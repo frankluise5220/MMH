@@ -46,6 +46,7 @@ const eslintConfig = defineConfig([
 
     // Local artifacts
     "public/test-results.json",
+    "release-artifacts/**",
     "src/app/test-results/**",
 
     // Utility scripts (not part of app runtime)

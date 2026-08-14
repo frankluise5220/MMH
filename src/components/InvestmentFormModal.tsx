@@ -95,6 +95,7 @@ export type InvestmentEntry = {
   toAccountName?: string | null;
   fundArrivalDate?: string | null;
   fundArrivalAmount?: number | null;
+  refundAmount?: number | null;
   realizedProfit?: number | null;
   feeRate?: string | number | null;
 };
@@ -173,6 +174,7 @@ type InvestmentEditDetail = {
   cashAccountId?: string;
   fundArrivalDate?: string | null;
   fundArrivalAmount?: number | null;
+  refundAmount?: number | null;
   linkedCandidateEntries?: LinkedCandidateEntry[];
   feeRate?: string | number | null;
 };
@@ -252,10 +254,6 @@ export function InvestmentFormModal({
     ? String(entry.metalFee)
     : mode === "edit" && entry?.fundFee != null ? String(entry.fundFee) : "";
   // 买入类：现金账户 -> 基金账户；赎回：基金账户 -> 现金账户；买入退回统一回到买入编辑。
-  const isFailedRefundEntry =
-    mode === "edit" &&
-    entry?.fundSubtype === "buy_failed" &&
-    entry?.source === "regular_invest_refund";
   const isRedeemEntry = isRedeemLike(initSubtype);
   const initCashAccountId = mode === "edit"
     ? (isRedeemEntry ? (entry?.toAccountId ?? "") : (entry?.accountId ?? ""))
@@ -283,14 +281,21 @@ export function InvestmentFormModal({
         return "";
       })())
     : (initSubtype === "dividend_cash" ? today : "");
-  const initArrivalAmount = mode === "edit" && entry?.fundArrivalAmount != null ? String(entry.fundArrivalAmount) : "";
+  const initRefundAmount = mode === "edit" && entry?.fundSubtype === "buy"
+    ? Math.max(0, Number(entry?.refundAmount) || 0)
+    : 0;
+  const initArrivalAmount = mode === "edit" && entry?.fundSubtype === "buy" && initRefundAmount > 0
+    ? String(initRefundAmount)
+    : mode === "edit" && entry?.fundArrivalAmount != null
+      ? String(entry.fundArrivalAmount)
+      : "";
   const initMemo = mode === "edit" ? (entry?.memo ?? entry?.note ?? "") : "";
   const initDate = mode === "edit" && entry ? entry.date : today;
   const initConfirmDate = mode === "edit" && entry ? (entry.confirmDate ?? "") : "";
   const initHasRefund =
     mode === "edit" &&
-    entry?.fundSubtype === "buy_failed" &&
-    entry?.source === "regular_invest_refund";
+    ((entry?.fundSubtype === "buy_failed" && entry?.source === "regular_invest_refund") ||
+      (entry?.fundSubtype === "buy" && initRefundAmount > 0));
 
   const [open, setOpen] = useState(false);
   const [productType, setProductType] = useState<ProductType>(fixedProductType);
@@ -963,6 +968,7 @@ export function InvestmentFormModal({
       cashAccountId: detail.cashAccountId ?? null,
       fundArrivalDate: detail.fundArrivalDate ?? null,
       fundArrivalAmount: detail.fundArrivalAmount ?? null,
+      refundAmount: detail.refundAmount ?? null,
       feeRate: detail.feeRate ?? null,
     });
 
@@ -987,7 +993,8 @@ export function InvestmentFormModal({
       setEditEntryId(detail.entryId);
       setEventEditEntry(detailToEntry(detail));
       setEventLinkedEntries(detail.linkedCandidateEntries ?? null);
-      setBuyResultStatus(linkedRefund ? "refund" : "normal");
+      const detailRefundAmount = Math.max(0, Number(detail.refundAmount) || 0);
+      setBuyResultStatus(linkedRefund || detailRefundAmount > 0 ? "refund" : "normal");
       setLinkedRefundEntryId(linkedRefund?.id ?? null);
       if (detail.fundProductType && ["fund", "money", "wealth", "deposit", "metal"].includes(detail.fundProductType)) {
         setProductType(detail.fundProductType as ProductType);
@@ -997,7 +1004,13 @@ export function InvestmentFormModal({
       setApplyDate(detail.date || today);
       setConfirmDate(detail.confirmDate ?? "");
       setArrivalDate(linkedRefund ? normalizeYmd(linkedRefund.fundArrivalDate ?? linkedRefund.date) : detail.fundArrivalDate ?? "");
-      setArrivalAmount(linkedRefund?.amount != null ? String(Math.abs(Number(linkedRefund.amount))) : "");
+      setArrivalAmount(
+        linkedRefund?.amount != null
+          ? String(Math.abs(Number(linkedRefund.amount)))
+          : detailRefundAmount > 0
+            ? String(detailRefundAmount)
+            : "",
+      );
       const numericAmount = Number(detail.amount);
       setAmount(Number.isFinite(numericAmount) && numericAmount !== 0 ? String(Math.abs(numericAmount)) : "");
       setMemo(detail.note ?? "");

@@ -226,6 +226,7 @@ export async function GET(req: NextRequest) {
  * - stockCode: stock code when securityId is not supplied
  * - stockName?: display name
  * - action: buy | sell | dividend | bonus_share | split_share | merge_share | fee_adjustment | tax_adjustment
+ *   dividend uses grossAmount and optional netAmount for cash dividends; bonus_share is the no-cash stock dividend/transfer action
  * - tradeDate: YYYY-MM-DD
  * - settleDate?: YYYY-MM-DD
  * - grossAmount?: amount before fees; defaults to quantity * price when possible

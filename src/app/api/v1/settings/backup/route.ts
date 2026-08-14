@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import crypto from "node:crypto";
 import { prisma } from "@/lib/db/prisma";
 import { verifyPassword } from "@/lib/auth/password";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -8,14 +9,208 @@ import {
   buildHouseholdBackupPayload,
   buildHouseholdTableExportWorkbook,
   buildTableExportFileName,
+  decryptBackupBytes,
   decryptBackupPackage,
+  encryptBackupBytes,
   encryptBackupPayload,
   restoreHouseholdBackup,
+  type RestoreHouseholdBackupProgress,
 } from "@/lib/server/backup";
+import {
+  createSqliteSnapshotBuffer,
+  isSqliteFileDatabase,
+  restoreSqliteSnapshotBuffer,
+} from "@/lib/server/sqlite-snapshot";
 
 export const runtime = "nodejs";
 const RESTORE_UPLOAD_LIMIT_BYTES = 128 * 1024 * 1024;
+const RESTORE_TASK_TTL_MS = 60 * 60 * 1000;
 const LEGACY_PASSWORD_KEY = "access_password";
+
+type RestoreTaskState = "queued" | "running" | "success" | "error";
+type RestoreFallbackAdmin = {
+  name: string;
+  role: string;
+  isSystem: boolean;
+  email?: string | null;
+  passwordHash?: string | null;
+} | null;
+type RestoreTask = {
+  id: string;
+  householdId: string;
+  userId: string;
+  status: RestoreTaskState;
+  progress: RestoreHouseholdBackupProgress;
+  summary?: {
+    householdName: string;
+    counts: { transactions: number };
+  };
+  error?: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+declare global {
+  var __mmhRestoreTasks: Map<string, RestoreTask> | undefined;
+  var __mmhActiveRestoreHouseholds: Set<string> | undefined;
+}
+
+const restoreTasks = globalThis.__mmhRestoreTasks ??= new Map<string, RestoreTask>();
+const activeRestoreHouseholds = globalThis.__mmhActiveRestoreHouseholds ??= new Set<string>();
+
+function restoreProgress(
+  progress: RestoreHouseholdBackupProgress,
+): RestoreHouseholdBackupProgress {
+  return {
+    stage: progress.stage,
+    percent: Math.max(0, Math.min(100, Math.round(progress.percent))),
+    label: progress.label,
+    detail: progress.detail,
+  };
+}
+
+function cleanupRestoreTasks() {
+  const cutoff = Date.now() - RESTORE_TASK_TTL_MS;
+  for (const [id, task] of restoreTasks) {
+    if (task.updatedAt < cutoff && task.status !== "running" && task.status !== "queued") {
+      restoreTasks.delete(id);
+    }
+  }
+}
+
+function updateRestoreTask(task: RestoreTask, patch: Partial<Omit<RestoreTask, "id" | "createdAt">>) {
+  Object.assign(task, patch, { updatedAt: Date.now() });
+}
+
+function publicRestoreTask(task: RestoreTask) {
+  return {
+    id: task.id,
+    status: task.status,
+    progress: task.progress,
+    summary: task.summary,
+    error: task.error,
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+  };
+}
+
+async function runRestoreTask(
+  task: RestoreTask,
+  encryptedText: string,
+  passphrase: string,
+  fallbackAdmin: RestoreFallbackAdmin,
+) {
+  let rawText: string | null = encryptedText;
+  let rawPayload: unknown = null;
+  let payload: unknown = null;
+  let packagePassphrase = passphrase;
+
+  try {
+    updateRestoreTask(task, {
+      status: "running",
+      progress: restoreProgress({
+        stage: "preparing",
+        percent: 36,
+        label: "解析备份",
+        detail: "备份文件已上传，正在读取加密包",
+      }),
+    });
+
+    rawPayload = JSON.parse(rawText ?? "");
+    rawText = null;
+
+    const rawObject = rawPayload as Record<string, unknown> | null;
+    const packageType = String(rawObject?.packageType ?? "");
+    const scopeName = String(
+      (rawObject?.scope as Record<string, unknown> | undefined)?.householdName ?? "当前账簿",
+    );
+
+    if (packageType === "encrypted-sqlite-backup") {
+      updateRestoreTask(task, {
+        progress: restoreProgress({
+          stage: "preparing",
+          percent: 44,
+          label: "解密整库备份",
+          detail: "正在验证口令并解密数据库文件",
+        }),
+      });
+
+      const bytes = await decryptBackupBytes(rawPayload, { passphrase: packagePassphrase });
+      rawPayload = null;
+      packagePassphrase = "";
+
+      const result = await restoreSqliteSnapshotBuffer(bytes, (progress) => {
+        updateRestoreTask(task, { progress: restoreProgress(progress) });
+      });
+
+      updateRestoreTask(task, {
+        status: "success",
+        summary: {
+          householdName: scopeName,
+          counts: { transactions: result.transactionCount },
+        },
+        progress: restoreProgress({
+          stage: "done",
+          percent: 100,
+          label: "恢复完成",
+          detail: "数据已恢复到备份时点，页面即将刷新",
+        }),
+      });
+      return;
+    }
+
+    updateRestoreTask(task, {
+      progress: restoreProgress({
+        stage: "preparing",
+        percent: 42,
+        label: "解密备份",
+        detail: "正在验证口令并解密备份内容",
+      }),
+    });
+
+    payload = await decryptBackupPackage(rawPayload, { passphrase: packagePassphrase });
+    rawPayload = null;
+    packagePassphrase = "";
+
+    const summary = await restoreHouseholdBackup(payload, {
+      householdId: task.householdId,
+      fallbackAdmin,
+      onProgress: (progress) => {
+        updateRestoreTask(task, { progress: restoreProgress(progress) });
+      },
+    });
+    payload = null;
+
+    updateRestoreTask(task, {
+      status: "success",
+      summary,
+      progress: restoreProgress({
+        stage: "done",
+        percent: 100,
+        label: "恢复完成",
+        detail: "数据已恢复，页面即将刷新",
+      }),
+    });
+  } catch (error) {
+    console.error("Backup restore failed", error);
+    updateRestoreTask(task, {
+      status: "error",
+      error: restoreFailureMessage(error),
+      progress: restoreProgress({
+        stage: "done",
+        percent: task.progress.percent,
+        label: "恢复失败",
+        detail: restoreFailureMessage(error),
+      }),
+    });
+  } finally {
+    rawText = null;
+    rawPayload = null;
+    payload = null;
+    packagePassphrase = "";
+    activeRestoreHouseholds.delete(task.householdId);
+  }
+}
 
 function requireAdmin(user: Awaited<ReturnType<typeof getCurrentUser>>) {
   if (!user || !isAdmin(user)) {
@@ -78,10 +273,15 @@ async function verifySensitiveOperationPassword(currentUser: CurrentUser, userPa
   return null;
 }
 
-function getCredentialsFromJson(value: unknown) {
+function getCredentialsFromJson(value: unknown): {
+  userPassword: string;
+  backupScope: "system" | "household";
+  backupPassphrase: string;
+} {
   const body = value && typeof value === "object" ? value as Record<string, unknown> : {};
   return {
     userPassword: String(body.userPassword ?? body.password ?? ""),
+    backupScope: String(body.backupScope ?? body.scope ?? "household") === "system" ? "system" : "household",
     backupPassphrase: String(
       body.backupPassphrase ??
       body.backupPassword ??
@@ -103,13 +303,23 @@ function restoreFailureMessage(error: unknown) {
  * GET /api/v1/settings/backup
  *
  * Response:
+ * - `?mode=restore-status&id=<restoreId>` returns `{ ok: true, task }`
  * - `{ ok: false, error }`
  *
  * Use `POST ?mode=export` to export an encrypted restore package.
  * Use `POST ?mode=table-export` to export a non-restorable Excel workbook.
  */
 export async function GET(req: NextRequest) {
-  void req;
+  cleanupRestoreTasks();
+  const mode = req.nextUrl.searchParams.get("mode");
+  if (mode === "restore-status") {
+    const id = String(req.nextUrl.searchParams.get("id") ?? "");
+    const task = restoreTasks.get(id);
+    if (!task) {
+      return NextResponse.json({ ok: false, error: "恢复任务不存在或已过期" }, { status: 404 });
+    }
+    return NextResponse.json({ ok: true, task: publicRestoreTask(task) });
+  }
   return NextResponse.json({ ok: false, error: "请使用 POST 导出备份、导出表格或恢复备份" }, { status: 405 });
 }
 
@@ -127,14 +337,37 @@ async function exportBackupPackage(req: NextRequest) {
     if (credentialDenied) return credentialDenied;
 
     const { householdId, user } = await getHouseholdScope();
+    const household = await prisma.household.findUnique({ where: { id: householdId } });
+    const householdName = household?.name ?? "默认";
+    const exportedAt = new Date();
+    const passphrase = credentials.backupPassphrase.trim() || credentials.userPassword;
+    const backupScope = credentials.backupScope;
+
+    if (isSqliteFileDatabase()) {
+      const snapshotBytes = await createSqliteSnapshotBuffer();
+      const encryptedPayload = await encryptBackupBytes(
+        snapshotBytes,
+        { householdId, householdName, backupScope: "system" },
+        exportedAt,
+        { passphrase },
+      );
+      const fileName = buildBackupFileName(householdName, exportedAt, "mmh-backup");
+      return new Response(JSON.stringify(encryptedPayload, null, 2), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "Content-Disposition": attachmentDisposition(fileName),
+          "Cache-Control": "no-store",
+        },
+      });
+    }
+
     const payload = await buildHouseholdBackupPayload(
       householdId,
       user ? { id: user.id, name: user.name, role: user.role } : null,
+      { backupScope },
     );
-
-    const encryptedPayload = await encryptBackupPayload(payload, {
-      passphrase: credentials.backupPassphrase.trim() || credentials.userPassword,
-    });
+    const encryptedPayload = await encryptBackupPayload(payload, { passphrase });
     const fileName = buildBackupFileName(payload.scope.householdName, payload.exportedAt, "mmh-backup");
     return new Response(JSON.stringify(encryptedPayload, null, 2), {
       status: 200,
@@ -161,7 +394,7 @@ async function exportTableWorkbook() {
     const payload = await buildHouseholdBackupPayload(
       householdId,
       user ? { id: user.id, name: user.name, role: user.role } : null,
-      { ensureBackupPackageKey: false },
+      { ensureBackupPackageKey: false, backupScope: "system" },
     );
 
     const workbook = await buildHouseholdTableExportWorkbook(payload);
@@ -204,12 +437,15 @@ async function exportTableWorkbook() {
  *   - `file`: the `.mmh-backup` encrypted package exported by this endpoint
  *   - `userPassword`: current user's password, verified before destructive restore
  *   - `backupPassphrase`: optional backup package encryption passphrase; when omitted, `userPassword` is used
+ * - starts a background restore task and returns `{ ok: true, restoreId, task }`
+ * - poll `GET /api/v1/settings/backup?mode=restore-status&id=<restoreId>` until `task.status` is `success` or `error`
  *
  * Response:
- * - `{ ok: true, summary }`
+ * - `{ ok: true, restoreId, task }`
  * - `{ ok: false, error }`
  */
 export async function POST(req: NextRequest) {
+  cleanupRestoreTasks();
   const mode = req.nextUrl.searchParams.get("mode");
   if (mode === "export") {
     return exportBackupPackage(req);
@@ -262,41 +498,59 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "恢复仅支持 MMH 加密备份（.mmh-backup）" }, { status: 400 });
   }
 
+  if (activeRestoreHouseholds.has(householdId)) {
+    return NextResponse.json({ ok: false, error: "当前账簿已有恢复任务在执行，请等待完成后再重试" }, { status: 409 });
+  }
+
+  let encryptedText: string;
   try {
-    const rawText = await file.text();
-    const rawPayload = JSON.parse(rawText);
-    const payload = await decryptBackupPackage(rawPayload, {
-      passphrase: backupPassphrase.trim() || userPassword,
-    });
-
-    const dbUser = user
-      ? await prisma.user.findUnique({
-          where: { id: user.id },
-          select: {
-            name: true,
-            role: true,
-            isSystem: true,
-            email: true,
-            passwordHash: true,
-          },
-        })
-      : null;
-
-    const summary = await restoreHouseholdBackup(payload, {
-      householdId,
-      fallbackAdmin: dbUser,
-    });
-
-    return NextResponse.json({
-      ok: true,
-      summary,
-      message: "恢复完成",
-    });
+    encryptedText = await file.text();
   } catch (error) {
-    console.error("Backup restore failed", error);
     return NextResponse.json(
       { ok: false, error: restoreFailureMessage(error) },
       { status: 400 },
     );
   }
+
+  const dbUser = user
+    ? await prisma.user.findUnique({
+        where: { id: user.id },
+        select: {
+          name: true,
+          role: true,
+          isSystem: true,
+          email: true,
+          passwordHash: true,
+        },
+      })
+    : null;
+
+  const task: RestoreTask = {
+    id: crypto.randomUUID(),
+    householdId,
+    userId: currentUser.id,
+    status: "queued",
+    progress: restoreProgress({
+      stage: "preparing",
+      percent: 35,
+      label: "等待恢复",
+      detail: "备份文件已上传，正在排队启动恢复任务",
+    }),
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  restoreTasks.set(task.id, task);
+  activeRestoreHouseholds.add(householdId);
+  void runRestoreTask(task, encryptedText, backupPassphrase.trim() || userPassword, dbUser);
+  encryptedText = "";
+
+  return NextResponse.json(
+    {
+      ok: true,
+      restoreId: task.id,
+      task: publicRestoreTask(task),
+      message: "恢复任务已开始",
+    },
+    { status: 202 },
+  );
 }

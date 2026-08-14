@@ -216,6 +216,7 @@
 - 信用卡账单明细和汇总按账期日期窗口归属。`statementMonth` 是缓存/兼容字段，不能让一条入账日期落在其他周期内的交易进入本期，也不能把本期日期内的交易排除出去。
 - `/api/v1/institution` 新增机构时，`name` 和 `shortName` 共用同一账簿内的机构名称池。提交的全称或简称只要与任何机构的全称或简称重复，或同一机构全称和简称相同，接口返回 `{ ok:false, error }`，状态码为 `409`。
 - `/api/v1/accounts` 新增或编辑账户时，同一账簿内按“所有人 + 机构 + 账户类型 + 尾号/名称”阻止不可区分的重复账户。借记卡和信用卡的 `numberMasked` 都会保存并参与查重；重复时返回 `{ ok:false, error }`，状态码为 `409`。
+- `POST /api/v1/accounts` 省略 `currency` 或传空值时，`PUT /api/v1/accounts` 传空 `currency` 时，服务端使用当前账簿 `Household.baseCurrency` 作为账户默认币种；Web 新增/编辑账户界面也使用同一套币种下拉选项，不再让用户手填币种代码。
 - 账户对象包含 `note` 作为用户自由备注；`POST /api/v1/accounts` 和 `PUT /api/v1/accounts` 接受 `note?`，空字符串按 `null` 保存，服务端不限制用户在备注里的用途。
 - 基金/货币基金类投资账户新增 `tradingCalendar` 字段，当前可选值包括 `cn_fund`、`hk_fund`、`us_fund`、`generic_weekday`。
 - `POST /api/v1/accounts` 与 `PUT /api/v1/accounts` 在这类账户上接受 `tradingCalendar`；当账户类型不支持该字段时，服务端会自动清空。
@@ -539,7 +540,7 @@ Notes:
 - `GET /api/v1/stocks/transactions?accountId=&securityId=&market=&stockCode=&limit=` 返回独立股票交易列表。交易项包含 `id`、`linkId`、`cashEntryId`、`stockAccountId`、`cashAccountId`、`securityId`、`market`、`stockCode`、`action`、`tradeDate`、`settleDate`、数量、价格、费用、`realizedProfit`、`externalLinkId` 和 `brokerTradeId`。
 - `POST /api/v1/stocks/transactions` 创建股票交易；动作为 `buy`、`sell`、`dividend`、`fee_adjustment` 或 `tax_adjustment` 时，服务端会在 `cashAccountId` 指向的证券资金账户上创建或更新资金侧 `TxRecord`，未传 `cashAccountId` 时自动使用同券商资金账户，写入 `EntryBusinessLink`，重算 `StockHolding`，并返回 `{ ok:true, data:{ transaction, linkId, cashEntryId } }`。现金流水不生成“资金账户 ↔ 股票账户”的自转账；股票持仓变化只由 `StockTransaction` / `StockHolding` 表达。买卖交易可以省略 `commission`、`stampTax`、`transferFee`、`exchangeFee`、`regulatoryFee` 和 `otherFee`，服务端先按股票账户下当前生效的 `StockFeeRule` 计算；账户规则未命中时再使用 `StockMarketFeeRule` 的市场默认规则。导入或特殊手工路径仍可传入费用字段作为覆盖值。
 - `DELETE /api/v1/stocks/transactions?id=...` 或 `DELETE /api/v1/stocks/transactions?linkId=...` 软删除股票交易、关联现金流水和业务 link，并重算持仓。
-- `GET /api/v1/stocks/holdings?accountId=&includeZero=1` 返回某个股票账户的 `StockHolding`，包括数量、成本、最新价、市值、浮盈、历史收益和汇总值。
+- `GET /api/v1/stocks/holdings?accountId=&includeZero=1` 返回某个股票账户的 `StockHolding`，包括数量、成本、最新价、市值、浮盈、历史收益和汇总值；传入 `tradeDate=YYYY-MM-DD` 时改为按该交易日回放 `StockTransaction`，只返回截至该日期仍有正数数量的股票，供股票卖出 SS 下拉使用。
 - `POST /api/v1/stocks/holdings` 使用 `{ accountId, securityIds? }` 触发股票持仓重算。
 - `POST /api/v1/stocks/prices/refresh` 使用 `{ accountId, securityIds? }` 获取当前股票持仓的最新收盘价，写入 `StockPriceCache` 后重算 `StockHolding`，返回 `{ refreshed, failed, prices, holdings, totalMarketValue, totalCost, floatingPnL }`；股票持仓表头的“获取收盘价”按钮调用该接口。
 - `GET /api/v1/stocks/fee-rules` 查询账户/标的/日期下生效的股票账户覆盖规则；`GET /api/v1/stocks/fee-rules?accountId=...&list=1` 返回该股票账户最近规则列表，供股票持仓表头的“账户费率”设置入口展示。`GET /api/v1/stocks/fee-rules?accountId=...&estimate=1&direction=buy&tradeDate=YYYY-MM-DD&market=CN&stockCode=600519&grossAmount=1040&refresh=1` 返回买卖窗口使用的只读费用预估 `{ fees, totalFee, cashAmount }`；`refresh=1` 会先刷新系统内置的 A 股公开市场默认费率，再按同一规则重算。`POST /api/v1/stocks/fee-rules` 新增佣金、印花税、过户费、经手费、监管费、平台费或其他费用规则，支持 `direction = buy | sell | both`、`rate`、`amount` 和 `minAmount`。账户规则匹配优先级为单一股票/标的、市场+代码、市场（例如 `CN_SH`、`CN_SZ`）和账户通用规则；市场公开默认规则存储在 `StockMarketFeeRule`，证券公司公开名录和别名存储在 `StockBrokerageCatalog`。
@@ -548,7 +549,8 @@ Notes:
 
 - `buy`：买入，通常产生现金流出。
 - `sell`：卖出，通常产生现金流入并由 `recalcStockPositions` 计算已实现收益。
-- `dividend`：现金股息，产生现金流入并计入历史收益。
+- `dividend`：现金股息，产生现金流入并计入历史收益；`grossAmount` 为分红金额，`netAmount` 可选表示扣税/费用后的实际到账金额。
+- Web 股票交易窗口的“送股/转增”提交为 `bonus_share`，只填写增加的股数，不创建资金侧流水；股票分红窗口必须先按交易日期通过持仓 SS 选择股票。
 - `bonus_share` / `split_share` / `merge_share`：股数变动，不创建资金侧流水；Web 交易弹窗应合并为一个“股本变动”入口，再在表单内选择具体类型。
 - `fee_adjustment` / `tax_adjustment`：费用或税费调整，通常产生现金流出；用于导入/账户调整路径，不作为普通股票交易弹窗动作展示。
 
@@ -697,7 +699,7 @@ Notes:
 - `/api/v1/settings/email-accounts`
 - `/api/v1/settings/resend`
 - `/api/v1/settings/fund-query-api`：GET/POST/PUT/DELETE 管理基金查询来源，PATCH 批量保存拖拽后的优先级；基金净值查询会优先使用账户默认 API，其次按机构场景（如支付宝基金账户优先支付宝来源），最后按全局优先级尝试。
-- `/api/v1/settings/backup`：导出/恢复当前账簿加密恢复包，也提供普通表格导出。备份导出使用 `POST /api/v1/settings/backup?mode=export`，JSON body 提交 `userPassword` 和可选 `backupPassphrase`；服务端先用 `userPassword` 验证当前登录用户，再用 `backupPassphrase` 加密 `.mmh-backup` 包，未提供时使用 `userPassword` 作为备份文件加密口令。恢复时 multipart body 提交扩展名为 `.mmh-backup` 的 `file`、`userPassword` 和可选 `backupPassphrase`；服务端先验证当前用户密码，再用 `backupPassphrase`（未提供时使用 `userPassword`）解密备份文件，然后执行清空和写回。导出和恢复都不要求重复提交用户名。表格导出使用 `POST /api/v1/settings/backup?mode=table-export`，返回 `.xlsx` 文件，仅用于查看、核对和处理数据，不能用于恢复账簿，且不包含密码、API Key、邮箱密码等敏感恢复配置；其中交易和定投计划的账户名称列按 `accountId` / `toAccountId` / `cashAccountId` 从 Account 表生成，不依赖流水表里的旧名称快照。当前恢复上传上限为 128MB，超过限制应返回 `{ ok: false, error }` 而不是 HTTP 500。恢复包包含账簿基础资料、业务表数据、系统设置、访问 Key、AI API Key、邀请码、加密主密钥、旧版备份包加密密钥（如存在）、邮箱账户和接口配置等恢复状态所需数据。备份文件本身不是明文，应妥善保存。
+- `/api/v1/settings/backup`：导出/恢复当前账簿加密恢复包，也提供普通表格导出。备份导出使用 `POST /api/v1/settings/backup?mode=export`，JSON body 提交 `userPassword` 和可选 `backupPassphrase`；服务端先用 `userPassword` 验证当前登录用户，再用 `backupPassphrase` 加密 `.mmh-backup` 包，未提供时使用 `userPassword` 作为备份文件加密口令。恢复时 multipart body 提交扩展名为 `.mmh-backup` 的 `file`、`userPassword` 和可选 `backupPassphrase`；服务端先验证当前用户密码，然后返回 `{ ok: true, restoreId, task }` 并在后台解密、清空和写回；调用方应轮询 `GET /api/v1/settings/backup?mode=restore-status&id=<restoreId>`，直到 `task.status` 为 `success` 或 `error`。导出和恢复都不要求重复提交用户名。表格导出使用 `POST /api/v1/settings/backup?mode=table-export`，返回 `.xlsx` 文件，仅用于查看、核对和处理数据，不能用于恢复账簿，且不包含密码、API Key、邮箱密码等敏感恢复配置；其中交易和定投计划的账户名称列按 `accountId` / `toAccountId` / `cashAccountId` 从 Account 表生成，不依赖流水表里的旧名称快照。当前恢复上传上限为 128MB，超过限制应返回 `{ ok: false, error }` 而不是 HTTP 500。恢复包包含账簿基础资料、业务表数据、系统设置、访问 Key、AI API Key、邀请码、加密主密钥、旧版备份包加密密钥（如存在）、邮箱账户和接口配置等恢复状态所需数据。备份文件本身不是明文，应妥善保存。
 - `/api/v1/settings/system-update`：GET 返回部署方式、当前包版本 `localVersion`、本版说明 `localReleaseNotes`、远端版本/镜像信息和更新状态；飞牛版返回版本和说明，但更新动作由飞牛应用中心管理。
 
 用户设置规则：

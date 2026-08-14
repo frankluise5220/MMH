@@ -5,10 +5,13 @@ import { RefreshCcw } from "lucide-react";
 
 import { formatCurrencyMoney, formatMoney } from "@/lib/format";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 import { StockFeeRuleSettingsButton } from "@/components/StockFeeRuleSettingsButton";
 
 type StockPosition = {
-  fundCode: string;
+  stockCode: string;
+  market?: string | null;
+  securityId?: string | null;
   name: string;
   units: number;
   avgCost: number;
@@ -42,6 +45,7 @@ type StockTransaction = {
 };
 
 type RefreshPriceHolding = {
+  securityId?: string | null;
   market: string;
   stockCode: string;
   stockName?: string | null;
@@ -79,17 +83,8 @@ function pnlClass(value: number, isRedUp: boolean) {
   return "text-slate-600";
 }
 
-function splitStockKey(value: string) {
-  const [market, ...codeParts] = String(value ?? "").split(":");
-  const stockCode = codeParts.join(":") || market;
-  return {
-    market: codeParts.length > 0 ? market : "",
-    stockCode,
-  };
-}
-
 function positionKey(position: StockPosition) {
-  return position.fundCode;
+  return position.securityId || `${position.market ?? ""}:${position.stockCode}`;
 }
 
 function actionLabel(action: string) {
@@ -128,7 +123,9 @@ function cashAmount(tx: StockTransaction) {
 
 function mapApiHolding(item: RefreshPriceHolding): StockPosition {
   return {
-    fundCode: `${item.market}:${item.stockCode}`,
+    stockCode: item.stockCode,
+    market: item.market,
+    securityId: item.securityId ?? undefined,
     name: item.stockName || item.stockCode,
     units: Number(item.quantity ?? 0),
     avgCost: Number(item.avgCost ?? 0),
@@ -194,7 +191,8 @@ export function StockHoldingsPanel({
   const assetValue = marketValue + cashBalance;
 
   const loadTransactions = useCallback(async (position: StockPosition) => {
-    const { market, stockCode } = splitStockKey(position.fundCode);
+    const market = position.market ?? "";
+    const stockCode = position.stockCode;
     if (!stockCode) return;
     setSelectedKey(positionKey(position));
     setTransactionsLoading(true);
@@ -250,7 +248,15 @@ export function StockHoldingsPanel({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-transparent p-4 md:p-5">
-      <div className="panel-surface flex min-h-0 flex-1 flex-col overflow-hidden">
+      <ResizableVerticalSplit
+        storageKey={`mmh:stock-shell:${accountId}:split-height`}
+        hasLowerPane={Boolean(selectedPosition)}
+        defaultUpperHeight={360}
+        separatorLabel="调整股票持仓和明细高度"
+        separatorTitle="拖动调整股票持仓和明细高度"
+        stackOnMobile
+      >
+      <div className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
         <div className="shrink-0 border-b border-slate-200 px-4 py-3">
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
@@ -295,59 +301,59 @@ export function StockHoldingsPanel({
           </div>
         </div>
 
-        <div className="grid min-h-0 flex-1 grid-rows-[minmax(220px,1fr)_minmax(180px,0.8fr)] overflow-hidden">
-          <div className="min-h-0 overflow-auto">
-            {positions.length > 0 ? (
-              <table className="w-full text-sm">
-                <thead className="sticky top-0 z-10 bg-slate-50 text-xs text-slate-500">
-                  <tr className="border-b border-slate-200">
-                    <th className="px-4 py-2 text-left font-medium">股票</th>
-                    <th className="px-3 py-2 text-right font-medium">数量</th>
-                    <th className="px-3 py-2 text-right font-medium">成本价</th>
-                    <th className="px-3 py-2 text-right font-medium">成本</th>
-                    <th className="px-3 py-2 text-right font-medium">收盘价</th>
-                    <th className="px-3 py-2 text-right font-medium">市值</th>
-                    <th className="px-4 py-2 text-right font-medium">浮动盈亏</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {positions.map((position) => {
-                    const active = positionKey(position) === selectedKey;
-                    const { stockCode } = splitStockKey(position.fundCode);
-                    return (
-                      <tr
-                        key={positionKey(position)}
-                        onClick={() => void loadTransactions(position)}
-                        className={`cursor-pointer border-b border-slate-100 ${active ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-slate-50"}`}
-                      >
-                        <td className="px-4 py-2">
-                          <div className={`font-medium ${active ? "text-blue-700" : "text-slate-900"}`}>{position.name}</div>
-                          <div className="text-xs text-slate-500">{stockCode}</div>
-                        </td>
-                        <td className="px-3 py-2 text-right tabular-nums">{formatMoney(position.units)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums">{formatMoney(position.avgCost)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums">{formatCurrencyMoney(position.cost, currency)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums">{position.nav == null ? "-" : formatMoney(position.nav)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums">{formatCurrencyMoney(position.marketValue, currency)}</td>
-                        <td className={`px-4 py-2 text-right tabular-nums ${pnlClass(position.floatingPnL, isRedUp)}`}>
-                          {formatCurrencyMoney(position.floatingPnL, currency)}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            ) : (
-              <div className="flex h-full min-h-[260px] flex-col items-center justify-center px-6 text-center">
-                <div className="text-sm font-medium text-slate-900">暂无股票持仓</div>
-                <div className="mt-2 max-w-md text-xs leading-5 text-slate-500">
-                  买入股票后会形成独立 StockHolding；收盘价刷新后会更新持仓市值。
-                </div>
+        <div className="min-h-0 flex-1 overflow-auto">
+          {positions.length > 0 ? (
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 z-10 bg-slate-50 text-xs text-slate-500">
+                <tr className="border-b border-slate-200">
+                  <th className="px-4 py-2 text-left font-medium">股票</th>
+                  <th className="px-3 py-2 text-right font-medium">数量</th>
+                  <th className="px-3 py-2 text-right font-medium">成本价</th>
+                  <th className="px-3 py-2 text-right font-medium">成本</th>
+                  <th className="px-3 py-2 text-right font-medium">收盘价</th>
+                  <th className="px-3 py-2 text-right font-medium">市值</th>
+                  <th className="px-4 py-2 text-right font-medium">浮动盈亏</th>
+                </tr>
+              </thead>
+              <tbody>
+                {positions.map((position) => {
+                  const active = positionKey(position) === selectedKey;
+                  return (
+                    <tr
+                      key={positionKey(position)}
+                      onClick={() => void loadTransactions(position)}
+                      className={`cursor-pointer border-b border-slate-100 ${active ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-slate-50"}`}
+                    >
+                      <td className="px-4 py-2">
+                        <div className={`font-medium ${active ? "text-blue-700" : "text-slate-900"}`}>{position.name}</div>
+                        <div className="text-xs text-slate-500">{position.stockCode}</div>
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">{formatMoney(position.units)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{formatMoney(position.avgCost)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{formatCurrencyMoney(position.cost, currency)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{position.nav == null ? "-" : formatMoney(position.nav)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{formatCurrencyMoney(position.marketValue, currency)}</td>
+                      <td className={`px-4 py-2 text-right tabular-nums ${pnlClass(position.floatingPnL, isRedUp)}`}>
+                        {formatCurrencyMoney(position.floatingPnL, currency)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : (
+            <div className="flex h-full min-h-[260px] flex-col items-center justify-center px-6 text-center">
+              <div className="text-sm font-medium text-slate-900">暂无股票持仓</div>
+              <div className="mt-2 max-w-md text-xs leading-5 text-slate-500">
+                买入股票后会形成独立 StockHolding；收盘价刷新后会更新持仓市值。
               </div>
-            )}
-          </div>
+            </div>
+          )}
+        </div>
+      </div>
 
-          <div className="min-h-0 border-t border-slate-200 bg-white">
+      {selectedPosition ? (
+        <div className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
             <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-4 py-2">
               <div className="min-w-0 text-sm font-semibold text-slate-800">
                 交易明细
@@ -403,9 +409,9 @@ export function StockHoldingsPanel({
                 </table>
               )}
             </div>
-          </div>
         </div>
-      </div>
+      ) : null}
+      </ResizableVerticalSplit>
     </div>
   );
 }

@@ -3,7 +3,7 @@
     "id": "mmh",
     "_manual": {
       "name": "MMH 家庭财务工作台",
-      "version": "0.1.27",
+      "version": "0.1.29",
       "platform": "x86",
       "platforms": [
         "x86",
@@ -11,18 +11,18 @@
       ],
       "author": "frankluise5220",
       "desc": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
-      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.27",
-      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.27/mmh-fnos-v0.1.27-x86_64.fpk",
+      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.29",
+      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.29/mmh-fnos-v0.1.29-x86_64.fpk",
       "download_urls": {
-        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.27/mmh-fnos-v0.1.27-x86_64.fpk",
-        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.27/mmh-fnos-v0.1.27-arm64.fpk"
+        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.29/mmh-fnos-v0.1.29-x86_64.fpk",
+        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.29/mmh-fnos-v0.1.29-arm64.fpk"
       },
       "screenshots": [],
       "tags": [
         "财务",
         "记账"
       ],
-      "changelog": "修复备份恢复分类外键兼容：恢复前会清理分类父级的缺失、自引用和循环引用，按父子层级分批写入，并保持流水和账单识别规则的分类名称一致，避免 category.createMany 外键失败。"
+      "changelog": "合并股票账户、股票交易、持仓与费用规则改进：股票交易弹窗支持股本变动（送股/拆股/并股）与现金分红+送股/转增同时记录，卖出、分红、股本变动统一使用交易日期持仓下拉；增强备份恢复和 SQLite 数据兼容；优化账户、债务、汇率与设置界面；飞牛包改用 Webpack 构建并清理非运行时文件，Docker 镜像优化分层以减少后续更新传输量。"
     }
   }
 ]

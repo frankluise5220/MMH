@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { signedFundAmount } from "@/lib/fund/transactions";
 
 export async function GET(req: NextRequest) {
   const { hidFilter } = await getHouseholdScope();
@@ -26,16 +27,12 @@ export async function GET(req: NextRequest) {
     });
 
     const result = entries.map((e) => {
-      const gross = Math.abs(Number(e.grossAmount));
-      const signedAmount = e.fundSubtype === "buy" || e.fundSubtype === "buy_failed" || e.fundSubtype === "switch_in"
-        ? -gross
-        : Math.abs(Number(e.arrivalAmount ?? e.grossAmount));
       return {
         id: e.id,
         date: e.applyDate.toISOString().slice(0, 10),
         fundCode: e.fundCode,
         fundName: e.fundName,
-        amount: String(signedAmount),
+        amount: String(signedFundAmount(e)),
         fundNav: e.nav ? String(e.nav) : null,
         fundUnits: e.units ? String(e.units) : null,
         fundConfirmDate: e.confirmDate ? e.confirmDate.toISOString().slice(0, 10) : null,

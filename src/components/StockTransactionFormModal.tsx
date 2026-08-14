@@ -22,6 +22,7 @@ type StockTransactionAction =
   | "merge_share";
 
 type StockModalAction = "buy" | "sell" | "dividend" | "share_change";
+type StockDividendMode = "cash" | "shares" | "cash_shares";
 
 type AccountOption = {
   id: string;
@@ -99,6 +100,24 @@ type StockSecurityLookupResponse = {
   };
 };
 
+type SellStockHolding = {
+  id: string;
+  accountId: string;
+  securityId: string;
+  market: string;
+  stockCode: string;
+  stockName?: string | null;
+  quantity: number;
+};
+
+type StockHoldingsResponse = {
+  ok?: boolean;
+  error?: string;
+  data?: {
+    holdings?: SellStockHolding[];
+  };
+};
+
 type StockFeeEstimateResponse = {
   ok?: boolean;
   error?: string;
@@ -131,15 +150,14 @@ const STOCK_ACTIONS: Array<{ key: StockModalAction; label: string; tone: string 
   { key: "buy", label: "买入", tone: "bg-blue-600 text-white border-blue-600" },
   { key: "sell", label: "卖出", tone: "bg-orange-600 text-white border-orange-600" },
   { key: "dividend", label: "分红", tone: "bg-emerald-600 text-white border-emerald-600" },
-  { key: "share_change", label: "股本变动", tone: "bg-slate-700 text-white border-slate-700" },
+  { key: "share_change", label: "股本变动", tone: "bg-violet-600 text-white border-violet-600" },
 ];
 
-const SHARE_CHANGE_ACTIONS: Array<{ key: Extract<StockTransactionAction, "bonus_share" | "split_share" | "merge_share">; label: string }> = [
-  { key: "bonus_share", label: "送股" },
-  { key: "split_share", label: "拆股" },
-  { key: "merge_share", label: "并股" },
+const SHARE_CHANGE_ACTIONS = [
+  { key: "bonus_share", label: "送股（除权，股价降低）" },
+  { key: "split_share", label: "拆股（除权，股价降低）" },
+  { key: "merge_share", label: "并股（股价升高）" },
 ];
-
 function todayDateInputValue() {
   const date = new Date();
   const year = date.getFullYear();
@@ -156,6 +174,11 @@ function parseNumber(value: string) {
 function formatMoney(value?: number | null, currency = "CNY") {
   if (value == null || !Number.isFinite(Number(value))) return "-";
   return `${Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`;
+}
+
+function formatStockQuantity(value?: number | null) {
+  if (value == null || !Number.isFinite(Number(value))) return "";
+  return Number(value).toLocaleString("zh-CN", { maximumFractionDigits: 4 });
 }
 
 function formatFeeTooltipValue(key: string, value: number | null, currency: string) {
@@ -381,10 +404,15 @@ export function StockTransactionFormModal({
   const cashAccountTouchedRef = useRef(false);
 
   const [action, setAction] = useState<StockModalAction>("buy");
+  const [dividendMode, setDividendMode] = useState<StockDividendMode>("cash");
   const [shareChangeAction, setShareChangeAction] = useState<Extract<StockTransactionAction, "bonus_share" | "split_share" | "merge_share">>("bonus_share");
   const [market, setMarket] = useState("CN");
   const [stockCode, setStockCode] = useState("");
   const [stockName, setStockName] = useState("");
+  const [selectedSecurityId, setSelectedSecurityId] = useState("");
+  const [sellHoldings, setSellHoldings] = useState<SellStockHolding[]>([]);
+  const [sellHoldingsLoading, setSellHoldingsLoading] = useState(false);
+  const [sellHoldingsError, setSellHoldingsError] = useState("");
   const [tradeDate, setTradeDate] = useState(today);
   const [settleDate, setSettleDate] = useState("");
   const [quantity, setQuantity] = useState("");
@@ -439,16 +467,66 @@ export function StockTransactionFormModal({
   const selectedCashAccount = eligibleCashAccounts.find((account) => account.id === cashAccountId)
     ?? eligibleCashAccounts[0]
     ?? null;
-  const transactionAction: StockTransactionAction = action === "share_change" ? shareChangeAction : action;
+  const sellHoldingOptions = useMemo<SmartSelectOption[]>(
+    () => sellHoldings.map((holding) => ({
+      id: holding.securityId,
+      label: holding.stockName?.trim() || holding.stockCode,
+      subLabel: `${holding.stockCode} · 当日持股 ${formatStockQuantity(holding.quantity)}`,
+    })),
+    [sellHoldings],
+  );
+  const selectedSellHolding = sellHoldings.find((holding) => holding.securityId === selectedSecurityId) ?? null;
+
+  function changeModalAction(nextAction: StockModalAction) {
+    setAction(nextAction);
+    if (nextAction !== "dividend") setDividendMode("cash");
+    setSelectedSecurityId("");
+    if (nextAction === "sell" || nextAction === "dividend" || nextAction === "share_change") {
+      setStockCode("");
+      setStockName("");
+      setQuantity("");
+    }
+  }
+
+  function handleTradeDateChange(value: string) {
+    setTradeDate(value);
+    if (action === "sell" || action === "dividend" || action === "share_change") {
+      setSelectedSecurityId("");
+      setStockCode("");
+      setStockName("");
+      setQuantity("");
+    }
+  }
+
+  function selectHolding(id: string) {
+    const holding = sellHoldings.find((item) => item.securityId === id) ?? null;
+    if (!holding) return;
+    setSelectedSecurityId(holding.securityId);
+    setMarket(holding.market);
+    setStockCode(holding.stockCode);
+    setStockName(holding.stockName?.trim() || holding.stockCode);
+    setQuantity(action === "sell" ? formatStockQuantity(holding.quantity) : "");
+  }
+
+  const isDividendCash = action === "dividend" && dividendMode === "cash";
+  const isDividendShares = action === "dividend" && dividendMode === "shares";
+  const isDividendCashShares = action === "dividend" && dividendMode === "cash_shares";
+  const isHoldingSelectionAction = action === "sell" || action === "dividend" || action === "share_change";
+  const transactionAction: StockTransactionAction = action === "share_change"
+    ? shareChangeAction
+    : isDividendShares
+      ? "bonus_share"
+      : action;
   const isBuySell = action === "buy" || action === "sell";
   const isDividendAction = action === "dividend";
   const isShareAction = action === "share_change";
-  const isCashAmountAction = action === "buy" || action === "sell" || action === "dividend";
-  const showQuantityField = isBuySell || isShareAction;
+  const isCashAmountAction = action === "buy" || action === "sell" || isDividendCash || isDividendCashShares;
+  const showQuantityField = isBuySell || isShareAction || isDividendShares || isDividendCashShares;
   const showPriceField = isBuySell;
   const showAmountField = isCashAmountAction;
   const showSettleDate = isBuySell || isDividendAction;
-  const showNetAmount = isDividendAction;
+  const showNetAmount = isDividendCash || isDividendCashShares;
+  const quantityFieldLabel = (isDividendShares || isDividendCashShares) ? "分红股数" : quantityLabelForAction(transactionAction);
   const grossFromQuantity = parseNumber(quantity) * parseNumber(price);
   const effectiveGrossAmount = isBuySell ? grossFromQuantity : parseNumber(grossAmount);
   const previewCashAmount = action === "sell" || action === "dividend"
@@ -541,9 +619,14 @@ export function StockTransactionFormModal({
     });
     setRequestId(detail?.requestId ?? null);
     setAction("buy");
+    setDividendMode("cash");
     setMarket("CN");
     setStockCode("");
     setStockName("");
+    setSelectedSecurityId("");
+    setSellHoldings([]);
+    setSellHoldingsLoading(false);
+    setSellHoldingsError("");
     setTradeDate(detail?.defaultDate ?? todayDateInputValue());
     setSettleDate("");
     setQuantity("");
@@ -801,6 +884,39 @@ export function StockTransactionFormModal({
     };
   }, [open, stockCode]);
 
+  useEffect(() => {
+    if (!open || !isHoldingSelectionAction || !stockAccountId || !tradeDate) {
+      setSellHoldingsLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    setSellHoldingsLoading(true);
+    setSellHoldingsError("");
+    setSellHoldings([]);
+    const params = new URLSearchParams({
+      accountId: stockAccountId,
+      tradeDate,
+    });
+    fetch(`/api/v1/stocks/holdings?${params.toString()}`, {
+      signal: controller.signal,
+      cache: "no-store",
+    })
+      .then((res) => res.json().catch(() => null))
+      .then((data: StockHoldingsResponse | null) => {
+        if (!data?.ok) throw new Error(data?.error ?? "股票持仓加载失败");
+        setSellHoldings(Array.isArray(data.data?.holdings) ? data.data.holdings : []);
+      })
+      .catch((error) => {
+        if ((error as Error)?.name === "AbortError") return;
+        setSellHoldings([]);
+        setSellHoldingsError(error instanceof Error ? error.message : "股票持仓加载失败");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setSellHoldingsLoading(false);
+      });
+    return () => controller.abort();
+  }, [isHoldingSelectionAction, open, stockAccountId, tradeDate]);
+
   const loadFeeEstimate = useCallback(async (refresh = false) => {
     const normalizedCode = normalizeStockCode(stockCode);
     if (!open || !isBuySell || !stockAccountId || effectiveGrossAmount <= 0 || !normalizedCode) {
@@ -859,12 +975,24 @@ export function StockTransactionFormModal({
       return;
     }
     const normalizedCode = normalizeStockCode(stockCode);
-    if (!normalizedCode) {
+    if (isHoldingSelectionAction && !selectedSecurityId) {
+      window.alert(action === "sell" || action === "share_change" ? "请选择持仓股票" : "请选择分红股票");
+      return;
+    }
+    if (!isHoldingSelectionAction && !normalizedCode) {
       window.alert("请填写股票代码");
       return;
     }
     if (isBuySell && (!parseNumber(quantity) || !parseNumber(price) || effectiveGrossAmount <= 0)) {
       window.alert("买卖股票需要填写数量和成交价格");
+      return;
+    }
+    if (action === "sell" && selectedSellHolding && parseNumber(quantity) > selectedSellHolding.quantity + 0.000001) {
+      window.alert(`卖出数量不能超过当日持股 ${formatStockQuantity(selectedSellHolding.quantity)}`);
+      return;
+    }
+    if ((isDividendShares || isDividendCashShares) && !parseNumber(quantity)) {
+      window.alert("请填写分红股数（送股/转增股数）");
       return;
     }
     if (isShareAction && !parseNumber(quantity)) {
@@ -877,31 +1005,57 @@ export function StockTransactionFormModal({
     }
     setSubmitting(true);
     try {
-      const payload = {
+      const commonPayload = {
         stockAccountId,
         cashAccountId: selectedCashAccount?.id || undefined,
+        securityId: selectedSecurityId || undefined,
         market,
         stockCode: normalizedCode,
         stockName: stockName.trim() || normalizedCode,
-        action: transactionAction,
         tradeDate,
         settleDate: showSettleDate ? settleDate || undefined : undefined,
-        quantity: showQuantityField ? quantity || undefined : undefined,
-        price: showPriceField ? price || undefined : undefined,
-        grossAmount: showAmountField ? effectiveGrossAmount || undefined : undefined,
-        netAmount: showNetAmount ? netAmount || undefined : undefined,
         brokerTradeId: brokerTradeId.trim() || undefined,
         note: note.trim() || undefined,
         source: "manual",
       };
-      const res = await fetch("/api/v1/stocks/transactions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; data?: { transaction?: { id?: string; cashEntryId?: string | null } | null } } | null;
-      if (!res.ok || !data?.ok) {
-        throw new Error(data?.error ?? "股票交易保存失败");
+      const postTransaction = async (body: Record<string, unknown>) => {
+        const res = await fetch("/api/v1/stocks/transactions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; data?: { transaction?: { id?: string; cashEntryId?: string | null } | null } } | null;
+        if (!res.ok || !data?.ok) {
+          throw new Error(data?.error ?? "股票交易保存失败");
+        }
+        return data;
+      };
+      let lastData: Awaited<ReturnType<typeof postTransaction>> | null = null;
+      if (isDividendCashShares) {
+        // 同一笔"现金分红+送股/转增"拆成两条独立业务记录：
+        // 1) dividend：现金分红（分红金额 + 净到账 → 证券资金账户）
+        lastData = await postTransaction({
+          ...commonPayload,
+          action: "dividend",
+          grossAmount: effectiveGrossAmount || undefined,
+          netAmount: netAmount || undefined,
+        });
+        // 2) bonus_share：送股/转增（只增加持仓股数，不产生现金流水）
+        await postTransaction({
+          ...commonPayload,
+          action: "bonus_share",
+          quantity: quantity || undefined,
+          grossAmount: 0,
+        });
+      } else {
+        lastData = await postTransaction({
+          ...commonPayload,
+          action: transactionAction,
+          quantity: showQuantityField ? quantity || undefined : undefined,
+          price: showPriceField ? price || undefined : undefined,
+          grossAmount: showAmountField ? effectiveGrossAmount || undefined : undefined,
+          netAmount: showNetAmount ? netAmount || undefined : undefined,
+        });
       }
       if (requestId) {
         window.dispatchEvent(new CustomEvent("mmh:stock:create:success", { detail: { requestId } }));
@@ -910,7 +1064,7 @@ export function StockTransactionFormModal({
         dispatchFinanceDataChanged({
           reason: "stock-transaction-save",
           accountIds: Array.from(new Set([stockAccountId, selectedCashAccount?.id].filter((id): id is string => Boolean(id)))),
-          entryIds: [data.data?.transaction?.cashEntryId ?? "", data.data?.transaction?.id ?? ""].filter(Boolean),
+          entryIds: [lastData?.data?.transaction?.cashEntryId ?? "", lastData?.data?.transaction?.id ?? ""].filter(Boolean),
         });
       });
       setOpen(false);
@@ -942,7 +1096,7 @@ export function StockTransactionFormModal({
                   <button
                     key={item.key}
                     type="button"
-                    onClick={() => setAction(item.key)}
+                    onClick={() => changeModalAction(item.key)}
                     className={`h-8 rounded-[10px] border px-2 text-xs ${action === item.key ? item.tone : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}
                   >
                     {item.label}
@@ -959,6 +1113,12 @@ export function StockTransactionFormModal({
                     onChange={(id) => {
                       cashAccountTouchedRef.current = false;
                       setStockAccountId(id);
+                      if (isHoldingSelectionAction) {
+                        setSelectedSecurityId("");
+                        setStockCode("");
+                        setStockName("");
+                        setQuantity("");
+                      }
                     }}
                     options={sortOptionsByRecent(filteredOptions ?? stockAccountOptions, recentAccountIds)}
                     placeholder={autoCreatingAccount ? "正在自动建立股票账户" : "选择股票账户"}
@@ -989,31 +1149,48 @@ export function StockTransactionFormModal({
               </div>
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                <div className="space-y-1">
-                  <div className="form-label">股票代码</div>
-                  <input
-                    value={stockCode}
-                    onChange={(event) => {
-                      const nextCode = event.target.value.toUpperCase();
-                      setStockCode(nextCode);
-                      setMarket(inferStockMarketFromCode(nextCode));
-                    }}
-                    className="form-input"
-                    placeholder="600519 / 00700 / AAPL"
-                  />
-                </div>
-                <div className="space-y-1 sm:col-span-2">
-                  <div className="form-label">股票名称</div>
-                  <div className="flex h-9 items-center rounded-[10px] border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">
-                    {stockLookupLoading ? "查询中..." : stockName || ""}
+                {isHoldingSelectionAction ? (
+                  <div className="space-y-1 sm:col-span-3">
+                    <div className="form-label">{action === "sell" || action === "share_change" ? "持仓股票" : "分红股票"}</div>
+                    <SmartSelect
+                      mode="single"
+                      value={selectedSecurityId}
+                      onChange={selectHolding}
+                      options={sellHoldingOptions}
+                      placeholder={sellHoldingsLoading ? "正在加载当日持仓..." : action === "sell" ? "选择可卖出的股票" : action === "share_change" ? "选择持仓股票" : "选择分红持仓股票"}
+                      behavior={{ search: true, density: "compact", minDropdownWidth: 300 }}
+                    />
+                    {sellHoldingsError ? <div className="text-[11px] text-rose-600">{sellHoldingsError}</div> : null}
                   </div>
-                </div>
+                ) : (
+                  <>
+                    <div className="space-y-1">
+                      <div className="form-label">股票代码</div>
+                      <input
+                        value={stockCode}
+                        onChange={(event) => {
+                          const nextCode = event.target.value.toUpperCase();
+                          setStockCode(nextCode);
+                          setMarket(inferStockMarketFromCode(nextCode));
+                        }}
+                        className="form-input"
+                        placeholder="600519 / 00700 / AAPL"
+                      />
+                    </div>
+                    <div className="space-y-1 sm:col-span-2">
+                      <div className="form-label">股票名称</div>
+                      <div className="flex h-9 items-center rounded-[10px] border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">
+                        {stockLookupLoading ? "查询中..." : stockName || ""}
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
 
               <div className={`grid gap-3 ${showSettleDate ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1"}`}>
                 <div className="space-y-1">
                   <div className="form-label">交易日期</div>
-                  <DateStepper value={tradeDate} onChange={setTradeDate} />
+                  <DateStepper value={tradeDate} onChange={handleTradeDateChange} />
                 </div>
                 {showSettleDate ? (
                   <div className="space-y-1">
@@ -1023,23 +1200,82 @@ export function StockTransactionFormModal({
                 ) : null}
               </div>
 
-              <div className={`grid grid-cols-1 gap-3 ${isBuySell ? "sm:grid-cols-2" : "sm:grid-cols-3"}`}>
-                {isShareAction ? (
-                  <div className="space-y-1">
-                    <div className="form-label">变动类型</div>
+              {isDividendAction ? (
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+                  <div className="space-y-1 sm:w-40 sm:shrink-0">
+                    <div className="form-label">分红方式</div>
                     <select
-                      value={shareChangeAction}
-                      onChange={(event) => setShareChangeAction(event.target.value as typeof shareChangeAction)}
+                      value={dividendMode}
+                      onChange={(event) => {
+                        const nextMode = event.target.value as StockDividendMode;
+                        setDividendMode(nextMode);
+                        setQuantity("");
+                        setGrossAmount("");
+                        setNetAmount("");
+                      }}
                       className="form-input"
                     >
-                      {SHARE_CHANGE_ACTIONS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
+                      <option value="cash">现金分红</option>
+                      <option value="shares">送股/转增</option>
+                      <option value="cash_shares">现金分红+送股/转增</option>
                     </select>
                   </div>
+                  <div className={`grid flex-1 grid-cols-1 gap-3 ${dividendMode === "cash_shares" ? "sm:grid-cols-3" : dividendMode === "cash" ? "sm:grid-cols-2" : "sm:grid-cols-1"}`}>
+                    {dividendMode === "shares" ? (
+                      <div className="space-y-1">
+                        <div className="form-label">分红股数</div>
+                        <CalcInput value={quantity} onChange={setQuantity} placeholder="分红股数" label="分红股数" precision={4} />
+                      </div>
+                    ) : (
+                      <>
+                        <div className="space-y-1">
+                          <div className="form-label">分红金额</div>
+                          <CalcInput value={grossAmount} onChange={setGrossAmount} placeholder="分红金额" label="分红金额" precision={2} />
+                        </div>
+                        <div className="space-y-1">
+                          <div className="form-label">净到账</div>
+                          <CalcInput value={netAmount} onChange={setNetAmount} placeholder={previewCashAmount > 0 ? previewCashAmount.toFixed(2) : "可选"} label="净金额" precision={2} />
+                        </div>
+                        {dividendMode === "cash_shares" ? (
+                          <div className="space-y-1">
+                            <div className="form-label">分红股数</div>
+                            <CalcInput value={quantity} onChange={setQuantity} placeholder="分红股数" label="分红股数" precision={4} />
+                          </div>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+
+              <div className={`grid grid-cols-1 gap-3 ${isBuySell ? "sm:grid-cols-2" : "sm:grid-cols-3"}`}>
+                {isShareAction ? (
+                  <div className="space-y-2 sm:col-span-3">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+                      <div className="space-y-1 sm:w-40 sm:shrink-0">
+                        <div className="form-label">变动类型</div>
+                        <select
+                          value={shareChangeAction}
+                          onChange={(event) => setShareChangeAction(event.target.value as typeof shareChangeAction)}
+                          className="form-input"
+                        >
+                          {SHARE_CHANGE_ACTIONS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
+                        </select>
+                      </div>
+                      <div className="flex-1 space-y-1">
+                        <div className="form-label">{quantityFieldLabel}</div>
+                        <CalcInput value={quantity} onChange={setQuantity} placeholder="变动股数" label={quantityFieldLabel} precision={4} />
+                      </div>
+                    </div>
+                    <div className="text-[11px] leading-relaxed text-slate-500">
+                      送股、转增、拆股会除权降低股价；并股会提高股价。股本变动只改变股数，持仓成本总额不变，系统会自动重算每股成本与后续卖出收益。
+                    </div>
+                  </div>
                 ) : null}
-                {showQuantityField ? (
+                {showQuantityField && !isDividendAction && !isShareAction ? (
                   <div className="space-y-1">
-                    <div className="form-label">{quantityLabelForAction(transactionAction)}</div>
-                    <CalcInput value={quantity} onChange={setQuantity} placeholder="股数" label={quantityLabelForAction(transactionAction)} precision={4} />
+                    <div className="form-label">{quantityFieldLabel}</div>
+                    <CalcInput value={quantity} onChange={setQuantity} placeholder="股数" label={quantityFieldLabel} precision={4} />
                   </div>
                 ) : null}
                 {showPriceField ? (
@@ -1048,7 +1284,7 @@ export function StockTransactionFormModal({
                     <CalcInput value={price} onChange={setPrice} placeholder="成交价" label="成交价格" precision={4} />
                   </div>
                 ) : null}
-                {showAmountField && !isBuySell ? (
+                {showAmountField && !isBuySell && !isDividendAction ? (
                   <div className="space-y-1">
                     <div className="form-label">{amountLabelForAction(action)}</div>
                     <CalcInput
@@ -1060,7 +1296,7 @@ export function StockTransactionFormModal({
                     />
                   </div>
                 ) : null}
-                {showNetAmount ? (
+                {showNetAmount && !isDividendAction ? (
                   <div className="space-y-1">
                     <div className="form-label">净到账</div>
                     <CalcInput value={netAmount} onChange={setNetAmount} placeholder={previewCashAmount > 0 ? previewCashAmount.toFixed(2) : "可选"} label="净金额" precision={2} />
@@ -1070,19 +1306,16 @@ export function StockTransactionFormModal({
 
               {isBuySell ? (
                 <div className="space-y-2">
-                  <div className="flex justify-end">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-[2.25rem_1fr_1fr_1fr]">
                     <button
                       type="button"
                       onClick={() => void loadFeeEstimate(true)}
                       disabled={feeEstimateLoading || !stockAccountId || effectiveGrossAmount <= 0}
-                      className="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-[11px] text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="flex h-9 w-9 items-center justify-center self-end rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
                       title="获取最新公开费率并重算"
                     >
-                      <RefreshCcw className={`h-3 w-3 ${feeEstimateLoading ? "animate-spin" : ""}`} />
-                      获取新费率
+                      <RefreshCcw className={`h-4 w-4 ${feeEstimateLoading ? "animate-spin" : ""}`} />
                     </button>
-                  </div>
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                     <div className="space-y-1">
                       <div className="form-label">费用合计{amountCurrencyLabel}</div>
                       <input

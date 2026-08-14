@@ -6,6 +6,7 @@ export type SettingsCounterparty = { id: string; name: string; shortName?: strin
 export type SettingsUser = { id: string; name: string };
 export type SettingsCategory = { id: string; name: string; type: string; parentId?: string | null; isSystem?: boolean };
 export type SettingsAccountData = {
+  baseCurrency?: string;
   accounts: unknown[];
   groups: SettingsAccountGroup[];
   institutions: SettingsInstitution[];
@@ -61,6 +62,7 @@ function setCacheValue<T>(key: string, value: T) {
 function seedBootstrapCaches(value: SettingsBootstrapData) {
   setCacheValue(BOOTSTRAP_KEY, value);
   setCacheValue(ACCOUNT_DATA_KEY, {
+    baseCurrency: value.baseCurrency,
     accounts: value.accounts,
     groups: value.groups,
     institutions: value.institutions,
@@ -94,6 +96,7 @@ export async function fetchSettingsBootstrap(options?: { force?: boolean }) {
     .then((data) => {
       if (!data?.ok) throw new Error(data?.error || "读取设置基础资料失败");
       const value: SettingsBootstrapData = {
+        baseCurrency: data.baseCurrency || "CNY",
         accounts: data.accounts || [],
         groups: data.groups || [],
         institutions: data.institutions || [],
@@ -164,6 +167,7 @@ export async function fetchSettingsAccountData(options?: { force?: boolean }) {
   if (bootstrap) {
     return {
       accounts: bootstrap.accounts,
+      baseCurrency: bootstrap.baseCurrency,
       groups: bootstrap.groups,
       institutions: bootstrap.institutions,
       counterparties: bootstrap.counterparties,
@@ -179,6 +183,7 @@ export async function fetchSettingsAccountData(options?: { force?: boolean }) {
     .then((data) => {
       if (!data?.ok) throw new Error(data?.error || "读取账户资料失败");
       const value: SettingsAccountData = {
+        baseCurrency: data.baseCurrency || "CNY",
         accounts: data.accounts || [],
         groups: data.groups || [],
         institutions: data.institutions || [],

@@ -401,7 +401,7 @@ function compactFundSubtypeLabel(entry: any, fallback: string) {
   const subtype = String(entry?.fundSubtype ?? "");
   const source = String(entry?.source ?? "");
   if (subtype === "buy_failed" && source === "regular_invest_refund") return "退回";
-  if (subtype === "buy_failed") return source === "regular_invest" ? "暂停" : "退回";
+  if (subtype === "buy_failed") return source === "regular_invest_refund" ? "退回" : "失败";
   if (subtype === "buy" && source === "regular_invest") return "定投";
   if (subtype === "buy") return "申购";
   if (subtype === "redeem") return "赎回";
@@ -623,7 +623,7 @@ export function FundShell(props: Props) {
   const investmentAccountLabel = isWealthAccount ? "理财账户" : "基金账户";
   const detailNameLabel = isWealthAccount ? "理财产品" : "基金";
   const navColumnLabel = isMetalAccount ? "单价" : isWealthAccount ? "净值/估值" : "净值";
-  const detailAmountColumnLabel = isWealthAccount ? "入账/出账金额" : "确认金额";
+  const detailAmountColumnLabel = isWealthAccount ? "入账/出账金额" : "金额";
   const entryAssetKey = useCallback((entry: any) => String(
     isWealthAccount
       ? entry?.wealthProductId ?? ""
@@ -738,12 +738,11 @@ export function FundShell(props: Props) {
   const detailAmountOf = useCallback((entry: any) => {
     const rawAmount = toNumber(entry?.amount);
     if (!isWealthAccount) {
+      if (entry?.fundSubtype === "buy_failed") {
+        return entry?.source === "regular_invest_refund" ? -Math.abs(rawAmount) : Math.abs(rawAmount);
+      }
       if (entry?.fundSubtype !== "buy") return rawAmount;
-      const entryId = String(entry?.id ?? "");
-      const linkedRefundAmount = refundAmountByBuyId.get(entryId) ?? 0;
-      const rowRefundAmount = Math.max(0, Math.abs(toNumber(entry?.refundAmount ?? 0)));
-      const confirmedAmount = getConfirmedBuyAmount(rawAmount, Math.max(linkedRefundAmount, rowRefundAmount));
-      return rawAmount < 0 ? -confirmedAmount : confirmedAmount;
+      return Math.abs(rawAmount);
     }
     const isCashIn =
       entry?.fundSubtype === "redeem" ||
@@ -752,7 +751,12 @@ export function FundShell(props: Props) {
     if (!isCashIn) return rawAmount;
     const arrivalAmount = entry?.fundArrivalAmount != null ? toNumber(entry.fundArrivalAmount) : null;
     return arrivalAmount != null ? Math.abs(arrivalAmount) : Math.abs(rawAmount);
-  }, [isWealthAccount, refundAmountByBuyId]);
+  }, [isWealthAccount]);
+  const refundAmountOf = useCallback((entry: any) => {
+    const linkedRefundAmount = refundAmountByBuyId.get(String(entry?.id ?? "")) ?? 0;
+    const rowRefundAmount = Math.max(0, Math.abs(toNumber(entry?.refundAmount ?? 0)));
+    return Math.max(linkedRefundAmount, rowRefundAmount);
+  }, [refundAmountByBuyId]);
   const linkedCandidateEntries = useMemo(() => {
     return (d.allEntries || []).map((entry: any) => ({
       id: String(entry.id ?? ""),
@@ -1142,7 +1146,7 @@ export function FundShell(props: Props) {
         : (displayUnitsOf(e) != null && Number(displayUnitsOf(e)) > 0) ? fmtDate(e.fundConfirmDate) : "待确认";
 
       const status = isBuyFailed
-        ? (e.source === "regular_invest_refund" ? "买入退回" : "暂停申购")
+        ? (e.source === "regular_invest_refund" ? "买入退回" : "买入失败")
         : (e.fundSubtype === "buy" && (refundAmountByBuyId.get(String(e.id ?? "")) ?? 0) > 0) ? "部分确认" : (e.fundUnits == null || Number(e.fundUnits) === 0) ? "待确认" : "确认";
 
 
@@ -2144,16 +2148,27 @@ export function FundShell(props: Props) {
   }, [accountOptions]);
 
   const statusOf = useCallback((e: any) => {
-    if (e.fundSubtype === "buy_failed") return e.source === "regular_invest_refund" ? "买入退回" : "暂停申购";
+    if (e.fundSubtype === "buy_failed") {
+      const amount = Math.abs(detailAmountOf(e));
+      if (e.source === "regular_invest_refund") {
+        return "买入退回";
+      }
+      const refundAmount = Math.min(amount, refundAmountOf(e));
+      const confirmedAmount = Math.max(0, amount - refundAmount);
+      return refundAmount > 0 && confirmedAmount > 0 ? "部分确认" : "买入失败";
+    }
     if (e.fundSubtype === "buy") {
-      if ((refundAmountByBuyId.get(String(e.id ?? "")) ?? 0) > 0) {
+      const refundAmount = refundAmountOf(e);
+      if (refundAmount > 0) {
+        const confirmedAmount = getConfirmedBuyAmount(Math.abs(toNumber(e.amount)), refundAmount);
         const units = displayUnitsOf(e);
+        if (confirmedAmount <= 0) return "买入失败";
         return units != null && units > 0 ? "部分确认" : "待确认";
       }
     }
     const units = displayUnitsOf(e);
     return units != null && units > 0 ? "确认" : "待确认";
-  }, [displayUnitsOf, refundAmountByBuyId]);
+  }, [detailAmountOf, displayUnitsOf, refundAmountOf]);
 
   const filteredByColumns = filtered;
 
@@ -2641,9 +2656,20 @@ export function FundShell(props: Props) {
           sortValue: (e: any) => Math.abs(detailAmountOf(e)),
           render: (e: any) => {
             const amount = detailAmountOf(e);
-            const absAmt = formatMoney(Math.abs(amount));
-            if (e.source === "dividend" || e.fundSubtype === "dividend_cash") return <span className={`font-medium ${upCls}`}>+{absAmt}</span>;
-            return <span className="tabular-nums text-xs text-slate-700">{absAmt}</span>;
+            const displayAmount = e.fundSubtype === "buy_failed" && e.source !== "regular_invest_refund"
+              ? Math.abs(amount)
+              : e.fundSubtype === "buy_failed" && e.source === "regular_invest_refund"
+                ? -Math.abs(amount)
+                : Math.abs(amount);
+            const displayText = formatMoney(displayAmount);
+            if (e.source === "dividend" || e.fundSubtype === "dividend_cash") return <span className={`font-medium ${upCls}`}>+{formatMoney(Math.abs(displayAmount))}</span>;
+            const entryStatus = statusOf(e);
+            const amountClass = entryStatus === "买入失败"
+              ? "text-rose-600"
+              : entryStatus === "买入退回"
+                ? "text-emerald-700"
+              : displayAmount < 0 ? downCls : "text-slate-700";
+            return <span className={`tabular-nums text-xs ${amountClass}`}>{displayText}</span>;
           },
         } satisfies AdvancedDataTableColumn<any>;
       }
@@ -2688,7 +2714,7 @@ export function FundShell(props: Props) {
           render: (e: any) => {
             const s = statusOf(e);
             if (s === "待确认") return <span className="text-amber-600">{s}</span>;
-            if (s === "暂停申购") return <span className="text-rose-600">{s}</span>;
+            if (s === "买入失败") return <span className="text-rose-600">{s}</span>;
             if (s === "买入退回") return <span className="text-emerald-700">{s}</span>;
             if (s === "部分确认") return <span className="text-amber-600">{s}</span>;
             return <span className="text-emerald-700">{s}</span>;
@@ -2734,6 +2760,7 @@ export function FundShell(props: Props) {
     isWealthAccount,
     navColumnLabel,
     pnl,
+    refundAmountOf,
     statusOf,
     upCls,
     visibleDetailDataCols,
@@ -2774,7 +2801,7 @@ export function FundShell(props: Props) {
 
     return (
       <div className="flex items-center justify-end gap-1">
-        {!isWealthAccount && e.fundCode && e.fundSubtype === "buy" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? <FillNavButton entryId={e.id} fundCode={e.fundCode} action={fillNavAction} onFilled={(data) => handleEntryNavFilled(e, data)} /> : null}
+        {!isWealthAccount && e.fundCode && e.fundSubtype === "buy" && statusOf(e) !== "买入失败" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? <FillNavButton entryId={e.id} fundCode={e.fundCode} action={fillNavAction} onFilled={(data) => handleEntryNavFilled(e, data)} /> : null}
         {e.fundProductType === "wealth" ? (
           <WealthFormModal
             mode="edit"
@@ -2867,6 +2894,7 @@ export function FundShell(props: Props) {
               toAccountName: editableInvestmentEntry.toAccountName ?? null,
               fundArrivalDate: fmtDate(editableInvestmentEntry.fundArrivalDate) || null,
               fundArrivalAmount: editableInvestmentEntry.fundArrivalAmount != null ? toNumber(editableInvestmentEntry.fundArrivalAmount) : null,
+              refundAmount: editableInvestmentEntry.refundAmount != null ? toNumber(editableInvestmentEntry.refundAmount) : null,
               realizedProfit: editableInvestmentEntry.realizedProfit != null ? toNumber(editableInvestmentEntry.realizedProfit) : null,
             }}
             openSignal={detailEditSignal && detailEditSignal.id === e.id ? detailEditSignal.value : undefined}
@@ -2967,6 +2995,7 @@ export function FundShell(props: Props) {
     selectedAccount?.investProductType,
     singleDeletingIds,
     linkDetailCashFlow,
+    statusOf,
   ]);
   const showDetailPane = Boolean(fundCode || isWealthAccount);
 
@@ -3681,12 +3710,14 @@ export function FundShell(props: Props) {
                         ) : null}
                       </div>
                       <div className="shrink-0 text-right">
-                        <div className="text-base font-semibold tabular-nums text-slate-900">
+                        <div className={`text-base font-semibold tabular-nums ${
+                          status === "买入失败" ? "text-rose-600" : status === "买入退回" ? "text-emerald-700" : "text-slate-900"
+                        }`}>
                           {e.source === "dividend" || e.fundSubtype === "dividend_cash" ? (
                             <span className={upCls}>+{formatMoney(Math.abs(amount))}</span>
-                          ) : formatMoney(Math.abs(amount))}
+                          ) : formatMoney(amount < 0 ? amount : Math.abs(amount))}
                         </div>
-                        <div className={`mt-0.5 text-[11px] ${status === "确认" || status === "买入退回" ? "text-emerald-700" : status === "暂停申购" ? "text-rose-600" : "text-amber-600"}`}>
+                        <div className={`mt-0.5 text-[11px] ${status === "确认" || status === "买入退回" ? "text-emerald-700" : status === "买入失败" ? "text-rose-600" : "text-amber-600"}`}>
                           {status}
                         </div>
                       </div>

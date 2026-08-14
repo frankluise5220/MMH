@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 import { entryBusinessTypeLabel, upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
 import { createManySkipDuplicatesCompat } from "@/lib/server/prisma-create-many";
+import { regularInvestRefundNote } from "@/lib/fund/regular-invest-display";
 
 type Tx = Prisma.TransactionClient;
 
@@ -82,13 +83,17 @@ function cashFlowKindOf(row: { fundSubtype?: string | null; source?: string | nu
   return FundCashFlowKind.other;
 }
 
-function signedFundAmount(ft: {
+export function signedFundAmount(ft: {
   fundSubtype: string;
+  source?: string | null;
   grossAmount: unknown;
   arrivalAmount?: unknown;
 }) {
   const gross = Math.abs(toNumber(ft.grossAmount));
-  if (ft.fundSubtype === FundSubtype.buy || ft.fundSubtype === FundSubtype.buy_failed || ft.fundSubtype === FundSubtype.switch_in) return -gross;
+  if (ft.fundSubtype === FundSubtype.buy_failed) {
+    return ft.source === "regular_invest_refund" ? -gross : gross;
+  }
+  if (ft.fundSubtype === FundSubtype.buy || ft.fundSubtype === FundSubtype.switch_in) return gross;
   return Math.abs(toNumber(ft.arrivalAmount ?? ft.grossAmount));
 }
 
@@ -690,7 +695,7 @@ export async function loadFundTransactionEntryLike(params: {
         fundTransactionId: row.id,
         date: row.applyDate,
         createdAt: flow.createdAt,
-        amount: Math.abs(toNumber(flow.amount)),
+        amount: -Math.abs(toNumber(flow.amount)),
         accountId: row.fundAccountId,
         accountName: null,
         toAccountId: flow.accountId ?? row.cashAccountId,
@@ -709,7 +714,7 @@ export async function loadFundTransactionEntryLike(params: {
         fundSourceEntryId: row.cashEntryId ?? row.id,
         regularInvestPlanId: row.regularInvestPlanId,
         realizedProfit: null,
-        note: row.note,
+        note: regularInvestRefundNote(row.fundCode, row.fundName, toNumber(flow.amount), row.applyDate),
         fundCashFlowOnly: true,
         businessLinkCount: validBusinessLinks.length,
         businessLinkLabels,

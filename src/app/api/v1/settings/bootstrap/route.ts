@@ -5,6 +5,7 @@ import { normalizeDefaultCategoryHierarchyForHousehold } from "@/lib/default-cat
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { loadCommonData } from "@/lib/server/cached-data";
 import { buildAccountDisplayOption } from "@/lib/account-display";
+import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 
 export const runtime = "nodejs";
 
@@ -42,19 +43,21 @@ function withAccountDisplayFields<T extends {
  * GET /api/v1/settings/bootstrap
  * 读取设置区常用基础资料，供系统设置页共享缓存使用。
  *
- * 返回: { ok, accounts, groups, institutions, counterparties, users, categories, tags }
+ * 返回: { ok, baseCurrency, accounts, groups, institutions, counterparties, users, categories, tags }
  */
 export async function GET() {
   try {
     const { householdId, hidFilter } = await getHouseholdScope();
     await normalizeDefaultCategoryHierarchyForHousehold(prisma, householdId);
-    const [{ accounts, groups, institutions, counterparties, categories, tags }, users] = await Promise.all([
+    const [{ accounts, groups, institutions, counterparties, categories, tags }, users, baseCurrency] = await Promise.all([
       loadCommonData(hidFilter),
       prisma.user.findMany({ where: hidFilter, orderBy: { name: "asc" } }),
+      getHouseholdBaseCurrency(householdId),
     ]);
 
     return NextResponse.json({
       ok: true,
+      baseCurrency,
       accounts: accounts.map(withAccountDisplayFields),
       groups,
       institutions,

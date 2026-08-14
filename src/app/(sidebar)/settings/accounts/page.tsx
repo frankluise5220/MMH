@@ -16,6 +16,7 @@ import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { isDepositAccount } from "@/lib/account-kind-utils";
 import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
 import { useI18n } from "@/lib/i18n";
+import { CURRENCY_OPTIONS, normalizeCurrency } from "@/lib/currency";
 import {
   STOCK_ACCOUNT_INSTITUTION_ERROR,
   isStockAccountInstitutionType,
@@ -84,6 +85,7 @@ export default function SettingsAccountsPage() {
   const [selectedGroup, setSelectedGroup] = useState<string>("");
   const [selectedInstitution, setSelectedInstitution] = useState<string>("");
   const [selectedKinds, setSelectedKinds] = useState<string[]>([]);
+  const [baseCurrency, setBaseCurrency] = useState("CNY");
   const [accountNameQuery, setAccountNameQuery] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
@@ -106,6 +108,7 @@ export default function SettingsAccountsPage() {
       setGroups(cached.groups as Group[]);
       setAccounts(cached.accounts as Account[]);
       setInstitutions(cached.institutions as Institution[]);
+      setBaseCurrency(normalizeCurrency(cached.baseCurrency));
       return;
     }
     loadAll();
@@ -117,6 +120,7 @@ export default function SettingsAccountsPage() {
     setGroups(data.groups as Group[]);
     setAccounts(data.accounts as Account[]);
     setInstitutions(data.institutions as Institution[]);
+    setBaseCurrency(normalizeCurrency(data.baseCurrency));
   }
 
   function notifySidebarChanged() {
@@ -138,6 +142,7 @@ export default function SettingsAccountsPage() {
       name: a.name,
       note: a.note || "",
       kind: normalizedKind,
+      currency: normalizeCurrency(a.currency || baseCurrency),
       groupId: a.groupId || "",
       institutionId: a.institutionId || "",
       billingDay: a.billingDay?.toString() || "",
@@ -438,6 +443,18 @@ export default function SettingsAccountsPage() {
                           placeholder={t("settings.accounts.selectInstitution")}
                           onCreateClick={() => setNestedEntityType("institution")} createLabel={t("settings.accounts.addInstitution")} />
                       </div>
+                      <div>
+                        <label className="block text-xs text-slate-500 mb-1">币种</label>
+                        <select
+                          value={normalizeCurrency(editForm.currency || baseCurrency)}
+                          onChange={e => setEditForm(f => ({ ...f, currency: e.target.value }))}
+                          className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
+                        >
+                          {CURRENCY_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
+                      </div>
                       {isInvestmentKind && (
                         <div>
                           <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.investmentAccountType")}</label>
@@ -571,9 +588,6 @@ export default function SettingsAccountsPage() {
                       {a.isPlaceholder && (
                         <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-slate-300 bg-slate-100 text-slate-400">{t("settings.accounts.placeholder")}</span>
                       )}
-                      {a.note && (
-                        <span className="max-w-[260px] truncate text-xs text-slate-400" title={a.note}>备注：{a.note}</span>
-                      )}
                       {a.AccountGroup && (
                         <span className="text-xs px-1.5 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600">{a.AccountGroup.name}</span>
                       )}
@@ -603,6 +617,9 @@ export default function SettingsAccountsPage() {
                           {a.numberMasked && <span className="text-[10px] text-slate-400">{tf("settings.accounts.lastFour", { value: a.numberMasked })}</span>}
                           {normalizedAccountKind(a) === "bank_credit" && <span className="text-[10px] text-slate-400">{a.creditBillMode === "consolidated" ? "合并账单" : "独立账单"}</span>}
                         </>
+                      )}
+                      {a.note && (
+                        <span className="max-w-[260px] truncate text-xs text-slate-400" title={a.note}>备注：{a.note}</span>
                       )}
                     </div>
                     <div className="flex items-center gap-1 shrink-0 ml-3">
@@ -666,6 +683,7 @@ export default function SettingsAccountsPage() {
         onClose={() => setShowCreateAccount(false)}
         fieldData={{ groupId: groups, institutionId: institutions }}
         includeInitialBalanceFields={guideAccountSetup}
+        defaultCurrency={baseCurrency}
         onCreated={() => {
           setShowCreateAccount(false);
           void refreshSettingsAccounts("account:create");

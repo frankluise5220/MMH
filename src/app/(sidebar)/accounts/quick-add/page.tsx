@@ -161,7 +161,7 @@ export default function QuickAddAccountsPage() {
     const res = await fetch("/api/v1/accounts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, kind, currency: "CNY", groupId, institutionId: institution.id }),
+      body: JSON.stringify({ name, kind, groupId, institutionId: institution.id }),
     }).catch(() => null);
     if (!res) throw new Error(`${institution.name}·${name} 创建失败：网络请求失败`);
     const data = await res.json().catch(() => ({ ok: false, error: "返回数据格式异常" }));

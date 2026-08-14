@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
-import { recalcStockPositions } from "@/lib/stock/recalcPosition";
+import { computeStockHoldingsAsOfDate, recalcStockPositions } from "@/lib/stock/recalcPosition";
 
 export const runtime = "nodejs";
 
@@ -35,6 +35,7 @@ async function assertStockAccount(accountId: string, householdId: string) {
  * Query:
  * - accountId: string
  * - includeZero?: "1"
+ * - tradeDate?: YYYY-MM-DD; returns positive holdings as of that trade date
  *
  * Response:
  * - { ok: true, data: { holdings, totalMarketValue, totalCost, floatingPnL } }
@@ -46,6 +47,45 @@ export async function GET(req: NextRequest) {
     if (!accountId) return NextResponse.json({ ok: false, error: "缺少股票账户" }, { status: 400, headers: corsHeaders() });
     const account = await assertStockAccount(accountId, householdId);
     const includeZero = req.nextUrl.searchParams.get("includeZero") === "1";
+    const tradeDateRaw = req.nextUrl.searchParams.get("tradeDate")?.trim() || "";
+    const asOfDate = tradeDateRaw && /^\d{4}-\d{2}-\d{2}$/.test(tradeDateRaw)
+      ? new Date(`${tradeDateRaw}T00:00:00.000Z`)
+      : null;
+    if (tradeDateRaw && !asOfDate) {
+      return NextResponse.json({ ok: false, error: "交易日期无效" }, { status: 400, headers: corsHeaders() });
+    }
+
+    if (asOfDate) {
+      const rows = await computeStockHoldingsAsOfDate(accountId, asOfDate);
+      const holdings = rows.map((item) => ({
+        id: item.securityId,
+        accountId,
+        securityId: item.securityId,
+        market: item.market,
+        stockCode: item.stockCode,
+        stockName: item.stockName,
+        quantity: item.quantity,
+        avgCost: 0,
+        cost: 0,
+        latestPrice: null,
+        marketValue: 0,
+        floatingPnL: 0,
+        floatingPnLRate: 0,
+        historicalProfit: 0,
+      }));
+      return NextResponse.json({
+        ok: true,
+        data: {
+          accountId,
+          currency: account.currency,
+          holdings,
+          totalMarketValue: 0,
+          totalCost: 0,
+          floatingPnL: 0,
+        },
+      }, { headers: corsHeaders() });
+    }
+
     const rows = await prisma.stockHolding.findMany({
       where: {
         householdId,

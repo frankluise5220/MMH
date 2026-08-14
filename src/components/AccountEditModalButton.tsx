@@ -13,6 +13,7 @@ import {
   type TradingCalendarValue,
 } from "@/lib/fund/trading-calendar";
 import { isStockAccountInstitutionType, isStockInvestmentAccount } from "@/lib/account-institution-rules";
+import { CURRENCY_OPTIONS, normalizeCurrency } from "@/lib/currency";
 
 type GroupOption = { id: string; name: string };
 type InstitutionOption = { id: string; name: string; type?: string };
@@ -320,11 +321,17 @@ export function AccountEditModalButton({
                   </div>
                 ) : null}
 
-                <input
+                <select
                   name="currency"
                   className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                  defaultValue={account.currency}
-                />
+                  defaultValue={normalizeCurrency(account.currency)}
+                >
+                  {CURRENCY_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               {supportsLastFour ? (

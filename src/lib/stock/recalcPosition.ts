@@ -11,6 +11,66 @@ function roundMoney(value: number) {
   return Math.max(0, Math.round((value + Number.EPSILON) * 100) / 100);
 }
 
+type StockTransactionReplayRow = {
+  securityId: string | null;
+  market: string;
+  stockCode: string;
+  stockName: string | null;
+  action: StockTransactionAction;
+  quantity: unknown;
+};
+
+type StockPositionQuantityState = {
+  securityId: string;
+  market: string;
+  stockCode: string;
+  stockName: string | null;
+  quantity: number;
+};
+
+function summarizeStockPositionQuantity(rows: StockTransactionReplayRow[]) {
+  const positions = new Map<string, StockPositionQuantityState>();
+  for (const row of rows) {
+    if (!row.securityId) continue;
+    const quantity = Math.abs(toNumber(row.quantity));
+    const current = positions.get(row.securityId) ?? {
+      securityId: row.securityId,
+      market: row.market,
+      stockCode: row.stockCode,
+      stockName: row.stockName,
+      quantity: 0,
+    };
+    if (row.action === StockTransactionAction.buy || row.action === StockTransactionAction.bonus_share || row.action === StockTransactionAction.split_share) {
+      current.quantity = roundQuantity(current.quantity + quantity);
+    } else if (row.action === StockTransactionAction.sell || row.action === StockTransactionAction.merge_share) {
+      current.quantity = roundQuantity(current.quantity - quantity);
+    }
+    current.market = row.market;
+    current.stockCode = row.stockCode;
+    current.stockName = row.stockName ?? current.stockName;
+    positions.set(row.securityId, current);
+  }
+  return Array.from(positions.values())
+    .filter((item) => item.quantity > 0)
+    .sort((left, right) => left.market.localeCompare(right.market) || left.stockCode.localeCompare(right.stockCode));
+}
+
+export async function computeStockHoldingsAsOfDate(accountId: string, asOfDate: Date, securityIds?: string[]) {
+  const securityFilter = securityIds && securityIds.length > 0
+    ? { securityId: { in: Array.from(new Set(securityIds.filter(Boolean))) } }
+    : {};
+  const rows = await prisma.stockTransaction.findMany({
+    where: {
+      deletedAt: null,
+      stockAccountId: accountId,
+      tradeDate: { lte: asOfDate },
+      ...securityFilter,
+    },
+    orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+  });
+  return summarizeStockPositionQuantity(rows);
+}
+
 type StockPosition = {
   securityId: string;
   market: string;

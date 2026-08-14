@@ -8,7 +8,12 @@ import { createFundTransactionWithCashFlows } from "@/lib/fund/transactions";
 import { getFundNavFromCacheOnly } from "@/lib/fund/navCache";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
-import { REGULAR_INVEST_CATEGORY_NAME, regularInvestBuyNote } from "@/lib/fund/regular-invest-display";
+import {
+  REGULAR_INVEST_CATEGORY_NAME,
+  regularInvestBuyNote,
+  regularInvestFailureNote,
+  regularInvestRefundNote,
+} from "@/lib/fund/regular-invest-display";
 import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -366,7 +371,7 @@ export async function POST(req: NextRequest) {
             nav: null,
             units: null,
             regularInvestPlanId: planId,
-            note: `基金暂停申购 ${plan.fundCode}`,
+            note: regularInvestFailureNote(plan.fundCode, plan.fundName || plan.fundCode, run.runDate),
             cashFlows: cashAcc ? [
               {
                 kind: FundCashFlowKind.buy_out,
@@ -377,7 +382,7 @@ export async function POST(req: NextRequest) {
                 currency: cashAcc.currency ?? fundAcc.currency ?? "CNY",
                 source: "regular_invest",
                 regularInvestPlanId: planId,
-                note: `基金暂停申购 ${plan.fundCode}`,
+                note: regularInvestFailureNote(plan.fundCode, plan.fundName || plan.fundCode, run.runDate),
               },
               {
                 kind: FundCashFlowKind.refund_in,
@@ -388,7 +393,13 @@ export async function POST(req: NextRequest) {
                 currency: cashAcc.currency ?? fundAcc.currency ?? "CNY",
                 source: "regular_invest_refund",
                 regularInvestPlanId: planId,
-                note: `基金暂停申购，资金退回 ${plan.fundCode}`,
+                note: regularInvestRefundNote(
+                  plan.fundCode,
+                  plan.fundName || plan.fundCode,
+                  amountNum,
+                  run.runDate,
+                  cashAcc.currency ?? fundAcc.currency ?? "CNY",
+                ),
               },
             ] : [],
           });

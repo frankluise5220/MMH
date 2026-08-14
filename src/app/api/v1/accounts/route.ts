@@ -35,6 +35,8 @@ import {
   isStockAccountInstitutionType,
   isStockInvestmentAccount,
 } from "@/lib/account-institution-rules";
+import { normalizeCurrency } from "@/lib/currency";
+import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 
 export const runtime = "nodejs";
 
@@ -90,7 +92,6 @@ export async function POST(req: NextRequest) {
     const requestedInstitutionId = String(body.institutionId ?? "").trim() || null;
     const requestedCounterpartyId = String(body.counterpartyId ?? "").trim() || null;
     const requestedUserId = String(body.userId ?? "").trim() || null;
-    const currency = String(body.currency ?? "CNY").trim() || "CNY";
     const isInvestment = kind === "investment";
     const isCreditLike = kind === "bank_credit";
     const investProductType = isInvestment ? normalizeFundProductType(body.investProductType) : null;
@@ -108,6 +109,8 @@ export async function POST(req: NextRequest) {
     }
 
     const { householdId } = await getHouseholdScope();
+    const currencyInput = String(body.currency ?? "").trim();
+    const currency = normalizeCurrency(currencyInput || await getHouseholdBaseCurrency(householdId));
 
     const group = requestedGroupId
       ? await prisma.accountGroup.findFirst({ where: { id: requestedGroupId, householdId } })
@@ -275,7 +278,10 @@ export async function PUT(req: NextRequest) {
     const data: Record<string, unknown> = {};
     if (body.name !== undefined) data.name = String(body.name).trim();
     if (body.kind !== undefined) data.kind = String(body.kind).trim();
-    if (body.currency !== undefined) data.currency = String(body.currency ?? "CNY").trim() || "CNY";
+    if (body.currency !== undefined) {
+      const currencyInput = String(body.currency ?? "").trim();
+      data.currency = normalizeCurrency(currencyInput || await getHouseholdBaseCurrency(householdId));
+    }
     if (body.groupId !== undefined) data.groupId = String(body.groupId).trim() || null;
     if (body.institutionId !== undefined) data.institutionId = String(body.institutionId).trim() || null;
     if (body.counterpartyId !== undefined) data.counterpartyId = String(body.counterpartyId).trim() || null;

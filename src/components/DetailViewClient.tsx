@@ -111,7 +111,7 @@ function cssEscape(value: string) {
   return escape ? escape(value) : value.replace(/["\\]/g, "\\$&");
 }
 
-function buildBasicEntryEditPayload(entry: DetailEntry) {
+function buildBasicEntryEditPayload(entry: DetailEntry, currentAccountId?: string | null) {
   const isAdvanceReturn = entry.source === "advance" && entry.accountKind === "loan";
   const numericAmount = toNumber(entry.amount);
   const dialogAmount = entry.type === "transfer" && entry.source !== "advance"
@@ -124,7 +124,7 @@ function buildBasicEntryEditPayload(entry: DetailEntry) {
     postedAt: entry.postedAt ?? null,
     type: (entry.source === "advance" ? "advance" : entry.source === "fx_conversion" ? "fx" : entry.type) as EditPayload["type"],
     amount: dialogAmount,
-    note: entry.note ?? "",
+    note: displayDetailRemark(entry, currentAccountId),
     toNote: entry.toNote ?? "",
     categoryId: entry.categoryId ?? undefined,
     categoryName: entry.categoryName ?? undefined,
@@ -308,7 +308,7 @@ function displaySecondRemark(entry: { toNote?: string | null }) {
   return parseLoanPrepayStrategy(entry.toNote) ? "" : (entry.toNote ?? "");
 }
 
-function displayDetailRemark(entry: DetailEntry, currentAccountId?: string) {
+function displayDetailRemark(entry: DetailEntry, currentAccountId?: string | null) {
   if (entry.source === "insurance") return getInsuranceDetailNote(entry);
   if (entry.type === "transfer" && currentAccountId && entry.toAccountId === currentAccountId) {
     return (displaySecondRemark(entry).trim() || (entry.note ?? "").trim());
@@ -837,8 +837,8 @@ export function DetailViewClient({
         : undefined;
 
     if (balanceReconcileEditEvent || debtEditEvent) return { customEditEvent: balanceReconcileEditEvent ?? debtEditEvent };
-    return { edit: e.type === "investment" ? investmentEditPayload : buildBasicEntryEditPayload(e) };
-  }, [accountOptionById, allowInvestmentEdit, investmentProductTypeByAccountId, linkedInvestmentCandidateEntries]);
+    return { edit: e.type === "investment" ? investmentEditPayload : buildBasicEntryEditPayload(e, accountId) };
+  }, [accountId, accountOptionById, allowInvestmentEdit, investmentProductTypeByAccountId, linkedInvestmentCandidateEntries]);
   const colorScheme =
     typeof document === "undefined"
       ? "red_up_green_down"

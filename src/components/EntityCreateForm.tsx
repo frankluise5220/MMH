@@ -9,6 +9,7 @@ import { DateStepper } from "@/components/DateStepper";
 import { notifySmartSelectOptionCreated, SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 import { notifySettingsDataChanged, type SettingsDataScope } from "@/lib/client/settingsCache";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { CURRENCY_OPTIONS, normalizeCurrency } from "@/lib/currency";
 import {
   STOCK_ACCOUNT_INSTITUTION_ERROR,
   isStockAccountInstitutionType,
@@ -54,7 +55,7 @@ type FieldDef = {
   /** Preferred textarea row count for multiline fields. */
   rows?: number;
   /** Static options (for selects whose values are fixed) */
-  options?: Array<{ value: string; label: string }>;
+  options?: ReadonlyArray<{ value: string; label: string }>;
   /** Dynamic option key - maps to fieldData prop for runtime-populated selects */
   optionsFromData?: string;
   /** Condition to show/hide this field based on current form state */
@@ -100,6 +101,8 @@ type CompactModeProps = {
   nestedFieldData?: Record<string, Array<{ id: string; name: string; type?: string }>>;
   /** When creating a non-investment account, also collect initial balance anchor data. */
   includeInitialBalanceFields?: boolean;
+  /** For account creation: initial currency selected from the current ledger setting. */
+  defaultCurrency?: string;
 };
 
 /* ---- Full mode props (new, for settings pages) ---- */
@@ -140,6 +143,8 @@ type FullModeProps = {
   readOnlyFields?: string[];
   /** When creating a non-investment account, also collect initial balance anchor data. */
   includeInitialBalanceFields?: boolean;
+  /** For account creation: initial currency selected from the current ledger setting. */
+  defaultCurrency?: string;
 };
 
 export type EntityCreateFormProps = CompactModeProps | FullModeProps;
@@ -242,14 +247,13 @@ const ENTITY_CONFIG = {
     bodyKey: { name: "name", kind: "kind" },
     fullFields: [
       { key: "name", label: "账户名称", type: "text", placeholder: "例如：招行卡、微信零钱" },
-      { key: "note", label: "备注", type: "text", placeholder: "可选，支持多行备注", multiline: true, rows: 4 },
       { key: "kind", label: "账户类型", type: "select", options: ACCOUNT_KIND_OPTIONS, defaultValue: "bank_debit" },
       { key: "investProductType", label: "投资账户类型", type: "select", options: INVEST_PRODUCT_OPTIONS, defaultValue: "fund", condition: (f) => f.kind === "investment" },
       { key: "fundUnitsDecimals", label: "份额位数", type: "text", defaultValue: "3", placeholder: "默认 3", condition: (f) => f.kind === "investment" && (f.investProductType ?? "fund") === "fund" },
       { key: "tradingCalendar", label: "交易日历", type: "select", options: TRADING_CALENDARS.map((value) => ({ value, label: TRADING_CALENDAR_LABELS[value] })), defaultValue: "cn_fund", condition: (f) => supportsTradingCalendarForAccount(f.kind, f.investProductType ?? "fund") },
       { key: "groupId", label: "所有人", type: "select", optionsFromData: "groupId", nestedCreate: "group" },
       { key: "institutionId", label: "机构", type: "select", optionsFromData: "institutionId", nestedCreate: "institution" },
-      { key: "currency", label: "币种", type: "text", defaultValue: "CNY", placeholder: "CNY" },
+      { key: "currency", label: "币种", type: "select", options: CURRENCY_OPTIONS, defaultValue: "CNY" },
       { key: "billingDay", label: "账单日", type: "text", placeholder: "1-31", condition: (f) => f.kind === "bank_credit" },
       { key: "repaymentDay", label: "还款日", type: "text", placeholder: "1-31", condition: (f) => f.kind === "bank_credit" },
       { key: "creditLimit", label: "额度", type: "text", placeholder: "例如：50000", condition: (f) => f.kind === "bank_credit" },
@@ -259,6 +263,7 @@ const ENTITY_CONFIG = {
       ], defaultValue: "separate", condition: (f) => f.kind === "bank_credit" },
       { key: "numberMasked", label: "卡号后四位", type: "text", placeholder: "例如：3833", condition: (f) => f.kind === "bank_credit" || f.kind === "bank_debit" },
       { key: "costBasisMethod", label: "成本摊薄方式", type: "select", options: COST_BASIS_OPTIONS, defaultValue: "moving_avg", condition: (f) => f.kind === "investment" && supportsCostBasisMethod(f.investProductType ?? "fund") },
+      { key: "note", label: "备注", type: "text", placeholder: "可选，支持多行备注", multiline: true, rows: 4 },
     ] as FieldDef[],
   },
   group: {
@@ -300,7 +305,7 @@ function buildSelectOptions(
   parentCategories?: Array<{ id: string; name: string; label: string; type: string; depth?: number; parentId?: string; isGroup?: boolean }>,
   hideRootOption?: boolean,
 ): Array<{ value: string; label: string }> {
-  if (field.options) return field.options;
+  if (field.options) return [...field.options];
   if (field.key === "parentId" && parentCategories) {
     const rootOpt = hideRootOption ? [] : [{ value: "", label: "无（根分类）" }];
     return [...rootOpt, ...parentCategories.map(pc => {
@@ -376,6 +381,25 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   const [nestedEntityType, setNestedEntityType] = useState<NestedEntityType | null>(null);
   const [nestedOpen, setNestedOpen] = useState(false);
   const [nestedFieldData, setNestedFieldData] = useState<Record<string, Array<{ id: string; name: string; type?: string }>>>(fieldData ?? compactNestedFieldData ?? {});
+  const hasAccountDefaultCurrency = entityType === "account" && String(props.defaultCurrency ?? "").trim() !== "";
+  const accountDefaultCurrency = hasAccountDefaultCurrency ? normalizeCurrency(props.defaultCurrency) : "";
+  const defaultValueForField = useCallback((field: FieldDef) => {
+    if (entityType === "account" && field.key === "currency") return accountDefaultCurrency;
+    return field.defaultValue ?? "";
+  }, [accountDefaultCurrency, entityType]);
+  const fallbackSelectValueForField = useCallback((field: FieldDef) => {
+    if (entityType === "account" && field.key === "currency" && !accountDefaultCurrency && !(extraFields && field.key in extraFields)) {
+      return "";
+    }
+    return field.options?.[0]?.value ?? "";
+  }, [accountDefaultCurrency, entityType, extraFields]);
+  const selectOptionsForField = useCallback((field: FieldDef) => {
+    const opts = buildSelectOptions(field, nestedFieldData, parentCategories);
+    if (entityType === "account" && field.key === "currency" && !accountDefaultCurrency && !(extraFields && field.key in extraFields)) {
+      return [{ value: "", label: "账簿默认币种" }, ...opts];
+    }
+    return opts;
+  }, [accountDefaultCurrency, entityType, extraFields, nestedFieldData, parentCategories]);
 
   useEffect(() => {
     if (entityType !== "account" || form.kind !== "bank_credit" || !form.institutionId) return;
@@ -439,10 +463,11 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
             : allowedInstitutionTypes[0];
           continue;
         }
-        if (field.defaultValue) initial[field.key] = field.defaultValue;
+        const fieldDefaultValue = defaultValueForField(field);
+        if (fieldDefaultValue) initial[field.key] = fieldDefaultValue;
         if (field.optionsFromData) initial[field.key] = "";
-        if (field.type === "select" && !field.defaultValue && !field.optionsFromData) initial[field.key] = field.options?.[0]?.value ?? "";
-        if (field.type === "text" && !field.defaultValue) initial[field.key] = "";
+        if (field.type === "select" && !fieldDefaultValue && !field.optionsFromData) initial[field.key] = fallbackSelectValueForField(field);
+        if (field.type === "text" && !fieldDefaultValue) initial[field.key] = "";
       }
     } else {
       // Full mode: set parentId first so type condition can evaluate correctly
@@ -455,13 +480,14 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
         // Skip if the key is already set (e.g. parentId from defaultParentId)
         if (initial[field.key] !== undefined) continue;
         // Default value
-        if (field.defaultValue) initial[field.key] = field.defaultValue;
+        const fieldDefaultValue = defaultValueForField(field);
+        if (fieldDefaultValue) initial[field.key] = fieldDefaultValue;
         // For dynamic selects, default to empty
         if (field.optionsFromData) initial[field.key] = "";
         // For conditional selects without defaultValue, set to empty
-        if (field.type === "select" && !field.defaultValue && !field.optionsFromData) initial[field.key] = field.options?.[0]?.value ?? "";
+        if (field.type === "select" && !fieldDefaultValue && !field.optionsFromData) initial[field.key] = fallbackSelectValueForField(field);
         // For text fields without defaultValue, set to empty
-        if (field.type === "text" && !field.defaultValue) initial[field.key] = "";
+        if (field.type === "text" && !fieldDefaultValue) initial[field.key] = "";
       }
       // Apply defaultType override
       if (defaultType && typeKey) initial[typeKey] = defaultType;
@@ -490,7 +516,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     setSaving(false);
     setError("");
     setDupWarning("");
-  }, [mode, defaultName, defaultType, extraFields, defaultParentId, typeKey, config.fullFields, getDefaultTypeCompact, entityType, allowedInstitutionTypes, includeInitialBalanceFields]);
+  }, [mode, defaultName, defaultType, extraFields, defaultParentId, typeKey, config.fullFields, getDefaultTypeCompact, entityType, allowedInstitutionTypes, includeInitialBalanceFields, defaultValueForField, fallbackSelectValueForField]);
 
   useEffect(() => {
     if (mode === "compact" && open) {
@@ -640,7 +666,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     },
   ) {
     const readOnly = options?.readOnly ?? false;
-    const value = form[field.key] ?? field.defaultValue ?? "";
+    const value = form[field.key] ?? defaultValueForField(field);
     const placeholder = options?.placeholder ?? textFieldPlaceholder(field);
     const onChange = (value: string) => {
       if (readOnly) return;
@@ -875,7 +901,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                   );
                 }
 
-                const opts = buildSelectOptions(field, nestedFieldData, parentCategories);
+                const opts = selectOptionsForField(field);
                 if (opts.length === 0 && !field.optionsFromData) return null;
 
                 if (field.optionsFromData && field.nestedCreate) {
@@ -912,7 +938,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                       <div className="form-label">{field.label}</div>
                       <SmartSelect
                         mode="single"
-                        value={form[field.key] ?? field.defaultValue ?? ""}
+                        value={form[field.key] ?? defaultValueForField(field)}
                         onChange={(id) => setForm((prev) => ({ ...prev, [field.key]: id }))}
                         options={ssOptions}
                         placeholder={selectPlaceholder}
@@ -928,7 +954,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                   <div key={field.key} className="space-y-1">
                     <div className="form-label">{field.label}</div>
                     <select
-                      value={form[field.key] ?? field.defaultValue ?? ""}
+                      value={form[field.key] ?? defaultValueForField(field)}
                       onChange={(e) => setForm((prev) => ({
                         ...prev,
                         ...selectFieldPatch(field, e.target.value, prev),
@@ -1034,12 +1060,12 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
               });
             }
             // Select field
-            const opts = buildSelectOptions(field, nestedFieldData, parentCategories);
+            const opts = selectOptionsForField(field);
             if (opts.length === 0) return null; // No data yet for dynamic select
             return (
               <select
                 key={field.key}
-                value={form[field.key] ?? field.defaultValue ?? ""}
+                value={form[field.key] ?? defaultValueForField(field)}
                 onChange={e => setForm(prev => ({ ...prev, ...selectFieldPatch(field, e.target.value, prev) }))}
                 className="form-input"
               >
@@ -1123,7 +1149,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                     );
                   }
 
-                  const opts = buildSelectOptions(field, nestedFieldData, parentCategories);
+                  const opts = selectOptionsForField(field);
                   if (opts.length === 0 && !field.optionsFromData) return null;
 
                   if (field.optionsFromData && field.nestedCreate) {
@@ -1148,7 +1174,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                         <label className="form-label mb-1 block">{field.label}</label>
                         <SmartSelect
                           mode="single"
-                          value={form[field.key] ?? field.defaultValue ?? ""}
+                          value={form[field.key] ?? defaultValueForField(field)}
                           onChange={id => setForm(prev => ({ ...prev, [field.key]: id }))}
                           options={ssOptions}
                           placeholder={selectPlaceholder}
@@ -1164,7 +1190,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                     <div key={field.key}>
                       <label className="form-label mb-1 block">{field.label}</label>
                       <select
-                        value={form[field.key] ?? field.defaultValue ?? ""}
+                        value={form[field.key] ?? defaultValueForField(field)}
                         onChange={e => setForm(prev => ({ ...prev, ...selectFieldPatch(field, e.target.value, prev) }))}
                         className="form-input"
                       >
@@ -1244,7 +1270,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                 }
 
                 // Select field - use SmartSelect for dynamic fields with nestedCreate, plain <select> for static
-                const opts = buildSelectOptions(field, nestedFieldData, parentCategories);
+                const opts = selectOptionsForField(field);
                 if (opts.length === 0 && !field.optionsFromData) return null;
 
                 // Build SmartSelect options for dynamic fields (institutionId / groupId)
@@ -1276,7 +1302,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                       <label className="form-label mb-1 block">{field.label}</label>
                       <SmartSelect
                         mode="single"
-                        value={form[field.key] ?? field.defaultValue ?? ""}
+                        value={form[field.key] ?? defaultValueForField(field)}
                         onChange={id => setForm(prev => ({ ...prev, [field.key]: id }))}
                         options={ssOptions}
                         placeholder={selectPlaceholder}
@@ -1293,7 +1319,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                   <div key={field.key}>
                     <label className="form-label mb-1 block">{field.label}</label>
                     <select
-                      value={form[field.key] ?? field.defaultValue ?? ""}
+                      value={form[field.key] ?? defaultValueForField(field)}
                       onChange={e => setForm(prev => ({
                         ...prev,
                         ...selectFieldPatch(field, e.target.value, prev),

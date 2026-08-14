@@ -301,6 +301,23 @@ function copyFnosPublicAssets(src, dest) {
   }
 }
 
+function pruneStagedServer(serverDir) {
+  if (!fs.existsSync(serverDir)) return;
+  const keepTopLevel = new Set([
+    ".next",
+    "node_modules",
+    "prisma",
+    "public",
+    "server.js",
+    "package.json",
+    "prisma.config.ts",
+  ]);
+  for (const entry of fs.readdirSync(serverDir, { withFileTypes: true })) {
+    if (keepTopLevel.has(entry.name)) continue;
+    fs.rmSync(path.join(serverDir, entry.name), { recursive: true, force: true });
+  }
+}
+
 function run(command, args, options = {}) {
   return spawnSync(command, args, {
     cwd: options.cwd || root,
@@ -1138,6 +1155,7 @@ if (fs.existsSync(standaloneDir)) {
   for (const envFile of [".env", ".env.local", ".env.production", ".env.development"]) {
     fs.rmSync(path.join(stageDir, "app", "server", envFile), { force: true });
   }
+  pruneStagedServer(path.join(stageDir, "app", "server"));
   const initSql = path.join(stageDir, "app", "server", "prisma", "native-init.sql");
   const diff = run(process.execPath, [
     prismaCli,

@@ -161,6 +161,7 @@ export function DebtShell({
   selectedKey,
   entries,
   repaymentScheduleRows,
+  summaryRemainingTotal,
   isRedUp,
   accountOptions,
   categoryOptions,
@@ -169,6 +170,7 @@ export function DebtShell({
   selectedKey: string;
   entries: DebtEntry[];
   repaymentScheduleRows: RepaymentScheduleRow[];
+  summaryRemainingTotal: number;
   totalPayable: number;
   totalReceivable: number;
   isRedUp: boolean;
@@ -213,14 +215,18 @@ export function DebtShell({
     () => showPaidScheduleRows ? repaymentScheduleRows : repaymentScheduleRows.filter((row) => row.status !== "paid"),
     [repaymentScheduleRows, showPaidScheduleRows],
   );
-  const debtRowSummary = useMemo(() => ({
-    paidPrincipal: visibleRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + Math.abs(row.paidPrincipal), 0),
-    paidInterest: visibleRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + Math.abs(row.paidInterest), 0),
-    remainingPrincipal: visibleRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + Math.abs(row.remainingPrincipal), 0),
-    remainingInterest: visibleRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + Math.abs(row.remainingInterest), 0),
-    remainingTotal: visibleRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + Math.abs(row.remainingTotal), 0),
-    net: visibleRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + row.net, 0),
-  }), [visibleRows]);
+  const debtRowSummary = useMemo(() => {
+    const summaryRows = visibleRows.filter((row) => !row.parentKey);
+    const net = summaryRows.reduce((sum, row) => sum + row.net, 0);
+    return {
+      paidPrincipal: summaryRows.reduce((sum, row) => sum + Math.abs(row.paidPrincipal), 0),
+      paidInterest: summaryRows.reduce((sum, row) => sum + Math.abs(row.paidInterest), 0),
+      remainingPrincipal: Math.abs(net),
+      remainingInterest: summaryRows.reduce((sum, row) => sum + Math.abs(row.remainingInterest), 0),
+      remainingTotal: Math.abs(summaryRemainingTotal),
+      net,
+    };
+  }, [visibleRows, summaryRemainingTotal]);
   useEffect(() => {
     return () => {
       if (rowClickTimerRef.current) {

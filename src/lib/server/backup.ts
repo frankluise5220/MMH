@@ -23,11 +23,18 @@ const BACKUP_PASSPHRASE_KDF = "pbkdf2-sha256";
 const BACKUP_PASSPHRASE_KDF_ITERATIONS = 210_000;
 
 type ExportedBy = Pick<CurrentUser, "id" | "name" | "role"> | null;
+export type BackupScope = "system" | "household";
 type BackupPackageEncryptionOptions = {
   passphrase?: string | null;
 };
 
 export type HouseholdBackupPayload = Awaited<ReturnType<typeof buildHouseholdBackupPayload>>;
+export type RestoreHouseholdBackupProgress = {
+  stage: "preparing" | "clearing" | "importing" | "restoring" | "finalizing" | "done";
+  percent: number;
+  label: string;
+  detail?: string;
+};
 
 function safeFilePart(value: string) {
   return (
@@ -382,6 +389,55 @@ async function createManyRecords(
   await target.createMany({ data: records.map((record) => normalizeRecordDates(record, nullDateKeys)) });
 }
 
+const RESTORE_CREATE_MANY_BATCH_SIZE = 500;
+
+type RawExecuteClient = {
+  $executeRawUnsafe: (query: string, ...values: unknown[]) => Promise<unknown>;
+};
+
+async function createMappedRecordsInChunks<T>(
+  delegate: unknown,
+  records: T[],
+  mapper: (record: T) => Record<string, unknown> | null,
+  options: {
+    batchSize?: number;
+    nullDateKeys?: Set<string>;
+    afterChunk?: (completed: number, total: number) => void | Promise<void>;
+    fastInsert?: (records: Record<string, unknown>[]) => Promise<void>;
+  } = {},
+) {
+  if (records.length === 0) return;
+  const batchSize = options.batchSize ?? RESTORE_CREATE_MANY_BATCH_SIZE;
+  const nullDateKeys = options.nullDateKeys ?? new Set<string>();
+  const target = delegate as { createMany: (args: { data: Record<string, unknown>[] }) => Promise<unknown> };
+  let completed = 0;
+  let batch: Record<string, unknown>[] = [];
+
+  const flush = async () => {
+    if (batch.length === 0) return;
+    const normalized = batch.map((record) => normalizeRecordDates(record, nullDateKeys));
+    if (options.fastInsert) {
+      await options.fastInsert(normalized);
+    } else {
+      await target.createMany({ data: normalized });
+    }
+    batch = [];
+    await options.afterChunk?.(completed, records.length);
+  };
+
+  for (const record of records) {
+    completed += 1;
+    const mapped = mapper(record);
+    if (mapped) {
+      batch.push(mapped);
+    }
+    if (batch.length >= batchSize) {
+      await flush();
+    }
+  }
+  await flush();
+}
+
 type RestoredCategoryRecord = {
   id: string;
   name: string;
@@ -470,6 +526,84 @@ function buildRestoredCategoryBatches(items: Record<string, unknown>[], househol
 function isSqliteRuntime() {
   const url = String(process.env.DATABASE_URL ?? "");
   return url === ":memory:" || url.startsWith("file:");
+}
+
+const TRANSACTION_RESTORE_COLUMNS = [
+  { name: "id", select: 'x."id"' },
+  { name: "date", select: "NULLIF(x.\"date\", '')::timestamptz" },
+  { name: "postedAt", select: "NULLIF(x.\"postedAt\", '')::timestamptz" },
+  { name: "type", select: 'x."type"::"TransactionType"' },
+  { name: "amount", select: "NULLIF(x.\"amount\", '')::numeric" },
+  { name: "accountId", select: 'x."accountId"' },
+  { name: "accountName", select: 'x."accountName"' },
+  { name: "toAccountId", select: 'x."toAccountId"' },
+  { name: "toAccountName", select: 'x."toAccountName"' },
+  { name: "categoryId", select: 'x."categoryId"' },
+  { name: "categoryName", select: 'x."categoryName"' },
+  { name: "fundCode", select: 'x."fundCode"' },
+  { name: "fundProductType", select: 'x."fundProductType"::"FundProductType"' },
+  { name: "metalTypeId", select: 'x."metalTypeId"' },
+  { name: "metalTypeName", select: 'x."metalTypeName"' },
+  { name: "metalUnitId", select: 'x."metalUnitId"' },
+  { name: "metalUnitName", select: 'x."metalUnitName"' },
+  { name: "metalQuantity", select: "NULLIF(x.\"metalQuantity\", '')::numeric" },
+  { name: "metalUnitPrice", select: "NULLIF(x.\"metalUnitPrice\", '')::numeric" },
+  { name: "metalFee", select: "NULLIF(x.\"metalFee\", '')::numeric" },
+  { name: "confirmDate", select: "NULLIF(x.\"confirmDate\", '')::timestamptz" },
+  { name: "statementMonth", select: 'x."statementMonth"' },
+  { name: "note", select: 'x."note"' },
+  { name: "toNote", select: 'x."toNote"' },
+  { name: "deletedAt", select: "NULLIF(x.\"deletedAt\", '')::timestamptz" },
+  { name: "importBatchId", select: 'x."importBatchId"' },
+  { name: "householdId", select: 'x."householdId"' },
+  { name: "createdAt", select: "NULLIF(x.\"createdAt\", '')::timestamptz" },
+  { name: "updatedAt", select: "NULLIF(x.\"updatedAt\", '')::timestamptz" },
+  { name: "dayOrder", select: "NULLIF(x.\"dayOrder\", '')::integer" },
+  { name: "currency", select: 'x."currency"' },
+  { name: "paymentChannelId", select: 'x."paymentChannelId"' },
+  { name: "paymentChannelName", select: 'x."paymentChannelName"' },
+  { name: "counterpartyInstitutionId", select: 'x."counterpartyInstitutionId"' },
+  { name: "counterpartyInstitutionName", select: 'x."counterpartyInstitutionName"' },
+  { name: "status", select: 'x."status"::"TransactionStatus"' },
+  { name: "fundArrivalAmount", select: "NULLIF(x.\"fundArrivalAmount\", '')::numeric" },
+  { name: "fundArrivalDate", select: "NULLIF(x.\"fundArrivalDate\", '')::timestamptz" },
+  { name: "depositAnnualRate", select: "NULLIF(x.\"depositAnnualRate\", '')::numeric" },
+  { name: "depositInterest", select: "NULLIF(x.\"depositInterest\", '')::numeric" },
+  { name: "depositSourceEntryId", select: 'x."depositSourceEntryId"' },
+  { name: "fundSourceEntryId", select: 'x."fundSourceEntryId"' },
+  { name: "debtPrincipalAmount", select: "NULLIF(x.\"debtPrincipalAmount\", '')::numeric" },
+  { name: "debtInterestAmount", select: "NULLIF(x.\"debtInterestAmount\", '')::numeric" },
+  { name: "debtFeeAmount", select: "NULLIF(x.\"debtFeeAmount\", '')::numeric" },
+  { name: "fundConfirmDate", select: "NULLIF(x.\"fundConfirmDate\", '')::timestamptz" },
+  { name: "fundFee", select: "NULLIF(x.\"fundFee\", '')::numeric" },
+  { name: "fundNav", select: "NULLIF(x.\"fundNav\", '')::numeric" },
+  { name: "fundSubtype", select: 'x."fundSubtype"::"FundSubtype"' },
+  { name: "fundUnits", select: "NULLIF(x.\"fundUnits\", '')::numeric" },
+  { name: "realizedProfit", select: "NULLIF(x.\"realizedProfit\", '')::numeric" },
+  { name: "regularInvestPlanId", select: 'x."regularInvestPlanId"' },
+  { name: "creditCardInstallmentPlanId", select: 'x."creditCardInstallmentPlanId"' },
+  { name: "installmentNo", select: "NULLIF(x.\"installmentNo\", '')::integer" },
+  { name: "installmentTotal", select: "NULLIF(x.\"installmentTotal\", '')::integer" },
+  { name: "installmentPrincipal", select: "NULLIF(x.\"installmentPrincipal\", '')::numeric" },
+  { name: "installmentInterest", select: "NULLIF(x.\"installmentInterest\", '')::numeric" },
+  { name: "installmentRole", select: 'x."installmentRole"' },
+  { name: "fundName", select: 'x."fundName"' },
+  { name: "wealthProductId", select: 'x."wealthProductId"' },
+  { name: "insuranceProductId", select: 'x."insuranceProductId"' },
+  { name: "insuranceAction", select: 'x."insuranceAction"' },
+  { name: "insuranceProductName", select: 'x."insuranceProductName"' },
+  { name: "source", select: 'x."source"' },
+] as const;
+
+const TRANSACTION_RESTORE_INSERT_SQL = `INSERT INTO "transactions" (${TRANSACTION_RESTORE_COLUMNS
+  .map((column) => `"${column.name}"`)
+  .join(", ")}) SELECT ${TRANSACTION_RESTORE_COLUMNS.map((column) => column.select).join(", ")} FROM jsonb_to_recordset($1::jsonb) AS x(${TRANSACTION_RESTORE_COLUMNS
+  .map((column) => `"${column.name}" text`)
+  .join(", ")})`;
+
+async function insertTransactionsViaJson(delegate: RawExecuteClient, records: Record<string, unknown>[]) {
+  if (records.length === 0) return;
+  await delegate.$executeRawUnsafe(TRANSACTION_RESTORE_INSERT_SQL, JSON.stringify(records));
 }
 
 const SQLITE_STOCK_RESTORE_SCHEMA_SQL = [
@@ -638,6 +772,79 @@ const SQLITE_STOCK_RESTORE_SCHEMA_SQL = [
   `CREATE INDEX IF NOT EXISTS "stock_brokerage_catalog_shortName_idx" ON "stock_brokerage_catalog"("shortName")`,
   `CREATE INDEX IF NOT EXISTS "stock_brokerage_catalog_registryCode_idx" ON "stock_brokerage_catalog"("registryCode")`,
   `CREATE INDEX IF NOT EXISTS "stock_brokerage_catalog_isActive_idx" ON "stock_brokerage_catalog"("isActive")`,
+] as const;
+
+const SQLITE_PROPERTY_RESTORE_SCHEMA_SQL = [
+  `CREATE TABLE IF NOT EXISTS "property_assets" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "householdId" TEXT NOT NULL,
+    "accountId" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "propertyType" TEXT,
+    "address" TEXT,
+    "currency" TEXT NOT NULL DEFAULT 'CNY',
+    "purchaseDate" DATETIME,
+    "purchasePrice" DECIMAL,
+    "cost" DECIMAL NOT NULL DEFAULT 0,
+    "marketValue" DECIMAL NOT NULL DEFAULT 0,
+    "latestValuationDate" DATETIME,
+    "status" TEXT NOT NULL DEFAULT 'active',
+    "note" TEXT,
+    "deletedAt" DATETIME,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "property_assets_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "property_assets_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE
+  )`,
+  `CREATE TABLE IF NOT EXISTS "property_valuations" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "householdId" TEXT NOT NULL,
+    "propertyAssetId" TEXT NOT NULL,
+    "valuationDate" DATETIME NOT NULL,
+    "marketValue" DECIMAL NOT NULL,
+    "source" TEXT NOT NULL DEFAULT 'manual',
+    "note" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "property_valuations_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "property_valuations_propertyAssetId_fkey" FOREIGN KEY ("propertyAssetId") REFERENCES "property_assets"("id") ON DELETE CASCADE ON UPDATE CASCADE
+  )`,
+  `CREATE TABLE IF NOT EXISTS "property_transactions" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "householdId" TEXT NOT NULL,
+    "accountId" TEXT NOT NULL,
+    "cashAccountId" TEXT,
+    "cashEntryId" TEXT,
+    "propertyAssetId" TEXT NOT NULL,
+    "action" TEXT NOT NULL DEFAULT 'purchase',
+    "source" TEXT DEFAULT 'manual',
+    "tradeDate" DATETIME NOT NULL,
+    "settlementDate" DATETIME,
+    "amount" DECIMAL NOT NULL,
+    "fee" DECIMAL,
+    "tax" DECIMAL,
+    "realizedProfit" DECIMAL,
+    "note" TEXT,
+    "deletedAt" DATETIME,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "property_transactions_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "property_transactions_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "property_transactions_cashAccountId_fkey" FOREIGN KEY ("cashAccountId") REFERENCES "Account"("id") ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT "property_transactions_propertyAssetId_fkey" FOREIGN KEY ("propertyAssetId") REFERENCES "property_assets"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "property_transactions_cashEntryId_fkey" FOREIGN KEY ("cashEntryId") REFERENCES "TxRecord"("id") ON DELETE SET NULL ON UPDATE CASCADE
+  )`,
+  `CREATE INDEX IF NOT EXISTS "property_assets_householdId_accountId_idx" ON "property_assets"("householdId", "accountId")`,
+  `CREATE INDEX IF NOT EXISTS "property_assets_householdId_status_idx" ON "property_assets"("householdId", "status")`,
+  `CREATE INDEX IF NOT EXISTS "property_assets_accountId_idx" ON "property_assets"("accountId")`,
+  `CREATE INDEX IF NOT EXISTS "property_assets_deletedAt_idx" ON "property_assets"("deletedAt")`,
+  `CREATE INDEX IF NOT EXISTS "property_valuations_householdId_valuationDate_idx" ON "property_valuations"("householdId", "valuationDate")`,
+  `CREATE INDEX IF NOT EXISTS "property_valuations_propertyAssetId_valuationDate_idx" ON "property_valuations"("propertyAssetId", "valuationDate")`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS "property_transactions_cashEntryId_key" ON "property_transactions"("cashEntryId") WHERE "cashEntryId" IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS "property_transactions_householdId_accountId_tradeDate_idx" ON "property_transactions"("householdId", "accountId", "tradeDate")`,
+  `CREATE INDEX IF NOT EXISTS "property_transactions_cashAccountId_tradeDate_idx" ON "property_transactions"("cashAccountId", "tradeDate")`,
+  `CREATE INDEX IF NOT EXISTS "property_transactions_propertyAssetId_tradeDate_idx" ON "property_transactions"("propertyAssetId", "tradeDate")`,
+  `CREATE INDEX IF NOT EXISTS "property_transactions_deletedAt_idx" ON "property_transactions"("deletedAt")`,
 ] as const;
 
 function quoteSqliteIdent(value: string) {
@@ -934,7 +1141,7 @@ async function applyNativeInitSqlSchemaBackfillForRestore(): Promise<SqliteSchem
 
 async function ensureSqliteRestoreCompatibilitySchema() {
   if (!isSqliteRuntime()) return;
-  for (const statement of SQLITE_STOCK_RESTORE_SCHEMA_SQL) {
+  for (const statement of [...SQLITE_STOCK_RESTORE_SCHEMA_SQL, ...SQLITE_PROPERTY_RESTORE_SCHEMA_SQL]) {
     await prisma.$executeRawUnsafe(statement);
   }
   const nativeSchemaBackfill = await applyNativeInitSqlSchemaBackfillForRestore();
@@ -943,8 +1150,12 @@ async function ensureSqliteRestoreCompatibilitySchema() {
   }
   await ensureSqliteColumn("UserSettings", "sessionDays", "INTEGER NOT NULL DEFAULT 30");
   await ensureSqliteColumn("entry_business_links", "stockTransactionId", "TEXT");
+  await ensureSqliteColumn("entry_business_links", "propertyTransactionId", "TEXT");
   await prisma.$executeRawUnsafe(
     `CREATE INDEX IF NOT EXISTS "entry_business_links_stockTransactionId_idx" ON "entry_business_links"("stockTransactionId")`,
+  );
+  await prisma.$executeRawUnsafe(
+    `CREATE INDEX IF NOT EXISTS "entry_business_links_propertyTransactionId_idx" ON "entry_business_links"("propertyTransactionId")`,
   );
 }
 
@@ -1132,6 +1343,70 @@ export async function decryptBackupPackage(
     const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
     return JSON.parse(plaintext) as unknown;
   } catch {
+    if (String(encryption.keySource ?? "") === BACKUP_PASSPHRASE_KEY_SOURCE) {
+      restoreError("备份加密口令不匹配。请检查创建备份时填写的加密口令；如果备份来自其他系统或其他用户，请输入该加密口令。若备份时未单独设置，则使用创建备份时的用户密码。");
+    }
+    restoreError("备份文件无法解密或已损坏");
+  }
+}
+
+export async function encryptBackupBytes(
+  bytes: Buffer,
+  scope: HouseholdBackupPayload["scope"],
+  exportedAt: Date,
+  options: BackupPackageEncryptionOptions = {},
+) {
+  const iv = crypto.randomBytes(12);
+  const { key, metadata } = await getBackupEncryptionKey(options);
+  const cipher = crypto.createCipheriv(ENCRYPTED_BACKUP_ALGORITHM, key, iv);
+  const ciphertext = Buffer.concat([cipher.update(bytes), cipher.final()]);
+
+  return {
+    app: "MMH" as const,
+    packageType: "encrypted-sqlite-backup" as const,
+    packageVersion: ENCRYPTED_BACKUP_PACKAGE_VERSION,
+    encrypted: true,
+    exportedAt,
+    scope,
+    encryption: {
+      algorithm: ENCRYPTED_BACKUP_ALGORITHM,
+      ...metadata,
+      iv: iv.toString("base64"),
+      authTag: cipher.getAuthTag().toString("base64"),
+    },
+    ciphertext: ciphertext.toString("base64"),
+  };
+}
+
+export async function decryptBackupBytes(
+  raw: unknown,
+  options: BackupPackageEncryptionOptions = {},
+): Promise<Buffer> {
+  const packageObject = ensureObject(raw, "payload");
+  if (packageObject.encrypted !== true) {
+    restoreError("这不是 MMH 加密备份文件");
+  }
+  if (packageObject.app !== "MMH" || packageObject.packageType !== "encrypted-sqlite-backup") {
+    restoreError("这不是 MMH 数据库备份文件");
+  }
+
+  const encryption = ensureObject(packageObject.encryption, "encryption");
+  if (encryption.algorithm !== ENCRYPTED_BACKUP_ALGORITHM) {
+    restoreError("不支持的备份加密格式");
+  }
+
+  const key = await getBackupDecryptionKey(encryption, options);
+  try {
+    const iv = Buffer.from(String(encryption.iv ?? ""), "base64");
+    const authTag = Buffer.from(String(encryption.authTag ?? ""), "base64");
+    const ciphertext = Buffer.from(String(packageObject.ciphertext ?? ""), "base64");
+    const decipher = crypto.createDecipheriv(ENCRYPTED_BACKUP_ALGORITHM, key, iv);
+    decipher.setAuthTag(authTag);
+    return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  } catch {
+    if (String(encryption.keySource ?? "") === BACKUP_PASSPHRASE_KEY_SOURCE) {
+      restoreError("备份加密口令不匹配。请检查创建备份时填写的加密口令；如果备份来自其他系统或其他用户，请输入该加密口令。若备份时未单独设置，则使用创建备份时的用户密码。");
+    }
     restoreError("备份文件无法解密或已损坏");
   }
 }
@@ -1166,8 +1441,10 @@ export function buildTableExportFileName(householdName: string, exportedAt: Date
 export async function buildHouseholdBackupPayload(
   householdId: string,
   exportedBy: ExportedBy,
-  options: { ensureBackupPackageKey?: boolean } = {},
+  options: { ensureBackupPackageKey?: boolean; backupScope?: BackupScope } = {},
 ) {
+  const backupScope: BackupScope = options.backupScope === "system" ? "system" : "household";
+  const isSystemBackup = backupScope === "system";
   const household = await prisma.household.findUnique({
     where: { id: householdId },
   });
@@ -1223,7 +1500,9 @@ export async function buildHouseholdBackupPayload(
     aiChannels,
     aiModels,
   ] = await Promise.all([
-    prisma.user.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    isSystemBackup
+      ? prisma.user.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] })
+      : Promise.resolve([]),
     prisma.accountGroup.findMany({ where: { householdId }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] }),
     prisma.institution.findMany({ where: { householdId }, orderBy: [{ name: "asc" }] }),
     prisma.counterparty.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
@@ -1367,10 +1646,11 @@ export async function buildHouseholdBackupPayload(
     app: "MMH" as const,
     formatVersion: BACKUP_FORMAT_VERSION,
     exportedAt,
-    exportedBy,
+    exportedBy: isSystemBackup ? exportedBy : null,
     scope: {
       householdId: household.id,
       householdName: household.name,
+      backupScope,
     },
     counts: {
       users: users.length,
@@ -1614,6 +1894,7 @@ export function parseBackupPayload(raw: unknown) {
     scope: {
       householdId: String(scope.householdId ?? ""),
       householdName: String(scope.householdName ?? "恢复账簿"),
+      backupScope: scope.backupScope === "household" ? "household" : "system",
     },
     counts: ensureObject(payload.counts ?? {}, "counts"),
     data: {
@@ -1686,13 +1967,21 @@ export async function restoreHouseholdBackup(
       email?: string | null;
       passwordHash?: string | null;
     } | null;
+    onProgress?: (progress: RestoreHouseholdBackupProgress) => void | Promise<void>;
   },
 ) {
+  const reportProgress = async (progress: RestoreHouseholdBackupProgress) => {
+    await options.onProgress?.(progress);
+  };
+  await reportProgress({ stage: "preparing", percent: 45, label: "读取备份", detail: "正在校验备份结构" });
   const payload = parseBackupPayload(rawPayload);
   const data = payload.data;
   const householdId = options.householdId;
+  await reportProgress({ stage: "preparing", percent: 48, label: "兼容检查", detail: "正在检查数据库表结构" });
   await ensureSqliteRestoreCompatibilitySchema();
+  await reportProgress({ stage: "preparing", percent: 50, label: "准备导入", detail: "正在建立恢复索引" });
 
+  const isSystemRestore = payload.scope.backupScope !== "household";
   const importedUsers = data.users.map((item) => String(item.id));
   const importedUserSet = new Set(importedUsers);
   const importedAccountGroups = new Set(data.accountGroups.map((item) => String(item.id)));
@@ -1787,6 +2076,7 @@ export async function restoreHouseholdBackup(
     data.entryBusinessLinks.some((item) => item.stockTransactionId != null);
 
   await prisma.$transaction(async (tx) => {
+    await reportProgress({ stage: "clearing", percent: 55, label: "清空当前账簿", detail: "正在移除当前账簿旧数据" });
     const currentUsers = await tx.user.findMany({
       where: { householdId },
       select: { id: true },
@@ -1935,11 +2225,18 @@ export async function restoreHouseholdBackup(
     await tx.institution.deleteMany({ where: { householdId } });
     await tx.accountGroup.deleteMany({ where: { householdId } });
 
-    if (currentUserIds.length > 0) {
-      await tx.userSettings.deleteMany({ where: { userId: { in: currentUserIds } } });
-      await tx.passwordResetToken.deleteMany({ where: { userId: { in: currentUserIds } } });
+    if (isSystemRestore) {
+      if (currentUserIds.length > 0) {
+        await tx.userSettings.deleteMany({ where: { userId: { in: currentUserIds } } });
+        await tx.passwordResetToken.deleteMany({ where: { userId: { in: currentUserIds } } });
+      }
+      await tx.user.deleteMany({ where: { householdId } });
+    } else {
+      for (const id of currentUserIds) {
+        importedUserSet.add(id);
+      }
     }
-    await tx.user.deleteMany({ where: { householdId } });
+    await reportProgress({ stage: "importing", percent: 60, label: "导入基础数据", detail: "正在写入用户、账户和分类" });
 
     await tx.household.update({
       where: { id: householdId },
@@ -2619,12 +2916,14 @@ export async function restoreHouseholdBackup(
         })),
       });
     }
+    await reportProgress({ stage: "importing", percent: 68, label: "导入交易明细", detail: "正在写入交易记录" });
 
     if (data.transactions.length > 0) {
-      await tx.txRecord.createMany({
-        data: data.transactions
-          .filter((item) => importedAccounts.has(String(item.accountId)))
-          .map((item) => {
+      await createMappedRecordsInChunks(
+        tx.txRecord,
+        data.transactions,
+        (item) => {
+            if (!importedAccounts.has(String(item.accountId))) return null;
             const categoryId = item.categoryId && importedCategories.has(String(item.categoryId))
               ? String(item.categoryId)
               : null;
@@ -2722,8 +3021,26 @@ export async function restoreHouseholdBackup(
               insuranceProductName: item.insuranceProductName == null ? null : String(item.insuranceProductName),
               source: item.source == null ? null : String(item.source),
             };
-          }),
-      });
+          },
+        {
+          ...(isSqliteRuntime()
+            ? {}
+            : {
+                batchSize: Math.max(data.transactions.length, 1),
+                fastInsert: (batch: Record<string, unknown>[]) =>
+                  insertTransactionsViaJson(tx as RawExecuteClient, batch),
+              }),
+          afterChunk: async (completed, total) => {
+            const percent = 68 + Math.round((Math.min(completed, total) / Math.max(total, 1)) * 12);
+            await reportProgress({
+              stage: "importing",
+              percent,
+              label: "导入交易明细",
+              detail: `正在写入交易记录 ${Math.min(completed, total)} / ${total}`,
+            });
+          },
+        },
+      );
     }
 
     if (legacyMainFundRows.length > 0) {
@@ -3071,6 +3388,8 @@ export async function restoreHouseholdBackup(
         })),
     );
 
+    await reportProgress({ stage: "importing", percent: 86, label: "导入关联数据", detail: "正在写入交易关联和附件" });
+
     await createManyRecords(
       tx.entryBusinessLink,
       data.entryBusinessLinks.map((item) => ({
@@ -3115,10 +3434,12 @@ export async function restoreHouseholdBackup(
     );
 
     if (data.attachments.length > 0) {
-      await tx.attachment.createMany({
-        data: data.attachments
-          .filter((item) => importedTransactions.has(String(item.entryId)))
-          .map((item) => ({
+      await createMappedRecordsInChunks(
+        tx.attachment,
+        data.attachments,
+        (item) =>
+          importedTransactions.has(String(item.entryId))
+            ? {
             id: String(item.id),
             name: item.name == null ? null : String(item.name),
             mimeType: item.mimeType == null ? null : String(item.mimeType),
@@ -3126,19 +3447,23 @@ export async function restoreHouseholdBackup(
             createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
             entryId: String(item.entryId),
             updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
-          })),
-      });
+              }
+            : null,
+      );
     }
 
     if (data.entryTags.length > 0) {
-      await tx.entryTag.createMany({
-        data: data.entryTags
-          .filter((item) => importedTransactions.has(String(item.entryId)) && importedTags.has(String(item.tagId)))
-          .map((item) => ({
+      await createMappedRecordsInChunks(
+        tx.entryTag,
+        data.entryTags,
+        (item) =>
+          importedTransactions.has(String(item.entryId)) && importedTags.has(String(item.tagId))
+            ? {
             entryId: String(item.entryId),
             tagId: String(item.tagId),
-          })),
-      });
+              }
+            : null,
+      );
     }
 
     if (data.regularInvestPlans.length > 0) {
@@ -3233,10 +3558,12 @@ export async function restoreHouseholdBackup(
         },
       });
     }
-  });
+  }, { maxWait: 10_000, timeout: 300_000 });
 
+  await reportProgress({ stage: "finalizing", percent: 96, label: "收尾处理", detail: "正在刷新恢复后的加密缓存" });
   const { clearMasterKeyCache } = await import("@/lib/auth/encrypt");
   clearMasterKeyCache();
+  await reportProgress({ stage: "done", percent: 100, label: "恢复完成", detail: "备份数据已写入当前账簿" });
 
   return {
     householdName: payload.scope.householdName,

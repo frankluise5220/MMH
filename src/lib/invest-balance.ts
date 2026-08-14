@@ -25,6 +25,9 @@ export type InvestBalanceDetail = {
 /** 持仓明细显示行 — 从 fundHolding 表直接读取生成 */
 export type PositionDisplayRow = {
   fundCode: string;
+  stockCode?: string | null;
+  market?: string | null;
+  securityId?: string | null;
   wealthProductId?: string | null;
   propertyAssetId?: string | null;
   name: string;
@@ -477,6 +480,9 @@ export const computePositionDisplay = cache(
         const floatingPnL = marketValue - cost;
         return {
           fundCode: `${holding.market}:${holding.stockCode}`,
+          stockCode: holding.stockCode,
+          market: holding.market,
+          securityId: holding.securityId,
           name: holding.stockName || holding.stockCode,
           holdingDate: "",
           units: quantity,

@@ -23,6 +23,7 @@ import {
   type SidebarGroupMode,
   type TimeZoneMode,
 } from "@/lib/client/appPreferences";
+import { CURRENCY_OPTIONS } from "@/lib/currency";
 import { PRODUCT_INTROS } from "@/lib/product-intro";
 
 type ColorScheme = "red_up_green_down" | "green_up_red_down";
@@ -37,15 +38,6 @@ const TIME_ZONE_OPTIONS = [
 ];
 
 const DISPLAY_LANGUAGE_OPTIONS: DisplayLanguage[] = ["zh-CN", "en-US", "ja-JP"];
-
-const BASE_CURRENCY_OPTIONS = [
-  { value: "CNY", label: "人民币 CNY" },
-  { value: "USD", label: "美元 USD" },
-  { value: "JPY", label: "日元 JPY" },
-  { value: "EUR", label: "欧元 EUR" },
-  { value: "HKD", label: "港币 HKD" },
-  { value: "GBP", label: "英镑 GBP" },
-];
 
 const CREDIT_CARD_NAME_PRESETS = [
   { value: "{机构简称}{信用卡后4位}", label: "简称+后四位", example: "招行8333" },
@@ -447,7 +439,7 @@ export default function DisplaySettingsPage() {
               disabled={savingBaseCurrency}
               className="form-input"
             >
-              {BASE_CURRENCY_OPTIONS.map((option) => (
+              {CURRENCY_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>

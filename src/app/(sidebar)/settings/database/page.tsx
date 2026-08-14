@@ -75,12 +75,56 @@ type BackupSaveResult = {
 type SensitiveOperationCredentials = {
   userPassword: string;
   backupPassphrase?: string;
+  backupScope?: "system" | "household";
 };
 
 type SettingsValuesResult = {
   ok?: boolean;
   values?: Record<string, string | null>;
   error?: string;
+};
+
+type RestoreResponse = {
+  ok?: boolean;
+  error?: string;
+  message?: string;
+  restoreId?: string;
+  task?: RestoreTask;
+  summary?: { counts?: Record<string, number> };
+};
+
+type RestoreProgressStage = "idle" | "uploading" | "preparing" | "clearing" | "importing" | "restoring" | "finalizing" | "done";
+
+type RestoreProgressState = {
+  stage: RestoreProgressStage;
+  percent: number;
+  label: string;
+  detail?: string;
+};
+
+type RestoreTask = {
+  id: string;
+  status: "queued" | "running" | "success" | "error";
+  progress?: RestoreProgressState;
+  summary?: { counts?: Record<string, number> };
+  error?: string;
+};
+
+const RESTORE_PROGRESS_IDLE: RestoreProgressState = {
+  stage: "idle",
+  percent: 0,
+  label: "",
+};
+
+const RESTORE_STAGE_ORDER: Record<RestoreProgressStage, number> = {
+  idle: -1,
+  uploading: 0,
+  preparing: 1,
+  clearing: 2,
+  importing: 3,
+  restoring: 4,
+  finalizing: 5,
+  done: 6,
 };
 
 async function fetchJsonWithTimeout<T>(url: string, options?: RequestInit & { timeoutMs?: number }): Promise<T> {
@@ -143,7 +187,11 @@ async function saveDataBackup(credentials: SensitiveOperationCredentials): Promi
   const res = await fetch("/api/v1/settings/backup?mode=export", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(credentials),
+    body: JSON.stringify({
+      userPassword: credentials.userPassword,
+      backupPassphrase: credentials.backupPassphrase ?? "",
+      backupScope: credentials.backupScope ?? "household",
+    }),
   });
   if (!res.ok) {
     const data = (await res.json().catch(() => null)) as { error?: string } | null;
@@ -228,6 +276,217 @@ async function saveDataTableExport(): Promise<BackupSaveResult | null> {
   return { fileName, pickedLocation: false };
 }
 
+function parseRestoreResponseText(value: string) {
+  try {
+    return JSON.parse(value) as RestoreResponse;
+  } catch {
+    return null;
+  }
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function normalizeRestoreProgress(progress: RestoreProgressState | undefined, fallback: RestoreProgressState) {
+  if (!progress) return fallback;
+  return {
+    stage: progress.stage,
+    percent: Math.max(fallback.percent, Math.max(0, Math.min(100, Math.round(progress.percent)))),
+    label: progress.label || fallback.label,
+    detail: progress.detail,
+  };
+}
+
+async function pollRestoreTask(
+  restoreId: string,
+  onProgress: (progress: RestoreProgressState) => void,
+): Promise<RestoreResponse> {
+  const deadline = Date.now() + 30 * 60 * 1000;
+  let failedPolls = 0;
+  let lastProgress: RestoreProgressState = {
+    stage: "preparing",
+    percent: 35,
+    label: "等待恢复",
+    detail: "备份文件已上传，正在等待服务端恢复进度",
+  };
+
+  while (Date.now() < deadline) {
+    await delay(1000);
+    try {
+      const res = await fetch(
+        `/api/v1/settings/backup?mode=restore-status&id=${encodeURIComponent(restoreId)}`,
+        { cache: "no-store" },
+      );
+      const data = (await res.json().catch(() => null)) as RestoreResponse | null;
+      if (!res.ok || !data?.ok || !data.task) {
+        throw new Error(data?.error || `读取恢复进度失败（HTTP ${res.status}）`);
+      }
+      failedPolls = 0;
+      lastProgress = normalizeRestoreProgress(data.task.progress, lastProgress);
+      onProgress(lastProgress);
+
+      if (data.task.status === "success") {
+        return {
+          ok: true,
+          message: "恢复完成",
+          summary: data.task.summary,
+          task: data.task,
+          restoreId,
+        };
+      }
+      if (data.task.status === "error") {
+        throw new Error(data.task.error || data.task.progress?.detail || "恢复失败");
+      }
+    } catch (error) {
+      failedPolls += 1;
+      if (failedPolls >= 5) {
+        throw error instanceof Error ? error : new Error("恢复进度查询失败");
+      }
+      onProgress({
+        ...lastProgress,
+        detail: "正在等待服务响应，恢复任务仍在后台执行",
+      });
+    }
+  }
+
+  throw new Error("恢复任务超过 30 分钟仍未完成，请检查服务日志");
+}
+
+function restoreDataBackup(
+  form: FormData,
+  onProgress: (progress: RestoreProgressState) => void,
+): Promise<RestoreResponse> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) {
+        const uploadPercent = Math.max(3, Math.min(35, Math.round((event.loaded / event.total) * 35)));
+        onProgress({
+          stage: "uploading",
+          percent: uploadPercent,
+          label: `上传中 ${Math.round((event.loaded / event.total) * 100)}%`,
+          detail: "正在上传备份文件",
+        });
+        return;
+      }
+      onProgress({
+        stage: "uploading",
+        percent: 8,
+        label: "上传中",
+        detail: "正在上传备份文件",
+      });
+    };
+
+    xhr.upload.onload = () => {
+      onProgress({
+        stage: "preparing",
+        percent: 35,
+        label: "等待服务端",
+        detail: "备份文件已上传，正在创建恢复任务",
+      });
+    };
+
+    xhr.onload = async () => {
+      const data = parseRestoreResponseText(xhr.responseText);
+      if (xhr.status < 200 || xhr.status >= 300 || !data?.ok) {
+        reject(new Error(data?.error || `恢复失败（HTTP ${xhr.status}）`));
+        return;
+      }
+      const restoreId = data.restoreId || data.task?.id;
+      if (!restoreId) {
+        reject(new Error("服务端没有返回恢复任务编号"));
+        return;
+      }
+      if (data.task?.progress) {
+        onProgress(normalizeRestoreProgress(data.task.progress, {
+          stage: "preparing",
+          percent: 35,
+          label: "等待恢复",
+        }));
+      }
+      try {
+        resolve(await pollRestoreTask(restoreId, onProgress));
+      } catch (error) {
+        reject(error);
+      }
+    };
+
+    xhr.onerror = () => {
+      reject(new Error("网络错误，请重试"));
+    };
+    xhr.onabort = () => {
+      reject(new Error("恢复已取消"));
+    };
+
+    onProgress({
+      stage: "uploading",
+      percent: 3,
+      label: "上传中",
+      detail: "正在准备上传备份文件",
+    });
+    xhr.open("POST", "/api/v1/settings/backup");
+    xhr.send(form);
+  });
+}
+
+function RestoreProgressView({ progress }: { progress: RestoreProgressState }) {
+  if (progress.stage === "idle") return null;
+
+  const activeIndex = RESTORE_STAGE_ORDER[progress.stage];
+  const steps: Array<{ stage: RestoreProgressStage; label: string }> = [
+    { stage: "uploading", label: "上传" },
+    { stage: "preparing", label: "准备" },
+    { stage: "clearing", label: "清理" },
+    { stage: "importing", label: "导入" },
+    { stage: "restoring", label: "还原" },
+    { stage: "finalizing", label: "收尾" },
+  ];
+
+  return (
+    <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3">
+      <div className="flex items-center justify-between gap-3 text-xs">
+        <div className="min-w-0 font-medium text-slate-700">{progress.label}</div>
+        <div className="shrink-0 tabular-nums text-slate-500">{progress.percent}%</div>
+      </div>
+      <div
+        className="mt-2 h-2 overflow-hidden rounded-full bg-slate-200"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={progress.percent}
+        aria-label={progress.label}
+      >
+        <div
+          className="h-full rounded-full bg-blue-500 transition-all duration-300"
+          style={{ width: `${progress.percent}%` }}
+        />
+      </div>
+      <div className="mt-2 grid grid-cols-6 gap-1 text-[11px]">
+        {steps.map((step) => {
+          const stepIndex = RESTORE_STAGE_ORDER[step.stage];
+          const active = activeIndex === stepIndex;
+          const passed = activeIndex > stepIndex;
+          return (
+            <div
+              key={step.stage}
+              className={
+                active || passed
+                  ? "truncate rounded bg-blue-50 px-2 py-1 text-center font-medium text-blue-700"
+                  : "truncate rounded bg-white px-2 py-1 text-center text-slate-400"
+              }
+            >
+              {step.label}
+            </div>
+          );
+        })}
+      </div>
+      {progress.detail ? <div className="mt-2 text-[11px] text-slate-500">{progress.detail}</div> : null}
+    </div>
+  );
+}
+
 export default function DatabaseSettingsPage() {
   const restoreFileInputRef = useRef<HTMLInputElement | null>(null);
   const [origins, setOrigins] = useState<string[]>([]);
@@ -249,15 +508,20 @@ export default function DatabaseSettingsPage() {
   const [backupError, setBackupError] = useState("");
   const [backupUserPassword, setBackupUserPassword] = useState("");
   const [backupPassphrase, setBackupPassphrase] = useState("");
+  const [backupCrossEnvironment, setBackupCrossEnvironment] = useState(false);
+  const [backupScope, setBackupScope] = useState<"system" | "household">("household");
   const [backupPasswordDialogOpen, setBackupPasswordDialogOpen] = useState(false);
 
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
   const [restoreUserPassword, setRestoreUserPassword] = useState("");
   const [restorePassphrase, setRestorePassphrase] = useState("");
+  const [restoreBackupScope, setRestoreBackupScope] = useState<"system" | "household" | null>(null);
+  const [restoreConfirmSystemOverwrite, setRestoreConfirmSystemOverwrite] = useState(false);
   const [restorePasswordDialogOpen, setRestorePasswordDialogOpen] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [restoreMessage, setRestoreMessage] = useState("");
   const [restoreError, setRestoreError] = useState("");
+  const [restoreProgress, setRestoreProgress] = useState<RestoreProgressState>(RESTORE_PROGRESS_IDLE);
 
   const [resetDbPassword, setResetDbPassword] = useState("");
   const [resetPasswordDialogOpen, setResetPasswordDialogOpen] = useState(false);
@@ -268,8 +532,8 @@ export default function DatabaseSettingsPage() {
   const [cacheRefreshMessage, setCacheRefreshMessage] = useState("");
   const [cacheRefreshError, setCacheRefreshError] = useState("");
 
-  const canBackup = !backuping && !tableExporting;
-  const canTableExport = !backuping && !tableExporting;
+  const canBackup = !backuping && !tableExporting && !restoring;
+  const canTableExport = !backuping && !tableExporting && !restoring;
   const canRestore = useMemo(
     () => Boolean(restoreFile) && !restoring,
     [restoreFile, restoring],
@@ -293,27 +557,41 @@ export default function DatabaseSettingsPage() {
     setOriginMessage("");
     setOriginError("");
     try {
-      const keys = ["allowed_dev_origins", "origin_check_enabled", LEDGER_INVITE_CODE_KEY].join(",");
+      const keys = ["allowed_dev_origins", "origin_check_enabled"].join(",");
       const data = await fetchJsonWithTimeout<SettingsValuesResult>(
         `/api/v1/settings/system?keys=${encodeURIComponent(keys)}`,
         { cache: "no-store" },
       );
       if (!data.ok) {
-        throw new Error(data.error ?? "读取数据库设置失败");
+        throw new Error(data.error ?? "读取访问白名单失败");
       }
       const values = data.values ?? {};
       const parsedOrigins = parseOriginList(values.allowed_dev_origins);
       setOrigins(parsedOrigins);
       setOriginCheckEnabled(values.origin_check_enabled === "true" && parsedOrigins.length > 0);
-      setLedgerInviteRecords(parseLedgerInviteCodeRecords(values[LEDGER_INVITE_CODE_KEY]));
-      setLedgerInviteCode("");
     } catch (error) {
       setOrigins([]);
       setOriginCheckEnabled(false);
       setOriginError(error instanceof Error ? error.message : "读取访问白名单失败");
-      setLedgerInviteError(error instanceof Error ? error.message : "读取数据库设置失败");
     } finally {
       setOriginsLoading(false);
+    }
+
+    try {
+      const data = await fetchJsonWithTimeout<SettingsValuesResult>(
+        `/api/v1/settings/system?keys=${encodeURIComponent(LEDGER_INVITE_CODE_KEY)}`,
+        { cache: "no-store", timeoutMs: 12_000 },
+      );
+      if (!data.ok) {
+        throw new Error(data.error ?? "读取邀请码失败");
+      }
+      const values = data.values ?? {};
+      setLedgerInviteRecords(parseLedgerInviteCodeRecords(values[LEDGER_INVITE_CODE_KEY]));
+      setLedgerInviteCode("");
+    } catch (error) {
+      setLedgerInviteRecords([]);
+      setLedgerInviteError(error instanceof Error ? error.message : "读取邀请码失败");
+    } finally {
       setLedgerInviteLoading(false);
     }
   }
@@ -515,6 +793,8 @@ export default function DatabaseSettingsPage() {
   function openBackupPasswordDialog() {
     setBackupUserPassword("");
     setBackupPassphrase("");
+    setBackupCrossEnvironment(false);
+    setBackupScope("household");
     setBackupError("");
     setBackupPasswordDialogOpen(true);
   }
@@ -526,18 +806,27 @@ export default function DatabaseSettingsPage() {
       return;
     }
 
+    const passphrase = backupPassphrase.trim();
+    if (backupCrossEnvironment && !passphrase) {
+      setBackupError("此备份需要跨环境恢复，请填写备份加密口令");
+      return;
+    }
+
     setBackuping(true);
     setBackupMessage("");
     setBackupError("");
     try {
       const result = await saveDataBackup({
         userPassword: password,
-        backupPassphrase: backupPassphrase.trim(),
+        backupPassphrase: passphrase,
+        backupScope,
       });
       if (!result) return;
       setBackupPasswordDialogOpen(false);
       setBackupUserPassword("");
       setBackupPassphrase("");
+      setBackupCrossEnvironment(false);
+      setBackupScope("household");
       setBackupMessage(
         result.pickedLocation
           ? `数据备份已保存：${result.fileName}`
@@ -569,13 +858,26 @@ export default function DatabaseSettingsPage() {
     }
   }
 
-  function applyRestoreFile(nextFile: File | null) {
+  async function inspectBackupScope(file: File): Promise<"system" | "household"> {
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as { scope?: { backupScope?: unknown } };
+      return parsed?.scope?.backupScope === "household" ? "household" : "system";
+    } catch {
+      return "system";
+    }
+  }
+
+  async function applyRestoreFile(nextFile: File | null) {
     setRestoreFile(nextFile);
     setRestoreUserPassword("");
     setRestorePassphrase("");
+    setRestoreBackupScope(nextFile ? await inspectBackupScope(nextFile) : null);
+    setRestoreConfirmSystemOverwrite(false);
     setRestorePasswordDialogOpen(false);
     setRestoreError("");
     setRestoreMessage("");
+    setRestoreProgress(RESTORE_PROGRESS_IDLE);
   }
 
   async function pickRestoreFile() {
@@ -592,7 +894,7 @@ export default function DatabaseSettingsPage() {
         types: RESTORE_FILE_PICKER_TYPES,
       });
       if (!handle) return;
-      applyRestoreFile(await handle.getFile());
+      void applyRestoreFile(await handle.getFile());
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       setRestoreError(error instanceof Error ? error.message : "选择备份文件失败");
@@ -606,7 +908,9 @@ export default function DatabaseSettingsPage() {
     }
     setRestoreUserPassword("");
     setRestorePassphrase("");
+    setRestoreConfirmSystemOverwrite(false);
     setRestoreError("");
+    setRestoreProgress(RESTORE_PROGRESS_IDLE);
     setRestorePasswordDialogOpen(true);
   }
 
@@ -620,32 +924,32 @@ export default function DatabaseSettingsPage() {
       setRestoreError("请输入当前用户密码");
       return;
     }
+    if (restoreBackupScope === "system" && !restoreConfirmSystemOverwrite) {
+      setRestoreError("这是系统备份，恢复会覆盖当前用户，请先勾选确认");
+      return;
+    }
 
     setRestoring(true);
     setRestoreError("");
     setRestoreMessage("");
+    setRestoreProgress(RESTORE_PROGRESS_IDLE);
     try {
       const form = new FormData();
       form.append("file", restoreFile);
       form.append("userPassword", password);
       form.append("backupPassphrase", restorePassphrase.trim());
-      const res = await fetch("/api/v1/settings/backup", {
-        method: "POST",
-        body: form,
-      });
-      const data = (await res.json().catch(() => null)) as
-        | { ok?: boolean; error?: string; message?: string; summary?: { counts?: Record<string, number> } }
-        | null;
-      if (!res.ok || !data?.ok) {
-        throw new Error(data?.error || `恢复失败（HTTP ${res.status}）`);
-      }
-      const count = data.summary?.counts?.transactions ?? 0;
-      setRestoreMessage(`恢复完成，已写入 ${count} 条交易记录。页面将刷新。`);
+      const data = await restoreDataBackup(form, setRestoreProgress);
+      const counts = data.summary?.counts;
+      const summaryText = counts
+        ? `恢复完成：账户 ${counts.accounts ?? 0}，交易 ${counts.transactions ?? 0}，分类 ${counts.categories ?? 0}，机构 ${counts.institutions ?? 0}。`
+        : "恢复完成。";
+      setRestoreMessage(`${summaryText} 页面将刷新。`);
       setRestorePasswordDialogOpen(false);
       setRestoreUserPassword("");
       setRestorePassphrase("");
       setTimeout(() => window.location.reload(), 1200);
     } catch (error) {
+      setRestoreProgress(RESTORE_PROGRESS_IDLE);
       setRestoreError(error instanceof Error ? error.message : "恢复失败");
     } finally {
       setRestoring(false);
@@ -751,7 +1055,8 @@ export default function DatabaseSettingsPage() {
             <button
               type="button"
               onClick={() => void pickRestoreFile()}
-              className="inline-flex h-9 w-32 items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:bg-slate-50"
+              disabled={restoring}
+              className="inline-flex h-9 w-32 items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
             >
               <Upload className="h-4 w-4 shrink-0" />
               选择备份
@@ -762,7 +1067,7 @@ export default function DatabaseSettingsPage() {
               accept=".mmh-backup"
               className="hidden"
               onChange={(event) => {
-                applyRestoreFile(event.target.files?.[0] ?? null);
+                void applyRestoreFile(event.target.files?.[0] ?? null);
               }}
             />
             <button
@@ -783,8 +1088,47 @@ export default function DatabaseSettingsPage() {
           <div className="w-full max-w-sm rounded-lg border border-slate-200 bg-white p-4 shadow-xl">
             <div className="text-sm font-semibold text-slate-800">验证当前用户</div>
             <div className="mt-1 text-xs text-slate-500">
-              数据备份包含密钥和敏感配置，请输入当前用户密码。可另外填写备份加密口令；留空则使用当前用户密码加密备份。
+              账簿备份不包含用户，恢复后保留当前用户；系统备份包含全部用户，恢复时会覆盖用户。请输入当前用户密码后继续。
             </div>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setBackupScope("household");
+                  setBackupError("");
+                }}
+                className={`h-9 rounded-md border px-2 text-xs font-medium ${
+                  backupScope === "household"
+                    ? "border-blue-300 bg-blue-50 text-blue-700"
+                    : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                账簿备份
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setBackupScope("system");
+                  setBackupError("");
+                }}
+                className={`h-9 rounded-md border px-2 text-xs font-medium ${
+                  backupScope === "system"
+                    ? "border-red-300 bg-red-50 text-red-700"
+                    : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                系统备份
+              </button>
+            </div>
+            {backupScope === "system" ? (
+              <div className="mt-2 rounded-md bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+                系统备份会覆盖目标账簿中的用户，包括当前登录用户，请确认后再执行。
+              </div>
+            ) : (
+              <div className="mt-2 rounded-md bg-slate-50 px-2 py-1 text-[11px] text-slate-500">
+                账簿备份不包含用户，恢复到当前账簿时会保留现有用户。
+              </div>
+            )}
             <input
               type="password"
               value={backupUserPassword}
@@ -800,6 +1144,18 @@ export default function DatabaseSettingsPage() {
               autoFocus
               className="mt-3 h-10 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-700 outline-none focus:border-blue-400"
             />
+            <label className="mt-3 flex items-center gap-2 text-xs text-slate-600">
+              <input
+                type="checkbox"
+                checked={backupCrossEnvironment}
+                onChange={(event) => {
+                  setBackupCrossEnvironment(event.target.checked);
+                  setBackupError("");
+                }}
+                className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-400"
+              />
+              此备份需要恢复到其他设备、系统或不同用户
+            </label>
             <input
               type="text"
               value={backupPassphrase}
@@ -810,11 +1166,13 @@ export default function DatabaseSettingsPage() {
               onKeyDown={(event) => {
                 if (event.key === "Enter") void handleBackup();
               }}
-              placeholder="备份加密口令（可选）"
+              placeholder={backupCrossEnvironment ? "备份加密口令（跨环境恢复必填）" : "备份加密口令（可选）"}
               autoComplete="off"
               className="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-700 outline-none focus:border-blue-400"
             />
-            <div className="mt-1 text-[11px] text-slate-400">此口令会明文显示，便于核对；恢复时需要输入同一口令。留空则用当前用户密码加密。</div>
+            <div className="mt-1 text-[11px] text-slate-400">
+              此口令会明文显示，便于核对；恢复时需要输入同一口令。仅当前环境恢复时可留空，系统会用当前用户密码加密。
+            </div>
             {backupError ? <div className="mt-2 text-xs text-red-600">{backupError}</div> : null}
             <div className="mt-4 flex justify-end gap-2">
               <button
@@ -824,6 +1182,8 @@ export default function DatabaseSettingsPage() {
                   setBackupPasswordDialogOpen(false);
                   setBackupUserPassword("");
                   setBackupPassphrase("");
+                  setBackupCrossEnvironment(false);
+                  setBackupScope("household");
                   setBackupError("");
                 }}
                 disabled={backuping}
@@ -849,8 +1209,27 @@ export default function DatabaseSettingsPage() {
           <div className="w-full max-w-sm rounded-lg border border-slate-200 bg-white p-4 shadow-xl">
             <div className="text-sm font-semibold text-slate-800">验证当前用户</div>
             <div className="mt-1 text-xs text-slate-500">
-              恢复会清空当前账簿并写回备份内容，请输入当前用户密码。如果备份时设置了加密口令，请输入同一口令。
+              恢复会清空当前账簿并写回备份内容。当前用户密码验证当前系统；备份加密口令用于解密备份文件，两者可以来自不同用户。
             </div>
+            <div className="mt-3 rounded-md bg-slate-50 px-2 py-1 text-[11px] text-slate-500">
+              {restoreBackupScope === "system"
+                ? "已检测到系统备份，恢复将覆盖当前账簿中的全部用户（包括当前登录用户）。"
+                : "已检测到账簿备份，不包含用户，恢复后当前用户会保留。"}
+            </div>
+            {restoreBackupScope === "system" ? (
+              <label className="mt-2 flex items-center gap-2 text-xs text-red-700">
+                <input
+                  type="checkbox"
+                  checked={restoreConfirmSystemOverwrite}
+                  onChange={(event) => {
+                    setRestoreConfirmSystemOverwrite(event.target.checked);
+                    setRestoreError("");
+                  }}
+                  className="h-4 w-4 rounded border-slate-300 text-red-600 focus:ring-red-400"
+                />
+                我已知晓系统备份会覆盖当前用户
+              </label>
+            ) : null}
             <input
               type="password"
               value={restoreUserPassword}
@@ -876,11 +1255,12 @@ export default function DatabaseSettingsPage() {
               onKeyDown={(event) => {
                 if (event.key === "Enter") void handleRestore();
               }}
-              placeholder="备份加密口令（如有）"
+              placeholder="备份加密口令"
               autoComplete="off"
               className="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-700 outline-none focus:border-blue-400"
             />
-            <div className="mt-1 text-[11px] text-slate-400">没有单独设置过口令时留空，系统会用当前用户密码尝试解密。</div>
+            <div className="mt-1 text-[11px] text-slate-400">如果备份时未单独设置，请输入创建备份时使用的用户密码；否则填写当时设置的备份加密口令。</div>
+            <RestoreProgressView progress={restoreProgress} />
             {restoreError ? <div className="mt-2 text-xs text-red-600">{restoreError}</div> : null}
             <div className="mt-4 flex justify-end gap-2">
               <button
@@ -890,6 +1270,7 @@ export default function DatabaseSettingsPage() {
                   setRestorePasswordDialogOpen(false);
                   setRestoreUserPassword("");
                   setRestorePassphrase("");
+                  setRestoreConfirmSystemOverwrite(false);
                   setRestoreError("");
                 }}
                 disabled={restoring}
@@ -900,7 +1281,11 @@ export default function DatabaseSettingsPage() {
               <button
                 type="button"
                 onClick={() => void handleRestore()}
-                disabled={restoring || restoreUserPassword.trim().length === 0}
+                disabled={
+                  restoring ||
+                  restoreUserPassword.trim().length === 0 ||
+                  (restoreBackupScope === "system" && !restoreConfirmSystemOverwrite)
+                }
                 className="h-9 rounded-md bg-red-600 px-3 text-sm text-white hover:bg-red-700 disabled:opacity-50"
               >
                 {restoring ? "恢复中..." : "确认恢复"}

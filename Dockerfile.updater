@@ -5,13 +5,6 @@ ARG APP_COMMIT_MESSAGE=""
 ARG APP_COMMIT_DATE=""
 ARG APP_VERSION=0.1.0
 
-LABEL org.opencontainers.image.title="MMH Updater"
-LABEL org.opencontainers.image.source="https://github.com/frankluise5220/MMH"
-LABEL org.opencontainers.image.revision=${APP_COMMIT}
-LABEL org.opencontainers.image.created=${APP_COMMIT_DATE}
-LABEL org.opencontainers.image.description=${APP_COMMIT_MESSAGE}
-LABEL org.opencontainers.image.version=${APP_VERSION}
-
 RUN apk add --no-cache git nodejs
 
 WORKDIR /updater
@@ -23,3 +16,10 @@ EXPOSE 7788
 
 ENTRYPOINT []
 CMD ["sh", "-lc", "git config --global --add safe.directory /workspace >/dev/null 2>&1 || true; if [ -f /updater/mmh-updater-server.mjs ]; then exec node /updater/mmh-updater-server.mjs; fi; exec node /workspace/scripts/mmh-updater-server.mjs"]
+
+LABEL org.opencontainers.image.title="MMH Updater"
+LABEL org.opencontainers.image.source="https://github.com/frankluise5220/MMH"
+LABEL org.opencontainers.image.revision=${APP_COMMIT}
+LABEL org.opencontainers.image.created=${APP_COMMIT_DATE}
+LABEL org.opencontainers.image.description=${APP_COMMIT_MESSAGE}
+LABEL org.opencontainers.image.version=${APP_VERSION}

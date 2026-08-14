@@ -149,9 +149,9 @@ const DISPLAY_MAP: Record<string, SubtypeDisplay> = {
   redeem: { label: "赎回", cls: "bg-orange-50 text-orange-600" },
   dividend_reinvest: { label: "分红再投资", cls: "bg-emerald-50 text-emerald-600", textCls: "text-emerald-600" },
   dividend_cash: { label: "现金红利", cls: "bg-emerald-50 text-emerald-600", textCls: "text-emerald-600" },
-  "buy_failed|regular_invest": { label: "定投(暂停申购)", cls: "bg-red-50 text-red-600" },
-  "buy_failed|regular_invest_refund": { label: "定投(资金退回)", cls: "bg-amber-50 text-amber-600" },
-  buy_failed: { label: "暂停申购", cls: "bg-red-50 text-red-600" }, // fallback
+  "buy_failed|regular_invest": { label: "买入失败", cls: "bg-red-50 text-red-600" },
+  "buy_failed|regular_invest_refund": { label: "买入退回", cls: "bg-amber-50 text-amber-600" },
+  buy_failed: { label: "买入失败", cls: "bg-red-50 text-red-600" }, // fallback
   _default: { label: "投资", cls: "bg-slate-50 text-slate-600" },
 };
 

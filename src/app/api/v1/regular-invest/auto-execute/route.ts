@@ -6,13 +6,18 @@ import { createFundTransactionWithCashFlows } from "@/lib/fund/transactions";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getFundConfirmDays, getFundArrivalDays, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
-import { addWorkdaysUtc, formatDateUtc, startOfDayUtc } from "@/lib/date-utils";
+import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { fetchHistoricalNavList, preloadNavListToCache } from "@/lib/fund/navCache";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
-import { REGULAR_INVEST_CATEGORY_NAME, regularInvestBuyNote } from "@/lib/fund/regular-invest-display";
+import {
+  REGULAR_INVEST_CATEGORY_NAME,
+  regularInvestBuyNote,
+  regularInvestFailureNote,
+  regularInvestRefundNote,
+} from "@/lib/fund/regular-invest-display";
 import { decodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { calcInitialScheduledRunDate as calcInitialRunDate, calcNextScheduledRunDate as calcNextRunDate, skipWeekend } from "@/lib/scheduled-task-date";
@@ -30,7 +35,6 @@ export async function POST() {
     const { householdId } = await getHouseholdScope();
 
     const now = new Date();
-    const today = startOfDayUtc(now);
     const todayStr = formatDateUtc(now);
 
     const allPlans = await prisma.regularInvestPlan.findMany({
@@ -346,7 +350,7 @@ export async function POST() {
             nav: null,
             units: null,
             regularInvestPlanId: e.plan.id,
-            note: `基金暂停申购 ${e.plan.fundCode}`,
+            note: regularInvestFailureNote(e.plan.fundCode, e.plan.fundName || e.plan.fundCode, e.runDate),
             cashFlows: e.cashAcc ? [
               {
                 kind: FundCashFlowKind.buy_out,
@@ -357,7 +361,7 @@ export async function POST() {
                 currency: e.cashAcc.currency ?? e.fundAcc.currency ?? "CNY",
                 source: "regular_invest",
                 regularInvestPlanId: e.plan.id,
-                note: `基金暂停申购 ${e.plan.fundCode}`,
+                note: regularInvestFailureNote(e.plan.fundCode, e.plan.fundName || e.plan.fundCode, e.runDate),
               },
               {
                 kind: FundCashFlowKind.refund_in,
@@ -368,7 +372,13 @@ export async function POST() {
                 currency: e.cashAcc.currency ?? e.fundAcc.currency ?? "CNY",
                 source: "regular_invest_refund",
                 regularInvestPlanId: e.plan.id,
-                note: `基金暂停申购，资金退回 ${e.plan.fundCode}`,
+                note: regularInvestRefundNote(
+                  e.plan.fundCode,
+                  e.plan.fundName || e.plan.fundCode,
+                  e.amountNum,
+                  e.runDate,
+                  e.cashAcc.currency ?? e.fundAcc.currency ?? "CNY",
+                ),
               },
             ] : [],
           });

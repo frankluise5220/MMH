@@ -23,7 +23,7 @@ const currentUserSelect = {
   householdId: true,
 } as const;
 
-const USER_LOOKUP_TIMEOUT_MS = 5000;
+const USER_LOOKUP_TIMEOUT_MS = 8000;
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T | null> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -57,83 +57,90 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
 
   if (!verified) return null;
 
+  const deadline = Date.now() + USER_LOOKUP_TIMEOUT_MS;
+  const lookup = async <T>(operation: Promise<T>): Promise<T | null> => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return null;
+    return withTimeout(operation, remaining);
+  };
+
   if (userId) {
-    const user = await withTimeout(prisma.user.findUnique({
+    const user = await lookup(prisma.user.findUnique({
       where: { id: userId },
       select: currentUserSelect,
-    }), USER_LOOKUP_TIMEOUT_MS);
+    }));
     if (user) return user;
   }
 
   if (username && householdId) {
-    const scopedUser = await withTimeout(prisma.user.findFirst({
+    const scopedUser = await lookup(prisma.user.findFirst({
       where: { name: username, householdId },
       select: currentUserSelect,
-    }), USER_LOOKUP_TIMEOUT_MS);
+    }));
     if (scopedUser) return scopedUser;
 
-    const systemUser = await withTimeout(prisma.user.findFirst({
+    const systemUser = await lookup(prisma.user.findFirst({
       where: { name: username, isSystem: true },
       select: currentUserSelect,
       orderBy: { createdAt: "asc" },
-    }), USER_LOOKUP_TIMEOUT_MS);
+    }));
     if (systemUser) return systemUser;
 
-    const users = await withTimeout(prisma.user.findMany({
+    const users = await lookup(prisma.user.findMany({
       where: { name: username },
       select: currentUserSelect,
       take: 2,
       orderBy: { createdAt: "asc" },
-    }), USER_LOOKUP_TIMEOUT_MS);
+    }));
     if (!users) return null;
     return users.length === 1 ? users[0] : null;
   }
 
   if (!username && householdId) {
-    const householdAdmin = await withTimeout(prisma.user.findFirst({
+    const householdAdmin = await lookup(prisma.user.findFirst({
       where: { householdId, OR: [{ role: "admin" }, { isSystem: true }] },
       select: currentUserSelect,
       orderBy: { createdAt: "asc" },
-    }), USER_LOOKUP_TIMEOUT_MS);
+    }));
     if (householdAdmin) return householdAdmin;
 
-    return await withTimeout(prisma.user.findFirst({
+    return await lookup(prisma.user.findFirst({
       where: { householdId },
       select: currentUserSelect,
       orderBy: { createdAt: "asc" },
-    }), USER_LOOKUP_TIMEOUT_MS);
+    }));
   }
 
   if (!username) {
-    const systemUser = await withTimeout(prisma.user.findFirst({
+    const systemUser = await lookup(prisma.user.findFirst({
       where: { isSystem: true },
       select: currentUserSelect,
       orderBy: { createdAt: "asc" },
-    }), USER_LOOKUP_TIMEOUT_MS);
+    }));
     if (systemUser) return systemUser;
 
-    const users = await withTimeout(prisma.user.findMany({
+    const users = await lookup(prisma.user.findMany({
       select: currentUserSelect,
       take: 2,
       orderBy: { createdAt: "asc" },
-    }), USER_LOOKUP_TIMEOUT_MS);
+    }));
     if (!users) return null;
     return users.length === 1 ? users[0] : null;
   }
 
-  const systemUser = await withTimeout(prisma.user.findFirst({
+  const systemUser = await lookup(prisma.user.findFirst({
     where: { name: username, isSystem: true },
     select: currentUserSelect,
     orderBy: { createdAt: "asc" },
-  }), USER_LOOKUP_TIMEOUT_MS);
+  }));
   if (systemUser) return systemUser;
 
-  const users = await withTimeout(prisma.user.findMany({
+  const users = await lookup(prisma.user.findMany({
     where: { name: username },
     select: currentUserSelect,
     take: 2,
     orderBy: { createdAt: "asc" },
-  }), USER_LOOKUP_TIMEOUT_MS);
+  }));
   if (!users) return null;
 
   return users.length === 1 ? users[0] : null;

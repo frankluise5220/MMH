@@ -73,6 +73,7 @@ import {
   upsertFundTransactionRefundCashFlow,
   type FundCashFlowInput,
 } from "@/lib/fund/transactions";
+import { regularInvestRefundNote } from "@/lib/fund/regular-invest-display";
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
 import { resolveAdvanceTransfer } from "@/lib/advance-transfer";
 import { isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/transaction-semantics";
@@ -309,7 +310,14 @@ async function upsertFundBuyRefundRecord(
     fundArrivalAmount: null,
     fundSourceEntryId: params.buyEntryId ?? null,
     regularInvestPlanId: params.regularInvestPlanId ?? null,
-    note: params.note || `买入退回 ${params.fundName || params.fundCode}`,
+    note: regularInvestRefundNote(
+      params.fundCode,
+      params.fundName,
+      refundAmount,
+      params.buyDate,
+      params.currency ?? "CNY",
+      params.note,
+    ),
     deletedAt: null,
   };
 
@@ -2382,7 +2390,14 @@ export async function POST(req: Request) {
               amount: Math.abs(refundAmount),
               currency: cashAcc.currency ?? investAcc.currency ?? "CNY",
               source: "regular_invest_refund",
-              note: note || `买入退回 ${entryFundName || entryFundCode}`,
+              note: regularInvestRefundNote(
+                entryFundCode,
+                entryFundName,
+                refundAmount,
+                date,
+                cashAcc.currency ?? investAcc.currency ?? "CNY",
+                note,
+              ),
             });
           }
 
@@ -2531,7 +2546,14 @@ export async function POST(req: Request) {
               fundConfirmDate: computedConfirmDate,
               fundArrivalDate: effectiveRefundDate,
               regularInvestPlanId: created.regularInvestPlanId ?? null,
-              note: note || `买入退回 ${entryFundName || entryFundCode}`,
+              note: regularInvestRefundNote(
+                entryFundCode,
+                entryFundName,
+                refundAmount,
+                date,
+                investAcc.currency ?? "CNY",
+                note,
+              ),
             });
           }
         }
@@ -3228,7 +3250,14 @@ export async function PUT(req: Request) {
             fundConfirmDate: toDateOrNull(body.fundConfirmDate),
             fundArrivalDate: effectiveRefundDate,
             regularInvestPlanId: entry.regularInvestPlanId ?? null,
-            note: note || `买入退回 ${resolvedInsuranceProductName || wealthProduct?.name || fundNameInput || fundCode}`,
+            note: regularInvestRefundNote(
+              fundCode,
+              resolvedInsuranceProductName || wealthProduct?.name || fundNameInput || fundCode,
+              refundAmount,
+              date,
+              cashAccCurrency ?? investAcc.currency ?? entry.currency ?? "CNY",
+              note,
+            ),
           });
         } else if ((subtype as FundSubtype) === FundSubtype.buy && linkedRefundEntryId) {
           await tx.txRecord.updateMany({
@@ -3264,7 +3293,14 @@ export async function PUT(req: Request) {
             cashAccountName: cashAccName ?? "",
             currency: cashAccCurrency ?? investAcc.currency ?? entry.currency ?? "CNY",
             source: "regular_invest_refund",
-            note: note || `买入退回 ${fundNameInput || fundCode}`,
+            note: regularInvestRefundNote(
+              fundCode,
+              fundNameInput || fundCode,
+              refundAmount,
+              date,
+              cashAccCurrency ?? investAcc.currency ?? entry.currency ?? "CNY",
+              note,
+            ),
           });
         }
 

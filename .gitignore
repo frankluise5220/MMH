@@ -146,6 +146,9 @@ _*.cjs
 _*.ts
 _*.mts
 _*.mjs
+_*.txt
+_*.html
+_*.json
 *.new
 
 # local test artifacts

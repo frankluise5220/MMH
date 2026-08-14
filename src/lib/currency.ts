@@ -3,6 +3,15 @@ type AccountCurrencyLike = {
   readonly currency?: string | null;
 };
 
+export const CURRENCY_OPTIONS = [
+  { value: "CNY", label: "人民币 CNY" },
+  { value: "USD", label: "美元 USD" },
+  { value: "JPY", label: "日元 JPY" },
+  { value: "EUR", label: "欧元 EUR" },
+  { value: "HKD", label: "港币 HKD" },
+  { value: "GBP", label: "英镑 GBP" },
+] as const;
+
 export function normalizeCurrency(value: unknown) {
   const text = String(value ?? "CNY").trim().toUpperCase();
   return text || "CNY";
