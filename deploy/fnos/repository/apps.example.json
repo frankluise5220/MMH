@@ -4,20 +4,20 @@
       "id": "mmh",
       "name": "MMH",
       "display_name": "MMH 家庭财务工作台",
-      "version": "0.1.30",
+      "version": "0.1.31",
       "platform": "x86",
       "platforms": [
         "x86",
         "arm"
       ],
       "description": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
-      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.30/mmh-fnos-v0.1.30-x86_64.fpk",
+      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.31/mmh-fnos-v0.1.31-x86_64.fpk",
       "download_urls": {
-        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.30/mmh-fnos-v0.1.30-x86_64.fpk",
-        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.30/mmh-fnos-v0.1.30-arm64.fpk"
+        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.31/mmh-fnos-v0.1.31-x86_64.fpk",
+        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.31/mmh-fnos-v0.1.31-arm64.fpk"
       },
       "homepage": "https://github.com/frankluise5220/MMH",
-      "changelog": "验证 FN 软仓 GitHub 源的版本更新信息：统一更新版本号、更新说明、x86_64 与 arm64 飞牛包下载地址，并继续保持覆盖升级和 SQLite 数据兼容；同时保留股票、备份恢复、汇率与界面增强。",
+      "changelog": "发布 0.1.31：报表页新增「股票持仓盈亏」页签（按机构/账户筛选、CSV 导出，与股票账户持仓共用同一套 StockHolding 数字）；股票持仓与交易明细表接入共享表格（列宽记忆、排序、筛选、批量删除），交易明细支持双击编辑并同步资金流水与持仓；新增批量修改备注与券商成交号接口；股票名称一律以本地已保存数据为准，交易窗口不再触发外部查询；投资账户不参与普通转账，股票界面银证转账限定同一所有人的资金账户；修复 SQLite 恢复时房产交易现金外键指向错误表导致清空失败。",
       "tags": [
         "finance",
         "bookkeeping"
