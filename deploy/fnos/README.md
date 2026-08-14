@@ -76,6 +76,15 @@ mmh-fnos-v0.1.x-arm64.fpk
 - Release workflow 会按 x86 / arm64 安装对应架构的官方 `fnpack`；如果安装或验证失败，workflow 必须失败，不能上传 `*-fpk-source.tgz` 作为替代。
 - `repository/apps.example.json` 的 `download_url` 指向 Release 中的 `mmh-fnos-v0.1.x-x86_64.fpk`，`download_urls` 只提供 `mmh-fnos-v0.1.x-x86_64.fpk` 和 `mmh-fnos-v0.1.x-arm64.fpk`。
 
+## 软仓源
+
+- 当前验证过的公开源地址是：
+  `https://raw.githubusercontent.com/frankluise5220/MMH/main/deploy/fnos/repository`
+- 飞牛会从这个源继续读取 `/api/apps`；如果界面要求直接填写 JSON 文件，则使用该目录下的 `fnpack.json`。
+- 这个地址直接映射到 GitHub `frankluise5220/MMH` 仓库的 `main/deploy/fnos/repository` 目录，不需要访问 `192.168.*` 内网地址，也不需要 `5660` 服务。
+- 如果未来改用自建软仓服务，才需要另行配置稳定域名或 frp；不能把自建服务地址混入当前 GitHub 源配置。
+- 源数据仍指向 GitHub Release 中的两个正式 `.fpk` 文件：`mmh-fnos-v0.1.x-x86_64.fpk` 和 `mmh-fnos-v0.1.x-arm64.fpk`。
+
 ## 升级边界
 
 - FN 软仓测试源只能验证“源里有新版本、下载地址可用、版本号能比较”这条测试链路。它不能替代飞牛官方应用中心的升级发布。

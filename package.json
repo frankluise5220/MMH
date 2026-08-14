@@ -1,8 +1,8 @@
 {
   "name": "mmh",
-  "version": "0.1.29",
+  "version": "0.1.30",
   "private": true,
-  "mmhReleaseNotes": "合并股票账户、股票交易、持仓与费用规则改进：股票交易弹窗支持股本变动（送股/拆股/并股）与现金分红+送股/转增同时记录，卖出、分红、股本变动统一使用交易日期持仓下拉；增强备份恢复和 SQLite 数据兼容；优化账户、债务、汇率与设置界面；飞牛包改用 Webpack 构建并清理非运行时文件，Docker 镜像优化分层以减少后续更新传输量。",
+  "mmhReleaseNotes": "验证 FN 软仓 GitHub 源的版本更新信息：统一更新版本号、更新说明、x86_64 与 arm64 飞牛包下载地址，并继续保持覆盖升级和 SQLite 数据兼容；同时保留股票、备份恢复、汇率与界面增强。",
   "scripts": {
     "postinstall": "prisma generate",
     "predev": "prisma generate",
