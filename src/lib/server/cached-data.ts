@@ -12,6 +12,7 @@ import { unstable_cache } from "next/cache";
 import { prisma } from "@/lib/db/prisma";
 import { computeInvestBalances, computePositionDisplay } from "@/lib/invest-balance";
 import type { HouseholdContext } from "@/lib/server/household-scope";
+import { loadStockHoldingReport } from "@/lib/server/stock-holding-report";
 import { listPreciousMetalDictionaries } from "@/lib/server/precious-metals";
 import { entryBusinessLinkSummaryInclude } from "@/lib/server/entry-business-link";
 import { loadFundTransactionEntryLike } from "@/lib/fund/transactions";
@@ -141,6 +142,29 @@ export const loadInvestBalances = unstable_cache(
   _loadInvestBalances,
   ["invest-balances"],
   { revalidate: false, tags: ["invest-balances", "fund-holding"] },
+);
+
+async function _loadStockHoldingReport(
+  hidFilterStr: string,
+  accountIdsStr: string,
+) {
+  const hidFilter = JSON.parse(hidFilterStr) as { householdId: string };
+  const accountIds = JSON.parse(accountIdsStr) as string[];
+  const ctx: HouseholdContext = {
+    householdId: hidFilter.householdId,
+    hidFilter,
+    user: null,
+  };
+  return loadStockHoldingReport(ctx, {
+    accountIds: accountIds.length > 0 ? accountIds : undefined,
+  });
+}
+
+/** 跨请求缓存：股票持仓盈亏报表读取已重算的 StockHolding，不随页面筛选重查库 */
+export const loadCachedStockHoldingReport = unstable_cache(
+  _loadStockHoldingReport,
+  ["stock-holding-report"],
+  { revalidate: false, tags: ["stock-holding-report", "invest-balances"] },
 );
 
 // ── 投资账户持仓数据（请求级缓存） ──

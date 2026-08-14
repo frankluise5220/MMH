@@ -14,7 +14,7 @@ appname=mmh
 
 - 用户安装飞牛版架构匹配的 `.fpk` 后，不需要理解 Node、Prisma、Next.js、Docker 或数据库构建流程。
 - 飞牛版直接运行包内 Next standalone、Linux Node runtime、Prisma runtime 和 SQLite 数据库。
-- 飞牛版没有 PostgreSQL 连接密码；安装向导中的系统密码用于系统初始化、删除账簿等敏感操作，并通过 `MMH_SYSTEM_PASSWORD` 注入运行时。
+- 飞牛版没有 PostgreSQL 连接密码；系统初始化、删除账簿等敏感操作验证当前登录管理员用户的密码，不使用部署级系统密码。
 - 普通 NAS 安装与更新仍保持 Docker 路线，不被飞牛 SQLite 包替代。
 - 飞牛包必须在 Linux/fnOS 构建环境生成，不能用 Windows 构建产物冒充正式包。
 - 数据目录必须持久化，升级不得删除用户的 SQLite 数据库文件；SQLite 数据库必须位于飞牛应用数据目录，不允许回退到应用安装目录。
@@ -43,7 +43,7 @@ appname=mmh
 2. 脚本定位应用目录和持久化数据目录；数据目录优先使用 `TRIM_DATADEST`，其次使用 `TRIM_PKGVAR/data`，再兜底到 `/vol*/@appdata/mmh/data`。
 3. 设置 `DATABASE_URL=file:$DATA_DEST/mmh.db`。
 4. 设置 `PRISMA_SCHEMA_PATH=$SERVER_DIR/prisma/schema.native.prisma`。
-5. 读取持久环境文件 `mmh.env`，导出 `PORT` 和 `MMH_SYSTEM_PASSWORD`；如果未设置系统密码，首次启动随机生成一次并保存到 `mmh-system-password.txt`。
+5. 读取持久环境文件 `mmh.env`，导出 `PORT`；`MMH_SYSTEM_PASSWORD` 仅作兼容保留（未设置时首次启动随机生成并保存到 `mmh-system-password.txt`），敏感操作验证不再使用。
 6. 使用包内 Node 运行 SQLite 初始化脚本；仅在数据库没有用户表时创建初始结构，已有数据库不会被重建，但会继续执行幂等运行时迁移并记录到 `_mmh_native_schema`，随后按 `native-init.sql` 补齐缺失的新表、可安全新增字段和可兼容索引。
 7. 启动包内 Next standalone `server.js`，对外暴露 `7777`。
 
@@ -62,7 +62,7 @@ appname=mmh
 - 构建正式包必须提供对应架构的 Linux Node runtime；x86 使用 `node-v20.x-linux-x64.tar.gz`，ARM64 使用 `node-v20.x-linux-arm64.tar.gz`。workflow 会自动下载，手动构建时通过 `FNOS_TARGET_ARCH` 与 `FNOS_NODE_TARBALL` 显式指定。
 - Windows 本地只能生成调试 stage 包，不能产出可安装的正式包。
 - 当前包包含 Linux Node runtime、Next standalone、Prisma runtime 和必要依赖，体积会明显大于 miniBill；除非后续把服务端重写为更轻的单二进制运行时，否则不承诺几 MB 级。
-- 飞牛包安装/配置向导必须提供系统密码设置项；留空时由启动脚本生成随机密码并写入持久应用数据目录。
+- 飞牛包安装/配置向导不要求提供系统密码；敏感操作验证当前管理员用户密码。启动脚本仍会为兼容保留自动生成 `MMH_SYSTEM_PASSWORD`。
 - 飞牛包不使用独立 `-fnos` 版本号；正式发布前用 `npm run release:version` 递增一次 `package.json` 的 `0.1.x`，并保持 GitHub Release、GHCR 镜像和所有架构 `.fpk` 同号。
 - 用户通过应用中心或手动选择新版 `.fpk` 时，应在已安装 `mmh` 上直接覆盖升级。`uninstall_init` 仅用于用户主动卸载或异常恢复时备份 appdata，不作为升级路径。
 

@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { logger } from "@/lib/logger";
 import { getHouseholdDisplayName } from "@/lib/household-display";
+import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import {
   HOUSEHOLD_COOKIE,
   SESSION_DAYS_COOKIE,
@@ -16,34 +17,40 @@ import { normalizeSessionDays, sessionDaysToMaxAge } from "@/lib/session-days";
 const LEGACY_PASSWORD_KEY = "access_password";
 const AUTH_LOOKUP_TIMEOUT_MS = 1500;
 
-function uniqueNonEmpty(values: Array<string | null | undefined>) {
-  return [...new Set(values.map((value) => value?.trim()).filter((value): value is string => !!value))];
-}
-
-function databaseUrlPassword() {
-  const dbUrl = process.env.DATABASE_URL;
-  if (!dbUrl) return "";
-  try {
-    const url = new URL(dbUrl);
-    return decodeURIComponent(url.password);
-  } catch {
-    return "";
+/**
+ * 敏感操作（系统初始化、删除账簿等）的密码验证。
+ *
+ * 要求当前登录用户是管理员，并校验该管理员用户的密码；
+ * 不再使用部署级“数据库密码/系统密码”（MMH_SYSTEM_PASSWORD、POSTGRES_PASSWORD 等）。
+ */
+async function verifyAdminPassword(
+  password: string,
+): Promise<{ ok: true } | { ok: false; error: string; status: number }> {
+  const currentUser = await getCurrentUser();
+  if (!currentUser) {
+    return { ok: false, error: "请先登录", status: 401 };
   }
-}
+  if (!isAdmin(currentUser)) {
+    return { ok: false, error: "仅管理员可执行此操作", status: 403 };
+  }
 
-async function verifySystemPassword(password: string) {
-  const directPasswords = uniqueNonEmpty([
-    process.env.MMH_SYSTEM_PASSWORD,
-    process.env.POSTGRES_PASSWORD,
-    databaseUrlPassword(),
-  ]);
-  if (directPasswords.includes(password)) return true;
+  const dbUser = await prisma.user.findUnique({
+    where: { id: currentUser.id },
+    select: { passwordHash: true },
+  });
+  if (dbUser?.passwordHash) {
+    const matched = await verifyPassword(password, dbUser.passwordHash);
+    if (matched) return { ok: true };
+    return { ok: false, error: "管理员密码错误", status: 401 };
+  }
 
+  // 兼容旧版：用户尚未设置密码时，校验系统设置中的旧访问密码。
   const legacy = await withTimeout(
     prisma.systemSetting.findUnique({ where: { key: LEGACY_PASSWORD_KEY }, select: { value: true } }),
     AUTH_LOOKUP_TIMEOUT_MS,
   );
-  return !!legacy?.value && legacy.value === password;
+  if (legacy?.value && password === legacy.value) return { ok: true };
+  return { ok: false, error: "管理员密码错误", status: 401 };
 }
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T | null> {
@@ -188,9 +195,11 @@ async function findPasswordMatches(users: LoginUser[], password: string) {
  * Verify a password for login or privileged system actions.
  *
  * Body: { password: string, userId?: string, username?: string, householdId?: string, verifySystem?: boolean }
- * - verifySystem=true verifies the deployment system password and does not create a user session.
- *   Docker deployments accept MMH_SYSTEM_PASSWORD, POSTGRES_PASSWORD, or DATABASE_URL password.
- *   fnOS/SQLite deployments accept MMH_SYSTEM_PASSWORD because file: DATABASE_URL values have no password.
+ * - verifySystem=true verifies that the current session user is an admin and that
+ *   `password` matches that admin user's password. It is used for sensitive
+ *   operations such as system initialization and deleting ledgers, and does not
+ *   create a user session. Deployment-level database/system passwords are not
+ *   accepted for this verification.
  * - userId verifies that exact user. This is preferred for Web login when
  *   multiple ledgers contain same-name users such as admin.
  * - username + householdId verifies that exact user inside the target household.
@@ -212,8 +221,10 @@ export async function POST(req: NextRequest) {
 
   if (body.verifySystem) {
     try {
-      const verified = await verifySystemPassword(password);
-      if (!verified) return NextResponse.json({ ok: false, error: "数据库密码错误" }, { status: 401 });
+      const verified = await verifyAdminPassword(password);
+      if (!verified.ok) {
+        return NextResponse.json({ ok: false, error: verified.error }, { status: verified.status });
+      }
       return NextResponse.json({ ok: true, systemVerified: true });
     } catch {
       return NextResponse.json({ ok: false, error: "系统配置错误" }, { status: 500 });

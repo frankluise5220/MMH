@@ -3394,6 +3394,17 @@ export default async function Home({
   // Pre-computed hierarchical SS options for modal props
   const allAccountSSOptions = buildAccountSSOptions(); // all accounts for transfer dropdown
   const cashAccountSSOptions = buildAccountSSOptions(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet");
+  // 资金界面转账保持原样：排除投资账户即可；股票界面打开转账时，只允许同一所有人的资金账户（bank_debit/ewallet）
+  const transferOwnerGroupId = (selectedAccount?.groupId ?? "").trim();
+  const isStockTransferEligibleAccount = (a: (typeof accountOptions)[number]) =>
+    (a.kind === "bank_debit" || a.kind === "ewallet")
+    && (!transferOwnerGroupId || a.groupId === transferOwnerGroupId);
+  const transferAccountSSOptions = view === "investstock"
+    ? buildAccountSSOptions(isStockTransferEligibleAccount)
+    : buildAccountSSOptions(a => !isPureInvestmentAccount(a));
+  const transferAccountOptions = view === "investstock"
+    ? accountOptions.filter(isStockTransferEligibleAccount)
+    : accountOptions.filter(a => !isPureInvestmentAccount(a));
   const stockAccountSSOptions = buildAccountSSOptions(a => a.kind === "investment" && a.investProductType === "stock");
   const propertyAccountSSOptions = buildAccountSSOptions(a => a.kind === "investment" && a.investProductType === "property");
   const debtTransferAccountSSOptions = buildAccountSSOptions(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet" || a.kind === "bank_credit");
@@ -4345,17 +4356,30 @@ export default async function Home({
       : cashAccountList[0]?.id ?? "";
   const defaultStockCashAccountId = (() => {
     const stockAccount = stockAccountOptions.find((account) => account.id === defaultStockInvestmentAccountId) ?? null;
+    const stockOwnerGroupId = (stockAccount?.groupId ?? "").trim();
     if (stockAccount?.institutionId) {
-      return cashAccountList.find((account) => account.institutionId === stockAccount.institutionId && account.institutionType === "brokerage")?.id
-        ?? cashAccountList.find((account) => account.institutionId === stockAccount.institutionId)?.id
-        ?? defaultCashAccountForSelectedInstitution;
+      const sameOwnerCash = (account: typeof cashAccountList[number]) =>
+        (!stockOwnerGroupId || (account.groupId ?? "") === stockOwnerGroupId);
+      const cashAccount = cashAccountList.find((account) =>
+        account.institutionId === stockAccount.institutionId && account.institutionType === "brokerage" && sameOwnerCash(account))
+        ?? cashAccountList.find((account) =>
+          account.institutionId === stockAccount.institutionId && sameOwnerCash(account))
+        ?? null;
+      return cashAccount?.id ?? defaultCashAccountForSelectedInstitution;
     }
     return defaultCashAccountForSelectedInstitution;
   })();
-  const defaultStockTransferFromAccountId =
-    cashAccountList.find((account) => account.id !== defaultStockCashAccountId && account.kind === "bank_debit")?.id
-    ?? cashAccountList.find((account) => account.id !== defaultStockCashAccountId)?.id
-    ?? "";
+  const defaultStockCashAccountName = cashAccountList.find((account) => account.id === defaultStockCashAccountId)?.label ?? null;
+  const defaultStockTransferFromAccountId = (() => {
+    const stockAccount = stockAccountOptions.find((account) => account.id === defaultStockInvestmentAccountId) ?? null;
+    const stockOwnerGroupId = (stockAccount?.groupId ?? "").trim();
+    const sameOwner = (account: typeof cashAccountList[number]) =>
+      (!stockOwnerGroupId || (account.groupId ?? "") === stockOwnerGroupId);
+    // 银证转账：转出方默认同一所有人下的银行借记卡（不能是证券资金账户本身，也不能是现金/信用卡）
+    return cashAccountList.find((account) => account.id !== defaultStockCashAccountId && account.kind === "bank_debit" && sameOwner(account))?.id
+      ?? cashAccountList.find((account) => account.id !== defaultStockCashAccountId && sameOwner(account) && account.kind !== "cash")?.id
+      ?? "";
+  })();
   const defaultWealthAccountForSelectedInstitution =
     selectedAccount && isPureInvestmentAccount(selectedAccount) && selectedAccount.investProductType === "wealth"
       ? selectedAccount.id
@@ -4438,7 +4462,11 @@ export default async function Home({
                 context={{
                   defaultAccountId: selectedAccount?.id ?? accountId ?? "",
                   defaultCashAccountId: defaultCashAccountForSelectedInstitution,
-                  defaultTransferFromAccountId: isBillAccount ? (lastRepayFromAccountId ?? cashAccountList[0]?.id ?? "") : (selectedAccount?.id ?? accountId ?? ""),
+                  defaultTransferFromAccountId: isBillAccount
+                    ? (lastRepayFromAccountId ?? cashAccountList[0]?.id ?? "")
+                    : view === "investstock"
+                      ? (defaultStockCashAccountId || defaultStockTransferFromAccountId || (cashAccountList[0]?.id ?? ""))
+                      : (selectedAccount?.id ?? accountId ?? ""),
                   defaultTransferToAccountId: isBillAccount ? (selectedAccount?.id ?? accountId ?? "") : "",
                   defaultInvestmentAccountId: defaultFundInvestmentAccountId,
                   defaultStockAccountId: defaultStockInvestmentAccountId,
@@ -4480,8 +4508,8 @@ export default async function Home({
               />
               <>
               <TransactionFormModal
-                accounts={spendingAccountOptions} transferAccounts={accountOptions}
-                accountSSOptions={spendingAccountSSOptions} transferAccountSSOptions={allAccountSSOptions}
+                accounts={spendingAccountOptions} transferAccounts={transferAccountOptions}
+                accountSSOptions={spendingAccountSSOptions} transferAccountSSOptions={transferAccountSSOptions}
                 nestedFieldData={nestedFieldData}
                 expenseCategories={expenseCategories.map((c) => ({ id: c.id, label: c.label, parentId: c.parentId, type: c.type }))}
                 incomeCategories={incomeCategories.map((c) => ({ id: c.id, label: c.label, parentId: c.parentId, type: c.type }))}
@@ -4918,10 +4946,11 @@ export default async function Home({
               currency={selectedAccount?.currency ?? baseCurrency}
               positions={JSON.parse(JSON.stringify(investstockData.positions))}
               cashBalance={investstockData.cashBalance ?? 0}
-              cashAccountName={investstockData.cashAccountName ?? null}
               totalMarketValue={investstockData.totalMarketValue}
               totalCost={investstockData.totalCost}
               isRedUp={isRedUp}
+              stockCashAccountId={defaultStockCashAccountId}
+              stockCashAccountName={defaultStockCashAccountName}
             />
           ) : view === "investfund" && investfundData ? (
             <FundShell

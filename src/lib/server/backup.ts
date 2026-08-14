@@ -832,7 +832,7 @@ const SQLITE_PROPERTY_RESTORE_SCHEMA_SQL = [
     CONSTRAINT "property_transactions_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "property_transactions_cashAccountId_fkey" FOREIGN KEY ("cashAccountId") REFERENCES "Account"("id") ON DELETE SET NULL ON UPDATE CASCADE,
     CONSTRAINT "property_transactions_propertyAssetId_fkey" FOREIGN KEY ("propertyAssetId") REFERENCES "property_assets"("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT "property_transactions_cashEntryId_fkey" FOREIGN KEY ("cashEntryId") REFERENCES "TxRecord"("id") ON DELETE SET NULL ON UPDATE CASCADE
+    CONSTRAINT "property_transactions_cashEntryId_fkey" FOREIGN KEY ("cashEntryId") REFERENCES "transactions"("id") ON DELETE SET NULL ON UPDATE CASCADE
   )`,
   `CREATE INDEX IF NOT EXISTS "property_assets_householdId_accountId_idx" ON "property_assets"("householdId", "accountId")`,
   `CREATE INDEX IF NOT EXISTS "property_assets_householdId_status_idx" ON "property_assets"("householdId", "status")`,
@@ -1059,6 +1059,39 @@ async function sqliteTableExists(tableName: string) {
   return rows.length > 0;
 }
 
+async function sqliteTableSql(tableName: string) {
+  const rows = await prisma.$queryRawUnsafe<Array<{ sql: string | null }>>(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+    tableName,
+  );
+  return rows[0]?.sql ?? "";
+}
+
+async function sqliteTableHasBrokenTxRecordCashEntryFk(tableName: string) {
+  const sql = await sqliteTableSql(tableName);
+  return /REFERENCES\s+"TxRecord"\s*\(\s*"id"\s*\)/i.test(sql);
+}
+
+async function rebuildSqliteTableWithoutBrokenTxRecordCashEntryFk(
+  tableName: string,
+  createSql: string,
+) {
+  if (!(await sqliteTableHasBrokenTxRecordCashEntryFk(tableName))) return;
+  const tempName = `${tableName}__txrecord_fk_fix`;
+  const columns = [...(await sqliteColumnNames(tableName))];
+  if (columns.length === 0) return;
+  await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS ${quoteSqliteIdent(tempName)}`);
+  await prisma.$executeRawUnsafe(
+    `ALTER TABLE ${quoteSqliteIdent(tableName)} RENAME TO ${quoteSqliteIdent(tempName)}`,
+  );
+  await prisma.$executeRawUnsafe(createSql.replace(/CREATE TABLE IF NOT EXISTS/i, "CREATE TABLE"));
+  const quotedColumns = columns.map((column) => quoteSqliteIdent(column)).join(", ");
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO ${quoteSqliteIdent(tableName)} (${quotedColumns}) SELECT ${quotedColumns} FROM ${quoteSqliteIdent(tempName)}`,
+  );
+  await prisma.$executeRawUnsafe(`DROP TABLE ${quoteSqliteIdent(tempName)}`);
+}
+
 async function sqliteColumnNames(tableName: string) {
   const columns = await prisma.$queryRawUnsafe<Array<{ name: string }>>(`PRAGMA table_info(${quoteSqliteIdent(tableName)})`);
   return new Set(columns.map((column) => column.name));
@@ -1141,6 +1174,15 @@ async function applyNativeInitSqlSchemaBackfillForRestore(): Promise<SqliteSchem
 
 async function ensureSqliteRestoreCompatibilitySchema() {
   if (!isSqliteRuntime()) return;
+  const propertyTransactionsCreateSql = SQLITE_PROPERTY_RESTORE_SCHEMA_SQL.find((statement) =>
+    /CREATE TABLE IF NOT EXISTS "property_transactions"/i.test(statement),
+  );
+  if (propertyTransactionsCreateSql) {
+    await rebuildSqliteTableWithoutBrokenTxRecordCashEntryFk(
+      "property_transactions",
+      propertyTransactionsCreateSql,
+    );
+  }
   for (const statement of [...SQLITE_STOCK_RESTORE_SCHEMA_SQL, ...SQLITE_PROPERTY_RESTORE_SCHEMA_SQL]) {
     await prisma.$executeRawUnsafe(statement);
   }

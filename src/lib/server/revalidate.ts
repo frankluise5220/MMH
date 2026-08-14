@@ -17,10 +17,12 @@ export function revalidateAfterInvestChange() {
   revalidateTag("invest-balances", "max");
   revalidateTag("invest-account-data", "max");
   revalidateTag("fund-holding", "max");
+  revalidateTag("stock-holding-report", "max");
   revalidatePath("/invest");
   revalidatePath("/investments");
   revalidatePath("/funds");
   revalidatePath("/regular-invest");
+  revalidatePath("/reports");
 }
 
 export function revalidateAfterSettingsChange() {

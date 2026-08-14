@@ -11,6 +11,9 @@ import {
 import { MissingFundNavPrompt } from "@/components/MissingFundNavPrompt";
 import { IncomeExpenseReportClient } from "@/components/IncomeExpenseReportClient";
 import { ReportTransactionEditHost } from "@/components/ReportTransactionEditHost";
+import { ReportSelector } from "@/components/ReportSelector";
+import type { ReportItem } from "@/components/ReportSelector";
+import { StockHoldingReport } from "@/components/StockHoldingReport";
 import { buildAccountDisplayOption, buildGroupedAccountOptions, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { kindLabel } from "@/lib/account-kinds";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
@@ -24,8 +27,9 @@ import {
   type IncomeExpenseReportRow,
 } from "@/lib/server/income-expense-report";
 import { loadInvestmentProfitReport, type InvestmentProfitPeriod } from "@/lib/server/investment-profit-report";
+import { loadCommonData, loadCachedStockHoldingReport } from "@/lib/server/cached-data";
+import { stockMarketLabel } from "@/lib/stock/market";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { readableTagWhere } from "@/lib/server/tag-scope";
 import { loadReportDetailEntries } from "@/lib/server/report-detail-entries";
 
 export const dynamic = "force-dynamic";
@@ -83,26 +87,22 @@ function rowCsv(section: "收入" | "支出", row: IncomeExpenseReportRow) {
   ];
 }
 
-function reportTabs(currentType: "income-expense" | "investment-profit", investmentHref: string) {
-  const itemClass = (active: boolean) =>
-    `inline-flex h-7 items-center rounded-full px-3 text-xs font-medium transition ${
-      active ? "bg-slate-900 text-white shadow-sm" : "text-slate-600 hover:bg-white"
-    }`;
+type ReportType = "income-expense" | "investment-profit" | "stock-holdings";
 
-  return (
-    <div className="inline-flex rounded-full border border-slate-200 bg-slate-50 p-0.5">
-      <Link href="/reports" scroll={false} className={itemClass(currentType === "income-expense")}>
-        收支统计表
-      </Link>
-      <Link href={investmentHref} scroll={false} className={itemClass(currentType === "investment-profit")}>
-        投资收益表
-      </Link>
-    </div>
-  );
+function reportMenuItems(
+  currentType: ReportType,
+  investmentHref: string,
+  stockHref: string,
+): ReportItem[] {
+  return [
+    { value: "income-expense", label: "收支统计表", href: "/reports" },
+    { value: "investment-profit", label: "投资收益表", href: investmentHref },
+    { value: "stock-holdings", label: "股票持仓盈亏", href: stockHref },
+  ];
 }
 
 function buildReportHref(
-  reportType: "income-expense" | "investment-profit",
+  reportType: ReportType,
   profitPeriod?: InvestmentProfitPeriod,
   profitYear?: number,
   profitMonth?: number,
@@ -114,6 +114,11 @@ function buildReportHref(
     query.set("profitPeriod", profitPeriod ?? "day");
     if (profitYear) query.set("profitYear", String(profitYear));
     if (profitMonth) query.set("profitMonth", String(profitMonth));
+    const normalizedScope = normalizeProfitScope(profitScope);
+    if (normalizedScope !== PROFIT_SCOPE_ALL) query.set("profitScope", normalizedScope);
+  }
+  if (reportType === "stock-holdings") {
+    query.set("report", reportType);
     const normalizedScope = normalizeProfitScope(profitScope);
     if (normalizedScope !== PROFIT_SCOPE_ALL) query.set("profitScope", normalizedScope);
   }
@@ -160,7 +165,10 @@ export default async function ReportsPage({
 }) {
   const params = await searchParams;
   const now = new Date();
-  const reportType = params.report === "investment-profit" ? "investment-profit" : "income-expense";
+  const reportType: ReportType =
+    params.report === "investment-profit" || params.report === "stock-holdings"
+      ? params.report
+      : "income-expense";
   const profitPeriod: InvestmentProfitPeriod =
     params.profitPeriod === "month" || params.profitPeriod === "year" ? params.profitPeriod : "day";
   const defaultStart = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
@@ -218,19 +226,10 @@ export default async function ReportsPage({
   );
   const rawProfitScope = normalizeProfitScope(typeof params.profitScope === "string" ? params.profitScope : undefined);
 
-  const allAccountRecords = await prisma.account.findMany({
-    where: {
-      ...ctx.hidFilter,
-      isActive: true,
-      isPlaceholder: { not: true },
-      name: { not: "未指定账户" },
-    },
-    include: {
-      AccountGroup: true,
-      Institution: true,
-    },
-    orderBy: [{ name: "asc" }],
-  });
+  const commonData = await loadCommonData(ctx.hidFilter);
+  const allAccountRecords = commonData.accounts.filter((account) =>
+    account.isActive && account.isPlaceholder !== true && account.name !== "未指定账户",
+  );
   const accountRecords = allAccountRecords.filter((account) => !isPureInvestmentAccount(account));
   const allAccountDisplayOptions = allAccountRecords.map((account) =>
     buildAccountDisplayOption({
@@ -262,6 +261,7 @@ export default async function ReportsPage({
   const cashAccounts = accounts.filter((account) => ["cash", "bank_debit", "ewallet"].includes(account.kind));
   const cashAccountIds = new Set(cashAccounts.map((account) => account.id));
   const investmentAccountRecords = allAccountRecords.filter(isPureInvestmentAccount);
+  const stockAccountRecords = investmentAccountRecords.filter((account) => account.investProductType === "stock");
   const investmentAccounts = investmentAccountRecords.map((account) => ({
     id: account.id,
     label: allAccountDisplayById.get(account.id)?.label ?? account.name,
@@ -334,6 +334,13 @@ export default async function ReportsPage({
     profitMonth,
     selectedProfitScope,
   );
+  const currentStockHref = buildReportHref(
+    "stock-holdings",
+    undefined,
+    undefined,
+    undefined,
+    selectedProfitScope,
+  );
   const allInvestmentScopeOption: InvestmentProfitScopeOption = {
     value: PROFIT_SCOPE_ALL,
     label: "全部投资账户",
@@ -394,7 +401,10 @@ export default async function ReportsPage({
           <div className="flex h-12 items-center justify-between px-4">
             <div className="text-sm page-title">报表</div>
             <div className="flex items-center gap-2">
-              {reportTabs("investment-profit", currentInvestmentHref)}
+              <ReportSelector
+                currentType="investment-profit"
+                items={reportMenuItems("investment-profit", currentInvestmentHref, currentStockHref)}
+              />
             </div>
           </div>
         </header>
@@ -463,33 +473,165 @@ export default async function ReportsPage({
     );
   }
 
-  const [editCategories, editTags, editGroups, editInstitutions, editCounterparties] = await Promise.all([
-    prisma.category.findMany({
-      where: { ...ctx.hidFilter, type: { in: ["income", "expense"] } },
-      select: { id: true, name: true, type: true, parentId: true },
-      orderBy: [{ type: "asc" }, { name: "asc" }],
-    }),
-    prisma.tag.findMany({
-      where: readableTagWhere(ctx.householdId),
-      select: { id: true, name: true, color: true },
-      orderBy: { name: "asc" },
-    }),
-    prisma.accountGroup.findMany({
-      where: ctx.hidFilter,
-      select: { id: true, name: true },
-      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
-    }),
-    prisma.institution.findMany({
-      where: ctx.hidFilter,
-      select: { id: true, name: true, type: true },
-      orderBy: { name: "asc" },
-    }),
-    prisma.counterparty.findMany({
-      where: ctx.hidFilter,
-      select: { id: true, name: true, shortName: true, type: true },
-      orderBy: [{ type: "asc" }, { name: "asc" }],
-    }),
-  ]);
+  if (reportType === "stock-holdings") {
+    const stockAccountIds = new Set(stockAccountRecords.map((account) => account.id));
+    const institutionScopeByStockValue = new Map<string, {
+      value: string;
+      label: string;
+      ids: string[];
+      sortLabel: string;
+      title: string;
+    }>();
+    for (const account of stockAccountRecords) {
+      const value = investmentInstitutionScope(account.institutionId);
+      const institutionName =
+        account.Institution?.shortName?.trim()
+        || account.Institution?.name?.trim()
+        || "未设机构";
+      const existing = institutionScopeByStockValue.get(value) ?? {
+        value,
+        label: `按机构：${institutionName}`,
+        ids: [],
+        sortLabel: institutionName,
+        title: "",
+      };
+      existing.ids.push(account.id);
+      institutionScopeByStockValue.set(value, existing);
+    }
+    const stockInstitutionScopeRows = Array.from(institutionScopeByStockValue.values())
+      .map((option) => ({
+        ...option,
+        title: `${option.label} · ${option.ids.length}个账户`,
+      }))
+      .sort((a, b) => a.sortLabel.localeCompare(b.sortLabel, "zh-Hans-CN"));
+    const validStockScopes = new Set<string>([
+      PROFIT_SCOPE_ALL,
+      ...stockInstitutionScopeRows.map((option) => option.value),
+      ...stockAccountRecords.map((account) => investmentAccountScope(account.id)),
+    ]);
+    const selectedStockScope = validStockScopes.has(rawProfitScope) ? rawProfitScope : PROFIT_SCOPE_ALL;
+    const stockAccountIdsForReport = (() => {
+      if (selectedStockScope.startsWith("account:")) {
+        const accountId = selectedStockScope.slice("account:".length);
+        return stockAccountIds.has(accountId) ? [accountId] : undefined;
+      }
+      if (selectedStockScope.startsWith("institution:")) {
+        return institutionScopeByStockValue.get(selectedStockScope)?.ids;
+      }
+      return undefined;
+    })();
+    const stockReport = await loadCachedStockHoldingReport(
+      JSON.stringify(ctx.hidFilter),
+      JSON.stringify(stockAccountIdsForReport ?? []),
+    );
+    const allStockScopeOption: InvestmentProfitScopeOption = {
+      value: PROFIT_SCOPE_ALL,
+      label: "全部股票账户",
+      href: buildReportHref("stock-holdings", undefined, undefined, undefined, PROFIT_SCOPE_ALL),
+    };
+    const stockInstitutionScopeOptions: InvestmentProfitScopeOption[] = stockInstitutionScopeRows.map((option) => ({
+      value: option.value,
+      label: option.label,
+      href: buildReportHref("stock-holdings", undefined, undefined, undefined, option.value),
+      title: option.title,
+    }));
+    const stockAccountScopeOptions: InvestmentProfitScopeOption[] = stockAccountRecords
+      .map((account) => {
+        const display = allAccountDisplayById.get(account.id);
+        const label = [display?.groupName, display?.label ?? account.name].filter(Boolean).join(" / ");
+        return {
+          value: investmentAccountScope(account.id),
+          label: `按账户：${label}`,
+          href: buildReportHref("stock-holdings", undefined, undefined, undefined, investmentAccountScope(account.id)),
+          title: display?.hoverTitle,
+        };
+      })
+      .sort((a, b) => a.label.localeCompare(b.label, "zh-Hans-CN"));
+    const stockExportHref = buildCsvDataUri([
+      ["市场", "代码", "名称", "账户", "数量", "成本价", "成本", "收盘价", "市值", "浮动盈亏", "浮盈率", "已实现收益", "综合盈亏"],
+      ...stockReport.rows.map((row) => [
+        stockMarketLabel(row.market),
+        row.stockCode,
+        row.stockName,
+        row.accountName,
+        String(row.quantity),
+        row.avgCost.toFixed(4),
+        row.cost.toFixed(2),
+        row.latestPrice == null ? "" : row.latestPrice.toFixed(4),
+        row.marketValue.toFixed(2),
+        row.floatingPnL.toFixed(2),
+        (row.floatingPnLRate * 100).toFixed(2),
+        row.historicalProfit.toFixed(2),
+        row.totalProfit.toFixed(2),
+      ]),
+      [
+        "合计",
+        "",
+        "",
+        "",
+        String(stockReport.totals.quantity),
+        "",
+        stockReport.totals.cost.toFixed(2),
+        "",
+        stockReport.totals.marketValue.toFixed(2),
+        stockReport.totals.floatingPnL.toFixed(2),
+        (stockReport.totals.floatingPnLRate * 100).toFixed(2),
+        stockReport.totals.historicalProfit.toFixed(2),
+        stockReport.totals.totalProfit.toFixed(2),
+      ],
+    ]);
+
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <header className="page-header">
+          <div className="flex h-12 items-center justify-between px-4">
+            <div className="text-sm page-title">股票持仓盈亏</div>
+            <div className="flex items-center gap-2">
+              <ReportSelector
+                currentType="stock-holdings"
+                items={reportMenuItems("stock-holdings", currentInvestmentHref, currentStockHref)}
+              />
+            </div>
+          </div>
+        </header>
+
+        <div className="min-h-0 flex-1 overflow-hidden p-4 md:p-5">
+          <div className="flex h-full min-h-0 flex-col gap-3">
+            <div className="flex min-h-10 shrink-0 flex-wrap items-center gap-3 border-b border-slate-200 bg-white px-1 pb-2">
+              <InvestmentProfitScopeSelect
+                selectedScope={selectedStockScope}
+                allOption={allStockScopeOption}
+                institutionOptions={stockInstitutionScopeOptions}
+                accountOptions={stockAccountScopeOptions}
+              />
+              <a
+                href={stockExportHref}
+                download="股票持仓盈亏.csv"
+                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-700"
+                title="导出当前股票持仓盈亏 CSV"
+              >
+                <Download className="h-3.5 w-3.5" />
+                导出
+              </a>
+            </div>
+            <StockHoldingReport
+              rows={stockReport.rows}
+              totals={stockReport.totals}
+              isRedUp={colorScheme === "red_up_green_down"}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const editCategories = commonData.categories.filter((category) =>
+    category.type === "income" || category.type === "expense",
+  );
+  const editTags = commonData.tags;
+  const editGroups = commonData.groups;
+  const editInstitutions = commonData.institutions;
+  const editCounterparties = commonData.counterparties;
   const expenseCategories = editCategories
     .filter((category) => category.type === "expense")
     .map((category) => ({ id: category.id, label: category.name, parentId: category.parentId, type: category.type }));
@@ -580,7 +722,14 @@ export default async function ReportsPage({
         <div className="flex h-12 items-center justify-between px-4">
           <div className="text-sm page-title">报表</div>
           <div className="flex items-center gap-2">
-            {reportTabs("income-expense", buildReportHref("investment-profit", "day", currentYear, currentMonth))}
+            <ReportSelector
+              currentType="income-expense"
+              items={reportMenuItems(
+                "income-expense",
+                buildReportHref("investment-profit", "day", currentYear, currentMonth),
+                buildReportHref("stock-holdings"),
+              )}
+            />
           </div>
         </div>
       </header>

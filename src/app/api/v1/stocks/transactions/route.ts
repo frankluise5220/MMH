@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { StockTransactionAction } from "@prisma/client";
-
 import { normalizeCurrency } from "@/lib/currency";
 import { formatDateUtc, toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
@@ -10,7 +9,7 @@ import { ensureBrokerageCashAccountForStockAccount } from "@/lib/server/brokerag
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { ensureStockTransactionCashFlow } from "@/lib/stock/cashFlow";
-import { calculateStockTransactionFeesByDate, upsertStockMarketFeeDefaultRules } from "@/lib/stock/feeRule";
+import { calculateStockTransactionFeesByDate } from "@/lib/stock/feeRule";
 import { recalcStockPositions } from "@/lib/stock/recalcPosition";
 import { inferStockMarketFromCode, normalizeStockCode, normalizeStockMarket, resolveOrCreateStockSecurity } from "@/lib/stock/securities";
 
@@ -21,7 +20,7 @@ const STOCK_ACTIONS = new Set(Object.values(StockTransactionAction));
 function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Api-Key",
   } as const;
 }
@@ -324,7 +323,6 @@ export async function POST(req: NextRequest) {
 
     const fees = (action === StockTransactionAction.buy || action === StockTransactionAction.sell)
       ? await (async () => {
-          await upsertStockMarketFeeDefaultRules();
           return calculateStockTransactionFeesByDate({
             accountId: stockAccountId,
             tradeDate,
@@ -420,6 +418,206 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     return NextResponse.json(
       { ok: false, error: error instanceof Error ? error.message : "创建失败" },
+      { status: 500, headers: corsHeaders() },
+    );
+  }
+}
+
+/**
+ * PATCH /api/v1/stocks/transactions
+ * Updates an existing stock transaction, syncs the linked cash-side TxRecord
+ * and EntryBusinessLink, then recalculates stock holdings and balances.
+ *
+ * Query:
+ * - id: stock transaction id
+ *
+ * Body: same fields as POST; omitted fields keep their existing values.
+ * stockAccountId / securityId / cashAccountId may be changed; the old cash flow
+ * is replaced when the action or amounts change.
+ *
+ * Response:
+ * - { ok: true, data: { transaction, linkId, cashEntryId } }
+ */
+export async function PATCH(req: NextRequest) {
+  try {
+    const { householdId } = await getApiHouseholdScope(req);
+    const id = req.nextUrl.searchParams.get("id")?.trim() || "";
+    if (!id) return NextResponse.json({ ok: false, error: "缺少交易 id" }, { status: 400, headers: corsHeaders() });
+
+    const existing = await prisma.stockTransaction.findFirst({
+      where: { id, householdId, deletedAt: null },
+      include: {
+        StockAccount: { select: { id: true, name: true, currency: true, institutionId: true } },
+        CashAccount: { select: { id: true, name: true, currency: true } },
+        EntryBusinessLink: { where: { deletedAt: null }, select: { id: true, cashEntryId: true } },
+      },
+    });
+    if (!existing) return NextResponse.json({ ok: false, error: "股票交易不存在" }, { status: 404, headers: corsHeaders() });
+
+    const body = await req.json().catch(() => null) as Record<string, unknown> | null;
+    if (!body) return NextResponse.json({ ok: false, error: "请求体无效" }, { status: 400, headers: corsHeaders() });
+
+    const stockAccountId = String(body.stockAccountId ?? body.accountId ?? existing.stockAccountId).trim();
+    const stockAccount = await assertStockAccount(stockAccountId, householdId);
+    const action = normalizeStockAction(body.action ?? existing.action);
+    const cashAccountIdRaw = String(body.cashAccountId ?? existing.cashAccountId ?? "").trim();
+    const cashAccount = await findCashAccount(cashAccountIdRaw || null, householdId, stockAccountId);
+    const tradeDate = parseDateOnly(body.tradeDate ?? formatDateUtc(existing.tradeDate));
+    const settleDateRaw = body.settleDate !== undefined
+      ? body.settleDate
+      : existing.settleDate ? formatDateUtc(existing.settleDate) : null;
+    const settleDate = parseDateOnly(settleDateRaw);
+    if (!tradeDate) return NextResponse.json({ ok: false, error: "交易日期无效" }, { status: 400, headers: corsHeaders() });
+
+    const readNumber = (key: string): number | null => {
+      if (body[key] === undefined) {
+        const existingValue = existing[key as keyof typeof existing] as unknown;
+        return existingValue == null ? null : toNumber(existingValue);
+      }
+      return parseOptionalNonNegativeNumber(body[key]);
+    };
+    const quantity = readNumber("quantity");
+    const price = readNumber("price");
+    const grossAmountInput = readNumber("grossAmount");
+    const grossFromQuantity = quantity != null && price != null ? quantity * price : 0;
+    const grossAmount = grossAmountInput ?? grossFromQuantity;
+    const netAmount = readNumber("netAmount");
+    const fee = readNumber("fee");
+    const commission = readNumber("commission");
+    const stampTax = readNumber("stampTax");
+    const transferFee = readNumber("transferFee");
+    const exchangeFee = readNumber("exchangeFee");
+    const regulatoryFee = readNumber("regulatoryFee");
+    const otherFee = readNumber("otherFee");
+
+    if ((action === StockTransactionAction.buy || action === StockTransactionAction.sell) && (!quantity || grossAmount <= 0)) {
+      return NextResponse.json({ ok: false, error: "买卖股票需要填写数量和成交金额" }, { status: 400, headers: corsHeaders() });
+    }
+    if ((action === StockTransactionAction.dividend || action === StockTransactionAction.fee_adjustment || action === StockTransactionAction.tax_adjustment) && grossAmount <= 0) {
+      return NextResponse.json({ ok: false, error: "该股票交易需要填写金额" }, { status: 400, headers: corsHeaders() });
+    }
+    if ((action === StockTransactionAction.bonus_share || action === StockTransactionAction.split_share || action === StockTransactionAction.merge_share) && !quantity) {
+      return NextResponse.json({ ok: false, error: "该股票交易需要填写数量" }, { status: 400, headers: corsHeaders() });
+    }
+    if ((action === StockTransactionAction.buy || action === StockTransactionAction.sell || action === StockTransactionAction.dividend || action === StockTransactionAction.fee_adjustment || action === StockTransactionAction.tax_adjustment) && !cashAccount) {
+      return NextResponse.json({ ok: false, error: "股票账户缺少证券机构，无法确定证券资金账户" }, { status: 400, headers: corsHeaders() });
+    }
+
+    const rawCode = normalizeStockCode(String(body.stockCode ?? existing.stockCode).trim());
+    if (!rawCode) return NextResponse.json({ ok: false, error: "缺少股票代码" }, { status: 400, headers: corsHeaders() });
+    const security = body.securityId || rawCode !== existing.stockCode
+      ? await resolveOrCreateStockSecurity(prisma, {
+          householdId,
+          market: body.market ? normalizeStockMarket(body.market) : inferStockMarketFromCode(rawCode),
+          stockCode: rawCode,
+          stockName: String(body.stockName ?? "").trim() || undefined,
+          currency: normalizeCurrency(body.currency ?? stockAccount.currency),
+          exchange: String(body.exchange ?? "").trim() || null,
+        })
+      : existing.securityId
+        ? await prisma.stockSecurity.findFirst({ where: { id: existing.securityId, householdId, isActive: true } })
+        : null;
+    if (!security) return NextResponse.json({ ok: false, error: "股票标的不存在" }, { status: 400, headers: corsHeaders() });
+
+    const fees = (action === StockTransactionAction.buy || action === StockTransactionAction.sell)
+      ? await (async () => {
+          return calculateStockTransactionFeesByDate({
+            accountId: stockAccountId,
+            tradeDate,
+            grossAmount,
+            direction: action,
+            securityId: security.id,
+            market: security.market,
+            stockCode: security.stockCode,
+            overrides: { fee, commission, stampTax, transferFee, exchangeFee, regulatoryFee, otherFee },
+          });
+        })()
+      : { fee, commission, stampTax, transferFee, exchangeFee, regulatoryFee, otherFee };
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const row = await tx.stockTransaction.update({
+        where: { id },
+        data: {
+          stockAccountId,
+          cashAccountId: cashAccount?.id ?? null,
+          securityId: security.id,
+          market: security.market,
+          stockCode: security.stockCode,
+          stockName: String(body.stockName ?? existing.stockName ?? "").trim() || security.stockName,
+          action,
+          source: String(body.source ?? existing.source ?? "manual").trim() || "manual",
+          tradeDate,
+          settleDate,
+          grossAmount: String(grossAmount),
+          netAmount: decimalString(netAmount),
+          quantity: decimalString(quantity),
+          price: decimalString(price),
+          fee: decimalString(fees.fee),
+          commission: decimalString(fees.commission),
+          stampTax: decimalString(fees.stampTax),
+          transferFee: decimalString(fees.transferFee),
+          exchangeFee: decimalString(fees.exchangeFee),
+          regulatoryFee: decimalString(fees.regulatoryFee),
+          otherFee: decimalString(fees.otherFee),
+          externalLinkId: String(body.externalLinkId ?? existing.externalLinkId ?? "").trim() || null,
+          brokerTradeId: String(body.brokerTradeId ?? existing.brokerTradeId ?? "").trim() || null,
+          note: String(body.note ?? existing.note ?? "").trim() || null,
+        },
+      });
+
+      const link = await ensureStockTransactionCashFlow(tx, {
+        householdId,
+        row,
+        stockAccount,
+        cashAccount,
+        metadata: { createdBy: "stocks-transactions-api", updatedBy: "stocks-transactions-patch" },
+      });
+
+      // 若新动作不再产生现金流水，但旧记录还挂着现金流水，软删旧流水与旧 link
+      if (!link.cashEntryId && existing.cashEntryId) {
+        await tx.txRecord.updateMany({
+          where: { id: existing.cashEntryId, householdId },
+          data: { deletedAt: new Date() },
+        });
+        await tx.entryBusinessLink.updateMany({
+          where: { householdId, deletedAt: null, OR: [{ stockTransactionId: id }, { cashEntryId: existing.cashEntryId }] },
+          data: { deletedAt: new Date() },
+        });
+        await tx.stockTransaction.update({ where: { id }, data: { cashEntryId: null } });
+      }
+
+      return { id: row.id, link, oldCashEntryId: existing.cashEntryId ?? null };
+    });
+
+    const recalcIds = new Set<string>([stockAccountId, existing.stockAccountId, cashAccount?.id ?? "", existing.cashAccountId ?? ""]);
+    await recalcStockPositions(stockAccountId, security.id ? [security.id] : undefined);
+    for (const accountId of recalcIds) {
+      if (accountId) await recalcAndSaveAccountBalance(accountId).catch(() => undefined);
+    }
+    await invalidateCreditCardCycleCacheForAccountIds(recalcIds).catch(() => undefined);
+    revalidateAfterInvestChange();
+
+    const row = await prisma.stockTransaction.findUnique({
+      where: { id: updated.id },
+      include: {
+        StockAccount: { select: { name: true, currency: true } },
+        CashAccount: { select: { name: true, currency: true } },
+        EntryBusinessLink: { where: { deletedAt: null }, select: { id: true, cashEntryId: true } },
+      },
+    });
+
+    return NextResponse.json({
+      ok: true,
+      data: {
+        transaction: row ? serializeStockTransaction(row) : null,
+        linkId: updated.link.linkId,
+        cashEntryId: updated.link.cashEntryId,
+        oldCashEntryId: updated.oldCashEntryId,
+      },
+    }, { headers: corsHeaders() });
+  } catch (error) {
+    return NextResponse.json(
+      { ok: false, error: error instanceof Error ? error.message : "更新失败" },
       { status: 500, headers: corsHeaders() },
     );
   }

@@ -150,6 +150,15 @@ _*.txt
 _*.html
 _*.json
 *.new
+_tmp_*
+
+# local tool caches
+.npm-cache-tmp/
+.pnpm-local/
+
+# FN 软仓自建源（运维部署文件保留在 VPS/本地，不进公开仓库）
+deploy/fnos/selfhosted-source/
+docs/fnos-selfhosted-source.md
 
 # local test artifacts
 public/test-results.json

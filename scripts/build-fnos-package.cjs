@@ -556,18 +556,6 @@ write(path.join(stageDir, "wizard", "install"), JSON.stringify([
     ],
   },
   {
-    stepTitle: "系统密码",
-    items: [
-      {
-        type: "password",
-        field: "wizard_system_password",
-        label: "系统密码",
-        initValue: "",
-        helpText: "用于系统初始化、删除账簿等敏感操作。不填写会在首次启动时自动生成，并保存到应用数据目录 mmh-system-password.txt。",
-      },
-    ],
-  },
-  {
     stepTitle: "数据目录",
     items: [
       {
@@ -588,18 +576,6 @@ write(path.join(stageDir, "wizard", "config"), JSON.stringify([
         label: "服务端口",
         initValue: "7777",
         helpText: "默认使用 7777；如果该端口已被占用，可以改为其他未占用端口。",
-      },
-    ],
-  },
-  {
-    stepTitle: "系统密码",
-    items: [
-      {
-        type: "password",
-        field: "wizard_system_password",
-        label: "系统密码",
-        initValue: "",
-        helpText: "用于系统初始化、删除账簿等敏感操作。留空则沿用当前密码；如果尚未生成过，启动时会自动生成。",
       },
     ],
   },
@@ -790,10 +766,6 @@ resolve_system_password() {
     pkgvar="$(resolve_pkgvar)"
     password_file="\${pkgvar}/mmh-system-password.txt"
 
-    if [ -n "\${wizard_system_password:-}" ]; then
-        printf '%s' "\${wizard_system_password}"
-        return 0
-    fi
     env_password="$(read_env_value MMH_SYSTEM_PASSWORD 2>/dev/null || true)"
     if [ -n "$env_password" ]; then
         printf '%s' "$env_password"
@@ -1219,6 +1191,13 @@ const MIGRATIONS = [
       migrateLegacyStatementCategoryRules(db);
     },
   },
+  {
+    version: "20260814_fix_property_cash_entry_fk",
+    description: "Point property_transactions.cashEntryId at transactions instead of TxRecord",
+    apply(db) {
+      rebuildPropertyTransactionsCashEntryFk(db);
+    },
+  },
 ];
 
 function databasePathFromUrl(value) {
@@ -1610,6 +1589,50 @@ function migrateLegacyStatementCategoryRules(db) {
     db.exec("DROP TABLE IF EXISTS \\"statement_category_rules\\"");
   }
   cleanupStatementRecognitionRuleKeywords(db);
+}
+
+function rebuildPropertyTransactionsCashEntryFk(db) {
+  if (!tableExists(db, "property_transactions")) return;
+  const sqlRow = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'property_transactions'").get();
+  const sql = String(sqlRow && sqlRow.sql ? sqlRow.sql : "");
+  if (!/REFERENCES\\s+"TxRecord"\\s*\\(\\s*"id"\\s*\\)/i.test(sql)) return;
+  const columns = db.prepare("PRAGMA table_info(\\"property_transactions\\")").all().map((column) => column.name);
+  if (!columns.length) return;
+  const quotedColumns = columns.map((column) => quoteIdent(column)).join(", ");
+  db.exec("DROP TABLE IF EXISTS \\"property_transactions__txrecord_fk_fix\\"");
+  db.exec("ALTER TABLE \\"property_transactions\\" RENAME TO \\"property_transactions__txrecord_fk_fix\\"");
+  db.exec(\`CREATE TABLE "property_transactions" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "householdId" TEXT NOT NULL,
+    "accountId" TEXT NOT NULL,
+    "cashAccountId" TEXT,
+    "cashEntryId" TEXT,
+    "propertyAssetId" TEXT NOT NULL,
+    "action" TEXT NOT NULL DEFAULT 'purchase',
+    "source" TEXT DEFAULT 'manual',
+    "tradeDate" DATETIME NOT NULL,
+    "settlementDate" DATETIME,
+    "amount" DECIMAL NOT NULL,
+    "fee" DECIMAL,
+    "tax" DECIMAL,
+    "realizedProfit" DECIMAL,
+    "note" TEXT,
+    "deletedAt" DATETIME,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "property_transactions_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "property_transactions_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "property_transactions_cashAccountId_fkey" FOREIGN KEY ("cashAccountId") REFERENCES "Account"("id") ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT "property_transactions_propertyAssetId_fkey" FOREIGN KEY ("propertyAssetId") REFERENCES "property_assets"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "property_transactions_cashEntryId_fkey" FOREIGN KEY ("cashEntryId") REFERENCES "transactions"("id") ON DELETE SET NULL ON UPDATE CASCADE
+  )\`);
+  db.exec("INSERT INTO \\"property_transactions\\" (" + quotedColumns + ") SELECT " + quotedColumns + " FROM \\"property_transactions__txrecord_fk_fix\\"");
+  db.exec("DROP TABLE \\"property_transactions__txrecord_fk_fix\\"");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS \\"property_transactions_cashEntryId_key\\" ON \\"property_transactions\\"(\\"cashEntryId\\") WHERE \\"cashEntryId\\" IS NOT NULL");
+  db.exec("CREATE INDEX IF NOT EXISTS \\"property_transactions_householdId_accountId_tradeDate_idx\\" ON \\"property_transactions\\"(\\"householdId\\", \\"accountId\\", \\"tradeDate\\")");
+  db.exec("CREATE INDEX IF NOT EXISTS \\"property_transactions_cashAccountId_tradeDate_idx\\" ON \\"property_transactions\\"(\\"cashAccountId\\", \\"tradeDate\\")");
+  db.exec("CREATE INDEX IF NOT EXISTS \\"property_transactions_propertyAssetId_tradeDate_idx\\" ON \\"property_transactions\\"(\\"propertyAssetId\\", \\"tradeDate\\")");
+  db.exec("CREATE INDEX IF NOT EXISTS \\"property_transactions_deletedAt_idx\\" ON \\"property_transactions\\"(\\"deletedAt\\")");
 }
 
 function cleanupStatementRecognitionRuleKeywords(db) {

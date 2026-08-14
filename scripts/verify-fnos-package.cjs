@@ -236,6 +236,7 @@ expect(/stock_transactions/.test(buildScript) && /entry_business_links_stockTran
 expect(/20260812_stock_reference_tables/.test(buildScript) && /createStockReferenceTables\(db\)/.test(buildScript), "fnOS SQLite migrations must create stock reference tables for existing databases.");
 expect(/stock_market_fee_rules/.test(buildScript) && /stock_brokerage_catalog/.test(buildScript), "fnOS SQLite migrations must include stock market fee rules and brokerage catalog tables.");
 expect(/20260813_zz_unify_statement_learning_rules/.test(buildScript), "fnOS SQLite statement-rule migration version must match the finalized Prisma migration directory.");
+expect(/20260814_fix_property_cash_entry_fk/.test(buildScript) && /rebuildPropertyTransactionsCashEntryFk/.test(buildScript), "fnOS SQLite migrations must rebuild property_transactions when cashEntryId still references TxRecord.");
 expect(/applyRuntimeMigrations\(db\)/.test(buildScript), "fnOS SQLite init must run runtime migrations for both fresh and existing databases.");
 expect(nativeSchemaBackfillCalls.length >= 2, "fnOS SQLite init must backfill missing native-init.sql schema objects for both fresh and existing databases.");
 expect(/applyRuntimeMigrations\(db\);\n\s+applyMissingSchemaObjectsFromInitSql\(db, sqlPath\);/.test(buildScript), "fnOS SQLite init must run schema-object backfill after explicit runtime migrations.");
@@ -260,12 +261,12 @@ expect(/assetSuffix/.test(buildScript), "fnOS package outputs must include archi
 expect(/fnos-v\$\{version\}-\$\{target\.assetSuffix\}/.test(buildScript), "fnOS release asset names must include fnOS, package version, and architecture.");
 expect(!/`\$\{appName\}-\$\{target\.assetSuffix\}\.fpk`/.test(buildScript), "fnOS release must not publish unversioned architecture-only .fpk aliases.");
 expect(!/legacyAlias/.test(buildScript), "fnOS release must not publish a third legacy mmh.fpk alias.");
-expect(/wizard_system_password/.test(buildScript), "fnOS install/config wizard must include a system password field.");
+expect(!/wizard_system_password/.test(buildScript), "fnOS install/config wizard must not ask for a separate system password.");
 expect(/MMH_SYSTEM_PASSWORD/.test(buildScript), "fnOS start script must export MMH_SYSTEM_PASSWORD.");
 expect(/mmh-system-password\.txt/.test(buildScript), "fnOS start script must persist generated system passwords in app data.");
 expect(/install_callback/.test(buildScript) && /write_env_file/.test(buildScript), "fnOS lifecycle callbacks must persist wizard settings.");
-expect(/MMH_SYSTEM_PASSWORD/.test(authVerifyRoute), "System password verification must support MMH_SYSTEM_PASSWORD for SQLite/fnOS.");
-expect(/POSTGRES_PASSWORD/.test(authVerifyRoute), "System password verification must remain compatible with Docker/PostgreSQL passwords.");
+expect(/verifyAdminPassword/.test(authVerifyRoute) && /getCurrentUser/.test(authVerifyRoute) && /isAdmin/.test(authVerifyRoute), "Sensitive operation verification must require the current admin user's password.");
+expect(!/process\.env\.(POSTGRES_PASSWORD|MMH_SYSTEM_PASSWORD)/.test(authVerifyRoute), "Sensitive operation verification must not rely on deployment database passwords.");
 expect(/FNOS_MANUAL_FPK/.test(buildScript), "fnOS package build should keep an explicit manual test FPK mode.");
 expect(/schema\.native\.prisma/.test(appBuildScript), "fnOS app build must generate and build against the SQLite schema.");
 expect(/MMH_DEPLOY_TARGET/.test(systemUpdateRoute), "System update API must detect fnOS by MMH_DEPLOY_TARGET.");

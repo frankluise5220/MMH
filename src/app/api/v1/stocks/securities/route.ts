@@ -70,7 +70,9 @@ export async function GET(req: NextRequest) {
       let security = await prisma.stockSecurity.findFirst({
         where: { householdId, isActive: true, market, stockCode },
       });
-      if (lookup && !usableStockName(security?.stockName, stockCode)) {
+      // 默认只查本地：StockSecurity 未命中时再从 StockHolding / StockTransaction 找已保存的名称，
+      // 不触发外部股票查询 API。只有 lookup=1 才在本地全部未命中时查外部并缓存。
+      if (!usableStockName(security?.stockName, stockCode)) {
         const localStockName = await findLocalStockName(householdId, market, stockCode);
         if (localStockName) {
           security = await resolveOrCreateStockSecurity(prisma, {

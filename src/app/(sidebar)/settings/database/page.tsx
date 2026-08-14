@@ -964,7 +964,7 @@ export default function DatabaseSettingsPage() {
 
   async function handleFactoryReset() {
     if (!resetDbPassword.trim()) {
-      setResetError("请输入数据库密码");
+      setResetError("请输入管理员密码");
       return;
     }
     setResetting(true);
@@ -977,7 +977,7 @@ export default function DatabaseSettingsPage() {
       });
       const verifyData = await verifyRes.json().catch(() => null) as { ok?: boolean; error?: string } | null;
       if (!verifyRes.ok || !verifyData?.ok) {
-        setResetError(verifyData?.error ?? "数据库密码错误");
+        setResetError(verifyData?.error ?? "管理员密码错误");
         return;
       }
 
@@ -1300,10 +1300,10 @@ export default function DatabaseSettingsPage() {
           <div className="w-full max-w-sm rounded-lg border border-red-100 bg-white p-4 shadow-xl">
             <div className="flex items-center gap-2 text-sm font-semibold text-red-800">
               <Shield className="h-4 w-4 shrink-0 text-amber-500" />
-              数据库密码验证
+              管理员密码验证
             </div>
             <div className="mt-1 text-xs text-slate-500">
-              系统初始化会删除所有账簿和业务数据。请输入数据库密码后继续。
+              系统初始化会删除所有账簿和业务数据。请输入管理员密码后继续。
             </div>
             <input
               type="password"
@@ -1315,7 +1315,7 @@ export default function DatabaseSettingsPage() {
               onKeyDown={(event) => {
                 if (event.key === "Enter") void handleFactoryReset();
               }}
-              placeholder="输入数据库密码"
+              placeholder="输入管理员密码"
               autoComplete="off"
               autoFocus
               className="mt-3 h-10 w-full rounded-md border border-red-100 px-3 text-sm text-slate-700 outline-none focus:border-red-400 focus:ring-2 focus:ring-red-50"

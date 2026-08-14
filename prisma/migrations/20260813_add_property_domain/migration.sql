@@ -163,7 +163,7 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'property_transactions_cashEntryId_fkey') THEN
     ALTER TABLE "property_transactions"
       ADD CONSTRAINT "property_transactions_cashEntryId_fkey"
-      FOREIGN KEY ("cashEntryId") REFERENCES "TxRecord"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+      FOREIGN KEY ("cashEntryId") REFERENCES "transactions"("id") ON DELETE SET NULL ON UPDATE CASCADE;
   END IF;
 
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'entry_business_links_propertyTransactionId_fkey') THEN

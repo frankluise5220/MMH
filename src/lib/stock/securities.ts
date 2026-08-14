@@ -41,7 +41,11 @@ export async function resolveOrCreateStockSecurity(
       },
     },
   });
-  const shouldQueryIdentity = !explicitStockName || explicitStockName === stockCode || !existing || existing.stockName === stockCode;
+  // 名称以表内已有数据为准：显式传入的名称、或 StockSecurity 里已保存且不等于代码的名称都算可用，
+  // 只有完全没有任何可用名称（首次购买且没有历史名称）才查外部股票查询 API。
+  const explicitNameUsable = Boolean(explicitStockName && explicitStockName !== stockCode);
+  const storedNameUsable = Boolean(existing?.stockName && existing.stockName !== stockCode);
+  const shouldQueryIdentity = !explicitNameUsable && !storedNameUsable;
   const identity = shouldQueryIdentity ? await queryStockIdentity(market, stockCode) : null;
   const stockName = explicitStockName || identity?.stockName || existing?.stockName || stockCode;
   const currency = explicitCurrency || identity?.currency || existing?.currency || defaultStockCurrencyForMarket(market);

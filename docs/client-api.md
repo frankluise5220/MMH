@@ -103,10 +103,10 @@
 - 非首次创建时，该接口必须校验系统设置中的账簿创建邀请码，不能无门槛开放。
 - 成功后应直接建立新账簿管理员账号并写入登录态，让用户进入新账簿。
 
-系统密码规则：
+敏感操作验证规则：
 
 - `/api/v1/auth/verify` 携带 `verifySystem: true` 时用于系统初始化、删除账簿等敏感操作验证，不建立用户登录态。
-- Docker/PostgreSQL 部署兼容 `MMH_SYSTEM_PASSWORD`、`POSTGRES_PASSWORD` 和 `DATABASE_URL` 中的连接密码；fnOS/SQLite 部署没有数据库连接密码，应使用安装向导写入的 `MMH_SYSTEM_PASSWORD`。
+- 验证要求当前登录用户是管理员，并校验该管理员用户的密码；不再使用部署级“数据库密码/系统密码”（`MMH_SYSTEM_PASSWORD`、`POSTGRES_PASSWORD` 等）。
 - Web 登录优先携带 `userId` 验证具体用户；当多个账簿里都有 `admin` 这类同名用户时，不应只靠用户名定位。
 - `/api/v1/auth/password-status` 的用户列表应返回用户 `id`、`name`、`householdId` 和 `householdName`，客户端用账簿名区分同名用户。
 
@@ -127,6 +127,26 @@
 相关路径示例：
 
 - `/api/v1/overview/summary`
+
+### Reports
+
+范围：
+
+- Web 报表页签使用的统计接口。
+- 股票持仓盈亏报表读取当前 `StockHolding`，不另算一套成本和市值。
+
+相关路径：
+
+- `/api/v1/reports/income-expense/detail`
+- `/api/v1/reports/stock-holdings`
+
+`GET /api/v1/reports/stock-holdings` 返回当前账簿股票账户的持仓盈亏：
+
+- Query: `accountId?` 可选，按单个股票账户过滤。
+- 成功返回 `{ ok: true, data: { rows, totals } }`。
+- `rows` 来自 `StockHolding`：数量、成本、收盘价、市值、浮动盈亏、已实现收益、综合盈亏。
+- `floatingPnL = marketValue - cost`，`totalProfit = floatingPnL + historicalProfit`。
+- 不从 `fundCode`、`FundHolding` 或基金净值推断股票值。
 
 ### Onboarding
 
@@ -535,15 +555,18 @@ Notes:
 
 相关路径：
 
-- `GET /api/v1/stocks/securities?market=&q=` 返回 `{ ok:true, data:{ securities:[{ id, market, stockCode, stockName, currency, exchange }] } }`；`GET /api/v1/stocks/securities?market=CN&code=600519&lookup=1` 先查本地股票主数据，未命中时按股票查询 API 获取名称并缓存，返回 `{ ok:true, data:{ security } }`。`market` 可省略，服务端按股票代码优先推断 A 股、港股或美股，导入和特殊场景仍可显式传入市场。
+- `GET /api/v1/stocks/securities?market=&q=` 返回 `{ ok:true, data:{ securities:[{ id, market, stockCode, stockName, currency, exchange }] } }`；`GET /api/v1/stocks/securities?market=CN&code=600519` 只查本地 `StockSecurity`，未命中时再从该账簿的 `StockHolding` / `StockTransaction` 找已保存的名称，不触发外部股票查询 API。`GET /api/v1/stocks/securities?market=CN&code=600519&lookup=1` 才会在本地全部未命中时按股票查询 API 获取名称并缓存；交易窗口输入股票代码默认走本地查询，只有首次买入保存时由 `POST /api/v1/stocks/transactions` 内部补全名称并缓存。`market` 可省略，服务端按股票代码优先推断 A 股、港股或美股，导入和特殊场景仍可显式传入市场。
 - `POST /api/v1/stocks/securities` 创建或返回股票标的。Body: `{ market?, stockCode, stockName?, currency?, exchange? }`；`market` 省略时按 `stockCode` 推断。
 - `GET /api/v1/stocks/transactions?accountId=&securityId=&market=&stockCode=&limit=` 返回独立股票交易列表。交易项包含 `id`、`linkId`、`cashEntryId`、`stockAccountId`、`cashAccountId`、`securityId`、`market`、`stockCode`、`action`、`tradeDate`、`settleDate`、数量、价格、费用、`realizedProfit`、`externalLinkId` 和 `brokerTradeId`。
-- `POST /api/v1/stocks/transactions` 创建股票交易；动作为 `buy`、`sell`、`dividend`、`fee_adjustment` 或 `tax_adjustment` 时，服务端会在 `cashAccountId` 指向的证券资金账户上创建或更新资金侧 `TxRecord`，未传 `cashAccountId` 时自动使用同券商资金账户，写入 `EntryBusinessLink`，重算 `StockHolding`，并返回 `{ ok:true, data:{ transaction, linkId, cashEntryId } }`。现金流水不生成“资金账户 ↔ 股票账户”的自转账；股票持仓变化只由 `StockTransaction` / `StockHolding` 表达。买卖交易可以省略 `commission`、`stampTax`、`transferFee`、`exchangeFee`、`regulatoryFee` 和 `otherFee`，服务端先按股票账户下当前生效的 `StockFeeRule` 计算；账户规则未命中时再使用 `StockMarketFeeRule` 的市场默认规则。导入或特殊手工路径仍可传入费用字段作为覆盖值。
+- `POST /api/v1/stocks/transactions` 创建股票交易；动作为 `buy`、`sell`、`dividend`、`fee_adjustment` 或 `tax_adjustment` 时，服务端会在 `cashAccountId` 指向的证券资金账户上创建或更新资金侧 `TxRecord`，未传 `cashAccountId` 时自动使用同券商资金账户，写入 `EntryBusinessLink`，重算 `StockHolding`，并返回 `{ ok:true, data:{ transaction, linkId, cashEntryId } }`。现金流水不生成“资金账户 ↔ 股票账户”的自转账；股票持仓变化只由 `StockTransaction` / `StockHolding` 表达。买卖交易可以省略 `commission`、`stampTax`、`transferFee`、`exchangeFee`、`regulatoryFee` 和 `otherFee`，服务端读取账户 `StockFeeRule` / 市场 `StockMarketFeeRule` 表中已保存的费率计算；账户规则未命中时再使用市场默认规则。交易保存本身不会刷新或改写费率表，只有 `GET /api/v1/stocks/fee-rules?estimate=1&refresh=1`（Web 交易窗口的“获取新费率”按钮）才刷新内置公开市场默认费率。
+- `PATCH /api/v1/stocks/transactions?id=...` 更新股票交易。Body 与 POST 相同，省略字段保留原值；动作、账户、日期、数量、价格、金额变更后，服务端同步更新关联资金侧 `TxRecord` 和 `EntryBusinessLink`（动作改为无现金的送转/拆并股时软删旧现金流水与旧 link），重算 `StockHolding` 与账户余额，返回 `{ ok:true, data:{ transaction, linkId, cashEntryId, oldCashEntryId } }`。编辑 Web 明细行通过双击行或行内编辑按钮打开股票交易弹窗，保存走该接口。
+- `POST /api/v1/stocks/transactions/batch-update` 批量修改股票交易的元数据字段（备注、券商成交号），Body: `{ updates: [{ id, note?, brokerTradeId? }] }`，一次事务更新后统一重算受影响账户的持仓与余额，返回 `{ ok:true, data:{ updatedCount, accountIds } }`。数量/价格/金额/日期/动作等会影响资金流水与持仓重建的字段必须走单条 `PATCH`，不能循环调该接口。
 - `DELETE /api/v1/stocks/transactions?id=...` 或 `DELETE /api/v1/stocks/transactions?linkId=...` 软删除股票交易、关联现金流水和业务 link，并重算持仓。
 - `GET /api/v1/stocks/holdings?accountId=&includeZero=1` 返回某个股票账户的 `StockHolding`，包括数量、成本、最新价、市值、浮盈、历史收益和汇总值；传入 `tradeDate=YYYY-MM-DD` 时改为按该交易日回放 `StockTransaction`，只返回截至该日期仍有正数数量的股票，供股票卖出 SS 下拉使用。
+- `GET /api/v1/reports/stock-holdings?accountId=` 返回跨股票账户的持仓盈亏报表；Web 报表页「股票持仓盈亏」使用同一口径。
 - `POST /api/v1/stocks/holdings` 使用 `{ accountId, securityIds? }` 触发股票持仓重算。
 - `POST /api/v1/stocks/prices/refresh` 使用 `{ accountId, securityIds? }` 获取当前股票持仓的最新收盘价，写入 `StockPriceCache` 后重算 `StockHolding`，返回 `{ refreshed, failed, prices, holdings, totalMarketValue, totalCost, floatingPnL }`；股票持仓表头的“获取收盘价”按钮调用该接口。
-- `GET /api/v1/stocks/fee-rules` 查询账户/标的/日期下生效的股票账户覆盖规则；`GET /api/v1/stocks/fee-rules?accountId=...&list=1` 返回该股票账户最近规则列表，供股票持仓表头的“账户费率”设置入口展示。`GET /api/v1/stocks/fee-rules?accountId=...&estimate=1&direction=buy&tradeDate=YYYY-MM-DD&market=CN&stockCode=600519&grossAmount=1040&refresh=1` 返回买卖窗口使用的只读费用预估 `{ fees, totalFee, cashAmount }`；`refresh=1` 会先刷新系统内置的 A 股公开市场默认费率，再按同一规则重算。`POST /api/v1/stocks/fee-rules` 新增佣金、印花税、过户费、经手费、监管费、平台费或其他费用规则，支持 `direction = buy | sell | both`、`rate`、`amount` 和 `minAmount`。账户规则匹配优先级为单一股票/标的、市场+代码、市场（例如 `CN_SH`、`CN_SZ`）和账户通用规则；市场公开默认规则存储在 `StockMarketFeeRule`，证券公司公开名录和别名存储在 `StockBrokerageCatalog`。
+- `GET /api/v1/stocks/fee-rules` 查询账户/标的/日期下生效的股票账户覆盖规则；`GET /api/v1/stocks/fee-rules?accountId=...&list=1` 返回该股票账户最近规则列表，供股票持仓表头的“账户费率”设置入口展示。`GET /api/v1/stocks/fee-rules?accountId=...&estimate=1&direction=buy&tradeDate=YYYY-MM-DD&market=CN&stockCode=600519&grossAmount=1040` 返回买卖窗口使用的只读费用预估 `{ fees, totalFee, cashAmount }`，只读表中已保存的费率计算，不刷新或改写费率表；`refresh=1` 才会先刷新系统内置的 A 股公开市场默认费率，再按同一规则重算（Web 交易窗口“获取新费率”按钮使用）。`POST /api/v1/stocks/fee-rules` 新增佣金、印花税、过户费、经手费、监管费、平台费或其他费用规则，支持 `direction = buy | sell | both`、`rate`、`amount` 和 `minAmount`。账户规则匹配优先级为单一股票/标的、市场+代码、市场（例如 `CN_SH`、`CN_SZ`）和账户通用规则；市场公开默认规则存储在 `StockMarketFeeRule`，证券公司公开名录和别名存储在 `StockBrokerageCatalog`。
 
 股票动作：
 

@@ -146,6 +146,28 @@ type StockCreateEventDetail = {
   defaultAmount?: number;
 };
 
+type StockEditEventDetail = {
+  requestId?: string;
+  transaction: {
+    id: string;
+    stockAccountId: string;
+    cashAccountId?: string | null;
+    securityId?: string | null;
+    market: string;
+    stockCode: string;
+    stockName?: string | null;
+    action: string;
+    tradeDate: string;
+    settleDate?: string | null;
+    grossAmount?: number | null;
+    netAmount?: number | null;
+    quantity?: number | null;
+    price?: number | null;
+    brokerTradeId?: string | null;
+    note?: string | null;
+  };
+};
+
 const STOCK_ACTIONS: Array<{ key: StockModalAction; label: string; tone: string }> = [
   { key: "buy", label: "买入", tone: "bg-blue-600 text-white border-blue-600" },
   { key: "sell", label: "卖出", tone: "bg-orange-600 text-white border-orange-600" },
@@ -390,6 +412,7 @@ export function StockTransactionFormModal({
 
   const [open, setOpen] = useState(false);
   const [requestId, setRequestId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [stockAccountId, setStockAccountId] = useState(defaultStockAccountId ?? "");
   const [cashAccountId, setCashAccountId] = useState(defaultCashAccountId ?? "");
   const [localStockAccounts, setLocalStockAccounts] = useState<AccountOption[]>(stockAccounts);
@@ -618,6 +641,7 @@ export function StockTransactionFormModal({
       fallbackCashAccountId: defaultCashAccountId,
     });
     setRequestId(detail?.requestId ?? null);
+    setEditingId(null);
     setAction("buy");
     setDividendMode("cash");
     setMarket("CN");
@@ -647,6 +671,52 @@ export function StockTransactionFormModal({
     setCashAccountId(nextCashAccountId);
   }, [defaultCashAccountId, defaultStockAccountId, localCashAccounts, localStockAccounts]);
 
+  const resetDraftForEdit = useCallback((detail: StockEditEventDetail) => {
+    const tx = detail.transaction;
+    const nextStockAccountId = tx.stockAccountId || defaultStockAccountId || localStockAccounts[0]?.id || "";
+    setRequestId(detail.requestId ?? null);
+    setEditingId(tx.id);
+    // 动作回填：dividend 里区分现金/送股；share_change 落到股本变动
+    if (tx.action === "buy" || tx.action === "sell") {
+      setAction(tx.action);
+      setDividendMode("cash");
+    } else if (tx.action === "dividend" || tx.action === "bonus_share") {
+      setAction("dividend");
+      setDividendMode(tx.action === "bonus_share" ? "shares" : "cash");
+    } else if (tx.action === "split_share" || tx.action === "merge_share") {
+      setAction("share_change");
+      setShareChangeAction(tx.action as Extract<StockTransactionAction, "bonus_share" | "split_share" | "merge_share">);
+    } else {
+      setAction("buy");
+      setDividendMode("cash");
+    }
+    setMarket(tx.market || "CN");
+    setStockCode(normalizeStockCode(tx.stockCode));
+    setStockName(tx.stockName?.trim() || tx.stockCode);
+    setSelectedSecurityId(tx.securityId ?? "");
+    setSellHoldings([]);
+    setSellHoldingsLoading(false);
+    setSellHoldingsError("");
+    setTradeDate(tx.tradeDate || todayDateInputValue());
+    setSettleDate(tx.settleDate ?? "");
+    setQuantity(tx.quantity == null ? "" : formatStockQuantity(Number(tx.quantity)));
+    setPrice(tx.price == null ? "" : String(Number(tx.price)));
+    setGrossAmount(tx.grossAmount == null ? "" : String(Number(tx.grossAmount)));
+    setNetAmount(tx.netAmount == null ? "" : String(Number(tx.netAmount)));
+    setStockLookupLoading(false);
+    setFeeEstimate(null);
+    setFeeEstimateLoading(false);
+    setFeeEstimateError("");
+    setFeeEstimateStatus("");
+    setBrokerTradeId(tx.brokerTradeId ?? "");
+    setNote(tx.note ?? "");
+    setAutoCreateError("");
+    autoCreateAttemptedRef.current = true;
+    cashAccountTouchedRef.current = false;
+    setStockAccountId(nextStockAccountId);
+    setCashAccountId(tx.cashAccountId ?? "");
+  }, [defaultStockAccountId, localStockAccounts]);
+
   const close = useCallback(() => {
     if (submitting) return;
     setOpen(false);
@@ -663,6 +733,17 @@ export function StockTransactionFormModal({
     window.addEventListener("mmh:stock:create", onOpen);
     return () => window.removeEventListener("mmh:stock:create", onOpen);
   }, [resetDraft]);
+
+  useEffect(() => {
+    function onEditOpen(event: Event) {
+      const detail = (event as CustomEvent<StockEditEventDetail>).detail;
+      if (!detail?.transaction?.id) return;
+      resetDraftForEdit(detail);
+      setOpen(true);
+    }
+    window.addEventListener("mmh:stock:edit", onEditOpen);
+    return () => window.removeEventListener("mmh:stock:edit", onEditOpen);
+  }, [resetDraftForEdit]);
 
   const ensureDefaultStockAccount = useCallback(async () => {
     if (autoCreatingAccount || autoCreateAttemptedRef.current || localStockAccounts.length > 0) return;
@@ -856,7 +937,9 @@ export function StockTransactionFormModal({
       setStockLookupLoading(true);
       try {
         const lookupMarket = inferStockMarketFromCode(code);
-        const params = new URLSearchParams({ market: lookupMarket, code, lookup: "1" });
+        // 只查本地已保存的股票主数据 / 持仓 / 交易名称，不触发外部股票查询 API；
+        // 首次买入保存时由服务端 resolveOrCreateStockSecurity 补全名称并缓存。
+        const params = new URLSearchParams({ market: lookupMarket, code });
         const res = await fetch(`/api/v1/stocks/securities?${params.toString()}`, {
           signal: controller.signal,
           cache: "no-store",
@@ -919,7 +1002,7 @@ export function StockTransactionFormModal({
 
   const loadFeeEstimate = useCallback(async (refresh = false) => {
     const normalizedCode = normalizeStockCode(stockCode);
-    if (!open || !isBuySell || !stockAccountId || effectiveGrossAmount <= 0 || !normalizedCode) {
+    if (editingId || !open || !isBuySell || !stockAccountId || effectiveGrossAmount <= 0 || !normalizedCode) {
       setFeeEstimate(null);
       setFeeEstimateLoading(false);
       setFeeEstimateError("");
@@ -951,10 +1034,10 @@ export function StockTransactionFormModal({
     } finally {
       setFeeEstimateLoading(false);
     }
-  }, [action, effectiveGrossAmount, isBuySell, market, open, stockAccountId, stockCode, tradeDate]);
+  }, [action, editingId, effectiveGrossAmount, isBuySell, market, open, stockAccountId, stockCode, tradeDate]);
 
   useEffect(() => {
-    if (!open || !isBuySell || effectiveGrossAmount <= 0) {
+    if (editingId || !open || !isBuySell || effectiveGrossAmount <= 0) {
       setFeeEstimate(null);
       setFeeEstimateLoading(false);
       setFeeEstimateError("");
@@ -965,7 +1048,7 @@ export function StockTransactionFormModal({
       void loadFeeEstimate(false);
     }, 350);
     return () => window.clearTimeout(timer);
-  }, [effectiveGrossAmount, isBuySell, loadFeeEstimate, open]);
+  }, [effectiveGrossAmount, editingId, isBuySell, loadFeeEstimate, open]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1019,8 +1102,8 @@ export function StockTransactionFormModal({
         source: "manual",
       };
       const postTransaction = async (body: Record<string, unknown>) => {
-        const res = await fetch("/api/v1/stocks/transactions", {
-          method: "POST",
+        const res = await fetch(editingId ? `/api/v1/stocks/transactions?id=${encodeURIComponent(editingId)}` : "/api/v1/stocks/transactions", {
+          method: editingId ? "PATCH" : "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
         });
@@ -1031,7 +1114,7 @@ export function StockTransactionFormModal({
         return data;
       };
       let lastData: Awaited<ReturnType<typeof postTransaction>> | null = null;
-      if (isDividendCashShares) {
+      if (isDividendCashShares && !editingId) {
         // 同一笔"现金分红+送股/转增"拆成两条独立业务记录：
         // 1) dividend：现金分红（分红金额 + 净到账 → 证券资金账户）
         lastData = await postTransaction({
@@ -1058,17 +1141,22 @@ export function StockTransactionFormModal({
         });
       }
       if (requestId) {
-        window.dispatchEvent(new CustomEvent("mmh:stock:create:success", { detail: { requestId } }));
+        window.dispatchEvent(new CustomEvent(editingId ? "mmh:stock:edit:success" : "mmh:stock:create:success", { detail: { requestId } }));
       }
       requestAnimationFrame(() => {
         dispatchFinanceDataChanged({
-          reason: "stock-transaction-save",
+          reason: editingId ? "stock-transaction-update" : "stock-transaction-save",
           accountIds: Array.from(new Set([stockAccountId, selectedCashAccount?.id].filter((id): id is string => Boolean(id)))),
           entryIds: [lastData?.data?.transaction?.cashEntryId ?? "", lastData?.data?.transaction?.id ?? ""].filter(Boolean),
         });
       });
       setOpen(false);
-      resetDraft();
+      if (editingId) {
+        setEditingId(null);
+        resetDraft();
+      } else {
+        resetDraft();
+      }
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "股票交易保存失败");
     } finally {
@@ -1084,7 +1172,7 @@ export function StockTransactionFormModal({
         <div className="app-modal-panel max-w-[min(38rem,calc(100vw-1rem))]">
           <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
             <div className="modal-header">
-              <div className="text-sm font-semibold text-slate-800">股票交易</div>
+              <div className="text-sm font-semibold text-slate-800">{editingId ? "编辑股票交易" : "股票交易"}</div>
               <button type="button" onClick={close} className="secondary-button h-8 px-2" title="关闭">
                 <X className="h-4 w-4" />
               </button>
@@ -1304,7 +1392,7 @@ export function StockTransactionFormModal({
                 ) : null}
               </div>
 
-              {isBuySell ? (
+              {isBuySell && !editingId ? (
                 <div className="space-y-2">
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-[2.25rem_1fr_1fr_1fr]">
                     <button

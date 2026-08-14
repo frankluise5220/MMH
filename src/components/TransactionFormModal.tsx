@@ -77,6 +77,12 @@ type OpenFromAiDetail = {
   defaultAccountId?: string;
   defaultFromAccountId?: string;
   defaultToAccountId?: string;
+  /** 锁定记账类型：打开后只保留该类型，隐藏支出/收入/代付切换 tab（如银证转账只允许转账）。 */
+  lockedType?: TxType;
+  /** 银证转账模式：转入账户固定为当前股票机构下的证券资金账户，转出账户从同一所有人的资金账户选择。 */
+  stockTransferMode?: boolean;
+  stockCashAccountId?: string;
+  stockCashAccountName?: string;
 };
 
 function normalizeYmd(value: string | undefined) {
@@ -334,6 +340,9 @@ export function TransactionFormModal({
 }) {
   const [open, setOpen] = useState(false);
   const [txType, setTxType] = useState<TxType>("expense");
+  const [lockedType, setLockedType] = useState<TxType | null>(null);
+  const [stockTransferMode, setStockTransferMode] = useState(false);
+  const [stockCashAccountId, setStockCashAccountId] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [requestId, setRequestId] = useState<string | null>(null);
   const [editEntryId, setEditEntryId] = useState<string | null>(null);
@@ -690,11 +699,31 @@ export function TransactionFormModal({
     if (transferVisibleOptionIds) {
       merged = merged.filter((option) => transferVisibleOptionIds.has(option.id));
     }
+    // 银证转账：转出账户不能是证券资金账户本身，只保留同一所有人的资金账户
+    if (stockTransferMode && stockCashAccountId) {
+      merged = merged.filter((option) => option.id !== stockCashAccountId);
+    }
     for (const option of selectedOptions) {
       if (!merged.some((item) => item.id === option.id)) merged.push(option);
     }
     return sortOptionsByRecent(merged, recentAccountIds);
-  }, [fromAccountId, localTransferAccountSSOpts, recentAccountIds, toAccountId, transferAccountList, transferFiltered, transferVisibleOptionIds]);
+  }, [fromAccountId, localTransferAccountSSOpts, recentAccountIds, stockCashAccountId, stockTransferMode, toAccountId, transferAccountList, transferFiltered, transferVisibleOptionIds]);
+
+  // 银证转账转入账户：当前股票机构证券资金账户 + 同一所有人的资金账户
+  const stockTransferToOptions = useMemo(() => {
+    const source = (transferFiltered?.length ? transferFiltered : localTransferAccountSSOpts) ?? [];
+    const filtered = source.filter((option) => !option.isHeader);
+    let merged = mergeSmartSelectOptions(filtered, transferAccountList);
+    if (transferVisibleOptionIds) {
+      merged = merged.filter((option) => transferVisibleOptionIds.has(option.id));
+    }
+    if (stockCashAccountId && !merged.some((option) => option.id === stockCashAccountId)) {
+      const cashOption = transferAccountList.find((option) => option.id === stockCashAccountId)
+        ?? localTransferAccountSSOpts?.find((option) => option.id === stockCashAccountId && !option.isHeader);
+      if (cashOption) merged.push(cashOption);
+    }
+    return sortOptionsByRecent(merged, recentAccountIds);
+  }, [localTransferAccountSSOpts, recentAccountIds, stockCashAccountId, transferAccountList, transferFiltered, transferVisibleOptionIds]);
 
   const displayAccountOptions = useMemo(() => {
     let base = mergeSmartSelectOptions(accountSSOptionsFiltered, accountList);
@@ -1094,6 +1123,9 @@ export function TransactionFormModal({
       setRequestId(detail.requestId);
       setOpen(true);
       setIsFromButton(detail.source === "launcher");
+      setLockedType(detail.lockedType ?? null);
+      setStockTransferMode(detail.stockTransferMode === true);
+      setStockCashAccountId(detail.stockCashAccountId ?? "");
       setTxType(mappedType);
 
       const dateStr = normalizeYmd(item.date) || today;
@@ -1118,8 +1150,15 @@ export function TransactionFormModal({
         const nextToAccountId = mappedType === "fx" && rawNextToAccount && !isForeignCurrency(rawNextToAccount.currency)
           ? ""
           : rawNextToAccountId;
-        setFromAccountId(nextFromAccountId);
-        setToAccountId(nextToAccountId);
+        // 银证转账：转入账户固定为当前股票机构的证券资金账户
+        const effectiveToAccountId = detail.stockTransferMode
+          ? (detail.stockCashAccountId || nextToAccountId)
+          : nextToAccountId;
+        const effectiveFromAccountId = detail.stockTransferMode && effectiveToAccountId === nextFromAccountId
+          ? ""
+          : nextFromAccountId;
+        setFromAccountId(effectiveFromAccountId);
+        setToAccountId(effectiveToAccountId);
         if (mappedType === "fx") {
           const fromCurrency = transferAccounts.find((account) => account.id === nextFromAccountId)?.currency;
           const toCurrency = transferAccounts.find((account) => account.id === nextToAccountId)?.currency;
@@ -1569,7 +1608,16 @@ export function TransactionFormModal({
             </div>
 
             <form ref={formRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4" onSubmit={onSubmit}>
-              {txType !== "fx" ? (
+              {txType !== "fx" && lockedType ? (
+                <div className="flex flex-wrap justify-center gap-2">
+                  <button
+                    type="button"
+                    className="segment-button h-9 flex-1 segment-button-active"
+                  >
+                    {lockedType === "transfer" ? "转账" : lockedType === "income" ? "收入" : lockedType === "advance" ? "代付" : "支出"}
+                  </button>
+                </div>
+              ) : txType !== "fx" ? (
               <div className="flex flex-wrap justify-center gap-2">
                 {isCreditCardAccount ? (
                   <>
@@ -2135,7 +2183,30 @@ export function TransactionFormModal({
                   </div>
 
                   {/* 第二行：转出账户 | 互换 | 转入账户 */}
-                  {isCreditCardAccount ? (
+                  {stockTransferMode ? (
+                    <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-end">
+                      <div className="space-y-1">
+                        <div className="form-label">转出账户</div>
+                        <SmartSelect mode="single" value={fromAccountId} onChange={v => { setFromAccountId(v); setFromAccountIdEdited(true); recordRecentAccount(v); }}
+                          options={displayTransferOptions} placeholder="请选择"
+                          onCreateClick={() => { void openAccountCreate("from"); }} createLabel="新增账户"
+                          onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
+                          behavior={compactAccountSelectBehavior} />
+                      </div>
+                      <div className="flex flex-col items-center pb-0.5">
+                        <div className="h-6 flex items-center justify-center text-emerald-600 mb-1"><ArrowRight className="w-4 h-4" /></div>
+                        <button type="button" className="secondary-button h-9 w-9 px-0 text-slate-700"
+                          onClick={swapTransferAccounts} disabled={!fromAccountId && !toAccountId} title="互换账户"><ArrowLeftRight className="w-4 h-4" /></button>
+                      </div>
+                      <div className="space-y-1">
+                        <div className="form-label">转入账户</div>
+                        <SmartSelect mode="single" value={toAccountId} onChange={(v) => { setToAccountId(v); recordRecentAccount(v); }}
+                          options={stockTransferToOptions} placeholder="请选择"
+                          onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
+                          behavior={compactAccountSelectBehavior} />
+                      </div>
+                    </div>
+                  ) : isCreditCardAccount ? (
                     <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-end">
                       <div className="space-y-1">
                         <div className="form-label">转出账户</div>

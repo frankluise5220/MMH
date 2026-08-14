@@ -41,9 +41,9 @@ export function getCashTargetOperation(account: AccountKindLike | null | undefin
   if (!account) return "transfer";
   if (isDepositAccount(account)) return "deposit";
   if (isPureInvestmentAccount(account)) {
-    if (account.investProductType === "stock") return "transfer";
-    if (account.investProductType === "property") return "transfer";
-    return account.investProductType === "wealth" ? "wealth" : "investment";
+    // 投资账户（含股票）不参与普通转账，只能用各自的专用记账窗口
+    if (account.investProductType === "wealth") return "wealth";
+    return "investment";
   }
   if (account.kind === "loan") return "debt";
   return "transfer";

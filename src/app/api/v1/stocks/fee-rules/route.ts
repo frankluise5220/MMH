@@ -121,7 +121,7 @@ export async function GET(req: NextRequest) {
       if (grossAmount <= 0) {
         return NextResponse.json({ ok: false, error: "缺少成交金额" }, { status: 400, headers: corsHeaders() });
       }
-      const updatedMarketDefaultCount = await upsertStockMarketFeeDefaultRules();
+      const updatedMarketDefaultCount = refresh ? await upsertStockMarketFeeDefaultRules() : 0;
       const fees = await calculateStockTransactionFeesByDate({
         accountId,
         tradeDate,

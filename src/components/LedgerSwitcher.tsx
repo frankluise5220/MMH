@@ -226,13 +226,13 @@ export function LedgerSwitcher({
       return;
     }
     if (!deleteDbPassword.trim()) {
-      setDeleteError("请输入数据库密码以确认删除");
+      setDeleteError("请输入管理员密码以确认删除");
       return;
     }
     setDeleting(true);
     setDeleteError("");
     try {
-      // 先验证数据库密码
+      // 先验证管理员密码
       const verifyRes = await fetch("/api/v1/auth/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -240,7 +240,7 @@ export function LedgerSwitcher({
       });
       const vd = await readApiResult(verifyRes);
       if (!verifyRes.ok || !vd.ok) {
-        setDeleteError(vd.error ?? "数据库密码错误");
+        setDeleteError(vd.error ?? "管理员密码错误");
         setDeleting(false);
         return;
       }
@@ -596,11 +596,11 @@ export function LedgerSwitcher({
                     />
                   </div>
 
-                  {/* 数据库密码验证 */}
+                  {/* 管理员密码验证 */}
                   <div className="pt-2 border-t border-slate-100">
                     <div className="flex items-center gap-1.5 mb-1">
                       <Shield className="h-3.5 w-3.5 text-amber-500 shrink-0" />
-                      <span className="text-xs font-medium text-amber-700">数据库密码验证</span>
+                      <span className="text-xs font-medium text-amber-700">管理员密码验证</span>
                     </div>
                     <input
                       type="password"
@@ -608,10 +608,10 @@ export function LedgerSwitcher({
                       onChange={(e) => { setDeleteDbPassword(e.target.value); setDeleteError(""); }}
                       onKeyDown={(e) => { if (e.key === "Enter") handleDelete(); }}
                       className="h-10 w-full rounded-md border border-amber-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-amber-100 focus:border-amber-400"
-                      placeholder="输入数据库密码"
+                      placeholder="输入管理员密码"
                       autoComplete="off"
                     />
-                    <div className="mt-1 text-[10px] text-slate-400">删除账簿需要验证数据库密码</div>
+                    <div className="mt-1 text-[10px] text-slate-400">删除账簿需要验证管理员密码</div>
                   </div>
 
                   {deleteError && (

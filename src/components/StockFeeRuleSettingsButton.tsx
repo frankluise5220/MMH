@@ -178,11 +178,11 @@ export function StockFeeRuleSettingsButton({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="secondary-button h-8 gap-1.5 px-3 text-xs"
+        className="secondary-button h-9 w-9 justify-center px-0 text-xs"
         title="设置股票账户费率"
+        aria-label="设置股票账户费率"
       >
-        <Settings2 className="h-3.5 w-3.5" />
-        账户费率
+        <Settings2 className="h-4 w-4" />
       </button>
       {open && typeof document !== "undefined" ? createPortal(
         <div className="app-modal-backdrop z-[1000]">

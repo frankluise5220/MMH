@@ -25,6 +25,7 @@
 - 股票交易事实字段以 `StockTransaction` 为准，现金流水只在需要时创建普通 `TxRecord`，二者通过 `EntryBusinessLink.stockTransactionId` 和返回的 `linkId` 关联。
 - 股票买入、卖出、分红和税费调整使用 `cashAccountId` 指向的证券资金账户/券商可用资金账户；同一证券公司名下的股票和基金可以共用同一个现金/钱包类资金账户。检查余额时应把证券资金账户现金和 `StockHolding` 市值区分开。银证转账是银行/现金账户与证券资金账户之间的普通转账，不写入 `StockTransaction`。
 - 股票持仓以 `StockHolding` 为准，数量、成本、最新价、市值、浮盈和历史收益都由 `src/lib/stock/recalcPosition.ts` 重算；最新收盘价写入 `StockPriceCache`，刷新后必须再次重算 `StockHolding`。不要从 `FundHolding` 或基金净值缓存推断股票值。
+- 报表页「股票持仓盈亏」必须与股票账户持仓表使用同一套 `StockHolding` 数字：市值、成本、浮动盈亏、已实现收益。核对时先看股票账户页，再看 `/reports?report=stock-holdings`，两边同一只股票的金额不能各算各的。
 - 股票手续费规则先看账户级 `StockFeeRule`，未命中时使用市场默认 `StockMarketFeeRule`；证券公司公开名录和别名存入 `StockBrokerageCatalog`。这些规则支持佣金、印花税、过户费、经手费、监管费、平台费、最低收费和买卖方向；不要复用 `fundFeeRate`。
 - 股票买入/卖出窗口只直接展示费用合计、成交金额和预计应付/到账，佣金、印花税、过户费、经手费、证管费、其他费用只在费用合计 hover 明细中展示；这些值只是同一套 `src/lib/stock/feeRule.ts` 计算结果的只读预估。保存交易时服务端再次按该规则计算并写入 `StockTransaction`，买入现金侧 `TxRecord` 金额应等于成交金额 + 费用合计，卖出现金侧 `TxRecord` 金额应等于成交金额 - 费用合计。
 - 券商导入或成交单去重使用 `externalLinkId` / `brokerTradeId`；它们不是基金买入退回 link，也不是 `fundSourceEntryId`。

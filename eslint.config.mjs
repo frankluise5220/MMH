@@ -48,6 +48,13 @@ const eslintConfig = defineConfig([
     "public/test-results.json",
     "release-artifacts/**",
     "src/app/test-results/**",
+    ".codex-logs/**",
+    ".npm-cache-tmp/**",
+    ".pnpm-local/**",
+    "mmh-doc-edit/**",
+    "tmp-*.cjs",
+    "verify*.js",
+    "verify*.cjs",
 
     // Utility scripts (not part of app runtime)
     "scripts/**",

@@ -4,8 +4,6 @@
 
 import { useState, useMemo, useRef, useEffect, useCallback, type MouseEvent as ReactMouseEvent, type RefObject } from "react";
 
-import Link from "next/link";
-
 import { startTransition } from "react";
 
 import { CartesianGrid, Line, LineChart as RechartsLineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -641,6 +639,7 @@ export function FundShell(props: Props) {
 
   const [fundCode, setFundCode] = useState(initialFundCode);
   const [fundChartOpen, setFundChartOpen] = useState(false);
+  const [showAllRecords, setShowAllRecords] = useState(false);
 
   const [showCleared, setShowCleared] = useState(initialShowCleared);
 
@@ -1327,7 +1326,7 @@ export function FundShell(props: Props) {
     if (!code) return;
 
     setFundCode(code);
-
+    setShowAllRecords(false);
     setFundPage(1);
 
     const q = new URLSearchParams(baseQuery);
@@ -1348,16 +1347,37 @@ export function FundShell(props: Props) {
   }, [baseQuery, isWealthAccount, showCleared, view]);
 
   function toggleAllWealthEntries() {
-    if (!isWealthAccount) return;
-    const list = showCleared ? sortedClearedPositions : sortedPositions;
-    const nextCode = fundCode ? "" : positionAssetKey((list || [])[0] ?? null);
-    setFundCode(nextCode);
+    if (isMetalAccount) return;
+    if (showAllRecords) {
+      // 退出"所有记录"：回到第一只持仓
+      const list = showCleared ? sortedClearedPositions : sortedPositions;
+      const first = positionAssetKey((list || [])[0] ?? null);
+      setShowAllRecords(false);
+      setFundCode(first);
+      setFundPage(1);
+      const q = new URLSearchParams(baseQuery);
+      q.set("view", view);
+      q.delete("fundCode");
+      if (isWealthAccount) {
+        if (first) q.set("wealthProductId", first);
+        else q.delete("wealthProductId");
+      } else {
+        if (first) q.set("fundCode", first);
+        q.delete("wealthProductId");
+      }
+      if (showCleared) q.set("showCleared", "1");
+      else q.delete("showCleared");
+      window.history.replaceState(null, "", `/?${q.toString()}`);
+      return;
+    }
+    // 进入"所有记录"：显示当前账户全部交易，持仓列表保留
+    setShowAllRecords(true);
+    setFundCode("");
     setFundPage(1);
     const q = new URLSearchParams(baseQuery);
     q.set("view", view);
     q.delete("fundCode");
-    if (nextCode) q.set("wealthProductId", nextCode);
-    else q.delete("wealthProductId");
+    q.delete("wealthProductId");
     if (showCleared) q.set("showCleared", "1");
     else q.delete("showCleared");
     window.history.replaceState(null, "", `/?${q.toString()}`);
@@ -1564,7 +1584,7 @@ export function FundShell(props: Props) {
   const filtered = useMemo(() => {
     const source = fundCode
       ? d.allEntries.filter((e: any) => entryAssetKey(e) === fundCode)
-      : isWealthAccount ? d.allEntries ?? [] : [];
+      : showAllRecords || isWealthAccount ? d.allEntries ?? [] : [];
     return [...source]
       .sort((a: any, b: any) => {
         const byApplyDate = fundApplyDateOf(b).localeCompare(fundApplyDateOf(a));
@@ -1573,7 +1593,7 @@ export function FundShell(props: Props) {
         if (byCreatedAt !== 0) return byCreatedAt;
         return String(b.id ?? "").localeCompare(String(a.id ?? ""));
       });
-  }, [d.allEntries, entryAssetKey, fundApplyDateOf, fundCode, isWealthAccount]);
+  }, [d.allEntries, entryAssetKey, fundApplyDateOf, fundCode, isWealthAccount, showAllRecords]);
   const selectedPosition = useMemo(
     () => (d.positions || []).find((p: any) => positionAssetKey(p) === fundCode) ?? null,
     [d.positions, fundCode, positionAssetKey],
@@ -2997,7 +3017,7 @@ export function FundShell(props: Props) {
     linkDetailCashFlow,
     statusOf,
   ]);
-  const showDetailPane = Boolean(fundCode || isWealthAccount);
+  const showDetailPane = Boolean(fundCode || showAllRecords || isWealthAccount);
 
   return (
 
@@ -3050,13 +3070,6 @@ export function FundShell(props: Props) {
           </div>
 
           <div className="flex items-center gap-2 text-xs text-slate-500 min-h-[24px]">
-
-            <Link
-              href={`/?accountId=${encodeURIComponent(accountId)}&view=detail&detailAll=1`}
-              className="secondary-button h-7 px-2 text-xs"
-            >
-              全部交易
-            </Link>
 
             {!showCleared && !isMetalAccount && !isWealthAccount && d.positions.length > 0 ? (
               <RefreshNavButton accountId={accountId} symbols={d.positions.map((p: any) => p.fundCode).filter(Boolean)} />
@@ -3461,24 +3474,26 @@ export function FundShell(props: Props) {
               </span>
             )}
 
-            <span className="ml-2 text-xs text-slate-400 font-normal">{fundCode || isWealthAccount ? `${detailTableRowCount}/${filtered.length}` : chooseHoldingText}</span>
+            <span className="ml-2 text-xs text-slate-400 font-normal">{fundCode || showAllRecords || isWealthAccount ? `${detailTableRowCount}/${filtered.length}` : chooseHoldingText}</span>
 
           </div>
 
           <div className="flex min-w-0 max-w-[62vw] items-center gap-1 overflow-x-auto whitespace-nowrap pb-0.5 text-xs md:max-w-none md:overflow-visible [&>*]:shrink-0">
 
-            {isWealthAccount ? (
+            {!isMetalAccount ? (
               <button
                 type="button"
                 onClick={toggleAllWealthEntries}
                 className={`h-6 px-2 rounded border flex items-center gap-1 ${
-                  !fundCode
+                  showAllRecords
                     ? "border-blue-300 bg-blue-50 text-blue-700 font-medium"
                     : "border-slate-200 bg-white text-slate-500 hover:bg-blue-50 hover:text-blue-600"
                 }`}
-                title={fundCode ? "显示当前理财账户下所有交易" : "取消所有交易，回到单个理财产品"}
+                title={showAllRecords
+                  ? `取消${isWealthAccount ? "所有交易" : "所有记录"}，回到单个${isWealthAccount ? "理财产品" : "基金持仓"}`
+                  : `显示当前${isWealthAccount ? "理财" : "基金"}账户下所有交易记录`}
               >
-                所有交易
+                {isWealthAccount ? "所有交易" : "所有记录"}
               </button>
             ) : null}
 
@@ -3809,7 +3824,7 @@ export function FundShell(props: Props) {
             </div>
           ) : (
             <div className="rounded-lg border border-dashed border-slate-300 bg-white px-4 py-10 text-center text-sm text-slate-500">
-              {fundCode || isWealthAccount ? "暂无交易记录" : chooseHoldingText}
+              {fundCode || showAllRecords || isWealthAccount ? "暂无交易记录" : chooseHoldingText}
             </div>
           )}
         </div>
@@ -3820,12 +3835,12 @@ export function FundShell(props: Props) {
 
           <AdvancedDataTable
             storageKey="mmh_fund_shell_detail_advanced_table_v1"
-            resetKey={`${accountId}:${fundCode || "all"}:${showCleared ? "cleared" : "detail"}`}
+            resetKey={`${accountId}:${fundCode || (showAllRecords ? "all" : "none")}:${showCleared ? "cleared" : "detail"}`}
             columns={detailAdvancedColumns}
             rows={filteredByColumns}
             rowKey={(entry) => String(entry.id)}
             minTableWidth={detailMinTableWidth}
-            emptyText={fundCode || isWealthAccount ? "暂无交易记录" : chooseHoldingText}
+            emptyText={fundCode || showAllRecords || isWealthAccount ? "暂无交易记录" : chooseHoldingText}
             selectable
             selectOnRowClick
             selectAllScope="renderedRows"

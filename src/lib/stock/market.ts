@@ -38,3 +38,11 @@ export function defaultStockCurrencyForMarket(marketRaw: unknown) {
   if (market === "US") return "USD";
   return "CNY";
 }
+
+export function stockMarketLabel(marketRaw: unknown) {
+  const market = normalizeStockMarket(marketRaw);
+  if (market === "HK") return "港股";
+  if (market === "US") return "美股";
+  if (market === "CN" || market.startsWith("CN_")) return "A股";
+  return market || "其他";
+}
