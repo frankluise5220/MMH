@@ -165,6 +165,14 @@ function imageSourceOptionLabel(option: { value: string; label: string }, t: (ke
   return option.value === "auto" ? t("settings.systemUpdate.autoSelect") : option.label;
 }
 
+// The updater image lives in the same registry as the app image with the repo
+// name `mmh-updater`, so the custom source only needs the app image address.
+function deriveUpdaterImage(appImage: string) {
+  const value = appImage.trim();
+  if (!value) return "";
+  return value.replace(/\/(mmh)(?=[:@]|$)/, "/mmh-updater");
+}
+
 export default function SystemUpdatePage() {
   const { t } = useI18n();
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
@@ -182,7 +190,7 @@ export default function SystemUpdatePage() {
   const [savingImageSource, setSavingImageSource] = useState(false);
   const [imageSourceMessage, setImageSourceMessage] = useState("");
   const customImageSourceIncomplete = imageSourceDraft.source === "custom"
-    && (!imageSourceDraft.customAppImage.trim() || !imageSourceDraft.customUpdaterImage.trim());
+    && !imageSourceDraft.customAppImage.trim();
   const [testingImageSource, setTestingImageSource] = useState(false);
   const [imageSpeedResults, setImageSpeedResults] = useState<Record<string, ImageSpeedResult>>({});
   const [timeZoneMode, setTimeZoneMode] = useState<TimeZoneMode>("system");
@@ -199,7 +207,7 @@ export default function SystemUpdatePage() {
         setImageSourceDraft({
           source: data.imageSourceConfig.source || "auto",
           customAppImage: data.imageSourceConfig.customAppImage || "",
-          customUpdaterImage: data.imageSourceConfig.customUpdaterImage || "",
+          customUpdaterImage: deriveUpdaterImage(data.imageSourceConfig.customAppImage || ""),
         });
       }
     } catch {
@@ -760,25 +768,32 @@ export default function SystemUpdatePage() {
                 </div>
 
                 {imageSourceDraft.source === "custom" ? (
-                  <div className="mt-2 grid gap-2 md:grid-cols-[104px_1fr]">
-                    <div className="text-xs text-slate-500">{t("settings.systemUpdate.appImage")}</div>
-                    <input
-                      value={imageSourceDraft.customAppImage}
-                      required
-                      onChange={(event) => setImageSourceDraft((draft) => ({ ...draft, customAppImage: event.target.value }))}
-                      disabled={savingImageSource || updating}
-                      className="h-8 rounded-md border border-slate-200 px-2 text-sm text-slate-700 outline-none focus:border-blue-400 disabled:opacity-50"
-                      placeholder="registry.example.com/frankluise5220/mmh:latest"
-                    />
-                    <div className="text-xs text-slate-500">{t("settings.systemUpdate.updaterImage")}</div>
-                    <input
-                      value={imageSourceDraft.customUpdaterImage}
-                      required
-                      onChange={(event) => setImageSourceDraft((draft) => ({ ...draft, customUpdaterImage: event.target.value }))}
-                      disabled={savingImageSource || updating}
-                      className="h-8 rounded-md border border-slate-200 px-2 text-sm text-slate-700 outline-none focus:border-blue-400 disabled:opacity-50"
-                      placeholder="registry.example.com/frankluise5220/mmh-updater:latest"
-                    />
+                  <div className="mt-2 space-y-2">
+                    <div className="grid gap-2 md:grid-cols-[104px_1fr]">
+                      <div className="text-xs text-slate-500">{t("settings.systemUpdate.appImage")}</div>
+                      <input
+                        value={imageSourceDraft.customAppImage}
+                        required
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          setImageSourceDraft((draft) => ({
+                            ...draft,
+                            customAppImage: value,
+                            customUpdaterImage: deriveUpdaterImage(value),
+                          }));
+                        }}
+                        disabled={savingImageSource || updating}
+                        className="h-8 rounded-md border border-slate-200 px-2 text-sm text-slate-700 outline-none focus:border-blue-400 disabled:opacity-50"
+                        placeholder="registry.example.com/frankluise5220/mmh:latest"
+                      />
+                    </div>
+                    <div className="grid gap-2 md:grid-cols-[104px_1fr]">
+                      <div className="text-xs text-slate-500">{t("settings.systemUpdate.updaterImage")}</div>
+                      <div className="min-w-0 truncate font-mono text-xs text-slate-500">
+                        {deriveUpdaterImage(imageSourceDraft.customAppImage) || t("settings.systemUpdate.notFilled")}
+                      </div>
+                    </div>
+                    <div className="text-xs text-slate-400">{t("settings.systemUpdate.updaterDerived")}</div>
                   </div>
                 ) : null}
 

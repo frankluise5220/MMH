@@ -456,7 +456,10 @@ export async function GET(req: NextRequest) {
     const dockerEnvironment = deploymentTarget === "docker";
     const fnosEnvironment = deploymentTarget === "fnos";
     const updaterEnabled = getUpdaterConfig().enabled;
-    if (checkRemote && dockerEnvironment && updaterEnabled) {
+    // The image source config comes from the local updater; load it whenever the
+    // updater is reachable so the settings panel is available on first load,
+    // not only after a remote version check.
+    if (dockerEnvironment && updaterEnabled) {
       try {
         const data = await callUpdater("/config", undefined, 3_000);
         imageSourceConfig = data.config ?? null;

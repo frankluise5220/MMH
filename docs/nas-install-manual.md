@@ -123,7 +123,7 @@ MMH_UPDATER_IMAGE="ghcr.dockerproxy.net/frankluise5220/mmh-updater:latest"
 
 固定选择 GHCR、dockerproxy、NJU、DaoCloud 或自定义源时，版本检查、`mmh-app` 和 `mmh-updater` 都统一使用用户选择的源。切换源后执行一次更新，两个容器会一起拉取并切换；不会把 NJU 或其他单一镜像源写死为所有用户的默认选择。
 
-选择自定义源时，必须同时填写应用镜像和更新器镜像地址，系统不会把其中一个容器悄悄回退到其他镜像源。
+选择自定义源时，只需填写应用镜像地址，更新器镜像会自动使用同源的 `mmh-updater` 镜像（例如应用镜像填 `registry.example.com/frankluise5220/mmh:latest`，更新器镜像自动为 `registry.example.com/frankluise5220/mmh-updater:latest`）。自定义源需要该镜像源同时提供 `mmh` 和 `mmh-updater` 两个镜像，系统不会把其中一个容器悄悄回退到其他镜像源。
 
 常用可选源：
 

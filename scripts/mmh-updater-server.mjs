@@ -130,6 +130,14 @@ async function updateEnvImageSource(appImage, updaterImage) {
   });
 }
 
+// The updater image lives in the same registry as the app image with the repo
+// name `mmh-updater`, so the custom source only needs the app image address.
+function deriveUpdaterImage(appImage) {
+  const value = String(appImage || "").trim();
+  if (!value) return "";
+  return value.replace(/\/(mmh)(?=[:@]|$)/, "/mmh-updater");
+}
+
 async function readEnvValues() {
   const envPath = `${workdir}/.env`;
   let text = "";
@@ -201,13 +209,14 @@ async function saveImageSourceConfig(input) {
   const values = { MMH_IMAGE_SOURCE: source };
 
   if (source === "custom") {
-    if (!customAppImage || !customUpdaterImage) {
-      throw new Error("自定义镜像源需要同时填写应用镜像和更新器镜像地址");
+    if (!customAppImage) {
+      throw new Error("自定义镜像源需要填写应用镜像地址");
     }
+    const updaterImage = customUpdaterImage || deriveUpdaterImage(customAppImage);
     values.CUSTOM_MMH_APP_IMAGE = customAppImage;
-    values.CUSTOM_MMH_UPDATER_IMAGE = customUpdaterImage;
+    values.CUSTOM_MMH_UPDATER_IMAGE = updaterImage;
     values.MMH_APP_IMAGE = customAppImage;
-    values.MMH_UPDATER_IMAGE = customUpdaterImage;
+    values.MMH_UPDATER_IMAGE = updaterImage;
   } else if (source !== "auto") {
     const selected = imageSources[source];
     if (!selected) throw new Error(`未知镜像源: ${source}`);
@@ -401,10 +410,10 @@ async function chooseImageSource() {
   const config = await getImageSourceConfig();
 
   if (config.source === "custom") {
-    if (!config.customAppImage || !config.customUpdaterImage) {
-      throw new Error("自定义镜像源需要同时填写应用镜像和更新器镜像地址");
+    if (!config.customAppImage) {
+      throw new Error("自定义镜像源需要填写应用镜像地址");
     }
-    const updaterImage = config.customUpdaterImage;
+    const updaterImage = config.customUpdaterImage || deriveUpdaterImage(config.customAppImage);
     pushLog("使用自定义镜像源");
     await updateEnvImageSource(config.customAppImage, updaterImage);
     return { appImage: config.customAppImage, updaterImage };
