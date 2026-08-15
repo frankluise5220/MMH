@@ -6,7 +6,7 @@
       "x86",
       "arm"
     ],
-    "version": "0.1.31",
+    "version": "0.1.32",
     "desc": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
     "labels": "财务,记账",
     "distributor": "frankluise5220",
@@ -15,12 +15,12 @@
     "isdocker": "false",
     "install_type": "存储空间",
     "size": "169",
-    "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.31/mmh-fnos-v0.1.31-x86_64.fpk",
+    "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.32/mmh-fnos-v0.1.32-x86_64.fpk",
     "download_urls": {
-      "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.31/mmh-fnos-v0.1.31-x86_64.fpk",
-      "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.31/mmh-fnos-v0.1.31-arm64.fpk"
+      "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.32/mmh-fnos-v0.1.32-x86_64.fpk",
+      "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.32/mmh-fnos-v0.1.32-arm64.fpk"
     },
-    "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.31",
-    "changelog": "发布 0.1.31：报表页新增「股票持仓盈亏」页签（按机构/账户筛选、CSV 导出，与股票账户持仓共用同一套 StockHolding 数字）；股票持仓与交易明细表接入共享表格（列宽记忆、排序、筛选、批量删除），交易明细支持双击编辑并同步资金流水与持仓；新增批量修改备注与券商成交号接口；股票名称一律以本地已保存数据为准，交易窗口不再触发外部查询；投资账户不参与普通转账，股票界面银证转账限定同一所有人的资金账户；修复 SQLite 恢复时房产交易现金外键指向错误表导致清空失败。"
+    "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.32",
+    "changelog": "发布 0.1.32：全站界面文案迁移到多语言体系（简体中文 / English / 日本語），登录与共享组件整合精简；信用卡分期改为到期实生成扣款行，支持首期入账日期、账单日和标签；系统初始化、删除账簿等敏感操作统一验证当前登录管理员用户密码；新增系统任务执行器与 NAS Docker Registry 镜像源脚本；修复 i18n 迁移引入的类型与 Hook 顺序问题。"
   }
 }
