@@ -2,6 +2,7 @@
 
 import type { ButtonHTMLAttributes, TdHTMLAttributes } from "react";
 import { Copy, Eye, EyeOff, Pencil, Plus, PlusCircle, Star, Trash2 } from "lucide-react";
+import { useI18n } from "@/lib/i18n";
 
 export function SettingsPageHeader({
   title,
@@ -18,6 +19,7 @@ export function SettingsPageHeader({
   toolbar?: React.ReactNode;
   sticky?: boolean;
 }) {
+  const { t } = useI18n();
   return (
     <div className={sticky ? "sticky top-0 z-20 border-b border-slate-200 bg-slate-50/95 pb-3 pt-1 backdrop-blur" : ""}>
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -26,7 +28,7 @@ export function SettingsPageHeader({
             <h2 className="text-sm font-semibold text-slate-800">{title}</h2>
             {count !== undefined ? (
               <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] tabular-nums text-slate-500">
-                {count} 项
+                {t("settings.scaffold.itemCount", { count })}
               </span>
             ) : null}
           </div>

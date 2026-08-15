@@ -37,6 +37,8 @@ model Account {
   numberMasked                                               String?
   routeKey                                                   String?                     @unique
   note                                                       String?
+  usageCount                                                 Int                         @default(0)
+  lastUsedAt                                                 DateTime?
   householdId                                                String
   institutionId                                              String?
   counterpartyId                                             String?

@@ -794,13 +794,15 @@ export const computePositionDisplay = cache(
 
   const fundCodes = [...new Set(holdings.map(h => h.fundCode))];
   const displayPendingByHoldingKey = await loadDisplayPendingCostByHoldingKey(ctx, [accountId]);
+  // Load the latest cached NAV for every held fund, money funds included, so the
+  // position row can always pair the displayed NAV with its date. Money funds
+  // keep NAV = 1 (their cached value is the per-10k yield, not the unit NAV).
   const latestNavByCode = new Map<string, { nav: number; date: string; name: string | null }>();
-  if (fundCodes.length > 0 && !isMoney) {
+  if (fundCodes.length > 0) {
     const caches = await getLatestFundNavMap(fundCodes);
     for (const [fundCode, c] of caches) {
-      const d = c.navDate;
-      const dateStr = `${String(d.getUTCMonth() + 1).padStart(2, "0")}.${String(d.getUTCDate()).padStart(2, "0")}`;
-      latestNavByCode.set(fundCode, { nav: c.nav, date: dateStr, name: c.name });
+      // Keep the full YYYY-MM-DD date in the payload; clients format for display.
+      latestNavByCode.set(fundCode, { nav: c.nav, date: c.navDate.toISOString().slice(0, 10), name: c.name });
     }
   }
 
@@ -814,8 +816,8 @@ export const computePositionDisplay = cache(
     const pending = displayPendingByHoldingKey.get(holdingKey(h.accountId, h.fundCode)) ?? 0;
     const cost = Math.max(0, storedCost - storedPending) + pending;
     const avgCost = toNumber(h.avgCost);
-    const navInfo = isMoney ? { nav: 1, date: "", name: null } : latestNavByCode.get(h.fundCode);
-    const latestNav = navInfo?.nav ?? (h.nav != null ? toNumber(h.nav) : 0);
+    const navInfo = latestNavByCode.get(h.fundCode);
+    const latestNav = isMoney ? 1 : (navInfo?.nav ?? (h.nav != null ? toNumber(h.nav) : 0));
     const navDateStr = navInfo?.date ?? "";
     const displayName = navInfo?.name ?? h.fundName ?? h.fundCode;
     const historicalProfit = toNumber(h.historicalProfit);

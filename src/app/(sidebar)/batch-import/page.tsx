@@ -19,6 +19,7 @@ import {
 } from "@/lib/account-import-match";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
+import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { useI18n } from "@/lib/i18n";
 import {
   BATCH_IMPORT_PENDING_FILE_STORAGE_KEY,
@@ -254,7 +255,7 @@ function buildCategorySmartSelectOptions(
         const hasChildren = (childrenByParentId.get(category.id) ?? []).length > 0;
         options.push({
           id: category.id,
-          label: `${indent.repeat(level)}${category.name}`,
+          label: `${indent.repeat(level)}${systemCategoryLabel(category.name, t)}`,
           parentId: parentOptionId,
           isGroup: hasChildren,
         });
@@ -3398,7 +3399,7 @@ export default function BatchImportPage() {
       label: t("batchImport.field.category"),
       width: 150,
       minWidth: 110,
-      filterText: (row) => getItem(row.idx).category || t("batchImport.emptyValue"),
+      filterText: (row) => systemCategoryLabel(getItem(row.idx).category, t) || t("batchImport.emptyValue"),
       render: (row) => {
         const idx = row.idx;
         const item = items[idx];
@@ -3406,7 +3407,7 @@ export default function BatchImportPage() {
         const category = draft.category ?? item.category ?? "";
         const editingField = editingCell?.idx === idx ? editingCell.field : null;
         return (
-          <div className="truncate text-slate-700" title={category || t("batchImport.doubleClickToEdit")} onDoubleClick={() => openCellEdit(idx, "category")}>
+          <div className="truncate text-slate-700" title={systemCategoryLabel(category, t) || t("batchImport.doubleClickToEdit")} onDoubleClick={() => openCellEdit(idx, "category")}>
             {editingField === "category" ? (
               <div className="w-44">
                 <SmartSelect
@@ -3435,7 +3436,7 @@ export default function BatchImportPage() {
                   }}
                 />
               </div>
-            ) : category || <span className="text-slate-400">-</span>}
+            ) : systemCategoryLabel(category, t) || <span className="text-slate-400">-</span>}
           </div>
         );
       },

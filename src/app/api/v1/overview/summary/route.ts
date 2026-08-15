@@ -1,7 +1,8 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 import { computeOverviewSummary } from "@/lib/server/overview-summary";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { DISPLAY_LANGUAGE_COOKIE } from "@/lib/server/i18n";
 
 export const dynamic = "force-dynamic";
 
@@ -47,13 +48,15 @@ export const dynamic = "force-dynamic";
  *
  * Response 500: { ok: false, code: string, error: string }
  */
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
     const ctx = await getHouseholdScope();
-    const data = await computeOverviewSummary(ctx);
+    const raw = req.cookies.get(DISPLAY_LANGUAGE_COOKIE)?.value;
+    const language = raw === "en-US" || raw === "ja-JP" ? raw : "zh-CN";
+    const data = await computeOverviewSummary(ctx, undefined, language);
     return NextResponse.json({ ok: true, data });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "总览数据读取失败";
+    const message = error instanceof Error ? error.message : "Failed to read overview summary";
     return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: message }, { status: 500 });
   }
 }

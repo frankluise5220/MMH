@@ -151,3 +151,35 @@
 - 目录平衡 **3822/3822/3822**，全项目 0 缺失键，全量 tsc 0 错误，check:encoding 636 文件 OK。
 
 待迁移（按优先级）：剩余少数 API 路由（transactions/detail 126 中 error 中文保留、settings/users 补 4 code、ai/chat 内部 error 保留）→ lib 数据文件（default-categories 104、commandParser 53 等为纯数据/匹配值，按规则保留）→ 少量零散组件（AdvancedDataTable 3、RegularInvestForm 11、DebtTransactionModal 10 等均为数据保留）。当前全项目约 245 文件 / 3270 行含中文（2026-08-15 实测），剩余中文绝大多数为业务数据/匹配值/错误串（按 AGENTS.md 第 3、4 条保留）。
+
+### 第 36 轮（DELETE_CANCELLED 契约改造）
+
+为将来 API error 英文化铺路：`lib/api/entries-delete.ts` 的两个 `ok: false` 返回（用户取消删除场景）新增稳定 code `DELETE_CANCELLED`，`EntriesDeleteResponse` 类型扩展 `code?: string`；5 个客户端组件（DepositShell、EntryRowActions、FundShell×2、InvestmentFormModal）的 `已取消删除` 判断改为 `code === "DELETE_CANCELLED" || error === "已取消删除"`（优先 code，兼容旧响应）。全量 tsc 0 错误——客户端逻辑不再依赖中文 error 字符串。
+
+### 第 37 轮（系统自带分类进 i18n）
+
+用户要求软件自带分类显示本地化。确认分类匹配机制：**记录关联用 `categoryId`，但分类创建/解析/模板判断仍用 name**（`ensureDefaultCategory` 按 name 幂等创建、`resolveCategorySnapshot` 按 name 查、`systemCategoryTemplateNames` 按 name 判模板）——DB 存储 name 不可变。
+
+方案：**显示层映射**。新增 `src/lib/system-category-labels.ts`（`systemCategoryLabel(name, t)` + `isSystemCategoryName`，60 个系统分类名映射到 `systemCategory.*` 键；未知名返回原样），新增 59 个三语键（3879/3879/3879）。
+
+接入显示点（wire 批，10 文件，tsc 0 错误）：
+- `settings/categories/client.tsx`：分类树/下拉 label（isSystem 条件映射）3 处
+- `reports/page.tsx`：报表行 + CSV 导出行名
+- `StatementImportPreviewDialog.tsx`：预览分类列/选项 4 处
+- `batch-import/page.tsx`：分类选项/列 5 处
+- `DetailViewClient.tsx`：明细分类列（借款转移/债务/投资/明细 fallback）4 处
+- `(sidebar)/page.tsx`：导出分类名/批量替换选项 6 处
+- `TransactionFormModal.tsx`：分类选择器选项（display 层映射，AI 创建/查重保留原名匹配）2 处
+
+明确不改：DB 写/查询逻辑（resolveCategorySnapshot、ensure*、创建 payload、筛选比较、原名匹配）——`getDetailFilterColumnValue` 的分类分支是 URL 参数比较，保留原样。RegularInvestForm/InvestmentFormModal/WealthFormModal/DebtTransactionModal 无分类显示，无需接入。
+
+### 第 38 轮（收支模板分类进 i18n）
+
+用户确认：**安装时自带的全部系统分类**都应进 i18n（用户自定义分类不处理）。此前第 37 轮只覆盖 60 个投资/结算分类；本轮补齐 `default-categories.ts` 的收支模板分类：
+
+- 键生成代理产出 **186 个 `systemCategory.*` 三语键**（餐饮费→Dining/食費、房租→Rent/家賃、工资→Salary/給与、人情往来→Gifts & Social 等），合并后目录 **4066/4066/4066** 平衡。
+- `system-category-labels.ts` 映射表扩展至 **245 条**（60 投资/结算 + 186 收支模板 - 1 去重），覆盖全部 196 个模板分类名（覆盖校验：missing 0）。
+- 既有 wire 批接入的显示点（分类树/报表/明细/导入预览/表单选择器）自动受益——`systemCategoryLabel` 查映射表，无需再改调用点。
+- DB 存储/匹配逻辑继续不变（name 为存储与匹配标识，显示本地化）。
+
+目录平衡 **4066/4066/4066**，全项目 0 缺失键，全量 tsc 0 错误，check:encoding 640 文件 OK。

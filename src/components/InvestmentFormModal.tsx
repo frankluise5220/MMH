@@ -2173,7 +2173,7 @@ export function InvestmentFormModal({
         confirmMessage: t("investForm.deleteConfirm"),
       });
       if (!data.ok) {
-        if (data.error !== "已取消删除") window.alert(data.error ?? t("investForm.alert.deleteFailed"));
+        if (data.code !== "DELETE_CANCELLED" && data.error !== "已取消删除") window.alert(data.error ?? t("investForm.alert.deleteFailed"));
         return;
       }
       requestAnimationFrame(() => {

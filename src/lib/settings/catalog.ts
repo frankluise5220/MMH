@@ -29,6 +29,8 @@ export type SettingsCatalog = {
   groups: SettingsCatalogGroup[];
 };
 
+type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
+
 export const settingsCatalog = rawCatalog as SettingsCatalog;
 
 export function getSettingsCatalogForSurface(surface: SettingsSurface): SettingsCatalog {
@@ -54,4 +56,99 @@ export function findSettingsItem(id: string, surface?: SettingsSurface) {
     if (item) return item;
   }
   return null;
+}
+
+// ── Web localization ─────────────────────────────────────────────────────────
+// The shared catalog JSON keeps human-readable Chinese labels so Android and
+// the /api/v1/settings/catalog contract stay stable. Web rendering maps each
+// catalog id to an i18n key and falls back to the raw label when a key is
+// missing. Every key referenced here exists in all three catalogs (zh-CN,
+// en-US, ja-JP) in src/lib/i18n-core.ts.
+
+const SETTINGS_TITLE_KEY = "settings.catalogTitle";
+
+const SETTINGS_GROUP_LABEL_KEYS: Record<string, string> = {
+  profile: "settings.group.profile",
+  "master-data": "settings.group.masterData",
+  automation: "settings.group.automation",
+  display: "settings.group.display",
+  system: "settings.group.system",
+};
+
+const SETTINGS_GROUP_DESCRIPTION_KEYS: Record<string, string> = {
+  profile: "settings.group.profile.desc",
+  "master-data": "settings.group.masterData.desc",
+  automation: "settings.group.automation.desc",
+  display: "settings.group.display.desc",
+  system: "settings.group.system.desc",
+};
+
+const SETTINGS_ITEM_LABEL_KEYS: Record<string, string> = {
+  ledgers: "settings.ledgers",
+  users: "settings.users",
+  accounts: "settings.accounts",
+  institutions: "settings.institutions",
+  counterparties: "settings.counterparties",
+  "family-members": "settings.familyMembers",
+  categories: "settings.categories",
+  tags: "settings.tags",
+  email: "settings.emailAccounts",
+  "password-recovery": "settings.passwordRecovery",
+  ai: "settings.aiModels",
+  api: "settings.externalApi",
+  "fund-api": "settings.fundApi",
+  display: "settings.display",
+  database: "settings.database",
+  "system-update": "settings.systemUpdate",
+};
+
+const SETTINGS_ITEM_DESCRIPTION_KEYS: Record<string, string> = {
+  server: "settings.item.server.desc",
+  ledgers: "settings.item.ledgers.desc",
+  users: "settings.item.users.desc",
+  accounts: "settings.item.accounts.desc",
+  institutions: "settings.item.institutions.desc",
+  counterparties: "settings.item.counterparties.desc",
+  "family-members": "settings.item.family-members.desc",
+  categories: "settings.item.categories.desc",
+  tags: "settings.item.tags.desc",
+  email: "settings.item.email.desc",
+  "password-recovery": "settings.item.password-recovery.desc",
+  ai: "settings.item.ai.desc",
+  api: "settings.item.api.desc",
+  "fund-api": "settings.item.fund-api.desc",
+  display: "settings.item.display.desc",
+  "color-scheme": "settings.item.color-scheme.desc",
+  database: "settings.item.database.desc",
+  "system-update": "settings.item.system-update.desc",
+};
+
+function localize(t: TranslateFn, key: string | undefined, fallback: string): string {
+  return key ? t(key) : fallback;
+}
+
+export function localizeSettingsItem(t: TranslateFn, item: SettingsCatalogItem): SettingsCatalogItem {
+  return {
+    ...item,
+    label: localize(t, SETTINGS_ITEM_LABEL_KEYS[item.id], item.label),
+    description: localize(t, SETTINGS_ITEM_DESCRIPTION_KEYS[item.id], item.description),
+  };
+}
+
+export function localizeSettingsGroup(t: TranslateFn, group: SettingsCatalogGroup): SettingsCatalogGroup {
+  return {
+    ...group,
+    label: localize(t, SETTINGS_GROUP_LABEL_KEYS[group.id], group.label),
+    description: localize(t, SETTINGS_GROUP_DESCRIPTION_KEYS[group.id], group.description),
+    items: group.items.map((item) => localizeSettingsItem(t, item)),
+  };
+}
+
+export function localizeSettingsCatalog(t: TranslateFn, surface: SettingsSurface): SettingsCatalog {
+  const catalog = getSettingsCatalogForSurface(surface);
+  return {
+    ...catalog,
+    title: localize(t, SETTINGS_TITLE_KEY, catalog.title),
+    groups: catalog.groups.map((group) => localizeSettingsGroup(t, group)),
+  };
 }

@@ -7,6 +7,7 @@ import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 import { SettingsActionButton } from "@/components/settings/SettingsPageScaffold";
 import { fetchSettingsCategories, getCachedSettingsCategories, notifySettingsDataChanged, setSettingsCategories } from "@/lib/client/settingsCache";
 import { useI18n } from "@/lib/i18n";
+import { systemCategoryLabel } from "@/lib/system-category-labels";
 
 type I18nT = (key: string, params?: Record<string, string | number>) => string;
 
@@ -342,7 +343,7 @@ export default function SettingsCategoriesClient({
         opts.push({
           id: child.id,
           name: child.name,
-          label: `${typeLabel(t, child.type)} — ${child.name}`,
+          label: `${typeLabel(t, child.type)} — ${child.isSystem ? systemCategoryLabel(child.name, t) : child.name}`,
           type: child.type,
           depth,
           parentId: child.parentId ?? undefined,
@@ -387,7 +388,7 @@ export default function SettingsCategoriesClient({
               className="h-7 min-w-0 flex-1 rounded-md border border-blue-200 bg-white px-2 text-sm outline-none focus:border-blue-400"
             />
           ) : (
-            <span className={`text-sm flex-1 truncate ${isSelected ? "text-blue-700 font-medium" : "text-slate-700"}`}>{cat.name}</span>
+            <span className={`text-sm flex-1 truncate ${isSelected ? "text-blue-700 font-medium" : "text-slate-700"}`}>{cat.isSystem ? systemCategoryLabel(cat.name, t) : cat.name}</span>
           )}
           {cat.isSystem && <span className="text-[10px] text-slate-400 shrink-0">{t("settings.users.status.system")}</span>}
           {hasChildren && !isExpanded && <span className="text-[10px] text-slate-400 shrink-0">{children.length}</span>}
@@ -743,7 +744,7 @@ export default function SettingsCategoriesClient({
                             className="form-input h-8 min-w-0 flex-1"
                           />
                         ) : (
-                          <span className="min-w-0 flex-1 truncate text-sm text-slate-700">{child.name}</span>
+                          <span className="min-w-0 flex-1 truncate text-sm text-slate-700">{child.isSystem ? systemCategoryLabel(child.name, t) : child.name}</span>
                         )}
                         <div className="flex items-center gap-1">
                           {child.isSystem && <span className="text-[10px] text-slate-400">{t("settings.users.status.system")}</span>}

@@ -36,7 +36,7 @@ export type EntriesDeleteResponse =
       needConfirm?: boolean;
       impacts?: EntryBusinessDeleteImpact[];
     }
-  | { ok: false; error: string; needConfirm?: boolean; impacts?: EntryBusinessDeleteImpact[] };
+  | { ok: false; error: string; code?: string; needConfirm?: boolean; impacts?: EntryBusinessDeleteImpact[] };
 
 export type I18nT = (key: string, params?: Record<string, string | number>) => string;
 
@@ -119,7 +119,7 @@ export async function deleteEntriesWithLinkedPrompt({
       cancelLabel: t("common.cancel"),
       tone: "danger",
     });
-    if (!linkedAction) return { ok: false, error: "已取消删除" };
+    if (!linkedAction) return { ok: false, code: "DELETE_CANCELLED", error: "已取消删除" };
     return callDeleteEntries({ entryIds, linkedAction });
   }
 
@@ -130,7 +130,7 @@ export async function deleteEntriesWithLinkedPrompt({
     cancelLabel: t("common.cancel"),
     tone: "danger",
   });
-  if (!confirmed) return { ok: false, error: "已取消删除" };
+  if (!confirmed) return { ok: false, code: "DELETE_CANCELLED", error: "已取消删除" };
 
   return callDeleteEntries({ entryIds });
 }

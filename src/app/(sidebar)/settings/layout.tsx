@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { ChevronRight, Loader2, Settings } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { SettingsCatalogIcon } from "@/components/settings/SettingsCatalogIcon";
-import { getSettingsItemsForSurface } from "@/lib/settings/catalog";
+import { getSettingsItemsForSurface, localizeSettingsItem } from "@/lib/settings/catalog";
 
 const navItems = getSettingsItemsForSurface("web").filter((item) => item.webHref);
 
@@ -30,6 +30,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
         <div className="flex-1 overflow-y-auto py-2 px-2 space-y-0.5">
           {navItems.map((item) => {
             const href = item.webHref ?? "/settings";
+            const localized = localizeSettingsItem(t, item);
             const pending = pendingHref === href && pathname !== href;
             const active = pathname === href || pending;
             return (
@@ -47,7 +48,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
                 }`}
               >
                 <SettingsCatalogIcon icon={item.icon} className={`w-4 h-4 shrink-0 ${active ? "text-blue-500" : "text-slate-400"}`} />
-                <span className="truncate">{item.label}</span>
+                <span className="truncate">{localized.label}</span>
                 {pending ? (
                   <Loader2 className="ml-auto h-3.5 w-3.5 animate-spin text-blue-400" />
                 ) : active ? (

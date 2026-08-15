@@ -54,7 +54,7 @@ import kotlin.math.abs
 fun InvestOverviewScreen(
     showTopBar: Boolean = true,
     onBack: (() -> Unit)? = null,
-    onAccountClick: (accountId: String) -> Unit = {},
+    onAccountClick: (accountId: String, investProductType: String) -> Unit = { _, _ -> },
     viewModel: InvestOverviewViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -95,7 +95,7 @@ fun InvestOverviewScreen(
 private fun Content(
     uiState: InvestOverviewUiState,
     viewModel: InvestOverviewViewModel,
-    onAccountClick: (accountId: String) -> Unit,
+    onAccountClick: (accountId: String, investProductType: String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     var hideZeroAccounts by rememberSaveable { mutableStateOf(true) }
@@ -150,7 +150,7 @@ private fun Content(
                     visibleAccounts.forEach { account ->
                         InvestmentAccountCard(
                             account = account,
-                            onClick = { onAccountClick(account.accountId) }
+                            onClick = { onAccountClick(account.accountId, account.investProductType) }
                         )
                     }
                 }

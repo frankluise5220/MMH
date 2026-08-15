@@ -186,7 +186,9 @@ class AccountRepository @Inject constructor(
         groupName = groupName,
         institutionName = institutionName,
         institutionId = null,
-        costBasisMethod = null
+        costBasisMethod = null,
+        usageCount = usageCount,
+        lastUsedAt = lastUsedAt
     )
 
     private fun InvestmentAccountDto.toCacheEntity() = AccountCacheEntity(
@@ -219,7 +221,9 @@ class AccountRepository @Inject constructor(
         kind = kind,
         currency = currency,
         groupName = groupName,
-        institutionName = institutionName
+        institutionName = institutionName,
+        usageCount = usageCount,
+        lastUsedAt = lastUsedAt
     )
 
     private fun AccountCacheEntity.toInvestmentAccount() = InvestmentAccountDto(

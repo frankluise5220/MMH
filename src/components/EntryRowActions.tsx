@@ -144,7 +144,7 @@ export function EntryRowActions({
         confirmMessage: t("entryRowActions.deleteConfirm"),
       });
       if (!data?.ok) {
-        if (data?.error === "已取消删除") return;
+        if (data?.code === "DELETE_CANCELLED" || data?.error === "已取消删除") return;
         throw new Error(data?.error ?? t("entryRowActions.deleteFailed"));
       }
       const refreshEntryIds = getDeleteRefreshEntryIds(data, [entryId]);

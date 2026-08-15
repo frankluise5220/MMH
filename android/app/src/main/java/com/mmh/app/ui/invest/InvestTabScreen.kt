@@ -24,7 +24,9 @@ import kotlinx.coroutines.launch
 @Composable
 fun InvestTabScreen(
     onNavigateToFundDetail: (accountId: String, fundCode: String) -> Unit = { _, _ -> },
-    onNavigateToEntryEdit: (entryId: String) -> Unit = {}
+    onNavigateToEntryEdit: (entryId: String) -> Unit = {},
+    onNavigateToStockHoldings: (accountId: String) -> Unit = {},
+    onNavigateToPropertyAssets: (accountId: String) -> Unit = {}
 ) {
     val titles = listOf("投资总览", "基金持仓", "定投计划")
     val pagerState = rememberPagerState(pageCount = { titles.size })
@@ -66,9 +68,15 @@ fun InvestTabScreen(
             when (page) {
                 0 -> InvestOverviewScreen(
                     showTopBar = false,
-                    onAccountClick = { accountId ->
-                        selectedHoldingAccountId = accountId
-                        scope.launch { pagerState.animateScrollToPage(1) }
+                    onAccountClick = { accountId, investProductType ->
+                        when (investProductType) {
+                            "stock" -> onNavigateToStockHoldings(accountId)
+                            "property" -> onNavigateToPropertyAssets(accountId)
+                            else -> {
+                                selectedHoldingAccountId = accountId
+                                scope.launch { pagerState.animateScrollToPage(1) }
+                            }
+                        }
                     }
                 )
 

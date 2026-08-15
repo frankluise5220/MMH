@@ -62,7 +62,11 @@ function getInitialLoginSelection(users: LoginUserChoice[]) {
 
 export function LoginPageClient({ householdName }: { householdName: string | null }) {
   const [mode, setMode] = useState<LoginMode>("login");
-  const [checking, setChecking] = useState(false);
+  // Start in the checking state so the login form only renders after the
+  // password-status check resolves. Otherwise the form briefly shows without
+  // the book/user rows (2 rows) and then re-renders with them (3 rows),
+  // making the layout appear to flip between two different rule sets.
+  const [checking, setChecking] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -904,7 +908,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
             {!initialLedgerSetup && (
               <button
                 type="button"
-                className="w-full text-xs text-slate-500 hover:text-slate-700"
+                className="h-10 w-full rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
                 disabled={loading}
                 onClick={() => {
                   setError("");
@@ -920,7 +924,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                   setMode("login");
                 }}
               >
-                {t("login.enter")}
+                {t("login.backToLogin")}
               </button>
             )}
           </div>

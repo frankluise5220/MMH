@@ -6,14 +6,18 @@ import com.mmh.app.data.local.dao.AccountCacheDao
 import com.mmh.app.data.local.dao.CategoryCacheDao
 import com.mmh.app.data.local.dao.FundHoldingCacheDao
 import com.mmh.app.data.local.dao.FundNavCacheDao
+import com.mmh.app.data.local.dao.PropertyAssetCacheDao
 import com.mmh.app.data.local.dao.RegularInvestPlanCacheDao
+import com.mmh.app.data.local.dao.StockHoldingCacheDao
 import com.mmh.app.data.local.dao.SyncStateDao
 import com.mmh.app.data.local.dao.TransactionCacheDao
 import com.mmh.app.data.local.entity.AccountCacheEntity
 import com.mmh.app.data.local.entity.CategoryCacheEntity
 import com.mmh.app.data.local.entity.FundHoldingCacheEntity
 import com.mmh.app.data.local.entity.FundNavCacheEntity
+import com.mmh.app.data.local.entity.PropertyAssetCacheEntity
 import com.mmh.app.data.local.entity.RegularInvestPlanCacheEntity
+import com.mmh.app.data.local.entity.StockHoldingCacheEntity
 import com.mmh.app.data.local.entity.SyncStateEntity
 import com.mmh.app.data.local.entity.TransactionCacheEntity
 
@@ -29,9 +33,11 @@ import com.mmh.app.data.local.entity.TransactionCacheEntity
         FundHoldingCacheEntity::class,
         FundNavCacheEntity::class,
         RegularInvestPlanCacheEntity::class,
+        StockHoldingCacheEntity::class,
+        PropertyAssetCacheEntity::class,
         SyncStateEntity::class
     ],
-    version = 6,
+    version = 8,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -41,5 +47,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun fundHoldingCacheDao(): FundHoldingCacheDao
     abstract fun fundNavCacheDao(): FundNavCacheDao
     abstract fun regularInvestPlanCacheDao(): RegularInvestPlanCacheDao
+    abstract fun stockHoldingCacheDao(): StockHoldingCacheDao
+    abstract fun propertyAssetCacheDao(): PropertyAssetCacheDao
     abstract fun syncStateDao(): SyncStateDao
 }

@@ -273,6 +273,7 @@ export function SidebarClient({
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const { t } = useI18n();
   const currentAppUrl = useMemo(() => {
     const query = searchParams.toString();
     return query ? `${pathname}?${query}` : pathname;
@@ -313,7 +314,6 @@ export function SidebarClient({
     entries: [],
     index: -1,
   });
-  const { t } = useI18n();
   const householdId = household?.id ?? "";
   const ownerOptions = useMemo(
     () => Array.from(new Set(items.flatMap((item) => (item.children?.length ? item.children : [item])

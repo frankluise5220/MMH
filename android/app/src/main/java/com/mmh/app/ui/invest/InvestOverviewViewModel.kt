@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.mmh.app.data.repository.AccountRepository
 import com.mmh.app.data.repository.FundRepository
+import com.mmh.app.data.repository.PropertyRepository
+import com.mmh.app.data.repository.StockRepository
 import com.mmh.app.domain.model.Resource
 import com.mmh.app.ui.util.formatAccountDisplayName
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -16,6 +18,7 @@ import kotlinx.coroutines.launch
 data class InvestmentAccountOverviewRow(
     val accountId: String,
     val accountName: String,
+    val investProductType: String = "fund",
     val marketValue: Double,
     val totalCost: Double,
     val floatingPnL: Double,
@@ -34,7 +37,9 @@ data class InvestOverviewUiState(
 @HiltViewModel
 class InvestOverviewViewModel @Inject constructor(
     private val accountRepository: AccountRepository,
-    private val fundRepository: FundRepository
+    private val fundRepository: FundRepository,
+    private val stockRepository: StockRepository,
+    private val propertyRepository: PropertyRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(InvestOverviewUiState())
@@ -50,15 +55,26 @@ class InvestOverviewViewModel @Inject constructor(
             val cachedAccounts = accountRepository.getCachedInvestmentAccounts()
             if (cachedAccounts.isNotEmpty()) {
                 val holdings = fundRepository.getCachedHoldings()
+                val stockHoldings = stockRepository.getCachedHoldings()
+                val propertyAssets = propertyRepository.getCachedAssets()
                 val rows = cachedAccounts.map { account ->
                     val scopedHoldings = holdings.filter { it.accountId == account.id }
+                    val scopedStockHoldings = stockHoldings.filter { it.accountId == account.id }
+                    val scopedPropertyAssets = propertyAssets.filter { it.accountId == account.id }
                     InvestmentAccountOverviewRow(
                         accountId = account.id,
                         accountName = formatAccountDisplayName(account.name, account.institutionName),
-                        marketValue = scopedHoldings.sumOf { it.marketValue },
-                        totalCost = scopedHoldings.sumOf { it.cost },
-                        floatingPnL = scopedHoldings.sumOf { it.marketValue - it.cost },
-                        positionCount = scopedHoldings.size
+                        investProductType = account.investProductType,
+                        marketValue = scopedHoldings.sumOf { it.marketValue }
+                            + scopedStockHoldings.sumOf { it.marketValue }
+                            + scopedPropertyAssets.sumOf { it.marketValue },
+                        totalCost = scopedHoldings.sumOf { it.cost }
+                            + scopedStockHoldings.sumOf { it.cost }
+                            + scopedPropertyAssets.sumOf { it.cost },
+                        floatingPnL = scopedHoldings.sumOf { it.marketValue - it.cost }
+                            + scopedStockHoldings.sumOf { it.floatingPnL }
+                            + scopedPropertyAssets.sumOf { it.marketValue - it.cost },
+                        positionCount = scopedHoldings.size + scopedStockHoldings.size + scopedPropertyAssets.size
                     )
                 }
                 _uiState.value = InvestOverviewUiState(
@@ -82,6 +98,7 @@ class InvestOverviewViewModel @Inject constructor(
                                 accountRows += InvestmentAccountOverviewRow(
                                     accountId = account.id,
                                     accountName = formatAccountDisplayName(account.name, account.institutionName),
+                                    investProductType = account.investProductType,
                                     marketValue = shell.totalMarketValue,
                                     totalCost = shell.totalCost,
                                     floatingPnL = shell.totalMarketValue - shell.totalCost,

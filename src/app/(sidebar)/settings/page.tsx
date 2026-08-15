@@ -1,12 +1,12 @@
 import Link from "next/link";
 
 import { SettingsCatalogIcon } from "@/components/settings/SettingsCatalogIcon";
-import { getSettingsCatalogForSurface } from "@/lib/settings/catalog";
+import { getSettingsCatalogForSurface, localizeSettingsCatalog } from "@/lib/settings/catalog";
 import { getServerT } from "@/lib/server/i18n";
 
 export default async function SettingsPage() {
   const t = await getServerT();
-  const catalog = getSettingsCatalogForSurface("web");
+  const catalog = localizeSettingsCatalog(t, "web");
 
   return (
     <div className="mx-auto max-w-4xl space-y-3 md:space-y-4">

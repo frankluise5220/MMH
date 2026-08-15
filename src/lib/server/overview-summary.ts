@@ -3,6 +3,7 @@ import { AccountKind, TransactionType } from "@prisma/client";
 import { buildAccountDisplayOption, DEFAULT_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
+import { translate } from "@/lib/i18n-core";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
@@ -10,16 +11,7 @@ import { computeDebtDisplaySummary } from "@/lib/server/debt-display-summary";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { isLegacyDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { getIncomeExpenseStatisticAmount } from "@/lib/transaction-statistics";
-
-export const KIND_LABEL: Record<string, string> = {
-  cash: "现金",
-  bank_debit: "借记卡",
-  bank_credit: "信用卡",
-  ewallet: "电子钱包",
-  deposit: "存款",
-  loan: "债务/债权",
-  other: "其他",
-};
+import type { DisplayLanguage } from "@/lib/client/appPreferences";
 
 export const DAILY_KIND_ORDER: string[] = [
   AccountKind.cash,
@@ -125,7 +117,7 @@ function dateToIso(date: Date | null | undefined) {
   return date ? date.toISOString().slice(0, 10) : null;
 }
 
-function buildDistribution(rows: AccountListRow[]) {
+function buildDistribution(rows: AccountListRow[], language: DisplayLanguage) {
   const totals = new Map<string, number>();
   for (const kind of DAILY_KIND_ORDER) totals.set(kind, 0);
 
@@ -141,7 +133,7 @@ function buildDistribution(rows: AccountListRow[]) {
       const value = totals.get(kind) ?? 0;
       return {
         kind,
-        label: KIND_LABEL[kind] ?? kind,
+        label: translate(language, `account.kind.${kind}`),
         value,
         pct: totalAbs > 0 ? (Math.abs(value) / totalAbs) * 100 : 0,
       };
@@ -152,6 +144,7 @@ function buildDistribution(rows: AccountListRow[]) {
 export async function computeOverviewSummary(
   ctx: HouseholdContext,
   creditCardLabelTemplate: string = DEFAULT_CREDIT_CARD_LABEL_TEMPLATE,
+  language: DisplayLanguage = "zh-CN",
 ): Promise<OverviewSummary> {
   const { hidFilter } = ctx;
   const now = new Date();
@@ -260,7 +253,7 @@ export async function computeOverviewSummary(
       name: display.label,
       kind: account.summaryKind,
       balance: dailyAndDebtDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance),
-      groupName: account.AccountGroup?.name?.trim() || "未设置所有人",
+      groupName: account.AccountGroup?.name?.trim() || translate(language, "invest.noOwner"),
       institutionName: display.institutionName,
     };
   });
@@ -348,7 +341,7 @@ export async function computeOverviewSummary(
       name: isConsolidatedGroup && consolidatedInstitutionName ? consolidatedInstitutionName : display.label,
       kind: storageAccount.kind,
       balance,
-      groupName: storageAccount.AccountGroup?.name?.trim() || "未设置所有人",
+      groupName: storageAccount.AccountGroup?.name?.trim() || translate(language, "invest.noOwner"),
       institutionName: isConsolidatedGroup ? consolidatedInstitutionName : institutionName,
       creditLimit,
       availableLimit: Math.max(0, creditLimit - Math.max(0, balance)),
@@ -404,7 +397,7 @@ export async function computeOverviewSummary(
   const liquidAssets = cash + bankDebit + ewallet + deposit + Math.max(0, other);
   const liabilities = loan + creditUsedTotal;
   const dailyNetWorth = liquidAssets + loanReceivable + Math.min(0, other) - liabilities;
-  const dailyAssetDistribution = buildDistribution(dailyAccountList);
+  const dailyAssetDistribution = buildDistribution(dailyAccountList, language);
 
   const investBalByAccountId = await computeInvestBalances(ctx);
   const investmentAccountList: TopPositionRow[] = pureInvestmentAccounts

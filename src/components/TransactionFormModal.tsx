@@ -12,7 +12,7 @@ import { useAccountSSFilter } from "./accountSSFilter";
 import { kindLabel } from "@/lib/account-kinds";
 import { getCashTargetOperation } from "@/lib/account-kind-utils";
 import { buildAccountDisplayOption, buildGroupedAccountOptions } from "@/lib/account-display";
-import { recordRecentAccount, sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
+import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import {
   fetchSettingsAccountData,
@@ -26,6 +26,7 @@ import {
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { parseDateInputToUtc as dateInputToUtcDate } from "@/lib/date-utils";
+import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { useI18n } from "@/lib/i18n";
 import {
   buildCreditCardInstallmentSchedule,
@@ -504,7 +505,8 @@ export function TransactionFormModal({
     function walk(parentId: string | null, depth: number, pathPrefix: string) {
       const children = byParentId.get(parentId) ?? [];
       for (const child of children) {
-        const shortName = child.label.includes(".") ? child.label.split(".").pop() ?? child.label : child.label;
+        const rawShortName = child.label.includes(".") ? child.label.split(".").pop() ?? child.label : child.label;
+        const shortName = systemCategoryLabel(rawShortName, t);
         const fullLabel = pathPrefix ? `${pathPrefix}.${shortName}` : shortName;
         options.push({
           id: child.id,
@@ -523,7 +525,7 @@ export function TransactionFormModal({
     walk(null, 0, "");
 
     return options;
-  }, [categoryList, currentCategoryType]);
+  }, [categoryList, currentCategoryType, t]);
 
   /** Build hierarchical SmartSelect options for category dropdown.
    * All real categories are selectable. Categories with children are collapsible
@@ -545,7 +547,8 @@ export function TransactionFormModal({
     function walk(parentId: string | null, level: number, currentGroupId?: string) {
       const children = byParentId.get(parentId) ?? [];
       for (const child of children) {
-        const shortName = child.label.includes(".") ? child.label.split(".").pop() ?? child.label : child.label;
+        const rawShortName = child.label.includes(".") ? child.label.split(".").pop() ?? child.label : child.label;
+        const shortName = systemCategoryLabel(rawShortName, t);
         const grandChildren = byParentId.get(child.id) ?? [];
 
         if (grandChildren.length > 0) {
@@ -571,7 +574,7 @@ export function TransactionFormModal({
 
     walk(null, 0);
     return opts;
-  }, [categoryList]);
+  }, [categoryList, t]);
 
   useEffect(() => {
     const nextCategoryList = txType === "income" ? incomeCategories : txType === "advance" ? (advanceCategories ?? []) : expenseCategories;
@@ -696,7 +699,7 @@ export function TransactionFormModal({
     visibleOptionIds: transferVisibleOptionIds,
   } = useAccountSSFilter(localTransferAccountSSOpts, ownerFilter);
 
-  const recentAccountIds = useRecentAccountIds();
+  const accountUsage = useAccountUsage();
   const displayTransferOptions = useMemo(() => {
     const source = (transferFiltered?.length ? transferFiltered : localTransferAccountSSOpts) ?? [];
     const filtered = source.filter((option) => !option.isHeader);
@@ -713,8 +716,8 @@ export function TransactionFormModal({
     for (const option of selectedOptions) {
       if (!merged.some((item) => item.id === option.id)) merged.push(option);
     }
-    return sortOptionsByRecent(merged, recentAccountIds);
-  }, [fromAccountId, localTransferAccountSSOpts, recentAccountIds, stockCashAccountId, stockTransferMode, toAccountId, transferAccountList, transferFiltered, transferVisibleOptionIds]);
+    return sortByAccountUsage(merged, accountUsage);
+  }, [accountUsage, fromAccountId, localTransferAccountSSOpts, stockCashAccountId, stockTransferMode, toAccountId, transferAccountList, transferFiltered, transferVisibleOptionIds]);
 
   // Stock-to-cash transfer target: securities cash account of the current stock institution + cash accounts of the same owner.
   const stockTransferToOptions = useMemo(() => {
@@ -729,16 +732,16 @@ export function TransactionFormModal({
         ?? localTransferAccountSSOpts?.find((option) => option.id === stockCashAccountId && !option.isHeader);
       if (cashOption) merged.push(cashOption);
     }
-    return sortOptionsByRecent(merged, recentAccountIds);
-  }, [localTransferAccountSSOpts, recentAccountIds, stockCashAccountId, transferAccountList, transferFiltered, transferVisibleOptionIds]);
+    return sortByAccountUsage(merged, accountUsage);
+  }, [accountUsage, localTransferAccountSSOpts, stockCashAccountId, transferAccountList, transferFiltered, transferVisibleOptionIds]);
 
   const displayAccountOptions = useMemo(() => {
     let base = mergeSmartSelectOptions(accountSSOptionsFiltered, accountList);
     if (accountVisibleOptionIds) {
       base = base.filter((option) => accountVisibleOptionIds.has(option.id));
     }
-    return sortOptionsByRecent(base, recentAccountIds);
-  }, [accountSSOptionsFiltered, accountList, accountVisibleOptionIds, recentAccountIds]);
+    return sortByAccountUsage(base, accountUsage);
+  }, [accountSSOptionsFiltered, accountList, accountUsage, accountVisibleOptionIds]);
   const incomeExpenseInstitutionOptions = useMemo(
     () => filterIncomeExpenseInstitutions(localNestedFieldData?.institutionId ?? nestedFieldData?.institutionId ?? []),
     [localNestedFieldData, nestedFieldData],

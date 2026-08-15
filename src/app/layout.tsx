@@ -1,8 +1,12 @@
 import "./globals.css";
 import Script from "next/script";
 import type { Metadata, Viewport } from "next";
+import { cookies } from "next/headers";
 import { ModalDragController } from "@/components/ModalDragController";
 import { PwaServiceWorkerRegistration } from "@/components/PwaServiceWorkerRegistration";
+import { I18nProvider } from "@/components/I18nProvider";
+import { DISPLAY_LANGUAGE_COOKIE } from "@/lib/server/i18n";
+import type { DisplayLanguage } from "@/lib/client/appPreferences";
 
 export const metadata: Metadata = {
   applicationName: "MoneyMoneyHome",
@@ -37,18 +41,22 @@ export const viewport: Viewport = {
   colorScheme: "light",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const store = await cookies();
+  const raw = store.get(DISPLAY_LANGUAGE_COOKIE)?.value;
+  const displayLanguage: DisplayLanguage = raw === "en-US" || raw === "ja-JP" ? raw : "zh-CN";
+
   return (
-    <html lang="zh-CN" suppressHydrationWarning>
+    <html lang={displayLanguage} suppressHydrationWarning>
       <body
         suppressHydrationWarning
         className="antialiased h-screen overflow-x-hidden overflow-y-hidden"
       >
-        {children}
+        <I18nProvider initialLanguage={displayLanguage}>{children}</I18nProvider>
         <ModalDragController />
         <PwaServiceWorkerRegistration />
         <Script

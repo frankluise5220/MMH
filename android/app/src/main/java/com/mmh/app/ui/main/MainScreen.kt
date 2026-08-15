@@ -50,8 +50,10 @@ import com.mmh.app.ui.navigation.NavRoutes
 import com.mmh.app.ui.statistics.StatisticsScreen
 import com.mmh.app.ui.overview.OverviewScreen
 import com.mmh.app.ui.regularinvest.RegularInvestListScreen
+import com.mmh.app.ui.property.PropertyAssetsScreen
 import com.mmh.app.ui.settings.ServerSettingsScreen
 import com.mmh.app.ui.settings.SettingsScreen
+import com.mmh.app.ui.stocks.StockHoldingsScreen
 import com.mmh.app.ui.transactions.TransactionFormScreen
 import com.mmh.app.ui.transactions.TransactionListScreen
 
@@ -106,9 +108,6 @@ fun MainScreen(
                     onNavigateToAddTransaction = {
                         navController.navigate(NavRoutes.transactionForm("expense"))
                     },
-                    onNavigateToFundDetail = { accountId, fundCode ->
-                        navController.navigate(NavRoutes.fundDetail(accountId, fundCode))
-                    },
                     onNavigateToAccountDetail = { accountId, accountName ->
                         navController.navigate(NavRoutes.accountDetail(accountId, accountName))
                     }
@@ -134,6 +133,12 @@ fun MainScreen(
                     },
                     onNavigateToEntryEdit = { entryId ->
                         navController.navigate(NavRoutes.transactionFormEdit(entryId))
+                    },
+                    onNavigateToStockHoldings = { accountId ->
+                        navController.navigate(NavRoutes.stockHoldings(accountId))
+                    },
+                    onNavigateToPropertyAssets = { accountId ->
+                        navController.navigate(NavRoutes.propertyAssets(accountId))
                     }
                 )
             }
@@ -148,6 +153,40 @@ fun MainScreen(
                 ServerSettingsScreen(
                     onBack = { navController.popBackStack() },
                     onLogout = onLogout
+                )
+            }
+
+            composable(
+                route = NavRoutes.STOCK_HOLDINGS,
+                arguments = listOf(
+                    navArgument("accountId") {
+                        type = NavType.StringType
+                        defaultValue = ""
+                    }
+                )
+            ) { backStackEntry ->
+                val accountId = backStackEntry.arguments?.getString("accountId") ?: ""
+                StockHoldingsScreen(
+                    accountId = accountId,
+                    showTopBar = true,
+                    onBack = { navController.popBackStack() }
+                )
+            }
+
+            composable(
+                route = NavRoutes.PROPERTY_ASSETS,
+                arguments = listOf(
+                    navArgument("accountId") {
+                        type = NavType.StringType
+                        defaultValue = ""
+                    }
+                )
+            ) { backStackEntry ->
+                val accountId = backStackEntry.arguments?.getString("accountId") ?: ""
+                PropertyAssetsScreen(
+                    accountId = accountId,
+                    showTopBar = true,
+                    onBack = { navController.popBackStack() }
                 )
             }
 

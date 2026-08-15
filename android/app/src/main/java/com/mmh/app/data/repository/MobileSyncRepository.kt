@@ -5,14 +5,18 @@ import com.mmh.app.data.local.dao.AccountCacheDao
 import com.mmh.app.data.local.dao.CategoryCacheDao
 import com.mmh.app.data.local.dao.FundHoldingCacheDao
 import com.mmh.app.data.local.dao.FundNavCacheDao
+import com.mmh.app.data.local.dao.PropertyAssetCacheDao
 import com.mmh.app.data.local.dao.RegularInvestPlanCacheDao
+import com.mmh.app.data.local.dao.StockHoldingCacheDao
 import com.mmh.app.data.local.dao.SyncStateDao
 import com.mmh.app.data.local.dao.TransactionCacheDao
 import com.mmh.app.data.local.entity.AccountCacheEntity
 import com.mmh.app.data.local.entity.CategoryCacheEntity
 import com.mmh.app.data.local.entity.FundHoldingCacheEntity
 import com.mmh.app.data.local.entity.FundNavCacheEntity
+import com.mmh.app.data.local.entity.PropertyAssetCacheEntity
 import com.mmh.app.data.local.entity.RegularInvestPlanCacheEntity
+import com.mmh.app.data.local.entity.StockHoldingCacheEntity
 import com.mmh.app.data.local.entity.SyncStateEntity
 import com.mmh.app.data.local.entity.TransactionCacheEntity
 import com.mmh.app.data.remote.api.MobileSyncApi
@@ -20,6 +24,8 @@ import com.mmh.app.data.remote.dto.CategoryItemDto
 import com.mmh.app.data.remote.dto.MobileSyncAccountDto
 import com.mmh.app.data.remote.dto.MobileSyncFundHoldingDto
 import com.mmh.app.data.remote.dto.MobileSyncFundNavDto
+import com.mmh.app.data.remote.dto.MobileSyncPropertyAssetDto
+import com.mmh.app.data.remote.dto.MobileSyncStockHoldingDto
 import com.mmh.app.data.remote.dto.RegularInvestPlanDto
 import com.mmh.app.data.remote.dto.TransactionDto
 import com.mmh.app.domain.model.Resource
@@ -35,6 +41,8 @@ data class MobileSyncSummary(
     val fundHoldingCount: Int = 0,
     val fundNavCount: Int = 0,
     val regularInvestPlanCount: Int = 0,
+    val stockHoldingCount: Int = 0,
+    val propertyAssetCount: Int = 0,
     val serverTime: String = ""
 )
 
@@ -45,7 +53,9 @@ class MobileSyncRepository @Inject constructor(
     private val categoryCacheDao: CategoryCacheDao,
     private val fundHoldingCacheDao: FundHoldingCacheDao,
     private val fundNavCacheDao: FundNavCacheDao,
+    private val propertyAssetCacheDao: PropertyAssetCacheDao,
     private val regularInvestPlanCacheDao: RegularInvestPlanCacheDao,
+    private val stockHoldingCacheDao: StockHoldingCacheDao,
     private val transactionCacheDao: TransactionCacheDao,
     private val syncStateDao: SyncStateDao,
     private val tokenProvider: TokenProvider
@@ -76,6 +86,8 @@ class MobileSyncRepository @Inject constructor(
                 fundHoldingCacheDao.clearAll()
                 fundNavCacheDao.clearAll()
                 regularInvestPlanCacheDao.clearAll()
+                stockHoldingCacheDao.clearAll()
+                propertyAssetCacheDao.clearAll()
                 transactionCacheDao.clearAll()
             }
 
@@ -105,6 +117,12 @@ class MobileSyncRepository @Inject constructor(
             if (body.regularInvestPlans.isNotEmpty()) {
                 regularInvestPlanCacheDao.upsertAll(body.regularInvestPlans.map { it.toCacheEntity() })
             }
+            if (body.stockHoldings.isNotEmpty()) {
+                stockHoldingCacheDao.upsertAll(body.stockHoldings.map { it.toCacheEntity() })
+            }
+            if (body.propertyAssets.isNotEmpty()) {
+                propertyAssetCacheDao.upsertAll(body.propertyAssets.map { it.toCacheEntity() })
+            }
 
             if (!body.hasMore && body.serverTime.isNotBlank()) {
                 syncStateDao.upsert(SyncStateEntity(key = key, lastSyncAt = body.serverTime))
@@ -122,6 +140,8 @@ class MobileSyncRepository @Inject constructor(
                     fundHoldingCount = body.fundHoldings.size,
                     fundNavCount = body.fundNav.size,
                     regularInvestPlanCount = body.regularInvestPlans.size,
+                    stockHoldingCount = body.stockHoldings.size,
+                    propertyAssetCount = body.propertyAssets.size,
                     serverTime = body.serverTime
                 )
             )
@@ -282,6 +302,40 @@ class MobileSyncRepository @Inject constructor(
         memo = memo,
         skipPendingPreceding = skipPendingPreceding,
         createdAt = createdAt,
+        updatedAt = updatedAt
+    )
+
+    private fun MobileSyncStockHoldingDto.toCacheEntity() = StockHoldingCacheEntity(
+        id = id,
+        accountId = accountId,
+        securityId = securityId,
+        market = market,
+        stockCode = stockCode,
+        stockName = stockName,
+        quantity = quantity,
+        avgCost = avgCost,
+        cost = cost,
+        latestPrice = latestPrice,
+        marketValue = marketValue,
+        floatingPnL = floatingPnL,
+        historicalProfit = historicalProfit,
+        updatedAt = updatedAt
+    )
+
+    private fun MobileSyncPropertyAssetDto.toCacheEntity() = PropertyAssetCacheEntity(
+        id = id,
+        accountId = accountId,
+        name = name,
+        propertyType = propertyType,
+        address = address,
+        currency = currency,
+        purchaseDate = purchaseDate,
+        purchasePrice = purchasePrice,
+        cost = cost,
+        marketValue = marketValue,
+        latestValuationDate = latestValuationDate,
+        status = status,
+        note = note,
         updatedAt = updatedAt
     )
 }

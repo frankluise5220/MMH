@@ -167,7 +167,7 @@ export async function loadDepositTransactionDetailLike(params: {
       fundName: row.productName ?? "",
       fundProductType: "deposit",
       fundSubtype: row.action,
-      fundNav: row.annualRate,
+      fundNav: row.annualRate == null ? null : toNumber(row.annualRate),
       fundConfirmDate: null,
       fundArrivalDate: ymd(row.arrivalDate ?? row.maturityDate),
       fundArrivalAmount: row.arrivalAmount,

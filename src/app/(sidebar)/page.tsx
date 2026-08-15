@@ -63,6 +63,7 @@ import {
   loadWealthTransactionEntryLike,
 } from "@/lib/server/business-transaction-entries";
 import { getInsuranceDetailCategoryName, getInsuranceDetailNote } from "@/lib/insurance/detail-display";
+import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { insuranceCashValueDelta } from "@/lib/insurance/transaction";
 import { loadCommonData, loadSelectedAccount, loadEntriesForAccount, loadInvestAccountData } from "@/lib/server/cached-data";
@@ -106,10 +107,11 @@ import {
 } from "@/lib/detail-pagination-preference";
 import type { CreditCardInstallmentRateType } from "@/lib/credit/installment";
 import { getServerT } from "@/lib/server/i18n";
+import { touchAccountUsage } from "@/lib/server/account-usage";
 
 export const dynamic = "force-dynamic";
 
-import { formatDateLocal, formatDateUtc, toStatementMonth, toNumber, addWorkdaysUtc } from "@/lib/date-utils";
+import { formatDateLocal, formatDateUtc, toStatementMonth, toNumber, addWorkdaysUtc, parseDateInputToUtc } from "@/lib/date-utils";
 
 function dateFromYmd(value: string | null | undefined): Date | null {
   const text = String(value ?? "").trim();
@@ -330,6 +332,37 @@ function toYmdOrNull(value: unknown) {
   return date ? ymdUtc(date) : null;
 }
 
+/**
+ * Day count between two YYYY-MM-DD dates (both parsed as UTC midnight to avoid
+ * timezone drift). Returns a non-negative integer; 0 when either side is invalid.
+ */
+function diffYmdDays(start: string, end: string): number {
+  const s = parseDateInputToUtc(start);
+  const e = parseDateInputToUtc(end);
+  if (!s || !e) return 0;
+  return Math.max(0, Math.round((e.getTime() - s.getTime()) / 86400000));
+}
+
+/**
+ * Expected interest for a held deposit certificate, following the same simple
+ * interest convention used by the deposit form: principal x annual rate (%) x
+ * term days / 365. Falls back to days up to today when the maturity date is
+ * missing. Returns null when any required input is unavailable.
+ */
+function calcDepositExpectedInterest(params: {
+  principal: number;
+  annualRate: number | null | undefined;
+  startDate: string | null | undefined;
+  maturityDate: string | null | undefined;
+  today: string;
+}): number | null {
+  const { principal, annualRate, startDate, maturityDate, today } = params;
+  if (!(principal > 0) || annualRate == null || annualRate <= 0 || !startDate) return null;
+  const days = diffYmdDays(startDate, maturityDate ?? today);
+  if (days <= 0) return null;
+  return Number(((principal * (annualRate / 100) * days) / 365).toFixed(2));
+}
+
 function buildCategoryPathLabels(categories: Array<{ id: string; name: string; type: string; parentId: string | null }>) {
   const labelById = new Map<string, string>();
   for (const c of categories) {
@@ -377,7 +410,7 @@ function buildCategoryExportLabels(
     if (exportNames[0] === formatType(t, c.type) || rootLabels.has(exportNames[0] ?? "")) {
       exportNames.shift();
     }
-    labelById.set(c.id, exportNames.join("."));
+    labelById.set(c.id, exportNames.map((name) => systemCategoryLabel(name, t)).join("."));
   }
   return labelById;
 }
@@ -1306,6 +1339,7 @@ async function createTransaction(formData: FormData) {
           ? [String(formData.get("accountId") ?? "").trim(), String(formData.get("cashAccountId") ?? "").trim()]
           : [String(formData.get("accountId") ?? "").trim()];
     await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(() => {});
+    await touchAccountUsage(touchedAccountIds);
     if (type === "investment") revalidateAfterInvestChange();
     else revalidateAfterTxChange();
     return { ok: true as const };
@@ -3010,12 +3044,12 @@ export default async function Home({
   const exportCategoryLabels = buildCategoryExportLabels(t, categories);
   const getExportCategoryName = (e: (typeof filteredEntries2)[number]) => {
     if (isCreditCardRepaymentForDisplay(e)) return t("transaction.category.creditCardRepayment");
-    if (e.categoryId) return exportCategoryLabels.get(e.categoryId) ?? stripExportCategoryRootLabel(e.categoryName);
+    if (e.categoryId) return exportCategoryLabels.get(e.categoryId) ?? systemCategoryLabel(stripExportCategoryRootLabel(e.categoryName), t);
     if (e.type === TransactionType.investment) {
       if (e.source === "insurance") return getInsuranceDetailCategoryName(e);
-      return stripExportCategoryRootLabel(e.categoryName) || getInvestmentCategoryName(e) || "";
+      return systemCategoryLabel(stripExportCategoryRootLabel(e.categoryName), t) || systemCategoryLabel(getInvestmentCategoryName(e), t) || "";
     }
-    return stripExportCategoryRootLabel(e.categoryName);
+    return systemCategoryLabel(stripExportCategoryRootLabel(e.categoryName), t);
   };
   const normalExportRows = (() => {
     const rows = [[
@@ -3122,7 +3156,7 @@ export default async function Home({
           const hasChildren = (childrenByParentId.get(child.id) ?? []).length > 0;
           options.push({
             value: child.id,
-            label: `${indent.repeat(level)}${child.name}`,
+            label: `${indent.repeat(level)}${systemCategoryLabel(child.name, t)}`,
             subLabel: typeLabels[type] ?? type,
             parentId: parentOptionId,
             isGroup: hasChildren,
@@ -3886,7 +3920,9 @@ export default async function Home({
           ...(currentDepositTransactionEntries || []).map((entry) => {
             const depositSubtype = String(entry.fundSubtype ?? "");
             const isRedeemEntry = depositSubtype === "redeem" || depositSubtype === "switch_out";
-            const cashAccountLabel = isRedeemEntry ? (entry.toAccountName ?? "") : (entry.accountName ?? "");
+            const cashAccountLabel = isRedeemEntry
+              ? (entry.toAccountId ? (accountLabelById.get(entry.toAccountId) ?? entry.toAccountName ?? "") : (entry.toAccountName ?? ""))
+              : (entry.accountId ? (accountLabelById.get(entry.accountId) ?? entry.accountName ?? "") : (entry.accountName ?? ""));
             const entryDate = toYmdOrNull(entry.date) ?? "";
             const arrivalDate = toYmdOrNull(entry.fundArrivalDate);
             return {
@@ -3955,7 +3991,9 @@ export default async function Home({
                 typeLabel,
                 fundName: entry.categoryName ?? "",
                 maturityDate: null,
-                cashAccountLabel: isDepositReceivingSide ? (entry.accountName ?? "") : (entry.toAccountName ?? ""),
+                cashAccountLabel: isDepositReceivingSide
+                  ? (entry.accountId ? (accountLabelById.get(entry.accountId) ?? entry.accountName ?? "") : (entry.accountName ?? ""))
+                  : (entry.toAccountId ? (accountLabelById.get(entry.toAccountId) ?? entry.toAccountName ?? "") : (entry.toAccountName ?? "")),
                 note: entry.note ?? "",
                 amount: effectiveAmount,
                 businessLinkCount: 0,
@@ -4316,10 +4354,26 @@ export default async function Home({
     return allLots
       .map((lot) => {
         const sourceEntry = sourceEntryById.get(lot.id);
+        const originalAmount = Number(Math.abs(toNumber(sourceEntry?.fundArrivalAmount ?? sourceEntry?.amount ?? lot.remainingAmount)).toFixed(2));
+        const annualRate = (() => {
+          if (sourceEntry?.depositAnnualRate != null) return toNumber(sourceEntry.depositAnnualRate);
+          return sourceEntry?.fundNav != null ? toNumber(sourceEntry.fundNav) : null;
+        })();
+        const startDate = toYmdOrNull(sourceEntry?.date);
+        const expectedInterest =
+          lot.remainingAmount > 0.0001
+            ? calcDepositExpectedInterest({
+                principal: originalAmount,
+                annualRate,
+                startDate,
+                maturityDate: lot.maturityDate,
+                today: formatDateUtc(new Date()),
+              })
+            : null;
         return {
           id: lot.id,
           label: lot.fundName,
-          originalAmount: Number(Math.abs(toNumber(sourceEntry?.fundArrivalAmount ?? sourceEntry?.amount ?? lot.remainingAmount)).toFixed(2)),
+          originalAmount,
           subLabel: [
             lot.depositAccountName,
             lot.maturityDate ? t("sidebar.depositLot.maturity", { date: lot.maturityDate }) : "",
@@ -4328,14 +4382,12 @@ export default async function Home({
             .filter(Boolean)
             .join(" · "),
           fundName: lot.fundName,
-          startDate: toYmdOrNull(sourceEntry?.date),
+          startDate,
           maturityDate: lot.maturityDate,
           remainingAmount: Number(lot.remainingAmount.toFixed(2)),
           status: lot.remainingAmount > 0.0001 ? "open" as const : "closed" as const,
-          annualRate: (() => {
-            if (sourceEntry?.depositAnnualRate != null) return toNumber(sourceEntry.depositAnnualRate);
-            return sourceEntry?.fundNav != null ? toNumber(sourceEntry.fundNav) : null;
-          })(),
+          annualRate,
+          expectedInterest,
           depositAccountId: lot.depositAccountId,
           depositAccountLabel: lot.depositAccountName,
           relatedEntryIds: lot.relatedEntryIds,
@@ -4907,6 +4959,7 @@ export default async function Home({
               institutionName={selectedAccount.Institution?.name ?? ""}
               entries={depositEntries}
               lots={depositLots}
+              cashAccounts={cashAccountList}
             />
           ) : view === "insurance" && selectedAccount ? (
             <InsuranceShell

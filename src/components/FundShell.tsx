@@ -70,6 +70,11 @@ function fl(t: (key: string) => string, subtype: string | null | undefined, sour
 
 function fmtDate(v: any) { if (!v) return ""; const s = typeof v === "string" ? v : v?.toISOString?.(); return s ? s.slice(0, 10) : ""; }
 
+function compactNavDate(value: string | null | undefined) {
+  const date = String(value ?? "").slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? `${date.slice(5, 7)}.${date.slice(8, 10)}` : String(value ?? "");
+}
+
 function isGenericFundName(name: string, code: string) {
   const value = name.trim();
   if (!value || value === code) return true;
@@ -2070,7 +2075,7 @@ export function FundShell(props: Props) {
             <div className="flex min-w-0 items-center justify-end gap-0.5">
               <span className="min-w-0 truncate">
                 {displayNav != null ? toNumber(displayNav).toFixed(4) : "-"}
-                {displayNavDate ? <span className="ml-0.5 text-slate-400">({displayNavDate})</span> : null}
+                {displayNavDate ? <span className="ml-0.5 text-slate-400">({compactNavDate(displayNavDate)})</span> : null}
               </span>
             </div>
           );
@@ -2408,7 +2413,7 @@ export function FundShell(props: Props) {
 
       if (!data.ok) {
 
-        if (data.error === "已取消删除") return;
+        if (data.code === "DELETE_CANCELLED" || data.error === "已取消删除") return;
         setBatchDeleteMessage(data.error ?? t("stockPanel.error.batchDeleteFailed"));
 
         return;
@@ -2455,7 +2460,7 @@ export function FundShell(props: Props) {
         counterpartRecordLabel: t("fundShell.counterpartRecord"),
       });
       if (!data.ok) {
-        if (data.error === "已取消删除") return;
+        if (data.code === "DELETE_CANCELLED" || data.error === "已取消删除") return;
         setBatchDeleteMessage(data.error ?? t("fundShell.deleteFailed"));
         return;
       }
@@ -3509,7 +3514,7 @@ export function FundShell(props: Props) {
               </div>
             ) : null}
 
-            <span className="shrink-0">{t("fundShell.entriesTitle")}</span>
+            <span className="flex h-6 shrink-0 items-center">{t("fundShell.entriesTitle")}</span>
 
             {fundCode && (
               <span className={`ml-2 text-xs font-normal ${selectedFundCodeCls}`}>

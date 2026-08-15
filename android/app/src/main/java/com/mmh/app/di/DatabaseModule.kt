@@ -7,7 +7,9 @@ import com.mmh.app.data.local.dao.AccountCacheDao
 import com.mmh.app.data.local.dao.CategoryCacheDao
 import com.mmh.app.data.local.dao.FundHoldingCacheDao
 import com.mmh.app.data.local.dao.FundNavCacheDao
+import com.mmh.app.data.local.dao.PropertyAssetCacheDao
 import com.mmh.app.data.local.dao.RegularInvestPlanCacheDao
+import com.mmh.app.data.local.dao.StockHoldingCacheDao
 import com.mmh.app.data.local.dao.SyncStateDao
 import com.mmh.app.data.local.dao.TransactionCacheDao
 import dagger.Module
@@ -50,6 +52,12 @@ object DatabaseModule {
 
     @Provides
     fun provideRegularInvestPlanCacheDao(db: AppDatabase): RegularInvestPlanCacheDao = db.regularInvestPlanCacheDao()
+
+    @Provides
+    fun provideStockHoldingCacheDao(db: AppDatabase): StockHoldingCacheDao = db.stockHoldingCacheDao()
+
+    @Provides
+    fun providePropertyAssetCacheDao(db: AppDatabase): PropertyAssetCacheDao = db.propertyAssetCacheDao()
 
     @Provides
     fun provideSyncStateDao(db: AppDatabase): SyncStateDao = db.syncStateDao()

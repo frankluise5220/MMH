@@ -104,10 +104,10 @@ function SettingRow({
 }
 
 export default function DisplaySettingsPage() {
-  const { t } = useI18n();
+  const { t, language: currentLanguage } = useI18n();
   const [scheme, setScheme] = useState<ColorScheme>("red_up_green_down");
   const [schemeDraft, setSchemeDraft] = useState<ColorScheme>("red_up_green_down");
-  const [displayLanguage, setDisplayLanguage] = useState<DisplayLanguage>("zh-CN");
+  const [displayLanguage, setDisplayLanguage] = useState<DisplayLanguage>(currentLanguage);
   const [baseCurrency, setBaseCurrency] = useState("CNY");
   const [timeZoneMode, setTimeZoneMode] = useState<TimeZoneMode>("system");
   const [timeZone, setTimeZone] = useState("Asia/Shanghai");

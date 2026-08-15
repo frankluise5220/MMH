@@ -23,6 +23,7 @@ import {
 } from "@/lib/client/colors";
 import { fetchSettingsBootstrap, type SettingsCategory } from "@/lib/client/settingsCache";
 import { uniqueStatementInfoTexts } from "@/lib/statement/preview-meta";
+import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { useI18n } from "@/lib/i18n";
 
 type BookAccount = {
@@ -400,7 +401,7 @@ function buildCategoryOptions(categories: BookCategory[], txType: StatementImpor
         const hasChildren = (childrenByParentId.get(child.id) ?? []).length > 0;
         options.push({
           value: child.id,
-          label: `${indent.repeat(level)}${child.name}`,
+          label: `${indent.repeat(level)}${systemCategoryLabel(child.name, t)}`,
           subLabel: scopedToOneType ? undefined : typeLabels[type] ?? type,
           parentId: parentOptionId,
           isGroup: hasChildren,
@@ -1089,7 +1090,7 @@ export function StatementImportPreviewDialog({
       label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.category),
       width: 110,
       minWidth: 88,
-      filterText: (row) => row.item.category?.trim() || t("batchImport.emptyValue"),
+      filterText: (row) => systemCategoryLabel(row.item.category, t) || t("batchImport.emptyValue"),
       render: (row) => (
         <div className="whitespace-nowrap text-slate-700" {...editableCellProps(row.key, "category")}>
           {editingPreviewCell?.rowKey === row.key && editingPreviewCell.field === "category" ? (
@@ -1108,7 +1109,7 @@ export function StatementImportPreviewDialog({
               />
             </div>
           ) : (
-            <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title={t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.category) })}>{row.item.category || "-"}</span>
+            <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title={t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.category) })}>{systemCategoryLabel(row.item.category, t) || "-"}</span>
           )}
         </div>
       ),

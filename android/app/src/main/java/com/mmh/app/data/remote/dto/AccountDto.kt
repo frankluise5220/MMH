@@ -61,7 +61,9 @@ data class ExternalAccountSummaryDto(
     val kind: String = "other",
     val currency: String = "CNY",
     val groupName: String? = null,
-    val institutionName: String? = null
+    val institutionName: String? = null,
+    val usageCount: Int = 0,
+    val lastUsedAt: String? = null
 )
 
 @Serializable

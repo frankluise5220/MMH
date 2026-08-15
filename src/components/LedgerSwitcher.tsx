@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, RefObject } from "react";
+import { useCallback, useState, useEffect, useRef, RefObject } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { Plus, Check, Pencil, X, Trash2, Shield } from "lucide-react";
@@ -26,6 +26,7 @@ export function LedgerSwitcher({
   const [households, setHouseholds] = useState<Household[]>([]);
   const [isAdminUser, setIsAdminUser] = useState(false);
   const [isSystemUser, setIsSystemUser] = useState(false);
+  const [householdsLoaded, setHouseholdsLoaded] = useState(false);
   const [newName, setNewName] = useState("");
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -54,15 +55,10 @@ export function LedgerSwitcher({
   const [deleteError, setDeleteError] = useState("");
   const [deleting, setDeleting] = useState(false);
 
-  useEffect(() => {
-    if (!open) {
-      setSwitchTargetId(null);
-      setSwitchUsername("");
-      setSwitchPassword("");
-      setSwitchError("");
-      return;
-    }
-    fetch("/api/v1/households")
+  // Load the household list once at mount so the first open of the switcher
+  // shows data instantly instead of an empty panel while the fetch runs.
+  const loadHouseholds = useCallback(() => {
+    return fetch("/api/v1/households")
       .then(r => r.json())
       .then(d => {
         if (d.ok) {
@@ -71,8 +67,26 @@ export function LedgerSwitcher({
           setIsSystemUser(d.isSystem ?? false);
         }
       })
-      .catch(() => {});
-  }, [open]);
+      .catch(() => {})
+      .finally(() => setHouseholdsLoaded(true));
+  }, []);
+
+  useEffect(() => {
+    void loadHouseholds();
+  }, [loadHouseholds]);
+
+  useEffect(() => {
+    if (!open) {
+      setSwitchTargetId(null);
+      setSwitchUsername("");
+      setSwitchPassword("");
+      setSwitchError("");
+      return;
+    }
+    // Refresh in the background; the previously loaded list stays visible so
+    // reopening never shows a blank panel.
+    void loadHouseholds();
+  }, [open, loadHouseholds]);
 
   const showSwitchList = isAdminUser || households.length > 1;
 
@@ -302,10 +316,10 @@ export function LedgerSwitcher({
       })()
     : { position: "fixed", left: 8, top: 8, zIndex: 50 };
 
-  const hasData = households.length > 0;
-
   if (!open) return null;
-  if (!showSwitchList && hasData && households.length <= 1) return null;
+  // Before the first fetch resolves we cannot know whether switching is
+  // available; show the panel with a loading hint instead of nothing.
+  if (householdsLoaded && !showSwitchList) return null;
 
   const content = (
     <>
@@ -318,7 +332,9 @@ export function LedgerSwitcher({
             {t("ledgerSwitch.switchLedger")}
           </div>
           <div className="max-h-[40vh] overflow-y-auto">
-            {households.map((h) => {
+            {households.length === 0 && !householdsLoaded ? (
+              <div className="px-3 py-2 text-xs text-foreground/40">{t("ledgerSwitch.loading")}</div>
+            ) : households.map((h) => {
               const isActive = current?.id === h.id;
               const isEditing = editingId === h.id;
               const displayName = getHouseholdDisplayName(h);

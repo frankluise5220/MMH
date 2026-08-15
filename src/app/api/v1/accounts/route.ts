@@ -623,8 +623,12 @@ export async function GET(req: Request) {
       currency: account.currency,
       groupName: account.kind === AccountKind.loan ? "" : account.AccountGroup?.name ?? "",
       institutionName: account.Institution?.name ?? "",
+      usageCount: account.usageCount,
+      lastUsedAt: account.lastUsedAt ? account.lastUsedAt.toISOString() : null,
     }))
-    .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+    // Most frequently used accounts first, then alphabetical, so entry forms
+    // (Web and Android) surface the accounts the user actually uses.
+    .sort((a, b) => (b.usageCount - a.usageCount) || a.name.localeCompare(b.name, "zh-Hans-CN"));
 
   return NextResponse.json({ ok: true, accounts }, { headers: corsHeaders() });
 }

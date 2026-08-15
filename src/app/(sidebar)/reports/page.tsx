@@ -29,6 +29,7 @@ import {
 import { loadInvestmentProfitReport, type InvestmentProfitPeriod } from "@/lib/server/investment-profit-report";
 import { loadCommonData, loadCachedStockHoldingReport } from "@/lib/server/cached-data";
 import { stockMarketLabel } from "@/lib/stock/market";
+import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { loadReportDetailEntries } from "@/lib/server/report-detail-entries";
 import { getServerT } from "@/lib/server/i18n";
@@ -82,7 +83,7 @@ function investmentInstitutionScope(institutionId: string | null | undefined) {
 function rowCsv(section: "income" | "expense", row: IncomeExpenseReportRow, t: (key: string) => string) {
   return [
     section === "income" ? t("reports.income") : t("reports.expense"),
-    `${"  ".repeat(row.depth)}${row.name}`,
+    `${"  ".repeat(row.depth)}${systemCategoryLabel(row.name, t)}`,
     ...row.values.map((value) => value.toFixed(2)),
     row.total.toFixed(2),
   ];

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { Database, Plus } from "lucide-react";
 import { DateStepper } from "./DateStepper";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -54,7 +55,9 @@ export function AddNavButton({
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [fundCode, setFundCode] = useState(defaultHolding?.fundCode ?? "");
-  const [date, setDate] = useState(defaultHolding?.navDate ?? new Date().toISOString().slice(0, 10));
+  // navDate may be "" for holdings without a NAV yet; fall back to today so the
+  // date input is never empty.
+  const [date, setDate] = useState(defaultHolding?.navDate || new Date().toISOString().slice(0, 10));
   const [nav, setNav] = useState(wealthMode && defaultHolding?.navDate ? String(defaultHolding.nav ?? "") : "");
   const [loading, setLoading] = useState(false);
 
@@ -79,7 +82,7 @@ export function AddNavButton({
   function openDialog() {
     if (defaultHolding) {
       setFundCode(defaultHolding.fundCode);
-      setDate(defaultHolding.navDate ?? new Date().toISOString().slice(0, 10));
+      setDate(defaultHolding.navDate || new Date().toISOString().slice(0, 10));
       setNav(wealthMode && defaultHolding.navDate ? String(defaultHolding.nav ?? "") : "");
     }
     setOpen(true);
@@ -118,90 +121,96 @@ export function AddNavButton({
     finally { setLoading(false); }
   }
 
-  if (!open) {
-    if (trigger === "icon") {
-      return (
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            openDialog();
-          }}
-          className="relative inline-flex h-6 w-6 items-center justify-center rounded-md border border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100"
-          title={t(wealthMode ? "addNav.wealthNavTitle" : "addNav.addNavTitle")}
-        >
-          <Database className="absolute left-1 top-1 h-3.5 w-3.5 opacity-80" />
-          <span className="absolute bottom-1 right-1 text-amber-800">
-            <ManualGrabMark />
-          </span>
-        </button>
-      );
-    }
+  // Keep the trigger button mounted at all times so the table cell's content
+  // (and therefore the row height) never changes when the dialog opens/closes.
+  const triggerButton = trigger === "icon" ? (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation();
+        openDialog();
+      }}
+      className="relative inline-flex h-6 w-6 items-center justify-center rounded-md border border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100"
+      title={t(wealthMode ? "addNav.wealthNavTitle" : "addNav.addNavTitle")}
+    >
+      <Database className="absolute left-1 top-1 h-3.5 w-3.5 opacity-80" />
+      <span className="absolute bottom-1 right-1 text-amber-800">
+        <ManualGrabMark />
+      </span>
+    </button>
+  ) : (
+    <button onClick={() => setOpen(true)}
+      className="h-7 px-2 rounded-md border border-slate-200 bg-white text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-1"
+      title={t(wealthMode ? "addNav.wealthNavTitle" : "addNav.addNavShortTitle")}>
+      <Plus className="w-3.5 h-3.5" />
+      {t("addNav.addNav")}
+    </button>
+  );
 
-    return (
-      <button onClick={() => setOpen(true)}
-        className="h-7 px-2 rounded-md border border-slate-200 bg-white text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-1"
-        title={t(wealthMode ? "addNav.wealthNavTitle" : "addNav.addNavShortTitle")}>
-        <Plus className="w-3.5 h-3.5" />
-        {t("addNav.addNav")}
-      </button>
-    );
-  }
+  if (!open) return triggerButton;
 
+  // Render the dialog through a portal so it never participates in the table
+  // row's DOM: inheriting cell styles or affecting row layout is impossible.
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
-      <div className="w-full max-w-sm rounded-xl bg-white border border-slate-200 shadow-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
-          <div className="text-sm font-semibold text-slate-800">{t("addNav.addNavShortTitle")}</div>
-          <button onClick={() => setOpen(false)} className="h-8 px-2 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50">{t("table.close")}</button>
-        </div>
-        <div className="p-4 space-y-3">
-          {wealthMode ? (
-            <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">{t("fundShell.wealthProduct")}</div>
-              <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-                {selectedHolding?.name ?? fundCode}
-              </div>
+    <>
+      {triggerButton}
+      {createPortal(
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4 text-left">
+          <div className="w-full max-w-sm rounded-xl bg-white border border-slate-200 shadow-lg overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+              <div className="text-sm font-semibold text-slate-800">{t("addNav.addNavShortTitle")}</div>
+              <button onClick={() => setOpen(false)} className="h-8 px-2 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50">{t("table.close")}</button>
             </div>
-          ) : (
-            <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">{t("viewImport.fundCode")}</div>
-              {sortedHoldings.length > 0 ? (
-                <div className="relative max-h-48 overflow-y-auto rounded-md border border-slate-200 bg-white shadow-inner">
-                  {sortedHoldings.map(h => (
-                    <button key={h.fundCode} type="button"
-                      onClick={() => selectHolding(h.fundCode)}
-                      className={`w-full text-left px-3 py-1.5 text-sm hover:bg-blue-50 border-b border-slate-50 last:border-b-0 ${fundCode === h.fundCode ? "bg-blue-50 text-blue-700" : "text-slate-700"}`}>
-                      <span className="font-medium">{h.fundCode}</span>{" "}
-                      <span className="text-slate-600">{h.name}</span>
-                      {h.navDate && <span className="ml-1 text-slate-400 text-xs">({h.navDate})</span>}
-                    </button>
-                  ))}
+            <div className="p-4 space-y-3">
+              {wealthMode ? (
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-slate-600">{t("fundShell.wealthProduct")}</div>
+                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                    {selectedHolding?.name ?? fundCode}
+                  </div>
                 </div>
               ) : (
-                <input value={fundCode} onChange={e => setFundCode(e.target.value)} placeholder={t("regularInvest.codePlaceholder")}
-                  className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-slate-600">{t("viewImport.fundCode")}</div>
+                  {sortedHoldings.length > 0 ? (
+                    <div className="relative max-h-48 overflow-y-auto rounded-md border border-slate-200 bg-white shadow-inner">
+                      {sortedHoldings.map(h => (
+                        <button key={h.fundCode} type="button"
+                          onClick={() => selectHolding(h.fundCode)}
+                          className={`w-full text-left px-3 py-1.5 text-sm hover:bg-blue-50 border-b border-slate-50 last:border-b-0 ${fundCode === h.fundCode ? "bg-blue-50 text-blue-700" : "text-slate-700"}`}>
+                          <span className="font-medium">{h.fundCode}</span>{" "}
+                          <span className="text-slate-600">{h.name}</span>
+                          {h.navDate && <span className="ml-1 text-slate-400 text-xs">({h.navDate})</span>}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <input value={fundCode} onChange={e => setFundCode(e.target.value)} placeholder={t("regularInvest.codePlaceholder")}
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+                  )}
+                </div>
               )}
+              <div className="space-y-1">
+                <div className="text-xs font-medium text-slate-600">{t("viewImport.navDate")}</div>
+                <DateStepper value={date} onChange={setDate}
+                  className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+              </div>
+              <div className="space-y-1">
+                <div className="text-xs font-medium text-slate-600">{t(wealthMode ? "fundShell.nav.wealth" : "addNav.unitNav")}</div>
+                <input inputMode="decimal" value={nav} onChange={e => setNav(e.target.value)} placeholder="1.2345"
+                  className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+              </div>
+              <div className="flex justify-end pt-1">
+                <button onClick={onSubmit} disabled={loading || !fundCode.trim() || !nav.trim()}
+                  className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">
+                  {loading ? t("addNav.saving") : t("addNav.add")}
+                </button>
+              </div>
             </div>
-          )}
-          <div className="space-y-1">
-            <div className="text-xs font-medium text-slate-600">{t("viewImport.navDate")}</div>
-            <DateStepper value={date} onChange={setDate}
-              className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
           </div>
-          <div className="space-y-1">
-            <div className="text-xs font-medium text-slate-600">{t(wealthMode ? "fundShell.nav.wealth" : "addNav.unitNav")}</div>
-            <input inputMode="decimal" value={nav} onChange={e => setNav(e.target.value)} placeholder="1.2345"
-              className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
-          </div>
-          <div className="flex justify-end pt-1">
-            <button onClick={onSubmit} disabled={loading || !fundCode.trim() || !nav.trim()}
-              className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">
-              {loading ? t("addNav.saving") : t("addNav.add")}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+        </div>,
+        document.body,
+      )}
+    </>
   );
 }

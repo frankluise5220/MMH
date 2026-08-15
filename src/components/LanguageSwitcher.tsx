@@ -21,8 +21,8 @@ function nextLanguage(current: DisplayLanguage) {
 }
 
 export function LanguageSwitcher() {
-  const { t } = useI18n();
-  const [language, setLanguage] = useState<DisplayLanguage>("zh-CN");
+  const { t, language: currentLanguage } = useI18n();
+  const [language, setLanguage] = useState<DisplayLanguage>(currentLanguage);
 
   useEffect(() => {
     function syncLanguage() {

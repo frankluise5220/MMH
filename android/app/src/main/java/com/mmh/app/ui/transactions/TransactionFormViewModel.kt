@@ -179,13 +179,19 @@ class TransactionFormViewModel @Inject constructor(
                     else -> emptyList()
                 }
             }
-            val stateWithDefaults = applyReferenceDefaults(_uiState.value, accounts, type)
-            val stateWithPaymentDefault = applyQuickFundTradeCashDefault(stateWithDefaults, accounts)
+            // Most frequently used accounts first (server-tracked usageCount),
+            // so the entry form's account selectors surface what the user actually uses.
+            val sortedAccounts = accounts.sortedWith(
+                compareByDescending<ExternalAccountSummaryDto> { it.usageCount }
+                    .thenByDescending { it.lastUsedAt.orEmpty() }
+            )
+            val stateWithDefaults = applyReferenceDefaults(_uiState.value, sortedAccounts, type)
+            val stateWithPaymentDefault = applyQuickFundTradeCashDefault(stateWithDefaults, sortedAccounts)
 
             _uiState.value = stateWithPaymentDefault.copy(
                 isLoading = false,
                 categories = categories,
-                accounts = accounts,
+                accounts = sortedAccounts,
             )
         } catch (e: Exception) {
             _uiState.value = _uiState.value.copy(

@@ -71,6 +71,7 @@ import { materializeDueInstallmentPayments } from "@/lib/server/credit-card-inst
 import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 import { encodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
+import { touchAccountUsage } from "@/lib/server/account-usage";
 import { executeNonFundScheduledTaskPlan } from "@/lib/server/scheduled-task-executor";
 import { applyBalanceReconcileEntry } from "@/lib/balance-reconcile";
 import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
@@ -1646,6 +1647,14 @@ export async function POST(req: Request) {
     const postedAt = type === "expense" || type === "income" ? (toDateOrNull(body.postedAt) ?? date) : null;
     const { householdId } = ctx;
 
+    // Accounts involved in this transaction: used to track usage frequency so
+    // entry forms can order account selectors by most-used-first.
+    const usageAccountIds = [
+      String(body.accountId ?? "").trim(),
+      String(body.toAccountId ?? "").trim(),
+      String(body.cashAccountId ?? "").trim(),
+    ].filter(Boolean);
+
     if (!amountAbs) {
       return NextResponse.json({ ok: false, code: "INVALID_AMOUNT", error: "金额不正确" }, { status: 400 });
     }
@@ -1978,6 +1987,7 @@ export async function POST(req: Request) {
       if (fundProductType === "wealth") {
         const created = await createSplitWealthTransactionFromBody(body, householdId, tagIds);
         const data = await loadApiDetailRecord(created.cashEntryId);
+        await touchAccountUsage(usageAccountIds);
         return NextResponse.json({ ok: true, data: data ?? { id: created.cashEntryId } });
       }
       let insuranceProductId = String(body.insuranceProductId ?? "").trim() || null;
@@ -2625,6 +2635,7 @@ export async function POST(req: Request) {
     }
     if (changedInvestment) revalidateAfterInvestChange();
     else revalidateAfterTxChange();
+    await touchAccountUsage(usageAccountIds);
 
     // Return the record just created
     if (createdId) {

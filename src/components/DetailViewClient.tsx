@@ -30,6 +30,7 @@ import {
 } from "@/lib/detail-pagination-preference";
 import { parseImportAccountId } from "@/lib/account-import-match";
 import { formatAccountTableLabel, formatAccountTableTitle } from "@/lib/account-display";
+import { systemCategoryLabel } from "@/lib/system-category-labels";
 
 /* Types */
 
@@ -292,7 +293,7 @@ function bankDebtTransferLabel(entry: DetailEntry, mode: DebtMode | null, t: (ke
   if (mode === "prepay_out") return t("detailView.loanPrepayment");
   if (mode === "lend_out") return t("detailView.bankLending");
   if (mode === "collect_in") return t("detailView.bankCollection");
-  return entry.categoryName || t("detailView.bankLoan");
+  return systemCategoryLabel(entry.categoryName, t) || t("detailView.bankLoan");
 }
 
 function debtCategoryLabel(entry: DetailEntry, accountById: Map<string, DetailAccountOption> | undefined, t: (key: string) => string) {
@@ -300,7 +301,7 @@ function debtCategoryLabel(entry: DetailEntry, accountById: Map<string, DetailAc
   const mode = inferDebtMode(entry, accountById);
   const bankLabel = bankDebtTransferLabel(entry, mode, t);
   if (bankLabel) return bankLabel;
-  return normalizeSettlementTransferCategoryName(entry.categoryName);
+  return systemCategoryLabel(normalizeSettlementTransferCategoryName(entry.categoryName), t);
 }
 
 function displaySecondRemark(entry: { toNote?: string | null }) {
@@ -400,7 +401,7 @@ function investmentCategoryLabel(
   t: (key: string) => string,
 ): string {
   if (entry.source === "insurance") return getInsuranceDetailCategoryName(entry);
-  if (entry.categoryName) return entry.categoryName;
+  if (entry.categoryName) return systemCategoryLabel(entry.categoryName, t);
   const subtype = String(entry.fundSubtype ?? "");
   const source = String(entry.source ?? "");
   const productType = entryFundProductType ?? null;
@@ -575,7 +576,7 @@ export function DetailViewClient({
     if (entry.type === "investment") return investmentCategoryLabel(entry, entryFundProductType, t);
     if (isCreditCardRepaymentDisplayEntry(entry)) return t("transaction.category.creditCardRepayment");
     if (entry.source === "insurance") return getInsuranceDetailCategoryName(entry);
-    return entry.categoryName ?? "";
+    return systemCategoryLabel(entry.categoryName, t);
   }, [accountOptionById, investmentProductTypeByAccountId, t]);
   const [refreshedEntries, setRefreshedEntries] = useState<{ accountId: string; entries: DetailEntry[] } | null>(null);
   const [linkingIds, setLinkingIds] = useState<Set<string>>(new Set());

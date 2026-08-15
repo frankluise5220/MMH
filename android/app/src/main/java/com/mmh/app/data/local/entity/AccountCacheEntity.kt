@@ -29,5 +29,7 @@ data class AccountCacheEntity(
     val groupName: String?,
     val institutionName: String?,
     val costBasisMethod: String?,
+    val usageCount: Int = 0,
+    val lastUsedAt: String? = null,
     @ColumnInfo(name = "cached_at") val cachedAt: Long = System.currentTimeMillis()
 )

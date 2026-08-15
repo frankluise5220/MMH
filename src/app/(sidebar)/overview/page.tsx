@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { OverviewDashboard } from "@/components/OverviewDashboard";
 import { normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getServerDisplayLanguage } from "@/lib/server/i18n";
 import { computeInsuranceOverviewSummary } from "@/lib/server/insurance-overview-summary";
 import { computeOverviewSummary } from "@/lib/server/overview-summary";
 
@@ -11,13 +12,14 @@ export const dynamic = "force-dynamic";
 export default async function OverviewPage() {
   const ctx = await getHouseholdScope();
   const cookieStore = await cookies();
+  const language = await getServerDisplayLanguage();
   const isRedUp = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") === "red_up_green_down";
   const creditCardLabelMode = cookieStore.get("mmh_credit_card_label_mode")?.value === "full_name" ? "full_name" : "short_last4";
   const creditCardLabelTemplate = normalizeCreditCardLabelTemplate(
     cookieStore.get("mmh_credit_card_label_template")?.value,
     creditCardLabelMode,
   );
-  const summary = await computeOverviewSummary(ctx, creditCardLabelTemplate);
+  const summary = await computeOverviewSummary(ctx, creditCardLabelTemplate, language);
   const insuranceOverview = await computeInsuranceOverviewSummary(ctx);
 
   return (
