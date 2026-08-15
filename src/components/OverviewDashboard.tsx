@@ -246,7 +246,6 @@ export function OverviewDashboard({
                   <PiggyBank className="h-4 w-4 text-emerald-500" />
                   {t("overview.investmentOverview")}
                 </div>
-                <Link href="/investments" className="text-xs text-blue-600 hover:text-blue-800">{t("overview.enterInvestment")}</Link>
               </div>
               <div className="space-y-4 px-4 py-4">
                 <InvestmentCostProfitBar
@@ -288,7 +287,6 @@ export function OverviewDashboard({
                 <Wallet className="h-4 w-4 text-blue-500" />
                 {t("overview.dailyAccounts")}
               </div>
-              <Link href="/accounts" className="text-xs text-blue-600 hover:text-blue-800">{t("overview.viewAll")}</Link>
             </div>
             <div className="space-y-4 px-4 py-4">
               <DailyAccountDistributionBar items={assetDistribution} />
@@ -327,7 +325,6 @@ export function OverviewDashboard({
                   <CreditCard className="h-4 w-4 text-amber-500" />
                   {t("overview.creditCards")}
                 </div>
-                <Link href="/accounts?tab=credit" className="text-xs text-blue-600 hover:text-blue-800">{t("overview.viewAll")}</Link>
               </div>
               <div className="space-y-4 px-4 py-4">
                 <CreditBillProgressBar bill={creditBillTotal} paid={creditPaidTotal} />
@@ -360,7 +357,6 @@ export function OverviewDashboard({
                   <HandCoins className="h-4 w-4 text-rose-500" />
                   {t("overview.debtCredit")}
                 </div>
-                <Link href="/liabilities" className="text-xs text-blue-600 hover:text-blue-800">{t("overview.viewAll")}</Link>
               </div>
               <div className="grid grid-cols-2 gap-3 px-4 py-4 sm:grid-cols-3">
                 <MetricCard label={t("overview.iOwe")} value={formatMoneyYuan(-totals.loan)} valueClass={directionalClass(-totals.loan, isRedUp)} />

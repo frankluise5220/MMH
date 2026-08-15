@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { Shield } from "lucide-react";
 
 import { formatMoneyYuan } from "@/lib/format";
@@ -54,7 +53,6 @@ export function InsuranceOverviewCard({
           <Shield className="h-4 w-4 text-cyan-500" />
           {t("insuranceOverview.title")}
         </div>
-        <Link href="/insurance" className="text-xs text-blue-600 hover:text-blue-800">{t("insuranceOverview.viewInsurance")}</Link>
       </div>
       <div className="grid grid-cols-2 gap-3 px-4 py-4 lg:grid-cols-4">
         <MetricCard label={t("insuranceOverview.insuredPersons")} value={t("insuranceOverview.peopleCountValue").replace("{count}", String(insuranceOverview?.insuredPersonCount ?? 0))} />
