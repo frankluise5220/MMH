@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { Database, Plus } from "lucide-react";
 import { DateStepper } from "./DateStepper";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { useI18n } from "@/lib/i18n";
 
 type HoldingItem = {
   fundCode: string;
@@ -46,6 +48,7 @@ export function AddNavButton({
   trigger?: "text" | "icon";
 }) {
   const defaultHolding = positions.find((p) => p.fundCode === defaultFundCode) ?? (positions.length === 1 ? positions[0] : null);
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [fundCode, setFundCode] = useState(defaultHolding?.fundCode ?? "");
   const [date, setDate] = useState(defaultHolding?.navDate ?? new Date().toISOString().slice(0, 10));
@@ -91,11 +94,11 @@ export function AddNavButton({
         setOpen(false);
         setFundCode("");
         setNav("");
-        window.dispatchEvent(new Event("mmh:fund:refresh"));
+        dispatchFinanceDataChanged({ reason: "nav-add" });
       } else {
-        window.alert(data.error ?? "添加失败");
+        window.alert(data.error ?? t("addNav.addFailed"));
       }
-    } catch { window.alert("网络错误"); }
+    } catch { window.alert(t("addNav.networkError")); }
     finally { setLoading(false); }
   }
 
@@ -109,7 +112,7 @@ export function AddNavButton({
             openDialog();
           }}
           className="relative inline-flex h-6 w-6 items-center justify-center rounded-md border border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100"
-          title="手动添加基金净值"
+          title={t("addNav.addNavTitle")}
         >
           <Database className="absolute left-1 top-1 h-3.5 w-3.5 opacity-80" />
           <span className="absolute bottom-1 right-1 text-amber-800">
@@ -122,9 +125,9 @@ export function AddNavButton({
     return (
       <button onClick={() => setOpen(true)}
         className="h-7 px-2 rounded-md border border-slate-200 bg-white text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-1"
-        title="手动添加净值">
+        title={t("addNav.addNavShortTitle")}>
         <Plus className="w-3.5 h-3.5" />
-        添加净值
+        {t("addNav.addNav")}
       </button>
     );
   }
@@ -133,12 +136,12 @@ export function AddNavButton({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
       <div className="w-full max-w-sm rounded-xl bg-white border border-slate-200 shadow-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
-          <div className="text-sm font-semibold text-slate-800">手动添加净值</div>
-          <button onClick={() => setOpen(false)} className="h-8 px-2 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50">关闭</button>
+          <div className="text-sm font-semibold text-slate-800">{t("addNav.addNavShortTitle")}</div>
+          <button onClick={() => setOpen(false)} className="h-8 px-2 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50">{t("table.close")}</button>
         </div>
         <div className="p-4 space-y-3">
           <div className="space-y-1">
-            <div className="text-xs font-medium text-slate-600">基金代码</div>
+            <div className="text-xs font-medium text-slate-600">{t("viewImport.fundCode")}</div>
             {sortedHoldings.length > 0 ? (
               <div className="relative max-h-48 overflow-y-auto rounded-md border border-slate-200 bg-white shadow-inner">
                 {sortedHoldings.map(h => (
@@ -152,24 +155,24 @@ export function AddNavButton({
                 ))}
               </div>
             ) : (
-              <input value={fundCode} onChange={e => setFundCode(e.target.value)} placeholder="6位代码"
+              <input value={fundCode} onChange={e => setFundCode(e.target.value)} placeholder={t("regularInvest.codePlaceholder")}
                 className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
             )}
           </div>
           <div className="space-y-1">
-            <div className="text-xs font-medium text-slate-600">净值日期</div>
+            <div className="text-xs font-medium text-slate-600">{t("viewImport.navDate")}</div>
             <DateStepper value={date} onChange={setDate}
               className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
           </div>
           <div className="space-y-1">
-            <div className="text-xs font-medium text-slate-600">单位净值</div>
+            <div className="text-xs font-medium text-slate-600">{t("addNav.unitNav")}</div>
             <input inputMode="decimal" value={nav} onChange={e => setNav(e.target.value)} placeholder="1.2345"
               className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
           </div>
           <div className="flex justify-end pt-1">
             <button onClick={onSubmit} disabled={loading || !fundCode.trim() || !nav.trim()}
               className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">
-              {loading ? "保存中…" : "添加"}
+              {loading ? t("addNav.saving") : t("addNav.add")}
             </button>
           </div>
         </div>

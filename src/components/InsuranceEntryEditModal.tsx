@@ -9,6 +9,7 @@ import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
+import { useI18n } from "@/lib/i18n";
 
 type InsuranceEntryEditValue = {
   id: string;
@@ -74,6 +75,7 @@ export function InsuranceEntryEditModal({
   const { filteredOptions: cashFiltered } = useAccountSSFilter(localCashSSOpts);
 
   const cashOptions = cashFiltered ?? cashAccountList;
+  const { t } = useI18n();
 
   if (!open || !draft) return null;
 
@@ -84,11 +86,11 @@ export function InsuranceEntryEditModal({
 
     const amountValue = parseOptionalNumber(currentDraft.amount);
     if (amountValue == null || amountValue <= 0) {
-      window.alert("请输入正确金额");
+      window.alert(t("insuranceEntryEdit.alert.validAmount"));
       return;
     }
     if (!currentDraft.cashAccountId) {
-      window.alert(currentDraft.insuranceAction === "refund" ? "请选择到账账户" : "请选择资金来源");
+      window.alert(currentDraft.insuranceAction === "refund" ? t("insuranceEntryEdit.alert.selectArrivalAccount") : t("insuranceEntryEdit.alert.selectSourceAccount"));
       return;
     }
 
@@ -121,7 +123,7 @@ export function InsuranceEntryEditModal({
         | { ok?: boolean; data?: { id?: string }; error?: string }
         | null;
       if (!response.ok || !data?.ok) {
-        throw new Error(data?.error || "保存失败");
+        throw new Error(data?.error || t("insuranceEntryEdit.saveFailed"));
       }
       const savedDraft = isCreating && typeof data?.data?.id === "string"
         ? { ...currentDraft, id: data.data.id }
@@ -137,7 +139,7 @@ export function InsuranceEntryEditModal({
         onClose();
       }
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "保存失败");
+      window.alert(error instanceof Error ? error.message : t("insuranceEntryEdit.saveFailed"));
     } finally {
       setSaving(false);
     }
@@ -146,16 +148,16 @@ export function InsuranceEntryEditModal({
   const isCreating = !draft.id;
   const title =
     draft.insuranceAction === "additional_premium"
-      ? isCreating ? "新增保全缴费" : "编辑保全缴费"
+      ? isCreating ? t("insuranceEntryEdit.title.addPremium") : t("insuranceEntryEdit.title.editPremium")
       : draft.insuranceAction === "refund"
-        ? isCreating ? "新增保险回款" : "编辑保险回款"
-        : isCreating ? "新增保险续期" : "编辑保险续期";
+        ? isCreating ? t("insuranceEntryEdit.title.addRefund") : t("insuranceEntryEdit.title.editRefund")
+        : isCreating ? t("insuranceEntryEdit.title.addRenewal") : t("insuranceEntryEdit.title.editRenewal");
   const amountLabel =
     draft.insuranceAction === "additional_premium"
-      ? "追加金额"
+      ? t("insuranceEntryEdit.amount.additional")
       : draft.insuranceAction === "refund"
-        ? "回款金额"
-        : "保费金额";
+        ? t("insuranceEntryEdit.amount.refund")
+        : t("insuranceEntryEdit.amount.premium");
   const isRefund = draft.insuranceAction === "refund";
 
   return createPortal(
@@ -164,7 +166,7 @@ export function InsuranceEntryEditModal({
         <div className="modal-header">
           <div className="text-sm font-semibold text-slate-800">{title}</div>
           <button type="button" onClick={onClose} className="secondary-button h-8 px-2">
-            关闭
+            {t("table.close")}
           </button>
         </div>
 
@@ -177,24 +179,24 @@ export function InsuranceEntryEditModal({
         >
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
             <div className="space-y-1">
-              <div className="form-label">保险产品</div>
+              <div className="form-label">{t("insuranceEntryEdit.product")}</div>
               <div className="form-input flex h-9 items-center bg-slate-50 text-sm text-slate-600">
                 {draft.insuranceProductName || "-"}
               </div>
             </div>
 
-            {/* 日期 */}
+            {/* Date */}
             {isRefund ? (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <div className="space-y-1">
-                  <div className="form-label">日期</div>
+                  <div className="form-label">{t("detail.column.date")}</div>
                   <DateStepper
                     value={draft.date}
                     onChange={(next) => setDraft({ ...draft, date: next })}
                   />
                 </div>
                 <div className="space-y-1">
-                  <div className="form-label">到账日期</div>
+                  <div className="form-label">{t("insuranceEntryEdit.arrivalDate")}</div>
                   <DateStepper
                     value={draft.arrivalDate || draft.date}
                     onChange={(next) => setDraft({ ...draft, arrivalDate: next })}
@@ -213,7 +215,7 @@ export function InsuranceEntryEditModal({
               </div>
             ) : (
               <div className="space-y-1">
-                <div className="form-label">日期</div>
+                <div className="form-label">{t("detail.column.date")}</div>
                 <DateStepper
                   value={draft.date}
                   onChange={(next) => setDraft({ ...draft, date: next })}
@@ -221,15 +223,15 @@ export function InsuranceEntryEditModal({
               </div>
             )}
 
-            {/* 资金来源 */}
+            {/* Cash source */}
             <div className="space-y-1">
-              <div className="form-label">{isRefund ? "到账账户" : "资金来源"}</div>
+              <div className="form-label">{isRefund ? t("insuranceEntryEdit.arrivalAccount") : t("insuranceEntryEdit.sourceAccount")}</div>
               <SmartSelect
                 mode="single"
                 value={draft.cashAccountId}
                 onChange={(id) => setDraft({ ...draft, cashAccountId: id })}
                 options={cashOptions}
-                placeholder="选择账户"
+                placeholder={t("insuranceEntryEdit.selectAccount")}
                 behavior={{
                   hierarchy: false,
                   search: "auto",
@@ -257,12 +259,12 @@ export function InsuranceEntryEditModal({
             ) : null}
 
             <div className="space-y-1">
-              <div className="form-label">备注</div>
+              <div className="form-label">{t("detail.column.remark")}</div>
               <textarea
                 value={draft.note}
                 onChange={(event) => setDraft({ ...draft, note: event.target.value })}
                 className="form-input min-h-[72px] resize-none py-2"
-                placeholder="可填写保全缴费说明"
+                placeholder={t("insuranceEntryEdit.notePlaceholder")}
               />
             </div>
           </div>
@@ -276,7 +278,7 @@ export function InsuranceEntryEditModal({
                   onClick={() => handleSave({ keepOpen: true })}
                   className="secondary-button h-9 px-4 disabled:opacity-50"
                 >
-                  保存并再记一笔
+                  {t("txForm.saveAndRepeat")}
                 </button>
               ) : null}
               <button
@@ -284,7 +286,7 @@ export function InsuranceEntryEditModal({
                 disabled={saving}
                 className="primary-button h-9 px-4 text-white disabled:opacity-50"
               >
-                {saving ? "保存中..." : "保存"}
+                {saving ? t("insuranceEntryEdit.saving") : t("common.save")}
               </button>
             </div>
           </div>

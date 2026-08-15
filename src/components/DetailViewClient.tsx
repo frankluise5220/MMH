@@ -1,7 +1,7 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useState, useEffect, useMemo, useRef, type ReactNode } from "react";
-import { toNumber } from "@/lib/date-utils";
+import { formatDateLocal as localDateKey, toNumber } from "@/lib/date-utils";
 import { formatCurrencyMoney } from "@/lib/format";
 import { getColorSchemeFromCookie, pnlColor } from "@/lib/client/colors";
 import { getInsuranceDetailCategoryName, getInsuranceDetailNote } from "@/lib/insurance/detail-display";
@@ -19,15 +19,14 @@ import { useI18n } from "@/lib/i18n";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, applyBalanceReconcileEntry, effectiveAmountForAccount, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
 import { compareDetailEntriesAsc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import { DEFAULT_LOAN_PREPAY_STRATEGY, parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
-import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT, LEGACY_FINANCE_REFRESH_EVENT } from "@/lib/client/refresh";
+import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 import { isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
 import { normalizeSettlementTransferCategoryName } from "@/lib/default-categories";
 import { advanceDialogAmount } from "@/lib/advance-transfer";
 import {
-  decodeDetailPaginationPreference,
-  detailPaginationCookieName,
   normalizeDetailPage,
   normalizeDetailPageSize,
+  readStoredDetailPreference,
 } from "@/lib/detail-pagination-preference";
 import { parseImportAccountId } from "@/lib/account-import-match";
 import { formatAccountTableLabel, formatAccountTableTitle } from "@/lib/account-display";
@@ -282,24 +281,24 @@ function isDebtActivityEntry(entry: {
   return inferDebtMode(entry, accountById) != null;
 }
 
-function bankDebtTransferLabel(entry: DetailEntry, mode: DebtMode | null) {
+function bankDebtTransferLabel(entry: DetailEntry, mode: DebtMode | null, t: (key: string) => string) {
   const involvesBankDebt =
     (entry.accountKind === "loan" && !entry.accountIsSettlementDebt) ||
     (entry.toAccountKind === "loan" && !entry.toAccountIsSettlementDebt);
   if (!involvesBankDebt) return null;
-  if (entry.source === "debt_financed_purchase") return "消费分期";
-  if (mode === "borrow_in") return "贷款发放";
-  if (mode === "repay_out") return "贷款还款";
-  if (mode === "prepay_out") return "提前还款";
-  if (mode === "lend_out") return "银行放款";
-  if (mode === "collect_in") return "银行收回";
-  return entry.categoryName || "银行贷款";
+  if (entry.source === "debt_financed_purchase") return t("txForm.installment");
+  if (mode === "borrow_in") return t("detailView.loanDisbursement");
+  if (mode === "repay_out") return t("detailView.loanRepayment");
+  if (mode === "prepay_out") return t("detailView.loanPrepayment");
+  if (mode === "lend_out") return t("detailView.bankLending");
+  if (mode === "collect_in") return t("detailView.bankCollection");
+  return entry.categoryName || t("detailView.bankLoan");
 }
 
-function debtCategoryLabel(entry: DetailEntry, accountById?: Map<string, DetailAccountOption>) {
+function debtCategoryLabel(entry: DetailEntry, accountById: Map<string, DetailAccountOption> | undefined, t: (key: string) => string) {
   if (!isDebtActivityEntry(entry, accountById)) return null;
   const mode = inferDebtMode(entry, accountById);
-  const bankLabel = bankDebtTransferLabel(entry, mode);
+  const bankLabel = bankDebtTransferLabel(entry, mode, t);
   if (bankLabel) return bankLabel;
   return normalizeSettlementTransferCategoryName(entry.categoryName);
 }
@@ -314,28 +313,6 @@ function displayDetailRemark(entry: DetailEntry, currentAccountId?: string | nul
     return (displaySecondRemark(entry).trim() || (entry.note ?? "").trim());
   }
   return (entry.note ?? "").trim();
-}
-
-function readCookieValue(name: string) {
-  if (typeof document === "undefined") return null;
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = document.cookie.match(new RegExp(`(?:^|; )${escaped}=([^;]*)`));
-  return match ? match[1] : null;
-}
-
-function readDetailPaginationSnapshot(accountId: string) {
-  const key = detailPaginationCookieName(accountId);
-  const stored = typeof window === "undefined"
-    ? null
-    : decodeDetailPaginationPreference(window.sessionStorage.getItem(key));
-  return stored ?? decodeDetailPaginationPreference(readCookieValue(key));
-}
-
-function localDateKey(date: Date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
 }
 
 function detailEntryDayKey(entry: DetailEntry, accountId: string) {
@@ -407,19 +384,20 @@ type ReorderResponse = {
 };
 
 function activityLabel(type: string, fundSubtype: string | null, source: string | null, t: (key: string) => string, balanceTarget: number | null = null): string {
-  if (balanceTarget != null && source === BALANCE_INITIALIZATION_SOURCE) return "初始";
-  if (source === BALANCE_RECONCILE_SOURCE) return "校准";
+  if (balanceTarget != null && source === BALANCE_INITIALIZATION_SOURCE) return t("detailView.initialBalance");
+  if (source === BALANCE_RECONCILE_SOURCE) return t("detailView.balanceReconcile");
   if (source === "insurance") {
-    return fundSubtype === "redeem" || fundSubtype === "switch_out" ? "保险回款" : "保险支出";
+    return fundSubtype === "redeem" || fundSubtype === "switch_out" ? t("detailView.insuranceRefund") : t("detailView.insuranceExpense");
   }
-  if (source === "advance") return "代付";
-  if (type === "investment" && (source === "deposit" || source === "deposit_manual")) return "存款";
+  if (source === "advance") return t("txForm.advance");
+  if (type === "investment" && (source === "deposit" || source === "deposit_manual")) return t("detailView.deposit");
   return formatType(type, t);
 }
 
 function investmentCategoryLabel(
   entry: DetailEntry,
   entryFundProductType: string | null | undefined,
+  t: (key: string) => string,
 ): string {
   if (entry.source === "insurance") return getInsuranceDetailCategoryName(entry);
   if (entry.categoryName) return entry.categoryName;
@@ -427,28 +405,28 @@ function investmentCategoryLabel(
   const source = String(entry.source ?? "");
   const productType = entryFundProductType ?? null;
   if (productType === "deposit") {
-    if (subtype === "redeem") return "存款取出";
-    if (subtype === "buy") return "存款存入";
+    if (subtype === "redeem") return t("detailView.depositWithdraw");
+    if (subtype === "buy") return t("txForm.depositIn");
   }
   if (productType === "wealth") {
-    if (subtype === "redeem") return "理财赎回";
-    if (subtype === "buy_failed" && source === "regular_invest_refund") return "买入退回";
-    if (subtype === "buy_failed") return "买入失败";
-    if (subtype === "buy") return "理财买入";
+    if (subtype === "redeem") return t("detailView.wealthRedeem");
+    if (subtype === "buy_failed" && source === "regular_invest_refund") return t("detailView.buyRefund");
+    if (subtype === "buy_failed") return t("detailView.buyFailed");
+    if (subtype === "buy") return t("detailView.wealthBuy");
   }
   if (productType === "metal") {
-    if (subtype === "redeem") return "贵金属卖出";
-    if (subtype === "buy") return "贵金属买入";
+    if (subtype === "redeem") return t("detailView.metalSell");
+    if (subtype === "buy") return t("detailView.metalBuy");
   }
   if (productType === "fund" || productType === "money" || !productType) {
-    if (subtype === "buy" && source === "regular_invest") return "基金定投";
-    if (subtype === "buy" && source === "dividend") return "红利转投";
-    if (subtype === "redeem") return "基金赎回";
-    if (subtype === "dividend_cash") return "现金分红";
-    if (subtype === "dividend_reinvest") return "分红再投资";
-    if (subtype === "buy_failed" && source === "regular_invest_refund") return "买入退回";
-    if (subtype === "buy_failed") return "买入失败";
-    if (subtype === "buy") return "基金买入";
+    if (subtype === "buy" && source === "regular_invest") return t("detailView.fundRegularInvest");
+    if (subtype === "buy" && source === "dividend") return t("detailView.dividendInvest");
+    if (subtype === "redeem") return t("detailView.fundRedeem");
+    if (subtype === "dividend_cash") return t("detailView.dividendCash");
+    if (subtype === "dividend_reinvest") return t("detailView.dividendReinvest");
+    if (subtype === "buy_failed" && source === "regular_invest_refund") return t("detailView.buyRefund");
+    if (subtype === "buy_failed") return t("detailView.buyFailed");
+    if (subtype === "buy") return t("detailView.fundBuy");
   }
   return "";
 }
@@ -468,11 +446,11 @@ export function DetailViewClient({
   toolbarTitle,
   toolbarRightContent,
   resetKey,
-  emptyText = "暂无记录",
+  emptyText,
   draggableRows = true,
   allowInvestmentEdit = true,
   showAccountColumn = false,
-  accountColumnLabel = "账户",
+  accountColumnLabel,
   accountColumnMode = "account",
   accountColumnDefaultHidden = false,
   relatedAccountDefaultHidden = false,
@@ -512,6 +490,8 @@ export function DetailViewClient({
   sortable?: boolean;
 }) {
   const { t } = useI18n();
+  const resolvedEmptyText = emptyText ?? t("detail.empty");
+  const resolvedAccountColumnLabel = accountColumnLabel ?? t("common.account");
   const accountOptionById = useMemo(
     () => new Map(accountOptions.map((option) => [option.id, option])),
     [accountOptions],
@@ -585,14 +565,14 @@ export function DetailViewClient({
     return text;
   };
   const detailCategoryLabel = useCallback((entry: DetailEntry) => {
-    const debtLabel = debtCategoryLabel(entry, accountOptionById);
+    const debtLabel = debtCategoryLabel(entry, accountOptionById, t);
     if (debtLabel) return debtLabel;
     const entryFundProductType =
       entry.fundProductType ??
       (entry.toAccountId ? investmentProductTypeByAccountId[entry.toAccountId] : undefined) ??
       (entry.accountId ? investmentProductTypeByAccountId[entry.accountId] : undefined) ??
       null;
-    if (entry.type === "investment") return investmentCategoryLabel(entry, entryFundProductType);
+    if (entry.type === "investment") return investmentCategoryLabel(entry, entryFundProductType, t);
     if (isCreditCardRepaymentDisplayEntry(entry)) return t("transaction.category.creditCardRepayment");
     if (entry.source === "insurance") return getInsuranceDetailCategoryName(entry);
     return entry.categoryName ?? "";
@@ -617,11 +597,11 @@ export function DetailViewClient({
                 ? "fund"
                 : null;
     if (!businessType) {
-      window.alert("这条记录缺少可自动建立关联的业务类型");
+      window.alert(t("detailView.alert.missingBusinessType"));
       return;
     }
     if (!businessTransactionId) {
-      window.alert("这条记录缺少业务记录 ID，无法自动建立关联");
+      window.alert(t("detailView.alert.missingBusinessId"));
       return;
     }
     setLinkingIds((prev) => new Set(prev).add(id));
@@ -632,10 +612,10 @@ export function DetailViewClient({
         body: JSON.stringify({ businessType, businessTransactionId }),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok || !data?.ok) throw new Error(data?.error ?? "建立关联失败");
+      if (!res.ok || !data?.ok) throw new Error(data?.error ?? t("detailView.alert.linkFailed"));
       dispatchFinanceDataChanged({ reason: "detail-link-cash-flow", entryIds: [data.data?.cashEntryId, id].filter(Boolean) });
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "建立关联失败");
+      window.alert(error instanceof Error ? error.message : t("detailView.alert.linkFailed"));
     } finally {
       setLinkingIds((prev) => {
         const next = new Set(prev);
@@ -643,7 +623,7 @@ export function DetailViewClient({
         return next;
       });
     }
-  }, [linkingIds]);
+  }, [linkingIds, t]);
   const navigateToAccountEntry = useCallback((targetAccountId: string | null | undefined, entry: DetailEntry) => {
     const target = String(targetAccountId ?? "").trim();
     if (!enableAccountNavigation || !target) return;
@@ -671,7 +651,7 @@ export function DetailViewClient({
       <span
         data-row-double-click-ignore
         className={`${className} cursor-zoom-in decoration-dotted underline-offset-4 hover:underline`}
-        title={`${title || text}（双击打开该账户明细并定位此记录）`}
+        title={t("detailView.navigateAccountTitle", { name: title || text })}
         onClick={(event) => event.stopPropagation()}
         onDoubleClick={(event) => {
           event.preventDefault();
@@ -869,10 +849,10 @@ export function DetailViewClient({
     });
     const data = (await res.json().catch(() => null)) as ReorderResponse | null;
     if (!data?.ok) {
-      throw new Error(data?.error ?? "调整顺序失败");
+      throw new Error(data?.error ?? t("detailView.alert.reorderFailed"));
     }
     return data;
-  }, [accountId, reorderAccountIds]);
+  }, [accountId, reorderAccountIds, t]);
 
   const canDropDetailEntry = useCallback((source: DetailEntry, target: DetailEntry, position?: AdvancedDataTableDropPosition) => {
     void position;
@@ -887,7 +867,7 @@ export function DetailViewClient({
     if (source.id === target.id) return;
     if (!canManuallyReorderDetailEntry(source) || !canManuallyReorderDetailEntry(target)) return;
     if (detailEntryDayKey(source, accountId) !== detailEntryDayKey(target, accountId)) {
-      window.alert("只能在同一天记录内拖动调整顺序");
+      window.alert(t("detailView.alert.reorderSameDayOnly"));
       return;
     }
     if (!canDropDetailEntry(source, target, position)) return;
@@ -912,9 +892,9 @@ export function DetailViewClient({
       }
     } catch (error) {
       setRefreshedEntries({ accountId, entries: previousEntries });
-      window.alert(error instanceof Error ? error.message : "调整顺序失败");
+      window.alert(error instanceof Error ? error.message : t("detailView.alert.reorderFailed"));
     }
-  }, [accountId, canDropDetailEntry, entries, persistEntryReorder, showRunningBalance]);
+  }, [accountId, canDropDetailEntry, entries, persistEntryReorder, showRunningBalance, t]);
 
   useEffect(() => {
     setRefreshedEntries((current) => (current?.accountId === accountId ? current : null));
@@ -947,7 +927,7 @@ export function DetailViewClient({
         return;
       }
       const url = new URL(window.location.href);
-      const storedPagination = readDetailPaginationSnapshot(accountId);
+      const storedPagination = readStoredDetailPreference(accountId);
       const detailAll = url.searchParams.has("detailAll")
         ? url.searchParams.get("detailAll") === "1"
         : storedPagination?.detailAll ?? false;
@@ -975,11 +955,7 @@ export function DetailViewClient({
         .catch(() => {});
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
-    window.addEventListener(LEGACY_FINANCE_REFRESH_EVENT, handler);
-    return () => {
-      window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
-      window.removeEventListener(LEGACY_FINANCE_REFRESH_EVENT, handler);
-    };
+    return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
   }, [accountId, entries, refreshOnGlobalEvent, setSelection]);
 
   const columns = useMemo<AdvancedDataTableColumn<DetailEntry>[]>(() => [
@@ -994,7 +970,7 @@ export function DetailViewClient({
     },
     ...(showAccountColumn ? [{
       key: "account",
-      label: accountColumnLabel,
+      label: resolvedAccountColumnLabel,
       width: accountColumnMode === "cardLast4" ? 82 : 190,
       minWidth: accountColumnMode === "cardLast4" ? 64 : 110,
       hideable: true,
@@ -1087,7 +1063,7 @@ export function DetailViewClient({
     },
     {
       key: "type",
-      label: "收支大类",
+      label: t("detailView.column.type"),
       width: 96,
       minWidth: 74,
       filterText: (e) => {
@@ -1098,7 +1074,7 @@ export function DetailViewClient({
           null;
         const displaySource = entryFundProductType === "deposit" ? "deposit" : e.source;
         if (isDebtActivityEntry(e, accountOptionById)) return t("transaction.type.transfer");
-        if (e.type === "investment") return "投资";
+        if (e.type === "investment") return t("transaction.type.investment");
         const balanceTarget = getBalanceReconcileTarget(e);
         return activityLabel(e.type, e.fundSubtype, displaySource, t, balanceTarget);
       },
@@ -1114,17 +1090,17 @@ export function DetailViewClient({
         const actLabel = isDebtActivity
           ? t("transaction.type.transfer")
           : e.type === "investment"
-          ? "投资"
+          ? t("transaction.type.investment")
           : activityLabel(e.type, e.fundSubtype, displaySource, t, balanceTarget);
         return (
           <>
             {balanceTarget != null && e.source === BALANCE_INITIALIZATION_SOURCE ? (
               <span className="rounded bg-slate-100 px-1 py-0.5 text-[10px] font-medium text-slate-600">
-                初始
+                {t("detailView.initialBalance")}
               </span>
             ) : e.source === BALANCE_RECONCILE_SOURCE ? (
               <span className="rounded bg-amber-50 px-1 py-0.5 text-[10px] font-medium text-amber-700">
-                校准
+                {t("detailView.balanceReconcile")}
               </span>
             ) : (
               <span className="text-xs text-slate-700">{actLabel}</span>
@@ -1234,7 +1210,7 @@ export function DetailViewClient({
       },
     },
     { key: "attachment", label: t("detail.column.attachment"), width: 60, minWidth: 46, align: "center", hideable: true, render: () => <span className="text-slate-400" /> },
-  ], [accountColumnDefaultHidden, accountColumnDisplayFallback, accountColumnLabel, accountColumnMode, accountDisplayFallback, accountId, accountOptionById, detailCategoryLabel, inflowCls, investmentProductTypeByAccountId, outflowCls, relatedAccountDefaultHidden, relatedAccountTarget, renderNavigableAccountLabel, runningBalanceDefaultHidden, showAccountColumn, showRunningBalance, t]);
+  ], [accountColumnDefaultHidden, accountColumnDisplayFallback, resolvedAccountColumnLabel, accountColumnMode, accountDisplayFallback, accountId, accountOptionById, detailCategoryLabel, inflowCls, investmentProductTypeByAccountId, outflowCls, relatedAccountDefaultHidden, relatedAccountTarget, renderNavigableAccountLabel, runningBalanceDefaultHidden, showAccountColumn, showRunningBalance, t]);
 
   const customToolbarLeft = toolbarMode === "custom" ? (
     <div className="flex min-w-0 items-center gap-2">
@@ -1249,13 +1225,13 @@ export function DetailViewClient({
   const mobileGroups = useMemo(() => {
     const groups: Array<{ date: string; entries: DetailEntry[] }> = [];
     for (const entry of entries) {
-      const date = (entry.date ?? "").slice(0, 10) || "未设置日期";
+      const date = (entry.date ?? "").slice(0, 10) || t("detailView.noDate");
       const current = groups[groups.length - 1];
       if (current?.date === date) current.entries.push(entry);
       else groups.push({ date, entries: [entry] });
     }
     return groups;
-  }, [entries]);
+  }, [entries, t]);
 
   return (
     <>
@@ -1276,10 +1252,10 @@ export function DetailViewClient({
                     (entry.accountId ? investmentProductTypeByAccountId[entry.accountId] : undefined) ??
                     null;
                   const category = (
-                    debtCategoryLabel(entry, accountOptionById) ?? (entry.type === "investment"
-                      ? investmentCategoryLabel(entry, entryFundProductType)
+                    debtCategoryLabel(entry, accountOptionById, t) ?? (entry.type === "investment"
+                      ? investmentCategoryLabel(entry, entryFundProductType, t)
                       : getInsuranceDetailCategoryName(entry))
-                  ) || "未分类";
+                  ) || t("txForm.uncategorized");
                   const note = displayDetailRemark(entry, accountId);
                   const related = relatedAccountTarget(entry);
                   const relatedDisplay = accountDisplayFallback(related.id, related.name);
@@ -1298,18 +1274,24 @@ export function DetailViewClient({
                       className="flex min-h-[68px] w-full items-center gap-3 px-3 py-2.5 text-left"
                     >
                       <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-xs font-semibold ${effectiveAmount >= 0 ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}>
-                        {entry.type === "transfer" ? "转" : entry.type === "investment" ? "投" : effectiveAmount >= 0 ? "收" : "支"}
+                        {entry.type === "transfer"
+                          ? t("detailView.badgeTransfer")
+                          : entry.type === "investment"
+                            ? t("detailView.badgeInvestment")
+                            : effectiveAmount >= 0
+                              ? t("detailView.badgeIncome")
+                              : t("detailView.badgeExpense")}
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-semibold text-slate-900">{category}</span>
-                        <span className="mt-0.5 block truncate text-xs text-slate-500">{counterpart || note || "无备注"}</span>
+                        <span className="mt-0.5 block truncate text-xs text-slate-500">{counterpart || note || t("detailView.noNote")}</span>
                       </span>
                       <span className="shrink-0 text-right">
                         <span className={`block text-sm font-semibold tabular-nums ${effectiveAmount >= 0 ? inflowCls : outflowCls}`}>
                           {effectiveAmount >= 0 ? "+" : "-"}{formatEntryCurrencyMoney(Math.abs(effectiveAmount), entry)}
                         </span>
                         {showRunningBalance && entry.runningBalance != null ? (
-                          <span className="mt-0.5 block text-[11px] tabular-nums text-slate-400">余额 {formatEntryCurrencyMoney(toNumber(entry.runningBalance), entry)}</span>
+                          <span className="mt-0.5 block text-[11px] tabular-nums text-slate-400">{t("detailView.runningBalance", { amount: formatEntryCurrencyMoney(toNumber(entry.runningBalance), entry) })}</span>
                         ) : null}
                       </span>
                       <span className="text-slate-300">›</span>
@@ -1321,7 +1303,7 @@ export function DetailViewClient({
           ))}
         </div>
       ) : (
-        <div className="flex h-40 items-center justify-center text-sm text-slate-400">{emptyText === "暂无记录" ? t("detail.empty") : emptyText}</div>
+        <div className="flex h-40 items-center justify-center text-sm text-slate-400">{resolvedEmptyText}</div>
       )}
     </div>
     <div className="hidden h-full md:block">
@@ -1332,7 +1314,7 @@ export function DetailViewClient({
       rows={entries}
       rowKey={(entry) => entry.id}
       minTableWidth={1160}
-      emptyText={emptyText === "暂无记录" ? t("detail.empty") : emptyText}
+      emptyText={resolvedEmptyText}
       selectable
       selectOnRowClick
       selectAllScope="renderedRows"
@@ -1352,8 +1334,8 @@ export function DetailViewClient({
         const linkLabels = entry.businessLinkLabels ?? [];
         const hasBusinessLink = (entry.businessLinkCount ?? 0) > 0;
         const linkTitle = hasBusinessLink
-          ? `已关联：${linkLabels.join("、") || "业务记录"}`
-          : "未关联，点击建立资金侧关联";
+          ? t("detailView.linkedLabel", { labels: linkLabels.join("、") || t("detailView.businessRecord") })
+          : t("detailView.notLinked");
         return (
           <>
             {shouldShowBusinessLinkStatus(entry) ? (

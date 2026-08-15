@@ -31,13 +31,13 @@ function getEntryIds(result: unknown): string[] | undefined {
 
 function assertOkResponse(res: Response, data: unknown, label: string) {
   if (!res.ok) {
-    throw new Error(`${label}失败: HTTP ${res.status}`);
+    throw new Error(`${label} failed: HTTP ${res.status}`);
   }
   if (!isObject(data)) {
-    throw new Error(`${label}失败: 返回数据为空`);
+    throw new Error(`${label} failed: empty response data`);
   }
   if (data.ok === false) {
-    throw new Error(`${label}失败: ${typeof data.error === "string" ? data.error : "未知错误"}`);
+    throw new Error(`${label} failed: ${typeof data.error === "string" ? data.error : "unknown error"}`);
   }
 }
 
@@ -61,14 +61,14 @@ export function DailyTaskCheck() {
           headers: { "Content-Type": "application/json" },
         });
         const planData = await planRes.json().catch(() => null);
-        assertOkResponse(planRes, planData, "计划任务自动执行");
+        assertOkResponse(planRes, planData, "scheduled task auto-execution");
 
         const pendingRes = await fetch("/api/v1/fund/refresh-pending", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
         });
         const pendingData = await pendingRes.json().catch(() => null);
-        assertOkResponse(pendingRes, pendingData, "基金待确认刷新");
+        assertOkResponse(pendingRes, pendingData, "fund pending refresh");
 
         if (hasUsefulChange(planData) || hasUsefulChange(pendingData)) {
           dispatchFinanceDataChanged({ reason: "startup-check", entryIds: getEntryIds(pendingData) });

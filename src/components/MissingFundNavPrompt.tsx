@@ -4,13 +4,15 @@ import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { AlertTriangle, DatabaseZap } from "lucide-react";
 
 import type { InvestmentProfitMissingNav } from "@/lib/server/investment-profit-report";
+import { showConfirmDialog } from "@/lib/client/confirm-dialog";
+import { useI18n } from "@/lib/i18n";
 
-function compactDateRange(items: InvestmentProfitMissingNav[]) {
+function compactDateRange(t: (key: string) => string, items: InvestmentProfitMissingNav[]) {
   const dates = items.map((item) => item.date).sort();
   if (dates.length === 0) return "";
   const first = dates[0]!;
   const last = dates[dates.length - 1]!;
-  return first === last ? first : `${first} 至 ${last}`;
+  return first === last ? first : `${first}${t("missingNav.dateRangeSep")}${last}`;
 }
 
 function uniqueMissingNavs(items: InvestmentProfitMissingNav[]) {
@@ -37,6 +39,7 @@ export function MissingFundNavPrompt({
   items: InvestmentProfitMissingNav[];
   className?: string;
 }) {
+  const { t } = useI18n();
   const [isPending, startTransition] = useTransition();
   const [message, setMessage] = useState("");
   const incoming = useMemo(() => {
@@ -46,7 +49,7 @@ export function MissingFundNavPrompt({
   const [missingItems, setMissingItems] = useState(incoming.values);
   const lastAppliedSignatureRef = useRef(incoming.signature);
   const fundCount = useMemo(() => new Set(missingItems.map((item) => item.fundCode)).size, [missingItems]);
-  const rangeLabel = compactDateRange(missingItems);
+  const rangeLabel = compactDateRange(t, missingItems);
 
   useEffect(() => {
     if (lastAppliedSignatureRef.current === incoming.signature) return;
@@ -58,7 +61,12 @@ export function MissingFundNavPrompt({
   if (missingItems.length === 0) return null;
 
   async function refreshMissingNavs() {
-    const ok = window.confirm(`发现 ${fundCount} 只基金共 ${missingItems.length} 个净值日期缺失，是否现在获取？`);
+    const ok = await showConfirmDialog({
+      title: t("missingNav.confirmTitle"),
+      message: t("missingNav.confirmMessage")
+        .replace("{fundCount}", String(fundCount))
+        .replace("{count}", String(missingItems.length)),
+    });
     if (!ok) return;
     setMessage("");
     startTransition(async () => {
@@ -72,7 +80,7 @@ export function MissingFundNavPrompt({
         });
         const data = await res.json();
         if (!res.ok || !data.ok) {
-          window.alert(data.error ?? "获取缺失净值失败");
+          window.alert(data.error ?? t("missingNav.fetchFailed"));
           return;
         }
         const unresolvedItems = Array.isArray(data.unresolvedItems)
@@ -84,11 +92,11 @@ export function MissingFundNavPrompt({
 
         setMissingItems([]);
         if (unresolvedItems.length > 0 && resolvedItems.length === 0 && (data.written ?? 0) === 0) {
-          window.alert(`本次没有获取到公开净值；${unresolvedItems.length} 个日期可能尚未披露或不是该基金交易日。`);
+          window.alert(t("missingNav.unresolvedAlert").replace("{count}", String(unresolvedItems.length)));
         }
         window.dispatchEvent(new CustomEvent("mmh:fund:nav-cache-updated", { detail: data }));
       } catch (error) {
-        window.alert(error instanceof Error ? error.message : "获取缺失净值失败");
+        window.alert(error instanceof Error ? error.message : t("missingNav.fetchFailed"));
       }
     });
   }
@@ -96,12 +104,15 @@ export function MissingFundNavPrompt({
   return (
     <div
       className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-2.5 text-xs text-amber-900 ${className}`}
-      title={`持仓基金有 ${missingItems.length} 个净值日期缺失，范围 ${rangeLabel}，${fundCount} 只基金。当前市值收益可能沿用了上一可用净值。${message ? ` ${message}` : ""}`}
+      title={`${t("missingNav.titleAttr")
+        .replace("{count}", String(missingItems.length))
+        .replace("{range}", rangeLabel)
+        .replace("{fundCount}", String(fundCount))}${message ? ` ${message}` : ""}`}
     >
       <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-600" />
-      <span className="font-medium tabular-nums">缺净值 {missingItems.length}</span>
+      <span className="font-medium tabular-nums">{t("missingNav.badge").replace("{count}", String(missingItems.length))}</span>
       <span className="hidden max-w-48 truncate text-amber-700 xl:inline">
-        {fundCount}只 · {rangeLabel}
+        {t("missingNav.summary").replace("{fundCount}", String(fundCount)).replace("{range}", rangeLabel)}
       </span>
       <button
         type="button"
@@ -110,7 +121,7 @@ export function MissingFundNavPrompt({
         className="ml-1 inline-flex h-6 shrink-0 items-center gap-1 rounded-full border border-amber-300 bg-white px-2 font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-60"
       >
         <DatabaseZap className={`h-3 w-3 ${isPending ? "animate-pulse" : ""}`} />
-        {isPending ? "获取中" : "获取"}
+        {isPending ? t("missingNav.fetching") : t("missingNav.fetch")}
       </button>
     </div>
   );

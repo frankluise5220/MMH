@@ -18,6 +18,7 @@ import {
   Repeat,
   X,
 } from "lucide-react";
+import { useI18n } from "@/lib/i18n";
 
 export type SmartSelectOption = {
   /** Selectable option IDs should be real entity IDs. Use synthetic IDs only for non-selectable headers/groups. */
@@ -302,14 +303,15 @@ function isSelectable(option: SmartSelectOption, selectableGroups = true) {
   return !option.isHeader && (selectableGroups || !option.isGroup);
 }
 
-function renderCycleActionButton(action?: SmartSelectCycleAction) {
+function renderCycleActionButton(action: SmartSelectCycleAction | undefined, t: (key: string, params?: Record<string, string | number>) => string) {
   if (!action) return undefined;
+  const fallback = t("smartSelect.cycleSwitch");
   return (
     <button
       type="button"
       onClick={action.onClick}
-      title={action.title ?? action.label ?? "循环切换"}
-      aria-label={action.ariaLabel ?? action.label ?? "循环切换"}
+      title={action.title ?? action.label ?? fallback}
+      aria-label={action.ariaLabel ?? action.label ?? fallback}
       className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
     >
       {action.icon ?? <Repeat className="h-3 w-3" />}
@@ -317,13 +319,13 @@ function renderCycleActionButton(action?: SmartSelectCycleAction) {
   );
 }
 
-function normalizeSingleBehavior(props: SingleModeProps, options: SmartSelectOption[]) {
+function normalizeSingleBehavior(props: SingleModeProps, options: SmartSelectOption[], t: (key: string, params?: Record<string, string | number>) => string) {
   const behavior = props.behavior;
   const legacyCycleAction = props.onCycleOwnerFilter
     ? {
         onClick: props.onCycleOwnerFilter,
-        title: `所有人：${props.ownerFilterLabel || "全部"}`,
-        ariaLabel: `切换所有人，当前 ${props.ownerFilterLabel || "全部"}`,
+        title: t("debtTx.ownerFilterTitle", { label: props.ownerFilterLabel || t("common.all") }),
+        ariaLabel: t("debtTx.ownerFilterAria", { label: props.ownerFilterLabel || t("common.all") }),
       }
     : undefined;
   const cycleAction = behavior?.cycleAction ?? props.cycleAction ?? legacyCycleAction;
@@ -402,6 +404,7 @@ function normalizeMultiBehavior(props: MultiModeProps, options: SmartSelectOptio
 
 export function SmartSelect(props: SmartSelectProps) {
   const { mode, value, onChange, options, placeholder } = props;
+  const { t } = useI18n();
   const [createdOptions, setCreatedOptions] = useState<SmartSelectOption[]>([]);
   const selectedCreatedOptions = useMemo(() => {
     const selectedIds = new Set(
@@ -417,7 +420,7 @@ export function SmartSelect(props: SmartSelectProps) {
     [options, selectedCreatedOptions],
   );
   const normalizedBehavior = mode === "single"
-    ? normalizeSingleBehavior(props, effectiveOptions)
+    ? normalizeSingleBehavior(props, effectiveOptions, t)
     : normalizeMultiBehavior(props, effectiveOptions);
 
   const {
@@ -464,7 +467,7 @@ export function SmartSelect(props: SmartSelectProps) {
   const selectedLabel = selectedOption ? stripIndent(selectedOption.label) : "";
   const selectedTitle = selectedOption
     ? (selectedOption.title || [selectedLabel, selectedOption.subLabel].filter(Boolean).join(" · "))
-    : (placeholder || "请选择");
+    : (placeholder || t("txForm.selectPlaceholder"));
   const groupChildCounts = useMemo(() => buildGroupChildCounts(effectiveOptions), [effectiveOptions]);
   const selectableOptions = useMemo(
     () => effectiveOptions.filter((option) => isSelectable(option, selectableGroups)),
@@ -720,7 +723,7 @@ export function SmartSelect(props: SmartSelectProps) {
         });
         const data = await res.json();
         if (!data.ok || !data.tag) {
-          window.alert(data.error ?? "创建失败");
+          window.alert(data.error ?? t("smartSelect.createFailed"));
           return;
         }
         const newOption: SmartSelectOption = {
@@ -733,7 +736,7 @@ export function SmartSelect(props: SmartSelectProps) {
       setNewName("");
       setShowNew(false);
     } catch {
-      window.alert("网络错误");
+      window.alert(t("smartSelect.networkError"));
     } finally {
       setCreating(false);
     }
@@ -1088,7 +1091,7 @@ export function SmartSelect(props: SmartSelectProps) {
                     setFocusedIndex(0);
                   }}
                   className="h-7 min-w-0 flex-1 rounded-[8px] border border-slate-300/70 bg-white px-2 text-xs outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                  placeholder="搜索..."
+                  placeholder={t("smartSelect.search")}
                 />
               ) : (
                 <div className="min-w-0 flex-1" />
@@ -1101,14 +1104,14 @@ export function SmartSelect(props: SmartSelectProps) {
                       closeDropdown();
                       isSingleCreateButton.onClick();
                     }}
-                    title={isSingleCreateButton.label ?? "新增"}
-                    aria-label={isSingleCreateButton.label ?? "新增"}
+                    title={isSingleCreateButton.label ?? t("smartSelect.add")}
+                    aria-label={isSingleCreateButton.label ?? t("smartSelect.add")}
                     className="secondary-button !px-0 h-7 w-7 shrink-0 text-blue-600 hover:bg-blue-50"
                   >
                     <Plus className="h-[18px] w-[18px]" />
                   </button>
                 ) : null}
-                {renderCycleActionButton(cycleAction)}
+                {renderCycleActionButton(cycleAction, t)}
                 {headerExtra}
               </div>
             </div>
@@ -1248,7 +1251,7 @@ export function SmartSelect(props: SmartSelectProps) {
                 style={fullGridRowStyle}
                 className="px-3 py-4 text-center text-xs text-slate-400"
               >
-                {search ? `没有匹配“${search}”的选项` : "暂无选项"}
+                {search ? t("smartSelect.noMatch", { search }) : t("smartSelect.noOptions")}
               </div>
             ) : null}
           </div>
@@ -1266,13 +1269,13 @@ export function SmartSelect(props: SmartSelectProps) {
                     setFocusedIndex(0);
                   }}
                   className="h-7 min-w-0 flex-1 rounded-[8px] border border-slate-300/70 bg-white px-2 text-xs outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                  placeholder="搜索..."
+                  placeholder={t("smartSelect.search")}
                 />
               ) : (
                 <div className="min-w-0 flex-1" />
               )}
               <div className="flex shrink-0 items-center gap-1">
-                {renderCycleActionButton(cycleAction)}
+                {renderCycleActionButton(cycleAction, t)}
                 {headerExtra}
               </div>
             </div>
@@ -1283,11 +1286,11 @@ export function SmartSelect(props: SmartSelectProps) {
               <button
                 type="button"
                 onClick={() => setShowNew(true)}
-                title={isMultiInlineCreate.buttonLabel ?? "新增"}
-                aria-label={isMultiInlineCreate.buttonLabel ?? "新增"}
+                title={isMultiInlineCreate.buttonLabel ?? t("smartSelect.add")}
+                aria-label={isMultiInlineCreate.buttonLabel ?? t("smartSelect.add")}
                 className="flex h-9 w-full items-center justify-between border-b border-slate-200/70 bg-slate-50/90 px-3 text-sm transition-colors hover:bg-blue-50/70"
               >
-                <span className="text-slate-500">{placeholder || "选择标签"}</span>
+                <span className="text-slate-500">{placeholder || t("txForm.selectTags")}</span>
                 <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-blue-200 bg-blue-50/80 text-blue-700">
                   <Plus className="h-[18px] w-[18px]" />
                 </span>
@@ -1309,7 +1312,7 @@ export function SmartSelect(props: SmartSelectProps) {
                       }
                     }}
                     className="h-8 flex-1 rounded-[8px] border border-slate-300/70 bg-white px-2 text-sm outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                    placeholder="标签名称"
+                    placeholder={t("smartSelect.tagName")}
                   />
                   <button
                     type="button"
@@ -1317,7 +1320,7 @@ export function SmartSelect(props: SmartSelectProps) {
                     disabled={!newName.trim() || creating}
                     className="primary-button h-8 px-3 text-sm disabled:opacity-50"
                   >
-                    {creating ? "..." : "创建"}
+                    {creating ? "..." : t("smartSelect.create")}
                   </button>
                   <button
                     type="button"
@@ -1381,7 +1384,7 @@ export function SmartSelect(props: SmartSelectProps) {
               );
             })}
             {visible.length === 0 && !showNew ? (
-              <div className="px-3 py-4 text-center text-xs text-slate-400">暂无选项</div>
+              <div className="px-3 py-4 text-center text-xs text-slate-400">{t("smartSelect.noOptions")}</div>
             ) : null}
           </div>
         </>
@@ -1404,7 +1407,7 @@ export function SmartSelect(props: SmartSelectProps) {
       >
         {mode === "single" ? (
           <span className={`${selectedLabel ? "text-slate-800" : "text-slate-400"} flex min-w-0 flex-1 items-center`} title={selectedTitle}>
-            <span className="min-w-0 truncate">{selectedLabel || placeholder || "请选择"}</span>
+            <span className="min-w-0 truncate">{selectedLabel || placeholder || t("txForm.selectPlaceholder")}</span>
             {selectedOption?.subLabel ? (
               <span className="ml-1 max-w-[42%] shrink-0 truncate text-[10px] text-slate-400">{selectedOption.subLabel}</span>
             ) : null}
@@ -1449,10 +1452,11 @@ function MultiTriggerDisplay({
   options: SmartSelectOption[];
   placeholder?: string;
 }) {
+  const { t } = useI18n();
   const selected = options.filter((option) => value.includes(option.id));
 
   if (selected.length === 0) {
-    return <span className="text-slate-400">{placeholder || "请选择"}</span>;
+    return <span className="text-slate-400">{placeholder || t("txForm.selectPlaceholder")}</span>;
   }
 
   return (

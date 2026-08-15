@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n";
+import { useOutsideClose } from "@/lib/client/useOutsideClose";
 
 type TableColumnFilterProps = {
   label: string;
@@ -67,23 +68,7 @@ export function TableColumnFilter({
     return () => window.cancelAnimationFrame(frame);
   }, [open]);
 
-  useEffect(() => {
-    if (!open) return;
-    const onMouseDown = (e: MouseEvent) => {
-      if (!rootRef.current) return;
-      if (rootRef.current.contains(e.target as Node)) return;
-      onClose();
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("mousedown", onMouseDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onMouseDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open, onClose]);
+  useOutsideClose(rootRef, open, onClose);
 
   const filterOptionsByKeyword = useCallback((rawKeyword: string) => {
     const query = rawKeyword.trim().toLowerCase();
@@ -176,7 +161,7 @@ export function TableColumnFilter({
           </div>
           {keywordActive ? (
             <div className="mb-2 rounded-md bg-blue-50 px-2 py-1 text-[11px] text-blue-700">
-              点确认将应用当前 {keywordMatchedCount} 个匹配项
+              {t("tableFilter.applyHint", { count: keywordMatchedCount })}
             </div>
           ) : null}
           <div className="max-h-[calc(100%-116px)] space-y-1 overflow-auto pr-1">
@@ -204,7 +189,7 @@ export function TableColumnFilter({
                     className={`flex h-3.5 w-3.5 items-center justify-center rounded border text-[10px] ${
                       checked ? "border-blue-600 bg-blue-600 text-white" : "border-slate-300 bg-white text-transparent"
                     }`}
-                    aria-label={`${value}勾选`}
+                    aria-label={t("tableFilter.checkRow", { value })}
                   >
                     ✓
                   </button>
@@ -259,23 +244,7 @@ export function DateRangeColumnFilter({
     setDraftTo(to);
   }, [from, to, open]);
 
-  useEffect(() => {
-    if (!open) return;
-    const onMouseDown = (e: MouseEvent) => {
-      if (!rootRef.current) return;
-      if (rootRef.current.contains(e.target as Node)) return;
-      onClose();
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("mousedown", onMouseDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onMouseDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open, onClose]);
+  useOutsideClose(rootRef, open, onClose);
 
   const active = !!from || !!to;
 
@@ -375,23 +344,7 @@ export function NumberRangeColumnFilter({
     setDraftTo(to);
   }, [from, to, open]);
 
-  useEffect(() => {
-    if (!open) return;
-    const onMouseDown = (e: MouseEvent) => {
-      if (!rootRef.current) return;
-      if (rootRef.current.contains(e.target as Node)) return;
-      onClose();
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("mousedown", onMouseDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onMouseDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open, onClose]);
+  useOutsideClose(rootRef, open, onClose);
 
   const active = !!from || !!to;
 
@@ -502,23 +455,7 @@ export function TextColumnFilter({
     return () => window.cancelAnimationFrame(frame);
   }, [open]);
 
-  useEffect(() => {
-    if (!open) return;
-    const onMouseDown = (e: MouseEvent) => {
-      if (!rootRef.current) return;
-      if (rootRef.current.contains(e.target as Node)) return;
-      onClose();
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("mousedown", onMouseDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onMouseDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open, onClose]);
+  useOutsideClose(rootRef, open, onClose);
 
   const active = value.trim().length > 0;
 
@@ -586,262 +523,6 @@ export function TextColumnFilter({
           </button>
         </div>
       ) : null}
-    </div>
-  );
-}
-
-export function LinkTableColumnFilter({
-  label,
-  badgeText,
-  items,
-  clearHref,
-}: {
-  label: string;
-  badgeText?: string | null;
-  items: { value: string; href: string; checked: boolean }[];
-  clearHref?: string | null;
-}) {
-  const [open, setOpen] = useState(false);
-  const { t } = useI18n();
-  const filterTitle = t("table.filterTitle").replaceAll("{label}", label);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onMouseDown = (e: MouseEvent) => {
-      if (!rootRef.current) return;
-      if (rootRef.current.contains(e.target as Node)) return;
-      setOpen(false);
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onMouseDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onMouseDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
-
-  const active = !!badgeText;
-  return (
-    <div ref={rootRef} className="relative inline-flex items-center gap-1">
-      <span>{label}</span>
-      <button
-        type="button"
-        onClick={(event) => { event.stopPropagation(); setOpen((v) => !v); }}
-        className={`h-5 px-1 rounded border text-[10px] leading-none inline-flex items-center gap-1 ${active ? "border-blue-300 bg-blue-50 text-blue-600" : "border-slate-200 bg-white text-slate-500"}`}
-        title={filterTitle}
-      >
-        {badgeText ? <span className="font-semibold">{badgeText}</span> : <span>▼</span>}
-      </button>
-      {open && (
-        <div className="absolute left-0 top-6 z-30 w-48 max-h-72 overflow-auto rounded-lg border border-slate-200 bg-white p-2 shadow-lg">
-          <div className="mb-2 flex items-center justify-between text-[11px] text-slate-500">
-            <span>{filterTitle}</span>
-            {clearHref ? <a href={clearHref} onClick={() => setOpen(false)} className="text-blue-600 hover:text-blue-700">{t("table.clear")}</a> : null}
-          </div>
-          <div className="space-y-1">
-            {items.map((it) => (
-              <a key={it.value} href={it.href} onClick={() => setOpen(false)} className="flex items-center gap-2 rounded px-1 py-1 text-xs text-slate-700 hover:bg-slate-50">
-                <span className={`h-3 w-3 rounded border ${it.checked ? "border-blue-500 bg-blue-500" : "border-slate-300 bg-white"}`} />
-                <span className="truncate" title={it.value}>{it.value}</span>
-              </a>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-export function LinkDateRangeFilter({
-  label,
-  from,
-  to,
-  badgeText,
-  clearHref,
-  hiddenInputs,
-}: {
-  label: string;
-  from: string;
-  to: string;
-  badgeText?: string | null;
-  clearHref?: string | null;
-  hiddenInputs: { name: string; value: string }[];
-}) {
-  const [open, setOpen] = useState(false);
-  const { t } = useI18n();
-  const filterTitle = t("table.filterTitle").replaceAll("{label}", label);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onMouseDown = (e: MouseEvent) => {
-      if (!rootRef.current) return;
-      if (rootRef.current.contains(e.target as Node)) return;
-      setOpen(false);
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onMouseDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onMouseDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
-
-  const active = !!badgeText;
-  return (
-    <div ref={rootRef} className="relative inline-flex items-center gap-1">
-      <span>{label}</span>
-      <button
-        type="button"
-        onClick={(event) => { event.stopPropagation(); setOpen((v) => !v); }}
-        className={`h-5 px-1 rounded border text-[10px] leading-none inline-flex items-center gap-1 ${active ? "border-blue-300 bg-blue-50 text-blue-600" : "border-slate-200 bg-white text-slate-500"}`}
-        title={filterTitle}
-      >
-        {badgeText ? <span className="font-semibold">{badgeText}</span> : <span>▼</span>}
-      </button>
-      {open && (
-        <div className="absolute left-0 top-6 z-30 w-64 rounded-lg border border-slate-200 bg-white p-2 shadow-lg">
-          <div className="mb-2 flex items-center justify-between text-[11px] text-slate-500">
-            <span>{filterTitle}</span>
-            {clearHref ? <a href={clearHref} onClick={() => setOpen(false)} className="text-blue-600 hover:text-blue-700">{t("table.clear")}</a> : null}
-          </div>
-          <form method="get" action="/">
-            {hiddenInputs.map((h) => (
-              <input key={`${h.name}:${h.value}`} type="hidden" name={h.name} value={h.value} />
-            ))}
-            <div className="grid grid-cols-2 gap-2">
-              <div className="space-y-1">
-                <div className="text-[10px] text-slate-500">{t("table.from")}</div>
-                <input
-                  type="date"
-                  name="detailDateFrom"
-                  defaultValue={from}
-                  className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-xs outline-none focus:border-blue-400"
-                />
-              </div>
-              <div className="space-y-1">
-                <div className="text-[10px] text-slate-500">{t("table.to")}</div>
-                <input
-                  type="date"
-                  name="detailDateTo"
-                  defaultValue={to}
-                  className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-xs outline-none focus:border-blue-400"
-                />
-              </div>
-            </div>
-            <div className="mt-2 flex items-center justify-end gap-2">
-              <button type="submit" onClick={() => setOpen(false)} className="h-8 px-3 rounded border border-blue-200 bg-blue-50 text-blue-700 text-xs hover:bg-blue-100">{t("table.confirm")}</button>
-            </div>
-          </form>
-        </div>
-      )}
-    </div>
-  );
-}
-
-export function LinkNumberRangeFilter({
-  label,
-  fromName,
-  toName,
-  from,
-  to,
-  badgeText,
-  clearHref,
-  hiddenInputs,
-  fromPlaceholder,
-  toPlaceholder,
-}: {
-  label: string;
-  fromName: string;
-  toName: string;
-  from: string;
-  to: string;
-  badgeText?: string | null;
-  clearHref?: string | null;
-  hiddenInputs: { name: string; value: string }[];
-  fromPlaceholder?: string;
-  toPlaceholder?: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const { t } = useI18n();
-  const filterTitle = t("table.filterTitle").replaceAll("{label}", label);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onMouseDown = (e: MouseEvent) => {
-      if (!rootRef.current) return;
-      if (rootRef.current.contains(e.target as Node)) return;
-      setOpen(false);
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onMouseDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onMouseDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
-
-  const active = !!badgeText;
-  return (
-    <div ref={rootRef} className="relative inline-flex items-center gap-1">
-      <span>{label}</span>
-      <button
-        type="button"
-        onClick={(event) => { event.stopPropagation(); setOpen((v) => !v); }}
-        className={`h-5 px-1 rounded border text-[10px] leading-none inline-flex items-center gap-1 ${active ? "border-blue-300 bg-blue-50 text-blue-600" : "border-slate-200 bg-white text-slate-500"}`}
-        title={filterTitle}
-      >
-        {badgeText ? <span className="font-semibold">{badgeText}</span> : <span>▼</span>}
-      </button>
-      {open && (
-        <div className="absolute left-0 top-6 z-30 w-64 rounded-lg border border-slate-200 bg-white p-2 shadow-lg">
-          <div className="mb-2 flex items-center justify-between text-[11px] text-slate-500">
-            <span>{filterTitle}</span>
-            {clearHref ? <a href={clearHref} onClick={() => setOpen(false)} className="text-blue-600 hover:text-blue-700">{t("table.clear")}</a> : null}
-          </div>
-          <form method="get" action="/">
-            {hiddenInputs.map((h) => (
-              <input key={`${h.name}:${h.value}`} type="hidden" name={h.name} value={h.value} />
-            ))}
-            <div className="grid grid-cols-2 gap-2">
-              <div className="space-y-1">
-                <div className="text-[10px] text-slate-500">{t("table.from")}</div>
-                <input
-                  inputMode="decimal"
-                  name={fromName}
-                  defaultValue={from}
-                  placeholder={fromPlaceholder}
-                  className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-xs outline-none focus:border-blue-400"
-                />
-              </div>
-              <div className="space-y-1">
-                <div className="text-[10px] text-slate-500">{t("table.to")}</div>
-                <input
-                  inputMode="decimal"
-                  name={toName}
-                  defaultValue={to}
-                  placeholder={toPlaceholder}
-                  className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-xs outline-none focus:border-blue-400"
-                />
-              </div>
-            </div>
-            <div className="mt-2 flex items-center justify-end gap-2">
-              <button type="submit" onClick={() => setOpen(false)} className="h-8 px-3 rounded border border-blue-200 bg-blue-50 text-blue-700 text-xs hover:bg-blue-100">{t("table.confirm")}</button>
-            </div>
-          </form>
-        </div>
-      )}
     </div>
   );
 }

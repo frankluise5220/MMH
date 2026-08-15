@@ -1,6 +1,7 @@
 "use client";
 
 import { Children, useEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
+import { useI18n } from "@/lib/i18n";
 
 const DEFAULT_UPPER_HEIGHT = 440;
 const DEFAULT_MIN_PANE_HEIGHT = 104;
@@ -23,8 +24,8 @@ export function ResizableVerticalSplit({
   children,
   defaultUpperHeight = DEFAULT_UPPER_HEIGHT,
   minPaneHeight = DEFAULT_MIN_PANE_HEIGHT,
-  separatorLabel = "调整上下表高度",
-  separatorTitle = "拖动调整上下表高度",
+  separatorLabel,
+  separatorTitle,
   stackOnMobile = false,
   stackLowerFirstOnMobile = false,
 }: {
@@ -38,6 +39,9 @@ export function ResizableVerticalSplit({
   stackOnMobile?: boolean;
   stackLowerFirstOnMobile?: boolean;
 }) {
+  const { t } = useI18n();
+  const effectiveSeparatorLabel = separatorLabel ?? t("resizableSplit.separatorLabel");
+  const effectiveSeparatorTitle = separatorTitle ?? t("resizableSplit.separatorTitle");
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [upperHeight, setUpperHeight] = useState(defaultUpperHeight);
   const [minimumUpperHeight, setMinimumUpperHeight] = useState(minPaneHeight);
@@ -147,7 +151,7 @@ export function ResizableVerticalSplit({
         <>
           <div
             role="separator"
-            aria-label={separatorLabel}
+            aria-label={effectiveSeparatorLabel}
             aria-orientation="horizontal"
             aria-valuemin={minimumUpperHeight}
             aria-valuenow={upperHeight}
@@ -163,7 +167,7 @@ export function ResizableVerticalSplit({
               }
             }}
             className="group flex h-4 shrink-0 cursor-row-resize touch-none items-center justify-center outline-none"
-            title={separatorTitle}
+            title={effectiveSeparatorTitle}
           >
             <span className="h-1 w-16 rounded-full bg-slate-300 transition group-hover:bg-blue-400 group-focus:bg-blue-500" />
           </div>

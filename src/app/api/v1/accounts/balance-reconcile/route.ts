@@ -57,7 +57,7 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
   const parsed = BodySchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json({ ok: false, error: "参数格式不正确" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "VALIDATION_FAILED", error: "参数格式不正确" }, { status: 400 });
   }
 
   const { hidFilter } = await getHouseholdScope();
@@ -78,7 +78,7 @@ export async function POST(req: Request) {
     },
   });
   if (!account) {
-    return NextResponse.json({ ok: false, error: "只支持对现金、借记卡、电子零钱、往来款账户校准余额" }, { status: 404 });
+    return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_RECONCILABLE", error: "只支持对现金、借记卡、电子零钱、往来款账户校准余额" }, { status: 404 });
   }
 
   const balanceMap = await computeAccountDisplayBalances([account], hidFilter);
@@ -117,7 +117,7 @@ export async function POST(req: Request) {
     : null;
 
   if (parsed.data.entryId && (!existing || getBalanceReconcileTarget(existing) == null)) {
-    return NextResponse.json({ ok: false, error: "校准记录不存在" }, { status: 404 });
+    return NextResponse.json({ ok: false, code: "RECONCILE_ENTRY_NOT_FOUND", error: "校准记录不存在" }, { status: 404 });
   }
 
   const saved = existing

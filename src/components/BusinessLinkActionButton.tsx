@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/lib/i18n";
+
 type BusinessLinkActionButtonProps = {
   active: boolean;
   title?: string;
@@ -15,11 +17,12 @@ export function BusinessLinkActionButton({
   disabled = false,
   onClick,
 }: BusinessLinkActionButtonProps) {
+  const { t } = useI18n();
   const effectiveTitle = active
-    ? title ?? "已关联业务记录"
+    ? title ?? t("businessLink.linked")
     : busy
-    ? "正在建立资金侧关联..."
-    : title ?? "未关联，点击建立资金侧关联";
+    ? t("businessLink.linking")
+    : title ?? t("detailView.notLinked");
   const clickable = !active && !!onClick && !disabled && !busy;
 
   return (

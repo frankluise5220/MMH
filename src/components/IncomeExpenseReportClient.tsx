@@ -8,6 +8,7 @@ import type { BasicDetailBatchCategoryOption } from "@/components/BasicDetailSel
 import type { DetailEntry } from "@/components/DetailViewClient";
 import { formatMoney } from "@/lib/format";
 import { pnlColor, type ColorScheme } from "@/lib/client/colors";
+import { useI18n } from "@/lib/i18n";
 import type {
   IncomeExpenseGroupBy,
   IncomeExpenseReport,
@@ -132,6 +133,7 @@ function AmountButton({
   loadingKey: string | null;
   onSelect: (detail: DetailSelection) => void;
 }) {
+  const { t } = useI18n();
   if (count === 0) return <span className={className}>{formatMoney(value)}</span>;
   const key = detailKey(detail);
   const loading = loadingKey === key;
@@ -141,7 +143,7 @@ function AmountButton({
       onClick={() => onSelect(detail)}
       disabled={loading}
       className={`${className} inline appearance-none border-0 bg-transparent p-0 text-inherit font-[inherit] cursor-pointer decoration-dotted underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 disabled:cursor-wait disabled:opacity-60`}
-      title={`查看 ${count} 条明细`}
+      title={t("incomeExpense.detailCount", { count })}
     >
       {formatMoney(value)}
     </button>
@@ -171,6 +173,7 @@ export function IncomeExpenseReportClient({
   const [detailEntries, setDetailEntries] = useState<DetailEntry[]>(initialDetailEntries);
   const [loadingKey, setLoadingKey] = useState<string | null>(null);
   const [expandedCategoryRows, setExpandedCategoryRows] = useState<Set<string>>(() => new Set());
+  const { t } = useI18n();
   const reportContextKey = useMemo(
     () => `${report.start}:${report.end}:${report.groupBy}:${accountId}`,
     [accountId, report.end, report.groupBy, report.start],
@@ -230,10 +233,10 @@ export function IncomeExpenseReportClient({
       const res = await fetch(`/api/v1/reports/income-expense/detail?${params.toString()}`, { cache: "no-store" });
       const data = (await res.json().catch(() => null)) as DetailResponse | null;
       if (!res.ok || !data?.ok || !data.data) {
-        throw new Error(data?.error ?? "查询明细失败");
+        throw new Error(data?.error ?? t("incomeExpense.queryFailed"));
       }
       if (requestSequence !== detailRequestSequenceRef.current) return;
-      if (!data.data.details) throw new Error("当前筛选没有可显示的明细");
+      if (!data.data.details) throw new Error(t("incomeExpense.noDetailsForFilter"));
       hasClientDetailSelectionRef.current = true;
       clientDetailKeyRef.current = activeDetailKey(data.data.details);
       setActiveDetails(data.data.details);
@@ -243,7 +246,7 @@ export function IncomeExpenseReportClient({
         document.getElementById("report-details")?.scrollIntoView({ block: "nearest" });
       });
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "查询明细失败");
+      window.alert(error instanceof Error ? error.message : t("incomeExpense.queryFailed"));
     } finally {
       if (requestSequence === detailRequestSequenceRef.current) setLoadingKey(null);
     }
@@ -317,7 +320,7 @@ export function IncomeExpenseReportClient({
             </colgroup>
             <thead className="bg-white">
               <tr>
-                <th className="sticky left-0 top-0 z-30 border-b border-r border-slate-200 bg-white px-4 py-2 text-left text-xs font-semibold text-slate-600">分类</th>
+                <th className="sticky left-0 top-0 z-30 border-b border-r border-slate-200 bg-white px-4 py-2 text-left text-xs font-semibold text-slate-600">{t("incomeExpense.colCategory")}</th>
                 {report.columns.map((column) => (
                   <th
                     key={column.key}
@@ -326,13 +329,13 @@ export function IncomeExpenseReportClient({
                     {column.label}
                   </th>
                 ))}
-                <th className="sticky top-0 z-20 border-b border-r border-slate-200 bg-white px-3 py-2 text-right text-xs font-semibold text-slate-700">合计</th>
+                <th className="sticky top-0 z-20 border-b border-r border-slate-200 bg-white px-3 py-2 text-right text-xs font-semibold text-slate-700">{t("common.total")}</th>
               </tr>
             </thead>
             <tbody>
               <tr className={incomeSectionStyle.row}>
                 <td className={incomeSectionStyle.label}>
-                  收入合计
+                  {t("incomeExpense.incomeTotal")}
                 </td>
                 {report.income.periodTotals.map((value, index) => (
                   <td key={`income-total-${index}`} className={incomeSectionStyle.cell}>
@@ -370,7 +373,7 @@ export function IncomeExpenseReportClient({
                     } : undefined}
                     role={canToggle ? "button" : undefined}
                     tabIndex={canToggle ? 0 : undefined}
-                    title={canToggle ? (expanded ? "点击收起下级分类" : "点击展开下级分类") : undefined}
+                    title={canToggle ? (expanded ? t("incomeExpense.collapseCategory") : t("incomeExpense.expandCategory")) : undefined}
                   >
                     <span className={`block truncate ${row.depth === 0 ? "font-semibold text-slate-800" : ""}`}>{row.name}</span>
                   </td>
@@ -401,7 +404,7 @@ export function IncomeExpenseReportClient({
 
               <tr className={expenseSectionStyle.row}>
                 <td className={expenseSectionStyle.label}>
-                  支出合计
+                  {t("incomeExpense.expenseTotal")}
                 </td>
                 {report.expense.periodTotals.map((value, index) => (
                   <td key={`expense-total-${index}`} className={expenseSectionStyle.cell}>
@@ -439,7 +442,7 @@ export function IncomeExpenseReportClient({
                     } : undefined}
                     role={canToggle ? "button" : undefined}
                     tabIndex={canToggle ? 0 : undefined}
-                    title={canToggle ? (expanded ? "点击收起下级分类" : "点击展开下级分类") : undefined}
+                    title={canToggle ? (expanded ? t("incomeExpense.collapseCategory") : t("incomeExpense.expandCategory")) : undefined}
                   >
                     <span className={`block truncate ${row.depth === 0 ? "font-semibold text-slate-800" : ""}`}>{row.name}</span>
                   </td>
@@ -471,7 +474,7 @@ export function IncomeExpenseReportClient({
             <tfoot className="sticky bottom-0 bg-slate-50">
               <tr>
                 <td className="sticky left-0 border-t border-r border-slate-200 bg-slate-50 px-4 py-2 text-sm font-semibold text-slate-700">
-                  净收支
+                  {t("stats.netIncome")}
                 </td>
                 {report.netPeriodTotals.map((value, index) => (
                   <td
@@ -505,7 +508,7 @@ export function IncomeExpenseReportClient({
 
         {report.income.rows.length === 0 && report.expense.rows.length === 0 ? (
           <div className="px-4 py-10 text-center text-sm text-slate-400">
-            当前筛选范围内暂无收支数据
+            {t("incomeExpense.emptyRange")}
           </div>
         ) : null}
       </div>
@@ -518,7 +521,11 @@ export function IncomeExpenseReportClient({
             accountOptions={accountOptions}
             categoryOptions={categoryOptions}
             investmentProductTypeByAccountId={investmentProductTypeByAccountId}
-            title={`${activeDetails.typeLabel}明细${activeDetails.categoryName ? ` · ${activeDetails.categoryName}` : ""} · ${activeDetails.columnLabel}`}
+            title={t("incomeExpense.detailTitle", {
+              typeLabel: activeDetails.typeLabel,
+              categorySuffix: activeDetails.categoryName ? ` · ${activeDetails.categoryName}` : "",
+              columnLabel: activeDetails.columnLabel,
+            })}
             total={activeDetails.total}
             colorValue={activeDetails.type === "expense" ? -activeDetails.total : activeDetails.total}
             onClear={clearDetails}

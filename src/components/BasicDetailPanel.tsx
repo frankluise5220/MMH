@@ -10,14 +10,15 @@ import { DebitBalanceReconcileButton } from "@/components/DebitBalanceReconcileB
 import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
 import { DetailViewClient, type DetailEntry } from "@/components/DetailViewClient";
 import { ViewExcelImportMenuButton } from "@/components/ViewExcelImportMenuButton";
-import { FINANCE_DATA_CHANGED_EVENT, LEGACY_FINANCE_REFRESH_EVENT, type FinanceDataChangedDetail } from "@/lib/client/refresh";
+import { FINANCE_DATA_CHANGED_EVENT, type FinanceDataChangedDetail } from "@/lib/client/refresh";
 import {
   DETAIL_PAGE_SIZE_OPTIONS,
-  decodeDetailPaginationPreference,
-  detailPaginationCookieName,
-  encodeDetailPaginationPreference,
+  clampDetailPage as clampPage,
   normalizeDetailPageSize,
+  readStoredDetailPreference,
+  writeStoredDetailPreference,
 } from "@/lib/detail-pagination-preference";
+import { useI18n } from "@/lib/i18n";
 
 type BasicDetailPanelProps = {
   accountId: string;
@@ -43,23 +44,6 @@ type BasicDetailPanelProps = {
   focusEntryId?: string;
   showGuideOverlay?: boolean;
 };
-
-function clampPage(page: number, totalPages: number) {
-  return Math.min(Math.max(1, Math.floor(page) || 1), totalPages);
-}
-
-function readStoredDetailPreference(accountId: string) {
-  if (typeof window === "undefined") return null;
-  return decodeDetailPaginationPreference(window.sessionStorage.getItem(detailPaginationCookieName(accountId)));
-}
-
-function writeStoredDetailPreference(accountId: string, pageSize: number, detailAll: boolean, detailPage: number) {
-  if (typeof window === "undefined") return;
-  const cookieName = detailPaginationCookieName(accountId);
-  const value = encodeDetailPaginationPreference({ pageSize, detailAll, detailPage });
-  window.sessionStorage.setItem(cookieName, value);
-  document.cookie = `${cookieName}=${value}; path=/; max-age=31536000; SameSite=Lax`;
-}
 
 function detailPaginationFetchKey(accountId: string, pageSize: number, detailAll: boolean, detailPage: number) {
   return `${accountId}:${pageSize}:${detailAll ? "all" : detailPage}`;
@@ -203,6 +187,7 @@ function GuideHotspot({
   title: string;
   children: string;
 }) {
+  const { t } = useI18n();
   if (!rect) return null;
   const hotspotStyle = style ?? expandedGuideRectStyle(rect);
   const hotspotRect = guideRectFromBoxStyle(hotspotStyle);
@@ -223,7 +208,7 @@ function GuideHotspot({
       tabIndex={0}
       role="note"
       aria-label={`${title}：${children}`}
-      title="移上查看说明"
+      title={t("basicDetail.guideHoverHint")}
       className={`group pointer-events-auto absolute z-20 cursor-help rounded-md border transition-colors outline-none ${hotspotToneClass}`}
       style={hotspotStyle}
     >
@@ -268,6 +253,7 @@ export function BasicDetailPanel({
   showGuideOverlay = false,
 }: BasicDetailPanelProps) {
   const router = useRouter();
+  const { t } = useI18n();
   const normalizedInitialPageSize = normalizeDetailPageSize(initialPageSize);
   const [localEntries, setLocalEntries] = useState(entries);
   const [localTotalCount, setLocalTotalCount] = useState(totalCount);
@@ -306,7 +292,7 @@ export function BasicDetailPanel({
       .then(async (response) => {
         const payload = await response.json().catch(() => null);
         if (!response.ok || !payload?.ok) {
-          throw new Error(payload?.error ?? "加载交易明细失败");
+          throw new Error(payload?.error ?? t("basicDetail.loadFailed"));
         }
         if (seq !== paginationFetchSeqRef.current) return;
         const nextEntries = Array.isArray(payload.data?.entries) ? payload.data.entries : [];
@@ -459,10 +445,8 @@ export function BasicDetailPanel({
       });
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
-    window.addEventListener(LEGACY_FINANCE_REFRESH_EVENT, handleFinanceChange);
     return () => {
       window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
-      window.removeEventListener(LEGACY_FINANCE_REFRESH_EVENT, handleFinanceChange);
     };
   }, [accountId, reloadDetailPage]);
 
@@ -548,7 +532,7 @@ export function BasicDetailPanel({
       <BasicDetailBatchDeleteMessage />
       <div ref={panelRef} className="relative flex-1 min-h-0 overflow-hidden">
         <div className="flex min-h-12 items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 md:hidden">
-          <span className="text-xs text-slate-500">共 {localTotalCount} 条</span>
+          <span className="text-xs text-slate-500">{t("creditBillDetail.recordCount", { count: localTotalCount })}</span>
           <DetailTablePaginationControls
             pageSize={pageSize}
             pageSizeOptions={DETAIL_PAGE_SIZE_OPTIONS}
@@ -573,26 +557,26 @@ export function BasicDetailPanel({
           resetKey={tableResetKey}
           focusEntryId={focusEntryId}
           toolbarMode="custom"
-          toolbarTitle="资金明细"
+          toolbarTitle={t("basicDetail.entriesTitle")}
           showRunningBalance={!isInvestAccount}
           toolbarRightContent={
             <div className="flex items-center gap-2 text-xs">
-              <span className="text-xs text-slate-600">共 {localTotalCount} 条{hasDetailFilters ? ` / 原 ${localOriginalCount} 条` : ""}{isPageLoading ? " · 加载中" : ""}</span>
+              <span className="text-xs text-slate-600">{t("creditBillDetail.recordCount", { count: localTotalCount })}{hasDetailFilters ? t("basicDetail.filteredSuffix", { count: localOriginalCount }) : ""}{isPageLoading ? t("basicDetail.loadingSuffix") : ""}</span>
               <span className="text-slate-400">|</span>
               <ViewExcelImportMenuButton
                 kind="normal"
                 accountId={accountId}
-                accountName={accountName || accountLabel || "当前账户"}
+                accountName={accountName || accountLabel || t("basicDetail.currentAccount")}
                 mailImport={{
                   accountId,
-                  accountName: accountName || accountLabel || "当前账户",
+                  accountName: accountName || accountLabel || t("basicDetail.currentAccount"),
                 }}
                 excelExport={{
                   rows: normalExportRows,
                   filename: normalExportFilename,
-                  sheetName: "资金明细",
-                  title: "导出资金明细 EXCEL 表",
-                  description: accountKind === "bank_credit" ? "按当前信用卡/筛选视图选择交易日期范围。" : "按当前账户/筛选视图选择交易日期范围。",
+                  sheetName: t("basicDetail.entriesTitle"),
+                  title: t("basicDetail.exportExcelTitle"),
+                  description: accountKind === "bank_credit" ? t("basicDetail.exportCreditDesc") : t("basicDetail.exportNormalDesc"),
                   dateColumnIndex: 0,
                 }}
                 dataBasicDetailImport
@@ -627,77 +611,77 @@ export function BasicDetailPanel({
               rect={guideMetrics?.entryButton ?? null}
               guideWidth={guideWidth}
               guideHeight={guideHeight}
-              title="收支记账"
+              title={t("basicDetail.guide.entry.title")}
             >
-              点这里新增普通收入或支出；右侧下拉可以切换转账、投资、保险等其他记账入口。
+              {t("basicDetail.guide.entry.text")}
             </GuideHotspot>
             <GuideHotspot
               rect={guideMetrics?.toolbarTools ?? null}
               guideWidth={guideWidth}
               guideHeight={guideHeight}
-              title="导入、导出、校准"
+              title={t("basicDetail.guide.importExport.title")}
             >
-              导入账单、导出明细、校准余额都在这里；校准用于把账面余额对齐到实际金额。
+              {t("basicDetail.guide.importExport.text")}
             </GuideHotspot>
             <GuideHotspot
               rect={headerTargetRect}
               guideWidth={guideWidth}
               guideHeight={guideHeight}
-              title="表头排序和筛选"
+              title={t("basicDetail.guide.headerSort.title")}
             >
-              点击表头可以排序；表头旁的筛选按钮可以按分类、账户等字段缩小范围。
+              {t("basicDetail.guide.headerSort.text")}
             </GuideHotspot>
             <GuideHotspot
               rect={guideMetrics?.rowControls ?? null}
               guideWidth={guideWidth}
               guideHeight={guideHeight}
-              title="拖拽与复选"
+              title={t("basicDetail.guide.dragSelect.title")}
             >
-              拖拽柄调整同一天内流水顺序；勾选记录后可以批量修改分类、账户，也可以批量删除。
+              {t("basicDetail.guide.dragSelect.text")}
             </GuideHotspot>
             <GuideHotspot
               rect={guideMetrics?.bodyRowFocus ?? null}
               guideWidth={guideWidth}
               guideHeight={guideHeight}
-              title="双击编辑"
+              title={t("basicDetail.guide.doubleClickEdit.title")}
             >
-              双击任一流水行可以打开编辑；适合快速修正金额、分类、备注或账户。
+              {t("basicDetail.guide.doubleClickEdit.text")}
             </GuideHotspot>
             <GuideHotspot
               rect={guideMetrics?.rowActions ?? null}
               guideWidth={guideWidth}
               guideHeight={guideHeight}
-              title="行操作"
+              title={t("basicDetail.guide.rowActions.title")}
             >
-              每行右侧提供编辑和关联入口；复选记录后，批量修改和批量删除会出现在表格上方。
+              {t("basicDetail.guide.rowActions.text")}
             </GuideHotspot>
             <GuideHotspot
               rect={guideMetrics?.resizeHandle ?? null}
               guideWidth={guideWidth}
               guideHeight={guideHeight}
               tone="emerald"
-              title="拖拽列宽"
+              title={t("basicDetail.guide.resizeColumn.title")}
             >
-              拖动列边缘可以调整列宽；列宽小于内容时显示省略号，鼠标移上去可看完整字段。
+              {t("basicDetail.guide.resizeColumn.text")}
             </GuideHotspot>
             <GuideHotspot
               rect={guideMetrics?.columnSettings ?? null}
               guideWidth={guideWidth}
               guideHeight={guideHeight}
               tone="emerald"
-              title="表头设置"
+              title={t("basicDetail.guide.columnSettings.title")}
             >
-              右上角滑杆按钮可显示或隐藏列，适合把表格调成自己的常用视图。
+              {t("basicDetail.guide.columnSettings.text")}
             </GuideHotspot>
 
             <button
               type="button"
               onClick={closeGuideOverlay}
               className="pointer-events-auto absolute bottom-5 right-5 z-40 flex h-7 items-center gap-1.5 rounded-md border border-slate-200/80 bg-white/[0.74] px-2 text-xs font-medium text-slate-600 shadow-sm backdrop-blur-sm transition-colors hover:bg-white/90 hover:text-slate-900"
-              title="关闭说明"
+              title={t("basicDetail.guide.close")}
             >
               <X className="h-3.5 w-3.5" />
-              关闭说明
+              {t("basicDetail.guide.close")}
             </button>
           </div>
         ), guidePortalHost) : null}

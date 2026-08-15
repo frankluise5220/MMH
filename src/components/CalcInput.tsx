@@ -1,8 +1,10 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Calculator } from "lucide-react";
 import { createPortal } from "react-dom";
+import { evaluateArithmeticExpression } from "@/lib/arithmetic-expression";
+import { useI18n } from "@/lib/i18n";
 
 export function sanitizeCalcInputValue(raw: string) {
   return raw.replace(/[^\d+\-*/().\s]/g, "");
@@ -13,12 +15,8 @@ export function evaluateCalcInputExpression(expression: string, currentValue = 0
   if (!full) return null;
   if (/^[+\-*/]/.test(full)) full = `${Number(currentValue) || 0}${full}`;
   if (!/^[\d+\-*/().\s]+$/.test(full)) return null;
-  try {
-    const computed = eval(full.replace(/\s+/g, ""));
-    return typeof computed === "number" && Number.isFinite(computed) ? computed : null;
-  } catch {
-    return null;
-  }
+  const computed = evaluateArithmeticExpression(full);
+  return typeof computed === "number" && Number.isFinite(computed) ? computed : null;
 }
 
 export function CalcInput({
@@ -44,6 +42,7 @@ export function CalcInput({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const numVal = parseFloat(value) || 0;
+  const { t } = useI18n();
 
   const formatValue = useCallback((num: number) => num.toFixed(precision), [precision]);
 
@@ -183,7 +182,7 @@ export function CalcInput({
           type="button"
           onClick={() => setOpen(true)}
           className="flex h-9 w-9 items-center justify-center rounded-r-[10px] border border-l-0 border-slate-200 bg-white text-blue-600 hover:bg-blue-50"
-          title={`计算器${label ? `（${label}）` : ""}`}
+          title={label ? t("calcInput.titleWithLabel").replace("{label}", label) : t("calcInput.title")}
         >
           <Calculator className="h-4 w-4" />
         </button>
@@ -203,9 +202,9 @@ export function CalcInput({
             className="viewport-floater w-[272px] select-none rounded-xl border bg-surface-white shadow-elevated"
           >
             <div className="border-b border-slate-100 bg-slate-50 px-3 pb-2 pt-2.5">
-              <div className="tabular-nums text-[11px] text-slate-400">当前值 {formatValue(numVal)}</div>
+              <div className="tabular-nums text-[11px] text-slate-400">{t("calcInput.currentValue")} {formatValue(numVal)}</div>
               <div className="mt-0.5 h-5 text-right font-mono text-sm tabular-nums text-slate-800">
-                {expr || <span className="text-xs text-slate-300">输入运算式</span>}
+                {expr || <span className="text-xs text-slate-300">{t("calcInput.expressionPlaceholder")}</span>}
               </div>
             </div>
 
@@ -247,7 +246,7 @@ export function CalcInput({
                 onClick={() => press("=")}
                 className="primary-button h-9 w-full rounded-[10px] text-sm font-semibold active:bg-blue-800"
               >
-                = 计算
+                = {t("calcInput.calculate")}
               </button>
             </div>
           </div>

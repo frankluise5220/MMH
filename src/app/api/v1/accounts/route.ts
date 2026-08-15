@@ -100,12 +100,12 @@ export async function POST(req: NextRequest) {
     const initialBalance = initialBalanceRaw ? Number(initialBalanceRaw) : null;
     const initialBalanceDate = initialBalanceRaw ? parseDateOnly(body.initialBalanceDate) : null;
 
-    if (!name) return NextResponse.json({ ok: false, error: "名称必填" }, { status: 400 });
+    if (!name) return NextResponse.json({ ok: false, code: "NAME_REQUIRED", error: "名称必填" }, { status: 400 });
     if (initialBalanceRaw && !Number.isFinite(initialBalance)) {
-      return NextResponse.json({ ok: false, error: "余额必须是有效数字" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_BALANCE", error: "余额必须是有效数字" }, { status: 400 });
     }
     if (initialBalanceRaw && !initialBalanceDate) {
-      return NextResponse.json({ ok: false, error: "时间节点格式必须是 YYYY-MM-DD" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_DATE_FORMAT", error: "时间节点格式必须是 YYYY-MM-DD" }, { status: 400 });
     }
 
     const { householdId } = await getHouseholdScope();
@@ -120,19 +120,19 @@ export async function POST(req: NextRequest) {
     const institution = requestedInstitutionId
       ? await prisma.institution.findFirst({ where: { id: requestedInstitutionId, householdId } })
       : null;
-    if (requestedInstitutionId && !institution) return NextResponse.json({ ok: false, error: "机构不存在或不属于当前账簿" }, { status: 400 });
+    if (requestedInstitutionId && !institution) return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "机构不存在或不属于当前账簿" }, { status: 400 });
     if (isStockInvestmentAccount(kind, investProductType) && !isStockAccountInstitutionType(institution?.type)) {
-      return NextResponse.json({ ok: false, error: STOCK_ACCOUNT_INSTITUTION_ERROR }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "STOCK_ACCOUNT_INSTITUTION_REQUIRED", error: STOCK_ACCOUNT_INSTITUTION_ERROR }, { status: 400 });
     }
     const counterparty = requestedCounterpartyId
       ? await prisma.counterparty.findFirst({ where: { id: requestedCounterpartyId, householdId } })
       : null;
-    if (requestedCounterpartyId && !counterparty) return NextResponse.json({ ok: false, error: "往来对象不存在或不属于当前账簿" }, { status: 400 });
+    if (requestedCounterpartyId && !counterparty) return NextResponse.json({ ok: false, code: "COUNTERPARTY_NOT_FOUND", error: "往来对象不存在或不属于当前账簿" }, { status: 400 });
 
     const owner = requestedUserId
       ? await prisma.user.findFirst({ where: { id: requestedUserId, householdId } })
       : null;
-    if (requestedUserId && !owner) return NextResponse.json({ ok: false, error: "所有人不存在或不属于当前账簿" }, { status: 400 });
+    if (requestedUserId && !owner) return NextResponse.json({ ok: false, code: "OWNER_NOT_FOUND", error: "所有人不存在或不属于当前账簿" }, { status: 400 });
 
     const creditDefaults = isCreditLike
       ? await getCreditCardInstitutionDefaults(prisma, householdId, institution?.id)
@@ -255,9 +255,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, account, brokerageCashAccount });
   } catch (e) {
     if (isAccountIdentityUniqueError(e)) {
-      return NextResponse.json({ ok: false, error: e.message }, { status: e.status });
+      return NextResponse.json({ ok: false, code: "ACCOUNT_IDENTITY_CONFLICT", error: e.message }, { status: e.status });
     }
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "创建失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: e instanceof Error ? e.message : "创建失败" }, { status: 500 });
   }
 }
 
@@ -267,12 +267,12 @@ export async function PUT(req: NextRequest) {
     const { householdId, user } = await getHouseholdScope();
     const body = await req.json();
     const id = String(body.id ?? "").trim();
-    if (!id) return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
+    if (!id) return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
 
     const existing = await prisma.account.findUnique({ where: { id } });
-    if (!existing) return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
+    if (!existing) return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "账户不存在" }, { status: 404 });
     if (!isAdmin(user) && existing.householdId !== householdId) {
-      return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
+      return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "越权操作" }, { status: 403 });
     }
 
     const data: Record<string, unknown> = {};
@@ -296,7 +296,7 @@ export async function PUT(req: NextRequest) {
     const nextCounterparty = nextCounterpartyId
       ? await prisma.counterparty.findFirst({ where: { id: nextCounterpartyId, householdId } })
       : null;
-    if (nextCounterpartyId && !nextCounterparty) return NextResponse.json({ ok: false, error: "往来对象不存在或不属于当前账簿" }, { status: 400 });
+    if (nextCounterpartyId && !nextCounterparty) return NextResponse.json({ ok: false, code: "COUNTERPARTY_NOT_FOUND", error: "往来对象不存在或不属于当前账簿" }, { status: 400 });
     data.debtDirection = nextKind === "bank_credit" ? "payable" : nextKind === "loan" && nextCounterparty ? "receivable" : null;
     if (nextKind === "bank_credit") {
       data.billingDay = body.billingDay !== undefined ? parseDay(body.billingDay) : existing.billingDay;
@@ -349,23 +349,23 @@ export async function PUT(req: NextRequest) {
     const hasNextNumberMasked = Object.prototype.hasOwnProperty.call(data, "numberMasked");
     const nextName = hasNextName ? String(data.name ?? "").trim() : existing.name;
     const nextNumberMasked = hasNextNumberMasked ? data.numberMasked : existing.numberMasked;
-    if (!nextName) return NextResponse.json({ ok: false, error: "名称必填" }, { status: 400 });
+    if (!nextName) return NextResponse.json({ ok: false, code: "NAME_REQUIRED", error: "名称必填" }, { status: 400 });
 
     const nextGroupId = data.groupId === undefined ? existing.groupId : String(data.groupId ?? "");
-    if (!nextGroupId) return NextResponse.json({ ok: false, error: "请选择所有人" }, { status: 400 });
+    if (!nextGroupId) return NextResponse.json({ ok: false, code: "OWNER_REQUIRED", error: "请选择所有人" }, { status: 400 });
     const nextInstitutionId = data.institutionId === undefined ? existing.institutionId : (data.institutionId ? String(data.institutionId) : null);
     if (nextGroupId) {
       const group = await prisma.accountGroup.findFirst({ where: { id: nextGroupId, householdId } });
-      if (!group) return NextResponse.json({ ok: false, error: "所有人不存在或不属于当前账簿" }, { status: 400 });
+      if (!group) return NextResponse.json({ ok: false, code: "OWNER_NOT_FOUND", error: "所有人不存在或不属于当前账簿" }, { status: 400 });
     }
     const nextInstitution = nextInstitutionId
       ? await prisma.institution.findFirst({ where: { id: nextInstitutionId, householdId } })
       : null;
     if (nextInstitutionId) {
-      if (!nextInstitution) return NextResponse.json({ ok: false, error: "机构不存在或不属于当前账簿" }, { status: 400 });
+      if (!nextInstitution) return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "机构不存在或不属于当前账簿" }, { status: 400 });
     }
     if (isStockInvestmentAccount(nextKind, nextInvestProductTypeForInstitution) && !isStockAccountInstitutionType(nextInstitution?.type)) {
-      return NextResponse.json({ ok: false, error: STOCK_ACCOUNT_INSTITUTION_ERROR }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "STOCK_ACCOUNT_INSTITUTION_REQUIRED", error: STOCK_ACCOUNT_INSTITUTION_ERROR }, { status: 400 });
     }
     await assertAccountIdentityUnique(prisma, {
       householdId,
@@ -432,9 +432,9 @@ export async function PUT(req: NextRequest) {
     });
   } catch (e) {
     if (isAccountIdentityUniqueError(e)) {
-      return NextResponse.json({ ok: false, error: e.message }, { status: e.status });
+      return NextResponse.json({ ok: false, code: "ACCOUNT_IDENTITY_CONFLICT", error: e.message }, { status: e.status });
     }
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "更新失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: e instanceof Error ? e.message : "更新失败" }, { status: 500 });
   }
 }
 
@@ -444,19 +444,19 @@ export async function PATCH(req: NextRequest) {
     const { householdId, user } = await getHouseholdScope();
     const body = await req.json();
     const id = String(body.id ?? "").trim();
-    if (!id) return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
+    if (!id) return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
 
     const existing = await prisma.account.findUnique({ where: { id } });
-    if (!existing) return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
+    if (!existing) return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "账户不存在" }, { status: 404 });
     if (!isAdmin(user) && existing.householdId !== householdId) {
-      return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
+      return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "越权操作" }, { status: 403 });
     }
 
     await prisma.account.update({ where: { id }, data: { isActive: !existing.isActive } });
     revalidateAfterSettingsChange();
     return NextResponse.json({ ok: true });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "操作失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: e instanceof Error ? e.message : "操作失败" }, { status: 500 });
   }
 }
 
@@ -465,13 +465,13 @@ export async function DELETE(req: NextRequest) {
   try {
     const { householdId, user } = await getHouseholdScope();
     const id = req.nextUrl.searchParams.get("id");
-    if (!id) return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
+    if (!id) return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
 
     const existing = await prisma.account.findUnique({ where: { id } });
-    if (!existing) return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
-    if (existing.isPlaceholder) return NextResponse.json({ ok: false, error: "占位账户不可删除" }, { status: 403 });
+    if (!existing) return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "账户不存在" }, { status: 404 });
+    if (existing.isPlaceholder) return NextResponse.json({ ok: false, code: "PLACEHOLDER_ACCOUNT_NOT_DELETABLE", error: "占位账户不可删除" }, { status: 403 });
     if (!isAdmin(user) && existing.householdId !== householdId) {
-      return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
+      return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "越权操作" }, { status: 403 });
     }
 
     // Check if account has any records referencing it
@@ -491,24 +491,24 @@ export async function DELETE(req: NextRequest) {
     try { body = await req.json(); } catch { /* no body */ }
     const password = (body?.password ?? "").trim();
     if (!password) {
-      return NextResponse.json({ ok: false, error: "该账户已产生记录，需输入密码才能删除", needPassword: true }, { status: 409 });
+      return NextResponse.json({ ok: false, code: "PASSWORD_REQUIRED_FOR_DELETE", error: "该账户已产生记录，需输入密码才能删除", needPassword: true }, { status: 409 });
     }
 
     // Verify password against current user
-    if (!user) return NextResponse.json({ ok: false, error: "未登录" }, { status: 401 });
+    if (!user) return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "未登录" }, { status: 401 });
     const currentUser = await prisma.user.findUnique({ where: { id: user.id } });
-    if (!currentUser) return NextResponse.json({ ok: false, error: "用户不存在" }, { status: 401 });
+    if (!currentUser) return NextResponse.json({ ok: false, code: "USER_NOT_FOUND", error: "用户不存在" }, { status: 401 });
 
     if (currentUser.passwordHash) {
       const match = await verifyPassword(password, currentUser.passwordHash);
-      if (!match) return NextResponse.json({ ok: false, error: "密码错误" }, { status: 401 });
+      if (!match) return NextResponse.json({ ok: false, code: "INVALID_PASSWORD", error: "密码错误" }, { status: 401 });
     } else {
       // No passwordHash → check legacy SystemSetting password
       const legacy = await prisma.systemSetting.findUnique({ where: { key: "access_password" } });
       if (!legacy || !legacy.value) {
-        return NextResponse.json({ ok: false, error: "请先设置密码" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "PASSWORD_NOT_SET", error: "请先设置密码" }, { status: 400 });
       }
-      if (password !== legacy.value) return NextResponse.json({ ok: false, error: "密码错误" }, { status: 401 });
+      if (password !== legacy.value) return NextResponse.json({ ok: false, code: "INVALID_PASSWORD", error: "密码错误" }, { status: 401 });
     }
 
     // Password verified → reassign all references to placeholder account
@@ -548,7 +548,7 @@ export async function DELETE(req: NextRequest) {
     revalidateAfterSettingsChange();
     return NextResponse.json({ ok: true });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "删除失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: e instanceof Error ? e.message : "删除失败" }, { status: 500 });
   }
 }
 
@@ -558,7 +558,7 @@ export async function GET(req: Request) {
   try {
     scope = await getApiHouseholdScope(req);
   } catch (e) {
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "未授权" }, { status: 401, headers: corsHeaders() });
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: e instanceof Error ? e.message : "未授权" }, { status: 401, headers: corsHeaders() });
   }
 
   const rows = await prisma.account.findMany({

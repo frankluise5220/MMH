@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { resolveAccountCurrencyDisplayValue } from "@/lib/account-currency-display";
 import { formatCurrencyMoney } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
-import { FINANCE_DATA_CHANGED_EVENT, LEGACY_FINANCE_REFRESH_EVENT } from "@/lib/client/refresh";
+import { FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 
 function pnlCls(value: number, isRedUp: boolean) {
   if (value > 0) return isRedUp ? "text-red-700" : "text-emerald-800";
@@ -51,7 +51,10 @@ export function LiveAccountBalance({
   }, [accountId, baseCurrency, initialValue, mode]);
 
   useEffect(() => {
-    const refresh = () => {
+    const refresh = (event: Event) => {
+      const detail = (event as CustomEvent<{ balanceChanged?: boolean }>).detail;
+      // Remark-only edits do not change balances: skip the top-summary refresh.
+      if (detail?.balanceChanged === false) return;
       if (refreshTimer.current) clearTimeout(refreshTimer.current);
       refreshTimer.current = setTimeout(async () => {
         if (refreshBusy.current) return;
@@ -95,10 +98,8 @@ export function LiveAccountBalance({
     };
 
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, refresh);
-    window.addEventListener(LEGACY_FINANCE_REFRESH_EVENT, refresh);
     return () => {
       window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, refresh);
-      window.removeEventListener(LEGACY_FINANCE_REFRESH_EVENT, refresh);
       if (refreshTimer.current) clearTimeout(refreshTimer.current);
     };
   }, [accountDisplayMode, accountId, baseCurrency, mode]);

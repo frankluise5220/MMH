@@ -6,13 +6,14 @@ import { useRouter } from "next/navigation";
 import { BasicDetailBatchDeleteMessage, BasicDetailSelectionProvider, type BasicDetailBatchCategoryOption } from "@/components/BasicDetailSelection";
 import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
 import { DetailViewClient, type DetailEntry } from "@/components/DetailViewClient";
-import { FINANCE_DATA_CHANGED_EVENT, LEGACY_FINANCE_REFRESH_EVENT } from "@/lib/client/refresh";
+import { useI18n } from "@/lib/i18n";
+import { FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 import {
   DETAIL_PAGE_SIZE_OPTIONS,
-  decodeDetailPaginationPreference,
-  detailPaginationCookieName,
-  encodeDetailPaginationPreference,
+  clampDetailPage as clampPage,
   normalizeDetailPageSize,
+  readStoredDetailPreference,
+  writeStoredDetailPreference,
 } from "@/lib/detail-pagination-preference";
 
 type CreditBillDetailPanelProps = {
@@ -31,23 +32,6 @@ type CreditBillDetailPanelProps = {
   investmentProductTypeByAccountId: Record<string, string | undefined | null>;
 };
 
-function clampPage(page: number, totalPages: number) {
-  return Math.min(Math.max(1, Math.floor(page) || 1), totalPages);
-}
-
-function readStoredDetailPreference(accountId: string) {
-  if (typeof window === "undefined") return null;
-  return decodeDetailPaginationPreference(window.sessionStorage.getItem(detailPaginationCookieName(accountId)));
-}
-
-function writeStoredDetailPreference(accountId: string, pageSize: number, detailAll: boolean, detailPage: number) {
-  if (typeof window === "undefined") return;
-  const cookieName = detailPaginationCookieName(accountId);
-  const value = encodeDetailPaginationPreference({ pageSize, detailAll, detailPage });
-  window.sessionStorage.setItem(cookieName, value);
-  document.cookie = `${cookieName}=${value}; path=/; max-age=31536000; SameSite=Lax`;
-}
-
 export function CreditBillDetailPanel({
   accountId,
   reorderAccountIds,
@@ -64,6 +48,7 @@ export function CreditBillDetailPanel({
   investmentProductTypeByAccountId,
 }: CreditBillDetailPanelProps) {
   const router = useRouter();
+  const { t } = useI18n();
   const normalizedInitialPageSize = normalizeDetailPageSize(initialPageSize);
   const [localEntries, setLocalEntries] = useState(entries);
   const [pageSize, setPageSize] = useState(normalizedInitialPageSize);
@@ -104,11 +89,7 @@ export function CreditBillDetailPanel({
       setLocalEntries((current) => current.filter((entry) => !deletedSet.has(entry.id)));
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
-    window.addEventListener(LEGACY_FINANCE_REFRESH_EVENT, handleFinanceChange);
-    return () => {
-      window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
-      window.removeEventListener(LEGACY_FINANCE_REFRESH_EVENT, handleFinanceChange);
-    };
+    return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
   }, [accountId, router]);
 
   useEffect(() => {
@@ -171,7 +152,7 @@ export function CreditBillDetailPanel({
           investmentProductTypeByAccountId={investmentProductTypeByAccountId}
           compactRows
           showAccountColumn={showCardColumn}
-          accountColumnLabel="卡号"
+          accountColumnLabel={t("creditBillDetail.accountNo")}
           accountColumnMode="cardLast4"
           accountColumnDefaultHidden
           relatedAccountDefaultHidden
@@ -185,7 +166,7 @@ export function CreditBillDetailPanel({
           toolbarRightContent={
             <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 text-xs text-slate-500 tabular-nums">
               {periodLabel ? <span className="hidden whitespace-nowrap md:inline">{periodLabel}</span> : null}
-              <span className="whitespace-nowrap text-slate-600">共 {localEntries.length} 条</span>
+              <span className="whitespace-nowrap text-slate-600">{t("creditBillDetail.recordCount", { count: localEntries.length })}</span>
               <DetailTablePaginationControls
                 pageSize={pageSize}
                 pageSizeOptions={DETAIL_PAGE_SIZE_OPTIONS}
@@ -200,7 +181,7 @@ export function CreditBillDetailPanel({
               />
             </div>
           }
-          emptyText="暂无记录"
+          emptyText={t("detail.empty")}
         />
       </div>
     </BasicDetailSelectionProvider>

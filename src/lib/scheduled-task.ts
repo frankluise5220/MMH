@@ -11,6 +11,14 @@ export type ScheduledTaskPayload = {
   repaymentMethod?: string | null;
   repaymentIntervalMonths?: number | null;
   originalTotalRuns?: number | null;
+  /**
+   * Loan repayment execution mode.
+   * true (default) = auto-debit: the due repayment is generated as a cash
+   * transfer from the payment account (mortgage-style auto-payment).
+   * false = bill only: only a bill record (source "loan_bill") is generated on
+   * the loan side; the user pays manually.
+   */
+  autoDebit?: boolean | null;
   loanRateAdjustments?: Array<{
     effectiveDate: string;
     annualRate: number;
@@ -72,6 +80,7 @@ export function decodeScheduledTaskMemo(memo?: string | null): ScheduledTaskPayl
         originalTotalRuns: typeof parsed.originalTotalRuns === "number" && Number.isFinite(parsed.originalTotalRuns) && parsed.originalTotalRuns > 0
           ? Math.floor(parsed.originalTotalRuns)
           : null,
+        autoDebit: parsed.autoDebit === false ? false : true,
         loanRateAdjustments: Array.isArray(parsed.loanRateAdjustments)
           ? parsed.loanRateAdjustments
               .map((item) => ({

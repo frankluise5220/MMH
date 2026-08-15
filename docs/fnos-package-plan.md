@@ -14,7 +14,7 @@ appname=mmh
 
 - 用户安装飞牛版架构匹配的 `.fpk` 后，不需要理解 Node、Prisma、Next.js、Docker 或数据库构建流程。
 - 飞牛版直接运行包内 Next standalone、Linux Node runtime、Prisma runtime 和 SQLite 数据库。
-- 飞牛版没有 PostgreSQL 连接密码；系统初始化、删除账簿等敏感操作验证当前登录管理员用户的密码，不使用部署级系统密码。
+- 飞牛版没有 PostgreSQL 连接密码；系统初始化、删除账簿等敏感操作验证当前登录用户自己的密码（仅管理员可执行），不使用部署级系统密码。
 - 普通 NAS 安装与更新仍保持 Docker 路线，不被飞牛 SQLite 包替代。
 - 飞牛包必须在 Linux/fnOS 构建环境生成，不能用 Windows 构建产物冒充正式包。
 - 数据目录必须持久化，升级不得删除用户的 SQLite 数据库文件；SQLite 数据库必须位于飞牛应用数据目录，不允许回退到应用安装目录。
@@ -62,7 +62,7 @@ appname=mmh
 - 构建正式包必须提供对应架构的 Linux Node runtime；x86 使用 `node-v20.x-linux-x64.tar.gz`，ARM64 使用 `node-v20.x-linux-arm64.tar.gz`。workflow 会自动下载，手动构建时通过 `FNOS_TARGET_ARCH` 与 `FNOS_NODE_TARBALL` 显式指定。
 - Windows 本地只能生成调试 stage 包，不能产出可安装的正式包。
 - 当前包包含 Linux Node runtime、Next standalone、Prisma runtime 和必要依赖，体积会明显大于 miniBill；除非后续把服务端重写为更轻的单二进制运行时，否则不承诺几 MB 级。
-- 飞牛包安装/配置向导不要求提供系统密码；敏感操作验证当前管理员用户密码。启动脚本仍会为兼容保留自动生成 `MMH_SYSTEM_PASSWORD`。
+- 飞牛包安装/配置向导不要求提供系统密码；敏感操作验证当前登录用户自己的密码（仅管理员可执行）。启动脚本仍会为兼容保留自动生成 `MMH_SYSTEM_PASSWORD`。
 - 飞牛包不使用独立 `-fnos` 版本号；正式发布前用 `npm run release:version` 递增一次 `package.json` 的 `0.1.x`，并保持 GitHub Release、GHCR 镜像和所有架构 `.fpk` 同号。
 - 用户通过应用中心或手动选择新版 `.fpk` 时，应在已安装 `mmh` 上直接覆盖升级。`uninstall_init` 仅用于用户主动卸载或异常恢复时备份 appdata，不作为升级路径。
 

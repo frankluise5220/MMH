@@ -1,4 +1,4 @@
-﻿import { cookies } from "next/headers";
+import { cookies } from "next/headers";
 import Link from "next/link";
 import { Shield, Building2, UserRound, ArrowDownLeft, ArrowUpRight } from "lucide-react";
 
@@ -7,6 +7,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { formatMoney } from "@/lib/format";
 import { toNumber } from "@/lib/date-utils";
+import { amountToneClass as amountClass } from "@/lib/client/colors";
 import { getInsuranceDisplayTypeLabel, getInsuranceMetricLabel, getInsuranceMetricMode, type InsuranceMetricMode } from "@/lib/insurance/display";
 import { getInsuranceAction, insuranceCashValueDelta, isInsuranceRefund } from "@/lib/insurance/transaction";
 import { TopEntryLauncher } from "@/components/TopEntryLauncher";
@@ -50,12 +51,6 @@ type InsuranceRow = {
     amount: unknown;
   }>;
 };
-
-function amountClass(value: number) {
-  if (value > 0) return "text-emerald-700";
-  if (value < 0) return "text-rose-700";
-  return "text-slate-500";
-}
 
 function metricClass(mode: InsuranceMetricMode, value: number) {
   return mode === "coverage" ? "text-slate-700" : amountClass(value);

@@ -45,7 +45,7 @@ export const dynamic = "force-dynamic";
  * Backward-compatible aliases are also returned: netWorth, assetDistribution, accountList,
  * floatingPnL, totalCost, topPositions.
  *
- * Response 500: { ok: false, error: string }
+ * Response 500: { ok: false, code: string, error: string }
  */
 export async function GET() {
   try {
@@ -54,6 +54,6 @@ export async function GET() {
     return NextResponse.json({ ok: true, data });
   } catch (error) {
     const message = error instanceof Error ? error.message : "总览数据读取失败";
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: message }, { status: 500 });
   }
 }

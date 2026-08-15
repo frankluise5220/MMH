@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/db/prisma";
 import {
@@ -43,12 +44,15 @@ async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise
 /**
  * Read the verified login cookies and resolve the current database user.
  *
+ * Cached per request (React.cache) so multiple modules in the same request
+ * share one lookup instead of running repeated DB queries.
+ *
  * If householdId is present, username is resolved inside that household.
  * Without householdId, legacy username-only lookup prefers an explicitly marked
  * system user, then falls back to unique username lookup; otherwise the session
  * is treated as ambiguous.
  */
-export async function getCurrentUser(): Promise<CurrentUser | null> {
+export const getCurrentUser = cache(async function getCurrentUser(): Promise<CurrentUser | null> {
   const cookieStore = await cookies();
   const verified = cookieStore.get(VERIFIED_COOKIE)?.value === "ok";
   const userId = cookieStore.get(USER_ID_COOKIE)?.value?.trim();
@@ -144,7 +148,7 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
   if (!users) return null;
 
   return users.length === 1 ? users[0] : null;
-}
+});
 
 /**
  * 判断用户是否为管理员（admin 角色或 isSystem 标记）。

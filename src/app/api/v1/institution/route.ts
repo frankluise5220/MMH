@@ -13,7 +13,7 @@ import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
  * POST /api/v1/institution
  * Body: { name: string, shortName?: string, type?: string }
  * Success: { ok: true, institution: { id, name, shortName, type } }
- * Error: { ok: false, error }, including 409 when any institution full name or short name
+ * Error: { ok: false, code, error }, including 409 when any institution full name or short name
  * in the current household already uses the submitted full name or short name.
  */
 export async function POST(req: NextRequest) {
@@ -23,7 +23,7 @@ export async function POST(req: NextRequest) {
   const type = typeof body?.type === "string" ? body.type.trim() : "bank";
 
   if (!name) {
-    return NextResponse.json({ ok: false, error: "机构名称不能为空" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "NAME_REQUIRED", error: "机构名称不能为空" }, { status: 400 });
   }
 
   const { householdId } = await getHouseholdScope();
@@ -57,8 +57,8 @@ export async function POST(req: NextRequest) {
     });
   } catch (error) {
     if (isInstitutionNameUniqueError(error)) {
-      return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
+      return NextResponse.json({ ok: false, code: "INSTITUTION_NAME_CONFLICT", error: error.message }, { status: error.status });
     }
-    return NextResponse.json({ ok: false, error: "创建失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: "创建失败" }, { status: 500 });
   }
 }

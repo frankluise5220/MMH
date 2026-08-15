@@ -17,7 +17,7 @@ async function updateInstitutionRow(formData: FormData) {
   const name = String(formData.get("name") ?? "").trim();
   const shortName = String(formData.get("shortName") ?? "").trim();
   const type = String(formData.get("type") ?? "").trim();
-  if (!institutionId || !name) return { ok: false, error: "缺少必填字段" };
+  if (!institutionId || !name) return { ok: false, error: "Missing required fields" };
 
   try {
     await prisma.$transaction(async (tx) => {
@@ -31,11 +31,11 @@ async function updateInstitutionRow(formData: FormData) {
         where: { id: institutionId, householdId },
         data: { name, shortName: shortName || null, type: type || null },
       });
-      if (updated.count === 0) throw new Error("机构不存在");
+      if (updated.count === 0) throw new Error("Institution not found");
     });
   } catch (error) {
     if (isInstitutionNameUniqueError(error)) return { ok: false, error: error.message };
-    return { ok: false, error: error instanceof Error ? error.message : "保存失败" };
+    return { ok: false, error: error instanceof Error ? error.message : "Save failed" };
   }
 
   revalidateAfterSettingsChange();

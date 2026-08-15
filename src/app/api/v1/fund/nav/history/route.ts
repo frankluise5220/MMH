@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { getCurrentUser } from "@/lib/server/auth";
 
 export const runtime = "nodejs";
 
@@ -7,16 +8,22 @@ export const runtime = "nodejs";
  * GET /api/v1/fund/nav/history
  *
  * 查询指定基金在日期范围内的历史净值数据，用于绘制走势图。
+ * 需要登录（防止未认证读取/探测全局净值缓存）。
  *
  * Query params:
  *   code      (required) — 基金代码
- *   start     (optional) — 开始日期 YYYY-MM-DD，默认 90 天前
+ *   start     (optional) — 开始日期 YYYY-MM-DD，默认 180 天前
  *   end       (optional) — 结束日期 YYYY-MM-DD，默认今天
  *
  * Response:
  *   { ok: true, data: [{ date, nav, cumNav }] }
  */
 export async function GET(req: NextRequest) {
+  const currentUser = await getCurrentUser();
+  if (!currentUser) {
+    return NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 });
+  }
+
   const code = req.nextUrl.searchParams.get("code")?.trim();
   if (!code) {
     return NextResponse.json({ ok: false, error: "缺少基金代码" }, { status: 400 });

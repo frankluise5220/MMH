@@ -82,10 +82,13 @@ export async function GET(req: NextRequest) {
       orderBy: { nextRunDate: "asc" },
     });
 
+    // System-level scheduled tasks (loan repayment plans) are shown in the plan
+    // table but marked read-only: users can see the schedule, not stop/edit it.
     return NextResponse.json({
       ok: true,
       plans: plans.map((plan) => ({
         ...plan,
+        isSystemTask: decodeScheduledTaskMemo(plan.memo).type === "loan_repayment",
         accountInstitutionName: plan.Account_RegularInvestPlan_accountIdToAccount.Institution?.name ?? "",
         cashAccountInstitutionName: plan.Account_RegularInvestPlan_cashAccountIdToAccount?.Institution?.name ?? "",
       })),
@@ -351,6 +354,12 @@ export async function PUT(req: NextRequest) {
     const existingTaskForAction = decodeScheduledTaskMemo(existing.memo);
     const actionUsesBusinessDays = existingTaskForAction.type === "fund_regular_invest";
 
+    // System-level plans (loan repayment) are read-only here: the schedule is
+    // derived from the loan and managed through loan flows, not this endpoint.
+    if (existingTaskForAction.type === "loan_repayment") {
+      return NextResponse.json({ ok: false, error: "贷款还款计划由系统管理，不可手动修改" }, { status: 403 });
+    }
+
     // 状态操作
     if (action === "pause") {
       if (existing.status !== RegularInvestStatus.active) {
@@ -598,6 +607,11 @@ export async function DELETE(req: NextRequest) {
     const plan = await prisma.regularInvestPlan.findUnique({ where: { id } });
     if (!plan) return NextResponse.json({ ok: false, error: "计划不存在" }, { status: 404 });
     if (plan.householdId && plan.householdId !== householdId) return NextResponse.json({ ok: false, error: "计划不属于当前账簿" }, { status: 403 });
+
+    // System-level plans (loan repayment) cannot be deleted manually.
+    if (decodeScheduledTaskMemo(plan.memo).type === "loan_repayment") {
+      return NextResponse.json({ ok: false, error: "贷款还款计划由系统管理，不可手动删除" }, { status: 403 });
+    }
 
     // 仅删除交易记录，保留计划，并把计划恢复为未执行状态
     if (deleteRecordsOnly) {

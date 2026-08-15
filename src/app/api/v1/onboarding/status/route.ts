@@ -157,8 +157,10 @@ export async function GET() {
       },
     });
   } catch (error) {
+    // 不向客户端回传原始错误信息（可能暴露数据库/模式细节），服务端记录日志
+    console.error("GET /api/v1/onboarding/status error:", error);
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "无法获取首次使用状态" },
+      { ok: false, error: "无法获取首次使用状态" },
       { status: 500 },
     );
   }

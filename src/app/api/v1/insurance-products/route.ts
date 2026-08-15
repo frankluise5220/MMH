@@ -1,4 +1,4 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { FundSubtype, InsuranceAccountingType, InsuranceProductType, InsuranceStatus, Prisma } from "@prisma/client";
 
 import { isInsuranceAccount } from "@/lib/account-kind-utils";
@@ -417,7 +417,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null) as Record<string, unknown> | null;
     if (!body) {
-      return NextResponse.json({ ok: false, error: "无效的请求体" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_REQUEST_BODY", error: "无效的请求体" }, { status: 400 });
     }
 
     const name = String(body.name ?? "").trim();
@@ -448,7 +448,7 @@ export async function POST(req: NextRequest) {
     const requestedProductMasterId = String(body.productMasterId ?? "").trim() || null;
 
     if (!name) {
-      return NextResponse.json({ ok: false, error: "保险产品名称不能为空" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_PRODUCT_NAME", error: "保险产品名称不能为空" }, { status: 400 });
     }
     const productType = PRODUCT_TYPES.has(productTypeRaw) ? productTypeRaw : "other";
     const accountingType = ACCOUNTING_TYPES.has(accountingTypeRaw) ? accountingTypeRaw : "asset";
@@ -459,21 +459,21 @@ export async function POST(req: NextRequest) {
 
     if (mode === "master") {
       if (!institutionId) {
-        return NextResponse.json({ ok: false, error: "请选择承保机构" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "MISSING_INSTITUTION", error: "请选择承保机构" }, { status: 400 });
       }
       const institution = await prisma.institution.findFirst({ where: { id: institutionId, ...hidFilter } });
       if (!institution) {
-        return NextResponse.json({ ok: false, error: "承保机构不存在" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "承保机构不存在" }, { status: 400 });
       }
       if (institution.type !== "insurance") {
-        return NextResponse.json({ ok: false, error: "承保机构必须是保险公司" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_INSURER", error: "承保机构必须是保险公司" }, { status: 400 });
       }
       const duplicateMaster = await prisma.insuranceProductMaster.findFirst({
         where: { householdId, institutionId, name, productType },
         include: { Institution: { select: { name: true, shortName: true } } },
       });
       if (duplicateMaster) {
-        return NextResponse.json({ ok: false, error: "该保险产品已存在" }, { status: 409 });
+        return NextResponse.json({ ok: false, code: "PRODUCT_EXISTS", error: "该保险产品已存在" }, { status: 409 });
       }
       const createdMaster = await prisma.insuranceProductMaster.create({
         data: {
@@ -519,25 +519,25 @@ export async function POST(req: NextRequest) {
     const ownerGroup = await resolveInsuranceOwnerGroup({ ownerGroupId, policyholderPerson, householdId });
 
     if (!institutionId) {
-      return NextResponse.json({ ok: false, error: "请选择承保机构" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_INSTITUTION", error: "请选择承保机构" }, { status: 400 });
     }
     if (institutionId && !institution) {
-      return NextResponse.json({ ok: false, error: "承保机构不存在" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "承保机构不存在" }, { status: 400 });
     }
     if (institution && institution.type !== "insurance") {
-      return NextResponse.json({ ok: false, error: "承保机构必须是保险公司" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_INSURER", error: "承保机构必须是保险公司" }, { status: 400 });
     }
     if (policyholderPersonIdInput && !isFamilyMember(policyholderPerson)) {
-      return NextResponse.json({ ok: false, error: "投保人必须是家庭成员" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "POLICYHOLDER_NOT_FAMILY_MEMBER", error: "投保人必须是家庭成员" }, { status: 400 });
     }
     if (insuredPersonIdInput && !isFamilyMember(insuredPerson)) {
-      return NextResponse.json({ ok: false, error: "被保险人必须是家庭成员" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INSURED_NOT_FAMILY_MEMBER", error: "被保险人必须是家庭成员" }, { status: 400 });
     }
     if (!ownerGroup) {
-      return NextResponse.json({ ok: false, error: "没有可用于归档保险账户的所有人" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "OWNER_GROUP_NOT_FOUND", error: "没有可用于归档保险账户的所有人" }, { status: 400 });
     }
     if (insuredUserId && !insuredUser) {
-      return NextResponse.json({ ok: false, error: "被保险人不存在" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INSURED_USER_NOT_FOUND", error: "被保险人不存在" }, { status: 400 });
     }
 
     const account = requestedAccountId
@@ -545,17 +545,17 @@ export async function POST(req: NextRequest) {
       : await getOrCreateInsuranceAccount(prisma, ownerGroup.id, householdId, institutionId);
 
     if (!account) {
-      return NextResponse.json({ ok: false, error: "保险账户不存在" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INSURANCE_ACCOUNT_NOT_FOUND", error: "保险账户不存在" }, { status: 400 });
     }
     if (!isInsuranceAccount(account)) {
-      return NextResponse.json({ ok: false, error: "请选择保险账户" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_INSURANCE_ACCOUNT", error: "请选择保险账户" }, { status: 400 });
     }
 
     const duplicate = await prisma.insuranceProduct.findFirst({
       where: { householdId, accountId: account.id, name, policyNo },
     });
     if (duplicate) {
-      return NextResponse.json({ ok: false, error: "该保险产品已存在" }, { status: 409 });
+      return NextResponse.json({ ok: false, code: "PRODUCT_EXISTS", error: "该保险产品已存在" }, { status: 409 });
     }
 
     const productMaster = requestedProductMasterId
@@ -573,7 +573,7 @@ export async function POST(req: NextRequest) {
           note,
         });
     if (requestedProductMasterId && !productMaster) {
-      return NextResponse.json({ ok: false, error: "保险产品主数据不存在" }, { status: 404 });
+      return NextResponse.json({ ok: false, code: "PRODUCT_MASTER_NOT_FOUND", error: "保险产品主数据不存在" }, { status: 404 });
     }
 
     const created = await prisma.insuranceProduct.create({
@@ -651,7 +651,7 @@ export async function POST(req: NextRequest) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "创建保险产品失败";
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "CREATE_FAILED", error: message }, { status: 500 });
   }
 }
 
@@ -659,12 +659,12 @@ export async function PUT(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null) as Record<string, unknown> | null;
     if (!body) {
-      return NextResponse.json({ ok: false, error: "无效的请求体" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_REQUEST_BODY", error: "无效的请求体" }, { status: 400 });
     }
 
     const id = String(body.id ?? "").trim();
     if (!id) {
-      return NextResponse.json({ ok: false, error: "缺少保险产品ID" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_PRODUCT_ID", error: "缺少保险产品ID" }, { status: 400 });
     }
 
     const name = String(body.name ?? "").trim();
@@ -702,7 +702,7 @@ export async function PUT(req: NextRequest) {
         where: { id, ...hidFilter },
       });
       if (!existingPolicy) {
-        return NextResponse.json({ ok: false, error: "保单不存在" }, { status: 404 });
+        return NextResponse.json({ ok: false, code: "POLICY_NOT_FOUND", error: "保单不存在" }, { status: 404 });
       }
 
       const [policyholderPerson, insuredPerson] = await Promise.all([
@@ -719,10 +719,10 @@ export async function PUT(req: NextRequest) {
       ]);
 
       if (policyholderPersonId && !isFamilyMember(policyholderPerson)) {
-        return NextResponse.json({ ok: false, error: "投保人必须是家庭成员" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "POLICYHOLDER_NOT_FAMILY_MEMBER", error: "投保人必须是家庭成员" }, { status: 400 });
       }
       if (insuredPersonId && !isFamilyMember(insuredPerson)) {
-        return NextResponse.json({ ok: false, error: "被保险人必须是家庭成员" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "INSURED_NOT_FAMILY_MEMBER", error: "被保险人必须是家庭成员" }, { status: 400 });
       }
 
       const ownerGroup = await resolveInsuranceOwnerGroup({
@@ -731,10 +731,10 @@ export async function PUT(req: NextRequest) {
         householdId,
       });
       if (!ownerGroup) {
-        return NextResponse.json({ ok: false, error: "没有可用于归档保险账户的所有人" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "OWNER_GROUP_NOT_FOUND", error: "没有可用于归档保险账户的所有人" }, { status: 400 });
       }
       if (!existingPolicy.institutionId) {
-        return NextResponse.json({ ok: false, error: "保单缺少承保机构" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "MISSING_INSTITUTION", error: "保单缺少承保机构" }, { status: 400 });
       }
 
       const account = await getOrCreateInsuranceAccount(
@@ -812,10 +812,10 @@ export async function PUT(req: NextRequest) {
     }
 
     if (!name) {
-      return NextResponse.json({ ok: false, error: "保险产品名称不能为空" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_PRODUCT_NAME", error: "保险产品名称不能为空" }, { status: 400 });
     }
     if (!institutionId) {
-      return NextResponse.json({ ok: false, error: "请选择承保机构" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_INSTITUTION", error: "请选择承保机构" }, { status: 400 });
     }
 
     const productType = PRODUCT_TYPES.has(productTypeRaw) ? productTypeRaw : "other";
@@ -830,16 +830,16 @@ export async function PUT(req: NextRequest) {
         },
       });
       if (!existingMaster) {
-        return NextResponse.json({ ok: false, error: "保险产品不存在" }, { status: 404 });
+        return NextResponse.json({ ok: false, code: "PRODUCT_NOT_FOUND", error: "保险产品不存在" }, { status: 404 });
       }
       const institution = await prisma.institution.findFirst({
         where: { id: institutionId, ...hidFilter },
       });
       if (!institution) {
-        return NextResponse.json({ ok: false, error: "承保机构不存在" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "承保机构不存在" }, { status: 400 });
       }
       if (institution.type !== "insurance") {
-        return NextResponse.json({ ok: false, error: "承保机构必须是保险公司" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_INSURER", error: "承保机构必须是保险公司" }, { status: 400 });
       }
       const duplicateMaster = await prisma.insuranceProductMaster.findFirst({
         where: {
@@ -851,7 +851,7 @@ export async function PUT(req: NextRequest) {
         },
       });
       if (duplicateMaster) {
-        return NextResponse.json({ ok: false, error: "该保险产品已存在" }, { status: 409 });
+        return NextResponse.json({ ok: false, code: "PRODUCT_EXISTS", error: "该保险产品已存在" }, { status: 409 });
       }
       const updatedMaster = await prisma.insuranceProductMaster.update({
         where: { id },
@@ -882,7 +882,7 @@ export async function PUT(req: NextRequest) {
       where: { id, ...hidFilter },
     });
     if (!existing) {
-      return NextResponse.json({ ok: false, error: "保险产品不存在" }, { status: 404 });
+      return NextResponse.json({ ok: false, code: "PRODUCT_NOT_FOUND", error: "保险产品不存在" }, { status: 404 });
     }
 
     const [institution, policyholderPerson, insuredPerson, insuredUser] = await Promise.all([
@@ -902,22 +902,22 @@ export async function PUT(req: NextRequest) {
     const ownerGroup = await resolveInsuranceOwnerGroup({ ownerGroupId, policyholderPerson, householdId });
 
     if (!institution) {
-      return NextResponse.json({ ok: false, error: "承保机构不存在" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "承保机构不存在" }, { status: 400 });
     }
     if (institution.type !== "insurance") {
-      return NextResponse.json({ ok: false, error: "承保机构必须是保险公司" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_INSURER", error: "承保机构必须是保险公司" }, { status: 400 });
     }
     if (policyholderPersonId && !isFamilyMember(policyholderPerson)) {
-      return NextResponse.json({ ok: false, error: "投保人必须是家庭成员" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "POLICYHOLDER_NOT_FAMILY_MEMBER", error: "投保人必须是家庭成员" }, { status: 400 });
     }
     if (insuredPersonId && !isFamilyMember(insuredPerson)) {
-      return NextResponse.json({ ok: false, error: "被保险人必须是家庭成员" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INSURED_NOT_FAMILY_MEMBER", error: "被保险人必须是家庭成员" }, { status: 400 });
     }
     if (!ownerGroup) {
-      return NextResponse.json({ ok: false, error: "没有可用于归档保险账户的所有人" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "OWNER_GROUP_NOT_FOUND", error: "没有可用于归档保险账户的所有人" }, { status: 400 });
     }
     if (insuredUserId && !insuredUser) {
-      return NextResponse.json({ ok: false, error: "被保险人不存在" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INSURED_USER_NOT_FOUND", error: "被保险人不存在" }, { status: 400 });
     }
 
     const account = requestedAccountId
@@ -925,10 +925,10 @@ export async function PUT(req: NextRequest) {
       : await getOrCreateInsuranceAccount(prisma, ownerGroup.id, householdId, institutionId);
 
     if (!account) {
-      return NextResponse.json({ ok: false, error: "保险账户不存在" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INSURANCE_ACCOUNT_NOT_FOUND", error: "保险账户不存在" }, { status: 400 });
     }
     if (!isInsuranceAccount(account)) {
-      return NextResponse.json({ ok: false, error: "请选择保险账户" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_INSURANCE_ACCOUNT", error: "请选择保险账户" }, { status: 400 });
     }
 
     const duplicate = await prisma.insuranceProduct.findFirst({
@@ -941,7 +941,7 @@ export async function PUT(req: NextRequest) {
       },
     });
     if (duplicate) {
-      return NextResponse.json({ ok: false, error: "该保险产品已存在" }, { status: 409 });
+      return NextResponse.json({ ok: false, code: "PRODUCT_EXISTS", error: "该保险产品已存在" }, { status: 409 });
     }
 
     const productMaster = await getOrCreateProductMaster({
@@ -1061,7 +1061,7 @@ export async function PUT(req: NextRequest) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "更新保险产品失败";
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "UPDATE_FAILED", error: message }, { status: 500 });
   }
 }
 
@@ -1071,7 +1071,7 @@ export async function DELETE(req: NextRequest) {
     const id = url.searchParams.get("id")?.trim() || "";
     const mode = url.searchParams.get("mode")?.trim() || null;
     if (!id) {
-      return NextResponse.json({ ok: false, error: "缺少保险产品ID" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_PRODUCT_ID", error: "缺少保险产品ID" }, { status: 400 });
     }
 
     const { hidFilter, user } = await getHouseholdScope();
@@ -1083,7 +1083,7 @@ export async function DELETE(req: NextRequest) {
         select: { id: true, name: true },
       });
       if (!existingMaster) {
-        return NextResponse.json({ ok: false, error: "保险产品不存在" }, { status: 404 });
+        return NextResponse.json({ ok: false, code: "PRODUCT_NOT_FOUND", error: "保险产品不存在" }, { status: 404 });
       }
 
       let body: { password?: string; cascade?: boolean } | null = null;
@@ -1096,27 +1096,27 @@ export async function DELETE(req: NextRequest) {
       const cascade = body?.cascade === true;
 
       if (!password) {
-        return NextResponse.json({ ok: false, error: "请输入密码确认删除" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "MISSING_PASSWORD", error: "请输入密码确认删除" }, { status: 400 });
       }
       if (!user) {
-        return NextResponse.json({ ok: false, error: "未登录" }, { status: 401 });
+        return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "未登录" }, { status: 401 });
       }
       const currentUser = await prisma.user.findUnique({ where: { id: user.id } });
       if (!currentUser) {
-        return NextResponse.json({ ok: false, error: "用户不存在" }, { status: 401 });
+        return NextResponse.json({ ok: false, code: "USER_NOT_FOUND", error: "用户不存在" }, { status: 401 });
       }
       if (currentUser.passwordHash) {
         const match = await verifyPassword(password, currentUser.passwordHash);
         if (!match) {
-          return NextResponse.json({ ok: false, error: "密码错误" }, { status: 401 });
+          return NextResponse.json({ ok: false, code: "INVALID_PASSWORD", error: "密码错误" }, { status: 401 });
         }
       } else {
         const legacy = await prisma.systemSetting.findUnique({ where: { key: "access_password" } });
         if (!legacy?.value) {
-          return NextResponse.json({ ok: false, error: "请先设置密码" }, { status: 400 });
+          return NextResponse.json({ ok: false, code: "PASSWORD_NOT_SET", error: "请先设置密码" }, { status: 400 });
         }
         if (password !== legacy.value) {
-          return NextResponse.json({ ok: false, error: "密码错误" }, { status: 401 });
+          return NextResponse.json({ ok: false, code: "INVALID_PASSWORD", error: "密码错误" }, { status: 401 });
         }
       }
 
@@ -1154,6 +1154,7 @@ export async function DELETE(req: NextRequest) {
       if ((linkedPolicyIds.length > 0 || linkedTxCount > 0 || planCount > 0) && !cascade) {
         return NextResponse.json({
           ok: false,
+          code: "PRODUCT_HAS_LINKED_DATA",
           error: `该保险产品已关联${linkedPolicyIds.length}个保单、${linkedTxCount}条记录、${planCount}个计划任务，请勾选“同时删除关联数据”后再确认`,
         }, { status: 409 });
       }
@@ -1196,7 +1197,7 @@ export async function DELETE(req: NextRequest) {
       select: { id: true, name: true },
     });
     if (!existing) {
-      return NextResponse.json({ ok: false, error: "保险产品不存在" }, { status: 404 });
+      return NextResponse.json({ ok: false, code: "PRODUCT_NOT_FOUND", error: "保险产品不存在" }, { status: 404 });
     }
 
     const [txCount, businessTxCount, planCount] = await Promise.all([
@@ -1251,6 +1252,7 @@ export async function DELETE(req: NextRequest) {
     if (!password) {
       return NextResponse.json({
         ok: false,
+        code: "DELETE_PASSWORD_REQUIRED",
         error: `该保单已有${linkedTxCount}条缴费记录，需输入密码并确认删除全部记录`,
         needPassword: true,
       }, { status: 409 });
@@ -1258,29 +1260,30 @@ export async function DELETE(req: NextRequest) {
     if (!cascade) {
       return NextResponse.json({
         ok: false,
+        code: "DELETE_CONFIRMATION_REQUIRED",
         error: "请确认是否删除全部记录",
       }, { status: 409 });
     }
 
     if (!user) {
-      return NextResponse.json({ ok: false, error: "未登录" }, { status: 401 });
+      return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "未登录" }, { status: 401 });
     }
     const currentUser = await prisma.user.findUnique({ where: { id: user.id } });
     if (!currentUser) {
-      return NextResponse.json({ ok: false, error: "用户不存在" }, { status: 401 });
+      return NextResponse.json({ ok: false, code: "USER_NOT_FOUND", error: "用户不存在" }, { status: 401 });
     }
     if (currentUser.passwordHash) {
       const match = await verifyPassword(password, currentUser.passwordHash);
       if (!match) {
-        return NextResponse.json({ ok: false, error: "密码错误" }, { status: 401 });
+        return NextResponse.json({ ok: false, code: "INVALID_PASSWORD", error: "密码错误" }, { status: 401 });
       }
     } else {
       const legacy = await prisma.systemSetting.findUnique({ where: { key: "access_password" } });
       if (!legacy?.value) {
-        return NextResponse.json({ ok: false, error: "请先设置密码" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "PASSWORD_NOT_SET", error: "请先设置密码" }, { status: 400 });
       }
       if (password !== legacy.value) {
-        return NextResponse.json({ ok: false, error: "密码错误" }, { status: 401 });
+        return NextResponse.json({ ok: false, code: "INVALID_PASSWORD", error: "密码错误" }, { status: 401 });
       }
     }
 
@@ -1310,6 +1313,6 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ ok: true, data: { id } });
   } catch (error) {
     const message = error instanceof Error ? error.message : "删除保险产品失败";
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "DELETE_FAILED", error: message }, { status: 500 });
   }
 }

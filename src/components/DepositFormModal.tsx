@@ -12,6 +12,7 @@ import { kindLabel } from "@/lib/account-kinds";
 import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { useI18n } from "@/lib/i18n";
 import { Repeat } from "lucide-react";
 
 type Entry = {
@@ -69,12 +70,12 @@ type EditingRedeemSource = {
   annualRate?: number | null;
 };
 const TERM_PRESETS = [
-  { label: "3个月", days: 90 },
-  { label: "半年", days: 180 },
-  { label: "1年", days: 365 },
-  { label: "2年", days: 730 },
-  { label: "3年", days: 1095 },
-  { label: "5年", days: 1825 },
+  { labelKey: "wealthForm.term.3months", days: 90 },
+  { labelKey: "wealthForm.term.halfYear", days: 180 },
+  { labelKey: "wealthForm.term.1year", days: 365 },
+  { labelKey: "wealthForm.term.2years", days: 730 },
+  { labelKey: "wealthForm.term.3years", days: 1095 },
+  { labelKey: "wealthForm.term.5years", days: 1825 },
 ] as const;
 const DEFAULT_DEPOSIT_TERM_DAYS = "365";
 
@@ -140,6 +141,7 @@ export function DepositFormModal({
   editAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const { t } = useI18n();
 
   const initIsRedeem = mode === "edit" && entry ? entry.amount > 0 : false;
   const initAmount = mode === "edit" && entry ? String(Math.abs(entry.amount)) : "";
@@ -243,8 +245,8 @@ export function DepositFormModal({
       label: editingRedeemSource.fundName,
       subLabel: [
         editingRedeemSource.depositAccountLabel,
-        editingRedeemSource.maturityDate ? `到期 ${editingRedeemSource.maturityDate}` : "",
-        `可取 ${editingRedeemSource.restoredRemainingAmount.toFixed(2)}`,
+        editingRedeemSource.maturityDate ? t("depositForm.lotSubLabel.maturity", { date: editingRedeemSource.maturityDate }) : "",
+        t("depositForm.lotSubLabel.available", { amount: editingRedeemSource.restoredRemainingAmount.toFixed(2) }),
       ]
         .filter(Boolean)
         .join(" · "),
@@ -577,14 +579,14 @@ export function DepositFormModal({
           restoredLotId
             ? {
                 id: restoredLotId,
-                fundName: detail.fundName ?? matchedLot?.fundName ?? "未命名存款",
+                fundName: detail.fundName ?? matchedLot?.fundName ?? t("depositForm.unnamedDeposit"),
                 startDate: matchedLot?.startDate ?? null,
                 maturityDate: matchedLot?.maturityDate ?? null,
                 depositAccountId: detail.accountId ?? matchedLot?.depositAccountId ?? defaultAccountId,
                 depositAccountLabel:
                   matchedLot?.depositAccountLabel ??
                   depositAccountList.find((account) => account.id === (detail.accountId ?? defaultAccountId))?.label ??
-                  "定期存款",
+                  t("investment.product.deposit"),
                 restoredRemainingAmount: Number(
                   ((matchedLot?.remainingAmount ?? 0) + restoredPrincipalAmount).toFixed(2),
                 ),
@@ -805,19 +807,19 @@ export function DepositFormModal({
     if (submitting) return;
     const amt = parseNumber(amount);
     if (amt <= 0) {
-      window.alert("请输入金额");
+      window.alert(t("wealthForm.alert.enterAmount"));
       return;
     }
     if (!fundName.trim()) {
-      window.alert("请输入产品名称");
+      window.alert(t("wealthForm.alert.enterProductName"));
       return;
     }
     if (isRedeem && !selectedRedeemLotId) {
-      window.alert("请选择要取出的存款单");
+      window.alert(t("depositForm.alert.selectRedeemLot"));
       return;
     }
     if (!isRedeem && !cashAccountId) {
-      window.alert("请选择资金来源账户");
+      window.alert(t("txForm.alert.selectCashSourceAccount"));
       return;
     }
     if (isRedeem && selectedRedeemLot) {
@@ -838,7 +840,7 @@ export function DepositFormModal({
         : amt;
       const cashAmt = showCurrencyConversion ? parseNumber(cashAmount) : amt;
       if (showCurrencyConversion && cashAmt <= 0) {
-        throw new Error("请填写折算后的来源账户扣款金额");
+        throw new Error(t("depositForm.alert.enterConvertedCashAmount"));
       }
       fd.set("amount", String(isRedeem ? redeemAmount : cashAmt));
       fd.set("fundName", fundName.trim());
@@ -860,7 +862,7 @@ export function DepositFormModal({
       if (isRedeem) {
         const arrivalValue = parseNumber(arrivalAmount);
         if (arrivalValue <= 0) {
-          throw new Error("到账金额不正确");
+          throw new Error(t("wealthForm.alert.arrivalAmountInvalid"));
         }
         const interestValue = parseNumber(interestAmount);
         if (interestValue > 0) {
@@ -886,12 +888,12 @@ export function DepositFormModal({
 
       if (mode === "edit" && (entry?.id || editEntryId)) {
         fd.set("entryId", entry?.id || editEntryId || "");
-        const res = editAction ? await editAction(fd) : { ok: false as const, error: "缺少 editAction" };
-        if (!res.ok) throw new Error(res.error ?? "保存失败");
+        const res = editAction ? await editAction(fd) : { ok: false as const, error: t("wealthForm.alert.missingEditAction") };
+        if (!res.ok) throw new Error(res.error ?? t("wealthForm.alert.saveFailed"));
         window.dispatchEvent(new CustomEvent("mmh:deposit:edit:success", { detail: { requestId } }));
       } else {
         const res = await createAction(fd);
-        if (!res.ok) throw new Error(res.error ?? "记账失败");
+        if (!res.ok) throw new Error(res.error ?? t("txForm.alert.saveFailed"));
       }
 
       if (keepAdding && mode === "create") {
@@ -904,7 +906,7 @@ export function DepositFormModal({
         dispatchFinanceDataChanged({ reason: "deposit-save" });
       });
     } catch (err) {
-      window.alert(err instanceof Error ? err.message : "保存失败");
+      window.alert(err instanceof Error ? err.message : t("wealthForm.alert.saveFailed"));
     } finally {
       setSubmitting(false);
     }
@@ -936,8 +938,8 @@ export function DepositFormModal({
     <button
       type="button"
       onClick={cycleCashOwnerFilter}
-      title={`所有人：${cashOwnerFilterLabel}`}
-      aria-label={`切换所有人，当前 ${cashOwnerFilterLabel}`}
+      title={t("investForm.ownerFilter.title", { label: cashOwnerFilterLabel })}
+      aria-label={t("investForm.ownerFilter.ariaLabel", { label: cashOwnerFilterLabel })}
       className="secondary-button !px-0 h-7 w-7 shrink-0 text-slate-500"
     >
       <Repeat className="h-3.5 w-3.5" />
@@ -947,8 +949,8 @@ export function DepositFormModal({
     <button
       type="button"
       onClick={cycleDepositOwnerFilter}
-      title={`所有人：${depositOwnerFilterLabel}`}
-      aria-label={`切换所有人，当前 ${depositOwnerFilterLabel}`}
+      title={t("investForm.ownerFilter.title", { label: depositOwnerFilterLabel })}
+      aria-label={t("investForm.ownerFilter.ariaLabel", { label: depositOwnerFilterLabel })}
       className="secondary-button !px-0 h-7 w-7 shrink-0 text-slate-500"
     >
       <Repeat className="h-3.5 w-3.5" />
@@ -962,8 +964,8 @@ export function DepositFormModal({
           <div className="app-modal-panel max-w-[min(42rem,calc(100vw-1rem))]">
             <div className="modal-header">
               <div className="text-sm font-semibold text-slate-800">
-                {mode === "edit" ? "编辑存款记录" : "新增存款记录"}
-                <span className="ml-2 text-xs font-normal text-slate-500">定期存款</span>
+                {mode === "edit" ? t("depositForm.title.edit") : t("depositForm.title.create")}
+                <span className="ml-2 text-xs font-normal text-slate-500">{t("investment.product.deposit")}</span>
               </div>
               <button
                 type="button"
@@ -973,7 +975,7 @@ export function DepositFormModal({
                 }}
                 className="secondary-button h-8 px-2"
               >
-                关闭
+                {t("investForm.close")}
               </button>
             </div>
 
@@ -989,7 +991,7 @@ export function DepositFormModal({
                   disabled={!!lockedSubtype}
                   className={`segment-button h-8 flex-1 text-xs ${subtype === "buy" ? "segment-button-active font-medium" : ""} ${lockedSubtype ? "cursor-not-allowed opacity-60" : ""}`}
                 >
-                  存入
+                  {t("deposit.subtype.buy")}
                 </button>
                 <button
                   type="button"
@@ -1000,54 +1002,54 @@ export function DepositFormModal({
                   disabled={!!lockedSubtype}
                   className={`segment-button h-8 flex-1 text-xs ${subtype === "redeem" ? "segment-button-active font-medium" : ""} ${lockedSubtype ? "cursor-not-allowed opacity-60" : ""}`}
                 >
-                  取出
+                  {t("deposit.subtype.redeem")}
                 </button>
               </div>
               {lockedSubtype ? (
                 <div className="text-[11px] text-slate-400">
-                  已有记录编辑时不能在“存入 / 取出”之间切换，避免把原始记录改坏。
+                  {t("depositForm.lockedSubtypeHint")}
                 </div>
               ) : null}
 
               <div className={isRedeem ? "space-y-3" : "grid grid-cols-2 gap-3"}>
                 <div className="space-y-1">
-                  <div className="form-label">日期</div>
+                  <div className="form-label">{t("detail.column.date")}</div>
                   <DateStepper value={date} onChange={changeDate} />
                 </div>
                 {isRedeem ? (
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <div className="form-label">取出账户</div>
+                      <div className="form-label">{t("depositForm.redeemAccount")}</div>
                       <SmartSelect
                         mode="single"
                         value={depositAccountId}
                         onChange={setDepositAccountId}
                         options={redeemDepositOptions}
-                        placeholder="选择定期存款账户"
+                        placeholder={t("depositForm.selectDepositAccount")}
                         behavior={{ hierarchy: false, search: "auto", clearable: false, headerExtra: depositOwnerCycleButton }}
                       />
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">到账账户</div>
+                      <div className="form-label">{t("wealthForm.arrivalAccount")}</div>
                       <SmartSelect
                         mode="single"
                         value={cashAccountId}
                         onChange={setCashAccountId}
                         options={redeemCashOptions}
-                        placeholder={redeemCashOptions.length > 0 ? "选择到账借记卡" : "该机构暂无借记卡"}
+                        placeholder={redeemCashOptions.length > 0 ? t("depositForm.selectArrivalDebit") : t("wealthForm.noDebitInInstitution")}
                         behavior={{ hierarchy: false, search: "auto", clearable: false }}
                       />
                     </div>
                   </div>
                 ) : (
                   <div className="space-y-1">
-                    <div className="form-label">存入账户</div>
+                    <div className="form-label">{t("depositForm.depositAccount")}</div>
                     <SmartSelect
                       mode="single"
                       value={depositAccountId}
                       onChange={setDepositAccountId}
                       options={redeemDepositOptions}
-                      placeholder="选择存款账户，可留空自动创建"
+                      placeholder={t("depositForm.selectDepositAccountCreate")}
                       behavior={{
                         hierarchy: false,
                         search: "auto",
@@ -1056,7 +1058,7 @@ export function DepositFormModal({
                         create: {
                           type: "button",
                           onClick: () => setNestedEntityType("deposit-account"),
-                          label: "新增账户",
+                          label: t("settings.accounts.add"),
                         },
                       }}
                     />
@@ -1067,29 +1069,29 @@ export function DepositFormModal({
               {isRedeem ? (
                 <>
                   <div className="space-y-1">
-                    <div className="form-label">取出存款单</div>
+                    <div className="form-label">{t("depositForm.redeemLot")}</div>
                     <SmartSelect
                       mode="single"
                       value={selectedRedeemLotId}
                       onChange={setSelectedRedeemLotId}
                       options={redeemLotSelectOptions}
-                      placeholder={redeemLotSelectOptions.length > 0 ? "选择可取出的存款单" : "暂无可取出的存款单"}
+                      placeholder={redeemLotSelectOptions.length > 0 ? t("depositForm.selectRedeemLot") : t("depositForm.noRedeemLot")}
                       behavior={{ hierarchy: false, search: "auto", clearable: false }}
                     />
                     <div className="text-[11px] text-slate-400">
                       {selectedRedeemLot
-                        ? `本次按整笔取回处理：本金 ${selectedRedeemLot.remainingAmount.toFixed(2)}${selectedRedeemLot.maturityDate ? `，到期 ${selectedRedeemLot.maturityDate}` : ""}`
-                        : "请选择一笔仍有余额的存款单"}
+                        ? `${t("depositForm.redeemWholeLotHint", { amount: selectedRedeemLot.remainingAmount.toFixed(2) })}${selectedRedeemLot.maturityDate ? t("depositForm.redeemMaturitySuffix", { date: selectedRedeemLot.maturityDate }) : ""}`
+                        : t("depositForm.selectRedeemLotWithBalance")}
                     </div>
                   </div>
                 </>
               ) : (
                 <div className="space-y-1">
-                  <div className="form-label">产品名称</div>
+                  <div className="form-label">{t("wealthForm.productName")}</div>
                   <input
                     value={fundName}
                     onChange={(e) => setFundName(e.target.value)}
-                    placeholder="例如：三年定期、余额宝"
+                    placeholder={t("depositForm.productNamePlaceholder")}
                     className="form-input"
                   />
                 </div>
@@ -1099,23 +1101,23 @@ export function DepositFormModal({
                 <>
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <div className="form-label">年化利率（%）</div>
+                      <div className="form-label">{t("depositForm.annualRatePercent")}</div>
                       <CalcInput
                         value={annualRate}
                         onChange={setAnnualRate}
                         onBlur={() => applyRedeemComputedAmounts(true)}
-                        placeholder="如：2.5"
-                        label="年化利率"
+                        placeholder={t("depositForm.rateExample")}
+                        label={t("depositShell.colAnnualRate")}
                         precision={4}
                       />
                       {!hasStoredAnnualRate ? (
                         <div className="text-[11px] text-slate-400">
-                          这笔存单历史记录里未保存利率，请手动填写一次。
+                          {t("depositForm.rateMissingHint")}
                         </div>
                       ) : null}
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">利息</div>
+                      <div className="form-label">{t("txForm.interest")}</div>
                       <CalcInput
                         value={interestAmount}
                         onChange={(value) => {
@@ -1123,18 +1125,18 @@ export function DepositFormModal({
                           setInterestAmount(value);
                         }}
                         placeholder="0.00"
-                        label="利息"
+                        label={t("txForm.interest")}
                         precision={2}
                       />
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <div className="form-label">到账日期</div>
+                      <div className="form-label">{t("wealthForm.arrivalDate")}</div>
                       <DateStepper value={arrivalDate} onChange={changeArrivalDate} />
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">到账金额</div>
+                      <div className="form-label">{t("wealthForm.arrivalAmount")}</div>
                       <CalcInput
                         value={arrivalAmount}
                         onChange={(value) => {
@@ -1142,38 +1144,42 @@ export function DepositFormModal({
                           setArrivalAmount(value);
                         }}
                         placeholder="0.00"
-                        label="到账金额"
+                        label={t("wealthForm.arrivalAmount")}
                         precision={2}
                       />
                     </div>
                     <div className="col-span-2 text-[11px] text-slate-400">
-                      本金 {amountNumber > 0 ? amountNumber.toFixed(2) : "0.00"} + 利息 {parseNumber(interestAmount).toFixed(2)} = 到账 {(parseNumber(arrivalAmount) || 0).toFixed(2)}
+                      {t("depositForm.arrivalPreview", {
+                        principal: amountNumber > 0 ? amountNumber.toFixed(2) : "0.00",
+                        interest: parseNumber(interestAmount).toFixed(2),
+                        arrival: (parseNumber(arrivalAmount) || 0).toFixed(2),
+                      })}
                     </div>
                   </div>
                 </>
               ) : (
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
-                    <div className="form-label">年化利率（%）</div>
+                    <div className="form-label">{t("depositForm.annualRatePercent")}</div>
                     <CalcInput
                       value={annualRate}
                       onChange={setAnnualRate}
-                      placeholder="如：2.5"
-                      label="年化利率"
+                      placeholder={t("depositForm.rateExample")}
+                      label={t("depositShell.colAnnualRate")}
                       precision={4}
                     />
                   </div>
                   <div className="space-y-1">
-                    <div className="form-label">期限天数</div>
+                    <div className="form-label">{t("wealthForm.termDays")}</div>
                     <select
                       value={TERM_PRESETS.some((preset) => String(preset.days) === termDays) ? termDays : ""}
                       onChange={(e) => setTermDays(e.target.value)}
                       className="form-input"
                     >
-                      <option value="">请选择常见期限</option>
+                      <option value="">{t("wealthForm.termPresetPlaceholder")}</option>
                       {TERM_PRESETS.map((preset) => (
                         <option key={preset.days} value={String(preset.days)}>
-                          {preset.label}
+                          {t(preset.labelKey)}
                         </option>
                       ))}
                     </select>
@@ -1183,13 +1189,13 @@ export function DepositFormModal({
 
               {!isRedeem ? (
                 <div className="space-y-1">
-                  <div className="form-label">资金来源账户</div>
+                  <div className="form-label">{t("wealthForm.sourceAccount")}</div>
                   <SmartSelect
                     mode="single"
                     value={cashAccountId}
                     onChange={setCashAccountId}
                     options={visibleCashOptions}
-                    placeholder="选择资金账户"
+                    placeholder={t("depositForm.selectCashAccount")}
                     behavior={{
                       hierarchy: "auto",
                       search: "auto",
@@ -1198,7 +1204,7 @@ export function DepositFormModal({
                       create: {
                         type: "button",
                         onClick: () => setNestedEntityType("cash-account"),
-                        label: "新增账户",
+                        label: t("settings.accounts.add"),
                       },
                     }}
                   />
@@ -1208,50 +1214,53 @@ export function DepositFormModal({
               {showCurrencyConversion ? (
                 <div className="grid grid-cols-2 gap-3 rounded-[10px] border border-amber-200 bg-amber-50/70 p-3">
                   <div className="space-y-1">
-                    <div className="form-label">汇率（1 {depositCurrency} = ? {cashCurrency}）</div>
+                    <div className="form-label">{t("depositForm.exchangeRateLabel", { deposit: depositCurrency, cash: cashCurrency })}</div>
                     <CalcInput
                       value={exchangeRate}
                       onChange={setExchangeRate}
-                      placeholder="例如 7.20"
-                      label="汇率"
+                      placeholder={t("depositForm.exchangeRateExample")}
+                      label={t("txForm.fxRate")}
                       precision={6}
                     />
                   </div>
                   <div className="space-y-1">
-                    <div className="form-label">来源账户扣款（{cashCurrency}）</div>
+                    <div className="form-label">{t("depositForm.cashAmountLabel", { currency: cashCurrency })}</div>
                     <CalcInput
                       value={cashAmount}
                       onChange={setCashAmount}
                       placeholder="0.00"
-                      label="来源账户扣款"
+                      label={t("depositForm.cashAmount")}
                       precision={2}
                     />
                   </div>
                   <div className="col-span-2 text-[11px] text-slate-500">
-                    存款账户入账 {amountNumber > 0 ? amountNumber.toFixed(2) : "0.00"} {depositCurrency}，来源账户按折算金额扣款。
+                    {t("depositForm.conversionHint", {
+                      amount: amountNumber > 0 ? amountNumber.toFixed(2) : "0.00",
+                      currency: depositCurrency,
+                    })}
                   </div>
                 </div>
               ) : null}
 
               {!isRedeem ? (
                 <div className="space-y-1">
-                  <div className="form-label">存入金额{depositCurrency ? `（${depositCurrency}）` : ""}</div>
+                  <div className="form-label">{depositCurrency ? t("depositForm.depositAmountWithCurrency", { currency: depositCurrency }) : t("depositForm.depositAmount")}</div>
                   <CalcInput
                     value={amount}
                     onChange={setAmount}
                     placeholder="0.00"
-                    label="存入金额"
+                    label={t("depositForm.depositAmount")}
                     precision={2}
                   />
                 </div>
               ) : null}
 
               <div className="space-y-1">
-                <div className="form-label">备注</div>
+                <div className="form-label">{t("detail.column.remark")}</div>
                 <input
                   value={memo}
                   onChange={(e) => setMemo(e.target.value)}
-                  placeholder="可选"
+                  placeholder={t("firstUseGuide.optional")}
                   className="form-input"
                 />
               </div>
@@ -1264,7 +1273,7 @@ export function DepositFormModal({
                     onClick={() => { void saveDepositTransaction(true); }}
                     className="secondary-button h-9 px-4 text-sm disabled:opacity-50"
                   >
-                    {submitting ? "保存中…" : "保存并再记一笔"}
+                    {submitting ? t("txForm.saving") : t("txForm.saveAndRepeat")}
                   </button>
                 ) : null}
                 <button
@@ -1274,7 +1283,7 @@ export function DepositFormModal({
                     isRedeem ? "bg-orange-600 hover:bg-orange-700" : "primary-button"
                   }`}
                 >
-                  {submitting ? "保存中…" : mode === "edit" ? "保存修改" : isRedeem ? "记账（取出）" : "记账（存入）"}
+                  {submitting ? t("txForm.saving") : mode === "edit" ? t("txForm.saveChanges") : isRedeem ? t("depositForm.recordRedeem") : t("depositForm.recordBuy")}
                 </button>
               </div>
               </div>

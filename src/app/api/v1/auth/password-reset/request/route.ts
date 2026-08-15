@@ -164,7 +164,7 @@ export async function POST(req: NextRequest) {
     return response;
   }
 
-  const code = String(Math.floor(100000 + Math.random() * 900000));
+  const code = String(crypto.randomInt(100000, 1000000));
   const tokenHash = hashCode({ userId: user.id, code });
   if (!tokenHash) {
     return NextResponse.json({ ok: false, error: "未配置密码找回功能" }, { status: 500 });

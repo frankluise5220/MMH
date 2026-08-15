@@ -262,6 +262,12 @@ model CreditCardInstallmentPlan {
   rateType             CreditCardInstallmentRateType
   rate                 Decimal                         @default(0) @db.Decimal(10, 6)
   firstStatementMonth  String                          @db.VarChar(7)
+  // Schedule rebuild inputs: payment rows are materialized when due instead of
+  // being pre-generated for the whole plan. Nullable for legacy plans, which
+  // fall back to the account billing day / firstStatementMonth.
+  billingDay           Int?
+  firstPaymentDate     DateTime?
+  tagIds               String?
   status               CreditCardInstallmentStatus     @default(active)
   createdAt            DateTime                        @default(now())
   updatedAt            DateTime                        @default(now()) @updatedAt

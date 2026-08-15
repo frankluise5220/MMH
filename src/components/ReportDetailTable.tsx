@@ -8,8 +8,9 @@ import type { BasicDetailBatchCategoryOption } from "@/components/BasicDetailSel
 import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
 import { DetailViewClient, type DetailEntry } from "@/components/DetailViewClient";
 import { formatMoney } from "@/lib/format";
-import { FINANCE_DATA_CHANGED_EVENT, LEGACY_FINANCE_REFRESH_EVENT } from "@/lib/client/refresh";
+import { FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 import { getColorSchemeFromCookie, pnlColor } from "@/lib/client/colors";
+import { useI18n } from "@/lib/i18n";
 
 type AccountOption = {
   id: string;
@@ -58,6 +59,7 @@ export function ReportDetailTable({
   const [page, setPage] = useState(1);
   const [showAll, setShowAll] = useState(false);
   const [displayEntries, setDisplayEntries] = useState(entries);
+  const { t } = useI18n();
   const totalPages = Math.max(1, Math.ceil(displayEntries.length / pageSize));
   const safePage = showAll ? 1 : clampPage(page, totalPages);
   const pageEntries = useMemo(
@@ -103,12 +105,10 @@ export function ReportDetailTable({
       "mmh:insurance:edit:success",
     ];
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, refresh);
-    window.addEventListener(LEGACY_FINANCE_REFRESH_EVENT, refresh);
     editSuccessEvents.forEach((eventName) => window.addEventListener(eventName, refresh));
     return () => {
       if (timer != null) window.clearTimeout(timer);
       window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, refresh);
-      window.removeEventListener(LEGACY_FINANCE_REFRESH_EVENT, refresh);
       editSuccessEvents.forEach((eventName) => window.removeEventListener(eventName, refresh));
     };
   }, [onRefresh]);
@@ -135,11 +135,11 @@ export function ReportDetailTable({
           )}
           toolbarRightContent={(
             <div className="flex items-center gap-3 text-xs text-slate-500">
-              <span>{displayEntries.length} 条，合计 <strong className={`tabular-nums ${pnlColor(colorValue, colorScheme)}`}>{formatMoney(total)}</strong></span>
+              <span>{t("reportDetail.entryCountTotal", { count: displayEntries.length })} <strong className={`tabular-nums ${pnlColor(colorValue, colorScheme)}`}>{formatMoney(total)}</strong></span>
               {onClear ? (
-                <button type="button" onClick={onClear} className="text-blue-600 hover:text-blue-800 hover:underline">清除明细</button>
+                <button type="button" onClick={onClear} className="text-blue-600 hover:text-blue-800 hover:underline">{t("reportDetail.clearDetails")}</button>
               ) : clearHref ? (
-                <Link href={clearHref} className="text-blue-600 hover:text-blue-800 hover:underline">清除明细</Link>
+                <Link href={clearHref} className="text-blue-600 hover:text-blue-800 hover:underline">{t("reportDetail.clearDetails")}</Link>
               ) : null}
               <span className="text-slate-300">|</span>
               <DetailTablePaginationControls

@@ -2,10 +2,13 @@
 
 import { useState } from "react";
 import { RefreshCw } from "lucide-react";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { useI18n } from "@/lib/i18n";
 
 export function InvestHeaderSync() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const { t } = useI18n();
 
   async function handleSync() {
     if (loading) return;
@@ -21,13 +24,13 @@ export function InvestHeaderSync() {
       const data = await res.json();
 
       if (data.ok) {
-        setMessage(data.message ?? `已同步 ${data.synced} 支基金`);
-        window.dispatchEvent(new Event("mmh:fund:refresh"));
+        setMessage(data.message ?? t("investSync.synced", { count: data.synced }));
+        dispatchFinanceDataChanged({ reason: "invest-header-sync" });
       } else {
-        setMessage(`同步失败：${data.error}`);
+        setMessage(t("investSync.failed", { reason: data.error }));
       }
     } catch (e) {
-      setMessage(`同步失败：${e instanceof Error ? e.message : "网络错误"}`);
+      setMessage(t("investSync.failed", { reason: e instanceof Error ? e.message : t("investSync.networkError") }));
     } finally {
       setLoading(false);
     }
@@ -41,7 +44,7 @@ export function InvestHeaderSync() {
         className="h-8 px-3 rounded-md bg-blue-600 text-white text-xs hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1.5"
       >
         <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
-        {loading ? "同步中..." : "同步持仓"}
+        {loading ? t("investSync.syncing") : t("investSync.syncHoldings")}
       </button>
       {message && (
         <span className="text-xs text-slate-500">{message}</span>

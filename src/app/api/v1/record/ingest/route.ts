@@ -3,6 +3,7 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { AccountKind, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { toStatementMonth } from "@/lib/date-utils";
 import { normalizeDefaultCategoryHierarchyForHousehold, type CategorySnapshot, type ResolveCategorySnapshotInput } from "@/lib/default-categories";
 import { defaultModel, localProvider } from "@/lib/ai/config";
 import {
@@ -223,20 +224,6 @@ function parseOptionalDateTime(value?: string) {
   if (!text) return null;
   const d = new Date(text);
   return Number.isNaN(d.getTime()) ? null : d;
-}
-
-function addMonthsUtc(date: Date, months: number) {
-  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-  d.setUTCMonth(d.getUTCMonth() + months);
-  return d;
-}
-
-function toStatementMonth(date: Date, billingDay: number) {
-  const day = date.getUTCDate();
-  const monthBase = day < billingDay ? date : addMonthsUtc(date, 1);
-  const y = monthBase.getUTCFullYear();
-  const m = String(monthBase.getUTCMonth() + 1).padStart(2, "0");
-  return `${y}-${m}`;
 }
 
 function normalizeAccountCell(value?: string) {

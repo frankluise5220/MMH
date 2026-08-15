@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
+import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { cookies } from "next/headers";
@@ -11,6 +12,38 @@ import { getDefaultTradingCalendarForAccount } from "@/lib/fund/trading-calendar
 
 const LEGACY_PASSWORD_KEY = "access_password";
 const STATUS_LOOKUP_TIMEOUT_MS = 900;
+const PASSWORD_SET_RATE_LIMIT = 10;
+const PASSWORD_SET_WINDOW_MS = 60 * 60 * 1000;
+
+declare global {
+  var __passwordStatusAttempts: Map<string, number[]> | undefined;
+}
+
+const passwordSetAttempts = globalThis.__passwordStatusAttempts ??= new Map<string, number[]>();
+
+function getClientIp(req: NextRequest) {
+  const xf = req.headers.get("x-forwarded-for");
+  if (xf) return xf.split(",")[0]?.trim() || null;
+  const xr = req.headers.get("x-real-ip");
+  if (xr) return xr.trim() || null;
+  return null;
+}
+
+function isPasswordSetRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const windowStart = now - PASSWORD_SET_WINDOW_MS;
+  const recent = (passwordSetAttempts.get(ip) ?? []).filter((ts) => ts > windowStart);
+  passwordSetAttempts.set(ip, recent);
+  return recent.length >= PASSWORD_SET_RATE_LIMIT;
+}
+
+function recordPasswordSetAttempt(ip: string) {
+  const now = Date.now();
+  const windowStart = now - PASSWORD_SET_WINDOW_MS;
+  const recent = (passwordSetAttempts.get(ip) ?? []).filter((ts) => ts > windowStart);
+  recent.push(now);
+  passwordSetAttempts.set(ip, recent);
+}
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T | null> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -166,6 +199,12 @@ export async function GET() {
  * Body: { userId?: string, username?: string, password: string, currentPassword?: string }
  */
 export async function POST(req: NextRequest) {
+  const ip = getClientIp(req);
+  if (ip && isPasswordSetRateLimited(ip)) {
+    return NextResponse.json({ ok: false, error: "操作过于频繁，请稍后再试" }, { status: 429 });
+  }
+  recordPasswordSetAttempt(ip ?? "unknown");
+
   const body = await req.json() as { userId?: string; username?: string; password?: string; currentPassword?: string };
   const newPassword = (body.password ?? "").trim();
   const userId = body.userId?.trim();
@@ -178,8 +217,15 @@ export async function POST(req: NextRequest) {
       ? await prisma.user.findFirst({ where: { name: username } })
       : null;
 
-  // 如果没找到且指定了 username，首次设置时创建当前账簿管理员用户
+  // 如果没找到且指定了 username，仅允许在“部署尚无任何用户”（全局首次设置）或管理员会话下创建
   if (!user && username) {
+    const anyExistingUser = await prisma.user.findFirst({ select: { id: true } });
+    if (anyExistingUser) {
+      const currentUser = await getCurrentUser();
+      if (!currentUser || !isAdmin(currentUser)) {
+        return NextResponse.json({ ok: false, error: "用户不存在，且当前无权创建用户" }, { status: 403 });
+      }
+    }
     const existingUser = await prisma.user.findFirst({ select: { id: true } });
     const isFirstUser = !existingUser;
     let householdId: string | null = null;
@@ -227,6 +273,20 @@ export async function POST(req: NextRequest) {
       }
       // 删除旧密码（迁移完成）
       await prisma.systemSetting.delete({ where: { key: LEGACY_PASSWORD_KEY } }).catch(logger.catchLog("操作失败", "route.ts"));
+    } else if (user.passwordHash == null) {
+      // 无密码且无旧密码的账户：仅允许“部署尚无任何用户设置过密码”（首次设置）
+      // 或已登录会话（如新账簿管理员通过 create-ledger 会话设置自己的密码）。
+      const anyUserWithPassword = await prisma.user.findFirst({
+        where: { passwordHash: { not: null } },
+        select: { id: true },
+      });
+      if (anyUserWithPassword) {
+        const currentUser = await getCurrentUser();
+        const isSetupOwner = currentUser && (currentUser.id === user.id || isAdmin(currentUser));
+        if (!isSetupOwner) {
+          return NextResponse.json({ ok: false, error: "当前账户尚未设置密码，请登录后再设置" }, { status: 403 });
+        }
+      }
     }
   }
 

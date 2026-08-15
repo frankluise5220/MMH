@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { z } from "zod";
 import { FundCashFlowKind, FundSubtype } from "@prisma/client";
-import { toNumber } from "@/lib/date-utils";
+import { toNumber, toStatementMonth } from "@/lib/date-utils";
 import { getLatestFundNav } from "@/lib/fund/navCache";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { createFundTransactionWithCashFlows } from "@/lib/fund/transactions";
@@ -42,20 +42,6 @@ function detectFundSubtype(rawText: string, remark?: string): string {
   return "buy";
 }
 
-function addMonthsUtc(date: Date, months: number) {
-  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-  d.setUTCMonth(d.getUTCMonth() + months);
-  return d;
-}
-
-function toStatementMonth(date: Date, billingDay: number) {
-  const day = date.getUTCDate();
-  const monthBase = day < billingDay ? date : addMonthsUtc(date, 1);
-  const y = monthBase.getUTCFullYear();
-  const m = String(monthBase.getUTCMonth() + 1).padStart(2, "0");
-  return `${y}-${m}`;
-}
-
 const ItemSchema = z.object({
   rawText: z.string(),
   type: z.enum(["expense", "income", "transfer", "investment"]),
@@ -89,7 +75,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "参数格式不正确" }, { status: 400 });
   }
 
-  const { hidFilter, householdId } = await getHouseholdScope();
+  const scope = await getHouseholdScope();
+  if (!scope.user) {
+    return NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 });
+  }
+  const { hidFilter, householdId } = scope;
 
   const { items, defaultAccountName, accountId: requestAccountId, fundContext } = parsed.data;
   if (!items?.length) {

@@ -44,3 +44,38 @@ export function decodeDetailPaginationPreference(value: string | null | undefine
     return null;
   }
 }
+
+/** 将页码钳制到 [1, totalPages] 范围 */
+export function clampDetailPage(page: number, totalPages: number) {
+  return Math.min(Math.max(1, Math.floor(page) || 1), totalPages);
+}
+
+function readCookieValue(name: string) {
+  if (typeof document === "undefined") return null;
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = document.cookie.match(new RegExp(`(?:^|; )${escaped}=([^;]*)`));
+  return match ? match[1] : null;
+}
+
+/** 从 sessionStorage（回退 cookie）读取该账户的明细分页偏好 */
+export function readStoredDetailPreference(accountId: string): DetailPaginationPreference | null {
+  const key = detailPaginationCookieName(accountId);
+  const stored = typeof window === "undefined"
+    ? null
+    : decodeDetailPaginationPreference(window.sessionStorage.getItem(key));
+  return stored ?? decodeDetailPaginationPreference(readCookieValue(key));
+}
+
+/** 将明细分页偏好写入 sessionStorage + cookie */
+export function writeStoredDetailPreference(
+  accountId: string,
+  pageSize: number,
+  detailAll: boolean,
+  detailPage: number,
+) {
+  if (typeof window === "undefined") return;
+  const cookieName = detailPaginationCookieName(accountId);
+  const value = encodeDetailPaginationPreference({ pageSize, detailAll, detailPage });
+  window.sessionStorage.setItem(cookieName, value);
+  document.cookie = `${cookieName}=${value}; path=/; max-age=31536000; SameSite=Lax`;
+}

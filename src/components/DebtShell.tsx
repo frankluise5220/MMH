@@ -19,6 +19,9 @@ import {
   type BasicDetailBatchCategoryOption,
 } from "./BasicDetailSelection";
 import { formatMoney } from "@/lib/format";
+import { useI18n } from "@/lib/i18n";
+import { pnlClassFromRedUp } from "@/lib/client/colors";
+import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import {
   buildMortgageLprRateAdjustments,
@@ -129,14 +132,12 @@ type RateAdjustmentDraft = {
 type AccountOption = { id: string; label: string; title?: string | null; hoverTitle?: string | null };
 
 function amountClass(value: number, isRedUp: boolean) {
-  if (value > 0) return isRedUp ? "text-red-700" : "text-emerald-700";
-  if (value < 0) return isRedUp ? "text-emerald-700" : "text-red-700";
-  return "text-slate-500";
+  return pnlClassFromRedUp(value, isRedUp, "strongMuted");
 }
 
-function formatRate(value: number | null) {
+function formatRate(value: number | null, language: string) {
   if (value == null || !Number.isFinite(value)) return "-";
-  return value.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+  return value.toLocaleString(language, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 }
 
 const SETTLED_DEBT_EPSILON = 0.005;
@@ -178,6 +179,7 @@ export function DebtShell({
   categoryOptions: BasicDetailBatchCategoryOption[];
 }) {
   const router = useRouter();
+  const { t, language } = useI18n();
   const [detailTab, setDetailTab] = useState<"entries" | "schedule">("entries");
   const [showPaidScheduleRows, setShowPaidScheduleRows] = useState(false);
   const [rateCardOpen, setRateCardOpen] = useState(false);
@@ -201,10 +203,10 @@ export function DebtShell({
     rows.find((row) => row.key === selectedKey) ??
     null;
   const remainingTotalLabel = selectedRow?.objectType === "银行贷款"
-    ? "待还金额"
+    ? t("debtShell.remainingTotal.payable")
     : selectedRow?.objectType === "银行应收"
-      ? "待收金额"
-      : "待收/还金额";
+      ? t("debtShell.remainingTotal.receivable")
+      : t("debtShell.remainingTotal.both");
   const settledCount = rows.filter(isSettledDebtRow).length;
   const isSelectedBankLoan = !!selectedRow && !selectedRow.isGroup && selectedRow.objectType === "银行贷款";
   const canRepaySelectedRow = !!selectedRow && !selectedRow.isGroup && selectedRow.net < -SETTLED_DEBT_EPSILON;
@@ -319,7 +321,7 @@ export function DebtShell({
   function generateLprRateDrafts() {
     const discount = Number(lprDiscount.trim());
     if (!Number.isFinite(discount) || discount <= 0) {
-      window.alert("请先填写正确的利率折扣，例如 0.85");
+      window.alert(t("debtShell.alert.lprDiscountInvalid"));
       return;
     }
     const adjustments = buildMortgageLprRateAdjustments({
@@ -327,7 +329,7 @@ export function DebtShell({
       throughDate: new Date().toISOString().slice(0, 10),
     });
     if (adjustments.length === 0) {
-      window.alert("没有生成可用的 LPR 利率调整，请检查折扣或重定价日期");
+      window.alert(t("debtShell.alert.lprNoAdjustments"));
       return;
     }
     setRateDrafts(adjustments.map((item) => ({
@@ -348,11 +350,11 @@ export function DebtShell({
     const duplicateDates = new Set<string>();
     for (const item of adjustments) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(item.effectiveDate) || !Number.isFinite(item.annualRate) || item.annualRate <= 0) {
-        window.alert("请检查利率调整记录：生效日期和年利率都必须填写正确");
+        window.alert(t("debtShell.alert.rateDraftInvalid"));
         return;
       }
       if (duplicateDates.has(item.effectiveDate)) {
-        window.alert(`生效日期重复：${item.effectiveDate}`);
+        window.alert(t("debtShell.alert.rateDraftDuplicateDate", { date: item.effectiveDate }));
         return;
       }
       duplicateDates.add(item.effectiveDate);
@@ -371,7 +373,7 @@ export function DebtShell({
       });
       const data = await response.json().catch(() => null);
       if (!response.ok || !data?.ok) {
-        window.alert(data?.error || "保存利率调整失败");
+        window.alert(data?.error || t("debtShell.error.saveRateAdjustmentsFailed"));
         return;
       }
       setRateCardOpen(false);
@@ -386,10 +388,13 @@ export function DebtShell({
     if (
       recalcStartDate &&
       selectedRow.nextRepaymentDate &&
-      recalcStartDate < selectedRow.nextRepaymentDate &&
-      !window.confirm("重算起始日期早于当前下次还款日，系统会自动删除并重建这之后由计划任务生成的还款记录；手工还款、手工修正和提前还款会保留并参与计算。是否继续？")
+      recalcStartDate < selectedRow.nextRepaymentDate
     ) {
-      return;
+      const confirmed = await showConfirmDialog({
+        title: t("debtShell.recalc.confirmTitle"),
+        message: t("debtShell.recalc.confirmMessage"),
+      });
+      if (!confirmed) return;
     }
     setRecalcSaving(true);
     try {
@@ -403,7 +408,7 @@ export function DebtShell({
       });
       const data = await response.json().catch(() => null);
       if (!response.ok || !data?.ok) {
-        window.alert(data?.error || "重算失败");
+        window.alert(data?.error || t("debtShell.error.recalculateFailed"));
         return;
       }
       window.alert(formatLoanRecalculateSuccessMessage(data.data));
@@ -422,7 +427,7 @@ export function DebtShell({
   const rowColumns = useMemo<AdvancedDataTableColumn<DebtRow>[]>(() => [
     {
       key: "objectType",
-      label: "对象类型",
+      label: t("debtShell.colObjectType"),
       width: 112,
       minWidth: 84,
       filterText: (row) => row.objectType,
@@ -434,7 +439,7 @@ export function DebtShell({
     },
     {
       key: "objectName",
-      label: "往来对象/机构",
+      label: t("debtShell.colObject"),
       width: 180,
       minWidth: 120,
       filterText: (row) => row.objectName,
@@ -451,7 +456,7 @@ export function DebtShell({
     },
     {
       key: "itemName",
-      label: "款项",
+      label: t("debtShell.colItem"),
       width: 190,
       minWidth: 120,
       filterText: (row) => row.itemName,
@@ -463,7 +468,7 @@ export function DebtShell({
     },
     {
       key: "itemType",
-      label: "款项类型",
+      label: t("debtShell.colItemType"),
       width: 150,
       minWidth: 110,
       filterText: (row) => row.itemType,
@@ -471,7 +476,7 @@ export function DebtShell({
     },
     {
       key: "repaymentMethod",
-      label: "收/还款方式",
+      label: t("debtShell.colRepaymentMethod"),
       width: 140,
       minWidth: 100,
       hideable: true,
@@ -480,16 +485,16 @@ export function DebtShell({
     },
     {
       key: "annualRate",
-      label: "利率",
+      label: t("debtShell.colAnnualRate"),
       width: 110,
       minWidth: 80,
       align: "right",
       hideable: true,
-      render: (row) => <span className="tabular-nums text-slate-600">{formatRate(row.annualRate)}</span>,
+      render: (row) => <span className="tabular-nums text-slate-600">{formatRate(row.annualRate, language)}</span>,
     },
     {
       key: "remainingRuns",
-      label: "剩余期数",
+      label: t("debtShell.colRemainingRuns"),
       width: 110,
       minWidth: 80,
       align: "right",
@@ -498,7 +503,7 @@ export function DebtShell({
     },
     {
       key: "paidPrincipal",
-      label: "已还本金",
+      label: t("debtShell.colPaidPrincipal"),
       width: 130,
       minWidth: 96,
       align: "right",
@@ -507,7 +512,7 @@ export function DebtShell({
     },
     {
       key: "paidInterest",
-      label: "已还利息",
+      label: t("debtShell.colPaidInterest"),
       width: 130,
       minWidth: 96,
       align: "right",
@@ -516,7 +521,7 @@ export function DebtShell({
     },
     {
       key: "remainingInterest",
-      label: "剩余利息",
+      label: t("debtShell.colRemainingInterest"),
       width: 130,
       minWidth: 96,
       align: "right",
@@ -525,7 +530,7 @@ export function DebtShell({
     },
     {
       key: "remainingPrincipal",
-      label: "剩余本金",
+      label: t("debtShell.colRemainingPrincipal"),
       width: 130,
       minWidth: 96,
       align: "right",
@@ -540,15 +545,15 @@ export function DebtShell({
       align: "right",
       render: (row) => <span className={`font-semibold tabular-nums ${amountClass(row.net, isRedUp)}`}>{formatMoney(Math.abs(row.remainingTotal))}</span>,
     },
-  ], [isRedUp, remainingTotalLabel]);
+  ], [t, language, isRedUp, remainingTotalLabel]);
 
   const entryColumns = useMemo<AdvancedDataTableColumn<DebtEntry>[]>(() => [
-    { key: "date", label: "日期", width: 100, minWidth: 80, filterText: (entry) => entry.date, render: (entry) => <span className="tabular-nums text-slate-700">{entry.date}</span> },
-    { key: "type", label: "类型", width: 90, minWidth: 70, filterText: (entry) => entry.typeLabel, render: (entry) => <span className="text-slate-700">{entry.typeLabel}</span> },
-    { key: "relatedAccount", label: "资金账户", width: 160, minWidth: 100, filterText: (entry) => entry.relatedAccountLabel, render: (entry) => <span className="block truncate text-slate-600" title={entry.relatedAccountLabel}>{entry.relatedAccountLabel || "-"}</span> },
+    { key: "date", label: t("detail.column.date"), width: 100, minWidth: 80, filterText: (entry) => entry.date, render: (entry) => <span className="tabular-nums text-slate-700">{entry.date}</span> },
+    { key: "type", label: t("debtShell.colType"), width: 90, minWidth: 70, filterText: (entry) => entry.typeLabel, render: (entry) => <span className="text-slate-700">{entry.typeLabel}</span> },
+    { key: "relatedAccount", label: t("debtShell.colCashAccount"), width: 160, minWidth: 100, filterText: (entry) => entry.relatedAccountLabel, render: (entry) => <span className="block truncate text-slate-600" title={entry.relatedAccountLabel}>{entry.relatedAccountLabel || "-"}</span> },
     {
       key: "outflow",
-      label: "流出",
+      label: t("detail.column.outflow"),
       width: 110,
       minWidth: 86,
       align: "right",
@@ -560,7 +565,7 @@ export function DebtShell({
     },
     {
       key: "inflow",
-      label: "流入",
+      label: t("detail.column.inflow"),
       width: 110,
       minWidth: 86,
       align: "right",
@@ -572,7 +577,7 @@ export function DebtShell({
     },
     {
       key: "interest",
-      label: "利息",
+      label: t("debtShell.colInterest"),
       width: 110,
       minWidth: 80,
       align: "right",
@@ -581,7 +586,7 @@ export function DebtShell({
     },
     {
       key: "paymentTotal",
-      label: isSelectedBankLoan ? "还款总额" : "流入合计",
+      label: isSelectedBankLoan ? t("debtShell.colPaymentTotalLoan") : t("debtShell.colPaymentTotalInflow"),
       width: 120,
       minWidth: 92,
       align: "right",
@@ -593,42 +598,42 @@ export function DebtShell({
         </span>
       ),
     },
-    { key: "balance", label: "往来余额", width: 130, minWidth: 92, align: "right", render: (entry) => <span className={`font-semibold tabular-nums ${amountClass(entry.balance, isRedUp)}`}>{formatMoney(entry.balance)}</span> },
-    { key: "note", label: "备注", width: 260, minWidth: 120, hideable: true, filterText: (entry) => entry.note, render: (entry) => <span className="block truncate text-slate-600" title={entry.note}>{entry.note || "-"}</span> },
-  ], [isRedUp, isSelectedBankLoan]);
+    { key: "balance", label: t("debtShell.colBalance"), width: 130, minWidth: 92, align: "right", render: (entry) => <span className={`font-semibold tabular-nums ${amountClass(entry.balance, isRedUp)}`}>{formatMoney(entry.balance)}</span> },
+    { key: "note", label: t("detail.column.remark"), width: 260, minWidth: 120, hideable: true, filterText: (entry) => entry.note, render: (entry) => <span className="block truncate text-slate-600" title={entry.note}>{entry.note || "-"}</span> },
+  ], [t, isRedUp, isSelectedBankLoan]);
 
   const repaymentScheduleColumns = useMemo<AdvancedDataTableColumn<RepaymentScheduleRow>[]>(() => [
     {
       key: "status",
-      label: "状态",
+      label: t("debtShell.colStatus"),
       width: 82,
       minWidth: 64,
-      filterText: (row) => row.rowType === "rate_adjustment" ? "利率调整" : row.status === "paid" ? "已还" : "计划",
+      filterText: (row) => row.rowType === "rate_adjustment" ? t("debtShell.rateAdjustment") : row.status === "paid" ? t("debtShell.paid") : t("debtShell.planned"),
       render: (row) => row.rowType === "rate_adjustment"
-        ? <span className="text-blue-700">利率</span>
+        ? <span className="text-blue-700">{t("debtShell.rate")}</span>
         : row.status === "paid"
-          ? <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">已还</span>
-          : <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">计划</span>,
+          ? <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">{t("debtShell.paid")}</span>
+          : <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">{t("debtShell.planned")}</span>,
     },
     {
       key: "eventType",
-      label: "类型",
+      label: t("debtShell.colType"),
       width: 100,
       minWidth: 78,
-      filterText: (row) => row.rowType === "rate_adjustment" ? "利率调整" : row.eventType === "prepayment" ? "提前还款" : "还款",
+      filterText: (row) => row.rowType === "rate_adjustment" ? t("debtShell.rateAdjustment") : row.eventType === "prepayment" ? t("debtShell.prepayment") : t("debtShell.repayment"),
       render: (row) => row.rowType === "rate_adjustment"
-        ? <span className="font-medium text-blue-700">利率调整</span>
+        ? <span className="font-medium text-blue-700">{t("debtShell.rateAdjustment")}</span>
         : row.eventType === "prepayment"
-          ? <span className="font-medium text-amber-700">提前还款</span>
-          : <span className="text-slate-700">还款</span>,
+          ? <span className="font-medium text-amber-700">{t("debtShell.prepayment")}</span>
+          : <span className="text-slate-700">{t("debtShell.repayment")}</span>,
     },
-    { key: "period", label: "期次", width: 80, minWidth: 64, align: "right", render: (row) => row.rowType === "rate_adjustment" || row.eventType === "prepayment" ? <span className="text-slate-400">-</span> : <span className="tabular-nums text-slate-700">{row.period}</span> },
-    { key: "date", label: "日期", width: 110, minWidth: 86, filterText: (row) => row.date, render: (row) => <span className="tabular-nums text-slate-700">{row.date}</span> },
-    { key: "principal", label: "本金", width: 130, minWidth: 96, align: "right", render: (row) => row.rowType === "rate_adjustment" ? <span className="tabular-nums text-blue-700">{formatRate(row.annualRate)}</span> : <span className="tabular-nums text-emerald-700">{formatMoney(row.principal)}</span> },
-    { key: "interest", label: "利息", width: 130, minWidth: 96, align: "right", render: (row) => row.rowType === "rate_adjustment" ? <span className="text-slate-400">-</span> : <span className="tabular-nums text-amber-700">{formatMoney(row.interest)}</span> },
-    { key: "payment", label: "本期还款", width: 130, minWidth: 96, align: "right", render: (row) => row.rowType === "rate_adjustment" ? <span className="font-medium text-blue-700">利率调整</span> : <span className="font-semibold tabular-nums text-slate-700">{formatMoney(row.payment)}</span> },
-    { key: "remainingPrincipal", label: "剩余本金", width: 140, minWidth: 104, align: "right", render: (row) => <span className="font-semibold tabular-nums text-slate-700">{formatMoney(row.remainingPrincipal)}</span> },
-  ], []);
+    { key: "period", label: t("debtShell.colPeriod"), width: 80, minWidth: 64, align: "right", render: (row) => row.rowType === "rate_adjustment" || row.eventType === "prepayment" ? <span className="text-slate-400">-</span> : <span className="tabular-nums text-slate-700">{row.period}</span> },
+    { key: "date", label: t("detail.column.date"), width: 110, minWidth: 86, filterText: (row) => row.date, render: (row) => <span className="tabular-nums text-slate-700">{row.date}</span> },
+    { key: "principal", label: t("debtShell.colPrincipal"), width: 130, minWidth: 96, align: "right", render: (row) => row.rowType === "rate_adjustment" ? <span className="tabular-nums text-blue-700">{formatRate(row.annualRate, language)}</span> : <span className="tabular-nums text-emerald-700">{formatMoney(row.principal)}</span> },
+    { key: "interest", label: t("debtShell.colInterest"), width: 130, minWidth: 96, align: "right", render: (row) => row.rowType === "rate_adjustment" ? <span className="text-slate-400">-</span> : <span className="tabular-nums text-amber-700">{formatMoney(row.interest)}</span> },
+    { key: "payment", label: t("debtShell.colPayment"), width: 130, minWidth: 96, align: "right", render: (row) => row.rowType === "rate_adjustment" ? <span className="font-medium text-blue-700">{t("debtShell.rateAdjustment")}</span> : <span className="font-semibold tabular-nums text-slate-700">{formatMoney(row.payment)}</span> },
+    { key: "remainingPrincipal", label: t("debtShell.colRemainingPrincipal"), width: 140, minWidth: 104, align: "right", render: (row) => <span className="font-semibold tabular-nums text-slate-700">{formatMoney(row.remainingPrincipal)}</span> },
+  ], [t, language]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent p-4 md:p-5">
@@ -636,8 +641,8 @@ export function DebtShell({
         storageKey="mmh:debt:split-height"
         hasLowerPane={!!selectedRow}
         defaultUpperHeight={360}
-        separatorLabel="调整往来款持仓和明细高度"
-        separatorTitle="拖动调整往来款持仓和明细高度"
+        separatorLabel={t("debtShell.resizeLabel")}
+        separatorTitle={t("debtShell.resizeTitle")}
       >
         <section className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
           <AdvancedDataTable
@@ -646,13 +651,13 @@ export function DebtShell({
             rows={visibleRows}
             rowKey={(row) => row.key}
             minTableWidth={1040}
-            emptyText="暂无债务/债权余额"
+            emptyText={t("debtShell.emptyRows")}
             fillHeight
             compactRows
             toolbarTitle={(
               <span className="inline-flex items-center gap-2 text-sm font-semibold text-slate-800">
                 <HandCoins className="h-4 w-4 text-amber-500" />
-                借入借出
+                {t("debtShell.title")}
               </span>
             )}
             toolbarRightContent={(
@@ -671,9 +676,9 @@ export function DebtShell({
                     onChange={(event) => setShowSettledRows(event.target.checked)}
                     className="h-3.5 w-3.5 accent-blue-600"
                   />
-                  显示已还完{settledCount > 0 ? `(${settledCount})` : ""}
+                  {t("debtShell.showSettledRows")}{settledCount > 0 ? `(${settledCount})` : ""}
                 </label>
-                <div className="text-xs text-slate-400">流入/流出按本金方向影响待收待还</div>
+                <div className="text-xs text-slate-400">{t("debtShell.inflowOutflowHint")}</div>
               </div>
             )}
             onRowClick={(row) => openDebtRow(row)}
@@ -683,7 +688,7 @@ export function DebtShell({
               rowClassName: "bg-slate-50",
               cellClassName: "py-2.5",
               cells: {
-                name: <span className="font-semibold tracking-[0.08em] text-slate-500">汇总</span>,
+                name: <span className="font-semibold tracking-[0.08em] text-slate-500">{t("debtShell.summaryRow")}</span>,
                 paidPrincipal: <span className="font-semibold tabular-nums text-emerald-700">{formatMoney(debtRowSummary.paidPrincipal)}</span>,
                 paidInterest: <span className="font-semibold tabular-nums text-amber-700">{formatMoney(debtRowSummary.paidInterest)}</span>,
                 remainingInterest: <span className="font-semibold tabular-nums text-amber-700">{formatMoney(debtRowSummary.remainingInterest)}</span>,
@@ -703,14 +708,14 @@ export function DebtShell({
                   onClick={() => setDetailTab("entries")}
                   className={`h-7 rounded-full px-3 text-xs font-medium transition ${detailTab === "entries" ? "bg-slate-900 text-white shadow-sm" : "text-slate-600 hover:bg-white"}`}
                 >
-                  交易明细
+                  {t("debtShell.tabEntries")}
                 </button>
                 <button
                   type="button"
                   onClick={() => setDetailTab("schedule")}
                   className={`h-7 rounded-full px-3 text-xs font-medium transition ${detailTab === "schedule" ? "bg-slate-900 text-white shadow-sm" : "text-slate-600 hover:bg-white"}`}
                 >
-                  还款表
+                  {t("debtShell.tabSchedule")}
                 </button>
               </div>
             ) : <div />}
@@ -722,20 +727,20 @@ export function DebtShell({
                     disabled={!canAdjustRateSelectedRow}
                     onClick={() => selectedRow && openRateAdjustment(selectedRow)}
                     className="inline-flex h-8 items-center gap-1.5 rounded-full border border-blue-200 bg-blue-50 px-3 text-xs font-medium text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                    title={canAdjustRateSelectedRow ? "新增贷款利率调整" : "只有银行贷款可以调整利率"}
+                    title={canAdjustRateSelectedRow ? t("debtShell.rateAdjust.title") : t("debtShell.rateAdjust.disabledTitle")}
                   >
                     <Percent className="h-3.5 w-3.5" />
-                    利率调整
+                    {t("debtShell.rateAdjustment")}
                   </button>
                   <button
                     type="button"
                     disabled={!canRecalculateSelectedRow}
                     onClick={() => selectedRow && openRecalculateDialog(selectedRow)}
                     className="inline-flex h-8 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                    title={canRecalculateSelectedRow ? "按当前余额和利率重算后续还款计划" : "只有有固定计划的银行贷款可以重算"}
+                    title={canRecalculateSelectedRow ? t("debtShell.recalc.title") : t("debtShell.recalc.disabledTitle")}
                   >
                     <RefreshCw className="h-3.5 w-3.5" />
-                    重算
+                    {t("debtShell.recalc")}
                   </button>
                 </>
               ) : null}
@@ -744,7 +749,7 @@ export function DebtShell({
 
           {!selectedRow ? (
             <div className="flex min-h-0 flex-1 items-center justify-center border-t border-slate-100 bg-slate-50/60 px-4 text-sm text-slate-500">
-              请先选择上方往来账户
+              {t("debtShell.selectRowFirst")}
             </div>
           ) : detailTab === "entries" || !isSelectedBankLoan ? (
             <BasicDetailSelectionProvider resetKey={`debt-entries:${selectedRow.key}`}>
@@ -764,13 +769,15 @@ export function DebtShell({
               rows={visibleRepaymentScheduleRows}
               rowKey={(row) => `${row.status ?? ""}:${row.eventType ?? ""}:${row.rowType}:${row.period}:${row.date}:${row.annualRate ?? ""}`}
               minTableWidth={920}
-              emptyText="暂无还款计划"
+              emptyText={t("debtShell.emptySchedule")}
               fillHeight
               compactRows
               toolbarMode="custom"
               toolbarLeftContent={(
                 <span>
-                  {showPaidScheduleRows ? `显示 ${visibleRepaymentScheduleRows.length}/${repaymentScheduleRows.length} 条` : `未还 ${visibleRepaymentScheduleRows.length} 条`}
+                  {showPaidScheduleRows
+                    ? t("debtShell.scheduleVisibleCount", { visible: visibleRepaymentScheduleRows.length, total: repaymentScheduleRows.length })
+                    : t("debtShell.scheduleUnpaidCount", { count: visibleRepaymentScheduleRows.length })}
                 </span>
               )}
               toolbarRightContent={(
@@ -781,7 +788,7 @@ export function DebtShell({
                     onChange={(event) => setShowPaidScheduleRows(event.target.checked)}
                     className="h-3.5 w-3.5 accent-blue-600"
                   />
-                  显示已还
+                  {t("debtShell.showPaid")}
                 </label>
               )}
               rowClassName={(row) => row.rowType === "rate_adjustment"
@@ -799,8 +806,8 @@ export function DebtShell({
             <div className="app-modal-panel max-w-2xl">
               <div className="modal-header shrink-0">
                 <div>
-                  <div className="text-sm font-semibold text-slate-800">利率调整</div>
-                  <div className="mt-0.5 text-xs text-slate-500">{selectedRow?.name ?? "当前贷款"}</div>
+                  <div className="text-sm font-semibold text-slate-800">{t("debtShell.rateAdjustment")}</div>
+                  <div className="mt-0.5 text-xs text-slate-500">{selectedRow?.name ?? t("debtShell.currentLoan")}</div>
                 </div>
                 <button
                   type="button"
@@ -808,37 +815,40 @@ export function DebtShell({
                   className="secondary-button h-8 px-2"
                   disabled={rateSaving}
                 >
-                  关闭
+                  {t("table.close")}
                 </button>
               </div>
 
               <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
                 <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-800">
-                  利率调整会影响生效日之后的还款表和后续自动还款。已执行的还款明细不会自动改写，如需重算历史记录请先确认记录处理方式。LPR 生成只适用于房贷；普通借款请直接添加实际年利率。
+                  {t("debtShell.rateAdjust.hint")}
                 </div>
 
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                   <div className="mb-2">
                     <div>
-                      <div className="text-xs font-semibold text-slate-700">按 LPR 折扣生成</div>
+                      <div className="text-xs font-semibold text-slate-700">{t("debtShell.lpr.title")}</div>
                       <div className="mt-0.5 text-[11px] leading-5 text-slate-500">
-                        只适合房贷，尤其是老房贷折扣利率。折扣先换算为固定加点：{MORTGAGE_BASE_BENCHMARK_RATE.toFixed(2)}% × 折扣 - {MORTGAGE_LPR_CONVERSION_BASE_RATE.toFixed(2)}%。之后执行利率 = 5 年期以上 LPR + 固定加点，例如 0.85 折对应 -0.635%，LPR 3.50% 时执行 2.865%。其他借款不使用 LPR。
+                        {t("debtShell.lpr.hint", {
+                          baseBenchmark: MORTGAGE_BASE_BENCHMARK_RATE.toFixed(2),
+                          conversionBase: MORTGAGE_LPR_CONVERSION_BASE_RATE.toFixed(2),
+                        })}
                       </div>
                     </div>
                   </div>
                   <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_92px] gap-2">
                     <div className="space-y-1">
-                      <div className="form-label">利率折扣</div>
+                      <div className="form-label">{t("debtShell.lpr.discountLabel")}</div>
                       <input
                         value={lprDiscount}
                         onChange={(event) => setLprDiscount(event.target.value)}
                         inputMode="decimal"
-                        placeholder="例如：0.85"
+                        placeholder={t("debtShell.lpr.discountPlaceholder")}
                         className="form-input"
                       />
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">固定加点</div>
+                      <div className="form-label">{t("debtShell.lpr.spreadLabel")}</div>
                       <input
                         value={(() => {
                           const discount = Number(lprDiscount.trim());
@@ -847,7 +857,7 @@ export function DebtShell({
                             : "";
                         })()}
                         readOnly
-                        placeholder="自动计算"
+                        placeholder={t("debtShell.lpr.autoCalculated")}
                         className="form-input bg-white/70 text-slate-500"
                       />
                     </div>
@@ -858,7 +868,7 @@ export function DebtShell({
                         className="inline-flex h-9 w-full items-center justify-center rounded-full border border-blue-600 bg-blue-600 px-4 text-xs font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-200 disabled:text-slate-500"
                         disabled={rateSaving}
                       >
-                        生成
+                        {t("debtShell.lpr.generate")}
                       </button>
                     </div>
                   </div>
@@ -866,14 +876,14 @@ export function DebtShell({
 
                 <div className="space-y-2">
                   <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_72px] gap-2 px-1 text-xs font-medium text-slate-500">
-                    <div>生效日期</div>
-                    <div>年利率（%）</div>
+                    <div>{t("debtShell.rateAdjust.effectiveDate")}</div>
+                    <div>{t("debtShell.rateAdjust.annualRateLabel")}</div>
                     <div className="text-right" aria-label="Action buttons" />
                   </div>
                   <div className="max-h-[230px] space-y-2 overflow-y-auto pr-1">
                     {rateDrafts.length === 0 ? (
                       <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-5 text-center text-sm text-slate-500">
-                        暂无利率调整记录
+                        {t("debtShell.rateAdjust.empty")}
                       </div>
                     ) : rateDrafts.map((item) => (
                       <div key={item.id} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_72px] gap-2">
@@ -885,7 +895,7 @@ export function DebtShell({
                           value={item.annualRate}
                           onChange={(event) => updateRateDraft(item.id, { annualRate: event.target.value })}
                           inputMode="decimal"
-                          placeholder="例如：4.015"
+                          placeholder={t("debtShell.rateAdjust.annualRatePlaceholder")}
                           className="form-input"
                         />
                         <button
@@ -894,7 +904,7 @@ export function DebtShell({
                           className="secondary-button h-9 px-2 text-rose-600 hover:bg-rose-50"
                           disabled={rateSaving}
                         >
-                          删除
+                          {t("common.delete")}
                         </button>
                       </div>
                     ))}
@@ -908,7 +918,7 @@ export function DebtShell({
                     className="secondary-button h-9 px-3"
                     disabled={rateSaving}
                   >
-                    新增一行
+                    {t("debtShell.rateAdjust.addRow")}
                   </button>
                   <div className="flex items-center gap-2">
                     <button
@@ -917,7 +927,7 @@ export function DebtShell({
                       className="secondary-button h-9 px-3"
                       disabled={rateSaving}
                     >
-                      取消
+                      {t("common.cancel")}
                     </button>
                     <button
                       type="button"
@@ -925,7 +935,7 @@ export function DebtShell({
                       className="primary-button h-9 px-3"
                       disabled={rateSaving}
                     >
-                      {rateSaving ? "保存中..." : "保存利率调整"}
+                      {rateSaving ? t("debtShell.saving") : t("debtShell.saveRateAdjustments")}
                     </button>
                   </div>
                 </div>
@@ -939,8 +949,8 @@ export function DebtShell({
             <div className="app-modal-panel max-w-lg">
               <div className="modal-header shrink-0">
                 <div>
-                  <div className="text-sm font-semibold text-slate-800">重算还款计划</div>
-                  <div className="mt-0.5 text-xs text-slate-500">{selectedRow?.name ?? "当前贷款"}</div>
+                  <div className="text-sm font-semibold text-slate-800">{t("debtShell.recalc.confirmTitle")}</div>
+                  <div className="mt-0.5 text-xs text-slate-500">{selectedRow?.name ?? t("debtShell.currentLoan")}</div>
                 </div>
                 <button
                   type="button"
@@ -948,34 +958,34 @@ export function DebtShell({
                   className="secondary-button h-8 px-2"
                   disabled={recalcSaving}
                 >
-                  关闭
+                  {t("table.close")}
                 </button>
               </div>
 
               <div className="space-y-3 p-4 text-sm text-slate-700">
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
-                  起始日期早于当前下次还款日时，会自动删除并重建这之后由计划任务生成的还款记录；手工还款、手工修正和提前还款会保留并参与后续计算。
+                  {t("debtShell.recalc.hint")}
                 </div>
 
                 <div className="space-y-1 rounded-lg border border-slate-200 bg-white p-3">
-                  <div className="form-label">重算起始日期</div>
+                  <div className="form-label">{t("debtShell.recalc.startDateLabel")}</div>
                   <DateStepper value={recalcStartDate} onChange={setRecalcStartDate} />
                   <div className="text-[11px] text-slate-500">
-                    选历史日期会重建该日期之后的自动计划记录；选下次还款日则只调整后续计划。
+                    {t("debtShell.recalc.startDateHint")}
                   </div>
                 </div>
 
                 <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs leading-5 text-slate-600">
-                  重算方式从对应提前还款记录读取；需要调整方式时，先编辑那条提前还款记录里的“处理后续还款计划”。
+                  {t("debtShell.recalc.methodHint")}
                 </div>
 
                 <div className="grid grid-cols-2 gap-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-600">
                   <div>
-                    <div className="text-slate-400">当前剩余本金</div>
+                    <div className="text-slate-400">{t("debtShell.recalc.currentRemainingPrincipal")}</div>
                     <div className="mt-0.5 font-semibold tabular-nums text-slate-800">{formatMoney(Math.abs(selectedRow?.net ?? 0))}</div>
                   </div>
                   <div>
-                    <div className="text-slate-400">当前剩余期数</div>
+                    <div className="text-slate-400">{t("debtShell.recalc.currentRemainingRuns")}</div>
                     <div className="mt-0.5 font-semibold tabular-nums text-slate-800">{selectedRow?.remainingRuns ?? "-"}</div>
                   </div>
                 </div>
@@ -987,7 +997,7 @@ export function DebtShell({
                     onClick={() => setRecalcOpen(false)}
                     disabled={recalcSaving}
                   >
-                    取消
+                    {t("common.cancel")}
                   </button>
                   <button
                     type="button"
@@ -995,7 +1005,7 @@ export function DebtShell({
                     onClick={() => { void recalculateRepaymentPlan(); }}
                     disabled={recalcSaving}
                   >
-                    {recalcSaving ? "重算中..." : "确认重算并重建"}
+                    {recalcSaving ? t("debtShell.recalc.saving") : t("debtShell.recalc.confirmAndRebuild")}
                   </button>
                 </div>
               </div>
@@ -1019,6 +1029,7 @@ function DebtEntriesTable({
   columns: AdvancedDataTableColumn<DebtEntry>[];
   entries: DebtEntry[];
 }) {
+  const { t } = useI18n();
   const { selectedIds, setSelection } = useBasicDetailSelection();
   const currentEntryIds = useMemo(() => entries.map((entry) => entry.id), [entries]);
   usePruneBasicDetailSelection(currentEntryIds);
@@ -1044,11 +1055,11 @@ function DebtEntriesTable({
       rows={entries}
       rowKey={(entry) => entry.id}
       minTableWidth={1240}
-      emptyText="暂无明细"
+      emptyText={t("debtShell.emptyEntries")}
       fillHeight
       compactRows
-      toolbarTitle="交易明细"
-      toolbarRightContent={<span className="text-xs text-slate-500">共 {entries.length} 条</span>}
+      toolbarTitle={t("debtShell.tabEntries")}
+      toolbarRightContent={<span className="text-xs text-slate-500">{t("debtShell.entryCount", { count: entries.length })}</span>}
       selectable
       selectOnRowClick
       selectedKeys={selectedIds}
@@ -1078,7 +1089,7 @@ function DebtEntriesTable({
             categoryOptions={categoryOptions}
             contextAccountId={contextAccountId}
           />
-          <BasicDetailBatchDeleteButton recordLabel="往来明细" />
+          <BasicDetailBatchDeleteButton recordLabel={t("debtShell.recordLabel")} />
         </>
       )}
     />

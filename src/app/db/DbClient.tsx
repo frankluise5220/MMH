@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 
 interface ModelInfo {
   name: string;
@@ -107,7 +108,12 @@ export function DbClient() {
 
   // 删除记录
   const deleteRow = async (id: string) => {
-    if (!window.confirm("确认删除这条记录吗？")) return;
+    const confirmed = await showConfirmDialog({
+      title: "删除记录",
+      message: "确认删除这条记录吗？",
+      tone: "danger",
+    });
+    if (!confirmed) return;
 
     try {
       const res = await fetch(`/api/v1/db/data?model=${selectedModel}&id=${id}`, {

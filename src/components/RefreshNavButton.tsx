@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { RefreshCw } from "lucide-react";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { useI18n } from "@/lib/i18n";
 
 export function RefreshNavButton({
   accountId,
@@ -12,6 +14,7 @@ export function RefreshNavButton({
 }) {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string | null>(null);
+  const { t } = useI18n();
 
   async function refresh() {
     if (loading || symbols.length === 0) return;
@@ -27,12 +30,12 @@ export function RefreshNavButton({
       if (data.ok) {
         setResult(data.message);
         await new Promise(resolve => setTimeout(resolve, 100));
-        window.dispatchEvent(new Event("mmh:fund:refresh"));
+        dispatchFinanceDataChanged({ reason: "nav-refresh" });
       } else {
-        setResult(data.error ?? "刷新失败");
+        setResult(data.error ?? t("refreshNav.refreshFailed"));
       }
     } catch (e) {
-      setResult(e instanceof Error ? e.message : "刷新失败");
+      setResult(e instanceof Error ? e.message : t("refreshNav.refreshFailed"));
     } finally {
       setLoading(false);
     }
@@ -48,7 +51,7 @@ export function RefreshNavButton({
         className="h-7 px-2 rounded-md border border-slate-200 bg-white text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-1 disabled:opacity-50"
       >
         <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
-        {loading ? "获取中…" : "获取最新净值"}
+        {loading ? t("refreshNav.fetching") : t("refreshNav.fetchLatestNav")}
       </button>
     </div>
   );

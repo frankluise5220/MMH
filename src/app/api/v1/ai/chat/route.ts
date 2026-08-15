@@ -1051,6 +1051,9 @@ async function executeQueryPlan(plan: { mode: "recycle_recent"; take: number }, 
 
 export async function POST(req: Request) {
   const ctx = await getHouseholdScope();
+  if (!ctx.user) {
+    return NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 });
+  }
   const { hidFilter, householdId } = ctx;
   const body = (await req.json().catch(() => null)) as unknown;
   const parse = z

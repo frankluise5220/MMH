@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { Plus, Check, Pencil, X, Trash2, Shield } from "lucide-react";
 import { getHouseholdDisplayName } from "@/lib/household-display";
+import { useI18n } from "@/lib/i18n";
 
 type Household = { id: string; name: string; createdAt?: string };
 type ApiResult = { ok?: boolean; error?: string };
@@ -21,6 +22,7 @@ export function LedgerSwitcher({
   onOpenChange: (open: boolean) => void;
 }) {
   const router = useRouter();
+  const { t } = useI18n();
   const [households, setHouseholds] = useState<Household[]>([]);
   const [isAdminUser, setIsAdminUser] = useState(false);
   const [isSystemUser, setIsSystemUser] = useState(false);
@@ -29,14 +31,14 @@ export function LedgerSwitcher({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
 
-  // 切换账簿验证对话框
+  // Ledger switch verification dialog
   const [switchTargetId, setSwitchTargetId] = useState<string | null>(null);
   const [switchUsername, setSwitchUsername] = useState("");
   const [switchPassword, setSwitchPassword] = useState("");
   const [switchError, setSwitchError] = useState("");
   const [switching, setSwitching] = useState(false);
 
-  // 创建账簿对话框状态
+  // Create ledger dialog state
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [createAdminName, setCreateAdminName] = useState("");
   const [createAdminPassword, setCreateAdminPassword] = useState("");
@@ -45,7 +47,7 @@ export function LedgerSwitcher({
   const [createDialogError, setCreateDialogError] = useState("");
   const dialogRef = useRef<HTMLDivElement>(null);
 
-  // 删除账簿状态
+  // Delete ledger state
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteConfirmName, setDeleteConfirmName] = useState("");
   const [deleteDbPassword, setDeleteDbPassword] = useState("");
@@ -74,7 +76,7 @@ export function LedgerSwitcher({
 
   const showSwitchList = isAdminUser || households.length > 1;
 
-  // 切换账簿：弹出验证对话框
+  // Switch ledger: open verification dialog
   function startSwitch(id: string) {
     setSwitchTargetId(id);
     setSwitchUsername("");
@@ -96,10 +98,10 @@ export function LedgerSwitcher({
       if (d.ok) {
         await switchTo(switchTargetId, switchUsername.trim(), switchPassword);
       } else {
-        setSwitchError(d.error ?? "验证失败");
+        setSwitchError(d.error ?? t("ledgerSwitch.error.verifyFailed"));
       }
     } catch {
-      setSwitchError("网络错误，请重试");
+      setSwitchError(t("ledgerSwitch.error.network"));
     } finally {
       setSwitching(false);
     }
@@ -113,7 +115,7 @@ export function LedgerSwitcher({
     });
     const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
     if (!res.ok || data?.ok === false) {
-      setSwitchError(data?.error ?? `切换失败：HTTP ${res.status}`);
+      setSwitchError(data?.error ?? t("ledgerSwitch.error.switchFailed", { status: res.status }));
       return false;
     }
     onOpenChange(false);
@@ -136,15 +138,15 @@ export function LedgerSwitcher({
     const name = newName.trim();
     if (!name || adding) return;
     if (!createAdminName.trim() || !createAdminPassword.trim()) {
-      setCreateDialogError("请填写管理员用户名和密码");
+      setCreateDialogError(t("ledgerSwitch.error.fillAdmin"));
       return;
     }
     if (createAdminPassword !== createAdminPasswordConfirm) {
-      setCreateDialogError("两次输入的密码不一致");
+      setCreateDialogError(t("ledgerSwitch.error.passwordMismatch"));
       return;
     }
     if (!createAdminEmail.trim()) {
-      setCreateDialogError("请输入邮箱");
+      setCreateDialogError(t("ledgerSwitch.error.enterEmail"));
       return;
     }
     setAdding(true);
@@ -178,10 +180,10 @@ export function LedgerSwitcher({
         setCreateAdminEmail("");
         onOpenChange(true);
       } else {
-        setCreateDialogError(d.error ?? "创建失败");
+        setCreateDialogError(d.error ?? t("ledgerSwitch.error.createFailed"));
       }
     } catch {
-      setCreateDialogError("网络错误，请重试");
+      setCreateDialogError(t("ledgerSwitch.error.network"));
     } finally {
       setAdding(false);
     }
@@ -213,7 +215,7 @@ export function LedgerSwitcher({
     setDeletingId(id);
     setDeleteConfirmName("");
     setDeleteDbPassword("");
-    setDeleteError(h ? `请输入账簿名称 "${getHouseholdDisplayName(h)}" 以确认删除` : "");
+    setDeleteError(h ? t("ledgerSwitch.error.enterNameToDelete", { name: getHouseholdDisplayName(h) }) : "");
   }
 
   async function handleDelete() {
@@ -222,35 +224,35 @@ export function LedgerSwitcher({
     if (!h) return;
     const displayName = getHouseholdDisplayName(h);
     if (deleteConfirmName.trim() !== displayName) {
-      setDeleteError(`名称不匹配，请输入 "${displayName}" 以确认删除`);
+      setDeleteError(t("ledgerSwitch.error.nameMismatch", { name: displayName }));
       return;
     }
     if (!deleteDbPassword.trim()) {
-      setDeleteError("请输入管理员密码以确认删除");
+      setDeleteError(t("ledgerSwitch.error.enterPassword"));
       return;
     }
     setDeleting(true);
     setDeleteError("");
     try {
-      // 先验证管理员密码
+      // Verify the current user password first
       const verifyRes = await fetch("/api/v1/auth/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password: deleteDbPassword, verifySystem: true }),
       });
-      const vd = await readApiResult(verifyRes);
+      const vd = await readApiResult(verifyRes, t);
       if (!verifyRes.ok || !vd.ok) {
-        setDeleteError(vd.error ?? "管理员密码错误");
+        setDeleteError(vd.error ?? t("ledgerSwitch.error.passwordWrong"));
         setDeleting(false);
         return;
       }
-      // 执行删除
+      // Execute the deletion
       const res = await fetch("/api/v1/households", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: deletingId }),
       });
-      const d = await readApiResult(res);
+      const d = await readApiResult(res, t);
       if (res.ok && d.ok) {
         setDeletingId(null);
         setDeleteConfirmName("");
@@ -265,16 +267,16 @@ export function LedgerSwitcher({
         }
         router.refresh();
       } else {
-        setDeleteError(d.error ?? "删除失败");
+        setDeleteError(d.error ?? t("ledgerSwitch.error.deleteFailed"));
       }
     } catch (error) {
-      setDeleteError(error instanceof Error ? error.message : "网络错误，请重试");
+      setDeleteError(error instanceof Error ? error.message : t("ledgerSwitch.error.network"));
     } finally {
       setDeleting(false);
     }
   }
 
-  // 根据锚点位置自动决定向上/向下展开，避免移动到顶部后弹到屏幕外
+  // Decide up/down expansion from the anchor position to avoid overflowing off-screen
   const anchor = anchorRef.current;
   const anchorRect = anchor?.getBoundingClientRect();
   const dropdownStyle: React.CSSProperties = anchorRect
@@ -313,9 +315,8 @@ export function LedgerSwitcher({
         className="rounded-xl border border-foreground/10 bg-white/95 shadow-lg shadow-foreground/5 py-1 backdrop-blur-sm"
       >
           <div className="px-3 py-2 text-[10px] font-bold text-foreground/30 uppercase tracking-[0.2em] border-b border-foreground/5">
-            切换账簿
+            {t("ledgerSwitch.switchLedger")}
           </div>
-
           <div className="max-h-[40vh] overflow-y-auto">
             {households.map((h) => {
               const isActive = current?.id === h.id;
@@ -387,7 +388,7 @@ export function LedgerSwitcher({
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") openCreateDialog(); }}
-                  placeholder="新建账簿…"
+                  placeholder={t("ledgerSwitch.newLedgerPlaceholder")}
                   className="flex-1 h-7 rounded border border-foreground/10 bg-white px-2 text-xs outline-none text-foreground"
                 />
                 <button
@@ -403,7 +404,7 @@ export function LedgerSwitcher({
           )}
         </div>
 
-        {/* 切换账簿验证对话框 */}
+        {/* Ledger switch verification dialog */}
         {switchTargetId && (() => {
           const h = households.find(x => x.id === switchTargetId);
           if (!h) return null;
@@ -412,31 +413,31 @@ export function LedgerSwitcher({
             <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
               <div className="w-full max-w-sm bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden">
                 <div className="px-6 py-5 border-b border-slate-200 bg-slate-50">
-                  <div className="text-base font-semibold text-slate-800">切换到 "{displayName}"</div>
-                  <div className="mt-1 text-xs text-slate-500">请输入该账簿的管理员用户名和密码</div>
+                  <div className="text-base font-semibold text-slate-800">{t("ledgerSwitch.switchToTitle", { name: displayName })}</div>
+                  <div className="mt-1 text-xs text-slate-500">{t("ledgerSwitch.switchToDesc")}</div>
                 </div>
 
                 <div className="p-6 space-y-4">
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">管理员用户名</div>
+                    <div className="text-xs font-medium text-slate-600">{t("ledgerSwitch.adminUsername")}</div>
                     <input
                       value={switchUsername}
                       onChange={(e) => setSwitchUsername(e.target.value)}
                       onKeyDown={(e) => { if (e.key === "Enter") handleSwitchVerify(); }}
                       className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
-                      placeholder="输入目标账簿中的用户名"
+                      placeholder={t("ledgerSwitch.usernamePlaceholder")}
                       autoFocus
                     />
                   </div>
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">密码</div>
+                    <div className="text-xs font-medium text-slate-600">{t("ledgerSwitch.password")}</div>
                     <input
                       type="password"
                       value={switchPassword}
                       onChange={(e) => setSwitchPassword(e.target.value)}
                       onKeyDown={(e) => { if (e.key === "Enter") handleSwitchVerify(); }}
                       className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
-                      placeholder="输入登录密码"
+                      placeholder={t("ledgerSwitch.loginPasswordPlaceholder")}
                     />
                   </div>
 
@@ -453,7 +454,7 @@ export function LedgerSwitcher({
                       }}
                       className="text-xs text-blue-600 hover:underline"
                     >
-                      忘记密码？去登录页找回
+                      {t("ledgerSwitch.forgotPassword")}
                     </button>
                   </div>
 
@@ -464,7 +465,7 @@ export function LedgerSwitcher({
                       disabled={switching}
                       className="flex-1 h-10 rounded-md border border-slate-200 bg-white text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
                     >
-                      取消
+                      {t("ledgerSwitch.cancel")}
                     </button>
                     <button
                       type="button"
@@ -472,7 +473,7 @@ export function LedgerSwitcher({
                       disabled={switching || !switchUsername.trim() || !switchPassword.trim()}
                       className="flex-1 h-10 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
                     >
-                      {switching ? "验证中…" : "确认切换"}
+                      {switching ? t("ledgerSwitch.verifying") : t("ledgerSwitch.confirmSwitch")}
                     </button>
                   </div>
                 </div>
@@ -481,58 +482,58 @@ export function LedgerSwitcher({
           );
         })()}
 
-        {/* 创建账簿对话框 */}
+        {/* Create ledger dialog */}
         {showCreateDialog && (
           <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
             <div ref={dialogRef} className="w-full max-w-sm bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden">
               <div className="px-6 py-5 border-b border-slate-200 bg-slate-50">
-                <div className="text-base font-semibold text-slate-800">新建账簿</div>
-                <div className="mt-1 text-xs text-slate-500">设置管理员账户以保护数据安全</div>
+                <div className="text-base font-semibold text-slate-800">{t("ledgerSwitch.newLedger")}</div>
+                <div className="mt-1 text-xs text-slate-500">{t("ledgerSwitch.newLedgerDesc")}</div>
               </div>
 
               <div className="p-6 space-y-4">
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">家庭成员/管理员名</div>
+                  <div className="text-xs font-medium text-slate-600">{t("ledgerSwitch.adminName")}</div>
                   <input
                     value={createAdminName}
                     onChange={(e) => setCreateAdminName(e.target.value)}
                     className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
-                    placeholder="输入管理员或家庭成员姓名"
+                    placeholder={t("ledgerSwitch.adminNamePlaceholder")}
                     autoFocus
                   />
-                  <div className="text-[10px] text-slate-400">这个名称也会作为默认家庭成员/账户所有人。</div>
+                  <div className="text-[10px] text-slate-400">{t("ledgerSwitch.adminNameHint")}</div>
                 </div>
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">邮箱</div>
+                  <div className="text-xs font-medium text-slate-600">{t("ledgerSwitch.email")}</div>
                   <input
                     type="email"
                     value={createAdminEmail}
                     onChange={(e) => setCreateAdminEmail(e.target.value)}
                     className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
-                    placeholder="用于密码找回"
+                    placeholder={t("ledgerSwitch.emailPlaceholder")}
                     autoComplete="email"
                   />
                 </div>
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">管理员密码</div>
+                  <div className="text-xs font-medium text-slate-600">{t("ledgerSwitch.adminPassword")}</div>
                   <input
                     type="password"
                     value={createAdminPassword}
                     onChange={(e) => setCreateAdminPassword(e.target.value)}
                     className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
-                    placeholder="设置登录密码"
+                    placeholder={t("ledgerSwitch.setPasswordPlaceholder")}
                     autoComplete="new-password"
                   />
                 </div>
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">确认密码</div>
+                  <div className="text-xs font-medium text-slate-600">{t("ledgerSwitch.confirmPassword")}</div>
                   <input
                     type="password"
                     value={createAdminPasswordConfirm}
                     onChange={(e) => setCreateAdminPasswordConfirm(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter") handleCreateWithAdmin(); }}
                     className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
-                    placeholder="再次输入密码"
+                    placeholder={t("ledgerSwitch.retypePasswordPlaceholder")}
                     autoComplete="new-password"
                   />
                 </div>
@@ -542,7 +543,7 @@ export function LedgerSwitcher({
                 )}
 
                 <div className="pt-2 text-xs text-slate-400">
-                  创建后将自动生成默认收支分类（餐饮、交通、工资等），后续可自行增删。
+                  {t("ledgerSwitch.createHint")}
                 </div>
 
                 <div className="flex gap-3">
@@ -552,7 +553,7 @@ export function LedgerSwitcher({
                     disabled={adding}
                     className="flex-1 h-10 rounded-md border border-slate-200 bg-white text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
                   >
-                    取消
+                    {t("ledgerSwitch.cancel")}
                   </button>
                   <button
                     type="button"
@@ -560,7 +561,7 @@ export function LedgerSwitcher({
                     disabled={adding || !createAdminName.trim() || !createAdminPassword.trim() || !createAdminPasswordConfirm.trim() || !createAdminEmail.trim()}
                     className="flex-1 h-10 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
                   >
-                    {adding ? "创建中…" : "创建账簿"}
+                    {adding ? t("ledgerSwitch.creating") : t("ledgerSwitch.createLedger")}
                   </button>
                 </div>
               </div>
@@ -568,7 +569,7 @@ export function LedgerSwitcher({
           </div>
         )}
 
-        {/* 删除账簿确认对话框 */}
+        {/* Delete ledger confirmation dialog */}
         {deletingId && (() => {
           const h = households.find(x => x.id === deletingId);
           if (!h) return null;
@@ -577,14 +578,14 @@ export function LedgerSwitcher({
             <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
               <div className="w-full max-w-sm bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden">
                 <div className="px-6 py-5 border-b border-red-100 bg-red-50">
-                  <div className="text-base font-semibold text-red-800">删除账簿</div>
-                  <div className="mt-1 text-xs text-red-600">此操作不可撤销，将删除该账簿及其所有关联数据</div>
+                  <div className="text-base font-semibold text-red-800">{t("ledgerSwitch.deleteLedger")}</div>
+                  <div className="mt-1 text-xs text-red-600">{t("ledgerSwitch.deleteLedgerDesc")}</div>
                 </div>
 
                 <div className="p-6 space-y-4">
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">
-                      请输入账簿名称 <span className="font-bold text-slate-800">"{displayName}"</span> 以确认删除
+                      {t("ledgerSwitch.error.enterNameToDelete", { name: displayName })}
                     </div>
                     <input
                       value={deleteConfirmName}
@@ -596,11 +597,11 @@ export function LedgerSwitcher({
                     />
                   </div>
 
-                  {/* 管理员密码验证 */}
+                  {/* Current user password verification */}
                   <div className="pt-2 border-t border-slate-100">
                     <div className="flex items-center gap-1.5 mb-1">
                       <Shield className="h-3.5 w-3.5 text-amber-500 shrink-0" />
-                      <span className="text-xs font-medium text-amber-700">管理员密码验证</span>
+                      <span className="text-xs font-medium text-amber-700">{t("ledgerSwitch.passwordVerifyTitle")}</span>
                     </div>
                     <input
                       type="password"
@@ -608,10 +609,10 @@ export function LedgerSwitcher({
                       onChange={(e) => { setDeleteDbPassword(e.target.value); setDeleteError(""); }}
                       onKeyDown={(e) => { if (e.key === "Enter") handleDelete(); }}
                       className="h-10 w-full rounded-md border border-amber-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-amber-100 focus:border-amber-400"
-                      placeholder="输入管理员密码"
+                      placeholder={t("ledgerSwitch.currentPasswordPlaceholder")}
                       autoComplete="off"
                     />
-                    <div className="mt-1 text-[10px] text-slate-400">删除账簿需要验证管理员密码</div>
+                    <div className="mt-1 text-[10px] text-slate-400">{t("ledgerSwitch.passwordVerifyHint")}</div>
                   </div>
 
                   {deleteError && (
@@ -619,7 +620,7 @@ export function LedgerSwitcher({
                   )}
 
                   <div className="pt-2 text-xs text-slate-400">
-                    将删除该账簿下的所有账户、交易记录、持仓数据、分类、用户等，删除后无法恢复。
+                    {t("ledgerSwitch.deleteWarning")}
                   </div>
 
                   <div className="flex gap-3">
@@ -629,7 +630,7 @@ export function LedgerSwitcher({
                       disabled={deleting}
                       className="flex-1 h-10 rounded-md border border-slate-200 bg-white text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
                     >
-                      取消
+                      {t("ledgerSwitch.cancel")}
                     </button>
                     <button
                       type="button"
@@ -637,7 +638,7 @@ export function LedgerSwitcher({
                       disabled={deleting || deleteConfirmName.trim() !== displayName || !deleteDbPassword.trim()}
                       className="flex-1 h-10 rounded-md bg-red-600 text-white text-sm hover:bg-red-700 disabled:opacity-50"
                     >
-                      {deleting ? "删除中…" : "确认删除"}
+                      {deleting ? t("ledgerSwitch.deleting") : t("ledgerSwitch.confirmDelete")}
                     </button>
                   </div>
                 </div>
@@ -651,15 +652,15 @@ export function LedgerSwitcher({
   return typeof document === "undefined" ? null : createPortal(content, document.body);
 }
 
-async function readApiResult(response: Response): Promise<ApiResult> {
+async function readApiResult(response: Response, t: (key: string, params?: Record<string, string | number>) => string): Promise<ApiResult> {
   const body = await response.text();
   if (!body.trim()) {
-    throw new Error(`服务器未返回结果（HTTP ${response.status}），请查看服务日志后重试`);
+    throw new Error(t("ledgerSwitch.error.serverNoResult", { status: response.status }));
   }
 
   try {
     return JSON.parse(body) as ApiResult;
   } catch {
-    throw new Error(`服务器返回了无效结果（HTTP ${response.status}），请查看服务日志后重试`);
+    throw new Error(t("ledgerSwitch.error.serverInvalidResult", { status: response.status }));
   }
 }

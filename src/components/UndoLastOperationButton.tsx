@@ -6,8 +6,8 @@ import { Undo2 } from "lucide-react";
 import {
   dispatchFinanceDataChanged,
   FINANCE_DATA_CHANGED_EVENT,
-  LEGACY_FINANCE_REFRESH_EVENT,
 } from "@/lib/client/refresh";
+import { useI18n } from "@/lib/i18n";
 
 type UndoState = {
   label: string;
@@ -28,6 +28,7 @@ export function UndoLastOperationButton({
   const [state, setState] = useState<UndoState>(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
+  const { t } = useI18n();
 
   async function loadState() {
     const result = await fetch("/api/v1/undo", { cache: "no-store" })
@@ -43,10 +44,8 @@ export function UndoLastOperationButton({
     void loadState();
     const refresh = () => void loadState();
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, refresh);
-    window.addEventListener(LEGACY_FINANCE_REFRESH_EVENT, refresh);
     return () => {
       window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, refresh);
-      window.removeEventListener(LEGACY_FINANCE_REFRESH_EVENT, refresh);
     };
   }, []);
 
@@ -56,15 +55,15 @@ export function UndoLastOperationButton({
     setMessage("");
     try {
       const response = await fetch("/api/v1/undo", { method: "POST" });
-      const result = await response.json().catch(() => ({ ok: false, error: "撤销失败" }));
+      const result = await response.json().catch(() => ({ ok: false, error: t("undo.undoFailed") }));
       if (!response.ok || !result?.ok) {
-        setMessage(result?.error ?? "撤销失败");
+        setMessage(result?.error ?? t("undo.undoFailed"));
         return;
       }
       const remainingCount = Number(result.data?.remainingCount ?? 0);
       setMessage(remainingCount > 0
-        ? `已撤销：${result.data.label}，还可撤销 ${remainingCount} 步`
-        : `已撤销：${result.data.label}`);
+        ? t("undo.doneWithMore", { label: result.data.label, count: remainingCount })
+        : t("undo.done", { label: result.data.label }));
       setState(null);
       dispatchFinanceDataChanged({ reason: "undo-entry-operation", entryIds: undefined });
     } finally {
@@ -74,8 +73,10 @@ export function UndoLastOperationButton({
 
   const undoCount = Number(state?.undoCount ?? 0);
   const title = state?.canUndo
-    ? `撤销：${state.label}${undoCount > 0 ? `（可连续撤销 ${undoCount} 步）` : ""}`
-    : "没有可撤销的操作";
+    ? undoCount > 0
+      ? t("undo.titleWithMore", { label: state.label, count: undoCount })
+      : t("undo.title", { label: state.label })
+    : t("undo.noOperations");
   if (compact) {
     return (
       <button
@@ -101,7 +102,7 @@ export function UndoLastOperationButton({
         title={title}
       >
         <Undo2 size={18} />
-        <span className="min-w-0 flex-1 truncate text-left">{loading ? "正在撤销" : "撤销上一步"}</span>
+        <span className="min-w-0 flex-1 truncate text-left">{loading ? t("undo.undoing") : t("undo.undoLastStep")}</span>
       </button>
       {message ? <div className="truncate px-3 pt-1 text-[10px] text-slate-500" title={message}>{message}</div> : null}
     </div>

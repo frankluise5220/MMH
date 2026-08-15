@@ -3,6 +3,7 @@ import { z } from "zod";
 import { AccountKind } from "@prisma/client";
 import { createHash } from "node:crypto";
 import { prisma } from "@/lib/db/prisma";
+import { addDaysUtc, toStatementMonth } from "@/lib/date-utils";
 import { getCurrentUser } from "@/lib/server/auth";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { normalizeDefaultCategoryHierarchyForHousehold, resolveCategorySnapshot } from "@/lib/default-categories";
@@ -181,24 +182,6 @@ function parseDateOnlyUtc(value?: string | null) {
 function formatDateUtc(date?: Date | null) {
   if (!date) return null;
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
-}
-
-function addDaysUtc(date: Date, days: number) {
-  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + days));
-}
-
-function addMonthsUtc(date: Date, months: number) {
-  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-  d.setUTCMonth(d.getUTCMonth() + months);
-  return d;
-}
-
-function toStatementMonth(date: Date, billingDay: number) {
-  const day = date.getUTCDate();
-  const monthBase = day < billingDay ? date : addMonthsUtc(date, 1);
-  const y = monthBase.getUTCFullYear();
-  const m = String(monthBase.getUTCMonth() + 1).padStart(2, "0");
-  return `${y}-${m}`;
 }
 
 async function statementMonthForAccountId(tx: Db, accountId: string | null, date: Date) {

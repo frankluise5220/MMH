@@ -106,7 +106,7 @@
 敏感操作验证规则：
 
 - `/api/v1/auth/verify` 携带 `verifySystem: true` 时用于系统初始化、删除账簿等敏感操作验证，不建立用户登录态。
-- 验证要求当前登录用户是管理员，并校验该管理员用户的密码；不再使用部署级“数据库密码/系统密码”（`MMH_SYSTEM_PASSWORD`、`POSTGRES_PASSWORD` 等）。
+- 验证要求当前登录用户是管理员，并校验当前登录用户自己的密码；不再使用部署级“数据库密码/系统密码”（`MMH_SYSTEM_PASSWORD`、`POSTGRES_PASSWORD` 等）。
 - Web 登录优先携带 `userId` 验证具体用户；当多个账簿里都有 `admin` 这类同名用户时，不应只靠用户名定位。
 - `/api/v1/auth/password-status` 的用户列表应返回用户 `id`、`name`、`householdId` 和 `householdName`，客户端用账簿名区分同名用户。
 

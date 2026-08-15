@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { X } from "lucide-react";
+import { useI18n } from "@/lib/i18n";
 
 type InsuranceProductEditValue = {
   id: string;
@@ -25,28 +26,32 @@ type InsuranceProductEditInstitution = {
   label: string;
 };
 
-const PRODUCT_TYPE_OPTIONS = [
-  { value: "savings", label: "储蓄型" },
-  { value: "dividend", label: "分红型" },
-  { value: "annuity", label: "年金型" },
-  { value: "universal", label: "万能型" },
-  { value: "investment_linked", label: "投连型" },
-  { value: "critical_illness", label: "重疾险" },
-  { value: "medical", label: "医疗险" },
-  { value: "accident", label: "意外险" },
-  { value: "term_life", label: "定期寿险" },
-  { value: "whole_life", label: "终身寿险" },
-  { value: "other", label: "其他" },
-] as const;
+function getProductTypeOptions(t: (key: string) => string) {
+  return [
+    { value: "savings", label: t("insuranceProduct.type.savings") },
+    { value: "dividend", label: t("insuranceProduct.type.dividend") },
+    { value: "annuity", label: t("insuranceProduct.type.annuity") },
+    { value: "universal", label: t("insuranceProduct.type.universal") },
+    { value: "investment_linked", label: t("insuranceProduct.type.investment_linked") },
+    { value: "critical_illness", label: t("insuranceProduct.type.critical_illness") },
+    { value: "medical", label: t("insuranceProduct.type.medical") },
+    { value: "accident", label: t("insuranceProduct.type.accident") },
+    { value: "term_life", label: t("insuranceProduct.type.term_life") },
+    { value: "whole_life", label: t("insuranceProduct.type.whole_life") },
+    { value: "other", label: t("insuranceProduct.type.other") },
+  ];
+}
 
-const ACCOUNTING_TYPE_OPTIONS = [
-  { value: "asset", label: "资产型" },
-  { value: "protection", label: "保障型" },
-  { value: "hybrid", label: "混合型" },
-] as const;
+function getAccountingTypeOptions(t: (key: string) => string) {
+  return [
+    { value: "asset", label: t("insuranceProduct.accountingType.asset") },
+    { value: "protection", label: t("insuranceProduct.accountingType.protection") },
+    { value: "hybrid", label: t("insuranceProduct.accountingType.hybrid") },
+  ];
+}
 
-function toLabel(value?: string | null) {
-  return PRODUCT_TYPE_OPTIONS.find((item) => item.value === value)?.label ?? "其他";
+function toLabel(t: (key: string) => string, value?: string | null) {
+  return getProductTypeOptions(t).find((item) => item.value === value)?.label ?? t("insuranceProduct.type.other");
 }
 
 export function InsuranceProductEditModal({
@@ -68,6 +73,7 @@ export function InsuranceProductEditModal({
   onChange: (next: InsuranceProductEditValue) => void;
   onSaved: (next: InsuranceProductEditValue) => Promise<void>;
 }) {
+  const { t } = useI18n();
   const [draft, setDraft] = useState<InsuranceProductEditValue | null>(value);
 
   useEffect(() => {
@@ -80,7 +86,7 @@ export function InsuranceProductEditModal({
     <div className="app-modal-backdrop z-[1200]">
       <div className="app-modal-panel max-w-2xl">
         <div className="modal-header">
-          <div className="text-sm font-semibold text-slate-800">编辑保险产品</div>
+          <div className="text-sm font-semibold text-slate-800">{t("insuranceProductEdit.editTitle")}</div>
           <button type="button" onClick={onClose} className="secondary-button h-8 px-2">
             <X className="h-4 w-4" />
           </button>
@@ -96,7 +102,7 @@ export function InsuranceProductEditModal({
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <div className="space-y-1">
-                <div className="form-label">保险产品</div>
+                <div className="form-label">{t("insuranceEntryEdit.product")}</div>
                 <select
                   value={draft.id}
                   onChange={(event) => {
@@ -121,7 +127,7 @@ export function InsuranceProductEditModal({
                 </select>
               </div>
               <div className="space-y-1">
-                <div className="form-label">承保机构</div>
+                <div className="form-label">{t("insuranceProductEdit.institutionLabel")}</div>
                 <select
                   value={draft.institutionId}
                   onChange={(event) => {
@@ -139,7 +145,7 @@ export function InsuranceProductEditModal({
                 </select>
               </div>
               <div className="space-y-1">
-                <div className="form-label">产品名称</div>
+                <div className="form-label">{t("investForm.productNameLabel")}</div>
                 <input
                   value={draft.name}
                   onChange={(event) => {
@@ -151,7 +157,7 @@ export function InsuranceProductEditModal({
                 />
               </div>
               <div className="space-y-1">
-                <div className="form-label">简称</div>
+                <div className="form-label">{t("entityForm.shortNameLabel")}</div>
                 <input
                   value={draft.shortName}
                   onChange={(event) => {
@@ -163,7 +169,7 @@ export function InsuranceProductEditModal({
                 />
               </div>
               <div className="space-y-1">
-                <div className="form-label">产品类型</div>
+                <div className="form-label">{t("insuranceProductEdit.productTypeLabel")}</div>
                 <select
                   value={draft.productType}
                   onChange={(event) => {
@@ -173,7 +179,7 @@ export function InsuranceProductEditModal({
                   }}
                   className="form-input"
                 >
-                  {PRODUCT_TYPE_OPTIONS.map((item) => (
+                  {getProductTypeOptions(t).map((item) => (
                     <option key={item.value} value={item.value}>
                       {item.label}
                     </option>
@@ -181,7 +187,7 @@ export function InsuranceProductEditModal({
                 </select>
               </div>
               <div className="space-y-1">
-                <div className="form-label">显示口径</div>
+                <div className="form-label">{t("insuranceProductEdit.accountingTypeLabel")}</div>
                 <select
                   value={draft.accountingType}
                   onChange={(event) => {
@@ -191,7 +197,7 @@ export function InsuranceProductEditModal({
                   }}
                   className="form-input"
                 >
-                  {ACCOUNTING_TYPE_OPTIONS.map((item) => (
+                  {getAccountingTypeOptions(t).map((item) => (
                     <option key={item.value} value={item.value}>
                       {item.label}
                     </option>
@@ -199,7 +205,7 @@ export function InsuranceProductEditModal({
                 </select>
               </div>
               <div className="space-y-1">
-                <div className="form-label">币种</div>
+                <div className="form-label">{t("detail.column.currency")}</div>
                 <input
                   value={draft.currency}
                   onChange={(event) => {
@@ -213,7 +219,7 @@ export function InsuranceProductEditModal({
             </div>
 
             <div className="space-y-1">
-              <div className="form-label">备注</div>
+              <div className="form-label">{t("detail.column.remark")}</div>
               <textarea
                 value={draft.note}
                 onChange={(event) => {
@@ -225,21 +231,21 @@ export function InsuranceProductEditModal({
               />
             </div>
             <div className="text-xs text-slate-500">
-              {draft.name ? `${draft.name} · ${toLabel(draft.productType)}` : "编辑保险产品主数据"}
+              {draft.name ? `${draft.name} · ${toLabel(t, draft.productType)}` : t("insuranceProductEdit.masterDataHint")}
             </div>
           </div>
 
           <div className="shrink-0 border-t border-slate-100 bg-white/95 px-4 py-3">
             <div className="flex justify-end gap-2">
               <button type="button" onClick={onClose} className="secondary-button h-9 px-4">
-                取消
+                {t("common.cancel")}
               </button>
               <button
                 type="submit"
                 disabled={saving}
                 className="primary-button h-9 px-4 text-white disabled:opacity-50"
               >
-                {saving ? "保存中..." : "保存"}
+                {saving ? t("insuranceEntryEdit.saving") : t("common.save")}
               </button>
             </div>
           </div>

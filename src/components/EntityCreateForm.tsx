@@ -1,20 +1,20 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useState, useCallback, type FormEvent } from "react";
 import { Plus } from "lucide-react";
-import { kindLabel, kindOrder, institutionTypeLabel } from "@/lib/account-kinds";
+import { kindOrder } from "@/lib/account-kinds";
 import { PRODUCT_LABELS, supportsCostBasisMethod, type ProductType } from "@/lib/investment-config";
-import { supportsTradingCalendarForAccount, TRADING_CALENDARS, TRADING_CALENDAR_LABELS } from "@/lib/fund/trading-calendar";
+import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
 import { DateStepper } from "@/components/DateStepper";
 import { notifySmartSelectOptionCreated, SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 import { notifySettingsDataChanged, type SettingsDataScope } from "@/lib/client/settingsCache";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { CURRENCY_OPTIONS, normalizeCurrency } from "@/lib/currency";
 import {
-  STOCK_ACCOUNT_INSTITUTION_ERROR,
   isStockAccountInstitutionType,
   isStockInvestmentAccount,
 } from "@/lib/account-institution-rules";
+import { useI18n } from "@/lib/i18n";
 
 /* ---- Types ---- */
 
@@ -47,22 +47,22 @@ type EntityCreatedExtra = {
 
 type FieldDef = {
   key: string;
-  label: string;
+  labelKey: string;
   type: "text" | "select";
-  placeholder?: string;
+  placeholderKey?: string;
   /** Render text fields as a taller multiline textarea. */
   multiline?: boolean;
   /** Preferred textarea row count for multiline fields. */
   rows?: number;
   /** Static options (for selects whose values are fixed) */
-  options?: ReadonlyArray<{ value: string; label: string }>;
+  options?: ReadonlyArray<{ value: string; labelKey: string }>;
   /** Dynamic option key - maps to fieldData prop for runtime-populated selects */
   optionsFromData?: string;
   /** Condition to show/hide this field based on current form state */
   condition?: (form: Record<string, string>) => boolean;
   /** Default value when the form opens */
   defaultValue?: string;
-  /** Whether this field supports nested inline creation (shows "+新增" button) */
+  /** Whether this field supports nested inline creation (shows a "+ New" button) */
   nestedCreate?: NestedEntityType;
 };
 
@@ -152,46 +152,67 @@ export type EntityCreateFormProps = CompactModeProps | FullModeProps;
 /* ---- Institution type options ---- */
 
 const INSTITUTION_TYPES = [
-  { value: "family_member", label: "家庭成员" },
-  { value: "person", label: "往来人员" },
-  { value: "organization", label: "往来组织" },
-  { value: "bank", label: "银行" },
-  { value: "insurance", label: "保险公司" },
-  { value: "brokerage", label: "证券" },
-  { value: "payment", label: "第三方支付" },
-  { value: "ewallet", label: "钱包" },
-  { value: "debt", label: "债权债务" },
-  { value: "other", label: "其他" },
+  { value: "family_member", labelKey: "institution.type.family_member" },
+  { value: "person", labelKey: "institution.type.person" },
+  { value: "organization", labelKey: "institution.type.organization" },
+  { value: "bank", labelKey: "institution.type.bank" },
+  { value: "insurance", labelKey: "institution.type.insurance" },
+  { value: "brokerage", labelKey: "institution.type.brokerage" },
+  { value: "payment", labelKey: "institution.type.payment" },
+  { value: "ewallet", labelKey: "institution.type.ewallet" },
+  { value: "debt", labelKey: "institution.type.debt" },
+  { value: "other", labelKey: "institution.type.other" },
 ];
 
 /* ---- Category type options ---- */
 
 const CATEGORY_TYPES = [
-  { value: "expense", label: "支出" },
-  { value: "income", label: "收入" },
-  { value: "advance", label: "代付" },
-  { value: "transfer", label: "转账" },
-  { value: "investment", label: "投资" },
+  { value: "expense", labelKey: "transaction.type.expense" },
+  { value: "income", labelKey: "transaction.type.income" },
+  { value: "advance", labelKey: "txForm.advance" },
+  { value: "transfer", labelKey: "transaction.type.transfer" },
+  { value: "investment", labelKey: "account.kind.investment" },
 ];
 
 /* ---- Cost basis method options ---- */
 
 const COST_BASIS_OPTIONS = [
-  { value: "moving_avg", label: "移动平均" },
-  { value: "fifo", label: "先进先出" },
-  { value: "lifo", label: "后进先出" },
+  { value: "moving_avg", labelKey: "settings.accounts.movingAverage" },
+  { value: "fifo", labelKey: "settings.accounts.fifo" },
+  { value: "lifo", labelKey: "settings.accounts.lifo" },
 ];
 
 /* ---- Account kind options (from account-kinds.ts) ---- */
 
-const ACCOUNT_KIND_OPTIONS = kindOrder.map(k => ({ value: k, label: kindLabel(k) }));
+const ACCOUNT_KIND_OPTIONS = kindOrder.map((k) => ({ value: k, labelKey: `account.kind.${k}` }));
 
 /* ---- Investment product type options (from investment-config.ts) ---- */
 
-const INVEST_PRODUCT_OPTIONS = (Object.keys(PRODUCT_LABELS) as ProductType[]).map(pt => ({
+const INVEST_PRODUCT_OPTIONS = (Object.keys(PRODUCT_LABELS) as ProductType[]).map((pt) => ({
   value: pt,
-  label: PRODUCT_LABELS[pt],
+  labelKey: `investment.product.${pt}`,
 }));
+
+/* ---- Trading calendar options ---- */
+
+const TRADING_CALENDAR_OPTIONS = TRADING_CALENDARS.map((value) => ({
+  value,
+  labelKey: `tradingCalendar.${value}`,
+}));
+
+/* ---- Currency options (labelKey per currency code) ---- */
+
+const CURRENCY_OPTION_KEYS = CURRENCY_OPTIONS.map((option) => ({
+  value: option.value,
+  labelKey: `entityForm.currency.${option.value.toLowerCase()}`,
+}));
+
+/* ---- Credit bill mode options ---- */
+
+const CREDIT_BILL_MODE_OPTIONS = [
+  { value: "separate", labelKey: "entityForm.creditBillMode.separate" },
+  { value: "consolidated", labelKey: "entityForm.creditBillMode.consolidated" },
+];
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
@@ -201,113 +222,117 @@ function todayStr() {
 
 const ENTITY_CONFIG = {
   institution: {
-    title: "新增往来对象",
-    namePlaceholder: "例如：张三、中国银行、平安保险",
-    nameLabel: "往来对象名称",
-    typeLabel: "类型",
+    titleKey: "txForm.addCounterparty",
+    namePlaceholderKey: "entityForm.contactNamePlaceholder",
+    nameLabelKey: "entityForm.contactNameLabel",
+    typeLabelKey: "entityForm.typeLabel",
     typeKey: "type",
     types: INSTITUTION_TYPES,
     apiPath: "/api/v1/institution",
     bodyKey: { name: "name", type: "type" },
     fullFields: [
-      { key: "name", label: "往来对象名称", type: "text", placeholder: "例如：张三、中国银行、平安保险" },
-      { key: "shortName", label: "简称", type: "text", placeholder: "例如：张三、中行、平安" },
-      { key: "type", label: "类型", type: "select", options: INSTITUTION_TYPES, defaultValue: "organization" },
+      { key: "name", labelKey: "entityForm.contactNameLabel", type: "text", placeholderKey: "entityForm.contactNamePlaceholder" },
+      { key: "shortName", labelKey: "entityForm.shortNameLabel", type: "text", placeholderKey: "entityForm.institutionShortNamePlaceholder" },
+      { key: "type", labelKey: "entityForm.typeLabel", type: "select", options: INSTITUTION_TYPES, defaultValue: "organization" },
     ] as FieldDef[],
   },
   counterparty: {
-    title: "新增往来对象",
-    namePlaceholder: "例如：张三、某公司",
-    nameLabel: "往来对象名称",
-    typeLabel: "类型",
+    titleKey: "txForm.addCounterparty",
+    namePlaceholderKey: "entityForm.counterpartyNamePlaceholder",
+    nameLabelKey: "entityForm.contactNameLabel",
+    typeLabelKey: "entityForm.typeLabel",
     typeKey: "type",
     types: [
-      { value: "person", label: "往来人员" },
-      { value: "organization", label: "往来组织" },
+      { value: "person", labelKey: "institution.type.person" },
+      { value: "organization", labelKey: "institution.type.organization" },
     ],
     apiPath: "/api/v1/counterparty",
     bodyKey: { name: "name", type: "type" },
     fullFields: [
-      { key: "name", label: "往来对象名称", type: "text", placeholder: "例如：张三、某公司" },
-      { key: "shortName", label: "简称", type: "text", placeholder: "可选" },
-      { key: "type", label: "类型", type: "select", options: [
-        { value: "person", label: "往来人员" },
-        { value: "organization", label: "往来组织" },
+      { key: "name", labelKey: "entityForm.contactNameLabel", type: "text", placeholderKey: "entityForm.counterpartyNamePlaceholder" },
+      { key: "shortName", labelKey: "entityForm.shortNameLabel", type: "text", placeholderKey: "entityForm.optional" },
+      { key: "type", labelKey: "entityForm.typeLabel", type: "select", options: [
+        { value: "person", labelKey: "institution.type.person" },
+        { value: "organization", labelKey: "institution.type.organization" },
       ], defaultValue: "person" },
     ] as FieldDef[],
   },
   account: {
-    title: "新增账户",
-    namePlaceholder: "例如：招行卡、微信零钱",
-    nameLabel: "账户名称",
-    typeLabel: "账户类型",
+    titleKey: "settings.accounts.add",
+    namePlaceholderKey: "entityForm.accountNamePlaceholder",
+    nameLabelKey: "entityForm.accountNameLabel",
+    typeLabelKey: "entityForm.accountTypeLabel",
     typeKey: "kind",
     types: ACCOUNT_KIND_OPTIONS,
     apiPath: "/api/v1/accounts",
     bodyKey: { name: "name", kind: "kind" },
     fullFields: [
-      { key: "name", label: "账户名称", type: "text", placeholder: "例如：招行卡、微信零钱" },
-      { key: "kind", label: "账户类型", type: "select", options: ACCOUNT_KIND_OPTIONS, defaultValue: "bank_debit" },
-      { key: "investProductType", label: "投资账户类型", type: "select", options: INVEST_PRODUCT_OPTIONS, defaultValue: "fund", condition: (f) => f.kind === "investment" },
-      { key: "fundUnitsDecimals", label: "份额位数", type: "text", defaultValue: "3", placeholder: "默认 3", condition: (f) => f.kind === "investment" && (f.investProductType ?? "fund") === "fund" },
-      { key: "tradingCalendar", label: "交易日历", type: "select", options: TRADING_CALENDARS.map((value) => ({ value, label: TRADING_CALENDAR_LABELS[value] })), defaultValue: "cn_fund", condition: (f) => supportsTradingCalendarForAccount(f.kind, f.investProductType ?? "fund") },
-      { key: "groupId", label: "所有人", type: "select", optionsFromData: "groupId", nestedCreate: "group" },
-      { key: "institutionId", label: "机构", type: "select", optionsFromData: "institutionId", nestedCreate: "institution" },
-      { key: "currency", label: "币种", type: "select", options: CURRENCY_OPTIONS, defaultValue: "CNY" },
-      { key: "billingDay", label: "账单日", type: "text", placeholder: "1-31", condition: (f) => f.kind === "bank_credit" },
-      { key: "repaymentDay", label: "还款日", type: "text", placeholder: "1-31", condition: (f) => f.kind === "bank_credit" },
-      { key: "creditLimit", label: "额度", type: "text", placeholder: "例如：50000", condition: (f) => f.kind === "bank_credit" },
-      { key: "creditBillMode", label: "账单模式", type: "select", options: [
-        { value: "separate", label: "独立账单" },
-        { value: "consolidated", label: "同机构合并账单" },
-      ], defaultValue: "separate", condition: (f) => f.kind === "bank_credit" },
-      { key: "numberMasked", label: "卡号后四位", type: "text", placeholder: "例如：3833", condition: (f) => f.kind === "bank_credit" || f.kind === "bank_debit" },
-      { key: "costBasisMethod", label: "成本摊薄方式", type: "select", options: COST_BASIS_OPTIONS, defaultValue: "moving_avg", condition: (f) => f.kind === "investment" && supportsCostBasisMethod(f.investProductType ?? "fund") },
-      { key: "note", label: "备注", type: "text", placeholder: "可选，支持多行备注", multiline: true, rows: 4 },
+      { key: "name", labelKey: "entityForm.accountNameLabel", type: "text", placeholderKey: "entityForm.accountNamePlaceholder" },
+      { key: "kind", labelKey: "entityForm.accountTypeLabel", type: "select", options: ACCOUNT_KIND_OPTIONS, defaultValue: "bank_debit" },
+      { key: "investProductType", labelKey: "settings.accounts.investmentAccountType", type: "select", options: INVEST_PRODUCT_OPTIONS, defaultValue: "fund", condition: (f) => f.kind === "investment" },
+      { key: "fundUnitsDecimals", labelKey: "settings.accounts.fundUnitsDecimals", type: "text", defaultValue: "3", placeholderKey: "settings.accounts.defaultUnitsDecimals", condition: (f) => f.kind === "investment" && (f.investProductType ?? "fund") === "fund" },
+      { key: "tradingCalendar", labelKey: "settings.accounts.tradingCalendar", type: "select", options: TRADING_CALENDAR_OPTIONS, defaultValue: "cn_fund", condition: (f) => supportsTradingCalendarForAccount(f.kind, f.investProductType ?? "fund") },
+      { key: "groupId", labelKey: "settings.accounts.owner", type: "select", optionsFromData: "groupId", nestedCreate: "group" },
+      { key: "institutionId", labelKey: "settings.accounts.institution", type: "select", optionsFromData: "institutionId", nestedCreate: "institution" },
+      { key: "currency", labelKey: "detail.column.currency", type: "select", options: CURRENCY_OPTION_KEYS, defaultValue: "CNY" },
+      { key: "billingDay", labelKey: "settings.accounts.billingDayLabel", type: "text", placeholderKey: "entityForm.dayRangePlaceholder", condition: (f) => f.kind === "bank_credit" },
+      { key: "repaymentDay", labelKey: "settings.accounts.repaymentDayLabel", type: "text", placeholderKey: "entityForm.dayRangePlaceholder", condition: (f) => f.kind === "bank_credit" },
+      { key: "creditLimit", labelKey: "settings.accounts.creditLimitLabel", type: "text", placeholderKey: "entityForm.creditLimitPlaceholder", condition: (f) => f.kind === "bank_credit" },
+      { key: "creditBillMode", labelKey: "entityForm.creditBillModeLabel", type: "select", options: CREDIT_BILL_MODE_OPTIONS, defaultValue: "separate", condition: (f) => f.kind === "bank_credit" },
+      { key: "numberMasked", labelKey: "settings.accounts.lastFourLabel", type: "text", placeholderKey: "entityForm.lastFourPlaceholder", condition: (f) => f.kind === "bank_credit" || f.kind === "bank_debit" },
+      { key: "costBasisMethod", labelKey: "settings.accounts.costBasisMethod", type: "select", options: COST_BASIS_OPTIONS, defaultValue: "moving_avg", condition: (f) => f.kind === "investment" && supportsCostBasisMethod(f.investProductType ?? "fund") },
+      { key: "note", labelKey: "detail.column.remark", type: "text", placeholderKey: "entityForm.notePlaceholder", multiline: true, rows: 4 },
     ] as FieldDef[],
   },
   group: {
-    title: "新增所有人",
-    namePlaceholder: "所有人",
-    nameLabel: "所有人名称",
-    typeLabel: null,
+    titleKey: "settings.accounts.addOwner",
+    namePlaceholderKey: "settings.accounts.owner",
+    nameLabelKey: "entityForm.groupNameLabel",
+    typeLabelKey: null,
     typeKey: null,
     types: [],
     apiPath: "/api/v1/account-group",
     bodyKey: { name: "name" },
     fullFields: [
-      { key: "name", label: "所有人名称", type: "text", placeholder: "所有人" },
+      { key: "name", labelKey: "entityForm.groupNameLabel", type: "text", placeholderKey: "settings.accounts.owner" },
     ] as FieldDef[],
   },
   category: {
-    title: "新增分类",
-    namePlaceholder: "例如：餐饮费",
-    nameLabel: "分类名称",
-    typeLabel: "类型",
+    titleKey: "entityForm.categoryTitle",
+    namePlaceholderKey: "entityForm.categoryNamePlaceholder",
+    nameLabelKey: "entityForm.categoryNameLabel",
+    typeLabelKey: "entityForm.typeLabel",
     typeKey: "type",
     types: CATEGORY_TYPES,
     apiPath: "/api/v1/category",
     bodyKey: { name: "name", type: "type" },
     fullFields: [
-      { key: "name", label: "分类名称", type: "text", placeholder: "例如：餐饮费" },
-      { key: "type", label: "类型", type: "select", options: CATEGORY_TYPES, defaultValue: "expense",
+      { key: "name", labelKey: "entityForm.categoryNameLabel", type: "text", placeholderKey: "entityForm.categoryNamePlaceholder" },
+      { key: "type", labelKey: "entityForm.typeLabel", type: "select", options: CATEGORY_TYPES, defaultValue: "expense",
         condition: (f) => !f.parentId /* hide type when parentId is set (inherits from parent) */ },
-      { key: "parentId", label: "上级分类", type: "select", optionsFromData: "parentId" },
+      { key: "parentId", labelKey: "entityForm.parentCategoryLabel", type: "select", optionsFromData: "parentId" },
     ] as FieldDef[],
   },
 } as const;
 
 /* ---- Helper: build select options for a dynamic field ---- */
 
+type SelectOption = { value: string; label?: string; labelKey?: string };
+
+function optionLabel(t: (key: string) => string, option: SelectOption) {
+  return option.label ?? (option.labelKey ? t(option.labelKey) : "");
+}
+
 function buildSelectOptions(
   field: FieldDef,
-  fieldData?: Record<string, Array<{ id: string; name: string }>>,
-  parentCategories?: Array<{ id: string; name: string; label: string; type: string; depth?: number; parentId?: string; isGroup?: boolean }>,
-  hideRootOption?: boolean,
-): Array<{ value: string; label: string }> {
+  fieldData: Record<string, Array<{ id: string; name: string }>> | undefined,
+  parentCategories: Array<{ id: string; name: string; label: string; type: string; depth?: number; parentId?: string; isGroup?: boolean }> | undefined,
+  hideRootOption: boolean | undefined,
+  t: (key: string) => string,
+): SelectOption[] {
   if (field.options) return [...field.options];
   if (field.key === "parentId" && parentCategories) {
-    const rootOpt = hideRootOption ? [] : [{ value: "", label: "无（根分类）" }];
+    const rootOpt = hideRootOption ? [] : [{ value: "", label: t("entityForm.noRootCategory") }];
     return [...rootOpt, ...parentCategories.map(pc => {
       // Use indentation for depth > 0 entries
       const indent = pc.depth && pc.depth > 0 ? "    ".repeat(pc.depth) : "";
@@ -317,19 +342,19 @@ function buildSelectOptions(
   if (field.optionsFromData && fieldData) {
     const data = fieldData[field.optionsFromData];
     if (data) {
-      const emptyLabel = field.key === "groupId" ? "所有人" : field.key === "institutionId" ? "无" : "无";
+      const emptyLabel = field.key === "groupId" ? t("settings.accounts.owner") : t("entityForm.none");
       return [{ value: "", label: emptyLabel }, ...data.map(d => ({ value: d.id, label: d.name }))];
     }
   }
   return [];
 }
 
-function getSmartSelectCreateLabel(entityType: NestedEntityType) {
-  if (entityType === "institution") return "新增机构";
-  if (entityType === "counterparty") return "新增往来对象";
-  if (entityType === "group") return "新增所有人";
-  if (entityType === "category") return "新增分类";
-  return "新增";
+function getSmartSelectCreateLabel(t: (key: string) => string, entityType: NestedEntityType) {
+  if (entityType === "institution") return t("settings.accounts.addInstitution");
+  if (entityType === "counterparty") return t("txForm.addCounterparty");
+  if (entityType === "group") return t("settings.accounts.addOwner");
+  if (entityType === "category") return t("entityForm.categoryTitle");
+  return t("entityForm.add");
 }
 
 function settingsScopeForEntity(entityType: NestedEntityType): SettingsDataScope {
@@ -339,13 +364,14 @@ function settingsScopeForEntity(entityType: NestedEntityType): SettingsDataScope
 /* ---- Main Component ---- */
 
 export function EntityCreateForm(props: EntityCreateFormProps) {
+  const { t } = useI18n();
   const mode = props.mode;
   const entityType = props.entityType;
   const config = ENTITY_CONFIG[entityType];
   const layout = mode === "full" ? (props.layout ?? "card") : "modal";
-  const displayTitle = props.title ?? config.title;
-  const displayNameLabel = props.nameLabel ?? config.nameLabel;
-  const displayNamePlaceholder = props.namePlaceholder ?? config.namePlaceholder;
+  const displayTitle = props.title ?? t(config.titleKey);
+  const displayNameLabel = props.nameLabel ?? t(config.nameLabelKey);
+  const displayNamePlaceholder = props.namePlaceholder ?? t(config.namePlaceholderKey);
   const defaultName = props.defaultName ?? "";
   const includeInitialBalanceFields = entityType === "account" && Boolean(props.includeInitialBalanceFields);
 
@@ -377,7 +403,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   // Full card mode: expanded state
   const [expanded, setExpanded] = useState(false);
 
-  // Nested creation state (for full mode "+新增" buttons on dynamic select fields)
+  // Nested creation state (for full mode "+ New" buttons on dynamic select fields)
   const [nestedEntityType, setNestedEntityType] = useState<NestedEntityType | null>(null);
   const [nestedOpen, setNestedOpen] = useState(false);
   const [nestedFieldData, setNestedFieldData] = useState<Record<string, Array<{ id: string; name: string; type?: string }>>>(fieldData ?? compactNestedFieldData ?? {});
@@ -394,12 +420,12 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     return field.options?.[0]?.value ?? "";
   }, [accountDefaultCurrency, entityType, extraFields]);
   const selectOptionsForField = useCallback((field: FieldDef) => {
-    const opts = buildSelectOptions(field, nestedFieldData, parentCategories);
+    const opts = buildSelectOptions(field, nestedFieldData, parentCategories, undefined, t);
     if (entityType === "account" && field.key === "currency" && !accountDefaultCurrency && !(extraFields && field.key in extraFields)) {
-      return [{ value: "", label: "账簿默认币种" }, ...opts];
+      return [{ value: "", label: t("entityForm.ledgerDefaultCurrency") }, ...opts];
     }
     return opts;
-  }, [accountDefaultCurrency, entityType, extraFields, nestedFieldData, parentCategories]);
+  }, [accountDefaultCurrency, entityType, extraFields, nestedFieldData, parentCategories, t]);
 
   useEffect(() => {
     if (entityType !== "account" || form.kind !== "bank_credit" || !form.institutionId) return;
@@ -552,7 +578,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     if (!existingNames || !nameValue.trim()) { setDupWarning(""); return; }
     const trimmed = nameValue.trim();
     if (existingNames.some(n => n.trim() === trimmed)) {
-      setDupWarning(`"${trimmed}" 已存在，创建时将提示重复`);
+      setDupWarning(t("entityForm.dupWarning", { name: trimmed }));
     } else {
       setDupWarning("");
     }
@@ -612,18 +638,18 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     return (
       <>
         <div>
-          <label className="form-label mb-1 block">时间节点</label>
+          <label className="form-label mb-1 block">{t("entityForm.initialBalanceDateLabel")}</label>
           <DateStepper
             value={form.initialBalanceDate || todayStr()}
             onChange={(value) => setForm((prev) => ({ ...prev, initialBalanceDate: value }))}
           />
         </div>
         <div>
-          <label className="form-label mb-1 block">余额</label>
+          <label className="form-label mb-1 block">{t("detail.column.balance")}</label>
           <input
             value={form.initialBalance ?? ""}
             onChange={(event) => setForm((prev) => ({ ...prev, initialBalance: event.target.value }))}
-            placeholder="例如：1000"
+            placeholder={t("entityForm.balancePlaceholder")}
             className="form-input text-right tabular-nums"
             inputMode="decimal"
           />
@@ -633,7 +659,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   }
 
   function textFieldPlaceholder(field: FieldDef) {
-    return field.key === "name" ? displayNamePlaceholder : field.placeholder ?? "";
+    return field.key === "name" ? displayNamePlaceholder : (field.placeholderKey ? t(field.placeholderKey) : "");
   }
 
   function textFieldInputMode(field: FieldDef) {
@@ -726,20 +752,20 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     if (saving || !name.trim()) return;
     // In compact mode for category: parentId is required (cannot create root category directly)
     if (mode === "compact" && entityType === "category" && parentCategories && parentCategories.length > 0 && !form.parentId) {
-      setError("请选择上级分类");
+      setError(t("entityForm.selectParentCategory"));
       return;
     }
     if (entityType === "account" && isStockInvestmentAccount(form.kind || extraFields?.kind || defaultType, form.investProductType || extraFields?.investProductType || "fund")) {
       const selectedInstitution = (nestedFieldData.institutionId ?? []).find((item) => item.id === form.institutionId);
       if (!form.institutionId || (selectedInstitution && !isStockAccountInstitutionType(selectedInstitution.type))) {
-        setError(STOCK_ACCOUNT_INSTITUTION_ERROR);
+        setError(t("entityForm.error.stockAccountInstitution"));
         return;
       }
     }
     if (shouldShowInitialBalanceFields && form.initialBalance?.trim()) {
       const initialBalance = Number(form.initialBalance);
       if (!Number.isFinite(initialBalance)) {
-        setError("余额必须是有效数字");
+        setError(t("entityForm.error.invalidBalance"));
         return;
       }
     }
@@ -778,11 +804,11 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
           id: created.id,
           label: created.shortName?.trim?.() || created.name,
           subLabel: entityType === "account"
-            ? (created.AccountGroup?.name || kindLabel(created.kind))
+            ? (created.AccountGroup?.name || (created.kind ? t(`account.kind.${created.kind}`) : undefined))
             : entityType === "institution"
-              ? institutionTypeLabel(selectedTypeValue || created.type)
+              ? t(`institution.type.${selectedTypeValue || created.type || "other"}`)
               : entityType === "counterparty"
-                ? selectedTypeValue === "person" ? "往来人员" : "往来组织"
+                ? t(selectedTypeValue === "person" ? "institution.type.person" : "institution.type.organization")
               : undefined,
         });
         void notifySettingsDataChanged({
@@ -817,16 +843,16 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
           initForm();
         }
       } else {
-        setError(data.error ?? "创建失败");
+        setError(data.error ?? t("txForm.createFailed"));
       }
     } catch {
-      setError("网络错误，请重试");
+      setError(t("entityForm.error.networkError"));
     } finally {
       setSaving(false);
     }
   }
 
-  /** Handle nested entity creation (e.g., "+新增机构" inside account full form) */
+  /** Handle nested entity creation (e.g., "+ New Institution" inside the account full form) */
   function handleNestedCreated(id: string, name: string, extra?: { kind?: string; type?: string }) {
     // Add the newly created entity to the nested field data
     if (nestedEntityType === "institution") {
@@ -860,7 +886,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
               <div className="text-sm font-semibold text-slate-800">{displayTitle}</div>
               <button type="button" onClick={onClose}
                 className="secondary-button h-8 px-2">
-                关闭
+                {t("entityForm.close")}
               </button>
             </div>
             <form className="p-4 space-y-3" onSubmit={onSubmit}>
@@ -876,16 +902,16 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                 />
                 {dupWarning && <div className="text-xs text-amber-600">{dupWarning}</div>}
               </div>
-              {!shouldHideType && config.typeLabel && config.types.length > 0 && (
+              {!shouldHideType && config.typeLabelKey && config.types.length > 0 && (
                 <div className="space-y-1">
-                  <div className="form-label">{config.typeLabel}</div>
+                  <div className="form-label">{t(config.typeLabelKey)}</div>
                   <select
                     value={(typeKey ? form[typeKey] : "") ?? ""}
                     onChange={(e) => setForm(prev => ({ ...prev, ...(typeKey ? { [typeKey]: e.target.value } : {}), institutionId: "" }))}
                     className="form-input"
                   >
-                    {config.types.map((t) => (
-                      <option key={t.value} value={t.value}>{t.label}</option>
+                    {config.types.map((typeOption) => (
+                      <option key={typeOption.value} value={typeOption.value}>{optionLabel(t, typeOption)}</option>
                     ))}
                   </select>
                 </div>
@@ -895,7 +921,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                 if (field.type === "text") {
                   return (
                     <div key={field.key} className="space-y-1">
-                      <div className="form-label">{field.label}</div>
+                      <div className="form-label">{t(field.labelKey)}</div>
                       {renderTextControl(field, { readOnly: isReadOnlyField })}
                     </div>
                   );
@@ -913,19 +939,19 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                     ? dataList.map((item) => ({
                         id: item.id,
                         label: item.name,
-                        subLabel: institutionTypeLabel(item.type ?? null),
+                        subLabel: t(`institution.type.${item.type || "other"}`),
                       }))
                     : dataList.map((item) => ({
                         id: item.id,
                         label: item.name,
                       }));
-                  const selectPlaceholder = field.key === "groupId" ? "选择所有人" : "选择机构";
+                  const selectPlaceholder = field.key === "groupId" ? t("settings.accounts.selectOwner") : t("settings.accounts.selectInstitution");
                   if (isReadOnlyField) {
                     const label = ssOptions.find((option) => option.id === (form[field.key] ?? ""))?.label
-                      || (form[field.key] ? "已指定" : selectPlaceholder);
+                      || (form[field.key] ? t("entityForm.specified") : selectPlaceholder);
                     return (
                       <div key={field.key} className="space-y-1">
-                        <div className="form-label">{field.label}</div>
+                        <div className="form-label">{t(field.labelKey)}</div>
                         <div className="flex h-9 items-center rounded-[10px] border border-slate-200 bg-slate-50 px-3 text-sm text-slate-500">
                           {label}
                         </div>
@@ -935,7 +961,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
 
                   return (
                     <div key={field.key} className="space-y-1">
-                      <div className="form-label">{field.label}</div>
+                      <div className="form-label">{t(field.labelKey)}</div>
                       <SmartSelect
                         mode="single"
                         value={form[field.key] ?? defaultValueForField(field)}
@@ -944,7 +970,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                         placeholder={selectPlaceholder}
                         searchable={field.key === "institutionId"}
                         onCreateClick={() => { setNestedEntityType(field.nestedCreate!); setNestedOpen(true); }}
-                        createLabel={getSmartSelectCreateLabel(field.nestedCreate)}
+                        createLabel={getSmartSelectCreateLabel(t, field.nestedCreate)}
                       />
                     </div>
                   );
@@ -952,7 +978,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
 
                 return (
                   <div key={field.key} className="space-y-1">
-                    <div className="form-label">{field.label}</div>
+                    <div className="form-label">{t(field.labelKey)}</div>
                     <select
                       value={form[field.key] ?? defaultValueForField(field)}
                       onChange={(e) => setForm((prev) => ({
@@ -966,7 +992,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                         ? opts.filter((option) => allowedInstitutionTypes.includes(option.value))
                         : opts
                       ).map((option) => (
-                        <option key={option.value} value={option.value}>{option.label}</option>
+                        <option key={option.value} value={option.value}>{optionLabel(t, option)}</option>
                       ))}
                     </select>
                   </div>
@@ -976,7 +1002,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
               {/* Parent category selector - only for category entityType when parentCategories provided */}
               {entityType === "category" && parentCategories && parentCategories.length > 0 && (
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-foreground/60">上级分类</div>
+                  <div className="text-xs font-medium text-foreground/60">{t("entityForm.parentCategoryLabel")}</div>
                   <SmartSelect
                     mode="single"
                     value={form.parentId ?? ""}
@@ -992,7 +1018,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                         parentId: pc.parentId || undefined,
                       };
                     })}
-                    placeholder="请选择上级分类"
+                    placeholder={t("entityForm.selectParentCategory")}
                     behavior={{
                       hierarchy: true,
                       search: true,
@@ -1010,11 +1036,11 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
               <div className="flex justify-end gap-2">
                 <button type="button" onClick={onClose}
                   className="secondary-button h-9 px-3">
-                  取消
+                  {t("common.cancel")}
                 </button>
                 <button type="submit" disabled={saving || !(form.name?.trim())}
                   className="primary-button h-9 disabled:opacity-50">
-                  {saving ? "保存中..." : "保存"}
+                  {saving ? t("entityForm.saving") : t("common.save")}
                 </button>
               </div>
             </form>
@@ -1055,7 +1081,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
             if (field.type === "text") {
               return renderTextControl(field, {
                 className: field.multiline ? "min-w-[240px]" : "flex-1 min-w-[120px]",
-                placeholder: field.key === "name" ? displayNamePlaceholder : field.placeholder ?? field.label,
+                placeholder: field.key === "name" ? displayNamePlaceholder : (field.placeholderKey ? t(field.placeholderKey) : t(field.labelKey)),
                 required: field.key === "name",
               });
             }
@@ -1072,7 +1098,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                 {(field.key === "type" && entityType === "institution" && allowedInstitutionTypes?.length
                   ? opts.filter((option) => allowedInstitutionTypes.includes(option.value))
                   : opts
-                ).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                ).map(o => <option key={o.value} value={o.value}>{optionLabel(t, o)}</option>)}
               </select>
             );
           })}
@@ -1087,7 +1113,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
               <input
                 value={form.initialBalance ?? ""}
                 onChange={(event) => setForm((prev) => ({ ...prev, initialBalance: event.target.value }))}
-                placeholder="余额"
+                placeholder={t("detail.column.balance")}
                 className="form-input min-w-[120px] text-right tabular-nums"
                 inputMode="decimal"
               />
@@ -1098,7 +1124,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
             disabled={saving || !(form.name?.trim())}
             className="primary-button h-9 shrink-0"
           >
-            {saving ? "新增中..." : "新增"}
+            {saving ? t("entityForm.adding") : t("entityForm.add")}
           </button>
         </form>
         {error && <div className="text-xs text-red-500 mt-1">{error}</div>}
@@ -1133,7 +1159,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                 onClick={() => { props.onClose?.(); setError(""); initForm(); }}
                 className="secondary-button h-8 px-2"
               >
-                关闭
+                {t("entityForm.close")}
               </button>
             </div>
             <form className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" onSubmit={onSubmit}>
@@ -1143,7 +1169,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                   if (field.type === "text") {
                     return (
                       <div key={field.key} className={textFieldWrapperClassName(field)}>
-                        <label className="form-label mb-1 block">{field.label}</label>
+                        <label className="form-label mb-1 block">{t(field.labelKey)}</label>
                         {renderTextControl(field, { required: field.key === "name" })}
                       </div>
                     );
@@ -1161,17 +1187,17 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                       ? dataList.map(d => ({
                           id: d.id,
                           label: d.name,
-                          subLabel: institutionTypeLabel((d as { type?: string }).type ?? null),
+                          subLabel: t(`institution.type.${(d as { type?: string }).type || "other"}`),
                         }))
                       : dataList.map(d => ({
                           id: d.id,
                           label: d.name,
                         }));
-                    const selectPlaceholder = field.key === "groupId" ? "选择所有人" : "选择机构";
+                    const selectPlaceholder = field.key === "groupId" ? t("settings.accounts.selectOwner") : t("settings.accounts.selectInstitution");
 
                     return (
                       <div key={field.key}>
-                        <label className="form-label mb-1 block">{field.label}</label>
+                        <label className="form-label mb-1 block">{t(field.labelKey)}</label>
                         <SmartSelect
                           mode="single"
                           value={form[field.key] ?? defaultValueForField(field)}
@@ -1180,7 +1206,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                           placeholder={selectPlaceholder}
                           searchable={field.key === "institutionId"}
                           onCreateClick={() => { setNestedEntityType(field.nestedCreate!); setNestedOpen(true); }}
-                          createLabel={getSmartSelectCreateLabel(field.nestedCreate)}
+                          createLabel={getSmartSelectCreateLabel(t, field.nestedCreate)}
                         />
                       </div>
                     );
@@ -1188,7 +1214,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
 
                   return (
                     <div key={field.key}>
-                      <label className="form-label mb-1 block">{field.label}</label>
+                      <label className="form-label mb-1 block">{t(field.labelKey)}</label>
                       <select
                         value={form[field.key] ?? defaultValueForField(field)}
                         onChange={e => setForm(prev => ({ ...prev, ...selectFieldPatch(field, e.target.value, prev) }))}
@@ -1197,7 +1223,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                         {(field.key === "type" && entityType === "institution" && allowedInstitutionTypes?.length
                           ? opts.filter((option) => allowedInstitutionTypes.includes(option.value))
                           : opts
-                        ).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                        ).map(o => <option key={o.value} value={o.value}>{optionLabel(t, o)}</option>)}
                       </select>
                     </div>
                   );
@@ -1211,14 +1237,14 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                   onClick={() => { props.onClose?.(); setError(""); initForm(); }}
                   className="secondary-button h-9 px-4"
                 >
-                  取消
+                  {t("common.cancel")}
                 </button>
                 <button
                   type="submit"
                   disabled={saving || !(form.name?.trim())}
                   className="primary-button h-9"
                 >
-                  {saving ? "保存中..." : "创建"}
+                  {saving ? t("entityForm.saving") : t("entityForm.create")}
                 </button>
               </div>
             </form>
@@ -1263,7 +1289,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                 if (field.type === "text") {
                   return (
                     <div key={field.key} className={textFieldWrapperClassName(field)}>
-                      <label className="form-label mb-1 block">{field.label}</label>
+                      <label className="form-label mb-1 block">{t(field.labelKey)}</label>
                       {renderTextControl(field, { required: field.key === "name" })}
                     </div>
                   );
@@ -1285,7 +1311,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                     ssOptions = dataList.map(d => ({
                       id: d.id,
                       label: d.name,
-                      subLabel: institutionTypeLabel((d as { type?: string }).type ?? null),
+                      subLabel: t(`institution.type.${(d as { type?: string }).type || "other"}`),
                     }));
                   } else {
                     ssOptions = dataList.map(d => ({
@@ -1295,11 +1321,11 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                   }
 
                   // Placeholder text for the SmartSelect (no empty option in the list)
-                  const selectPlaceholder = field.key === "groupId" ? "选择所有人" : "选择机构";
+                  const selectPlaceholder = field.key === "groupId" ? t("settings.accounts.selectOwner") : t("settings.accounts.selectInstitution");
 
                   return (
                     <div key={field.key}>
-                      <label className="form-label mb-1 block">{field.label}</label>
+                      <label className="form-label mb-1 block">{t(field.labelKey)}</label>
                       <SmartSelect
                         mode="single"
                         value={form[field.key] ?? defaultValueForField(field)}
@@ -1308,7 +1334,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                         placeholder={selectPlaceholder}
                         searchable={field.key === "institutionId"}
                         onCreateClick={() => { setNestedEntityType(field.nestedCreate!); setNestedOpen(true); }}
-                        createLabel={getSmartSelectCreateLabel(field.nestedCreate)}
+                        createLabel={getSmartSelectCreateLabel(t, field.nestedCreate)}
                       />
                     </div>
                   );
@@ -1317,7 +1343,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                 // Static select (kind, type, costBasisMethod, etc.)
                 return (
                   <div key={field.key}>
-                    <label className="form-label mb-1 block">{field.label}</label>
+                    <label className="form-label mb-1 block">{t(field.labelKey)}</label>
                     <select
                       value={form[field.key] ?? defaultValueForField(field)}
                       onChange={e => setForm(prev => ({
@@ -1329,7 +1355,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                       {(field.key === "type" && entityType === "institution" && allowedInstitutionTypes?.length
                         ? opts.filter((option) => allowedInstitutionTypes.includes(option.value))
                         : opts
-                      ).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                      ).map(o => <option key={o.value} value={o.value}>{optionLabel(t, o)}</option>)}
                     </select>
                   </div>
                 );
@@ -1343,14 +1369,14 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                 onClick={() => { setExpanded(false); setError(""); initForm(); }}
                 className="secondary-button h-9 px-4"
               >
-                取消
+                {t("common.cancel")}
               </button>
               <button
                 type="submit"
                 disabled={saving || !(form.name?.trim())}
                 className="primary-button h-9"
               >
-                {saving ? "保存中..." : "创建"}
+                {saving ? t("entityForm.saving") : t("entityForm.create")}
               </button>
             </div>
           </form>

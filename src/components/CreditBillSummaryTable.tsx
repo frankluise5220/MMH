@@ -79,15 +79,15 @@ function installmentAvailableAmount(row: CreditBillSummaryRow | null | undefined
   return row ? creditBillUnpaidAmount(row) : 0;
 }
 
-function safeFileNamePart(value: string) {
-  return value.replace(/[\\/:*?"<>|]+/g, "_").trim() || "信用卡";
+function safeFileNamePart(value: string, t: (key: string, params?: Record<string, string | number>) => string) {
+  return value.replace(/[\\/:*?"<>|]+/g, "_").trim() || t("creditBillSummary.defaultFileAccount");
 }
 
-function creditBillStatusLabel(row: CreditBillSummaryRow) {
-  if (isCreditBillSettled(row)) return "已还款";
-  if (row.isCurrentCycle) return "未出账单";
-  if (row.effectiveBill < 0) return "溢缴";
-  if (row.effectiveBill > 0) return "待还款";
+function creditBillStatusLabel(row: CreditBillSummaryRow, t: (key: string, params?: Record<string, string | number>) => string) {
+  if (isCreditBillSettled(row)) return t("creditBill.settled");
+  if (row.isCurrentCycle) return t("creditBill.currentCycle");
+  if (row.effectiveBill < 0) return t("creditBillSummary.status.overpaid");
+  if (row.effectiveBill > 0) return t("creditBillSummary.status.pending");
   return "-";
 }
 
@@ -109,13 +109,6 @@ export function CreditBillSummaryTable({
 }: CreditBillSummaryTableProps) {
   const router = useRouter();
   const { t } = useI18n();
-  const tf = (key: string, values: Record<string, string | number>) => {
-    let text: string = t(key);
-    for (const [name, value] of Object.entries(values)) {
-      text = text.replaceAll(`{${name}}`, String(value));
-    }
-    return text;
-  };
   const [localRows, setLocalRows] = useState(rows);
   const [editingCycle, setEditingCycle] = useState<CreditBillSummaryRow | null>(null);
   const [cycleForm, setCycleForm] = useState({ periodStart: "", periodEnd: "", dueDate: "" });
@@ -296,7 +289,7 @@ export function CreditBillSummaryTable({
         }),
       });
       const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
-      if (!data?.ok) throw new Error(data?.error ?? "创建账单分期失败");
+      if (!data?.ok) throw new Error(data?.error ?? t("creditBillSummary.alert.createInstallmentFailed"));
       setInstallmentOpen(false);
       dispatchFinanceDataChanged({
         reason: "statement-installment",
@@ -304,7 +297,7 @@ export function CreditBillSummaryTable({
         statementMonth: installmentSourceMonth || undefined,
       });
     } catch (error) {
-      setInstallmentError(error instanceof Error ? error.message : "创建账单分期失败");
+      setInstallmentError(error instanceof Error ? error.message : t("creditBillSummary.alert.createInstallmentFailed"));
     } finally {
       setInstallmentSaving(false);
     }
@@ -406,30 +399,30 @@ export function CreditBillSummaryTable({
     const startIndex = options.findIndex((row) => row.month === exportStartMonth);
     const endIndex = options.findIndex((row) => row.month === exportEndMonth);
     if (startIndex < 0 || endIndex < 0) {
-      setExportError("请选择账单期起止范围。");
+      setExportError(t("creditBillSummary.alert.selectRange"));
       return;
     }
     const fromIndex = Math.min(startIndex, endIndex);
     const toIndex = Math.max(startIndex, endIndex);
     const selectedRows = options.slice(fromIndex, toIndex + 1);
     if (selectedRows.length === 0) {
-      setExportError("所选账单期没有可导出的记录。");
+      setExportError(t("creditBillSummary.alert.noExportRows"));
       return;
     }
 
     const exportRows: Array<Array<string | number>> = [[
-      "账单期",
-      "周期开始",
-      "周期结束",
-      "还款日",
-      "流出",
-      "流入",
-      "本期金额",
-      "账单金额",
-      "已还",
-      "未还",
-      "状态",
-      "人工调整",
+      t("creditBillSummary.exportPeriod"),
+      t("creditBill.periodStart"),
+      t("creditBillSummary.exportPeriodEnd"),
+      t("creditBill.dueDate"),
+      t("creditBill.outflow"),
+      t("creditBill.inflow"),
+      t("creditBillSummary.colNetAmount"),
+      t("creditBill.billAmount"),
+      t("creditBillSummary.exportPaid"),
+      t("creditBillSummary.exportUnpaid"),
+      t("depositShell.colStatus"),
+      t("creditBillSummary.exportOverride"),
     ]];
     for (const row of selectedRows) {
       exportRows.push([
@@ -443,20 +436,20 @@ export function CreditBillSummaryTable({
         row.effectiveBill,
         row.paid,
         creditBillUnpaidAmount(row),
-        creditBillStatusLabel(row),
-        row.hasOverride ? "是" : "",
+        creditBillStatusLabel(row, t),
+        row.hasOverride ? t("creditBillSummary.exportYes") : "",
       ]);
     }
 
     setExportBusy(true);
     setExportError("");
     try {
-      const start = selectedRows[0]?.month ?? "开始";
-      const end = selectedRows[selectedRows.length - 1]?.month ?? "结束";
+      const start = selectedRows[0]?.month ?? t("creditBillSummary.fileStart");
+      const end = selectedRows[selectedRows.length - 1]?.month ?? t("creditBillSummary.fileEnd");
       await exportRowsToXlsx(
         exportRows,
-        `${safeFileNamePart(accountName)}-信用卡账单-${start}_${end}.xlsx`,
-        "信用卡账单",
+        `${safeFileNamePart(accountName, t)}-${t("creditBillSummary.billSheetName")}-${start}_${end}.xlsx`,
+        t("creditBillSummary.billSheetName"),
       );
       setExportOpen(false);
     } catch (error) {
@@ -539,7 +532,7 @@ export function CreditBillSummaryTable({
     },
     {
       key: "netAmount",
-      label: "本期金额",
+      label: t("creditBillSummary.colNetAmount"),
       width: 112,
       minWidth: 96,
       align: "right",
@@ -574,7 +567,7 @@ export function CreditBillSummaryTable({
     },
     {
       key: "dueDate",
-      label: "还款日",
+      label: t("creditBill.dueDate"),
       width: 112,
       minWidth: 96,
       hideable: true,
@@ -582,23 +575,23 @@ export function CreditBillSummaryTable({
     },
     {
       key: "status",
-      label: "状态",
+      label: t("depositShell.colStatus"),
       width: 92,
       minWidth: 76,
       hideable: true,
       render: (row) => {
         const settled = isCreditBillSettled(row);
         if (settled) {
-          return <span className="whitespace-nowrap rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">已还款</span>;
+          return <span className="whitespace-nowrap rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">{t("creditBill.settled")}</span>;
         }
         if (row.isCurrentCycle) {
           return <span className="whitespace-nowrap text-xs text-amber-600">{t("creditBill.currentCycle")}</span>;
         }
         if (row.effectiveBill < 0) {
-          return <span className="whitespace-nowrap rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">溢缴</span>;
+          return <span className="whitespace-nowrap rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">{t("creditBillSummary.status.overpaid")}</span>;
         }
         if (row.effectiveBill > 0) {
-          return <span className="whitespace-nowrap text-xs text-slate-500">待还款</span>;
+          return <span className="whitespace-nowrap text-xs text-slate-500">{t("creditBillSummary.status.pending")}</span>;
         }
         return <span className="text-xs text-slate-300">-</span>;
       },
@@ -624,7 +617,7 @@ export function CreditBillSummaryTable({
               <Link href={buildHref((q) => q.set("billMonth", "all"))} prefetch={false} scroll={false} className={`flex h-6 items-center rounded border px-1.5 text-xs ${selectedBillMonth ? "border-slate-200 bg-white text-slate-600 hover:bg-slate-50" : "border-blue-300 bg-blue-50 text-blue-700"}`}>
                 {t("creditBill.all")}
               </Link>
-              <span className="whitespace-nowrap text-xs text-slate-500">共 {localRows.length} 期</span>
+              <span className="whitespace-nowrap text-xs text-slate-500">{t("creditBillSummary.cycleCount", { count: localRows.length })}</span>
               {totalPages > 1 ? (
                 <div className="ml-1 flex items-center gap-0.5">
                   <button type="button" onClick={() => setPage(1)} disabled={!canPrev} className={pageButtonClass(canPrev, "muted")} title={t("creditBill.firstPage")}>
@@ -651,10 +644,10 @@ export function CreditBillSummaryTable({
                 onClick={openStatementInstallment}
                 disabled={!billingDay || localRows.length === 0}
                 className="flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                title={billingDay ? "按日期创建账单分期，系统会自动归属到账单月" : "当前信用卡缺少账单日，无法创建账单分期"}
+                title={billingDay ? t("creditBillSummary.installmentTitle") : t("creditBillSummary.installmentDisabledTitle")}
               >
                 <CalendarClock className="h-3.5 w-3.5" />
-                账单分期
+                {t("creditBillSummary.installment")}
               </button>
               <ViewExcelImportMenuButton
                 kind="normal"
@@ -665,7 +658,7 @@ export function CreditBillSummaryTable({
                   accountName,
                 }}
                 exportItems={[{
-                  label: "导出 EXCEL 表",
+                  label: t("viewImport.exportExcel"),
                   onClick: openExportDialog,
                 }]}
               />
@@ -731,21 +724,21 @@ export function CreditBillSummaryTable({
             const active = selectedBillMonth === row.month || activeStatementMonth === row.month;
             return `cursor-pointer hover:bg-blue-50/40 ${active ? "bg-blue-50" : ""}`;
           }}
-          emptyText="暂无账单"
+          emptyText={t("creditBillSummary.empty")}
         />
       </div>
       {exportOpen ? (
         <div className="fixed inset-0 z-[85] flex items-center justify-center bg-slate-900/25 px-4">
           <div className="w-full max-w-md overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
             <div className="border-b border-slate-100 px-4 py-3">
-              <div className="text-sm font-semibold text-slate-800">导出信用卡账单 EXCEL 表</div>
+              <div className="text-sm font-semibold text-slate-800">{t("creditBillSummary.exportTitle")}</div>
               <div className="mt-1 text-xs text-slate-500">
-                按当前账单列表视图选择账单期起止范围，导出范围内全部账单期。
+                {t("creditBillSummary.exportDesc")}
               </div>
             </div>
             <div className="space-y-3 px-4 py-4">
               <label className="block">
-                <span className="mb-1 block text-xs font-medium text-slate-600">起始账单期</span>
+                <span className="mb-1 block text-xs font-medium text-slate-600">{t("creditBillSummary.exportStartLabel")}</span>
                 <select
                   value={exportStartMonth}
                   onChange={(event) => setExportStartMonth(event.target.value)}
@@ -753,13 +746,13 @@ export function CreditBillSummaryTable({
                 >
                   {exportBillOptions.map((row) => (
                     <option key={row.month} value={row.month}>
-                      {row.month}（{row.periodStart} ~ {row.periodEnd}）
+                      {t("creditBillSummary.exportOption", { month: row.month, start: row.periodStart, end: row.periodEnd })}
                     </option>
                   ))}
                 </select>
               </label>
               <label className="block">
-                <span className="mb-1 block text-xs font-medium text-slate-600">结束账单期</span>
+                <span className="mb-1 block text-xs font-medium text-slate-600">{t("creditBillSummary.exportEndLabel")}</span>
                 <select
                   value={exportEndMonth}
                   onChange={(event) => setExportEndMonth(event.target.value)}
@@ -767,7 +760,7 @@ export function CreditBillSummaryTable({
                 >
                   {exportBillOptions.map((row) => (
                     <option key={row.month} value={row.month}>
-                      {row.month}（{row.periodStart} ~ {row.periodEnd}）
+                      {t("creditBillSummary.exportOption", { month: row.month, start: row.periodStart, end: row.periodEnd })}
                     </option>
                   ))}
                 </select>
@@ -776,10 +769,10 @@ export function CreditBillSummaryTable({
             </div>
             <div className="flex justify-end gap-2 border-t border-slate-100 px-4 py-3">
               <button type="button" onClick={() => setExportOpen(false)} className="secondary-button h-8 px-3 text-xs" disabled={exportBusy}>
-                取消
+                {t("common.cancel")}
               </button>
               <button type="button" onClick={() => void exportBillExcel()} className="primary-button h-8 px-3 text-xs" disabled={exportBusy || exportBillOptions.length === 0}>
-                {exportBusy ? "导出中..." : "导出"}
+                {exportBusy ? t("creditBillSummary.exporting") : t("creditBillSummary.export")}
               </button>
             </div>
           </div>
@@ -790,17 +783,17 @@ export function CreditBillSummaryTable({
           <div className="w-full max-w-lg overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl">
             <div className="flex items-start justify-between border-b border-slate-100 px-4 py-3">
               <div>
-                <div className="text-sm font-semibold text-slate-800">账单分期</div>
+                <div className="text-sm font-semibold text-slate-800">{t("creditBillSummary.installment")}</div>
                 <div className="mt-1 text-xs tabular-nums text-slate-500">
-                  归属账单 {installmentSourceMonth || "-"}
-                  {installmentSourceRow ? ` · 参考未还 ${formatMoney(installmentAvailable)}` : ""}
+                  {t("creditBillSummary.belongMonth", { month: installmentSourceMonth || "-" })}
+                  {installmentSourceRow ? t("creditBillSummary.referenceUnpaid", { amount: formatMoney(installmentAvailable) }) : ""}
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setInstallmentOpen(false)}
                 className="inline-flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-                title="关闭"
+                title={t("creditBill.close")}
                 disabled={installmentSaving}
               >
                 <X className="h-4 w-4" />
@@ -809,17 +802,17 @@ export function CreditBillSummaryTable({
             <div className="space-y-4 px-4 py-4">
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_72px_minmax(92px,0.75fr)]">
                 <label className="space-y-1">
-                  <span className="form-label">分期金额</span>
+                  <span className="form-label">{t("txForm.installmentAmount")}</span>
                   <CalcInput
                     value={installmentForm.amount}
                     onChange={(value) => setInstallmentForm((prev) => ({ ...prev, amount: value }))}
-                    placeholder="例如：1200"
-                    label="分期金额"
+                    placeholder={t("creditBillSummary.installmentAmountPlaceholder")}
+                    label={t("txForm.installmentAmount")}
                     precision={2}
                   />
                 </label>
                 <label className="space-y-1">
-                  <span className="form-label">期数</span>
+                  <span className="form-label">{t("txForm.periods")}</span>
                   <input
                     type="number"
                     min={2}
@@ -831,7 +824,7 @@ export function CreditBillSummaryTable({
                   />
                 </label>
                 <label className="space-y-1">
-                  <span className="form-label">{installmentForm.rateType === "annual_interest" ? "年利率 (%)" : "每期费率 (%)"}</span>
+                  <span className="form-label">{installmentForm.rateType === "annual_interest" ? t("txForm.annualRatePercent") : t("txForm.periodRatePercent")}</span>
                   <input
                     type="number"
                     min={0}
@@ -845,7 +838,7 @@ export function CreditBillSummaryTable({
               </div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <label className="space-y-1">
-                  <span className="form-label">分期日期</span>
+                  <span className="form-label">{t("creditBillSummary.installmentDate")}</span>
                   <DateStepper
                     value={installmentForm.date}
                     onChange={(value) => {
@@ -868,7 +861,7 @@ export function CreditBillSummaryTable({
                   />
                 </label>
                 <label className="space-y-1">
-                  <span className="form-label">首期入账日期</span>
+                  <span className="form-label">{t("creditBillSummary.firstPaymentDate")}</span>
                   <DateStepper
                     value={installmentForm.firstPaymentDate}
                     onChange={(value) => setInstallmentForm((prev) => ({ ...prev, firstPaymentDate: value }))}
@@ -882,29 +875,31 @@ export function CreditBillSummaryTable({
                     onClick={() => setInstallmentForm((prev) => ({ ...prev, rateType: "period_fee" }))}
                     className={`px-3 text-xs ${installmentForm.rateType === "period_fee" ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-50"}`}
                   >
-                    每期手续费
+                    {t("txForm.periodFee")}
                   </button>
                   <button
                     type="button"
                     onClick={() => setInstallmentForm((prev) => ({ ...prev, rateType: "annual_interest" }))}
                     className={`border-l border-slate-200 px-3 text-xs ${installmentForm.rateType === "annual_interest" ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-50"}`}
                   >
-                    年利率
+                    {t("txForm.annualRate")}
                   </button>
                 </div>
                 {installmentPreview ? (
                   <div className="text-xs tabular-nums text-slate-500">
-                    首期本金 {formatMoney(installmentPreview.rows[0]?.principal ?? 0)}
+                    {t("creditBillSummary.firstPrincipal", { amount: formatMoney(installmentPreview.rows[0]?.principal ?? 0) })}
                     {" · "}
-                    首期{installmentForm.rateType === "annual_interest" ? "利息" : "手续费"} {formatMoney(installmentPreview.rows[0]?.interest ?? 0)}
+                    {installmentForm.rateType === "annual_interest"
+                      ? t("creditBillSummary.firstInterest", { amount: formatMoney(installmentPreview.rows[0]?.interest ?? 0) })
+                      : t("creditBillSummary.firstFee", { amount: formatMoney(installmentPreview.rows[0]?.interest ?? 0) })}
                     {" · "}
-                    首期合计 {formatMoney(installmentPreview.summary.firstPayment)}
+                    {t("creditBillSummary.firstTotal", { amount: formatMoney(installmentPreview.summary.firstPayment) })}
                   </div>
                 ) : null}
               </div>
               {installmentSourceRow && installmentSourceRow.isCurrentCycle ? (
                 <div className="rounded bg-amber-50 px-3 py-2 text-xs text-amber-700">
-                  当前日期归属到的账单还未出账，不能创建账单分期。
+                  {t("creditBillSummary.alert.billNotSettled")}
                 </div>
               ) : null}
               {installmentPreview ? (
@@ -912,11 +907,11 @@ export function CreditBillSummaryTable({
                   <table className="min-w-full text-xs tabular-nums">
                     <thead className="sticky top-0 bg-slate-50 text-slate-500">
                       <tr>
-                        <th className="px-2 py-1 text-left font-medium">期数</th>
-                        <th className="px-2 py-1 text-left font-medium">日期</th>
-                        <th className="px-2 py-1 text-right font-medium">本金</th>
-                        <th className="px-2 py-1 text-right font-medium">{installmentForm.rateType === "annual_interest" ? "利息" : "手续费"}</th>
-                        <th className="px-2 py-1 text-right font-medium">应还</th>
+                        <th className="px-2 py-1 text-left font-medium">{t("txForm.periods")}</th>
+                        <th className="px-2 py-1 text-left font-medium">{t("detail.column.date")}</th>
+                        <th className="px-2 py-1 text-right font-medium">{t("txForm.principal")}</th>
+                        <th className="px-2 py-1 text-right font-medium">{installmentForm.rateType === "annual_interest" ? t("txForm.interest") : t("txForm.fee")}</th>
+                        <th className="px-2 py-1 text-right font-medium">{t("txForm.dueAmount")}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -937,7 +932,7 @@ export function CreditBillSummaryTable({
             </div>
             <div className="flex justify-end gap-2 border-t border-slate-100 px-4 py-3">
               <button type="button" onClick={() => setInstallmentOpen(false)} className="secondary-button h-8 px-3 text-xs" disabled={installmentSaving}>
-                取消
+                {t("common.cancel")}
               </button>
               <button
                 type="button"
@@ -945,7 +940,7 @@ export function CreditBillSummaryTable({
                 className="primary-button h-8 px-3 text-xs"
                 disabled={installmentSaving || !installmentPreview || installmentBlocked}
               >
-                {installmentSaving ? "保存中..." : "创建账单分期"}
+                {installmentSaving ? t("creditBill.saving") : t("creditBillSummary.createInstallment")}
               </button>
             </div>
           </div>
@@ -955,7 +950,7 @@ export function CreditBillSummaryTable({
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/20 px-4">
           <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white shadow-xl">
             <div className="border-b border-slate-100 px-4 py-3">
-              <div className="text-sm font-semibold text-slate-800">{tf("creditBill.editCycleTitle", { month: editingCycle.month })}</div>
+              <div className="text-sm font-semibold text-slate-800">{t("creditBill.editCycleTitle", { month: editingCycle.month })}</div>
               <div className="mt-1 text-xs text-slate-500">{t("creditBill.editCycleDesc")}</div>
             </div>
             <div className="space-y-3 px-4 py-4">

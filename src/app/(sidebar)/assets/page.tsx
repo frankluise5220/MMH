@@ -1,8 +1,10 @@
 import { prisma } from "@/lib/db/prisma";
 import { AccountKind } from "@prisma/client";
 import { formatMoney } from "@/lib/format";
+import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getServerT } from "@/lib/server/i18n";
 import { cookies } from "next/headers";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
@@ -14,9 +16,10 @@ const ASSET_KINDS = [AccountKind.cash, AccountKind.bank_debit, AccountKind.ewall
 export default async function AssetsPage() {
   const ctx = await getHouseholdScope();
   const { hidFilter } = ctx;
+  const t = await getServerT();
   const cookieStore = await cookies();
   const isRedUp = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") === "red_up_green_down";
-  const pnlCls = (n: number) => n > 0 ? (isRedUp ? "text-red-600" : "text-emerald-700") : n < 0 ? (isRedUp ? "text-emerald-700" : "text-red-600") : "text-slate-600";
+  const pnlCls = (n: number) => pnlClassFromRedUp(n, isRedUp);
 
   const accounts = await prisma.account.findMany({
     where: { isActive: true, isPlaceholder: { not: true }, kind: { in: ASSET_KINDS }, ...hidFilter },
@@ -44,14 +47,14 @@ export default async function AssetsPage() {
           <ArrowLeft size={20} />
         </Link>
         <div>
-          <h1 className="text-2xl font-bold">💰 资产</h1>
-          <p className="text-sm text-slate-500 mt-1">共 {accounts.length} 个账户</p>
+          <h1 className="text-2xl font-bold">💰 {t("assets.title")}</h1>
+          <p className="text-sm text-slate-500 mt-1">{t("assets.accountCount", { count: accounts.length })}</p>
         </div>
       </div>
 
       <div className="page-card overflow-hidden mb-6">
         <div className="page-card-header">
-          <span className="page-title">资产合计</span>
+          <span className="page-title">{t("assets.total")}</span>
           <span className={`text-xl font-bold tabular-nums ${pnlCls(total)}`}>{formatMoney(total)}</span>
         </div>
       </div>
@@ -71,7 +74,7 @@ export default async function AssetsPage() {
                 <div>
                   <div className="font-semibold text-foreground">{prefix}{a.name}</div>
                   <div className="text-xs text-slate-400 mt-0.5">
-                    {a.kind === AccountKind.cash ? "现金" : a.kind === AccountKind.bank_debit ? "借记卡" : "电子钱包"}
+                    {a.kind === AccountKind.cash ? t("account.kind.cash") : a.kind === AccountKind.bank_debit ? t("account.kind.bank_debit") : t("account.kind.ewallet")}
                   </div>
                 </div>
                 <div className={`text-lg font-bold tabular-nums ${pnlCls(bal)}`}>{formatMoney(bal)}</div>
@@ -80,7 +83,7 @@ export default async function AssetsPage() {
           );
         })}
         {accounts.length === 0 && (
-          <div className="text-center py-8 text-slate-400">暂无资产账户</div>
+          <div className="text-center py-8 text-slate-400">{t("assets.empty")}</div>
         )}
       </div>
     </div>

@@ -131,6 +131,9 @@ MMH_UPDATER_IMAGE="ghcr.dockerproxy.net/frankluise5220/mmh-updater:latest"
 - `dockerproxy`：`ghcr.dockerproxy.net/frankluise5220/mmh:latest`
 - `nju`：`ghcr.nju.edu.cn/frankluise5220/mmh:latest`
 - `daocloud`：`ghcr.m.daocloud.io/frankluise5220/mmh:latest`
+- `fnvps`（自建源，推荐直连）：`fnapp.floatingice.win:5000/frankluise5220/mmh:latest`
+
+选择 `fnvps` 自建源时，MMH 应用和更新器镜像都从作者维护的 VPS Docker Registry 拉取，不依赖第三方加速源。该源由 VPS 定时从 GHCR 同步，发布新版后约 1 小时内在 VPS 上可用。使用前需要在 NAS 的 Docker 配置（`/etc/docker/daemon.json`）的 `insecure-registries` 里加入 `fnapp.floatingice.win:5000`，因为自建 registry 使用 HTTP 而非 HTTPS；不配置则 Docker 会拒绝连接。
 
 PostgreSQL 使用官方镜像：
 
@@ -234,3 +237,22 @@ MMH 应用镜像可以在网页的系统更新页切换镜像源。
 正常情况下不是。Docker 会复用已有镜像层，更新时只下载变化的层。
 
 第一次安装或第一次切换镜像源时，可能需要下载较大的基础层，这是正常现象。
+
+### 7.5 更新页面提示“更新失败 / Failed to fetch”，但系统实际已更新
+
+网页更新会拉取新镜像并重启 `mmh-app`。应用冷启动（数据库兼容迁移、Prisma 同步、Next.js 启动）在低功耗 NAS 上可能超过一分钟，期间页面会显示“服务正在重启，正在重新连接...”。
+
+如果页面在应用恢复之前就提示“更新失败 / Failed to fetch”，先不要急着重试，按下面步骤确认：
+
+1. 等 1 分钟，重新打开 `http://NAS_IP:7777/`。
+2. 进入 系统设置 -> 系统更新，看“当前版本”是否已经是新版本；如果是，说明更新实际已经成功，直接使用即可。
+3. 如果应用仍然打不开，在 NAS 终端检查：
+
+```bash
+cd ~/mmh
+sudo docker compose -p mmh ps
+sudo docker compose -p mmh logs --tail 50 app
+sudo docker compose -p mmh up -d app
+```
+
+说明：镜像拉取完成后，重启 `mmh-app` 不会删除数据，数据库容器 `mmh-db` 保持不变；“重启服务”之后更新进程会先确认应用能正常响应，再标记更新完成，所以页面最终会显示成功或给出可执行的恢复命令。

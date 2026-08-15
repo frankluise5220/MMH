@@ -233,7 +233,7 @@ export default function LedgerSettingsPage() {
       return;
     }
     if (!deleteForm.dbPassword.trim()) {
-      setError("请输入管理员密码");
+      setError("请输入当前用户密码");
       return;
     }
     setBusy(`delete:${deleteForm.householdId}`);
@@ -246,7 +246,7 @@ export default function LedgerSettingsPage() {
       });
       const verifyData = await readApiResult(verifyRes);
       if (!verifyRes.ok || !verifyData.ok) {
-        throw new Error(verifyData.error ?? "管理员密码验证失败");
+        throw new Error(verifyData.error ?? "当前用户密码验证失败");
       }
 
       const res = await fetch("/api/v1/households", {
@@ -555,7 +555,7 @@ export default function LedgerSettingsPage() {
               />
             </label>
             <label className="grid gap-1.5">
-              <span className="form-label inline-flex items-center gap-1.5"><Shield className="h-3.5 w-3.5 text-amber-500" />管理员密码</span>
+              <span className="form-label inline-flex items-center gap-1.5"><Shield className="h-3.5 w-3.5 text-amber-500" />当前用户密码</span>
               <input
                 type="password"
                 value={deleteForm.dbPassword}

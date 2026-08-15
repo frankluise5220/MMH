@@ -1,28 +1,38 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
+import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 
 export const runtime = "nodejs";
 
-function cors() {
-  return {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-  } as const;
-}
-
-export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: cors() });
+/**
+ * API Key 管理接口（仅管理员）。
+ *
+ * GET   /api/v1/settings/access-keys        → 列出全部 API Key（含明文，供管理员查看/复制）
+ * POST  /api/v1/settings/access-keys        → 新增 { name, key }
+ * DELETE /api/v1/settings/access-keys?id=…  → 删除指定 key
+ */
+async function requireAdmin(): Promise<{ ok: true } | { ok: false; response: NextResponse }> {
+  const user = await getCurrentUser();
+  if (!user) {
+    return { ok: false, response: NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 }) };
+  }
+  if (!isAdmin(user)) {
+    return { ok: false, response: NextResponse.json({ ok: false, error: "仅管理员可操作" }, { status: 403 }) };
+  }
+  return { ok: true };
 }
 
 export async function GET() {
+  const auth = await requireAdmin();
+  if (!auth.ok) return auth.response;
+
   const keys = await prisma.accessKey.findMany({
     orderBy: { createdAt: "desc" },
     select: { id: true, name: true, key: true, createdAt: true },
   });
 
-  return NextResponse.json({ ok: true, keys }, { headers: cors() });
+  return NextResponse.json({ ok: true, keys });
 }
 
 const CreateSchema = z.object({
@@ -31,10 +41,13 @@ const CreateSchema = z.object({
 });
 
 export async function POST(req: Request) {
+  const auth = await requireAdmin();
+  if (!auth.ok) return auth.response;
+
   const body = (await req.json().catch(() => null)) as unknown;
   const parse = CreateSchema.safeParse(body);
   if (!parse.success) {
-    return NextResponse.json({ ok: false, error: "缺少必填字段（name/key）" }, { status: 400, headers: cors() });
+    return NextResponse.json({ ok: false, error: "缺少必填字段（name/key）" }, { status: 400 });
   }
 
   const { name, key } = parse.data;
@@ -44,23 +57,26 @@ export async function POST(req: Request) {
     select: { id: true, name: true, key: true, createdAt: true },
   });
 
-  return NextResponse.json({ ok: true, key: created }, { headers: cors() });
+  return NextResponse.json({ ok: true, key: created });
 }
 
 export async function DELETE(req: Request) {
+  const auth = await requireAdmin();
+  if (!auth.ok) return auth.response;
+
   const { searchParams } = new URL(req.url);
   const id = searchParams.get("id") ?? "";
 
   if (!id) {
-    return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400, headers: cors() });
+    return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
   }
 
   const existing = await prisma.accessKey.findUnique({ where: { id } });
   if (!existing) {
-    return NextResponse.json({ ok: false, error: "API Key 不存在" }, { status: 404, headers: cors() });
+    return NextResponse.json({ ok: false, error: "API Key 不存在" }, { status: 404 });
   }
 
   await prisma.accessKey.delete({ where: { id } });
 
-  return NextResponse.json({ ok: true }, { headers: cors() });
+  return NextResponse.json({ ok: true });
 }

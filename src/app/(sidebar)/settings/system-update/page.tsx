@@ -90,6 +90,7 @@ const FIXED_IMAGE_SOURCE_OPTIONS = [
   { value: "dockerproxy", label: "dockerproxy", appImage: "ghcr.dockerproxy.net/frankluise5220/mmh:latest", updaterImage: "ghcr.dockerproxy.net/frankluise5220/mmh-updater:latest" },
   { value: "nju", label: "NJU", appImage: "ghcr.nju.edu.cn/frankluise5220/mmh:latest", updaterImage: "ghcr.nju.edu.cn/frankluise5220/mmh-updater:latest" },
   { value: "daocloud", label: "DaoCloud", appImage: "ghcr.m.daocloud.io/frankluise5220/mmh:latest", updaterImage: "ghcr.m.daocloud.io/frankluise5220/mmh-updater:latest" },
+  { value: "fnvps", label: "FN VPS", appImage: "fnapp.floatingice.win:5000/frankluise5220/mmh:latest", updaterImage: "fnapp.floatingice.win:5000/frankluise5220/mmh-updater:latest" },
 ];
 
 function formatVersionDate(value: string | undefined, timeZoneMode: TimeZoneMode, timeZone: string) {
@@ -326,9 +327,22 @@ export default function SystemUpdatePage() {
     let shouldContinue = true;
     let statusFetchFailures = 0;
     let lastCurrentStep = "";
+    let restartWaitStartedAt: number | null = null;
+    // 应用容器重启期间本页面无法连接应用，抓取失败属于正常现象。低功耗 NAS 上
+    // 应用冷启动（兼容迁移 + Prisma 同步 + Next.js 启动）可能超过一分钟，所以
+    // 重启阶段的等待预算按“连续不可用时长”计算，而不是按失败次数计算。
+    const RESTART_MAX_WAIT_MS = 8 * 60 * 1000;
+    const STATUS_FETCH_TIMEOUT_MS = 20 * 1000;
+    const MAX_UPSTREAM_ERRORS = 5;
     while (shouldContinue) {
       try {
-        const res = await fetch("/api/v1/settings/system-update?status=1", { method: "POST", cache: "no-store" });
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), STATUS_FETCH_TIMEOUT_MS);
+        const res = await fetch("/api/v1/settings/system-update?status=1", {
+          method: "POST",
+          cache: "no-store",
+          signal: controller.signal,
+        }).finally(() => clearTimeout(timer));
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || "查询更新状态失败");
         statusFetchFailures = 0;
@@ -371,24 +385,50 @@ export default function SystemUpdatePage() {
           await new Promise((resolve) => setTimeout(resolve, 1500));
         }
       } catch (e) {
-        statusFetchFailures += 1;
-        const isRestarting = lastCurrentStep === "重启服务";
-        if (isRestarting && statusFetchFailures <= 20) {
-          setSteps((prev) =>
-            prev.map((step) =>
-              step.label === "重启服务"
-                ? { ...step, status: "running", output: "服务正在重启，正在重新连接..." }
-                : step,
-            ),
+        const message = e instanceof Error ? e.message : "查询更新状态失败";
+        const isNetworkFailure =
+          e instanceof TypeError ||
+          (typeof DOMException !== "undefined" && e instanceof DOMException && e.name === "AbortError");
+        if (isNetworkFailure) {
+          // 连接不到应用：应用容器正在重启或尚未启动完成。这是重启阶段的正常现象，
+          // 按总等待时长给足预算，避免把“重启较慢”误报成“更新失败”。
+          if (restartWaitStartedAt === null) restartWaitStartedAt = Date.now();
+          const waitedMs = Date.now() - restartWaitStartedAt;
+          if (waitedMs < RESTART_MAX_WAIT_MS) {
+            setSteps((prev) =>
+              prev.map((step) =>
+                step.label === "重启服务"
+                  ? { ...step, status: "running", output: `服务正在重启，正在重新连接（已等待 ${Math.round(waitedMs / 1000)} 秒）...` }
+                  : step,
+              ),
+            );
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+            continue;
+          }
+          setUpdateDone(true);
+          setUpdateOk(false);
+          setUpdateError(
+            `应用服务在 ${Math.round(waitedMs / 1000)} 秒内未能恢复连接。镜像可能已经拉取成功，本次更新可能实际已经完成；` +
+            "请先在新标签页打开本地址确认服务是否可用。如果仍无法访问，请在 NAS 宿主机上检查：" +
+            "sudo docker compose ps、sudo docker compose logs --tail 50 app，然后执行 sudo docker compose up -d app 恢复。",
           );
-          await new Promise((resolve) => setTimeout(resolve, 1500));
-          continue;
+          setUpdating(false);
+          shouldContinue = false;
+        } else {
+          // 应用可访问，但更新执行器状态查询失败（例如执行器正在重建或已异常）。
+          statusFetchFailures += 1;
+          if (statusFetchFailures >= MAX_UPSTREAM_ERRORS) {
+            setUpdateDone(true);
+            setUpdateOk(false);
+            setUpdateError(
+              `更新执行器状态查询失败：${message}。请在 NAS 上确认 mmh-updater 容器运行正常：sudo docker compose ps。`,
+            );
+            setUpdating(false);
+            shouldContinue = false;
+          } else {
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+          }
         }
-        setUpdateDone(true);
-        setUpdateOk(false);
-        setUpdateError(e instanceof Error ? e.message : "查询更新状态失败");
-        setUpdating(false);
-        shouldContinue = false;
       }
     }
   }

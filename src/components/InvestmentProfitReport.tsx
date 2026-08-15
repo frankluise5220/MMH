@@ -1,10 +1,20 @@
 import { formatMoney } from "@/lib/format";
+import { pnlClassFromRedUp } from "@/lib/client/colors";
 import type {
   InvestmentProfitPeriod,
   InvestmentProfitReportRow,
 } from "@/lib/server/investment-profit-report";
+import { useI18n } from "@/lib/i18n";
 
-const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"];
+const WEEKDAY_LABEL_KEYS = [
+  "investmentProfitReport.weekday.mon",
+  "investmentProfitReport.weekday.tue",
+  "investmentProfitReport.weekday.wed",
+  "investmentProfitReport.weekday.thu",
+  "investmentProfitReport.weekday.fri",
+  "investmentProfitReport.weekday.sat",
+  "investmentProfitReport.weekday.sun",
+];
 
 type Props = {
   period: InvestmentProfitPeriod;
@@ -22,37 +32,39 @@ type Props = {
 };
 
 function valueClass(value: number, isRedUp: boolean) {
-  if (value > 0) return isRedUp ? "text-red-600" : "text-emerald-700";
-  if (value < 0) return isRedUp ? "text-emerald-700" : "text-red-600";
-  return "text-slate-500";
+  return pnlClassFromRedUp(value, isRedUp, "muted");
 }
 
 function signedMoney(value: number) {
   return `${value > 0 ? "+" : ""}${formatMoney(value)}`;
 }
 
-function periodTitle(period: InvestmentProfitPeriod, year: number, month: number) {
-  if (period === "day") return `${year}年${month}月日历市值收益`;
-  if (period === "month") return `${year}年月度市值收益`;
-  return "年度市值收益";
+function periodTitle(t: (key: string) => string, period: InvestmentProfitPeriod, year: number, month: number) {
+  if (period === "day") {
+    return t("investmentProfitReport.title.day")
+      .replace("{year}", String(year))
+      .replace("{month}", String(month));
+  }
+  if (period === "month") return t("investmentProfitReport.title.month").replace("{year}", String(year));
+  return t("investmentProfitReport.title.year");
 }
 
-function totalLabel(period: InvestmentProfitPeriod) {
-  if (period === "day") return "本月总市值收益";
-  if (period === "month") return "本年总市值收益";
-  return "累计总市值收益";
+function totalLabel(t: (key: string) => string, period: InvestmentProfitPeriod) {
+  if (period === "day") return t("investmentProfitReport.total.day");
+  if (period === "month") return t("investmentProfitReport.total.month");
+  return t("investmentProfitReport.total.year");
 }
 
-function totalRowLabel(period: InvestmentProfitPeriod) {
-  if (period === "day") return "本月合计";
-  if (period === "month") return "本年合计";
-  return "累计合计";
+function totalRowLabel(t: (key: string) => string, period: InvestmentProfitPeriod) {
+  if (period === "day") return t("investmentProfitReport.totalRow.day");
+  if (period === "month") return t("investmentProfitReport.totalRow.month");
+  return t("investmentProfitReport.totalRow.year");
 }
 
-function activePeriodLabel(period: InvestmentProfitPeriod) {
-  if (period === "day") return "有收益日";
-  if (period === "month") return "有收益月";
-  return "有收益年";
+function activePeriodLabel(t: (key: string) => string, period: InvestmentProfitPeriod) {
+  if (period === "day") return t("investmentProfitReport.activePeriod.day");
+  if (period === "month") return t("investmentProfitReport.activePeriod.month");
+  return t("investmentProfitReport.activePeriod.year");
 }
 
 function dailyCells(rows: InvestmentProfitReportRow[]) {
@@ -75,6 +87,7 @@ function ProfitNumber({ value, isRedUp }: { value: number; isRedUp: boolean }) {
 }
 
 export function InvestmentProfitReport({ period, year, month, rows, totals, isRedUp }: Props) {
+  const { t } = useI18n();
   const activeRows = rows.filter((row) => row.count > 0);
   const best = [...activeRows].sort((a, b) => b.totalProfit - a.totalProfit)[0] ?? null;
   const worst = [...activeRows].sort((a, b) => a.totalProfit - b.totalProfit)[0] ?? null;
@@ -83,13 +96,13 @@ export function InvestmentProfitReport({ period, year, month, rows, totals, isRe
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
         {[
-          { label: totalLabel(period), value: totals.totalProfit },
-          { label: "基金市值收益", value: totals.fundProfit },
-          { label: "理财收益", value: totals.wealthProfit },
-          { label: "存款收益", value: totals.depositProfit },
-          { label: activePeriodLabel(period), value: activeRows.length, count: true },
+          { key: "total", label: totalLabel(t, period), value: totals.totalProfit },
+          { key: "fund", label: t("investmentProfitReport.summary.fundProfit"), value: totals.fundProfit },
+          { key: "wealth", label: t("investmentProfitReport.summary.wealthProfit"), value: totals.wealthProfit },
+          { key: "deposit", label: t("investmentProfitReport.summary.depositProfit"), value: totals.depositProfit },
+          { key: "active", label: activePeriodLabel(t, period), value: activeRows.length, count: true },
         ].map((item) => (
-          <div key={item.label} className="rounded-lg border border-slate-200 bg-white p-3">
+          <div key={item.key} className="rounded-lg border border-slate-200 bg-white p-3">
             <div className="text-[11px] text-slate-500">{item.label}</div>
             <div className={`mt-1 text-base font-semibold tabular-nums ${item.count ? "text-slate-800" : valueClass(item.value, isRedUp)}`}>
               {item.count ? item.value : signedMoney(item.value)}
@@ -101,10 +114,18 @@ export function InvestmentProfitReport({ period, year, month, rows, totals, isRe
       <div className="rounded-lg border border-slate-200 bg-white">
         <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
           <div>
-            <div className="text-sm font-semibold text-slate-800">{periodTitle(period, year, month)}</div>
+            <div className="text-sm font-semibold text-slate-800">{periodTitle(t, period, year, month)}</div>
             <div className="mt-0.5 text-xs text-slate-500">
-              {best ? `最高 ${best.label} ${signedMoney(best.totalProfit)}` : "暂无收益记录"}
-              {worst && worst.key !== best?.key ? ` · 最低 ${worst.label} ${signedMoney(worst.totalProfit)}` : ""}
+              {best
+                ? t("investmentProfitReport.bestPeriod")
+                    .replace("{name}", best.label)
+                    .replace("{amount}", signedMoney(best.totalProfit))
+                : t("investmentProfitReport.noProfitRecords")}
+              {worst && worst.key !== best?.key
+                ? ` · ${t("investmentProfitReport.worstPeriod")
+                    .replace("{name}", worst.label)
+                    .replace("{amount}", signedMoney(worst.totalProfit))}`
+                : ""}
             </div>
           </div>
           <div className={`text-sm font-semibold tabular-nums ${valueClass(totals.totalProfit, isRedUp)}`}>
@@ -115,8 +136,8 @@ export function InvestmentProfitReport({ period, year, month, rows, totals, isRe
         {period === "day" ? (
           <div className="p-3">
             <div className="grid grid-cols-7 gap-1 border-b border-slate-100 pb-1">
-              {WEEKDAY_LABELS.map((label) => (
-                <div key={label} className="text-center text-[11px] text-slate-400">{label}</div>
+              {WEEKDAY_LABEL_KEYS.map((key) => (
+                <div key={key} className="text-center text-[11px] text-slate-400">{t(key)}</div>
               ))}
             </div>
             <div className="mt-1 grid grid-cols-7 gap-1">
@@ -141,9 +162,9 @@ export function InvestmentProfitReport({ period, year, month, rows, totals, isRe
                     </div>
                     {hasProfit ? (
                       <div className="mt-1 space-y-0.5 text-[10px] tabular-nums text-slate-400">
-                        {row.fundProfit !== 0 ? <div>基金 {signedMoney(row.fundProfit)}</div> : null}
-                        {row.wealthProfit !== 0 ? <div>理财 {signedMoney(row.wealthProfit)}</div> : null}
-                        {row.depositProfit !== 0 ? <div>存款 {signedMoney(row.depositProfit)}</div> : null}
+                        {row.fundProfit !== 0 ? <div>{t("investmentProfitReport.daily.fund")} {signedMoney(row.fundProfit)}</div> : null}
+                        {row.wealthProfit !== 0 ? <div>{t("investmentProfitReport.daily.wealth")} {signedMoney(row.wealthProfit)}</div> : null}
+                        {row.depositProfit !== 0 ? <div>{t("investmentProfitReport.daily.deposit")} {signedMoney(row.depositProfit)}</div> : null}
                       </div>
                     ) : null}
                   </div>
@@ -156,12 +177,12 @@ export function InvestmentProfitReport({ period, year, month, rows, totals, isRe
             <table className="w-full table-fixed border-separate border-spacing-0">
               <thead className="sticky top-0 bg-white">
                 <tr>
-                  <th className="border-b border-slate-200 px-4 py-2 text-left text-xs font-semibold text-slate-600">期间</th>
-                  <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">基金市值收益</th>
-                  <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">理财收益</th>
-                  <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">存款收益</th>
-                  <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">合计</th>
-                  <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">来源数</th>
+                  <th className="border-b border-slate-200 px-4 py-2 text-left text-xs font-semibold text-slate-600">{t("investmentProfitReport.colPeriod")}</th>
+                  <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">{t("investmentProfitReport.summary.fundProfit")}</th>
+                  <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">{t("investmentProfitReport.summary.wealthProfit")}</th>
+                  <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">{t("investmentProfitReport.summary.depositProfit")}</th>
+                  <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">{t("common.total")}</th>
+                  <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">{t("investmentProfitReport.colSourceCount")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -178,7 +199,7 @@ export function InvestmentProfitReport({ period, year, month, rows, totals, isRe
               </tbody>
               <tfoot className="sticky bottom-0 bg-slate-50">
                 <tr>
-                  <td className="border-t border-slate-200 px-4 py-2 text-xs font-semibold text-slate-700">{totalRowLabel(period)}</td>
+                  <td className="border-t border-slate-200 px-4 py-2 text-xs font-semibold text-slate-700">{totalRowLabel(t, period)}</td>
                   <td className="border-t border-slate-200 px-3 py-2 text-right text-xs"><ProfitNumber value={totals.fundProfit} isRedUp={isRedUp} /></td>
                   <td className="border-t border-slate-200 px-3 py-2 text-right text-xs"><ProfitNumber value={totals.wealthProfit} isRedUp={isRedUp} /></td>
                   <td className="border-t border-slate-200 px-3 py-2 text-right text-xs"><ProfitNumber value={totals.depositProfit} isRedUp={isRedUp} /></td>

@@ -11,10 +11,12 @@ import {
   Wallet,
 } from "lucide-react";
 
-import { formatMoney, formatMoneyYuan } from "@/lib/format";
+import { formatMoney, formatMoneyYuan, formatPercent } from "@/lib/format";
+import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { InsuranceOverviewCard, type InsuranceOverview } from "@/components/InsuranceOverviewCard";
 import { getInvestmentAccountView } from "@/lib/account-kind-utils";
 import { MobileOverviewDashboard } from "@/components/mobile/MobileOverviewDashboard";
+import { useI18n } from "@/lib/i18n";
 
 export type AssetDistItem = {
   kind: string;
@@ -112,15 +114,11 @@ const ZERO_TOTALS: AccountTypeTotals = {
 };
 
 function directionalClass(value: number, isRedUp: boolean) {
-  if (value > 0) return isRedUp ? "text-red-600" : "text-emerald-600";
-  if (value < 0) return isRedUp ? "text-emerald-600" : "text-red-600";
-  return "text-slate-500";
+  return pnlClassFromRedUp(value, isRedUp, "softMuted");
 }
 
 function liabilityClass(value: number, isRedUp: boolean) {
-  if (value > 0) return isRedUp ? "text-emerald-600" : "text-red-600";
-  if (value < 0) return isRedUp ? "text-red-600" : "text-emerald-600";
-  return "text-slate-500";
+  return pnlClassFromRedUp(value, isRedUp, "softMuted", true);
 }
 
 function distributionBarClass(index: number) {
@@ -129,7 +127,7 @@ function distributionBarClass(index: number) {
 }
 
 function formatRate(value: number) {
-  return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%`;
+  return formatPercent(value);
 }
 
 export function OverviewDashboard({
@@ -152,13 +150,14 @@ export function OverviewDashboard({
   isRedUp,
 }: OverviewDashboardProps) {
   const totals: AccountTypeTotals = { ...ZERO_TOTALS, ...(accountTypeTotals ?? {}) };
+  const { t } = useI18n();
   const investMarketValue = investmentMarketValue ?? totals.investmentMarketValue;
   const investCost = investmentCost ?? totals.investmentCost;
   const investFloatingPnL = investmentFloatingPnL ?? totals.investmentFloatingPnL;
   const investFloatingRate = investmentFloatingPnLRate ?? (investCost > 0 ? investFloatingPnL / investCost : 0);
   const monthNet = monthIncome - monthExpense;
   const netLiabilities = totals.liabilities - totals.loanReceivable;
-  const netDebtLabel = netLiabilities >= 0 ? "净负债" : "净债权";
+  const netDebtLabel = netLiabilities >= 0 ? t("overview.netDebt") : t("overview.netCredit");
   const netDebtAmount = Math.abs(netLiabilities);
   const netDebtClass = netLiabilities >= 0
     ? liabilityClass(netDebtAmount, isRedUp)
@@ -221,19 +220,19 @@ export function OverviewDashboard({
           <div className="grid gap-4 px-5 py-4 md:grid-cols-[minmax(220px,1fr)_2.2fr] md:items-center md:px-6">
             <div>
               <div className="text-xs font-medium tracking-[0.18em] text-slate-400 uppercase">Overview</div>
-              <div className="mt-1 text-sm text-slate-500">总净值</div>
+              <div className="mt-1 text-sm text-slate-500">{t("overview.netWorth")}</div>
               <div className={`mt-1 break-all text-3xl font-semibold md:text-4xl ${directionalClass(netWorth, isRedUp)}`}>
                 {formatMoneyYuan(netWorth)}
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-              <MetricCard label="流动资产" value={formatMoneyYuan(totals.liquidAssets)} valueClass={directionalClass(totals.liquidAssets, isRedUp)} />
+              <MetricCard label={t("overview.liquidAssets")} value={formatMoneyYuan(totals.liquidAssets)} valueClass={directionalClass(totals.liquidAssets, isRedUp)} />
               <MetricCard label={netDebtLabel} value={formatMoneyYuan(netDebtAmount)} valueClass={netDebtClass} />
               {showInvestmentOverview ? (
-                <MetricCard label="投资市值" value={formatMoneyYuan(investMarketValue)} valueClass={directionalClass(investMarketValue, isRedUp)} />
+                <MetricCard label={t("overview.investMarketValue")} value={formatMoneyYuan(investMarketValue)} valueClass={directionalClass(investMarketValue, isRedUp)} />
               ) : null}
               {showInsuranceOverview ? (
-                <MetricCard label="保险现金价值" value={formatMoneyYuan(totals.insuranceAsset)} valueClass={directionalClass(totals.insuranceAsset, isRedUp)} />
+                <MetricCard label={t("overview.insuranceCashValue")} value={formatMoneyYuan(totals.insuranceAsset)} valueClass={directionalClass(totals.insuranceAsset, isRedUp)} />
               ) : null}
             </div>
           </div>
@@ -245,9 +244,9 @@ export function OverviewDashboard({
               <div className="panel-header">
                 <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                   <PiggyBank className="h-4 w-4 text-emerald-500" />
-                  投资总览
+                  {t("overview.investmentOverview")}
                 </div>
-                <Link href="/investments" className="text-xs text-blue-600 hover:text-blue-800">进入投资</Link>
+                <Link href="/investments" className="text-xs text-blue-600 hover:text-blue-800">{t("overview.enterInvestment")}</Link>
               </div>
               <div className="space-y-4 px-4 py-4">
                 <InvestmentCostProfitBar
@@ -255,10 +254,10 @@ export function OverviewDashboard({
                   floatingPnL={investFloatingPnL}
                 />
                 <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                  <MetricCard label="投资市值" value={formatMoneyYuan(investMarketValue)} valueClass={directionalClass(investMarketValue, isRedUp)} />
-                  <MetricCard label="持仓成本" value={formatMoneyYuan(investCost)} />
-                  <MetricCard label="浮动盈亏" value={formatMoneyYuan(investFloatingPnL)} valueClass={directionalClass(investFloatingPnL, isRedUp)} />
-                  <MetricCard label="浮盈率" value={formatRate(investFloatingRate)} valueClass={directionalClass(investFloatingRate, isRedUp)} />
+                  <MetricCard label={t("overview.investMarketValue")} value={formatMoneyYuan(investMarketValue)} valueClass={directionalClass(investMarketValue, isRedUp)} />
+                  <MetricCard label={t("overview.holdingCost")} value={formatMoneyYuan(investCost)} />
+                  <MetricCard label={t("overview.floatingPnL")} value={formatMoneyYuan(investFloatingPnL)} valueClass={directionalClass(investFloatingPnL, isRedUp)} />
+                  <MetricCard label={t("overview.floatingRate")} value={formatRate(investFloatingRate)} valueClass={directionalClass(investFloatingRate, isRedUp)} />
                 </div>
               </div>
               <div className="divide-y divide-slate-100 border-t border-slate-100">
@@ -277,7 +276,7 @@ export function OverviewDashboard({
                     </Link>
                   ))
                 ) : (
-                  <div className="px-4 py-8 text-center text-sm text-slate-400">暂无投资持仓</div>
+                  <div className="px-4 py-8 text-center text-sm text-slate-400">{t("overview.noInvestmentPositions")}</div>
                 )}
               </div>
             </div>
@@ -287,17 +286,17 @@ export function OverviewDashboard({
             <div className="panel-header">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                 <Wallet className="h-4 w-4 text-blue-500" />
-                日常账户
+                {t("overview.dailyAccounts")}
               </div>
-              <Link href="/accounts" className="text-xs text-blue-600 hover:text-blue-800">查看全部</Link>
+              <Link href="/accounts" className="text-xs text-blue-600 hover:text-blue-800">{t("overview.viewAll")}</Link>
             </div>
             <div className="space-y-4 px-4 py-4">
               <DailyAccountDistributionBar items={assetDistribution} />
               <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                <MetricCard label="现金" value={formatMoneyYuan(totals.cash)} valueClass={directionalClass(totals.cash, isRedUp)} />
-                <MetricCard label="借记卡" value={formatMoneyYuan(totals.bankDebit)} valueClass={directionalClass(totals.bankDebit, isRedUp)} />
-                <MetricCard label="电子钱包" value={formatMoneyYuan(totals.ewallet)} valueClass={directionalClass(totals.ewallet, isRedUp)} />
-                <MetricCard label="存款" value={formatMoneyYuan(totals.deposit)} valueClass={directionalClass(totals.deposit, isRedUp)} />
+                <MetricCard label={t("overview.cash")} value={formatMoneyYuan(totals.cash)} valueClass={directionalClass(totals.cash, isRedUp)} />
+                <MetricCard label={t("overview.debitCard")} value={formatMoneyYuan(totals.bankDebit)} valueClass={directionalClass(totals.bankDebit, isRedUp)} />
+                <MetricCard label={t("overview.ewallet")} value={formatMoneyYuan(totals.ewallet)} valueClass={directionalClass(totals.ewallet, isRedUp)} />
+                <MetricCard label={t("overview.deposit")} value={formatMoneyYuan(totals.deposit)} valueClass={directionalClass(totals.deposit, isRedUp)} />
               </div>
             </div>
             <div className="divide-y divide-slate-100 border-t border-slate-100">
@@ -312,7 +311,7 @@ export function OverviewDashboard({
                   </Link>
                 ))
               ) : (
-                <div className="px-4 py-10 text-center text-sm text-slate-400">暂无日常账户</div>
+                <div className="px-4 py-10 text-center text-sm text-slate-400">{t("overview.noDailyAccounts")}</div>
               )}
             </div>
           </div>
@@ -326,9 +325,9 @@ export function OverviewDashboard({
               <div className="panel-header">
                 <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                   <CreditCard className="h-4 w-4 text-amber-500" />
-                  信用卡
+                  {t("overview.creditCards")}
                 </div>
-                <Link href="/accounts?tab=credit" className="text-xs text-blue-600 hover:text-blue-800">查看全部</Link>
+                <Link href="/accounts?tab=credit" className="text-xs text-blue-600 hover:text-blue-800">{t("overview.viewAll")}</Link>
               </div>
               <div className="space-y-4 px-4 py-4">
                 <CreditBillProgressBar bill={creditBillTotal} paid={creditPaidTotal} />
@@ -348,7 +347,7 @@ export function OverviewDashboard({
                   </Link>
                 ))}
                 {creditCards.length === 0 && (
-                  <div className="px-4 py-10 text-center text-sm text-slate-400">暂无信用卡账单</div>
+                  <div className="px-4 py-10 text-center text-sm text-slate-400">{t("overview.noCreditBills")}</div>
                 )}
               </div>
             </div>
@@ -359,14 +358,14 @@ export function OverviewDashboard({
               <div className="panel-header">
                 <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                   <HandCoins className="h-4 w-4 text-rose-500" />
-                  债务/债权
+                  {t("overview.debtCredit")}
                 </div>
-                <Link href="/liabilities" className="text-xs text-blue-600 hover:text-blue-800">查看全部</Link>
+                <Link href="/liabilities" className="text-xs text-blue-600 hover:text-blue-800">{t("overview.viewAll")}</Link>
               </div>
               <div className="grid grid-cols-2 gap-3 px-4 py-4 sm:grid-cols-3">
-                <MetricCard label="我欠别人" value={formatMoneyYuan(-totals.loan)} valueClass={directionalClass(-totals.loan, isRedUp)} />
-                <MetricCard label="别人欠我" value={formatMoneyYuan(totals.loanReceivable)} valueClass={directionalClass(totals.loanReceivable, isRedUp)} />
-                <MetricCard label="账户数" value={`${debtAccounts.length} 个`} />
+                <MetricCard label={t("overview.iOwe")} value={formatMoneyYuan(-totals.loan)} valueClass={directionalClass(-totals.loan, isRedUp)} />
+                <MetricCard label={t("overview.owedToMe")} value={formatMoneyYuan(totals.loanReceivable)} valueClass={directionalClass(totals.loanReceivable, isRedUp)} />
+                <MetricCard label={t("overview.accountCount")} value={t("overview.accountCountValue", { count: debtAccounts.length })} />
               </div>
               <div className="grid grid-cols-1 gap-3 px-4 pb-4 sm:grid-cols-2">
                 {debtAccounts.slice(0, 4).map((account) => (
@@ -377,7 +376,7 @@ export function OverviewDashboard({
                     className="rounded-lg border border-slate-100 bg-slate-50/80 px-3 py-3 transition-colors hover:border-rose-200 hover:bg-rose-50/30"
                   >
                     <div className="line-clamp-2 min-h-[40px] text-sm font-semibold leading-5 text-slate-800">{account.name}</div>
-                    <div className="mt-3 text-[11px] text-slate-400">{account.balance >= 0 ? "别人欠我" : "我欠别人"}</div>
+                    <div className="mt-3 text-[11px] text-slate-400">{account.balance >= 0 ? t("overview.owedToMe") : t("overview.iOwe")}</div>
                     <div className={`mt-0.5 text-base font-semibold tabular-nums ${directionalClass(account.balance, isRedUp)}`}>{formatMoney(account.balance)}</div>
                   </Link>
                 ))}
@@ -388,19 +387,19 @@ export function OverviewDashboard({
 
         <section className="grid grid-cols-1 gap-3 md:grid-cols-3">
           <CashFlowCard
-            label="本月收入"
+            label={t("overview.thisMonthIncome")}
             value={formatMoneyYuan(monthIncome)}
             icon={ArrowUpRight}
             className={isRedUp ? "text-red-600" : "text-emerald-600"}
           />
           <CashFlowCard
-            label="本月支出"
+            label={t("overview.thisMonthExpense")}
             value={formatMoneyYuan(-monthExpense)}
             icon={ArrowDownRight}
             className={isRedUp ? "text-emerald-600" : "text-red-600"}
           />
           <CashFlowCard
-            label="本月净流入"
+            label={t("overview.thisMonthNet")}
             value={formatMoneyYuan(monthNet)}
             icon={Wallet}
             className={directionalClass(monthNet, isRedUp)}
@@ -433,14 +432,15 @@ function InvestmentCostProfitBar({
   const total = cost + pnlAbs;
   const costPct = total > 0 ? Math.max(0, Math.min(100, (cost / total) * 100)) : 0;
   const pnlPct = total > 0 ? 100 - costPct : 0;
+  const { t } = useI18n();
   const isLoss = floatingPnL < 0;
-  const pnlLabel = isLoss ? "亏损" : "收益";
+  const pnlLabel = isLoss ? t("overview.loss") : t("overview.profit");
   const pnlClass = isLoss ? "bg-emerald-500" : "bg-red-500";
 
   if (total <= 0) {
     return (
       <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/80 px-4 py-3 text-sm text-slate-400">
-        暂无投资分布
+        {t("overview.noInvestmentDistribution")}
       </div>
     );
   }
@@ -451,18 +451,18 @@ function InvestmentCostProfitBar({
         <div
           className="bg-slate-900 transition-all"
           style={{ width: `${Math.max(costPct, cost > 0 ? 2 : 0)}%` }}
-          title={`持仓成本 ${formatMoneyYuan(cost)}`}
+          title={t("overview.costTitle", { amount: formatMoneyYuan(cost) })}
         />
         <div
           className={`${pnlClass} transition-all`}
           style={{ width: `${Math.max(pnlPct, pnlAbs > 0 ? 2 : 0)}%` }}
-          title={`${pnlLabel} ${formatMoneyYuan(floatingPnL)}`}
+          title={t("overview.pnlTitle", { label: pnlLabel, amount: formatMoneyYuan(floatingPnL) })}
         />
       </div>
       <div className="flex items-center gap-4 text-[11px] text-slate-500">
         <span className="inline-flex items-center gap-1">
           <span className="h-2 w-2 rounded-full bg-slate-900" />
-          持仓成本
+          {t("overview.holdingCost")}
         </span>
         <span className="inline-flex items-center gap-1">
           <span className={`h-2 w-2 rounded-full ${pnlClass}`} />
@@ -474,10 +474,11 @@ function InvestmentCostProfitBar({
 }
 
 function DailyAccountDistributionBar({ items }: { items: AssetDistItem[] }) {
+  const { t } = useI18n();
   if (items.length === 0) {
     return (
       <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/80 px-4 py-3 text-sm text-slate-400">
-        暂无日常账户分布
+        {t("overview.noDailyDistribution")}
       </div>
     );
   }
@@ -521,11 +522,12 @@ function CreditBillProgressBar({
   const remain = Math.max(0, safeBill - safePaid);
   const paidPct = safeBill > 0 ? (safePaid / safeBill) * 100 : 0;
   const remainPct = safeBill > 0 ? (remain / safeBill) * 100 : 0;
+  const { t } = useI18n();
 
   if (safeBill <= 0) {
     return (
       <div className={`rounded-lg border border-dashed border-slate-200 bg-slate-50/80 text-slate-400 ${compact ? "px-3 py-2 text-xs" : "px-4 py-3 text-sm"}`}>
-        暂无账单进度
+        {t("overview.noBillProgress")}
       </div>
     );
   }
@@ -536,23 +538,23 @@ function CreditBillProgressBar({
         <div
           className="bg-emerald-500 transition-all"
           style={{ width: `${Math.max(paidPct, safePaid > 0 ? 2 : 0)}%` }}
-          title={`已还 ${formatMoneyYuan(safePaid)}`}
+          title={t("overview.paidTitle", { amount: formatMoneyYuan(safePaid) })}
         />
         <div
           className="bg-amber-500 transition-all"
           style={{ width: `${Math.max(remainPct, remain > 0 ? 2 : 0)}%` }}
-          title={`待还 ${formatMoneyYuan(remain)}`}
+          title={t("overview.remainTitle", { amount: formatMoneyYuan(remain) })}
         />
       </div>
       {!compact && (
         <div className="flex items-center gap-4 text-[11px] text-slate-500">
           <span className="inline-flex items-center gap-1">
             <span className="h-2 w-2 rounded-full bg-amber-500" />
-            本期账单
+            {t("overview.currentBill")}
           </span>
           <span className="inline-flex items-center gap-1">
             <span className="h-2 w-2 rounded-full bg-emerald-500" />
-            已还金额
+            {t("overview.paidAmount")}
           </span>
         </div>
       )}

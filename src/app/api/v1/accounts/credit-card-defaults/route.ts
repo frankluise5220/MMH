@@ -13,7 +13,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 export async function GET(request: Request) {
   const institutionId = new URL(request.url).searchParams.get("institutionId")?.trim() ?? "";
   if (!institutionId) {
-    return NextResponse.json({ ok: false, error: "缺少机构 ID" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_INSTITUTION_ID", error: "缺少机构 ID" }, { status: 400 });
   }
   const { householdId } = await getHouseholdScope();
   const data = await getCreditCardInstitutionDefaults(prisma, householdId, institutionId);

@@ -24,6 +24,9 @@ import {
   type SettingsDataChangedDetail,
 } from "@/lib/client/settingsCache";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
+import { showConfirmDialog } from "@/lib/client/confirm-dialog";
+import { parseDateInputToUtc as dateInputToUtcDate } from "@/lib/date-utils";
+import { useI18n } from "@/lib/i18n";
 import {
   buildCreditCardInstallmentSchedule,
   summarizeCreditCardInstallments,
@@ -77,9 +80,9 @@ type OpenFromAiDetail = {
   defaultAccountId?: string;
   defaultFromAccountId?: string;
   defaultToAccountId?: string;
-  /** 锁定记账类型：打开后只保留该类型，隐藏支出/收入/代付切换 tab（如银证转账只允许转账）。 */
+  /** Locks the entry type: only this type is kept and the expense/income/advance tab switcher is hidden (e.g. stock-to-cash transfer only allows transfer). */
   lockedType?: TxType;
-  /** 银证转账模式：转入账户固定为当前股票机构下的证券资金账户，转出账户从同一所有人的资金账户选择。 */
+  /** Stock-to-cash transfer mode: the target account is fixed to the securities cash account of the current stock institution, and the source account is chosen from cash accounts of the same owner. */
   stockTransferMode?: boolean;
   stockCashAccountId?: string;
   stockCashAccountName?: string;
@@ -117,13 +120,6 @@ function toDateInputValue(value: string | null | undefined) {
   ].join("-");
 }
 
-function dateInputToUtcDate(value: string) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) return null;
-  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
-  return Number.isFinite(date.getTime()) ? date : null;
-}
-
 function parseMoneyDraft(value: string) {
   const parsed = Number(String(value ?? "").replace(/,/g, "").trim());
   return Number.isFinite(parsed) ? parsed : 0;
@@ -139,9 +135,9 @@ function formatFxRate(value: number) {
   return value.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
 }
 
-function formatFxQuoteAmount(value: number) {
+function formatFxQuoteAmount(value: number, locale: string) {
   if (!Number.isFinite(value) || value <= 0) return "";
-  return value.toLocaleString("zh-CN", {
+  return value.toLocaleString(locale, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
@@ -338,6 +334,7 @@ export function TransactionFormModal({
   nestedFieldData?: NestedFieldData;
   hideTrigger?: boolean;
 }) {
+  const { t, language } = useI18n();
   const [open, setOpen] = useState(false);
   const [txType, setTxType] = useState<TxType>("expense");
   const [lockedType, setLockedType] = useState<TxType | null>(null);
@@ -349,6 +346,16 @@ export function TransactionFormModal({
   const [editEntryOriginalType, setEditEntryOriginalType] = useState<TxType | null>(null);
   const [editEntryHasFundDetail, setEditEntryHasFundDetail] = useState(false);
   const [editOriginalTransferAccounts, setEditOriginalTransferAccounts] = useState<{ fromAccountId: string; toAccountId: string } | null>(null);
+  // Original balance-affecting values captured when an edit dialog opens,
+  // used to decide whether the save changes any balance (refresh scope).
+  const editOriginalRef = useRef<{
+    type: TxType;
+    amountStored: number;
+    date: string;
+    accountId?: string;
+    fromAccountId?: string;
+    toAccountId?: string;
+  } | null>(null);
   const [fromAccountIdEdited, setFromAccountIdEdited] = useState(false);
   const [categoryList, setCategoryList] = useState(expenseCategories);
   const [categoryNestedOpen, setCategoryNestedOpen] = useState(false);
@@ -699,7 +706,7 @@ export function TransactionFormModal({
     if (transferVisibleOptionIds) {
       merged = merged.filter((option) => transferVisibleOptionIds.has(option.id));
     }
-    // 银证转账：转出账户不能是证券资金账户本身，只保留同一所有人的资金账户
+    // Stock-to-cash transfer: the source account cannot be the securities cash account itself; keep only cash accounts of the same owner.
     if (stockTransferMode && stockCashAccountId) {
       merged = merged.filter((option) => option.id !== stockCashAccountId);
     }
@@ -709,7 +716,7 @@ export function TransactionFormModal({
     return sortOptionsByRecent(merged, recentAccountIds);
   }, [fromAccountId, localTransferAccountSSOpts, recentAccountIds, stockCashAccountId, stockTransferMode, toAccountId, transferAccountList, transferFiltered, transferVisibleOptionIds]);
 
-  // 银证转账转入账户：当前股票机构证券资金账户 + 同一所有人的资金账户
+  // Stock-to-cash transfer target: securities cash account of the current stock institution + cash accounts of the same owner.
   const stockTransferToOptions = useMemo(() => {
     const source = (transferFiltered?.length ? transferFiltered : localTransferAccountSSOpts) ?? [];
     const filtered = source.filter((option) => !option.isHeader);
@@ -818,7 +825,7 @@ export function TransactionFormModal({
   async function fetchFxRateForForm() {
     if (fetchingFxRate) return;
     if (!fxFromCurrency || !fxToCurrency || fxFromCurrency === fxToCurrency) {
-      window.alert("请先选择不同的换出币种和换入币种");
+      window.alert(t("txForm.alert.selectDifferentCurrencies"));
       return;
     }
     setFetchingFxRate(true);
@@ -831,7 +838,7 @@ export function TransactionFormModal({
       const res = await fetch(`/api/v1/fx-rates?${params.toString()}`, { cache: "no-store" });
       const data = await res.json().catch(() => null);
       if (!res.ok || !data?.ok || !Array.isArray(data.rates)) {
-        throw new Error(data?.error || "汇率获取失败");
+        throw new Error(data?.error || t("txForm.alert.fxFetchFailed"));
       }
       const rateRow = data.rates.find((rate: { fromCurrency?: string; toCurrency?: string }) =>
         normalizeCurrencyLabel(rate.fromCurrency) === fxFromCurrency &&
@@ -839,28 +846,28 @@ export function TransactionFormModal({
       );
       const rate = Number(rateRow?.rate);
       if (!Number.isFinite(rate) || rate <= 0) {
-        throw new Error("未获取到可用汇率，可手工填写");
+        throw new Error(t("txForm.alert.fxRateUnavailable"));
       }
       const formattedRate = formatFxRate(rate);
       setFxRate(formattedRate);
       const fromValue = parseMoneyDraft(amount);
       if (fromValue > 0) setFxToAmount(formatFxAmount(fromValue * rate));
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "汇率获取失败，可手工填写");
+      window.alert(error instanceof Error ? error.message : t("txForm.alert.fxFetchFailedManual"));
     } finally {
       setFetchingFxRate(false);
     }
   }
   const fxCommonQuoteText = useMemo(() => {
-    if (fxFromCurrency === fxToCurrency) return "换出币种和换入币种相同，请选择不同币种账户";
+    if (fxFromCurrency === fxToCurrency) return t("txForm.alert.sameCurrency");
     const fromValue = parseMoneyDraft(amount);
     const toValue = parseMoneyDraft(fxToAmount);
     if (fromValue <= 0 || toValue <= 0) return "";
     const quoteBase = 100;
     const quoteAmount = (fromValue / toValue) * quoteBase;
     if (!Number.isFinite(quoteAmount) || quoteAmount <= 0) return "";
-    return `当前折算：${quoteBase} ${fxToCurrency} = ${formatFxQuoteAmount(quoteAmount)} ${fxFromCurrency}`;
-  }, [amount, fxFromCurrency, fxToAmount, fxToCurrency]);
+    return t("txForm.fxCommonQuote", { base: quoteBase, to: fxToCurrency, amount: formatFxQuoteAmount(quoteAmount, language), from: fxFromCurrency });
+  }, [amount, fxFromCurrency, language, fxToAmount, fxToCurrency]);
   const installmentPreview = useMemo(() => {
     if (!createInstallment) return null;
     const account = accountMetaById.get(accountId);
@@ -902,12 +909,12 @@ export function TransactionFormModal({
         const cashAccountId = isDebtSourceFlow ? toAccountId : fromAccountId;
         const debtAccountId = isDebtSourceFlow ? fromAccountId : toAccountId;
         if (!cashAccountId) {
-          window.alert(isDebtSourceFlow ? "请选择资金到账账户" : "请选择资金来源账户");
+          window.alert(isDebtSourceFlow ? t("txForm.alert.selectCashInAccount") : t("txForm.alert.selectCashSourceAccount"));
           return true;
         }
         const amountNumber = Number(amount);
         if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
-          window.alert("金额不正确");
+          window.alert(t("txForm.alert.invalidAmount"));
           return true;
         }
 
@@ -927,19 +934,19 @@ export function TransactionFormModal({
         resetDraft();
         return true;
       }
-      window.alert("这类目标账户需要用对应的专用记账窗口编辑，不能保存为普通转账。");
+      window.alert(t("txForm.alert.specialTargetAccount"));
       return true;
     }
     const isDebtSourceFlow = debtMode === "borrow_in" || debtMode === "collect_in";
     const cashAccountId = isDebtSourceFlow ? toAccountId : fromAccountId;
     const debtAccountId = isDebtSourceFlow ? fromAccountId : toAccountId;
     if (!cashAccountId) {
-      window.alert(isDebtSourceFlow ? "请选择资金到账账户" : "请选择资金来源账户");
+      window.alert(isDebtSourceFlow ? t("txForm.alert.selectCashInAccount") : t("txForm.alert.selectCashSourceAccount"));
       return true;
     }
     const amountNumber = Number(amount);
     if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
-      window.alert("金额不正确");
+      window.alert(t("txForm.alert.invalidAmount"));
       return true;
     }
 
@@ -1042,6 +1049,7 @@ export function TransactionFormModal({
     setEditEntryHasFundDetail(false);
     setEditOriginalTransferAccounts(null);
     setFromAccountIdEdited(false);
+    editOriginalRef.current = null;
   }
   useCloseOnNavigation(open, () => {
     setOpen(false);
@@ -1061,6 +1069,7 @@ export function TransactionFormModal({
     setEditEntryOriginalType(null);
     setEditEntryHasFundDetail(false);
     setEditOriginalTransferAccounts(null);
+    editOriginalRef.current = null;
     if ((txType === "transfer" || txType === "fx") && !isCreditCardAccount && !fromAccountId && defaultAccountId) {
       setFromAccountId(defaultAccountId);
     }
@@ -1150,7 +1159,7 @@ export function TransactionFormModal({
         const nextToAccountId = mappedType === "fx" && rawNextToAccount && !isForeignCurrency(rawNextToAccount.currency)
           ? ""
           : rawNextToAccountId;
-        // 银证转账：转入账户固定为当前股票机构的证券资金账户
+        // Stock-to-cash transfer: the target account is fixed to the securities cash account of the current stock institution.
         const effectiveToAccountId = detail.stockTransferMode
           ? (detail.stockCashAccountId || nextToAccountId)
           : nextToAccountId;
@@ -1222,6 +1231,14 @@ export function TransactionFormModal({
       setEditEntryId(detail.entryId);
       setEditEntryOriginalType(detail.type);
       setEditEntryHasFundDetail(detail.hasFundDetail ?? false);
+      editOriginalRef.current = {
+        type: detail.type,
+        amountStored: Number(detail.amount),
+        date: detail.date || today,
+        accountId: detail.accountId ?? undefined,
+        fromAccountId: detail.fromAccountId ?? undefined,
+        toAccountId: detail.toAccountId ?? undefined,
+      };
       setCreateInstallment(false);
       setOpen(true);
       setTxType(detail.type);
@@ -1243,7 +1260,7 @@ export function TransactionFormModal({
         const knownIds = new Set([...prev.map((tag) => tag.id), ...detailTags.map((tag) => tag.id)]);
         const missingSelectedTags = nextTagIds
           .filter((id) => !knownIds.has(id))
-          .map((id) => ({ id, name: "未知标签", color: null }));
+          .map((id) => ({ id, name: t("txForm.unknownTag"), color: null }));
         return mergeTagOptions(prev, [...detailTags, ...missingSelectedTags]);
       });
       setSelectedTagIds(nextTagIds);
@@ -1365,10 +1382,27 @@ export function TransactionFormModal({
       : txType === "investment"
         ? compactIds([accountId, fromAccountId, toAccountId, defaultAccountId])
         : compactIds([accountId, toAccountId, defaultAccountId]);
+
+    // A save only skips the heavy refresh when editing an existing record and
+    // every balance-affecting field (type, amount, date, accounts) is unchanged.
+    const original = editOriginalRef.current;
+    const currentStoredAmount = dialogAmountToStoredAmount(txType, amount);
+    const balanceChanged = !editEntryId || !original
+      ? true
+      : !(
+          original.type === txType &&
+          Math.abs(original.amountStored - currentStoredAmount) < 0.005 &&
+          original.date === date &&
+          (txType === "transfer" || txType === "fx"
+            ? original.fromAccountId === fromAccountId && original.toAccountId === toAccountId
+            : original.accountId === accountId && original.toAccountId === toAccountId)
+        );
+
     return {
       reason: "transaction-save",
       accountIds: accountIds.length > 0 ? accountIds : undefined,
       entryIds: editEntryId ? [editEntryId] : undefined,
+      balanceChanged,
     };
   }
 
@@ -1379,7 +1413,10 @@ export function TransactionFormModal({
     if (openSpecialTransferTargetIfNeeded()) return;
 
     if (editEntryId && editEntryOriginalType === "investment" && txType !== "investment" && editEntryHasFundDetail) {
-      const confirmed = window.confirm("这条投资记录有对应的基金明细。\n\n选择「确定」将删除基金明细记录。\n选择「取消」将保留基金明细但清空资金来源关联。\n\n请选择：");
+      const confirmed = await showConfirmDialog({
+        title: t("txForm.fundDetailTitle"),
+        message: t("txForm.fundDetailMessage"),
+      });
       if (!confirmed) {
         const formData = new FormData(e.currentTarget);
         formData.set("type", txType);
@@ -1415,35 +1452,35 @@ export function TransactionFormModal({
       const toValue = parseMoneyDraft(fxToAmount);
       const feeValue = String(fxFeeAmount ?? "").trim() ? parseMoneyDraft(fxFeeAmount) : null;
       if (!fromAccountId) {
-        window.alert("请选择换出账户");
+        window.alert(t("txForm.alert.selectFromAccount"));
         return;
       }
       if (accountMetaById.get(fromAccountId)?.kind !== "bank_debit") {
-        window.alert("换出账户只能选择借记卡");
+        window.alert(t("txForm.alert.fromAccountDebitOnly"));
         return;
       }
       if (toAccountId && fromAccountId === toAccountId) {
-        window.alert("换出账户和换入账户不能相同");
+        window.alert(t("txForm.alert.accountsSame"));
         return;
       }
       if (toAccountId && !isForeignCurrency(accountMetaById.get(toAccountId)?.currency)) {
-        window.alert("换入账户只能选择外币账户");
+        window.alert(t("txForm.alert.toAccountForeignOnly"));
         return;
       }
       if (!toAccountId && !isForeignCurrency(fxToCurrencyDraft)) {
-        window.alert("换入币种只能选择外币");
+        window.alert(t("txForm.alert.toCurrencyForeignOnly"));
         return;
       }
       if (fxFromCurrency === fxToCurrency) {
-        window.alert("同币种账户请使用普通转账，跨币种才使用换汇");
+        window.alert(t("txForm.alert.sameCurrencyUseTransfer"));
         return;
       }
       if (fromValue <= 0 || toValue <= 0) {
-        window.alert("换出金额和换入金额必须大于 0");
+        window.alert(t("txForm.alert.amountsPositive"));
         return;
       }
       if (feeValue != null && feeValue <= 0) {
-        window.alert("手续费必须大于 0，或留空");
+        window.alert(t("txForm.alert.feePositiveOrEmpty"));
         return;
       }
       setSubmitting(true);
@@ -1466,7 +1503,7 @@ export function TransactionFormModal({
         });
         const data = await res.json().catch(() => null);
         if (!res.ok || !data?.ok) {
-          window.alert(data?.error ?? "换汇保存失败");
+          window.alert(data?.error ?? t("txForm.alert.fxSaveFailed"));
           return;
         }
         if (requestId) {
@@ -1483,7 +1520,7 @@ export function TransactionFormModal({
           resetDraft();
         }
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "换汇保存失败";
+        const msg = err instanceof Error ? err.message : t("txForm.alert.fxSaveFailed");
         window.alert(msg);
       } finally {
         submitModeRef.current = "close";
@@ -1558,7 +1595,7 @@ export function TransactionFormModal({
         resetDraft();
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "记账失败";
+      const msg = err instanceof Error ? err.message : t("txForm.alert.saveFailed");
       window.alert(msg);
     } finally {
       submitModeRef.current = "close";
@@ -1572,12 +1609,12 @@ export function TransactionFormModal({
         <UnifiedEntryLauncher
           defaultAction="transaction"
           actions={[
-            { key: "transaction", label: "记账" },
-            { key: "fx", label: "换汇 / 购汇" },
-            { key: "investment", label: "基金 / 贵金属", disabled: !showInvestment },
-            { key: "wealth", label: "银行理财" },
-            { key: "deposit-buy", label: "存款存入" },
-            { key: "insurance", label: "保险" },
+            { key: "transaction", label: t("txForm.record") },
+            { key: "fx", label: t("txForm.fx") },
+            { key: "investment", label: t("txForm.fundMetal"), disabled: !showInvestment },
+            { key: "wealth", label: t("investment.product.wealth") },
+            { key: "deposit-buy", label: t("txForm.depositIn") },
+            { key: "insurance", label: t("account.kind.insurance") },
           ]}
           context={{
             defaultAccountId: defaultAccountId ?? "",
@@ -1593,7 +1630,7 @@ export function TransactionFormModal({
           <div className="app-modal-panel mobile-transaction-modal max-w-xl">
             <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">
-                {txType === "fx" ? "换汇 / 购汇" : editEntryId ? "编辑记录" : "记一笔"}
+                {txType === "fx" ? t("txForm.fx") : editEntryId ? t("txForm.editEntry") : t("txForm.addEntry")}
               </div>
               <button
                 type="button"
@@ -1603,7 +1640,7 @@ export function TransactionFormModal({
                 }}
                 className="secondary-button h-8 px-2"
               >
-                关闭
+                {t("table.close")}
               </button>
             </div>
 
@@ -1614,7 +1651,7 @@ export function TransactionFormModal({
                     type="button"
                     className="segment-button h-9 flex-1 segment-button-active"
                   >
-                    {lockedType === "transfer" ? "转账" : lockedType === "income" ? "收入" : lockedType === "advance" ? "代付" : "支出"}
+                    {lockedType === "transfer" ? t("transaction.type.transfer") : lockedType === "income" ? t("transaction.type.income") : lockedType === "advance" ? t("txForm.advance") : t("transaction.type.expense")}
                   </button>
                 </div>
               ) : txType !== "fx" ? (
@@ -1630,7 +1667,7 @@ export function TransactionFormModal({
                           : ""
                       }`}
                     >
-                      支出
+                      {t("transaction.type.expense")}
                     </button>
                     <button
                       type="button"
@@ -1641,7 +1678,7 @@ export function TransactionFormModal({
                           : ""
                       }`}
                     >
-                      收入
+                      {t("transaction.type.income")}
                     </button>
                     <button
                       type="button"
@@ -1652,7 +1689,7 @@ export function TransactionFormModal({
                           : ""
                       }`}
                     >
-                      代付
+                      {t("txForm.advance")}
                     </button>
                     <button
                       type="button"
@@ -1663,7 +1700,7 @@ export function TransactionFormModal({
                           : ""
                       }`}
                     >
-                      转账
+                      {t("transaction.type.transfer")}
                     </button>
                   </>
                 ) : (
@@ -1677,7 +1714,7 @@ export function TransactionFormModal({
                           : ""
                       }`}
                     >
-                      支出
+                      {t("transaction.type.expense")}
                     </button>
                     <button
                       type="button"
@@ -1688,7 +1725,7 @@ export function TransactionFormModal({
                           : ""
                       }`}
                     >
-                      收入
+                      {t("transaction.type.income")}
                     </button>
                     <button
                       type="button"
@@ -1699,7 +1736,7 @@ export function TransactionFormModal({
                           : ""
                       }`}
                     >
-                      代付
+                      {t("txForm.advance")}
                     </button>
                     <button
                       type="button"
@@ -1710,7 +1747,7 @@ export function TransactionFormModal({
                           : ""
                       }`}
                     >
-                      转账
+                      {t("transaction.type.transfer")}
                     </button>
                   </>
                 )}
@@ -1719,7 +1756,7 @@ export function TransactionFormModal({
 
               {txType === "investment" && (
                 <div className="space-y-2 pt-1">
-                  <div className="text-xs font-medium text-slate-500 mb-1">选择投资类型：</div>
+                  <div className="text-xs font-medium text-slate-500 mb-1">{t("txForm.chooseInvestmentType")}</div>
                   <button
                     type="button"
                     onClick={() => {
@@ -1731,7 +1768,7 @@ export function TransactionFormModal({
                     }}
                     className="segment-button segment-button-active h-10 w-full"
                   >
-                    基金
+                    {t("txForm.fund")}
                   </button>
                   <button
                     type="button"
@@ -1744,7 +1781,7 @@ export function TransactionFormModal({
                     }}
                     className="h-10 w-full rounded-[10px] border border-yellow-200 bg-yellow-50 text-sm text-yellow-700 transition-colors hover:bg-yellow-100"
                   >
-                    贵金属
+                    {t("investment.product.metal")}
                   </button>
                   <button
                     type="button"
@@ -1757,7 +1794,7 @@ export function TransactionFormModal({
                     }}
                     className="h-10 w-full rounded-[10px] border border-amber-200 bg-amber-50 text-sm text-amber-700 transition-colors hover:bg-amber-100"
                   >
-                    银行理财
+                    {t("investment.product.wealth")}
                   </button>
                   <button
                     type="button"
@@ -1770,7 +1807,7 @@ export function TransactionFormModal({
                     }}
                     className="h-10 w-full rounded-[10px] border border-emerald-200 bg-emerald-50 text-sm text-emerald-700 transition-colors hover:bg-emerald-100"
                   >
-                    活期 / 定期存款
+                    {t("txForm.deposit")}
                   </button>
                   <button
                     type="button"
@@ -1783,7 +1820,7 @@ export function TransactionFormModal({
                     }}
                     className="h-10 w-full rounded-[10px] border border-sky-200 bg-sky-50 text-sm text-sky-700 transition-colors hover:bg-sky-100"
                   >
-                    保险
+                    {t("account.kind.insurance")}
                   </button>
                 </div>
               )}
@@ -1793,12 +1830,12 @@ export function TransactionFormModal({
                   {txType === "advance" ? (
                     <>
                       <div className="space-y-1">
-                        <div className="form-label">日期</div>
+                        <div className="form-label">{t("detail.column.date")}</div>
                         <DateStepper name="date" value={date} onChange={setDate} />
                       </div>
                       <div className="grid grid-cols-2 gap-3">
                         <div className="space-y-1">
-                          <div className="form-label">往来对象</div>
+                          <div className="form-label">{t("txForm.counterparty")}</div>
                           <SmartSelect
                             mode="single"
                             value={counterpartyInstitutionId}
@@ -1806,17 +1843,17 @@ export function TransactionFormModal({
                             options={((localNestedFieldData ?? nestedFieldData)?.counterpartyId ?? [])
                               .filter((item) => COUNTERPARTY_TYPES.has(item.type ?? "other"))
                               .map((item) => ({ id: item.id, label: item.name }))}
-                            placeholder="请选择"
+                            placeholder={t("txForm.selectPlaceholder")}
                             onCreateClick={() => setCounterpartyNestedOpen(true)}
-                            createLabel="新增往来对象"
+                            createLabel={t("txForm.addCounterparty")}
                             searchable
                           />
                         </div>
                         <div className="space-y-1">
-                          <div className="form-label">所属账户</div>
+                          <div className="form-label">{t("txForm.belongingAccount")}</div>
                           <SmartSelect mode="single" value={accountId}
                             onChange={(id: string) => { setAccountId(id); recordRecentAccount(id); }}
-                            options={displayAccountOptions} placeholder="请选择"
+                            options={displayAccountOptions} placeholder={t("txForm.selectPlaceholder")}
                             onCreateClick={() => { void openAccountCreate("account"); }}
                             onCycleOwnerFilter={cycleOwnerFilter}
                             ownerFilterLabel={ownerFilterLabel}
@@ -1828,16 +1865,16 @@ export function TransactionFormModal({
                     <>
                       <div className="grid grid-cols-2 gap-3">
                         <div className="space-y-1">
-                          <div className="form-label">日期</div>
+                          <div className="form-label">{t("detail.column.date")}</div>
                           <DateStepper name="date" value={date} onChange={setDate} />
                         </div>
                         <div className="space-y-1">
                           <div className="form-label">
-                            {isCreditCardAccount ? "记账账户" : (txType === "income" ? "收款账户" : "资金账户")}
+                            {isCreditCardAccount ? t("txForm.recordAccount") : (txType === "income" ? t("txForm.receiveAccount") : t("txForm.cashAccount"))}
                           </div>
                           <SmartSelect mode="single" value={accountId}
                             onChange={(id: string) => { setAccountId(id); recordRecentAccount(id); }}
-                            options={displayAccountOptions} placeholder="请选择"
+                            options={displayAccountOptions} placeholder={t("txForm.selectPlaceholder")}
                             onCreateClick={() => { void openAccountCreate("account"); }}
                             onCycleOwnerFilter={cycleOwnerFilter}
                             ownerFilterLabel={ownerFilterLabel}
@@ -1846,7 +1883,7 @@ export function TransactionFormModal({
                       </div>
                       <div className="grid grid-cols-2 gap-3">
                         <div className="space-y-1">
-                          <div className="form-label">入账日期</div>
+                          <div className="form-label">{t("detail.column.postedAt")}</div>
                           <DateStepper
                             value={postedAt}
                             onChange={(value) => {
@@ -1857,14 +1894,14 @@ export function TransactionFormModal({
                           />
                         </div>
                         <div className="space-y-1">
-                          <div className="form-label">收支机构</div>
+                          <div className="form-label">{t("detail.column.counterparty")}</div>
                           <SmartSelect
                             mode="single"
                             value={counterpartyInstitutionId}
                             onChange={setCounterpartyInstitutionId}
                             options={incomeExpenseInstitutionOptions.map((item) => ({ id: item.id, label: item.name }))}
-                            placeholder="可选"
-                            createLabel="新增往来对象"
+                            placeholder={t("stockFee.optional")}
+                            createLabel={t("txForm.addCounterparty")}
                             searchable
                           />
                         </div>
@@ -1874,9 +1911,9 @@ export function TransactionFormModal({
 
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <div className="form-label">类别</div>
+                      <div className="form-label">{t("detail.column.category")}</div>
                       <SmartSelect mode="single" value={categoryId} onChange={setCategoryId}
-                        options={categorySSOptions} placeholder="未分类"
+                        options={categorySSOptions} placeholder={t("txForm.uncategorized")}
                         onCreateClick={() => setCategoryNestedOpen(true)}
                         behavior={{
                           hierarchy: true,
@@ -1893,10 +1930,10 @@ export function TransactionFormModal({
                       />
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">标签</div>
+                      <div className="form-label">{t("detail.column.tags")}</div>
                       <SmartSelect mode="multi" value={selectedTagIds}
                         onChange={(ids) => setSelectedTagIds(ids)}
-                        options={tagList.map(t => ({ id: t.id, label: t.name, color: t.color }))} placeholder="选择标签"
+                        options={tagList.map(t => ({ id: t.id, label: t.name, color: t.color }))} placeholder={t("txForm.selectTags")}
                         onInlineCreate={async (name, color) => {
                           const res = await fetch("/api/v1/tags", {
                             method: "POST",
@@ -1904,7 +1941,7 @@ export function TransactionFormModal({
                             body: JSON.stringify({ name, color }),
                           });
                           const data = await res.json();
-                          if (!data.ok || !data.tag) throw new Error(data.error ?? "创建失败");
+                          if (!data.ok || !data.tag) throw new Error(data.error ?? t("txForm.createFailed"));
                           return { id: data.tag.id, label: data.tag.name, color: data.tag.color };
                         }}
                         onCreated={(tag) => {
@@ -1916,14 +1953,14 @@ export function TransactionFormModal({
                   </div>
 
                   <div className="space-y-1">
-                    <div className="form-label">金额</div>
+                    <div className="form-label">{t("txForm.amount")}</div>
                     <CalcInput value={amount} onChange={(value) => {
                       setAmount(value);
                       if (createInstallment && !installmentAmountEdited) {
                         const numeric = Math.abs(Number(value));
                         setInstallmentAmount(Number.isFinite(numeric) && numeric > 0 ? String(numeric) : "");
                       }
-                    }} placeholder={txType === "expense" ? "正数流出，负数流入/退款" : "正数流入，负数流出/冲减"} label="金额" precision={2} />
+                    }} placeholder={txType === "expense" ? t("txForm.amountPlaceholderExpense") : t("txForm.amountPlaceholderIncome")} label={t("txForm.amount")} precision={2} />
                   </div>
 
                   {txType === "expense" && selectedAccountIsCreditCard && !editEntryId ? (
@@ -1942,20 +1979,20 @@ export function TransactionFormModal({
                           }}
                           className="h-4 w-4 accent-slate-800"
                         />
-                        消费分期
+                        {t("txForm.installment")}
                       </label>
                       {createInstallment ? (
                         <>
                           <div className="grid grid-cols-3 gap-3">
                             <div className="space-y-1">
-                              <div className="form-label">分期金额</div>
+                              <div className="form-label">{t("txForm.installmentAmount")}</div>
                               <CalcInput value={installmentAmount} onChange={(value) => {
                                 setInstallmentAmount(value);
                                 setInstallmentAmountEdited(true);
-                              }} placeholder="默认全部金额" label="分期金额" precision={2} />
+                              }} placeholder={t("txForm.installmentAmountPlaceholder")} label={t("txForm.installmentAmount")} precision={2} />
                             </div>
                             <div className="space-y-1">
-                              <div className="form-label">期数</div>
+                              <div className="form-label">{t("txForm.periods")}</div>
                               <input
                                 type="number"
                                 min={2}
@@ -1967,7 +2004,7 @@ export function TransactionFormModal({
                               />
                             </div>
                             <div className="space-y-1">
-                              <div className="form-label">{installmentRateType === "annual_interest" ? "年利率 (%)" : "每期费率 (%)"}</div>
+                              <div className="form-label">{installmentRateType === "annual_interest" ? t("txForm.annualRatePercent") : t("txForm.periodRatePercent")}</div>
                               <input
                                 type="number"
                                 min={0}
@@ -1983,16 +2020,16 @@ export function TransactionFormModal({
                             <div className="inline-flex h-8 overflow-hidden rounded border border-slate-200 bg-white">
                               <button type="button" onClick={() => setInstallmentRateType("period_fee")}
                                 className={`px-3 text-xs ${installmentRateType === "period_fee" ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
-                                每期手续费
+                                {t("txForm.periodFee")}
                               </button>
                               <button type="button" onClick={() => setInstallmentRateType("annual_interest")}
                                 className={`border-l border-slate-200 px-3 text-xs ${installmentRateType === "annual_interest" ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
-                                年利率
+                                {t("txForm.annualRate")}
                               </button>
                             </div>
                             {installmentPreview ? (
                               <div className="text-xs tabular-nums text-slate-500">
-                                首期 {installmentPreview.summary.firstPayment.toFixed(2)} · 费用 {installmentPreview.summary.totalInterest.toFixed(2)} · 合计 {installmentPreview.summary.totalPayment.toFixed(2)}
+                                {t("txForm.installmentSummary", { first: installmentPreview.summary.firstPayment.toFixed(2), interest: installmentPreview.summary.totalInterest.toFixed(2), total: installmentPreview.summary.totalPayment.toFixed(2) })}
                               </div>
                             ) : null}
                           </div>
@@ -2001,11 +2038,11 @@ export function TransactionFormModal({
                               <table className="min-w-full text-xs tabular-nums">
                                 <thead className="sticky top-0 bg-slate-50 text-slate-500">
                                   <tr>
-                                    <th className="px-2 py-1 text-left font-medium">期数</th>
-                                    <th className="px-2 py-1 text-left font-medium">日期</th>
-                                    <th className="px-2 py-1 text-right font-medium">本金</th>
-                                    <th className="px-2 py-1 text-right font-medium">{installmentRateType === "annual_interest" ? "利息" : "手续费"}</th>
-                                    <th className="px-2 py-1 text-right font-medium">应还</th>
+                                    <th className="px-2 py-1 text-left font-medium">{t("txForm.periods")}</th>
+                                    <th className="px-2 py-1 text-left font-medium">{t("detail.column.date")}</th>
+                                    <th className="px-2 py-1 text-right font-medium">{t("txForm.principal")}</th>
+                                    <th className="px-2 py-1 text-right font-medium">{installmentRateType === "annual_interest" ? t("txForm.interest") : t("txForm.fee")}</th>
+                                    <th className="px-2 py-1 text-right font-medium">{t("txForm.dueAmount")}</th>
                                   </tr>
                                 </thead>
                                 <tbody>
@@ -2027,12 +2064,12 @@ export function TransactionFormModal({
                     </div>
                   ) : null}
 
-                  {/* 第五行：备注 */}
+                  {/* Row 5: note */}
                   <div className="space-y-1">
-                    <div className="form-label">备注</div>
+                    <div className="form-label">{t("detail.column.remark")}</div>
                     <input
                       name="note"
-                      placeholder="可选"
+                      placeholder={t("stockFee.optional")}
                       value={note}
                       onChange={(e) => setNote(e.target.value)}
                       className="form-input"
@@ -2044,13 +2081,13 @@ export function TransactionFormModal({
               {txType === "fx" && (
                 <div className="space-y-3">
                   <div className="space-y-1">
-                    <div className="form-label">日期</div>
+                    <div className="form-label">{t("detail.column.date")}</div>
                     <DateStepper name="date" value={date} onChange={setDate} />
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <div className="form-label">换出账户</div>
+                      <div className="form-label">{t("txForm.fxFromAccount")}</div>
                       <SmartSelect mode="single" value={fromAccountId} onChange={(v) => {
                         setFromAccountId(v);
                         const currency = normalizeCurrencyLabel(accountMetaById.get(v)?.currency);
@@ -2058,13 +2095,13 @@ export function TransactionFormModal({
                         if (v && v === toAccountId) setToAccountId("");
                         recordRecentAccount(v);
                       }}
-                        options={fxFromAccountOptions} placeholder="只能选择借记卡"
-                        onCreateClick={() => { void openAccountCreate("from"); }} createLabel="新增借记卡账户"
+                        options={fxFromAccountOptions} placeholder={t("txForm.fxFromAccountPlaceholder")}
+                        onCreateClick={() => { void openAccountCreate("from"); }} createLabel={t("txForm.addDebitAccount")}
                         onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
                         behavior={compactAccountSelectBehavior} />
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">换入账户</div>
+                      <div className="form-label">{t("txForm.fxToAccount")}</div>
                       <SmartSelect mode="single" value={toAccountId} onChange={(v) => {
                         setToAccountId(v);
                         const currency = normalizeCurrencyLabel(accountMetaById.get(v)?.currency);
@@ -2072,8 +2109,8 @@ export function TransactionFormModal({
                         recordRecentAccount(v);
                       }}
                         options={fxToAccountOptions}
-                        placeholder={`不选择时，将按 ${fxToCurrencyDraft} 自动建立同机构外币账户`}
-                        onCreateClick={() => { void openAccountCreate("to"); }} createLabel="新增账户"
+                        placeholder={t("txForm.fxToAccountPlaceholder", { currency: fxToCurrencyDraft })}
+                        onCreateClick={() => { void openAccountCreate("to"); }} createLabel={t("settings.accounts.add")}
                         onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
                         behavior={compactAccountSelectBehavior} />
                     </div>
@@ -2081,13 +2118,13 @@ export function TransactionFormModal({
 
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <div className="form-label">换出币种</div>
+                      <div className="form-label">{t("txForm.fxFromCurrency")}</div>
                       <div className="form-input flex h-9 items-center bg-slate-50 text-slate-700">
-                        {fromAccountId ? fxFromCurrency : "选择换出账户后自动读取"}
+                        {fromAccountId ? fxFromCurrency : t("txForm.fxCurrencyAuto")}
                       </div>
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">换入币种</div>
+                      <div className="form-label">{t("txForm.fxToCurrency")}</div>
                       {toAccountId ? (
                         <div className="form-input flex h-9 items-center bg-slate-50 text-slate-700">
                           {fxToCurrency}
@@ -2108,24 +2145,24 @@ export function TransactionFormModal({
 
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <div className="form-label">换出金额 ({fxFromCurrency})</div>
-                      <CalcInput value={amount} onChange={updateFxFromAmount} placeholder="例如：1000.00" label="换出金额" precision={2} />
+                      <div className="form-label">{t("txForm.fxFromAmountLabel", { currency: fxFromCurrency })}</div>
+                      <CalcInput value={amount} onChange={updateFxFromAmount} placeholder={t("txForm.exampleAmount")} label={t("txForm.fxFromAmount")} precision={2} />
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">汇率（可手工填写）</div>
+                      <div className="form-label">{t("txForm.fxRateLabel")}</div>
                       <div className="flex items-center gap-2">
                         <div className="min-w-0 flex-1">
-                          <CalcInput value={fxRate} onChange={updateFxRate} placeholder={`1 ${fxFromCurrency} = ? ${fxToCurrency}`} label="汇率" precision={8} />
+                          <CalcInput value={fxRate} onChange={updateFxRate} placeholder={t("txForm.fxRatePlaceholder", { from: fxFromCurrency, to: fxToCurrency })} label={t("txForm.fxRate")} precision={8} />
                         </div>
                         <button
                           type="button"
                           onClick={() => void fetchFxRateForForm()}
                           disabled={fetchingFxRate || fxFromCurrency === fxToCurrency}
                           className="secondary-button h-9 shrink-0 gap-1 px-2 text-[11px] disabled:opacity-50"
-                          title="获取当前币种对汇率，并填入汇率框"
+                          title={t("txForm.fxFetchTitle")}
                         >
                           <RefreshCw className={`h-3 w-3 ${fetchingFxRate ? "animate-spin" : ""}`} />
-                          {fetchingFxRate ? "获取中" : "获取汇率"}
+                          {fetchingFxRate ? t("txForm.fxFetching") : t("txForm.fxFetch")}
                         </button>
                       </div>
                     </div>
@@ -2133,24 +2170,24 @@ export function TransactionFormModal({
 
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <div className="form-label">手续费</div>
-                      <CalcInput value={fxFeeAmount} onChange={setFxFeeAmount} placeholder="可选，已含在换出金额" label="手续费" precision={2} />
+                      <div className="form-label">{t("txForm.fee")}</div>
+                      <CalcInput value={fxFeeAmount} onChange={setFxFeeAmount} placeholder={t("txForm.fxFeePlaceholder")} label={t("txForm.fee")} precision={2} />
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">换入金额 ({fxToCurrency})</div>
-                      <CalcInput value={fxToAmount} onChange={updateFxToAmount} placeholder="例如：21500.00" label="换入金额" precision={2} />
+                      <div className="form-label">{t("txForm.fxToAmountLabel", { currency: fxToCurrency })}</div>
+                      <CalcInput value={fxToAmount} onChange={updateFxToAmount} placeholder={t("txForm.exampleAmount")} label={t("txForm.fxToAmount")} precision={2} />
                     </div>
                   </div>
 
                   <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                    {fxCommonQuoteText || "可填写汇率自动计算换入金额，也可以直接填写换入金额反算汇率。"}
+                    {fxCommonQuoteText || t("txForm.fxQuoteHint")}
                   </div>
 
                   <div className="space-y-1">
-                    <div className="form-label">备注</div>
+                    <div className="form-label">{t("detail.column.remark")}</div>
                     <input
                       name="note"
-                      placeholder="例如：购汇：日元"
+                      placeholder={t("txForm.fxNotePlaceholder")}
                       value={note}
                       onChange={(e) => setNote(e.target.value)}
                       className="form-input"
@@ -2161,47 +2198,47 @@ export function TransactionFormModal({
 
               {txType === "transfer" && (
                 <div className="space-y-3">
-                  {/* 第一行：日期 | 收支机构 */}
+                  {/* Row 1: date | income/expense institution */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <div className="form-label">日期</div>
+                      <div className="form-label">{t("detail.column.date")}</div>
                       <DateStepper name="date" value={date} onChange={setDate} />
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">收支机构</div>
+                      <div className="form-label">{t("detail.column.counterparty")}</div>
                       <SmartSelect
                         mode="single"
                         value={counterpartyInstitutionId}
                         onChange={setCounterpartyInstitutionId}
                         options={incomeExpenseInstitutionOptions.map((item) => ({ id: item.id, label: item.name }))}
-                        placeholder="可选"
+                        placeholder={t("stockFee.optional")}
                         onCreateClick={() => setInstitutionNestedOpen(true)}
-                        createLabel="新增收支机构"
+                        createLabel={t("txForm.addInstitution")}
                         searchable
                       />
                     </div>
                   </div>
 
-                  {/* 第二行：转出账户 | 互换 | 转入账户 */}
+                  {/* Row 2: from account | swap | to account */}
                   {stockTransferMode ? (
                     <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-end">
                       <div className="space-y-1">
-                        <div className="form-label">转出账户</div>
+                        <div className="form-label">{t("txForm.transferFrom")}</div>
                         <SmartSelect mode="single" value={fromAccountId} onChange={v => { setFromAccountId(v); setFromAccountIdEdited(true); recordRecentAccount(v); }}
-                          options={displayTransferOptions} placeholder="请选择"
-                          onCreateClick={() => { void openAccountCreate("from"); }} createLabel="新增账户"
+                          options={displayTransferOptions} placeholder={t("txForm.selectPlaceholder")}
+                          onCreateClick={() => { void openAccountCreate("from"); }} createLabel={t("settings.accounts.add")}
                           onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
                           behavior={compactAccountSelectBehavior} />
                       </div>
                       <div className="flex flex-col items-center pb-0.5">
                         <div className="h-6 flex items-center justify-center text-emerald-600 mb-1"><ArrowRight className="w-4 h-4" /></div>
                         <button type="button" className="secondary-button h-9 w-9 px-0 text-slate-700"
-                          onClick={swapTransferAccounts} disabled={!fromAccountId && !toAccountId} title="互换账户"><ArrowLeftRight className="w-4 h-4" /></button>
+                          onClick={swapTransferAccounts} disabled={!fromAccountId && !toAccountId} title={t("txForm.swapAccounts")}><ArrowLeftRight className="w-4 h-4" /></button>
                       </div>
                       <div className="space-y-1">
-                        <div className="form-label">转入账户</div>
+                        <div className="form-label">{t("txForm.transferTo")}</div>
                         <SmartSelect mode="single" value={toAccountId} onChange={(v) => { setToAccountId(v); recordRecentAccount(v); }}
-                          options={stockTransferToOptions} placeholder="请选择"
+                          options={stockTransferToOptions} placeholder={t("txForm.selectPlaceholder")}
                           onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
                           behavior={compactAccountSelectBehavior} />
                       </div>
@@ -2209,23 +2246,23 @@ export function TransactionFormModal({
                   ) : isCreditCardAccount ? (
                     <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-end">
                       <div className="space-y-1">
-                        <div className="form-label">转出账户</div>
+                        <div className="form-label">{t("txForm.transferFrom")}</div>
                         <SmartSelect mode="single" value={fromAccountId} onChange={v => { setFromAccountId(v); setFromAccountIdEdited(true); recordRecentAccount(v); }}
-                          options={displayTransferOptions} placeholder="请选择"
-                          onCreateClick={() => { void openAccountCreate("from"); }} createLabel="新增账户"
+                          options={displayTransferOptions} placeholder={t("txForm.selectPlaceholder")}
+                          onCreateClick={() => { void openAccountCreate("from"); }} createLabel={t("settings.accounts.add")}
                           onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
                           behavior={compactAccountSelectBehavior} />
                       </div>
                       <div className="flex flex-col items-center pb-0.5">
                         <div className="h-6 flex items-center justify-center text-emerald-600 mb-1"><ArrowRight className="w-4 h-4" /></div>
                         <button type="button" className="secondary-button h-9 w-9 px-0 text-slate-700"
-                          onClick={swapTransferAccounts} disabled={!fromAccountId && !toAccountId} title="互换账户"><ArrowLeftRight className="w-4 h-4" /></button>
+                          onClick={swapTransferAccounts} disabled={!fromAccountId && !toAccountId} title={t("txForm.swapAccounts")}><ArrowLeftRight className="w-4 h-4" /></button>
                       </div>
                       <div className="space-y-1">
-                        <div className="form-label">转入账户</div>
+                        <div className="form-label">{t("txForm.transferTo")}</div>
                         <SmartSelect mode="single" value={toAccountId} onChange={(v) => { setToAccountId(v); recordRecentAccount(v); }}
-                          options={displayTransferOptions} placeholder="请选择"
-                          onCreateClick={() => { void openAccountCreate("to"); }} createLabel="新增账户"
+                          options={displayTransferOptions} placeholder={t("txForm.selectPlaceholder")}
+                          onCreateClick={() => { void openAccountCreate("to"); }} createLabel={t("settings.accounts.add")}
                           onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
                           behavior={compactAccountSelectBehavior} />
                       </div>
@@ -2233,40 +2270,40 @@ export function TransactionFormModal({
                   ) : (
                     <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-end">
                       <div className="space-y-1">
-                        <div className="form-label">转出账户</div>
+                        <div className="form-label">{t("txForm.transferFrom")}</div>
                         <SmartSelect mode="single" value={fromAccountId} onChange={(v) => { setFromAccountId(v); recordRecentAccount(v); }}
-                          options={displayTransferOptions} placeholder="请选择"
-                          onCreateClick={() => { void openAccountCreate("from"); }} createLabel="新增账户"
+                          options={displayTransferOptions} placeholder={t("txForm.selectPlaceholder")}
+                          onCreateClick={() => { void openAccountCreate("from"); }} createLabel={t("settings.accounts.add")}
                           onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
                           behavior={compactAccountSelectBehavior} />
                       </div>
                       <div className="flex items-center justify-center pb-0.5">
                         <button type="button" className="secondary-button h-9 w-9 px-0 text-slate-700"
-                          onClick={swapTransferAccounts} disabled={!fromAccountId && !toAccountId} title="互换转出/转入账户"><ArrowLeftRight className="w-4 h-4" /></button>
+                          onClick={swapTransferAccounts} disabled={!fromAccountId && !toAccountId} title={t("txForm.swapAccountsTitle")}><ArrowLeftRight className="w-4 h-4" /></button>
                       </div>
                       <div className="space-y-1">
-                        <div className="form-label">转入账户</div>
+                        <div className="form-label">{t("txForm.transferTo")}</div>
                         <SmartSelect mode="single" value={toAccountId} onChange={(v) => { setToAccountId(v); recordRecentAccount(v); }}
-                          options={displayTransferOptions} placeholder="请选择"
-                          onCreateClick={() => { void openAccountCreate("to"); }} createLabel="新增账户"
+                          options={displayTransferOptions} placeholder={t("txForm.selectPlaceholder")}
+                          onCreateClick={() => { void openAccountCreate("to"); }} createLabel={t("settings.accounts.add")}
                           onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
                           behavior={compactAccountSelectBehavior} />
                       </div>
                     </div>
                   )}
 
-                  {/* 第三行：金额 */}
+                  {/* Row 3: amount */}
                   <div className="space-y-1">
-                    <div className="form-label">金额</div>
-                    <CalcInput value={amount} onChange={setAmount} placeholder="例如：88.50" label="金额" precision={2} />
+                    <div className="form-label">{t("txForm.amount")}</div>
+                    <CalcInput value={amount} onChange={setAmount} placeholder={t("txForm.amountExample")} label={t("txForm.amount")} precision={2} />
                   </div>
 
-                  {/* 第四行：备注 */}
+                  {/* Row 4: note */}
                   <div className="space-y-1">
-                    <div className="form-label">备注</div>
+                    <div className="form-label">{t("detail.column.remark")}</div>
                     <input
                       name="note"
-                      placeholder="可选"
+                      placeholder={t("stockFee.optional")}
                       value={note}
                       onChange={(e) => setNote(e.target.value)}
                       className="form-input"
@@ -2288,7 +2325,7 @@ export function TransactionFormModal({
                     }}
                     disabled={submitting}
                   >
-                    保存并再记一笔
+                    {t("txForm.saveAndRepeat")}
                   </button>
                 ) : null}
                 <button
@@ -2297,7 +2334,7 @@ export function TransactionFormModal({
                   onClick={() => { submitModeRef.current = "close"; }}
                   disabled={submitting}
                 >
-                  {submitting ? "保存中…" : editEntryId ? "保存修改" : "保存"}
+                  {submitting ? t("txForm.saving") : editEntryId ? t("txForm.saveChanges") : t("common.save")}
                 </button>
               </div>
             </form>
@@ -2389,9 +2426,9 @@ export function TransactionFormModal({
         open={institutionNestedOpen}
         onClose={() => setInstitutionNestedOpen(false)}
         defaultType="payment"
-        title="新增收支机构"
-        nameLabel="机构名称"
-        namePlaceholder="例如：支付宝、微信支付、工商银行"
+        title={t("txForm.addInstitution")}
+        nameLabel={t("txForm.institutionName")}
+        namePlaceholder={t("txForm.institutionNamePlaceholder")}
         allowedInstitutionTypes={["bank", "payment", "ewallet"]}
         existingNames={incomeExpenseInstitutionOptions.map((item) => item.name)}
         onCreated={(id, name, extra) => {

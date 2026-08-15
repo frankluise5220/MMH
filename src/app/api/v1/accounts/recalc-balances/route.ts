@@ -4,7 +4,7 @@ import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 
 /**
- * 重算当前账簿下所有活跃账户的余额并写回数据库。
+ * Recalculates and writes back balances for all active accounts in the current household.
  * POST /api/v1/accounts/recalc-balances
  */
 export async function POST() {
@@ -28,7 +28,7 @@ export async function POST() {
     return NextResponse.json({ ok: true, updated });
   } catch (e) {
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : "重算失败" },
+      { ok: false, code: "INTERNAL_ERROR", error: e instanceof Error ? e.message : "重算失败" },
       { status: 500 },
     );
   }

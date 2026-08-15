@@ -31,7 +31,7 @@ import { LanguageSwitcher } from "../LanguageSwitcher";
 import { formatCurrencyMoney, isDisplayZeroMoney, roundDisplayNumber } from "@/lib/format";
 import { resolveAccountCurrencyDisplayValue } from "@/lib/account-currency-display";
 import { buildAccountDisplayOption, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
-import { FINANCE_DATA_CHANGED_EVENT, LEGACY_FINANCE_REFRESH_EVENT } from "@/lib/client/refresh";
+import { FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 import {
   APP_PREFS_EVENT,
   getAppPreferences,
@@ -489,11 +489,15 @@ export function SidebarClient({
         }
       }, 100);
     };
-    window.addEventListener(FINANCE_DATA_CHANGED_EVENT, debouncedRefresh);
-    window.addEventListener(LEGACY_FINANCE_REFRESH_EVENT, debouncedRefresh);
+    const onFinanceChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ balanceChanged?: boolean }>).detail;
+      // Remark-only edits do not change balances: skip the sidebar refresh.
+      if (detail?.balanceChanged === false) return;
+      debouncedRefresh();
+    };
+    window.addEventListener(FINANCE_DATA_CHANGED_EVENT, onFinanceChanged);
     return () => {
-      window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, debouncedRefresh);
-      window.removeEventListener(LEGACY_FINANCE_REFRESH_EVENT, debouncedRefresh);
+      window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, onFinanceChanged);
       if (sidebarRefreshTimer.current) clearTimeout(sidebarRefreshTimer.current);
     };
   }, [householdId]);
@@ -536,11 +540,9 @@ export function SidebarClient({
       prefetchedHrefRef.current.clear();
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, clearPrefetchMarkers);
-    window.addEventListener(LEGACY_FINANCE_REFRESH_EVENT, clearPrefetchMarkers);
     window.addEventListener(APP_PREFS_EVENT, clearPrefetchMarkers);
     return () => {
       window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, clearPrefetchMarkers);
-      window.removeEventListener(LEGACY_FINANCE_REFRESH_EVENT, clearPrefetchMarkers);
       window.removeEventListener(APP_PREFS_EVENT, clearPrefetchMarkers);
     };
   }, []);

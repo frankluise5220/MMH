@@ -5,6 +5,7 @@ import { DepositFormModal } from "@/components/DepositFormModal";
 import { InvestmentFormModal } from "@/components/InvestmentFormModal";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { WealthFormModal } from "@/components/WealthFormModal";
+import { useI18n } from "@/lib/i18n";
 
 type AccountOption = {
   id: string;
@@ -64,16 +65,18 @@ export function ReportTransactionEditHost({
   tags: TagOption[];
   nestedFieldData: NestedFieldData;
 }) {
+  const { t } = useI18n();
+
   async function updateEntry(formData: FormData): Promise<{ ok: true } | { ok: false; error: string }> {
     const entryId = formValue(formData, "entryId");
-    if (!entryId) return { ok: false, error: "缺少记录 ID" };
+    if (!entryId) return { ok: false, error: t("reportTxEdit.missingEntryId") };
 
     let tagIds: string[] = [];
     try {
       const parsed = JSON.parse(formValue(formData, "tagIds") || "[]");
       if (Array.isArray(parsed)) tagIds = parsed.filter((id): id is string => typeof id === "string" && Boolean(id));
     } catch {
-      return { ok: false, error: "标签数据不正确" };
+      return { ok: false, error: t("reportTxEdit.invalidTags") };
     }
 
     const submittedType = formValue(formData, "type");
@@ -102,19 +105,19 @@ export function ReportTransactionEditHost({
       data?: { type?: string | null; source?: string | null };
     } | null;
     if (!response.ok || !result?.ok) {
-      return { ok: false, error: result?.error || response.statusText || "保存失败" };
+      return { ok: false, error: result?.error || response.statusText || t("reportTxEdit.saveFailed") };
     }
     const savedType = String(result.data?.type ?? "").trim();
     const savedSource = String(result.data?.source ?? "").trim();
     if (!savedTypeMatchesSubmitted(submittedType, savedType, savedSource)) {
-      return { ok: false, error: `保存后类型仍为 ${savedType}，未成功改为 ${submittedType}` };
+      return { ok: false, error: t("reportTxEdit.typeNotChanged", { saved: savedType, submitted: submittedType }) };
     }
     return { ok: true };
   }
 
   async function updateInvestment(formData: FormData): Promise<{ ok: true } | { ok: false; error: string }> {
     const entryId = formValue(formData, "entryId");
-    if (!entryId) return { ok: false, error: "缺少记录 ID" };
+    if (!entryId) return { ok: false, error: t("reportTxEdit.missingEntryId") };
 
     const payload: Record<string, string> = {};
     formData.forEach((value, key) => {
@@ -134,7 +137,7 @@ export function ReportTransactionEditHost({
     const result = await response.json().catch(() => null) as { ok?: boolean; error?: string } | null;
     return response.ok && result?.ok
       ? { ok: true }
-      : { ok: false, error: result?.error || response.statusText || "保存失败" };
+      : { ok: false, error: result?.error || response.statusText || t("reportTxEdit.saveFailed") };
   }
 
   return (

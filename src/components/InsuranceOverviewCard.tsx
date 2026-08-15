@@ -4,6 +4,8 @@ import Link from "next/link";
 import { Shield } from "lucide-react";
 
 import { formatMoneyYuan } from "@/lib/format";
+import { pnlClassFromRedUp } from "@/lib/client/colors";
+import { useI18n } from "@/lib/i18n";
 
 export type InsuranceOverviewCategoryRow = {
   key: string;
@@ -41,6 +43,7 @@ export function InsuranceOverviewCard({
   insuranceOverview?: InsuranceOverview | null;
   isRedUp: boolean;
 }) {
+  const { t } = useI18n();
   const insuranceRows = insuranceOverview?.personRows ?? [];
   const coverageColumns = (insuranceOverview?.categoryRows ?? []).filter((item) => item.key !== "other").slice(0, 4);
 
@@ -49,15 +52,15 @@ export function InsuranceOverviewCard({
       <div className="panel-header">
         <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
           <Shield className="h-4 w-4 text-cyan-500" />
-          保险概览
+          {t("insuranceOverview.title")}
         </div>
-        <Link href="/insurance" className="text-xs text-blue-600 hover:text-blue-800">查看保险</Link>
+        <Link href="/insurance" className="text-xs text-blue-600 hover:text-blue-800">{t("insuranceOverview.viewInsurance")}</Link>
       </div>
       <div className="grid grid-cols-2 gap-3 px-4 py-4 lg:grid-cols-4">
-        <MetricCard label="被保险人数" value={insuranceOverview ? `${insuranceOverview.insuredPersonCount} 人` : "0 人"} />
-        <MetricCard label="保险产品" value={insuranceOverview ? `${insuranceOverview.productCount} 个` : "0 个"} />
-        <MetricCard label="投保金额" value={formatMoneyYuan(insuranceOverview?.totalPremium ?? 0)} valueClass={directionalClass(-(insuranceOverview?.totalPremium ?? 0), isRedUp)} />
-        <MetricCard label="保额" value={formatMoneyYuan(insuranceOverview?.totalCoverage ?? 0)} />
+        <MetricCard label={t("insuranceOverview.insuredPersons")} value={t("insuranceOverview.peopleCountValue").replace("{count}", String(insuranceOverview?.insuredPersonCount ?? 0))} />
+        <MetricCard label={t("insuranceOverview.insuranceProducts")} value={t("insuranceOverview.productCountValue").replace("{count}", String(insuranceOverview?.productCount ?? 0))} />
+        <MetricCard label={t("insuranceOverview.totalPremium")} value={formatMoneyYuan(insuranceOverview?.totalPremium ?? 0)} valueClass={directionalClass(-(insuranceOverview?.totalPremium ?? 0), isRedUp)} />
+        <MetricCard label={t("insuranceOverview.totalCoverage")} value={formatMoneyYuan(insuranceOverview?.totalCoverage ?? 0)} />
       </div>
       <div className="border-t border-slate-100 px-4 pb-4">
         {insuranceRows.length > 0 && coverageColumns.length > 0 ? (
@@ -67,7 +70,7 @@ export function InsuranceOverviewCard({
               <div key={person.insuredPersonKey} className="py-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0 truncate text-sm font-semibold text-slate-800">{person.insuredPersonName}</div>
-                  <div className="shrink-0 text-sm font-semibold tabular-nums text-slate-900">{formatCompactMoney(person.coverage)}</div>
+                  <div className="shrink-0 text-sm font-semibold tabular-nums text-slate-900">{formatCompactMoney(person.coverage, t)}</div>
                 </div>
                 <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-500">
                   {coverageColumns.map((column) => {
@@ -76,7 +79,7 @@ export function InsuranceOverviewCard({
                     return (
                       <span key={column.key} className="inline-flex items-center gap-1">
                         <span>{column.label}</span>
-                        <span className="font-medium tabular-nums text-slate-700">{formatCompactMoney(coverage)}</span>
+                        <span className="font-medium tabular-nums text-slate-700">{formatCompactMoney(coverage, t)}</span>
                       </span>
                     );
                   })}
@@ -88,11 +91,11 @@ export function InsuranceOverviewCard({
             <table className="w-full table-fixed border-separate border-spacing-0 text-xs">
               <thead>
                 <tr className="text-slate-500">
-                  <th className="sticky left-0 z-10 bg-white px-0 py-2 pr-3 text-left font-semibold">人员</th>
+                  <th className="sticky left-0 z-10 bg-white px-0 py-2 pr-3 text-left font-semibold">{t("insuranceOverview.column.person")}</th>
                   {coverageColumns.map((column) => (
                     <th key={column.key} className="px-2 py-2 text-right font-semibold">{column.label}</th>
                   ))}
-                  <th className="px-2 py-2 text-right font-semibold">合计</th>
+                  <th className="px-2 py-2 text-right font-semibold">{t("insuranceOverview.column.total")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -108,7 +111,7 @@ export function InsuranceOverviewCard({
                         <td key={column.key} className="border-t border-slate-100 px-2 py-2 text-right align-middle tabular-nums group-hover:bg-slate-50">
                           {coverage > 0 ? (
                             <div>
-                              <div className="font-semibold text-slate-800">{formatCompactMoney(coverage)}</div>
+                              <div className="font-semibold text-slate-800">{formatCompactMoney(coverage, t)}</div>
                             </div>
                           ) : (
                             <span className="text-slate-300">-</span>
@@ -117,7 +120,7 @@ export function InsuranceOverviewCard({
                       );
                     })}
                     <td className="border-t border-slate-100 px-2 py-2 text-right align-middle font-semibold tabular-nums text-slate-900 group-hover:bg-slate-50">
-                      {formatCompactMoney(person.coverage)}
+                      {formatCompactMoney(person.coverage, t)}
                     </td>
                   </tr>
                 ))}
@@ -127,7 +130,7 @@ export function InsuranceOverviewCard({
           </>
         ) : (
           <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/80 px-4 py-6 text-center text-sm text-slate-400">
-            暂无保险数据
+            {t("insuranceOverview.empty")}
           </div>
         )}
       </div>
@@ -145,13 +148,11 @@ function MetricCard({ label, value, valueClass = "text-slate-900" }: { label: st
 }
 
 function directionalClass(value: number, isRedUp: boolean) {
-  if (value > 0) return isRedUp ? "text-red-600" : "text-emerald-600";
-  if (value < 0) return isRedUp ? "text-emerald-600" : "text-red-600";
-  return "text-slate-500";
+  return pnlClassFromRedUp(value, isRedUp, "softMuted");
 }
 
-function formatCompactMoney(value: number) {
+function formatCompactMoney(value: number, t: (key: string, params?: Record<string, string | number>) => string) {
   if (!Number.isFinite(value) || value === 0) return "-";
-  if (Math.abs(value) >= 10000) return `${(value / 10000).toFixed(Math.abs(value) >= 1000000 ? 0 : 1)}万`;
+  if (Math.abs(value) >= 10000) return `${(value / 10000).toFixed(Math.abs(value) >= 1000000 ? 0 : 1)}${t("common.compactUnit")}`;
   return formatMoneyYuan(value);
 }

@@ -13,8 +13,21 @@ import { NextRequest, NextResponse } from "next/server";
 import { exec, execSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
+import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 
 export const runtime = "nodejs";
+
+/** 系统更新会执行 git 拉取、安装依赖、数据库变更与构建，仅允许管理员触发。 */
+async function requireAdmin(): Promise<{ ok: true } | { ok: false; response: NextResponse }> {
+  const user = await getCurrentUser();
+  if (!user) {
+    return { ok: false, response: NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 }) };
+  }
+  if (!isAdmin(user)) {
+    return { ok: false, response: NextResponse.json({ ok: false, error: "仅管理员可操作" }, { status: 403 }) };
+  }
+  return { ok: true };
+}
 
 type VersionInfo = {
   localCommit: string;
@@ -429,6 +442,8 @@ async function getImageVersionFallback(
 }
 
 export async function GET(req: NextRequest) {
+  const auth = await requireAdmin();
+  if (!auth.ok) return auth.response;
   try {
     const { searchParams } = new URL(req.url);
     const checkRemote = searchParams.get("check") === "1";
@@ -540,6 +555,9 @@ function runStep(projectRoot: string, cmd: string, timeout: number): Promise<{ o
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await requireAdmin();
+  if (!auth.ok) return auth.response;
+
   const { searchParams } = new URL(req.url);
   if (getDeploymentTarget() === "fnos") {
     return NextResponse.json(

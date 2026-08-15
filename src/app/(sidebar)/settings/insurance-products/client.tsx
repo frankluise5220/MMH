@@ -2,6 +2,7 @@
 
 import { useMemo, useState, type FormEvent } from "react";
 import { Search, X } from "lucide-react";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import {
   SettingsActionButton,
   SettingsEmptyRow,
@@ -199,7 +200,7 @@ export function SettingsInsuranceProductsClient({
         return prev.map((item) => (item.id === editing.id ? mapApiProductMaster(productMaster, item) : item));
       });
       setEditing(null);
-      window.dispatchEvent(new Event("mmh:fund:refresh"));
+      dispatchFinanceDataChanged({ reason: "insurance-product:save" });
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "保存保险产品失败");
     } finally {
@@ -236,7 +237,7 @@ export function SettingsInsuranceProductsClient({
       setDeleteTarget(null);
       setDeletePassword("");
       setDeleteCascade(false);
-      window.dispatchEvent(new Event("mmh:fund:refresh"));
+      dispatchFinanceDataChanged({ reason: "insurance-product:delete" });
     } catch (error) {
       setDeleteError(error instanceof Error ? error.message : "删除保险产品失败");
     } finally {

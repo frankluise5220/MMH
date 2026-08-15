@@ -7,6 +7,7 @@ import {
   type BackgroundTaskProgressDetail,
   type BackgroundTaskProgressEventDetail,
 } from "@/lib/client/background-tasks";
+import { useI18n } from "@/lib/i18n";
 
 type TaskMap = Record<string, BackgroundTaskProgressDetail>;
 
@@ -24,6 +25,7 @@ function pickVisibleTask(tasks: BackgroundTaskProgressDetail[]) {
 export function BackgroundTaskStatusBar() {
   const [tasks, setTasks] = useState<TaskMap>({});
   const cleanupTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const { t } = useI18n();
 
   useEffect(() => {
     const onProgress = (event: Event) => {
@@ -112,18 +114,18 @@ export function BackgroundTaskStatusBar() {
               <div className="truncate text-sm font-semibold">{visibleTask.title}</div>
               {runningCount > 1 ? (
                 <span className="shrink-0 rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">
-                  {runningCount} 个任务
+                  {t("backgroundTask.runningCount", { count: runningCount })}
                 </span>
               ) : null}
               <span className="ml-auto shrink-0 text-xs tabular-nums opacity-70">{percent}%</span>
             </div>
             <div className="mt-1 flex items-center gap-2 text-xs opacity-80">
-              <span className="min-w-0 truncate">{visibleTask.currentLabel || latestMessage || "后台任务处理中..."}</span>
+              <span className="min-w-0 truncate">{visibleTask.currentLabel || latestMessage || t("backgroundTask.processing")}</span>
               {visibleTask.total ? (
                 <span className="shrink-0 tabular-nums">{visibleTask.current ?? 0}/{visibleTask.total}</span>
               ) : null}
               {visibleTask.ok || visibleTask.fail ? (
-                <span className="shrink-0 tabular-nums">成功 {visibleTask.ok ?? 0} / 失败 {visibleTask.fail ?? 0}</span>
+                <span className="shrink-0 tabular-nums">{t("backgroundTask.okFail", { ok: visibleTask.ok ?? 0, fail: visibleTask.fail ?? 0 })}</span>
               ) : null}
             </div>
           </div>
@@ -138,7 +140,7 @@ export function BackgroundTaskStatusBar() {
                 });
               }}
               className="shrink-0 rounded-md p-1 text-slate-400 transition-colors hover:bg-white/70 hover:text-slate-700"
-              title="关闭"
+              title={t("table.close")}
             >
               <X className="h-3.5 w-3.5" />
             </button>

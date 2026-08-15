@@ -13,6 +13,7 @@ import { kindLabel } from "@/lib/account-kinds";
 import { buildAccountDisplayOption } from "@/lib/account-display";
 import { formatMoneyLoose as formatMoney } from "@/lib/format";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { useI18n } from "@/lib/i18n";
 
 type Entry = {
   id?: string;
@@ -111,22 +112,22 @@ type OwnerOption = {
 };
 
 const PRODUCT_TYPE_OPTIONS = [
-  { value: "savings", label: "储蓄型" },
-  { value: "dividend", label: "分红型" },
-  { value: "annuity", label: "年金型" },
-  { value: "universal", label: "万能型" },
-  { value: "investment_linked", label: "投连型" },
-  { value: "critical_illness", label: "重疾险" },
-  { value: "medical", label: "医疗险" },
-  { value: "accident", label: "意外险" },
-  { value: "term_life", label: "定期寿险" },
-  { value: "whole_life", label: "终身寿险" },
-  { value: "other", label: "其他" },
+  { value: "savings", labelKey: "insuranceProduct.type.savings" },
+  { value: "dividend", labelKey: "insuranceProduct.type.dividend" },
+  { value: "annuity", labelKey: "insuranceProduct.type.annuity" },
+  { value: "universal", labelKey: "insuranceProduct.type.universal" },
+  { value: "investment_linked", labelKey: "insuranceProduct.type.investment_linked" },
+  { value: "critical_illness", labelKey: "insuranceProduct.type.critical_illness" },
+  { value: "medical", labelKey: "insuranceProduct.type.medical" },
+  { value: "accident", labelKey: "insuranceProduct.type.accident" },
+  { value: "term_life", labelKey: "insuranceProduct.type.term_life" },
+  { value: "whole_life", labelKey: "insuranceProduct.type.whole_life" },
+  { value: "other", labelKey: "insuranceProduct.type.other" },
 ] as const;
 
 const PAYMENT_MODE_OPTIONS = [
-  { value: 12, label: "年交" },
-  { value: 999999, label: "趸交" },
+  { value: 12, labelKey: "insuranceFormModal.payMode.annual" },
+  { value: 999999, labelKey: "insuranceShell.frequency.single" },
 ] as const;
 
 const PRODUCT_ACCOUNTING_TYPE: Record<string, "asset" | "protection" | "hybrid"> = {
@@ -143,8 +144,9 @@ const PRODUCT_ACCOUNTING_TYPE: Record<string, "asset" | "protection" | "hybrid">
   other: "asset",
 };
 
-function productTypeLabel(type?: string | null) {
-  return PRODUCT_TYPE_OPTIONS.find((item) => item.value === type)?.label ?? "保险";
+function productTypeLabel(t: (key: string) => string, type?: string | null) {
+  const labelKey = PRODUCT_TYPE_OPTIONS.find((item) => item.value === type)?.labelKey;
+  return labelKey ? t(labelKey) : t("insuranceFormModal.insurance");
 }
 
 function accountingTypeForProductType(type?: string | null) {
@@ -226,11 +228,11 @@ function nullableNumberFromRecord(item: Record<string, unknown>, key: string) {
   return value == null ? null : Number(value);
 }
 
-function mapInsuranceProduct(item: Record<string, unknown>): InsuranceProductOption {
+function mapInsuranceProduct(item: Record<string, unknown>, t: (key: string) => string): InsuranceProductOption {
   return {
     id: valueFromRecord(item, "id"),
     label: valueFromRecord(item, "name"),
-    subLabel: [valueFromRecord(item, "institutionShortName") || valueFromRecord(item, "institutionName"), productTypeLabel(nullableStringFromRecord(item, "productType"))].filter(Boolean).join(" · "),
+    subLabel: [valueFromRecord(item, "institutionShortName") || valueFromRecord(item, "institutionName"), productTypeLabel(t, nullableStringFromRecord(item, "productType"))].filter(Boolean).join(" · "),
     productMasterId: nullableStringFromRecord(item, "productMasterId"),
     accountId: valueFromRecord(item, "accountId"),
     accountLabel: valueFromRecord(item, "accountName"),
@@ -264,14 +266,14 @@ function mapInsuranceProduct(item: Record<string, unknown>): InsuranceProductOpt
   };
 }
 
-function mapInsuranceProductMaster(item: Record<string, unknown>): InsuranceProductOption {
+function mapInsuranceProductMaster(item: Record<string, unknown>, t: (key: string) => string): InsuranceProductOption {
   const id = valueFromRecord(item, "id");
   return {
     id,
     isMaster: true,
     productMasterId: id,
     label: valueFromRecord(item, "name"),
-    subLabel: [valueFromRecord(item, "institutionShortName") || valueFromRecord(item, "institutionName"), productTypeLabel(nullableStringFromRecord(item, "productType"))].filter(Boolean).join(" · "),
+    subLabel: [valueFromRecord(item, "institutionShortName") || valueFromRecord(item, "institutionName"), productTypeLabel(t, nullableStringFromRecord(item, "productType"))].filter(Boolean).join(" · "),
     accountId: "",
     institutionId: nullableStringFromRecord(item, "institutionId"),
     institutionName: nullableStringFromRecord(item, "institutionName"),
@@ -299,6 +301,7 @@ export function InsuranceFormModal({
   nestedFieldData?: NestedFieldData;
 }) {
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const { t } = useI18n();
 
   const initIsRedeem = mode === "edit" && entry ? entry.amount > 0 : false;
   const initAmount = mode === "edit" && entry ? String(Math.abs(entry.amount)) : "";
@@ -414,7 +417,7 @@ export function InsuranceFormModal({
           }
         | null;
       if (!response.ok || !data?.ok) {
-        throw new Error(data?.error || "查询失败");
+        throw new Error(data?.error || t("insuranceFormModal.alert.lookupFailed"));
       }
       const candidates = data.data?.candidates ?? [];
       setNewProductLookupCandidates(
@@ -431,7 +434,7 @@ export function InsuranceFormModal({
     } catch (error) {
       setNewProductLookupCandidates([]);
       setNewProductSelectedCandidate(-1);
-      setNewProductLookupError(error instanceof Error ? error.message : "查询失败");
+      setNewProductLookupError(error instanceof Error ? error.message : t("insuranceFormModal.alert.lookupFailed"));
     } finally {
       setNewProductLookupLoading(false);
     }
@@ -463,9 +466,9 @@ export function InsuranceFormModal({
         | { ok?: boolean; error?: string; productMaster?: Record<string, unknown> }
         | null;
       if (!response.ok || !data?.ok || !data.productMaster) {
-        throw new Error(data?.error || "创建失败");
+        throw new Error(data?.error || t("txForm.createFailed"));
       }
-      const nextOption = mapInsuranceProductMaster(data.productMaster);
+      const nextOption = mapInsuranceProductMaster(data.productMaster, t);
       setInsuranceProductOptions((prev) => [
         ...prev.filter((item) => item.id !== nextOption.id),
         nextOption,
@@ -478,7 +481,7 @@ export function InsuranceFormModal({
       setNewProductSelectedCandidate(-1);
       setNewProductLookupError("");
     } catch (error) {
-      setNewProductLookupError(error instanceof Error ? error.message : "创建失败");
+      setNewProductLookupError(error instanceof Error ? error.message : t("txForm.createFailed"));
     } finally {
       setNewProductSaving(false);
     }
@@ -536,7 +539,7 @@ export function InsuranceFormModal({
       amount: amountValue,
       planStartDate: formatDateOnly(start),
       currentRecordDate: formatDateOnly(currentEntryDate),
-      frequencyLabel: frequencyMonths === 12 ? "每年" : `每 ${frequencyMonths} 个月`,
+      frequencyLabel: frequencyMonths === 12 ? t("insuranceShell.frequency.annual") : t("insuranceFormModal.frequencyMonths", { months: frequencyMonths }),
     };
   }
 
@@ -590,8 +593,8 @@ export function InsuranceFormModal({
     <button
       type="button"
       onClick={cycleCashOwnerFilter}
-      title={`所有人：${cashOwnerFilterLabel}`}
-      aria-label={`切换所有人，当前${cashOwnerFilterLabel}`}
+      title={t("insuranceFormModal.ownerFilterTitle", { label: cashOwnerFilterLabel })}
+      aria-label={t("insuranceFormModal.cycleOwnerAria", { label: cashOwnerFilterLabel })}
       className="secondary-button !px-0 h-7 w-7 shrink-0 text-slate-500"
     >
       <Repeat className="h-3.5 w-3.5" />
@@ -680,14 +683,14 @@ export function InsuranceFormModal({
           .map((item) => ({
             id: item.id,
             label: item.name,
-            subLabel: "家庭成员",
+            subLabel: t("institution.type.family_member"),
           }));
         const nextInstitutions = institutions
           .filter((item) => item.type === "insurance")
           .map((item) => ({
             id: item.id,
             label: item.name,
-            subLabel: item.shortName && item.shortName !== item.name ? item.shortName : "保险公司",
+            subLabel: item.shortName && item.shortName !== item.name ? item.shortName : t("institution.type.insurance"),
           }));
         setFamilyMemberOptions(nextFamilyMembers);
         setInstitutionOptions(nextInstitutions);
@@ -754,8 +757,8 @@ export function InsuranceFormModal({
           | null;
         if (cancelled || !response.ok || !data?.ok) return;
         const nextOptions = [
-          ...(Array.isArray(data.products) ? data.products.map(mapInsuranceProduct) : []),
-          ...(Array.isArray(data.masters) ? data.masters.map(mapInsuranceProductMaster) : []),
+          ...(Array.isArray(data.products) ? data.products.map((item) => mapInsuranceProduct(item, t)) : []),
+          ...(Array.isArray(data.masters) ? data.masters.map((item) => mapInsuranceProductMaster(item, t)) : []),
         ];
         setInsuranceProductOptions(nextOptions);
       } catch {
@@ -789,20 +792,20 @@ export function InsuranceFormModal({
 
     const amountValue = parseOptionalNumber(amount);
     if (amountValue == null || amountValue <= 0) {
-      window.alert("请输入正确金额");
+      window.alert(t("insuranceFormModal.alert.amountInvalid"));
       return;
     }
 
     if (!insuranceProductId) {
-      window.alert("请选择保单");
+      window.alert(t("insuranceFormModal.alert.selectPolicy"));
       return;
     }
     if (!cashAccountId) {
-      window.alert("请选择资金账户");
+      window.alert(t("investForm.selectCashAccount"));
       return;
     }
     if (!selectedInsuranceProduct) {
-      window.alert("请选择保险产品");
+      window.alert(t("insuranceFormModal.alert.selectInsuranceProduct"));
       return;
     }
 
@@ -856,7 +859,7 @@ export function InsuranceFormModal({
       });
       const data = (await response.json().catch(() => null)) as { ok?: boolean; error?: string; data?: { id?: string } } | null;
       if (!response.ok || !data?.ok) {
-        throw new Error(data?.error || (isEdit ? "保存失败" : "记账失败"));
+        throw new Error(data?.error || (isEdit ? t("debtTx.alert.saveFailed") : t("txForm.alert.saveFailed")));
       }
 
       if (isEdit) {
@@ -868,7 +871,7 @@ export function InsuranceFormModal({
         dispatchFinanceDataChanged({ reason: "insurance-save" });
       });
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "保存失败");
+      window.alert(error instanceof Error ? error.message : t("debtTx.alert.saveFailed"));
     } finally {
       setSubmitting(false);
     }
@@ -901,8 +904,8 @@ export function InsuranceFormModal({
         <div className="app-modal-panel max-w-[min(42rem,calc(100vw-1rem))]">
           <div className="modal-header">
             <div className="text-sm font-semibold text-slate-800">
-              {isEditingRecord ? "编辑保单" : "新增保单"}
-              <span className="ml-2 text-xs font-normal text-slate-500">保险</span>
+              {isEditingRecord ? t("insuranceFormModal.editPolicy") : t("insuranceFormModal.newPolicy")}
+              <span className="ml-2 text-xs font-normal text-slate-500">{t("insuranceFormModal.insurance")}</span>
             </div>
             <button
               type="button"
@@ -912,20 +915,20 @@ export function InsuranceFormModal({
               }}
               className="secondary-button h-8 px-2"
             >
-              关闭
+              {t("table.close")}
             </button>
           </div>
 
           <form className="flex min-h-0 flex-1 flex-col" onSubmit={onSubmit}>
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 sm:p-4">
-              {/* 投保 / 退保 切换 */}
+              {/* Buy / redeem toggle */}
               <div className="flex gap-2">
                 <button
                   type="button"
                   onClick={() => setSubtype("buy")}
                   className={`segment-button h-8 flex-1 text-xs ${subtype === "buy" ? "segment-button-active font-medium" : ""}`}
                 >
-                  投保
+                  {t("insuranceFormModal.buy")}
                 </button>
                 <button
                   type="button"
@@ -935,15 +938,15 @@ export function InsuranceFormModal({
                   }}
                   className={`segment-button h-8 flex-1 text-xs ${subtype === "redeem" ? "segment-button-active font-medium" : ""}`}
                 >
-                  退保
+                  {t("insuranceFormModal.redeem")}
                 </button>
               </div>
 
               {isRedeem ? (
-                /* ========== 退保模式 ========== */
+                /* ========== Redeem mode ========== */
                 <>
                   <div className="space-y-1">
-                    <div className="form-label">保单</div>
+                    <div className="form-label">{t("insuranceFormModal.policy")}</div>
                     <SmartSelect
                       mode="single"
                       value={insuranceProductId}
@@ -952,19 +955,19 @@ export function InsuranceFormModal({
                         setLastAppliedProductId("");
                       }}
                       options={filteredInsuranceProductOptions}
-                      placeholder="选择已有保单"
+                      placeholder={t("insuranceFormModal.selectExistingPolicy")}
                       behavior={{ hierarchy: false, search: "auto", clearable: false }}
                     />
                   </div>
 
                   <div className="space-y-1">
-                    <div className="form-label">资金退回账户</div>
+                    <div className="form-label">{t("insuranceFormModal.refundCashAccount")}</div>
                     <SmartSelect
                       mode="single"
                       value={cashAccountId}
                       onChange={setCashAccountId}
                       options={cashFiltered ?? cashAccountList}
-                      placeholder="选择账户"
+                      placeholder={t("wealthForm.selectAccount")}
                       behavior={{
                         hierarchy: false,
                         search: "auto",
@@ -981,48 +984,48 @@ export function InsuranceFormModal({
 
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                     <div className="space-y-1">
-                      <div className="form-label">退保日期</div>
+                      <div className="form-label">{t("insuranceFormModal.redeemDate")}</div>
                       <DateStepper
                         value={date}
                         onChange={changeDate}
                       />
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">到账日期</div>
+                      <div className="form-label">{t("investForm.arrivalDate")}</div>
                       <DateStepper
                         value={arrivalDate}
                         onChange={changeArrivalDate}
                       />
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">退保金额</div>
+                      <div className="form-label">{t("insuranceFormModal.redeemAmount")}</div>
                       <CalcInput
                         value={amount}
                         onChange={setAmount}
                         placeholder="0.00"
-                        label="退保"
+                        label={t("insuranceFormModal.redeem")}
                         precision={2}
                       />
                     </div>
                   </div>
 
                   <div className="space-y-1">
-                    <div className="form-label">备注</div>
+                    <div className="form-label">{t("detail.column.remark")}</div>
                     <input
                       value={memo}
                       onChange={(event) => setMemo(event.target.value)}
-                      placeholder="可选"
+                      placeholder={t("stockFee.optional")}
                       className="form-input"
                     />
                   </div>
                 </>
               ) : (
-                /* ========== 投保模式 ========== */
+                /* ========== Buy mode ========== */
                 <>
-                  {/* 1. 投保人 + 2. 资金账户 */}
+                  {/* 1. Policyholder + 2. Cash account */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <div className="form-label">投保人</div>
+                      <div className="form-label">{t("insuranceShell.colPolicyholder")}</div>
                       <SmartSelect
                         mode="single"
                         value={policyholderPersonId}
@@ -1031,7 +1034,7 @@ export function InsuranceFormModal({
                           setCashAccountId("");
                         }}
                         options={familyMemberOptions}
-                        placeholder="选择投保人"
+                        placeholder={t("insuranceFormModal.selectPolicyholder")}
                         behavior={{
                           hierarchy: false,
                           search: "auto",
@@ -1045,13 +1048,13 @@ export function InsuranceFormModal({
                       />
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">资金来源账户</div>
+                      <div className="form-label">{t("insuranceFormModal.cashSourceAccount")}</div>
                       <SmartSelect
                         mode="single"
                         value={cashAccountId}
                         onChange={setCashAccountId}
                         options={cashFiltered ?? cashListForPolicyholder}
-                        placeholder={policyholderPersonId ? "选择账户" : "先选择投保人"}
+                        placeholder={policyholderPersonId ? t("wealthForm.selectAccount") : t("insuranceFormModal.selectPolicyholderFirst")}
                         behavior={{
                           hierarchy: false,
                           search: "auto",
@@ -1067,9 +1070,9 @@ export function InsuranceFormModal({
                     </div>
                   </div>
 
-                  {/* 3. 保险产品 */}
+                  {/* 3. Insurance product */}
                   <div className="space-y-1">
-                    <div className="form-label">保险产品</div>
+                    <div className="form-label">{t("insuranceOverview.insuranceProducts")}</div>
                     <SmartSelect
                       mode="single"
                       value={insuranceProductId}
@@ -1078,7 +1081,7 @@ export function InsuranceFormModal({
                         setLastAppliedProductId("");
                       }}
                       options={filteredInsuranceProductOptions}
-                      placeholder="选择保险产品"
+                      placeholder={t("insuranceFormModal.selectInsuranceProduct")}
                       behavior={{
                         hierarchy: false,
                         search: "auto",
@@ -1092,16 +1095,16 @@ export function InsuranceFormModal({
                     />
                   </div>
 
-                  {/* 4. 被保险人 + 5. 受益人 */}
+                  {/* 4. Insured + 5. Beneficiary */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <div className="form-label">被保险人</div>
+                      <div className="form-label">{t("insuranceFormModal.insured")}</div>
                       <SmartSelect
                         mode="single"
                         value={insuredPersonId}
                         onChange={setInsuredPersonId}
                         options={familyMemberOptions}
-                        placeholder="选择被保险人"
+                        placeholder={t("insuranceFormModal.selectInsured")}
                         behavior={{
                           hierarchy: false,
                           search: "auto",
@@ -1115,13 +1118,13 @@ export function InsuranceFormModal({
                       />
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">受益人</div>
+                      <div className="form-label">{t("insuranceFormModal.beneficiary")}</div>
                       <SmartSelect
                         mode="single"
                         value={beneficiaryPersonId}
                         onChange={setBeneficiaryPersonId}
                         options={familyMemberOptions}
-                        placeholder="选择受益人"
+                        placeholder={t("insuranceFormModal.selectBeneficiary")}
                         behavior={{
                           hierarchy: false,
                           search: "auto",
@@ -1138,32 +1141,32 @@ export function InsuranceFormModal({
 
                   <div className="grid grid-cols-3 gap-3">
                     <div className="space-y-1">
-                      <div className="form-label">保单号</div>
+                      <div className="form-label">{t("insuranceShell.colPolicyNo")}</div>
                       <input
                         value={policyNo}
                         onChange={(event) => setPolicyNo(event.target.value)}
-                        placeholder="可选"
+                        placeholder={t("stockFee.optional")}
                         className="form-input"
                       />
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">交款方式</div>
+                      <div className="form-label">{t("insuranceFormModal.paymentMode")}</div>
                       <select
                         value={premiumFrequencyMonths}
                         onChange={(event) => setPremiumFrequencyMonths(event.target.value)}
                         className="form-input"
-                        title="交款方式"
-                        aria-label="交款方式"
+                        title={t("insuranceFormModal.paymentMode")}
+                        aria-label={t("insuranceFormModal.paymentMode")}
                       >
                         {PAYMENT_MODE_OPTIONS.map((item) => (
                           <option key={item.value} value={String(item.value)}>
-                            {item.label}
+                            {t(item.labelKey)}
                           </option>
                         ))}
                       </select>
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">缴费期限（年）</div>
+                      <div className="form-label">{t("insuranceFormModal.paymentTermYears")}</div>
                       <input
                         type="number"
                         inputMode="numeric"
@@ -1171,17 +1174,17 @@ export function InsuranceFormModal({
                         onChange={(event) => setPaymentTermYears(event.target.value)}
                         min={2}
                         max={30}
-                        placeholder={isAnnualPayment ? "2-30" : "锁定"}
+                        placeholder={isAnnualPayment ? "2-30" : t("insuranceFormModal.locked")}
                         disabled={isSinglePayment}
                         className="form-input disabled:bg-slate-100 disabled:text-slate-400"
                       />
                     </div>
                   </div>
 
-                  {/* 7. 初次购买日期 + 投保金额 */}
+                  {/* 7. First purchase date + premium amount */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <div className="form-label">初次购买日期</div>
+                      <div className="form-label">{t("insuranceFormModal.firstPurchaseDate")}</div>
                       <DateStepper
                         value={productStartDate}
                         onChange={(value) => {
@@ -1193,12 +1196,12 @@ export function InsuranceFormModal({
                       />
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">投保金额</div>
+                      <div className="form-label">{t("insuranceOverview.totalPremium")}</div>
                       <CalcInput
                         value={amount}
                         onChange={setAmount}
                         placeholder="0.00"
-                        label="投保"
+                        label={t("insuranceFormModal.buy")}
                         precision={2}
                       />
                     </div>
@@ -1206,17 +1209,17 @@ export function InsuranceFormModal({
 
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <div className="form-label">保额</div>
+                      <div className="form-label">{t("insuranceOverview.totalCoverage")}</div>
                       <CalcInput
                         value={coverageAmount}
                         onChange={setCoverageAmount}
                         placeholder="0.00"
-                        label="保额"
+                        label={t("insuranceOverview.totalCoverage")}
                         precision={2}
                       />
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">保障期限（年）</div>
+                      <div className="form-label">{t("insuranceFormModal.coverageTermYears")}</div>
                       <input
                         type="number"
                         inputMode="numeric"
@@ -1230,13 +1233,13 @@ export function InsuranceFormModal({
                     </div>
                   </div>
 
-                  {/* 9. 备注 */}
+                  {/* 9. Note */}
                   <div className="space-y-1">
-                    <div className="form-label">备注</div>
+                    <div className="form-label">{t("detail.column.remark")}</div>
                     <input
                       value={memo}
                       onChange={(event) => setMemo(event.target.value)}
-                      placeholder="可选"
+                      placeholder={t("stockFee.optional")}
                       className="form-input"
                     />
                   </div>
@@ -1251,7 +1254,7 @@ export function InsuranceFormModal({
                   disabled={submitting}
                   className={`h-9 rounded-[10px] px-4 text-sm text-white disabled:opacity-50 ${isRedeem ? "bg-orange-600 hover:bg-orange-700" : "primary-button"}`}
                 >
-                  {submitting ? "保存中..." : isEditingRecord ? "保存修改" : isRedeem ? "记账（退保）" : "记账（投保）"}
+                  {submitting ? t("txForm.saving") : isEditingRecord ? t("txForm.saveChanges") : isRedeem ? t("insuranceFormModal.recordRedeem") : t("insuranceFormModal.recordBuy")}
                 </button>
               </div>
             </div>
@@ -1286,7 +1289,7 @@ export function InsuranceFormModal({
           open={true}
           onClose={() => setNestedEntityType(null)}
           onCreated={(id, name) => {
-            const option = { id, label: name, subLabel: "家庭成员" };
+            const option = { id, label: name, subLabel: t("institution.type.family_member") };
             setFamilyMemberOptions((prev) => [...prev, option]);
             setNestedEntityType(null);
           }}
@@ -1296,12 +1299,12 @@ export function InsuranceFormModal({
         />
       )}
 
-      {/* 新增保险产品母体弹窗 */}
+      {/* New insurance product master modal */}
       {showNewProductModal && (
         <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-black/35 p-4">
           <div className="w-full max-w-sm overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
             <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
-              <div className="text-sm font-semibold text-slate-800">新增保险产品</div>
+              <div className="text-sm font-semibold text-slate-800">{t("insuranceFormModal.newProductTitle")}</div>
               <button
                 type="button"
                 onClick={() => {
@@ -1314,21 +1317,21 @@ export function InsuranceFormModal({
                 }}
                 className="h-8 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700 hover:bg-slate-50"
               >
-                关闭
+                {t("table.close")}
               </button>
             </div>
             <div className="space-y-3 p-4">
               <div className="space-y-1">
-                <div className="text-xs font-medium text-slate-600">承保机构</div>
+                <div className="text-xs font-medium text-slate-600">{t("insuranceFormModal.underwritingInstitution")}</div>
                 <select
                   value={newProductInstitutionId}
                   onChange={(event) => setNewProductInstitutionId(event.target.value)}
                   className="form-input bg-white"
                 >
-                  <option value="">选择机构</option>
+                  <option value="">{t("insuranceFormModal.selectInstitution")}</option>
                   {institutionOptions.map((item) => (
                     <option key={item.id} value={item.id}>
-                      {item.label}{item.subLabel && item.subLabel !== "保险公司" ? ` (${item.subLabel})` : ""}
+                      {item.label}{item.subLabel && item.subLabel !== t("institution.type.insurance") ? ` (${item.subLabel})` : ""}
                     </option>
                   ))}
                 </select>
@@ -1336,14 +1339,14 @@ export function InsuranceFormModal({
 
               <div className="space-y-1">
                 <div className="flex items-center justify-between gap-2">
-                  <div className="text-xs font-medium text-slate-600">产品名称</div>
+                  <div className="text-xs font-medium text-slate-600">{t("investForm.productNameLabel")}</div>
                   <button
                     type="button"
                     onClick={handleNewProductLookup}
                     disabled={newProductLookupLoading || !newProductName.trim() || !newProductInstitutionId}
                     className="text-[11px] text-blue-600 hover:text-blue-700 disabled:text-slate-300"
                   >
-                    {newProductLookupLoading ? "查询中..." : "查询"}
+                    {newProductLookupLoading ? t("insuranceFormModal.lookupLoading") : t("insuranceFormModal.lookup")}
                   </button>
                 </div>
                 <input
@@ -1354,7 +1357,7 @@ export function InsuranceFormModal({
                     setNewProductLookupCandidates([]);
                     setNewProductSelectedCandidate(-1);
                   }}
-                  placeholder="例如：平安福满分"
+                  placeholder={t("insuranceFormModal.productNamePlaceholder")}
                   className="form-input bg-white"
                 />
               </div>
@@ -1366,7 +1369,7 @@ export function InsuranceFormModal({
               {newProductLookupCandidates.length > 0 && (
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">
-                    查询结果 ({newProductLookupCandidates.length})
+                    {t("insuranceFormModal.lookupResultCount", { count: newProductLookupCandidates.length })}
                   </div>
                   <div className="max-h-40 overflow-auto rounded-md border border-slate-200">
                     {newProductLookupCandidates.map((candidate, index) => (
@@ -1387,7 +1390,7 @@ export function InsuranceFormModal({
                           <div className="text-slate-800">{candidate.name}</div>
                           <div className="text-[11px] text-slate-500">
                             {candidate.institutionName}
-                            {candidate.productType ? ` · ${productTypeLabel(candidate.productType)}` : ""}
+                            {candidate.productType ? ` · ${productTypeLabel(t, candidate.productType)}` : ""}
                             {candidate.status ? ` · ${candidate.status}` : ""}
                           </div>
                         </div>
@@ -1410,7 +1413,7 @@ export function InsuranceFormModal({
                   }}
                   className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50"
                 >
-                  取消
+                  {t("common.cancel")}
                 </button>
                 <button
                   type="button"
@@ -1418,7 +1421,7 @@ export function InsuranceFormModal({
                   disabled={newProductSaving || !newProductName.trim() || !newProductInstitutionId}
                   className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
                 >
-                  {newProductSaving ? "保存中..." : "创建"}
+                  {newProductSaving ? t("txForm.saving") : t("settings.fundApi.create")}
                 </button>
               </div>
             </div>
@@ -1426,20 +1429,19 @@ export function InsuranceFormModal({
         </div>
       )}
 
-      {/* 确认弹窗：缴费计划固定生成，用户只确认是否补生成过往记录 */}
+      {/* Confirm dialog: premium plan is always generated; user only confirms whether to backfill past records */}
       {showConfirmDialog && pendingPlanData && (
         <div className="fixed inset-0 z-[1200] flex items-center justify-center bg-black/35 p-4">
           <div className="w-full max-w-sm overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
             <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
-              <div className="text-sm font-semibold text-slate-800">缴费计划确认</div>
+              <div className="text-sm font-semibold text-slate-800">{t("insuranceFormModal.planConfirmTitle")}</div>
             </div>
             <div className="space-y-4 p-4">
               <div className="text-sm text-slate-600">
-                初次购买日期为 <span className="font-semibold text-slate-800">{productStartDate}</span>，
-                本次应补齐到 <span className="font-semibold text-slate-800">{pendingPlanData.currentRecordDate}</span>。
+                {t("insuranceFormModal.planConfirmSummary", { startDate: productStartDate, endDate: pendingPlanData.currentRecordDate })}
               </div>
               <div className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700">
-                将生成缴费计划：共 {pendingPlanData.totalRuns} 次，{pendingPlanData.frequencyLabel} {formatMoney(pendingPlanData.amount)}。
+                {t("insuranceFormModal.planSummary", { totalRuns: pendingPlanData.totalRuns, frequencyLabel: pendingPlanData.frequencyLabel, amount: formatMoney(pendingPlanData.amount) })}
               </div>
               <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
                 <input
@@ -1449,7 +1451,7 @@ export function InsuranceFormModal({
                   disabled={pendingPlanData.dueCount <= 0}
                   className="h-4 w-4 accent-blue-600"
                 />
-                同时由计划任务批量生成已到期缴费记录（预计 {pendingPlanData.dueCount} 条，从 {pendingPlanData.planStartDate} 到 {pendingPlanData.currentRecordDate}）
+                {t("insuranceFormModal.planBackfill", { dueCount: pendingPlanData.dueCount, planStartDate: pendingPlanData.planStartDate, currentRecordDate: pendingPlanData.currentRecordDate })}
               </label>
               <div className="flex justify-end gap-2 pt-1">
                 <button
@@ -1457,14 +1459,14 @@ export function InsuranceFormModal({
                   onClick={handleCancelConfirm}
                   className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50"
                 >
-                  返回修改
+                  {t("debtTx.backToEdit")}
                 </button>
                 <button
                   type="button"
                   onClick={handleConfirmPlanAndBatch}
                   className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700"
                 >
-                  确认并保存
+                  {t("insuranceFormModal.confirmAndSave")}
                 </button>
               </div>
             </div>

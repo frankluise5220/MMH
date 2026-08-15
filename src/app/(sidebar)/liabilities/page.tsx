@@ -12,6 +12,7 @@ import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { createDebtTransaction } from "@/lib/server/sidebar-actions/debt-actions";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getServerT } from "@/lib/server/i18n";
 
 export const dynamic = "force-dynamic";
 
@@ -33,14 +34,14 @@ function directionOf(kind: AccountKind, balance: number): "payable" | "receivabl
   return balance >= 0 ? "receivable" : "payable";
 }
 
-function kindLabel(kind: AccountKind) {
-  if (kind === AccountKind.bank_credit) return "信用卡";
-  if (kind === AccountKind.loan) return "借入/借出";
-  return "借入借出账户";
+function kindLabel(kind: AccountKind, t: (key: string) => string) {
+  if (kind === AccountKind.bank_credit) return t("account.kind.bank_credit");
+  if (kind === AccountKind.loan) return t("account.kind.loan");
+  return t("liabilities.debtAccount");
 }
 
-function dayLabel(day: number | null) {
-  return day ? `${day}日` : "未设置";
+function dayLabel(day: number | null, t: (key: string, params?: Record<string, string | number>) => string) {
+  return day ? t("liabilities.day", { day }) : t("liabilities.notSet");
 }
 
 type SmartSelectOptionLike = {
@@ -76,6 +77,7 @@ export default async function LiabilitiesPage({
 }) {
   const params = searchParams ? await searchParams : {};
   const guideMode = params.guide === "settlements";
+  const t = await getServerT();
   const cookieStore = await cookies();
   const creditCardLabelMode = cookieStore.get("mmh_credit_card_label_mode")?.value === "full_name" ? "full_name" : "short_last4";
   const creditCardLabelTemplate = normalizeCreditCardLabelTemplate(
@@ -128,7 +130,7 @@ export default async function LiabilitiesPage({
       counterpartyId: account.counterpartyId ?? "",
       debtDirection: account.debtDirection ?? null,
       billingDay: account.billingDay ?? null,
-      subLabel: kindLabel(account.kind),
+      subLabel: kindLabel(account.kind, t),
       currency: account.currency ?? "CNY",
     };
   });
@@ -197,21 +199,21 @@ export default async function LiabilitiesPage({
   const debtObjectOptions: SmartSelectOptionLike[] = [
     ...(counterparties.length > 0
       ? [
-          { id: "debt-counterparty-header", label: "往来对象", isHeader: true },
+          { id: "debt-counterparty-header", label: t("liabilities.counterparties"), isHeader: true },
           ...counterparties.map((counterparty) => ({
             id: `counterparty:${counterparty.id}`,
             label: counterparty.shortName?.trim() || counterparty.name,
-            subLabel: counterparty.type === "person" ? "往来人员" : "往来组织",
+            subLabel: counterparty.type === "person" ? t("institution.type.person") : t("institution.type.organization"),
           })),
         ]
       : []),
     ...(institutions.some((institution) => institution.type === "bank")
       ? [
-          { id: "debt-institution-source-header", label: "从机构选择", isHeader: true },
+          { id: "debt-institution-source-header", label: t("liabilities.fromInstitution"), isHeader: true },
           ...institutions.filter((institution) => institution.type === "bank").map((institution) => ({
             id: `institution:${institution.id}`,
             label: institution.shortName?.trim() || institution.name,
-            subLabel: "银行",
+            subLabel: t("institution.type.bank"),
           })),
         ]
       : []),
@@ -252,7 +254,7 @@ export default async function LiabilitiesPage({
       return {
         id: account.id,
         label: display.label,
-        subLabel: account.Counterparty?.name ? "往来对象" : account.Institution?.name ? "机构往来" : "借入/借出",
+        subLabel: account.Counterparty?.name ? t("liabilities.counterparty") : account.Institution?.name ? t("liabilities.institutionDeal") : t("account.kind.loan"),
         institutionId: account.institutionId ?? null,
         counterpartyId: account.counterpartyId ?? null,
         institutionType: account.Institution?.type ?? account.Counterparty?.type ?? null,
@@ -318,7 +320,7 @@ export default async function LiabilitiesPage({
       Institution: account.Institution,
       AccountGroup: account.AccountGroup,
     }, creditCardLabelTemplate);
-    const institutionName = display.institutionName || "未设置往来对象";
+    const institutionName = display.institutionName || t("liabilities.noCounterparty");
     const debtPersonKey = institutionName
       ? `institution:${account.institutionId ?? institutionName}`
       : `account:${account.id}`;
@@ -331,7 +333,7 @@ export default async function LiabilitiesPage({
       direction,
       balance,
       amount,
-      groupName: account.AccountGroup?.name?.trim() || "未设置所有人",
+      groupName: account.AccountGroup?.name?.trim() || t("investments.noOwner"),
       institutionName,
       billingDay: account.billingDay,
       repaymentDay: account.repaymentDay,
@@ -368,11 +370,11 @@ export default async function LiabilitiesPage({
       <header className="page-header">
         <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 px-4 py-2 md:px-5">
           <div className="min-w-0">
-            <div className="text-sm font-semibold text-slate-900">借入借出</div>
-            <div className="text-xs text-slate-500">往来对象、余额列表和明细</div>
+            <div className="text-sm font-semibold text-slate-900">{t("liabilities.title")}</div>
+            <div className="text-xs text-slate-500">{t("liabilities.subtitle")}</div>
           </div>
           <Link href="/settings/accounts" className="secondary-button h-8 px-3 text-xs">
-            管理借入借出账户
+            {t("liabilities.manageAccounts")}
           </Link>
         </div>
       </header>
@@ -380,11 +382,11 @@ export default async function LiabilitiesPage({
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-4 py-4 md:px-5 md:py-5">
         <section className="panel-surface overflow-hidden">
           <div className="grid grid-cols-2 gap-3 p-4 md:grid-cols-5">
-            <SummaryCard label="总余额" value={receivableTotal - payableTotal} intent={receivableTotal >= payableTotal ? "receivable" : "payable"} />
-            <SummaryCard label="借入余额" value={payableTotal} intent="payable" />
-            <SummaryCard label="借出余额" value={receivableTotal} intent="receivable" />
-            <SummaryCard label="信用卡" value={creditTotal} intent="payable" />
-            <SummaryCard label="借入/借出" value={loanTotal} intent="payable" />
+            <SummaryCard label={t("liabilities.netBalance")} value={receivableTotal - payableTotal} intent={receivableTotal >= payableTotal ? "receivable" : "payable"} />
+            <SummaryCard label={t("liabilities.payableBalance")} value={payableTotal} intent="payable" />
+            <SummaryCard label={t("liabilities.receivableBalance")} value={receivableTotal} intent="receivable" />
+            <SummaryCard label={t("account.kind.bank_credit")} value={creditTotal} intent="payable" />
+            <SummaryCard label={t("account.kind.loan")} value={loanTotal} intent="payable" />
           </div>
         </section>
 
@@ -393,9 +395,9 @@ export default async function LiabilitiesPage({
             <div className="panel-header">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                 <Building2 className="h-4 w-4 text-blue-500" />
-                往来对象
+                {t("liabilities.counterparties")}
               </div>
-              <div className="text-xs text-slate-400">{institutionRows.length} 个对象</div>
+              <div className="text-xs text-slate-400">{t("liabilities.objectCount", { count: institutionRows.length })}</div>
             </div>
             <div className="divide-y divide-slate-100">
               {institutionRows.length > 0 ? (
@@ -404,17 +406,17 @@ export default async function LiabilitiesPage({
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0">
                         <div className="truncate text-sm font-semibold text-slate-800">{institution.name}</div>
-                        <div className="mt-1 text-xs text-slate-400">{institution.count} 个账户</div>
+                        <div className="mt-1 text-xs text-slate-400">{t("invest.accountCount", { count: institution.count })}</div>
                       </div>
                       <div className="text-right text-xs tabular-nums">
-                        <div className={amountClass(institution.payable, "payable")}>欠款 {yuan(institution.payable)}</div>
-                        <div className={amountClass(institution.receivable, "receivable")}>应收 {yuan(institution.receivable)}</div>
+                        <div className={amountClass(institution.payable, "payable")}>{t("liabilities.owed", { amount: yuan(institution.payable) })}</div>
+                        <div className={amountClass(institution.receivable, "receivable")}>{t("liabilities.receivable", { amount: yuan(institution.receivable) })}</div>
                       </div>
                     </div>
                   </Link>
                 ))
               ) : (
-                <div className="px-4 py-10 text-center text-sm text-slate-400">暂无往来对象</div>
+                <div className="px-4 py-10 text-center text-sm text-slate-400">{t("liabilities.noCounterparties")}</div>
               )}
             </div>
           </div>
@@ -423,9 +425,9 @@ export default async function LiabilitiesPage({
             <div className="panel-header">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                 <ArrowLeftRight className="h-4 w-4 text-cyan-500" />
-                余额列表
+                {t("liabilities.balanceList")}
               </div>
-              <div className="text-xs text-slate-400">点击查看明细</div>
+              <div className="text-xs text-slate-400">{t("liabilities.clickForDetail")}</div>
             </div>
             <div className="divide-y divide-slate-100">
               {rows.length > 0 ? (
@@ -443,7 +445,7 @@ export default async function LiabilitiesPage({
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-sm font-semibold text-slate-800" title={row.hoverTitle}>{row.name}</div>
                           <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
-                            <span className="rounded bg-slate-100 px-1.5 py-0.5">{kindLabel(row.kind)}</span>
+                            <span className="rounded bg-slate-100 px-1.5 py-0.5">{kindLabel(row.kind, t)}</span>
                             <span className="rounded bg-slate-100 px-1.5 py-0.5">{row.groupName}</span>
                             <span
                               className={`rounded border px-1.5 py-0.5 ${
@@ -452,19 +454,19 @@ export default async function LiabilitiesPage({
                                   : "border-rose-200 bg-rose-50 text-rose-700"
                               }`}
                             >
-                              {row.direction === "receivable" ? "借出" : "借入"}
+                              {row.direction === "receivable" ? t("liabilities.lent") : t("liabilities.borrowed")}
                             </span>
-                            <span>账单日 {dayLabel(row.billingDay)}</span>
-                            <span>还款日 {dayLabel(row.repaymentDay)}</span>
-                            {row.numberMasked ? <span>尾号 {row.numberMasked}</span> : null}
+                            <span>{t("liabilities.billingDayLabel", { day: dayLabel(row.billingDay, t) })}</span>
+                            <span>{t("liabilities.repaymentDayLabel", { day: dayLabel(row.repaymentDay, t) })}</span>
+                            {row.numberMasked ? <span>{t("liabilities.lastFour", { value: row.numberMasked })}</span> : null}
                           </div>
                         </div>
                         <div className="shrink-0 text-right">
-                          <div className="text-xs text-slate-400">{row.direction === "receivable" ? "借出余额" : "借入余额"}</div>
+                          <div className="text-xs text-slate-400">{row.direction === "receivable" ? t("liabilities.receivableBalance") : t("liabilities.payableBalance")}</div>
                           <div className={`mt-1 text-sm font-semibold tabular-nums ${amountClass(row.amount, row.direction)}`}>
                             {yuan(row.amount)}
                           </div>
-                          {row.creditLimit > 0 ? <div className="mt-1 text-[11px] text-slate-400">额度 {yuan(row.creditLimit)}</div> : null}
+                          {row.creditLimit > 0 ? <div className="mt-1 text-[11px] text-slate-400">{t("liabilities.creditLimit", { amount: yuan(row.creditLimit) })}</div> : null}
                         </div>
                       </div>
                     </Link>
@@ -472,7 +474,7 @@ export default async function LiabilitiesPage({
                 })
               ) : (
                 <div className="px-4 py-10 text-center text-sm text-slate-400">
-                  暂无信用卡或借入借出账户
+                  {t("liabilities.noAccounts")}
                 </div>
               )}
             </div>

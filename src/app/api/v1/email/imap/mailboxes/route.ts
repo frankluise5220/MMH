@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { ImapFlow } from "imapflow";
+import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 
 export const runtime = "nodejs";
 
@@ -12,7 +13,22 @@ const BodySchema = z.object({
   password: z.string().min(1),
 });
 
+/**
+ * POST /api/v1/email/imap/mailboxes
+ *
+ * 连接指定 IMAP 服务器并列出邮箱（仅管理员）。
+ * 该接口会用调用方提供的 host/port/账号发起服务器端连接，
+ * 若允许匿名使用会成为内网探测/凭据测试代理，因此必须管理员鉴权。
+ */
 export async function POST(req: NextRequest) {
+  const currentUser = await getCurrentUser();
+  if (!currentUser) {
+    return NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 });
+  }
+  if (!isAdmin(currentUser)) {
+    return NextResponse.json({ ok: false, error: "仅管理员可操作" }, { status: 403 });
+  }
+
   const body = (await req.json().catch(() => null)) as unknown;
   const parsed = BodySchema.safeParse(body);
   if (!parsed.success) {

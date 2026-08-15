@@ -1,4 +1,4 @@
-﻿import { AccountKind } from "@prisma/client";
+import { AccountKind } from "@prisma/client";
 import { ArrowLeft } from "lucide-react";
 import { cookies } from "next/headers";
 import Link from "next/link";
@@ -6,32 +6,34 @@ import Link from "next/link";
 import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { getInvestmentAccountView } from "@/lib/account-kind-utils";
 import { prisma } from "@/lib/db/prisma";
-import { formatMoney } from "@/lib/format";
+import { formatMoney, formatPercent } from "@/lib/format";
+import { pnlClassFromRedUp } from "@/lib/client/colors";
 import type { InvestBalanceDetail } from "@/lib/invest-balance";
 import { loadInvestBalances } from "@/lib/server/cached-data";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getServerT } from "@/lib/server/i18n";
 import { MobileInvestments } from "@/components/mobile/MobileInvestments";
 
 export const dynamic = "force-dynamic";
 
 const INVEST_KINDS = [AccountKind.investment];
 const GROUP_MODES = [
-  { key: "group", label: "所有人" },
-  { key: "institution", label: "机构" },
-  { key: "owner", label: "所有人" },
-  { key: "none", label: "不按所有人" },
+  { key: "group", labelKey: "investments.groupByOwner" },
+  { key: "institution", labelKey: "investments.groupByInstitution" },
+  { key: "owner", labelKey: "investments.groupByOwner" },
+  { key: "none", labelKey: "investments.groupByNone" },
 ] as const;
 
 type GroupMode = typeof GROUP_MODES[number]["key"];
 
-function investProductTypeLabel(type: string | null) {
-  if (type === "fund") return "开放式基金";
-  if (type === "money") return "货币基金";
-  if (type === "wealth") return "银行理财";
-  if (type === "metal") return "贵金属";
-  if (type === "stock") return "股票";
-  if (type === "property") return "房产";
-  return "投资账户";
+function investProductTypeLabel(type: string | null, t: (key: string) => string) {
+  if (type === "fund") return t("investment.product.fund");
+  if (type === "money") return t("investment.product.money");
+  if (type === "wealth") return t("investment.product.wealth");
+  if (type === "metal") return t("investment.product.metal");
+  if (type === "stock") return t("investment.product.stock");
+  if (type === "property") return t("investment.product.property");
+  return t("invest.productTypeDefault");
 }
 
 export default async function InvestmentsPage({
@@ -40,6 +42,7 @@ export default async function InvestmentsPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const params = await searchParams;
+  const t = await getServerT();
   const groupByParam = typeof params.groupBy === "string" ? params.groupBy : "group";
   const groupBy = GROUP_MODES.some((mode) => mode.key === groupByParam) ? (groupByParam as GroupMode) : "group";
   const ctx = await getHouseholdScope();
@@ -51,16 +54,7 @@ export default async function InvestmentsPage({
     cookieStore.get("mmh_credit_card_label_template")?.value,
     creditCardLabelMode,
   );
-  const pnlCls = (n: number) =>
-    n > 0
-      ? isRedUp
-        ? "text-red-600"
-        : "text-emerald-700"
-      : n < 0
-        ? isRedUp
-          ? "text-emerald-700"
-          : "text-red-600"
-        : "text-slate-600";
+  const pnlCls = (n: number) => pnlClassFromRedUp(n, isRedUp);
 
   const [accounts, investBalById] = await Promise.all([
     prisma.account.findMany({
@@ -95,10 +89,10 @@ export default async function InvestmentsPage({
       AccountGroup: account.AccountGroup,
     }, creditCardLabelTemplate);
     const accountLabel = display.label;
-    const groupName = account.AccountGroup?.name?.trim() || "未设置所有人";
-    const institutionName = display.institutionName || "未指定机构";
-    const ownerName = account.User?.name?.trim() || "未指定";
-    const productType = investProductTypeLabel(account.investProductType);
+    const groupName = account.AccountGroup?.name?.trim() || t("investments.noOwner");
+    const institutionName = display.institutionName || t("investments.noInstitution");
+    const ownerName = account.User?.name?.trim() || t("investments.unspecified");
+    const productType = investProductTypeLabel(account.investProductType, t);
 
     return {
       id: account.id,
@@ -127,9 +121,9 @@ export default async function InvestmentsPage({
     const label =
       groupBy === "institution" ? row.institutionName :
       groupBy === "owner" ? row.ownerName :
-      groupBy === "none" ? "全部投资账户" :
+      groupBy === "none" ? t("investments.allAccounts") :
       row.groupName;
-    const sort = groupBy === "group" ? row.groupSort : label === "未指定" || label === "未指定机构" || label === "未设置所有人" ? 9999 : 0;
+    const sort = groupBy === "group" ? row.groupSort : label === t("investments.unspecified") || label === t("investments.noInstitution") || label === t("investments.noOwner") ? 9999 : 0;
     const current = grouped.get(label);
     if (current) current.rows.push(row);
     else grouped.set(label, { label, sort, rows: [row] });
@@ -155,7 +149,7 @@ export default async function InvestmentsPage({
   }
 
   function fmtRate(value: number) {
-    return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%`;
+    return formatPercent(value);
   }
 
   return (
@@ -178,8 +172,8 @@ export default async function InvestmentsPage({
               <ArrowLeft size={17} />
             </Link>
             <div className="min-w-0">
-              <h1 className="text-base font-semibold text-slate-900">投资分账户</h1>
-              <p className="mt-0.5 text-xs text-slate-500">共 {rows.length} 个投资账户，{groups.length} 个所有人</p>
+              <h1 className="text-base font-semibold text-slate-900">{t("investments.title")}</h1>
+              <p className="mt-0.5 text-xs text-slate-500">{t("investments.summary", { count: rows.length, groupCount: groups.length })}</p>
             </div>
           </div>
           <div className="flex items-center rounded-lg bg-slate-100 p-0.5">
@@ -189,7 +183,7 @@ export default async function InvestmentsPage({
                 href={modeHref(mode.key)}
                 className={`h-7 rounded-md px-3 text-xs leading-7 transition-colors ${groupBy === mode.key ? "bg-white font-medium text-blue-700 shadow-sm" : "text-slate-600 hover:text-slate-900"}`}
               >
-                {mode.label}
+                {t(mode.labelKey)}
               </Link>
             ))}
           </div>
@@ -197,15 +191,15 @@ export default async function InvestmentsPage({
 
         <div className="grid grid-cols-3 gap-3">
           <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
-            <div className="text-xs text-slate-500">投资合计</div>
+            <div className="text-xs text-slate-500">{t("investments.totalLabel")}</div>
             <div className="mt-1 text-lg font-semibold tabular-nums text-slate-900">{formatMoney(total)}</div>
           </div>
           <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
-            <div className="text-xs text-slate-500">浮动盈亏</div>
+            <div className="text-xs text-slate-500">{t("invest.floatingPnL")}</div>
             <div className={`mt-1 text-lg font-semibold tabular-nums ${pnlCls(totalFloatingPnL)}`}>{formatMoney(totalFloatingPnL)}</div>
           </div>
           <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
-            <div className="text-xs text-slate-500">浮盈率</div>
+            <div className="text-xs text-slate-500">{t("invest.floatingRate")}</div>
             <div className={`mt-1 text-lg font-semibold tabular-nums ${pnlCls(totalFloatingRate)}`}>{fmtRate(totalFloatingRate)}</div>
           </div>
         </div>
@@ -218,19 +212,19 @@ export default async function InvestmentsPage({
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-4 py-2.5">
                   <div className="min-w-0">
                     <div className="truncate text-sm font-semibold text-slate-800">{group.label}</div>
-                    <div className="mt-0.5 text-xs text-slate-400">{group.rows.length} 个账户</div>
+                    <div className="mt-0.5 text-xs text-slate-400">{t("invest.accountCount", { count: group.rows.length })}</div>
                   </div>
                   <div className="grid grid-cols-3 gap-5 text-right text-xs">
                     <div>
-                      <div className="text-slate-400">市值</div>
+                      <div className="text-slate-400">{t("investments.marketValue")}</div>
                       <div className="mt-0.5 font-semibold tabular-nums text-slate-800">{formatMoney(gt.marketValue)}</div>
                     </div>
                     <div>
-                      <div className="text-slate-400">浮盈</div>
+                      <div className="text-slate-400">{t("investments.floatingProfit")}</div>
                       <div className={`mt-0.5 font-semibold tabular-nums ${pnlCls(gt.floatingPnL)}`}>{formatMoney(gt.floatingPnL)}</div>
                     </div>
                     <div>
-                      <div className="text-slate-400">浮盈率</div>
+                      <div className="text-slate-400">{t("invest.floatingRate")}</div>
                       <div className={`mt-0.5 font-semibold tabular-nums ${pnlCls(gt.floatingRate)}`}>{fmtRate(gt.floatingRate)}</div>
                     </div>
                   </div>
@@ -248,11 +242,11 @@ export default async function InvestmentsPage({
                         </div>
                       </div>
                       <div className="text-right">
-                        <div className="text-[11px] text-slate-400">市值</div>
+                        <div className="text-[11px] text-slate-400">{t("investments.marketValue")}</div>
                         <div className="text-xs font-semibold tabular-nums text-slate-800">{formatMoney(row.marketValue)}</div>
                       </div>
                       <div className="text-right">
-                        <div className="text-[11px] text-slate-400">浮盈</div>
+                        <div className="text-[11px] text-slate-400">{t("investments.floatingProfit")}</div>
                         <div className={`text-xs font-semibold tabular-nums ${pnlCls(row.floatingPnL)}`}>{formatMoney(row.floatingPnL)}</div>
                       </div>
                       <div className={`text-right text-xs font-semibold tabular-nums ${pnlCls(row.floatingRate)}`}>
@@ -264,7 +258,7 @@ export default async function InvestmentsPage({
               </section>
             );
           })}
-          {rows.length === 0 && <div className="rounded-lg border border-slate-200 bg-white py-8 text-center text-sm text-slate-400">暂无投资账户</div>}
+          {rows.length === 0 && <div className="rounded-lg border border-slate-200 bg-white py-8 text-center text-sm text-slate-400">{t("invest.noAccounts")}</div>}
         </div>
       </div>
     </div>

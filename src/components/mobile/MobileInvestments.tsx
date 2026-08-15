@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import { ChevronRight, TrendingUp } from "lucide-react";
 
 import { formatMoneyYuan } from "@/lib/format";
+import { pnlClassFromRedUp } from "@/lib/client/colors";
 
 type InvestmentRow = {
   id: string;
@@ -39,11 +40,7 @@ export function MobileInvestments({
     [hideZero, rows],
   );
 
-  const pnlClass = (value: number) => {
-    if (value > 0) return isRedUp ? "text-red-600" : "text-emerald-600";
-    if (value < 0) return isRedUp ? "text-emerald-600" : "text-red-600";
-    return "text-slate-700";
-  };
+  const pnlClass = (value: number) => pnlClassFromRedUp(value, isRedUp, "softDark");
 
   return (
     <div className="h-full overflow-y-auto bg-slate-100">

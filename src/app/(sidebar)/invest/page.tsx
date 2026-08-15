@@ -1,12 +1,14 @@
-﻿import { prisma } from "@/lib/db/prisma";
+import { prisma } from "@/lib/db/prisma";
 import { AccountKind, TransactionType } from "@prisma/client";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { InvestHeaderSync } from "@/components/InvestHeaderSync";
 import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { toNumber } from "@/lib/date-utils";
-import { formatMoneyYuan } from "@/lib/format";
+import { formatMoneyYuan, formatPercent } from "@/lib/format";
+import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { getInvestmentAccountView } from "@/lib/account-kind-utils";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getServerT } from "@/lib/server/i18n";
 import { getInvestmentStatisticItems } from "@/lib/transaction-statistics";
 import { cookies } from "next/headers";
 import Link from "next/link";
@@ -17,19 +19,20 @@ export const dynamic = "force-dynamic";
 
 const fmt = formatMoneyYuan;
 
-const fmtRate = (n: number) => `${n >= 0 ? "+" : ""}${(n * 100).toFixed(2)}%`;
+const fmtRate = (n: number) => formatPercent(n);
 
-const investProductTypeLabel = (type: string | null) => {
-  if (type === "fund") return "开放式基金";
-  if (type === "money") return "货币基金";
-  if (type === "wealth") return "银行理财";
-  if (type === "metal") return "贵金属";
-  if (type === "stock") return "股票";
-  return "投资账户";
+const investProductTypeLabel = (type: string | null, t: (key: string) => string) => {
+  if (type === "fund") return t("investment.product.fund");
+  if (type === "money") return t("investment.product.money");
+  if (type === "wealth") return t("investment.product.wealth");
+  if (type === "metal") return t("investment.product.metal");
+  if (type === "stock") return t("investment.product.stock");
+  return t("invest.productTypeDefault");
 };
 
   export default async function InvestPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const params = await searchParams;
+  const t = await getServerT();
   const tab = typeof params?.tab === "string" ? params.tab : "overview";
   const filter = typeof params?.filter === "string" ? params.filter : "all"; // holding | cleared | all
   const pageParam = typeof params?.page === "string" ? parseInt(params.page, 10) : 1;
@@ -43,8 +46,7 @@ const investProductTypeLabel = (type: string | null) => {
     creditCardLabelMode,
   );
   const isRedUp = colorScheme === "red_up_green_down";
-  const pnlClass = (n: number) =>
-    n > 0 ? (isRedUp ? "text-red-600" : "text-emerald-700") : n < 0 ? (isRedUp ? "text-emerald-700" : "text-red-600") : "text-slate-600";
+  const pnlClass = (n: number) => pnlClassFromRedUp(n, isRedUp);
   const ctx = await getHouseholdScope();
   const { hidFilter } = ctx;
 
@@ -59,11 +61,11 @@ const investProductTypeLabel = (type: string | null) => {
       <div className="flex-1 flex flex-col min-w-0">
         <header className="page-header">
           <div className="h-12 flex items-center px-4">
-            <div className="text-sm page-title">投资一览</div>
+            <div className="text-sm page-title">{t("invest.overview")}</div>
           </div>
         </header>
         <div className="flex-1 flex items-center justify-center text-sm text-slate-500">
-          暂无投资账户
+          {t("invest.noAccounts")}
         </div>
       </div>
     );
@@ -87,7 +89,7 @@ const investProductTypeLabel = (type: string | null) => {
     computeInvestBalances(ctx),
   ]);
 
-  // ── 收益统计：按月汇总数据 ──
+  // Earnings statistics: monthly aggregates
   const earningsData = (() => {
     type MonthRow = { income: number; expense: number; investPnL: number };
     const monthMap = new Map<string, MonthRow>();
@@ -217,8 +219,8 @@ const investProductTypeLabel = (type: string | null) => {
       AccountGroup: a.AccountGroup,
     }, creditCardLabelTemplate);
     const label = display.label;
-    const groupName = a.AccountGroup?.name?.trim() || "未设置所有人";
-    const productTypeLabel = investProductTypeLabel(a.investProductType);
+    const groupName = a.AccountGroup?.name?.trim() || t("invest.noOwner");
+    const productTypeLabel = investProductTypeLabel(a.investProductType, t);
 
     return {
       id: a.id,
@@ -245,7 +247,7 @@ const investProductTypeLabel = (type: string | null) => {
     };
   });
 
-  // ── 筛选 + 分页 ──
+  // Filter + pagination
   const filteredRows = accountRows.filter((r) => {
     if (filter === "holding") return r.marketValue > 0.01;
     if (filter === "cleared") return r.marketValue <= 0.01 && r.txCount > 0;
@@ -270,10 +272,10 @@ const investProductTypeLabel = (type: string | null) => {
       <header className="page-header">
         <div className="h-12 flex items-center justify-between px-4">
           <div className="flex items-center gap-4">
-            <div className="text-sm page-title">投资</div>
+            <div className="text-sm page-title">{t("invest.title")}</div>
             <div className="flex items-center gap-1">
-              <Link href="/invest?tab=overview" className={`h-7 px-3 rounded text-xs flex items-center ${tab === "overview" ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}>投资一览</Link>
-              <Link href="/invest?tab=stats" className={`h-7 px-3 rounded text-xs flex items-center ${tab === "stats" ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}>收益统计</Link>
+              <Link href="/invest?tab=overview" className={`h-7 px-3 rounded text-xs flex items-center ${tab === "overview" ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}>{t("invest.overview")}</Link>
+              <Link href="/invest?tab=stats" className={`h-7 px-3 rounded text-xs flex items-center ${tab === "stats" ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}>{t("invest.stats")}</Link>
             </div>
           </div>
           <InvestHeaderSync />
@@ -297,13 +299,13 @@ const investProductTypeLabel = (type: string | null) => {
         <DailyPnlCalendar accountId={accounts[0]?.id ?? ""} />
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           {[
-            { label: "总市值", value: fmt(totalMarketValue), sub: null, color: pnlClass(totalMarketValue) },
-            { label: "持仓成本", value: fmt(totalCostAll), sub: null, color: "text-slate-600" },
-            { label: "浮动盈亏", value: fmt(totalFloatingPnL), sub: fmtRate(totalFloatingRate), color: pnlClass(totalFloatingPnL) },
-            { label: "历史收益", value: fmt(totalRealizedPnL), sub: null, color: pnlClass(totalRealizedPnL) },
-            { label: "总收益", value: fmt(totalReturn), sub: fmtRate(totalReturnRate), color: pnlClass(totalReturn) },
-            { label: "累计买入", value: fmt(totalBuyAll), sub: null, color: "text-slate-600" },
-            { label: "累计手续费", value: fmt(totalFeeAll), sub: null, color: "text-slate-600" },
+            { label: t("invest.totalMarketValue"), value: fmt(totalMarketValue), sub: null, color: pnlClass(totalMarketValue) },
+            { label: t("invest.totalCost"), value: fmt(totalCostAll), sub: null, color: "text-slate-600" },
+            { label: t("invest.floatingPnL"), value: fmt(totalFloatingPnL), sub: fmtRate(totalFloatingRate), color: pnlClass(totalFloatingPnL) },
+            { label: t("invest.historicalReturn"), value: fmt(totalRealizedPnL), sub: null, color: pnlClass(totalRealizedPnL) },
+            { label: t("invest.totalReturn"), value: fmt(totalReturn), sub: fmtRate(totalReturnRate), color: pnlClass(totalReturn) },
+            { label: t("invest.totalBuy"), value: fmt(totalBuyAll), sub: null, color: "text-slate-600" },
+            { label: t("invest.totalFee"), value: fmt(totalFeeAll), sub: null, color: "text-slate-600" },
           ].map((item) => (
             <div key={item.label} className="bg-white border border-slate-200 rounded-xl px-4 py-3">
               <div className="text-xs text-slate-500 mb-1">{item.label}</div>
@@ -316,12 +318,12 @@ const investProductTypeLabel = (type: string | null) => {
         <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="text-sm font-semibold text-slate-800">账户汇总</div>
+              <div className="text-sm font-semibold text-slate-800">{t("invest.accountSummary")}</div>
               <div className="flex items-center bg-slate-100 rounded-lg p-0.5 gap-0.5">
                 {[
-                  { key: "all", label: "全部" },
-                  { key: "holding", label: "持仓" },
-                  { key: "cleared", label: "清仓" },
+                  { key: "all", label: t("invest.filterAll") },
+                  { key: "holding", label: t("invest.filterHolding") },
+                  { key: "cleared", label: t("invest.filterCleared") },
                 ].map((f) => {
                   const q = new URLSearchParams();
                   q.set("tab", "overview");
@@ -330,27 +332,27 @@ const investProductTypeLabel = (type: string | null) => {
                 })}
               </div>
             </div>
-            <span className="text-xs text-slate-400">{filteredRows.length} 个账户</span>
+            <span className="text-xs text-slate-400">{t("invest.accountCount", { count: filteredRows.length })}</span>
           </div>
           <div className="overflow-auto">
             <table className="w-full table-fixed border-separate border-spacing-0">
               <thead className="sticky top-0 z-10 bg-white">
                 <tr>
-                  <th className="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200">账户</th>
-                  <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">持仓成本</th>
-                  <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">市值</th>
-                  <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">浮动盈亏</th>
-                  <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">浮盈率</th>
-                  <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">历史收益</th>
-                  <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">累计买入</th>
-                  <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">累计手续费</th>
-                  <th className="text-center text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">交易</th>
-                  <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">操作</th>
+                  <th className="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200">{t("invest.colAccount")}</th>
+                  <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">{t("invest.totalCost")}</th>
+                  <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">{t("invest.colMarketValue")}</th>
+                  <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">{t("invest.floatingPnL")}</th>
+                  <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">{t("invest.colFloatingRate")}</th>
+                  <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">{t("invest.historicalReturn")}</th>
+                  <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">{t("invest.totalBuy")}</th>
+                  <th className="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">{t("invest.totalFee")}</th>
+                  <th className="text-center text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">{t("invest.colTransactions")}</th>
+                  <th className="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">{t("invest.colActions")}</th>
                 </tr>
               </thead>
               <tbody className="text-sm">
                 {pagedRows.length === 0 ? (
-                  <tr><td className="px-4 py-6 text-xs text-slate-500 text-center" colSpan={10}>暂无数据</td></tr>
+                  <tr><td className="px-4 py-6 text-xs text-slate-500 text-center" colSpan={10}>{t("invest.noData")}</td></tr>
                 ) : pagedRows.map((r) => (
                   <tr key={r.id} className="hover:bg-slate-50">
                     <td className="px-4 py-2.5 border-b border-slate-100">
@@ -371,7 +373,7 @@ const investProductTypeLabel = (type: string | null) => {
                     <td className="px-3 py-2 border-b border-slate-100 text-right text-xs tabular-nums text-slate-500">{r.totalFee > 0 ? fmt(r.totalFee) : <span className="text-slate-300">-</span>}</td>
                     <td className="px-3 py-2 border-b border-slate-100 text-center text-xs text-slate-500">{r.txCount > 0 ? r.txCount : <span className="text-slate-300">-</span>}</td>
                     <td className="px-3 py-2 border-b border-slate-100">
-                      <a href={`/?accountId=${r.id}&view=${getInvestmentAccountView(r)}`} className="text-xs text-blue-600 hover:text-blue-800">明细</a>
+                      <a href={`/?accountId=${r.id}&view=${getInvestmentAccountView(r)}`} className="text-xs text-blue-600 hover:text-blue-800">{t("invest.detail")}</a>
                     </td>
                   </tr>
                 ))}
@@ -379,7 +381,7 @@ const investProductTypeLabel = (type: string | null) => {
               {pagedRows.length > 0 && (
                 <tfoot className="sticky bottom-0 bg-slate-50">
                   <tr>
-                    <td className="px-4 py-2 border-t border-slate-200 text-xs font-semibold text-slate-700">合计</td>
+                    <td className="px-4 py-2 border-t border-slate-200 text-xs font-semibold text-slate-700">{t("invest.totalLabel")}</td>
                     <td className="px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums text-slate-600">{fmt(totalCostAll)}</td>
                     <td className={`px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums font-semibold ${pnlClass(totalMarketValue)}`}>{fmt(totalMarketValue)}</td>
                     <td className={`px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums font-semibold ${pnlClass(totalFloatingPnL)}`}>{fmt(totalFloatingPnL)}</td>
@@ -394,7 +396,7 @@ const investProductTypeLabel = (type: string | null) => {
               )}
             </table>
           </div>
-          {/* 分页 */}
+          {/* Pagination */}
           {totalPageCount > 1 && (
             <div className="px-4 py-2 border-t border-slate-200 bg-slate-50 flex items-center justify-end gap-1 text-xs shrink-0">
               {[10, 20, 40].map((n) => {

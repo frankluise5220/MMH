@@ -1,4 +1,4 @@
-﻿import { AccountKind } from "@prisma/client";
+import { AccountKind } from "@prisma/client";
 import { Banknote, Coins, CreditCard, HandCoins, Landmark, PiggyBank, Wallet } from "lucide-react";
 import type { Prisma } from "@prisma/client";
 import { cookies } from "next/headers";
@@ -9,6 +9,7 @@ import { TopEntryLauncher } from "@/components/TopEntryLauncher";
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { formatMoney, formatMoneyYuan } from "@/lib/format";
+import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -70,15 +71,11 @@ function neutralMoneyClass(value: number) {
 }
 
 function debtMoneyClass(value: number, isRedUp: boolean) {
-  if (value > 0) return isRedUp ? "text-red-700" : "text-emerald-700";
-  if (value < 0) return isRedUp ? "text-emerald-700" : "text-red-700";
-  return "text-slate-900";
+  return pnlClassFromRedUp(value, isRedUp, "strong");
 }
 
 function liabilityMoneyClass(value: number, isRedUp: boolean) {
-  if (value > 0) return isRedUp ? "text-emerald-700" : "text-red-700";
-  if (value < 0) return isRedUp ? "text-red-700" : "text-emerald-700";
-  return "text-slate-900";
+  return pnlClassFromRedUp(value, isRedUp, "strong", true);
 }
 
 export default async function AccountsPage({ searchParams }: { searchParams: SearchParams }) {

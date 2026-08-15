@@ -22,6 +22,8 @@ import {
   importPreviewFlowAmountTextFor,
 } from "@/lib/client/colors";
 import { fetchSettingsBootstrap, type SettingsCategory } from "@/lib/client/settingsCache";
+import { uniqueStatementInfoTexts } from "@/lib/statement/preview-meta";
+import { useI18n } from "@/lib/i18n";
 
 type BookAccount = {
   id: string;
@@ -114,25 +116,32 @@ type StatementImportPreviewDialogProps = {
   onConfirm: (items: StatementImportPreviewItem[]) => void | Promise<void>;
 };
 
-const PREVIEW_TYPE_OPTIONS: Array<{ value: StatementImportPreviewItem["type"]; label: string }> = [
-  { value: "expense", label: "支出" },
-  { value: "income", label: "收入" },
-  { value: "transfer", label: "转账" },
-  { value: "investment", label: "投资" },
+const PREVIEW_TYPE_OPTIONS: Array<{ value: StatementImportPreviewItem["type"]; labelKey: string }> = [
+  { value: "expense", labelKey: "transaction.type.expense" },
+  { value: "income", labelKey: "transaction.type.income" },
+  { value: "transfer", labelKey: "transaction.type.transfer" },
+  { value: "investment", labelKey: "transaction.type.investment" },
 ];
 
-const IMPORT_PREVIEW_FIELD_LABELS: Record<PreviewEditField, string> = {
-  date: "交易日",
-  postedDate: "入账日期",
-  type: "类型",
-  account: "账户",
-  counterAccount: "对向账户",
-  category: "分类",
-  institution: "收支机构",
-  inflow: "流入",
-  outflow: "流出",
-  amount: "金额",
-  remark: "备注",
+const IMPORT_PREVIEW_FIELD_LABEL_KEYS: Record<PreviewEditField, string> = {
+  date: "statementImportPreview.colDate",
+  postedDate: "detail.column.postedAt",
+  type: "batchImport.field.type",
+  account: "batchImport.field.account",
+  counterAccount: "batchImport.field.counterAccount",
+  category: "detail.column.category",
+  institution: "detail.column.counterparty",
+  inflow: "detail.column.inflow",
+  outflow: "detail.column.outflow",
+  amount: "txForm.amount",
+  remark: "detail.column.remark",
+};
+
+const MISSING_FIELD_LABEL_KEYS: Record<string, string> = {
+  date: "detail.column.date",
+  amount: "txForm.amount",
+  account: "batchImport.field.account",
+  counterAccount: "batchImport.field.counterAccount",
 };
 
 function isPlaceholderText(value?: string | null) {
@@ -155,39 +164,11 @@ function normalizeDateOnlyText(value?: string | null) {
   return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
 }
 
-function moneyNumber(value?: number | string | null) {
-  const amount = Number(value);
-  return Number.isFinite(amount) ? amount : null;
-}
-
-function formatMoneyAmount(value?: number | string | null) {
-  const amount = moneyNumber(value);
-  return amount === null ? "" : `¥${amount.toFixed(2)}`;
-}
-
-function uniqueStatementInfoTexts(items: StatementImportPreviewItem[]) {
-  const lines = items
-    .map((item) => {
-      const meta = item._meta;
-      if (!meta) return "";
-      const parts = [
-        moneyNumber(meta.statementAmount) !== null ? `账单金额 ${formatMoneyAmount(meta.statementAmount)}` : "",
-        meta.statementPeriodStart || meta.statementPeriodEnd ? `账期 ${meta.statementPeriodStart || "?"} ~ ${meta.statementPeriodEnd || "?"}` : "",
-        meta.statementDueDate ? `还款日 ${meta.statementDueDate}` : "",
-        meta.statementCurrency ? `币种 ${meta.statementCurrency}` : "",
-        moneyNumber(meta.creditLimit) !== null ? `总授信额度 ${formatMoneyAmount(meta.creditLimit)}` : "",
-      ].filter(Boolean);
-      return parts.join(" · ");
-    })
-    .filter(Boolean);
-  return Array.from(new Set(lines));
-}
-
-function typeLabel(type: StatementImportPreviewItem["type"]) {
-  if (type === "income") return "收入";
-  if (type === "transfer") return "转账";
-  if (type === "investment") return "投资";
-  return "支出";
+function typeLabel(t: (key: string) => string, type: StatementImportPreviewItem["type"]) {
+  if (type === "income") return t("transaction.type.income");
+  if (type === "transfer") return t("transaction.type.transfer");
+  if (type === "investment") return t("transaction.type.investment");
+  return t("transaction.type.expense");
 }
 
 function previewTransferDirection(item: StatementImportPreviewItem): "in" | "out" {
@@ -372,13 +353,13 @@ function canonicalizePreviewItemAccounts(
 
 export function statementImportMissingFields(item: StatementImportPreviewItem, defaultAccountName: string) {
   const missing: string[] = [];
-  if (!cleanText(item.date)) missing.push("日期");
-  if (!(Number(item.amount) > 0)) missing.push("金额");
+  if (!cleanText(item.date)) missing.push("date");
+  if (!(Number(item.amount) > 0)) missing.push("amount");
   if (item.type === "transfer") {
-    if (!primaryAccountValue(item, defaultAccountName)) missing.push("账户");
-    if (!counterAccountValue(item)) missing.push("对向账户");
+    if (!primaryAccountValue(item, defaultAccountName)) missing.push("account");
+    if (!counterAccountValue(item)) missing.push("counterAccount");
   } else if (!cleanText(item.account) && !cleanText(defaultAccountName) && !cleanText(item._meta?.institutionName)) {
-    missing.push("账户");
+    missing.push("account");
   }
   return Array.from(new Set(missing));
 }
@@ -387,10 +368,10 @@ export function isStatementImportReady(item: StatementImportPreviewItem, default
   return statementImportMissingFields(item, defaultAccountName).length === 0;
 }
 
-function buildCategoryOptions(categories: BookCategory[], txType?: StatementImportPreviewItem["type"]): BatchReplaceOption[] {
-  const options: BatchReplaceOption[] = [{ value: "", label: "清除分类" }];
+function buildCategoryOptions(categories: BookCategory[], txType: StatementImportPreviewItem["type"] | undefined, t: (key: string) => string): BatchReplaceOption[] {
+  const options: BatchReplaceOption[] = [{ value: "", label: t("statementImportPreview.clearCategory") }];
   const indent = "　";
-  const typeLabels: Record<string, string> = { expense: "支出分类", income: "收入分类" };
+  const typeLabels: Record<string, string> = { expense: t("stats.expenseCategories"), income: t("statementImportPreview.incomeCategories") };
   const types = txType ? [txType === "income" ? "income" : "expense"] : ["expense", "income"];
   const scopedToOneType = Boolean(txType);
 
@@ -467,6 +448,7 @@ export function StatementImportPreviewDialog({
   const [editingPreviewCell, setEditingPreviewCell] = useState<{ rowKey: string; field: PreviewEditField } | null>(null);
   const [bookAccounts, setBookAccounts] = useState<BookAccount[]>([]);
   const [bookCategories, setBookCategories] = useState<BookCategory[]>([]);
+  const { t } = useI18n();
 
   const accountDisplayOptions = useMemo(
     () => bookAccounts
@@ -507,8 +489,8 @@ export function StatementImportPreviewDialog({
     [bookCategories],
   );
   const previewCategoryReplaceOptions = useMemo(
-    () => buildCategoryOptions(bookCategories),
-    [bookCategories],
+    () => buildCategoryOptions(bookCategories, undefined, t),
+    [bookCategories, t],
   );
   const statementInfoTexts = useMemo(
     () => uniqueStatementInfoTexts(rows.map((row) => row.item)),
@@ -564,8 +546,8 @@ export function StatementImportPreviewDialog({
     if (!text || matchedId) return displayAccountOptions;
     return [{
       id: `unmatched:${text}`,
-      label: `未匹配：${text}`,
-      subLabel: "原始识别值",
+      label: t("statementImportPreview.unmatchedValue", { value: text }),
+      subLabel: t("statementImportPreview.originalRecognizedValue"),
     }, ...displayAccountOptions];
   }
 
@@ -586,7 +568,7 @@ export function StatementImportPreviewDialog({
 
   function previewAccountDisplayTitle(value: string | undefined, meta?: StatementImportPreviewItem["_meta"]) {
     const text = cleanText(value);
-    if (!text) return "双击修改账户";
+    if (!text) return t("statementImportPreview.doubleClickEdit", { field: t("batchImport.field.account") });
     const matchedId = findPreviewAccountId(text, meta);
     const display = matchedId ? accountDisplayById.get(matchedId) : undefined;
     if (display) return formatAccountTableTitle(display, text);
@@ -609,7 +591,7 @@ export function StatementImportPreviewDialog({
 
   function previewCategorySmartSelectOptionsFor(txType: StatementImportPreviewItem["type"]): SmartSelectOption[] {
     const categoryType = txType === "income" ? "income" : "expense";
-    return buildCategoryOptions(bookCategories, txType)
+    return buildCategoryOptions(bookCategories, txType, t)
       .filter((option) => {
         if (!option.value) return true;
         if (option.isHeader) return option.value === `preview-category-type:${categoryType}`;
@@ -727,7 +709,7 @@ export function StatementImportPreviewDialog({
       ? selectedKeys
       : new Set(sourceRows.filter((row) => row.ready).map((row) => row.key));
     const selectedRowKeys = Array.from(effectiveSelectedKeys);
-    if (selectedRowKeys.length === 0) throw new Error("请先勾选记录");
+    if (selectedRowKeys.length === 0) throw new Error(t("statementImportPreview.selectRowsFirst"));
     let changed = 0;
     let invalid = 0;
     const nextRows = sourceRows.map((row) => {
@@ -755,8 +737,8 @@ export function StatementImportPreviewDialog({
       return recomputeRow(row, { [field]: value || undefined } as Partial<StatementImportPreviewItem>);
     });
     recomputeState(nextRows);
-    const invalidSuffix = invalid > 0 ? `，跳过 ${invalid} 条金额格式无效` : "";
-    return `已批量修改 ${changed} 条：${IMPORT_PREVIEW_FIELD_LABELS[field]}${invalidSuffix}。`;
+    const invalidSuffix = invalid > 0 ? t("statementImportPreview.invalidAmountSkipped", { count: invalid }) : "";
+    return t("statementImportPreview.batchReplaceResult", { count: changed, field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS[field]), invalidSuffix });
   }
 
   function previewItemForImport(item: StatementImportPreviewItem): StatementImportPreviewItem {
@@ -794,51 +776,51 @@ export function StatementImportPreviewDialog({
 
   const previewAccountReplaceOptions = useMemo<BatchReplaceOption[]>(
     () => [
-      { value: "", label: "未选择" },
+      { value: "", label: t("batchImport.unselected") },
       ...accountDisplayOptions.map((account) => ({
         value: account.id,
         label: formatAccountTableLabel(account),
         title: formatAccountTableTitle(account),
       })),
     ],
-    [accountDisplayOptions],
+    [accountDisplayOptions, t],
   );
 
   const previewReplaceFields = useMemo<BatchReplaceFieldConfig<PreviewEditField>[]>(
     () => [
-      { value: "date", label: IMPORT_PREVIEW_FIELD_LABELS.date, kind: "text", placeholder: "YYYY-MM-DD 或含时间" },
-      { value: "postedDate", label: IMPORT_PREVIEW_FIELD_LABELS.postedDate, kind: "date", placeholder: "YYYY-MM-DD" },
+      { value: "date", label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.date), kind: "text", placeholder: t("statementImportPreview.datePlaceholder") },
+      { value: "postedDate", label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.postedDate), kind: "date", placeholder: t("statementImportPreview.postedDatePlaceholder") },
       {
         value: "type",
-        label: IMPORT_PREVIEW_FIELD_LABELS.type,
+        label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.type),
         kind: "select",
-        options: [{ value: "", label: "选择类型" }, ...PREVIEW_TYPE_OPTIONS],
-        placeholder: "选择类型",
+        options: [{ value: "", label: t("batchImport.selectType") }, ...PREVIEW_TYPE_OPTIONS.map((option) => ({ value: option.value, label: t(option.labelKey) }))],
+        placeholder: t("batchImport.selectType"),
       },
       {
         value: "account",
-        label: IMPORT_PREVIEW_FIELD_LABELS.account,
+        label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.account),
         kind: "smartSelect",
         options: previewAccountReplaceOptions,
-        placeholder: "选择账户",
+        placeholder: t("statementImportPreview.selectAccount"),
         allowEmpty: true,
         smartSelectBehavior: { search: true, hierarchy: true, minDropdownWidth: 252, dropdownMaxHeight: 220, density: "micro", resizableDropdown: true },
       },
       {
         value: "counterAccount",
-        label: IMPORT_PREVIEW_FIELD_LABELS.counterAccount,
+        label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.counterAccount),
         kind: "smartSelect",
         options: previewAccountReplaceOptions,
-        placeholder: "选择对向账户",
+        placeholder: t("statementImportPreview.selectCounterAccount"),
         allowEmpty: true,
         smartSelectBehavior: { search: true, hierarchy: true, minDropdownWidth: 252, dropdownMaxHeight: 220, density: "micro", resizableDropdown: true },
       },
       {
         value: "category",
-        label: IMPORT_PREVIEW_FIELD_LABELS.category,
+        label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.category),
         kind: "smartSelect",
         options: previewCategoryReplaceOptions,
-        placeholder: "选择分类",
+        placeholder: t("statementImportPreview.selectCategory"),
         allowEmpty: true,
         smartSelectBehavior: {
           hierarchy: true,
@@ -854,13 +836,13 @@ export function StatementImportPreviewDialog({
           resizableDropdown: true,
         },
       },
-      { value: "institution", label: IMPORT_PREVIEW_FIELD_LABELS.institution, kind: "text", placeholder: "银行或第三方支付机构" },
-      { value: "outflow", label: IMPORT_PREVIEW_FIELD_LABELS.outflow, kind: "number", placeholder: "输入金额或运算式" },
-      { value: "inflow", label: IMPORT_PREVIEW_FIELD_LABELS.inflow, kind: "number", placeholder: "输入金额或运算式" },
-      { value: "amount", label: IMPORT_PREVIEW_FIELD_LABELS.amount, kind: "number", placeholder: "输入金额或运算式" },
-      { value: "remark", label: IMPORT_PREVIEW_FIELD_LABELS.remark, kind: "text", placeholder: "输入备注" },
+      { value: "institution", label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.institution), kind: "text", placeholder: t("statementImportPreview.institutionPlaceholder") },
+      { value: "outflow", label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.outflow), kind: "number", placeholder: t("statementImportPreview.amountExpressionPlaceholder") },
+      { value: "inflow", label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.inflow), kind: "number", placeholder: t("statementImportPreview.amountExpressionPlaceholder") },
+      { value: "amount", label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.amount), kind: "number", placeholder: t("statementImportPreview.amountExpressionPlaceholder") },
+      { value: "remark", label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.remark), kind: "text", placeholder: t("statementImportPreview.remarkPlaceholder") },
     ],
-    [previewAccountReplaceOptions, previewCategoryReplaceOptions],
+    [previewAccountReplaceOptions, previewCategoryReplaceOptions, t],
   );
 
   function stopPreviewCellEvent(event: ReactMouseEvent<HTMLElement>) {
@@ -950,11 +932,11 @@ export function StatementImportPreviewDialog({
   const columns = useMemo<AdvancedDataTableColumn<ImportPreviewRow>[]>(() => [
     {
       key: "date",
-      label: "交易日",
+      label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.date),
       width: 100,
       minWidth: 84,
       filterKind: "dateRange",
-      filterText: (row) => row.item.date?.trim() || "(空)",
+      filterText: (row) => row.item.date?.trim() || t("batchImport.emptyValue"),
       sortValue: (row) => row.item.date || "",
       render: (row) => (
         <div className="whitespace-nowrap tabular-nums text-slate-700" {...editableCellProps(row.key, "date")}>
@@ -970,18 +952,18 @@ export function StatementImportPreviewDialog({
               }}
             />
           ) : (
-            <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title="双击修改交易日">{normalizeDateOnlyText(row.item.date) || "-"}</span>
+            <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title={t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.date) })}>{normalizeDateOnlyText(row.item.date) || "-"}</span>
           )}
         </div>
       ),
     },
     {
       key: "postedDate",
-      label: "入账日期",
+      label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.postedDate),
       width: 110,
       minWidth: 96,
       filterKind: "dateRange",
-      filterText: (row) => normalizeDateOnlyText(row.item.postedDate) || "(空)",
+      filterText: (row) => normalizeDateOnlyText(row.item.postedDate) || t("batchImport.emptyValue"),
       sortValue: (row) => normalizeDateOnlyText(row.item.postedDate) || "",
       render: (row) => (
         <div className="whitespace-nowrap tabular-nums text-slate-500" {...editableCellProps(row.key, "postedDate")}>
@@ -997,17 +979,17 @@ export function StatementImportPreviewDialog({
               }}
             />
           ) : (
-            <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title="双击修改入账日期">{normalizeDateOnlyText(row.item.postedDate) || "-"}</span>
+            <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title={t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.postedDate) })}>{normalizeDateOnlyText(row.item.postedDate) || "-"}</span>
           )}
         </div>
       ),
     },
     {
       key: "type",
-      label: "类型",
+      label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.type),
       width: 72,
       minWidth: 60,
-      filterText: (row) => typeLabel(row.item.type),
+      filterText: (row) => typeLabel(t, row.item.type),
       render: (row) => (
         <div className="whitespace-nowrap text-slate-700" {...editableCellProps(row.key, "type")}>
           {editingPreviewCell?.rowKey === row.key && editingPreviewCell.field === "type" ? (
@@ -1026,21 +1008,21 @@ export function StatementImportPreviewDialog({
               }}
             >
               {PREVIEW_TYPE_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
+                <option key={option.value} value={option.value}>{t(option.labelKey)}</option>
               ))}
             </select>
           ) : (
-            <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title="双击修改类型">{typeLabel(row.item.type)}</span>
+            <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title={t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.type) })}>{typeLabel(t, row.item.type)}</span>
           )}
         </div>
       ),
     },
     {
       key: "account",
-      label: "账户",
+      label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.account),
       width: 190,
       minWidth: 140,
-      filterText: (row) => previewAccountDisplayText(primaryAccountValue(row.item, defaultAccountName), row.item._meta) || "(空)",
+      filterText: (row) => previewAccountDisplayText(primaryAccountValue(row.item, defaultAccountName), row.item._meta) || t("batchImport.emptyValue"),
       render: (row) => {
         const accountValue = primaryAccountValue(row.item, defaultAccountName);
         return (
@@ -1054,7 +1036,7 @@ export function StatementImportPreviewDialog({
                   setEditingPreviewCell(null);
                 }}
                 options={previewAccountOptionsFor(accountValue, row.item._meta)}
-                placeholder="选择账户"
+                placeholder={t("statementImportPreview.selectAccount")}
                 onCycleOwnerFilter={cycleOwnerFilter}
                 ownerFilterLabel={ownerFilterLabel}
                 behavior={{ search: true, hierarchy: true, clearable: true, cycleSelectionWithArrowKeys: true, minDropdownWidth: 216, dropdownMaxHeight: 180, density: "micro", resizableDropdown: true, autoOpen: true, onDropdownClose: () => setEditingPreviewCell(null) }}
@@ -1070,10 +1052,10 @@ export function StatementImportPreviewDialog({
     },
     {
       key: "counterAccount",
-      label: "对向账户",
+      label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.counterAccount),
       width: 170,
       minWidth: 120,
-      filterText: (row) => previewAccountDisplayText(counterAccountValue(row.item)) || "(空)",
+      filterText: (row) => previewAccountDisplayText(counterAccountValue(row.item)) || t("batchImport.emptyValue"),
       render: (row) => {
         if (row.item.type !== "transfer") return <span className="text-slate-400">-</span>;
         const accountValue = counterAccountValue(row.item);
@@ -1088,7 +1070,7 @@ export function StatementImportPreviewDialog({
                   setEditingPreviewCell(null);
                 }}
                 options={previewAccountOptionsFor(accountValue)}
-                placeholder="选择对向账户"
+                placeholder={t("statementImportPreview.selectCounterAccount")}
                 onCycleOwnerFilter={cycleOwnerFilter}
                 ownerFilterLabel={ownerFilterLabel}
                 behavior={{ search: true, hierarchy: true, clearable: true, cycleSelectionWithArrowKeys: true, minDropdownWidth: 216, dropdownMaxHeight: 180, density: "micro", resizableDropdown: true, autoOpen: true, onDropdownClose: () => setEditingPreviewCell(null) }}
@@ -1104,10 +1086,10 @@ export function StatementImportPreviewDialog({
     },
     {
       key: "category",
-      label: "分类",
+      label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.category),
       width: 110,
       minWidth: 88,
-      filterText: (row) => row.item.category?.trim() || "(空)",
+      filterText: (row) => row.item.category?.trim() || t("batchImport.emptyValue"),
       render: (row) => (
         <div className="whitespace-nowrap text-slate-700" {...editableCellProps(row.key, "category")}>
           {editingPreviewCell?.rowKey === row.key && editingPreviewCell.field === "category" ? (
@@ -1120,28 +1102,28 @@ export function StatementImportPreviewDialog({
                   setEditingPreviewCell(null);
                 }}
                 options={previewCategorySmartSelectOptionsFor(row.item.type)}
-                placeholder="选择分类"
+                placeholder={t("statementImportPreview.selectCategory")}
                 searchable
                 behavior={{ hierarchy: true, search: true, initialCollapsedAll: true, accordionGroups: true, selectableGroups: true, groupSelectOnDoubleClick: false, minDropdownWidth: 252, dropdownMaxHeight: 180, density: "micro", expandedGroupColumns: 4, resizableDropdown: true, autoOpen: true, showGroupCounts: false, onDropdownClose: () => setEditingPreviewCell(null) }}
               />
             </div>
           ) : (
-            <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title="双击修改分类">{row.item.category || "-"}</span>
+            <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title={t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.category) })}>{row.item.category || "-"}</span>
           )}
         </div>
       ),
     },
     {
       key: "institution",
-      label: "收支机构",
+      label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.institution),
       width: 118,
       minWidth: 90,
-      filterText: (row) => cleanText(row.item.institution || row.item.counterparty) || "(空)",
-      render: (row) => renderTextEditCell(row, "institution", cleanText(row.item.institution || row.item.counterparty), "双击修改收支机构"),
+      filterText: (row) => cleanText(row.item.institution || row.item.counterparty) || t("batchImport.emptyValue"),
+      render: (row) => renderTextEditCell(row, "institution", cleanText(row.item.institution || row.item.counterparty), t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.institution) })),
     },
     {
       key: "inflow",
-      label: "流入",
+      label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.inflow),
       width: 88,
       minWidth: 74,
       truncate: true,
@@ -1155,7 +1137,7 @@ export function StatementImportPreviewDialog({
           {editingPreviewCell?.rowKey === row.key && editingPreviewCell.field === "amount" && amountEditorSide(row.item) === "inflow" ? (
             renderAmountInput(row)
           ) : (
-            <span className={`cursor-pointer whitespace-nowrap rounded px-1 py-0.5 tabular-nums hover:bg-slate-100 ${importPreviewFlowAmountColorFor(row.item, "inflow", getColorSchemeFromCookie(typeof document === "undefined" ? null : document.cookie))}`} title="双击修改金额">
+            <span className={`cursor-pointer whitespace-nowrap rounded px-1 py-0.5 tabular-nums hover:bg-slate-100 ${importPreviewFlowAmountColorFor(row.item, "inflow", getColorSchemeFromCookie(typeof document === "undefined" ? null : document.cookie))}`} title={t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.amount) })}>
               {importPreviewFlowAmountTextFor(row.item, "inflow")}
             </span>
           )}
@@ -1164,7 +1146,7 @@ export function StatementImportPreviewDialog({
     },
     {
       key: "outflow",
-      label: "流出",
+      label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.outflow),
       width: 88,
       minWidth: 74,
       truncate: true,
@@ -1178,7 +1160,7 @@ export function StatementImportPreviewDialog({
           {editingPreviewCell?.rowKey === row.key && editingPreviewCell.field === "amount" && amountEditorSide(row.item) === "outflow" ? (
             renderAmountInput(row)
           ) : (
-            <span className={`cursor-pointer whitespace-nowrap rounded px-1 py-0.5 tabular-nums hover:bg-slate-100 ${importPreviewFlowAmountColorFor(row.item, "outflow", getColorSchemeFromCookie(typeof document === "undefined" ? null : document.cookie))}`} title="双击修改金额">
+            <span className={`cursor-pointer whitespace-nowrap rounded px-1 py-0.5 tabular-nums hover:bg-slate-100 ${importPreviewFlowAmountColorFor(row.item, "outflow", getColorSchemeFromCookie(typeof document === "undefined" ? null : document.cookie))}`} title={t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.amount) })}>
               {importPreviewFlowAmountTextFor(row.item, "outflow")}
             </span>
           )}
@@ -1187,24 +1169,24 @@ export function StatementImportPreviewDialog({
     },
     {
       key: "remark",
-      label: "备注",
+      label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.remark),
       width: 230,
       minWidth: 160,
       filterKind: "text",
-      filterText: (row) => (row.item.remark || row.item.rawText || "").trim() || "(空)",
-      render: (row) => renderTextEditCell(row, "remark", row.item.remark || row.item.rawText || "", "双击修改备注"),
+      filterText: (row) => (row.item.remark || row.item.rawText || "").trim() || t("batchImport.emptyValue"),
+      render: (row) => renderTextEditCell(row, "remark", row.item.remark || row.item.rawText || "", t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.remark) })),
     },
     {
       key: "status",
-      label: "状态",
+      label: t("statementImportPreview.status"),
       width: 96,
       minWidth: 76,
-      filterText: (row) => row.ready ? "可导入" : `缺${row.missingFields.join("、") || "字段"}`,
+      filterText: (row) => row.ready ? t("statementImportPreview.importable") : t("statementImportPreview.missingFields", { fields: row.missingFields.map((field) => t(MISSING_FIELD_LABEL_KEYS[field] ?? field)).join("、") || t("statementImportPreview.field") }),
       render: (row) => row.ready ? (
         <span className="text-[11px] text-slate-400">-</span>
       ) : (
         <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700">
-          {row.missingFields.includes("账户") ? "请选择账户" : `缺 ${row.missingFields.join("、")}`}
+          {row.missingFields.includes("account") ? t("investForm.selectAccount") : t("statementImportPreview.missingFields", { fields: row.missingFields.map((field) => t(MISSING_FIELD_LABEL_KEYS[field] ?? field)).join("、") })}
         </span>
       ),
     },
@@ -1219,6 +1201,7 @@ export function StatementImportPreviewDialog({
     editingPreviewCell,
     ownerFilterLabel,
     rows,
+    t,
   ]);
 
   const fallbackRows = useMemo(
@@ -1245,7 +1228,7 @@ export function StatementImportPreviewDialog({
             className="h-8 w-8 rounded-md border border-slate-300 text-slate-500 hover:bg-white disabled:opacity-50"
             onClick={closeDialog}
             disabled={busy}
-            aria-label="关闭"
+            aria-label={t("table.close")}
           >
             ×
           </button>
@@ -1257,7 +1240,7 @@ export function StatementImportPreviewDialog({
             columns={columns}
             rows={fallbackRows}
             rowKey={(row) => row.key}
-            emptyText="没有符合筛选条件的记录。"
+            emptyText={t("batchImport.noRecordsForFilter")}
             minTableWidth={1180}
             selectable
             selectedKeys={fallbackSelectedKeys}
@@ -1270,20 +1253,20 @@ export function StatementImportPreviewDialog({
               <BatchReplacePopoverButton
                 fields={previewReplaceFields}
                 targetCount={fallbackSelectedKeys.size}
-                targetLabel="已选"
+                targetLabel={t("stockPanel.selected")}
                 panelAlign="left"
-                disabledTitle="请先勾选记录"
-                buttonTitle={`批量修改已选 ${fallbackSelectedKeys.size} 条`}
+                disabledTitle={t("statementImportPreview.selectRowsFirst")}
+                buttonTitle={t("statementImportPreview.batchEditSelected", { count: fallbackSelectedKeys.size })}
                 messageClassName="sr-only"
                 onApply={applyPreviewReplace}
               />
             )}
-            toolbarTitle="账单导入预览"
+            toolbarTitle={t("statementImportPreview.previewTitle")}
             toolbarRightContent={(
               <div className="flex items-center gap-3 text-xs text-slate-500">
-                {statementInfoTexts.length > 0 ? <span>账单信息：{statementInfoTexts.join(" / ")}</span> : null}
-                <span>共 {fallbackRows.length} 条</span>
-                <span>将导入 {fallbackSelectedKeys.size} 条</span>
+                {statementInfoTexts.length > 0 ? <span>{t("statementImportPreview.statementInfo", { texts: statementInfoTexts.join(" / ") })}</span> : null}
+                <span>{t("batchImport.totalCount", { total: fallbackRows.length })}</span>
+                <span>{t("statementImportPreview.willImport", { count: fallbackSelectedKeys.size })}</span>
               </div>
             )}
             rowClassName={(row) => fallbackSelectedKeys.has(row.key) ? "bg-blue-50/40" : row.ready ? "bg-white" : "bg-amber-50/40"}
@@ -1293,7 +1276,7 @@ export function StatementImportPreviewDialog({
         </div>
 
         <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3">
-          <div className="text-xs text-slate-500">将导入 {fallbackSelectedKeys.size} 条</div>
+          <div className="text-xs text-slate-500">{t("statementImportPreview.willImport", { count: fallbackSelectedKeys.size })}</div>
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -1301,7 +1284,7 @@ export function StatementImportPreviewDialog({
               onClick={closeDialog}
               disabled={busy}
             >
-              取消
+              {t("common.cancel")}
             </button>
             <button
               type="button"
@@ -1309,7 +1292,7 @@ export function StatementImportPreviewDialog({
               onClick={() => void confirmSelected()}
               disabled={busy || fallbackSelectedKeys.size === 0 || fallbackRows.some((row) => fallbackSelectedKeys.has(row.key) && !row.ready)}
             >
-              {busy ? "导入中…" : `确认导入 ${fallbackSelectedKeys.size} 条`}
+              {busy ? t("batchImport.importing") : t("batchImport.confirmImport", { count: fallbackSelectedKeys.size })}
             </button>
           </div>
         </div>

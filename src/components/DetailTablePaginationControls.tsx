@@ -1,6 +1,7 @@
 "use client";
 
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { useI18n } from "@/lib/i18n";
 
 type DetailTablePaginationControlsProps = {
   pageSize: number;
@@ -35,9 +36,10 @@ export function DetailTablePaginationControls({
   onShowAll,
   onPageChange,
 }: DetailTablePaginationControlsProps) {
+  const { t } = useI18n();
   return (
     <div className="flex items-center gap-1.5 text-xs tabular-nums">
-      <span className="text-slate-500">每页</span>
+      <span className="text-slate-500">{t("pagination.perPage")}</span>
       {pageSizeOptions.map((n) => {
         const active = !detailAll && pageSize === n;
         return (
@@ -63,23 +65,23 @@ export function DetailTablePaginationControls({
             ? "border-blue-300 bg-blue-50 text-blue-700"
             : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
         }`}
-        title="当前账户全部记录不分页显示"
+        title={t("pagination.allModeTitle")}
       >
-        全部
+        {t("common.all")}
       </button>
-      <span className="text-slate-500">条</span>
+      <span className="text-slate-500">{t("pagination.items")}</span>
       <span className="mx-0.5 text-slate-300">|</span>
-      <button type="button" onClick={() => onPageChange(1)} disabled={!canPrev} className={pageButtonClass(canPrev, "muted")} title={detailAll ? "全部模式" : "第一页"}>
+      <button type="button" onClick={() => onPageChange(1)} disabled={!canPrev} className={pageButtonClass(canPrev, "muted")} title={detailAll ? t("pagination.allMode") : t("creditBill.firstPage")}>
         <ChevronsLeft className="h-3.5 w-3.5" />
       </button>
-      <button type="button" onClick={() => onPageChange(safePage - 1)} disabled={!canPrev} className={pageButtonClass(canPrev)} title={detailAll ? "全部模式" : "上一页"}>
+      <button type="button" onClick={() => onPageChange(safePage - 1)} disabled={!canPrev} className={pageButtonClass(canPrev)} title={detailAll ? t("pagination.allMode") : t("creditBill.prevPage")}>
         <ChevronLeft className="h-3.5 w-3.5" />
       </button>
-      <span className="min-w-10 text-center text-xs text-slate-500">{detailAll ? "全部" : `${safePage}/${totalPages}`}</span>
-      <button type="button" onClick={() => onPageChange(safePage + 1)} disabled={!canNext} className={pageButtonClass(canNext)} title={detailAll ? "全部模式" : "下一页"}>
+      <span className="min-w-10 text-center text-xs text-slate-500">{detailAll ? t("common.all") : `${safePage}/${totalPages}`}</span>
+      <button type="button" onClick={() => onPageChange(safePage + 1)} disabled={!canNext} className={pageButtonClass(canNext)} title={detailAll ? t("pagination.allMode") : t("creditBill.nextPage")}>
         <ChevronRight className="h-3.5 w-3.5" />
       </button>
-      <button type="button" onClick={() => onPageChange(totalPages)} disabled={!canNext} className={pageButtonClass(canNext, "muted")} title={detailAll ? "全部模式" : "最后一页"}>
+      <button type="button" onClick={() => onPageChange(totalPages)} disabled={!canNext} className={pageButtonClass(canNext, "muted")} title={detailAll ? t("pagination.allMode") : t("creditBill.lastPage")}>
         <ChevronsRight className="h-3.5 w-3.5" />
       </button>
     </div>

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
+import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 
 export const runtime = "nodejs";
 
@@ -26,7 +27,30 @@ const BodySchema = z.object({
   passwordResetEnabled: z.boolean().optional(),
 });
 
+/**
+ * 旧版邮箱设置接口（仅管理员）。
+ *
+ * 当前界面已改用 /api/v1/settings/email-accounts；此接口仍被邮件发送回退链路
+ * （smtp.ts / resend.ts 读取 userSettings）使用，因此保留但必须：
+ * 1. 仅管理员可读写；
+ * 2. 不再信任 x-user-id 请求头（避免任意用户身份冒充）；
+ * 3. GET 不回传明文密码 / API Key，只返回是否已设置。
+ */
+async function requireAdminUserId(): Promise<{ ok: true; userId: string } | { ok: false; response: NextResponse }> {
+  const currentUser = await getCurrentUser();
+  if (!currentUser) {
+    return { ok: false, response: NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 }) };
+  }
+  if (!isAdmin(currentUser)) {
+    return { ok: false, response: NextResponse.json({ ok: false, error: "仅管理员可操作" }, { status: 403 }) };
+  }
+  return { ok: true, userId: currentUser.id };
+}
+
 export async function POST(req: Request) {
+  const auth = await requireAdminUserId();
+  if (!auth.ok) return auth.response;
+
   const body = (await req.json().catch(() => null)) as unknown;
   const parse = BodySchema.safeParse(body);
   if (!parse.success) {
@@ -34,21 +58,8 @@ export async function POST(req: Request) {
   }
 
   const data = parse.data;
-
-  // 开发环境：获取第一个用户或创建默认用户
-  let userId = req.headers.get("x-user-id");
-  if (!userId) {
-    const users = await prisma.user.findMany({ take: 1 });
-    if (users[0]?.id) {
-      userId = users[0].id;
-    } else {
-      const newUser = await prisma.user.create({ data: { name: "默认用户" } });
-      userId = newUser.id;
-    }
-  }
-
   await prisma.userSettings.upsert({
-    where: { userId },
+    where: { userId: auth.userId },
     update: {
       emailHost: data.emailHost,
       emailPort: data.emailPort,
@@ -67,7 +78,7 @@ export async function POST(req: Request) {
       passwordResetEnabled: data.passwordResetEnabled,
     },
     create: {
-      userId,
+      userId: auth.userId,
       emailHost: data.emailHost,
       emailPort: data.emailPort,
       emailSecure: data.emailSecure,
@@ -89,41 +100,34 @@ export async function POST(req: Request) {
   return NextResponse.json({ ok: true });
 }
 
-export async function GET(req: Request) {
-  // 开发环境：获取第一个用户或创建默认用户
-  let userId = new URL(req.url).searchParams.get("userId");
-  if (!userId) {
-    const users = await prisma.user.findMany({ take: 1 });
-    if (users[0]?.id) {
-      userId = users[0].id;
-    } else {
-      const newUser = await prisma.user.create({ data: { name: "默认用户" } });
-      userId = newUser.id;
-    }
-  }
+export async function GET() {
+  const auth = await requireAdminUserId();
+  if (!auth.ok) return auth.response;
 
   const settings = await prisma.userSettings.findUnique({
-    where: { userId },
+    where: { userId: auth.userId },
   });
 
   return NextResponse.json({
     ok: true,
-    data: settings ? {
-      emailHost: settings.emailHost,
-      emailPort: settings.emailPort,
-      emailSecure: settings.emailSecure,
-      emailUser: settings.emailUser,
-      emailPassword: settings.emailPassword,
-      emailMailbox: settings.emailMailbox,
-      smtpHost: settings.smtpHost,
-      smtpPort: settings.smtpPort,
-      smtpSecure: settings.smtpSecure,
-      smtpUser: settings.smtpUser,
-      smtpPass: settings.smtpPass,
-      smtpFrom: settings.smtpFrom,
-      resendApiKey: settings.resendApiKey,
-      resendFrom: settings.resendFrom,
-      passwordResetEnabled: settings.passwordResetEnabled,
-    } : null,
+    data: settings
+      ? {
+          emailHost: settings.emailHost,
+          emailPort: settings.emailPort,
+          emailSecure: settings.emailSecure,
+          emailUser: settings.emailUser,
+          emailPasswordSet: !!settings.emailPassword,
+          emailMailbox: settings.emailMailbox,
+          smtpHost: settings.smtpHost,
+          smtpPort: settings.smtpPort,
+          smtpSecure: settings.smtpSecure,
+          smtpUser: settings.smtpUser,
+          smtpPassSet: !!settings.smtpPass,
+          smtpFrom: settings.smtpFrom,
+          resendApiKeySet: !!settings.resendApiKey,
+          resendFrom: settings.resendFrom,
+          passwordResetEnabled: settings.passwordResetEnabled,
+        }
+      : null,
   });
 }

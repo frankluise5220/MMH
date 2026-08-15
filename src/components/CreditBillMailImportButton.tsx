@@ -10,13 +10,18 @@ const EmailSettingsPage = dynamic(
   () => import("@/app/(sidebar)/settings/email/page"),
   {
     ssr: false,
-    loading: () => (
-      <div className="flex h-full items-center justify-center text-sm text-slate-400">
-        正在打开邮箱账单导入...
-      </div>
-    ),
+    loading: () => <EmailSettingsLoading />,
   },
 );
+
+function EmailSettingsLoading() {
+  const { t } = useI18n();
+  return (
+    <div className="flex h-full items-center justify-center text-sm text-slate-400">
+      {t("creditBill.mailImportLoading")}
+    </div>
+  );
+}
 
 type CreditBillMailImportButtonProps = {
   accountId?: string;
@@ -44,7 +49,7 @@ export function CreditBillMailImportDialog({ open, onClose, accountId, accountNa
           <div className="min-w-0">
             <div className="text-sm font-semibold text-slate-800">{t("creditBill.fetchMailTitle")}</div>
             <div className="mt-0.5 truncate text-xs text-slate-500">
-              使用系统设置里的同一套邮箱账单读取、HTML 预览、识别和导入流程。
+              {t("creditBill.mailImportSameFlow")}
             </div>
           </div>
           <button

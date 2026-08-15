@@ -75,11 +75,27 @@ export function formatDateLocal(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+/** 今天的本地日期 YYYY-MM-DD（用于日期输入框默认值等场景） */
+export function todayDateLocalYmd(): string {
+  return formatDateLocal(new Date());
+}
+
 export function formatDateUtc(d: Date): string {
   const y = d.getUTCFullYear();
   const m = String(d.getUTCMonth() + 1).padStart(2, "0");
   const day = String(d.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+/**
+ * 将 YYYY-MM-DD 日期输入值解析为 UTC 零时 Date；格式不合法返回 null。
+ * 日期输入框（<input type="date">）与日期字符串解析统一走这里，避免时区漂移。
+ */
+export function parseDateInputToUtc(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value ?? "").trim());
+  if (!match) return null;
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  return Number.isFinite(date.getTime()) ? date : null;
 }
 
 const CN_FUND_HOLIDAYS = new Set<string>([

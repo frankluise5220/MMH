@@ -1,8 +1,9 @@
-﻿"use client";
+"use client";
 
 import { ChevronDown, Plus } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useI18n } from "@/lib/i18n";
 
 type EntryKind =
   | "transaction"
@@ -294,6 +295,7 @@ export function UnifiedEntryLauncher({ defaultAction, actions, className, contex
   const [menuStyle, setMenuStyle] = useState<CSSProperties | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const { t } = useI18n();
 
   const defaultItem = useMemo(
     () => actions.find((item) => item.key === defaultAction && !item.disabled) ?? actions.find((item) => !item.disabled),
@@ -370,7 +372,7 @@ export function UnifiedEntryLauncher({ defaultAction, actions, className, contex
           className="inline-flex items-center gap-1.5 bg-transparent px-3 text-sm font-medium hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Plus className="h-4 w-4" />
-          {defaultItem?.label ?? "记账"}
+          {defaultItem?.label ?? t("txForm.record")}
         </button>
         <div className="my-1 w-px shrink-0 bg-white/35" aria-hidden="true" />
         <button
@@ -379,7 +381,7 @@ export function UnifiedEntryLauncher({ defaultAction, actions, className, contex
           aria-expanded={menuOpen}
           onClick={() => setMenuOpen((open) => !open)}
           className="inline-flex items-center justify-center bg-transparent px-2.5 hover:bg-white/10"
-          title="更多记账入口"
+          title={t("unifiedEntry.moreEntries")}
         >
           <ChevronDown className="h-4 w-4 opacity-90" />
         </button>

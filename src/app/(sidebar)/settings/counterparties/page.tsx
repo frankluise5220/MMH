@@ -20,11 +20,11 @@ async function updateCounterpartyRow(formData: FormData) {
   const name = String(formData.get("name") ?? "").trim();
   const shortName = String(formData.get("shortName") ?? "").trim();
   const type = String(formData.get("type") ?? "").trim();
-  if (!counterpartyId || !name) return { ok: false, error: "缺少必填字段" };
+  if (!counterpartyId || !name) return { ok: false, error: "Missing required fields" };
 
   const safeType = ["person", "organization"].includes(type) ? type : "person";
   const existing = await prisma.counterparty.findFirst({ where: { id: counterpartyId, householdId } });
-  if (!existing) return { ok: false, error: "往来对象不存在" };
+  if (!existing) return { ok: false, error: "Counterparty not found" };
 
   try {
     await prisma.$transaction(async (tx) => {
@@ -43,7 +43,7 @@ async function updateCounterpartyRow(formData: FormData) {
   } catch (error) {
     if (isCounterpartyNameUniqueError(error)) return { ok: false, error: error.message };
     if (isInstitutionNameUniqueError(error)) return { ok: false, error: error.message };
-    return { ok: false, error: error instanceof Error ? error.message : "保存失败" };
+    return { ok: false, error: error instanceof Error ? error.message : "Save failed" };
   }
 
   revalidateAfterSettingsChange();

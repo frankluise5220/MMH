@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, Loader2 } from "lucide-react";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
 type AccountKindValue = "bank_debit" | "bank_credit";
 
@@ -211,7 +212,7 @@ export default function QuickAddAccountsPage() {
 
       setAccounts((prev) => [...prev, ...createdAccounts]);
       setMessage(`已生成 ${createdCount} 个账户${skippedCount > 0 ? `，跳过 ${skippedCount} 个已存在账户` : ""}。`);
-      window.dispatchEvent(new Event("mmh:fund:refresh"));
+      dispatchFinanceDataChanged({ reason: "quick-add-accounts" });
     } catch (err) {
       setError(err instanceof Error ? err.message : "批量生成失败");
     } finally {

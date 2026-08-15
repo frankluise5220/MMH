@@ -32,14 +32,6 @@ export function formatMoney(amount: number): string {
   return `${sign}${abs.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-/** 格式化金额，4位小数，中文数字格式（用于净值等精度要求高的场景） */
-export function formatMoney4(amount: number): string {
-  const rounded = roundDisplayNumber(amount, 4);
-  const sign = rounded < 0 ? "-" : "";
-  const abs = Math.abs(rounded);
-  return `${sign}${abs.toLocaleString("zh-CN", { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`;
-}
-
 /** 格式化金额，带¥前缀，2位小数 */
 export function formatMoneyYuan(amount: number): string {
   return `¥${formatMoney(amount)}`;
@@ -69,4 +61,25 @@ export function formatCurrencyMoney(amount: number, currency = "CNY"): string {
 export function formatMoneyLoose(v: string | number): string {
   const n = typeof v === "string" ? parseFloat(v) : v;
   return Number.isFinite(n) ? formatMoney(n) : "-";
+}
+
+/**
+ * 格式化金额并附带币种代码后缀（如 "1,234.56 CNY"）。
+ * 用于股票/证券类场景中需要同时展示金额与币种的表格与弹窗；非法输入返回 "-"。
+ */
+export function formatMoneyWithCurrencyCode(value: number | null | undefined, currency = "CNY"): string {
+  if (value == null || !Number.isFinite(Number(value))) return "-";
+  const code = String(currency || "CNY");
+  return `${Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${code}`;
+}
+
+/**
+ * 格式化收益率/百分比：带正负号、固定小数位、% 后缀；非有限数字返回 "-"。
+ * 例如 0.0435 → "+4.35%"，-0.01 → "-1.00%"。
+ */
+export function formatPercent(value: number | null | undefined, digits = 2): string {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return "-";
+  const sign = n >= 0 ? "+" : "";
+  return `${sign}${(n * 100).toFixed(digits)}%`;
 }

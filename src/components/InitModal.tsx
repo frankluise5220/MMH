@@ -9,6 +9,7 @@ import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
 import { buildAccountDisplayOption } from "@/lib/account-display";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { useI18n } from "@/lib/i18n";
 
 /* Types */
 
@@ -68,6 +69,7 @@ export function InitModal({
 }) {
   const [tab, setTab] = useState<"balance" | "fund">("balance");
   const [busy, setBusy] = useState(false);
+  const { t } = useI18n();
   const [message, setMessage] = useState<{ ok: boolean; text: string; details?: string[] } | null>(null);
   const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [accountsLoaded, setAccountsLoaded] = useState(false);
@@ -322,10 +324,10 @@ export function InitModal({
       if (duplicateKeys.length > 0) {
         const duplicateDetails = duplicateKeys.map((key) => {
           const [investmentAccountId, fundCode] = key.split("::");
-          const accountLabel = investmentAccountList.find((account) => account.id === investmentAccountId)?.label ?? "未命名投资账户";
-          return `${accountLabel} 下的基金 ${fundCode} 重复录入`;
+          const accountLabel = investmentAccountList.find((account) => account.id === investmentAccountId)?.label ?? t("initModal.unnamedInvestAccount");
+          return t("initModal.alert.duplicateFundDetail", { account: accountLabel, code: fundCode });
         });
-        setMessage({ ok: false, text: "同一投资账户下不能重复录入同一基金", details: duplicateDetails });
+        setMessage({ ok: false, text: t("initModal.alert.duplicateFund"), details: duplicateDetails });
         setBusy(false);
         return;
       }
@@ -346,13 +348,13 @@ export function InitModal({
         } : undefined,
       })).filter((r) => r.units > 0 && r.avgCost > 0);
       if (accountBalances.length === 0 && fundHoldings.length === 0) {
-        setMessage({ ok: false, text: "请填写至少一条记录" }); setBusy(false); return;
+        setMessage({ ok: false, text: t("initModal.alert.atLeastOne") }); setBusy(false); return;
       }
       const res = await fetch("/api/v1/init", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ accountBalances, fundHoldings }) });
       const data = await res.json();
-      if (!data.ok) setMessage({ ok: false, text: data.error ?? "初始化失败" });
+      if (!data.ok) setMessage({ ok: false, text: data.error ?? t("initModal.alert.initFailed") });
       else { setMessage({ ok: true, text: data.message, details: data.details }); dispatchFinanceDataChanged({ reason: "initial-data" }); }
-    } catch (e) { setMessage({ ok: false, text: e instanceof Error ? e.message : "初始化失败" }); }
+    } catch (e) { setMessage({ ok: false, text: e instanceof Error ? e.message : t("initModal.alert.initFailed") }); }
     finally { setBusy(false); }
   }
 
@@ -385,7 +387,7 @@ export function InitModal({
         fetch(`/api/v1/fund/name?code=${fundCode}`).then((r) => r.json()),
         accountId
           ? fetch(`/api/v1/fund/position?accountId=${encodeURIComponent(accountId)}&fundCode=${encodeURIComponent(fundCode)}`).then((r) => r.json())
-          : Promise.resolve({ ok: false, error: "缺少投资账户" }),
+          : Promise.resolve({ ok: false, error: t("initModal.alert.missingInvestAccount") }),
       ]);
 
       const nextPatch: Partial<FundHoldingRow> = {};
@@ -456,35 +458,35 @@ export function InitModal({
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/35 p-4 pt-[5vh] overflow-auto">
       <div className="w-full max-w-6xl rounded-xl bg-white border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
         <div className="shrink-0 px-5 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
-          <div className="text-base font-bold text-slate-800">📦 初始数据</div>
+          <div className="text-base font-bold text-slate-800">📦 {t("nav.initialData")}</div>
           <button onClick={handleClose} disabled={busy} className="h-8 w-8 rounded-md border border-slate-200 bg-white flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100 disabled:opacity-40"><X className="w-4 h-4" /></button>
         </div>
         <div className="shrink-0 flex border-b border-slate-200 bg-slate-50/50">
-          <button onClick={() => { setTab("balance"); setMessage(null); }} className={`flex items-center gap-1.5 px-5 py-2.5 text-sm font-medium border-b-2 transition-colors ${tab === "balance" ? "border-blue-600 text-blue-700 bg-white" : "border-transparent text-slate-500 hover:text-slate-700"}`}><Database className="w-4 h-4" />账户余额</button>
-          <button onClick={() => { setTab("fund"); setMessage(null); }} className={`flex items-center gap-1.5 px-5 py-2.5 text-sm font-medium border-b-2 transition-colors ${tab === "fund" ? "border-blue-600 text-blue-700 bg-white" : "border-transparent text-slate-500 hover:text-slate-700"}`}><TrendingUp className="w-4 h-4" />基金持仓</button>
+          <button onClick={() => { setTab("balance"); setMessage(null); }} className={`flex items-center gap-1.5 px-5 py-2.5 text-sm font-medium border-b-2 transition-colors ${tab === "balance" ? "border-blue-600 text-blue-700 bg-white" : "border-transparent text-slate-500 hover:text-slate-700"}`}><Database className="w-4 h-4" />{t("initModal.tab.balance")}</button>
+          <button onClick={() => { setTab("fund"); setMessage(null); }} className={`flex items-center gap-1.5 px-5 py-2.5 text-sm font-medium border-b-2 transition-colors ${tab === "fund" ? "border-blue-600 text-blue-700 bg-white" : "border-transparent text-slate-500 hover:text-slate-700"}`}><TrendingUp className="w-4 h-4" />{t("initModal.tab.fund")}</button>
         </div>
         <div className="flex-1 overflow-y-auto p-5 space-y-4">
           {tab === "balance" && (
             <div className="space-y-3">
               <div className="init-balance-toolbar flex items-center justify-between gap-3">
-                <p className="text-xs text-slate-500">填写需要初始化余额的账户。选择账户并填写余额后，可继续添加下一个账户。</p>
-                <button onClick={addBalanceRow} className="inline-flex items-center gap-1 h-8 px-3 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 shrink-0"><Plus className="w-4 h-4" />新增账户</button>
+                <p className="text-xs text-slate-500">{t("initModal.balanceIntro")}</p>
+                <button onClick={addBalanceRow} className="inline-flex items-center gap-1 h-8 px-3 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 shrink-0"><Plus className="w-4 h-4" />{t("settings.accounts.add")}</button>
               </div>
-              {loadingAccounts && !accountsLoaded ? <p className="text-sm text-slate-400 py-6 text-center">正在加载账户...</p> : balanceRows.length === 0 ? <p className="text-sm text-slate-400 py-6 text-center">暂无账户</p> : (
+              {loadingAccounts && !accountsLoaded ? <p className="text-sm text-slate-400 py-6 text-center">{t("initModal.loadingAccounts")}</p> : balanceRows.length === 0 ? <p className="text-sm text-slate-400 py-6 text-center">{t("initModal.emptyAccounts")}</p> : (
                 <table className="w-full border-separate border-spacing-0">
                   <thead><tr className="text-xs font-semibold text-slate-600">
-                    <th className="text-left px-3 py-2 border-b border-slate-200">账户</th>
-                    <th className="text-left px-3 py-2 border-b border-slate-200">类型</th>
-                    <th className="text-right px-3 py-2 border-b border-slate-200">初始余额</th>
-                    <th className="text-left px-3 py-2 border-b border-slate-200">日期</th>
+                    <th className="text-left px-3 py-2 border-b border-slate-200">{t("common.account")}</th>
+                    <th className="text-left px-3 py-2 border-b border-slate-200">{t("settings.accounts.type")}</th>
+                    <th className="text-right px-3 py-2 border-b border-slate-200">{t("initModal.col.balance")}</th>
+                    <th className="text-left px-3 py-2 border-b border-slate-200">{t("detail.column.date")}</th>
                   </tr></thead>
                   <tbody>{balanceRows.map((row) => {
-                    const kl = row.kind ? (row.kind === "bank_debit" ? "借记卡" : row.kind === "bank_credit" ? "信用卡" : row.kind === "cash" ? "现金" : row.kind === "loan" ? "债务/债权" : row.kind === "ewallet" ? "电子钱包" : row.kind) : "";
+                    const kl = row.kind ? (row.kind === "bank_debit" ? t("account.kind.bank_debit") : row.kind === "bank_credit" ? t("account.kind.bank_credit") : row.kind === "cash" ? t("account.kind.cash") : row.kind === "loan" ? t("account.kind.loan") : row.kind === "ewallet" ? t("account.kind.ewallet") : row.kind) : "";
                     const accountOptions = getBalanceAccountSSOptions(row);
                     return (<tr key={row.tempId} className="hover:bg-slate-50">
                       <td className="px-3 py-1.5 border-b border-slate-100 text-sm text-slate-700">
                         <div className="init-modal-dropdown min-w-[220px]">
-                          <SmartSelect mode="single" value={row.accountId} onChange={(id) => selectBalanceAccount(row.tempId, id)} options={accountOptions} placeholder={accountOptions.length > 0 ? "选择资金账户" : "没有可选账户，可直接新建"} searchable={true} onCreateClick={() => { pendingBalanceCreateRowId.current = row.tempId; setBalanceNestedOpen(true); }} createLabel="新增" />
+                          <SmartSelect mode="single" value={row.accountId} onChange={(id) => selectBalanceAccount(row.tempId, id)} options={accountOptions} placeholder={accountOptions.length > 0 ? t("initModal.placeholder.selectCashAccount") : t("initModal.placeholder.noAccountCreate")} searchable={true} onCreateClick={() => { pendingBalanceCreateRowId.current = row.tempId; setBalanceNestedOpen(true); }} createLabel={t("initModal.create")} />
                         </div>
                       </td>
                       <td className="px-3 py-1.5 border-b border-slate-100 text-xs text-slate-500">{kl}</td>
@@ -503,15 +505,15 @@ export function InitModal({
 
           {tab === "fund" && (
             <div className="space-y-3">
-              <p className="text-xs text-slate-500">选择投资账户，然后添加该账户下的基金持仓。系统将自动获取基金名称和最新净值。</p>
+              <p className="text-xs text-slate-500">{t("initModal.fundIntro")}</p>
               {loadingAccounts && !accountsLoaded && (
-                <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-sm text-slate-500 text-center">正在加载投资账户...</div>
+                <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-sm text-slate-500 text-center">{t("initModal.loadingInvestAccounts")}</div>
               )}
               {investmentAccountList.length === 0 && !loadingAccounts && (
                 <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-5 space-y-3">
-                  <p className="text-sm text-slate-500 text-center">暂无投资账户，可直接在下方选择器中新建</p>
+                  <p className="text-sm text-slate-500 text-center">{t("initModal.emptyInvestAccounts")}</p>
                   <div className="init-modal-dropdown max-w-sm mx-auto">
-                    <SmartSelect mode="single" value={addInvestAccountId} onChange={(id) => { setAddInvestAccountId(id); addInvestAccountToInit(id); }} options={addableInvestSSOptions} placeholder="选择或新建投资账户" searchable={true} onCreateClick={() => openInvestAccountCreate()} createLabel="新增" />
+                    <SmartSelect mode="single" value={addInvestAccountId} onChange={(id) => { setAddInvestAccountId(id); addInvestAccountToInit(id); }} options={addableInvestSSOptions} placeholder={t("initModal.placeholder.selectOrCreateInvestAccount")} searchable={true} onCreateClick={() => openInvestAccountCreate()} createLabel={t("initModal.create")} />
                   </div>
                 </div>
               )}
@@ -523,20 +525,20 @@ export function InitModal({
               <div key={`invest-panel-${account.id}`} className="space-y-3">
               <div className="rounded-xl border border-slate-200 bg-white px-3 py-3">
               <div className="flex items-center gap-2">
-                <label className="text-[10px] font-semibold text-slate-500 uppercase shrink-0">投资账户</label>
+                <label className="text-[10px] font-semibold text-slate-500 uppercase shrink-0">{t("firstUseGuide.step.investment.title")}</label>
                 <div className="init-modal-dropdown flex-1 max-w-xs" key={`invest-switch-${account.id}`}>
-                  <SmartSelect mode="single" value={account.id} onChange={(id) => accountHasContent ? addInvestAccountToInit(id) : switchInvestAccountBlock(account.id, id)} options={accountSwitchOptions} placeholder="选择投资账户" searchable={true} onCreateClick={() => openInvestAccountCreate(account.id)} createLabel="新增" />
+                  <SmartSelect mode="single" value={account.id} onChange={(id) => accountHasContent ? addInvestAccountToInit(id) : switchInvestAccountBlock(account.id, id)} options={accountSwitchOptions} placeholder={t("initModal.placeholder.selectInvestAccount")} searchable={true} onCreateClick={() => openInvestAccountCreate(account.id)} createLabel={t("initModal.create")} />
                 </div>
-                <button onClick={() => { setCurrentInvestAccountId(account.id); addFundRow(account.id); }} className="inline-flex items-center gap-1 h-8 px-3 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 shrink-0"><Plus className="w-4 h-4" />添加基金</button>
+                <button onClick={() => { setCurrentInvestAccountId(account.id); addFundRow(account.id); }} className="inline-flex items-center gap-1 h-8 px-3 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 shrink-0"><Plus className="w-4 h-4" />{t("initModal.addFund")}</button>
                 {activeInvestmentAccounts.length > 1 && (
-                  <button onClick={() => removeInvestAccountFromInit(account.id)} className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-red-200 bg-white text-red-500 hover:bg-red-50 shrink-0" title="移除投资账户">
+                  <button onClick={() => removeInvestAccountFromInit(account.id)} className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-red-200 bg-white text-red-500 hover:bg-red-50 shrink-0" title={t("initModal.removeInvestAccount")}>
                     <Trash2 className="w-4 h-4" />
                   </button>
                 )}
               </div>
               </div>
                 {!loadingAccounts && accountFundRows.length === 0 && (
-                  <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-sm text-slate-500 text-center">当前投资账户下还没有基金，点击上方“添加基金”开始录入。</div>
+                  <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-sm text-slate-500 text-center">{t("initModal.emptyFundRowsHint")}</div>
                 )}
                 {accountFundRows.length > 0 && (
                   <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
@@ -555,15 +557,15 @@ export function InitModal({
                       </colgroup>
                       <thead className="sticky top-0 z-10 bg-white">
                         <tr>
-                          <th className="px-2 py-1 border-b border-r border-slate-200 text-left text-xs font-semibold text-slate-600">基金</th>
-                          <th className="px-1.5 py-1 border-b border-r border-slate-200 text-right text-xs font-semibold text-slate-600">均价</th>
-                          <th className="px-1.5 py-1 border-b border-r border-slate-200 text-right text-xs font-semibold text-slate-600">份额</th>
-                          <th className="px-1.5 py-1 border-b border-r border-slate-200 text-right text-xs font-semibold text-slate-600">净值</th>
-                          <th className="px-1.5 py-1 border-b border-r border-slate-200 text-right text-xs font-semibold text-slate-600">市值</th>
-                          <th className="px-1.5 py-1 border-b border-r border-slate-200 text-right text-xs font-semibold text-slate-600">浮盈</th>
-                          <th className="px-1.5 py-1 border-b border-r border-slate-200 text-right text-xs font-semibold text-slate-600">历史盈亏</th>
-                          <th className="px-0 py-1 border-b border-slate-200 text-center text-xs font-semibold text-slate-600">定投</th>
-                          <th className="px-0 py-1 border-b border-slate-200 text-center text-xs font-semibold text-slate-600">操作</th>
+                          <th className="px-2 py-1 border-b border-r border-slate-200 text-left text-xs font-semibold text-slate-600">{t("txForm.fund")}</th>
+                          <th className="px-1.5 py-1 border-b border-r border-slate-200 text-right text-xs font-semibold text-slate-600">{t("wealthForm.avgPrice")}</th>
+                          <th className="px-1.5 py-1 border-b border-r border-slate-200 text-right text-xs font-semibold text-slate-600">{t("investForm.units")}</th>
+                          <th className="px-1.5 py-1 border-b border-r border-slate-200 text-right text-xs font-semibold text-slate-600">{t("investForm.nav")}</th>
+                          <th className="px-1.5 py-1 border-b border-r border-slate-200 text-right text-xs font-semibold text-slate-600">{t("propertyShell.column.marketValue")}</th>
+                          <th className="px-1.5 py-1 border-b border-r border-slate-200 text-right text-xs font-semibold text-slate-600">{t("initModal.col.floatingProfit")}</th>
+                          <th className="px-1.5 py-1 border-b border-r border-slate-200 text-right text-xs font-semibold text-slate-600">{t("initModal.col.historicalProfit")}</th>
+                          <th className="px-0 py-1 border-b border-slate-200 text-center text-xs font-semibold text-slate-600">{t("fund.subtype.regular_invest")}</th>
+                          <th className="px-0 py-1 border-b border-slate-200 text-center text-xs font-semibold text-slate-600">{t("detail.column.actions")}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -584,7 +586,7 @@ export function InitModal({
                               <tr key={row.tempId} className="hover:bg-slate-50 align-top">
                                 <td className="px-2 py-1 border-b border-r border-slate-100 align-middle">
                                   <div className="flex items-start gap-1.5">
-                                    <input type="text" placeholder="6位代码" maxLength={6} value={row.fundCode}
+                                    <input type="text" placeholder={t("regularInvest.codePlaceholder")} maxLength={6} value={row.fundCode}
                                       onChange={(e) => {
                                         const code = e.target.value;
                                         updateFundRow(row.tempId, { fundCode: code });
@@ -594,7 +596,7 @@ export function InitModal({
                                       }}
                                       className="h-6 w-[78px] shrink-0 rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[14px] font-medium font-mono text-center text-slate-800 outline-none focus:border-blue-400" />
                                     <div className="min-w-0 flex-1 pt-0.5 text-slate-700">
-                                      <div className="truncate leading-5" style={{ fontSize: `${fundNameFontSize}px` }}>{row.fundName || "输入代码自动获取"}</div>
+                                      <div className="truncate leading-5" style={{ fontSize: `${fundNameFontSize}px` }}>{row.fundName || t("initModal.autoFetchFundName")}</div>
                                     </div>
                                   </div>
                                 </td>
@@ -627,33 +629,33 @@ export function InitModal({
                                   </label>
                                 </td>
                                 <td className="px-0 py-1 border-b border-slate-100 align-top text-center">
-                                  <button onClick={() => removeFundRow(row.tempId)} className="inline-flex h-5.5 w-5.5 items-center justify-center rounded border border-red-200 bg-white text-red-500 hover:bg-red-50" title="移除"><Trash2 className="w-3 h-3" /></button>
+                                  <button onClick={() => removeFundRow(row.tempId)} className="inline-flex h-5.5 w-5.5 items-center justify-center rounded border border-red-200 bg-white text-red-500 hover:bg-red-50" title={t("initModal.remove")}><Trash2 className="w-3 h-3" /></button>
                                 </td>
                               </tr>
                               {row.hasRegularInvest && (
                                 <tr key={`${row.tempId}-ri`} className="bg-slate-50/70">
                                   <td colSpan={9} className="border-b border-slate-100 px-3 py-2">
                                     <div className="space-y-2">
-                                      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">最近交易明细</p>
+                                      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{t("initModal.ri.latestTxTitle")}</p>
                                       <div className="overflow-x-auto">
                                         <div className="flex min-w-[802px] items-end gap-1.5">
-                                          <div className="w-[148px] shrink-0 space-y-1"><label className="text-[11px] font-medium uppercase text-slate-500">扣款账户</label><SmartSelect mode="single" value={row.riCashAccountId} onChange={(id) => updateFundRow(row.tempId, { riCashAccountId: id })} options={cashSSOptions} placeholder="不限" /></div>
-                                          <div className="w-[78px] shrink-0 space-y-1"><label className="text-[11px] font-medium uppercase text-slate-500">每期金额</label><input type="number" step="0.01" placeholder="金额" value={row.riAmount} onChange={(e) => updateFundRow(row.tempId, { riAmount: e.target.value })} className="init-modal-number h-7 w-full rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[13px] font-medium text-right text-slate-800 outline-none focus:border-blue-400" /></div>
-                                          <div className="w-[148px] shrink-0 space-y-1"><label className="text-[11px] font-medium uppercase text-slate-500">间隔</label>
+                                          <div className="w-[148px] shrink-0 space-y-1"><label className="text-[11px] font-medium uppercase text-slate-500">{t("initModal.ri.deductAccount")}</label><SmartSelect mode="single" value={row.riCashAccountId} onChange={(id) => updateFundRow(row.tempId, { riCashAccountId: id })} options={cashSSOptions} placeholder={t("regularInvest.unlimited")} /></div>
+                                          <div className="w-[78px] shrink-0 space-y-1"><label className="text-[11px] font-medium uppercase text-slate-500">{t("initModal.ri.amountPerPeriod")}</label><input type="number" step="0.01" placeholder={t("txForm.amount")} value={row.riAmount} onChange={(e) => updateFundRow(row.tempId, { riAmount: e.target.value })} className="init-modal-number h-7 w-full rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[13px] font-medium text-right text-slate-800 outline-none focus:border-blue-400" /></div>
+                                          <div className="w-[148px] shrink-0 space-y-1"><label className="text-[11px] font-medium uppercase text-slate-500">{t("regularInvest.interval")}</label>
                                             <div className="flex gap-1">
                                               <input type="number" min="1" placeholder="1" value={row.riIntervalValue} onChange={(e) => updateFundRow(row.tempId, { riIntervalValue: e.target.value })} className="h-7 w-9 rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[13px] font-medium text-center text-slate-800 outline-none focus:border-blue-400" />
-                                              <select value={row.riIntervalUnit} onChange={(e) => updateFundRow(row.tempId, { riIntervalUnit: e.target.value, riWeekday: e.target.value === "week" ? (row.riWeekday || "1") : row.riWeekday })} className="h-7 w-[54px] rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[12px] text-slate-700 outline-none focus:border-blue-400"><option value="day">天</option><option value="week">周</option><option value="biweek">双周</option><option value="month">月</option><option value="year">年</option></select>
-                                              {row.riIntervalUnit === "week" && <select value={row.riWeekday} onChange={(e) => updateFundRow(row.tempId, { riWeekday: e.target.value })} className="h-7 w-[56px] rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[12px] text-slate-700 outline-none focus:border-blue-400"><option value="1">周一</option><option value="2">周二</option><option value="3">周三</option><option value="4">周四</option><option value="5">周五</option><option value="6">周六</option><option value="0">周日</option></select>}
+                                              <select value={row.riIntervalUnit} onChange={(e) => updateFundRow(row.tempId, { riIntervalUnit: e.target.value, riWeekday: e.target.value === "week" ? (row.riWeekday || "1") : row.riWeekday })} className="h-7 w-[54px] rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[12px] text-slate-700 outline-none focus:border-blue-400"><option value="day">{t("initModal.ri.unit.day")}</option><option value="week">{t("initModal.ri.unit.week")}</option><option value="biweek">{t("initModal.ri.unit.biweek")}</option><option value="month">{t("initModal.ri.unit.month")}</option><option value="year">{t("initModal.ri.unit.year")}</option></select>
+                                              {row.riIntervalUnit === "week" && <select value={row.riWeekday} onChange={(e) => updateFundRow(row.tempId, { riWeekday: e.target.value })} className="h-7 w-[56px] rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[12px] text-slate-700 outline-none focus:border-blue-400"><option value="1">{t("regularInvest.weekday.1")}</option><option value="2">{t("regularInvest.weekday.2")}</option><option value="3">{t("regularInvest.weekday.3")}</option><option value="4">{t("regularInvest.weekday.4")}</option><option value="5">{t("regularInvest.weekday.5")}</option><option value="6">{t("regularInvest.weekday.6")}</option><option value="0">{t("regularInvest.weekday.0")}</option></select>}
                                             </div>
                                           </div>
-                                          <div className="w-[96px] shrink-0 space-y-1"><label className="text-[11px] font-medium uppercase text-slate-500">交易日</label>
+                                          <div className="w-[96px] shrink-0 space-y-1"><label className="text-[11px] font-medium uppercase text-slate-500">{t("initModal.ri.txDate")}</label>
                                             <DateStepper value={row.riTxDate} onChange={(txDate) => { let tPlusN = ""; let arrivalDate = row.riArrivalDate; if (txDate && row.riConfirmDate) { const diff = Math.round((new Date(row.riConfirmDate).getTime() - new Date(txDate).getTime()) / 86400000); if (diff >= 0) tPlusN = String(diff); } if (txDate && (!row.riArrivalDate || row.riArrivalDate === row.riTxDate)) { const arrival = new Date(`${txDate}T00:00:00`); arrival.setDate(arrival.getDate() + 2); arrivalDate = arrival.toISOString().slice(0, 10); } updateFundRow(row.tempId, { riTxDate: txDate, riTPlusN: tPlusN, riArrivalDate: arrivalDate }); }} className="h-7 w-full rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[12px] text-slate-800 outline-none focus:border-blue-400" />
                                           </div>
-                                          <div className="w-[96px] shrink-0 space-y-1"><label className="text-[11px] font-medium uppercase text-slate-500">确认日</label>
+                                          <div className="w-[96px] shrink-0 space-y-1"><label className="text-[11px] font-medium uppercase text-slate-500">{t("initModal.ri.confirmDate")}</label>
                                             <DateStepper value={row.riConfirmDate} onChange={(confirmDate) => { let tPlusN = ""; if (row.riTxDate && confirmDate) { const diff = Math.round((new Date(confirmDate).getTime() - new Date(row.riTxDate).getTime()) / 86400000); if (diff >= 0) tPlusN = String(diff); } updateFundRow(row.tempId, { riConfirmDate: confirmDate, riTPlusN: tPlusN }); }} className="h-7 w-full rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[12px] text-slate-800 outline-none focus:border-blue-400" />
                                           </div>
-                                          <div className="w-[96px] shrink-0 space-y-1"><label className="text-[11px] font-medium uppercase text-slate-500">入账日</label><DateStepper value={row.riArrivalDate} onChange={(value) => updateFundRow(row.tempId, { riArrivalDate: value })} className="h-7 w-full rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[12px] text-slate-800 outline-none focus:border-blue-400" /></div>
-                                          <div className="w-[60px] shrink-0 space-y-1"><label className="text-[11px] font-medium uppercase text-slate-500">费率%</label><input type="number" step="0.01" placeholder="0" value={row.riFeeRate} onChange={(e) => updateFundRow(row.tempId, { riFeeRate: e.target.value })} className="init-modal-number h-7 w-full rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[13px] font-medium text-right text-slate-800 outline-none focus:border-blue-400" /></div>
+                                          <div className="w-[96px] shrink-0 space-y-1"><label className="text-[11px] font-medium uppercase text-slate-500">{t("initModal.ri.arrivalDate")}</label><DateStepper value={row.riArrivalDate} onChange={(value) => updateFundRow(row.tempId, { riArrivalDate: value })} className="h-7 w-full rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[12px] text-slate-800 outline-none focus:border-blue-400" /></div>
+                                          <div className="w-[60px] shrink-0 space-y-1"><label className="text-[11px] font-medium uppercase text-slate-500">{t("initModal.ri.feeRate")}</label><input type="number" step="0.01" placeholder="0" value={row.riFeeRate} onChange={(e) => updateFundRow(row.tempId, { riFeeRate: e.target.value })} className="init-modal-number h-7 w-full rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[13px] font-medium text-right text-slate-800 outline-none focus:border-blue-400" /></div>
                                         </div>
                                       </div>
                                     </div>
@@ -674,9 +676,9 @@ export function InitModal({
 
               {investmentAccountList.length > 0 && canAddAnotherInvestAccount && (
                 <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-3">
-                  <p className="mb-2 text-[11px] font-medium text-slate-500">新增投资账户</p>
+                  <p className="mb-2 text-[11px] font-medium text-slate-500">{t("initModal.addInvestAccount")}</p>
                   <div className="init-modal-dropdown">
-                    <SmartSelect mode="single" value={addInvestAccountId} onChange={(id) => { setAddInvestAccountId(id); addInvestAccountToInit(id); }} options={addableInvestSSOptions} placeholder={addableInvestSSOptions.length > 0 ? "选择一个投资账户加入当前初始化" : "没有可选账户，可直接新建"} searchable={true} onCreateClick={() => openInvestAccountCreate()} createLabel="新增" />
+                    <SmartSelect mode="single" value={addInvestAccountId} onChange={(id) => { setAddInvestAccountId(id); addInvestAccountToInit(id); }} options={addableInvestSSOptions} placeholder={addableInvestSSOptions.length > 0 ? t("initModal.placeholder.selectInvestAccountToInit") : t("initModal.placeholder.noAccountCreate")} searchable={true} onCreateClick={() => openInvestAccountCreate()} createLabel={t("initModal.create")} />
                   </div>
                 </div>
               )}
@@ -692,11 +694,11 @@ export function InitModal({
         </div>
 
         <div className="shrink-0 px-5 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
-          <div className="text-xs text-slate-400">{tab === "balance" ? `共 ${balanceRows.length} 个账户` : `共 ${new Set(fundRows.map((row) => row.investmentAccountId).filter(Boolean)).size} 个投资账户，${fundRows.length} 只基金`}</div>
+          <div className="text-xs text-slate-400">{tab === "balance" ? t("settings.accounts.count", { count: balanceRows.length }) : t("initModal.count.investAccounts", { accounts: new Set(fundRows.map((row) => row.investmentAccountId).filter(Boolean)).size, funds: fundRows.length })}</div>
           <div className="flex items-center gap-2">
-            <button onClick={handleClose} disabled={busy} className="h-9 px-4 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-40">取消</button>
+            <button onClick={handleClose} disabled={busy} className="h-9 px-4 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-40">{t("common.cancel")}</button>
             <button onClick={handleSubmit} disabled={busy} className="h-9 px-5 rounded-md bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1">
-              {busy ? <><span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />处理中...</> : "保存"}
+              {busy ? <><span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />{t("initModal.processing")}</> : t("common.save")}
             </button>
           </div>
         </div>

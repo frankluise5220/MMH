@@ -170,6 +170,11 @@ export async function createCreditCardInstallmentPlan(
       rateType: input.rateType,
       rate: input.rate,
       firstStatementMonth: input.firstPaymentStatementMonth,
+      // Schedule rebuild inputs: future payment rows are materialized when due
+      // (materializeDueInstallmentPayments) instead of being pre-generated.
+      billingDay: input.billingDay,
+      firstPaymentDate: input.firstPaymentDate,
+      tagIds: input.tagIds?.length ? JSON.stringify(input.tagIds) : null,
     },
   });
 
@@ -203,47 +208,123 @@ export async function createCreditCardInstallmentPlan(
     });
   }
 
-  for (const row of schedule) {
-    const principalEntry = await tx.txRecord.create({
-      data: {
-        householdId: input.householdId,
-        accountId: input.account.id,
-        accountName: input.account.name,
-        categoryId: input.category?.id ?? null,
-        categoryName: input.category?.name ?? null,
-        amount: -row.principal,
-        type: TransactionType.expense,
-        date: row.date,
-        postedAt: row.date,
-        statementMonth: row.statementMonth,
-        source: "credit_card_installment",
-        creditCardInstallmentPlanId: plan.id,
-        installmentNo: row.installmentNo,
-        installmentTotal: input.totalRuns,
-        installmentPrincipal: row.principal,
-        installmentInterest: 0,
-        installmentRole: "payment",
-        note: `${input.label}（${installmentKindLabel}分期本金 ${row.installmentNo}/${input.totalRuns}，分期日期 ${installmentDateLabel}）`,
-      },
-    });
-    if (input.tagIds?.length) {
-      await attachEntryTags({
-        tx,
-        entryId: principalEntry.id,
-        householdId: input.householdId,
-        tagIds: input.tagIds,
-      });
-    }
+  // Payment rows are NOT pre-generated here. Each installment payment/fee is
+  // materialized by materializeDueInstallmentPayments when its date arrives,
+  // so future-dated records never appear in ordinary record lists.
+  return { plan, schedule };
+}
 
-    if (row.interest > 0) {
-      const feeEntry = await tx.txRecord.create({
+type InstallmentPaymentRow = {
+  installmentNo: number;
+  date: Date;
+  statementMonth: string;
+  principal: number;
+  interest: number;
+};
+
+function parsePlanTagIds(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Materialize due credit-card installment payment rows.
+ *
+ * Payment rows are created lazily: for each active plan, rebuild the schedule
+ * from the stored billing day / first payment date and create the principal
+ * (and fee) rows whose date is on or before `asOfDate` and do not exist yet.
+ * Legacy plans without stored billingDay/firstPaymentDate fall back to the
+ * account billing day and the first statement month + billing day.
+ */
+export async function materializeDueInstallmentPayments(
+  db: InstallmentWriter,
+  input: { householdId: string; accountIds?: string[]; asOfDate?: Date },
+) {
+  const asOf = input.asOfDate ?? new Date();
+  const plans = await db.creditCardInstallmentPlan.findMany({
+    where: {
+      householdId: input.householdId,
+      status: "active",
+      ...(input.accountIds && input.accountIds.length > 0
+        ? { accountId: { in: Array.from(new Set(input.accountIds)) } }
+        : {}),
+    },
+    select: {
+      id: true,
+      accountId: true,
+      sourceType: true,
+      installmentPrincipal: true,
+      totalRuns: true,
+      rateType: true,
+      rate: true,
+      billingDay: true,
+      firstPaymentDate: true,
+      firstStatementMonth: true,
+      tagIds: true,
+      Account: { select: { name: true, billingDay: true } },
+    },
+  });
+  if (plans.length === 0) return { materialized: 0 };
+
+  let materialized = 0;
+  for (const plan of plans) {
+    const billingDay = plan.billingDay ?? plan.Account?.billingDay ?? 1;
+    const firstDate =
+      plan.firstPaymentDate ??
+      new Date(`${plan.firstStatementMonth}-${String(billingDay).padStart(2, "0")}T00:00:00`);
+    const schedule = buildCreditCardInstallmentSchedule({
+      principal: Number(plan.installmentPrincipal),
+      totalRuns: plan.totalRuns,
+      rateType: plan.rateType,
+      rate: Number(plan.rate),
+      billingDay,
+      firstDate,
+    });
+    const dueRows: InstallmentPaymentRow[] = schedule
+      .filter((row) => row.date.getTime() <= asOf.getTime())
+      .map((row) => ({
+        installmentNo: row.installmentNo,
+        date: row.date,
+        statementMonth: toStatementMonth(row.date, billingDay),
+        principal: row.principal,
+        interest: row.interest,
+      }));
+    if (dueRows.length === 0) continue;
+
+    const existing = await db.txRecord.findMany({
+      where: {
+        creditCardInstallmentPlanId: plan.id,
+        deletedAt: null,
+        installmentRole: { in: ["payment", "fee"] },
+      },
+      select: { installmentNo: true, installmentRole: true },
+    });
+    const existingPaymentNos = new Set(
+      existing.filter((entry) => entry.installmentRole === "payment").map((entry) => entry.installmentNo),
+    );
+
+    const tagIds = parsePlanTagIds(plan.tagIds);
+    for (const row of dueRows) {
+      if (existingPaymentNos.has(row.installmentNo)) continue;
+      const label = plan.sourceType === CreditCardInstallmentSourceType.statement
+        ? `${plan.firstStatementMonth} 账单`
+        : "消费分期";
+      const installmentKindLabel = plan.sourceType === CreditCardInstallmentSourceType.statement ? "账单" : "消费";
+      const installmentDateLabel = formatDateUtc(row.date);
+
+      const principalEntry = await db.txRecord.create({
         data: {
           householdId: input.householdId,
-          accountId: input.account.id,
-          accountName: input.account.name,
-          categoryId: input.category?.id ?? null,
-          categoryName: input.category?.name ?? null,
-          amount: -row.interest,
+          accountId: plan.accountId,
+          accountName: plan.Account?.name ?? "",
+          amount: -row.principal,
           type: TransactionType.expense,
           date: row.date,
           postedAt: row.date,
@@ -251,23 +332,47 @@ export async function createCreditCardInstallmentPlan(
           source: "credit_card_installment",
           creditCardInstallmentPlanId: plan.id,
           installmentNo: row.installmentNo,
-          installmentTotal: input.totalRuns,
-          installmentPrincipal: 0,
-          installmentInterest: row.interest,
-          installmentRole: "fee",
-          note: `${input.label}（${installmentKindLabel}分期${input.rateType === "annual_interest" ? "利息" : "手续费"} ${row.installmentNo}/${input.totalRuns}，分期日期 ${installmentDateLabel}）`,
+          installmentTotal: plan.totalRuns,
+          installmentPrincipal: row.principal,
+          installmentInterest: 0,
+          installmentRole: "payment",
+          note: `${label}（${installmentKindLabel}分期本金 ${row.installmentNo}/${plan.totalRuns}，分期日期 ${installmentDateLabel}）`,
         },
       });
-      if (input.tagIds?.length) {
-        await attachEntryTags({
-          tx,
-          entryId: feeEntry.id,
-          householdId: input.householdId,
-          tagIds: input.tagIds,
-        });
+      if (tagIds.length) {
+        await attachEntryTags({ tx: db, entryId: principalEntry.id, householdId: input.householdId, tagIds });
       }
+      materialized += 1;
+
+      if (row.interest > 0) {
+        const feeEntry = await db.txRecord.create({
+          data: {
+            householdId: input.householdId,
+            accountId: plan.accountId,
+            accountName: plan.Account?.name ?? "",
+            amount: -row.interest,
+            type: TransactionType.expense,
+            date: row.date,
+            postedAt: row.date,
+            statementMonth: row.statementMonth,
+            source: "credit_card_installment",
+            creditCardInstallmentPlanId: plan.id,
+            installmentNo: row.installmentNo,
+            installmentTotal: plan.totalRuns,
+            installmentPrincipal: 0,
+            installmentInterest: row.interest,
+            installmentRole: "fee",
+            note: `${label}（${installmentKindLabel}分期${plan.rateType === "annual_interest" ? "利息" : "手续费"} ${row.installmentNo}/${plan.totalRuns}，分期日期 ${installmentDateLabel}）`,
+          },
+        });
+        if (tagIds.length) {
+          await attachEntryTags({ tx: db, entryId: feeEntry.id, householdId: input.householdId, tagIds });
+        }
+        materialized += 1;
+      }
+      existingPaymentNos.add(row.installmentNo);
     }
   }
 
-  return { plan, schedule };
+  return { materialized };
 }

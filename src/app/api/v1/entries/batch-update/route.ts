@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { evaluateArithmeticExpression } from "@/lib/arithmetic-expression";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
@@ -17,33 +18,33 @@ import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/bus
 import { upsertStatementCategoryRuleFromTx } from "@/lib/statement/category-rules";
 
 /**
- * 批量更新交易记录
+ * Batch-updates transaction records.
  *
  * POST {
  *   updates: Array<{
  *     id: string;              // TxRecord.id
  *     date?: string;           // YYYY-MM-DD
- *     postedAt?: string;       // YYYY-MM-DD，可传空字符串清空
+ *     postedAt?: string;       // YYYY-MM-DD, pass empty string to clear
  *     type?: "expense" | "income" | "transfer" | "investment";
- *     amount?: string | number;// 金额（绝对值），会保持原记录方向
- *     inflow?: string | number;// 流入金额，按当前账户视角改为正向流入
- *     outflow?: string | number;// 流出金额，按当前账户视角改为负向流出
- *     account?: string;        // 来源账户 Account.id
- *     toAccount?: string;      // 去向账户 Account.id
- *     categoryId?: string;     // 收支分类 Category.id，可传空字符串清空
- *     institution?: string;    // 收支机构名称/简称，可传空字符串清空
- *     remark?: string;         // 备注，可传空字符串清空
- *     fundConfirmDate?: string;// 确认日期 YYYY-MM-DD，可传空字符串清空
- *     fundArrivalDate?: string;// 到账日期 YYYY-MM-DD，可传空字符串清空
- *     cashAccountId?: string;  // 资金账户 Account.id（按 fundSubtype 自动落到 accountId/toAccountId）
- *     fundAccountId?: string;  // 基金账户 Account.id（按 fundSubtype 自动落到 accountId/toAccountId）
- *     accountName?: string;    // 兼容旧调用：来源账户名称
+ *     amount?: string | number;// amount (absolute value), keeps the original record direction
+ *     inflow?: string | number;// inflow amount, becomes a positive inflow from the current account view
+ *     outflow?: string | number;// outflow amount, becomes a negative outflow from the current account view
+ *     account?: string;        // source account Account.id
+ *     toAccount?: string;      // destination account Account.id
+ *     categoryId?: string;     // income/expense category Category.id, pass empty string to clear
+ *     institution?: string;    // counterparty institution name/short name, pass empty string to clear
+ *     remark?: string;         // note, pass empty string to clear
+ *     fundConfirmDate?: string;// confirm date YYYY-MM-DD, pass empty string to clear
+ *     fundArrivalDate?: string;// arrival date YYYY-MM-DD, pass empty string to clear
+ *     cashAccountId?: string;  // cash account Account.id (lands on accountId/toAccountId by fundSubtype)
+ *     fundAccountId?: string;  // fund account Account.id (lands on accountId/toAccountId by fundSubtype)
+ *     accountName?: string;    // legacy call compat: source account name
  *   }>;
- *   contextAccountId?: string; // 当前明细页账户。批量改“对向账户”时用于保留收入/支出的资金方向。
- *   contextAccountIds?: string[]; // 当前明细页账户范围。信用卡合并账单等多账户视图用于判断哪一侧是当前侧。
+ *   contextAccountId?: string; // current detail page account. Used when batch-editing the counterparty to preserve income/expense fund direction.
+ *   contextAccountIds?: string[]; // current detail page account scope. Multi-account views such as combined credit card bills use it to tell which side is current.
  * }
- *   返回 { ok: true, updatedCount, changed, notFoundIds? }
- *   如果所有 ID 都未匹配到记录，返回 { ok: false, error }
+ *   Response: { ok: true, updatedCount, changed, notFoundIds? }
+ *   If none of the IDs match any record, returns { ok: false, error }
  */
 type BatchUpdateItem = {
   id: string;
@@ -79,12 +80,8 @@ function parseAmountUpdate(raw: string, baseAmountAbs: number) {
   let expr = normalized;
   if (/^[+\-*/]/.test(expr)) expr = `${baseAmountAbs}${expr}`;
 
-  try {
-    const computed = Function(`"use strict"; return (${expr});`)();
-    return typeof computed === "number" && Number.isFinite(computed) ? Math.abs(computed) : null;
-  } catch {
-    return null;
-  }
+  const computed = evaluateArithmeticExpression(expr);
+  return typeof computed === "number" && Number.isFinite(computed) ? Math.abs(computed) : null;
 }
 
 export async function POST(req: NextRequest) {
@@ -100,12 +97,12 @@ export async function POST(req: NextRequest) {
     const contextAccountIdSet = new Set(contextAccountIds.length > 0 ? contextAccountIds : (contextAccountId ? [contextAccountId] : []));
 
     if (!Array.isArray(updates) || updates.length === 0) {
-      return NextResponse.json({ ok: false, error: "没有更新数据" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "BATCH_EMPTY", error: "没有更新数据" }, { status: 400 });
     }
 
     const ids = Array.from(new Set(updates.map((u) => String(u.id ?? "").trim()).filter(Boolean)));
     if (ids.length === 0) {
-      return NextResponse.json({ ok: false, error: "没有有效记录ID" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_RECORD_IDS", error: "没有有效记录ID" }, { status: 400 });
     }
 
     const existingRecords = await prisma.txRecord.findMany({
@@ -192,21 +189,21 @@ export async function POST(req: NextRequest) {
 
       if (item.date !== undefined) {
         const dateValue = String(item.date).trim();
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) return NextResponse.json({ ok: false, error: "日期格式必须是 YYYY-MM-DD" }, { status: 400 });
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) return NextResponse.json({ ok: false, code: "INVALID_DATE", error: "日期格式必须是 YYYY-MM-DD" }, { status: 400 });
         data.date = new Date(`${dateValue}T00:00:00.000Z`);
         changed.push({ id, date: ymd(existing.date), oldValue: ymd(existing.date), newValue: dateValue, field: "date" });
       }
 
       if (item.postedAt !== undefined) {
         const postedAtValue = String(item.postedAt).trim();
-        if (postedAtValue && !/^\d{4}-\d{2}-\d{2}$/.test(postedAtValue)) return NextResponse.json({ ok: false, error: "入账日期格式必须是 YYYY-MM-DD" }, { status: 400 });
+        if (postedAtValue && !/^\d{4}-\d{2}-\d{2}$/.test(postedAtValue)) return NextResponse.json({ ok: false, code: "INVALID_DATE", error: "入账日期格式必须是 YYYY-MM-DD" }, { status: 400 });
         data.postedAt = postedAtValue ? new Date(`${postedAtValue}T00:00:00.000Z`) : null;
         changed.push({ id, date: ymd(existing.date), oldValue: existing.postedAt ? ymd(existing.postedAt) : "", newValue: postedAtValue, field: "postedAt" });
       }
 
       if (item.type !== undefined) {
         const typeValue = String(item.type).trim();
-        if (!validTypes.has(typeValue)) return NextResponse.json({ ok: false, error: `交易类型不正确：${typeValue}` }, { status: 400 });
+        if (!validTypes.has(typeValue)) return NextResponse.json({ ok: false, code: "INVALID_TRANSACTION_TYPE", error: `交易类型不正确：${typeValue}` }, { status: 400 });
         data.type = typeValue;
         changed.push({ id, date: ymd(existing.date), oldValue: existing.type, newValue: typeValue, field: "type" });
       }
@@ -214,7 +211,7 @@ export async function POST(req: NextRequest) {
       if (item.account !== undefined) {
         const accountId = String(item.account).trim();
         const account = accountById.get(accountId);
-        if (!account) return NextResponse.json({ ok: false, error: `来源账户不存在：${accountId}` }, { status: 400 });
+        if (!account) return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: `来源账户不存在：${accountId}` }, { status: 400 });
         data.accountId = account.id;
         data.accountName = account.name;
         balanceAccountIds.add(account.id);
@@ -231,7 +228,7 @@ export async function POST(req: NextRequest) {
       if (item.toAccount !== undefined) {
         const toAccountId = String(item.toAccount).trim();
         const account = accountById.get(toAccountId);
-        if (!account) return NextResponse.json({ ok: false, error: `去向账户不存在：${toAccountId}` }, { status: 400 });
+        if (!account) return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: `去向账户不存在：${toAccountId}` }, { status: 400 });
         const finalTypeForAccountSide = String(data.type ?? existing.type);
         const amountN = Number(existing.amount);
         const amountAbs = Number.isFinite(amountN) ? Math.abs(amountN) : null;
@@ -256,8 +253,8 @@ export async function POST(req: NextRequest) {
           (contextIsTarget || originalCurrentSideWasInflow);
 
         if (finalTypeForAccountSide === TransactionType.transfer && item.account === undefined && keepCurrentAccountAsTransferTarget) {
-          if (!currentAccountId) return NextResponse.json({ ok: false, error: "转账需要保留当前账户" }, { status: 400 });
-          if (account.id === currentAccountId) return NextResponse.json({ ok: false, error: "对向账户不能和当前账户相同" }, { status: 400 });
+          if (!currentAccountId) return NextResponse.json({ ok: false, code: "TRANSFER_NEEDS_CURRENT_ACCOUNT", error: "转账需要保留当前账户" }, { status: 400 });
+          if (account.id === currentAccountId) return NextResponse.json({ ok: false, code: "SAME_ACCOUNT_NOT_ALLOWED", error: "对向账户不能和当前账户相同" }, { status: 400 });
           data.accountId = account.id;
           data.accountName = account.name;
           data.toAccountId = currentAccountId;
@@ -268,7 +265,7 @@ export async function POST(req: NextRequest) {
           changed.push({ id, date: ymd(existing.date), oldValue: existing.accountName ?? "-", newValue: account.name, field: "toAccount" });
         } else {
           if (finalTypeForAccountSide === TransactionType.transfer && currentAccountId && account.id === currentAccountId) {
-            return NextResponse.json({ ok: false, error: "对向账户不能和当前账户相同" }, { status: 400 });
+            return NextResponse.json({ ok: false, code: "SAME_ACCOUNT_NOT_ALLOWED", error: "对向账户不能和当前账户相同" }, { status: 400 });
           }
           data.toAccountId = account.id;
           data.toAccountName = account.name;
@@ -286,7 +283,7 @@ export async function POST(req: NextRequest) {
           changed.push({ id, date: ymd(existing.date), oldValue: existing.categoryName ?? "-", newValue: "", field: "categoryId" });
         } else {
           const category = categoryById.get(categoryId);
-          if (!category) return NextResponse.json({ ok: false, error: `分类不存在：${categoryId}` }, { status: 400 });
+          if (!category) return NextResponse.json({ ok: false, code: "CATEGORY_NOT_FOUND", error: `分类不存在：${categoryId}` }, { status: 400 });
           data.categoryId = category.id;
           data.categoryName = category.name;
           changed.push({ id, date: ymd(existing.date), oldValue: existing.categoryName ?? "-", newValue: category.name, field: "categoryId" });
@@ -316,7 +313,7 @@ export async function POST(req: NextRequest) {
       if (item.fundConfirmDate !== undefined) {
         const value = String(item.fundConfirmDate).trim();
         if (value) {
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return NextResponse.json({ ok: false, error: "确认日期格式必须是 YYYY-MM-DD" }, { status: 400 });
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return NextResponse.json({ ok: false, code: "INVALID_DATE", error: "确认日期格式必须是 YYYY-MM-DD" }, { status: 400 });
           data.fundConfirmDate = new Date(`${value}T00:00:00.000Z`);
         } else {
           data.fundConfirmDate = null;
@@ -327,7 +324,7 @@ export async function POST(req: NextRequest) {
       if (item.fundArrivalDate !== undefined) {
         const value = String(item.fundArrivalDate).trim();
         if (value) {
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return NextResponse.json({ ok: false, error: "到账日期格式必须是 YYYY-MM-DD" }, { status: 400 });
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return NextResponse.json({ ok: false, code: "INVALID_DATE", error: "到账日期格式必须是 YYYY-MM-DD" }, { status: 400 });
           data.fundArrivalDate = new Date(`${value}T00:00:00.000Z`);
         } else {
           data.fundArrivalDate = null;
@@ -344,7 +341,7 @@ export async function POST(req: NextRequest) {
 
         if (cashAccountId) {
           const cashAcc = accountById.get(cashAccountId);
-          if (!cashAcc) return NextResponse.json({ ok: false, error: `资金账户不存在：${cashAccountId}` }, { status: 400 });
+          if (!cashAcc) return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: `资金账户不存在：${cashAccountId}` }, { status: 400 });
           if (isCashOnToSide) {
             data.toAccountId = cashAcc.id;
             data.toAccountName = cashAcc.name;
@@ -360,7 +357,7 @@ export async function POST(req: NextRequest) {
 
         if (fundAccountId) {
           const fundAcc = accountById.get(fundAccountId);
-          if (!fundAcc) return NextResponse.json({ ok: false, error: `基金账户不存在：${fundAccountId}` }, { status: 400 });
+          if (!fundAcc) return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: `基金账户不存在：${fundAccountId}` }, { status: 400 });
           if (isCashOnToSide) {
             data.accountId = fundAcc.id;
             data.accountName = fundAcc.name;
@@ -400,7 +397,7 @@ export async function POST(req: NextRequest) {
             ? Math.max(-effectiveOldN, 0)
             : Math.abs(oldN);
         const absNew = parseAmountUpdate(v, baseAmount);
-        if (absNew == null) return NextResponse.json({ ok: false, error: "金额必须是数字或运算式，如 100、*2、+10、-5、/2" }, { status: 400 });
+        if (absNew == null) return NextResponse.json({ ok: false, code: "INVALID_AMOUNT", error: "金额必须是数字或运算式，如 100、*2、+10、-5、/2" }, { status: 400 });
         const finalTypeForAmount = String(data.type ?? existing.type);
         if (amountField === "amount") {
           const signed = finalTypeForAmount === TransactionType.transfer
@@ -507,7 +504,7 @@ export async function POST(req: NextRequest) {
 
     if (updatedCount === 0) {
       return NextResponse.json(
-        { ok: false, error: `未找到匹配的记录 (IDs: ${ids.slice(0, 3).join(", ")}${ids.length > 3 ? "..." : ""})` },
+        { ok: false, code: "RECORDS_NOT_FOUND", error: `未找到匹配的记录 (IDs: ${ids.slice(0, 3).join(", ")}${ids.length > 3 ? "..." : ""})` },
         { status: 404 }
       );
     }
@@ -657,6 +654,6 @@ export async function POST(req: NextRequest) {
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "更新失败";
-    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "UPDATE_FAILED", error: msg }, { status: 500 });
   }
 }

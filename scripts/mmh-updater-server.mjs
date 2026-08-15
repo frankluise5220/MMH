@@ -12,10 +12,12 @@ const ghcrImage = "ghcr.io/frankluise5220/mmh:latest";
 const daocloudImage = "ghcr.m.daocloud.io/frankluise5220/mmh:latest";
 const dockerproxyImage = "ghcr.dockerproxy.net/frankluise5220/mmh:latest";
 const njuImage = "ghcr.nju.edu.cn/frankluise5220/mmh:latest";
+const fnvpsImage = "fnapp.floatingice.win:5000/frankluise5220/mmh:latest";
 const ghcrUpdaterImage = "ghcr.io/frankluise5220/mmh-updater:latest";
 const daocloudUpdaterImage = "ghcr.m.daocloud.io/frankluise5220/mmh-updater:latest";
 const dockerproxyUpdaterImage = "ghcr.dockerproxy.net/frankluise5220/mmh-updater:latest";
 const njuUpdaterImage = "ghcr.nju.edu.cn/frankluise5220/mmh-updater:latest";
+const fnvpsUpdaterImage = "fnapp.floatingice.win:5000/frankluise5220/mmh-updater:latest";
 const quotedWorkdir = JSON.stringify(workdir);
 
 const imageSources = {
@@ -23,6 +25,7 @@ const imageSources = {
   dockerproxy: { name: "dockerproxy", app: dockerproxyImage, updater: dockerproxyUpdaterImage },
   nju: { name: "NJU", app: njuImage, updater: njuUpdaterImage },
   daocloud: { name: "DaoCloud", app: daocloudImage, updater: daocloudUpdaterImage },
+  fnvps: { name: "FN VPS", app: fnvpsImage, updater: fnvpsUpdaterImage },
 };
 
 const autoImageSourceOrder = ["dockerproxy", "nju", "ghcr", "daocloud"];
@@ -511,6 +514,30 @@ async function scheduleUpdaterRecreate(updaterImage) {
   });
 }
 
+async function waitForAppReady(timeoutMs = 6 * 60 * 1000) {
+  const appUrl = "http://app:7777/";
+  const startedAt = Date.now();
+  let lastError = "";
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      const res = await fetch(appUrl, { signal: controller.signal, cache: "no-store" });
+      clearTimeout(timer);
+      // 任意 <500 的响应都说明应用已开始对外服务（首页、登录页、未授权提示等都算）。
+      if (res.status < 500) return;
+      lastError = `HTTP ${res.status}`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  throw new Error(
+    `应用在 ${Math.round(timeoutMs / 60000)} 分钟内未能启动完成（最后状态：${lastError || "无响应"}）。` +
+      "镜像可能已经拉取成功，请在宿主机执行 sudo docker compose logs --tail 50 app 查看原因。",
+  );
+}
+
 async function startUpdate() {
   if (task.running) return false;
   task = {
@@ -535,6 +562,8 @@ async function startUpdate() {
         void (async () => {
           try {
             await run(composeCommand("up -d --no-deps --force-recreate app"), "重启服务");
+            pushLog("等待应用启动完成...");
+            await waitForAppReady();
             task.status = "completed";
             task.running = false;
             task.currentStep = "完成";

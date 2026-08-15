@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -10,6 +11,19 @@ export async function GET(req: NextRequest) {
 
   if (!accountId) {
     return NextResponse.json({ ok: false, error: "缺少参数" }, { status: 400 });
+  }
+
+  const { hidFilter, user } = await getHouseholdScope();
+  if (!user) {
+    return NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 });
+  }
+  // 校验账户属于当前账簿，避免跨账簿读取持仓/收益
+  const account = await prisma.account.findFirst({
+    where: { id: accountId, ...hidFilter },
+    select: { id: true },
+  });
+  if (!account) {
+    return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
   }
 
   try {

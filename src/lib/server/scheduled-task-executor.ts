@@ -322,25 +322,50 @@ export async function executeNonFundScheduledTaskPlan(params: {
         rollingPreviousRunDate = runDate;
 
         if (parts.principal > 0 || parts.interest > 0) {
-          await tx.txRecord.create({
-            data: {
-              householdId,
-              type: TransactionType.transfer,
-              date: runDate,
-              accountId: cashAcc.id,
-              accountName: cashAcc.name,
-              toAccountId: targetAcc.id,
-              toAccountName: targetAcc.name,
-              amount: -roundLoanMoney(parts.principal + parts.interest),
-              debtPrincipalAmount: Math.abs(parts.principal),
-              debtInterestAmount: Math.abs(parts.interest),
-              debtFeeAmount: 0,
-              realizedProfit: parts.interest > 0 ? -Math.abs(parts.interest) : null,
-              source: "scheduled_task",
-              regularInvestPlanId: plan.id,
-              note: getTaskNote(task.type),
-            },
-          });
+          if (task.autoDebit !== false) {
+            // Auto-debit (mortgage-style): generate the repayment as a cash
+            // transfer from the payment account to the loan account.
+            await tx.txRecord.create({
+              data: {
+                householdId,
+                type: TransactionType.transfer,
+                date: runDate,
+                accountId: cashAcc.id,
+                accountName: cashAcc.name,
+                toAccountId: targetAcc.id,
+                toAccountName: targetAcc.name,
+                amount: -roundLoanMoney(parts.principal + parts.interest),
+                debtPrincipalAmount: Math.abs(parts.principal),
+                debtInterestAmount: Math.abs(parts.interest),
+                debtFeeAmount: 0,
+                realizedProfit: parts.interest > 0 ? -Math.abs(parts.interest) : null,
+                source: "scheduled_task",
+                regularInvestPlanId: plan.id,
+                note: getTaskNote(task.type),
+              },
+            });
+          } else {
+            // Bill-only (consumer loan without auto-debit): generate only a
+            // bill record on the loan side — no cash movement. source
+            // "loan_bill" keeps it out of the debt view's principal/interest
+            // aggregations (it is a bill, not a payment).
+            await tx.txRecord.create({
+              data: {
+                householdId,
+                type: TransactionType.expense,
+                date: runDate,
+                accountId: targetAcc.id,
+                accountName: targetAcc.name,
+                amount: -roundLoanMoney(parts.principal + parts.interest),
+                debtPrincipalAmount: Math.abs(parts.principal),
+                debtInterestAmount: Math.abs(parts.interest),
+                debtFeeAmount: 0,
+                source: "loan_bill",
+                regularInvestPlanId: plan.id,
+                note: `消费贷账单：本期应还 ${roundLoanMoney(parts.principal + parts.interest).toFixed(2)}`,
+              },
+            });
+          }
         }
       } else if (task.type === "transfer") {
         await tx.txRecord.create({

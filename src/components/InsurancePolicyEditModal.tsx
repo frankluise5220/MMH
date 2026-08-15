@@ -1,7 +1,8 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useState } from "react";
 import { DateStepper } from "./DateStepper";
+import { useI18n } from "@/lib/i18n";
 
 type InsurancePolicyEditValue = {
   id: string;
@@ -39,6 +40,7 @@ export function InsurancePolicyEditModal({
   onSaved: (next: InsurancePolicyEditValue) => Promise<void>;
 }) {
   const [draft, setDraft] = useState<InsurancePolicyEditValue | null>(value);
+  const { t } = useI18n();
 
   useEffect(() => {
     setDraft(value);
@@ -50,9 +52,9 @@ export function InsurancePolicyEditModal({
     <div className="app-modal-backdrop z-[1200]">
       <div className="app-modal-panel max-w-xl">
         <div className="modal-header">
-          <div className="text-sm font-semibold text-slate-800">编辑保单</div>
+          <div className="text-sm font-semibold text-slate-800">{t("insurancePolicy.editTitle")}</div>
           <button type="button" onClick={onClose} className="secondary-button h-8 px-2">
-            关闭
+            {t("table.close")}
           </button>
         </div>
 
@@ -66,9 +68,9 @@ export function InsurancePolicyEditModal({
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
             <div className="rounded-lg bg-slate-50/70 px-3 py-2 text-[11px] leading-5 text-slate-500">
               {[
-                meta.name ? `保单：${meta.name}` : "",
-                meta.institutionName ? `承保机构：${meta.institutionName}` : "",
-                meta.ownerName ? `当前投保人：${meta.ownerName}` : "",
+                meta.name ? t("insurancePolicy.policyLine", { name: meta.name }) : "",
+                meta.institutionName ? t("insurancePolicy.institutionLine", { name: meta.institutionName }) : "",
+                meta.ownerName ? t("insurancePolicy.currentOwnerLine", { name: meta.ownerName }) : "",
               ]
                 .filter(Boolean)
                 .join("  ")}
@@ -76,7 +78,7 @@ export function InsurancePolicyEditModal({
 
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
-                <div className="form-label">保单号</div>
+                <div className="form-label">{t("insuranceShell.colPolicyNo")}</div>
                 <input
                   value={draft.policyNo}
                   onChange={(event) => {
@@ -85,11 +87,11 @@ export function InsurancePolicyEditModal({
                     onChange?.(next);
                   }}
                   className="form-input"
-                  placeholder="可选"
+                  placeholder={t("insurancePolicy.optional")}
                 />
               </div>
               <div className="space-y-1">
-                <div className="form-label">生效日期</div>
+                <div className="form-label">{t("insurancePolicy.effectiveDate")}</div>
                 <DateStepper
                   value={draft.effectiveDate}
                   onChange={(value) => {
@@ -101,7 +103,7 @@ export function InsurancePolicyEditModal({
                 />
               </div>
               <div className="space-y-1">
-                <div className="form-label">投保人</div>
+                <div className="form-label">{t("insuranceShell.colPolicyholder")}</div>
                 <select
                   value={draft.policyholderPersonId}
                   onChange={(event) => {
@@ -111,7 +113,7 @@ export function InsurancePolicyEditModal({
                   }}
                   className="form-input"
                 >
-                  <option value="">请选择</option>
+                  <option value="">{t("txForm.selectPlaceholder")}</option>
                   {(familyMemberOptions ?? []).map((item) => (
                     <option key={item.id} value={item.id}>
                       {item.label}
@@ -120,7 +122,7 @@ export function InsurancePolicyEditModal({
                 </select>
               </div>
               <div className="space-y-1">
-                <div className="form-label">被保人</div>
+                <div className="form-label">{t("insuranceShell.colInsured")}</div>
                 <select
                   value={draft.insuredPersonId}
                   onChange={(event) => {
@@ -130,7 +132,7 @@ export function InsurancePolicyEditModal({
                   }}
                   className="form-input"
                 >
-                  <option value="">请选择</option>
+                  <option value="">{t("txForm.selectPlaceholder")}</option>
                   {(familyMemberOptions ?? []).map((item) => (
                     <option key={item.id} value={item.id}>
                       {item.label}
@@ -139,7 +141,7 @@ export function InsurancePolicyEditModal({
                 </select>
               </div>
               <div className="space-y-1">
-                <div className="form-label">缴费年限</div>
+                <div className="form-label">{t("insuranceShell.colPaymentTerm")}</div>
                 <input
                   value={draft.paymentTermYears}
                   onChange={(event) => {
@@ -148,11 +150,11 @@ export function InsurancePolicyEditModal({
                     onChange?.(next);
                   }}
                   className="form-input"
-                  placeholder="例如 20"
+                  placeholder={t("insurancePolicy.termYearsPlaceholder")}
                 />
               </div>
               <div className="space-y-1">
-                <div className="form-label">保额</div>
+                <div className="form-label">{t("insuranceOverview.totalCoverage")}</div>
                 <input
                   value={draft.coverageAmount}
                   onChange={(event) => {
@@ -161,7 +163,7 @@ export function InsurancePolicyEditModal({
                     onChange?.(next);
                   }}
                   className="form-input"
-                  placeholder="例如 1000000"
+                  placeholder={t("insurancePolicy.coveragePlaceholder")}
                 />
               </div>
             </div>
@@ -170,14 +172,14 @@ export function InsurancePolicyEditModal({
           <div className="shrink-0 border-t border-slate-100 bg-white/95 px-4 py-3">
             <div className="flex items-center justify-end gap-2">
               <button type="button" onClick={onClose} className="secondary-button h-9 px-4">
-                取消
+                {t("common.cancel")}
               </button>
               <button
                 type="submit"
                 disabled={saving}
                 className="primary-button h-9 px-4 text-white disabled:opacity-50"
               >
-                {saving ? "保存中..." : "保存"}
+                {saving ? t("insurancePolicy.saving") : t("common.save")}
               </button>
             </div>
           </div>

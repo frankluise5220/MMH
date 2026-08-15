@@ -1,6 +1,7 @@
 "use client";
 
 import { UnifiedEntryLauncher } from "@/components/UnifiedEntryLauncher";
+import { useI18n } from "@/lib/i18n";
 
 export function TopEntryLauncher({
   defaultAction = "transaction",
@@ -19,22 +20,23 @@ export function TopEntryLauncher({
     | "debt"
     | "regular-task";
 }) {
+  const { t } = useI18n();
   return (
     <UnifiedEntryLauncher
       defaultAction={defaultAction}
       actions={[
-        { key: "transaction", label: "收支记账" },
-        { key: "transfer", label: "转账" },
-        { key: "fx", label: "购入外汇" },
-        { key: "investment", label: "基金" },
-        { key: "stock", label: "股票" },
-        { key: "stock-transfer", label: "银证转账" },
-        { key: "wealth", label: "银行理财" },
-        { key: "deposit-buy", label: "存款存入" },
-        { key: "deposit-redeem", label: "存款取出" },
-        { key: "insurance", label: "保险" },
-        { key: "debt", label: "借还款" },
-        { key: "regular-task", label: "计划任务" },
+        { key: "transaction", label: t("basicDetail.guide.entry.title") },
+        { key: "transfer", label: t("transaction.type.transfer") },
+        { key: "fx", label: t("entry.kind.fx") },
+        { key: "investment", label: t("txForm.fund") },
+        { key: "stock", label: t("investment.product.stock") },
+        { key: "stock-transfer", label: t("stockPanel.transfer") },
+        { key: "wealth", label: t("investment.product.wealth") },
+        { key: "deposit-buy", label: t("txForm.depositIn") },
+        { key: "deposit-redeem", label: t("detailView.depositWithdraw") },
+        { key: "insurance", label: t("sidebar.section.insurance") },
+        { key: "debt", label: t("debtTx.borrowRepay") },
+        { key: "regular-task", label: t("nav.scheduledTasks") },
       ]}
       context={{}}
     />

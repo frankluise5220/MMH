@@ -3,6 +3,9 @@
 import { useState } from "react";
 import { SettingsActionButton } from "@/components/settings/SettingsPageScaffold";
 import { notifySettingsDataChanged, type SettingsDataScope } from "@/lib/client/settingsCache";
+import { showConfirmDialog } from "@/lib/client/confirm-dialog";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { useI18n } from "@/lib/i18n";
 
 function scopeForEntity(entity: "accountGroup" | "account" | "institution" | "counterparty" | "category"): SettingsDataScope {
   return entity === "category" ? "categories" : "accounts";
@@ -22,10 +25,16 @@ export function SettingsDeleteButton({
   onDeleted?: () => void;
 }) {
   const [deleting, setDeleting] = useState(false);
+  const { t } = useI18n();
 
   async function onDelete() {
     if (deleting) return;
-    if (!window.confirm(`确认删除「${label}」？删除后不可恢复。`)) return;
+    const confirmed = await showConfirmDialog({
+      title: t("settingsDelete.confirmTitle"),
+      message: t("settingsDelete.confirmMessage", { label }),
+      tone: "danger",
+    });
+    if (!confirmed) return;
 
     setDeleting(true);
     try {
@@ -37,16 +46,16 @@ export function SettingsDeleteButton({
 
       const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
       if (!data?.ok) {
-        window.alert(data?.error ?? "删除失败");
+        window.alert(data?.error ?? t("settingsDelete.deleteFailed"));
         return;
       }
       void notifySettingsDataChanged({ scope: scopeForEntity(entity), reason: `${entity}:delete`, prefetch: true });
       onDeleted?.();
       if (refresh !== false) {
-        window.dispatchEvent(new Event("mmh:fund:refresh"));
+        dispatchFinanceDataChanged({ reason: "settings-entity:delete" });
       }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "删除失败";
+      const msg = e instanceof Error ? e.message : t("settingsDelete.deleteFailed");
       window.alert(msg);
     } finally {
       setDeleting(false);
@@ -55,7 +64,7 @@ export function SettingsDeleteButton({
 
   return (
     <SettingsActionButton
-      label={`删除：${label}`}
+      label={t("settingsDelete.deleteLabel", { label })}
       variant="delete"
       onClick={onDelete}
       disabled={deleting}

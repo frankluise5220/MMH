@@ -7,6 +7,40 @@ import { getHouseholdDisplayName } from "@/lib/household-display";
 
 export const runtime = "nodejs";
 
+// 验证码接口防爆破：按 IP 限制尝试次数（验证码有效期 15 分钟，窗口取相同长度）
+const RESET_ATTEMPT_LIMIT = 10;
+const RESET_ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
+
+declare global {
+  var __passwordResetConfirmAttempts: Map<string, number[]> | undefined;
+}
+
+const resetConfirmAttempts = globalThis.__passwordResetConfirmAttempts ??= new Map<string, number[]>();
+
+function getClientIp(req: NextRequest) {
+  const xf = req.headers.get("x-forwarded-for");
+  if (xf) return xf.split(",")[0]?.trim() || null;
+  const xr = req.headers.get("x-real-ip");
+  if (xr) return xr.trim() || null;
+  return null;
+}
+
+function isResetAttemptLimited(ip: string): boolean {
+  const now = Date.now();
+  const windowStart = now - RESET_ATTEMPT_WINDOW_MS;
+  const recent = (resetConfirmAttempts.get(ip) ?? []).filter((ts) => ts > windowStart);
+  resetConfirmAttempts.set(ip, recent);
+  return recent.length >= RESET_ATTEMPT_LIMIT;
+}
+
+function recordResetAttempt(ip: string) {
+  const now = Date.now();
+  const windowStart = now - RESET_ATTEMPT_WINDOW_MS;
+  const recent = (resetConfirmAttempts.get(ip) ?? []).filter((ts) => ts > windowStart);
+  recent.push(now);
+  resetConfirmAttempts.set(ip, recent);
+}
+
 const BodySchema = z.object({
   username: z.string().min(1).max(80),
   code: z.string().min(4).max(20),
@@ -63,6 +97,12 @@ function hashCode(params: { userId: string; code: string }) {
 }
 
 export async function POST(req: NextRequest) {
+  const ip = getClientIp(req);
+  if (ip && isResetAttemptLimited(ip)) {
+    return NextResponse.json({ ok: false, error: "尝试次数过多，请稍后再试" }, { status: 429 });
+  }
+  recordResetAttempt(ip ?? "unknown");
+
   const body = (await req.json().catch(() => null)) as unknown;
   const parse = BodySchema.safeParse(body);
   if (!parse.success) {

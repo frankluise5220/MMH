@@ -442,6 +442,7 @@ export function buildDebtDetailEntriesViewData({
   const filteredDebtInterestEntries = debtEntriesRaw.filter(
     (entry) =>
       entry.type !== TransactionType.transfer &&
+      String(entry.source ?? "") !== "loan_bill" &&
       (
         selectedDebtAccountIds.has(entry.toAccountId ?? "") ||
         (entry.regularInvestPlanId ? selectedLoanRepaymentPlanIds.has(entry.regularInvestPlanId) : false)
@@ -455,6 +456,7 @@ export function buildDebtDetailEntriesViewData({
   const filteredDebtFeeEntries = debtEntriesRaw.filter(
     (entry) =>
       entry.type !== TransactionType.transfer &&
+      String(entry.source ?? "") !== "loan_bill" &&
       (
         selectedDebtAccountIds.has(entry.toAccountId ?? "") ||
         (entry.regularInvestPlanId ? selectedLoanRepaymentPlanIds.has(entry.regularInvestPlanId) : false)

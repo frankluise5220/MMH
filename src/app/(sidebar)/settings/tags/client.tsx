@@ -14,6 +14,7 @@ import {
   SettingsTh,
 } from "@/components/settings/SettingsPageScaffold";
 import { fetchSettingsTags, getCachedSettingsTags, notifySettingsDataChanged, setSettingsTags } from "@/lib/client/settingsCache";
+import { useI18n } from "@/lib/i18n";
 
 type Tag = {
   id: string;
@@ -34,6 +35,7 @@ export default function SettingsTagsClient({
   initialTags: Tag[];
   initialLoaded?: boolean;
 }) {
+  const { t } = useI18n();
   const [tags, setTags] = useState<Tag[]>(initialTags);
   const [editing, setEditing] = useState<Tag | null>(null);
 
@@ -66,7 +68,7 @@ export default function SettingsTagsClient({
       });
       void notifySettingsDataChanged({ scope: "tags", reason: "tag:delete", prefetch: true });
     }
-    else window.alert(data.error || "删除失败");
+    else window.alert(data.error || t("settings.tags.deleteFailed"));
   }
 
   async function handleSaveTag(input: { id?: string; name: string; color: string }) {
@@ -77,7 +79,7 @@ export default function SettingsTagsClient({
     });
     const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; tag?: Tag } | null;
     if (!res.ok || !data?.ok || !data.tag) {
-      throw new Error(data?.error || "保存失败");
+      throw new Error(data?.error || t("settings.tags.saveFailed"));
     }
     setTags((prev) => {
       const next = input.id
@@ -92,19 +94,19 @@ export default function SettingsTagsClient({
   return (
     <div className="space-y-4">
       <SettingsPageHeader
-        title="标签管理"
-        description="维护流水和业务记录可复用的标签，系统自动添加的标签也会在这里显示和编辑。"
+        title={t("settings.tags.title")}
+        description={t("settings.tags.description")}
         count={tags.length}
-        actions={<SettingsPrimaryAddButton onClick={() => setEditing({ id: "", name: "", color: COLORS[6] })}>新增标签</SettingsPrimaryAddButton>}
+        actions={<SettingsPrimaryAddButton onClick={() => setEditing({ id: "", name: "", color: COLORS[6] })}>{t("settings.tags.add")}</SettingsPrimaryAddButton>}
       />
 
-      <SettingsSection title="标签列表" count={tags.length}>
+      <SettingsSection title={t("settings.tags.listTitle")} count={tags.length}>
         <SettingsTable minWidth={640}>
           <thead className="sticky top-0 z-10">
             <tr>
-              <SettingsTh>标签</SettingsTh>
-              <SettingsTh>颜色</SettingsTh>
-              <SettingsTh align="right">操作</SettingsTh>
+              <SettingsTh>{t("settings.tags.tag")}</SettingsTh>
+              <SettingsTh>{t("settings.tags.color")}</SettingsTh>
+              <SettingsTh align="right">{t("settings.tags.actions")}</SettingsTh>
             </tr>
           </thead>
           <tbody className="text-sm">
@@ -120,12 +122,12 @@ export default function SettingsTagsClient({
                 <SettingsTd align="right">
                   <SettingsRowActions>
                     <SettingsActionButton
-                      label="编辑标签"
+                      label={t("settings.tags.edit")}
                       variant="edit"
                       onClick={() => setEditing(tag)}
                     />
                     <SettingsActionButton
-                      label="删除标签"
+                      label={t("settings.tags.delete")}
                       variant="delete"
                       onClick={() => handleDelete(tag.id)}
                     />
@@ -133,7 +135,7 @@ export default function SettingsTagsClient({
                 </SettingsTd>
               </tr>
             )) : (
-              <SettingsEmptyRow colSpan={3}>暂无标签</SettingsEmptyRow>
+              <SettingsEmptyRow colSpan={3}>{t("settings.tags.empty")}</SettingsEmptyRow>
             )}
           </tbody>
         </SettingsTable>
@@ -162,6 +164,7 @@ function TagEditModal({
   onCancel: () => void;
   onSave: (input: { id?: string; name: string; color: string }) => Promise<void>;
 }) {
+  const { t } = useI18n();
   const [name, setName] = useState(tag?.name ?? "");
   const [color, setColor] = useState(tag?.color || COLORS[6]);
   const [saving, setSaving] = useState(false);
@@ -175,7 +178,7 @@ function TagEditModal({
     try {
       await onSave({ id: tag?.id, name: name.trim(), color });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "保存失败");
+      setError(err instanceof Error ? err.message : t("settings.tags.saveFailed"));
     } finally {
       setSaving(false);
     }
@@ -185,7 +188,7 @@ function TagEditModal({
     <div className="app-modal-backdrop z-[1100]">
       <div className="app-modal-panel max-w-md">
         <div className="modal-header shrink-0">
-          <div className="text-sm font-semibold text-slate-800">{tag ? "编辑标签" : "新增标签"}</div>
+          <div className="text-sm font-semibold text-slate-800">{tag ? t("settings.tags.edit") : t("settings.tags.add")}</div>
           <button type="button" onClick={onCancel} className="secondary-button h-8 px-2">
             <X className="h-4 w-4" />
           </button>
@@ -193,17 +196,17 @@ function TagEditModal({
         <form className="space-y-4 p-4" onSubmit={submit}>
           {error ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{error}</div> : null}
           <label className="block space-y-1">
-            <span className="form-label">名称</span>
+            <span className="form-label">{t("settings.tags.name")}</span>
             <input
               value={name}
               onChange={(event) => setName(event.target.value)}
               autoFocus
               className="form-input"
-              placeholder="输入标签名称"
+              placeholder={t("settings.tags.namePlaceholder")}
             />
           </label>
           <div className="space-y-2">
-            <div className="form-label">颜色</div>
+            <div className="form-label">{t("settings.tags.color")}</div>
             <div className="grid grid-cols-6 gap-2">
               {COLORS.map((item) => (
                 <button
@@ -218,9 +221,9 @@ function TagEditModal({
             </div>
           </div>
           <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
-            <button type="button" onClick={onCancel} className="secondary-button h-9 px-4">取消</button>
+            <button type="button" onClick={onCancel} className="secondary-button h-9 px-4">{t("common.cancel")}</button>
             <button type="submit" disabled={saving || !name.trim()} className="primary-button h-9 px-4 disabled:opacity-50">
-              {saving ? "保存中..." : "保存"}
+              {saving ? t("settings.tags.saving") : t("common.save")}
             </button>
           </div>
         </form>

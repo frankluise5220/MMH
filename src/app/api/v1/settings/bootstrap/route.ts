@@ -51,7 +51,12 @@ export async function GET() {
     await normalizeDefaultCategoryHierarchyForHousehold(prisma, householdId);
     const [{ accounts, groups, institutions, counterparties, categories, tags }, users, baseCurrency] = await Promise.all([
       loadCommonData(hidFilter),
-      prisma.user.findMany({ where: hidFilter, orderBy: { name: "asc" } }),
+      prisma.user.findMany({
+        where: hidFilter,
+        orderBy: { name: "asc" },
+        // 只返回展示字段，绝不外泄 passwordHash
+        select: { id: true, name: true, email: true, role: true, isSystem: true, householdId: true, createdAt: true },
+      }),
       getHouseholdBaseCurrency(householdId),
     ]);
 

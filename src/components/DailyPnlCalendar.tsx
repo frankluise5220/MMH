@@ -2,14 +2,19 @@
 
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { useI18n } from "@/lib/i18n";
 
 type DayPnl = { date: string; mv: number; pnl: number | null };
 type MonthSummary = { month: number; mv: number | null; pnl: number | null };
 
-const WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"];
-const MONTHS = ["1月","2月","3月","4月","5月","6月","7月","8月","9月","10月","11月","12月"];
+const WEEKDAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
+
+function monthLabel(language: string, month: number) {
+  return new Intl.DateTimeFormat(language, { month: "short" }).format(new Date(2000, month - 1, 1));
+}
 
 export function DailyPnlCalendar({ accountId }: { accountId: string }) {
+  const { t, language } = useI18n();
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
@@ -99,7 +104,9 @@ export function DailyPnlCalendar({ accountId }: { accountId: string }) {
 
   const prevFn = viewMode === "year" ? prevYear : prev;
   const nextFn = viewMode === "year" ? nextYear : next;
-  const title = viewMode === "year" ? `${year}年` : `${year}年${MONTHS[month - 1]}`;
+  const title = viewMode === "year"
+    ? t("dailyPnlCalendar.title.year", { year })
+    : t("dailyPnlCalendar.title.month", { year, month: monthLabel(language, month) });
   const summary = viewMode === "year" ? yearTotalPnl : totalPnl;
 
   return (
@@ -120,8 +127,8 @@ export function DailyPnlCalendar({ accountId }: { accountId: string }) {
           </span>
           <select value={viewMode} onChange={e => setViewMode(e.target.value as any)}
             className="h-6 rounded border border-slate-200 bg-white px-1.5 text-[11px] outline-none text-slate-600">
-            <option value="month">月</option>
-            <option value="year">年</option>
+            <option value="month">{t("dailyPnlCalendar.viewMonth")}</option>
+            <option value="year">{t("dailyPnlCalendar.viewYear")}</option>
           </select>
         </div>
       </div>
@@ -130,7 +137,7 @@ export function DailyPnlCalendar({ accountId }: { accountId: string }) {
         {viewMode === "month" ? (
           <>
             <div className="grid grid-cols-7 gap-[1px] mb-[1px]">
-              {WEEKDAYS.map(w => <div key={w} className="text-center text-[11px] text-slate-400 py-0.5">{w}</div>)}
+              {WEEKDAY_KEYS.map(w => <div key={w} className="text-center text-[11px] text-slate-400 py-0.5">{t(`investmentProfitReport.weekday.${w}`)}</div>)}
             </div>
             <div className="grid grid-cols-7 gap-[1px]">
               {monthGrid.map((c, i) => renderDay(c, `md${i}`, c?.date === new Date().toISOString().slice(0, 10)))}
@@ -138,8 +145,8 @@ export function DailyPnlCalendar({ accountId }: { accountId: string }) {
           </>
         ) : (
           <div className="grid grid-cols-4 gap-1.5">
-            {MONTHS.map((lbl, i) => {
-              const m = i + 1;
+            {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => {
+              const lbl = monthLabel(language, m);
               const info = yearMonths.find(x => x.month === m);
               const pnl = info?.pnl ?? null;
               let bg = "bg-slate-50/50", tc = "text-slate-400";

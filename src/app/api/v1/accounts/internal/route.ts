@@ -43,11 +43,11 @@ function withAccountDisplayFields<T extends {
 }
 
 /**
- * 获取账户设置页面所需全部数据（按当前账簿筛选）
+ * Fetches all data needed by the account settings page (filtered by the current household).
  * GET /api/v1/accounts/internal
  *
  * Query:
- * - balances=false 时只返回账户/所有人/机构基础资料，不计算显示余额。
+ * - balances=false returns only account/owner/institution base data without computing display balances.
  */
 export async function GET(request: Request) {
   try {
@@ -68,7 +68,12 @@ export async function GET(request: Request) {
       }),
       prisma.institution.findMany({ where: hidFilter, orderBy: { name: "asc" } }),
       prisma.counterparty.findMany({ where: hidFilter, orderBy: [{ type: "asc" }, { name: "asc" }] }),
-      prisma.user.findMany({ where: hidFilter, orderBy: { name: "asc" } }),
+      prisma.user.findMany({
+        where: hidFilter,
+        orderBy: { name: "asc" },
+        // 只返回展示字段，绝不外泄 passwordHash
+        select: { id: true, name: true, email: true, role: true, isSystem: true, householdId: true, createdAt: true },
+      }),
     ]);
 
     if (!includeBalances) {
@@ -173,7 +178,7 @@ export async function GET(request: Request) {
     });
   } catch (e) {
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : "查询失败" },
+      { ok: false, code: "INTERNAL_ERROR", error: e instanceof Error ? e.message : "查询失败" },
       { status: 500 }
     );
   }

@@ -3,6 +3,7 @@
 import { ChevronDown } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
+import { useI18n } from "@/lib/i18n";
 
 export type HoldingItem = {
   fundCode: string;
@@ -30,10 +31,11 @@ export function HoldingPicker({
   searchText,
   onSearchChange,
   onBlur,
-  placeholder = "输入代码或名称筛选…",
+  placeholder,
   showUnits = false,
 }: Props) {
   const [show, setShow] = useState(false);
+  const { t } = useI18n();
   const inputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; width: number } | null>(null);
@@ -123,7 +125,7 @@ export function HoldingPicker({
           <span className="font-medium">{h.fundCode}</span>{" "}
           <span className="text-slate-600">{h.name}</span>
           {showUnits && h.units != null && (
-            <span className="text-slate-400 ml-1">（{Number(h.units).toFixed(3)}份）</span>
+            <span className="text-slate-400 ml-1">{t("holdingPicker.unitsSuffix", { units: Number(h.units).toFixed(3) })}</span>
           )}
         </button>
       ))}
@@ -133,7 +135,7 @@ export function HoldingPicker({
 
   return (
     <div className="relative space-y-1">
-      <div className="text-xs font-medium text-slate-600">持仓基金</div>
+      <div className="text-xs font-medium text-slate-600">{t("holdingPicker.holdingFunds")}</div>
       <div className="flex gap-1">
         <input
           ref={inputRef}
@@ -142,7 +144,7 @@ export function HoldingPicker({
           onFocus={open}
           onBlur={onBlur}
           onKeyDown={handleKeyDown}
-          placeholder={placeholder}
+          placeholder={placeholder ?? t("holdingPicker.searchPlaceholder")}
           className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
         />
         <button type="button" onClick={() => show ? close() : open()}

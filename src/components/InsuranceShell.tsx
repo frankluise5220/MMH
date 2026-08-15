@@ -1,17 +1,19 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { ArrowDownLeft, ArrowUpRight, Pencil, Plus, Shield, Trash2 } from "lucide-react";
 
 import { formatMoney } from "@/lib/format";
+import { useI18n } from "@/lib/i18n";
 import {
   getInsuranceAction,
   getInsuranceProductName,
   insuranceCashValueDelta,
   type InsuranceAction,
 } from "@/lib/insurance/transaction";
-import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
+import { amountToneClass as amountClass } from "@/lib/client/colors";
 import {
   AdvancedDataTable,
   type AdvancedDataTableColumn,
@@ -146,12 +148,6 @@ type InsuranceProductRow = {
   note?: string | null;
 };
 
-function amountClass(value: number) {
-  if (value > 0) return "text-emerald-700";
-  if (value < 0) return "text-rose-700";
-  return "text-slate-500";
-}
-
 function todayLocalYmd() {
   const now = new Date();
   const local = new Date(now.getTime() - now.getTimezoneOffset() * 60_000);
@@ -178,20 +174,20 @@ function normalizeInsuranceMetricMode(
   return "balance";
 }
 
-function frequencyLabel(months?: number | null) {
-  if (months === 1) return "每月";
-  if (months === 3) return "每季";
-  if (months === 6) return "每半年";
-  if (months === 12) return "每年";
-  if (months === 999999) return "趸交";
+function frequencyLabel(t: (key: string) => string, months?: number | null) {
+  if (months === 1) return t("insuranceShell.frequency.monthly");
+  if (months === 3) return t("insuranceShell.frequency.quarterly");
+  if (months === 6) return t("insuranceShell.frequency.semiannual");
+  if (months === 12) return t("insuranceShell.frequency.annual");
+  if (months === 999999) return t("insuranceShell.frequency.single");
   return "-";
 }
 
-function statusLabel(status?: string | null) {
-  if (status === "matured") return "已满期";
-  if (status === "surrendered") return "已退保";
-  if (status === "lapsed") return "已失效";
-  return "保障中";
+function statusLabel(t: (key: string) => string, status?: string | null) {
+  if (status === "matured") return t("insuranceShell.status.matured");
+  if (status === "surrendered") return t("insuranceShell.status.surrendered");
+  if (status === "lapsed") return t("insuranceShell.status.lapsed");
+  return t("insuranceShell.status.active");
 }
 
 function parseOptionalNumber(input: string) {
@@ -202,6 +198,8 @@ function parseOptionalNumber(input: string) {
 }
 
 function mergeFamilyMemberOptions(
+  t: (key: string) => string,
+  language: string,
   options: SmartSelectOption[],
   people: ReadonlyArray<{ id?: string | null; name?: string | null }>,
 ) {
@@ -213,7 +211,7 @@ function mergeFamilyMemberOptions(
     const normalizedCandidate: SmartSelectOption = {
       ...candidate,
       label: normalizedName,
-      subLabel: "家庭成员",
+      subLabel: t("institution.type.family_member"),
     };
     const existing = byName.get(normalizedName);
     const existingIsSynthetic = existing?.id.startsWith("name:") ?? false;
@@ -234,14 +232,17 @@ function mergeFamilyMemberOptions(
     addOption({
       id: id || `name:${name}`,
       label: name,
-      subLabel: "家庭成员",
+      subLabel: t("institution.type.family_member"),
     });
   }
 
-  return Array.from(byName.values()).sort((a, b) => a.label.localeCompare(b.label, "zh-CN"));
+  return Array.from(byName.values()).sort((a, b) => a.label.localeCompare(b.label, language));
 }
 
-function buildInsuranceEntries(detailEntries: Array<Record<string, unknown>>): InsuranceEntry[] {
+function buildInsuranceEntries(
+  t: (key: string) => string,
+  detailEntries: Array<Record<string, unknown>>,
+): InsuranceEntry[] {
   return detailEntries
     .filter((entry) => entry.source === "insurance")
     .map((entry) => {
@@ -253,10 +254,10 @@ function buildInsuranceEntries(detailEntries: Array<Record<string, unknown>>): I
       const isRedeemEntry = insuranceAction === "refund";
       const typeLabel =
         isRedeemEntry
-          ? "回款"
+          ? t("insuranceShell.entryType.refund")
           : insuranceAction === "additional_premium"
-            ? "保全缴费"
-            : "续期";
+            ? t("insuranceShell.entryType.additionalPremium")
+            : t("insuranceShell.renewal");
       const rawAmount = Number(entry.amount ?? 0);
       const amount = isRedeemEntry ? Math.abs(rawAmount) : -Math.abs(rawAmount);
       const productName = getInsuranceProductName({
@@ -270,7 +271,7 @@ function buildInsuranceEntries(detailEntries: Array<Record<string, unknown>>): I
         ? (entry.toAccountId ? String(entry.toAccountId) : null)
         : (entry.accountId ? String(entry.accountId) : null);
 
-      // 资金账户显示：机构 · 卡名称
+      // Cash account display: institution · card name
       const accountInstitutionName = String(entry.accountInstitutionName ?? "");
       const toAccountInstitutionName = String(entry.toAccountInstitutionName ?? "");
       const rawAccountName = isRedeemEntry
@@ -322,6 +323,7 @@ function buildInsuranceEntries(detailEntries: Array<Record<string, unknown>>): I
 }
 
 function buildInsuranceHoldings(
+  t: (key: string) => string,
   products: InsuranceProductRow[],
   entries: InsuranceEntry[],
 ): InsuranceHolding[] {
@@ -363,8 +365,8 @@ function buildInsuranceHoldings(
       totalPremium,
       lastPremiumAmount: lastPremiumEntry ? Math.abs(lastPremiumEntry.amount) : null,
       status: product.status ?? null,
-      statusLabel: statusLabel(product.status),
-      frequencyLabel: frequencyLabel(product.premiumFrequencyMonths),
+      statusLabel: statusLabel(t, product.status),
+      frequencyLabel: frequencyLabel(t, product.premiumFrequencyMonths),
       paymentTermYears: product.paymentTermYears ?? null,
       coverageTermYears: product.coverageTermYears ?? null,
       institutionId: product.institutionId ?? null,
@@ -404,6 +406,7 @@ function InsuranceEntryRecordsTable({
   onRowDoubleClick: (entry: InsuranceEntry) => void;
   rowActions: (entry: InsuranceEntry) => ReactNode;
 }) {
+  const { t } = useI18n();
   const { selectedIds, setSelection } = useBasicDetailSelection();
   const currentEntryIds = useMemo(() => rows.map((entry) => entry.id), [rows]);
   usePruneBasicDetailSelection(currentEntryIds);
@@ -419,7 +422,7 @@ function InsuranceEntryRecordsTable({
       rows={rows}
       rowKey={(entry) => entry.id}
       minTableWidth={1020}
-      emptyText={hasSelectedHolding ? "这份保单暂时没有关联记录" : "请先选择上方保单"}
+      emptyText={hasSelectedHolding ? t("insuranceShell.emptyRelatedEntries") : t("insuranceShell.selectPolicyFirst")}
       selectable
       fillHeight
       toolbarTitle={toolbarTitle}
@@ -435,9 +438,9 @@ function InsuranceEntryRecordsTable({
           <BasicDetailBatchReplaceButton
             accountOptions={accountOptions}
             fields={["date", "account", "remark"]}
-            targetLabel="投保记录"
+            targetLabel={t("insuranceShell.entriesTitle")}
           />
-          <BasicDetailBatchDeleteButton recordLabel="投保记录" />
+          <BasicDetailBatchDeleteButton recordLabel={t("insuranceShell.entriesTitle")} />
         </>
       }
     />
@@ -489,6 +492,8 @@ export function InsuranceShell({
   const currentHoldingsRef = useRef<InsuranceHolding[]>(holdings);
   const familyMemberOptionsRef = useRef<SmartSelectOption[]>(familyMemberOptions);
 
+  const { t, language } = useI18n();
+
   const currentEntries = refreshedEntries ?? entries;
   const currentHoldings = refreshedHoldings ?? holdings;
 
@@ -528,14 +533,14 @@ export function InsuranceShell({
         return;
       }
 
-      const nextEntries = buildInsuranceEntries(detailData.data.entries);
+      const nextEntries = buildInsuranceEntries(t, detailData.data.entries);
       const nextProducts = (productsData.products as InsuranceProductRow[]).filter(
         (product) => product.accountId === accountId,
       );
       const previousHoldingsById = new Map(
         currentHoldingsRef.current.map((holding) => [holding.id, holding]),
       );
-      const nextHoldings = buildInsuranceHoldings(nextProducts, nextEntries).map((holding) => {
+      const nextHoldings = buildInsuranceHoldings(t, nextProducts, nextEntries).map((holding) => {
         const previous = previousHoldingsById.get(holding.id);
         if (!previous) return holding;
         return {
@@ -557,12 +562,14 @@ export function InsuranceShell({
             .map((item: { id: string; name: string }) => ({
               id: String(item.id),
               label: String(item.name ?? ""),
-              subLabel: "家庭成员",
+              subLabel: t("institution.type.family_member"),
             }))
         : [];
 
       setFamilyMemberOptionsState(
         mergeFamilyMemberOptions(
+          t,
+          language,
           fetchedFamilyOptions.length > 0 ? fetchedFamilyOptions : familyMemberOptionsRef.current,
           nextHoldings.flatMap((holding) => [
             { id: holding.policyholderPersonId, name: holding.ownerName },
@@ -574,14 +581,14 @@ export function InsuranceShell({
       setRefreshedEntries(nextEntries);
       setRefreshedHoldings(nextHoldings);
     } catch {}
-  }, [accountId]);
+  }, [accountId, t, language]);
 
   const linkInsuranceCashFlow = useCallback(async (entry: InsuranceEntry) => {
     const id = String(entry.id ?? "").trim();
     if (!id || linkingIds.has(id)) return;
     const businessTransactionId = String(entry.businessTransactionId ?? "").trim();
     if (!businessTransactionId) {
-      window.alert("这条保险记录缺少业务记录 ID，无法自动建立关联");
+      window.alert(t("insuranceShell.missingBusinessId"));
       return;
     }
     setLinkingIds((prev) => new Set(prev).add(id));
@@ -592,11 +599,11 @@ export function InsuranceShell({
         body: JSON.stringify({ businessType: "insurance", businessTransactionId }),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok || !data?.ok) throw new Error(data?.error ?? "建立关联失败");
+      if (!res.ok || !data?.ok) throw new Error(data?.error ?? t("insuranceShell.linkFailed"));
       await refreshInsuranceData();
       dispatchFinanceDataChanged({ reason: "insurance-link-cash-flow", accountIds: [accountId], entryIds: [data.data?.cashEntryId, id].filter(Boolean) });
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "建立关联失败");
+      window.alert(error instanceof Error ? error.message : t("insuranceShell.linkFailed"));
     } finally {
       setLinkingIds((prev) => {
         const next = new Set(prev);
@@ -604,7 +611,7 @@ export function InsuranceShell({
         return next;
       });
     }
-  }, [accountId, linkingIds, refreshInsuranceData]);
+  }, [accountId, linkingIds, t, refreshInsuranceData]);
 
   useEffect(() => {
     setRefreshedEntries(null);
@@ -614,7 +621,7 @@ export function InsuranceShell({
 
   useEffect(() => {
     setFamilyMemberOptionsState((previous) =>
-      mergeFamilyMemberOptions(familyMemberOptions, [
+      mergeFamilyMemberOptions(t, language, familyMemberOptions, [
         ...previous.map((item) => ({ id: item.id, name: item.label })),
         ...currentHoldings.flatMap((holding) => [
           { id: holding.policyholderPersonId, name: holding.ownerName },
@@ -626,11 +633,14 @@ export function InsuranceShell({
   }, [currentHoldings, familyMemberOptions]);
 
   useEffect(() => {
-    const handler = () => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ balanceChanged?: boolean }>).detail;
+      // Remark-only edits do not change holdings: skip the shell refresh.
+      if (detail?.balanceChanged === false) return;
       void refreshInsuranceData();
     };
-    window.addEventListener("mmh:fund:refresh", handler);
-    return () => window.removeEventListener("mmh:fund:refresh", handler);
+    window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
+    return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
   }, [refreshInsuranceData]);
 
   useEffect(() => {
@@ -685,10 +695,12 @@ export function InsuranceShell({
           .map((item: { id: string; name: string }) => ({
             id: String(item.id),
             label: String(item.name ?? ""),
-            subLabel: "家庭成员",
+            subLabel: t("institution.type.family_member"),
           }));
         setFamilyMemberOptionsState((prev) =>
           mergeFamilyMemberOptions(
+            t,
+            language,
             nextOptions,
             prev.map((item) => ({ id: item.id, name: item.label })),
           ),
@@ -728,8 +740,8 @@ export function InsuranceShell({
             .filter((item) => item.id && item.label)
             .map((item) => [item.id, item] as const),
         ).values(),
-      ).sort((a, b) => a.label.localeCompare(b.label, "zh-CN")),
-    [currentHoldings],
+      ).sort((a, b) => a.label.localeCompare(b.label, language)),
+    [currentHoldings, language],
   );
 
   const visibleEntries = useMemo(() => {
@@ -786,7 +798,7 @@ export function InsuranceShell({
   const holdingSummaryRow = useMemo<AdvancedDataTableSummaryRow>(
     () => ({
       cells: {
-        name: <span className="font-semibold text-slate-800">汇总</span>,
+        name: <span className="font-semibold text-slate-800">{t("debtShell.summaryRow")}</span>,
         totalPremium: (
           <span className="font-semibold tabular-nums text-slate-800">
             {formatMoney(holdingSummary.totalPremium)}
@@ -805,13 +817,13 @@ export function InsuranceShell({
       },
       rowClassName: "bg-slate-50/80",
     }),
-    [holdingSummary],
+    [holdingSummary, t],
   );
 
   async function savePolicyEdit(next: InsurancePolicyEditValue) {
     const holding = currentHoldings.find((item) => item.id === next.id);
     if (!holding) {
-      window.alert("保单不存在");
+      window.alert(t("insuranceShell.policyNotFound"));
       return;
     }
 
@@ -848,13 +860,13 @@ export function InsuranceShell({
         | { ok?: boolean; error?: string }
         | null;
       if (!response.ok || !data?.ok) {
-        throw new Error(data?.error || "保存保单失败");
+        throw new Error(data?.error || t("insuranceShell.savePolicyFailed"));
       }
       setPolicyEditValue(null);
       setPolicyEditMeta(null);
       dispatchFinanceDataChanged({ reason: "insurance-policy-save", accountIds: [accountId] });
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "保存保单失败");
+      window.alert(error instanceof Error ? error.message : t("insuranceShell.savePolicyFailed"));
     } finally {
       setSavingPolicy(false);
     }
@@ -876,7 +888,7 @@ export function InsuranceShell({
       });
       const data = (await response.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
       if (!response.ok || !data?.ok) {
-        throw new Error(data?.error || "删除保单失败");
+        throw new Error(data?.error || t("insuranceShell.deletePolicyFailed"));
       }
       setDeletePolicyValue(null);
       setPolicyEditValue(null);
@@ -884,7 +896,7 @@ export function InsuranceShell({
       setSelectedHoldingId(null);
       dispatchFinanceDataChanged({ reason: "insurance-policy-delete", accountIds: [accountId] });
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "删除保单失败");
+      window.alert(error instanceof Error ? error.message : t("insuranceShell.deletePolicyFailed"));
     } finally {
       setDeletingPolicy(false);
     }
@@ -893,7 +905,7 @@ export function InsuranceShell({
   async function saveProductEdit(next: InsuranceProductEditValue) {
     const holding = currentHoldings.find((item) => item.id === next.id);
     if (!holding) {
-      window.alert("保险产品不存在");
+      window.alert(t("insuranceShell.productNotFound"));
       return;
     }
 
@@ -911,12 +923,12 @@ export function InsuranceShell({
       });
       const data = (await response.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
       if (!response.ok || !data?.ok) {
-        throw new Error(data?.error || "保存保险产品失败");
+        throw new Error(data?.error || t("insuranceShell.saveProductFailed"));
       }
       setProductEditValue(null);
       dispatchFinanceDataChanged({ reason: "insurance-product-save", accountIds: [accountId] });
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "保存保险产品失败");
+      window.alert(error instanceof Error ? error.message : t("insuranceShell.saveProductFailed"));
     } finally {
       setSavingProduct(false);
     }
@@ -926,7 +938,7 @@ export function InsuranceShell({
     () => [
       {
         key: "name",
-        label: "保单名称",
+        label: t("insuranceShell.colPolicyName"),
         width: 240,
         minWidth: 160,
         filterText: (holding) => holding.label,
@@ -939,7 +951,7 @@ export function InsuranceShell({
       },
       {
         key: "policyNo",
-        label: "保单号",
+        label: t("insuranceShell.colPolicyNo"),
         width: 140,
         minWidth: 96,
         hideable: true,
@@ -952,7 +964,7 @@ export function InsuranceShell({
       },
       {
         key: "insuredPersonName",
-        label: "被保人",
+        label: t("insuranceShell.colInsured"),
         width: 110,
         minWidth: 84,
         hideable: true,
@@ -964,7 +976,7 @@ export function InsuranceShell({
       },
       {
         key: "ownerName",
-        label: "投保人",
+        label: t("insuranceShell.colPolicyholder"),
         width: 110,
         minWidth: 84,
         hideable: true,
@@ -976,7 +988,7 @@ export function InsuranceShell({
       },
       {
         key: "startDate",
-        label: "开始投保",
+        label: t("insuranceShell.colStartDate"),
         width: 112,
         minWidth: 88,
         hideable: true,
@@ -988,20 +1000,22 @@ export function InsuranceShell({
       },
       {
         key: "paymentTerm",
-        label: "缴费年限",
+        label: t("insuranceShell.colPaymentTerm"),
         width: 96,
         minWidth: 74,
         align: "right",
         hideable: true,
         render: (holding) => (
           <span className="tabular-nums text-slate-600">
-            {holding.paymentTermYears != null ? `${holding.paymentTermYears} 年` : "-"}
+            {holding.paymentTermYears != null
+              ? t("insuranceShell.paymentYears", { years: holding.paymentTermYears })
+              : "-"}
           </span>
         ),
       },
       {
         key: "lastPremiumAmount",
-        label: "末次缴费金额",
+        label: t("insuranceShell.colLastPremium"),
         width: 128,
         minWidth: 100,
         align: "right",
@@ -1015,7 +1029,7 @@ export function InsuranceShell({
       },
       {
         key: "totalPremium",
-        label: "保费合计",
+        label: t("insuranceShell.colTotalPremium"),
         width: 120,
         minWidth: 92,
         align: "right",
@@ -1028,7 +1042,7 @@ export function InsuranceShell({
       },
       {
         key: "cashValue",
-        label: "现金价值余额",
+        label: t("insuranceShell.colCashValue"),
         width: 140,
         minWidth: 108,
         align: "right",
@@ -1040,7 +1054,7 @@ export function InsuranceShell({
       },
       {
         key: "coverageAmount",
-        label: "保额",
+        label: t("insuranceOverview.totalCoverage"),
         width: 120,
         minWidth: 92,
         align: "right",
@@ -1086,8 +1100,8 @@ export function InsuranceShell({
                   ownerName: holding.ownerName ?? null,
                 });
               }}
-              title="编辑按钮"
-              aria-label="编辑按钮"
+              title={t("insuranceShell.editButton")}
+              aria-label={t("insuranceShell.editButton")}
             >
               <Pencil className="h-3.5 w-3.5" />
             </button>
@@ -1103,8 +1117,8 @@ export function InsuranceShell({
                   relatedEntryCount: holding.relatedEntryIds.length,
                 });
               }}
-              title="删除按钮"
-              aria-label="删除按钮"
+              title={t("depositShell.deleteButton")}
+              aria-label={t("depositShell.deleteButton")}
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>
@@ -1112,14 +1126,14 @@ export function InsuranceShell({
         ),
       },
     ],
-    [],
+    [t],
   );
 
   const entryColumns = useMemo<AdvancedDataTableColumn<InsuranceEntry>[]>(
     () => [
       {
         key: "date",
-        label: "日期",
+        label: t("detail.column.date"),
         width: 100,
         minWidth: 80,
         filterText: (entry) => entry.date,
@@ -1127,7 +1141,7 @@ export function InsuranceShell({
       },
       {
         key: "action",
-        label: "动作",
+        label: t("depositShell.colAction"),
         width: 90,
         minWidth: 70,
         filterText: (entry) => entry.typeLabel,
@@ -1144,7 +1158,7 @@ export function InsuranceShell({
       },
       {
         key: "product",
-        label: "保险名称",
+        label: t("insuranceShell.colInsuranceName"),
         width: 220,
         minWidth: 140,
         filterText: (entry) => entry.productName,
@@ -1156,7 +1170,7 @@ export function InsuranceShell({
       },
       {
         key: "cashAccount",
-        label: "资金账户",
+        label: t("txForm.cashAccount"),
         width: 180,
         minWidth: 120,
         hideable: true,
@@ -1169,7 +1183,7 @@ export function InsuranceShell({
       },
       {
         key: "amount",
-        label: "金额",
+        label: t("stats.amount"),
         width: 120,
         minWidth: 90,
         align: "right",
@@ -1181,7 +1195,7 @@ export function InsuranceShell({
       },
       {
         key: "note",
-        label: "备注",
+        label: t("detail.column.remark"),
         width: 280,
         minWidth: 140,
         hideable: true,
@@ -1193,7 +1207,7 @@ export function InsuranceShell({
         ),
       },
     ],
-    [],
+    [t],
   );
 
   return (
@@ -1202,8 +1216,8 @@ export function InsuranceShell({
         storageKey="mmh:insurance:split-height"
         hasLowerPane={!!selectedHolding}
         defaultUpperHeight={360}
-        separatorLabel="调整保单列表和投保记录高度"
-        separatorTitle="拖动调整保单列表和投保记录高度"
+        separatorLabel={t("insuranceShell.resizeLabel")}
+        separatorTitle={t("insuranceShell.resizeTitle")}
       >
         <section className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
           <div className="min-h-0 flex-1">
@@ -1213,14 +1227,14 @@ export function InsuranceShell({
               rows={visibleHoldings}
               rowKey={(holding) => holding.id}
               minTableWidth={1120}
-              emptyText="暂无保单"
+              emptyText={t("insuranceShell.emptyHoldings")}
               showFilters={false}
               showColumnVisibilityButton
               fillHeight
               toolbarTitle={
                 <span className="inline-flex items-center gap-2">
                   <Shield className="h-4 w-4 text-cyan-600" />
-                  保单列表
+                  {t("insuranceShell.holdingsTitle")}
                 </span>
               }
               toolbarRightContent={
@@ -1234,7 +1248,7 @@ export function InsuranceShell({
                     }}
                     className="h-3.5 w-3.5 rounded border-slate-300"
                   />
-                  仅保障中
+                  {t("insuranceShell.activeOnly")}
                 </label>
               }
               summaryRow={holdingSummaryRow}
@@ -1274,7 +1288,7 @@ export function InsuranceShell({
                 toolbarTitle={
                   <span className="inline-flex items-center gap-2">
                     <Shield className="h-4 w-4 text-blue-500" />
-                    投保记录
+                    {t("insuranceShell.entriesTitle")}
                   </span>
                 }
                 toolbarRightContent={
@@ -1283,32 +1297,32 @@ export function InsuranceShell({
                       href={`/?accountId=${encodeURIComponent(accountId)}&view=detail&detailAll=1`}
                       className="secondary-button h-7 px-2 text-xs"
                     >
-                      全部交易
+                      {t("insuranceShell.allTransactions")}
                     </Link>
                     <button
                       type="button"
                       className="secondary-button h-7 gap-1.5 px-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
                       disabled={!selectedHolding}
                       onClick={() => openInsurancePaymentModal("premium")}
-                      title={selectedHolding ? "给当前保单手动记录一次续期保费" : "请先选择上方保单"}
+                      title={selectedHolding ? t("insuranceShell.renewalTitle") : t("insuranceShell.selectPolicyFirst")}
                     >
                       <Plus className="h-3.5 w-3.5" />
-                      续期
+                      {t("insuranceShell.renewal")}
                     </button>
                     <button
                       type="button"
                       className="secondary-button h-7 gap-1.5 px-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
                       disabled={!selectedHolding}
                       onClick={() => openInsurancePaymentModal("additional_premium")}
-                      title={selectedHolding ? "对当前保单追加保全保费" : "请先选择上方保单"}
+                      title={selectedHolding ? t("insuranceShell.additionalPremiumTitle") : t("insuranceShell.selectPolicyFirst")}
                     >
                       <Plus className="h-3.5 w-3.5" />
-                      追加
+                      {t("insuranceShell.addPremium")}
                     </button>
                     <div className="text-xs text-slate-400">
                       {selectedHolding
-                        ? `当前显示 ${visibleEntries.length} 条关联记录`
-                        : "请先选择上方保单"}
+                        ? t("depositShell.entryCountHint", { count: visibleEntries.length })
+                        : t("insuranceShell.selectPolicyFirst")}
                     </div>
                   </>
                 }
@@ -1320,8 +1334,10 @@ export function InsuranceShell({
                   const hasBusinessLink = (entry.businessLinkCount ?? 0) > 0;
                   const labels = entry.businessLinkLabels ?? [];
                   const title = hasBusinessLink
-                    ? `已关联：${labels.join("、") || "业务记录"}`
-                    : "未关联，点击建立资金侧关联";
+                    ? t("depositShell.linkedTitle", {
+                        labels: labels.join("、") || t("depositShell.businessRecord"),
+                      })
+                    : t("depositShell.unlinkedTitle");
                   return (
                     <>
                       <BusinessLinkActionButton
@@ -1365,7 +1381,7 @@ export function InsuranceShell({
         onDelete={async (password) => {
           if (!deletePolicyValue) return;
           if (deletePolicyValue.relatedEntryCount > 0 && !password.trim()) {
-            window.alert("请输入密码后再删除");
+            window.alert(t("insuranceShell.passwordRequired"));
             return;
           }
           await deletePolicyById(deletePolicyValue, password);

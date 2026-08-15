@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Pencil, Trash2 } from "lucide-react";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { useI18n } from "@/lib/i18n";
 
 export type EditPayload = {
   requestId?: string;
@@ -126,6 +127,7 @@ export function EntryRowActions({
   customEditEvent?: { name: string; detail: Record<string, unknown> };
 }) {
   const [deleting, setDeleting] = useState(false);
+  const { t } = useI18n();
   const actionButtonClass = "flex h-6 w-6 items-center justify-center rounded border bg-white transition-colors disabled:opacity-50";
 
   function onEdit() {
@@ -139,11 +141,11 @@ export function EntryRowActions({
     try {
       const data = await deleteEntriesWithLinkedPrompt({
         entryIds: [entryId],
-        confirmMessage: "确认删除这条记录吗？删除后可使用左侧栏的撤销按钮恢复。",
+        confirmMessage: t("entryRowActions.deleteConfirm"),
       });
       if (!data?.ok) {
         if (data?.error === "已取消删除") return;
-        throw new Error(data?.error ?? "删除失败");
+        throw new Error(data?.error ?? t("entryRowActions.deleteFailed"));
       }
       const refreshEntryIds = getDeleteRefreshEntryIds(data, [entryId]);
       dispatchFinanceDataChanged({ reason: "entry-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
@@ -152,9 +154,9 @@ export function EntryRowActions({
       const msg =
         e instanceof Error
           ? e.name === "AbortError"
-            ? "请求超时：删除接口无响应"
+            ? t("entryRowActions.timeout")
             : e.message
-          : "删除失败";
+          : t("entryRowActions.deleteFailed");
       window.alert(msg);
     } finally {
       setDeleting(false);
@@ -168,8 +170,8 @@ export function EntryRowActions({
           className={`${actionButtonClass} border-slate-200 text-slate-700 hover:bg-slate-50`}
           type="button"
           onClick={onEdit}
-          title="编辑按钮"
-          aria-label="编辑按钮"
+          title={t("insuranceShell.editButton")}
+          aria-label={t("insuranceShell.editButton")}
         >
           <Pencil className="h-3.5 w-3.5" />
         </button>
@@ -179,8 +181,8 @@ export function EntryRowActions({
         disabled={deleting}
         type="button"
         onClick={onDelete}
-        title={deleting ? "删除中…" : "删除按钮"}
-        aria-label={deleting ? "删除中…" : "删除按钮"}
+        title={deleting ? t("ledgerSwitch.deleting") : t("depositShell.deleteButton")}
+        aria-label={deleting ? t("ledgerSwitch.deleting") : t("depositShell.deleteButton")}
       >
         <Trash2 className="h-3.5 w-3.5" />
       </button>

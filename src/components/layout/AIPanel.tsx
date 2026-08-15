@@ -8,6 +8,7 @@ import { formatMoney } from "@/lib/format";
 import { CHANNEL_TYPES, getModelsUrl } from "@/lib/ai/config";
 import { callDeleteEntries, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { TableColumnFilter } from "@/components/TableColumnFilter";
 import {
   APP_PREFS_EVENT,
@@ -563,17 +564,22 @@ export function AIPanel({
         }
         let data = await callDeleteEntries({ entryIds });
         if (!data.ok && data.needConfirm) {
-          const deleteBusiness = window.confirm(
-            "这些记录关联了保险/基金/理财/存款等业务明细。\n\n" +
-            "选择「确定」：同时删除资金流水和业务明细。\n" +
-            "选择「取消」：不删除业务明细，下一步再确认是否仅移除资金流水。",
-          );
+          const deleteBusiness = await showConfirmDialog({
+            title: "删除关联业务明细",
+            message:
+              "这些记录关联了保险/基金/理财/存款等业务明细。\n\n" +
+              "选择「确定」：同时删除资金流水和业务明细。\n" +
+              "选择「取消」：不删除业务明细，下一步再确认是否仅移除资金流水。",
+            tone: "danger",
+          });
           if (!deleteBusiness) {
-            const keepBusiness = window.confirm(
-              "是否只从资金账户流水中移除，并保留关联业务明细？\n\n" +
-              "选择「确定」：保留业务明细。\n" +
-              "选择「取消」：放弃本次删除。",
-            );
+            const keepBusiness = await showConfirmDialog({
+              title: "仅移除资金流水",
+              message:
+                "是否只从资金账户流水中移除，并保留关联业务明细？\n\n" +
+                "选择「确定」：保留业务明细。\n" +
+                "选择「取消」：放弃本次删除。",
+            });
             if (!keepBusiness) {
               setMessages((m) => [...m, { role: "assistant", text: "已取消删除。" }]);
               setConfirmDialog(null);

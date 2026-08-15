@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
   const type = typeof body?.type === "string" ? body.type.trim() : "person";
 
   if (!name) {
-    return NextResponse.json({ ok: false, error: "往来对象名称不能为空" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "NAME_REQUIRED", error: "往来对象名称不能为空" }, { status: 400 });
   }
 
   const { householdId } = await getHouseholdScope();
@@ -43,12 +43,12 @@ export async function POST(req: NextRequest) {
     });
   } catch (error) {
     if (isCounterpartyNameUniqueError(error)) {
-      return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
+      return NextResponse.json({ ok: false, code: "COUNTERPARTY_NAME_CONFLICT", error: error.message }, { status: error.status });
     }
     if (isInstitutionNameUniqueError(error)) {
-      return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
+      return NextResponse.json({ ok: false, code: "INSTITUTION_NAME_CONFLICT", error: error.message }, { status: error.status });
     }
-    return NextResponse.json({ ok: false, error: "创建失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: "创建失败" }, { status: 500 });
   }
 
   revalidateAfterSettingsChange();

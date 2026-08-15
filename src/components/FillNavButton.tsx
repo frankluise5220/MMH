@@ -1,7 +1,8 @@
-﻿"use client";
+"use client";
 
 import { useState, useTransition } from "react";
 import { DatabaseZap } from "lucide-react";
+import { useI18n } from "@/lib/i18n";
 
 export function FillNavButton({
   entryId,
@@ -16,6 +17,7 @@ export function FillNavButton({
 }) {
   const [pending, startTransition] = useTransition();
   const [done, setDone] = useState(false);
+  const { t } = useI18n();
 
   async function fill() {
     const formData = new FormData();
@@ -26,7 +28,7 @@ export function FillNavButton({
         if (action) {
           const data = await action(formData);
           if (!data.ok) {
-            window.alert(data.error ?? "获取失败");
+            window.alert(data.error ?? t("fillNav.fetchFailed"));
             return;
           }
           setDone(true);
@@ -43,7 +45,7 @@ export function FillNavButton({
         });
         const data = await res.json();
         if (!res.ok || !data.ok) {
-          window.alert(data.error ?? "补填失败");
+          window.alert(data.error ?? t("fillNav.backfillFailed"));
           return;
         }
         setDone(true);
@@ -51,12 +53,12 @@ export function FillNavButton({
           onFilled({ nav: data.nav, confirmDate: data.confirmDate ?? "", units: data.units ?? 0 });
         }
       } catch (e) {
-        window.alert(e instanceof Error ? e.message : "获取失败");
+        window.alert(e instanceof Error ? e.message : t("fillNav.fetchFailed"));
       }
     });
   }
 
-  if (done) return <span className="text-xs text-emerald-600">已获取</span>;
+  if (done) return <span className="text-xs text-emerald-600">{t("fillNav.fetched")}</span>;
 
   return (
     <button
@@ -64,8 +66,8 @@ export function FillNavButton({
       onClick={fill}
       disabled={pending}
       className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100 disabled:opacity-50"
-      title="获取净值"
-      aria-label={'获取基金 ' + fundCode + ' 净值'}
+      title={t("fillNav.fetchNavTitle")}
+      aria-label={t("fillNav.fetchFundAria", { code: fundCode })}
     >
       <DatabaseZap className={"h-3.5 w-3.5 shrink-0" + (pending ? " animate-pulse" : "")} />
     </button>

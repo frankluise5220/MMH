@@ -246,7 +246,16 @@ async function validateReferencedOwnership(data: Record<string, unknown>, househ
 
 async function requireScope(req: Request) {
   try {
-    return await getApiHouseholdScope(req);
+    const scope = await getApiHouseholdScope(req);
+    // Agent DB API 属于管理能力：会话 cookie 方式登录时必须是管理员
+    // （API Key 路径本身即管理员密码验证，天然满足）
+    if (scope.user && !(scope.user.role === "admin" || scope.user.isSystem === true)) {
+      return NextResponse.json(
+        { ok: false, error: "仅管理员可访问数据库 API" },
+        { status: 403, headers: corsHeaders() },
+      );
+    }
+    return scope;
   } catch (e) {
     return NextResponse.json(
       { ok: false, error: e instanceof Error ? e.message : "未授权" },

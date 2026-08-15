@@ -5,7 +5,7 @@
  * - { accountId: string; entryId: string; direction: "up" | "down" }
  * - { accountId: string; entryId: string; targetEntryId: string; targetPosition?: "before" | "after" }
  * - { accountId: string; accountIds: string[]; entryId: string; targetEntryId: string; targetPosition?: "before" | "after" }
- * Response: { ok: true, changed: boolean, orderedEntryIds: string[], runningBalances?: Record<string, number> } | { ok: false, error }
+ * Response: { ok: true, changed: boolean, orderedEntryIds: string[], runningBalances?: Record<string, number> } | { ok: false, code, error }
  *
  * Reorders ordinary TxRecord rows within the same displayed local date for one
  * account detail view. It never moves balance anchors; those remain end-of-day
@@ -93,7 +93,7 @@ export async function POST(req: Request) {
     const direction = String(body?.direction ?? "").trim() as Direction;
 
     if (!accountId || !entryId || (!targetEntryId && direction !== "up" && direction !== "down")) {
-      return NextResponse.json({ ok: false, error: "参数不完整" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_PARAMS", error: "参数不完整" }, { status: 400 });
     }
     const accountIdsRaw = Array.isArray(body?.accountIds) ? body.accountIds : [];
     const scopeAccountIds = Array.from(new Set([
@@ -133,10 +133,10 @@ export async function POST(req: Request) {
     });
     const target = targetRows[0] ?? null;
     if (!target) {
-      return NextResponse.json({ ok: false, error: "记录不存在" }, { status: 404 });
+      return NextResponse.json({ ok: false, code: "ENTRY_NOT_FOUND", error: "记录不存在" }, { status: 404 });
     }
     if (isBalanceAnchor(target)) {
-      return NextResponse.json({ ok: false, error: "余额校准记录固定在当天末尾，不能手动移动" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "BALANCE_ANCHOR_NOT_MOVABLE", error: "余额校准记录固定在当天末尾，不能手动移动" }, { status: 400 });
     }
 
     const rows = await prisma.txRecord.findMany({
@@ -183,14 +183,14 @@ export async function POST(req: Request) {
 
     const currentIndex = sameDayRows.findIndex((row) => row.id === entryId);
     if (currentIndex < 0) {
-      return NextResponse.json({ ok: false, error: "记录不在当前账户的同日列表中" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "ENTRY_NOT_IN_DAY_LIST", error: "记录不在当前账户的同日列表中" }, { status: 400 });
     }
 
     let reorderedRows = [...sameDayRows];
     if (targetEntryId) {
       const targetIndex = sameDayRows.findIndex((row) => row.id === targetEntryId);
       if (targetIndex < 0) {
-        return NextResponse.json({ ok: false, error: "只能在同一天记录内调整顺序" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "REORDER_WITHIN_DAY_ONLY", error: "只能在同一天记录内调整顺序" }, { status: 400 });
       }
       if (targetIndex === currentIndex) {
         return NextResponse.json({ ok: true, changed: false, orderedEntryIds: sameDayRows.map((row) => row.id) });
@@ -199,7 +199,7 @@ export async function POST(req: Request) {
       const [moving] = reorderedRows.splice(currentIndex, 1);
       const targetIndexAfterRemoval = reorderedRows.findIndex((row) => row.id === targetEntryId);
       if (targetIndexAfterRemoval < 0) {
-        return NextResponse.json({ ok: false, error: "目标记录不存在" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "TARGET_ENTRY_NOT_FOUND", error: "目标记录不存在" }, { status: 400 });
       }
       reorderedRows.splice(position === "after" ? targetIndexAfterRemoval + 1 : targetIndexAfterRemoval, 0, moving);
     } else {
@@ -248,6 +248,6 @@ export async function POST(req: Request) {
   } catch (error) {
     console.error("POST /api/v1/transactions/reorder error:", error);
     const message = error instanceof Error ? error.message : "调整顺序失败";
-    return NextResponse.json({ ok: false, error: message || "调整顺序失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: message || "调整顺序失败" }, { status: 500 });
   }
 }

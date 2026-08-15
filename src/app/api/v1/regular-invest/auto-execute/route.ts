@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { FundCashFlowKind, FundSubtype, IntervalUnit, RegularInvestStatus } from "@prisma/client";
+import { FundCashFlowKind, FundSubtype, IntervalUnit, RegularInvestStatus, type Prisma } from "@prisma/client";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { createFundTransactionWithCashFlows } from "@/lib/fund/transactions";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
@@ -30,11 +30,33 @@ const AUTO_EXECUTE_TRANSACTION_OPTIONS = {
   timeout: 60_000,
 };
 
-export async function POST() {
-  try {
-    const { householdId } = await getHouseholdScope();
+type AutoExecuteRoundDetail = { planId: string; fundCode: string; action: string; reason?: string };
 
-    const now = new Date();
+type AutoExecuteRoundResult = {
+  ok: boolean;
+  error?: string;
+  executedCount: number;
+  skippedCount: number;
+  completedCount: number;
+  skippedPaused: number;
+  skippedGap: number;
+  details: AutoExecuteRoundDetail[];
+  hasMoreDue: boolean;
+};
+
+/** Are there still active plans with a due next run? */
+async function hasMoreDuePlans(householdId: string, now: Date) {
+  const where: Prisma.RegularInvestPlanWhereInput = {
+    householdId,
+    status: RegularInvestStatus.active,
+    nextRunDate: { lte: now },
+  };
+  const count = await prisma.regularInvestPlan.count({ where });
+  return count > 0;
+}
+
+async function executeAutoExecuteRound(householdId: string, now: Date): Promise<AutoExecuteRoundResult> {
+  try {
     const todayStr = formatDateUtc(now);
 
     const allPlans = await prisma.regularInvestPlan.findMany({
@@ -42,7 +64,7 @@ export async function POST() {
     });
 
     if (allPlans.length === 0) {
-      return NextResponse.json({ ok: true, message: "没有执行中的计划任务", executedCount: 0, skippedCount: 0 });
+      return { ok: true, executedCount: 0, skippedCount: 0, completedCount: 0, skippedPaused: 0, skippedGap: 0, details: [], hasMoreDue: false };
     }
 
     // ── Phase 1: Filter & load all data in batch ──
@@ -74,7 +96,7 @@ export async function POST() {
     }
 
     if (plansToRun.length === 0) {
-      return NextResponse.json({ ok: true, message: `已完成 ${completed.length} 条到期的计划`, executedCount: 0, skippedCount: 0, completedCount: completed.length, details: [] });
+      return { ok: true, executedCount: 0, skippedCount: 0, completedCount: completed.length, skippedPaused: 0, skippedGap: 0, details: [], hasMoreDue: false };
     }
 
     const generalPlans = plansToRun.filter((plan) => isNonFundScheduledTask(decodeScheduledTaskMemo(plan.memo).type));
@@ -110,14 +132,16 @@ export async function POST() {
 
     if (fundPlans.length === 0) {
       if (generalExecuted.length > 0) revalidateAfterTxChange();
-      return NextResponse.json({
+      return {
         ok: true,
-        message: `执行完成：生成 ${generalGeneratedCount} 条记录，${generalSkipped.length} 条计划已跳过，${completed.length} 条已完成`,
         executedCount: generalGeneratedCount,
         skippedCount: generalSkipped.length,
         completedCount: completed.length,
+        skippedPaused: 0,
+        skippedGap: 0,
         details: generalDetails,
-      });
+        hasMoreDue: await hasMoreDuePlans(householdId, now),
+      };
     }
 
     // Batch-check already-run-today
@@ -211,14 +235,16 @@ export async function POST() {
 
     if (execs.length === 0) {
       if (generalExecuted.length > 0) revalidateAfterTxChange();
-      return NextResponse.json({
+      return {
         ok: true,
-        message: `执行完成：生成 ${generalGeneratedCount} 条记录，${generalSkipped.length + skipped.length} 条计划已跳过，${completed.length} 条已完成`,
         executedCount: generalGeneratedCount,
         skippedCount: generalSkipped.length + skipped.length,
         completedCount: completed.length,
+        skippedPaused,
+        skippedGap,
         details: [...generalDetails, ...details],
-      });
+        hasMoreDue: await hasMoreDuePlans(householdId, now),
+      };
     }
 
     // Batch fetch confirmDays & feeRates for all plans (parallel per unique (accountId, fundCode))
@@ -554,15 +580,79 @@ export async function POST() {
     else if (generalExecuted.length > 0) revalidateAfterTxChange();
 
     // Client-side handles page refresh
-    return NextResponse.json({
+    return {
       ok: true,
-      message: `执行完成：生成 ${generalGeneratedCount + executed.length} 条记录，${generalSkipped.length + skipped.length} 条计划已跳过${skippedPaused > 0 ? `（暂停申购 ${skippedPaused}` : ""}${skippedGap > 0 ? `${skippedPaused > 0 ? "，" : "（无净值 "}${skippedGap}` : ""}${skippedPaused + skippedGap > 0 ? "）" : ""}，${completed.length} 条已完成`,
       executedCount: generalGeneratedCount + executed.length,
       skippedCount: generalSkipped.length + skipped.length,
       completedCount: completed.length,
       skippedPaused,
       skippedGap,
       details: [...generalDetails, ...details],
+      hasMoreDue: await hasMoreDuePlans(householdId, now),
+    };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "执行失败", executedCount: 0, skippedCount: 0, completedCount: 0, skippedPaused: 0, skippedGap: 0, details: [], hasMoreDue: false };
+  }
+}
+
+/**
+ * POST /api/v1/regular-invest/auto-execute
+ *
+ * Runs due scheduled tasks. Executes in ROUNDS: after each round advances the
+ * affected plans' nextRunDate, remaining due plans (e.g. several missed
+ * periods after a long absence) are executed in further rounds until nothing
+ * is due anymore (or MMH_AUTO_EXECUTE_MAX_ROUNDS is reached). This guarantees
+ * catch-up completeness for user-level plans and system-level obligations
+ * (loan repayments, installments) when the app is opened.
+ */
+export async function POST() {
+  try {
+    const { householdId } = await getHouseholdScope();
+    const now = new Date();
+    const maxRounds = Math.max(1, Number(process.env.MMH_AUTO_EXECUTE_MAX_ROUNDS ?? 12) || 12);
+
+    const aggregated = {
+      executedCount: 0,
+      skippedCount: 0,
+      completedCount: 0,
+      skippedPaused: 0,
+      skippedGap: 0,
+      details: [] as AutoExecuteRoundDetail[],
+    };
+
+    let rounds = 0;
+    let moreDue = true;
+    while (rounds < maxRounds && moreDue) {
+      rounds += 1;
+      const result = await executeAutoExecuteRound(householdId, now);
+      if (!result.ok) {
+        return NextResponse.json({ ok: false, error: result.error ?? "执行失败" }, { status: 500 });
+      }
+      aggregated.executedCount += result.executedCount;
+      aggregated.skippedCount += result.skippedCount;
+      aggregated.completedCount += result.completedCount;
+      aggregated.skippedPaused += result.skippedPaused;
+      aggregated.skippedGap += result.skippedGap;
+      aggregated.details.push(...result.details);
+      moreDue = result.hasMoreDue;
+    }
+
+    const gapText = aggregated.skippedGap > 0
+      ? `${aggregated.skippedPaused > 0 ? "，" : "（无净值 "}${aggregated.skippedGap}`
+      : "";
+    const pauseText = aggregated.skippedPaused > 0 ? `（暂停申购 ${aggregated.skippedPaused}` : "";
+    const closeParen = aggregated.skippedPaused + aggregated.skippedGap > 0 ? "）" : "";
+
+    return NextResponse.json({
+      ok: true,
+      message: `执行完成：共 ${rounds} 轮，生成 ${aggregated.executedCount} 条记录，${aggregated.skippedCount} 条计划已跳过${pauseText}${gapText}${closeParen}，${aggregated.completedCount} 条已完成`,
+      executedCount: aggregated.executedCount,
+      skippedCount: aggregated.skippedCount,
+      completedCount: aggregated.completedCount,
+      skippedPaused: aggregated.skippedPaused,
+      skippedGap: aggregated.skippedGap,
+      rounds,
+      details: aggregated.details,
     });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "执行失败" }, { status: 500 });

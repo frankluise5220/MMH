@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { ArrowDownLeft, ArrowUpRight, Landmark } from "lucide-react";
 
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "./AdvancedDataTable";
@@ -9,7 +9,9 @@ import { EntryRowActions } from "./EntryRowActions";
 import { ResizableVerticalSplit } from "./ResizableVerticalSplit";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { amountToneClass as amountClass } from "@/lib/client/colors";
 import { formatMoney } from "@/lib/format";
+import { useI18n } from "@/lib/i18n";
 
 type DepositEntry = {
   id: string;
@@ -53,12 +55,6 @@ type DepositLot = {
   relatedEntryIds?: string[];
 };
 
-function amountClass(value: number) {
-  if (value > 0) return "text-emerald-700";
-  if (value < 0) return "text-rose-700";
-  return "text-slate-500";
-}
-
 export function DepositShell({
   accountLabel,
   institutionName,
@@ -73,6 +69,16 @@ export function DepositShell({
   const [selectedLotId, setSelectedLotId] = useState<string | null>(null);
   const [selectedEntryIds, setSelectedEntryIds] = useState<Set<string>>(new Set());
   const [linkingIds, setLinkingIds] = useState<Set<string>>(new Set());
+
+  const { t } = useI18n();
+  const formatText = useCallback((key: string, values?: Record<string, string | number>) => {
+    let text = t(key) as string;
+    if (!values) return text;
+    for (const [name, value] of Object.entries(values)) {
+      text = text.split(`{${name}}`).join(String(value));
+    }
+    return text;
+  }, [t]);
 
   const selectedLot = useMemo(
     () => lots.find((lot) => lot.id === selectedLotId) ?? null,
@@ -90,11 +96,11 @@ export function DepositShell({
     const entryIds = Array.from(selectedEntryIds);
     const data = await deleteEntriesWithLinkedPrompt({
       entryIds,
-      confirmMessage: `确认删除选中的 ${selectedEntryIds.size} 条明细吗？`,
+      confirmMessage: formatText("depositShell.batchDeleteConfirm", { count: selectedEntryIds.size }),
     });
     if (!data.ok) {
       if (data.error === "已取消删除") return;
-      window.alert(data?.error || "批量删除失败");
+      window.alert(data?.error || t("depositShell.error.batchDeleteFailed"));
       return;
     }
     setSelectedEntryIds(new Set());
@@ -107,7 +113,7 @@ export function DepositShell({
     if (!id || linkingIds.has(id)) return;
     const businessTransactionId = String(entry.businessTransactionId ?? "").trim();
     if (!businessTransactionId) {
-      window.alert("这条存款记录缺少业务记录 ID，无法自动建立关联");
+      window.alert(t("depositShell.error.missingBusinessId"));
       return;
     }
     setLinkingIds((prev) => new Set(prev).add(id));
@@ -118,10 +124,10 @@ export function DepositShell({
         body: JSON.stringify({ businessType: "deposit", businessTransactionId }),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok || !data?.ok) throw new Error(data?.error ?? "建立关联失败");
+      if (!res.ok || !data?.ok) throw new Error(data?.error ?? t("depositShell.error.linkFailed"));
       dispatchFinanceDataChanged({ reason: "deposit-link-cash-flow", entryIds: [data.data?.cashEntryId, id].filter(Boolean) });
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "建立关联失败");
+      window.alert(error instanceof Error ? error.message : t("depositShell.error.linkFailed"));
     } finally {
       setLinkingIds((prev) => {
         const next = new Set(prev);
@@ -134,35 +140,35 @@ export function DepositShell({
   const lotColumns = useMemo<AdvancedDataTableColumn<DepositLot>[]>(() => [
     {
       key: "product",
-      label: "产品",
+      label: t("depositShell.colProduct"),
       width: 260,
       minWidth: 160,
       filterText: (lot) => `${lot.fundName} ${lot.label} ${lot.subLabel ?? ""}`,
       render: (lot) => (
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate font-medium text-slate-700" title={lot.fundName}>{lot.fundName}</span>
-          <span className="shrink-0 text-[11px] text-slate-400">定期存款</span>
+          <span className="shrink-0 text-[11px] text-slate-400">{t("investment.product.deposit")}</span>
         </div>
       ),
     },
-    { key: "startDate", label: "存入日期", width: 110, minWidth: 84, hideable: true, filterText: (lot) => lot.startDate ?? "", render: (lot) => <span className="tabular-nums text-slate-600">{lot.startDate || "-"}</span> },
-    { key: "maturityDate", label: "到期日", width: 110, minWidth: 84, hideable: true, filterText: (lot) => lot.maturityDate ?? "", render: (lot) => <span className="tabular-nums text-slate-600">{lot.maturityDate || "-"}</span> },
-    { key: "originalAmount", label: "存入金额", width: 120, minWidth: 86, align: "right", hideable: true, render: (lot) => <span className="font-semibold tabular-nums text-slate-700">{formatMoney(lot.originalAmount)}</span> },
-    { key: "remainingAmount", label: "剩余余额", width: 120, minWidth: 86, align: "right", render: (lot) => <span className={`font-semibold tabular-nums ${amountClass(lot.remainingAmount)}`}>{formatMoney(lot.remainingAmount)}</span> },
-    { key: "annualRate", label: "年化利率", width: 100, minWidth: 72, align: "right", hideable: true, render: (lot) => <span className="tabular-nums text-slate-600">{lot.annualRate != null ? `${lot.annualRate}%` : "-"}</span> },
-    { key: "status", label: "状态", width: 90, minWidth: 70, hideable: true, filterText: (lot) => lot.status === "open" ? "持有中" : "已取回", render: (lot) => lot.status === "open" ? "持有中" : "已取回" },
-  ], []);
+    { key: "startDate", label: t("depositShell.colStartDate"), width: 110, minWidth: 84, hideable: true, filterText: (lot) => lot.startDate ?? "", render: (lot) => <span className="tabular-nums text-slate-600">{lot.startDate || "-"}</span> },
+    { key: "maturityDate", label: t("depositShell.colMaturityDate"), width: 110, minWidth: 84, hideable: true, filterText: (lot) => lot.maturityDate ?? "", render: (lot) => <span className="tabular-nums text-slate-600">{lot.maturityDate || "-"}</span> },
+    { key: "originalAmount", label: t("depositShell.colOriginalAmount"), width: 120, minWidth: 86, align: "right", hideable: true, render: (lot) => <span className="font-semibold tabular-nums text-slate-700">{formatMoney(lot.originalAmount)}</span> },
+    { key: "remainingAmount", label: t("depositShell.colRemainingAmount"), width: 120, minWidth: 86, align: "right", render: (lot) => <span className={`font-semibold tabular-nums ${amountClass(lot.remainingAmount)}`}>{formatMoney(lot.remainingAmount)}</span> },
+    { key: "annualRate", label: t("depositShell.colAnnualRate"), width: 100, minWidth: 72, align: "right", hideable: true, render: (lot) => <span className="tabular-nums text-slate-600">{lot.annualRate != null ? `${lot.annualRate}%` : "-"}</span> },
+    { key: "status", label: t("depositShell.colStatus"), width: 90, minWidth: 70, hideable: true, filterText: (lot) => lot.status === "open" ? t("depositShell.status.open") : t("depositShell.status.closed"), render: (lot) => lot.status === "open" ? t("depositShell.status.open") : t("depositShell.status.closed") },
+  ], [t]);
 
   const entryColumns = useMemo<AdvancedDataTableColumn<DepositEntry>[]>(() => [
-    { key: "date", label: "日期", width: 100, minWidth: 80, filterText: (entry) => entry.date, render: (entry) => <span className="tabular-nums text-slate-700">{entry.date}</span> },
-    { key: "action", label: "动作", width: 90, minWidth: 70, filterText: (entry) => entry.typeLabel, render: (entry) => <span className="text-slate-700">{entry.typeLabel}</span> },
-    { key: "product", label: "产品", width: 190, minWidth: 120, filterText: (entry) => entry.fundName, render: (entry) => <span className="truncate text-slate-700" title={entry.fundName}>{entry.fundName || "-"}</span> },
-    { key: "maturityDate", label: "到期日", width: 110, minWidth: 84, hideable: true, filterText: (entry) => entry.maturityDate ?? "", render: (entry) => <span className="tabular-nums text-slate-600">{entry.maturityDate || "-"}</span> },
-    { key: "cashAccount", label: "资金账户", width: 150, minWidth: 100, hideable: true, filterText: (entry) => entry.cashAccountLabel, render: (entry) => <span className="truncate text-slate-600" title={entry.cashAccountLabel}>{entry.cashAccountLabel || "-"}</span> },
-    { key: "note", label: "备注", width: 240, minWidth: 120, hideable: true, filterText: (entry) => entry.note, render: (entry) => <span className="block truncate text-slate-600" title={entry.note}>{entry.note || "-"}</span> },
+    { key: "date", label: t("detail.column.date"), width: 100, minWidth: 80, filterText: (entry) => entry.date, render: (entry) => <span className="tabular-nums text-slate-700">{entry.date}</span> },
+    { key: "action", label: t("depositShell.colAction"), width: 90, minWidth: 70, filterText: (entry) => entry.typeLabel, render: (entry) => <span className="text-slate-700">{entry.typeLabel}</span> },
+    { key: "product", label: t("depositShell.colProduct"), width: 190, minWidth: 120, filterText: (entry) => entry.fundName, render: (entry) => <span className="truncate text-slate-700" title={entry.fundName}>{entry.fundName || "-"}</span> },
+    { key: "maturityDate", label: t("depositShell.colMaturityDate"), width: 110, minWidth: 84, hideable: true, filterText: (entry) => entry.maturityDate ?? "", render: (entry) => <span className="tabular-nums text-slate-600">{entry.maturityDate || "-"}</span> },
+    { key: "cashAccount", label: t("depositShell.colCashAccount"), width: 150, minWidth: 100, hideable: true, filterText: (entry) => entry.cashAccountLabel, render: (entry) => <span className="truncate text-slate-600" title={entry.cashAccountLabel}>{entry.cashAccountLabel || "-"}</span> },
+    { key: "note", label: t("detail.column.remark"), width: 240, minWidth: 120, hideable: true, filterText: (entry) => entry.note, render: (entry) => <span className="block truncate text-slate-600" title={entry.note}>{entry.note || "-"}</span> },
     {
       key: "amount",
-      label: "金额",
+      label: t("depositShell.colAmount"),
       width: 120,
       minWidth: 86,
       align: "right",
@@ -173,7 +179,7 @@ export function DepositShell({
         </span>
       ),
     },
-  ], []);
+  ], [t]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent p-4 md:p-5">
@@ -181,17 +187,17 @@ export function DepositShell({
         storageKey="mmh:deposit:split-height"
         hasLowerPane={!!selectedLot}
         defaultUpperHeight={360}
-        separatorLabel="调整存款持仓和明细高度"
-        separatorTitle="拖动调整存款持仓和明细高度"
+        separatorLabel={t("depositShell.resizeLabel")}
+        separatorTitle={t("depositShell.resizeTitle")}
       >
         <section className="panel-surface flex min-h-0 flex-col overflow-hidden">
           <div className="panel-header">
             <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
               <Landmark className="h-4 w-4 text-cyan-600" />
-              存款持仓
+              {t("depositShell.holdingsTitle")}
             </div>
             <div className="text-xs text-slate-400">
-              {selectedLot ? `已选中 ${selectedLot.fundName}，下方仅显示这笔存单相关记录` : `${institutionName || accountLabel} 下的全部存款持仓`}
+              {selectedLot ? formatText("depositShell.lotSelectedHint", { name: selectedLot.fundName }) : formatText("depositShell.allHoldingsHint", { scope: institutionName || accountLabel })}
             </div>
           </div>
           <AdvancedDataTable
@@ -200,7 +206,7 @@ export function DepositShell({
             rows={lots}
             rowKey={(lot) => lot.id}
             minTableWidth={920}
-            emptyText="暂无存款持仓"
+            emptyText={t("depositShell.emptyHoldings")}
             showFilters={false}
             fillHeight
             onRowClick={(lot) => setSelectedLotId((current) => current === lot.id ? null : lot.id)}
@@ -212,10 +218,10 @@ export function DepositShell({
           <div className="panel-header">
             <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
               <Landmark className="h-4 w-4 text-blue-500" />
-              存款明细
+              {t("depositShell.entriesTitle")}
             </div>
             <div className="text-xs text-slate-400">
-              {selectedLot ? `当前显示 ${visibleEntries.length} 条关联记录` : "请先选择上方存款持仓"}
+              {selectedLot ? formatText("depositShell.entryCountHint", { count: visibleEntries.length }) : t("depositShell.selectLotFirst")}
             </div>
           </div>
           <AdvancedDataTable
@@ -224,7 +230,7 @@ export function DepositShell({
             rows={visibleEntries}
             rowKey={(entry) => entry.id}
             minTableWidth={1020}
-            emptyText={selectedLot ? "这笔存单暂时没有关联明细" : "请先选择上方存款持仓"}
+            emptyText={selectedLot ? t("depositShell.emptyRelatedEntries") : t("depositShell.selectLotFirst")}
             fillHeight
             selectable
             selectedKeys={selectedEntryIds}
@@ -233,8 +239,8 @@ export function DepositShell({
               const hasBusinessLink = (entry.businessLinkCount ?? 0) > 0;
               const labels = entry.businessLinkLabels ?? [];
               const title = hasBusinessLink
-                ? `已关联：${labels.join("、") || "业务记录"}`
-                : "未关联，点击建立资金侧关联";
+                ? formatText("depositShell.linkedTitle", { labels: labels.join("、") || t("depositShell.businessRecord") })
+                : t("depositShell.unlinkedTitle");
               return (
                 <>
                   <BusinessLinkActionButton
@@ -250,7 +256,7 @@ export function DepositShell({
             rowActionsWidth={112}
             rowActionsMinWidth={92}
             batchActions={[
-              { label: "批量删除", title: "删除按钮", ariaLabel: "删除按钮", tone: "danger", onClick: batchDeleteEntries },
+              { label: t("depositShell.batchDelete"), title: t("depositShell.deleteButton"), ariaLabel: t("depositShell.deleteButton"), tone: "danger", onClick: batchDeleteEntries },
             ]}
           />
         </section>

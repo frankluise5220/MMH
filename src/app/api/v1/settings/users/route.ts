@@ -199,6 +199,10 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "用户不存在" }, { status: 404, headers: cors() });
   }
 
+  // 越权检查：系统用户仅系统管理员可修改（防止普通账簿管理员重置系统管理员密码）
+  if (existing.isSystem && !(currentUser?.isSystem === true)) {
+    return NextResponse.json({ ok: false, error: "仅系统管理员可管理系统管理员" }, { status: 403, headers: cors() });
+  }
   // 越权检查：用户不属于当前账簿
   if (existing.householdId !== householdId && !existing.isSystem) {
     return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403, headers: cors() });
@@ -258,7 +262,7 @@ const DeleteSchema = z.object({
   password: z.string().min(1),
 });
 
-/** DELETE /api/v1/settings/users?id=xxx — 删除当前账簿内的用户，需要当前管理员密码确认 */
+/** DELETE /api/v1/settings/users?id=xxx — 删除当前账簿内的用户，需要当前用户密码确认 */
 export async function DELETE(req: NextRequest) {
   const currentUser = await getCurrentUser();
   const auth = requireAdmin(currentUser);
@@ -274,16 +278,16 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400, headers: cors() });
   }
   if (!parse.success) {
-    return NextResponse.json({ ok: false, error: "请输入当前管理员密码" }, { status: 400, headers: cors() });
+    return NextResponse.json({ ok: false, error: "请输入当前用户密码" }, { status: 400, headers: cors() });
   }
 
   const operator = await prisma.user.findUnique({ where: { id: currentUser!.id } });
   if (!operator?.passwordHash) {
-    return NextResponse.json({ ok: false, error: "当前管理员未设置密码，不能执行删除用户操作" }, { status: 403, headers: cors() });
+    return NextResponse.json({ ok: false, error: "当前用户未设置密码，不能执行删除用户操作" }, { status: 403, headers: cors() });
   }
   const passwordMatched = await verifyPassword(parse.data.password, operator.passwordHash);
   if (!passwordMatched) {
-    return NextResponse.json({ ok: false, error: "管理员密码不正确" }, { status: 403, headers: cors() });
+    return NextResponse.json({ ok: false, error: "当前用户密码不正确" }, { status: 403, headers: cors() });
   }
 
   const existing = await prisma.user.findUnique({ where: { id } });

@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import {
   useCallback,
@@ -274,7 +274,7 @@ export function AdvancedDataTable<T>({
   columns,
   rows,
   rowKey,
-  emptyText = "暂无数据",
+  emptyText,
   minTableWidth,
   rowClassName,
   onRowClick,
@@ -1155,7 +1155,7 @@ export function AdvancedDataTable<T>({
                         className={`block min-w-0 truncate cursor-pointer select-none text-xs font-semibold transition-transform duration-200 ${sortState?.key === column.key || (filters[column.key]?.length ?? 0) > 0 ? "text-blue-600" : "text-slate-600"} ${sortState?.key === column.key && sortState.direction === "desc" ? "rotate-180" : ""}`}
                         onClick={(event) => handleHeaderSortClick(event, column.key, showFilters && !!column.filterText)}
                         onDoubleClick={(event) => handleHeaderLabelDoubleClick(event, column.key, showFilters && !!column.filterText)}
-                        title={showFilters && column.filterText ? (sortState?.key === column.key ? (sortState.direction === "asc" ? "升序排列，点击降序；双击筛选" : "降序排列，点击取消；双击筛选") : "点击排序；双击筛选") : (sortState?.key === column.key ? (sortState.direction === "asc" ? "升序排列，点击降序" : "降序排列，点击取消") : "点击排序")}
+                        title={showFilters && column.filterText ? (sortState?.key === column.key ? (sortState.direction === "asc" ? t("advancedTable.sortAscDesc") : t("advancedTable.sortDescCancel")) : t("advancedTable.sortClickFilter")) : (sortState?.key === column.key ? (sortState.direction === "asc" ? t("advancedTable.sortAsc") : t("advancedTable.sortDesc")) : t("advancedTable.sortClick"))}
                       >
                         {labelText(column.label, column.key)}
                       </span>
@@ -1163,7 +1163,7 @@ export function AdvancedDataTable<T>({
                       <span
                         className={`block min-w-0 truncate text-xs font-semibold ${((filters[column.key]?.length ?? 0) > 0) ? "text-blue-600" : "text-slate-600"} ${showFilters && column.filterText ? "cursor-pointer hover:text-blue-600" : ""}`}
                         onDoubleClick={(event) => handleHeaderLabelDoubleClick(event, column.key, showFilters && !!column.filterText)}
-                        title={showFilters && column.filterText ? `${labelText(column.label, column.key)}；双击筛选` : labelText(column.label, column.key)}
+                        title={showFilters && column.filterText ? t("advancedTable.doubleClickFilter", { label: labelText(column.label, column.key) }) : labelText(column.label, column.key)}
                       >
                         {labelText(column.label, column.key)}
                       </span>
@@ -1327,8 +1327,8 @@ export function AdvancedDataTable<T>({
                             onDragStart={(event) => handleRowDragStart(event, key, dragDisabled)}
                             onDragEnd={handleRowDragEnd}
                             className={`flex h-5 w-4 items-center justify-center rounded text-slate-300 transition hover:bg-slate-100 hover:text-slate-500 ${dragDisabled ? "cursor-not-allowed opacity-30" : "cursor-grab active:cursor-grabbing"}`}
-                            title="拖动排序"
-                            aria-label="拖动排序"
+                            title={t("advancedTable.dragSort")}
+                            aria-label={t("advancedTable.dragSort")}
                           >
                             <GripVertical className="h-3.5 w-3.5" />
                           </button>
@@ -1358,7 +1358,7 @@ export function AdvancedDataTable<T>({
             }) : (
               <tr>
                 <td className="px-4 py-8 text-center text-sm text-slate-400" colSpan={bodyColSpan}>
-                  {emptyText === "暂无数据" ? t("table.empty") : emptyText}
+                  {emptyText == null ? t("table.empty") : emptyText}
                 </td>
               </tr>
             )}

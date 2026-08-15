@@ -15,6 +15,7 @@ import type { SmartSelectOption } from "@/components/SmartSelect";
 import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
 import type { AccountDisplayOption } from "@/lib/account-display";
 import { scheduledTaskTypeLabel, type ScheduledTaskType } from "@/lib/scheduled-task";
+import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { clearBackgroundTaskProgress, dispatchBackgroundTaskProgress } from "@/lib/client/background-tasks";
 
@@ -64,6 +65,8 @@ type RegularInvestPlanView = {
   taskAnnualRate?: number | null;
   taskRepaymentMethod?: string | null;
   taskRepaymentIntervalMonths?: number | null;
+  /** System-level plans (e.g. loan repayment) are shown but read-only. */
+  isSystemTask?: boolean;
   targetName?: string | null;
   insuranceProductName?: string | null;
   accountId: string;
@@ -656,7 +659,11 @@ export function RegularInvestClient({
     const plan = plans.find((item) => item.id === planId);
     if (!plan) return;
     const taskType = getPlanTaskType(plan);
-    if (!window.confirm(`确认执行该${getPlanTaskLabel(plan)}计划吗？\n\n系统会生成所有到期但未执行的交易明细。`)) return;
+    const confirmed = await showConfirmDialog({
+      title: "执行计划",
+      message: `确认执行该${getPlanTaskLabel(plan)}计划吗？\n\n系统会生成所有到期但未执行的交易明细。`,
+    });
+    if (!confirmed) return;
     setExecutionProgress({
       title: "执行计划任务",
       status: "running",
@@ -731,7 +738,11 @@ export function RegularInvestClient({
       window.alert("没有执行中的计划任务");
       return;
     }
-    if (!window.confirm(`确认批量执行所有 ${activePlans.length} 个执行中的计划任务吗？`)) return;
+    const confirmed = await showConfirmDialog({
+      title: "批量执行",
+      message: `确认批量执行所有 ${activePlans.length} 个执行中的计划任务吗？`,
+    });
+    if (!confirmed) return;
     setExecutionProgress({
       title: "批量执行计划任务",
       status: "running",
@@ -823,7 +834,12 @@ export function RegularInvestClient({
   async function executeDelete(planId: string, mode: "all" | "plan" | "records") {
     setDeleteConfirm(null);
     if (mode === "records") {
-      if (!window.confirm("确认删除该计划关联的所有交易明细吗？")) return;
+      const confirmed = await showConfirmDialog({
+        title: "删除交易明细",
+        message: "确认删除该计划关联的所有交易明细吗？",
+        tone: "danger",
+      });
+      if (!confirmed) return;
       const res = await fetch(`/api/v1/regular-invest?id=${planId}&deleteRecords=records`, { method: "DELETE" });
       const data = await res.json();
       if (data.ok) {
@@ -858,7 +874,12 @@ export function RegularInvestClient({
   }
 
   async function handleDeleteRecord(recordId: string) {
-    if (!window.confirm("确认删除这条交易明细？")) return;
+    const confirmed = await showConfirmDialog({
+      title: "删除交易明细",
+      message: "确认删除这条交易明细？",
+      tone: "danger",
+    });
+    if (!confirmed) return;
     const res = await fetch(`/api/v1/fund/entry?id=${recordId}`, { method: "DELETE" });
     const data = await res.json();
     if (data.ok) {
@@ -1031,6 +1052,15 @@ export function RegularInvestClient({
   }, []);
 
   function renderPlanActions(plan: RegularInvestPlanView) {
+    // System-level plans (loan repayment) are read-only in the plan table:
+    // the schedule is derived from the loan, so no pause/stop/edit/delete.
+    if (plan.isSystemTask) {
+      return (
+        <span className="inline-flex h-6 items-center rounded border border-slate-200 bg-slate-50 px-1.5 text-[10px] text-slate-400" title="系统管理计划，不可手动修改">
+          系统
+        </span>
+      );
+    }
     return (
       <>
         {plan.status === "active" && (

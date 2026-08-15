@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useState, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
@@ -124,7 +124,7 @@ export default function SettingsAccountsPage() {
   }
 
   function notifySidebarChanged() {
-    window.dispatchEvent(new Event("mmh:fund:refresh"));
+    dispatchFinanceDataChanged({ reason: "settings-accounts-change" });
   }
 
   async function refreshSettingsAccounts(reason: string) {
@@ -183,7 +183,7 @@ export default function SettingsAccountsPage() {
       };
     } | null;
     if (!res.ok || data?.ok === false) {
-      setEditError(data?.error ?? "保存失败");
+      setEditError(data?.error ?? t("settings.accounts.saveFailed"));
       return;
     }
     setEditingId(null);
@@ -313,7 +313,7 @@ export default function SettingsAccountsPage() {
       <SettingsPageHeader
         sticky
         title={t("settings.accounts.title")}
-        description={guideAccountSetup ? "先补齐现金、借记卡、信用卡等资金账户；新增普通账户时可同时填写时间节点和余额，生成期初余额锚点。" : "维护资金、信用卡、投资、贷款等账户及其默认机构、所有人和业务参数。"}
+        description={guideAccountSetup ? t("settings.accounts.guideDescription") : t("settings.accounts.description")}
         count={filteredAccounts.length}
         actions={<SettingsPrimaryAddButton onClick={() => setShowCreateAccount(true)}>{t("settings.accounts.add")}</SettingsPrimaryAddButton>}
         toolbar={
@@ -322,7 +322,7 @@ export default function SettingsAccountsPage() {
             <input
               value={accountNameQuery}
               onChange={(event) => setAccountNameQuery(event.target.value)}
-              placeholder="按账户名称/机构/尾号/备注筛选"
+              placeholder={t("settings.accounts.searchPlaceholder")}
               className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
             />
           </div>
@@ -358,7 +358,7 @@ export default function SettingsAccountsPage() {
         }
       />
 
-      {/* ===== 账户列表（按类型分组，可折叠） ===== */}
+      {/* ===== Account list (grouped by kind, collapsible) ===== */}
       {kindOrder.map(kind => {
         const list = grouped.get(kind);
         if (!list || list.length === 0) return null;
@@ -444,7 +444,7 @@ export default function SettingsAccountsPage() {
                           onCreateClick={() => setNestedEntityType("institution")} createLabel={t("settings.accounts.addInstitution")} />
                       </div>
                       <div>
-                        <label className="block text-xs text-slate-500 mb-1">币种</label>
+                        <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.currency")}</label>
                         <select
                           value={normalizeCurrency(editForm.currency || baseCurrency)}
                           onChange={e => setEditForm(f => ({ ...f, currency: e.target.value }))}
@@ -544,14 +544,14 @@ export default function SettingsAccountsPage() {
                         </div>
                         {isBillLikeKind && (
                           <div>
-                            <label className="block text-xs text-slate-500 mb-1">账单模式</label>
+                            <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.billMode")}</label>
                             <select
                               value={editForm.creditBillMode || "separate"}
                               onChange={e => setEditForm(f => ({ ...f, creditBillMode: e.target.value }))}
                               className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
                             >
-                              <option value="separate">独立账单</option>
-                              <option value="consolidated">同机构合并账单</option>
+                              <option value="separate">{t("settings.accounts.separateBill")}</option>
+                              <option value="consolidated">{t("settings.accounts.consolidatedBill")}</option>
                             </select>
                           </div>
                         )}
@@ -559,12 +559,12 @@ export default function SettingsAccountsPage() {
                     )}
 
                     <div className="mt-3">
-                      <label className="block text-xs text-slate-500 mb-1">备注</label>
+                      <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.note")}</label>
                       <textarea
                         value={editForm.note || ""}
                         onChange={e => setEditForm(f => ({ ...f, note: e.target.value }))}
                         className="min-h-[96px] w-full resize-y rounded-md border border-slate-200 px-2 py-2 text-sm leading-5 outline-none focus:border-blue-400"
-                        placeholder="可选，支持多行备注"
+                        placeholder={t("settings.accounts.notePlaceholder")}
                         rows={4}
                       />
                     </div>
@@ -615,11 +615,11 @@ export default function SettingsAccountsPage() {
                           {normalizedAccountKind(a) === "bank_credit" && a.repaymentDay && <span className="text-[10px] text-slate-400">{tf("settings.accounts.repaymentDay", { day: a.repaymentDay })}</span>}
                           {normalizedAccountKind(a) === "bank_credit" && a.creditLimit && <span className="text-[10px] text-slate-400">{tf("settings.accounts.creditLimit", { amount: a.creditLimit })}</span>}
                           {a.numberMasked && <span className="text-[10px] text-slate-400">{tf("settings.accounts.lastFour", { value: a.numberMasked })}</span>}
-                          {normalizedAccountKind(a) === "bank_credit" && <span className="text-[10px] text-slate-400">{a.creditBillMode === "consolidated" ? "合并账单" : "独立账单"}</span>}
+                          {normalizedAccountKind(a) === "bank_credit" && <span className="text-[10px] text-slate-400">{a.creditBillMode === "consolidated" ? t("settings.accounts.consolidatedBill") : t("settings.accounts.separateBill")}</span>}
                         </>
                       )}
                       {a.note && (
-                        <span className="max-w-[260px] truncate text-xs text-slate-400" title={a.note}>备注：{a.note}</span>
+                        <span className="max-w-[260px] truncate text-xs text-slate-400" title={a.note}>{t("settings.accounts.notePrefix")}{a.note}</span>
                       )}
                     </div>
                     <div className="flex items-center gap-1 shrink-0 ml-3">

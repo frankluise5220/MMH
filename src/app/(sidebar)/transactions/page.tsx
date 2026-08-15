@@ -4,10 +4,12 @@ import { formatDateLocal } from "@/lib/date-utils";
 import { MobileTransactions, type MobileTransactionRow } from "@/components/mobile/MobileTransactions";
 import { MobileTransactionForm } from "@/components/mobile/MobileTransactionForm";
 import { buildAccountDisplayOption, formatAccountTableLabel } from "@/lib/account-display";
+import { getServerT } from "@/lib/server/i18n";
 
 export const dynamic = "force-dynamic";
 
 export default async function TransactionsPage() {
+  const t = await getServerT();
   const { hidFilter } = await getHouseholdScope();
   const [entries, accounts, categories] = await Promise.all([
     prisma.txRecord.findMany({
@@ -75,7 +77,7 @@ export default async function TransactionsPage() {
         />
       </div>
       <div className="hidden h-full items-center justify-center md:flex">
-        <div className="text-sm text-slate-500">请使用桌面侧栏进入账户明细工作区。</div>
+        <div className="text-sm text-slate-500">{t("transactions.desktopHint")}</div>
       </div>
     </>
   );

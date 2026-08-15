@@ -1,5 +1,7 @@
 # Product TODOs
 
+> 注：本文件部分中文曾在 2026-08 因编码问题损坏为 `?` 字符，已按当前产品方向重建（例如保险账户组示例、`定投`→`计划任务` 用词）。
+
 ## Insurance
 
 ### Split product master from owned policy/holding
@@ -41,15 +43,15 @@ Goal:
 - Each insurance account should behave like a dedicated account page.
 
 Desired account-page shape:
-- Left sidebar account group: `??`
-- Under it: one row per insurance account, such as `???????`, `????????`
+- Left sidebar account group: `保险`
+- Under it: one row per insurance account, such as `张四的泰康养老`, `李五的平安医疗`
 - Inside a selected insurance account page:
   - Top area: product summary for the products under this insurance account
   - Main list: records for this insurance account
 
 Terminology direction:
 - For now, keep the UI wording close to the existing investment shell pattern so the interaction stays familiar.
-- Later decide whether insurance should keep the word `??` or switch to a more insurance-native term such as `??` / `????`.
+- Later decide whether insurance should keep the word `保险` or switch to a more insurance-native term such as `保单` / `保障`.
 
 Open implementation tasks:
 - Remove remaining top-level insurance nav entries from sidebar chrome.
@@ -87,4 +89,4 @@ Open implementation tasks:
 - Define task-type-specific payloads and validation rules.
 - Define how insurance purchase tasks choose insurance account, product, owner, and funding account defaults.
 - Define how transfer tasks choose source and destination account defaults.
-- Update sidebar / navigation wording from `??` to `????` when the generic model is ready.
+- Update sidebar / navigation wording from `定投` to `计划任务` when the generic model is ready.

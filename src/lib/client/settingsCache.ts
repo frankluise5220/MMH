@@ -73,11 +73,6 @@ function seedBootstrapCaches(value: SettingsBootstrapData) {
   setCacheValue(TAGS_KEY, value.tags);
 }
 
-export function getCachedSettingsBootstrap() {
-  const entry = cache.get(BOOTSTRAP_KEY) as CacheEntry<SettingsBootstrapData> | undefined;
-  return isFresh(entry) ? entry?.value ?? null : entry?.value ?? null;
-}
-
 async function getSharedSettingsBootstrap(options?: { force?: boolean }) {
   if (options?.force) return null;
   const entry = cache.get(BOOTSTRAP_KEY) as CacheEntry<SettingsBootstrapData> | undefined;
@@ -204,15 +199,6 @@ export async function fetchSettingsAccountData(options?: { force?: boolean }) {
   return promise;
 }
 
-export function setSettingsAccountData(next: SettingsAccountData) {
-  cache.set(ACCOUNT_DATA_KEY, { value: next, updatedAt: Date.now() });
-  cache.delete(BOOTSTRAP_KEY);
-}
-
-export function invalidateSettingsAccountData() {
-  invalidateSettingsData("accounts");
-}
-
 export function getCachedSettingsCategories() {
   const entry = cache.get(CATEGORIES_KEY) as CacheEntry<SettingsCategory[]> | undefined;
   return isFresh(entry) ? entry?.value ?? null : entry?.value ?? null;
@@ -247,10 +233,6 @@ export function setSettingsCategories(next: SettingsCategory[]) {
   cache.delete(BOOTSTRAP_KEY);
 }
 
-export function invalidateSettingsCategories() {
-  invalidateSettingsData("categories");
-}
-
 export function getCachedSettingsTags() {
   const entry = cache.get(TAGS_KEY) as CacheEntry<SettingsTag[]> | undefined;
   return isFresh(entry) ? entry?.value ?? null : entry?.value ?? null;
@@ -283,8 +265,4 @@ export async function fetchSettingsTags(options?: { force?: boolean }) {
 export function setSettingsTags(next: SettingsTag[]) {
   cache.set(TAGS_KEY, { value: next, updatedAt: Date.now() });
   cache.delete(BOOTSTRAP_KEY);
-}
-
-export function invalidateSettingsTags() {
-  invalidateSettingsData("tags");
 }

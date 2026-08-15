@@ -1,10 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Building2, CheckCircle2, Landmark, Plus, UserRound } from "lucide-react";
 
 import { DebtTransactionModal } from "@/components/DebtTransactionModal";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
+import { formatMoney } from "@/lib/format";
+import { useI18n } from "@/lib/i18n";
 
 type CounterpartyGuideRow = {
   id: string;
@@ -44,13 +46,17 @@ type SmartSelectLikeOption = {
 
 type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
 
-function formatMoney(value: number) {
-  return value.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function typeLabel(t: (key: string) => string, type?: string | null) {
+  return type === "organization" ? t("institution.type.organization") : t("institution.type.person");
 }
 
-function typeLabel(type?: string | null) {
-  return type === "organization" ? "往来组织" : "往来人员";
-}
+const GUIDE_STEPS = [
+  { titleKey: "liabilitiesGuide.step1Title", textKey: "liabilitiesGuide.step1Text" },
+  { titleKey: "liabilitiesGuide.step2Title", textKey: "liabilitiesGuide.step2Text" },
+  { titleKey: "liabilitiesGuide.step3Title", textKey: "liabilitiesGuide.step3Text" },
+  { titleKey: "liabilitiesGuide.step4Title", textKey: "liabilitiesGuide.step4Text" },
+  { titleKey: "liabilitiesGuide.step5Title", textKey: "liabilitiesGuide.step5Text" },
+] as const;
 
 export function LiabilitiesGuideClient({
   counterparties,
@@ -78,6 +84,16 @@ export function LiabilitiesGuideClient({
   const [selectedId, setSelectedId] = useState(counterparties[0]?.id ?? "");
   const [showCreate, setShowCreate] = useState(counterparties.length === 0);
 
+  const { t } = useI18n();
+  const formatText = useCallback((key: string, values?: Record<string, string | number>) => {
+    let text = t(key) as string;
+    if (!values) return text;
+    for (const [name, value] of Object.entries(values)) {
+      text = text.split(`{${name}}`).join(String(value));
+    }
+    return text;
+  }, [t]);
+
   const selectedRow = rows.find((row) => row.id === selectedId) ?? rows[0] ?? null;
   const existingNames = useMemo(
     () => rows.flatMap((row) => [row.name, row.shortName?.trim() || ""]).filter(Boolean),
@@ -104,12 +120,12 @@ export function LiabilitiesGuideClient({
       <header className="page-header">
         <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 px-4 py-2 md:px-5">
           <div className="min-w-0">
-            <div className="text-sm font-semibold text-slate-900">往来款向导</div>
-            <div className="text-xs text-slate-500">先建立往来人员，再记录借入、借出、还款或收回</div>
+            <div className="text-sm font-semibold text-slate-900">{t("liabilitiesGuide.title")}</div>
+            <div className="text-xs text-slate-500">{t("liabilitiesGuide.subtitle")}</div>
           </div>
           <button type="button" onClick={() => setShowCreate(true)} className="secondary-button h-8 gap-1 px-3 text-xs">
             <Plus className="h-3.5 w-3.5" />
-            新增往来人员
+            {t("liabilitiesGuide.addCounterparty")}
           </button>
         </div>
       </header>
@@ -121,9 +137,9 @@ export function LiabilitiesGuideClient({
         onClose={() => setShowCreate(false)}
         entityType="counterparty"
         defaultType="person"
-        title="新增往来人员"
-        nameLabel="往来对象名称"
-        namePlaceholder="例如：张三、某某公司"
+        title={t("liabilitiesGuide.addCounterparty")}
+        nameLabel={t("liabilitiesGuide.nameLabel")}
+        namePlaceholder={t("liabilitiesGuide.namePlaceholder")}
         existingNames={existingNames}
         onCreated={handleCreated}
       />
@@ -133,9 +149,9 @@ export function LiabilitiesGuideClient({
           <div className="panel-header">
             <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
               <UserRound className="h-4 w-4 text-blue-500" />
-              往来人员列表
+              {t("liabilitiesGuide.listTitle")}
             </div>
-            <div className="text-xs text-slate-400">{rows.length} 个对象</div>
+            <div className="text-xs text-slate-400">{formatText("liabilitiesGuide.objectCount", { count: rows.length })}</div>
           </div>
           <div className="divide-y divide-slate-100">
             {rows.length > 0 ? rows.map((row) => {
@@ -152,25 +168,25 @@ export function LiabilitiesGuideClient({
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="truncate text-sm font-semibold text-slate-800">{row.shortName?.trim() || row.name}</span>
-                        <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-500">{typeLabel(row.type)}</span>
+                        <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-500">{typeLabel(t, row.type)}</span>
                       </div>
-                      <div className="mt-1 text-xs text-slate-400">{row.accountCount > 0 ? `${row.accountCount} 个往来账户` : "还没有往来款记录"}</div>
+                      <div className="mt-1 text-xs text-slate-400">{row.accountCount > 0 ? formatText("liabilitiesGuide.accountCount", { count: row.accountCount }) : t("liabilitiesGuide.noRecords")}</div>
                     </div>
                     <div className="shrink-0 text-right text-xs tabular-nums">
-                      <div className={row.payable > 0 ? "text-rose-700" : "text-slate-400"}>应付 ¥{formatMoney(row.payable)}</div>
-                      <div className={row.receivable > 0 ? "text-emerald-700" : "text-slate-400"}>应收 ¥{formatMoney(row.receivable)}</div>
-                      {net !== 0 ? <div className="mt-0.5 text-[11px] text-slate-500">净额 ¥{formatMoney(Math.abs(net))}</div> : null}
+                      <div className={row.payable > 0 ? "text-rose-700" : "text-slate-400"}>{t("liabilitiesGuide.payable")} ¥{formatMoney(row.payable)}</div>
+                      <div className={row.receivable > 0 ? "text-emerald-700" : "text-slate-400"}>{t("liabilitiesGuide.receivable")} ¥{formatMoney(row.receivable)}</div>
+                      {net !== 0 ? <div className="mt-0.5 text-[11px] text-slate-500">{t("liabilitiesGuide.net")} ¥{formatMoney(Math.abs(net))}</div> : null}
                     </div>
                   </div>
                 </button>
               );
             }) : (
               <div className="px-4 py-10 text-center">
-                <div className="text-sm font-medium text-slate-700">还没有往来人员</div>
-                <div className="mt-1 text-xs leading-5 text-slate-500">先添加一个借入借出、代付或待结算对象。新增后，这里会出现“新建往来款”按钮。</div>
+                <div className="text-sm font-medium text-slate-700">{t("liabilitiesGuide.emptyTitle")}</div>
+                <div className="mt-1 text-xs leading-5 text-slate-500">{t("liabilitiesGuide.emptyHint")}</div>
                 <button type="button" onClick={() => setShowCreate(true)} className="primary-button mt-4 h-8 gap-1 px-3 text-xs">
                   <Plus className="h-3.5 w-3.5" />
-                  新增往来人员
+                  {t("liabilitiesGuide.addCounterparty")}
                 </button>
               </div>
             )}
@@ -181,7 +197,7 @@ export function LiabilitiesGuideClient({
           <div className="panel-header">
             <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
               <Landmark className="h-4 w-4 text-cyan-500" />
-              新建往来款说明
+              {t("liabilitiesGuide.guideTitle")}
             </div>
             {selectedRow ? (
               <DebtTransactionModal
@@ -194,7 +210,7 @@ export function LiabilitiesGuideClient({
                 defaultDebtInstitutionId={`counterparty:${selectedRow.id}`}
                 defaultCashAccountId={defaultCashAccountId}
                 action={action}
-                triggerLabel="新建往来款"
+                triggerLabel={t("liabilitiesGuide.newDebtTransaction")}
               />
             ) : null}
           </div>
@@ -202,43 +218,22 @@ export function LiabilitiesGuideClient({
           <div className="space-y-3 p-4">
             {selectedRow ? (
               <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm leading-6 text-blue-900">
-                当前选中：{selectedRow.shortName?.trim() || selectedRow.name}。点击右上角“新建往来款”后，弹窗里的“往来对象”会默认选中它；也可以在弹窗内切换或直接新增对象。
+                {formatText("liabilitiesGuide.selectedHint", { name: selectedRow.shortName?.trim() || selectedRow.name })}
               </div>
             ) : (
               <div className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-900">
-                先在左侧新增一个往来人员。没有往来对象时，不显示新建往来款按钮，避免直接建出无归属的往来账户。
+                {t("liabilitiesGuide.noSelectionHint")}
               </div>
             )}
 
             <div className="grid gap-3">
-              {[
-                {
-                  title: "1. 选择操作类型",
-                  text: "借入表示对方给你钱；借出表示你给对方钱；还款和收回用于冲减已有余额。",
-                },
-                {
-                  title: "2. 选择资金账户",
-                  text: "资金账户是现金、借记卡、电子钱包或信用卡这一侧，用来记录钱实际从哪里流入或流出。",
-                },
-                {
-                  title: "3. 选择往来对象",
-                  text: "普通往来必须先选对象。没有对象时，可以在左侧列表新增，也可以在弹窗的往来对象下拉里直接新增。",
-                },
-                {
-                  title: "4. 确认往来账户",
-                  text: "普通人员/组织通常复用该对象下的同一个往来账户；不选账户时，保存会自动复用或创建“某某的往来款”。",
-                },
-                {
-                  title: "5. 填金额和备注",
-                  text: "本金是要形成或冲减的往来余额；利息只在还款或收回时需要。备注用于说明原因，例如临时周转、代付餐费。",
-                },
-              ].map((item) => (
-                <div key={item.title} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3">
+              {GUIDE_STEPS.map((item) => (
+                <div key={item.titleKey} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3">
                   <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                     <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                    {item.title}
+                    {t(item.titleKey)}
                   </div>
-                  <div className="mt-1 text-xs leading-5 text-slate-600">{item.text}</div>
+                  <div className="mt-1 text-xs leading-5 text-slate-600">{t(item.textKey)}</div>
                 </div>
               ))}
             </div>
@@ -246,10 +241,10 @@ export function LiabilitiesGuideClient({
             <div className="rounded-lg border border-slate-200 bg-white px-3 py-3">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                 <Building2 className="h-4 w-4 text-slate-400" />
-                建议顺序
+                {t("liabilitiesGuide.suggestedOrderTitle")}
               </div>
               <div className="mt-2 text-xs leading-5 text-slate-600">
-                新手阶段建议先建“人/公司”，再录第一笔借入或借出；以后发生还款、收回、代付返还时，都继续选择同一个往来对象，这样余额才能自然结清。
+                {t("liabilitiesGuide.suggestedOrderText")}
               </div>
             </div>
           </div>

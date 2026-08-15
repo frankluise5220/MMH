@@ -13,23 +13,23 @@ import { listEntryBusinessDeleteImpacts } from "@/lib/server/entry-business-link
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 
 /**
- * 删除 / 恢复 交易记录
+ * Delete / restore transaction records.
  *
- * 删除:
+ * Delete:
  *   POST { entryIds: string[], checkOnly?: boolean, linkedAction?: "deleteBusiness" | "keepBusiness" }
- *   entryIds 必须是 TxRecord.id
- *   普通交易软删除。
- *   checkOnly=true 时只返回是否有关联业务，不执行删除。
- *   如果记录关联保险/基金/理财/存款/贵金属等业务明细，且未传 linkedAction，
- *   返回 { ok:false, needConfirm:true, impacts }，由客户端提示用户。
- *   linkedAction="deleteBusiness" 表示同时删除业务明细；
- *   linkedAction="keepBusiness" 表示仅移除资金流水并保留业务明细。
+ *   entryIds must be TxRecord.id
+ *   Ordinary entries are soft-deleted.
+ *   With checkOnly=true, only reports whether linked business exists without deleting.
+ *   If entries link to business details (insurance/fund/wealth/deposit/precious metal) and linkedAction is not passed,
+ *   returns { ok:false, needConfirm:true, impacts } for the client to prompt the user.
+ *   linkedAction="deleteBusiness" deletes the linked business details too;
+ *   linkedAction="keepBusiness" removes only the cash-flow entries and keeps the business details.
  *
- * 恢复（撤销软删除）:
+ * Restore (undo soft delete):
  *   POST { action: "restore", transactionIds: string[] }
- *   transactionIds 必须是 TxRecord.id
+ *   transactionIds must be TxRecord.id
  *
- * 返回 { ok: true, message } 或 { ok: false, error }
+ * Response: { ok: true, message } or { ok: false, error }
  */
 export async function POST(req: Request) {
   try {
@@ -41,7 +41,7 @@ export async function POST(req: Request) {
     if (action === "restore") {
       const transactionIds: string[] | undefined = body?.transactionIds;
       if (!transactionIds || !Array.isArray(transactionIds) || transactionIds.length === 0) {
-        return NextResponse.json({ ok: false, error: "缺少 transactionIds" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "MISSING_TRANSACTION_IDS", error: "缺少 transactionIds" }, { status: 400 });
       }
       const requestedRecords = await prisma.txRecord.findMany({
         where: { id: { in: transactionIds }, OR: [{ householdId }, { householdId: null }] },
@@ -134,7 +134,7 @@ export async function POST(req: Request) {
     const checkOnly = body?.checkOnly === true;
 
     if (!entryIds || !Array.isArray(entryIds) || entryIds.length === 0) {
-      return NextResponse.json({ ok: false, error: "缺少 entryIds" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_ENTRY_IDS", error: "缺少 entryIds" }, { status: 400 });
     }
     const impacts = await listEntryBusinessDeleteImpacts(ctx, entryIds);
     if (checkOnly) {
@@ -149,6 +149,7 @@ export async function POST(req: Request) {
       return NextResponse.json(
         {
           ok: false,
+          code: "DELETE_CONFLICT",
           needConfirm: true,
           error: "这些资金交易关联了业务明细，请确认删除方式",
           impacts,
@@ -171,7 +172,7 @@ export async function POST(req: Request) {
 
     if (deletedCount === 0 && keptBusinessCount === 0) {
       return NextResponse.json(
-        { ok: false, error: `未找到匹配的记录 (IDs: ${entryIds.slice(0, 3).join(", ")}${entryIds.length > 3 ? "..." : ""})` },
+        { ok: false, code: "RECORDS_NOT_FOUND", error: `未找到匹配的记录 (IDs: ${entryIds.slice(0, 3).join(", ")}${entryIds.length > 3 ? "..." : ""})` },
         { status: 404 }
       );
     }
@@ -191,7 +192,7 @@ export async function POST(req: Request) {
   } catch (e) {
     console.error("[delete] Error:", e);
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : "删除失败" },
+      { ok: false, code: "DELETE_FAILED", error: e instanceof Error ? e.message : "删除失败" },
       { status: 500 }
     );
   }

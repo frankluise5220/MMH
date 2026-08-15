@@ -8,11 +8,14 @@ import { startTransition } from "react";
 
 import { CartesianGrid, Line, LineChart as RechartsLineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
-import { formatMoney } from "@/lib/format";
+import { formatMoney, formatPercent } from "@/lib/format";
+import { formatDateLocal } from "@/lib/date-utils";
+import { pnlClassFromRedUp } from "@/lib/client/colors";
+import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 
 import { toNumber } from "@/lib/date-utils";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
-import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 
 import { CalendarSync, ChartLine, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Pause, Pencil, Play, SlidersHorizontal, Trash2, X } from "lucide-react";
 
@@ -42,11 +45,26 @@ import { ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewEx
 
 import { subtypeDisplay } from "@/lib/investment-config";
 
+import { useI18n } from "@/lib/i18n";
 
 
-function fl(subtype: string | null | undefined, source: string | null | undefined) {
 
-  return subtypeDisplay(subtype, source);
+function fundSubtypeLabel(t: (key: string) => string, subtype: string | null | undefined, source: string | null | undefined) {
+  if (subtype === "buy" && source === "regular_invest") return t("fundShell.subtype.buyRegularInvest");
+  if (subtype === "buy" && source === "dividend") return t("fund.subtype.dividend");
+  if (subtype === "buy_failed" && source === "regular_invest_refund") return t("fundShell.subtype.buyRefund");
+  if (subtype === "buy_failed") return t("fundShell.subtype.buyFailed");
+  if (subtype === "buy") return t("fund.subtype.buy");
+  if (subtype === "redeem") return t("fund.subtype.redeem");
+  if (subtype === "dividend_reinvest") return t("fundShell.subtype.dividendReinvest");
+  if (subtype === "dividend_cash") return t("fundShell.subtype.dividendCash");
+  return t("fundShell.subtype.unknown");
+}
+
+function fl(t: (key: string) => string, subtype: string | null | undefined, source: string | null | undefined) {
+
+  const info = subtypeDisplay(subtype, source);
+  return { label: fundSubtypeLabel(t, subtype, source), cls: info.cls, textCls: info.textCls };
 
 }
 
@@ -179,21 +197,21 @@ type DetailColumnKey = typeof DETAIL_COLS[number][0];
 const FIXED_DETAIL_COLUMNS = new Set<DetailColumnKey>(["select", "actions"]);
 const DEFAULT_HIDDEN_DETAIL_COLUMNS = new Set<DetailColumnKey>(["confirmDate", "note"]);
 const FUND_DETAIL_HIDDEN_COLUMNS_DEFAULTS_KEY = `${FUND_DETAIL_HIDDEN_COLUMNS_KEY}:defaults_v2`;
-const DETAIL_COLUMN_LABELS: Record<DetailColumnKey, string> = {
-  select: "选择",
-  date: "申请日期",
-  confirmDate: "确认日期",
-  arrivalDate: "到账日期",
-  cashAccount: "资金账户",
-  fund: "基金",
-  nav: "净值",
-  units: "份额",
-  remainingUnits: "剩余份额",
-  subtype: "交易类型",
-  amount: "金额",
-  profit: "收益",
-  status: "状态",
-  note: "备注",
+const DETAIL_COLUMN_LABEL_KEYS: Record<DetailColumnKey, string> = {
+  select: "",
+  date: "fundShell.col.applyDate",
+  confirmDate: "fundShell.col.confirmDate",
+  arrivalDate: "fundShell.col.arrivalDate",
+  cashAccount: "txForm.cashAccount",
+  fund: "txForm.fund",
+  nav: "viewImport.nav",
+  units: "viewImport.units",
+  remainingUnits: "fundShell.col.remainingUnits",
+  subtype: "fundShell.col.subtype",
+  amount: "txForm.amount",
+  profit: "overview.profit",
+  status: "fundShell.col.status",
+  note: "detail.column.remark",
   actions: "",
 };
 
@@ -257,20 +275,15 @@ type FundChartPoint = {
   hasPosition: boolean;
 };
 
-const FUND_CHART_RANGE_LABELS: Record<FundChartRange, string> = {
-  month: "本月",
-  quarter: "三月",
-  halfYear: "半年",
-  oneYear: "一年",
-  sinceBuy: "购买以来",
+const FUND_CHART_RANGE_LABEL_KEYS: Record<FundChartRange, string> = {
+  month: "fundShell.chartRange.month",
+  quarter: "fundShell.chartRange.quarter",
+  halfYear: "fundShell.chartRange.halfYear",
+  oneYear: "fundShell.chartRange.oneYear",
+  sinceBuy: "fundShell.chartRange.sinceBuy",
 };
 
-function localYmd(date = new Date()) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
+const localYmd = (date?: Date) => formatDateLocal(date ?? new Date());
 
 function parseYmdDay(value: string | null | undefined) {
   const raw = String(value ?? "").slice(0, 10);
@@ -395,19 +408,19 @@ function buildFundProfitChartPoints(history: FundNavHistoryPoint[], entries: Fun
   });
 }
 
-function compactFundSubtypeLabel(entry: any, fallback: string) {
+function compactFundSubtypeLabel(t: (key: string) => string, entry: any, fallback: string) {
   const subtype = String(entry?.fundSubtype ?? "");
   const source = String(entry?.source ?? "");
-  if (subtype === "buy_failed" && source === "regular_invest_refund") return "退回";
-  if (subtype === "buy_failed") return source === "regular_invest_refund" ? "退回" : "失败";
-  if (subtype === "buy" && source === "regular_invest") return "定投";
-  if (subtype === "buy") return "申购";
-  if (subtype === "redeem") return "赎回";
-  if (subtype === "dividend_cash") return "现金红利";
-  if (subtype === "dividend_reinvest" || source === "dividend") return "红利再投";
-  if (subtype === "switch_in") return "转入";
-  if (subtype === "switch_out") return "转出";
-  return fallback.replace(/^基金/, "").replace(/^定期/, "定投");
+  if (subtype === "buy_failed" && source === "regular_invest_refund") return t("fundShell.subtypeCompact.refund");
+  if (subtype === "buy_failed") return t("fundShell.subtypeCompact.failed");
+  if (subtype === "buy" && source === "regular_invest") return t("fund.subtype.regular_invest");
+  if (subtype === "buy") return t("fundShell.subtypeCompact.buy");
+  if (subtype === "redeem") return t("fund.subtype.redeem");
+  if (subtype === "dividend_cash") return t("fundShell.subtype.dividendCash");
+  if (subtype === "dividend_reinvest" || source === "dividend") return t("fund.subtype.dividend_reinvest");
+  if (subtype === "switch_in") return t("fund.subtype.switch");
+  if (subtype === "switch_out") return t("fund.subtype.switch_out");
+  return fallback;
 }
 
 function FundTrendChart({
@@ -441,6 +454,7 @@ function FundTrendChart({
   onRangeChange: (range: FundChartRange) => void;
   embedded?: boolean;
 }) {
+  const { t } = useI18n();
   const firstBuyDate = firstFundBuyDate(entries);
   const ranges = availableFundChartRanges(history, firstBuyDate);
   const activeRange = ranges.includes(range) ? range : ranges[0] ?? "month";
@@ -485,17 +499,17 @@ function FundTrendChart({
         </div>
         <div className="flex shrink-0 items-center gap-1 rounded-md bg-slate-100 p-0.5 text-xs">
           {([
-            ["profit", "收益走势"],
-            ["nav", "净值走势"],
-            ...(hasCumNav ? [["cumNav", "累计净值"] as const] : []),
-          ] as const).map(([key, label]) => (
+            ["profit", "fundShell.chart.profit"],
+            ["nav", "fundShell.chart.nav"],
+            ...(hasCumNav ? [["cumNav", "fundShell.chart.cumNav"] as const] : []),
+          ] as const).map(([key, labelKey]) => (
             <button
               key={key}
               type="button"
               onClick={() => onModeChange(key)}
               className={`h-7 rounded px-2 ${activeMode === key ? "bg-white font-medium text-blue-700 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
             >
-              {label}
+              {t(labelKey)}
             </button>
           ))}
         </div>
@@ -511,7 +525,7 @@ function FundTrendChart({
                 onClick={() => onRangeChange(item)}
                 className={`h-6 rounded border px-2 text-xs ${activeRange === item ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}
               >
-                {FUND_CHART_RANGE_LABELS[item]}
+                {t(FUND_CHART_RANGE_LABEL_KEYS[item])}
               </button>
             ))}
           </div>
@@ -524,11 +538,11 @@ function FundTrendChart({
 
         <div className={`${embedded ? "h-[180px]" : "h-[210px]"} w-full`}>
           {loading ? (
-            <div className="flex h-full items-center justify-center text-xs text-slate-400">正在加载历史净值</div>
+            <div className="flex h-full items-center justify-center text-xs text-slate-400">{t("fundShell.chart.loading")}</div>
           ) : error ? (
             <div className="flex h-full items-center justify-center px-4 text-center text-xs text-rose-500">{error}</div>
           ) : points.length < 2 ? (
-            <div className="flex h-full items-center justify-center px-4 text-center text-xs text-slate-400">历史净值不足，至少需要两个净值点才能绘制走势</div>
+            <div className="flex h-full items-center justify-center px-4 text-center text-xs text-slate-400">{t("fundShell.chart.notEnoughPoints")}</div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
               <RechartsLineChart data={points} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
@@ -558,17 +572,17 @@ function FundTrendChart({
                       <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs shadow-lg">
                         <div className="mb-1 font-medium text-slate-700">{point.date}</div>
                         <div className="tabular-nums text-slate-600">
-                          {activeMode === "profit" ? "收益" : activeMode === "cumNav" ? "累计净值" : "净值"} {chartValueText(point.value, activeMode)}
+                          {activeMode === "profit" ? t("overview.profit") : activeMode === "cumNav" ? t("fundShell.chart.cumNav") : t("viewImport.nav")} {chartValueText(point.value, activeMode)}
                         </div>
-                        <div className="tabular-nums text-slate-400">单位净值 {point.nav.toFixed(4)}</div>
+                        <div className="tabular-nums text-slate-400">{t("fundShell.chart.unitNav", { nav: point.nav.toFixed(4) })}</div>
                         {activeMode === "profit" ? (
                           point.hasPosition ? (
                             <>
-                              <div className="tabular-nums text-slate-400">份额 {point.units.toFixed(2)}</div>
-                              <div className="tabular-nums text-slate-400">成本 {formatMoney(point.cost)} · 市值 {formatMoney(point.marketValue)}</div>
+                              <div className="tabular-nums text-slate-400">{t("fundShell.chart.units", { units: point.units.toFixed(2) })}</div>
+                              <div className="tabular-nums text-slate-400">{t("fundShell.chart.costMarketValue", { cost: formatMoney(point.cost), value: formatMoney(point.marketValue) })}</div>
                             </>
                           ) : (
-                            <div className="text-slate-400">未确认持仓</div>
+                            <div className="text-slate-400">{t("fundShell.chart.unconfirmedPosition")}</div>
                           )
                         ) : null}
                       </div>
@@ -608,20 +622,22 @@ export function FundShell(props: Props) {
 
   const fundUnitsDecimals = Number.isFinite(Number(fundUnitsDecimalsProp)) ? Math.min(Math.max(Math.round(Number(fundUnitsDecimalsProp)), 0), 6) : 2;
 
+  const { t } = useI18n();
+
   const formatFundUnits = useCallback((value: number) => value.toFixed(fundUnitsDecimals), [fundUnitsDecimals]);
   const accountProductType = selectedAccount?.investProductType ?? null;
   const isMetalAccount = accountProductType === "metal";
   const isWealthAccount = accountProductType === "wealth";
   const positionCols = isWealthAccount ? WEALTH_POSITION_COLS : POSITION_COLS;
-  const assetNameLabel = isMetalAccount ? "品种" : isWealthAccount ? "理财产品" : "基金";
-  const holdingTabLabel = isMetalAccount ? "持仓贵金属" : isWealthAccount ? "持仓理财" : "持仓基金";
-  const clearedTabLabel = isWealthAccount ? "已赎回理财" : "清仓基金";
-  const noClearedText = isWealthAccount ? "暂无已赎回理财" : "暂无清仓基金";
-  const chooseHoldingText = `请先选择上方${isWealthAccount ? "理财持仓" : "基金持仓"}`;
-  const investmentAccountLabel = isWealthAccount ? "理财账户" : "基金账户";
-  const detailNameLabel = isWealthAccount ? "理财产品" : "基金";
-  const navColumnLabel = isMetalAccount ? "单价" : isWealthAccount ? "净值/估值" : "净值";
-  const detailAmountColumnLabel = isWealthAccount ? "入账/出账金额" : "金额";
+  const assetNameLabel = isMetalAccount ? t("fundShell.col.species") : isWealthAccount ? t("fundShell.wealthProduct") : t("txForm.fund");
+  const holdingTabLabel = isMetalAccount ? t("fundShell.tab.holdings.metal") : isWealthAccount ? t("fundShell.tab.holdings.wealth") : t("fundShell.tab.holdings.fund");
+  const clearedTabLabel = isWealthAccount ? t("fundShell.tab.cleared.wealth") : t("fundShell.tab.cleared.fund");
+  const noClearedText = isWealthAccount ? t("fundShell.empty.cleared.wealth") : t("fundShell.empty.cleared.fund");
+  const chooseHoldingText = isWealthAccount ? t("fundShell.selectHoldingFirst.wealth") : t("fundShell.selectHoldingFirst.fund");
+  const investmentAccountLabel = isWealthAccount ? t("fundShell.account.wealth") : t("viewImport.fundAccount");
+  const detailNameLabel = isWealthAccount ? t("fundShell.wealthProduct") : t("txForm.fund");
+  const navColumnLabel = isMetalAccount ? t("fundShell.nav.unitPrice") : isWealthAccount ? t("fundShell.nav.wealth") : t("viewImport.nav");
+  const detailAmountColumnLabel = isWealthAccount ? t("fundShell.amount.wealth") : t("txForm.amount");
   const entryAssetKey = useCallback((entry: any) => String(
     isWealthAccount
       ? entry?.wealthProductId ?? ""
@@ -802,11 +818,11 @@ export function FundShell(props: Props) {
 
 
 
-  const upCls = isRedUp ? "text-red-600" : "text-emerald-700";
+  const upCls = pnlClassFromRedUp(1, isRedUp);
 
-  const downCls = isRedUp ? "text-emerald-700" : "text-red-600";
+  const downCls = pnlClassFromRedUp(-1, isRedUp);
 
-  const pnl = useCallback((n: number) => n > 0 ? upCls : n < 0 ? downCls : "text-slate-600", [downCls, upCls]);
+  const pnl = useCallback((n: number) => pnlClassFromRedUp(n, isRedUp), [isRedUp]);
   const positionDefaultSort = useMemo(() => ({ key: "marketValue", direction: "desc" as const }), []);
 
   useEffect(() => {
@@ -1037,7 +1053,7 @@ export function FundShell(props: Props) {
       aria-orientation="vertical"
       onMouseDown={(event) => beginColumnResize(event, table, colKey, width, minWidth)}
       className="absolute right-[-3px] top-0 z-20 h-full w-2 cursor-col-resize touch-none select-none hover:bg-blue-300/40"
-      title="拖动调整列宽"
+      title={t("table.resizeColumn")}
     />
   );
 
@@ -1089,19 +1105,19 @@ export function FundShell(props: Props) {
     const label = scope === "current" ? fundCode || "current" : "all";
 
     const header = [
-      "申请日期",
-      "确认日期",
-      "到账日期",
-      "资金账户",
-      isWealthAccount ? "理财产品ID" : `${detailNameLabel}代码`,
-      `${detailNameLabel}名称`,
+      t("fundShell.col.applyDate"),
+      t("fundShell.col.confirmDate"),
+      t("fundShell.col.arrivalDate"),
+      t("txForm.cashAccount"),
+      isWealthAccount ? t("fundShell.export.wealthProductId") : t("viewImport.fundCode"),
+      isWealthAccount ? t("fundShell.export.wealthName") : t("viewImport.fundName"),
       navColumnLabel,
-      isMetalAccount ? "数量" : "份额",
-      ...(isWealthAccount ? ["剩余份额"] : []),
-      "交易类型",
+      isMetalAccount ? t("fundShell.col.quantity") : t("viewImport.units"),
+      ...(isWealthAccount ? [t("fundShell.col.remainingUnits")] : []),
+      t("fundShell.col.subtype"),
       detailAmountColumnLabel,
-      "收益",
-      ...(isWealthAccount ? [] : ["状态"]),
+      t("overview.profit"),
+      ...(isWealthAccount ? [] : [t("fundShell.col.status")]),
     ];
 
     const accountLabelByIdLocal = new Map<string, string>();
@@ -1124,9 +1140,9 @@ export function FundShell(props: Props) {
 
       const profit = e.realizedProfit != null ? e.realizedProfit : "";
 
-      const subtype = fl(e.fundSubtype, e.source).label;
+      const subtype = fl(t, e.fundSubtype, e.source).label;
 
-      // redeem/dividend_cash: 资金收到方是 toAccountId
+      // redeem/dividend_cash: the cash receiver is toAccountId
 
       const isR = e.fundSubtype === "redeem" || e.fundSubtype === "dividend_cash";
 
@@ -1142,11 +1158,11 @@ export function FundShell(props: Props) {
 
         : e.fundSubtype === "dividend_cash" ? fmtDate(e.fundArrivalDate)
 
-        : (displayUnitsOf(e) != null && Number(displayUnitsOf(e)) > 0) ? fmtDate(e.fundConfirmDate) : "待确认";
+        : (displayUnitsOf(e) != null && Number(displayUnitsOf(e)) > 0) ? fmtDate(e.fundConfirmDate) : t("fundShell.status.pending");
 
       const status = isBuyFailed
-        ? (e.source === "regular_invest_refund" ? "买入退回" : "买入失败")
-        : (e.fundSubtype === "buy" && (refundAmountByBuyId.get(String(e.id ?? "")) ?? 0) > 0) ? "部分确认" : (e.fundUnits == null || Number(e.fundUnits) === 0) ? "待确认" : "确认";
+        ? (e.source === "regular_invest_refund" ? t("fundShell.status.buyRefund") : t("fundShell.status.buyFailed"))
+        : (e.fundSubtype === "buy" && (refundAmountByBuyId.get(String(e.id ?? "")) ?? 0) > 0) ? t("fundShell.status.partial") : (e.fundUnits == null || Number(e.fundUnits) === 0) ? t("fundShell.status.pending") : t("fundShell.status.confirmed");
 
 
 
@@ -1184,8 +1200,8 @@ export function FundShell(props: Props) {
 
     await exportRowsToXlsx(
       exportRows,
-      `交易明细_${label}_${new Date().toISOString().slice(0, 10)}.xlsx`,
-      "交易明细",
+      `${t("fundShell.entriesTitle")}_${label}_${new Date().toISOString().slice(0, 10)}.xlsx`,
+      t("fundShell.entriesTitle"),
     );
 
   }
@@ -1349,7 +1365,7 @@ export function FundShell(props: Props) {
   function toggleAllWealthEntries() {
     if (isMetalAccount) return;
     if (showAllRecords) {
-      // 退出"所有记录"：回到第一只持仓
+      // Exit "all records": return to the first holding
       const list = showCleared ? sortedClearedPositions : sortedPositions;
       const first = positionAssetKey((list || [])[0] ?? null);
       setShowAllRecords(false);
@@ -1370,7 +1386,7 @@ export function FundShell(props: Props) {
       window.history.replaceState(null, "", `/?${q.toString()}`);
       return;
     }
-    // 进入"所有记录"：显示当前账户全部交易，持仓列表保留
+    // Enter "all records": show all transactions of the current account, keeping the holding list
     setShowAllRecords(true);
     setFundCode("");
     setFundPage(1);
@@ -1554,9 +1570,15 @@ export function FundShell(props: Props) {
   }, [entryAssetKey]);
 
   useEffect(() => {
-    window.addEventListener("mmh:fund:refresh", shellRefreshHandler);
+    const onFundChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ balanceChanged?: boolean }>).detail;
+      // Remark-only edits do not change holdings: skip the shell refresh.
+      if (detail?.balanceChanged === false) return;
+      shellRefreshHandler();
+    };
+    window.addEventListener(FINANCE_DATA_CHANGED_EVENT, onFundChanged);
     return () => {
-      window.removeEventListener("mmh:fund:refresh", shellRefreshHandler);
+      window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, onFundChanged);
       if (refreshTimer.current) clearTimeout(refreshTimer.current);
     };
   }, [shellRefreshHandler]);
@@ -1647,7 +1669,7 @@ export function FundShell(props: Props) {
       .then((json) => {
         if (controller.signal.aborted) return;
         if (!json?.ok || !Array.isArray(json.data)) {
-          setFundNavHistoryState({ code: fundCode, loading: false, error: String(json?.error ?? "历史净值加载失败"), data: [] });
+          setFundNavHistoryState({ code: fundCode, loading: false, error: String(json?.error ?? t("fundShell.chart.loadFailed")), data: [] });
           return;
         }
         const data = json.data
@@ -1662,10 +1684,10 @@ export function FundShell(props: Props) {
       })
       .catch((error) => {
         if (controller.signal.aborted) return;
-        setFundNavHistoryState({ code: fundCode, loading: false, error: error instanceof Error ? error.message : "历史净值加载失败", data: [] });
+        setFundNavHistoryState({ code: fundCode, loading: false, error: error instanceof Error ? error.message : t("fundShell.chart.loadFailed"), data: [] });
       });
     return () => controller.abort();
-  }, [fundCode, selectedFundChartStartDate, showSelectedFundChart]);
+  }, [fundCode, selectedFundChartStartDate, showSelectedFundChart, t]);
 
   const loadRegularPlans = useCallback(async () => {
     if (!accountId) {
@@ -1685,14 +1707,26 @@ export function FundShell(props: Props) {
   }, [loadRegularPlans]);
 
   useEffect(() => {
-    window.addEventListener("mmh:fund:refresh", loadRegularPlans);
-    return () => window.removeEventListener("mmh:fund:refresh", loadRegularPlans);
+    const onFundChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ balanceChanged?: boolean }>).detail;
+      if (detail?.balanceChanged === false) return;
+      void loadRegularPlans();
+    };
+    window.addEventListener(FINANCE_DATA_CHANGED_EVENT, onFundChanged);
+    return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, onFundChanged);
   }, [loadRegularPlans]);
 
   const updateRegularPlanStatus = useCallback(async (plan: any, action: "pause" | "resume" | "stop") => {
     if (!plan?.id || regularPlanActionBusy) return;
-    const actionLabel = action === "pause" ? "暂停" : action === "resume" ? "恢复" : "停止";
-    if (action === "stop" && !window.confirm(`确认停止 ${plan.fundCode} 的定投计划吗？`)) return;
+    const actionLabel = action === "pause" ? t("fundShell.plan.pause") : action === "resume" ? t("fundShell.plan.resume") : t("fundShell.plan.stop");
+    if (action === "stop") {
+      const confirmed = await showConfirmDialog({
+        title: t("fundShell.plan.stopTitle"),
+        message: t("fundShell.plan.stopConfirm", { code: plan.fundCode }),
+        tone: "danger",
+      });
+      if (!confirmed) return;
+    }
     setRegularPlanActionBusy(true);
     setRegularPlanBusyId(String(plan.id));
     try {
@@ -1703,19 +1737,19 @@ export function FundShell(props: Props) {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || !data?.ok) {
-        window.alert(data?.error || `${actionLabel}失败`);
+        window.alert(data?.error || t("fundShell.plan.actionFailed", { action: actionLabel }));
         return;
       }
       setRegularPlanMenu(null);
       await loadRegularPlans();
       dispatchFinanceDataChanged({ reason: "regular-invest-plan-status" });
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : `${actionLabel}失败`);
+      window.alert(error instanceof Error ? error.message : t("fundShell.plan.actionFailed", { action: actionLabel }));
     } finally {
       setRegularPlanActionBusy(false);
       setRegularPlanBusyId(null);
     }
-  }, [loadRegularPlans, regularPlanActionBusy]);
+  }, [loadRegularPlans, regularPlanActionBusy, t]);
 
   const regularPlanByFundCode = useMemo(() => {
     const map = new Map<string, any>();
@@ -1866,7 +1900,7 @@ export function FundShell(props: Props) {
                   ? "border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100"
                   : "border-blue-200 bg-blue-50 text-blue-700 hover:border-blue-300 hover:bg-blue-100"
               }`}
-              title={plan.status === "paused" ? "当前已暂停，点击选择继续或编辑" : "当前执行中，点击选择暂停或编辑"}
+              title={plan.status === "paused" ? t("fundShell.plan.titlePaused") : t("fundShell.plan.titleActive")}
               aria-haspopup="menu"
               aria-expanded={menuOpen}
             >
@@ -1896,7 +1930,7 @@ export function FundShell(props: Props) {
                     className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-50"
                     role="menuitem"
                   >
-                    <Pause className="h-3.5 w-3.5" />暂停
+                    <Pause className="h-3.5 w-3.5" />{t("fundShell.plan.pause")}
                   </button>
                 ) : (
                   <button
@@ -1906,7 +1940,7 @@ export function FundShell(props: Props) {
                     className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
                     role="menuitem"
                   >
-                    <Play className="h-3.5 w-3.5" />继续
+                    <Play className="h-3.5 w-3.5" />{t("fundShell.plan.continue")}
                   </button>
                 )}
                 <button
@@ -1918,7 +1952,7 @@ export function FundShell(props: Props) {
                   className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-blue-700 hover:bg-blue-50"
                   role="menuitem"
                 >
-                  <CalendarSync className="h-3.5 w-3.5" />编辑
+                  <CalendarSync className="h-3.5 w-3.5" />{t("common.edit")}
                 </button>
               </div>
             ) : null}
@@ -1940,8 +1974,8 @@ export function FundShell(props: Props) {
                   ? "border-blue-300 bg-blue-50 text-blue-700"
                   : "border-slate-200 bg-white text-slate-500 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
               }`}
-              title="查看基金曲线图"
-              aria-label="查看基金曲线图"
+              title={t("fundShell.chart.viewTitle")}
+              aria-label={t("fundShell.chart.viewTitle")}
             >
               <ChartLine className="h-3 w-3" />
             </button>
@@ -1962,6 +1996,7 @@ export function FundShell(props: Props) {
     regularPlanMenu,
     switchFund,
     updateRegularPlanStatus,
+    t,
   ]);
 
   const positionAdvancedColumns = useMemo<AdvancedDataTableColumn<any>[]>(() => {
@@ -1991,7 +2026,7 @@ export function FundShell(props: Props) {
       },
       ...(isWealthAccount ? [{
         key: "holdingDate",
-        label: "持仓日期",
+        label: t("fundShell.col.holdingDate"),
         width: colWidth("positions", "holdingDate", 96),
         minWidth: minFundColWidth("positions", "holdingDate"),
         headerClassName: "text-left",
@@ -2001,7 +2036,7 @@ export function FundShell(props: Props) {
       } satisfies AdvancedDataTableColumn<any>] : []),
       {
         key: "units",
-        label: isMetalAccount ? "数量" : "份额",
+        label: isMetalAccount ? t("fundShell.col.quantity") : t("viewImport.units"),
         width: colWidth("positions", "units", 92),
         minWidth: minFundColWidth("positions", "units"),
         align: "right",
@@ -2011,7 +2046,7 @@ export function FundShell(props: Props) {
       },
       {
         key: "avgCost",
-        label: "均价",
+        label: t("fundShell.col.avgCost"),
         width: colWidth("positions", "avgCost", 84),
         minWidth: minFundColWidth("positions", "avgCost"),
         align: "right",
@@ -2041,7 +2076,7 @@ export function FundShell(props: Props) {
       },
       {
         key: "cost",
-        label: "持仓成本",
+        label: t("overview.holdingCost"),
         width: colWidth("positions", "cost", 112),
         minWidth: minFundColWidth("positions", "cost"),
         align: "right",
@@ -2051,7 +2086,7 @@ export function FundShell(props: Props) {
       },
       {
         key: "marketValue",
-        label: "市值",
+        label: t("propertyShell.column.marketValue"),
         width: colWidth("positions", "marketValue", 112),
         minWidth: minFundColWidth("positions", "marketValue"),
         align: "right",
@@ -2064,7 +2099,7 @@ export function FundShell(props: Props) {
       },
       {
         key: "pending",
-        label: "未确认金额",
+        label: t("fundShell.col.pending"),
         width: colWidth("positions", "pending", 78),
         minWidth: minFundColWidth("positions", "pending"),
         align: "right",
@@ -2074,7 +2109,7 @@ export function FundShell(props: Props) {
       },
       {
         key: "floatingPnL",
-        label: "浮盈",
+        label: t("fundShell.col.floatingPnL"),
         width: colWidth("positions", "floatingPnL", 104),
         minWidth: minFundColWidth("positions", "floatingPnL"),
         align: "right",
@@ -2087,7 +2122,7 @@ export function FundShell(props: Props) {
       },
       {
         key: "floatingRate",
-        label: "浮盈率",
+        label: t("overview.floatingRate"),
         width: colWidth("positions", "floatingRate", 84),
         minWidth: minFundColWidth("positions", "floatingRate"),
         align: "right",
@@ -2100,7 +2135,7 @@ export function FundShell(props: Props) {
       },
       {
         key: "historical",
-        label: "历史收益",
+        label: t("stockPanel.colHistoricalProfit"),
         width: colWidth("positions", "historical", 108),
         minWidth: minFundColWidth("positions", "historical"),
         align: "right",
@@ -2130,6 +2165,7 @@ export function FundShell(props: Props) {
     positionAssetKey,
     positionDisplayMetrics,
     renderPositionActions,
+    t,
   ]);
 
   const positionSummaryRow = useMemo(() => {
@@ -2137,15 +2173,15 @@ export function FundShell(props: Props) {
     const floatingProfit = d.totalMarketValue - d.totalCost;
     return {
       cells: {
-        fund: "汇总",
+        fund: t("debtShell.summaryRow"),
         cost: <span className="tabular-nums text-slate-800">{formatMoney(d.totalCost)}</span>,
         marketValue: <span className={`tabular-nums ${pnl(d.totalMarketValue)}`}>{formatMoney(d.totalMarketValue)}</span>,
         floatingPnL: <span className={`tabular-nums ${pnl(floatingProfit)}`}>{formatMoney(floatingProfit)}</span>,
-        floatingRate: <span className={`tabular-nums ${pnl(floatingProfit)}`}>{d.totalCost !== 0 ? `${((floatingProfit / d.totalCost) * 100).toFixed(2)}%` : "-"}</span>,
+        floatingRate: <span className={`tabular-nums ${pnl(floatingProfit)}`}>{d.totalCost !== 0 ? formatPercent(floatingProfit / d.totalCost) : "-"}</span>,
         historical: <span className={`tabular-nums ${pnl(d.totalHistoricalProfit)}`}>{formatMoney(d.totalHistoricalProfit)}</span>,
       },
     };
-  }, [d.positions.length, d.totalCost, d.totalHistoricalProfit, d.totalMarketValue, pnl]);
+  }, [d.positions.length, d.totalCost, d.totalHistoricalProfit, d.totalMarketValue, pnl, t]);
 
 
   const cashAccountInfoOf = useCallback((e: any) => {
@@ -2161,33 +2197,33 @@ export function FundShell(props: Props) {
     const label = String(o?.label ?? "").trim();
 
     return {
-      label: label || "(空)",
+      label,
       groupName: String(o?.groupName ?? "").trim(),
     };
 
   }, [accountOptions]);
 
-  const statusOf = useCallback((e: any) => {
+  const statusOf = useCallback((e: any): "confirmed" | "pending" | "buy_failed" | "buy_refund" | "partial" => {
     if (e.fundSubtype === "buy_failed") {
       const amount = Math.abs(detailAmountOf(e));
       if (e.source === "regular_invest_refund") {
-        return "买入退回";
+        return "buy_refund";
       }
       const refundAmount = Math.min(amount, refundAmountOf(e));
       const confirmedAmount = Math.max(0, amount - refundAmount);
-      return refundAmount > 0 && confirmedAmount > 0 ? "部分确认" : "买入失败";
+      return refundAmount > 0 && confirmedAmount > 0 ? "partial" : "buy_failed";
     }
     if (e.fundSubtype === "buy") {
       const refundAmount = refundAmountOf(e);
       if (refundAmount > 0) {
         const confirmedAmount = getConfirmedBuyAmount(Math.abs(toNumber(e.amount)), refundAmount);
         const units = displayUnitsOf(e);
-        if (confirmedAmount <= 0) return "买入失败";
-        return units != null && units > 0 ? "部分确认" : "待确认";
+        if (confirmedAmount <= 0) return "buy_failed";
+        return units != null && units > 0 ? "partial" : "pending";
       }
     }
     const units = displayUnitsOf(e);
-    return units != null && units > 0 ? "确认" : "待确认";
+    return units != null && units > 0 ? "confirmed" : "pending";
   }, [detailAmountOf, displayUnitsOf, refundAmountOf]);
 
   const filteredByColumns = filtered;
@@ -2259,11 +2295,11 @@ export function FundShell(props: Props) {
 
       value: "cashAccountId",
 
-      label: "资金账户",
+      label: t("txForm.cashAccount"),
 
       kind: "select",
 
-      options: [{ value: "", label: "选择账户" }, ...cashAccounts.map((a: any) => ({ value: a.id, label: a.label }))],
+      options: [{ value: "", label: t("fundShell.selectAccount") }, ...cashAccounts.map((a: any) => ({ value: a.id, label: a.label }))],
 
     },
 
@@ -2275,19 +2311,19 @@ export function FundShell(props: Props) {
 
       kind: "select",
 
-      options: [{ value: "", label: "选择账户" }, ...investmentAccounts.map((a: any) => ({ value: a.id, label: a.label }))],
+      options: [{ value: "", label: t("fundShell.selectAccount") }, ...investmentAccounts.map((a: any) => ({ value: a.id, label: a.label }))],
 
     },
 
-    { value: "amount", label: "金额", kind: "number", placeholder: "如 100、*2、+10、-5、/2" },
+    { value: "amount", label: t("txForm.amount"), kind: "number", placeholder: t("fundShell.batch.amountPlaceholder") },
 
-    { value: "fundConfirmDate", label: "确认日期", kind: "date", allowEmpty: true },
+    { value: "fundConfirmDate", label: t("fundShell.col.confirmDate"), kind: "date", allowEmpty: true },
 
-    { value: "fundArrivalDate", label: "到账日期", kind: "date", allowEmpty: true },
+    { value: "fundArrivalDate", label: t("fundShell.col.arrivalDate"), kind: "date", allowEmpty: true },
 
-    { value: "remark", label: "备注", kind: "text", placeholder: "输入替换内容，可留空清除备注", allowEmpty: true },
+    { value: "remark", label: t("detail.column.remark"), kind: "text", placeholder: t("stockPanel.batchNotePlaceholder"), allowEmpty: true },
 
-  ], [cashAccounts, investmentAccountLabel, investmentAccounts]);
+  ], [cashAccounts, investmentAccountLabel, investmentAccounts, t]);
 
 
 
@@ -2295,7 +2331,7 @@ export function FundShell(props: Props) {
 
     const ids = batchTargetIds;
 
-    if (ids.length === 0) throw new Error("请先勾选记录");
+    if (ids.length === 0) throw new Error(t("stockPanel.error.selectRowsFirst"));
 
 
 
@@ -2327,9 +2363,9 @@ export function FundShell(props: Props) {
 
     });
 
-    const data = await res.json().catch(() => ({ ok: false, error: "批量修改失败" }));
+    const data = await res.json().catch(() => ({ ok: false, error: t("stockPanel.error.batchUpdateFailed") }));
 
-    if (!res.ok || !data.ok) throw new Error(data.error ?? "批量修改失败");
+    if (!res.ok || !data.ok) throw new Error(data.error ?? t("stockPanel.error.batchUpdateFailed"));
 
 
 
@@ -2343,7 +2379,7 @@ export function FundShell(props: Props) {
 
     });
 
-    window.dispatchEvent(new Event("mmh:fund:refresh")); return `已修改 ${data.updatedCount ?? 0} 条记录`;
+    dispatchFinanceDataChanged({ reason: "fund-batch-note-update" }); return t("stockPanel.updatedCount", { count: data.updatedCount ?? 0 });
 
   }
 
@@ -2363,21 +2399,21 @@ export function FundShell(props: Props) {
 
       const data = await deleteEntriesWithLinkedPrompt({
         entryIds: ids,
-        confirmMessage: `确认删除已勾选 ${ids.length} 条${isWealthAccount ? "理财" : "基金"}明细？删除后会进入回收站。`,
-        selectedRecordLabel: isWealthAccount ? "理财交易" : "基金交易",
-        counterpartRecordLabel: "资金交易",
+        confirmMessage: t("fundShell.deleteConfirm.batch", { count: ids.length, kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund") }),
+        selectedRecordLabel: isWealthAccount ? t("fundShell.record.wealth") : t("fundShell.record.fund"),
+        counterpartRecordLabel: t("fundShell.counterpartRecord"),
       });
 
       if (!data.ok) {
 
         if (data.error === "已取消删除") return;
-        setBatchDeleteMessage(data.error ?? "批量删除失败");
+        setBatchDeleteMessage(data.error ?? t("stockPanel.error.batchDeleteFailed"));
 
         return;
 
       }
 
-      setBatchDeleteMessage(data.message ?? `已删除 ${ids.length} 条记录`);
+      setBatchDeleteMessage(data.message ?? t("fundShell.deletedCount", { count: ids.length }));
 
       setSelectedIds((prev) => {
 
@@ -2394,7 +2430,7 @@ export function FundShell(props: Props) {
 
     } catch {
 
-      setBatchDeleteMessage("批量删除失败");
+      setBatchDeleteMessage(t("stockPanel.error.batchDeleteFailed"));
 
     } finally {
 
@@ -2412,13 +2448,13 @@ export function FundShell(props: Props) {
     try {
       const data = await deleteEntriesWithLinkedPrompt({
         entryIds: [id],
-        confirmMessage: `确认删除这条${isWealthAccount ? "理财" : "基金"}明细？删除后会进入回收站。`,
-        selectedRecordLabel: isWealthAccount ? "理财交易" : "基金交易",
-        counterpartRecordLabel: "资金交易",
+        confirmMessage: t("fundShell.deleteConfirm.single", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund") }),
+        selectedRecordLabel: isWealthAccount ? t("fundShell.record.wealth") : t("fundShell.record.fund"),
+        counterpartRecordLabel: t("fundShell.counterpartRecord"),
       });
       if (!data.ok) {
         if (data.error === "已取消删除") return;
-        setBatchDeleteMessage(data.error ?? "删除失败");
+        setBatchDeleteMessage(data.error ?? t("fundShell.deleteFailed"));
         return;
       }
       const refreshEntryIds = getDeleteRefreshEntryIds(data, [id]);
@@ -2429,7 +2465,7 @@ export function FundShell(props: Props) {
       });
       dispatchFinanceDataChanged({ reason: "entry-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
     } catch {
-      setBatchDeleteMessage("删除失败");
+      setBatchDeleteMessage(t("fundShell.deleteFailed"));
     } finally {
       setSingleDeletingIds((prev) => {
         const next = new Set(prev);
@@ -2437,7 +2473,7 @@ export function FundShell(props: Props) {
         return next;
       });
     }
-  }, [isWealthAccount, singleDeletingIds]);
+  }, [isWealthAccount, singleDeletingIds, t]);
 
   const linkDetailCashFlow = useCallback(async (entry: any) => {
     const id = String(entry?.id ?? "");
@@ -2454,7 +2490,7 @@ export function FundShell(props: Props) {
     ).trim();
     if (!id || linkingIds.has(id)) return;
     if (!businessTransactionId) {
-      window.alert(`这条${businessType === "wealth" ? "理财" : "基金"}记录缺少业务记录 ID，无法自动建立关联`);
+      window.alert(t("fundShell.alert.missingBusinessId", { kind: businessType === "wealth" ? t("fundShell.kind.wealth") : t("txForm.fund") }));
       return;
     }
 
@@ -2468,16 +2504,16 @@ export function FundShell(props: Props) {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || !data?.ok) {
-        throw new Error(data?.error ?? "建立关联失败");
+        throw new Error(data?.error ?? t("fundShell.error.linkFailed"));
       }
-      setBatchDeleteMessage("已建立资金侧关联");
+      setBatchDeleteMessage(t("fundShell.linkEstablished"));
       dispatchFinanceDataChanged({
         reason: "business-link-cash-flow",
         accountIds: [entry.accountId, entry.toAccountId].filter(Boolean),
         entryIds: [data.data?.cashEntryId, id].filter(Boolean),
       });
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "建立关联失败");
+      window.alert(error instanceof Error ? error.message : t("fundShell.error.linkFailed"));
     } finally {
       setLinkingIds((prev) => {
         const next = new Set(prev);
@@ -2485,7 +2521,7 @@ export function FundShell(props: Props) {
         return next;
       });
     }
-  }, [isWealthAccount, linkingIds]);
+  }, [isWealthAccount, linkingIds, t]);
 
 
 
@@ -2495,8 +2531,8 @@ export function FundShell(props: Props) {
     const navValueOf = (entry: any) => entry.fundNav != null ? toNumber(entry.fundNav) : null;
     const remainingUnitsValueOf = (entry: any) => entry.wealthRemainingUnits != null ? toNumber(entry.wealthRemainingUnits) : null;
     const detailSubtypeLabelOf = (entry: any) => {
-      const info = fl(entry.fundSubtype, entry.source);
-      return isSingleNormalFundScope ? compactFundSubtypeLabel(entry, info.label) : info.label;
+      const info = fl(t, entry.fundSubtype, entry.source);
+      return isSingleNormalFundScope ? compactFundSubtypeLabel(t, entry, info.label) : info.label;
     };
     const fundLabelOf = (entry: any) => displayFundName(entry);
     const fundSearchTextOf = (entry: any) =>
@@ -2510,7 +2546,7 @@ export function FundShell(props: Props) {
       if (key === "date") {
         return {
           key,
-          label: DETAIL_COLUMN_LABELS[key],
+          label: t(DETAIL_COLUMN_LABEL_KEYS[key]),
           ...common,
           filterKind: "dateRange",
           filterText: (e: any) => fundApplyDateOf(e) || "",
@@ -2522,7 +2558,7 @@ export function FundShell(props: Props) {
       if (key === "confirmDate") {
         return {
           key,
-          label: DETAIL_COLUMN_LABELS[key],
+          label: t(DETAIL_COLUMN_LABEL_KEYS[key]),
           ...common,
           filterKind: "dateRange",
           filterText: (e: any) => fmtDate(e.fundConfirmDate) || "",
@@ -2538,7 +2574,7 @@ export function FundShell(props: Props) {
       if (key === "arrivalDate") {
         return {
           key,
-          label: DETAIL_COLUMN_LABELS[key],
+          label: t(DETAIL_COLUMN_LABEL_KEYS[key]),
           ...common,
           filterKind: "dateRange",
           filterText: (e: any) => fmtDate(e.fundArrivalDate) || "",
@@ -2554,7 +2590,7 @@ export function FundShell(props: Props) {
       if (key === "cashAccount") {
         return {
           key,
-          label: DETAIL_COLUMN_LABELS[key],
+          label: t(DETAIL_COLUMN_LABEL_KEYS[key]),
           ...common,
           filterText: (e: any) => cashAccountInfoOf(e)?.label ?? "",
           filterSearchText: (e: any) => {
@@ -2564,7 +2600,7 @@ export function FundShell(props: Props) {
           sortValue: (e: any) => cashAccountInfoOf(e)?.label ?? null,
           render: (e: any) => {
             const info = cashAccountInfoOf(e);
-            if (!info || info.label === "(空)") return <span className="text-slate-300">-</span>;
+            if (!info || !info.label) return <span className="text-slate-300">-</span>;
             return (
               <div className="min-w-0">
                 <div className="truncate text-slate-600" title={info.label}>{info.label}</div>
@@ -2613,7 +2649,7 @@ export function FundShell(props: Props) {
       if (key === "units") {
         return {
           key,
-          label: DETAIL_COLUMN_LABELS[key],
+          label: t(DETAIL_COLUMN_LABEL_KEYS[key]),
           ...common,
           align: "right",
           filterKind: "numberRange",
@@ -2630,7 +2666,7 @@ export function FundShell(props: Props) {
       if (key === "remainingUnits") {
         return {
           key,
-          label: DETAIL_COLUMN_LABELS[key],
+          label: t(DETAIL_COLUMN_LABEL_KEYS[key]),
           ...common,
           align: "right",
           filterKind: "numberRange",
@@ -2648,12 +2684,12 @@ export function FundShell(props: Props) {
       if (key === "subtype") {
         return {
           key,
-          label: DETAIL_COLUMN_LABELS[key],
+          label: t(DETAIL_COLUMN_LABEL_KEYS[key]),
           ...common,
           filterText: detailSubtypeLabelOf,
           sortValue: detailSubtypeLabelOf,
           render: (e: any) => {
-            const info = fl(e.fundSubtype, e.source);
+            const info = fl(t, e.fundSubtype, e.source);
             const detailSubtypeLabel = detailSubtypeLabelOf(e);
             return (
               <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${e.source === "dividend" || e.fundSubtype === "dividend_cash" ? `bg-emerald-50 ${upCls}` : info.cls}`}>
@@ -2684,9 +2720,9 @@ export function FundShell(props: Props) {
             const displayText = formatMoney(displayAmount);
             if (e.source === "dividend" || e.fundSubtype === "dividend_cash") return <span className={`font-medium ${upCls}`}>+{formatMoney(Math.abs(displayAmount))}</span>;
             const entryStatus = statusOf(e);
-            const amountClass = entryStatus === "买入失败"
+            const amountClass = entryStatus === "buy_failed"
               ? "text-rose-600"
-              : entryStatus === "买入退回"
+              : entryStatus === "buy_refund"
                 ? "text-emerald-700"
               : displayAmount < 0 ? downCls : "text-slate-700";
             return <span className={`tabular-nums text-xs ${amountClass}`}>{displayText}</span>;
@@ -2697,7 +2733,7 @@ export function FundShell(props: Props) {
       if (key === "profit") {
         return {
           key,
-          label: DETAIL_COLUMN_LABELS[key],
+          label: t(DETAIL_COLUMN_LABEL_KEYS[key]),
           ...common,
           align: "right",
           filterKind: "numberRange",
@@ -2727,17 +2763,17 @@ export function FundShell(props: Props) {
       if (key === "status") {
         return {
           key,
-          label: DETAIL_COLUMN_LABELS[key],
+          label: t(DETAIL_COLUMN_LABEL_KEYS[key]),
           ...common,
           filterText: statusOf,
           sortValue: statusOf,
           render: (e: any) => {
             const s = statusOf(e);
-            if (s === "待确认") return <span className="text-amber-600">{s}</span>;
-            if (s === "买入失败") return <span className="text-rose-600">{s}</span>;
-            if (s === "买入退回") return <span className="text-emerald-700">{s}</span>;
-            if (s === "部分确认") return <span className="text-amber-600">{s}</span>;
-            return <span className="text-emerald-700">{s}</span>;
+            if (s === "pending") return <span className="text-amber-600">{t("fundShell.status.pending")}</span>;
+            if (s === "buy_failed") return <span className="text-rose-600">{t("fundShell.status.buyFailed")}</span>;
+            if (s === "buy_refund") return <span className="text-emerald-700">{t("fundShell.status.buyRefund")}</span>;
+            if (s === "partial") return <span className="text-amber-600">{t("fundShell.status.partial")}</span>;
+            return <span className="text-emerald-700">{t("fundShell.status.confirmed")}</span>;
           },
         } satisfies AdvancedDataTableColumn<any>;
       }
@@ -2745,7 +2781,7 @@ export function FundShell(props: Props) {
       if (key === "note") {
         return {
           key,
-          label: DETAIL_COLUMN_LABELS[key],
+          label: t(DETAIL_COLUMN_LABEL_KEYS[key]),
           ...common,
           filterKind: "text",
           filterText: (e: any) => String(e.note ?? "").trim(),
@@ -2761,7 +2797,7 @@ export function FundShell(props: Props) {
 
       return {
         key,
-        label: DETAIL_COLUMN_LABELS[key] ?? key,
+        label: DETAIL_COLUMN_LABEL_KEYS[key] ? t(DETAIL_COLUMN_LABEL_KEYS[key]) : key,
         ...common,
         render: () => null,
       } satisfies AdvancedDataTableColumn<any>;
@@ -2783,17 +2819,21 @@ export function FundShell(props: Props) {
     refundAmountOf,
     statusOf,
     upCls,
+    downCls,
     visibleDetailDataCols,
+    t,
   ]);
 
   const detailRowActions = useCallback((e: any) => {
     const businessLinkInfo = entryBusinessLinkInfo(e);
     const isLinked = businessLinkInfo.active;
     const linkTitle = isLinked
-      ? `已关联${businessLinkInfo.labels.length ? `：${businessLinkInfo.labels.join("、")}` : ""}`
+      ? (businessLinkInfo.labels.length > 0
+          ? t("detailView.linkedLabel", { labels: businessLinkInfo.labels.join("、") })
+          : t("fundShell.linkedCashFlow"))
       : linkingIds.has(String(e.id ?? ""))
-        ? "正在建立资金侧关联..."
-        : "未关联，点击建立资金侧关联";
+        ? t("fundShell.linking")
+        : t("detailView.notLinked");
     const isRegularInvestRefund = e.fundSubtype === "buy_failed" && e.source === "regular_invest_refund";
     const linkedBuyForRefund = isRegularInvestRefund
       ? (() => {
@@ -2821,7 +2861,7 @@ export function FundShell(props: Props) {
 
     return (
       <div className="flex items-center justify-end gap-1">
-        {!isWealthAccount && e.fundCode && e.fundSubtype === "buy" && statusOf(e) !== "买入失败" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? <FillNavButton entryId={e.id} fundCode={e.fundCode} action={fillNavAction} onFilled={(data) => handleEntryNavFilled(e, data)} /> : null}
+        {!isWealthAccount && e.fundCode && e.fundSubtype === "buy" && statusOf(e) !== "buy_failed" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? <FillNavButton entryId={e.id} fundCode={e.fundCode} action={fillNavAction} onFilled={(data) => handleEntryNavFilled(e, data)} /> : null}
         {e.fundProductType === "wealth" ? (
           <WealthFormModal
             mode="edit"
@@ -2953,7 +2993,7 @@ export function FundShell(props: Props) {
               : "border-amber-200 text-amber-700 hover:bg-amber-50 disabled:opacity-60",
           ].join(" ")}
           title={linkTitle}
-          aria-label={isLinked ? "已关联资金流水" : "未关联，点击建立资金侧关联"}
+          aria-label={isLinked ? t("fundShell.linkedCashFlow") : t("detailView.notLinked")}
         >
           <LinkStatusIcon active={isLinked} title={linkTitle} />
         </button>
@@ -2964,8 +3004,8 @@ export function FundShell(props: Props) {
             openDetailEdit(e.id);
           }}
           className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50"
-          title="编辑"
-          aria-label="编辑"
+          title={t("common.edit")}
+          aria-label={t("common.edit")}
         >
           <Pencil className="h-3.5 w-3.5" />
         </button>
@@ -2974,8 +3014,8 @@ export function FundShell(props: Props) {
           onClick={() => { void deleteDetailEntry(e); }}
           disabled={singleDeletingIds.has(String(e.id ?? ""))}
           className="flex h-6 w-6 items-center justify-center rounded border border-red-200 bg-white text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
-          title={singleDeletingIds.has(String(e.id ?? "")) ? "删除中..." : "删除"}
-          aria-label={singleDeletingIds.has(String(e.id ?? "")) ? "删除中..." : "删除"}
+          title={singleDeletingIds.has(String(e.id ?? "")) ? t("stockPanel.deleting") : t("common.delete")}
+          aria-label={singleDeletingIds.has(String(e.id ?? "")) ? t("stockPanel.deleting") : t("common.delete")}
         >
           <Trash2 className="h-3.5 w-3.5" />
         </button>
@@ -3016,6 +3056,7 @@ export function FundShell(props: Props) {
     singleDeletingIds,
     linkDetailCashFlow,
     statusOf,
+    t,
   ]);
   const showDetailPane = Boolean(fundCode || showAllRecords || isWealthAccount);
 
@@ -3027,8 +3068,8 @@ export function FundShell(props: Props) {
         storageKey={`mmh:fund-shell:${accountId}:split-height`}
         hasLowerPane={showDetailPane}
         defaultUpperHeight={360}
-        separatorLabel={`调整${isWealthAccount ? "理财" : "基金"}持仓和明细高度`}
-        separatorTitle={`拖动调整${isWealthAccount ? "理财" : "基金"}持仓和明细高度`}
+        separatorLabel={t("fundShell.resizeLabel", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund") })}
+        separatorTitle={t("fundShell.resizeTitle", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund") })}
         stackOnMobile
         stackLowerFirstOnMobile={false}
       >
@@ -3083,7 +3124,7 @@ export function FundShell(props: Props) {
           <div className="block h-full overflow-y-auto overscroll-contain px-3 pb-4 pt-2 md:hidden">
             {!showCleared ? (
               sortedPositions.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-slate-300 bg-white px-4 py-10 text-center text-sm text-slate-500">暂无持仓数据</div>
+                <div className="rounded-lg border border-dashed border-slate-300 bg-white px-4 py-10 text-center text-sm text-slate-500">{t("fundShell.empty.positions")}</div>
               ) : (
                 <div className="space-y-2.5">
                   {sortedPositions.map((p: any) => {
@@ -3112,7 +3153,7 @@ export function FundShell(props: Props) {
                             {!isWealthAccount && p.fundCode !== p.name ? (
                               <div className={`mt-1 text-[11px] tabular-nums ${pnl(displayPnL)}`}>{p.fundCode}</div>
                             ) : null}
-                            {isWealthAccount ? <div className="mt-1 text-[11px] text-slate-400">{p.holdingDate || "持仓日期 -"}</div> : null}
+                            {isWealthAccount ? <div className="mt-1 text-[11px] text-slate-400">{p.holdingDate || `${t("fundShell.col.holdingDate")} -`}</div> : null}
                           </div>
                           <div className="shrink-0 text-right">
                             <div className={`text-base font-semibold tabular-nums ${pnl(displayMV)}`}>{formatMoney(displayMV)}</div>
@@ -3121,10 +3162,10 @@ export function FundShell(props: Props) {
                         </div>
 
                         <div className="mt-2 grid grid-cols-4 gap-x-2">
-                          <FundMobileDetailItem label={isMetalAccount ? "数量" : "份额"} value={isWealthAccount && !p.hasUnits ? "-" : formatFundUnits(p.units)} alignRight />
-                          <FundMobileDetailItem label="均价" value={isWealthAccount && !p.hasUnits ? "-" : p.avgCost.toFixed(4)} alignRight />
-                          <FundMobileDetailItem label="成本" value={formatMoney(p.cost)} alignRight />
-                          <FundMobileDetailItem label="收益" value={formatMoney(displayPnL)} valueClassName={pnl(displayPnL)} alignRight />
+                          <FundMobileDetailItem label={isMetalAccount ? t("fundShell.col.quantity") : t("viewImport.units")} value={isWealthAccount && !p.hasUnits ? "-" : formatFundUnits(p.units)} alignRight />
+                          <FundMobileDetailItem label={t("fundShell.col.avgCost")} value={isWealthAccount && !p.hasUnits ? "-" : p.avgCost.toFixed(4)} alignRight />
+                          <FundMobileDetailItem label={t("fundShell.col.cost")} value={formatMoney(p.cost)} alignRight />
+                          <FundMobileDetailItem label={t("overview.profit")} value={formatMoney(displayPnL)} valueClassName={pnl(displayPnL)} alignRight />
                         </div>
 
                       </article>
@@ -3161,10 +3202,10 @@ export function FundShell(props: Props) {
                           </div>
                         </div>
                         <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2">
-                          <FundMobileDetailItem label="初次购买" value={c.firstBuyDate || "-"} />
-                          <FundMobileDetailItem label="清仓时间" value={c.clearedDate || "-"} />
-                          <FundMobileDetailItem label="申购金额" value={formatMoney(c.totalBuyAmount)} alignRight />
-                          <FundMobileDetailItem label="回收金额" value={formatMoney(c.totalRedeemAmount)} alignRight />
+                          <FundMobileDetailItem label={t("fundShell.col.firstBuy")} value={c.firstBuyDate || "-"} />
+                          <FundMobileDetailItem label={t("fundShell.col.clearedDate")} value={c.clearedDate || "-"} />
+                          <FundMobileDetailItem label={t("fundShell.col.buyAmount")} value={formatMoney(c.totalBuyAmount)} alignRight />
+                          <FundMobileDetailItem label={t("fundShell.col.redeemAmount")} value={formatMoney(c.totalRedeemAmount)} alignRight />
                         </div>
                       </article>
                     );
@@ -3183,7 +3224,7 @@ export function FundShell(props: Props) {
               columns={positionAdvancedColumns}
               rows={d.positions}
               rowKey={(p, index) => positionAssetKey(p) || p.fundCode || String(index)}
-              emptyText="暂无持仓数据"
+              emptyText={t("fundShell.empty.positions")}
               minTableWidth={minFundTableWidth("positions", positionCols)}
               rowClassName={(p) => {
                 const positionKey = positionAssetKey(p);
@@ -3220,29 +3261,29 @@ export function FundShell(props: Props) {
 
                 <tr>
 
-                  <SortHead sk="fundCode" label={`${assetNameLabel}名称`} cls="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200" sortType="cleared" table="cleared" colKey="fund" width={colWidth("cleared", "fund", 220)} minWidth={150} />
+                  <SortHead sk="fundCode" label={t("fundShell.clearedNameHeader", { label: assetNameLabel })} cls="text-left text-xs font-semibold text-slate-600 px-4 py-2 border-b border-slate-200" sortType="cleared" table="cleared" colKey="fund" width={colWidth("cleared", "fund", 220)} minWidth={150} />
 
                   <th className="relative select-none text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
-                    初次购买
+                    {t("fundShell.col.firstBuy")}
                     <ResizeGrip table="cleared" colKey="firstBuy" width={colWidth("cleared", "firstBuy", 108)} minWidth={78} />
                   </th>
 
-                  <SortHead sk="clearedDate" label="清仓时间" cls="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" sortType="cleared" table="cleared" colKey="clearedDate" width={colWidth("cleared", "clearedDate", 108)} minWidth={78} />
+                  <SortHead sk="clearedDate" label={t("fundShell.col.clearedDate")} cls="text-left text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" sortType="cleared" table="cleared" colKey="clearedDate" width={colWidth("cleared", "clearedDate", 108)} minWidth={78} />
 
                   <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
-                    申购金额
+                    {t("fundShell.col.buyAmount")}
                     <ResizeGrip table="cleared" colKey="buyAmount" width={colWidth("cleared", "buyAmount", 112)} minWidth={82} />
                   </th>
 
                   <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
-                    回收金额
+                    {t("fundShell.col.redeemAmount")}
                     <ResizeGrip table="cleared" colKey="redeemAmount" width={colWidth("cleared", "redeemAmount", 112)} minWidth={82} />
                   </th>
 
-                  <SortHead sk="historicalProfit" label="清仓收益" cls="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" sortType="cleared" table="cleared" colKey="historical" width={colWidth("cleared", "historical", 112)} minWidth={82} />
+                  <SortHead sk="historicalProfit" label={t("fundShell.col.clearedProfit")} cls="text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200" sortType="cleared" table="cleared" colKey="historical" width={colWidth("cleared", "historical", 112)} minWidth={82} />
 
                   <th className="relative select-none text-right text-xs font-semibold text-slate-600 px-3 py-2 border-b border-slate-200">
-                    收益率
+                    {t("stats.rate")}
                     <ResizeGrip table="cleared" colKey="returnRate" width={colWidth("cleared", "returnRate", 80)} minWidth={62} />
                   </th>
 
@@ -3310,7 +3351,7 @@ export function FundShell(props: Props) {
 
                     <tr>
 
-                      <td className="px-4 py-2 border-t border-slate-200 text-xs text-slate-700" colSpan={3}>汇总</td>
+                      <td className="px-4 py-2 border-t border-slate-200 text-xs text-slate-700" colSpan={3}>{t("debtShell.summaryRow")}</td>
 
                       <td className="px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums text-slate-800">{formatMoney(totalBuyAmt)}</td>
 
@@ -3318,7 +3359,7 @@ export function FundShell(props: Props) {
 
                       <td className={`px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums ${pnl(d.totalHistoricalProfit)}`}>{formatMoney(d.totalHistoricalProfit)}</td>
 
-                      <td className={`px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums ${pnl(totalReturnRate)}`}>{totalBuyAmt > 0 ? `${(totalReturnRate * 100).toFixed(2)}%` : "-"}</td>
+                      <td className={`px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums ${pnl(totalReturnRate)}`}>{totalBuyAmt > 0 ? formatPercent(totalReturnRate) : "-"}</td>
 
                     </tr>
 
@@ -3374,7 +3415,7 @@ export function FundShell(props: Props) {
           onSuccess={() => {
             setEditingRegularPlan(null);
             void loadRegularPlans();
-            window.dispatchEvent(new Event("mmh:fund:refresh"));
+            dispatchFinanceDataChanged({ reason: "regular-invest-plan:edit" });
           }}
         />
       ) : null}
@@ -3398,8 +3439,8 @@ export function FundShell(props: Props) {
                 type="button"
                 onClick={() => setFundChartOpen(false)}
                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-slate-400 hover:bg-slate-50 hover:text-slate-700"
-                title="收起曲线图"
-                aria-label="收起曲线图"
+                title={t("fundShell.chart.collapse")}
+                aria-label={t("fundShell.chart.collapse")}
               >
                 <X className="h-4 w-4" />
               </button>
@@ -3426,7 +3467,7 @@ export function FundShell(props: Props) {
 
       <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden">
 
-      {/* 交易明细 */}
+      {/* Transaction details */}
 
       <div className="panel-surface flex min-h-0 flex-1 flex-col overflow-hidden">
 
@@ -3437,16 +3478,16 @@ export function FundShell(props: Props) {
               <div className="flex shrink-0 items-center gap-1">
                 <span
                   className="h-6 rounded border border-blue-200 bg-blue-50 px-2 text-xs font-medium leading-6 tabular-nums text-blue-700"
-                  title={`当前筛选结果已选 ${batchTargetIds.length} 条`}
+                  title={t("fundShell.selectedTitle", { count: batchTargetIds.length })}
                 >
-                  已选 {batchTargetIds.length} 条
+                  {t("table.selectedCount", { count: batchTargetIds.length })}
                 </span>
 
                 <BatchReplacePopoverButton
                   fields={batchFields}
                   targetCount={batchTargetIds.length}
-                  targetLabel="已选"
-                  buttonTitle="编辑"
+                  targetLabel={t("stockPanel.selected")}
+                  buttonTitle={t("common.edit")}
                   buttonClassName="h-6 w-6 rounded border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center [&_svg]:h-3.5 [&_svg]:w-3.5"
                   onApply={applyBatch}
                 />
@@ -3456,8 +3497,8 @@ export function FundShell(props: Props) {
                   onClick={applyBatchDelete}
                   disabled={batchTargetIds.length === 0 || batchDeleting}
                   className="flex h-6 w-6 items-center justify-center rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40"
-                  title="删除"
-                  aria-label="删除"
+                  title={t("common.delete")}
+                  aria-label={t("common.delete")}
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
@@ -3466,7 +3507,7 @@ export function FundShell(props: Props) {
               </div>
             ) : null}
 
-            <span className="shrink-0">交易明细</span>
+            <span className="shrink-0">{t("fundShell.entriesTitle")}</span>
 
             {fundCode && (
               <span className={`ml-2 text-xs font-normal ${selectedFundCodeCls}`}>
@@ -3490,10 +3531,13 @@ export function FundShell(props: Props) {
                     : "border-slate-200 bg-white text-slate-500 hover:bg-blue-50 hover:text-blue-600"
                 }`}
                 title={showAllRecords
-                  ? `取消${isWealthAccount ? "所有交易" : "所有记录"}，回到单个${isWealthAccount ? "理财产品" : "基金持仓"}`
-                  : `显示当前${isWealthAccount ? "理财" : "基金"}账户下所有交易记录`}
+                  ? t("fundShell.toggleAllOff", {
+                      scope: isWealthAccount ? t("fundShell.allRecords.wealth") : t("fundShell.allRecords.fund"),
+                      kind: isWealthAccount ? t("fundShell.wealthProduct") : t("fundShell.holding.fund"),
+                    })
+                  : t("fundShell.toggleAllOn", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund") })}
               >
-                {isWealthAccount ? "所有交易" : "所有记录"}
+                {isWealthAccount ? t("fundShell.allRecords.wealth") : t("fundShell.allRecords.fund")}
               </button>
             ) : null}
 
@@ -3501,16 +3545,16 @@ export function FundShell(props: Props) {
               <ViewExcelImportMenuButton
                 kind="fund"
                 accountId={accountId}
-                fundAccountName={selectedAccount?.name ?? "基金账户"}
+                fundAccountName={selectedAccount?.name ?? t("viewImport.fundAccount")}
                 fundCode={fundCode || undefined}
                 fundName={selectedFundNameForChart || undefined}
                 exportItems={[
                   ...(fundCode ? [{
-                    label: "导出当前基金明细",
+                    label: t("fundShell.export.current"),
                     onClick: () => void exportXlsx("current"),
                   }] : []),
                   {
-                    label: "导出账户全部基金",
+                    label: t("fundShell.export.all"),
                     onClick: () => void exportXlsx("all"),
                   },
                 ]}
@@ -3570,7 +3614,7 @@ export function FundShell(props: Props) {
                                 ? navColumnLabel
                                 : key === "amount"
                                   ? detailAmountColumnLabel
-                                  : DETAIL_COLUMN_LABELS[key]}
+                                  : t(DETAIL_COLUMN_LABEL_KEYS[key])}
                           </span>
                         </label>
                       );
@@ -3587,9 +3631,9 @@ export function FundShell(props: Props) {
             {isMetalAccount || isWealthAccount ? (
             <div className="relative" ref={exportRef}>
 
-              <button onClick={() => setShowExportMenu(!showExportMenu)} className="h-6 px-2 rounded border border-slate-200 bg-white text-slate-500 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title="导出 EXCEL 表">
+              <button onClick={() => setShowExportMenu(!showExportMenu)} className="h-6 px-2 rounded border border-slate-200 bg-white text-slate-500 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title={t("viewImport.exportExcel")}>
 
-                <Download className="w-3 h-3" />导出
+                <Download className="w-3 h-3" />{t("viewImport.export")}
 
               </button>
 
@@ -3603,7 +3647,7 @@ export function FundShell(props: Props) {
 
                       className="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-blue-50">
 
-                      导出当前{isWealthAccount ? "理财" : "基金"}明细
+                      {t("fundShell.export.currentDetail", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund") })}
 
                     </button>
 
@@ -3613,7 +3657,7 @@ export function FundShell(props: Props) {
 
                     className="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-blue-50">
 
-                    导出账户全部{isWealthAccount ? "理财" : "基金"}
+                    {t("fundShell.export.allDetail", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund") })}
 
                   </button>
 
@@ -3634,7 +3678,7 @@ export function FundShell(props: Props) {
 
               ))}
 
-              <button onClick={() => { setFundPageSize(allFundPageSize); setFundPage(1); }} className={`h-6 px-1.5 rounded border ${fundPageSize === allFundPageSize ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}>所有</button>
+              <button onClick={() => { setFundPageSize(allFundPageSize); setFundPage(1); }} className={`h-6 px-1.5 rounded border ${fundPageSize === allFundPageSize ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}>{t("stockPanel.all")}</button>
 
               <span className="text-slate-300">|</span>
 
@@ -3681,7 +3725,7 @@ export function FundShell(props: Props) {
                 const units = displayUnitsOf(e);
                 const nav = e.fundNav != null ? toNumber(e.fundNav) : null;
                 const amount = detailAmountOf(e);
-                const info = fl(e.fundSubtype, e.source);
+                const info = fl(t, e.fundSubtype, e.source);
                 const detailSubtypeLabel = isSingleNormalFundScope ? (info as { shortLabel?: string }).shortLabel ?? info.label : info.label;
                 const cashInfo = cashAccountInfoOf(e);
                 const status = statusOf(e);
@@ -3691,8 +3735,8 @@ export function FundShell(props: Props) {
                 const selected = selectedIds.has(e.id);
                 const businessLinkInfo = entryBusinessLinkInfo(e);
                 const businessLinkTitle = businessLinkInfo.active
-                  ? (businessLinkInfo.labels.length > 0 ? businessLinkInfo.labels.join("；") : "已关联资金流水")
-                  : "未关联";
+                  ? (businessLinkInfo.labels.length > 0 ? businessLinkInfo.labels.join("；") : t("fundShell.linkedCashFlow"))
+                  : t("fundShell.notLinked");
 
                 return (
                   <article
@@ -3726,34 +3770,34 @@ export function FundShell(props: Props) {
                       </div>
                       <div className="shrink-0 text-right">
                         <div className={`text-base font-semibold tabular-nums ${
-                          status === "买入失败" ? "text-rose-600" : status === "买入退回" ? "text-emerald-700" : "text-slate-900"
+                          status === "buy_failed" ? "text-rose-600" : status === "buy_refund" ? "text-emerald-700" : "text-slate-900"
                         }`}>
                           {e.source === "dividend" || e.fundSubtype === "dividend_cash" ? (
                             <span className={upCls}>+{formatMoney(Math.abs(amount))}</span>
                           ) : formatMoney(amount < 0 ? amount : Math.abs(amount))}
                         </div>
-                        <div className={`mt-0.5 text-[11px] ${status === "确认" || status === "买入退回" ? "text-emerald-700" : status === "买入失败" ? "text-rose-600" : "text-amber-600"}`}>
-                          {status}
+                        <div className={`mt-0.5 text-[11px] ${status === "confirmed" || status === "buy_refund" ? "text-emerald-700" : status === "buy_failed" ? "text-rose-600" : "text-amber-600"}`}>
+                          {status === "confirmed" ? t("fundShell.status.confirmed") : status === "pending" ? t("fundShell.status.pending") : status === "buy_failed" ? t("fundShell.status.buyFailed") : status === "buy_refund" ? t("fundShell.status.buyRefund") : t("fundShell.status.partial")}
                         </div>
                       </div>
                     </div>
 
                     <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 px-3 text-xs">
-                      <FundMobileDetailItem label="申请日期" value={fundApplyDateOf(e) || "-"} />
-                      <FundMobileDetailItem label="到账日期" value={e.fundArrivalDate ? fmtDate(e.fundArrivalDate) : "-"} />
+                      <FundMobileDetailItem label={t("fundShell.col.applyDate")} value={fundApplyDateOf(e) || "-"} />
+                      <FundMobileDetailItem label={t("fundShell.col.arrivalDate")} value={e.fundArrivalDate ? fmtDate(e.fundArrivalDate) : "-"} />
                       <FundMobileDetailItem label={navColumnLabel} value={nav != null ? nav.toFixed(4) : "-"} alignRight />
-                      <FundMobileDetailItem label={isMetalAccount ? "数量" : "份额"} value={units != null ? formatFundUnits(units) : "-"} alignRight />
+                      <FundMobileDetailItem label={isMetalAccount ? t("fundShell.col.quantity") : t("viewImport.units")} value={units != null ? formatFundUnits(units) : "-"} alignRight />
                       {!hideRemainingUnitsDetailColumn ? (
                         <FundMobileDetailItem
-                          label="剩余份额"
+                          label={t("fundShell.col.remainingUnits")}
                           value={e.wealthRemainingUnits != null ? formatFundUnits(toNumber(e.wealthRemainingUnits)) : "-"}
                           alignRight
                         />
                       ) : null}
                       {profit != null ? (
-                        <FundMobileDetailItem label="收益" value={formatMoney(profit)} valueClassName={pnl(profit)} alignRight />
+                        <FundMobileDetailItem label={t("overview.profit")} value={formatMoney(profit)} valueClassName={pnl(profit)} alignRight />
                       ) : null}
-                      <FundMobileDetailItem label="资金账户" value={cashInfo?.label && cashInfo.label !== "(空)" ? cashInfo.label : "-"} wide />
+                      <FundMobileDetailItem label={t("txForm.cashAccount")} value={cashInfo?.label ? cashInfo.label : "-"} wide />
                     </div>
 
                     <div
@@ -3772,9 +3816,9 @@ export function FundShell(props: Props) {
                             return next;
                           })}
                           className="h-4 w-4 accent-blue-600"
-                          aria-label={`选择${isWealthAccount ? "理财" : "基金"}交易明细`}
+                          aria-label={t("fundShell.selectDetailAria", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund") })}
                         />
-                        选择
+                        {t("fundShell.select")}
                       </label>
                       <div className="flex items-center gap-1.5">
                         {!isWealthAccount && e.fundCode && e.fundSubtype === "buy" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? (
@@ -3792,8 +3836,8 @@ export function FundShell(props: Props) {
                               ? "border-slate-200 text-slate-500"
                               : "border-amber-200 text-amber-700 hover:bg-amber-50 disabled:opacity-60",
                           ].join(" ")}
-                          title={businessLinkInfo.active ? businessLinkTitle : linkingIds.has(String(e.id ?? "")) ? "正在建立资金侧关联..." : "未关联，点击建立资金侧关联"}
-                          aria-label={businessLinkInfo.active ? businessLinkTitle : "未关联，点击建立资金侧关联"}
+                          title={businessLinkInfo.active ? businessLinkTitle : linkingIds.has(String(e.id ?? "")) ? t("fundShell.linking") : t("detailView.notLinked")}
+                          aria-label={businessLinkInfo.active ? businessLinkTitle : t("detailView.notLinked")}
                         >
                           <LinkStatusIcon active={businessLinkInfo.active} title={businessLinkTitle} />
                         </button>
@@ -3801,8 +3845,8 @@ export function FundShell(props: Props) {
                           type="button"
                           onClick={() => openDetailEdit(e.id)}
                           className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50"
-                          title="编辑按钮"
-                          aria-label="编辑按钮"
+                          title={t("insuranceShell.editButton")}
+                          aria-label={t("insuranceShell.editButton")}
                         >
                           <Pencil className="h-4 w-4" />
                         </button>
@@ -3811,8 +3855,8 @@ export function FundShell(props: Props) {
                           onClick={() => { void deleteDetailEntry(e); }}
                           disabled={singleDeletingIds.has(String(e.id ?? ""))}
                           className="flex h-8 w-8 items-center justify-center rounded border border-red-200 bg-white text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
-                          title={singleDeletingIds.has(String(e.id ?? "")) ? "删除中..." : "删除按钮"}
-                          aria-label={singleDeletingIds.has(String(e.id ?? "")) ? "删除中..." : "删除按钮"}
+                          title={singleDeletingIds.has(String(e.id ?? "")) ? t("stockPanel.deleting") : t("depositShell.deleteButton")}
+                          aria-label={singleDeletingIds.has(String(e.id ?? "")) ? t("stockPanel.deleting") : t("depositShell.deleteButton")}
                         >
                           <Trash2 className="h-4 w-4" />
                         </button>
@@ -3824,7 +3868,7 @@ export function FundShell(props: Props) {
             </div>
           ) : (
             <div className="rounded-lg border border-dashed border-slate-300 bg-white px-4 py-10 text-center text-sm text-slate-500">
-              {fundCode || showAllRecords || isWealthAccount ? "暂无交易记录" : chooseHoldingText}
+              {fundCode || showAllRecords || isWealthAccount ? t("fundShell.empty.entries") : chooseHoldingText}
             </div>
           )}
         </div>
@@ -3840,7 +3884,7 @@ export function FundShell(props: Props) {
             rows={filteredByColumns}
             rowKey={(entry) => String(entry.id)}
             minTableWidth={detailMinTableWidth}
-            emptyText={fundCode || showAllRecords || isWealthAccount ? "暂无交易记录" : chooseHoldingText}
+            emptyText={fundCode || showAllRecords || isWealthAccount ? t("fundShell.empty.entries") : chooseHoldingText}
             selectable
             selectOnRowClick
             selectAllScope="renderedRows"

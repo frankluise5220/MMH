@@ -22,6 +22,14 @@ import { createImportTraceId, postImportDebugLog } from "@/lib/client/importDebu
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
 import { inferKnownStatementMerchant } from "@/lib/statement/merchant-inference";
+import {
+  formatStatementMoneyAmount as formatMoneyAmount,
+  statementMoneyNumber as moneyNumber,
+  uniqueStatementInfoTexts,
+} from "@/lib/statement/preview-meta";
+import { useI18n } from "@/lib/i18n";
+
+type I18nT = (key: string, params?: Record<string, string | number>) => string;
 
 type BatchReplacePopoverButtonComponent = typeof import("@/components/BatchReplacePopoverButton").BatchReplacePopoverButton;
 type SmartSelectComponent = typeof import("@/components/SmartSelect").SmartSelect;
@@ -36,16 +44,16 @@ const SmartSelect = dynamic(
 ) as SmartSelectComponent;
 
 const MAIL_DISPLAY_LIMIT = 5;
-const MAIL_FIXED_KEYWORD = "账单";
+const MAIL_FIXED_KEYWORD = "\u8d26\u5355"; // "bill": fixed subject keyword for matching Chinese bill emails
 
-const EMAIL_PROVIDER_PRESETS = [
-  { key: "qq", label: "QQ邮箱", imapHost: "imap.qq.com", imapPort: "993", smtpHost: "smtp.qq.com", smtpPort: "465" },
-  { key: "163", label: "网易163", imapHost: "imap.163.com", imapPort: "993", smtpHost: "smtp.163.com", smtpPort: "465" },
-  { key: "126", label: "网易126", imapHost: "imap.126.com", imapPort: "993", smtpHost: "smtp.126.com", smtpPort: "465" },
-  { key: "sohu", label: "搜狐邮箱", imapHost: "imap.sohu.com", imapPort: "993", smtpHost: "smtp.sohu.com", smtpPort: "465" },
-  { key: "sina", label: "新浪邮箱", imapHost: "imap.sina.com", imapPort: "993", smtpHost: "smtp.sina.com", smtpPort: "465" },
-  { key: "gmail", label: "Gmail", imapHost: "imap.gmail.com", imapPort: "993", smtpHost: "smtp.gmail.com", smtpPort: "587" },
-] as const;
+const EMAIL_PROVIDER_PRESETS = (t: I18nT) => [
+  { key: "qq", label: t("settings.email.providerQq"), imapHost: "imap.qq.com", imapPort: "993", smtpHost: "smtp.qq.com", smtpPort: "465" },
+  { key: "163", label: t("settings.email.provider163"), imapHost: "imap.163.com", imapPort: "993", smtpHost: "smtp.163.com", smtpPort: "465" },
+  { key: "126", label: t("settings.email.provider126"), imapHost: "imap.126.com", imapPort: "993", smtpHost: "smtp.126.com", smtpPort: "465" },
+  { key: "sohu", label: t("settings.email.providerSohu"), imapHost: "imap.sohu.com", imapPort: "993", smtpHost: "smtp.sohu.com", smtpPort: "465" },
+  { key: "sina", label: t("settings.email.providerSina"), imapHost: "imap.sina.com", imapPort: "993", smtpHost: "smtp.sina.com", smtpPort: "465" },
+  { key: "gmail", label: t("settings.email.providerGmail"), imapHost: "imap.gmail.com", imapPort: "993", smtpHost: "smtp.gmail.com", smtpPort: "587" },
+];
 
 type Account = {
   id: string;
@@ -159,24 +167,24 @@ type ImportCompleteState = {
   accountId: string | null;
   lockedStatementBills: LockedStatementBill[];
 };
-const IMPORT_PREVIEW_FIELD_LABELS: Record<ImportPreviewEditableCell, string> = {
-  date: "交易日",
-  postedDate: "入账日期",
-  type: "类型",
-  account: "账户",
-  counterAccount: "对向账户",
-  category: "分类",
-  institution: "收支机构",
-  inflow: "流入",
-  outflow: "流出",
-  amount: "金额",
-  remark: "备注",
-};
-const PREVIEW_TYPE_OPTIONS: Array<{ value: ParsedItem["type"]; label: string }> = [
-  { value: "expense", label: "支出" },
-  { value: "income", label: "收入" },
-  { value: "transfer", label: "转账" },
-  { value: "investment", label: "投资" },
+const IMPORT_PREVIEW_FIELD_LABELS = (t: I18nT): Record<ImportPreviewEditableCell, string> => ({
+  date: t("initModal.ri.txDate"),
+  postedDate: t("detail.column.postedAt"),
+  type: t("batchImport.field.type"),
+  account: t("batchImport.field.account"),
+  counterAccount: t("batchImport.field.counterAccount"),
+  category: t("batchImport.field.category"),
+  institution: t("batchImport.field.institution"),
+  inflow: t("batchImport.field.inflow"),
+  outflow: t("batchImport.field.outflow"),
+  amount: t("stats.amount"),
+  remark: t("batchImport.field.remark"),
+});
+const PREVIEW_TYPE_OPTIONS = (t: I18nT): Array<{ value: ParsedItem["type"]; label: string }> => [
+  { value: "expense", label: t("transaction.type.expense") },
+  { value: "income", label: t("transaction.type.income") },
+  { value: "transfer", label: t("transaction.type.transfer") },
+  { value: "investment", label: t("transaction.type.investment") },
 ];
 
 function buildBookAccountDisplayOption(account: BookAccount) {
@@ -207,39 +215,11 @@ function cleanOptionalText(value?: string | null) {
   return isPlaceholderText(text) ? undefined : text;
 }
 
-function moneyNumber(value?: number | string | null) {
-  const amount = Number(value);
-  return Number.isFinite(amount) ? amount : null;
-}
-
-function formatMoneyAmount(value?: number | string | null) {
-  const amount = moneyNumber(value);
-  if (amount === null) return "";
-  return `¥${amount.toFixed(2)}`;
-}
-
-function uniqueStatementInfoTexts(items: ParsedItem[]) {
-  const lines = items
-    .map((item) => {
-      const meta = item._meta;
-      if (!meta) return "";
-      const parts = [
-        moneyNumber(meta.statementAmount) !== null ? `账单金额 ${formatMoneyAmount(meta.statementAmount)}` : "",
-        meta.statementPeriodStart || meta.statementPeriodEnd ? `账期 ${meta.statementPeriodStart || "?"} ~ ${meta.statementPeriodEnd || "?"}` : "",
-        meta.statementDueDate ? `还款日 ${meta.statementDueDate}` : "",
-        meta.statementCurrency ? `币种 ${meta.statementCurrency}` : "",
-        moneyNumber(meta.creditLimit) !== null ? `总授信额度 ${formatMoneyAmount(meta.creditLimit)}` : "",
-      ].filter(Boolean);
-      return parts.join(" · ");
-    })
-    .filter(Boolean);
-  return Array.from(new Set(lines));
-}
-
 function normalizeDateOnlyText(value?: string | null) {
   const raw = String(value ?? "").trim();
   if (!raw) return undefined;
-  const match = raw.match(/^(\d{4})[-\/.年](\d{1,2})[-\/.月](\d{1,2})(?:日)?/);
+  // Matches Chinese date formats such as 2024-01-05 or 2024/1/5 as well as -/. separators.
+  const match = raw.match(/^(\d{4})[-\/.\u5e74](\d{1,2})[-\/.\u6708](\d{1,2})(?:\u65e5)?/);
   if (!match) return raw.slice(0, 10);
   return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
 }
@@ -253,7 +233,8 @@ function shouldTreatAsTransfer(item: ParsedItem) {
     .map((value) => cleanOptionalText(value))
     .filter(Boolean)
     .join(" ");
-  return /转账|转帐|还款|信用卡还款/.test(source);
+  // Matches Chinese transfer/repayment keywords in user-entered remark text.
+  return /\u8f6c\u8d26|\u8f6c\u5e10|\u8fd8\u6b3e|\u4fe1\u7528\u5361\u8fd8\u6b3e/.test(source);
 }
 
 function mailDebugDetails(mail: Partial<MailItem & MailDetail> | null | undefined, emailAccountId?: string | null) {
@@ -284,6 +265,9 @@ type AccountCreateDraft = {
 };
 
 export default function EmailSettingsPage() {
+  const { t } = useI18n();
+  const importPreviewFieldLabels = useMemo(() => IMPORT_PREVIEW_FIELD_LABELS(t), [t]);
+  const previewTypeOptions = useMemo(() => PREVIEW_TYPE_OPTIONS(t), [t]);
   const router = useRouter();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loadingAccounts, setLoadingAccounts] = useState(true);
@@ -291,7 +275,7 @@ export default function EmailSettingsPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showAccountModal, setShowAccountModal] = useState(false);
 
-  // 邮箱账户表单
+  // Email account form
   const [providerKey, setProviderKey] = useState("");
   const [label, setLabel] = useState("");
   const [username, setUsername] = useState("");
@@ -311,7 +295,7 @@ export default function EmailSettingsPage() {
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
 
-  // 邮件操作
+  // Mail operations
   const [mailItems, setMailItems] = useState<MailItem[]>([]);
   const [loadingMails, setLoadingMails] = useState(false);
   const [selectedMail, setSelectedMail] = useState<MailDetail | null>(null);
@@ -351,7 +335,7 @@ export default function EmailSettingsPage() {
         if (nextAccounts.length === 1 && selectedId !== nextAccounts[0].id) {
           const onlyAccount = nextAccounts[0];
           setSelectedId(onlyAccount.id);
-          setInfo(`已自动选择邮箱：${onlyAccount.label || onlyAccount.username}，正在读取账单邮件。`);
+          setInfo(t("settings.email.autoSelected", { account: onlyAccount.label || onlyAccount.username }));
           void listMails(onlyAccount.id);
         }
       }
@@ -403,7 +387,7 @@ export default function EmailSettingsPage() {
 
   function applyProviderPreset(key: string) {
     setProviderKey(key);
-    const preset = EMAIL_PROVIDER_PRESETS.find((item) => item.key === key);
+    const preset = EMAIL_PROVIDER_PRESETS(t).find((item) => item.key === key);
     if (!preset) return;
     setLabel((current) => current || preset.label);
     setImapHost(preset.imapHost);
@@ -433,7 +417,7 @@ export default function EmailSettingsPage() {
     setTestResult("");
     setAccountTested(false);
     setError("");
-    setInfo("修改邮箱账户时，如不更换授权码，可留空。可先测试连接，测试通过后直接保存。");
+    setInfo(t("settings.email.editAccountHint"));
   }
 
   function buildAccountBody(requirePassword: boolean) {
@@ -462,13 +446,13 @@ export default function EmailSettingsPage() {
       body: JSON.stringify(body),
     });
     const data = await res.json();
-    if (!data.ok) throw new Error(data.error ?? "测试失败");
-    return Array.isArray(data.results) ? data.results.join("; ") : "测试通过";
+    if (!data.ok) throw new Error(data.error ?? t("settings.email.testFailed"));
+    return Array.isArray(data.results) ? data.results.join("; ") : t("settings.email.testPassed");
   }
 
   async function saveAccount() {
     if (!label.trim() || !username.trim() || !imapHost.trim() || (!editingId && !password.trim())) {
-      setError(editingId ? "请填写标签名、用户名和 IMAP 服务器" : "请填写标签名、用户名、IMAP 服务器和授权码");
+      setError(editingId ? t("settings.email.fillRequiredEdit") : t("settings.email.fillRequiredCreate"));
       return;
     }
     setSaving(true); setError(""); setInfo(""); setTestResult("");
@@ -480,18 +464,18 @@ export default function EmailSettingsPage() {
       });
       const data = await res.json();
       if (data.ok) {
-        setInfo("邮箱账户已保存");
+        setInfo(t("settings.email.accountSaved"));
         closeAccountModal();
         loadAccounts();
       } else {
-        setError(data.error ?? "保存失败");
+        setError(data.error ?? t("settings.accounts.saveFailed"));
       }
-    } catch (e) { setError(e instanceof Error ? e.message : "网络错误"); }
+    } catch (e) { setError(e instanceof Error ? e.message : t("settings.passwordRecovery.networkError")); }
     finally { setSaving(false); }
   }
 
   async function deleteAccount(id: string) {
-    if (!confirm("确定删除此邮箱账户？")) return;
+    if (!confirm(t("settings.email.deleteConfirm"))) return;
     try {
       await fetch("/api/v1/settings/email-accounts", {
         method: "DELETE", headers: { "Content-Type": "application/json" },
@@ -504,29 +488,29 @@ export default function EmailSettingsPage() {
 
   async function testConnection() {
     if (!imapHost.trim() || !username.trim() || (!editingId && !password.trim())) {
-      setError(editingId ? "请填写 IMAP 配置；如要重新测试密码，请填写授权码" : "请填写 IMAP 配置和授权码"); return;
+      setError(editingId ? t("settings.email.imapRequiredEdit") : t("settings.email.imapRequiredCreate")); return;
     }
     setTesting(true); setTestResult(""); setError("");
     try {
       const message = await runAccountConnectionTest(buildAccountBody(!editingId));
-      setTestResult(`测试通过: ${message}`);
+      setTestResult(t("settings.email.testPassedDetail", { detail: message }));
       setAccountTested(true);
-    } catch (e) { setError(e instanceof Error ? e.message : "网络错误"); }
+    } catch (e) { setError(e instanceof Error ? e.message : t("settings.passwordRecovery.networkError")); }
     finally { setTesting(false); }
   }
 
   function buildMailListHint(meta: MailListMeta | undefined, itemCount: number) {
     if (!meta) return "";
     const timing = typeof meta.timingMs?.total === "number"
-      ? `，耗时 ${(meta.timingMs.total / 1000).toFixed(1)} 秒`
+      ? t("settings.email.timingSeconds", { seconds: (meta.timingMs.total / 1000).toFixed(1) })
       : "";
     const scope = meta.searchMode === "imap"
-      ? (meta.sinceDate ? `自 ${meta.sinceDate} 起邮箱搜索` : "邮箱搜索")
-      : (meta.sinceDate ? `自 ${meta.sinceDate} 起` : `最近 ${meta.scanLimit} 封内`);
+      ? (meta.sinceDate ? t("settings.email.mailSearchSince", { date: meta.sinceDate }) : t("settings.email.mailboxSearch"))
+      : (meta.sinceDate ? t("settings.email.scanSince", { date: meta.sinceDate }) : t("settings.email.scanRecent", { limit: meta.scanLimit }));
     if (itemCount > 0) {
-      return `${scope}扫描 ${meta.scanned} 封，按“${MAIL_FIXED_KEYWORD}”匹配到 ${meta.matched} 封，当前展示 ${itemCount} 封${timing}。`;
+      return t("settings.email.scanMatched", { scope, scanned: meta.scanned, keyword: MAIL_FIXED_KEYWORD, matched: meta.matched, itemCount, timing });
     }
-    return `${scope}扫描 ${meta.scanned} 封，没有找到主题或发件人包含“${MAIL_FIXED_KEYWORD}”的邮件${timing}。`;
+    return t("settings.email.scanNoMatch", { scope, scanned: meta.scanned, keyword: MAIL_FIXED_KEYWORD, timing });
   }
 
   function monthAgoDateString() {
@@ -591,10 +575,10 @@ export default function EmailSettingsPage() {
           source: "settings_email",
           emailAccountId: accountId,
           httpStatus: res.status,
-          errorMessage: data.error ?? "读取失败",
+          errorMessage: data.error ?? t("creditBill.readFailed"),
           durationMs: Math.round(performance.now() - startedAt),
         });
-        setError(data.error ?? "读取失败");
+        setError(data.error ?? t("creditBill.readFailed"));
       }
     } catch (e) {
       postImportDebugLog(traceId, "email_list_failed", {
@@ -605,7 +589,7 @@ export default function EmailSettingsPage() {
         errorMessage: e instanceof Error ? e.message : String(e),
         durationMs: Math.round(performance.now() - startedAt),
       });
-      setError(e instanceof DOMException && e.name === "AbortError" ? "读取超时，请检查 IMAP 配置、授权码或网络连接" : "网络错误");
+      setError(e instanceof DOMException && e.name === "AbortError" ? t("settings.email.readTimeoutHint") : t("settings.passwordRecovery.networkError"));
     }
     finally {
       clearTimeout(timer);
@@ -616,7 +600,7 @@ export default function EmailSettingsPage() {
   function buildStatementParseContent(mail: MailDetail | null, fallbackContent = "") {
     const attachmentText = mail?.attachments
       ?.filter((attachment) => attachment.text?.trim())
-      .map((attachment) => `【附件：${attachment.filename || "未命名 PDF"}】\n${attachment.text!.trim()}`)
+      .map((attachment) => `\u3010\u9644\u4ef6\uff1a${attachment.filename || "\u672a\u547d\u540d PDF"}\u3011\n${attachment.text!.trim()}`)
       .join("\n\n");
     return [mail?.html?.trim() || fallbackContent.trim(), attachmentText]
       .filter((part) => part && part.trim())
@@ -656,10 +640,10 @@ export default function EmailSettingsPage() {
         postImportDebugLog(traceId, "email_fetch_failed", {
           ...mailDebugDetails(listedMail ?? { uid }, selectedId),
           httpStatus: res.status,
-          errorMessage: data.error ?? "获取失败",
+          errorMessage: data.error ?? t("settings.email.fetchFailed"),
           durationMs: Math.round(performance.now() - startedAt),
         });
-        setError(data.error ?? "获取失败");
+        setError(data.error ?? t("settings.email.fetchFailed"));
       }
     } catch (e) {
       postImportDebugLog(traceId, "email_fetch_failed", {
@@ -668,7 +652,7 @@ export default function EmailSettingsPage() {
         errorMessage: e instanceof Error ? e.message : String(e),
         durationMs: Math.round(performance.now() - startedAt),
       });
-      setError(e instanceof DOMException && e.name === "AbortError" ? "读取邮件内容超时，请稍后重试" : "网络错误");
+      setError(e instanceof DOMException && e.name === "AbortError" ? t("settings.email.fetchTimeoutHint") : t("settings.passwordRecovery.networkError"));
     }
     finally {
       clearTimeout(timer);
@@ -685,7 +669,7 @@ export default function EmailSettingsPage() {
         ...mailDebugDetails(mail, selectedId),
         reason: "empty_content",
       });
-      setError("无邮件内容");
+      setError(t("settings.email.emptyMailContent"));
       return;
     }
     setParsing(true); setError("");
@@ -715,17 +699,17 @@ export default function EmailSettingsPage() {
             await loadBookLookups();
             openImportPreview(items);
           }
-          else setError("这封邮件没有识别到账单明细，请换一封或检查附件内容。");
+          else setError(t("settings.email.noBillItems"));
         }
       }
       else {
         postImportDebugLog(traceId, "email_parse_failed", {
           ...mailDebugDetails(mail, selectedId),
           httpStatus: res.status,
-          errorMessage: data.error ?? "解析失败",
+          errorMessage: data.error ?? t("settings.email.parseFailed"),
           durationMs: Math.round(performance.now() - startedAt),
         });
-        setError(data.error ?? "解析失败");
+        setError(data.error ?? t("settings.email.parseFailed"));
       }
     } catch (e) {
       postImportDebugLog(traceId, "email_parse_failed", {
@@ -734,7 +718,7 @@ export default function EmailSettingsPage() {
         errorMessage: e instanceof Error ? e.message : String(e),
         durationMs: Math.round(performance.now() - startedAt),
       });
-      setError("网络错误");
+      setError(t("settings.passwordRecovery.networkError"));
     }
     finally { setParsing(false); }
   }
@@ -804,7 +788,7 @@ export default function EmailSettingsPage() {
         const refreshAccountIds = Array.from(new Set([...(targetAccountId ? [targetAccountId] : []), ...lockedAccountIds]));
         const createdAccounts = Array.isArray(data.createdAccounts) ? data.createdAccounts : [];
         const accountText = createdAccounts.length
-          ? `；已自动创建账户：${createdAccounts.map((account: any) => `${account.institutionName ? `${account.institutionName}·` : ""}${account.name}`).join("、")}`
+          ? t("settings.email.autoCreatedAccounts", { accounts: createdAccounts.map((account: any) => `${account.institutionName ? `${account.institutionName}\u00b7` : ""}${account.name}`).join("\u3001") })
           : "";
         const createdCount = data.createdCount ?? 0;
         const skippedCount = data.skippedCount ?? 0;
@@ -816,10 +800,10 @@ export default function EmailSettingsPage() {
           importBatchId: data.importBatchId ?? null,
           durationMs: Math.round(performance.now() - startedAt),
         });
-        setInfo(`导入完成: 创建 ${createdCount} 条, 跳过 ${skippedCount} 条${accountText}`);
+        setInfo(t("settings.email.importCompleteInfo", { created: createdCount, skipped: skippedCount }) + accountText);
         if ((data.skippedCount ?? 0) > 0) {
           const firstError = Array.isArray(data.errors) ? data.errors[0]?.error : "";
-          setError(firstError ? `有 ${data.skippedCount} 条未导入：${firstError}` : `有 ${data.skippedCount} 条未导入，请检查账户匹配。`);
+          setError(firstError ? t("settings.email.skippedWithError", { count: data.skippedCount, error: firstError }) : t("settings.email.skippedCheck", { count: data.skippedCount }));
         }
         setImportComplete({
           created: createdCount,
@@ -836,10 +820,10 @@ export default function EmailSettingsPage() {
           ...mailDebugDetails(selectedMail, selectedId),
           selectedCount: sourceItems.length,
           httpStatus: res.status,
-          errorMessage: data.error ?? "导入失败",
+          errorMessage: data.error ?? t("settings.email.importFailed"),
           durationMs: Math.round(performance.now() - startedAt),
         });
-        setError(data.error ?? "导入失败");
+        setError(data.error ?? t("settings.email.importFailed"));
       }
     } catch (e) {
       postImportDebugLog(traceId, "email_import_failed", {
@@ -849,7 +833,7 @@ export default function EmailSettingsPage() {
         errorMessage: e instanceof Error ? e.message : String(e),
         durationMs: Math.round(performance.now() - startedAt),
       });
-      setError("网络错误");
+      setError(t("settings.passwordRecovery.networkError"));
     }
     finally { setImporting(false); }
   }
@@ -883,7 +867,7 @@ export default function EmailSettingsPage() {
     if (html) {
       return `<!doctype html><html><head><meta charset="utf-8"><base target="_blank"><style>html,body{margin:0;padding:12px;background:#fff;color:#0f172a;font:13px/1.5 sans-serif;}img{max-width:100%;height:auto;}table{max-width:100%;}a{color:#2563eb;}</style></head><body>${html}</body></html>`;
     }
-    const escaped = (mail.text || "无内容")
+    const escaped = (mail.text || t("settings.email.noContent"))
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;");
@@ -902,13 +886,13 @@ export default function EmailSettingsPage() {
 
   function getMissingFields(item: ParsedItem) {
     const missing: string[] = [];
-    if (!item.date?.trim()) missing.push("日期");
-    if (!(item.amount > 0)) missing.push("金额");
+    if (!item.date?.trim()) missing.push(t("initModal.ri.txDate"));
+    if (!(item.amount > 0)) missing.push(t("stats.amount"));
     if (item.type === "transfer") {
-      if (!item.account?.trim() && !item.toAccount?.trim() && !item._meta?.institutionName) missing.push("账户");
-      if (!cleanOptionalText(item.fromAccount) && !cleanOptionalText(item.toAccount)) missing.push("对向账户");
+      if (!item.account?.trim() && !item.toAccount?.trim() && !item._meta?.institutionName) missing.push(t("batchImport.field.account"));
+      if (!cleanOptionalText(item.fromAccount) && !cleanOptionalText(item.toAccount)) missing.push(t("batchImport.field.counterAccount"));
     } else if (!item.account?.trim() && !item._meta?.institutionName) {
-      missing.push("账户");
+      missing.push(t("batchImport.field.account"));
     }
     return missing;
   }
@@ -939,10 +923,10 @@ export default function EmailSettingsPage() {
 
   function getPreviewMissingFields(item: ParsedItem, hasResolvedAccount: boolean) {
     const missing = getMissingFields(item);
-    if (!hasResolvedAccount) missing.push("账户");
+    if (!hasResolvedAccount) missing.push(t("batchImport.field.account"));
     if (item.type === "transfer") {
       const counterAccount = transferCounterAccountName(item);
-      if (!counterAccount || !accountIdFromName(counterAccount)) missing.push("对向账户");
+      if (!counterAccount || !accountIdFromName(counterAccount)) missing.push(t("batchImport.field.counterAccount"));
     }
     return Array.from(new Set(missing));
   }
@@ -1013,7 +997,7 @@ export default function EmailSettingsPage() {
     if (
       item.type === "transfer" &&
       outflow <= 0 &&
-      /银联入账|银联转账|还款|自动扣款|自动还款|repayment|payment|autopay/i.test(text)
+      /\u94f6\u8054\u5165\u8d26|\u94f6\u8054\u8f6c\u8d26|\u8fd8\u6b3e|\u81ea\u52a8\u6263\u6b3e|\u81ea\u52a8\u8fd8\u6b3e|repayment|payment|autopay/i.test(text)
     ) {
       return "in";
     }
@@ -1083,7 +1067,7 @@ export default function EmailSettingsPage() {
       toAccount: treatAsTransfer ? undefined : cleanOptionalText(item.toAccount),
       category: treatAsTransfer
         ? undefined
-        : merchant.category === "充电"
+        : merchant.category === "\u5145\u7535"
           ? item.type === "expense" ? merchant.category : undefined
           : cleanOptionalText(item.category) || merchant.category,
       remark,
@@ -1175,7 +1159,7 @@ export default function EmailSettingsPage() {
   }
 
   function isCreditStatement(item: ParsedItem) {
-    return Boolean(item._meta?.institutionName || item._meta?.cardNumberMasked || /信用卡/.test(accountLabel(item)));
+    return Boolean(item._meta?.institutionName || item._meta?.cardNumberMasked || /\u4fe1\u7528\u5361/.test(accountLabel(item)));
   }
 
   function resolvePreviewAccount(item: ParsedItem) {
@@ -1189,9 +1173,9 @@ export default function EmailSettingsPage() {
       label,
       item.account,
       stripOwnerPrefix(label),
-      bank && `${bank}信用卡`,
-      bank && last4 ? `${bank}信用卡(${last4})` : "",
-      bank && last4 ? `${bank}信用卡${last4}` : "",
+      bank && `${bank}\u4fe1\u7528\u5361`,
+      bank && last4 ? `${bank}\u4fe1\u7528\u5361(${last4})` : "",
+      bank && last4 ? `${bank}\u4fe1\u7528\u5361${last4}` : "",
     ].filter((value): value is string => Boolean(value?.trim()))));
     let found: BookAccount | null = null;
     for (const candidate of candidates) {
@@ -1205,7 +1189,7 @@ export default function EmailSettingsPage() {
   }
 
   function stripOwnerPrefix(value: string) {
-    const match = value.trim().match(/^(.+?)的(.+)$/);
+    const match = value.trim().match(/^(.+?)\u7684(.+)$/);
     return match?.[2]?.trim() || value.trim();
   }
 
@@ -1255,21 +1239,21 @@ export default function EmailSettingsPage() {
 
   const hasImportPreview = importPreview !== null;
   const previewAccountReplaceOptions = useMemo<BatchReplaceOption[]>(() => {
-    if (!hasImportPreview) return [{ value: "", label: "未选择" }];
+    if (!hasImportPreview) return [{ value: "", label: t("batchImport.unselected") }];
     return [
-      { value: "", label: "未选择" },
+      { value: "", label: t("batchImport.unselected") },
       ...previewAccountDisplayOptions
         .map((account) => ({ value: account.id, label: formatAccountTableLabel(account), title: formatAccountTableTitle(account) })),
     ];
-  }, [hasImportPreview, previewAccountDisplayOptions]);
+  }, [hasImportPreview, previewAccountDisplayOptions, t]);
   const previewDebitAccountReplaceOptions = useMemo<BatchReplaceOption[]>(() => {
-    if (!hasImportPreview) return [{ value: "", label: "未选择" }];
+    if (!hasImportPreview) return [{ value: "", label: t("batchImport.unselected") }];
     return [
-      { value: "", label: "未选择" },
+      { value: "", label: t("batchImport.unselected") },
       ...previewAccountDisplayOptions
         .map((account) => ({ value: account.id, label: formatAccountTableLabel(account), title: formatAccountTableTitle(account) })),
     ];
-  }, [hasImportPreview, previewAccountDisplayOptions]);
+  }, [hasImportPreview, previewAccountDisplayOptions, t]);
   const previewDebitAccountDisplayOptions = useMemo(
     () => {
       if (!hasImportPreview) return [];
@@ -1322,9 +1306,9 @@ export default function EmailSettingsPage() {
   }, [previewCategoryById]);
   const previewCategoryReplaceOptions = useMemo<BatchReplaceOption[]>(() => {
     if (!hasImportPreview) return [];
-    const typeLabels: Record<string, string> = { expense: "支出分类", income: "收入分类" };
-    const options: BatchReplaceOption[] = [{ value: "", label: "清除分类" }];
-    const indent = "　";
+    const typeLabels: Record<string, string> = { expense: t("stats.expenseCategories"), income: t("statementImportPreview.incomeCategories") };
+    const options: BatchReplaceOption[] = [{ value: "", label: t("statementImportPreview.clearCategory") }];
+    const indent = "\u3000";
 
     for (const type of ["expense", "income"]) {
       const typedCategories = bookCategories.filter((category) => category.type === type);
@@ -1362,7 +1346,7 @@ export default function EmailSettingsPage() {
     }
 
     return options;
-  }, [bookCategories, hasImportPreview]);
+  }, [bookCategories, hasImportPreview, t]);
   const previewCategorySmartSelectOptionsFor = useCallback((txType: ParsedItem["type"]): SmartSelectOption[] => {
     const categoryType = txType === "income" ? "income" : "expense";
     const typedCategories = bookCategories.filter((category) => category.type === categoryType);
@@ -1377,14 +1361,14 @@ export default function EmailSettingsPage() {
       list.sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
     }
 
-    const options: SmartSelectOption[] = [{ id: "", label: "清除分类" }];
+    const options: SmartSelectOption[] = [{ id: "", label: t("statementImportPreview.clearCategory") }];
     function walk(parentId: string | null, level: number, parentOptionId?: string) {
       const children = childrenByParentId.get(parentId) ?? [];
       for (const child of children) {
         const hasChildren = (childrenByParentId.get(child.id) ?? []).length > 0;
         options.push({
           id: child.id,
-          label: `${"　".repeat(level)}${child.name}`,
+          label: `${"\u3000".repeat(level)}${child.name}`,
           parentId: parentOptionId,
           isGroup: hasChildren,
         });
@@ -1393,44 +1377,41 @@ export default function EmailSettingsPage() {
     }
     walk(null, 0);
     return options;
-  }, [bookCategories]);
+  }, [bookCategories, t]);
   const previewReplaceFields = useMemo<BatchReplaceFieldConfig<ImportPreviewEditableCell>[]>(() => {
     if (!hasImportPreview) return [];
     return [
-      { value: "date", label: IMPORT_PREVIEW_FIELD_LABELS.date, kind: "text", placeholder: "YYYY-MM-DD 或含时间" },
-      { value: "postedDate", label: IMPORT_PREVIEW_FIELD_LABELS.postedDate, kind: "date", placeholder: "YYYY-MM-DD" },
+      { value: "date", label: importPreviewFieldLabels.date, kind: "text", placeholder: t("statementImportPreview.datePlaceholder") },
+      { value: "postedDate", label: importPreviewFieldLabels.postedDate, kind: "date", placeholder: "YYYY-MM-DD" },
       {
         value: "type",
-        label: IMPORT_PREVIEW_FIELD_LABELS.type,
+        label: importPreviewFieldLabels.type,
         kind: "select",
         options: [
-          { value: "", label: "选择类型" },
-          { value: "expense", label: "支出" },
-          { value: "income", label: "收入" },
-          { value: "transfer", label: "转账" },
-          { value: "investment", label: "投资" },
+          { value: "", label: t("batchImport.selectType") },
+          ...previewTypeOptions,
         ],
       },
       {
         value: "account",
-        label: IMPORT_PREVIEW_FIELD_LABELS.account,
+        label: importPreviewFieldLabels.account,
         kind: "smartSelect",
         options: previewAccountReplaceOptions,
         smartSelectBehavior: { search: true, density: "micro", dropdownMaxHeight: 180, minDropdownWidth: 156, resizableDropdown: true },
       },
       {
         value: "counterAccount",
-        label: IMPORT_PREVIEW_FIELD_LABELS.counterAccount,
+        label: importPreviewFieldLabels.counterAccount,
         kind: "smartSelect",
         options: previewDebitAccountReplaceOptions,
         smartSelectBehavior: { search: true, density: "micro", dropdownMaxHeight: 180, minDropdownWidth: 156, resizableDropdown: true },
       },
       {
         value: "category",
-        label: IMPORT_PREVIEW_FIELD_LABELS.category,
+        label: importPreviewFieldLabels.category,
         kind: "smartSelect",
         options: previewCategoryReplaceOptions,
-        placeholder: "选择分类",
+        placeholder: t("statementImportPreview.selectCategory"),
         allowEmpty: true,
         smartSelectBehavior: {
           hierarchy: true,
@@ -1446,13 +1427,13 @@ export default function EmailSettingsPage() {
           resizableDropdown: true,
         },
       },
-      { value: "institution", label: IMPORT_PREVIEW_FIELD_LABELS.institution, kind: "text", placeholder: "银行或第三方支付机构" },
-      { value: "outflow", label: IMPORT_PREVIEW_FIELD_LABELS.outflow, kind: "number", placeholder: "输入金额或运算式" },
-      { value: "inflow", label: IMPORT_PREVIEW_FIELD_LABELS.inflow, kind: "number", placeholder: "输入金额或运算式" },
-      { value: "amount", label: IMPORT_PREVIEW_FIELD_LABELS.amount, kind: "number", placeholder: "输入金额或运算式" },
-      { value: "remark", label: IMPORT_PREVIEW_FIELD_LABELS.remark, kind: "text", placeholder: "输入备注" },
+      { value: "institution", label: importPreviewFieldLabels.institution, kind: "text", placeholder: t("statementImportPreview.institutionPlaceholder") },
+      { value: "outflow", label: importPreviewFieldLabels.outflow, kind: "number", placeholder: t("statementImportPreview.amountExpressionPlaceholder") },
+      { value: "inflow", label: importPreviewFieldLabels.inflow, kind: "number", placeholder: t("statementImportPreview.amountExpressionPlaceholder") },
+      { value: "amount", label: importPreviewFieldLabels.amount, kind: "number", placeholder: t("statementImportPreview.amountExpressionPlaceholder") },
+      { value: "remark", label: importPreviewFieldLabels.remark, kind: "text", placeholder: t("statementImportPreview.remarkPlaceholder") },
     ];
-  }, [hasImportPreview, previewAccountReplaceOptions, previewCategoryReplaceOptions, previewDebitAccountReplaceOptions]);
+  }, [hasImportPreview, importPreviewFieldLabels, previewTypeOptions, previewAccountReplaceOptions, previewCategoryReplaceOptions, previewDebitAccountReplaceOptions, t]);
 
   const previewDebitAccountIdFromName = useCallback((accountName: string) => {
     return accountIdFromName(accountName);
@@ -1509,9 +1490,9 @@ export default function EmailSettingsPage() {
   }
 
   function applyPreviewReplace(field: ImportPreviewEditableCell, value: string) {
-    if (!importPreview) throw new Error("没有导入预览");
+    if (!importPreview) throw new Error(t("settings.email.noImportPreview"));
     const selectedPreviewKeys = Array.from(importPreview.selectedKeys);
-    if (selectedPreviewKeys.length === 0) throw new Error("请先勾选记录");
+    if (selectedPreviewKeys.length === 0) throw new Error(t("stockPanel.error.selectRowsFirst"));
     let changed = 0;
     let invalid = 0;
     const nextItems = importPreview.items.map((row) => {
@@ -1551,8 +1532,8 @@ export default function EmailSettingsPage() {
     });
     setImportPreview(recomputePreviewState(nextItems));
     setParsedItems(nextItems.map((row) => row.item));
-    const invalidSuffix = invalid > 0 ? `，跳过 ${invalid} 条金额格式无效` : "";
-    return `已批量修改 ${changed} 条：${IMPORT_PREVIEW_FIELD_LABELS[field]}${invalidSuffix}。`;
+    const invalidSuffix = invalid > 0 ? t("statementImportPreview.invalidAmountSkipped", { count: invalid }) : "";
+    return t("statementImportPreview.batchReplaceResult", { count: changed, field: importPreviewFieldLabels[field], invalidSuffix });
   }
 
   function updatePreviewAccount(rowKey: string, accountId: string) {
@@ -1641,7 +1622,7 @@ export default function EmailSettingsPage() {
       body: JSON.stringify({ name, shortName: name, type: "bank" }),
     });
     const data = await res.json();
-    if (!data.ok && res.status !== 409) throw new Error(data.error ?? "创建机构失败");
+    if (!data.ok && res.status !== 409) throw new Error(data.error ?? t("settings.email.createInstitutionFailed"));
     if (data.ok && data.institution) {
       setBookInstitutions((current) => [...current, data.institution]);
       return data.institution.id;
@@ -1671,52 +1652,52 @@ export default function EmailSettingsPage() {
         }),
       });
       const data = await res.json();
-      if (!data.ok) throw new Error(data.error ?? "创建账户失败");
+      if (!data.ok) throw new Error(data.error ?? t("settings.email.createAccountFailed"));
       const created: BookAccount = data.account;
       setBookAccounts((current) => [...current, created]);
       setAccountDraft(null);
       applyPreviewAccountFromCreated(accountDraft.rowKey, created);
       await loadBookLookups();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "创建账户失败");
+      setError(e instanceof Error ? e.message : t("settings.email.createAccountFailed"));
     } finally {
       setSavingAccountDraft(false);
     }
   }
 
   function typeLabel(type: ParsedItem["type"]) {
-    if (type === "income") return "收入";
-    if (type === "transfer") return "转账";
-    if (type === "investment") return "投资";
-    return "支出";
+    if (type === "income") return t("transaction.type.income");
+    if (type === "transfer") return t("transaction.type.transfer");
+    if (type === "investment") return t("transaction.type.investment");
+    return t("transaction.type.expense");
   }
 
   function accountLabel(item: ParsedItem) {
     if (item.account) return item.account;
     const bank = item._meta?.institutionName;
     const last4 = item._meta?.cardNumberMasked;
-    if (bank) return `${bank}信用卡${last4 ? `(${last4})` : ""}`;
-    return "未识别账户";
+    if (bank) return `${bank}\u4fe1\u7528\u5361${last4 ? `(${last4})` : ""}`;
+    return t("settings.email.unrecognizedAccount");
   }
 
   const importPreviewColumns: AdvancedDataTableColumn<ImportPreviewItem>[] = [
     {
       key: "date",
-      label: "交易日",
+      label: importPreviewFieldLabels.date,
       width: 100,
       minWidth: 84,
       filterKind: "dateRange",
-      filterText: (row) => row.item.date?.trim() || "(空)",
+      filterText: (row) => row.item.date?.trim() || t("settings.email.emptyFilter"),
       sortValue: (row) => row.item.date || "",
       render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.item.date || "-"}</span>,
     },
     {
       key: "postedDate",
-      label: "入账日期",
+      label: importPreviewFieldLabels.postedDate,
       width: 110,
       minWidth: 96,
       filterKind: "dateRange",
-      filterText: (row) => normalizeDateOnlyText(row.item.postedDate) || "(空)",
+      filterText: (row) => normalizeDateOnlyText(row.item.postedDate) || t("settings.email.emptyFilter"),
       sortValue: (row) => normalizeDateOnlyText(row.item.postedDate) || "",
       render: (row) => {
         const item = row.item;
@@ -1734,7 +1715,7 @@ export default function EmailSettingsPage() {
                 }}
               />
             ) : (
-              <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title="双击修改入账日期">{normalizeDateOnlyText(item.postedDate) || "-"}</span>
+              <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title={t("statementImportPreview.doubleClickEdit", { field: t("detail.column.postedAt") })}>{normalizeDateOnlyText(item.postedDate) || "-"}</span>
             )}
           </div>
         );
@@ -1742,7 +1723,7 @@ export default function EmailSettingsPage() {
     },
     {
       key: "type",
-      label: "类型",
+      label: importPreviewFieldLabels.type,
       width: 72,
       minWidth: 60,
       filterText: (row) => typeLabel(row.item.type),
@@ -1761,12 +1742,12 @@ export default function EmailSettingsPage() {
                   setEditingPreviewCell(null);
                 }}
               >
-                {PREVIEW_TYPE_OPTIONS.map((option) => (
+                {previewTypeOptions.map((option) => (
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
               </select>
             ) : (
-              <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title="双击修改类型">{typeLabel(item.type)}</span>
+              <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title={t("statementImportPreview.doubleClickEdit", { field: t("batchImport.field.type") })}>{typeLabel(item.type)}</span>
             )}
           </div>
         );
@@ -1774,10 +1755,10 @@ export default function EmailSettingsPage() {
     },
     {
       key: "account",
-      label: "账户",
+      label: importPreviewFieldLabels.account,
       width: 190,
       minWidth: 140,
-      filterText: (row) => selectedPreviewAccountDisplayLabel(row) || accountLabel(row.item) || "(空)",
+      filterText: (row) => selectedPreviewAccountDisplayLabel(row) || accountLabel(row.item) || t("settings.email.emptyFilter"),
       render: (row) => {
         const item = row.item;
         const accountId = row.selectedAccountId ?? row.matchedAccountId ?? importPreview?.statementAccountId ?? "";
@@ -1795,9 +1776,9 @@ export default function EmailSettingsPage() {
                   setEditingPreviewCell(null);
                 }}
                 options={displayPreviewDebitAccountOptions}
-                placeholder="选择账户"
+                placeholder={t("statementImportPreview.selectAccount")}
                 onCreateClick={() => openAccountDraft(row)}
-                createLabel="新增账户"
+                createLabel={t("settings.accounts.add")}
                 onCycleOwnerFilter={cyclePreviewDebitOwnerFilter}
                 ownerFilterLabel={previewDebitOwnerFilterLabel}
                 behavior={{
@@ -1824,10 +1805,10 @@ export default function EmailSettingsPage() {
     },
     {
       key: "counterAccount",
-      label: "对向账户",
+      label: importPreviewFieldLabels.counterAccount,
       width: 160,
       minWidth: 120,
-      filterText: (row) => cleanOptionalText(row.item.fromAccount) || cleanOptionalText(row.item.toAccount) || "(空)",
+      filterText: (row) => cleanOptionalText(row.item.fromAccount) || cleanOptionalText(row.item.toAccount) || t("settings.email.emptyFilter"),
       render: (row) => {
         const item = row.item;
         if (item.type !== "transfer") return <span className="text-slate-400">-</span>;
@@ -1852,9 +1833,9 @@ export default function EmailSettingsPage() {
                   setEditingPreviewCell(null);
                 }}
                 options={displayPreviewDebitAccountOptions}
-                placeholder="选择对向账户"
+                placeholder={t("statementImportPreview.selectCounterAccount")}
                 onCreateClick={() => openDebitAccountDraft(row.key)}
-                createLabel="新增账户"
+                createLabel={t("settings.accounts.add")}
                 onCycleOwnerFilter={cyclePreviewDebitOwnerFilter}
                 ownerFilterLabel={previewDebitOwnerFilterLabel}
                 behavior={{
@@ -1871,7 +1852,7 @@ export default function EmailSettingsPage() {
                 }}
               />
             ) : (
-              <span className="block truncate cursor-pointer rounded px-1 py-0.5 text-slate-700 hover:bg-slate-100" title="双击修改对向账户">
+              <span className="block truncate cursor-pointer rounded px-1 py-0.5 text-slate-700 hover:bg-slate-100" title={t("statementImportPreview.doubleClickEdit", { field: t("batchImport.field.counterAccount") })}>
                 {previewDebitAccountDisplayLabelByName(cleanOptionalText(item.fromAccount) || cleanOptionalText(item.toAccount) || "") || cleanOptionalText(item.fromAccount) || cleanOptionalText(item.toAccount) || "-"}
               </span>
             )}
@@ -1881,10 +1862,10 @@ export default function EmailSettingsPage() {
     },
     {
       key: "category",
-      label: "分类",
+      label: importPreviewFieldLabels.category,
       width: 98,
       minWidth: 80,
-      filterText: (row) => row.item.category?.trim() || "(空)",
+      filterText: (row) => row.item.category?.trim() || t("settings.email.emptyFilter"),
       render: (row) => {
         const item = row.item;
         return (
@@ -1899,7 +1880,7 @@ export default function EmailSettingsPage() {
                     setEditingPreviewCell(null);
                   }}
                   options={previewCategorySmartSelectOptionsFor(item.type)}
-                  placeholder="选择分类"
+                  placeholder={t("statementImportPreview.selectCategory")}
                   searchable
                   behavior={{
                     hierarchy: true,
@@ -1920,7 +1901,7 @@ export default function EmailSettingsPage() {
                 />
               </div>
             ) : (
-              <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title="双击修改分类">{item.category || "-"}</span>
+              <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title={t("statementImportPreview.doubleClickEdit", { field: t("batchImport.field.category") })}>{item.category || "-"}</span>
             )}
           </div>
         );
@@ -1928,15 +1909,15 @@ export default function EmailSettingsPage() {
     },
     {
       key: "institution",
-      label: "收支机构",
+      label: importPreviewFieldLabels.institution,
       width: 108,
       minWidth: 90,
-      filterText: (row) => row.item.institution?.trim() || "(空)",
+      filterText: (row) => row.item.institution?.trim() || t("settings.email.emptyFilter"),
       render: (row) => <span className="block truncate text-slate-700" title={row.item.institution || "-"}>{row.item.institution || "-"}</span>,
     },
     {
       key: "inflow",
-      label: "流入",
+      label: importPreviewFieldLabels.inflow,
       width: 82,
       minWidth: 70,
       truncate: true,
@@ -1949,7 +1930,7 @@ export default function EmailSettingsPage() {
     },
     {
       key: "outflow",
-      label: "流出",
+      label: importPreviewFieldLabels.outflow,
       width: 82,
       minWidth: 70,
       truncate: true,
@@ -1962,24 +1943,24 @@ export default function EmailSettingsPage() {
     },
     {
       key: "remark",
-      label: "备注",
+      label: importPreviewFieldLabels.remark,
       width: 230,
       minWidth: 160,
       filterKind: "text",
-      filterText: (row) => (row.item.remark || row.item.rawText || "").trim() || "(空)",
+      filterText: (row) => (row.item.remark || row.item.rawText || "").trim() || t("settings.email.emptyFilter"),
       render: (row) => <span className="block truncate text-slate-600" title={row.item.remark || row.item.rawText}>{row.item.remark || row.item.rawText}</span>,
     },
     {
       key: "status",
-      label: "状态",
+      label: t("statementImportPreview.status"),
       width: 88,
       minWidth: 72,
-      filterText: (row) => row.ready ? "可导入" : row.missingFields.includes("账户") ? "缺账户" : `缺${row.missingFields.join("、") || "字段"}`,
+      filterText: (row) => row.ready ? t("statementImportPreview.importable") : row.missingFields.includes(t("batchImport.field.account")) ? t("statementImportPreview.missingFields", { fields: t("batchImport.field.account") }) : t("statementImportPreview.missingFields", { fields: row.missingFields.join("\u3001") || t("statementImportPreview.field") }),
       render: (row) => row.ready ? (
         <span className="text-[11px] text-slate-400">-</span>
       ) : (
         <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700">
-          {row.missingFields.includes("账户") ? "请选择或创建账户" : `缺 ${row.missingFields.join("、")}`}
+          {row.missingFields.includes(t("batchImport.field.account")) ? t("settings.email.selectOrCreateAccount") : t("statementImportPreview.missingFields", { fields: row.missingFields.join("\u3001") })}
         </span>
       ),
     },
@@ -1994,7 +1975,7 @@ export default function EmailSettingsPage() {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-sm font-semibold text-slate-800">邮箱设置</h2>
+      <h2 className="text-sm font-semibold text-slate-800">{t("settings.email.title")}</h2>
 
       {error && <div className="rounded-md border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>}
       {info && <div className="rounded-md border border-blue-200 bg-blue-50 px-4 py-2 text-sm text-blue-700">{info}</div>}
@@ -2002,12 +1983,12 @@ export default function EmailSettingsPage() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[210px_minmax(0,1fr)]">
         <div className="rounded-lg border border-slate-200 bg-white p-3">
           <div className="mb-3 flex items-center justify-between gap-2">
-            <div className="text-sm font-medium text-slate-800">邮箱账户</div>
-            <SettingsPrimaryAddButton onClick={openCreateAccountModal}>新增</SettingsPrimaryAddButton>
+            <div className="text-sm font-medium text-slate-800">{t("settings.emailAccounts")}</div>
+            <SettingsPrimaryAddButton onClick={openCreateAccountModal}>{t("settings.email.add")}</SettingsPrimaryAddButton>
           </div>
           <div className="max-h-[220px] space-y-2 overflow-y-auto pr-1">
             {loadingAccounts ? (
-              <div className="rounded-md border border-dashed border-slate-200 px-3 py-8 text-center text-xs text-slate-400">加载邮箱账户…</div>
+              <div className="rounded-md border border-dashed border-slate-200 px-3 py-8 text-center text-xs text-slate-400">{t("settings.email.loadingAccounts")}</div>
             ) : accounts.length > 0 ? accounts.map(acc => (
               <div key={acc.id} className={`flex items-center gap-2 rounded-md border px-2.5 py-2 ${selectedId === acc.id ? "border-blue-300 bg-blue-50" : "border-slate-200 hover:bg-slate-50"}`}>
                 <button className="min-w-0 flex-1 text-left" onClick={() => selectAccountForMail(acc.id)}>
@@ -2016,19 +1997,19 @@ export default function EmailSettingsPage() {
                 </button>
                 <div className="flex shrink-0 items-center gap-1">
                   <SettingsActionButton
-                    label="编辑邮箱账户"
+                    label={t("settings.email.editAccount")}
                     variant="edit"
                     onClick={(e) => { e.stopPropagation(); editAccount(acc); }}
                   />
                   <SettingsActionButton
-                    label="删除邮箱账户"
+                    label={t("settings.email.deleteAccount")}
                     variant="delete"
                     onClick={(e) => { e.stopPropagation(); deleteAccount(acc.id); }}
                   />
                 </div>
               </div>
             )) : (
-              <div className="rounded-md border border-dashed border-slate-200 px-3 py-8 text-center text-xs text-slate-400">暂无邮箱账户</div>
+              <div className="rounded-md border border-dashed border-slate-200 px-3 py-8 text-center text-xs text-slate-400">{t("settings.email.noAccounts")}</div>
             )}
           </div>
         </div>
@@ -2036,20 +2017,20 @@ export default function EmailSettingsPage() {
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-[380px_minmax(0,1fr)]">
             <div className="overflow-hidden rounded-md border border-slate-200">
               <div className="border-b border-slate-100 bg-slate-50 p-2">
-                <div className="mb-2 text-sm font-medium text-slate-800">{selectedAccount ? selectedAccount.label : "邮箱读取"}</div>
+                <div className="mb-2 text-sm font-medium text-slate-800">{selectedAccount ? selectedAccount.label : t("settings.email.mailReading")}</div>
                 <div className="grid grid-cols-[minmax(92px,1fr)_120px_76px] items-center gap-2">
                   <div className="flex h-8 items-center truncate rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-600">
-                    关键词：{MAIL_FIXED_KEYWORD}
+                    {t("settings.email.keywordLabel", { keyword: MAIL_FIXED_KEYWORD })}
                   </div>
                   <select className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs outline-none" value={mailRange} onChange={(e) => setMailRange(e.target.value)}>
-                    <option value="month">最近一个月</option>
-                    <option value="50">最近 50 封</option>
-                    <option value="100">最近 100 封</option>
-                    <option value="500">最近 500 封</option>
-                    <option value="1000">最近 1000 封（较慢）</option>
+                    <option value="month">{t("settings.email.rangeMonth")}</option>
+                    <option value="50">{t("settings.email.rangeCount", { count: 50 })}</option>
+                    <option value="100">{t("settings.email.rangeCount", { count: 100 })}</option>
+                    <option value="500">{t("settings.email.rangeCount", { count: 500 })}</option>
+                    <option value="1000">{t("settings.email.rangeCountSlow", { count: 1000 })}</option>
                   </select>
                   <button className="h-8 rounded-md bg-blue-600 text-xs text-white hover:bg-blue-700 disabled:opacity-50" onClick={() => listMails()} disabled={!selectedAccount || loadingMails}>
-                    {loadingMails ? "读取中…" : "获取邮件"}
+                    {loadingMails ? t("settings.email.readingMails") : t("settings.email.fetchMails")}
                   </button>
                 </div>
                 {mailListHint && <div className="text-[11px] leading-5 text-blue-600">{mailListHint}</div>}
@@ -2058,13 +2039,13 @@ export default function EmailSettingsPage() {
                 {mailItems.map(m => (
                   <button key={m.uid} className={`w-full text-left px-2.5 py-2 text-xs ${selectedMail?.uid === m.uid ? "bg-blue-50" : "hover:bg-slate-50"}`}
                     onClick={() => fetchMail(m.uid)}>
-                    <div className="truncate font-medium text-slate-800">{m.subject || "（无主题）"}</div>
+                    <div className="truncate font-medium text-slate-800">{m.subject || t("settings.email.noSubject")}</div>
                     <div className="truncate text-[11px] text-slate-500">{m.from}</div>
                     <div className="mt-0.5 text-[10px] text-slate-400">{m.date}</div>
                   </button>
                 ))}
                 {mailItems.length === 0 && !loadingMails && (
-                  <div className="px-3 py-10 text-xs text-slate-500">{selectedAccount ? "点击获取邮件读取列表" : "请选择左侧邮箱账户"}</div>
+                  <div className="px-3 py-10 text-xs text-slate-500">{selectedAccount ? t("settings.email.clickToFetch") : t("settings.email.selectAccountFirst")}</div>
                 )}
               </div>
             </div>
@@ -2073,30 +2054,30 @@ export default function EmailSettingsPage() {
               {selectedMail ? (
                 <>
                   <div className="text-xs text-slate-500">
-                    发件人: {selectedMail.from} · 日期: {selectedMail.date}
+                    {t("settings.email.senderDate", { from: selectedMail.from, date: selectedMail.date })}
                   </div>
                   <iframe
                     className="h-[360px] w-full rounded-md border border-slate-200 bg-white"
                     sandbox="allow-popups allow-popups-to-escape-sandbox"
                     srcDoc={buildMailPreviewHtml(selectedMail)}
-                    title="邮件内容预览"
+                    title={t("settings.email.mailPreviewTitle")}
                   />
                   {selectedMail.attachments && selectedMail.attachments.length > 0 && (
                     <div className="rounded-md border border-slate-200 bg-slate-50 p-2">
-                      <div className="mb-1 text-xs font-medium text-slate-700">附件</div>
+                      <div className="mb-1 text-xs font-medium text-slate-700">{t("settings.email.attachments")}</div>
                       <div className="space-y-1.5">
                         {selectedMail.attachments.map((attachment) => (
                           <div key={attachment.id} className="rounded border border-slate-100 bg-white px-2 py-1.5 text-xs text-slate-600">
                             <div className="flex items-center justify-between gap-2">
-                              <span className="truncate font-medium text-slate-700">{attachment.filename || "未命名附件"}</span>
+                              <span className="truncate font-medium text-slate-700">{attachment.filename || t("settings.email.unnamedAttachment")}</span>
                               <span className="shrink-0 text-slate-400">{formatAttachmentSize(attachment.size)}</span>
                             </div>
                             {attachment.text ? (
-                              <div className="mt-0.5 text-emerald-700">已提取 PDF 文字，识别时会一起分析。</div>
+                              <div className="mt-0.5 text-emerald-700">{t("settings.email.pdfTextExtracted")}</div>
                             ) : attachment.parseError ? (
                               <div className="mt-0.5 text-amber-700">{attachment.parseError}</div>
                             ) : (
-                              <div className="mt-0.5 text-slate-400">{attachment.contentType || "附件"}</div>
+                              <div className="mt-0.5 text-slate-400">{attachment.contentType || t("settings.email.attachments")}</div>
                             )}
                           </div>
                         ))}
@@ -2105,12 +2086,12 @@ export default function EmailSettingsPage() {
                   )}
                   <div className="flex items-center gap-2">
                     <button className="h-8 px-3 rounded-md bg-blue-600 text-white text-xs hover:bg-blue-700 disabled:opacity-50" onClick={() => parseMail(selectedMail, true)} disabled={parsing}>
-                      {parsing ? "识别中…" : "导入账单"}
+                      {parsing ? t("settings.email.recognizing") : t("settings.email.importBill")}
                     </button>
                   </div>
                 </>
               ) : (
-                <div className="rounded-md border border-dashed border-slate-200 px-3 py-10 text-center text-sm text-slate-400">选中一封邮件后预览内容，再点导入账单</div>
+                <div className="rounded-md border border-dashed border-slate-200 px-3 py-10 text-center text-sm text-slate-400">{t("settings.email.selectMailHint")}</div>
               )}
             </div>
           </div>
@@ -2119,8 +2100,8 @@ export default function EmailSettingsPage() {
 
       <StatementImportPreviewDialog
         open={Boolean(importPreview)}
-        title="账单导入预览"
-        description={`已识别 ${statementPreviewItems.length} 条，默认选择可导入记录。`}
+        title={t("viewImport.previewTitle")}
+        description={t("settings.email.recognizedItems", { count: statementPreviewItems.length })}
         items={statementPreviewItems}
         defaultAccountName=""
         busy={importing}
@@ -2134,27 +2115,27 @@ export default function EmailSettingsPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4 py-6">
           <div className="w-full max-w-2xl rounded-xl border border-slate-200 bg-white shadow-xl">
             <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
-              <div className="text-sm font-semibold text-slate-800">导入完成</div>
-              <div className="mt-0.5 text-xs text-slate-500">创建 {importComplete.created} 条，跳过 {importComplete.skipped} 条。</div>
+              <div className="text-sm font-semibold text-slate-800">{t("batchImport.importPhase.done")}</div>
+              <div className="mt-0.5 text-xs text-slate-500">{t("settings.email.createdSkipped", { created: importComplete.created, skipped: importComplete.skipped })}</div>
             </div>
             <div className="space-y-2 px-4 py-4 text-xs text-slate-600">
               {importCompleteLockedBills.length > 0 ? (
                 <div>
-                  已锁定：{importCompleteLockedBills.map((item) => {
-                    const accountText = previewAccountDisplayLabelById(item.accountId) ?? "账单账户";
+                  {t("settings.email.locked")}{importCompleteLockedBills.map((item) => {
+                    const accountText = previewAccountDisplayLabelById(item.accountId) ?? t("settings.email.billAccount");
                     const amountText = formatMoneyAmount(item.amount);
-                    const periodText = item.periodStart || item.periodEnd ? `账期 ${item.periodStart || "?"} ~ ${item.periodEnd || "?"}` : "";
-                    const dueText = item.dueDate ? `还款日 ${item.dueDate}` : "";
-                    return [item.statementMonth || "未知月份", accountText, amountText, periodText, dueText].filter(Boolean).join(" · ");
+                    const periodText = item.periodStart || item.periodEnd ? t("settings.email.periodRange", { start: item.periodStart || "?", end: item.periodEnd || "?" }) : "";
+                    const dueText = item.dueDate ? t("settings.email.dueDate", { date: item.dueDate }) : "";
+                    return [item.statementMonth || t("settings.email.unknownMonth"), accountText, amountText, periodText, dueText].filter(Boolean).join(" · ");
                   }).join("；")}
                 </div>
               ) : (
-                <div>导入已完成，请确认后返回。</div>
+                <div>{t("settings.email.importDoneConfirm")}</div>
               )}
             </div>
             <div className="flex items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-4 py-3">
               <button className="h-9 rounded-md bg-green-600 px-4 text-sm text-white hover:bg-green-700" onClick={confirmImportComplete}>
-                {importComplete.accountId ? "确定并打开账户" : "确定并返回开始界面"}
+                {importComplete.accountId ? t("settings.email.confirmOpenAccount") : t("settings.email.confirmBackHome")}
               </button>
             </div>
           </div>
@@ -2166,9 +2147,9 @@ export default function EmailSettingsPage() {
           <div data-smart-select-boundary className="flex h-[82vh] min-h-[420px] w-full min-w-0 max-w-6xl resize flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
             <div className="flex items-start justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
               <div>
-                <div className="text-sm font-semibold text-slate-800">账单导入预览</div>
+                <div className="text-sm font-semibold text-slate-800">{t("viewImport.previewTitle")}</div>
                 <div className="mt-0.5 text-xs text-slate-500">
-                  已识别 {importPreview.items.length} 条，默认选择可导入记录。信用卡会按账单中的姓名、银行、尾号、账单日自动匹配或生成账户。
+                  {t("settings.email.previewDescription", { count: importPreview.items.length })}
                 </div>
               </div>
               <button className="h-8 w-8 rounded-md border border-slate-300 text-slate-500 hover:bg-white" onClick={() => importComplete ? confirmImportComplete() : setImportPreview(null)}>×</button>
@@ -2180,7 +2161,7 @@ export default function EmailSettingsPage() {
                 columns={importPreviewColumns}
                 rows={importPreview.items}
                 rowKey={(row) => row.key}
-                emptyText="没有符合筛选条件的记录。"
+                emptyText={t("settings.email.noFilteredRows")}
                 minTableWidth={1120}
                 selectable
                 selectedKeys={importPreview.selectedKeys}
@@ -2197,29 +2178,29 @@ export default function EmailSettingsPage() {
                   <BatchReplacePopoverButton
                     fields={previewReplaceFields}
                     targetCount={importPreview.selectedKeys.size}
-                    targetLabel="已选"
+                    targetLabel={t("stockPanel.selected")}
                     panelAlign="left"
-                    disabledTitle="请先勾选记录"
-                    buttonTitle={`批量修改已选 ${importPreview.selectedKeys.size} 条`}
+                    disabledTitle={t("stockPanel.error.selectRowsFirst")}
+                    buttonTitle={t("statementImportPreview.batchEditSelected", { count: importPreview.selectedKeys.size })}
                     messageClassName="sr-only"
                     onApply={applyPreviewReplace}
                   />
                 )}
-                toolbarTitle="账单导入预览"
+                toolbarTitle={t("viewImport.previewTitle")}
                 toolbarRightContent={(
                   <div className="flex items-center gap-3 text-xs text-slate-500">
                     {importPreviewStatementInfoTexts.length > 0 && (
                       <span>
-                        账单信息：{importPreviewStatementInfoTexts.join(" / ")}
+                        {t("statementImportPreview.statementInfo", { texts: importPreviewStatementInfoTexts.join(" / ") })}
                       </span>
                     )}
                     {importPreview.statementAccountId && (
                       <span>
-                        账户：{previewAccountDisplayLabelById(importPreview.statementAccountId) ?? "已匹配账户"}
+                        {t("settings.email.accountInfo", { account: previewAccountDisplayLabelById(importPreview.statementAccountId) ?? t("settings.email.matchedAccount") })}
                       </span>
                     )}
-                    <span>共 {importPreview.items.length} 条</span>
-                    <span>将导入 {importPreview.selectedKeys.size} 条</span>
+                    <span>{t("settings.email.totalItems", { count: importPreview.items.length })}</span>
+                    <span>{t("statementImportPreview.willImport", { count: importPreview.selectedKeys.size })}</span>
                   </div>
                 )}
                 rowClassName={(row) => importPreview.selectedKeys.has(row.key) ? "bg-blue-50/40" : row.ready ? "bg-white" : "bg-amber-50/40"}
@@ -2236,33 +2217,33 @@ export default function EmailSettingsPage() {
                 {importComplete ? (
                   importCompleteLockedBills.length > 0 ? (
                     <span className="space-y-1">
-                      <span className="block">导入已完成，请确认后返回。</span>
+                      <span className="block">{t("settings.email.importDoneConfirm")}</span>
                       <span className="block">
-                        已锁定：{importCompleteLockedBills.map((item) => {
-                          const accountText = previewAccountDisplayLabelById(item.accountId) ?? "账单账户";
+                        {t("settings.email.locked")}{importCompleteLockedBills.map((item) => {
+                          const accountText = previewAccountDisplayLabelById(item.accountId) ?? t("settings.email.billAccount");
                           const amountText = formatMoneyAmount(item.amount);
-                          const periodText = item.periodStart || item.periodEnd ? `账期 ${item.periodStart || "?"} ~ ${item.periodEnd || "?"}` : "";
-                          const dueText = item.dueDate ? `还款日 ${item.dueDate}` : "";
-                          return [item.statementMonth || "未知月份", accountText, amountText, periodText, dueText].filter(Boolean).join(" · ");
+                          const periodText = item.periodStart || item.periodEnd ? t("settings.email.periodRange", { start: item.periodStart || "?", end: item.periodEnd || "?" }) : "";
+                          const dueText = item.dueDate ? t("settings.email.dueDate", { date: item.dueDate }) : "";
+                          return [item.statementMonth || t("settings.email.unknownMonth"), accountText, amountText, periodText, dueText].filter(Boolean).join(" · ");
                         }).join("；")}
                       </span>
                     </span>
-                  ) : "导入已完成，请确认后返回。"
-                ) : `将导入 ${importPreview.selectedKeys.size} 条`}
+                  ) : t("settings.email.importDoneConfirm")
+                ) : t("statementImportPreview.willImport", { count: importPreview.selectedKeys.size })}
               </div>
               <div className="flex items-center gap-2">
                 {!importComplete && (
                   <button className="h-9 px-4 rounded-md border border-slate-300 bg-white text-sm hover:bg-slate-50" onClick={() => setImportPreview(null)}>
-                    取消
+                    {t("common.cancel")}
                   </button>
                 )}
                 {importComplete ? (
                   <button className="h-9 px-4 rounded-md bg-green-600 text-white text-sm hover:bg-green-700" onClick={confirmImportComplete}>
-                    {importComplete.accountId ? "确定并打开账户" : "确定并返回开始界面"}
+                    {importComplete.accountId ? t("settings.email.confirmOpenAccount") : t("settings.email.confirmBackHome")}
                   </button>
                 ) : (
                   <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed" onClick={() => void importItems()} disabled={importing || importPreview.selectedKeys.size === 0 || importPreview.items.some((row) => importPreview.selectedKeys.has(row.key) && !row.ready)}>
-                    {importing ? "导入中…" : `确认导入 ${importPreview.selectedKeys.size} 条`}
+                    {importing ? t("settings.email.importing") : t("creditBill.confirmImport", { count: importPreview.selectedKeys.size })}
                   </button>
                 )}
               </div>
@@ -2276,29 +2257,29 @@ export default function EmailSettingsPage() {
           <div className="w-full max-w-2xl rounded-xl border border-slate-200 bg-white p-4 shadow-xl">
             <div className="mb-3 flex items-start justify-between gap-3">
               <div>
-                <div className="text-sm font-semibold text-slate-800">根据账单创建账户</div>
-                <div className="mt-1 text-xs text-slate-500">识别到的信息已预填，确认后会回填到当前账单导入预览。</div>
+                <div className="text-sm font-semibold text-slate-800">{t("settings.email.createAccountFromBill")}</div>
+                <div className="mt-1 text-xs text-slate-500">{t("settings.email.createAccountFromBillDesc")}</div>
               </div>
               <button className="h-8 w-8 rounded-md border border-slate-300 text-slate-500 hover:bg-slate-50" onClick={() => setAccountDraft(null)}>×</button>
             </div>
 
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <label className="text-xs text-slate-500">
-                账户名称
+                {t("entityForm.accountNameLabel")}
                 <input className="mt-1 h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none" value={accountDraft.name} onChange={(e) => setAccountDraft((current) => current ? { ...current, name: e.target.value } : current)} />
               </label>
               <label className="text-xs text-slate-500">
-                账户类型
+                {t("entityForm.accountTypeLabel")}
                 <select className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={accountDraft.kind} onChange={(e) => setAccountDraft((current) => current ? { ...current, kind: e.target.value as AccountCreateDraft["kind"] } : current)}>
-                  <option value="bank_credit">信用卡</option>
-                  <option value="bank_debit">储蓄卡</option>
-                  <option value="ewallet">电子钱包</option>
-                  <option value="cash">现金</option>
-                  <option value="other">其他</option>
+                  <option value="bank_credit">{t("account.kind.bank_credit")}</option>
+                  <option value="bank_debit">{t("account.kind.bank_savings")}</option>
+                  <option value="ewallet">{t("account.kind.ewallet")}</option>
+                  <option value="cash">{t("account.kind.cash")}</option>
+                  <option value="other">{t("account.kind.other")}</option>
                 </select>
               </label>
               <label className="text-xs text-slate-500">
-                机构
+                {t("settings.accounts.institution")}
                 <select
                   className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                   value={accountDraft.institutionId}
@@ -2307,42 +2288,42 @@ export default function EmailSettingsPage() {
                     setAccountDraft((current) => current ? { ...current, institutionId: e.target.value, institutionName: institution?.name ?? current.institutionName } : current);
                   }}
                 >
-                  <option value="">新建/不选择机构</option>
+                  <option value="">{t("settings.email.newOrNoInstitution")}</option>
                   {bookInstitutions.map((institution) => (
                     <option key={institution.id} value={institution.id}>{institution.name}</option>
                   ))}
                 </select>
               </label>
               <label className="text-xs text-slate-500">
-                新机构名称
-                <input className="mt-1 h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none" value={accountDraft.institutionName} onChange={(e) => setAccountDraft((current) => current ? { ...current, institutionName: e.target.value, institutionId: "" } : current)} placeholder="如 兴业银行" />
+                {t("settings.email.newInstitutionName")}
+                <input className="mt-1 h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none" value={accountDraft.institutionName} onChange={(e) => setAccountDraft((current) => current ? { ...current, institutionName: e.target.value, institutionId: "" } : current)} placeholder={t("settings.email.institutionNamePlaceholder")} />
               </label>
               <label className="text-xs text-slate-500">
-                所有人
+                {t("settings.accounts.owner")}
                 <select className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={accountDraft.userId} onChange={(e) => setAccountDraft((current) => current ? { ...current, userId: e.target.value } : current)}>
-                  <option value="">{accountDraft.ownerName ? `识别到：${accountDraft.ownerName}` : "不指定"}</option>
+                  <option value="">{accountDraft.ownerName ? t("settings.email.detectedOwner", { name: accountDraft.ownerName }) : t("regularInvest.notSpecified")}</option>
                   {bookUsers.map((user) => (
                     <option key={user.id} value={user.id}>{user.name}</option>
                   ))}
                 </select>
               </label>
               <label className="text-xs text-slate-500">
-                尾号
-                <input className="mt-1 h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none" value={accountDraft.numberMasked} onChange={(e) => setAccountDraft((current) => current ? { ...current, numberMasked: e.target.value } : current)} placeholder="如 1100" />
+                {t("settings.email.lastFour")}
+                <input className="mt-1 h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none" value={accountDraft.numberMasked} onChange={(e) => setAccountDraft((current) => current ? { ...current, numberMasked: e.target.value } : current)} placeholder={t("settings.email.lastFourPlaceholder")} />
               </label>
               {accountDraft.kind === "bank_credit" && (
                 <>
                   <label className="text-xs text-slate-500">
-                    信用额度
+                    {t("settings.email.creditLimit")}
                     <input className="mt-1 h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none" value={accountDraft.creditLimit} onChange={(e) => setAccountDraft((current) => current ? { ...current, creditLimit: e.target.value } : current)} />
                   </label>
                   <div className="grid grid-cols-2 gap-3">
                     <label className="text-xs text-slate-500">
-                      账单日
+                      {t("settings.accounts.billingDayLabel")}
                       <input className="mt-1 h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none" value={accountDraft.billingDay} onChange={(e) => setAccountDraft((current) => current ? { ...current, billingDay: e.target.value } : current)} />
                     </label>
                     <label className="text-xs text-slate-500">
-                      还款日
+                      {t("settings.accounts.repaymentDayLabel")}
                       <input className="mt-1 h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none" value={accountDraft.repaymentDay} onChange={(e) => setAccountDraft((current) => current ? { ...current, repaymentDay: e.target.value } : current)} />
                     </label>
                   </div>
@@ -2351,9 +2332,9 @@ export default function EmailSettingsPage() {
             </div>
 
             <div className="mt-4 flex items-center justify-end gap-2">
-              <button className="h-9 px-4 rounded-md border border-slate-300 text-sm hover:bg-slate-50" onClick={() => setAccountDraft(null)}>取消</button>
+              <button className="h-9 px-4 rounded-md border border-slate-300 text-sm hover:bg-slate-50" onClick={() => setAccountDraft(null)}>{t("common.cancel")}</button>
               <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50" onClick={createAccountFromDraft} disabled={savingAccountDraft || !accountDraft.name.trim()}>
-                {savingAccountDraft ? "创建中…" : "创建并使用"}
+                {savingAccountDraft ? t("settings.email.creating") : t("settings.email.createAndUse")}
               </button>
             </div>
           </div>
@@ -2365,50 +2346,50 @@ export default function EmailSettingsPage() {
           <div className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-xl border border-slate-200 bg-white p-4 shadow-xl">
             <div className="mb-3 flex items-start justify-between gap-3">
               <div>
-                <div className="text-sm font-medium text-slate-800">{editingId ? "修改邮箱账户" : "添加邮箱账户"}</div>
-                <div className="mt-1 text-xs text-slate-500">先点测试确认连接；测试通过后保存不会再重复测试。</div>
+                <div className="text-sm font-medium text-slate-800">{editingId ? t("settings.email.editAccountTitle") : t("settings.email.addAccountTitle")}</div>
+                <div className="mt-1 text-xs text-slate-500">{t("settings.email.testFirstHint")}</div>
               </div>
               <button className="h-8 w-8 rounded-md border border-slate-300 text-slate-500 hover:bg-slate-50" onClick={closeAccountModal}>×</button>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <select className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={providerKey} onChange={(e) => applyProviderPreset(e.target.value)}>
-                <option value="">选择邮箱模板（可选）</option>
-                {EMAIL_PROVIDER_PRESETS.map((preset) => (
+                <option value="">{t("settings.email.selectTemplate")}</option>
+                {EMAIL_PROVIDER_PRESETS(t).map((preset) => (
                   <option key={preset.key} value={preset.key}>{preset.label}</option>
                 ))}
               </select>
-              <input className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="标签名，如 QQ邮箱" />
-              <input className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={username} onChange={(e) => { setUsername(e.target.value); if (!smtpFrom.trim()) setSmtpFrom(e.target.value); }} placeholder="邮箱账号" autoComplete="username" />
-              <input className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={imapHost} onChange={(e) => setImapHost(e.target.value)} placeholder="IMAP 主机，如 imap.qq.com" />
+              <input className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={label} onChange={(e) => setLabel(e.target.value)} placeholder={t("settings.email.labelPlaceholder")} />
+              <input className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={username} onChange={(e) => { setUsername(e.target.value); if (!smtpFrom.trim()) setSmtpFrom(e.target.value); }} placeholder={t("settings.email.usernamePlaceholder")} autoComplete="username" />
+              <input className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={imapHost} onChange={(e) => setImapHost(e.target.value)} placeholder={t("settings.email.imapHostPlaceholder")} />
               <div className="flex gap-2">
-                <input className="h-9 w-24 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={imapPort} onChange={(e) => setImapPort(e.target.value)} placeholder="端口" />
+                <input className="h-9 w-24 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={imapPort} onChange={(e) => setImapPort(e.target.value)} placeholder={t("settings.fundApi.port")} />
                 <label className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700 flex items-center gap-2">
                   <input type="checkbox" checked={imapSecure} onChange={(e) => setImapSecure(e.target.checked)} />TLS
                 </label>
               </div>
-              <input className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={editingId ? "新授权码，不修改可留空" : "授权码/密码"} type="password" autoComplete="new-password" />
-              <input className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={mailbox} onChange={(e) => setMailbox(e.target.value)} placeholder="邮箱文件夹，默认 INBOX" />
+              <input className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={editingId ? t("settings.email.passwordPlaceholderEdit") : t("settings.email.passwordPlaceholder")} type="password" autoComplete="new-password" />
+              <input className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={mailbox} onChange={(e) => setMailbox(e.target.value)} placeholder={t("settings.email.mailboxPlaceholder")} />
             </div>
 
             <div className="mt-3 pt-3 border-t border-slate-100">
-              <div className="text-xs font-medium text-slate-500 mb-2">SMTP 发件（可选）</div>
+              <div className="text-xs font-medium text-slate-500 mb-2">{t("settings.email.smtpSection")}</div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <input className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} placeholder="SMTP 主机，如 smtp.qq.com" />
-                <input className="h-9 w-24 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={smtpPort} onChange={(e) => { setSmtpPort(e.target.value); setSmtpSecure(e.target.value === "465"); }} placeholder="端口" />
-                <input className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={smtpFrom} onChange={(e) => setSmtpFrom(e.target.value)} placeholder="发件地址，如 noreply@qq.com" />
+                <input className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} placeholder={t("settings.email.smtpHostPlaceholder")} />
+                <input className="h-9 w-24 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={smtpPort} onChange={(e) => { setSmtpPort(e.target.value); setSmtpSecure(e.target.value === "465"); }} placeholder={t("settings.fundApi.port")} />
+                <input className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={smtpFrom} onChange={(e) => setSmtpFrom(e.target.value)} placeholder={t("settings.email.smtpFromPlaceholder")} />
               </div>
               <div className="mt-2 text-xs text-slate-500">
-                SMTP 端口 465 使用 SSL；587 使用 STARTTLS。Gmail 发信用 587 更通用，收信用 IMAP 993。
+                {t("settings.email.smtpHint")}
               </div>
             </div>
 
             <div className="mt-4 flex items-center justify-end gap-2">
-              <button className="h-9 px-4 rounded-md border border-slate-300 text-sm hover:bg-slate-50" onClick={closeAccountModal}>取消</button>
-              <button className="h-9 px-4 rounded-md border border-slate-300 text-sm hover:bg-slate-50 disabled:opacity-50" onClick={testConnection} disabled={testing}>{testing ? "测试中…" : "测试连接"}</button>
-              <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50" onClick={saveAccount} disabled={saving}>{saving ? "保存中…" : editingId ? "保存修改" : "保存"}</button>
+              <button className="h-9 px-4 rounded-md border border-slate-300 text-sm hover:bg-slate-50" onClick={closeAccountModal}>{t("common.cancel")}</button>
+              <button className="h-9 px-4 rounded-md border border-slate-300 text-sm hover:bg-slate-50 disabled:opacity-50" onClick={testConnection} disabled={testing}>{testing ? t("settings.email.testing") : t("settings.email.testConnection")}</button>
+              <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50" onClick={saveAccount} disabled={saving}>{saving ? t("settings.email.saving") : editingId ? t("settings.email.saveChanges") : t("common.save")}</button>
             </div>
             {testResult && <div className="mt-2 text-xs text-emerald-700">{testResult}</div>}
-            {!accountTested && <div className="mt-2 text-xs text-slate-500">建议先测试连接，测试通过后再保存。</div>}
+            {!accountTested && <div className="mt-2 text-xs text-slate-500">{t("settings.email.recommendTestFirst")}</div>}
           </div>
         </div>
       )}

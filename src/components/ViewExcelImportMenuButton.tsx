@@ -65,9 +65,12 @@ type ViewExcelImportMenuButtonProps =
       fundName?: string;
     } & ViewExcelImportMenuButtonBaseProps);
 
+type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
+
 type TemplateSpec = {
   filename: string;
   sheetName: string;
+  noteSheetName: string;
   headers: string[];
   labelRow?: string[];
   rows: string[][];
@@ -76,47 +79,63 @@ type TemplateSpec = {
 
 const NORMAL_HEADERS = ["日期", "入账日期", "收支大类", "金额", "流出", "流入", "账户", "对向账户", "分类", "收支机构", "标签", "备注"];
 const FUND_HEADERS = ["date", "fundSubtype", "source", "cashAccount", "fundAccount", "fundCode", "fundName", "amount", "units", "nav", "fee", "confirmDate", "arrivalDate", "remark"];
-const FUND_LABEL_ROW = ["日期", "基金动作", "来源", "资金账户", "基金账户", "基金代码", "基金名称", "金额", "份额", "净值", "手续费", "净值日期", "入账日期", "备注"];
 
-function safeFileNamePart(value: string) {
-  return value.replace(/[\\/:*?"<>|]+/g, "_").trim() || "导入";
+function safeFileNamePart(value: string, fallback: string) {
+  return value.replace(/[\\/:*?"<>|]+/g, "_").trim() || fallback;
 }
 
-function templateFor(props: ViewExcelImportMenuButtonProps): TemplateSpec {
+function templateFor(props: ViewExcelImportMenuButtonProps, t: TranslateFn): TemplateSpec {
   if (props.kind === "fund") {
-    const fundAccountName = props.fundAccountName || "基金账户";
+    const fundAccountName = props.fundAccountName || t("viewImport.fundAccount");
     const fundCode = props.fundCode || "000001";
-    const fundName = props.fundName || "示例基金";
+    const fundName = props.fundName || t("viewImport.sampleFund");
     return {
-      filename: `基金交易导入模板_${safeFileNamePart(fundAccountName)}.xlsx`,
-      sheetName: "基金交易",
+      filename: `${t("viewImport.fundTemplateFile", { name: safeFileNamePart(fundAccountName, t("viewImport.import")) })}.xlsx`,
+      sheetName: t("viewImport.sheetFundTransactions"),
+      noteSheetName: t("viewImport.sheetNotes"),
       headers: FUND_HEADERS,
-      labelRow: FUND_LABEL_ROW,
+      labelRow: [
+        t("detail.column.date"),
+        t("viewImport.fundSubtype"),
+        t("viewImport.source"),
+        t("viewImport.cashAccount"),
+        t("viewImport.fundAccount"),
+        t("viewImport.fundCode"),
+        t("viewImport.fundName"),
+        t("viewImport.amount"),
+        t("viewImport.units"),
+        t("viewImport.nav"),
+        t("viewImport.fee"),
+        t("viewImport.navDate"),
+        t("detail.column.postedAt"),
+        t("detail.column.remark"),
+      ],
       rows: [
         ["2026-06-03", "buy", "manual", "", fundAccountName, fundCode, fundName, "1000.00", "738.99", "1.3521", "1.00", "2026-06-04", "2026-06-04", "申购"],
         ["2026-06-20", "redeem", "manual", "", fundAccountName, fundCode, fundName, "500.00", "360.00", "1.3889", "0.50", "2026-06-21", "2026-06-23", "赎回"],
       ],
       notes: [
-        ["说明", "模板页第 1 行是稳定字段键名，第 2 行是中文显示名称；导入时按字段键名识别。备注字段固定放在最后。"],
-        ["识别原则", "系统只识别有明确表头和业务方向的字段；不能确定含义时会在预览里报错或警告，不会强行改作其他字段。"],
-        ["fundSubtype", "必填。填写 buy、redeem、dividend_cash、dividend_reinvest、refund。"],
-        ["source", "选填。填写 manual、regular_invest、regular_invest_refund 等来源；留空按手工导入处理。"],
-        ["cashAccount", "有现金出入时填写资金账户；留空时由基金导入规则校验。"],
-        ["fundAccount", "必填。基金账户，当前模板默认填入本视图账户。"],
-        ["fundCode", "必填。基金代码是基金记录识别主键，基金名称仅用于显示。"],
-        ["amount", "必填。填正数，方向由 fundSubtype 决定。"],
-        ["units/nav/fee", "选填。份额、净值、手续费会进入基金预览校验；缺失时按现有基金规则补全或提示。"],
-        ["confirmDate/arrivalDate", "选填。分别表示确认/净值日期和现金入账日期。"],
-        ["remark", "选填。自由文本备注，放在最后一列。"],
+        [t("viewImport.notesIntroLabel"), t("viewImport.notesIntroFund")],
+        [t("viewImport.notesRecognitionLabel"), t("viewImport.notesRecognitionFund")],
+        ["fundSubtype", t("viewImport.notesFundSubtype")],
+        ["source", t("viewImport.notesSource")],
+        ["cashAccount", t("viewImport.notesCashAccount")],
+        ["fundAccount", t("viewImport.notesFundAccount")],
+        ["fundCode", t("viewImport.notesFundCode")],
+        ["amount", t("viewImport.notesFundAmount")],
+        ["units/nav/fee", t("viewImport.notesUnitsNavFee")],
+        ["confirmDate/arrivalDate", t("viewImport.notesConfirmArrival")],
+        ["remark", t("viewImport.notesRemark")],
       ],
     };
   }
 
-  const accountName = props.accountName || "当前账户";
+  const accountName = props.accountName || t("viewImport.currentAccount");
   const isCreditCardTemplate = /信用卡|贷记卡|credit\s*card/i.test(accountName);
   return {
-    filename: `账单记录导入模板_${safeFileNamePart(accountName)}.xlsx`,
-    sheetName: "账单记录",
+    filename: `${t("viewImport.billTemplateFile", { name: safeFileNamePart(accountName, t("viewImport.import")) })}.xlsx`,
+    sheetName: t("viewImport.sheetBillRecords"),
+    noteSheetName: t("viewImport.sheetNotes"),
     headers: NORMAL_HEADERS,
     rows: isCreditCardTemplate
       ? [
@@ -130,20 +149,20 @@ function templateFor(props: ViewExcelImportMenuButtonProps): TemplateSpec {
         ["2026-06-20", "", "转账", "1000.00", "1000.00", "", accountName, "现金", "", "", "", "转账"],
       ],
     notes: [
-      ["说明", "模板页第 1 行是稳定字段键名；导入时按字段键名识别。备注字段固定放在最后。"],
-      ["识别原则", "系统只识别有明确表头和收支方向的字段；不能确定含义时会在预览里报错或警告，不会把字段强行改作其他用途。"],
-      ["日期", "必填。写交易日期，推荐 YYYY-MM-DD；也兼容常见 Excel 日期。"],
-      ["入账日期", "选填。支出记录可填实际入账日期；无法识别时预览警告并按空值处理。"],
-      ["收支大类", "必填。填写 支出、收入、转账、投资。信用卡还款也填写 转账，系统按账户方向识别，不需要在分类里写信用卡还款。"],
-      ["金额", "必填。统一填正数；方向优先看“流出/流入”，未填写时再按收支大类推断。"],
-      ["流出", "选填。账户侧资金减少时填写，例如消费、转出、取现。"],
-      ["流入", "选填。账户侧资金增加时填写，例如收入、信用卡还款、退款、退货、冲正。"],
-      ["账户", "必填。支出/收入写发生账户；转账可写当前视角账户；信用卡账单页导入时可统一写当前信用卡账户。"],
-      ["对向账户", "仅转账时填写另一侧账户。信用卡还款若账户列是信用卡，这里写付款账户；若账户列是付款账户，这里写信用卡账户。非转账记录填写后只会预览警告并忽略。"],
-      ["分类", "选填。填写账簿中已有分类名称，系统会按现有分类/学习规则对齐。"],
-      ["收支机构", "选填。填写商户、银行、支付机构等明确机构名。"],
-      ["标签", "选填。多个标签按现有导入规则处理。"],
-      ["备注", "选填。自由文本备注，放在最后一列。"],
+      [t("viewImport.notesIntroLabel"), t("viewImport.notesIntroNormal")],
+      [t("viewImport.notesRecognitionLabel"), t("viewImport.notesRecognitionNormal")],
+      [t("detail.column.date"), t("viewImport.notesDate")],
+      [t("detail.column.postedAt"), t("viewImport.notesPostedAt")],
+      [t("viewImport.activityType"), t("viewImport.notesActivityType")],
+      [t("viewImport.amount"), t("viewImport.notesAmount")],
+      [t("detail.column.outflow"), t("viewImport.notesOutflow")],
+      [t("detail.column.inflow"), t("viewImport.notesInflow")],
+      [t("viewImport.account"), t("viewImport.notesAccount")],
+      [t("viewImport.counterAccount"), t("viewImport.notesCounterAccount")],
+      [t("detail.column.category"), t("viewImport.notesCategory")],
+      [t("detail.column.counterparty"), t("viewImport.notesCounterparty")],
+      [t("detail.column.tags"), t("viewImport.notesTags")],
+      [t("detail.column.remark"), t("viewImport.notesRemark")],
     ],
   };
 }
@@ -160,11 +179,11 @@ export async function exportViewImportTemplate(spec: TemplateSpec) {
 
   const noteSheet = XLSX.utils.aoa_to_sheet(spec.notes);
   noteSheet["!cols"] = [{ wch: 18 }, { wch: 72 }];
-  XLSX.utils.book_append_sheet(workbook, noteSheet, "填写说明");
+  XLSX.utils.book_append_sheet(workbook, noteSheet, spec.noteSheetName);
   XLSX.writeFile(workbook, spec.filename, { compression: true });
 }
 
-export async function exportRowsToXlsx(rows: ExportCellValue[][], filename: string, sheetName = "导出") {
+export async function exportRowsToXlsx(rows: ExportCellValue[][], filename: string, sheetName: string) {
   const XLSX = await import("xlsx");
   const workbook = XLSX.utils.book_new();
   const sheet = XLSX.utils.aoa_to_sheet(rows.map((row) => row.map((cell) => cell ?? "")));
@@ -183,8 +202,8 @@ export async function exportRowsToXlsx(rows: ExportCellValue[][], filename: stri
   XLSX.writeFile(workbook, filename, { compression: true });
 }
 
-export async function exportNormalAccountImportTemplate(accountName: string) {
-  await exportViewImportTemplate(templateFor({ kind: "normal", accountId: "", accountName }));
+export async function exportNormalAccountImportTemplate(accountName: string, t: TranslateFn) {
+  await exportViewImportTemplate(templateFor({ kind: "normal", accountId: "", accountName }, t));
 }
 
 function parseExportDate(value: unknown) {
@@ -200,8 +219,8 @@ function exportDateBounds(rows: ExportCellValue[][], dateColumnIndex: number) {
   };
 }
 
-function filenameWithDateRange(filename: string, start: string, end: string) {
-  const suffix = start && end ? `${start}_${end}` : start || end || "全部";
+function filenameWithDateRange(filename: string, start: string, end: string, fallback: string) {
+  const suffix = start && end ? `${start}_${end}` : start || end || fallback;
   return filename.replace(/\.xlsx$/i, `-${suffix}.xlsx`);
 }
 
@@ -265,9 +284,9 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
     setOpen(false);
     setBusy(true);
     try {
-      await exportViewImportTemplate(templateFor(props));
+      await exportViewImportTemplate(templateFor(props, t));
     } catch (error) {
-      setStatus(t("viewImport.failed").replace("{reason}", error instanceof Error ? error.message : String(error)));
+      setStatus(t("viewImport.failed", { reason: error instanceof Error ? error.message : String(error) }));
     } finally {
       setBusy(false);
     }
@@ -308,10 +327,10 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
               account: item.account || props.accountName,
             };
           });
-        if (items.length === 0) throw new Error("没有识别到可导入的账单记录");
+        if (items.length === 0) throw new Error(t("viewImport.noRows"));
         setPreviewItems(items);
         setPreviewOpen(true);
-        setStatus(`已识别 ${items.length} 条，进入导入预览`);
+        setStatus(t("viewImport.recognizedCount", { count: items.length }));
         return;
       }
 
@@ -319,7 +338,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
       sessionStorage.setItem(BATCH_IMPORT_PENDING_FILE_STORAGE_KEY, JSON.stringify(payload));
       router.push("/batch-import");
     } catch (error) {
-      setStatus(t("viewImport.failed").replace("{reason}", error instanceof Error ? error.message : String(error)));
+      setStatus(t("viewImport.failed", { reason: error instanceof Error ? error.message : String(error) }));
     } finally {
       setBusy(false);
       if (inputRef.current) inputRef.current.value = "";
@@ -333,14 +352,14 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
       body: JSON.stringify({ text }),
     });
     const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; items?: StatementImportPreviewItem[] } | null;
-    if (!res.ok || !data?.ok) throw new Error(data?.error || "识别失败");
+    if (!res.ok || !data?.ok) throw new Error(data?.error || t("viewImport.recognitionFailed"));
     return Array.isArray(data.items) ? data.items : [];
   }
 
   async function confirmImport(items: StatementImportPreviewItem[]) {
     if (items.length === 0 || props.kind !== "normal") return;
     setBusy(true);
-    setStatus("正在导入账单记录...");
+    setStatus(t("viewImport.importingBills"));
     try {
       const res = await fetch("/api/v1/statement/import", {
         method: "POST",
@@ -352,15 +371,15 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
         }),
       });
       const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; createdCount?: number; skippedCount?: number; errors?: Array<{ error?: string }> } | null;
-      if (!res.ok || !data?.ok) throw new Error(data?.error || data?.errors?.[0]?.error || "导入失败");
+      if (!res.ok || !data?.ok) throw new Error(data?.error || data?.errors?.[0]?.error || t("creditBill.importFailed"));
       const createdCount = data.createdCount ?? 0;
       const skippedCount = data.skippedCount ?? 0;
-      setStatus(`导入完成：创建 ${createdCount} 条，跳过 ${skippedCount} 条`);
+      setStatus(t("creditBill.importExcelSuccess", { created: createdCount, skipped: skippedCount }));
       setPreviewOpen(false);
       setPreviewItems([]);
       dispatchFinanceDataChanged({ reason: "statement-excel-import", accountIds: [props.accountId] });
     } catch (error) {
-      setStatus(`导入失败：${error instanceof Error ? error.message : String(error)}`);
+      setStatus(t("viewImport.failed", { reason: error instanceof Error ? error.message : String(error) }));
     } finally {
       setBusy(false);
     }
@@ -383,7 +402,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
     if (!spec || busy) return;
     const dateColumnIndex = spec.dateColumnIndex ?? 0;
     if (excelExportStart && excelExportEnd && excelExportStart > excelExportEnd) {
-      setExcelExportError("起始日期不能晚于结束日期。");
+      setExcelExportError(t("viewImport.dateRangeInvalid"));
       return;
     }
     const [header = [], ...bodyRows] = spec.rows;
@@ -395,7 +414,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
       return true;
     });
     if (filteredRows.length === 0) {
-      setExcelExportError("所选时间段没有可导出的记录。");
+      setExcelExportError(t("viewImport.noRowsInRange"));
       return;
     }
     setBusy(true);
@@ -403,11 +422,11 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
     try {
       await exportRowsToXlsx(
         [header, ...filteredRows],
-        filenameWithDateRange(spec.filename, excelExportStart, excelExportEnd),
-        spec.sheetName ?? "明细",
+        filenameWithDateRange(spec.filename, excelExportStart, excelExportEnd, t("creditBill.all")),
+        spec.sheetName ?? t("viewImport.details"),
       );
       setExcelExportOpen(false);
-      setStatus(`已导出 ${filteredRows.length} 条记录`);
+      setStatus(t("viewImport.exportedCount", { count: filteredRows.length }));
     } catch (error) {
       setExcelExportError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -438,7 +457,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
               className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
             >
               <FileSpreadsheet className="h-3.5 w-3.5" />
-              导出 EXCEL 表
+              {t("viewImport.exportExcel")}
             </button>
           ) : null}
           {props.exportItems?.map((item) => item.href ? (
@@ -521,8 +540,8 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
       {props.kind === "normal" ? (
         <StatementImportPreviewDialog
           open={previewOpen}
-          title="账单导入预览"
-          description="普通账户和信用卡账户使用同一张账单记录 Excel 表；在这里复核、筛选、排序、批量修改后再导入。"
+          title={t("viewImport.previewTitle")}
+          description={t("viewImport.previewDescription")}
           items={previewItems}
           defaultAccountName={props.accountName}
           busy={busy}
@@ -534,14 +553,14 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
         <div className="fixed inset-0 z-[85] flex items-center justify-center bg-slate-900/25 px-4">
           <div className="w-full max-w-md overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
             <div className="border-b border-slate-100 px-4 py-3">
-              <div className="text-sm font-semibold text-slate-800">{props.excelExport.title ?? "导出 EXCEL 表"}</div>
+              <div className="text-sm font-semibold text-slate-800">{props.excelExport.title ?? t("viewImport.exportExcel")}</div>
               <div className="mt-1 text-xs text-slate-500">
-                {props.excelExport.description ?? "按当前视图可见记录选择导出时间段。"}
+                {props.excelExport.description ?? t("viewImport.exportDescription")}
               </div>
             </div>
             <div className="space-y-3 px-4 py-4">
               <label className="block">
-                <span className="mb-1 block text-xs font-medium text-slate-600">开始日期</span>
+                <span className="mb-1 block text-xs font-medium text-slate-600">{t("viewImport.exportStartDate")}</span>
                 <input
                   type="date"
                   value={excelExportStart}
@@ -550,7 +569,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
                 />
               </label>
               <label className="block">
-                <span className="mb-1 block text-xs font-medium text-slate-600">结束日期</span>
+                <span className="mb-1 block text-xs font-medium text-slate-600">{t("viewImport.exportEndDate")}</span>
                 <input
                   type="date"
                   value={excelExportEnd}
@@ -562,10 +581,10 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
             </div>
             <div className="flex justify-end gap-2 border-t border-slate-100 px-4 py-3">
               <button type="button" onClick={() => setExcelExportOpen(false)} className="secondary-button h-8 px-3 text-xs" disabled={busy}>
-                取消
+                {t("common.cancel")}
               </button>
               <button type="button" onClick={() => void handleExcelExport()} className="primary-button h-8 px-3 text-xs" disabled={busy}>
-                {busy ? "导出中..." : "导出"}
+                {busy ? t("viewImport.exporting") : t("viewImport.export")}
               </button>
             </div>
           </div>

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { useI18n } from "@/lib/i18n";
 
 export type InvestmentProfitScopeOption = {
   value: string;
@@ -24,6 +25,7 @@ export function InvestmentProfitScopeSelect({
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [draftScope, setDraftScope] = useState(selectedScope);
+  const { t } = useI18n();
   const optionByValue = new Map(
     [
       allOption,
@@ -38,7 +40,7 @@ export function InvestmentProfitScopeSelect({
 
   return (
     <label className="flex shrink-0 items-center gap-1.5">
-      <span className="text-xs font-medium text-slate-500">统计范围</span>
+      <span className="text-xs font-medium text-slate-500">{t("investmentProfitScope.scopeLabel")}</span>
       <select
         value={draftScope}
         disabled={isPending}
@@ -55,7 +57,7 @@ export function InvestmentProfitScopeSelect({
       >
         <option value={allOption.value}>{allOption.label}</option>
         {institutionOptions.length ? (
-          <optgroup label="按机构统计">
+          <optgroup label={t("investmentProfitScope.byInstitution")}>
             {institutionOptions.map((option) => (
               <option key={option.value} value={option.value} title={option.title}>
                 {option.label}
@@ -64,7 +66,7 @@ export function InvestmentProfitScopeSelect({
           </optgroup>
         ) : null}
         {accountOptions.length ? (
-          <optgroup label="按账户统计">
+          <optgroup label={t("investmentProfitScope.byAccount")}>
             {accountOptions.map((option) => (
               <option key={option.value} value={option.value} title={option.title}>
                 {option.label}

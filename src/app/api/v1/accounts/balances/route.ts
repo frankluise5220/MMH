@@ -1,11 +1,11 @@
 /**
  * API: GET /api/v1/accounts/balances
  *
- * 批量返回账户余额
- * 供 SidebarClient 局部刷新使用
+ * Returns account balances in batch.
+ * Used by SidebarClient for partial refresh.
  *
- * 查询参数:
- *   ids (required) - 逗号分隔的账户 ID 列表
+ * Query params:
+ *   ids (required) - comma-separated account ID list
  */
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
@@ -25,12 +25,12 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const idsRaw = (url.searchParams.get("ids") ?? "").trim();
   if (!idsRaw) {
-    return NextResponse.json({ ok: false, error: "缺少 ids 参数" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_IDS", error: "缺少 ids 参数" }, { status: 400 });
   }
 
   const ids = idsRaw.split(",").map((s) => s.trim()).filter(Boolean);
   if (ids.length === 0) {
-    return NextResponse.json({ ok: false, error: "ids 参数无效" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INVALID_IDS", error: "ids 参数无效" }, { status: 400 });
   }
 
   try {
@@ -101,6 +101,6 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: true, data });
   } catch (err) {
     console.error("GET /api/v1/accounts/balances error:", err);
-    return NextResponse.json({ ok: false, error: "服务器错误" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: "服务器错误" }, { status: 500 });
   }
 }

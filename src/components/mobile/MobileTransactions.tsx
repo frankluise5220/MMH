@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import Link from "next/link";
 import { ArrowDownLeft, ArrowLeft, ArrowLeftRight, ArrowUpRight, MoreHorizontal, Pencil, ReceiptText, Trash2, TrendingUp } from "lucide-react";
 import { formatMoneyYuan } from "@/lib/format";
+import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
 export type MobileTransactionRow = {
@@ -63,7 +64,8 @@ export function MobileTransactions({ entries, accountSummary }: { entries: Mobil
   }, [filteredEntries]);
 
   async function deleteEntry(id: string) {
-    if (!window.confirm("确认删除这条流水吗？")) return;
+    const confirmed = await showConfirmDialog({ title: "删除流水", message: "确认删除这条流水吗？", tone: "danger" });
+    if (!confirmed) return;
     const response = await fetch(`/api/v1/transactions/detail?id=${encodeURIComponent(id)}`, { method: "DELETE" });
     const result = await response.json().catch(() => null);
     if (!response.ok || !result?.ok) {

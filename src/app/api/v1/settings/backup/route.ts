@@ -214,7 +214,7 @@ async function runRestoreTask(
 
 function requireAdmin(user: Awaited<ReturnType<typeof getCurrentUser>>) {
   if (!user || !isAdmin(user)) {
-    return NextResponse.json({ ok: false, error: "仅管理员可执行备份或恢复" }, { status: 403 });
+    return NextResponse.json({ ok: false, code: "ADMIN_REQUIRED", error: "仅管理员可执行备份或恢复" }, { status: 403 });
   }
   return null;
 }
@@ -244,7 +244,7 @@ function attachmentDisposition(fileName: string) {
 async function verifySensitiveOperationPassword(currentUser: CurrentUser, userPassword: string) {
   const password = userPassword.trim();
   if (!password) {
-    return NextResponse.json({ ok: false, error: "请输入用户密码" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_PASSWORD", error: "请输入用户密码" }, { status: 400 });
   }
 
   const dbUser = await prisma.user.findUnique({
@@ -252,23 +252,23 @@ async function verifySensitiveOperationPassword(currentUser: CurrentUser, userPa
     select: { passwordHash: true },
   });
   if (!dbUser) {
-    return NextResponse.json({ ok: false, error: "当前用户不存在，请重新登录" }, { status: 401 });
+    return NextResponse.json({ ok: false, code: "USER_NOT_FOUND", error: "当前用户不存在，请重新登录" }, { status: 401 });
   }
 
   if (dbUser.passwordHash) {
     const matched = await verifyPassword(password, dbUser.passwordHash);
     if (!matched) {
-      return NextResponse.json({ ok: false, error: "用户密码错误" }, { status: 401 });
+      return NextResponse.json({ ok: false, code: "INVALID_PASSWORD", error: "用户密码错误" }, { status: 401 });
     }
     return null;
   }
 
   const legacySetting = await prisma.systemSetting.findUnique({ where: { key: LEGACY_PASSWORD_KEY } });
   if (!legacySetting?.value) {
-    return NextResponse.json({ ok: false, error: "请先设置用户密码" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "PASSWORD_NOT_SET", error: "请先设置用户密码" }, { status: 400 });
   }
-  if (password !== legacySetting.value) {
-    return NextResponse.json({ ok: false, error: "用户密码错误" }, { status: 401 });
+  if (!constantTimeEqual(password, legacySetting.value)) {
+    return NextResponse.json({ ok: false, code: "INVALID_PASSWORD", error: "用户密码错误" }, { status: 401 });
   }
   return null;
 }
@@ -299,6 +299,13 @@ function restoreFailureMessage(error: unknown) {
   return error instanceof Error ? error.message : "恢复失败";
 }
 
+/** Constant-time string comparison (hashing both sides equalizes length timing). */
+function constantTimeEqual(a: string, b: string): boolean {
+  const ah = crypto.createHash("sha256").update(String(a ?? "")).digest();
+  const bh = crypto.createHash("sha256").update(String(b ?? "")).digest();
+  return crypto.timingSafeEqual(ah, bh);
+}
+
 /**
  * GET /api/v1/settings/backup
  *
@@ -310,17 +317,21 @@ function restoreFailureMessage(error: unknown) {
  * Use `POST ?mode=table-export` to export a non-restorable Excel workbook.
  */
 export async function GET(req: NextRequest) {
+  const currentUser = await getCurrentUser();
+  if (!currentUser) {
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "请先登录" }, { status: 401 });
+  }
   cleanupRestoreTasks();
   const mode = req.nextUrl.searchParams.get("mode");
   if (mode === "restore-status") {
     const id = String(req.nextUrl.searchParams.get("id") ?? "");
     const task = restoreTasks.get(id);
     if (!task) {
-      return NextResponse.json({ ok: false, error: "恢复任务不存在或已过期" }, { status: 404 });
+      return NextResponse.json({ ok: false, code: "RESTORE_TASK_NOT_FOUND", error: "恢复任务不存在或已过期" }, { status: 404 });
     }
     return NextResponse.json({ ok: true, task: publicRestoreTask(task) });
   }
-  return NextResponse.json({ ok: false, error: "请使用 POST 导出备份、导出表格或恢复备份" }, { status: 405 });
+  return NextResponse.json({ ok: false, code: "METHOD_NOT_ALLOWED", error: "请使用 POST 导出备份、导出表格或恢复备份" }, { status: 405 });
 }
 
 async function exportBackupPackage(req: NextRequest) {
@@ -329,7 +340,7 @@ async function exportBackupPackage(req: NextRequest) {
     const denied = requireAdmin(currentUser);
     if (denied) return denied;
     if (!currentUser) {
-      return NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 });
+      return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "请先登录" }, { status: 401 });
     }
 
     const credentials = getCredentialsFromJson(await req.json().catch(() => null));
@@ -380,7 +391,7 @@ async function exportBackupPackage(req: NextRequest) {
   } catch (error) {
     console.error("Backup export failed", error);
     const message = error instanceof Error ? error.message : "备份失败";
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "EXPORT_FAILED", error: message }, { status: 500 });
   }
 }
 
@@ -410,7 +421,7 @@ async function exportTableWorkbook() {
   } catch (error) {
     console.error("Table export failed", error);
     const message = error instanceof Error ? error.message : "导出表格失败";
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "EXPORT_FAILED", error: message }, { status: 500 });
   }
 }
 
@@ -458,7 +469,7 @@ export async function POST(req: NextRequest) {
   const denied = requireAdmin(currentUser);
   if (denied) return denied;
   if (!currentUser) {
-    return NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 });
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "请先登录" }, { status: 401 });
   }
 
   const { householdId, user } = await getHouseholdScope();
@@ -466,7 +477,7 @@ export async function POST(req: NextRequest) {
   const contentLength = Number(req.headers.get("content-length") ?? 0);
   if (contentLength > RESTORE_UPLOAD_LIMIT_BYTES) {
     return NextResponse.json(
-      { ok: false, error: "备份文件超过 128MB，请拆分或清理过大的导入原文后重新备份" },
+      { ok: false, code: "FILE_TOO_LARGE", error: "备份文件超过 128MB，请拆分或清理过大的导入原文后重新备份" },
       { status: 413 },
     );
   }
@@ -474,7 +485,7 @@ export async function POST(req: NextRequest) {
   const form = await req.formData().catch(() => null);
   if (!form) {
     return NextResponse.json(
-      { ok: false, error: "备份文件上传不完整或超过恢复上传限制，请重新选择备份文件后再恢复" },
+      { ok: false, code: "INVALID_UPLOAD", error: "备份文件上传不完整或超过恢复上传限制，请重新选择备份文件后再恢复" },
       { status: 400 },
     );
   }
@@ -488,18 +499,18 @@ export async function POST(req: NextRequest) {
     "",
   );
   if (!(file instanceof File)) {
-    return NextResponse.json({ ok: false, error: "请选择备份文件" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_FILE", error: "请选择备份文件" }, { status: 400 });
   }
   const credentialDenied = await verifySensitiveOperationPassword(currentUser, userPassword);
   if (credentialDenied) return credentialDenied;
 
   const lowerFileName = file.name.toLowerCase();
   if (!lowerFileName.endsWith(".mmh-backup")) {
-    return NextResponse.json({ ok: false, error: "恢复仅支持 MMH 加密备份（.mmh-backup）" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INVALID_FILE_TYPE", error: "恢复仅支持 MMH 加密备份（.mmh-backup）" }, { status: 400 });
   }
 
   if (activeRestoreHouseholds.has(householdId)) {
-    return NextResponse.json({ ok: false, error: "当前账簿已有恢复任务在执行，请等待完成后再重试" }, { status: 409 });
+    return NextResponse.json({ ok: false, code: "RESTORE_ALREADY_RUNNING", error: "当前账簿已有恢复任务在执行，请等待完成后再重试" }, { status: 409 });
   }
 
   let encryptedText: string;
@@ -507,7 +518,7 @@ export async function POST(req: NextRequest) {
     encryptedText = await file.text();
   } catch (error) {
     return NextResponse.json(
-      { ok: false, error: restoreFailureMessage(error) },
+      { ok: false, code: "INVALID_BACKUP_FILE", error: restoreFailureMessage(error) },
       { status: 400 },
     );
   }

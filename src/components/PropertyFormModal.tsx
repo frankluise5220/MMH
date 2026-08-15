@@ -9,6 +9,7 @@ import { DateStepper } from "@/components/DateStepper";
 import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
+import { useI18n } from "@/lib/i18n";
 
 type PropertyAction = "purchase" | "improvement" | "sale";
 type ModalMode = "transaction" | "valuation";
@@ -82,6 +83,7 @@ export function PropertyFormModal({
   propertyAssets = [],
 }: Props) {
   const [open, setOpen] = useState(false);
+  const { t } = useI18n();
   const [mode, setMode] = useState<ModalMode>("transaction");
   const [requestId, setRequestId] = useState("");
   const [action, setAction] = useState<PropertyAction>("purchase");
@@ -178,11 +180,11 @@ export function PropertyFormModal({
     if (submitting) return;
     if (mode === "valuation") {
       if (!propertyAssetId) {
-        window.alert("请选择房产");
+        window.alert(t("propertyForm.alert.selectProperty"));
         return;
       }
       if (parseAmount(marketValue) < 0 || !marketValue.trim()) {
-        window.alert("请填写市值");
+        window.alert(t("propertyForm.alert.enterMarketValue"));
         return;
       }
       setSubmitting(true);
@@ -198,12 +200,12 @@ export function PropertyFormModal({
           }),
         });
         const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
-        if (!res.ok || !data?.ok) throw new Error(data?.error ?? "市值更新失败");
+        if (!res.ok || !data?.ok) throw new Error(data?.error ?? t("propertyForm.alert.updateFailed"));
         if (requestId) window.dispatchEvent(new CustomEvent("mmh:property:valuation:success", { detail: { requestId } }));
         requestAnimationFrame(() => dispatchFinanceDataChanged({ reason: "property-valuation-save", accountIds: [propertyAccountId].filter(Boolean) }));
         setOpen(false);
       } catch (error) {
-        window.alert(error instanceof Error ? error.message : "市值更新失败");
+        window.alert(error instanceof Error ? error.message : t("propertyForm.alert.updateFailed"));
       } finally {
         setSubmitting(false);
       }
@@ -211,19 +213,19 @@ export function PropertyFormModal({
     }
 
     if (!propertyAccountId) {
-      window.alert("请选择房产账户");
+      window.alert(t("propertyForm.alert.selectPropertyAccount"));
       return;
     }
     if (action !== "purchase" && !propertyAssetId) {
-      window.alert("请选择房产");
+      window.alert(t("propertyForm.alert.selectProperty"));
       return;
     }
     if (action === "purchase" && !name.trim()) {
-      window.alert("请填写房产名称");
+      window.alert(t("propertyForm.alert.enterPropertyName"));
       return;
     }
     if (parseAmount(amount) <= 0) {
-      window.alert("请填写交易金额");
+      window.alert(t("propertyForm.alert.enterTradeAmount"));
       return;
     }
     setSubmitting(true);
@@ -249,7 +251,7 @@ export function PropertyFormModal({
         }),
       });
       const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; data?: { transaction?: { id?: string; cashEntryId?: string | null } | null } } | null;
-      if (!res.ok || !data?.ok) throw new Error(data?.error ?? "房产交易保存失败");
+      if (!res.ok || !data?.ok) throw new Error(data?.error ?? t("propertyForm.alert.saveFailed"));
       if (requestId) window.dispatchEvent(new CustomEvent("mmh:property:create:success", { detail: { requestId } }));
       requestAnimationFrame(() => {
         dispatchFinanceDataChanged({
@@ -261,7 +263,7 @@ export function PropertyFormModal({
       setOpen(false);
       resetTransactionDraft();
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "房产交易保存失败");
+      window.alert(error instanceof Error ? error.message : t("propertyForm.alert.saveFailed"));
     } finally {
       setSubmitting(false);
     }
@@ -274,8 +276,8 @@ export function PropertyFormModal({
       <div className="app-modal-panel max-w-[min(34rem,calc(100vw-1rem))]">
         <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
           <div className="modal-header">
-            <div className="text-sm font-semibold text-slate-800">{mode === "valuation" ? "更新房产市值" : "房产交易"}</div>
-            <button type="button" onClick={close} className="secondary-button h-8 px-2" title="关闭">
+            <div className="text-sm font-semibold text-slate-800">{mode === "valuation" ? t("propertyForm.title.updateValuation") : t("propertyForm.title.transaction")}</div>
+            <button type="button" onClick={close} className="secondary-button h-8 px-2" title={t("table.close")}>
               <X className="h-4 w-4" />
             </button>
           </div>
@@ -284,17 +286,17 @@ export function PropertyFormModal({
             {mode === "transaction" ? (
               <div className="grid grid-cols-3 gap-2">
                 {([
-                  ["purchase", "购入"],
-                  ["improvement", "装修投入"],
-                  ["sale", "出售"],
-                ] as const).map(([key, label]) => (
+                  ["purchase", "propertyForm.action.purchase"],
+                  ["improvement", "propertyForm.action.improvement"],
+                  ["sale", "propertyForm.action.sale"],
+                ] as const).map(([key, labelKey]) => (
                   <button
                     key={key}
                     type="button"
                     onClick={() => setAction(key)}
                     className={`h-8 rounded-[10px] border px-2 text-xs ${action === key ? "border-blue-200 bg-blue-50 font-medium text-blue-700" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}
                   >
-                    {label}
+                    {t(labelKey)}
                   </button>
                 ))}
               </div>
@@ -302,25 +304,25 @@ export function PropertyFormModal({
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-1">
-                <div className="form-label">房产账户</div>
+                <div className="form-label">{t("propertyForm.propertyAccount")}</div>
                 <SmartSelect
                   mode="single"
                   value={propertyAccountId}
                   onChange={setPropertyAccountId}
                   options={propertyOptions}
-                  placeholder="选择房产账户"
+                  placeholder={t("propertyForm.propertyAccountPlaceholder")}
                   behavior={{ search: true, density: "compact", minDropdownWidth: 260 }}
                 />
               </div>
               {mode === "transaction" ? (
                 <div className="space-y-1">
-                  <div className="form-label">资金账户</div>
+                  <div className="form-label">{t("propertyForm.cashAccount")}</div>
                   <SmartSelect
                     mode="single"
                     value={cashAccountId}
                     onChange={setCashAccountId}
                     options={cashOptions}
-                    placeholder="选择资金账户"
+                    placeholder={t("propertyForm.cashAccountPlaceholder")}
                     behavior={{ search: true, density: "compact", minDropdownWidth: 260 }}
                   />
                 </div>
@@ -330,21 +332,21 @@ export function PropertyFormModal({
             {action === "purchase" && mode === "transaction" ? (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="space-y-1">
-                  <div className="form-label">房产名称</div>
-                  <input value={name} onChange={(event) => setName(event.target.value)} className="form-input" placeholder="例如：XX小区 1 号楼" />
+                  <div className="form-label">{t("propertyForm.propertyName")}</div>
+                  <input value={name} onChange={(event) => setName(event.target.value)} className="form-input" placeholder={t("propertyForm.namePlaceholder")} />
                 </div>
                 <div className="space-y-1">
-                  <div className="form-label">房产类型</div>
-                  <input value={propertyType} onChange={(event) => setPropertyType(event.target.value)} className="form-input" placeholder="住宅 / 商铺 / 车位" />
+                  <div className="form-label">{t("propertyForm.propertyType")}</div>
+                  <input value={propertyType} onChange={(event) => setPropertyType(event.target.value)} className="form-input" placeholder={t("propertyForm.typePlaceholder")} />
                 </div>
                 <div className="space-y-1 sm:col-span-2">
-                  <div className="form-label">地址</div>
-                  <input value={address} onChange={(event) => setAddress(event.target.value)} className="form-input" placeholder="可选" />
+                  <div className="form-label">{t("propertyForm.address")}</div>
+                  <input value={address} onChange={(event) => setAddress(event.target.value)} className="form-input" placeholder={t("stockFee.optional")} />
                 </div>
               </div>
             ) : (
               <div className="space-y-1">
-                <div className="form-label">房产</div>
+                <div className="form-label">{t("propertyForm.property")}</div>
                 <SmartSelect
                   mode="single"
                   value={propertyAssetId}
@@ -354,7 +356,7 @@ export function PropertyFormModal({
                     if (asset?.marketValue != null && mode === "valuation") setMarketValue(String(asset.marketValue));
                   }}
                   options={assetOptions}
-                  placeholder="选择房产"
+                  placeholder={t("propertyForm.propertyPlaceholder")}
                   behavior={{ search: true, density: "compact", minDropdownWidth: 280 }}
                 />
               </div>
@@ -362,12 +364,12 @@ export function PropertyFormModal({
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-1">
-                <div className="form-label">{mode === "valuation" ? "估值日期" : "交易日期"}</div>
+                <div className="form-label">{mode === "valuation" ? t("propertyForm.dateValuation") : t("propertyForm.dateTransaction")}</div>
                 <DateStepper value={tradeDate} onChange={setTradeDate} />
               </div>
               {mode === "transaction" && action === "sale" ? (
                 <div className="space-y-1">
-                  <div className="form-label">交割日期</div>
+                  <div className="form-label">{t("propertyForm.settlementDate")}</div>
                   <DateStepper value={settlementDate || tradeDate} onChange={(value) => setSettlementDate(value === tradeDate ? "" : value)} />
                 </div>
               ) : null}
@@ -376,34 +378,34 @@ export function PropertyFormModal({
             {mode === "transaction" ? (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <div className="space-y-1">
-                  <div className="form-label">{action === "sale" ? "出售金额" : action === "improvement" ? "投入金额" : "购入金额"}</div>
-                  <CalcInput value={amount} onChange={setAmount} placeholder="金额" label="金额" precision={2} />
+                  <div className="form-label">{action === "sale" ? t("propertyForm.amountSale") : action === "improvement" ? t("propertyForm.amountImprovement") : t("propertyForm.amountPurchase")}</div>
+                  <CalcInput value={amount} onChange={setAmount} placeholder={t("txForm.amount")} label={t("txForm.amount")} precision={2} />
                 </div>
                 <div className="space-y-1">
-                  <div className="form-label">手续费</div>
-                  <CalcInput value={fee} onChange={setFee} placeholder="可选" label="手续费" precision={2} />
+                  <div className="form-label">{t("txForm.fee")}</div>
+                  <CalcInput value={fee} onChange={setFee} placeholder={t("stockFee.optional")} label={t("txForm.fee")} precision={2} />
                 </div>
                 <div className="space-y-1">
-                  <div className="form-label">税费</div>
-                  <CalcInput value={tax} onChange={setTax} placeholder="可选" label="税费" precision={2} />
+                  <div className="form-label">{t("propertyForm.tax")}</div>
+                  <CalcInput value={tax} onChange={setTax} placeholder={t("stockFee.optional")} label={t("propertyForm.tax")} precision={2} />
                 </div>
               </div>
             ) : null}
 
             <div className="space-y-1">
-              <div className="form-label">{mode === "valuation" ? "最新市值" : "交易后市值"}</div>
-              <CalcInput value={marketValue} onChange={setMarketValue} placeholder={mode === "valuation" ? "手动更新市值" : "可选，默认按成本"} label="市值" precision={2} />
+              <div className="form-label">{mode === "valuation" ? t("propertyForm.marketValueLatest") : t("propertyForm.marketValueAfter")}</div>
+              <CalcInput value={marketValue} onChange={setMarketValue} placeholder={mode === "valuation" ? t("propertyForm.marketValuePlaceholderManual") : t("propertyForm.marketValuePlaceholderDefault")} label={t("propertyForm.marketValue")} precision={2} />
             </div>
 
             <div className="space-y-1">
-              <div className="form-label">备注</div>
-              <textarea value={note} onChange={(event) => setNote(event.target.value)} className="form-input min-h-[72px] resize-none py-2" placeholder="可选" />
+              <div className="form-label">{t("detail.column.remark")}</div>
+              <textarea value={note} onChange={(event) => setNote(event.target.value)} className="form-input min-h-[72px] resize-none py-2" placeholder={t("stockFee.optional")} />
             </div>
           </div>
 
           <div className="flex justify-end gap-2 border-t border-slate-200 p-3 sm:px-5">
-            <button type="button" onClick={close} className="secondary-button" disabled={submitting}>取消</button>
-            <button type="submit" className="primary-button" disabled={submitting}>{submitting ? "保存中..." : "保存"}</button>
+            <button type="button" onClick={close} className="secondary-button" disabled={submitting}>{t("ledgerSwitch.cancel")}</button>
+            <button type="submit" className="primary-button" disabled={submitting}>{submitting ? t("stockFee.saving") : t("common.save")}</button>
           </div>
         </form>
       </div>

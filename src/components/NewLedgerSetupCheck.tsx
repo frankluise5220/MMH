@@ -2,6 +2,7 @@
 
 import { usePathname } from "next/navigation";
 import { useState, useEffect, useRef } from "react";
+import { useI18n } from "@/lib/i18n";
 
 export function NewLedgerSetupCheck() {
   const [show, setShow] = useState(false);
@@ -12,6 +13,7 @@ export function NewLedgerSetupCheck() {
   const dialogRef = useRef<HTMLDivElement>(null);
   const checkedRef = useRef(false);
   const pathname = usePathname();
+  const { t } = useI18n();
 
   useEffect(() => {
     if (pathname.startsWith("/settings")) {
@@ -55,8 +57,8 @@ export function NewLedgerSetupCheck() {
 
   async function handleSetup() {
     const { newPassword, confirmPassword } = getSetupValues();
-    if (!newPassword) { setError("请输入密码"); return; }
-    if (newPassword !== confirmPassword) { setError("两次输入的密码不一致"); return; }
+    if (!newPassword) { setError(t("newLedgerSetup.enterPassword")); return; }
+    if (newPassword !== confirmPassword) { setError(t("ledgerSwitch.error.passwordMismatch")); return; }
 
     setLoading(true);
     setError("");
@@ -67,7 +69,7 @@ export function NewLedgerSetupCheck() {
         body: JSON.stringify({ password: newPassword, username: adminName }),
       });
       const setupData = await setupRes.json() as { ok: boolean; error?: string };
-      if (!setupData.ok) { setError(setupData.error ?? "设置失败"); setLoading(false); return; }
+      if (!setupData.ok) { setError(setupData.error ?? t("newLedgerSetup.setupFailed")); setLoading(false); return; }
 
       const loginRes = await fetch("/api/v1/auth/verify", {
         method: "POST",
@@ -78,10 +80,10 @@ export function NewLedgerSetupCheck() {
       if (loginData.ok) {
         window.location.reload();
       } else {
-        setError(loginData.error ?? "登录失败");
+        setError(loginData.error ?? t("newLedgerSetup.loginFailed"));
       }
     } catch {
-      setError("设置失败");
+      setError(t("newLedgerSetup.setupFailed"));
     } finally {
       setLoading(false);
     }
@@ -97,33 +99,33 @@ export function NewLedgerSetupCheck() {
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div className="w-full max-w-sm bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden">
         <div className="px-6 py-5 border-b border-slate-200 bg-slate-50">
-          <div className="text-base font-semibold text-slate-800">新账簿初始化</div>
+          <div className="text-base font-semibold text-slate-800">{t("newLedgerSetup.title")}</div>
           <div className="mt-1 text-xs text-slate-500">
-            为账簿管理员 <span className="font-semibold text-slate-700">{adminName}</span> 设置密码
+            {t("newLedgerSetup.setupForAdmin", { name: adminName })}
           </div>
         </div>
 
         <div ref={dialogRef} className="p-6 space-y-4">
           <div className="space-y-1">
-            <div className="text-xs font-medium text-slate-600">设置密码</div>
+            <div className="text-xs font-medium text-slate-600">{t("login.setupPassword")}</div>
             <input
               data-field="newPassword"
               type="password"
               autoComplete="new-password"
               className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
-              placeholder="输入密码"
+              placeholder={t("settings.accounts.passwordPlaceholder")}
               autoFocus
               onKeyDown={(e) => { if (e.key === "Enter") handleSetup(); }}
             />
           </div>
           <div className="space-y-1">
-            <div className="text-xs font-medium text-slate-600">确认密码</div>
+            <div className="text-xs font-medium text-slate-600">{t("login.confirmPassword")}</div>
             <input
               data-field="confirmPassword"
               type="password"
               autoComplete="new-password"
               className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
-              placeholder="再次输入密码"
+              placeholder={t("ledgerSwitch.retypePasswordPlaceholder")}
               onKeyDown={(e) => { if (e.key === "Enter") handleSetup(); }}
             />
           </div>
@@ -134,14 +136,14 @@ export function NewLedgerSetupCheck() {
             disabled={loading}
             onClick={handleSetup}
           >
-            {loading ? "设置中…" : "设置并进入"}
+            {loading ? t("login.setting") : t("login.setupAndEnter")}
           </button>
           <button
             type="button"
             className="h-10 w-full rounded-md border border-slate-200 bg-white text-slate-600 text-sm hover:bg-slate-50"
             onClick={handleSkip}
           >
-            跳过
+            {t("newLedgerSetup.skip")}
           </button>
         </div>
       </div>

@@ -10,7 +10,7 @@ import { logger } from "@/lib/logger";
 export async function GET() {
   const user = await getCurrentUser();
   if (!user) {
-    return NextResponse.json({ ok: false, error: "未登录" }, { status: 401 });
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "未登录" }, { status: 401 });
   }
 
   // 始终返回全部账簿（用于切换列表），isAdmin/isSystem 仍基于当前用户权限
@@ -37,18 +37,18 @@ export async function GET() {
 
 /**
  * POST /api/v1/households
- * 创建新账簿（含默认所有人、账户、分类、管理员用户）
+ * Creates a new household (including default owner, account, categories, and admin user).
  *
  * Body: { name: string, adminName: string, adminPassword: string, adminEmail: string }
- * - adminName: 管理员用户名/默认家庭成员名，必须明确填写
- * - adminPassword: 管理员密码（创建时立即哈希存储，不再延迟设置）
- * - adminEmail: 管理员邮箱（用于密码找回）
- * 非 admin 用户创建新账簿后，自动将用户关联到新账簿
+ * - adminName: admin username / default family member name, must be explicitly provided
+ * - adminPassword: admin password (hashed and stored immediately at creation, no longer deferred)
+ * - adminEmail: admin email (used for password recovery)
+ * Non-admin users are automatically linked to the new household after creating it.
  */
 export async function POST(req: NextRequest) {
   const user = await getCurrentUser();
   if (!user) {
-    return NextResponse.json({ ok: false, error: "未登录" }, { status: 401 });
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "未登录" }, { status: 401 });
   }
   const body = await req.json().catch(() => ({}));
   const name = String(body.name ?? "").trim();
@@ -57,16 +57,16 @@ export async function POST(req: NextRequest) {
   const adminEmail = String(body.adminEmail ?? "").trim();
 
   if (!name || name.length > 50) {
-    return NextResponse.json({ ok: false, error: "账簿名称不合法（1-50字）" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INVALID_HOUSEHOLD_NAME", error: "账簿名称不合法（1-50字）" }, { status: 400 });
   }
   if (!adminName || adminName.length > 50) {
-    return NextResponse.json({ ok: false, error: "请填写管理员用户名（1-50字）" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "ADMIN_NAME_REQUIRED", error: "请填写管理员用户名（1-50字）" }, { status: 400 });
   }
   if (!adminPassword || adminPassword.length < 1) {
-    return NextResponse.json({ ok: false, error: "请设置管理员密码" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "ADMIN_PASSWORD_REQUIRED", error: "请设置管理员密码" }, { status: 400 });
   }
   if (!adminEmail) {
-    return NextResponse.json({ ok: false, error: "请输入邮箱" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "ADMIN_EMAIL_REQUIRED", error: "请输入邮箱" }, { status: 400 });
   }
 
   const { household } = await prisma.$transaction((tx) =>
@@ -82,14 +82,14 @@ export async function POST(req: NextRequest) {
 
 /**
  * PUT /api/v1/households
- * 管理员重命名账簿
+ * Admin renames a household.
  *
  * Body: { id: string, name: string }
  */
 export async function PUT(req: NextRequest) {
   const user = await getCurrentUser();
   if (!isAdmin(user)) {
-    return NextResponse.json({ ok: false, error: "仅管理员可修改账簿" }, { status: 403 });
+    return NextResponse.json({ ok: false, code: "ADMIN_REQUIRED", error: "仅管理员可修改账簿" }, { status: 403 });
   }
 
   const body = await req.json().catch(() => ({}));
@@ -97,15 +97,15 @@ export async function PUT(req: NextRequest) {
   const name = String(body.name ?? "").trim();
 
   if (!id) {
-    return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
   }
   if (!name || name.length > 50) {
-    return NextResponse.json({ ok: false, error: "账簿名称不合法（1-50字）" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INVALID_HOUSEHOLD_NAME", error: "账簿名称不合法（1-50字）" }, { status: 400 });
   }
 
   const existing = await prisma.household.findUnique({ where: { id } });
   if (!existing) {
-    return NextResponse.json({ ok: false, error: "账簿不存在" }, { status: 404 });
+    return NextResponse.json({ ok: false, code: "HOUSEHOLD_NOT_FOUND", error: "账簿不存在" }, { status: 404 });
   }
 
   await prisma.household.update({ where: { id }, data: { name } });
@@ -114,37 +114,37 @@ export async function PUT(req: NextRequest) {
 
 /**
  * DELETE /api/v1/households
- * 系统管理员删除账簿（最后一个账簿不可删除）
+ * System admin deletes a household (the last household cannot be deleted).
  *
  * Body: { id: string }
- * 权限：仅 isSystem 用户可删除
- * 约束：至少保留一个账簿
+ * Permission: only isSystem users can delete
+ * Constraint: at least one household must remain
  */
 export async function DELETE(req: NextRequest) {
   const user = await getCurrentUser();
 
   // 仅系统管理员可删除账簿
   if (!user || user.isSystem !== true) {
-    return NextResponse.json({ ok: false, error: "仅系统管理员可删除账簿" }, { status: 403 });
+    return NextResponse.json({ ok: false, code: "SYSTEM_ADMIN_REQUIRED", error: "仅系统管理员可删除账簿" }, { status: 403 });
   }
 
   const body = await req.json().catch(() => ({}));
   const id = String(body.id ?? "").trim();
 
   if (!id) {
-    return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
   }
 
   // 检查账簿是否存在
   const existing = await prisma.household.findUnique({ where: { id } });
   if (!existing) {
-    return NextResponse.json({ ok: false, error: "账簿不存在" }, { status: 404 });
+    return NextResponse.json({ ok: false, code: "HOUSEHOLD_NOT_FOUND", error: "账簿不存在" }, { status: 404 });
   }
 
   // 最后一个账簿不可删除
   const count = await prisma.household.count();
   if (count <= 1) {
-    return NextResponse.json({ ok: false, error: "最后一个账簿不可删除，请至少保留一个账簿" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "LAST_HOUSEHOLD_NOT_DELETABLE", error: "最后一个账簿不可删除，请至少保留一个账簿" }, { status: 400 });
   }
 
   try {
@@ -237,7 +237,7 @@ export async function DELETE(req: NextRequest) {
     }, { maxWait: 10_000, timeout: 120_000 });
   } catch (error) {
     logger.error("删除账簿失败", "api/v1/households", error);
-    return NextResponse.json({ ok: false, error: "删除账簿失败，请查看服务日志后重试" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: "删除账簿失败，请查看服务日志后重试" }, { status: 500 });
   }
 
   return NextResponse.json({ ok: true });

@@ -1,38 +1,46 @@
 /**
  * API: /api/v1/transactions/detail
  *
- * 交易详情的增删改查接口
+ * CRUD API for transaction details.
  *
- * GET    ?accountId=&page=&pageSize=  查询交易列表（已有）
- * POST   JSON body                    创建交易
- * PUT    JSON body { id, ... }         更新交易
- * DELETE ?id=xxx 或 POST { id }         删除交易（软删除）
+ * GET    ?accountId=&page=&pageSize=  List transactions (existing)
+ * POST   JSON body                    Create a transaction
+ * PUT    JSON body { id, ... }        Update a transaction
+ * DELETE ?id=xxx or POST { id }       Delete a transaction (soft delete)
  *
- * 贵金属交易:
- * - 接收 metalTypeId、metalUnitId、metalQuantity、metalUnitPrice、metalFee。
- * - 服务端会按当前账簿或系统字典校验品种和单位，并回写 metalTypeName / metalUnitName。
- * - 贵金属不使用 fundCode / fundUnits / fundNav 作为事实字段。
+ * Precious metal transactions:
+ * - Accept metalTypeId, metalUnitId, metalQuantity, metalUnitPrice, metalFee.
+ * - The server validates the metal type and unit against the current household or
+ *   system dictionaries and writes back metalTypeName / metalUnitName.
+ * - Precious metal records do not use fundCode / fundUnits / fundNav as source fields.
  *
- * 保险投保:
- * - 选择 insuranceProductMasterId 创建新保单时可接收 policyNo，写入保单层 InsuranceProduct.policyNo。
- * - policyNo 属于保单，不属于可复用保险产品主数据。
+ * Insurance purchase:
+ * - When creating a new policy with insuranceProductMasterId, policyNo may be provided
+ *   and is written to the policy-level InsuranceProduct.policyNo.
+ * - policyNo belongs to the policy, not to the reusable insurance product master data.
  *
- * 理财交易:
- * - fundProductType/productType 为 wealth 时，TxRecord 只保存资金流水。
- * - 理财业务字段写入 WealthTransaction，并通过 EntryBusinessLink 关联资金流水。
- * - PUT 可额外接收 businessTransactionId，用于明确更新关联的 WealthTransaction.id。
- * - 资金流水分类保存投资分类树中的动作分类，例如理财买入、理财赎回。
- * - 同一理财账户下同一产品已有份额记录时，继续买入必须提供 fundUnits。
+ * Wealth transactions:
+ * - When fundProductType/productType is wealth, TxRecord only stores the cash flow.
+ * - Wealth business fields are written to WealthTransaction and linked to the cash flow
+ *   through EntryBusinessLink.
+ * - PUT may additionally accept businessTransactionId to explicitly update the linked
+ *   WealthTransaction.id.
+ * - Cash flow categories store action categories from the investment category tree,
+ *   e.g. wealth buy, wealth redeem.
+ * - When the same product under the same wealth account already has a units record,
+ *   further buys must provide fundUnits.
  *
- * 金额与币种:
- * - amount 为交易原始币种金额，currency 返回该流水的原始币种。
- * - 跨账户汇总/侧栏折算应使用账户余额和汇率口径，不得用 detail amount 自行按 1:1 折算。
+ * Amount and currency:
+ * - amount is the transaction amount in its original currency; currency returns the
+ *   original currency of that cash flow.
+ * - Cross-account totals / sidebar conversion must use account balance and exchange-rate
+ *   semantics; do not convert detail amounts 1:1.
  *
- * 接受的实体类型: id/entryId 为 TxRecord.id；businessTransactionId 为 WealthTransaction.id。
+ * Accepted entity IDs: id/entryId is TxRecord.id; businessTransactionId is WealthTransaction.id.
  *
- * 认证方式（混合）：
- * - cookie session（浏览器用户）
- * - X-Api-Key header（Android 客户端，用密码验证）
+ * Authentication (mixed):
+ * - cookie session (browser users)
+ * - X-Api-Key header (Android client, password verified)
  */
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
@@ -59,6 +67,7 @@ import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
 import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
 import { resolveOrCreateAdvanceAccount } from "@/lib/server/advance-account";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
+import { materializeDueInstallmentPayments } from "@/lib/server/credit-card-installment";
 import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 import { encodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
@@ -1273,7 +1282,7 @@ export async function GET(req: Request) {
         },
       });
       if (!record || record.deletedAt || record.householdId !== hidFilter.householdId) {
-        return NextResponse.json({ ok: false, error: "记录不存在" }, { status: 404 });
+        return NextResponse.json({ ok: false, code: "ENTRY_NOT_FOUND", error: "记录不存在" }, { status: 404 });
       }
       const linkedWealthTransactionId = linkedWealthTransactionIdOf(record);
       const linkedWealthTransaction = linkedWealthTransactionId
@@ -1361,7 +1370,7 @@ export async function GET(req: Request) {
     }
 
     if (!accountId) {
-      return NextResponse.json({ ok: false, error: "缺少 accountId" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_ACCOUNT_ID", error: "缺少 accountId" }, { status: 400 });
     }
 
     const listWhere = {
@@ -1370,8 +1379,22 @@ export async function GET(req: Request) {
       ...hidFilter,
     };
 
-    const [account, totalCount, orderingEntries] = await Promise.all([
-      prisma.account.findUnique({ where: { id: accountId } }),
+    const account = await prisma.account.findUnique({ where: { id: accountId } });
+    if (!account) {
+      return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "账户不存在" }, { status: 404 });
+    }
+
+    // Lazy materialization: create installment payment rows that became due
+    // since the last daily job, so the detail list is correct even if the job
+    // has not run yet. Non-fatal on failure.
+    if (account.kind === AccountKind.bank_credit) {
+      await materializeDueInstallmentPayments(prisma, {
+        householdId: hidFilter.householdId ?? "",
+        accountIds: [accountId],
+      }).catch(logger.catchLog("分期到期落地失败", "transactions/detail"));
+    }
+
+    const [totalCount, orderingEntries] = await Promise.all([
       prisma.txRecord.count({ where: listWhere }),
       prisma.txRecord.findMany({
         where: listWhere,
@@ -1401,10 +1424,6 @@ export async function GET(req: Request) {
         orderBy: [{ date: "desc" }, { createdAt: "desc" }],
       }),
     ]);
-
-    if (!account) {
-      return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
-    }
 
     const orderingLinkedWealthIds = Array.from(new Set(orderingEntries
       .map((entry) => linkedWealthTransactionIdOf(entry))
@@ -1563,7 +1582,7 @@ export async function GET(req: Request) {
     });
   } catch (err) {
     console.error("GET /api/v1/transactions/detail error:", err);
-    return NextResponse.json({ ok: false, error: "服务器错误" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: "服务器错误" }, { status: 500 });
   }
 }
 
@@ -1601,14 +1620,14 @@ export async function GET(req: Request) {
  *   counterpartyInstitutionId?: string (expense/income uses bank/payment institution id; advance uses Counterparty.id or legacy Institution.id)
  *   source?: string (default "manual")
  *
- * 返回: { ok: true, data: { id, ... } } | { ok: false, error }
+ * Response: { ok: true, data: { id, ... } } | { ok: false, code, error }
  */
 export async function POST(req: Request) {
   try {
     const ctx = await getApiHouseholdScope(req);
     const body = await req.json().catch(() => null) as Record<string, unknown> | null;
     if (!body) {
-      return NextResponse.json({ ok: false, error: "无效的请求体" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_REQUEST_BODY", error: "无效的请求体" }, { status: 400 });
     }
 
     const type = String(body.type ?? "").trim();
@@ -1628,7 +1647,7 @@ export async function POST(req: Request) {
     const { householdId } = ctx;
 
     if (!amountAbs) {
-      return NextResponse.json({ ok: false, error: "金额不正确" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_AMOUNT", error: "金额不正确" }, { status: 400 });
     }
 
     let createdId: string | undefined;
@@ -1642,7 +1661,7 @@ export async function POST(req: Request) {
       const categoryId = String(body.categoryId ?? "").trim();
       const categoryName = String(body.categoryName ?? "").trim();
       if (!accountId || !counterpartyInstitutionId) {
-        return NextResponse.json({ ok: false, error: !accountId ? "请选择资金账户" : "请选择往来对象" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "MISSING_ACCOUNT_OR_COUNTERPARTY", error: !accountId ? "请选择资金账户" : "请选择往来对象" }, { status: 400 });
       }
       let advanceAccountId = "";
       await prisma.$transaction(async (tx) => {
@@ -1688,10 +1707,10 @@ export async function POST(req: Request) {
       const fromAccountId = String(body.fromAccountId ?? body.accountId ?? "").trim();
       const toAccountId = String(body.toAccountId ?? "").trim();
       if (!fromAccountId || !toAccountId) {
-        return NextResponse.json({ ok: false, error: "转账需要选择转出/转入账户" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "MISSING_TRANSFER_ACCOUNTS", error: "转账需要选择转出/转入账户" }, { status: 400 });
       }
       if (fromAccountId === toAccountId) {
-        return NextResponse.json({ ok: false, error: "转出/转入账户不能相同" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "SAME_TRANSFER_ACCOUNTS", error: "转出/转入账户不能相同" }, { status: 400 });
       }
 
       await prisma.$transaction(async (tx) => {
@@ -1779,7 +1798,7 @@ export async function POST(req: Request) {
           })
         : null;
       if (counterpartyInstitutionId && !counterpartyInstitution) {
-        return NextResponse.json({ ok: false, error: "收支机构只能选择银行或第三方支付机构" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "INVALID_COUNTERPARTY_INSTITUTION", error: "收支机构只能选择银行或第三方支付机构" }, { status: 400 });
       }
 
       await prisma.$transaction(async (tx) => {
@@ -1850,7 +1869,7 @@ export async function POST(req: Request) {
           })
         : null;
       if (counterpartyInstitutionId && !counterpartyInstitution) {
-        return NextResponse.json({ ok: false, error: "收支机构只能选择银行或第三方支付机构" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "INVALID_COUNTERPARTY_INSTITUTION", error: "收支机构只能选择银行或第三方支付机构" }, { status: 400 });
       }
 
       await prisma.$transaction(async (tx) => {
@@ -1994,10 +2013,10 @@ export async function POST(req: Request) {
         ? (redeemLike ? "refund" : normalizeInsuranceAction(body.insuranceAction, "premium"))
         : null;
       if (!accountId && fundProductType !== "deposit" && fundProductType !== "wealth" && !isInsurance) {
-        return NextResponse.json({ ok: false, error: "请选择账户" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "ACCOUNT_REQUIRED", error: "请选择账户" }, { status: 400 });
       }
       if (isInsurance && !insuranceProductId && !insuranceProductMasterId && !ownerGroupId && !String(body.policyholderPersonId ?? "").trim()) {
-        return NextResponse.json({ ok: false, error: "请选择投保人" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "POLICYHOLDER_REQUIRED", error: "请选择投保人" }, { status: 400 });
       }
 
       let finalInvestmentAccId = "";
@@ -2584,7 +2603,7 @@ export async function POST(req: Request) {
         await recalcAndSaveAccountBalance(cashAccountIdInput).catch(logger.catchLog("操作失败", "route.ts"));
       }
     } else {
-      return NextResponse.json({ ok: false, error: "类型不正确" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_TYPE", error: "类型不正确" }, { status: 400 });
     }
 
     if (changedInvestment && createdId && !createdFundTransactionId) {
@@ -2677,7 +2696,7 @@ export async function POST(req: Request) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : "创建失败";
     console.error("POST /api/v1/transactions/detail error:", err);
-    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: msg }, { status: 500 });
   }
 }
 
@@ -2685,10 +2704,10 @@ export async function POST(req: Request) {
 
 /**
  * PUT /api/v1/transactions/detail
- * 更新交易记录
+ * Updates a transaction record.
  *
  * Body (JSON):
- *   id: string (必填)
+ *   id: string (required)
  *   date?: string (YYYY-MM-DD)
  *   postedAt?: string (YYYY-MM-DD; expense/income only, defaults to date)
  *   amount?: number
@@ -2715,14 +2734,14 @@ export async function POST(req: Request) {
  *   cashAccountId?: string
  *   keepFundDetail?: boolean
  *
- * 返回: { ok: true, data: { id, ... } } | { ok: false, error }
+ * Response: { ok: true, data: { id, ... } } | { ok: false, code, error }
  */
 export async function PUT(req: Request) {
   try {
     const ctx = await getApiHouseholdScope(req);
     const body = await req.json().catch(() => null) as Record<string, unknown> | null;
     if (!body) {
-      return NextResponse.json({ ok: false, error: "无效的请求体" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_REQUEST_BODY", error: "无效的请求体" }, { status: 400 });
     }
 
     const type = String(body.type ?? "").trim();
@@ -2730,7 +2749,7 @@ export async function PUT(req: Request) {
     const productType = String(body.fundProductType ?? body.productType ?? "").trim();
     const businessTransactionId = String(body.businessTransactionId ?? "").trim();
     if (!entryId && !(type === "investment" && productType === "wealth" && businessTransactionId)) {
-      return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
     }
 
     const dateStr = String(body.date ?? "").trim();
@@ -2747,7 +2766,7 @@ export async function PUT(req: Request) {
     const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
     const postedAt = type === "expense" || type === "income" ? (toDateOrNull(body.postedAt) ?? date) : null;
     if (!amountAbs) {
-      return NextResponse.json({ ok: false, error: "金额不正确" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_AMOUNT", error: "金额不正确" }, { status: 400 });
     }
 
     const { householdId } = ctx;
@@ -2782,7 +2801,7 @@ export async function PUT(req: Request) {
       await saveEntryUndo(prisma, ctx, undo, "edit", "编辑明细");
       const data = await loadApiDetailRecord(updated.cashEntryId);
       if (!data) {
-        return NextResponse.json({ ok: false, error: "更新后记录不存在" }, { status: 404 });
+        return NextResponse.json({ ok: false, code: "UPDATED_ENTRY_NOT_FOUND", error: "更新后记录不存在" }, { status: 404 });
       }
       return NextResponse.json({ ok: true, data });
     }
@@ -3564,7 +3583,7 @@ return;
     });
 
     if (!updated) {
-      return NextResponse.json({ ok: false, error: "更新后记录不存在" }, { status: 404 });
+      return NextResponse.json({ ok: false, code: "UPDATED_ENTRY_NOT_FOUND", error: "更新后记录不存在" }, { status: 404 });
     }
     await saveEntryUndo(prisma, ctx, undo, "edit", "编辑明细");
 
@@ -3625,7 +3644,7 @@ return;
   } catch (err) {
     const msg = err instanceof Error ? err.message : "更新失败";
     console.error("PUT /api/v1/transactions/detail error:", err);
-    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: msg }, { status: 500 });
   }
 }
 
@@ -3634,9 +3653,9 @@ return;
 /**
  * DELETE /api/v1/transactions/detail?id=xxx
  *
- * 软删除一条交易记录
+ * Soft-deletes one transaction record.
  *
- * 返回: { ok: true } | { ok: false, error }
+ * Response: { ok: true } | { ok: false, code, error }
  */
 export async function DELETE(req: Request) {
   try {
@@ -3645,7 +3664,7 @@ export async function DELETE(req: Request) {
     const id = (url.searchParams.get("id") ?? "").trim();
 
     if (!id) {
-      return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
     }
 
     const { householdId } = ctx;
@@ -3654,12 +3673,12 @@ export async function DELETE(req: Request) {
     const txRecord = await prisma.txRecord.findUnique({ where: { id } });
 
     if (!txRecord) {
-      return NextResponse.json({ ok: false, error: `记录不存在 (id: ${id})` }, { status: 404 });
+      return NextResponse.json({ ok: false, code: "ENTRY_NOT_FOUND", error: `记录不存在 (id: ${id})` }, { status: 404 });
     }
 
     // Verify household
     if (txRecord.householdId && txRecord.householdId !== householdId) {
-      return NextResponse.json({ ok: false, error: "记录不属于当前账簿" }, { status: 403 });
+      return NextResponse.json({ ok: false, code: "ENTRY_NOT_IN_HOUSEHOLD", error: "记录不属于当前账簿" }, { status: 403 });
     }
     const linkedFundTransaction = txRecord.type === TransactionType.investment
       ? await findFundTransactionForEntryId(prisma, { id, householdId, syncLegacy: false })
@@ -3700,6 +3719,6 @@ export async function DELETE(req: Request) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : "删除失败";
     console.error("DELETE /api/v1/transactions/detail error:", err);
-    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: msg }, { status: 500 });
   }
 }

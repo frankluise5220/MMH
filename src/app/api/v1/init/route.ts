@@ -1,26 +1,26 @@
 /**
  * API: POST /api/v1/init
  *
- * 初始化功能 — 批量创建起始数据和基金持仓
+ * Initialization — batch-creates starting balances and fund holdings.
  *
  * Body:
  * {
- *   accountId: string,           // 当前投资账户 ID（可选，用于基金持仓）
- *   accountBalances: Array<{     // 普通账户余额初始化
+ *   accountId: string,           // current investment account ID (optional, used for fund holdings)
+ *   accountBalances: Array<{     // regular account balance initialization
  *     accountId: string;
- *     balance: number;           // 正数=收入方向，负数=支出方向
+ *     balance: number;           // positive = income direction, negative = expense direction
  *     date: string;              // ISO date
  *   }>;
- *   fundHoldings: Array<{        // 基金持仓初始化
+ *   fundHoldings: Array<{        // fund holding initialization
  *     fundCode: string;
  *     units: number;
  *     avgCost: number;
  *     lastBuyDate: string;       // ISO date
  *     arrivalDate?: string;      // ISO date
- *     historicalProfit: number;  // 历史已实现盈亏（正=盈利，负=亏损）
+ *     historicalProfit: number;  // historical realized profit/loss (positive = profit, negative = loss)
  *     investmentAccountId: string;
  *     cashAccountId?: string;
- *     regularInvest?: {          // 定投计划（可选）
+ *     regularInvest?: {          // regular investment plan (optional)
  *       amount: number;
  *       intervalUnit: string;    // day|week|biweek|month|year
  *       intervalValue: number;
@@ -32,7 +32,7 @@
  *   }>;
  * }
  *
- * 返回 { ok: true, message, details } 或 { ok: false, error }
+ * Response: { ok: true, message, details } or { ok: false, error }
  */
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
@@ -53,7 +53,7 @@ export async function POST(req: NextRequest) {
     const { accountBalances = [], fundHoldings = [], accountId: mainAccountId } = body;
 
     if (!accountBalances.length && !fundHoldings.length) {
-      return NextResponse.json({ ok: false, error: "请提供至少一条初始化记录" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INIT_DATA_EMPTY", error: "请提供至少一条初始化记录" }, { status: 400 });
     }
 
     const results: string[] = [];
@@ -299,7 +299,7 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     console.error("[init] Error:", e);
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : "初始化失败" },
+      { ok: false, code: "INIT_FAILED", error: e instanceof Error ? e.message : "初始化失败" },
       { status: 500 }
     );
   }

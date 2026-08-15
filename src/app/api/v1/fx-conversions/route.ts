@@ -202,12 +202,12 @@ export async function POST(req: NextRequest) {
     const feeAmount = body.feeAmount == null || body.feeAmount === "" ? null : parsePositiveAmount(body.feeAmount);
     const note = String(body.note ?? "").trim() || null;
 
-    if (!date) return NextResponse.json({ ok: false, error: "换汇日期不正确" }, { status: 400 });
-    if (!fromAccountId) return NextResponse.json({ ok: false, error: "请选择换出账户" }, { status: 400 });
-    if (fromAccountId === toAccountId) return NextResponse.json({ ok: false, error: "换出账户和换入账户不能相同" }, { status: 400 });
-    if (fromAmount == null || toAmount == null) return NextResponse.json({ ok: false, error: "换出金额和换入金额必须大于 0" }, { status: 400 });
+    if (!date) return NextResponse.json({ ok: false, code: "INVALID_DATE", error: "换汇日期不正确" }, { status: 400 });
+    if (!fromAccountId) return NextResponse.json({ ok: false, code: "MISSING_FROM_ACCOUNT", error: "请选择换出账户" }, { status: 400 });
+    if (fromAccountId === toAccountId) return NextResponse.json({ ok: false, code: "SAME_ACCOUNT_NOT_ALLOWED", error: "换出账户和换入账户不能相同" }, { status: 400 });
+    if (fromAmount == null || toAmount == null) return NextResponse.json({ ok: false, code: "INVALID_AMOUNT", error: "换出金额和换入金额必须大于 0" }, { status: 400 });
     if (body.feeAmount != null && body.feeAmount !== "" && feeAmount == null) {
-      return NextResponse.json({ ok: false, error: "手续费必须大于 0，或留空" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_FEE_AMOUNT", error: "手续费必须大于 0，或留空" }, { status: 400 });
     }
 
     const result = await prisma.$transaction(async (tx) => {
@@ -288,7 +288,7 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (error) {
-    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "换汇失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "CONVERSION_FAILED", error: error instanceof Error ? error.message : "换汇失败" }, { status: 500 });
   }
 }
 
@@ -298,7 +298,7 @@ export async function GET(req: NextRequest) {
     const url = new URL(req.url);
     const entryId = String(url.searchParams.get("entryId") ?? "").trim();
     const id = String(url.searchParams.get("id") ?? "").trim();
-    if (!entryId && !id) return NextResponse.json({ ok: false, error: "缺少换汇记录 ID" }, { status: 400 });
+    if (!entryId && !id) return NextResponse.json({ ok: false, code: "MISSING_CONVERSION_ID", error: "缺少换汇记录 ID" }, { status: 400 });
 
     const conversion = await prisma.fxConversion.findFirst({
       where: {
@@ -306,10 +306,10 @@ export async function GET(req: NextRequest) {
         ...(id ? { id } : { OR: [{ fromEntryId: entryId }, { toEntryId: entryId }] }),
       },
     });
-    if (!conversion) return NextResponse.json({ ok: false, error: "未找到换汇记录" }, { status: 404 });
+    if (!conversion) return NextResponse.json({ ok: false, code: "CONVERSION_NOT_FOUND", error: "未找到换汇记录" }, { status: 404 });
     return NextResponse.json({ ok: true, conversion: serializeConversion(conversion) });
   } catch (error) {
-    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "读取换汇记录失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "FETCH_FAILED", error: error instanceof Error ? error.message : "读取换汇记录失败" }, { status: 500 });
   }
 }
 
@@ -331,13 +331,13 @@ export async function PATCH(req: NextRequest) {
     const feeAmount = body.feeAmount == null || body.feeAmount === "" ? null : parsePositiveAmount(body.feeAmount);
     const note = String(body.note ?? "").trim() || null;
 
-    if (!entryId && !conversionId) return NextResponse.json({ ok: false, error: "缺少换汇记录 ID" }, { status: 400 });
-    if (!date) return NextResponse.json({ ok: false, error: "换汇日期不正确" }, { status: 400 });
-    if (!fromAccountId) return NextResponse.json({ ok: false, error: "请选择换出账户" }, { status: 400 });
-    if (fromAccountId === toAccountId) return NextResponse.json({ ok: false, error: "换出账户和换入账户不能相同" }, { status: 400 });
-    if (fromAmount == null || toAmount == null) return NextResponse.json({ ok: false, error: "换出金额和换入金额必须大于 0" }, { status: 400 });
+    if (!entryId && !conversionId) return NextResponse.json({ ok: false, code: "MISSING_CONVERSION_ID", error: "缺少换汇记录 ID" }, { status: 400 });
+    if (!date) return NextResponse.json({ ok: false, code: "INVALID_DATE", error: "换汇日期不正确" }, { status: 400 });
+    if (!fromAccountId) return NextResponse.json({ ok: false, code: "MISSING_FROM_ACCOUNT", error: "请选择换出账户" }, { status: 400 });
+    if (fromAccountId === toAccountId) return NextResponse.json({ ok: false, code: "SAME_ACCOUNT_NOT_ALLOWED", error: "换出账户和换入账户不能相同" }, { status: 400 });
+    if (fromAmount == null || toAmount == null) return NextResponse.json({ ok: false, code: "INVALID_AMOUNT", error: "换出金额和换入金额必须大于 0" }, { status: 400 });
     if (body.feeAmount != null && body.feeAmount !== "" && feeAmount == null) {
-      return NextResponse.json({ ok: false, error: "手续费必须大于 0，或留空" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_FEE_AMOUNT", error: "手续费必须大于 0，或留空" }, { status: 400 });
     }
 
     const result = await prisma.$transaction(async (tx) => {
@@ -423,6 +423,6 @@ export async function PATCH(req: NextRequest) {
       },
     });
   } catch (error) {
-    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "保存换汇记录失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "SAVE_FAILED", error: error instanceof Error ? error.message : "保存换汇记录失败" }, { status: 500 });
   }
 }

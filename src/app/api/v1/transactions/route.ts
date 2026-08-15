@@ -22,7 +22,7 @@ export async function GET(req: Request) {
     scope = await getApiHouseholdScope(req);
   } catch (e) {
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : "未授权" },
+      { ok: false, code: "UNAUTHORIZED", error: e instanceof Error ? e.message : "未授权" },
       { status: 401, headers: corsHeaders() },
     );
   }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { verifyPassword } from "@/lib/auth/password";
 import {
   extractAccessHostnames,
   isAccessHostnameAllowed,
@@ -7,19 +8,15 @@ import {
 } from "@/lib/access-whitelist";
 
 const VERIFIED_KEY = "mmh_access_password_verified";
+const LEGACY_ACCESS_PASSWORD_KEY = "access_password";
 const CACHE_TTL = 5_000;
 const LOOKUP_TIMEOUT_MS = 1_200;
 
 const PUBLIC_PATHS = [
   "/login",
-  "/api/v1/ai/chat",
-  "/api/v1/ai/import",
-  "/api/v1/ai/models",
   "/api/v1/auth",
   "/api/v1/settings/catalog",
   "/api/v1/settings/system",
-  "/api/v1/test-prompt",
-  "/test-results",
   "/_next",
   "/favicon",
   "/manifest",
@@ -81,6 +78,41 @@ async function getAllowedOrigins(): Promise<string[]> {
   return allowedOriginsCache;
 }
 
+function getProvidedApiKey(req: NextRequest): string | null {
+  const auth = req.headers.get("authorization");
+  if (auth && auth.toLowerCase().startsWith("bearer ")) return auth.slice(7).trim();
+  return req.headers.get("x-api-key")?.trim() || null;
+}
+
+/**
+ * Validate an X-Api-Key / Bearer credential the same way src/lib/server/api-auth.ts does:
+ * bcrypt-compare against the admin user's password hash, with a legacy
+ * plaintext `access_password` fallback. Without this check, merely *having* an
+ * api-key header would bypass the auth gate.
+ */
+async function isValidApiKey(key: string): Promise<boolean> {
+  const adminUser = await withTimeout(
+    prisma.user.findFirst({
+      where: { OR: [{ role: "admin" }, { isSystem: true }] },
+      orderBy: [{ isSystem: "desc" }, { createdAt: "asc" }],
+      select: { passwordHash: true },
+    }),
+    LOOKUP_TIMEOUT_MS,
+  );
+  if (adminUser?.passwordHash) {
+    try {
+      return await verifyPassword(key, adminUser.passwordHash);
+    } catch {
+      return false;
+    }
+  }
+  const legacy = await withTimeout(
+    prisma.systemSetting.findUnique({ where: { key: LEGACY_ACCESS_PASSWORD_KEY }, select: { value: true } }),
+    LOOKUP_TIMEOUT_MS,
+  );
+  return !!legacy?.value && key === legacy.value;
+}
+
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
@@ -100,20 +132,17 @@ export async function proxy(req: NextRequest) {
     return NextResponse.next();
   }
 
-  const hasApiCredential =
-    !!req.headers.get("x-api-key") ||
-    (req.headers.get("authorization") ?? "").toLowerCase().startsWith("bearer ");
-  if (pathname.startsWith("/api/") && hasApiCredential) {
-    return NextResponse.next();
-  }
-
   const verified = req.cookies.get(VERIFIED_KEY)?.value;
   if (verified === "ok") {
     return NextResponse.next();
   }
 
   if (pathname.startsWith("/api/")) {
-    return NextResponse.json({ ok: false, error: "未登录" }, { status: 401 });
+    const apiKey = getProvidedApiKey(req);
+    if (apiKey && (await isValidApiKey(apiKey))) {
+      return NextResponse.next();
+    }
+    return NextResponse.json({ ok: false, error: apiKey ? "API Key 无效" : "未登录" }, { status: 401 });
   }
 
   const loginUrl = req.nextUrl.clone();

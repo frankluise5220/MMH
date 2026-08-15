@@ -5,6 +5,7 @@ import { Check, Unlock } from "lucide-react";
 
 import { formatMoneyYuan as formatMoney } from "@/lib/format";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { useI18n } from "@/lib/i18n";
 
 export default function EditBillAmount({
   accountId,
@@ -29,6 +30,7 @@ export default function EditBillAmount({
   const [saving, setSaving] = useState(false);
   const [errMsg, setErrMsg] = useState("");
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const { t } = useI18n();
 
   useEffect(() => {
     setCommittedAmount(currentAmount);
@@ -113,9 +115,9 @@ export default function EditBillAmount({
         setSaving(false);
         return;
       }
-      setErrMsg(data.error || "保存失败");
+      setErrMsg(data.error || t("editBill.saveFailed"));
     } catch {
-      setErrMsg("网络错误");
+      setErrMsg(t("editBill.networkError"));
     }
     setSaving(false);
   }, [accountId, postOverrideAdjustment, statementMonth]);
@@ -166,7 +168,7 @@ export default function EditBillAmount({
             if (displayValue != null) save(displayValue / displayMultiplier);
           }}
           disabled={saving}
-          title="确认锁定"
+          title={t("editBill.confirmLock")}
         >
           <Check className="h-3 w-3" strokeWidth={3} />
         </button>
@@ -183,7 +185,7 @@ export default function EditBillAmount({
         setErrMsg("");
         setEditing(true);
       }}
-      title="点击修改账单金额"
+      title={t("editBill.clickToEdit")}
     >
       {formatMoney(displayAmount)}
       {localHasOverride ? (
@@ -193,7 +195,7 @@ export default function EditBillAmount({
             e.stopPropagation();
             void reset();
           }}
-          aria-label="解锁并恢复自动计算"
+          aria-label={t("editBill.unlockReset")}
         />
       ) : null}
     </span>

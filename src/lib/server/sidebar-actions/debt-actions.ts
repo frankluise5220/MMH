@@ -214,6 +214,9 @@ export async function createDebtTransaction(formData: FormData) {
   const loanTotalRunsRaw = parseInt(String(formData.get("loanTotalRuns") ?? ""), 10);
   const firstRepaymentDateStr = String(formData.get("firstRepaymentDate") ?? "").trim();
   const createRepaymentPlan = String(formData.get("createRepaymentPlan") ?? "false") === "true";
+  // Loan repayment execution mode: true = auto-debit (cash transfer when due,
+  // mortgage-style); false = bill only (generate the bill, pay manually).
+  const autoDebit = String(formData.get("autoDebit") ?? "true") !== "false";
   const createHistoricalRepaymentRecords = String(formData.get("createHistoricalRepaymentRecords") ?? "false") === "true";
   const historicalLoanRatesText = String(formData.get("historicalLoanRates") ?? "").trim();
   const acceptedLprRateEffectiveDateStr = String(formData.get("acceptedLprRateEffectiveDate") ?? "").trim();
@@ -584,6 +587,7 @@ export async function createDebtTransaction(formData: FormData) {
               repaymentMethod,
               repaymentIntervalMonths,
               originalTotalRuns: totalRuns,
+              autoDebit,
             }),
             skipPendingPreceding: false,
             householdId,

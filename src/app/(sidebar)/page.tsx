@@ -48,6 +48,7 @@ import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-se
 import { getFundArrivalDays, getFundConfirmDays, setFundConfirmDays, setFundArrivalDays } from "@/lib/fund/confirmDays";
 import { setFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { formatCurrencyMoney, formatMoney } from "@/lib/format";
+import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { LiveAccountBalance } from "@/components/LiveAccountBalance";
 import { AccountFxRateInline } from "@/components/AccountFxRateInline";
 import { createFundTransactionWithCashFlows, findFundTransactionForEntryId, syncFundTransactionsFromTxRecords, upsertFundTransactionRefundCashFlow, type FundCashFlowInput } from "@/lib/fund/transactions";
@@ -104,10 +105,11 @@ import {
   normalizeDetailPageSize,
 } from "@/lib/detail-pagination-preference";
 import type { CreditCardInstallmentRateType } from "@/lib/credit/installment";
+import { getServerT } from "@/lib/server/i18n";
 
 export const dynamic = "force-dynamic";
 
-import { formatDateLocal, toStatementMonth, toNumber, addWorkdaysUtc } from "@/lib/date-utils";
+import { formatDateLocal, formatDateUtc, toStatementMonth, toNumber, addWorkdaysUtc } from "@/lib/date-utils";
 
 function dateFromYmd(value: string | null | undefined): Date | null {
   const text = String(value ?? "").trim();
@@ -239,12 +241,12 @@ async function upsertFundBuyRefundRecord(
   });
 }
 
-function formatType(type: string) {
-  if (type === "expense") return "支出";
-  if (type === "income") return "收入";
-  if (type === "advance") return "代付";
-  if (type === "transfer") return "转账";
-  if (type === "investment") return "投资";
+function formatType(t: (key: string, params?: Record<string, string | number>) => string, type: string) {
+  if (type === "expense") return t("transaction.type.expense");
+  if (type === "income") return t("transaction.type.income");
+  if (type === "advance") return t("txForm.advance");
+  if (type === "transfer") return t("transaction.type.transfer");
+  if (type === "investment") return t("transaction.type.investment");
   return type;
 }
 
@@ -262,7 +264,6 @@ import { subtypeDisplay } from "@/lib/investment-config";
 
 type DetailFilterColumn = "date" | "flow" | "type" | "category" | "related" | "remark";
 
-const DETAIL_EMPTY_VALUE = "(空)";
 const DETAIL_FILTER_SEPARATOR = "\u001F";
 
 function parseDetailFilterParam(value: string | undefined) {
@@ -271,6 +272,7 @@ function parseDetailFilterParam(value: string | undefined) {
 }
 
 function fundSubtypeInfo(
+  t: (key: string, params?: Record<string, string | number>) => string,
   subtype: string | null | undefined,
   source: string | null | undefined,
   _amount: number,
@@ -278,27 +280,22 @@ function fundSubtypeInfo(
 ) {
   const base = subtypeDisplay(subtype, source);
   if (fundProductType === "deposit") {
-    if (subtype === "buy") return { label: "存入", cls: "bg-blue-50 text-blue-600" };
-    if (subtype === "redeem") return { label: "取出", cls: "bg-orange-50 text-orange-600" };
+    if (subtype === "buy") return { label: t("deposit.subtype.buy"), cls: "bg-blue-50 text-blue-600" };
+    if (subtype === "redeem") return { label: t("deposit.subtype.redeem"), cls: "bg-orange-50 text-orange-600" };
   }
-  // source-based overrides for buy subtype (定投/红利转投/转入)
+  // Source-based overrides for the buy subtype (auto-invest / dividend reinvest / switch in).
   if (subtype === "buy" && source) {
     const srcLabels: Record<string, { label: string; cls: string; textCls?: string }> = {
-      regular_invest: { label: "定投", cls: "bg-blue-50 text-blue-600" },
-      dividend: { label: "红利转投", cls: "bg-emerald-50 text-emerald-600", textCls: "text-emerald-600" },
-      switch: { label: "转入", cls: "bg-blue-50 text-blue-600" },
+      regular_invest: { label: t("fund.subtype.regular_invest"), cls: "bg-blue-50 text-blue-600" },
+      dividend: { label: t("fund.subtype.dividend"), cls: "bg-emerald-50 text-emerald-600", textCls: "text-emerald-600" },
+      switch: { label: t("fund.subtype.switch"), cls: "bg-blue-50 text-blue-600" },
     };
     return srcLabels[source] ?? base;
   }
   return base;
 }
 
-function ymdUtc(d: Date) {
-  const y = d.getUTCFullYear();
-  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(d.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
+const ymdUtc = formatDateUtc;
 
 function mdUtcDots(d: Date) {
   const m = String(d.getUTCMonth() + 1).padStart(2, "0");
@@ -340,9 +337,13 @@ function buildCategoryPathLabels(categories: Array<{ id: string; name: string; t
   return labelById;
 }
 
-function buildCategoryExportLabels(categories: Array<{ id: string; name: string; type: string; parentId: string | null }>) {
+function buildCategoryExportLabels(
+  t: (key: string, params?: Record<string, string | number>) => string,
+  categories: Array<{ id: string; name: string; type: string; parentId: string | null }>,
+) {
   const byId = new Map(categories.map((c) => [c.id, c]));
   const memo = new Map<string, string[]>();
+  // Root category names are user data stored in the DB; keep the Chinese names for matching.
   const rootLabels = new Set(["支出", "收入", "转账", "代付", "投资"]);
 
   function pathNames(id: string): string[] {
@@ -372,7 +373,7 @@ function buildCategoryExportLabels(categories: Array<{ id: string; name: string;
   for (const c of categories) {
     const names = pathNames(c.id);
     const exportNames = [...names];
-    if (exportNames[0] === formatType(c.type) || rootLabels.has(exportNames[0] ?? "")) {
+    if (exportNames[0] === formatType(t, c.type) || rootLabels.has(exportNames[0] ?? "")) {
       exportNames.shift();
     }
     labelById.set(c.id, exportNames.join("."));
@@ -411,6 +412,7 @@ function parseMoneyInput(value: FormDataEntryValue | null) {
 }
 
 async function assertWealthUnitsWhenRequiredInTx(
+  t: (key: string, params?: Record<string, string | number>) => string,
   tx: any,
   params: {
     householdId: string;
@@ -439,7 +441,7 @@ async function assertWealthUnitsWhenRequiredInTx(
     select: { id: true },
   });
   if (existingUnitRecord) {
-    throw new Error("该理财产品已有份额记录，继续买入时必须填写份额");
+    throw new Error(t("sidebar.action.wealthUnitsRequired"));
   }
 }
 
@@ -450,7 +452,11 @@ function parseOptionalDateTimeInput(value: FormDataEntryValue | null) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-async function createSplitWealthTransaction(formData: FormData, householdId: string) {
+async function createSplitWealthTransaction(
+  t: (key: string, params?: Record<string, string | number>) => string,
+  formData: FormData,
+  householdId: string,
+) {
   const dateStr = String(formData.get("date") ?? "").trim();
   const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
   const subtypeInput = String(formData.get("subtype") ?? "buy").trim();
@@ -459,7 +465,7 @@ async function createSplitWealthTransaction(formData: FormData, householdId: str
   const isRedeem = subtype === FundSubtype.redeem || subtype === FundSubtype.switch_out;
   const isDividend = subtype === FundSubtype.dividend_cash;
   const amountAbs = Math.abs(parseMoneyInput(formData.get("amount") ?? null));
-  if (!amountAbs) throw new Error("金额不正确");
+  if (!amountAbs) throw new Error(t("txForm.alert.invalidAmount"));
 
   const requestedWealthAccountId = String(formData.get("accountId") ?? formData.get("toAccountId") ?? "").trim();
   const cashAccountId = String(formData.get("cashAccountId") ?? "").trim();
@@ -496,7 +502,7 @@ async function createSplitWealthTransaction(formData: FormData, householdId: str
       where: { id: cashAccountId },
       select: { id: true, name: true, currency: true },
     });
-    if (!cashAcc) throw new Error(isRedeem || isDividend ? "请选择到账账户" : "请选择资金来源账户");
+    if (!cashAcc) throw new Error(isRedeem || isDividend ? t("sidebar.action.selectArrivalAccount") : t("txForm.alert.selectCashSourceAccount"));
 
     const wealthAcc = isRedeem || isDividend
       ? await tx.account.findUnique({
@@ -508,7 +514,7 @@ async function createSplitWealthTransaction(formData: FormData, householdId: str
           cashAccountId: cashAcc.id,
           requestedAccountId: requestedWealthAccountId || null,
         });
-    if (!wealthAcc) throw new Error("请选择理财账户");
+    if (!wealthAcc) throw new Error(t("sidebar.action.selectWealthAccount"));
 
     const wealthProduct = wealthProductIdInput
       ? await tx.wealthProduct.findFirst({
@@ -527,9 +533,9 @@ async function createSplitWealthTransaction(formData: FormData, householdId: str
             },
           })
         : null;
-    if (!wealthProduct) throw new Error("请选择或新增理财产品");
+    if (!wealthProduct) throw new Error(t("sidebar.action.selectOrCreateWealthProduct"));
     if (!isRedeem && !isDividend) {
-      await assertWealthUnitsWhenRequiredInTx(tx, {
+      await assertWealthUnitsWhenRequiredInTx(t, tx, {
         householdId,
         accountId: wealthAcc.id,
         wealthProductId: wealthProduct.id,
@@ -622,7 +628,7 @@ async function createSplitWealthTransaction(formData: FormData, householdId: str
 
 async function createTransaction(formData: FormData) {
   "use server";
-
+  const t = await getServerT();
   const type = String(formData.get("type") ?? "").trim();
   const dateStr = String(formData.get("date") ?? "").trim();
   const postedAtInput = parseOptionalDateTimeInput(formData.get("postedAt"));
@@ -644,15 +650,15 @@ async function createTransaction(formData: FormData) {
   const { householdId } = await getHouseholdScope();
 
   if (!amountAbs) {
-    return { ok: false as const, error: "金额不正确" };
+    return { ok: false as const, error: t("txForm.alert.invalidAmount") };
   }
 
   try {
     if (type === "transfer") {
       const formFromAccountId = String(formData.get("fromAccountId") ?? "").trim();
       const formToAccountId = String(formData.get("toAccountId") ?? "").trim();
-      if (!formFromAccountId || !formToAccountId) return { ok: false as const, error: "转账需要选择转出/转入账户" };
-      if (formFromAccountId === formToAccountId) return { ok: false as const, error: "转出/转入账户不能相同" };
+      if (!formFromAccountId || !formToAccountId) return { ok: false as const, error: t("sidebar.action.transferAccountsRequired") };
+      if (formFromAccountId === formToAccountId) return { ok: false as const, error: t("sidebar.action.transferAccountsSame") };
       const fromAccountId = amountRaw < 0 ? formToAccountId : formFromAccountId;
       const toAccountId = amountRaw < 0 ? formFromAccountId : formToAccountId;
 
@@ -661,16 +667,16 @@ async function createTransaction(formData: FormData) {
           tx.account.findUnique({ where: { id: fromAccountId }, include: { Institution: true } }),
           tx.account.findUnique({ where: { id: toAccountId }, include: { Institution: true } }),
         ]);
-        if (!fromAcc || !toAcc) throw new Error("账户不存在");
+        if (!fromAcc || !toAcc) throw new Error(t("sidebar.action.accountNotFound"));
         const counterpartyInstitution = counterpartyInstitutionId
           ? await tx.institution.findUnique({ where: { id: counterpartyInstitutionId } })
           : null;
         const isDebtTransfer = fromAcc.kind === AccountKind.loan || toAcc.kind === AccountKind.loan;
         if (fromAcc.kind === AccountKind.loan && toAcc.kind === AccountKind.loan) {
-          throw new Error("往来款账户之间不能保存为普通转账");
+          throw new Error(t("sidebar.action.settlementTransferNotAllowed"));
         }
         if (!isDebtTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc))) {
-          throw new Error("基金、存款和往来款账户不能保存为普通转账，请使用对应的专用记账窗口");
+          throw new Error(t("sidebar.action.specialTargetTransferNotAllowed"));
         }
         const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
         const debtMode = isDebtTransfer
@@ -740,14 +746,14 @@ async function createTransaction(formData: FormData) {
           tx.account.findUnique({ where: { id: accountId }, include: { Institution: true } }),
           categoryId ? tx.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
         ]);
-        if (!acc) throw new Error("账户不存在");
-        if (isPureInvestmentAccount(acc)) throw new Error("基金/理财账户不参与收支记账");
-        if (createInstallment && acc.kind !== AccountKind.bank_credit) throw new Error("只有信用卡支出可以设置分期");
+        if (!acc) throw new Error(t("sidebar.action.accountNotFound"));
+        if (isPureInvestmentAccount(acc)) throw new Error(t("sidebar.action.investmentNoIncomeExpense"));
+        if (createInstallment && acc.kind !== AccountKind.bank_credit) throw new Error(t("sidebar.action.installmentCreditCardOnly"));
         if (createInstallment && (installmentAmount <= 0 || installmentAmount > amountAbs)) {
-          throw new Error("分期金额必须大于 0，且不能超过本笔支出金额");
+          throw new Error(t("sidebar.action.installmentAmountInvalid"));
         }
         if (createInstallment && installmentRateType !== "annual_interest" && installmentRateType !== "period_fee") {
-          throw new Error("分期费率类型不正确");
+          throw new Error(t("sidebar.action.installmentRateTypeInvalid"));
         }
 
         const statementMonth =
@@ -784,7 +790,7 @@ async function createTransaction(formData: FormData) {
         await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
 
         if (createInstallment) {
-          if (!statementMonth) throw new Error("信用卡账户缺少账单日，无法计算分期账期");
+          if (!statementMonth) throw new Error(t("sidebar.action.creditCardMissingBillingDay"));
           await createCreditCardInstallmentPlan(tx, {
             householdId,
             account: { id: acc.id, name: acc.name },
@@ -801,7 +807,7 @@ async function createTransaction(formData: FormData) {
             firstPaymentDate: date,
             firstPaymentStatementMonth: statementMonth,
             category: cat ? { id: cat.id, name: cat.name } : null,
-            label: note || cat?.name || "信用卡支出",
+            label: note || cat?.name || t("creditBill.creditCardExpense"),
             tagIds,
           });
         }
@@ -812,8 +818,8 @@ async function createTransaction(formData: FormData) {
       const accountId = String(formData.get("accountId") ?? "").trim();
       const categoryId = String(formData.get("categoryId") ?? "").trim();
       const counterpartyInstitutionId = String(formData.get("counterpartyInstitutionId") ?? "").trim();
-      if (!accountId) return { ok: false as const, error: "请选择资金账户" };
-      if (!counterpartyInstitutionId) return { ok: false as const, error: "请选择往来对象" };
+      if (!accountId) return { ok: false as const, error: t("investForm.selectCashAccount") };
+      if (!counterpartyInstitutionId) return { ok: false as const, error: t("debtTx.placeholder.selectCounterparty") };
 
       let advanceAccountId = "";
       await prisma.$transaction(async (tx) => {
@@ -821,15 +827,15 @@ async function createTransaction(formData: FormData) {
           tx.account.findUnique({ where: { id: accountId }, include: { Institution: true } }),
           categoryId ? tx.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
         ]);
-        if (!acc) throw new Error("账户不存在");
-        if (isPureInvestmentAccount(acc)) throw new Error("基金/理财账户不参与代付记账");
+        if (!acc) throw new Error(t("sidebar.action.accountNotFound"));
+        if (isPureInvestmentAccount(acc)) throw new Error(t("sidebar.action.advanceNoIncomeExpense"));
         const resolvedAdvance = await resolveOrCreateAdvanceAccount(tx, {
           householdId,
           cashAccountId: acc.id,
           debtObjectId: counterpartyInstitutionId,
         });
         const advanceAccount = resolvedAdvance.account;
-        if (advanceAccount.id === acc.id) throw new Error("资金账户不能和往来款账户相同");
+        if (advanceAccount.id === acc.id) throw new Error(t("sidebar.action.cashAccountSameAsSettlement"));
         advanceAccountId = advanceAccount.id;
         const transfer = resolveAdvanceTransfer({ amount: amountRaw, cashAccount: acc, advanceAccount });
         const statementMonth = statementMonthForTransfer(date, transfer.fromAccount, transfer.toAccount);
@@ -888,7 +894,7 @@ async function createTransaction(formData: FormData) {
 
         const created = await tx.txRecord.create({
           data: { accountId: acc?.id ?? undefined,
-            accountName: acc?.name ?? "未知账户",
+            accountName: acc?.name ?? t("common.unknownAccount"),
             categoryId: cat?.id ?? undefined,
             categoryName: cat?.name ?? undefined,
             amount: amountRaw,
@@ -905,7 +911,7 @@ async function createTransaction(formData: FormData) {
       if (accountId) await recalcAndSaveAccountBalance(accountId).catch(() => {});
     } else if (type === "investment") {
       if (String(formData.get("fundProductType") ?? "").trim() === "wealth") {
-        await createSplitWealthTransaction(formData, householdId);
+        await createSplitWealthTransaction(t, formData, householdId);
         return { ok: true as const };
       }
       let createdInvestmentEntryId: string | null = null;
@@ -957,7 +963,7 @@ async function createTransaction(formData: FormData) {
       const metalTypeIdInput = String(formData.get("metalTypeId") ?? "").trim();
       const metalUnitIdInput = String(formData.get("metalUnitId") ?? "").trim();
       const effectiveAccountId = accountId || (fundProductType === "deposit" ? "__auto_deposit__" : fundProductType === "wealth" ? "__auto_wealth__" : "");
-      if (!effectiveAccountId) return { ok: false as const, error: "请选择账户" };
+      if (!effectiveAccountId) return { ok: false as const, error: t("investForm.selectAccount") };
 
       const redeemLike = subtype === "redeem" || subtype === "switch_out";
       const validSubtypes = Object.values(FundSubtype);
@@ -977,7 +983,7 @@ async function createTransaction(formData: FormData) {
 
       let finalInvestmentAccId = "";
       await prisma.$transaction(async (tx) => {
-        // accountId 统一为投资账户（基金账户）
+        // accountId is unified as the investment (fund) account.
         const investAcc =
           fundProductType === "deposit"
             ? await resolveOrCreateDepositAccount(tx, {
@@ -994,8 +1000,8 @@ async function createTransaction(formData: FormData) {
                   requestedAccountId: accountId || null,
                 })
               : await tx.account.findUnique({ where: { id: accountId } });
-        if (!investAcc) throw new Error("账户不存在");
-        if (!isPureInvestmentAccount(investAcc) && !isDepositAccount(investAcc)) throw new Error("请选择投资/存款账户");
+        if (!investAcc) throw new Error(t("sidebar.action.accountNotFound"));
+        if (!isPureInvestmentAccount(investAcc) && !isDepositAccount(investAcc)) throw new Error(t("sidebar.action.selectInvestmentDepositAccount"));
         finalInvestmentAccId = investAcc.id;
         const fundUnitsPrecisionAccount = await tx.account.findUnique({
           where: { id: investAcc.id },
@@ -1026,8 +1032,8 @@ async function createTransaction(formData: FormData) {
               },
             })
           : null;
-        if (fundProductType === "metal" && !metalType) throw new Error("请选择贵金属品种");
-        if (fundProductType === "metal" && !metalUnit) throw new Error("请选择贵金属单位");
+        if (fundProductType === "metal" && !metalType) throw new Error(t("sidebar.action.selectMetalType"));
+        if (fundProductType === "metal" && !metalUnit) throw new Error(t("sidebar.action.selectMetalUnit"));
 
         const wealthProduct = fundProductType === "wealth"
           ? (wealthProductIdInput
@@ -1046,20 +1052,20 @@ async function createTransaction(formData: FormData) {
                   })
                 : null)
           : null;
-        if (fundProductType === "wealth" && !wealthProduct) throw new Error("请选择或新增理财产品");
+        if (fundProductType === "wealth" && !wealthProduct) throw new Error(t("sidebar.action.selectOrCreateWealthProduct"));
 
         const isMetalProduct = fundProductType === "metal";
         const isWealthProduct = fundProductType === "wealth";
         const entryFundCode = isMetalProduct || isWealthProduct ? null : fundCode || null;
-        // fundName 只存基金/存款等产品名称；贵金属名称来自 metalTypeName。
+        // fundName stores fund/deposit product names; precious metal names come from metalTypeName.
         const entryFundName = isMetalProduct ? null : (wealthProduct?.name || fundNameInput || fundCode || null);
 
 
-        // 创建 TxRecord，直接包含所有基金字段
-        // 规则：toAccountId = 资金收到方
-        // buy/dividend_cash: accountId=现金(发起), toAccountId=投资(接收)
-        // redeem/switch_out: accountId=投资(发起), toAccountId=现金(接收)
-        // dividend_reinvest: accountId=投资(发起), toAccountId=投资(接收)
+        // Create the TxRecord, including all fund fields directly.
+        // Rule: toAccountId = the cash receiving side.
+        // buy/dividend_cash: accountId=cash (source), toAccountId=investment (receiver)
+        // redeem/switch_out: accountId=investment (source), toAccountId=cash (receiver)
+        // dividend_reinvest: accountId=investment (source), toAccountId=investment (receiver)
         let recordAccountId: string;
         let recordAccountName: string;
         let recordToAccountId: string;
@@ -1079,7 +1085,7 @@ async function createTransaction(formData: FormData) {
           recordToAccountName = investAcc.name;
           signedAmount = -amountAbs;
         } else if (isDividendCash && cashAcc) {
-          // 现金红利：投资账户(发起) → 现金账户(接收)，金额为正（资金流入现金账户）
+          // Cash dividend: investment account (source) → cash account (receiver), positive amount (cash inflow).
           recordAccountId = investAcc.id;
           recordAccountName = investAcc.name;
           recordToAccountId = cashAcc.id;
@@ -1260,7 +1266,7 @@ async function createTransaction(formData: FormData) {
               fundConfirmDate: computedConfirmDate,
               fundArrivalDate: refundDate ?? computedArrivalDate ?? computedConfirmDate ?? date,
               regularInvestPlanId: created.regularInvestPlanId ?? null,
-              note: note || `买入退回 ${entryFundName || entryFundCode}`,
+              note: note || `${t("detailView.buyRefund")} ${entryFundName || entryFundCode}`,
             });
           }
         }
@@ -1289,7 +1295,7 @@ async function createTransaction(formData: FormData) {
         await recalcAndSaveAccountBalance(cashAccountIdInput).catch(() => {});
       }
     } else {
-      return { ok: false as const, error: "类型不正确" };
+      return { ok: false as const, error: t("sidebar.action.invalidType") };
     }
 
     const touchedAccountIds =
@@ -1303,17 +1309,21 @@ async function createTransaction(formData: FormData) {
     else revalidateAfterTxChange();
     return { ok: true as const };
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "记账失败";
+    const msg = e instanceof Error ? e.message : t("txForm.alert.saveFailed");
     return { ok: false as const, error: msg };
   }
 }
 
-async function editSplitWealthTransaction(formData: FormData, householdId: string) {
+async function editSplitWealthTransaction(
+  t: (key: string, params?: Record<string, string | number>) => string,
+  formData: FormData,
+  householdId: string,
+) {
   const entryId = String(formData.get("entryId") ?? "").trim();
-  if (!entryId) throw new Error("缺少参数");
+  if (!entryId) throw new Error(t("sidebar.action.missingParams"));
   const businessTransactionId = String(formData.get("businessTransactionId") ?? "").trim();
   const dateStr = String(formData.get("date") ?? "").trim();
-  if (!dateStr) throw new Error("申请日期不能为空");
+  if (!dateStr) throw new Error(t("sidebar.action.applyDateRequired"));
   const date = new Date(dateStr);
   const subtypeInput = String(formData.get("subtype") ?? "buy").trim();
   const validSubtypes = Object.values(FundSubtype);
@@ -1321,7 +1331,7 @@ async function editSplitWealthTransaction(formData: FormData, householdId: strin
   const isRedeem = subtype === FundSubtype.redeem || subtype === FundSubtype.switch_out;
   const isDividend = subtype === FundSubtype.dividend_cash;
   const amountAbs = Math.abs(parseMoneyInput(formData.get("amount") ?? null));
-  if (!amountAbs) throw new Error("金额不正确");
+  if (!amountAbs) throw new Error(t("txForm.alert.invalidAmount"));
 
   const requestedWealthAccountId = String(formData.get("toAccountId") ?? formData.get("accountId") ?? "").trim();
   const cashAccountId = String(formData.get("cashAccountId") ?? "").trim();
@@ -1382,13 +1392,13 @@ async function editSplitWealthTransaction(formData: FormData, householdId: strin
       const legacy = await tx.txRecord.findFirst({
         where: { id: entryId, householdId, deletedAt: null, type: TransactionType.investment, fundProductType: "wealth" },
       });
-      if (!legacy) throw new Error("理财记录不存在");
+      if (!legacy) throw new Error(t("sidebar.action.wealthRecordNotFound"));
       await syncIndependentBusinessTransactionFromTxRecord(tx, { businessEntryId: legacy.id });
       wealthRow = await tx.wealthTransaction.findFirst({
         where: { householdId, OR: [{ id: legacy.id }, { cashEntryId: legacy.id }] },
       });
     }
-    if (!wealthRow) throw new Error("理财记录不存在");
+    if (!wealthRow) throw new Error(t("sidebar.action.wealthRecordNotFound"));
 
     const oldCashEntry = wealthRow.cashEntryId
       ? await tx.txRecord.findUnique({ where: { id: wealthRow.cashEntryId } })
@@ -1409,12 +1419,12 @@ async function editSplitWealthTransaction(formData: FormData, householdId: strin
       where: { id: fallbackCashAccountId },
       select: { id: true, name: true, currency: true },
     });
-    if (!cashAcc) throw new Error(isRedeem || isDividend ? "请选择到账账户" : "请选择资金来源账户");
+    if (!cashAcc) throw new Error(isRedeem || isDividend ? t("sidebar.action.selectArrivalAccount") : t("txForm.alert.selectCashSourceAccount"));
     const wealthAcc = await tx.account.findUnique({
       where: { id: requestedWealthAccountId || wealthRow.accountId },
       select: { id: true, name: true, institutionId: true, currency: true },
     });
-    if (!wealthAcc) throw new Error("请选择理财账户");
+    if (!wealthAcc) throw new Error(t("sidebar.action.selectWealthAccount"));
 
     const resolvedWealthProductId = wealthProductIdInput || wealthRow.wealthProductId || "";
     const resolvedProductNameInput = productNameInput || wealthRow.productName || "";
@@ -1435,9 +1445,9 @@ async function editSplitWealthTransaction(formData: FormData, householdId: strin
             },
           })
         : null;
-    if (!wealthProduct) throw new Error("请选择或新增理财产品");
+    if (!wealthProduct) throw new Error(t("sidebar.action.selectOrCreateWealthProduct"));
     if (!isRedeem && !isDividend) {
-      await assertWealthUnitsWhenRequiredInTx(tx, {
+      await assertWealthUnitsWhenRequiredInTx(t, tx, {
         householdId,
         accountId: wealthAcc.id,
         wealthProductId: wealthProduct.id,
@@ -1557,6 +1567,7 @@ async function editSplitWealthTransaction(formData: FormData, householdId: strin
 
 async function editInvestment(formData: FormData) {
   "use server";
+  const t = await getServerT();
   const { householdId } = await getHouseholdScope();
   const entryId = String(formData.get("entryId") ?? "").trim();
   const subtype = String(formData.get("subtype") ?? "buy").trim();
@@ -1569,10 +1580,10 @@ async function editInvestment(formData: FormData) {
   const fundProductType = String(formData.get("fundProductType") ?? "").trim() || null;
   if (fundProductType === "wealth") {
     try {
-      await editSplitWealthTransaction(formData, householdId);
+      await editSplitWealthTransaction(t, formData, householdId);
       return { ok: true as const };
     } catch (e) {
-      return { ok: false as const, error: e instanceof Error ? e.message : "保存失败" };
+      return { ok: false as const, error: e instanceof Error ? e.message : t("investForm.alert.saveFailed") };
     }
   }
   const metalTypeIdInput = String(formData.get("metalTypeId") ?? "").trim();
@@ -1582,7 +1593,7 @@ async function editInvestment(formData: FormData) {
   const refundAmountRaw = parseFloat(String(formData.get("refundAmount") ?? ""));
   const refundDateStr = String(formData.get("refundDate") ?? "").trim();
 
-  // 检测字段是否被传递（用于区分"不更新"vs"清空")
+  // Detect which fields were passed (distinguish "not updated" vs "cleared").
   const hasFundUnits = formData.has("fundUnits");
   const hasFundNav = formData.has("fundNav");
   const hasDepositAnnualRate = formData.has("depositAnnualRate");
@@ -1614,7 +1625,7 @@ async function editInvestment(formData: FormData) {
   const arrivalDaysStr = String(formData.get("arrivalDays") ?? "").trim();
   const feeRateStr = String(formData.get("feeRate") ?? "").trim();
 
-  // 空字符串 → null（清空），有值 → 数值
+  // Empty string → null (clear), value present → parsed number.
   const fundUnitsRaw = fundUnitsStr ? parseFloat(fundUnitsStr) : NaN;
   const fundNavRaw = fundNavStr ? parseFloat(fundNavStr) : NaN;
   const fundFeeRaw = fundFeeStr ? parseFloat(fundFeeStr) : NaN;
@@ -1632,7 +1643,7 @@ async function editInvestment(formData: FormData) {
 
   const fundUnits: number | null | undefined = hasFundUnits
     ? (Number.isFinite(fundUnitsRaw) && fundUnitsRaw > 0 ? fundUnitsRaw : null)
-    : undefined; // undefined 表示不更新
+    : undefined; // undefined means do not update.
   const fundUnitsExplicitlyCleared = hasFundUnits && fundUnits === null;
   const fundNav: number | null | undefined = hasFundNav
     ? (Number.isFinite(fundNavRaw) && fundNavRaw > 0 ? fundNavRaw : null)
@@ -1674,10 +1685,10 @@ async function editInvestment(formData: FormData) {
     ? (Number.isFinite(arrivalDaysRaw) && arrivalDaysRaw >= 0 ? arrivalDaysRaw : null)
     : undefined;
 
-  if (!entryId) return { ok: false as const, error: "缺少参数" };
+  if (!entryId) return { ok: false as const, error: t("sidebar.action.missingParams") };
   const amountAbs = Number.isFinite(amountRaw) ? Math.abs(amountRaw) : 0;
-  if (!amountAbs) return { ok: false as const, error: "金额不正确" };
-  if (!dateStr) return { ok: false as const, error: "申请日期不能为空" };
+  if (!amountAbs) return { ok: false as const, error: t("txForm.alert.invalidAmount") };
+  if (!dateStr) return { ok: false as const, error: t("sidebar.action.applyDateRequired") };
   const date = new Date(dateStr);
   const redeemLike = subtype === "redeem" || subtype === "switch_out";
   const validSubtypes = Object.values(FundSubtype);
@@ -1686,12 +1697,12 @@ async function editInvestment(formData: FormData) {
   const isDividendCash = fundSubtypeValue === FundSubtype.dividend_cash;
 
   try {
-    // 直接查询 TxRecord
+    // Query the TxRecord directly.
     let txRecord = await prisma.txRecord.findUnique({
       where: { id: entryId },
     });
 
-    if (!txRecord) return { ok: false as const, error: "基金记录不存在" };
+    if (!txRecord) return { ok: false as const, error: t("sidebar.action.fundRecordNotFound") };
     if (txRecord.fundSubtype === FundSubtype.buy_failed && txRecord.source === "regular_invest_refund") {
       const sourceBuy = txRecord.fundSourceEntryId
         ? await prisma.txRecord.findFirst({
@@ -1705,13 +1716,13 @@ async function editInvestment(formData: FormData) {
           })
         : null;
       if (!sourceBuy || !sourceBuy.accountId || !sourceBuy.toAccountId || !sourceBuy.fundCode) {
-        return { ok: false as const, error: "买入退回缺少关联买入记录，无法保存" };
+        return { ok: false as const, error: t("sidebar.action.buyRefundMissingBuy") };
       }
       const [fundAccount, cashAccount] = await Promise.all([
         prisma.account.findUnique({ where: { id: sourceBuy.toAccountId }, select: { id: true, name: true, currency: true } }),
         prisma.account.findUnique({ where: { id: sourceBuy.accountId }, select: { id: true, name: true } }),
       ]);
-      if (!fundAccount || !cashAccount) return { ok: false as const, error: "买入退回关联账户不存在" };
+      if (!fundAccount || !cashAccount) return { ok: false as const, error: t("sidebar.action.buyRefundAccountsNotFound") };
       const nextRefundAmount = refundAmount ?? amountAbs;
       const nextRefundDate = refundDate ?? fundArrivalDate ?? date;
       await prisma.$transaction(async (tx) => {
@@ -1753,8 +1764,8 @@ async function editInvestment(formData: FormData) {
       return { ok: true as const };
     }
 
-    // 买入类：accountId=资金账户(发起), toAccountId=投资账户(接收)
-    // 赎回/现金红利/buy_failed退回：accountId=投资账户(发起), toAccountId=资金账户(接收)
+    // Buy: accountId=cash account (source), toAccountId=investment account (receiver).
+    // Redeem / cash dividend / buy_failed refund: accountId=investment account (source), toAccountId=cash account (receiver).
     const isRedeemOrRefund = txRecord.fundSubtype === "redeem" || txRecord.fundSubtype === "switch_out"
       || txRecord.fundSubtype === "dividend_cash"
       || (txRecord.fundSubtype === "buy_failed" && txRecord.source === "regular_invest_refund");
@@ -1765,7 +1776,7 @@ async function editInvestment(formData: FormData) {
     const oldCashAccId = existingFundTransactionForRecalc?.cashAccountId ?? ((isRedeemOrRefund ? txRecord.toAccountId : txRecord.accountId) ?? "");
     const oldFundCode = existingFundTransactionForRecalc?.fundCode ?? null;
 
-    // 检测是否有新的基金账户（通过toAccountId字段传递）
+    // Detect whether a new fund account was passed (via the toAccountId field).
     const hasNewToAccountId = formData.has("toAccountId");
     const newToAccountIdStr = String(formData.get("toAccountId") ?? "").trim();
     const newToAccountId = hasNewToAccountId && newToAccountIdStr ? newToAccountIdStr : null;
@@ -1781,12 +1792,12 @@ async function editInvestment(formData: FormData) {
             requestedAccountId: requestedInvestmentAccountId || null,
           })
         : null;
-      // 先查询资金账户信息（如果需要）
+      // Query the cash account info first (if needed).
       const cashAccountInfo = requestedCashAccountId
         ? await tx.account.findUnique({ where: { id: requestedCashAccountId }, select: { id: true, name: true } })
         : null;
 
-      // 查询新基金账户信息（如果需要）
+      // Query the new fund account info (if needed).
       const newInvestmentAccountInfo = resolvedWealthAccount ?? (newToAccountId
         ? await tx.account.findUnique({ where: { id: newToAccountId }, select: { id: true, name: true, fundUnitsDecimals: true, institutionId: true, currency: true } })
         : null);
@@ -1821,8 +1832,8 @@ async function editInvestment(formData: FormData) {
             },
           })
         : null;
-      if (fundProductType === "metal" && !metalType) throw new Error("请选择贵金属品种");
-      if (fundProductType === "metal" && !metalUnit) throw new Error("请选择贵金属单位");
+      if (fundProductType === "metal" && !metalType) throw new Error(t("sidebar.action.selectMetalType"));
+      if (fundProductType === "metal" && !metalUnit) throw new Error(t("sidebar.action.selectMetalUnit"));
       const wealthProduct = fundProductType === "wealth"
         ? (wealthProductIdInput
             ? await tx.wealthProduct.findFirst({ where: { id: wealthProductIdInput, householdId, institutionId: finalInvestmentAccountInfo?.institutionId, isActive: true } })
@@ -1839,9 +1850,9 @@ async function editInvestment(formData: FormData) {
                 })
               : null)
         : null;
-      if (fundProductType === "wealth" && !wealthProduct) throw new Error("请选择或新增理财产品");
+      if (fundProductType === "wealth" && !wealthProduct) throw new Error(t("sidebar.action.selectOrCreateWealthProduct"));
 
-      // 构建 TxRecord 更新数据
+      // Build the TxRecord update data.
       const sourceValue = fundProductType === "deposit"
         ? "deposit"
         : isDividendReinvest
@@ -1903,7 +1914,7 @@ async function editInvestment(formData: FormData) {
         }
       }
 
-        // 买入：资金账户 -> 基金账户；赎回/现金红利/买入退回：基金账户 -> 资金账户。
+        // Buy: cash account -> fund account; redeem/cash dividend/buy refund: fund account -> cash account.
         if (redeemLike || isDividendCash || isBuyFailedRefund) {
           updateData.accountId = finalFundAccountId;
           updateData.accountName = finalFundAccountName;
@@ -1936,7 +1947,7 @@ async function editInvestment(formData: FormData) {
       let independentFundTransaction: Awaited<ReturnType<typeof findFundTransactionForEntryId>> = null;
       if (isFundLikeIndependentEdit) {
         independentFundTransaction = await findFundTransactionForEntryId(tx, { id: entryId, householdId });
-        if (!independentFundTransaction) throw new Error("基金交易不存在或尚未完成迁移");
+        if (!independentFundTransaction) throw new Error(t("sidebar.action.fundTransactionNotMigrated"));
         usedIndependentFundTransaction = true;
         const businessUnits = updateData.fundUnits;
         const businessNav = fundNav ?? independentFundTransaction.nav;
@@ -2114,7 +2125,7 @@ async function editInvestment(formData: FormData) {
       });
     }
 
-    // 重算持仓：如果基金账户变更，需要重算旧账户和新账户
+    // Recalculate positions: if the fund account changed, recalculate both the old and new accounts.
     const finalInvestmentAccId = newToAccountId ?? oldInvestmentAccId;
     const recalcCodes = Array.from(new Set([oldFundCode, fundCode].filter((code): code is string => !!code)));
 
@@ -2128,22 +2139,22 @@ async function editInvestment(formData: FormData) {
     }
     if (!isMetalProduct && fundProductType !== "wealth") {
       if (oldInvestmentAccId && oldInvestmentAccId !== finalInvestmentAccId) {
-        // 基金账户变更：重算旧账户和新账户
+        // Fund account changed: recalculate both the old and new accounts.
         await recalcFundPositions(oldInvestmentAccId, recalcCodes.length > 0 ? recalcCodes : undefined).catch((e) => { console.error("editInvestment recalc old fund positions:", e); });
         await recalcFundPositions(finalInvestmentAccId, recalcCodes.length > 0 ? recalcCodes : undefined).catch((e) => { console.error("editInvestment recalc new fund positions:", e); });
       } else if (finalInvestmentAccId) {
-        // 基金账户未变更：只重算该账户
+        // Fund account unchanged: recalculate only that account.
         await recalcFundPositions(finalInvestmentAccId, recalcCodes.length > 0 ? recalcCodes : undefined).catch((e) => { console.error("editInvestment recalc fund positions:", e); });
       }
     }
 
-    // 重算投资账户余额
+    // Recalculate the investment account balance.
     await recalcAndSaveAccountBalance(finalInvestmentAccId).catch((e) => { console.error("editInvestment recalc invest balance:", e); });
     if (oldInvestmentAccId && oldInvestmentAccId !== finalInvestmentAccId) {
       await recalcAndSaveAccountBalance(oldInvestmentAccId).catch((e) => { console.error("editInvestment recalc old invest balance:", e); });
     }
 
-    // 重算资金账户余额（如果资金账户变更）
+    // Recalculate the cash account balance (if the cash account changed).
     if (oldCashAccId && oldCashAccId !== finalInvestmentAccId) {
       await recalcAndSaveAccountBalance(oldCashAccId).catch((e) => { console.error("editInvestment recalc old cash balance:", e); });
     }
@@ -2151,17 +2162,17 @@ async function editInvestment(formData: FormData) {
       await recalcAndSaveAccountBalance(cashAccountId).catch((e) => { console.error("editInvestment recalc new cash balance:", e); });
     }
 
-    // 更新 T+N 确认天数到统一确认天数库
+    // Update the T+N confirm days in the unified confirm-days store.
     if (fundProductType !== "metal" && fundProductType !== "wealth" && finalInvestmentAccId && fundCode && confirmDays !== undefined && confirmDays !== null) {
       await setFundConfirmDays(finalInvestmentAccId, fundCode, confirmDays).catch(() => {});
 
-    // 更新入账天数到统一入账天数库
+    // Update the arrival days in the unified arrival-days store.
     if (finalInvestmentAccId && fundCode && arrivalDays !== undefined && arrivalDays !== null) {
       await setFundArrivalDays(finalInvestmentAccId, fundCode, arrivalDays).catch(() => {});
     }
     }
 
-    // 更新费率到统一费率库，并按申购/赎回分开保存
+    // Update the fee rate in the unified fee-rate store, split by buy/redeem.
     if (fundProductType !== "metal" && fundProductType !== "wealth" && finalInvestmentAccId && fundCode && feeRate !== undefined && feeRate !== null) {
       await setFundFeeRateByDate(finalInvestmentAccId, fundCode, feeRate, fundConfirmDate ?? date, redeemLike ? "redeem" : "buy").catch(() => {});
     }
@@ -2175,16 +2186,17 @@ async function editInvestment(formData: FormData) {
     revalidateAfterInvestChange();
     return { ok: true as const };
   } catch (e) {
-    return { ok: false as const, error: e instanceof Error ? e.message : "保存失败" };
+    return { ok: false as const, error: e instanceof Error ? e.message : t("investForm.alert.saveFailed") };
   }
 }
 
 
 async function updateTransactionFromDialog(formData: FormData) {
   "use server";
+  const t = await getServerT();
 
   const entryId = String(formData.get("entryId") ?? "").trim();
-  if (!entryId) return { ok: false as const, error: "缺少 entryId" };
+  if (!entryId) return { ok: false as const, error: t("sidebar.action.missingEntryId") };
 
   const type = String(formData.get("type") ?? "").trim();
   const dateStr = String(formData.get("date") ?? "").trim();
@@ -2199,7 +2211,7 @@ async function updateTransactionFromDialog(formData: FormData) {
 
   const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
   const postedAt = type === "expense" || type === "income" ? (postedAtInput ?? date) : null;
-  if (!amountAbs) return { ok: false as const, error: "金额不正确" };
+  if (!amountAbs) return { ok: false as const, error: t("txForm.alert.invalidAmount") };
 
   try {
     const ctx = await getHouseholdScope();
@@ -2212,7 +2224,7 @@ async function updateTransactionFromDialog(formData: FormData) {
         where: { id: entryId },
 
       });
-      if (!entry) throw new Error("记录不存 ");
+      if (!entry) throw new Error(t("sidebar.action.recordNotFound"));
       if (entry.accountId) touchedAccountIds.add(entry.accountId);
       if (entry.toAccountId) touchedAccountIds.add(entry.toAccountId);
 
@@ -2221,8 +2233,8 @@ async function updateTransactionFromDialog(formData: FormData) {
       if (type === "transfer") {
         const formFromAccountId = String(formData.get("fromAccountId") ?? "").trim();
         const formToAccountId = String(formData.get("toAccountId") ?? "").trim();
-        if (!formFromAccountId || !formToAccountId) throw new Error("转账需要选择转出/转入账户");
-        if (formFromAccountId === formToAccountId) throw new Error("转出/转入账户不能相同");
+        if (!formFromAccountId || !formToAccountId) throw new Error(t("sidebar.action.transferAccountsRequired"));
+        if (formFromAccountId === formToAccountId) throw new Error(t("sidebar.action.transferAccountsSame"));
         const fromAccountId = amountRaw < 0 ? formToAccountId : formFromAccountId;
         const toAccountId = amountRaw < 0 ? formFromAccountId : formToAccountId;
 
@@ -2230,7 +2242,7 @@ async function updateTransactionFromDialog(formData: FormData) {
           tx.account.findUnique({ where: { id: fromAccountId } }),
           tx.account.findUnique({ where: { id: toAccountId } }),
         ]);
-        if (!fromAcc || !toAcc) throw new Error("账户不存在");
+        if (!fromAcc || !toAcc) throw new Error(t("sidebar.action.accountNotFound"));
         const counterpartyInstitution = counterpartyInstitutionId
           ? await tx.institution.findUnique({ where: { id: counterpartyInstitutionId } })
           : null;
@@ -2238,10 +2250,10 @@ async function updateTransactionFromDialog(formData: FormData) {
         touchedAccountIds.add(toAcc.id);
         const isDebtTransfer = fromAcc.kind === AccountKind.loan || toAcc.kind === AccountKind.loan;
         if (fromAcc.kind === AccountKind.loan && toAcc.kind === AccountKind.loan) {
-          throw new Error("往来款账户之间不能保存为普通转账");
+          throw new Error(t("sidebar.action.settlementTransferNotAllowed"));
         }
         if (!isDebtTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc))) {
-          throw new Error("基金、存款和往来款账户不能保存为普通转账，请使用对应的专用记账窗口");
+          throw new Error(t("sidebar.action.specialTargetTransferNotAllowed"));
         }
         const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
         const debtMode = isDebtTransfer
@@ -2254,7 +2266,7 @@ async function updateTransactionFromDialog(formData: FormData) {
           String(entry.source ?? "").startsWith("debt_") &&
           (Math.abs(toNumber(entry.debtInterestAmount)) > 0.005 || Math.abs(toNumber(entry.debtFeeAmount)) > 0.005)
         ) {
-          throw new Error("有利息或手续费的借入借出记录不能直接改为普通转账");
+          throw new Error(t("sidebar.action.debtWithInterestNoTransfer"));
         }
         const signedTransferAmount = debtMode === "collect_in" ? amountAbs : -amountAbs;
 
@@ -2298,7 +2310,7 @@ async function updateTransactionFromDialog(formData: FormData) {
       }
 
       if (type === "investment") {
-        // 编辑模式：accountId=投资账户(统一), cashAccountId=资金账户
+        // Edit mode: accountId=investment account (unified), cashAccountId=cash account.
         const accountIdFormData = String(formData.get("accountId") ?? "").trim();
         const cashAccountIdFormData = String(formData.get("cashAccountId") ?? "").trim();
         const fundCode = String(formData.get("fundCode") ?? "").trim();
@@ -2308,26 +2320,26 @@ async function updateTransactionFromDialog(formData: FormData) {
         const isInsuranceEntry = entry.source === "insurance" || !!entry.insuranceProductId;
 
         const investAcc = accountIdFormData ? await tx.account.findUnique({ where: { id: accountIdFormData } }) : null;
-        if (!investAcc) throw new Error("请选择投资账户");
+        if (!investAcc) throw new Error(t("sidebar.action.selectInvestmentAccount"));
         touchedAccountIds.add(investAcc.id);
 
-        // 资金账户：优先用表单传入的，否则从原始记录推断
+        // Cash account: prefer the form value; otherwise infer from the original record.
         let cashAccId: string | null = null;
         let cashAccName: string | null = null;
         if (cashAccountIdFormData) {
           const cashAcc = await tx.account.findUnique({ where: { id: cashAccountIdFormData } });
           if (cashAcc) { cashAccId = cashAcc.id; cashAccName = cashAcc.name; touchedAccountIds.add(cashAcc.id); }
         }
-        // 回退：从原始记录推断资金账户
+        // Fallback: infer the cash account from the original record.
         if (!cashAccId) {
           if (redeemLike) {
-            // 赎回记录：toAccountId 是资金账户（接收方）
+            // Redeem records: toAccountId is the cash account (receiver).
             if (entry.toAccountId) {
               const acc = await tx.account.findUnique({ where: { id: entry.toAccountId } });
               if (acc) { cashAccId = acc.id; cashAccName = acc.name; touchedAccountIds.add(acc.id); }
             }
           } else {
-            // 买入记录：accountId 是资金账户（发起方）
+            // Buy records: accountId is the cash account (source).
             if (entry.accountId && entry.accountId !== investAcc.id) {
               const acc = await tx.account.findUnique({ where: { id: entry.accountId } });
               if (acc) { cashAccId = acc.id; cashAccName = acc.name; touchedAccountIds.add(acc.id); }
@@ -2335,7 +2347,7 @@ async function updateTransactionFromDialog(formData: FormData) {
           }
         }
 
-        // 确定记录方向：toAccountId = 资金收到方
+        // Determine record direction: toAccountId = cash receiving side.
         let recordAccountId: string;
         let recordAccountName: string;
         let recordToAccountId: string;
@@ -2369,7 +2381,7 @@ async function updateTransactionFromDialog(formData: FormData) {
           ? await findFundTransactionForEntryId(tx, { id: entryId, householdId: ctx.householdId })
           : null;
         if (isFundLikeIndependentEdit && !independentFundTransaction) {
-          throw new Error("基金交易不存在或尚未完成迁移");
+          throw new Error(t("sidebar.action.fundTransactionNotMigrated"));
         }
         if (independentFundTransaction) {
           const arrivalAmount = Number.isFinite(fundArrivalAmount) && fundArrivalAmount > 0 ? fundArrivalAmount : null;
@@ -2431,7 +2443,7 @@ async function updateTransactionFromDialog(formData: FormData) {
           }
         }
 
-        // 更新 TxRecord
+        // Update the TxRecord.
         await tx.txRecord.update({
           where: { id: entryId },
           data: {
@@ -2462,14 +2474,14 @@ async function updateTransactionFromDialog(formData: FormData) {
         const accountId = String(formData.get("accountId") ?? "").trim();
         const categoryId = String(formData.get("categoryId") ?? "").trim();
         const debtObjectId = String(formData.get("counterpartyInstitutionId") ?? "").trim();
-        if (!accountId) throw new Error("请选择资金账户");
-        if (!debtObjectId) throw new Error("请选择往来对象");
+        if (!accountId) throw new Error(t("investForm.selectCashAccount"));
+        if (!debtObjectId) throw new Error(t("debtTx.placeholder.selectCounterparty"));
         const [acc, cat] = await Promise.all([
           tx.account.findUnique({ where: { id: accountId } }),
           categoryId ? tx.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
         ]);
-        if (!acc) throw new Error("账户不存在");
-        if (isPureInvestmentAccount(acc)) throw new Error("基金/理财账户不参与代付记账");
+        if (!acc) throw new Error(t("sidebar.action.accountNotFound"));
+        if (isPureInvestmentAccount(acc)) throw new Error(t("sidebar.action.advanceNoIncomeExpense"));
         const resolvedAdvance = await resolveOrCreateAdvanceAccount(tx, {
           householdId: ctx.householdId,
           cashAccountId: acc.id,
@@ -2506,7 +2518,7 @@ async function updateTransactionFromDialog(formData: FormData) {
         return;
       }
 
-      if (type !== "expense" && type !== "income") throw new Error("类型不正确");
+      if (type !== "expense" && type !== "income") throw new Error(t("sidebar.action.invalidType"));
       const accountId = String(formData.get("accountId") ?? "").trim();
       const categoryId = String(formData.get("categoryId") ?? "").trim();
       const keepFundDetail = formData.get("keepFundDetail") === "true";
@@ -2515,11 +2527,11 @@ async function updateTransactionFromDialog(formData: FormData) {
         accountId ? tx.account.findUnique({ where: { id: accountId } }) : Promise.resolve(null),
         categoryId ? tx.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
       ]);
-      if (!acc) throw new Error("请选择账户");
+      if (!acc) throw new Error(t("investForm.selectAccount"));
       touchedAccountIds.add(acc.id);
-      if (isPureInvestmentAccount(acc)) throw new Error("基金/理财账户不参与收支记账");
+      if (isPureInvestmentAccount(acc)) throw new Error(t("sidebar.action.investmentNoIncomeExpense"));
 
-      // 检查是否是基金交易（通过 toAccountId + fundProductType）
+      // Check whether this is a fund transaction (via toAccountId + fundProductType).
       const isFundTransaction = entry.toAccountId && entry.fundProductType;
 
       const statementMonth =
@@ -2570,10 +2582,10 @@ async function updateTransactionFromDialog(formData: FormData) {
     await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(() => {});
     if (type === "investment") revalidateAfterInvestChange();
     else revalidateAfterTxChange();
-    await saveEntryUndo(prisma, ctx, undo, "edit", "编辑明细");
+    await saveEntryUndo(prisma, ctx, undo, "edit", t("sidebar.undo.editEntry"));
     return { ok: true as const };
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "保存失败";
+    const msg = e instanceof Error ? e.message : t("investForm.alert.saveFailed");
     return { ok: false as const, error: msg };
   }
 }
@@ -2618,11 +2630,12 @@ export default async function Home({
     guide?: string;
   }>;
 }) {
+  const t = await getServerT();
   const params = await searchParams;
   await connection();
   const accountId = typeof params?.accountId === "string" ? params.accountId.trim() : "";
   const accountName = typeof params?.account === "string" ? params.account.trim() : "";
-  // 如果没有选择账户，默认跳转到概览页
+  // If no account is selected, default to the overview page.
   if (!accountId && !accountName && params?.view !== "debt") {
     redirect("/overview");
   }
@@ -2653,7 +2666,8 @@ export default async function Home({
   const billPageParam = typeof params?.billPage === "string" ? parseInt(params.billPage, 10) : 1;
   const billPage = Number.isFinite(billPageParam) && billPageParam >= 1 ? billPageParam : 1;
 
-  // 读取 cookie 偏好。分页 cookie 用于保存编辑刷新后的明细表上下文。
+  // Read the cookie preference. The pagination cookie preserves the detail-table
+  // context after an edit refresh.
   const cookieStore = await cookies();
   const detailPaginationPref = decodeDetailPaginationPreference(
     cookieStore.get(detailPaginationCookieName(accountId))?.value,
@@ -2700,7 +2714,7 @@ export default async function Home({
   const fundPage = Number.isFinite(fundPageParam) && fundPageParam >= 1 ? fundPageParam : 1;
   const showCleared = params?.showCleared === "1";
 
-  // 读取涨跌颜色方案
+  // Read the up/down color scheme.
   const colorScheme = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") as "red_up_green_down" | "green_up_red_down";
   const creditCardLabelMode = cookieStore.get("mmh_credit_card_label_mode")?.value === "full_name" ? "full_name" : "short_last4";
   const creditCardLabelTemplate = normalizeCreditCardLabelTemplate(
@@ -2729,11 +2743,9 @@ export default async function Home({
   const ctx = await getCachedHouseholdScope();
   const { hidFilter, householdId } = ctx;
   const baseCurrency = await getHouseholdBaseCurrency(householdId);
-  // 颜色辅助函数
-  const upCls = isRedUp ? "text-red-600" : "text-emerald-700";
-  const downCls = isRedUp ? "text-emerald-700" : "text-red-600";
-  const pnlCls = (n: number) => n > 0 ? upCls : n < 0 ? downCls : "text-slate-600";
-  // Common data: 跨账户共享，跨请求缓存
+  // Color helper.
+  const pnlCls = (n: number) => pnlClassFromRedUp(n, isRedUp);
+  // Common data: shared across accounts, cached across requests.
   const common = await loadCommonData(hidFilter);
   const { categories, tags, groups, institutions, counterparties, preciousMetalDictionaries } = common;
   const metalTypes = preciousMetalDictionaries.types;
@@ -2745,7 +2757,7 @@ export default async function Home({
     include: { Institution: true, Counterparty: true, AccountGroup: true },
     orderBy: [{ isActive: "desc" }, { name: "asc" }],
   });
-  // selectedAccount: per-account，请求级缓存去重
+  // selectedAccount: per-account, deduplicated at request level.
   const selectedAccount = await loadSelectedAccount(accountId || undefined, hidFilter);
   const fundUnitsDecimals = normalizeFundUnitsDecimals(selectedAccount?.fundUnitsDecimals, 3);
   const isBillAccount =
@@ -2906,30 +2918,30 @@ export default async function Home({
     const effectiveAmount = effectiveAmountForAccount(e, accountId);
     const balanceTarget = getBalanceReconcileTarget(e);
     if (column === "date") return entryDisplayDate(e).toISOString().slice(0, 10);
-    if (column === "flow" && balanceTarget != null && e.source === BALANCE_INITIALIZATION_SOURCE) return "初始";
-    if (column === "flow" && e.source === BALANCE_RECONCILE_SOURCE) return "校准";
-    if (column === "flow") return effectiveAmount >= 0 ? "流入" : "流出";
-    if (column === "type" && balanceTarget != null && e.source === BALANCE_INITIALIZATION_SOURCE) return "初始";
-    if (column === "type" && e.source === BALANCE_RECONCILE_SOURCE) return "校准";
+    if (column === "flow" && balanceTarget != null && e.source === BALANCE_INITIALIZATION_SOURCE) return t("detailView.initialBalance");
+    if (column === "flow" && e.source === BALANCE_RECONCILE_SOURCE) return t("detailView.balanceReconcile");
+    if (column === "flow") return effectiveAmount >= 0 ? t("detail.column.inflow") : t("detail.column.outflow");
+    if (column === "type" && balanceTarget != null && e.source === BALANCE_INITIALIZATION_SOURCE) return t("detailView.initialBalance");
+    if (column === "type" && e.source === BALANCE_RECONCILE_SOURCE) return t("detailView.balanceReconcile");
     if (column === "type") {
       if (e.source === "insurance") return getInsuranceDetailCategoryName(e);
-      if (e.source === "advance") return "代付";
-      if (e.type === "investment" && e.fundProductType === "deposit") return "存款";
-      return e.type === "investment" && e.fundSubtype ? (fundSubtypeInfo(e.fundSubtype, e.source, amount, e.fundProductType)?.label ?? formatType(e.type)) : formatType(e.type);
+      if (e.source === "advance") return t("txForm.advance");
+      if (e.type === "investment" && e.fundProductType === "deposit") return t("detailView.deposit");
+      return e.type === "investment" && e.fundSubtype ? (fundSubtypeInfo(t, e.fundSubtype, e.source, amount, e.fundProductType)?.label ?? formatType(t, e.type)) : formatType(t, e.type);
     }
     if (column === "category") {
-      if (isCreditCardRepaymentForDisplay(e)) return "信用卡还款";
+      if (isCreditCardRepaymentForDisplay(e)) return t("transaction.category.creditCardRepayment");
       if (e.type === TransactionType.investment) {
         if (e.source === "insurance") return getInsuranceDetailCategoryName(e);
-        return e.categoryName || getInvestmentCategoryName(e) || DETAIL_EMPTY_VALUE;
+        return e.categoryName || getInvestmentCategoryName(e) || t("detail.emptyValue");
       }
-      return getInsuranceDetailCategoryName(e) || DETAIL_EMPTY_VALUE;
+      return getInsuranceDetailCategoryName(e) || t("detail.emptyValue");
     }
     if (column === "related") {
       const related = accountId && e.toAccountId === accountId ? (e.accountName ?? "") : (e.toAccountName ?? "");
-      return related.trim() || DETAIL_EMPTY_VALUE;
+      return related.trim() || t("detail.emptyValue");
     }
-    return getEntryDisplayNote(e) || DETAIL_EMPTY_VALUE;
+    return getEntryDisplayNote(e) || t("detail.emptyValue");
   };
   const detailDateInRange = (v: string) => {
     let f = detailDateFrom;
@@ -2994,9 +3006,9 @@ export default async function Home({
     : null;
   const safeDetailPage = detailAll ? 1 : Math.min(focusDetailPage ?? detailPage, detailTotalPages);
   const categoryLabels = buildCategoryPathLabels(categories);
-  const exportCategoryLabels = buildCategoryExportLabels(categories);
+  const exportCategoryLabels = buildCategoryExportLabels(t, categories);
   const getExportCategoryName = (e: (typeof filteredEntries2)[number]) => {
-    if (isCreditCardRepaymentForDisplay(e)) return "信用卡还款";
+    if (isCreditCardRepaymentForDisplay(e)) return t("transaction.category.creditCardRepayment");
     if (e.categoryId) return exportCategoryLabels.get(e.categoryId) ?? stripExportCategoryRootLabel(e.categoryName);
     if (e.type === TransactionType.investment) {
       if (e.source === "insurance") return getInsuranceDetailCategoryName(e);
@@ -3006,16 +3018,16 @@ export default async function Home({
   };
   const normalExportRows = (() => {
     const rows = [[
-      "日期",
-      "收支大类",
-      "分类",
-      "流出",
-      "流入",
-      "账户",
-      "对向账户",
-      "收支机构",
-      "标签",
-      "备注",
+      t("detail.column.date"),
+      t("detailView.column.type"),
+      t("detail.column.category"),
+      t("detail.column.outflow"),
+      t("detail.column.inflow"),
+      t("common.account"),
+      t("batchImport.field.counterAccount"),
+      t("detail.column.counterparty"),
+      t("detail.column.tags"),
+      t("detail.column.remark"),
     ]];
     for (const e of filteredEntries2) {
       const effectiveAmount = effectiveAmountForAccount(e, accountId);
@@ -3036,7 +3048,7 @@ export default async function Home({
         .join("、");
       rows.push([
         entryDisplayDate(e).toISOString().slice(0, 10),
-        e.source === "insurance" ? getInsuranceDetailCategoryName(e) : formatType(e.type),
+        e.source === "insurance" ? getInsuranceDetailCategoryName(e) : formatType(t, e.type),
         getExportCategoryName(e),
         outflow,
         inflow,
@@ -3049,7 +3061,9 @@ export default async function Home({
     }
     return rows;
   })();
-  const normalExportFilename = `${selectedAccount?.name || accountName || "全部账户"}-资金明细.xlsx`;
+  const normalExportFilename = t("sidebar.export.filename", {
+    name: selectedAccount?.name || accountName || t("statistics.allAccounts"),
+  });
 
   const expenseCategories = categories
     .filter((c) => c.type === "expense")
@@ -3065,11 +3079,11 @@ export default async function Home({
     .sort((a, b) => a.label.localeCompare(b.label, "zh-Hans-CN"));
   const categoryBatchReplaceOptions = (() => {
     const typeLabels: Record<string, string> = {
-      expense: "支出分类",
-      income: "收入分类",
-      advance: "代付分类",
-      transfer: "转账分类",
-      investment: "投资分类",
+      expense: t("stats.expenseCategories"),
+      income: t("categoryType.income"),
+      advance: t("categoryType.advance"),
+      transfer: t("categoryType.transfer"),
+      investment: t("categoryType.investment"),
     };
     const typeOrder = ["expense", "income", "advance", "transfer", "investment"];
     const options: Array<{
@@ -3187,7 +3201,7 @@ export default async function Home({
   }
 
   const selectedAccountLabel = (() => {
-    if (view === "debt") return "借入/借出";
+    if (view === "debt") return t("account.kind.loan");
     if (selectedAccount) {
       const display = buildAccountDisplayOption({
         id: selectedAccount.id,
@@ -3201,8 +3215,8 @@ export default async function Home({
       }, selectedAccount.kind === AccountKind.bank_credit ? SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE : creditCardLabelTemplate);
       const accountLabel = display.label;
       if (isPureInvestmentAccount(selectedAccount)) return accountLabel;
-      if (isDepositAccount(selectedAccount)) return `存款 / ${accountLabel}`;
-      if (selectedAccount.kind === AccountKind.insurance) return `保险 / ${accountLabel}`;
+      if (isDepositAccount(selectedAccount)) return `${t("entry.kind.deposit")} / ${accountLabel}`;
+      if (selectedAccount.kind === AccountKind.insurance) return `${t("entry.kind.insurance")} / ${accountLabel}`;
       const group = selectedAccount.kind === AccountKind.loan ? "" : (selectedAccount.AccountGroup?.name ?? "").trim();
       return [group, accountLabel].filter(Boolean).join(" / ");
     }
@@ -3263,7 +3277,7 @@ export default async function Home({
     const grouped = filtered.filter(a => a.groupId);
     const ungrouped = filtered.filter(a => !a.groupId);
 
-    // Build group header entries — exclude "未指定" group
+    // Build group header entries — exclude the unspecified group (stored group name is user data).
     const groupHeaders: SSOpt[] = groups
       .filter(g => g.name !== "未指定")
       .filter(g => grouped.some(a => a.groupId === g.id))
@@ -3394,7 +3408,8 @@ export default async function Home({
   // Pre-computed hierarchical SS options for modal props
   const allAccountSSOptions = buildAccountSSOptions(); // all accounts for transfer dropdown
   const cashAccountSSOptions = buildAccountSSOptions(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet");
-  // 资金界面转账保持原样：排除投资账户即可；股票界面打开转账时，只允许同一所有人的资金账户（bank_debit/ewallet）
+  // Transfers in the cash view stay unchanged: just exclude investment accounts.
+  // In the stock view, transfers only allow cash accounts (bank_debit/ewallet) of the same owner.
   const transferOwnerGroupId = (selectedAccount?.groupId ?? "").trim();
   const isStockTransferEligibleAccount = (a: (typeof accountOptions)[number]) =>
     (a.kind === "bank_debit" || a.kind === "ewallet")
@@ -3413,17 +3428,17 @@ export default async function Home({
   const debtObjectOptions: SSOpt[] = [
     ...(debtCounterpartyOptions.length > 0
       ? [
-          { id: "debt-counterparty-header", label: "往来对象", isHeader: true },
+          { id: "debt-counterparty-header", label: t("txForm.counterparty"), isHeader: true },
           ...debtCounterpartyOptions.map((counterparty) => ({
             id: `counterparty:${counterparty.id}`,
             label: counterparty.shortName?.trim() || counterparty.name,
-            subLabel: counterparty.type === "person" ? "往来人员" : "往来组织",
+            subLabel: counterparty.type === "person" ? t("sidebar.debt.counterpartyPerson") : t("sidebar.debt.counterpartyOrganization"),
           })),
         ]
       : []),
     ...(debtSourceInstitutions.length > 0
       ? [
-          { id: "debt-institution-source-header", label: "从机构选择", isHeader: true },
+          { id: "debt-institution-source-header", label: t("sidebar.debt.institutionSource"), isHeader: true },
           ...debtSourceInstitutions.map((institution) => ({
             id: `institution:${institution.id}`,
             label: institution.shortName?.trim() || institution.name,
@@ -3632,7 +3647,7 @@ export default async function Home({
     displayAccountId: accountId,
   });
 
-  // 查询最近使用的资金账户
+  // Query the most recently used cash account.
   const lastUsedCashAccount = isInvestAccount && accountId
     ? await prisma.txRecord.findFirst({
         where: {
@@ -3840,10 +3855,10 @@ export default async function Home({
     ? allDetailEntries
     : (creditCardBillDetails?.details ?? []);
   const creditBillDetailTitle = showAllCreditBillDetails
-    ? "信用卡全部明细"
+    ? t("creditBill.allDetails")
     : creditCardBill?.statementMonth
-      ? `账单明细 (${creditCardBill.statementMonth})`
-      : "账单明细";
+      ? t("creditBill.detailTitleWithMonth", { month: creditCardBill.statementMonth })
+      : t("creditBill.detailTitle");
 
   const allDepositAccounts = accounts.filter((account) => isDepositAccount(account));
   const selectedDepositAccountIds =
@@ -3875,7 +3890,7 @@ export default async function Home({
           return {
             id: entry.id,
             date: entryDate,
-            typeLabel: entry.fundSubtype === "redeem" ? "取出" : "存入",
+            typeLabel: entry.fundSubtype === "redeem" ? t("deposit.subtype.redeem") : t("deposit.subtype.buy"),
             fundName: entry.fundName ?? entry.fundCode ?? "",
             maturityDate: arrivalDate,
             cashAccountLabel,
@@ -3921,7 +3936,7 @@ export default async function Home({
             return {
               id: entry.id,
               date: entryDate,
-              typeLabel: isRedeemEntry ? "赎回" : "投保",
+              typeLabel: isRedeemEntry ? t("fund.subtype.redeem") : t("insuranceShell.entryType.premium"),
               productName: entry.fundName ?? "",
               cashAccountLabel,
               cashAccountId: isRedeemEntry ? (entry.toAccountId ?? null) : (entry.accountId ?? null),
@@ -3984,24 +3999,24 @@ export default async function Home({
             totalPremium,
             statusLabel:
               product.status === "matured"
-                ? "已满期"
+                ? t("insuranceShell.status.matured")
                 : product.status === "surrendered"
-                  ? "已退保"
+                  ? t("insuranceShell.status.surrendered")
                   : product.status === "lapsed"
-                    ? "已失效"
-                    : "保障中",
+                    ? t("insuranceShell.status.lapsed")
+                    : t("insuranceShell.status.active"),
             status: product.status,
             frequencyLabel:
               product.premiumFrequencyMonths === 1
-                ? "每月"
+                ? t("insuranceShell.frequency.monthly")
                 : product.premiumFrequencyMonths === 3
-                  ? "每季"
+                  ? t("insuranceShell.frequency.quarterly")
                   : product.premiumFrequencyMonths === 6
-                    ? "每半年"
+                    ? t("insuranceShell.frequency.semiannual")
                     : product.premiumFrequencyMonths === 12
-                      ? "每年"
+                      ? t("insuranceShell.frequency.annual")
                       : product.premiumFrequencyMonths === 999999
-                        ? "趸交"
+                        ? t("insuranceShell.frequency.single")
                         : "-",
             paymentTermYears: product.paymentTermYears ? Number(product.paymentTermYears) : null,
             coverageTermYears: product.coverageTermYears ? Number(product.coverageTermYears) : null,
@@ -4073,7 +4088,7 @@ export default async function Home({
       const wealthAccountId = (isRedeemEntry ? entry.accountId : entry.toAccountId) ?? "";
       if (!wealthAccountId || !allWealthAccountIds.includes(wealthAccountId)) continue;
 
-      const productName = entry.WealthProduct?.name ?? entry.fundName ?? "未命名理财";
+      const productName = entry.WealthProduct?.name ?? entry.fundName ?? t("sidebar.wealthHolding.unnamed");
       const productLabel = entry.WealthProduct?.shortName?.trim() || productName;
       const productKey = entry.wealthProductId ? `product:${entry.wealthProductId}` : `name:${productName}`;
       const key = `${wealthAccountId}\u001f${productKey}`;
@@ -4114,7 +4129,7 @@ export default async function Home({
           fundName: productName,
           wealthProductId: entry.wealthProductId ?? null,
           wealthAccountId,
-          wealthAccountLabel: accountNameById.get(wealthAccountId) ?? entry.toAccountName ?? entry.accountName ?? "理财账户",
+          wealthAccountLabel: accountNameById.get(wealthAccountId) ?? entry.toAccountName ?? entry.accountName ?? t("sidebar.wealthAccount"),
           remainingAmount: principalDelta,
           remainingUnits: unitsDelta,
           hasUnits: unitsValue != null,
@@ -4134,10 +4149,10 @@ export default async function Home({
         label: holding.label,
         subLabel: [
           holding.wealthAccountLabel,
-          holding.annualRate != null ? `年化 ${holding.annualRate}%` : "",
-          holding.termDays ? `${holding.termDays}天` : "",
-          `可赎回 ${formatMoney(holding.remainingAmount)}`,
-          holding.hasUnits ? `份额 ${holding.remainingUnits.toFixed(6)}` : "",
+          holding.annualRate != null ? t("sidebar.wealthHolding.annualRate", { rate: holding.annualRate }) : "",
+          holding.termDays ? t("sidebar.wealthHolding.termDays", { days: holding.termDays }) : "",
+          t("sidebar.wealthHolding.redeemable", { amount: formatMoney(holding.remainingAmount) }),
+          holding.hasUnits ? t("sidebar.wealthHolding.units", { units: holding.remainingUnits.toFixed(6) }) : "",
         ].filter(Boolean).join(" · "),
         fundName: holding.fundName,
         wealthProductId: holding.wealthProductId,
@@ -4201,7 +4216,7 @@ export default async function Home({
     }> = [];
 
     for (const entry of depositSourceEntries) {
-      const fundName = (entry.fundName ?? entry.fundCode ?? "").trim() || "未命名存款";
+      const fundName = (entry.fundName ?? entry.fundCode ?? "").trim() || t("sidebar.deposit.unnamed");
       const maturityDate = toYmdOrNull(entry.fundArrivalDate);
       const isRedeemEntry = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";
       const amountValue = isRedeemEntry
@@ -4213,7 +4228,7 @@ export default async function Home({
       const depositAccountId = (
         isRedeemEntry ? entry.accountId : entry.toAccountId
       ) ?? "";
-      const depositAccountName = accountNameById.get(depositAccountId) ?? entry.toAccountName ?? entry.accountName ?? "定期存款";
+      const depositAccountName = accountNameById.get(depositAccountId) ?? entry.toAccountName ?? entry.accountName ?? t("sidebar.deposit.fallbackName");
       const lotKey = `${depositAccountId}\u001f${fundName}\u001f${maturityDate ?? ""}`;
 
       if (!isRedeemEntry) {
@@ -4254,8 +4269,8 @@ export default async function Home({
           originalAmount: Number(Math.abs(toNumber(sourceEntry?.fundArrivalAmount ?? sourceEntry?.amount ?? lot.remainingAmount)).toFixed(2)),
           subLabel: [
             lot.depositAccountName,
-            lot.maturityDate ? `到期 ${lot.maturityDate}` : "",
-            lot.remainingAmount > 0.0001 ? `可取 ${formatMoney(lot.remainingAmount)}` : "已结清",
+            lot.maturityDate ? t("sidebar.depositLot.maturity", { date: lot.maturityDate }) : "",
+            lot.remainingAmount > 0.0001 ? t("sidebar.depositLot.withdrawable", { amount: formatMoney(lot.remainingAmount) }) : t("sidebar.depositLot.closed"),
           ]
             .filter(Boolean)
             .join(" · "),
@@ -4375,7 +4390,8 @@ export default async function Home({
     const stockOwnerGroupId = (stockAccount?.groupId ?? "").trim();
     const sameOwner = (account: typeof cashAccountList[number]) =>
       (!stockOwnerGroupId || (account.groupId ?? "") === stockOwnerGroupId);
-    // 银证转账：转出方默认同一所有人下的银行借记卡（不能是证券资金账户本身，也不能是现金/信用卡）
+    // Stock transfer: default the source to a bank debit card of the same owner
+    // (not the securities cash account itself, and not cash/credit cards).
     return cashAccountList.find((account) => account.id !== defaultStockCashAccountId && account.kind === "bank_debit" && sameOwner(account))?.id
       ?? cashAccountList.find((account) => account.id !== defaultStockCashAccountId && sameOwner(account) && account.kind !== "cash")?.id
       ?? "";
@@ -4395,7 +4411,7 @@ export default async function Home({
         <header className="page-header">
           <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 px-4 py-2 md:px-5">
             <div className="flex min-w-0 flex-wrap items-center gap-3 text-sm">
-              <span className="page-title">{selectedAccountLabel || "全部账户"}</span>
+              <span className="page-title">{selectedAccountLabel || t("statistics.allAccounts")}</span>
               {view === "debt" ? (
                 <span className={`tabular-nums font-semibold ${pnlCls(debtDisplaySummaryValue)}`}>
                   {formatCurrencyMoney(debtDisplaySummaryValue, baseCurrency)}
@@ -4428,7 +4444,7 @@ export default async function Home({
               ) : null}
               {missingFxCurrencies.length > 0 ? (
                 <span className="text-xs text-amber-700">
-                  缺少汇率：{missingFxCurrencies.join("、")}，相关金额暂未折算
+                  {t("sidebar.missingFxRateDetail", { currencies: missingFxCurrencies.join("、") })}
                 </span>
               ) : null}
             </div>
@@ -4490,20 +4506,20 @@ export default async function Home({
                         : "fund_regular_invest",
                 }}
                 actions={[
-                  { key: "transaction", label: "收支记账" },
-                  { key: "advance", label: "代付" },
-                  { key: "transfer", label: isBillAccount ? "信用卡还款" : "转账" },
-                  { key: "fx", label: "购入外汇" },
-                  { key: "investment", label: "基金" },
-                  { key: "stock", label: "股票" },
-                  { key: "stock-transfer", label: "银证转账" },
-                  { key: "property", label: "房产" },
-                  { key: "metal", label: "贵金属" },
-                  { key: "wealth", label: "银行理财" },
-                  { key: "deposit", label: "存款" },
-                  { key: "insurance", label: "保险" },
-                  { key: "debt", label: "往来款", disabled: cashAccountList.length === 0 },
-                  { key: "regular-task", label: "计划任务" },
+                  { key: "transaction", label: t("entry.kind.transaction") },
+                  { key: "advance", label: t("entry.kind.advance") },
+                  { key: "transfer", label: isBillAccount ? t("transaction.type.creditCardRepayment") : t("entry.kind.transfer") },
+                  { key: "fx", label: t("entry.kind.fx") },
+                  { key: "investment", label: t("entry.kind.investment") },
+                  { key: "stock", label: t("entry.kind.stock") },
+                  { key: "stock-transfer", label: t("entry.kind.stockTransfer") },
+                  { key: "property", label: t("entry.kind.property") },
+                  { key: "metal", label: t("entry.kind.metal") },
+                  { key: "wealth", label: t("entry.kind.wealth") },
+                  { key: "deposit", label: t("entry.kind.deposit") },
+                  { key: "insurance", label: t("entry.kind.insurance") },
+                  { key: "debt", label: t("entry.kind.debt"), disabled: cashAccountList.length === 0 },
+                  { key: "regular-task", label: t("entry.kind.regularTask") },
                 ]}
               />
               <>
@@ -4690,7 +4706,7 @@ export default async function Home({
                 debtAccounts={debtAccounts.map((account) => ({
                   id: account.id,
                   label: debtAccountLabelById.get(account.id) ?? account.name,
-                  subLabel: account.Counterparty?.name ? "往来对象" : account.Institution?.name ? "机构往来" : "借入/借出",
+                  subLabel: account.Counterparty?.name ? t("txForm.counterparty") : account.Institution?.name ? t("liabilities.institutionDeal") : t("account.kind.loan"),
                   institutionId: account.institutionId ?? null,
                   counterpartyId: account.counterpartyId ?? null,
                   institutionType: account.Institution?.type ?? account.Counterparty?.type ?? null,
@@ -4726,12 +4742,12 @@ export default async function Home({
                 {missingBillingDayForBill ? (
                   <div className="panel-surface border-amber-200 bg-amber-50/70">
                     <div className="px-4 py-4">
-                      <div className="text-sm font-semibold text-amber-900">这张信用卡还没设置账单日</div>
+                      <div className="text-sm font-semibold text-amber-900">{t("sidebar.bill.missingBillingDayTitle")}</div>
                       <div className="mt-1 text-xs leading-5 text-amber-800">
-                        这不是“所有人”筛选的问题。信用卡账单明细要先按账单日划分周期；当前账户还没有账单日，所以系统暂时无法计算账单，也不会显示对应明细。
+                        {t("sidebar.bill.missingBillingDayBody")}
                       </div>
                       <div className="mt-2 text-xs text-amber-700">
-                        请先到“账户管理”里补上这张卡的账单日，保存后再回到这里查看。
+                        {t("sidebar.bill.missingBillingDayAction")}
                       </div>
                     </div>
                   </div>
@@ -4740,8 +4756,8 @@ export default async function Home({
                   storageKey="mmh:credit-bill:split-height"
                   hasLowerPane
                   defaultUpperHeight={360}
-                  separatorLabel="调整信用卡账单和明细高度"
-                  separatorTitle="拖动调整信用卡账单和明细高度"
+                  separatorLabel={t("sidebar.bill.resizeLabel")}
+                  separatorTitle={t("sidebar.bill.resizeTitle")}
                 >
                   {hasCreditBillSummaries ? (
                     <CreditBillSummaryTable
@@ -4761,7 +4777,7 @@ export default async function Home({
                     />
                   ) : (
                     <div className="panel-surface flex h-full items-center justify-center text-sm text-slate-400">
-                      暂无账单记录
+                      {t("creditBill.empty")}
                     </div>
                   )}
 
@@ -4777,7 +4793,7 @@ export default async function Home({
                     title={creditBillDetailTitle}
                     periodLabel={
                       !showAllCreditBillDetails && creditCardBill
-                        ? <>周期：{mdUtcDots(creditCardBill.start)} ~ {mdUtcDots(creditCardBill.end)} · {creditCardBill.isCurrentCycle ? "未出账单" : "本期账单"}</>
+                        ? <>{t("creditBill.period")}：{mdUtcDots(creditCardBill.start)} ~ {mdUtcDots(creditCardBill.end)} · {creditCardBill.isCurrentCycle ? t("creditBill.currentCycle") : t("creditBill.currentBill")}</>
                         : undefined
                     }
                     accountOptions={accountOptions}
@@ -4853,7 +4869,7 @@ export default async function Home({
                 .map((item) => ({
                   id: item.id,
                   label: item.name,
-                  subLabel: "家庭成员",
+                  subLabel: t("settings.familyMembers"),
                 }))}
             />
           ) : view === "investmoney" && investmoneyData ? (

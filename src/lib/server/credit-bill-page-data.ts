@@ -18,7 +18,7 @@ import {
   signedCreditBillAmountFromCardSide,
   summarizeCreditBillSignedFlows,
 } from "@/lib/credit/billing";
-import { normalizeCreditCardInstallmentStatementMonths } from "@/lib/server/credit-card-installment";
+import { normalizeCreditCardInstallmentStatementMonths, materializeDueInstallmentPayments } from "@/lib/server/credit-card-installment";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude } from "@/lib/server/entry-business-link";
 
@@ -136,6 +136,19 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
 
   const billAccountIdSet = new Set(billAccountIds);
   const scopedBillAccountIds = billAccountIds.length > 0 ? billAccountIds : selectedAccount ? [selectedAccount.id] : [];
+
+  // Lazy materialization: create installment payment rows that became due
+  // since the last daily job, so the bill view is correct even if the job
+  // has not run yet. Non-fatal on failure.
+  if (scopedBillAccountIds.length > 0) {
+    await materializeDueInstallmentPayments(prisma, {
+      householdId,
+      accountIds: scopedBillAccountIds,
+    }).catch((error) => {
+      console.error("materialize installment payments failed:", error);
+    });
+  }
+
   const billScope: Prisma.TxRecordWhereInput | undefined = selectedAccount
     ? {
         OR: [

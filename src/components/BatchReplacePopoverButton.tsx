@@ -1,10 +1,11 @@
-﻿"use client";
+"use client";
 
 import { Pencil } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { CalcInput } from "@/components/CalcInput";
 import { SmartSelect, type SmartSelectOption, type SmartSelectProps } from "@/components/SmartSelect";
+import { useI18n } from "@/lib/i18n";
 
 export type BatchReplaceInputKind = "date" | "text" | "number" | "select" | "smartSelect";
 
@@ -53,8 +54,8 @@ type Props<Field extends string> = {
 export function BatchReplacePopoverButton<Field extends string>({
   fields,
   targetCount,
-  targetLabel = "已选",
-  disabledTitle = "请先勾选记录",
+  targetLabel,
+  disabledTitle,
   buttonTitle,
   panelAlign = "right",
   buttonClassName,
@@ -62,6 +63,9 @@ export function BatchReplacePopoverButton<Field extends string>({
   children,
   onApply,
 }: Props<Field>) {
+  const { t } = useI18n();
+  const effectiveTargetLabel = targetLabel ?? t("stockPanel.selected");
+  const effectiveDisabledTitle = disabledTitle ?? t("stockPanel.error.selectRowsFirst");
   const firstField = fields[0]?.value;
   const triggerRef = useRef<HTMLDivElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -169,7 +173,7 @@ export function BatchReplacePopoverButton<Field extends string>({
       setOpen(false);
       setValue("");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "批量修改失败");
+      setMessage(error instanceof Error ? error.message : t("stockPanel.error.batchUpdateFailed"));
     } finally {
       setSubmitting(false);
     }
@@ -183,8 +187,8 @@ export function BatchReplacePopoverButton<Field extends string>({
         onClick={() => setOpen((current) => !current)}
         disabled={disabled}
         className={buttonClassName ?? "flex h-8 w-8 items-center justify-center rounded-md border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"}
-        title={disabled ? disabledTitle : (buttonTitle ?? `批量修改${targetLabel} ${targetCount} 条记录`)}
-        aria-label={disabled ? disabledTitle : (buttonTitle ?? `批量修改${targetLabel} ${targetCount} 条记录`)}
+        title={disabled ? effectiveDisabledTitle : (buttonTitle ?? t("batchReplace.title", { label: effectiveTargetLabel, count: targetCount }))}
+        aria-label={disabled ? effectiveDisabledTitle : (buttonTitle ?? t("batchReplace.title", { label: effectiveTargetLabel, count: targetCount }))}
       >
         <Pencil className="h-4 w-4" />
       </button>
@@ -196,8 +200,8 @@ export function BatchReplacePopoverButton<Field extends string>({
               className="z-[120] overflow-y-auto rounded-lg border border-blue-100 bg-white p-3 text-xs shadow-lg"
             >
               <div className="mb-2 flex items-center justify-between gap-3">
-                <span className="font-medium text-slate-700">修改{targetLabel} {targetCount} 条</span>
-                <button type="button" onClick={() => setOpen(false)} className="shrink-0 text-slate-400 hover:text-slate-600">关闭</button>
+                <span className="font-medium text-slate-700">{t("batchReplace.panelTitle", { label: effectiveTargetLabel, count: targetCount })}</span>
+                <button type="button" onClick={() => setOpen(false)} className="shrink-0 text-slate-400 hover:text-slate-600">{t("table.close")}</button>
               </div>
               {children ? <div className="mb-2 text-xs text-slate-500">{children}</div> : null}
               <div className="grid grid-cols-[96px_minmax(0,1fr)] gap-2">
@@ -235,26 +239,26 @@ export function BatchReplacePopoverButton<Field extends string>({
                       institutionId: option.institutionId,
                       currency: option.currency,
                     } satisfies SmartSelectOption))}
-                    placeholder={fieldConfig.placeholder ?? "请选择"}
+                    placeholder={fieldConfig.placeholder ?? t("txForm.selectPlaceholder")}
                     searchable
                     behavior={fieldConfig.smartSelectBehavior ?? { search: true }}
                   />
                 ) : fieldConfig?.kind === "number" ? (
-                  <CalcInput value={value} onChange={setValue} placeholder={fieldConfig?.placeholder ?? "输入数值"} precision={2} />
+                  <CalcInput value={value} onChange={setValue} placeholder={fieldConfig?.placeholder ?? t("batchReplace.numberPlaceholder")} precision={2} />
                 ) : (
                   <input
                     type={fieldConfig?.kind === "date" ? "date" : "text"}
                     value={value}
                     onChange={(event) => setValue(event.target.value)}
-                    placeholder={fieldConfig?.placeholder ?? "输入修改内容"}
+                    placeholder={fieldConfig?.placeholder ?? t("batchReplace.valuePlaceholder")}
                     className="h-8 rounded border border-slate-200 bg-white px-2 outline-none focus:border-blue-400"
                   />
                 )}
               </div>
               <div className="mt-3 flex justify-end gap-2">
-                <button type="button" onClick={() => { setOpen(false); setValue(""); }} className="h-8 rounded border border-slate-200 bg-white px-3 text-slate-600 hover:bg-slate-50">取消</button>
+                <button type="button" onClick={() => { setOpen(false); setValue(""); }} className="h-8 rounded border border-slate-200 bg-white px-3 text-slate-600 hover:bg-slate-50">{t("common.cancel")}</button>
                 <button type="button" onClick={applyReplace} disabled={!canApply} className="h-8 rounded bg-blue-600 px-3 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">
-                  {submitting ? "修改中…" : "应用修改"}
+                  {submitting ? t("batchReplace.applying") : t("batchReplace.apply")}
                 </button>
               </div>
             </div>,

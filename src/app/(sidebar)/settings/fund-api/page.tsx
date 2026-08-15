@@ -14,6 +14,7 @@ import {
 } from "@/components/settings/SettingsPageScaffold";
 import { parseBaseUrl, buildBaseUrl, PROTOCOL_OPTIONS, PORT_SUGGESTIONS } from "@/lib/urlInput";
 import type { ParsedUrl } from "@/lib/urlInput";
+import { useI18n } from "@/lib/i18n";
 
 type FundQueryApiRecord = {
   id: string;
@@ -73,6 +74,7 @@ function UrlInputGroup({
   value: ParsedUrl;
   onChange: (next: ParsedUrl) => void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
@@ -97,7 +99,7 @@ function UrlInputGroup({
           value={value.port}
           onChange={e => onChange({ ...value, port: e.target.value })}
           type="number"
-          placeholder="端口"
+          placeholder={t("settings.fundApi.port")}
           list="port-suggestions"
           className="h-9 w-24 rounded-md border border-slate-200 bg-white px-2.5 text-sm outline-none font-mono"
         />
@@ -111,7 +113,7 @@ function UrlInputGroup({
         <input
           value={value.path}
           onChange={e => onChange({ ...value, path: e.target.value })}
-          placeholder="/api/fund（可选）"
+          placeholder={t("settings.fundApi.pathPlaceholder")}
           className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none font-mono"
         />
       </div>
@@ -120,6 +122,7 @@ function UrlInputGroup({
 }
 
 export default function FundQueryApiPage() {
+  const { t } = useI18n();
   const [apis, setApis] = useState<FundQueryApiRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -148,14 +151,14 @@ export default function FundQueryApiPage() {
           setLoadError("");
         } else {
           setApis([]);
-          const hint = "ok" in payload ? (payload.error || `请求失败（${status}）`) : `请求失败（${status}）`;
+          const hint = "ok" in payload ? (payload.error || t("settings.fundApi.requestFailed", { status })) : t("settings.fundApi.requestFailed", { status });
           setLoadError(hint);
         }
       })
       .catch((error) => {
         if (controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) return;
         setApis([]);
-        setLoadError("请求失败（网络或服务异常）");
+        setLoadError(t("settings.fundApi.networkFailed"));
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
@@ -188,11 +191,11 @@ export default function FundQueryApiPage() {
         setApis(sortApis(Array.isArray(data.apis) ? data.apis : nextApis));
         return true;
       } else {
-        alert(data.error || "排序保存失败");
+        alert(data.error || t("settings.fundApi.orderSaveFailed"));
         return false;
       }
     } catch {
-      alert("排序保存失败");
+      alert(t("settings.fundApi.orderSaveFailed"));
       return false;
     } finally {
       setSaving(false);
@@ -269,10 +272,10 @@ export default function FundQueryApiPage() {
         setEditingId(null);
         setForm(makeForm());
       } else {
-        alert(data.error || "保存失败");
+        alert(data.error || t("settings.fundApi.saveFailed"));
       }
     } catch {
-      alert("保存失败");
+      alert(t("settings.fundApi.saveFailed"));
     } finally {
       setSaving(false);
     }
@@ -291,14 +294,14 @@ export default function FundQueryApiPage() {
         setApis(prev => prev.map(a => a.id === api.id ? { ...a, isActive: !a.isActive } : a));
       }
     } catch {
-      alert("操作失败");
+      alert(t("settings.fundApi.actionFailed"));
     } finally {
       setSaving(false);
     }
   }
 
   if (loading) {
-    return <div className="text-sm text-slate-400">加载中...</div>;
+    return <div className="text-sm text-slate-400">{t("common.loading")}</div>;
   }
 
   const isCreating = editingId === "__new__";
@@ -307,10 +310,10 @@ export default function FundQueryApiPage() {
   return (
     <div className="space-y-4">
       <SettingsPageHeader
-        title="基金查询 API 管理"
-        description="含 {date} 占位符的 API 支持历史净值；不含 {date} 的 API 仅返回最新净值。拖拽列表行调整全局优先级，越上面越先尝试。"
+        title={t("settings.fundApi.title")}
+        description={t("settings.fundApi.description")}
         count={apis.length}
-        actions={<SettingsPrimaryAddButton onClick={openCreate}>添加 API</SettingsPrimaryAddButton>}
+        actions={<SettingsPrimaryAddButton onClick={openCreate}>{t("settings.fundApi.add")}</SettingsPrimaryAddButton>}
       />
 
       {loadError && (
@@ -330,12 +333,12 @@ export default function FundQueryApiPage() {
         </colgroup>
         <thead className="sticky top-0 z-10">
           <tr>
-            <SettingsTh align="center">顺序</SettingsTh>
-            <SettingsTh>名称</SettingsTh>
-            <SettingsTh>代码</SettingsTh>
-            <SettingsTh>请求地址</SettingsTh>
-            <SettingsTh>状态</SettingsTh>
-            <SettingsTh align="right">操作</SettingsTh>
+            <SettingsTh align="center">{t("settings.fundApi.order")}</SettingsTh>
+            <SettingsTh>{t("settings.fundApi.name")}</SettingsTh>
+            <SettingsTh>{t("settings.fundApi.code")}</SettingsTh>
+            <SettingsTh>{t("settings.fundApi.url")}</SettingsTh>
+            <SettingsTh>{t("settings.fundApi.status")}</SettingsTh>
+            <SettingsTh align="right">{t("settings.fundApi.actions")}</SettingsTh>
           </tr>
         </thead>
         <tbody>
@@ -363,7 +366,7 @@ export default function FundQueryApiPage() {
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="truncate">{api.name}</span>
                   {api.code === "alipay" ? (
-                    <span className="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-normal text-blue-700">支付宝账户优先</span>
+                    <span className="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-normal text-blue-700">{t("settings.fundApi.alipayPriority")}</span>
                   ) : null}
                 </div>
               </SettingsTd>
@@ -371,23 +374,23 @@ export default function FundQueryApiPage() {
               <SettingsTd className="truncate font-mono text-[11px] text-slate-400" title={api.baseUrl}>{api.baseUrl}</SettingsTd>
               <SettingsTd>
                 <span className={`rounded px-2 py-0.5 text-xs ${api.isActive ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>
-                  {api.isActive ? "启用" : "停用"}
+                  {api.isActive ? t("common.enabled") : t("common.disabled")}
                 </span>
               </SettingsTd>
               <SettingsTd align="right">
                 <SettingsRowActions>
                   <SettingsActionButton
-                    label={api.isActive ? "停用 API" : "启用 API"}
+                    label={api.isActive ? t("settings.fundApi.disableApi") : t("settings.fundApi.enableApi")}
                     icon={api.isActive ? <PowerOff className="h-3.5 w-3.5" /> : <Power className="h-3.5 w-3.5" />}
                     onClick={() => toggleActive(api)}
                     disabled={saving}
                   />
-                  <SettingsActionButton label="编辑 API" variant="edit" onClick={() => openEdit(api)} />
+                  <SettingsActionButton label={t("settings.fundApi.editApi")} variant="edit" onClick={() => openEdit(api)} />
                 </SettingsRowActions>
               </SettingsTd>
             </tr>
           )) : (
-            <SettingsEmptyRow colSpan={6}>暂无基金查询 API，请点击右上角“添加 API”。</SettingsEmptyRow>
+            <SettingsEmptyRow colSpan={6}>{t("settings.fundApi.empty")}</SettingsEmptyRow>
           )}
         </tbody>
       </SettingsTable>
@@ -396,12 +399,12 @@ export default function FundQueryApiPage() {
         <div className="app-modal-backdrop z-[1100]">
           <div className="app-modal-panel max-w-2xl">
             <div className="modal-header shrink-0">
-              <div className="text-sm font-semibold text-slate-800">{isCreating ? "新增基金查询 API" : "编辑基金查询 API"}</div>
+              <div className="text-sm font-semibold text-slate-800">{isCreating ? t("settings.fundApi.addTitle") : t("settings.fundApi.editTitle")}</div>
             </div>
             <div className="space-y-3 p-5">
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">代码</div>
+                  <div className="text-xs font-medium text-slate-600">{t("settings.fundApi.code")}</div>
                   {isCreating ? (
                     <input value={form.code ?? ""} onChange={e => setForm(f => ({ ...f, code: e.target.value }))}
                       className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none font-mono" />
@@ -412,31 +415,31 @@ export default function FundQueryApiPage() {
                   )}
                 </div>
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">排序</div>
+                  <div className="text-xs font-medium text-slate-600">{t("settings.fundApi.order")}</div>
                   <div className="flex h-9 items-center rounded-md border border-slate-100 bg-slate-50 px-3 text-sm text-slate-500">
-                    {isCreating ? "创建后可拖拽调整" : `第 ${apis.findIndex((api) => api.id === editingId) + 1} 位，保存后可拖拽调整`}
+                    {isCreating ? t("settings.fundApi.dragAfterCreate") : t("settings.fundApi.positionInfo", { position: apis.findIndex((api) => api.id === editingId) + 1 })}
                   </div>
                 </div>
               </div>
               <div className="space-y-1">
-                <div className="text-xs font-medium text-slate-600">名称</div>
+                <div className="text-xs font-medium text-slate-600">{t("settings.fundApi.name")}</div>
                 <input value={form.name ?? ""} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                   className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
               </div>
               <div className="space-y-1">
-                <div className="text-xs font-medium text-slate-600">请求地址</div>
+                <div className="text-xs font-medium text-slate-600">{t("settings.fundApi.url")}</div>
                 <UrlInputGroup value={form.urlParts} onChange={next => setForm(f => ({ ...f, urlParts: next }))} />
               </div>
               <div className="space-y-1">
-                <div className="text-xs font-medium text-slate-600">API Key（可选）</div>
+                <div className="text-xs font-medium text-slate-600">{t("settings.fundApi.apiKey")}</div>
                 <input value={form.apiKey ?? ""} onChange={e => setForm(f => ({ ...f, apiKey: e.target.value }))}
                   className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
               </div>
               <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
                 <button onClick={() => { setEditingId(null); setForm(makeForm()); }}
-                  className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50">取消</button>
+                  className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50">{t("common.cancel")}</button>
                 <button onClick={save} disabled={saving}
-                  className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:opacity-50">{isCreating ? "创建" : "保存"}</button>
+                  className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:opacity-50">{isCreating ? t("settings.fundApi.create") : t("common.save")}</button>
               </div>
             </div>
           </div>

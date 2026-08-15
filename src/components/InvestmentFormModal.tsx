@@ -7,11 +7,12 @@ import { NestedAddModal } from "./EntityCreateForm";
 import { HoldingPicker } from "./HoldingPicker";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
+import { useI18n } from "@/lib/i18n";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
-import { kindLabel } from "@/lib/account-kinds";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
+import { getColorSchemeFromCookie, pnlClassFromRedUp } from "@/lib/client/colors";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { findLinkedEntries, type RefundLinkableEntry } from "@/lib/fund/refund-link";
@@ -19,9 +20,6 @@ import { formatFundUnitsValue, normalizeFundUnitsDecimals, roundFundUnits } from
 import {
   type FundSubtype,
   type ProductType,
-  PRODUCT_LABELS,
-  SUBTYPE_LABELS,
-  DEPOSIT_LABELS,
   PRODUCT_SUBTYPES,
   parseNumber,
   addDays,
@@ -34,16 +32,12 @@ import {
   showFeeFor,
 } from "@/lib/investment-config";
 
+const KNOWN_SUBTYPES = new Set<FundSubtype>(["buy", "redeem", "dividend_cash", "dividend_reinvest", "buy_failed"]);
+
 function pnlCls(n: number | null | undefined): string {
   if (n == null) return "text-slate-600";
-  const isRedUp = (() => {
-    if (typeof document === "undefined") return true;
-    const match = document.cookie.match(/colorScheme=([^;]+)/);
-    return (match?.[1] ?? "red_up_green_down") === "red_up_green_down";
-  })();
-  if (n > 0) return isRedUp ? "text-red-600" : "text-emerald-700";
-  if (n < 0) return isRedUp ? "text-emerald-700" : "text-red-600";
-  return "text-slate-600";
+  const scheme = getColorSchemeFromCookie(typeof document === "undefined" ? null : document.cookie);
+  return pnlClassFromRedUp(n, scheme === "red_up_green_down");
 }
 
 const p = parseNumber;
@@ -63,7 +57,7 @@ function normalizeYmd(value: string | Date | null | undefined): string {
   return String(value).trim().slice(0, 10);
 }
 
-// 编辑模式的入口数据。
+// Entry data for edit mode.
 export type InvestmentEntry = {
   id: string;
   transactionId: string;
@@ -100,7 +94,7 @@ export type InvestmentEntry = {
   feeRate?: string | number | null;
 };
 
-// 新增模式的默认值。
+// Default values for create mode.
 export type InvestmentDefaults = {
   fundCode?: string;
   fundName?: string;
@@ -222,6 +216,7 @@ export function InvestmentFormModal({
   listenCreateEvents?: boolean;
   fundUnitsDecimals?: number | null;
 }) {
+  const { t, language } = useI18n();
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const fundUnitsDecimals = normalizeFundUnitsDecimals(fundUnitsDecimalsProp, 3);
   const formatUnits = (value: number) => formatFundUnitsValue(value, fundUnitsDecimals);
@@ -233,12 +228,12 @@ export function InvestmentFormModal({
         ? entry.fundProductType as ProductType
         : "fund"));
 
-  // 编辑旧记录时，把历史存储形态映射成当前表单展示类型。
+  // When editing legacy records, map the stored form to the current display subtype.
   const initDisplaySubtype: FundSubtype = mode === "edit" && entry?.fundSubtype === "buy_failed" && entry?.source === "regular_invest_refund"
     ? "buy"
     : mode === "edit" && entry?.fundSubtype === "buy" && entry?.source === "dividend"
     ? "dividend_reinvest"
-    : mode === "edit" && entry?.fundSubtype && SUBTYPE_LABELS[entry.fundSubtype as FundSubtype]
+    : mode === "edit" && entry?.fundSubtype && KNOWN_SUBTYPES.has(entry.fundSubtype as FundSubtype)
     ? entry.fundSubtype as FundSubtype
     : (mode === "edit" && entry && entry.amount < 0 ? "buy" : "redeem");
   const initSubtype: FundSubtype = initDisplaySubtype;
@@ -253,7 +248,7 @@ export function InvestmentFormModal({
   const initFee = mode === "edit" && fixedProductType === "metal" && entry?.metalFee != null
     ? String(entry.metalFee)
     : mode === "edit" && entry?.fundFee != null ? String(entry.fundFee) : "";
-  // 买入类：现金账户 -> 基金账户；赎回：基金账户 -> 现金账户；买入退回统一回到买入编辑。
+  // Buy: cash account -> fund account; redeem: fund account -> cash account; buy refunds return to buy edit.
   const isRedeemEntry = isRedeemLike(initSubtype);
   const initCashAccountId = mode === "edit"
     ? (isRedeemEntry ? (entry?.toAccountId ?? "") : (entry?.accountId ?? ""))
@@ -539,16 +534,16 @@ export function InvestmentFormModal({
   const cashCycleAction = localCashSSOptions?.some((option) => option.isHeader)
     ? {
         onClick: cycleCashOwnerFilter,
-        title: `所有人：${cashOwnerFilterLabel}`,
-        ariaLabel: `切换所有人，当前 ${cashOwnerFilterLabel}`,
+        title: t("investForm.ownerFilter.title", { label: cashOwnerFilterLabel }),
+        ariaLabel: t("investForm.ownerFilter.ariaLabel", { label: cashOwnerFilterLabel }),
         icon: <Repeat className="h-3.5 w-3.5" />,
       }
     : undefined;
   const investmentCycleAction = productInvestmentSSOptions.some((option) => option.isHeader)
     ? {
         onClick: cycleInvestmentOwnerFilter,
-        title: `所有人：${investmentOwnerFilterLabel}`,
-        ariaLabel: `切换所有人，当前 ${investmentOwnerFilterLabel}`,
+        title: t("investForm.ownerFilter.title", { label: investmentOwnerFilterLabel }),
+        ariaLabel: t("investForm.ownerFilter.ariaLabel", { label: investmentOwnerFilterLabel }),
         icon: <Repeat className="h-3.5 w-3.5" />,
       }
     : undefined;
@@ -611,7 +606,7 @@ export function InvestmentFormModal({
     setCashAccountId(id);
   }
 
-  function renderCashAccountSelect(placeholder = "请选择资金账户") {
+  function renderCashAccountSelect(placeholder = t("investForm.selectCashAccount")) {
     return (
       <SmartSelect
         mode="single"
@@ -620,7 +615,7 @@ export function InvestmentFormModal({
         options={visibleCashAccountOptions}
         placeholder={placeholder}
         onCreateClick={() => setNestedEntityType("cash-account")}
-        createLabel="新增账户"
+        createLabel={t("settings.accounts.add")}
         cycleAction={cashCycleAction}
         behavior={{
           hierarchy: "auto",
@@ -631,7 +626,7 @@ export function InvestmentFormModal({
     );
   }
 
-  function renderInvestmentAccountSelect(placeholder = "请选择账户") {
+  function renderInvestmentAccountSelect(placeholder = t("investForm.selectAccount")) {
     return (
       <SmartSelect
         mode="single"
@@ -643,7 +638,7 @@ export function InvestmentFormModal({
         options={visibleInvestmentAccountOptions}
         placeholder={placeholder}
         onCreateClick={() => setNestedEntityType("invest-account")}
-        createLabel="新增账户"
+        createLabel={t("settings.accounts.add")}
         cycleAction={investmentCycleAction}
         behavior={{
           hierarchy: "auto",
@@ -658,24 +653,24 @@ export function InvestmentFormModal({
     return (
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="space-y-1">
-          <div className="text-xs font-medium text-slate-600">贵金属品种</div>
+          <div className="text-xs font-medium text-slate-600">{t("investForm.metalType")}</div>
           <SmartSelect
             mode="single"
             value={metalTypeId}
             onChange={applyMetalType}
             options={metalTypeOptions}
-            placeholder="选择品种"
+            placeholder={t("investForm.selectMetalType")}
             searchable
           />
         </div>
         <div className="space-y-1">
-          <div className="text-xs font-medium text-slate-600">单位</div>
+          <div className="text-xs font-medium text-slate-600">{t("investForm.unit")}</div>
           <SmartSelect
             mode="single"
             value={metalUnitId}
             onChange={setMetalUnitId}
             options={metalUnitOptions}
-            placeholder="选择单位"
+            placeholder={t("investForm.selectUnit")}
             searchable
           />
         </div>
@@ -688,7 +683,7 @@ export function InvestmentFormModal({
     const nextOption: SmartSelectOption = {
       id,
       label: name,
-      subLabel: kindLabel(kind),
+      subLabel: t(`account.kind.${kind}`),
     };
     if (nestedEntityType === "cash-account") {
       setLocalCashAccountList((prev) => [...prev, { id, label: name }]);
@@ -807,7 +802,7 @@ export function InvestmentFormModal({
   }, [open, toAccountId, subtype]);
 
 
-  // AI 面板触发新增记账时，自动带入识别到的基金信息。
+  // When the AI panel triggers a new entry, auto-fill the recognized fund info.
   useEffect(() => {
     if (mode !== "create") return;
 
@@ -833,7 +828,7 @@ export function InvestmentFormModal({
 
       requestIdRef.current = detail.requestId;
 
-      // 从分类或交易对方中提取 6 位基金代码。
+      // Extract a 6-digit fund code from the category or counterparty.
       const catCode = (detail.item.category ?? "").match(/\b(\d{6})\b/)?.[1];
       const cptyCode = (detail.item.counterparty ?? "").match(/\b(\d{6})\b/)?.[1];
       const fundCodeFromAi = catCode || cptyCode || "";
@@ -1033,7 +1028,7 @@ export function InvestmentFormModal({
         const st = detail.fundSubtype === "buy_failed" && detail.source === "regular_invest_refund"
           ? "buy"
           : detail.fundSubtype as FundSubtype;
-        if (SUBTYPE_LABELS[st as FundSubtype]) setSubtype(st as FundSubtype);
+        if (KNOWN_SUBTYPES.has(st as FundSubtype)) setSubtype(st as FundSubtype);
       }
       const linkedRefundAmount = linkedRefund ? Math.abs(Number(linkedRefund.amount) || 0) : 0;
       const detailAmount = Math.max(0, Math.abs(Number(detail.amount) || 0));
@@ -1111,7 +1106,7 @@ export function InvestmentFormModal({
     window.dispatchEvent(new CustomEvent("mmh:create-transaction:success", { detail: { requestId } }));
   }
 
-  // 赎回时按到账日期口径回放赎回日可用份额；编辑当前赎回时排除自身，避免被自身扣减。
+  // For redeems, replay units available as of the arrival-date basis; exclude the current redeem entry in edit mode so it is not deducted by itself.
   const holdingsAsOfDate = useMemo(() => {
     if (!allEntries || !isRedeemLike(subtype) || !applyDate) return null;
     const investmentAccountId = (toAccountId || defaultAccountId || "").trim();
@@ -1206,7 +1201,7 @@ export function InvestmentFormModal({
   const effectiveHoldings = useMemo(() => {
     if (!holdings) return undefined;
     if (!redeemAvailableUnitsByFund) return holdings;
-    // 赎回模式优先用赎回日可用份额；日期回放异常但当前仍持仓时，保留当前持仓份额供手动修正。
+    // Redeem mode prefers units available on the redeem date; when replay is abnormal but the fund is still held, keep current holdings for manual correction.
     return holdings.map(h => ({
       ...h,
       units: (redeemAvailableUnitsByFund.get(h.fundCode) ?? 0) > 0.0001
@@ -1241,16 +1236,16 @@ export function InvestmentFormModal({
       .map(({ code, availableUnits, currentUnits }) => {
         const displayAvailable = Math.max(0, availableUnits);
         const currentText = currentUnits > displayAvailable + 0.0001
-          ? ` · 当前 ${formatFundUnitsValue(currentUnits, fundUnitsDecimals)} 份`
+          ? t("investForm.redeemOption.currentUnits", { units: formatFundUnitsValue(currentUnits, fundUnitsDecimals) })
           : "";
         return {
           id: code,
           label: names.get(code)?.trim() || code,
-          subLabel: `${code} · 日期剩余 ${formatFundUnitsValue(displayAvailable, fundUnitsDecimals)} 份${currentText}`,
+          subLabel: `${code} · ${t("investForm.redeemOption.dateRemaining", { units: formatFundUnitsValue(displayAvailable, fundUnitsDecimals) })}${currentText}`,
         };
       })
-      .sort((left, right) => left.label.localeCompare(right.label, "zh-CN"));
-  }, [fundCode, fundName, fundUnitsDecimals, holdingUnitsByFund, holdings, isFundRedeemAsOfMode, redeemAvailableUnitsByFund]);
+      .sort((left, right) => left.label.localeCompare(right.label, language));
+  }, [fundCode, fundName, fundUnitsDecimals, holdingUnitsByFund, holdings, isFundRedeemAsOfMode, redeemAvailableUnitsByFund, t]);
 
   function selectRedeemFund(code: string) {
     const nextCode = code.trim();
@@ -1280,7 +1275,7 @@ export function InvestmentFormModal({
   const allSubtypes = subtypeGroups.flat();
   function selectSubtype(nextSubtype: FundSubtype) {
     if (isRedeemLike(nextSubtype) && !isRedeemLike(subtype)) {
-      // 切到赎回时清空买入金额和费用，并优先带入当前持仓份额。
+      // Switching to redeem clears buy amount/fee and prefers current holding units.
       setAmount("");
       setFee("");
       setFeeEdited(false);
@@ -1296,7 +1291,7 @@ export function InvestmentFormModal({
       else setUnits("");
     }
     if (isBuyLike(nextSubtype) && !isBuyLike(subtype)) {
-      // 切回买入时清空赎回金额、到账金额和相关自动计算状态。
+      // Switching back to buy clears redeem amount, arrival amount, and related auto-calc state.
       setUnits("");
       unitsEditedRef.current = false;
       amountEditedRef.current = false;
@@ -1336,7 +1331,7 @@ export function InvestmentFormModal({
     }
   }, [productType]);
 
-  // 现金红利模式打开后聚焦到金额输入。
+  // Focus the amount input when the cash-dividend mode opens.
   useEffect(() => {
     if (isDividend(subtype) && open) {
       setTimeout(() => dividendAmountRef.current?.focus(), 100);
@@ -1352,7 +1347,7 @@ export function InvestmentFormModal({
     return /^\d{6}$/.test(raw) ? raw : "";
   }, [fundCode]);
 
-  // 新增模式打开后，按基金账户和基金代码补全资金账户、费率和确认天数。
+  // After create mode opens, fill cash account, fee rate, and confirm days from the fund account/code.
   useEffect(() => {
     if (mode !== "create" || !open || !toAccountId) return;
     const controller = new AbortController();
@@ -1395,7 +1390,7 @@ export function InvestmentFormModal({
     return () => controller.abort();
   }, [mode, open, toAccountId, fundCodeKey, cashAccounts, subtype, confirmDate]);
 
-  // 编辑模式下，用户改基金账户/代码/确认日期后也要按对应日期重新取费率并联动份额。
+  // In edit mode, re-fetch the fee rate for the new date and relink units after the fund account/code/confirm date changes.
   useEffect(() => {
     if (!open || !toAccountId || !fundCodeKey) return;
     if (!showFeeFor(subtype, productType) || feeRateEdited) return;
@@ -1647,14 +1642,14 @@ export function InvestmentFormModal({
     }
   }
 
-  // 申请日期变化时，联动确认日期和到账日期。
-  // 到账日期只反向更新到账天数，不反向覆盖确认日期。
+  // When the apply date changes, update the confirm and arrival dates.
+  // The arrival date only feeds arrival days back; it never overrides the confirm date.
   useEffect(() => {
     if (mode === "edit" && !editAutoNavEnabledRef.current) return;
     if ((isBuyLike(subtype) || isRedeemLike(subtype)) && applyDate && confirmDays >= 0) {
       const nextConfirmDate = confirmDays > 0 ? addDays(applyDate, confirmDays) : applyDate;
       setConfirmDate(nextConfirmDate);
-      // 到账天数已知且未手动改过到账日时，自动推导到账日期。
+      // Derive the arrival date automatically when arrival days are known and the user has not edited it.
       if (mode === "create" && isRedeemLike(subtype) && !arrivalDateEditedRef.current) {
         setArrivalDate(applyDate);
       } else if (arrivalDays > 0 && !arrivalDateEditedRef.current) {
@@ -1663,19 +1658,19 @@ export function InvestmentFormModal({
     }
   }, [applyDate, confirmDays, subtype, open, mode]);
 
-  // 手动修改到账日期时，反算并保存 arrivalDays。
+  // When the user edits the arrival date, back-calculate and persist arrivalDays.
   const arrivalDateEditedRef = useRef(false);
   function onArrivalDateChange(val: string) {
     setArrivalDate(val);
     arrivalDateEditedRef.current = true;
-    // arrivalDate - confirmDate 得到到账天数。
+    // arrivalDate - confirmDate gives the arrival days.
     if (val && confirmDate) {
       const d1 = new Date(val + "T00:00:00Z");
       const d2 = new Date(confirmDate + "T00:00:00Z");
       const diff = Math.round((d1.getTime() - d2.getTime()) / 86400000);
       if (diff >= 0) {
         setArrivalDays(diff);
-        // 只持久化常见短周期到账天数，避免偶发长间隔污染默认值。
+        // Persist only common short arrival-day spans so occasional long gaps do not pollute defaults.
         if (toAccountId && fundCode.trim() && diff <= 3) {
           fetch("/api/v1/fund/confirm-days", {
             method: "POST",
@@ -1687,7 +1682,7 @@ export function InvestmentFormModal({
     }
   }
 
-  // 基金赎回按赎回日限定基金和份额；编辑打开时保留已保存份额，避免无意改成全额赎回。
+  // Fund redeem restricts fund/units by redeem date; edit mode keeps saved units to avoid accidental full redemption.
   useEffect(() => {
     if (isFundRedeemAsOfMode) {
       if (!redeemAvailableUnitsByFund || !fundCode) return;
@@ -1716,7 +1711,7 @@ export function InvestmentFormModal({
     if (!confirmDate || !code || !showUnitsFor(subtype, productType)) return;
     if (productType === "metal") return;
     if (mode === "edit" && !editAutoNavEnabledRef.current) return;
-    // 防抖获取净值，避免日期和代码联动时连续请求。
+    // Debounce NAV fetching to avoid consecutive requests when date/code link.
     if (navDebounce.current) clearTimeout(navDebounce.current);
     navDebounce.current = setTimeout(() => {
       const fetchKey = `${toAccountId}:${code}:${confirmDate}`;
@@ -1778,7 +1773,7 @@ export function InvestmentFormModal({
       setConfirmDays(typeof defaults?.confirmDays === "number" ? defaults.confirmDays : Number(defaults?.confirmDays) || 0);
       setFeeRateEdited(false);
     }
-    // 重置日期、金额、份额、净值、手续费和备注。
+    // Reset date, amount, units, NAV, fee, and memo.
     setApplyDate(today);
     setConfirmDate(confirmDays > 0 ? addDays(today, confirmDays) : today);
     cashAccountTouchedRef.current = false;
@@ -1889,10 +1884,10 @@ export function InvestmentFormModal({
           }
         }
       } else {
-        window.alert(data.error ?? `净值获取失败 code=${fundCode},date=${fetchDate})`);
+        window.alert(data.error ?? t("investForm.alert.navFetchFailed", { code: fundCode, date: fetchDate }));
       }
     } catch (err) {
-      window.alert(err instanceof Error ? err.message : "净值获取异常");
+      window.alert(err instanceof Error ? err.message : t("investForm.alert.navFetchError"));
     } finally {
       setNavLoading(false);
     }
@@ -1902,14 +1897,14 @@ export function InvestmentFormModal({
     e.preventDefault();
     if (submitting) return;
     const finalAmount = p(amount);
-    // 分红再投资不要求用户输入金额，金额可由份额和净值推导。
+    // Dividend reinvest does not require an amount; it can be derived from units and NAV.
     if (isDividend(subtype) && subtype !== "dividend_cash") {
-      // 只校验份额，不拦截空金额。
+      // Only validate units; do not block an empty amount.
     } else if (!amount.trim() || finalAmount < 0) {
-      window.alert("请输入正确的金额");
+      window.alert(t("investForm.alert.invalidAmount"));
       return;
     }
-    if (!isDividend(subtype) && confirmDate && confirmDate < applyDate) { window.alert("确认日期不能早于申请日期"); return; }
+    if (!isDividend(subtype) && confirmDate && confirmDate < applyDate) { window.alert(t("investForm.alert.confirmDateBeforeApply")); return; }
 
     const userClearedUnits =
       mode === "edit" &&
@@ -1931,11 +1926,11 @@ export function InvestmentFormModal({
     const currentMetalType = productType === "metal" ? selectedMetalType() : null;
     const currentMetalUnit = productType === "metal" ? selectedMetalUnit() : null;
     if (productType === "metal" && !currentMetalType) {
-      window.alert("请选择贵金属品种");
+      window.alert(t("investForm.alert.selectMetalType"));
       return;
     }
     if (productType === "metal" && !currentMetalUnit) {
-      window.alert("请选择贵金属单位");
+      window.alert(t("investForm.alert.selectMetalUnit"));
       return;
     }
     const finalFundCode = productType === "metal" ? "" : fundCode.trim();
@@ -1946,25 +1941,25 @@ export function InvestmentFormModal({
       const currentUnits = holdingUnitsByFund.get(finalFundCode) ?? 0;
       const redeemLimitUnits = availableUnits > 0.0001 ? availableUnits : currentUnits;
       if (!finalFundCode || redeemLimitUnits <= 0.0001) {
-        window.alert("请选择赎回日期或当前仍有持仓的基金");
+        window.alert(t("investForm.alert.selectRedeemFund"));
         return;
       }
       if (p(units) <= 0) {
-        window.alert("赎回份额必须大于 0");
+        window.alert(t("investForm.alert.redeemUnitsPositive"));
         return;
       }
       if (p(units) > redeemLimitUnits + 0.0001) {
-        window.alert(`赎回份额不能超过该日期/当前可用份额（${formatUnits(redeemLimitUnits)}）`);
+        window.alert(t("investForm.alert.redeemUnitsExceed", { units: formatUnits(redeemLimitUnits) }));
         return;
       }
     }
 
-    // 分红再投资：金额 = 份额 * 净值。
+    // Dividend reinvest: amount = units * NAV.
     const effectiveAmount = subtype === "dividend_reinvest" && !(finalAmount > 0) && finalUnits > 0 && p(nav) > 0
       ? finalUnits * p(nav)
       : (subtype === "dividend_reinvest" && !(finalAmount > 0) ? 0 : finalAmount);
 
-    // 只有手动修改过费率时，才把该确认日期的新费率写入费率库。
+    // Write the new rate for this confirm date only when the user edited the rate manually.
     if (mode === "create" && feeRateEdited && !isDividend(subtype) && (productType === "fund" || productType === "money") && fundCode.trim() && showFeeFor(subtype, productType)) {
       fetch("/api/v1/fund/fee-rate", {
         method: "POST",
@@ -1988,7 +1983,7 @@ export function InvestmentFormModal({
     }
 
     const formData = new FormData();
-    // 现金红利使用到账日期作为记账日期；买入退回由买入表单生成一条独立退回流水。
+    // Cash dividend uses the arrival date as the record date; buy refunds create a separate refund entry from the buy form.
     const effectiveDate = isDividend(subtype) ? (arrivalDate || applyDate) : applyDate;
     const submitSubtype: FundSubtype = subtype;
     const submitEntry = mode === "edit" ? (eventEditEntry ?? entry ?? null) : null;
@@ -2099,7 +2094,7 @@ export function InvestmentFormModal({
       }
       if (keepOpen) {
         if (mode === "create") {
-          // 保存并继续时按上次保存间隔推导下一笔申请日期。
+          // When saving and continuing, derive the next apply date from the previous save interval.
           const currentDate = applyDate;
           const prev = prevSavedDateRef.current;
           const intervalRaw = prev
@@ -2165,7 +2160,7 @@ export function InvestmentFormModal({
           dispatchFinanceDataChanged({ reason: "investment-save" });
         });
       }
-    } catch (err) { window.alert(err instanceof Error ? err.message : (mode === "edit" ? "保存失败" : "记账失败")); }
+    } catch (err) { window.alert(err instanceof Error ? err.message : (mode === "edit" ? t("investForm.alert.saveFailed") : t("txForm.alert.saveFailed"))); }
     finally { setSubmitting(false); }
   }
 
@@ -2175,10 +2170,10 @@ export function InvestmentFormModal({
     try {
       const data = await deleteEntriesWithLinkedPrompt({
         entryIds: [entry.id],
-        confirmMessage: "确认删除这条基金记录吗？",
+        confirmMessage: t("investForm.deleteConfirm"),
       });
       if (!data.ok) {
-        if (data.error !== "已取消删除") window.alert(data.error ?? "删除失败");
+        if (data.error !== "已取消删除") window.alert(data.error ?? t("investForm.alert.deleteFailed"));
         return;
       }
       requestAnimationFrame(() => {
@@ -2186,7 +2181,7 @@ export function InvestmentFormModal({
         dispatchFinanceDataChanged({ reason: "investment-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
       });
     } catch {
-      window.alert("删除失败");
+      window.alert(t("investForm.alert.deleteFailed"));
     } finally {
       setDeleting(false);
     }
@@ -2194,22 +2189,22 @@ export function InvestmentFormModal({
 
   const showCode = productType === "fund" || productType === "money" || productType === "metal";
   const showFee = showFeeFor(subtype, productType);
-  const productShortLabel = productType === "metal" ? "贵金属" : "基金";
-  const productAccountLabel = `${productShortLabel}账户`;
-  const productCodeLabel = `${productShortLabel}代码`;
-  const productNameLabel = `${productShortLabel}名称`;
-  const productCodePlaceholder = productType === "metal" ? "代码/品种" : "6位代码";
+  const productShortLabel = productType === "metal" ? t("investment.product.metal") : t("txForm.fund");
+  const productAccountLabel = t("investForm.productAccount", { product: productShortLabel });
+  const productCodeLabel = t("investForm.productCode", { product: productShortLabel });
+  const productNameLabel = t("investForm.productName", { product: productShortLabel });
+  const productCodePlaceholder = productType === "metal" ? t("investForm.codePlaceholderMetal") : t("investForm.codePlaceholderFund");
   const productNameReadOnly = productType !== "metal";
 
   const title = mode === "edit"
-    ? (`编辑${productShortLabel}记录`)
-    : "投资记账";
+    ? t("investForm.editTitle", { product: productShortLabel })
+    : t("investForm.createTitle");
   useCloseOnNavigation(open, () => {
     setOpen(false);
     if (mode === "create") resetForCreate();
   });
 
-  // 编辑模式显示图标按钮，新增模式显示“记账”按钮。
+  // Edit mode shows icon buttons; create mode shows the record button.
   const triggerButton = mode === "edit" ? (
     entry ? (
       <div className="flex h-7 shrink-0 items-center gap-1">
@@ -2226,7 +2221,7 @@ export function InvestmentFormModal({
   ) : (
     <button type="button" onClick={() => { resetForCreate(); setOpen(true); }}
       className="primary-button h-8 gap-1 px-3 shadow-sm">
-      <Plus className="w-4 h-4" />记账
+      <Plus className="w-4 h-4" />{t("txForm.record")}
     </button>
   );
 
@@ -2240,15 +2235,15 @@ export function InvestmentFormModal({
               <div className="modal-header shrink-0">
                 <div className="text-sm font-semibold text-slate-800">
                   {title}
-                  <span className="ml-2 text-xs font-normal text-slate-500">{PRODUCT_LABELS[productType]}</span>
+                  <span className="ml-2 text-xs font-normal text-slate-500">{t(`investment.product.${productType}`)}</span>
                 </div>
                 <button type="button" onClick={() => { setOpen(false); if (mode === "create") resetForCreate(); }}
-                    className="secondary-button h-8 px-2">关闭</button>
+                    className="secondary-button h-8 px-2">{t("investForm.close")}</button>
               </div>
 
               <form className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" onSubmit={onSubmit}>
               <div className="space-y-1">
-                <div className="form-label">交易类型</div>
+                <div className="form-label">{t("investForm.transactionType")}</div>
                 <div className="space-y-1.5">
                   {PRODUCT_SUBTYPES[productType].map((group, gi) => (
                     <div key={gi} className="flex gap-1.5">
@@ -2257,7 +2252,9 @@ export function InvestmentFormModal({
                         return (
                           <button key={s} type="button" onClick={() => selectSubtypeOption(s)}
                             className={`segment-button h-8 flex-1 text-xs ${isActive ? "segment-button-active font-medium" : ""}`}>
-                            {productType === "deposit" ? (DEPOSIT_LABELS[s as FundSubtype] ?? SUBTYPE_LABELS[s as FundSubtype]) : SUBTYPE_LABELS[s as FundSubtype]}
+                            {productType === "deposit"
+                              ? (s === "buy" ? t("investForm.subtype.depositIn") : t("investForm.subtype.depositOut"))
+                              : t(`fund.subtype.${s}`)}
                           </button>
                         );
                       })}
@@ -2272,13 +2269,13 @@ export function InvestmentFormModal({
                   {subtype === "dividend_reinvest" && investmentAccounts && investmentAccounts.length > 0 && (
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">{productAccountLabel}</div>
-                      {renderInvestmentAccountSelect(`选择${productAccountLabel}`)}
+                      {renderInvestmentAccountSelect(t("investForm.selectProductAccount", { account: productAccountLabel }))}
                     </div>
                   )}
 
                   {subtype === "dividend_reinvest" && (
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">到账日期</div>
+                      <div className="text-xs font-medium text-slate-600">{t("investForm.arrivalDate")}</div>
                       <DateStepper value={arrivalDate} onChange={onArrivalDateChange} />
                     </div>
                   )}
@@ -2286,20 +2283,20 @@ export function InvestmentFormModal({
                   {subtype === "dividend_cash" && (
                     <>
                       <div className="space-y-1">
-                          <div className="text-xs font-medium text-slate-600">到账日期</div>
+                          <div className="text-xs font-medium text-slate-600">{t("investForm.arrivalDate")}</div>
                         <DateStepper value={arrivalDate} onChange={onArrivalDateChange} />
                       </div>
                       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         {investmentAccounts && investmentAccounts.length > 0 && (
                           <div className="space-y-1">
                             <div className="text-xs font-medium text-slate-600">{productAccountLabel}</div>
-                            {renderInvestmentAccountSelect(`选择${productAccountLabel}`)}
+                            {renderInvestmentAccountSelect(t("investForm.selectProductAccount", { account: productAccountLabel }))}
                           </div>
                         )}
                         {cashAccounts && cashAccounts.length > 0 && (
                           <div className="space-y-1">
-                            <div className="text-xs font-medium text-slate-600">到账资金账户</div>
-                            {renderCashAccountSelect("不关联")}
+                            <div className="text-xs font-medium text-slate-600">{t("investForm.arrivalCashAccount")}</div>
+                            {renderCashAccountSelect(t("investForm.noLink"))}
                           </div>
                         )}
                       </div>
@@ -2332,7 +2329,7 @@ export function InvestmentFormModal({
                         <div className="text-xs font-medium text-slate-600">
                           {productNameLabel}
                           {nameLoading ? (
-                            <span className="ml-1 font-normal text-slate-400">获取中...</span>
+                            <span className="ml-1 font-normal text-slate-400">{t("investForm.fetching")}</span>
                           ) : null}
                         </div>
                         <input
@@ -2347,7 +2344,7 @@ export function InvestmentFormModal({
 
                   {subtype === "dividend_cash" && (
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">现金红利金额</div>
+                      <div className="text-xs font-medium text-slate-600">{t("investForm.dividendCashAmount")}</div>
                       <input ref={dividendAmountRef} inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)}
                         className="form-input" />
                     </div>
@@ -2355,7 +2352,7 @@ export function InvestmentFormModal({
 
                   {subtype === "dividend_reinvest" && (
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">分红再投资份额</div>
+                      <div className="text-xs font-medium text-slate-600">{t("investForm.dividendReinvestUnits")}</div>
                       <CalcInput
                         value={units}
                         onChange={(v) => {
@@ -2363,18 +2360,18 @@ export function InvestmentFormModal({
                           setUnits(v);
                         }}
                         placeholder="0.00"
-                        label="份额"
+                        label={t("investForm.units")}
                         precision={fundUnitsDecimals}
                       />
                     </div>
                   )}
 
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">备注</div>
+                    <div className="text-xs font-medium text-slate-600">{t("detail.column.remark")}</div>
                     <input
                       value={memo}
                       onChange={(e) => setMemo(e.target.value)}
-                      placeholder="可选"
+                      placeholder={t("stockFee.optional")}
                       className="form-input"
                     />
                   </div>
@@ -2390,7 +2387,7 @@ export function InvestmentFormModal({
                         }}
                         className="secondary-button h-9 px-4 text-blue-700 disabled:opacity-50"
                       >
-                        {submitting ? "保存中..." : "保存并继续"}
+                        {submitting ? t("stockFee.saving") : t("investForm.saveAndContinue")}
                       </button>
                     )}
                     <button
@@ -2398,7 +2395,7 @@ export function InvestmentFormModal({
                       disabled={submitting}
                       className="primary-button h-9 disabled:opacity-50"
                     >
-                      {submitting ? "保存中..." : "保存"}
+                      {submitting ? t("stockFee.saving") : t("common.save")}
                     </button>
                   </div>
                 </>
@@ -2406,7 +2403,7 @@ export function InvestmentFormModal({
               <>
               <div className="grid grid-cols-[1fr_auto_1fr] gap-2 items-end">
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">申请日期</div>
+                  <div className="text-xs font-medium text-slate-600">{t("investForm.applyDate")}</div>
                   <DateStepper value={applyDate} onChange={changeApplyDate}
                     onBlur={() => {
                       if (confirmDays >= 0 && applyDate) {
@@ -2432,7 +2429,7 @@ export function InvestmentFormModal({
                 )}
                 {showConfirmFor(subtype) && (
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">确认日期</div>
+                    <div className="text-xs font-medium text-slate-600">{t("investForm.confirmDate")}</div>
                     <DateStepper value={confirmDate} onChange={changeConfirmDate} min={applyDate} />
                   </div>
                 )}
@@ -2444,24 +2441,24 @@ export function InvestmentFormModal({
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                       <div className="space-y-1">
                           <div className="text-xs font-medium text-slate-600">{productAccountLabel}</div>
-                          {renderInvestmentAccountSelect(`选择${productAccountLabel}`)}
+                          {renderInvestmentAccountSelect(t("investForm.selectProductAccount", { account: productAccountLabel }))}
                       </div>
                       <div className="space-y-1">
-                        <div className="text-xs font-medium text-slate-600">{"赎回到账账户"}</div>
-                        {renderCashAccountSelect("请选择资金账户")}
+                        <div className="text-xs font-medium text-slate-600">{t("investForm.redeemArrivalAccount")}</div>
+                        {renderCashAccountSelect(t("investForm.selectCashAccount"))}
                       </div>
                     </div>
                   )}
 
                   {productType === "metal" ? renderMetalFields() : isFundRedeemAsOfMode && redeemAvailableUnitsByFund ? (
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">基金</div>
+                      <div className="text-xs font-medium text-slate-600">{t("txForm.fund")}</div>
                       <SmartSelect
                         mode="single"
                         value={fundCode}
                         onChange={selectRedeemFund}
                         options={redeemFundOptions}
-                        placeholder={redeemFundOptions.length > 0 ? "选择持仓基金" : "该日期没有可赎回基金"}
+                        placeholder={redeemFundOptions.length > 0 ? t("investForm.selectHoldingFund") : t("investForm.noRedeemableFund")}
                         behavior={{ search: true, clearable: false, density: "compact" }}
                       />
                     </div>
@@ -2495,7 +2492,7 @@ export function InvestmentFormModal({
                         <div className="text-xs font-medium text-slate-600">
                           {productNameLabel}
                           {nameLoading ? (
-                            <span className="ml-1 font-normal text-slate-400">获取中...</span>
+                            <span className="ml-1 font-normal text-slate-400">{t("investForm.fetching")}</span>
                           ) : null}
                         </div>
                         <input
@@ -2509,15 +2506,15 @@ export function InvestmentFormModal({
                   ) : null}
                   {!showCode && (
                     <div className="space-y-1">
-                        <div className="text-xs font-medium text-slate-600">产品名称</div>
-                      <input placeholder="例如：招行朝朝宝" value={fundName} onChange={(e) => setFundName(e.target.value)}
+                        <div className="text-xs font-medium text-slate-600">{t("investForm.productNameLabel")}</div>
+                      <input placeholder={t("investForm.productNamePlaceholder")} value={fundName} onChange={(e) => setFundName(e.target.value)}
                         className="form-input" />
                     </div>
                   )}
 
                   <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-2">
                       <div className="space-y-1">
-                        <div className="text-xs font-medium text-slate-600">份额</div>
+                        <div className="text-xs font-medium text-slate-600">{t("investForm.units")}</div>
                         <CalcInput
                           value={units}
                           onChange={(v) => {
@@ -2527,7 +2524,7 @@ export function InvestmentFormModal({
                             recalculateRedeemAmountsFromTerms({ unitsRaw: v });
                           }}
                           placeholder="0.00"
-                          label="份额"
+                          label={t("investForm.units")}
                           precision={fundUnitsDecimals}
                         />
                       </div>
@@ -2536,18 +2533,18 @@ export function InvestmentFormModal({
                         onClick={fetchNav}
                         disabled={navLoading || !fundCode || productType === "metal"}
                         className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-amber-200 bg-amber-50 text-amber-700 transition-colors hover:border-amber-300 hover:bg-amber-100 disabled:opacity-50"
-                        title={productType === "metal" ? "贵金属单价请手动填写" : "获取净值"}
+                        title={productType === "metal" ? t("investForm.metalPriceManualTitle") : t("investForm.fetchNav")}
                       >
                         <DatabaseZap className={`h-4 w-4 ${navLoading ? "animate-pulse" : ""}`} />
                       </button>
                       <div className="space-y-1">
                         <div className="text-xs font-medium text-slate-600">
-                          {productType === "metal" ? "单价" : "净值"}
+                          {productType === "metal" ? t("investForm.metalPrice") : t("investForm.nav")}
                           {navLoading ? (
-                            <span className="ml-1 font-normal text-slate-400">获取中...</span>
+                            <span className="ml-1 font-normal text-slate-400">{t("investForm.fetching")}</span>
                           ) : null}
                           {navActualDate && !navLoading ? (
-                            <span className="ml-1 font-normal text-amber-600">({navActualDate}{productType === "metal" ? "单价" : "净值"})</span>
+                            <span className="ml-1 font-normal text-amber-600">{t("investForm.navActualDate", { date: navActualDate, label: productType === "metal" ? t("investForm.metalPrice") : t("investForm.nav") })}</span>
                           ) : null}
                         </div>
                         <input
@@ -2569,7 +2566,7 @@ export function InvestmentFormModal({
                       </div>
                     </div>
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">{"赎回金额"}</div>
+                    <div className="text-xs font-medium text-slate-600">{t("investForm.redeemAmount")}</div>
                     <input inputMode="decimal" value={amount} onChange={(e) => {
                         const nextAmount = e.target.value;
                         amountEditedRef.current = true;
@@ -2583,7 +2580,7 @@ export function InvestmentFormModal({
                   {showFee && (
                   <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-2">
                       <div className="space-y-1">
-                        <div className="text-xs font-medium text-slate-600">手续费率(%)</div>
+                        <div className="text-xs font-medium text-slate-600">{t("investForm.feeRatePercent")}</div>
                         <input
                           inputMode="decimal"
                           value={feeRate}
@@ -2599,7 +2596,7 @@ export function InvestmentFormModal({
                         />
                       </div>
                       <div className="space-y-1">
-                        <div className="text-xs font-medium text-slate-600">手续费金额</div>
+                        <div className="text-xs font-medium text-slate-600">{t("investForm.feeAmount")}</div>
                         <input
                           inputMode="decimal"
                           value={fee}
@@ -2619,24 +2616,24 @@ export function InvestmentFormModal({
 
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">到账日期</div>
+                      <div className="text-xs font-medium text-slate-600">{t("investForm.arrivalDate")}</div>
                       <DateStepper value={arrivalDate} onChange={onArrivalDateChange} min={applyDate} />
                     </div>
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">到账金额</div>
-                      <CalcInput value={arrivalAmount} onChange={setArrivalAmount} placeholder="可手动填写" label="到账金额" precision={2} />
+                      <div className="text-xs font-medium text-slate-600">{t("investForm.arrivalAmount")}</div>
+                      <CalcInput value={arrivalAmount} onChange={setArrivalAmount} placeholder={t("investForm.arrivalAmountPlaceholder")} label={t("investForm.arrivalAmount")} precision={2} />
                     </div>
                   </div>
 
                   {mode === "edit" && entry && (
                     <div className="space-y-1 rounded-md border border-emerald-100 bg-emerald-50/40 p-3">
                       <div className="flex items-center justify-between text-xs">
-                        <span className="font-medium text-slate-600">赎回收益</span>
+                        <span className="font-medium text-slate-600">{t("investForm.redeemProfit")}</span>
                         <span className={`tabular-nums font-semibold ${pnlCls(entry.realizedProfit)}`}>
-                          {entry.realizedProfit != null ? entry.realizedProfit.toFixed(2) : "保存后计算"}
+                          {entry.realizedProfit != null ? entry.realizedProfit.toFixed(2) : t("investForm.profitAfterSave")}
                         </span>
                       </div>
-                      <div className="text-[10px] text-slate-400">按到账金额减去被赎回份额对应成本计算，保存后由持仓重算写回。</div>
+                      <div className="text-[10px] text-slate-400">{t("investForm.redeemProfitHint")}</div>
                     </div>
                   )}
                 </>
@@ -2645,23 +2642,23 @@ export function InvestmentFormModal({
               {showAccountSelectorsFor(subtype) && cashAccounts && cashAccounts.length > 0 && investmentAccounts && investmentAccounts.length > 0 ? (
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">资金来源账户</div>
-                    {renderCashAccountSelect("请选择资金账户")}
+                    <div className="text-xs font-medium text-slate-600">{t("investForm.cashSourceAccount")}</div>
+                    {renderCashAccountSelect(t("investForm.selectCashAccount"))}
                   </div>
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">{productAccountLabel}</div>
-                    {renderInvestmentAccountSelect(`选择${productAccountLabel}`)}
+                    {renderInvestmentAccountSelect(t("investForm.selectProductAccount", { account: productAccountLabel }))}
                   </div>
                 </div>
               ) : showAccountSelectorsFor(subtype) && cashAccounts && cashAccounts.length > 0 ? (
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">资金来源账户</div>
-                  {renderCashAccountSelect("请选择资金账户")}
+                  <div className="text-xs font-medium text-slate-600">{t("investForm.cashSourceAccount")}</div>
+                  {renderCashAccountSelect(t("investForm.selectCashAccount"))}
                 </div>
               ) : investmentAccounts && investmentAccounts.length > 0 ? (
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">{productAccountLabel}</div>
-                  {renderInvestmentAccountSelect(`选择${productAccountLabel}`)}
+                  {renderInvestmentAccountSelect(t("investForm.selectProductAccount", { account: productAccountLabel }))}
                 </div>
               ) : null}
 
@@ -2681,7 +2678,7 @@ export function InvestmentFormModal({
                     <div className="text-xs font-medium text-slate-600">
                       {productNameLabel}
                       {nameLoading ? (
-                        <span className="ml-1 font-normal text-slate-400">获取中...</span>
+                        <span className="ml-1 font-normal text-slate-400">{t("investForm.fetching")}</span>
                       ) : null}
                     </div>
                     <input
@@ -2696,8 +2693,8 @@ export function InvestmentFormModal({
 
               {!showCode && (
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">产品名称</div>
-                  <input placeholder="例如：招行朝朝宝" value={fundName} onChange={(e) => setFundName(e.target.value)}
+                  <div className="text-xs font-medium text-slate-600">{t("investForm.productNameLabel")}</div>
+                  <input placeholder={t("investForm.productNamePlaceholder")} value={fundName} onChange={(e) => setFundName(e.target.value)}
                     className="form-input" />
                 </div>
               )}
@@ -2705,12 +2702,12 @@ export function InvestmentFormModal({
               <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-[0.7fr_auto_1fr]">
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">
-                    {productType === "metal" ? "单价" : "净值"}
+                    {productType === "metal" ? t("investForm.metalPrice") : t("investForm.nav")}
                     {navLoading ? (
-                      <span className="ml-1 font-normal text-slate-400">获取中...</span>
+                      <span className="ml-1 font-normal text-slate-400">{t("investForm.fetching")}</span>
                     ) : null}
                     {navActualDate && !navLoading ? (
-                      <span className="ml-1 font-normal text-amber-600">({navActualDate}{productType === "metal" ? "单价" : "净值"})</span>
+                      <span className="ml-1 font-normal text-amber-600">{t("investForm.navActualDate", { date: navActualDate, label: productType === "metal" ? t("investForm.metalPrice") : t("investForm.nav") })}</span>
                     ) : null}
                   </div>
                   <input
@@ -2738,16 +2735,16 @@ export function InvestmentFormModal({
                   onClick={fetchNav}
                   disabled={navLoading || !fundCode || productType === "metal"}
                   className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-amber-200 bg-amber-50 text-amber-700 transition-colors hover:border-amber-300 hover:bg-amber-100 disabled:opacity-50"
-                  title={productType === "metal" ? "贵金属单价请手动填写" : "获取净值"}
+                  title={productType === "metal" ? t("investForm.metalPriceManualTitle") : t("investForm.fetchNav")}
                 >
                   <DatabaseZap className={`h-4 w-4 ${navLoading ? "animate-pulse" : ""}`} />
                 </button>
                 <div className={`grid grid-cols-1 gap-2 ${isBuyLike(subtype) && subtype === "buy" && !isDividend(subtype) && productType !== "metal" ? "sm:grid-cols-[1fr_1fr_1fr]" : ""}`}>
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">
-                      {isBuyLike(subtype) ? "买入金额" : "金额"}
+                      {isBuyLike(subtype) ? t("investForm.buyAmount") : t("txForm.amount")}
                       {subtype === "dividend_reinvest" ? (
-                        <span className="ml-1 font-normal text-slate-400">（留空则=份额×净值）</span>
+                        <span className="ml-1 font-normal text-slate-400">{t("investForm.amountAutoHint")}</span>
                       ) : null}
                     </div>
                     <CalcInput
@@ -2757,21 +2754,21 @@ export function InvestmentFormModal({
                         setAmount(v);
                         calculateUnitsAfterAmountChange(v);
                       }}
-                      label="金额"
-                      placeholder={subtype === "dividend_reinvest" ? "由份额×净值自动计算" : undefined}
+                      label={t("txForm.amount")}
+                      placeholder={subtype === "dividend_reinvest" ? t("investForm.amountAutoPlaceholder") : undefined}
                       precision={2}
                     />
                   </div>
                   {isBuyLike(subtype) && subtype === "buy" && !isDividend(subtype) && productType !== "metal" ? (
                     <div className="space-y-1">
                       <div className="flex min-h-4 items-center justify-between gap-2">
-                        <div className="text-xs font-medium text-slate-600">退回金额</div>
+                        <div className="text-xs font-medium text-slate-600">{t("investForm.refundAmount")}</div>
                         <button
                           type="button"
                           onClick={() => toggleBuyRefund(buyResultStatus !== "refund")}
                           className={`h-4 rounded-full px-1.5 text-[10px] leading-none transition-colors ${buyResultStatus === "refund" ? "bg-amber-600 text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`}
                         >
-                          {buyResultStatus === "refund" ? "开" : "关"}
+                          {buyResultStatus === "refund" ? t("investForm.refundOn") : t("investForm.refundOff")}
                         </button>
                       </div>
                       <CalcInput
@@ -2786,14 +2783,14 @@ export function InvestmentFormModal({
                           calculateUnitsAfterRefundChange(v);
                         }}
                         placeholder="0.00"
-                        label="退回金额"
+                        label={t("investForm.refundAmount")}
                         precision={2}
                       />
                     </div>
                   ) : null}
                   {isBuyLike(subtype) && subtype === "buy" && !isDividend(subtype) && productType !== "metal" ? (
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">确认金额</div>
+                      <div className="text-xs font-medium text-slate-600">{t("investForm.confirmedAmount")}</div>
                       <input
                         value={confirmedBuyAmount > 0 ? confirmedBuyAmount.toFixed(2) : ""}
                         readOnly
@@ -2808,7 +2805,7 @@ export function InvestmentFormModal({
               {showFee && (
                 <div className="grid grid-cols-1 gap-2 items-end sm:grid-cols-2">
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">手续费率(%)</div>
+                    <div className="text-xs font-medium text-slate-600">{t("investForm.feeRatePercent")}</div>
                     <input inputMode="decimal" value={feeRate}
                       onChange={(e) => {
                         const nextRate = e.target.value;
@@ -2820,7 +2817,7 @@ export function InvestmentFormModal({
                       className="form-input" />
                   </div>
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">手续费金额</div>
+                    <div className="text-xs font-medium text-slate-600">{t("investForm.feeAmount")}</div>
                     <input inputMode="decimal" value={fee}
                       onChange={(e) => {
                         suppressFeeAutoCalcRef.current = false;
@@ -2836,23 +2833,23 @@ export function InvestmentFormModal({
 
               <div className="grid grid-cols-1 gap-2 items-end sm:grid-cols-2">
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">到账日期</div>
+                  <div className="text-xs font-medium text-slate-600">{t("investForm.arrivalDate")}</div>
                   <DateStepper value={arrivalDate} onChange={onArrivalDateChange} min={applyDate} />
                 </div>
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">份额</div>
+                  <div className="text-xs font-medium text-slate-600">{t("investForm.units")}</div>
                   <CalcInput value={units}
                     onChange={(v) => { unitsEditedRef.current = true; setUnits(v); }}
                     placeholder={computedUnits || "0.00"}
-                    label="份额" precision={fundUnitsDecimals} />
+                    label={t("investForm.units")} precision={fundUnitsDecimals} />
                 </div>
               </div>
                 </>
               )}
 
               <div className="space-y-1">
-                <div className="text-xs font-medium text-slate-600">备注</div>
-                <input value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="可选" className="form-input" />
+                <div className="text-xs font-medium text-slate-600">{t("detail.column.remark")}</div>
+                <input value={memo} onChange={(e) => setMemo(e.target.value)} placeholder={t("stockFee.optional")} className="form-input" />
               </div>
 
               <div className="sticky bottom-0 z-10 -mx-4 -mb-4 flex justify-end gap-2 border-t border-slate-100 bg-white/95 px-4 py-3 backdrop-blur">
@@ -2866,7 +2863,7 @@ export function InvestmentFormModal({
                     }}
                     className="secondary-button h-9 px-4 text-blue-700 disabled:opacity-50"
                   >
-                    {submitting ? "保存中..." : "保存并继续"}
+                    {submitting ? t("stockFee.saving") : t("investForm.saveAndContinue")}
                   </button>
                 )}
                 <button
@@ -2874,7 +2871,7 @@ export function InvestmentFormModal({
                   disabled={submitting}
                   className="primary-button h-9 disabled:opacity-50"
                 >
-                  {submitting ? "保存中..." : "保存"}
+                  {submitting ? t("stockFee.saving") : t("common.save")}
                 </button>
               </div>
               </>

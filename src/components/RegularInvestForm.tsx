@@ -8,34 +8,54 @@ import { DateStepper } from "./DateStepper";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { NestedAddModal } from "./EntityCreateForm";
-import { kindLabel } from "@/lib/account-kinds";
+import { useI18n } from "@/lib/i18n";
 import { scheduledTaskTypeLabel, type ScheduledTaskType } from "@/lib/scheduled-task";
 import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 
 const INTERVAL_LABELS: Record<string, string> = {
-  day: "每天",
-  week: "每周",
-  month: "每月",
-  year: "每年",
+  day: "regularInvest.interval.day",
+  week: "regularInvest.interval.week",
+  month: "regularInvest.interval.month",
+  year: "regularInvest.interval.year",
 };
 
 const WEEKDAY_OPTIONS = [
-  { value: "1", label: "周一" },
-  { value: "2", label: "周二" },
-  { value: "3", label: "周三" },
-  { value: "4", label: "周四" },
-  { value: "5", label: "周五" },
-  { value: "6", label: "周六" },
-  { value: "0", label: "周日" },
+  { value: "1", labelKey: "regularInvest.weekday.1" },
+  { value: "2", labelKey: "regularInvest.weekday.2" },
+  { value: "3", labelKey: "regularInvest.weekday.3" },
+  { value: "4", labelKey: "regularInvest.weekday.4" },
+  { value: "5", labelKey: "regularInvest.weekday.5" },
+  { value: "6", labelKey: "regularInvest.weekday.6" },
+  { value: "0", labelKey: "regularInvest.weekday.0" },
 ];
 
-const TASK_TYPE_OPTIONS: Array<{ value: ScheduledTaskType; label: string }> = [
-  { value: "fund_regular_invest", label: "基金定投" },
-  { value: "loan_repayment", label: "还贷款" },
-  { value: "transfer", label: "转账" },
-  { value: "insurance_premium", label: "保费缴费" },
+// Loan repayment is a system-level scheduled task: the repayment schedule is
+// derived from the loan and created automatically on loan setup, so it is not
+// offered as a user-manageable plan here.
+const TASK_TYPE_OPTIONS: Array<{ value: ScheduledTaskType; labelKey: string }> = [
+  { value: "fund_regular_invest", labelKey: "detailView.fundRegularInvest" },
+  { value: "transfer", labelKey: "transaction.type.transfer" },
+  { value: "insurance_premium", labelKey: "regularInvest.taskType.insurancePremium" },
 ];
+
+const ACCOUNT_KIND_LABEL_KEYS: Record<string, string> = {
+  cash: "account.kind.cash",
+  bank_debit: "account.kind.bank_debit",
+  bank_credit: "account.kind.bank_credit",
+  ewallet: "account.kind.ewallet",
+  deposit: "account.kind.deposit",
+  investment: "account.kind.investment",
+  loan: "account.kind.loan",
+  insurance: "account.kind.insurance",
+  other: "account.kind.other",
+  bank_savings: "account.kind.bank_savings",
+};
+
+function accountKindLabel(t: (key: string) => string, kind: string) {
+  const labelKey = ACCOUNT_KIND_LABEL_KEYS[kind];
+  return labelKey ? t(labelKey) : kind;
+}
 
 const INTEREST_FREE_LOAN_REPAYMENT_METHOD = "免息分期还本";
 const LOAN_REPAYMENT_METHOD_OPTIONS = ["等额本息", "等额本金", INTEREST_FREE_LOAN_REPAYMENT_METHOD, "自由还款", "先还利息一次性还本"];
@@ -81,22 +101,34 @@ function positiveIntervalValue(value: string) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
 }
 
-function schedulePreview(unit: string, value: string, executionDay: string, locked = false) {
-  if (locked && unit === "year") return "每年一次";
-  const interval = positiveIntervalValue(value);
-  const weekday = WEEKDAY_OPTIONS.find((option) => option.value === executionDay)?.label ?? "";
+type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
 
-  if (unit === "day") return interval === 1 ? "每天执行一次" : `每${interval}天执行一次`;
+function scheduleAnchor(t: TranslateFn, unit: string, executionDay: string, weekdayLabel: string) {
   if (unit === "week") {
-    const anchor = weekday ? weekday : "";
-    return interval === 1 ? `每周${anchor}执行一次` : `每${interval}周${anchor}执行一次`;
+    return weekdayLabel ? t("regularInvest.anchor.weekday", { weekday: weekdayLabel }) : "";
   }
   if (unit === "month") {
-    const anchor = executionDay ? `的${executionDay}号` : "";
-    return interval === 1 ? `每月${anchor}执行一次` : `每${interval}个月${anchor}执行一次`;
+    return executionDay ? t("regularInvest.anchor.monthDay", { day: executionDay }) : "";
   }
-  if (unit === "year") return interval === 1 ? "每年执行一次" : `每${interval}年执行一次`;
-  return "按计划执行";
+  return "";
+}
+
+function schedulePreview(t: TranslateFn, unit: string, value: string, executionDay: string, locked = false) {
+  if (locked && unit === "year") return t("regularInvest.schedule.yearlyOnceLocked");
+  const interval = positiveIntervalValue(value);
+  const weekdayOption = WEEKDAY_OPTIONS.find((option) => option.value === executionDay);
+  const weekdayLabel = weekdayOption ? t(weekdayOption.labelKey) : "";
+  const anchor = scheduleAnchor(t, unit, executionDay, weekdayLabel);
+
+  if (unit === "day") return interval === 1 ? t("regularInvest.schedule.dailyOnce") : t("regularInvest.schedule.dailyN", { interval });
+  if (unit === "week") {
+    return interval === 1 ? t("regularInvest.schedule.weeklyOnce", { anchor }) : t("regularInvest.schedule.weeklyN", { interval, anchor });
+  }
+  if (unit === "month") {
+    return interval === 1 ? t("regularInvest.schedule.monthlyOnce", { anchor }) : t("regularInvest.schedule.monthlyN", { interval, anchor });
+  }
+  if (unit === "year") return interval === 1 ? t("regularInvest.schedule.yearlyOnce") : t("regularInvest.schedule.yearlyN", { interval });
+  return t("regularInvest.schedule.asPlanned");
 }
 
 function normalizeBiweekFormData(intervalUnit: string, intervalValue: string) {
@@ -184,15 +216,15 @@ interface EditData {
 }
 
 /**
- * 统一的定投计划表单组件（新增 + 修改）
+ * Unified recurring-investment plan form component (create + edit).
  *
- * 支持两种模式：
- * - create: 新增定投计划
- * - edit: 修改定投计划（基金代码不可改）
+ * Two modes:
+ * - create: create a new recurring investment plan
+ * - edit: modify an existing plan (fund code is not changeable)
  *
- * 支持两种提交方式：
- * 1. Server Action（主页）— action prop + submitMethod="serverAction"
- * 2. API 方式（定投计划页面）— submitMethod="api"（默认）
+ * Two submit paths:
+ * 1. Server Action (home page) — action prop + submitMethod="serverAction"
+ * 2. API (recurring investment page) — submitMethod="api" (default)
  */
 export function RegularInvestForm({
   accountId,
@@ -276,6 +308,8 @@ export function RegularInvestForm({
   const [localCashSSOptions, setLocalCashSSOptions] = useState(cashAccountSSOptions);
   const [localInvestmentSSOptions, setLocalInvestmentSSOptions] = useState(investmentAccountSSOptions);
   const [localTransferTargetSSOptions, setLocalTransferTargetSSOptions] = useState(transferTargetAccountSSOptions);
+
+  const { t } = useI18n();
 
   const { ownerFilter: cfOwnerFilter, ownerFilterLabel: cfLabel, cycleOwnerFilter: cfCycle, filteredOptions: cashFiltered } = useAccountSSFilter(localCashSSOptions);
   const { ownerFilterLabel: ifLabel, cycleOwnerFilter: ifCycle, filteredOptions: investFiltered } = useAccountSSFilter(localInvestmentSSOptions);
@@ -500,28 +534,36 @@ export function RegularInvestForm({
 
     const finalAmount = parseFloat(formData.amount);
     if (!finalAmount || finalAmount <= 0) {
-      window.alert("请输入正确的金额");
+      window.alert(t("regularInvest.alert.validAmount"));
       return;
     }
 
     if (!formData.accountId) {
-      window.alert(`请选择${formData.taskType === "fund_regular_invest" ? "基金账户" : formData.taskType === "loan_repayment" ? "贷款账户" : formData.taskType === "insurance_premium" ? "保险产品" : "目标账户"}`);
+      const accountLabel =
+        formData.taskType === "fund_regular_invest"
+          ? t("viewImport.fundAccount")
+          : formData.taskType === "loan_repayment"
+            ? t("regularInvest.account.loanAccount")
+            : formData.taskType === "insurance_premium"
+              ? t("settings.insuranceProducts")
+              : t("regularInvest.account.targetAccount");
+      window.alert(t("regularInvest.alert.selectAccount", { label: accountLabel }));
       return;
     }
     if (formData.taskType === "fund_regular_invest" && !formData.fundCode.trim()) {
-      window.alert("请输入基金代码");
+      window.alert(t("regularInvest.alert.fundCodeRequired"));
       return;
     }
     if (formData.taskType === "insurance_premium" && !formData.insuranceProductId) {
-      window.alert("请选择保险产品");
+      window.alert(t("regularInvest.alert.selectInsuranceProduct"));
       return;
     }
     if ((formData.taskType === "transfer" || formData.taskType === "loan_repayment" || formData.taskType === "insurance_premium") && !formData.cashAccountId) {
-      window.alert("请选择资金账户");
+      window.alert(t("regularInvest.alert.selectCashAccount"));
       return;
     }
     if (formData.taskType === "transfer" && formData.accountId === formData.cashAccountId) {
-      window.alert("转出/转入账户不能相同");
+      window.alert(t("regularInvest.alert.sameTransferAccounts"));
       return;
     }
     const isFixedLoanRepayment = formData.taskType === "loan_repayment" && FIXED_LOAN_REPAYMENT_METHODS.has(formData.repaymentMethod);
@@ -530,11 +572,11 @@ export function RegularInvestForm({
     const loanRepaymentIntervalMonths = parseInt(formData.repaymentIntervalMonths || "1", 10);
     if (isFixedLoanRepayment) {
       if (!isInterestFreeLoanRepayment && (loanAnnualRate == null || !Number.isFinite(loanAnnualRate) || loanAnnualRate <= 0)) {
-        window.alert("固定还款方式需要填写年利率");
+        window.alert(t("regularInvest.alert.fixedRepaymentRateRequired"));
         return;
       }
       if (!Number.isFinite(loanRepaymentIntervalMonths) || loanRepaymentIntervalMonths <= 0) {
-        window.alert("请填写正确的还款周期");
+        window.alert(t("regularInvest.alert.invalidRepaymentInterval"));
         return;
       }
     }
@@ -556,7 +598,7 @@ export function RegularInvestForm({
 
       if (mode === "edit" && editData) {
         if (submitMethod === "serverAction" && action) {
-          // Server Action 方式（主页）
+          // Server Action path (home page)
           const fd = new FormData();
           fd.set("intent", "updateRegularInvest");
           fd.set("planId", editData.id);
@@ -586,7 +628,7 @@ export function RegularInvestForm({
             return;
           }
         } else {
-          // API 方式（定投计划页面）— 直接调 PUT
+          // API path (recurring investment page) — direct PUT
           const payload = {
             id: editData.id,
             taskType: formData.taskType,
@@ -618,7 +660,7 @@ export function RegularInvestForm({
           });
           const data = await res.json();
           if (!data.ok) {
-            window.alert(data.error || "保存失败");
+            window.alert(data.error || t("regularInvest.alert.saveFailed"));
             return;
           }
         }
@@ -626,7 +668,7 @@ export function RegularInvestForm({
         setActualOpen(false);
         onSuccess?.();
       } else {
-        // 新增模式
+        // Create mode
         if (action) {
           const fd = new FormData();
           fd.set("intent", "createRegularInvest");
@@ -684,26 +726,26 @@ export function RegularInvestForm({
 
           const res = await apiAction(payload);
           if (!res.ok) {
-            window.alert(res.error || res.message || "保存失败");
+            window.alert(res.error || res.message || t("regularInvest.alert.saveFailed"));
             return;
           }
           setActualOpen(false);
           resetForm();
         } else {
-          window.alert("保存入口未配置");
+          window.alert(t("regularInvest.alert.noSaveEntry"));
         }
       }
     } catch (err) {
-      window.alert(err instanceof Error ? err.message : "保存失败");
+      window.alert(err instanceof Error ? err.message : t("regularInvest.alert.saveFailed"));
     } finally {
       setSubmitting(false);
     }
   }
 
-  const title = mode === "edit" ? "修改计划任务" : "新增计划任务";
+  const title = mode === "edit" ? t("regularInvest.title.edit") : t("regularInvest.title.create");
   const recentAccountIds = useRecentAccountIds();
 
-  // edit 模式下的账户显示标签
+  // Account display label in edit mode
   const displayAccountLabel = stripDefaultGroupLabel(mode === "edit" ? (editAccountLabel ?? accountLabel) : accountLabel);
   const investmentOptions = investFiltered
     ? sortOptionsByRecent(stripDefaultGroupOptions(investFiltered), recentAccountIds)
@@ -729,15 +771,18 @@ export function RegularInvestForm({
   const scheduleLocked = isInsuranceTask || isLoanTask;
   const displayedIntervalUnit = isInsuranceTask ? "year" : isLoanTask ? "month" : formData.intervalUnit;
   const displayedIntervalValue = isInsuranceTask ? "1" : isLoanTask ? formData.repaymentIntervalMonths || "1" : formData.intervalValue;
-  const scheduleText = schedulePreview(displayedIntervalUnit, displayedIntervalValue, formData.executionDay, scheduleLocked);
+  const scheduleText = schedulePreview(t, displayedIntervalUnit, displayedIntervalValue, formData.executionDay, scheduleLocked);
   const startDateLocked = mode === "edit" && !!editData && ((editData.executedRuns ?? 0) > 0 || !!editData.lastRunDate);
   const readonlyTransferFromLabel =
     cashOptions.find((option) => option.id === formData.cashAccountId)?.label
     ?? cashAccountList.find((option) => option.id === formData.cashAccountId)?.label
-    ?? "未选择";
+    ?? t("batchImport.unselected");
   const executedRuns = Math.max(0, editData?.executedRuns ?? 0);
-  const totalRunsHint = editData?.totalRuns == null ? "不限" : String(editData.totalRuns);
-  const runCountHint = mode === "edit" ? `（共${totalRunsHint}次，已执行${executedRuns}次）` : "";
+  const totalRunsHint = editData?.totalRuns == null ? t("regularInvest.unlimited") : String(editData.totalRuns);
+  const runsLabel =
+    mode === "edit"
+      ? t("regularInvest.remainingRunsLabel", { total: totalRunsHint, executed: executedRuns })
+      : t("regularInvest.runsOptional");
 
   function handleTaskTypeChange(taskType: ScheduledTaskType) {
     setFormData((prev) => ({
@@ -774,7 +819,7 @@ export function RegularInvestForm({
 
   function handleNestedAccountCreated(id: string, name: string, extra?: { kind?: string }) {
     const kind = extra?.kind ?? (nestedEntityType === "cash-account" ? "bank_debit" : "investment");
-    const option = { id, label: name, subLabel: kindLabel(kind) };
+    const option = { id, label: name, subLabel: accountKindLabel(t, kind) };
 
     if (nestedEntityType === "cash-account") {
       setCashAccountList(prev => [...prev, option]);
@@ -798,7 +843,7 @@ export function RegularInvestForm({
           className="h-7 px-2 rounded-md border border-slate-200 bg-white text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-1"
         >
           <CalendarPlus className="w-3.5 h-3.5" />
-          计划
+          {t("regularInvest.plan")}
         </button>
       )}
 
@@ -812,7 +857,7 @@ export function RegularInvestForm({
                 onClick={() => setActualOpen(false)}
                 className="h-8 px-2 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50"
               >
-                关闭
+                {t("table.close")}
               </button>
             </div>
 
@@ -830,7 +875,7 @@ export function RegularInvestForm({
                         : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
                     } disabled:cursor-not-allowed disabled:opacity-70`}
                   >
-                    <div className="text-xs font-semibold">{item.label}</div>
+                    <div className="text-xs font-semibold">{t(item.labelKey)}</div>
                   </button>
                 ))}
               </div>
@@ -838,7 +883,7 @@ export function RegularInvestForm({
               {isTransferTask ? (
                 <div className={`grid items-end gap-3 rounded-lg border border-slate-100 bg-slate-50/60 p-2 ${mode === "edit" ? "grid-cols-2" : "grid-cols-[1fr_auto_1fr]"}`}>
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">转出账户</div>
+                    <div className="text-xs font-medium text-slate-600">{t("txForm.transferFrom")}</div>
                     {mode === "edit" ? (
                       <div className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-600 flex items-center">
                         {readonlyTransferFromLabel}
@@ -847,16 +892,16 @@ export function RegularInvestForm({
                       <SmartSelect mode="single" value={formData.cashAccountId}
                         onChange={(id) => setFormData(d => ({ ...d, cashAccountId: id }))}
                         options={cashOptions}
-                        placeholder="选择转出账户"
+                        placeholder={t("regularInvest.placeholder.transferFrom")}
                         onCreateClick={() => setNestedEntityType("cash-account")}
-                        createLabel="新增账户"
+                        createLabel={t("settings.accounts.add")}
                         onCycleOwnerFilter={cfCycle} ownerFilterLabel={cfLabel} />
                     )}
                   </div>
 
                   {mode === "edit" ? null : (
                     <div className="flex flex-col items-center gap-1 pb-0.5">
-                      <div className="flex h-6 items-center justify-center text-emerald-600" title="资金方向">
+                      <div className="flex h-6 items-center justify-center text-emerald-600" title={t("regularInvest.fundDirection")}>
                         <ArrowRight className="h-4 w-4" />
                       </div>
                       <button
@@ -874,7 +919,7 @@ export function RegularInvestForm({
                         }}
                         disabled={!formData.cashAccountId && !formData.accountId}
                         className="flex h-9 w-9 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 hover:border-blue-200 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
-                        title="互换转出/转入账户"
+                        title={t("txForm.swapAccountsTitle")}
                       >
                         <ArrowLeftRight className="h-4 w-4" />
                       </button>
@@ -882,20 +927,20 @@ export function RegularInvestForm({
                   )}
 
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">转入账户</div>
+                    <div className="text-xs font-medium text-slate-600">{t("txForm.transferTo")}</div>
                     <SmartSelect mode="single" value={formData.accountId}
                       onChange={(id) => setFormData(d => ({ ...d, accountId: id, fundName: transferTargetOptions.find((item) => item.id === id)?.label ?? "转账" }))}
                       options={transferTargetOptions}
-                      placeholder="选择转入账户" />
+                      placeholder={t("regularInvest.placeholder.transferTo")} />
                   </div>
                 </div>
               ) : isInsuranceTask ? (
                 <div className="space-y-3">
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">保险产品</div>
+                    <div className="text-xs font-medium text-slate-600">{t("settings.insuranceProducts")}</div>
                     {mode === "edit" ? (
                       <div className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 flex items-center">
-                        {selectedInsuranceProduct?.label || formData.fundName || "保费缴费"}
+                        {selectedInsuranceProduct?.label || formData.fundName || t("regularInvest.taskType.insurancePremium")}
                       </div>
                     ) : (
                       <SmartSelect mode="single" value={formData.insuranceProductId}
@@ -912,28 +957,28 @@ export function RegularInvestForm({
                           }));
                         }}
                         options={insuranceOptions}
-                        placeholder="选择保险产品" />
+                        placeholder={t("regularInvest.placeholder.insuranceProduct")} />
                     )}
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">投保人（可选）</div>
+                      <div className="text-xs font-medium text-slate-600">{t("regularInvest.policyholderOptional")}</div>
                       <SmartSelect mode="single" value={formData.policyholderGroupId}
                         onChange={(id) => setFormData(d => ({ ...d, policyholderGroupId: id, cashAccountId: "" }))}
                         options={policyholderOptions}
-                        placeholder="全部投保人" />
+                        placeholder={t("regularInvest.allPolicyholders")} />
                     </div>
 
                     {cashAccountList.length > 0 && (
                       <div className="space-y-1">
-                        <div className="text-xs font-medium text-slate-600">资金账户</div>
+                        <div className="text-xs font-medium text-slate-600">{t("txForm.cashAccount")}</div>
                         <SmartSelect mode="single" value={formData.cashAccountId}
                           onChange={(id) => setFormData(d => ({ ...d, cashAccountId: id }))}
                           options={insuranceCashOptions}
-                          placeholder={selectedPolicyholderName ? `选择${selectedPolicyholderName}的账户` : "选择账户"}
+                          placeholder={selectedPolicyholderName ? t("regularInvest.placeholder.ownerAccount", { name: selectedPolicyholderName }) : t("regularInvest.placeholder.account")}
                           onCreateClick={() => setNestedEntityType("cash-account")}
-                          createLabel="新增账户" />
+                          createLabel={t("settings.accounts.add")} />
                       </div>
                     )}
                   </div>
@@ -942,16 +987,16 @@ export function RegularInvestForm({
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">
-                      {isFundTask ? "基金账户" : isLoanTask ? "贷款账户" : isInsuranceTask ? "保险产品" : "目标账户"}
+                      {isFundTask ? t("viewImport.fundAccount") : isLoanTask ? t("regularInvest.account.loanAccount") : isInsuranceTask ? t("settings.insuranceProducts") : t("regularInvest.account.targetAccount")}
                     </div>
                     {isFundTask ? (
                       investmentAccountList.length > 0 ? (
                         <SmartSelect mode="single" value={formData.accountId}
                           onChange={(id) => setFormData(d => ({ ...d, accountId: id }))}
                           options={investmentOptions}
-                          placeholder="选择基金账户"
+                          placeholder={t("regularInvest.placeholder.fundAccount")}
                           onCreateClick={() => setNestedEntityType("invest-account")}
-                          createLabel="新增账户"
+                          createLabel={t("settings.accounts.add")}
                           onCycleOwnerFilter={ifCycle} ownerFilterLabel={ifLabel} />
                       ) : (
                         <div className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 flex items-center">
@@ -962,10 +1007,10 @@ export function RegularInvestForm({
                       <SmartSelect mode="single" value={formData.accountId}
                         onChange={(id) => setFormData(d => ({ ...d, accountId: id, fundName: loanOptions.find((item) => item.id === id)?.label ?? "还贷款" }))}
                         options={loanOptions}
-                        placeholder="选择贷款账户" />
+                        placeholder={t("regularInvest.placeholder.loanAccount")} />
                     ) : mode === "edit" && isInsuranceTask ? (
                       <div className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 flex items-center">
-                        {selectedInsuranceProduct?.label || formData.fundName || "保费缴费"}
+                        {selectedInsuranceProduct?.label || formData.fundName || t("regularInvest.taskType.insurancePremium")}
                       </div>
                     ) : (
                       <SmartSelect mode="single" value={formData.insuranceProductId}
@@ -979,19 +1024,19 @@ export function RegularInvestForm({
                           }));
                         }}
                         options={insuranceOptions}
-                        placeholder="选择保险产品" />
+                        placeholder={t("regularInvest.placeholder.insuranceProduct")} />
                     )}
                   </div>
 
                   {cashAccountList.length > 0 && (
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">资金账户</div>
+                      <div className="text-xs font-medium text-slate-600">{t("txForm.cashAccount")}</div>
                       <SmartSelect mode="single" value={formData.cashAccountId}
                         onChange={(id) => setFormData(d => ({ ...d, cashAccountId: id }))}
                         options={cashOptions}
-                        placeholder="选择账户"
+                        placeholder={t("regularInvest.placeholder.account")}
                         onCreateClick={() => setNestedEntityType("cash-account")}
-                        createLabel="新增账户"
+                        createLabel={t("settings.accounts.add")}
                         onCycleOwnerFilter={cfCycle} ownerFilterLabel={cfLabel} />
                     </div>
                   )}
@@ -1001,7 +1046,7 @@ export function RegularInvestForm({
               {isFundTask && (
                 <div className="grid grid-cols-[1fr_auto_1fr] gap-2 items-end">
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">基金代码</div>
+                    <div className="text-xs font-medium text-slate-600">{t("viewImport.fundCode")}</div>
                     {mode === "edit" ? (
                       <div className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 flex items-center">{formData.fundCode}</div>
                     ) : (
@@ -1009,7 +1054,7 @@ export function RegularInvestForm({
                         value={formData.fundCode}
                         onChange={(e) => setFormData(d => ({ ...d, fundCode: e.target.value }))}
                         onBlur={handleFundCodeBlur}
-                        placeholder="6位代码"
+                        placeholder={t("regularInvest.codePlaceholder")}
                         className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                       />
                     )}
@@ -1021,18 +1066,18 @@ export function RegularInvestForm({
                       disabled={nameLoading || !formData.fundCode}
                       className="h-9 px-2 rounded-md border border-slate-200 bg-white text-xs text-blue-600 hover:bg-blue-50 disabled:opacity-50 shrink-0"
                     >
-                      {nameLoading ? "…" : "获取"}
+                      {nameLoading ? "…" : t("regularInvest.fetch")}
                     </button>
                   )}
                   {mode === "edit" && <div />}
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">
-                      基金名称{nameLoading && <span className="ml-1 text-slate-400 font-normal">获取中…</span>}
+                      {t("viewImport.fundName")}{nameLoading && <span className="ml-1 text-slate-400 font-normal">{t("regularInvest.fetching")}</span>}
                     </div>
                     <input
                       value={formData.fundName}
                       onChange={(e) => setFormData(d => ({ ...d, fundName: e.target.value }))}
-                      placeholder={formData.fundCode?.length === 6 && !formData.fundName && !nameLoading ? "获取失败" : ""}
+                      placeholder={formData.fundCode?.length === 6 && !formData.fundName && !nameLoading ? t("regularInvest.fetchFailed") : ""}
                       className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                     />
                   </div>
@@ -1042,7 +1087,7 @@ export function RegularInvestForm({
               {isFundTask && (
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">确认天数 (T+N)</div>
+                    <div className="text-xs font-medium text-slate-600">{t("regularInvest.confirmDaysLabel")}</div>
                     <input
                       inputMode="numeric"
                       min="0"
@@ -1053,7 +1098,7 @@ export function RegularInvestForm({
                     />
                   </div>
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">入账天数 (确认日+N日后入账)</div>
+                    <div className="text-xs font-medium text-slate-600">{t("regularInvest.arrivalDaysLabel")}</div>
                     <input
                       inputMode="numeric"
                       min="0"
@@ -1066,30 +1111,30 @@ export function RegularInvestForm({
                 </div>
               )}
 
-              {/* 执行频率 */}
+              {/* Execution frequency */}
               <div className="space-y-2 rounded-lg border border-slate-100 bg-slate-50/60 p-3">
                 <div className="flex items-center justify-between gap-3">
-                  <div className="text-xs font-medium text-slate-600">执行频率</div>
+                  <div className="text-xs font-medium text-slate-600">{t("regularInvest.scheduleFrequency")}</div>
                   <div className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-slate-700 ring-1 ring-slate-200">
                     {scheduleText}
                   </div>
                 </div>
                 <div className={`grid gap-3 ${displayedIntervalUnit === "year" ? "grid-cols-2" : "grid-cols-3"}`}>
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">周期单位</div>
+                    <div className="text-xs font-medium text-slate-600">{t("regularInvest.intervalUnit")}</div>
                     <select
                       value={displayedIntervalUnit}
                       onChange={(e) => handleIntervalUnitChange(e.target.value)}
                       disabled={scheduleLocked}
                       className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
                     >
-                      {Object.entries(INTERVAL_LABELS).map(([v, l]) => (
-                        <option key={v} value={v}>{l}</option>
+                      {Object.entries(INTERVAL_LABELS).map(([v, labelKey]) => (
+                        <option key={v} value={v}>{t(labelKey)}</option>
                       ))}
                     </select>
                   </div>
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">间隔</div>
+                    <div className="text-xs font-medium text-slate-600">{t("regularInvest.interval")}</div>
                     <input
                       inputMode="numeric"
                       min="1"
@@ -1101,11 +1146,11 @@ export function RegularInvestForm({
                   </div>
                   {displayedIntervalUnit !== "year" && (
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">执行日</div>
+                      <div className="text-xs font-medium text-slate-600">{t("regularInvest.executionDay")}</div>
                       {displayedIntervalUnit === "day" ? (
                         <input
                           type="text"
-                          value="无需指定"
+                          value={t("regularInvest.noDayRequired")}
                           disabled
                           className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-500 cursor-not-allowed"
                         />
@@ -1115,9 +1160,9 @@ export function RegularInvestForm({
                         onChange={(e) => setFormData(d => ({ ...d, executionDay: e.target.value }))}
                         className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                       >
-                        <option value="">不指定</option>
+                        <option value="">{t("regularInvest.notSpecified")}</option>
                         {WEEKDAY_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>{option.label}</option>
+                          <option key={option.value} value={option.value}>{t(option.labelKey)}</option>
                         ))}
                       </select>
                       ) : (
@@ -1126,9 +1171,9 @@ export function RegularInvestForm({
                         onChange={(e) => setFormData(d => ({ ...d, executionDay: e.target.value }))}
                         className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                       >
-                        <option value="">不指定</option>
+                        <option value="">{t("regularInvest.notSpecified")}</option>
                         {Array.from({ length: 31 }, (_, i) => i + 1).map((day) => (
-                          <option key={day} value={day}>{day}号</option>
+                          <option key={day} value={day}>{t("regularInvest.daySuffix", { day })}</option>
                         ))}
                       </select>
                       )}
@@ -1137,22 +1182,22 @@ export function RegularInvestForm({
                 </div>
               </div>
 
-              {/* 生效日期 */}
+              {/* Effective date */}
               <div className="grid grid-cols-1 gap-3">
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">生效日期</div>
+                  <div className="text-xs font-medium text-slate-600">{t("stockFee.effectiveDateLabel")}</div>
                   <DateStepper
                     value={formData.startDate}
                     onChange={(value) => setFormData(d => ({ ...d, startDate: value }))}
                     disabled={startDateLocked}
                   />
-                  {startDateLocked ? <div className="text-[11px] text-slate-400">已生成记录后不可修改生效日期；后续执行会从最后一笔生成记录后的下一个周期自动继续。</div> : null}
+                  {startDateLocked ? <div className="text-[11px] text-slate-400">{t("regularInvest.startDateLockedHint")}</div> : null}
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">停止日期（可选）</div>
+                  <div className="text-xs font-medium text-slate-600">{t("regularInvest.stopDateOptional")}</div>
                   <DateStepper
                     value={formData.endDate}
                     onChange={(value) => setFormData(d => ({ ...d, endDate: value }))}
@@ -1160,14 +1205,14 @@ export function RegularInvestForm({
                 </div>
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">
-                    {mode === "edit" ? `剩余次数${runCountHint}（可选）` : "次数（可选）"}
+                    {runsLabel}
                   </div>
                   <input
                     inputMode="numeric"
                     min="1"
                     value={formData.totalRuns}
                     onChange={(e) => setFormData(d => ({ ...d, totalRuns: e.target.value }))}
-                    placeholder="不限"
+                    placeholder={t("regularInvest.unlimited")}
                     className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                   />
                 </div>
@@ -1178,14 +1223,14 @@ export function RegularInvestForm({
                   <input type="checkbox" checked={formData.skipPendingPreceding}
                     onChange={(e) => setFormData(d => ({ ...d, skipPendingPreceding: e.target.checked }))}
                     className="w-3.5 h-3.5 accent-blue-600" />
-                  跳过暂停申购与无净值间隙
+                  {t("regularInvest.skipPendingPreceding")}
                 </label>
               )}
 
               {isLoanTask && (
                 <div className="grid grid-cols-3 gap-3 rounded-lg border border-slate-100 bg-slate-50/60 p-3">
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">还款方式</div>
+                    <div className="text-xs font-medium text-slate-600">{t("regularInvest.repaymentMethod")}</div>
                     <select
                       value={formData.repaymentMethod}
                       onChange={(e) => setFormData(d => ({
@@ -1201,19 +1246,19 @@ export function RegularInvestForm({
                     </select>
                   </div>
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">年利率 (%)</div>
+                    <div className="text-xs font-medium text-slate-600">{t("txForm.annualRatePercent")}</div>
                     <input
                       inputMode="decimal"
                       step="0.001"
                       value={formData.annualRate}
                       onChange={(e) => setFormData(d => ({ ...d, annualRate: e.target.value }))}
                       disabled={formData.repaymentMethod === INTEREST_FREE_LOAN_REPAYMENT_METHOD}
-                      placeholder={formData.repaymentMethod === INTEREST_FREE_LOAN_REPAYMENT_METHOD ? "0" : FIXED_LOAN_REPAYMENT_METHODS.has(formData.repaymentMethod) ? "必填" : "可选"}
+                      placeholder={formData.repaymentMethod === INTEREST_FREE_LOAN_REPAYMENT_METHOD ? "0" : FIXED_LOAN_REPAYMENT_METHODS.has(formData.repaymentMethod) ? t("batchImport.required") : t("stockFee.optional")}
                       className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                     />
                   </div>
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">还款周期（月）</div>
+                    <div className="text-xs font-medium text-slate-600">{t("regularInvest.repaymentIntervalMonths")}</div>
                     <input
                       inputMode="numeric"
                       min="1"
@@ -1228,45 +1273,45 @@ export function RegularInvestForm({
 
               <div className={`grid gap-3 ${isFundTask ? "grid-cols-2" : "grid-cols-1"}`}>
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">{isFundTask ? "基金定投金额" : "计划金额"}</div>
+                  <div className="text-xs font-medium text-slate-600">{isFundTask ? t("regularInvest.fundInvestAmount") : t("regularInvest.planAmount")}</div>
                   <CalcInput
                     value={formData.amount}
                     onChange={(value) => setFormData(d => ({ ...d, amount: value }))}
                     placeholder="0.00"
-                    label={isFundTask ? "基金定投金额" : "计划金额"}
+                    label={isFundTask ? t("regularInvest.fundInvestAmount") : t("regularInvest.planAmount")}
                     precision={2}
                   />
                 </div>
                 {isFundTask && (
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">手续费率 (%)</div>
+                    <div className="text-xs font-medium text-slate-600">{t("regularInvest.feeRatePercent")}</div>
                     <input
                       inputMode="decimal"
                       step="0.001"
                       value={formData.feeRate}
                       onChange={(e) => setFormData(d => ({ ...d, feeRate: e.target.value }))}
-                      placeholder="默认0"
+                      placeholder={t("regularInvest.defaultFeeRatePlaceholder")}
                       className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                     />
                   </div>
                 )}
               </div>
 
-              {/* 保存按钮 */}
+              {/* Save buttons */}
               <div className="flex justify-end pt-1 gap-2">
                 <button
                   type="button"
                   onClick={() => setActualOpen(false)}
                   className="h-9 px-4 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50"
                 >
-                  取消
+                  {t("common.cancel")}
                 </button>
                 <button
                   type="submit"
                   disabled={submitting}
                   className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
                 >
-                  {submitting ? "保存中…" : "保存"}
+                  {submitting ? t("txForm.saving") : t("common.save")}
                 </button>
               </div>
             </form>

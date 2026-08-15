@@ -3,8 +3,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Pencil, RefreshCcw, Trash2 } from "lucide-react";
 
-import { formatCurrencyMoney, formatMoney } from "@/lib/format";
+import { formatCurrencyMoney, formatMoney, formatPercent } from "@/lib/format";
+import { pnlClassFromRedUp } from "@/lib/client/colors";
+import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { useI18n } from "@/lib/i18n";
 import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 import { StockFeeRuleSettingsButton } from "@/components/StockFeeRuleSettingsButton";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
@@ -86,25 +89,27 @@ type StockTransactionsResponse = {
 };
 
 function pnlClass(value: number, isRedUp: boolean) {
-  if (value > 0) return isRedUp ? "text-red-600" : "text-emerald-600";
-  if (value < 0) return isRedUp ? "text-emerald-600" : "text-red-600";
-  return "text-slate-600";
+  return pnlClassFromRedUp(value, isRedUp, "soft");
 }
 
 function positionKey(position: StockPosition) {
   return position.securityId || `${position.market ?? ""}:${position.stockCode}`;
 }
 
-function actionLabel(action: string) {
-  if (action === "buy") return "买入";
-  if (action === "sell") return "卖出";
-  if (action === "dividend") return "分红";
-  if (action === "bonus_share") return "送股";
-  if (action === "split_share") return "拆股";
-  if (action === "merge_share") return "并股";
-  if (action === "fee_adjustment") return "费用调整";
-  if (action === "tax_adjustment") return "税费调整";
-  return action || "-";
+const ACTION_LABEL_KEYS: Record<string, string> = {
+  buy: "stockPanel.action.buy",
+  sell: "stockPanel.action.sell",
+  dividend: "stockPanel.action.dividend",
+  bonus_share: "stockPanel.action.bonus_share",
+  split_share: "stockPanel.action.split_share",
+  merge_share: "stockPanel.action.merge_share",
+  fee_adjustment: "stockPanel.action.fee_adjustment",
+  tax_adjustment: "stockPanel.action.tax_adjustment",
+};
+
+function actionLabel(t: (key: string) => string, action: string) {
+  const key = ACTION_LABEL_KEYS[action];
+  return key ? t(key) : action || "-";
 }
 
 function totalFee(tx: StockTransaction) {
@@ -169,6 +174,7 @@ export function StockHoldingsPanel({
   stockCashAccountId?: string;
   stockCashAccountName?: string | null;
 }) {
+  const { t } = useI18n();
   const [positions, setPositions] = useState<StockPosition[]>(initialPositions);
   const [marketValue, setMarketValue] = useState(totalMarketValue);
   const [cost, setCost] = useState(totalCost);
@@ -226,15 +232,15 @@ export function StockHoldingsPanel({
       if (market) params.set("market", market);
       const res = await fetch(`/api/v1/stocks/transactions?${params.toString()}`, { cache: "no-store" });
       const data = await res.json().catch(() => null) as StockTransactionsResponse | null;
-      if (!res.ok || !data?.ok) throw new Error(data?.error ?? "股票交易明细加载失败");
+      if (!res.ok || !data?.ok) throw new Error(data?.error ?? t("stockPanel.error.transactionsLoadFailed"));
       setTransactions(data.data?.transactions ?? []);
     } catch (error) {
       setTransactions([]);
-      setTransactionsError(error instanceof Error ? error.message : "股票交易明细加载失败");
+      setTransactionsError(error instanceof Error ? error.message : t("stockPanel.error.transactionsLoadFailed"));
     } finally {
       setTransactionsLoading(false);
     }
-  }, [accountId]);
+  }, [accountId, t]);
 
   useEffect(() => {
     function onEditSaved() {
@@ -256,7 +262,7 @@ export function StockHoldingsPanel({
         body: JSON.stringify({ accountId }),
       });
       const data = await res.json().catch(() => null) as RefreshPriceResponse | null;
-      if (!res.ok || !data?.ok) throw new Error(data?.error ?? "获取收盘价失败");
+      if (!res.ok || !data?.ok) throw new Error(data?.error ?? t("stockPanel.error.refreshPriceFailed"));
       if (Array.isArray(data.data?.holdings)) {
         setPositions(data.data.holdings.map(mapApiHolding));
         setMarketValue(Number(data.data.totalMarketValue ?? 0));
@@ -267,9 +273,9 @@ export function StockHoldingsPanel({
       if (refreshed > 0) {
         dispatchFinanceDataChanged({ reason: "stock-price-refresh", accountIds: [accountId] });
       }
-      setRefreshMessage(failedCount > 0 ? `已获取 ${refreshed} 个，${failedCount} 个失败` : `已获取 ${refreshed} 个收盘价`);
+      setRefreshMessage(failedCount > 0 ? t("stockPanel.refreshedWithFailures", { success: refreshed, failed: failedCount }) : t("stockPanel.refreshedCount", { count: refreshed }));
     } catch (error) {
-      setRefreshMessage(error instanceof Error ? error.message : "获取收盘价失败");
+      setRefreshMessage(error instanceof Error ? error.message : t("stockPanel.error.refreshPriceFailed"));
     } finally {
       setRefreshingPrice(false);
     }
@@ -285,13 +291,13 @@ export function StockHoldingsPanel({
         cache: "no-store",
       });
       const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
-      if (!res.ok || !data?.ok) throw new Error(data?.error ?? "删除股票交易失败");
+      if (!res.ok || !data?.ok) throw new Error(data?.error ?? t("stockPanel.error.deleteFailed"));
       setTransactions((prev) => prev.filter((tx) => tx.id !== id));
-      setDeleteMessage("已删除该股票交易");
+      setDeleteMessage(t("stockPanel.deletedSingle"));
       dispatchFinanceDataChanged({ reason: "stock-transaction-delete", accountIds: [accountId] });
       if (selectedPosition) void loadTransactions(selectedPosition);
     } catch (error) {
-      setDeleteMessage(error instanceof Error ? error.message : "删除股票交易失败");
+      setDeleteMessage(error instanceof Error ? error.message : t("stockPanel.error.deleteFailed"));
     } finally {
       setDeletingIds((prev) => {
         const next = new Set(prev);
@@ -299,12 +305,16 @@ export function StockHoldingsPanel({
         return next;
       });
     }
-  }, [accountId, deletingIds, loadTransactions, selectedPosition]);
+  }, [accountId, deletingIds, loadTransactions, selectedPosition, t]);
 
   async function applyBatchDelete() {
     const ids = Array.from(selectedIds);
     if (ids.length === 0 || batchDeleting) return;
-    const ok = window.confirm(`确认删除已勾选 ${ids.length} 条股票交易？删除后会同时删除关联资金流水并重算持仓。`);
+    const ok = await showConfirmDialog({
+      title: t("stockPanel.batchDeleteTitle"),
+      message: t("stockPanel.batchDeleteConfirm", { count: ids.length }),
+      tone: "danger",
+    });
     if (!ok) return;
     setBatchDeleting(true);
     setDeleteMessage("");
@@ -320,11 +330,11 @@ export function StockHoldingsPanel({
       }
       setTransactions((prev) => prev.filter((tx) => !selectedIds.has(tx.id)));
       setSelectedIds(new Set());
-      setDeleteMessage(`已删除 ${deleted} 条股票交易`);
+      setDeleteMessage(t("stockPanel.deletedCount", { count: deleted }));
       dispatchFinanceDataChanged({ reason: "stock-transaction-batch-delete", accountIds: [accountId] });
       if (selectedPosition) void loadTransactions(selectedPosition);
     } catch {
-      setDeleteMessage("批量删除失败");
+      setDeleteMessage(t("stockPanel.error.batchDeleteFailed"));
     } finally {
       setBatchDeleting(false);
     }
@@ -336,21 +346,21 @@ export function StockHoldingsPanel({
   );
 
   const batchFields = useMemo<BatchReplaceFieldConfig<"note" | "brokerTradeId">[]>(() => [
-    { value: "note", label: "备注", kind: "text", placeholder: "输入替换内容，可留空清除备注", allowEmpty: true },
-    { value: "brokerTradeId", label: "券商成交号", kind: "text", placeholder: "输入替换内容，可留空清除", allowEmpty: true },
-  ], []);
+    { value: "note", label: t("detail.column.remark"), kind: "text", placeholder: t("stockPanel.batchNotePlaceholder"), allowEmpty: true },
+    { value: "brokerTradeId", label: t("stockPanel.batchField.brokerTradeId"), kind: "text", placeholder: t("stockPanel.batchTradeIdPlaceholder"), allowEmpty: true },
+  ], [t]);
 
   async function applyBatch(field: "note" | "brokerTradeId", value: string) {
     const ids = batchTargetIds;
-    if (ids.length === 0) throw new Error("请先勾选记录");
+    if (ids.length === 0) throw new Error(t("stockPanel.error.selectRowsFirst"));
     const updates = ids.map((id) => ({ id, [field]: value }));
     const res = await fetch("/api/v1/stocks/transactions/batch-update", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ updates }),
     });
-    const data = await res.json().catch(() => ({ ok: false, error: "批量修改失败" })) as { ok?: boolean; error?: string; data?: { updatedCount?: number } } | null;
-    if (!res.ok || !data?.ok) throw new Error(data?.error ?? "批量修改失败");
+    const data = await res.json().catch(() => ({ ok: false, error: t("stockPanel.error.batchUpdateFailed") })) as { ok?: boolean; error?: string; data?: { updatedCount?: number } } | null;
+    if (!res.ok || !data?.ok) throw new Error(data?.error ?? t("stockPanel.error.batchUpdateFailed"));
     setSelectedIds((prev) => {
       const next = new Set(prev);
       ids.forEach((id) => next.delete(id));
@@ -358,7 +368,7 @@ export function StockHoldingsPanel({
     });
     dispatchFinanceDataChanged({ reason: "stock-transaction-batch-update", accountIds: [accountId] });
     if (selectedPosition) void loadTransactions(selectedPosition);
-    return `已修改 ${data.data?.updatedCount ?? ids.length} 条记录`;
+    return t("stockPanel.updatedCount", { count: data.data?.updatedCount ?? ids.length });
   }
 
   const detailTotalPages = Math.max(1, Math.ceil(detailTableRowCount / detailPageSize));
@@ -368,7 +378,7 @@ export function StockHoldingsPanel({
   const positionColumns = useMemo<AdvancedDataTableColumn<StockPosition>[]>(() => [
     {
       key: "stock",
-      label: "股票",
+      label: t("stockHoldingReport.colStock"),
       width: 220,
       minWidth: 140,
       headerClassName: "text-left",
@@ -388,7 +398,7 @@ export function StockHoldingsPanel({
     },
     {
       key: "units",
-      label: "数量",
+      label: t("stockHoldingReport.colQuantity"),
       width: 100,
       minWidth: 72,
       align: "right",
@@ -401,7 +411,7 @@ export function StockHoldingsPanel({
     },
     {
       key: "avgCost",
-      label: "成本价",
+      label: t("stockHoldingReport.colAvgCost"),
       width: 100,
       minWidth: 72,
       align: "right",
@@ -414,7 +424,7 @@ export function StockHoldingsPanel({
     },
     {
       key: "cost",
-      label: "成本",
+      label: t("stockHoldingReport.colCost"),
       width: 120,
       minWidth: 88,
       align: "right",
@@ -427,7 +437,7 @@ export function StockHoldingsPanel({
     },
     {
       key: "nav",
-      label: "收盘价",
+      label: t("stockHoldingReport.colClosePrice"),
       width: 110,
       minWidth: 84,
       align: "right",
@@ -442,7 +452,7 @@ export function StockHoldingsPanel({
     },
     {
       key: "marketValue",
-      label: "市值",
+      label: t("stockHoldingReport.colMarketValue"),
       width: 120,
       minWidth: 88,
       align: "right",
@@ -455,7 +465,7 @@ export function StockHoldingsPanel({
     },
     {
       key: "floatingPnL",
-      label: "浮动盈亏",
+      label: t("stockHoldingReport.colFloatingPnL"),
       width: 120,
       minWidth: 88,
       align: "right",
@@ -468,7 +478,7 @@ export function StockHoldingsPanel({
     },
     {
       key: "floatingRate",
-      label: "浮盈率",
+      label: t("stockHoldingReport.colFloatingPnLRate"),
       width: 88,
       minWidth: 64,
       align: "right",
@@ -481,7 +491,7 @@ export function StockHoldingsPanel({
     },
     {
       key: "historical",
-      label: "历史收益",
+      label: t("stockPanel.colHistoricalProfit"),
       width: 120,
       minWidth: 88,
       align: "right",
@@ -496,7 +506,7 @@ export function StockHoldingsPanel({
         </span>
       ),
     },
-  ], [currency, isRedUp, selectedKey]);
+  ], [currency, isRedUp, selectedKey, t]);
 
   const positionSummaryRow = useMemo(() => {
     if (positions.length === 0) return undefined;
@@ -504,16 +514,16 @@ export function StockHoldingsPanel({
     const totalHistorical = positions.reduce((sum, p) => sum + (p.historicalProfit ?? 0), 0);
     return {
       cells: {
-        stock: "汇总",
-        units: <span className="tabular-nums text-slate-800">{positions.length} 只</span>,
+        stock: t("debtShell.summaryRow"),
+        units: <span className="tabular-nums text-slate-800">{t("stockPanel.holdingCount", { count: positions.length })}</span>,
         cost: <span className="tabular-nums text-slate-800">{formatCurrencyMoney(cost, currency)}</span>,
         marketValue: <span className={`tabular-nums ${pnlClass(marketValue, isRedUp)}`}>{formatCurrencyMoney(marketValue, currency)}</span>,
         floatingPnL: <span className={`tabular-nums ${pnlClass(totalFloating, isRedUp)}`}>{formatCurrencyMoney(totalFloating, currency)}</span>,
-        floatingRate: <span className={`tabular-nums ${pnlClass(cost !== 0 ? totalFloating / cost : 0, isRedUp)}`}>{cost !== 0 ? `${((totalFloating / cost) * 100).toFixed(2)}%` : "-"}</span>,
+        floatingRate: <span className={`tabular-nums ${pnlClass(cost !== 0 ? totalFloating / cost : 0, isRedUp)}`}>{cost !== 0 ? formatPercent(totalFloating / cost) : "-"}</span>,
         historical: <span className={`tabular-nums ${pnlClass(totalHistorical, isRedUp)}`}>{formatCurrencyMoney(totalHistorical, currency)}</span>,
       },
     };
-  }, [cost, currency, isRedUp, marketValue, positions]);
+  }, [cost, currency, isRedUp, marketValue, positions, t]);
 
   const transactionColumns = useMemo<AdvancedDataTableColumn<StockTransaction>[]>(() => {
     const numberFilterText = (value: number | null | undefined) =>
@@ -521,7 +531,7 @@ export function StockHoldingsPanel({
     return [
       {
         key: "tradeDate",
-        label: "日期",
+        label: t("detail.column.date"),
         width: 112,
         minWidth: 96,
         filterKind: "dateRange",
@@ -531,16 +541,16 @@ export function StockHoldingsPanel({
       },
       {
         key: "action",
-        label: "动作",
+        label: t("depositShell.colAction"),
         width: 88,
         minWidth: 72,
-        filterText: (tx) => actionLabel(tx.action),
-        sortValue: (tx) => actionLabel(tx.action),
-        render: (tx) => <span className="text-xs text-slate-700">{actionLabel(tx.action)}</span>,
+        filterText: (tx) => actionLabel(t, tx.action),
+        sortValue: (tx) => actionLabel(t, tx.action),
+        render: (tx) => <span className="text-xs text-slate-700">{actionLabel(t, tx.action)}</span>,
       },
       {
         key: "quantity",
-        label: "数量",
+        label: t("stockHoldingReport.colQuantity"),
         width: 104,
         minWidth: 84,
         align: "right",
@@ -557,7 +567,7 @@ export function StockHoldingsPanel({
       },
       {
         key: "price",
-        label: "价格",
+        label: t("stockPanel.colPrice"),
         width: 100,
         minWidth: 80,
         align: "right",
@@ -574,7 +584,7 @@ export function StockHoldingsPanel({
       },
       {
         key: "grossAmount",
-        label: "成交金额",
+        label: t("stockPanel.colGrossAmount"),
         width: 120,
         minWidth: 92,
         align: "right",
@@ -587,7 +597,7 @@ export function StockHoldingsPanel({
       },
       {
         key: "fee",
-        label: "费用",
+        label: t("stockPanel.colFee"),
         width: 96,
         minWidth: 76,
         align: "right",
@@ -600,7 +610,7 @@ export function StockHoldingsPanel({
       },
       {
         key: "cash",
-        label: "资金流",
+        label: t("stockPanel.colCashFlow"),
         width: 120,
         minWidth: 92,
         align: "right",
@@ -615,7 +625,7 @@ export function StockHoldingsPanel({
       },
       {
         key: "realized",
-        label: "已实现",
+        label: t("stockHoldingReport.colRealized"),
         width: 110,
         minWidth: 84,
         align: "right",
@@ -632,7 +642,7 @@ export function StockHoldingsPanel({
       },
       {
         key: "note",
-        label: "备注",
+        label: t("detail.column.remark"),
         width: 180,
         minWidth: 110,
         filterKind: "text",
@@ -646,7 +656,7 @@ export function StockHoldingsPanel({
         },
       },
     ];
-  }, [currency, isRedUp]);
+  }, [currency, isRedUp, t]);
 
   const openEditTransaction = useCallback((tx: StockTransaction) => {
     window.dispatchEvent(new CustomEvent("mmh:stock:edit", {
@@ -682,8 +692,8 @@ export function StockHoldingsPanel({
           type="button"
           onClick={() => openEditTransaction(tx)}
           className="flex h-7 w-7 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50"
-          title="编辑该股票交易"
-          aria-label="编辑该股票交易"
+          title={t("stockPanel.editTransaction")}
+          aria-label={t("stockPanel.editTransaction")}
         >
           <Pencil className="h-3.5 w-3.5" />
         </button>
@@ -692,14 +702,14 @@ export function StockHoldingsPanel({
           onClick={() => { void deleteTransaction(tx.id); }}
           disabled={deleting}
           className="flex h-7 w-7 items-center justify-center rounded border border-red-200 bg-white text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
-          title={deleting ? "删除中..." : "删除该股票交易"}
-          aria-label={deleting ? "删除中..." : "删除该股票交易"}
+          title={deleting ? t("stockPanel.deleting") : t("stockPanel.deleteTransaction")}
+          aria-label={deleting ? t("stockPanel.deleting") : t("stockPanel.deleteTransaction")}
         >
           <Trash2 className="h-3.5 w-3.5" />
         </button>
       </div>
     );
-  }, [deleteTransaction, deletingIds, openEditTransaction]);
+  }, [deleteTransaction, deletingIds, openEditTransaction, t]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-transparent p-4 md:p-5">
@@ -707,15 +717,15 @@ export function StockHoldingsPanel({
         storageKey={`mmh:stock-shell:${accountId}:split-height`}
         hasLowerPane={Boolean(selectedPosition)}
         defaultUpperHeight={360}
-        separatorLabel="调整股票持仓和明细高度"
-        separatorTitle="拖动调整股票持仓和明细高度"
+        separatorLabel={t("stockPanel.resizeLabel")}
+        separatorTitle={t("stockPanel.resizeTitle")}
         stackOnMobile
       >
       <div className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
         <div className="shrink-0 border-b border-slate-200 px-4 py-3">
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
-              <div className="text-xs text-slate-500">股票账户</div>
+              <div className="text-xs text-slate-500">{t("stockPanel.stockAccountTitle")}</div>
               <div className="mt-1 flex flex-wrap items-center gap-2">
                 <h2 className="text-base font-semibold text-slate-900">{accountLabel}</h2>
                 <StockFeeRuleSettingsButton accountId={accountId} accountLabel={accountLabel} currency={currency} />
@@ -724,8 +734,8 @@ export function StockHoldingsPanel({
                   onClick={() => void refreshClosingPrices()}
                   disabled={refreshingPrice || positions.length === 0}
                   className="secondary-button h-9 w-9 justify-center px-0 text-xs disabled:cursor-not-allowed disabled:opacity-50"
-                  title="获取当前持仓股票的最新收盘价"
-                  aria-label="获取当前持仓股票的最新收盘价"
+                  title={t("stockPanel.refreshPriceTitle")}
+                  aria-label={t("stockPanel.refreshPriceTitle")}
                 >
                   <RefreshCcw className={`h-4 w-4 ${refreshingPrice ? "animate-spin" : ""}`} />
                 </button>
@@ -747,28 +757,28 @@ export function StockHoldingsPanel({
                     }));
                   }}
                   className="secondary-button h-9 px-2.5 text-xs"
-                  title="银证转账：银行资金账户与当前股票机构证券资金账户互转"
+                  title={t("stockPanel.transferTitle")}
                 >
-                  银证转账
+                  {t("stockPanel.transfer")}
                 </button>
                 {refreshMessage ? <span className="text-[11px] text-slate-500">{refreshMessage}</span> : null}
               </div>
             </div>
             <div className="grid grid-cols-4 gap-6 text-right text-xs">
               <div>
-                <div className="text-slate-500">证券现金</div>
+                <div className="text-slate-500">{t("stockPanel.cashBalance")}</div>
                 <div className="mt-1 text-sm font-semibold tabular-nums text-slate-900">{formatCurrencyMoney(cashBalance, currency)}</div>
               </div>
               <div>
-                <div className="text-slate-500">持仓市值</div>
+                <div className="text-slate-500">{t("stockHoldingReport.summary.marketValue")}</div>
                 <div className="mt-1 text-sm font-semibold tabular-nums text-slate-900">{formatCurrencyMoney(marketValue, currency)}</div>
               </div>
               <div>
-                <div className="text-slate-500">总资产</div>
+                <div className="text-slate-500">{t("stockPanel.totalAssets")}</div>
                 <div className="mt-1 text-sm font-semibold tabular-nums text-slate-900">{formatCurrencyMoney(assetValue, currency)}</div>
               </div>
               <div>
-                <div className="text-slate-500">浮动盈亏</div>
+                <div className="text-slate-500">{t("stockHoldingReport.summary.floatingPnL")}</div>
                 <div className={`mt-1 text-sm font-semibold tabular-nums ${pnlClass(floatingPnL, isRedUp)}`}>
                   {formatCurrencyMoney(floatingPnL, currency)}
                 </div>
@@ -783,7 +793,7 @@ export function StockHoldingsPanel({
             columns={positionColumns}
             rows={positions}
             rowKey={(p) => positionKey(p)}
-            emptyText="暂无股票持仓"
+            emptyText={t("stockHoldingReport.empty")}
             minTableWidth={900}
             rowClassName={(p) => {
               const active = positionKey(p) === selectedKey;
@@ -808,13 +818,13 @@ export function StockHoldingsPanel({
                 {batchTargetIds.length > 0 ? (
                   <div className="flex shrink-0 items-center gap-1">
                     <span className="shrink-0 text-xs font-medium tabular-nums text-blue-700">
-                      已选 {batchTargetIds.length} 条
+                      {t("detail.selectedCount", { count: batchTargetIds.length })}
                     </span>
                     <BatchReplacePopoverButton
                       fields={batchFields}
                       targetCount={batchTargetIds.length}
-                      targetLabel="已选"
-                      buttonTitle="编辑"
+                      targetLabel={t("stockPanel.selected")}
+                      buttonTitle={t("common.edit")}
                       buttonClassName="h-6 w-6 rounded border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center [&_svg]:h-3.5 [&_svg]:w-3.5"
                       onApply={applyBatch}
                     />
@@ -823,17 +833,17 @@ export function StockHoldingsPanel({
                       onClick={() => void applyBatchDelete()}
                       disabled={batchDeleting}
                       className="flex h-6 w-6 items-center justify-center rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40"
-                      title="删除已选股票交易"
-                      aria-label="删除已选股票交易"
+                      title={t("stockPanel.deleteSelected")}
+                      aria-label={t("stockPanel.deleteSelected")}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
                     <span className="mx-1 h-4 w-px bg-slate-200" />
                   </div>
                 ) : null}
-                <span className="shrink-0">交易明细</span>
+                <span className="shrink-0">{t("debtShell.tabEntries")}</span>
                 <span className="ml-2 truncate text-xs font-normal text-slate-500">{selectedPosition.name}</span>
-                <span className="ml-2 text-xs font-normal text-slate-400">{transactions.length} 条</span>
+                <span className="ml-2 text-xs font-normal text-slate-400">{t("stockPanel.entryCount", { count: transactions.length })}</span>
               </div>
               <div className="flex shrink-0 items-center gap-2 text-xs text-slate-400">
                 {deleteMessage ? <span className="text-[11px] text-slate-500">{deleteMessage}</span> : null}
@@ -854,7 +864,7 @@ export function StockHoldingsPanel({
                     onClick={() => { setDetailPageSize(allDetailPageSize); setDetailPage(1); }}
                     className={`h-6 px-1.5 rounded border ${detailPageSize === allDetailPageSize ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}
                   >
-                    所有
+                    {t("stockPanel.all")}
                   </button>
                   <span className="text-slate-300">|</span>
                   {detailSafePage > 1 ? (<>
@@ -901,11 +911,11 @@ export function StockHoldingsPanel({
             </div>
             <div className="min-h-0 flex-1">
               {transactionsLoading ? (
-                <div className="flex h-full min-h-[160px] items-center justify-center text-xs text-slate-500">交易明细加载中...</div>
+                <div className="flex h-full min-h-[160px] items-center justify-center text-xs text-slate-500">{t("stockPanel.detailLoading")}</div>
               ) : transactionsError ? (
                 <div className="flex h-full min-h-[160px] items-center justify-center text-xs text-rose-600">{transactionsError}</div>
               ) : transactions.length === 0 ? (
-                <div className="flex h-full min-h-[160px] items-center justify-center text-xs text-slate-500">暂无该股票交易明细</div>
+                <div className="flex h-full min-h-[160px] items-center justify-center text-xs text-slate-500">{t("stockPanel.noTransactions")}</div>
               ) : (
                 <AdvancedDataTable
                   storageKey="mmh_stock_shell_detail_advanced_table_v1"
@@ -914,7 +924,7 @@ export function StockHoldingsPanel({
                   rows={transactions}
                   rowKey={(tx) => tx.id}
                   minTableWidth={1000}
-                  emptyText="暂无该股票交易明细"
+                  emptyText={t("stockPanel.noTransactions")}
                   selectable
                   selectOnRowClick
                   selectAllScope="renderedRows"

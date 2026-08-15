@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 
 import {
   InsuranceEntryEditModal,
@@ -12,6 +13,7 @@ import {
   getInsuranceProductName,
   type InsuranceAction,
 } from "@/lib/insurance/transaction";
+import { useI18n } from "@/lib/i18n";
 
 type AccountOption = {
   id: string;
@@ -57,6 +59,7 @@ export function InsuranceEntryEditBridge({
 }) {
   const [value, setValue] = useState<InsuranceEntryEditValue | null>(null);
   const [loading, setLoading] = useState(false);
+  const { t } = useI18n();
 
   useEffect(() => {
     let activeRequest = "";
@@ -77,14 +80,14 @@ export function InsuranceEntryEditBridge({
           | { ok?: boolean; data?: Record<string, any>; error?: string }
           | null;
         if (!response.ok || !data?.ok || !data.data) {
-          throw new Error(data?.error || "读取保险续期记录失败");
+          throw new Error(data?.error || t("insuranceEntryEdit.loadFailed"));
         }
         if (activeRequest !== requestId) return;
 
         const entry = data.data;
         const sourceIsInsurance = entry.source === "insurance" || !!entry.insuranceProductId;
         if (!sourceIsInsurance) {
-          throw new Error("这条记录不是保险续期记录");
+          throw new Error(t("insuranceEntryEdit.notInsuranceEntry"));
         }
 
         const insuranceAction = getInsuranceAction(entry);
@@ -108,10 +111,10 @@ export function InsuranceEntryEditBridge({
             source: "insurance",
             insuranceProductName: entry.insuranceProductName ?? detail.insuranceProductName ?? null,
             fundName: entry.fundName ?? null,
-          }) || "保险续期",
+          }) || t("insuranceEntryEdit.defaultProductName"),
         });
       } catch (error) {
-        window.alert(error instanceof Error ? error.message : "读取保险续期记录失败");
+        window.alert(error instanceof Error ? error.message : t("insuranceEntryEdit.loadFailed"));
       } finally {
         if (activeRequest === requestId) setLoading(false);
       }
@@ -122,7 +125,7 @@ export function InsuranceEntryEditBridge({
       activeRequest = "";
       window.removeEventListener("mmh:insurance:edit", onInsuranceEdit as EventListener);
     };
-  }, []);
+  }, [t]);
 
   return (
     <>
@@ -137,7 +140,7 @@ export function InsuranceEntryEditBridge({
         }}
         onSaved={async (next) => {
           setValue(next);
-          window.dispatchEvent(new Event("mmh:fund:refresh"));
+          dispatchFinanceDataChanged({ reason: "insurance-entry:save" });
         }}
       />
     </>

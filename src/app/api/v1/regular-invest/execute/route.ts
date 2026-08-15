@@ -493,7 +493,7 @@ export async function POST(req: NextRequest) {
     await recalcAndSaveAccountBalance(fundAcc.id).catch(logger.catchLog("操作失败", "route.ts"));
     revalidateAfterInvestChange();
 
-    // Client-side handles page refresh via mmh:fund:refresh
+    // Client-side handles page refresh via dispatchFinanceDataChanged (mmh:finance:changed)
 
     if (result.buyFailed) {
       return NextResponse.json({

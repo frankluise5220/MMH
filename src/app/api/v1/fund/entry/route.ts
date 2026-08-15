@@ -24,15 +24,15 @@ function cashFlowDateForKind(kind: FundCashFlowKind, applyDate?: Date, arrivalDa
 }
 
 /**
- * 修改交易明细
+ * Updates a fund transaction entry.
  * PUT /api/v1/fund/entry
- * Body: { id, date?, fundConfirmDate?, fundArrivalDate?, ...其他字段 }
- * id 可以是 FundTransaction.id，也可以是关联资金 TxRecord.id；服务端会解析到基金业务交易。
+ * Body: { id, date?, fundConfirmDate?, fundArrivalDate?, ...other fields }
+ * id can be a FundTransaction.id or a linked cash-flow TxRecord.id; the server resolves it to the fund business transaction.
  *
- * 特殊逻辑：
- * - 如果修改了申请日期(date)，自动重新计算确认日期(fundConfirmDate)和入账日期(fundArrivalDate)
- * - 如果修改了确认日期(fundConfirmDate)，自动重新计算入账日期(fundArrivalDate)
- * - 如果直接指定了入账日期(fundArrivalDate)，不做自动计算
+ * Special logic:
+ * - If apply date (date) is changed, confirm date (fundConfirmDate) and arrival date (fundArrivalDate) are auto-recomputed
+ * - If confirm date (fundConfirmDate) is changed, arrival date (fundArrivalDate) is auto-recomputed
+ * - If arrival date (fundArrivalDate) is given directly, no auto computation is performed
  */
 export async function PUT(req: NextRequest) {
   try {
@@ -41,13 +41,13 @@ export async function PUT(req: NextRequest) {
     const { id, date, fundConfirmDate, fundArrivalDate, autoCalcConfirmDate } = body;
 
     if (!id) {
-      return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
     }
 
     const entry = await findFundTransactionForEntryId(prisma, { id, householdId });
 
     if (!entry || entry.deletedAt) {
-      return NextResponse.json({ ok: false, error: "基金交易记录不存在" }, { status: 404 });
+      return NextResponse.json({ ok: false, code: "FUND_ENTRY_NOT_FOUND", error: "基金交易记录不存在" }, { status: 404 });
     }
 
     const updateData: any = {};
@@ -121,7 +121,7 @@ export async function PUT(req: NextRequest) {
     // Client-side handles page refresh
     return NextResponse.json({ ok: true, entry: updated });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "修改失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "UPDATE_FAILED", error: e instanceof Error ? e.message : "修改失败" }, { status: 500 });
   }
 }
 
@@ -132,13 +132,13 @@ export async function DELETE(req: NextRequest) {
     const id = searchParams.get("id");
 
     if (!id) {
-      return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
     }
 
     const entry = await findFundTransactionForEntryId(prisma, { id, householdId });
 
     if (!entry || entry.deletedAt) {
-      return NextResponse.json({ ok: false, error: "基金交易记录不存在" }, { status: 404 });
+      return NextResponse.json({ ok: false, code: "FUND_ENTRY_NOT_FOUND", error: "基金交易记录不存在" }, { status: 404 });
     }
 
     const deletedAt = new Date();
@@ -184,6 +184,6 @@ export async function DELETE(req: NextRequest) {
     // Client-side handles page refresh
     return NextResponse.json({ ok: true });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "删除失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "DELETE_FAILED", error: e instanceof Error ? e.message : "删除失败" }, { status: 500 });
   }
 }

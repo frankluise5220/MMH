@@ -4,13 +4,14 @@ import { useEffect, useState } from "react";
 import { Scale } from "lucide-react";
 import { DateStepper } from "./DateStepper";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { useI18n } from "@/lib/i18n";
 
 function todayYmd() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function formatMoneyValue(value: number) {
-  return value.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function formatMoneyValue(value: number, language: string) {
+  return value.toLocaleString(language, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 type EditDetail = {
@@ -37,6 +38,7 @@ export function DebitBalanceReconcileButton({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
+  const { t, language } = useI18n();
 
   const parsedReconcileAmount = Number(reconcileAmount);
 
@@ -67,7 +69,7 @@ export function DebitBalanceReconcileButton({
 
   async function submit() {
     if (!Number.isFinite(parsedReconcileAmount)) {
-      setError("请填写正确的校准金额。");
+      setError(t("balanceReconcile.enterValidAmount"));
       return;
     }
     setSubmitting(true);
@@ -85,8 +87,10 @@ export function DebitBalanceReconcileButton({
         }),
       });
       const data = await res.json().catch(() => null);
-      if (!data?.ok) throw new Error(data?.error || "校准失败");
-      setInfo(`${editingEntryId ? "已更新校准" : "已校准"}到 ${formatMoneyValue(Number(data.actualBalance ?? parsedReconcileAmount))}`);
+      if (!data?.ok) throw new Error(data?.error || t("balanceReconcile.failed"));
+      setInfo(t(editingEntryId ? "balanceReconcile.resultUpdated" : "balanceReconcile.resultCreated", {
+        amount: formatMoneyValue(Number(data.actualBalance ?? parsedReconcileAmount), language),
+      }));
       dispatchFinanceDataChanged({
         reason: "balance-reconcile",
         accountIds: [accountId],
@@ -94,7 +98,7 @@ export function DebitBalanceReconcileButton({
       });
       setTimeout(() => setOpen(false), 450);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "校准失败");
+      setError(err instanceof Error ? err.message : t("balanceReconcile.failed"));
     } finally {
       setSubmitting(false);
     }
@@ -107,27 +111,27 @@ export function DebitBalanceReconcileButton({
         data-basic-detail-reconcile
         onClick={openModal}
         className="flex h-7 items-center gap-1 rounded border border-slate-200 bg-white px-2 text-xs text-slate-600 hover:bg-amber-50 hover:text-amber-700"
-        title="按实际余额生成一条校准流水"
+        title={t("balanceReconcile.buttonTitle")}
       >
         <Scale className="h-3 w-3" />
-        校准余额
+        {t("balanceReconcile.button")}
       </button>
 
       {open ? (
         <div className="fixed inset-0 z-[95] flex items-start justify-center bg-slate-900/25 px-4 py-[18vh]">
           <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-2xl">
             <div className="border-b border-slate-100 px-4 py-3">
-              <div className="text-sm font-semibold text-slate-800">{editingEntryId ? "编辑余额校准" : "余额校准"}</div>
-              <div className="mt-1 text-xs text-slate-500">把当前账户余额固定到一个明确日期节点</div>
+              <div className="text-sm font-semibold text-slate-800">{editingEntryId ? t("balanceReconcile.titleEdit") : t("balanceReconcile.titleCreate")}</div>
+              <div className="mt-1 text-xs text-slate-500">{t("balanceReconcile.desc")}</div>
             </div>
 
             <div className="space-y-3 px-4 py-4 text-sm">
               <div className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                校准会在所选日期的最末时刻生成一个余额锚点，当天其他流水先计算，最后余额固定为校准金额。
+                {t("balanceReconcile.hint")}
               </div>
 
               <label className="block">
-                <span className="mb-1 block text-xs text-slate-500">校准账户</span>
+                <span className="mb-1 block text-xs text-slate-500">{t("balanceReconcile.labelAccount")}</span>
                 <div className="flex h-9 w-full items-center rounded-md border border-slate-200 bg-slate-50 px-2 text-sm text-slate-700">
                   {accountLabel || accountId}
                 </div>
@@ -135,11 +139,11 @@ export function DebitBalanceReconcileButton({
 
               <div className="grid grid-cols-2 gap-3">
                 <label className="block">
-                  <span className="mb-1 block text-xs text-slate-500">校准日期</span>
+                  <span className="mb-1 block text-xs text-slate-500">{t("balanceReconcile.labelDate")}</span>
                   <DateStepper value={date} onChange={setDate} className="h-9 w-full rounded-md border border-slate-200 px-2 text-sm" />
                 </label>
                 <label className="block">
-                  <span className="mb-1 block text-xs text-slate-500">校准金额</span>
+                  <span className="mb-1 block text-xs text-slate-500">{t("balanceReconcile.labelAmount")}</span>
                   <input
                     value={reconcileAmount}
                     onChange={(event) => setReconcileAmount(event.target.value)}
@@ -152,7 +156,10 @@ export function DebitBalanceReconcileButton({
               </div>
 
               <div className="text-[11px] text-slate-400">
-                当前账面余额：{formatMoneyValue(currentBalance)}。校准记录时间会保存为 {date || "所选日期"} 23:59:59。
+                {t("balanceReconcile.balanceInfo", {
+                  balance: formatMoneyValue(currentBalance, language),
+                  date: date || t("balanceReconcile.selectedDate"),
+                })}
               </div>
 
               {error ? <div className="text-xs text-red-600">{error}</div> : null}
@@ -166,7 +173,7 @@ export function DebitBalanceReconcileButton({
                 className="secondary-button h-8 px-3 text-xs"
                 disabled={submitting}
               >
-                取消
+                {t("common.cancel")}
               </button>
               <button
                 type="button"
@@ -174,7 +181,7 @@ export function DebitBalanceReconcileButton({
                 className="primary-button h-8 px-3 text-xs disabled:opacity-50"
                 disabled={submitting || !Number.isFinite(parsedReconcileAmount)}
               >
-                {submitting ? "保存中..." : editingEntryId ? "保存校准" : "确认校准"}
+                {submitting ? t("balanceReconcile.saving") : editingEntryId ? t("balanceReconcile.saveUpdate") : t("balanceReconcile.confirmCreate")}
               </button>
             </div>
           </div>

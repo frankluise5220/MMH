@@ -20,10 +20,10 @@ const AUTH_LOOKUP_TIMEOUT_MS = 1500;
 /**
  * 敏感操作（系统初始化、删除账簿等）的密码验证。
  *
- * 要求当前登录用户是管理员，并校验该管理员用户的密码；
+ * 要求当前登录用户是管理员，并校验当前登录用户自己的密码；
  * 不再使用部署级“数据库密码/系统密码”（MMH_SYSTEM_PASSWORD、POSTGRES_PASSWORD 等）。
  */
-async function verifyAdminPassword(
+async function verifySensitiveOperationPassword(
   password: string,
 ): Promise<{ ok: true } | { ok: false; error: string; status: number }> {
   const currentUser = await getCurrentUser();
@@ -41,7 +41,7 @@ async function verifyAdminPassword(
   if (dbUser?.passwordHash) {
     const matched = await verifyPassword(password, dbUser.passwordHash);
     if (matched) return { ok: true };
-    return { ok: false, error: "管理员密码错误", status: 401 };
+    return { ok: false, error: "当前用户密码错误", status: 401 };
   }
 
   // 兼容旧版：用户尚未设置密码时，校验系统设置中的旧访问密码。
@@ -50,7 +50,7 @@ async function verifyAdminPassword(
     AUTH_LOOKUP_TIMEOUT_MS,
   );
   if (legacy?.value && password === legacy.value) return { ok: true };
-  return { ok: false, error: "管理员密码错误", status: 401 };
+  return { ok: false, error: "当前用户密码错误", status: 401 };
 }
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T | null> {
@@ -196,7 +196,7 @@ async function findPasswordMatches(users: LoginUser[], password: string) {
  *
  * Body: { password: string, userId?: string, username?: string, householdId?: string, verifySystem?: boolean }
  * - verifySystem=true verifies that the current session user is an admin and that
- *   `password` matches that admin user's password. It is used for sensitive
+ *   `password` matches that user's own password. It is used for sensitive
  *   operations such as system initialization and deleting ledgers, and does not
  *   create a user session. Deployment-level database/system passwords are not
  *   accepted for this verification.
@@ -221,7 +221,7 @@ export async function POST(req: NextRequest) {
 
   if (body.verifySystem) {
     try {
-      const verified = await verifyAdminPassword(password);
+      const verified = await verifySensitiveOperationPassword(password);
       if (!verified.ok) {
         return NextResponse.json({ ok: false, error: verified.error }, { status: verified.status });
       }

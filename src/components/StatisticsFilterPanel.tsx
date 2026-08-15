@@ -2,6 +2,7 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
+import { useI18n } from "@/lib/i18n";
 
 type AccountItem = {
   id: string;
@@ -32,6 +33,7 @@ export function StatisticsFilterPanel({
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { t } = useI18n();
 
   const selectedAccountIds = searchParams.get("accounts")
     ? searchParams.get("accounts")!.split(",").filter(Boolean)
@@ -74,14 +76,14 @@ export function StatisticsFilterPanel({
     <div className="flex items-center gap-3">
       <div className="flex items-center gap-1">
         <Link href={hrefYear(year - 1)} className="h-7 w-7 rounded border border-slate-200 bg-white text-xs text-slate-500 hover:bg-slate-50 flex items-center justify-center">◀</Link>
-        <span className="text-sm font-semibold text-slate-700 w-16 text-center">{year}年</span>
+        <span className="text-sm font-semibold text-slate-700 w-16 text-center">{t("statistics.yearTitle", { year })}</span>
         <Link href={hrefYear(year + 1)} className="h-7 w-7 rounded border border-slate-200 bg-white text-xs text-slate-500 hover:bg-slate-50 flex items-center justify-center">▶</Link>
       </div>
 
-      {/* 账户筛选 */}
+      {/* Account filter */}
       <div className="relative group">
         <span className="text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded cursor-pointer hover:bg-slate-200">
-          {selectedAccountIds.length > 0 ? `已选 ${selectedAccountIds.length} 个账户` : "全部账户"}
+          {selectedAccountIds.length > 0 ? t("statistics.selectedAccounts", { count: selectedAccountIds.length }) : t("statistics.allAccounts")}
         </span>
         <div className="absolute right-0 top-full mt-1 z-50 hidden group-hover:block bg-white border border-slate-200 rounded-lg shadow-lg p-2 min-w-[240px] max-h-64 overflow-y-auto">
           {allAccounts.map(a => (
@@ -98,11 +100,11 @@ export function StatisticsFilterPanel({
         </div>
       </div>
 
-      {/* 标签筛选 */}
+      {/* Tag filter */}
       {allTags.length > 0 && (
         <div className="relative group">
           <span className="text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded cursor-pointer hover:bg-slate-200">
-            {selectedTagIds.length > 0 ? `已选 ${selectedTagIds.length} 个标签` : "全部标签"}
+            {selectedTagIds.length > 0 ? t("statistics.selectedTags", { count: selectedTagIds.length }) : t("statistics.allTags")}
           </span>
           <div className="absolute right-0 top-full mt-1 z-50 hidden group-hover:block bg-white border border-slate-200 rounded-lg shadow-lg p-2 min-w-[200px] max-h-64 overflow-y-auto">
             {allTags.map(t => {

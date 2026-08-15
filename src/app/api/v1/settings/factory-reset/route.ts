@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { getCurrentUser } from "@/lib/server/auth";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { isAdmin } from "@/lib/server/auth";
+import { verifyPassword } from "@/lib/auth/password";
 
 export const runtime = "nodejs";
 
@@ -10,14 +11,41 @@ export const runtime = "nodejs";
  *
  * 系统初始化：删除所有数据，包括账簿本身，恢复到第一次安装完成的状态。
  * 初始化后需要重新创建账簿和管理员。
- * 仅管理员可操作。
+ *
+ * 安全要求（见 AGENTS.md）：
+ * - 仅系统管理员（isSystem=true）可执行；
+ * - 必须提交当前登录管理员的密码，服务端校验通过后才执行；
+ *   不使用部署级系统密码做身份验证。
+ * Body: { password: string }
  */
-export async function POST(_req: NextRequest) {
-  const { householdId, user } = await getHouseholdScope();
-
-  if (!user || !isAdmin(user)) {
-    return NextResponse.json({ ok: false, error: "仅管理员可执行此操作" }, { status: 403 });
+export async function POST(req: NextRequest) {
+  const currentUser = await getCurrentUser();
+  if (!currentUser) {
+    return NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 });
   }
+  if (!currentUser.isSystem) {
+    return NextResponse.json({ ok: false, error: "仅系统管理员可执行此操作" }, { status: 403 });
+  }
+
+  const body = (await req.json().catch(() => null)) as { password?: string } | null;
+  const password = (body?.password ?? "").trim();
+  if (!password) {
+    return NextResponse.json({ ok: false, error: "请输入当前用户密码" }, { status: 400 });
+  }
+
+  const dbUser = await prisma.user.findUnique({
+    where: { id: currentUser.id },
+    select: { passwordHash: true },
+  });
+  if (!dbUser?.passwordHash) {
+    return NextResponse.json({ ok: false, error: "当前用户尚未设置密码" }, { status: 400 });
+  }
+  const matched = await verifyPassword(password, dbUser.passwordHash);
+  if (!matched) {
+    return NextResponse.json({ ok: false, error: "当前用户密码错误" }, { status: 401 });
+  }
+
+  const { householdId } = await getHouseholdScope();
 
   await prisma.$transaction(async (tx) => {
     // 先查出该账簿下所有账户 ID

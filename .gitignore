@@ -177,6 +177,13 @@ mmh-doc-edit/
 .tmp_known_hosts*
 .tmp-fnos-logo/
 backup-deleted-*.json
+
+# household backup data (never commit user financial data)
+*.mh8
+/mh8/
+
+# editor auto-save temp files
+*~RF*.TMP
 tmp-backup-*.json
 nul
 resume_japan_network_engineer/

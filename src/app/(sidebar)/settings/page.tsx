@@ -2,8 +2,10 @@ import Link from "next/link";
 
 import { SettingsCatalogIcon } from "@/components/settings/SettingsCatalogIcon";
 import { getSettingsCatalogForSurface } from "@/lib/settings/catalog";
+import { getServerT } from "@/lib/server/i18n";
 
-export default function SettingsPage() {
+export default async function SettingsPage() {
+  const t = await getServerT();
   const catalog = getSettingsCatalogForSurface("web");
 
   return (
@@ -11,7 +13,7 @@ export default function SettingsPage() {
       <div className="rounded-xl border border-slate-200 bg-white px-4 py-4">
         <h2 className="text-sm font-semibold text-slate-800">{catalog.title}</h2>
         <p className="mt-1 text-xs text-slate-500">
-          选择左侧菜单或下方快捷入口进入具体设置。设置目录来自共享 catalog，Web 和 Android 使用同一套分组与入口语义。
+          {t("settings.catalogDescription")}
         </p>
       </div>
 

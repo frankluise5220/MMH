@@ -24,8 +24,10 @@ import {
   normalizeAllowedAccessList,
   parseAllowedAccessList,
 } from "@/lib/access-whitelist";
+import { useI18n } from "@/lib/i18n";
 
-const ACCESS_WHITELIST_HINT = "开启后只允许名单内的访问域名或 IP 打开 MMH。";
+type I18nT = (key: string, params?: Record<string, string | number>) => string;
+
 const LEDGER_INVITE_CODE_KEY = "ledger_creation_invite_code";
 
 type SaveFilePickerHandle = {
@@ -40,9 +42,9 @@ type OpenFilePickerHandle = {
   getFile: () => Promise<File>;
 };
 
-const RESTORE_FILE_PICKER_TYPES = [
+const RESTORE_FILE_PICKER_TYPES = (t: I18nT) => [
   {
-    description: "MMH 备份文件",
+    description: t("settings.database.backupFilePickerDesc"),
     accept: {
       "application/json": [".mmh-backup"],
     },
@@ -127,8 +129,8 @@ const RESTORE_STAGE_ORDER: Record<RestoreProgressStage, number> = {
   done: 6,
 };
 
-async function fetchJsonWithTimeout<T>(url: string, options?: RequestInit & { timeoutMs?: number }): Promise<T> {
-  const { timeoutMs = 8000, ...fetchOptions } = options ?? {};
+async function fetchJsonWithTimeout<T>(url: string, options: RequestInit & { timeoutMs?: number; t: I18nT }): Promise<T> {
+  const { timeoutMs = 8000, t, ...fetchOptions } = options ?? {};
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -139,12 +141,12 @@ async function fetchJsonWithTimeout<T>(url: string, options?: RequestInit & { ti
     const data = await res.json().catch(() => null) as T | null;
     if (!res.ok || !data) {
       const maybeError = data as { error?: string } | null;
-      throw new Error(maybeError?.error ?? `读取失败（HTTP ${res.status}）`);
+      throw new Error(maybeError?.error ?? t("settings.database.readFailedHttp", { status: res.status }));
     }
     return data;
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error("读取超时，请稍后重试");
+      throw new Error(t("settings.database.readTimeout"));
     }
     throw error;
   } finally {
@@ -183,7 +185,7 @@ function formatInviteDateTime(value?: string) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-async function saveDataBackup(credentials: SensitiveOperationCredentials): Promise<BackupSaveResult | null> {
+async function saveDataBackup(credentials: SensitiveOperationCredentials, t: I18nT): Promise<BackupSaveResult | null> {
   const res = await fetch("/api/v1/settings/backup?mode=export", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -195,7 +197,7 @@ async function saveDataBackup(credentials: SensitiveOperationCredentials): Promi
   });
   if (!res.ok) {
     const data = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(data?.error || `备份失败（HTTP ${res.status}）`);
+    throw new Error(data?.error || t("settings.database.backupFailedHttp", { status: res.status }));
   }
   const blob = await res.blob();
   const fileName =
@@ -206,7 +208,7 @@ async function saveDataBackup(credentials: SensitiveOperationCredentials): Promi
     try {
       const handle = await savePicker({
         suggestedName: fileName,
-        types: [{ description: "MMH 加密数据备份", accept: { "application/json": [".mmh-backup"] } }],
+        types: [{ description: t("settings.database.backupFileDesc"), accept: { "application/json": [".mmh-backup"] } }],
       });
       const writable = await handle.createWritable();
       await writable.write(blob);
@@ -229,13 +231,13 @@ async function saveDataBackup(credentials: SensitiveOperationCredentials): Promi
   return { fileName, pickedLocation: false };
 }
 
-async function saveDataTableExport(): Promise<BackupSaveResult | null> {
+async function saveDataTableExport(t: I18nT): Promise<BackupSaveResult | null> {
   const res = await fetch("/api/v1/settings/backup?mode=table-export", {
     method: "POST",
   });
   if (!res.ok) {
     const data = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(data?.error || `导出表格失败（HTTP ${res.status}）`);
+    throw new Error(data?.error || t("settings.database.exportFailedHttp", { status: res.status }));
   }
   const blob = await res.blob();
   const fileName =
@@ -248,7 +250,7 @@ async function saveDataTableExport(): Promise<BackupSaveResult | null> {
         suggestedName: fileName,
         types: [
           {
-            description: "MMH 表格导出",
+            description: t("settings.database.tableExportDesc"),
             accept: {
               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
             },
@@ -301,14 +303,15 @@ function normalizeRestoreProgress(progress: RestoreProgressState | undefined, fa
 async function pollRestoreTask(
   restoreId: string,
   onProgress: (progress: RestoreProgressState) => void,
+  t: I18nT,
 ): Promise<RestoreResponse> {
   const deadline = Date.now() + 30 * 60 * 1000;
   let failedPolls = 0;
   let lastProgress: RestoreProgressState = {
     stage: "preparing",
     percent: 35,
-    label: "等待恢复",
-    detail: "备份文件已上传，正在等待服务端恢复进度",
+    label: t("settings.database.waitingRestore"),
+    detail: t("settings.database.waitingRestoreDetail"),
   };
 
   while (Date.now() < deadline) {
@@ -320,7 +323,7 @@ async function pollRestoreTask(
       );
       const data = (await res.json().catch(() => null)) as RestoreResponse | null;
       if (!res.ok || !data?.ok || !data.task) {
-        throw new Error(data?.error || `读取恢复进度失败（HTTP ${res.status}）`);
+        throw new Error(data?.error || t("settings.database.restoreStatusFailedHttp", { status: res.status }));
       }
       failedPolls = 0;
       lastProgress = normalizeRestoreProgress(data.task.progress, lastProgress);
@@ -329,33 +332,34 @@ async function pollRestoreTask(
       if (data.task.status === "success") {
         return {
           ok: true,
-          message: "恢复完成",
+          message: t("settings.database.restoreComplete"),
           summary: data.task.summary,
           task: data.task,
           restoreId,
         };
       }
       if (data.task.status === "error") {
-        throw new Error(data.task.error || data.task.progress?.detail || "恢复失败");
+        throw new Error(data.task.error || data.task.progress?.detail || t("settings.database.restoreFailed"));
       }
     } catch (error) {
       failedPolls += 1;
       if (failedPolls >= 5) {
-        throw error instanceof Error ? error : new Error("恢复进度查询失败");
+        throw error instanceof Error ? error : new Error(t("settings.database.restoreQueryFailed"));
       }
       onProgress({
         ...lastProgress,
-        detail: "正在等待服务响应，恢复任务仍在后台执行",
+        detail: t("settings.database.waitingServerDetail"),
       });
     }
   }
 
-  throw new Error("恢复任务超过 30 分钟仍未完成，请检查服务日志");
+  throw new Error(t("settings.database.restoreTimeout"));
 }
 
 function restoreDataBackup(
   form: FormData,
   onProgress: (progress: RestoreProgressState) => void,
+  t: I18nT,
 ): Promise<RestoreResponse> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -366,16 +370,16 @@ function restoreDataBackup(
         onProgress({
           stage: "uploading",
           percent: uploadPercent,
-          label: `上传中 ${Math.round((event.loaded / event.total) * 100)}%`,
-          detail: "正在上传备份文件",
+          label: t("settings.database.uploadingPercent", { percent: Math.round((event.loaded / event.total) * 100) }),
+          detail: t("settings.database.uploadingDetail"),
         });
         return;
       }
       onProgress({
         stage: "uploading",
         percent: 8,
-        label: "上传中",
-        detail: "正在上传备份文件",
+        label: t("settings.database.uploading"),
+        detail: t("settings.database.uploadingDetail"),
       });
     };
 
@@ -383,48 +387,48 @@ function restoreDataBackup(
       onProgress({
         stage: "preparing",
         percent: 35,
-        label: "等待服务端",
-        detail: "备份文件已上传，正在创建恢复任务",
+        label: t("settings.database.waitingServer"),
+        detail: t("settings.database.creatingRestoreTask"),
       });
     };
 
     xhr.onload = async () => {
       const data = parseRestoreResponseText(xhr.responseText);
       if (xhr.status < 200 || xhr.status >= 300 || !data?.ok) {
-        reject(new Error(data?.error || `恢复失败（HTTP ${xhr.status}）`));
+        reject(new Error(data?.error || t("settings.database.restoreFailedHttp", { status: xhr.status })));
         return;
       }
       const restoreId = data.restoreId || data.task?.id;
       if (!restoreId) {
-        reject(new Error("服务端没有返回恢复任务编号"));
+        reject(new Error(t("settings.database.noRestoreId")));
         return;
       }
       if (data.task?.progress) {
         onProgress(normalizeRestoreProgress(data.task.progress, {
           stage: "preparing",
           percent: 35,
-          label: "等待恢复",
+          label: t("settings.database.waitingRestore"),
         }));
       }
       try {
-        resolve(await pollRestoreTask(restoreId, onProgress));
+        resolve(await pollRestoreTask(restoreId, onProgress, t));
       } catch (error) {
         reject(error);
       }
     };
 
     xhr.onerror = () => {
-      reject(new Error("网络错误，请重试"));
+      reject(new Error(t("settings.database.networkErrorRetry")));
     };
     xhr.onabort = () => {
-      reject(new Error("恢复已取消"));
+      reject(new Error(t("settings.database.restoreCancelled")));
     };
 
     onProgress({
       stage: "uploading",
       percent: 3,
-      label: "上传中",
-      detail: "正在准备上传备份文件",
+      label: t("settings.database.uploading"),
+      detail: t("settings.database.preparingUpload"),
     });
     xhr.open("POST", "/api/v1/settings/backup");
     xhr.send(form);
@@ -432,16 +436,17 @@ function restoreDataBackup(
 }
 
 function RestoreProgressView({ progress }: { progress: RestoreProgressState }) {
+  const { t } = useI18n();
   if (progress.stage === "idle") return null;
 
   const activeIndex = RESTORE_STAGE_ORDER[progress.stage];
   const steps: Array<{ stage: RestoreProgressStage; label: string }> = [
-    { stage: "uploading", label: "上传" },
-    { stage: "preparing", label: "准备" },
-    { stage: "clearing", label: "清理" },
-    { stage: "importing", label: "导入" },
-    { stage: "restoring", label: "还原" },
-    { stage: "finalizing", label: "收尾" },
+    { stage: "uploading", label: t("settings.database.stageUpload") },
+    { stage: "preparing", label: t("settings.database.stagePrepare") },
+    { stage: "clearing", label: t("settings.database.stageClear") },
+    { stage: "importing", label: t("settings.database.stageImport") },
+    { stage: "restoring", label: t("settings.database.stageRestore") },
+    { stage: "finalizing", label: t("settings.database.stageFinalize") },
   ];
 
   return (
@@ -488,6 +493,7 @@ function RestoreProgressView({ progress }: { progress: RestoreProgressState }) {
 }
 
 export default function DatabaseSettingsPage() {
+  const { t } = useI18n();
   const restoreFileInputRef = useRef<HTMLInputElement | null>(null);
   const [origins, setOrigins] = useState<string[]>([]);
   const [originsLoading, setOriginsLoading] = useState(false);
@@ -560,10 +566,10 @@ export default function DatabaseSettingsPage() {
       const keys = ["allowed_dev_origins", "origin_check_enabled"].join(",");
       const data = await fetchJsonWithTimeout<SettingsValuesResult>(
         `/api/v1/settings/system?keys=${encodeURIComponent(keys)}`,
-        { cache: "no-store" },
+        { cache: "no-store", t },
       );
       if (!data.ok) {
-        throw new Error(data.error ?? "读取访问白名单失败");
+        throw new Error(data.error ?? t("settings.database.readWhitelistFailed"));
       }
       const values = data.values ?? {};
       const parsedOrigins = parseOriginList(values.allowed_dev_origins);
@@ -572,7 +578,7 @@ export default function DatabaseSettingsPage() {
     } catch (error) {
       setOrigins([]);
       setOriginCheckEnabled(false);
-      setOriginError(error instanceof Error ? error.message : "读取访问白名单失败");
+      setOriginError(error instanceof Error ? error.message : t("settings.database.readWhitelistFailed"));
     } finally {
       setOriginsLoading(false);
     }
@@ -580,17 +586,17 @@ export default function DatabaseSettingsPage() {
     try {
       const data = await fetchJsonWithTimeout<SettingsValuesResult>(
         `/api/v1/settings/system?keys=${encodeURIComponent(LEDGER_INVITE_CODE_KEY)}`,
-        { cache: "no-store", timeoutMs: 12_000 },
+        { cache: "no-store", timeoutMs: 12_000, t },
       );
       if (!data.ok) {
-        throw new Error(data.error ?? "读取邀请码失败");
+        throw new Error(data.error ?? t("settings.database.readInviteFailed"));
       }
       const values = data.values ?? {};
       setLedgerInviteRecords(parseLedgerInviteCodeRecords(values[LEDGER_INVITE_CODE_KEY]));
       setLedgerInviteCode("");
     } catch (error) {
       setLedgerInviteRecords([]);
-      setLedgerInviteError(error instanceof Error ? error.message : "读取邀请码失败");
+      setLedgerInviteError(error instanceof Error ? error.message : t("settings.database.readInviteFailed"));
     } finally {
       setLedgerInviteLoading(false);
     }
@@ -608,14 +614,14 @@ export default function DatabaseSettingsPage() {
       });
       const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
       if (!res.ok || !data?.ok) {
-        throw new Error(data?.error ?? "保存邀请码失败");
+        throw new Error(data?.error ?? t("settings.database.saveInviteFailed"));
       }
       const normalized = parseLedgerInviteCodeRecords(serializeLedgerInviteCodeRecords(nextRecords));
       setLedgerInviteRecords(normalized);
       setLedgerInviteCode("");
-      setLedgerInviteMessage(normalized.length > 0 ? successMessage : "已关闭登录页新建账簿");
+      setLedgerInviteMessage(normalized.length > 0 ? successMessage : t("settings.database.inviteDisabled"));
     } catch (error) {
-      setLedgerInviteError(error instanceof Error ? error.message : "保存邀请码失败");
+      setLedgerInviteError(error instanceof Error ? error.message : t("settings.database.saveInviteFailed"));
     } finally {
       setLedgerInviteSaving(false);
     }
@@ -624,19 +630,19 @@ export default function DatabaseSettingsPage() {
   async function addLedgerInviteCode() {
     const code = ledgerInviteCode.trim();
     if (!code) {
-      setLedgerInviteError("请输入邀请码");
+      setLedgerInviteError(t("settings.database.enterInviteCode"));
       return;
     }
     if (ledgerInviteRecords.some((record) => record.code === code)) {
-      setLedgerInviteError("邀请码已存在");
+      setLedgerInviteError(t("settings.database.inviteExists"));
       return;
     }
-    await saveLedgerInviteRecords([...ledgerInviteRecords, createLedgerInviteCodeRecord(code)], "邀请码已添加");
+    await saveLedgerInviteRecords([...ledgerInviteRecords, createLedgerInviteCodeRecord(code)], t("settings.database.inviteAdded"));
   }
 
   async function removeLedgerInviteCode(code: string) {
     const nextRecords = ledgerInviteRecords.filter((item) => item.code !== code);
-    await saveLedgerInviteRecords(nextRecords, "邀请码已删除");
+    await saveLedgerInviteRecords(nextRecords, t("settings.database.inviteDeleted"));
   }
 
   async function saveSystemSetting(key: string, value: string) {
@@ -654,9 +660,9 @@ export default function DatabaseSettingsPage() {
     }
     if (!res.ok || !data?.ok) {
       if (res.status === 403 && raw.includes("Access Denied")) {
-        throw new Error("当前访问的域名或 IP 不在访问白名单内，请用已放行的地址打开后再修改白名单。");
+        throw new Error(t("settings.database.whitelistAccessDenied"));
       }
-      throw new Error(data?.error ?? "保存失败");
+      throw new Error(data?.error ?? t("settings.accounts.saveFailed"));
     }
   }
 
@@ -667,7 +673,7 @@ export default function DatabaseSettingsPage() {
       setOriginError("");
       return true;
     } catch (error) {
-      setOriginError(error instanceof Error ? error.message : "保存白名单失败");
+      setOriginError(error instanceof Error ? error.message : t("settings.database.saveWhitelistFailed"));
       return false;
     }
   }
@@ -698,7 +704,7 @@ export default function DatabaseSettingsPage() {
       }
       if (nextOrigins.length === 0) {
         setOriginCheckEnabled(false);
-        setOriginError("请先添加至少一个非本机访问域名或 IP，再开启访问白名单。localhost 和 127.0.0.1 已默认允许。");
+        setOriginError(t("settings.database.whitelistNeedOrigin"));
         return;
       }
     }
@@ -708,14 +714,14 @@ export default function DatabaseSettingsPage() {
       setOriginMessage(
         enabled
           ? autoAddedHost
-            ? `已自动加入当前访问地址 ${autoAddedHost}，访问白名单已开启`
-            : "访问白名单已开启"
-          : "访问白名单已关闭",
+            ? t("settings.database.whitelistAutoAdded", { host: autoAddedHost })
+            : t("settings.database.whitelistEnabled")
+          : t("settings.database.whitelistDisabled"),
       );
     } catch (error) {
       setOriginCheckEnabled(previous);
       setOrigins(previousOrigins);
-      setOriginError(error instanceof Error ? error.message : "保存白名单开关失败");
+      setOriginError(error instanceof Error ? error.message : t("settings.database.saveWhitelistToggleFailed"));
     }
   }
 
@@ -726,12 +732,12 @@ export default function DatabaseSettingsPage() {
     if (!value) return;
     if (isDefaultAllowedAccessHostname(value)) {
       setNewOrigin("");
-      setOriginMessage("localhost、127.0.0.1 和 ::1 已默认允许，不需要加入白名单。");
+      setOriginMessage(t("settings.database.localhostDefault"));
       return;
     }
     if (origins.includes(value)) {
       setNewOrigin("");
-      setOriginMessage("该来源已在白名单中");
+      setOriginMessage(t("settings.database.originAlreadyListed"));
       return;
     }
     const previous = origins;
@@ -743,7 +749,7 @@ export default function DatabaseSettingsPage() {
       setOrigins(previous);
       return;
     }
-    setOriginMessage(originCheckEnabled ? "白名单已更新" : "白名单已更新，开启后生效");
+    setOriginMessage(originCheckEnabled ? t("settings.database.whitelistUpdated") : t("settings.database.whitelistUpdatedOnEnable"));
   }
 
   async function removeOrigin(index: number) {
@@ -762,11 +768,11 @@ export default function DatabaseSettingsPage() {
           setOrigins(previousOrigins);
           return;
         }
-        setOriginMessage("白名单已清空，访问白名单已关闭");
+        setOriginMessage(t("settings.database.whitelistCleared"));
       } catch (error) {
         setOrigins(previousOrigins);
         setOriginCheckEnabled(previousEnabled);
-        setOriginError(error instanceof Error ? error.message : "关闭白名单失败");
+        setOriginError(error instanceof Error ? error.message : t("settings.database.closeWhitelistFailed"));
       }
       return;
     }
@@ -777,7 +783,7 @@ export default function DatabaseSettingsPage() {
       !isDefaultAllowedAccessHostname(currentHost) &&
       !isAccessHostnameAllowed(currentHost, next)
     ) {
-      setOriginError("不能删除当前正在访问的域名或 IP，否则会把自己排除在白名单外。");
+      setOriginError(t("settings.database.cannotDeleteCurrentOrigin"));
       return;
     }
     setOrigins(next);
@@ -787,7 +793,7 @@ export default function DatabaseSettingsPage() {
       setOriginCheckEnabled(previousEnabled);
       return;
     }
-    setOriginMessage("白名单已更新");
+    setOriginMessage(t("settings.database.whitelistUpdated"));
   }
 
   function openBackupPasswordDialog() {
@@ -802,13 +808,13 @@ export default function DatabaseSettingsPage() {
   async function handleBackup() {
     const password = backupUserPassword.trim();
     if (!password) {
-      setBackupError("请输入用户密码");
+      setBackupError(t("settings.database.enterUserPassword"));
       return;
     }
 
     const passphrase = backupPassphrase.trim();
     if (backupCrossEnvironment && !passphrase) {
-      setBackupError("此备份需要跨环境恢复，请填写备份加密口令");
+      setBackupError(t("settings.database.passphraseRequired"));
       return;
     }
 
@@ -820,7 +826,7 @@ export default function DatabaseSettingsPage() {
         userPassword: password,
         backupPassphrase: passphrase,
         backupScope,
-      });
+      }, t);
       if (!result) return;
       setBackupPasswordDialogOpen(false);
       setBackupUserPassword("");
@@ -829,11 +835,11 @@ export default function DatabaseSettingsPage() {
       setBackupScope("household");
       setBackupMessage(
         result.pickedLocation
-          ? `数据备份已保存：${result.fileName}`
-          : `数据备份已开始下载：${result.fileName}。如未弹出保存位置，请在浏览器默认下载目录查看。`,
+          ? t("settings.database.backupSaved", { name: result.fileName })
+          : t("settings.database.backupDownloading", { name: result.fileName }),
       );
     } catch (error) {
-      setBackupError(error instanceof Error ? error.message : "备份失败");
+      setBackupError(error instanceof Error ? error.message : t("settings.database.backupFailed"));
     } finally {
       setBackuping(false);
     }
@@ -844,15 +850,15 @@ export default function DatabaseSettingsPage() {
     setBackupMessage("");
     setBackupError("");
     try {
-      const result = await saveDataTableExport();
+      const result = await saveDataTableExport(t);
       if (!result) return;
       setBackupMessage(
         result.pickedLocation
-          ? `表格导出已保存：${result.fileName}`
-          : `表格导出已开始下载：${result.fileName}。如未弹出保存位置，请在浏览器默认下载目录查看。`,
+          ? t("settings.database.exportSaved", { name: result.fileName })
+          : t("settings.database.exportDownloading", { name: result.fileName }),
       );
     } catch (error) {
-      setBackupError(error instanceof Error ? error.message : "导出表格失败");
+      setBackupError(error instanceof Error ? error.message : t("settings.database.exportFailed"));
     } finally {
       setTableExporting(false);
     }
@@ -891,19 +897,19 @@ export default function DatabaseSettingsPage() {
       const [handle] = await openPicker({
         multiple: false,
         excludeAcceptAllOption: true,
-        types: RESTORE_FILE_PICKER_TYPES,
+        types: RESTORE_FILE_PICKER_TYPES(t),
       });
       if (!handle) return;
       void applyRestoreFile(await handle.getFile());
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
-      setRestoreError(error instanceof Error ? error.message : "选择备份文件失败");
+      setRestoreError(error instanceof Error ? error.message : t("settings.database.selectBackupFailed"));
     }
   }
 
   function openRestorePasswordDialog() {
     if (!restoreFile) {
-      setRestoreError("请选择数据备份文件");
+      setRestoreError(t("settings.database.selectBackupFile"));
       return;
     }
     setRestoreUserPassword("");
@@ -916,16 +922,16 @@ export default function DatabaseSettingsPage() {
 
   async function handleRestore() {
     if (!restoreFile) {
-      setRestoreError("请选择数据备份文件");
+      setRestoreError(t("settings.database.selectBackupFile"));
       return;
     }
     const password = restoreUserPassword.trim();
     if (!password) {
-      setRestoreError("请输入当前用户密码");
+      setRestoreError(t("settings.database.enterCurrentPassword"));
       return;
     }
     if (restoreBackupScope === "system" && !restoreConfirmSystemOverwrite) {
-      setRestoreError("这是系统备份，恢复会覆盖当前用户，请先勾选确认");
+      setRestoreError(t("settings.database.systemBackupConfirm"));
       return;
     }
 
@@ -938,19 +944,19 @@ export default function DatabaseSettingsPage() {
       form.append("file", restoreFile);
       form.append("userPassword", password);
       form.append("backupPassphrase", restorePassphrase.trim());
-      const data = await restoreDataBackup(form, setRestoreProgress);
+      const data = await restoreDataBackup(form, setRestoreProgress, t);
       const counts = data.summary?.counts;
       const summaryText = counts
-        ? `恢复完成：账户 ${counts.accounts ?? 0}，交易 ${counts.transactions ?? 0}，分类 ${counts.categories ?? 0}，机构 ${counts.institutions ?? 0}。`
-        : "恢复完成。";
-      setRestoreMessage(`${summaryText} 页面将刷新。`);
+        ? t("settings.database.restoreSummary", { accounts: counts.accounts ?? 0, transactions: counts.transactions ?? 0, categories: counts.categories ?? 0, institutions: counts.institutions ?? 0 })
+        : t("settings.database.restoreDone");
+      setRestoreMessage(`${summaryText} ${t("settings.database.pageWillRefresh")}`);
       setRestorePasswordDialogOpen(false);
       setRestoreUserPassword("");
       setRestorePassphrase("");
       setTimeout(() => window.location.reload(), 1200);
     } catch (error) {
       setRestoreProgress(RESTORE_PROGRESS_IDLE);
-      setRestoreError(error instanceof Error ? error.message : "恢复失败");
+      setRestoreError(error instanceof Error ? error.message : t("settings.database.restoreFailed"));
     } finally {
       setRestoring(false);
     }
@@ -964,7 +970,7 @@ export default function DatabaseSettingsPage() {
 
   async function handleFactoryReset() {
     if (!resetDbPassword.trim()) {
-      setResetError("请输入管理员密码");
+      setResetError(t("settings.database.enterCurrentPassword"));
       return;
     }
     setResetting(true);
@@ -977,21 +983,25 @@ export default function DatabaseSettingsPage() {
       });
       const verifyData = await verifyRes.json().catch(() => null) as { ok?: boolean; error?: string } | null;
       if (!verifyRes.ok || !verifyData?.ok) {
-        setResetError(verifyData?.error ?? "管理员密码错误");
+        setResetError(verifyData?.error ?? t("settings.database.currentPasswordWrong"));
         return;
       }
 
-      const res = await fetch("/api/v1/settings/factory-reset", { method: "POST" });
+      const res = await fetch("/api/v1/settings/factory-reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: resetDbPassword }),
+      });
       const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
       if (res.ok && data?.ok) {
         setResetPasswordDialogOpen(false);
         setResetDbPassword("");
         window.location.href = "/login";
       } else {
-        setResetError(data?.error ?? "操作失败");
+        setResetError(data?.error ?? t("settings.database.operationFailed"));
       }
     } catch {
-      setResetError("网络错误，请重试");
+      setResetError(t("settings.database.networkErrorRetry"));
     } finally {
       setResetting(false);
     }
@@ -1005,12 +1015,12 @@ export default function DatabaseSettingsPage() {
       const res = await fetch("/api/v1/settings/revalidate", { method: "POST" });
       const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
       if (!res.ok || !data?.ok) {
-        throw new Error(data?.error || "刷新失败");
+        throw new Error(data?.error || t("settings.database.refreshFailed"));
       }
-      setCacheRefreshMessage("缓存已刷新，正在重新加载页面…");
+      setCacheRefreshMessage(t("settings.database.cacheRefreshed"));
       setTimeout(() => window.location.href = "/", 800);
     } catch (e) {
-      setCacheRefreshError(e instanceof Error ? e.message : "刷新失败");
+      setCacheRefreshError(e instanceof Error ? e.message : t("settings.database.refreshFailed"));
     } finally {
       setCacheRefreshing(false);
     }
@@ -1018,16 +1028,16 @@ export default function DatabaseSettingsPage() {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-sm font-semibold text-slate-800">数据库</h2>
+      <h2 className="text-sm font-semibold text-slate-800">{t("settings.database")}</h2>
 
       <section className="rounded-lg border border-slate-200 bg-white p-4">
         <div className="grid gap-4 lg:grid-cols-[1fr_auto]">
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium text-slate-800">备份与恢复</div>
+            <div className="text-sm font-medium text-slate-800">{t("settings.database.backupRestore")}</div>
             <div className="mt-1 text-xs text-slate-500">
-              备份生成加密恢复包；导出表格仅用于查看和处理数据，不能用于恢复。
+              {t("settings.database.backupRestoreDesc")}
             </div>
-            {restoreFile ? <div className="mt-2 truncate text-xs text-slate-500" title={restoreFile.name}>已选择：{restoreFile.name}</div> : null}
+            {restoreFile ? <div className="mt-2 truncate text-xs text-slate-500" title={restoreFile.name}>{t("settings.database.fileSelected", { name: restoreFile.name })}</div> : null}
             {backupMessage ? <div className="mt-2 text-xs text-emerald-600">{backupMessage}</div> : null}
             {backupError ? <div className="mt-2 text-xs text-red-600">{backupError}</div> : null}
             {restoreMessage ? <div className="mt-2 text-xs text-emerald-600">{restoreMessage}</div> : null}
@@ -1041,7 +1051,7 @@ export default function DatabaseSettingsPage() {
               className="inline-flex h-9 w-32 items-center justify-center gap-2 rounded-md border border-blue-200 bg-white px-3 text-sm text-blue-600 hover:bg-blue-50 disabled:opacity-50"
             >
               <Download className="h-4 w-4" />
-              {backuping ? "备份中..." : "数据备份"}
+              {backuping ? t("settings.database.backuping") : t("settings.database.backup")}
             </button>
             <button
               type="button"
@@ -1050,7 +1060,7 @@ export default function DatabaseSettingsPage() {
               className="inline-flex h-9 w-32 items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
             >
               <Download className="h-4 w-4" />
-              {tableExporting ? "导出中..." : "导出表格"}
+              {tableExporting ? t("settings.database.exporting") : t("settings.database.exportTable")}
             </button>
             <button
               type="button"
@@ -1059,7 +1069,7 @@ export default function DatabaseSettingsPage() {
               className="inline-flex h-9 w-32 items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
             >
               <Upload className="h-4 w-4 shrink-0" />
-              选择备份
+              {t("settings.database.selectBackup")}
             </button>
             <input
               ref={restoreFileInputRef}
@@ -1077,7 +1087,7 @@ export default function DatabaseSettingsPage() {
               className="inline-flex h-9 w-32 items-center justify-center gap-2 rounded-md bg-red-600 px-3 text-sm text-white hover:bg-red-700 disabled:opacity-50"
             >
               <RotateCcw className="h-4 w-4" />
-              {restoring ? "恢复中..." : "开始恢复"}
+              {restoring ? t("settings.database.restoring") : t("settings.database.startRestore")}
             </button>
           </div>
         </div>
@@ -1086,9 +1096,9 @@ export default function DatabaseSettingsPage() {
       {backupPasswordDialogOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 px-4">
           <div className="w-full max-w-sm rounded-lg border border-slate-200 bg-white p-4 shadow-xl">
-            <div className="text-sm font-semibold text-slate-800">验证当前用户</div>
+            <div className="text-sm font-semibold text-slate-800">{t("settings.database.verifyUser")}</div>
             <div className="mt-1 text-xs text-slate-500">
-              账簿备份不包含用户，恢复后保留当前用户；系统备份包含全部用户，恢复时会覆盖用户。请输入当前用户密码后继续。
+              {t("settings.database.verifyUserDesc")}
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2">
               <button
@@ -1103,7 +1113,7 @@ export default function DatabaseSettingsPage() {
                     : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
                 }`}
               >
-                账簿备份
+                {t("settings.database.householdBackup")}
               </button>
               <button
                 type="button"
@@ -1117,16 +1127,16 @@ export default function DatabaseSettingsPage() {
                     : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
                 }`}
               >
-                系统备份
+                {t("settings.database.systemBackup")}
               </button>
             </div>
             {backupScope === "system" ? (
               <div className="mt-2 rounded-md bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
-                系统备份会覆盖目标账簿中的用户，包括当前登录用户，请确认后再执行。
+                {t("settings.database.systemBackupWarning")}
               </div>
             ) : (
               <div className="mt-2 rounded-md bg-slate-50 px-2 py-1 text-[11px] text-slate-500">
-                账簿备份不包含用户，恢复到当前账簿时会保留现有用户。
+                {t("settings.database.householdBackupNote")}
               </div>
             )}
             <input
@@ -1139,7 +1149,7 @@ export default function DatabaseSettingsPage() {
               onKeyDown={(event) => {
                 if (event.key === "Enter") void handleBackup();
               }}
-              placeholder="当前用户密码"
+              placeholder={t("settings.database.currentPasswordPlaceholder")}
               autoComplete="current-password"
               autoFocus
               className="mt-3 h-10 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-700 outline-none focus:border-blue-400"
@@ -1154,7 +1164,7 @@ export default function DatabaseSettingsPage() {
                 }}
                 className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-400"
               />
-              此备份需要恢复到其他设备、系统或不同用户
+              {t("settings.database.crossEnvironment")}
             </label>
             <input
               type="text"
@@ -1166,12 +1176,12 @@ export default function DatabaseSettingsPage() {
               onKeyDown={(event) => {
                 if (event.key === "Enter") void handleBackup();
               }}
-              placeholder={backupCrossEnvironment ? "备份加密口令（跨环境恢复必填）" : "备份加密口令（可选）"}
+              placeholder={backupCrossEnvironment ? t("settings.database.passphraseRequiredPlaceholder") : t("settings.database.passphraseOptionalPlaceholder")}
               autoComplete="off"
               className="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-700 outline-none focus:border-blue-400"
             />
             <div className="mt-1 text-[11px] text-slate-400">
-              此口令会明文显示，便于核对；恢复时需要输入同一口令。仅当前环境恢复时可留空，系统会用当前用户密码加密。
+              {t("settings.database.passphraseHint")}
             </div>
             {backupError ? <div className="mt-2 text-xs text-red-600">{backupError}</div> : null}
             <div className="mt-4 flex justify-end gap-2">
@@ -1189,7 +1199,7 @@ export default function DatabaseSettingsPage() {
                 disabled={backuping}
                 className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
               >
-                取消
+                {t("common.cancel")}
               </button>
               <button
                 type="button"
@@ -1197,7 +1207,7 @@ export default function DatabaseSettingsPage() {
                 disabled={backuping || backupUserPassword.trim().length === 0}
                 className="h-9 rounded-md bg-blue-600 px-3 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
               >
-                {backuping ? "备份中..." : "确认备份"}
+                {backuping ? t("settings.database.backuping") : t("settings.database.confirmBackup")}
               </button>
             </div>
           </div>
@@ -1207,14 +1217,14 @@ export default function DatabaseSettingsPage() {
       {restorePasswordDialogOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 px-4">
           <div className="w-full max-w-sm rounded-lg border border-slate-200 bg-white p-4 shadow-xl">
-            <div className="text-sm font-semibold text-slate-800">验证当前用户</div>
+            <div className="text-sm font-semibold text-slate-800">{t("settings.database.verifyUser")}</div>
             <div className="mt-1 text-xs text-slate-500">
-              恢复会清空当前账簿并写回备份内容。当前用户密码验证当前系统；备份加密口令用于解密备份文件，两者可以来自不同用户。
+              {t("settings.database.restoreDesc")}
             </div>
             <div className="mt-3 rounded-md bg-slate-50 px-2 py-1 text-[11px] text-slate-500">
               {restoreBackupScope === "system"
-                ? "已检测到系统备份，恢复将覆盖当前账簿中的全部用户（包括当前登录用户）。"
-                : "已检测到账簿备份，不包含用户，恢复后当前用户会保留。"}
+                ? t("settings.database.systemBackupDetected")
+                : t("settings.database.householdBackupDetected")}
             </div>
             {restoreBackupScope === "system" ? (
               <label className="mt-2 flex items-center gap-2 text-xs text-red-700">
@@ -1227,7 +1237,7 @@ export default function DatabaseSettingsPage() {
                   }}
                   className="h-4 w-4 rounded border-slate-300 text-red-600 focus:ring-red-400"
                 />
-                我已知晓系统备份会覆盖当前用户
+                {t("settings.database.confirmSystemOverwrite")}
               </label>
             ) : null}
             <input
@@ -1240,7 +1250,7 @@ export default function DatabaseSettingsPage() {
               onKeyDown={(event) => {
                 if (event.key === "Enter") void handleRestore();
               }}
-              placeholder="当前用户密码"
+              placeholder={t("settings.database.currentPasswordPlaceholder")}
               autoComplete="current-password"
               autoFocus
               className="mt-3 h-10 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-700 outline-none focus:border-blue-400"
@@ -1255,11 +1265,11 @@ export default function DatabaseSettingsPage() {
               onKeyDown={(event) => {
                 if (event.key === "Enter") void handleRestore();
               }}
-              placeholder="备份加密口令"
+              placeholder={t("settings.database.passphrasePlaceholder")}
               autoComplete="off"
               className="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-700 outline-none focus:border-blue-400"
             />
-            <div className="mt-1 text-[11px] text-slate-400">如果备份时未单独设置，请输入创建备份时使用的用户密码；否则填写当时设置的备份加密口令。</div>
+            <div className="mt-1 text-[11px] text-slate-400">{t("settings.database.restorePassphraseHint")}</div>
             <RestoreProgressView progress={restoreProgress} />
             {restoreError ? <div className="mt-2 text-xs text-red-600">{restoreError}</div> : null}
             <div className="mt-4 flex justify-end gap-2">
@@ -1276,7 +1286,7 @@ export default function DatabaseSettingsPage() {
                 disabled={restoring}
                 className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
               >
-                取消
+                {t("common.cancel")}
               </button>
               <button
                 type="button"
@@ -1288,7 +1298,7 @@ export default function DatabaseSettingsPage() {
                 }
                 className="h-9 rounded-md bg-red-600 px-3 text-sm text-white hover:bg-red-700 disabled:opacity-50"
               >
-                {restoring ? "恢复中..." : "确认恢复"}
+                {restoring ? t("settings.database.restoring") : t("settings.database.confirmRestore")}
               </button>
             </div>
           </div>
@@ -1300,10 +1310,10 @@ export default function DatabaseSettingsPage() {
           <div className="w-full max-w-sm rounded-lg border border-red-100 bg-white p-4 shadow-xl">
             <div className="flex items-center gap-2 text-sm font-semibold text-red-800">
               <Shield className="h-4 w-4 shrink-0 text-amber-500" />
-              管理员密码验证
+              {t("settings.database.resetTitle")}
             </div>
             <div className="mt-1 text-xs text-slate-500">
-              系统初始化会删除所有账簿和业务数据。请输入管理员密码后继续。
+              {t("settings.database.resetDesc")}
             </div>
             <input
               type="password"
@@ -1315,7 +1325,7 @@ export default function DatabaseSettingsPage() {
               onKeyDown={(event) => {
                 if (event.key === "Enter") void handleFactoryReset();
               }}
-              placeholder="输入管理员密码"
+              placeholder={t("settings.database.resetPlaceholder")}
               autoComplete="off"
               autoFocus
               className="mt-3 h-10 w-full rounded-md border border-red-100 px-3 text-sm text-slate-700 outline-none focus:border-red-400 focus:ring-2 focus:ring-red-50"
@@ -1333,7 +1343,7 @@ export default function DatabaseSettingsPage() {
                 disabled={resetting}
                 className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
               >
-                取消
+                {t("common.cancel")}
               </button>
               <button
                 type="button"
@@ -1341,7 +1351,7 @@ export default function DatabaseSettingsPage() {
                 disabled={resetting || resetDbPassword.trim().length === 0}
                 className="h-9 rounded-md bg-red-600 px-3 text-sm text-white hover:bg-red-700 disabled:opacity-50"
               >
-                {resetting ? "执行中..." : "确认初始化"}
+                {resetting ? t("settings.database.executing") : t("settings.database.confirmInit")}
               </button>
             </div>
           </div>
@@ -1351,8 +1361,8 @@ export default function DatabaseSettingsPage() {
       <section className="rounded-lg border border-slate-200 bg-white p-4">
         <div className="flex items-center justify-between">
           <div>
-            <div className="text-sm font-medium text-slate-800">访问白名单</div>
-            <div className="mt-0.5 text-xs text-slate-500">{ACCESS_WHITELIST_HINT}</div>
+            <div className="text-sm font-medium text-slate-800">{t("settings.database.whitelist")}</div>
+            <div className="mt-0.5 text-xs text-slate-500">{t("settings.database.whitelistHint")}</div>
           </div>
           <label className="relative inline-flex cursor-pointer items-center">
             <input
@@ -1367,10 +1377,10 @@ export default function DatabaseSettingsPage() {
 
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
           <span className={`rounded px-2 py-0.5 ${originCheckEnabled ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>
-            {originCheckEnabled ? "已开启" : "未开启"}
+            {originCheckEnabled ? t("settings.database.whitelistOn") : t("settings.database.whitelistOff")}
           </span>
           <span className="text-slate-500">
-            {origins.length > 0 ? `已配置 ${origins.length} 个允许来源` : "暂无白名单条目，当前不会限制访问来源"}
+            {origins.length > 0 ? t("settings.database.configuredOrigins", { count: origins.length }) : t("settings.database.noWhitelistEntries")}
           </span>
         </div>
         {originMessage ? <div className="mt-2 text-xs text-emerald-600">{originMessage}</div> : null}
@@ -1383,26 +1393,26 @@ export default function DatabaseSettingsPage() {
           </colgroup>
           <thead className="sticky top-0 z-10">
             <tr>
-              <SettingsTh>允许来源</SettingsTh>
-              <SettingsTh align="right">操作</SettingsTh>
+              <SettingsTh>{t("settings.database.allowedOrigin")}</SettingsTh>
+              <SettingsTh align="right">{t("detail.column.actions")}</SettingsTh>
             </tr>
           </thead>
           <tbody>
             {originsLoading ? (
-              <SettingsEmptyRow colSpan={2}>正在读取白名单...</SettingsEmptyRow>
+              <SettingsEmptyRow colSpan={2}>{t("settings.database.loadingWhitelist")}</SettingsEmptyRow>
             ) : origins.length > 0 ? (
               origins.map((origin, index) => (
                 <tr key={origin} className="hover:bg-slate-50">
                   <SettingsTd className="truncate font-mono text-[11px]" title={origin}>{origin}</SettingsTd>
                   <SettingsTd align="right">
                     <SettingsRowActions>
-                      <SettingsActionButton label="删除白名单" variant="delete" onClick={() => void removeOrigin(index)} />
+                      <SettingsActionButton label={t("settings.database.deleteWhitelist")} variant="delete" onClick={() => void removeOrigin(index)} />
                     </SettingsRowActions>
                   </SettingsTd>
                 </tr>
               ))
             ) : (
-              <SettingsEmptyRow colSpan={2}>暂无白名单条目。请先添加允许访问的域名或 IP，再开启访问白名单。</SettingsEmptyRow>
+              <SettingsEmptyRow colSpan={2}>{t("settings.database.emptyWhitelist")}</SettingsEmptyRow>
             )}
             <tr className="bg-slate-50/60">
               <SettingsTd>
@@ -1410,7 +1420,7 @@ export default function DatabaseSettingsPage() {
                   type="text"
                   value={newOrigin}
                   onChange={(event) => setNewOrigin(event.target.value)}
-                  placeholder="域名或 IP，例如 mmh.example.com 或 192.168.1.100"
+                  placeholder={t("settings.database.originPlaceholder")}
                   disabled={originsLoading}
                   className="h-8 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700 focus:border-blue-300 focus:outline-none disabled:bg-slate-50"
                   onKeyDown={(event) => {
@@ -1420,7 +1430,7 @@ export default function DatabaseSettingsPage() {
               </SettingsTd>
               <SettingsTd align="right">
                 <SettingsRowActions>
-                  <SettingsActionButton label="添加白名单" variant="add" onClick={() => void addOrigin()} disabled={originsLoading} />
+                  <SettingsActionButton label={t("settings.database.addWhitelist")} variant="add" onClick={() => void addOrigin()} disabled={originsLoading} />
                 </SettingsRowActions>
               </SettingsTd>
             </tr>
@@ -1431,9 +1441,9 @@ export default function DatabaseSettingsPage() {
       <section className="rounded-lg border border-slate-200 bg-white p-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium text-slate-800">登录页新建账簿邀请码</div>
+            <div className="text-sm font-medium text-slate-800">{t("settings.database.inviteTitle")}</div>
             <div className="mt-1 text-xs text-slate-500">
-              邀请码只能使用一次。使用后会记录建立的账簿和使用时间，并自动失效。
+              {t("settings.database.inviteDesc")}
             </div>
             {ledgerInviteMessage ? <div className="mt-2 text-xs text-emerald-600">{ledgerInviteMessage}</div> : null}
             {ledgerInviteError ? <div className="mt-2 text-xs text-red-600">{ledgerInviteError}</div> : null}
@@ -1449,30 +1459,30 @@ export default function DatabaseSettingsPage() {
           </colgroup>
           <thead className="sticky top-0 z-10">
             <tr>
-              <SettingsTh>邀请码</SettingsTh>
-              <SettingsTh>状态</SettingsTh>
-              <SettingsTh>建立账簿</SettingsTh>
-              <SettingsTh>使用时间</SettingsTh>
-              <SettingsTh align="right">操作</SettingsTh>
+              <SettingsTh>{t("settings.database.inviteCode")}</SettingsTh>
+              <SettingsTh>{t("settings.database.inviteStatus")}</SettingsTh>
+              <SettingsTh>{t("settings.database.createdBook")}</SettingsTh>
+              <SettingsTh>{t("settings.database.usedTime")}</SettingsTh>
+              <SettingsTh align="right">{t("detail.column.actions")}</SettingsTh>
             </tr>
           </thead>
           <tbody>
             {ledgerInviteLoading ? (
-              <SettingsEmptyRow colSpan={5}>正在读取邀请码...</SettingsEmptyRow>
+              <SettingsEmptyRow colSpan={5}>{t("settings.database.loadingInvites")}</SettingsEmptyRow>
             ) : sortedLedgerInviteRecords.length > 0 ? (
               sortedLedgerInviteRecords.map((record) => (
                 <tr key={record.code} className="hover:bg-slate-50">
                   <SettingsTd>
                     <div className="min-w-0">
                       <div className="truncate font-mono text-[11px] text-slate-700" title={record.code}>{record.code}</div>
-                      <div className="mt-0.5 text-[10px] text-slate-400">创建：{formatInviteDateTime(record.createdAt)}</div>
+                      <div className="mt-0.5 text-[10px] text-slate-400">{t("settings.database.createdPrefix", { time: formatInviteDateTime(record.createdAt) })}</div>
                     </div>
                   </SettingsTd>
                   <SettingsTd>
                     {record.usedAt ? (
-                      <span className="rounded bg-slate-100 px-1.5 py-0.5 text-slate-500">已使用</span>
+                      <span className="rounded bg-slate-100 px-1.5 py-0.5 text-slate-500">{t("settings.database.used")}</span>
                     ) : (
-                      <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-700">可使用</span>
+                      <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-700">{t("settings.database.available")}</span>
                     )}
                   </SettingsTd>
                   <SettingsTd className="max-w-[16rem] truncate" title={record.usedHouseholdName || ""}>
@@ -1481,15 +1491,15 @@ export default function DatabaseSettingsPage() {
                   <SettingsTd>{formatInviteDateTime(record.usedAt)}</SettingsTd>
                   <SettingsTd align="right">
                     <SettingsRowActions>
-                      <SettingsActionButton label="删除邀请码" variant="delete" onClick={() => void removeLedgerInviteCode(record.code)} disabled={ledgerInviteSaving} />
+                      <SettingsActionButton label={t("settings.database.deleteInvite")} variant="delete" onClick={() => void removeLedgerInviteCode(record.code)} disabled={ledgerInviteSaving} />
                     </SettingsRowActions>
                   </SettingsTd>
                 </tr>
               ))
             ) : ledgerInviteError ? (
-              <SettingsEmptyRow colSpan={5}>读取邀请码失败：{ledgerInviteError}</SettingsEmptyRow>
+              <SettingsEmptyRow colSpan={5}>{t("settings.database.inviteLoadFailed", { error: ledgerInviteError })}</SettingsEmptyRow>
             ) : (
-              <SettingsEmptyRow colSpan={5}>暂无已保存的邀请码</SettingsEmptyRow>
+              <SettingsEmptyRow colSpan={5}>{t("settings.database.noInvites")}</SettingsEmptyRow>
             )}
             <tr className="bg-slate-50/60">
               <SettingsTd>
@@ -1502,7 +1512,7 @@ export default function DatabaseSettingsPage() {
                       setLedgerInviteError("");
                       setLedgerInviteMessage("");
                     }}
-                    placeholder={ledgerInviteLoading ? "读取中..." : "输入新的邀请码"}
+                    placeholder={ledgerInviteLoading ? t("settings.database.reading") : t("settings.database.invitePlaceholder")}
                     disabled={ledgerInviteLoading || ledgerInviteSaving}
                     className="h-8 min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700 focus:border-blue-300 focus:outline-none disabled:bg-slate-50"
                     onKeyDown={(event) => {
@@ -1519,16 +1529,16 @@ export default function DatabaseSettingsPage() {
                     disabled={ledgerInviteLoading || ledgerInviteSaving}
                     className="secondary-button h-8 px-2 text-xs disabled:opacity-50"
                   >
-                    随机填入
+                    {t("settings.database.randomFill")}
                   </button>
                 </div>
               </SettingsTd>
-              <SettingsTd><span className="text-xs text-slate-400">新增</span></SettingsTd>
+              <SettingsTd><span className="text-xs text-slate-400">{t("settings.database.add")}</span></SettingsTd>
               <SettingsTd><span className="text-xs text-slate-400">-</span></SettingsTd>
               <SettingsTd><span className="text-xs text-slate-400">-</span></SettingsTd>
               <SettingsTd align="right">
                 <SettingsRowActions>
-                  <SettingsActionButton label={ledgerInviteSaving ? "保存中" : "添加邀请码"} variant="add" onClick={() => void addLedgerInviteCode()} disabled={ledgerInviteLoading || ledgerInviteSaving} />
+                  <SettingsActionButton label={ledgerInviteSaving ? t("settings.database.saving") : t("settings.database.addInvite")} variant="add" onClick={() => void addLedgerInviteCode()} disabled={ledgerInviteLoading || ledgerInviteSaving} />
                 </SettingsRowActions>
               </SettingsTd>
             </tr>
@@ -1539,9 +1549,9 @@ export default function DatabaseSettingsPage() {
       <section className="rounded-lg border border-slate-200 bg-white p-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium text-slate-800">刷新服务端缓存</div>
+            <div className="text-sm font-medium text-slate-800">{t("settings.database.cacheRefreshTitle")}</div>
             <div className="mt-1 text-xs text-slate-500">
-              外部工具改库后，刷新服务端缓存并重新加载页面。
+              {t("settings.database.cacheRefreshDesc")}
             </div>
             {cacheRefreshMessage ? <div className="mt-2 text-xs text-emerald-600">{cacheRefreshMessage}</div> : null}
             {cacheRefreshError ? <div className="mt-2 text-xs text-red-600">{cacheRefreshError}</div> : null}
@@ -1553,15 +1563,15 @@ export default function DatabaseSettingsPage() {
             className="inline-flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
           >
             <RefreshCw className={`h-4 w-4 ${cacheRefreshing ? "animate-spin" : ""}`} />
-            {cacheRefreshing ? "刷新中..." : "刷新缓存"}
+            {cacheRefreshing ? t("settings.database.refreshing") : t("settings.database.refreshCache")}
           </button>
         </div>
       </section>
 
       <section className="rounded-lg border border-red-200 bg-red-50 p-4">
-        <div className="text-sm font-medium text-red-800">系统初始化</div>
+        <div className="text-sm font-medium text-red-800">{t("settings.database.factoryReset")}</div>
         <div className="mt-0.5 text-xs text-red-600">
-          此操作不可撤销，将删除所有账簿、交易、账户、分类、用户等数据，恢复到第一次安装完成后的状态。
+          {t("settings.database.factoryResetDesc")}
         </div>
 
         <button
@@ -1570,7 +1580,7 @@ export default function DatabaseSettingsPage() {
           disabled={resetting}
           className="mt-3 h-9 rounded-md bg-red-600 px-4 text-sm text-white hover:bg-red-700 disabled:opacity-50"
         >
-          {resetting ? "执行中..." : "系统初始化"}
+          {resetting ? t("settings.database.executing") : t("settings.database.factoryReset")}
         </button>
       </section>
     </div>

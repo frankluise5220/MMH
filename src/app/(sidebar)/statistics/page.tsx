@@ -17,6 +17,7 @@ import {
 } from "@/lib/default-categories";
 import { addStatisticCategoryBucket, buildStatisticCategoryItemsFromBuckets, createStatisticCategoryResolver, getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
 import { isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
+import { getServerT } from "@/lib/server/i18n";
 
 export const dynamic = "force-dynamic";
 
@@ -45,6 +46,7 @@ type PnLItem = {
 
 export default async function StatisticsPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const params = await searchParams;
+  const t = await getServerT();
   const ctx = await getHouseholdScope();
   const { hidFilter } = ctx;
   const cookieStore = await cookies();
@@ -91,7 +93,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
     ? { OR: [{ accountId: { in: selectedAccountIds } }, { toAccountId: { in: selectedAccountIds } }] }
     : {};
 
-  // 获取当年全部交易记录（含 EntryTag）
+  // Fetch all transactions of the selected year (with EntryTag)
   const allEntries = await prisma.txRecord.findMany({
     where: {
       deletedAt: null,
@@ -135,12 +137,12 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
     excludeEntryIds: representedInvestmentEntryIds,
   });
 
-  // ── 标签筛选 ──
+  // ── Tag filter ──
   const filteredEntries = selectedTagIds
     ? allEntries.filter(e => e.EntryTag.some(et => selectedTagIds.includes(et.tagId)))
     : allEntries;
 
-  // ── 按月汇总 ──
+  // ── Monthly aggregation ──
   const monthMap = new Map<string, { income: number; expense: number; investPnL: number; investCost: number }>();
   const incomeByCat = new Map<string, { id: string | null; name: string; type: "income"; value: number }>();
   const expenseByCat = new Map<string, { id: string | null; name: string; type: "expense"; value: number }>();
@@ -165,7 +167,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
       const effectiveAmount = getIncomeExpenseStatisticAmount(e.type, amount);
       row.income += effectiveAmount;
       addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", categoryId: e.categoryId, categoryName: e.categoryName }), effectiveAmount);
-      // 标签聚合
+      // Tag aggregation
       for (const et of e.EntryTag) {
         const existing = incomeByTag.get(et.tagId);
         incomeByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + effectiveAmount });
@@ -174,7 +176,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
       const effectiveAmount = getIncomeExpenseStatisticAmount(e.type, amount);
       row.expense += effectiveAmount;
       addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", categoryId: e.categoryId, categoryName: e.categoryName }), effectiveAmount);
-      // 标签聚合
+      // Tag aggregation
       for (const et of e.EntryTag) {
         const existing = expenseByTag.get(et.tagId);
         expenseByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + effectiveAmount });
@@ -286,7 +288,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
     }
   }
 
-  // ── 构建月份+累计数据 ──
+  // ── Build month + cumulative data ──
   const monthData: MonthData[] = [];
   let cumNet = 0;
   for (let i = 1; i <= 12; i++) {
@@ -298,13 +300,13 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
     monthData.push({ month: m, income: row.income, expense: row.expense, investPnL: row.investPnL, netTotal, cumNet });
   }
 
-  // ── 分类饼图数据 ──
+  // ── Category pie data ──
   const totalIncome = Array.from(incomeByCat.values()).reduce((sum, bucket) => sum + bucket.value, 0);
   const totalExpense = Array.from(expenseByCat.values()).reduce((sum, bucket) => sum + bucket.value, 0);
   const incomeCats: CategoryItem[] = buildStatisticCategoryItemsFromBuckets(incomeByCat, totalIncome);
   const expenseCats: CategoryItem[] = buildStatisticCategoryItemsFromBuckets(expenseByCat, totalExpense);
 
-  // ── 标签分组数据 ──
+  // ── Tag group data ──
   const incomeTagGroups: TagGroupData[] = Array.from(incomeByTag.values())
     .sort((a, b) => b.value - a.value)
     .slice(0, 8)
@@ -314,7 +316,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
     .slice(0, 8)
     .map(t => ({ ...t, pct: totalExpense > 0 ? (t.value / totalExpense) * 100 : 0 }));
 
-  // ── 投资浮盈 ──
+  // ── Investment floating P&L ──
   const investAccountIds = allAccounts.filter(isPureInvestmentAccount).map(a => a.id);
   const selectedInvestIds = selectedAccountIds
     ? selectedAccountIds.filter(id => investAccountIds.includes(id))
@@ -325,14 +327,14 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
     if (selectedInvestIds.includes(id)) totalFloatingPnL += detail.floatingPnL;
   }
 
-  // ── P&L 列表按日期倒序 ──
+  // ── P&L list sorted by date descending ──
   pnlItems.sort((a, b) => b.date.localeCompare(a.date));
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       <header className="page-header px-6 py-3 flex items-center justify-between">
-        <h1 className="text-lg page-title">资金统计</h1>
-        <Suspense fallback={<div className="text-xs text-slate-400">加载筛选…</div>}>
+        <h1 className="text-lg page-title">{t("statistics.title")}</h1>
+        <Suspense fallback={<div className="text-xs text-slate-400">{t("statistics.loadingFilter")}</div>}>
           <StatisticsFilterPanel
             allAccounts={allAccounts}
             allTags={allTags}
@@ -353,7 +355,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
         />
         {totalFloatingPnL !== 0 && (
           <div className="mt-3 text-xs text-slate-500 text-right">
-            * 当前持仓未实现浮盈 {totalFloatingPnL >= 0 ? "+" : ""}{totalFloatingPnL.toLocaleString("zh-CN", { minimumFractionDigits: 2 })}，未计入综合盈亏
+            {t("statistics.floatingPnlNote", { amount: `${totalFloatingPnL >= 0 ? "+" : ""}${totalFloatingPnL.toLocaleString("zh-CN", { minimumFractionDigits: 2 })}` })}
           </div>
         )}
       </div>

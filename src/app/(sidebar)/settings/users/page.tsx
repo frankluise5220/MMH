@@ -214,7 +214,7 @@ export default function UsersPage() {
   async function handleDelete() {
     if (!deleteTarget || deleting) return;
     if (!deletePassword.trim()) {
-      setDeleteError("请输入当前管理员密码");
+      setDeleteError("请输入当前用户密码");
       return;
     }
     setDeleting(true);
@@ -394,18 +394,18 @@ export default function UsersPage() {
               </button>
             </div>
             <div className="space-y-4 p-5">
-              <div className="text-xs text-slate-500">删除前需要输入当前管理员密码。</div>
+              <div className="text-xs text-slate-500">删除前需要输入当前用户密码。</div>
               <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
                 确认删除用户“{deleteTarget.name}”？该操作不可撤销。
               </div>
               <div>
-                <label className="mb-1.5 block text-xs font-medium text-slate-600">当前管理员密码</label>
+                <label className="mb-1.5 block text-xs font-medium text-slate-600">当前用户密码</label>
                 <input
                   type="password"
                   value={deletePassword}
                   onChange={(e) => { setDeletePassword(e.target.value); setDeleteError(""); }}
                   className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                  placeholder="请输入当前管理员密码"
+                  placeholder="请输入当前用户密码"
                   autoFocus
                 />
               </div>

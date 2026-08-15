@@ -1,17 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sendEmailByResend } from "@/lib/mail/resend";
 import { sendEmail, hasAnySmtpConfig } from "@/lib/mail/smtp";
+import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 
 export const runtime = "nodejs";
 
 /**
  * POST /api/v1/settings/email/test-send
  *
- * 使用当前保存的发件配置发送测试邮件。
+ * 使用当前保存的发件配置发送测试邮件（仅管理员）。
  * 优先 SMTP，其次 Resend。
  * Body: { to: string } - 收件邮箱地址
  */
 export async function POST(req: NextRequest) {
+  const currentUser = await getCurrentUser();
+  if (!currentUser) {
+    return NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 });
+  }
+  if (!isAdmin(currentUser)) {
+    return NextResponse.json({ ok: false, error: "仅管理员可操作" }, { status: 403 });
+  }
+
   const body = await req.json().catch(() => ({}));
   const to = String(body.to ?? "").trim();
   if (!to) {

@@ -14,7 +14,8 @@ import {
 } from "lucide-react";
 
 import type { OverviewDashboardProps } from "@/components/OverviewDashboard";
-import { formatMoneyYuan } from "@/lib/format";
+import { formatMoneyYuan, formatPercent } from "@/lib/format";
+import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { getInvestmentAccountView } from "@/lib/account-kind-utils";
 
 const ZERO_TOTALS = {
@@ -71,16 +72,8 @@ export function MobileOverviewDashboard({
   const headerMetricCount = 2 + (showInvestmentOverview ? 1 : 0) + (showInsuranceOverview ? 1 : 0);
 
   const amount = (value: number) => showAmounts ? formatMoneyYuan(value) : "****";
-  const valueClass = (value: number) => {
-    if (value > 0) return isRedUp ? "text-red-600" : "text-emerald-600";
-    if (value < 0) return isRedUp ? "text-emerald-600" : "text-red-600";
-    return "text-slate-700";
-  };
-  const liabilityValueClass = (value: number) => {
-    if (value > 0) return isRedUp ? "text-emerald-600" : "text-red-600";
-    if (value < 0) return isRedUp ? "text-red-600" : "text-emerald-600";
-    return "text-slate-700";
-  };
+  const valueClass = (value: number) => pnlClassFromRedUp(value, isRedUp, "softDark");
+  const liabilityValueClass = (value: number) => pnlClassFromRedUp(value, isRedUp, "softDark", true);
   const netDebtClass = netLiabilities >= 0 ? liabilityValueClass(netDebtAmount) : valueClass(netDebtAmount);
 
   return (
@@ -153,7 +146,7 @@ export function MobileOverviewDashboard({
                   </span>
                   <span className="shrink-0 text-right">
                     <span className={`block text-sm font-semibold tabular-nums ${valueClass(position.floatingPnL)}`}>{amount(position.floatingPnL)}</span>
-                    <span className="mt-0.5 block text-[11px] tabular-nums text-slate-500">{showAmounts ? `${position.floatingPnLRate >= 0 ? "+" : ""}${(position.floatingPnLRate * 100).toFixed(2)}%` : "****"}</span>
+                    <span className="mt-0.5 block text-[11px] tabular-nums text-slate-500">{showAmounts ? formatPercent(position.floatingPnLRate) : "****"}</span>
                   </span>
                 </Link>
               )) : (

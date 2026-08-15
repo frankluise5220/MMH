@@ -1,14 +1,8 @@
 "use client";
 
 import { type KeyboardEvent, useRef, useState } from "react";
-
-function todayDateInputValue() {
-  const date = new Date();
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
+import { todayDateLocalYmd as todayDateInputValue } from "@/lib/date-utils";
+import { useI18n } from "@/lib/i18n";
 
 function splitDateInputValue(value: string) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
@@ -41,6 +35,7 @@ export function DateStepper({ value, onChange, onBlur, onKeyDown, min = "1900-01
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const { t } = useI18n();
 
   const changeByDays = (delta: number) => {
     if (disabled) return;
@@ -89,8 +84,8 @@ export function DateStepper({ value, onChange, onBlur, onKeyDown, min = "1900-01
         onClick={togglePicker}
         disabled={disabled}
         className="absolute bottom-px right-5 top-px flex w-7 items-center justify-center text-slate-500 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-        title="选择日期"
-        aria-label="选择日期"
+        title={t("dateStepper.pickDate")}
+        aria-label={t("dateStepper.pickDate")}
       >
         <svg viewBox="0 0 24 24" aria-hidden="true" className="h-[1.1rem] w-[1.1rem]">
           <path d="M7 3v3M17 3v3M4.5 9h15M6.5 5h11a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-11a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
@@ -102,8 +97,8 @@ export function DateStepper({ value, onChange, onBlur, onKeyDown, min = "1900-01
           onClick={() => changeByDays(1)}
           disabled={disabled || Boolean(max && addDays(value, 1) > max)}
           className="flex flex-1 items-center justify-center text-[9px] leading-none text-slate-500 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-          title="后一天"
-          aria-label="后一天"
+          title={t("dateStepper.nextDay")}
+          aria-label={t("dateStepper.nextDay")}
         >
           <span className="rotate-90 text-[13px] leading-none">‹</span>
         </button>
@@ -112,8 +107,8 @@ export function DateStepper({ value, onChange, onBlur, onKeyDown, min = "1900-01
           onClick={() => changeByDays(-1)}
           disabled={disabled || Boolean(min && addDays(value, -1) < min)}
           className="flex flex-1 items-center justify-center border-t border-slate-200 text-[9px] leading-none text-slate-500 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-          title="前一天"
-          aria-label="前一天"
+          title={t("dateStepper.prevDay")}
+          aria-label={t("dateStepper.prevDay")}
         >
           <span className="rotate-90 text-[13px] leading-none">›</span>
         </button>

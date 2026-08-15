@@ -6,15 +6,16 @@ import { HOUSEHOLD_COOKIE, USER_ID_COOKIE } from "@/lib/server/session-cookies";
 
 /**
  * POST /api/v1/households/switch
- * 切换当前活跃账簿（设置 householdId cookie）
+ * Switches the active household (sets the householdId cookie).
  *
  * Body: { householdId: string, username?: string, password?: string }
- * 当前系统管理员可切换到任意账簿；普通用户切换到其他账簿时，必须提供目标账簿管理员用户名和密码。
+ * The current system admin may switch to any household; a regular user switching to
+ * another household must provide the target household admin username and password.
  */
 export async function POST(req: NextRequest) {
   const user = await getCurrentUser();
   if (!user) {
-    return NextResponse.json({ ok: false, error: "未登录" }, { status: 401 });
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "未登录" }, { status: 401 });
   }
 
   const body = await req.json().catch(() => ({}));
@@ -22,18 +23,18 @@ export async function POST(req: NextRequest) {
   const username = String(body.username ?? "").trim();
   const password = String(body.password ?? "");
   if (!householdId) {
-    return NextResponse.json({ ok: false, error: "缺少 householdId" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_HOUSEHOLD_ID", error: "缺少 householdId" }, { status: 400 });
   }
 
   const exists = await prisma.household.findUnique({ where: { id: householdId } });
   if (!exists) {
-    return NextResponse.json({ ok: false, error: "账簿不存在" }, { status: 404 });
+    return NextResponse.json({ ok: false, code: "HOUSEHOLD_NOT_FOUND", error: "账簿不存在" }, { status: 404 });
   }
 
   // 权限验证：当前管理员可直接切换；普通用户切换到非当前账簿时，必须验证目标账簿管理员凭证。
   if (!isAdmin(user) && user.householdId !== householdId) {
     if (!username || !password) {
-      return NextResponse.json({ ok: false, error: "请先输入目标账簿管理员用户名和密码" }, { status: 403 });
+      return NextResponse.json({ ok: false, code: "ADMIN_CREDENTIALS_REQUIRED", error: "请先输入目标账簿管理员用户名和密码" }, { status: 403 });
     }
     const namedTargetUser = await prisma.user.findFirst({
       where: { name: username, householdId, role: "admin" },
@@ -44,11 +45,11 @@ export async function POST(req: NextRequest) {
       select: { passwordHash: true },
     });
     if (!targetUser?.passwordHash) {
-      return NextResponse.json({ ok: false, error: "目标账簿管理员不存在或未设置密码" }, { status: 401 });
+      return NextResponse.json({ ok: false, code: "TARGET_ADMIN_NOT_FOUND", error: "目标账簿管理员不存在或未设置密码" }, { status: 401 });
     }
     const matched = await verifyPassword(password, targetUser.passwordHash);
     if (!matched) {
-      return NextResponse.json({ ok: false, error: "目标账簿管理员密码错误" }, { status: 401 });
+      return NextResponse.json({ ok: false, code: "INVALID_ADMIN_PASSWORD", error: "目标账簿管理员密码错误" }, { status: 401 });
     }
   }
 
