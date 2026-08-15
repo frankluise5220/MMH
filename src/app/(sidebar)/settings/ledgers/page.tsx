@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Check, RefreshCw, Shield, X } from "lucide-react";
 import { SettingsActionButton, SettingsPrimaryAddButton } from "@/components/settings/SettingsPageScaffold";
 import { getHouseholdDisplayName } from "@/lib/household-display";
+import { useI18n } from "@/lib/i18n";
 
 type Household = {
   id: string;
@@ -60,6 +61,7 @@ function formatDate(value?: string) {
 
 export default function LedgerSettingsPage() {
   const router = useRouter();
+  const { t } = useI18n();
   const [households, setHouseholds] = useState<Household[]>([]);
   const [active, setActive] = useState<Household | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -89,14 +91,14 @@ export default function LedgerSettingsPage() {
       const res = await fetch("/api/v1/households", { cache: "no-store" });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        throw new Error(data.error ?? "读取账簿失败");
+        throw new Error(data.error ?? t("settings.ledgers.loadFailed"));
       }
       setHouseholds(data.households ?? []);
       setActive(data.active ?? null);
       setIsAdmin(data.isAdmin === true);
       setIsSystem(data.isSystem === true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "读取账簿失败");
+      setError(err instanceof Error ? err.message : t("settings.ledgers.loadFailed"));
     } finally {
       setLoading(false);
     }
@@ -117,13 +119,13 @@ export default function LedgerSettingsPage() {
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        throw new Error(data.error ?? "切换账簿失败");
+        throw new Error(data.error ?? t("settings.ledgers.switchFailed"));
       }
       setSwitchForm(null);
       router.push("/");
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "切换账簿失败");
+      setError(err instanceof Error ? err.message : t("settings.ledgers.switchFailed"));
     } finally {
       setBusy(null);
     }
@@ -148,23 +150,23 @@ export default function LedgerSettingsPage() {
     const adminName = createForm.adminName.trim() || name;
     const adminEmail = createForm.adminEmail.trim();
     if (!name) {
-      setError("请填写账簿名");
+      setError(t("settings.ledgers.nameRequired"));
       return;
     }
     if (!adminName) {
-      setError("请填写管理员用户名");
+      setError(t("settings.ledgers.adminNameRequired"));
       return;
     }
     if (!adminEmail) {
-      setError("请填写邮箱");
+      setError(t("settings.ledgers.emailRequired"));
       return;
     }
     if (!createForm.adminPassword) {
-      setError("请设置管理员密码");
+      setError(t("settings.ledgers.passwordRequired"));
       return;
     }
     if (createForm.adminPassword !== createForm.adminPasswordConfirm) {
-      setError("两次输入的密码不一致");
+      setError(t("settings.ledgers.passwordMismatch"));
       return;
     }
 
@@ -183,14 +185,14 @@ export default function LedgerSettingsPage() {
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        throw new Error(data.error ?? "新增账簿失败");
+        throw new Error(data.error ?? t("settings.ledgers.createFailed"));
       }
       setShowCreate(false);
       setCreateForm(emptyCreateForm);
       await loadHouseholds();
       await switchTo(data.household.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "新增账簿失败");
+      setError(err instanceof Error ? err.message : t("settings.ledgers.createFailed"));
     } finally {
       setBusy(null);
     }
@@ -199,7 +201,7 @@ export default function LedgerSettingsPage() {
   async function renameLedger(householdId: string) {
     const name = editName.trim();
     if (!name) {
-      setError("请填写账簿名");
+      setError(t("settings.ledgers.nameRequired"));
       return;
     }
     setBusy(`rename:${householdId}`);
@@ -212,14 +214,14 @@ export default function LedgerSettingsPage() {
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        throw new Error(data.error ?? "修改账簿名失败");
+        throw new Error(data.error ?? t("settings.ledgers.renameFailed"));
       }
       setEditingId(null);
       setEditName("");
       await loadHouseholds();
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "修改账簿名失败");
+      setError(err instanceof Error ? err.message : t("settings.ledgers.renameFailed"));
     } finally {
       setBusy(null);
     }
@@ -229,11 +231,11 @@ export default function LedgerSettingsPage() {
     if (!deleteForm || !deleteTarget) return;
     const displayName = getHouseholdDisplayName(deleteTarget);
     if (deleteForm.confirmName.trim() !== displayName) {
-      setError(`请输入账簿名“${displayName}”确认删除`);
+      setError(t("settings.ledgers.confirmNameMismatch", { name: displayName }));
       return;
     }
     if (!deleteForm.dbPassword.trim()) {
-      setError("请输入当前用户密码");
+      setError(t("settings.ledgers.currentPasswordRequired"));
       return;
     }
     setBusy(`delete:${deleteForm.householdId}`);
@@ -244,9 +246,9 @@ export default function LedgerSettingsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password: deleteForm.dbPassword, verifySystem: true }),
       });
-      const verifyData = await readApiResult(verifyRes);
+      const verifyData = await readApiResult(verifyRes, t);
       if (!verifyRes.ok || !verifyData.ok) {
-        throw new Error(verifyData.error ?? "当前用户密码验证失败");
+        throw new Error(verifyData.error ?? t("settings.ledgers.verifyPasswordFailed"));
       }
 
       const res = await fetch("/api/v1/households", {
@@ -254,14 +256,14 @@ export default function LedgerSettingsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: deleteForm.householdId }),
       });
-      const data = await readApiResult(res);
+      const data = await readApiResult(res, t);
       if (!res.ok || !data.ok) {
-        throw new Error(data.error ?? "删除账簿失败");
+        throw new Error(data.error ?? t("settings.ledgers.deleteFailed"));
       }
       setDeleteForm(null);
       await loadHouseholds();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "删除账簿失败");
+      setError(err instanceof Error ? err.message : t("settings.ledgers.deleteFailed"));
     } finally {
       setBusy(null);
     }
@@ -271,8 +273,8 @@ export default function LedgerSettingsPage() {
     <div className="space-y-5">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold text-slate-800">账簿管理</h2>
-          <p className="mt-1 text-xs text-slate-500">账簿存放在数据库中，可在这里切换、新增和维护名称。</p>
+          <h2 className="text-sm font-semibold text-slate-800">{t("settings.ledgers.title")}</h2>
+          <p className="mt-1 text-xs text-slate-500">{t("settings.ledgers.description")}</p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -280,7 +282,7 @@ export default function LedgerSettingsPage() {
             onClick={() => loadHouseholds()}
             disabled={loading}
             className="h-9 w-9 rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50"
-            title="刷新"
+            title={t("settings.ledgers.refresh")}
           >
             <RefreshCw className={`mx-auto h-4 w-4 ${loading ? "animate-spin" : ""}`} />
           </button>
@@ -291,7 +293,7 @@ export default function LedgerSettingsPage() {
               setShowCreate(true);
             }}
           >
-            新增账簿
+            {t("settings.ledgers.add")}
           </SettingsPrimaryAddButton>
         </div>
       </div>
@@ -303,8 +305,8 @@ export default function LedgerSettingsPage() {
       <section className="panel-surface overflow-hidden">
         <div className="panel-header">
           <div>
-            <div className="text-sm font-medium text-slate-800">当前账簿</div>
-            <div className="mt-1 text-xs text-slate-500">{active ? activeName : "正在读取"}</div>
+            <div className="text-sm font-medium text-slate-800">{t("settings.ledgers.current")}</div>
+            <div className="mt-1 text-xs text-slate-500">{active ? activeName : t("settings.ledgers.loading")}</div>
           </div>
         </div>
 
@@ -312,20 +314,20 @@ export default function LedgerSettingsPage() {
           <table className="w-full table-fixed text-sm">
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50 text-xs font-medium text-slate-500">
-                <th className="w-[36%] px-4 py-2 text-left">账簿名</th>
-                <th className="w-[14%] px-3 py-2 text-left">状态</th>
-                <th className="w-[24%] px-3 py-2 text-left">创建时间</th>
-                <th className="px-4 py-2 text-right">操作</th>
+                <th className="w-[36%] px-4 py-2 text-left">{t("settings.ledgers.name")}</th>
+                <th className="w-[14%] px-3 py-2 text-left">{t("settings.ledgers.status")}</th>
+                <th className="w-[24%] px-3 py-2 text-left">{t("settings.ledgers.createdAt")}</th>
+                <th className="px-4 py-2 text-right">{t("settings.ledgers.actions")}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 bg-white">
               {loading ? (
                 <tr>
-                  <td colSpan={4} className="px-4 py-8 text-center text-sm text-slate-500">正在读取账簿</td>
+                  <td colSpan={4} className="px-4 py-8 text-center text-sm text-slate-500">{t("settings.ledgers.loadingRows")}</td>
                 </tr>
               ) : households.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="px-4 py-8 text-center text-sm text-slate-500">暂无账簿</td>
+                  <td colSpan={4} className="px-4 py-8 text-center text-sm text-slate-500">{t("settings.ledgers.empty")}</td>
                 </tr>
               ) : (
                 households.map((household) => {
@@ -356,7 +358,7 @@ export default function LedgerSettingsPage() {
                               onClick={() => renameLedger(household.id)}
                               disabled={rowBusy}
                               className="h-8 w-8 rounded-md border border-slate-200 bg-white text-emerald-700 hover:bg-slate-50 disabled:opacity-50"
-                              title="保存"
+                              title={t("common.save")}
                             >
                               <Check className="mx-auto h-4 w-4" />
                             </button>
@@ -368,7 +370,7 @@ export default function LedgerSettingsPage() {
                               }}
                               disabled={rowBusy}
                               className="h-8 w-8 rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 disabled:opacity-50"
-                              title="取消"
+                              title={t("common.cancel")}
                             >
                               <X className="mx-auto h-4 w-4" />
                             </button>
@@ -379,9 +381,9 @@ export default function LedgerSettingsPage() {
                       </td>
                       <td className="px-3 py-2 align-middle">
                         {isActive ? (
-                          <span className="inline-flex h-6 items-center rounded-full bg-blue-100 px-2 text-xs font-medium text-blue-700">当前</span>
+                          <span className="inline-flex h-6 items-center rounded-full bg-blue-100 px-2 text-xs font-medium text-blue-700">{t("settings.ledgers.currentBadge")}</span>
                         ) : (
-                          <span className="text-xs text-slate-400">可切换</span>
+                          <span className="text-xs text-slate-400">{t("settings.ledgers.switchable")}</span>
                         )}
                       </td>
                       <td className="px-3 py-2 align-middle text-xs text-slate-500">{formatDate(household.createdAt)}</td>
@@ -393,11 +395,11 @@ export default function LedgerSettingsPage() {
                             disabled={isActive || rowBusy}
                             className="h-8 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50"
                           >
-                            切换
+                            {t("settings.ledgers.switch")}
                           </button>
                           {isAdmin ? (
                             <SettingsActionButton
-                              label="编辑名称"
+                              label={t("settings.ledgers.editName")}
                               variant="edit"
                               onClick={() => {
                                 setEditingId(household.id);
@@ -408,7 +410,7 @@ export default function LedgerSettingsPage() {
                           ) : null}
                           {isSystem ? (
                             <SettingsActionButton
-                              label={isActive ? "先切换到其他账簿再删除" : "删除账簿"}
+                              label={isActive ? t("settings.ledgers.deleteDisabledHint") : t("settings.ledgers.delete")}
                               variant="delete"
                               onClick={() => {
                                 setError("");
@@ -429,11 +431,11 @@ export default function LedgerSettingsPage() {
       </section>
 
       {showCreate ? (
-        <Modal title="新增账簿" onClose={() => setShowCreate(false)}>
+        <Modal title={t("settings.ledgers.add")} onClose={() => setShowCreate(false)}>
           <div className="space-y-4">
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="grid gap-1.5">
-                <span className="form-label">账簿名</span>
+                <span className="form-label">{t("settings.ledgers.name")}</span>
                 <input
                   value={createForm.name}
                   onChange={(event) => {
@@ -445,17 +447,17 @@ export default function LedgerSettingsPage() {
                 />
               </label>
               <label className="grid gap-1.5">
-                <span className="form-label">家庭成员/管理员名</span>
+                <span className="form-label">{t("settings.ledgers.adminName")}</span>
                 <input
                   value={createForm.adminName}
                   onChange={(event) => setCreateForm((prev) => ({ ...prev, adminName: event.target.value }))}
                   className="form-input"
-                  placeholder={createForm.name || "默认使用账簿名，可改为真实姓名"}
+                  placeholder={createForm.name || t("settings.ledgers.adminNamePlaceholder")}
                 />
-                <span className="text-xs text-slate-400">默认使用账簿名；建议改成实际使用者姓名，后续账户会归到这个家庭成员下。</span>
+                <span className="text-xs text-slate-400">{t("settings.ledgers.adminNameHint")}</span>
               </label>
               <label className="grid gap-1.5 sm:col-span-2">
-                <span className="form-label">邮箱</span>
+                <span className="form-label">{t("settings.ledgers.email")}</span>
                 <input
                   type="email"
                   value={createForm.adminEmail}
@@ -465,7 +467,7 @@ export default function LedgerSettingsPage() {
                 />
               </label>
               <label className="grid gap-1.5">
-                <span className="form-label">管理员密码</span>
+                <span className="form-label">{t("settings.ledgers.adminPassword")}</span>
                 <input
                   type="password"
                   value={createForm.adminPassword}
@@ -475,7 +477,7 @@ export default function LedgerSettingsPage() {
                 />
               </label>
               <label className="grid gap-1.5">
-                <span className="form-label">确认密码</span>
+                <span className="form-label">{t("settings.ledgers.confirmPassword")}</span>
                 <input
                   type="password"
                   value={createForm.adminPasswordConfirm}
@@ -490,10 +492,10 @@ export default function LedgerSettingsPage() {
             </div>
             <div className="flex justify-end gap-2">
               <button type="button" onClick={() => setShowCreate(false)} disabled={busy === "create"} className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50">
-                取消
+                {t("common.cancel")}
               </button>
               <button type="button" onClick={createLedger} disabled={busy === "create"} className="h-9 rounded-md bg-blue-600 px-4 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
-                {busy === "create" ? "新增中" : "新增"}
+                {busy === "create" ? t("settings.ledgers.creating") : t("settings.ledgers.add")}
               </button>
             </div>
           </div>
@@ -501,13 +503,13 @@ export default function LedgerSettingsPage() {
       ) : null}
 
       {switchForm ? (
-        <Modal title="切换账簿" onClose={() => setSwitchForm(null)}>
+        <Modal title={t("settings.ledgers.switchTitle")} onClose={() => setSwitchForm(null)}>
           <div className="space-y-4">
             <div className="rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-700">
-              切换到：{getHouseholdDisplayName(households.find((item) => item.id === switchForm.householdId))}
+              {t("settings.ledgers.switchTo", { name: getHouseholdDisplayName(households.find((item) => item.id === switchForm.householdId)) })}
             </div>
             <label className="grid gap-1.5">
-              <span className="form-label">目标账簿管理员用户名</span>
+              <span className="form-label">{t("settings.ledgers.targetAdminName")}</span>
               <input
                 value={switchForm.username}
                 onChange={(event) => setSwitchForm((prev) => prev ? { ...prev, username: event.target.value } : prev)}
@@ -516,7 +518,7 @@ export default function LedgerSettingsPage() {
               />
             </label>
             <label className="grid gap-1.5">
-              <span className="form-label">密码</span>
+              <span className="form-label">{t("settings.ledgers.password")}</span>
               <input
                 type="password"
                 value={switchForm.password}
@@ -529,10 +531,10 @@ export default function LedgerSettingsPage() {
             </label>
             <div className="flex justify-end gap-2">
               <button type="button" onClick={() => setSwitchForm(null)} disabled={busy?.startsWith("switch:")} className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50">
-                取消
+                {t("common.cancel")}
               </button>
               <button type="button" onClick={() => switchTo(switchForm.householdId, switchForm.username, switchForm.password)} disabled={busy?.startsWith("switch:")} className="h-9 rounded-md bg-blue-600 px-4 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
-                确认切换
+                {t("settings.ledgers.confirmSwitch")}
               </button>
             </div>
           </div>
@@ -540,13 +542,13 @@ export default function LedgerSettingsPage() {
       ) : null}
 
       {deleteForm && deleteTarget ? (
-        <Modal title="删除账簿" onClose={() => setDeleteForm(null)} tone="danger">
+        <Modal title={t("settings.ledgers.deleteTitle")} onClose={() => setDeleteForm(null)} tone="danger">
           <div className="space-y-4">
             <div className="rounded-md border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-700">
-              将删除“{getHouseholdDisplayName(deleteTarget)}”及其账户、交易、分类、用户等数据。此操作不可撤销。
+              {t("settings.ledgers.deleteWarning", { name: getHouseholdDisplayName(deleteTarget) })}
             </div>
             <label className="grid gap-1.5">
-              <span className="form-label">输入账簿名确认</span>
+              <span className="form-label">{t("settings.ledgers.confirmNameLabel")}</span>
               <input
                 value={deleteForm.confirmName}
                 onChange={(event) => setDeleteForm((prev) => prev ? { ...prev, confirmName: event.target.value } : prev)}
@@ -555,7 +557,7 @@ export default function LedgerSettingsPage() {
               />
             </label>
             <label className="grid gap-1.5">
-              <span className="form-label inline-flex items-center gap-1.5"><Shield className="h-3.5 w-3.5 text-amber-500" />当前用户密码</span>
+              <span className="form-label inline-flex items-center gap-1.5"><Shield className="h-3.5 w-3.5 text-amber-500" />{t("settings.ledgers.currentPasswordLabel")}</span>
               <input
                 type="password"
                 value={deleteForm.dbPassword}
@@ -568,10 +570,10 @@ export default function LedgerSettingsPage() {
             </label>
             <div className="flex justify-end gap-2">
               <button type="button" onClick={() => setDeleteForm(null)} disabled={busy?.startsWith("delete:")} className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50">
-                取消
+                {t("common.cancel")}
               </button>
               <button type="button" onClick={deleteLedger} disabled={busy?.startsWith("delete:")} className="h-9 rounded-md bg-red-600 px-4 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50">
-                确认删除
+                {t("settings.ledgers.confirmDelete")}
               </button>
             </div>
           </div>
@@ -581,16 +583,16 @@ export default function LedgerSettingsPage() {
   );
 }
 
-async function readApiResult(response: Response): Promise<ApiResult> {
+async function readApiResult(response: Response, t: (key: string, params?: Record<string, string | number>) => string): Promise<ApiResult> {
   const body = await response.text();
   if (!body.trim()) {
-    throw new Error(`服务器未返回结果（HTTP ${response.status}），请查看服务日志后重试`);
+    throw new Error(t("settings.ledgers.emptyResponse", { status: response.status }));
   }
 
   try {
     return JSON.parse(body) as ApiResult;
   } catch {
-    throw new Error(`服务器返回了无效结果（HTTP ${response.status}），请查看服务日志后重试`);
+    throw new Error(t("settings.ledgers.invalidResponse", { status: response.status }));
   }
 }
 
@@ -605,12 +607,13 @@ function Modal({
   onClose: () => void;
   tone?: "default" | "danger";
 }) {
+  const { t } = useI18n();
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
       <div className="w-full max-w-lg overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl">
         <div className={`flex items-center justify-between border-b px-5 py-4 ${tone === "danger" ? "border-red-100 bg-red-50" : "border-slate-200 bg-slate-50"}`}>
           <div className={`text-sm font-semibold ${tone === "danger" ? "text-red-800" : "text-slate-800"}`}>{title}</div>
-          <button type="button" onClick={onClose} className="h-8 w-8 rounded-md text-slate-500 hover:bg-white" title="关闭">
+          <button type="button" onClick={onClose} className="h-8 w-8 rounded-md text-slate-500 hover:bg-white" title={t("settings.ledgers.close")}>
             <X className="mx-auto h-4 w-4" />
           </button>
         </div>

@@ -2,14 +2,14 @@ import { prisma } from "@/lib/db/prisma";
 export type FundFeeRateType = "buy" | "redeem";
 
 /**
- * 查询基金手续费率（按确认日期查询）
- * 查询小于等于确认日期的最近一次费率值
+ * Query the fund fee rate by confirmation date.
+ * Returns the most recent rate whose effective date is <= confirmDate.
  *
- * @param accountId 账户ID
- * @param fundCode 基金代码
- * @param confirmDate 确认日期
- * @param feeType 费率类型：buy=申购手续费，redeem=赎回费率
- * @returns 手续费率（如果没有记录则返回默认值 0）
+ * @param accountId Account ID
+ * @param fundCode Fund code
+ * @param confirmDate Confirmation date
+ * @param feeType Fee type: buy = purchase fee, redeem = redemption fee
+ * @returns The fee rate, or the default value 0 when no record exists
  */
 export async function getFundFeeRateByDate(
   accountId: string,
@@ -35,12 +35,12 @@ export async function getFundFeeRateByDate(
 }
 
 /**
- * 查询基金手续费率（查询最新的费率）
+ * Query the latest fund fee rate.
  *
- * @param accountId 账户ID
- * @param fundCode 基金代码
- * @param feeType 费率类型：buy=申购手续费，redeem=赎回费率
- * @returns 手续费率（默认 0，免手续费）
+ * @param accountId Account ID
+ * @param fundCode Fund code
+ * @param feeType Fee type: buy = purchase fee, redeem = redemption fee
+ * @returns The fee rate (defaults to 0, meaning no fee)
  */
 export async function getFundFeeRate(
   accountId: string,
@@ -62,17 +62,17 @@ export async function getFundFeeRate(
 }
 
 /**
- * 更新基金手续费率（智能模式）
- * 1. 查询小于等于确认日期的最近一次费率值
- * 2. 如果值相同，则不新增记录
- * 3. 如果值不同，则新增一条记录，日期为确认日期
- * 4. 清理大于确认日期且值相同的重复记录
+ * Update the fund fee rate (smart mode).
+ * 1. Query the most recent rate with effective date <= confirmDate
+ * 2. If the value is the same, do not create a new record
+ * 3. If the value differs, create a new record dated confirmDate
+ * 4. Remove duplicate records after confirmDate that share the same value
  *
- * @param accountId 账户ID
- * @param fundCode 基金代码
- * @param rate 新的费率值
- * @param confirmDate 确认日期（生效日期）
- * @param feeType 费率类型：buy=申购手续费，redeem=赎回费率
+ * @param accountId Account ID
+ * @param fundCode Fund code
+ * @param rate The new rate value
+ * @param confirmDate Confirmation date (effective date)
+ * @param feeType Fee type: buy = purchase fee, redeem = redemption fee
  */
 export async function setFundFeeRateByDate(
   accountId: string,
@@ -136,15 +136,15 @@ export async function setFundFeeRateByDate(
 }
 
 /**
- * 批量更新手续费率（用于事务内）
- * 与setFundFeeRateByDate逻辑相同，但用于事务内
+ * Update the fund fee rate inside a transaction.
+ * Same logic as setFundFeeRateByDate, but runs within the provided transaction.
  *
- * @param tx Prisma事务客户端
- * @param accountId 账户ID
- * @param fundCode 基金代码
- * @param rate 新的费率值
- * @param confirmDate 确认日期（生效日期）
- * @param feeType 费率类型：buy=申购手续费，redeem=赎回费率
+ * @param tx Prisma transaction client
+ * @param accountId Account ID
+ * @param fundCode Fund code
+ * @param rate The new rate value
+ * @param confirmDate Confirmation date (effective date)
+ * @param feeType Fee type: buy = purchase fee, redeem = redemption fee
  */
 export async function setFundFeeRateByDateInTx(
   tx: any,
@@ -209,14 +209,14 @@ export async function setFundFeeRateByDateInTx(
 }
 
 /**
- * 更新基金手续费率（定投计划专用）
- * 使用当前日期作为生效日期，按日期区间逻辑写入
- * 查询 <=当前日期 的最近一条费率，相同则不写入，不同则新增
+ * Update the fund fee rate (for regular investment plans).
+ * Uses the current date as the effective date and writes with date-range logic:
+ * query the latest rate <= today; skip when equal, create a new record when different.
  *
- * @param accountId 账户ID
- * @param fundCode 基金代码
- * @param rate 手续费率（可以是 0）
- * @param feeType 费率类型：buy=申购手续费，redeem=赎回费率
+ * @param accountId Account ID
+ * @param fundCode Fund code
+ * @param rate The fee rate (can be 0)
+ * @param feeType Fee type: buy = purchase fee, redeem = redemption fee
  */
 export async function setFundFeeRate(
   accountId: string,
@@ -228,14 +228,14 @@ export async function setFundFeeRate(
 }
 
 /**
- * 批量更新手续费率（定投计划专用，用于事务内）
- * 使用当前日期作为生效日期，按日期区间逻辑写入
+ * Update the fund fee rate inside a transaction (for regular investment plans).
+ * Uses the current date as the effective date and writes with date-range logic.
  *
- * @param tx Prisma事务客户端
- * @param accountId 账户ID
- * @param fundCode 基金代码
- * @param rate 手续费率（可以是 0）
- * @param feeType 费率类型：buy=申购手续费，redeem=赎回费率
+ * @param tx Prisma transaction client
+ * @param accountId Account ID
+ * @param fundCode Fund code
+ * @param rate The fee rate (can be 0)
+ * @param feeType Fee type: buy = purchase fee, redeem = redemption fee
  */
 export async function setFundFeeRateInTx(
   tx: any,

@@ -1,4 +1,5 @@
 import { showChoiceDialog, showConfirmDialog } from "@/lib/client/confirm-dialog";
+import { translate } from "@/lib/i18n-core";
 
 export type EntriesDeleteRequest = {
   entryIds: string[];
@@ -37,6 +38,12 @@ export type EntriesDeleteResponse =
     }
   | { ok: false; error: string; needConfirm?: boolean; impacts?: EntryBusinessDeleteImpact[] };
 
+export type I18nT = (key: string, params?: Record<string, string | number>) => string;
+
+// Fallback translator used when callers do not pass `t`: renders English so the
+// dialogs never show raw keys. Callers should pass the `t` from useI18n().
+const defaultT: I18nT = (key, params) => translate("en-US", key, params);
+
 export async function callDeleteEntries(body: EntriesDeleteRequest): Promise<EntriesDeleteResponse> {
   const res = await fetch("/api/v1/entries/delete", {
     method: "POST",
@@ -60,15 +67,14 @@ export function getDeleteRefreshAccountIds(data: EntriesDeleteResponse) {
   return data.ok ? Array.from(new Set((data.accountIds ?? []).filter(Boolean))) : [];
 }
 
-function describeBusinessImpacts(impacts: EntryBusinessDeleteImpact[] = [], labelOverride?: string) {
+function describeBusinessImpacts(impacts: EntryBusinessDeleteImpact[] = [], labelOverride?: string, t: I18nT = defaultT) {
   const counts = new Map<string, number>();
   for (const impact of impacts) {
-    const label = labelOverride || impact.counterpartLabel || impact.businessLabel || "关联记录";
+    const label = labelOverride || impact.counterpartLabel || impact.businessLabel || t("entriesDelete.linkedRecord");
     counts.set(label, (counts.get(label) ?? 0) + 1);
   }
-  return Array.from(counts.entries())
-    .map(([label, count]) => `${label} ${count} 条`)
-    .join("、") || "业务明细";
+  const parts = Array.from(counts.entries()).map(([label, count]) => t("entriesDelete.impactCount", { label, count }));
+  return parts.join(", ") || t("entriesDelete.businessDetail");
 }
 
 export async function deleteEntriesWithLinkedPrompt({
@@ -76,38 +82,41 @@ export async function deleteEntriesWithLinkedPrompt({
   confirmMessage,
   selectedRecordLabel,
   counterpartRecordLabel,
+  t = defaultT,
 }: {
   entryIds: string[];
   confirmMessage: string;
   selectedRecordLabel?: string;
   counterpartRecordLabel?: string;
+  t?: I18nT;
 }): Promise<EntriesDeleteResponse> {
-  if (entryIds.length === 0) return { ok: false, error: "没有可删除的记录" };
+  if (entryIds.length === 0) return { ok: false, error: t("entriesDelete.noDeletableRecord") };
 
   const precheck = await callDeleteEntries({ entryIds, checkOnly: true });
   if (!precheck.ok && !precheck.needConfirm) return precheck;
 
   const impacts = precheck.impacts ?? [];
   if (impacts.length > 0 || precheck.needConfirm) {
-    const impactText = describeBusinessImpacts(impacts, counterpartRecordLabel);
+    const impactText = describeBusinessImpacts(impacts, counterpartRecordLabel, t);
     const allBusinessSide = impacts.length > 0 && impacts.every((impact) => impact.selectedSide === "business");
+    const businessRecordLabel = t("entriesDelete.businessRecord");
     const selectedLabel = allBusinessSide
-      ? (Array.from(new Set(impacts.map((impact) => impact.businessLabel || "业务记录"))).join("、") || "业务记录")
-      : "本账户记录";
+      ? (Array.from(new Set(impacts.map((impact) => impact.businessLabel || businessRecordLabel))).join(", ") || businessRecordLabel)
+      : t("entriesDelete.thisAccountRecord");
     const effectiveSelectedLabel = selectedRecordLabel || selectedLabel;
-    const counterpartLabel = counterpartRecordLabel || (allBusinessSide ? "关联资金交易" : "业务侧记录");
+    const counterpartLabel = counterpartRecordLabel || (allBusinessSide ? t("entriesDelete.linkedCashTransaction") : t("entriesDelete.businessSideRecord"));
     const linkedAction = await showChoiceDialog<"keepBusiness" | "deleteBusiness">({
-      title: entryIds.length > 1 ? "选择批量删除范围" : "选择删除范围",
-      message:
-        `当前选择关联了 ${impactText}。\n\n` +
-        "请选择这次删除要影响的范围：\n" +
-        `只删${effectiveSelectedLabel}：只移除当前选择的${effectiveSelectedLabel}，并保留${counterpartLabel}。\n` +
-        `两边一起删除：同时删除当前选择的${effectiveSelectedLabel}和${counterpartLabel}。`,
+      title: entryIds.length > 1 ? t("entriesDelete.batchRangeTitle") : t("entriesDelete.rangeTitle"),
+      message: t("entriesDelete.rangeMessage", {
+        impactText,
+        selectedLabel: effectiveSelectedLabel,
+        counterpartLabel,
+      }),
       choices: [
-        { value: "keepBusiness", label: `只删${effectiveSelectedLabel}` },
-        { value: "deleteBusiness", label: "两边一起删除", tone: "danger" },
+        { value: "keepBusiness", label: t("entriesDelete.onlyDeleteLabel", { label: effectiveSelectedLabel }) },
+        { value: "deleteBusiness", label: t("entriesDelete.deleteBothLabel"), tone: "danger" },
       ],
-      cancelLabel: "取消",
+      cancelLabel: t("common.cancel"),
       tone: "danger",
     });
     if (!linkedAction) return { ok: false, error: "已取消删除" };
@@ -115,10 +124,10 @@ export async function deleteEntriesWithLinkedPrompt({
   }
 
   const confirmed = await showConfirmDialog({
-    title: entryIds.length > 1 ? "删除选中记录" : "删除这条记录",
+    title: entryIds.length > 1 ? t("entriesDelete.deleteSelectedTitle") : t("entriesDelete.deleteRecordTitle"),
     message: confirmMessage,
-    confirmLabel: "删除",
-    cancelLabel: "取消",
+    confirmLabel: t("common.delete"),
+    cancelLabel: t("common.cancel"),
     tone: "danger",
   });
   if (!confirmed) return { ok: false, error: "已取消删除" };

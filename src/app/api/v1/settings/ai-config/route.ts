@@ -7,27 +7,27 @@ import { getOrCreateMasterKey, encrypt, decrypt, isEncrypted } from "@/lib/auth/
 export const runtime = "nodejs";
 
 /**
- * AI 渠道/模型配置接口（仅管理员）。
+ * AI channel/model configuration API (admin only).
  *
- * GET    /api/v1/settings/ai-config → 列出渠道（含解密后的 apiKey，供管理员查看）
- * POST   /api/v1/settings/ai-config → 新增渠道 { name, channelType?, baseUrl, apiKey? }
- * PUT    /api/v1/settings/ai-config → 更新渠道 / 增删模型 / 设置激活模型
- * DELETE /api/v1/settings/ai-config?id=… → 删除渠道
+ * GET    /api/v1/settings/ai-config → list channels (with decrypted apiKey for admin review)
+ * POST   /api/v1/settings/ai-config → create channel { name, channelType?, baseUrl, apiKey? }
+ * PUT    /api/v1/settings/ai-config → update channel / add or remove models / set active model
+ * DELETE /api/v1/settings/ai-config?id=… → delete channel
  */
-async function requireAdmin(): Promise<{ ok: true } | { ok: false; response: NextResponse }> {
+async function requireAdmin(): Promise<NextResponse | null> {
   const user = await getCurrentUser();
   if (!user) {
-    return { ok: false, response: NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 }) };
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "请先登录" }, { status: 401 });
   }
   if (!isAdmin(user)) {
-    return { ok: false, response: NextResponse.json({ ok: false, error: "仅管理员可操作" }, { status: 403 }) };
+    return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "仅管理员可操作" }, { status: 403 });
   }
-  return { ok: true };
+  return null;
 }
 
 export async function GET() {
   const auth = await requireAdmin();
-  if (!auth.ok) return auth.response;
+  if (auth) return auth;
 
   const channels = await prisma.aiChannel.findMany({
     orderBy: { createdAt: "asc" },
@@ -52,12 +52,12 @@ const ChannelSchema = z.object({
 
 export async function POST(req: Request) {
   const auth = await requireAdmin();
-  if (!auth.ok) return auth.response;
+  if (auth) return auth;
 
   const body = (await req.json().catch(() => null)) as unknown;
   const parse = ChannelSchema.safeParse(body);
   if (!parse.success) {
-    return NextResponse.json({ ok: false, error: "缺少必填字段" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_REQUIRED_FIELDS", error: "缺少必填字段" }, { status: 400 });
   }
   const masterKey = await getOrCreateMasterKey();
   const encryptedApiKey = parse.data.apiKey && !isEncrypted(parse.data.apiKey)
@@ -72,14 +72,14 @@ export async function POST(req: Request) {
 
 export async function DELETE(req: Request) {
   const auth = await requireAdmin();
-  if (!auth.ok) return auth.response;
+  if (auth) return auth;
 
   const { searchParams } = new URL(req.url);
   const id = searchParams.get("id") ?? "";
-  if (!id) return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
+  if (!id) return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
 
   const existing = await prisma.aiChannel.findUnique({ where: { id } });
-  if (!existing) return NextResponse.json({ ok: false, error: "AI 渠道不存在" }, { status: 404 });
+  if (!existing) return NextResponse.json({ ok: false, code: "CHANNEL_NOT_FOUND", error: "AI 渠道不存在" }, { status: 404 });
 
   await prisma.aiChannel.delete({ where: { id } });
   return NextResponse.json({ ok: true });
@@ -94,7 +94,7 @@ const ModelSchema = z.object({
 
 export async function PUT(req: Request) {
   const auth = await requireAdmin();
-  if (!auth.ok) return auth.response;
+  if (auth) return auth;
 
   const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
 
@@ -106,7 +106,7 @@ export async function PUT(req: Request) {
     const baseUrl = (body as any).baseUrl as string;
     const apiKey = (body as any).apiKey as string | undefined;
     const existing = await prisma.aiChannel.findUnique({ where: { id: channelId } });
-    if (!existing) return NextResponse.json({ ok: false, error: "AI 渠道不存在" }, { status: 404 });
+    if (!existing) return NextResponse.json({ ok: false, code: "CHANNEL_NOT_FOUND", error: "AI 渠道不存在" }, { status: 404 });
     const masterKey = await getOrCreateMasterKey();
     const encryptedApiKey = apiKey !== undefined && !isEncrypted(apiKey) ? encrypt(apiKey, masterKey) : apiKey;
     const updated = await prisma.aiChannel.update({
@@ -126,7 +126,7 @@ export async function PUT(req: Request) {
   // Add model
   if (body && "model" in body && "channelId" in body) {
     const parse = ModelSchema.safeParse(body);
-    if (!parse.success) return NextResponse.json({ ok: false, error: "缺少必填字段" }, { status: 400 });
+    if (!parse.success) return NextResponse.json({ ok: false, code: "MISSING_REQUIRED_FIELDS", error: "缺少必填字段" }, { status: 400 });
     const created = await prisma.aiModel.create({
       data: { model: parse.data.model, name: parse.data.name, channelId: parse.data.channelId, vision: parse.data.vision ?? false },
     });
@@ -139,7 +139,7 @@ export async function PUT(req: Request) {
     const name = (body as any).name as string | undefined;
     const vision = (body as any).vision as boolean | undefined;
     const modelExists = await prisma.aiModel.findUnique({ where: { id: updateModelId } });
-    if (!modelExists) return NextResponse.json({ ok: false, error: "AI 模型不存在" }, { status: 404 });
+    if (!modelExists) return NextResponse.json({ ok: false, code: "MODEL_NOT_FOUND", error: "AI 模型不存在" }, { status: 404 });
     const updated = await prisma.aiModel.update({
       where: { id: updateModelId },
       data: { ...(name !== undefined ? { name } : {}), ...(vision !== undefined ? { vision } : {}) },
@@ -161,10 +161,10 @@ export async function PUT(req: Request) {
   if (body && "deleteModelId" in body) {
     const deleteModelId = (body as any).deleteModelId as string;
     const modelExists = await prisma.aiModel.findUnique({ where: { id: deleteModelId } });
-    if (!modelExists) return NextResponse.json({ ok: false, error: "AI 模型不存在" }, { status: 404 });
+    if (!modelExists) return NextResponse.json({ ok: false, code: "MODEL_NOT_FOUND", error: "AI 模型不存在" }, { status: 404 });
     await prisma.aiModel.delete({ where: { id: deleteModelId } });
     return NextResponse.json({ ok: true });
   }
 
-  return NextResponse.json({ ok: false, error: "未知操作" }, { status: 400 });
+  return NextResponse.json({ ok: false, code: "UNKNOWN_OPERATION", error: "未知操作" }, { status: 400 });
 }

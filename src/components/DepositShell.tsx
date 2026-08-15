@@ -26,7 +26,7 @@ type DepositEntry = {
   businessLinkCount?: number;
   businessLinkLabels?: string[];
   edit?: {
-    type: "investment";
+    type: "investment" | "expense" | "income" | "transfer";
     date: string;
     amount: number;
     note: string;
@@ -36,6 +36,11 @@ type DepositEntry = {
     fundArrivalDate?: string | null;
     fundProductType?: string;
     fundSubtype?: string;
+    categoryId?: string;
+    categoryName?: string;
+    toAccountId?: string;
+    toAccountName?: string;
+    source?: string | null;
   };
 };
 
@@ -86,7 +91,7 @@ export function DepositShell({
   );
 
   const visibleEntries = useMemo(() => {
-    if (!selectedLot) return [];
+    if (!selectedLot) return entries;
     const relatedIds = new Set(selectedLot.relatedEntryIds ?? [selectedLot.id]);
     return entries.filter((entry) => relatedIds.has(entry.id));
   }, [entries, selectedLot]);
@@ -221,7 +226,7 @@ export function DepositShell({
               {t("depositShell.entriesTitle")}
             </div>
             <div className="text-xs text-slate-400">
-              {selectedLot ? formatText("depositShell.entryCountHint", { count: visibleEntries.length }) : t("depositShell.selectLotFirst")}
+              {selectedLot ? formatText("depositShell.entryCountHint", { count: visibleEntries.length }) : formatText("depositShell.allEntryCountHint", { count: visibleEntries.length })}
             </div>
           </div>
           <AdvancedDataTable
@@ -230,7 +235,7 @@ export function DepositShell({
             rows={visibleEntries}
             rowKey={(entry) => entry.id}
             minTableWidth={1020}
-            emptyText={selectedLot ? t("depositShell.emptyRelatedEntries") : t("depositShell.selectLotFirst")}
+            emptyText={selectedLot ? t("depositShell.emptyRelatedEntries") : t("depositShell.emptyAllEntries")}
             fillHeight
             selectable
             selectedKeys={selectedEntryIds}

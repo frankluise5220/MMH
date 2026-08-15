@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect } from "react";
+import { useI18n } from "@/lib/i18n";
 import {
   Home,
   Landmark,
@@ -13,12 +14,16 @@ import {
   ReceiptText,
 } from "lucide-react";
 
-const NAV_ITEMS = [
-  { href: "/overview", label: "总览", icon: Home },
-  { href: "/accounts", label: "账户", icon: Landmark },
-  { href: "/transactions", label: "流水", icon: ReceiptText },
-  { href: "/investments", label: "投资", icon: TrendingUp },
-] as const;
+type TFunc = (key: string, params?: Record<string, string | number>) => string;
+
+function navItems(t: TFunc) {
+  return [
+    { href: "/overview", label: t("mobileNav.overview"), icon: Home },
+    { href: "/accounts", label: t("nav.accounts"), icon: Landmark },
+    { href: "/transactions", label: t("mobileTransactions.fallback"), icon: ReceiptText },
+    { href: "/investments", label: t("nav.investments"), icon: TrendingUp },
+  ] as const;
+}
 
 function openQuickEntry() {
   window.dispatchEvent(
@@ -33,9 +38,11 @@ function openQuickEntry() {
 }
 
 export function MobileNavigation() {
+  const { t } = useI18n();
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
+  const navItemsList = navItems(t);
   const rootView = pathname === "/" ? searchParams.get("view") ?? "" : "";
   const isRootInvestmentView =
     rootView === "investfund" ||
@@ -66,17 +73,17 @@ export function MobileNavigation() {
     <>
       <header className="fixed inset-x-0 top-0 z-50 flex h-[calc(2.5rem+env(safe-area-inset-top))] items-end border-b border-slate-200 bg-slate-50/96 px-3 pb-1 backdrop-blur md:hidden">
         <div className="flex h-9 min-w-0 flex-1 items-center gap-2.5">
-          <span className="sr-only">移动端导航</span>
+          <span className="sr-only">{t("mobileNav.ariaLabel")}</span>
         </div>
         <div className="flex shrink-0 items-center">
-          <Link href="/settings" className="flex h-9 w-9 items-center justify-center text-slate-500" aria-label="我的">
+          <Link href="/settings" className="flex h-9 w-9 items-center justify-center text-slate-500" aria-label={t("mobileNav.profile")}>
             <Settings size={19} />
           </Link>
           <button
             type="button"
             onClick={() => router.refresh()}
             className="flex h-9 w-9 items-center justify-center text-slate-500"
-            aria-label="刷新"
+            aria-label={t("settings.ledgers.refresh")}
           >
             <RefreshCw size={19} />
           </button>
@@ -85,18 +92,18 @@ export function MobileNavigation() {
 
       <nav className="fixed inset-x-0 bottom-0 z-50 h-[calc(5.75rem+env(safe-area-inset-bottom))] pb-[env(safe-area-inset-bottom)] md:hidden">
         <div className="absolute inset-x-0 bottom-0 grid h-[calc(4.5rem+env(safe-area-inset-bottom))] grid-cols-[1fr_1fr_0.72fr_1fr_1fr] border-t border-slate-200 bg-white/97 px-1 pb-[env(safe-area-inset-bottom)] backdrop-blur">
-          <MobileNavLink item={NAV_ITEMS[0]} active={isActive(NAV_ITEMS[0].href)} />
-          <MobileNavLink item={NAV_ITEMS[1]} active={isActive(NAV_ITEMS[1].href) || (pathname === "/" && !isRootInvestmentView)} />
+          <MobileNavLink item={navItemsList[0]} active={isActive(navItemsList[0].href)} />
+          <MobileNavLink item={navItemsList[1]} active={isActive(navItemsList[1].href) || (pathname === "/" && !isRootInvestmentView)} />
           <span aria-hidden="true" />
-          <MobileNavLink item={NAV_ITEMS[2]} active={isActive(NAV_ITEMS[2].href)} />
-          <MobileNavLink item={NAV_ITEMS[3]} active={isActive(NAV_ITEMS[3].href)} />
+          <MobileNavLink item={navItemsList[2]} active={isActive(navItemsList[2].href)} />
+          <MobileNavLink item={navItemsList[3]} active={isActive(navItemsList[3].href)} />
         </div>
         {pathname === "/transactions" || pathname.startsWith("/accounts/") ? (
           <button
             type="button"
             onClick={openQuickEntry}
             className="absolute left-1/2 top-0 flex h-[72px] w-[72px] -translate-x-1/2 items-center justify-center rounded-full bg-white shadow-[0_4px_18px_rgba(15,23,42,0.18)]"
-            aria-label="记一笔"
+            aria-label={t("txForm.addEntry")}
           >
             <span className="flex h-[58px] w-[58px] items-center justify-center rounded-full bg-indigo-600 text-white shadow-[0_8px_20px_rgba(79,70,229,0.32)]">
               <Plus size={28} />
@@ -106,7 +113,7 @@ export function MobileNavigation() {
           <Link
             href="/?quickEntry=1"
             className="absolute left-1/2 top-0 flex h-[72px] w-[72px] -translate-x-1/2 items-center justify-center rounded-full bg-white shadow-[0_4px_18px_rgba(15,23,42,0.18)]"
-            aria-label="记一笔"
+            aria-label={t("txForm.addEntry")}
           >
             <span className="flex h-[58px] w-[58px] items-center justify-center rounded-full bg-indigo-600 text-white shadow-[0_8px_20px_rgba(79,70,229,0.32)]">
               <Plus size={28} />
@@ -118,7 +125,7 @@ export function MobileNavigation() {
   );
 }
 
-function MobileNavLink({ item, active }: { item: (typeof NAV_ITEMS)[number]; active: boolean }) {
+function MobileNavLink({ item, active }: { item: ReturnType<typeof navItems>[number]; active: boolean }) {
   const Icon = item.icon;
   return (
     <Link

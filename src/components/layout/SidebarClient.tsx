@@ -160,14 +160,14 @@ function isOwnerScopedSidebarItem(item: AccountItem) {
   return item.kind !== "loan_summary" && !isSidebarSettlementLoan(item);
 }
 
-function normalizeSidebarItems(items: AccountItem[]) {
+function normalizeSidebarItems(items: AccountItem[], t: (key: string, params?: Record<string, string | number>) => string) {
   const normalized = items.map(normalizeSidebarAccountItem);
   const loanItems = normalized
     .filter(isSidebarSettlementLoan)
     .map((item) => ({
       ...item,
       groupName: undefined,
-      hoverTitle: [item.label, "借入借出"].filter(Boolean).join(" · "),
+      hoverTitle: [item.label, t("debtShell.title")].filter(Boolean).join(" · "),
       children: undefined,
     }))
     .sort((a, b) => {
@@ -182,13 +182,13 @@ function normalizeSidebarItems(items: AccountItem[]) {
     ...otherItems,
     {
       id: "__debt__",
-      name: "借入借出",
-      label: "借入借出",
-      hoverTitle: "往来款 · 借入借出",
+      name: t("debtShell.title"),
+      label: t("debtShell.title"),
+      hoverTitle: `${t("sidebar.section.liabilities")} · ${t("debtShell.title")}`,
       balance: loanBalance,
       kind: "loan_summary",
       groupName: undefined,
-      institution: "往来款",
+      institution: t("sidebar.section.liabilities"),
       children: loanItems,
     },
   ];
@@ -218,7 +218,7 @@ function getSidebarItemSignature(item: AccountItem): string {
   ].join("\u0001");
 }
 
-function toSidebarAccountItem(a: any, creditCardSidebarLabelTemplate = SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE): AccountItem {
+function toSidebarAccountItem(a: any, t: (key: string, params?: Record<string, string | number>) => string, creditCardSidebarLabelTemplate = SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE): AccountItem {
   const convertedBalance = a.convertedBalance == null ? null : Number(a.convertedBalance);
   const display = buildAccountDisplayOption({
     id: a.id,
@@ -242,7 +242,7 @@ function toSidebarAccountItem(a: any, creditCardSidebarLabelTemplate = SIDEBAR_C
     baseCurrency: a.baseCurrency ?? null,
     fxRateMissing: !!a.fxRateMissing,
     kind: a.kind,
-    groupName: display.groupName || "未设置所有人",
+    groupName: display.groupName || t("batchImport.ownerUnset"),
     institution: a.Institution?.name?.trim() || display.institutionName || undefined,
     institutionId: a.institutionId ?? null,
     institutionType: a.Institution?.type ?? a.institutionType ?? null,
@@ -297,7 +297,7 @@ export function SidebarClient({
   const [collapsedAssetSubgroupKeys, setCollapsedAssetSubgroupKeys] = useState<Set<string>>(new Set());
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [pendingSettings, setPendingSettings] = useState(false);
-  const [items, setItems] = useState(() => normalizeSidebarItems(initialItems));
+  const [items, setItems] = useState(() => normalizeSidebarItems(initialItems, t));
   const accountUsage = useAccountUsage();
   const ledgerSwitcherAnchorRef = useRef<HTMLButtonElement>(null);
   const userMenuAnchorRef = useRef<HTMLButtonElement>(null);
@@ -318,10 +318,10 @@ export function SidebarClient({
   const ownerOptions = useMemo(
     () => Array.from(new Set(items.flatMap((item) => (item.children?.length ? item.children : [item])
       .filter(isOwnerScopedSidebarItem)
-      .map((child) => child.groupName || "未设置所有人"))))
+      .map((child) => child.groupName || t("batchImport.ownerUnset")))))
       .filter((name) => name !== "未指定")
       .sort((a, b) => a.localeCompare(b, "zh-Hans-CN")),
-    [items],
+    [items, t],
   );
 
   const updateUserMenuPosition = useCallback(() => {
@@ -357,11 +357,11 @@ export function SidebarClient({
       });
       const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
       if (!res.ok || data?.ok !== true) {
-        throw new Error(data?.error || `退出接口返回 ${res.status}`);
+        throw new Error(data?.error || `Logout API returned ${res.status}`);
       }
       window.location.assign("/login");
     } catch (error) {
-      window.alert(error instanceof Error ? `无法退出：${error.message}` : "无法退出");
+      window.alert(error instanceof Error ? `${t("sidebarClient.logoutFailed")}: ${error.message}` : t("sidebarClient.logoutFailed"));
       setLoggingOut(false);
     }
   }
@@ -430,9 +430,9 @@ export function SidebarClient({
 
   useEffect(() => {
     startTransition(() => {
-      setItems(normalizeSidebarItems(initialItems));
+      setItems(normalizeSidebarItems(initialItems, t));
     });
-  }, [initialItems]);
+  }, [initialItems, t]);
 
   useEffect(() => {
     setCollapsedSections(new Set());
@@ -457,7 +457,7 @@ export function SidebarClient({
               setItems(prev => {
                 const fresh: AccountItem[] = normalizeSidebarItems(data.accounts
                   .filter((a: any) => a.isActive !== false)
-                  .map((a: any) => toSidebarAccountItem(a, getAppPreferences().creditCardSidebarLabelTemplate)));
+                  .map((a: any) => toSidebarAccountItem(a, t, getAppPreferences().creditCardSidebarLabelTemplate)), t);
                 // Merge: only update items whose data actually changed
                 // Unchanged items keep their object reference → React skips re-render
                 let changed = false;
@@ -699,7 +699,7 @@ export function SidebarClient({
       const visibleBalance = displayBalanceValue(item);
       if (visibleBalance != null && item.kind === "loan" && item.institutionType === "bank" && isDisplayZeroMoney(visibleBalance)) return false;
       if (visibleBalance != null && hideZero && isDisplayZeroMoney(visibleBalance)) return false;
-      if (selectedOwnerFilter && isOwnerScopedSidebarItem(item) && (item.groupName || "未设置所有人") !== selectedOwnerFilter) return false;
+      if (selectedOwnerFilter && isOwnerScopedSidebarItem(item) && (item.groupName || t("batchImport.ownerUnset")) !== selectedOwnerFilter) return false;
       return true;
     };
     const isVisibleLeaf = (item: AccountItem) => {
@@ -722,7 +722,7 @@ export function SidebarClient({
         baseCurrency,
       }];
     });
-  }, [items, hideZero, selectedOwnerFilter, baseCurrency, displayBalance, displayBalanceValue]);
+  }, [items, hideZero, selectedOwnerFilter, baseCurrency, displayBalance, displayBalanceValue, t]);
 
   const sections = useMemo(() => {
     const sortAccountsByUsage = (accounts: AccountItem[]) =>
@@ -741,7 +741,7 @@ export function SidebarClient({
     if (sidebarGroupBy === "institution") {
       const map = new Map<string, { kind: string; label: string; accounts: AccountItem[]; total: number; subgroups: never[] }>();
       for (const item of visibleItems) {
-        const label = item.institution?.trim() || "未设机构";
+        const label = item.institution?.trim() || t("insurance.noInstitution");
         const key = `institution:${label}`;
         const existing = map.get(key);
         if (existing) {
@@ -811,7 +811,7 @@ export function SidebarClient({
         subgroups,
       };
     }).filter(s => s.accounts.length > 0);
-  }, [visibleItems, sidebarGroupBy, accountUsage, displayBalance]);
+  }, [visibleItems, sidebarGroupBy, accountUsage, displayBalance, t]);
 
   const selectedDebtPerson = (searchParams.get("debtPerson") ?? "").trim();
   const debtPersonKeyFor = (item: AccountItem) => item.id ? `account:${item.id}` : "";
@@ -898,12 +898,12 @@ export function SidebarClient({
       className="fixed z-[1200] w-40 overflow-hidden rounded-lg border border-slate-200 bg-white text-sm shadow-lg shadow-slate-900/12"
       style={{ top: userMenuPosition.top, left: userMenuPosition.left }}
       role="menu"
-      aria-label="用户菜单"
+      aria-label={t("sidebarClient.userMenu")}
     >
       <div className="border-b border-slate-100 px-3 py-2">
-        <div className="text-[10px] font-medium text-slate-400">当前用户</div>
-        <div className="mt-0.5 truncate text-xs font-semibold text-slate-800" title={user?.name || "用户"}>
-          {user?.name || "用户"}
+        <div className="text-[10px] font-medium text-slate-400">{t("sidebarClient.currentUser")}</div>
+        <div className="mt-0.5 truncate text-xs font-semibold text-slate-800" title={user?.name || t("sidebarClient.user")}>
+          {user?.name || t("sidebarClient.user")}
         </div>
       </div>
       <button
@@ -914,7 +914,7 @@ export function SidebarClient({
         role="menuitem"
       >
         <LogOut size={14} />
-        <span>{loggingOut ? "退出中..." : "退出登录"}</span>
+        <span>{loggingOut ? t("sidebarClient.loggingOut") : t("sidebarClient.logout")}</span>
       </button>
     </div>
   ) : null;
@@ -929,7 +929,7 @@ export function SidebarClient({
               type="button"
               onClick={() => setSwitcherOpen((open) => !open)}
               className="mb-1 flex h-12 w-12 items-center justify-center rounded-2xl transition-colors hover:bg-slate-100"
-              title="切换账簿"
+              title={t("ledgerSwitch.switchLedger")}
             >
               <MmhLogo size={32} />
             </button>
@@ -938,7 +938,7 @@ export function SidebarClient({
               type="button"
               onClick={toggleUserMenu}
               className={collapsedNavCls(userMenuOpen)}
-              title={`用户菜单${user?.name ? `：${user.name}` : ""}`}
+              title={user?.name ? t("sidebarClient.userMenuWithName", { name: user.name }) : t("sidebarClient.userMenu")}
               aria-haspopup="menu"
               aria-expanded={userMenuOpen}
             >
@@ -1017,7 +1017,7 @@ export function SidebarClient({
             type="button"
             onClick={() => setSwitcherOpen((open) => !open)}
             className="flex h-9 w-9 items-center justify-center rounded-2xl transition-colors hover:bg-slate-100"
-            title="切换账簿"
+            title={t("ledgerSwitch.switchLedger")}
           >
             <MmhLogo size={26} />
           </button>
@@ -1026,24 +1026,24 @@ export function SidebarClient({
             type="button"
             onClick={toggleUserMenu}
             className={`flex h-7 min-w-0 max-w-[92px] items-center gap-1 rounded-md px-1.5 text-xs font-medium transition-colors ${userMenuOpen ? "bg-slate-100 text-slate-800" : "text-slate-500 hover:bg-slate-100 hover:text-slate-800"}`}
-            title={`用户菜单${user?.name ? `：${user.name}` : ""}`}
+            title={user?.name ? t("sidebarClient.userMenuWithName", { name: user.name }) : t("sidebarClient.userMenu")}
             aria-haspopup="menu"
             aria-expanded={userMenuOpen}
           >
             <UserRound size={15} className="shrink-0" />
-            <span className="truncate">{user?.name || "用户"}</span>
+            <span className="truncate">{user?.name || t("sidebarClient.user")}</span>
             <ChevronDown size={12} className={`shrink-0 transition-transform ${userMenuOpen ? "rotate-180" : ""}`} />
           </button>
           <div className="flex shrink-0 items-center gap-0.5">
             <HeaderHistoryButton
               direction="back"
-              title="前一页"
+              title={t("sidebarClient.historyBack")}
               disabled={appHistory.index <= 0}
               onClick={() => navigateAppHistory("back")}
             />
             <HeaderHistoryButton
               direction="forward"
-              title="后一页"
+              title={t("sidebarClient.historyForward")}
               disabled={appHistory.index < 0 || appHistory.index >= appHistory.entries.length - 1}
               onClick={() => navigateAppHistory("forward")}
             />

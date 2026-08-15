@@ -41,9 +41,9 @@ function withAccountDisplayFields<T extends {
 
 /**
  * GET /api/v1/settings/bootstrap
- * 读取设置区常用基础资料，供系统设置页共享缓存使用。
+ * Loads common base data for the settings area, shared with the system settings page cache.
  *
- * 返回: { ok, baseCurrency, accounts, groups, institutions, counterparties, users, categories, tags }
+ * Returns: { ok, baseCurrency, accounts, groups, institutions, counterparties, users, categories, tags }
  */
 export async function GET() {
   try {
@@ -54,7 +54,7 @@ export async function GET() {
       prisma.user.findMany({
         where: hidFilter,
         orderBy: { name: "asc" },
-        // 只返回展示字段，绝不外泄 passwordHash
+        // Return display fields only; never leak passwordHash
         select: { id: true, name: true, email: true, role: true, isSystem: true, householdId: true, createdAt: true },
       }),
       getHouseholdBaseCurrency(householdId),
@@ -73,6 +73,6 @@ export async function GET() {
     });
   } catch (error) {
     console.error("GET /api/v1/settings/bootstrap error:", error);
-    return NextResponse.json({ ok: false, error: "查询失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "FETCH_FAILED", error: "查询失败" }, { status: 500 });
   }
 }

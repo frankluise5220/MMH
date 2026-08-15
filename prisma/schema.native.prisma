@@ -1077,6 +1077,8 @@ model WealthProduct {
   termDays          Int?
   note              String?
   isActive          Boolean             @default(true)
+  manualNav         Decimal?
+  manualNavDate     DateTime?
   householdId       String
   institutionId     String?
   createdAt         DateTime            @default(now())

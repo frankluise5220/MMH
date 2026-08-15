@@ -8,23 +8,23 @@ export const runtime = "nodejs";
 /**
  * POST /api/v1/settings/email/test-send
  *
- * 使用当前保存的发件配置发送测试邮件（仅管理员）。
- * 优先 SMTP，其次 Resend。
- * Body: { to: string } - 收件邮箱地址
+ * Sends a test email using the currently saved mail configuration (admin only).
+ * Prefers SMTP, falls back to Resend.
+ * Body: { to: string } - recipient email address
  */
 export async function POST(req: NextRequest) {
   const currentUser = await getCurrentUser();
   if (!currentUser) {
-    return NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 });
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "请先登录" }, { status: 401 });
   }
   if (!isAdmin(currentUser)) {
-    return NextResponse.json({ ok: false, error: "仅管理员可操作" }, { status: 403 });
+    return NextResponse.json({ ok: false, code: "ADMIN_ONLY", error: "仅管理员可操作" }, { status: 403 });
   }
 
   const body = await req.json().catch(() => ({}));
   const to = String(body.to ?? "").trim();
   if (!to) {
-    return NextResponse.json({ ok: false, error: "缺少收件邮箱" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_RECIPIENT_EMAIL", error: "缺少收件邮箱" }, { status: 400 });
   }
 
   if (await hasAnySmtpConfig()) {
@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(result);
   }
 
-  // 尝试 Resend
+  // Try Resend
   const result = await sendEmailByResend({
     to,
     subject: "MMH 邮件测试",

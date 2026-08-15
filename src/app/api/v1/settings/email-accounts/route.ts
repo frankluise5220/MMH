@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 
 /**
  * GET /api/v1/settings/email-accounts
- * 返回当前账簿的所有邮箱账户
+ * Returns all email accounts of the current household.
  */
 export async function GET() {
   const { householdId } = await getHouseholdScope();
@@ -26,13 +26,13 @@ export async function GET() {
 
 /**
  * POST /api/v1/settings/email-accounts
- * 创建新邮箱账户（仅 SMTP 发件）
+ * Creates a new email account (SMTP outbound only).
  * Body: { label, username, imapHost, imapPort, imapSecure, smtpHost?, smtpPort?, smtpFrom?, password, mailbox? }
  */
 export async function POST(req: NextRequest) {
   const { householdId, user } = await getHouseholdScope();
   if (!user || !isAdmin(user)) {
-    return NextResponse.json({ ok: false, error: "仅管理员可操作" }, { status: 403 });
+    return NextResponse.json({ ok: false, code: "ADMIN_REQUIRED", error: "仅管理员可操作" }, { status: 403 });
   }
   const body = await req.json().catch(() => ({}));
   const label = String(body.label ?? "").trim();
@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
   const mailbox = String(body.mailbox ?? "INBOX").trim() || "INBOX";
 
   if (!label || !username || !imapHost || !password) {
-    return NextResponse.json({ ok: false, error: "请填写标签名、用户名、IMAP 服务器和授权码" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_FIELDS", error: "请填写标签名、用户名、IMAP 服务器和授权码" }, { status: 400 });
   }
 
   const account = await prisma.emailAccount.create({
@@ -67,23 +67,23 @@ export async function POST(req: NextRequest) {
 
 /**
  * PUT /api/v1/settings/email-accounts
- * 更新邮箱账户
+ * Updates an email account.
  * Body: { id, label?, username?, ... }
  */
 export async function PUT(req: NextRequest) {
   const { householdId, user } = await getHouseholdScope();
   if (!user || !isAdmin(user)) {
-    return NextResponse.json({ ok: false, error: "仅管理员可操作" }, { status: 403 });
+    return NextResponse.json({ ok: false, code: "ADMIN_REQUIRED", error: "仅管理员可操作" }, { status: 403 });
   }
   const body = await req.json().catch(() => ({}));
   const id = String(body.id ?? "").trim();
   if (!id) {
-    return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
   }
 
   const existing = await prisma.emailAccount.findFirst({ where: { id, householdId } });
   if (!existing) {
-    return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
+    return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "账户不存在" }, { status: 404 });
   }
 
   const data: Record<string, unknown> = {};
@@ -105,22 +105,22 @@ export async function PUT(req: NextRequest) {
 
 /**
  * DELETE /api/v1/settings/email-accounts
- * 删除邮箱账户
+ * Deletes an email account.
  * Body: { id }
  */
 export async function DELETE(req: NextRequest) {
   const { householdId, user } = await getHouseholdScope();
   if (!user || !isAdmin(user)) {
-    return NextResponse.json({ ok: false, error: "仅管理员可操作" }, { status: 403 });
+    return NextResponse.json({ ok: false, code: "ADMIN_REQUIRED", error: "仅管理员可操作" }, { status: 403 });
   }
   const body = await req.json().catch(() => ({}));
   const id = String(body.id ?? "").trim();
   if (!id) {
-    return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
   }
   const existing = await prisma.emailAccount.findFirst({ where: { id, householdId } });
   if (!existing) {
-    return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
+    return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "账户不存在" }, { status: 404 });
   }
   await prisma.emailAccount.delete({ where: { id } });
   return NextResponse.json({ ok: true });

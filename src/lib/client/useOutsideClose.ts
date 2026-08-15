@@ -3,10 +3,10 @@
 import { useEffect, type RefObject } from "react";
 
 /**
- * 点击元素外部或按 Escape 时触发 onClose。
+ * Triggers onClose when clicking outside the element or pressing Escape.
  *
- * 下拉、浮层、弹窗类组件的统一关闭行为，避免每个组件重复编写
- * mousedown/keydown 监听与清理逻辑。
+ * Unified close behavior for dropdowns, overlays, and modals, avoiding
+ * duplicated mousedown/keydown listener and cleanup logic in each component.
  */
 export function useOutsideClose(
   ref: RefObject<HTMLElement | null>,

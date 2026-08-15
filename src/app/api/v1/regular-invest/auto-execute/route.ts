@@ -334,7 +334,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
         const sgzt = navCheck?.sgzt ?? "";
         const feeAmount = e.feeAmount > 0 ? e.feeAmount : null;
 
-        // 跳过暂停申购 + 无净值间隙
+        // Skip purchase-suspended funds and NAV gaps
         if (e.plan.skipPendingPreceding !== false) {
           if (sgzt === "暂停申购") {
             skippedPaused++;
@@ -343,9 +343,9 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
             await tx.regularInvestPlan.update({ where: { id: e.plan.id }, data: { nextRunDate: skipWeekend(e.nextRun) } });
             continue;
           }
-          // 确认日无净值且不是暂停申购：
-          // - 确认日已过去（历史日期）→ 市场休市（假期等），跳过
-          // - 确认日尚未到或为今天 → 净值未公布是正常的，保留（nav=null 后续补填）
+          // Confirm date has no NAV and it is not a purchase suspension:
+          // - Confirm date already passed (historical) → market closed (holiday etc.), skip
+          // - Confirm date is today or later → NAV not yet published is normal, keep (nav=null backfilled later)
           const noNav = !navCheck || ((navCheck.nav == null || Number(navCheck.nav) <= 0) && sgzt !== "暂停申购");
           if (noNav && e.confirmDateStr < todayStr) {
             skippedGap++;
@@ -357,7 +357,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
         }
 
         if (sgzt === "暂停申购") {
-          // skipPendingPreceding=false 的旧行为：生成两条现金对冲记录，并把基金业务写入 FundTransaction。
+          // Legacy behavior for skipPendingPreceding=false: create two cash offset records and write the fund business into FundTransaction.
           await createFundTransactionWithCashFlows(tx, {
             householdId,
             fundAccountId: e.fundAcc.id,
@@ -626,7 +626,7 @@ export async function POST() {
       rounds += 1;
       const result = await executeAutoExecuteRound(householdId, now);
       if (!result.ok) {
-        return NextResponse.json({ ok: false, error: result.error ?? "执行失败" }, { status: 500 });
+        return NextResponse.json({ ok: false, code: "AUTO_EXECUTE_FAILED", error: result.error ?? "执行失败" }, { status: 500 });
       }
       aggregated.executedCount += result.executedCount;
       aggregated.skippedCount += result.skippedCount;
@@ -655,6 +655,6 @@ export async function POST() {
       details: aggregated.details,
     });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "执行失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "AUTO_EXECUTE_FAILED", error: e instanceof Error ? e.message : "执行失败" }, { status: 500 });
   }
 }

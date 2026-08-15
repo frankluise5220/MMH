@@ -16,6 +16,7 @@ import {
   getAiPanelEnabledPreference,
   setAiPanelCollapsedPreference,
 } from "@/lib/client/appPreferences";
+import { useI18n } from "@/lib/i18n";
 
 /* ---- Types ---- */
 
@@ -149,15 +150,15 @@ function isRowReadyForImport(item: ParsedItem) {
   return true;
 }
 
-function getMissingFields(item: ParsedItem): string[] {
+function getMissingFields(item: ParsedItem, t: (key: string, params?: Record<string, string | number>) => string): string[] {
   const missing: string[] = [];
-  if (!item.date?.trim()) missing.push("日期");
-  if (!(item.amount > 0)) missing.push("金额");
+  if (!item.date?.trim()) missing.push(t("detail.column.date"));
+  if (!(item.amount > 0)) missing.push(t("stats.amount"));
   if (item.type === "transfer") {
-    if (!item.fromAccount?.trim()) missing.push("转出账户");
-    if (!item.toAccount?.trim()) missing.push("转入账户");
+    if (!item.fromAccount?.trim()) missing.push(t("txForm.transferFrom"));
+    if (!item.toAccount?.trim()) missing.push(t("txForm.transferTo"));
   } else {
-    if (!item.account?.trim()) missing.push("账户");
+    if (!item.account?.trim()) missing.push(t("common.account"));
   }
   return missing;
 }
@@ -185,41 +186,41 @@ function normalizeItemForImport(item: ParsedItem): ParsedItem {
   };
 }
 
-function itemTypeLabel(type: ParsedItem["type"]) {
-  if (type === "transfer") return "转账";
-  if (type === "income") return "收入";
-  if (type === "investment") return "投资";
-  return "支出";
+function itemTypeLabel(type: ParsedItem["type"], t: (key: string, params?: Record<string, string | number>) => string) {
+  if (type === "transfer") return t("transaction.type.transfer");
+  if (type === "income") return t("transaction.type.income");
+  if (type === "investment") return t("transaction.type.investment");
+  return t("transaction.type.expense");
 }
 
-function itemAccountLabel(item: ParsedItem) {
+function itemAccountLabel(item: ParsedItem, t: (key: string, params?: Record<string, string | number>) => string) {
   if (item.type === "transfer") {
-    const from = item.fromAccount?.trim() || "无转出";
-    const to = item.toAccount?.trim() || "无转入";
+    const from = item.fromAccount?.trim() || t("aiPanel.noTransferFrom");
+    const to = item.toAccount?.trim() || t("aiPanel.noTransferTo");
     return `${from} -> ${to}`;
   }
   if (item._meta?.accountDisplayName?.trim()) return item._meta.accountDisplayName.trim();
-  return item.account?.trim() || item._meta?.institutionName?.trim() || "无账户";
+  return item.account?.trim() || item._meta?.institutionName?.trim() || t("aiPanel.noAccount");
 }
 
-function formatRecognitionPreviewBlock(item: ParsedItem, index: number) {
-  const date = item.date?.trim() || "无日期";
+function formatRecognitionPreviewBlock(item: ParsedItem, index: number, t: (key: string, params?: Record<string, string | number>) => string) {
+  const date = item.date?.trim() || t("aiPanel.noDate");
   const remark = item.remark?.trim() || item.counterparty?.trim() || "";
   return [
     `${index + 1}.`,
-    `日期：${date}`,
-    `类型：${itemTypeLabel(item.type)}`,
-    `金额：${formatMoney(Math.abs(item.amount ?? 0))}`,
-    `账户：${itemAccountLabel(item)}`,
-    `收支机构：${item.counterparty?.trim() || "-"}`,
-    `备注：${remark}`,
+    t("aiPanel.block.date", { value: date }),
+    t("aiPanel.block.type", { value: itemTypeLabel(item.type, t) }),
+    t("aiPanel.block.amount", { value: formatMoney(Math.abs(item.amount ?? 0)) }),
+    t("aiPanel.block.account", { value: itemAccountLabel(item, t) }),
+    t("aiPanel.block.counterparty", { value: item.counterparty?.trim() || "-" }),
+    t("aiPanel.block.remark", { value: remark }),
   ].join("\n");
 }
 
-function formatRecognitionPreviewText(items: ParsedItem[]) {
-  const lines = items.slice(0, 8).map(formatRecognitionPreviewBlock);
-  const rest = items.length > lines.length ? `\n...还有 ${items.length - lines.length} 条` : "";
-  return `识别到 ${items.length} 条记录，请核对后导入：\n${lines.join("\n\n")}${rest}`;
+function formatRecognitionPreviewText(items: ParsedItem[], t: (key: string, params?: Record<string, string | number>) => string) {
+  const lines = items.slice(0, 8).map((item, index) => formatRecognitionPreviewBlock(item, index, t));
+  const rest = items.length > lines.length ? t("aiPanel.preview.more", { count: items.length - lines.length }) : "";
+  return `${t("aiPanel.preview.title", { count: items.length })}\n${lines.join("\n\n")}${rest}`;
 }
 
 /* ---- Component ---- */
@@ -234,6 +235,7 @@ export function AIPanel({
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const { t } = useI18n();
   const chatEndRef = useRef<HTMLDivElement>(null);
   const modelsLoadedRef = useRef(false);
 
@@ -242,7 +244,7 @@ export function AIPanel({
   const [enabled, setEnabled] = useState(() => getAiPanelEnabledPreference());
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([
-    { role: "assistant", text: "粘贴账单文本或输入指令，我会帮你解析、导入、查询或修改记录。" },
+    { role: "assistant", text: t("aiPanel.welcome") },
   ]);
   const [loading, setLoading] = useState(false);
   const [collapsed, setCollapsedState] = useState(() => initialCollapsed || getAiPanelCollapsedPreference());
@@ -401,7 +403,7 @@ export function AIPanel({
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    if (!data.ok) throw new Error(data.error || "解析失败");
+    if (!data.ok) throw new Error(data.error || t("aiPanel.parseFailed"));
     return data;
   }
 
@@ -418,7 +420,7 @@ export function AIPanel({
       }),
     });
     const data = await res.json();
-    if (!data.ok) throw new Error(data.error || "导入失败");
+    if (!data.ok) throw new Error(data.error || t("creditBill.importFailed"));
     return data;
   }
 
@@ -441,10 +443,10 @@ export function AIPanel({
             .filter((id: unknown): id is string => typeof id === "string" && id.length > 0);
           setConfirmDialog({
             kind: "delete",
-            label: "删除预览",
+            label: t("aiPanel.deletePreview"),
             count: parsed.deletedCount,
             payload: { sourceText: text },
-            tip: `将删除 ${parsed.deletedCount} 条记录`,
+            tip: t("aiPanel.willDelete", { count: parsed.deletedCount }),
             targets,
             selectedTargetIds: new Set(targetIds),
             selectAll: targetIds.length > 0 && targetIds.length === targets.length,
@@ -452,38 +454,41 @@ export function AIPanel({
           setDeletePreviewFilters({ text: "", accountName: "", type: "all", selection: "all" });
           setDeletePreviewColumnFilters({});
           setActiveDeletePreviewFilterColumn(null);
-          setMessages((m) => [...m, { role: "assistant", text: `命中 ${parsed.deletedCount} 条记录，请确认。`, trace: parsed.trace }]);
+          setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.hitConfirm", { count: parsed.deletedCount }), trace: parsed.trace }]);
           return;
         }
-        setMessages((m) => [...m, { role: "assistant", text: `已删除 ${parsed.deletedCount} 条记录。`, trace: parsed.trace }]);
+        setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.deleted", { count: parsed.deletedCount }), trace: parsed.trace }]);
         dispatchFinanceDataChanged({ reason: "ai-entry-delete" });
         return;
       }
 
       if ("operation" in parsed && parsed.operation === "restore") {
         if (parsed.stage === "confirm") {
-          setConfirmDialog({ kind: "restore", label: "确认恢复记录", count: parsed.restoredCount, payload: { sourceText: text }, tip: `将恢复 ${parsed.restoredCount} 条记录`, targets: parsed.targets ?? [] });
-          setMessages((m) => [...m, { role: "assistant", text: `命中 ${parsed.restoredCount} 条记录，请确认。`, trace: parsed.trace }]);
+          setConfirmDialog({ kind: "restore", label: t("aiPanel.restoreConfirmTitle"), count: parsed.restoredCount, payload: { sourceText: text }, tip: t("aiPanel.willRestore", { count: parsed.restoredCount }), targets: parsed.targets ?? [] });
+          setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.hitConfirm", { count: parsed.restoredCount }), trace: parsed.trace }]);
           return;
         }
-        setMessages((m) => [...m, { role: "assistant", text: `已恢复 ${parsed.restoredCount} 条记录。`, trace: parsed.trace }]);
+        setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.restored", { count: parsed.restoredCount }), trace: parsed.trace }]);
         dispatchFinanceDataChanged({ reason: "ai-entry-restore" });
         return;
       }
 
       if ("operation" in parsed && parsed.operation === "update") {
         if (parsed.stage === "confirm") {
-          setConfirmDialog({ kind: "update", label: "批量修改预览", count: parsed.count, payload: { sourceText: text }, tip: `将修改 ${parsed.count} 条记录`, targets: parsed.targets ?? [], preview: parsed.preview });
-          setMessages((m) => [...m, { role: "assistant", text: `命中 ${parsed.count} 条记录，请确认后再修改。`, trace: parsed.trace }]);
+          setConfirmDialog({ kind: "update", label: t("aiPanel.updatePreviewTitle"), count: parsed.count, payload: { sourceText: text }, tip: t("aiPanel.willUpdate", { count: parsed.count }), targets: parsed.targets ?? [], preview: parsed.preview });
+          setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.hitUpdateConfirm", { count: parsed.count }), trace: parsed.trace }]);
           return;
         }
-        setMessages((m) => [...m, { role: "assistant", text: `已修改 ${parsed.updatedCount} 条记录。`, trace: parsed.trace }]);
+        setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.updated", { count: parsed.updatedCount }), trace: parsed.trace }]);
         dispatchFinanceDataChanged({ reason: "ai-entry-update" });
         return;
       }
 
       if ("operation" in parsed && parsed.operation === "stats") {
-        setMessages((m) => [...m, { role: "assistant", text: `统计结果：${parsed.metric === "sum" ? "合计 ¥" + formatMoney(parsed.sum) : parsed.count + " 条"}`, trace: parsed.trace }]);
+        const statsValue = parsed.metric === "sum"
+          ? t("aiPanel.sumTotal", { value: formatMoney(parsed.sum) })
+          : t("aiPanel.countSuffix", { count: parsed.count });
+        setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.statsResult", { value: statsValue }), trace: parsed.trace }]);
         return;
       }
 
@@ -494,27 +499,27 @@ export function AIPanel({
           key: `ai-${i}-${Date.now()}`,
           item,
           ready: isRowReadyForImport(item),
-          missingFields: getMissingFields(item),
+          missingFields: getMissingFields(item, t),
         }));
         setImportConfirmDialog({
           items: importData,
           selectedKeys: new Set(importData.filter(it => it.ready).map(it => it.key)),
           selectAll: importData.every(it => it.ready),
         });
-        setMessages((m) => [...m, { role: "assistant", text: formatRecognitionPreviewText(allItems), trace: parsed.trace }]);
+        setMessages((m) => [...m, { role: "assistant", text: formatRecognitionPreviewText(allItems, t), trace: parsed.trace }]);
       } else if (parsed.operation) {
-        setMessages((m) => [...m, { role: "assistant", text: `已执行：${parsed.operation}`, trace: parsed.trace }]);
+        setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.executedOp", { operation: parsed.operation }), trace: parsed.trace }]);
         dispatchFinanceDataChanged({ reason: "ai-operation" });
       }
     } catch (e: any) {
-      setMessages((m) => [...m, { role: "assistant", text: `错误：${e.message}`, error: e.message }]);
+      setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.error", { message: e.message }), error: e.message }]);
     } finally { setLoading(false); }
   }
 
   async function onPickImage(file: File) {
     if (loading) return;
     setLoading(true);
-    setMessages((m) => [...m, { role: "user", text: `上传截图：${file.name}` }]);
+    setMessages((m) => [...m, { role: "user", text: t("aiPanel.uploadScreenshot", { name: file.name }) }]);
     try {
       const reader = new FileReader();
       const imageDataUrl = await new Promise<string>((resolve) => {
@@ -528,17 +533,17 @@ export function AIPanel({
           key: `img-${i}-${Date.now()}`,
           item,
           ready: isRowReadyForImport(item),
-          missingFields: getMissingFields(item),
+          missingFields: getMissingFields(item, t),
         }));
         setImportConfirmDialog({
           items: importData,
           selectedKeys: new Set(importData.filter(it => it.ready).map(it => it.key)),
           selectAll: importData.every(it => it.ready),
         });
-        setMessages((m) => [...m, { role: "assistant", text: formatRecognitionPreviewText(allItems), trace: parsed.trace }]);
+        setMessages((m) => [...m, { role: "assistant", text: formatRecognitionPreviewText(allItems, t), trace: parsed.trace }]);
       }
     } catch (e: any) {
-      setMessages((m) => [...m, { role: "assistant", text: `识别失败：${e.message}` }]);
+      setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.recognizeFailed", { message: e.message }) }]);
     } finally { setLoading(false); }
   }
 
@@ -559,37 +564,31 @@ export function AIPanel({
       if (confirmDialog.kind === "delete") {
         const entryIds = Array.from(confirmDialog.selectedTargetIds ?? new Set<string>());
         if (entryIds.length === 0) {
-          setMessages((m) => [...m, { role: "assistant", text: "请至少选择一条要删除的记录。" }]);
+          setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.selectAtLeastOne") }]);
           return;
         }
         let data = await callDeleteEntries({ entryIds });
         if (!data.ok && data.needConfirm) {
           const deleteBusiness = await showConfirmDialog({
-            title: "删除关联业务明细",
-            message:
-              "这些记录关联了保险/基金/理财/存款等业务明细。\n\n" +
-              "选择「确定」：同时删除资金流水和业务明细。\n" +
-              "选择「取消」：不删除业务明细，下一步再确认是否仅移除资金流水。",
+            title: t("aiPanel.confirmDeleteBusiness.title"),
+            message: t("aiPanel.confirmDeleteBusiness.message", { ok: t("common.ok"), cancel: t("common.cancel") }),
             tone: "danger",
           });
           if (!deleteBusiness) {
             const keepBusiness = await showConfirmDialog({
-              title: "仅移除资金流水",
-              message:
-                "是否只从资金账户流水中移除，并保留关联业务明细？\n\n" +
-                "选择「确定」：保留业务明细。\n" +
-                "选择「取消」：放弃本次删除。",
+              title: t("aiPanel.confirmKeepFlow.title"),
+              message: t("aiPanel.confirmKeepFlow.message", { ok: t("common.ok"), cancel: t("common.cancel") }),
             });
             if (!keepBusiness) {
-              setMessages((m) => [...m, { role: "assistant", text: "已取消删除。" }]);
+              setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.cancelledDelete") }]);
               setConfirmDialog(null);
               return;
             }
           }
           data = await callDeleteEntries({ entryIds, linkedAction: deleteBusiness ? "deleteBusiness" : "keepBusiness" });
         }
-        if (!data?.ok) throw new Error(data?.error || "删除失败");
-        setMessages((m) => [...m, { role: "assistant", text: data.message || `已删除 ${entryIds.length} 条记录。` }]);
+        if (!data?.ok) throw new Error(data?.error || t("settingsDelete.deleteFailed"));
+        setMessages((m) => [...m, { role: "assistant", text: data.message || t("aiPanel.deleted", { count: entryIds.length }) }]);
         setConfirmDialog(null);
         const refreshEntryIds = getDeleteRefreshEntryIds(data, entryIds);
         dispatchFinanceDataChanged({ reason: "ai-entry-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
@@ -598,12 +597,12 @@ export function AIPanel({
       const src = String(confirmDialog.payload.sourceText ?? "").trim();
       const parsed = await parseStatement({ text: `${src}，确认执行` });
       if (parsed.ok) {
-        setMessages((m) => [...m, { role: "assistant", text: `已确认执行：${parsed.deletedCount || parsed.restoredCount || parsed.updatedCount || 0} 条记录。`, trace: parsed.trace }]);
+        setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.confirmedExecuted", { count: parsed.deletedCount || parsed.restoredCount || parsed.updatedCount || 0 }), trace: parsed.trace }]);
         setConfirmDialog(null);
         dispatchFinanceDataChanged({ reason: "ai-confirmed-operation" });
       }
     } catch (e: any) {
-      setMessages((m) => [...m, { role: "assistant", text: `执行失败：${e.message}` }]);
+      setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.executionFailed", { message: e.message }) }]);
     } finally { setLoading(false); }
   }
 
@@ -618,13 +617,13 @@ export function AIPanel({
       const result = await importItems(selected);
       const createdAccounts = Array.isArray(result.createdAccounts) ? result.createdAccounts : [];
       const accountText = createdAccounts.length
-        ? ` 已自动创建账户：${createdAccounts.map((account: any) => `${account.institutionName ? `${account.institutionName}·` : ""}${account.name}`).join("、")}。`
+        ? t("aiPanel.autoCreatedAccounts", { names: createdAccounts.map((account: any) => `${account.institutionName ? `${account.institutionName}·` : ""}${account.name}`).join("、") })
         : "";
-      setMessages((m) => [...m, { role: "assistant", text: `已导入 ${result.createdCount} 条记录。${accountText}` }]);
+      setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.importedCount", { count: result.createdCount, extra: accountText }) }]);
       setImportConfirmDialog(null);
       dispatchFinanceDataChanged({ reason: "ai-entry-import" });
     } catch (e: any) {
-      setMessages((m) => [...m, { role: "assistant", text: `导入失败：${e.message}` }]);
+      setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.importFailed", { message: e.message }) }]);
     } finally { setLoading(false); }
   }
 
@@ -648,8 +647,8 @@ export function AIPanel({
     return target.transactionId ?? target.id ?? "";
   }
 
-  function targetTypeLabel(type?: string) {
-    return type === "transfer" ? "转账" : type === "income" ? "收入" : type === "investment" ? "投资" : "支出";
+  function targetTypeLabel(type?: string, translate = t) {
+    return type === "transfer" ? translate("transaction.type.transfer") : type === "income" ? translate("transaction.type.income") : type === "investment" ? translate("transaction.type.investment") : translate("transaction.type.expense");
   }
 
   function getFilteredConfirmTargets(dialog = confirmDialog) {
@@ -672,12 +671,12 @@ export function AIPanel({
   }
 
   function getDeletePreviewColumnValue(target: ConfirmTarget, column: DeletePreviewColumn, selectedIds = confirmDialog?.selectedTargetIds ?? new Set<string>()) {
-    if (column === "selection") return selectedIds.has(targetIdOf(target)) ? "已选" : "未选";
+    if (column === "selection") return selectedIds.has(targetIdOf(target)) ? t("stockPanel.selected") : t("aiPanel.unselected");
     if (column === "date") return target.date || "-";
     if (column === "type") return targetTypeLabel(target.type);
     if (column === "account") return target.accountName || "-";
     if (column === "amount") return `${target.amount < 0 ? "-" : "+"}${formatMoney(Math.abs(target.amount || 0))}`;
-    return target.remark || "无备注";
+    return target.remark || t("detailView.noNote");
   }
 
   function deletePreviewColumnOptions(column: DeletePreviewColumn, dialog = confirmDialog) {
@@ -758,7 +757,7 @@ export function AIPanel({
   const [remoteModels, setRemoteModels] = useState<Array<{ id: string; category: string; supportsVision: boolean }>>([]);
   const [selectedRemoteModel, setSelectedRemoteModel] = useState("");
   const [newChannelId, setNewChannelId] = useState("");
-  const [modelFetched, setModelFetched] = useState(false); // 是否已尝试获取过模型
+  const [modelFetched, setModelFetched] = useState(false); // Whether model fetching has been attempted.
   const [fetchingModels, setFetchingModels] = useState(false);
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsError, setSettingsError] = useState("");
@@ -838,7 +837,7 @@ export function AIPanel({
         }),
       });
       const chData = await chRes.json();
-      if (!chData.ok) throw new Error(chData.error ?? "更新渠道失败");
+      if (!chData.ok) throw new Error(chData.error ?? t("aiPanel.channelUpdateFailed"));
 
       const mRes = await fetch("/api/v1/settings/ai-config", {
         method: "PUT",
@@ -850,7 +849,7 @@ export function AIPanel({
         }),
       });
       const mData = await mRes.json();
-      if (!mData.ok) throw new Error(mData.error ?? "更新模型失败");
+      if (!mData.ok) throw new Error(mData.error ?? t("aiPanel.modelUpdateFailed"));
 
       setEditModelOverlay(null);
       setSettingsError("");
@@ -879,7 +878,7 @@ export function AIPanel({
       body: JSON.stringify({ baseUrl, apiKey, modelsUrl }),
     });
     const data = await res.json();
-    if (!data.ok) throw new Error(data.error ?? "获取模型失败");
+    if (!data.ok) throw new Error(data.error ?? t("settings.ai.client.fetchModelsFailed"));
     return data.modelInfos ?? data.models ?? [];
   }
 
@@ -888,7 +887,7 @@ export function AIPanel({
     if (addChannelForm.channelType !== "ollama" && !addChannelForm.apiKey.trim()) return;
     setFetchingModels(true);
     setSettingsError("");
-    setRemoteModels([]); // 清空旧列表，显示加载状态
+    setRemoteModels([]); // Clear the old list to show the loading state.
     try {
       const modelsUrl = getModelsUrl(addChannelForm.channelType);
       const res = await fetch("/api/v1/ai/models", {
@@ -897,7 +896,7 @@ export function AIPanel({
         body: JSON.stringify({ baseUrl: addChannelForm.baseUrl.trim(), apiKey: addChannelForm.apiKey.trim(), modelsUrl }),
       });
       const data = await res.json();
-      if (!data.ok) throw new Error(data.error ?? "获取模型失败");
+      if (!data.ok) throw new Error(data.error ?? t("settings.ai.client.fetchModelsFailed"));
       const list: typeof remoteModels = data.modelInfos ?? data.models ?? [];
       setRemoteModels(list);
       setModelFetched(true);
@@ -932,7 +931,7 @@ export function AIPanel({
         body: JSON.stringify({ name: addChannelForm.name, channelType: addChannelForm.channelType, baseUrl: addChannelForm.baseUrl, apiKey: addChannelForm.apiKey }),
       });
       const data = await res.json();
-      if (!data.ok) throw new Error(data.error ?? "添加失败");
+      if (!data.ok) throw new Error(data.error ?? t("aiPanel.addFailed"));
       const chId = data.channel.id;
       const info = remoteModels.find(m => m.id === selectedRemoteModel);
       const mRes = await fetch("/api/v1/settings/ai-config", {
@@ -941,7 +940,7 @@ export function AIPanel({
         body: JSON.stringify({ model: selectedRemoteModel, name: addChannelForm.name || selectedRemoteModel, channelId: chId, vision: info?.supportsVision ?? false }),
       });
       const mData = await mRes.json();
-      if (!mData.ok) throw new Error(mData.error ?? "添加模型失败");
+      if (!mData.ok) throw new Error(mData.error ?? t("aiPanel.addModelFailed"));
       setAddChannelForm({ name: "", channelType: "deepseek", baseUrl: "", apiKey: "" });
       setRemoteModels([]);
       setSelectedRemoteModel("");
@@ -999,13 +998,13 @@ export function AIPanel({
         <button
           onClick={() => setCollapsedPersist(false)}
           className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-white hover:text-slate-900"
-          title="展开记账助手"
+          title={t("aiPanel.expandTitle")}
         >
           <PanelRightOpen size={18} />
         </button>
         <div className="mt-8 flex flex-col gap-4 items-center text-foreground/20">
           <Sparkles size={18} />
-          <div className="text-[10px] font-bold tracking-widest" style={{ writingMode: "vertical-rl" }}>记账助手</div>
+          <div className="text-[10px] font-bold tracking-widest" style={{ writingMode: "vertical-rl" }}>{t("aiPanel.title")}</div>
         </div>
       </aside>
     );
@@ -1013,7 +1012,7 @@ export function AIPanel({
 
   /* ---- Main Panel (Roo Code style) ---- */
 
-  const activeModelDisplay = activeModel || "选择模型";
+  const activeModelDisplay = activeModel || t("aiPanel.selectModel");
   const deletePreviewDialog = confirmDialog?.kind === "delete" ? confirmDialog : null;
 
   function renderDeletePreviewModal() {
@@ -1030,17 +1029,17 @@ export function AIPanel({
           <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 bg-slate-50/80 px-5 py-4">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <h2 className="text-base font-semibold text-slate-900">删除预览</h2>
-                <span className="rounded-full bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-600">不可编辑</span>
+                <h2 className="text-base font-semibold text-slate-900">{t("aiPanel.deletePreview")}</h2>
+                <span className="rounded-full bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-600">{t("aiPanel.notEditable")}</span>
               </div>
               <div className="mt-1 text-xs text-slate-500">
-                删除模式只允许筛选和勾选，确认后会进入回收/撤销链路。
+                {t("aiPanel.deleteModeHint")}
               </div>
             </div>
             <button
               onClick={() => setConfirmDialog(null)}
               className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-100 hover:text-slate-900"
-              title="关闭"
+              title={t("table.close")}
             >
               <X size={18} />
             </button>
@@ -1057,16 +1056,16 @@ export function AIPanel({
                 }`}>
                   {allFilteredSelected && <span className="text-[10px]">✓</span>}
                 </span>
-                {allFilteredSelected ? "取消筛选结果" : "全选筛选结果"}
+                {allFilteredSelected ? t("aiPanel.unselectFiltered") : t("aiPanel.selectFiltered")}
               </button>
               <div className="text-xs text-slate-500">
-                筛选 <span className="font-semibold text-slate-800">{filteredTargets.length}</span> / {deletePreviewDialog.targets?.length ?? 0}
+                {t("aiPanel.filteredLabel")} <span className="font-semibold text-slate-800">{filteredTargets.length}</span> / {deletePreviewDialog.targets?.length ?? 0}
                 <span className="mx-2 text-slate-300">|</span>
-                已选 <span className="font-semibold text-slate-800">{selectedIds.size}</span>
+                {t("aiPanel.selectedLabel")} <span className="font-semibold text-slate-800">{selectedIds.size}</span>
               </div>
             </div>
             <div className="flex items-center justify-between gap-3">
-              <div className="text-xs text-slate-500">按表头下拉筛选后，可对筛选结果批量勾选或取消。</div>
+              <div className="text-xs text-slate-500">{t("aiPanel.filterHint")}</div>
               <button
                 type="button"
                 onClick={() => {
@@ -1075,7 +1074,7 @@ export function AIPanel({
                 }}
                 className="h-8 rounded-md border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-500 hover:bg-slate-50 hover:text-slate-800"
               >
-                清空筛选
+                {t("table.clearFilters")}
               </button>
             </div>
           </div>
@@ -1084,18 +1083,18 @@ export function AIPanel({
             <table className="min-w-full border-separate border-spacing-0 text-sm">
               <thead className="sticky top-0 z-10 bg-slate-50 text-xs font-semibold text-slate-500">
                 <tr>
-                  <th className="w-10 border-b border-slate-200 px-3 py-2 text-left">{renderDeletePreviewColumnFilter("selection", "选")}</th>
-                  <th className="border-b border-slate-200 px-3 py-2 text-left">{renderDeletePreviewColumnFilter("date", "日期")}</th>
-                  <th className="border-b border-slate-200 px-3 py-2 text-left">{renderDeletePreviewColumnFilter("type", "类型")}</th>
-                  <th className="border-b border-slate-200 px-3 py-2 text-left">{renderDeletePreviewColumnFilter("account", "账户")}</th>
-                  <th className="border-b border-slate-200 px-3 py-2 text-right">{renderDeletePreviewColumnFilter("amount", "金额")}</th>
-                  <th className="border-b border-slate-200 px-3 py-2 text-left">{renderDeletePreviewColumnFilter("remark", "备注")}</th>
+                  <th className="w-10 border-b border-slate-200 px-3 py-2 text-left">{renderDeletePreviewColumnFilter("selection", t("aiPanel.col.selection"))}</th>
+                  <th className="border-b border-slate-200 px-3 py-2 text-left">{renderDeletePreviewColumnFilter("date", t("detail.column.date"))}</th>
+                  <th className="border-b border-slate-200 px-3 py-2 text-left">{renderDeletePreviewColumnFilter("type", t("batchImport.field.type"))}</th>
+                  <th className="border-b border-slate-200 px-3 py-2 text-left">{renderDeletePreviewColumnFilter("account", t("common.account"))}</th>
+                  <th className="border-b border-slate-200 px-3 py-2 text-right">{renderDeletePreviewColumnFilter("amount", t("stats.amount"))}</th>
+                  <th className="border-b border-slate-200 px-3 py-2 text-left">{renderDeletePreviewColumnFilter("remark", t("detail.column.remark"))}</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredTargets.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-4 py-12 text-center text-sm text-slate-400">当前筛选条件下没有记录</td>
+                    <td colSpan={6} className="px-4 py-12 text-center text-sm text-slate-400">{t("aiPanel.noRecordsUnderFilter")}</td>
                   </tr>
                 ) : filteredTargets.map((target, index) => {
                   const id = targetIdOf(target);
@@ -1119,7 +1118,7 @@ export function AIPanel({
                       <td className={`whitespace-nowrap border-b border-slate-100 px-3 py-2 text-right font-semibold ${target.amount < 0 ? "text-red-500" : "text-emerald-600"}`}>
                         {target.amount < 0 ? "-" : "+"}¥{formatMoney(Math.abs(target.amount || 0))}
                       </td>
-                      <td className="max-w-[360px] truncate border-b border-slate-100 px-3 py-2 text-slate-600" title={target.remark}>{target.remark || "无备注"}</td>
+                      <td className="max-w-[360px] truncate border-b border-slate-100 px-3 py-2 text-slate-600" title={target.remark}>{target.remark || t("detailView.noNote")}</td>
                     </tr>
                   );
                 })}
@@ -1132,14 +1131,14 @@ export function AIPanel({
               onClick={() => setConfirmDialog(null)}
               className="h-10 rounded-lg border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-600 hover:bg-slate-100"
             >
-              取消
+              {t("common.cancel")}
             </button>
             <button
               onClick={onConfirmBatchAction}
               disabled={loading || selectedIds.size === 0}
               className="h-10 rounded-lg bg-slate-900 px-5 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 disabled:opacity-30"
             >
-              {loading ? "删除中..." : `确认删除 ${selectedIds.size} 条`}
+              {loading ? t("aiPanel.deleting") : t("aiPanel.confirmDeleteCount", { count: selectedIds.size })}
             </button>
           </div>
         </div>
@@ -1153,42 +1152,42 @@ export function AIPanel({
     {renderDeletePreviewModal()}
     <aside className="w-80 ai-panel-glass shrink-0 flex flex-col h-screen overflow-hidden transition-all duration-300 relative border-l border-foreground/5">
 
-      {/* 头部：标题 + 模型选择 + 操作按钮 */}
+      {/* Header: title + model selector + action buttons */}
       <div className="shrink-0 border-b border-slate-200/70 bg-white/70 px-3 py-3 backdrop-blur">
         <div className="mb-3 flex items-center justify-between gap-2">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h5 className="truncate text-sm font-semibold text-slate-900">记账助手</h5>
+              <h5 className="truncate text-sm font-semibold text-slate-900">{t("aiPanel.title")}</h5>
               <span className="rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">AI</span>
             </div>
-            <p className="mt-0.5 text-[10px] font-medium text-slate-400">解析 · 导入 · 查询 · 修改</p>
+            <p className="mt-0.5 text-[10px] font-medium text-slate-400">{t("aiPanel.subtitle")}</p>
           </div>
           <div className="flex shrink-0 items-center gap-1">
             <button
-              onClick={() => { setMessages([{ role: "assistant", text: "粘贴账单文本或输入指令，我会帮你解析、导入、查询或修改记录。" }]); }}
+              onClick={() => { setMessages([{ role: "assistant", text: t("aiPanel.welcome") }]); }}
               className="flex h-8 w-8 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
-              title="新对话"
+              title={t("aiPanel.newChat")}
             >
               <Plus size={16} />
             </button>
             <button
               onClick={() => { setSettingsView(true); loadChannelsFromDB(); }}
               className="flex h-8 w-8 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
-              title="API 配置"
+              title={t("aiPanel.apiConfig")}
             >
               <Settings size={16} />
             </button>
             <button
               onClick={() => setCollapsedPersist(true)}
               className="flex h-8 w-8 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
-              title="收起记账助手"
+              title={t("aiPanel.collapseTitle")}
             >
               <PanelRightClose size={18} />
             </button>
           </div>
         </div>
 
-        {/* 模型选择下拉 */}
+        {/* Model selector dropdown */}
         <div className="relative">
           {modelNames.length > 0 ? (
             <button
@@ -1203,12 +1202,12 @@ export function AIPanel({
               onClick={() => { setSettingsView(true); loadChannelsFromDB(); }}
               className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-500 shadow-sm transition-colors hover:bg-slate-50"
             >
-              <span>{modelsLoading ? "加载中…" : "未配置模型，点击设置"}</span>
+              <span>{modelsLoading ? t("aiPanel.loadingModels") : t("aiPanel.noModelConfigured")}</span>
               <Settings size={12} className="shrink-0" />
             </button>
           )}
 
-          {/* 模型下拉弹出 */}
+          {/* Model dropdown popup */}
           {modelDropdownOpen && modelNames.length > 0 && (
             <div className="absolute top-full left-0 right-0 mt-1 z-50 bg-surface-white border border-foreground/10 rounded-xl shadow-lg overflow-hidden">
               <div className="max-h-[220px] overflow-y-auto py-1">
@@ -1232,14 +1231,14 @@ export function AIPanel({
                         <button
                           onClick={() => { loadChannelsFromDB(); openEditModelOverlay(name); }}
                           className="w-5 h-5 rounded flex items-center justify-center text-foreground/20 hover:text-foreground/50 hover:bg-foreground/10 transition-all"
-                          title="编辑模型"
+                          title={t("settings.ai.client.action.edit")}
                         >
                           <Pencil size={10} />
                         </button>
                         <button
                           onClick={() => { const id = modelIdsByName[name]; if (id) { handleDeleteModel(id); setModelDropdownOpen(false); } }}
                           className="w-5 h-5 rounded flex items-center justify-center text-foreground/20 hover:text-red-500 hover:bg-red-50 transition-all"
-                          title="删除模型"
+                          title={t("settings.ai.client.action.delete")}
                         >
                           <X size={10} />
                         </button>
@@ -1253,7 +1252,7 @@ export function AIPanel({
                   onClick={() => { setModelDropdownOpen(false); setSettingsView(true); loadChannelsFromDB(); }}
                   className="w-full px-3 py-2.5 text-[11px] text-left text-foreground/40 hover:bg-foreground/5 transition-all flex items-center gap-1.5"
                 >
-                  <Settings size={10} /> 管理模型
+                  <Settings size={10} /> {t("aiPanel.manageModels")}
                 </button>
               </div>
             </div>
@@ -1261,23 +1260,23 @@ export function AIPanel({
         </div>
       </div>
 
-      {/* 编辑模型覆盖层 */}
+      {/* Edit model overlay */}
       {editModelOverlay && (
         <div className="absolute inset-0 z-50 bg-background/95 backdrop-blur-md flex flex-col animate-in fade-in duration-300">
           <div className="flex items-center justify-between px-5 py-4 border-b border-foreground/5 shrink-0">
-            <h6 className="font-heading text-base text-foreground">编辑模型</h6>
+            <h6 className="font-heading text-base text-foreground">{t("settings.ai.client.action.edit")}</h6>
             <button onClick={() => { setEditModelOverlay(null); setSettingsError(""); }} className="text-foreground/20 hover:text-foreground transition-colors">
               <X size={18} />
             </button>
           </div>
           <div className="flex-1 overflow-y-auto px-5 py-4 custom-scrollbar">
             <div className="space-y-3">
-              {/* 渠道信息 */}
+              {/* Channel info */}
               <div className="rounded-xl border border-foreground/10 bg-surface-white p-4 shadow-sm">
-                <div className="text-[10px] font-bold text-foreground/30 mb-3 tracking-wider">渠道配置</div>
+                <div className="text-[10px] font-bold text-foreground/30 mb-3 tracking-wider">{t("aiPanel.channelConfig")}</div>
                 <div className="space-y-3">
                   <div>
-                    <label className="block text-[10px] font-bold text-foreground/30 mb-1">渠道名称</label>
+                    <label className="block text-[10px] font-bold text-foreground/30 mb-1">{t("settings.ai.client.channelName")}</label>
                     <input
                       className="w-full h-10 rounded-xl bg-background/50 border border-foreground/10 px-4 text-sm outline-none focus:border-accent-green/30 text-foreground"
                       value={editModelOverlay.channelName}
@@ -1285,13 +1284,13 @@ export function AIPanel({
                     />
                   </div>
                   <div>
-                    <label className="block text-[10px] font-bold text-foreground/30 mb-1">接口类型</label>
+                    <label className="block text-[10px] font-bold text-foreground/30 mb-1">{t("aiPanel.channelType")}</label>
                     <select
                       className="w-full h-10 rounded-xl bg-background/50 border border-foreground/10 px-4 text-sm outline-none focus:border-accent-green/30 text-foreground"
                       value={editModelOverlay.channelType}
                       onChange={(e) => setEditModelOverlay(o => o ? { ...o, channelType: e.target.value } : null)}
                     >
-                      {CHANNEL_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+                      {CHANNEL_TYPES.map(ct => <option key={ct.id} value={ct.id}>{t(`settings.ai.client.channelType.${ct.id}`)}</option>)}
                     </select>
                   </div>
                   <div>
@@ -1314,12 +1313,12 @@ export function AIPanel({
                 </div>
               </div>
 
-              {/* 模型信息 */}
+              {/* Model info */}
               <div className="rounded-xl border border-foreground/10 bg-surface-white p-4 shadow-sm">
-                <div className="text-[10px] font-bold text-foreground/30 mb-3 tracking-wider">模型配置</div>
+                <div className="text-[10px] font-bold text-foreground/30 mb-3 tracking-wider">{t("aiPanel.modelConfig")}</div>
                 <div className="space-y-3">
                   <div>
-                    <label className="block text-[10px] font-bold text-foreground/30 mb-1">显示名称</label>
+                    <label className="block text-[10px] font-bold text-foreground/30 mb-1">{t("aiPanel.displayName")}</label>
                     <input
                       className="w-full h-10 rounded-xl bg-background/50 border border-foreground/10 px-4 text-sm outline-none focus:border-accent-green/30 text-foreground"
                       value={editModelOverlay.modelName}
@@ -1327,13 +1326,13 @@ export function AIPanel({
                     />
                   </div>
                   <div>
-                    <label className="block text-[10px] font-bold text-foreground/30 mb-1">模型 ID</label>
+                    <label className="block text-[10px] font-bold text-foreground/30 mb-1">{t("aiPanel.modelId")}</label>
                     <div className="h-10 rounded-xl bg-foreground/5 border border-foreground/5 px-4 text-sm text-foreground/50 flex items-center">
                       {editModelOverlay.modelId}
                     </div>
                   </div>
                   <div className="flex items-center justify-between gap-3 py-2">
-                    <span className="text-sm text-foreground/60">支持识图</span>
+                    <span className="text-sm text-foreground/60">{t("aiPanel.visionSupport")}</span>
                     <button
                       onClick={() => setEditModelOverlay(o => o ? { ...o, vision: !o.vision } : null)}
                       className={`w-8 h-5 rounded-full transition-all ${editModelOverlay.vision ? "bg-accent-green" : "bg-foreground/10"}`}
@@ -1349,46 +1348,46 @@ export function AIPanel({
           </div>
           <div className="px-5 py-4 border-t border-foreground/5 shrink-0 flex gap-3">
             <button onClick={() => { setEditModelOverlay(null); setSettingsError(""); }} className="flex-1 py-3 bg-background border border-foreground/10 text-foreground rounded-xl font-bold text-sm hover:bg-foreground/5 transition-colors">
-              关闭
+              {t("table.close")}
             </button>
             <button onClick={saveEditModelOverlay} disabled={settingsLoading} className="flex-[2] py-3 bg-foreground text-background rounded-xl font-bold text-sm shadow-lg disabled:opacity-30 active:scale-95 transition-transform">
-              {settingsLoading ? "保存中…" : "保存"}
+              {settingsLoading ? t("aiPanel.saving") : t("common.save")}
             </button>
           </div>
         </div>
       )}
 
-      {/* API 配置覆盖层对话框 */}
+      {/* API settings overlay dialog */}
       {settingsView && (
         <div className="absolute inset-0 z-50 bg-background/95 backdrop-blur-md flex flex-col animate-in fade-in duration-300">
-          {/* 对话框头部 */}
+          {/* Dialog header */}
           <div className="flex items-center justify-between px-5 py-4 border-b border-foreground/5 shrink-0">
-            <h6 className="font-heading text-base text-foreground">API 配置</h6>
+            <h6 className="font-heading text-base text-foreground">{t("aiPanel.apiConfig")}</h6>
             <button onClick={() => { setSettingsView(false); }} className="text-foreground/20 hover:text-foreground transition-colors">
               <X size={18} />
             </button>
           </div>
 
-          {/* 对话框内容 */}
+          {/* Dialog content */}
           <div className="flex-1 overflow-y-auto px-5 py-4 custom-scrollbar">
 
-            {/* 渠道 & 模型列表 */}
+            {/* Channel & model list */}
             {channels.length > 0 && (
               <div className="space-y-4 mb-4">
                 {channels.map((ch) => (
                   <div key={ch.id} className="rounded-xl border border-foreground/5 bg-surface-white p-4 shadow-sm">
-                    {/* 渠道头部 */}
+                    {/* Channel header */}
                     <div className="flex items-center justify-between gap-3 mb-3">
                       <div className="min-w-0">
                         <div className="text-sm font-bold text-foreground">{ch.name}</div>
                         <div className="mt-0.5 text-[10px] text-foreground/30 truncate">{ch.baseUrl}</div>
                       </div>
-                      <button onClick={() => handleDeleteChannel(ch.id)} className="w-7 h-7 rounded-lg flex items-center justify-center text-foreground/20 hover:text-red-500 hover:bg-red-50 transition-all" title="删除渠道">
+                      <button onClick={() => handleDeleteChannel(ch.id)} className="w-7 h-7 rounded-lg flex items-center justify-center text-foreground/20 hover:text-red-500 hover:bg-red-50 transition-all" title={t("aiPanel.deleteChannel")}>
                         <Trash2 size={14} />
                       </button>
                     </div>
 
-                    {/* 模型列表 */}
+                    {/* Model list */}
                     {ch.AiModel.length > 0 ? (
                       <div className="space-y-2">
                         {ch.AiModel.map((m) => (
@@ -1396,12 +1395,12 @@ export function AIPanel({
                             <div className="flex items-center gap-2 min-w-0">
                               <span className="text-sm font-medium text-foreground truncate">{m.name || m.model}</span>
                               {m.vision && <Eye size={12} className="text-accent-green shrink-0" />}
-                              {m.active && <span className="text-[10px] bg-accent-green/10 text-accent-green px-2 py-0.5 rounded-full shrink-0 font-bold">活跃</span>}
+                              {m.active && <span className="text-[10px] bg-accent-green/10 text-accent-green px-2 py-0.5 rounded-full shrink-0 font-bold">{t("aiPanel.active")}</span>}
                             </div>
                             <div className="flex items-center gap-2 shrink-0">
                               {!m.active && (
                                 <button onClick={() => handleSetActiveModel(m.id)} className="text-[10px] text-foreground/30 hover:text-accent-green font-bold transition-colors px-2 py-1 rounded-lg hover:bg-accent-green/10">
-                                  设为活跃
+                                  {t("aiPanel.setActive")}
                                 </button>
                               )}
                               <button onClick={() => handleDeleteModel(m.id)} className="w-6 h-6 rounded-lg flex items-center justify-center text-foreground/20 hover:text-red-500 hover:bg-red-50 transition-all">
@@ -1412,30 +1411,30 @@ export function AIPanel({
                         ))}
                       </div>
                     ) : (
-                      <div className="text-[11px] text-foreground/30 py-3 text-center">暂无模型</div>
+                      <div className="text-[11px] text-foreground/30 py-3 text-center">{t("aiPanel.noModels")}</div>
                     )}
                   </div>
                 ))}
               </div>
             )}
 
-            {/* 添加渠道 - 单步表单 */}
+            {/* Add channel - single-step form */}
             <div className="rounded-xl border border-foreground/10 bg-surface-white p-4 shadow-sm space-y-3">
-              <div className="text-sm font-bold text-foreground">添加渠道</div>
+              <div className="text-sm font-bold text-foreground">{t("aiPanel.addChannel")}</div>
 
-              {/* 基础配置 */}
+              {/* Basic configuration */}
               <div className="grid grid-cols-2 gap-2">
                 <div className="col-span-2">
-                  <label className="block text-[10px] font-bold text-foreground/30 mb-1">渠道名称（可选）</label>
+                  <label className="block text-[10px] font-bold text-foreground/30 mb-1">{t("aiPanel.channelNameOptional")}</label>
                   <input
                     className="w-full h-9 rounded-xl bg-background/50 border border-foreground/10 px-3 text-sm outline-none focus:border-accent-green/30 text-foreground"
-                    placeholder="可留空，以模型名填充"
+                    placeholder={t("aiPanel.channelNamePlaceholder")}
                     value={addChannelForm.name}
                     onChange={(e) => setAddChannelForm(f => ({ ...f, name: e.target.value }))}
                   />
                 </div>
                 <div className="col-span-2">
-                  <label className="block text-[10px] font-bold text-foreground/30 mb-1">接口类型</label>
+                  <label className="block text-[10px] font-bold text-foreground/30 mb-1">{t("aiPanel.channelType")}</label>
                   <select
                     className="w-full h-9 rounded-xl bg-background/50 border border-foreground/10 px-3 text-sm outline-none focus:border-accent-green/30 text-foreground"
                     value={addChannelForm.channelType}
@@ -1447,7 +1446,7 @@ export function AIPanel({
                       setRemoteModels([]);
                     }}
                   >
-                    {CHANNEL_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+                    {CHANNEL_TYPES.map(ct => <option key={ct.id} value={ct.id}>{t(`settings.ai.client.channelType.${ct.id}`)}</option>)}
                   </select>
                 </div>
                 <div className="col-span-2">
@@ -1460,30 +1459,30 @@ export function AIPanel({
                   />
                 </div>
                 <div className="col-span-2">
-                  <label className="block text-[10px] font-bold text-foreground/30 mb-1">API Key {addChannelForm.channelType === "ollama" ? "（可选）" : ""}</label>
+                  <label className="block text-[10px] font-bold text-foreground/30 mb-1">API Key {addChannelForm.channelType === "ollama" ? t("aiPanel.optionalSuffix") : ""}</label>
                   <input
                     type="password"
                     className="w-full h-9 rounded-xl bg-background/50 border border-foreground/10 px-3 text-sm outline-none focus:border-accent-green/30 text-foreground"
-                    placeholder={addChannelForm.channelType === "ollama" ? "本地通常不需要" : "sk-..."}
+                    placeholder={addChannelForm.channelType === "ollama" ? t("aiPanel.localNoKey") : "sk-..."}
                     value={addChannelForm.apiKey}
                     onChange={(e) => { setAddChannelForm(f => ({ ...f, apiKey: e.target.value })); setModelFetched(false); setRemoteModels([]); }}
                   />
                 </div>
               </div>
 
-              {/* 错误提示 */}
-              {/* 模型选择区 - Key 填好后始终显示 */}
+              {/* Error hint */}
+              {/* Model selection area - always visible once the Key is filled */}
               {(addChannelForm.channelType === "ollama" || addChannelForm.apiKey.trim()) && addChannelForm.baseUrl.trim() ? (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <label className="block text-[10px] font-bold text-foreground/30">选择模型</label>
-                    {fetchingModels && <span className="text-[10px] text-accent-green animate-pulse">获取中…</span>}
-                    {remoteModels.length > 0 && !fetchingModels && <span className="text-[10px] text-foreground/30">{remoteModels.length} 个模型</span>}
+                    <label className="block text-[10px] font-bold text-foreground/30">{t("aiPanel.selectModel")}</label>
+                    {fetchingModels && <span className="text-[10px] text-accent-green animate-pulse">{t("aiPanel.fetching")}</span>}
+                    {remoteModels.length > 0 && !fetchingModels && <span className="text-[10px] text-foreground/30">{t("aiPanel.modelCount", { count: remoteModels.length })}</span>}
                   </div>
 
                   {fetchingModels ? (
                     <div className="flex items-center gap-2 py-4 text-[11px] text-foreground/30 justify-center">
-                      <Wand2 size={12} className="animate-spin text-accent-green" /> 正在获取模型列表…
+                      <Wand2 size={12} className="animate-spin text-accent-green" /> {t("aiPanel.fetchingModelList")}
                     </div>
                   ) : remoteModels.length > 0 ? (
                     <div className="max-h-[140px] overflow-y-auto rounded-xl border border-foreground/5">
@@ -1497,7 +1496,7 @@ export function AIPanel({
                         >
                           <span className="truncate">{m.id}</span>
                           <div className="flex items-center gap-1 shrink-0 ml-2">
-                            {m.supportsVision && <span className="text-[10px] text-accent-green">识图</span>}
+                            {m.supportsVision && <span className="text-[10px] text-accent-green">{t("aiPanel.vision")}</span>}
                             {m.id === selectedRemoteModel && <span className="text-accent-green text-xs">✓</span>}
                           </div>
                         </button>
@@ -1512,13 +1511,13 @@ export function AIPanel({
                         onClick={fetchModelsForAdd}
                         className="w-full py-2 rounded-xl border border-dashed border-foreground/10 text-[11px] font-bold text-foreground/40 hover:text-foreground hover:border-foreground/20 transition-all"
                       >
-                        {settingsError ? "重试获取模型" : "点此获取模型"}
+                        {settingsError ? t("aiPanel.retryFetch") : t("aiPanel.clickFetch")}
                       </button>
                       <div>
-                        <label className="block text-[10px] font-bold text-foreground/30 mb-1">或手动输入模型 ID</label>
+                        <label className="block text-[10px] font-bold text-foreground/30 mb-1">{t("aiPanel.manualModelId")}</label>
                         <input
                           className="w-full h-9 rounded-xl bg-background/50 border border-foreground/10 px-3 text-sm outline-none focus:border-accent-green/30 text-foreground"
-                          placeholder="例如 deepseek-chat"
+                          placeholder={t("aiPanel.modelIdPlaceholder")}
                           value={selectedRemoteModel}
                           onChange={(e) => setSelectedRemoteModel(e.target.value)}
                         />
@@ -1528,35 +1527,35 @@ export function AIPanel({
                 </div>
               ) : (
                 <div className="text-[11px] text-foreground/30 py-2 text-center">
-                  {addChannelForm.baseUrl.trim() ? "请填写 API Key 后自动获取模型" : "请先填写 URL 和 Key"}
+                  {addChannelForm.baseUrl.trim() ? t("aiPanel.fillApiKeyFirst") : t("aiPanel.fillUrlAndKey")}
                 </div>
               )}
 
               {settingsError && <div className="text-[11px] text-red-500 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{settingsError}</div>}
 
-              {/* 底部按钮 */}
+              {/* Bottom buttons */}
               <div className="flex gap-2 pt-1">
                 <button onClick={() => { setSettingsView(false); setAddChannelForm({ name: "", channelType: "deepseek", baseUrl: "", apiKey: "" }); setRemoteModels([]); setSelectedRemoteModel(""); setModelFetched(false); setSettingsError(""); }} className="flex-1 py-2.5 bg-background border border-foreground/10 text-foreground/60 rounded-xl font-bold text-xs hover:bg-foreground/5 transition-colors">
-                  取消
+                  {t("common.cancel")}
                 </button>
                 <button
                   onClick={remoteModels.length > 0 ? handleAddChannelAndModel : fetchModelsForAdd}
                   disabled={settingsLoading || fetchingModels || !addChannelForm.baseUrl.trim() || (addChannelForm.channelType !== "ollama" && !addChannelForm.apiKey.trim()) || (remoteModels.length > 0 && !selectedRemoteModel)}
                   className="flex-[2] py-2.5 bg-foreground text-background rounded-xl font-bold text-xs shadow-lg disabled:opacity-30 active:scale-95 transition-transform"
                 >
-                  {settingsLoading ? "添加中…" : remoteModels.length > 0 ? `添加 ${selectedRemoteModel || ""}` : "获取模型"}
+                  {settingsLoading ? t("aiPanel.adding") : remoteModels.length > 0 ? t("aiPanel.addModel", { name: selectedRemoteModel || "" }) : t("settings.ai.client.fetchModels")}
                 </button>
               </div>
             </div>
           </div>
 
-          {/* 底部添加按钮已合并到表单中，此处不再单独显示 */}
+          {/* The bottom add button is merged into the form above; no separate button here */}
         </div>
       )}
 
       {!settingsView && (
       <>
-      {/* 聊天区 — 主体 */}
+      {/* Chat area - main body */}
       <div className="flex-1 overflow-y-auto px-4 py-3 custom-scrollbar space-y-3">
         {messages.map((m, idx) => (
           <div key={idx} className={`flex flex-col ${m.role === "user" ? "items-end" : "items-start"} gap-1`}>
@@ -1576,15 +1575,15 @@ export function AIPanel({
         ))}
         {loading && (
           <div className="flex items-center gap-2 text-[11px] text-foreground/30 px-2">
-            <Wand2 size={12} className="animate-spin text-accent-green" /> 正在解析...
+            <Wand2 size={12} className="animate-spin text-accent-green" /> {t("aiPanel.parsing")}
           </div>
         )}
         {importConfirmDialog && (
           <div className="rounded-2xl border border-foreground/10 bg-surface-white p-3 shadow-sm">
             <div className="mb-2 flex items-center justify-between">
-              <div className="text-[11px] font-bold text-foreground/60">AI 识别结果</div>
+              <div className="text-[11px] font-bold text-foreground/60">{t("aiPanel.recognitionResult")}</div>
               <button onClick={toggleImportAll} className="text-[11px] font-bold text-accent-green">
-                {importConfirmDialog.selectAll ? "取消全选" : "全选"}
+                {importConfirmDialog.selectAll ? t("accountsQuickAdd.clearSelection") : t("table.selectAllValues")}
               </button>
             </div>
             <div className="space-y-2">
@@ -1597,16 +1596,16 @@ export function AIPanel({
                     <div className="flex items-start gap-2">
                       <input type="checkbox" checked={selected} onChange={() => toggleImportItem(it.key)} className="mt-1" />
                       <div className="min-w-0 flex-1 space-y-1">
-                        <div>日期：{it.item.date ?? "无日期"}</div>
-                        <div>类型：{itemTypeLabel(it.item.type)}</div>
-                        <div>金额：{formatMoney(Math.abs(it.item.amount ?? 0))}</div>
-                        <div className="truncate" title={itemAccountLabel(it.item)}>账户：{itemAccountLabel(it.item)}</div>
-                        <div className="truncate" title={it.item.counterparty ?? ""}>收支机构：{it.item.counterparty ?? "-"}</div>
+                        <div>{t("aiPanel.block.date", { value: it.item.date ?? t("aiPanel.noDate") })}</div>
+                        <div>{t("aiPanel.block.type", { value: itemTypeLabel(it.item.type, t) })}</div>
+                        <div>{t("aiPanel.block.amount", { value: formatMoney(Math.abs(it.item.amount ?? 0)) })}</div>
+                        <div className="truncate" title={itemAccountLabel(it.item, t)}>{t("aiPanel.block.account", { value: itemAccountLabel(it.item, t) })}</div>
+                        <div className="truncate" title={it.item.counterparty ?? ""}>{t("aiPanel.block.counterparty", { value: it.item.counterparty ?? "-" })}</div>
                         <div className="truncate text-foreground/60" title={it.item.remark ?? it.item.counterparty ?? ""}>
-                          备注：{it.item.remark ?? it.item.counterparty ?? ""}
+                          {t("aiPanel.block.remark", { value: it.item.remark ?? it.item.counterparty ?? "" })}
                         </div>
                         {!it.ready && it.missingFields.length > 0 && (
-                          <div className="text-[10px] text-red-500">缺少：{it.missingFields.join("、")}</div>
+                          <div className="text-[10px] text-red-500">{t("aiPanel.missing", { fields: it.missingFields.join("、") })}</div>
                         )}
                       </div>
                     </div>
@@ -1616,14 +1615,14 @@ export function AIPanel({
             </div>
             <div className="mt-3 flex gap-2">
               <button onClick={() => setImportConfirmDialog(null)} className="flex-1 rounded-xl border border-foreground/10 py-2 text-xs font-bold">
-                取消
+                {t("common.cancel")}
               </button>
               <button
                 onClick={onConfirmBatchImport}
                 disabled={loading || importConfirmDialog.selectedKeys.size === 0}
                 className="flex-[2] rounded-xl bg-foreground py-2 text-xs font-bold text-background disabled:opacity-30"
               >
-                确认导入 {importConfirmDialog.selectedKeys.size} 条
+                {t("aiPanel.confirmImportCount", { count: importConfirmDialog.selectedKeys.size })}
               </button>
             </div>
           </div>
@@ -1631,27 +1630,27 @@ export function AIPanel({
         <div ref={chatEndRef} />
       </div>
 
-      {/* 确认对话框覆盖层 */}
+      {/* Confirm dialog overlay */}
       {confirmDialog && (
         <div className="absolute inset-0 z-40 bg-background/95 backdrop-blur-md p-6 flex flex-col animate-in fade-in duration-300">
           <div className="flex justify-between items-center mb-6">
-            <h6 className="font-heading text-lg text-foreground">{confirmDialog?.label ?? "确认导入"}</h6>
+            <h6 className="font-heading text-lg text-foreground">{confirmDialog?.label ?? t("batchImport.confirmSelectedImport")}</h6>
             <button onClick={() => { setConfirmDialog(null); setImportConfirmDialog(null); }} className="text-foreground/20 hover:text-foreground transition-colors">
               <X size={20} />
             </button>
           </div>
 
           <div className="flex-1 overflow-y-auto space-y-3 mb-6">
-            {/* 批量修改预览 */}
+            {/* Batch update preview */}
             {confirmDialog?.kind === "update" && (
               <>
                 <div className="rounded-xl border border-foreground/10 bg-surface-white p-4 shadow-sm">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <div className="text-[10px] font-bold text-foreground/35 tracking-wider">操作类型</div>
-                      <div className="mt-1 text-sm font-bold">{confirmDialog.preview?.operationType ?? "批量修改"} · {confirmDialog.preview?.action ?? "字段修改"}</div>
+                      <div className="text-[10px] font-bold text-foreground/35 tracking-wider">{t("aiPanel.operationType")}</div>
+                      <div className="mt-1 text-sm font-bold">{confirmDialog.preview?.operationType ?? t("aiPanel.batchUpdate")} · {confirmDialog.preview?.action ?? t("aiPanel.fieldUpdate")}</div>
                     </div>
-                    <div className="rounded-full bg-accent-green/10 px-3 py-1 text-[10px] font-bold text-accent-green">{confirmDialog.count} 条</div>
+                    <div className="rounded-full bg-accent-green/10 px-3 py-1 text-[10px] font-bold text-accent-green">{t("aiPanel.countSuffix", { count: confirmDialog.count })}</div>
                   </div>
                   <div className="mt-3 grid grid-cols-2 gap-2 text-[10px]">
                     {(confirmDialog.preview?.scopeFields ?? []).map((field) => (
@@ -1662,38 +1661,38 @@ export function AIPanel({
                     ))}
                   </div>
                   <div className="mt-3 rounded-lg bg-foreground/5 p-3 text-[10px]">
-                    <div className="text-foreground/40">修改字段</div>
-                    <div className="mt-1 font-bold text-foreground">{confirmDialog.preview?.targetField ?? "账户"}</div>
+                    <div className="text-foreground/40">{t("aiPanel.updateField")}</div>
+                    <div className="mt-1 font-bold text-foreground">{confirmDialog.preview?.targetField ?? t("common.account")}</div>
                     <div className="mt-1 text-foreground/60">
-                      {confirmDialog.preview?.oldValue ?? "原值"} → <span className="font-bold text-accent-green">{confirmDialog.preview?.newValue ?? "新值"}</span>
+                      {confirmDialog.preview?.oldValue ?? t("aiPanel.oldValue")} → <span className="font-bold text-accent-green">{confirmDialog.preview?.newValue ?? t("aiPanel.newValue")}</span>
                     </div>
                   </div>
                 </div>
                 <div className="space-y-2">
-                  <div className="text-[10px] font-bold text-foreground/35 tracking-wider">操作记录预览</div>
-                  {(confirmDialog.targets ?? []).map((t, i) => (
-                    <div key={t.transactionId ?? t.id ?? i} className="rounded-lg border border-foreground/5 bg-surface-white p-3 text-[10px] text-foreground">
+                  <div className="text-[10px] font-bold text-foreground/35 tracking-wider">{t("aiPanel.recordsPreview")}</div>
+                  {(confirmDialog.targets ?? []).map((target, i) => (
+                    <div key={target.transactionId ?? target.id ?? i} className="rounded-lg border border-foreground/5 bg-surface-white p-3 text-[10px] text-foreground">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="font-mono text-foreground/50">{t.date}</span>
-                        <span className="font-bold text-accent-green">¥{formatMoney(Math.abs(t.amount || 0))}</span>
+                        <span className="font-mono text-foreground/50">{target.date}</span>
+                        <span className="font-bold text-accent-green">¥{formatMoney(Math.abs(target.amount || 0))}</span>
                       </div>
-                      <div className="mt-1 truncate font-bold" title={t.accountName}>{t.accountName}</div>
+                      <div className="mt-1 truncate font-bold" title={target.accountName}>{target.accountName}</div>
                       <div className="mt-1 flex items-center justify-between gap-2 text-foreground/45">
-                        <span>{t.type ?? "记录"}</span>
-                        <span className="truncate" title={t.remark}>{t.remark || "无备注"}</span>
+                        <span>{target.type ?? t("aiPanel.recordDefault")}</span>
+                        <span className="truncate" title={target.remark}>{target.remark || t("detailView.noNote")}</span>
                       </div>
                     </div>
                   ))}
                   {confirmDialog.count > (confirmDialog.targets?.length ?? 0) && (
                     <div className="rounded-lg border border-dashed border-foreground/10 p-3 text-center text-[10px] text-foreground/40">
-                      还有 {confirmDialog.count - (confirmDialog.targets?.length ?? 0)} 条将在确认后一起修改
+                      {t("aiPanel.moreUpdatedLater", { count: confirmDialog.count - (confirmDialog.targets?.length ?? 0) })}
                     </div>
                   )}
                 </div>
               </>
             )}
 
-            {/* 删除预览 - 勾选列表 */}
+            {/* Delete preview - selectable list */}
             {confirmDialog?.kind === "delete" && confirmDialog.targets && (
               (() => {
                 const filteredTargets = getFilteredConfirmTargets(confirmDialog);
@@ -1711,17 +1710,17 @@ export function AIPanel({
                           }`}>
                             {allFilteredSelected && <span className="text-[9px]">✓</span>}
                           </span>
-                          {allFilteredSelected ? "取消筛选结果" : "全选筛选结果"}
+                          {allFilteredSelected ? t("aiPanel.unselectFiltered") : t("aiPanel.selectFiltered")}
                         </button>
                         <span className="text-[10px] text-foreground/40">
-                          筛选 {filteredTargets.length}/{confirmDialog.targets?.length ?? 0} · 已选 {selectedIds.size}
+                          {t("aiPanel.filteredCountShort", { current: filteredTargets.length, total: confirmDialog.targets?.length ?? 0 })} · {t("aiPanel.selectedLabelShort", { count: selectedIds.size })}
                         </span>
                       </div>
                       <div className="grid grid-cols-2 gap-2">
                         <input
                           value={deletePreviewFilters.text}
                           onChange={(e) => setDeletePreviewFilters({ ...deletePreviewFilters, text: e.target.value })}
-                          placeholder="搜索日期/账户/备注/金额"
+                          placeholder={t("aiPanel.searchPlaceholder")}
                           className="col-span-2 h-8 rounded-lg border border-foreground/10 bg-surface-white px-2 text-[11px] outline-none focus:border-accent-green/30"
                         />
                         <select
@@ -1729,7 +1728,7 @@ export function AIPanel({
                           onChange={(e) => setDeletePreviewFilters({ ...deletePreviewFilters, accountName: e.target.value })}
                           className="h-8 rounded-lg border border-foreground/10 bg-surface-white px-2 text-[11px] outline-none focus:border-accent-green/30"
                         >
-                          <option value="">全部账户</option>
+                          <option value="">{t("statistics.allAccounts")}</option>
                           {accountOptions.map((name) => <option key={name} value={name}>{name}</option>)}
                         </select>
                         <select
@@ -1737,39 +1736,39 @@ export function AIPanel({
                           onChange={(e) => setDeletePreviewFilters({ ...deletePreviewFilters, type: e.target.value as DeletePreviewFilters["type"] })}
                           className="h-8 rounded-lg border border-foreground/10 bg-surface-white px-2 text-[11px] outline-none focus:border-accent-green/30"
                         >
-                          <option value="all">全部类型</option>
-                          <option value="expense">支出</option>
-                          <option value="income">收入</option>
-                          <option value="transfer">转账</option>
-                          <option value="investment">投资</option>
+                          <option value="all">{t("aiPanel.allTypes")}</option>
+                          <option value="expense">{t("transaction.type.expense")}</option>
+                          <option value="income">{t("transaction.type.income")}</option>
+                          <option value="transfer">{t("transaction.type.transfer")}</option>
+                          <option value="investment">{t("transaction.type.investment")}</option>
                         </select>
                         <select
                           value={deletePreviewFilters.selection}
                           onChange={(e) => setDeletePreviewFilters({ ...deletePreviewFilters, selection: e.target.value as DeletePreviewFilters["selection"] })}
                           className="h-8 rounded-lg border border-foreground/10 bg-surface-white px-2 text-[11px] outline-none focus:border-accent-green/30"
                         >
-                          <option value="all">全部选择状态</option>
-                          <option value="selected">仅看已选</option>
-                          <option value="unselected">仅看未选</option>
+                          <option value="all">{t("aiPanel.allSelection")}</option>
+                          <option value="selected">{t("aiPanel.onlySelected")}</option>
+                          <option value="unselected">{t("aiPanel.onlyUnselected")}</option>
                         </select>
                         <button
                           type="button"
                           onClick={() => setDeletePreviewFilters({ text: "", accountName: "", type: "all", selection: "all" })}
                           className="h-8 rounded-lg border border-foreground/10 bg-surface-white px-2 text-[11px] font-bold text-foreground/50 hover:text-foreground"
                         >
-                          清空筛选
+                          {t("table.clearFilters")}
                         </button>
                       </div>
                     </div>
                     <div className="rounded-xl border border-red-200/60 bg-red-50/80 p-3 text-[10px] text-red-600">
-                      删除模式只允许筛选和勾选，不能编辑记录。确认后会进入回收/撤销链路。
+                      {t("aiPanel.deleteModeHint2")}
                     </div>
                     {filteredTargets.length === 0 ? (
                       <div className="rounded-xl border border-dashed border-foreground/10 p-6 text-center text-[11px] text-foreground/35">
-                        当前筛选条件下没有记录
+                        {t("aiPanel.noRecordsUnderFilter")}
                       </div>
-                    ) : filteredTargets.map((t, i) => {
-                      const id = targetIdOf(t);
+                    ) : filteredTargets.map((target, i) => {
+                      const id = targetIdOf(target);
                       const selected = !!id && selectedIds.has(id);
                       return (
                         <div key={id || i} className={`p-3 rounded-lg border text-[11px] flex items-start gap-3 transition-all ${
@@ -1782,15 +1781,15 @@ export function AIPanel({
                           </button>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center justify-between gap-2">
-                              <span className="font-mono text-foreground/60">{t.date}</span>
-                              <span className={`font-bold shrink-0 ${t.amount < 0 ? "text-red-500" : "text-accent-green"}`}>
-                                {t.amount < 0 ? "-" : "+"}¥{formatMoney(Math.abs(t.amount || 0))}
+                              <span className="font-mono text-foreground/60">{target.date}</span>
+                              <span className={`font-bold shrink-0 ${target.amount < 0 ? "text-red-500" : "text-accent-green"}`}>
+                                {target.amount < 0 ? "-" : "+"}¥{formatMoney(Math.abs(target.amount || 0))}
                               </span>
                             </div>
-                            <div className="mt-1 truncate font-bold" title={t.accountName}>{t.accountName}</div>
+                            <div className="mt-1 truncate font-bold" title={target.accountName}>{target.accountName}</div>
                             <div className="mt-0.5 flex items-center justify-between gap-2 text-foreground/50">
-                              <span>{targetTypeLabel(t.type)}</span>
-                              <span className="truncate" title={t.remark}>{t.remark || "无备注"}</span>
+                              <span>{targetTypeLabel(target.type)}</span>
+                              <span className="truncate" title={target.remark}>{target.remark || t("detailView.noNote")}</span>
                             </div>
                           </div>
                         </div>
@@ -1801,7 +1800,7 @@ export function AIPanel({
               })()
             )}
 
-            {/* 恢复确认 */}
+            {/* Restore confirmation */}
             {confirmDialog?.kind === "restore" && confirmDialog.targets && (
               confirmDialog.targets.map((t, i) => (
                 <div key={i} className="p-3 bg-surface-white rounded-lg border border-foreground/5 text-[11px] flex justify-between text-foreground">
@@ -1811,7 +1810,7 @@ export function AIPanel({
               ))
             )}
 
-            {/* 导入确认 - 勾选列表 */}
+            {/* Import confirmation - selectable list */}
             {importConfirmDialog && (
               <>
                 <div className="flex items-center justify-between mb-2">
@@ -1821,10 +1820,10 @@ export function AIPanel({
                     }`}>
                       {importConfirmDialog.selectAll && <span className="text-[9px]">✓</span>}
                     </span>
-                    全选
+                    {t("table.selectAllValues")}
                   </button>
                   <span className="text-[10px] text-foreground/40">
-                    已选 {importConfirmDialog.selectedKeys.size}/{importConfirmDialog.items.length}
+                    {t("aiPanel.selectedLabelShort", { count: importConfirmDialog.selectedKeys.size })}/{importConfirmDialog.items.length}
                   </span>
                 </div>
                 {importConfirmDialog.items.map((it) => {
@@ -1840,14 +1839,14 @@ export function AIPanel({
                       </button>
                       <div className="flex-1 min-w-0">
                         <div className="grid grid-cols-[76px_minmax(0,1fr)_44px_72px] items-center gap-2">
-                          <span className="font-mono truncate">{it.item.date ?? "无日期"}</span>
-                          <span className="truncate" title={itemAccountLabel(it.item)}>{itemAccountLabel(it.item)}</span>
-                          <span className="text-foreground/55">{itemTypeLabel(it.item.type)}</span>
+                          <span className="font-mono truncate">{it.item.date ?? t("aiPanel.noDate")}</span>
+                          <span className="truncate" title={itemAccountLabel(it.item, t)}>{itemAccountLabel(it.item, t)}</span>
+                          <span className="text-foreground/55">{itemTypeLabel(it.item.type, t)}</span>
                           <span className="font-bold text-accent-green text-right shrink-0">¥{formatMoney(it.item.amount)}</span>
                         </div>
                         <div className="mt-1 truncate text-foreground/50">{it.item.remark ?? it.item.counterparty ?? ""}</div>
                         {!it.ready && it.missingFields.length > 0 && (
-                          <div className="mt-1 text-[9px] text-red-400/80">缺少：{it.missingFields.join("、")}</div>
+                          <div className="mt-1 text-[9px] text-red-400/80">{t("aiPanel.missing", { fields: it.missingFields.join("、") })}</div>
                         )}
                       </div>
                     </div>
@@ -1859,7 +1858,7 @@ export function AIPanel({
 
           <div className="flex gap-2">
             <button onClick={() => { setConfirmDialog(null); setImportConfirmDialog(null); }} className="flex-1 py-3 bg-background border border-foreground/10 text-foreground rounded-xl font-bold text-sm transition-colors hover:bg-foreground/5">
-              取消
+              {t("common.cancel")}
             </button>
             <button
               onClick={confirmDialog ? onConfirmBatchAction : onConfirmBatchImport}
@@ -1870,17 +1869,17 @@ export function AIPanel({
               className="flex-[2] py-3 bg-foreground text-background rounded-xl font-bold text-sm shadow-xl active:scale-95 transition-transform disabled:opacity-30"
             >
               {confirmDialog?.kind === "delete"
-                ? `确认删除 ${confirmDialog.selectedTargetIds?.size ?? 0} 条`
-                : "确认执行"}
+                ? t("aiPanel.confirmDeleteCount", { count: confirmDialog.selectedTargetIds?.size ?? 0 })
+                : t("batchImport.confirmSelectedImport")}
             </button>
           </div>
         </div>
       )}
 
-      {/* 输入区 */}
+      {/* Input area */}
       <div className="shrink-0 px-4 pb-4 pt-3 border-t border-foreground/5">
 
-        {/* 输入框 + 发送按钮 */}
+        {/* Input + send button */}
         <div className="relative">
           <input
             className="w-full pl-3 pr-10 py-2.5 bg-background/50 rounded-xl outline-none text-sm placeholder-foreground/20 border border-transparent focus:border-accent-green/30 focus:bg-surface-white transition-all font-medium text-foreground"
@@ -1888,7 +1887,7 @@ export function AIPanel({
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && onSend()}
             onPaste={onPaste}
-            placeholder="输入指令或粘贴账单..."
+            placeholder={t("aiPanel.inputPlaceholder")}
           />
           <button
             onClick={onSend}
@@ -1899,19 +1898,19 @@ export function AIPanel({
           </button>
         </div>
 
-        {/* 底部操作按钮 */}
+        {/* Bottom action buttons */}
         <div className="flex items-center gap-2 mt-2">
           <label className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[10px] font-bold text-foreground/30 hover:text-foreground/60 hover:bg-foreground/5 transition-all cursor-pointer">
-            <ImagePlus size={12} /> 图片
+            <ImagePlus size={12} /> {t("aiPanel.image")}
             <input type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) onPickImage(f); e.target.value = ""; }} />
           </label>
           <button
             type="button"
             onClick={() => router.push("/settings/email")}
             className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[10px] font-bold text-foreground/30 hover:text-foreground/60 hover:bg-foreground/5 transition-all"
-            title="打开邮箱导入账单"
+            title={t("aiPanel.emailImportTitle")}
           >
-            <Mail size={12} /> 邮箱导入
+            <Mail size={12} /> {t("aiPanel.emailImport")}
           </button>
         </div>
       </div>

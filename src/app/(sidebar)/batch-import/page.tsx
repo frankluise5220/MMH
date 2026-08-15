@@ -212,15 +212,16 @@ function postImportDebugLog(traceId: string, event: string, details: ImportDebug
     body: JSON.stringify({ traceId, event, details }),
     keepalive: true,
   }).catch((error) => {
-    console.warn("[batch-import] 调试日志上报失败", error);
+    console.warn("[batch-import] debug log upload failed", error);
   });
 }
 
 function buildCategorySmartSelectOptions(
   categories: BookCategory[],
-  txType?: ParsedItem["type"] | "all",
+  txType: ParsedItem["type"] | "all" | undefined,
+  t: (key: string) => string,
 ): SmartSelectOption[] {
-  const options: SmartSelectOption[] = [{ id: "", label: "未分类" }];
+  const options: SmartSelectOption[] = [{ id: "", label: t("batchImport.uncategorized") }];
   const indent = "　";
   const categoryTypes = txType === "all"
     ? ["income", "expense"]
@@ -241,7 +242,11 @@ function buildCategorySmartSelectOptions(
 
     const headerId = `category-type:${categoryType}`;
     if (typedCategories.length > 0) {
-      options.push({ id: headerId, label: categoryType === "income" ? "收入分类" : "支出分类", isHeader: true });
+      options.push({
+        id: headerId,
+        label: categoryType === "income" ? t("batchImport.incomeCategory") : t("batchImport.expenseCategory"),
+        isHeader: true,
+      });
     }
     const walk = (parentId: string | null, level: number, parentOptionId?: string) => {
       const children = childrenByParentId.get(parentId) ?? [];
@@ -922,6 +927,15 @@ function formatOptionalNumber(value: number | null | undefined, digits = 2) {
   return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "-";
 }
 
+function previewRowLabel(rowNums: number[], text: string, t: (key: string, params?: Record<string, string | number>) => string) {
+  if (rowNums.length === 1) {
+    return t("batchImport.previewRowLineSingle", { row: rowNums[0], text });
+  }
+  const rows = rowNums.slice(0, 10).join("、");
+  const more = rowNums.length > 10 ? t("batchImport.previewRowLineMore", { count: rowNums.length }) : "";
+  return t("batchImport.previewRowLineMany", { rows, more, text });
+}
+
 function getFundImportSubtypeLabel(subtype: string, source: string, t: (key: string) => string) {
   if (subtype === "buy_failed" && source === "regular_invest_refund") return t("batchImport.fundSubtype.refund");
   if (subtype === "buy_failed") return t("batchImport.fundSubtype.unfilledRefund");
@@ -963,7 +977,7 @@ function buildFundRuleEditorRows(items: FundImportPreviewItem[]) {
   );
 }
 
-function serializeFundRuleOverrides(rows: FundRuleEditorRow[]) {
+function serializeFundRuleOverrides(rows: FundRuleEditorRow[], t: (key: string) => string) {
   const invalidLabels: string[] = [];
   const overrides = rows.flatMap((row) => {
     const parseDays = (value: string, label: string) => {
@@ -976,8 +990,8 @@ function serializeFundRuleOverrides(rows: FundRuleEditorRow[]) {
       }
       return Math.trunc(num);
     };
-    const confirmDays = parseDays(row.confirmDays, "确认天数");
-    const arrivalDays = parseDays(row.arrivalDays, "入账天数");
+    const confirmDays = parseDays(row.confirmDays, t("batchImport.fundPreview.confirmDays"));
+    const arrivalDays = parseDays(row.arrivalDays, t("batchImport.fundPreview.arrivalDays"));
     if (!row.fundCode || (!row.fundAccountId && !row.fundAccount.trim())) return [];
     return [{
       fundAccountId: row.fundAccountId,
@@ -1064,8 +1078,9 @@ function normalRowsToItems(
     const majorTypeText = readAny(row, fieldHeaders.majorType);
     const majorType = parseMajorType(majorTypeText);
     const explicitType = readAny(row, fieldHeaders.explicitType);
-    // "类型" column may carry the user's explicit classification (收入/支出/转账/投资).
-    // When it resolves to a concrete type, prefer it over the looser 收支大类 column.
+    // The "type" column may carry the user's explicit classification
+    // (income/expense/transfer/investment). When it resolves to a concrete
+    // type, prefer it over the looser major-type column.
     const explicitMajorType = parseMajorType(explicitType);
     const resolvedMajorType = explicitMajorType ?? majorType;
     let counterAccount = importMode === "credit_card"
@@ -1115,8 +1130,8 @@ function normalRowsToItems(
         )
     );
     // If type is transfer but the category explicitly says income and there is no
-    // counter account, the "转账" keyword likely describes how money arrived rather
-    // than a true account-to-account transfer. Respect the category.
+    // counter account, the transfer keyword likely describes how money arrived
+    // rather than a true account-to-account transfer. Respect the category.
     const explicitFlowDirection: "in" | "out" | null =
       rawInflow > 0 && rawOutflow <= 0 ? "in"
       : rawOutflow > 0 && rawInflow <= 0 ? "out"
@@ -1793,7 +1808,7 @@ export default function BatchImportPage() {
     preserveSelection: boolean,
     fileInfo?: string,
   ) => {
-    const { overrides, invalidLabels } = serializeFundRuleOverrides(ruleRows);
+    const { overrides, invalidLabels } = serializeFundRuleOverrides(ruleRows, t);
     if (invalidLabels.length > 0) {
       setMessage(formatText("batchImport.fundPreview.invalidRules", {
         items: invalidLabels.slice(0, 3).join("、"),
@@ -2429,13 +2444,11 @@ export default function BatchImportPage() {
     }
     const parts: string[] = [];
     for (const [text, rowNums] of groups) {
-      const label = rowNums.length === 1
-        ? `第 ${rowNums[0]} 行：${text}`
-        : `第 ${rowNums.slice(0, 10).join("、")}${rowNums.length > 10 ? "等" + rowNums.length + "行" : ""}：${text}`;
+      const label = previewRowLabel(rowNums, text, t);
       if (parts.length < 6) parts.push(label);
     }
     return parts.join("；");
-  }, [previewErrorRows]);
+  }, [previewErrorRows, t]);
   const previewWarningGrouped = useMemo(() => {
     const groups: Map<string, number[]> = new Map();
     for (const row of previewWarningRows) {
@@ -2449,13 +2462,11 @@ export default function BatchImportPage() {
   const previewWarningPreviewText = useMemo(() => {
     const parts: string[] = [];
     for (const { text, rowNums } of previewWarningGrouped) {
-      const label = rowNums.length === 1
-        ? `第 ${rowNums[0]} 行：${text}`
-        : `第 ${rowNums.slice(0, 10).join("、")}${rowNums.length > 10 ? "等" + rowNums.length + "行" : ""}：${text}`;
+      const label = previewRowLabel(rowNums, text, t);
       if (parts.length < 6) parts.push(label);
     }
     return parts.join("；");
-  }, [previewWarningGrouped]);
+  }, [previewWarningGrouped, t]);
   const categoryById = useMemo(() => new Map(bookCategories.map((category) => [category.id, category])), [bookCategories]);
   const categorySelectValue = useCallback((categoryName: string, txType?: ParsedItem["type"]) => {
     const name = categoryName.trim();
@@ -2470,7 +2481,7 @@ export default function BatchImportPage() {
     return categoryById.get(categoryId)?.name ?? "";
   }, [categoryById]);
   const categoryReplaceOptions = useMemo<BatchReplaceOption[]>(
-    () => buildCategorySmartSelectOptions(bookCategories, "all").map((option) => ({
+    () => buildCategorySmartSelectOptions(bookCategories, "all", t).map((option) => ({
       value: option.id,
       label: option.label,
       isHeader: option.isHeader,
@@ -2478,7 +2489,7 @@ export default function BatchImportPage() {
       parentId: option.parentId,
       title: option.title,
     })),
-    [bookCategories],
+    [bookCategories, t],
   );
   const previewValidationRunning = previewValidationProgress !== null;
   const importProgressPercent = useMemo(() => {
@@ -2541,7 +2552,7 @@ export default function BatchImportPage() {
     if (confirmRuleWarnings.length > 0 && confirmRuleWarnings.length === fundPreviewWarningGroups.length) {
       const items = confirmRuleWarnings.map((group) => {
         const match = group.message.match(/^未找到\s+(\S+)\s+的确认天数配置/);
-        return `${match?.[1] ?? group.message}（${group.count}条）`;
+        return `${match?.[1] ?? group.message}${t("batchImport.fundPreview.warningItemCount", { count: group.count })}`;
       }).join("、");
       return formatText("batchImport.fundPreview.warningMissingConfirmRules", { items });
     }
@@ -2875,7 +2886,7 @@ export default function BatchImportPage() {
     setUploadDebug(null);
 
     try {
-      const { overrides, invalidLabels } = serializeFundRuleOverrides(fundRuleRows);
+      const { overrides, invalidLabels } = serializeFundRuleOverrides(fundRuleRows, t);
       if (invalidLabels.length > 0) {
         throw new Error(formatText("batchImport.fundPreview.invalidRules", {
           items: invalidLabels.slice(0, 3).join("、"),
@@ -3015,9 +3026,9 @@ export default function BatchImportPage() {
       align: "center",
       filterText: (row) => {
         const rowIssues = previewIssuesByRow.get(row.idx) ?? [];
-        if (rowIssues.some((issue) => issue.level === "error")) return "错误";
-        if (rowIssues.some((issue) => issue.level === "warning")) return "警告";
-        return "正常";
+        if (rowIssues.some((issue) => issue.level === "error")) return t("batchImport.levelError");
+        if (rowIssues.some((issue) => issue.level === "warning")) return t("batchImport.levelWarning");
+        return t("batchImport.levelNormal");
       },
       render: (row) => {
         const rowIssues = previewIssuesByRow.get(row.idx) ?? [];
@@ -3405,7 +3416,7 @@ export default function BatchImportPage() {
                     updateDraft(idx, "category", categoryNameById(categoryId));
                     closeCellEdit();
                   }}
-                  options={buildCategorySmartSelectOptions(bookCategories, item.type)}
+                  options={buildCategorySmartSelectOptions(bookCategories, item.type, t)}
                   placeholder={t("batchImport.categoryPlaceholder")}
                   searchable
                   behavior={{
@@ -3558,7 +3569,7 @@ export default function BatchImportPage() {
       width: 42,
       minWidth: 36,
       align: "center",
-      filterText: (row) => row.issues.some((issue) => issue.level === "error") ? "错误" : row.issues.some((issue) => issue.level === "warning") ? "警告" : "正常",
+      filterText: (row) => row.issues.some((issue) => issue.level === "error") ? t("batchImport.levelError") : row.issues.some((issue) => issue.level === "warning") ? t("batchImport.levelWarning") : t("batchImport.levelNormal"),
       render: (row) => {
         const rowHasError = row.issues.some((issue) => issue.level === "error");
         const rowHasWarning = row.issues.some((issue) => issue.level === "warning");

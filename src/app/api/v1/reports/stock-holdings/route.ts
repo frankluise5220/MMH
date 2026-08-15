@@ -30,7 +30,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: true, data: report });
   } catch (error) {
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "查询股票持仓报表失败" },
+      { ok: false, code: "FETCH_FAILED", error: error instanceof Error ? error.message : "查询股票持仓报表失败" },
       { status: 500 },
     );
   }

@@ -13,6 +13,7 @@ import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getServerT } from "@/lib/server/i18n";
 import { MobileAccounts } from "@/components/mobile/MobileAccounts";
 
 export const dynamic = "force-dynamic";
@@ -39,15 +40,6 @@ const MONEY_KINDS: AccountKind[] = [
   AccountKind.other,
 ];
 const CREDIT_KINDS: AccountKind[] = [AccountKind.bank_credit];
-const KIND_LABEL: Record<string, string> = {
-  bank_debit: "借记卡",
-  ewallet: "电子钱包",
-  cash: "现金",
-  deposit: "存款",
-  bank_credit: "信用卡",
-  loan: "债务/债权",
-  other: "其他",
-};
 const KIND_ICON = {
   bank_debit: Landmark,
   ewallet: Coins,
@@ -58,12 +50,23 @@ const KIND_ICON = {
   other: Wallet,
 };
 
-function dayLabel(day: number | null) {
-  return day ? `${day}日` : "未设置";
+type T = (key: string, params?: Record<string, string | number>) => string;
+
+function kindLabel(t: T, kind: string) {
+  const labels: Record<string, string> = {
+    bank_debit: t("account.kind.bank_debit"),
+    ewallet: t("account.kind.ewallet"),
+    cash: t("account.kind.cash"),
+    deposit: t("account.kind.deposit"),
+    bank_credit: t("account.kind.bank_credit"),
+    loan: t("account.kind.loan"),
+    other: t("account.kind.other"),
+  };
+  return labels[kind] ?? kind;
 }
 
-function dateLabel(date: Date | null | undefined) {
-  return date ? date.toISOString().slice(0, 10) : "未生成";
+function dateLabel(t: T, date: Date | null | undefined) {
+  return date ? date.toISOString().slice(0, 10) : t("accountsPage.notGenerated");
 }
 
 function neutralMoneyClass(value: number) {
@@ -79,6 +82,7 @@ function liabilityMoneyClass(value: number, isRedUp: boolean) {
 }
 
 export default async function AccountsPage({ searchParams }: { searchParams: SearchParams }) {
+  const t = await getServerT();
   const params = await searchParams;
   const tab = typeof params.tab === "string" && params.tab === "credit" ? "credit" : "assets";
   const ctx = await getHouseholdScope();
@@ -152,7 +156,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         name: display.label,
         hoverTitle: display.hoverTitle,
         kind: account.kind,
-        groupName: account.AccountGroup?.name?.trim() || "未设置所有人",
+        groupName: account.AccountGroup?.name?.trim() || t("batchImport.ownerUnset"),
         balance: displayBalanceByAccountId.get(account.id) ?? toNumber(account.balance),
       };
     });
@@ -181,7 +185,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         name: display.label,
         hoverTitle: display.hoverTitle,
         kind: account.kind,
-        groupName: account.AccountGroup?.name?.trim() || "未设置所有人",
+        groupName: account.AccountGroup?.name?.trim() || t("batchImport.ownerUnset"),
         balance,
         creditLimit,
         availableLimit: Math.max(0, creditLimit - Math.max(0, balance)),
@@ -209,7 +213,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
 
   const groupedMoneyAccounts = MONEY_KINDS.map((kind) => ({
     kind,
-    label: KIND_LABEL[kind] ?? kind,
+    label: kindLabel(t, kind),
     accounts: moneyAccounts.filter((account) => account.kind === kind),
   })).filter((group) => group.accounts.length > 0);
 
@@ -230,13 +234,13 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         isRedUp={isRedUp}
       />
     </div>
-    <div className="hidden h-full md:block">
+    <div className="hidden h-full md:flex md:flex-col">
     <div className="flex-1 min-h-0 overflow-auto bg-slate-50">
       <header className="page-header">
         <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 px-4 py-2 md:px-5">
           <div className="min-w-0">
-            <div className="text-sm font-semibold text-slate-900">资金账户</div>
-            <div className="text-xs text-slate-500">现金、借记卡、信用卡和债务/债权</div>
+            <div className="text-sm font-semibold text-slate-900">{t("accountsPage.title")}</div>
+            <div className="text-xs text-slate-500">{t("accountsPage.subtitle")}</div>
           </div>
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
             <TopEntryLauncher defaultAction="transaction" />
@@ -247,21 +251,21 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         <section className="panel-surface overflow-hidden">
           <div className="flex flex-col gap-5 px-5 py-5 md:flex-row md:items-end md:justify-between md:px-6">
             <div className="space-y-2">
-              <div className="text-xs font-medium tracking-[0.18em] text-slate-400 uppercase">Money Accounts</div>
-              <h1 className="text-2xl font-semibold tracking-tight text-slate-900">资金账户</h1>
-              <p className="text-sm text-slate-500">现金、借记卡、电子钱包、信用卡和债务/债权集中在这里；投资账户继续放在投资页。</p>
+              <div className="text-xs font-medium tracking-[0.18em] text-slate-400 uppercase">{t("accountsPage.eyebrow")}</div>
+              <h1 className="text-2xl font-semibold tracking-tight text-slate-900">{t("accountsPage.title")}</h1>
+              <p className="text-sm text-slate-500">{t("accountsPage.description")}</p>
             </div>
             <div className="grid grid-cols-2 gap-3 md:min-w-[420px]">
-              <SummaryCard label="可用资产" value={formatMoneyYuan(assetTotal)} />
-              <SummaryCard label="信用卡已用" value={formatMoneyYuan(creditUsedTotal)} />
-              <SummaryCard label="信用卡可用" value={formatMoneyYuan(creditAvailableTotal)} />
-              <SummaryCard label="债务/债权" value={formatMoneyYuan(loanTotal)} />
+              <SummaryCard label={t("accountsPage.availableAssets")} value={formatMoneyYuan(assetTotal)} />
+              <SummaryCard label={t("accountsPage.creditUsed")} value={formatMoneyYuan(creditUsedTotal)} />
+              <SummaryCard label={t("accountsPage.creditAvailable")} value={formatMoneyYuan(creditAvailableTotal)} />
+              <SummaryCard label={t("overview.debtCredit")} value={formatMoneyYuan(loanTotal)} />
             </div>
           </div>
           <div className="border-t border-slate-100 bg-slate-50/70 px-4 py-3">
             <div className="flex items-center gap-2">
-              <TabLink href="/accounts" active={tab === "assets"} label="现金与借记卡" />
-              <TabLink href="/accounts?tab=credit" active={tab === "credit"} label="信用卡" />
+              <TabLink href="/accounts" active={tab === "assets"} label={t("accountsPage.tab.assets")} />
+              <TabLink href="/accounts?tab=credit" active={tab === "credit"} label={t("nav.creditCards")} />
             </div>
           </div>
         </section>
@@ -272,16 +276,16 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
               <div className="panel-header">
                 <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                   <CreditCard className="h-4 w-4 text-amber-500" />
-                  信用卡汇总
+                  {t("accountsPage.creditSummaryTitle")}
                 </div>
-                <div className="text-xs text-slate-400">{creditAccounts.length} 张卡</div>
+                <div className="text-xs text-slate-400">{t("accountsPage.creditCardCount", { count: creditAccounts.length })}</div>
               </div>
               <div className="grid grid-cols-2 gap-3 px-4 py-4 md:grid-cols-3">
-                <SummaryCard label="总额度" value={formatMoneyYuan(creditLimitTotal)} compact />
-                <SummaryCard label="已用额度" value={formatMoneyYuan(creditUsedTotal)} compact />
-                <SummaryCard label="可用额度" value={formatMoneyYuan(creditAvailableTotal)} compact />
-                <SummaryCard label="本期金额" value={formatMoneyYuan(creditCurrentAmountTotal)} compact />
-                <SummaryCard label="本期账单" value={formatMoneyYuan(creditBillTotal)} compact />
+                <SummaryCard label={t("accountsPage.limitTotal")} value={formatMoneyYuan(creditLimitTotal)} compact />
+                <SummaryCard label={t("accountsPage.usedLimit")} value={formatMoneyYuan(creditUsedTotal)} compact />
+                <SummaryCard label={t("accountsPage.availableLimit")} value={formatMoneyYuan(creditAvailableTotal)} compact />
+                <SummaryCard label={t("creditBillSummary.colNetAmount")} value={formatMoneyYuan(creditCurrentAmountTotal)} compact />
+                <SummaryCard label={t("creditBill.currentBill")} value={formatMoneyYuan(creditBillTotal)} compact />
               </div>
             </div>
 
@@ -289,9 +293,9 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
               <div className="panel-header">
                 <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                   <Wallet className="h-4 w-4 text-blue-500" />
-                  信用卡明细
+                  {t("accountsPage.creditDetailTitle")}
                 </div>
-                <div className="text-xs text-slate-400">额度、账单日、还款日</div>
+                <div className="text-xs text-slate-400">{t("accountsPage.creditDetailHint")}</div>
               </div>
               <div className="divide-y divide-slate-100">
                 {creditAccounts.length > 0 ? (
@@ -302,29 +306,29 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
                           <div className="truncate text-sm font-semibold text-slate-800" title={account.hoverTitle}>{account.name}</div>
                           <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
                             <span className="rounded bg-slate-100 px-1.5 py-0.5">{account.groupName}</span>
-                            <span>账单日 {dayLabel(account.billingDay)}</span>
-                            <span>还款日 {dayLabel(account.repaymentDay)}</span>
-                            <span>到期日 {dateLabel(account.dueDate)}</span>
+                            <span>{account.billingDay ? t("settings.accounts.billingDay", { day: account.billingDay }) : t("liabilities.notSet")}</span>
+                            <span>{account.repaymentDay ? t("settings.accounts.repaymentDay", { day: account.repaymentDay }) : t("liabilities.notSet")}</span>
+                            <span>{t("depositShell.colMaturityDate")} {dateLabel(t, account.dueDate)}</span>
                           </div>
                         </div>
                         <div className="text-left md:text-right">
-                          <div className="text-xs text-slate-400">已用额度</div>
+                          <div className="text-xs text-slate-400">{t("accountsPage.usedLimit")}</div>
                           <div className={`mt-1 text-sm font-semibold tabular-nums ${liabilityMoneyClass(account.balance, isRedUp)}`}>
                             {formatMoney(account.balance)}
                           </div>
                         </div>
                       </div>
                       <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-5">
-                        <MiniMetric label="额度" value={formatMoney(account.creditLimit)} />
-                        <MiniMetric label="可用" value={formatMoney(account.availableLimit)} />
-                        <MiniMetric label="本期金额" value={formatMoney(account.currentAmount)} valueClass={liabilityMoneyClass(account.currentAmount, isRedUp)} />
-                        <MiniMetric label="本期账单" value={formatMoney(account.currentBill)} valueClass={liabilityMoneyClass(account.currentBill, isRedUp)} />
-                        <MiniMetric label="待还" value={formatMoney(account.remain)} valueClass={liabilityMoneyClass(account.remain, isRedUp)} />
+                        <MiniMetric label={t("settings.accounts.creditLimitLabel")} value={formatMoney(account.creditLimit)} />
+                        <MiniMetric label={t("accountsPage.available")} value={formatMoney(account.availableLimit)} />
+                        <MiniMetric label={t("creditBillSummary.colNetAmount")} value={formatMoney(account.currentAmount)} valueClass={liabilityMoneyClass(account.currentAmount, isRedUp)} />
+                        <MiniMetric label={t("creditBill.currentBill")} value={formatMoney(account.currentBill)} valueClass={liabilityMoneyClass(account.currentBill, isRedUp)} />
+                        <MiniMetric label={t("accountsPage.repayRemain")} value={formatMoney(account.remain)} valueClass={liabilityMoneyClass(account.remain, isRedUp)} />
                       </div>
                     </Link>
                   ))
                 ) : (
-                  <div className="px-4 py-10 text-center text-sm text-slate-400">暂无信用卡账户</div>
+                  <div className="px-4 py-10 text-center text-sm text-slate-400">{t("accountsPage.noCreditAccounts")}</div>
                 )}
               </div>
             </div>
@@ -335,9 +339,9 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
               <div className="panel-header">
                 <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                   <Landmark className="h-4 w-4 text-blue-500" />
-                  分类汇总
+                  {t("accountsPage.groupSummaryTitle")}
                 </div>
-                <div className="text-xs text-slate-400">{moneyAccounts.length} 个账户</div>
+                <div className="text-xs text-slate-400">{t("invest.accountCount", { count: moneyAccounts.length })}</div>
               </div>
               <div className="space-y-3 px-4 py-4">
                 {groupedMoneyAccounts.map((group) => {
@@ -353,7 +357,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
                           <div className="text-sm font-medium text-slate-700">{group.label}</div>
                           <div className={`text-base font-semibold tabular-nums ${group.kind === AccountKind.loan ? debtMoneyClass(total, isRedUp) : neutralMoneyClass(total)}`}>{formatMoney(total)}</div>
                         </div>
-                        <div className="text-xs text-slate-400">{group.accounts.length} 个</div>
+                        <div className="text-xs text-slate-400">{t("settings.accounts.kindCount", { count: group.accounts.length })}</div>
                       </div>
                     </div>
                   );
@@ -365,9 +369,9 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
               <div className="panel-header">
                 <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                   <Wallet className="h-4 w-4 text-cyan-500" />
-                  账户明细
+                  {t("accountsPage.accountDetailTitle")}
                 </div>
-                <div className="text-xs text-slate-400">点击进入流水明细</div>
+                <div className="text-xs text-slate-400">{t("accountsPage.accountDetailHint")}</div>
               </div>
               <div className="divide-y divide-slate-100">
                 {moneyAccounts.length > 0 ? (
@@ -387,7 +391,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-sm font-semibold text-slate-800" title={account.hoverTitle}>{account.name}</div>
                           <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
-                            <span>{KIND_LABEL[account.kind] ?? account.kind}</span>
+                            <span>{kindLabel(t, account.kind)}</span>
                             <span className="rounded bg-slate-100 px-1.5 py-0.5">{account.groupName}</span>
                           </div>
                         </div>
@@ -398,7 +402,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
                     );
                   })
                 ) : (
-                  <div className="px-4 py-10 text-center text-sm text-slate-400">暂无资金账户</div>
+                  <div className="px-4 py-10 text-center text-sm text-slate-400">{t("accountsPage.noMoneyAccounts")}</div>
                 )}
               </div>
             </div>

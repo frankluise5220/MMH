@@ -19,7 +19,7 @@ export async function GET(req: Request) {
   }
 
   if (surface !== "web" && surface !== "android") {
-    return NextResponse.json({ ok: false, error: "surface must be web or android" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INVALID_SURFACE", error: "surface must be web or android" }, { status: 400 });
   }
 
   return NextResponse.json({ ok: true, data: getSettingsCatalogForSurface(surface as SettingsSurface) });

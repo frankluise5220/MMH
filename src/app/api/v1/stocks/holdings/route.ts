@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
   try {
     const { householdId } = await getApiHouseholdScope(req);
     const accountId = req.nextUrl.searchParams.get("accountId")?.trim() || "";
-    if (!accountId) return NextResponse.json({ ok: false, error: "缺少股票账户" }, { status: 400, headers: corsHeaders() });
+    if (!accountId) return NextResponse.json({ ok: false, code: "MISSING_STOCK_ACCOUNT", error: "缺少股票账户" }, { status: 400, headers: corsHeaders() });
     const account = await assertStockAccount(accountId, householdId);
     const includeZero = req.nextUrl.searchParams.get("includeZero") === "1";
     const tradeDateRaw = req.nextUrl.searchParams.get("tradeDate")?.trim() || "";
@@ -52,7 +52,7 @@ export async function GET(req: NextRequest) {
       ? new Date(`${tradeDateRaw}T00:00:00.000Z`)
       : null;
     if (tradeDateRaw && !asOfDate) {
-      return NextResponse.json({ ok: false, error: "交易日期无效" }, { status: 400, headers: corsHeaders() });
+      return NextResponse.json({ ok: false, code: "INVALID_TRADE_DATE", error: "交易日期无效" }, { status: 400, headers: corsHeaders() });
     }
 
     if (asOfDate) {
@@ -130,7 +130,7 @@ export async function GET(req: NextRequest) {
       },
     }, { headers: corsHeaders() });
   } catch (error) {
-    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "查询失败" }, { status: 500, headers: corsHeaders() });
+    return NextResponse.json({ ok: false, code: "FETCH_FAILED", error: error instanceof Error ? error.message : "查询失败" }, { status: 500, headers: corsHeaders() });
   }
 }
 
@@ -150,7 +150,7 @@ export async function POST(req: NextRequest) {
     const { householdId } = await getApiHouseholdScope(req);
     const body = await req.json();
     const accountId = String(body.accountId ?? "").trim();
-    if (!accountId) return NextResponse.json({ ok: false, error: "缺少股票账户" }, { status: 400, headers: corsHeaders() });
+    if (!accountId) return NextResponse.json({ ok: false, code: "MISSING_STOCK_ACCOUNT", error: "缺少股票账户" }, { status: 400, headers: corsHeaders() });
     await assertStockAccount(accountId, householdId);
     const securityIds = Array.isArray(body.securityIds)
       ? body.securityIds.map((item) => String(item ?? "").trim()).filter(Boolean)
@@ -158,6 +158,6 @@ export async function POST(req: NextRequest) {
     await recalcStockPositions(accountId, securityIds);
     return NextResponse.json({ ok: true, data: { accountId } }, { headers: corsHeaders() });
   } catch (error) {
-    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "重算失败" }, { status: 500, headers: corsHeaders() });
+    return NextResponse.json({ ok: false, code: "RECALC_FAILED", error: error instanceof Error ? error.message : "重算失败" }, { status: 500, headers: corsHeaders() });
   }
 }

@@ -18,20 +18,22 @@ const LEGACY_PASSWORD_KEY = "access_password";
 const AUTH_LOOKUP_TIMEOUT_MS = 1500;
 
 /**
- * 敏感操作（系统初始化、删除账簿等）的密码验证。
+ * Password verification for sensitive operations (system initialization,
+ * ledger deletion, etc.).
  *
- * 要求当前登录用户是管理员，并校验当前登录用户自己的密码；
- * 不再使用部署级“数据库密码/系统密码”（MMH_SYSTEM_PASSWORD、POSTGRES_PASSWORD 等）。
+ * Requires the current signed-in user to be an admin and verifies that
+ * user's own password; deployment-level database/system passwords
+ * (MMH_SYSTEM_PASSWORD, POSTGRES_PASSWORD, etc.) are no longer accepted.
  */
 async function verifySensitiveOperationPassword(
   password: string,
-): Promise<{ ok: true } | { ok: false; error: string; status: number }> {
+): Promise<{ ok: boolean; code?: string; error?: string; status?: number }> {
   const currentUser = await getCurrentUser();
   if (!currentUser) {
-    return { ok: false, error: "请先登录", status: 401 };
+    return { ok: false, code: "UNAUTHORIZED", error: "请先登录", status: 401 };
   }
   if (!isAdmin(currentUser)) {
-    return { ok: false, error: "仅管理员可执行此操作", status: 403 };
+    return { ok: false, code: "FORBIDDEN", error: "仅管理员可执行此操作", status: 403 };
   }
 
   const dbUser = await prisma.user.findUnique({
@@ -41,16 +43,16 @@ async function verifySensitiveOperationPassword(
   if (dbUser?.passwordHash) {
     const matched = await verifyPassword(password, dbUser.passwordHash);
     if (matched) return { ok: true };
-    return { ok: false, error: "当前用户密码错误", status: 401 };
+    return { ok: false, code: "INVALID_PASSWORD", error: "当前用户密码错误", status: 401 };
   }
 
-  // 兼容旧版：用户尚未设置密码时，校验系统设置中的旧访问密码。
+  // Legacy fallback: when the user has no password set yet, check the old access password in system settings.
   const legacy = await withTimeout(
     prisma.systemSetting.findUnique({ where: { key: LEGACY_PASSWORD_KEY }, select: { value: true } }),
     AUTH_LOOKUP_TIMEOUT_MS,
   );
   if (legacy?.value && password === legacy.value) return { ok: true };
-  return { ok: false, error: "当前用户密码错误", status: 401 };
+  return { ok: false, code: "INVALID_PASSWORD", error: "当前用户密码错误", status: 401 };
 }
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T | null> {
@@ -216,41 +218,41 @@ export async function POST(req: NextRequest) {
   const householdId = (body.householdId ?? "").trim();
 
   if (!password) {
-    return NextResponse.json({ ok: false, error: "请输入密码" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INVALID_REQUEST", error: "请输入密码" }, { status: 400 });
   }
 
   if (body.verifySystem) {
     try {
       const verified = await verifySensitiveOperationPassword(password);
       if (!verified.ok) {
-        return NextResponse.json({ ok: false, error: verified.error }, { status: verified.status });
+        return NextResponse.json({ ok: false, code: "AUTH_VERIFICATION_FAILED", error: verified.error }, { status: verified.status });
       }
       return NextResponse.json({ ok: true, systemVerified: true });
     } catch {
-      return NextResponse.json({ ok: false, error: "系统配置错误" }, { status: 500 });
+      return NextResponse.json({ ok: false, code: "SYSTEM_CONFIG_ERROR", error: "系统配置错误" }, { status: 500 });
     }
   }
 
   const candidates = await withTimeout(resolveLoginCandidates(username, householdId, userId), AUTH_LOOKUP_TIMEOUT_MS);
   if (!candidates) {
-    return NextResponse.json({ ok: false, error: "认证服务暂时不可用，请稍后重试" }, { status: 503 });
+    return NextResponse.json({ ok: false, code: "AUTH_SERVICE_UNAVAILABLE", error: "认证服务暂时不可用，请稍后重试" }, { status: 503 });
   }
 
   if (candidates.length === 0) {
     const anyUser = await prisma.user.findFirst({ select: { id: true } });
     if (!anyUser) {
-      return NextResponse.json({ ok: false, error: "请先设置管理员密码" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "ADMIN_PASSWORD_NOT_SET", error: "请先设置管理员密码" }, { status: 400 });
     }
-    return NextResponse.json({ ok: false, error: "用户不存在" }, { status: 401 });
+    return NextResponse.json({ ok: false, code: "USER_NOT_FOUND", error: "用户不存在" }, { status: 401 });
   }
 
   const matches = await findPasswordMatches(candidates, password);
   if (matches.length === 0) {
     if (candidates.some((user) => !user.passwordHash)) {
       const hasAnyPassword = candidates.some((user) => user.passwordHash);
-      if (!hasAnyPassword) return NextResponse.json({ ok: false, error: "请先设置密码" }, { status: 400 });
+      if (!hasAnyPassword) return NextResponse.json({ ok: false, code: "PASSWORD_NOT_SET", error: "请先设置密码" }, { status: 400 });
     }
-    return NextResponse.json({ ok: false, error: "密码错误" }, { status: 401 });
+    return NextResponse.json({ ok: false, code: "INVALID_PASSWORD", error: "密码错误" }, { status: 401 });
   }
   if (matches.length > 1 && !householdId) {
     return ambiguousUsernameResponse(matches.map((match) => match.user));

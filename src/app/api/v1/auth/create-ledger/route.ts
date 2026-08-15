@@ -37,10 +37,10 @@ function resolveSessionMaxAge(req: NextRequest) {
 
 /**
  * POST /api/v1/auth/create-ledger
- * 公开入口：创建新账簿，并直接登录到新账簿管理员。
- * - 首次空库初始化第一本账簿时不需要邀请码。
- * - 非首次创建必须校验系统设置中的账簿创建邀请码。
- * - 邀请码一次性使用；创建成功后记录所建账簿和使用时间，并自动失效。
+ * Public entry: creates a new ledger and logs in directly as the new ledger's admin.
+ * - Initializing the first ledger on an empty deployment does not require an invite code.
+ * - Non-first-time creation must validate the ledger creation invite code from system settings.
+ * - Invite codes are single-use; after a successful creation, the created ledger and usage time are recorded and the code is invalidated.
  *
  * Body:
  * {
@@ -60,13 +60,13 @@ export async function POST(req: NextRequest) {
   const adminEmail = String(body.adminEmail ?? "").trim();
 
   if (!name || name.length > 50) {
-    return NextResponse.json({ ok: false, error: "账簿名称不合法（1-50字）" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INVALID_LEDGER_NAME", error: "账簿名称不合法（1-50字）" }, { status: 400 });
   }
   if (!adminName || adminName.length > 50) {
-    return NextResponse.json({ ok: false, error: "请填写管理员用户名（1-50字）" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INVALID_ADMIN_NAME", error: "请填写管理员用户名（1-50字）" }, { status: 400 });
   }
   if (!adminPassword) {
-    return NextResponse.json({ ok: false, error: "请设置管理员密码" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "ADMIN_PASSWORD_REQUIRED", error: "请设置管理员密码" }, { status: 400 });
   }
 
   const [householdCount, userCount, legacy] = await prisma.$transaction([
@@ -81,10 +81,10 @@ export async function POST(req: NextRequest) {
 
   if (!isInitialLedgerSetup) {
     if (!inviteCode) {
-      return NextResponse.json({ ok: false, error: "请输入邀请码" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVITE_CODE_REQUIRED", error: "请输入邀请码" }, { status: 400 });
     }
     if (!adminEmail) {
-      return NextResponse.json({ ok: false, error: "请输入邮箱" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "EMAIL_REQUIRED", error: "请输入邮箱" }, { status: 400 });
     }
 
   }
@@ -138,7 +138,7 @@ export async function POST(req: NextRequest) {
     });
   } catch (error) {
     if (error instanceof CreateLedgerError) {
-      return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
+      return NextResponse.json({ ok: false, code: "LEDGER_CREATION_REJECTED", error: error.message }, { status: error.status });
     }
     throw error;
   }

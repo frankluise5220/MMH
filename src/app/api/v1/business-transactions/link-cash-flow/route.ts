@@ -53,10 +53,10 @@ export async function POST(req: Request) {
     const businessTransactionId = String(body?.businessTransactionId ?? "").trim();
 
     if (!["wealth", "deposit", "insurance", "metal", "fund", "stock", "property"].includes(businessType)) {
-      return NextResponse.json({ ok: false, error: "不支持的业务交易类型" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "UNSUPPORTED_BUSINESS_TYPE", error: "不支持的业务交易类型" }, { status: 400 });
     }
     if (!businessTransactionId) {
-      return NextResponse.json({ ok: false, error: "缺少 businessTransactionId" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_BUSINESS_TRANSACTION_ID", error: "缺少 businessTransactionId" }, { status: 400 });
     }
 
     const touchedAccountIds = new Set<string>();
@@ -516,7 +516,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, data: result });
   } catch (error) {
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "建立关联失败" },
+      { ok: false, code: "LINK_CASH_FLOW_FAILED", error: error instanceof Error ? error.message : "建立关联失败" },
       { status: 500 },
     );
   }

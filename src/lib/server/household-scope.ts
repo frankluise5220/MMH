@@ -16,25 +16,26 @@ export function belongsToHousehold(record: { householdId?: string | null } | nul
   return !!record && record.householdId === ctx.householdId;
 }
 
-export function assertBelongsToHousehold(record: { householdId?: string | null } | null | undefined, ctx: HouseholdContext, label = "记录") {
-  if (!record) return { ok: false as const, error: `${label}不存在`, status: 404 };
-  if (!belongsToHousehold(record, ctx)) return { ok: false as const, error: `${label}不属于当前账簿`, status: 403 };
+export function assertBelongsToHousehold(record: { householdId?: string | null } | null | undefined, ctx: HouseholdContext, label = "record") {
+  if (!record) return { ok: false as const, error: `${label} not found`, status: 404 };
+  if (!belongsToHousehold(record, ctx)) return { ok: false as const, error: `${label} does not belong to the current household`, status: 403 };
   return { ok: true as const };
 }
 
 /**
- * 从 cookie 读取 householdId，结合当前用户身份验证权限：
- * - admin 用户：cookie 中的 householdId 只要存在即可，否则回退到 DB 第一个 household
- * - 普通用户：只允许访问自己 householdId 对应的账簿
- * 如果 DB 中没有任何 Household，自动创建默认账簿（含默认账户分组、账户、分类）。
- * 返回 HouseholdContext，householdId 始终为 string，hidFilter 始终非空。
+ * Read householdId from the cookie and verify access against the current user:
+ * - admin: any householdId present in the cookie is accepted; otherwise fall back to the first household in the DB
+ * - regular user: only the household matching the user's own householdId is accessible
+ * If the DB has no Household at all, a default household is auto-created
+ * (with default account groups, accounts, and categories).
+ * Returns HouseholdContext; householdId is always a string and hidFilter is always non-empty.
  */
 export async function getHouseholdScope(): Promise<HouseholdContext> {
   const user = await getCurrentUser();
   const cookieStore = await cookies();
   const raw = cookieStore.get("householdId")?.value;
 
-  // admin 用户：cookie 中的 householdId 只要存在即可
+  // admin: any householdId present in the cookie is accepted
   if (isAdmin(user)) {
     if (raw) {
       const h = await prisma.household.findUnique({ where: { id: raw }, select: { id: true } });
@@ -45,24 +46,24 @@ export async function getHouseholdScope(): Promise<HouseholdContext> {
     return ensureHouseholdForUser(user);
   }
 
-  // 普通用户：只能访问自己 householdId 对应的账簿
+  // regular user: only the household matching the user's own householdId is accessible
   if (user?.householdId) {
-    // 如果 cookie 和用户的 householdId 一致，使用 cookie
+    // use the cookie when it matches the user's householdId
     if (raw === user.householdId) {
       const h = await prisma.household.findUnique({ where: { id: raw }, select: { id: true } });
       if (h) return { householdId: h.id, hidFilter: { householdId: h.id }, user };
     }
-    // 回退到用户的 householdId
+    // fall back to the user's householdId
     const h = await prisma.household.findUnique({ where: { id: user.householdId }, select: { id: true } });
     if (h) return { householdId: h.id, hidFilter: { householdId: h.id }, user };
   }
 
-  // 普通用户未分配 householdId → 分配已有账簿
+  // regular user without a householdId → assign an existing household
   return ensureHouseholdForUser(user);
 }
 
 async function ensureHouseholdForUser(user: CurrentUser | null): Promise<HouseholdContext> {
-  // 普通用户未分配 householdId → 先查 DB 是否已有账簿，有则分配
+  // regular user without a householdId → check for an existing household first, assign if present
   const existing = await prisma.household.findFirst({ select: { id: true }, orderBy: { createdAt: "asc" } });
   if (existing) {
     if (user && !user.householdId) {
@@ -71,7 +72,7 @@ async function ensureHouseholdForUser(user: CurrentUser | null): Promise<Househo
     return { householdId: existing.id, hidFilter: { householdId: existing.id }, user };
   }
 
-  // DB 完全空 → 创建初始账簿
+  // DB is completely empty → create the initial household
   const household = await prisma.household.create({ data: { name: "默认" } });
 
   const defaultOwner = await prisma.accountGroup.create({
@@ -108,5 +109,5 @@ async function ensureHouseholdForUser(user: CurrentUser | null): Promise<Househo
   return { householdId: household.id, hidFilter: { householdId: household.id }, user };
 }
 
-/** 请求级缓存版本：同一 HTTP 请求内只执行一次，消除 page.tsx + Sidebar.tsx 重复调用 */
+/** Request-level cached version: runs once per HTTP request, removing duplicate calls from page.tsx + Sidebar.tsx */
 export const getCachedHouseholdScope = cache(getHouseholdScope);

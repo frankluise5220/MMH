@@ -107,7 +107,7 @@ export async function GET(req: NextRequest) {
   try {
     const { householdId } = await getApiHouseholdScope(req);
     const accountId = req.nextUrl.searchParams.get("accountId")?.trim() || "";
-    if (!accountId) return NextResponse.json({ ok: false, error: "缺少股票账户" }, { status: 400, headers: corsHeaders() });
+    if (!accountId) return NextResponse.json({ ok: false, code: "MISSING_STOCK_ACCOUNT", error: "缺少股票账户" }, { status: 400, headers: corsHeaders() });
     await assertStockAccount(accountId, householdId);
 
     const estimate = /^(1|true|yes)$/i.test(req.nextUrl.searchParams.get("estimate")?.trim() ?? "");
@@ -119,7 +119,7 @@ export async function GET(req: NextRequest) {
       const stockCodeRaw = req.nextUrl.searchParams.get("stockCode")?.trim() || "";
       const grossAmount = parseNonNegativeNumber(req.nextUrl.searchParams.get("grossAmount"));
       if (grossAmount <= 0) {
-        return NextResponse.json({ ok: false, error: "缺少成交金额" }, { status: 400, headers: corsHeaders() });
+        return NextResponse.json({ ok: false, code: "MISSING_GROSS_AMOUNT", error: "缺少成交金额" }, { status: 400, headers: corsHeaders() });
       }
       const updatedMarketDefaultCount = refresh ? await upsertStockMarketFeeDefaultRules() : 0;
       const fees = await calculateStockTransactionFeesByDate({
@@ -185,7 +185,7 @@ export async function GET(req: NextRequest) {
       },
     }, { headers: corsHeaders() });
   } catch (error) {
-    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "查询失败" }, { status: 500, headers: corsHeaders() });
+    return NextResponse.json({ ok: false, code: "FETCH_FAILED", error: error instanceof Error ? error.message : "查询失败" }, { status: 500, headers: corsHeaders() });
   }
 }
 
@@ -215,7 +215,7 @@ export async function POST(req: NextRequest) {
     const { householdId } = await getApiHouseholdScope(req);
     const body = await req.json();
     const accountId = String(body.accountId ?? "").trim();
-    if (!accountId) return NextResponse.json({ ok: false, error: "缺少股票账户" }, { status: 400, headers: corsHeaders() });
+    if (!accountId) return NextResponse.json({ ok: false, code: "MISSING_STOCK_ACCOUNT", error: "缺少股票账户" }, { status: 400, headers: corsHeaders() });
     await assertStockAccount(accountId, householdId);
 
     const effectiveDateRaw = String(body.effectiveDate ?? "").trim();
@@ -242,6 +242,6 @@ export async function POST(req: NextRequest) {
       },
     }, { headers: corsHeaders() });
   } catch (error) {
-    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "保存失败" }, { status: 500, headers: corsHeaders() });
+    return NextResponse.json({ ok: false, code: "SAVE_FAILED", error: error instanceof Error ? error.message : "保存失败" }, { status: 500, headers: corsHeaders() });
   }
 }

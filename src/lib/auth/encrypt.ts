@@ -6,8 +6,8 @@ const MASTER_KEY_SETTING = "api_key_encryption_master";
 let _masterKey: Buffer | null = null;
 
 /**
- * 加密 API Key。在数据库存储层自动调用，API 路由无需感知。
- * 返回格式：base64(iv).base64(ciphertext).base64(tag)
+ * Encrypts an API Key. Called automatically by the database storage layer; API routes do not need to be aware of it.
+ * Return format: base64(iv).base64(ciphertext).base64(tag)
  */
 export function encrypt(plain: string, key: Buffer): string {
   const iv = crypto.randomBytes(IV_LENGTH);
@@ -18,7 +18,7 @@ export function encrypt(plain: string, key: Buffer): string {
 }
 
 /**
- * 解密 API Key
+ * Decrypts an API Key.
  */
 export function decrypt(encrypted: string, key: Buffer): string {
   const parts = encrypted.split(".");
@@ -32,14 +32,14 @@ export function decrypt(encrypted: string, key: Buffer): string {
 }
 
 /**
- * 判断字符串是否已被加密（判断是否是 base64.base64.base64 格式）
+ * Checks whether a string is already encrypted (checks whether it matches the base64.base64.base64 format).
  */
 export function isEncrypted(s: string): boolean {
   return /^[A-Za-z0-9+/=]+\.[A-Za-z0-9+/=]+\.[A-Za-z0-9+/=]+$/.test(s) && s.split(".").length === 3;
 }
 
 /**
- * 获取或创建主加密密钥（存在 systemSetting 表中）
+ * Gets or creates the master encryption key (stored in the systemSetting table).
  */
 export async function getOrCreateMasterKey(): Promise<Buffer> {
   if (_masterKey) return _masterKey;
@@ -49,7 +49,7 @@ export async function getOrCreateMasterKey(): Promise<Buffer> {
     _masterKey = Buffer.from(setting.value, "base64");
     return _masterKey;
   }
-  // 生成 256-bit 随机密钥
+  // Generate a 256-bit random key
   _masterKey = crypto.randomBytes(32);
   await prisma.systemSetting.upsert({
     where: { key: MASTER_KEY_SETTING },

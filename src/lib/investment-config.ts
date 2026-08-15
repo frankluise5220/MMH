@@ -1,43 +1,33 @@
 /**
- * 投资交易配置模块
+ * Investment transaction configuration module.
  *
- * 提供统一的类型定义、常量和辅助函数
- * 被 InvestmentFormModal 等组件共享使用
+ * Provides unified type definitions, constants, and helper functions
+ * shared by components such as InvestmentFormModal.
  */
 
 import { addWorkdaysUtc } from "@/lib/date-utils";
 
-// 基金交易类型
+// Fund transaction types
 export type FundSubtype = "buy" | "redeem" | "dividend_cash" | "dividend_reinvest" | "buy_failed";
 
-// 产品类型
+// Product types (labels come from the i18n catalog via `investment.product.*`)
 export type ProductType = "fund" | "money" | "wealth" | "deposit" | "metal" | "stock" | "property";
 
-// 产品类型标签
-export const PRODUCT_LABELS: Record<ProductType, string> = {
-  fund: "开放式基金",
-  money: "货币基金",
-  wealth: "银行理财",
-  deposit: "定期存款",
-  metal: "贵金属",
-  stock: "股票",
-  property: "房产",
-};
+export const PRODUCT_TYPES: readonly ProductType[] = [
+  "fund",
+  "money",
+  "wealth",
+  "deposit",
+  "metal",
+  "stock",
+  "property",
+];
 
 export function supportsCostBasisMethod(productType: string | null | undefined): boolean {
   return productType === "fund" || productType === "money";
 }
 
-// 交易类型标签
-export const SUBTYPE_LABELS: Record<FundSubtype, string> = {
-  buy: "买入",
-  redeem: "赎回",
-  dividend_cash: "现金红利",
-  dividend_reinvest: "分红再投资",
-  buy_failed: "暂停申购",
-};
-
-// 每种产品类型支持的交易类型（布局分组）
+// Transaction types supported by each product type (layout grouping)
 export const PRODUCT_SUBTYPES: Record<ProductType, FundSubtype[][]> = {
   fund: [["buy", "redeem", "dividend_cash", "dividend_reinvest"]],
   money: [["buy", "redeem", "dividend_cash", "dividend_reinvest"]],
@@ -48,14 +38,8 @@ export const PRODUCT_SUBTYPES: Record<ProductType, FundSubtype[][]> = {
   property: [],
 };
 
-// 存款产品的特殊标签
-export const DEPOSIT_LABELS: Partial<Record<FundSubtype, string>> = {
-  buy: "存入",
-  redeem: "取出",
-};
-
 /**
- * 解析数字输入（处理逗号分隔）
+ * Parse numeric input (handles comma separators).
  */
 export const parseNumber = (s: string): number => {
   const n = parseFloat(String(s).replace(/,/g, ""));
@@ -63,96 +47,86 @@ export const parseNumber = (s: string): number => {
 };
 
 /**
- * 工作日加减
+ * Add/subtract workdays.
  */
 export const addDays = addWorkdaysUtc;
 
 /**
- * 是否赎回类交易
+ * Whether this is a redeem-like transaction.
  */
 export const isRedeemLike = (s: FundSubtype): boolean => s === "redeem";
 
 /**
- * 是否买入类交易（买入、分红再投资）
+ * Whether this is a buy-like transaction (buy, dividend reinvestment).
  */
 export const isBuyLike = (s: FundSubtype): boolean => s === "buy" || s === "dividend_reinvest";
 
 /**
- * 是否红利类交易
+ * Whether this is a dividend transaction.
  */
 export const isDividend = (s: FundSubtype): boolean => s === "dividend_cash" || s === "dividend_reinvest";
 
 /**
- * 是否显示份额字段
- * 现金红利不涉及份额变动，不显示
+ * Whether the units field is shown.
+ * Cash dividends do not change units, so it is not shown.
  */
 export const showUnitsFor = (s: FundSubtype, pt: ProductType): boolean => (pt === "fund" || pt === "money" || pt === "metal") && (isBuyLike(s) || isRedeemLike(s));
 
 /**
- * 是否显示手续费字段
- * 现金红利无手续费，不显示
+ * Whether the fee field is shown.
+ * Cash dividends have no fee, so it is not shown.
  */
 export const showFeeFor = (s: FundSubtype, pt: ProductType): boolean =>
   (pt === "fund" || pt === "money" || pt === "metal") && (isBuyLike(s) || isRedeemLike(s)) && !isDividend(s);
 
 /**
- * 是否显示净值字段
- * 现金红利是直接收到的现金，不涉及净值
+ * Whether the NAV field is shown.
+ * Cash dividends are cash received directly and do not involve NAV.
  */
 export const showNavFor = (s: FundSubtype): boolean => (isBuyLike(s) || isRedeemLike(s)) && !isDividend(s);
 
 /**
- * 是否显示 T+N 确认天数和确认日期
- * 现金红利只有到账日期，没有申请确认的概念
+ * Whether the T+N confirmation days and confirmation date are shown.
+ * Cash dividends only have an arrival date; there is no application confirmation concept.
  */
 export const showConfirmFor = (s: FundSubtype): boolean => (isBuyLike(s) || isRedeemLike(s)) && !isDividend(s);
 
 /**
- * 是否显示入账日期（确认日 + arrivalDays）
- * 买入类有入账日期；赎回类资金到账日期用赎回确认日表示，不需要额外 arrivalDate
+ * Whether the arrival date is shown (confirmation date + arrivalDays).
+ * Buy-like transactions have an arrival date; redeem-like funds arrive on the redeem
+ * confirmation date, so no extra arrivalDate is needed.
  */
 export const showArrivalFor = (s: FundSubtype): boolean => isBuyLike(s) && !isDividend(s);
 
 /**
- * 是否显示账户选择区（现金账户 + 基金账户）
- * 现金红利和分红再投资都不需要选择现金账户
+ * Whether the account selector area is shown (cash account + fund account).
+ * Neither cash dividends nor dividend reinvestment requires selecting a cash account.
  */
 export const showAccountSelectorsFor = (s: FundSubtype): boolean => (isBuyLike(s) && s !== "dividend_reinvest") || isRedeemLike(s) || s === "buy_failed";
 
 /**
- * 获取金额字段标签
- */
-export function amountLabel(s: FundSubtype, pt: ProductType): string {
-  if (pt === "deposit") return isRedeemLike(s) ? "取出金额" : "存入金额";
-  if (isRedeemLike(s)) return "赎回金额";
-  if (s === "dividend_cash") return "现金红利金额";
-  if (s === "dividend_reinvest") return "分红再投资金额";
-  return "买入金额";
-}
-
-/**
- * 交易类型显示信息注册表 — 全项目唯一数据源
+ * Transaction type display registry — the single source of truth for the whole project.
  *
- * 所有 fundSubtype + source 组合的标签、颜色、文字色
- * 均由此处定义。页面和组件通过 subtypeDisplay(subtype, source) 获取。
+ * All labels, colors, and text colors for every fundSubtype + source combination
+ * are defined here. Pages and components retrieve them via subtypeDisplay(subtype, source).
  */
 export type SubtypeDisplay = {
-  label: string;
-  cls: string;           // 标签背景色 class
-  textCls?: string;      // 金额文字色 class（如分红绿色）
+  labelKey: string;
+  cls: string;           // Label background color class
+  textCls?: string;      // Amount text color class (e.g. dividend green)
 };
 
 const DISPLAY_MAP: Record<string, SubtypeDisplay> = {
-  buy: { label: "买入", cls: "bg-blue-50 text-blue-600" },
-  "buy|regular_invest": { label: "定投买入", cls: "bg-blue-50 text-blue-600" },
-  "buy|dividend": { label: "红利转投", cls: "bg-emerald-50 text-emerald-600", textCls: "text-emerald-600" },
-  redeem: { label: "赎回", cls: "bg-orange-50 text-orange-600" },
-  dividend_reinvest: { label: "分红再投资", cls: "bg-emerald-50 text-emerald-600", textCls: "text-emerald-600" },
-  dividend_cash: { label: "现金红利", cls: "bg-emerald-50 text-emerald-600", textCls: "text-emerald-600" },
-  "buy_failed|regular_invest": { label: "买入失败", cls: "bg-red-50 text-red-600" },
-  "buy_failed|regular_invest_refund": { label: "买入退回", cls: "bg-amber-50 text-amber-600" },
-  buy_failed: { label: "买入失败", cls: "bg-red-50 text-red-600" }, // fallback
-  _default: { label: "投资", cls: "bg-slate-50 text-slate-600" },
+  buy: { labelKey: "fund.subtype.buy", cls: "bg-blue-50 text-blue-600" },
+  "buy|regular_invest": { labelKey: "fundShell.subtype.buyRegularInvest", cls: "bg-blue-50 text-blue-600" },
+  "buy|dividend": { labelKey: "fund.subtype.dividend", cls: "bg-emerald-50 text-emerald-600", textCls: "text-emerald-600" },
+  redeem: { labelKey: "fund.subtype.redeem", cls: "bg-orange-50 text-orange-600" },
+  dividend_reinvest: { labelKey: "fundShell.subtype.dividendReinvest", cls: "bg-emerald-50 text-emerald-600", textCls: "text-emerald-600" },
+  dividend_cash: { labelKey: "fundShell.subtype.dividendCash", cls: "bg-emerald-50 text-emerald-600", textCls: "text-emerald-600" },
+  "buy_failed|regular_invest": { labelKey: "fundShell.subtype.buyFailed", cls: "bg-red-50 text-red-600" },
+  "buy_failed|regular_invest_refund": { labelKey: "fundShell.subtype.buyRefund", cls: "bg-amber-50 text-amber-600" },
+  buy_failed: { labelKey: "fundShell.subtype.buyFailed", cls: "bg-red-50 text-red-600" }, // fallback
+  _default: { labelKey: "fundShell.subtype.unknown", cls: "bg-slate-50 text-slate-600" },
 };
 
 export function subtypeDisplay(subtype: string | null | undefined, source?: string | null): SubtypeDisplay {

@@ -9,22 +9,24 @@ import { formatDateLocal, toNumber } from "@/lib/date-utils";
 import { buildAccountDisplayOption, formatAccountTableLabel } from "@/lib/account-display";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getServerT } from "@/lib/server/i18n";
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 
 export const dynamic = "force-dynamic";
 
-const KIND_LABEL: Record<string, string> = {
-  bank_debit: "借记卡",
-  bank_credit: "信用卡",
-  ewallet: "电子钱包",
-  cash: "现金",
-  deposit: "存款",
-  loan: "债务/债权",
-  other: "其他账户",
+const KIND_LABEL_KEYS: Record<string, string> = {
+  bank_debit: "account.kind.bank_debit",
+  bank_credit: "account.kind.bank_credit",
+  ewallet: "account.kind.ewallet",
+  cash: "account.kind.cash",
+  deposit: "account.kind.deposit",
+  loan: "account.kind.loan",
+  other: "account.kind.other",
 };
 
 export default async function MobileAccountDetailPage({ params }: { params: Promise<{ accountId: string }> }) {
   const { accountId } = await params;
+  const t = await getServerT();
   const { hidFilter } = await getHouseholdScope();
   const [account, accounts, categories] = await Promise.all([
     prisma.account.findFirst({
@@ -116,9 +118,9 @@ export default async function MobileAccountDetailPage({ params }: { params: Prom
           entries={rows}
           accountSummary={{
             title: account.name,
-            subtitle: `${KIND_LABEL[kind] ?? kind}${account.AccountGroup?.name ? ` · ${account.AccountGroup.name}` : ""}`,
+            subtitle: `${t(KIND_LABEL_KEYS[kind] ?? "account.kind.other")}${account.AccountGroup?.name ? ` · ${account.AccountGroup.name}` : ""}`,
             balance,
-            balanceLabel: kind === "bank_credit" ? "当前应还" : "当前余额",
+            balanceLabel: kind === "bank_credit" ? t("mobile.detail.balanceDue") : t("mobile.detail.balance"),
             backHref: "/accounts",
           }}
         />
@@ -129,7 +131,7 @@ export default async function MobileAccountDetailPage({ params }: { params: Prom
         />
       </div>
       <div className="hidden h-full items-center justify-center md:flex">
-        <div className="text-sm text-slate-500">请使用桌面侧栏进入账户明细工作区。</div>
+        <div className="text-sm text-slate-500">{t("mobile.detail.desktopHint")}</div>
       </div>
     </>
   );

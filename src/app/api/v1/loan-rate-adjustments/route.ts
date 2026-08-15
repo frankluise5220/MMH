@@ -49,18 +49,18 @@ export async function POST(req: Request) {
         ? null
         : Number(mortgageLprDiscountRaw);
 
-    if (!accountId) return NextResponse.json({ ok: false, error: "缺少贷款账户" }, { status: 400 });
+    if (!accountId) return NextResponse.json({ ok: false, code: "MISSING_LOAN_ACCOUNT", error: "缺少贷款账户" }, { status: 400 });
     if (
       mortgageLprDiscountRaw != null &&
       mortgageLprDiscountRaw !== "" &&
       (mortgageLprDiscount == null || !Number.isFinite(mortgageLprDiscount) || mortgageLprDiscount <= 0)
     ) {
-      return NextResponse.json({ ok: false, error: "LPR 利率折扣不正确" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_LPR_DISCOUNT", error: "LPR 利率折扣不正确" }, { status: 400 });
     }
     if (!replacementAdjustments) {
-      if (!effectiveDate) return NextResponse.json({ ok: false, error: "生效日期不正确" }, { status: 400 });
+      if (!effectiveDate) return NextResponse.json({ ok: false, code: "INVALID_EFFECTIVE_DATE", error: "生效日期不正确" }, { status: 400 });
       if (!Number.isFinite(annualRate) || annualRate <= 0) {
-        return NextResponse.json({ ok: false, error: "年利率不正确" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "INVALID_ANNUAL_RATE", error: "年利率不正确" }, { status: 400 });
       }
     }
 
@@ -78,7 +78,7 @@ export async function POST(req: Request) {
       },
       orderBy: [{ status: "asc" }, { nextRunDate: "asc" }],
     });
-    if (!plan) return NextResponse.json({ ok: false, error: "未找到贷款还款计划" }, { status: 404 });
+    if (!plan) return NextResponse.json({ ok: false, code: "LOAN_PLAN_NOT_FOUND", error: "未找到贷款还款计划" }, { status: 404 });
 
     const memo = decodeScheduledTaskMemo(plan.memo);
     const tableAdjustments = (await listLoanRateAdjustmentsByAccountIds({
@@ -138,7 +138,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, data: { adjustments, nextAmount } });
   } catch (error) {
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "保存利率调整失败" },
+      { ok: false, code: "SAVE_FAILED", error: error instanceof Error ? error.message : "保存利率调整失败" },
       { status: 500 },
     );
   }

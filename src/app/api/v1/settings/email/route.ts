@@ -6,43 +6,44 @@ import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 export const runtime = "nodejs";
 
 const BodySchema = z.object({
-  // IMAP 收件
+  // IMAP receiving
   emailHost: z.string().optional(),
   emailPort: z.number().optional(),
   emailSecure: z.boolean().optional(),
   emailUser: z.string().optional(),
   emailPassword: z.string().optional(),
   emailMailbox: z.string().optional(),
-  // SMTP 发件
+  // SMTP sending
   smtpHost: z.string().optional(),
   smtpPort: z.number().optional(),
   smtpSecure: z.boolean().optional(),
   smtpUser: z.string().optional(),
   smtpPass: z.string().optional(),
   smtpFrom: z.string().optional(),
-  // Resend 发件
+  // Resend sending
   resendApiKey: z.string().optional(),
   resendFrom: z.string().optional(),
-  // 功能开关
+  // Feature toggles
   passwordResetEnabled: z.boolean().optional(),
 });
 
 /**
- * 旧版邮箱设置接口（仅管理员）。
+ * Legacy email settings API (admin only).
  *
- * 当前界面已改用 /api/v1/settings/email-accounts；此接口仍被邮件发送回退链路
- * （smtp.ts / resend.ts 读取 userSettings）使用，因此保留但必须：
- * 1. 仅管理员可读写；
- * 2. 不再信任 x-user-id 请求头（避免任意用户身份冒充）；
- * 3. GET 不回传明文密码 / API Key，只返回是否已设置。
+ * The current UI uses /api/v1/settings/email-accounts; this API is still used
+ * by the email sending fallback chain (smtp.ts / resend.ts read userSettings),
+ * so it is kept but must:
+ * 1. Be readable/writable by admins only;
+ * 2. No longer trust the x-user-id request header (prevents user identity spoofing);
+ * 3. GET must not return plaintext passwords / API keys, only whether they are set.
  */
 async function requireAdminUserId(): Promise<{ ok: true; userId: string } | { ok: false; response: NextResponse }> {
   const currentUser = await getCurrentUser();
   if (!currentUser) {
-    return { ok: false, response: NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 }) };
+    return { ok: false, response: NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "请先登录" }, { status: 401 }) };
   }
   if (!isAdmin(currentUser)) {
-    return { ok: false, response: NextResponse.json({ ok: false, error: "仅管理员可操作" }, { status: 403 }) };
+    return { ok: false, response: NextResponse.json({ ok: false, code: "ADMIN_REQUIRED", error: "仅管理员可操作" }, { status: 403 }) };
   }
   return { ok: true, userId: currentUser.id };
 }
@@ -54,7 +55,7 @@ export async function POST(req: Request) {
   const body = (await req.json().catch(() => null)) as unknown;
   const parse = BodySchema.safeParse(body);
   if (!parse.success) {
-    return NextResponse.json({ ok: false, error: "参数不正确" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INVALID_PARAMETERS", error: "参数不正确" }, { status: 400 });
   }
 
   const data = parse.data;

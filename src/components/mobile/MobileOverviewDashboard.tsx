@@ -17,6 +17,7 @@ import type { OverviewDashboardProps } from "@/components/OverviewDashboard";
 import { formatMoneyYuan, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { getInvestmentAccountView } from "@/lib/account-kind-utils";
+import { useI18n } from "@/lib/i18n";
 
 const ZERO_TOTALS = {
   cash: 0,
@@ -53,12 +54,13 @@ export function MobileOverviewDashboard({
   investmentMarketValue,
   isRedUp,
 }: OverviewDashboardProps) {
+  const { t } = useI18n();
   const [showAmounts, setShowAmounts] = useState(true);
   const totals = { ...ZERO_TOTALS, ...(accountTypeTotals ?? {}) };
   const investMarketValue = investmentMarketValue ?? totals.investmentMarketValue;
   const monthNet = monthIncome - monthExpense;
   const netLiabilities = totals.liabilities - totals.loanReceivable;
-  const netDebtLabel = netLiabilities >= 0 ? "净负债" : "净债权";
+  const netDebtLabel = netLiabilities >= 0 ? t("overview.netDebt") : t("overview.netCredit");
   const netDebtAmount = Math.abs(netLiabilities);
   const creditUsed = creditAccountList.reduce((sum, account) => sum + Math.max(0, account.balance), 0);
   const creditAvailable = creditAccountList.reduce((sum, account) => sum + Math.max(0, account.availableLimit), 0);
@@ -81,12 +83,12 @@ export function MobileOverviewDashboard({
       <div className="space-y-2.5 pb-4">
         <section className="rounded-lg bg-indigo-600 px-4 py-4 text-white shadow-sm">
           <div className="flex items-center justify-between gap-3">
-            <span className="text-sm font-medium text-indigo-100">总资产</span>
+            <span className="text-sm font-medium text-indigo-100">{t("stockPanel.totalAssets")}</span>
             <button
               type="button"
               onClick={() => setShowAmounts((visible) => !visible)}
               className="flex h-10 w-10 items-center justify-center text-indigo-100"
-              aria-label={showAmounts ? "隐藏金额" : "显示金额"}
+              aria-label={t(showAmounts ? "mobileOverview.hideAmounts" : "mobileOverview.showAmounts")}
             >
               {showAmounts ? <Eye size={19} /> : <EyeOff size={19} />}
             </button>
@@ -96,40 +98,40 @@ export function MobileOverviewDashboard({
             className="mt-4 grid gap-2 border-t border-white/15 pt-3"
             style={{ gridTemplateColumns: `repeat(${headerMetricCount}, minmax(0, 1fr))` }}
           >
-            <HeaderMetric label="日常" value={amount(totals.dailyNetWorth)} />
-            {showInvestmentOverview ? <HeaderMetric label="投资" value={amount(investMarketValue)} /> : null}
-            {showInsuranceOverview ? <HeaderMetric label="保险" value={amount(totals.insuranceAsset)} /> : null}
+            <HeaderMetric label={t("mobileOverview.daily")} value={amount(totals.dailyNetWorth)} />
+            {showInvestmentOverview ? <HeaderMetric label={t("nav.investments")} value={amount(investMarketValue)} /> : null}
+            {showInsuranceOverview ? <HeaderMetric label={t("account.kind.insurance")} value={amount(totals.insuranceAsset)} /> : null}
             <HeaderMetric label={netDebtLabel} value={amount(netDebtAmount)} liability={netLiabilities > 0} />
           </div>
         </section>
 
         <section className="grid grid-cols-3 rounded-lg border border-slate-200 bg-white px-3 py-3 shadow-sm">
-          <CompactMetric label="本月收入" value={amount(Math.abs(monthIncome))} className={isRedUp ? "text-red-600" : "text-emerald-600"} />
-          <CompactMetric label="本月支出" value={amount(Math.abs(monthExpense))} className={isRedUp ? "text-emerald-600" : "text-red-600"} />
-          <CompactMetric label="结余" value={amount(monthNet)} className={valueClass(monthNet)} align="right" />
+          <CompactMetric label={t("overview.thisMonthIncome")} value={amount(Math.abs(monthIncome))} className={isRedUp ? "text-red-600" : "text-emerald-600"} />
+          <CompactMetric label={t("overview.thisMonthExpense")} value={amount(Math.abs(monthExpense))} className={isRedUp ? "text-emerald-600" : "text-red-600"} />
+          <CompactMetric label={t("mobileOverview.balance")} value={amount(monthNet)} className={valueClass(monthNet)} align="right" />
         </section>
 
         <section className="rounded-lg border border-slate-200 bg-white px-3 py-3 shadow-sm">
           <div className="grid grid-cols-3 gap-x-2 gap-y-4">
-            <CompactMetric label="现金" value={amount(totals.cash)} />
-            <CompactMetric label="借记卡" value={amount(totals.bankDebit)} />
-            <CompactMetric label="第三方" value={amount(totals.ewallet)} align="right" />
-            <CompactMetric label="存款" value={amount(totals.deposit)} />
+            <CompactMetric label={t("overview.cash")} value={amount(totals.cash)} />
+            <CompactMetric label={t("overview.debitCard")} value={amount(totals.bankDebit)} />
+            <CompactMetric label={t("mobileOverview.ewallet")} value={amount(totals.ewallet)} align="right" />
+            <CompactMetric label={t("overview.deposit")} value={amount(totals.deposit)} />
             <CompactMetric label={netDebtLabel} value={amount(netDebtAmount)} className={netDebtClass} />
           </div>
         </section>
 
         {creditAccountList.length > 0 ? (
           <section className="grid grid-cols-3 rounded-lg border border-slate-200 bg-white px-3 py-3 shadow-sm">
-            <CompactMetric label="信用卡已用" value={amount(creditUsed)} className="text-red-600" />
-            <CompactMetric label="可用额度" value={amount(creditAvailable)} />
-            <CompactMetric label="本期账单" value={amount(creditBill)} align="right" />
+            <CompactMetric label={t("accountsPage.creditUsed")} value={amount(creditUsed)} className="text-red-600" />
+            <CompactMetric label={t("accountsPage.availableLimit")} value={amount(creditAvailable)} />
+            <CompactMetric label={t("overview.currentBill")} value={amount(creditBill)} align="right" />
           </section>
         ) : null}
 
         {showInvestmentOverview ? (
           <section>
-            <MobileSectionHeader label="投资账户" href="/investments" />
+            <MobileSectionHeader label={t("invest.productTypeDefault")} href="/investments" t={t} />
             <div className="divide-y divide-slate-100 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
               {topPositions.length > 0 ? topPositions.slice(0, 6).map((position) => (
                 <Link
@@ -150,7 +152,7 @@ export function MobileOverviewDashboard({
                   </span>
                 </Link>
               )) : (
-                <div className="px-3 py-6 text-center text-sm text-slate-400">暂无投资持仓</div>
+                <div className="px-3 py-6 text-center text-sm text-slate-400">{t("overview.noInvestmentPositions")}</div>
               )}
             </div>
           </section>
@@ -158,7 +160,7 @@ export function MobileOverviewDashboard({
 
         {accountList.length > 0 ? (
           <section>
-            <MobileSectionHeader label="资金账户" href="/accounts" />
+            <MobileSectionHeader label={t("accountsPage.title")} href="/accounts" t={t} />
             <div className="divide-y divide-slate-100 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
               {accountList.slice(0, 8).map((account) => (
                 <Link
@@ -198,12 +200,12 @@ function CompactMetric({ label, value, className = "text-slate-900", align = "le
   );
 }
 
-function MobileSectionHeader({ label, href }: { label: string; href: string }) {
+function MobileSectionHeader({ label, href, t }: { label: string; href: string; t: (key: string, params?: Record<string, string | number>) => string }) {
   return (
     <div className="flex h-9 items-center justify-between px-1">
       <h2 className="text-sm font-semibold text-slate-900">{label}</h2>
       <Link href={href} className="flex h-9 items-center gap-0.5 text-xs font-medium text-indigo-600">
-        查看全部 <ChevronRight size={15} />
+        {t("overview.viewAll")} <ChevronRight size={15} />
       </Link>
     </div>
   );

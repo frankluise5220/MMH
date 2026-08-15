@@ -14,7 +14,7 @@ export async function GET(req: Request) {
     const planId = searchParams.get("planId");
 
     if (!planId) {
-      return NextResponse.json({ ok: false, error: "缺少 planId" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_PLAN_ID", error: "缺少 planId" }, { status: 400 });
     }
 
     const plan = await prisma.regularInvestPlan.findUnique({
@@ -22,7 +22,7 @@ export async function GET(req: Request) {
     });
 
     if (!plan) {
-      return NextResponse.json({ ok: false, error: "计划不存在" }, { status: 404 });
+      return NextResponse.json({ ok: false, code: "PLAN_NOT_FOUND", error: "计划不存在" }, { status: 404 });
     }
 
     const task = decodeScheduledTaskMemo(plan.memo);
@@ -135,6 +135,7 @@ export async function GET(req: Request) {
   } catch (e) {
     return NextResponse.json({
       ok: false,
+      code: "FETCH_FAILED",
       error: e instanceof Error ? e.message : "查询失败",
     }, { status: 500 });
   }

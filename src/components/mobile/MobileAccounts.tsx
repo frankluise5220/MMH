@@ -17,6 +17,9 @@ import {
 } from "lucide-react";
 
 import { formatMoneyYuan } from "@/lib/format";
+import { useI18n } from "@/lib/i18n";
+
+type TFunc = (key: string, params?: Record<string, string | number>) => string;
 
 type AccountRow = {
   id: string;
@@ -56,6 +59,7 @@ export function MobileAccounts({
   liabilityCount: number;
   isRedUp: boolean;
 }) {
+  const { t } = useI18n();
   const [hideZero, setHideZero] = useState(true);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
@@ -64,7 +68,7 @@ export function MobileAccounts({
       ? creditAccounts.filter((account) => Math.abs(account.balance) >= 0.005 || Math.abs(account.currentBill) >= 0.005)
       : creditAccounts;
     if (activeTab === "credit") {
-      return visibleCredit.length > 0 ? [{ kind: "bank_credit", label: "信用卡", accounts: visibleCredit }] : [];
+      return visibleCredit.length > 0 ? [{ kind: "bank_credit", label: t("account.kind.bank_credit"), accounts: visibleCredit }] : [];
     }
     return groups
       .map((group) => ({
@@ -72,7 +76,7 @@ export function MobileAccounts({
         accounts: hideZero ? group.accounts.filter((account) => Math.abs(account.balance) >= 0.005) : group.accounts,
       }))
       .filter((group) => group.accounts.length > 0);
-  }, [activeTab, creditAccounts, groups, hideZero]);
+  }, [activeTab, creditAccounts, groups, hideZero, t]);
 
   const accountCount = visibleGroups.reduce((sum, group) => sum + group.accounts.length, 0);
   const creditTotal = creditAccounts.reduce((sum, account) => sum + Math.max(0, account.balance), 0);
@@ -90,25 +94,25 @@ export function MobileAccounts({
     <div className="h-full overflow-y-auto bg-slate-100 px-3 py-2">
       <div className="space-y-2.5 pb-4">
         <section className="rounded-lg bg-indigo-600 px-4 py-4 text-center text-white shadow-sm">
-          <div className="text-sm font-medium text-indigo-100">{activeTab === "credit" ? "信用卡已用" : "资金合计"}</div>
+          <div className="text-sm font-medium text-indigo-100">{activeTab === "credit" ? t("accountsPage.creditUsed") : t("mobileAccounts.fundsTotal")}</div>
           <div className="mt-1 break-all text-[26px] font-bold tabular-nums">{formatMoneyYuan(activeTab === "credit" ? creditTotal : assetTotal)}</div>
           <div className="mt-3 flex items-center justify-center gap-5 text-xs text-indigo-100">
-            <span>{visibleGroups.length} 个分类</span>
-            <span>{accountCount} 个账户</span>
+            <span>{t("mobileAccounts.groupCount", { count: visibleGroups.length })}</span>
+            <span>{t("mobileAccounts.accountCount", { count: accountCount })}</span>
           </div>
         </section>
 
         <div className="grid grid-cols-4 gap-2">
-          <ModuleLink href="/accounts" label="资金" value={formatModuleCount(groups.reduce((sum, group) => sum + group.accounts.length, 0))} icon="wallet" active={activeTab === "assets"} />
-          <ModuleLink href="/accounts?tab=credit" label="信用卡" value={formatModuleCount(creditAccounts.length)} icon="credit" active={activeTab === "credit"} />
-          <ModuleLink href="/insurance" label="保险" value={formatModuleCount(insuranceCount)} icon="insurance" />
-          <ModuleLink href="/liabilities" label="往来款" value={formatModuleCount(liabilityCount)} icon="liability" />
+          <ModuleLink href="/accounts" label={t("mobileAccounts.funds")} value={formatModuleCount(groups.reduce((sum, group) => sum + group.accounts.length, 0), t)} icon="wallet" active={activeTab === "assets"} />
+          <ModuleLink href="/accounts?tab=credit" label={t("account.kind.bank_credit")} value={formatModuleCount(creditAccounts.length, t)} icon="credit" active={activeTab === "credit"} />
+          <ModuleLink href="/insurance" label={t("account.kind.insurance")} value={formatModuleCount(insuranceCount, t)} icon="insurance" />
+          <ModuleLink href="/liabilities" label={t("nav.liabilities")} value={formatModuleCount(liabilityCount, t)} icon="liability" />
         </div>
 
         <label className="flex min-h-14 items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm">
           <span className="min-w-0 flex-1">
-            <span className="block text-sm font-semibold text-slate-900">隐藏零余额账户</span>
-            <span className="mt-0.5 block text-xs text-slate-500">仅影响当前手机列表</span>
+            <span className="block text-sm font-semibold text-slate-900">{t("settings.display.hideZero")}</span>
+            <span className="mt-0.5 block text-xs text-slate-500">{t("mobileAccounts.hideZeroHint")}</span>
           </span>
           <input
             type="checkbox"
@@ -131,7 +135,7 @@ export function MobileAccounts({
                 <AccountKindIcon kind={group.kind} />
                 <span className="min-w-0 flex-1">
                   <span className="block text-sm font-semibold text-slate-900">{group.label}</span>
-                  <span className="mt-0.5 block text-xs text-slate-500">{group.accounts.length} 个账户</span>
+                  <span className="mt-0.5 block text-xs text-slate-500">{t("mobileAccounts.accountCount", { count: group.accounts.length })}</span>
                 </span>
                 <span className={`shrink-0 text-sm font-semibold tabular-nums ${moneyClass(group.kind, total, isRedUp)}`}>{formatMoneyYuan(total)}</span>
                 <ChevronDown size={19} className={`shrink-0 text-slate-400 transition-transform ${isCollapsed ? "-rotate-90" : ""}`} />
@@ -162,7 +166,7 @@ export function MobileAccounts({
           );
         }) : (
           <div className="rounded-lg border border-dashed border-slate-300 bg-white px-4 py-10 text-center text-sm text-slate-500">
-            暂无非零余额账户
+            {t("mobileAccounts.noNonZeroAccounts")}
           </div>
         )}
       </div>
@@ -205,8 +209,8 @@ function ModuleLink({
   );
 }
 
-function formatModuleCount(value: number) {
-  return value > 0 ? `${value} 个` : "暂无";
+function formatModuleCount(value: number, t: TFunc) {
+  return value > 0 ? t("overview.accountCountValue", { count: value }) : t("mobileAccounts.none");
 }
 
 function AccountKindIcon({ kind, compact = false }: { kind: string; compact?: boolean }) {

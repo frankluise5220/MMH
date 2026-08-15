@@ -55,8 +55,8 @@ import { upsertStatementInstitutionRuleFromUserEdit } from "@/lib/statement/reco
  * Transfer items must carry matched `fromAccount` and `toAccount`; the server
  * rejects incomplete transfers instead of writing an empty counter account.
  * `businessType="credit_card_repayment"` stores a transfer categorized as
- * "信用卡还款" while requiring a debit-card/e-wallet source and credit-card target.
- * Response: { ok: true, items, imported, createdCount?, ids? } or { ok: false, error }.
+ * the "credit card repayment" category while requiring a debit-card/e-wallet source and credit-card target.
+ * Response: { ok: true, items, imported, createdCount?, ids? } or { ok:false, code, error }.
  */
 export const runtime = "nodejs";
 
@@ -163,7 +163,7 @@ function requireApiKey(req: Request) {
   const required = (process.env.STATEMENT_API_KEY ?? "").trim();
   if (!required) return { ok: true as const };
   const provided = getProvidedApiKey(req);
-  if (!provided || provided !== required) return { ok: false as const };
+  if (!provided || provided !== required) return { ok: false as const, code: "UNAUTHORIZED" as const };
   return { ok: true as const };
 }
 
@@ -852,7 +852,7 @@ export async function POST(req: Request) {
   const internalImport = await isInternalImportRequest(req).catch(() => false);
   if (!internalImport && !requireApiKey(req).ok) {
     return NextResponse.json(
-      { ok: false, error: "未授权" },
+      { ok: false, code: "UNAUTHORIZED", error: "未授权" },
       { status: 401, headers: corsHeaders() },
     );
   }
@@ -875,7 +875,7 @@ export async function POST(req: Request) {
 
   if (!text && !bodyItems?.success) {
     return NextResponse.json(
-      { ok: false, error: "缺少 text 或 items" },
+      { ok: false, code: "MISSING_TEXT_OR_ITEMS", error: "缺少 text 或 items" },
       { status: 400, headers: corsHeaders() },
     );
   }
@@ -952,15 +952,17 @@ export async function POST(req: Request) {
     const importRun = beginImportRun(ctx.householdId, traceId, items.length);
     if (!importRun.ok) {
       const error = `已有一批导入正在写入（${importRun.active.itemCount} 条，traceId: ${importRun.active.traceId}），请等待完成后再导入`;
-      finishImportProgress(traceId, {
+      const failureProgress = {
         ok: false,
+        code: "IMPORT_BUSY",
         total: items.length,
         processed: 0,
         created: 0,
         currentRow: null,
         error,
         failedRow: null,
-      });
+      };
+      finishImportProgress(traceId, failureProgress);
       if (traceId) {
         await writeImportDebugLog({
           traceId,
@@ -974,7 +976,7 @@ export async function POST(req: Request) {
         });
       }
       return NextResponse.json(
-        { ok: false, error, trace },
+        { ok: false, code: "IMPORT_BUSY", error, trace },
         { status: 409, headers: corsHeaders() },
       );
     }
@@ -1208,15 +1210,17 @@ export async function POST(req: Request) {
   } catch (e) {
     const error = e instanceof Error ? e.message : "导入失败";
     const failureDetail = e instanceof ImportItemError ? e.detail : null;
-    finishImportProgress(traceId, {
+    const failureProgress = {
       ok: false,
+      code: "IMPORT_FAILED",
       total: items.length,
       processed: failureDetail?.rowIndex ?? 0,
       created: 0,
       currentRow: failureDetail ? failureDetail.rowIndex + 1 : null,
       error,
       failedRow: failureDetail ? failureDetail.rowIndex + 1 : null,
-    });
+    };
+    finishImportProgress(traceId, failureProgress);
     if (traceId) {
       const scope = await getHouseholdScope().catch(() => null);
       if (scope) {
@@ -1237,6 +1241,7 @@ export async function POST(req: Request) {
     return NextResponse.json(
       {
         ok: false,
+        code: "IMPORT_FAILED",
         error,
         failedRow: failureDetail,
         trace: failureDetail

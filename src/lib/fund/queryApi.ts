@@ -1,15 +1,15 @@
 /**
- * 基金净值查询统一入口
+ * Unified fund NAV query entry point.
  *
- * 两种调用模式：
- * 1. 查询最新净值：不传 dateStr → 按优先级尝试所有 API，返回最新可用净值
- * 2. 查询指定日期净值：传入 dateStr → 只使用支持日期过滤的 API（baseUrl 含 {date} 占位符），
- *    跳过不支持日期过滤的 API（如 eastmoney 实时估值），避免返回错误日期的净值
+ * Two calling modes:
+ * 1. Query latest NAV: omit dateStr → try all APIs by priority and return the latest available NAV
+ * 2. Query a specific date: pass dateStr → only use APIs that support date filtering (baseUrl contains the {date} placeholder),
+ *    skipping APIs without date filtering (e.g. eastmoney realtime estimate) to avoid returning a NAV for the wrong date
  *
- * @param fundCode 基金代码
- * @param dateStr 净值日期（YYYY-MM-DD），不传则查询最新
- * @param accountId 资金账户ID（可选，用于账户级默认 API）
- * @returns 净值信息或 null
+ * @param fundCode Fund code
+ * @param dateStr NAV date (YYYY-MM-DD); omit to query the latest
+ * @param accountId Fund account ID (optional, used for the account-level default API)
+ * @returns NAV info or null
  */
 import { prisma } from "@/lib/db/prisma";
 
@@ -49,7 +49,7 @@ async function fetchFromUrl(url: string, parser: (data: any) => NavResult): Prom
     const text = await res.text();
     let data: any;
     try { data = JSON.parse(text); } catch {
-      // 天天基金返回的是 JS 格式
+      // Tiantian Fund returns data in JS format
       const m = text.match(/\{.+\}/);
       if (!m) return null;
       try { data = JSON.parse(m[0]); } catch { return null; }
@@ -60,7 +60,7 @@ async function fetchFromUrl(url: string, parser: (data: any) => NavResult): Prom
   }
 }
 
-// eastmoney parser — 最新净值 (天天基金)
+// eastmoney parser — latest NAV (Tiantian Fund)
 function parseEastmoney(data: any): NavResult {
   if (!data?.dwjz) return null;
   return {
@@ -72,8 +72,8 @@ function parseEastmoney(data: any): NavResult {
 }
 
 /**
- * eastmoney_history parser — 历史净值 (东方财富)
- * 支持解析多条记录，用于查找最接近目标日期的净值
+ * eastmoney_history parser — historical NAVs (Eastmoney)
+ * Supports parsing multiple records to find the NAV closest to a target date.
  */
 function parseEastmoneyHistoryList(data: any): { FSRQ: string; DWJZ: string; LJJZ: string }[] {
   return data?.Data?.LSJZList ?? [];
@@ -91,7 +91,7 @@ function parseEastmoneyHistory(data: any): NavResult {
   return null;
 }
 
-// danjuan parser — 蛋卷基金
+// danjuan parser — Danjuan Fund
 function parseDanjuan(data: any): NavResult {
   if (!data?.data?.nav) return null;
   return {
@@ -144,7 +144,8 @@ function parseDateValue(value: unknown): string | undefined {
   return undefined;
 }
 
-// 支付宝/蚂蚁财富接口不同版本字段名不稳定，这里只读取明确的净值字段，不做宽泛数字猜测。
+// Alipay/Ant Fortune field names vary across API versions, so only read explicit NAV
+// fields here instead of broadly guessing numbers.
 function parseAlipay(data: any): NavResult {
   const nav = parseNumberValue(findValueByKeys(data, [
     "nav",
@@ -257,7 +258,7 @@ const PARSERS: Record<string, (data: any) => NavResult> = {
 };
 
 /**
- * 获取所有活跃的查询 API（按优先级排序）
+ * Get all active query APIs (sorted by priority).
  */
 async function getActiveApis(householdId?: string | null): Promise<FundQueryApiConfig[]> {
   return prisma.fundQueryApi.findMany({
@@ -285,20 +286,20 @@ function isAlipayInstitutionText(text: string) {
 }
 
 /**
- * 查询历史净值（扩大日期范围）
- * 当精确日期查询失败时，尝试查询前后几天的净值，返回最接近目标日期的净值
+ * Query historical NAVs (wider date range).
+ * When an exact-date query fails, try querying NAVs around the target date and return the one closest to it.
  *
- * @param fundCode 基金代码
- * @param targetDate 目标日期（YYYY-MM-DD）
- * @param rangeDays 查询范围天数（向前扩展几天），默认 90 天（覆盖一个季度）
- * @returns 净值信息（包含实际净值日期）或 null
+ * @param fundCode Fund code
+ * @param targetDate Target date (YYYY-MM-DD)
+ * @param rangeDays How many days to extend the range backward; defaults to 90 (covers a quarter)
+ * @returns NAV info (including the actual NAV date) or null
  */
 export async function queryHistoricalNav(
   fundCode: string,
   targetDate: string,
   rangeDays: number = 90
 ): Promise<NavResult> {
-  // 计算查询范围：目标日期前 rangeDays 天到目标日期
+  // Calculate the query range: from rangeDays before the target date to the target date
   const target = new Date(targetDate + "T00:00:00Z");
   const startDate = new Date(target.getTime() - rangeDays * 24 * 60 * 60 * 1000);
   const endDate = target;
@@ -306,7 +307,7 @@ export async function queryHistoricalNav(
   const startStr = startDate.toISOString().slice(0, 10);
   const endStr = endDate.toISOString().slice(0, 10);
 
-  // 查询 eastmoney_history API（扩大日期范围）
+  // Query the eastmoney_history API (wider date range)
   const url = `http://api.fund.eastmoney.com/f10/lsjz?fundCode=${fundCode}&pageIndex=1&pageSize=50&startDate=${startStr}&endDate=${endStr}`;
 
   try {
@@ -319,14 +320,14 @@ export async function queryHistoricalNav(
     const list = parseEastmoneyHistoryList(data);
     if (list.length === 0) return null;
 
-    // 按日期降序排列（最新的在前）
+    // Sort by date descending (newest first)
     const sortedList = list.sort((a, b) => new Date(b.FSRQ).getTime() - new Date(a.FSRQ).getTime());
 
-    // 找到目标日期或之前最近的净值（确认日期不应该晚于目标日期）
+    // Find the NAV on or before the target date (the confirmation date should not be later than the target date)
     const targetTime = target.getTime();
     for (const item of sortedList) {
       const itemDate = new Date(item.FSRQ + "T00:00:00Z");
-      // 选择目标日期或之前最近的交易日净值
+      // Pick the NAV of the nearest trading day on or before the target date
       if (itemDate.getTime() <= targetTime) {
         return {
           date: item.FSRQ,
@@ -336,7 +337,7 @@ export async function queryHistoricalNav(
       }
     }
 
-    // 如果目标日期之前没有净值，返回列表中最接近的（最新的）
+    // If no NAV exists before the target date, return the closest one (the newest)
     const closest = sortedList[0];
     if (closest) {
       return {
@@ -353,8 +354,8 @@ export async function queryHistoricalNav(
 }
 
 /**
- * 统一查询基金净值
- * 优先使用账户配置的默认 API，未配置则按优先级尝试所有活跃 API
+ * Unified fund NAV query.
+ * Prefers the account-configured default API; otherwise tries all active APIs by priority.
  */
 export async function queryFundNav(
   fundCode: string,
@@ -379,11 +380,11 @@ export async function queryFundNav(
     });
   }
 
-  // 获取活跃 API 列表
+  // Get the list of active APIs
   const activeApis = await getActiveApis(account?.householdId);
   if (activeApis.length === 0) return null;
 
-  // 优先级：账户默认 API > 账户机构场景优先 > 全局拖拽优先级
+  // Priority: account default API > account institution scenario > global priority order
   let orderedApis = activeApis;
   if (account?.defaultFundQueryApiId) {
     orderedApis = moveApiToFront(orderedApis, (api) => api.id === account!.defaultFundQueryApiId);
@@ -394,12 +395,12 @@ export async function queryFundNav(
     }
   }
 
-  // 按优先级尝试每个 API
+  // Try each API in priority order
   for (const api of orderedApis) {
     const parser = PARSERS[api.code];
     if (!parser) continue;
 
-    // 指定日期查询时，跳过不支持日期过滤的 API（baseUrl 不含 {date} 占位符）
+    // When querying a specific date, skip APIs that do not support date filtering (baseUrl without the {date} placeholder)
     if (dateStr && !api.baseUrl.includes("{date}")) continue;
 
     let url = api.baseUrl;
@@ -410,7 +411,7 @@ export async function queryFundNav(
     if (result) return result;
   }
 
-  // 精确日期查询失败，尝试扩大范围查询历史净值
+  // Exact-date query failed; try the wider-range historical NAV query
   if (dateStr) {
     const historicalResult = await queryHistoricalNav(fundCode, dateStr);
     if (historicalResult) return historicalResult;

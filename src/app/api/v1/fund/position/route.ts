@@ -3,16 +3,16 @@ import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 
 /**
- * 查询 / 更新基金持仓。
+ * Query / update fund holdings.
  *
  * GET ?accountId=string&fundCode=string
- *   accountId 和 fundCode 对应 `fundHolding` 表的唯一键
- *   返回 { ok: true, exists, units, avgCost, cost, historicalProfit, nav, fundName }
- *   当 ID 未命中记录时，返回 { ok: false, error }
+ *   accountId and fundCode are the unique key of the `fundHolding` table
+ *   Returns { ok: true, exists, units, avgCost, cost, historicalProfit, nav, fundName }
+ *   When the record is not found, returns { ok: false, error }
  *
  * POST { accountId: string, fundCode: string, nav: number }
- *   accountId 和 fundCode 对应 `fundHolding` 表的唯一键
- *   返回 { ok: true, ... } 或 { ok: false, error }
+ *   accountId and fundCode are the unique key of the `fundHolding` table
+ *   Returns { ok: true, ... } or { ok: false, error }
  */
 export async function GET(req: NextRequest) {
   try {
@@ -21,7 +21,7 @@ export async function GET(req: NextRequest) {
     const fundCode = String(searchParams.get("fundCode") ?? "").trim();
 
     if (!accountId || !fundCode) {
-      return NextResponse.json({ ok: false, error: "缺少 accountId 或 fundCode" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_PARAMS", error: "缺少 accountId 或 fundCode" }, { status: 400 });
     }
 
     const holding = await prisma.fundHolding.findUnique({
@@ -29,7 +29,7 @@ export async function GET(req: NextRequest) {
     });
 
     if (!holding) {
-      return NextResponse.json({ ok: false, error: "持仓记录不存在" }, { status: 404 });
+      return NextResponse.json({ ok: false, code: "HOLDING_NOT_FOUND", error: "持仓记录不存在" }, { status: 404 });
     }
 
     return NextResponse.json({
@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
     });
   } catch (e) {
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : "查询失败" },
+      { ok: false, code: "QUERY_FAILED", error: e instanceof Error ? e.message : "查询失败" },
       { status: 500 }
     );
   }
@@ -58,14 +58,14 @@ export async function POST(req: NextRequest) {
     const nav = parseFloat(body.nav);
 
     if (!accountId || !fundCode || !Number.isFinite(nav) || nav <= 0) {
-      return NextResponse.json({ ok: false, error: "参数不正确" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_PARAMS", error: "参数不正确" }, { status: 400 });
     }
 
     const existing = await prisma.fundHolding.findUnique({
       where: { accountId_fundCode: { accountId, fundCode } },
     });
     if (!existing) {
-      return NextResponse.json({ ok: false, error: "持仓记录不存在" }, { status: 404 });
+      return NextResponse.json({ ok: false, code: "HOLDING_NOT_FOUND", error: "持仓记录不存在" }, { status: 404 });
     }
 
     await prisma.fundHolding.update({
@@ -89,7 +89,7 @@ export async function POST(req: NextRequest) {
     });
   } catch (e) {
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : "更新失败" },
+      { ok: false, code: "UPDATE_FAILED", error: e instanceof Error ? e.message : "更新失败" },
       { status: 500 }
     );
   }

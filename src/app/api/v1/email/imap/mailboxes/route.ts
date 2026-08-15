@@ -16,23 +16,24 @@ const BodySchema = z.object({
 /**
  * POST /api/v1/email/imap/mailboxes
  *
- * 连接指定 IMAP 服务器并列出邮箱（仅管理员）。
- * 该接口会用调用方提供的 host/port/账号发起服务器端连接，
- * 若允许匿名使用会成为内网探测/凭据测试代理，因此必须管理员鉴权。
+ * Connects to the given IMAP server and lists mailboxes (admin only).
+ * This endpoint starts a server-side connection using the host/port/credentials
+ * provided by the caller; allowing anonymous use would turn it into an
+ * intranet-scan/credential-testing proxy, so admin authentication is required.
  */
 export async function POST(req: NextRequest) {
   const currentUser = await getCurrentUser();
   if (!currentUser) {
-    return NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 });
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "请先登录" }, { status: 401 });
   }
   if (!isAdmin(currentUser)) {
-    return NextResponse.json({ ok: false, error: "仅管理员可操作" }, { status: 403 });
+    return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "仅管理员可操作" }, { status: 403 });
   }
 
   const body = (await req.json().catch(() => null)) as unknown;
   const parsed = BodySchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json({ ok: false, error: "参数格式不正确" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INVALID_REQUEST", error: "参数格式不正确" }, { status: 400 });
   }
 
   const { host, port, secure, user, password } = parsed.data;
@@ -106,7 +107,7 @@ export async function POST(req: NextRequest) {
         : lower.includes("enotfound")
           ? "域名解析失败：请检查IMAP主机地址是否正确。"
           : rawMsg;
-    return NextResponse.json({ ok: false, error: msg, trace: [...trace, `error: ${rawMsg}`] }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "IMAP_CONNECT_FAILED", error: msg, trace: [...trace, `error: ${rawMsg}`] }, { status: 500 });
   } finally {
     try {
       await client.logout();

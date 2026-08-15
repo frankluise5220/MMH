@@ -338,6 +338,6 @@ export async function GET(req: NextRequest) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "统计数据读取失败";
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "FETCH_FAILED", error: message }, { status: 500 });
   }
 }

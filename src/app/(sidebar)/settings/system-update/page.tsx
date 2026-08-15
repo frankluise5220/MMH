@@ -8,6 +8,7 @@ import {
   getTimeZonePreference,
   type TimeZoneMode,
 } from "@/lib/client/appPreferences";
+import { useI18n } from "@/lib/i18n";
 
 type VersionInfo = {
   ok: boolean;
@@ -45,6 +46,7 @@ type VersionInfo = {
 type StepStatus = "pending" | "running" | "completed" | "failed";
 
 type StepState = {
+  key: string;
   label: string;
   status: StepStatus;
   output: string;
@@ -82,10 +84,26 @@ type ImageSpeedResult = {
   error?: string;
 };
 
+// Step keys are matched against the step names emitted by the update API (data, not UI copy).
 const UPDATE_STEPS = ["拉取代码", "安装依赖", "生成 Prisma Client", "同步数据库", "构建项目"];
 const DOCKER_UPDATE_STEPS = ["同步部署文件", "检测镜像源", "拉取应用镜像", "重启服务"];
+
+function updateStepLabel(key: string, t: (key: string) => string) {
+  switch (key) {
+    case "拉取代码": return t("settings.systemUpdate.step.pullCode");
+    case "安装依赖": return t("settings.systemUpdate.step.installDeps");
+    case "生成 Prisma Client": return t("settings.systemUpdate.step.generatePrisma");
+    case "同步数据库": return t("settings.systemUpdate.step.syncDb");
+    case "构建项目": return t("settings.systemUpdate.step.build");
+    case "同步部署文件": return t("settings.systemUpdate.step.syncFiles");
+    case "检测镜像源": return t("settings.systemUpdate.step.detectMirror");
+    case "拉取应用镜像": return t("settings.systemUpdate.step.pullImage");
+    case "重启服务": return t("settings.systemUpdate.step.restartService");
+    default: return key;
+  }
+}
 const FIXED_IMAGE_SOURCE_OPTIONS = [
-  { value: "auto", label: "自动选择", appImage: "", updaterImage: "" },
+  { value: "auto", label: "", appImage: "", updaterImage: "" },
   { value: "ghcr", label: "GHCR", appImage: "ghcr.io/frankluise5220/mmh:latest", updaterImage: "ghcr.io/frankluise5220/mmh-updater:latest" },
   { value: "dockerproxy", label: "dockerproxy", appImage: "ghcr.dockerproxy.net/frankluise5220/mmh:latest", updaterImage: "ghcr.dockerproxy.net/frankluise5220/mmh-updater:latest" },
   { value: "nju", label: "NJU", appImage: "ghcr.nju.edu.cn/frankluise5220/mmh:latest", updaterImage: "ghcr.nju.edu.cn/frankluise5220/mmh-updater:latest" },
@@ -129,9 +147,9 @@ function formatVersionLine(
   return [head, formatVersionDate(date, timeZoneMode, timeZone)].filter(Boolean).join(" · ");
 }
 
-function formatImageVersion(result: ImageSpeedResult | undefined, timeZoneMode: TimeZoneMode, timeZone: string) {
+function formatImageVersion(result: ImageSpeedResult | undefined, timeZoneMode: TimeZoneMode, timeZone: string, t: (key: string) => string) {
   if (!result) return "";
-  if (!result.ok) return result.error || "失败";
+  if (!result.ok) return result.error || t("settings.systemUpdate.failed");
   const version = result.version?.version || "";
   const commit = result.version?.commit || "";
   const digest = result.version?.digestShort || "";
@@ -140,10 +158,15 @@ function formatImageVersion(result: ImageSpeedResult | undefined, timeZoneMode: 
   if (versionAndCommit && date) return `${versionAndCommit} · ${date}`;
   if (versionAndCommit) return versionAndCommit;
   if (digest) return `digest ${digest}`;
-  return "未读到版本";
+  return t("settings.systemUpdate.versionUnread");
+}
+
+function imageSourceOptionLabel(option: { value: string; label: string }, t: (key: string) => string) {
+  return option.value === "auto" ? t("settings.systemUpdate.autoSelect") : option.label;
 }
 
 export default function SystemUpdatePage() {
+  const { t } = useI18n();
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
   const [loadingVersion, setLoadingVersion] = useState(true);
   const [updating, setUpdating] = useState(false);
@@ -201,7 +224,7 @@ export default function SystemUpdatePage() {
   }, []);
 
   function initSteps() {
-    return UPDATE_STEPS.map((label) => ({ label, status: "pending" as StepStatus, output: "" }));
+    return UPDATE_STEPS.map((key) => ({ key, label: updateStepLabel(key, t), status: "pending" as StepStatus, output: "" }));
   }
 
   async function saveImageSource() {
@@ -215,12 +238,12 @@ export default function SystemUpdatePage() {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || !data?.ok) {
-        throw new Error(data?.error || "保存失败");
+        throw new Error(data?.error || t("settings.systemUpdate.saveFailed"));
       }
       setVersionInfo((prev) => prev ? { ...prev, imageSourceConfig: data.config } : prev);
-      setImageSourceMessage("已保存");
+      setImageSourceMessage(t("settings.systemUpdate.saved"));
     } catch (e) {
-      setImageSourceMessage(e instanceof Error ? e.message : "保存失败");
+      setImageSourceMessage(e instanceof Error ? e.message : t("settings.systemUpdate.saveFailed"));
     } finally {
       setSavingImageSource(false);
     }
@@ -240,16 +263,16 @@ export default function SystemUpdatePage() {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || !data?.ok) {
-        throw new Error(data?.error || "测速失败");
+        throw new Error(data?.error || t("settings.systemUpdate.speedTestFailed"));
       }
       const next = { ...imageSpeedResults };
       for (const result of data.results as ImageSpeedResult[]) {
         next[result.source] = result;
       }
       setImageSpeedResults(next);
-      setImageSourceMessage("测速完成");
+      setImageSourceMessage(t("settings.systemUpdate.speedTestDone"));
     } catch (e) {
-      setImageSourceMessage(e instanceof Error ? e.message : "测速失败");
+      setImageSourceMessage(e instanceof Error ? e.message : t("settings.systemUpdate.speedTestFailed"));
     } finally {
       setTestingImageSource(false);
     }
@@ -260,7 +283,7 @@ export default function SystemUpdatePage() {
     setUpdateDone(false);
     setUpdateOk(false);
     setUpdateError("");
-    setSteps(versionInfo?.isDocker ? DOCKER_UPDATE_STEPS.map((label) => ({ label, status: "pending" as StepStatus, output: "" })) : initSteps());
+    setSteps(versionInfo?.isDocker ? DOCKER_UPDATE_STEPS.map((key) => ({ key, label: updateStepLabel(key, t), status: "pending" as StepStatus, output: "" })) : initSteps());
 
     try {
       const res = await fetch("/api/v1/settings/system-update?mode=update", { method: "POST" });
@@ -268,7 +291,7 @@ export default function SystemUpdatePage() {
         const errData = await res.json().catch(() => null);
         setUpdateDone(true);
         setUpdateOk(false);
-        setUpdateError(errData?.error || "更新不可用");
+        setUpdateError(errData?.error || t("settings.systemUpdate.updateUnavailable"));
         setUpdating(false);
         return;
       }
@@ -304,7 +327,7 @@ export default function SystemUpdatePage() {
             } else if (event.step) {
               setSteps((prev) =>
                 prev.map((s) =>
-                  s.label === event.step
+                  s.key === event.step
                     ? { ...s, status: event.status as StepStatus, output: event.output || s.output }
                     : s,
                 ),
@@ -318,7 +341,7 @@ export default function SystemUpdatePage() {
     } catch (e) {
       setUpdateDone(true);
       setUpdateOk(false);
-      setUpdateError(e instanceof Error ? e.message : "网络错误");
+      setUpdateError(e instanceof Error ? e.message : t("settings.systemUpdate.networkError"));
       setUpdating(false);
     }
   }
@@ -328,9 +351,11 @@ export default function SystemUpdatePage() {
     let statusFetchFailures = 0;
     let lastCurrentStep = "";
     let restartWaitStartedAt: number | null = null;
-    // 应用容器重启期间本页面无法连接应用，抓取失败属于正常现象。低功耗 NAS 上
-    // 应用冷启动（兼容迁移 + Prisma 同步 + Next.js 启动）可能超过一分钟，所以
-    // 重启阶段的等待预算按“连续不可用时长”计算，而不是按失败次数计算。
+    // While the app container restarts, this page cannot reach the app and
+    // fetch failures are expected. On low-power NAS devices a cold start
+    // (compat migration + Prisma sync + Next.js boot) can take over a minute,
+    // so the restart wait budget is measured by total consecutive downtime
+    // rather than by the number of failures.
     const RESTART_MAX_WAIT_MS = 8 * 60 * 1000;
     const STATUS_FETCH_TIMEOUT_MS = 20 * 1000;
     const MAX_UPSTREAM_ERRORS = 5;
@@ -344,7 +369,7 @@ export default function SystemUpdatePage() {
           signal: controller.signal,
         }).finally(() => clearTimeout(timer));
         const data = await res.json();
-        if (!data.ok) throw new Error(data.error || "查询更新状态失败");
+        if (!data.ok) throw new Error(data.error || t("settings.systemUpdate.statusQueryFailed"));
         statusFetchFailures = 0;
         const task = data.task as { status?: string; currentStep?: string; logs?: string[]; error?: string };
         const current = task.currentStep || "";
@@ -353,8 +378,8 @@ export default function SystemUpdatePage() {
         const currentIndex = DOCKER_UPDATE_STEPS.indexOf(current);
         setSteps((prev) =>
           prev.map((step) => {
-            if (step.label === current) return { ...step, status: "running", output: logs };
-            if (currentIndex >= 0 && DOCKER_UPDATE_STEPS.indexOf(step.label) < currentIndex) return { ...step, status: "completed", output: step.output || logs };
+            if (step.key === current) return { ...step, status: "running", output: logs };
+            if (currentIndex >= 0 && DOCKER_UPDATE_STEPS.indexOf(step.key) < currentIndex) return { ...step, status: "completed", output: step.output || logs };
             return step;
           }),
         );
@@ -363,7 +388,7 @@ export default function SystemUpdatePage() {
         // response after reconnect can be `idle` instead of `completed`.
         const updaterRestartedAfterApp = task.status === "idle" && lastCurrentStep === "重启服务";
         if (task.status === "completed" || updaterRestartedAfterApp) {
-          const completedOutput = logs || (updaterRestartedAfterApp ? "服务已恢复，更新完成" : "");
+          const completedOutput = logs || (updaterRestartedAfterApp ? t("settings.systemUpdate.serviceRestored") : "");
           setSteps((prev) => prev.map((step) => ({ ...step, status: "completed", output: step.output || logs })));
           setUpdateDone(true);
           setUpdateOk(true);
@@ -371,34 +396,36 @@ export default function SystemUpdatePage() {
           shouldContinue = false;
           if (updaterRestartedAfterApp) {
             setSteps((prev) => prev.map((step) => (
-              step.label === "重启服务" ? { ...step, status: "completed", output: completedOutput } : step
+              step.key === "重启服务" ? { ...step, status: "completed", output: completedOutput } : step
             )));
           }
           setTimeout(() => window.location.reload(), 2500);
         } else if (task.status === "failed") {
           setUpdateDone(true);
           setUpdateOk(false);
-          setUpdateError(task.error || "更新失败");
+          setUpdateError(task.error || t("settings.systemUpdate.updateFailed"));
           setUpdating(false);
           shouldContinue = false;
         } else {
           await new Promise((resolve) => setTimeout(resolve, 1500));
         }
       } catch (e) {
-        const message = e instanceof Error ? e.message : "查询更新状态失败";
+        const message = e instanceof Error ? e.message : t("settings.systemUpdate.statusQueryFailed");
         const isNetworkFailure =
           e instanceof TypeError ||
           (typeof DOMException !== "undefined" && e instanceof DOMException && e.name === "AbortError");
         if (isNetworkFailure) {
-          // 连接不到应用：应用容器正在重启或尚未启动完成。这是重启阶段的正常现象，
-          // 按总等待时长给足预算，避免把“重启较慢”误报成“更新失败”。
+          // The app is unreachable: its container is restarting or has not
+          // finished booting. This is normal during the restart phase, so give
+          // enough total wait budget instead of reporting a slow restart as a
+          // failed update.
           if (restartWaitStartedAt === null) restartWaitStartedAt = Date.now();
           const waitedMs = Date.now() - restartWaitStartedAt;
           if (waitedMs < RESTART_MAX_WAIT_MS) {
             setSteps((prev) =>
               prev.map((step) =>
-                step.label === "重启服务"
-                  ? { ...step, status: "running", output: `服务正在重启，正在重新连接（已等待 ${Math.round(waitedMs / 1000)} 秒）...` }
+                step.key === "重启服务"
+                  ? { ...step, status: "running", output: t("settings.systemUpdate.reconnecting", { seconds: Math.round(waitedMs / 1000) }) }
                   : step,
               ),
             );
@@ -408,20 +435,19 @@ export default function SystemUpdatePage() {
           setUpdateDone(true);
           setUpdateOk(false);
           setUpdateError(
-            `应用服务在 ${Math.round(waitedMs / 1000)} 秒内未能恢复连接。镜像可能已经拉取成功，本次更新可能实际已经完成；` +
-            "请先在新标签页打开本地址确认服务是否可用。如果仍无法访问，请在 NAS 宿主机上检查：" +
-            "sudo docker compose ps、sudo docker compose logs --tail 50 app，然后执行 sudo docker compose up -d app 恢复。",
+            t("settings.systemUpdate.restartTimeout", { seconds: Math.round(waitedMs / 1000) }),
           );
           setUpdating(false);
           shouldContinue = false;
         } else {
-          // 应用可访问，但更新执行器状态查询失败（例如执行器正在重建或已异常）。
+          // The app is reachable but the update executor status query failed
+          // (for example the executor is rebuilding or crashed).
           statusFetchFailures += 1;
           if (statusFetchFailures >= MAX_UPSTREAM_ERRORS) {
             setUpdateDone(true);
             setUpdateOk(false);
             setUpdateError(
-              `更新执行器状态查询失败：${message}。请在 NAS 上确认 mmh-updater 容器运行正常：sudo docker compose ps。`,
+              t("settings.systemUpdate.updaterQueryFailed", { message }),
             );
             setUpdating(false);
             shouldContinue = false;
@@ -475,21 +501,21 @@ export default function SystemUpdatePage() {
     ? `${githubProjectUrl}/releases/tag/v${versionInfo.localVersion}`
     : `${githubProjectUrl}/releases`;
   const updateStatusText = needsUpdate
-    ? "可更新"
+    ? t("settings.systemUpdate.updateAvailable")
     : isLatest
-      ? "已是最新版本"
-      : "未确认";
+      ? t("settings.systemUpdate.isLatest")
+      : t("settings.systemUpdate.unconfirmed");
   const canStartUpdate = !fnosManaged && needsUpdate && (!dockerManaged || versionInfo.updaterEnabled);
   const updateActionPanel = !updating && !updateDone && versionInfo?.ok && !canStartUpdate ? (
     <div className="border-t border-slate-100 pt-3">
       {isLatest ? (
         <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700">
           <CheckCircle2 className="h-4 w-4 shrink-0" />
-          当前已是最新版本
+          {t("settings.systemUpdate.currentIsLatest")}
         </div>
       ) : needsUpdate && !canStartUpdate && dockerManaged ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          当前为 Docker 部署，但未启用宿主机更新执行器。请在宿主机项目目录运行
+          {t("settings.systemUpdate.dockerUpdaterDisabled")}
           <div className="mt-2 rounded bg-white/70 px-3 py-2 font-mono text-xs text-slate-700">
             git pull
             <br />
@@ -500,7 +526,7 @@ export default function SystemUpdatePage() {
         </div>
       ) : !canCheckUpdate ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-          暂时无法确认远端版本，请点击上方刷新。
+          {t("settings.systemUpdate.cannotCheckRemote")}
         </div>
       ) : null}
     </div>
@@ -508,12 +534,12 @@ export default function SystemUpdatePage() {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-sm font-semibold text-slate-800">{fnosManaged ? "版本信息" : "系统更新"}</h2>
+      <h2 className="text-sm font-semibold text-slate-800">{fnosManaged ? t("settings.systemUpdate.versionInfo") : t("settings.systemUpdate.title")}</h2>
 
       <section className="rounded-lg border border-slate-200 bg-white p-4">
         <div className="mb-3 flex items-center justify-between gap-3">
           <div className="text-sm font-medium text-slate-800">
-            {fnosManaged ? "版本信息" : dockerManaged ? "软件更新（镜像）" : "软件更新"}
+            {fnosManaged ? t("settings.systemUpdate.versionInfo") : dockerManaged ? t("settings.systemUpdate.softwareUpdateImage") : t("settings.systemUpdate.softwareUpdate")}
           </div>
           <button
             onClick={() => loadVersionInfo({ checkRemote: true })}
@@ -521,27 +547,27 @@ export default function SystemUpdatePage() {
             className="inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loadingVersion ? "animate-spin" : ""}`} />
-            刷新
+            {t("settings.systemUpdate.refresh")}
           </button>
         </div>
 
         {!loadingVersion && !versionInfo ? (
           <div className="rounded-md border border-dashed border-slate-200 bg-slate-50/80 px-4 py-6 text-center text-sm text-slate-500">
-            {fnosManaged ? "读取当前版本失败，请点击“刷新”重试。" : "读取当前版本失败，请点击“刷新”重试并查询远端版本。"}
+            {fnosManaged ? t("settings.systemUpdate.readFailedFnos") : t("settings.systemUpdate.readFailed")}
           </div>
         ) : loadingVersion && !versionInfo ? (
           <div className="flex items-center gap-2 text-xs text-slate-500">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            正在读取当前版本...
+            {t("settings.systemUpdate.readingVersion")}
           </div>
         ) : versionInfo?.ok ? (
           <div className="space-y-3 text-sm">
             <div className="grid gap-2 md:grid-cols-[104px_1fr]">
-              <div className="text-slate-500">当前版本</div>
+              <div className="text-slate-500">{t("settings.systemUpdate.currentVersion")}</div>
               <div className="min-w-0">
                 <span className="font-semibold text-slate-900">{currentVersionText || "unknown"}</span>
                 {fnosManaged ? (
-                  <span className="ml-2 rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600">飞牛应用包</span>
+                  <span className="ml-2 rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600">{t("settings.systemUpdate.fnosPackage")}</span>
                 ) : versionInfo.localCommitMsg ? (
                   <span className="ml-2 text-xs text-slate-500">{versionInfo.localCommitMsg}</span>
                 ) : null}
@@ -549,14 +575,14 @@ export default function SystemUpdatePage() {
 
               {fnosManaged && localReleaseNotes ? (
                 <>
-                  <div className="text-slate-500">本版说明</div>
+                  <div className="text-slate-500">{t("settings.systemUpdate.releaseNotes")}</div>
                   <div className="min-w-0 text-slate-700">{localReleaseNotes}</div>
                 </>
               ) : null}
 
               {fnosManaged ? (
                 <>
-                  <div className="text-slate-500">项目地址</div>
+                  <div className="text-slate-500">{t("settings.systemUpdate.projectUrl")}</div>
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
                       <a
@@ -565,7 +591,7 @@ export default function SystemUpdatePage() {
                         rel="noreferrer"
                         className="inline-flex items-center gap-1 font-medium text-blue-600 hover:text-blue-700"
                       >
-                        GitHub 项目主页
+                        {t("settings.systemUpdate.githubHome")}
                         <ExternalLink className="h-3.5 w-3.5" />
                       </a>
                       <a
@@ -574,7 +600,7 @@ export default function SystemUpdatePage() {
                         rel="noreferrer"
                         className="inline-flex items-center gap-1 text-slate-600 hover:text-slate-800"
                       >
-                        当前发布
+                        {t("settings.systemUpdate.currentRelease")}
                         <ExternalLink className="h-3.5 w-3.5" />
                       </a>
                     </div>
@@ -582,10 +608,10 @@ export default function SystemUpdatePage() {
                 </>
               ) : null}
 
-              <div className="text-slate-500">{fnosManaged ? "更新方式" : needsUpdate ? "可更新版本" : "远端版本"}</div>
+              <div className="text-slate-500">{fnosManaged ? t("settings.systemUpdate.updateMethod") : needsUpdate ? t("settings.systemUpdate.availableVersion") : t("settings.systemUpdate.remoteVersion")}</div>
               <div className="min-w-0">
                 {fnosManaged ? (
-                  <span className="text-slate-600">由飞牛应用中心管理</span>
+                  <span className="text-slate-600">{t("settings.systemUpdate.managedByFnos")}</span>
                 ) : canCheckUpdate ? (
                   <>
                     <span className="font-semibold text-slate-900">{availableVersionText || versionInfo.remoteCommit}</span>
@@ -594,13 +620,13 @@ export default function SystemUpdatePage() {
                     ) : null}
                   </>
                 ) : (
-                  <span className="text-amber-600">未获取，请查看下方失败原因后重试</span>
+                  <span className="text-amber-600">{t("settings.systemUpdate.notFetched")}</span>
                 )}
               </div>
 
               {canCheckUpdate && remoteSourceText ? (
                 <>
-                  <div className="text-slate-500">版本来源</div>
+                  <div className="text-slate-500">{t("settings.systemUpdate.versionSource")}</div>
                   <div className="min-w-0 truncate text-xs text-slate-500" title={remoteSourceText}>
                     {remoteSourceText}
                   </div>
@@ -610,7 +636,7 @@ export default function SystemUpdatePage() {
 
             {fnosManaged ? (
               <div className="rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-                  当前为飞牛版，系统更新由飞牛应用中心管理；应用中心会安装对应架构的新 FPK，本页只展示当前应用包版本和本版说明，应用数据会继续保存在飞牛应用数据目录中。
+                {t("settings.systemUpdate.fnosManagedInfo")}
               </div>
             ) : null}
 
@@ -628,7 +654,7 @@ export default function SystemUpdatePage() {
                   </span>
                   {needsUpdate ? (
                     <span className="text-xs text-slate-500">
-                      {dockerManaged ? "将拉取应用镜像并重启服务" : `将更新到 ${availableVersionText || versionInfo.remoteCommit}`}
+                      {dockerManaged ? t("settings.systemUpdate.willPullImage") : t("settings.systemUpdate.willUpdateTo", { version: availableVersionText || versionInfo.remoteCommit })}
                     </span>
                   ) : null}
                 </div>
@@ -638,7 +664,7 @@ export default function SystemUpdatePage() {
                     className="inline-flex h-8 items-center gap-1.5 rounded-md bg-blue-600 px-3 text-xs font-medium text-white hover:bg-blue-700"
                   >
                     <Download className="h-3.5 w-3.5" />
-                    更新
+                    {t("settings.systemUpdate.update")}
                   </button>
                 ) : null}
               </div>
@@ -646,13 +672,13 @@ export default function SystemUpdatePage() {
 
             {!fnosManaged && !canCheckUpdate && (versionInfo.fetchError || versionInfo.githubFetchError) ? (
               <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
-                获取远端版本失败：{versionInfo.fetchError || versionInfo.githubFetchError}
+                {t("settings.systemUpdate.fetchRemoteFailed", { error: versionInfo.fetchError || versionInfo.githubFetchError || "" })}
               </div>
             ) : null}
 
             {!fnosManaged && canCheckUpdate && versionInfo.remoteName?.startsWith("image:") && versionInfo.githubFetchError ? (
               <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700">
-                GitHub 查询失败，已改用镜像源版本判断。
+                {t("settings.systemUpdate.githubFallback")}
               </div>
             ) : null}
 
@@ -661,21 +687,21 @@ export default function SystemUpdatePage() {
             {!fnosManaged && dockerManaged && versionInfo.imageSourceConfig ? (
               <div className="border-t border-slate-100 pt-3">
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                  <div className="text-slate-500">镜像源</div>
+                  <div className="text-slate-500">{t("settings.systemUpdate.imageSource")}</div>
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => testImageSourceSpeed()}
                       disabled={testingImageSource || savingImageSource || updating}
                       className="h-8 rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50"
                     >
-                      {testingImageSource ? "测速中" : "测试速度"}
+                      {testingImageSource ? t("settings.systemUpdate.speedTesting") : t("settings.systemUpdate.testSpeed")}
                     </button>
                     <button
                       onClick={saveImageSource}
                       disabled={savingImageSource || updating || customImageSourceIncomplete}
                       className="h-8 rounded-md bg-slate-800 px-3 text-xs text-white hover:bg-slate-700 disabled:opacity-50"
                     >
-                      {savingImageSource ? "保存中" : "保存"}
+                      {savingImageSource ? t("settings.systemUpdate.saving") : t("common.save")}
                     </button>
                   </div>
                 </div>
@@ -689,7 +715,7 @@ export default function SystemUpdatePage() {
                     const speed = imageSpeedResults[option.value];
                     const appImage =
                       option.value === "custom"
-                        ? imageSourceDraft.customAppImage || option.appImage || "未填写"
+                        ? imageSourceDraft.customAppImage || option.appImage || t("settings.systemUpdate.notFilled")
                         : option.appImage || "";
                     return (
                       <label
@@ -709,24 +735,24 @@ export default function SystemUpdatePage() {
                           disabled={savingImageSource || updating}
                           className="h-4 w-4 rounded border-slate-300 text-blue-600"
                         />
-                        <span className="font-medium text-slate-800">{option.label}</span>
-                        <span className="min-w-0 truncate font-mono text-slate-500">{appImage || "自动检测可用镜像源"}</span>
+                        <span className="font-medium text-slate-800">{imageSourceOptionLabel(option, t)}</span>
+                        <span className="min-w-0 truncate font-mono text-slate-500">{appImage || t("settings.systemUpdate.autoDetect")}</span>
                         <span
                           className={`min-w-0 text-right ${
                             speed?.ok ? "text-emerald-600" : speed ? "text-red-600" : "text-slate-400"
                           }`}
-                          title={speed ? formatImageVersion(speed, timeZoneMode, timeZone) : ""}
+                          title={speed ? formatImageVersion(speed, timeZoneMode, timeZone, t) : ""}
                         >
                           {speed ? (
                             speed.ok ? (
                               <span className="flex min-w-0 flex-col items-end leading-tight">
                                 <span>{speed.ms}ms</span>
                                 <span className="max-w-full truncate text-[10px] text-slate-500">
-                                  {formatImageVersion(speed, timeZoneMode, timeZone)}
+                                  {formatImageVersion(speed, timeZoneMode, timeZone, t)}
                                 </span>
                               </span>
-                            ) : "失败"
-                          ) : option.value === "auto" ? "自动" : "未测"}
+                            ) : t("settings.systemUpdate.failed")
+                          ) : option.value === "auto" ? t("settings.systemUpdate.auto") : t("settings.systemUpdate.notTested")}
                         </span>
                       </label>
                     );
@@ -735,7 +761,7 @@ export default function SystemUpdatePage() {
 
                 {imageSourceDraft.source === "custom" ? (
                   <div className="mt-2 grid gap-2 md:grid-cols-[104px_1fr]">
-                    <div className="text-xs text-slate-500">应用镜像</div>
+                    <div className="text-xs text-slate-500">{t("settings.systemUpdate.appImage")}</div>
                     <input
                       value={imageSourceDraft.customAppImage}
                       required
@@ -744,7 +770,7 @@ export default function SystemUpdatePage() {
                       className="h-8 rounded-md border border-slate-200 px-2 text-sm text-slate-700 outline-none focus:border-blue-400 disabled:opacity-50"
                       placeholder="registry.example.com/frankluise5220/mmh:latest"
                     />
-                    <div className="text-xs text-slate-500">更新器镜像</div>
+                    <div className="text-xs text-slate-500">{t("settings.systemUpdate.updaterImage")}</div>
                     <input
                       value={imageSourceDraft.customUpdaterImage}
                       required
@@ -757,19 +783,19 @@ export default function SystemUpdatePage() {
                 ) : null}
 
                 <div className="mt-1 min-h-4 text-xs text-slate-500">
-                  {imageSourceMessage || "测速只检查镜像清单响应，不下载镜像层。"}
+                  {imageSourceMessage || t("settings.systemUpdate.speedTestHint")}
                 </div>
               </div>
             ) : null}
           </div>
         ) : (
-          <div className="text-xs text-red-600">获取版本信息失败</div>
+          <div className="text-xs text-red-600">{t("settings.systemUpdate.fetchInfoFailed")}</div>
         )}
       </section>
 
       {(updating || updateDone) && steps.length > 0 ? (
         <section className="rounded-lg border border-slate-200 bg-white p-4">
-          <div className="mb-3 text-sm font-medium text-slate-800">更新进度</div>
+          <div className="mb-3 text-sm font-medium text-slate-800">{t("settings.systemUpdate.updateProgress")}</div>
 
           <div className="space-y-2">
             {steps.map((s) => (
@@ -788,7 +814,7 @@ export default function SystemUpdatePage() {
                     }`}
                   >
                     {s.label}
-                    {s.status === "running" ? "（进行中...）" : ""}
+                    {s.status === "running" ? t("settings.systemUpdate.inProgress") : ""}
                   </div>
                   {s.output && s.status !== "pending" ? (
                     <div
@@ -809,19 +835,19 @@ export default function SystemUpdatePage() {
               {updateOk ? (
                 <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
                   <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-500" />
-                  <div className="text-sm font-medium text-emerald-800">更新完成，请刷新页面加载新版本</div>
+                  <div className="text-sm font-medium text-emerald-800">{t("settings.systemUpdate.updateComplete")}</div>
                   <button
                     onClick={() => window.location.reload()}
                     className="ml-auto h-8 rounded-md bg-emerald-600 px-3 text-xs text-white hover:bg-emerald-700"
                   >
-                    刷新页面
+                    {t("settings.systemUpdate.reloadPage")}
                   </button>
                 </div>
               ) : (
                 <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3">
                   <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-500" />
                   <div className="min-w-0 flex-1">
-                    <div className="text-sm font-medium text-red-800">更新失败</div>
+                    <div className="text-sm font-medium text-red-800">{t("settings.systemUpdate.updateFailed")}</div>
                     {updateError ? <div className="mt-1 break-all text-xs text-red-600">{updateError}</div> : null}
                   </div>
                 </div>

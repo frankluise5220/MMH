@@ -18,28 +18,26 @@ import { scheduledTaskTypeLabel, type ScheduledTaskType } from "@/lib/scheduled-
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { clearBackgroundTaskProgress, dispatchBackgroundTaskProgress } from "@/lib/client/background-tasks";
-
-const INTERVAL_LABELS: Record<string, string> = {
-  day: "每天",
-  week: "每周",
-  month: "每月",
-  year: "每年",
-};
+import { useI18n } from "@/lib/i18n";
 
 const WEEKDAY_LABELS: Record<number, string> = {
-  1: "一",
-  2: "二",
-  3: "三",
-  4: "四",
-  5: "五",
+  1: "regularInvest.client.weekdayShort.1",
+  2: "regularInvest.client.weekdayShort.2",
+  3: "regularInvest.client.weekdayShort.3",
+  4: "regularInvest.client.weekdayShort.4",
+  5: "regularInvest.client.weekdayShort.5",
 };
 
-const STATUS_MAP: Record<string, { label: string; cls: string }> = {
-  active: { label: "执行中", cls: "text-green-600" },
-  paused: { label: "已暂停", cls: "text-yellow-600" },
-  stopped: { label: "已终止", cls: "text-red-600" },
-  completed: { label: "已完成", cls: "text-blue-600" },
+const STATUS_MAP: Record<string, { labelKey: string; cls: string }> = {
+  active: { labelKey: "regularInvest.client.status.active", cls: "text-green-600" },
+  paused: { labelKey: "regularInvest.client.status.paused", cls: "text-yellow-600" },
+  stopped: { labelKey: "regularInvest.client.status.stopped", cls: "text-red-600" },
+  completed: { labelKey: "regularInvest.client.status.completed", cls: "text-blue-600" },
 };
+
+function getStatusLabel(status: string, t: (key: string, params?: Record<string, string | number>) => string) {
+  return STATUS_MAP[status] ? t(STATUS_MAP[status].labelKey) : status;
+}
 
 type GroupByMode = "fundGroup" | "fundAccount" | "cashGroup" | "cashAccount" | "none";
 type RegularInvestColumnKey =
@@ -130,17 +128,17 @@ type InsuranceProductOption = {
   premiumAmount?: number | null;
 };
 
-const REGULAR_INVEST_COLUMNS: ReadonlyArray<{ key: RegularInvestColumnKey; label: string }> = [
-  { key: "taskContent", label: "任务内容" },
-  { key: "taskType", label: "类型" },
-  { key: "startDate", label: "开始日期" },
-  { key: "nextRunDate", label: "下次执行" },
-  { key: "targetAccount", label: "目标账户" },
-  { key: "cashAccount", label: "资金账户" },
-  { key: "amount", label: "金额" },
-  { key: "interval", label: "周期" },
-  { key: "status", label: "状态" },
-  { key: "executedCount", label: "已执行次数" },
+const REGULAR_INVEST_COLUMNS: ReadonlyArray<{ key: RegularInvestColumnKey; labelKey: string }> = [
+  { key: "taskContent", labelKey: "regularInvest.client.column.taskContent" },
+  { key: "taskType", labelKey: "batchImport.field.type" },
+  { key: "startDate", labelKey: "viewImport.exportStartDate" },
+  { key: "nextRunDate", labelKey: "regularInvest.client.column.nextRun" },
+  { key: "targetAccount", labelKey: "regularInvest.account.targetAccount" },
+  { key: "cashAccount", labelKey: "batchImport.template.fund.label.cashAccount" },
+  { key: "amount", labelKey: "stats.amount" },
+  { key: "interval", labelKey: "creditBill.period" },
+  { key: "status", labelKey: "depositShell.colStatus" },
+  { key: "executedCount", labelKey: "regularInvest.client.column.executedCount" },
 ];
 
 const REGULAR_INVEST_COLUMN_WIDTHS: Record<RegularInvestColumnKey, number> = {
@@ -176,26 +174,38 @@ const REGULAR_INVEST_MAIN_TABLE_MIN_WIDTH = REGULAR_INVEST_COLUMNS.reduce(
   REGULAR_INVEST_ACTION_COLUMN_WIDTH,
 );
 
-function formatInterval(p: RegularInvestPlanView): string {
+function formatInterval(p: RegularInvestPlanView, t: (key: string, params?: Record<string, string | number>) => string): string {
   const intervalUnit = p.intervalUnit === "biweek" ? "week" : p.intervalUnit;
   const intervalValue = p.intervalUnit === "biweek" ? Math.max(1, p.intervalValue || 1) * 2 : p.intervalValue;
   if (intervalUnit === "week") {
-    const weekday = p.executionDay ? WEEKDAY_LABELS[p.executionDay] : "";
-    const prefix = intervalValue > 1 ? `每${intervalValue}周` : (INTERVAL_LABELS.week || "每周");
-    return weekday ? `${prefix}${weekday}` : prefix;
+    const weekday = p.executionDay ? t(WEEKDAY_LABELS[p.executionDay] ?? "") : "";
+    if (weekday) {
+      return intervalValue > 1
+        ? t("regularInvest.client.weekLabelN", { count: intervalValue, weekday })
+        : t("regularInvest.client.weekLabel", { weekday });
+    }
+    return intervalValue > 1 ? t("regularInvest.client.everyNWeek", { count: intervalValue }) : t("regularInvest.interval.week");
   }
-  const base = INTERVAL_LABELS[intervalUnit] || intervalUnit;
-  if (intervalUnit === "month" && p.executionDay) return intervalValue > 1 ? `每${intervalValue}个月${p.executionDay}号` : `每月${p.executionDay}号`;
+  if (intervalUnit === "month" && p.executionDay) {
+    return intervalValue > 1
+      ? t("regularInvest.client.everyNMonthDay", { count: intervalValue, day: p.executionDay })
+      : t("regularInvest.client.everyMonthDay", { day: p.executionDay });
+  }
   if (intervalUnit === "year" && p.executionDay) {
     const month = Math.floor(p.executionDay / 100);
     const day = p.executionDay % 100;
-    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) return intervalValue > 1 ? `每${intervalValue}年${month}.${day}` : `每年${month}.${day}`;
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return intervalValue > 1
+        ? t("regularInvest.client.everyNYearDate", { count: intervalValue, month, day })
+        : t("regularInvest.client.everyYearDate", { month, day });
+    }
   }
+  const base = t(`regularInvest.interval.${intervalUnit}`);
   if (intervalValue > 1) {
-    if (intervalUnit === "day") return `每${intervalValue}天`;
-    if (intervalUnit === "month") return `每${intervalValue}个月`;
-    if (intervalUnit === "year") return `每${intervalValue}年`;
-    return `${base} x${intervalValue}`;
+    if (intervalUnit === "day") return t("regularInvest.client.everyNDay", { count: intervalValue });
+    if (intervalUnit === "month") return t("regularInvest.client.everyNMonth", { count: intervalValue });
+    if (intervalUnit === "year") return t("regularInvest.client.everyNYear", { count: intervalValue });
+    return t("regularInvest.client.multi", { base, count: intervalValue });
   }
   return base;
 }
@@ -246,34 +256,34 @@ function recordMatchesPlan(plan: RegularInvestPlanView, record: { source?: strin
   return record.source === "scheduled_task";
 }
 
-function groupLabel(p: RegularInvestPlanView, mode: GroupByMode): string {
-  if (mode === "fundGroup") return p.accountGroupName || "目标账户未设置所有人";
+function groupLabel(p: RegularInvestPlanView, mode: GroupByMode, t: (key: string, params?: Record<string, string | number>) => string): string {
+  if (mode === "fundGroup") return p.accountGroupName || t("regularInvest.client.group.noTargetOwner");
   if (mode === "fundAccount") return planAccountLabel(p);
-  if (mode === "cashGroup") return p.cashAccountGroupName || "资金账户未设置所有人";
+  if (mode === "cashGroup") return p.cashAccountGroupName || t("regularInvest.client.group.noCashOwner");
   if (mode === "cashAccount") return planCashAccountLabel(p);
   return "";
 }
 
-function groupTitle(p: RegularInvestPlanView, mode: GroupByMode): string {
+function groupTitle(p: RegularInvestPlanView, mode: GroupByMode, t: (key: string, params?: Record<string, string | number>) => string): string {
   if (mode === "fundAccount") return p.accountHoverTitle || p.accountFullLabel || planAccountLabel(p);
   if (mode === "cashAccount") return p.cashAccountHoverTitle || p.cashAccountFullLabel || planCashAccountLabel(p);
-  return groupLabel(p, mode);
+  return groupLabel(p, mode, t);
 }
 
-function groupKey(p: RegularInvestPlanView, mode: GroupByMode): string {
+function groupKey(p: RegularInvestPlanView, mode: GroupByMode, t: (key: string, params?: Record<string, string | number>) => string): string {
   if (mode === "fundAccount") return `fundAccount:${p.accountId || p.accountFullLabel || planAccountLabel(p)}`;
   if (mode === "cashAccount") return `cashAccount:${p.cashAccountId || p.cashAccountFullLabel || planCashAccountLabel(p)}`;
-  return `${mode}:${groupLabel(p, mode)}`;
+  return `${mode}:${groupLabel(p, mode, t)}`;
 }
 
-function groupPlans(plans: RegularInvestPlanView[], mode: GroupByMode) {
+function groupPlans(plans: RegularInvestPlanView[], mode: GroupByMode, t: (key: string, params?: Record<string, string | number>) => string) {
   if (mode === "none") return [{ label: "", title: "", items: plans }];
 
   const grouped = new Map<string, { label: string; title: string; items: RegularInvestPlanView[] }>();
   for (const plan of plans) {
-    const key = groupKey(plan, mode);
-    const label = groupLabel(plan, mode);
-    const title = groupTitle(plan, mode);
+    const key = groupKey(plan, mode, t);
+    const label = groupLabel(plan, mode, t);
+    const title = groupTitle(plan, mode, t);
     if (!grouped.has(key)) grouped.set(key, { label, title, items: [] });
     grouped.get(key)!.items.push(plan);
   }
@@ -291,7 +301,7 @@ function compareText(a: string, b: string): number {
   return a.localeCompare(b, "zh-Hans-CN");
 }
 
-function getRegularInvestSortValue(plan: RegularInvestPlanView, key: string): string | number | null {
+function getRegularInvestSortValue(plan: RegularInvestPlanView, key: string, t: (key: string, params?: Record<string, string | number>) => string): string | number | null {
   if (key === "taskContent") return getPlanTargetLabel(plan);
   if (key === "taskType") return getPlanTaskLabel(plan);
   if (key === "startDate") return dateSortValue(plan.startDate);
@@ -299,8 +309,8 @@ function getRegularInvestSortValue(plan: RegularInvestPlanView, key: string): st
   if (key === "targetAccount") return planAccountLabel(plan);
   if (key === "cashAccount") return planCashAccountLabel(plan);
   if (key === "amount") return Number(plan.amount || 0);
-  if (key === "interval") return formatInterval(plan);
-  if (key === "status") return STATUS_MAP[plan.status]?.label || plan.status;
+  if (key === "interval") return formatInterval(plan, t);
+  if (key === "status") return getStatusLabel(plan.status, t);
   if (key === "executedCount") return Number(plan.executedCount || 0);
   return null;
 }
@@ -413,11 +423,11 @@ function filterRegularInvestDisplayRows(
   return filteredRows;
 }
 
-function sortPlansByDefault(plans: readonly RegularInvestPlanView[]): RegularInvestPlanView[] {
+function sortPlansByDefault(plans: readonly RegularInvestPlanView[], t: (key: string, params?: Record<string, string | number>) => string): RegularInvestPlanView[] {
   return [...plans].sort((left, right) => {
     const nextRunCompare = compareRegularInvestSortValue(
-      { value: getRegularInvestSortValue(left, "nextRunDate"), index: 0 },
-      { value: getRegularInvestSortValue(right, "nextRunDate"), index: 0 },
+      { value: getRegularInvestSortValue(left, "nextRunDate", t), index: 0 },
+      { value: getRegularInvestSortValue(right, "nextRunDate", t), index: 0 },
       "asc",
     );
     if (nextRunCompare !== 0) return nextRunCompare;
@@ -470,6 +480,7 @@ export function RegularInvestClient({
   transactionCreateAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
   transactionEditAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
+  const { t } = useI18n();
   const [plans, setPlans] = useState(initialPlans);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -651,7 +662,7 @@ export function RegularInvestClient({
         return { ...plan, status };
       }));
     } else {
-      window.alert(data.error || "操作失败");
+      window.alert(data.error || t("settings.fundApi.actionFailed"));
     }
   }
 
@@ -660,23 +671,23 @@ export function RegularInvestClient({
     if (!plan) return;
     const taskType = getPlanTaskType(plan);
     const confirmed = await showConfirmDialog({
-      title: "执行计划",
-      message: `确认执行该${getPlanTaskLabel(plan)}计划吗？\n\n系统会生成所有到期但未执行的交易明细。`,
+      title: t("regularInvest.client.execute.title"),
+      message: t("regularInvest.client.execute.confirm", { name: getPlanTaskLabel(plan) }),
     });
     if (!confirmed) return;
     setExecutionProgress({
-      title: "执行计划任务",
+      title: t("regularInvest.client.execute.taskTitle"),
       status: "running",
       current: 0,
       total: 1,
-      currentLabel: `准备执行：${getPlanTargetLabel(plan)}`,
+      currentLabel: t("regularInvest.client.execute.preparing", { name: getPlanTargetLabel(plan) }),
       ok: 0,
       fail: 0,
       messages: [],
     });
     try {
       if (taskType === "fund_regular_invest" && plan?.fundCode) {
-        setExecutionProgress((prev) => prev ? { ...prev, currentLabel: "正在预加载基金净值..." } : prev);
+        setExecutionProgress((prev) => prev ? { ...prev, currentLabel: t("regularInvest.client.execute.preloadingNav") } : prev);
         const startDate = plan.lastRunDate
           ? toDateInput(plan.lastRunDate)
           : toDateInput(plan.startDate) || todayInput();
@@ -692,7 +703,7 @@ export function RegularInvestClient({
         }
       }
 
-      setExecutionProgress((prev) => prev ? { ...prev, currentLabel: "正在生成到期交易明细..." } : prev);
+      setExecutionProgress((prev) => prev ? { ...prev, currentLabel: t("regularInvest.client.execute.generating") } : prev);
       const res = await fetch(taskType === "fund_regular_invest" ? "/api/v1/regular-invest/batch-execute" : "/api/v1/regular-invest/execute", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -705,8 +716,8 @@ export function RegularInvestClient({
           status: "error",
           current: 1,
           fail: 1,
-          currentLabel: "执行失败",
-          messages: [data?.error || `执行失败(${res.status})`],
+          currentLabel: t("regularInvest.client.execute.failed"),
+          messages: [data?.error || t("regularInvest.client.execute.failedStatus", { status: res.status })],
         } : prev);
         return;
       }
@@ -717,8 +728,8 @@ export function RegularInvestClient({
         status: "done",
         current: 1,
         ok: 1,
-        currentLabel: "执行完成，相关数字已刷新",
-        messages: [data.message || "执行完成"],
+        currentLabel: t("regularInvest.client.execute.doneRefreshed"),
+        messages: [data.message || t("regularInvest.client.execute.done")],
       } : prev);
     } catch (e) {
       setExecutionProgress((prev) => prev ? {
@@ -726,8 +737,8 @@ export function RegularInvestClient({
         status: "error",
         current: 1,
         fail: 1,
-        currentLabel: "执行失败",
-        messages: [e instanceof Error ? e.message : "执行失败"],
+        currentLabel: t("regularInvest.client.execute.failed"),
+        messages: [e instanceof Error ? e.message : t("regularInvest.client.execute.failed")],
       } : prev);
     }
   }
@@ -735,20 +746,20 @@ export function RegularInvestClient({
   async function handleBatchExecuteAll() {
     const activePlans = plans.filter((plan) => plan.status === "active");
     if (activePlans.length === 0) {
-      window.alert("没有执行中的计划任务");
+      window.alert(t("regularInvest.client.executeAll.noActive"));
       return;
     }
     const confirmed = await showConfirmDialog({
-      title: "批量执行",
-      message: `确认批量执行所有 ${activePlans.length} 个执行中的计划任务吗？`,
+      title: t("regularInvest.client.executeAll.title"),
+      message: t("regularInvest.client.executeAll.confirm", { count: activePlans.length }),
     });
     if (!confirmed) return;
     setExecutionProgress({
-      title: "批量执行计划任务",
+      title: t("regularInvest.client.executeAll.taskTitle"),
       status: "running",
       current: 0,
       total: activePlans.length,
-      currentLabel: "准备执行计划任务...",
+      currentLabel: t("regularInvest.client.executeAll.preparing"),
       ok: 0,
       fail: 0,
       messages: [],
@@ -757,7 +768,7 @@ export function RegularInvestClient({
       const endDate = todayInput();
       for (const plan of activePlans) {
         if (getPlanTaskType(plan) !== "fund_regular_invest" || !plan.fundCode) continue;
-        setExecutionProgress((prev) => prev ? { ...prev, currentLabel: `预加载净值：${getPlanTargetLabel(plan)}` } : prev);
+        setExecutionProgress((prev) => prev ? { ...prev, currentLabel: t("regularInvest.client.executeAll.preloadNav", { name: getPlanTargetLabel(plan) }) } : prev);
         const preloadStart = plan.lastRunDate
           ? toDateInput(plan.lastRunDate)
           : toDateInput(plan.startDate) || todayInput();
@@ -779,7 +790,7 @@ export function RegularInvestClient({
         setExecutionProgress((prev) => prev ? {
           ...prev,
           current: index,
-          currentLabel: `正在执行 ${index + 1}/${activePlans.length}：${getPlanTargetLabel(plan)}`,
+          currentLabel: t("regularInvest.client.executeAll.running", { current: index + 1, total: activePlans.length, name: getPlanTargetLabel(plan) }),
           ok,
           fail,
         } : prev);
@@ -793,19 +804,19 @@ export function RegularInvestClient({
           if (res.ok && data?.ok) {
             ok++;
             updatePlanFromExecutionResult(plan.id, data);
-            messages.push(`${getPlanTargetLabel(plan)}：${data.message || "执行完成"}`);
+            messages.push(t("regularInvest.client.execute.message", { name: getPlanTargetLabel(plan), message: data.message || t("regularInvest.client.execute.done") }));
           } else {
             fail++;
-            messages.push(`${getPlanTargetLabel(plan)}：${data?.error || `执行失败(${res.status})`}`);
+            messages.push(t("regularInvest.client.execute.message", { name: getPlanTargetLabel(plan), message: data?.error || t("regularInvest.client.execute.failedStatus", { status: res.status }) }));
           }
         } catch (error) {
           fail++;
-          messages.push(`${getPlanTargetLabel(plan)}：${error instanceof Error ? error.message : "执行失败"}`);
+          messages.push(t("regularInvest.client.execute.message", { name: getPlanTargetLabel(plan), message: error instanceof Error ? error.message : t("regularInvest.client.execute.failed") }));
         }
         setExecutionProgress((prev) => prev ? {
           ...prev,
           current: index + 1,
-          currentLabel: `已处理 ${index + 1}/${activePlans.length}`,
+          currentLabel: t("regularInvest.client.executeAll.processed", { current: index + 1, total: activePlans.length }),
           ok,
           fail,
           messages: messages.slice(-6),
@@ -816,7 +827,7 @@ export function RegularInvestClient({
         ...prev,
         status: fail === 0 ? "done" : "error",
         current: activePlans.length,
-        currentLabel: fail === 0 ? "批量执行完成，相关数字已刷新" : "批量执行完成，部分计划失败",
+        currentLabel: fail === 0 ? t("regularInvest.client.executeAll.done") : t("regularInvest.client.executeAll.partialFail"),
         ok,
         fail,
         messages: messages.slice(-8),
@@ -825,8 +836,8 @@ export function RegularInvestClient({
       setExecutionProgress((prev) => prev ? {
         ...prev,
         status: "error",
-        currentLabel: "批量执行失败",
-        messages: [e instanceof Error ? e.message : "批量执行失败"],
+        currentLabel: t("regularInvest.client.executeAll.failed"),
+        messages: [e instanceof Error ? e.message : t("regularInvest.client.executeAll.failed")],
       } : prev);
     }
   }
@@ -835,8 +846,8 @@ export function RegularInvestClient({
     setDeleteConfirm(null);
     if (mode === "records") {
       const confirmed = await showConfirmDialog({
-        title: "删除交易明细",
-        message: "确认删除该计划关联的所有交易明细吗？",
+        title: t("regularInvest.client.deleteRecords.title"),
+        message: t("regularInvest.client.deleteRecords.confirmAll"),
         tone: "danger",
       });
       if (!confirmed) return;
@@ -848,7 +859,7 @@ export function RegularInvestClient({
         setPlans((prev) => prev.map((plan) => plan.id === planId ? { ...plan, ...data.plan, executedCount: 0, executedAmount: 0, confirmedCount: 0, confirmedAmount: 0 } : plan));
         dispatchFinanceDataChanged({ reason: "regular-invest-records-delete" });
       } else {
-        window.alert(data.error || "删除失败");
+        window.alert(data.error || t("settingsDelete.deleteFailed"));
       }
       return;
     }
@@ -864,19 +875,19 @@ export function RegularInvestClient({
       setPlans((prev) => prev.filter((plan) => plan.id !== planId));
       dispatchFinanceDataChanged({ reason: "regular-invest-plan-delete" });
     } else {
-      window.alert(data.error || "删除失败");
+      window.alert(data.error || t("settingsDelete.deleteFailed"));
     }
   }
 
   function handleDelete(planId: string) {
     const plan = plans.find((item) => item.id === planId);
-    setDeleteConfirm({ planId, planName: plan ? getPlanTargetLabel(plan) : "计划任务" });
+    setDeleteConfirm({ planId, planName: plan ? getPlanTargetLabel(plan) : t("nav.scheduledTasks") });
   }
 
   async function handleDeleteRecord(recordId: string) {
     const confirmed = await showConfirmDialog({
-      title: "删除交易明细",
-      message: "确认删除这条交易明细？",
+      title: t("regularInvest.client.deleteRecords.title"),
+      message: t("regularInvest.client.deleteRecord.confirm"),
       tone: "danger",
     });
     if (!confirmed) return;
@@ -886,14 +897,14 @@ export function RegularInvestClient({
       await refreshRecords();
       dispatchFinanceDataChanged({ reason: "regular-invest-record-delete", deletedEntryIds: [recordId], entryIds: [recordId] });
     } else {
-      window.alert(data.error || "删除失败");
+      window.alert(data.error || t("settingsDelete.deleteFailed"));
     }
   }
 
   function openEditRecord(record: any) {
     if (selectedPlan && getPlanTaskType(selectedPlan) !== "fund_regular_invest") {
       if (record.type !== "transfer") {
-        window.alert("这类计划生成的记录暂时请到对应业务页面编辑");
+        window.alert(t("regularInvest.client.editRecord.notSupported"));
         return;
       }
       window.dispatchEvent(new CustomEvent("mmh:transaction:edit", {
@@ -942,7 +953,7 @@ export function RegularInvestClient({
       await refreshRecords();
       dispatchFinanceDataChanged({ reason: "regular-invest-record-save", entryIds: [editingRecord.id] });
     } else {
-      window.alert(data.error || "保存失败");
+      window.alert(data.error || t("regularInvest.alert.saveFailed"));
     }
   }
 
@@ -955,8 +966,8 @@ export function RegularInvestClient({
   const overduePlans = filteredPlans.filter(
     (plan) => plan.status === "active" && plan.nextRunDate && new Date(plan.nextRunDate).getTime() <= todayStart.getTime(),
   );
-  const sortedPlans = sortPlansByDefault(filteredPlans);
-  const groupedPlans = groupPlans(sortedPlans, groupBy);
+  const sortedPlans = sortPlansByDefault(filteredPlans, t);
+  const groupedPlans = groupPlans(sortedPlans, groupBy, t);
 
   const tableRows: RegularInvestDisplayRow[] = groupedPlans.flatMap((group, index) => {
     const planRows = group.items.map((plan) => ({ kind: "plan" as const, plan }));
@@ -987,17 +998,17 @@ export function RegularInvestClient({
     return (
       REGULAR_INVEST_COLUMNS.map((column) => ({
         key: column.key,
-        label: column.label,
+        label: t(column.labelKey),
         width: REGULAR_INVEST_COLUMN_WIDTHS[column.key],
         minWidth: REGULAR_INVEST_COLUMN_MIN_WIDTHS[column.key],
         hideable: column.key !== "taskContent",
         align: column.key === "amount" ? "right" : undefined,
         truncate: column.key !== "amount" && column.key !== "status",
-        sortValue: (row) => row.kind === "plan" ? getRegularInvestSortValue(row.plan, column.key) : null,
+        sortValue: (row) => row.kind === "plan" ? getRegularInvestSortValue(row.plan, column.key, t) : null,
         filterText: column.key === "taskType"
           ? (row) => row.kind === "plan" ? getPlanTaskLabel(row.plan) : null
           : column.key === "status"
-            ? (row) => row.kind === "plan" ? (STATUS_MAP[row.plan.status]?.label || row.plan.status) : null
+            ? (row) => row.kind === "plan" ? getStatusLabel(row.plan.status, t) : null
             : undefined,
         cellTitle: (row) => {
           if (row.kind === "group") return column.key === "taskContent" ? row.title : "";
@@ -1005,7 +1016,7 @@ export function RegularInvestClient({
           if (column.key === "targetAccount") return row.plan.accountHoverTitle || planAccountLabel(row.plan);
           if (column.key === "cashAccount") return row.plan.cashAccountHoverTitle || planCashAccountLabel(row.plan);
           if (column.key === "taskType") return getPlanTaskLabel(row.plan);
-          if (column.key === "interval") return formatInterval(row.plan);
+          if (column.key === "interval") return formatInterval(row.plan, t);
           return "";
         },
         render: (row) => {
@@ -1032,32 +1043,32 @@ export function RegularInvestClient({
             return <span className="tabular-nums text-slate-700">{Number(row.plan.amount || 0).toFixed(2)}</span>;
           }
           if (column.key === "interval") {
-            return <span className="text-slate-500">{formatInterval(row.plan)}</span>;
+            return <span className="text-slate-500">{formatInterval(row.plan, t)}</span>;
           }
           if (column.key === "status") {
             return (
               <span className={STATUS_MAP[row.plan.status]?.cls || "text-slate-600"}>
-                {STATUS_MAP[row.plan.status]?.label || row.plan.status}
+                {getStatusLabel(row.plan.status, t)}
               </span>
             );
           }
           return planOnly(row, (plan) => (
             <span className="tabular-nums text-slate-500">
-              {plan.executedCount || 0}笔({(plan.executedAmount || 0).toFixed(2)})
+              {t("regularInvest.client.executedSummary", { count: plan.executedCount || 0, amount: (plan.executedAmount || 0).toFixed(2) })}
             </span>
           ));
         },
       }))
     );
-  }, []);
+  }, [t]);
 
   function renderPlanActions(plan: RegularInvestPlanView) {
     // System-level plans (loan repayment) are read-only in the plan table:
     // the schedule is derived from the loan, so no pause/stop/edit/delete.
     if (plan.isSystemTask) {
       return (
-        <span className="inline-flex h-6 items-center rounded border border-slate-200 bg-slate-50 px-1.5 text-[10px] text-slate-400" title="系统管理计划，不可手动修改">
-          系统
+        <span className="inline-flex h-6 items-center rounded border border-slate-200 bg-slate-50 px-1.5 text-[10px] text-slate-400" title={t("regularInvest.client.systemTask.title")}>
+          {t("regularInvest.client.systemTask.short")}
         </span>
       );
     }
@@ -1068,28 +1079,28 @@ export function RegularInvestClient({
             <button
               onClick={() => handleBatchExecute(plan.id)}
               disabled={executionBusy}
-              title="批量执行"
+              title={t("regularInvest.client.executeAll.title")}
               className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-purple-200 hover:bg-purple-50 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <RefreshCw className={`h-3 w-3 text-purple-600 ${executionBusy ? "animate-spin" : ""}`} />
             </button>
-            <button onClick={() => handleAction(plan.id, "pause")} title="暂停" className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-yellow-200 hover:bg-yellow-50">
+            <button onClick={() => handleAction(plan.id, "pause")} title={t("fundShell.plan.pause")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-yellow-200 hover:bg-yellow-50">
               <Pause className="h-3 w-3 text-yellow-600" />
             </button>
-            <button onClick={() => handleAction(plan.id, "stop")} title="终止" className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
+            <button onClick={() => handleAction(plan.id, "stop")} title={t("regularInvest.client.action.stop")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
               <Square className="h-3 w-3 text-red-600" />
             </button>
           </>
         )}
         {plan.status === "paused" && (
-          <button onClick={() => handleAction(plan.id, "resume")} title="恢复" className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-green-200 hover:bg-green-50">
+          <button onClick={() => handleAction(plan.id, "resume")} title={t("fundShell.plan.resume")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-green-200 hover:bg-green-50">
             <Play className="h-3 w-3 text-green-600" />
           </button>
         )}
-        <button onClick={() => { setEditPlan(plan); setEditOpen(true); }} title="修改" className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-blue-200 hover:bg-blue-50">
+        <button onClick={() => { setEditPlan(plan); setEditOpen(true); }} title={t("regularInvest.client.action.edit")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-blue-200 hover:bg-blue-50">
           <Pencil className="h-3 w-3 text-blue-600" />
         </button>
-        <button onClick={() => handleDelete(plan.id)} title="删除" className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
+        <button onClick={() => handleDelete(plan.id)} title={t("common.delete")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
           <Trash2 className="h-3 w-3 text-red-500" />
         </button>
       </>
@@ -1119,7 +1130,7 @@ export function RegularInvestClient({
                 apiAction={apiCreateAction}
               />
               <button onClick={() => setShowCreateForm(true)} className="flex h-8 items-center gap-1 rounded-md bg-blue-600 px-3 text-sm text-white hover:bg-blue-700">
-                <Plus className="h-4 w-4" />新增计划
+                <Plus className="h-4 w-4" />{t("regularInvest.client.addPlan")}
               </button>
             </div>
           </header>
@@ -1139,7 +1150,7 @@ export function RegularInvestClient({
                 defaultSort={{ key: "nextRunDate", direction: "asc" }}
                 filterRows={filterRegularInvestDisplayRows}
                 sortRows={sortRegularInvestDisplayRows}
-                emptyText="暂无计划任务"
+                emptyText={t("regularInvest.client.empty")}
                 onRowClick={(row) => {
                   if (row.kind === "plan") handleSelectPlan(row.plan);
                 }}
@@ -1153,13 +1164,13 @@ export function RegularInvestClient({
                 toolbarMode="custom"
                 toolbarLeftContent={(
                   <div className="flex min-w-0 items-center gap-3 text-sm">
-                    <span className="font-semibold text-slate-800">计划任务</span>
+                    <span className="font-semibold text-slate-800">{t("nav.scheduledTasks")}</span>
                     <span className="text-slate-500">
-                      共 {filteredPlans.length} 个计划，{filteredPlans.filter((plan) => plan.status === "active").length} 个执行中
+                      {t("regularInvest.client.toolbarSummary", { total: filteredPlans.length, active: filteredPlans.filter((plan) => plan.status === "active").length })}
                     </span>
                     {overduePlans.length > 0 ? (
                       <span className="rounded-full bg-orange-50 px-2 py-0.5 text-xs font-medium text-orange-600">
-                        待执行 {overduePlans.length}
+                        {t("regularInvest.client.overdue", { count: overduePlans.length })}
                       </span>
                     ) : null}
                   </div>
@@ -1168,15 +1179,15 @@ export function RegularInvestClient({
                   <>
                     <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-slate-500">
                       <input type="checkbox" checked={!showEnded} onChange={(e) => setShowEnded(!e.target.checked)} className="h-3.5 w-3.5 accent-blue-600" />
-                      不显示已结束计划
+                      {t("regularInvest.client.hideEnded")}
                     </label>
                     <button
                       onClick={handleBatchExecuteAll}
                       disabled={executionBusy}
-                      title="批量执行所有计划任务"
+                      title={t("regularInvest.client.executeAll.title")}
                       className="flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      <RefreshCw className={`h-3.5 w-3.5 ${executionBusy ? "animate-spin" : ""}`} />执行全部
+                      <RefreshCw className={`h-3.5 w-3.5 ${executionBusy ? "animate-spin" : ""}`} />{t("regularInvest.client.executeAll.short")}
                     </button>
                   </>
                 )}
@@ -1186,28 +1197,28 @@ export function RegularInvestClient({
             {selectedPlan && (
               <div className="flex h-80 shrink-0 flex-col bg-slate-50">
                 <div className="flex h-10 shrink-0 items-center justify-between border-b border-slate-100 bg-white px-4">
-                  <div className="text-xs font-semibold text-slate-700">{getPlanTargetLabel(selectedPlan)} - 执行记录</div>
-                  <button onClick={() => { setSelectedPlan(null); setPlanRecords([]); }} className="text-xs text-slate-400 hover:text-slate-600">关闭</button>
+                  <div className="text-xs font-semibold text-slate-700">{t("regularInvest.client.recordsTitle", { name: getPlanTargetLabel(selectedPlan) })}</div>
+                  <button onClick={() => { setSelectedPlan(null); setPlanRecords([]); }} className="text-xs text-slate-400 hover:text-slate-600">{t("table.close")}</button>
                 </div>
                 <div className="min-h-0 flex-1 overflow-auto">
                   {recordsLoading ? (
-                    <div className="px-4 py-6 text-center text-xs text-slate-400">加载中...</div>
+                    <div className="px-4 py-6 text-center text-xs text-slate-400">{t("common.loading")}</div>
                   ) : planRecords.length === 0 ? (
-                    <div className="px-4 py-6 text-center text-xs text-slate-400">暂无交易记录</div>
+                    <div className="px-4 py-6 text-center text-xs text-slate-400">{t("regularInvest.client.recordsEmpty")}</div>
                   ) : (
                     <table className="min-w-full text-xs">
                       <thead className="sticky top-0 bg-slate-100">
                         <tr>
-                          <th className="px-3 py-1.5 text-left font-medium text-slate-600">执行日期</th>
+                          <th className="px-3 py-1.5 text-left font-medium text-slate-600">{t("regularInvest.client.recordsCol.execDate")}</th>
                           {getPlanTaskType(selectedPlan) === "fund_regular_invest" && (
-                            <th className="px-3 py-1.5 text-left font-medium text-slate-600">确认日期</th>
+                            <th className="px-3 py-1.5 text-left font-medium text-slate-600">{t("investForm.confirmDate")}</th>
                           )}
-                          <th className="px-3 py-1.5 text-right font-medium text-slate-600">金额</th>
+                          <th className="px-3 py-1.5 text-right font-medium text-slate-600">{t("stats.amount")}</th>
                           {getPlanTaskType(selectedPlan) === "fund_regular_invest" && (
-                            <th className="px-3 py-1.5 text-right font-medium text-slate-600">份额</th>
+                            <th className="px-3 py-1.5 text-right font-medium text-slate-600">{t("batchImport.template.fund.label.units")}</th>
                           )}
-                          <th className="px-3 py-1.5 text-center font-medium text-slate-600">状态</th>
-                          <th className="px-3 py-1.5 text-center font-medium text-slate-600">操作</th>
+                          <th className="px-3 py-1.5 text-center font-medium text-slate-600">{t("depositShell.colStatus")}</th>
+                          <th className="px-3 py-1.5 text-center font-medium text-slate-600">{t("detail.column.actions")}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1225,15 +1236,15 @@ export function RegularInvestClient({
                               )}
                               <td className="px-3 py-1.5 text-center">
                                 {getPlanTaskType(selectedPlan) === "fund_regular_invest"
-                                  ? (isConfirmed ? <span className="text-emerald-600">已确认</span> : <span className="text-amber-600">待确认</span>)
-                                  : <span className="text-emerald-600">已执行</span>}
+                                  ? (isConfirmed ? <span className="text-emerald-600">{t("regularInvest.client.recordsCol.confirmed")}</span> : <span className="text-amber-600">{t("fundShell.status.pending")}</span>)
+                                  : <span className="text-emerald-600">{t("regularInvest.client.recordsCol.executed")}</span>}
                               </td>
                               <td className="px-3 py-1.5 text-center">
                                 <div className="flex items-center justify-center gap-1">
-                                  <button onClick={(e) => { e.stopPropagation(); openEditRecord(record); }} title="修改日期" className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-blue-200 hover:bg-blue-50">
+                                  <button onClick={(e) => { e.stopPropagation(); openEditRecord(record); }} title={t("regularInvest.client.recordsCol.editDate")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-blue-200 hover:bg-blue-50">
                                     <Pencil className="h-3 w-3 text-blue-600" />
                                   </button>
-                                  <button onClick={(e) => { e.stopPropagation(); handleDeleteRecord(record.id); }} title="删除" className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
+                                  <button onClick={(e) => { e.stopPropagation(); handleDeleteRecord(record.id); }} title={t("common.delete")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
                                     <Trash2 className="h-3 w-3 text-red-500" />
                                   </button>
                                 </div>
@@ -1314,22 +1325,22 @@ export function RegularInvestClient({
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
           <div className="w-full max-w-sm overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
             <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
-              <div className="text-sm font-semibold text-slate-800">删除计划任务</div>
+              <div className="text-sm font-semibold text-slate-800">{t("regularInvest.client.deleteDialog.title")}</div>
             </div>
             <div className="space-y-3 p-4">
-              <div className="text-sm text-slate-700">确认对「{deleteConfirm.planName}」的操作？</div>
+              <div className="text-sm text-slate-700">{t("regularInvest.client.deleteDialog.confirm", { name: deleteConfirm.planName })}</div>
               <div className="space-y-2">
                 <button onClick={() => executeDelete(deleteConfirm.planId, "all")} className="h-9 w-full rounded-md bg-red-600 text-sm text-white hover:bg-red-700">
-                  删除计划 + 删除关联交易记录
+                  {t("regularInvest.client.deleteDialog.deletePlanAndRecords")}
                 </button>
                 <button onClick={() => executeDelete(deleteConfirm.planId, "plan")} className="h-9 w-full rounded-md border border-amber-200 bg-amber-50 text-sm text-amber-700 hover:bg-amber-100">
-                  仅删除计划，保留交易记录
+                  {t("regularInvest.client.deleteDialog.deletePlanOnly")}
                 </button>
                 <button onClick={() => executeDelete(deleteConfirm.planId, "records")} className="h-9 w-full rounded-md border border-red-200 bg-red-50 text-sm text-red-600 hover:bg-red-100">
-                  仅删除交易记录，保留计划
+                  {t("regularInvest.client.deleteDialog.deleteRecordsOnly")}
                 </button>
                 <button onClick={() => setDeleteConfirm(null)} className="h-9 w-full rounded-md border border-slate-200 bg-white text-sm text-slate-500 hover:bg-slate-50">
-                  取消
+                  {t("common.cancel")}
                 </button>
               </div>
             </div>
@@ -1341,12 +1352,12 @@ export function RegularInvestClient({
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
           <div className="w-full max-w-sm overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
             <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
-              <div className="text-sm font-semibold text-slate-800">修改交易明细日期</div>
-              <button onClick={() => setEditingRecord(null)} className="h-8 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700 hover:bg-slate-50">关闭</button>
+              <div className="text-sm font-semibold text-slate-800">{t("regularInvest.client.editDateDialog.title")}</div>
+              <button onClick={() => setEditingRecord(null)} className="h-8 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700 hover:bg-slate-50">{t("table.close")}</button>
             </div>
             <div className="space-y-3 p-4">
               <div className="space-y-1">
-                <div className="text-xs font-medium text-slate-600">申请日期</div>
+                <div className="text-xs font-medium text-slate-600">{t("investForm.applyDate")}</div>
                 <DateStepper
                   value={editingRecord.date}
                   onChange={(newDate) => {
@@ -1354,20 +1365,20 @@ export function RegularInvestClient({
                   }}
                   className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                 />
-                <div className="text-xs text-slate-400">修改申请日期会自动重算确认日期 (T+{editingRecord.confirmDays})</div>
+                <div className="text-xs text-slate-400">{t("regularInvest.client.editDateDialog.applyHint", { days: editingRecord.confirmDays })}</div>
               </div>
               <div className="space-y-1">
-                <div className="text-xs font-medium text-slate-600">确认日期</div>
+                <div className="text-xs font-medium text-slate-600">{t("investForm.confirmDate")}</div>
                 <DateStepper
                   value={editingRecord.fundConfirmDate}
                   onChange={(value) => setEditingRecord((record: any) => ({ ...record, fundConfirmDate: value }))}
                   className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                 />
-                <div className="text-xs text-slate-400">单独修改确认日期不会影响申请日期</div>
+                <div className="text-xs text-slate-400">{t("regularInvest.client.editDateDialog.confirmHint")}</div>
               </div>
               <div className="flex justify-end gap-2 pt-1">
-                <button onClick={() => setEditingRecord(null)} className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50">取消</button>
-                <button onClick={handleSaveRecord} className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700">保存</button>
+                <button onClick={() => setEditingRecord(null)} className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50">{t("common.cancel")}</button>
+                <button onClick={handleSaveRecord} className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700">{t("common.save")}</button>
               </div>
             </div>
           </div>

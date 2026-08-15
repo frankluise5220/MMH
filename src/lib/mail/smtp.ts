@@ -140,7 +140,7 @@ async function getLegacyUserSettingsSmtpConfig(householdId?: string | null): Pro
       };
     }
   } catch {
-    // db 不可用时 fallback
+    // fallback when the db is unavailable
   }
   return null;
 }

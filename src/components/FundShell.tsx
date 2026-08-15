@@ -1958,27 +1958,29 @@ export function FundShell(props: Props) {
             ) : null}
           </div>
         ) : null}
-        {!isMetalAccount && !isWealthAccount ? (
+        {!isMetalAccount ? (
           <>
-            <AddNavButton accountId={accountId} positions={[p]} defaultFundCode={p.fundCode} trigger="icon" />
-            <button
-              type="button"
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                switchFund(positionKey || p.fundCode);
-                setFundChartOpen(true);
-              }}
-              className={`inline-flex h-6 w-6 items-center justify-center rounded-md border transition-colors ${
-                active && fundChartOpen
-                  ? "border-blue-300 bg-blue-50 text-blue-700"
-                  : "border-slate-200 bg-white text-slate-500 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
-              }`}
-              title={t("fundShell.chart.viewTitle")}
-              aria-label={t("fundShell.chart.viewTitle")}
-            >
-              <ChartLine className="h-3 w-3" />
-            </button>
+            <AddNavButton accountId={accountId} positions={[p]} defaultFundCode={p.fundCode} trigger="icon" wealthMode={isWealthAccount} />
+            {!isWealthAccount ? (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  switchFund(positionKey || p.fundCode);
+                  setFundChartOpen(true);
+                }}
+                className={`inline-flex h-6 w-6 items-center justify-center rounded-md border transition-colors ${
+                  active && fundChartOpen
+                    ? "border-blue-300 bg-blue-50 text-blue-700"
+                    : "border-slate-200 bg-white text-slate-500 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+                }`}
+                title={t("fundShell.chart.viewTitle")}
+                aria-label={t("fundShell.chart.viewTitle")}
+              >
+                <ChartLine className="h-3 w-3" />
+              </button>
+            ) : null}
           </>
         ) : null}
       </div>

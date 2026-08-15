@@ -41,8 +41,8 @@ export async function resolveOrCreateStockSecurity(
       },
     },
   });
-  // 名称以表内已有数据为准：显式传入的名称、或 StockSecurity 里已保存且不等于代码的名称都算可用，
-  // 只有完全没有任何可用名称（首次购买且没有历史名称）才查外部股票查询 API。
+  // The name uses existing data in the table first: an explicitly passed name, or a name already saved in StockSecurity that differs from the code, both count as usable.
+  // Only when no usable name exists at all (first purchase with no historical name) do we query the external stock lookup API.
   const explicitNameUsable = Boolean(explicitStockName && explicitStockName !== stockCode);
   const storedNameUsable = Boolean(existing?.stockName && existing.stockName !== stockCode);
   const shouldQueryIdentity = !explicitNameUsable && !storedNameUsable;

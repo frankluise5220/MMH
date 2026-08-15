@@ -7,7 +7,7 @@ export const localProvider = createOpenAI({
 
 export const defaultModel = process.env.LOCAL_AI_MODEL_NAME || "hermes";
 
-/** AI 渠道类型配置 */
+/** AI channel type configuration */
 export const CHANNEL_TYPES = [
   { id: "openai", label: "OpenAI", modelsUrl: "/v1/models" },
   { id: "anthropic", label: "Anthropic", modelsUrl: "/v1/models" },

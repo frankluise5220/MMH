@@ -4,6 +4,9 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, Loader2 } from "lucide-react";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { useI18n } from "@/lib/i18n";
+
+type T = (key: string, params?: Record<string, string | number>) => string;
 
 type AccountKindValue = "bank_debit" | "bank_credit";
 
@@ -35,6 +38,8 @@ type LoadResult = {
   error?: string;
 };
 
+// Preset bank names are institution data, not UI copy; they are stored and
+// displayed as-is.
 const BANK_NAMES = [
   "中国工商银行",
   "中国建设银行",
@@ -57,21 +62,24 @@ const BANK_NAMES = [
   "宁波银行",
 ];
 
-const KIND_OPTIONS: { value: AccountKindValue; label: string }[] = [
-  { value: "bank_debit", label: "借记卡" },
-  { value: "bank_credit", label: "信用卡" },
-];
+const KIND_VALUES: AccountKindValue[] = ["bank_debit", "bank_credit"];
 
 function normalizeName(value: string) {
   return value.trim().replace(/\s+/g, "");
 }
 
-function accountName(kind: AccountKindValue, last4: string) {
-  const label = KIND_OPTIONS.find((item) => item.value === kind)?.label ?? "银行卡";
+function kindOptions(t: T): { value: AccountKindValue; label: string }[] {
+  return KIND_VALUES.map((value) => ({ value, label: t(`account.kind.${value}`) }));
+}
+
+function accountName(t: T, kind: AccountKindValue, last4: string) {
+  const label = kindOptions(t).find((item) => item.value === kind)?.label ?? t("accountsQuickAdd.accountKindFallback");
   return `${label}${last4}`;
 }
 
 export default function QuickAddAccountsPage() {
+  const { t } = useI18n();
+  const kindOptionsList = useMemo(() => kindOptions(t), [t]);
   const [institutions, setInstitutions] = useState<Institution[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -89,13 +97,13 @@ export default function QuickAddAccountsPage() {
     setError("");
     const res = await fetch("/api/v1/accounts/internal?balances=false").catch(() => null);
     if (!res) {
-      setError("网络请求失败，无法加载账户基础数据。");
+      setError(t("accountsQuickAdd.error.loadFailed"));
       setLoading(false);
       return;
     }
-    const data = (await res.json().catch(() => ({ ok: false, error: "返回数据格式异常" }))) as LoadResult;
+    const data = (await res.json().catch(() => ({ ok: false, error: t("accountsQuickAdd.error.invalidResponse") }))) as LoadResult;
     if (!data.ok) {
-      setError(data.error || "加载账户基础数据失败。");
+      setError(data.error || t("accountsQuickAdd.error.loadAccountsFailed"));
       setLoading(false);
       return;
     }
@@ -125,13 +133,13 @@ export default function QuickAddAccountsPage() {
     for (const bankName of selectedBanks) {
       const institution = institutionByName.get(normalizeName(bankName));
       for (const kind of selectedKinds) {
-        const name = accountName(kind, last4.trim());
+        const name = accountName(t, kind, last4.trim());
         const exists = accounts.some((account) => account.kind === kind && account.name.trim() === name && (institution ? account.institutionId === institution.id : account.Institution?.name === bankName));
         rows.push({ bankName, kind, name, exists });
       }
     }
     return rows;
-  }, [accounts, institutions, last4, selectedBanks, selectedKinds]);
+  }, [accounts, institutions, last4, selectedBanks, selectedKinds, t]);
 
   function toggleBank(bankName: string) {
     setSelectedBanks((prev) => prev.includes(bankName) ? prev.filter((item) => item !== bankName) : [...prev, bankName]);
@@ -150,23 +158,24 @@ export default function QuickAddAccountsPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: bankName, type: "bank" }),
     }).catch(() => null);
-    if (!res) throw new Error(`机构“${bankName}”创建失败：网络请求失败`);
-    const data = await res.json().catch(() => ({ ok: false, error: "返回数据格式异常" }));
-    if (!data.ok || !data.institution?.id) throw new Error(data.error || `机构“${bankName}”创建失败`);
+    if (!res) throw new Error(t("accountsQuickAdd.error.institutionCreateFailedNetwork", { name: bankName }));
+    const data = await res.json().catch(() => ({ ok: false, error: t("accountsQuickAdd.error.invalidResponse") }));
+    if (!data.ok || !data.institution?.id) throw new Error(data.error || t("accountsQuickAdd.error.institutionCreateFailed", { name: bankName }));
     const created = data.institution as Institution;
     setInstitutions((prev) => [...prev, created]);
     return created;
   }
 
   async function createAccount(institution: Institution, kind: AccountKindValue, name: string) {
+    const fullName = `${institution.name}·${name}`;
     const res = await fetch("/api/v1/accounts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, kind, groupId, institutionId: institution.id }),
     }).catch(() => null);
-    if (!res) throw new Error(`${institution.name}·${name} 创建失败：网络请求失败`);
-    const data = await res.json().catch(() => ({ ok: false, error: "返回数据格式异常" }));
-    if (!data.ok) throw new Error(`${institution.name}·${name} 创建失败：${data.error || "未知错误"}`);
+    if (!res) throw new Error(t("accountsQuickAdd.error.accountCreateFailedNetwork", { name: fullName }));
+    const data = await res.json().catch(() => ({ ok: false, error: t("accountsQuickAdd.error.invalidResponse") }));
+    if (!data.ok) throw new Error(t("accountsQuickAdd.error.accountCreateFailedDetail", { name: fullName, error: data.error || t("accountsQuickAdd.error.unknown") }));
     return data.account as Account;
   }
 
@@ -175,15 +184,15 @@ export default function QuickAddAccountsPage() {
     setMessage("");
     setError("");
     if (selectedBanks.length === 0) {
-      setError("请至少选择一个银行。");
+      setError(t("accountsQuickAdd.error.selectBankRequired"));
       return;
     }
     if (selectedKinds.length === 0) {
-      setError("请至少选择借记卡或信用卡。");
+      setError(t("accountsQuickAdd.error.selectKindRequired"));
       return;
     }
     if (!/^\d{4}$/.test(safeLast4)) {
-      setError("卡号后 4 位必须填写 4 个数字。");
+      setError(t("accountsQuickAdd.error.invalidLast4"));
       return;
     }
 
@@ -198,7 +207,7 @@ export default function QuickAddAccountsPage() {
         const institution = institutionByName.get(normalizeName(bankName)) ?? await ensureInstitution(bankName);
         institutionByName.set(normalizeName(bankName), institution);
         for (const kind of selectedKinds) {
-          const name = accountName(kind, safeLast4);
+          const name = accountName(t, kind, safeLast4);
           const exists = [...accounts, ...createdAccounts].some((account) => account.kind === kind && account.name.trim() === name && account.institutionId === institution.id);
           if (exists) {
             skippedCount++;
@@ -211,10 +220,14 @@ export default function QuickAddAccountsPage() {
       }
 
       setAccounts((prev) => [...prev, ...createdAccounts]);
-      setMessage(`已生成 ${createdCount} 个账户${skippedCount > 0 ? `，跳过 ${skippedCount} 个已存在账户` : ""}。`);
+      setMessage(
+        skippedCount > 0
+          ? t("accountsQuickAdd.success.createdWithSkipped", { created: createdCount, skipped: skippedCount })
+          : t("accountsQuickAdd.success.createdOnly", { created: createdCount }),
+      );
       dispatchFinanceDataChanged({ reason: "quick-add-accounts" });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "批量生成失败");
+      setError(err instanceof Error ? err.message : t("accountsQuickAdd.error.batchFailed"));
     } finally {
       setSubmitting(false);
     }
@@ -225,11 +238,11 @@ export default function QuickAddAccountsPage() {
       <div className="mx-auto max-w-5xl p-4 space-y-4">
         <div className="flex items-center justify-between">
           <div>
-            <div className="text-xs text-slate-500">账户中心 / 快捷新增</div>
-            <h1 className="text-lg font-semibold text-slate-900">快捷新增银行卡账户</h1>
+            <div className="text-xs text-slate-500">{t("accountsQuickAdd.breadcrumb")}</div>
+            <h1 className="text-lg font-semibold text-slate-900">{t("accountsQuickAdd.title")}</h1>
           </div>
           <Link href="/accounts" className="h-9 px-3 inline-flex items-center rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50">
-            返回账户中心
+            {t("accountsQuickAdd.backToAccounts")}
           </Link>
         </div>
 
@@ -238,15 +251,15 @@ export default function QuickAddAccountsPage() {
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="text-sm font-medium text-slate-800">选择银行</div>
-                  <div className="text-xs text-slate-500">可多选；不存在的银行会自动作为机构创建。</div>
+                  <div className="text-sm font-medium text-slate-800">{t("accountsQuickAdd.selectBank")}</div>
+                  <div className="text-xs text-slate-500">{t("accountsQuickAdd.selectBankHint")}</div>
                 </div>
                 <button
                   type="button"
                   onClick={() => setSelectedBanks(selectedBanks.length === bankOptions.length ? [] : bankOptions)}
                   className="h-8 px-2 rounded border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50"
                 >
-                  {selectedBanks.length === bankOptions.length ? "取消全选" : "全选银行"}
+                  {selectedBanks.length === bankOptions.length ? t("accountsQuickAdd.clearSelection") : t("accountsQuickAdd.selectAllBanks")}
                 </button>
               </div>
               <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-4">
@@ -261,8 +274,8 @@ export default function QuickAddAccountsPage() {
 
             <div className="space-y-4 rounded-lg border border-slate-100 bg-slate-50 p-3">
               <div className="space-y-2">
-                <div className="text-sm font-medium text-slate-800">账户类型</div>
-                {KIND_OPTIONS.map((item) => (
+                <div className="text-sm font-medium text-slate-800">{t("accountsQuickAdd.accountType")}</div>
+                {kindOptionsList.map((item) => (
                   <label key={item.value} className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm ${selectedKinds.includes(item.value) ? "border-blue-200 bg-white text-blue-700" : "border-slate-200 bg-white text-slate-700"}`}>
                     <input type="checkbox" checked={selectedKinds.includes(item.value)} onChange={() => toggleKind(item.value)} className="h-4 w-4 rounded border-slate-300 text-blue-600" />
                     <span>{item.label}</span>
@@ -271,21 +284,21 @@ export default function QuickAddAccountsPage() {
               </div>
 
               <div className="space-y-1.5">
-                <div className="text-sm font-medium text-slate-800">卡号后 4 位</div>
+                <div className="text-sm font-medium text-slate-800">{t("accountsQuickAdd.last4Label")}</div>
                 <input
                   value={last4}
                   onChange={(event) => setLast4(event.target.value.replace(/\D/g, "").slice(0, 4))}
                   inputMode="numeric"
                   maxLength={4}
-                  placeholder="例如 3924"
+                  placeholder={t("accountsQuickAdd.last4Placeholder")}
                   className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-300"
                 />
               </div>
 
               <div className="space-y-1.5">
-                <div className="text-sm font-medium text-slate-800">所有人</div>
+                <div className="text-sm font-medium text-slate-800">{t("accountsQuickAdd.owner")}</div>
                 <select value={groupId} onChange={(event) => setGroupId(event.target.value)} className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-300">
-                  <option value="">自动默认所有人</option>
+                  <option value="">{t("accountsQuickAdd.defaultOwner")}</option>
                   {groups.map((group) => (
                     <option key={group.id} value={group.id}>{group.name}</option>
                   ))}
@@ -298,7 +311,7 @@ export default function QuickAddAccountsPage() {
                 disabled={loading || submitting}
                 className="h-10 w-full rounded-md bg-blue-600 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
               >
-                {submitting ? <span className="inline-flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" />正在生成</span> : "确定，全部生成"}
+                {submitting ? <span className="inline-flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" />{t("accountsQuickAdd.generating")}</span> : t("accountsQuickAdd.submit")}
               </button>
             </div>
           </div>
@@ -307,35 +320,35 @@ export default function QuickAddAccountsPage() {
         <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm space-y-3">
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-sm font-medium text-slate-800">生成预览</div>
-              <div className="text-xs text-slate-500">实际账户显示为“机构名·账户名”。</div>
+              <div className="text-sm font-medium text-slate-800">{t("accountsQuickAdd.previewTitle")}</div>
+              <div className="text-xs text-slate-500">{t("accountsQuickAdd.previewHint")}</div>
             </div>
-            <div className="text-xs text-slate-500">{previewRows.length} 个待处理组合</div>
+            <div className="text-xs text-slate-500">{t("accountsQuickAdd.pendingCombinations", { count: previewRows.length })}</div>
           </div>
 
           {loading ? (
-            <div className="py-8 text-center text-sm text-slate-500">正在加载账户数据...</div>
+            <div className="py-8 text-center text-sm text-slate-500">{t("accountsQuickAdd.loading")}</div>
           ) : previewRows.length === 0 ? (
-            <div className="py-8 text-center text-sm text-slate-500">请选择银行、账户类型，并填写卡号后 4 位。</div>
+            <div className="py-8 text-center text-sm text-slate-500">{t("accountsQuickAdd.emptyPreview")}</div>
           ) : (
             <div className="overflow-auto rounded-lg border border-slate-100">
               <table className="w-full table-fixed text-sm">
                 <thead className="bg-slate-50 text-xs text-slate-500">
                   <tr>
-                    <th className="px-3 py-2 text-left font-medium">银行</th>
-                    <th className="px-3 py-2 text-left font-medium">类型</th>
-                    <th className="px-3 py-2 text-left font-medium">账户名</th>
-                    <th className="px-3 py-2 text-left font-medium">状态</th>
+                    <th className="px-3 py-2 text-left font-medium">{t("accountsQuickAdd.col.bank")}</th>
+                    <th className="px-3 py-2 text-left font-medium">{t("accountsQuickAdd.col.type")}</th>
+                    <th className="px-3 py-2 text-left font-medium">{t("accountsQuickAdd.col.accountName")}</th>
+                    <th className="px-3 py-2 text-left font-medium">{t("accountsQuickAdd.col.status")}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {previewRows.map((row) => (
                     <tr key={`${row.bankName}-${row.kind}`}>
                       <td className="px-3 py-2 text-slate-700">{row.bankName}</td>
-                      <td className="px-3 py-2 text-slate-700">{KIND_OPTIONS.find((item) => item.value === row.kind)?.label}</td>
+                      <td className="px-3 py-2 text-slate-700">{kindOptionsList.find((item) => item.value === row.kind)?.label}</td>
                       <td className="px-3 py-2 text-slate-700">{row.name}</td>
                       <td className="px-3 py-2 text-xs">
-                        {row.exists ? <span className="text-amber-600">已存在，将跳过</span> : <span className="text-emerald-600">可生成</span>}
+                        {row.exists ? <span className="text-amber-600">{t("accountsQuickAdd.status.exists")}</span> : <span className="text-emerald-600">{t("accountsQuickAdd.status.creatable")}</span>}
                       </td>
                     </tr>
                   ))}

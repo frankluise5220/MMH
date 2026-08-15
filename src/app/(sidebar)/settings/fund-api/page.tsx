@@ -105,7 +105,7 @@ function UrlInputGroup({
         />
         <datalist id="port-suggestions">
           {PORT_SUGGESTIONS.filter(s => s.value).map(s => (
-            <option key={s.value} value={s.value}>{s.label} ({s.description})</option>
+            <option key={s.value} value={s.value}>{t(s.labelKey)}</option>
           ))}
         </datalist>
       </div>

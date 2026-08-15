@@ -5,16 +5,16 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 
 /**
  * POST /api/v1/cleanup/dividend-cash
- * 清理旧版现金红利重复记录：
- * 1. 删除 type=income 且 note 以"现金红利"开头的重复记录
- * 2. 修复 fundSubtype=dividend_cash 且 amount<0 的旧投资记录（改为新方向）
+ * Cleans up legacy duplicate cash-dividend records:
+ * 1. Deletes duplicate type=income records whose note starts with the cash-dividend text
+ * 2. Fixes legacy investment records with fundSubtype=dividend_cash and amount<0 (rewrites them to the new direction)
  */
 export async function POST() {
   const { hidFilter } = await getHouseholdScope();
   const results = { deletedIncome: 0, fixedInvestment: 0, errors: [] as string[] };
 
   try {
-    // 1. 删除重复的 income 记录
+    // 1. Delete duplicate income records
     const incomeRecords = await prisma.txRecord.findMany({
       where: {
         type: "income",
@@ -32,7 +32,7 @@ export async function POST() {
       results.deletedIncome = incomeRecords.length;
     }
 
-    // 2. 修复旧版 dividend_cash investment 记录：amount<0 说明是旧方向(accountId=现金)
+    // 2. Fix legacy dividend_cash investment records: amount<0 means the old direction (accountId=cash)
     const oldRecords = await prisma.txRecord.findMany({
       where: {
         fundSubtype: "dividend_cash",
@@ -46,13 +46,13 @@ export async function POST() {
     for (const rec of oldRecords) {
       const oldAmount = toNumber(rec.amount);
       const newAmount = Math.abs(oldAmount);
-      // 旧记录: accountId=现金账户, toAccountId=投资账户, amount负
-      // 新记录: accountId=投资账户, toAccountId=现金账户, amount正
+      // Old record: accountId=cash account, toAccountId=investment account, negative amount
+      // New record: accountId=investment account, toAccountId=cash account, positive amount
       await prisma.txRecord.update({
         where: { id: rec.id },
         data: {
-          accountId: rec.toAccountId!,  // 交换: 投资账户变accountId
-          toAccountId: rec.accountId,   // 现金账户变toAccountId
+          accountId: rec.toAccountId!,  // swap: investment account becomes accountId
+          toAccountId: rec.accountId,   // cash account becomes toAccountId
           amount: newAmount,
         },
       });

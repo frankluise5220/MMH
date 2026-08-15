@@ -279,6 +279,7 @@ function fundSubtypeInfo(
   fundProductType?: string | null,
 ) {
   const base = subtypeDisplay(subtype, source);
+  const baseLabel = { label: t(base.labelKey), cls: base.cls, textCls: base.textCls };
   if (fundProductType === "deposit") {
     if (subtype === "buy") return { label: t("deposit.subtype.buy"), cls: "bg-blue-50 text-blue-600" };
     if (subtype === "redeem") return { label: t("deposit.subtype.redeem"), cls: "bg-orange-50 text-orange-600" };
@@ -290,9 +291,9 @@ function fundSubtypeInfo(
       dividend: { label: t("fund.subtype.dividend"), cls: "bg-emerald-50 text-emerald-600", textCls: "text-emerald-600" },
       switch: { label: t("fund.subtype.switch"), cls: "bg-blue-50 text-blue-600" },
     };
-    return srcLabels[source] ?? base;
+    return srcLabels[source] ?? baseLabel;
   }
-  return base;
+  return baseLabel;
 }
 
 const ymdUtc = formatDateUtc;
@@ -3881,47 +3882,99 @@ export default async function Home({
 
   const depositEntries =
     view === "deposit"
-      ? (currentDepositTransactionEntries || []).map((entry) => {
-          const depositSubtype = String(entry.fundSubtype ?? "");
-          const isRedeemEntry = depositSubtype === "redeem" || depositSubtype === "switch_out";
-          const cashAccountLabel = isRedeemEntry ? (entry.toAccountName ?? "") : (entry.accountName ?? "");
-          const entryDate = toYmdOrNull(entry.date) ?? "";
-          const arrivalDate = toYmdOrNull(entry.fundArrivalDate);
-          return {
-            id: entry.id,
-            date: entryDate,
-            typeLabel: entry.fundSubtype === "redeem" ? t("deposit.subtype.redeem") : t("deposit.subtype.buy"),
-            fundName: entry.fundName ?? entry.fundCode ?? "",
-            maturityDate: arrivalDate,
-            cashAccountLabel,
-            note: entry.note ?? "",
-            amount: entry.toAccountId === accountId ? Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount)) : toNumber(entry.amount),
-            businessLinkCount: entry.businessLinkCount ?? 0,
-            businessLinkLabels: entry.businessLinkLabels ?? [],
-            edit: {
-              type: "investment" as const,
+      ? [
+          ...(currentDepositTransactionEntries || []).map((entry) => {
+            const depositSubtype = String(entry.fundSubtype ?? "");
+            const isRedeemEntry = depositSubtype === "redeem" || depositSubtype === "switch_out";
+            const cashAccountLabel = isRedeemEntry ? (entry.toAccountName ?? "") : (entry.accountName ?? "");
+            const entryDate = toYmdOrNull(entry.date) ?? "";
+            const arrivalDate = toYmdOrNull(entry.fundArrivalDate);
+            return {
+              id: entry.id,
               date: entryDate,
-              amount: Math.abs(toNumber(entry.amount)),
+              typeLabel: entry.fundSubtype === "redeem" ? t("deposit.subtype.redeem") : t("deposit.subtype.buy"),
+              fundName: entry.fundName ?? entry.fundCode ?? "",
+              maturityDate: arrivalDate,
+              cashAccountLabel,
               note: entry.note ?? "",
-              accountId: isRedeemEntry ? (entry.accountId ?? "") : (entry.toAccountId ?? ""),
-              cashAccountId: isRedeemEntry ? (entry.toAccountId ?? "") : (entry.accountId ?? ""),
-              fundName: entry.fundName ?? undefined,
-              fundNav: entry.fundNav ?? undefined,
-              depositAnnualRate:
-                entry.depositAnnualRate != null
-                  ? toNumber(entry.depositAnnualRate)
-                  : entry.fundNav != null ? toNumber(entry.fundNav) : undefined,
-              depositInterest:
-                entry.depositInterest != null
-                  ? toNumber(entry.depositInterest)
-                  : undefined,
-              depositSourceEntryId: entry.depositSourceEntryId ?? undefined,
-              fundArrivalDate: arrivalDate ?? undefined,
-              fundProductType: "deposit",
-              fundSubtype: entry.fundSubtype ?? "buy",
-            },
-          };
-        })
+              amount: entry.toAccountId === accountId ? Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount)) : toNumber(entry.amount),
+              businessLinkCount: entry.businessLinkCount ?? 0,
+              businessLinkLabels: entry.businessLinkLabels ?? [],
+              edit: {
+                type: "investment" as const,
+                date: entryDate,
+                amount: Math.abs(toNumber(entry.amount)),
+                note: entry.note ?? "",
+                accountId: isRedeemEntry ? (entry.accountId ?? "") : (entry.toAccountId ?? ""),
+                cashAccountId: isRedeemEntry ? (entry.toAccountId ?? "") : (entry.accountId ?? ""),
+                fundName: entry.fundName ?? undefined,
+                fundNav: entry.fundNav ?? undefined,
+                depositAnnualRate:
+                  entry.depositAnnualRate != null
+                    ? toNumber(entry.depositAnnualRate)
+                    : entry.fundNav != null ? toNumber(entry.fundNav) : undefined,
+                depositInterest:
+                  entry.depositInterest != null
+                    ? toNumber(entry.depositInterest)
+                    : undefined,
+                depositSourceEntryId: entry.depositSourceEntryId ?? undefined,
+                fundArrivalDate: arrivalDate ?? undefined,
+                fundProductType: "deposit",
+                fundSubtype: entry.fundSubtype ?? "buy",
+              },
+            };
+          }),
+          ...(selectedDepositAccountIds.length > 0 ? entries : [])
+            .filter((entry) => {
+              // Keep only ordinary income/expense/transfer rows here: deposit
+              // business entries (fundProductType=deposit) are already rendered
+              // by loadDepositTransactionDetailLike, so skip them to avoid duplicates.
+              if (entry.deletedAt) return false;
+              if (entry.fundProductType === "deposit") return false;
+              if (!(entry.accountId && selectedDepositAccountIds.includes(entry.accountId)) &&
+                  !(entry.toAccountId && selectedDepositAccountIds.includes(entry.toAccountId))) {
+                return false;
+              }
+              return true;
+            })
+            .map((entry) => {
+              const entryDate = toYmdOrNull(getDetailEntryDisplayDate(entry, accountId)) ?? "";
+              const isDepositReceivingSide = entry.toAccountId === accountId;
+              const effectiveAmount = effectiveAmountForAccount(entry, accountId);
+              const typeLabel =
+                entry.type === "income"
+                  ? t("transaction.type.income")
+                  : entry.type === "expense"
+                    ? t("transaction.type.expense")
+                    : entry.type === "transfer"
+                      ? t("transaction.type.transfer")
+                      : formatType(t, entry.type);
+              return {
+                id: entry.id,
+                date: entryDate,
+                typeLabel,
+                fundName: entry.categoryName ?? "",
+                maturityDate: null,
+                cashAccountLabel: isDepositReceivingSide ? (entry.accountName ?? "") : (entry.toAccountName ?? ""),
+                note: entry.note ?? "",
+                amount: effectiveAmount,
+                businessLinkCount: 0,
+                businessLinkLabels: [],
+                edit: {
+                  type: entry.type === "income" || entry.type === "expense" || entry.type === "transfer" ? entry.type : ("expense" as const),
+                  date: entryDate,
+                  amount: Math.abs(toNumber(entry.amount)),
+                  note: entry.note ?? "",
+                  accountId: entry.accountId ?? "",
+                  toAccountId: entry.toAccountId ?? undefined,
+                  toAccountName: entry.toAccountName ?? undefined,
+                  categoryId: entry.categoryId ?? undefined,
+                  categoryName: entry.categoryName ?? undefined,
+                  source: entry.source ?? null,
+                },
+              };
+            }),
+        ]
       : [];
 
   const insuranceEntries =

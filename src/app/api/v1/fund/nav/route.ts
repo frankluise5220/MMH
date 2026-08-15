@@ -29,8 +29,9 @@ async function getNav(fundCode: string, dateStr: string, accountId?: string) {
       name: cached.name ?? undefined,
     };
   }
-  // 指定日期如果是未来日期/非交易日，东方财富历史净值可能没有数据。
-  // 回退到缓存或最新净值，避免赎回界面误以为函数调用失败；返回 date 用于提示实际净值日期。
+  // If the requested date is in the future or not a trading day, the historical NAV may be missing.
+  // Fall back to the cached or latest NAV so the redeem UI does not treat this as a failed call;
+  // the returned date shows the actual NAV date.
   const latest = await getLatestFundNav(fundCode);
   if (latest) {
     return {
@@ -51,7 +52,7 @@ async function fetchNavFromEastmoney(fundCode: string, date?: string) {
   };
 
   if (date) {
-    // 先用精确日期查询
+    // Query with the exact date first
     const exactUrl = `http://api.fund.eastmoney.com/f10/lsjz?fundCode=${fundCode}&pageIndex=1&pageSize=5&startDate=${date}&endDate=${date}`;
     const exactRes = await fetch(exactUrl, { headers, cache: "no-store" });
     let json: any = null;
@@ -62,7 +63,7 @@ async function fetchNavFromEastmoney(fundCode: string, date?: string) {
       return { date: list[0]!.FSRQ, nav: parseFloat(list[0]!.DWJZ), cumNav: parseFloat(list[0]!.LJJZ) };
     }
 
-    // 精确日期无数据（非交易日），扩大范围搜索前后 30 天
+    // No data for the exact date (non-trading day); widen the search to the surrounding 30 days
     const target = new Date(date + "T00:00:00Z");
     const startDate = new Date(target.getTime() - 30 * 86400000).toISOString().slice(0, 10);
     const endDate = new Date(target.getTime() + 30 * 86400000).toISOString().slice(0, 10);
@@ -74,7 +75,7 @@ async function fetchNavFromEastmoney(fundCode: string, date?: string) {
       rangeJson?.Data?.LSJZList ?? [];
     if (rangeList.length === 0) return null;
 
-    // 按日期降序，找≤目标日期最近的交易日净值
+    // Sort by date descending and find the nearest trading-day NAV on or before the target date
     const sorted = rangeList
       .map((item: any) => ({ ...item, _t: new Date(item.FSRQ + "T00:00:00Z").getTime() }))
       .sort((a: any, b: any) => b._t - a._t);
@@ -84,7 +85,7 @@ async function fetchNavFromEastmoney(fundCode: string, date?: string) {
         return { date: item.FSRQ, nav: parseFloat(item.DWJZ), cumNav: parseFloat(item.LJJZ) };
       }
     }
-    // 没有≤目标日期的，返回最新的
+    // No NAV on or before the target date; return the latest one
     const latest = sorted[0];
     return latest ? { date: latest.FSRQ, nav: parseFloat(latest.DWJZ), cumNav: parseFloat(latest.LJJZ) } : null;
   }
@@ -115,23 +116,24 @@ export async function GET(req: NextRequest) {
   const accountId = searchParams.get("accountId")?.trim() || undefined;
 
   if (!fundCode) {
-    return NextResponse.json({ ok: false, error: "缺少基金代码" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "FUND_CODE_REQUIRED", error: "缺少基金代码" }, { status: 400 });
   }
 
   try {
     if (date) {
-      // 使用 getNav()（包含缓存→东方财富→最新净值回退链），避免未来日期/非交易日无数据时直接报错
+      // Use getNav() (cache -> Eastmoney -> latest NAV fallback chain) so missing data for
+      // future dates or non-trading days does not error directly
       const data = await getNav(fundCode, date, accountId);
       if (!data) {
-        return NextResponse.json({ ok: false, error: `未找到基金代码 ${fundCode} 的净值，请确认代码是否正确` }, { status: 404 });
+        return NextResponse.json({ ok: false, code: "NAV_NOT_FOUND", error: `未找到基金代码 ${fundCode} 的净值，请确认代码是否正确` }, { status: 404 });
       }
       return NextResponse.json({ ok: true, ...data });
     }
 
-    // 无日期时：查询实时估值
+    // Without a date: query the real-time estimate
     const latest = await refreshLatestFundNav(fundCode, accountId);
     if (!latest) {
-      return NextResponse.json({ ok: false, error: `未找到基金代码 ${fundCode} 的净值，请确认代码是否正确` }, { status: 404 });
+      return NextResponse.json({ ok: false, code: "NAV_NOT_FOUND", error: `未找到基金代码 ${fundCode} 的净值，请确认代码是否正确` }, { status: 404 });
     }
     const navDateStr = latest.navDate.toISOString().slice(0, 10);
     return NextResponse.json({
@@ -143,37 +145,38 @@ export async function GET(req: NextRequest) {
     });
   } catch (e) {
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : "查询失败" },
+      { ok: false, code: "FETCH_FAILED", error: e instanceof Error ? e.message : "查询失败" },
       { status: 500 }
     );
   }
 }
 
 /**
- * 补填基金净值（查询净值、计算手续费和份额，并写入 FundTransaction）
+ * Backfills the fund NAV (queries the NAV, calculates the fee and units, and writes FundTransaction)
  *
  * POST { entryId: string, date?: string, confirmDays?: number, amount?: number, fee?: number }
- *   entryId 可以是 FundTransaction.id 或关联的资金 TxRecord.id
- *   返回 { ok: true, nav, units, confirmDate, fee } 或 { ok: false, error }
+ *   entryId can be a FundTransaction.id or the linked cash TxRecord.id
+ *   Returns { ok: true, nav, units, confirmDate, fee } or { ok: false, error }
  *
- * 自动从费率库查询手续费率，计算手续费和份额，写入基金业务交易表。
+ * Automatically looks up the fee rate from the fee-rate store, calculates the fee and units,
+ * and writes the fund business transaction table.
  */
 export async function POST(req: NextRequest) {
   try {
     const { householdId } = await getHouseholdScope();
     const body = await req.json();
     const entryId = String(body.entryId ?? "").trim();
-    if (!entryId) return NextResponse.json({ ok: false, error: "缺少 entryId" }, { status: 400 });
+    if (!entryId) return NextResponse.json({ ok: false, code: "ENTRY_ID_REQUIRED", error: "缺少 entryId" }, { status: 400 });
 
     const fundTransaction = await findFundTransactionForEntryId(prisma, { id: entryId, householdId });
     if (!fundTransaction || fundTransaction.deletedAt) {
-      return NextResponse.json({ ok: false, error: "该记录不是基金交易" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "NOT_FUND_TRANSACTION", error: "该记录不是基金交易" }, { status: 400 });
     }
 
     const fundCode = fundTransaction.fundCode;
-    if (!fundCode) return NextResponse.json({ ok: false, error: "该记录无基金代码" }, { status: 400 });
+    if (!fundCode) return NextResponse.json({ ok: false, code: "FUND_CODE_MISSING", error: "该记录无基金代码" }, { status: 400 });
 
-    // 优先使用用户传入的申请日期，否则使用数据库中的日期
+    // Prefer the user-supplied application date; otherwise use the date from the database
     const userDate = body.date ? String(body.date) : null;
     const applyDate = userDate ?? fundTransaction.applyDate.toISOString().slice(0, 10);
     const accountId = fundTransaction.fundAccountId;
@@ -185,7 +188,7 @@ export async function POST(req: NextRequest) {
       confirmDate = userConfirmDate;
       confirmDateObj = utcDate(confirmDate);
     } else {
-      // 从确认天数库查询确认天数（使用统一模块）
+      // Query the confirm days from the confirm-days store (using the unified module)
       const confirmDays = await getFundConfirmDays(accountId, fundCode);
       confirmDate = addWorkdaysUtc(applyDate, confirmDays);
       confirmDateObj = utcDate(confirmDate);
@@ -193,21 +196,21 @@ export async function POST(req: NextRequest) {
 
     const navData = await getNav(fundCode, confirmDate, accountId);
     if (!navData) {
-      return NextResponse.json({ ok: false, error: `未找到 ${confirmDate} 的净值，可能是非交易日` }, { status: 404 });
+      return NextResponse.json({ ok: false, code: "NAV_NOT_FOUND", error: `未找到 ${confirmDate} 的净值，可能是非交易日` }, { status: 404 });
     }
     if (navData.date && navData.date !== confirmDate) {
       return NextResponse.json(
-        { ok: false, error: `${confirmDate} 没有精确净值，最新可用净值日期是 ${navData.date}，未写入份额` },
+        { ok: false, code: "EXACT_NAV_UNAVAILABLE", error: `${confirmDate} 没有精确净值，最新可用净值日期是 ${navData.date}，未写入份额` },
         { status: 404 }
       );
     }
 
     const nav = navData.nav;
-    // 优先使用用户传入的金额，否则使用数据库中的值
+    // Prefer the user-supplied amount; otherwise use the value from the database
     const userAmount = body.amount ? parseFloat(String(body.amount)) : null;
     const amount = Math.abs(userAmount ?? toNum(fundTransaction.grossAmount));
 
-    // 从费率库查询手续费率（按确认日期查询）
+    // Query the fee rate from the fee-rate store (by confirm date)
     const feeType = (fundTransaction.fundSubtype === "redeem" || fundTransaction.fundSubtype === "switch_out") ? "redeem" : "buy";
     const feeRateRaw = await getFundFeeRateByDate(accountId, fundCode, confirmDateObj, feeType);
     const feeRate = feeRateRaw / 100;
@@ -256,7 +259,7 @@ export async function POST(req: NextRequest) {
       await ensureFundTransactionCashFlowLinks(tx, [fundTransaction.id]);
     });
 
-    // 重新计算持仓
+    // Recalculate positions
     await recalcFundPositions(accountId).catch(logger.catchLog("操作失败", "route.ts"));
     // Client-side handles page refresh
 
@@ -270,7 +273,7 @@ export async function POST(req: NextRequest) {
     });
   } catch (e) {
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : "补填失败" },
+      { ok: false, code: "BACKFILL_FAILED", error: e instanceof Error ? e.message : "补填失败" },
       { status: 500 }
     );
   }
@@ -283,11 +286,11 @@ export async function PUT(req: NextRequest) {
     const date = String(body.date ?? "").trim();
     const nav = parseFloat(String(body.nav ?? ""));
     if (!fundCode || !date || !Number.isFinite(nav) || nav <= 0) {
-      return NextResponse.json({ ok: false, error: "缺少参数" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_PARAMETERS", error: "缺少参数" }, { status: 400 });
     }
     await setFundNav(fundCode, new Date(date+"T00:00:00Z"), nav);
     return NextResponse.json({ ok: true });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "保存失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "SAVE_FAILED", error: e instanceof Error ? e.message : "保存失败" }, { status: 500 });
   }
 }

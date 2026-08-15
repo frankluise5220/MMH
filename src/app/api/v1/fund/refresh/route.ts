@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
     const { householdId } = await getHouseholdScope();
     const body = await req.json();
     const accountId = String(body.accountId ?? "").trim();
-    if (!accountId) return NextResponse.json({ ok: false, error: "缺少 accountId" }, { status: 400 });
+    if (!accountId) return NextResponse.json({ ok: false, code: "MISSING_ACCOUNT_ID", error: "缺少 accountId" }, { status: 400 });
 
     let entryFilled = 0;
     let entryFailed = 0;
@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
     const syncedEntryIds: string[] = [];
     const fundUnitsDecimals = await getAccountFundUnitsDecimals(accountId);
 
-    // 直接查询 FundTransaction 中未确认的基金交易。
+    // Query unconfirmed fund transactions directly from FundTransaction.
     const requestedSymbols: string[] = Array.isArray(body.symbols) ? body.symbols.map(String).filter(Boolean) : [];
     const unconfirmedEntries = await prisma.fundTransaction.findMany({
       where: {
@@ -62,11 +62,11 @@ export async function POST(req: NextRequest) {
       orderBy: { createdAt: "asc" },
     });
 
-    // 按基金代码分组，一次性获取每个基金的历史净值
+    // Group by fund code and fetch historical NAV for each fund in one pass
     const fundCodes = [...new Set([...unconfirmedEntries.map(e => e.fundCode).filter(Boolean), ...requestedSymbols])];
     const navCacheByFund: Map<string, NavListItem[]> = new Map();
 
-    // 找出所有记录的最早日期。如无待确认记录，取 30 天前
+    // Find the earliest date among all records; fall back to 30 days ago when there are no unconfirmed records
     const now = new Date();
     let earliestDate = now.toISOString().slice(0, 10);
     for (const entry of unconfirmedEntries) {
@@ -74,20 +74,20 @@ export async function POST(req: NextRequest) {
       const applyDate = entry.applyDate.toISOString().slice(0, 10);
       if (applyDate < earliestDate) earliestDate = applyDate;
     }
-    // 如果有显式请求的 symbol 但没有未确认记录，用 30 天前作为起始
+    // When explicit symbols are requested but no unconfirmed records exist, start from 30 days ago
     if (requestedSymbols.length > 0 && unconfirmedEntries.length === 0) {
       const d = new Date(now);
       d.setDate(d.getDate() - 30);
       earliestDate = d.toISOString().slice(0, 10);
     }
 
-    // 为每个基金预加载历史净值（从最早申请日期到今天）
+    // Preload historical NAV for each fund (from the earliest apply date to today)
     for (const fundCode of fundCodes) {
       if (!fundCode) continue;
       const navList = await fetchHistoricalNavList(fundCode, earliestDate, now.toISOString().slice(0, 10));
       if (navList.length > 0) {
         navCacheByFund.set(fundCode, navList);
-        // 将净值写入缓存表（含申购状态）
+        // Write NAV into the cache table (including purchase status)
         await preloadNavListToCache(fundCode, navList);
       }
     }
@@ -102,7 +102,7 @@ export async function POST(req: NextRequest) {
           : addWorkdaysUtc(applyDate, confirmDays ?? 1);
         if (confirmDate < applyDate) logger.warn(`confirmDate ${confirmDate} < applyDate ${applyDate}, confirmDays=${confirmDays}`, "fund/refresh");
 
-        // 先从预加载的净值列表中查找
+        // First look it up in the preloaded NAV list
         const navList = navCacheByFund.get(entry.fundCode);
         let navData: { nav: number; cumNav: number | null; name: string | null; dateMatch: boolean; actualDate?: string } | null = null;
 
@@ -119,7 +119,7 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // 如果预加载列表中没有找到，使用原有的查询方式
+        // When the preloaded list has no match, fall back to the original lookup
         if (!navData) {
           navData = await getFundNav(entry.fundCode, utcDate(confirmDate), accountId);
         }
@@ -144,7 +144,7 @@ export async function POST(req: NextRequest) {
         let units: number | null = null;
         if (hasExactNav && navData && navData.nav > 0) {
           if (entry.fundSubtype === FundSubtype.redeem || entry.fundSubtype === FundSubtype.switch_out) {
-            // 赎回: received = units * nav * (1 - feeRate) => units = received / (nav * (1 - feeRate))
+            // Redeem: received = units * nav * (1 - feeRate) => units = received / (nav * (1 - feeRate))
             const divisor = navData.nav * (1 - feeRate);
             units = divisor > 0 ? roundFundUnits(amount / divisor, fundUnitsDecimals) : null;
           } else {
@@ -158,7 +158,7 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // 更新 FundTransaction：写入净值、确认日期、手续费、份额。
+        // Update FundTransaction: write NAV, confirm date, fee, and units.
         const updateData: {
           nav?: number;
           confirmDate: Date;
@@ -213,7 +213,7 @@ export async function POST(req: NextRequest) {
     });
   } catch (e) {
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : "刷新失败" },
+      { ok: false, code: "REFRESH_FAILED", error: e instanceof Error ? e.message : "刷新失败" },
       { status: 500 }
     );
   }

@@ -390,6 +390,23 @@
 
 银行理财交易应保存 `wealthProductId` 作为产品身份，`fundName` 只作为兼容展示文本。买入时理财账户只能与资金来源同机构，或属于同一所有人名下的第三方支付/钱包机构；未传 `wealthAccountId` 时接口会按资金来源自动复用或创建同机构理财账户。同一理财账户下同一产品已有份额记录时，继续买入必须传 `fundUnits`。`/api/v1/transactions/detail` 在 `fundProductType/productType = "wealth"` 时使用拆表语义：资金流水只保存现金流和投资动作分类，业务字段写入 `WealthTransaction`，编辑时可传 `businessTransactionId` 明确指定关联的理财业务记录。
 
+#### 理财持仓手动净值
+
+- Method: `PUT`
+- Path: `/api/v1/wealth-products/nav`
+- Auth: required
+- Context: server/book/user/role
+- Body: `{ accountId, wealthProductId?, productName?, date, nav }`
+- Success: `{ ok: true, data: { nav, date } }`
+- Failure: `{ ok: false, code, error }`（缺少参数 `ACCOUNT_ID_REQUIRED` / `INVALID_DATE` / `INVALID_NAV` / `PRODUCT_IDENTIFIER_REQUIRED`；账户或产品不存在 `WEALTH_ACCOUNT_NOT_FOUND` / `WEALTH_PRODUCT_NOT_FOUND`）
+
+说明：
+
+- 用于用户在理财持仓界面手动追加产品当前净值（`nav` 为产品单位净值，`date` 为净值日期），写入 `WealthProduct.manualNav / manualNavDate`。
+- 持仓表与投资汇总在读取时优先使用该净值计算市值（份额 × 净值）和浮动盈亏（市值 − 成本）；未录入手动净值时维持原口径（市值 = 剩余本金，浮动盈亏为 0）。
+- `wealthProductId` 优先作为产品身份；缺失时按 `productName` 在理财账户所属机构下解析产品。
+
+
 #### 贵金属字典
 
 - Method: `GET`

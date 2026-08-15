@@ -53,7 +53,7 @@ export async function GET(req: NextRequest) {
     ));
     return NextResponse.json({ ok: true, baseCurrency, rates });
   } catch (error) {
-    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "汇率查询失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "FETCH_FAILED", error: error instanceof Error ? error.message : "汇率查询失败" }, { status: 500 });
   }
 }
 
@@ -82,12 +82,12 @@ export async function POST(req: NextRequest) {
     if (fromCurrencyInput || rateInput !== undefined) {
       const rate = parsePositiveRate(rateInput);
       if (!fromCurrencyInput || !rate) {
-        return NextResponse.json({ ok: false, error: "手工汇率需要填写源币种和正数汇率" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "INVALID_MANUAL_RATE", error: "手工汇率需要填写源币种和正数汇率" }, { status: 400 });
       }
       const targetCurrency = normalizeCurrency(body.toCurrency ?? baseCurrency ?? await getHouseholdBaseCurrency(householdId));
       const fromCurrency = normalizeCurrency(fromCurrencyInput);
       if (fromCurrency === targetCurrency) {
-        return NextResponse.json({ ok: false, error: "同币种不需要手工汇率" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "SAME_CURRENCY_NOT_ALLOWED", error: "同币种不需要手工汇率" }, { status: 400 });
       }
       rateRow = await setFxRate({
         householdId,
@@ -112,6 +112,6 @@ export async function POST(req: NextRequest) {
       } : null,
     });
   } catch (error) {
-    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "汇率保存失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "SAVE_FAILED", error: error instanceof Error ? error.message : "汇率保存失败" }, { status: 500 });
   }
 }

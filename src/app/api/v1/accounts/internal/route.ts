@@ -71,7 +71,7 @@ export async function GET(request: Request) {
       prisma.user.findMany({
         where: hidFilter,
         orderBy: { name: "asc" },
-        // 只返回展示字段，绝不外泄 passwordHash
+        // Return display fields only; never leak passwordHash
         select: { id: true, name: true, email: true, role: true, isSystem: true, householdId: true, createdAt: true },
       }),
     ]);

@@ -10,7 +10,7 @@ function parsePrompt(prompt: string) {
   let amountMin: number | undefined;
   let amountMax: number | undefined;
 
-  // Date range: "2025年1月到2025年3月" or "2025-01到2025-03"
+  // Date range: "2025-01 to 2025-03" or Chinese year/month phrasing
   const rangeMatch = prompt.match(/(\d{4}-\d{2}|\d{4}\s*年\s*\d{1,2}\s*月)\s*[到至\-]\s*(\d{4}-\d{2}|\d{4}\s*年\s*\d{1,2}\s*月)/);
   if (rangeMatch) {
     const fromP = rangeMatch[1].match(/(\d{4}).*?(\d{1,2})/);
@@ -28,13 +28,13 @@ function parsePrompt(prompt: string) {
     else if (months.length === 1) dateFrom = months[0];
   }
 
-  // Amount: "金额小于500" or "金额大于100"
+  // Amount: e.g. "amount under 500" or "amount over 100"
   const amtLt = prompt.match(/金额\s*(小于|低于|不超过|<=?)\s*(\d+)/);
   const amtGt = prompt.match(/金额\s*(大于|高于|大于等于|不低于|>=?)\s*(\d+)/);
   if (amtLt) amountMax = parseInt(amtLt[2]);
   if (amtGt) amountMin = parseInt(amtGt[2]);
 
-  // Fund code change: "改成004011" or "基金改成014982"
+  // Fund code change: e.g. "change to 004011" or "change fund to 014982"
   const changeFund = prompt.match(/(?:改成|改成\s*基金|基金\s*改成|基金代码\s*改成?)\s*(\d{6})/);
   const newFundCode = changeFund?.[1] || null;
 
@@ -55,7 +55,7 @@ export async function POST(req: NextRequest) {
     const { hidFilter } = ctx;
     const body = await req.json();
     const prompt = String(body.prompt ?? "").trim();
-    if (!prompt) return NextResponse.json({ ok: false, error: "请输入修改指令" }, { status: 400 });
+    if (!prompt) return NextResponse.json({ ok: false, code: "MISSING_PROMPT", error: "请输入修改指令" }, { status: 400 });
 
     const accountId = String(body.accountId ?? "").trim();
     const fundCodeFilter = String(body.fundCode ?? "").trim();
@@ -106,7 +106,7 @@ export async function POST(req: NextRequest) {
 
     // Apply mode
     if (!newFundCode) {
-      return NextResponse.json({ ok: false, error: "当前只支持批量修改基金代码" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "UNSUPPORTED_OPERATION", error: "当前只支持批量修改基金代码" }, { status: 400 });
     }
 
     const records = await prisma.fundTransaction.findMany({
@@ -115,7 +115,7 @@ export async function POST(req: NextRequest) {
     });
 
     if (records.length === 0) {
-      return NextResponse.json({ ok: false, error: "没有匹配的记录" }, { status: 404 });
+      return NextResponse.json({ ok: false, code: "RECORD_NOT_FOUND", error: "没有匹配的记录" }, { status: 404 });
     }
 
     const name = await prisma.fundNavCache.findFirst({
@@ -142,6 +142,6 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true, updatedCount: records.length });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "操作失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "UPDATE_FAILED", error: e instanceof Error ? e.message : "操作失败" }, { status: 500 });
   }
 }

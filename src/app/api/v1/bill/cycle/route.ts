@@ -8,8 +8,10 @@
  *   periodEnd: string (YYYY-MM-DD)
  *   dueDate?: string | null (YYYY-MM-DD)
  *
- * 更新某一期信用卡账单周期，并从该期开始按新的账单日/还款日重排后续已存在周期。
- * 接受的实体类型: Account.id + CreditCardCycle.statementMonth
+ * Updates the credit-card bill cycle for one statement month and reorders
+ * the following existing cycles from that month onward using the new
+ * billing day / repayment day.
+ * Accepted entity types: Account.id + CreditCardCycle.statementMonth
  */
 import { NextResponse } from "next/server";
 import { AccountKind } from "@prisma/client";
@@ -74,7 +76,7 @@ export async function PATCH(req: Request) {
   try {
     const { householdId } = await getHouseholdScope();
     const body = await req.json().catch(() => null) as Record<string, unknown> | null;
-    if (!body) return NextResponse.json({ ok: false, error: "无效的请求体" }, { status: 400 });
+    if (!body) return NextResponse.json({ ok: false, code: "INVALID_REQUEST_BODY", error: "无效的请求体" }, { status: 400 });
 
     const accountId = String(body.accountId ?? "").trim();
     const statementMonth = String(body.statementMonth ?? "").trim();
@@ -82,11 +84,11 @@ export async function PATCH(req: Request) {
     const periodEnd = parseDateOnly(body.periodEnd);
     const dueDate = body.dueDate ? parseDateOnly(body.dueDate) : null;
 
-    if (!accountId || !statementMonth) return NextResponse.json({ ok: false, error: "缺少账户或账单月份" }, { status: 400 });
-    if (!statementMonthDate(statementMonth)) return NextResponse.json({ ok: false, error: "账单月份格式不正确" }, { status: 400 });
-    if (!periodStart || !periodEnd) return NextResponse.json({ ok: false, error: "账单周期日期格式不正确" }, { status: 400 });
-    if (periodStart > periodEnd) return NextResponse.json({ ok: false, error: "周期开始日不能晚于结束日" }, { status: 400 });
-    if (dueDate && dueDate < periodEnd) return NextResponse.json({ ok: false, error: "还款日不能早于账单结束日" }, { status: 400 });
+    if (!accountId || !statementMonth) return NextResponse.json({ ok: false, code: "MISSING_ACCOUNT_OR_MONTH", error: "缺少账户或账单月份" }, { status: 400 });
+    if (!statementMonthDate(statementMonth)) return NextResponse.json({ ok: false, code: "INVALID_STATEMENT_MONTH", error: "账单月份格式不正确" }, { status: 400 });
+    if (!periodStart || !periodEnd) return NextResponse.json({ ok: false, code: "INVALID_PERIOD_DATE", error: "账单周期日期格式不正确" }, { status: 400 });
+    if (periodStart > periodEnd) return NextResponse.json({ ok: false, code: "PERIOD_START_AFTER_END", error: "周期开始日不能晚于结束日" }, { status: 400 });
+    if (dueDate && dueDate < periodEnd) return NextResponse.json({ ok: false, code: "DUE_DATE_BEFORE_PERIOD_END", error: "还款日不能早于账单结束日" }, { status: 400 });
 
     const account = await prisma.account.findFirst({
       where: { id: accountId, householdId, kind: AccountKind.bank_credit },
@@ -100,7 +102,7 @@ export async function PATCH(req: Request) {
         repaymentDay: true,
       },
     });
-    if (!account) return NextResponse.json({ ok: false, error: "信用卡账户不存在" }, { status: 404 });
+    if (!account) return NextResponse.json({ ok: false, code: "CREDIT_ACCOUNT_NOT_FOUND", error: "信用卡账户不存在" }, { status: 404 });
     const billAccountIds = await getCreditBillAccountIds(prisma, account);
     const billAccountIdSet = new Set(billAccountIds);
     const storageAccountId = billAccountIds[0] ?? account.id;
@@ -110,7 +112,7 @@ export async function PATCH(req: Request) {
       orderBy: { statementMonth: "asc" },
     });
     if (!cycles.some((cycle) => cycle.statementMonth === statementMonth)) {
-      return NextResponse.json({ ok: false, error: "这一期账单周期不存在，请先生成账单列表" }, { status: 404 });
+      return NextResponse.json({ ok: false, code: "CYCLE_NOT_FOUND", error: "这一期账单周期不存在，请先生成账单列表" }, { status: 404 });
     }
 
     const billingDay = periodEnd.getUTCDate();
@@ -330,6 +332,6 @@ export async function PATCH(req: Request) {
       },
     });
   } catch (error) {
-    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "更新账单周期失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "UPDATE_FAILED", error: error instanceof Error ? error.message : "更新账单周期失败" }, { status: 500 });
   }
 }

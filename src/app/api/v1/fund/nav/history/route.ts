@@ -7,13 +7,13 @@ export const runtime = "nodejs";
 /**
  * GET /api/v1/fund/nav/history
  *
- * 查询指定基金在日期范围内的历史净值数据，用于绘制走势图。
- * 需要登录（防止未认证读取/探测全局净值缓存）。
+ * Queries historical NAV data for a fund within a date range, used to draw trend charts.
+ * Requires login (prevents unauthenticated reads/probing of the global NAV cache).
  *
  * Query params:
- *   code      (required) — 基金代码
- *   start     (optional) — 开始日期 YYYY-MM-DD，默认 180 天前
- *   end       (optional) — 结束日期 YYYY-MM-DD，默认今天
+ *   code      (required) — fund code
+ *   start     (optional) — start date YYYY-MM-DD, defaults to 180 days ago
+ *   end       (optional) — end date YYYY-MM-DD, defaults to today
  *
  * Response:
  *   { ok: true, data: [{ date, nav, cumNav }] }
@@ -21,19 +21,19 @@ export const runtime = "nodejs";
 export async function GET(req: NextRequest) {
   const currentUser = await getCurrentUser();
   if (!currentUser) {
-    return NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 });
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "请先登录" }, { status: 401 });
   }
 
   const code = req.nextUrl.searchParams.get("code")?.trim();
   if (!code) {
-    return NextResponse.json({ ok: false, error: "缺少基金代码" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_FUND_CODE", error: "缺少基金代码" }, { status: 400 });
   }
 
   const endRaw = req.nextUrl.searchParams.get("end")?.trim();
   const startRaw = req.nextUrl.searchParams.get("start")?.trim();
 
   const endDate = endRaw ? new Date(endRaw) : new Date();
-  // 默认取 180 天数据，覆盖近6个月走势
+  // Default to 180 days of data, covering roughly the last 6 months of trends
   const defaultStart = new Date(endDate);
   defaultStart.setDate(defaultStart.getDate() - 180);
   const startDate = startRaw ? new Date(startRaw) : defaultStart;
@@ -57,7 +57,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: true, data });
   } catch (e) {
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : "查询失败" },
+      { ok: false, code: "FETCH_FAILED", error: e instanceof Error ? e.message : "查询失败" },
       { status: 500 }
     );
   }

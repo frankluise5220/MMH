@@ -5,6 +5,7 @@ import { X } from "lucide-react";
 import { buildGroupedAccountOptions, buildAccountDisplayOption, type AccountDisplaySource } from "@/lib/account-display";
 import { SmartSelect } from "@/components/SmartSelect";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { useI18n } from "@/lib/i18n";
 
 type AccountOption = AccountDisplaySource;
 type CategoryOption = { id: string; name: string; type: string };
@@ -41,6 +42,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const scrollYRef = useRef(0);
+  const { t } = useI18n();
 
   const availableCategories = useMemo(
     () => categories.filter((category) => category.type === draft.type),
@@ -83,9 +85,9 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
         const response = await fetch(`/api/v1/transactions/detail?id=${encodeURIComponent(entryId)}`);
         const result = await response.json().catch(() => null);
         const entry = result?.data;
-        if (!response.ok || !result?.ok || !entry) throw new Error(result?.error ?? "读取流水失败");
+        if (!response.ok || !result?.ok || !entry) throw new Error(result?.error ?? t("mobileTxForm.loadFailed"));
         if (entry.type !== "expense" && entry.type !== "income" && entry.type !== "transfer") {
-          throw new Error("投资、存款和保险流水请从对应业务页面编辑");
+          throw new Error(t("mobileTxForm.editOtherPageHint"));
         }
         setDraft({
           id: entry.id,
@@ -99,7 +101,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
         });
         setOpen(true);
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : "读取流水失败");
+        setError(cause instanceof Error ? cause.message : t("mobileTxForm.loadFailed"));
       }
     };
     window.addEventListener("mmh:create-transaction:open", openCreate);
@@ -108,7 +110,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
       window.removeEventListener("mmh:create-transaction:open", openCreate);
       window.removeEventListener("mmh:mobile-transaction:edit", openEdit);
     };
-  }, [accounts, defaultAccountId]);
+  }, [accounts, defaultAccountId, t]);
 
   function close() {
     if (saving) return;
@@ -123,11 +125,11 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
   async function save() {
     const amount = Number(draft.amount);
     if (!draft.date || !Number.isFinite(amount) || amount <= 0 || !draft.accountId) {
-      setError("请填写日期、金额和账户");
+      setError(t("mobileTxForm.fillRequired"));
       return;
     }
     if (draft.type === "transfer" && !draft.toAccountId) {
-      setError("请选择转入账户");
+      setError(t("mobileTxForm.selectToAccount"));
       return;
     }
 
@@ -150,7 +152,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
         body: JSON.stringify(body),
       });
       const result = await response.json().catch(() => null);
-      if (!response.ok || !result?.ok) throw new Error(result?.error ?? "保存失败");
+      if (!response.ok || !result?.ok) throw new Error(result?.error ?? t("mobileTxForm.saveFailed"));
       setOpen(false);
       dispatchFinanceDataChanged({
         reason: "mobile-transaction-save",
@@ -158,7 +160,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
         entryIds: draft.id ? [draft.id] : undefined,
       });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "保存失败");
+      setError(cause instanceof Error ? cause.message : t("mobileTxForm.saveFailed"));
     } finally {
       setSaving(false);
     }
@@ -167,13 +169,13 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[1000] flex items-end overflow-hidden bg-slate-950/30" role="dialog" aria-modal="true" aria-label={draft.id ? "编辑流水" : "记一笔"}>
+    <div className="fixed inset-0 z-[1000] flex items-end overflow-hidden bg-slate-950/30" role="dialog" aria-modal="true" aria-label={draft.id ? t("mobileTxForm.editTitle") : t("mobileTxForm.newTitle")}>
       <div className="flex h-[min(86dvh,42rem)] max-h-[calc(100dvh-max(0.75rem,env(safe-area-inset-top)))] w-full flex-col overflow-hidden rounded-t-2xl bg-white shadow-2xl">
         <div className="shrink-0 px-4 pt-3">
         <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-slate-200" />
         <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold text-slate-900">{draft.id ? "编辑流水" : "记一笔"}</h2>
-          <button type="button" onClick={close} className="flex h-10 w-10 items-center justify-center text-slate-500" aria-label="关闭">
+          <h2 className="text-base font-semibold text-slate-900">{draft.id ? t("mobileTxForm.editTitle") : t("mobileTxForm.newTitle")}</h2>
+          <button type="button" onClick={close} className="flex h-10 w-10 items-center justify-center text-slate-500" aria-label={t("mobileTxForm.close")}>
             <X size={20} />
           </button>
         </div>
@@ -188,31 +190,31 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
               onClick={() => update("type", type)}
               className={`h-10 rounded-md text-sm font-medium ${draft.type === type ? "bg-white text-indigo-700 shadow-sm" : "text-slate-500"}`}
             >
-              {type === "expense" ? "支出" : type === "income" ? "收入" : "转账"}
+              {type === "expense" ? t("mobileTxForm.expense") : type === "income" ? t("mobileTxForm.income") : t("mobileTxForm.transfer")}
             </button>
           ))}
         </div>
 
         <div className="mt-3 grid grid-cols-2 gap-3">
           <label className="block">
-            <span className="text-xs text-slate-500">日期</span>
+            <span className="text-xs text-slate-500">{t("mobileTxForm.date")}</span>
             <input className="form-input mt-1" type="date" value={draft.date} onChange={(event) => update("date", event.target.value)} />
           </label>
           <label className="block">
-            <span className="text-xs text-slate-500">金额</span>
+            <span className="text-xs text-slate-500">{t("mobileTxForm.amount")}</span>
             <input className="form-input mt-1 text-right tabular-nums" inputMode="decimal" type="number" min="0" step="0.01" placeholder="0.00" value={draft.amount} onChange={(event) => update("amount", event.target.value)} />
           </label>
         </div>
 
         <label className="mt-3 block">
-          <span className="text-xs text-slate-500">{draft.type === "transfer" ? "转出账户" : "账户"}</span>
+          <span className="text-xs text-slate-500">{draft.type === "transfer" ? t("mobileTxForm.transferFromAccount") : t("mobileTxForm.account")}</span>
           <div className="mt-1 [&>[role=button]]:h-11">
             <SmartSelect
               mode="single"
               value={draft.accountId}
               onChange={(value) => update("accountId", value)}
               options={accountOptions}
-              placeholder="请选择账户"
+              placeholder={t("mobileTxForm.selectAccountPlaceholder")}
               behavior={{ search: true, hierarchy: true, density: "regular", minDropdownWidth: 340, dropdownMaxHeight: 320 }}
             />
           </div>
@@ -220,35 +222,35 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
 
         {draft.type === "transfer" ? (
           <label className="mt-3 block">
-            <span className="text-xs text-slate-500">转入账户</span>
+            <span className="text-xs text-slate-500">{t("mobileTxForm.transferToAccount")}</span>
             <div className="mt-1 [&>[role=button]]:h-11">
               <SmartSelect
                 mode="single"
                 value={draft.toAccountId}
                 onChange={(value) => update("toAccountId", value)}
                 options={transferAccountOptions}
-                placeholder="请选择账户"
+                placeholder={t("mobileTxForm.selectAccountPlaceholder")}
                 behavior={{ search: true, hierarchy: true, density: "regular", minDropdownWidth: 340, dropdownMaxHeight: 320 }}
               />
             </div>
           </label>
         ) : (
           <label className="mt-3 block">
-            <span className="text-xs text-slate-500">分类</span>
+            <span className="text-xs text-slate-500">{t("mobileTxForm.category")}</span>
             <select className="form-input mt-1" value={draft.categoryId} onChange={(event) => update("categoryId", event.target.value)}>
-              <option value="">未分类</option>
+              <option value="">{t("mobileTxForm.uncategorized")}</option>
               {availableCategories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
             </select>
           </label>
         )}
 
         <label className="mt-3 block">
-          <span className="text-xs text-slate-500">备注</span>
-          <input className="form-input mt-1" value={draft.note} onChange={(event) => update("note", event.target.value)} placeholder="可选" />
+          <span className="text-xs text-slate-500">{t("mobileTxForm.note")}</span>
+          <input className="form-input mt-1" value={draft.note} onChange={(event) => update("note", event.target.value)} placeholder={t("mobileTxForm.optional")} />
         </label>
         {error ? <p className="mt-2 text-sm text-red-600">{error}</p> : null}
         <button type="button" disabled={saving} onClick={save} className="primary-button mt-4 h-11 w-full disabled:opacity-60">
-          {saving ? "保存中..." : "保存"}
+          {saving ? t("mobileTxForm.saving") : t("mobileTxForm.save")}
         </button>
         </div>
       </div>

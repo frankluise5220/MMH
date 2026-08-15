@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db/prisma";
 
-/** 固定发件地址 */
+/** Fixed sender address */
 export const RESEND_FROM = "mmh@floatingice.win";
 
 type ResendConfig = {
@@ -30,23 +30,23 @@ export function getEnvResendConfig(): ResendConfig | null {
   if (!allowEnvResendConfig()) return null;
   const apiKey = (process.env.RESEND_API_KEY ?? "").trim();
   if (!apiKey) return null;
-  // env 可覆盖 from，但默认用固定值
+  // env can override from, but defaults to the fixed value
   const from = (process.env.RESEND_FROM ?? "").trim() || RESEND_FROM;
   return { apiKey, from };
 }
 
-/** 从 SystemSetting 表或 env 读取 Resend 配置 */
+/** Reads the Resend config from the SystemSetting table or env. */
 async function getDbResendConfig(): Promise<ResendConfig | null> {
   try {
     const setting = await prisma.systemSetting.findUnique({ where: { key: "resend_config" } });
     if (setting) {
       const parsed = JSON.parse(setting.value) as { apiKey?: string; from?: string };
       if (parsed.apiKey) {
-        // from 优先用数据库存的，但数据库存的就是固定值
+        // Prefer the from stored in the database, which is the fixed value anyway
         return { apiKey: parsed.apiKey, from: parsed.from || RESEND_FROM };
       }
     }
-    // fallback: 旧 UserSettings（兼容旧数据）
+    // fallback: legacy UserSettings (for backward compatibility with old data)
     const users = await prisma.user.findMany({ where: { role: "admin" }, take: 1 });
     if (users[0]) {
       const settings = await prisma.userSettings.findUnique({ where: { userId: users[0].id } });

@@ -6,15 +6,15 @@ export const runtime = "nodejs";
 
 /**
  * POST /api/v1/settings/resend/test
- * 使用传入的 Resend 配置发送测试邮件
- * Body: { apiKey: string, from: string }（可选：不传则用已保存配置）
+ * Sends a test email using the provided Resend configuration.
+ * Body: { apiKey: string, from: string } (optional: falls back to the saved configuration when omitted)
  */
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   let apiKey = String(body.apiKey ?? "").trim();
   let from = String(body.from ?? "").trim();
 
-  // 如果没传配置，从 SystemSetting 读取
+  // When no config is passed, read it from SystemSetting
   if (!apiKey || !from) {
     const setting = await prisma.systemSetting.findUnique({ where: { key: "resend_config" } });
     if (setting) {
@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (!apiKey || !from) {
-    return NextResponse.json({ ok: false, error: "请填写 Resend API Key 和发件地址" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_RESEND_CONFIG", error: "请填写 Resend API Key 和发件地址" }, { status: 400 });
   }
 
   const res = await fetch("https://api.resend.com/emails", {
@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
     },
     body: JSON.stringify({
       from,
-      to: from, // 测试发给自己
+      to: from, // Send the test to yourself
       subject: "MMH Resend 测试邮件",
       text: "如果你收到这封邮件，说明 Resend 发件配置正确。",
       html: "<div><h2>MMH Resend 测试邮件</h2><p>如果你收到这封邮件，说明 Resend 发件配置正确。</p></div>",
@@ -55,7 +55,7 @@ export async function POST(req: NextRequest) {
 
   if (!res.ok) {
     const data = await res.json().catch(() => null) as { message?: string; error?: string } | null;
-    return NextResponse.json({ ok: false, error: formatResendSendError(data, res.status) });
+    return NextResponse.json({ ok: false, code: "SEND_FAILED", error: formatResendSendError(data, res.status) });
   }
 
   return NextResponse.json({ ok: true });

@@ -14,6 +14,9 @@ import {
   SettingsTd,
   SettingsTh,
 } from "@/components/settings/SettingsPageScaffold";
+import { useI18n } from "@/lib/i18n";
+
+type I18nT = (key: string, params?: Record<string, string | number>) => string;
 
 type Option = {
   id: string;
@@ -53,32 +56,36 @@ type DeleteState = {
   policyCount: number;
 };
 
-const PRODUCT_TYPE_OPTIONS = [
-  { value: "savings", label: "储蓄型" },
-  { value: "dividend", label: "分红型" },
-  { value: "annuity", label: "年金型" },
-  { value: "universal", label: "万能型" },
-  { value: "investment_linked", label: "投连型" },
-  { value: "critical_illness", label: "重疾险" },
-  { value: "medical", label: "医疗险" },
-  { value: "accident", label: "意外险" },
-  { value: "term_life", label: "定期寿险" },
-  { value: "whole_life", label: "终身寿险" },
-  { value: "other", label: "其他" },
+const PRODUCT_TYPE_VALUES = [
+  "savings",
+  "dividend",
+  "annuity",
+  "universal",
+  "investment_linked",
+  "critical_illness",
+  "medical",
+  "accident",
+  "term_life",
+  "whole_life",
+  "other",
 ] as const;
 
-const ACCOUNTING_TYPE_OPTIONS = [
-  { value: "asset", label: "资产型" },
-  { value: "protection", label: "保障型" },
-  { value: "hybrid", label: "混合型" },
+const ACCOUNTING_TYPE_VALUES = [
+  "asset",
+  "protection",
+  "hybrid",
 ] as const;
 
-function productTypeLabel(value?: string | null) {
-  return PRODUCT_TYPE_OPTIONS.find((item) => item.value === value)?.label ?? "其他";
+/** Localized label for an insurance product type. */
+function productTypeLabel(t: I18nT, value?: string | null) {
+  const known = (PRODUCT_TYPE_VALUES as readonly string[]).includes(value ?? "");
+  return t(`insuranceProduct.type.${known && value ? value : "other"}`);
 }
 
-function accountingTypeLabel(value?: string | null) {
-  return ACCOUNTING_TYPE_OPTIONS.find((item) => item.value === value)?.label ?? "资产型";
+/** Localized label for an insurance product accounting type. */
+function accountingTypeLabel(t: I18nT, value?: string | null) {
+  const known = (ACCOUNTING_TYPE_VALUES as readonly string[]).includes(value ?? "");
+  return t(`insuranceProduct.accountingType.${known && value ? value : "asset"}`);
 }
 
 function toEditState(item: InsuranceProductMasterRow): EditState {
@@ -135,6 +142,7 @@ export function SettingsInsuranceProductsClient({
   initialProducts: InsuranceProductMasterRow[];
   institutions: Option[];
 }) {
+  const { t } = useI18n();
   const [products, setProducts] = useState(initialProducts);
   const [query, setQuery] = useState("");
   const [productTypeFilter, setProductTypeFilter] = useState("all");
@@ -168,11 +176,11 @@ export function SettingsInsuranceProductsClient({
     event.preventDefault();
     if (!editing || saving) return;
     if (!editing.name.trim()) {
-      window.alert("请输入保险产品名称");
+      window.alert(t("settings.insuranceProducts.client.nameRequired"));
       return;
     }
     if (!editing.institutionId) {
-      window.alert("请选择承保机构");
+      window.alert(t("settings.insuranceProducts.client.selectInstitution"));
       return;
     }
 
@@ -192,7 +200,7 @@ export function SettingsInsuranceProductsClient({
         | { ok?: boolean; error?: string; productMaster?: Record<string, unknown> }
         | null;
       if (!response.ok || !data?.ok || !data.productMaster) {
-        throw new Error(data?.error || "保存保险产品失败");
+        throw new Error(data?.error || t("insuranceShell.saveProductFailed"));
       }
       const productMaster = data.productMaster;
       setProducts((prev) => {
@@ -202,7 +210,7 @@ export function SettingsInsuranceProductsClient({
       setEditing(null);
       dispatchFinanceDataChanged({ reason: "insurance-product:save" });
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "保存保险产品失败");
+      window.alert(error instanceof Error ? error.message : t("insuranceShell.saveProductFailed"));
     } finally {
       setSaving(false);
     }
@@ -228,7 +236,7 @@ export function SettingsInsuranceProductsClient({
         | { ok?: boolean; error?: string }
         | null;
       if (!response.ok || !data?.ok) {
-        throw new Error(data?.error || "删除保险产品失败");
+        throw new Error(data?.error || t("settings.insuranceProducts.client.deleteFailed"));
       }
       setProducts((prev) => prev.filter((item) => item.id !== deleteTarget.id));
       if (editing?.id === deleteTarget.id) {
@@ -239,7 +247,7 @@ export function SettingsInsuranceProductsClient({
       setDeleteCascade(false);
       dispatchFinanceDataChanged({ reason: "insurance-product:delete" });
     } catch (error) {
-      setDeleteError(error instanceof Error ? error.message : "删除保险产品失败");
+      setDeleteError(error instanceof Error ? error.message : t("settings.insuranceProducts.client.deleteFailed"));
     } finally {
       setDeleting(false);
     }
@@ -248,19 +256,19 @@ export function SettingsInsuranceProductsClient({
   return (
     <div className="space-y-4">
       <SettingsPageHeader
-        title="保险产品"
-        description="维护保险产品主数据；保单的投保人、被保人、受益人等信息仍在具体保单里维护。"
+        title={t("settings.insuranceProducts")}
+        description={t("settings.insuranceProducts.client.description")}
         count={products.length}
         actions={
           <SettingsPrimaryAddButton onClick={() => setEditing(createBlankEditState(institutions[0]?.id ?? ""))}>
-            新增保险产品
+            {t("insuranceFormModal.newProductTitle")}
           </SettingsPrimaryAddButton>
         }
       />
 
       <SettingsSection
-        title="保险产品库"
-        description={`已关联 ${linkedCount} 个，未关联 ${products.length - linkedCount} 个`}
+        title={t("settings.insuranceProducts.client.libraryTitle")}
+        description={t("settings.insuranceProducts.client.linkedSummary", { linked: linkedCount, unlinked: products.length - linkedCount })}
         count={filteredProducts.length}
       >
 
@@ -270,7 +278,7 @@ export function SettingsInsuranceProductsClient({
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索产品名称、简称、承保机构"
+              placeholder={t("settings.insuranceProducts.client.searchPlaceholder")}
               className="form-input h-9 pl-8 text-sm"
             />
           </div>
@@ -278,13 +286,13 @@ export function SettingsInsuranceProductsClient({
             value={productTypeFilter}
             onChange={(event) => setProductTypeFilter(event.target.value)}
             className="form-input h-9 w-36 text-sm"
-            title="产品类型筛选"
-            aria-label="产品类型筛选"
+            title={t("settings.insuranceProducts.client.typeFilterLabel")}
+            aria-label={t("settings.insuranceProducts.client.typeFilterLabel")}
           >
-            <option value="all">全部类型</option>
-            {PRODUCT_TYPE_OPTIONS.map((item) => (
-              <option key={item.value} value={item.value}>
-                {item.label}
+            <option value="all">{t("settings.insuranceProducts.client.allTypes")}</option>
+            {PRODUCT_TYPE_VALUES.map((value) => (
+              <option key={value} value={value}>
+                {productTypeLabel(t, value)}
               </option>
             ))}
           </select>
@@ -293,14 +301,14 @@ export function SettingsInsuranceProductsClient({
         <SettingsTable minWidth={920}>
             <thead className="sticky top-0 z-10 bg-slate-50">
               <tr>
-                <SettingsTh>保险产品</SettingsTh>
-                <SettingsTh>产品类型</SettingsTh>
-                <SettingsTh>显示口径</SettingsTh>
-                <SettingsTh>承保机构</SettingsTh>
-                <SettingsTh>币种</SettingsTh>
-                <SettingsTh align="right">关联保单</SettingsTh>
-                <SettingsTh>备注</SettingsTh>
-                <SettingsTh align="right">操作</SettingsTh>
+                <SettingsTh>{t("settings.insuranceProducts")}</SettingsTh>
+                <SettingsTh>{t("insuranceProductEdit.productTypeLabel")}</SettingsTh>
+                <SettingsTh>{t("insuranceProductEdit.accountingTypeLabel")}</SettingsTh>
+                <SettingsTh>{t("insuranceProductEdit.institutionLabel")}</SettingsTh>
+                <SettingsTh>{t("detail.column.currency")}</SettingsTh>
+                <SettingsTh align="right">{t("settings.insuranceProducts.client.linkedPolicies")}</SettingsTh>
+                <SettingsTh>{t("insurance.col.note")}</SettingsTh>
+                <SettingsTh align="right">{t("detail.column.actions")}</SettingsTh>
               </tr>
             </thead>
             <tbody className="text-sm">
@@ -317,8 +325,8 @@ export function SettingsInsuranceProductsClient({
                         ) : null}
                       </div>
                     </SettingsTd>
-                    <SettingsTd>{productTypeLabel(item.productType)}</SettingsTd>
-                    <SettingsTd>{accountingTypeLabel(item.accountingType)}</SettingsTd>
+                    <SettingsTd>{productTypeLabel(t, item.productType)}</SettingsTd>
+                    <SettingsTd>{accountingTypeLabel(t, item.accountingType)}</SettingsTd>
                     <SettingsTd>{item.institutionShortName || item.institutionName || "-"}</SettingsTd>
                     <SettingsTd>{item.currency}</SettingsTd>
                     <SettingsTd align="right">{item.policyCount}</SettingsTd>
@@ -330,12 +338,12 @@ export function SettingsInsuranceProductsClient({
                     <SettingsTd align="right">
                       <SettingsRowActions>
                         <SettingsActionButton
-                          label="编辑保险产品"
+                          label={t("insuranceProductEdit.editTitle")}
                           variant="edit"
                           onClick={() => setEditing(toEditState(item))}
                         />
                         <SettingsActionButton
-                          label="删除保险产品"
+                          label={t("settings.insuranceProducts.client.deleteProduct")}
                           variant="delete"
                           onClick={() => {
                             setDeleteError("");
@@ -353,7 +361,7 @@ export function SettingsInsuranceProductsClient({
                   </tr>
                 ))
               ) : (
-                <SettingsEmptyRow colSpan={8}>暂无保险产品</SettingsEmptyRow>
+                <SettingsEmptyRow colSpan={8}>{t("settings.insuranceProducts.client.empty")}</SettingsEmptyRow>
               )}
             </tbody>
         </SettingsTable>
@@ -363,7 +371,7 @@ export function SettingsInsuranceProductsClient({
         <div className="app-modal-backdrop z-[1000]">
           <div className="app-modal-panel max-w-[min(42rem,calc(100vw-1rem))]">
             <div className="modal-header shrink-0">
-              <div className="text-sm font-semibold text-slate-800">{editing.id ? "编辑保险产品" : "新增保险产品"}</div>
+              <div className="text-sm font-semibold text-slate-800">{editing.id ? t("insuranceProductEdit.editTitle") : t("insuranceFormModal.newProductTitle")}</div>
               <button
                 type="button"
                 onClick={() => setEditing(null)}
@@ -376,34 +384,34 @@ export function SettingsInsuranceProductsClient({
             <form className="flex min-h-0 flex-1 flex-col" onSubmit={onSave}>
               <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 sm:p-4">
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                  <Field label="产品名称">
+                  <Field label={t("investForm.productNameLabel")}>
                     <input
                       value={editing.name}
                       onChange={(event) => setEditing({ ...editing, name: event.target.value })}
                       className="form-input"
                     />
                   </Field>
-                  <Field label="简称">
+                  <Field label={t("wealthForm.shortName")}>
                     <input
                       value={editing.shortName}
                       onChange={(event) => setEditing({ ...editing, shortName: event.target.value })}
                       className="form-input"
                     />
                   </Field>
-                  <Field label="产品类型">
+                  <Field label={t("insuranceProductEdit.productTypeLabel")}>
                     <select
                       value={editing.productType}
                       onChange={(event) => setEditing({ ...editing, productType: event.target.value })}
                       className="form-input"
                     >
-                      {PRODUCT_TYPE_OPTIONS.map((item) => (
-                        <option key={item.value} value={item.value}>
-                          {item.label}
+                      {PRODUCT_TYPE_VALUES.map((value) => (
+                        <option key={value} value={value}>
+                          {productTypeLabel(t, value)}
                         </option>
                       ))}
                     </select>
                   </Field>
-                  <Field label="显示口径">
+                  <Field label={t("insuranceProductEdit.accountingTypeLabel")}>
                     <select
                       value={editing.accountingType}
                       onChange={(event) =>
@@ -411,20 +419,20 @@ export function SettingsInsuranceProductsClient({
                       }
                       className="form-input"
                     >
-                      {ACCOUNTING_TYPE_OPTIONS.map((item) => (
-                        <option key={item.value} value={item.value}>
-                          {item.label}
+                      {ACCOUNTING_TYPE_VALUES.map((value) => (
+                        <option key={value} value={value}>
+                          {accountingTypeLabel(t, value)}
                         </option>
                       ))}
                     </select>
                   </Field>
-                  <Field label="承保机构">
+                  <Field label={t("insuranceProductEdit.institutionLabel")}>
                     <select
                       value={editing.institutionId}
                       onChange={(event) => setEditing({ ...editing, institutionId: event.target.value })}
                       className="form-input"
                     >
-                      <option value="">请选择</option>
+                      <option value="">{t("txForm.selectPlaceholder")}</option>
                       {institutions.map((item) => (
                         <option key={item.id} value={item.id}>
                           {item.label || item.name}
@@ -432,7 +440,7 @@ export function SettingsInsuranceProductsClient({
                       ))}
                     </select>
                   </Field>
-                  <Field label="币种">
+                  <Field label={t("detail.column.currency")}>
                     <input
                       value={editing.currency}
                       onChange={(event) => setEditing({ ...editing, currency: event.target.value.toUpperCase() })}
@@ -440,7 +448,7 @@ export function SettingsInsuranceProductsClient({
                     />
                   </Field>
                 </div>
-                <Field label="备注">
+                <Field label={t("insurance.col.note")}>
                   <textarea
                     value={editing.note}
                     onChange={(event) => setEditing({ ...editing, note: event.target.value })}
@@ -456,14 +464,14 @@ export function SettingsInsuranceProductsClient({
                     onClick={() => setEditing(null)}
                     className="secondary-button h-9 px-4"
                   >
-                    取消
+                    {t("common.cancel")}
                   </button>
                   <button
                     type="submit"
                     disabled={saving}
                     className="primary-button h-9 px-4 disabled:opacity-50"
                   >
-                    {saving ? "保存中..." : "保存产品"}
+                    {saving ? t("settings.tags.saving") : t("settings.insuranceProducts.client.saveProduct")}
                   </button>
                 </div>
               </div>
@@ -485,12 +493,11 @@ export function SettingsInsuranceProductsClient({
             className="w-[360px] max-w-[calc(100vw-2rem)] rounded-xl border border-slate-200 bg-white p-4 shadow-xl"
             onMouseDown={(event) => event.stopPropagation()}
           >
-            <div className="text-sm font-semibold text-slate-800">确认删除保险产品</div>
+            <div className="text-sm font-semibold text-slate-800">{t("settings.insuranceProducts.client.deleteConfirmTitle")}</div>
             <div className="mt-1 text-xs leading-5 text-slate-500">
-              产品“{deleteTarget.name}”
               {deleteTarget.policyCount > 0
-                ? ` 已关联 ${deleteTarget.policyCount} 个保单。勾选后会一并删除关联保单、交易记录与计划任务。`
-                : " 当前没有关联保单。"}
+                ? t("settings.insuranceProducts.client.deleteLinkedWarning", { name: deleteTarget.name, count: deleteTarget.policyCount })
+                : t("settings.insuranceProducts.client.deleteNoLinked", { name: deleteTarget.name })}
             </div>
             {deleteTarget.policyCount > 0 ? (
               <label className="mt-3 flex items-start gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs text-slate-600">
@@ -500,7 +507,7 @@ export function SettingsInsuranceProductsClient({
                   onChange={(event) => setDeleteCascade(event.target.checked)}
                   className="mt-0.5 h-3.5 w-3.5 rounded border-slate-300"
                 />
-                <span>同时删除关联保单、交易记录和计划任务</span>
+                <span>{t("settings.insuranceProducts.client.cascadeLabel")}</span>
               </label>
             ) : null}
             <input
@@ -516,7 +523,7 @@ export function SettingsInsuranceProductsClient({
                   void confirmDelete();
                 }
               }}
-              placeholder="输入密码确认"
+              placeholder={t("settings.insuranceProducts.client.passwordPlaceholder")}
               autoFocus
               className="mt-3 h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none focus:border-blue-400"
             />
@@ -531,7 +538,7 @@ export function SettingsInsuranceProductsClient({
                 }}
                 className="h-8 rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-600 hover:bg-slate-50"
               >
-                取消
+                {t("common.cancel")}
               </button>
               <button
                 type="button"
@@ -539,7 +546,7 @@ export function SettingsInsuranceProductsClient({
                 disabled={deleting}
                 className="h-8 rounded-md bg-red-600 px-3 text-xs text-white hover:bg-red-700 disabled:opacity-50"
               >
-                {deleting ? "删除中..." : "确认删除"}
+                {deleting ? t("stockPanel.deleting") : t("settings.accounts.confirmDelete")}
               </button>
             </div>
           </div>

@@ -247,18 +247,18 @@ async function validateReferencedOwnership(data: Record<string, unknown>, househ
 async function requireScope(req: Request) {
   try {
     const scope = await getApiHouseholdScope(req);
-    // Agent DB API 属于管理能力：会话 cookie 方式登录时必须是管理员
-    // （API Key 路径本身即管理员密码验证，天然满足）
+    // The Agent DB API is an admin capability: cookie-session logins must be an admin
+    // (the API Key path already performs admin-password verification, satisfying this by nature)
     if (scope.user && !(scope.user.role === "admin" || scope.user.isSystem === true)) {
       return NextResponse.json(
-        { ok: false, error: "仅管理员可访问数据库 API" },
+        { ok: false, code: "FORBIDDEN", error: "仅管理员可访问数据库 API" },
         { status: 403, headers: corsHeaders() },
       );
     }
     return scope;
   } catch (e) {
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : "未授权" },
+      { ok: false, code: "UNAUTHORIZED", error: e instanceof Error ? e.message : "未授权" },
       { status: 401, headers: corsHeaders() },
     );
   }
@@ -270,7 +270,7 @@ function isResponse(value: unknown): value is NextResponse {
 
 async function ensureOwnedRecord(model: any, modelInfo: ModelInfo, id: string, householdId: string) {
   const existing = await model.findFirst({ where: scopedWhere(modelInfo, householdId, { id }) });
-  if (!existing) return { ok: false as const, status: 404, error: "记录不存在" };
+  if (!existing) return { ok: false as const, code: "RECORD_NOT_FOUND", status: 404, error: "记录不存在" };
   return { ok: true as const, existing };
 }
 
@@ -281,18 +281,18 @@ export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const modelInfo = getModelInfo(searchParams.get("model") ?? "");
-    if (!modelInfo) return NextResponse.json({ ok: false, error: "缺少或无效的 model 参数" }, { status: 400, headers: corsHeaders() });
+    if (!modelInfo) return NextResponse.json({ ok: false, code: "INVALID_MODEL", error: "缺少或无效的 model 参数" }, { status: 400, headers: corsHeaders() });
     assertModelAllowed(modelInfo);
 
     const model = getPrismaModel(modelInfo);
-    if (!model) return NextResponse.json({ ok: false, error: `模型 ${modelInfo.name} 不存在` }, { status: 400, headers: corsHeaders() });
+    if (!model) return NextResponse.json({ ok: false, code: "MODEL_NOT_FOUND", error: `模型 ${modelInfo.name} 不存在` }, { status: 400, headers: corsHeaders() });
 
     const take = Math.min(Math.max(jsonNumber(searchParams.get("take"), 100), 1), 500);
     const skip = Math.max(jsonNumber(searchParams.get("skip"), 0), 0);
     const orderByField = searchParams.get("orderBy") || (hasField(modelInfo, "createdAt") ? "createdAt" : "id");
     const orderByDir = searchParams.get("orderDir") === "asc" ? "asc" : "desc";
     if (!hasField(modelInfo, orderByField)) {
-      return NextResponse.json({ ok: false, error: `排序字段 ${orderByField} 不存在` }, { status: 400, headers: corsHeaders() });
+      return NextResponse.json({ ok: false, code: "INVALID_ORDER_FIELD", error: `排序字段 ${orderByField} 不存在` }, { status: 400, headers: corsHeaders() });
     }
 
     const where = {
@@ -306,7 +306,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ ok: true, data: data.map(serializeRow), page: { take, skip, total } }, { headers: corsHeaders() });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "查询失败" }, { status: 500, headers: corsHeaders() });
+    return NextResponse.json({ ok: false, code: "FETCH_FAILED", error: e instanceof Error ? e.message : "查询失败" }, { status: 500, headers: corsHeaders() });
   }
 }
 
@@ -318,7 +318,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const modelInfo = getModelInfo(String(body?.model ?? ""));
     if (!modelInfo || !body?.data) {
-      return NextResponse.json({ ok: false, error: "缺少 model 或 data 参数" }, { status: 400, headers: corsHeaders() });
+      return NextResponse.json({ ok: false, code: "MISSING_PARAMS", error: "缺少 model 或 data 参数" }, { status: 400, headers: corsHeaders() });
     }
     assertModelAllowed(modelInfo, true);
 
@@ -330,7 +330,7 @@ export async function POST(req: NextRequest) {
     const created = await model.create({ data });
     return NextResponse.json({ ok: true, data: serializeRow(created) }, { headers: corsHeaders() });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "创建失败" }, { status: 500, headers: corsHeaders() });
+    return NextResponse.json({ ok: false, code: "CREATE_FAILED", error: e instanceof Error ? e.message : "创建失败" }, { status: 500, headers: corsHeaders() });
   }
 }
 
@@ -343,20 +343,20 @@ export async function PUT(req: NextRequest) {
     const modelInfo = getModelInfo(String(body?.model ?? ""));
     const id = String(body?.id ?? "").trim();
     if (!modelInfo || !id || !body?.data) {
-      return NextResponse.json({ ok: false, error: "缺少 model、id 或 data 参数" }, { status: 400, headers: corsHeaders() });
+      return NextResponse.json({ ok: false, code: "MISSING_PARAMS", error: "缺少 model、id 或 data 参数" }, { status: 400, headers: corsHeaders() });
     }
     assertModelAllowed(modelInfo, true);
 
     const model = getPrismaModel(modelInfo);
     const ownership = await ensureOwnedRecord(model, modelInfo, id, scope.householdId);
-    if (!ownership.ok) return NextResponse.json({ ok: false, error: ownership.error }, { status: ownership.status, headers: corsHeaders() });
+    if (!ownership.ok) return NextResponse.json({ ok: false, code: "RECORD_NOT_FOUND", error: ownership.error }, { status: ownership.status, headers: corsHeaders() });
 
     const data = normalizeData(modelInfo, body.data, "update");
     await validateReferencedOwnership(data, scope.householdId);
     const updated = await model.update({ where: { id }, data });
     return NextResponse.json({ ok: true, data: serializeRow(updated) }, { headers: corsHeaders() });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "更新失败" }, { status: 500, headers: corsHeaders() });
+    return NextResponse.json({ ok: false, code: "UPDATE_FAILED", error: e instanceof Error ? e.message : "更新失败" }, { status: 500, headers: corsHeaders() });
   }
 }
 
@@ -369,17 +369,17 @@ export async function DELETE(req: NextRequest) {
     const modelInfo = getModelInfo(searchParams.get("model") ?? "");
     const id = String(searchParams.get("id") ?? "").trim();
     if (!modelInfo || !id) {
-      return NextResponse.json({ ok: false, error: "缺少 model 或 id 参数" }, { status: 400, headers: corsHeaders() });
+      return NextResponse.json({ ok: false, code: "MISSING_PARAMS", error: "缺少 model 或 id 参数" }, { status: 400, headers: corsHeaders() });
     }
     assertModelAllowed(modelInfo, true);
 
     const model = getPrismaModel(modelInfo);
     const ownership = await ensureOwnedRecord(model, modelInfo, id, scope.householdId);
-    if (!ownership.ok) return NextResponse.json({ ok: false, error: ownership.error }, { status: ownership.status, headers: corsHeaders() });
+    if (!ownership.ok) return NextResponse.json({ ok: false, code: "RECORD_NOT_FOUND", error: ownership.error }, { status: ownership.status, headers: corsHeaders() });
 
     await model.delete({ where: { id } });
     return NextResponse.json({ ok: true }, { headers: corsHeaders() });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "删除失败" }, { status: 500, headers: corsHeaders() });
+    return NextResponse.json({ ok: false, code: "DELETE_FAILED", error: e instanceof Error ? e.message : "删除失败" }, { status: 500, headers: corsHeaders() });
   }
 }

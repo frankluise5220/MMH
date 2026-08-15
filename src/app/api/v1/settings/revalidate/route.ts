@@ -7,19 +7,19 @@ export const runtime = "nodejs";
 /**
  * POST /api/v1/settings/revalidate
  *
- * 强制刷新服务端缓存（unstable_cache / revalidateTag）。
- * 用于在数据库被外部工具直接修改后，让 Web 重新读取最新数据。
- * 仅管理员可操作。
+ * Force-refreshes server caches (unstable_cache / revalidateTag).
+ * Used when the database was modified directly by an external tool so the Web
+ * app re-reads the latest data. Admin only.
  *
  * Response:
- *   { ok: true } 成功
- *   { ok: false, error } 失败
+ *   { ok: true } success
+ *   { ok: false, error } failure
  */
 export async function POST() {
   const user = await getCurrentUser();
   if (!user || !isAdmin(user)) {
     return NextResponse.json(
-      { ok: false, error: "仅管理员可执行此操作" },
+      { ok: false, code: "ADMIN_ONLY", error: "仅管理员可执行此操作" },
       { status: 403 },
     );
   }
@@ -31,7 +31,7 @@ export async function POST() {
     return NextResponse.json({ ok: true });
   } catch (e) {
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : "刷新缓存失败" },
+      { ok: false, code: "REVALIDATE_FAILED", error: e instanceof Error ? e.message : "刷新缓存失败" },
       { status: 500 },
     );
   }

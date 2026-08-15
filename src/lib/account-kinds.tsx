@@ -1,17 +1,38 @@
-export function kindLabel(k: string): string {
-  const map: Record<string, string> = {
-    cash: "现金",
-    bank_debit: "借记卡",
-    bank_credit: "信用卡",
-    ewallet: "电子钱包",
-    deposit: "存款",
-    investment: "投资",
-    loan: "债务/债权",
-    insurance: "保险",
-    other: "其他",
-    bank_savings: "储蓄卡",
-  };
-  return map[k] || k;
+export type I18nT = (key: string, params?: Record<string, string | number>) => string;
+
+// Catalog keys for account-kind labels; keep in sync with the account.kind.* entries in i18n-core.ts.
+const KIND_LABEL_KEYS: Record<string, string> = {
+  cash: "account.kind.cash",
+  bank_debit: "account.kind.bank_debit",
+  bank_credit: "account.kind.bank_credit",
+  ewallet: "account.kind.ewallet",
+  deposit: "account.kind.deposit",
+  investment: "account.kind.investment",
+  loan: "account.kind.loan",
+  insurance: "account.kind.insurance",
+  other: "account.kind.other",
+  bank_savings: "account.kind.bank_savings",
+};
+
+// Legacy account-kind labels kept as data for callers without a `t` function
+// (server pages and shared libs). New code should pass `t` to kindLabel().
+const KIND_LABEL_FALLBACK: Record<string, string> = {
+  cash: "现金",
+  bank_debit: "借记卡",
+  bank_credit: "信用卡",
+  ewallet: "电子钱包",
+  deposit: "存款",
+  investment: "投资",
+  loan: "债务/债权",
+  insurance: "保险",
+  other: "其他",
+  bank_savings: "储蓄卡",
+};
+
+export function kindLabel(k: string, t?: I18nT): string {
+  const key = KIND_LABEL_KEYS[k];
+  if (t && key) return t(key);
+  return KIND_LABEL_FALLBACK[k] || k;
 }
 
 export function kindColor(k: string): string {
@@ -50,20 +71,38 @@ export function kindIconName(k: string): string {
   return "building-2";
 }
 
-export function institutionTypeLabel(t: string | null): string {
-  const map: Record<string, string> = {
-    family_member: "家庭成员",
-    person: "往来人员",
-    organization: "往来组织",
-    bank: "银行",
-    insurance: "保险公司",
-    brokerage: "证券",
-    payment: "第三方支付",
-    ewallet: "钱包",
-    debt: "债权债务",
-    other: "其他",
-  };
-  return map[t ?? "other"] ?? t ?? "其他";
+// Catalog keys for institution-type labels; keep in sync with the institution.type.* entries in i18n-core.ts.
+const INSTITUTION_TYPE_LABEL_KEYS: Record<string, string> = {
+  family_member: "institution.type.family_member",
+  person: "institution.type.person",
+  organization: "institution.type.organization",
+  bank: "institution.type.bank",
+  insurance: "institution.type.insurance",
+  brokerage: "institution.type.brokerage",
+  payment: "institution.type.payment",
+  ewallet: "institution.type.ewallet",
+  debt: "institution.type.debt",
+  other: "institution.type.other",
+};
+
+// Legacy institution-type labels kept as data for callers without a `t` function.
+const INSTITUTION_TYPE_LABEL_FALLBACK: Record<string, string> = {
+  family_member: "家庭成员",
+  person: "往来人员",
+  organization: "往来组织",
+  bank: "银行",
+  insurance: "保险公司",
+  brokerage: "证券",
+  payment: "第三方支付",
+  ewallet: "钱包",
+  debt: "债权债务",
+  other: "其他",
+};
+
+export function institutionTypeLabel(type: string | null, t?: I18nT): string {
+  const key = INSTITUTION_TYPE_LABEL_KEYS[type ?? "other"];
+  if (t && key) return t(key);
+  return INSTITUTION_TYPE_LABEL_FALLBACK[type ?? "other"] ?? type ?? INSTITUTION_TYPE_LABEL_FALLBACK.other;
 }
 
 export function institutionTypeIconName(t: string | null): string {

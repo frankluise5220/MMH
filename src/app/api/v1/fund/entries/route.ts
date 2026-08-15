@@ -11,7 +11,7 @@ export async function GET(req: NextRequest) {
   const subtype = searchParams.get("subtype")?.trim();
 
   if (!accountId || !fundCode) {
-    return NextResponse.json({ ok: false, error: "缺少参数" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_PARAMS", error: "缺少参数" }, { status: 400 });
   }
 
   try {
@@ -41,6 +41,6 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ ok: true, entries: result });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "查询失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "FETCH_FAILED", error: e instanceof Error ? e.message : "查询失败" }, { status: 500 });
   }
 }

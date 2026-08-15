@@ -4,7 +4,7 @@ import { getApiHouseholdScope } from "@/lib/server/api-auth";
 export const runtime = "nodejs";
 
 /**
- * 获取 Prisma schema 的 Agent 可访问模型列表。
+ * Lists the Agent-accessible models of the Prisma schema.
  *
  * Auth: browser session cookie, Authorization: Bearer <admin password>, or X-Api-Key.
  *
@@ -59,11 +59,11 @@ export async function GET(req: Request) {
   try {
     await getApiHouseholdScope(req);
 
-    // 使用Prisma的DMMF API动态获取所有模型信息
+    // Dynamically fetch all model metadata via Prisma's DMMF API
     const { Prisma } = await import("@prisma/client");
     const dmmf = Prisma?.dmmf?.datamodel?.models || [];
 
-    // 中文标题映射
+    // Model name to Chinese title mapping
     const MODEL_CN: Record<string, string> = {
       Household: "家庭",
       User: "用户",

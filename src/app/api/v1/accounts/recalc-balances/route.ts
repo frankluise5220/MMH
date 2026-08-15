@@ -19,7 +19,7 @@ export async function POST() {
       await recalcAndSaveAccountBalance(a.id);
     }
 
-    // 返回更新后的余额用于验证
+    // Return updated balances for verification
     const updated = await prisma.account.findMany({
       where: { ...hidFilter, isActive: true },
       select: { id: true, name: true, kind: true, balance: true },

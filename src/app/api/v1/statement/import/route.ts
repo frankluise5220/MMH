@@ -729,7 +729,7 @@ async function ensureAccountId(tx: Db, householdId: string, accountName?: string
     if (matchedTailAccount?.id) return matchedTailAccount.id;
     throw new Error(`未找到付款尾号对应账户：${name}`);
   }
-  // When the account name matches "XX的往来款" and a Counterparty exists,
+  // When the account name matches the "<owner>'s debt" naming convention and a Counterparty exists,
   // resolve or create the loan account linked to that counterparty.
   const debtAccountId = await resolveDebtAccountByCounterpartyName(tx, householdId, name);
   if (debtAccountId) return debtAccountId;
@@ -1017,7 +1017,7 @@ export async function POST(req: Request) {
   const currentUser = await getCurrentUser();
   if (!currentUser && !requireApiKey(req).ok) {
     return NextResponse.json(
-      { ok: false, error: "未授权" },
+      { ok: false, code: "UNAUTHORIZED", error: "未授权" },
       { status: 401, headers: corsHeaders() },
     );
   }
@@ -1039,7 +1039,7 @@ export async function POST(req: Request) {
     .safeParse(body);
   if (!parse.success) {
     return NextResponse.json(
-      { ok: false, error: "items 格式不正确" },
+      { ok: false, code: "INVALID_ITEMS_FORMAT", error: "items 格式不正确" },
       { status: 400, headers: corsHeaders() },
     );
   }

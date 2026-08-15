@@ -45,7 +45,7 @@ export async function GET(req: Request) {
   }
   const storageAccountId = await resolveBillStorageAccountId(accountId);
   if (!storageAccountId) {
-    return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404, headers: cors() });
+    return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "账户不存在" }, { status: 404, headers: cors() });
   }
   const overrides = await prisma.billOverride.findMany({
     where: { accountId: storageAccountId, statementMonth: { startsWith: statementMonth.slice(0, 7) } },
@@ -66,12 +66,12 @@ export async function POST(req: Request) {
     const body = (await req.json().catch(() => null)) as unknown;
     const parse = SaveSchema.safeParse(body);
     if (!parse.success) {
-      return NextResponse.json({ ok: false, error: "缺少必填字段" }, { status: 400, headers: cors() });
+      return NextResponse.json({ ok: false, code: "MISSING_FIELDS", error: "缺少必填字段" }, { status: 400, headers: cors() });
     }
     const { accountId, statementMonth, amount, note } = parse.data;
     const storageAccountId = await resolveBillStorageAccountId(accountId);
     if (!storageAccountId) {
-      return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404, headers: cors() });
+      return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "账户不存在" }, { status: 404, headers: cors() });
     }
     const existing = await prisma.billOverride.findFirst({
       where: { accountId: storageAccountId, statementMonth },
@@ -91,7 +91,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, override }, { headers: cors() });
   } catch (err) {
     console.error("[bill/override POST]", err);
-    return NextResponse.json({ ok: false, error: String(err) }, { status: 500, headers: cors() });
+    return NextResponse.json({ ok: false, code: "SAVE_FAILED", error: String(err) }, { status: 500, headers: cors() });
   }
 }
 
@@ -100,18 +100,18 @@ export async function DELETE(req: Request) {
   const accountId = searchParams.get("accountId") ?? "";
   const statementMonth = searchParams.get("statementMonth") ?? "";
   if (!accountId || !statementMonth) {
-    return NextResponse.json({ ok: false, error: "缺少参数" }, { status: 400, headers: cors() });
+    return NextResponse.json({ ok: false, code: "MISSING_PARAMS", error: "缺少参数" }, { status: 400, headers: cors() });
   }
   const storageAccountId = await resolveBillStorageAccountId(accountId);
   if (!storageAccountId) {
-    return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404, headers: cors() });
+    return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "账户不存在" }, { status: 404, headers: cors() });
   }
 
   const existing = await prisma.billOverride.findFirst({
     where: { accountId: storageAccountId, statementMonth },
   });
   if (!existing) {
-    return NextResponse.json({ ok: false, error: "账单覆盖记录不存在" }, { status: 404, headers: cors() });
+    return NextResponse.json({ ok: false, code: "RECORD_NOT_FOUND", error: "账单覆盖记录不存在" }, { status: 404, headers: cors() });
   }
 
   await prisma.billOverride.delete({ where: { id: existing.id } });

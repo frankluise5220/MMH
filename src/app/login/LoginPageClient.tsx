@@ -2,11 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { getHouseholdDisplayName } from "@/lib/household-display";
-import {
-  APP_PREFS_EVENT,
-  getDisplayLanguagePreference,
-  type DisplayLanguage,
-} from "@/lib/client/appPreferences";
 import { useI18n } from "@/lib/i18n";
 import { getProductIntro } from "@/lib/product-intro";
 import { MmhLogo } from "@/components/MmhLogo";
@@ -51,14 +46,28 @@ type CreateLedgerResponse = {
 type ResetStep = "request" | "confirm";
 type LoginMode = "login" | "setup" | "create";
 
+const SYSTEM_LOGIN_SCOPE_ID = "__system__";
+
+function getLoginUserScopeId(user: LoginUserChoice) {
+  return user.householdId ?? SYSTEM_LOGIN_SCOPE_ID;
+}
+
+function getInitialLoginSelection(users: LoginUserChoice[]) {
+  const firstUser = users.find((user) => !!user.householdId) ?? users[0] ?? null;
+  return {
+    scopeId: firstUser ? getLoginUserScopeId(firstUser) : "",
+    user: firstUser,
+  };
+}
+
 export function LoginPageClient({ householdName }: { householdName: string | null }) {
   const [mode, setMode] = useState<LoginMode>("login");
   const [checking, setChecking] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [displayLanguage, setDisplayLanguage] = useState<DisplayLanguage>("zh-CN");
 
   const [username, setUsername] = useState("");
+  const [selectedHouseholdId, setSelectedHouseholdId] = useState("");
   const [selectedUserId, setSelectedUserId] = useState("");
   const [password, setPassword] = useState("");
   const [systemUsers, setSystemUsers] = useState<LoginUserChoice[]>([]);
@@ -91,20 +100,47 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
   const [resetHouseholdId, setResetHouseholdId] = useState("");
   const [resetHouseholdChoices, setResetHouseholdChoices] = useState<HouseholdChoice[]>([]);
   const { t } = useI18n();
-  const currentHouseholdDisplayName = getHouseholdDisplayName({ name: householdName });
-  const productIntro = getProductIntro(displayLanguage);
+  const currentHouseholdDisplayName = getHouseholdDisplayName({ name: householdName }, t("login.defaultBook"));
+  const productIntro = getProductIntro(t);
+  const loginHouseholdChoices = getLoginHouseholdChoices();
+  const selectedHouseholdUsers = selectedHouseholdId
+    ? systemUsers.filter((user) => getLoginUserScopeId(user) === selectedHouseholdId)
+    : [];
 
   function getLoginUserLabel(user: LoginUserChoice) {
-    const scopeName = user.householdName
-      ? getHouseholdDisplayName({ id: user.householdId, name: user.householdName })
-      : user.isSystem
-        ? "系统用户"
-        : "";
-    return scopeName ? `${user.name} · ${scopeName}` : user.name;
+    return user.isSystem ? `${user.name} · ${t("login.systemUserBadge")}` : user.name;
+  }
+
+  function getLoginHouseholdChoices() {
+    const seen = new Set<string>();
+    const choices: HouseholdChoice[] = [];
+    for (const user of systemUsers) {
+      const id = getLoginUserScopeId(user);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      choices.push({
+        id,
+        name: user.householdId
+          ? getHouseholdDisplayName({ id: user.householdId, name: user.householdName }, t("login.defaultBook"))
+          : t("login.systemScope"),
+      });
+    }
+    return choices;
+  }
+
+  function selectLoginHousehold(scopeId: string) {
+    const user = systemUsers.find((item) => getLoginUserScopeId(item) === scopeId) ?? null;
+    setSelectedHouseholdId(scopeId);
+    setSelectedUserId(user?.id ?? "");
+    setUsername(user?.name ?? "");
+    cancelHouseholdChoice();
   }
 
   function getSelectedLoginUser() {
-    return systemUsers.find((user) => user.id === selectedUserId) ?? null;
+    const user = systemUsers.find((item) => item.id === selectedUserId) ?? null;
+    if (!user) return null;
+    if (selectedHouseholdId && getLoginUserScopeId(user) !== selectedHouseholdId) return null;
+    return user;
   }
 
   function openPasswordReset() {
@@ -115,15 +151,15 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
     setResetHouseholdId("");
     setResetHouseholdChoices([]);
     if (!passwordResetEnabled) {
-      setResetError("当前未配置可用的发件服务，无法发送密码找回验证码。请先在系统设置里配置 SMTP 或 Resend。");
+      setResetError(t("login.reset.mailNotConfigured"));
       setShowReset(true);
-      setResetUsername(username);
+      setResetUsername(getSelectedLoginUser()?.name ?? username);
       cancelHouseholdChoice();
       return;
     }
     setResetError("");
     setShowReset(true);
-    setResetUsername(username);
+    setResetUsername(getSelectedLoginUser()?.name ?? username);
     cancelHouseholdChoice();
   }
 
@@ -143,17 +179,20 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
           setMode(needsInitialLedgerSetup ? "create" : data.hasPassword ? "login" : "setup");
           setSystemUsers(users);
           setPasswordResetEnabled(data.passwordResetEnabled ?? false);
-          const firstUser = users[0];
-          if (firstUser) {
-            setSelectedUserId(firstUser.id);
-            setUsername(firstUser.name);
+          const initialSelection = getInitialLoginSelection(users);
+          setSelectedHouseholdId(initialSelection.scopeId);
+          if (initialSelection.user) {
+            setSelectedUserId(initialSelection.user.id);
+            setUsername(initialSelection.user.name);
           } else {
             setSelectedUserId("");
+            setUsername("");
           }
         } else {
           setMode("login");
           setInitialLedgerSetup(false);
           setSystemUsers([]);
+          setSelectedHouseholdId("");
           setSelectedUserId("");
           setPasswordResetEnabled(false);
         }
@@ -166,6 +205,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
         setMode("login");
         setInitialLedgerSetup(false);
         setSystemUsers([]);
+        setSelectedHouseholdId("");
         setSelectedUserId("");
         setPasswordResetEnabled(false);
       })
@@ -183,15 +223,6 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
     };
   }, []);
 
-  useEffect(() => {
-    function syncLanguagePreference() {
-      setDisplayLanguage(getDisplayLanguagePreference());
-    }
-    syncLanguagePreference();
-    window.addEventListener(APP_PREFS_EVENT, syncLanguagePreference);
-    return () => window.removeEventListener(APP_PREFS_EVENT, syncLanguagePreference);
-  }, []);
-
   async function verifyLogin(params: { userId?: string; username?: string; password: string; householdId?: string }) {
     const res = await fetch("/api/v1/auth/verify", {
       method: "POST",
@@ -205,21 +236,25 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
     if (!data) {
       return {
         ok: false,
-        error: res.ok ? "登录响应异常，请刷新后重试" : `登录接口异常（${res.status}）`,
+        error: res.ok ? t("login.error.responseInvalid") : t("login.error.apiStatus", { status: res.status }),
       };
     }
     if (!res.ok && !data.error) {
-      return { ...data, error: `登录失败（${res.status}）` };
+      return { ...data, error: t("login.error.failedStatus", { status: res.status }) };
     }
     return data;
   }
 
   async function handleLogin() {
     const selectedUser = getSelectedLoginUser();
+    const selectedScopeId = selectedHouseholdId && selectedHouseholdId !== SYSTEM_LOGIN_SCOPE_ID
+      ? selectedHouseholdId
+      : "";
     const trimmedUsername = (selectedUser?.name ?? username).trim();
     const trimmedPassword = password.trim();
-    if (!trimmedUsername) { setError("请输入用户名"); return; }
-    if (!trimmedPassword) { setError("请输入密码"); return; }
+    if (loginHouseholdChoices.length > 0 && !selectedHouseholdId) { setError(t("login.error.bookRequired")); return; }
+    if (!trimmedUsername) { setError(t("login.error.usernameRequired")); return; }
+    if (!trimmedPassword) { setError(t("login.error.passwordRequired")); return; }
 
     setLoading(true);
     setError("");
@@ -230,6 +265,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
       const data = await verifyLogin({
         ...(selectedUser ? { userId: selectedUser.id } : {}),
         username: trimmedUsername,
+        ...(selectedScopeId ? { householdId: selectedScopeId } : {}),
         password: trimmedPassword,
       });
       if (data.ok) {
@@ -239,12 +275,12 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
       if (data.code === "AMBIGUOUS_USER" && data.households?.length) {
         setPendingLogin({ username: trimmedUsername, password: trimmedPassword });
         setHouseholdChoices(data.households);
-        setError(data.error ?? "该用户名存在于多个账簿，请选择账簿");
+        setError(data.error ?? t("login.error.ambiguousUser"));
         return;
       }
-      setError(data.error ?? "登录失败");
+      setError(data.error ?? t("login.error.loginFailed"));
     } catch {
-      setError("验证失败，请稍后重试");
+      setError(t("login.error.verifyRetry"));
     } finally {
       setLoading(false);
     }
@@ -252,8 +288,8 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
 
   async function handleHouseholdChoice(householdId: string) {
     const credentials = pendingLogin ?? { username: username.trim(), password: password.trim() };
-    if (!credentials.username) { setError("请输入用户名"); return; }
-    if (!credentials.password) { setError("请输入密码"); return; }
+    if (!credentials.username) { setError(t("login.error.usernameRequired")); return; }
+    if (!credentials.password) { setError(t("login.error.passwordRequired")); return; }
 
     setLoading(true);
     setError("");
@@ -263,9 +299,9 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
         window.location.href = "/";
         return;
       }
-      setError(data.error ?? "登录失败");
+      setError(data.error ?? t("login.error.loginFailed"));
     } catch {
-      setError("验证失败，请稍后重试");
+      setError(t("login.error.verifyRetry"));
     } finally {
       setLoading(false);
     }
@@ -280,9 +316,9 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
   async function handleSetup() {
     const trimmedUsername = setupUsername.trim();
     const trimmedPassword = newPassword.trim();
-    if (!trimmedUsername) { setError("请输入用户名"); return; }
-    if (!trimmedPassword) { setError("请输入密码"); return; }
-    if (trimmedPassword !== confirmPassword.trim()) { setError("两次输入的密码不一致"); return; }
+    if (!trimmedUsername) { setError(t("login.error.usernameRequired")); return; }
+    if (!trimmedPassword) { setError(t("login.error.passwordRequired")); return; }
+    if (trimmedPassword !== confirmPassword.trim()) { setError(t("login.error.passwordMismatch")); return; }
 
     setLoading(true);
     setError("");
@@ -294,7 +330,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
       });
       const setupData = await setupRes.json() as { ok: boolean; error?: string };
       if (!setupData.ok) {
-        setError(setupData.error ?? "设置失败");
+        setError(setupData.error ?? t("login.error.setupFailed"));
         return;
       }
 
@@ -303,9 +339,9 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
         window.location.href = "/";
         return;
       }
-      setError(loginData.error ?? "登录失败");
+      setError(loginData.error ?? t("login.error.loginFailed"));
     } catch {
-      setError("设置失败，请稍后重试");
+      setError(t("login.error.setupRetry"));
     } finally {
       setLoading(false);
     }
@@ -318,12 +354,12 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
     const trimmedAdminEmail = createAdminEmail.trim();
     const trimmedPassword = createPassword.trim();
     const trimmedConfirmPassword = createConfirmPassword.trim();
-    if (!initialLedgerSetup && !trimmedInviteCode) { setError("请输入邀请码"); return; }
-    if (!trimmedLedgerName) { setError("请输入账簿名"); return; }
-    if (!trimmedAdminName) { setError("请输入管理员用户名"); return; }
-    if (!initialLedgerSetup && !trimmedAdminEmail) { setError("请输入管理员邮箱"); return; }
-    if (!trimmedPassword) { setError("请输入密码"); return; }
-    if (trimmedPassword !== trimmedConfirmPassword) { setError("两次输入的密码不一致"); return; }
+    if (!initialLedgerSetup && !trimmedInviteCode) { setError(t("login.error.inviteRequired")); return; }
+    if (!trimmedLedgerName) { setError(t("login.error.ledgerNameRequired")); return; }
+    if (!trimmedAdminName) { setError(t("login.error.adminUsernameRequired")); return; }
+    if (!initialLedgerSetup && !trimmedAdminEmail) { setError(t("login.error.adminEmailRequired")); return; }
+    if (!trimmedPassword) { setError(t("login.error.passwordRequired")); return; }
+    if (trimmedPassword !== trimmedConfirmPassword) { setError(t("login.error.passwordMismatch")); return; }
 
     setLoading(true);
     setError("");
@@ -341,21 +377,21 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
       });
       const createData = await createRes.json().catch(() => null) as CreateLedgerResponse | null;
       if (!createRes.ok || !createData?.ok) {
-        setError(createData?.error ?? "创建账簿失败");
+        setError(createData?.error ?? t("login.error.createFailed"));
         return;
       }
       window.location.href = "/";
     } catch {
-      setError("创建账簿失败，请稍后重试");
+      setError(t("login.error.createRetry"));
     } finally {
       setLoading(false);
     }
   }
 
   async function handleResetRequest(selectedHouseholdId = resetHouseholdId) {
-    if (!resetUsername.trim()) { setResetError("请输入用户名"); return; }
+    if (!resetUsername.trim()) { setResetError(t("login.error.usernameRequired")); return; }
     const previewOnly = !resetEmailHint;
-    if (!previewOnly && !resetEmail.trim()) { setResetError("请输入绑定邮箱"); return; }
+    if (!previewOnly && !resetEmail.trim()) { setResetError(t("login.reset.emailRequired")); return; }
 
     setResetLoading(true);
     setResetError("");
@@ -374,34 +410,34 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
       if (!data?.ok) {
         if (data?.code === "AMBIGUOUS_USER" && data.households?.length) {
           setResetHouseholdChoices(data.households);
-          setResetError(data.error ?? "该用户名和邮箱匹配多个账簿，请选择账簿");
+          setResetError(data.error ?? t("login.reset.ambiguousUserEmail"));
           return;
         }
-        setResetError(data?.error ?? "发送失败");
+        setResetError(data?.error ?? t("login.reset.sendFailed"));
         return;
       }
       setResetHouseholdId(data.householdId ?? selectedHouseholdId ?? "");
       setResetHouseholdChoices([]);
       if (previewOnly) {
         setResetEmailHint(data.maskedEmailHint ?? "");
-        setResetInfo(data.message ?? "请补全绑定邮箱后发送验证码。");
+        setResetInfo(data.message ?? t("login.reset.completeEmail"));
         return;
       }
-      setResetInfo(data.message ?? "验证码邮件已发送，请检查邮箱收件箱或垃圾邮件。");
+      setResetInfo(data.message ?? t("login.reset.codeSent"));
       setResetStep("confirm");
     } catch {
-      setResetError("发送失败，请稍后重试");
+      setResetError(t("login.reset.sendRetry"));
     } finally {
       setResetLoading(false);
     }
   }
 
   async function handleResetConfirm(selectedHouseholdId = resetHouseholdId) {
-    if (!resetUsername.trim()) { setResetError("请输入用户名"); return; }
-    if (!resetCode.trim()) { setResetError("请输入验证码"); return; }
-    if (!resetNewPassword.trim()) { setResetError("请输入新密码"); return; }
+    if (!resetUsername.trim()) { setResetError(t("login.error.usernameRequired")); return; }
+    if (!resetCode.trim()) { setResetError(t("login.reset.codeRequired")); return; }
+    if (!resetNewPassword.trim()) { setResetError(t("login.reset.newPasswordRequired")); return; }
     if (resetNewPassword.trim() !== resetConfirmPassword.trim()) {
-      setResetError("两次输入的密码不一致");
+      setResetError(t("login.error.passwordMismatch"));
       return;
     }
 
@@ -423,13 +459,13 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
       if (!data?.ok) {
         if (data?.code === "AMBIGUOUS_USER" && data.households?.length) {
           setResetHouseholdChoices(data.households);
-          setResetError(data.error ?? "该验证码匹配多个账簿，请选择账簿");
+          setResetError(data.error ?? t("login.reset.ambiguousCode"));
           return;
         }
-        setResetError(data?.error ?? "重置失败");
+        setResetError(data?.error ?? t("login.reset.failed"));
         return;
       }
-      setResetInfo("密码已重置，请返回登录。");
+      setResetInfo(t("login.reset.done"));
       setResetStep("request");
       setShowReset(false);
       setResetHouseholdId("");
@@ -437,7 +473,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
       setPassword(resetNewPassword.trim());
       setUsername(resetUsername.trim());
     } catch {
-      setResetError("重置失败，请稍后重试");
+      setResetError(t("login.reset.retry"));
     } finally {
       setResetLoading(false);
     }
@@ -468,9 +504,9 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                 <p key={paragraph}>{paragraph}</p>
               ))}
             </div>
-            <div className="mt-7 grid grid-cols-2 gap-2">
+            <div className="mt-6 grid grid-cols-3 gap-2">
               {productIntro.highlights.map((item) => (
-                <span key={item} className="rounded-xl border border-white/12 bg-white/[0.08] px-3 py-2 text-xs leading-5 text-slate-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] backdrop-blur-sm">
+                <span key={item} className="rounded-lg border border-white/12 bg-white/[0.08] px-2 py-2 text-center text-[11px] leading-4 text-slate-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] backdrop-blur-sm">
                   {item}
                 </span>
               ))}
@@ -481,28 +517,20 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
         <div className="min-w-0">
         <div className="border-b border-slate-200/70 bg-white/72 px-6 py-5 shadow-[inset_0_-1px_0_rgba(148,163,184,0.14)] backdrop-blur">
           {householdName && <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-400">{t("login.book")}</div>}
-          <div className="flex items-center justify-between">
+          <div className="flex items-center">
             <div className="flex min-w-0 items-center gap-2">
               <MmhLogo size={40} />
               <div className="min-w-0">
                 <div className="truncate text-base font-semibold text-slate-800">{householdName ? currentHouseholdDisplayName : "MoneyMoneyHome"}</div>
-                {!householdName && <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-slate-400">Family Finance</div>}
+                {!householdName && <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-slate-400">{t("login.productTagline")}</div>}
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => { window.location.href = "/"; }}
-              className="rounded-full border border-slate-200/80 bg-white/80 px-3 py-1 text-xs text-slate-500 shadow-sm hover:border-slate-300 hover:bg-white hover:text-slate-700"
-              title={t("login.backHome")}
-            >
-              {t("login.backHome")}
-            </button>
           </div>
           {mode === "login" && <div className="mt-1 text-xs text-slate-500">{t("login.continueHint")}</div>}
           {mode === "setup" && <div className="mt-1 text-xs text-slate-500">{t("login.setupHint")}</div>}
           {mode === "create" && (
             <div className="mt-1 text-xs text-slate-500">
-              {initialLedgerSetup ? "首次使用，请先创建第一个账簿和管理员账号" : t("login.createHint")}
+              {initialLedgerSetup ? t("login.initialCreateHint") : t("login.createHint")}
             </div>
           )}
         </div>
@@ -511,20 +539,36 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
           <div className="space-y-4 p-6">
             {!showReset && (
               <>
+                {loginHouseholdChoices.length > 0 && (
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">{t("login.book")}</div>
+                    <select
+                      value={selectedHouseholdId}
+                      onChange={(event) => selectLoginHousehold(event.target.value)}
+                      className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                      autoFocus
+                    >
+                      {loginHouseholdChoices.map((household) => (
+                        <option key={household.id} value={household.id}>{household.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">{t("login.username")}</div>
-                  {systemUsers.length > 0 ? (
+                  {selectedHouseholdUsers.length > 0 ? (
                     <select
                       value={selectedUserId}
                       onChange={(event) => {
-                        const user = systemUsers.find((item) => item.id === event.target.value);
+                        const user = selectedHouseholdUsers.find((item) => item.id === event.target.value);
                         setSelectedUserId(user?.id ?? "");
                         setUsername(user?.name ?? "");
                         cancelHouseholdChoice();
                       }}
                       className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                     >
-                      {systemUsers.map((user) => (
+                      {selectedHouseholdUsers.map((user) => (
                         <option key={user.id} value={user.id}>{getLoginUserLabel(user)}</option>
                       ))}
                     </select>
@@ -556,7 +600,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                     autoComplete="current-password"
                     className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                     placeholder={t("login.passwordPlaceholder")}
-                    autoFocus
+                    autoFocus={loginHouseholdChoices.length === 0}
                     onKeyDown={(event) => { if (event.key === "Enter") void handleLogin(); }}
                   />
                 </div>
@@ -564,8 +608,8 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                 {householdChoices.length > 0 && (
                   <div className="space-y-3 rounded-xl border border-blue-100 bg-blue-50/70 p-3">
                     <div>
-                      <div className="text-sm font-semibold text-slate-800">选择账簿</div>
-                      <div className="mt-1 text-xs text-slate-500">这个用户名和密码匹配多个账簿，请选择要进入的账簿。</div>
+                      <div className="text-sm font-semibold text-slate-800">{t("login.chooseBook")}</div>
+                      <div className="mt-1 text-xs text-slate-500">{t("login.ambiguousBookHint")}</div>
                     </div>
                     <div className="space-y-2">
                       {householdChoices.map((household) => (
@@ -586,7 +630,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                       disabled={loading}
                       onClick={cancelHouseholdChoice}
                     >
-                      重新输入用户名
+                      {t("login.reenterUsername")}
                     </button>
                   </div>
                 )}
@@ -623,9 +667,9 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
 
             {showReset && (
               <div className="space-y-3 border-t border-slate-100 pt-2">
-                <div className="text-xs font-medium text-slate-600">找回密码</div>
+                <div className="text-xs font-medium text-slate-600">{t("login.reset.title")}</div>
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">用户名</div>
+                  <div className="text-xs font-medium text-slate-600">{t("login.username")}</div>
                   <input
                     value={resetUsername}
                     onChange={(event) => {
@@ -637,14 +681,14 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                     }}
                     type="text"
                     className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                    placeholder="输入用户名"
+                    placeholder={t("login.usernamePlaceholder")}
                   />
                 </div>
                 {resetStep === "request" && (
                   resetEmailHint ? (
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">补全绑定邮箱</div>
-                      <div className="text-[11px] text-slate-500">请根据提示补全完整邮箱：{resetEmailHint}</div>
+                      <div className="text-xs font-medium text-slate-600">{t("login.reset.emailLabel")}</div>
+                      <div className="text-[11px] text-slate-500">{t("login.reset.emailHint", { hint: resetEmailHint })}</div>
                       <input
                         value={resetEmail}
                         onChange={(event) => {
@@ -653,7 +697,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                         }}
                         type="email"
                         className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                        placeholder="输入完整绑定邮箱"
+                        placeholder={t("login.reset.emailPlaceholder")}
                       />
                     </div>
                   ) : null
@@ -661,40 +705,40 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                 {resetStep === "confirm" && (
                   <>
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">验证码</div>
+                      <div className="text-xs font-medium text-slate-600">{t("login.reset.code")}</div>
                       <input
                         value={resetCode}
                         onChange={(event) => setResetCode(event.target.value)}
                         type="text"
                         className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                        placeholder="邮箱中收到的验证码"
+                        placeholder={t("login.reset.codePlaceholder")}
                       />
                     </div>
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">新密码</div>
+                      <div className="text-xs font-medium text-slate-600">{t("login.reset.newPassword")}</div>
                       <input
                         value={resetNewPassword}
                         onChange={(event) => setResetNewPassword(event.target.value)}
                         type="password"
                         className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                        placeholder="输入新密码"
+                        placeholder={t("login.reset.newPasswordPlaceholder")}
                       />
                     </div>
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">确认新密码</div>
+                      <div className="text-xs font-medium text-slate-600">{t("login.reset.confirmNewPassword")}</div>
                       <input
                         value={resetConfirmPassword}
                         onChange={(event) => setResetConfirmPassword(event.target.value)}
                         type="password"
                         className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                        placeholder="再次输入新密码"
+                        placeholder={t("login.reset.confirmNewPasswordPlaceholder")}
                       />
                     </div>
                   </>
                 )}
                 {resetHouseholdChoices.length > 0 && (
                   <div className="space-y-2 rounded-xl border border-blue-100 bg-blue-50/70 p-3">
-                    <div className="text-xs text-slate-500">请选择要找回密码的账簿。</div>
+                    <div className="text-xs text-slate-500">{t("login.reset.chooseBookHint")}</div>
                     {resetHouseholdChoices.map((household) => (
                       <button
                         key={household.id}
@@ -725,7 +769,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                       disabled={resetLoading}
                       onClick={() => void handleResetRequest()}
                     >
-                      {resetLoading ? "处理中..." : resetEmailHint ? "发送验证码" : "下一步"}
+                      {resetLoading ? t("login.reset.processing") : resetEmailHint ? t("login.reset.sendCode") : t("login.reset.nextStep")}
                     </button>
                     {resetEmailHint ? (
                       <button
@@ -740,7 +784,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                           setResetHouseholdChoices([]);
                         }}
                       >
-                        重新输入用户名
+                        {t("login.reenterUsername")}
                       </button>
                     ) : null}
                   </div>
@@ -752,7 +796,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                       disabled={resetLoading}
                       onClick={() => void handleResetConfirm()}
                     >
-                      {resetLoading ? "提交中..." : "重置密码"}
+                      {resetLoading ? t("login.reset.submitting") : t("login.reset.resetPassword")}
                     </button>
                     <button
                       type="button"
@@ -764,7 +808,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                         setResetInfo("");
                       }}
                     >
-                      返回上一步
+                      {t("login.reset.backStep")}
                     </button>
                   </div>
                 )}
@@ -777,44 +821,44 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
           <div className="space-y-4 p-6">
             {!initialLedgerSetup && (
               <div className="space-y-1">
-                <div className="text-xs font-medium text-slate-600">邀请码</div>
+                <div className="text-xs font-medium text-slate-600">{t("login.inviteCode")}</div>
                 <input
                   value={createInviteCode}
                   onChange={(event) => setCreateInviteCode(event.target.value)}
                   type="password"
                   autoComplete="off"
                   className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                  placeholder="输入新建账簿邀请码"
+                  placeholder={t("login.invitePlaceholder")}
                   autoFocus
                 />
               </div>
             )}
             <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">账簿名</div>
+              <div className="text-xs font-medium text-slate-600">{t("login.ledgerName")}</div>
               <input
                 value={createLedgerName}
                 onChange={(event) => setCreateLedgerName(event.target.value)}
                 type="text"
                 autoComplete="organization"
                 className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                placeholder="输入新账簿名"
+                placeholder={t("login.ledgerNamePlaceholder")}
                 autoFocus={initialLedgerSetup}
               />
             </div>
             <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">管理员用户名</div>
+              <div className="text-xs font-medium text-slate-600">{t("login.adminUsername")}</div>
               <input
                 value={createAdminName}
                 onChange={(event) => setCreateAdminName(event.target.value)}
                 type="text"
                 autoComplete="username"
                 className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                placeholder="输入管理员用户名"
+                placeholder={t("login.adminUsernamePlaceholder")}
               />
             </div>
             <div className="space-y-1">
               <div className="text-xs font-medium text-slate-600">
-                {initialLedgerSetup ? "管理员邮箱（可选）" : "管理员邮箱"}
+                {initialLedgerSetup ? t("login.adminEmailOptional") : t("login.adminEmail")}
               </div>
               <input
                 value={createAdminEmail}
@@ -822,7 +866,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                 type="email"
                 autoComplete="email"
                 className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                placeholder="用于找回密码"
+                placeholder={t("login.adminEmailPlaceholder")}
               />
             </div>
             <div className="space-y-1">

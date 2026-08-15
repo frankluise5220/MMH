@@ -21,7 +21,7 @@ export async function GET(req: Request) {
     const showCleared = url.searchParams.get("showCleared") === "1";
 
     if (!accountId) {
-      return NextResponse.json({ ok: false, error: "缺少 accountId" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_ACCOUNT_ID", error: "缺少 accountId" }, { status: 400 });
     }
 
     // Verify account exists and is investment type
@@ -29,7 +29,7 @@ export async function GET(req: Request) {
       where: { id: accountId, ...hidFilter },
     });
     if (!account) {
-      return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
+      return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "账户不存在" }, { status: 404 });
     }
 
     // Compute positions
@@ -129,6 +129,6 @@ export async function GET(req: Request) {
     });
   } catch (e) {
     console.error("[fund/shell-data]", e);
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "获取数据失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "FETCH_FAILED", error: e instanceof Error ? e.message : "获取数据失败" }, { status: 500 });
   }
 }

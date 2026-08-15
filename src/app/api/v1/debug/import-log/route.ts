@@ -26,7 +26,7 @@ export async function POST(request: Request) {
     const scope = await getHouseholdScope();
     const parsed = BodySchema.safeParse(await request.json().catch(() => null));
     if (!parsed.success) {
-      return NextResponse.json({ ok: false, error: "日志参数不正确" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_LOG_PARAMS", error: "日志参数不正确" }, { status: 400 });
     }
 
     await writeImportDebugLog({
@@ -39,6 +39,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : "日志写入失败";
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "LOG_WRITE_FAILED", error: message }, { status: 500 });
   }
 }

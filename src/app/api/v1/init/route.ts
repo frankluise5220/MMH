@@ -59,9 +59,9 @@ export async function POST(req: NextRequest) {
     const results: string[] = [];
 
     await prisma.$transaction(async (tx) => {
-      // === 1. 账户余额初始化 ===
+      // === 1. Account balance initialization ===
       if (accountBalances.length > 0) {
-        // 批量获取账户信息
+        // Batch-fetch account info
         const balanceAccountIds = accountBalances.map((a: any) => a.accountId);
         const accounts = await tx.account.findMany({
           where: { id: { in: balanceAccountIds }, ...hidFilter },
@@ -85,7 +85,7 @@ export async function POST(req: NextRequest) {
           const isCredit = acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan;
           const targetBalance = isCredit ? -Math.abs(balance) : balance;
 
-          // 检查是否已有初始化记录
+          // Check whether an initialization record already exists
           const existingInit = await tx.txRecord.findFirst({
             where: {
               accountId: acc.id,
@@ -113,14 +113,14 @@ export async function POST(req: NextRequest) {
             },
           });
 
-          // 重算该账户余额
+          // Recalculate the account balance
           await recalcAndSaveAccountBalance(acc.id).catch(logger.catchLog("recalc balance", "init"));
 
           results.push(`${acc.name} 初始余额: ${targetBalance.toFixed(2)} 元`);
         }
       }
 
-      // === 2. 基金持仓初始化 ===
+      // === 2. Fund holding initialization ===
       if (fundHoldings.length > 0) {
         const investIds = [...new Set(fundHoldings.map((f: any) => f.investmentAccountId))].filter(Boolean) as string[];
         const investAccounts = await tx.account.findMany({
@@ -128,7 +128,7 @@ export async function POST(req: NextRequest) {
         });
         const investAccountMap = new Map(investAccounts.map((a) => [a.id, a]));
 
-        // 批量获取资金账户
+        // Batch-fetch cash accounts
         const cashIds = [...new Set(fundHoldings.map((f: any) => f.cashAccountId).filter(Boolean))] as string[];
         const cashAccounts = cashIds.length > 0
           ? await tx.account.findMany({ where: { id: { in: cashIds } }, select: { id: true, name: true } })
@@ -156,7 +156,7 @@ export async function POST(req: NextRequest) {
           const arrivalDate = item.arrivalDate ? new Date(item.arrivalDate) : null;
           const cashAccName = item.cashAccountId ? (cashAccountMap.get(item.cashAccountId) ?? "资金账户") : "资金账户";
 
-          // 创建买入业务记录；TxRecord 只保存真实资金账户现金流。
+          // Create the buy business record; TxRecord only stores real cash-account cash flows.
           await createFundTransactionWithCashFlows(tx, {
             householdId,
             fundAccountId: investAcc.id,
@@ -186,7 +186,7 @@ export async function POST(req: NextRequest) {
               : [],
           });
 
-          // 如果有历史盈亏，创建现金分红记录，recalcPositions 会自动累加到 historicalProfit
+          // If there is historical profit/loss, create a cash dividend record; recalcPositions accumulates it into historicalProfit
           if (historicalProfit !== 0) {
             const divAmount = Math.abs(historicalProfit);
             const cashId = item.cashAccountId ?? investAcc.id;
@@ -221,7 +221,7 @@ export async function POST(req: NextRequest) {
             });
           }
 
-          // 重算持仓
+          // Recalculate positions
           await recalcFundPositions(investAcc.id, [fundCode]).catch(logger.catchLog("recalc positions", "init"));
           await recalcAndSaveAccountBalance(investAcc.id).catch(logger.catchLog("recalc invest balance", "init"));
           if (item.cashAccountId && item.cashAccountId !== investAcc.id) {
@@ -230,14 +230,14 @@ export async function POST(req: NextRequest) {
 
           results.push(`${fundCode} 持仓: ${units}份 × ${avgCost}元 = ${totalCost.toFixed(2)} 元${historicalProfit ? `, 历史盈亏 ${historicalProfit.toFixed(2)}` : ""}`);
 
-          // === 3. 创建定投计划（如有） ===
+          // === 3. Create a regular investment plan (if any) ===
           if (item.regularInvest) {
             const ri = item.regularInvest;
             const riCashAcc = ri.cashAccountId
               ? await tx.account.findUnique({ where: { id: ri.cashAccountId }, select: { id: true, name: true } })
               : null;
 
-            // 检查是否已有该基金的定投计划
+            // Check whether a regular investment plan for this fund already exists
             const existingPlan = await tx.regularInvestPlan.findFirst({
               where: { accountId: investAcc.id, fundCode, householdId },
             });
@@ -272,7 +272,7 @@ export async function POST(req: NextRequest) {
                 },
               });
 
-              // 同步写入确认天数和费率库
+              // Write confirm days and the fee rate library in sync
               if (investAcc.id) {
                 await setFundConfirmDaysInTx(tx, investAcc.id, fundCode, confirmDays);
               }

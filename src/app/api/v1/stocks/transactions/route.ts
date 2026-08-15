@@ -207,7 +207,7 @@ export async function GET(req: NextRequest) {
     );
   } catch (error) {
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "查询失败" },
+      { ok: false, code: "FETCH_FAILED", error: error instanceof Error ? error.message : "查询失败" },
       { status: 500, headers: corsHeaders() },
     );
   }
@@ -242,10 +242,10 @@ export async function POST(req: NextRequest) {
   try {
     const { householdId } = await getApiHouseholdScope(req);
     const body = await req.json().catch(() => null) as Record<string, unknown> | null;
-    if (!body) return NextResponse.json({ ok: false, error: "请求体无效" }, { status: 400, headers: corsHeaders() });
+    if (!body) return NextResponse.json({ ok: false, code: "INVALID_BODY", error: "请求体无效" }, { status: 400, headers: corsHeaders() });
 
     const stockAccountId = String(body.stockAccountId ?? body.accountId ?? "").trim();
-    if (!stockAccountId) return NextResponse.json({ ok: false, error: "缺少股票账户" }, { status: 400, headers: corsHeaders() });
+    if (!stockAccountId) return NextResponse.json({ ok: false, code: "STOCK_ACCOUNT_REQUIRED", error: "缺少股票账户" }, { status: 400, headers: corsHeaders() });
     const stockAccount = await assertStockAccount(stockAccountId, householdId);
     const action = normalizeStockAction(body.action);
     const cashAccountIdRaw = String(body.cashAccountId ?? "").trim();
@@ -254,7 +254,7 @@ export async function POST(req: NextRequest) {
     const cashAccount = await findCashAccount(cashAccountId || null, householdId);
     const tradeDate = parseDateOnly(body.tradeDate);
     const settleDate = parseDateOnly(body.settleDate);
-    if (!tradeDate) return NextResponse.json({ ok: false, error: "交易日期无效" }, { status: 400, headers: corsHeaders() });
+    if (!tradeDate) return NextResponse.json({ ok: false, code: "INVALID_TRADE_DATE", error: "交易日期无效" }, { status: 400, headers: corsHeaders() });
 
     const quantity = parseOptionalNonNegativeNumber(body.quantity);
     const price = parseOptionalNonNegativeNumber(body.price);
@@ -273,16 +273,16 @@ export async function POST(req: NextRequest) {
     const brokerTradeId = String(body.brokerTradeId ?? "").trim() || null;
 
     if ((action === StockTransactionAction.buy || action === StockTransactionAction.sell) && (!quantity || grossAmount <= 0)) {
-      return NextResponse.json({ ok: false, error: "买卖股票需要填写数量和成交金额" }, { status: 400, headers: corsHeaders() });
+      return NextResponse.json({ ok: false, code: "QUANTITY_AND_AMOUNT_REQUIRED", error: "买卖股票需要填写数量和成交金额" }, { status: 400, headers: corsHeaders() });
     }
     if ((action === StockTransactionAction.dividend || action === StockTransactionAction.fee_adjustment || action === StockTransactionAction.tax_adjustment) && grossAmount <= 0) {
-      return NextResponse.json({ ok: false, error: "该股票交易需要填写金额" }, { status: 400, headers: corsHeaders() });
+      return NextResponse.json({ ok: false, code: "AMOUNT_REQUIRED", error: "该股票交易需要填写金额" }, { status: 400, headers: corsHeaders() });
     }
     if ((action === StockTransactionAction.bonus_share || action === StockTransactionAction.split_share || action === StockTransactionAction.merge_share) && !quantity) {
-      return NextResponse.json({ ok: false, error: "该股票交易需要填写数量" }, { status: 400, headers: corsHeaders() });
+      return NextResponse.json({ ok: false, code: "QUANTITY_REQUIRED", error: "该股票交易需要填写数量" }, { status: 400, headers: corsHeaders() });
     }
     if ((action === StockTransactionAction.buy || action === StockTransactionAction.sell || action === StockTransactionAction.dividend || action === StockTransactionAction.fee_adjustment || action === StockTransactionAction.tax_adjustment) && !cashAccount) {
-      return NextResponse.json({ ok: false, error: "股票账户缺少证券机构，无法确定证券资金账户" }, { status: 400, headers: corsHeaders() });
+      return NextResponse.json({ ok: false, code: "CASH_ACCOUNT_UNDETERMINED", error: "股票账户缺少证券机构，无法确定证券资金账户" }, { status: 400, headers: corsHeaders() });
     }
 
     if (externalLinkId) {
@@ -319,7 +319,7 @@ export async function POST(req: NextRequest) {
           currency: normalizeCurrency(body.currency ?? stockAccount.currency),
           exchange: String(body.exchange ?? "").trim() || null,
         });
-    if (!security) return NextResponse.json({ ok: false, error: "股票标的不存在" }, { status: 400, headers: corsHeaders() });
+    if (!security) return NextResponse.json({ ok: false, code: "SECURITY_NOT_FOUND", error: "股票标的不存在" }, { status: 400, headers: corsHeaders() });
 
     const fees = (action === StockTransactionAction.buy || action === StockTransactionAction.sell)
       ? await (async () => {
@@ -417,7 +417,7 @@ export async function POST(req: NextRequest) {
     }, { headers: corsHeaders() });
   } catch (error) {
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "创建失败" },
+      { ok: false, code: "CREATE_FAILED", error: error instanceof Error ? error.message : "创建失败" },
       { status: 500, headers: corsHeaders() },
     );
   }
@@ -442,7 +442,7 @@ export async function PATCH(req: NextRequest) {
   try {
     const { householdId } = await getApiHouseholdScope(req);
     const id = req.nextUrl.searchParams.get("id")?.trim() || "";
-    if (!id) return NextResponse.json({ ok: false, error: "缺少交易 id" }, { status: 400, headers: corsHeaders() });
+    if (!id) return NextResponse.json({ ok: false, code: "MISSING_TRANSACTION_ID", error: "缺少交易 id" }, { status: 400, headers: corsHeaders() });
 
     const existing = await prisma.stockTransaction.findFirst({
       where: { id, householdId, deletedAt: null },
@@ -452,10 +452,10 @@ export async function PATCH(req: NextRequest) {
         EntryBusinessLink: { where: { deletedAt: null }, select: { id: true, cashEntryId: true } },
       },
     });
-    if (!existing) return NextResponse.json({ ok: false, error: "股票交易不存在" }, { status: 404, headers: corsHeaders() });
+    if (!existing) return NextResponse.json({ ok: false, code: "TRANSACTION_NOT_FOUND", error: "股票交易不存在" }, { status: 404, headers: corsHeaders() });
 
     const body = await req.json().catch(() => null) as Record<string, unknown> | null;
-    if (!body) return NextResponse.json({ ok: false, error: "请求体无效" }, { status: 400, headers: corsHeaders() });
+    if (!body) return NextResponse.json({ ok: false, code: "INVALID_BODY", error: "请求体无效" }, { status: 400, headers: corsHeaders() });
 
     const stockAccountId = String(body.stockAccountId ?? body.accountId ?? existing.stockAccountId).trim();
     const stockAccount = await assertStockAccount(stockAccountId, householdId);
@@ -467,7 +467,7 @@ export async function PATCH(req: NextRequest) {
       ? body.settleDate
       : existing.settleDate ? formatDateUtc(existing.settleDate) : null;
     const settleDate = parseDateOnly(settleDateRaw);
-    if (!tradeDate) return NextResponse.json({ ok: false, error: "交易日期无效" }, { status: 400, headers: corsHeaders() });
+    if (!tradeDate) return NextResponse.json({ ok: false, code: "INVALID_TRADE_DATE", error: "交易日期无效" }, { status: 400, headers: corsHeaders() });
 
     const readNumber = (key: string): number | null => {
       if (body[key] === undefined) {
@@ -491,20 +491,20 @@ export async function PATCH(req: NextRequest) {
     const otherFee = readNumber("otherFee");
 
     if ((action === StockTransactionAction.buy || action === StockTransactionAction.sell) && (!quantity || grossAmount <= 0)) {
-      return NextResponse.json({ ok: false, error: "买卖股票需要填写数量和成交金额" }, { status: 400, headers: corsHeaders() });
+      return NextResponse.json({ ok: false, code: "QUANTITY_AND_AMOUNT_REQUIRED", error: "买卖股票需要填写数量和成交金额" }, { status: 400, headers: corsHeaders() });
     }
     if ((action === StockTransactionAction.dividend || action === StockTransactionAction.fee_adjustment || action === StockTransactionAction.tax_adjustment) && grossAmount <= 0) {
-      return NextResponse.json({ ok: false, error: "该股票交易需要填写金额" }, { status: 400, headers: corsHeaders() });
+      return NextResponse.json({ ok: false, code: "AMOUNT_REQUIRED", error: "该股票交易需要填写金额" }, { status: 400, headers: corsHeaders() });
     }
     if ((action === StockTransactionAction.bonus_share || action === StockTransactionAction.split_share || action === StockTransactionAction.merge_share) && !quantity) {
-      return NextResponse.json({ ok: false, error: "该股票交易需要填写数量" }, { status: 400, headers: corsHeaders() });
+      return NextResponse.json({ ok: false, code: "QUANTITY_REQUIRED", error: "该股票交易需要填写数量" }, { status: 400, headers: corsHeaders() });
     }
     if ((action === StockTransactionAction.buy || action === StockTransactionAction.sell || action === StockTransactionAction.dividend || action === StockTransactionAction.fee_adjustment || action === StockTransactionAction.tax_adjustment) && !cashAccount) {
-      return NextResponse.json({ ok: false, error: "股票账户缺少证券机构，无法确定证券资金账户" }, { status: 400, headers: corsHeaders() });
+      return NextResponse.json({ ok: false, code: "CASH_ACCOUNT_UNDETERMINED", error: "股票账户缺少证券机构，无法确定证券资金账户" }, { status: 400, headers: corsHeaders() });
     }
 
     const rawCode = normalizeStockCode(String(body.stockCode ?? existing.stockCode).trim());
-    if (!rawCode) return NextResponse.json({ ok: false, error: "缺少股票代码" }, { status: 400, headers: corsHeaders() });
+    if (!rawCode) return NextResponse.json({ ok: false, code: "STOCK_CODE_REQUIRED", error: "缺少股票代码" }, { status: 400, headers: corsHeaders() });
     const security = body.securityId || rawCode !== existing.stockCode
       ? await resolveOrCreateStockSecurity(prisma, {
           householdId,
@@ -517,7 +517,7 @@ export async function PATCH(req: NextRequest) {
       : existing.securityId
         ? await prisma.stockSecurity.findFirst({ where: { id: existing.securityId, householdId, isActive: true } })
         : null;
-    if (!security) return NextResponse.json({ ok: false, error: "股票标的不存在" }, { status: 400, headers: corsHeaders() });
+    if (!security) return NextResponse.json({ ok: false, code: "SECURITY_NOT_FOUND", error: "股票标的不存在" }, { status: 400, headers: corsHeaders() });
 
     const fees = (action === StockTransactionAction.buy || action === StockTransactionAction.sell)
       ? await (async () => {
@@ -573,7 +573,8 @@ export async function PATCH(req: NextRequest) {
         metadata: { createdBy: "stocks-transactions-api", updatedBy: "stocks-transactions-patch" },
       });
 
-      // 若新动作不再产生现金流水，但旧记录还挂着现金流水，软删旧流水与旧 link
+      // If the new action no longer generates cash flow but the old record still has one,
+      // soft-delete the old cash flow and the old link
       if (!link.cashEntryId && existing.cashEntryId) {
         await tx.txRecord.updateMany({
           where: { id: existing.cashEntryId, householdId },
@@ -617,7 +618,7 @@ export async function PATCH(req: NextRequest) {
     }, { headers: corsHeaders() });
   } catch (error) {
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "更新失败" },
+      { ok: false, code: "UPDATE_FAILED", error: error instanceof Error ? error.message : "更新失败" },
       { status: 500, headers: corsHeaders() },
     );
   }
@@ -640,7 +641,7 @@ export async function DELETE(req: NextRequest) {
     const id = req.nextUrl.searchParams.get("id")?.trim() || "";
     const linkId = req.nextUrl.searchParams.get("linkId")?.trim() || "";
     if (!id && !linkId) {
-      return NextResponse.json({ ok: false, error: "缺少 id 或 linkId" }, { status: 400, headers: corsHeaders() });
+      return NextResponse.json({ ok: false, code: "MISSING_ID_OR_LINK_ID", error: "缺少 id 或 linkId" }, { status: 400, headers: corsHeaders() });
     }
 
     const row = await prisma.stockTransaction.findFirst({
@@ -656,7 +657,7 @@ export async function DELETE(req: NextRequest) {
         EntryBusinessLink: { where: { deletedAt: null }, select: { id: true } },
       },
     });
-    if (!row) return NextResponse.json({ ok: false, error: "股票交易不存在" }, { status: 404, headers: corsHeaders() });
+    if (!row) return NextResponse.json({ ok: false, code: "TRANSACTION_NOT_FOUND", error: "股票交易不存在" }, { status: 404, headers: corsHeaders() });
 
     const deletedAt = new Date();
     await prisma.$transaction(async (tx) => {
@@ -693,7 +694,7 @@ export async function DELETE(req: NextRequest) {
     }, { headers: corsHeaders() });
   } catch (error) {
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "删除失败" },
+      { ok: false, code: "DELETE_FAILED", error: error instanceof Error ? error.message : "删除失败" },
       { status: 500, headers: corsHeaders() },
     );
   }

@@ -59,7 +59,7 @@ export async function POST(req: Request) {
   try {
     const { householdId } = await getHouseholdScope();
     const body = await req.json().catch(() => null) as Record<string, unknown> | null;
-    if (!body) return NextResponse.json({ ok: false, error: "无效的请求体" }, { status: 400 });
+    if (!body) return NextResponse.json({ ok: false, code: "INVALID_BODY", error: "无效的请求体" }, { status: 400 });
 
     const accountId = String(body.accountId ?? "").trim();
     const statementMonthInput = String(body.statementMonth ?? "").trim();
@@ -72,27 +72,27 @@ export async function POST(req: Request) {
     const firstPaymentDateInput = String(body.firstPaymentDate ?? dateInput).trim();
     const firstPaymentDate = parseDateOnlyUtc(firstPaymentDateInput);
 
-    if (!accountId) return NextResponse.json({ ok: false, error: "缺少信用卡账户" }, { status: 400 });
+    if (!accountId) return NextResponse.json({ ok: false, code: "CREDIT_CARD_ACCOUNT_REQUIRED", error: "缺少信用卡账户" }, { status: 400 });
     if (statementMonthInput && !/^\d{4}-\d{2}$/.test(statementMonthInput)) {
-      return NextResponse.json({ ok: false, error: "账单月份格式不正确" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_STATEMENT_MONTH", error: "账单月份格式不正确" }, { status: 400 });
     }
     if (!Number.isFinite(amount) || amount <= 0) {
-      return NextResponse.json({ ok: false, error: "分期金额必须大于 0" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_AMOUNT", error: "分期金额必须大于 0" }, { status: 400 });
     }
     if (!Number.isInteger(totalRuns) || totalRuns < 2 || totalRuns > 120) {
-      return NextResponse.json({ ok: false, error: "分期期数应为 2 至 120 期" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_TOTAL_RUNS", error: "分期期数应为 2 至 120 期" }, { status: 400 });
     }
     if (rateType !== "period_fee" && rateType !== "annual_interest") {
-      return NextResponse.json({ ok: false, error: "分期费率类型不正确" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_RATE_TYPE", error: "分期费率类型不正确" }, { status: 400 });
     }
     if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
-      return NextResponse.json({ ok: false, error: "费率应为 0 至 100" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_RATE", error: "费率应为 0 至 100" }, { status: 400 });
     }
     if (!installmentDate) {
-      return NextResponse.json({ ok: false, error: "分期日期格式不正确" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_INSTALLMENT_DATE", error: "分期日期格式不正确" }, { status: 400 });
     }
     if (!firstPaymentDate) {
-      return NextResponse.json({ ok: false, error: "首期入账日期格式不正确" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_FIRST_PAYMENT_DATE", error: "首期入账日期格式不正确" }, { status: 400 });
     }
 
     const account = await prisma.account.findFirst({
@@ -108,9 +108,9 @@ export async function POST(req: Request) {
         repaymentDay: true,
       },
     });
-    if (!account) return NextResponse.json({ ok: false, error: "信用卡账户不存在" }, { status: 404 });
+    if (!account) return NextResponse.json({ ok: false, code: "CREDIT_CARD_ACCOUNT_NOT_FOUND", error: "信用卡账户不存在" }, { status: 404 });
     if (!account.billingDay) {
-      return NextResponse.json({ ok: false, error: "信用卡缺少账单日，无法创建账单分期" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "BILLING_DAY_MISSING", error: "信用卡缺少账单日，无法创建账单分期" }, { status: 400 });
     }
     const billingDay = account.billingDay;
     const billAccountIds = await getCreditBillAccountIds(prisma, account);
@@ -123,14 +123,14 @@ export async function POST(req: Request) {
       },
     });
     if (!cycle) {
-      return NextResponse.json({ ok: false, error: "这一期账单尚未生成，请先打开账单列表" }, { status: 404 });
+      return NextResponse.json({ ok: false, code: "STATEMENT_CYCLE_NOT_FOUND", error: "这一期账单尚未生成，请先打开账单列表" }, { status: 404 });
     }
     const statementMonth = cycle.statementMonth;
     if (!dateInCycle(installmentDate, cycle)) {
-      return NextResponse.json({ ok: false, error: "分期日期没有归属到有效账单周期" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INSTALLMENT_DATE_NOT_IN_CYCLE", error: "分期日期没有归属到有效账单周期" }, { status: 400 });
     }
     if (statementMonthInput && statementMonthInput !== statementMonth) {
-      return NextResponse.json({ ok: false, error: `分期日期归属 ${statementMonth} 账单，与提交的账单月份不一致` }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "STATEMENT_MONTH_MISMATCH", error: `分期日期归属 ${statementMonth} 账单，与提交的账单月份不一致` }, { status: 400 });
     }
     const existingPlan = await prisma.creditCardInstallmentPlan.findFirst({
       where: {
@@ -143,10 +143,10 @@ export async function POST(req: Request) {
       select: { id: true },
     });
     if (cycle.isCurrentCycle) {
-      return NextResponse.json({ ok: false, error: "当前账期尚未出账，请在消费记录中使用消费分期" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "CURRENT_CYCLE_NOT_STATEMENT", error: "当前账期尚未出账，请在消费记录中使用消费分期" }, { status: 400 });
     }
     if (existingPlan) {
-      return NextResponse.json({ ok: false, error: "这一期账单已经创建过账单分期" }, { status: 409 });
+      return NextResponse.json({ ok: false, code: "INSTALLMENT_ALREADY_EXISTS", error: "这一期账单已经创建过账单分期" }, { status: 409 });
     }
 
     const referenceUnpaidAmount = creditBillUnpaidAmount(cycle);
@@ -194,7 +194,7 @@ export async function POST(req: Request) {
   } catch (error) {
     console.error("[bill-installment] failed to create statement installment", error);
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "创建账单分期失败" },
+      { ok: false, code: "CREATE_FAILED", error: error instanceof Error ? error.message : "创建账单分期失败" },
       { status: 500 },
     );
   }

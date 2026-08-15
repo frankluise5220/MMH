@@ -91,6 +91,17 @@
 
 主代理修复：批 2 交付遗漏的 `insuranceProduct.accountingType.asset/protection/hybrid` 三语补齐。
 
+### 第 31–32 轮（空闲窗口恢复后）
+
+目标从 blocked 恢复（轮次上限提升至 45），空闲窗口内完成 8 个代理批 + 主代理自修，目录平衡 **3763/3763/3763**，全项目 0 缺失键，全量 tsc 0 错误：
+
+- API 批 2–8（约 50 路由，380+ code）：regular-invest、settings/users、stocks/transactions、loan-repayment/recalculate、settings/delete、bill/installment、fund/nav、regular-invest/execute、db/data、auth/verify、system-update、ai-config、bill/cycle、batch-execute、record/ingest、properties、password-status、fund/position、email-accounts、password-reset、bill/override、access-keys、create-ledger、loan-rate、fee-rate、factory-reset、fee-rules、holdings、account-group、valuations、imap×4、undo、fx-rates、settings/email、wealth-products、statement/import、fund/name、nav/history、nav/missing、shell-data、auto-execute、batch-execute-test、link-cash-flow、test-send、resend、revalidate、income-expense/detail、init、securities、statement/parse、imported-mail、ai/import、ai/models、fund/refresh、preload-nav、fund/entries、debug×4、resend/test、integrity、command-aliases、overview/summary 等。内部 helper 返回（非 NextResponse）不含 code，正确保留。
+- 页面批 b8+b9（9 页面，382 键）：accounts/quick-add、accounts/page、batch-import、settings/system-update、ledgers、users、insurance、reports、settings/display。剩余中文均为数据（BANK_NAMES 机构名、导入表头契约、服务端步骤 key、模板 token、文件名）。
+- lib 批 1–3（40 文件）：注释/JSDoc 转英文；数据值（AI prompt、正则、关键词映射、默认分类/机构名、错误串）保留。
+- b10+b11+b12（11 组件，366 键）：AIPanel、RegularInvestClient、SidebarClient、MobileTransactions、DbClient、settings/ai、settings/categories、settings/insurance-products、mobile×4。自修 MobileOverviewDashboard 的 MobileSectionHeader t 参数线程化、MobileNavigation 类型引用。
+- 自修 accounts/[accountId] 服务端页面（3 键）。
+- 修复 Prisma client 过期类型（`manualNav`/`manualNavDate` 重新 generate）。
+
 已迁移（0 中文残留）：`StockFeeRuleSettingsButton`、`DateStepper`、`OverviewDashboard`、`MissingFundNavPrompt`、`PropertyShell`、`StockHoldingReport`、`InvestmentProfitReport`、`CalcInput`、`LiabilitiesGuideClient`、`StatisticsCharts`、`CreditBillDetailPanel`、`SettingsDeleteButton`、`BasicDetailPanel`、`DebtShell`、`TransactionFormModal`、`LedgerSwitcher`、`TableColumnFilter`、`FirstUseGuide`、`ViewExcelImportMenuButton`、`DetailViewClient`、`InsuranceShell`、`StockHoldingsPanel`（22 个组件，约 1100 个三语键）。`InsuranceOverviewCard`、`DepositShell` 各剩 1 行数据/匹配值保留；`DebtShell` 保留 3 行 DB 匹配值；`TransactionFormModal` 保留 7 行数据；`ViewExcelImportMenuButton` 保留 10 行导入契约；`DetailViewClient` 保留 5 行数据；`StockHoldingsPanel` 保留 1 行（`"银证转账"` 记录备注）。
 
 服务端组件（sidebar 页面）迁移用 `getServerT()`：`import { getServerT } from "@/lib/server/i18n";` + `const t = await getServerT();`。i18n 三件套：`i18n-core.ts`（纯核心，服务端可导入）/ `i18n.ts`（客户端壳）/ `server/i18n.ts`（服务端助手）。合并脚本目标已改为 `src/lib/i18n-core.ts`。
@@ -104,4 +115,39 @@
 
 统计图表注意点：汇总卡片上的 `+` 前缀判断曾用 `c.label !== "总支出"` 比较中文标签，迁移时改为卡片对象的稳定 `kind` 字段（`c.kind !== "expense"`），避免依赖本地化标签。
 
-待迁移（按优先级）：API 路由错误 `code`（133 路由中约 115 仍含中文，本批已处理 8 个）→ `accounts/quick-add/page.tsx`（58）、`accounts/page.tsx`（46）→ lib 注释（default-categories 104、account-import-match 53、commandParser 53 等为数据/匹配值，多为注释类）。当前全项目约 279 文件 / 5201 行含中文（2026-08-15 实测）。
+### 第 31 轮（空闲窗口继续）
+
+- b13（38 键）：`MobileTransactionForm`（22 行错误串/弹窗文案 → mobileTxForm.*）、`lib/client/colors.ts`（注释英文化）、`lib/api/entries-delete.ts`（弹窗文案 → entriesDelete.*，`已取消删除` 匹配契约保留）、`lib/server/household-scope.ts`（注释英文化 + 错误模板英文化，DB 种子数据保留）、`lib/account-kinds.tsx`（新增 t-aware `kindLabel(k, t?)`/`institutionTypeLabel(type, t?)`，无 t 调用方保留中文 label 数据 map）。
+- 主代理自修：10 个小 API 路由补 code（statistics、accounts/investment、entries/purge、settings/bootstrap、settings/catalog、settings/color-scheme、statement/category-rules、statement/recognition-rules、regular-invest/records、reports/stock-holdings）。
+
+目录平衡 **3801/3801/3801**，全项目 0 缺失键，全量 tsc 0 错误，check:encoding 636 文件 OK。全局中文行 **3446**（自 8914 下降 61.3%）。
+
+### 第 32 轮
+
+- 自修 `app/test-results/page.tsx`（15 键）：调试页面 UI 文案 → testResults.*（getServerT）。
+- lib 批 4（16 文件）：auth/encrypt、client/useOutsideClose、server/cached-data、server/auth 等注释英文化；mail/passwordReset、mail/resend、mail/smtp、server/placeholder-account、server/import-debt-account、statement/preview-meta、stock/securities、fund-actions、ai/config 等注释转英文、数据值（邮件模板、错误串、存储账户名、正则、渠道标签）保留；ai/client、mail/imap-client、fund/regular-invest-display 纯数据文件验证后未改。
+
+目录平衡 **3816/3816/3816**，全项目 0 缺失键，全量 tsc 0 错误，check:encoding 636 文件 OK。全局中文行 **3371**（自 8914 下降 62.2%），含中文文件 248/460。
+
+### 第 33 轮
+
+- 路由注释批（19 文件，70 条注释行）：households、household-password-status、cleanup/dividend-cash、fund/entry、entries/purge、transactions/detail、db/models、entries/batch-edit、settings/email/status、settings/bootstrap、settings/color-scheme、statement/import、onboarding/status、precious-metals/dictionaries、households/switch、entries/delete、accounts/recalc-balances、record/ingest、accounts/internal 的中文 JSDoc/注释全部英文化；错误串、正则、匹配值（`现金红利` startsWith、`金额`/`改成` 正则、MODEL_CN 标题等）原样保留。
+- 全项目注释类中文清零：仅剩 4 处英文注释中引用中文数据模式（`"限制"` 状态值、`"XX的往来款"` 模式、`"空白"` 存储名）——数据契约引用，正确保留。
+
+目录平衡 **3817/3817/3817**，全项目 0 缺失键，全量 tsc 0 错误，check:encoding 636 文件 OK。全局中文行 **3270**（自 8914 下降 63.3%），含中文文件 245/460。
+
+### 第 34 轮
+
+- 终审修复最后残留的 JSX 渲染文案：`DebtTransactionModal` 的 5 个还款方式 `<option>` 显示文本 → `debtTx.method.*` 键（5 键：等额本息/等额本金/自由还款/先还利息一次性还本/免息分期还本），value 保留中文数据。
+- **全项目 JSX 渲染中文清零（0 处）**——所有用户可见 UI 文本均已走 i18n。
+- 系统终审确认：剩余中文全部为 AGENTS.md 第 3、4 条的数据类别（DB 分类/机构名、AI prompt、命令正则、商户规则、导入契约、API 错误串、匹配值、邮件模板），无遗漏 UI 文案或注释。
+
+目录平衡 **3822/3822/3822**，全项目 0 缺失键，全量 tsc 0 错误，check:encoding 636 文件 OK。全局中文行 **3270**（自 8914 下降 63.3%），含中文文件 245/460。
+
+### 第 35 轮（收尾清扫）
+
+- `urlInput.ts`：`PORT_SUGGESTIONS` 的 `label`/`description` 中文字段改为 `labelKey`（新增 `urlInput.portSuggestion.*` 三语键，替换原 `settings.ai.client.portSuggestion.*`）；两个消费页（`settings/fund-api`、`settings/ai/client`）改为 `t(s.labelKey)`；删除死导出 `PATH_PLACEHOLDER`。
+- `investment-config.ts`：`PRODUCT_LABELS` 中文 label map 改为 `PRODUCT_TYPES` 数组，消费方（`EntityCreateForm`、`settings/accounts`）改用 `labelKey`；删除无消费方的 `SUBTYPE_LABELS`/`DEPOSIT_LABELS`/`amountLabel`；`DISPLAY_MAP` 的 `label` 改为 `labelKey`（复用 `fund.subtype.*`/`fundShell.subtype.*`），sidebar 主页 `fundSubtypeInfo` 改为 `t(base.labelKey)`。
+- 目录平衡 **3822/3822/3822**，全项目 0 缺失键，全量 tsc 0 错误，check:encoding 636 文件 OK。
+
+待迁移（按优先级）：剩余少数 API 路由（transactions/detail 126 中 error 中文保留、settings/users 补 4 code、ai/chat 内部 error 保留）→ lib 数据文件（default-categories 104、commandParser 53 等为纯数据/匹配值，按规则保留）→ 少量零散组件（AdvancedDataTable 3、RegularInvestForm 11、DebtTransactionModal 10 等均为数据保留）。当前全项目约 245 文件 / 3270 行含中文（2026-08-15 实测），剩余中文绝大多数为业务数据/匹配值/错误串（按 AGENTS.md 第 3、4 条保留）。

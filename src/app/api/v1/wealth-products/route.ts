@@ -13,10 +13,10 @@ function parsePositiveNumber(raw: unknown) {
 
 /**
  * GET /api/v1/wealth-products
- * 返回当前账簿的银行理财产品主数据。
+ * Returns the bank wealth product master data for the current household.
  *
  * Query:
- * - institutionId?: string 按机构筛选
+ * - institutionId?: string filter by institution
  *
  * Response:
  * - { ok: true, products: [{ id, name, shortName, institutionId, institutionName, currency, annualRate, termDays, note }] }
@@ -50,13 +50,13 @@ export async function GET(req: NextRequest) {
       })),
     });
   } catch (error) {
-    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "查询失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "FETCH_FAILED", error: error instanceof Error ? error.message : "查询失败" }, { status: 500 });
   }
 }
 
 /**
  * POST /api/v1/wealth-products
- * 创建或返回同名银行理财产品主数据。
+ * Creates or returns the bank wealth product master data with the same name.
  *
  * Body:
  * - name: string
@@ -84,8 +84,8 @@ export async function POST(req: NextRequest) {
     const termDays = parsePositiveNumber(body.termDays);
     const note = String(body.note ?? "").trim() || null;
 
-    if (!name) return NextResponse.json({ ok: false, error: "产品名称必填" }, { status: 400 });
-    if (!cashAccountId) return NextResponse.json({ ok: false, error: "请选择资金来源账户" }, { status: 400 });
+    if (!name) return NextResponse.json({ ok: false, code: "PRODUCT_NAME_REQUIRED", error: "产品名称必填" }, { status: 400 });
+    if (!cashAccountId) return NextResponse.json({ ok: false, code: "CASH_ACCOUNT_REQUIRED", error: "请选择资金来源账户" }, { status: 400 });
 
     const { product, wealthAccount } = await prisma.$transaction(async (tx) => {
       const resolvedAccount = await resolveOrCreateWealthAccount(tx, {
@@ -145,6 +145,6 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (error) {
-    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "创建失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "CREATE_FAILED", error: error instanceof Error ? error.message : "创建失败" }, { status: 500 });
   }
 }

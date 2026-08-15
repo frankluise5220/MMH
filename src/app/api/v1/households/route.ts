@@ -13,7 +13,7 @@ export async function GET() {
     return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "未登录" }, { status: 401 });
   }
 
-  // 始终返回全部账簿（用于切换列表），isAdmin/isSystem 仍基于当前用户权限
+  // Always return all households (for the switch list); isAdmin/isSystem still reflect the current user's permissions
   const households = await prisma.household.findMany({
     select: { id: true, name: true, createdAt: true },
     orderBy: { createdAt: "asc" },
@@ -123,7 +123,7 @@ export async function PUT(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const user = await getCurrentUser();
 
-  // 仅系统管理员可删除账簿
+  // Only system admins can delete a household
   if (!user || user.isSystem !== true) {
     return NextResponse.json({ ok: false, code: "SYSTEM_ADMIN_REQUIRED", error: "仅系统管理员可删除账簿" }, { status: 403 });
   }
@@ -135,13 +135,13 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
   }
 
-  // 检查账簿是否存在
+  // Check whether the household exists
   const existing = await prisma.household.findUnique({ where: { id } });
   if (!existing) {
     return NextResponse.json({ ok: false, code: "HOUSEHOLD_NOT_FOUND", error: "账簿不存在" }, { status: 404 });
   }
 
-  // 最后一个账簿不可删除
+  // The last household cannot be deleted
   const count = await prisma.household.count();
   if (count <= 1) {
     return NextResponse.json({ ok: false, code: "LAST_HOUSEHOLD_NOT_DELETABLE", error: "最后一个账簿不可删除，请至少保留一个账簿" }, { status: 400 });
@@ -149,16 +149,16 @@ export async function DELETE(req: NextRequest) {
 
   try {
     await prisma.$transaction(async (tx) => {
-      // 先查出该账簿下所有账户 ID（后续多处复用）
+      // First fetch all account IDs under this household (reused below)
       const accounts = await tx.account.findMany({ where: { householdId: id }, select: { id: true } });
       const accountIds = accounts.map(a => a.id);
 
-      // 删除该账簿下的定投计划（通过 accountId，RegularInvestPlan.accountId 必填）
+      // Delete regular invest plans under this household (via accountId; RegularInvestPlan.accountId is required)
       if (accountIds.length > 0) {
         await tx.regularInvestPlan.deleteMany({ where: { accountId: { in: accountIds } } });
       }
       await tx.undoOperation.deleteMany({ where: { householdId: id } });
-      // 删除该账簿下的基金查询API
+      // Delete fund query API configs under this household
       await tx.fundQueryApi.deleteMany({ where: { householdId: id } });
       await tx.entryBusinessLink.deleteMany({ where: { householdId: id } });
       await optionalPrismaDeleteMany(
@@ -191,9 +191,9 @@ export async function DELETE(req: NextRequest) {
         { where: { householdId: id } },
         { tableNames: ["stock_securities"] },
       );
-      // 级联删除账户关联数据
+      // Cascade-delete account-related data
       if (accountIds.length > 0) {
-        // 删除持仓
+        // Delete holdings
         await tx.fundHolding.deleteMany({ where: { accountId: { in: accountIds } } });
         await tx.preciousMetalHolding.deleteMany({ where: { accountId: { in: accountIds } } });
         await optionalPrismaDeleteMany(
@@ -202,12 +202,12 @@ export async function DELETE(req: NextRequest) {
           { where: { accountId: { in: accountIds } } },
           { tableNames: ["stock_fee_rules"] },
         );
-        // 删除确认天数、费率、账单覆盖、信用卡周期
+        // Delete confirm days, fee rates, bill overrides, and credit card cycles
         await tx.fundConfirmDays.deleteMany({ where: { accountId: { in: accountIds } } });
         await tx.fundFeeRate.deleteMany({ where: { accountId: { in: accountIds } } });
         await tx.billOverride.deleteMany({ where: { accountId: { in: accountIds } } });
         await tx.creditCardCycle.deleteMany({ where: { accountId: { in: accountIds } } });
-        // 删除交易记录
+        // Delete transaction records
         await tx.txRecord.deleteMany({
           where: {
             OR: [
@@ -216,23 +216,23 @@ export async function DELETE(req: NextRequest) {
             ],
           },
         });
-        // 删除账户别名（通过 accountId）
+        // Delete account aliases (by accountId)
         await tx.accountAlias.deleteMany({ where: { accountId: { in: accountIds } } });
       }
-      // 交易记录删除后，EntryTag 会随记录级联清理，此时再删标签。
+      // After transaction records are deleted, EntryTags are cleaned up with them; now delete tags.
       await tx.tag.deleteMany({ where: { householdId: id } });
-      // 删除该账簿下的账户
+      // Delete accounts under this household
       await tx.account.deleteMany({ where: { householdId: id } });
-      // 账户和交易删除后，才能删除仍被它们引用的账簿级资料
+      // Accounts and transactions must be deleted before the household-level data they still reference
       await tx.importBatch.deleteMany({ where: { householdId: id } });
       await tx.institution.deleteMany({ where: { householdId: id } });
-      // 删除该账簿下的账户所有人
+      // Delete account owners under this household
       await tx.accountGroup.deleteMany({ where: { householdId: id } });
-      // 删除该账簿下的分类
+      // Delete categories under this household
       await tx.category.deleteMany({ where: { householdId: id } });
-      // 删除该账簿下的用户
+      // Delete users under this household
       await tx.user.deleteMany({ where: { householdId: id } });
-      // 最后删除账簿本身
+      // Finally delete the household itself
       await tx.household.delete({ where: { id } });
     }, { maxWait: 10_000, timeout: 120_000 });
   } catch (error) {

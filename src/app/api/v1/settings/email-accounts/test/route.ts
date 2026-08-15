@@ -8,14 +8,15 @@ export const runtime = "nodejs";
 
 /**
  * POST /api/v1/settings/email-accounts/test
- * 测试邮箱账户的 IMAP 连接和 SMTP 发件功能
+ * Tests the IMAP connection and SMTP sending for an email account.
  * Body: { accountId?, imapHost, imapPort, imapSecure, username, password?, mailbox?, smtpHost?, smtpPort?, smtpFrom? }
- * 修改已保存账户时可传 accountId 并省略 password，服务端会使用该账簿下已保存的授权码测试。
+ * When modifying a saved account, pass accountId and omit password; the server
+ * uses the saved authorization code of that household account for testing.
  */
 export async function POST(req: NextRequest) {
   const { householdId, user } = await getHouseholdScope();
   if (!user || !isAdmin(user)) {
-    return NextResponse.json({ ok: false, error: "仅管理员可操作" }, { status: 403 });
+    return NextResponse.json({ ok: false, code: "ADMIN_REQUIRED", error: "仅管理员可操作" }, { status: 403 });
   }
 
   const body = await req.json().catch(() => ({}));
@@ -36,12 +37,12 @@ export async function POST(req: NextRequest) {
   }
 
   if (!imapHost || !username || !password) {
-    return NextResponse.json({ ok: false, error: "请填写完整配置；新账户必须填写授权码，修改账户如需重新测试也要保留或填写授权码" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INCOMPLETE_CONFIG", error: "请填写完整配置；新账户必须填写授权码，修改账户如需重新测试也要保留或填写授权码" }, { status: 400 });
   }
 
   const results: string[] = [];
 
-  // 测试 IMAP
+  // Test IMAP
   try {
     const client = connectAndOpenBox({ host: imapHost, port: imapPort, secure: imapSecure, user: username, password, mailbox }, []);
     const imapResult = await Promise.race([
@@ -52,10 +53,10 @@ export async function POST(req: NextRequest) {
     closeImap(imapResult.client);
   } catch (e) {
     results.push(`IMAP 失败: ${e instanceof Error ? e.message : "未知错误"}`);
-    return NextResponse.json({ ok: false, error: results.join("; ") });
+    return NextResponse.json({ ok: false, code: "IMAP_CONNECT_FAILED", error: results.join("; ") });
   }
 
-  // 测试 SMTP（可选）
+  // Test SMTP (optional)
   const smtpHost = String(body.smtpHost ?? "").trim();
   const smtpPort = Number(body.smtpPort) || 465;
   const smtpSecure = body.smtpSecure === undefined ? smtpPort === 465 : body.smtpSecure !== false;
@@ -71,7 +72,7 @@ export async function POST(req: NextRequest) {
       results.push("SMTP 连接成功");
     } catch (e) {
       results.push(`SMTP 失败: ${e instanceof Error ? e.message : "未知错误"}`);
-      return NextResponse.json({ ok: false, error: results.join("; ") });
+      return NextResponse.json({ ok: false, code: "SMTP_CONNECT_FAILED", error: results.join("; ") });
     }
   }
 

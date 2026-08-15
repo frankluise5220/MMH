@@ -27,10 +27,10 @@ export async function GET(req: NextRequest) {
   try {
     const name = String(req.nextUrl.searchParams.get("name") ?? "").trim();
     if (!name) {
-      return NextResponse.json({ ok: false, error: "请提供保险产品名称" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_PRODUCT_NAME", error: "请提供保险产品名称" }, { status: 400 });
     }
     if (name.length > 120) {
-      return NextResponse.json({ ok: false, error: "保险产品名称过长" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "PRODUCT_NAME_TOO_LONG", error: "保险产品名称过长" }, { status: 400 });
     }
 
     const institutionName = String(req.nextUrl.searchParams.get("institutionName") ?? "").trim() || null;
@@ -38,6 +38,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: true, data });
   } catch (error) {
     const message = error instanceof Error ? error.message : "查询保险产品资料失败";
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "LOOKUP_FAILED", error: message }, { status: 500 });
   }
 }

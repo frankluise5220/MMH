@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
     const ctx = await getHouseholdScope();
     const accountId = req.nextUrl.searchParams.get("accountId")?.trim() ?? "";
     if (!accountId) {
-      return NextResponse.json({ ok: false, error: "缺少保险账户ID" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_ACCOUNT_ID", error: "缺少保险账户ID" }, { status: 400 });
     }
 
     const account = await prisma.account.findFirst({
@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
       select: { id: true },
     });
     if (!account) {
-      return NextResponse.json({ ok: false, error: "保险账户不存在" }, { status: 404 });
+      return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "保险账户不存在" }, { status: 404 });
     }
 
     const entries = await loadInsuranceTransactionDetailLike({
@@ -35,6 +35,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: true, data: { entries } });
   } catch (error) {
     const message = error instanceof Error ? error.message : "读取保险交易失败";
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "FETCH_FAILED", error: message }, { status: 500 });
   }
 }

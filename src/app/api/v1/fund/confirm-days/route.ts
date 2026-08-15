@@ -1,4 +1,4 @@
-﻿﻿﻿﻿import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getFundArrivalDays, getFundConfirmDays, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
 
@@ -8,7 +8,7 @@ export async function GET(req: NextRequest) {
   const fundCode = searchParams.get("fundCode")?.trim();
 
   if (!accountId) {
-    return NextResponse.json({ ok: false, error: "缺少参数" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_PARAMS", error: "缺少参数" }, { status: 400 });
   }
 
   try {
@@ -40,7 +40,7 @@ export async function GET(req: NextRequest) {
     });
   } catch (e) {
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : "查询失败" },
+      { ok: false, code: "FETCH_FAILED", error: e instanceof Error ? e.message : "查询失败" },
       { status: 500 }
     );
   }
@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
       accountId?: string; fundCode?: string; days?: number; redeemCostDays?: number; arrivalDays?: number;
     } | null;
     if (!body?.accountId) {
-      return NextResponse.json({ ok: false, error: "缺少 accountId" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_ACCOUNT_ID", error: "缺少 accountId" }, { status: 400 });
     }
     const existing = await prisma.fundConfirmDays.findUnique({
       where: { accountId_fundCode: { accountId: body.accountId, fundCode: body.fundCode || "" } },
@@ -79,7 +79,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   } catch (e) {
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : "保存失败" },
+      { ok: false, code: "SAVE_FAILED", error: e instanceof Error ? e.message : "保存失败" },
       { status: 500 }
     );
   }

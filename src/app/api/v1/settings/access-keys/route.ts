@@ -6,19 +6,19 @@ import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 export const runtime = "nodejs";
 
 /**
- * API Key 管理接口（仅管理员）。
+ * API Key management endpoint (admin only).
  *
- * GET   /api/v1/settings/access-keys        → 列出全部 API Key（含明文，供管理员查看/复制）
- * POST  /api/v1/settings/access-keys        → 新增 { name, key }
- * DELETE /api/v1/settings/access-keys?id=…  → 删除指定 key
+ * GET   /api/v1/settings/access-keys        → Lists all API keys (including plaintext, for admin viewing/copying)
+ * POST  /api/v1/settings/access-keys        → Creates { name, key }
+ * DELETE /api/v1/settings/access-keys?id=…  → Deletes the specified key
  */
 async function requireAdmin(): Promise<{ ok: true } | { ok: false; response: NextResponse }> {
   const user = await getCurrentUser();
   if (!user) {
-    return { ok: false, response: NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 }) };
+    return { ok: false, response: NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "请先登录" }, { status: 401 }) };
   }
   if (!isAdmin(user)) {
-    return { ok: false, response: NextResponse.json({ ok: false, error: "仅管理员可操作" }, { status: 403 }) };
+    return { ok: false, response: NextResponse.json({ ok: false, code: "ADMIN_REQUIRED", error: "仅管理员可操作" }, { status: 403 }) };
   }
   return { ok: true };
 }
@@ -47,7 +47,7 @@ export async function POST(req: Request) {
   const body = (await req.json().catch(() => null)) as unknown;
   const parse = CreateSchema.safeParse(body);
   if (!parse.success) {
-    return NextResponse.json({ ok: false, error: "缺少必填字段（name/key）" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_FIELDS", error: "缺少必填字段（name/key）" }, { status: 400 });
   }
 
   const { name, key } = parse.data;
@@ -68,12 +68,12 @@ export async function DELETE(req: Request) {
   const id = searchParams.get("id") ?? "";
 
   if (!id) {
-    return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
   }
 
   const existing = await prisma.accessKey.findUnique({ where: { id } });
   if (!existing) {
-    return NextResponse.json({ ok: false, error: "API Key 不存在" }, { status: 404 });
+    return NextResponse.json({ ok: false, code: "ACCESS_KEY_NOT_FOUND", error: "API Key 不存在" }, { status: 404 });
   }
 
   await prisma.accessKey.delete({ where: { id } });

@@ -1,6 +1,6 @@
-﻿/**
- * 统一日志模块
- * 用于记录关键错误和警告，替代静默异常处理
+/**
+ * Unified logging module.
+ * Used to record critical errors and warnings, replacing silent exception handling.
  */
 
 type LogLevel = 'error' | 'warn' | 'info' | 'debug';
@@ -52,13 +52,13 @@ export const logger = {
   
   catchSilent(operation: string, context?: string): (error: unknown) => void {
     return (error: unknown) => {
-      logger.warn(operation + ' 失败（已静默处理）', context, error);
+      logger.warn(operation + ' failed (silently handled)', context, error);
     };
   },
   
   catchLog(operation: string, context?: string): (error: unknown) => void {
     return (error: unknown) => {
-      logger.error(operation + ' 失败', context, error);
+      logger.error(operation + ' failed', context, error);
     };
   }
 };

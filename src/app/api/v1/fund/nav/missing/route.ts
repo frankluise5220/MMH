@@ -12,12 +12,13 @@ export const runtime = "nodejs";
 /**
  * POST /api/v1/fund/nav/missing
  *
- * 补齐当前账簿已有基金代码的历史净值缓存，主要供投资收益表在
- * 发现持仓基金缺失工作日净值时使用。
+ * Backfills historical NAV cache entries for fund codes already held in the
+ * current household. Mainly used by the investment income report when a held
+ * fund is missing a trading-day NAV.
  *
  * Body:
  *   { items: [{ fundCode, date }] }
- *   或 { ranges: [{ fundCode, startDate, endDate }] }
+ *   or { ranges: [{ fundCode, startDate, endDate }] }
  *
  * Success:
  *   { ok: true, requested, rangeCount, fundCount, fetched, written, failed, ranges }
@@ -115,7 +116,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}));
     const requests = normalizeRequests(body);
     if (requests.length === 0) {
-      return NextResponse.json({ ok: false, error: "缺少要补齐的基金净值日期" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_NAV_DATES", error: "缺少要补齐的基金净值日期" }, { status: 400 });
     }
 
     const requestedCodes = Array.from(new Set(requests.map((item) => item.fundCode)));
@@ -146,7 +147,7 @@ export async function POST(req: NextRequest) {
     );
     const allowedRequests = requests.filter((item) => allowedCodes.has(item.fundCode));
     if (allowedRequests.length === 0) {
-      return NextResponse.json({ ok: false, error: "没有可补齐的当前账簿基金代码" }, { status: 403 });
+      return NextResponse.json({ ok: false, code: "NO_ELIGIBLE_FUND_CODES", error: "没有可补齐的当前账簿基金代码" }, { status: 403 });
     }
 
     const result = await refreshFundNavCacheRanges(allowedRequests);
@@ -166,7 +167,7 @@ export async function POST(req: NextRequest) {
     });
   } catch (error) {
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "获取缺失净值失败" },
+      { ok: false, code: "FETCH_FAILED", error: error instanceof Error ? error.message : "获取缺失净值失败" },
       { status: 500 },
     );
   }

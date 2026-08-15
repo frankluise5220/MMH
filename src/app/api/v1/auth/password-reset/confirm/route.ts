@@ -7,7 +7,7 @@ import { getHouseholdDisplayName } from "@/lib/household-display";
 
 export const runtime = "nodejs";
 
-// 验证码接口防爆破：按 IP 限制尝试次数（验证码有效期 15 分钟，窗口取相同长度）
+// Brute-force protection for the code verification endpoint: limit attempts per IP (the code is valid for 15 minutes; use the same window).
 const RESET_ATTEMPT_LIMIT = 10;
 const RESET_ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
 
@@ -99,33 +99,33 @@ function hashCode(params: { userId: string; code: string }) {
 export async function POST(req: NextRequest) {
   const ip = getClientIp(req);
   if (ip && isResetAttemptLimited(ip)) {
-    return NextResponse.json({ ok: false, error: "尝试次数过多，请稍后再试" }, { status: 429 });
+    return NextResponse.json({ ok: false, code: "RATE_LIMITED", error: "尝试次数过多，请稍后再试" }, { status: 429 });
   }
   recordResetAttempt(ip ?? "unknown");
 
   const body = (await req.json().catch(() => null)) as unknown;
   const parse = BodySchema.safeParse(body);
   if (!parse.success) {
-    return NextResponse.json({ ok: false, error: "参数不正确" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INVALID_PARAMS", error: "参数不正确" }, { status: 400 });
   }
 
   const secret = (process.env.PASSWORD_RESET_SECRET ?? "").trim();
   if (!secret) {
-    return NextResponse.json({ ok: false, error: "未配置密码找回功能" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "PASSWORD_RESET_NOT_CONFIGURED", error: "未配置密码找回功能" }, { status: 500 });
   }
 
   const { username, code, newPassword, householdId } = parse.data;
   const cookieHouseholdId = householdId ?? req.cookies.get("householdId")?.value ?? null;
   const users = await findCandidateUsers({ username, householdId: cookieHouseholdId });
   if (users.length === 0) {
-    return NextResponse.json({ ok: false, error: "验证码无效或已过期" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INVALID_OR_EXPIRED_CODE", error: "验证码无效或已过期" }, { status: 400 });
   }
 
   const tokenMatches: Array<{ user: ResetUser; tokenId: string }> = [];
   for (const user of users) {
     const tokenHash = hashCode({ userId: user.id, code: code.trim() });
     if (!tokenHash) {
-      return NextResponse.json({ ok: false, error: "未配置密码找回功能" }, { status: 500 });
+      return NextResponse.json({ ok: false, code: "PASSWORD_RESET_NOT_CONFIGURED", error: "未配置密码找回功能" }, { status: 500 });
     }
     const token = await prisma.passwordResetToken.findFirst({
       where: {
@@ -141,7 +141,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (tokenMatches.length === 0) {
-    return NextResponse.json({ ok: false, error: "验证码无效或已过期" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INVALID_OR_EXPIRED_CODE", error: "验证码无效或已过期" }, { status: 400 });
   }
   if (tokenMatches.length > 1 && !cookieHouseholdId) {
     return NextResponse.json(

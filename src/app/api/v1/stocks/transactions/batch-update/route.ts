@@ -45,15 +45,15 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => null) as { updates?: Array<Record<string, unknown>> } | null;
     const updates = Array.isArray(body?.updates) ? body.updates : [];
     if (updates.length === 0) {
-      return NextResponse.json({ ok: false, error: "缺少要修改的记录" }, { status: 400, headers: corsHeaders() });
+      return NextResponse.json({ ok: false, code: "MISSING_UPDATES", error: "缺少要修改的记录" }, { status: 400, headers: corsHeaders() });
     }
     if (updates.length > 500) {
-      return NextResponse.json({ ok: false, error: "单次最多修改 500 条" }, { status: 400, headers: corsHeaders() });
+      return NextResponse.json({ ok: false, code: "TOO_MANY_UPDATES", error: "单次最多修改 500 条" }, { status: 400, headers: corsHeaders() });
     }
 
     const ids = Array.from(new Set(updates.map((item) => String(item.id ?? "").trim()).filter(Boolean)));
     if (ids.length === 0) {
-      return NextResponse.json({ ok: false, error: "缺少交易 id" }, { status: 400, headers: corsHeaders() });
+      return NextResponse.json({ ok: false, code: "MISSING_TRANSACTION_IDS", error: "缺少交易 id" }, { status: 400, headers: corsHeaders() });
     }
 
     const existing = await prisma.stockTransaction.findMany({
@@ -61,7 +61,7 @@ export async function POST(req: NextRequest) {
       select: { id: true, stockAccountId: true, securityId: true, cashAccountId: true },
     });
     if (existing.length === 0) {
-      return NextResponse.json({ ok: false, error: "股票交易不存在" }, { status: 404, headers: corsHeaders() });
+      return NextResponse.json({ ok: false, code: "RECORD_NOT_FOUND", error: "股票交易不存在" }, { status: 404, headers: corsHeaders() });
     }
     const existingById = new Map(existing.map((row) => [row.id, row]));
 
@@ -115,7 +115,7 @@ export async function POST(req: NextRequest) {
     }, { headers: corsHeaders() });
   } catch (error) {
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "批量修改失败" },
+      { ok: false, code: "BATCH_UPDATE_FAILED", error: error instanceof Error ? error.message : "批量修改失败" },
       { status: 500, headers: corsHeaders() },
     );
   }

@@ -70,8 +70,9 @@ export async function GET(req: NextRequest) {
       let security = await prisma.stockSecurity.findFirst({
         where: { householdId, isActive: true, market, stockCode },
       });
-      // 默认只查本地：StockSecurity 未命中时再从 StockHolding / StockTransaction 找已保存的名称，
-      // 不触发外部股票查询 API。只有 lookup=1 才在本地全部未命中时查外部并缓存。
+      // Default is local-only lookup: when StockSecurity misses, look for a saved name in
+      // StockHolding / StockTransaction without triggering the external stock query API.
+      // Only lookup=1 queries externally and caches when all local lookups miss.
       if (!usableStockName(security?.stockName, stockCode)) {
         const localStockName = await findLocalStockName(householdId, market, stockCode);
         if (localStockName) {
@@ -148,7 +149,7 @@ export async function GET(req: NextRequest) {
       },
     }, { headers: corsHeaders() });
   } catch (error) {
-    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "查询失败" }, { status: 500, headers: corsHeaders() });
+    return NextResponse.json({ ok: false, code: "FETCH_FAILED", error: error instanceof Error ? error.message : "查询失败" }, { status: 500, headers: corsHeaders() });
   }
 }
 
@@ -176,7 +177,7 @@ export async function POST(req: NextRequest) {
     const currency = normalizeCurrency(body.currency);
     const exchange = String(body.exchange ?? "").trim() || null;
 
-    if (!stockCode) return NextResponse.json({ ok: false, error: "股票代码必填" }, { status: 400, headers: corsHeaders() });
+    if (!stockCode) return NextResponse.json({ ok: false, code: "STOCK_CODE_REQUIRED", error: "股票代码必填" }, { status: 400, headers: corsHeaders() });
 
     const security = await resolveOrCreateStockSecurity(prisma, {
       householdId,
@@ -201,6 +202,6 @@ export async function POST(req: NextRequest) {
       },
     }, { headers: corsHeaders() });
   } catch (error) {
-    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "创建失败" }, { status: 500, headers: corsHeaders() });
+    return NextResponse.json({ ok: false, code: "CREATE_FAILED", error: error instanceof Error ? error.message : "创建失败" }, { status: 500, headers: corsHeaders() });
   }
 }

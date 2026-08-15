@@ -2,22 +2,22 @@ import { prisma } from "@/lib/db/prisma";
 import { getOrCreateDefaultAccountGroupId } from "@/lib/server/account-group-default";
 
 /**
- * 获取或创建系统级占位账户（「空白」）
- * 用于删除真实账户后，将引用该账户的记录改为引用占位账户
- * 占位账户不可编辑/删除，在列表中显示为灰色
+ * Gets or creates the system-level placeholder account (named "空白").
+ * Used after deleting a real account: records that referenced it are repointed to the placeholder account.
+ * The placeholder account cannot be edited/deleted and is shown greyed out in lists.
  */
 
 let cachedPlaceholderId: string | null = null;
 
 export async function getOrCreatePlaceholderAccountId(householdId: string): Promise<string> {
-  // 如果有缓存且账户仍然存在，直接返回
+  // If cached and the account still exists, return it directly
   if (cachedPlaceholderId) {
     const exists = await prisma.account.findUnique({ where: { id: cachedPlaceholderId } });
     if (exists) return cachedPlaceholderId;
     cachedPlaceholderId = null;
   }
 
-  // 查找已存在的占位账户（限当前账簿）
+  // Look for an existing placeholder account (scoped to the current household/book)
   const existing = await prisma.account.findFirst({
     where: { isPlaceholder: true, householdId },
   });
@@ -26,10 +26,10 @@ export async function getOrCreatePlaceholderAccountId(householdId: string): Prom
     return existing.id;
   }
 
-  // 找到当前账簿的默认所有人，确保 groupId 存在
+  // Find the default owner of the current household/book to ensure the groupId exists
   const groupId = await getOrCreateDefaultAccountGroupId(prisma, householdId);
 
-  // 创建占位账户
+  // Create the placeholder account
   const placeholder = await prisma.account.create({
     data: {
       name: "空白",

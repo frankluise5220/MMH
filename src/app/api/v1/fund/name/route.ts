@@ -5,12 +5,13 @@ import { getLatestFundNav, refreshLatestFundNav, setFundNav } from "@/lib/fund/n
 import { queryFundIdentity } from "@/lib/fund/queryApi";
 
 /**
- * 获取基金名称（优先从代码权威来源，再从净值缓存库，最后从持仓库）
+ * Resolves a fund name, preferring the authoritative code source, then the NAV
+ * cache, and finally holding records.
  * GET /api/v1/fund/name?code=000001
  *
- * 1. 先从外部代码详情页按 fundCode 精确校验名称
- * 2. 再从净值缓存库查询
- * 3. 最后从持仓库兜底（仅在navCache和外部API都没有时）
+ * 1. Validate the name against the external fund detail page by fundCode.
+ * 2. Query the NAV cache.
+ * 3. Fall back to holding records (only when navCache and external APIs both miss).
  */
 
 function utcDate(dateStr: string): Date {
@@ -20,7 +21,7 @@ function utcDate(dateStr: string): Date {
 
 async function fetchFromEastmoney(fundCode: string, headers: Record<string, string>): Promise<string | null> {
   try {
-    // 方法1: 天天基金快查API
+    // Method 1: Eastmoney fund quick-lookup API
     const url1 = `http://fundgz.1234567.com.cn/js/${fundCode}.js?rt=${Date.now()}`;
     const res1 = await fetch(url1, {
       headers: { ...headers, Referer: `http://fundf10.eastmoney.com/jjjz_${fundCode}.html` },
@@ -44,19 +45,19 @@ async function fetchFromEastmoney(fundCode: string, headers: Record<string, stri
       } catch {}
     }
 
-    // 方法2: 从基金详情页提取
+    // Method 2: Extract from the fund detail page
     const url2 = `http://fundf10.eastmoney.com/jjjz_${fundCode}.html`;
     const res2 = await fetch(url2, {
       headers: { ...headers, Referer: url2 },
       cache: "no-store"
     });
     const html2 = await res2.text();
-    // 多种匹配模式
+    // Multiple matching patterns
     const patterns = [
       /基金简称[：<>\s]*([^：<>\s]{2,30})(?:基金|\s|<)/,
       /基金名称[：<>\s]*([^：<>\s]{2,30})(?:基金|\s|<)/,
-      /<title[^>]*>([^<]{2,30})[（(]\d{6}[）)]/,  // title: "基金名称(代码)" or "基金名称（代码）"
-      /f_name[^>]*>\s*([^<]{2,30})\s*</,    // 天天基金页面变量
+      /<title[^>]*>([^<]{2,30})[（(]\d{6}[）)]/,  // title: "fund name (code)" with half or full-width parens
+      /f_name[^>]*>\s*([^<]{2,30})\s*</,    // Eastmoney page variable
     ];
     for (const pattern of patterns) {
       const match = html2.match(pattern);
@@ -71,7 +72,7 @@ async function fetchFromEastmoney(fundCode: string, headers: Record<string, stri
 
 async function fetchFromDanjuan(fundCode: string, headers: Record<string, string>): Promise<string | null> {
   try {
-    // 蛋卷基金API
+    // Danjuan fund API
     const url = `https://danjuanfunds.com/djapi/fund/${fundCode}`;
     const res = await fetch(url, {
       headers: {
@@ -91,14 +92,14 @@ async function fetchFromDanjuan(fundCode: string, headers: Record<string, string
 
 async function fetchFromFund123(fundCode: string, headers: Record<string, string>): Promise<string | null> {
   try {
-    // 天天基金基金搜索API
+    // Eastmoney fund search API
     const url = `http://so.eastmoney.com/web/s?keyword=${fundCode}`;
     const res = await fetch(url, {
       headers: { ...headers },
       cache: "no-store"
     });
     const html = await res.text();
-    // 从搜索结果页提取基金名称
+    // Extract the fund name from the search result page
     const match = html.match(new RegExp(`${fundCode}[^<]*?([^<]+?)</a>`));
     if (match && match[1]) {
       const name = match[1].trim();
@@ -110,14 +111,14 @@ async function fetchFromFund123(fundCode: string, headers: Record<string, string
 
 async function fetchFromAlipay(fundCode: string, headers: Record<string, string>): Promise<string | null> {
   try {
-    // 支付宝基金API（通过蚂蚁财富）
+    // Alipay fund API (via Ant Fortune)
     const url = `https://fund.alipay.com/fund/fundDetail.htm?fundCode=${fundCode}`;
     const res = await fetch(url, {
       headers: { ...headers },
       cache: "no-store"
     });
     const html = await res.text();
-    // 从页面标题或内容提取名称
+    // Extract the name from the page title or content
     const patterns = [
       /<title[^>]*>([^<]+基金)/,
       /基金名称[：<>\s]*([^：<>\s]+)/,
@@ -138,11 +139,11 @@ export async function GET(req: NextRequest) {
   const fundCode = searchParams.get("code")?.trim();
 
   if (!fundCode) {
-    return NextResponse.json({ ok: false, error: "缺少基金代码" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_FUND_CODE", error: "缺少基金代码" }, { status: 400 });
   }
 
   try {
-    // 1. 先按基金代码查询权威身份，避免历史净值缓存中的错误 name 污染显示。
+    // 1. Query the authoritative identity by fund code first, so a wrong name in the historical NAV cache cannot pollute the display.
     const identity = await queryFundIdentity(fundCode);
     if (identity?.name) {
       return NextResponse.json({
@@ -152,7 +153,7 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // 2. 再从净值缓存库查询。
+    // 2. Then query the NAV cache.
     const latestNav = await getLatestFundNav(fundCode);
     if (latestNav?.name) {
       return NextResponse.json({
@@ -175,12 +176,12 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // 2. 本地缓存没有，尝试多个外部API获取
+    // 2. Local cache missed; try multiple external APIs
     const headers = {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     };
 
-    // 尝试天天基金API
+    // Try the Eastmoney API
     const eastmoneyName = await fetchFromEastmoney(fundCode, headers);
     if (eastmoneyName) {
       return NextResponse.json({
@@ -190,7 +191,7 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // 尝试蛋卷基金API
+    // Try the Danjuan API
     const danjuanName = await fetchFromDanjuan(fundCode, headers);
     if (danjuanName) {
       return NextResponse.json({
@@ -200,7 +201,7 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // 尝试天天基金搜索API
+    // Try the Eastmoney search API
     const fund123Name = await fetchFromFund123(fundCode, headers);
     if (fund123Name) {
       return NextResponse.json({
@@ -210,7 +211,7 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // 尝试支付宝基金API
+    // Try the Alipay API
     const alipayName = await fetchFromAlipay(fundCode, headers);
     if (alipayName) {
       return NextResponse.json({
@@ -220,7 +221,7 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // 3. 最后从持仓库兜底（仅在navCache和外部API都没有时）
+    // 3. Finally fall back to holding records (only when navCache and external APIs both miss)
     const holding = await prisma.fundHolding.findFirst({
       where: { fundCode },
       select: { fundName: true },
@@ -233,10 +234,10 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    return NextResponse.json({ ok: false, error: `未找到基金代码 ${fundCode}，请确认代码是否正确` }, { status: 404 });
+    return NextResponse.json({ ok: false, code: "FUND_NOT_FOUND", error: `未找到基金代码 ${fundCode}，请确认代码是否正确` }, { status: 404 });
   } catch (e) {
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : "查询失败" },
+      { ok: false, code: "FETCH_FAILED", error: e instanceof Error ? e.message : "查询失败" },
       { status: 500 }
     );
   }

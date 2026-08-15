@@ -30,12 +30,12 @@ export async function GET(req: NextRequest) {
   const keysParam = searchParams.get("keys")?.trim();
   if (keysParam) {
     const keys = Array.from(new Set(keysParam.split(",").map((key) => key.trim()).filter(Boolean)));
-    if (keys.length === 0) return NextResponse.json({ ok: false, error: "缺少 key" }, { status: 400 });
+    if (keys.length === 0) return NextResponse.json({ ok: false, code: "MISSING_KEY", error: "缺少 key" }, { status: 400 });
     const needsAdmin = keys.some((key) => !PUBLIC_SETTING_KEYS.has(key));
     if (needsAdmin) {
       const user = await getCurrentUser();
       if (!isAdmin(user)) {
-        return NextResponse.json({ ok: false, error: "仅管理员可读取该设置" }, { status: 403 });
+        return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "仅管理员可读取该设置" }, { status: 403 });
       }
     }
     const rows = await prisma.systemSetting.findMany({ where: { key: { in: keys } } });
@@ -44,12 +44,12 @@ export async function GET(req: NextRequest) {
   }
 
   const key = searchParams.get("key")?.trim();
-  if (!key) return NextResponse.json({ ok: false, error: "缺少 key" }, { status: 400 });
+  if (!key) return NextResponse.json({ ok: false, code: "MISSING_KEY", error: "缺少 key" }, { status: 400 });
   const isPublicKey = PUBLIC_SETTING_KEYS.has(key);
   if (!isPublicKey) {
     const user = await getCurrentUser();
     if (!isAdmin(user)) {
-      return NextResponse.json({ ok: false, error: "仅管理员可读取该设置" }, { status: 403 });
+      return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "仅管理员可读取该设置" }, { status: 403 });
     }
   }
   const row = await prisma.systemSetting.findUnique({ where: { key } });
@@ -58,10 +58,10 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const { key, value } = await req.json();
-  if (!key) return NextResponse.json({ ok: false, error: "缺少 key" }, { status: 400 });
+  if (!key) return NextResponse.json({ ok: false, code: "MISSING_KEY", error: "缺少 key" }, { status: 400 });
   const user = await getCurrentUser();
   if (!isAdmin(user)) {
-    return NextResponse.json({ ok: false, error: "仅管理员可修改系统设置" }, { status: 403 });
+    return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "仅管理员可修改系统设置" }, { status: 403 });
   }
   let nextValue = String(value ?? "");
   if (key === ACCESS_WHITELIST_KEY) {
@@ -71,12 +71,12 @@ export async function POST(req: NextRequest) {
     if (enabledRow?.value === "true") {
       if (nextAllowedList.length === 0) {
         return NextResponse.json(
-          { ok: false, error: "访问白名单开启时，至少需要保留一个非本机访问域名或 IP。" },
+          { ok: false, code: "EMPTY_ACCESS_WHITELIST", error: "访问白名单开启时，至少需要保留一个非本机访问域名或 IP。" },
           { status: 400 },
         );
       }
       const selfLockError = validateCurrentAccessHost(req, nextAllowedList);
-      if (selfLockError) return NextResponse.json({ ok: false, error: selfLockError }, { status: 400 });
+      if (selfLockError) return NextResponse.json({ ok: false, code: "SELF_LOCK_OUT", error: selfLockError }, { status: 400 });
     }
   }
   if (key === ORIGIN_CHECK_KEY && nextValue === "true") {
@@ -84,12 +84,12 @@ export async function POST(req: NextRequest) {
     const allowedList = parseAllowedAccessList(allowedRow?.value);
     if (allowedList.length === 0) {
       return NextResponse.json(
-        { ok: false, error: "请先添加至少一个非本机访问域名或 IP，再开启访问白名单。" },
+        { ok: false, code: "EMPTY_ACCESS_WHITELIST", error: "请先添加至少一个非本机访问域名或 IP，再开启访问白名单。" },
         { status: 400 },
       );
     }
     const selfLockError = validateCurrentAccessHost(req, allowedList);
-    if (selfLockError) return NextResponse.json({ ok: false, error: selfLockError }, { status: 400 });
+    if (selfLockError) return NextResponse.json({ ok: false, code: "SELF_LOCK_OUT", error: selfLockError }, { status: 400 });
   }
   await prisma.systemSetting.upsert({
     where: { key },

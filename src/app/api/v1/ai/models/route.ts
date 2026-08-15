@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
   const { baseUrl, apiKey, modelsUrl } = body;
 
   if (!baseUrl) {
-    return NextResponse.json({ ok: false, error: "缺少 baseUrl" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_BASE_URL", error: "缺少 baseUrl" }, { status: 400 });
   }
 
   const cleanUrl = baseUrl.replace(/\/$/, "");
@@ -65,7 +65,7 @@ export async function POST(req: NextRequest) {
     if (!response.ok) {
       const text = await response.text().catch(() => "");
       return NextResponse.json(
-        { ok: false, error: `HTTP ${response.status}: ${text}` },
+        { ok: false, code: "MODEL_FETCH_FAILED", error: `HTTP ${response.status}: ${text}` },
         { status: response.status },
       );
     }
@@ -91,7 +91,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, models, modelInfos });
   } catch (e) {
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : "请求失败" },
+      { ok: false, code: "MODEL_LIST_FAILED", error: e instanceof Error ? e.message : "请求失败" },
       { status: 500 },
     );
   }

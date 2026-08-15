@@ -2,13 +2,13 @@
  * API: /api/v1/business-transactions/integrity
  *
  * GET
- *   检查旧 TxRecord 投资/保险/理财/存款/贵金属业务字段与独立业务交易表、
- *   EntryBusinessLink 的一致性。
+ *   Checks consistency between the legacy TxRecord investment/insurance/wealth/deposit/precious-metals
+ *   business fields and the standalone business transaction tables plus EntryBusinessLink.
  *
  * POST JSON body { limit?: number }
- *   使用现有同步逻辑补齐缺失的独立业务交易记录和关联记录。
+ *   Uses the existing sync logic to backfill missing standalone business transactions and links.
  *
- * 返回:
+ * Responses:
  *   GET  { ok: true, data: { ok, summary, issueCount, issues } }
  *   POST { ok: true, data: { attempted, before, after } }
  */
@@ -36,7 +36,7 @@ export async function GET() {
   } catch (error) {
     console.error("GET /api/v1/business-transactions/integrity error:", error);
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "检查失败" },
+      { ok: false, code: "INTEGRITY_CHECK_FAILED", error: error instanceof Error ? error.message : "检查失败" },
       { status: 500 },
     );
   }
@@ -51,7 +51,7 @@ export async function POST(req: Request) {
   } catch (error) {
     console.error("POST /api/v1/business-transactions/integrity error:", error);
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "修复失败" },
+      { ok: false, code: "INTEGRITY_REPAIR_FAILED", error: error instanceof Error ? error.message : "修复失败" },
       { status: 500 },
     );
   }

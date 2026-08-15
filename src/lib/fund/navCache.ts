@@ -16,9 +16,9 @@ export interface NavListItem {
 }
 
 /**
- * 批量查询基金历史净值（一次性获取整个时间段的数据）
- * 返回按日期降序排列的净值列表，包含申购/赎回状态
- * 东方财富API单页最多返回20条，设更大也只返回20
+ * Batch fetch a fund's historical NAVs (fetches the whole date range at once).
+ * Returns the NAV list sorted by date descending, including purchase/redemption status.
+ * The Eastmoney API returns at most 20 items per page; requesting more still returns 20.
  */
 export async function fetchHistoricalNavList(
   fundCode: string,
@@ -59,7 +59,7 @@ export async function fetchHistoricalNavList(
 }
 
 /**
- * 从预加载的净值列表中找到目标日期的净值（精确匹配）
+ * Find the NAV for the target date in a preloaded NAV list (exact match).
  */
 export function findNavExact(
   navList: NavListItem[],
@@ -71,7 +71,7 @@ export function findNavExact(
 }
 
 /**
- * 从预加载的净值列表中找到目标日期或之前最近的交易日净值（回退查找）
+ * Find the NAV for the target date or the most recent trading day before it (fallback lookup).
  */
 export function findNavFallback(
   navList: NavListItem[],
@@ -99,14 +99,14 @@ export function findNavFallback(
 }
 
 /**
- * 将历史净值列表批量写入缓存表（含申购状态）
+ * Write a historical NAV list into the cache table in bulk (including purchase status).
  */
 export async function preloadNavListToCache(
   fundCode: string,
   navList: NavListItem[]
 ): Promise<number> {
   let written = 0;
-  // Check if any entry has 限制 status and fetch purchase limit if so
+  // Check if any entry has a restricted ("限制") status and fetch purchase limit if so
   const hasRestriction = navList.some(n => n.sgzt?.includes("限制"));
   let purchaseLimit: number | null = null;
   if (hasRestriction) {
@@ -118,7 +118,7 @@ export async function preloadNavListToCache(
       await setFundNav(fundCode, utcDate(navItem.date), navItem.nav, navItem.cumNav, undefined, navItem.sgzt, limit ?? undefined);
       written++;
     } catch {
-      // 单条写入失败不影响整体
+      // A single failed write must not abort the whole batch
     }
   }
   return written;
@@ -150,10 +150,10 @@ function isYmd(value: string) {
 }
 
 /**
- * 批量补齐指定基金/日期范围的历史净值缓存。
+ * Batch fill the historical NAV cache for the given fund/date ranges.
  *
- * 调用方可以传入多个缺失日期；这里按基金合并成最小日期范围，
- * 通过历史净值接口一次拉取整段数据，再写入 FundNavCache。
+ * Callers may pass multiple missing dates; they are merged per fund into a minimal
+ * date range, fetched at once through the historical NAV API, then written to FundNavCache.
  */
 export async function refreshFundNavCacheRanges(
   requests: FundNavCacheRangeRequest[],
@@ -222,7 +222,7 @@ export async function refreshFundNavCacheRanges(
 }
 
 /**
- * UTC日期转换（避免时区问题）
+ * Convert a date string to a UTC Date (avoids timezone issues).
  */
 function utcDate(dateStr: string): Date {
   const [y, m, d] = dateStr.split("-").map(Number);
@@ -230,47 +230,49 @@ function utcDate(dateStr: string): Date {
 }
 
 /**
- * 查询基金净值（智能获取）
- * 流程：先查询缓存 → 不存在则调用API → 写入缓存 → 返回结果
+ * Query a fund NAV (smart fetch).
+ * Flow: check cache first → call the API when missing → write to cache → return the result.
  *
- * 调用方式：
- * - navDate 必须用 utcDate() 构造，确保时区为 T00:00:00Z
- *   正确：utcDate("2026-05-25") → 2026-05-25T00:00:00.000Z
- *   错误：new Date("2026-05-25") → 某些环境下可能偏移为 T16:00:00Z
+ * Usage:
+ * - navDate must be built with utcDate() so the time is T00:00:00Z
+ *   Correct: utcDate("2026-05-25") → 2026-05-25T00:00:00.000Z
+ *   Wrong: new Date("2026-05-25") → may shift to T16:00:00Z in some environments
  *
- * 返回值说明：
- * - dateMatch=true：净值日期与请求日期一致，可安全用于份额计算
- * - dateMatch=false：净值日期与请求日期不一致（如请求历史日期但API返回最近可用净值）
- *   actualDate 字段包含实际净值日期，可用于更新确认日期
- * - null：缓存和API均无数据
+ * Return value:
+ * - dateMatch=true: the NAV date equals the requested date, safe for share calculation
+ * - dateMatch=false: the NAV date differs from the requested date (e.g. a historical date
+ *   was requested but the API returned the latest available NAV). The actualDate field
+ *   contains the real NAV date and can be used to update the confirmation date.
+ * - null: neither the cache nor the API has data
  *
- * @param fundCode 基金代码
- * @param navDate 净值日期（必须用 utcDate 构造的 Date 对象，确保 T00:00:00Z）
- * @param accountId 资金账户ID（可选，用于账户默认 API 和机构场景优先）
- * @returns 净值信息（nav、cumNav、name、dateMatch、actualDate）或 null
+ * @param fundCode Fund code
+ * @param navDate NAV date (must be a Date built with utcDate, ensuring T00:00:00Z)
+ * @param accountId Fund account ID (optional; used to prefer the account default API and institution scenarios)
+ * @returns NAV info (nav, cumNav, name, dateMatch, actualDate) or null
  */
 export async function getFundNav(
   fundCode: string,
   navDate: Date,
   accountId?: string,
 ): Promise<{ nav: number; cumNav: number | null; name: string | null; dateMatch: boolean; actualDate?: string } | null> {
-  // 1. 先查询缓存表
+  // 1. Query the cache table first
   const cached = await getFundNavFromCacheOnly(fundCode, navDate);
 
-  if (cached) return { ...cached, dateMatch: true }; // 缓存数据日期一定匹配
+  if (cached) return { ...cached, dateMatch: true }; // Cache dates always match
 
-  // 2. 缓存未命中，从外部 API 获取（按配置的优先级尝试）
+  // 2. Cache miss: fetch from the external API (trying configured priorities)
   const dateStr = navDate.toISOString().slice(0, 10);
   const apiData = await queryFundNav(fundCode, dateStr, accountId);
 
   if (!apiData) return null;
 
-  // 3. 校验净值日期是否与请求日期一致
+  // 3. Check whether the NAV date matches the requested date
   const actualNavDate = apiData.date ? utcDate(apiData.date) : navDate;
   const actualDateStr = actualNavDate.toISOString().slice(0, 10);
   const dateMatch = actualDateStr === dateStr;
 
-  // 4. 只要外部 API 返回了净值，就按实际净值日写入缓存，避免“获取了但没入库”。
+  // 4. As long as the external API returned a NAV, write it to the cache using the actual
+  //    NAV date so fetched data is not left uncached.
   try {
     await setFundNav(
       fundCode,
@@ -283,7 +285,7 @@ export async function getFundNav(
     console.warn("Failed to cache fund NAV", { fundCode, navDate: actualDateStr, error });
   }
 
-  // 5. 返回结果（包含日期匹配信息和实际净值日期）
+  // 5. Return the result (including date-match info and the actual NAV date)
   return {
     nav: apiData.nav,
     cumNav: apiData.cumNav ?? null,
@@ -294,11 +296,11 @@ export async function getFundNav(
 }
 
 /**
- * 仅从基金净值缓存库查询指定日期净值，不访问外部 API，不写入缓存。
+ * Query a NAV for the given date from the cache only. Does not call external APIs or write to the cache.
  *
- * @param fundCode 基金代码
- * @param navDate 净值日期（必须用 utcDate 构造，确保 T00:00:00Z）
- * @returns 净值信息（nav、cumNav、name、sgzt）或 null（缓存不存在）
+ * @param fundCode Fund code
+ * @param navDate NAV date (must be built with utcDate, ensuring T00:00:00Z)
+ * @returns NAV info (nav, cumNav, name, sgzt) or null when not cached
  */
 export interface NavCacheEntry {
   nav: number;
@@ -326,8 +328,8 @@ export async function getFundNavFromCacheOnly(
 }
 
 /**
- * 从天天基金详情页抓取基金单日申购限额
- * 只有 sgzt 包含"限制"时才调用
+ * Scrape the fund's daily purchase limit from the Tiantian Fund detail page.
+ * Only called when sgzt contains "限制" (restricted).
  */
 const PURCHASE_LIMIT_CACHE = new Map<string, number | null>();
 
@@ -350,15 +352,15 @@ export async function fetchPurchaseLimit(fundCode: string): Promise<number | nul
 }
 
 /**
- * 更新基金净值（缓存表）
- * 强制同步净值到 FundNavCache 表
+ * Update a fund NAV (cache table).
+ * Force-syncs the NAV into the FundNavCache table.
  *
- * @param fundCode 基金代码
- * @param navDate 净值日期（必须用 utcDate 构造，确保 T00:00:00Z）
- * @param nav 单位净值
- * @param cumNav 累计净值（可选）
- * @param name 基金名称（可选）
- * @param sgzt 申购状态（可选，如"开放申购"、"暂停申购"、"限制大额申购"）
+ * @param fundCode Fund code
+ * @param navDate NAV date (must be built with utcDate, ensuring T00:00:00Z)
+ * @param nav Unit NAV
+ * @param cumNav Cumulative NAV (optional)
+ * @param name Fund name (optional)
+ * @param sgzt Purchase status (optional, e.g. "开放申购", "暂停申购", "限制大额申购")
  */
 export async function setFundNav(
   fundCode: string,
@@ -377,15 +379,15 @@ export async function setFundNav(
 }
 
 /**
- * 批量更新净值（用于事务内）
+ * Update a fund NAV inside a transaction.
  *
- * @param tx Prisma事务客户端
- * @param fundCode 基金代码
- * @param navDate 净值日期（必须用 utcDate 构造，确保 T00:00:00Z）
- * @param nav 单位净值
- * @param cumNav 累计净值（可选）
- * @param name 基金名称（可选）
- * @param sgzt 申购状态（可选）
+ * @param tx Prisma transaction client
+ * @param fundCode Fund code
+ * @param navDate NAV date (must be built with utcDate, ensuring T00:00:00Z)
+ * @param nav Unit NAV
+ * @param cumNav Cumulative NAV (optional)
+ * @param name Fund name (optional)
+ * @param sgzt Purchase status (optional)
  */
 export async function setFundNavInTx(
   tx: any,
@@ -421,11 +423,11 @@ export async function setFundNavInTx(
 }
 
 /**
- * 查询基金最新净值
- * 从 FundNavCache 表查询最新的净值记录
+ * Query a fund's latest NAV.
+ * Reads the newest NAV record from the FundNavCache table.
  *
- * @param fundCode 基金代码
- * @returns 最新净值信息或 null
+ * @param fundCode Fund code
+ * @returns The latest NAV info or null
  */
 export async function getLatestFundNav(
   fundCode: string
@@ -447,9 +449,9 @@ export async function getLatestFundNav(
 }
 
 /**
- * 批量查询多个基金代码的最新净值。
+ * Batch query the latest NAV for multiple fund codes.
  *
- * 只返回每个 fundCode 的最新一条缓存记录，避免调用方把历史净值全量拉到 JS 再筛选。
+ * Returns only the newest cached record per fundCode so callers do not pull full history into JS to filter.
  */
 export async function getLatestFundNavMap(
   fundCodes: string[],

@@ -119,9 +119,9 @@ export async function POST(req: Request) {
     const accountId = String(body?.accountId ?? "").trim();
     const requestedStartDate = body?.startDate ? parseDateOnlyUtc(body.startDate) : null;
 
-    if (!accountId) return NextResponse.json({ ok: false, error: "缺少贷款账户" }, { status: 400 });
+    if (!accountId) return NextResponse.json({ ok: false, code: "LOAN_ACCOUNT_REQUIRED", error: "缺少贷款账户" }, { status: 400 });
     if (body?.startDate && !requestedStartDate) {
-      return NextResponse.json({ ok: false, error: "重算起始日期不正确" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_START_DATE", error: "重算起始日期不正确" }, { status: 400 });
     }
 
     const plan = await prisma.regularInvestPlan.findFirst({
@@ -138,14 +138,14 @@ export async function POST(req: Request) {
       },
       orderBy: [{ status: "asc" }, { nextRunDate: "asc" }],
     });
-    if (!plan) return NextResponse.json({ ok: false, error: "未找到可重算的还款计划" }, { status: 404 });
+    if (!plan) return NextResponse.json({ ok: false, code: "RECALC_PLAN_NOT_FOUND", error: "未找到可重算的还款计划" }, { status: 404 });
 
     const memo = decodeScheduledTaskMemo(plan.memo);
     if (memo.type !== "loan_repayment") {
-      return NextResponse.json({ ok: false, error: "当前计划不是贷款还款计划" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "NOT_LOAN_REPAYMENT_PLAN", error: "当前计划不是贷款还款计划" }, { status: 400 });
     }
     if (memo.repaymentMethod === "自由还款") {
-      return NextResponse.json({ ok: false, error: "自由还款没有固定计划，不需要重算" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "FREE_REPAYMENT_NOT_RECALCULABLE", error: "自由还款没有固定计划，不需要重算" }, { status: 400 });
     }
 
     const originalBorrow = await prisma.txRecord.findFirst({
@@ -231,7 +231,7 @@ export async function POST(req: Request) {
           );
           historicalGuard += 1;
           if (historicalGuard > 1200) {
-            return NextResponse.json({ ok: false, error: "计划周期异常，已停止重算以避免无限循环" }, { status: 400 });
+            return NextResponse.json({ ok: false, code: "SCHEDULE_LOOP_GUARD", error: "计划周期异常，已停止重算以避免无限循环" }, { status: 400 });
           }
           continue;
         }
@@ -250,11 +250,11 @@ export async function POST(req: Request) {
         );
         historicalGuard += 1;
         if (historicalGuard > 1200) {
-          return NextResponse.json({ ok: false, error: "计划周期异常，已停止重算以避免无限循环" }, { status: 400 });
+          return NextResponse.json({ ok: false, code: "SCHEDULE_LOOP_GUARD", error: "计划周期异常，已停止重算以避免无限循环" }, { status: 400 });
         }
       }
       if (historicalRuns.length === 0) {
-        return NextResponse.json({ ok: false, error: "起始日期之后没有可重算的计划期次" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "NO_RECALC_RUNS", error: "起始日期之后没有可重算的计划期次" }, { status: 400 });
       }
 
       const firstRunDate = historicalRuns[0]!.date;
@@ -328,7 +328,7 @@ export async function POST(req: Request) {
         : (originalTotalRuns ?? plan.totalRuns);
       const remainingRunsAtStart = totalRunsForHistoricalStart == null ? null : Math.max(0, totalRunsForHistoricalStart - executedBefore);
       if (!remainingRunsAtStart || remainingRunsAtStart <= 0) {
-        return NextResponse.json({ ok: false, error: "起始日期后的剩余期数不足，无法重算历史记录" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "INSUFFICIENT_REMAINING_RUNS", error: "起始日期后的剩余期数不足，无法重算历史记录" }, { status: 400 });
       }
 
       let rollingRemainingPrincipal = Math.abs(await getLoanBalanceBeforeDate({
@@ -371,10 +371,10 @@ export async function POST(req: Request) {
           revalidateAfterTxChange();
           return NextResponse.json({ ok: true, data: { status: "completed", nextAmount: 0, remainingRuns: 0 } });
         }
-        return NextResponse.json({ ok: false, error: "起始日期前贷款余额已为 0，无法重算历史记录" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "ZERO_BALANCE_BEFORE_START", error: "起始日期前贷款余额已为 0，无法重算历史记录" }, { status: 400 });
       }
       if (strategy === "settle") {
-        return NextResponse.json({ ok: false, error: "全部结清要求贷款余额为 0，请检查提前还本金金额" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "SETTLE_REQUIRES_ZERO_BALANCE", error: "全部结清要求贷款余额为 0，请检查提前还本金金额" }, { status: 400 });
       }
       let rollingExactRemainingPrincipal = rollingRemainingPrincipal;
 
@@ -430,11 +430,11 @@ export async function POST(req: Request) {
         ? await prisma.account.findUnique({ where: { id: plan.cashAccountId }, select: { id: true, name: true } })
         : null;
       if (!cashAccount) {
-        return NextResponse.json({ ok: false, error: "计划缺少还款资金账户，无法重算历史记录" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "CASH_ACCOUNT_MISSING", error: "计划缺少还款资金账户，无法重算历史记录" }, { status: 400 });
       }
       const targetAccount = await prisma.account.findUnique({ where: { id: plan.accountId }, select: { id: true, name: true } });
       if (!targetAccount) {
-        return NextResponse.json({ ok: false, error: "贷款账户不存在" }, { status: 404 });
+        return NextResponse.json({ ok: false, code: "LOAN_ACCOUNT_NOT_FOUND", error: "贷款账户不存在" }, { status: 404 });
       }
       let nextPrepaymentIndex = 0;
       const applyPrepaymentsBefore = (previousRunDate: Date) => {
@@ -455,7 +455,7 @@ export async function POST(req: Request) {
       };
 
       if (historicalRuns.length === 0) {
-        return NextResponse.json({ ok: false, error: "没有可重算的历史期次" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "NO_HISTORICAL_RUNS", error: "没有可重算的历史期次" }, { status: 400 });
       }
 
       await prisma.$transaction(async (tx) => {
@@ -666,12 +666,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, data: { status: "completed", nextAmount: 0, remainingRuns: 0 } });
     }
     if (strategy === "settle") {
-      return NextResponse.json({ ok: false, error: "全部结清要求贷款余额为 0，请检查提前还本金金额" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "SETTLE_REQUIRES_ZERO_BALANCE", error: "全部结清要求贷款余额为 0，请检查提前还本金金额" }, { status: 400 });
     }
 
     const availableRemainingRuns = strategy === "reduce_payment" ? (originalRemainingRuns ?? remainingRuns) : remainingRuns;
     if (!availableRemainingRuns || availableRemainingRuns <= 0) {
-      return NextResponse.json({ ok: false, error: "计划剩余期数不足，无法重算" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INSUFFICIENT_REMAINING_RUNS", error: "计划剩余期数不足，无法重算" }, { status: 400 });
     }
 
     const nextRunDateKey = formatDateUtc(recalculateStartDate);
@@ -689,7 +689,7 @@ export async function POST(req: Request) {
     if (strategy === "reduce_payment") {
       const fixedTermRemainingRuns = originalRemainingRuns ?? remainingRuns;
       if (!fixedTermRemainingRuns || fixedTermRemainingRuns <= 0) {
-        return NextResponse.json({ ok: false, error: "原始贷款期限不足，无法按期限不变重算月供" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "ORIGINAL_TERM_INSUFFICIENT", error: "原始贷款期限不足，无法按期限不变重算月供" }, { status: 400 });
       }
       const nextAmount = calcLoanScheduledAmount({
         repaymentMethod: memo.repaymentMethod,
@@ -699,7 +699,7 @@ export async function POST(req: Request) {
         intervalMonths,
       });
       if (!nextAmount || nextAmount <= 0) {
-        return NextResponse.json({ ok: false, error: "无法重算月供，请检查利率、剩余本金和剩余期数" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "SCHEDULED_AMOUNT_CALC_FAILED", error: "无法重算月供，请检查利率、剩余本金和剩余期数" }, { status: 400 });
       }
       updateData.amount = nextAmount;
       if (originalTotalRuns != null && originalTotalRuns > executedRuns) {
@@ -708,7 +708,7 @@ export async function POST(req: Request) {
     } else {
       const termRemainingRuns = remainingRuns ?? 0;
       if (currentAmount <= 0) {
-        return NextResponse.json({ ok: false, error: "当前计划金额不正确，无法按月供不变重算" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "INVALID_PLAN_AMOUNT", error: "当前计划金额不正确，无法按月供不变重算" }, { status: 400 });
       }
       const estimatedRuns = estimateLoanEqualPaymentRemainingRuns({
         annualRate: effectiveAnnualRate,
@@ -718,7 +718,7 @@ export async function POST(req: Request) {
         maxRemainingRuns: termRemainingRuns || originalRemainingRuns || 600,
       });
       if (estimatedRuns <= 0) {
-        return NextResponse.json({ ok: false, error: "剩余本金已为 0，无法按月供不变重算" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "ZERO_REMAINING_PRINCIPAL", error: "剩余本金已为 0，无法按月供不变重算" }, { status: 400 });
       }
       updateData.totalRuns = executedRuns + estimatedRuns;
     }
@@ -741,7 +741,7 @@ export async function POST(req: Request) {
     });
   } catch (error) {
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "重算还款计划失败" },
+      { ok: false, code: "RECALC_FAILED", error: error instanceof Error ? error.message : "重算还款计划失败" },
       { status: 500 },
     );
   }

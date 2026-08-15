@@ -48,13 +48,13 @@ export async function POST(req: NextRequest) {
   try {
     const { householdId } = await getApiHouseholdScope(req);
     const body = await req.json().catch(() => null) as Record<string, unknown> | null;
-    if (!body) return NextResponse.json({ ok: false, error: "请求体无效" }, { status: 400, headers: corsHeaders() });
+    if (!body) return NextResponse.json({ ok: false, code: "INVALID_REQUEST", error: "请求体无效" }, { status: 400, headers: corsHeaders() });
 
     const propertyAssetId = String(body.propertyAssetId ?? "").trim();
-    if (!propertyAssetId) return NextResponse.json({ ok: false, error: "缺少房产" }, { status: 400, headers: corsHeaders() });
+    if (!propertyAssetId) return NextResponse.json({ ok: false, code: "MISSING_PROPERTY_ASSET", error: "缺少房产" }, { status: 400, headers: corsHeaders() });
     const valuationDate = parseDateOnly(body.valuationDate) ?? new Date();
     const marketValue = parseNonNegativeNumber(body.marketValue);
-    if (marketValue == null) return NextResponse.json({ ok: false, error: "市值必须是不小于 0 的数字" }, { status: 400, headers: corsHeaders() });
+    if (marketValue == null) return NextResponse.json({ ok: false, code: "INVALID_MARKET_VALUE", error: "市值必须是不小于 0 的数字" }, { status: 400, headers: corsHeaders() });
 
     const result = await prisma.$transaction(async (tx) => {
       const asset = await tx.propertyAsset.findFirst({
@@ -104,7 +104,7 @@ export async function POST(req: NextRequest) {
     }, { headers: corsHeaders() });
   } catch (error) {
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "更新失败" },
+      { ok: false, code: "UPDATE_FAILED", error: error instanceof Error ? error.message : "更新失败" },
       { status: 500, headers: corsHeaders() },
     );
   }

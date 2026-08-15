@@ -1,12 +1,13 @@
 /**
- * 命令别名库 — 统一查询模块
+ * Command alias library — unified lookup module.
  *
- * 分类 (category) 说明：
- * - "fundSubtype":    买入→buy, 赎回→redeem, 现金红利→dividend_cash, ...
- * - "updateTarget":   资金账户→cashAccount, 消费账户→account, ...
- * - "transactionType": 支出→expense, 收入→income, ...
+ * Category notes:
+ * - "fundSubtype": canonical values such as buy, redeem, dividend_cash, ...
+ * - "updateTarget": canonical values such as cashAccount, account, ...
+ * - "transactionType": canonical values such as expense, income, ...
  *
- * 所有命令解析函数必须使用此模块查找别名，禁止硬编码映射。
+ * All command parsing functions must use this module to look up aliases;
+ * hardcoding mappings is forbidden.
  */
 import { prisma } from "@/lib/db/prisma";
 
@@ -28,13 +29,13 @@ async function loadCache(): Promise<Map<string, Map<string, string>>> {
   return cache;
 }
 
-/** 通过别名查找规范值 (带缓存) */
+/** Look up the canonical value by alias (cached). */
 export async function resolveAlias(category: string, key: string): Promise<string | null> {
   const c = await loadCache();
   return c.get(category)?.get(key) ?? null;
 }
 
-/** 反查：通过规范值查找所有别名 */
+/** Reverse lookup: find all aliases for a canonical value. */
 export async function resolveAliasReverse(category: string, value: string): Promise<string[]> {
   const c = await loadCache();
   const keys: string[] = [];
@@ -44,7 +45,7 @@ export async function resolveAliasReverse(category: string, value: string): Prom
   return keys;
 }
 
-/** 设置别名 */
+/** Set an alias. */
 export async function setAlias(category: string, key: string, value: string): Promise<void> {
   await prisma.commandAlias.upsert({
     where: { category_key: { category, key } },
@@ -54,7 +55,7 @@ export async function setAlias(category: string, key: string, value: string): Pr
   cache = null; // invalidate
 }
 
-/** 删除别名 */
+/** Delete an alias. */
 export async function deleteAlias(category: string, key: string): Promise<boolean> {
   try {
     await prisma.commandAlias.delete({ where: { category_key: { category, key } } });
@@ -65,7 +66,7 @@ export async function deleteAlias(category: string, key: string): Promise<boolea
   }
 }
 
-/** 列出某分类所有别名 */
+/** List all aliases for a category. */
 export async function listAliases(category?: string): Promise<Array<{ key: string; value: string; category: string }>> {
   const c = await loadCache();
   const result: Array<{ key: string; value: string; category: string }> = [];

@@ -80,7 +80,7 @@ export async function POST(req: Request) {
           }),
         ]);
       }
-      // 收集恢复记录涉及的账户，重算余额
+      // Collect accounts involved in the restored records and recalculate balances
       const restoredRecords = await prisma.txRecord.findMany({
         where: { id: { in: transactionIds } },
         select: { accountId: true, toAccountId: true, type: true, fundProductType: true, fundSubtype: true, fundCode: true, metalTypeId: true },

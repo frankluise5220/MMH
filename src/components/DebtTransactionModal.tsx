@@ -1410,11 +1410,11 @@ export function DebtTransactionModal({
                                 setHistoricalRateRows([]);
                               }
                             }} className="form-input">
-                              <option value="等额本息">等额本息</option>
-                              <option value="等额本金">等额本金</option>
-                              <option value={INTEREST_FREE_REPAYMENT_METHOD}>{INTEREST_FREE_REPAYMENT_METHOD}</option>
-                              <option value="自由还款">自由还款</option>
-                              <option value="先还利息一次性还本">先还利息一次性还本</option>
+                              <option value="等额本息">{t("debtTx.method.equalInstallment")}</option>
+                              <option value="等额本金">{t("debtTx.method.equalPrincipal")}</option>
+                              <option value={INTEREST_FREE_REPAYMENT_METHOD}>{t("debtTx.method.interestFreeInstallment")}</option>
+                              <option value="自由还款">{t("debtTx.method.freeRepayment")}</option>
+                              <option value="先还利息一次性还本">{t("debtTx.method.interestFirstThenPrincipal")}</option>
                             </select>
                           </div>
                           <div className="space-y-1">

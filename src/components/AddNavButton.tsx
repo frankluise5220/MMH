@@ -11,6 +11,7 @@ type HoldingItem = {
   name: string;
   navDate?: string;
   nav?: number;
+  wealthProductId?: string;
 };
 
 function ManualGrabMark() {
@@ -41,18 +42,20 @@ export function AddNavButton({
   positions = [],
   defaultFundCode,
   trigger = "text",
+  wealthMode = false,
 }: {
   accountId: string;
   positions?: HoldingItem[];
   defaultFundCode?: string;
   trigger?: "text" | "icon";
+  wealthMode?: boolean;
 }) {
   const defaultHolding = positions.find((p) => p.fundCode === defaultFundCode) ?? (positions.length === 1 ? positions[0] : null);
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [fundCode, setFundCode] = useState(defaultHolding?.fundCode ?? "");
   const [date, setDate] = useState(defaultHolding?.navDate ?? new Date().toISOString().slice(0, 10));
-  const [nav, setNav] = useState("");
+  const [nav, setNav] = useState(wealthMode && defaultHolding?.navDate ? String(defaultHolding.nav ?? "") : "");
   const [loading, setLoading] = useState(false);
 
   // Sort holdings by navDate ASC (oldest NAV first) so funds needing most updates appear first
@@ -70,31 +73,44 @@ export function AddNavButton({
     setFundCode(code);
     const h = positions.find(p => p.fundCode === code);
     if (h?.navDate) setDate(h.navDate);
+    if (wealthMode && h?.navDate) setNav(String(h.nav ?? ""));
   }
 
   function openDialog() {
     if (defaultHolding) {
       setFundCode(defaultHolding.fundCode);
       setDate(defaultHolding.navDate ?? new Date().toISOString().slice(0, 10));
+      setNav(wealthMode && defaultHolding.navDate ? String(defaultHolding.nav ?? "") : "");
     }
     setOpen(true);
   }
+
+  const selectedHolding = positions.find((p) => p.fundCode === fundCode);
 
   async function onSubmit() {
     if (!fundCode.trim() || !nav.trim()) return;
     setLoading(true);
     try {
-      const res = await fetch("/api/v1/fund/nav", {
+      const body = wealthMode
+        ? JSON.stringify({
+            accountId,
+            wealthProductId: selectedHolding?.wealthProductId || null,
+            productName: selectedHolding?.name ?? fundCode,
+            date,
+            nav: parseFloat(nav),
+          })
+        : JSON.stringify({ fundCode: fundCode.trim(), date, nav: parseFloat(nav) });
+      const res = await fetch(wealthMode ? "/api/v1/wealth-products/nav" : "/api/v1/fund/nav", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fundCode: fundCode.trim(), date, nav: parseFloat(nav) }),
+        body,
       });
       const data = await res.json();
       if (data.ok) {
         setOpen(false);
         setFundCode("");
         setNav("");
-        dispatchFinanceDataChanged({ reason: "nav-add" });
+        dispatchFinanceDataChanged({ reason: wealthMode ? "wealth-nav-add" : "nav-add" });
       } else {
         window.alert(data.error ?? t("addNav.addFailed"));
       }
@@ -112,7 +128,7 @@ export function AddNavButton({
             openDialog();
           }}
           className="relative inline-flex h-6 w-6 items-center justify-center rounded-md border border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100"
-          title={t("addNav.addNavTitle")}
+          title={t(wealthMode ? "addNav.wealthNavTitle" : "addNav.addNavTitle")}
         >
           <Database className="absolute left-1 top-1 h-3.5 w-3.5 opacity-80" />
           <span className="absolute bottom-1 right-1 text-amber-800">
@@ -125,7 +141,7 @@ export function AddNavButton({
     return (
       <button onClick={() => setOpen(true)}
         className="h-7 px-2 rounded-md border border-slate-200 bg-white text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-1"
-        title={t("addNav.addNavShortTitle")}>
+        title={t(wealthMode ? "addNav.wealthNavTitle" : "addNav.addNavShortTitle")}>
         <Plus className="w-3.5 h-3.5" />
         {t("addNav.addNav")}
       </button>
@@ -140,32 +156,41 @@ export function AddNavButton({
           <button onClick={() => setOpen(false)} className="h-8 px-2 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50">{t("table.close")}</button>
         </div>
         <div className="p-4 space-y-3">
-          <div className="space-y-1">
-            <div className="text-xs font-medium text-slate-600">{t("viewImport.fundCode")}</div>
-            {sortedHoldings.length > 0 ? (
-              <div className="relative max-h-48 overflow-y-auto rounded-md border border-slate-200 bg-white shadow-inner">
-                {sortedHoldings.map(h => (
-                  <button key={h.fundCode} type="button"
-                    onClick={() => selectHolding(h.fundCode)}
-                    className={`w-full text-left px-3 py-1.5 text-sm hover:bg-blue-50 border-b border-slate-50 last:border-b-0 ${fundCode === h.fundCode ? "bg-blue-50 text-blue-700" : "text-slate-700"}`}>
-                    <span className="font-medium">{h.fundCode}</span>{" "}
-                    <span className="text-slate-600">{h.name}</span>
-                    {h.navDate && <span className="ml-1 text-slate-400 text-xs">({h.navDate})</span>}
-                  </button>
-                ))}
+          {wealthMode ? (
+            <div className="space-y-1">
+              <div className="text-xs font-medium text-slate-600">{t("fundShell.wealthProduct")}</div>
+              <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                {selectedHolding?.name ?? fundCode}
               </div>
-            ) : (
-              <input value={fundCode} onChange={e => setFundCode(e.target.value)} placeholder={t("regularInvest.codePlaceholder")}
-                className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
-            )}
-          </div>
+            </div>
+          ) : (
+            <div className="space-y-1">
+              <div className="text-xs font-medium text-slate-600">{t("viewImport.fundCode")}</div>
+              {sortedHoldings.length > 0 ? (
+                <div className="relative max-h-48 overflow-y-auto rounded-md border border-slate-200 bg-white shadow-inner">
+                  {sortedHoldings.map(h => (
+                    <button key={h.fundCode} type="button"
+                      onClick={() => selectHolding(h.fundCode)}
+                      className={`w-full text-left px-3 py-1.5 text-sm hover:bg-blue-50 border-b border-slate-50 last:border-b-0 ${fundCode === h.fundCode ? "bg-blue-50 text-blue-700" : "text-slate-700"}`}>
+                      <span className="font-medium">{h.fundCode}</span>{" "}
+                      <span className="text-slate-600">{h.name}</span>
+                      {h.navDate && <span className="ml-1 text-slate-400 text-xs">({h.navDate})</span>}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <input value={fundCode} onChange={e => setFundCode(e.target.value)} placeholder={t("regularInvest.codePlaceholder")}
+                  className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+              )}
+            </div>
+          )}
           <div className="space-y-1">
             <div className="text-xs font-medium text-slate-600">{t("viewImport.navDate")}</div>
             <DateStepper value={date} onChange={setDate}
               className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
           </div>
           <div className="space-y-1">
-            <div className="text-xs font-medium text-slate-600">{t("addNav.unitNav")}</div>
+            <div className="text-xs font-medium text-slate-600">{t(wealthMode ? "fundShell.nav.wealth" : "addNav.unitNav")}</div>
             <input inputMode="decimal" value={nav} onChange={e => setNav(e.target.value)} placeholder="1.2345"
               className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
           </div>

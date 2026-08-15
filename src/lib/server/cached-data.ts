@@ -1,10 +1,10 @@
 /**
- * 显示层跨请求缓存模块
+ * Cross-request cache module for the display layer
  *
- * 原则（CLAUDE.md）：
- * - 初次读库 → 后续全走缓存 → 仅写入/编辑/删除时操作库 + 刷新缓存
- * - common 数据（不随账户变化）：unstable_cache 跨请求缓存
- * - per-account 数据（随账户变化）：React.cache() 请求级去重
+ * Principles (CLAUDE.md):
+ * - First read hits the DB → subsequent reads go through the cache → only writes/edits/deletes touch the DB and refresh the cache
+ * - common data (not account-dependent): unstable_cache cross-request cache
+ * - per-account data (account-dependent): React.cache() request-level deduplication
  */
 
 import { cache } from "react";
@@ -23,7 +23,7 @@ import {
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 import { readableTagWhere } from "@/lib/server/tag-scope";
 
-// ── 类型 ──
+// ── Types ──
 
 export type CommonData = Awaited<ReturnType<typeof _loadCommonData>>;
 
@@ -31,7 +31,7 @@ export type BaseData = CommonData & {
   selectedAccount: Awaited<ReturnType<typeof loadSelectedAccount>>;
 };
 
-// ── Common 基础数据（跨账户共享，跨请求缓存） ──
+// ── Common base data (shared across accounts, cached across requests) ──
 
 async function _loadCommonData(hidFilter: { householdId: string }) {
   const [categories, accounts, tags, groups, institutions, counterparties, preciousMetalDictionaries] = await Promise.all([
@@ -65,13 +65,13 @@ async function _loadCommonData(hidFilter: { householdId: string }) {
   return { categories, accounts, tags, groups, institutions, counterparties, preciousMetalDictionaries };
 }
 
-/** 跨请求缓存：不随账户变化的数据 */
+/** Cross-request cache: data that does not vary by account */
 export const loadCommonData = unstable_cache(_loadCommonData, ["common-data"], {
   revalidate: false,
   tags: ["common-data"],
 });
 
-// ── Per-account 数据（请求级缓存，仅同一请求内去重） ──
+// ── Per-account data (request-level cache, deduplicated only within the same request) ──
 
 export const loadSelectedAccount = cache(
   async (accountId: string | undefined, hidFilter: { householdId: string }) => {
@@ -83,7 +83,7 @@ export const loadSelectedAccount = cache(
   },
 );
 
-// ── entries 数据（请求级缓存） ──
+// ── entries data (request-level cache) ──
 
 async function _loadEntriesForAccount(
   accountId: string,
@@ -121,8 +121,8 @@ async function _loadEntriesForAccount(
 }
 
 /**
- * 账户交易明细可能超过 Next.js data cache 单项 2MB 上限。
- * 这里只做 React.cache 请求级去重，避免大账户写入 unstable_cache 失败。
+ * Account transaction details can exceed the 2MB per-entry limit of the Next.js data cache.
+ * This only uses React.cache request-level deduplication to avoid unstable_cache write failures for large accounts.
  */
 export const loadEntriesForAccount = cache(_loadEntriesForAccount);
 
@@ -160,14 +160,14 @@ async function _loadStockHoldingReport(
   });
 }
 
-/** 跨请求缓存：股票持仓盈亏报表读取已重算的 StockHolding，不随页面筛选重查库 */
+/** Cross-request cache: the stock holding P&L report reads recalculated StockHolding rows and does not re-query the DB per page filter */
 export const loadCachedStockHoldingReport = unstable_cache(
   _loadStockHoldingReport,
   ["stock-holding-report"],
   { revalidate: false, tags: ["stock-holding-report", "invest-balances"] },
 );
 
-// ── 投资账户持仓数据（请求级缓存） ──
+// ── Investment account holding data (request-level cache) ──
 
 async function _loadInvestAccountData(
   _hidFilterStr: string,
@@ -308,7 +308,7 @@ async function _loadInvestAccountData(
 }
 
 /**
- * 投资账户持仓+明细数据可能包含大量 allEntries。
- * Next.js data cache 单项有 2MB 上限，因此这里只做请求级去重，避免基金明细较多时写入 unstable_cache 失败。
+ * Investment account holdings + detail data can contain a large number of allEntries.
+ * The Next.js data cache has a 2MB per-entry limit, so this only does request-level deduplication to avoid unstable_cache write failures when fund details are numerous.
  */
 export const loadInvestAccountData = cache(_loadInvestAccountData);

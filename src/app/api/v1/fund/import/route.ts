@@ -498,7 +498,7 @@ export async function POST(req: Request) {
     const items = Array.isArray(body?.items) ? body.items : [];
     const overrideMap = buildRuleOverrideMap(Array.isArray(body?.overrides) ? body.overrides : []);
     if (items.length === 0) {
-      return NextResponse.json({ ok: false, error: "缺少导入记录" }, { status: 400, headers: corsHeaders() });
+      return NextResponse.json({ ok: false, code: "MISSING_IMPORT_ITEMS", error: "缺少导入记录" }, { status: 400, headers: corsHeaders() });
     }
 
     const ctx = await buildImportContext();
@@ -513,7 +513,7 @@ export async function POST(req: Request) {
     );
     if (blockingIssues.length > 0) {
       return NextResponse.json(
-        { ok: false, error: `导入前校验未通过：${blockingIssues.join("；")}` },
+        { ok: false, code: "IMPORT_VALIDATION_FAILED", error: `导入前校验未通过：${blockingIssues.join("；")}` },
         { status: 400, headers: corsHeaders() },
       );
     }
@@ -567,7 +567,7 @@ export async function POST(req: Request) {
     );
   } catch (error) {
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "基金导入失败" },
+      { ok: false, code: "IMPORT_FAILED", error: error instanceof Error ? error.message : "基金导入失败" },
       { status: 500, headers: corsHeaders() },
     );
   }

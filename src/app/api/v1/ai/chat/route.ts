@@ -67,7 +67,7 @@ async function logDistill(payload: {
       },
     });
   } catch {
-    // 蒸馏日志写入失败不影响主流程
+    // Distill log write failures must not block the main flow
   }
 }
 
@@ -1052,7 +1052,7 @@ async function executeQueryPlan(plan: { mode: "recycle_recent"; take: number }, 
 export async function POST(req: Request) {
   const ctx = await getHouseholdScope();
   if (!ctx.user) {
-    return NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 });
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "请先登录" }, { status: 401 });
   }
   const { hidFilter, householdId } = ctx;
   const body = (await req.json().catch(() => null)) as unknown;
@@ -1075,7 +1075,7 @@ export async function POST(req: Request) {
     .safeParse(body);
 
   if (!parse.success) {
-    return NextResponse.json({ ok: false, error: "参数格式不正确" }, { status: 400, headers: corsHeaders() });
+    return NextResponse.json({ ok: false, code: "INVALID_REQUEST", error: "参数格式不正确" }, { status: 400, headers: corsHeaders() });
   }
 
   const { text, imageDataUrl, fundContext } = parse.data;
@@ -1086,11 +1086,11 @@ export async function POST(req: Request) {
   const accountName = (parse.data.accountName ?? "").trim();
 
   if (!text && !imageDataUrl) {
-    return NextResponse.json({ ok: false, error: "缺少 text 或 imageDataUrl" }, { status: 400, headers: corsHeaders() });
+    return NextResponse.json({ ok: false, code: "MISSING_INPUT", error: "缺少 text 或 imageDataUrl" }, { status: 400, headers: corsHeaders() });
   }
 
   if (!baseUrl || !modelName) {
-    return NextResponse.json({ ok: false, error: "缺少模型配置（baseUrl/modelName）" }, { status: 400, headers: corsHeaders() });
+    return NextResponse.json({ ok: false, code: "MISSING_MODEL_CONFIG", error: "缺少模型配置（baseUrl/modelName）" }, { status: 400, headers: corsHeaders() });
   }
 
   const cleanUrl = baseUrl.replace(/\/$/, "");
@@ -1138,7 +1138,7 @@ export async function POST(req: Request) {
       try {
         const applyNow = /确认|继续|执行|立即/.test(text);
         const result = await executeUpdatePlan(updatePlan, applyNow, accountName, hidFilter, householdId);
-        if (!result.ok) return NextResponse.json({ ok: false, error: (result as { error: string }).error }, { status: 422, headers: corsHeaders() });
+        if (!result.ok) return NextResponse.json({ ok: false, code: "UPDATE_PLAN_FAILED", error: (result as { error: string }).error }, { status: 422, headers: corsHeaders() });
         if (applyNow) {
           return NextResponse.json({
             ok: true,
@@ -1167,7 +1167,7 @@ export async function POST(req: Request) {
           ],
         }, { headers: corsHeaders() });
       } catch {
-        // 数据库不可用，跳到下一步
+        // Database unavailable, fall through to the next step
       }
     }
 
@@ -1194,7 +1194,7 @@ export async function POST(req: Request) {
           { headers: corsHeaders() },
         );
       } catch {
-        // 数据库不可用，跳到下一步
+        // Database unavailable, fall through to the next step
       }
     }
 
@@ -1203,7 +1203,7 @@ export async function POST(req: Request) {
       try {
         const applyNow = /确认|继续|执行|立即/.test(text);
         const result = await executeDeletePlan(plan, applyNow, ctx, { accountId, accountName });
-        if (!result.ok) return NextResponse.json({ ok: false, error: result.error }, { status: 422, headers: corsHeaders() });
+        if (!result.ok) return NextResponse.json({ ok: false, code: "DELETE_PLAN_FAILED", error: result.error }, { status: 422, headers: corsHeaders() });
         if (applyNow) {
           return NextResponse.json({
             ok: true,
@@ -1234,7 +1234,7 @@ export async function POST(req: Request) {
           ],
         }, { headers: corsHeaders() });
       } catch {
-        // 数据库不可用，跳到下一步
+        // Database unavailable, fall through to the next step
       }
     }
 
@@ -1258,7 +1258,7 @@ export async function POST(req: Request) {
           { headers: corsHeaders() },
         );
       } catch {
-        // 数据库不可用，跳到下一步
+        // Database unavailable, fall through to the next step
       }
     }
 
@@ -1277,14 +1277,14 @@ export async function POST(req: Request) {
           { headers: corsHeaders() },
         );
       } catch {
-        // 数据库不可用，跳到下一步
+        // Database unavailable, fall through to the next step
       }
     }
   }
 
   if (imageDataUrl && !modelSupportsVision(modelName)) {
     return NextResponse.json(
-      { ok: false, error: `当前模型 "${modelName}" 不支持图片识别，请切换到支持图片的模型（如 GPT-4o、Claude-3.5、Qwen-VL 等），或将截图另存为文本后粘贴上传。` },
+      { ok: false, code: "VISION_NOT_SUPPORTED", error: `当前模型 "${modelName}" 不支持图片识别，请切换到支持图片的模型（如 GPT-4o、Claude-3.5、Qwen-VL 等），或将截图另存为文本后粘贴上传。` },
       { status: 422, headers: corsHeaders() },
     );
   }
@@ -1541,7 +1541,7 @@ export async function POST(req: Request) {
       if (!llmRes.ok) {
         const errText = await llmRes.text().catch(() => "");
         return NextResponse.json(
-          { ok: false, error: `LLM 调用失败 (${llmRes.status}): ${errText.slice(0, 300)}` },
+          { ok: false, code: "LLM_CALL_FAILED", error: `LLM 调用失败 (${llmRes.status}): ${errText.slice(0, 300)}` },
           { status: 502, headers: corsHeaders() },
         );
       }
@@ -1566,7 +1566,7 @@ export async function POST(req: Request) {
       if (!llmRes.ok) {
         const errText = await llmRes.text().catch(() => "");
         return NextResponse.json(
-          { ok: false, error: `LLM 调用失败 (${llmRes.status}): ${errText.slice(0, 300)}` },
+          { ok: false, code: "LLM_CALL_FAILED", error: `LLM 调用失败 (${llmRes.status}): ${errText.slice(0, 300)}` },
           { status: 502, headers: corsHeaders() },
         );
       }
@@ -1578,7 +1578,7 @@ export async function POST(req: Request) {
 
       if (llmData?.error) {
         return NextResponse.json(
-          { ok: false, error: `LLM 错误: ${llmData.error.message ?? "未知错误"}` },
+          { ok: false, code: "LLM_ERROR", error: `LLM 错误: ${llmData.error.message ?? "未知错误"}` },
           { status: 400, headers: corsHeaders() },
         );
       }
@@ -1598,7 +1598,7 @@ export async function POST(req: Request) {
         success: false,
         errorMsg: "LLM 未返回内容",
       });
-      return NextResponse.json({ ok: false, error: "LLM 未返回内容，请重试或更换模型" }, { status: 422, headers: corsHeaders() });
+      return NextResponse.json({ ok: false, code: "LLM_EMPTY_RESPONSE", error: "LLM 未返回内容，请重试或更换模型" }, { status: 422, headers: corsHeaders() });
     }
 
     const now = new Date();
@@ -1700,7 +1700,7 @@ export async function POST(req: Request) {
       errorMsg: errMsg,
     });
     return NextResponse.json(
-      { ok: false, error: errMsg },
+      { ok: false, code: "AI_SERVICE_UNAVAILABLE", error: errMsg },
       { status: 500, headers: corsHeaders() },
     );
   }

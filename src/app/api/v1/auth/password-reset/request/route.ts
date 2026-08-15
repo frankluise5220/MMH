@@ -110,12 +110,12 @@ export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => null)) as unknown;
   const parse = BodySchema.safeParse(body);
   if (!parse.success) {
-    return NextResponse.json({ ok: false, error: "参数不正确" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INVALID_PARAMS", error: "参数不正确" }, { status: 400 });
   }
 
   const secret = (process.env.PASSWORD_RESET_SECRET ?? "").trim();
   if (!secret) {
-    return NextResponse.json({ ok: false, error: "未配置密码找回功能" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "PASSWORD_RESET_NOT_CONFIGURED", error: "未配置密码找回功能" }, { status: 500 });
   }
 
   const { username, email, householdId, preview } = parse.data;
@@ -148,7 +148,7 @@ export async function POST(req: NextRequest) {
 
   const providedEmail = email ? normalizeEmail(email) : null;
   if (providedEmail && user && userEmail && providedEmail !== userEmail) {
-    return NextResponse.json({ ok: false, error: "用户名和绑定邮箱不匹配" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "USER_EMAIL_MISMATCH", error: "用户名和绑定邮箱不匹配" }, { status: 400 });
   }
   if (!user || !userEmail || (providedEmail && userEmail !== providedEmail)) {
     return response;
@@ -167,7 +167,7 @@ export async function POST(req: NextRequest) {
   const code = String(crypto.randomInt(100000, 1000000));
   const tokenHash = hashCode({ userId: user.id, code });
   if (!tokenHash) {
-    return NextResponse.json({ ok: false, error: "未配置密码找回功能" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "PASSWORD_RESET_NOT_CONFIGURED", error: "未配置密码找回功能" }, { status: 500 });
   }
 
   const expiresMinutes = 15;
@@ -189,12 +189,12 @@ export async function POST(req: NextRequest) {
     if (!mailRes.ok) {
       await prisma.passwordResetToken.delete({ where: { id: created.id } }).catch(logger.catchSilent("删除未发送验证码", "password-reset"));
       logger.warn(mailRes.error || "验证码发送失败", "password-reset");
-      return NextResponse.json({ ok: false, error: mailRes.error }, { status: 500 });
+      return NextResponse.json({ ok: false, code: "EMAIL_SEND_FAILED", error: mailRes.error }, { status: 500 });
     }
   } catch (error) {
     await prisma.passwordResetToken.delete({ where: { id: created.id } }).catch(logger.catchSilent("删除发送失败验证码", "password-reset"));
     logger.error("验证码邮件发送失败", "password-reset", error);
-    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "验证码邮件发送失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "EMAIL_SEND_FAILED", error: error instanceof Error ? error.message : "验证码邮件发送失败" }, { status: 500 });
   }
 
   return NextResponse.json({

@@ -26,7 +26,7 @@ export async function POST(req: Request) {
 
   if (days < 1 || days > 365) {
     return NextResponse.json(
-      { ok: false, error: "天数必须在 1-365 之间" },
+      { ok: false, code: "INVALID_DAYS", error: "天数必须在 1-365 之间" },
       { status: 400, headers: corsHeaders() }
     );
   }
@@ -50,9 +50,9 @@ export async function POST(req: Request) {
       return { permanentlyDeleted: 0, fundAccountsToRecalc: new Map<string, string[]>(), metalAccountsToRecalc: new Set<string>() };
     }
 
-    // 收集需要重新计算持仓的基金账户
-    // 买入类：accountId=资金账户, toAccountId=投资账户
-    // 赎回类：accountId=投资账户, toAccountId=资金账户
+    // Collect fund accounts whose positions need recalculation
+    // Buy type: accountId=cash account, toAccountId=investment account
+    // Redeem type: accountId=investment account, toAccountId=cash account
     const fundAccountsToRecalc = new Map<string, string[]>();
     const metalAccountsToRecalc = new Set<string>();
     for (const tx of toDelete) {
@@ -94,7 +94,7 @@ export async function POST(req: Request) {
     return { permanentlyDeleted: deleted.count, fundAccountsToRecalc, metalAccountsToRecalc };
   });
 
-  // 重新汇总持仓（事务外）
+  // Re-aggregate positions (outside the transaction)
   for (const [accountId, fundCodes] of result.fundAccountsToRecalc) {
     await recalcFundPositions(accountId, fundCodes).catch(logger.catchLog("操作失败", "route.ts"));
   }

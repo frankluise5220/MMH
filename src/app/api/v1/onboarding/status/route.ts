@@ -157,7 +157,7 @@ export async function GET() {
       },
     });
   } catch (error) {
-    // 不向客户端回传原始错误信息（可能暴露数据库/模式细节），服务端记录日志
+    // Do not return raw error details to the client (may leak DB/schema details); log them server-side
     console.error("GET /api/v1/onboarding/status error:", error);
     return NextResponse.json(
       { ok: false, error: "无法获取首次使用状态" },

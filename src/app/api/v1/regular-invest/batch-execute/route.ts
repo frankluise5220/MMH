@@ -43,15 +43,16 @@ const BATCH_EXECUTE_TRANSACTION_OPTIONS = {
 };
 
 /**
- * 批量执行定投计划：从开始日期到现在，生成所有到期的交易明细
+ * Batch-executes a regular investment plan: generates all due transaction
+ * records from the start date up to now.
  * POST /api/v1/regular-invest/batch-execute
  * Body: { planId: string }
  *
- * 防重机制：
- * 1. 查询该定投计划已生成的所有 TxRecord（通过regularInvestPlanId）
- * 2. 获取申请日期
- * 3. 构建已有日期集合
- * 4. 只生成缺失的记录
+ * Duplicate-prevention:
+ * 1. Query all TxRecords already generated for this plan (by regularInvestPlanId)
+ * 2. Collect their application dates
+ * 3. Build the set of existing dates
+ * 4. Generate only the missing records
  */
 export async function POST(req: NextRequest) {
   try {
@@ -61,7 +62,7 @@ export async function POST(req: NextRequest) {
     const { planId } = body;
 
     if (!planId) {
-      return NextResponse.json({ ok: false, error: "缺少 planId" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_PLAN_ID", error: "缺少 planId" }, { status: 400 });
     }
 
     const plan = await prisma.regularInvestPlan.findUnique({
@@ -69,17 +70,17 @@ export async function POST(req: NextRequest) {
     });
 
     if (!plan) {
-      return NextResponse.json({ ok: false, error: "计划不存在" }, { status: 404 });
+      return NextResponse.json({ ok: false, code: "PLAN_NOT_FOUND", error: "计划不存在" }, { status: 404 });
     }
 
     if (plan.householdId && plan.householdId !== householdId) {
-      return NextResponse.json({ ok: false, error: "计划不属于当前账簿" }, { status: 403 });
+      return NextResponse.json({ ok: false, code: "PLAN_NOT_IN_HOUSEHOLD", error: "计划不属于当前账簿" }, { status: 403 });
     }
 
     if (plan.status !== RegularInvestStatus.active) {
-      // 允许已完成但从未执行过的计划补生成记录
+      // Allow a completed-but-never-executed plan to backfill records
       if (plan.status === RegularInvestStatus.completed && plan.executedRuns === 0) {
-        // 临时恢复为 active，允许生成记录
+        // Temporarily restore to active so records can be generated
         await prisma.regularInvestPlan.update({
           where: { id: planId },
           data: { status: RegularInvestStatus.active },
@@ -87,21 +88,23 @@ export async function POST(req: NextRequest) {
       } else {
         return NextResponse.json({
           ok: false,
+          code: "PLAN_NOT_ACTIVE",
           error: `计划状态为 ${plan.status}，只有 active 状态才能执行`,
         }, { status: 400 });
       }
     }
 
     const now = new Date();
-    // endDate 已过期时仍允许生成历史记录（startDate → endDate），只是生成后标记为完成
-    // 不再提前拒绝，避免"已完成但无记录"的情况
+    // Even when endDate has passed, allow generating historical records
+    // (startDate → endDate), marking the plan completed afterwards.
+    // Do not reject early, avoiding "completed but no records" cases.
 
     if (plan.totalRuns && plan.executedRuns >= plan.totalRuns) {
       await prisma.regularInvestPlan.update({
         where: { id: planId },
         data: { status: RegularInvestStatus.completed },
       });
-      return NextResponse.json({ ok: false, error: "计划已达到执行次数，自动标记为已完成" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "PLAN_RUN_LIMIT_REACHED", error: "计划已达到执行次数，自动标记为已完成" }, { status: 400 });
     }
 
     const scheduledTask = decodeScheduledTaskMemo(plan.memo);
@@ -123,7 +126,7 @@ export async function POST(req: NextRequest) {
 
     const fundAcc = await prisma.account.findUnique({ where: { id: plan.accountId } });
     if (!fundAcc) {
-      return NextResponse.json({ ok: false, error: "基金账户不存在" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "FUND_ACCOUNT_NOT_FOUND", error: "基金账户不存在" }, { status: 400 });
     }
     const fundUnitsDecimals = normalizeFundUnitsDecimals(fundAcc.fundUnitsDecimals);
 
@@ -133,10 +136,10 @@ export async function POST(req: NextRequest) {
 
     const amountNum = parseFloat(String(plan.amount));
     if (!Number.isFinite(amountNum) || amountNum <= 0) {
-      return NextResponse.json({ ok: false, error: "金额不正确" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_AMOUNT", error: "金额不正确" }, { status: 400 });
     }
 
-    // 防重机制：查询该定投计划已生成的所有基金业务交易
+    // Duplicate-prevention: query all fund transactions already generated for this plan
     const existingFundTransactions = await prisma.fundTransaction.findMany({
       where: {
         regularInvestPlanId: planId,
@@ -149,7 +152,7 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // 构建已有交易日期的集合
+    // Build the set of existing transaction dates
     const existingDates = new Set<string>();
     for (const tx of existingFundTransactions) {
       if (tx.applyDate) {
@@ -158,10 +161,10 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 从最近一次已执行日期之后开始（不补充历史）
+    // Start after the most recently executed date (no historical backfill)
     let currentDate: Date;
     if (existingFundTransactions.length > 0) {
-      // 找到最近一条记录的日期，从其后开始
+      // Find the latest record date and start from the day after it
       const latestDate = existingFundTransactions.reduce((max, r) => (r.applyDate > max ? r.applyDate : max), new Date(0));
       currentDate = calcNextRunDate(latestDate, plan.intervalUnit, plan.intervalValue, plan.executionDay);
     } else {
@@ -174,10 +177,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 生成范围上限：endDate（如果已过期）或 now，取较早者
+    // Upper bound of the generation range: endDate (if already passed) or now, whichever is earlier
     const effectiveEndDate = plan.endDate && plan.endDate < now ? plan.endDate : now;
 
-    // 收集所有应该执行但还没有执行的日期
+    // Collect all dates that should have run but have not yet
     const datesToExecute: Date[] = [];
     while (currentDate <= effectiveEndDate) {
       const dateStr = formatDateUtc(currentDate);
@@ -195,12 +198,12 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 计算本次需要生成的记录数（不超过总次数限制）
+    // Cap the number of records generated this run (do not exceed the total run limit)
     const maxToExecute = plan.totalRuns ? plan.totalRuns - plan.executedRuns : datesToExecute.length;
     let datesToProcess = datesToExecute.slice(0, maxToExecute);
     let skippedCount = 0;
 
-    // ── 预计算 NAV：同时过滤暂停申购和无净值间隙 ──
+    // ── Pre-compute NAV: filter out paused purchases and no-NAV gaps ──
     const confirmDays = normalizeNonNegativeDays(plan.confirmDays ?? await getFundConfirmDays(plan.accountId, plan.fundCode), 0);
     const arrivalDays = normalizeNonNegativeDays(plan.arrivalDays ?? await getFundArrivalDays(plan.accountId, plan.fundCode), 2);
     const todayStr = formatDateUtc(now);
@@ -228,16 +231,16 @@ export async function POST(req: NextRequest) {
       const ds = formatDateUtc(arr[i]!);
       const cur = navResultMap.get(ds);
 
-      // skipPendingPreceding: 跳过暂停申购 + 历史无净值（假期休市）
+      // skipPendingPreceding: skip paused purchases + historical no-NAV days (market holidays)
       if (plan.skipPendingPreceding !== false) {
-        // 跳过暂停申购日期（不生成任何记录）
+        // Skip dates with suspended purchases (generate no records)
         if (cur && cur.sgzt === "暂停申购") {
           skippedPaused++;
           continue;
         }
 
-        // 确认日无净值：如果确认日已过且无净值 → 市场休市（假期等），跳过
-        // 如果确认日尚未到或为今天 → 净值未公布是正常的，保留（nav=null 后续补填）
+        // No NAV on confirm date: if the confirm date has passed with no NAV → market holiday, skip
+        // If the confirm date has not arrived or is today → NAV not yet published is normal, keep (nav=null filled later)
         const noNav = !cur || (!cur.hasNav && cur.sgzt !== "暂停申购");
         const confirmDateStr = cur?.confirmDateStr ?? addWorkdaysUtc(ds, confirmDays);
         if (noNav && confirmDateStr < todayStr) {
@@ -261,7 +264,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 净值数据从缓存库读取（前端已先调 /api/v1/fund/preload-nav 扩充了净值库）
+    // NAV data is read from the cache (the frontend calls /api/v1/fund/preload-nav first to expand the NAV cache)
     const category = await resolveCategorySnapshot(prisma, householdId, {
       categoryName: REGULAR_INVEST_CATEGORY_NAME,
       type: "investment",
@@ -347,11 +350,11 @@ export async function POST(req: NextRequest) {
       if (actualRunsToCreate.length === 0) return;
 
       for (const run of actualRunsToCreate) {
-        // 暂停申购：创建两条记录，合计对冲为 0
-        // 记录1：定投(暂停申购) — 从资金账户向基金账户，金额 -100
-        // 记录2：定投(退回) — 从基金账户往资金账户，金额 -100
-        // 资金账户视角：记录1为流出，记录2为流入，对冲为 0
-        // 基金账户视角：两条 buy_failed 在持仓计算中跳过，不影响持仓
+        // Suspended purchase: create two records that net to 0
+        // Record 1: regular invest (suspended) — cash account to fund account, amount -100
+        // Record 2: regular invest (refund) — fund account to cash account, amount -100
+        // Cash account view: record 1 is an outflow, record 2 is an inflow, netting to 0
+        // Fund account view: both buy_failed records are skipped in position calculation and do not affect holdings
         if (run.sgzt === "暂停申购") {
           await createFundTransactionWithCashFlows(tx, {
             householdId,
@@ -440,7 +443,7 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      // 更新定投计划状态
+      // Update the regular investment plan status
       const finalExecutedRuns = plan.executedRuns + actualRunsToCreate.length;
       const finalLastRunDate = actualRunsToCreate[actualRunsToCreate.length - 1]!.runDate;
       const nextRunDate = calcNextRunDate(finalLastRunDate, plan.intervalUnit, plan.intervalValue, plan.executionDay);
@@ -484,7 +487,7 @@ export async function POST(req: NextRequest) {
 
     await recalcFundPositions(fundAcc.id, [plan.fundCode]).catch(logger.catchLog("操作失败", "route.ts"));
 
-    // 查询更新后的统计数据
+    // Query the updated statistics after the run
     const updatedEntries = await prisma.fundTransaction.findMany({
       where: {
         regularInvestPlanId: planId,
@@ -529,6 +532,6 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "执行失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "EXECUTE_FAILED", error: e instanceof Error ? e.message : "执行失败" }, { status: 500 });
   }
 }

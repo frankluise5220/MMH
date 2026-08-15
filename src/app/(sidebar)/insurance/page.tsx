@@ -10,6 +10,7 @@ import { toNumber } from "@/lib/date-utils";
 import { amountToneClass as amountClass } from "@/lib/client/colors";
 import { getInsuranceDisplayTypeLabel, getInsuranceMetricLabel, getInsuranceMetricMode, type InsuranceMetricMode } from "@/lib/insurance/display";
 import { getInsuranceAction, insuranceCashValueDelta, isInsuranceRefund } from "@/lib/insurance/transaction";
+import { getServerT } from "@/lib/server/i18n";
 import { TopEntryLauncher } from "@/components/TopEntryLauncher";
 
 export const dynamic = "force-dynamic";
@@ -56,23 +57,24 @@ function metricClass(mode: InsuranceMetricMode, value: number) {
   return mode === "coverage" ? "text-slate-700" : amountClass(value);
 }
 
-function productTypeLabel(type: string | null) {
+function productTypeLabel(type: string | null, t: (key: string) => string) {
   switch (type) {
-    case "savings": return "储蓄型";
-    case "dividend": return "分红型";
-    case "annuity": return "年金型";
-    case "universal": return "万能型";
-    case "investment_linked": return "投连型";
-    case "critical_illness": return "重疾险";
-    case "medical": return "医疗险";
-    case "accident": return "意外险";
-    case "term_life": return "定期寿险";
-    case "whole_life": return "终身寿险";
-    default: return "保险";
+    case "savings": return t("insuranceProduct.type.savings");
+    case "dividend": return t("insuranceProduct.type.dividend");
+    case "annuity": return t("insuranceProduct.type.annuity");
+    case "universal": return t("insuranceProduct.type.universal");
+    case "investment_linked": return t("insuranceProduct.type.investment_linked");
+    case "critical_illness": return t("insuranceProduct.type.critical_illness");
+    case "medical": return t("insuranceProduct.type.medical");
+    case "accident": return t("insuranceProduct.type.accident");
+    case "term_life": return t("insuranceProduct.type.term_life");
+    case "whole_life": return t("insuranceProduct.type.whole_life");
+    default: return t("insuranceProduct.type.default");
   }
 }
 
 export default async function InsurancePage() {
+  const t = await getServerT();
   const { hidFilter } = await getHouseholdScope();
   const cookieStore = await cookies();
   const creditCardLabelMode = cookieStore.get("mmh_credit_card_label_mode")?.value === "full_name" ? "full_name" : "short_last4";
@@ -113,6 +115,7 @@ export default async function InsurancePage() {
       })
     : [];
   const accountById = new Map(products.map((product) => [product.Account.id, product.Account]));
+  const lapsedStatusLabel = t("insuranceShell.status.lapsed");
 
   const rows: InsuranceRow[] = products.map((product) => {
     const account = accountById.get(product.accountId) ?? product.Account;
@@ -146,7 +149,7 @@ export default async function InsurancePage() {
       name: product.name,
       policyNo: product.policyNo ?? null,
       startDateLabel: product.startDate ? product.startDate.toISOString().slice(0, 10) : null,
-      typeLabel: productTypeLabel(product.productType ?? null),
+      typeLabel: productTypeLabel(product.productType ?? null, t),
       displayTypeLabel: getInsuranceDisplayTypeLabel(metricMode),
       metricMode,
       cashValueLabel: getInsuranceMetricLabel(metricMode),
@@ -155,28 +158,28 @@ export default async function InsurancePage() {
       totalPremium,
       statusLabel:
         product.status === "matured"
-          ? "已满期"
+          ? t("insuranceShell.status.matured")
           : product.status === "surrendered"
-            ? "已退保"
+            ? t("insuranceShell.status.surrendered")
             : product.status === "lapsed"
-              ? "已失效"
-              : "保障中",
+              ? t("insuranceShell.status.lapsed")
+              : t("insuranceShell.status.active"),
       frequencyLabel:
         product.premiumFrequencyMonths === 1
-          ? "每月"
+          ? t("insuranceShell.frequency.monthly")
           : product.premiumFrequencyMonths === 3
-            ? "每季"
+            ? t("insuranceShell.frequency.quarterly")
             : product.premiumFrequencyMonths === 6
-              ? "每半年"
+              ? t("insuranceShell.frequency.semiannual")
               : product.premiumFrequencyMonths === 12
-                ? "每年"
+                ? t("insuranceShell.frequency.annual")
                 : product.premiumFrequencyMonths === 999999
-                  ? "趸交"
+                  ? t("insuranceShell.frequency.single")
                   : "-",
       paymentTermYears: product.paymentTermYears ? Number(product.paymentTermYears) : null,
       coverageTermYears: product.coverageTermYears ? Number(product.coverageTermYears) : null,
-      institutionName: product.Institution?.name?.trim() || account.Institution?.name?.trim() || "未设机构",
-      ownerName: product.OwnerGroup?.name?.trim() || account.AccountGroup?.name?.trim() || "未设所有人",
+      institutionName: product.Institution?.name?.trim() || account.Institution?.name?.trim() || t("insurance.noInstitution"),
+      ownerName: product.OwnerGroup?.name?.trim() || account.AccountGroup?.name?.trim() || t("insurance.noOwner"),
       policyholderName: product.PolicyholderPerson?.name?.trim() || product.OwnerGroup?.name?.trim() || "",
       insuredPersonName: product.InsuredPerson?.name?.trim() || product.InsuredUser?.name?.trim() || "",
       accountId: account.id,
@@ -186,7 +189,7 @@ export default async function InsurancePage() {
       redeemCount: refundCount,
       entries: relatedEntries,
     };
-  }).filter((row) => row.entries.length > 0 || row.statusLabel !== "已失效" || row.coverageAmount !== 0 || row.cashValue !== 0);
+  }).filter((row) => row.entries.length > 0 || row.statusLabel !== lapsedStatusLabel || row.coverageAmount !== 0 || row.cashValue !== 0);
 
   const grouped = Array.from(
     rows.reduce((map, row) => {
@@ -218,8 +221,8 @@ export default async function InsurancePage() {
       <header className="page-header">
         <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 px-4 py-2 md:px-5">
           <div className="min-w-0">
-            <div className="text-sm font-semibold text-slate-900">保险</div>
-            <div className="text-xs text-slate-500">按机构与所有人查看保险产品、续期和回款记录</div>
+            <div className="text-sm font-semibold text-slate-900">{t("insurance.page.title")}</div>
+            <div className="text-xs text-slate-500">{t("insurance.page.subtitle")}</div>
           </div>
           <TopEntryLauncher defaultAction="insurance" />
         </div>
@@ -228,10 +231,10 @@ export default async function InsurancePage() {
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-4 py-4 md:px-5 md:py-5">
         <section className="panel-surface overflow-hidden">
           <div className="grid grid-cols-2 gap-3 p-4 md:grid-cols-4">
-            <SummaryCard label="保险产品" value={String(rows.length)} />
-            <SummaryCard label="金额型保单" value={formatMoney(totalBalance)} valueClass={amountClass(totalBalance)} />
-            <SummaryCard label="续期记录" value={String(totalBuy)} />
-            <SummaryCard label="回款记录" value={String(totalRedeem)} />
+            <SummaryCard label={t("insurance.summary.products")} value={String(rows.length)} />
+            <SummaryCard label={t("insurance.summary.amountPolicies")} value={formatMoney(totalBalance)} valueClass={amountClass(totalBalance)} />
+            <SummaryCard label={t("insurance.summary.renewals")} value={String(totalBuy)} />
+            <SummaryCard label={t("insurance.summary.refunds")} value={String(totalRedeem)} />
           </div>
         </section>
 
@@ -240,9 +243,9 @@ export default async function InsurancePage() {
             <div className="panel-header">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                 <Building2 className="h-4 w-4 text-blue-500" />
-                保单分组
+                {t("insurance.groupTitle")}
               </div>
-              <div className="text-xs text-slate-400">机构 - 所有人</div>
+              <div className="text-xs text-slate-400">{t("insurance.groupSubtitle")}</div>
             </div>
             <div className="divide-y divide-slate-100">
               {grouped.length > 0 ? grouped.map((group) => (
@@ -271,7 +274,7 @@ export default async function InsurancePage() {
                   </div>
                 </div>
               )) : (
-                <div className="px-4 py-10 text-center text-sm text-slate-400">暂无保险产品</div>
+                <div className="px-4 py-10 text-center text-sm text-slate-400">{t("insurance.emptyProducts")}</div>
               )}
             </div>
           </div>
@@ -280,9 +283,9 @@ export default async function InsurancePage() {
             <div className="panel-header">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                 <Shield className="h-4 w-4 text-cyan-500" />
-                保单列表
+                {t("insurance.listTitle")}
               </div>
-              <div className="text-xs text-slate-400">允许同一产品出现多张保单，按保单分别显示</div>
+              <div className="text-xs text-slate-400">{t("insurance.listSubtitle")}</div>
             </div>
             <div className="divide-y divide-slate-100">
               {rows.length > 0 ? rows.map((row) => (
@@ -294,17 +297,17 @@ export default async function InsurancePage() {
                         <span className="ml-2 text-xs font-normal text-slate-500">{row.displayTypeLabel} · {row.typeLabel}</span>
                       </div>
                       <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
-                        {row.policyNo ? <span className="rounded bg-slate-100 px-1.5 py-0.5">保单号 {row.policyNo}</span> : null}
-                        {row.startDateLabel ? <span className="rounded bg-slate-100 px-1.5 py-0.5">起保 {row.startDateLabel}</span> : null}
+                        {row.policyNo ? <span className="rounded bg-slate-100 px-1.5 py-0.5">{t("insurance.policyNo", { policyNo: row.policyNo })}</span> : null}
+                        {row.startDateLabel ? <span className="rounded bg-slate-100 px-1.5 py-0.5">{t("insurance.startDate", { date: row.startDateLabel })}</span> : null}
                         <span className="rounded bg-slate-100 px-1.5 py-0.5">{row.institutionName}</span>
-                        <span className="rounded bg-slate-100 px-1.5 py-0.5">投保人 {row.policyholderName || row.ownerName}</span>
-                        {row.insuredPersonName ? <span className="rounded bg-slate-100 px-1.5 py-0.5">被保人 {row.insuredPersonName}</span> : null}
+                        <span className="rounded bg-slate-100 px-1.5 py-0.5">{t("insurance.policyholder", { name: row.policyholderName || row.ownerName })}</span>
+                        {row.insuredPersonName ? <span className="rounded bg-slate-100 px-1.5 py-0.5">{t("insurance.insured", { name: row.insuredPersonName })}</span> : null}
                         <span className="rounded bg-slate-100 px-1.5 py-0.5">{row.statusLabel}</span>
-                        <span>频率 {row.frequencyLabel}</span>
-                        <span>保费 {formatMoney(row.totalPremium)}</span>
-                        <span>账户 {row.accountLabel}</span>
-                        <span>续期 {row.buyCount}</span>
-                        <span>回款 {row.redeemCount}</span>
+                        <span>{t("insurance.frequency", { label: row.frequencyLabel })}</span>
+                        <span>{t("insurance.premium", { amount: formatMoney(row.totalPremium) })}</span>
+                        <span>{t("insurance.account", { label: row.accountLabel })}</span>
+                        <span>{t("insurance.renewalCount", { count: row.buyCount })}</span>
+                        <span>{t("insurance.refundCount", { count: row.redeemCount })}</span>
                       </div>
                     </div>
                     <div className="shrink-0 text-right text-sm font-semibold tabular-nums">
@@ -315,7 +318,7 @@ export default async function InsurancePage() {
                       <div className="mt-1 text-slate-700">
                         {row.coverageAmount != null ? formatMoney(row.coverageAmount) : "-"}
                       </div>
-                      <div className="text-[10px] font-normal text-slate-400">保额</div>
+                      <div className="text-[10px] font-normal text-slate-400">{t("insurance.coverage")}</div>
                     </div>
                   </div>
 
@@ -323,11 +326,11 @@ export default async function InsurancePage() {
                     <table className="w-full table-fixed border-separate border-spacing-0">
                       <thead>
                         <tr>
-                          <th className="border-b border-slate-200 px-2 py-2 text-left text-xs font-semibold text-slate-600">日期</th>
-                          <th className="border-b border-slate-200 px-2 py-2 text-left text-xs font-semibold text-slate-600">动作</th>
-                          <th className="border-b border-slate-200 px-2 py-2 text-left text-xs font-semibold text-slate-600">资金账户</th>
-                          <th className="border-b border-slate-200 px-2 py-2 text-left text-xs font-semibold text-slate-600">备注</th>
-                          <th className="border-b border-slate-200 px-2 py-2 text-right text-xs font-semibold text-slate-600">金额</th>
+                          <th className="border-b border-slate-200 px-2 py-2 text-left text-xs font-semibold text-slate-600">{t("insurance.col.date")}</th>
+                          <th className="border-b border-slate-200 px-2 py-2 text-left text-xs font-semibold text-slate-600">{t("insurance.col.action")}</th>
+                          <th className="border-b border-slate-200 px-2 py-2 text-left text-xs font-semibold text-slate-600">{t("insurance.col.cashAccount")}</th>
+                          <th className="border-b border-slate-200 px-2 py-2 text-left text-xs font-semibold text-slate-600">{t("insurance.col.note")}</th>
+                          <th className="border-b border-slate-200 px-2 py-2 text-right text-xs font-semibold text-slate-600">{t("insurance.col.amount")}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -348,7 +351,7 @@ export default async function InsurancePage() {
                               <td className="border-b border-slate-100 px-2 py-2 text-xs text-slate-700">
                                 <span className="inline-flex items-center gap-1">
                                   {isRefund ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownLeft className="h-3 w-3" />}
-                                  {isRefund ? "回款" : "续期"}
+                                  {isRefund ? t("insuranceShell.entryType.refund") : t("insuranceShell.renewal")}
                                 </span>
                               </td>
                               <td className="border-b border-slate-100 px-2 py-2 text-xs text-slate-600">{cashLabel}</td>
@@ -362,7 +365,7 @@ export default async function InsurancePage() {
                           );
                         }) : (
                           <tr>
-                            <td className="px-2 py-6 text-center text-xs text-slate-400" colSpan={5}>暂无记录</td>
+                            <td className="px-2 py-6 text-center text-xs text-slate-400" colSpan={5}>{t("insurance.emptyEntries")}</td>
                           </tr>
                         )}
                       </tbody>
@@ -370,7 +373,7 @@ export default async function InsurancePage() {
                   </div>
                 </div>
               )) : (
-                <div className="px-4 py-10 text-center text-sm text-slate-400">暂无保单</div>
+                <div className="px-4 py-10 text-center text-sm text-slate-400">{t("insurance.emptyPolicies")}</div>
               )}
             </div>
           </div>

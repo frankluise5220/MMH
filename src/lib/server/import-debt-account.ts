@@ -16,7 +16,7 @@ function debtResolveCacheSet(householdId: string, key: string, val: { accountId:
 const DEBT_ACCOUNT_NAME_RE = /^(.+?)的往来款$/;
 
 /**
- * Detects the "XX的往来款" pattern and extracts the counterparty name.
+ * Detects the "<name>的往来款" (name's payment/loan funds) pattern and extracts the counterparty name.
  * Returns null when the account name does not match this pattern.
  */
 export function parseDebtAccountName(accountName: string): string | null {
@@ -28,7 +28,7 @@ export function parseDebtAccountName(accountName: string): string | null {
  * Resolves or creates a loan-type Account for a counterparty whose name
  * appears in a "XX的往来款" style account name during import.
  *
- * 1. Extract the counterparty name from "XX的往来款".
+ * 1. Extract the counterparty name from the "XX的往来款" style account name.
  * 2. Look up a Counterparty by name or shortName within the household.
  * 3. If found, look for an existing loan-type Account linked to that Counterparty.
  * 4. If no account exists, create one (kind=loan, counterpartyId set).

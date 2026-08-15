@@ -14,6 +14,7 @@ import {
   SettingsTh,
 } from "@/components/settings/SettingsPageScaffold";
 import { SESSION_DAY_OPTIONS } from "@/lib/session-days";
+import { useI18n } from "@/lib/i18n";
 
 type ManagedUser = {
   id: string;
@@ -37,6 +38,7 @@ function UserModal({
   onCancel: () => void;
   users: ManagedUser[];
 }) {
+  const { t } = useI18n();
   const [name, setName] = useState(initial?.name ?? "");
   const [email, setEmail] = useState(initial?.email ?? "");
   const [role, setRole] = useState(initial?.role ?? "user");
@@ -48,18 +50,18 @@ function UserModal({
   const hasExistingPassword = initial?.hasPassword ?? false;
   const isEditing = !!initial;
 
-  // 检查是否是当前账簿最后一个管理员，且正在被降级
+  // Whether this is the last admin of the current ledger and is being demoted.
   const isLastAdmin = initial?.role === "admin" && users.filter(u => u.role === "admin").length <= 1;
 
   function validate(): string | null {
-    if (!name.trim()) return "请输入用户名";
+    if (!name.trim()) return t("settings.users.error.usernameRequired");
     if (!isEditing) {
-      if (!password && !confirmPassword) return "请输入密码";
-      if (password !== confirmPassword) return "两次输入的密码不一致";
+      if (!password && !confirmPassword) return t("settings.users.error.passwordRequired");
+      if (password !== confirmPassword) return t("settings.users.error.passwordMismatch");
     } else {
-      // 编辑时如果填写了密码（任意一个），需要两次一致
+      // When editing, both password fields must match if either was filled in.
       if (password || confirmPassword) {
-        if (password !== confirmPassword) return "两次输入的密码不一致";
+        if (password !== confirmPassword) return t("settings.users.error.passwordMismatch");
       }
     }
     return null;
@@ -76,7 +78,7 @@ function UserModal({
     <div className="app-modal-backdrop z-[1100]">
       <div className="app-modal-panel max-w-md">
         <div className="modal-header shrink-0">
-          <div className="text-sm font-semibold text-slate-800">{isEditing ? "编辑用户" : "添加用户"}</div>
+          <div className="text-sm font-semibold text-slate-800">{isEditing ? t("settings.users.modalTitleEdit") : t("settings.users.modalTitleAdd")}</div>
           <button type="button" onClick={onCancel} className="secondary-button h-8 px-2">
             <X className="h-4 w-4" />
           </button>
@@ -87,34 +89,34 @@ function UserModal({
           )}
 
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1.5">用户名</label>
+            <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.field.username")}</label>
             <input className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-              placeholder="输入用户名" value={name} onChange={(e) => { setName(e.target.value); setError(""); }} autoFocus />
+              placeholder={t("settings.users.placeholder.username")} value={name} onChange={(e) => { setName(e.target.value); setError(""); }} autoFocus />
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1.5">找回邮箱（可选）</label>
+            <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.field.recoveryEmail")}</label>
             <input className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-              placeholder="用于忘记密码找回" value={email ?? ""} onChange={(e) => { setEmail(e.target.value); setError(""); }} />
+              placeholder={t("settings.users.placeholder.recoveryEmail")} value={email ?? ""} onChange={(e) => { setEmail(e.target.value); setError(""); }} />
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1.5">角色</label>
+            <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.field.role")}</label>
             <select className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none disabled:opacity-60 disabled:bg-slate-50"
               value={role} onChange={(e) => setRole(e.target.value)} disabled={isSystemUser}>
-              <option value="admin">管理员 (admin)</option>
-              <option value="user">普通用户 (user)</option>
+              <option value="admin">{t("settings.users.roleOptionAdmin")}</option>
+              <option value="user">{t("settings.users.roleOptionUser")}</option>
             </select>
-            {isSystemUser && <div className="mt-1 text-[11px] text-slate-500">系统管理员角色不可更改</div>}
-            {isLastAdmin && !isSystemUser && <div className="mt-1 text-[11px] text-amber-600">这是当前账簿最后一个管理员，不可降级为普通用户</div>}
+            {isSystemUser && <div className="mt-1 text-[11px] text-slate-500">{t("settings.users.systemRoleFixed")}</div>}
+            {isLastAdmin && !isSystemUser && <div className="mt-1 text-[11px] text-amber-600">{t("settings.users.lastAdminWarning")}</div>}
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1.5">
-              {isEditing ? (hasExistingPassword ? "修改密码（留空则不修改）" : "设置密码") : "密码"}
+              {isEditing ? (hasExistingPassword ? t("settings.users.password.edit") : t("settings.users.password.set")) : t("settings.users.password.label")}
             </label>
             <div className="relative">
               <input
                 type={showPassword ? "text" : "password"}
                 className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 pr-10 text-sm outline-none"
-                placeholder={isEditing ? (hasExistingPassword ? "留空则不修改" : "设置新密码") : "设置密码"}
+                placeholder={isEditing ? (hasExistingPassword ? t("settings.users.placeholder.passwordKeep") : t("settings.users.placeholder.passwordNew")) : t("settings.users.password.set")}
                 value={password} onChange={(e) => { setPassword(e.target.value); setError(""); }}
               />
               <button type="button"
@@ -122,26 +124,26 @@ function UserModal({
                 onClick={() => setShowPassword(!showPassword)}
                 tabIndex={-1}
               >
-                {showPassword ? "隐藏" : "显示"}
+                {showPassword ? t("settings.users.password.hide") : t("settings.users.password.show")}
               </button>
             </div>
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1.5">
-              {isEditing ? "确认新密码（留空则不修改）" : "确认密码"}
+              {isEditing ? t("settings.users.confirmPassword.edit") : t("settings.users.confirmPassword.label")}
             </label>
             <input
               type={showPassword ? "text" : "password"}
               className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-              placeholder={isEditing ? "再次输入密码确认" : "再次输入密码确认"}
+              placeholder={t("settings.users.placeholder.confirmPassword")}
               value={confirmPassword} onChange={(e) => { setConfirmPassword(e.target.value); setError(""); }}
             />
           </div>
           <div className="flex justify-end gap-2">
-            <button className="secondary-button h-9 px-4" onClick={onCancel}>取消</button>
+            <button className="secondary-button h-9 px-4" onClick={onCancel}>{t("common.cancel")}</button>
             <button className="primary-button h-9 px-4 disabled:opacity-50"
               onClick={handleSubmit} disabled={!name.trim()}>
-              {isEditing ? "保存" : "添加"}
+              {isEditing ? t("common.save") : t("settings.users.add")}
             </button>
           </div>
         </div>
@@ -151,6 +153,7 @@ function UserModal({
 }
 
 export default function UsersPage() {
+  const { t } = useI18n();
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [loadError, setLoadError] = useState("");
   const [showModal, setShowModal] = useState(false);
@@ -180,12 +183,12 @@ export default function UsersPage() {
         setLoadError("");
       } else {
         setUsers([]);
-        const hint = "ok" in data ? (data.error || `请求失败（${res.status}）`) : `请求失败（${res.status}）`;
+        const hint = "ok" in data ? (data.error || t("settings.users.requestFailed", { status: res.status })) : t("settings.users.requestFailed", { status: res.status });
         setLoadError(hint);
       }
     } catch {
       setUsers([]);
-      setLoadError("请求失败（网络或服务异常）");
+      setLoadError(t("settings.users.networkError"));
     }
   }
 
@@ -206,15 +209,15 @@ export default function UsersPage() {
         setShowModal(false);
         setEditingUser(null);
       } else {
-        window.alert(result?.error || (editingUser ? "更新失败" : "添加失败"));
+        window.alert(result?.error || (editingUser ? t("settings.users.updateFailed") : t("settings.users.addFailed")));
       }
-    } catch { window.alert(editingUser ? "更新失败" : "添加失败"); }
+    } catch { window.alert(editingUser ? t("settings.users.updateFailed") : t("settings.users.addFailed")); }
   }
 
   async function handleDelete() {
     if (!deleteTarget || deleting) return;
     if (!deletePassword.trim()) {
-      setDeleteError("请输入当前用户密码");
+      setDeleteError(t("settings.users.delete.passwordRequired"));
       return;
     }
     setDeleting(true);
@@ -231,10 +234,10 @@ export default function UsersPage() {
         setDeletePassword("");
         await fetchUsers();
       } else {
-        setDeleteError(result?.error || "删除失败");
+        setDeleteError(result?.error || t("settings.users.deleteFailed"));
       }
     } catch {
-      setDeleteError("删除失败");
+      setDeleteError(t("settings.users.deleteFailed"));
     } finally {
       setDeleting(false);
     }
@@ -253,11 +256,11 @@ export default function UsersPage() {
       const data = await res.json();
       if (!data.ok) {
         setUsers(prevUsers);
-        window.alert(data.error || "保存失败");
+        window.alert(data.error || t("settings.users.saveFailed"));
       }
     } catch {
       setUsers(prevUsers);
-      window.alert("保存失败");
+      window.alert(t("settings.users.saveFailed"));
     } finally {
       setSavingSessionUserId("");
     }
@@ -266,12 +269,12 @@ export default function UsersPage() {
   return (
     <div className="space-y-4">
       <SettingsPageHeader
-        title="用户管理"
-        description="管理账簿用户、登录身份和角色权限。"
+        title={t("settings.users.title")}
+        description={t("settings.users.description")}
         count={users.length}
         actions={
           <SettingsPrimaryAddButton onClick={() => { setEditingUser(null); setShowModal(true); }}>
-            添加用户
+            {t("settings.users.add")}
           </SettingsPrimaryAddButton>
         }
       />
@@ -282,7 +285,7 @@ export default function UsersPage() {
         </div>
       )}
 
-      <SettingsSection title="用户列表" count={users.length}>
+      <SettingsSection title={t("settings.users.list")} count={users.length}>
         <SettingsTable minWidth={820} maxWidth="full">
           <colgroup>
             <col className="w-[22%]" />
@@ -294,12 +297,12 @@ export default function UsersPage() {
           </colgroup>
           <thead className="sticky top-0 z-10">
             <tr>
-              <SettingsTh>用户</SettingsTh>
-              <SettingsTh>邮箱</SettingsTh>
-              <SettingsTh>登录保留</SettingsTh>
-              <SettingsTh>角色</SettingsTh>
-              <SettingsTh>状态</SettingsTh>
-              <SettingsTh align="right">操作</SettingsTh>
+              <SettingsTh>{t("settings.users.col.user")}</SettingsTh>
+              <SettingsTh>{t("settings.users.col.email")}</SettingsTh>
+              <SettingsTh>{t("settings.users.col.session")}</SettingsTh>
+              <SettingsTh>{t("settings.users.col.role")}</SettingsTh>
+              <SettingsTh>{t("settings.users.col.status")}</SettingsTh>
+              <SettingsTh align="right">{t("settings.users.col.actions")}</SettingsTh>
             </tr>
           </thead>
           <tbody>
@@ -319,7 +322,7 @@ export default function UsersPage() {
                     onChange={(event) => void saveUserSessionDays(u, Number(event.target.value))}
                     disabled={savingSessionUserId === u.id}
                     className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 outline-none disabled:opacity-60"
-                    title="控制该用户重新登录间隔，不影响用户权限"
+                    title={t("settings.users.sessionDaysTitle")}
                   >
                     {SESSION_DAY_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>{option.label}</option>
@@ -328,26 +331,26 @@ export default function UsersPage() {
                 </SettingsTd>
                 <SettingsTd>
                   <span className={`rounded-full px-2 py-0.5 text-xs ${u.role === "admin" ? "bg-blue-50 text-blue-700" : "bg-slate-100 text-slate-500"}`}>
-                    {u.role === "admin" ? "管理员" : "用户"}
+                    {u.role === "admin" ? t("settings.users.role.admin") : t("settings.users.role.user")}
                   </span>
                 </SettingsTd>
                 <SettingsTd>
                   {u.isSystem ? (
-                    <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700">系统</span>
+                    <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700">{t("settings.users.status.system")}</span>
                   ) : (
-                    <span className="text-xs text-slate-400">普通用户</span>
+                    <span className="text-xs text-slate-400">{t("settings.users.status.normal")}</span>
                   )}
                 </SettingsTd>
                 <SettingsTd align="right">
                   <SettingsRowActions>
                     <SettingsActionButton
-                      label="编辑用户"
+                      label={t("settings.users.edit")}
                       variant="edit"
                       onClick={() => { setEditingUser(u); setShowModal(true); }}
                     />
                     {!u.isSystem ? (
                       <SettingsActionButton
-                        label="删除用户"
+                        label={t("settings.users.delete")}
                         variant="delete"
                         onClick={() => {
                           setDeleteTarget(u);
@@ -360,7 +363,7 @@ export default function UsersPage() {
                 </SettingsTd>
               </tr>
             )) : (
-              <SettingsEmptyRow colSpan={6}>暂无用户</SettingsEmptyRow>
+              <SettingsEmptyRow colSpan={6}>{t("settings.users.empty")}</SettingsEmptyRow>
             )}
           </tbody>
         </SettingsTable>
@@ -379,7 +382,7 @@ export default function UsersPage() {
         <div className="app-modal-backdrop z-[1100]">
           <div className="app-modal-panel max-w-md">
             <div className="modal-header shrink-0">
-              <div className="text-sm font-semibold text-slate-800">删除用户</div>
+              <div className="text-sm font-semibold text-slate-800">{t("settings.users.delete")}</div>
               <button
                 type="button"
                 onClick={() => {
@@ -394,18 +397,18 @@ export default function UsersPage() {
               </button>
             </div>
             <div className="space-y-4 p-5">
-              <div className="text-xs text-slate-500">删除前需要输入当前用户密码。</div>
+              <div className="text-xs text-slate-500">{t("settings.users.delete.passwordHint")}</div>
               <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
-                确认删除用户“{deleteTarget.name}”？该操作不可撤销。
+                {t("settings.users.delete.confirm", { name: deleteTarget.name })}
               </div>
               <div>
-                <label className="mb-1.5 block text-xs font-medium text-slate-600">当前用户密码</label>
+                <label className="mb-1.5 block text-xs font-medium text-slate-600">{t("settings.users.delete.passwordLabel")}</label>
                 <input
                   type="password"
                   value={deletePassword}
                   onChange={(e) => { setDeletePassword(e.target.value); setDeleteError(""); }}
                   className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                  placeholder="请输入当前用户密码"
+                  placeholder={t("settings.users.delete.passwordRequired")}
                   autoFocus
                 />
               </div>
@@ -423,7 +426,7 @@ export default function UsersPage() {
                   }}
                   disabled={deleting}
                 >
-                  取消
+                  {t("common.cancel")}
                 </button>
                 <button
                   type="button"
@@ -431,7 +434,7 @@ export default function UsersPage() {
                   onClick={handleDelete}
                   disabled={deleting || !deletePassword.trim()}
                 >
-                  {deleting ? "删除中..." : "确认删除"}
+                  {deleting ? t("settings.users.deleting") : t("settings.users.confirmDelete")}
                 </button>
               </div>
             </div>

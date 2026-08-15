@@ -45,7 +45,7 @@ export function decodeDetailPaginationPreference(value: string | null | undefine
   }
 }
 
-/** 将页码钳制到 [1, totalPages] 范围 */
+/** Clamp the page number to the [1, totalPages] range. */
 export function clampDetailPage(page: number, totalPages: number) {
   return Math.min(Math.max(1, Math.floor(page) || 1), totalPages);
 }
@@ -57,7 +57,7 @@ function readCookieValue(name: string) {
   return match ? match[1] : null;
 }
 
-/** 从 sessionStorage（回退 cookie）读取该账户的明细分页偏好 */
+/** Read the account's detail pagination preference from sessionStorage (falling back to cookie). */
 export function readStoredDetailPreference(accountId: string): DetailPaginationPreference | null {
   const key = detailPaginationCookieName(accountId);
   const stored = typeof window === "undefined"
@@ -66,7 +66,7 @@ export function readStoredDetailPreference(accountId: string): DetailPaginationP
   return stored ?? decodeDetailPaginationPreference(readCookieValue(key));
 }
 
-/** 将明细分页偏好写入 sessionStorage + cookie */
+/** Write the detail pagination preference to sessionStorage + cookie. */
 export function writeStoredDetailPreference(
   accountId: string,
   pageSize: number,

@@ -22,17 +22,17 @@ export async function POST(req: Request) {
   const body = (await req.json().catch(() => null)) as unknown;
   const parse = BodySchema.safeParse(body);
   if (!parse.success) {
-    return NextResponse.json({ ok: false, error: "参数不正确" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INVALID_PARAMETERS", error: "参数不正确" }, { status: 400 });
   }
 
   const { entity, id } = parse.data;
 
   if (entity === "accountGroup") {
     const group = await prisma.accountGroup.findUnique({ where: { id } });
-    if (!group) return NextResponse.json({ ok: false, error: "所有人不存在" }, { status: 404 });
-    if (!isAdmin(user) && group.householdId && group.householdId !== householdId) return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
+    if (!group) return NextResponse.json({ ok: false, code: "ACCOUNT_GROUP_NOT_FOUND", error: "所有人不存在" }, { status: 404 });
+    if (!isAdmin(user) && group.householdId && group.householdId !== householdId) return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "越权操作" }, { status: 403 });
     const used = await prisma.account.count({ where: { groupId: id } });
-    if (used > 0) return NextResponse.json({ ok: false, error: "已有账户属于该所有人，无法删除" }, { status: 409 });
+    if (used > 0) return NextResponse.json({ ok: false, code: "GROUP_IN_USE", error: "已有账户属于该所有人，无法删除" }, { status: 409 });
     await prisma.accountGroup.delete({ where: { id } });
     revalidateAfterSettingsChange();
     // Client-side updates settings/account caches and broadcasts local change events.
@@ -41,10 +41,10 @@ export async function POST(req: Request) {
 
   if (entity === "account") {
     const acc = await prisma.account.findUnique({ where: { id } });
-    if (!acc) return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
-    if (!isAdmin(user) && acc.householdId && acc.householdId !== householdId) return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
+    if (!acc) return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "账户不存在" }, { status: 404 });
+    if (!isAdmin(user) && acc.householdId && acc.householdId !== householdId) return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "越权操作" }, { status: 403 });
     const used = await prisma.txRecord.count({ where: { accountId: id } });
-    if (used > 0) return NextResponse.json({ ok: false, error: "该账户已产生流水记录，无法删除" }, { status: 409 });
+    if (used > 0) return NextResponse.json({ ok: false, code: "ACCOUNT_IN_USE", error: "该账户已产生流水记录，无法删除" }, { status: 409 });
     await prisma.account.delete({ where: { id } });
     revalidateAfterSettingsChange();
     // Client-side updates settings/account caches and broadcasts local change events.
@@ -53,10 +53,10 @@ export async function POST(req: Request) {
 
   if (entity === "institution") {
     const inst = await prisma.institution.findUnique({ where: { id } });
-    if (!inst) return NextResponse.json({ ok: false, error: "机构不存在" }, { status: 404 });
-    if (!isAdmin(user) && inst.householdId && inst.householdId !== householdId) return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
+    if (!inst) return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "机构不存在" }, { status: 404 });
+    if (!isAdmin(user) && inst.householdId && inst.householdId !== householdId) return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "越权操作" }, { status: 403 });
     const used = await prisma.account.count({ where: { institutionId: id } });
-    if (used > 0) return NextResponse.json({ ok: false, error: "已有账户使用该机构，无法删除" }, { status: 409 });
+    if (used > 0) return NextResponse.json({ ok: false, code: "INSTITUTION_IN_USE", error: "已有账户使用该机构，无法删除" }, { status: 409 });
     await prisma.$transaction(async (tx) => {
       await deleteUnusedSyncedCounterpartiesForInstitution(tx, inst);
       await tx.institution.delete({ where: { id } });
@@ -68,10 +68,10 @@ export async function POST(req: Request) {
 
   if (entity === "counterparty") {
     const counterparty = await prisma.counterparty.findUnique({ where: { id } });
-    if (!counterparty) return NextResponse.json({ ok: false, error: "往来对象不存在" }, { status: 404 });
-    if (!isAdmin(user) && counterparty.householdId !== householdId) return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
+    if (!counterparty) return NextResponse.json({ ok: false, code: "COUNTERPARTY_NOT_FOUND", error: "往来对象不存在" }, { status: 404 });
+    if (!isAdmin(user) && counterparty.householdId !== householdId) return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "越权操作" }, { status: 403 });
     const used = await prisma.account.count({ where: { counterpartyId: id } });
-    if (used > 0) return NextResponse.json({ ok: false, error: "已有往来款使用该往来对象，无法删除" }, { status: 409 });
+    if (used > 0) return NextResponse.json({ ok: false, code: "COUNTERPARTY_IN_USE", error: "已有往来款使用该往来对象，无法删除" }, { status: 409 });
     await prisma.$transaction(async (tx) => {
       await deleteUnusedSyncedInstitutionForCounterparty(tx, counterparty);
       await tx.counterparty.delete({ where: { id } });
@@ -92,13 +92,13 @@ export async function POST(req: Request) {
       Category: { select: { name: true } },
     },
   });
-  if (!category) return NextResponse.json({ ok: false, error: "类别不存在" }, { status: 404 });
+  if (!category) return NextResponse.json({ ok: false, code: "CATEGORY_NOT_FOUND", error: "类别不存在" }, { status: 404 });
   if (!isAdmin(user) && category.householdId && category.householdId !== householdId) {
-    return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
+    return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "越权操作" }, { status: 403 });
   }
 
   if (category.isSystem) {
-    return NextResponse.json({ ok: false, error: "系统内置类别，无法删除" }, { status: 409 });
+    return NextResponse.json({ ok: false, code: "SYSTEM_CATEGORY_IMMUTABLE", error: "系统内置类别，无法删除" }, { status: 409 });
   }
 
   const [children, used] = await Promise.all([
@@ -114,8 +114,8 @@ export async function POST(req: Request) {
     }),
   ]);
 
-  if (children > 0) return NextResponse.json({ ok: false, error: "该类别有子级，无法删除" }, { status: 409 });
-  if (used > 0) return NextResponse.json({ ok: false, error: "该类别已产生流水记录，无法删除" }, { status: 409 });
+  if (children > 0) return NextResponse.json({ ok: false, code: "CATEGORY_HAS_CHILDREN", error: "该类别有子级，无法删除" }, { status: 409 });
+  if (used > 0) return NextResponse.json({ ok: false, code: "CATEGORY_IN_USE", error: "该类别已产生流水记录，无法删除" }, { status: 409 });
 
   await prisma.$transaction(async (tx) => {
     await recordDefaultCategoryDeletion(tx, householdId, {

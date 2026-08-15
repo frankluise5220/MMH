@@ -46,7 +46,7 @@ export async function fillFundNavFromCache(formData: FormData) {
     const nav = navData.nav;
     const amount = Math.abs(toNumber(fundTransaction.grossAmount));
 
-    // 从费率库查询费率（按确认日期）
+    // Look up the fee rate from the fee rate store (by confirm date)
     const arrivalDays = await getFundArrivalDays(investmentAccId, fundTransaction.fundCode);
     const arrivalDateStr = arrivalDays > 0 ? addWorkdaysUtc(confirmDate, arrivalDays) : confirmDate;
     const arrivalDate = new Date(Date.UTC(parseInt(arrivalDateStr.slice(0, 4)), parseInt(arrivalDateStr.slice(5, 7)) - 1, parseInt(arrivalDateStr.slice(8, 10))));
@@ -69,7 +69,7 @@ export async function fillFundNavFromCache(formData: FormData) {
           roundUnits: (value) => roundFundUnits(value, fundUnitsDecimals),
         });
 
-    // 更新净值、确认日期、手续费、份额
+    // Update NAV, confirm date, fee, and units
     const updateData: {
       confirmDate: Date;
       nav: number;

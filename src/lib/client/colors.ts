@@ -1,22 +1,23 @@
 /**
- * 涨跌颜色配置
+ * Gain/loss color scheme.
  *
- * red_up_green_down: 红涨绿跌（中国习惯）— 涨(正数)=红, 跌(负数)=绿
- * green_up_red_down: 绿涨红跌（国际习惯）— 涨(正数)=绿, 跌(负数)=红
+ * red_up_green_down: red for gains, green for losses (China convention) — gain (positive) = red, loss (negative) = green
+ * green_up_red_down: green for gains, red for losses (international convention) — gain (positive) = green, loss (negative) = red
  */
 export type ColorScheme = "red_up_green_down" | "green_up_red_down";
 
 /**
- * 涨跌调色板。
+ * Gain/loss palette.
  *
- * 历史上各页面/组件各自实现了一份“正红负绿”三元映射，深浅（600/700）和
- * 中性色（slate-500/600/700/900）略有漂移。统一收敛到这里，组件只选调色板名：
- * - default：标准（涨红 text-red-600 / 跌绿 text-emerald-700 / 中性 slate-600）
- * - soft：浅一档的跌绿（emerald-600）
- * - softMuted / softDark：soft 基础上中性色为 slate-500 / slate-700
- * - strong：深一档（red-700 / emerald-700），中性 slate-900
- * - muted：默认色但中性为 slate-500
- * - strongMuted：strong 色但中性为 slate-500
+ * Pages/components historically each implemented their own "positive red, negative green"
+ * three-tone mapping, with slightly drifting shades (600/700) and neutral colors
+ * (slate-500/600/700/900). Unified here; components only pick a palette name:
+ * - default: standard (gain red text-red-600 / loss green text-emerald-700 / neutral slate-600)
+ * - soft: lighter loss green (emerald-600)
+ * - softMuted / softDark: soft with neutral slate-500 / slate-700
+ * - strong: darker (red-700 / emerald-700), neutral slate-900
+ * - muted: default colors but neutral slate-500
+ * - strongMuted: strong colors but neutral slate-500
  */
 export const PNL_PALETTES = {
   default: { up: "text-red-600", down: "text-emerald-700", neutral: "text-slate-600" },
@@ -30,7 +31,7 @@ export const PNL_PALETTES = {
 
 export type PnlPaletteName = keyof typeof PNL_PALETTES;
 
-/** 根据数值和色系返回颜色 class */
+/** Return the color class for a value and scheme. */
 export function pnlColor(n: number, scheme: ColorScheme, palette: PnlPaletteName = "default"): string {
   const p = PNL_PALETTES[palette] ?? PNL_PALETTES.default;
   const positive = scheme === "red_up_green_down" ? p.up : p.down;
@@ -41,8 +42,9 @@ export function pnlColor(n: number, scheme: ColorScheme, palette: PnlPaletteName
 }
 
 /**
- * 以 isRedUp 布尔形式取涨跌颜色（历史组件普遍使用 isRedUp 而非 scheme 字符串）。
- * invert=true 时方向反转（用于负债类金额：正值表示“已还/可用”等利好语义）。
+ * Resolve gain/loss colors from an isRedUp boolean (legacy components commonly use
+ * isRedUp instead of a scheme string). invert=true reverses the direction (used for
+ * liability-style amounts where a positive value means "paid off/available").
  */
 export function pnlClassFromRedUp(
   n: number,
@@ -60,8 +62,8 @@ export function pnlClassFromRedUp(
 }
 
 /**
- * 资金正负颜色（正=绿，负=红，零=灰），用于余额/金额等非涨跌场景的展示。
- * 涨跌盈亏请使用 pnlColor(n, scheme)。
+ * Fund amount sign colors (positive = green, negative = red, zero = gray),
+ * for balances/amounts outside gain-loss contexts. Use pnlColor(n, scheme) for P&L.
  */
 export function amountToneClass(value: number): string {
   if (value > 0) return "text-emerald-700";
@@ -79,8 +81,8 @@ export type ImportPreviewFlowItem = {
 };
 
 /**
- * 账单导入预览展示的是资金方向，不是分类好坏。
- * 收入=流入，支出=流出；在红涨绿跌设置下，支出应显示为绿色。
+ * The bill import preview shows fund direction, not whether a category is good or bad.
+ * Income = inflow, expense = outflow; under red-up/green-down settings, expenses render green.
  */
 export function importPreviewAmountColor(type: ImportPreviewAmountKind, scheme: ColorScheme): string {
   if (type === "income") return pnlColor(1, scheme);
@@ -124,7 +126,7 @@ export function importPreviewFlowAmountColorFor(
     : importPreviewAmountColor(direction === "inflow" ? "income" : "expense", scheme);
 }
 
-/** 从 cookie 中读取色系偏好 */
+/** Read the color scheme preference from the cookie header. */
 export function getColorSchemeFromCookie(cookieHeader: string | null): ColorScheme {
   if (!cookieHeader) return "red_up_green_down";
   const match = cookieHeader.match(/colorScheme=([^;]+)/);

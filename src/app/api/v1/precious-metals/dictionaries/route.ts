@@ -2,7 +2,7 @@
  * API: /api/v1/precious-metals/dictionaries
  *
  * Method:
- * - GET: 查询当前账簿可用的贵金属品种和计量单位字典。
+ * - GET: queries the precious-metal types and measurement-unit dictionaries available to the current household.
  *
  * Auth: required
  * Context: server/book/user/role

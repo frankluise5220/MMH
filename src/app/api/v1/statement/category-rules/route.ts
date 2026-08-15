@@ -18,6 +18,6 @@ export async function GET() {
     return NextResponse.json({ ok: true, samples });
   } catch (error) {
     const message = error instanceof Error ? error.message : "读取分类学习规则失败";
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "FETCH_FAILED", error: message }, { status: 500 });
   }
 }

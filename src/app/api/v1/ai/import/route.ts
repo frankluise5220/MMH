@@ -72,18 +72,18 @@ export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => null)) as unknown;
   const parsed = BodySchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json({ ok: false, error: "参数格式不正确" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INVALID_PARAMS", error: "参数格式不正确" }, { status: 400 });
   }
 
   const scope = await getHouseholdScope();
   if (!scope.user) {
-    return NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 });
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "请先登录" }, { status: 401 });
   }
   const { hidFilter, householdId } = scope;
 
   const { items, defaultAccountName, accountId: requestAccountId, fundContext } = parsed.data;
   if (!items?.length) {
-    return NextResponse.json({ ok: false, error: "没有可导入的记录" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "NOTHING_TO_IMPORT", error: "没有可导入的记录" }, { status: 400 });
   }
 
   const [accounts, categories, groups, users, institutions] = await Promise.all([
@@ -679,7 +679,7 @@ export async function POST(req: NextRequest) {
           continue;
         }
 
-        // 用户确认 = 正例：沉淀别名 + 标记蒸馏日志
+        // User confirmation = positive example: persist alias + mark distillation log
         if (item.account && item.account.trim() !== `${account.Institution?.name ?? ""}·${account.name}`.replace(/^·/, "")) {
           try {
             await prisma.accountAlias.upsert({
@@ -690,7 +690,7 @@ export async function POST(req: NextRequest) {
           } catch { /* alias already exists */ }
         }
 
-        // 标记最近一条 DistillLog 为用户确认
+        // Mark the most recent DistillLog as user-confirmed
         try {
           const recent = await prisma.distillLog.findFirst({
             where: { source: "chat", success: true, userConfirmed: null },
@@ -749,7 +749,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (createdCount > 0) {
-    // 重算持仓，确保 fundHolding 表即时更新
+    // Recalculate positions so the fundHolding table updates immediately
     if (fundContext?.accountId) {
       await recalcFundPositions(fundContext.accountId).catch(logger.catchLog("操作失败", "route.ts"));
     }

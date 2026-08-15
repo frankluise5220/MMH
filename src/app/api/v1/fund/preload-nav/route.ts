@@ -2,15 +2,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { fetchHistoricalNavList, preloadNavListToCache } from "@/lib/fund/navCache";
 
 /**
- * 扩充净值库 API
+ * NAV library expansion API
  * POST /api/v1/fund/preload-nav
  * Body: { fundCode: string, startDate: string, endDate: string }
  *
- * 仅将指定时间段内的历史净值写入 FundNavCache 缓存表。
- * 不返回净值数据，只返回成功/失败状态和写入条数。
+ * Only writes historical NAV for the given period into the FundNavCache table.
+ * Does not return NAV data; only returns success/failure status and the written count.
  *
- * 调用时机：批量生成定投明细前，先调此 API 预填充净值库，
- * 之后批量生成时从缓存读取，无需再访问外部 API，节省时间。
+ * When to call: before batch-generating regular investment details, call this API to
+ * prefill the NAV library so batch generation reads from cache without hitting the
+ * external API again, saving time.
  */
 export async function POST(req: NextRequest) {
   try {
@@ -19,12 +20,12 @@ export async function POST(req: NextRequest) {
 
     if (!fundCode || !startDate || !endDate) {
       return NextResponse.json(
-        { ok: false, error: "缺少 fundCode、startDate 或 endDate" },
+        { ok: false, code: "MISSING_NAV_RANGE_PARAMS", error: "缺少 fundCode、startDate 或 endDate" },
         { status: 400 }
       );
     }
 
-    // 从东方财富获取历史净值列表
+    // Fetch the historical NAV list from Eastmoney
     const navList = await fetchHistoricalNavList(fundCode, startDate, endDate);
 
     if (navList.length === 0) {
@@ -35,7 +36,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 将净值写入缓存表
+    // Write the NAV list into the cache table
     const written = await preloadNavListToCache(fundCode, navList);
 
     return NextResponse.json({
@@ -46,7 +47,7 @@ export async function POST(req: NextRequest) {
     });
   } catch (e) {
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : "扩充净值库失败" },
+      { ok: false, code: "PRELOAD_NAV_FAILED", error: e instanceof Error ? e.message : "扩充净值库失败" },
       { status: 500 }
     );
   }

@@ -5,17 +5,18 @@ import { getCurrentUser } from "@/lib/server/auth";
 
 /**
  * GET /api/v1/auth/household-password-status
- * 查询当前账簿的管理员用户是否已设置密码
+ * Queries whether an admin user of the current household has set a password.
  *
- * 返回 { ok, hasPassword, adminUser }
- * - hasPassword: 当前账簿至少有一个管理员设置了密码
- * - adminUser: 当前账簿的第一个管理员用户信息（用于引导设置密码）
+ * Returns { ok, hasPassword, adminUser }
+ * - hasPassword: at least one admin of the current household has set a password
+ * - adminUser: the first admin user of the current household (used to guide password setup)
  *
- * 注意：如果用户未登录（无 mmh_username cookie），
- * 说明用户正在登录页面，此时不触发账簿级密码引导（登录页有自己的设置流程）。
+ * Note: if the user is not logged in (no mmh_username cookie),
+ * the user is on the login page, so household-level password guidance is not triggered
+ * (the login page has its own setup flow).
  */
 export async function GET() {
-  // 用户未登录时，不触发账簿级密码引导（登录页有自己的设置流程）
+  // When the user is not logged in, skip household-level password guidance (the login page has its own setup flow)
   const currentUser = await getCurrentUser();
   if (!currentUser) {
     return NextResponse.json({ ok: true, hasPassword: true, adminUser: null });
@@ -31,7 +32,7 @@ export async function GET() {
     orderBy: { createdAt: "asc" },
   });
 
-  // 也检查 isSystem 系统管理员（householdId=null），他们属于所有账簿
+  // Also check isSystem admins (householdId=null); they belong to all households
   const systemAdmins = await prisma.user.findMany({
     where: { isSystem: true, role: "admin" },
     select: { id: true, name: true, passwordHash: true },

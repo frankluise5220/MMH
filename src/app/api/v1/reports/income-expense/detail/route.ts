@@ -41,7 +41,7 @@ export async function GET(req: Request) {
         : null;
 
     if (!detailType) {
-      return NextResponse.json({ ok: false, error: "明细类型不正确" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_DETAIL_TYPE", error: "明细类型不正确" }, { status: 400 });
     }
 
     const ctx = await getHouseholdScope();
@@ -71,6 +71,6 @@ export async function GET(req: Request) {
     });
   } catch (error) {
     console.error("GET /api/v1/reports/income-expense/detail error:", error);
-    return NextResponse.json({ ok: false, error: "查询报表明细失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "FETCH_FAILED", error: "查询报表明细失败" }, { status: 500 });
   }
 }

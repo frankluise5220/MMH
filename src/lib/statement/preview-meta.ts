@@ -1,9 +1,9 @@
 /**
- * 账单导入预览共用的账单元信息（statement meta）展示工具。
+ * Shared statement meta display helpers for the bill import preview.
  *
- * 邮箱账单导入设置页（settings/email/page.tsx）与账单导入预览弹窗
- * （StatementImportPreviewDialog.tsx）曾各自复制一份相同实现，
- * 统一放在这里保证展示口径一致。
+ * The email bill import settings page (settings/email/page.tsx) and the bill
+ * import preview dialog (StatementImportPreviewDialog.tsx) each used to
+ * duplicate this implementation; it is unified here so the display stays consistent.
  */
 
 export type StatementPreviewMeta = {

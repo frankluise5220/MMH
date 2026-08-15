@@ -25,25 +25,28 @@ import {
 } from "@/lib/client/appPreferences";
 import { CURRENCY_OPTIONS } from "@/lib/currency";
 import { PRODUCT_INTROS } from "@/lib/product-intro";
+import { useI18n } from "@/lib/i18n";
 
 type ColorScheme = "red_up_green_down" | "green_up_red_down";
 
-const TIME_ZONE_OPTIONS = [
-  { value: "Asia/Shanghai", label: "北京时间 (Asia/Shanghai)" },
-  { value: "Asia/Hong_Kong", label: "香港 (Asia/Hong_Kong)" },
-  { value: "Asia/Tokyo", label: "东京 (Asia/Tokyo)" },
-  { value: "Europe/London", label: "伦敦 (Europe/London)" },
-  { value: "America/New_York", label: "纽约 (America/New_York)" },
-  { value: "America/Los_Angeles", label: "洛杉矶 (America/Los_Angeles)" },
-];
+function buildTimeZoneOptions(t: (key: string) => string) {
+  return [
+    { value: "Asia/Shanghai", label: t("settings.display.timezone.beijing") },
+    { value: "Asia/Hong_Kong", label: t("settings.display.timezone.hongKong") },
+    { value: "Asia/Tokyo", label: t("settings.display.timezone.tokyo") },
+    { value: "Europe/London", label: t("settings.display.timezone.london") },
+    { value: "America/New_York", label: t("settings.display.timezone.newYork") },
+    { value: "America/Los_Angeles", label: t("settings.display.timezone.losAngeles") },
+  ];
+}
 
 const DISPLAY_LANGUAGE_OPTIONS: DisplayLanguage[] = ["zh-CN", "en-US", "ja-JP"];
 
 const CREDIT_CARD_NAME_PRESETS = [
-  { value: "{机构简称}{信用卡后4位}", label: "简称+后四位", example: "招行8333" },
-  { value: "{机构简称}·{信用卡后4位}", label: "简称·后四位", example: "招行·8333" },
-  { value: "{机构名称}·{信用卡名称}", label: "机构名称·卡名", example: "招商银行·优享白金卡" },
-  { value: "{机构简称}·{信用卡名称}·{信用卡后4位}", label: "简称·卡名·后四位", example: "招行·优享白金卡·8333" },
+  { value: "{机构简称}{信用卡后4位}", labelKey: "settings.display.preset.short", example: "招行8333" },
+  { value: "{机构简称}·{信用卡后4位}", labelKey: "settings.display.preset.shortDot", example: "招行·8333" },
+  { value: "{机构名称}·{信用卡名称}", labelKey: "settings.display.preset.full", example: "招商银行·优享白金卡" },
+  { value: "{机构简称}·{信用卡名称}·{信用卡后4位}", labelKey: "settings.display.preset.fullShort", example: "招行·优享白金卡·8333" },
 ];
 
 const CREDIT_CARD_NAME_FIELDS = [
@@ -101,6 +104,7 @@ function SettingRow({
 }
 
 export default function DisplaySettingsPage() {
+  const { t } = useI18n();
   const [scheme, setScheme] = useState<ColorScheme>("red_up_green_down");
   const [schemeDraft, setSchemeDraft] = useState<ColorScheme>("red_up_green_down");
   const [displayLanguage, setDisplayLanguage] = useState<DisplayLanguage>("zh-CN");
@@ -328,18 +332,19 @@ export default function DisplaySettingsPage() {
 
   const sidebarPreview = useMemo(() => previewCreditCardName(creditCardSidebarDisplayName), [creditCardSidebarDisplayName]);
   const tablePreview = useMemo(() => previewCreditCardName(creditCardDisplayName), [creditCardDisplayName]);
+  const timeZoneOptions = useMemo(() => buildTimeZoneOptions(t), [t]);
 
   const colorOptions: { value: ColorScheme; label: string; desc: string; preview: { up: string; down: string } }[] = [
     {
       value: "red_up_green_down",
-      label: "红涨绿跌",
-      desc: "适合国内常见金融产品显示习惯。",
+      label: t("settings.display.colorRedUp"),
+      desc: t("settings.display.colorRedUpDesc"),
       preview: { up: "text-red-600", down: "text-emerald-700" },
     },
     {
       value: "green_up_red_down",
-      label: "绿涨红跌",
-      desc: "适合国际市场常见显示习惯。",
+      label: t("settings.display.colorGreenUp"),
+      desc: t("settings.display.colorGreenUpDesc"),
       preview: { up: "text-emerald-700", down: "text-red-600" },
     },
   ];
@@ -347,31 +352,31 @@ export default function DisplaySettingsPage() {
   return (
     <div className="space-y-5">
       <div>
-        <h2 className="text-sm font-semibold text-slate-800">显示与应用设置</h2>
-        <p className="mt-1 text-xs text-slate-500">管理显示密度、颜色、时区和侧边栏习惯。</p>
+        <h2 className="text-sm font-semibold text-slate-800">{t("settings.display.title")}</h2>
+        <p className="mt-1 text-xs text-slate-500">{t("settings.display.description")}</p>
       </div>
 
       <section className="panel-surface overflow-hidden">
         <div>
-          <SettingRow title="侧边栏账户分组" desc="控制左侧账户列表按资产类型或机构归类，属于本机浏览器习惯。">
+          <SettingRow title={t("settings.display.sidebarGroup")} desc={t("settings.display.sidebarGroupDesc")}>
             <div className="flex gap-2">
               <button
                 type="button"
                 onClick={() => updateSidebarGroup("kind")}
                 className={`segment-button h-9 px-4 ${sidebarGroupBy === "kind" ? "segment-button-active font-medium" : ""}`}
               >
-                按资产类型
+                {t("settings.display.groupByKind")}
               </button>
               <button
                 type="button"
                 onClick={() => updateSidebarGroup("institution")}
                 className={`segment-button h-9 px-4 ${sidebarGroupBy === "institution" ? "segment-button-active font-medium" : ""}`}
               >
-                按机构
+                {t("settings.display.groupByInstitution")}
               </button>
             </div>
           </SettingRow>
-          <SettingRow title="隐藏零余额账户" desc="减少侧边栏噪音。">
+          <SettingRow title={t("settings.display.hideZero")} desc={t("settings.display.hideZeroDesc")}>
             <input
               type="checkbox"
               checked={sidebarHideZero}
@@ -379,7 +384,7 @@ export default function DisplaySettingsPage() {
               className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
             />
           </SettingRow>
-          <SettingRow title="隐藏初始数据" desc="隐藏左侧导航中“初始数据”入口，避免日常使用时误点。">
+          <SettingRow title={t("settings.display.hideInitialData")} desc={t("settings.display.hideInitialDataDesc")}>
             <input
               type="checkbox"
               checked={sidebarHideInitialData}
@@ -391,7 +396,7 @@ export default function DisplaySettingsPage() {
       </section>
 
       <section className="panel-surface overflow-hidden">
-        <SettingRow title="涨跌颜色" desc="统一收益、净值和盈亏颜色口径。" wide>
+        <SettingRow title={t("settings.display.colorScheme")} desc={t("settings.display.colorSchemeDesc")} wide>
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex flex-wrap gap-2">
               {colorOptions.map((opt) => (
@@ -424,7 +429,7 @@ export default function DisplaySettingsPage() {
               disabled={savingScheme || schemeDraft === scheme}
               className="primary-button h-9 px-4 text-sm disabled:opacity-50"
             >
-              {savingScheme ? "应用中" : "应用"}
+              {savingScheme ? t("settings.display.applying") : t("settings.display.apply")}
             </button>
           </div>
         </SettingRow>
@@ -432,7 +437,7 @@ export default function DisplaySettingsPage() {
 
       <section className="panel-surface overflow-hidden">
         <div>
-          <SettingRow title="当前币种" desc="用于总资产、侧边栏和跨账户汇总折算；账户和流水仍保留原币种。">
+          <SettingRow title={t("settings.display.baseCurrency")} desc={t("settings.display.baseCurrencyDesc")}>
             <select
               value={baseCurrency}
               onChange={(e) => void saveBaseCurrency(e.target.value)}
@@ -446,7 +451,7 @@ export default function DisplaySettingsPage() {
               ))}
             </select>
           </SettingRow>
-          <SettingRow title="界面语言" desc="选择中文、英文或日文显示；业务数据不受影响。">
+          <SettingRow title={t("settings.display.language")} desc={t("settings.display.languageDesc")}>
             <select
               value={displayLanguage}
               onChange={(e) => saveDisplayLanguage(e.target.value as DisplayLanguage)}
@@ -460,7 +465,7 @@ export default function DisplaySettingsPage() {
               ))}
             </select>
           </SettingRow>
-          <SettingRow title="时区" desc="控制页面日期与版本信息显示，可跟随系统或固定时区。">
+          <SettingRow title={t("settings.display.timeZone")} desc={t("settings.display.timeZoneDesc")}>
             <select
               value={timeZoneMode === "system" ? "system" : timeZone}
               onChange={(e) => {
@@ -470,8 +475,8 @@ export default function DisplaySettingsPage() {
               disabled={savingTimeZone}
               className="form-input"
             >
-              <option value="system">跟随系统</option>
-              {TIME_ZONE_OPTIONS.map((option) => (
+              <option value="system">{t("settings.display.timeZoneSystem")}</option>
+              {timeZoneOptions.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
@@ -483,7 +488,7 @@ export default function DisplaySettingsPage() {
 
       <section className="panel-surface overflow-hidden">
         <div>
-          <SettingRow title="信用卡左侧栏显示内容" desc="用于左侧栏账户列表；账户名已包含后四位时，后四位固定自动省略。" wide>
+          <SettingRow title={t("settings.display.creditCardSidebar")} desc={t("settings.display.creditCardSidebarDesc")} wide>
             <div className="space-y-2">
               <input
                 value={creditCardSidebarDisplayName}
@@ -500,7 +505,7 @@ export default function DisplaySettingsPage() {
                     className="secondary-button h-8 px-3 text-xs"
                     title={preset.example}
                   >
-                    {preset.label}
+                    {t(preset.labelKey)}
                   </button>
                 ))}
                 <button
@@ -509,7 +514,7 @@ export default function DisplaySettingsPage() {
                   onClick={() => setCreditCardSidebarDisplayName(SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE)}
                   className="secondary-button h-8 px-3 text-xs"
                 >
-                  默认
+                  {t("settings.display.default")}
                 </button>
                 <button
                   type="button"
@@ -517,14 +522,14 @@ export default function DisplaySettingsPage() {
                   onClick={() => void saveCreditCardSidebarDisplayName(creditCardSidebarDisplayName)}
                   className="primary-button h-8 px-3 text-xs"
                 >
-                  保存
+                  {t("common.save")}
                 </button>
               </div>
-              <div className="text-xs text-slate-500">预览：<span className="font-medium text-slate-800">{sidebarPreview || "请输入显示内容"}</span></div>
+              <div className="text-xs text-slate-500">{t("settings.display.preview")}<span className="font-medium text-slate-800">{sidebarPreview || t("settings.display.previewEmpty")}</span></div>
             </div>
           </SettingRow>
 
-          <SettingRow title="信用卡表格内显示内容" desc="用于账户页、概览、业务页面等表格内显示；同样遵守尾号不重复规则。" wide>
+          <SettingRow title={t("settings.display.creditCardTable")} desc={t("settings.display.creditCardTableDesc")} wide>
             <div className="space-y-2">
               <input
                 value={creditCardDisplayName}
@@ -541,7 +546,7 @@ export default function DisplaySettingsPage() {
                     className="secondary-button h-8 px-3 text-xs"
                     title={preset.example}
                   >
-                    {preset.label}
+                    {t(preset.labelKey)}
                   </button>
                 ))}
                 <button
@@ -550,7 +555,7 @@ export default function DisplaySettingsPage() {
                   onClick={() => setCreditCardDisplayName(DEFAULT_CREDIT_CARD_LABEL_TEMPLATE)}
                   className="secondary-button h-8 px-3 text-xs"
                 >
-                  默认
+                  {t("settings.display.default")}
                 </button>
                 <button
                   type="button"
@@ -558,7 +563,7 @@ export default function DisplaySettingsPage() {
                   onClick={() => void saveCreditCardDisplayName(creditCardDisplayName)}
                   className="primary-button h-8 px-3 text-xs"
                 >
-                  保存
+                  {t("common.save")}
                 </button>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -568,13 +573,13 @@ export default function DisplaySettingsPage() {
                     type="button"
                     onClick={() => setCreditCardDisplayName((current) => `${current}${field}`)}
                     className="secondary-button h-7 px-2 text-[11px]"
-                    title={`插入 ${field}`}
+                    title={t("settings.display.insertField", { field })}
                   >
                     {field}
                   </button>
                 ))}
               </div>
-              <div className="text-xs text-slate-500">预览：<span className="font-medium text-slate-800">{tablePreview || "请输入显示内容"}</span></div>
+              <div className="text-xs text-slate-500">{t("settings.display.preview")}<span className="font-medium text-slate-800">{tablePreview || t("settings.display.previewEmpty")}</span></div>
             </div>
           </SettingRow>
         </div>

@@ -85,6 +85,63 @@ export async function computeAccountDisplayBalances(
     for (const lot of remainingByLotId.values()) {
       result.set(lot.depositAccountId, (result.get(lot.depositAccountId) ?? 0) + lot.amount);
     }
+
+    // Deposit accounts may also carry ordinary income/expense and transfers.
+    // Deposit business entries (type=investment with fundProductType=deposit) are
+    // already counted via DepositTransaction as unredeemed arrival amounts; only
+    // non-deposit TxRecords are layered on top here to avoid double counting.
+    const depositTxRows = await prisma.txRecord.findMany({
+      where: {
+        ...txWhere,
+        ...txRecordAccountScopeWhere(depositAccountIds),
+        NOT: {
+          type: TransactionType.investment,
+          fundProductType: "deposit",
+        },
+      },
+      select: {
+        id: true,
+        date: true,
+        createdAt: true,
+        dayOrder: true,
+        type: true,
+        amount: true,
+        accountId: true,
+        toAccountId: true,
+        toNote: true,
+        source: true,
+        debtPrincipalAmount: true,
+        fundSubtype: true,
+        fundConfirmDate: true,
+        fundArrivalDate: true,
+      },
+    });
+
+    const depositTxByAccountId = new Map<string, typeof depositTxRows>();
+    for (const accountId of depositAccountIds) {
+      depositTxByAccountId.set(accountId, []);
+    }
+    for (const entry of depositTxRows) {
+      if (entry.accountId && depositTxByAccountId.has(entry.accountId)) {
+        depositTxByAccountId.get(entry.accountId)?.push(entry);
+      }
+      if (entry.source !== FX_CONVERSION_SOURCE && entry.toAccountId && depositTxByAccountId.has(entry.toAccountId)) {
+        depositTxByAccountId.get(entry.toAccountId)?.push(entry);
+      }
+    }
+
+    for (const account of accounts) {
+      if (!depositAccountIdSet.has(account.id)) continue;
+      const rows = depositTxByAccountId.get(account.id) ?? [];
+      const orderedRows = rows
+        .filter((entry) => isOnOrBeforeToday(getDetailEntryDisplayDate(entry, account.id)))
+        .sort((a, b) => compareDetailEntriesAsc(a, b, account.id));
+      let runningBalance = result.get(account.id) ?? 0;
+      for (const entry of orderedRows) {
+        runningBalance = applyBalanceReconcileEntry(runningBalance, entry, account.id);
+      }
+      result.set(account.id, runningBalance);
+    }
   }
 
   const nonDepositAccounts = accounts.filter(

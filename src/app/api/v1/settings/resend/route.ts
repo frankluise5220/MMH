@@ -14,7 +14,7 @@ function maskApiKey(apiKey: string) {
 
 /**
  * GET /api/v1/settings/resend
- * 获取 Resend 发件配置（API Key 和发件地址）
+ * Gets the Resend mail configuration (API key and sender address).
  */
 export async function GET() {
   const setting = await prisma.systemSetting.findUnique({ where: { key: "resend_config" } });
@@ -53,13 +53,13 @@ export async function GET() {
 
 /**
  * POST /api/v1/settings/resend
- * 保存 Resend 发件配置
+ * Saves the Resend mail configuration.
  * Body: { apiKey: string, from: string }
  */
 export async function POST(req: NextRequest) {
   const { user } = await getHouseholdScope();
   if (!user || !isAdmin(user)) {
-    return NextResponse.json({ ok: false, error: "仅管理员可操作" }, { status: 403 });
+    return NextResponse.json({ ok: false, code: "ADMIN_ONLY", error: "仅管理员可操作" }, { status: 403 });
   }
 
   const body = await req.json().catch(() => ({}));
@@ -67,7 +67,7 @@ export async function POST(req: NextRequest) {
   const from = String(body.from ?? "").trim() || RESEND_FROM;
 
   if (!apiKey) {
-    return NextResponse.json({ ok: false, error: "请填写 Resend API Key" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_RESEND_API_KEY", error: "请填写 Resend API Key" }, { status: 400 });
   }
 
   const value = JSON.stringify({ apiKey, from });
@@ -82,12 +82,12 @@ export async function POST(req: NextRequest) {
 
 /**
  * DELETE /api/v1/settings/resend
- * 删除数据库中保存的 Resend 发件配置；环境变量配置不可在页面删除。
+ * Deletes the Resend mail configuration saved in the database; env-based configuration cannot be deleted from the page.
  */
 export async function DELETE() {
   const { user } = await getHouseholdScope();
   if (!user || !isAdmin(user)) {
-    return NextResponse.json({ ok: false, error: "仅管理员可操作" }, { status: 403 });
+    return NextResponse.json({ ok: false, code: "ADMIN_ONLY", error: "仅管理员可操作" }, { status: 403 });
   }
 
   await prisma.systemSetting.deleteMany({ where: { key: "resend_config" } });

@@ -31,6 +31,7 @@ import { loadCommonData, loadCachedStockHoldingReport } from "@/lib/server/cache
 import { stockMarketLabel } from "@/lib/stock/market";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { loadReportDetailEntries } from "@/lib/server/report-detail-entries";
+import { getServerT } from "@/lib/server/i18n";
 
 export const dynamic = "force-dynamic";
 
@@ -78,9 +79,9 @@ function investmentInstitutionScope(institutionId: string | null | undefined) {
   return `institution:${institutionId || NO_INSTITUTION_SCOPE_ID}`;
 }
 
-function rowCsv(section: "收入" | "支出", row: IncomeExpenseReportRow) {
+function rowCsv(section: "income" | "expense", row: IncomeExpenseReportRow, t: (key: string) => string) {
   return [
-    section,
+    section === "income" ? t("reports.income") : t("reports.expense"),
     `${"  ".repeat(row.depth)}${row.name}`,
     ...row.values.map((value) => value.toFixed(2)),
     row.total.toFixed(2),
@@ -93,11 +94,12 @@ function reportMenuItems(
   currentType: ReportType,
   investmentHref: string,
   stockHref: string,
+  t: (key: string) => string,
 ): ReportItem[] {
   return [
-    { value: "income-expense", label: "收支统计表", href: "/reports" },
-    { value: "investment-profit", label: "投资收益表", href: investmentHref },
-    { value: "stock-holdings", label: "股票持仓盈亏", href: stockHref },
+    { value: "income-expense", label: t("reports.menu.incomeExpense"), href: "/reports" },
+    { value: "investment-profit", label: t("reports.menu.investmentProfit"), href: investmentHref },
+    { value: "stock-holdings", label: t("reports.menu.stockHoldings"), href: stockHref },
   ];
 }
 
@@ -164,6 +166,7 @@ export default async function ReportsPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const params = await searchParams;
+  const t = await getServerT();
   const now = new Date();
   const reportType: ReportType =
     params.report === "investment-profit" || params.report === "stock-holdings"
@@ -293,10 +296,10 @@ export default async function ReportsPage({
     const institutionName =
       account.Institution?.shortName?.trim()
       || account.Institution?.name?.trim()
-      || "未设机构";
+      || t("reports.noInstitution");
     const existing = institutionScopeByValue.get(value) ?? {
       value,
-      label: `按机构：${institutionName}`,
+      label: t("reports.scopeByInstitution", { name: institutionName }),
       ids: [],
       sortLabel: institutionName,
       title: "",
@@ -308,7 +311,7 @@ export default async function ReportsPage({
   const institutionScopeRows = Array.from(institutionScopeByValue.values())
     .map((option) => ({
       ...option,
-      title: `${option.label} · ${option.ids.length}个账户`,
+      title: t("reports.institutionScopeTitle", { label: option.label, count: option.ids.length }),
     }))
     .sort((a, b) => a.sortLabel.localeCompare(b.sortLabel, "zh-Hans-CN"));
   const validProfitScopes = new Set<string>([
@@ -343,7 +346,7 @@ export default async function ReportsPage({
   );
   const allInvestmentScopeOption: InvestmentProfitScopeOption = {
     value: PROFIT_SCOPE_ALL,
-    label: "全部投资账户",
+    label: t("reports.allInvestmentAccounts"),
     href: buildReportHref("investment-profit", profitPeriod, profitYear, profitMonth, PROFIT_SCOPE_ALL),
   };
   const investmentInstitutionScopeOptions: InvestmentProfitScopeOption[] = institutionScopeRows.map((option) => ({
@@ -358,7 +361,7 @@ export default async function ReportsPage({
       const label = [display?.groupName, display?.label ?? account.name].filter(Boolean).join(" / ");
       return {
         value: investmentAccountScope(account.id),
-        label: `按账户：${label}`,
+        label: t("reports.scopeByAccount", { name: label }),
         href: buildReportHref("investment-profit", profitPeriod, profitYear, profitMonth, investmentAccountScope(account.id)),
         title: display?.hoverTitle,
       };
@@ -391,19 +394,19 @@ export default async function ReportsPage({
       selectedProfitScope,
     );
     const rangeLabel = profitPeriod === "day"
-      ? `${profitYear}年${profitMonth}月`
+      ? t("reports.rangeLabelDay", { year: profitYear, month: profitMonth })
       : profitPeriod === "month"
-        ? `${profitYear}年`
-        : `截至 ${currentYear} 年`;
+        ? t("reports.rangeLabelMonth", { year: profitYear })
+        : t("reports.rangeLabelYear", { year: currentYear });
     return (
       <div className="flex min-h-0 flex-1 flex-col">
         <header className="page-header">
           <div className="flex h-12 items-center justify-between px-4">
-            <div className="text-sm page-title">报表</div>
+            <div className="text-sm page-title">{t("reports.page.title")}</div>
             <div className="flex items-center gap-2">
               <ReportSelector
                 currentType="investment-profit"
-                items={reportMenuItems("investment-profit", currentInvestmentHref, currentStockHref)}
+                items={reportMenuItems("investment-profit", currentInvestmentHref, currentStockHref, t)}
               />
             </div>
           </div>
@@ -425,7 +428,7 @@ export default async function ReportsPage({
                           : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
                       }`}
                     >
-                      {period === "day" ? "按日" : period === "month" ? "按月" : "按年"}
+                      {period === "day" ? t("reports.period.day") : period === "month" ? t("reports.period.month") : t("reports.period.year")}
                     </Link>
                   ))}
                 </div>
@@ -434,7 +437,7 @@ export default async function ReportsPage({
                     href={previousHref}
                     scroll={false}
                     className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-800"
-                    title={profitPeriod === "day" ? "上月" : "上一年"}
+                    title={profitPeriod === "day" ? t("reports.prevMonth") : t("reports.prevYear")}
                   >
                     <ChevronLeft className="h-3.5 w-3.5" />
                   </Link>
@@ -445,7 +448,7 @@ export default async function ReportsPage({
                     href={nextHref}
                     scroll={false}
                     className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-800"
-                    title={profitPeriod === "day" ? "下月" : "下一年"}
+                    title={profitPeriod === "day" ? t("reports.nextMonth") : t("reports.nextYear")}
                   >
                     <ChevronRight className="h-3.5 w-3.5" />
                   </Link>
@@ -487,10 +490,10 @@ export default async function ReportsPage({
       const institutionName =
         account.Institution?.shortName?.trim()
         || account.Institution?.name?.trim()
-        || "未设机构";
+        || t("reports.noInstitution");
       const existing = institutionScopeByStockValue.get(value) ?? {
         value,
-        label: `按机构：${institutionName}`,
+        label: t("reports.scopeByInstitution", { name: institutionName }),
         ids: [],
         sortLabel: institutionName,
         title: "",
@@ -501,7 +504,7 @@ export default async function ReportsPage({
     const stockInstitutionScopeRows = Array.from(institutionScopeByStockValue.values())
       .map((option) => ({
         ...option,
-        title: `${option.label} · ${option.ids.length}个账户`,
+        title: t("reports.institutionScopeTitle", { label: option.label, count: option.ids.length }),
       }))
       .sort((a, b) => a.sortLabel.localeCompare(b.sortLabel, "zh-Hans-CN"));
     const validStockScopes = new Set<string>([
@@ -526,7 +529,7 @@ export default async function ReportsPage({
     );
     const allStockScopeOption: InvestmentProfitScopeOption = {
       value: PROFIT_SCOPE_ALL,
-      label: "全部股票账户",
+      label: t("reports.allStockAccounts"),
       href: buildReportHref("stock-holdings", undefined, undefined, undefined, PROFIT_SCOPE_ALL),
     };
     const stockInstitutionScopeOptions: InvestmentProfitScopeOption[] = stockInstitutionScopeRows.map((option) => ({
@@ -541,14 +544,28 @@ export default async function ReportsPage({
         const label = [display?.groupName, display?.label ?? account.name].filter(Boolean).join(" / ");
         return {
           value: investmentAccountScope(account.id),
-          label: `按账户：${label}`,
+          label: t("reports.scopeByAccount", { name: label }),
           href: buildReportHref("stock-holdings", undefined, undefined, undefined, investmentAccountScope(account.id)),
           title: display?.hoverTitle,
         };
       })
       .sort((a, b) => a.label.localeCompare(b.label, "zh-Hans-CN"));
     const stockExportHref = buildCsvDataUri([
-      ["市场", "代码", "名称", "账户", "数量", "成本价", "成本", "收盘价", "市值", "浮动盈亏", "浮盈率", "已实现收益", "综合盈亏"],
+      [
+        t("reports.stock.market"),
+        t("reports.stock.code"),
+        t("reports.stock.name"),
+        t("reports.account"),
+        t("reports.stock.quantity"),
+        t("reports.stock.avgCost"),
+        t("reports.stock.cost"),
+        t("reports.stock.closePrice"),
+        t("reports.stock.marketValue"),
+        t("reports.stock.floatingPnL"),
+        t("reports.stock.floatingPnLRate"),
+        t("reports.stock.realizedProfit"),
+        t("reports.stock.totalProfit"),
+      ],
       ...stockReport.rows.map((row) => [
         stockMarketLabel(row.market),
         row.stockCode,
@@ -565,7 +582,7 @@ export default async function ReportsPage({
         row.totalProfit.toFixed(2),
       ]),
       [
-        "合计",
+        t("reports.total"),
         "",
         "",
         "",
@@ -585,11 +602,11 @@ export default async function ReportsPage({
       <div className="flex min-h-0 flex-1 flex-col">
         <header className="page-header">
           <div className="flex h-12 items-center justify-between px-4">
-            <div className="text-sm page-title">股票持仓盈亏</div>
+            <div className="text-sm page-title">{t("reports.menu.stockHoldings")}</div>
             <div className="flex items-center gap-2">
               <ReportSelector
                 currentType="stock-holdings"
-                items={reportMenuItems("stock-holdings", currentInvestmentHref, currentStockHref)}
+                items={reportMenuItems("stock-holdings", currentInvestmentHref, currentStockHref, t)}
               />
             </div>
           </div>
@@ -608,10 +625,10 @@ export default async function ReportsPage({
                 href={stockExportHref}
                 download="股票持仓盈亏.csv"
                 className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-700"
-                title="导出当前股票持仓盈亏 CSV"
+                title={t("reports.exportStockTitle")}
               >
                 <Download className="h-3.5 w-3.5" />
-                导出
+                {t("reports.export")}
               </a>
             </div>
             <StockHoldingReport
@@ -696,16 +713,16 @@ export default async function ReportsPage({
   );
 
   const exportRows = [
-    ["统计范围", `${report.start} ~ ${report.end}`],
-    ["账户", selectedAccount?.label ?? "全部账户"],
-    ["统计粒度", report.groupBy === "year" ? "按年" : "按月"],
+    [t("reports.scope"), `${report.start} ~ ${report.end}`],
+    [t("reports.account"), selectedAccount?.label ?? t("reports.allAccounts")],
+    [t("reports.granularity"), report.groupBy === "year" ? t("reports.period.year") : t("reports.period.month")],
     [],
-    ["类型", "分类", ...report.columns.map((column) => column.label), "合计"],
-    ["收入", "收入合计", ...report.income.periodTotals.map((value) => value.toFixed(2)), report.income.total.toFixed(2)],
-    ...report.income.rows.map((row) => rowCsv("收入", row)),
-    ["支出", "支出合计", ...report.expense.periodTotals.map((value) => value.toFixed(2)), report.expense.total.toFixed(2)],
-    ...report.expense.rows.map((row) => rowCsv("支出", row)),
-    ["净收支", "净收支", ...report.netPeriodTotals.map((value) => value.toFixed(2)), report.netTotal.toFixed(2)],
+    [t("reports.type"), t("reports.category"), ...report.columns.map((column) => column.label), t("reports.total")],
+    [t("reports.income"), t("reports.incomeTotal"), ...report.income.periodTotals.map((value) => value.toFixed(2)), report.income.total.toFixed(2)],
+    ...report.income.rows.map((row) => rowCsv("income", row, t)),
+    [t("reports.expense"), t("reports.expenseTotal"), ...report.expense.periodTotals.map((value) => value.toFixed(2)), report.expense.total.toFixed(2)],
+    ...report.expense.rows.map((row) => rowCsv("expense", row, t)),
+    [t("reports.net"), t("reports.net"), ...report.netPeriodTotals.map((value) => value.toFixed(2)), report.netTotal.toFixed(2)],
   ];
   const exportHref = buildCsvDataUri(exportRows);
   const exportFilename = `收支统计-${report.start}-${report.end}${selectedAccount ? `-${selectedAccount.label}` : ""}.csv`;
@@ -720,7 +737,7 @@ export default async function ReportsPage({
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="page-header">
         <div className="flex h-12 items-center justify-between px-4">
-          <div className="text-sm page-title">报表</div>
+          <div className="text-sm page-title">{t("reports.page.title")}</div>
           <div className="flex items-center gap-2">
             <ReportSelector
               currentType="income-expense"
@@ -728,6 +745,7 @@ export default async function ReportsPage({
                 "income-expense",
                 buildReportHref("investment-profit", "day", currentYear, currentMonth),
                 buildReportHref("stock-holdings"),
+                t,
               )}
             />
           </div>
@@ -739,26 +757,26 @@ export default async function ReportsPage({
           <form className="flex h-10 shrink-0 items-center gap-3 overflow-x-auto border-b border-slate-200 bg-white px-1" method="get">
               <input type="hidden" name="groupBy" value={report.groupBy} />
               <div className="flex shrink-0 items-center gap-1.5">
-                <span className="text-xs font-medium text-slate-500">级次</span>
+                <span className="text-xs font-medium text-slate-500">{t("reports.groupBy")}</span>
                 <div className="inline-flex h-8 overflow-hidden rounded-md border border-slate-200 bg-white text-xs">
                   <Link
                     href={presetQuery({ ...currentReportQuery, groupBy: "year" })}
                     className={`flex items-center px-2.5 ${report.groupBy === "year" ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-100"}`}
                   >
-                    年
+                    {t("reports.year")}
                   </Link>
                   <Link
                     href={presetQuery({ ...currentReportQuery, groupBy: "month" })}
                     className={`flex items-center border-l border-slate-200 px-2.5 ${report.groupBy === "month" ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-100"}`}
                   >
-                    月
+                    {t("reports.month")}
                   </Link>
                 </div>
               </div>
               {report.groupBy === "month" ? (
                 <>
                   <label className="flex shrink-0 items-center gap-1.5">
-                    <span className="text-xs font-medium text-slate-500">开始月份</span>
+                    <span className="text-xs font-medium text-slate-500">{t("reports.startMonth")}</span>
                     <input
                       type="month"
                       name="startMonth"
@@ -767,7 +785,7 @@ export default async function ReportsPage({
                     />
                   </label>
                   <label className="flex shrink-0 items-center gap-1.5">
-                    <span className="text-xs font-medium text-slate-500">结束月份</span>
+                    <span className="text-xs font-medium text-slate-500">{t("reports.endMonth")}</span>
                     <input
                       type="month"
                       name="endMonth"
@@ -779,7 +797,7 @@ export default async function ReportsPage({
               ) : (
                 <>
                   <label className="flex shrink-0 items-center gap-1.5">
-                    <span className="text-xs font-medium text-slate-500">开始年</span>
+                    <span className="text-xs font-medium text-slate-500">{t("reports.startYear")}</span>
                     <select
                       name="startYear"
                       defaultValue={report.start.slice(0, 4)}
@@ -789,7 +807,7 @@ export default async function ReportsPage({
                     </select>
                   </label>
                   <label className="flex shrink-0 items-center gap-1.5">
-                    <span className="text-xs font-medium text-slate-500">结束年</span>
+                    <span className="text-xs font-medium text-slate-500">{t("reports.endYear")}</span>
                     <select
                       name="endYear"
                       defaultValue={report.end.slice(0, 4)}
@@ -801,13 +819,13 @@ export default async function ReportsPage({
                 </>
               )}
               <label className="flex shrink-0 items-center gap-1.5">
-                <span className="text-xs font-medium text-slate-500">账户</span>
+                <span className="text-xs font-medium text-slate-500">{t("reports.account")}</span>
                 <select
                   name="accountId"
                   defaultValue={selectedAccount?.id ?? ""}
                   className="h-8 w-48 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
                 >
-                  <option value="">全部账户</option>
+                  <option value="">{t("reports.allAccounts")}</option>
                   {accounts.map((account) => (
                     <option key={account.id} value={account.id}>
                       {account.label}
@@ -819,16 +837,16 @@ export default async function ReportsPage({
                 type="submit"
                 className="inline-flex h-8 shrink-0 items-center rounded-md bg-slate-900 px-3 text-xs font-medium text-white transition hover:bg-slate-700"
               >
-                刷新统计
+                {t("reports.refresh")}
               </button>
               <a
                 href={exportHref}
                 download={exportFilename}
                 className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-700"
-                title="导出当前收支统计 CSV"
+                title={t("reports.exportIncomeExpenseTitle")}
               >
                 <Download className="h-3.5 w-3.5" />
-                导出
+                {t("reports.export")}
               </a>
           </form>
 

@@ -94,7 +94,7 @@ export async function GET(req: NextRequest) {
       })),
     });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "查询失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "FETCH_FAILED", error: e instanceof Error ? e.message : "查询失败" }, { status: 500 });
   }
 }
 
@@ -136,21 +136,21 @@ export async function POST(req: NextRequest) {
     const loanRepaymentMethod = typeof repaymentMethod === "string" && repaymentMethod.trim() ? repaymentMethod.trim() : "自由还款";
     const loanRepaymentIntervalMonths = parsePositiveInteger(repaymentIntervalMonths, 1);
 
-    // 保险任务需要 insuranceProductId 或 accountId
+    // Insurance tasks require insuranceProductId or accountId
     if (!amount || !startDate || (isFundTask && (!accountId || !fundCode))) {
-      return NextResponse.json({ ok: false, error: "缺少必填字段" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_REQUIRED_FIELDS", error: "缺少必填字段" }, { status: 400 });
     }
     if (isInsuranceTask && !insuranceProductId && !accountId) {
-      return NextResponse.json({ ok: false, error: "缺少必填字段" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_REQUIRED_FIELDS", error: "缺少必填字段" }, { status: 400 });
     }
     if (!isInsuranceTask && !isFundTask && !accountId) {
-      return NextResponse.json({ ok: false, error: "缺少必填字段" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_REQUIRED_FIELDS", error: "缺少必填字段" }, { status: 400 });
     }
     if (requiresCashAccount && !cashAccountId) {
-      return NextResponse.json({ ok: false, error: "请选择资金账户" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "CASH_ACCOUNT_REQUIRED", error: "请选择资金账户" }, { status: 400 });
     }
 
-    // 为 insurance_premium 解析目标账户
+    // Resolve the target account for insurance_premium
     let effectiveAccountId = accountId;
     let effectiveAccountName: string | null = null;
     let insuranceProductName: string | null = null;
@@ -159,7 +159,7 @@ export async function POST(req: NextRequest) {
         where: { id: insuranceProductId, householdId },
         include: { Account: { select: { id: true, name: true } } },
       });
-      if (!product) return NextResponse.json({ ok: false, error: "保险产品不存在" }, { status: 400 });
+      if (!product) return NextResponse.json({ ok: false, code: "INSURANCE_PRODUCT_NOT_FOUND", error: "保险产品不存在" }, { status: 400 });
       effectiveAccountId = product.accountId;
       effectiveAccountName = product.Account.name;
       insuranceProductName = product.name;
@@ -173,20 +173,20 @@ export async function POST(req: NextRequest) {
 
     const amountNum = parseFloat(amount);
     if (!Number.isFinite(amountNum) || amountNum <= 0) {
-      return NextResponse.json({ ok: false, error: "金额不正确" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_AMOUNT", error: "金额不正确" }, { status: 400 });
     }
 
     const targetAcc = await prisma.account.findUnique({ where: { id: effectiveAccountId } });
-    if (!targetAcc) return NextResponse.json({ ok: false, error: "目标账户不存在" }, { status: 400 });
-    if (targetAcc.householdId !== householdId) return NextResponse.json({ ok: false, error: "目标账户不属于当前账簿" }, { status: 403 });
+    if (!targetAcc) return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "目标账户不存在" }, { status: 400 });
+    if (targetAcc.householdId !== householdId) return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_IN_HOUSEHOLD", error: "目标账户不属于当前账簿" }, { status: 403 });
 
     const cashAcc = cashAccountId
       ? await prisma.account.findUnique({ where: { id: cashAccountId }, select: { id: true, name: true, householdId: true } })
       : null;
-    if (cashAcc && cashAcc.householdId !== householdId) return NextResponse.json({ ok: false, error: "资金账户不属于当前账簿" }, { status: 403 });
-    if (requiresCashAccount && !cashAcc) return NextResponse.json({ ok: false, error: "资金账户不存在" }, { status: 400 });
+    if (cashAcc && cashAcc.householdId !== householdId) return NextResponse.json({ ok: false, code: "CASH_ACCOUNT_NOT_IN_HOUSEHOLD", error: "资金账户不属于当前账簿" }, { status: 403 });
+    if (requiresCashAccount && !cashAcc) return NextResponse.json({ ok: false, code: "CASH_ACCOUNT_NOT_FOUND", error: "资金账户不存在" }, { status: 400 });
     if (scheduledTaskType === "transfer" && cashAccountId === effectiveAccountId) {
-      return NextResponse.json({ ok: false, error: "转出/转入账户不能相同" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "SAME_TRANSFER_ACCOUNTS", error: "转出/转入账户不能相同" }, { status: 400 });
     }
 
     const taskTitle =
@@ -205,11 +205,11 @@ export async function POST(req: NextRequest) {
     const executionDayInt = intervalUnitValue === IntervalUnit.year ? null : executionDay ? parseInt(executionDay) : null;
     const parsedStartDate = parseDateOnlyUtc(startDate);
     if (!parsedStartDate) {
-      return NextResponse.json({ ok: false, error: "开始日期不正确" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_START_DATE", error: "开始日期不正确" }, { status: 400 });
     }
     const parsedEndDate = endDate ? parseDateOnlyUtc(endDate) : null;
     if (endDate && !parsedEndDate) {
-      return NextResponse.json({ ok: false, error: "Invalid endDate" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_END_DATE", error: "Invalid endDate" }, { status: 400 });
     }
     const start = isFundTask ? skipWeekend(parsedStartDate) : parsedStartDate;
     const initialRunDate = calcInitialRunDate(parsedStartDate, intervalUnitValue, unitVal, executionDayInt, isFundTask);
@@ -258,25 +258,25 @@ export async function POST(req: NextRequest) {
         },
       });
 
-      // 更新确认天数表
+      // Update the confirm days table
       const newDays = safeConfirmDays ?? 0;
       if (isFundTask && effectiveAccountId && fundCode) {
         await setFundConfirmDaysInTx(tx, effectiveAccountId, fundCode, newDays);
       }
 
-      // 更新手续费率表
+      // Update the fee rate table
       const newRate = feeRate != null ? parseFloat(feeRate) : 0;
       if (isFundTask && effectiveAccountId && fundCode) {
         await setFundFeeRateInTx(tx, effectiveAccountId, fundCode, newRate);
       }
 
-      // 更新入账天数表
+      // Update the arrival days table
       const newArrivalDays = safeArrivalDays ?? 2;
       if (isFundTask && effectiveAccountId && fundCode) {
         await setFundArrivalDaysInTx(tx, effectiveAccountId, fundCode, newArrivalDays);
       }
 
-      // 不预生成交易明细，等用户点击"批量生成"按钮后再生成
+      // Do not pre-generate transaction entries; wait for the "batch generate" button
       return plan;
     });
 
@@ -311,7 +311,7 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "创建失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "CREATE_FAILED", error: e instanceof Error ? e.message : "创建失败" }, { status: 500 });
   }
 }
 
@@ -346,24 +346,24 @@ export async function PUT(req: NextRequest) {
       skipPendingPreceding,
     } = body;
 
-    if (!id) return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
+    if (!id) return NextResponse.json({ ok: false, code: "MISSING_PLAN_ID", error: "缺少 id" }, { status: 400 });
 
     const existing = await prisma.regularInvestPlan.findUnique({ where: { id } });
-    if (!existing) return NextResponse.json({ ok: false, error: "计划不存在" }, { status: 404 });
-    if (existing.householdId && existing.householdId !== householdId) return NextResponse.json({ ok: false, error: "计划不属于当前账簿" }, { status: 403 });
+    if (!existing) return NextResponse.json({ ok: false, code: "PLAN_NOT_FOUND", error: "计划不存在" }, { status: 404 });
+    if (existing.householdId && existing.householdId !== householdId) return NextResponse.json({ ok: false, code: "PLAN_NOT_IN_HOUSEHOLD", error: "计划不属于当前账簿" }, { status: 403 });
     const existingTaskForAction = decodeScheduledTaskMemo(existing.memo);
     const actionUsesBusinessDays = existingTaskForAction.type === "fund_regular_invest";
 
     // System-level plans (loan repayment) are read-only here: the schedule is
     // derived from the loan and managed through loan flows, not this endpoint.
     if (existingTaskForAction.type === "loan_repayment") {
-      return NextResponse.json({ ok: false, error: "贷款还款计划由系统管理，不可手动修改" }, { status: 403 });
+      return NextResponse.json({ ok: false, code: "SYSTEM_MANAGED_PLAN", error: "贷款还款计划由系统管理，不可手动修改" }, { status: 403 });
     }
 
-    // 状态操作
+    // Status actions
     if (action === "pause") {
       if (existing.status !== RegularInvestStatus.active) {
-        return NextResponse.json({ ok: false, error: "只有活跃状态的计划才能暂停" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "PLAN_NOT_ACTIVE", error: "只有活跃状态的计划才能暂停" }, { status: 400 });
       }
       const plan = await prisma.regularInvestPlan.update({
         where: { id },
@@ -375,9 +375,9 @@ export async function PUT(req: NextRequest) {
 
     if (action === "resume") {
       if (existing.status !== RegularInvestStatus.paused) {
-        return NextResponse.json({ ok: false, error: "只有暂停状态的计划才能恢复" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "PLAN_NOT_PAUSED", error: "只有暂停状态的计划才能恢复" }, { status: 400 });
       }
-      // 恢复时重新计算下次执行日期（从当前日期或上次执行日期开始）
+      // Recalculate the next run date on resume (from the current date or the last run date)
       const now = new Date();
       const nextRun = existing.lastRunDate
         ? calcNextRunDate(existing.lastRunDate, existing.intervalUnit, existing.intervalValue, existing.executionDay, actionUsesBusinessDays)
@@ -399,7 +399,7 @@ export async function PUT(req: NextRequest) {
 
     if (action === "stop") {
       if (existing.status === RegularInvestStatus.stopped || existing.status === RegularInvestStatus.completed) {
-        return NextResponse.json({ ok: false, error: "计划已终止或已完成" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "PLAN_ALREADY_STOPPED", error: "计划已终止或已完成" }, { status: 400 });
       }
       const plan = await prisma.regularInvestPlan.update({
         where: { id },
@@ -409,7 +409,7 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ ok: true, plan, message: "计划任务已终止" });
     }
 
-    // 普通更新
+    // Regular update
     const updateData: any = {};
     const existingTask = decodeScheduledTaskMemo(existing.memo);
     const existingTaskType = normalizeScheduledTaskType(existing.taskType ?? existingTask.type);
@@ -430,10 +430,10 @@ export async function PUT(req: NextRequest) {
     const effectiveCashAccountIdForValidation =
       cashAccountId != null ? cashAccountId || null : existing.cashAccountId;
     if (requiresCashAccount && !effectiveCashAccountIdForValidation) {
-      return NextResponse.json({ ok: false, error: "请选择资金账户" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "CASH_ACCOUNT_REQUIRED", error: "请选择资金账户" }, { status: 400 });
     }
     if (nextTaskType === "transfer" && effectiveCashAccountIdForValidation === effectiveAccountIdForValidation) {
-      return NextResponse.json({ ok: false, error: "转出/转入账户不能相同" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "SAME_TRANSFER_ACCOUNTS", error: "转出/转入账户不能相同" }, { status: 400 });
     }
 
     if (accountId != null) {
@@ -452,11 +452,11 @@ export async function PUT(req: NextRequest) {
     }
     const parsedStartDate = startDate != null ? parseDateOnlyUtc(startDate) : null;
     if (startDate != null && !parsedStartDate) {
-      return NextResponse.json({ ok: false, error: "开始日期不正确" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_START_DATE", error: "开始日期不正确" }, { status: 400 });
     }
     const parsedEndDate = endDate ? parseDateOnlyUtc(endDate) : null;
     if (endDate && !parsedEndDate) {
-      return NextResponse.json({ ok: false, error: "Invalid endDate" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_END_DATE", error: "Invalid endDate" }, { status: 400 });
     }
     const rawEffectiveIntervalUnit = normalizeIntervalUnit(intervalUnit || existing.intervalUnit);
     const rawEffectiveIntervalValue = intervalValue != null ? parseInt(intervalValue) || 1 : existing.intervalValue;
@@ -489,18 +489,18 @@ export async function PUT(req: NextRequest) {
     };
     const hasGeneratedRecords = (existing.executedRuns ?? 0) > 0 || !!existing.lastRunDate;
     if (startDateChanged && hasGeneratedRecords) {
-      return NextResponse.json({ ok: false, error: "该计划已生成记录，不能修改起始日期。后续执行会自动从最后一笔生成记录后的下一个周期继续；如需调整范围，请修改停止日期、频率或总次数。" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "START_DATE_LOCKED_AFTER_RECORDS", error: "该计划已生成记录，不能修改起始日期。后续执行会自动从最后一笔生成记录后的下一个周期继续；如需调整范围，请修改停止日期、频率或总次数。" }, { status: 400 });
     }
     if (taskTypeChanged && hasGeneratedRecords) {
-      return NextResponse.json({ ok: false, error: "该计划已生成记录，不能修改任务类型。请新建计划处理不同类型的后续任务。" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "TASK_TYPE_LOCKED_AFTER_RECORDS", error: "该计划已生成记录，不能修改任务类型。请新建计划处理不同类型的后续任务。" }, { status: 400 });
     }
     if (startDateChanged) {
       if (await getLinkedRecordCount() > 0) {
-        return NextResponse.json({ ok: false, error: "该计划已生成记录，不能修改起始日期。后续执行会自动从最后一笔生成记录后的下一个周期继续；如需调整范围，请修改停止日期、频率或总次数。" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "START_DATE_LOCKED_AFTER_RECORDS", error: "该计划已生成记录，不能修改起始日期。后续执行会自动从最后一笔生成记录后的下一个周期继续；如需调整范围，请修改停止日期、频率或总次数。" }, { status: 400 });
       }
     }
     if (taskTypeChanged && await getLinkedRecordCount() > 0) {
-      return NextResponse.json({ ok: false, error: "该计划已生成记录，不能修改任务类型。请新建计划处理不同类型的后续任务。" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "TASK_TYPE_LOCKED_AFTER_RECORDS", error: "该计划已生成记录，不能修改任务类型。请新建计划处理不同类型的后续任务。" }, { status: 400 });
     }
 
     if (parsedStartDate) updateData.startDate = nextStoredStartDate;
@@ -518,7 +518,7 @@ export async function PUT(req: NextRequest) {
       updateData.intervalValue = effectiveIntervalValue;
     }
     if (effectiveIntervalUnit === IntervalUnit.year) updateData.executionDay = null;
-    else if (executionDay != null) updateData.executionDay = executionDay ? parseInt(executionDay) : null; // 执行日更新
+    else if (executionDay != null) updateData.executionDay = executionDay ? parseInt(executionDay) : null; // Execution day update
     if (scheduleChanged) {
       updateData.nextRunDate = await deriveRegularInvestNextRunDate(prisma, {
         id: existing.id,
@@ -538,7 +538,7 @@ export async function PUT(req: NextRequest) {
     if (arrivalDays != null) updateData.arrivalDays = normalizeNonNegativeDays(arrivalDays, 2);
     if (cashAccountId != null) {
       updateData.cashAccountId = cashAccountId || null;
-      // 更新资金账户名称
+      // Update the cash account name
       if (cashAccountId) {
         const cashAcc = await prisma.account.findUnique({ where: { id: cashAccountId }, select: { name: true } });
         updateData.cashAccountName = cashAcc?.name || null;
@@ -572,7 +572,7 @@ export async function PUT(req: NextRequest) {
       data: updateData,
     });
 
-    // 同步确认天数和费率到统一库
+    // Sync confirm days and fee rate to the unified store
     const effectiveAccountId = accountId || existing.accountId;
     const effectiveFundCode = fundCode || existing.fundCode;
     if (isFundTask && confirmDays != null && effectiveAccountId && effectiveFundCode) {
@@ -588,7 +588,7 @@ export async function PUT(req: NextRequest) {
     // Client-side handles page refresh
     return NextResponse.json({ ok: true, plan });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "更新失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "UPDATE_FAILED", error: e instanceof Error ? e.message : "更新失败" }, { status: 500 });
   }
 }
 
@@ -602,18 +602,18 @@ export async function DELETE(req: NextRequest) {
     const deleteEntries = deleteMode === "1";
     const deleteRecordsOnly = deleteMode === "records";
 
-    if (!id) return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
+    if (!id) return NextResponse.json({ ok: false, code: "MISSING_PLAN_ID", error: "缺少 id" }, { status: 400 });
 
     const plan = await prisma.regularInvestPlan.findUnique({ where: { id } });
-    if (!plan) return NextResponse.json({ ok: false, error: "计划不存在" }, { status: 404 });
-    if (plan.householdId && plan.householdId !== householdId) return NextResponse.json({ ok: false, error: "计划不属于当前账簿" }, { status: 403 });
+    if (!plan) return NextResponse.json({ ok: false, code: "PLAN_NOT_FOUND", error: "计划不存在" }, { status: 404 });
+    if (plan.householdId && plan.householdId !== householdId) return NextResponse.json({ ok: false, code: "PLAN_NOT_IN_HOUSEHOLD", error: "计划不属于当前账簿" }, { status: 403 });
 
     // System-level plans (loan repayment) cannot be deleted manually.
     if (decodeScheduledTaskMemo(plan.memo).type === "loan_repayment") {
-      return NextResponse.json({ ok: false, error: "贷款还款计划由系统管理，不可手动删除" }, { status: 403 });
+      return NextResponse.json({ ok: false, code: "SYSTEM_MANAGED_PLAN", error: "贷款还款计划由系统管理，不可手动删除" }, { status: 403 });
     }
 
-    // 仅删除交易记录，保留计划，并把计划恢复为未执行状态
+    // Delete only transaction records, keep the plan, and reset it to the un-executed state
     if (deleteRecordsOnly) {
       const affectedRecords = await prisma.txRecord.findMany({
         where: { regularInvestPlanId: id, householdId },
@@ -675,7 +675,7 @@ export async function DELETE(req: NextRequest) {
       });
     }
 
-    // 如果删除了交易明细，先收集涉及的账户ID（事务后记录已被删除）
+    // If deleting entries, first collect the involved account IDs (records are deleted inside the transaction)
     const affectedRecords = deleteEntries
       ? await prisma.txRecord.findMany({
           where: { regularInvestPlanId: id },
@@ -690,25 +690,25 @@ export async function DELETE(req: NextRequest) {
       if (r.toAccountId) accountsToRecalc.add(r.toAccountId);
     }
 
-    // 如果要求删除关联的交易明细
+    // If deleting linked transaction entries is requested
     if (deleteEntries) {
       await prisma.$transaction(async (tx) => {
-        // 先删除关联的 TxRecord
+        // First delete linked TxRecords
         await tx.txRecord.deleteMany({
           where: { regularInvestPlanId: id },
         });
-        // 再删除定投计划
+        // Then delete the regular invest plan
         await tx.regularInvestPlan.delete({ where: { id } });
       });
     } else {
-      // 仅删除定投计划，保留交易明细（但清除关联）
+      // Delete only the plan and keep transaction entries (clearing the link)
       await prisma.$transaction(async (tx) => {
-        // 清除交易明细的关联字段
+        // Clear the linked fields on transaction entries
         await tx.txRecord.updateMany({
           where: { regularInvestPlanId: id },
           data: { regularInvestPlanId: null },
         });
-        // 删除定投计划
+        // Delete the regular invest plan
         await tx.regularInvestPlan.delete({ where: { id } });
       });
     }
@@ -717,7 +717,7 @@ export async function DELETE(req: NextRequest) {
       await recalcFundPositions(plan.accountId, [plan.fundCode]).catch(() => {});
     }
 
-    // 刷新涉及的账户余额
+    // Refresh involved account balances
     for (const acctId of accountsToRecalc) {
       if (acctId) await recalcAndSaveAccountBalance(acctId).catch(() => {});
     }
@@ -730,6 +730,6 @@ export async function DELETE(req: NextRequest) {
     // Client-side handles page refresh
     return NextResponse.json({ ok: true, deletedEntries: deleteEntries });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "删除失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "DELETE_FAILED", error: e instanceof Error ? e.message : "删除失败" }, { status: 500 });
   }
 }

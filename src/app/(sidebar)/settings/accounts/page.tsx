@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, ChevronDown, ChevronRight } from "lucide-react";
 import type { AccountKind } from "@prisma/client";
-import { PRODUCT_LABELS, supportsCostBasisMethod, type ProductType } from "@/lib/investment-config";
+import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
 import { kindIconName, kindColor, kindOrder } from "@/lib/account-kinds";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { SmartSelect } from "@/components/SmartSelect";
@@ -53,7 +53,7 @@ type Account = {
   tradingCalendar?: string | null;
 };
 
-const investmentProductTypeOptions = (Object.keys(PRODUCT_LABELS) as ProductType[]).map((value) => ({ value, label: PRODUCT_LABELS[value] }));
+const investmentProductTypeOptions = PRODUCT_TYPES.map((value) => ({ value, labelKey: `investment.product.${value}` }));
 
 function normalizedAccountKind(account: Pick<Account, "kind" | "investProductType">): AccountKind {
   return isDepositAccount(account) ? ("deposit" as AccountKind) : account.kind;

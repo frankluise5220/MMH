@@ -22,13 +22,13 @@ export async function POST(req: NextRequest) {
   const { householdId } = await getHouseholdScope();
   const body = (await req.json().catch(() => null)) as unknown;
   const parsed = BodySchema.safeParse(body);
-  if (!parsed.success) return NextResponse.json({ ok: false, error: "参数格式不正确" }, { status: 400 });
+  if (!parsed.success) return NextResponse.json({ ok: false, code: "INVALID_REQUEST", error: "参数格式不正确" }, { status: 400 });
 
   let { host, port, secure, user, password, mailbox, uid, debug } = parsed.data;
 
   if (parsed.data.accountId) {
     const account = await prisma.emailAccount.findFirst({ where: { id: parsed.data.accountId, householdId } });
-    if (!account) return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
+    if (!account) return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "账户不存在" }, { status: 404 });
     host = account.imapHost;
     port = account.imapPort;
     secure = account.imapSecure;
@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (!host || !user || !password) {
-    return NextResponse.json({ ok: false, error: "请填写完整配置" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INCOMPLETE_CONFIG", error: "请填写完整配置" }, { status: 400 });
   }
 
   const trace: string[] = [];
@@ -51,7 +51,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, item, mailbox: opened.mailbox, ...(debug ? { trace: [...trace, "fetch ok"] } : {}) });
   } catch (e) {
     const rawMsg = e instanceof Error ? e.message : "邮箱连接失败";
-    return NextResponse.json({ ok: false, error: formatImapError(rawMsg), ...(debug ? { trace: [...trace, `error: ${rawMsg}`] } : {}) }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "IMAP_CONNECT_FAILED", error: formatImapError(rawMsg), ...(debug ? { trace: [...trace, `error: ${rawMsg}`] } : {}) }, { status: 500 });
   } finally {
     if (client) await closeImap(client);
   }

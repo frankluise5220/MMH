@@ -29,26 +29,26 @@ function buildPasswordResetContent(params: PasswordResetEmailParams) {
   return { subject, text, html };
 }
 
-/** 检查是否有可用的邮件发件服务（密码找回自动启用条件） */
+/** Checks whether any email sending service is available (auto-enable condition for password recovery) */
 export async function hasEmailService(householdId?: string | null): Promise<boolean> {
-  // Resend 为首选通道
+  // Resend is the preferred channel
   if (await hasAnyResendConfig()) return true;
 
-  // SMTP（env + EmailAccount + UserSettings）为备用
+  // SMTP (env + EmailAccount + UserSettings) is the fallback
   if (await hasAnySmtpConfig(householdId)) return true;
 
   return false;
 }
 
 export async function sendPasswordResetEmail(params: PasswordResetEmailParams): Promise<SendEmailResult> {
-  // 检查是否有邮件服务
+  // Check whether any email service is available
   if (!await hasEmailService(params.householdId)) {
     return { ok: false, error: "未配置邮件服务，无法发送密码找回邮件。请在设置中配置 SMTP 或 Resend。" };
   }
 
   const content = buildPasswordResetContent(params);
 
-  // Resend 优先
+  // Prefer Resend
   if (await hasAnyResendConfig()) {
     const resendResult = await sendEmailByResend({ to: params.to, ...content });
     if (resendResult.ok) {
@@ -64,7 +64,7 @@ export async function sendPasswordResetEmail(params: PasswordResetEmailParams): 
     return resendResult;
   }
 
-  // SMTP 备用
+  // SMTP fallback
   if (await hasAnySmtpConfig(params.householdId)) {
     return sendEmail({ to: params.to, householdId: params.householdId, ...content });
   }

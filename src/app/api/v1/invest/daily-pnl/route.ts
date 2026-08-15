@@ -10,20 +10,20 @@ export async function GET(req: NextRequest) {
   const mode = searchParams.get("mode") || "month";
 
   if (!accountId) {
-    return NextResponse.json({ ok: false, error: "缺少参数" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_PARAMETERS", error: "缺少参数" }, { status: 400 });
   }
 
   const { hidFilter, user } = await getHouseholdScope();
   if (!user) {
-    return NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 });
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "请先登录" }, { status: 401 });
   }
-  // 校验账户属于当前账簿，避免跨账簿读取持仓/收益
+  // Verify the account belongs to the current household to avoid cross-household reads
   const account = await prisma.account.findFirst({
     where: { id: accountId, ...hidFilter },
     select: { id: true },
   });
   if (!account) {
-    return NextResponse.json({ ok: false, error: "账户不存在" }, { status: 404 });
+    return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "账户不存在" }, { status: 404 });
   }
 
   try {
@@ -151,6 +151,6 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ ok: true, days: results });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "查询失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "FETCH_FAILED", error: e instanceof Error ? e.message : "查询失败" }, { status: 500 });
   }
 }

@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
+import { useI18n } from "@/lib/i18n";
 
 interface ModelInfo {
   name: string;
@@ -17,6 +18,7 @@ interface DataRow {
 
 export function DbClient() {
   const router = useRouter();
+  const { t } = useI18n();
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [data, setData] = useState<DataRow[]>([]);
@@ -25,7 +27,7 @@ export function DbClient() {
   const [editValue, setEditValue] = useState<string>("");
   const [saving, setSaving] = useState(false);
 
-  // 获取模型列表
+  // Fetch the model list.
   useEffect(() => {
     fetch("/api/v1/db/models")
       .then(r => r.json())
@@ -37,10 +39,10 @@ export function DbClient() {
           }
         }
       })
-      .catch(e => console.error("获取模型列表失败:", e));
+      .catch(e => console.error("Failed to fetch model list:", e));
   }, []);
 
-  // 获取选中的模型数据
+  // Fetch data for the selected model.
   useEffect(() => {
     if (!selectedModel) return;
     setLoading(true);
@@ -51,17 +53,17 @@ export function DbClient() {
           setData(d.data);
         }
       })
-      .catch(e => console.error("获取数据失败:", e))
+      .catch(e => console.error("Failed to fetch data:", e))
       .finally(() => setLoading(false));
   }, [selectedModel]);
 
-  // 开始编辑单元格
+  // Start editing a cell.
   const startEdit = (rowId: string, field: string, currentValue: any) => {
     setEditingCell({ rowId, field });
     setEditValue(String(currentValue ?? ""));
   };
 
-  // 保存编辑
+  // Save the current cell edit.
   const saveEdit = async () => {
     if (!editingCell || saving) return;
     setSaving(true);
@@ -79,7 +81,7 @@ export function DbClient() {
 
       const d = await res.json();
       if (d.ok) {
-        // 更新本地数据
+        // Update local data.
         setData(prev =>
           prev.map(row =>
             row.id === editingCell.rowId
@@ -91,26 +93,26 @@ export function DbClient() {
         setEditValue("");
         router.refresh();
       } else {
-        window.alert(d.error || "保存失败");
+        window.alert(d.error || t("regularInvest.alert.saveFailed"));
       }
     } catch (e) {
-      window.alert("保存失败");
+      window.alert(t("regularInvest.alert.saveFailed"));
     } finally {
       setSaving(false);
     }
   };
 
-  // 取消编辑
+  // Cancel the current edit.
   const cancelEdit = () => {
     setEditingCell(null);
     setEditValue("");
   };
 
-  // 删除记录
+  // Delete a record.
   const deleteRow = async (id: string) => {
     const confirmed = await showConfirmDialog({
-      title: "删除记录",
-      message: "确认删除这条记录吗？",
+      title: t("db.client.deleteTitle"),
+      message: t("db.client.deleteConfirm"),
       tone: "danger",
     });
     if (!confirmed) return;
@@ -125,14 +127,14 @@ export function DbClient() {
         setData(prev => prev.filter(row => row.id !== id));
         router.refresh();
       } else {
-        window.alert(d.error || "删除失败");
+        window.alert(d.error || t("settingsDelete.deleteFailed"));
       }
     } catch (e) {
-      window.alert("删除失败");
+      window.alert(t("settingsDelete.deleteFailed"));
     }
   };
 
-  // 格式化显示值
+  // Format a value for display.
   const formatValue = (v: any, field: string): string => {
     if (v === null || v === undefined) return "-";
     if (field.includes("Date") || field === "createdAt" || field === "updatedAt") {
@@ -146,15 +148,15 @@ export function DbClient() {
   const currentModel = models.find(m => m.name === selectedModel);
 
   if (models.length === 0) {
-    return <div className="p-4 text-slate-500">加载中...</div>;
+    return <div className="p-4 text-slate-500">{t("common.loading")}</div>;
   }
 
   return (
     <div className="flex h-full min-h-0">
-      {/* 左侧导航 */}
+      {/* Left navigation */}
       <nav className="w-[200px] border-r border-slate-200 bg-slate-50 flex flex-col overflow-y-auto shrink-0">
         <div className="px-3 py-2 border-b border-slate-200 bg-slate-100 font-bold text-sm">
-          表导航 ({models.length})
+          {t("db.client.tableNav", { count: models.length })}
         </div>
         {models.map((m) => (
           <button
@@ -171,10 +173,10 @@ export function DbClient() {
         ))}
       </nav>
 
-      {/* 右侧内容 */}
+      {/* Right content */}
       <main className="flex-1 min-w-0 min-h-0 overflow-hidden p-4">
         {loading ? (
-          <div className="text-slate-500">加载中...</div>
+          <div className="text-slate-500">{t("common.loading")}</div>
         ) : currentModel && data.length > 0 ? (
           <div className="h-full min-h-0 border border-slate-200 rounded-lg overflow-hidden flex flex-col">
             <div className="text-xs font-semibold bg-slate-100 px-3 py-2 border-b border-slate-200 flex items-center gap-2">
@@ -188,7 +190,7 @@ export function DbClient() {
                 <thead className="sticky top-0 bg-slate-50 border-b border-slate-200">
                   <tr>
                     {Object.keys(data[0])
-                      .slice(0, 40) // 显示前40个字段（包含基金字段）
+                      .slice(0, 40) // Show the first 40 fields (including fund fields).
                       .map((field) => (
                         <th
                           key={field}
@@ -198,7 +200,7 @@ export function DbClient() {
                           {field === "id" && <span className="text-blue-500 ml-1">★</span>}
                         </th>
                       ))}
-                    <th className="text-xs font-semibold text-slate-600 px-2 py-1.5 text-right">操作</th>
+                    <th className="text-xs font-semibold text-slate-600 px-2 py-1.5 text-right">{t("detail.column.actions")}</th>
                   </tr>
                 </thead>
 
@@ -247,7 +249,7 @@ export function DbClient() {
                           className="text-red-500 hover:text-red-700"
                           disabled={saving}
                         >
-                          删除
+                          {t("common.delete")}
                         </button>
                       </td>
                     </tr>
@@ -257,7 +259,7 @@ export function DbClient() {
             </div>
           </div>
         ) : (
-          <div className="text-slate-500 text-xs">暂无数据</div>
+          <div className="text-slate-500 text-xs">{t("table.empty")}</div>
         )}
       </main>
     </div>

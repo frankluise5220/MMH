@@ -75,7 +75,7 @@ export function formatDateLocal(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-/** 今天的本地日期 YYYY-MM-DD（用于日期输入框默认值等场景） */
+/** Today's local date as YYYY-MM-DD (used for date-input defaults etc.). */
 export function todayDateLocalYmd(): string {
   return formatDateLocal(new Date());
 }
@@ -88,8 +88,9 @@ export function formatDateUtc(d: Date): string {
 }
 
 /**
- * 将 YYYY-MM-DD 日期输入值解析为 UTC 零时 Date；格式不合法返回 null。
- * 日期输入框（<input type="date">）与日期字符串解析统一走这里，避免时区漂移。
+ * Parse a YYYY-MM-DD date input value into a UTC-midnight Date; invalid
+ * formats return null. Date inputs (<input type="date">) and date-string
+ * parsing all go through here to avoid timezone drift.
  */
 export function parseDateInputToUtc(value: string): Date | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value ?? "").trim());

@@ -1,13 +1,13 @@
 /**
- * 系统更新接口。
+ * System update API.
  *
- * GET: 返回当前版本、部署方式和远端版本、是否需要更新。
- * POST ?mode=update: 执行 git fetch + fast-forward merge，然后安装依赖、生成 Prisma、同步数据库、构建。
- * POST ?mode=rebuild: 不拉取代码，只重新安装依赖、生成 Prisma、同步数据库、构建。
+ * GET: returns the current version, deployment target, remote version, and whether an update is needed.
+ * POST ?mode=update: runs git fetch + fast-forward merge, then installs dependencies, generates Prisma, syncs the database, and builds.
+ * POST ?mode=rebuild: does not pull code; only reinstalls dependencies, generates Prisma, syncs the database, and builds.
  *
- * 返回格式：
+ * Response format:
  * - GET: { ok, deploymentTarget, isDocker, isFnos, updateMode, localVersion, localReleaseNotes, localCommit, localCommitMsg, localCommitDate, remoteVersion, remoteCommit, remoteCommitMsg, needsUpdate, canCheckUpdate }
- * - POST: text/event-stream，每条 data 为 { step, status, output? }，结束为 { type: "done", ok, error?, restartRequired }
+ * - POST: text/event-stream; each data is { step, status, output? }, ending with { type: "done", ok, error?, restartRequired }
  */
 import { NextRequest, NextResponse } from "next/server";
 import { exec, execSync } from "child_process";
@@ -17,16 +17,16 @@ import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 
 export const runtime = "nodejs";
 
-/** 系统更新会执行 git 拉取、安装依赖、数据库变更与构建，仅允许管理员触发。 */
-async function requireAdmin(): Promise<{ ok: true } | { ok: false; response: NextResponse }> {
+/** System update runs git pull, dependency install, database changes, and builds; only admins may trigger it. */
+async function requireAdmin(): Promise<NextResponse | null> {
   const user = await getCurrentUser();
   if (!user) {
-    return { ok: false, response: NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 }) };
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "请先登录" }, { status: 401 });
   }
   if (!isAdmin(user)) {
-    return { ok: false, response: NextResponse.json({ ok: false, error: "仅管理员可操作" }, { status: 403 }) };
+    return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "仅管理员可操作" }, { status: 403 });
   }
-  return { ok: true };
+  return null;
 }
 
 type VersionInfo = {
@@ -443,7 +443,7 @@ async function getImageVersionFallback(
 
 export async function GET(req: NextRequest) {
   const auth = await requireAdmin();
-  if (!auth.ok) return auth.response;
+  if (auth) return auth;
   try {
     const { searchParams } = new URL(req.url);
     const checkRemote = searchParams.get("check") === "1";
@@ -537,7 +537,7 @@ export async function GET(req: NextRequest) {
       ...versionInfo,
     });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "查询失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "FETCH_FAILED", error: e instanceof Error ? e.message : "查询失败" }, { status: 500 });
   }
 }
 
@@ -545,10 +545,10 @@ function sseEvent(encoder: TextEncoder, data: Record<string, unknown>) {
   return encoder.encode(`data: ${JSON.stringify(data)}\n\n`);
 }
 
-function runStep(projectRoot: string, cmd: string, timeout: number): Promise<{ ok: boolean; output: string }> {
+function runStep(projectRoot: string, cmd: string, timeout: number): Promise<{ ok: boolean; code?: string; output: string }> {
   return new Promise((resolve) => {
     exec(cmd, { cwd: projectRoot, encoding: "utf-8", timeout, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err) resolve({ ok: false, output: stderr?.trim() || err.message });
+      if (err) resolve({ ok: false, code: "STEP_FAILED", output: stderr?.trim() || err.message });
       else resolve({ ok: true, output: stdout?.trim() || "完成" });
     });
   });
@@ -556,31 +556,31 @@ function runStep(projectRoot: string, cmd: string, timeout: number): Promise<{ o
 
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin();
-  if (!auth.ok) return auth.response;
+  if (auth) return auth;
 
   const { searchParams } = new URL(req.url);
   if (getDeploymentTarget() === "fnos") {
     return NextResponse.json(
-      { ok: false, error: "飞牛版请通过飞牛应用中心更新 MMH 应用包" },
+      { ok: false, code: "FNOS_UPDATE_NOT_SUPPORTED", error: "飞牛版请通过飞牛应用中心更新 MMH 应用包" },
       { status: 409 },
     );
   }
 
   if (updateRunning) {
-    return NextResponse.json({ ok: false, error: "系统更新正在执行，请稍后再试" }, { status: 409 });
+    return NextResponse.json({ ok: false, code: "UPDATE_ALREADY_RUNNING", error: "系统更新正在执行，请稍后再试" }, { status: 409 });
   }
 
   if (searchParams.get("status") === "1") {
     try {
       return NextResponse.json(await callUpdater("/status"));
     } catch (e) {
-      return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "查询更新状态失败" }, { status: 500 });
+      return NextResponse.json({ ok: false, code: "UPDATE_STATUS_QUERY_FAILED", error: e instanceof Error ? e.message : "查询更新状态失败" }, { status: 500 });
     }
   }
 
   if (searchParams.get("config") === "1") {
     if (req.method !== "POST") {
-      return NextResponse.json({ ok: false, error: "method not allowed" }, { status: 405 });
+      return NextResponse.json({ ok: false, code: "METHOD_NOT_ALLOWED", error: "method not allowed" }, { status: 405 });
     }
     try {
       const body = await req.json().catch(() => ({}));
@@ -590,7 +590,7 @@ export async function POST(req: NextRequest) {
         body: JSON.stringify(body),
       }));
     } catch (e) {
-      return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "保存镜像源失败" }, { status: 500 });
+      return NextResponse.json({ ok: false, code: "IMAGE_SOURCE_SAVE_FAILED", error: e instanceof Error ? e.message : "保存镜像源失败" }, { status: 500 });
     }
   }
 
@@ -603,7 +603,7 @@ export async function POST(req: NextRequest) {
         body: JSON.stringify(body),
       }));
     } catch (e) {
-      return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "测速失败" }, { status: 500 });
+      return NextResponse.json({ ok: false, code: "SPEED_TEST_FAILED", error: e instanceof Error ? e.message : "测速失败" }, { status: 500 });
     }
   }
 
@@ -614,7 +614,7 @@ export async function POST(req: NextRequest) {
     try {
       return NextResponse.json(await callUpdater("/update", { method: "POST" }), { status: 202 });
     } catch (e) {
-      return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "启动更新失败" }, { status: 500 });
+      return NextResponse.json({ ok: false, code: "UPDATE_START_FAILED", error: e instanceof Error ? e.message : "启动更新失败" }, { status: 500 });
     }
   }
   const { remote, branch, ref } = getGitTarget();

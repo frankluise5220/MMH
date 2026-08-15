@@ -202,7 +202,7 @@ export async function GET(req: NextRequest) {
     }, { headers: corsHeaders() });
   } catch (error) {
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "查询失败" },
+      { ok: false, code: "FETCH_FAILED", error: error instanceof Error ? error.message : "查询失败" },
       { status: 500, headers: corsHeaders() },
     );
   }
@@ -212,23 +212,23 @@ export async function POST(req: NextRequest) {
   try {
     const { householdId } = await getApiHouseholdScope(req);
     const body = await req.json().catch(() => null) as Record<string, unknown> | null;
-    if (!body) return NextResponse.json({ ok: false, error: "请求体无效" }, { status: 400, headers: corsHeaders() });
+    if (!body) return NextResponse.json({ ok: false, code: "INVALID_REQUEST_BODY", error: "请求体无效" }, { status: 400, headers: corsHeaders() });
 
     const accountId = String(body.accountId ?? "").trim();
-    if (!accountId) return NextResponse.json({ ok: false, error: "缺少房产账户" }, { status: 400, headers: corsHeaders() });
+    if (!accountId) return NextResponse.json({ ok: false, code: "MISSING_PROPERTY_ACCOUNT", error: "缺少房产账户" }, { status: 400, headers: corsHeaders() });
     const propertyAccount = await assertPropertyAccount(accountId, householdId);
     const cashAccountId = String(body.cashAccountId ?? "").trim() || null;
     const cashAccount = await findCashAccount(cashAccountId, householdId);
     const action = normalizePropertyAction(body.action);
     const tradeDate = parseDateOnly(body.tradeDate);
     const settlementDate = parseDateOnly(body.settlementDate);
-    if (!tradeDate) return NextResponse.json({ ok: false, error: "交易日期无效" }, { status: 400, headers: corsHeaders() });
+    if (!tradeDate) return NextResponse.json({ ok: false, code: "INVALID_TRADE_DATE", error: "交易日期无效" }, { status: 400, headers: corsHeaders() });
 
     const amount = parseNonNegativeNumber(body.amount);
     const fee = parseOptionalNonNegativeNumber(body.fee);
     const tax = parseOptionalNonNegativeNumber(body.tax);
     const marketValueInput = parseOptionalNonNegativeNumber(body.marketValue);
-    if (amount <= 0) return NextResponse.json({ ok: false, error: "交易金额必须大于 0" }, { status: 400, headers: corsHeaders() });
+    if (amount <= 0) return NextResponse.json({ ok: false, code: "INVALID_AMOUNT", error: "交易金额必须大于 0" }, { status: 400, headers: corsHeaders() });
 
     const touchedAccountIds = new Set<string>([accountId]);
     if (cashAccountId) touchedAccountIds.add(cashAccountId);
@@ -359,7 +359,7 @@ export async function POST(req: NextRequest) {
     }, { headers: corsHeaders() });
   } catch (error) {
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "创建失败" },
+      { ok: false, code: "CREATE_FAILED", error: error instanceof Error ? error.message : "创建失败" },
       { status: 500, headers: corsHeaders() },
     );
   }

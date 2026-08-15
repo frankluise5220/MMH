@@ -171,7 +171,7 @@ async function createRegularInvest(formData: FormData) {
         },
       });
 
-      // 同步更新确认天数和手续费率统一库（与 API Route 保持一致）
+      // Keep the canonical confirm-days and fee-rate stores in sync (matching the API route)
       const newDays = confirmDays != null && Number.isFinite(confirmDays) ? confirmDays : 0;
       const newRate = feeRate != null && Number.isFinite(feeRate) ? feeRate : 0;
       if (isFundTask && accountId && fundCode) {
@@ -473,7 +473,7 @@ async function deleteRegularInvest(formData: FormData) {
 
   try {
     if (deleteRecords && plan.accountId) {
-      // 软删除关联的交易记录
+      // Soft-delete the linked transaction records
       await prisma.txRecord.updateMany({
         where: { regularInvestPlanId: planId, deletedAt: null },
         data: { deletedAt: new Date() },
@@ -493,7 +493,7 @@ async function deleteRegularInvest(formData: FormData) {
   }
 }
 
-/** 定投操作的统一入口：根据 intent 分发到不同的 Server Action */
+/** Unified entry point for regular-invest operations: dispatches to the different Server Actions by intent */
 export async function regularInvestFormAction(formData: FormData) {
   const intent = String(formData.get("intent") ?? "").trim();
   if (intent === "createRegularInvest") return createRegularInvest(formData);

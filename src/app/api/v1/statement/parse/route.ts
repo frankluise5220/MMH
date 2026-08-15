@@ -1624,7 +1624,7 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => null);
     const text = ((body?.text ?? "") as string).trim();
     if (!text) {
-      return NextResponse.json({ ok: false, error: "缺少 text" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "MISSING_TEXT", error: "缺少 text" }, { status: 400 });
     }
 
     const charCount = text.length;
@@ -1720,6 +1720,6 @@ export async function POST(req: Request) {
     });
   } catch (e) {
     console.error("[parse] error:", e);
-    return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "PARSE_FAILED", error: String(e) }, { status: 500 });
   }
 }

@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "HOUSEHOLD_NOT_FOUND", error: "账簿不存在" }, { status: 404 });
   }
 
-  // 权限验证：当前管理员可直接切换；普通用户切换到非当前账簿时，必须验证目标账簿管理员凭证。
+  // Permission check: the current admin can switch directly; a regular user switching to a different household must verify the target household admin credentials.
   if (!isAdmin(user) && user.householdId !== householdId) {
     if (!username || !password) {
       return NextResponse.json({ ok: false, code: "ADMIN_CREDENTIALS_REQUIRED", error: "请先输入目标账簿管理员用户名和密码" }, { status: 403 });

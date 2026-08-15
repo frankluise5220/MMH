@@ -42,13 +42,13 @@ function parseBatchRawText(rawText?: string | null) {
 export async function POST(req: Request) {
   const currentUser = await getCurrentUser();
   if (!currentUser) {
-    return NextResponse.json({ ok: false, error: "未授权" }, { status: 401 });
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "未授权" }, { status: 401 });
   }
 
   const body = await req.json().catch(() => null);
   const parsed = z.object({ mails: z.array(MailRefSchema).max(100) }).safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json({ ok: false, error: "mails 格式不正确" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INVALID_MAILS", error: "mails 格式不正确" }, { status: 400 });
   }
 
   const { householdId } = await getHouseholdScope();

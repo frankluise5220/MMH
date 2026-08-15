@@ -54,12 +54,12 @@ export async function PUT(req: NextRequest) {
     let nextApplyDate: Date | undefined;
     let nextArrivalDate: Date | null | undefined;
 
-    // 如果修改了申请日期
+    // If the apply date was changed
     if (date) {
       nextApplyDate = new Date(date);
       updateData.applyDate = nextApplyDate;
 
-      // 自动计算确认日期
+      // Auto-compute the confirm date
       if (autoCalcConfirmDate !== false) {
         const confirmDays = await getFundConfirmDays(entry.fundAccountId, entry.fundCode);
         const dateStr = new Date(date).toISOString().slice(0, 10);
@@ -68,12 +68,12 @@ export async function PUT(req: NextRequest) {
       }
     }
 
-    // 确认日期由前端传入
+    // Confirm date is provided by the frontend
     if (fundConfirmDate && !date) {
       updateData.confirmDate = new Date(fundConfirmDate);
     }
 
-    // 到账日期由前端传入（手工填写或由 arrivalDays 推算）
+    // Arrival date is provided by the frontend (manually entered or derived from arrivalDays)
     if (fundArrivalDate) {
       nextArrivalDate = new Date(fundArrivalDate);
       updateData.arrivalDate = nextArrivalDate;
@@ -107,7 +107,7 @@ export async function PUT(req: NextRequest) {
 
     await recalcFundPositions(entry.fundAccountId, [entry.fundCode]).catch(logger.catchLog("操作失败", "route.ts"));
 
-    // 刷新涉及的账户余额
+    // Refresh balances of affected accounts
     const accountsToRecalc = new Set<string>();
     if (entry.fundAccountId) accountsToRecalc.add(entry.fundAccountId);
     if (entry.cashAccountId) accountsToRecalc.add(entry.cashAccountId);
@@ -169,7 +169,7 @@ export async function DELETE(req: NextRequest) {
 
     await recalcFundPositions(entry.fundAccountId, [entry.fundCode]).catch(logger.catchLog("操作失败", "route.ts"));
 
-    // 刷新涉及的账户余额
+    // Refresh balances of affected accounts
     const accountsToRecalc = new Set<string>();
     if (entry.fundAccountId) accountsToRecalc.add(entry.fundAccountId);
     if (entry.cashAccountId) accountsToRecalc.add(entry.cashAccountId);

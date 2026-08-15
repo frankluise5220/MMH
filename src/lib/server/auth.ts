@@ -151,8 +151,8 @@ export const getCurrentUser = cache(async function getCurrentUser(): Promise<Cur
 });
 
 /**
- * 判断用户是否为管理员（admin 角色或 isSystem 标记）。
- * 管理员可以访问所有账簿数据。
+ * Checks whether the user is an administrator (admin role or isSystem flag).
+ * Administrators can access data of all households (books).
  */
 export function isAdmin(user: CurrentUser | null): boolean {
   if (!user) return false;

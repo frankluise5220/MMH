@@ -1,9 +1,10 @@
 /**
- * 投资余额与持仓显示层计算
+ * Investment balance and holding display-layer calculations.
  *
- * 显示层规则：基金类显示数据从 FundHolding 读取，股票从 StockHolding 读取，贵金属从 PreciousMetalHolding 读取。
- * 不同资产类型保持独立数据源，避免把股票/贵金属混入基金持仓。
- * 读取时不再触发重算，避免重复计算。
+ * Display-layer rule: fund display data is read from FundHolding, stocks from
+ * StockHolding, and precious metals from PreciousMetalHolding. Each asset type
+ * keeps its own data source so stocks/metals are never mixed into fund holdings.
+ * Reading here never triggers recalculation, avoiding duplicate computation.
  */
 
 import { prisma } from "@/lib/db/prisma";
@@ -22,7 +23,7 @@ export type InvestBalanceDetail = {
   floatingPnL: number;
 };
 
-/** 持仓明细显示行 — 从 fundHolding 表直接读取生成 */
+/** Position detail display row — generated directly from the fundHolding table. */
 export type PositionDisplayRow = {
   fundCode: string;
   stockCode?: string | null;
@@ -211,10 +212,11 @@ export function resetWealthHoldingBucket(bucket: { principal?: number; units?: n
 }
 
 /**
- * 计算所有投资账户的余额汇总（显示层）
+ * Compute balance summaries for all investment accounts (display layer).
  *
- * 数据源：fundHolding 表（由 recalcFundPositions 在写入时维护）
- * 不再在此处调用 recalcFundPositions，避免读取时触发全量重算
+ * Data source: fundHolding table (maintained by recalcFundPositions on write).
+ * Does not call recalcFundPositions here, so reads never trigger a full
+ * recalculation.
  */
 export const computeInvestBalances = cache(
   async (ctx: HouseholdContext): Promise<Map<string, InvestBalanceDetail>> => {
@@ -248,6 +250,7 @@ export const computeInvestBalances = cache(
   });
   const allWealthTransactions = await prisma.wealthTransaction.findMany({
     where: { accountId: { in: wealthAccountIds }, deletedAt: null },
+    include: { WealthProduct: true },
   });
   const allStockHoldings = await loadStockHoldingsForInvestSummary(stockAccountIds);
   const allPropertyAssets = await loadPropertyAssetsForInvestSummary(propertyAccountIds);
@@ -323,6 +326,18 @@ export const computeInvestBalances = cache(
       units: number | null;
     }> = [];
 
+    // Manual NAV (unit value) entered by the user per wealth product, keyed the
+    // same way as the holding buckets so market value follows the manual NAV.
+    const wealthManualNavByKey = new Map<string, number>();
+    for (const row of allWealthTransactions) {
+      const wp = row.WealthProduct;
+      if (!wp || wp.manualNav == null) continue;
+      const nav = toNumber(wp.manualNav);
+      if (!Number.isFinite(nav) || nav <= 0) continue;
+      const key = row.wealthProductId ?? row.productName ?? `wealth:${row.id}`;
+      if (!wealthManualNavByKey.has(key)) wealthManualNavByKey.set(key, nav);
+    }
+
     for (const row of allWealthTransactions) {
       if (row.accountId !== acctId) continue;
       const gross = Math.abs(toNumber(row.grossAmount));
@@ -359,12 +374,21 @@ export const computeInvestBalances = cache(
       }
       buckets.set(event.key, bucket);
     }
-    const principal = Array.from(buckets.values()).reduce(
-      (sum, bucket) => sum + (isWealthHoldingCleared(bucket.cycleHasUnits, bucket.principal, bucket.units) ? 0 : bucket.principal),
-      0,
-    );
-    const marketValue = Math.max(0, Number(principal.toFixed(2)));
-    result.set(acctId, { marketValue, totalCost: marketValue, floatingPnL: 0 });
+    let totalCost = 0;
+    let marketValue = 0;
+    for (const [key, bucket] of buckets.entries()) {
+      const principal = isWealthHoldingCleared(bucket.cycleHasUnits, bucket.principal, bucket.units)
+        ? 0
+        : Math.max(0, Number(bucket.principal.toFixed(2)));
+      totalCost += principal;
+      const manualNav = bucket.cycleHasUnits && bucket.units > 0 ? (wealthManualNavByKey.get(key) ?? null) : null;
+      marketValue += manualNav != null && bucket.units > 0
+        ? roundMoney(bucket.units * manualNav)
+        : principal;
+    }
+    totalCost = Number(totalCost.toFixed(2));
+    marketValue = Number(marketValue.toFixed(2));
+    result.set(acctId, { marketValue, totalCost, floatingPnL: Number((marketValue - totalCost).toFixed(2)) });
   }
 
   for (const acctId of stockAccountIds) {
@@ -389,12 +413,14 @@ export const computeInvestBalances = cache(
 );
 
 /**
- * 计算单个投资账户的持仓明细显示数据（显示层）
+ * Compute position detail display data for a single investment account (display layer).
  *
- * 数据源：基金账户读 FundHolding + FundNavCache；股票账户读 StockHolding；贵金属账户读 PreciousMetalHolding。
- * 不再从 entries 逐条累加计算，保证与 Sidebar/invest 页面数字一致
+ * Data sources: fund accounts read FundHolding + FundNavCache; stock accounts
+ * read StockHolding; precious-metal accounts read PreciousMetalHolding.
+ * No longer accumulates entry by entry, keeping numbers consistent with the
+ * Sidebar/invest pages.
  */
-/** 缓存版本：同一 HTTP 请求内不重复计算 */
+/** Cached version: does not recompute twice within the same HTTP request. */
 export const computePositionDisplay = cache(
   async (
     ctx: HouseholdContext,
@@ -576,6 +602,22 @@ export const computePositionDisplay = cache(
       include: { WealthProduct: true },
       orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }],
     });
+    // Manual NAV (unit value) entered by the user per wealth product. It drives
+    // the displayed NAV, market value and floating P&L of wealth holdings.
+    const manualNavByKey = new Map<string, { nav: number; date: string }>();
+    for (const row of rows) {
+      const wp = row.WealthProduct;
+      if (!wp || wp.manualNav == null) continue;
+      const nav = toNumber(wp.manualNav);
+      if (!Number.isFinite(nav) || nav <= 0) continue;
+      const key = row.wealthProductId ?? row.productName ?? wp.name ?? "";
+      if (key && !manualNavByKey.has(key)) {
+        manualNavByKey.set(key, {
+          nav,
+          date: wp.manualNavDate ? wp.manualNavDate.toISOString().slice(0, 10) : "",
+        });
+      }
+    }
     const buckets = new Map<string, {
       fundCode: string;
       wealthProductId: string | null;
@@ -694,6 +736,12 @@ export const computePositionDisplay = cache(
       const remainingUnits = Number(bucket.remainingUnits.toFixed(6));
       const hasActiveHolding = !isWealthHoldingCleared(bucket.cycleHasUnits, remaining, remainingUnits);
       if (hasActiveHolding) {
+        const manualNavInfo = manualNavByKey.get(bucket.fundCode);
+        const displayNav = manualNavInfo ? manualNavInfo.nav : 1;
+        const marketValue = manualNavInfo && bucket.cycleHasUnits && remainingUnits > 0
+          ? roundMoney(remainingUnits * displayNav)
+          : remaining;
+        const floatingPnL = roundMoney(marketValue - remaining);
         positions.push({
           fundCode: bucket.fundCode,
           wealthProductId: bucket.wealthProductId,
@@ -703,11 +751,11 @@ export const computePositionDisplay = cache(
           hasUnits: bucket.cycleHasUnits,
           avgCost: bucket.cycleHasUnits && remainingUnits > 0 ? remaining / remainingUnits : 0,
           cost: remaining,
-          nav: 1,
-          navDate: "",
-          marketValue: remaining,
-          floatingPnL: 0,
-          floatingPnLRate: 0,
+          nav: displayNav,
+          navDate: manualNavInfo?.date ?? "",
+          marketValue,
+          floatingPnL,
+          floatingPnLRate: remaining > 0 ? floatingPnL / remaining : 0,
           pendingCost: 0,
           historicalProfit: Number(bucket.historicalProfit.toFixed(2)),
         });
@@ -812,10 +860,10 @@ export const computePositionDisplay = cache(
   positions.sort((a, b) => b.marketValue - a.marketValue);
   clearedPositions.sort((a, b) => b.clearedDate.localeCompare(a.clearedDate) || b.historicalProfit - a.historicalProfit);
 
-  // 批量查询清仓基金：总投入金额 + 初次购买时间 + 清仓时间 + 申购/赎回金额
+  // Batch-query cleared funds: total invested amount + first purchase time + cleared time + buy/redeem amounts
   if (clearedPositions.length > 0) {
     const clearedCodes = clearedPositions.map(c => c.fundCode);
-    // 总投入金额（所有买入交易的 ABS(amount) 之和）
+    // Total invested amount (sum of ABS(amount) over all buy transactions)
     const investedRows = await prisma.fundTransaction.groupBy({
       by: ["fundCode"],
       where: {
@@ -833,7 +881,7 @@ export const computePositionDisplay = cache(
         investedMap.set(row.fundCode, Math.abs(toNumber(row._sum.grossAmount ?? 0)));
       }
     }
-    // 初次购买时间（最早买入交易的日期）
+    // First purchase time (date of the earliest buy transaction)
     const firstBuyRows = await prisma.fundTransaction.groupBy({
       by: ["fundCode"],
       where: {
@@ -851,7 +899,7 @@ export const computePositionDisplay = cache(
         firstBuyMap.set(row.fundCode, row._min.applyDate.toISOString().slice(0, 10));
       }
     }
-    // 清仓时间（最后赎回的日期）
+    // Cleared time (date of the last redemption)
     const clearedDateRows = await prisma.fundTransaction.groupBy({
       by: ["fundCode"],
       where: {
@@ -869,8 +917,8 @@ export const computePositionDisplay = cache(
         clearedDateMap.set(row.fundCode, row._max.applyDate.toISOString().slice(0, 10));
       }
     }
-    // 申购金额和回收金额：只统计清仓日期之前的交易
-    // 回收金额 = 赎回到账 + 现金分红到账，和清仓收益保持同一现金流口径
+    // Buy amount and recovered amount: only transactions before the cleared date are counted
+    // Recovered amount = redemption arrival + cash dividend arrival, keeping the same cash-flow basis as cleared profit
     const clearedTxRows = await prisma.fundTransaction.findMany({
       where: {
         ...ctx.hidFilter,

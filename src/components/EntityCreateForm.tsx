@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, type FormEvent } from "react";
 import { Plus } from "lucide-react";
 import { kindOrder } from "@/lib/account-kinds";
-import { PRODUCT_LABELS, supportsCostBasisMethod, type ProductType } from "@/lib/investment-config";
+import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
 import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
 import { DateStepper } from "@/components/DateStepper";
 import { notifySmartSelectOptionCreated, SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
@@ -188,7 +188,7 @@ const ACCOUNT_KIND_OPTIONS = kindOrder.map((k) => ({ value: k, labelKey: `accoun
 
 /* ---- Investment product type options (from investment-config.ts) ---- */
 
-const INVEST_PRODUCT_OPTIONS = (Object.keys(PRODUCT_LABELS) as ProductType[]).map((pt) => ({
+const INVEST_PRODUCT_OPTIONS = PRODUCT_TYPES.map((pt) => ({
   value: pt,
   labelKey: `investment.product.${pt}`,
 }));

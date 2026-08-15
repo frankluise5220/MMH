@@ -1590,7 +1590,7 @@ export async function GET(req: Request) {
 
 /**
  * POST /api/v1/transactions/detail
- * 创建交易记录
+ * Creates a transaction record
  *
  * Body (JSON):
  *   type: "expense" | "income" | "advance" | "transfer" | "investment"
@@ -2626,7 +2626,7 @@ export async function POST(req: Request) {
     if (changedInvestment) revalidateAfterInvestChange();
     else revalidateAfterTxChange();
 
-    // 返回刚创建的记录
+    // Return the record just created
     if (createdId) {
       if (createdFundTransactionId) {
         const createdFund = await loadApiFundTransactionRecord(createdFundTransactionId);
@@ -3539,7 +3539,7 @@ return;
       );
     }
 
-    // 重算余额：所有涉及的旧/新账户
+    // Recalculate balances: all involved old/new accounts
     const accountsToRecalc = new Set<string>();
     if (oldAccountId) accountsToRecalc.add(oldAccountId);
     if (oldToAccountId) accountsToRecalc.add(oldToAccountId);
@@ -3571,7 +3571,7 @@ return;
     if (changedInvestment) revalidateAfterInvestChange();
     else revalidateAfterTxChange();
 
-    // 返回更新后的记录
+    // Return the updated record
     const updated = await prisma.txRecord.findUnique({
       where: { id: entryId },
       include: {

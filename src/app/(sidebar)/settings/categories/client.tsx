@@ -6,6 +6,9 @@ import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 import { SettingsActionButton } from "@/components/settings/SettingsPageScaffold";
 import { fetchSettingsCategories, getCachedSettingsCategories, notifySettingsDataChanged, setSettingsCategories } from "@/lib/client/settingsCache";
+import { useI18n } from "@/lib/i18n";
+
+type I18nT = (key: string, params?: Record<string, string | number>) => string;
 
 type Category = {
   id: string;
@@ -15,11 +18,24 @@ type Category = {
   isSystem: boolean;
 };
 
-const typeLabel = (t: string) =>
-  t === "expense" ? "支出" : t === "income" ? "收入" : t === "advance" ? "代付" : t === "transfer" ? "转账" : t === "investment" ? "投资" : t;
+/** Display label for a category main type, localized through the i18n catalog. */
+const typeLabel = (t: I18nT, type: string) =>
+  type === "expense" ? t("transaction.type.expense")
+  : type === "income" ? t("transaction.type.income")
+  : type === "advance" ? t("txForm.advance")
+  : type === "transfer" ? t("transaction.type.transfer")
+  : type === "investment" ? t("transaction.type.investment")
+  : type;
 
-const typeColor = (t: string) =>
-  t === "expense" ? "text-red-600" : t === "income" ? "text-emerald-600" : t === "advance" ? "text-amber-600" : "text-blue-600";
+/**
+ * System root category name per main type, as stored in the database (user
+ * data). Used only to match the system root category by its stored name.
+ */
+const typeSystemRootName = (type: string) =>
+  type === "expense" ? "支出" : type === "income" ? "收入" : type === "advance" ? "代付" : type === "transfer" ? "转账" : type === "investment" ? "投资" : type;
+
+const typeColor = (type: string) =>
+  type === "expense" ? "text-red-600" : type === "income" ? "text-emerald-600" : type === "advance" ? "text-amber-600" : "text-blue-600";
 
 const TYPE_ORDER = ["expense", "income", "advance", "transfer", "investment"] as const;
 
@@ -30,6 +46,7 @@ export default function SettingsCategoriesClient({
   categories: Category[];
   initialLoaded?: boolean;
 }) {
+  const { t } = useI18n();
   const [categories, setCategories] = useState<Category[]>(initialCategories);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -60,7 +77,7 @@ export default function SettingsCategoriesClient({
   useEffect(() => {
     const category = selectedId ? categories.find(c => c.id === selectedId) : null;
     const typeSystemRoot = category
-      ? categories.find(c => c.parentId === null && c.type === category.type && c.isSystem && c.name === typeLabel(category.type)) ?? null
+      ? categories.find(c => c.parentId === null && c.type === category.type && c.isSystem && c.name === typeSystemRootName(category.type)) ?? null
       : null;
     setPendingMoveParentValue(category
       ? ((category.parentId ?? null) === (typeSystemRoot?.id ?? null) ? `__root:${category.type}` : category.parentId ?? `__root:${category.type}`)
@@ -127,7 +144,7 @@ export default function SettingsCategoriesClient({
     setAddingUnder(null);
     setEditingName(category?.name ?? "");
     const typeSystemRoot = category
-      ? categories.find(c => c.parentId === null && c.type === category.type && c.isSystem && c.name === typeLabel(category.type)) ?? null
+      ? categories.find(c => c.parentId === null && c.type === category.type && c.isSystem && c.name === typeSystemRootName(category.type)) ?? null
       : null;
     setPendingMoveParentValue(category
       ? ((category.parentId ?? null) === (typeSystemRoot?.id ?? null) ? `__root:${category.type}` : category.parentId ?? `__root:${category.type}`)
@@ -185,9 +202,9 @@ export default function SettingsCategoriesClient({
         if (selectedId === id) setSelectedId(null);
         setExpanded(prev => { const next = new Set(prev); next.delete(id); return next; });
       } else {
-        window.alert(data.error || "删除失败");
+        window.alert(data.error || t("settingsDelete.deleteFailed"));
       }
-    } catch { window.alert("删除失败"); }
+    } catch { window.alert(t("settingsDelete.deleteFailed")); }
   }
 
   async function renameCategory(id: string, name: string) {
@@ -195,16 +212,16 @@ export default function SettingsCategoriesClient({
     const target = categories.find(c => c.id === id);
     if (!target) return false;
     if (target.isSystem) {
-      setEditError("系统内置类别不能修改名称");
+      setEditError(t("settings.categories.client.cannotRenameSystem"));
       return false;
     }
     if (!nextName) {
-      setEditError("请填写分类名称");
+      setEditError(t("settings.categories.client.nameRequired"));
       return false;
     }
     if (nextName === target.name) return true;
     if (hasDuplicateCategoryName(nextName, id)) {
-      setEditError("分类名称已存在");
+      setEditError(t("settings.categories.client.nameExists"));
       return false;
     }
 
@@ -217,7 +234,7 @@ export default function SettingsCategoriesClient({
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setEditError(data.error ?? "修改失败");
+        setEditError(data.error ?? t("settings.categories.client.renameFailed"));
         return false;
       }
       setCategories(prev => {
@@ -229,7 +246,7 @@ export default function SettingsCategoriesClient({
       if (selectedId === id) setEditingName(data.category.name);
       return true;
     } catch {
-      setEditError("修改失败");
+      setEditError(t("settings.categories.client.renameFailed"));
       return false;
     }
   }
@@ -238,7 +255,7 @@ export default function SettingsCategoriesClient({
     const target = categories.find(c => c.id === id);
     if (!target) return false;
     if (target.isSystem) {
-      setEditError("系统内置类别不能移动");
+      setEditError(t("settings.categories.client.cannotMoveSystem"));
       return false;
     }
     if ((target.parentId ?? null) === parentId) return true;
@@ -253,7 +270,7 @@ export default function SettingsCategoriesClient({
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setEditError(data.error ?? "移动失败");
+        setEditError(data.error ?? t("settings.categories.client.moveFailed"));
         return false;
       }
       setCategories(prev => {
@@ -267,7 +284,7 @@ export default function SettingsCategoriesClient({
       }
       return true;
     } catch {
-      setEditError("移动失败");
+      setEditError(t("settings.categories.client.moveFailed"));
       return false;
     } finally {
       setMovingParent(false);
@@ -325,7 +342,7 @@ export default function SettingsCategoriesClient({
         opts.push({
           id: child.id,
           name: child.name,
-          label: `${typeLabel(child.type)} — ${child.name}`,
+          label: `${typeLabel(t, child.type)} — ${child.name}`,
           type: child.type,
           depth,
           parentId: child.parentId ?? undefined,
@@ -372,23 +389,23 @@ export default function SettingsCategoriesClient({
           ) : (
             <span className={`text-sm flex-1 truncate ${isSelected ? "text-blue-700 font-medium" : "text-slate-700"}`}>{cat.name}</span>
           )}
-          {cat.isSystem && <span className="text-[10px] text-slate-400 shrink-0">系统</span>}
+          {cat.isSystem && <span className="text-[10px] text-slate-400 shrink-0">{t("settings.users.status.system")}</span>}
           {hasChildren && !isExpanded && <span className="text-[10px] text-slate-400 shrink-0">{children.length}</span>}
           {inlineEditingId === cat.id ? (
             <>
               <button onClick={(e) => { e.stopPropagation(); void saveInlineEdit(cat.id); }}
                 disabled={inlineSavingId === cat.id}
-                className="h-5 w-5 flex items-center justify-center rounded hover:bg-blue-100 text-blue-600 disabled:opacity-50 shrink-0" title="保存">
+                className="h-5 w-5 flex items-center justify-center rounded hover:bg-blue-100 text-blue-600 disabled:opacity-50 shrink-0" title={t("common.save")}>
                 <Save className="w-3 h-3" />
               </button>
               <button onClick={(e) => { e.stopPropagation(); setInlineEditingId(null); setInlineEditingName(""); }}
-                className="h-5 w-5 flex items-center justify-center rounded hover:bg-slate-100 text-slate-400 hover:text-slate-600 shrink-0" title="取消">
+                className="h-5 w-5 flex items-center justify-center rounded hover:bg-slate-100 text-slate-400 hover:text-slate-600 shrink-0" title={t("common.cancel")}>
                 <X className="w-3 h-3" />
               </button>
             </>
           ) : !cat.isSystem ? (
             <SettingsActionButton
-              label="修改名称"
+              label={t("settings.categories.client.rename")}
               variant="edit"
               size="sm"
               onClick={(e) => { e.stopPropagation(); startInlineEdit(cat); }}
@@ -398,7 +415,7 @@ export default function SettingsCategoriesClient({
             <span className="h-5 w-5 shrink-0" />
           )}
           <SettingsActionButton
-            label="添加子分类"
+            label={t("settings.categories.client.addSubcategory")}
             variant="add"
             size="sm"
             icon={<Plus className="w-3 h-3" />}
@@ -407,7 +424,7 @@ export default function SettingsCategoriesClient({
           />
           {!cat.isSystem && (
             <SettingsActionButton
-              label="删除分类"
+              label={t("settings.categories.client.deleteCategory")}
               variant="delete"
               size="sm"
               onClick={(e) => { e.stopPropagation(); handleDelete(cat.id); }}
@@ -445,17 +462,18 @@ export default function SettingsCategoriesClient({
   })();
   const moveRootOptionId = selectedCategory ? `__root:${selectedCategory.type}` : "__root";
   const selectedTypeSystemRoot = selectedCategory
-    ? roots.find(root => root.type === selectedCategory.type && root.isSystem && root.name === typeLabel(selectedCategory.type)) ?? null
+    ? roots.find(root => root.type === selectedCategory.type && root.isSystem && root.name === typeSystemRootName(selectedCategory.type)) ?? null
     : null;
   const moveRootActualParentId = selectedTypeSystemRoot?.id ?? null;
   const moveTargetOptions: SmartSelectOption[] = selectedCategory ? (() => {
     const selectedType = selectedCategory.type;
+    const topLevelOptionLabel = t("settings.categories.client.moveToTopOption", { type: typeLabel(t, selectedType) });
     const options: SmartSelectOption[] = [{
       id: moveRootOptionId,
-      label: `${typeLabel(selectedType)}（顶层）`,
-      subLabel: "移动为该类型的一级分类",
+      label: topLevelOptionLabel,
+      subLabel: t("settings.categories.client.moveToTopSub"),
       isGroup: true,
-      title: `移动到：${typeLabel(selectedType)}（顶层）`,
+      title: t("settings.categories.client.moveToTitle", { target: topLevelOptionLabel }),
     }];
     const topLevelCandidates = selectedTypeSystemRoot
       ? getChildren(selectedTypeSystemRoot.id)
@@ -470,7 +488,7 @@ export default function SettingsCategoriesClient({
           id: cat.id,
           label: cat.name,
           subLabel: pathLabel,
-          title: `移动到：${pathLabel}`,
+          title: t("settings.categories.client.moveToTitle", { target: pathLabel }),
           parentId,
           isGroup: availableChildren.length > 0,
         });
@@ -488,9 +506,9 @@ export default function SettingsCategoriesClient({
     ? (pendingMoveParentValue === "__root" ? currentMoveParentValue : pendingMoveParentValue)
     : "__root";
   const selectedParentName = selectedCategory?.parentId
-    ? categories.find(c => c.id === selectedCategory.parentId)?.name ?? "上级分类"
+    ? categories.find(c => c.id === selectedCategory.parentId)?.name ?? t("entityForm.parentCategoryLabel")
     : selectedCategory
-      ? typeLabel(selectedCategory.type)
+      ? typeLabel(t, selectedCategory.type)
       : "";
   const selectedMoveTargetLabel = moveTargetOptions.find(option => option.id === moveParentValue)?.label
     ?? selectedParentName
@@ -502,16 +520,16 @@ export default function SettingsCategoriesClient({
 
   return (
     <div className="flex" style={{ height: "calc(100vh - 8.5rem)" }}>
-      {/* 左侧：分类树 */}
+      {/* Left: category tree */}
       <div className="w-64 flex flex-col shrink-0 border-r border-slate-200 bg-white">
         <div className="px-4 py-3 border-b border-slate-200 shrink-0">
-          <div className="text-sm font-semibold text-slate-800">分类管理</div>
+          <div className="text-sm font-semibold text-slate-800">{t("settings.categories")}</div>
         </div>
         <div className="flex-1 overflow-y-auto py-2">
           {TYPE_ORDER.map(type => {
             const typeKey = `type:${type}`;
             const typeRoots = roots.filter(c => c.type === type);
-            const systemTypeRoot = typeRoots.find(root => root.isSystem && root.name === typeLabel(type));
+            const systemTypeRoot = typeRoots.find(root => root.isSystem && root.name === typeSystemRootName(type));
             const visibleRoots = systemTypeRoot ? getChildren(systemTypeRoot.id) : typeRoots;
             const addParentId = systemTypeRoot?.id ?? "__root__";
             const isExpanded = expanded.has(typeKey);
@@ -527,10 +545,10 @@ export default function SettingsCategoriesClient({
                   {visibleRoots.length > 0 || systemTypeRoot ? (
                     isExpanded ? <ChevronDown className="w-3 h-3 text-slate-400 shrink-0" /> : <ChevronRight className="w-3 h-3 text-slate-400 shrink-0" />
                   ) : <span className="w-3" />}
-                  <span className={`text-xs font-semibold ${typeColor(type)} flex-1`}>{typeLabel(type)}</span>
+                  <span className={`text-xs font-semibold ${typeColor(type)} flex-1`}>{typeLabel(t, type)}</span>
                   <span className="text-[10px] text-slate-400">{visibleRoots.length}</span>
                   <SettingsActionButton
-                    label="创建一级分类"
+                    label={t("settings.categories.client.createTopLevel")}
                     variant="add"
                     size="sm"
                     icon={<Plus className="w-3 h-3" />}
@@ -560,20 +578,20 @@ export default function SettingsCategoriesClient({
         </div>
       </div>
 
-      {/* 右侧：详情 */}
+      {/* Right: details */}
       <div className="flex-1 bg-slate-50 p-6 min-w-0">
         {selectedCategory ? (
           <div className="space-y-4">
             <div className="bg-white border border-slate-200 rounded-xl">
               <div className="px-4 py-3 border-b border-slate-100">
-                <div className="text-sm font-semibold text-slate-800">分类详情</div>
+                <div className="text-sm font-semibold text-slate-800">{t("settings.categories.client.detailTitle")}</div>
               </div>
               <div className="p-4">
-                <div className="text-xs text-slate-500 mb-3">路径：{selectedPath.join(" 〉")}</div>
+                <div className="text-xs text-slate-500 mb-3">{t("settings.categories.client.path", { path: selectedPath.join(" 〉") })}</div>
                 <div>
                   <div className="flex flex-wrap items-end gap-3">
                     <label className="min-w-[12rem] w-full sm:w-48 xl:w-56">
-                      <span className="form-label mb-1 block">分类名称</span>
+                      <span className="form-label mb-1 block">{t("settings.categories.client.name")}</span>
                       <input
                         value={editingName}
                         disabled={selectedCategory.isSystem}
@@ -594,25 +612,25 @@ export default function SettingsCategoriesClient({
                       className="primary-button h-9 shrink-0 gap-1.5 disabled:opacity-50"
                     >
                       <Save className="h-3.5 w-3.5" />
-                      保存
+                      {t("common.save")}
                     </button>
                     <div className="hidden h-9 shrink-0 items-center sm:flex">
                       <ArrowRight className="h-4 w-4 text-blue-500" aria-hidden="true" />
                     </div>
                     <div className="min-w-[16rem] w-full sm:w-72 xl:w-80">
-                      <span className="form-label mb-1 block">移动至</span>
+                      <span className="form-label mb-1 block">{t("settings.categories.client.moveToLabel")}</span>
                       <div
                         className={
                           selectedCategory.isSystem || movingParent ? "pointer-events-none opacity-60" : ""
                         }
-                        title={`当前上级：${selectedParentName}`}
+                        title={t("settings.categories.client.currentParent", { name: selectedParentName })}
                       >
                         <SmartSelect
                           mode="single"
                           value={moveParentValue}
                           onChange={setPendingMoveParentValue}
                           options={moveTargetOptions}
-                          placeholder="选择移动到哪个分类下"
+                          placeholder={t("settings.categories.client.movePlaceholder")}
                           searchable
                           behavior={{
                             hierarchy: true,
@@ -636,15 +654,15 @@ export default function SettingsCategoriesClient({
                       disabled={selectedCategory.isSystem || movingParent || !hasPendingMoveTarget}
                       className="primary-button h-9 shrink-0 px-3 disabled:opacity-50"
                     >
-                      {movingParent ? "移动中" : "移动"}
+                      {movingParent ? t("settings.categories.client.moving") : t("settings.categories.client.move")}
                     </button>
                   </div>
                   <div className="mt-2 text-[11px] text-slate-400">
                     {selectedCategory.isSystem
-                      ? "系统内置类别固定显示，不能改名或移动。"
+                      ? t("settings.categories.client.systemNote")
                       : hasPendingMoveTarget
-                        ? `已选择移动到「${selectedMoveTargetLabel}」，点击“移动”后生效。`
-                        : `当前上级：${currentMoveTargetLabel}。选择目标后点击“移动”生效。`}
+                        ? t("settings.categories.client.movePending", { target: selectedMoveTargetLabel })
+                        : t("settings.categories.client.moveHint", { target: currentMoveTargetLabel })}
                   </div>
                 </div>
                 {editError && <div className="mt-2 text-xs text-red-600">{editError}</div>}
@@ -654,16 +672,16 @@ export default function SettingsCategoriesClient({
                     selectedCategory.type === "income" ? "bg-emerald-50 text-emerald-600" :
                     selectedCategory.type === "advance" ? "bg-amber-50 text-amber-600" :
                     "bg-blue-50 text-blue-600"}`}>
-                    {typeLabel(selectedCategory.type)}
+                    {typeLabel(t, selectedCategory.type)}
                   </span>
-                  {selectedCategory.isSystem && <span className="text-xs text-slate-400">系统内置</span>}
+                  {selectedCategory.isSystem && <span className="text-xs text-slate-400">{t("settings.categories.client.systemBuiltin")}</span>}
                 </div>
               </div>
             </div>
 
             <div className="bg-white border border-slate-200 rounded-xl">
               <div className="px-4 py-3 border-b border-slate-100">
-                <div className="text-sm font-medium text-slate-700">在「{selectedCategory.name}」下添加子分类</div>
+                <div className="text-sm font-medium text-slate-700">{t("settings.categories.client.addChildUnder", { name: selectedCategory.name })}</div>
               </div>
               <div className="p-4">
                 <EntityCreateForm
@@ -696,13 +714,13 @@ export default function SettingsCategoriesClient({
             <div className="bg-white border border-slate-200 rounded-xl">
               <div className="px-4 py-3 border-b border-slate-100">
                 <div className="text-sm font-medium text-slate-700">
-                  {selectedCategory.name} 的子分类
-                  <span className="ml-1 text-xs text-slate-400">（{selectedChildren.length} 个）</span>
+                  {t("settings.categories.client.childCategoriesOf", { name: selectedCategory.name })}
+                  <span className="ml-1 text-xs text-slate-400">{t("settings.categories.client.countSuffix", { count: selectedChildren.length })}</span>
                 </div>
               </div>
               <div className="p-4">
                 {selectedChildren.length === 0 ? (
-                  <div className="text-xs text-slate-400 py-4 text-center">暂无子分类</div>
+                  <div className="text-xs text-slate-400 py-4 text-center">{t("settings.categories.client.noChildren")}</div>
                 ) : (
                   <div className="space-y-0.5">
                     {selectedChildren.map(child => (
@@ -728,24 +746,24 @@ export default function SettingsCategoriesClient({
                           <span className="min-w-0 flex-1 truncate text-sm text-slate-700">{child.name}</span>
                         )}
                         <div className="flex items-center gap-1">
-                          {child.isSystem && <span className="text-[10px] text-slate-400">系统</span>}
+                          {child.isSystem && <span className="text-[10px] text-slate-400">{t("settings.users.status.system")}</span>}
                           {inlineEditingId === child.id ? (
                             <>
                               <button onClick={(e) => { e.stopPropagation(); void saveInlineEdit(child.id); }}
                                 disabled={inlineSavingId === child.id}
                                 className="h-6 w-6 flex items-center justify-center rounded hover:bg-blue-50 text-blue-600 disabled:opacity-50"
-                                title="保存">
+                                title={t("common.save")}>
                                 <Save className="w-3 h-3" />
                               </button>
                               <button onClick={(e) => { e.stopPropagation(); setInlineEditingId(null); setInlineEditingName(""); }}
                                 className="h-6 w-6 flex items-center justify-center rounded hover:bg-slate-100 text-slate-400 hover:text-slate-600"
-                                title="取消">
+                                title={t("common.cancel")}>
                                 <X className="w-3 h-3" />
                               </button>
                             </>
                           ) : !child.isSystem ? (
                             <SettingsActionButton
-                              label="修改名称"
+                              label={t("settings.categories.client.rename")}
                               variant="edit"
                               size="sm"
                               onClick={(e) => { e.stopPropagation(); startInlineEdit(child); }}
@@ -755,7 +773,7 @@ export default function SettingsCategoriesClient({
                           )}
                           {!child.isSystem && (
                             <SettingsActionButton
-                              label="删除分类"
+                              label={t("settings.categories.client.deleteCategory")}
                               variant="delete"
                               size="sm"
                               onClick={(e) => { e.stopPropagation(); handleDelete(child.id); }}
@@ -771,7 +789,7 @@ export default function SettingsCategoriesClient({
           </div>
         ) : (
           <div className="h-full flex items-center justify-center text-sm text-slate-400">
-            选择一个分类查看详情
+            {t("settings.categories.client.selectCategoryHint")}
           </div>
         )}
       </div>

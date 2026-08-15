@@ -62,7 +62,7 @@ async function repairBrokenDefaultFundQueryApis() {
   if (updates.length > 0) await prisma.$transaction(updates);
 }
 
-// GET: 获取当前账簿内的 FundQueryApi 列表
+// GET: list FundQueryApi entries within the current household
 export async function GET() {
   try {
     const { householdId } = await getHouseholdScope();
@@ -84,7 +84,7 @@ export async function GET() {
 
     return NextResponse.json({ ok: true, apis });
   } catch {
-    return NextResponse.json({ ok: false, error: "服务器错误" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "FETCH_FAILED", error: "服务器错误" }, { status: 500 });
   }
 }
 
@@ -97,13 +97,13 @@ const CreateSchema = z.object({
   isActive: z.boolean().default(true),
 });
 
-// POST: 在当前账簿内创建新的 FundQueryApi
+// POST: create a new FundQueryApi within the current household
 export async function POST(req: NextRequest) {
   const { householdId } = await getHouseholdScope();
   const body = await req.json().catch(() => null);
   const parse = CreateSchema.safeParse(body);
   if (!parse.success) {
-    return NextResponse.json({ ok: false, error: "缺少必填字段（name/code/baseUrl）" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_REQUIRED_FIELDS", error: "缺少必填字段（name/code/baseUrl）" }, { status: 400 });
   }
 
   const { name, code, baseUrl, apiKey, priority, isActive } = parse.data;
@@ -115,20 +115,20 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ ok: true, api });
 }
 
-// PUT: 更新当前账簿内的单个 FundQueryApi 的字段
+// PUT: update fields of a single FundQueryApi within the current household
 export async function PUT(req: NextRequest) {
   const { householdId } = await getHouseholdScope();
   const body = await req.json().catch(() => ({}));
   const { id, name, baseUrl, apiKey, priority, isActive } = body;
 
-  if (!id) return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
+  if (!id) return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
 
   const existing = await prisma.fundQueryApi.findUnique({ where: { id } });
-  if (!existing) return NextResponse.json({ ok: false, error: "API 不存在" }, { status: 404 });
+  if (!existing) return NextResponse.json({ ok: false, code: "API_NOT_FOUND", error: "API 不存在" }, { status: 404 });
 
-  // 越权检查：API 不属于当前账簿
+  // Authorization check: the API does not belong to the current household
   if (existing.householdId !== householdId && existing.householdId !== null) {
-    return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
+    return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "越权操作" }, { status: 403 });
   }
 
   const data: Record<string, unknown> = {};
@@ -140,7 +140,7 @@ export async function PUT(req: NextRequest) {
 
   await prisma.fundQueryApi.update({ where: { id }, data });
 
-  // 如果 API 被停用，清除当前账簿内所有账户中引用它的默认 API
+  // If the API is deactivated, clear it from all accounts in the current household that reference it as the default
   if (isActive === false) {
     await prisma.account.updateMany({
       where: { defaultFundQueryApiId: id, householdId },
@@ -158,13 +158,13 @@ const ReorderSchema = z.object({
   })).min(1),
 });
 
-// PATCH: 批量更新当前账簿可见 FundQueryApi 的优先级，用于拖拽排序
+// PATCH: batch update priorities of FundQueryApi entries visible to the current household, for drag-and-drop ordering
 export async function PATCH(req: NextRequest) {
   const { householdId } = await getHouseholdScope();
   const body = await req.json().catch(() => ({}));
   const parse = ReorderSchema.safeParse(body);
   if (!parse.success) {
-    return NextResponse.json({ ok: false, error: "缺少排序数据" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_REORDER_DATA", error: "缺少排序数据" }, { status: 400 });
   }
 
   const ids = parse.data.priorities.map((item) => item.id);
@@ -173,10 +173,10 @@ export async function PATCH(req: NextRequest) {
     select: { id: true, householdId: true },
   });
   if (existing.length !== ids.length) {
-    return NextResponse.json({ ok: false, error: "部分 API 不存在" }, { status: 404 });
+    return NextResponse.json({ ok: false, code: "API_NOT_FOUND", error: "部分 API 不存在" }, { status: 404 });
   }
   if (existing.some((api) => api.householdId !== householdId && api.householdId !== null)) {
-    return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
+    return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "越权操作" }, { status: 403 });
   }
 
   await prisma.$transaction(
@@ -204,23 +204,23 @@ export async function PATCH(req: NextRequest) {
   return NextResponse.json({ ok: true, apis });
 }
 
-// DELETE: 删除当前账簿内的 FundQueryApi
+// DELETE: delete a FundQueryApi within the current household
 export async function DELETE(req: NextRequest) {
   const { householdId } = await getHouseholdScope();
   const { searchParams } = new URL(req.url);
   const id = searchParams.get("id") ?? "";
 
-  if (!id) return NextResponse.json({ ok: false, error: "缺少 id" }, { status: 400 });
+  if (!id) return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
 
   const existing = await prisma.fundQueryApi.findUnique({ where: { id } });
-  if (!existing) return NextResponse.json({ ok: false, error: "API 不存在" }, { status: 404 });
+  if (!existing) return NextResponse.json({ ok: false, code: "API_NOT_FOUND", error: "API 不存在" }, { status: 404 });
 
-  // 越权检查：API 不属于当前账簿
+  // Authorization check: the API does not belong to the current household
   if (existing.householdId !== householdId && existing.householdId !== null) {
-    return NextResponse.json({ ok: false, error: "越权操作" }, { status: 403 });
+    return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "越权操作" }, { status: 403 });
   }
 
-  // 删除前清除当前账簿内所有引用此 API 的账户默认设置
+  // Clear this API from the default settings of all accounts that reference it before deleting
   await prisma.account.updateMany({
     where: existing.householdId
       ? { defaultFundQueryApiId: id, householdId }

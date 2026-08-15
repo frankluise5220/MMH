@@ -126,10 +126,10 @@ async function ensureInitialHousehold(adminName: string) {
 
 /**
  * GET /api/v1/auth/password-status
- * 检查系统是否有任何用户设置了密码（或旧 SystemSetting 密码）
- * 返回的用户列表按当前账簿过滤：
- * - 系统用户（isSystem=true）不绑定账簿，始终显示
- * - 普通用户只显示属于当前 householdId 的用户
+ * Checks whether any user has set a password (or the legacy SystemSetting password).
+ * The returned user list is filtered by the current household:
+ * - System users (isSystem=true) are not bound to a household and always shown.
+ * - Regular users are shown only when they belong to the current householdId.
  */
 export async function GET() {
   const cookieStore = await cookies();
@@ -195,13 +195,13 @@ export async function GET() {
 
 /**
  * POST /api/v1/auth/password-status
- * 为用户设置或修改密码，首次设置时创建 admin 用户
+ * Sets or changes a user's password; creates the admin user on first setup.
  * Body: { userId?: string, username?: string, password: string, currentPassword?: string }
  */
 export async function POST(req: NextRequest) {
   const ip = getClientIp(req);
   if (ip && isPasswordSetRateLimited(ip)) {
-    return NextResponse.json({ ok: false, error: "操作过于频繁，请稍后再试" }, { status: 429 });
+    return NextResponse.json({ ok: false, code: "RATE_LIMITED", error: "操作过于频繁，请稍后再试" }, { status: 429 });
   }
   recordPasswordSetAttempt(ip ?? "unknown");
 
@@ -210,20 +210,20 @@ export async function POST(req: NextRequest) {
   const userId = body.userId?.trim();
   const username = (body.username ?? "").trim();
 
-  // 查找目标用户
+  // Find the target user
   let user = userId
     ? await prisma.user.findUnique({ where: { id: userId } })
     : username
       ? await prisma.user.findFirst({ where: { name: username } })
       : null;
 
-  // 如果没找到且指定了 username，仅允许在“部署尚无任何用户”（全局首次设置）或管理员会话下创建
+  // If not found and username is specified, creation is only allowed when the deployment has no users yet (global first setup) or under an admin session
   if (!user && username) {
     const anyExistingUser = await prisma.user.findFirst({ select: { id: true } });
     if (anyExistingUser) {
       const currentUser = await getCurrentUser();
       if (!currentUser || !isAdmin(currentUser)) {
-        return NextResponse.json({ ok: false, error: "用户不存在，且当前无权创建用户" }, { status: 403 });
+        return NextResponse.json({ ok: false, code: "USER_CREATION_FORBIDDEN", error: "用户不存在，且当前无权创建用户" }, { status: 403 });
       }
     }
     const existingUser = await prisma.user.findFirst({ select: { id: true } });
@@ -232,7 +232,7 @@ export async function POST(req: NextRequest) {
 
     const householdCount = isFirstUser ? await prisma.household.count() : 0;
     if (isFirstUser && householdCount === 0) {
-      return NextResponse.json({ ok: false, error: "请先创建第一个账簿" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "LEDGER_NOT_CREATED", error: "请先创建第一个账簿" }, { status: 400 });
     }
 
     if (isFirstUser) {
@@ -248,34 +248,35 @@ export async function POST(req: NextRequest) {
   }
 
   if (!user) {
-    return NextResponse.json({ ok: false, error: "用户不存在" }, { status: 404 });
+    return NextResponse.json({ ok: false, code: "USER_NOT_FOUND", error: "用户不存在" }, { status: 404 });
   }
 
-  // 如果用户已有密码哈希，需要验证当前密码
+  // If the user already has a password hash, verify the current password
   if (user.passwordHash) {
     const currentPassword = (body.currentPassword ?? "").trim();
     if (!currentPassword) {
-      return NextResponse.json({ ok: false, error: "请输入当前密码" }, { status: 401 });
+      return NextResponse.json({ ok: false, code: "CURRENT_PASSWORD_REQUIRED", error: "请输入当前密码" }, { status: 401 });
     }
     const match = await verifyPassword(currentPassword, user.passwordHash);
     if (!match) {
-      return NextResponse.json({ ok: false, error: "当前密码错误" }, { status: 401 });
+      return NextResponse.json({ ok: false, code: "INVALID_CURRENT_PASSWORD", error: "当前密码错误" }, { status: 401 });
     }
   } else {
-    // 迁移桥接：如果存在旧 SystemSetting 密码，需要先验证旧密码
+    // Migration bridge: if a legacy SystemSetting password exists, verify the legacy password first
     const legacy = await prisma.systemSetting.findUnique({
       where: { key: LEGACY_PASSWORD_KEY },
     });
     if (legacy && legacy.value.length > 0) {
       const currentPassword = (body.currentPassword ?? "").trim();
       if (currentPassword !== legacy.value) {
-        return NextResponse.json({ ok: false, error: "当前密码错误" }, { status: 401 });
+        return NextResponse.json({ ok: false, code: "INVALID_CURRENT_PASSWORD", error: "当前密码错误" }, { status: 401 });
       }
-      // 删除旧密码（迁移完成）
+      // Delete the legacy password (migration complete)
       await prisma.systemSetting.delete({ where: { key: LEGACY_PASSWORD_KEY } }).catch(logger.catchLog("操作失败", "route.ts"));
     } else if (user.passwordHash == null) {
-      // 无密码且无旧密码的账户：仅允许“部署尚无任何用户设置过密码”（首次设置）
-      // 或已登录会话（如新账簿管理员通过 create-ledger 会话设置自己的密码）。
+      // Accounts with no password and no legacy password: only allowed during first setup
+      // (no user has set a password yet) or under a logged-in session (e.g. a new ledger
+      // admin setting their own password through the create-ledger session).
       const anyUserWithPassword = await prisma.user.findFirst({
         where: { passwordHash: { not: null } },
         select: { id: true },
@@ -284,7 +285,7 @@ export async function POST(req: NextRequest) {
         const currentUser = await getCurrentUser();
         const isSetupOwner = currentUser && (currentUser.id === user.id || isAdmin(currentUser));
         if (!isSetupOwner) {
-          return NextResponse.json({ ok: false, error: "当前账户尚未设置密码，请登录后再设置" }, { status: 403 });
+          return NextResponse.json({ ok: false, code: "PASSWORD_NOT_SET", error: "当前账户尚未设置密码，请登录后再设置" }, { status: 403 });
         }
       }
     }
@@ -297,7 +298,7 @@ export async function POST(req: NextRequest) {
       data: { passwordHash: hashed },
     });
   } else {
-    // 清除密码（不建议但允许）
+    // Clear the password (not recommended but allowed)
     await prisma.user.update({
       where: { id: user.id },
       data: { passwordHash: null },
