@@ -4,20 +4,20 @@
       "id": "mmh",
       "name": "MMH",
       "display_name": "MMH 家庭财务工作台",
-      "version": "0.1.32",
+      "version": "0.1.33",
       "platform": "x86",
       "platforms": [
         "x86",
         "arm"
       ],
       "description": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
-      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.32/mmh-fnos-v0.1.32-x86_64.fpk",
+      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.33/mmh-fnos-v0.1.33-x86_64.fpk",
       "download_urls": {
-        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.32/mmh-fnos-v0.1.32-x86_64.fpk",
-        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.32/mmh-fnos-v0.1.32-arm64.fpk"
+        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.33/mmh-fnos-v0.1.33-x86_64.fpk",
+        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.33/mmh-fnos-v0.1.33-arm64.fpk"
       },
       "homepage": "https://github.com/frankluise5220/MMH",
-      "changelog": "发布 0.1.32：全站界面文案迁移到多语言体系（简体中文 / English / 日本語），登录与共享组件整合精简；信用卡分期改为到期实生成扣款行，支持首期入账日期、账单日和标签；系统初始化、删除账簿等敏感操作统一验证当前登录管理员用户密码；新增系统任务执行器与 NAS Docker Registry 镜像源脚本；修复 i18n 迁移引入的类型与 Hook 顺序问题。",
+      "changelog": "发布 0.1.33：新增账户使用频率统计，记账时账户下拉按最常用优先排序（Web 与 Android 共用同一套数据）；Android 客户端新增房产资产与股票持仓页面（配套 Android v1.0.1，同一签名可覆盖升级）；i18n 多语言迁移继续收尾，新增 I18nProvider 与系统分类标签；若干界面与交互优化。",
       "tags": [
         "finance",
         "bookkeeping"
