@@ -1,72 +1,42 @@
-# Android APK Release
+# Android APK Release（与 v0.1.x 同步发布）
 
-这个 Android 客户端是 MMH 服务端的配套客户端，不按通用应用上架设计。推荐发布方式是把签名后的 APK 放到同仓库的 GitHub Releases，和服务端/API 版本一起维护。
+这个 Android 客户端是 MMH 服务端的配套客户端。**从 0.1.33 起，Android APK 与服务端、飞牛包同步发布**：每次创建 `v0.1.x` GitHub Release，`.github/workflows/android-release.yml` 会自动构建签名 APK 并挂到同一个 Release 页面，不再单独发布 `android-v*` 版本。
 
-## 1. 生成发布签名
+## 1. 发布形态
 
-在项目的 `android` 目录下执行一次：
+每个 `v0.1.x` Release 包含：
 
-```powershell
-New-Item -ItemType Directory -Force .\release
-keytool -genkeypair -v -keystore .\release\mmh-release.jks -alias mmh-release -keyalg RSA -keysize 2048 -validity 10000
-```
+- `mmh-fnos-v0.1.x-x86_64.fpk` / `mmh-fnos-v0.1.x-arm64.fpk`（飞牛）
+- `mmh-nas-v0.1.x.zip`（NAS Docker 源码包）
+- `mmh-android-v0.1.x.apk`（Android，签名 APK）
 
-这个 `.jks` 是以后升级 APK 的钥匙，必须备份。以后同一个包名 `com.mmh.app` 的升级包都要用同一把钥匙签名。
+Android 版本号与服务端同号：`versionName = 0.1.x`，`versionCode = major*100000 + minor*1000 + patch`（0.1.33 → 1033，保证只增不减）。本地不带参数构建时回退到 `1.0.1`（versionCode 2）。
 
-## 2. 配置本机签名参数
+## 2. CI 签名配置（GitHub Secrets，一次性）
 
-复制示例文件：
+工作流需要仓库 Secrets 提供签名钥匙和密码（只进 Secrets，绝不进仓库）：
 
-```powershell
-Copy-Item .\keystore.properties.example .\keystore.properties
-```
+| Secret 名 | 值 |
+|---|---|
+| `ANDROID_KEYSTORE_BASE64` | `mmh-release.jks` 的 base64（`certutil -encode` / `base64` 均可） |
+| `ANDROID_KEYSTORE_PASSWORD` | keystore 存储密码（`storePassword`） |
+| `ANDROID_KEY_ALIAS` | 钥匙别名（`mmh-release`） |
+| `ANDROID_KEY_PASSWORD` | 钥匙密码（`keyPassword`） |
 
-编辑 `keystore.properties`，填入真实密码：
+设置位置：GitHub 仓库 → Settings → Secrets and variables → Actions → New repository secret。
 
-```properties
-storeFile=release/mmh-release.jks
-storePassword=你的密码
-keyAlias=mmh-release
-keyPassword=你的密码
-```
+钥匙本身（`mmh-release.jks`）必须永久备份；丢失后用户无法覆盖升级，只能卸载重装。
 
-`keystore.properties` 和 `.jks` 只保存在本机，不提交到 GitHub。
+## 3. 日常流程
 
-## 3. 构建 APK
+- 正常发布：`npm run release:version` 升 `0.1.x` → 提交推送 → 创建 GitHub Release `v0.1.x`。APK 随工作流自动构建上传，无需手工操作。
+- 手动触发：Actions → Release Android APK → Run workflow（`mmh_version` 留空则用 `package.json` 版本）。
+- 本地验证（不发布）：`android` 目录下 `gradlew :app:assembleRelease`（默认 1.0.1），或 `gradlew :app:assembleRelease -PmmhVersion=0.1.33` 模拟发布版本。
 
-```powershell
-$env:JAVA_HOME='C:\Program Files\Android\Android Studio\jbr'
-.\gradlew.bat :app:assembleRelease
-```
+## 4. 本机签名钥匙
 
-产物位置：
-
-```text
-android/app/build/outputs/apk/release/app-release.apk
-```
-
-如果没有配置 `keystore.properties`，Gradle 仍可构建 release，但产物会是 unsigned，不能作为正式发布包长期使用。
-
-## 4. 发布到 GitHub Releases
-
-建议 release 标题和 tag 使用客户端版本号，例如：
-
-```text
-android-v1.0.0
-```
-
-Release 说明里写清楚：
-
-- 需要配套的 MMH 服务端版本或提交号。
-- 是否需要重新登录或重新同步本地缓存。
-- 主要变更和已知问题。
-
-可以直接参考：
-
-- [Release 说明模板](/E:/fs/wiseme/docs/release-notes-template.md)
-
-如果在 GitHub 创建 Release 时使用 `Generate release notes`，仓库会按 `.github/release.yml` 自动分组生成一版说明；再手工补一段“本次更新”摘要即可。
+`android/keystore.properties` 与 `android/release/mmh-release.jks` 只保存在本机，不提交（`.gitignore` 已排除）。主备份放在工作区外的安全位置（如 `E:\fs\mmh-release.jks`）。
 
 ## 5. 手机安装和升级
 
-手机第一次安装需要允许“安装未知来源应用”。升级时直接安装新版 APK 即可覆盖旧版，但前提是新旧 APK 使用同一个 release keystore 签名。
+手机第一次安装需要允许"安装未知来源应用"。升级时直接安装新版 APK 即可覆盖旧版，前提是新旧 APK 使用同一个 release keystore 签名（CI 一直用同一把钥匙）。

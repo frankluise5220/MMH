@@ -147,17 +147,19 @@ SQLite 恢复兼容建表时，`TxRecord` 只是 Prisma 模型名，实际表名
 
 ### `docs/android-release.md`
 
-用途：Android 客户端打包、安装、发布说明。
+用途：Android 客户端打包、安装、发布说明（从 0.1.33 起 APK 随 `v0.1.x` Release 由 CI 自动构建，不再单独发 `android-v*`）。
 
 记录内容：
 
 - 构建命令、签名方式、安装方式。
+- GitHub Secrets 签名配置（`ANDROID_KEYSTORE_BASE64` 等四个 secret）。
 - Android 端服务器/账簿/用户登录配置。
 - 与 Web API 的兼容要求。
 
 更新时机：
 
 - Android 工程结构、包名、签名、构建命令变化。
+- `.github/workflows/android-release.yml` 或签名 Secrets 变化。
 - Android 登录、设置、同步 API 使用方式变化。
 - 移动端需要新的权限或系统能力。
 
@@ -376,7 +378,7 @@ SQLite 恢复兼容建表时，`TxRecord` 只是 Prisma 模型名，实际表名
 
 发布前至少确认：
 
-- 对外发布必须同时覆盖 GitHub/GHCR 的 Docker 更新链路和飞牛 x86/ARM64 `.fpk` 更新链路。两者版本号、构建时间和已验证结果一致后，才算发布完成。
+- 对外发布必须同时覆盖 GitHub/GHCR 的 Docker 更新链路、飞牛 x86/ARM64 `.fpk` 更新链路和随 Release 自动构建的 Android APK。三者版本号、构建时间和已验证结果一致后，才算发布完成。
 - 对外版本号统一使用 `package.json` 中的 `0.1.x`。每次正式公开 push/release 前先运行 `npm run release:version`，只递增一级 patch，例如 `0.1.9` -> `0.1.10`；GitHub Release tag 使用 `v0.1.x`，GHCR 镜像 tag、应用版本、全部飞牛 `.fpk` manifest 和飞牛源元数据都必须一致，不能再使用单独的 `-fnos` 版本号。
 - 发布前运行 `npm run check:release-version`，确认 `package.json`、`package-lock.json`、Docker workflow、飞牛 workflow 和飞牛源元数据没有版本分叉。
 - 新接口是否补了 route JSDoc 和 `docs/client-api.md`。

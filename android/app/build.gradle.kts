@@ -21,6 +21,17 @@ val hasReleaseSigningConfig =
         releaseKeystoreProperties.getProperty("keyAlias").orEmpty().isNotBlank() &&
         releaseKeystoreProperties.getProperty("keyPassword").orEmpty().isNotBlank()
 
+// Version comes from the server release tag in CI (e.g. v0.1.33 -> 0.1.33).
+// Local builds without the property keep the standalone client version.
+val mmhReleaseVersion = providers.gradleProperty("mmhVersion").getOrElse("").trim()
+val clientVersionName = if (mmhReleaseVersion.isNotBlank()) mmhReleaseVersion else "1.0.1"
+val versionParts = mmhReleaseVersion.split(".").mapNotNull { it.toIntOrNull() }
+val clientVersionCode = if (versionParts.size >= 3) {
+    versionParts[0] * 100000 + versionParts[1] * 1000 + versionParts[2]
+} else {
+    2
+}
+
 android {
     namespace = "com.mmh.app"
     compileSdk = 35
@@ -29,8 +40,8 @@ android {
         applicationId = "com.mmh.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = clientVersionCode
+        versionName = clientVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
