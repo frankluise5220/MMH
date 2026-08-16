@@ -150,9 +150,7 @@ export async function executeNonFundScheduledTaskPlan(params: {
   } else {
     const today = startOfDayUtc(params.now ?? new Date());
     const effectiveEndDate = plan.endDate && startOfDayUtc(plan.endDate) < today ? startOfDayUtc(plan.endDate) : today;
-    let currentDate = latestExistingDate
-      ? makeNextRunDate(plan, latestExistingDate)
-      : startOfDayUtc(plan.nextRunDate);
+    let currentDate = startOfDayUtc(plan.nextRunDate);
     let guard = 0;
     while (currentDate <= effectiveEndDate && datesToProcess.length < remainingRuns) {
       const dateStr = formatDateUtc(currentDate);

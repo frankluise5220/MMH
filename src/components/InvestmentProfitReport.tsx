@@ -1,3 +1,5 @@
+"use client";
+
 import { formatMoney } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import type {
@@ -7,13 +9,13 @@ import type {
 import { useI18n } from "@/lib/i18n";
 
 const WEEKDAY_LABEL_KEYS = [
+  "investmentProfitReport.weekday.sun",
   "investmentProfitReport.weekday.mon",
   "investmentProfitReport.weekday.tue",
   "investmentProfitReport.weekday.wed",
   "investmentProfitReport.weekday.thu",
   "investmentProfitReport.weekday.fri",
   "investmentProfitReport.weekday.sat",
-  "investmentProfitReport.weekday.sun",
 ];
 
 type Props = {
@@ -39,6 +41,19 @@ function signedMoney(value: number) {
   return `${value > 0 ? "+" : ""}${formatMoney(value)}`;
 }
 
+// Row labels (day cells, month/year rows, best/worst names) are derived
+// client-side from the ISO row key so they update instantly when the display
+// language changes, instead of waiting for a server re-render.
+function rowLabel(
+  t: (key: string, params?: Record<string, string | number>) => string,
+  period: InvestmentProfitPeriod,
+  key: string,
+) {
+  if (period === "day") return t("investmentProfitReport.dayLabel", { day: Number(key.slice(-2)) });
+  if (period === "month") return t("investmentProfitReport.monthLabel", { month: Number(key.slice(-2)) });
+  return t("investmentProfitReport.yearLabel", { year: key });
+}
+
 function periodTitle(t: (key: string) => string, period: InvestmentProfitPeriod, year: number, month: number) {
   if (period === "day") {
     return t("investmentProfitReport.title.day")
@@ -55,12 +70,6 @@ function totalLabel(t: (key: string) => string, period: InvestmentProfitPeriod) 
   return t("investmentProfitReport.total.year");
 }
 
-function totalRowLabel(t: (key: string) => string, period: InvestmentProfitPeriod) {
-  if (period === "day") return t("investmentProfitReport.totalRow.day");
-  if (period === "month") return t("investmentProfitReport.totalRow.month");
-  return t("investmentProfitReport.totalRow.year");
-}
-
 function activePeriodLabel(t: (key: string) => string, period: InvestmentProfitPeriod) {
   if (period === "day") return t("investmentProfitReport.activePeriod.day");
   if (period === "month") return t("investmentProfitReport.activePeriod.month");
@@ -71,7 +80,7 @@ function dailyCells(rows: InvestmentProfitReportRow[]) {
   const first = rows[0]?.key;
   if (!first) return rows.map((row) => ({ row, pad: false }));
   const [year, month] = first.split("-").map((item) => Number(item));
-  const firstDow = (new Date(Date.UTC(year, month - 1, 1)).getUTCDay() + 6) % 7;
+  const firstDow = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
   return [
     ...Array.from({ length: firstDow }, (_, index) => ({ row: null, pad: true, key: `pad-${index}` })),
     ...rows.map((row) => ({ row, pad: false, key: row.key })),
@@ -118,12 +127,12 @@ export function InvestmentProfitReport({ period, year, month, rows, totals, isRe
             <div className="mt-0.5 text-xs text-slate-500">
               {best
                 ? t("investmentProfitReport.bestPeriod")
-                    .replace("{name}", best.label)
+                    .replace("{name}", rowLabel(t, period, best.key))
                     .replace("{amount}", signedMoney(best.totalProfit))
                 : t("investmentProfitReport.noProfitRecords")}
               {worst && worst.key !== best?.key
                 ? ` · ${t("investmentProfitReport.worstPeriod")
-                    .replace("{name}", worst.label)
+                    .replace("{name}", rowLabel(t, period, worst.key))
                     .replace("{amount}", signedMoney(worst.totalProfit))}`
                 : ""}
             </div>
@@ -154,7 +163,7 @@ export function InvestmentProfitReport({ period, year, month, rows, totals, isRe
                     title={`${row.subLabel} ${signedMoney(row.totalProfit)}`}
                   >
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold text-slate-600">{row.label}</span>
+                      <span className="text-xs font-semibold text-slate-600">{rowLabel(t, period, row.key)}</span>
                       {row.count > 0 ? <span className="text-[10px] text-slate-400">{row.count}</span> : null}
                     </div>
                     <div className={`mt-1 text-xs font-semibold tabular-nums ${valueClass(row.totalProfit, isRedUp)}`}>
@@ -173,41 +182,52 @@ export function InvestmentProfitReport({ period, year, month, rows, totals, isRe
             </div>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full table-fixed border-separate border-spacing-0">
-              <thead className="sticky top-0 bg-white">
-                <tr>
-                  <th className="border-b border-slate-200 px-4 py-2 text-left text-xs font-semibold text-slate-600">{t("investmentProfitReport.colPeriod")}</th>
-                  <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">{t("investmentProfitReport.summary.fundProfit")}</th>
-                  <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">{t("investmentProfitReport.summary.wealthProfit")}</th>
-                  <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">{t("investmentProfitReport.summary.depositProfit")}</th>
-                  <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">{t("common.total")}</th>
-                  <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">{t("investmentProfitReport.colSourceCount")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row) => (
-                  <tr key={row.key} className="hover:bg-slate-50">
-                    <td className="border-b border-slate-100 px-4 py-2 text-xs font-medium text-slate-700">{row.label}</td>
-                    <td className="border-b border-slate-100 px-3 py-2 text-right text-xs"><ProfitNumber value={row.fundProfit} isRedUp={isRedUp} /></td>
-                    <td className="border-b border-slate-100 px-3 py-2 text-right text-xs"><ProfitNumber value={row.wealthProfit} isRedUp={isRedUp} /></td>
-                    <td className="border-b border-slate-100 px-3 py-2 text-right text-xs"><ProfitNumber value={row.depositProfit} isRedUp={isRedUp} /></td>
-                    <td className="border-b border-slate-100 px-3 py-2 text-right text-xs"><ProfitNumber value={row.totalProfit} isRedUp={isRedUp} /></td>
-                    <td className="border-b border-slate-100 px-3 py-2 text-right text-xs tabular-nums text-slate-500">{row.count || "-"}</td>
-                  </tr>
-                ))}
-              </tbody>
-              <tfoot className="sticky bottom-0 bg-slate-50">
-                <tr>
-                  <td className="border-t border-slate-200 px-4 py-2 text-xs font-semibold text-slate-700">{totalRowLabel(t, period)}</td>
-                  <td className="border-t border-slate-200 px-3 py-2 text-right text-xs"><ProfitNumber value={totals.fundProfit} isRedUp={isRedUp} /></td>
-                  <td className="border-t border-slate-200 px-3 py-2 text-right text-xs"><ProfitNumber value={totals.wealthProfit} isRedUp={isRedUp} /></td>
-                  <td className="border-t border-slate-200 px-3 py-2 text-right text-xs"><ProfitNumber value={totals.depositProfit} isRedUp={isRedUp} /></td>
-                  <td className="border-t border-slate-200 px-3 py-2 text-right text-xs"><ProfitNumber value={totals.totalProfit} isRedUp={isRedUp} /></td>
-                  <td className="border-t border-slate-200 px-3 py-2 text-right text-xs tabular-nums text-slate-700">{totals.count || "-"}</td>
-                </tr>
-              </tfoot>
-            </table>
+          <div className="p-3">
+            <div className={`grid gap-2 ${period === "month" ? "grid-cols-2 md:grid-cols-3 xl:grid-cols-4" : "grid-cols-1 sm:grid-cols-2 xl:grid-cols-3"}`}>
+              {rows.map((row) => {
+                const hasProfit = row.count > 0;
+                return (
+                  <div
+                    key={row.key}
+                    className={`min-h-[116px] rounded-md border p-3 ${
+                      hasProfit ? "border-slate-200 bg-white" : "border-slate-100 bg-slate-50/50"
+                    }`}
+                    title={`${row.subLabel || rowLabel(t, period, row.key)} ${signedMoney(row.totalProfit)}`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="truncate text-xs font-semibold text-slate-700">{rowLabel(t, period, row.key)}</div>
+                        {row.subLabel ? <div className="mt-0.5 truncate text-[10px] text-slate-400">{row.subLabel}</div> : null}
+                      </div>
+                      {hasProfit ? (
+                        <div className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] tabular-nums text-slate-500">
+                          {t("investmentProfitReport.colSourceCount")} {row.count}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className={`mt-3 text-base font-semibold tabular-nums ${valueClass(row.totalProfit, isRedUp)}`}>
+                      {hasProfit ? signedMoney(row.totalProfit) : "-"}
+                    </div>
+                    {hasProfit ? (
+                      <div className="mt-2 grid grid-cols-1 gap-1 text-[11px] tabular-nums text-slate-500">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate">{t("investmentProfitReport.summary.fundProfit")}</span>
+                          <ProfitNumber value={row.fundProfit} isRedUp={isRedUp} />
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate">{t("investmentProfitReport.summary.wealthProfit")}</span>
+                          <ProfitNumber value={row.wealthProfit} isRedUp={isRedUp} />
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate">{t("investmentProfitReport.summary.depositProfit")}</span>
+                          <ProfitNumber value={row.depositProfit} isRedUp={isRedUp} />
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
       </div>

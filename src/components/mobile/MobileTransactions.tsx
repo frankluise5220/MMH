@@ -159,7 +159,7 @@ export function MobileTransactions({ entries, accountSummary }: { entries: Mobil
         </div>
         <div className="mt-2 flex gap-1 overflow-x-auto pb-0.5">
           {(["all", "expense", "income", "transfer", "investment"] as const).map((value) => (
-            <button key={value} type="button" onClick={() => setFilter(value)} className={`h-9 shrink-0 rounded-full px-3 text-xs font-semibold ${filter === value ? "bg-indigo-600 text-white" : "bg-white text-slate-600"}`}>
+            <button key={value} type="button" onClick={() => setFilter(value)} className={`h-9 shrink-0 rounded-lg border px-3 text-xs font-semibold ${filter === value ? "border-indigo-600 bg-indigo-600 text-white" : "border-slate-200 bg-white text-slate-600"}`}>
               {value === "all" ? t("common.all") : typeLabel(value, t)}
             </button>
           ))}

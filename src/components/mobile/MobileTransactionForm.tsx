@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { buildGroupedAccountOptions, buildAccountDisplayOption, type AccountDisplaySource } from "@/lib/account-display";
 import { SmartSelect } from "@/components/SmartSelect";
@@ -71,12 +71,21 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
     };
   }, [open]);
 
+  const openCreate = useCallback(() => {
+    setDraft({ ...EMPTY_DRAFT, accountId: defaultAccountId || accounts[0]?.id || "" });
+    setError("");
+    setOpen(true);
+  }, [accounts, defaultAccountId]);
+
   useEffect(() => {
-    const openCreate = () => {
-      setDraft({ ...EMPTY_DRAFT, accountId: defaultAccountId || accounts[0]?.id || "" });
-      setError("");
-      setOpen(true);
-    };
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("quickEntry") !== "1") return;
+    openCreate();
+    url.searchParams.delete("quickEntry");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  }, [openCreate]);
+
+  useEffect(() => {
     const openEdit = async (event: Event) => {
       const entryId = (event as CustomEvent<{ entryId?: string }>).detail?.entryId?.trim();
       if (!entryId) return;
@@ -110,7 +119,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
       window.removeEventListener("mmh:create-transaction:open", openCreate);
       window.removeEventListener("mmh:mobile-transaction:edit", openEdit);
     };
-  }, [accounts, defaultAccountId, t]);
+  }, [openCreate, t]);
 
   function close() {
     if (saving) return;
@@ -172,7 +181,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
     <div className="fixed inset-0 z-[1000] flex items-end overflow-hidden bg-slate-950/30" role="dialog" aria-modal="true" aria-label={draft.id ? t("mobileTxForm.editTitle") : t("mobileTxForm.newTitle")}>
       <div className="flex h-[min(86dvh,42rem)] max-h-[calc(100dvh-max(0.75rem,env(safe-area-inset-top)))] w-full flex-col overflow-hidden rounded-t-2xl bg-white shadow-2xl">
         <div className="shrink-0 px-4 pt-3">
-        <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-slate-200" />
+        <div className="mx-auto mb-3 h-1 w-10 rounded bg-slate-200" />
         <div className="flex items-center justify-between">
           <h2 className="text-base font-semibold text-slate-900">{draft.id ? t("mobileTxForm.editTitle") : t("mobileTxForm.newTitle")}</h2>
           <button type="button" onClick={close} className="flex h-10 w-10 items-center justify-center text-slate-500" aria-label={t("mobileTxForm.close")}>

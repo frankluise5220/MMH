@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db/prisma";
+import { addTradingDaysUtc } from "@/lib/date-utils";
 
 export type FundConfirmRule = {
   days: number;
@@ -12,11 +13,20 @@ export function normalizeNonNegativeDays(value: unknown, fallback: number): numb
   return Math.max(0, Math.trunc(days));
 }
 
+export function fundUnitsProfitStartDate(
+  navDate: string | null | undefined,
+  tradingCalendar?: string | null,
+): string | null {
+  const date = String(navDate ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  return addTradingDaysUtc(date, 1, tradingCalendar ?? "cn_fund");
+}
+
 export async function getFundConfirmDays(accountId: string, fundCode: string): Promise<number> {
   const record = await prisma.fundConfirmDays.findUnique({
     where: { accountId_fundCode: { accountId, fundCode } },
   });
-  return normalizeNonNegativeDays(record?.days, 0);
+  return normalizeNonNegativeDays(record?.days, 1);
 }
 
 export async function getFundArrivalDays(accountId: string, fundCode: string): Promise<number> {
@@ -31,7 +41,7 @@ export async function getFundConfirmRule(accountId: string, fundCode: string): P
     where: { accountId_fundCode: { accountId, fundCode } },
   });
   return {
-    days: normalizeNonNegativeDays(record?.days, 0),
+    days: normalizeNonNegativeDays(record?.days, 1),
     arrivalDays: normalizeNonNegativeDays(record?.arrivalDays, 2),
     exists: !!record,
   };

@@ -77,7 +77,7 @@ type TemplateSpec = {
   notes: string[][];
 };
 
-const NORMAL_HEADERS = ["日期", "入账日期", "收支大类", "金额", "流出", "流入", "账户", "对向账户", "分类", "收支机构", "标签", "备注"];
+const NORMAL_HEADERS = ["日期", "入账日期", "收支大类", "流出", "流入", "账户", "对向账户", "分类", "收支机构", "标签", "备注"];
 const FUND_HEADERS = ["date", "fundSubtype", "source", "cashAccount", "fundAccount", "fundCode", "fundName", "amount", "units", "nav", "fee", "confirmDate", "arrivalDate", "remark"];
 
 function safeFileNamePart(value: string, fallback: string) {
@@ -139,14 +139,14 @@ function templateFor(props: ViewExcelImportMenuButtonProps, t: TranslateFn): Tem
     headers: NORMAL_HEADERS,
     rows: isCreditCardTemplate
       ? [
-        ["2026-06-08", "2026-06-09", "支出", "32.50", "32.50", "", accountName, "", "餐饮", "麦当劳", "午餐", "信用卡消费"],
-        ["2026-06-05", "2026-06-06", "支出", "20.00", "", "20.00", accountName, "", "餐饮", "示例餐厅", "", "信用卡退款"],
-        ["2026-06-20", "2026-06-20", "转账", "108.00", "", "108.00", accountName, "招商银行2758", "", "", "", "信用卡还款"],
+        ["2026-06-08", "2026-06-09", "支出", "32.50", "", accountName, "", "餐饮", "麦当劳", "午餐", "信用卡消费"],
+        ["2026-06-05", "2026-06-06", "支出", "", "20.00", accountName, "", "餐饮", "示例餐厅", "", "信用卡退款"],
+        ["2026-06-20", "2026-06-20", "转账", "", "108.00", accountName, "招商银行2758", "", "", "", "信用卡还款"],
       ]
       : [
-        ["2026-06-08", "2026-06-09", "支出", "32.50", "32.50", "", accountName, "", "餐饮", "麦当劳", "午餐", "午餐"],
-        ["2026-06-08", "", "收入", "1.28", "", "1.28", accountName, "", "利息收入", "", "利息", "活期利息"],
-        ["2026-06-20", "", "转账", "1000.00", "1000.00", "", accountName, "现金", "", "", "", "转账"],
+        ["2026-06-08", "2026-06-09", "支出", "32.50", "", accountName, "", "餐饮", "麦当劳", "午餐", "午餐"],
+        ["2026-06-08", "", "收入", "", "1.28", accountName, "", "利息收入", "", "利息", "活期利息"],
+        ["2026-06-20", "", "转账", "1000.00", "", accountName, "现金", "", "", "", "转账"],
       ],
     notes: [
       [t("viewImport.notesIntroLabel"), t("viewImport.notesIntroNormal")],
@@ -154,7 +154,6 @@ function templateFor(props: ViewExcelImportMenuButtonProps, t: TranslateFn): Tem
       [t("detail.column.date"), t("viewImport.notesDate")],
       [t("detail.column.postedAt"), t("viewImport.notesPostedAt")],
       [t("viewImport.activityType"), t("viewImport.notesActivityType")],
-      [t("viewImport.amount"), t("viewImport.notesAmount")],
       [t("detail.column.outflow"), t("viewImport.notesOutflow")],
       [t("detail.column.inflow"), t("viewImport.notesInflow")],
       [t("viewImport.account"), t("viewImport.notesAccount")],

@@ -10,6 +10,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,16 +44,21 @@ import com.mmh.app.ui.util.formatRate
  * - 标签分组饼图
  * - 投资盈亏列表
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StatisticsScreen(
     viewModel: StatisticsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        if (uiState.isLoading && uiState.monthData.isEmpty()) {
-            SkeletonLoading()
-        } else {
+    if (uiState.isLoading && uiState.monthData.isEmpty()) {
+        SkeletonLoading()
+    } else {
+        PullToRefreshBox(
+            isRefreshing = uiState.isLoading,
+            onRefresh = { viewModel.retry() },
+            modifier = Modifier.fillMaxSize()
+        ) {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
@@ -134,16 +140,6 @@ fun StatisticsScreen(
                     item { ErrorBanner(msg) { viewModel.retry() } }
                 }
             }
-        }
-
-        // 右上角刷新按钮
-        IconButton(
-            onClick = { viewModel.retry() },
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 4.dp, end = 4.dp)
-        ) {
-            Icon(Icons.Default.Refresh, contentDescription = "刷新", tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }

@@ -70,6 +70,17 @@ function dateAtYearAnchor(date: Date, encodedMonthDay: number): Date {
   return anchor ?? startOfDayUtc(date);
 }
 
+export function calcResumedScheduledRunDate(
+  currentNextRunDate: Date,
+  resumeDate: Date,
+  skipNonBusinessDays = true,
+): Date {
+  const currentNextRunDay = startOfDayUtc(currentNextRunDate);
+  const resumeDay = startOfDayUtc(resumeDate);
+  const nextRunDay = currentNextRunDay <= resumeDay ? resumeDay : currentNextRunDay;
+  return applyWeekendPolicy(nextRunDay, skipNonBusinessDays);
+}
+
 export function calcNextScheduledRunDate(
   fromDate: Date,
   unit: IntervalUnit,

@@ -7,13 +7,13 @@ import { useI18n } from "@/lib/i18n";
 type DayPnl = { date: string; mv: number; pnl: number | null };
 type MonthSummary = { month: number; mv: number | null; pnl: number | null };
 
-const WEEKDAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
+const WEEKDAY_KEYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
 
 function monthLabel(language: string, month: number) {
   return new Intl.DateTimeFormat(language, { month: "short" }).format(new Date(2000, month - 1, 1));
 }
 
-export function DailyPnlCalendar({ accountId }: { accountId: string }) {
+export function DailyPnlCalendar({ accountId, accountIds }: { accountId?: string; accountIds?: string[] }) {
   const { t, language } = useI18n();
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
@@ -26,24 +26,30 @@ export function DailyPnlCalendar({ accountId }: { accountId: string }) {
   // Month data fetch
   useEffect(() => {
     if (viewMode !== "month") return;
+    const scope = accountIds?.length
+      ? `accountIds=${encodeURIComponent(accountIds.join(","))}`
+      : `accountId=${encodeURIComponent(accountId ?? "all")}`;
     setLoading(true);
-    fetch(`/api/v1/invest/daily-pnl?accountId=${encodeURIComponent(accountId)}&year=${year}&month=${month}`)
+    fetch(`/api/v1/invest/daily-pnl?${scope}&year=${year}&month=${month}`)
       .then(r => r.json())
       .then(d => { if (d.ok) setDays(d.days || []); })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [accountId, year, month, viewMode]);
+  }, [accountId, accountIds, year, month, viewMode]);
 
   // Year data fetch
   useEffect(() => {
     if (viewMode !== "year") return;
+    const scope = accountIds?.length
+      ? `accountIds=${encodeURIComponent(accountIds.join(","))}`
+      : `accountId=${encodeURIComponent(accountId ?? "all")}`;
     setLoading(true);
-    fetch(`/api/v1/invest/daily-pnl?accountId=${encodeURIComponent(accountId)}&year=${year}&mode=year`)
+    fetch(`/api/v1/invest/daily-pnl?${scope}&year=${year}&mode=year`)
       .then(r => r.json())
       .then(d => { if (d.ok) setYearMonths(d.months || []); })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [accountId, year, viewMode]);
+  }, [accountId, accountIds, year, viewMode]);
 
   const pnlByDate = useMemo(() => {
     const m = new Map<string, DayPnl>();
@@ -65,13 +71,13 @@ export function DailyPnlCalendar({ accountId }: { accountId: string }) {
 
   // ── Month view grid ──
   const daysInMonth = new Date(year, month, 0).getDate();
-  const firstDow = (new Date(year, month - 1, 1).getDay() + 6) % 7;
+  const firstDow = new Date(year, month - 1, 1).getDay();
   const monthCells: Array<{ day: number; date: string } | null> = [];
   for (let i = 0; i < firstDow; i++) monthCells.push(null);
   for (let d = 1; d <= daysInMonth; d++) {
     monthCells.push({ day: d, date: `${year}-${String(month).padStart(2, "0")}-${String(d).padStart(2, "0")}` });
   }
-  const monthGrid = monthCells.slice(0, 35);
+  const monthGrid = monthCells;
 
   function prev() { if (month === 1) { setMonth(12); setYear(year - 1); } else setMonth(month - 1); }
   function next() { if (month === 12) { setMonth(1); setYear(year + 1); } else setMonth(month + 1); }

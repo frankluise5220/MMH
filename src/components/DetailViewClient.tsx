@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { Paperclip } from "lucide-react";
 import { formatDateLocal as localDateKey, toNumber } from "@/lib/date-utils";
 import { formatCurrencyMoney } from "@/lib/format";
 import { getColorSchemeFromCookie, pnlColor } from "@/lib/client/colors";
@@ -8,8 +9,8 @@ import { getInsuranceDetailCategoryName, getInsuranceDetailNote } from "@/lib/in
 import { dispatchEntryEdit, EntryRowActions, type EditPayload } from "./EntryRowActions";
 import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTableDropPosition } from "./AdvancedDataTable";
 import { BusinessLinkActionButton } from "./BusinessLinkActionButton";
-import {
-  BasicDetailBatchDeleteButton,
+import { EntryAttachmentWindow } from "./EntryAttachmentWindow";
+import { BasicDetailBatchDeleteButton,
   BasicDetailBatchReplaceButton,
   type BasicDetailBatchCategoryOption,
   useBasicDetailSelection,
@@ -100,6 +101,12 @@ export type DetailEntry = {
   fundArrivalAmount: number | null;
   businessLinkCount?: number;
   businessLinkLabels?: string[];
+  attachments?: Array<{
+    id: string;
+    name: string;
+    mimeType?: string | null;
+    url?: string | null;
+  }>;
   entryTags: Array<{
     tagId: string;
     Tag: { name: string; color: string } | null;
@@ -109,6 +116,28 @@ export type DetailEntry = {
 function cssEscape(value: string) {
   const escape = typeof window !== "undefined" ? window.CSS?.escape : undefined;
   return escape ? escape(value) : value.replace(/["\\]/g, "\\$&");
+}
+
+function EntryAttachmentIndicator({ entry, onClick }: { entry: DetailEntry; onClick: () => void }) {
+  const attachments = entry.attachments ?? [];
+  if (attachments.length === 0) return null;
+  const names = attachments.map((item) => item.name).join("、");
+  return (
+    <button
+      type="button"
+      title={names}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
+      className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-transparent text-amber-500 hover:border-amber-200 hover:bg-amber-50"
+    >
+      <Paperclip className="h-3.5 w-3.5" />
+      {attachments.length > 1 ? (
+        <span className="ml-0.5 text-[9px] font-medium text-amber-600">{attachments.length}</span>
+      ) : null}
+    </button>
+  );
 }
 
 function buildBasicEntryEditPayload(entry: DetailEntry, currentAccountId?: string | null) {
@@ -461,6 +490,7 @@ export function DetailViewClient({
   focusEntryId,
   reorderAccountIds,
   sortable = true,
+  onDisplayRowsChange,
 }: {
   accountId: string;
   isInvestAccount: boolean;
@@ -489,8 +519,10 @@ export function DetailViewClient({
   focusEntryId?: string;
   reorderAccountIds?: string[];
   sortable?: boolean;
+  onDisplayRowsChange?: (rows: DetailEntry[]) => void;
 }) {
   const { t } = useI18n();
+  const [attachmentViewEntryId, setAttachmentViewEntryId] = useState<string | null>(null);
   const resolvedEmptyText = emptyText ?? t("detail.empty");
   const resolvedAccountColumnLabel = accountColumnLabel ?? t("common.account");
   const accountOptionById = useMemo(
@@ -1210,7 +1242,6 @@ export function DetailViewClient({
         return <span className="block truncate text-slate-500" title={text}>{text}</span>;
       },
     },
-    { key: "attachment", label: t("detail.column.attachment"), width: 60, minWidth: 46, align: "center", hideable: true, render: () => <span className="text-slate-400" /> },
   ], [accountColumnDefaultHidden, accountColumnDisplayFallback, resolvedAccountColumnLabel, accountColumnMode, accountDisplayFallback, accountId, accountOptionById, detailCategoryLabel, inflowCls, investmentProductTypeByAccountId, outflowCls, relatedAccountDefaultHidden, relatedAccountTarget, renderNavigableAccountLabel, runningBalanceDefaultHidden, showAccountColumn, showRunningBalance, t]);
 
   const customToolbarLeft = toolbarMode === "custom" ? (
@@ -1295,6 +1326,7 @@ export function DetailViewClient({
                           <span className="mt-0.5 block text-[11px] tabular-nums text-slate-400">{t("detailView.runningBalance", { amount: formatEntryCurrencyMoney(toNumber(entry.runningBalance), entry) })}</span>
                         ) : null}
                       </span>
+                      <EntryAttachmentIndicator entry={entry} onClick={() => setAttachmentViewEntryId(entry.id)} />
                       <span className="text-slate-300">›</span>
                     </button>
                   );
@@ -1339,6 +1371,7 @@ export function DetailViewClient({
           : t("detailView.notLinked");
         return (
           <>
+            <EntryAttachmentIndicator entry={entry} onClick={() => setAttachmentViewEntryId(entry.id)} />
             {shouldShowBusinessLinkStatus(entry) ? (
               <BusinessLinkActionButton
                 active={hasBusinessLink}
@@ -1355,8 +1388,8 @@ export function DetailViewClient({
           </>
         );
       }}
-      rowActionsWidth={112}
-      rowActionsMinWidth={92}
+      rowActionsWidth={128}
+      rowActionsMinWidth={104}
       batchActionSlot={toolbarMode === "default" ? (
         <>
           <BasicDetailBatchReplaceButton accountOptions={accountOptions} categoryOptions={categoryOptions} categoryTypes={selectedCategoryTypes} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} />
@@ -1372,8 +1405,14 @@ export function DetailViewClient({
       toolbarLeftContent={customToolbarLeft}
       toolbarRightContent={toolbarRightContent}
       sortable={sortable}
+      onDisplayRowsChange={onDisplayRowsChange}
     />
     </div>
+    <EntryAttachmentWindow
+      open={attachmentViewEntryId != null}
+      entryId={attachmentViewEntryId}
+      onClose={() => setAttachmentViewEntryId(null)}
+    />
     </>
   );
 }

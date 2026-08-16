@@ -20,7 +20,7 @@ import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { decodeScheduledTaskMemo, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
-import { calcInitialScheduledRunDate as calcInitialRunDate, calcNextScheduledRunDate as calcNextRunDate, skipWeekend } from "@/lib/scheduled-task-date";
+import { calcNextScheduledRunDate as calcNextRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { executeNonFundScheduledTaskPlan, isNonFundScheduledTask } from "@/lib/server/scheduled-task-executor";
 import { resolveCategorySnapshot } from "@/lib/default-categories";
 import { acquireScheduledTaskPlanLock } from "@/lib/server/scheduled-task-lock";
@@ -157,13 +157,7 @@ export async function POST(req: NextRequest) {
         const dateStr = formatDateUtc(runDate);
         if (!existingDates.has(dateStr) && remainingRuns > 0) datesToProcess.push(runDate);
       } else {
-        let currentDate = calcInitialRunDate(
-          plan.nextRunDate,
-          plan.intervalUnit as IntervalUnit,
-          plan.intervalValue,
-          plan.executionDay,
-          false,
-        );
+        let currentDate = startOfDayUtc(plan.nextRunDate);
         let guard = 0;
         while (currentDate <= effectiveEndDate && datesToProcess.length < remainingRuns) {
           const dateStr = formatDateUtc(currentDate);
@@ -301,7 +295,7 @@ export async function POST(req: NextRequest) {
 
     // Precompute outside the transaction so NAV, fee-rate, and category lookups do not count toward the Prisma interactive transaction.
     const runDateStr = formatDateUtc(runDate);
-    const confirmDays = normalizeNonNegativeDays(plan.confirmDays ?? await getFundConfirmDays(plan.accountId, plan.fundCode), 0);
+    const confirmDays = normalizeNonNegativeDays(plan.confirmDays ?? await getFundConfirmDays(plan.accountId, plan.fundCode), 1);
     let confirmDateStr = addWorkdaysUtc(runDateStr, confirmDays);
     if (confirmDateStr < runDateStr) {
       logger.warn(`confirmDate ${confirmDateStr} < runDate ${runDateStr}, confirmDays=${confirmDays}, planId=${planId}`, "execute");

@@ -169,7 +169,9 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
 
   useEffect(() => {
     const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 5000);
+    // Generous timeout: a slow first compile or cold API route must not
+    // silently degrade the login form into a book-less two-row layout.
+    const timeoutId = window.setTimeout(() => controller.abort(), 15000);
     let mounted = true;
 
     void fetch("/api/v1/auth/password-status", { signal: controller.signal })
@@ -192,6 +194,11 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
             setSelectedUserId("");
             setUsername("");
           }
+          // A password exists but no user list came back (degraded status):
+          // never silently render a login form without the ledger row.
+          if (users.length === 0 && data.hasPassword && !needsInitialLedgerSetup) {
+            setError(t("login.error.statusCheckFailed"));
+          }
         } else {
           setMode("login");
           setInitialLedgerSetup(false);
@@ -199,6 +206,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
           setSelectedHouseholdId("");
           setSelectedUserId("");
           setPasswordResetEnabled(false);
+          setError(t("login.error.statusCheckFailed"));
         }
         if (typeof window !== "undefined" && new URL(window.location.href).searchParams.get("reset") === "1") {
           setShowReset(true);
@@ -212,6 +220,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
         setSelectedHouseholdId("");
         setSelectedUserId("");
         setPasswordResetEnabled(false);
+        setError(t("login.error.statusCheckFailed"));
       })
       .finally(() => {
         window.clearTimeout(timeoutId);
@@ -225,7 +234,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
       window.clearTimeout(timeoutId);
       controller.abort();
     };
-  }, []);
+  }, [t]);
 
   async function verifyLogin(params: { userId?: string; username?: string; password: string; householdId?: string }) {
     const res = await fetch("/api/v1/auth/verify", {

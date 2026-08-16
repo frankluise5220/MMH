@@ -2,16 +2,14 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useEffect } from "react";
+import type { MouseEvent } from "react";
 import { useI18n } from "@/lib/i18n";
 import {
   Home,
   Landmark,
   Plus,
-  RefreshCw,
   Settings,
   TrendingUp,
-  ReceiptText,
 } from "lucide-react";
 
 type TFunc = (key: string, params?: Record<string, string | number>) => string;
@@ -20,8 +18,8 @@ function navItems(t: TFunc) {
   return [
     { href: "/overview", label: t("mobileNav.overview"), icon: Home },
     { href: "/accounts", label: t("nav.accounts"), icon: Landmark },
-    { href: "/transactions", label: t("mobileTransactions.fallback"), icon: ReceiptText },
     { href: "/investments", label: t("nav.investments"), icon: TrendingUp },
+    { href: "/settings", label: t("mobileNav.profile"), icon: Settings },
   ] as const;
 }
 
@@ -35,6 +33,10 @@ function openQuickEntry() {
       },
     }),
   );
+}
+
+function isLocalQuickEntryPage(pathname: string) {
+  return pathname === "/" || pathname === "/overview" || pathname === "/transactions" || pathname.startsWith("/accounts/");
 }
 
 export function MobileNavigation() {
@@ -52,44 +54,23 @@ export function MobileNavigation() {
     rootView === "investproperty" ||
     rootView === "regularinvest";
 
-  useEffect(() => {
-    if (pathname !== "/" || searchParams.get("quickEntry") !== "1") return;
-    const timer = window.setTimeout(() => {
-      openQuickEntry();
-      const url = new URL(window.location.href);
-      url.searchParams.delete("quickEntry");
-      window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
-    }, 100);
-    return () => window.clearTimeout(timer);
-  }, [pathname, searchParams]);
-
   const isActive = (href: string) => {
     if (href === "/investments") return isRootInvestmentView || pathname.startsWith("/invest") || pathname.startsWith("/funds") || pathname.startsWith("/regular-invest");
     if (href === "/accounts") return pathname.startsWith("/accounts") || pathname.startsWith("/insurance") || pathname.startsWith("/liabilities");
     return pathname === href || pathname.startsWith(`${href}/`);
   };
 
+  function handleQuickEntry(event: MouseEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    if (isLocalQuickEntryPage(pathname)) {
+      openQuickEntry();
+      return;
+    }
+    router.push("/overview?quickEntry=1");
+  }
+
   return (
     <>
-      <header className="fixed inset-x-0 top-0 z-50 flex h-[calc(2.5rem+env(safe-area-inset-top))] items-end border-b border-slate-200 bg-slate-50/96 px-3 pb-1 backdrop-blur md:hidden">
-        <div className="flex h-9 min-w-0 flex-1 items-center gap-2.5">
-          <span className="sr-only">{t("mobileNav.ariaLabel")}</span>
-        </div>
-        <div className="flex shrink-0 items-center">
-          <Link href="/settings" className="flex h-9 w-9 items-center justify-center text-slate-500" aria-label={t("mobileNav.profile")}>
-            <Settings size={19} />
-          </Link>
-          <button
-            type="button"
-            onClick={() => router.refresh()}
-            className="flex h-9 w-9 items-center justify-center text-slate-500"
-            aria-label={t("settings.ledgers.refresh")}
-          >
-            <RefreshCw size={19} />
-          </button>
-        </div>
-      </header>
-
       <nav className="fixed inset-x-0 bottom-0 z-50 h-[calc(5.75rem+env(safe-area-inset-bottom))] pb-[env(safe-area-inset-bottom)] md:hidden">
         <div className="absolute inset-x-0 bottom-0 grid h-[calc(4.5rem+env(safe-area-inset-bottom))] grid-cols-[1fr_1fr_0.72fr_1fr_1fr] border-t border-slate-200 bg-white/97 px-1 pb-[env(safe-area-inset-bottom)] backdrop-blur">
           <MobileNavLink item={navItemsList[0]} active={isActive(navItemsList[0].href)} />
@@ -98,28 +79,16 @@ export function MobileNavigation() {
           <MobileNavLink item={navItemsList[2]} active={isActive(navItemsList[2].href)} />
           <MobileNavLink item={navItemsList[3]} active={isActive(navItemsList[3].href)} />
         </div>
-        {pathname === "/transactions" || pathname.startsWith("/accounts/") ? (
-          <button
-            type="button"
-            onClick={openQuickEntry}
-            className="absolute left-1/2 top-0 flex h-[72px] w-[72px] -translate-x-1/2 items-center justify-center rounded-full bg-white shadow-[0_4px_18px_rgba(15,23,42,0.18)]"
-            aria-label={t("txForm.addEntry")}
-          >
-            <span className="flex h-[58px] w-[58px] items-center justify-center rounded-full bg-indigo-600 text-white shadow-[0_8px_20px_rgba(79,70,229,0.32)]">
-              <Plus size={28} />
-            </span>
-          </button>
-        ) : (
-          <Link
-            href="/?quickEntry=1"
-            className="absolute left-1/2 top-0 flex h-[72px] w-[72px] -translate-x-1/2 items-center justify-center rounded-full bg-white shadow-[0_4px_18px_rgba(15,23,42,0.18)]"
-            aria-label={t("txForm.addEntry")}
-          >
-            <span className="flex h-[58px] w-[58px] items-center justify-center rounded-full bg-indigo-600 text-white shadow-[0_8px_20px_rgba(79,70,229,0.32)]">
-              <Plus size={28} />
-            </span>
-          </Link>
-        )}
+        <button
+          type="button"
+          onClick={handleQuickEntry}
+          className="absolute left-1/2 top-1 flex h-14 w-14 -translate-x-1/2 touch-manipulation items-center justify-center rounded-2xl bg-white shadow-[0_4px_18px_rgba(15,23,42,0.16)]"
+          aria-label={t("txForm.addEntry")}
+        >
+          <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-indigo-600 text-white shadow-[0_8px_20px_rgba(79,70,229,0.28)]">
+            <Plus size={25} />
+          </span>
+        </button>
       </nav>
     </>
   );

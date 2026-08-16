@@ -32,6 +32,28 @@ function write(file, content, mode) {
   if (mode) fs.chmodSync(file, mode);
 }
 
+function makeFnosPackageEntriesReadable(dir) {
+  if (!fs.existsSync(dir)) return;
+  const walk = (current) => {
+    const stat = fs.lstatSync(current);
+    if (stat.isDirectory()) {
+      fs.chmodSync(current, 0o755);
+      for (const entry of fs.readdirSync(current)) {
+        walk(path.join(current, entry));
+      }
+      return;
+    }
+    if (!stat.isFile()) return;
+    const relative = path.relative(stageDir, current).replace(/\\/g, "/");
+    const executable =
+      relative.startsWith("cmd/") ||
+      relative === "app/bin/node" ||
+      relative.startsWith("app/bin/bin/");
+    fs.chmodSync(current, executable ? 0o755 : 0o644);
+  };
+  walk(dir);
+}
+
 function normalizeFnosVersion(value) {
   const raw = String(value || "").trim();
   if (!raw) return "0.1.0";
@@ -518,7 +540,6 @@ changelog=${changelog}
 `);
 
 write(path.join(stageDir, "config", "privilege"), JSON.stringify({
-  defaults: { "run-as": "package" },
   username: "mmh",
   groupname: "mmh",
 }, null, 2));
@@ -829,6 +850,12 @@ EOF
         sed -i "s/^service_port[[:space:]]*=.*/service_port          = \${port}/" "\${APP_ROOT}/manifest"
     fi
 
+    if id mmh >/dev/null 2>&1; then
+        chown -R mmh:mmh "$pkgvar" 2>/dev/null || true
+    fi
+    chmod 770 "$pkgvar" 2>/dev/null || true
+    chmod 700 "\${pkgvar}/data" 2>/dev/null || true
+
     printf '%s' "$port"
 }
 `, 0o755);
@@ -934,8 +961,42 @@ EOF
   chmod 600 "$SYSTEM_PASSWORD_FILE" 2>/dev/null || true
 }
 
+ensure_runtime_owner () {
+  mkdir -p "$DATA_DEST" "$DATA_ROOT"
+  if id mmh >/dev/null 2>&1; then
+    chown -R mmh:mmh "$DATA_ROOT" 2>/dev/null || true
+  fi
+  chmod 770 "$DATA_ROOT" 2>/dev/null || true
+  chmod 700 "$DATA_DEST" 2>/dev/null || true
+}
+
+restart_start_as_package_user () {
+  if [ "$(id -u)" = "0" ] && id mmh >/dev/null 2>&1; then
+    ensure_runtime_owner
+    if command -v runuser >/dev/null 2>&1; then
+      exec env \
+        TRIM_APPDEST="\${TRIM_APPDEST:-}" \
+        TRIM_DATADEST="\${TRIM_DATADEST:-}" \
+        TRIM_PKGVAR="\${TRIM_PKGVAR:-}" \
+        TRIM_APPNAME="\${TRIM_APPNAME:-mmh}" \
+        PORT="\${PORT:-}" \
+        runuser -u mmh -- "$0" start
+    fi
+    if command -v su >/dev/null 2>&1; then
+      exec env \
+        TRIM_APPDEST="\${TRIM_APPDEST:-}" \
+        TRIM_DATADEST="\${TRIM_DATADEST:-}" \
+        TRIM_PKGVAR="\${TRIM_PKGVAR:-}" \
+        TRIM_APPNAME="\${TRIM_APPNAME:-mmh}" \
+        PORT="\${PORT:-}" \
+        su mmh -s /bin/bash -c "'$0' start"
+    fi
+  fi
+}
+
 start_app () {
   mkdir -p "$DATA_DEST"
+  restart_start_as_package_user
   ensure_runtime_settings
   if [ ! -x "$NODE_BIN" ]; then
     echo "Bundled Linux Node runtime is missing: $NODE_BIN" >&2
@@ -1120,13 +1181,13 @@ if (fs.existsSync(standaloneDir)) {
     runtimePkg.mmhReleaseNotes = changelog;
     write(runtimePackageJson, JSON.stringify(runtimePkg, null, 2));
   }
+  for (const envFile of [".env", ".env.local", ".env.production", ".env.development"]) {
+    fs.rmSync(path.join(stageDir, "app", "server", envFile), { force: true });
+  }
   copyDir(staticDir, path.join(stageDir, "app", "server", ".next", "static"));
   copyFnosPublicAssets(publicDir, path.join(stageDir, "app", "server", "public"));
   copyDir(path.join(root, "prisma"), path.join(stageDir, "app", "server", "prisma"));
   copyFile(path.join(root, "prisma.config.ts"), path.join(stageDir, "app", "server", "prisma.config.ts"));
-  for (const envFile of [".env", ".env.local", ".env.production", ".env.development"]) {
-    fs.rmSync(path.join(stageDir, "app", "server", envFile), { force: true });
-  }
   pruneStagedServer(path.join(stageDir, "app", "server"));
   const initSql = path.join(stageDir, "app", "server", "prisma", "native-init.sql");
   const diff = run(process.execPath, [
@@ -1745,6 +1806,8 @@ if (hasNode) {
   }
 }
 
+makeFnosPackageEntriesReadable(stageDir);
+
 console.log(`FNOS SQLite FPK source staged: ${path.relative(root, stageDir)}`);
 
 if (stageOnly) {
@@ -1810,6 +1873,7 @@ if (manualFpk) {
   }
   fs.rmSync(path.join(stageDir, "app"), { recursive: true, force: true });
   fs.appendFileSync(path.join(stageDir, "manifest"), `checksum=${hashFileMd5(appArchive)}\n`, "utf8");
+  makeFnosPackageEntriesReadable(stageDir);
   const fpkPath = path.join(outDir, fpkAssetName());
   const fpkEntries = [
     "app.tgz",

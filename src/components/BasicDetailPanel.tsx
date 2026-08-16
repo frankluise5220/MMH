@@ -32,6 +32,7 @@ type BasicDetailPanelProps = {
   initialDetailAll: boolean;
   normalExportFilename: string;
   normalExportRows?: string[][];
+  normalExportRowsByEntryId?: Record<string, string[]>;
   accountOptions: Array<{ id: string; label: string; fullLabel?: string | null; title?: string | null }>;
   categoryOptions?: BasicDetailBatchCategoryOption[];
   investmentProductTypeByAccountId: Record<string, string | undefined | null>;
@@ -240,6 +241,7 @@ export function BasicDetailPanel({
   initialDetailAll,
   normalExportFilename,
   normalExportRows = [],
+  normalExportRowsByEntryId,
   accountOptions,
   categoryOptions = [],
   investmentProductTypeByAccountId,
@@ -261,6 +263,7 @@ export function BasicDetailPanel({
   const [pageSize, setPageSize] = useState(normalizedInitialPageSize);
   const [detailAll, setDetailAll] = useState(initialDetailAll);
   const [isPageLoading, setIsPageLoading] = useState(false);
+  const [displayedEntryIds, setDisplayedEntryIds] = useState<string[] | null>(null);
   const [guideOverlayOpen, setGuideOverlayOpen] = useState(showGuideOverlay);
   const [guideMetrics, setGuideMetrics] = useState<GuideMetrics | null>(null);
   const [guidePortalHost, setGuidePortalHost] = useState<HTMLElement | null>(null);
@@ -495,6 +498,24 @@ export function BasicDetailPanel({
   }, [accountId, clientPaginationEnabled, detailAll, pageSize, reloadDetailPage, safePage]);
 
   const pageEntries = useMemo(() => localEntries, [localEntries]);
+  const handleDisplayRowsChange = useCallback((rows: DetailEntry[]) => {
+    const nextIds = rows.map((entry) => entry.id);
+    setDisplayedEntryIds((current) => {
+      if (!current) return nextIds;
+      if (current.length !== nextIds.length) return nextIds;
+      const currentIds = new Set(current);
+      if (nextIds.every((id) => currentIds.has(id))) return current;
+      return nextIds;
+    });
+  }, []);
+  const visibleNormalExportRows = useMemo(() => {
+    if (!normalExportRowsByEntryId || displayedEntryIds === null || displayedEntryIds.length === pageEntries.length) return normalExportRows;
+    const [header = []] = normalExportRows;
+    const rows = displayedEntryIds
+      .map((id) => normalExportRowsByEntryId[id])
+      .filter((row): row is string[] => Array.isArray(row));
+    return [header, ...rows];
+  }, [displayedEntryIds, normalExportRows, normalExportRowsByEntryId, pageEntries.length]);
 
   const setPagedSize = (nextPageSize: number) => {
     setDetailAll(false);
@@ -572,7 +593,7 @@ export function BasicDetailPanel({
                   accountName: accountName || accountLabel || t("basicDetail.currentAccount"),
                 }}
                 excelExport={{
-                  rows: normalExportRows,
+                  rows: visibleNormalExportRows,
                   filename: normalExportFilename,
                   sheetName: t("basicDetail.entriesTitle"),
                   title: t("basicDetail.exportExcelTitle"),
@@ -603,6 +624,7 @@ export function BasicDetailPanel({
               />
             </div>
           }
+          onDisplayRowsChange={handleDisplayRowsChange}
         />
         {guideOverlayOpen && guidePortalHost ? createPortal((
           <div className="pointer-events-none fixed inset-0 z-[80] hidden overflow-hidden md:block" aria-live="polite">

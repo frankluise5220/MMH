@@ -271,30 +271,10 @@ export default function LedgerSettingsPage() {
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between gap-3">
+      <div>
         <div>
           <h2 className="text-sm font-semibold text-slate-800">{t("settings.ledgers.title")}</h2>
           <p className="mt-1 text-xs text-slate-500">{t("settings.ledgers.description")}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => loadHouseholds()}
-            disabled={loading}
-            className="h-9 w-9 rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50"
-            title={t("settings.ledgers.refresh")}
-          >
-            <RefreshCw className={`mx-auto h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-          </button>
-          <SettingsPrimaryAddButton
-            onClick={() => {
-              setError("");
-              setCreateForm(emptyCreateForm);
-              setShowCreate(true);
-            }}
-          >
-            {t("settings.ledgers.add")}
-          </SettingsPrimaryAddButton>
         </div>
       </div>
 
@@ -307,6 +287,26 @@ export default function LedgerSettingsPage() {
           <div>
             <div className="text-sm font-medium text-slate-800">{t("settings.ledgers.current")}</div>
             <div className="mt-1 text-xs text-slate-500">{active ? activeName : t("settings.ledgers.loading")}</div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => loadHouseholds()}
+              disabled={loading}
+              className="secondary-button h-8 gap-1.5 px-2.5 text-xs disabled:opacity-50"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+              {t("settings.ledgers.refresh")}
+            </button>
+            <SettingsPrimaryAddButton
+              onClick={() => {
+                setError("");
+                setCreateForm(emptyCreateForm);
+                setShowCreate(true);
+              }}
+            >
+              {t("settings.ledgers.add")}
+            </SettingsPrimaryAddButton>
           </div>
         </div>
 

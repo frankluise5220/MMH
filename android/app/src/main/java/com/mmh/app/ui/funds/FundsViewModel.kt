@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import timber.log.Timber
 import javax.inject.Inject
 
 data class FundsUiState(
@@ -50,49 +51,56 @@ class FundsViewModel @Inject constructor(
     fun loadInitial() {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, error = null)
-
-            val cachedAccounts = accountRepository.getCachedInvestmentAccounts()
-            if (cachedAccounts.isNotEmpty()) {
-                val selectedAccountId = _uiState.value.selectedAccountId
-                    .takeIf { current -> cachedAccounts.any { it.id == current } }
-                    ?: cachedAccounts.firstOrNull()?.id.orEmpty()
-
-                _uiState.value = _uiState.value.copy(
-                    isLoading = false,
-                    accounts = cachedAccounts,
-                    selectedAccountId = selectedAccountId,
-                )
-
-                if (selectedAccountId.isNotBlank()) {
-                    loadCachedFundData(selectedAccountId)
-                }
-                return@launch
-            }
-
-            when (val accountResult = accountRepository.getInvestmentAccounts()) {
-                is Resource.Success -> {
-                    val accounts = accountResult.data
+            try {
+                val cachedAccounts = accountRepository.getCachedInvestmentAccounts()
+                if (cachedAccounts.isNotEmpty()) {
                     val selectedAccountId = _uiState.value.selectedAccountId
-                        .takeIf { current -> accounts.any { it.id == current } }
-                        ?: accounts.firstOrNull()?.id.orEmpty()
+                        .takeIf { current -> cachedAccounts.any { it.id == current } }
+                        ?: cachedAccounts.firstOrNull()?.id.orEmpty()
 
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
-                        accounts = accounts,
+                        accounts = cachedAccounts,
                         selectedAccountId = selectedAccountId,
                     )
 
                     if (selectedAccountId.isNotBlank()) {
-                        loadFundData(selectedAccountId, false)
+                        loadCachedFundData(selectedAccountId)
                     }
+                    return@launch
                 }
 
-                is Resource.Error -> {
-                    _uiState.value = _uiState.value.copy(
-                        isLoading = false,
-                        error = accountResult.message,
-                    )
+                when (val accountResult = accountRepository.getInvestmentAccounts()) {
+                    is Resource.Success -> {
+                        val accounts = accountResult.data
+                        val selectedAccountId = _uiState.value.selectedAccountId
+                            .takeIf { current -> accounts.any { it.id == current } }
+                            ?: accounts.firstOrNull()?.id.orEmpty()
+
+                        _uiState.value = _uiState.value.copy(
+                            isLoading = false,
+                            accounts = accounts,
+                            selectedAccountId = selectedAccountId,
+                        )
+
+                        if (selectedAccountId.isNotBlank()) {
+                            loadFundData(selectedAccountId, false)
+                        }
+                    }
+
+                    is Resource.Error -> {
+                        _uiState.value = _uiState.value.copy(
+                            isLoading = false,
+                            error = accountResult.message,
+                        )
+                    }
                 }
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to load funds initial")
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    error = e.message ?: "加载基金持仓失败",
+                )
             }
         }
     }
@@ -136,20 +144,29 @@ class FundsViewModel @Inject constructor(
                 error = null,
             )
 
-            when (val fundResult = fundRepository.getShellData(accountId = accountId)) {
-                is Resource.Success -> {
-                    val data = fundResult.data
-                    shellCache[accountId] = data
-                    applyShellData(accountId, data, isRefreshing = false)
-                }
+            try {
+                when (val fundResult = fundRepository.getShellData(accountId = accountId)) {
+                    is Resource.Success -> {
+                        val data = fundResult.data
+                        shellCache[accountId] = data
+                        applyShellData(accountId, data, isRefreshing = false)
+                    }
 
-                is Resource.Error -> {
-                    _uiState.value = _uiState.value.copy(
-                        isLoading = false,
-                        isRefreshing = false,
-                        error = fundResult.message,
-                    )
+                    is Resource.Error -> {
+                        _uiState.value = _uiState.value.copy(
+                            isLoading = false,
+                            isRefreshing = false,
+                            error = fundResult.message,
+                        )
+                    }
                 }
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to load fund shell data")
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    isRefreshing = false,
+                    error = e.message ?: "加载基金数据失败",
+                )
             }
         }
     }

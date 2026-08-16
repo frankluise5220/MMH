@@ -97,10 +97,13 @@ export default function SettingsTagsClient({
         title={t("settings.tags.title")}
         description={t("settings.tags.description")}
         count={tags.length}
-        actions={<SettingsPrimaryAddButton onClick={() => setEditing({ id: "", name: "", color: COLORS[6] })}>{t("settings.tags.add")}</SettingsPrimaryAddButton>}
       />
 
-      <SettingsSection title={t("settings.tags.listTitle")} count={tags.length}>
+      <SettingsSection
+        title={t("settings.tags.listTitle")}
+        count={tags.length}
+        actions={<SettingsPrimaryAddButton onClick={() => setEditing({ id: "", name: "", color: COLORS[6] })}>{t("settings.tags.add")}</SettingsPrimaryAddButton>}
+      >
         <SettingsTable minWidth={640}>
           <thead className="sticky top-0 z-10">
             <tr>

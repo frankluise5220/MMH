@@ -381,6 +381,7 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Income/expense reports should prioritize dense statistical rows and must not spend vertical space on duplicate total-income, total-expense, net, or column-count cards above the table.
 - Report filters such as hierarchy, start/end year-month, and account should use one compact toolbar row without a separate summary row or tall filter card.
 - 投资收益表展示的是市值收益，不是赎回时确认的投资收入。按日视图顶部合计只汇总当前月份，按月视图顶部合计只汇总当前年份，按年视图才展示有收益以来到当前年的累计合计；前翻/后翻与按日、按月、按年粒度切换放在同一组控件中。投资收益表发现已发生工作日的持仓基金净值缺失时，必须在统计范围控件最右侧以内联提示显示并询问用户是否获取缺失净值，不应另占一行；周末/非交易日可以沿用上一可用交易日净值，不应造成永久缺失提示。用户确认获取缺失净值且请求成功结束后，当前提示条应局部消隐，不应整页刷新。
+- 基金买入和红利再投资的 `confirmDate` / `fundConfirmDate` 表示净值日期，不表示新增份额已经可以参与同日收益。收益日历按“前一日已收益生效份额 × 当日净值变化”计算；新份额从净值日期后的下一个基金交易日开始参与收益。
 - 报表页第三个页签是「股票持仓盈亏」。它读取当前 `StockHolding`，展示数量、成本、收盘价、市值、浮动盈亏、已实现收益和综合盈亏；浮动盈亏 = 市值 - 成本，综合盈亏 = 浮动盈亏 + 已实现收益。不要把它并进基金/理财/存款的市值收益日历，也不要从基金字段推断股票值。统计范围复用同一套机构/账户筛选控件，但选项只包含股票账户。
 - The income/expense statistics table scrolls inside its own bounded panel with a frozen header. When drill-down details are open, a horizontal splitter must let the user resize the statistics panel height, and the chosen height should persist locally. The upper statistics panel must never collapse below half of the currently available split area.
 - The reports workspace must not show a page-level vertical scrollbar. The statistics panel and drill-down detail panel each scroll internally within the remaining viewport height.

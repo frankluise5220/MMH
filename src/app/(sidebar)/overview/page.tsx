@@ -1,11 +1,13 @@
 import { cookies } from "next/headers";
 
 import { OverviewDashboard } from "@/components/OverviewDashboard";
+import { MobileTransactionForm } from "@/components/mobile/MobileTransactionForm";
 import { normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getServerDisplayLanguage } from "@/lib/server/i18n";
 import { computeInsuranceOverviewSummary } from "@/lib/server/insurance-overview-summary";
 import { computeOverviewSummary } from "@/lib/server/overview-summary";
+import { prisma } from "@/lib/db/prisma";
 
 export const dynamic = "force-dynamic";
 
@@ -19,10 +21,32 @@ export default async function OverviewPage() {
     cookieStore.get("mmh_credit_card_label_template")?.value,
     creditCardLabelMode,
   );
-  const summary = await computeOverviewSummary(ctx, creditCardLabelTemplate, language);
-  const insuranceOverview = await computeInsuranceOverviewSummary(ctx);
+  const [summary, insuranceOverview, accounts, categories] = await Promise.all([
+    computeOverviewSummary(ctx, creditCardLabelTemplate, language),
+    computeInsuranceOverviewSummary(ctx),
+    prisma.account.findMany({
+      where: { ...ctx.hidFilter, isActive: true, isPlaceholder: { not: true } },
+      orderBy: { name: "asc" },
+      select: {
+        id: true,
+        name: true,
+        kind: true,
+        numberMasked: true,
+        groupId: true,
+        investProductType: true,
+        Institution: { select: { name: true, shortName: true } },
+        AccountGroup: { select: { id: true, name: true } },
+      },
+    }),
+    prisma.category.findMany({
+      where: { ...ctx.hidFilter, type: { in: ["expense", "income"] } },
+      orderBy: [{ type: "asc" }, { name: "asc" }],
+      select: { id: true, name: true, type: true },
+    }),
+  ]);
 
   return (
+    <>
     <OverviewDashboard
       netWorth={summary.netWorth}
       accountTypeTotals={summary.accountTypeTotals}
@@ -42,5 +66,12 @@ export default async function OverviewPage() {
       insuranceOverview={insuranceOverview}
       isRedUp={isRedUp}
     />
+    <div className="md:hidden">
+      <MobileTransactionForm
+        accounts={accounts.map((account) => ({ ...account, kind: String(account.kind) }))}
+        categories={categories}
+      />
+    </div>
+    </>
   );
 }

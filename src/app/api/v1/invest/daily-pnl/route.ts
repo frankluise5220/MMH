@@ -1,156 +1,94 @@
 import { NextRequest, NextResponse } from "next/server";
+import { AccountKind } from "@prisma/client";
+
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { loadInvestmentProfitReport } from "@/lib/server/investment-profit-report";
 
+/**
+ * GET /api/v1/invest/daily-pnl
+ *
+ * Query parameters:
+ * - accountId: optional investment account ID. Omit or pass "all" for all investment accounts.
+ * - accountIds: optional comma-separated investment account IDs.
+ * - year: required four-digit year.
+ * - month: required month for month mode.
+ * - mode: "month" for daily rows, "year" for monthly rows.
+ *
+ * Success:
+ * - month mode: { ok: true, days: [{ date, mv, pnl }] }
+ * - year mode: { ok: true, months: [{ month, mv, pnl }] }
+ */
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const accountId = searchParams.get("accountId")?.trim();
-  const yearStr = searchParams.get("year")?.trim();
-  const monthStr = searchParams.get("month")?.trim();
-  const mode = searchParams.get("mode") || "month";
+  const accountIds = searchParams.get("accountIds")?.split(",").map((id) => id.trim()).filter(Boolean) ?? [];
+  const year = Number(searchParams.get("year")?.trim());
+  const month = Number(searchParams.get("month")?.trim());
+  const mode = searchParams.get("mode") === "year" ? "year" : "month";
 
-  if (!accountId) {
-    return NextResponse.json({ ok: false, code: "MISSING_PARAMETERS", error: "缺少参数" }, { status: 400 });
+  if (!Number.isInteger(year) || year < 1900 || year > 2200) {
+    return NextResponse.json({ ok: false, code: "INVALID_YEAR", error: "Invalid year." }, { status: 400 });
+  }
+  if (mode === "month" && (!Number.isInteger(month) || month < 1 || month > 12)) {
+    return NextResponse.json({ ok: false, code: "INVALID_MONTH", error: "Invalid month." }, { status: 400 });
   }
 
-  const { hidFilter, user } = await getHouseholdScope();
-  if (!user) {
-    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "请先登录" }, { status: 401 });
+  const ctx = await getHouseholdScope();
+  if (!ctx.user) {
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "Please sign in first." }, { status: 401 });
   }
-  // Verify the account belongs to the current household to avoid cross-household reads
-  const account = await prisma.account.findFirst({
-    where: { id: accountId, ...hidFilter },
-    select: { id: true },
-  });
-  if (!account) {
-    return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "账户不存在" }, { status: 404 });
+
+  const requestedAccountIds = Array.from(new Set([
+    ...accountIds,
+    ...(accountId && accountId !== "all" ? [accountId] : []),
+  ]));
+  if (requestedAccountIds.length > 0) {
+    const count = await prisma.account.count({
+      where: {
+        ...ctx.hidFilter,
+        id: { in: requestedAccountIds },
+        kind: AccountKind.investment,
+      },
+    });
+    if (count !== requestedAccountIds.length) {
+      return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "Investment account not found." }, { status: 404 });
+    }
   }
 
   try {
-    const holdings = await prisma.fundHolding.findMany({
-      where: { accountId, units: { gt: 0 } },
-      select: { fundCode: true, units: true },
+    const report = await loadInvestmentProfitReport(ctx, {
+      period: mode === "year" ? "month" : "day",
+      year,
+      month: mode === "year" ? 1 : month,
+      accountIds: requestedAccountIds.length ? requestedAccountIds : null,
+      fundValuationMode: "daily_nav_delta",
     });
-    if (holdings.length === 0) {
-      return NextResponse.json({ ok: true, days: [], months: [] });
-    }
 
-    const fundCodes = holdings.map(h => h.fundCode);
-    const unitsByCode = new Map(holdings.map(h => [h.fundCode, Number(h.units)]));
-
-    // Year mode: return monthly summaries
-    if (mode === "year" && yearStr) {
-      const year = parseInt(yearStr, 10);
-      const startDate = new Date(Date.UTC(year - 1, 11, 25));
-      const endDate = new Date(Date.UTC(year + 1, 0, 5));
-
-      const navRecords = await prisma.fundNavCache.findMany({
-        where: { fundCode: { in: fundCodes }, navDate: { gte: startDate, lte: endDate } },
-        orderBy: { navDate: "asc" },
-        select: { fundCode: true, navDate: true, nav: true },
+    if (mode === "year") {
+      return NextResponse.json({
+        ok: true,
+        months: report.rows.map((row) => ({
+          month: Number(row.key.slice(5, 7)),
+          mv: null,
+          pnl: row.count > 0 ? row.totalProfit : null,
+        })),
       });
-
-      const navByDate = new Map<string, Map<string, number>>(); // date → fundCode → nav
-      for (const r of navRecords) {
-        const ds = r.navDate.toISOString().slice(0, 10);
-        if (!navByDate.has(ds)) navByDate.set(ds, new Map());
-        navByDate.get(ds)!.set(r.fundCode, Number(r.nav));
-      }
-
-      const daysList = Array.from(navByDate.keys()).sort();
-      const months: Array<{ month: number; pnl: number | null; mv: number | null }> = [];
-
-      // For each month, find the last available NAV day
-      let prevMonthMv: number | null = null;
-      for (let m = 1; m <= 12; m++) {
-        const lastDay = new Date(year, m, 0).getDate();
-        let lastNavDate = "";
-        // scan from last day backwards
-        for (let d = lastDay; d >= 1; d--) {
-          const ds = `${year}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-          if (navByDate.has(ds)) { lastNavDate = ds; break; }
-        }
-        if (!lastNavDate) {
-          months.push({ month: m, pnl: null, mv: null });
-          continue;
-        }
-
-        const fundNavs = navByDate.get(lastNavDate)!;
-        let mv = 0;
-        for (const code of fundCodes) {
-          const units = unitsByCode.get(code) || 0;
-          const nav = fundNavs.get(code);
-          if (nav) mv += units * nav;
-        }
-        mv = Math.round(mv * 100) / 100;
-        const pnl = prevMonthMv !== null ? Math.round((mv - prevMonthMv) * 100) / 100 : null;
-        months.push({ month: m, mv, pnl: pnl !== 0 ? pnl : null });
-        prevMonthMv = mv;
-      }
-
-      return NextResponse.json({ ok: true, months });
     }
 
-    // Month mode
-    const year = parseInt(yearStr!, 10);
-    const month = parseInt(monthStr!, 10);
-
-    const startDate = new Date(Date.UTC(year, month - 2, 25));
-    const endDate = new Date(Date.UTC(year, month, 5));
-
-    const navRecords = await prisma.fundNavCache.findMany({
-      where: { fundCode: { in: fundCodes }, navDate: { gte: startDate, lte: endDate } },
-      orderBy: { navDate: "asc" },
-      select: { fundCode: true, navDate: true, nav: true },
+    return NextResponse.json({
+      ok: true,
+      days: report.rows.map((row) => ({
+        date: row.key,
+        mv: 0,
+        pnl: row.count > 0 ? row.totalProfit : null,
+      })),
     });
-
-    const navByDate = new Map<string, Map<string, number>>();
-    for (const r of navRecords) {
-      const ds = r.navDate.toISOString().slice(0, 10);
-      if (!navByDate.has(ds)) navByDate.set(ds, new Map());
-      navByDate.get(ds)!.set(r.fundCode, Number(r.nav));
-    }
-
-    const dates = Array.from(navByDate.keys()).sort();
-    const daysInMonth = new Date(year, month, 0).getDate();
-    const results: Array<{ date: string; mv: number; pnl: number | null }> = [];
-
-    // Find last day before this month for baseline
-    let prevMv: number | null = null;
-    for (let d = 31; d >= 1; d--) {
-      const ds = `${year}-${String(month - 1 || 12).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-      if (navByDate.has(ds)) {
-        const fundNavs = navByDate.get(ds)!;
-        let mv = 0;
-        for (const code of fundCodes) {
-          const units = unitsByCode.get(code) || 0;
-          const nav = fundNavs.get(code);
-          if (nav) mv += units * nav;
-        }
-        prevMv = Math.round(mv * 100) / 100;
-        break;
-      }
-    }
-
-    for (let day = 1; day <= daysInMonth; day++) {
-      const ds = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-      const fundNavs = navByDate.get(ds);
-      if (!fundNavs) continue;
-
-      let mv = 0;
-      for (const code of fundCodes) {
-        const units = unitsByCode.get(code) || 0;
-        const nav = fundNavs.get(code);
-        if (nav) mv += units * nav;
-      }
-      mv = Math.round(mv * 100) / 100;
-      const pnl = prevMv !== null && prevMv > 0 ? Math.round((mv - prevMv) * 100) / 100 : null;
-      results.push({ date: ds, mv, pnl: pnl !== 0 ? pnl : null });
-      prevMv = mv;
-    }
-
-    return NextResponse.json({ ok: true, days: results });
-  } catch (e) {
-    return NextResponse.json({ ok: false, code: "FETCH_FAILED", error: e instanceof Error ? e.message : "查询失败" }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json({
+      ok: false,
+      code: "FETCH_FAILED",
+      error: error instanceof Error ? error.message : "Failed to fetch investment profit.",
+    }, { status: 500 });
   }
 }

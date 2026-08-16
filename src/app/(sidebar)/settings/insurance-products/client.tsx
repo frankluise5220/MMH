@@ -259,17 +259,17 @@ export function SettingsInsuranceProductsClient({
         title={t("settings.insuranceProducts")}
         description={t("settings.insuranceProducts.client.description")}
         count={products.length}
-        actions={
-          <SettingsPrimaryAddButton onClick={() => setEditing(createBlankEditState(institutions[0]?.id ?? ""))}>
-            {t("insuranceFormModal.newProductTitle")}
-          </SettingsPrimaryAddButton>
-        }
       />
 
       <SettingsSection
         title={t("settings.insuranceProducts.client.libraryTitle")}
         description={t("settings.insuranceProducts.client.linkedSummary", { linked: linkedCount, unlinked: products.length - linkedCount })}
         count={filteredProducts.length}
+        actions={
+          <SettingsPrimaryAddButton onClick={() => setEditing(createBlankEditState(institutions[0]?.id ?? ""))}>
+            {t("insuranceFormModal.newProductTitle")}
+          </SettingsPrimaryAddButton>
+        }
       >
 
         <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-4 py-3">

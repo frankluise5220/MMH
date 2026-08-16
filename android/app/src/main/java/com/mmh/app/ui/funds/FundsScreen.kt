@@ -20,7 +20,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.CloudOff
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.TrendingUp
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -37,10 +36,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -100,26 +99,24 @@ fun FundsScreen(
                         containerColor = MaterialTheme.colorScheme.background
                     )
                 )
-            },
-            floatingActionButton = {
-                if (uiState.accounts.isNotEmpty()) {
-                    SmallFloatingActionButton(
-                        onClick = viewModel::refresh,
-                        containerColor = MaterialTheme.colorScheme.primary
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "\u5237\u65b0",
-                            tint = MaterialTheme.colorScheme.onPrimary
-                        )
-                    }
-                }
             }
         ) { padding ->
-            FundsContent(uiState, viewModel, onFundClick, onEntryClick, Modifier.padding(padding))
+            PullToRefreshBox(
+                isRefreshing = uiState.isRefreshing,
+                onRefresh = viewModel::refresh,
+                modifier = Modifier.fillMaxSize()
+            ) {
+                FundsContent(uiState, viewModel, onFundClick, onEntryClick, Modifier.padding(padding))
+            }
         }
     } else {
-        FundsContent(uiState, viewModel, onFundClick, onEntryClick, Modifier.fillMaxSize())
+        PullToRefreshBox(
+            isRefreshing = uiState.isRefreshing,
+            onRefresh = viewModel::refresh,
+            modifier = Modifier.fillMaxSize()
+        ) {
+            FundsContent(uiState, viewModel, onFundClick, onEntryClick, Modifier.fillMaxSize())
+        }
     }
 }
 

@@ -103,8 +103,6 @@ const investProductTypeLabel = (type: string | null, t: (key: string) => string)
       if (!monthMap.has(m)) monthMap.set(m, { income: 0, expense: 0, investPnL: 0 });
       const row = monthMap.get(m)!;
       const amt = toNumber(e.amount);
-      const fee = toNumber(e.fundFee);
-      const subtype = e.fundSubtype;
 
       for (const item of getInvestmentStatisticItems(e)) {
         const signedProfit = item.type === "income" ? item.amount : -item.amount;
@@ -296,7 +294,7 @@ const investProductTypeLabel = (type: string | null, t: (key: string) => string)
         </div>
       ) : (
       <div className="flex-1 overflow-auto p-4 space-y-4">
-        <DailyPnlCalendar accountId={accounts[0]?.id ?? ""} />
+        <DailyPnlCalendar accountIds={accountIds} />
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           {[
             { label: t("invest.totalMarketValue"), value: fmt(totalMarketValue), sub: null, color: pnlClass(totalMarketValue) },

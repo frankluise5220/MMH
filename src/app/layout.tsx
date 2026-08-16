@@ -16,8 +16,8 @@ export const metadata: Metadata = {
   icons: {
     icon: [
       { url: "/favicon.ico" },
-      { url: "/branding/mmh-logo-pageflip-192.png", sizes: "192x192", type: "image/png" },
-      { url: "/branding/mmh-logo-pageflip-512.png", sizes: "512x512", type: "image/png" },
+      { url: "/branding/mmh-logo-pwa-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/branding/mmh-logo-pwa-512.png", sizes: "512x512", type: "image/png" },
     ],
     shortcut: "/favicon.ico",
     apple: "/apple-touch-icon.png",

@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import timber.log.Timber
 import javax.inject.Inject
 
 /**
@@ -41,14 +42,22 @@ class RegularInvestViewModel @Inject constructor(
     fun loadPlans() {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, error = null)
-            when (val res = repository.getPlans()) {
-                is Resource.Success -> _uiState.value = _uiState.value.copy(
+            try {
+                when (val res = repository.getPlans()) {
+                    is Resource.Success -> _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        plans = res.data
+                    )
+                    is Resource.Error -> _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        error = res.message
+                    )
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to load regular invest plans")
+                _uiState.value = _uiState.value.copy(
                     isLoading = false,
-                    plans = res.data
-                )
-                is Resource.Error -> _uiState.value = _uiState.value.copy(
-                    isLoading = false,
-                    error = res.message
+                    error = e.message ?: "加载定投计划失败"
                 )
             }
         }

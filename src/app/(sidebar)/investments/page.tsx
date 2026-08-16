@@ -1,4 +1,4 @@
-import { AccountKind } from "@prisma/client";
+import { AccountKind, FundProductType } from "@prisma/client";
 import { ArrowLeft } from "lucide-react";
 import { cookies } from "next/headers";
 import Link from "next/link";
@@ -6,17 +6,20 @@ import Link from "next/link";
 import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { getInvestmentAccountView } from "@/lib/account-kind-utils";
 import { prisma } from "@/lib/db/prisma";
+import { formatDateUtc } from "@/lib/date-utils";
+import { signedFundAmount } from "@/lib/fund/transactions";
 import { formatMoney, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import type { InvestBalanceDetail } from "@/lib/invest-balance";
 import { loadInvestBalances } from "@/lib/server/cached-data";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getServerT } from "@/lib/server/i18n";
-import { MobileInvestments } from "@/components/mobile/MobileInvestments";
+import { MobileInvestments, type MobileInvestmentAccountDetail } from "@/components/mobile/MobileInvestments";
 
 export const dynamic = "force-dynamic";
 
 const INVEST_KINDS = [AccountKind.investment];
+const FUND_LIKE_PRODUCT_TYPES: FundProductType[] = [FundProductType.fund, FundProductType.money];
 const GROUP_MODES = [
   { key: "group", labelKey: "investments.groupByOwner" },
   { key: "institution", labelKey: "investments.groupByInstitution" },
@@ -34,6 +37,17 @@ function investProductTypeLabel(type: string | null, t: (key: string) => string)
   if (type === "stock") return t("investment.product.stock");
   if (type === "property") return t("investment.product.property");
   return t("invest.productTypeDefault");
+}
+
+function toNumber(value: unknown) {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function startDateForMobileChart() {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() - 180);
+  return date;
 }
 
 export default async function InvestmentsPage({
@@ -111,6 +125,130 @@ export default async function InvestmentsPage({
     };
   });
 
+  const fundLikeAccountIds = accounts
+    .filter((account) => FUND_LIKE_PRODUCT_TYPES.includes(account.investProductType as FundProductType))
+    .map((account) => account.id);
+  const chartStartDate = startDateForMobileChart();
+
+  const [fundHoldings, fundTransactions] = await Promise.all([
+    fundLikeAccountIds.length > 0 ? prisma.fundHolding.findMany({
+      where: { accountId: { in: fundLikeAccountIds } },
+      orderBy: [{ accountId: "asc" }, { fundName: "asc" }, { fundCode: "asc" }],
+    }) : Promise.resolve([]),
+    fundLikeAccountIds.length > 0 ? prisma.fundTransaction.findMany({
+      where: {
+        ...hidFilter,
+        fundAccountId: { in: fundLikeAccountIds },
+        deletedAt: null,
+      },
+      orderBy: [{ applyDate: "desc" }, { createdAt: "desc" }],
+    }) : Promise.resolve([]),
+  ]);
+
+  const fundCodes = Array.from(new Set([
+    ...fundHoldings.map((holding) => holding.fundCode),
+    ...fundTransactions.map((entry) => entry.fundCode),
+  ])).filter(Boolean);
+  const navRows = fundCodes.length > 0 ? await prisma.fundNavCache.findMany({
+    where: { fundCode: { in: fundCodes }, navDate: { gte: chartStartDate } },
+    orderBy: [{ fundCode: "asc" }, { navDate: "asc" }],
+    select: { fundCode: true, navDate: true, nav: true, cumNav: true },
+  }) : [];
+
+  const navByFundCode = new Map<string, { date: string; nav: number; cumNav: number | null }[]>();
+  for (const nav of navRows) {
+    const list = navByFundCode.get(nav.fundCode) ?? [];
+    list.push({ date: formatDateUtc(nav.navDate), nav: toNumber(nav.nav), cumNav: nav.cumNav == null ? null : toNumber(nav.cumNav) });
+    navByFundCode.set(nav.fundCode, list);
+  }
+
+  const entriesByAccountFund = new Map<string, typeof fundTransactions>();
+  for (const entry of fundTransactions) {
+    const key = `${entry.fundAccountId}\u001f${entry.fundCode}`;
+    const list = entriesByAccountFund.get(key) ?? [];
+    list.push(entry);
+    entriesByAccountFund.set(key, list);
+  }
+
+  const mobileDetails: MobileInvestmentAccountDetail[] = fundLikeAccountIds.map((accountId) => {
+    const accountHoldings = fundHoldings.filter((holding) => holding.accountId === accountId);
+    const holdingKeys = new Set(accountHoldings.map((holding) => holding.fundCode));
+    const holdings = accountHoldings
+      .filter((holding) => toNumber(holding.units) > 0 || toNumber(holding.pendingCost) > 0 || toNumber(holding.cost) > 0)
+      .map((holding) => {
+        const nav = holding.nav == null ? null : toNumber(holding.nav);
+        const units = toNumber(holding.units);
+        const cost = toNumber(holding.cost);
+        const marketValue = nav == null ? cost : units * nav;
+        const floatingPnL = marketValue - cost;
+        const key = `${accountId}\u001f${holding.fundCode}`;
+        return {
+          fundCode: holding.fundCode,
+          fundName: holding.fundName ?? "",
+          units,
+          avgCost: toNumber(holding.avgCost),
+          cost,
+          pendingCost: toNumber(holding.pendingCost),
+          nav,
+          marketValue,
+          floatingPnL,
+          floatingRate: cost > 0 ? floatingPnL / cost : 0,
+          historicalProfit: toNumber(holding.historicalProfit),
+          entries: (entriesByAccountFund.get(key) ?? []).slice(0, 30).map((entry) => ({
+            id: entry.id,
+            date: formatDateUtc(entry.applyDate),
+            subtype: entry.fundSubtype,
+            source: entry.source ?? "",
+            amount: signedFundAmount(entry),
+            nav: entry.nav == null ? null : toNumber(entry.nav),
+            units: entry.units == null ? null : toNumber(entry.units),
+            fee: entry.fee == null ? 0 : toNumber(entry.fee),
+            realizedProfit: entry.realizedProfit == null ? null : toNumber(entry.realizedProfit),
+          })),
+          chart: navByFundCode.get(holding.fundCode) ?? [],
+        };
+      });
+
+    const cleared = Array.from(entriesByAccountFund.entries())
+      .filter(([key]) => key.startsWith(`${accountId}\u001f`))
+      .map(([key, entries]) => ({ fundCode: key.split("\u001f")[1] ?? "", entries }))
+      .filter((item) => item.fundCode && !holdingKeys.has(item.fundCode))
+      .map((item) => {
+        const sorted = [...item.entries].sort((a, b) => a.applyDate.getTime() - b.applyDate.getTime() || a.id.localeCompare(b.id));
+        const buyAmount = sorted.reduce((sum, entry) => (entry.fundSubtype === "buy" || entry.fundSubtype === "regular_invest" || entry.fundSubtype === "switch_in" || entry.fundSubtype === "dividend_reinvest") ? sum + Math.abs(toNumber(entry.grossAmount)) : sum, 0);
+        const redeemAmount = sorted.reduce((sum, entry) => (entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out" || entry.fundSubtype === "dividend_cash") ? sum + Math.abs(toNumber(entry.arrivalAmount ?? entry.grossAmount)) : sum, 0);
+        const historicalProfit = sorted.reduce((sum, entry) => sum + toNumber(entry.realizedProfit), 0);
+        const firstDate = sorted[0]?.applyDate ? formatDateUtc(sorted[0].applyDate) : "";
+        const clearedDate = sorted.at(-1)?.applyDate ? formatDateUtc(sorted.at(-1)!.applyDate) : "";
+        return {
+          fundCode: item.fundCode,
+          fundName: sorted.find((entry) => entry.fundName)?.fundName ?? "",
+          buyAmount,
+          redeemAmount,
+          historicalProfit,
+          returnRate: buyAmount > 0 ? historicalProfit / buyAmount : 0,
+          firstDate,
+          clearedDate,
+          entries: [...sorted].reverse().slice(0, 30).map((entry) => ({
+            id: entry.id,
+            date: formatDateUtc(entry.applyDate),
+            subtype: entry.fundSubtype,
+            source: entry.source ?? "",
+            amount: signedFundAmount(entry),
+            nav: entry.nav == null ? null : toNumber(entry.nav),
+            units: entry.units == null ? null : toNumber(entry.units),
+            fee: entry.fee == null ? 0 : toNumber(entry.fee),
+            realizedProfit: entry.realizedProfit == null ? null : toNumber(entry.realizedProfit),
+          })),
+          chart: navByFundCode.get(item.fundCode) ?? [],
+        };
+      })
+      .filter((item) => item.buyAmount > 0 || item.redeemAmount > 0 || item.entries.length > 0)
+      .sort((a, b) => b.clearedDate.localeCompare(a.clearedDate));
+
+    return { accountId, holdings, cleared };
+  });
+
   const total = rows.reduce((sum, row) => sum + row.marketValue, 0);
   const totalFloatingPnL = rows.reduce((sum, row) => sum + row.floatingPnL, 0);
   const totalCost = rows.reduce((sum, row) => sum + row.totalCost, 0);
@@ -157,6 +295,7 @@ export default async function InvestmentsPage({
     <div className="h-full md:hidden">
       <MobileInvestments
         rows={rows}
+        details={mobileDetails}
         total={total}
         totalCost={totalCost}
         totalFloatingPnL={totalFloatingPnL}

@@ -938,6 +938,7 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
     data: {
       type: item.type as any,
       date,
+      postedAt: item.type === "expense" || item.type === "income" ? confirmDate : null,
       amount,
       accountId: accountId ?? "",
       accountName: currencyMeta?.name || accountName || "未识别账户",

@@ -15,6 +15,9 @@
 /.next/
 /out/
 
+# local gradle home used for sandboxed Android builds
+/.gradle-home/
+
 # local db
 *.db
 *.sqlite
@@ -182,8 +185,15 @@ backup-deleted-*.json
 *.mh8
 /mh8/
 
+# runtime user data (attachments, uploads)
+/data/
+
 # editor auto-save temp files
 *~RF*.TMP
+
+# local probes / test data
+.tmp-chrome-mobile/
+.tmp_mmh149_*
 tmp-backup-*.json
 nul
 resume_japan_network_engineer/

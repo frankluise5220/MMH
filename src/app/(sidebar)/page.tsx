@@ -682,6 +682,7 @@ async function createTransaction(formData: FormData) {
   const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
   const postedAt = type === "expense" || type === "income" ? (postedAtInput ?? date) : null;
   const { householdId } = await getHouseholdScope();
+  let createdEntryId: string | null = null;
 
   if (!amountAbs) {
     return { ok: false as const, error: t("txForm.alert.invalidAmount") };
@@ -766,6 +767,7 @@ async function createTransaction(formData: FormData) {
             ...{ householdId },
           },
         });
+        createdEntryId = created.id;
         await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
       });
 
@@ -821,6 +823,7 @@ async function createTransaction(formData: FormData) {
             ...{ householdId },
           },
         });
+        createdEntryId = created.id;
         await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
 
         if (createInstallment) {
@@ -894,6 +897,7 @@ async function createTransaction(formData: FormData) {
             householdId,
           },
         });
+        createdEntryId = created.id;
         await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
       });
 
@@ -939,6 +943,7 @@ async function createTransaction(formData: FormData) {
             ...{ householdId },
           } as any,
         });
+        createdEntryId = created.id;
         await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
       });
 
@@ -1233,6 +1238,7 @@ async function createTransaction(formData: FormData) {
           });
           createdFundTransactionId = createdFund.fundTransaction.id;
           createdInvestmentEntryId = createdFund.cashEntry?.id ?? createdFund.fundTransaction.id;
+          createdEntryId = createdFund.cashEntry?.id ?? createdInvestmentEntryId;
         } else {
           const created = await tx.txRecord.create({
             data: {
@@ -1272,6 +1278,7 @@ async function createTransaction(formData: FormData) {
             },
           });
           createdInvestmentEntryId = created.id;
+          createdEntryId = created.id;
           if (
             finalFundSubtype === FundSubtype.buy &&
             sourceValue !== "insurance" &&
@@ -1342,7 +1349,7 @@ async function createTransaction(formData: FormData) {
     await touchAccountUsage(touchedAccountIds);
     if (type === "investment") revalidateAfterInvestChange();
     else revalidateAfterTxChange();
-    return { ok: true as const };
+    return { ok: true as const, data: createdEntryId ? { id: createdEntryId } : undefined };
   } catch (e) {
     const msg = e instanceof Error ? e.message : t("txForm.alert.saveFailed");
     return { ok: false as const, error: msg };
@@ -2882,6 +2889,7 @@ export default async function Home({
             },
             include: {
               EntryTag: { include: { Tag: true } },
+              Attachment: { select: { id: true, name: true, mimeType: true, url: true } },
               ...entryBusinessLinkSummaryInclude,
               account: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
               toAccount: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
@@ -2898,6 +2906,7 @@ export default async function Home({
               },
               include: {
                 EntryTag: { include: { Tag: true } },
+                Attachment: { select: { id: true, name: true, mimeType: true, url: true } },
                 ...entryBusinessLinkSummaryInclude,
                 account: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
                 toAccount: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
@@ -2910,6 +2919,7 @@ export default async function Home({
           where,
           include: {
             EntryTag: { include: { Tag: true } },
+            Attachment: { select: { id: true, name: true, mimeType: true, url: true } },
             ...entryBusinessLinkSummaryInclude,
             account: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
             toAccount: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
@@ -3051,37 +3061,38 @@ export default async function Home({
     }
     return systemCategoryLabel(stripExportCategoryRootLabel(e.categoryName), t);
   };
-  const normalExportRows = (() => {
-    const rows = [[
-      t("detail.column.date"),
-      t("detailView.column.type"),
-      t("detail.column.category"),
-      t("detail.column.outflow"),
-      t("detail.column.inflow"),
-      t("common.account"),
-      t("batchImport.field.counterAccount"),
-      t("detail.column.counterparty"),
-      t("detail.column.tags"),
-      t("detail.column.remark"),
-    ]];
-    for (const e of filteredEntries2) {
-      const effectiveAmount = effectiveAmountForAccount(e, accountId);
-      const outflow = effectiveAmount < 0 ? String(-effectiveAmount) : "";
-      const inflow = effectiveAmount > 0 ? String(effectiveAmount) : "";
-      const isToSide = accountId && e.toAccountId === accountId;
-      const accountLabel = isToSide
-        ? exportAccountLabel(e.toAccount, e.toAccountName)
-        : exportAccountLabel(e.account, e.accountName);
-      const counterAccountLabel = e.type === TransactionType.transfer || e.type === TransactionType.investment
-        ? isToSide
-          ? exportAccountLabel(e.account, e.accountName)
-          : exportAccountLabel(e.toAccount, e.toAccountName)
-        : "";
-      const tagsText = (e.EntryTag || [])
-        .map((entryTag) => entryTag.Tag?.name?.trim() || "")
-        .filter(Boolean)
-        .join("、");
-      rows.push([
+  const normalExportHeader = [
+    t("detail.column.date"),
+    t("detailView.column.type"),
+    t("detail.column.category"),
+    t("detail.column.outflow"),
+    t("detail.column.inflow"),
+    t("common.account"),
+    t("batchImport.field.counterAccount"),
+    t("detail.column.counterparty"),
+    t("detail.column.tags"),
+    t("detail.column.remark"),
+  ];
+  const normalExportEntryRows = filteredEntries2.map((e) => {
+    const effectiveAmount = effectiveAmountForAccount(e, accountId);
+    const outflow = effectiveAmount < 0 ? String(-effectiveAmount) : "";
+    const inflow = effectiveAmount > 0 ? String(effectiveAmount) : "";
+    const isToSide = accountId && e.toAccountId === accountId;
+    const accountLabel = isToSide
+      ? exportAccountLabel(e.toAccount, e.toAccountName)
+      : exportAccountLabel(e.account, e.accountName);
+    const counterAccountLabel = e.type === TransactionType.transfer || e.type === TransactionType.investment
+      ? isToSide
+        ? exportAccountLabel(e.account, e.accountName)
+        : exportAccountLabel(e.toAccount, e.toAccountName)
+      : "";
+    const tagsText = (e.EntryTag || [])
+      .map((entryTag) => entryTag.Tag?.name?.trim() || "")
+      .filter(Boolean)
+      .join("、");
+    return {
+      id: e.id,
+      row: [
         entryDisplayDate(e).toISOString().slice(0, 10),
         e.source === "insurance" ? getInsuranceDetailCategoryName(e) : formatType(t, e.type),
         getExportCategoryName(e),
@@ -3092,10 +3103,11 @@ export default async function Home({
         e.counterpartyInstitutionName ?? "",
         tagsText,
         getEntryDisplayNote(e),
-      ]);
-    }
-    return rows;
-  })();
+      ],
+    };
+  });
+  const normalExportRows = [normalExportHeader, ...normalExportEntryRows.map((item) => item.row)];
+  const normalExportRowsByEntryId = Object.fromEntries(normalExportEntryRows.map((item) => [item.id, item.row]));
   const normalExportFilename = t("sidebar.export.filename", {
     name: selectedAccount?.name || accountName || t("statistics.allAccounts"),
   });
@@ -3637,6 +3649,7 @@ export default async function Home({
           },
           include: {
             EntryTag: { include: { Tag: true } },
+            Attachment: { select: { id: true, name: true, mimeType: true, url: true } },
             ...entryBusinessLinkSummaryInclude,
             account: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
             toAccount: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
@@ -3877,6 +3890,12 @@ export default async function Home({
     fundSourceEntryId: e.fundSourceEntryId ?? null,
     fundArrivalAmount: linkedWealthArrivalAmount ?? (e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null),
     ...buildEntryBusinessLinkSummary(e),
+    attachments: (e.Attachment || []).map((attachment: any) => ({
+      id: attachment.id,
+      name: attachment.name || t("attachments.title"),
+      mimeType: attachment.mimeType ?? null,
+      url: attachment.url || `/api/v1/attachments/${encodeURIComponent(attachment.id)}`,
+    })),
     entryTags: (e.EntryTag || []).map((et: any) => ({
       tagId: et.tagId,
       Tag: et.Tag ? { name: et.Tag.name, color: et.Tag.color } : null,
@@ -5123,6 +5142,7 @@ export default async function Home({
                   initialDetailAll={detailAll}
                   normalExportFilename={normalExportFilename}
                   normalExportRows={normalExportRows}
+                  normalExportRowsByEntryId={normalExportRowsByEntryId}
                   accountOptions={accountOptions.map((a) => ({ id: a.id, label: a.label, fullLabel: a.fullLabel, title: a.hoverTitle }))}
                   categoryOptions={categoryBatchReplaceOptions}
                   investmentProductTypeByAccountId={investmentProductTypeByAccountIdObj}

@@ -123,7 +123,7 @@ export function LiabilitiesGuideClient({
             <div className="text-sm font-semibold text-slate-900">{t("liabilitiesGuide.title")}</div>
             <div className="text-xs text-slate-500">{t("liabilitiesGuide.subtitle")}</div>
           </div>
-          <button type="button" onClick={() => setShowCreate(true)} className="secondary-button h-8 gap-1 px-3 text-xs">
+          <button type="button" onClick={() => setShowCreate(true)} className="primary-button page-action-button h-8 gap-1 text-xs">
             <Plus className="h-3.5 w-3.5" />
             {t("liabilitiesGuide.addCounterparty")}
           </button>

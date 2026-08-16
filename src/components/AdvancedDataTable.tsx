@@ -114,6 +114,7 @@ export type AdvancedDataTableProps<T> = {
   rowDragDisabled?: (row: T, index: number) => boolean;
   rowDropAllowed?: (sourceRow: T, targetRow: T, sourceIndex: number, targetIndex: number, position: AdvancedDataTableDropPosition) => boolean;
   onRowReorder?: (sourceRow: T, targetRow: T, sourceIndex: number, targetIndex: number, position: AdvancedDataTableDropPosition) => void | Promise<void>;
+  onDisplayRowsChange?: (rows: T[]) => void;
   selectable?: boolean;
   selectOnRowClick?: boolean;
   selectAllScope?: "allRows" | "renderedRows";
@@ -283,6 +284,7 @@ export function AdvancedDataTable<T>({
   rowDragDisabled,
   rowDropAllowed,
   onRowReorder,
+  onDisplayRowsChange,
   selectable = false,
   selectOnRowClick = false,
   selectAllScope = "allRows",
@@ -382,13 +384,21 @@ export function AdvancedDataTable<T>({
     () => tableColumns.filter((column) => column.defaultHidden && column.hideable).map((column) => column.key),
     [tableColumns],
   );
+  const filterableColumnKeysSignature = useMemo(
+    () => tableColumns.filter((column) => column.filterText).map((column) => column.key).join("\u001F"),
+    [tableColumns],
+  );
   const filterableColumnKeys = useMemo(
-    () => new Set(tableColumns.filter((column) => column.filterText).map((column) => column.key)),
+    () => new Set(filterableColumnKeysSignature ? filterableColumnKeysSignature.split("\u001F") : []),
+    [filterableColumnKeysSignature],
+  );
+  const sortableColumnKeysSignature = useMemo(
+    () => tableColumns.filter((column) => column.sortValue || column.filterText).map((column) => column.key).join("\u001F"),
     [tableColumns],
   );
   const sortableColumnKeys = useMemo(
-    () => new Set(tableColumns.filter((column) => column.sortValue || column.filterText).map((column) => column.key)),
-    [tableColumns],
+    () => new Set(sortableColumnKeysSignature ? sortableColumnKeysSignature.split("\u001F") : []),
+    [sortableColumnKeysSignature],
   );
   const filtersStorageKey = `${storageKey}:filters:v2`;
   const sortStorageKey = `${storageKey}:sort:v1`;
@@ -589,6 +599,9 @@ export function AdvancedDataTable<T>({
       })
       .map((item) => item.row);
   }, [filteredRows, sortRows, sortState, sortable, tableColumns]);
+  useEffect(() => {
+    onDisplayRowsChange?.(orderedRows);
+  }, [onDisplayRowsChange, orderedRows]);
   const hasPagination = paginationPage != null && !!paginationOnPageChange;
   const pageSize = paginationPageSize && paginationPageSize > 0 ? paginationPageSize : orderedRows.length || 1;
   const pageCount = Math.max(1, Math.ceil(orderedRows.length / pageSize));

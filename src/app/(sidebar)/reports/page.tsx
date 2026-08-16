@@ -13,6 +13,7 @@ import { IncomeExpenseReportClient } from "@/components/IncomeExpenseReportClien
 import { ReportTransactionEditHost } from "@/components/ReportTransactionEditHost";
 import { ReportSelector } from "@/components/ReportSelector";
 import type { ReportItem } from "@/components/ReportSelector";
+import { ReportRefreshButton } from "@/components/ReportRefreshButton";
 import { StockHoldingReport } from "@/components/StockHoldingReport";
 import { buildAccountDisplayOption, buildGroupedAccountOptions, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { kindLabel } from "@/lib/account-kinds";
@@ -32,7 +33,7 @@ import { stockMarketLabel } from "@/lib/stock/market";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { loadReportDetailEntries } from "@/lib/server/report-detail-entries";
-import { getServerT } from "@/lib/server/i18n";
+import { getServerDisplayLanguage, getServerT } from "@/lib/server/i18n";
 
 export const dynamic = "force-dynamic";
 
@@ -168,6 +169,7 @@ export default async function ReportsPage({
 }) {
   const params = await searchParams;
   const t = await getServerT();
+  const language = await getServerDisplayLanguage();
   const now = new Date();
   const reportType: ReportType =
     params.report === "investment-profit" || params.report === "stock-holdings"
@@ -375,7 +377,7 @@ export default async function ReportsPage({
       year: profitYear,
       month: profitMonth,
       accountIds: investmentAccountIdsForReport,
-    });
+    }, language);
     const periodHref = (period: InvestmentProfitPeriod) =>
       buildReportHref("investment-profit", period, profitYear, profitMonth, selectedProfitScope);
     const previousWindow = shiftProfitWindow(profitPeriod, profitYear, profitMonth, -1);
@@ -461,6 +463,7 @@ export default async function ReportsPage({
                 institutionOptions={investmentInstitutionScopeOptions}
                 accountOptions={investmentAccountScopeOptions}
               />
+              <ReportRefreshButton />
               <MissingFundNavPrompt items={investmentReport.missingNavs} className="ml-auto" />
             </div>
             <InvestmentProfitReport
@@ -622,9 +625,10 @@ export default async function ReportsPage({
                 institutionOptions={stockInstitutionScopeOptions}
                 accountOptions={stockAccountScopeOptions}
               />
+              <ReportRefreshButton />
               <a
                 href={stockExportHref}
-                download="股票持仓盈亏.csv"
+                download={`${t("reports.filename.stockHoldings")}.csv`}
                 className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-700"
                 title={t("reports.exportStockTitle")}
               >
@@ -726,7 +730,7 @@ export default async function ReportsPage({
     [t("reports.net"), t("reports.net"), ...report.netPeriodTotals.map((value) => value.toFixed(2)), report.netTotal.toFixed(2)],
   ];
   const exportHref = buildCsvDataUri(exportRows);
-  const exportFilename = `收支统计-${report.start}-${report.end}${selectedAccount ? `-${selectedAccount.label}` : ""}.csv`;
+  const exportFilename = `${t("reports.filename.incomeExpense")}-${report.start}-${report.end}${selectedAccount ? `-${selectedAccount.label}` : ""}.csv`;
   const currentReportQuery = {
     start: report.start,
     end: report.end,

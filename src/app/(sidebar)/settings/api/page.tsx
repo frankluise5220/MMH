@@ -8,6 +8,7 @@ import {
   SettingsPageHeader,
   SettingsPrimaryAddButton,
   SettingsRowActions,
+  SettingsSection,
   SettingsTable,
   SettingsTd,
   SettingsTh,
@@ -88,13 +89,17 @@ export default function ApiKeysPage() {
         title={t("settings.externalApiKeys.title")}
         description={t("settings.externalApiKeys.description")}
         count={keys.length}
+      />
+
+      <SettingsSection
+        title={t("settings.externalApiKeys.listTitle")}
+        count={keys.length}
         actions={
           <SettingsPrimaryAddButton onClick={() => { setNewKey(generateRandomKey()); setName(""); setShowModal(true); }}>
             {t("settings.externalApiKeys.add")}
           </SettingsPrimaryAddButton>
         }
-      />
-
+      >
       <SettingsTable minWidth={760} maxWidth="full">
         <thead className="sticky top-0 z-10">
           <tr>
@@ -142,6 +147,7 @@ export default function ApiKeysPage() {
           )}
         </tbody>
       </SettingsTable>
+      </SettingsSection>
 
       {showModal && (
         <div className="app-modal-backdrop z-[1100]">

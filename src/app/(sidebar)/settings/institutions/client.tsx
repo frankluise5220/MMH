@@ -96,7 +96,6 @@ export function SettingsInstitutionsClient({
         title={pageTitle}
         description={pageDescription}
         count={visibleInstitutions.length}
-        actions={<SettingsPrimaryAddButton onClick={() => setShowCreate(true)}>{createTitle}</SettingsPrimaryAddButton>}
       />
 
       <EntityCreateForm
@@ -114,7 +113,11 @@ export function SettingsInstitutionsClient({
         existingNames={createExistingNames}
       />
 
-      <SettingsSection title={listTitle} count={visibleInstitutions.length}>
+      <SettingsSection
+        title={listTitle}
+        count={visibleInstitutions.length}
+        actions={<SettingsPrimaryAddButton onClick={() => setShowCreate(true)}>{createTitle}</SettingsPrimaryAddButton>}
+      >
         <SettingsTable minWidth={780}>
             <thead className="sticky top-0 z-10">
               <tr>

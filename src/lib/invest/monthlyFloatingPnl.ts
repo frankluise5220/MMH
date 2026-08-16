@@ -7,6 +7,7 @@ import {
   calculateFundPositionsFromEntries,
   type FundPositionEntryLike,
 } from "@/lib/fund/recalcPosition";
+import { fundUnitsProfitStartDate } from "@/lib/fund/confirmDays";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 
@@ -69,6 +70,7 @@ type InvestmentAccount = {
   name: string;
   costBasisMethod: string | null;
   fundUnitsDecimals: number;
+  tradingCalendar: string | null;
 };
 
 function ymd(date: Date) {
@@ -122,6 +124,7 @@ function toEntryLike(row: {
   source: string | null;
   fundConfirmDate: Date | null;
   fundArrivalDate: Date | null;
+  tradingCalendar?: string | null;
 }): FundPositionEntryLike {
   const amount = toNumber(row.amount);
   const fee = toNumber(row.fundFee ?? 0);
@@ -139,6 +142,7 @@ function toEntryLike(row: {
     isPending: row.fundSubtype === "buy_failed" || (row.fundConfirmDate == null && row.fundSubtype === "buy"),
     confirmDate: row.fundConfirmDate ? ymd(row.fundConfirmDate) : null,
     arrivalDate: row.fundArrivalDate ? ymd(row.fundArrivalDate) : null,
+    unitsProfitStartDate: row.fundConfirmDate ? fundUnitsProfitStartDate(ymd(row.fundConfirmDate), row.tradingCalendar) : null,
     netBuyAmount,
     pendingBuyAmount: row.fundSubtype === "buy" ? grossAmount : null,
   };
@@ -175,7 +179,7 @@ async function buildAccountSnapshot(params: {
   const entriesToDate = params.entries.filter((entry) => {
     const subtype = entry.subtype ?? (entry.amount < 0 ? "buy" : "redeem");
     const calcDate = subtype === "buy" || subtype === "dividend_reinvest"
-      ? (entry.confirmDate ?? entry.arrivalDate)
+      ? (entry.unitsProfitStartDate ?? entry.confirmDate ?? entry.arrivalDate)
       : entry.confirmDate;
     return !!calcDate && calcDate <= ymd(params.date);
   });
@@ -252,7 +256,7 @@ export async function computeMonthlyFloatingPnl(params: {
       kind: AccountKind.investment,
       ...(params.accountIds?.length ? { id: { in: params.accountIds } } : {}),
     },
-    select: { id: true, name: true, kind: true, investProductType: true, costBasisMethod: true, fundUnitsDecimals: true },
+    select: { id: true, name: true, kind: true, investProductType: true, costBasisMethod: true, fundUnitsDecimals: true, tradingCalendar: true },
     orderBy: { name: "asc" },
   });
   const investmentAccounts = accounts.filter(isPureInvestmentAccount);
@@ -302,10 +306,12 @@ export async function computeMonthlyFloatingPnl(params: {
 
   const entriesByAccountId = new Map<string, FundPositionEntryLike[]>();
   const fundNameByCode = new Map<string, string>();
+  const investmentAccountById = new Map(investmentAccounts.map((account) => [account.id, account]));
   for (const row of txRows) {
     const accountId = accountIds.includes(row.toAccountId ?? "") ? row.toAccountId! : row.accountId;
     if (!accountIds.includes(accountId)) continue;
-    const entry = toEntryLike(row);
+    const account = investmentAccountById.get(accountId);
+    const entry = toEntryLike({ ...row, tradingCalendar: account?.tradingCalendar ?? "cn_fund" });
     if (entry.units != null) entry.units = roundFundUnits(entry.units, 6);
     const list = entriesByAccountId.get(accountId) ?? [];
     list.push(entry);

@@ -37,6 +37,7 @@ export type CreditAccountItem = AccountItem & {
   availableLimit: number;
   currentBill: number;
   paid: number;
+  dueDate?: string | null;
 };
 
 export type AccountTypeTotals = {

@@ -373,7 +373,7 @@ export default async function LiabilitiesPage({
             <div className="text-sm font-semibold text-slate-900">{t("liabilities.title")}</div>
             <div className="text-xs text-slate-500">{t("liabilities.subtitle")}</div>
           </div>
-          <Link href="/settings/accounts" className="secondary-button h-8 px-3 text-xs">
+          <Link href="/settings/accounts" className="primary-button page-action-button h-8 text-xs">
             {t("liabilities.manageAccounts")}
           </Link>
         </div>

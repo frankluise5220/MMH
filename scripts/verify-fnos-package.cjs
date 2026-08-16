@@ -121,6 +121,41 @@ function tarHasEntry(archive, entry) {
   return listTarEntries(archive).some((name) => name === entry);
 }
 
+function parseTarPermission(value) {
+  const chars = value.slice(1);
+  let mode = 0;
+  for (let index = 0; index < chars.length; index += 1) {
+    const char = chars[index];
+    const bit = 8 - index;
+    if (char !== "-") mode |= 1 << bit;
+  }
+  return mode;
+}
+
+function tarEntryMode(archive, entry) {
+  if (!fs.existsSync(archive)) return null;
+  const result = spawnSync("tar", ["-tvzf", archive, entry], {
+    cwd: root,
+    encoding: "utf8",
+    shell: false,
+    maxBuffer: 1024 * 1024,
+  });
+  if (result.status !== 0) {
+    failures.push(`Could not inspect ${entry} from ${path.relative(root, archive)}.\n${result.stderr || result.stdout || result.error?.message}`);
+    return null;
+  }
+  const line = result.stdout.split(/\r?\n/).find(Boolean);
+  if (!line) return null;
+  return parseTarPermission(line.split(/\s+/, 1)[0]);
+}
+
+function expectTarEntryModeAtLeast(archive, entry, requiredMode, label) {
+  const mode = tarEntryMode(archive, entry);
+  expect(mode !== null, `${label} must include ${entry}.`);
+  if (mode === null) return;
+  expect((mode & requiredMode) === requiredMode, `${label} ${entry} must include mode ${requiredMode.toString(8)}; got ${(mode & 0o777).toString(8)}.`);
+}
+
 function listFilesRelative(dir) {
   if (!fs.existsSync(dir)) return [];
   const files = [];
@@ -202,6 +237,9 @@ const nativeSchema = path.join(root, "prisma", "schema.native.prisma");
 const stageDir = path.join(root, "release-artifacts", "fnos", verifyTarget.stageDirName);
 const prismaCli = path.join(root, "node_modules", "prisma", "build", "index.js");
 const nativeSchemaBackfillCalls = buildScript.match(/\n\s+applyMissingSchemaObjectsFromInitSql\(db, sqlPath\);/g) || [];
+const standaloneCopyIndex = buildScript.indexOf('copyDir(standaloneAppDir, path.join(stageDir, "app", "server"))');
+const standaloneEnvScrubIndex = buildScript.indexOf('for (const envFile of [".env", ".env.local", ".env.production", ".env.development"])');
+const publicAssetCopyIndex = buildScript.indexOf("copyFnosPublicAssets(publicDir");
 
 expect(/provider = "sqlite"/.test(schemaScript), "Native schema generator must switch datasource provider to sqlite.");
 expect(/@db\\\./.test(schemaScript), "Native schema generator must strip PostgreSQL native column annotations.");
@@ -265,6 +303,9 @@ expect(!/wizard_system_password/.test(buildScript), "fnOS install/config wizard 
 expect(/MMH_SYSTEM_PASSWORD/.test(buildScript), "fnOS start script must export MMH_SYSTEM_PASSWORD.");
 expect(/mmh-system-password\.txt/.test(buildScript), "fnOS start script must persist generated system passwords in app data.");
 expect(/install_callback/.test(buildScript) && /write_env_file/.test(buildScript), "fnOS lifecycle callbacks must persist wizard settings.");
+expect(!/"run-as": "package"/.test(buildScript), "fnOS lifecycle scripts must not default to the package user; install_init can fail before app data permissions exist.");
+expect(/restart_start_as_package_user/.test(buildScript) && /runuser -u mmh/.test(buildScript), "fnOS start script must drop from app-center/root lifecycle execution to the mmh package user before running Node.");
+expect(/makeFnosPackageEntriesReadable/.test(buildScript), "fnOS package build must normalize entry permissions before packaging.");
 expect(/verifySensitiveOperationPassword/.test(authVerifyRoute) && /getCurrentUser/.test(authVerifyRoute) && /isAdmin/.test(authVerifyRoute), "Sensitive operation verification must require the current admin user and check that user's own password.");
 expect(!/process\.env\.(POSTGRES_PASSWORD|MMH_SYSTEM_PASSWORD)/.test(authVerifyRoute), "Sensitive operation verification must not rely on deployment database passwords.");
 expect(/FNOS_MANUAL_FPK/.test(buildScript), "fnOS package build should keep an explicit manual test FPK mode.");
@@ -281,6 +322,7 @@ expect(!/docker-project/.test(buildScript), "fnOS package build must not declare
 expect(/better-sqlite3/.test(buildScript), "fnOS package build must explicitly include the SQLite native runtime dependency.");
 expect(/copyFnosPublicAssets/.test(buildScript), "fnOS package build must copy only whitelisted runtime public assets.");
 expect(!/copyDir\(publicDir/.test(buildScript), "fnOS package build must not copy the whole public directory.");
+expect(standaloneCopyIndex >= 0 && standaloneCopyIndex < standaloneEnvScrubIndex && standaloneEnvScrubIndex < publicAssetCopyIndex, "fnOS package build must scrub standalone env files before public asset copying can fail.");
 expect(/release:\s*\n\s*types:\s*\[published\]/.test(fnosReleaseWorkflow), "fnOS workflow should run when a GitHub Release is published.");
 expect(/npm ci/.test(fnosReleaseWorkflow), "fnOS workflow should install Linux native dependencies.");
 expect(/FNOS_NODE_TARBALL/.test(fnosReleaseWorkflow), "fnOS workflow should provide a Linux Node runtime tarball.");
@@ -312,8 +354,13 @@ expect(!/"x86"\s*:/.test(repositoryApiApps), "fnOS repository api/apps must not 
 
 if (fs.existsSync(stageDir)) {
   const stageManifest = read(path.join(stageDir, "manifest"));
+  const stagePrivilege = read(path.join(stageDir, "config", "privilege"));
+  const stageMainScript = read(path.join(stageDir, "cmd", "main"));
   expect(new RegExp(`arch\\s*=\\s*${verifyTarget.manifestArch}`).test(stageManifest), `fnOS ${verifyTarget.id} stage manifest must declare arch=${verifyTarget.manifestArch}.`);
   expect(new RegExp(`platform\\s*=\\s*${verifyTarget.manifestPlatform}`).test(stageManifest), `fnOS ${verifyTarget.id} stage manifest must declare platform=${verifyTarget.manifestPlatform}.`);
+  expect(!/"run-as"\s*:\s*"package"/.test(stagePrivilege), `fnOS ${verifyTarget.id} stage privilege must not run lifecycle scripts as the package user.`);
+  expect(/"username"\s*:\s*"mmh"/.test(stagePrivilege) && /"groupname"\s*:\s*"mmh"/.test(stagePrivilege), `fnOS ${verifyTarget.id} stage privilege must still declare the mmh package user and group.`);
+  expect(/restart_start_as_package_user/.test(stageMainScript) && /runuser -u mmh/.test(stageMainScript), `fnOS ${verifyTarget.id} stage cmd/main must drop root-started service execution to the mmh user.`);
   for (const envFile of [".env", ".env.local", ".env.production", ".env.development"]) {
     expect(!fs.existsSync(path.join(stageDir, "app", "server", envFile)), `fnOS stage must not include ${envFile}.`);
   }
@@ -339,6 +386,24 @@ if (process.env.FNOS_VERIFY_BUILT_FPK === "1") {
   expect(tarHasEntry(builtFpk, "cmd/upgrade_init"), "Built fnOS .fpk must include cmd/upgrade_init to back up app data before upgrades.");
   expect(tarHasEntry(builtFpk, "cmd/upgrade_callback"), "Built fnOS .fpk must include cmd/upgrade_callback for overlay upgrades.");
   expect(tarHasEntry(builtFpk, "cmd/uninstall_init"), "Built fnOS .fpk must include cmd/uninstall_init to back up app data before uninstall/reinstall flows.");
+  for (const entry of ["cmd", "config", "wizard"]) {
+    expectTarEntryModeAtLeast(builtFpk, entry, 0o755, "Built fnOS .fpk");
+  }
+  for (const entry of [
+    "cmd/install_init",
+    "cmd/install_callback",
+    "cmd/upgrade_init",
+    "cmd/upgrade_callback",
+    "cmd/uninstall_init",
+    "cmd/uninstall_callback",
+    "cmd/config_init",
+    "cmd/config_callback",
+    "cmd/main",
+  ]) {
+    expectTarEntryModeAtLeast(builtFpk, entry, 0o755, "Built fnOS .fpk");
+  }
+  expectTarEntryModeAtLeast(builtFpk, "app.tgz", 0o644, "Built fnOS .fpk");
+  expectTarEntryModeAtLeast(builtFpk, "manifest", 0o644, "Built fnOS .fpk");
   const upgradeInitScript = readTarEntry(builtFpk, "cmd/upgrade_init");
   const uninstallInitScript = readTarEntry(builtFpk, "cmd/uninstall_init");
   expect(/upgrade-backups/.test(upgradeInitScript) && /data\/mmh\.db/.test(upgradeInitScript), "Built fnOS upgrade_init must back up persistent app data when SQLite data exists.");

@@ -10,26 +10,26 @@ export default function manifest(): MetadataRoute.Manifest {
     start_url: "/overview",
     scope: "/",
     display: "standalone",
-    display_override: ["standalone", "minimal-ui"],
+    display_override: ["standalone", "fullscreen", "minimal-ui"],
     background_color: "#f4f7fb",
     theme_color: "#f4f7fb",
     orientation: "portrait",
     categories: ["finance", "productivity"],
     icons: [
       {
-        src: "/branding/mmh-logo-pageflip-192.png",
+        src: "/branding/mmh-logo-pwa-192.png",
         sizes: "192x192",
         type: "image/png",
         purpose: "any",
       },
       {
-        src: "/branding/mmh-logo-pageflip-512.png",
+        src: "/branding/mmh-logo-pwa-512.png",
         sizes: "512x512",
         type: "image/png",
         purpose: "any",
       },
       {
-        src: "/branding/mmh-logo-pageflip-512.png",
+        src: "/branding/mmh-logo-pwa-512.png",
         sizes: "512x512",
         type: "image/png",
         purpose: "maskable",
@@ -42,7 +42,7 @@ export default function manifest(): MetadataRoute.Manifest {
         url: "/overview",
         icons: [
           {
-            src: "/branding/mmh-logo-pageflip-192.png",
+            src: "/branding/mmh-logo-pwa-192.png",
             sizes: "192x192",
             type: "image/png",
           },
@@ -54,7 +54,7 @@ export default function manifest(): MetadataRoute.Manifest {
         url: "/?quickEntry=1",
         icons: [
           {
-            src: "/branding/mmh-logo-pageflip-192.png",
+            src: "/branding/mmh-logo-pwa-192.png",
             sizes: "192x192",
             type: "image/png",
           },

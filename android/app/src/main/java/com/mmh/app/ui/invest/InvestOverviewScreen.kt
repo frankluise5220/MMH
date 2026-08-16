@@ -18,7 +18,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccountBalanceWallet
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -31,6 +30,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -73,21 +73,28 @@ fun InvestOverviewScreen(
                             }
                         }
                     },
-                    actions = {
-                        IconButton(onClick = { viewModel.load() }) {
-                            Icon(Icons.Default.Refresh, contentDescription = "\u5237\u65b0")
-                        }
-                    },
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = MaterialTheme.colorScheme.background
                     )
                 )
             }
         ) { padding ->
-            Content(uiState, viewModel, onAccountClick, Modifier.padding(padding))
+            PullToRefreshBox(
+                isRefreshing = uiState.isLoading,
+                onRefresh = { viewModel.load() },
+                modifier = Modifier.fillMaxSize()
+            ) {
+                Content(uiState, viewModel, onAccountClick, Modifier.padding(padding))
+            }
         }
     } else {
-        Content(uiState, viewModel, onAccountClick, Modifier.fillMaxSize())
+        PullToRefreshBox(
+            isRefreshing = uiState.isLoading,
+            onRefresh = { viewModel.load() },
+            modifier = Modifier.fillMaxSize()
+        ) {
+            Content(uiState, viewModel, onAccountClick, Modifier.fillMaxSize())
+        }
     }
 }
 

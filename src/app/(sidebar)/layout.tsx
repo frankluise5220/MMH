@@ -3,6 +3,7 @@ import { AIPanel } from "@/components/layout/AIPanel";
 import { BackgroundTaskStatusBar } from "@/components/BackgroundTaskStatusBar";
 import { FirstUseGuide } from "@/components/FirstUseGuide";
 import { MobileNavigation } from "@/components/layout/MobileNavigation";
+import { MobilePullToRefresh } from "@/components/layout/MobilePullToRefresh";
 import { getCurrentUser } from "@/lib/server/auth";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
@@ -42,13 +43,14 @@ export default async function SidebarLayout({
           <Sidebar />
         </Suspense>
       </div>
-      <main className="flex h-dvh min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-hidden bg-background pb-[calc(5.75rem+env(safe-area-inset-bottom))] pt-[calc(2.5rem+env(safe-area-inset-top))] md:p-0">
+      <main className="flex h-dvh min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-hidden bg-background pb-[calc(5.75rem+env(safe-area-inset-bottom))] pt-[env(safe-area-inset-top)] md:p-0">
         <FirstUseGuide>{children}</FirstUseGuide>
       </main>
       <div className="hidden h-dvh shrink-0 xl:block">
         <AIPanel initialCollapsed={aiPanelCollapsed} />
       </div>
       <Suspense fallback={null}>
+        <MobilePullToRefresh />
         <MobileNavigation />
       </Suspense>
     </div>

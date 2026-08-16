@@ -49,7 +49,11 @@ export function SettingsPrimaryAddButton({
   onClick: () => void;
 }) {
   return (
-    <button type="button" onClick={onClick} className="primary-button h-9 shrink-0 gap-1.5">
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border border-blue-200 bg-blue-50 px-2.5 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-100"
+    >
       <Plus className="h-3.5 w-3.5" />
       {children}
     </button>

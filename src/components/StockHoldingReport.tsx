@@ -1,3 +1,5 @@
+"use client";
+
 import { formatCurrencyMoney, formatMoney, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import type {

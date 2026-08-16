@@ -8,7 +8,7 @@ import { setFundFeeRate, setFundFeeRateInTx } from "@/lib/fund/feeRate";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
-import { calcInitialScheduledRunDate as calcInitialRunDate, calcNextScheduledRunDate as calcNextRunDate, skipWeekend } from "@/lib/scheduled-task-date";
+import { calcInitialScheduledRunDate as calcInitialRunDate, calcResumedScheduledRunDate as calcResumedRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { deriveRegularInvestNextRunDate } from "@/lib/server/regular-invest-plan";
 
 function normalizeIntervalUnit(value: unknown): IntervalUnit {
@@ -377,20 +377,14 @@ export async function PUT(req: NextRequest) {
       if (existing.status !== RegularInvestStatus.paused) {
         return NextResponse.json({ ok: false, code: "PLAN_NOT_PAUSED", error: "只有暂停状态的计划才能恢复" }, { status: 400 });
       }
-      // Recalculate the next run date on resume (from the current date or the last run date)
-      const now = new Date();
-      const nextRun = existing.lastRunDate
-        ? calcNextRunDate(existing.lastRunDate, existing.intervalUnit, existing.intervalValue, existing.executionDay, actionUsesBusinessDays)
-        : calcInitialRunDate(existing.startDate, existing.intervalUnit, existing.intervalValue, existing.executionDay, actionUsesBusinessDays);
-      const actualNextRun = nextRun < now
-        ? calcInitialRunDate(now, existing.intervalUnit, existing.intervalValue, existing.executionDay, actionUsesBusinessDays)
-        : nextRun;
+      // Resume from the current period; do not backfill runs missed while paused.
+      const nextRunDate = calcResumedRunDate(existing.nextRunDate, new Date(), actionUsesBusinessDays);
 
       const plan = await prisma.regularInvestPlan.update({
         where: { id },
         data: {
           status: RegularInvestStatus.active,
-          nextRunDate: actualNextRun,
+          nextRunDate,
         },
       });
       // Client-side handles page refresh

@@ -84,7 +84,11 @@ function liabilityMoneyClass(value: number, isRedUp: boolean) {
 export default async function AccountsPage({ searchParams }: { searchParams: SearchParams }) {
   const t = await getServerT();
   const params = await searchParams;
-  const tab = typeof params.tab === "string" && params.tab === "credit" ? "credit" : "assets";
+  const tab = typeof params.tab === "string" && params.tab === "credit"
+    ? "credit"
+    : typeof params.tab === "string" && params.tab === "other"
+      ? "other"
+      : "assets";
   const ctx = await getHouseholdScope();
   const { hidFilter } = ctx;
   const cookieStore = await cookies();

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   APP_PREFS_EVENT,
   getDisplayLanguagePreference,
@@ -22,6 +23,7 @@ function nextLanguage(current: DisplayLanguage) {
 
 export function LanguageSwitcher() {
   const { t, language: currentLanguage } = useI18n();
+  const router = useRouter();
   const [language, setLanguage] = useState<DisplayLanguage>(currentLanguage);
 
   useEffect(() => {
@@ -39,6 +41,10 @@ export function LanguageSwitcher() {
     setLanguage(next);
     setDisplayLanguagePreference(next);
     document.documentElement.lang = next;
+    // Server components render with getServerT() from the cookie, so re-render
+    // the current route so server-translated copy (pills, titles, options)
+    // catches up to the client text right away.
+    router.refresh();
     void fetch("/api/v1/settings/app-preferences", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },

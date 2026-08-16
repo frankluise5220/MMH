@@ -34,7 +34,7 @@ export async function GET(req: NextRequest) {
     });
     return NextResponse.json({
       ok: true,
-      days: normalizeNonNegativeDays(record?.defaultConfirmDays, 0),
+      days: normalizeNonNegativeDays(record?.defaultConfirmDays, 1),
       redeemCostDays: 1,
       arrivalDays: normalizeNonNegativeDays(record?.defaultArrivalDays, 2),
     });
@@ -70,7 +70,7 @@ export async function POST(req: NextRequest) {
         data: {
           accountId: body.accountId,
           fundCode: body.fundCode || "",
-          days: typeof body.days === "number" && body.days >= 0 ? body.days : 0,
+          days: typeof body.days === "number" && body.days >= 0 ? body.days : 1,
           redeemCostDays: typeof body.redeemCostDays === "number" && body.redeemCostDays >= 1 ? body.redeemCostDays : 1,
           arrivalDays: typeof body.arrivalDays === "number" && body.arrivalDays >= 0 ? body.arrivalDays : 2,
         },

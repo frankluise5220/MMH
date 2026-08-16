@@ -43,6 +43,8 @@ services:
     depends_on:
       - postgres
       - updater
+    volumes:
+      - ./data:/app/data
 
   updater:
     image: ${MMH_UPDATER_IMAGE:-ghcr.dockerproxy.net/frankluise5220/mmh-updater:latest}

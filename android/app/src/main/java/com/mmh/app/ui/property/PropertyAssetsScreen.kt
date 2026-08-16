@@ -15,7 +15,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.HomeWork
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -28,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -97,21 +97,28 @@ fun PropertyAssetsScreen(
                             }
                         }
                     },
-                    actions = {
-                        IconButton(onClick = { viewModel.load(accountId) }) {
-                            Icon(Icons.Default.Refresh, contentDescription = "刷新")
-                        }
-                    },
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = MaterialTheme.colorScheme.background
                     )
                 )
             }
         ) { padding ->
-            content(Modifier.padding(padding))
+            PullToRefreshBox(
+                isRefreshing = uiState.isLoading,
+                onRefresh = { viewModel.load(accountId) },
+                modifier = Modifier.fillMaxSize()
+            ) {
+                content(Modifier.padding(padding))
+            }
         }
     } else {
-        content(Modifier.fillMaxSize())
+        PullToRefreshBox(
+            isRefreshing = uiState.isLoading,
+            onRefresh = { viewModel.load(accountId) },
+            modifier = Modifier.fillMaxSize()
+        ) {
+            content(Modifier.fillMaxSize())
+        }
     }
 }
 

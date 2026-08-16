@@ -101,6 +101,7 @@ async function _loadEntriesForAccount(
     where,
     include: {
       EntryTag: { include: { Tag: true } },
+      Attachment: { select: { id: true, name: true, mimeType: true, url: true } },
       ...entryBusinessLinkSummaryInclude,
       account: {
         include: {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
 
 import { DEFAULT_CREDIT_CARD_LABEL_TEMPLATE, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
 import {
@@ -105,6 +106,7 @@ function SettingRow({
 
 export default function DisplaySettingsPage() {
   const { t, language: currentLanguage } = useI18n();
+  const router = useRouter();
   const [scheme, setScheme] = useState<ColorScheme>("red_up_green_down");
   const [schemeDraft, setSchemeDraft] = useState<ColorScheme>("red_up_green_down");
   const [displayLanguage, setDisplayLanguage] = useState<DisplayLanguage>(currentLanguage);
@@ -189,6 +191,11 @@ export default function DisplaySettingsPage() {
       if (!data.ok) {
         setDisplayLanguage(prev);
         setDisplayLanguagePreference(prev);
+      } else {
+        // Server components render with getServerT() from the cookie, so
+        // re-render the current route so server-translated copy catches up to
+        // the client text right away.
+        router.refresh();
       }
     } catch {
       setDisplayLanguage(prev);

@@ -6,6 +6,7 @@ import { createPortal } from "react-dom";
 import { CalcInput } from "./CalcInput";
 import { DateStepper } from "./DateStepper";
 import { EntityCreateForm, NestedAddModal } from "./EntityCreateForm";
+import { EntryAttachmentButton, uploadEntryAttachmentFiles } from "./EntryAttachmentPanel";
 import { SmartSelect, SmartSelectOption } from "./SmartSelect";
 import { UnifiedEntryLauncher } from "./UnifiedEntryLauncher";
 import { useAccountSSFilter } from "./accountSSFilter";
@@ -36,6 +37,9 @@ import {
 import { filterIncomeExpenseInstitutions } from "@/lib/institution-rules";
 
 type TxType = "expense" | "income" | "advance" | "transfer" | "fx" | "investment";
+type TransactionActionResult =
+  | { ok: true; data?: { id?: string | null; cashEntryId?: string | null } | null }
+  | { ok: false; error: string };
 type DebtTransferMode = "borrow_in" | "repay_out" | "lend_out" | "collect_in";
 
 type AccountOption = {
@@ -324,8 +328,8 @@ export function TransactionFormModal({
   lastRepayFromAccountId?: string;
   isCreditCardAccount?: boolean;
   showInvestment?: boolean;
-  action: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
-  editAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
+  action: (formData: FormData) => Promise<TransactionActionResult>;
+  editAction?: (formData: FormData) => Promise<TransactionActionResult>;
   allTags?: TagOption[];
   /** Hierarchical SmartSelect options for spending account dropdown (grouped by AccountGroup) */
   accountSSOptions?: SmartSelectOption[];
@@ -336,6 +340,7 @@ export function TransactionFormModal({
   hideTrigger?: boolean;
 }) {
   const { t, language } = useI18n();
+  const quickEntryConsumedRef = useRef<string | null>(null);
   const [open, setOpen] = useState(false);
   const [txType, setTxType] = useState<TxType>("expense");
   const [lockedType, setLockedType] = useState<TxType | null>(null);
@@ -607,6 +612,7 @@ export function TransactionFormModal({
   const [counterpartyInstitutionId, setCounterpartyInstitutionId] = useState("");
   const [note, setNote] = useState("");
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
+  const [pendingAttachmentFiles, setPendingAttachmentFiles] = useState<File[]>([]);
   const [isFromButton, setIsFromButton] = useState(false);
 
   useEffect(() => {
@@ -1046,6 +1052,7 @@ export function TransactionFormModal({
     setCounterpartyInstitutionId("");
     setNote("");
     setSelectedTagIds([]);
+    setPendingAttachmentFiles([]);
     setRequestId(null);
     setEditEntryId(null);
     setEditEntryOriginalType(null);
@@ -1067,6 +1074,7 @@ export function TransactionFormModal({
     setCreateInstallment(false);
     setInstallmentAmount("");
     setInstallmentAmountEdited(false);
+    setPendingAttachmentFiles([]);
     setRequestId(null);
     setEditEntryId(null);
     setEditEntryOriginalType(null);
@@ -1196,6 +1204,26 @@ export function TransactionFormModal({
     window.addEventListener("mmh:create-transaction:open", onOpenFromAi as EventListener);
     return () => window.removeEventListener("mmh:create-transaction:open", onOpenFromAi as EventListener);
   }, [accounts, defaultAccountId, expenseCategories, incomeCategories, lastRepayFromAccountId, lastRepayToAccountId, today, transferAccounts]);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("quickEntry") !== "1") return;
+    const key = url.searchParams.toString();
+    if (quickEntryConsumedRef.current === key) return;
+    quickEntryConsumedRef.current = key;
+    window.dispatchEvent(
+      new CustomEvent("mmh:create-transaction:open", {
+        detail: {
+          requestId: `url-${Date.now()}`,
+          source: "launcher",
+          item: { type: "expense" },
+          defaultAccountId: defaultAccountId ?? "",
+        },
+      }),
+    );
+    url.searchParams.delete("quickEntry");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  }, [defaultAccountId]);
 
   useEffect(() => {
     function onOpenEdit(ev: Event) {
@@ -1509,6 +1537,17 @@ export function TransactionFormModal({
           window.alert(data?.error ?? t("txForm.alert.fxSaveFailed"));
           return;
         }
+        const fxEntryId = editEntryId || data?.entries?.fromEntry?.id || data?.conversion?.fromEntryId || null;
+        if (fxEntryId && pendingAttachmentFiles.length > 0) {
+          try {
+            await uploadEntryAttachmentFiles(fxEntryId, pendingAttachmentFiles);
+            setPendingAttachmentFiles([]);
+          } catch (attachmentError) {
+            window.alert(t("attachments.saveAfterCreateFailed", {
+              reason: attachmentError instanceof Error ? attachmentError.message : t("attachments.uploadFailed"),
+            }));
+          }
+        }
         if (requestId) {
           window.dispatchEvent(new CustomEvent(editEntryId ? "mmh:transaction:edit:success" : "mmh:create-transaction:success", { detail: { requestId } }));
         }
@@ -1582,6 +1621,17 @@ export function TransactionFormModal({
       if (!res.ok) {
         window.alert(res.error);
         return;
+      }
+      const attachmentEntryId = editEntryId || res.data?.id || res.data?.cashEntryId || null;
+      if (attachmentEntryId && pendingAttachmentFiles.length > 0) {
+        try {
+          await uploadEntryAttachmentFiles(attachmentEntryId, pendingAttachmentFiles);
+          setPendingAttachmentFiles([]);
+        } catch (attachmentError) {
+          window.alert(t("attachments.saveAfterCreateFailed", {
+            reason: attachmentError instanceof Error ? attachmentError.message : t("attachments.uploadFailed"),
+          }));
+        }
       }
       if (requestId) {
         window.dispatchEvent(
@@ -2067,16 +2117,23 @@ export function TransactionFormModal({
                     </div>
                   ) : null}
 
-                  {/* Row 5: note */}
+                  {/* Row 5: note + attachment */}
                   <div className="space-y-1">
                     <div className="form-label">{t("detail.column.remark")}</div>
-                    <input
-                      name="note"
-                      placeholder={t("stockFee.optional")}
-                      value={note}
-                      onChange={(e) => setNote(e.target.value)}
-                      className="form-input"
-                    />
+                    <div className="flex items-start gap-2">
+                      <input
+                        name="note"
+                        placeholder={t("stockFee.optional")}
+                        value={note}
+                        onChange={(e) => setNote(e.target.value)}
+                        className="form-input flex-1"
+                      />
+                      <EntryAttachmentButton
+                        entryId={editEntryId}
+                        pendingFiles={pendingAttachmentFiles}
+                        onPendingFilesChange={setPendingAttachmentFiles}
+                      />
+                    </div>
                   </div>
                 </div>
               )}
@@ -2188,13 +2245,20 @@ export function TransactionFormModal({
 
                   <div className="space-y-1">
                     <div className="form-label">{t("detail.column.remark")}</div>
-                    <input
-                      name="note"
-                      placeholder={t("txForm.fxNotePlaceholder")}
-                      value={note}
-                      onChange={(e) => setNote(e.target.value)}
-                      className="form-input"
-                    />
+                    <div className="flex items-start gap-2">
+                      <input
+                        name="note"
+                        placeholder={t("txForm.fxNotePlaceholder")}
+                        value={note}
+                        onChange={(e) => setNote(e.target.value)}
+                        className="form-input flex-1"
+                      />
+                      <EntryAttachmentButton
+                        entryId={editEntryId}
+                        pendingFiles={pendingAttachmentFiles}
+                        onPendingFilesChange={setPendingAttachmentFiles}
+                      />
+                    </div>
                   </div>
                 </div>
               )}
@@ -2301,16 +2365,23 @@ export function TransactionFormModal({
                     <CalcInput value={amount} onChange={setAmount} placeholder={t("txForm.amountExample")} label={t("txForm.amount")} precision={2} />
                   </div>
 
-                  {/* Row 4: note */}
+                  {/* Row 4: note + attachment */}
                   <div className="space-y-1">
                     <div className="form-label">{t("detail.column.remark")}</div>
-                    <input
-                      name="note"
-                      placeholder={t("stockFee.optional")}
-                      value={note}
-                      onChange={(e) => setNote(e.target.value)}
-                      className="form-input"
-                    />
+                    <div className="flex items-start gap-2">
+                      <input
+                        name="note"
+                        placeholder={t("stockFee.optional")}
+                        value={note}
+                        onChange={(e) => setNote(e.target.value)}
+                        className="form-input flex-1"
+                      />
+                      <EntryAttachmentButton
+                        entryId={editEntryId}
+                        pendingFiles={pendingAttachmentFiles}
+                        onPendingFilesChange={setPendingAttachmentFiles}
+                      />
+                    </div>
                   </div>
                 </div>
               )}

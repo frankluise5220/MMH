@@ -272,11 +272,6 @@ export default function UsersPage() {
         title={t("settings.users.title")}
         description={t("settings.users.description")}
         count={users.length}
-        actions={
-          <SettingsPrimaryAddButton onClick={() => { setEditingUser(null); setShowModal(true); }}>
-            {t("settings.users.add")}
-          </SettingsPrimaryAddButton>
-        }
       />
 
       {loadError && (
@@ -285,7 +280,15 @@ export default function UsersPage() {
         </div>
       )}
 
-      <SettingsSection title={t("settings.users.list")} count={users.length}>
+      <SettingsSection
+        title={t("settings.users.list")}
+        count={users.length}
+        actions={
+          <SettingsPrimaryAddButton onClick={() => { setEditingUser(null); setShowModal(true); }}>
+            {t("settings.users.add")}
+          </SettingsPrimaryAddButton>
+        }
+      >
         <SettingsTable minWidth={820} maxWidth="full">
           <colgroup>
             <col className="w-[22%]" />

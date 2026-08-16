@@ -15,6 +15,7 @@ import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAcc
 import { getColorSchemeFromCookie, pnlClassFromRedUp } from "@/lib/client/colors";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
+import { addTradingDaysUtc } from "@/lib/date-utils";
 import { findLinkedEntries, type RefundLinkableEntry } from "@/lib/fund/refund-link";
 import { formatFundUnitsValue, normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision-core";
 import {
@@ -22,7 +23,6 @@ import {
   type ProductType,
   PRODUCT_SUBTYPES,
   parseNumber,
-  addDays,
   isRedeemLike,
   isBuyLike,
   isDividend,
@@ -41,6 +41,10 @@ function pnlCls(n: number | null | undefined): string {
 }
 
 const p = parseNumber;
+
+function addFundTradingDays(date: string, days: number) {
+  return days > 0 ? addTradingDaysUtc(date, days, "cn_fund") : date;
+}
 
 function buildFundNavUrl(code: string, date: string, accountId?: string) {
   const params = new URLSearchParams({
@@ -257,8 +261,8 @@ export function InvestmentFormModal({
     ? (isRedeemEntry ? (entry?.accountId ?? defaultAccountId) : (entry?.toAccountId ?? defaultAccountId))
     : defaultAccountId;
   const initConfirmDays = mode === "edit" && entry
-    ? (defaults?.confirmDays ?? 0)
-    : (defaults?.confirmDays ?? 0);
+    ? (defaults?.confirmDays ?? 1)
+    : (defaults?.confirmDays ?? 1);
   const initFeeRate = mode === "edit" ? String(entry?.feeRate ?? defaults?.feeRate ?? "0") : (defaults?.feeRate ?? "0");
   const initFundCode = mode === "edit" ? (entry?.fundCode ?? "") : (defaults?.fundCode ?? "");
   const initFundName = mode === "edit" ? (entry?.fundName ?? entry?.fundCode ?? "") : (defaults?.fundName ?? "");
@@ -429,7 +433,7 @@ export function InvestmentFormModal({
       const applied = applyLinkedRefundToForm(firstLinkedRefund);
       if (!applied && !arrivalDate) {
         const baseDate = confirmDate || applyDate;
-        setArrivalDate(baseDate && arrivalDays > 0 ? addDays(baseDate, arrivalDays) : baseDate);
+        setArrivalDate(baseDate && arrivalDays > 0 ? addFundTradingDays(baseDate, arrivalDays) : baseDate);
       }
       return;
     }
@@ -1472,7 +1476,7 @@ export function InvestmentFormModal({
     if (buyResultStatus !== "refund" || subtype !== "buy") return;
     if (linkedRefundEntryId) return;
     if (confirmDate && !arrivalDateEditedRef.current) {
-      const nextArrivalDate = arrivalDays > 0 ? addDays(confirmDate, arrivalDays) : confirmDate;
+      const nextArrivalDate = arrivalDays > 0 ? addFundTradingDays(confirmDate, arrivalDays) : confirmDate;
       if (arrivalDate !== nextArrivalDate) setArrivalDate(nextArrivalDate);
     }
   }, [buyResultStatus, subtype, confirmDate, arrivalDate, arrivalDays, linkedRefundEntryId]);
@@ -1647,13 +1651,13 @@ export function InvestmentFormModal({
   useEffect(() => {
     if (mode === "edit" && !editAutoNavEnabledRef.current) return;
     if ((isBuyLike(subtype) || isRedeemLike(subtype)) && applyDate && confirmDays >= 0) {
-      const nextConfirmDate = confirmDays > 0 ? addDays(applyDate, confirmDays) : applyDate;
+      const nextConfirmDate = addFundTradingDays(applyDate, confirmDays);
       setConfirmDate(nextConfirmDate);
       // Derive the arrival date automatically when arrival days are known and the user has not edited it.
       if (mode === "create" && isRedeemLike(subtype) && !arrivalDateEditedRef.current) {
         setArrivalDate(applyDate);
       } else if (arrivalDays > 0 && !arrivalDateEditedRef.current) {
-        setArrivalDate(addDays(nextConfirmDate, arrivalDays));
+        setArrivalDate(addFundTradingDays(nextConfirmDate, arrivalDays));
       }
     }
   }, [applyDate, confirmDays, subtype, open, mode]);
@@ -1770,12 +1774,12 @@ export function InvestmentFormModal({
       setFundName(nextFundName);
       setHoldingSearch(nextFundCode ? `${nextFundCode} ${nextFundName || nextFundCode}` : "");
       setFeeRate(defaults?.feeRate ?? "0");
-      setConfirmDays(typeof defaults?.confirmDays === "number" ? defaults.confirmDays : Number(defaults?.confirmDays) || 0);
+      setConfirmDays(typeof defaults?.confirmDays === "number" ? defaults.confirmDays : Number(defaults?.confirmDays) || 1);
       setFeeRateEdited(false);
     }
     // Reset date, amount, units, NAV, fee, and memo.
     setApplyDate(today);
-    setConfirmDate(confirmDays > 0 ? addDays(today, confirmDays) : today);
+    setConfirmDate(addFundTradingDays(today, confirmDays));
     cashAccountTouchedRef.current = false;
     cashAccountAutoRef.current = false;
     prevSavedDateRef.current = null;
@@ -2107,7 +2111,7 @@ export function InvestmentFormModal({
           while (next.getUTCDay() === 0 || next.getUTCDay() === 6) next.setUTCDate(next.getUTCDate() + 1);
           const nextDate = next.toISOString().slice(0, 10);
           setApplyDate(nextDate);
-          setConfirmDate(confirmDays > 0 ? addDays(nextDate, confirmDays) : nextDate);
+          setConfirmDate(addFundTradingDays(nextDate, confirmDays));
           setNav("");
           setNavLoading(false);
           setFee("");
@@ -2408,7 +2412,7 @@ export function InvestmentFormModal({
                     onBlur={() => {
                       if (confirmDays >= 0 && applyDate) {
                         enableEditAutoNav();
-                        setConfirmDate(confirmDays > 0 ? addDays(applyDate, confirmDays) : applyDate);
+                        setConfirmDate(addFundTradingDays(applyDate, confirmDays));
                       }
                     }} />
                 </div>
@@ -2421,7 +2425,7 @@ export function InvestmentFormModal({
                         const days = Number(e.target.value) || 0;
                         setConfirmDays(days);
                         setConfirmDaysEdited(true);
-                        if (applyDate) setConfirmDate(addDays(applyDate, days));
+                        if (applyDate) setConfirmDate(addFundTradingDays(applyDate, days));
                       }}
                       placeholder="0"
                       className="h-7 w-8 rounded-[8px] border border-slate-300/70 bg-white text-center text-xs outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-100" />
@@ -2778,7 +2782,7 @@ export function InvestmentFormModal({
                           if (p(v) > 0 && buyResultStatus !== "refund") setBuyResultStatus("refund");
                           if (p(v) > 0 && !arrivalDate) {
                             const baseDate = confirmDate || applyDate;
-                            setArrivalDate(baseDate && arrivalDays > 0 ? addDays(baseDate, arrivalDays) : baseDate);
+                            setArrivalDate(baseDate && arrivalDays > 0 ? addFundTradingDays(baseDate, arrivalDays) : baseDate);
                           }
                           calculateUnitsAfterRefundChange(v);
                         }}

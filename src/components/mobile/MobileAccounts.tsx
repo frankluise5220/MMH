@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 
 import { formatMoneyYuan } from "@/lib/format";
+import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { useI18n } from "@/lib/i18n";
 
 type TFunc = (key: string, params?: Record<string, string | number>) => string;
@@ -54,7 +55,7 @@ export function MobileAccounts({
   assetTotal: number;
   groups: AccountGroup[];
   creditAccounts: CreditRow[];
-  activeTab: "assets" | "credit";
+  activeTab: "assets" | "other" | "credit";
   insuranceCount: number;
   liabilityCount: number;
   isRedUp: boolean;
@@ -69,6 +70,11 @@ export function MobileAccounts({
       : creditAccounts;
     if (activeTab === "credit") {
       return visibleCredit.length > 0 ? [{ kind: "bank_credit", label: t("account.kind.bank_credit"), accounts: visibleCredit }] : [];
+    }
+    if (activeTab === "other") {
+      const otherGroup = groups.find((group) => group.kind === "other");
+      const accounts = hideZero ? otherGroup?.accounts.filter((account) => Math.abs(account.balance) >= 0.005) : otherGroup?.accounts;
+      return accounts && accounts.length > 0 ? [{ kind: "other", label: t("account.kind.other"), accounts }] : [];
     }
     return groups
       .map((group) => ({
@@ -95,15 +101,16 @@ export function MobileAccounts({
       <div className="space-y-2.5 pb-4">
         <section className="rounded-lg bg-indigo-600 px-4 py-4 text-center text-white shadow-sm">
           <div className="text-sm font-medium text-indigo-100">{activeTab === "credit" ? t("accountsPage.creditUsed") : t("mobileAccounts.fundsTotal")}</div>
-          <div className="mt-1 break-all text-[26px] font-bold tabular-nums">{formatMoneyYuan(activeTab === "credit" ? creditTotal : assetTotal)}</div>
+          <div className="mt-1 break-all text-[26px] font-bold text-white tabular-nums">{formatMoneyYuan(activeTab === "credit" ? creditTotal : assetTotal)}</div>
           <div className="mt-3 flex items-center justify-center gap-5 text-xs text-indigo-100">
             <span>{t("mobileAccounts.groupCount", { count: visibleGroups.length })}</span>
             <span>{t("mobileAccounts.accountCount", { count: accountCount })}</span>
           </div>
         </section>
 
-        <div className="grid grid-cols-4 gap-2">
+        <div className="grid grid-cols-5 gap-2">
           <ModuleLink href="/accounts" label={t("mobileAccounts.funds")} value={formatModuleCount(groups.reduce((sum, group) => sum + group.accounts.length, 0), t)} icon="wallet" active={activeTab === "assets"} />
+          <ModuleLink href="/accounts?tab=other" label={t("account.kind.other")} value={formatModuleCount(groups.find((group) => group.kind === "other")?.accounts.length ?? 0, t)} icon="other" active={activeTab === "other"} />
           <ModuleLink href="/accounts?tab=credit" label={t("account.kind.bank_credit")} value={formatModuleCount(creditAccounts.length, t)} icon="credit" active={activeTab === "credit"} />
           <ModuleLink href="/insurance" label={t("account.kind.insurance")} value={formatModuleCount(insuranceCount, t)} icon="insurance" />
           <ModuleLink href="/liabilities" label={t("nav.liabilities")} value={formatModuleCount(liabilityCount, t)} icon="liability" />
@@ -184,7 +191,7 @@ function ModuleLink({
   href: string;
   label: string;
   value: string;
-  icon: "wallet" | "credit" | "insurance" | "liability";
+  icon: "wallet" | "other" | "credit" | "insurance" | "liability";
   active?: boolean;
 }) {
   const Icon =
@@ -194,7 +201,9 @@ function ModuleLink({
         ? Shield
         : icon === "liability"
           ? ArrowLeftRight
-          : Wallet;
+          : icon === "other"
+            ? Coins
+            : Wallet;
   return (
     <Link
       href={href}
@@ -236,7 +245,6 @@ function AccountKindIcon({ kind, compact = false }: { kind: string; compact?: bo
 }
 
 function moneyClass(kind: string, value: number, isRedUp: boolean) {
-  if (kind === "bank_credit" || (kind === "loan" && value < 0)) return isRedUp ? "text-emerald-700" : "text-red-700";
-  if (value < 0) return "text-red-600";
-  return "text-slate-900";
+  if (kind === "bank_credit" || (kind === "loan" && value < 0)) return pnlClassFromRedUp(Math.abs(value), isRedUp, "strong", true);
+  return pnlClassFromRedUp(value, isRedUp, "strong");
 }

@@ -315,7 +315,6 @@ export default function SettingsAccountsPage() {
         title={t("settings.accounts.title")}
         description={guideAccountSetup ? t("settings.accounts.guideDescription") : t("settings.accounts.description")}
         count={filteredAccounts.length}
-        actions={<SettingsPrimaryAddButton onClick={() => setShowCreateAccount(true)}>{t("settings.accounts.add")}</SettingsPrimaryAddButton>}
         toolbar={
           <>
           <div className="w-64 max-w-full">
@@ -353,6 +352,9 @@ export default function SettingsAccountsPage() {
               options={kindFilterOptions}
               placeholder={t("settings.accounts.filterKind")}
             />
+          </div>
+          <div className="ml-auto">
+            <SettingsPrimaryAddButton onClick={() => setShowCreateAccount(true)}>{t("settings.accounts.add")}</SettingsPrimaryAddButton>
           </div>
           </>
         }

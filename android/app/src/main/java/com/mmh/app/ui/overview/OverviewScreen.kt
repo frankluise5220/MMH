@@ -8,6 +8,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -37,6 +38,7 @@ private const val MASKED_AMOUNT = "************"
  * 移动端只保留高频摘要：总资产、月收支、日常资金、信用卡、投资账户和资金账户。
  * 详细统计与更多筛选交给 Web 工作台。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OverviewScreen(
     onNavigateToSettings: () -> Unit,
@@ -56,11 +58,15 @@ fun OverviewScreen(
 
     LaunchedEffect(Unit) { viewModel.loadOverview() }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        if (uiState.isLoading && uiState.netWorth == 0.0) {
-            // 骨架加载态
-            SkeletonLoading()
-        } else {
+    if (uiState.isLoading && uiState.netWorth == 0.0) {
+        // 骨架加载态
+        SkeletonLoading()
+    } else {
+        PullToRefreshBox(
+            isRefreshing = uiState.isLoading,
+            onRefresh = { viewModel.retry() },
+            modifier = Modifier.fillMaxSize()
+        ) {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 92.dp),
@@ -166,17 +172,6 @@ fun OverviewScreen(
                 uiState.error?.let { msg ->
                     item { ErrorBanner(msg) { viewModel.retry() } }
                 }
-            }
-        }
-
-        // 右上角菜单
-        Row(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 4.dp, end = 4.dp)
-        ) {
-            IconButton(onClick = { viewModel.retry() }) {
-                Icon(Icons.Default.Refresh, contentDescription = "刷新", tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }

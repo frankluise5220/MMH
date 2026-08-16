@@ -26,7 +26,6 @@ import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Payments
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RequestQuote
 import androidx.compose.material.icons.filled.Savings
 import androidx.compose.material3.Card
@@ -35,7 +34,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -43,6 +41,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -89,17 +88,17 @@ fun AccountsScreen(
         topBar = {
             TopAppBar(
                 title = { Text("\u8d44\u91d1\u8d26\u6237", style = MaterialTheme.typography.titleMedium) },
-                actions = {
-                    IconButton(onClick = { viewModel.refresh() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "\u5237\u65b0")
-                    }
-                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background
                 )
             )
         }
     ) { padding ->
+        PullToRefreshBox(
+            isRefreshing = uiState.isRefreshing,
+            onRefresh = { viewModel.refresh() },
+            modifier = Modifier.fillMaxSize()
+        ) {
         when {
             uiState.isLoading && uiState.groups.isEmpty() -> {
                 Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
@@ -147,10 +146,6 @@ fun AccountsScreen(
                         )
                     }
 
-                    if (uiState.isRefreshing) {
-                        item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
-                    }
-
                     if (visibleGroups.isEmpty()) {
                         item {
                             EmptyAccountsCard(
@@ -179,6 +174,7 @@ fun AccountsScreen(
                     item { Spacer(Modifier.height(16.dp)) }
                 }
             }
+        }
         }
     }
 }

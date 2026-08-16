@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { AlertTriangle, DatabaseZap } from "lucide-react";
+import { useRouter } from "next/navigation";
 
 import type { InvestmentProfitMissingNav } from "@/lib/server/investment-profit-report";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
@@ -40,6 +41,7 @@ export function MissingFundNavPrompt({
   className?: string;
 }) {
   const { t } = useI18n();
+  const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [message, setMessage] = useState("");
   const incoming = useMemo(() => {
@@ -91,10 +93,11 @@ export function MissingFundNavPrompt({
           : [];
 
         setMissingItems([]);
+        window.dispatchEvent(new CustomEvent("mmh:fund:nav-cache-updated", { detail: data }));
+        router.refresh();
         if (unresolvedItems.length > 0 && resolvedItems.length === 0 && (data.written ?? 0) === 0) {
           window.alert(t("missingNav.unresolvedAlert").replace("{count}", String(unresolvedItems.length)));
         }
-        window.dispatchEvent(new CustomEvent("mmh:fund:nav-cache-updated", { detail: data }));
       } catch (error) {
         window.alert(error instanceof Error ? error.message : t("missingNav.fetchFailed"));
       }

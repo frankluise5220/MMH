@@ -285,6 +285,10 @@ html {
     @apply bg-blue-700;
   }
 
+  .page-action-button {
+    @apply rounded-full px-4 shadow-sm;
+  }
+
   .primary-button:disabled,
   .secondary-button:disabled,
   .segment-button:disabled {

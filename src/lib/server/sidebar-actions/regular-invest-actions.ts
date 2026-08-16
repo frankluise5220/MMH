@@ -5,7 +5,7 @@ import { prisma } from "@/lib/db/prisma";
 import { normalizeNonNegativeDays, setFundArrivalDays, setFundArrivalDaysInTx, setFundConfirmDays, setFundConfirmDaysInTx } from "@/lib/fund/confirmDays";
 import { setFundFeeRateByDateInTx } from "@/lib/fund/feeRate";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
-import { calcInitialScheduledRunDate, calcNextScheduledRunDate, skipWeekend } from "@/lib/scheduled-task-date";
+import { calcInitialScheduledRunDate, calcResumedScheduledRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { deriveRegularInvestNextRunDate } from "@/lib/server/regular-invest-plan";
@@ -217,17 +217,11 @@ async function regularInvestAction(formData: FormData) {
       }
       const task = decodeScheduledTaskMemo(plan.memo);
       const usesBusinessDays = task.type === "fund_regular_invest";
-      const now = new Date();
-      const nextRun = plan.lastRunDate
-        ? calcNextScheduledRunDate(plan.lastRunDate, plan.intervalUnit, plan.intervalValue, plan.executionDay, usesBusinessDays)
-        : calcInitialScheduledRunDate(plan.startDate, plan.intervalUnit, plan.intervalValue, plan.executionDay, usesBusinessDays);
-      const actualNextRun = nextRun < now
-        ? calcInitialScheduledRunDate(now, plan.intervalUnit, plan.intervalValue, plan.executionDay, usesBusinessDays)
-        : nextRun;
+      const nextRunDate = calcResumedScheduledRunDate(plan.nextRunDate, new Date(), usesBusinessDays);
 
       await prisma.regularInvestPlan.update({
         where: { id: planId },
-        data: { status: RegularInvestStatus.active, nextRunDate: actualNextRun },
+        data: { status: RegularInvestStatus.active, nextRunDate },
       });
     } else if (actionType === "stop") {
       if (plan.status === RegularInvestStatus.stopped || plan.status === RegularInvestStatus.completed) {

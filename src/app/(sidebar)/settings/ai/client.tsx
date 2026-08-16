@@ -8,6 +8,7 @@ import {
   SettingsPageHeader,
   SettingsPrimaryAddButton,
   SettingsRowActions,
+  SettingsSection,
   SettingsTable,
   SettingsTd,
   SettingsTh,
@@ -450,13 +451,17 @@ export default function AISettingsClient({
         title={t("settings.ai.client.title")}
         description={t("settings.ai.client.description")}
         count={models.length}
+      />
+
+      <SettingsSection
+        title={t("settings.ai.client.listTitle")}
+        count={models.length}
         actions={
           <SettingsPrimaryAddButton onClick={() => { setEditingModel(null); setShowModal(true); }}>
             {t("settings.ai.client.newChannel")}
           </SettingsPrimaryAddButton>
         }
-      />
-
+      >
       <SettingsTable minWidth={860} maxWidth="full">
         <thead className="sticky top-0 z-10">
           <tr>
@@ -533,6 +538,7 @@ export default function AISettingsClient({
           )}
         </tbody>
       </SettingsTable>
+      </SettingsSection>
 
       {/* Quick add modal */}
       {quickAdd && (

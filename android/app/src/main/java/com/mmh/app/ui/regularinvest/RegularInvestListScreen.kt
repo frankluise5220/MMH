@@ -11,6 +11,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -72,11 +73,6 @@ fun RegularInvestListScreen(
                             }
                         }
                     },
-                    actions = {
-                        IconButton(onClick = { viewModel.loadPlans() }) {
-                            Icon(Icons.Default.Refresh, contentDescription = "刷新")
-                        }
-                    },
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = MaterialTheme.colorScheme.background
                     )
@@ -84,23 +80,35 @@ fun RegularInvestListScreen(
             },
             snackbarHost = { SnackbarHost(snackbarHostState) }
         ) { padding ->
-            PlanListContent(
-                uiState = uiState,
-                viewModel = viewModel,
-                modifier = Modifier.padding(padding),
-                filterFundCode = filterFundCode,
-                onEditPlan = { editingPlan = it }
-            )
+            PullToRefreshBox(
+                isRefreshing = uiState.isLoading,
+                onRefresh = { viewModel.loadPlans() },
+                modifier = Modifier.fillMaxSize()
+            ) {
+                PlanListContent(
+                    uiState = uiState,
+                    viewModel = viewModel,
+                    modifier = Modifier.padding(padding),
+                    filterFundCode = filterFundCode,
+                    onEditPlan = { editingPlan = it }
+                )
+            }
         }
     } else {
         Box(modifier = Modifier.fillMaxSize()) {
-            PlanListContent(
-                uiState = uiState,
-                viewModel = viewModel,
-                modifier = Modifier.fillMaxSize(),
-                filterFundCode = filterFundCode,
-                onEditPlan = { editingPlan = it }
-            )
+            PullToRefreshBox(
+                isRefreshing = uiState.isLoading,
+                onRefresh = { viewModel.loadPlans() },
+                modifier = Modifier.fillMaxSize()
+            ) {
+                PlanListContent(
+                    uiState = uiState,
+                    viewModel = viewModel,
+                    modifier = Modifier.fillMaxSize(),
+                    filterFundCode = filterFundCode,
+                    onEditPlan = { editingPlan = it }
+                )
+            }
             // embedded mode: snackbar host inline
             SnackbarHost(
                 hostState = snackbarHostState,

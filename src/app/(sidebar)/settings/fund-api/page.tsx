@@ -8,6 +8,7 @@ import {
   SettingsPageHeader,
   SettingsPrimaryAddButton,
   SettingsRowActions,
+  SettingsSection,
   SettingsTable,
   SettingsTd,
   SettingsTh,
@@ -313,7 +314,6 @@ export default function FundQueryApiPage() {
         title={t("settings.fundApi.title")}
         description={t("settings.fundApi.description")}
         count={apis.length}
-        actions={<SettingsPrimaryAddButton onClick={openCreate}>{t("settings.fundApi.add")}</SettingsPrimaryAddButton>}
       />
 
       {loadError && (
@@ -322,6 +322,11 @@ export default function FundQueryApiPage() {
         </div>
       )}
 
+      <SettingsSection
+        title={t("settings.fundApi.listTitle")}
+        count={apis.length}
+        actions={<SettingsPrimaryAddButton onClick={openCreate}>{t("settings.fundApi.add")}</SettingsPrimaryAddButton>}
+      >
       <SettingsTable minWidth={920} maxWidth="full">
         <colgroup>
           <col className="w-[4.5rem]" />
@@ -394,6 +399,7 @@ export default function FundQueryApiPage() {
           )}
         </tbody>
       </SettingsTable>
+      </SettingsSection>
 
       {(isCreating || editingApi) ? (
         <div className="app-modal-backdrop z-[1100]">

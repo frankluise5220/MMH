@@ -152,6 +152,18 @@ export async function POST(req: NextRequest) {
 
     const result = await refreshFundNavCacheRanges(allowedRequests);
     const exactStatus = await resolveExactRequestStatus(allowedRequests);
+    console.info("[fund-nav-missing] refresh result", {
+      requested: requests.length,
+      allowed: allowedRequests.length,
+      rangeCount: result.rangeCount,
+      fundCount: result.fundCount,
+      fetched: result.fetched,
+      written: result.written,
+      failed: result.failed,
+      resolved: exactStatus.resolvedItems.length,
+      unresolved: exactStatus.unresolvedItems.length,
+      skipped: requests.length - allowedRequests.length,
+    });
     if (result.written > 0) {
       revalidateAfterInvestChange();
       revalidatePath("/reports");

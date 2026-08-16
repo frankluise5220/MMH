@@ -169,6 +169,7 @@ const REGULAR_INVEST_COLUMN_MIN_WIDTHS: Record<RegularInvestColumnKey, number> =
   status: 82,
   executedCount: 120,
 };
+const REGULAR_INVEST_DEFAULT_SORT: AdvancedDataTableSortState = { key: "nextRunDate", direction: "asc" };
 const REGULAR_INVEST_MAIN_TABLE_MIN_WIDTH = REGULAR_INVEST_COLUMNS.reduce(
   (total, column) => total + REGULAR_INVEST_COLUMN_WIDTHS[column.key],
   REGULAR_INVEST_ACTION_COLUMN_WIDTH,
@@ -487,6 +488,7 @@ export function RegularInvestClient({
   const [editPlan, setEditPlan] = useState<RegularInvestPlanView | null>(null);
   const [selectedPlan, setSelectedPlan] = useState<RegularInvestPlanView | null>(null);
   const [planRecords, setPlanRecords] = useState<any[]>([]);
+  const [selectedRecordIds, setSelectedRecordIds] = useState<Set<string>>(new Set());
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<{ planId: string; planName: string } | null>(null);
   const [editingRecord, setEditingRecord] = useState<any>(null);
@@ -567,6 +569,7 @@ export function RegularInvestClient({
       setPlans((prev) => [createdPlan, ...prev.filter((plan) => plan.id !== createdPlan.id)]);
       setSelectedPlan(createdPlan);
       setPlanRecords([]);
+      setSelectedRecordIds(new Set());
     }
     return data;
   }
@@ -580,11 +583,14 @@ export function RegularInvestClient({
         const records = (data.records || []).filter((record: any) => recordMatchesPlan(plan, record));
         records.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
         setPlanRecords(records);
+        setSelectedRecordIds(new Set());
       } else {
         setPlanRecords([]);
+        setSelectedRecordIds(new Set());
       }
     } catch {
       setPlanRecords([]);
+      setSelectedRecordIds(new Set());
     } finally {
       setRecordsLoading(false);
     }
@@ -594,6 +600,7 @@ export function RegularInvestClient({
     if (selectedPlan?.id === plan.id) {
       setSelectedPlan(null);
       setPlanRecords([]);
+      setSelectedRecordIds(new Set());
       return;
     }
     setSelectedPlan(plan);
@@ -603,6 +610,40 @@ export function RegularInvestClient({
   async function refreshRecords() {
     if (!selectedPlan) return;
     await loadRecords(selectedPlan);
+  }
+
+  const visibleRecordIds = useMemo(() => planRecords.map((record) => String(record.id)).filter(Boolean), [planRecords]);
+  const selectedVisibleRecordIds = useMemo(
+    () => visibleRecordIds.filter((id) => selectedRecordIds.has(id)),
+    [selectedRecordIds, visibleRecordIds],
+  );
+  const allVisibleRecordsSelected = visibleRecordIds.length > 0 && selectedVisibleRecordIds.length === visibleRecordIds.length;
+
+  function toggleRecordSelection(recordId: string, checked: boolean) {
+    setSelectedRecordIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(recordId);
+      else next.delete(recordId);
+      return next;
+    });
+  }
+
+  function toggleAllRecordSelection(checked: boolean) {
+    setSelectedRecordIds(checked ? new Set(visibleRecordIds) : new Set());
+  }
+
+  function removeDeletedRecordsFromSelection(recordIds: string[]) {
+    setSelectedRecordIds((prev) => {
+      const next = new Set(prev);
+      for (const id of recordIds) next.delete(id);
+      return next;
+    });
+  }
+
+  async function updateAfterRecordDelete(recordIds: string[]) {
+    removeDeletedRecordsFromSelection(recordIds);
+    await refreshRecords();
+    dispatchFinanceDataChanged({ reason: "regular-invest-record-delete", deletedEntryIds: recordIds, entryIds: recordIds });
   }
 
   function updatePlanFromExecutionResult(planId: string, data: any) {
@@ -855,6 +896,7 @@ export function RegularInvestClient({
       const data = await res.json();
       if (data.ok) {
         setPlanRecords([]);
+        setSelectedRecordIds(new Set());
         setSelectedPlan((prev) => prev?.id === planId ? { ...prev, ...data.plan, executedCount: 0, executedAmount: 0, confirmedCount: 0, confirmedAmount: 0 } : prev);
         setPlans((prev) => prev.map((plan) => plan.id === planId ? { ...plan, ...data.plan, executedCount: 0, executedAmount: 0, confirmedCount: 0, confirmedAmount: 0 } : plan));
         dispatchFinanceDataChanged({ reason: "regular-invest-records-delete" });
@@ -871,6 +913,7 @@ export function RegularInvestClient({
       if (selectedPlan?.id === planId) {
         setSelectedPlan(null);
         setPlanRecords([]);
+        setSelectedRecordIds(new Set());
       }
       setPlans((prev) => prev.filter((plan) => plan.id !== planId));
       dispatchFinanceDataChanged({ reason: "regular-invest-plan-delete" });
@@ -884,20 +927,58 @@ export function RegularInvestClient({
     setDeleteConfirm({ planId, planName: plan ? getPlanTargetLabel(plan) : t("nav.scheduledTasks") });
   }
 
+  async function deleteRegularInvestRecordIds(recordIds: string[], plan: RegularInvestPlanView) {
+    if (recordIds.length === 0) return;
+    if (getPlanTaskType(plan) === "fund_regular_invest") {
+      for (const recordId of recordIds) {
+        const res = await fetch(`/api/v1/fund/entry?id=${recordId}`, { method: "DELETE" });
+        const data = await res.json();
+        if (!data.ok && data.code !== "FUND_ENTRY_NOT_FOUND") {
+          throw new Error(data.error || t("settingsDelete.deleteFailed"));
+        }
+      }
+      return;
+    }
+
+    const res = await fetch("/api/v1/entries/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ entryIds: recordIds, linkedAction: "deleteBusiness" }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || t("settingsDelete.deleteFailed"));
+  }
+
+  async function handleDeleteSelectedRecords() {
+    if (!selectedPlan || selectedVisibleRecordIds.length === 0) return;
+    const recordIds = selectedVisibleRecordIds;
+    const confirmed = await showConfirmDialog({
+      title: t("regularInvest.client.deleteRecords.title"),
+      message: t("regularInvest.client.deleteRecords.confirmSelected", { count: recordIds.length }),
+      tone: "danger",
+    });
+    if (!confirmed) return;
+    try {
+      await deleteRegularInvestRecordIds(recordIds, selectedPlan);
+      await updateAfterRecordDelete(recordIds);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : t("settingsDelete.deleteFailed"));
+    }
+  }
+
   async function handleDeleteRecord(recordId: string) {
+    if (!selectedPlan) return;
     const confirmed = await showConfirmDialog({
       title: t("regularInvest.client.deleteRecords.title"),
       message: t("regularInvest.client.deleteRecord.confirm"),
       tone: "danger",
     });
     if (!confirmed) return;
-    const res = await fetch(`/api/v1/fund/entry?id=${recordId}`, { method: "DELETE" });
-    const data = await res.json();
-    if (data.ok) {
-      await refreshRecords();
-      dispatchFinanceDataChanged({ reason: "regular-invest-record-delete", deletedEntryIds: [recordId], entryIds: [recordId] });
-    } else {
-      window.alert(data.error || t("settingsDelete.deleteFailed"));
+    try {
+      await deleteRegularInvestRecordIds([recordId], selectedPlan);
+      await updateAfterRecordDelete([recordId]);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : t("settingsDelete.deleteFailed"));
     }
   }
 
@@ -1147,7 +1228,7 @@ export function RegularInvestClient({
                 compactRows
                 showFilters
                 sortable
-                defaultSort={{ key: "nextRunDate", direction: "asc" }}
+                defaultSort={REGULAR_INVEST_DEFAULT_SORT}
                 filterRows={filterRegularInvestDisplayRows}
                 sortRows={sortRegularInvestDisplayRows}
                 emptyText={t("regularInvest.client.empty")}
@@ -1198,7 +1279,17 @@ export function RegularInvestClient({
               <div className="flex h-80 shrink-0 flex-col bg-slate-50">
                 <div className="flex h-10 shrink-0 items-center justify-between border-b border-slate-100 bg-white px-4">
                   <div className="text-xs font-semibold text-slate-700">{t("regularInvest.client.recordsTitle", { name: getPlanTargetLabel(selectedPlan) })}</div>
-                  <button onClick={() => { setSelectedPlan(null); setPlanRecords([]); }} className="text-xs text-slate-400 hover:text-slate-600">{t("table.close")}</button>
+                  <div className="flex items-center gap-2">
+                    {selectedVisibleRecordIds.length > 0 && (
+                      <>
+                        <span className="text-xs text-slate-400">{t("table.selectedCount", { count: selectedVisibleRecordIds.length })}</span>
+                        <button onClick={handleDeleteSelectedRecords} className="flex h-7 items-center gap-1 rounded border border-red-200 bg-red-50 px-2 text-xs text-red-600 hover:bg-red-100">
+                          <Trash2 className="h-3.5 w-3.5" />{t("regularInvest.client.deleteRecords.deleteSelected")}
+                        </button>
+                      </>
+                    )}
+                    <button onClick={() => { setSelectedPlan(null); setPlanRecords([]); setSelectedRecordIds(new Set()); }} className="text-xs text-slate-400 hover:text-slate-600">{t("table.close")}</button>
+                  </div>
                 </div>
                 <div className="min-h-0 flex-1 overflow-auto">
                   {recordsLoading ? (
@@ -1209,6 +1300,14 @@ export function RegularInvestClient({
                     <table className="min-w-full text-xs">
                       <thead className="sticky top-0 bg-slate-100">
                         <tr>
+                          <th className="w-8 px-3 py-1.5 text-left font-medium text-slate-600">
+                            <input
+                              type="checkbox"
+                              checked={allVisibleRecordsSelected}
+                              onChange={(event) => toggleAllRecordSelection(event.target.checked)}
+                              className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600"
+                            />
+                          </th>
                           <th className="px-3 py-1.5 text-left font-medium text-slate-600">{t("regularInvest.client.recordsCol.execDate")}</th>
                           {getPlanTaskType(selectedPlan) === "fund_regular_invest" && (
                             <th className="px-3 py-1.5 text-left font-medium text-slate-600">{t("investForm.confirmDate")}</th>
@@ -1226,6 +1325,14 @@ export function RegularInvestClient({
                           const isConfirmed = record.fundUnits != null && Number(record.fundUnits) > 0;
                           return (
                             <tr key={record.id} className="border-b border-slate-100 bg-white">
+                              <td className="px-3 py-1.5">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedRecordIds.has(String(record.id))}
+                                  onChange={(event) => toggleRecordSelection(String(record.id), event.target.checked)}
+                                  className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600"
+                                />
+                              </td>
                               <td className="px-3 py-1.5 tabular-nums text-slate-700">{formatDate(record.date)}</td>
                               {getPlanTaskType(selectedPlan) === "fund_regular_invest" && (
                                 <td className="px-3 py-1.5 tabular-nums text-slate-500">{formatDate(record.fundConfirmDate)}</td>

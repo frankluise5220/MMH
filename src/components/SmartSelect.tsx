@@ -303,6 +303,19 @@ function isSelectable(option: SmartSelectOption, selectableGroups = true) {
   return !option.isHeader && (selectableGroups || !option.isGroup);
 }
 
+function groupLabelCapsuleClass(selected: boolean, focused: boolean) {
+  if (selected) return "border-blue-200 bg-blue-50 font-medium text-blue-700 hover:bg-blue-100";
+  if (focused) return "border-slate-300 bg-slate-200 text-slate-800";
+  return "border-slate-200 bg-slate-100/90 text-slate-700 hover:border-slate-300 hover:bg-slate-200";
+}
+
+function groupToggleIndicatorClass(collapsed: boolean, roomier = false) {
+  const sizeClass = roomier ? "h-7 w-7 rounded-md" : "h-5 w-5 rounded";
+  return collapsed
+    ? `inline-flex ${sizeClass} items-center justify-center bg-slate-200/90 text-slate-600 ring-1 ring-slate-300/70 transition-colors hover:bg-slate-300 hover:text-slate-700`
+    : `inline-flex ${sizeClass} items-center justify-center bg-slate-100/80 text-slate-500 transition-colors hover:bg-slate-200 hover:text-slate-700`;
+}
+
 function renderCycleActionButton(action: SmartSelectCycleAction | undefined, t: (key: string, params?: Record<string, string | number>) => string) {
   if (!action) return undefined;
   const fallback = t("smartSelect.cycleSwitch");
@@ -880,6 +893,9 @@ export function SmartSelect(props: SmartSelectProps) {
     const index = visibleIndexById.get(option.id) ?? 0;
     const selected = option.id === value;
     const collapsed = collapsedGroups.has(option.id) && search.trim().length === 0;
+    const capsuleLayout = Boolean(singleGridColumns) || insidePanel;
+    const focused = index === focusedIndex;
+    const optionLabel = capsuleLayout ? stripIndent(option.label) : option.label;
     return (
       <button
         key={option.id}
@@ -897,17 +913,11 @@ export function SmartSelect(props: SmartSelectProps) {
         }}
         onMouseEnter={() => setFocusedIndex(index)}
         className={
-          insidePanel
-            ? `relative flex h-8 min-w-0 items-center justify-center rounded-md border pl-1.5 pr-6 text-center text-xs transition-colors ${
-                index === focusedIndex ? "border-blue-200 bg-blue-50" : "border-transparent bg-white hover:border-slate-200 hover:bg-white"
-              } ${selected ? "border-blue-200 bg-blue-50 font-medium text-blue-700" : "text-slate-700"}`
-            : singleGridColumns
-              ? `relative flex h-8 min-w-0 items-center justify-center rounded-md pl-1.5 pr-6 text-center text-xs transition-colors ${
-                  index === focusedIndex ? "bg-blue-50" : "hover:bg-slate-50"
-                } ${selected ? "bg-blue-50 font-medium text-blue-700" : "text-slate-700"}`
-              : `flex ${micro ? "h-5 px-1.5 text-[11px]" : dense ? "h-7 px-2 text-xs" : compact ? "h-8 px-2 text-xs" : "h-9 px-3 text-sm"} w-full items-center gap-1.5 text-left transition-colors ${
-                  index === focusedIndex ? "bg-blue-50" : ""
-                } ${selected ? "font-medium text-blue-700" : "text-slate-700"}`
+          capsuleLayout
+            ? "flex h-8 min-w-0 items-center gap-1 text-center text-xs outline-none"
+            : `flex ${micro ? "h-5 px-1.5 text-[11px]" : dense ? "h-7 px-2 text-xs" : compact ? "h-8 px-2 text-xs" : "h-9 px-3 text-sm"} w-full items-center gap-1.5 text-left transition-colors ${
+                focused ? "bg-blue-50" : ""
+              } ${selected ? "font-medium text-blue-700" : "text-slate-700"}`
         }
       >
         <span
@@ -915,28 +925,29 @@ export function SmartSelect(props: SmartSelectProps) {
             event.stopPropagation();
             if (hierarchy && collapsibleGroups) toggleGroup(option.id);
           }}
-          className={(singleGridColumns || insidePanel)
-            ? "absolute right-1 top-1 z-10 flex shrink-0 cursor-pointer items-center gap-1 px-0.5 text-slate-400 hover:text-slate-600"
+          className={capsuleLayout
+            ? "order-2 z-10 flex shrink-0 cursor-pointer items-center justify-center"
             : "flex shrink-0 cursor-pointer items-center gap-1 px-0.5 text-slate-400 hover:text-slate-600"}
         >
           {hierarchy && collapsibleGroups ? (
             <>
-              <span className="inline-flex h-5 w-5 items-center justify-center rounded">
+              <span className={groupToggleIndicatorClass(collapsed, capsuleLayout)}>
                 {collapsed ? (
                   <ChevronRight className="h-4 w-4" />
                 ) : (
                   <ChevronDown className="h-4 w-4" />
                 )}
               </span>
-              {showGroupCounts ? <span className="text-[10px]">{groupChildCounts.get(option.id) ?? 0}</span> : null}
             </>
           ) : null}
         </span>
         <span
-          className={(singleGridColumns || insidePanel) ? "min-w-0 truncate" : "min-w-0 flex-1 truncate"}
+          className={capsuleLayout
+            ? `order-1 min-w-0 flex-1 truncate rounded-md border px-2 py-1.5 ${groupLabelCapsuleClass(selected, focused)}`
+            : "min-w-0 flex-1 truncate"}
           title={option.title || stripIndent(option.label)}
         >
-          {(singleGridColumns || insidePanel) ? stripIndent(option.label) : option.label}
+          {optionLabel}
         </span>
         {!singleGridColumns && !insidePanel && option.subLabel ? (
           <span className="max-w-[48%] shrink-0 truncate text-[10px] text-slate-400" title={option.subLabel}>{option.subLabel}</span>
@@ -962,7 +973,7 @@ export function SmartSelect(props: SmartSelectProps) {
         className={
           insidePanel
             ? `flex h-8 min-w-0 items-center justify-center rounded-md border px-2 text-center text-xs transition-colors ${
-                index === focusedIndex ? "border-blue-200 bg-blue-50" : "border-transparent bg-white hover:border-slate-200 hover:bg-white"
+                index === focusedIndex ? "border-blue-200 bg-blue-50" : "border-slate-200/70 bg-slate-50 hover:border-slate-300 hover:bg-slate-100"
               } ${selected ? "border-blue-200 bg-blue-50 font-medium text-blue-700" : "text-slate-700"}`
             : singleGridColumns
               ? `flex h-8 min-w-0 items-center justify-center rounded-md px-2 text-center text-xs transition-colors ${
@@ -991,8 +1002,8 @@ export function SmartSelect(props: SmartSelectProps) {
         className={[
           "my-0.5 rounded-md border p-1.5",
           depth === 0
-            ? "border-slate-200/70 bg-slate-50/95 shadow-inner"
-            : "border-slate-200/60 bg-slate-100/70",
+            ? "border-slate-400/70 bg-slate-200/95 shadow-inner"
+            : "border-slate-400/60 bg-slate-300/70",
         ].join(" ")}
       >
         <div
@@ -1161,62 +1172,8 @@ export function SmartSelect(props: SmartSelectProps) {
                   </div>
                 );
               }
-
               if (option.isGroup) {
-                const selected = option.id === value;
-                const collapsed = collapsedGroups.has(option.id) && search.trim().length === 0;
-                return (
-                  <button
-                    key={option.id}
-                    id={`${listId}-${index}`}
-                    style={singleGridColumns ? undefined : fullGridRowStyle}
-                    type="button"
-                    role="option"
-                    aria-selected={selected}
-                    title={option.title || stripIndent(option.label)}
-                    onClick={() => {
-                      selectOrToggleSingleGroup(option);
-                    }}
-                    onDoubleClick={() => {
-                      if (selectableGroups && groupSelectOnDoubleClick) selectSingle(option.id);
-                    }}
-                    onMouseEnter={() => setFocusedIndex(index)}
-                    className={singleGridColumns
-                      ? `relative flex h-8 min-w-0 items-center justify-center rounded-md pl-1.5 pr-6 text-center text-xs transition-colors ${
-                          index === focusedIndex ? "bg-blue-50" : "hover:bg-slate-50"
-                        } ${selected ? "bg-blue-50 font-medium text-blue-700" : "text-slate-700"}`
-                      : `flex ${micro ? "h-5 px-1.5 text-[11px]" : dense ? "h-7 px-2 text-xs" : compact ? "h-8 px-2 text-xs" : "h-9 px-3 text-sm"} w-full items-center gap-1.5 text-left transition-colors ${
-                          index === focusedIndex ? "bg-blue-50" : ""
-                        } ${selected ? "font-medium text-blue-700" : "text-slate-700"}`}
-                  >
-                    <span
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        if (hierarchy && collapsibleGroups) toggleGroup(option.id);
-                      }}
-                      className={singleGridColumns
-                        ? "absolute right-1 top-1 z-10 flex shrink-0 cursor-pointer items-center gap-1 px-0.5 text-slate-400 hover:text-slate-600"
-                        : "flex shrink-0 cursor-pointer items-center gap-1 px-0.5 text-slate-400 hover:text-slate-600"}
-                    >
-                      {hierarchy && collapsibleGroups ? (
-                        <>
-                          <span className="inline-flex h-5 w-5 items-center justify-center rounded">
-                            {collapsed ? (
-                              <ChevronRight className="h-4 w-4" />
-                            ) : (
-                              <ChevronDown className="h-4 w-4" />
-                            )}
-                          </span>
-                          {showGroupCounts ? <span className="text-[10px]">{groupChildCounts.get(option.id) ?? 0}</span> : null}
-                        </>
-                      ) : null}
-                    </span>
-                    <span className={singleGridColumns ? "min-w-0 truncate" : "min-w-0 flex-1 truncate"} title={option.title || stripIndent(option.label)}>{singleGridColumns ? stripIndent(option.label) : option.label}</span>
-                    {!singleGridColumns && option.subLabel ? (
-                      <span className="max-w-[48%] shrink-0 truncate text-[10px] text-slate-400" title={option.subLabel}>{option.subLabel}</span>
-                    ) : null}
-                  </button>
-                );
+                return renderSingleGroupOption(option);
               }
 
               const selected = option.id === value;

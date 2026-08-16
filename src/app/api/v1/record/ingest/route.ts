@@ -605,7 +605,7 @@ async function buildTransactionRow(ctx: ImportContext, item: ParsedItem, default
   const meta = accountId ? ctx.accountMetaById.get(accountId ?? "") ?? null : null;
   const storedAccountName = accountName && parseImportAccountId(accountName) ? meta?.name ?? accountName : accountName;
   const amount = accountSideAmountForImportItem(item);
-  const postedAt = item.type === "expense" ? (parseOptionalDateTime(item.postedAt) ?? date) : null;
+  const postedAt = item.type === "expense" || item.type === "income" ? (parseOptionalDateTime(item.postedAt) ?? date) : null;
   const cat = resolveCategorySnapshotFromContext(ctx, { categoryName: item.category, type: item.type === "income" ? "income" : item.type === "expense" ? "expense" : null });
   const stmtMonth2 = accountId ? statementMonthForAccountMeta(ctx, accountId, date) : null;
   const currency2 = normalizeCurrency(meta?.currency);
@@ -745,7 +745,7 @@ async function createTransactionFromItem(ctx: ImportContext, tx: Db, item: Parse
 
   const sign = item.type === "income" ? 1 : -1;
   const amount = sign * Math.abs(item.amount);
-  const postedAt = item.type === "expense" ? (parseOptionalDateTime(item.postedAt) ?? date) : null;
+  const postedAt = item.type === "expense" || item.type === "income" ? (parseOptionalDateTime(item.postedAt) ?? date) : null;
 
   // For investment transactions, detect fund fields
   let fundCode: string | null = null;
@@ -1110,7 +1110,7 @@ export async function POST(req: Request) {
           const accountId = lookupAccount(ctx, accountName, defaultAccountName);
           const meta = ctx.accountMetaById.get(accountId ?? "") ?? null;
           const storedName = accountId && meta ? meta.name : accountName;
-          const postedAt = item.type === "expense" ? (parseOptionalDateTime(item.postedAt) ?? date) : null;
+          const postedAt = item.type === "expense" || item.type === "income" ? (parseOptionalDateTime(item.postedAt) ?? date) : null;
           const cat = resolveCategorySnapshotFromContext(ctx, { categoryName: item.category, type: item.type === "income" ? "income" : item.type === "expense" ? "expense" : null });
           const stmtMonth = accountId ? statementMonthForAccountMeta(ctx, accountId, date) : null;
           batchData.push({

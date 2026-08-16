@@ -29,6 +29,7 @@ export type FundPositionEntryLike = {
   netBuyAmount?: number | null;
   pendingBuyAmount?: number | null;
   effectiveUnits?: number | null;
+  unitsProfitStartDate?: string | null;
   realizedProfit?: number | null;
 };
 
