@@ -14,7 +14,6 @@ const fnosPublicFiles = new Set([
   "apple-touch-icon.png",
   "favicon.ico",
   "sw.js",
-  "branding/mmh-logo-pageflip.png",
   "branding/mmh-logo-pageflip.square.png",
   "branding/mmh-logo-pageflip-192.png",
   "branding/mmh-logo-pageflip-512.png",

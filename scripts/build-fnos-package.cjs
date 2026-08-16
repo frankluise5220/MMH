@@ -314,7 +314,6 @@ function copyFnosPublicAssets(src, dest) {
   }
 
   for (const file of [
-    "mmh-logo-pageflip.png",
     "mmh-logo-pageflip.square.png",
     "mmh-logo-pageflip-192.png",
     "mmh-logo-pageflip-512.png",
