@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CheckCircle2, Download, ExternalLink, Loader2, RefreshCw, XCircle } from "lucide-react";
 import {
   APP_PREFS_EVENT,
@@ -189,6 +189,8 @@ export default function SystemUpdatePage() {
   });
   const [savingImageSource, setSavingImageSource] = useState(false);
   const [imageSourceMessage, setImageSourceMessage] = useState("");
+  // Synchronous guard so rapid row clicks cannot start overlapping saves.
+  const imageSourceSaveInFlightRef = useRef(false);
   const customImageSourceIncomplete = imageSourceDraft.source === "custom"
     && !imageSourceDraft.customAppImage.trim();
   const [testingImageSource, setTestingImageSource] = useState(false);
@@ -235,14 +237,15 @@ export default function SystemUpdatePage() {
     return UPDATE_STEPS.map((key) => ({ key, label: updateStepLabel(key, t), status: "pending" as StepStatus, output: "" }));
   }
 
-  async function saveImageSource() {
+  async function saveImageSource(draftOverride?: ImageSourceDraft) {
     setSavingImageSource(true);
     setImageSourceMessage("");
+    const draft = draftOverride ?? imageSourceDraft;
     try {
       const res = await fetch("/api/v1/settings/system-update?config=1", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(imageSourceDraft),
+        body: JSON.stringify(draft),
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || !data?.ok) {
@@ -250,8 +253,10 @@ export default function SystemUpdatePage() {
       }
       setVersionInfo((prev) => prev ? { ...prev, imageSourceConfig: data.config } : prev);
       setImageSourceMessage(t("settings.systemUpdate.saved"));
+      return true;
     } catch (e) {
       setImageSourceMessage(e instanceof Error ? e.message : t("settings.systemUpdate.saveFailed"));
+      return false;
     } finally {
       setSavingImageSource(false);
     }
@@ -292,6 +297,26 @@ export default function SystemUpdatePage() {
     setUpdateOk(false);
     setUpdateError("");
     setSteps(versionInfo?.isDocker ? DOCKER_UPDATE_STEPS.map((key) => ({ key, label: updateStepLabel(key, t), status: "pending" as StepStatus, output: "" })) : initSteps());
+
+    // The image source list is a draft until saved, but the updater only reads
+    // the persisted config. Persist the visible selection before updating so
+    // the update uses exactly the source the user sees selected.
+    const savedConfig = versionInfo?.imageSourceConfig;
+    if (savedConfig) {
+      const draft = imageSourceDraft;
+      const customImageChanged = draft.source === "custom"
+        && (savedConfig.customAppImage || "") !== (draft.customAppImage || "");
+      if (savedConfig.source !== draft.source || customImageChanged) {
+        const saved = await saveImageSource();
+        if (!saved) {
+          setUpdateDone(true);
+          setUpdateOk(false);
+          setUpdateError(t("settings.systemUpdate.saveFailed"));
+          setUpdating(false);
+          return;
+        }
+      }
+    }
 
     try {
       const res = await fetch("/api/v1/settings/system-update?mode=update", { method: "POST" });
@@ -705,7 +730,7 @@ export default function SystemUpdatePage() {
                       {testingImageSource ? t("settings.systemUpdate.speedTesting") : t("settings.systemUpdate.testSpeed")}
                     </button>
                     <button
-                      onClick={saveImageSource}
+                      onClick={() => saveImageSource()}
                       disabled={savingImageSource || updating || customImageSourceIncomplete}
                       className="h-8 rounded-md bg-slate-800 px-3 text-xs text-white hover:bg-slate-700 disabled:opacity-50"
                     >
@@ -729,8 +754,20 @@ export default function SystemUpdatePage() {
                       <label
                         key={option.value}
                         onClick={() => {
-                          setImageSourceDraft((draft) => ({ ...draft, source: option.value }));
+                          if (imageSourceSaveInFlightRef.current || updating) return;
+                          if (imageSourceDraft.source === option.value) return;
+                          // Selecting a source takes effect immediately: persist
+                          // the new draft instead of waiting for the Save button.
+                          const nextDraft = { ...imageSourceDraft, source: option.value };
+                          setImageSourceDraft(nextDraft);
                           setImageSourceMessage("");
+                          // Custom needs an image address before it can be
+                          // saved; it is persisted by Save or on update.
+                          if (option.value === "custom") return;
+                          imageSourceSaveInFlightRef.current = true;
+                          void saveImageSource(nextDraft).finally(() => {
+                            imageSourceSaveInFlightRef.current = false;
+                          });
                         }}
                         className={`grid cursor-pointer grid-cols-[28px_92px_minmax(0,1fr)_180px] items-center gap-2 border-b border-slate-100 px-3 py-2 text-xs last:border-b-0 hover:bg-slate-50 ${
                           selected ? "bg-blue-50/60" : ""

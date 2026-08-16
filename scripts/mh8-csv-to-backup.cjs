@@ -277,9 +277,11 @@ const fundTransactions = [];
 const fundTransactionCashFlows = [];
 const entryBusinessLinks = [];
 const warnings = [];
+const fundReviewRowsBySourceFile = new Map();
 const stats = {
   ordinaryBillRows: 0,
   fundRows: 0,
+  fundReviewRowsAsFundTransactions: 0,
   fundRowsWithoutCode: 0,
   candidateRows: 0,
   zeroAmountReviewRows: 0,
@@ -754,23 +756,108 @@ for (const row of fundRows) {
 }
 
 for (const row of readCsv("mh8_fund_candidate_review.csv", true)) {
-  if (clean(row.fundCode) && clean(row.fundName)) continue;
-  addCandidateCashFlow(row, {
-    seedPrefix: "fund-review",
-    type: "investment",
-    direction: row.action === "redeem" ? "inflow" : "outflow",
-    fromAccount: clean(row.cashAccount) || clean(row.fundAccount),
-    toAccount: clean(row.fundAccount),
-    fromShape: clean(row.cashAccount) ? undefined : { kind: "investment", investProductType: "fund" },
-    toShape: { kind: "investment", investProductType: "fund" },
-    amount: row.amount,
-    categoryName: row.category || "基金复核",
-    categoryType: "investment",
-    sourceSuffix: "fund_review",
-    extraNote: "基金代码/名称缺失，已作为复核现金流保留",
+  const mh8Id = clean(row.mh8TransID) || String(stats.fundReviewRowsAsFundTransactions + 1);
+  const sourceFile = clean(row.sourceFile);
+  const sourceFileKey = sourceFile || "(unknown)";
+  fundReviewRowsBySourceFile.set(sourceFileKey, (fundReviewRowsBySourceFile.get(sourceFileKey) || 0) + 1);
+  const subtype = normalizeFundSubtype(row.action, row.source);
+  const grossAmount = Math.abs(money(row.amount));
+  const cashReceipt = isFundCashReceipt(subtype);
+  const fundAccountName = clean(row.fundAccount) || clean(row.cashAccount) || "MH8 基金账户待确认";
+  const cashAccountName = clean(row.cashAccount);
+  const fundAccount = ensureAccount(fundAccountName, { kind: "investment", investProductType: "fund" });
+  const cashAccount = cashAccountName ? ensureAccount(cashAccountName) : null;
+  const fundCode = clean(row.fundCode) || `MH8-${mh8Id}`;
+  const fundName = clean(row.fundName) || `MH8未识别基金#${mh8Id}`;
+  const note = compactNote(
+    row.note,
+    sourceFile ? `MH8:${sourceFile}#${mh8Id}` : `MH8:#${mh8Id}`,
+    clean(row.fundCode) ? "" : "基金代码缺失，已使用临时代码",
+    clean(row.fundName) ? "" : "基金名称缺失，已使用临时名称",
+  );
+  let cashEntryId = null;
+
+  if (grossAmount > 0 && (cashAccount || cashAccountName || clean(row.fundAccount))) {
+    const amount = cashReceipt ? grossAmount : -grossAmount;
+    const tx = addTransaction({
+      seed: `fund-review-cash:${sourceKey(row)}`,
+      date: cashReceipt ? (row.arrivalDate || row.date) : row.date,
+      type: "investment",
+      amount,
+      accountName: cashReceipt ? fundAccount.name : (cashAccount?.name || fundAccount.name),
+      toAccountName: cashReceipt ? (cashAccount?.name || null) : fundAccount.name,
+      accountShape: cashReceipt ? { kind: "investment", investProductType: "fund" } : undefined,
+      toAccountShape: cashReceipt ? undefined : { kind: "investment", investProductType: "fund" },
+      categoryName: row.category || (subtype === "redeem" ? "基金赎回" : "基金买入"),
+      categoryType: "investment",
+      institutionName: row.institution,
+      note,
+      source: `${EXPORT_SOURCE}_fund_review_cash`,
+      fundProductType: "fund",
+      fundSubtype: subtype,
+      fundCode,
+      fundName,
+      fundUnits: nullableAmount(row.units, 6) == null ? null : Math.abs(money(row.units)),
+      fundNav: nullableAmount(row.nav, 6) == null ? null : money(row.nav),
+      fundFee: nullableAmount(row.fee, 2) == null ? null : Math.abs(money(row.fee)),
+      fundConfirmDate: row.confirmDate || row.date,
+      fundArrivalDate: row.arrivalDate || row.date,
+      fundArrivalAmount: cashReceipt ? grossAmount : null,
+    });
+    cashEntryId = tx.id;
+  }
+
+  const fundTxId = hashId("fundtx_review", sourceKey(row), fundCode);
+  fundTransactions.push({
+    id: fundTxId,
+    householdId: HOUSEHOLD_ID,
+    fundAccountId: fundAccount.id,
+    cashAccountId: cashAccount ? cashAccount.id : null,
+    cashEntryId,
+    fundCode,
+    fundName,
     fundProductType: "fund",
+    fundSubtype: subtype,
+    source: `${EXPORT_SOURCE}_fund_review`,
+    applyDate: isoDate(row.date) || "1970-01-01T00:00:00.000Z",
+    confirmDate: isoDate(row.confirmDate || row.date),
+    arrivalDate: isoDate(row.arrivalDate || row.date),
+    grossAmount: amountString(grossAmount, 2),
+    refundAmount: subtype === "buy_failed" ? amountString(grossAmount, 2) : "0.00",
+    arrivalAmount: cashReceipt ? amountString(grossAmount, 2) : null,
+    fee: nullableAmount(row.fee, 2),
+    nav: nullableAmount(row.nav, 6),
+    units: nullableAmount(row.units, 6) == null ? null : amountString(Math.abs(money(row.units)), 6),
+    realizedProfit: null,
+    regularInvestPlanId: null,
+    note,
+    deletedAt: null,
+    createdAt: isoDate(row.date) || nowIso,
+    updatedAt: nowIso,
   });
-  stats.fundRowsWithoutCode += 1;
+
+  if (cashEntryId) {
+    fundTransactionCashFlows.push({
+      id: hashId("fundcf_review", fundTxId, cashEntryId),
+      fundTransactionId: fundTxId,
+      txRecordId: cashEntryId,
+      kind: flowKindForFundSubtype(subtype),
+      amount: amountString(grossAmount, 2),
+      flowDate: isoDate(row.arrivalDate || row.date) || "1970-01-01T00:00:00.000Z",
+      accountId: cashAccount ? cashAccount.id : null,
+      createdAt: nowIso,
+    });
+  }
+  addBusinessCashLink({
+    txId: cashEntryId,
+    fundTransactionId: fundTxId,
+    businessType: "fund",
+    direction: cashEntryId ? (cashReceipt ? "inflow" : "outflow") : "none",
+    note: "Linked MH8 fund review transaction",
+  });
+  stats.fundReviewRowsAsFundTransactions += 1;
+  stats.candidateRows += 1;
+  if (!clean(row.fundCode) || !clean(row.fundName)) stats.fundRowsWithoutCode += 1;
 }
 
 for (const row of readCsv("mh8_stock_candidate_import.csv", true)) {
@@ -1171,9 +1258,11 @@ const summary = {
     entryBusinessLinks: data.entryBusinessLinks.length,
     entryTags: data.entryTags.length,
     zeroAmountReviewRows: stats.zeroAmountReviewRows,
+    fundReviewRowsAsFundTransactions: stats.fundReviewRowsAsFundTransactions,
     fundRowsWithoutCode: stats.fundRowsWithoutCode,
     candidateRows: stats.candidateRows,
   },
+  fundReviewRowsBySourceFile: Object.fromEntries([...fundReviewRowsBySourceFile.entries()].sort((a, b) => a[0].localeCompare(b[0]))),
   warnings,
 };
 fs.writeFileSync(SUMMARY_FILE, `${JSON.stringify(summary, null, 2)}\n`, "utf8");

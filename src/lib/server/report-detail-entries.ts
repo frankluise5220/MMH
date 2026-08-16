@@ -19,6 +19,7 @@ export async function loadReportDetailEntries(
     },
     include: {
       EntryTag: { include: { Tag: true } },
+      Attachment: { select: { id: true, name: true, mimeType: true, url: true } },
       ...entryBusinessLinkSummaryInclude,
       account: { include: { Institution: { select: { name: true } } } },
       toAccount: { include: { Institution: { select: { name: true } } } },
@@ -77,6 +78,12 @@ export async function loadReportDetailEntries(
     fundArrivalDate: record.fundArrivalDate ? formatDateLocal(record.fundArrivalDate) : null,
     fundArrivalAmount: record.fundArrivalAmount == null ? null : toNumber(record.fundArrivalAmount),
     ...buildEntryBusinessLinkSummary(record),
+    attachments: (record.Attachment || []).map((attachment) => ({
+      id: attachment.id,
+      name: attachment.name ?? "",
+      mimeType: attachment.mimeType ?? null,
+      url: attachment.url ?? `/api/v1/attachments/${encodeURIComponent(attachment.id)}`,
+    })),
     entryTags: record.EntryTag.map((entryTag) => ({
       tagId: entryTag.tagId,
       Tag: entryTag.Tag ? { name: entryTag.Tag.name, color: entryTag.Tag.color ?? "#3B82F6" } : null,

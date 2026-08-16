@@ -194,6 +194,7 @@ backup-deleted-*.json
 # local probes / test data
 .tmp-chrome-mobile/
 .tmp_mmh149_*
+/tmp/
 tmp-backup-*.json
 nul
 resume_japan_network_engineer/

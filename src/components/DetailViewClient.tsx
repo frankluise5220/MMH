@@ -130,20 +130,15 @@ function EntryAttachmentIndicator({
   const attachments = entry.attachments ?? [];
   if (attachments.length === 0) return null;
   const names = attachments.map((item) => item.name).join("、");
-  const content = (
-    <>
-      <Paperclip className="h-3.5 w-3.5" />
-      {attachments.length > 1 ? (
-        <span className="ml-0.5 text-[9px] font-medium text-amber-600">{attachments.length}</span>
-      ) : null}
-    </>
-  );
+  const content = <Paperclip className="h-3.5 w-3.5" />;
   const handleClick = (event: MouseEvent) => {
     event.stopPropagation();
     onClick();
   };
+  // Boxed style consistent with the adjacent row action icons (BusinessLinkActionButton,
+  // EntryRowActions): visible border, white background, amber accent for attachments.
   const className =
-    "flex h-6 w-6 shrink-0 items-center justify-center rounded border border-transparent text-amber-500 hover:border-amber-200 hover:bg-amber-50";
+    "flex h-6 w-6 shrink-0 items-center justify-center rounded border border-amber-200 bg-white text-amber-600 transition-colors hover:border-amber-300 hover:bg-amber-50";
   // The mobile entry row is itself a <button>, so the indicator must not render a nested
   // button there (invalid HTML and a React hydration error). Render a span instead.
   if (!asButton) {

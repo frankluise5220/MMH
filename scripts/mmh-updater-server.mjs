@@ -422,7 +422,11 @@ async function chooseImageSource() {
   if (config.source !== "auto") {
     const selected = imageSources[config.source];
     if (!selected) throw new Error(`未知镜像源: ${config.source}`);
-    pushLog(`使用 ${selected.name} 镜像源`);
+    // Fixed sources do not probe candidates, but the progress UI expects the
+    // "检测镜像源" step to reflect which source is actually used, so surface it
+    // here with the concrete image address.
+    task.currentStep = "检测镜像源";
+    pushLog(`使用 ${selected.name} 镜像源：${selected.app}`);
     await updateEnvImageSource(selected.app, selected.updater);
     return { appImage: selected.app, updaterImage: selected.updater };
   }

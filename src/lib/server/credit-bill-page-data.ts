@@ -838,6 +838,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
             },
             include: {
               EntryTag: { include: { Tag: true } },
+              Attachment: { select: { id: true, name: true, mimeType: true, url: true } },
               ...entryBusinessLinkSummaryInclude,
               account: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
               toAccount: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
@@ -903,6 +904,12 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
             fundArrivalDate: toIsoOrNull(e.fundArrivalDate),
             fundArrivalAmount: e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null,
             ...buildEntryBusinessLinkSummary(e),
+            attachments: (e.Attachment || []).map((attachment: any) => ({
+              id: attachment.id,
+              name: attachment.name ?? "",
+              mimeType: attachment.mimeType ?? null,
+              url: attachment.url ?? `/api/v1/attachments/${encodeURIComponent(attachment.id)}`,
+            })),
             entryTags: (e.EntryTag || []).map((et: any) => ({
               tagId: et.tagId,
               Tag: et.Tag ? { name: et.Tag.name, color: et.Tag.color } : null,

@@ -45,7 +45,10 @@ services:
       - postgres
       - updater
     volumes:
-      - ./data:/app/data
+      # Named volume, not a relative-path bind mount: the updater container
+      # resolves relative paths against /workspace, which does not exist on the
+      # host, so a bind mount like ./data:/app/data breaks Web updates.
+      - appdata:/app/data
 
   updater:
     image: ${MMH_UPDATER_IMAGE:-ghcr.io/frankluise5220/mmh-updater:latest}
@@ -67,3 +70,4 @@ services:
 
 volumes:
   pgdata:
+  appdata:
