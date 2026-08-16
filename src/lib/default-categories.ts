@@ -715,11 +715,47 @@ async function ensureFallbackCategory(
     select: { id: true },
   });
 
+  // The unique index on Category is (householdId, name), so a restored or
+  // imported row can already carry this fallback name under a different
+  // parent or type. Reuse it (and converge its type) instead of failing the
+  // create with a unique-constraint error.
   if (!fallback) {
-    fallback = await writer.category.create({
-      data: { householdId, type, parentId: null, name: fallbackName },
+    fallback = await writer.category.findFirst({
+      where: { householdId, type, name: fallbackName },
+      orderBy: { id: "asc" },
       select: { id: true },
     });
+  }
+
+  if (!fallback) {
+    const anyType = await writer.category.findFirst({
+      where: { householdId, name: fallbackName },
+      orderBy: { id: "asc" },
+      select: { id: true, type: true },
+    });
+    if (anyType) {
+      if (anyType.type !== type) {
+        await writer.category.update({ where: { id: anyType.id }, data: { type } });
+      }
+      fallback = { id: anyType.id };
+    }
+  }
+
+  if (!fallback) {
+    try {
+      fallback = await writer.category.create({
+        data: { householdId, type, parentId: null, name: fallbackName },
+        select: { id: true },
+      });
+    } catch (error) {
+      if (!isUniqueConstraintError(error)) throw error;
+      fallback = await writer.category.findFirst({
+        where: { householdId, name: fallbackName },
+        orderBy: { id: "asc" },
+        select: { id: true },
+      });
+      if (!fallback) throw error;
+    }
   }
 
   return fallback.id;
@@ -878,22 +914,47 @@ async function ensureDefaultCategory(
 ) {
   let category = await writer.category.findFirst({
     where: { householdId, type, parentId, name },
-    select: { id: true, parentId: true, isSystem: true },
+    select: { id: true, parentId: true, isSystem: true, type: true },
   });
 
   if (!category) {
     category = await writer.category.findFirst({
       where: { householdId, type, name },
       orderBy: { id: "asc" },
-      select: { id: true, parentId: true, isSystem: true },
+      select: { id: true, parentId: true, isSystem: true, type: true },
     });
   }
 
   if (!category && isSystem) {
     category = await writer.category.findFirst({
       where: { householdId, type, name },
-      select: { id: true, parentId: true, isSystem: true },
+      select: { id: true, parentId: true, isSystem: true, type: true },
     });
+  }
+
+  if (!category) {
+    // The unique index on Category is (householdId, name), so restored or
+    // imported data can already contain this name under a different type.
+    // Adopt that row and converge its type/parent/system flags instead of
+    // attempting a create that would fail with a unique-constraint error and
+    // abort category normalization for the whole household (which made the
+    // web bootstrap endpoint fail permanently).
+    category = await writer.category.findFirst({
+      where: { householdId, name },
+      orderBy: { id: "asc" },
+      select: { id: true, parentId: true, isSystem: true, type: true },
+    });
+    if (category) {
+      const changes: { type?: string; parentId?: string | null; isSystem?: boolean } = {};
+      if (category.type !== type) changes.type = type;
+      if (category.parentId !== parentId) changes.parentId = parentId;
+      if (isSystem && !category.isSystem) changes.isSystem = true;
+      if (Object.keys(changes).length > 0) {
+        await writer.category.update({ where: { id: category.id }, data: changes });
+      }
+      await mergeSameTypeCategoryNameDuplicates(writer, householdId, type, name, category.id);
+      return { id: category.id };
+    }
   }
 
   if (!category) {
@@ -906,21 +967,25 @@ async function ensureDefaultCategory(
       return created;
     } catch (error) {
       if (!isUniqueConstraintError(error)) throw error;
+      // A concurrent request may have created the row between our lookups and
+      // the create. Re-fetch by name only: the colliding row can have any
+      // type (the unique index is (householdId, name)).
       category = await writer.category.findFirst({
-        where: { householdId, type, name },
+        where: { householdId, name },
         orderBy: { id: "asc" },
-        select: { id: true, parentId: true, isSystem: true },
+        select: { id: true, parentId: true, isSystem: true, type: true },
       });
       if (!category) throw error;
     }
   }
 
-  if (category.parentId !== parentId || (isSystem && !category.isSystem)) {
+  if (category.parentId !== parentId || (isSystem && !category.isSystem) || category.type !== type) {
     await writer.category.update({
       where: { id: category.id },
       data: {
         ...(category.parentId !== parentId ? { parentId } : {}),
         ...(isSystem && !category.isSystem ? { isSystem: true } : {}),
+        ...(category.type !== type ? { type } : {}),
       },
     });
   }

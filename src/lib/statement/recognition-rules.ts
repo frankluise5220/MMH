@@ -210,9 +210,15 @@ async function ensureStatementRecognitionRuleFieldNameColumn(client: RawSqlClien
       CREATE INDEX IF NOT EXISTS "statement_recognition_rules_isActive_idx"
       ON "statement_recognition_rules"("isActive")
     `);
-    await client.$executeRaw(Prisma.sql`
-      ALTER TABLE "statement_recognition_rules" ADD COLUMN "fieldName" TEXT
-    `);
+    // ADD COLUMN has no IF NOT EXISTS on either supported dialect, so check
+    // existence first. This avoids a noisy "duplicate column" error on every
+    // upgraded deployment where the column was already added by a migration
+    // or by the native SQLite schema initializer.
+    if (!(await statementRecognitionRuleFieldNameColumnExists(client))) {
+      await client.$executeRaw(Prisma.sql`
+        ALTER TABLE "statement_recognition_rules" ADD COLUMN "fieldName" TEXT
+      `);
+    }
   } catch (error) {
     if (!isIgnorableFieldNameColumnEnsureError(error)) {
       console.error("[statement-recognition-rules] failed to ensure fieldName column", error);
@@ -220,6 +226,24 @@ async function ensureStatementRecognitionRuleFieldNameColumn(client: RawSqlClien
   } finally {
     fieldNameColumnChecked = true;
   }
+}
+
+async function statementRecognitionRuleFieldNameColumnExists(client: RawSqlClient): Promise<boolean> {
+  const url = String(process.env.DATABASE_URL ?? "");
+  const isSqlite = url === ":memory:" || url.startsWith("file:");
+  if (isSqlite) {
+    const rows = await client.$queryRaw<Array<{ name: string }>>(Prisma.sql`
+      PRAGMA table_info("statement_recognition_rules")
+    `);
+    return rows.some((row) => row.name === "fieldName");
+  }
+  const rows = await client.$queryRaw<Array<{ exists: number }>>(Prisma.sql`
+    SELECT 1 AS "exists"
+    FROM information_schema.columns
+    WHERE table_name = 'statement_recognition_rules' AND column_name = 'fieldName'
+    LIMIT 1
+  `);
+  return rows.length > 0;
 }
 
 function normalizedRuleKeyword(value: string) {
