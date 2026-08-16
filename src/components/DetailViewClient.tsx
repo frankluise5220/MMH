@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { useCallback, useState, useEffect, useMemo, useRef, type ReactNode, type MouseEvent } from "react";
 import { Paperclip } from "lucide-react";
 import { formatDateLocal as localDateKey, toNumber } from "@/lib/date-utils";
 import { formatCurrencyMoney } from "@/lib/format";
@@ -118,24 +118,44 @@ function cssEscape(value: string) {
   return escape ? escape(value) : value.replace(/["\\]/g, "\\$&");
 }
 
-function EntryAttachmentIndicator({ entry, onClick }: { entry: DetailEntry; onClick: () => void }) {
+function EntryAttachmentIndicator({
+  entry,
+  onClick,
+  asButton = true,
+}: {
+  entry: DetailEntry;
+  onClick: () => void;
+  asButton?: boolean;
+}) {
   const attachments = entry.attachments ?? [];
   if (attachments.length === 0) return null;
   const names = attachments.map((item) => item.name).join("、");
-  return (
-    <button
-      type="button"
-      title={names}
-      onClick={(event) => {
-        event.stopPropagation();
-        onClick();
-      }}
-      className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-transparent text-amber-500 hover:border-amber-200 hover:bg-amber-50"
-    >
+  const content = (
+    <>
       <Paperclip className="h-3.5 w-3.5" />
       {attachments.length > 1 ? (
         <span className="ml-0.5 text-[9px] font-medium text-amber-600">{attachments.length}</span>
       ) : null}
+    </>
+  );
+  const handleClick = (event: MouseEvent) => {
+    event.stopPropagation();
+    onClick();
+  };
+  const className =
+    "flex h-6 w-6 shrink-0 items-center justify-center rounded border border-transparent text-amber-500 hover:border-amber-200 hover:bg-amber-50";
+  // The mobile entry row is itself a <button>, so the indicator must not render a nested
+  // button there (invalid HTML and a React hydration error). Render a span instead.
+  if (!asButton) {
+    return (
+      <span title={names} onClick={handleClick} className={className}>
+        {content}
+      </span>
+    );
+  }
+  return (
+    <button type="button" title={names} onClick={handleClick} className={className}>
+      {content}
     </button>
   );
 }
@@ -1326,7 +1346,7 @@ export function DetailViewClient({
                           <span className="mt-0.5 block text-[11px] tabular-nums text-slate-400">{t("detailView.runningBalance", { amount: formatEntryCurrencyMoney(toNumber(entry.runningBalance), entry) })}</span>
                         ) : null}
                       </span>
-                      <EntryAttachmentIndicator entry={entry} onClick={() => setAttachmentViewEntryId(entry.id)} />
+                      <EntryAttachmentIndicator entry={entry} asButton={false} onClick={() => setAttachmentViewEntryId(entry.id)} />
                       <span className="text-slate-300">›</span>
                     </button>
                   );
