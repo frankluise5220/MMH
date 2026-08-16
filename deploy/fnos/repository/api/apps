@@ -4,7 +4,7 @@
     {
       "id": "mmh",
       "name": "MMH",
-      "version": "0.1.35",
+      "version": "0.1.36",
       "platform": "x86",
       "platforms": [
         "x86",
@@ -12,16 +12,16 @@
       ],
       "author": "frankluise5220",
       "desc": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
-      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.35/mmh-fnos-v0.1.35-x86_64.fpk",
+      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.36/mmh-fnos-v0.1.36-x86_64.fpk",
       "download_urls": {
-        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.35/mmh-fnos-v0.1.35-x86_64.fpk",
-        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.35/mmh-fnos-v0.1.35-arm64.fpk"
+        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.36/mmh-fnos-v0.1.36-x86_64.fpk",
+        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.36/mmh-fnos-v0.1.36-arm64.fpk"
       },
-      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.35",
+      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.36",
       "repo": "https://github.com/frankluise5220/MMH",
       "screenshots": [],
       "tags": "财务,记账",
-      "changelog": "发布 0.1.35：修复打开收益报表/收支统计报错（分类跨类型同名冲突在规范化时先查重收敛，不再因唯一约束失败中断报表）；修复快照恢复后 SQLite 原生包 schema 回填；完成自适应启动图标前景资源。手机端无需安装即可用浏览器访问 Web 版（响应式，支持日常查看与快速记账）；Android 客户端同版本同步发布，签名一致可直接覆盖升级。"
+      "changelog": "发布 0.1.36：修复打开收益报表/收支统计报错（分类跨类型同名冲突先查重收敛，不再因唯一约束失败中断）；修复快照恢复后 SQLite 原生包 schema 回填；系统更新页镜像源保存防重复点击并支持草稿预填；更新服务与账单/报表数据接口小幅优化；mh8 备份转换工具增强；Android 自适应启动图标前景资源补齐。手机端无需安装即可用浏览器访问 Web 版（响应式，支持日常查看与快速记账）；Android 客户端同版本同步发布，签名一致可直接覆盖升级。"
     }
   ]
 }
