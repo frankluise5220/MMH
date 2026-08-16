@@ -4,20 +4,20 @@
       "id": "mmh",
       "name": "MMH",
       "display_name": "MMH 家庭财务工作台",
-      "version": "0.1.33",
+      "version": "0.1.34",
       "platform": "x86",
       "platforms": [
         "x86",
         "arm"
       ],
       "description": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
-      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.33/mmh-fnos-v0.1.33-x86_64.fpk",
+      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.34/mmh-fnos-v0.1.34-x86_64.fpk",
       "download_urls": {
-        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.33/mmh-fnos-v0.1.33-x86_64.fpk",
-        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.33/mmh-fnos-v0.1.33-arm64.fpk"
+        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.34/mmh-fnos-v0.1.34-x86_64.fpk",
+        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.34/mmh-fnos-v0.1.34-arm64.fpk"
       },
       "homepage": "https://github.com/frankluise5220/MMH",
-      "changelog": "发布 0.1.33：新增账户使用频率统计，记账时账户下拉按最常用优先排序（Web 与 Android 共用同一套数据）；Android 客户端新增房产资产与股票持仓页面（配套 Android v1.0.1，同一签名可覆盖升级）；i18n 多语言迁移继续收尾，新增 I18nProvider 与系统分类标签；若干界面与交互优化。",
+      "changelog": "发布 0.1.34：新增交易流水附件（上传、查看、删除，单个文件不超过 5MB）；手机浏览器下拉刷新与全新错误页；Android 客户端更换新版应用图标并持续打磨各页面；PWA 图标与多语言迁移收尾；修复 Android CI 构建权限问题。手机端无需安装即可用浏览器访问 Web 版（响应式，支持日常查看与快速记账）；Android 客户端同版本同步发布，签名一致可直接覆盖升级。",
       "tags": [
         "finance",
         "bookkeeping"
