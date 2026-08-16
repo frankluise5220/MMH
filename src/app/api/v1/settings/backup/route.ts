@@ -13,6 +13,7 @@ import {
   decryptBackupPackage,
   encryptBackupBytes,
   encryptBackupPayload,
+  ensureSqliteRestoreCompatibilitySchema,
   restoreHouseholdBackup,
   type RestoreHouseholdBackupProgress,
 } from "@/lib/server/backup";
@@ -142,6 +143,12 @@ async function runRestoreTask(
       const result = await restoreSqliteSnapshotBuffer(bytes, (progress) => {
         updateRestoreTask(task, { progress: restoreProgress(progress) });
       });
+
+      // The snapshot carries the schema of the system that created it. An
+      // older backup (for example from 0.1.31) lacks columns added by newer
+      // releases, so backfill the live schema in-process right after the file
+      // swap; otherwise the running app queries fail until the next restart.
+      await ensureSqliteRestoreCompatibilitySchema();
 
       updateRestoreTask(task, {
         status: "success",

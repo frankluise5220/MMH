@@ -1172,7 +1172,7 @@ async function applyNativeInitSqlSchemaBackfillForRestore(): Promise<SqliteSchem
   return result;
 }
 
-async function ensureSqliteRestoreCompatibilitySchema() {
+export async function ensureSqliteRestoreCompatibilitySchema() {
   if (!isSqliteRuntime()) return;
   const propertyTransactionsCreateSql = SQLITE_PROPERTY_RESTORE_SCHEMA_SQL.find((statement) =>
     /CREATE TABLE IF NOT EXISTS "property_transactions"/i.test(statement),
