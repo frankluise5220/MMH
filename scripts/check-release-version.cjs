@@ -71,20 +71,16 @@ for (const [file, key] of [
 }
 
 const fndepotFnpack = readJson("deploy/fnos/repository/fnpack.json");
-const fndepotApp = fndepotFnpack.mmh;
-expect(fndepotApp, "deploy/fnos/repository/fnpack.json must contain the mmh app entry for FnDepot.");
+const fndepotApp = fndepotFnpack.apps?.mmh;
+expect(fndepotApp, "deploy/fnos/repository/fnpack.json must contain the mmh app entry under apps for FnDepot.");
 if (fndepotApp) {
-  expect(fndepotApp.version === version, "deploy/fnos/repository/fnpack.json mmh.version must match package.json.");
-  expect(fndepotApp.platform === "x86", "deploy/fnos/repository/fnpack.json mmh.platform must keep x86 as the default platform.");
-  expect(Array.isArray(fndepotApp.platforms), "deploy/fnos/repository/fnpack.json mmh.platforms must list supported fnOS architectures.");
-  expect(fndepotApp.platforms?.includes("x86"), "deploy/fnos/repository/fnpack.json mmh.platforms must include x86.");
-  expect(fndepotApp.platforms?.includes("arm"), "deploy/fnos/repository/fnpack.json mmh.platforms must include arm.");
-  expect(fndepotApp.download_url === downloadUrls.x86_64, "deploy/fnos/repository/fnpack.json mmh.download_url must point to the x86_64 FPK.");
-  expect(!("x86" in (fndepotApp.download_urls || {})), "deploy/fnos/repository/fnpack.json mmh.download_urls must not publish a third x86 alias URL.");
-  expect(fndepotApp.download_urls?.x86_64 === downloadUrls.x86_64, "deploy/fnos/repository/fnpack.json mmh.download_urls.x86_64 must use the unified Release tag.");
-  expect(fndepotApp.download_urls?.arm64 === downloadUrls.arm64, "deploy/fnos/repository/fnpack.json mmh.download_urls.arm64 must use the unified Release tag.");
-  expect(fndepotApp.labels === "财务,记账", "deploy/fnos/repository/fnpack.json mmh.labels must use the finance/bookkeeping category labels.");
-  expect(fndepotApp.changelog === releaseNotes, "deploy/fnos/repository/fnpack.json mmh.changelog must match package.json mmhReleaseNotes.");
+  const fndepotRelease = fndepotApp.releases?.[version];
+  expect(fndepotRelease, `deploy/fnos/repository/fnpack.json must contain a release entry for v${version}.`);
+  if (fndepotRelease) {
+    expect(fndepotRelease.changelog === releaseNotes, "deploy/fnos/repository/fnpack.json releases changelog must match package.json mmhReleaseNotes.");
+    expect(fndepotRelease.packages?.x86?.download_url === downloadUrls.x86_64, "deploy/fnos/repository/fnpack.json releases x86 download_url must point to the x86_64 FPK for v${version}.");
+    expect(fndepotRelease.packages?.arm?.download_url === downloadUrls.arm64, "deploy/fnos/repository/fnpack.json releases arm download_url must point to the arm64 FPK for v${version}.");
+  }
 }
 
 const legacyAppstore = readJson("fn-appstores.json");
