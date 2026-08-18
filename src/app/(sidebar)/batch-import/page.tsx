@@ -34,6 +34,7 @@ import {
   matchStatementHeaderProfile,
   type StatementImportField,
 } from "@/lib/statement/header-catalog";
+import { normalizeAlipayWorkbookRows } from "@/lib/statement/alipay-template";
 import {
   inferSignedAmountInflowSign,
   isCreditCardCreditAdjustmentLikeText,
@@ -48,6 +49,7 @@ import {
   type StatementHistoricalCategorySample,
 } from "@/lib/statement/import-normalization";
 import { inferKnownStatementMerchant } from "@/lib/statement/merchant-inference";
+import { statementPreviewCategorySyncKey } from "@/lib/statement/preview-category-sync";
 import {
   CREDIT_CARD_REPAYMENT_BUSINESS_TYPE,
   CREDIT_CARD_REPAYMENT_CATEGORY_NAME,
@@ -101,6 +103,7 @@ type FundImportUploadItem = {
   units: number | null;
   nav: number | null;
   fee: number | null;
+  feeRateInput?: number | null;
   confirmDate: string | null;
   arrivalDate: string | null;
   remark: string;
@@ -282,6 +285,27 @@ const FUND_CANONICAL_HEADERS = [
   "arrivalDate",
   "remark",
 ] as const;
+const FUND_FIELD_LABEL_KEYS: Record<(typeof FUND_CANONICAL_HEADERS)[number], string> = {
+  date: "batchImport.template.fund.label.date",
+  fundSubtype: "batchImport.template.fund.label.fundSubtype",
+  source: "batchImport.template.fund.label.source",
+  cashAccount: "batchImport.template.fund.label.cashAccount",
+  fundAccount: "batchImport.template.fund.label.fundAccount",
+  fundCode: "batchImport.template.fund.label.fundCode",
+  fundName: "batchImport.template.fund.label.fundName",
+  amount: "batchImport.template.fund.label.amount",
+  units: "batchImport.template.fund.label.units",
+  nav: "batchImport.template.fund.label.nav",
+  fee: "batchImport.template.fund.label.fee",
+  confirmDate: "batchImport.template.fund.label.confirmDate",
+  arrivalDate: "batchImport.template.fund.label.arrivalDate",
+  remark: "batchImport.template.fund.label.remark",
+};
+const FUND_ACTION_HEADERS = {
+  buy: "batchImport.template.fund.action.buy",
+  regularInvest: "batchImport.template.fund.action.regularInvest",
+  redeem: "batchImport.template.fund.action.redeem",
+} as const;
 const FUND_LABEL_HEADER_SET = new Set([
   "日期",
   "基金动作",
@@ -298,21 +322,21 @@ const FUND_LABEL_HEADER_SET = new Set([
   "入账日期",
   "备注",
 ]);
-const FUND_FIELD_ALIASES: Record<Exclude<keyof FundImportUploadItem, "rawText">, string[]> = {
-  date: ["date", "日期", "交易日期", "申请日期"],
-  fundSubtype: ["fundSubtype", "基金动作", "基金类型", "动作"],
-  source: ["source", "来源"],
-  cashAccount: ["cashAccount", "资金账户", "现金账户", "付款账户", "cash account"],
-  fundAccount: ["fundAccount", "基金账户", "投资账户", "account", "fund account"],
-  fundCode: ["fundCode", "基金代码", "代码", "fund code"],
-  fundName: ["fundName", "基金名称", "名称", "fund name"],
-  amount: ["amount", "金额", "发生金额"],
-  units: ["units", "份额", "确认份额"],
-  nav: ["nav", "净值", "成交净值"],
-  fee: ["fee", "手续费"],
-  confirmDate: ["confirmDate", "确认日期", "净值日期"],
-  arrivalDate: ["arrivalDate", "入账日期", "到账日期"],
-  remark: ["remark", "备注", "说明"],
+const FUND_FIELD_ALIASES: Record<Exclude<keyof FundImportUploadItem, "rawText" | "feeRateInput">, string[]> = {
+  date: ["date", "日期", "交易日期", "申请日期", "Date", "日付"],
+  fundSubtype: ["fundSubtype", "基金动作", "基金类型", "动作", "Fund Action", "Action", "基金アクション", "ファンド操作"],
+  source: ["source", "来源", "Source", "発生元", "ソース"],
+  cashAccount: ["cashAccount", "资金账户", "现金账户", "付款账户", "cash account", "Cash Account", "資金口座"],
+  fundAccount: ["fundAccount", "基金账户", "投资账户", "account", "fund account", "Fund Account", "ファンド口座"],
+  fundCode: ["fundCode", "基金代码", "代码", "fund code", "Fund Code", "ファンドコード", "基金コード"],
+  fundName: ["fundName", "基金名称", "名称", "fund name", "Fund Name", "ファンド名", "基金名"],
+  amount: ["amount", "金额", "发生金额", "Amount", "金額"],
+  units: ["units", "份额", "确认份额", "Units", "口数"],
+  nav: ["nav", "净值", "成交净值", "NAV", "基準価額"],
+  fee: ["fee", "手续费", "Fee", "手数料"],
+  confirmDate: ["confirmDate", "确认日期", "净值日期", "NAV Date", "基準価額日"],
+  arrivalDate: ["arrivalDate", "入账日期", "到账日期", "Posting Date", "入帳日"],
+  remark: ["remark", "备注", "说明", "Remark", "Note", "備考", "メモ"],
 };
 
 const replaceFieldLabelKeys: Record<ReplaceField, string> = {
@@ -333,37 +357,51 @@ function applyNumberExpression(currentValue: number, expression: string) {
   return computed ?? Number.NaN;
 }
 
-function buildTemplates(t: (key: string) => string): ImportTemplate[] {
+function buildTemplates(t: (key: string, params?: Record<string, string | number>) => string): ImportTemplate[] {
+  const fundHeaders = FUND_CANONICAL_HEADERS.map((header) => t(FUND_FIELD_LABEL_KEYS[header]));
+  const normalHeaders = [
+    t("detail.column.date"),
+    t("detail.column.postedAt"),
+    t("viewImport.activityType"),
+    t("detail.column.outflow"),
+    t("detail.column.inflow"),
+    t("viewImport.account"),
+    t("viewImport.counterAccount"),
+    t("detail.column.category"),
+    t("detail.column.counterparty"),
+    t("detail.column.tags"),
+    t("detail.column.remark"),
+  ];
   return [
   {
     key: "normal",
     title: t("batchImport.template.normal.title"),
     description: t("batchImport.template.normal.description"),
     status: t("batchImport.template.normal.status"),
-    filename: "账单记录导入模板.xlsx",
+    filename: `${t("viewImport.billTemplateFile", { name: t("viewImport.import") })}.xlsx`,
     downloadFormat: "xlsx",
     sheetName: t("batchImport.sheet.template"),
-    headers: ["日期", "入账日期", "收支大类", "流出", "流入", "账户", "对向账户", "分类", "收支机构", "标签", "备注"],
+    headers: normalHeaders,
     rows: [
-      ["2026-06-08", "2026-06-09", "支出", "32.50", "", "招商银行2758", "", "餐饮", "麦当劳", "午餐", "午餐"],
-      ["2026-06-08", "", "收入", "", "1.28", "招商银行2758", "", "利息收入", "招商银行", "利息", "活期利息"],
-      ["2026-06-08", "2026-06-08 23:30", "支出", "2.00", "", "招商银行2758", "", "利息支出", "招商银行", "手续费", "账户管理费"],
-      ["2026-06-08", "", "转账", "1000.00", "", "招商银行2758", "现金", "", "", "现金", "取现"],
-      ["2026-06-20", "2026-06-20", "转账", "", "108.00", "招商信用卡", "招商银行2758", "", "", "", "信用卡还款"],
-      ["2026-06-05", "2026-06-06", "支出", "", "20.00", "招商信用卡", "", "餐饮", "示例餐厅", "", "信用卡退款"],
+      ["2026-06-08", "2026-06-09", t("transaction.type.expense"), "32.50", "", t("viewImport.sampleAccountDebit"), "", t("viewImport.sampleCategoryDining"), t("viewImport.sampleMerchantFastFood"), t("viewImport.sampleTagLunch"), t("viewImport.sampleRemarkLunch")],
+      ["2026-06-08", "", t("transaction.type.income"), "", "1.28", t("viewImport.sampleAccountDebit"), "", t("viewImport.sampleCategoryInterestIncome"), t("viewImport.sampleAccountDebit"), t("viewImport.sampleTagInterest"), t("viewImport.sampleRemarkDemandInterest")],
+      ["2026-06-08", "2026-06-08 23:30", t("transaction.type.expense"), "2.00", "", t("viewImport.sampleAccountDebit"), "", t("viewImport.sampleCategoryInterestIncome"), t("viewImport.sampleAccountDebit"), t("viewImport.sampleTagInterest"), t("batchImport.template.normal.sample.accountFeeRemark")],
+      ["2026-06-08", "", t("transaction.type.transfer"), "1000.00", "", t("viewImport.sampleAccountDebit"), t("viewImport.sampleAccountCash"), "", "", t("viewImport.sampleAccountCash"), t("viewImport.sampleRemarkTransfer")],
+      ["2026-06-20", "2026-06-20", t("transaction.type.transfer"), "", "108.00", t("batchImport.template.normal.sample.creditCardAccount"), t("viewImport.sampleAccountDebit"), "", "", "", t("viewImport.sampleRemarkCreditCardRepayment")],
+      ["2026-06-05", "2026-06-06", t("transaction.type.expense"), "", "20.00", t("batchImport.template.normal.sample.creditCardAccount"), "", t("viewImport.sampleCategoryDining"), t("viewImport.sampleMerchantRestaurant"), "", t("viewImport.sampleRemarkCreditCardRefund")],
     ],
     fields: [
-      { name: "日期", required: true, note: t("batchImport.template.normal.field.date") },
-      { name: "入账日期", required: false, note: t("batchImport.template.normal.field.postedAt") },
-      { name: "收支大类", required: true, note: t("batchImport.template.normal.field.majorType") },
-      { name: "流出", required: false, note: t("batchImport.template.normal.field.outflow") },
-      { name: "流入", required: false, note: t("batchImport.template.normal.field.inflow") },
-      { name: "账户", required: true, note: t("batchImport.template.normal.field.account") },
-      { name: "对向账户", required: false, note: t("batchImport.template.normal.field.counterAccount") },
-      { name: "分类", required: false, note: t("batchImport.template.normal.field.category") },
-      { name: "收支机构", required: false, note: t("batchImport.template.normal.field.institution") },
-      { name: "标签", required: false, note: t("batchImport.template.normal.field.tags") },
-      { name: "备注", required: false, note: t("batchImport.template.normal.field.remark") },
+      { name: normalHeaders[0], required: true, note: t("batchImport.template.normal.field.date") },
+      { name: normalHeaders[1], required: false, note: t("batchImport.template.normal.field.postedAt") },
+      { name: normalHeaders[2], required: true, note: t("batchImport.template.normal.field.majorType") },
+      { name: normalHeaders[3], required: false, note: t("batchImport.template.normal.field.outflow") },
+      { name: normalHeaders[4], required: false, note: t("batchImport.template.normal.field.inflow") },
+      { name: normalHeaders[5], required: true, note: t("batchImport.template.normal.field.account") },
+      { name: normalHeaders[6], required: false, note: t("batchImport.template.normal.field.counterAccount") },
+      { name: normalHeaders[7], required: false, note: t("batchImport.template.normal.field.category") },
+      { name: normalHeaders[8], required: false, note: t("batchImport.template.normal.field.institution") },
+      { name: normalHeaders[9], required: false, note: t("batchImport.template.normal.field.tags") },
+      { name: normalHeaders[10], required: false, note: t("batchImport.template.normal.field.remark") },
     ],
     guideNotes: [
       t("batchImport.guide.currentSupport"),
@@ -375,30 +413,14 @@ function buildTemplates(t: (key: string) => string): ImportTemplate[] {
     title: t("batchImport.template.fund.title"),
     description: t("batchImport.template.fund.description"),
     status: t("batchImport.template.normal.status"),
-    filename: "基金记录导入模板.xlsx",
+    filename: `${t("batchImport.template.fund.filename")}.xlsx`,
     downloadFormat: "xlsx",
     sheetName: t("batchImport.sheet.template"),
-    headers: ["date", "fundSubtype", "source", "cashAccount", "fundAccount", "fundCode", "fundName", "amount", "units", "nav", "fee", "confirmDate", "arrivalDate", "remark"],
-    exportHeaders: [
-      t("batchImport.template.fund.label.date"),
-      t("batchImport.template.fund.label.fundSubtype"),
-      t("batchImport.template.fund.label.source"),
-      t("batchImport.template.fund.label.cashAccount"),
-      t("batchImport.template.fund.label.fundAccount"),
-      t("batchImport.template.fund.label.fundCode"),
-      t("batchImport.template.fund.label.fundName"),
-      t("batchImport.template.fund.label.amount"),
-      t("batchImport.template.fund.label.units"),
-      t("batchImport.template.fund.label.nav"),
-      t("batchImport.template.fund.label.fee"),
-      t("batchImport.template.fund.label.confirmDate"),
-      t("batchImport.template.fund.label.arrivalDate"),
-      t("batchImport.template.fund.label.remark"),
-    ],
+    headers: fundHeaders,
     rows: [
-      ["2026-06-08", "buy", "regular_invest", "招商银行2758", "招商基金账户", "000001", "示例基金", "100.00", "99.9000", "1.0010", "0.15", "2026-06-10", "2026-06-11", "定投成功部分"],
-      ["2026-06-08", "refund", "regular_invest_refund", "招商银行2758", "招商基金账户", "000001", "示例基金", "100.00", "", "", "", "2026-06-10", "2026-06-11", "定投退回部分"],
-      ["2026-06-12", "redeem", "manual", "招商银行2758", "招商基金账户", "000001", "示例基金", "500.00", "499.0000", "1.0020", "0.50", "2026-06-14", "2026-06-15", "赎回"],
+      ["2026-06-08", t(FUND_ACTION_HEADERS.buy), "", t("batchImport.template.sample.cashAccount"), t("batchImport.template.sample.fundAccount"), "000001", "", "100.00", "99.9000", "1.0010", "0.15%", "2026-06-10", "2026-06-11", t("batchImport.template.fund.sample.buyRemark")],
+      ["2026-06-12", t(FUND_ACTION_HEADERS.regularInvest), "", t("batchImport.template.sample.cashAccount"), t("batchImport.template.sample.fundAccount"), "000001", "", "100.00", "99.9000", "1.0010", "0.15", "2026-06-14", "2026-06-15", t("batchImport.template.fund.sample.regularInvestRemark")],
+      ["2026-06-20", t(FUND_ACTION_HEADERS.redeem), "", t("batchImport.template.sample.cashAccount"), t("batchImport.template.sample.fundAccount"), "000001", "", "500.00", "499.0000", "1.0020", "0.50", "2026-06-21", "2026-06-23", t("batchImport.template.fund.sample.redeemRemark")],
     ],
     fields: [
       { name: "date", label: t("batchImport.template.fund.label.date"), required: true, note: t("batchImport.template.fund.field.date") },
@@ -467,8 +489,8 @@ async function buildTemplateWorkbook(
       t("batchImport.sheet.ruleColumn"),
     ],
     ...template.fields.map((field) => [
-      field.name,
       field.label ?? field.name,
+      "",
       field.required ? t("batchImport.required") : t("batchImport.optional"),
       field.note,
     ]),
@@ -526,6 +548,24 @@ function parseLooseNumber(value: string) {
   if (!normalized) return null;
   const amount = Number(normalized);
   return Number.isFinite(amount) ? amount : null;
+}
+
+function parseFundFeeInput(value: string, amount: number) {
+  const raw = value.trim();
+  if (!raw) return { fee: null as number | null, feeRateInput: null as number | null };
+  if (raw.includes("%")) {
+    const rate = parseLooseNumber(raw.replace(/%/g, ""));
+    if (rate == null || rate < 0) return { fee: null as number | null, feeRateInput: null as number | null };
+    return {
+      fee: Number((Math.abs(amount) * rate / 100).toFixed(2)),
+      feeRateInput: rate,
+    };
+  }
+  const fee = parseLooseNumber(raw);
+  return {
+    fee: fee == null ? null : Math.abs(fee),
+    feeRateInput: null as number | null,
+  };
 }
 
 function normalizeFundHeaderText(value: string) {
@@ -588,8 +628,8 @@ function isExpenseRefundImportText(source: string) {
 
 function inferBillType(source: string, inflow: number, outflow: number, counterAccount: string): ParsedItem["type"] {
   if (isExpenseRefundImportText(source)) return "expense";
-  if (/结息|利息|派息|收入|工资|报销|返现|返利|credit/i.test(source)) return "income";
-  if (/转入|转进|他行转入|账户转入|转出|转账|转给|转到|汇款|跨行转账|取现|还款|repayment|payment/i.test(source)) return "transfer";
+  if (/结息|利息|派息|收入|収入|工资|給与|报销|返现|返利|credit/i.test(source)) return "income";
+  if (/转入|转进|他行转入|账户转入|转出|转账|转给|转到|汇款|跨行转账|取现|还款|振替|返済|repayment|payment/i.test(source)) return "transfer";
   if (/installment/i.test(source)) return "expense";
   if (counterAccount) return "transfer";
   if (inflow > 0 && outflow <= 0) return "income";
@@ -600,9 +640,9 @@ function parseMajorType(value: string): ParsedItem["type"] | null {
   const raw = value.trim();
   if (!raw) return null;
   if (/^(支出|expense|outflow|installment)$/.test(raw)) return "expense";
-  if (/^(收入|income|inflow|refund|credit)$/.test(raw)) return "income";
-  if (/^(转账|transfer|信用卡还款|还款|repayment|payment)$/.test(raw)) return "transfer";
-  if (/^(投资|investment)$/.test(raw)) return "investment";
+  if (/^(收入|income|inflow|refund|credit|収入)$/.test(raw)) return "income";
+  if (/^(转账|transfer|信用卡还款|还款|repayment|payment|振替|クレジットカード返済)$/.test(raw)) return "transfer";
+  if (/^(投资|investment|投資)$/.test(raw)) return "investment";
   return null;
 }
 
@@ -805,6 +845,18 @@ function mergeWorkbookRows(
     return { rows: [], sourceDataRowCount: 0, workbook: { sheetCount: workbook.SheetNames.length, includedSheetCount: 0 } };
   }
 
+  const alipayRows = normalizeAlipayWorkbookRows(sheetRows);
+  if (alipayRows) {
+    return {
+      rows: alipayRows.rows,
+      sourceDataRowCount: alipayRows.sourceDataRowCount,
+      workbook: {
+        sheetCount: workbook.SheetNames.length,
+        includedSheetCount: alipayRows.includedSheetCount,
+      },
+    };
+  }
+
   const groups = new Map<string, typeof sheetRows>();
   for (const item of sheetRows) {
     const signature = importHeaderSignature(item.rows[0] ?? []);
@@ -857,15 +909,15 @@ async function parseImportFile(
 
 function buildFundHeaderIndex(headers: string[]) {
   const normalizedHeaders = headers.map(normalizeFundHeaderText);
-  const map = new Map<Exclude<keyof FundImportUploadItem, "rawText">, number>();
-  (Object.entries(FUND_FIELD_ALIASES) as Array<[Exclude<keyof FundImportUploadItem, "rawText">, string[]]>).forEach(([field, aliases]) => {
+  const map = new Map<Exclude<keyof FundImportUploadItem, "rawText" | "feeRateInput">, number>();
+  (Object.entries(FUND_FIELD_ALIASES) as Array<[Exclude<keyof FundImportUploadItem, "rawText" | "feeRateInput">, string[]]>).forEach(([field, aliases]) => {
     const index = normalizedHeaders.findIndex((header) => aliases.some((alias) => normalizeFundHeaderText(alias) === header));
     if (index >= 0) map.set(field, index);
   });
   return map;
 }
 
-function hasLikelyFundHeaders(map: Map<Exclude<keyof FundImportUploadItem, "rawText">, number>) {
+function hasLikelyFundHeaders(map: Map<Exclude<keyof FundImportUploadItem, "rawText" | "feeRateInput">, number>) {
   return map.has("date") && map.has("fundAccount") && map.has("fundCode") && map.has("amount");
 }
 
@@ -875,6 +927,25 @@ function hasCanonicalFundHeaders(headers: string[]) {
 
 function looksLikeFundLabelRow(headers: string[]) {
   return headers.some((header) => FUND_LABEL_HEADER_SET.has(header.trim()));
+}
+
+function normalizeFundActionText(value: string) {
+  return value.trim().toLowerCase().replace(/[\s_-]+/g, "");
+}
+
+function normalizeFundImportAction(rawAction: string, rawSource: string) {
+  const action = normalizeFundActionText(rawAction);
+  const source = String(rawSource ?? "").trim();
+  if (["regularinvest", "recurringinvest", "recurringbuy", "定投", "積立"].includes(action)) {
+    return { fundSubtype: "buy", source: "regular_invest" };
+  }
+  if (["redeem", "redemption", "sell", "赎回", "贖回", "解約"].includes(action)) {
+    return { fundSubtype: "redeem", source: source || "manual" };
+  }
+  if (["buy", "purchase", "申购", "買入", "买入", "購入"].includes(action)) {
+    return { fundSubtype: "buy", source: source || "manual" };
+  }
+  return { fundSubtype: rawAction, source };
 }
 
 function fundRowsToItems(rows: string[][]): FundImportUploadItem[] {
@@ -897,30 +968,36 @@ function fundRowsToItems(rows: string[][]): FundImportUploadItem[] {
     dataRows = rows.slice(2);
   }
 
-  const readField = (row: string[], field: Exclude<keyof FundImportUploadItem, "rawText">) => {
+  const readField = (row: string[], field: Exclude<keyof FundImportUploadItem, "rawText" | "feeRateInput">) => {
     const index = headerIndex.get(field);
     return index == null ? "" : String(row[index] ?? "").trim();
   };
 
   return dataRows
     .filter((row) => row.some((cell) => String(cell ?? "").trim()))
-    .map((row) => ({
-      rawText: row.join(" "),
-      date: normalizeDateCell(readField(row, "date")),
-      fundSubtype: readField(row, "fundSubtype"),
-      source: readField(row, "source"),
-      cashAccount: readField(row, "cashAccount"),
-      fundAccount: readField(row, "fundAccount"),
-      fundCode: readField(row, "fundCode"),
-      fundName: readField(row, "fundName"),
-      amount: parseLooseNumber(readField(row, "amount")) ?? 0,
-      units: parseLooseNumber(readField(row, "units")),
-      nav: parseLooseNumber(readField(row, "nav")),
-      fee: parseLooseNumber(readField(row, "fee")),
-      confirmDate: normalizeDateCell(readField(row, "confirmDate")) || null,
-      arrivalDate: normalizeDateCell(readField(row, "arrivalDate")) || null,
-      remark: readField(row, "remark"),
-    }));
+    .map((row) => {
+      const amount = parseLooseNumber(readField(row, "amount")) ?? 0;
+      const parsedFee = parseFundFeeInput(readField(row, "fee"), amount);
+      const action = normalizeFundImportAction(readField(row, "fundSubtype"), readField(row, "source"));
+      return {
+        rawText: row.join(" "),
+        date: normalizeDateCell(readField(row, "date")),
+        fundSubtype: action.fundSubtype,
+        source: action.source,
+        cashAccount: readField(row, "cashAccount"),
+        fundAccount: readField(row, "fundAccount"),
+        fundCode: readField(row, "fundCode"),
+        fundName: readField(row, "fundName"),
+        amount,
+        units: parseLooseNumber(readField(row, "units")),
+        nav: parseLooseNumber(readField(row, "nav")),
+        fee: parsedFee.fee,
+        feeRateInput: parsedFee.feeRateInput,
+        confirmDate: normalizeDateCell(readField(row, "confirmDate")) || null,
+        arrivalDate: normalizeDateCell(readField(row, "arrivalDate")) || null,
+        remark: readField(row, "remark"),
+      };
+    });
 }
 
 function formatOptionalNumber(value: number | null | undefined, digits = 2) {
@@ -939,6 +1016,7 @@ function previewRowLabel(rowNums: number[], text: string, t: (key: string, param
 function getFundImportSubtypeLabel(subtype: string, source: string, t: (key: string) => string) {
   if (subtype === "buy_failed" && source === "regular_invest_refund") return t("batchImport.fundSubtype.refund");
   if (subtype === "buy_failed") return t("batchImport.fundSubtype.unfilledRefund");
+  if (subtype === "buy" && source === "regular_invest") return t("fund.subtype.regular_invest");
   if (subtype === "buy") return t("fund.subtype.buy");
   if (subtype === "redeem") return t("fund.subtype.redeem");
   if (subtype === "dividend_cash") return t("fund.subtype.dividend_cash");
@@ -1449,6 +1527,16 @@ export default function BatchImportPage() {
   const [bookCategoriesLoaded, setBookCategoriesLoaded] = useState(false);
   const [categoryRuleSamples, setCategoryRuleSamples] = useState<StatementHistoricalCategorySample[]>([]);
   const [categoryRuleSamplesLoaded, setCategoryRuleSamplesLoaded] = useState(false);
+  const refreshCategoryRuleSamples = useCallback(async () => {
+    const res = await fetch("/api/v1/statement/recognition-rules", { cache: "no-store" });
+    const data = await res.json().catch(() => null) as { samples?: StatementHistoricalCategorySample[] } | null;
+    if (!res.ok || !Array.isArray(data?.samples)) {
+      throw new Error(`Recognition rules request failed: ${res.status}`);
+    }
+    setCategoryRuleSamples(data.samples);
+    setCategoryRuleSamplesLoaded(true);
+    return data.samples;
+  }, []);
   const statementFieldHeaders = useMemo(
     () => buildStatementImportFieldHeaders(categoryRuleSamples),
     [categoryRuleSamples],
@@ -1521,21 +1609,18 @@ export default function BatchImportPage() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/v1/statement/recognition-rules")
-      .then((res) => res.json())
-      .then((data) => {
+    refreshCategoryRuleSamples()
+      .then(() => {
         if (cancelled) return;
-        setCategoryRuleSamples(Array.isArray(data?.samples) ? data.samples : []);
-        setCategoryRuleSamplesLoaded(true);
       })
       .catch(() => {
         if (!cancelled) {
           setCategoryRuleSamples([]);
           setCategoryRuleSamplesLoaded(true);
         }
-      });
+    });
     return () => { cancelled = true; };
-  }, []);
+  }, [refreshCategoryRuleSamples]);
 
   const accountDisplayLabel = useCallback((account: AccountOption) => {
     const provided = formatAccountTableLabel(account);
@@ -1883,6 +1968,7 @@ export default function BatchImportPage() {
     setShowImportIssuesOnly(false);
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     try {
+      const latestCategoryRuleSamples = await refreshCategoryRuleSamples().catch(() => categoryRuleSamples);
       const parseResult = await parseImportFile(file, statementFieldHeaders);
       const rows = parseResult.rows;
       const importMode = detectBillImportMode(rows, isCreditAccountText, statementFieldHeaders);
@@ -1902,7 +1988,7 @@ export default function BatchImportPage() {
       const parsed = alignStatementRecognitionToLedger(
         alignStatementIncomeRefunds(parsedRows.map(enrichKnownStatementMerchantForImport)),
         bookCategories,
-        categoryRuleSamples,
+        latestCategoryRuleSamples,
       );
       const skippedCount = Math.max(0, parseResult.sourceDataRowCount - parsed.length);
       const recognitionDetail = formatText("batchImport.recognitionDetail", {
@@ -1919,6 +2005,7 @@ export default function BatchImportPage() {
         sourceDataRowCount: parseResult.sourceDataRowCount,
         recognizedCount: parsed.length,
         skippedCount,
+        categoryRuleCount: latestCategoryRuleSamples.length,
         durationMs: Math.round(performance.now() - startedAt),
       });
       if (parsed.length === 0) {
@@ -1968,7 +2055,7 @@ export default function BatchImportPage() {
     } finally {
       setUploading(false);
     }
-  }, [bookCategories, categoryRuleSamples, formatText, isCreditAccountText, statementFieldHeaders, t]);
+  }, [bookCategories, categoryRuleSamples, formatText, isCreditAccountText, refreshCategoryRuleSamples, statementFieldHeaders, t]);
 
   const handleFundFile = useCallback(async (file: File) => {
     const traceId = createImportTraceId();
@@ -2155,6 +2242,34 @@ export default function BatchImportPage() {
       importInvalidPostedAt: item.importInvalidPostedAt,
     };
   }, [items, drafts]);
+
+  const updateCategoryForMatchingRemarks = useCallback((idx: number, category: string) => {
+    const sourceItem = getItem(idx);
+    const sourceKey = statementPreviewCategorySyncKey(sourceItem);
+    const matchingIndexes = sourceKey
+      ? items.map((_, itemIndex) => itemIndex).filter((itemIndex) => statementPreviewCategorySyncKey(getItem(itemIndex)) === sourceKey)
+      : [idx];
+    const indexesToUpdate = matchingIndexes.filter((itemIndex) => (
+      itemIndex === idx || String(getItem(itemIndex).category ?? "").trim() !== category.trim()
+    ));
+
+    setDrafts((prev) => {
+      const next = { ...prev };
+      for (const itemIndex of indexesToUpdate) {
+        next[itemIndex] = {
+          ...(next[itemIndex] ?? {}),
+          category,
+          categoryUserEdited: true,
+        };
+      }
+      return next;
+    });
+
+    const propagatedCount = indexesToUpdate.filter((itemIndex) => itemIndex !== idx).length;
+    if (propagatedCount > 0) {
+      setMessage(formatText("statementImportPreview.sameRemarkCategoryApplied", { count: propagatedCount }));
+    }
+  }, [formatText, getItem, items]);
 
   const creditStatementAccount = useMemo(() => {
     if (activeBillMode !== "credit_card") return "";
@@ -3007,6 +3122,7 @@ export default function BatchImportPage() {
         selectableGroups: true,
         groupSelectOnDoubleClick: false,
         minDropdownWidth: 252,
+        fitContent: true,
         dropdownMaxHeight: 180,
         density: "micro",
         expandedGroupColumns: 4,
@@ -3406,14 +3522,14 @@ export default function BatchImportPage() {
         const category = draft.category ?? item.category ?? "";
         const editingField = editingCell?.idx === idx ? editingCell.field : null;
         return (
-          <div className="truncate text-slate-700" title={systemCategoryLabel(category, t) || t("batchImport.doubleClickToEdit")} onDoubleClick={() => openCellEdit(idx, "category")}>
+          <div className="w-full min-w-0 truncate text-slate-700" title={systemCategoryLabel(category, t) || t("batchImport.doubleClickToEdit")} onDoubleClick={() => openCellEdit(idx, "category")}>
             {editingField === "category" ? (
-              <div className="w-44">
+              <div className="w-full min-w-0">
                 <SmartSelect
                   mode="single"
                   value={categorySelectValue(category, item.type)}
                   onChange={(categoryId) => {
-                    updateDraft(idx, "category", categoryNameById(categoryId));
+                    updateCategoryForMatchingRemarks(idx, categoryNameById(categoryId));
                     closeCellEdit();
                   }}
                   options={buildCategorySmartSelectOptions(bookCategories, item.type, t)}
@@ -3427,6 +3543,7 @@ export default function BatchImportPage() {
                     selectableGroups: true,
                     groupSelectOnDoubleClick: false,
                     minDropdownWidth: 252,
+                    fitContent: true,
                     dropdownMaxHeight: 180,
                     density: "micro",
                     expandedGroupColumns: 4,
@@ -3559,6 +3676,7 @@ export default function BatchImportPage() {
     previewIssuesByRow,
     t,
     updateCreditStatementAccount,
+    updateCategoryForMatchingRemarks,
     updateDraft,
   ]);
 
@@ -3782,7 +3900,7 @@ export default function BatchImportPage() {
 
       {activeImportKind === "normal" && (items.length > 0 || uploading) && (
         <div className="fixed inset-0 z-50 bg-slate-900/40 p-4 flex items-center justify-center">
-          <div data-smart-select-boundary className="w-full max-w-7xl h-[82vh] min-h-[420px] min-w-[720px] resize bg-white rounded-xl border border-slate-200 shadow-2xl flex flex-col overflow-hidden">
+          <div data-smart-select-boundary className="h-[82vh] min-h-[420px] w-[80rem] min-w-[720px] max-w-[calc(100vw-2rem)] resize overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl flex flex-col">
             <div className="shrink-0 px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3">
               <div>
                 <div className="text-base font-semibold text-slate-800">{t("batchImport.previewTitle")}</div>
@@ -3918,6 +4036,7 @@ export default function BatchImportPage() {
                 emptyText={uploading ? t("batchImport.previewParsing") : t("batchImport.noRecordsForFilter")}
                 minTableWidth={1820}
                 selectable
+                selectAllScope="renderedRows"
                 selectedKeys={selectedNormalPreviewKeys}
                 onSelectionChange={(keys) => {
                   setSelected(new Set(Array.from(keys).map((key) => Number(key)).filter((idx) => Number.isInteger(idx))));
@@ -3960,7 +4079,7 @@ export default function BatchImportPage() {
 
       {activeImportKind === "fund" && (fundPreviewItems.length > 0 || uploading) && (
         <div className="fixed inset-0 z-50 bg-slate-900/40 p-4 flex items-center justify-center">
-          <div data-smart-select-boundary className="w-full max-w-7xl h-[82vh] min-h-[420px] min-w-[720px] resize bg-white rounded-xl border border-slate-200 shadow-2xl flex flex-col overflow-hidden">
+          <div data-smart-select-boundary className="h-[82vh] min-h-[420px] w-[80rem] min-w-[720px] max-w-[calc(100vw-2rem)] resize overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl flex flex-col">
             <div className="shrink-0 px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3">
               <div>
                 <div className="text-base font-semibold text-slate-800">{t("batchImport.previewFundTitle")}</div>

@@ -1,26 +1,65 @@
 {
-  "mmh": {
-    "display_name": "MMH 家庭财务工作台",
-    "platform": "x86",
-    "platforms": [
-      "x86",
-      "arm"
-    ],
-    "version": "0.1.36",
-    "desc": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
-    "labels": "财务,记账",
-    "distributor": "frankluise5220",
-    "distributor_url": "https://github.com/frankluise5220/MMH",
-    "bug_report_url": "https://github.com/frankluise5220/MMH/issues",
-    "isdocker": "false",
-    "install_type": "存储空间",
-    "size": "169",
-    "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.36/mmh-fnos-v0.1.36-x86_64.fpk",
-    "download_urls": {
-      "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.36/mmh-fnos-v0.1.36-x86_64.fpk",
-      "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.36/mmh-fnos-v0.1.36-arm64.fpk"
-    },
-    "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.36",
-    "changelog": "发布 0.1.36：修复打开收益报表/收支统计报错（分类跨类型同名冲突先查重收敛，不再因唯一约束失败中断）；修复快照恢复后 SQLite 原生包 schema 回填；系统更新页镜像源保存防重复点击并支持草稿预填；更新服务与账单/报表数据接口小幅优化；mh8 备份转换工具增强；Android 自适应启动图标前景资源补齐。手机端无需安装即可用浏览器访问 Web 版（响应式，支持日常查看与快速记账）；Android 客户端同版本同步发布，签名一致可直接覆盖升级。"
+  "schema_version": "2",
+  "source_info": {
+    "name": "MMH fnOS Source",
+    "author": "frankluise5220",
+    "homepage": "https://github.com/frankluise5220/MMH",
+    "description": "MMH fnOS packages for Feiniu NAS.",
+    "i18n": {
+      "zh-CN": {
+        "name": "MMH 飞牛应用源",
+        "description": "MMH 面向飞牛 NAS 的原生应用包源。"
+      },
+      "ja-JP": {
+        "name": "MMH fnOS ソース",
+        "description": "Feiniu NAS 向け MMH ネイティブアプリパッケージのソース。"
+      }
+    }
+  },
+  "apps": {
+    "mmh": {
+      "display_name": "MMH 家庭财务工作台",
+      "desc": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
+      "platform": [
+        "x86",
+        "arm"
+      ],
+      "categories": [
+        "生活服务"
+      ],
+      "icon_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.36",
+      "readme_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/deploy/fnos/README.md",
+      "bug_report_url": "https://github.com/frankluise5220/MMH/issues",
+      "maintainer": "frankluise5220",
+      "maintainer_url": "https://github.com/frankluise5220/MMH",
+      "run_as": "root",
+      "install_type": "",
+      "is_docker": false,
+      "service_port": "7777",
+      "i18n": {
+        "en-US": {
+          "display_name": "MMH Home Finance Workspace",
+          "desc": "A self-hosted home bookkeeping and asset-management workspace for transaction records, credit card bills, fund holdings, reports, and imports, with data stored on your own Feiniu NAS."
+        },
+        "ja-JP": {
+          "display_name": "MMH ホームファイナンスワークスペース",
+          "desc": "取引記録、クレジットカード明細、投資信託保有、レポート、データインポートに対応した、自宅の Feiniu NAS にデータを保存するセルフホスト型家計・資産管理ワークスペースです。"
+        }
+      },
+      "releases": {
+        "0.1.36": {
+          "changelog": "发布 0.1.36：修复打开收益报表/收支统计报错（分类跨类型同名冲突先查重收敛，不再因唯一约束失败中断）；修复快照恢复后 SQLite 原生包 schema 回填；系统更新页镜像源保存防重复点击并支持草稿预填；更新服务与账单/报表数据接口小幅优化；mh8 备份转换工具增强；Android 自适应启动图标前景资源补齐。手机端无需安装即可用浏览器访问 Web 版（响应式，支持日常查看与快速记账）；Android 客户端同版本同步发布，签名一致可直接覆盖升级。",
+          "os_min_version": "0.9.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.36/mmh-fnos-v0.1.36-x86_64.fpk"
+            },
+            "arm": {
+              "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.36/mmh-fnos-v0.1.36-arm64.fpk"
+            }
+          }
+        }
+      }
+    }
   }
 }

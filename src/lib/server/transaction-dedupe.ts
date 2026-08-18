@@ -1,6 +1,12 @@
 import { Prisma, TransactionType } from "@prisma/client";
 
-const MANUAL_CREATE_DEDUPE_WINDOW_MS = 10 * 60 * 1000;
+// Dedupe window for import / AI-ingest flows: same record identity within the
+// window is treated as a repeated import of the same statement.
+const INGEST_DEDUPE_WINDOW_MS = 10 * 60 * 1000;
+// Manual create flow only guards against double-click / double-submit of the
+// same form. A longer window would swallow legitimate consecutive entries that
+// happen to share account, amount, and note.
+const MANUAL_CREATE_DOUBLE_SUBMIT_WINDOW_MS = 5 * 1000;
 
 function textOrNull(value: string | null | undefined) {
   const text = String(value ?? "").trim();
@@ -37,7 +43,7 @@ export async function findRecentTransactionDuplicate(
       amount: params.amount,
       note: textOrNull(params.note),
       createdAt: {
-        gte: new Date((params.now ?? new Date()).getTime() - MANUAL_CREATE_DEDUPE_WINDOW_MS),
+        gte: new Date((params.now ?? new Date()).getTime() - INGEST_DEDUPE_WINDOW_MS),
       },
     },
     orderBy: { createdAt: "asc" },
@@ -50,5 +56,13 @@ export async function findRecentManualTransactionDuplicate(
 ) {
   const source = textOrNull(params.source) ?? "manual";
   if (source !== "manual") return null;
-  return findRecentTransactionDuplicate(tx, { ...params, source });
+  const duplicate = await findRecentTransactionDuplicate(tx, { ...params, source });
+  if (!duplicate) return null;
+  // Manual create dedupe only protects against an immediate double submit, so
+  // ignore matches older than the double-submit window.
+  const now = params.now ?? new Date();
+  if (duplicate.createdAt.getTime() < now.getTime() - MANUAL_CREATE_DOUBLE_SUBMIT_WINDOW_MS) {
+    return null;
+  }
+  return duplicate;
 }

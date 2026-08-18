@@ -768,7 +768,7 @@ async function createTransactionFromItem(ctx: ImportContext, tx: Db, item: Parse
       accountId: accountId ?? (await ensureAccountId(ctx, tx, "未指定账户")) ?? "",
       accountName: storedAccountName,
       categoryId: category?.id ?? null,
-      categoryName: category?.name ?? item.category ?? null,
+      categoryName: category?.name ?? null,
       note: item.remark ?? item.rawText,
       toNote: null,
       counterpartyInstitutionId,

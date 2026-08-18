@@ -191,6 +191,7 @@ export function formatCreditCardDisplayName(input: {
   accountName: string;
   institution?: { name: string | null; shortName?: string | null } | null;
   numberMasked?: string | null;
+  ownerName?: string | null;
   template?: string | null;
   mode?: CreditCardLabelMode;
   /** @deprecated Duplicate last-four suppression is now always on for credit cards. */
@@ -201,6 +202,7 @@ export function formatCreditCardDisplayName(input: {
   const fullInstitutionName = input.institution?.name?.trim() ?? "";
   const shortInstitutionName = shortInstitutionNameRaw || fullInstitutionName;
   const institutionName = fullInstitutionName || shortInstitutionNameRaw;
+  const ownerName = input.ownerName?.trim() ?? "";
   const last4Raw = (input.numberMasked ?? "").trim();
   const last4 = last4Raw && accountName.includes(last4Raw) ? "" : last4Raw;
   const template = normalizeCreditCardLabelTemplate(input.template, input.mode);
@@ -209,6 +211,7 @@ export function formatCreditCardDisplayName(input: {
     .replaceAll("{机构简称}", shortInstitutionName)
     .replaceAll("{机构全称}", institutionName)
     .replaceAll("{机构名称}", institutionName)
+    .replaceAll("{\u6240\u6709\u4eba}", ownerName)
     .replaceAll("{信用卡名称}", accountName)
     .replaceAll("{账户名称}", accountName)
     .replaceAll("{信用卡后4位}", last4)
@@ -248,6 +251,7 @@ export function buildAccountDisplayOption(
           accountName: account.name,
           institution: account.Institution,
           numberMasked: account.numberMasked,
+          ownerName: groupName,
           template: creditCardLabelTemplate,
           suppressDuplicateLast4: options?.suppressDuplicateCreditCardLast4,
         })

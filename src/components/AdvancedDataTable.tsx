@@ -650,9 +650,9 @@ export function AdvancedDataTable<T>({
     : displayRowItems.map((item, displayIndex) => ({ item, displayIndex, virtualRow: null }));
   const selectableRowKeys = useMemo(
     () => selectAllScope === "renderedRows"
-      ? renderedRowItems.map(({ item }) => item.key)
+      ? displayRowItems.map(({ key }) => key)
       : allRowKeys,
-    [allRowKeys, renderedRowItems, selectAllScope],
+    [allRowKeys, displayRowItems, selectAllScope],
   );
   const virtualPaddingTop = shouldVirtualizeRows ? virtualRows[0]?.start ?? 0 : 0;
   const virtualPaddingBottom = shouldVirtualizeRows

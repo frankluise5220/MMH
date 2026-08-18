@@ -35,6 +35,10 @@ function fnosDownloadUrls(version) {
   };
 }
 
+function getFndepotRelease(payload, version) {
+  return payload.apps?.mmh?.releases?.[version];
+}
+
 const pkg = readJson("package.json");
 const version = String(pkg.version || "").trim();
 const releaseNotes = String(pkg.mmhReleaseNotes || "").trim();

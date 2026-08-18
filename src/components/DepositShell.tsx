@@ -188,6 +188,7 @@ export function DepositShell({
     const data = await deleteEntriesWithLinkedPrompt({
       entryIds,
       confirmMessage: formatText("depositShell.batchDeleteConfirm", { count: selectedEntryIds.size }),
+      t,
     });
     if (!data.ok) {
       if (data.code === "DELETE_CANCELLED" || data.error === "已取消删除") return;

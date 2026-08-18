@@ -3,6 +3,7 @@ import {
   SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE,
   normalizeCreditCardLabelTemplate,
 } from "@/lib/account-display";
+import { normalizeDateDisplayFormat } from "@/lib/date-utils";
 
 const SESSION_DAYS_KEY = "mmh_session_days";
 const FUND_UNITS_DECIMALS_KEY = "mmh_fund_units_decimals";
@@ -16,6 +17,7 @@ const CREDIT_BILL_HIDE_ZERO_KEY = "mmh_credit_hide_zero_bills";
 const CREDIT_BILL_HIDE_SETTLED_KEY = "mmh_credit_hide_settled_bills";
 const CREDIT_BILL_RECENT_CYCLES_KEY = "mmh_credit_recent_cycles";
 const DISPLAY_LANGUAGE_KEY = "mmh_display_language";
+const DATE_DISPLAY_FORMAT_KEY = "mmh_date_display_format";
 const SIDEBAR_HIDE_INITIAL_DATA_KEY = "sidebar_hide_initial_data";
 const VERIFIED_KEY = "mmh_access_password_verified";
 const USER_ID_KEY = "mmh_user_id";
@@ -85,6 +87,7 @@ export async function GET(req: NextRequest) {
   const creditBillHideSettled = normalizeBoolean(req.cookies.get(CREDIT_BILL_HIDE_SETTLED_KEY)?.value, false);
   const creditBillShowRecentCycles = normalizeBoolean(req.cookies.get(CREDIT_BILL_RECENT_CYCLES_KEY)?.value, true);
   const displayLanguage = normalizeDisplayLanguage(req.cookies.get(DISPLAY_LANGUAGE_KEY)?.value);
+  const dateDisplayFormat = normalizeDateDisplayFormat(req.cookies.get(DATE_DISPLAY_FORMAT_KEY)?.value);
   const sidebarHideInitialData = normalizeBoolean(req.cookies.get(SIDEBAR_HIDE_INITIAL_DATA_KEY)?.value, false);
   return NextResponse.json({
     ok: true,
@@ -100,6 +103,7 @@ export async function GET(req: NextRequest) {
     creditBillHideSettled,
     creditBillShowRecentCycles,
     displayLanguage,
+    dateDisplayFormat,
     sidebarHideInitialData,
   });
 }
@@ -119,6 +123,7 @@ export async function PUT(req: NextRequest) {
     creditBillHideSettled?: unknown;
     creditBillShowRecentCycles?: unknown;
     displayLanguage?: unknown;
+    dateDisplayFormat?: unknown;
     sidebarHideInitialData?: unknown;
   } : {};
   const hasSessionDays = Object.prototype.hasOwnProperty.call(prefs, "sessionDays");
@@ -133,6 +138,7 @@ export async function PUT(req: NextRequest) {
   const hasCreditBillHideSettled = Object.prototype.hasOwnProperty.call(prefs, "creditBillHideSettled");
   const hasCreditBillShowRecentCycles = Object.prototype.hasOwnProperty.call(prefs, "creditBillShowRecentCycles");
   const hasDisplayLanguage = Object.prototype.hasOwnProperty.call(prefs, "displayLanguage");
+  const hasDateDisplayFormat = Object.prototype.hasOwnProperty.call(prefs, "dateDisplayFormat");
   const hasSidebarHideInitialData = Object.prototype.hasOwnProperty.call(prefs, "sidebarHideInitialData");
   const sessionDays = normalizeSessionDays(hasSessionDays ? prefs.sessionDays : req.cookies.get(SESSION_DAYS_KEY)?.value ?? 30);
   const fundUnitsDecimals = normalizeFundUnitsDecimals(hasFundUnitsDecimals ? prefs.fundUnitsDecimals : req.cookies.get(FUND_UNITS_DECIMALS_KEY)?.value ?? 2);
@@ -165,6 +171,9 @@ export async function PUT(req: NextRequest) {
   const displayLanguage = normalizeDisplayLanguage(
     hasDisplayLanguage ? prefs.displayLanguage : req.cookies.get(DISPLAY_LANGUAGE_KEY)?.value,
   );
+  const dateDisplayFormat = normalizeDateDisplayFormat(
+    hasDateDisplayFormat ? prefs.dateDisplayFormat : req.cookies.get(DATE_DISPLAY_FORMAT_KEY)?.value,
+  );
   const sidebarHideInitialData = normalizeBoolean(
     hasSidebarHideInitialData ? prefs.sidebarHideInitialData : req.cookies.get(SIDEBAR_HIDE_INITIAL_DATA_KEY)?.value,
     false,
@@ -185,6 +194,7 @@ export async function PUT(req: NextRequest) {
     creditBillHideSettled,
     creditBillShowRecentCycles,
     displayLanguage,
+    dateDisplayFormat,
     sidebarHideInitialData,
   });
   response.cookies.set(SESSION_DAYS_KEY, String(sessionDays), {
@@ -254,6 +264,12 @@ export async function PUT(req: NextRequest) {
     sameSite: "lax",
   });
   response.cookies.set(DISPLAY_LANGUAGE_KEY, displayLanguage, {
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365,
+    httpOnly: false,
+    sameSite: "lax",
+  });
+  response.cookies.set(DATE_DISPLAY_FORMAT_KEY, dateDisplayFormat, {
     path: "/",
     maxAge: 60 * 60 * 24 * 365,
     httpOnly: false,

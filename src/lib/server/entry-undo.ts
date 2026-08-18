@@ -14,6 +14,27 @@ import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/serv
 type DbWriter = PrismaClient | Prisma.TransactionClient;
 type UndoSnapshot = Record<string, unknown>;
 export const ENTRY_UNDO_HISTORY_LIMIT = 5;
+const ENTRY_UNDO_PREVIEW_LIMIT = 5;
+
+export type EntryUndoPreviewItem = {
+  id: string;
+  date: string;
+  type: string;
+  amount: number | null;
+  accountName: string;
+  toAccountName: string;
+  categoryName: string;
+  counterpartyInstitutionName: string;
+  fundCode: string;
+  fundName: string;
+  note: string;
+};
+
+export type EntryUndoPreview = {
+  count: number;
+  hiddenCount: number;
+  items: EntryUndoPreviewItem[];
+};
 
 export type PreparedEntryUndo = {
   snapshots: UndoSnapshot[];
@@ -152,6 +173,58 @@ export async function getAvailableEntryUndoCount(ctx: HouseholdContext) {
   });
 }
 
+function previewText(value: unknown) {
+  return value == null ? "" : String(value).trim();
+}
+
+function previewDate(value: unknown) {
+  return previewText(value).slice(0, 10);
+}
+
+function previewNumber(value: unknown) {
+  if (value == null || value === "") return null;
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : null;
+}
+
+function snapshotPreviewItem(snapshot: UndoSnapshot): EntryUndoPreviewItem {
+  return {
+    id: previewText(snapshot.id),
+    date: previewDate(snapshot.date),
+    type: previewText(snapshot.type),
+    amount: previewNumber(snapshot.amount),
+    accountName: previewText(snapshot.accountName),
+    toAccountName: previewText(snapshot.toAccountName),
+    categoryName: previewText(snapshot.categoryName),
+    counterpartyInstitutionName: previewText(snapshot.counterpartyInstitutionName),
+    fundCode: previewText(snapshot.fundCode),
+    fundName: previewText(snapshot.fundName) || previewText(snapshot.metalTypeName) || previewText(snapshot.insuranceProductName),
+    note: previewText(snapshot.note) || previewText(snapshot.toNote),
+  };
+}
+
+export async function getEntryUndoPreview(ctx: HouseholdContext, operationId: string): Promise<EntryUndoPreview | null> {
+  const stored = await prisma.undoOperation.findFirst({
+    where: { ...undoScope(ctx), id: operationId, undoneAt: null },
+    select: { snapshots: true },
+  });
+  const snapshots = Array.isArray(stored?.snapshots)
+    ? stored.snapshots as UndoSnapshot[]
+    : [];
+  if (snapshots.length === 0) return null;
+
+  const items = snapshots
+    .slice(0, ENTRY_UNDO_PREVIEW_LIMIT)
+    .map(snapshotPreviewItem)
+    .filter((item) => item.id || item.date || item.accountName || item.note);
+
+  return {
+    count: snapshots.length,
+    hiddenCount: Math.max(0, snapshots.length - items.length),
+    items,
+  };
+}
+
 function restoreValue(value: unknown, type: string) {
   if (value == null) return null;
   if (type === "DateTime") return new Date(String(value));
@@ -248,7 +321,7 @@ export async function undoLatestEntryOperation(ctx: HouseholdContext) {
         where: { id, OR: [{ householdId: ctx.householdId }, { householdId: null }] },
         select: { id: true },
       });
-      if (!current) throw new Error(`记录 ${id} 已被永久删除，无法撤销`);
+      if (!current) throw new Error(`Record ${id} has been permanently deleted and cannot be undone`);
       await tx.txRecord.update({ where: { id }, data: snapshotToUpdateData(snapshot) as Prisma.TxRecordUncheckedUpdateInput });
       const tagIds = Array.isArray(snapshot._entryTagIds)
         ? snapshot._entryTagIds.map(String).filter(Boolean)

@@ -298,6 +298,7 @@ export function SidebarClient({
   const [collapsedAssetSubgroupKeys, setCollapsedAssetSubgroupKeys] = useState<Set<string>>(new Set());
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [pendingSettings, setPendingSettings] = useState(false);
+  const [hideFirstUseGuide, setHideFirstUseGuide] = useState(() => initialPreferences?.sidebarHideInitialData ?? getAppPreferences().sidebarHideInitialData);
   const [items, setItems] = useState(() => normalizeSidebarItems(initialItems, t));
   const accountUsage = useAccountUsage();
   const ledgerSwitcherAnchorRef = useRef<HTMLButtonElement>(null);
@@ -507,6 +508,7 @@ export function SidebarClient({
       const prefs = getAppPreferences();
       setSelectedOwnerFilter(prefs.sidebarOwnerFilter);
       setHideZero(prefs.sidebarHideZero);
+      setHideFirstUseGuide(prefs.sidebarHideInitialData);
       setSidebarCollapsed(prefs.sidebarCollapsed);
       setSidebarGroupBy(getSidebarGroupPreference());
     };
@@ -970,14 +972,16 @@ export function SidebarClient({
           <Link href="/reports" className={collapsedNavCls(pathname.startsWith("/reports"))} title={t("nav.reports")}>
             <Table2 size={18} />
           </Link>
-          <button
-            type="button"
-            onClick={dispatchFirstUseGuideOpen}
-            className={collapsedNavCls(false)}
-            title={t("nav.firstUseGuide")}
-          >
-            <Compass size={18} />
-          </button>
+          {!hideFirstUseGuide ? (
+            <button
+              type="button"
+              onClick={dispatchFirstUseGuideOpen}
+              className={collapsedNavCls(false)}
+              title={t("nav.firstUseGuide")}
+            >
+              <Compass size={18} />
+            </button>
+          ) : null}
           <Link href="/accounts" className={collapsedNavCls(pathname.startsWith("/accounts") || (pathname === "/" && !isRootInvestmentView))} title={t("nav.accounts")}>
             <Landmark size={18} />
           </Link>
@@ -1088,14 +1092,16 @@ export function SidebarClient({
               <Table2 size={18} />
               <span className="font-medium">{t("nav.reports")}</span>
             </Link>
-            <button
-              type="button"
-              onClick={dispatchFirstUseGuideOpen}
-              className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-slate-600 transition-all duration-200 hover:bg-white hover:text-slate-900"
-            >
-              <Compass size={18} />
-              <span className="font-medium">{t("nav.firstUseGuide")}</span>
-            </button>
+            {!hideFirstUseGuide ? (
+              <button
+                type="button"
+                onClick={dispatchFirstUseGuideOpen}
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-slate-600 transition-all duration-200 hover:bg-white hover:text-slate-900"
+              >
+                <Compass size={18} />
+                <span className="font-medium">{t("nav.firstUseGuide")}</span>
+              </button>
+            ) : null}
           </nav>
         </div>
 

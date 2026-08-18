@@ -66,6 +66,7 @@ type FundImportInput = {
   units?: number | null;
   nav?: number | null;
   fee?: number | null;
+  feeRateInput?: number | null;
   confirmDate?: string | null;
   arrivalDate?: string | null;
   remark?: string;
@@ -154,12 +155,17 @@ function parsePositiveNumber(value: unknown): number | null {
   return abs > 0 ? abs : null;
 }
 
+function parseNonNegativeNumber(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const num = Number(String(value).replace(/[,，￥¥\s]/g, ""));
+  if (!Number.isFinite(num) || num < 0) return null;
+  return num;
+}
+
 function normalizeSubtype(raw: string) {
   const value = String(raw ?? "").trim();
-  if (!value) return "buy";
-  if (value === "refund" || value === "returned" || value === "buy_refund") return "buy_failed";
-  const valid = new Set(["buy", "redeem", "dividend_cash", "dividend_reinvest", "buy_failed"]);
-  return valid.has(value) ? value : "buy";
+  const valid = new Set(["buy", "redeem"]);
+  return valid.has(value) ? value : "";
 }
 
 function normalizeSource(raw: string, subtype: string, rawSubtype?: string) {
@@ -312,6 +318,7 @@ async function enrichPreviewItem(
   ]);
 
   if (!date) issues.push({ level: "error", message: "缺少日期" });
+  if (!subtype) issues.push({ level: "error", message: "基金动作无效，仅支持买入、定投、赎回" });
   if (!fundAccount) issues.push({ level: "error", message: "缺少基金账户" });
   else if (!fundAccountMeta) issues.push({ level: "error", message: `基金账户“${fundAccount}”未匹配` });
   else if (!isPureInvestmentAccount(fundAccountMeta)) issues.push({ level: "error", message: `基金账户“${fundAccount}”不是开放式基金账户` });
@@ -327,9 +334,10 @@ async function enrichPreviewItem(
   let arrivalDays: number | null = null;
   let confirmDate = String(input.confirmDate ?? "").trim() || null;
   let nav = parsePositiveNumber(input.nav);
-  let fee = parsePositiveNumber(input.fee);
+  let fee = parseNonNegativeNumber(input.fee);
+  const feeRateInput = parseNonNegativeNumber(input.feeRateInput);
   let units = parsePositiveNumber(input.units);
-  let feeRate: number | null = null;
+  let feeRate: number | null = feeRateInput;
   let fundName = String(input.fundName ?? "").trim();
   let arrivalDate = String(input.arrivalDate ?? "").trim() || null;
   const remark = String(input.remark ?? "").trim();
@@ -351,7 +359,9 @@ async function enrichPreviewItem(
       arrivalDate = addTradingDaysUtc(confirmDate, arrivalDays, fundAccountMeta.tradingCalendar);
     }
 
-    if (!fee) {
+    if (feeRateInput != null) {
+      fee = Number((amount * (feeRateInput / 100)).toFixed(2));
+    } else if (fee == null) {
       const feeType = subtype === "redeem" ? "redeem" : "buy";
       const baseDate = confirmDate ? toUtcDate(confirmDate) : toUtcDate(date);
       let feeRateRaw = await getFundFeeRateByDate(fundAccountMeta.id, fundCode, baseDate, feeType).catch(() => 0);

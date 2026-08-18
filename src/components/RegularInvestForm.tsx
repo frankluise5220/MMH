@@ -1325,11 +1325,11 @@ export function RegularInvestForm({
           open={true}
           onClose={() => setNestedEntityType(null)}
           onCreated={handleNestedAccountCreated}
-          extraFields={{
-            kind: nestedEntityType === "cash-account" ? "bank_debit" : "investment",
-            investProductType: "fund",
-          }}
-          hiddenFields={["kind"]}
+          extraFields={nestedEntityType === "cash-account"
+            ? undefined
+            : { kind: "investment", investProductType: "fund" }}
+          hiddenFields={nestedEntityType === "cash-account" ? [] : ["kind"]}
+          allowedAccountKinds={nestedEntityType === "cash-account" ? ["bank_debit", "ewallet"] : undefined}
           nestedFieldData={nestedFieldData}
         />,
         document.body,

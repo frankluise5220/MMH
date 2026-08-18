@@ -17,8 +17,9 @@ import { toNumber } from "@/lib/date-utils";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 
-import { CalendarSync, ChartLine, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Pause, Pencil, Play, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { CalendarDays, CalendarSync, ChartLine, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Pause, Pencil, Play, SlidersHorizontal, Trash2, X } from "lucide-react";
 
+import { FundConfirmDaysModal } from "@/components/FundConfirmDaysModal";
 import { InvestmentFormModal } from "@/components/InvestmentFormModal";
 import { allocateBuyFailedRefunds, findLinkedEntries, getConfirmedBuyAmount, getEffectiveBuyUnitsByRefunds, type RefundLinkableEntry } from "@/lib/fund/refund-link";
 
@@ -661,6 +662,14 @@ export function FundShell(props: Props) {
   const [fundCode, setFundCode] = useState(initialFundCode);
   const [fundChartOpen, setFundChartOpen] = useState(false);
   const [showAllRecords, setShowAllRecords] = useState(false);
+  const [confirmDaysModalOpen, setConfirmDaysModalOpen] = useState(false);
+  const [confirmDaysModalFundCode, setConfirmDaysModalFundCode] = useState<string | null>(null);
+  const [confirmDaysModalFundName, setConfirmDaysModalFundName] = useState<string | null>(null);
+  const openConfirmDaysModal = useCallback((fundCode?: string | null, fundName?: string | null) => {
+    setConfirmDaysModalFundCode(fundCode ?? null);
+    setConfirmDaysModalFundName(fundName ?? null);
+    setConfirmDaysModalOpen(true);
+  }, []);
 
   const [showCleared, setShowCleared] = useState(initialShowCleared);
 
@@ -1167,6 +1176,7 @@ export function FundShell(props: Props) {
 
       const status = isBuyFailed
         ? (e.source === "regular_invest_refund" ? t("fundShell.status.buyRefund") : t("fundShell.status.buyFailed"))
+        : e.fundSubtype === "dividend_cash" ? t("fundShell.status.confirmed")
         : (e.fundSubtype === "buy" && (refundAmountByBuyId.get(String(e.id ?? "")) ?? 0) > 0) ? t("fundShell.status.partial") : (e.fundUnits == null || Number(e.fundUnits) === 0) ? t("fundShell.status.pending") : t("fundShell.status.confirmed");
 
 
@@ -1966,6 +1976,19 @@ export function FundShell(props: Props) {
         {!isMetalAccount ? (
           <>
             <AddNavButton accountId={accountId} positions={[p]} defaultFundCode={p.fundCode} trigger="icon" wealthMode={isWealthAccount} />
+            <button
+              type="button"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                openConfirmDaysModal(p.fundCode || positionKey, p.name || null);
+              }}
+              className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 transition-colors hover:border-amber-200 hover:bg-amber-50 hover:text-amber-700"
+              title={t("fundRules.title")}
+              aria-label={t("fundRules.title")}
+            >
+              <CalendarDays className="h-3 w-3" />
+            </button>
             {!isWealthAccount ? (
               <button
                 type="button"
@@ -1996,6 +2019,7 @@ export function FundShell(props: Props) {
     fundCode,
     isMetalAccount,
     isWealthAccount,
+    openConfirmDaysModal,
     positionAssetKey,
     regularPlanActionBusy,
     regularPlanBusyId,
@@ -2229,6 +2253,7 @@ export function FundShell(props: Props) {
         return units != null && units > 0 ? "partial" : "pending";
       }
     }
+    if (e.fundSubtype === "dividend_cash") return "confirmed";
     const units = displayUnitsOf(e);
     return units != null && units > 0 ? "confirmed" : "pending";
   }, [detailAmountOf, displayUnitsOf, refundAmountOf]);
@@ -2409,6 +2434,7 @@ export function FundShell(props: Props) {
         confirmMessage: t("fundShell.deleteConfirm.batch", { count: ids.length, kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund") }),
         selectedRecordLabel: isWealthAccount ? t("fundShell.record.wealth") : t("fundShell.record.fund"),
         counterpartRecordLabel: t("fundShell.counterpartRecord"),
+        t,
       });
 
       if (!data.ok) {
@@ -2458,6 +2484,7 @@ export function FundShell(props: Props) {
         confirmMessage: t("fundShell.deleteConfirm.single", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund") }),
         selectedRecordLabel: isWealthAccount ? t("fundShell.record.wealth") : t("fundShell.record.fund"),
         counterpartRecordLabel: t("fundShell.counterpartRecord"),
+        t,
       });
       if (!data.ok) {
         if (data.code === "DELETE_CANCELLED" || data.error === "已取消删除") return;
@@ -3107,6 +3134,30 @@ export function FundShell(props: Props) {
               fundUnitsDecimals={fundUnitsDecimals}
             />
 
+            {!isMetalAccount ? (
+              <button
+                type="button"
+                onClick={() => openConfirmDaysModal()}
+                className="inline-flex h-6 items-center gap-1 rounded border border-slate-200 bg-white px-2 text-xs text-slate-600 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+                title={t("fundRules.title")}
+              >
+                <CalendarDays className="h-3.5 w-3.5" />
+                {t("fundRules.title")}
+              </button>
+            ) : null}
+
+            {!isMetalAccount && !isWealthAccount ? (
+              <ViewExcelImportMenuButton
+                kind="fund"
+                accountId={accountId}
+                fundAccountName={selectedAccount?.name ?? t("viewImport.fundAccount")}
+                exportItems={[{
+                  label: t("fundShell.export.all"),
+                  onClick: () => void exportXlsx("all"),
+                }]}
+              />
+            ) : null}
+
             <div className="flex items-center gap-0.5">
 
               <button onClick={() => toggleCleared(false)} className={`h-6 px-2 rounded text-xs ${!showCleared ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}>{holdingTabLabel}</button>
@@ -3472,6 +3523,18 @@ export function FundShell(props: Props) {
         </div>
       ) : null}
 
+      <FundConfirmDaysModal
+        accountId={accountId}
+        open={confirmDaysModalOpen}
+        onClose={() => setConfirmDaysModalOpen(false)}
+        onSaved={() => {
+          setConfirmDaysModalOpen(false);
+          dispatchFinanceDataChanged({ reason: "fund-confirm-days:save", accountIds: [accountId] });
+        }}
+        initialFundCode={confirmDaysModalFundCode}
+        fundName={confirmDaysModalFundName}
+      />
+
       <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden">
 
       {/* Transaction details */}
@@ -3546,26 +3609,6 @@ export function FundShell(props: Props) {
               >
                 {isWealthAccount ? t("fundShell.allRecords.wealth") : t("fundShell.allRecords.fund")}
               </button>
-            ) : null}
-
-            {!isMetalAccount && !isWealthAccount ? (
-              <ViewExcelImportMenuButton
-                kind="fund"
-                accountId={accountId}
-                fundAccountName={selectedAccount?.name ?? t("viewImport.fundAccount")}
-                fundCode={fundCode || undefined}
-                fundName={selectedFundNameForChart || undefined}
-                exportItems={[
-                  ...(fundCode ? [{
-                    label: t("fundShell.export.current"),
-                    onClick: () => void exportXlsx("current"),
-                  }] : []),
-                  {
-                    label: t("fundShell.export.all"),
-                    onClick: () => void exportXlsx("all"),
-                  },
-                ]}
-              />
             ) : null}
 
             {batchDeleteMessage ? <span className="px-1 text-[10px] text-rose-500">{batchDeleteMessage}</span> : null}

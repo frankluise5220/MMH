@@ -1806,16 +1806,17 @@ async function editInvestment(formData: FormData) {
       return { ok: true as const };
     }
 
-    // Buy: accountId=cash account (source), toAccountId=investment account (receiver).
-    // Redeem / cash dividend / buy_failed refund: accountId=investment account (source), toAccountId=cash account (receiver).
-    const isRedeemOrRefund = txRecord.fundSubtype === "redeem" || txRecord.fundSubtype === "switch_out"
-      || txRecord.fundSubtype === "dividend_cash"
-      || (txRecord.fundSubtype === "buy_failed" && txRecord.source === "regular_invest_refund");
     const existingFundTransactionForRecalc = fundProductType !== "wealth" && fundProductType !== "metal"
       ? await findFundTransactionForEntryId(prisma, { id: entryId, householdId }).catch(() => null)
       : null;
-    const oldInvestmentAccId = existingFundTransactionForRecalc?.fundAccountId ?? ((isRedeemOrRefund ? txRecord.accountId : txRecord.toAccountId) ?? "");
-    const oldCashAccId = existingFundTransactionForRecalc?.cashAccountId ?? ((isRedeemOrRefund ? txRecord.toAccountId : txRecord.accountId) ?? "");
+    // Buy: cash account -> fund account; redeem / cash dividend / buy_failed refund: fund account -> cash account.
+    // Migrated independent fund rows keep the fund subtype on FundTransaction while TxRecord fund fields are cleared.
+    const oldFundSubtype = existingFundTransactionForRecalc?.fundSubtype ?? txRecord.fundSubtype;
+    const isOldRedeemOrRefund = oldFundSubtype === "redeem" || oldFundSubtype === "switch_out"
+      || oldFundSubtype === "dividend_cash"
+      || (oldFundSubtype === "buy_failed" && txRecord.source === "regular_invest_refund");
+    const oldInvestmentAccId = existingFundTransactionForRecalc?.fundAccountId ?? ((isOldRedeemOrRefund ? txRecord.accountId : txRecord.toAccountId) ?? "");
+    const oldCashAccId = existingFundTransactionForRecalc?.cashAccountId ?? ((isOldRedeemOrRefund ? txRecord.toAccountId : txRecord.accountId) ?? "");
     const oldFundCode = existingFundTransactionForRecalc?.fundCode ?? null;
 
     // Detect whether a new fund account was passed (via the toAccountId field).

@@ -26,6 +26,16 @@ type StatementCategoryRuleInput = {
   note?: string | null;
 };
 
+export type StatementCategoryLearningRecord = {
+  householdId?: string | null;
+  type?: string | null;
+  categoryId?: string | null;
+  categoryName?: string | null;
+  counterpartyInstitutionName?: string | null;
+  paymentChannelName?: string | null;
+  note?: string | null;
+};
+
 const LEARNABLE_TYPES = new Set(["income", "expense"]);
 const MAX_TEXT_LENGTH = 500;
 
@@ -62,6 +72,23 @@ export async function upsertStatementCategoryRuleFromTx(client: RawSqlClient, in
     categoryName,
     keyword,
     source: cleanText(input.source) || "user_category_edit",
+  });
+}
+
+export async function upsertStatementCategoryRuleFromSavedRecord(
+  client: RawSqlClient,
+  record: StatementCategoryLearningRecord,
+  source = "user_category_edit",
+) {
+  return upsertStatementCategoryRuleFromTx(client, {
+    householdId: record.householdId,
+    type: record.type,
+    categoryId: record.categoryId,
+    categoryName: record.categoryName,
+    counterpartyInstitutionName: record.counterpartyInstitutionName,
+    paymentChannelName: record.paymentChannelName,
+    note: record.note,
+    source,
   });
 }
 

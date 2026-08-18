@@ -2,7 +2,7 @@
 
 import { useCallback, useState, useEffect, useMemo, useRef, type ReactNode, type MouseEvent } from "react";
 import { Paperclip } from "lucide-react";
-import { formatDateLocal as localDateKey, toNumber } from "@/lib/date-utils";
+import { formatDateDisplay, formatDateLocal as localDateKey, toNumber } from "@/lib/date-utils";
 import { formatCurrencyMoney } from "@/lib/format";
 import { getColorSchemeFromCookie, pnlColor } from "@/lib/client/colors";
 import { getInsuranceDetailCategoryName, getInsuranceDetailNote } from "@/lib/insurance/detail-display";
@@ -32,6 +32,7 @@ import {
 import { parseImportAccountId } from "@/lib/account-import-match";
 import { formatAccountTableLabel, formatAccountTableTitle } from "@/lib/account-display";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
+import { APP_PREFS_EVENT, getDateDisplayFormatPreference, type DateDisplayFormat } from "@/lib/client/appPreferences";
 
 /* Types */
 
@@ -537,6 +538,14 @@ export function DetailViewClient({
   onDisplayRowsChange?: (rows: DetailEntry[]) => void;
 }) {
   const { t } = useI18n();
+  const [dateDisplayFormat, setDateDisplayFormat] = useState<DateDisplayFormat>("yyyy-mm-dd");
+
+  useEffect(() => {
+    const syncDateDisplayFormat = () => setDateDisplayFormat(getDateDisplayFormatPreference());
+    syncDateDisplayFormat();
+    window.addEventListener(APP_PREFS_EVENT, syncDateDisplayFormat);
+    return () => window.removeEventListener(APP_PREFS_EVENT, syncDateDisplayFormat);
+  }, []);
   const [attachmentViewEntryId, setAttachmentViewEntryId] = useState<string | null>(null);
   const resolvedEmptyText = emptyText ?? t("detail.empty");
   const resolvedAccountColumnLabel = accountColumnLabel ?? t("common.account");
@@ -1014,7 +1023,7 @@ export function DetailViewClient({
       minWidth: 78,
       filterKind: "dateRange",
       filterText: (e) => (e.date ?? "").slice(0, 10),
-      render: (e) => <span className="tabular-nums text-slate-600">{(e.date ?? "").slice(0, 10)}</span>,
+      render: (e) => <span className="tabular-nums text-slate-600">{formatDateDisplay(e.date, dateDisplayFormat)}</span>,
     },
     ...(showAccountColumn ? [{
       key: "account",
@@ -1046,7 +1055,7 @@ export function DetailViewClient({
       filterText: (e) => (e.postedAt ?? "").slice(0, 10),
       render: (e) => (
         <span className="tabular-nums text-slate-500">
-          {e.postedAt ? e.postedAt.slice(0, 10) : ""}
+          {e.postedAt ? formatDateDisplay(e.postedAt, dateDisplayFormat) : ""}
         </span>
       ),
     },
@@ -1257,7 +1266,7 @@ export function DetailViewClient({
         return <span className="block truncate text-slate-500" title={text}>{text}</span>;
       },
     },
-  ], [accountColumnDefaultHidden, accountColumnDisplayFallback, resolvedAccountColumnLabel, accountColumnMode, accountDisplayFallback, accountId, accountOptionById, detailCategoryLabel, inflowCls, investmentProductTypeByAccountId, outflowCls, relatedAccountDefaultHidden, relatedAccountTarget, renderNavigableAccountLabel, runningBalanceDefaultHidden, showAccountColumn, showRunningBalance, t]);
+  ], [accountColumnDefaultHidden, accountColumnDisplayFallback, resolvedAccountColumnLabel, accountColumnMode, accountDisplayFallback, accountId, accountOptionById, dateDisplayFormat, detailCategoryLabel, inflowCls, investmentProductTypeByAccountId, outflowCls, relatedAccountDefaultHidden, relatedAccountTarget, renderNavigableAccountLabel, runningBalanceDefaultHidden, showAccountColumn, showRunningBalance, t]);
 
   const customToolbarLeft = toolbarMode === "custom" ? (
     <div className="flex min-w-0 items-center gap-2">
@@ -1288,7 +1297,7 @@ export function DetailViewClient({
           {mobileGroups.map((group, groupIndex) => (
             <section key={`${group.date}:${group.entries[0]?.id ?? groupIndex}`}>
               <div className="sticky top-0 z-10 border-y border-slate-200 bg-slate-100/96 px-3 py-1.5 text-xs font-semibold text-slate-500 backdrop-blur">
-                {group.date}
+                {formatDateDisplay(group.date, dateDisplayFormat)}
               </div>
               <div className="divide-y divide-slate-100 bg-white">
                 {group.entries.map((entry) => {

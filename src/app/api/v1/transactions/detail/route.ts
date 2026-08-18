@@ -102,7 +102,7 @@ import {
 } from "@/lib/server/entry-business-link";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
-import { upsertStatementCategoryRuleFromTx } from "@/lib/statement/category-rules";
+import { upsertStatementCategoryRuleFromSavedRecord } from "@/lib/statement/category-rules";
 import { upsertStatementInstitutionRuleFromUserEdit } from "@/lib/statement/recognition-rules";
 
 export const runtime = "nodejs";
@@ -852,6 +852,7 @@ async function loadApiDetailRecord(entryId: string) {
     include: {
       ...entryBusinessLinkSummaryInclude,
       EntryTag: { include: { Tag: true } },
+      Attachment: { select: { id: true, name: true, mimeType: true, url: true } },
       account: { include: { Institution: { select: { name: true } } } },
       toAccount: { include: { Institution: { select: { name: true } } } },
     },
@@ -919,6 +920,7 @@ async function loadApiDetailRecord(entryId: string) {
     source: entry.source,
     ...buildEntryBusinessLinkSummary(entry),
     ...(linkedWealthTransaction ? linkedWealthDetailFields(entry, linkedWealthTransaction) : {}),
+    attachments: mapEntryAttachments(entry),
     entryTags: mapEntryTags(entry),
   };
 }
@@ -1016,6 +1018,7 @@ async function loadApiFundTransactionRecord(fundTransactionId: string) {
     source: row.source,
     businessLinkCount: validBusinessLinks.length,
     businessLinkLabels: validBusinessLinks.length > 0 ? ["基金交易"] : [],
+    attachments: primaryCashEntry?.attachments ?? [],
     entryTags: primaryCashEntry?.entryTags ?? [],
   };
 }
@@ -1167,6 +1170,17 @@ function mapEntryTags(entry: { EntryTag: Array<{ tagId: string; Tag: { name: str
   }));
 }
 
+function mapEntryAttachments(entry: {
+  Attachment?: Array<{ id: string; name: string | null; mimeType: string | null; url: string | null }> | null;
+}) {
+  return (entry.Attachment ?? []).map((attachment) => ({
+    id: attachment.id,
+    name: attachment.name || "attachment",
+    mimeType: attachment.mimeType ?? null,
+    url: attachment.url || `/api/v1/attachments/${encodeURIComponent(attachment.id)}`,
+  }));
+}
+
 function mapFundLinkCandidate(entry: {
   id: string;
   date: Date;
@@ -1277,6 +1291,7 @@ export async function GET(req: Request) {
         include: {
           ...entryBusinessLinkSummaryInclude,
           EntryTag: { include: { Tag: true } },
+          Attachment: { select: { id: true, name: true, mimeType: true, url: true } },
           account: { include: { Institution: { select: { name: true } } } },
           toAccount: { include: { Institution: { select: { name: true } } } },
           CreditCardInstallmentPlan: { select: { sourceType: true, sourceStatementMonth: true } },
@@ -1364,6 +1379,7 @@ export async function GET(req: Request) {
         source: record.source,
         ...buildEntryBusinessLinkSummary(record),
         ...(linkedWealthTransaction ? linkedWealthDetailFields(record, linkedWealthTransaction) : {}),
+        attachments: mapEntryAttachments(record),
         entryTags: mapEntryTags(record),
         linkedCandidateEntries: await getFundLinkCandidateEntries(record, hidFilter.householdId),
       };
@@ -1467,6 +1483,7 @@ export async function GET(req: Request) {
           include: {
             ...entryBusinessLinkSummaryInclude,
             EntryTag: { include: { Tag: true } },
+            Attachment: { select: { id: true, name: true, mimeType: true, url: true } },
             account: { include: { Institution: { select: { name: true } } } },
             toAccount: { include: { Institution: { select: { name: true } } } },
             CreditCardInstallmentPlan: { select: { sourceType: true, sourceStatementMonth: true } },
@@ -1565,6 +1582,7 @@ export async function GET(req: Request) {
       source: e.source,
       ...buildEntryBusinessLinkSummary(e),
       ...(linkedWealth ? linkedWealthDetailFields(e, linkedWealth) : {}),
+      attachments: mapEntryAttachments(e),
       entryTags: mapEntryTags(e),
     });
     });
@@ -2650,6 +2668,7 @@ export async function POST(req: Request) {
         include: {
           ...entryBusinessLinkSummaryInclude,
           EntryTag: { include: { Tag: true } },
+          Attachment: { select: { id: true, name: true, mimeType: true, url: true } },
           account: { include: { Institution: { select: { name: true } } } },
           toAccount: { include: { Institution: { select: { name: true } } } },
         },
@@ -2697,6 +2716,7 @@ export async function POST(req: Request) {
             fundArrivalAmount: created.fundArrivalAmount ? toNumber(created.fundArrivalAmount) : null,
             source: created.source,
             ...buildEntryBusinessLinkSummary(created),
+            attachments: mapEntryAttachments(created),
             entryTags: mapEntryTags(created),
           },
         });
@@ -2788,16 +2808,6 @@ export async function PUT(req: Request) {
     let investmentAccId: string | undefined;
     let advanceAccountId: string | undefined;
     let changedInvestment = false;
-    let pendingStatementCategoryRuleInput: {
-      householdId: string;
-      type: string;
-      categoryId: string;
-      categoryName: string;
-      counterpartyInstitutionName?: string | null;
-      paymentChannelName?: string | null;
-      source: string;
-      note?: string | null;
-    } | null = null;
     let pendingStatementInstitutionRuleInput: {
       householdId: string;
       institutionId: string;
@@ -3508,18 +3518,6 @@ return;
           note: note || null,
         },
       });
-      if ((body.categoryId !== undefined || body.categoryName !== undefined) && cat && (type === "income" || type === "expense")) {
-        pendingStatementCategoryRuleInput = {
-          householdId,
-          type,
-          categoryId: cat.id,
-          categoryName: cat.name,
-          counterpartyInstitutionName: counterpartyInstitution?.name ?? entry.counterpartyInstitutionName,
-          paymentChannelName: entry.paymentChannelName,
-          source: "user_category_edit",
-          note: note || entry.note,
-        };
-      }
       if (body.counterpartyInstitutionId !== undefined && counterpartyInstitution && (type === "income" || type === "expense")) {
         const keyword = note || entry.note || "";
         if (keyword) {
@@ -3535,8 +3533,22 @@ return;
       }
     }, TX_EDIT_TRANSACTION_OPTIONS);
 
-    if (pendingStatementCategoryRuleInput) {
-      await upsertStatementCategoryRuleFromTx(prisma, pendingStatementCategoryRuleInput);
+    if ((body.categoryId !== undefined || body.categoryName !== undefined) && (type === "income" || type === "expense")) {
+      const savedForLearning = await prisma.txRecord.findUnique({
+        where: { id: entryId },
+        select: {
+          householdId: true,
+          type: true,
+          categoryId: true,
+          categoryName: true,
+          counterpartyInstitutionName: true,
+          paymentChannelName: true,
+          note: true,
+        },
+      });
+      if (savedForLearning) {
+        await upsertStatementCategoryRuleFromSavedRecord(prisma, savedForLearning, "user_category_edit");
+      }
     }
     if (pendingStatementInstitutionRuleInput) {
       await upsertStatementInstitutionRuleFromUserEdit(prisma, pendingStatementInstitutionRuleInput);
@@ -3588,6 +3600,7 @@ return;
       include: {
         ...entryBusinessLinkSummaryInclude,
         EntryTag: { include: { Tag: true } },
+        Attachment: { select: { id: true, name: true, mimeType: true, url: true } },
         account: { include: { Institution: { select: { name: true } } } },
         toAccount: { include: { Institution: { select: { name: true } } } },
       },
@@ -3649,6 +3662,7 @@ return;
         fundArrivalAmount: updated.fundArrivalAmount ? toNumber(updated.fundArrivalAmount) : null,
         source: updated.source,
         ...buildEntryBusinessLinkSummary(updated),
+        attachments: mapEntryAttachments(updated),
         entryTags: mapEntryTags(updated),
       },
     });

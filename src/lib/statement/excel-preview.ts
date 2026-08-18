@@ -11,6 +11,7 @@ import {
   matchStatementHeaderProfile,
   type StatementImportField,
 } from "@/lib/statement/header-catalog";
+import { normalizeAlipayWorkbookRows } from "@/lib/statement/alipay-template";
 import {
   alignStatementIncomeRefunds,
   enrichKnownStatementMerchantForImport,
@@ -271,10 +272,10 @@ export function parseStatementTemplateRows(
     const remark = String(row[remarkIndex] ?? "").trim() || tags || rowText(row);
     const postedDate = postedIndex >= 0 ? normalizeDate(row[postedIndex] ?? "") : undefined;
     const sourceText = `${typeText} ${category} ${institution} ${remark} ${rowText(row)}`;
-    const isRepayment = /转账|transfer/.test(typeText) || isCreditCardRepaymentLikeText(sourceText);
+    const isRepayment = /转账|transfer|振替/.test(typeText) || isCreditCardRepaymentLikeText(sourceText);
     const isRefund = isExpenseRefundLikeText(sourceText);
     const isSignedInflow = signedDirection === "in";
-    const isIncome = !isRefund && (/income|收入/.test(typeText) || isSignedInflow);
+    const isIncome = !isRefund && (/income|收入|収入/.test(typeText) || isSignedInflow);
 
     if (isRepayment) {
       const accountIsCurrent = normalizeHeader(accountValue) === normalizeHeader(defaultAccountName);
@@ -353,7 +354,8 @@ export async function readStatementWorkbookRowsAndText(
     }).map((row) => row.map(formatDateCell).map((cell) => cell.trim()));
     return { sheetName, rows };
   });
-  const rows = mergeStatementWorkbookRows(sheetRows, fieldHeaders);
+  const alipayRows = normalizeAlipayWorkbookRows(sheetRows);
+  const rows = alipayRows?.rows ?? mergeStatementWorkbookRows(sheetRows, fieldHeaders);
   const text = sheetRows
     .flatMap((sheet) => sheet.rows.filter((row) => row.some(Boolean)))
     .map((row) => row.join("\t"))

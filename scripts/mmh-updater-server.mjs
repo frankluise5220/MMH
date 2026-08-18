@@ -40,6 +40,33 @@ let task = {
   updatedAt: null,
 };
 
+// Host-side workdir of the updater container, resolved at startup so compose
+// relative bind mounts (e.g. ./data) are evaluated against real host paths.
+// currentUpdaterImage is the image the updater container itself runs, used as
+// the helper container image for host-path compose execution.
+let hostWorkdir = "";
+let currentUpdaterImage = "";
+
+async function resolveHostWorkdir() {
+  try {
+    const source = await captureDocker([
+      "inspect",
+      "mmh-updater",
+      "--format",
+      "{{range .Mounts}}{{if eq .Destination \"/workspace\"}}{{.Source}}{{end}}{{end}}",
+    ]);
+    if (source && source.startsWith("/")) hostWorkdir = source;
+  } catch {
+    hostWorkdir = "";
+  }
+  try {
+    const image = await captureDocker(["inspect", "mmh-updater", "--format", "{{.Config.Image}}"]);
+    if (image) currentUpdaterImage = image;
+  } catch {
+    currentUpdaterImage = "";
+  }
+}
+
 async function persistTask() {
   await writeFile(taskStateFile, JSON.stringify(task), "utf8");
 }
@@ -106,6 +133,37 @@ function run(command, step, options = {}) {
 }
 
 function composeCommand(args) {
+  // The updater container resolves compose relative paths (e.g. ./data) against
+  // its own working dir. When the container runs in /workspace mode, that yields
+  // /workspace/data, which does not exist on the host, so bind mounts fail.
+  // Detect the host workdir and run compose through a helper container mounted
+  // at the host path instead, so relative bind mounts resolve to real host paths.
+  if (hostWorkdir && currentUpdaterImage && composeFile.startsWith(`${workdir}/`)) {
+    const relativeCompose = composeFile.slice(workdir.length + 1) || "docker-compose.yml";
+    const hostComposeFile = `${hostWorkdir}/${relativeCompose}`;
+    const inner = [
+      `mkdir -p ${JSON.stringify(`${hostWorkdir}/data`)};`,
+      "docker compose",
+      `-p ${composeProject}`,
+      `-f ${JSON.stringify(hostComposeFile)}`,
+      args,
+    ].join(" ");
+    return [
+      "docker run",
+      "--rm",
+      "-v",
+      "/var/run/docker.sock:/var/run/docker.sock",
+      "-v",
+      `${JSON.stringify(hostWorkdir)}:${JSON.stringify(hostWorkdir)}`,
+      "-w",
+      JSON.stringify(hostWorkdir),
+      "--entrypoint",
+      "sh",
+      currentUpdaterImage,
+      "-lc",
+      JSON.stringify(inner),
+    ].join(" ");
+  }
   return `docker compose -p ${composeProject} -f "${composeFile}" ${args}`;
 }
 
@@ -473,19 +531,30 @@ function inspectImageSource(source, timeoutMs = 8000) {
 }
 
 async function scheduleUpdaterRecreate(updaterImage) {
-  const hostWorkdir = await captureDocker([
+  const workspaceSource = await captureDocker([
     "inspect",
     "mmh-updater",
     "--format",
     "{{range .Mounts}}{{if eq .Destination \"/workspace\"}}{{.Source}}{{end}}{{end}}",
   ]);
-  if (!hostWorkdir || !hostWorkdir.startsWith("/")) {
+  // The updater may run in host-path mode (no /workspace mount). Fall back to
+  // a mount whose destination equals the configured workdir.
+  const hostWorkdirForRecreate =
+    workspaceSource && workspaceSource.startsWith("/")
+      ? workspaceSource
+      : await captureDocker([
+          "inspect",
+          "mmh-updater",
+          "--format",
+          `{{range .Mounts}}{{if eq .Destination ${JSON.stringify(workdir)}}}{{.Source}}{{end}}{{end}}`,
+        ]).catch(() => "");
+  if (!hostWorkdirForRecreate || !hostWorkdirForRecreate.startsWith("/")) {
     throw new Error("无法确定更新目录在宿主机上的路径");
   }
   const composeRelativePath = composeFile.startsWith(`${workdir}/`)
     ? composeFile.slice(workdir.length + 1)
     : "docker-compose.yml";
-  const hostComposeFile = `${hostWorkdir}/${composeRelativePath}`;
+  const hostComposeFile = `${hostWorkdirForRecreate}/${composeRelativePath}`;
 
   return new Promise((resolve, reject) => {
     if (!updaterImage) {
@@ -508,9 +577,9 @@ async function scheduleUpdaterRecreate(updaterImage) {
       "-v",
       "/var/run/docker.sock:/var/run/docker.sock",
       "-v",
-      `${hostWorkdir}:${hostWorkdir}`,
+      `${hostWorkdirForRecreate}:${hostWorkdirForRecreate}`,
       "-w",
-      hostWorkdir,
+      hostWorkdirForRecreate,
       "--entrypoint",
       "sh",
       updaterImage,
@@ -565,6 +634,7 @@ async function startUpdate() {
 
   void (async () => {
     try {
+      await resolveHostWorkdir();
       await run(syncDeployFilesCommand(), "同步部署文件", { allowFailure: true });
       const selectedImages = await chooseImageSource();
       await run(composeCommand("pull updater app"), "拉取应用镜像");

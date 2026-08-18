@@ -43,6 +43,18 @@ function fnosDownloadUrls(version) {
   };
 }
 
+function fnosFndepotPackages(version) {
+  const urls = fnosDownloadUrls(version);
+  return {
+    x86: {
+      download_url: urls.x86_64,
+    },
+    arm: {
+      download_url: urls.arm64,
+    },
+  };
+}
+
 function updatePackageJson(version) {
   const file = path.join(root, "package.json");
   const pkg = readJson(file);
@@ -84,19 +96,21 @@ function updateFnosRepositoryJson(version, file, rootKey, releaseNotes) {
 function updateFndepotFnpackJson(version, releaseNotes) {
   const file = path.join(root, "deploy", "fnos", "repository", "fnpack.json");
   const payload = readJson(file);
-  const app = payload.mmh;
+  const app = payload.apps?.mmh;
   if (!app) return;
-  app.version = version;
-  app.platform = "x86";
-  app.platforms = ["x86", "arm"];
-  app.download_url = fnosDownloadUrls(version).x86_64;
-  app.download_urls = fnosDownloadUrls(version);
-  if (typeof app.icon === "string") {
-    app.icon = app.icon.replace(/([?&]v=)[^&]+/, `$1${version}`);
+  app.platform = ["x86", "arm"];
+  if (typeof app.icon_url === "string") {
+    app.icon_url = app.icon_url.replace(/([?&]v=)[^&]+/, `$1${version}`);
   }
-  if (releaseNotes) {
-    app.changelog = releaseNotes;
-  }
+  const releases = app.releases && typeof app.releases === "object" ? app.releases : {};
+  const current = releases[version] && typeof releases[version] === "object" ? releases[version] : {};
+  releases[version] = {
+    ...current,
+    changelog: releaseNotes || current.changelog || "",
+    os_min_version: current.os_min_version || "0.9.0",
+    packages: fnosFndepotPackages(version),
+  };
+  app.releases = releases;
   writeJson(file, payload);
 }
 

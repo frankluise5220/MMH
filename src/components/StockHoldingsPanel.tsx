@@ -12,6 +12,7 @@ import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 import { StockFeeRuleSettingsButton } from "@/components/StockFeeRuleSettingsButton";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/components/BatchReplacePopoverButton";
+import { ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewExcelImportMenuButton";
 
 type StockPosition = {
   stockCode: string;
@@ -31,7 +32,9 @@ type StockPosition = {
 type StockTransaction = {
   id: string;
   stockAccountId?: string;
+  stockAccountName?: string | null;
   cashAccountId?: string | null;
+  cashAccountName?: string | null;
   securityId?: string | null;
   market?: string | null;
   stockCode: string;
@@ -212,7 +215,6 @@ export function StockHoldingsPanel({
   }, [selectedKey, selectedPosition]);
 
   const floatingPnL = marketValue - cost;
-  const assetValue = marketValue + cashBalance;
 
   const loadTransactions = useCallback(async (position: StockPosition) => {
     const market = position.market ?? "";
@@ -369,6 +371,68 @@ export function StockHoldingsPanel({
     dispatchFinanceDataChanged({ reason: "stock-transaction-batch-update", accountIds: [accountId] });
     if (selectedPosition) void loadTransactions(selectedPosition);
     return t("stockPanel.updatedCount", { count: data.data?.updatedCount ?? ids.length });
+  }
+
+  async function exportStockTransactions() {
+    setRefreshMessage(t("viewImport.exporting"));
+    try {
+      const res = await fetch(`/api/v1/stocks/transactions?accountId=${encodeURIComponent(accountId)}&limit=500`, { cache: "no-store" });
+      const data = await res.json().catch(() => null) as StockTransactionsResponse | null;
+      if (!res.ok || !data?.ok) throw new Error(data?.error ?? t("stockPanel.error.transactionsLoadFailed"));
+      const rows = data.data?.transactions ?? [];
+      if (rows.length === 0) throw new Error(t("viewImport.noRowsInRange"));
+      await exportRowsToXlsx([
+        [
+          t("detail.column.date"),
+          t("stockTx.settleDateLabel"),
+          t("depositShell.colAction"),
+          t("viewImport.stockAccount"),
+          t("viewImport.cashAccount"),
+          t("reports.stock.market"),
+          t("stockTx.stockCodeLabel"),
+          t("stockTx.stockNameLabel"),
+          t("stockHoldingReport.colQuantity"),
+          t("stockPanel.colPrice"),
+          t("stockPanel.colGrossAmount"),
+          t("stockTx.netAmountLabel"),
+          t("stockPanel.colFee"),
+          t("stockFee.feeType.commission"),
+          t("stockFee.feeType.stamp_tax"),
+          t("stockFee.feeType.transfer_fee"),
+          t("stockFee.feeType.exchange_fee"),
+          t("stockFee.feeType.regulatory_fee"),
+          t("stockFee.feeType.other"),
+          t("stockPanel.batchField.brokerTradeId"),
+          t("detail.column.remark"),
+        ],
+        ...rows.map((tx) => [
+          tx.tradeDate,
+          tx.settleDate ?? "",
+          actionLabel(t, tx.action),
+          tx.stockAccountName ?? accountLabel,
+          tx.cashAccountName ?? "",
+          tx.market ?? "",
+          tx.stockCode,
+          tx.stockName ?? "",
+          tx.quantity ?? "",
+          tx.price ?? "",
+          tx.grossAmount ?? "",
+          tx.netAmount ?? "",
+          totalFee(tx),
+          tx.commission ?? "",
+          tx.stampTax ?? "",
+          tx.transferFee ?? "",
+          tx.exchangeFee ?? "",
+          tx.regulatoryFee ?? "",
+          tx.otherFee ?? "",
+          tx.brokerTradeId ?? "",
+          tx.note ?? "",
+        ]),
+      ], `${t("viewImport.sheetStockTransactions")}_${accountLabel}_${new Date().toISOString().slice(0, 10)}.xlsx`, t("viewImport.sheetStockTransactions"));
+      setRefreshMessage(t("viewImport.exportedCount", { count: rows.length }));
+    } catch (error) {
+      setRefreshMessage(error instanceof Error ? error.message : String(error));
+    }
   }
 
   const detailTotalPages = Math.max(1, Math.ceil(detailTableRowCount / detailPageSize));
@@ -722,68 +786,61 @@ export function StockHoldingsPanel({
         stackOnMobile
       >
       <div className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
-        <div className="shrink-0 border-b border-slate-200 px-4 py-3">
-          <div className="flex flex-wrap items-end justify-between gap-3">
-            <div>
-              <div className="text-xs text-slate-500">{t("stockPanel.stockAccountTitle")}</div>
-              <div className="mt-1 flex flex-wrap items-center gap-2">
-                <h2 className="text-base font-semibold text-slate-900">{accountLabel}</h2>
-                <StockFeeRuleSettingsButton accountId={accountId} accountLabel={accountLabel} currency={currency} />
-                <button
-                  type="button"
-                  onClick={() => void refreshClosingPrices()}
-                  disabled={refreshingPrice || positions.length === 0}
-                  className="secondary-button h-9 w-9 justify-center px-0 text-xs disabled:cursor-not-allowed disabled:opacity-50"
-                  title={t("stockPanel.refreshPriceTitle")}
-                  aria-label={t("stockPanel.refreshPriceTitle")}
-                >
-                  <RefreshCcw className={`h-4 w-4 ${refreshingPrice ? "animate-spin" : ""}`} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    window.dispatchEvent(new CustomEvent("mmh:create-transaction:open", {
-                      detail: {
-                        requestId: `stock-transfer-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-                        source: "launcher",
-                        item: { type: "transfer", remark: "银证转账" },
-                        lockedType: "transfer",
-                        stockTransferMode: true,
-                        stockCashAccountId: stockCashAccountId ?? "",
-                        stockCashAccountName: stockCashAccountName || "",
-                        defaultFromAccountId: "",
-                        defaultToAccountId: stockCashAccountId ?? "",
-                      },
-                    }));
-                  }}
-                  className="secondary-button h-9 px-2.5 text-xs"
-                  title={t("stockPanel.transferTitle")}
-                >
-                  {t("stockPanel.transfer")}
-                </button>
-                {refreshMessage ? <span className="text-[11px] text-slate-500">{refreshMessage}</span> : null}
-              </div>
+        <div className="panel-header shrink-0 gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-left">
+            <div className="flex min-w-0 items-center gap-1 text-sm font-semibold text-slate-800">
+              <span className="flex h-6 min-w-0 shrink items-center truncate" title={accountLabel}>{accountLabel}</span>
+              <span className="ml-2 flex h-6 shrink-0 items-center text-xs font-normal text-slate-400">{t("stockPanel.stockAccountTitle")}</span>
+              <span className="flex h-6 shrink-0 items-center text-xs text-slate-500">
+                <span className="ml-2">{t("stockPanel.cashBalanceLabel")}</span>
+                <span className="ml-2 font-semibold tabular-nums text-slate-800">{formatCurrencyMoney(cashBalance, currency)}</span>
+              </span>
             </div>
-            <div className="grid grid-cols-4 gap-6 text-right text-xs">
-              <div>
-                <div className="text-slate-500">{t("stockPanel.cashBalance")}</div>
-                <div className="mt-1 text-sm font-semibold tabular-nums text-slate-900">{formatCurrencyMoney(cashBalance, currency)}</div>
-              </div>
-              <div>
-                <div className="text-slate-500">{t("stockHoldingReport.summary.marketValue")}</div>
-                <div className="mt-1 text-sm font-semibold tabular-nums text-slate-900">{formatCurrencyMoney(marketValue, currency)}</div>
-              </div>
-              <div>
-                <div className="text-slate-500">{t("stockPanel.totalAssets")}</div>
-                <div className="mt-1 text-sm font-semibold tabular-nums text-slate-900">{formatCurrencyMoney(assetValue, currency)}</div>
-              </div>
-              <div>
-                <div className="text-slate-500">{t("stockHoldingReport.summary.floatingPnL")}</div>
-                <div className={`mt-1 text-sm font-semibold tabular-nums ${pnlClass(floatingPnL, isRedUp)}`}>
-                  {formatCurrencyMoney(floatingPnL, currency)}
-                </div>
-              </div>
-            </div>
+          </div>
+          <div className="flex min-w-0 max-w-[66vw] items-center gap-1 overflow-x-auto whitespace-nowrap pb-0.5 text-xs md:max-w-none md:overflow-visible [&>*]:shrink-0">
+            <ViewExcelImportMenuButton
+              kind="stock"
+              accountId={accountId}
+              stockAccountName={accountLabel}
+              exportItems={[{
+                label: t("viewImport.exportExcel"),
+                onClick: () => void exportStockTransactions(),
+              }]}
+            />
+            <StockFeeRuleSettingsButton accountId={accountId} accountLabel={accountLabel} currency={currency} />
+            <button
+              type="button"
+              onClick={() => void refreshClosingPrices()}
+              disabled={refreshingPrice || positions.length === 0}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-500 transition-colors hover:bg-blue-50 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
+              title={t("stockPanel.refreshPriceTitle")}
+              aria-label={t("stockPanel.refreshPriceTitle")}
+            >
+              <RefreshCcw className={`h-3.5 w-3.5 ${refreshingPrice ? "animate-spin" : ""}`} />
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                window.dispatchEvent(new CustomEvent("mmh:create-transaction:open", {
+                  detail: {
+                    requestId: `stock-transfer-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+                    source: "launcher",
+                    item: { type: "transfer", remark: t("stockPanel.transfer") },
+                    lockedType: "transfer",
+                    stockTransferMode: true,
+                    stockCashAccountId: stockCashAccountId ?? "",
+                    stockCashAccountName: stockCashAccountName || "",
+                    defaultFromAccountId: "",
+                    defaultToAccountId: stockCashAccountId ?? "",
+                  },
+                }));
+              }}
+              className="h-7 rounded border border-slate-200 bg-white px-2.5 text-xs text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+              title={t("stockPanel.transferTitle")}
+            >
+              {t("stockPanel.transfer")}
+            </button>
+            {refreshMessage ? <span className="px-1 text-[10px] text-slate-500">{refreshMessage}</span> : null}
           </div>
         </div>
 

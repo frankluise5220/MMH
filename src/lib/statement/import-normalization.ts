@@ -55,6 +55,59 @@ const LEARNING_KEYWORD_MAX_LENGTH = 120;
 const LEARNING_PAYMENT_PREFIX_PATTERN =
   /^(?:支付宝付款|支付宝支付|支付宝|微信支付|微信|财付通|云闪付|银联商务|银联|京东支付|京东|拼多多支付|拼多多|美团支付|抖音支付|翼支付|网银在线|快捷支付|Apple Pay|APPLE PAY)[\s\-—–_:：/\\|]+/i;
 const LEARNING_COMPANY_SUFFIXES = ["有限责任公司", "股份有限公司", "集团有限公司", "有限公司"];
+const LEARNING_NOISE_TERMS = [
+  "\u7ecf\u8425\u7801\u4ea4\u6613",
+  "\u7ecf\u8425\u7801",
+  "\u4ea4\u6613",
+  "\u6d88\u8d39",
+  "\u4ed8\u6b3e",
+  "\u652f\u4ed8",
+  "\u6536\u6b3e",
+  "\u5165\u8d26",
+  "\u8f6c\u8d26",
+  "\u6263\u6b3e",
+  "\u9000\u6b3e",
+  "\u9000\u8d27",
+  "\u51b2\u6b63",
+  "\u64a4\u9500",
+  "\u8d26\u5355",
+  "\u660e\u7ec6",
+  "\u5907\u6ce8",
+  "\u652f\u4ed8\u5b9d",
+  "\u5fae\u4fe1\u652f\u4ed8",
+  "\u5fae\u4fe1",
+  "\u8d22\u4ed8\u901a",
+  "\u62fc\u591a\u591a",
+  "\u4e91\u95ea\u4ed8",
+  "\u94f6\u8054",
+  "\u4eac\u4e1c",
+  "\u7f8e\u56e2",
+  "\u6296\u97f3\u652f\u4ed8",
+  "\u7ffc\u652f\u4ed8",
+  "\u7f51\u94f6\u5728\u7ebf",
+  "Apple Pay",
+  "APPLE PAY",
+] as const;
+const LEARNING_GENERIC_PREFIXES = new Set([
+  "\u8d23\u4efb",
+  "\u79d1\u6280",
+  "\u4fe1\u606f",
+  "\u7f51\u7edc",
+  "\u5546\u8d38",
+  "\u8d38\u6613",
+  "\u5b9e\u4e1a",
+  "\u96c6\u56e2",
+  "\u7535\u5b50",
+  "\u7269\u6d41",
+  "\u670d\u52a1",
+  "\u6295\u8d44",
+  "\u53d1\u5c55",
+  "\u91d1\u878d",
+  "\u6587\u5316",
+  "\u4f20\u5a92",
+  "\u54a8\u8be2",
+  "\u56fd\u9645",
+]);
 const LEARNING_TRAILING_NOISE_PATTERNS = [
   /可用额度[\s\S]*$/i,
   /可用余额[\s\S]*$/i,
@@ -130,6 +183,23 @@ function stripLearningTrailingNoise(value: string) {
   return text;
 }
 
+function stripLearningNoiseTerms(value: string) {
+  let text = value;
+  for (const term of LEARNING_NOISE_TERMS) {
+    text = text.replace(new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), " ");
+  }
+  return tidyLearningKeyword(text);
+}
+
+function isGenericLearningKeyword(value: string) {
+  const text = tidyLearningKeyword(value);
+  if (!text) return true;
+  if (LEARNING_NOISE_TERMS.includes(text as (typeof LEARNING_NOISE_TERMS)[number])) return true;
+  if (LEARNING_COMPANY_SUFFIXES.includes(text)) return true;
+  if (LEARNING_GENERIC_PREFIXES.has(text)) return true;
+  return false;
+}
+
 function tidyLearningKeyword(value: string) {
   return value
     .replace(/\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}(?:日)?/g, " ")
@@ -155,8 +225,9 @@ export function extractStatementLearningKeyword(value?: string | null) {
   text = stripLearningPaymentPrefix(text);
   text = truncateBeforeCompanySuffix(text);
   text = stripLearningTrailingNoise(text);
-  text = tidyLearningKeyword(stripLearningPaymentPrefix(text));
+  text = stripLearningNoiseTerms(tidyLearningKeyword(stripLearningPaymentPrefix(text)));
 
+  if (isGenericLearningKeyword(text)) return "";
   const normalizedForMatch = normalizeStatementRecognitionText(text);
   const normalizedKeyword = normalizeStatementKeywordText(text);
   if (!text || (normalizedForMatch.length < 2 && normalizedKeyword.length < 2)) return "";
@@ -233,7 +304,7 @@ export function enrichKnownStatementMerchantForImport<T extends StatementImportI
     ...item,
     category: shouldCarryCategory
       ? preferMerchantRule
-        ? matchedCategory ?? existingCategory ?? item.category
+        ? existingCategory ?? matchedCategory ?? item.category
         : existingCategory || matchedCategory || item.category
       : undefined,
     institution: preferMerchantRule ? matchedInstitution ?? item.institution : cleanOptionalText(item.institution) || matchedInstitution || matchedCounterparty || item.institution,
@@ -243,12 +314,12 @@ export function enrichKnownStatementMerchantForImport<T extends StatementImportI
 }
 
 function refundPairMatchKey(item: StatementImportItemLike) {
-  const source = [
+  const structuredSource = [
     cleanOptionalText(item.remark),
     cleanOptionalText(item.counterparty),
     cleanOptionalText(item.institution),
-    cleanOptionalText(item.rawText),
   ].filter(Boolean).join(" ");
+  const source = structuredSource || cleanOptionalText(item.rawText) || "";
   const normalized = normalizeStatementRecognitionText(source)
     .replace(/收入|支出|存入|转入|转出/g, "")
     .trim();
@@ -275,9 +346,10 @@ export function alignStatementIncomeRefunds<T extends StatementImportItemLike>(i
   if (expenseCandidates.length === 0) return items;
 
   return items.map((item) => {
-    if (item.type !== "income") return item;
     const inflow = positiveAmount(item.inflow ?? item.amount);
-    if (inflow <= 0 || positiveAmount(item.outflow) > 0 || shouldKeepAsIncome(item)) return item;
+    if (item.type !== "income" && item.type !== "expense") return item;
+    if (inflow <= 0 || positiveAmount(item.outflow) > 0) return item;
+    if (item.type === "income" && shouldKeepAsIncome(item)) return item;
     const key = refundPairMatchKey(item);
     if (!key) return item;
     const matchedExpense = expenseCandidates.find((candidate) => {
@@ -286,6 +358,14 @@ export function alignStatementIncomeRefunds<T extends StatementImportItemLike>(i
       return inflow <= candidate.amount;
     })?.item;
     if (!matchedExpense) return item;
+    if (item.type === "expense") {
+      return {
+        ...item,
+        category: item.category || matchedExpense.category,
+        counterparty: item.counterparty || matchedExpense.counterparty,
+        institution: item.institution || matchedExpense.institution,
+      } as T;
+    }
     return {
       ...item,
       type: "expense",
@@ -389,12 +469,14 @@ export function alignStatementCategoriesToLedger<T extends StatementImportItemLi
   categories: StatementCategoryOption[],
   historicalSamples: StatementHistoricalCategorySample[] = [],
 ) {
-  if (categories.length === 0) return items;
   return items.map((item) => {
+    if (item.type !== "income" && item.type !== "expense") return item;
     const matchedCategoryName = matchExistingCategoryName(item, categories, historicalSamples);
     return {
       ...item,
-      category: matchedCategoryName ?? cleanOptionalText(item.category) ?? item.category,
+      // Merchant inference may emit broad labels that do not exist in the ledger.
+      // Only expose category names that resolve to the current category list.
+      category: matchedCategoryName,
     } as T;
   });
 }

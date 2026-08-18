@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronDown, Download, FileSpreadsheet, MailSearch, Upload } from "lucide-react";
 import { CreditBillMailImportDialog } from "@/components/CreditBillMailImportButton";
@@ -13,8 +13,11 @@ import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 import {
   buildStatementImportFieldHeaders,
-  type StatementFieldRecognitionSample,
 } from "@/lib/statement/header-catalog";
+import {
+  alignStatementRecognitionToLedger,
+  type StatementHistoricalCategorySample,
+} from "@/lib/statement/import-normalization";
 import {
   hasImportableStatementRows,
   parseStatementExcelFile,
@@ -63,6 +66,11 @@ type ViewExcelImportMenuButtonProps =
       fundAccountName: string;
       fundCode?: string;
       fundName?: string;
+    } & ViewExcelImportMenuButtonBaseProps)
+  | ({
+      kind: "stock";
+      accountId: string;
+      stockAccountName: string;
     } & ViewExcelImportMenuButtonBaseProps);
 
 type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
@@ -77,76 +85,171 @@ type TemplateSpec = {
   notes: string[][];
 };
 
-const NORMAL_HEADERS = ["日期", "入账日期", "收支大类", "流出", "流入", "账户", "对向账户", "分类", "收支机构", "标签", "备注"];
-const FUND_HEADERS = ["date", "fundSubtype", "source", "cashAccount", "fundAccount", "fundCode", "fundName", "amount", "units", "nav", "fee", "confirmDate", "arrivalDate", "remark"];
+const NORMAL_HEADER_KEYS = [
+  "detail.column.date",
+  "detail.column.postedAt",
+  "viewImport.activityType",
+  "detail.column.outflow",
+  "detail.column.inflow",
+  "viewImport.account",
+  "viewImport.counterAccount",
+  "detail.column.category",
+  "detail.column.counterparty",
+  "detail.column.tags",
+  "detail.column.remark",
+] as const;
+const FUND_HEADER_KEYS = [
+  "detail.column.date",
+  "viewImport.fundSubtype",
+  "viewImport.source",
+  "viewImport.cashAccount",
+  "viewImport.fundAccount",
+  "viewImport.fundCode",
+  "viewImport.fundName",
+  "viewImport.amount",
+  "viewImport.units",
+  "viewImport.nav",
+  "viewImport.fee",
+  "viewImport.navDate",
+  "detail.column.postedAt",
+  "detail.column.remark",
+] as const;
+const STOCK_HEADER_KEYS = [
+  "detail.column.date",
+  "stockTx.settleDateLabel",
+  "depositShell.colAction",
+  "reports.stock.market",
+  "stockTx.stockCodeLabel",
+  "stockTx.stockNameLabel",
+  "stockHoldingReport.colQuantity",
+  "stockPanel.colPrice",
+  "stockPanel.colGrossAmount",
+  "stockTx.netAmountLabel",
+  "viewImport.bankAccount",
+  "stockPanel.colFee",
+  "stockFee.feeType.commission",
+  "stockFee.feeType.stamp_tax",
+  "stockFee.feeType.transfer_fee",
+  "stockFee.feeType.exchange_fee",
+  "stockFee.feeType.regulatory_fee",
+  "stockFee.feeType.other",
+  "stockPanel.batchField.brokerTradeId",
+  "detail.column.remark",
+] as const;
+
+type StockImportItem = {
+  tradeDate: string;
+  settleDate?: string | null;
+  action: string;
+  market?: string;
+  stockCode: string;
+  stockName?: string;
+  quantity?: number | null;
+  price?: number | null;
+  grossAmount?: number | null;
+  netAmount?: number | null;
+  bankAccount?: string;
+  fee?: number | null;
+  commission?: number | null;
+  stampTax?: number | null;
+  transferFee?: number | null;
+  exchangeFee?: number | null;
+  regulatoryFee?: number | null;
+  otherFee?: number | null;
+  brokerTradeId?: string | null;
+  note?: string | null;
+};
+
+type ImportCategoryOption = {
+  name: string;
+  type: string;
+};
+
+function localizedHeaders(keys: readonly string[], t: TranslateFn) {
+  return keys.map((key) => t(key));
+}
 
 function safeFileNamePart(value: string, fallback: string) {
   return value.replace(/[\\/:*?"<>|]+/g, "_").trim() || fallback;
 }
 
 function templateFor(props: ViewExcelImportMenuButtonProps, t: TranslateFn): TemplateSpec {
+  if (props.kind === "stock") {
+    const stockAccountName = props.stockAccountName || t("stockPanel.stockAccountTitle");
+    return {
+      filename: `${t("viewImport.stockTemplateFile", { name: safeFileNamePart(stockAccountName, t("viewImport.import")) })}.xlsx`,
+      sheetName: t("viewImport.sheetStockTransactions"),
+      noteSheetName: t("viewImport.sheetNotes"),
+      headers: localizedHeaders(STOCK_HEADER_KEYS, t),
+      rows: [
+        ["2026-06-08", "2026-06-08", t("stockPanel.action.buy"), "CN", "600519", "", "100", "1580.00", "158000.00", "", "", "5.00", "3.00", "", "1.00", "0.50", "0.50", "", "T20260608001", t("viewImport.sampleRemarkStockBuy")],
+        ["2026-06-20", "2026-06-20", t("stockPanel.action.sell"), "CN", "600519", "", "50", "1620.00", "81000.00", "80990.00", "", "10.00", "3.00", "", "1.00", "0.50", "0.50", "5.00", "T20260620001", t("viewImport.sampleRemarkStockSell")],
+        ["2026-06-25", "2026-06-25", t("viewImport.stockActionBankTransfer"), "", "", "", "", "", "10000.00", "", t("viewImport.sampleAccountDebit"), "", "", "", "", "", "", "", "T20260625001", t("viewImport.sampleRemarkStockTransferIn")],
+        ["2026-06-30", "2026-06-30", t("stockPanel.action.dividend"), "CN", "600519", "", "", "", "300.00", "300.00", "", "", "", "", "", "", "", "", "T20260630001", t("viewImport.sampleRemarkStockDividend")],
+      ],
+      notes: [
+        [t("viewImport.notesIntroLabel"), t("viewImport.notesIntroStock")],
+        [t("viewImport.notesRecognitionLabel"), t("viewImport.notesRecognitionStock")],
+        [t("detail.column.date"), t("viewImport.notesDate")],
+        [t("depositShell.colAction"), t("viewImport.notesStockAction")],
+        [t("reports.stock.market"), t("viewImport.notesStockMarket")],
+        [t("stockTx.stockCodeLabel"), t("viewImport.notesStockCode")],
+        [t("stockHoldingReport.colQuantity"), t("viewImport.notesStockQuantity")],
+        [t("stockPanel.colGrossAmount"), t("viewImport.notesStockAmount")],
+        [t("viewImport.bankAccount"), t("viewImport.notesStockBankAccount")],
+        [t("stockPanel.colFee"), t("viewImport.notesStockFees")],
+        [t("detail.column.remark"), t("viewImport.notesRemark")],
+      ],
+    };
+  }
+
   if (props.kind === "fund") {
     const fundAccountName = props.fundAccountName || t("viewImport.fundAccount");
     const fundCode = props.fundCode || "000001";
-    const fundName = props.fundName || t("viewImport.sampleFund");
     return {
       filename: `${t("viewImport.fundTemplateFile", { name: safeFileNamePart(fundAccountName, t("viewImport.import")) })}.xlsx`,
       sheetName: t("viewImport.sheetFundTransactions"),
       noteSheetName: t("viewImport.sheetNotes"),
-      headers: FUND_HEADERS,
-      labelRow: [
-        t("detail.column.date"),
-        t("viewImport.fundSubtype"),
-        t("viewImport.source"),
-        t("viewImport.cashAccount"),
-        t("viewImport.fundAccount"),
-        t("viewImport.fundCode"),
-        t("viewImport.fundName"),
-        t("viewImport.amount"),
-        t("viewImport.units"),
-        t("viewImport.nav"),
-        t("viewImport.fee"),
-        t("viewImport.navDate"),
-        t("detail.column.postedAt"),
-        t("detail.column.remark"),
-      ],
+      headers: localizedHeaders(FUND_HEADER_KEYS, t),
       rows: [
-        ["2026-06-03", "buy", "manual", "", fundAccountName, fundCode, fundName, "1000.00", "738.99", "1.3521", "1.00", "2026-06-04", "2026-06-04", "申购"],
-        ["2026-06-20", "redeem", "manual", "", fundAccountName, fundCode, fundName, "500.00", "360.00", "1.3889", "0.50", "2026-06-21", "2026-06-23", "赎回"],
+        ["2026-06-03", t("viewImport.fundActionBuy"), "", "", fundAccountName, fundCode, "", "1000.00", "738.99", "1.3521", "1%", "2026-06-04", "2026-06-04", t("viewImport.sampleRemarkFundBuy")],
+        ["2026-06-10", t("viewImport.fundActionRecurringBuy"), "", "", fundAccountName, fundCode, "", "1000.00", "738.99", "1.3521", "1.00", "2026-06-11", "2026-06-11", t("viewImport.sampleRemarkFundRecurringBuy")],
+        ["2026-06-20", t("viewImport.fundActionRedeem"), "", "", fundAccountName, fundCode, "", "500.00", "360.00", "1.3889", "0.50", "2026-06-21", "2026-06-23", t("viewImport.sampleRemarkFundRedeem")],
       ],
       notes: [
         [t("viewImport.notesIntroLabel"), t("viewImport.notesIntroFund")],
         [t("viewImport.notesRecognitionLabel"), t("viewImport.notesRecognitionFund")],
-        ["fundSubtype", t("viewImport.notesFundSubtype")],
-        ["source", t("viewImport.notesSource")],
-        ["cashAccount", t("viewImport.notesCashAccount")],
-        ["fundAccount", t("viewImport.notesFundAccount")],
-        ["fundCode", t("viewImport.notesFundCode")],
-        ["amount", t("viewImport.notesFundAmount")],
-        ["units/nav/fee", t("viewImport.notesUnitsNavFee")],
-        ["confirmDate/arrivalDate", t("viewImport.notesConfirmArrival")],
-        ["remark", t("viewImport.notesRemark")],
+        [t("viewImport.fundSubtype"), t("viewImport.notesFundSubtype")],
+        [t("viewImport.source"), t("viewImport.notesSource")],
+        [t("viewImport.cashAccount"), t("viewImport.notesCashAccount")],
+        [t("viewImport.fundAccount"), t("viewImport.notesFundAccount")],
+        [t("viewImport.fundCode"), t("viewImport.notesFundCode")],
+        [t("viewImport.amount"), t("viewImport.notesFundAmount")],
+        [t("viewImport.units"), t("viewImport.notesUnitsNavFee")],
+        [t("viewImport.navDate"), t("viewImport.notesConfirmArrival")],
+        [t("detail.column.remark"), t("viewImport.notesRemark")],
       ],
     };
   }
 
   const accountName = props.accountName || t("viewImport.currentAccount");
-  const isCreditCardTemplate = /信用卡|贷记卡|credit\s*card/i.test(accountName);
+  const creditCardAliases = splitImportAliases(t("viewImport.creditCardAccountAliases"));
+  const isCreditCardTemplate = creditCardAliases.some((alias) => accountName.toLowerCase().includes(alias.toLowerCase()));
   return {
     filename: `${t("viewImport.billTemplateFile", { name: safeFileNamePart(accountName, t("viewImport.import")) })}.xlsx`,
     sheetName: t("viewImport.sheetBillRecords"),
     noteSheetName: t("viewImport.sheetNotes"),
-    headers: NORMAL_HEADERS,
+    headers: localizedHeaders(NORMAL_HEADER_KEYS, t),
     rows: isCreditCardTemplate
       ? [
-        ["2026-06-08", "2026-06-09", "支出", "32.50", "", accountName, "", "餐饮", "麦当劳", "午餐", "信用卡消费"],
-        ["2026-06-05", "2026-06-06", "支出", "", "20.00", accountName, "", "餐饮", "示例餐厅", "", "信用卡退款"],
-        ["2026-06-20", "2026-06-20", "转账", "", "108.00", accountName, "招商银行2758", "", "", "", "信用卡还款"],
+        ["2026-06-08", "2026-06-09", t("transaction.type.expense"), "32.50", "", accountName, "", t("viewImport.sampleCategoryDining"), t("viewImport.sampleMerchantFastFood"), t("viewImport.sampleTagLunch"), t("viewImport.sampleRemarkCreditCardSpend")],
+        ["2026-06-05", "2026-06-06", t("transaction.type.expense"), "", "20.00", accountName, "", t("viewImport.sampleCategoryDining"), t("viewImport.sampleMerchantRestaurant"), "", t("viewImport.sampleRemarkCreditCardRefund")],
+        ["2026-06-20", "2026-06-20", t("transaction.type.transfer"), "", "108.00", accountName, t("viewImport.sampleAccountDebit"), "", "", "", t("viewImport.sampleRemarkCreditCardRepayment")],
       ]
       : [
-        ["2026-06-08", "2026-06-09", "支出", "32.50", "", accountName, "", "餐饮", "麦当劳", "午餐", "午餐"],
-        ["2026-06-08", "", "收入", "", "1.28", accountName, "", "利息收入", "", "利息", "活期利息"],
-        ["2026-06-20", "", "转账", "1000.00", "", accountName, "现金", "", "", "", "转账"],
+        ["2026-06-08", "2026-06-09", t("transaction.type.expense"), "32.50", "", accountName, "", t("viewImport.sampleCategoryDining"), t("viewImport.sampleMerchantFastFood"), t("viewImport.sampleTagLunch"), t("viewImport.sampleRemarkLunch")],
+        ["2026-06-08", "", t("transaction.type.income"), "", "1.28", accountName, "", t("viewImport.sampleCategoryInterestIncome"), "", t("viewImport.sampleTagInterest"), t("viewImport.sampleRemarkDemandInterest")],
+        ["2026-06-20", "", t("transaction.type.transfer"), "1000.00", "", accountName, t("viewImport.sampleAccountCash"), "", "", "", t("viewImport.sampleRemarkTransfer")],
       ],
     notes: [
       [t("viewImport.notesIntroLabel"), t("viewImport.notesIntroNormal")],
@@ -205,6 +308,183 @@ export async function exportNormalAccountImportTemplate(accountName: string, t: 
   await exportViewImportTemplate(templateFor({ kind: "normal", accountId: "", accountName }, t));
 }
 
+function normalizeHeaderText(value: unknown) {
+  return String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function normalizeCellText(value: unknown) {
+  return String(value ?? "").trim();
+}
+
+function parseOptionalNumber(value: unknown) {
+  const raw = normalizeCellText(value).replace(/,/g, "");
+  if (!raw) return null;
+  const num = Number(raw);
+  return Number.isFinite(num) ? num : null;
+}
+
+function parseDateCell(value: unknown) {
+  if (value instanceof Date && Number.isFinite(value.getTime())) return value.toISOString().slice(0, 10);
+  const raw = normalizeCellText(value);
+  if (!raw) return "";
+  const direct = raw.slice(0, 10);
+  if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(direct)) {
+    const [year, month, day] = direct.split("-");
+    return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+  }
+  if (/^\d{4}\/\d{1,2}\/\d{1,2}$/.test(raw)) {
+    const [year, month, day] = raw.split("/");
+    return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+  }
+  return /^\d{4}-\d{2}-\d{2}$/.test(direct) ? direct : "";
+}
+
+const STOCK_FIELDS = [
+  "tradeDate",
+  "settleDate",
+  "action",
+  "market",
+  "stockCode",
+  "stockName",
+  "quantity",
+  "price",
+  "grossAmount",
+  "netAmount",
+  "bankAccount",
+  "fee",
+  "commission",
+  "stampTax",
+  "transferFee",
+  "exchangeFee",
+  "regulatoryFee",
+  "otherFee",
+  "brokerTradeId",
+  "note",
+] as const satisfies readonly (keyof StockImportItem)[];
+
+const STOCK_FIELD_ALIAS_KEYS: Record<keyof StockImportItem, string> = {
+  tradeDate: "viewImport.stockAlias.tradeDate",
+  settleDate: "viewImport.stockAlias.settleDate",
+  action: "viewImport.stockAlias.action",
+  market: "viewImport.stockAlias.market",
+  stockCode: "viewImport.stockAlias.stockCode",
+  stockName: "viewImport.stockAlias.stockName",
+  quantity: "viewImport.stockAlias.quantity",
+  price: "viewImport.stockAlias.price",
+  grossAmount: "viewImport.stockAlias.grossAmount",
+  netAmount: "viewImport.stockAlias.netAmount",
+  bankAccount: "viewImport.stockAlias.bankAccount",
+  fee: "viewImport.stockAlias.fee",
+  commission: "viewImport.stockAlias.commission",
+  stampTax: "viewImport.stockAlias.stampTax",
+  transferFee: "viewImport.stockAlias.transferFee",
+  exchangeFee: "viewImport.stockAlias.exchangeFee",
+  regulatoryFee: "viewImport.stockAlias.regulatoryFee",
+  otherFee: "viewImport.stockAlias.otherFee",
+  brokerTradeId: "viewImport.stockAlias.brokerTradeId",
+  note: "viewImport.stockAlias.note",
+};
+
+function splitImportAliases(value: string) {
+  return value.split("|").map((item) => item.trim()).filter(Boolean);
+}
+
+function buildStockHeaderIndex(headers: unknown[], t: TranslateFn) {
+  const aliases = new Map<string, keyof StockImportItem>();
+  STOCK_FIELDS.forEach((field, index) => {
+    aliases.set(normalizeHeaderText(field), field);
+    aliases.set(normalizeHeaderText(STOCK_HEADER_KEYS[index]), field);
+    aliases.set(normalizeHeaderText(t(STOCK_HEADER_KEYS[index])), field);
+    splitImportAliases(t(STOCK_FIELD_ALIAS_KEYS[field])).forEach((alias) => aliases.set(normalizeHeaderText(alias), field));
+  });
+  const normalizedHeaders = headers.map(normalizeHeaderText);
+  const map = new Map<keyof StockImportItem, number>();
+  normalizedHeaders.forEach((header, index) => {
+    if (!header) return;
+    const field = aliases.get(header);
+    if (field && !map.has(field)) map.set(field, index);
+  });
+  return map;
+}
+
+function normalizeStockImportAction(raw: string, t: TranslateFn) {
+  const value = normalizeHeaderText(raw);
+  if (!value) return "";
+  const candidates: Array<[string, string[]]> = [
+    ["buy", ["buy", t("stockPanel.action.buy"), ...splitImportAliases(t("viewImport.stockActionAlias.buy"))]],
+    ["sell", ["sell", t("stockPanel.action.sell"), ...splitImportAliases(t("viewImport.stockActionAlias.sell"))]],
+    ["dividend", ["dividend", t("stockPanel.action.dividend"), ...splitImportAliases(t("viewImport.stockActionAlias.dividend"))]],
+    ["bonus_share", ["bonus_share", "bonus share", t("stockPanel.action.bonus_share"), ...splitImportAliases(t("viewImport.stockActionAlias.bonus_share"))]],
+    ["split_share", ["split_share", "split", t("stockPanel.action.split_share"), ...splitImportAliases(t("viewImport.stockActionAlias.split_share"))]],
+    ["merge_share", ["merge_share", "merge", t("stockPanel.action.merge_share"), ...splitImportAliases(t("viewImport.stockActionAlias.merge_share"))]],
+    ["fee_adjustment", ["fee_adjustment", "fee adjustment", t("stockPanel.action.fee_adjustment"), ...splitImportAliases(t("viewImport.stockActionAlias.fee_adjustment"))]],
+    ["tax_adjustment", ["tax_adjustment", "tax adjustment", t("stockPanel.action.tax_adjustment"), ...splitImportAliases(t("viewImport.stockActionAlias.tax_adjustment"))]],
+    ["bank_transfer", ["bank_transfer", t("viewImport.stockActionBankTransfer"), ...splitImportAliases(t("viewImport.stockActionAlias.bank_transfer"))]],
+  ];
+  for (const [action, labels] of candidates) {
+    if (labels.some((label) => normalizeHeaderText(label) === value)) return action;
+  }
+  return "";
+}
+
+async function parseStockImportFile(file: File, t: TranslateFn): Promise<StockImportItem[]> {
+  const XLSX = await import("xlsx");
+  const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
+  let bestRows: unknown[][] = [];
+  let bestHeader = new Map<keyof StockImportItem, number>();
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: false, defval: "" });
+    for (let index = 0; index < Math.min(rows.length, 8); index++) {
+      const header = buildStockHeaderIndex(rows[index] ?? [], t);
+      const score = ["tradeDate", "action"].filter((field) => header.has(field as keyof StockImportItem)).length + (header.has("stockCode") || header.has("bankAccount") ? 1 : 0) + header.size / 100;
+      if (score > 2 && score > (bestHeader.has("tradeDate") ? 2 : 0) + bestHeader.size / 100) {
+        bestHeader = header;
+        bestRows = rows.slice(index + 1);
+      }
+    }
+  }
+  if (!bestHeader.has("tradeDate") || !bestHeader.has("action") || (!bestHeader.has("stockCode") && !bestHeader.has("bankAccount"))) return [];
+  const readField = (row: unknown[], field: keyof StockImportItem) => {
+    const index = bestHeader.get(field);
+    return index == null ? "" : normalizeCellText(row[index]);
+  };
+  const unsupportedActions = new Set<string>();
+  const items = bestRows.map((row) => {
+    const rawAction = readField(row, "action");
+    const action = normalizeStockImportAction(rawAction, t);
+    const tradeDate = parseDateCell(row[bestHeader.get("tradeDate") ?? -1]);
+    const stockCode = readField(row, "stockCode");
+    if (tradeDate && stockCode && rawAction && !action) unsupportedActions.add(rawAction);
+    return {
+      tradeDate,
+      settleDate: bestHeader.has("settleDate") ? parseDateCell(row[bestHeader.get("settleDate") ?? -1]) || null : null,
+      action,
+      market: readField(row, "market"),
+      stockCode,
+      stockName: readField(row, "stockName"),
+      quantity: parseOptionalNumber(row[bestHeader.get("quantity") ?? -1]),
+      price: parseOptionalNumber(row[bestHeader.get("price") ?? -1]),
+      grossAmount: parseOptionalNumber(row[bestHeader.get("grossAmount") ?? -1]),
+      netAmount: parseOptionalNumber(row[bestHeader.get("netAmount") ?? -1]),
+      bankAccount: readField(row, "bankAccount"),
+      fee: parseOptionalNumber(row[bestHeader.get("fee") ?? -1]),
+      commission: parseOptionalNumber(row[bestHeader.get("commission") ?? -1]),
+      stampTax: parseOptionalNumber(row[bestHeader.get("stampTax") ?? -1]),
+      transferFee: parseOptionalNumber(row[bestHeader.get("transferFee") ?? -1]),
+      exchangeFee: parseOptionalNumber(row[bestHeader.get("exchangeFee") ?? -1]),
+      regulatoryFee: parseOptionalNumber(row[bestHeader.get("regulatoryFee") ?? -1]),
+      otherFee: parseOptionalNumber(row[bestHeader.get("otherFee") ?? -1]),
+      brokerTradeId: readField(row, "brokerTradeId") || null,
+      note: readField(row, "note") || null,
+    };
+  }).filter((item) => item.tradeDate && item.action && item.stockCode);
+  if (unsupportedActions.size > 0) {
+    throw new Error(t("viewImport.stockUnsupportedAction", { action: Array.from(unsupportedActions).join(", ") }));
+  }
+  return items.filter((item) => item.tradeDate && item.action && (item.stockCode || (item.action === "bank_transfer" && item.bankAccount)));
+}
+
 function parseExportDate(value: unknown) {
   const text = String(value ?? "").trim().slice(0, 10);
   return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : "";
@@ -238,11 +518,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
   const [status, setStatus] = useState("");
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewItems, setPreviewItems] = useState<StatementImportPreviewItem[]>([]);
-  const [recognitionSamples, setRecognitionSamples] = useState<StatementFieldRecognitionSample[]>([]);
-  const statementFieldHeaders = useMemo(
-    () => buildStatementImportFieldHeaders(recognitionSamples),
-    [recognitionSamples],
-  );
+  const [recognitionSamples, setRecognitionSamples] = useState<StatementHistoricalCategorySample[]>([]);
 
   useEffect(() => {
     if (!open) return;
@@ -279,6 +555,23 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
     return () => { cancelled = true; };
   }, [props.kind]);
 
+  async function refreshRecognitionSamples() {
+    const res = await fetch("/api/v1/statement/recognition-rules", { cache: "no-store" });
+    const data = await res.json().catch(() => null) as { samples?: StatementHistoricalCategorySample[] } | null;
+    if (!res.ok || !Array.isArray(data?.samples)) {
+      throw new Error(t("viewImport.recognitionFailed"));
+    }
+    setRecognitionSamples(data.samples);
+    return data.samples;
+  }
+
+  async function loadImportCategories() {
+    const res = await fetch("/api/v1/category", { cache: "no-store" });
+    const data = await res.json().catch(() => null) as { categories?: ImportCategoryOption[] } | null;
+    if (!res.ok || !Array.isArray(data?.categories)) return [];
+    return data.categories;
+  }
+
   async function handleExportTemplate() {
     setOpen(false);
     setBusy(true);
@@ -297,7 +590,10 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
     setStatus(t("viewImport.importing"));
     try {
       if (props.kind === "normal") {
-        const { localItems, preferServerRecognition, text } = await parseStatementExcelFile(file, props.accountName, statementFieldHeaders);
+        const latestRecognitionSamples = await refreshRecognitionSamples().catch(() => recognitionSamples);
+        const categories = await loadImportCategories();
+        const latestFieldHeaders = buildStatementImportFieldHeaders(latestRecognitionSamples);
+        const { localItems, preferServerRecognition, text } = await parseStatementExcelFile(file, props.accountName, latestFieldHeaders);
         let serverError: unknown = null;
         const serverItems = preferServerRecognition || !hasImportableStatementRows(localItems)
           ? await parseByServer(text).catch((error) => {
@@ -311,7 +607,12 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
             ? localItems
             : [];
         if (parsedItems.length === 0 && serverError) throw serverError;
-        const items = parsedItems
+        const recognizedItems = alignStatementRecognitionToLedger(
+          parsedItems,
+          categories,
+          latestRecognitionSamples,
+        );
+        const items = recognizedItems
           .filter((item) => item.date && Number(item.amount) > 0)
           .map((item) => {
             if (item.type === "transfer") {
@@ -330,6 +631,43 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
         setPreviewItems(items);
         setPreviewOpen(true);
         setStatus(t("viewImport.recognizedCount", { count: items.length }));
+        return;
+      }
+
+      if (props.kind === "stock") {
+        const items = await parseStockImportFile(file, t);
+        if (items.length === 0) throw new Error(t("viewImport.noRows"));
+        let created = 0;
+        let skipped = 0;
+        for (const item of items) {
+          const isBankTransfer = item.action === "bank_transfer";
+          const endpoint = isBankTransfer ? "/api/v1/stocks/cash-transfer" : "/api/v1/stocks/transactions";
+          const body = isBankTransfer
+            ? {
+              accountId: props.accountId,
+              tradeDate: item.tradeDate,
+              amount: item.grossAmount ?? item.netAmount,
+              bankAccount: item.bankAccount,
+              note: item.note,
+            }
+            : {
+              ...item,
+              accountId: props.accountId,
+              source: "excel_import",
+              externalLinkId: item.brokerTradeId ? `stock-excel:${props.accountId}:${item.brokerTradeId}` : undefined,
+            };
+          const res = await fetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; data?: { duplicate?: boolean } } | null;
+          if (!res.ok || !data?.ok) throw new Error(data?.error || t("viewImport.stockImportFailed"));
+          if (data.data?.duplicate) skipped += 1;
+          else created += 1;
+        }
+        setStatus(t("viewImport.stockImportSuccess", { created, skipped }));
+        dispatchFinanceDataChanged({ reason: "stock-excel-import", accountIds: [props.accountId] });
         return;
       }
 

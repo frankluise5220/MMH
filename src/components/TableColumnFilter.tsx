@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { useI18n } from "@/lib/i18n";
 import { useOutsideClose } from "@/lib/client/useOutsideClose";
 
@@ -32,6 +33,82 @@ type DateRangeColumnFilterProps = {
   onClose: () => void;
   onChange: (next: { from: string; to: string }) => void;
 };
+
+function FilterPopover({
+  open,
+  anchorRef,
+  children,
+  className,
+  width = 256,
+  maxHeight = 384,
+  height,
+}: {
+  open: boolean;
+  anchorRef: RefObject<HTMLElement | null>;
+  children: ReactNode;
+  className: string;
+  width?: number;
+  maxHeight?: number;
+  height?: number;
+}) {
+  const [style, setStyle] = useState<CSSProperties>({ visibility: "hidden" });
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const updatePosition = () => {
+      const anchor = anchorRef.current;
+      if (!anchor) return;
+      const rect = anchor.getBoundingClientRect();
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      const horizontalPadding = 8;
+      const popupWidth = Math.min(width, Math.max(160, viewportWidth - horizontalPadding * 2));
+      const belowSpace = viewportHeight - rect.bottom - horizontalPadding;
+      const aboveSpace = rect.top - horizontalPadding;
+      const shouldOpenAbove = belowSpace < Math.min(maxHeight, 220) && aboveSpace > belowSpace;
+      const availableHeight = Math.max(160, shouldOpenAbove ? aboveSpace : belowSpace);
+      const popupHeight = Math.min(height ?? maxHeight, availableHeight);
+      const left = Math.min(
+        Math.max(horizontalPadding, rect.left),
+        Math.max(horizontalPadding, viewportWidth - popupWidth - horizontalPadding),
+      );
+      const top = shouldOpenAbove
+        ? Math.max(horizontalPadding, rect.top - popupHeight - 4)
+        : Math.min(viewportHeight - popupHeight - horizontalPadding, rect.bottom + 4);
+      setStyle({
+        position: "fixed",
+        top,
+        left,
+        width: popupWidth,
+        maxWidth: `calc(100vw - ${horizontalPadding * 2}px)`,
+        maxHeight: availableHeight,
+        ...(height ? { height: popupHeight } : {}),
+        zIndex: 30000,
+        visibility: "visible",
+      });
+    };
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    document.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      document.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [anchorRef, height, maxHeight, open, width]);
+
+  if (!open || typeof document === "undefined") return null;
+  return createPortal(
+    <div
+      className={className}
+      style={style}
+      onMouseDown={(event) => event.stopPropagation()}
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      {children}
+    </div>,
+    document.body,
+  );
+}
 
 export function TableColumnFilter({
   label,
@@ -118,8 +195,7 @@ export function TableColumnFilter({
           ▼
         </button>
       ) : null}
-      {open && (
-        <div className="absolute left-0 top-6 z-30 h-96 min-h-52 w-64 min-w-56 max-w-[min(640px,90vw)] resize overflow-auto rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
+      <FilterPopover open={open} anchorRef={rootRef} className="h-96 min-h-52 min-w-56 max-w-[min(640px,90vw)] resize overflow-auto rounded-lg border border-slate-200 bg-white p-2 shadow-xl" height={384}>
           <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
             <span className="text-xs font-medium text-slate-700">{filterTitle}</span>
             <button type="button" onClick={onClose} className="text-xs text-slate-400 hover:text-slate-700">
@@ -216,8 +292,7 @@ export function TableColumnFilter({
               <div className="px-1 py-3 text-center text-xs text-slate-400">{t("table.noFilterOptions")}</div>
             ) : null}
           </div>
-        </div>
-      )}
+      </FilterPopover>
     </div>
   );
 }
@@ -264,8 +339,7 @@ export function DateRangeColumnFilter({
           ▼
         </button>
       ) : null}
-      {open ? (
-        <div className="absolute left-0 top-6 z-30 w-64 rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
+      <FilterPopover open={open} anchorRef={rootRef} className="rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
           <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
             <span className="text-xs font-medium text-slate-700">{filterTitle}</span>
             <button type="button" onClick={onClose} className="text-xs text-slate-400 hover:text-slate-700">
@@ -316,8 +390,7 @@ export function DateRangeColumnFilter({
               {t("table.confirm")}
             </button>
           </div>
-        </div>
-      ) : null}
+      </FilterPopover>
     </div>
   );
 }
@@ -364,8 +437,7 @@ export function NumberRangeColumnFilter({
           ▼
         </button>
       ) : null}
-      {open ? (
-        <div className="absolute left-0 top-6 z-30 w-64 rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
+      <FilterPopover open={open} anchorRef={rootRef} className="rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
           <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
             <span className="text-xs font-medium text-slate-700">{filterTitle}</span>
             <button type="button" onClick={onClose} className="text-xs text-slate-400 hover:text-slate-700">
@@ -411,8 +483,7 @@ export function NumberRangeColumnFilter({
               {t("table.confirm")}
             </button>
           </div>
-        </div>
-      ) : null}
+      </FilterPopover>
     </div>
   );
 }
@@ -480,8 +551,7 @@ export function TextColumnFilter({
           ▼
         </button>
       ) : null}
-      {open ? (
-        <div className="absolute left-0 top-6 z-30 w-64 rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
+      <FilterPopover open={open} anchorRef={rootRef} className="rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
           <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
             <span className="text-xs font-medium text-slate-700">{filterTitle}</span>
             <button type="button" onClick={onClose} className="text-xs text-slate-400 hover:text-slate-700">
@@ -521,8 +591,7 @@ export function TextColumnFilter({
           >
             {t("table.clear")}
           </button>
-        </div>
-      ) : null}
+      </FilterPopover>
     </div>
   );
 }

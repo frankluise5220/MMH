@@ -307,6 +307,7 @@ export function BasicDetailBatchDeleteButton({ recordLabel }: { recordLabel?: st
       const data = await deleteEntriesWithLinkedPrompt({
         entryIds,
         confirmMessage: t("basicDetailSelection.deleteConfirm", { count: entryIds.length, label: effectiveRecordLabel }),
+        t,
       });
       if (!data.ok) {
         if (data.error === translate("zh-CN", "basicDetailSelection.deleteCanceled")) return;

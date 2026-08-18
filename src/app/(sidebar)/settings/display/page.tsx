@@ -3,10 +3,10 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 
-import { DEFAULT_CREDIT_CARD_LABEL_TEMPLATE, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
+import { SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
 import {
   getCreditCardSidebarLabelTemplatePreference,
-  getCreditCardLabelTemplatePreference,
+  getDateDisplayFormatPreference,
   getDisplayLanguagePreference,
   getSidebarGroupPreference,
   getSidebarHideInitialDataPreference,
@@ -14,6 +14,7 @@ import {
   getTimeZoneModePreference,
   getTimeZonePreference,
   setCreditCardSidebarLabelTemplatePreference,
+  setDateDisplayFormatPreference,
   setCreditCardLabelTemplatePreference,
   setDisplayLanguagePreference,
   setSidebarGroupPreference,
@@ -21,11 +22,11 @@ import {
   setSidebarHideZeroPreference,
   setTimeZonePreference,
   type DisplayLanguage,
+  type DateDisplayFormat,
   type SidebarGroupMode,
   type TimeZoneMode,
 } from "@/lib/client/appPreferences";
 import { CURRENCY_OPTIONS } from "@/lib/currency";
-import { PRODUCT_INTROS } from "@/lib/product-intro";
 import { useI18n } from "@/lib/i18n";
 
 type ColorScheme = "red_up_green_down" | "green_up_red_down";
@@ -41,33 +42,86 @@ function buildTimeZoneOptions(t: (key: string) => string) {
   ];
 }
 
-const DISPLAY_LANGUAGE_OPTIONS: DisplayLanguage[] = ["zh-CN", "en-US", "ja-JP"];
+const DISPLAY_LANGUAGE_OPTIONS: ReadonlyArray<{ value: DisplayLanguage; labelKey: string }> = [
+  { value: "zh-CN", labelKey: "settings.display.language.zhCN" },
+  { value: "en-US", labelKey: "settings.display.language.enUS" },
+  { value: "ja-JP", labelKey: "settings.display.language.jaJP" },
+];
+
+const DATE_DISPLAY_FORMAT_OPTIONS: ReadonlyArray<{ value: DateDisplayFormat; labelKey: string }> = [
+  { value: "yyyy-mm-dd", labelKey: "settings.display.dateFormat.yyyyMmDd" },
+  { value: "yyyy/mm/dd", labelKey: "settings.display.dateFormat.yyyySlashMmSlashDd" },
+  { value: "mm/dd/yyyy", labelKey: "settings.display.dateFormat.mmDdYyyy" },
+  { value: "dd/mm/yyyy", labelKey: "settings.display.dateFormat.ddMmYyyy" },
+];
+
+const CREDIT_CARD_TEMPLATE_TOKEN = {
+  owner: "{\u6240\u6709\u4eba}",
+  institutionShort: "{\u673a\u6784\u7b80\u79f0}",
+  institutionFull: "{\u673a\u6784\u5168\u79f0}",
+  institutionName: "{\u673a\u6784\u540d\u79f0}",
+  cardName: "{\u4fe1\u7528\u5361\u540d\u79f0}",
+  accountName: "{\u8d26\u6237\u540d\u79f0}",
+  last4: "{\u4fe1\u7528\u5361\u540e4\u4f4d}",
+  shortLast4: "{\u540e4\u4f4d}",
+  separator: "·",
+} as const;
 
 const CREDIT_CARD_NAME_PRESETS = [
-  { value: "{机构简称}{信用卡后4位}", labelKey: "settings.display.preset.short", example: "招行8333" },
-  { value: "{机构简称}·{信用卡后4位}", labelKey: "settings.display.preset.shortDot", example: "招行·8333" },
-  { value: "{机构名称}·{信用卡名称}", labelKey: "settings.display.preset.full", example: "招商银行·优享白金卡" },
-  { value: "{机构简称}·{信用卡名称}·{信用卡后4位}", labelKey: "settings.display.preset.fullShort", example: "招行·优享白金卡·8333" },
+  {
+    value: `${CREDIT_CARD_TEMPLATE_TOKEN.institutionShort}${CREDIT_CARD_TEMPLATE_TOKEN.last4}`,
+    labelKey: "settings.display.preset.short",
+  },
+  {
+    value: `${CREDIT_CARD_TEMPLATE_TOKEN.institutionShort}${CREDIT_CARD_TEMPLATE_TOKEN.separator}${CREDIT_CARD_TEMPLATE_TOKEN.last4}`,
+    labelKey: "settings.display.preset.shortDot",
+  },
+  {
+    value: `${CREDIT_CARD_TEMPLATE_TOKEN.institutionName}${CREDIT_CARD_TEMPLATE_TOKEN.separator}${CREDIT_CARD_TEMPLATE_TOKEN.cardName}`,
+    labelKey: "settings.display.preset.full",
+  },
+  {
+    value: `${CREDIT_CARD_TEMPLATE_TOKEN.institutionShort}${CREDIT_CARD_TEMPLATE_TOKEN.separator}${CREDIT_CARD_TEMPLATE_TOKEN.cardName}${CREDIT_CARD_TEMPLATE_TOKEN.separator}${CREDIT_CARD_TEMPLATE_TOKEN.last4}`,
+    labelKey: "settings.display.preset.fullShort",
+  },
 ];
 
 const CREDIT_CARD_NAME_FIELDS = [
-  "{机构简称}",
-  "{机构名称}",
-  "{信用卡名称}",
-  "{信用卡后4位}",
-  "·",
+  { value: CREDIT_CARD_TEMPLATE_TOKEN.owner, labelKey: "settings.display.creditCardField.owner" },
+  { value: CREDIT_CARD_TEMPLATE_TOKEN.institutionShort, labelKey: "settings.display.creditCardField.institutionShort" },
+  { value: CREDIT_CARD_TEMPLATE_TOKEN.institutionName, labelKey: "settings.display.creditCardField.institutionName" },
+  { value: CREDIT_CARD_TEMPLATE_TOKEN.cardName, labelKey: "settings.display.creditCardField.cardName" },
+  { value: CREDIT_CARD_TEMPLATE_TOKEN.last4, labelKey: "settings.display.creditCardField.last4" },
+  { value: CREDIT_CARD_TEMPLATE_TOKEN.separator, labelKey: "settings.display.creditCardField.separator" },
 ];
 
-function previewCreditCardName(value: string, accountName = "优享白金卡") {
-  const last4 = accountName.includes("8333") ? "" : "8333";
+type CreditCardPreviewSample = {
+  ownerName: string;
+  institutionShort: string;
+  institutionName: string;
+  cardName: string;
+  last4: string;
+};
+
+const CREDIT_CARD_PREVIEW_SAMPLE: CreditCardPreviewSample = {
+  ownerName: "\u5f20\u56db",
+  institutionShort: "\u62db\u884c",
+  institutionName: "\u62db\u5546\u94f6\u884c",
+  cardName: "\u4f18\u4eab\u767d\u91d1\u5361",
+  last4: "8333",
+};
+
+function previewCreditCardName(value: string, sample: CreditCardPreviewSample) {
+  const last4 = sample.cardName.includes(sample.last4) ? "" : sample.last4;
   return value
-    .replaceAll("{机构简称}", "招行")
-    .replaceAll("{机构全称}", "招商银行")
-    .replaceAll("{机构名称}", "招商银行")
-    .replaceAll("{信用卡名称}", accountName)
-    .replaceAll("{账户名称}", accountName)
-    .replaceAll("{信用卡后4位}", last4)
-    .replaceAll("{后4位}", last4)
+    .replaceAll(CREDIT_CARD_TEMPLATE_TOKEN.institutionShort, sample.institutionShort)
+    .replaceAll(CREDIT_CARD_TEMPLATE_TOKEN.institutionFull, sample.institutionName)
+    .replaceAll(CREDIT_CARD_TEMPLATE_TOKEN.institutionName, sample.institutionName)
+    .replaceAll(CREDIT_CARD_TEMPLATE_TOKEN.owner, sample.ownerName)
+    .replaceAll(CREDIT_CARD_TEMPLATE_TOKEN.cardName, sample.cardName)
+    .replaceAll(CREDIT_CARD_TEMPLATE_TOKEN.accountName, sample.cardName)
+    .replaceAll(CREDIT_CARD_TEMPLATE_TOKEN.last4, last4)
+    .replaceAll(CREDIT_CARD_TEMPLATE_TOKEN.shortLast4, last4)
     .replace(/[·]{2,}/g, "·")
     .replace(/(^[·\s]+|[·\s]+$)/g, "")
     .trim();
@@ -80,22 +134,34 @@ function getColorSchemePreference(): ColorScheme {
   return value === "green_up_red_down" ? "green_up_red_down" : "red_up_green_down";
 }
 
+function setColorSchemePreference(value: ColorScheme) {
+  if (typeof document === "undefined") return;
+  document.cookie = `colorScheme=${encodeURIComponent(value)}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
+}
+
 function SettingRow({
   title,
   desc,
   children,
   wide = false,
+  hideDesc = false,
 }: {
   title: string;
   desc: string;
   children: ReactNode;
   wide?: boolean;
+  hideDesc?: boolean;
 }) {
+  const showDesc = Boolean(desc) && !hideDesc;
+
   return (
-    <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-3 last:border-b-0 lg:flex-row lg:items-center lg:justify-between">
+    <div
+      className="flex flex-col gap-3 border-b border-slate-100 px-4 py-3 last:border-b-0 lg:flex-row lg:items-center lg:justify-between"
+      title={hideDesc ? desc : undefined}
+    >
       <div className="min-w-0 lg:w-56 lg:shrink-0">
         <div className="text-sm font-medium text-slate-800">{title}</div>
-        <div className="mt-1 text-xs text-slate-500">{desc}</div>
+        {showDesc ? <div className="mt-1 text-xs text-slate-500">{desc}</div> : null}
       </div>
       <div className={wide ? "min-w-0 flex-1 lg:max-w-3xl" : "min-w-0 lg:min-w-[280px] lg:max-w-xl"}>
         {children}
@@ -108,13 +174,12 @@ export default function DisplaySettingsPage() {
   const { t, language: currentLanguage } = useI18n();
   const router = useRouter();
   const [scheme, setScheme] = useState<ColorScheme>("red_up_green_down");
-  const [schemeDraft, setSchemeDraft] = useState<ColorScheme>("red_up_green_down");
   const [displayLanguage, setDisplayLanguage] = useState<DisplayLanguage>(currentLanguage);
+  const [dateDisplayFormat, setDateDisplayFormat] = useState<DateDisplayFormat>("yyyy-mm-dd");
   const [baseCurrency, setBaseCurrency] = useState("CNY");
   const [timeZoneMode, setTimeZoneMode] = useState<TimeZoneMode>("system");
   const [timeZone, setTimeZone] = useState("Asia/Shanghai");
   const [creditCardSidebarDisplayName, setCreditCardSidebarDisplayName] = useState(SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE);
-  const [creditCardDisplayName, setCreditCardDisplayName] = useState(DEFAULT_CREDIT_CARD_LABEL_TEMPLATE);
   const [sidebarGroupBy, setSidebarGroupBy] = useState<SidebarGroupMode>("kind");
   const [sidebarHideZero, setSidebarHideZero] = useState(false);
   const [sidebarHideInitialData, setSidebarHideInitialData] = useState(false);
@@ -122,21 +187,20 @@ export default function DisplaySettingsPage() {
   const [savingBaseCurrency, setSavingBaseCurrency] = useState(false);
   const [savingTimeZone, setSavingTimeZone] = useState(false);
   const [savingDisplayLanguage, setSavingDisplayLanguage] = useState(false);
+  const [savingDateDisplayFormat, setSavingDateDisplayFormat] = useState(false);
   const [savingCreditCardSidebarDisplayName, setSavingCreditCardSidebarDisplayName] = useState(false);
-  const [savingCreditCardDisplayName, setSavingCreditCardDisplayName] = useState(false);
 
   useEffect(() => {
     const colorScheme = getColorSchemePreference();
     setScheme(colorScheme);
-    setSchemeDraft(colorScheme);
     setSidebarGroupBy(getSidebarGroupPreference());
     setSidebarHideZero(getSidebarHideZeroPreference());
     setSidebarHideInitialData(getSidebarHideInitialDataPreference());
     setDisplayLanguage(getDisplayLanguagePreference());
+    setDateDisplayFormat(getDateDisplayFormatPreference());
     setTimeZoneMode(getTimeZoneModePreference());
     setTimeZone(getTimeZonePreference());
     setCreditCardSidebarDisplayName(getCreditCardSidebarLabelTemplatePreference());
-    setCreditCardDisplayName(getCreditCardLabelTemplatePreference());
   }, []);
 
   async function loadBaseCurrency() {
@@ -156,6 +220,7 @@ export default function DisplaySettingsPage() {
   async function saveScheme(next: ColorScheme) {
     const prev = scheme;
     setScheme(next);
+    setColorSchemePreference(next);
     setSavingScheme(true);
     try {
       const res = await fetch("/api/v1/settings/color-scheme", {
@@ -166,11 +231,16 @@ export default function DisplaySettingsPage() {
       const data = await res.json();
       if (!data.ok) {
         setScheme(prev);
-        setSchemeDraft(prev);
+        setColorSchemePreference(prev);
+      } else {
+        const saved = data.colorScheme === "green_up_red_down" ? "green_up_red_down" : "red_up_green_down";
+        setScheme(saved);
+        setColorSchemePreference(saved);
+        router.refresh();
       }
     } catch {
       setScheme(prev);
-      setSchemeDraft(prev);
+      setColorSchemePreference(prev);
     } finally {
       setSavingScheme(false);
     }
@@ -202,6 +272,34 @@ export default function DisplaySettingsPage() {
       setDisplayLanguagePreference(prev);
     } finally {
       setSavingDisplayLanguage(false);
+    }
+  }
+
+  async function saveDateDisplayFormat(next: DateDisplayFormat) {
+    const prev = dateDisplayFormat;
+    setDateDisplayFormat(next);
+    setDateDisplayFormatPreference(next);
+    setSavingDateDisplayFormat(true);
+    try {
+      const res = await fetch("/api/v1/settings/app-preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dateDisplayFormat: next }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setDateDisplayFormat(prev);
+        setDateDisplayFormatPreference(prev);
+      } else if (data.dateDisplayFormat) {
+        setDateDisplayFormat(data.dateDisplayFormat as DateDisplayFormat);
+        setDateDisplayFormatPreference(data.dateDisplayFormat as DateDisplayFormat);
+        router.refresh();
+      }
+    } catch {
+      setDateDisplayFormat(prev);
+      setDateDisplayFormatPreference(prev);
+    } finally {
+      setSavingDateDisplayFormat(false);
     }
   }
 
@@ -257,50 +355,32 @@ export default function DisplaySettingsPage() {
     }
   }
 
-  async function saveCreditCardDisplayName(next: string) {
-    const prev = creditCardDisplayName;
-    setCreditCardDisplayName(next);
-    setCreditCardLabelTemplatePreference(next);
-    setSavingCreditCardDisplayName(true);
-    try {
-      const res = await fetch("/api/v1/settings/app-preferences", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ creditCardLabelTemplate: next }),
-      });
-      const data = await res.json();
-      if (!data.ok) {
-        setCreditCardDisplayName(prev);
-        setCreditCardLabelTemplatePreference(prev);
-      }
-    } catch {
-      setCreditCardDisplayName(prev);
-      setCreditCardLabelTemplatePreference(prev);
-    } finally {
-      setSavingCreditCardDisplayName(false);
-    }
-  }
-
   async function saveCreditCardSidebarDisplayName(next: string) {
     const prev = creditCardSidebarDisplayName;
     const normalized = next || SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE;
     setCreditCardSidebarDisplayName(normalized);
     setCreditCardSidebarLabelTemplatePreference(normalized);
+    setCreditCardLabelTemplatePreference(normalized);
     setSavingCreditCardSidebarDisplayName(true);
     try {
       const res = await fetch("/api/v1/settings/app-preferences", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ creditCardSidebarLabelTemplate: normalized }),
+        body: JSON.stringify({
+          creditCardSidebarLabelTemplate: normalized,
+          creditCardLabelTemplate: normalized,
+        }),
       });
       const data = await res.json();
       if (!data.ok) {
         setCreditCardSidebarDisplayName(prev);
         setCreditCardSidebarLabelTemplatePreference(prev);
+        setCreditCardLabelTemplatePreference(prev);
       }
     } catch {
       setCreditCardSidebarDisplayName(prev);
       setCreditCardSidebarLabelTemplatePreference(prev);
+      setCreditCardLabelTemplatePreference(prev);
     } finally {
       setSavingCreditCardSidebarDisplayName(false);
     }
@@ -337,24 +417,26 @@ export default function DisplaySettingsPage() {
     }
   }
 
-  const sidebarPreview = useMemo(() => previewCreditCardName(creditCardSidebarDisplayName), [creditCardSidebarDisplayName]);
-  const tablePreview = useMemo(() => previewCreditCardName(creditCardDisplayName), [creditCardDisplayName]);
+  const sidebarPreview = useMemo(
+    () => previewCreditCardName(creditCardSidebarDisplayName, CREDIT_CARD_PREVIEW_SAMPLE),
+    [creditCardSidebarDisplayName]
+  );
   const timeZoneOptions = useMemo(() => buildTimeZoneOptions(t), [t]);
+  const hideSettingDescriptions = sidebarHideInitialData;
 
-  const colorOptions: { value: ColorScheme; label: string; desc: string; preview: { up: string; down: string } }[] = [
+  const colorOptions: { value: ColorScheme; label: string; preview: { up: string; down: string } }[] = [
     {
       value: "red_up_green_down",
       label: t("settings.display.colorRedUp"),
-      desc: t("settings.display.colorRedUpDesc"),
       preview: { up: "text-red-600", down: "text-emerald-700" },
     },
     {
       value: "green_up_red_down",
       label: t("settings.display.colorGreenUp"),
-      desc: t("settings.display.colorGreenUpDesc"),
       preview: { up: "text-emerald-700", down: "text-red-600" },
     },
   ];
+  const selectedColorOption = colorOptions.find((opt) => opt.value === scheme) ?? colorOptions[0];
 
   return (
     <div className="space-y-5">
@@ -365,7 +447,7 @@ export default function DisplaySettingsPage() {
 
       <section className="panel-surface overflow-hidden">
         <div>
-          <SettingRow title={t("settings.display.sidebarGroup")} desc={t("settings.display.sidebarGroupDesc")}>
+          <SettingRow title={t("settings.display.sidebarGroup")} desc={t("settings.display.sidebarGroupDesc")} hideDesc={hideSettingDescriptions}>
             <div className="flex gap-2">
               <button
                 type="button"
@@ -383,7 +465,7 @@ export default function DisplaySettingsPage() {
               </button>
             </div>
           </SettingRow>
-          <SettingRow title={t("settings.display.hideZero")} desc={t("settings.display.hideZeroDesc")}>
+          <SettingRow title={t("settings.display.hideZero")} desc={t("settings.display.hideZeroDesc")} hideDesc={hideSettingDescriptions}>
             <input
               type="checkbox"
               checked={sidebarHideZero}
@@ -391,7 +473,11 @@ export default function DisplaySettingsPage() {
               className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
             />
           </SettingRow>
-          <SettingRow title={t("settings.display.hideInitialData")} desc={t("settings.display.hideInitialDataDesc")}>
+          <SettingRow
+            title={t("settings.display.hideInitialData")}
+            desc={t("settings.display.hideInitialDataDesc")}
+            hideDesc={hideSettingDescriptions}
+          >
             <input
               type="checkbox"
               checked={sidebarHideInitialData}
@@ -403,48 +489,33 @@ export default function DisplaySettingsPage() {
       </section>
 
       <section className="panel-surface overflow-hidden">
-        <SettingRow title={t("settings.display.colorScheme")} desc={t("settings.display.colorSchemeDesc")} wide>
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex flex-wrap gap-2">
-              {colorOptions.map((opt) => (
-                <label
-                  key={opt.value}
-                  className={`flex h-9 cursor-pointer items-center gap-2 rounded-md border px-3 text-sm transition ${
-                    schemeDraft === opt.value ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700 hover:border-slate-300"
-                  }`}
-                  title={opt.desc}
-                >
-                  <input
-                    type="radio"
-                    name="colorScheme"
-                    value={opt.value}
-                    checked={schemeDraft === opt.value}
-                    onChange={() => setSchemeDraft(opt.value)}
-                    disabled={savingScheme}
-                    className="shrink-0"
-                  />
-                  <span className="font-medium">{opt.label}</span>
-                  <span className={`text-xs ${opt.preview.up}`}>+1.23%</span>
-                  <span className="text-xs text-slate-400">/</span>
-                  <span className={`text-xs ${opt.preview.down}`}>-0.56%</span>
-                </label>
-              ))}
-            </div>
-            <button
-              type="button"
-              onClick={() => saveScheme(schemeDraft)}
-              disabled={savingScheme || schemeDraft === scheme}
-              className="primary-button h-9 px-4 text-sm disabled:opacity-50"
+        <SettingRow title={t("settings.display.colorScheme")} desc={t("settings.display.colorSchemeDesc")} hideDesc={hideSettingDescriptions}>
+          <div className="space-y-2">
+            <select
+              value={scheme}
+              onChange={(e) => void saveScheme(e.target.value as ColorScheme)}
+              disabled={savingScheme}
+              className="form-input"
             >
-              {savingScheme ? t("settings.display.applying") : t("settings.display.apply")}
-            </button>
+              {colorOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <div className="flex items-center gap-1 text-xs text-slate-500" aria-live="polite">
+              <span className={`font-medium ${selectedColorOption.preview.up}`}>+1.23%</span>
+              <span className="text-slate-400">/</span>
+              <span className={`font-medium ${selectedColorOption.preview.down}`}>-0.56%</span>
+              {savingScheme ? <span className="ml-2 text-slate-400">{t("settings.display.applying")}</span> : null}
+            </div>
           </div>
         </SettingRow>
       </section>
 
       <section className="panel-surface overflow-hidden">
         <div>
-          <SettingRow title={t("settings.display.baseCurrency")} desc={t("settings.display.baseCurrencyDesc")}>
+          <SettingRow title={t("settings.display.baseCurrency")} desc={t("settings.display.baseCurrencyDesc")} hideDesc={hideSettingDescriptions}>
             <select
               value={baseCurrency}
               onChange={(e) => void saveBaseCurrency(e.target.value)}
@@ -453,26 +524,26 @@ export default function DisplaySettingsPage() {
             >
               {CURRENCY_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
-                  {option.label}
+                  {t(`entityForm.currency.${option.value.toLowerCase()}`)}
                 </option>
               ))}
             </select>
           </SettingRow>
-          <SettingRow title={t("settings.display.language")} desc={t("settings.display.languageDesc")}>
+          <SettingRow title={t("settings.display.language")} desc={t("settings.display.languageDesc")} hideDesc={hideSettingDescriptions}>
             <select
               value={displayLanguage}
               onChange={(e) => saveDisplayLanguage(e.target.value as DisplayLanguage)}
               disabled={savingDisplayLanguage}
               className="form-input"
             >
-              {DISPLAY_LANGUAGE_OPTIONS.map((value) => (
-                <option key={value} value={value}>
-                  {PRODUCT_INTROS[value].languageLabel}
+              {DISPLAY_LANGUAGE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {t(option.labelKey)}
                 </option>
               ))}
             </select>
           </SettingRow>
-          <SettingRow title={t("settings.display.timeZone")} desc={t("settings.display.timeZoneDesc")}>
+          <SettingRow title={t("settings.display.timeZone")} desc={t("settings.display.timeZoneDesc")} hideDesc={hideSettingDescriptions}>
             <select
               value={timeZoneMode === "system" ? "system" : timeZone}
               onChange={(e) => {
@@ -490,12 +561,26 @@ export default function DisplaySettingsPage() {
               ))}
             </select>
           </SettingRow>
+          <SettingRow title={t("settings.display.dateFormat")} desc={t("settings.display.dateFormatDesc")} hideDesc={hideSettingDescriptions}>
+            <select
+              value={dateDisplayFormat}
+              onChange={(e) => void saveDateDisplayFormat(e.target.value as DateDisplayFormat)}
+              disabled={savingDateDisplayFormat}
+              className="form-input"
+            >
+              {DATE_DISPLAY_FORMAT_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {t(option.labelKey)}
+                </option>
+              ))}
+            </select>
+          </SettingRow>
         </div>
       </section>
 
       <section className="panel-surface overflow-hidden">
         <div>
-          <SettingRow title={t("settings.display.creditCardSidebar")} desc={t("settings.display.creditCardSidebarDesc")} wide>
+          <SettingRow title={t("settings.display.creditCardSidebar")} desc={t("settings.display.creditCardSidebarDesc")} hideDesc={hideSettingDescriptions} wide>
             <div className="space-y-2">
               <input
                 value={creditCardSidebarDisplayName}
@@ -503,90 +588,54 @@ export default function DisplaySettingsPage() {
                 className="form-input"
                 placeholder={SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE}
               />
-              <div className="flex flex-wrap items-center gap-2">
-                {CREDIT_CARD_NAME_PRESETS.map((preset) => (
+              <div className="flex flex-wrap gap-2">
+                {CREDIT_CARD_NAME_FIELDS.map((field) => {
+                  const fieldLabel = t(field.labelKey);
+                  return (
                   <button
-                    key={`sidebar-${preset.value}`}
+                    key={field.value}
                     type="button"
-                    onClick={() => setCreditCardSidebarDisplayName(preset.value)}
-                    className="secondary-button h-8 px-3 text-xs"
-                    title={preset.example}
+                    onClick={() => setCreditCardSidebarDisplayName((current) => `${current}${field.value}`)}
+                    className="secondary-button h-7 px-2 text-[11px]"
+                    title={t("settings.display.insertField", { field: fieldLabel })}
                   >
-                    {t(preset.labelKey)}
+                    {fieldLabel}
                   </button>
-                ))}
-                <button
-                  type="button"
-                  disabled={savingCreditCardSidebarDisplayName}
-                  onClick={() => setCreditCardSidebarDisplayName(SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE)}
-                  className="secondary-button h-8 px-3 text-xs"
-                >
-                  {t("settings.display.default")}
-                </button>
+                  );
+                })}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                  {CREDIT_CARD_NAME_PRESETS.map((preset) => (
+                    <button
+                      key={`credit-card-${preset.value}`}
+                      type="button"
+                      onClick={() => setCreditCardSidebarDisplayName(preset.value)}
+                      className="secondary-button h-8 px-3 text-xs"
+                      title={previewCreditCardName(preset.value, CREDIT_CARD_PREVIEW_SAMPLE)}
+                    >
+                      {t(preset.labelKey)}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    disabled={savingCreditCardSidebarDisplayName}
+                    onClick={() => setCreditCardSidebarDisplayName(SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE)}
+                    className="secondary-button h-8 px-3 text-xs"
+                  >
+                    {t("settings.display.default")}
+                  </button>
+                </div>
                 <button
                   type="button"
                   disabled={savingCreditCardSidebarDisplayName}
                   onClick={() => void saveCreditCardSidebarDisplayName(creditCardSidebarDisplayName)}
-                  className="primary-button h-8 px-3 text-xs"
+                  className="primary-button ml-auto h-8 px-4 text-xs"
                 >
                   {t("common.save")}
                 </button>
               </div>
               <div className="text-xs text-slate-500">{t("settings.display.preview")}<span className="font-medium text-slate-800">{sidebarPreview || t("settings.display.previewEmpty")}</span></div>
-            </div>
-          </SettingRow>
-
-          <SettingRow title={t("settings.display.creditCardTable")} desc={t("settings.display.creditCardTableDesc")} wide>
-            <div className="space-y-2">
-              <input
-                value={creditCardDisplayName}
-                onChange={(e) => setCreditCardDisplayName(e.target.value)}
-                className="form-input"
-                placeholder={DEFAULT_CREDIT_CARD_LABEL_TEMPLATE}
-              />
-              <div className="flex flex-wrap items-center gap-2">
-                {CREDIT_CARD_NAME_PRESETS.map((preset) => (
-                  <button
-                    key={`table-${preset.value}`}
-                    type="button"
-                    onClick={() => setCreditCardDisplayName(preset.value)}
-                    className="secondary-button h-8 px-3 text-xs"
-                    title={preset.example}
-                  >
-                    {t(preset.labelKey)}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  disabled={savingCreditCardDisplayName}
-                  onClick={() => setCreditCardDisplayName(DEFAULT_CREDIT_CARD_LABEL_TEMPLATE)}
-                  className="secondary-button h-8 px-3 text-xs"
-                >
-                  {t("settings.display.default")}
-                </button>
-                <button
-                  type="button"
-                  disabled={savingCreditCardDisplayName}
-                  onClick={() => void saveCreditCardDisplayName(creditCardDisplayName)}
-                  className="primary-button h-8 px-3 text-xs"
-                >
-                  {t("common.save")}
-                </button>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {CREDIT_CARD_NAME_FIELDS.map((field) => (
-                  <button
-                    key={field}
-                    type="button"
-                    onClick={() => setCreditCardDisplayName((current) => `${current}${field}`)}
-                    className="secondary-button h-7 px-2 text-[11px]"
-                    title={t("settings.display.insertField", { field })}
-                  >
-                    {field}
-                  </button>
-                ))}
-              </div>
-              <div className="text-xs text-slate-500">{t("settings.display.preview")}<span className="font-medium text-slate-800">{tablePreview || t("settings.display.previewEmpty")}</span></div>
             </div>
           </SettingRow>
         </div>

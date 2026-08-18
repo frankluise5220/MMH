@@ -128,6 +128,8 @@ const DEFAULT_STATEMENT_RECOGNITION_RULES: DefaultStatementRecognitionRule[] = [
   { targetType: "institution", institutionName: "拼多多", keyword: "付费通", priority: 105 },
   { targetType: "institution", institutionName: "滴滴出行", keyword: "滴滴出行", priority: 110 },
   { targetType: "institution", institutionName: "携程", keyword: "携程", priority: 100 },
+  { targetType: "institution", institutionName: "\u4e2d\u56fd\u77f3\u5316", keyword: "\u4e2d\u56fd\u77f3\u5316", priority: 110 },
+  { targetType: "institution", institutionName: "\u4e2d\u56fd\u77f3\u5316", keyword: "\u4e2d\u77f3\u5316", priority: 110 },
   { targetType: "institution", institutionName: "国家电网", keyword: "国家电网", priority: 110 },
   { targetType: "institution", institutionName: "江苏云快充新能源科技有限公司", keyword: "云快充", priority: 110 },
   ...Object.entries(STATEMENT_IMPORT_FIELD_HEADERS).flatMap(([fieldName, aliases]) =>

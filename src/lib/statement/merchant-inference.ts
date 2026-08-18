@@ -13,6 +13,7 @@ type MerchantRule = {
 };
 
 const MERCHANT_RULES: MerchantRule[] = [
+  { pattern: /\u7279\u6765\u7535|\u5145\u7535\u9884\u5145\u503c|\u5145\u7535\u6869|\u5145\u7535\u7ad9|\u65b0\u80fd\u6e90.*\u5145\u7535/, counterparty: "\u5145\u7535\u670d\u52a1", category: "\u5145\u7535" },
   { pattern: /江苏云快充|云快充|新能源.*充电|充电桩/, counterparty: "江苏云快充新能源科技有限公司", category: "充电" },
   { pattern: /支付宝[^-]*-?(.*)/, counterparty: "支付宝", institution: "支付宝", category: "购物" },
   { pattern: /财付通[^-]*-?(.*)/, counterparty: "微信支付", institution: "微信", category: "购物" },
@@ -25,6 +26,7 @@ const MERCHANT_RULES: MerchantRule[] = [
   { pattern: /滴滴出行|打车/, counterparty: "滴滴出行", institution: "滴滴出行", category: "交通" },
   { pattern: /地铁|公交/, counterparty: "公共交通", category: "交通" },
   { pattern: /中国铁路|铁路网络|12306|火车票|高铁票|铁路/, counterparty: "中国铁路", institution: "中国铁路", category: "火车高铁" },
+  { pattern: /\u4e2d\u56fd\u77f3\u5316|\u4e2d\u77f3\u5316/, counterparty: "\u4e2d\u56fd\u77f3\u5316", institution: "\u4e2d\u56fd\u77f3\u5316" },
   { pattern: /停车场|停车费|停车/, counterparty: "停车场", category: "停车费" },
   { pattern: /移动|联通|电信/, counterparty: "运营商", category: "通讯" },
   { pattern: /拼多多|付费通/, counterparty: "拼多多", institution: "拼多多", category: "购物" },
@@ -81,6 +83,11 @@ function extractMerchant(text: string) {
   return "";
 }
 
+function extractLabeledMerchant(text: string) {
+  const labeledMerchant = text.match(/(?:^|[\s/])\u5546\u6237[:\uff1a]\s*([^/]+?)(?=\s*\/|$)/);
+  return cleanupMerchantName(labeledMerchant?.[1] ?? "");
+}
+
 function extractPaymentPrefix(text: string) {
   return cleanupMerchantName(text.split(/--|－|—/)[0] ?? "");
 }
@@ -122,19 +129,21 @@ export function inferKnownStatementMerchant(item: MerchantSource) {
   const normalizedText = cleanupMerchantName(normalizedSource).replace(/特约商户?/g, "").trim();
   const prefixInstitution = inferInstitutionFromPrefix(normalizedText);
   const remarkCategory = inferCategoryFromRemark(normalizedText);
+  const labeledMerchant = extractLabeledMerchant(source);
   for (const { pattern, counterparty, category, institution } of MERCHANT_RULES) {
     const matchText = pattern.test(normalizedText) ? normalizedText : source;
     if (!pattern.test(matchText)) continue;
-    const match = matchText.match(pattern);
-    const extra = cleanupMerchantName(extractMerchant(matchText) || (match?.[1] ? match[1].trim() : ""));
+    const extra = cleanupMerchantName(extractMerchant(matchText));
+    if (counterparty === "\u652f\u4ed8\u5b9d" && (labeledMerchant || !extra)) continue;
+    const broadPlatformCategory = counterparty === "\u652f\u4ed8\u5b9d" ? undefined : category;
     return {
-      counterparty: extra || counterparty,
-      category: remarkCategory || category || undefined,
+      counterparty: extra || labeledMerchant || counterparty,
+      category: remarkCategory || broadPlatformCategory || undefined,
       institution: prefixInstitution || institution || counterparty,
     };
   }
   return {
-    counterparty: undefined,
+    counterparty: labeledMerchant || undefined,
     category: remarkCategory || undefined,
     institution: prefixInstitution || undefined,
   };

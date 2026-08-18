@@ -175,11 +175,11 @@ export function StockFeeRuleSettingsButton({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="secondary-button h-9 w-9 justify-center px-0 text-xs"
+        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-500 transition-colors hover:bg-blue-50 hover:text-blue-600"
         title={t("stockFee.openTitle")}
         aria-label={t("stockFee.openTitle")}
       >
-        <Settings2 className="h-4 w-4" />
+        <Settings2 className="h-3.5 w-3.5" />
       </button>
       {open && typeof document !== "undefined" ? createPortal(
         <div className="app-modal-backdrop z-[1000]">

@@ -46,8 +46,8 @@ jobs:
           if [ -z "${VERSION}" ]; then
             VERSION="$(node -p "require('./package.json').version")"
           fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Building mmh-android-${VERSION}.apk"
+          echo "version=${VERSION}"
+          echo "asset=mmh-android-v${VERSION}.apk" >> "$GITHUB_OUTPUT"
 
       - name: Decode signing keystore
         env:
@@ -88,7 +88,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release-artifacts/android
-          cp android/app/build/outputs/apk/release/app-release.apk "release-artifacts/android/mmh-android-${{ steps.version.outputs.version }}.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "release-artifacts/android/${{ steps.version.outputs.asset }}"
           ls -lh release-artifacts/android/
 
       - name: Upload APK to GitHub Release

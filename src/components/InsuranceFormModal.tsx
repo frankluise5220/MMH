@@ -1269,15 +1269,15 @@ export function InsuranceFormModal({
           entityType="account"
           open={true}
           onClose={() => setNestedEntityType(null)}
-          onCreated={(id, name) => {
-            const option = { id, label: name, subLabel: kindLabel("bank_debit") };
+          onCreated={(id, name, extra) => {
+            const option = { id, label: name, subLabel: kindLabel(extra?.kind ?? "bank_debit") };
             setCashAccountList((prev) => [...prev, option]);
             setLocalCashSSOpts((prev) => (prev ? [...prev, option] : prev));
             setCashAccountId(id);
             setNestedEntityType(null);
           }}
-          extraFields={{ kind: "bank_debit" }}
-          hiddenFields={["kind"]}
+          allowedAccountKinds={["bank_debit", "ewallet"]}
+          hiddenFields={[]}
           nestedFieldData={nestedFieldData}
         />
       )}

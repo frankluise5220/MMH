@@ -6,6 +6,12 @@ import {
   SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE,
   normalizeCreditCardLabelTemplate,
 } from "@/lib/account-display";
+import {
+  normalizeDateDisplayFormat,
+  type DateDisplayFormat,
+} from "@/lib/date-utils";
+
+export type { DateDisplayFormat } from "@/lib/date-utils";
 
 export const SESSION_DAYS_COOKIE = "mmh_session_days";
 export const FUND_UNITS_DECIMALS_COOKIE = "mmh_fund_units_decimals";
@@ -19,6 +25,7 @@ export const CREDIT_BILL_HIDE_ZERO_COOKIE = "mmh_credit_hide_zero_bills";
 export const CREDIT_BILL_HIDE_SETTLED_COOKIE = "mmh_credit_hide_settled_bills";
 export const CREDIT_BILL_RECENT_CYCLES_COOKIE = "mmh_credit_recent_cycles";
 export const DISPLAY_LANGUAGE_COOKIE = "mmh_display_language";
+export const DATE_DISPLAY_FORMAT_COOKIE = "mmh_date_display_format";
 export const SIDEBAR_GROUP_BY_KEY = "sidebar_group_by";
 export const SIDEBAR_HIDE_ZERO_KEY = "sidebar_hide_zero";
 export const SIDEBAR_HIDE_INITIAL_DATA_KEY = "sidebar_hide_initial_data";
@@ -45,6 +52,7 @@ export type AppPreferencesSnapshot = {
   creditBillHideSettled: boolean;
   creditBillShowRecentCycles: boolean;
   displayLanguage: DisplayLanguage;
+  dateDisplayFormat: DateDisplayFormat;
   sidebarGroupBy: SidebarGroupMode;
   sidebarOwnerFilter: string;
   sidebarHideZero: boolean;
@@ -212,6 +220,16 @@ export function getDisplayLanguagePreference(): DisplayLanguage {
   return normalizeDisplayLanguage(parseCookieValue(DISPLAY_LANGUAGE_COOKIE));
 }
 
+export function getDateDisplayFormatPreference(): DateDisplayFormat {
+  return normalizeDateDisplayFormat(parseCookieValue(DATE_DISPLAY_FORMAT_COOKIE));
+}
+
+export function setDateDisplayFormatPreference(value: DateDisplayFormat) {
+  if (typeof document === "undefined") return;
+  setCookieValue(DATE_DISPLAY_FORMAT_COOKIE, normalizeDateDisplayFormat(value));
+  emitPreferencesChanged();
+}
+
 export function setDisplayLanguagePreference(value: DisplayLanguage) {
   if (typeof document === "undefined") return;
   setCookieValue(DISPLAY_LANGUAGE_COOKIE, normalizeDisplayLanguage(value));
@@ -334,6 +352,7 @@ export function getAppPreferences(): AppPreferencesSnapshot {
     creditBillHideSettled: getCreditBillHideSettledPreference(),
     creditBillShowRecentCycles: getCreditBillShowRecentCyclesPreference(),
     displayLanguage: getDisplayLanguagePreference(),
+    dateDisplayFormat: getDateDisplayFormatPreference(),
     sidebarGroupBy: getSidebarGroupPreference(),
     sidebarOwnerFilter: getSidebarOwnerFilterPreference(),
     sidebarHideZero: getSidebarHideZeroPreference(),

@@ -72,6 +72,7 @@ const ALIAS_PATTERNS: Array<{ pattern: RegExp; counterparty: string; category?: 
   { pattern: /滴滴出行|打车/, counterparty: "滴滴出行", institution: "滴滴出行", category: "交通" },
   { pattern: /地铁|公交/, counterparty: "公共交通", category: "交通" },
   { pattern: /中国铁路|铁路网络|12306|火车票|高铁票|铁路/, counterparty: "中国铁路", institution: "中国铁路", category: "火车高铁" },
+  { pattern: /\u4e2d\u56fd\u77f3\u5316|\u4e2d\u77f3\u5316/, counterparty: "\u4e2d\u56fd\u77f3\u5316", institution: "\u4e2d\u56fd\u77f3\u5316" },
   { pattern: /停车场|停车费|停车/, counterparty: "停车场", category: "停车费" },
   { pattern: /移动|联通|电信/, counterparty: "运营商", category: "通讯" },
   { pattern: /拼多多|付费通/, counterparty: "拼多多", institution: "拼多多", category: "购物" },

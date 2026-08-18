@@ -2,11 +2,12 @@
 
 import { useState, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
-import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, ChevronDown, ChevronRight } from "lucide-react";
+import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, ChevronDown, ChevronRight, X } from "lucide-react";
 import type { AccountKind } from "@prisma/client";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
 import { kindIconName, kindColor, kindOrder } from "@/lib/account-kinds";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
+import { FundConfirmDaysPanel } from "@/components/FundConfirmDaysModal";
 import { SmartSelect } from "@/components/SmartSelect";
 import { SettingsActionButton, SettingsPageHeader, SettingsPrimaryAddButton } from "@/components/settings/SettingsPageScaffold";
 import { buildAccountDisplayOption } from "@/lib/account-display";
@@ -95,7 +96,7 @@ export default function SettingsAccountsPage() {
   const guideAccountSetup = searchParams.get("guide") === "accounts";
 
   // Delete account with password verification
-  const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ account: Account; recordCount: number; toRecordCount: number } | null>(null);
   const [deletePassword, setDeletePassword] = useState("");
   const [deleteError, setDeleteError] = useState("");
 
@@ -381,208 +382,6 @@ export default function SettingsAccountsPage() {
             {!collapsed && (
             <div className="divide-y divide-slate-100">
               {list.map(a => (
-                editingId === a.id ? (
-                  /* ---- Edit mode ---- */
-                  <div key={a.id} className="p-4 bg-blue-50/30">
-                    {(() => {
-                      const normalizedKind = normalizedAccountKind(a);
-                      const editKind = (editForm.kind || normalizedKind) as AccountKind;
-                      const isInvestmentKind = editKind === "investment";
-                      const editInvestProductType = editForm.investProductType || "fund";
-                      const showCostBasisMethod = isInvestmentKind && supportsCostBasisMethod(editInvestProductType);
-                      const isBillLikeKind = editKind === "bank_credit";
-                      const supportsLastFour = editKind === "bank_credit" || editKind === "bank_debit";
-                      const filteredInstitutions = institutions.filter((institution) =>
-                        accountInstitutionTypeMatches(editKind, editInvestProductType, institution.type),
-                      );
-                      return (
-                        <>
-                    <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                      <div>
-                        <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.name")}</label>
-                        <input value={editForm.name || ""} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))}
-                          className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none focus:border-blue-400" />
-                      </div>
-                      <div>
-                        <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.type")}</label>
-                        <select
-                          value={editKind}
-                          onChange={e => setEditForm(f => ({
-                            ...f,
-                            kind: e.target.value,
-                            institutionId: "",
-                            investProductType: e.target.value === "investment" ? (f.investProductType || "fund") : "",
-                          }))}
-                          className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
-                        >
-                          <option value="cash">{t("account.kind.cash")}</option>
-                          <option value="bank_debit">{t("account.kind.bank_debit")}</option>
-                          <option value="bank_credit">{t("account.kind.bank_credit")}</option>
-                          <option value="ewallet">{t("account.kind.ewallet")}</option>
-                          <option value="deposit">{t("account.kind.deposit")}</option>
-                          <option value="investment">{t("account.kind.investment")}</option>
-                          <option value="loan">{t("account.kind.loan")}</option>
-                          <option value="other">{t("account.kind.other")}</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.owner")}</label>
-                        <SmartSelect mode="single" value={editForm.groupId || ""}
-                          onChange={id => setEditForm(f => ({ ...f, groupId: id }))}
-                          options={groups.map(g => ({ id: g.id, label: g.name }))}
-                          placeholder={t("settings.accounts.selectOwner")}
-                          onCreateClick={() => setNestedEntityType("group")} createLabel={t("settings.accounts.addOwner")} />
-                      </div>
-                      <div>
-                        <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.institution")}</label>
-                        <SmartSelect mode="single" value={editForm.institutionId || ""}
-                          onChange={changeEditInstitution}
-                          options={filteredInstitutions.map(i => ({
-                            id: i.id,
-                            label: i.shortName?.trim() || i.name,
-                            subLabel: [i.shortName?.trim() ? i.name : "", institutionKindLabel(i.type)].filter(Boolean).join(" · "),
-                          }))}
-                          placeholder={t("settings.accounts.selectInstitution")}
-                          onCreateClick={() => setNestedEntityType("institution")} createLabel={t("settings.accounts.addInstitution")} />
-                      </div>
-                      <div>
-                        <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.currency")}</label>
-                        <select
-                          value={normalizeCurrency(editForm.currency || baseCurrency)}
-                          onChange={e => setEditForm(f => ({ ...f, currency: e.target.value }))}
-                          className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
-                        >
-                          {CURRENCY_OPTIONS.map((option) => (
-                            <option key={option.value} value={option.value}>{option.label}</option>
-                          ))}
-                        </select>
-                      </div>
-                      {isInvestmentKind && (
-                        <div>
-                          <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.investmentAccountType")}</label>
-                          <select value={editInvestProductType} onChange={e => setEditForm(f => {
-                            const nextInvestProductType = e.target.value;
-                            const selectedInstitution = institutions.find((institution) => institution.id === f.institutionId);
-                            return {
-                              ...f,
-                              investProductType: nextInvestProductType,
-                              ...(isStockInvestmentAccount(editKind, nextInvestProductType) && selectedInstitution && !isStockAccountInstitutionType(selectedInstitution.type) ? { institutionId: "" } : {}),
-                            };
-                          })}
-                            className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none">
-                            {investmentProductTypeOptions.map((item) => <option key={item.value} value={item.value}>{investmentLabel(item.value)}</option>)}
-                          </select>
-                        </div>
-                      )}
-                    </div>
-
-                    {isInvestmentKind && (
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
-                        {showCostBasisMethod && (
-                          <div>
-                            <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.costBasisMethod")}</label>
-                            <select value={editForm.costBasisMethod || "moving_avg"} onChange={e => setEditForm(f => ({ ...f, costBasisMethod: e.target.value }))}
-                              className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none">
-                              <option value="moving_avg">{t("settings.accounts.movingAverage")}</option>
-                              <option value="fifo">{t("settings.accounts.fifo")}</option>
-                              <option value="lifo">{t("settings.accounts.lifo")}</option>
-                            </select>
-                          </div>
-                        )}
-                        {editInvestProductType === "fund" && (
-                          <div>
-                            <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.fundUnitsDecimals")}</label>
-                            <input
-                              value={editForm.fundUnitsDecimals || "3"}
-                              onChange={e => setEditForm(f => ({ ...f, fundUnitsDecimals: e.target.value }))}
-                              className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
-                              inputMode="numeric"
-                              placeholder={t("settings.accounts.defaultUnitsDecimals")}
-                            />
-                          </div>
-                        )}
-                        {supportsTradingCalendarForAccount(editKind, editInvestProductType) && (
-                          <div>
-                            <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.tradingCalendar")}</label>
-                            <select
-                              value={editForm.tradingCalendar || "cn_fund"}
-                              onChange={e => setEditForm(f => ({ ...f, tradingCalendar: e.target.value }))}
-                              className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
-                            >
-                              {TRADING_CALENDARS.map((calendar) => (
-                                <option key={calendar} value={calendar}>{t(`tradingCalendar.${calendar}`)}</option>
-                              ))}
-                            </select>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {supportsLastFour && (
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
-                        {isBillLikeKind && (
-                          <>
-                            <div>
-                              <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.billingDayLabel")}</label>
-                              <input value={editForm.billingDay || ""} onChange={e => setEditForm(f => ({ ...f, billingDay: e.target.value }))}
-                                className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" placeholder="1-31" />
-                            </div>
-                            <div>
-                              <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.repaymentDayLabel")}</label>
-                              <input value={editForm.repaymentDay || ""} onChange={e => setEditForm(f => ({ ...f, repaymentDay: e.target.value }))}
-                                className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" placeholder="1-31" />
-                            </div>
-                            <div>
-                              <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.creditLimitLabel")}</label>
-                              <input value={editForm.creditLimit || ""} onChange={e => setEditForm(f => ({ ...f, creditLimit: e.target.value }))}
-                                className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" />
-                            </div>
-                          </>
-                        )}
-                        <div>
-                          <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.lastFourLabel")}</label>
-                          <input value={editForm.numberMasked || ""} onChange={e => setEditForm(f => ({ ...f, numberMasked: e.target.value }))}
-                            className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" />
-                        </div>
-                        {isBillLikeKind && (
-                          <div>
-                            <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.billMode")}</label>
-                            <select
-                              value={editForm.creditBillMode || "separate"}
-                              onChange={e => setEditForm(f => ({ ...f, creditBillMode: e.target.value }))}
-                              className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
-                            >
-                              <option value="separate">{t("settings.accounts.separateBill")}</option>
-                              <option value="consolidated">{t("settings.accounts.consolidatedBill")}</option>
-                            </select>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    <div className="mt-3">
-                      <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.note")}</label>
-                      <textarea
-                        value={editForm.note || ""}
-                        onChange={e => setEditForm(f => ({ ...f, note: e.target.value }))}
-                        className="min-h-[96px] w-full resize-y rounded-md border border-slate-200 px-2 py-2 text-sm leading-5 outline-none focus:border-blue-400"
-                        placeholder={t("settings.accounts.notePlaceholder")}
-                        rows={4}
-                      />
-                    </div>
-
-                    <div className="flex justify-end gap-2 mt-3">
-                      {editError && <div className="text-xs text-red-600">{editError}</div>}
-                      <button onClick={() => { setEditingId(null); setEditError(""); }}
-                        className="h-7 px-3 rounded-md border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50">{t("common.cancel")}</button>
-                      <button onClick={saveEdit}
-                        className="h-7 px-3 rounded-md bg-blue-600 text-white text-xs hover:bg-blue-700">{t("common.save")}</button>
-                    </div>
-                        </>
-                      );
-                    })()}
-                  </div>
-                ) : (
                   /* ---- View mode ---- */
                   <div key={a.id} className={`px-4 py-2.5 flex items-center justify-between ${a.isPlaceholder ? "opacity-40 bg-slate-50" : !a.isActive ? "opacity-60" : ""} ${!a.isPlaceholder ? "hover:bg-slate-50" : ""} transition-colors`}>
                     <div className="flex-1 min-w-0 flex items-center gap-2">
@@ -639,7 +438,6 @@ export default function SettingsAccountsPage() {
                         onClick={() => openEdit(a)}
                       />
                       )}
-                      {!a.isPlaceholder && (
                       <SettingsActionButton
                         label={t("common.delete")}
                         variant="delete"
@@ -652,7 +450,11 @@ export default function SettingsAccountsPage() {
                           return;
                         }
                         if (data.needPassword) {
-                          setDeleteTarget(a);
+                          setDeleteTarget({
+                            account: a,
+                            recordCount: Number(data.recordCount ?? 0),
+                            toRecordCount: Number(data.toRecordCount ?? 0),
+                          });
                           setDeletePassword("");
                           setDeleteError("");
                           return;
@@ -660,10 +462,8 @@ export default function SettingsAccountsPage() {
                         window.alert(data.error);
                       }}
                       />
-                      )}
                     </div>
                   </div>
-                )
               ))}
             </div>
             )}
@@ -734,7 +534,11 @@ export default function SettingsAccountsPage() {
             onMouseDown={e => e.stopPropagation()}>
             <div className="text-sm font-semibold text-slate-800 mb-1">{t("settings.accounts.passwordTitle")}</div>
             <div className="text-xs text-slate-500 mb-3">
-              {tf("settings.accounts.passwordDesc", { name: deleteTarget.name })}
+              {tf("settings.accounts.passwordDesc", {
+                name: deleteTarget.account.name,
+                recordCount: deleteTarget.recordCount,
+                linkedCount: deleteTarget.toRecordCount,
+              })}
             </div>
             <input
               type="password"
@@ -742,7 +546,7 @@ export default function SettingsAccountsPage() {
               onChange={e => { setDeletePassword(e.target.value); setDeleteError(""); }}
               onKeyDown={async e => {
                 if (e.key === "Enter") {
-                  const res = await fetch(`/api/v1/accounts?id=${deleteTarget.id}`, {
+                  const res = await fetch(`/api/v1/accounts?id=${deleteTarget.account.id}`, {
                     method: "DELETE",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ password: deletePassword }),
@@ -764,7 +568,7 @@ export default function SettingsAccountsPage() {
               <button onClick={() => { setDeleteTarget(null); setDeleteError(""); }}
                 className="h-8 px-3 rounded-md border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50">{t("common.cancel")}</button>
               <button onClick={async () => {
-                const res = await fetch(`/api/v1/accounts?id=${deleteTarget.id}`, {
+                const res = await fetch(`/api/v1/accounts?id=${deleteTarget.account.id}`, {
                   method: "DELETE",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({ password: deletePassword }),
@@ -781,6 +585,234 @@ export default function SettingsAccountsPage() {
           </div>
         </div>
       )}
+
+      {/* Account edit modal */}
+      {editingId && (() => {
+        const editingAccount = accounts.find((account) => account.id === editingId);
+        if (!editingAccount) return null;
+        const normalizedKind = normalizedAccountKind(editingAccount);
+        const editKind = (editForm.kind || normalizedKind) as AccountKind;
+        const isInvestmentKind = editKind === "investment";
+        const editInvestProductType = editForm.investProductType || "fund";
+        const showCostBasisMethod = isInvestmentKind && supportsCostBasisMethod(editInvestProductType);
+        const isBillLikeKind = editKind === "bank_credit";
+        const supportsLastFour = editKind === "bank_credit" || editKind === "bank_debit";
+        const filteredInstitutions = institutions.filter((institution) =>
+          accountInstitutionTypeMatches(editKind, editInvestProductType, institution.type),
+        );
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-[1px]"
+            onMouseDown={() => { setEditingId(null); setEditError(""); }}>
+            <div className="max-h-[90vh] w-[720px] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 shadow-xl"
+              onMouseDown={e => e.stopPropagation()}>
+              <div className="mb-3 flex items-center justify-between">
+                <div className="text-sm font-semibold text-slate-800">{t("settings.accounts.editTitle", { name: editingAccount.name })}</div>
+                <button type="button" onClick={() => { setEditingId(null); setEditError(""); }}
+                  className="h-8 w-8 rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50" aria-label={t("table.close")}>
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.name")}</label>
+                  <input value={editForm.name || ""} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))}
+                    className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none focus:border-blue-400" />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.type")}</label>
+                  <select
+                    value={editKind}
+                    onChange={e => setEditForm(f => ({
+                      ...f,
+                      kind: e.target.value,
+                      institutionId: "",
+                      investProductType: e.target.value === "investment" ? (f.investProductType || "fund") : "",
+                    }))}
+                    className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
+                  >
+                    <option value="cash">{t("account.kind.cash")}</option>
+                    <option value="bank_debit">{t("account.kind.bank_debit")}</option>
+                    <option value="bank_credit">{t("account.kind.bank_credit")}</option>
+                    <option value="ewallet">{t("account.kind.ewallet")}</option>
+                    <option value="deposit">{t("account.kind.deposit")}</option>
+                    <option value="investment">{t("account.kind.investment")}</option>
+                    <option value="loan">{t("account.kind.loan")}</option>
+                    <option value="other">{t("account.kind.other")}</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.owner")}</label>
+                  <SmartSelect mode="single" value={editForm.groupId || ""}
+                    onChange={id => setEditForm(f => ({ ...f, groupId: id }))}
+                    options={groups.map(g => ({ id: g.id, label: g.name }))}
+                    placeholder={t("settings.accounts.selectOwner")}
+                    onCreateClick={() => setNestedEntityType("group")} createLabel={t("settings.accounts.addOwner")} />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.institution")}</label>
+                  <SmartSelect mode="single" value={editForm.institutionId || ""}
+                    onChange={changeEditInstitution}
+                    options={filteredInstitutions.map(i => ({
+                      id: i.id,
+                      label: i.shortName?.trim() || i.name,
+                      subLabel: [i.shortName?.trim() ? i.name : "", institutionKindLabel(i.type)].filter(Boolean).join(" · "),
+                    }))}
+                    placeholder={t("settings.accounts.selectInstitution")}
+                    onCreateClick={() => setNestedEntityType("institution")} createLabel={t("settings.accounts.addInstitution")} />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.currency")}</label>
+                  <select
+                    value={normalizeCurrency(editForm.currency || baseCurrency)}
+                    onChange={e => setEditForm(f => ({ ...f, currency: e.target.value }))}
+                    className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
+                  >
+                    {CURRENCY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{t(`entityForm.currency.${option.value.toLowerCase()}`)}</option>
+                    ))}
+                  </select>
+                </div>
+                {isInvestmentKind && (
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.investmentAccountType")}</label>
+                    <select value={editInvestProductType} onChange={e => setEditForm(f => {
+                      const nextInvestProductType = e.target.value;
+                      const selectedInstitution = institutions.find((institution) => institution.id === f.institutionId);
+                      return {
+                        ...f,
+                        investProductType: nextInvestProductType,
+                        ...(isStockInvestmentAccount(editKind, nextInvestProductType) && selectedInstitution && !isStockAccountInstitutionType(selectedInstitution.type) ? { institutionId: "" } : {}),
+                      };
+                    })}
+                      className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none">
+                      {investmentProductTypeOptions.map((item) => <option key={item.value} value={item.value}>{investmentLabel(item.value)}</option>)}
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              {isInvestmentKind && (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+                  {showCostBasisMethod && (
+                    <div>
+                      <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.costBasisMethod")}</label>
+                      <select value={editForm.costBasisMethod || "moving_avg"} onChange={e => setEditForm(f => ({ ...f, costBasisMethod: e.target.value }))}
+                        className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none">
+                        <option value="moving_avg">{t("settings.accounts.movingAverage")}</option>
+                        <option value="fifo">{t("settings.accounts.fifo")}</option>
+                        <option value="lifo">{t("settings.accounts.lifo")}</option>
+                      </select>
+                    </div>
+                  )}
+                  {editInvestProductType === "fund" && (
+                    <div>
+                      <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.fundUnitsDecimals")}</label>
+                      <input
+                        value={editForm.fundUnitsDecimals || "3"}
+                        onChange={e => setEditForm(f => ({ ...f, fundUnitsDecimals: e.target.value }))}
+                        className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
+                        inputMode="numeric"
+                        placeholder={t("settings.accounts.defaultUnitsDecimals")}
+                      />
+                    </div>
+                  )}
+                  {supportsTradingCalendarForAccount(editKind, editInvestProductType) && (
+                    <div>
+                      <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.tradingCalendar")}</label>
+                      <select
+                        value={editForm.tradingCalendar || "cn_fund"}
+                        onChange={e => setEditForm(f => ({ ...f, tradingCalendar: e.target.value }))}
+                        className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
+                      >
+                        {TRADING_CALENDARS.map((calendar) => (
+                          <option key={calendar} value={calendar}>{t(`tradingCalendar.${calendar}`)}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {supportsLastFour && (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+                  {isBillLikeKind && (
+                    <>
+                      <div>
+                        <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.billingDayLabel")}</label>
+                        <input value={editForm.billingDay || ""} onChange={e => setEditForm(f => ({ ...f, billingDay: e.target.value }))}
+                          className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" placeholder="1-31" />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.repaymentDayLabel")}</label>
+                        <input value={editForm.repaymentDay || ""} onChange={e => setEditForm(f => ({ ...f, repaymentDay: e.target.value }))}
+                          className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" placeholder="1-31" />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.creditLimitLabel")}</label>
+                        <input value={editForm.creditLimit || ""} onChange={e => setEditForm(f => ({ ...f, creditLimit: e.target.value }))}
+                          className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" />
+                      </div>
+                    </>
+                  )}
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.lastFourLabel")}</label>
+                    <input value={editForm.numberMasked || ""} onChange={e => setEditForm(f => ({ ...f, numberMasked: e.target.value }))}
+                      className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" />
+                  </div>
+                  {isBillLikeKind && (
+                    <div>
+                      <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.billMode")}</label>
+                      <select
+                        value={editForm.creditBillMode || "separate"}
+                        onChange={e => setEditForm(f => ({ ...f, creditBillMode: e.target.value }))}
+                        className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
+                      >
+                        <option value="separate">{t("settings.accounts.separateBill")}</option>
+                        <option value="consolidated">{t("settings.accounts.consolidatedBill")}</option>
+                      </select>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="mt-3">
+                <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.note")}</label>
+                <textarea
+                  value={editForm.note || ""}
+                  onChange={e => setEditForm(f => ({ ...f, note: e.target.value }))}
+                  className="min-h-[96px] w-full resize-y rounded-md border border-slate-200 px-2 py-2 text-sm leading-5 outline-none focus:border-blue-400"
+                  placeholder={t("settings.accounts.notePlaceholder")}
+                  rows={4}
+                />
+              </div>
+
+              {isInvestmentKind && editInvestProductType === "fund" ? (
+                <div className="mt-4">
+                  <div className="mb-2 flex items-center gap-2">
+                    <span className="text-xs font-medium text-slate-600">{t("fundRules.title")}</span>
+                    <span className="text-[11px] text-slate-400">{t("fundConfirmDays.embeddedHint")}</span>
+                  </div>
+                  <FundConfirmDaysPanel
+                    accountId={editingAccount.id}
+                    compact
+                    onSaved={() => {
+                      dispatchFinanceDataChanged({ reason: "fund-confirm-days:save", accountIds: [editingAccount.id] });
+                    }}
+                  />
+                </div>
+              ) : null}
+
+              <div className="mt-4 flex justify-end gap-2 border-t border-slate-100 pt-3">
+                {editError && <div className="text-xs text-red-600">{editError}</div>}
+                <button onClick={() => { setEditingId(null); setEditError(""); }}
+                  className="h-8 px-3 rounded-md border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50">{t("common.cancel")}</button>
+                <button onClick={saveEdit}
+                  className="h-8 px-4 rounded-md bg-blue-600 text-white text-xs hover:bg-blue-700">{t("common.save")}</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

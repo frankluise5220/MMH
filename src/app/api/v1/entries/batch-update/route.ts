@@ -15,7 +15,7 @@ import { resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { CREDIT_CARD_REPAYMENT_CATEGORY_NAME, isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
-import { upsertStatementCategoryRuleFromTx } from "@/lib/statement/category-rules";
+import { upsertStatementCategoryRuleFromSavedRecord } from "@/lib/statement/category-rules";
 
 /**
  * Batch-updates transaction records.
@@ -488,16 +488,15 @@ export async function POST(req: NextRequest) {
         const learnedCategoryId = typeof data.categoryId === "string" ? data.categoryId : "";
         const learnedCategoryName = typeof data.categoryName === "string" ? data.categoryName : "";
         if (item.categoryId !== undefined && learnedCategoryId && learnedCategoryName && (finalType === "income" || finalType === "expense")) {
-          await upsertStatementCategoryRuleFromTx(prisma, {
+          await upsertStatementCategoryRuleFromSavedRecord(prisma, {
             householdId: ctx.householdId,
             type: finalType,
             categoryId: learnedCategoryId,
             categoryName: learnedCategoryName,
             counterpartyInstitutionName: existing.counterpartyInstitutionName,
             paymentChannelName: existing.paymentChannelName,
-            source: "user_category_edit",
             note: typeof data.note === "string" ? data.note : existing.note,
-          });
+          }, "user_category_edit");
         }
       }
     }

@@ -1,8 +1,27 @@
 "use client";
 
 import type { ButtonHTMLAttributes, TdHTMLAttributes } from "react";
+import { useEffect, useState } from "react";
 import { Copy, Eye, EyeOff, Pencil, Plus, PlusCircle, Star, Trash2 } from "lucide-react";
+import { APP_PREFS_EVENT, getSidebarHideInitialDataPreference } from "@/lib/client/appPreferences";
 import { useI18n } from "@/lib/i18n";
+
+function useHideSettingDescriptions() {
+  const [hidden, setHidden] = useState(false);
+
+  useEffect(() => {
+    const update = () => setHidden(getSidebarHideInitialDataPreference());
+    update();
+    window.addEventListener(APP_PREFS_EVENT, update);
+    window.addEventListener("storage", update);
+    return () => {
+      window.removeEventListener(APP_PREFS_EVENT, update);
+      window.removeEventListener("storage", update);
+    };
+  }, []);
+
+  return hidden;
+}
 
 export function SettingsPageHeader({
   title,
@@ -20,10 +39,13 @@ export function SettingsPageHeader({
   sticky?: boolean;
 }) {
   const { t } = useI18n();
+  const hideDescriptions = useHideSettingDescriptions();
+  const showDescription = Boolean(description) && !hideDescriptions;
+
   return (
     <div className={sticky ? "sticky top-0 z-20 border-b border-slate-200 bg-slate-50/95 pb-3 pt-1 backdrop-blur" : ""}>
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
+        <div className="min-w-0" title={description && hideDescriptions ? description : undefined}>
           <div className="flex items-center gap-2">
             <h2 className="text-sm font-semibold text-slate-800">{title}</h2>
             {count !== undefined ? (
@@ -32,7 +54,7 @@ export function SettingsPageHeader({
               </span>
             ) : null}
           </div>
-          {description ? <p className="mt-1 text-xs text-slate-500">{description}</p> : null}
+          {showDescription ? <p className="mt-1 text-xs text-slate-500">{description}</p> : null}
         </div>
         {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
       </div>
@@ -124,15 +146,18 @@ export function SettingsSection({
   actions?: React.ReactNode;
   children: React.ReactNode;
 }) {
+  const hideDescriptions = useHideSettingDescriptions();
+  const showDescription = Boolean(description) && !hideDescriptions;
+
   return (
     <section className="panel-surface overflow-hidden">
       <div className="panel-header gap-3">
-        <div className="min-w-0">
+        <div className="min-w-0" title={description && hideDescriptions ? description : undefined}>
           <div className="flex items-center gap-2">
             <div className="text-sm font-medium text-slate-800">{title}</div>
             {count !== undefined ? <span className="text-xs tabular-nums text-slate-400">({count})</span> : null}
           </div>
-          {description ? <div className="mt-1 text-xs text-slate-500">{description}</div> : null}
+          {showDescription ? <div className="mt-1 text-xs text-slate-500">{description}</div> : null}
         </div>
         {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
       </div>
@@ -235,12 +260,15 @@ export function SettingsPreferencePanel({
   description?: string;
   children: React.ReactNode;
 }) {
+  const hideDescriptions = useHideSettingDescriptions();
+  const showDescription = Boolean(description) && !hideDescriptions;
+
   return (
     <section className="panel-surface overflow-hidden">
       <div className="panel-header">
-        <div>
+        <div title={description && hideDescriptions ? description : undefined}>
           <div className="text-sm font-medium text-slate-800">{title}</div>
-          {description ? <div className="mt-1 text-xs text-slate-500">{description}</div> : null}
+          {showDescription ? <div className="mt-1 text-xs text-slate-500">{description}</div> : null}
         </div>
       </div>
       <div className="p-4">{children}</div>

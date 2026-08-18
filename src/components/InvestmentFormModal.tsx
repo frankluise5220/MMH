@@ -252,13 +252,13 @@ export function InvestmentFormModal({
   const initFee = mode === "edit" && fixedProductType === "metal" && entry?.metalFee != null
     ? String(entry.metalFee)
     : mode === "edit" && entry?.fundFee != null ? String(entry.fundFee) : "";
-  // Buy: cash account -> fund account; redeem: fund account -> cash account; buy refunds return to buy edit.
-  const isRedeemEntry = isRedeemLike(initSubtype);
+  // Buy: cash account -> fund account; redeem / cash dividend: fund account -> cash account.
+  const initCashReceivingEntry = isRedeemLike(initSubtype) || initSubtype === "dividend_cash";
   const initCashAccountId = mode === "edit"
-    ? (isRedeemEntry ? (entry?.toAccountId ?? "") : (entry?.accountId ?? ""))
+    ? (initCashReceivingEntry ? (entry?.toAccountId ?? "") : (entry?.accountId ?? ""))
     : "";
   const initToAccountId = mode === "edit"
-    ? (isRedeemEntry ? (entry?.accountId ?? defaultAccountId) : (entry?.toAccountId ?? defaultAccountId))
+    ? (initCashReceivingEntry ? (entry?.accountId ?? defaultAccountId) : (entry?.toAccountId ?? defaultAccountId))
     : defaultAccountId;
   const initConfirmDays = mode === "edit" && entry
     ? (defaults?.confirmDays ?? 1)
@@ -2089,6 +2089,7 @@ export function InvestmentFormModal({
       formData.set("redeemCostDays", String(redeemCostDays));
       formData.set('arrivalDays', String(arrivalDays));
     }
+    setSubmitting(true);
     try {
       const res = mode === "edit" && editAction ? await editAction(formData) : await createAction(formData);
       if (!res.ok) { window.alert(res.error); return; }
@@ -2175,6 +2176,7 @@ export function InvestmentFormModal({
       const data = await deleteEntriesWithLinkedPrompt({
         entryIds: [entry.id],
         confirmMessage: t("investForm.deleteConfirm"),
+        t,
       });
       if (!data.ok) {
         if (data.code !== "DELETE_CANCELLED" && data.error !== "已取消删除") window.alert(data.error ?? t("investForm.alert.deleteFailed"));
@@ -2885,20 +2887,21 @@ export function InvestmentFormModal({
         </div>,
         document.body,
       ) : null}
-      {nestedEntityType ? (
+      {nestedEntityType && typeof document !== "undefined" ? createPortal(
         <NestedAddModal
           mode="compact"
           entityType="account"
           open={true}
           onClose={() => setNestedEntityType(null)}
           onCreated={handleNestedAccountCreated}
-          extraFields={{
-            kind: nestedEntityType === "cash-account" ? "bank_debit" : "investment",
-            investProductType: productType === "deposit" ? "fund" : productType,
-          }}
-          hiddenFields={["kind"]}
+          extraFields={nestedEntityType === "cash-account"
+            ? undefined
+            : { kind: "investment", investProductType: productType === "deposit" ? "fund" : productType }}
+          hiddenFields={nestedEntityType === "cash-account" ? [] : ["kind"]}
+          allowedAccountKinds={nestedEntityType === "cash-account" ? ["bank_debit", "ewallet"] : undefined}
           nestedFieldData={nestedFieldData}
-        />
+        />,
+        document.body,
       ) : null}
     </>
   );

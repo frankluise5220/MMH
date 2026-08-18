@@ -1328,10 +1328,11 @@ export function DepositFormModal({
               }}
               extraFields={
                 nestedEntityType === "cash-account"
-                  ? { kind: "bank_debit" }
+                  ? undefined
                   : { kind: "deposit" }
               }
-              hiddenFields={["kind"]}
+              hiddenFields={nestedEntityType === "cash-account" ? [] : ["kind"]}
+              allowedAccountKinds={nestedEntityType === "cash-account" ? ["bank_debit", "ewallet"] : undefined}
               nestedFieldData={nestedFieldData}
             />,
             document.body,

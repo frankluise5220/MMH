@@ -152,7 +152,7 @@ export async function computeOverviewSummary(
   const monthEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
 
   const accounts = await prisma.account.findMany({
-    where: { isActive: true, ...hidFilter },
+    where: { isActive: true, isPlaceholder: { not: true }, ...hidFilter },
     select: {
       id: true,
       name: true,

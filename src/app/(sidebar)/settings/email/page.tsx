@@ -1421,6 +1421,7 @@ export default function EmailSettingsPage() {
           selectableGroups: true,
           groupSelectOnDoubleClick: false,
           minDropdownWidth: 252,
+          fitContent: true,
           dropdownMaxHeight: 180,
           density: "micro",
           expandedGroupColumns: 4,
@@ -1869,9 +1870,9 @@ export default function EmailSettingsPage() {
       render: (row) => {
         const item = row.item;
         return (
-          <div className="whitespace-nowrap text-slate-700" onDoubleClick={() => setEditingPreviewCell({ rowKey: row.key, field: "category" })}>
+          <div className="w-full min-w-0 truncate whitespace-nowrap text-slate-700" onDoubleClick={() => setEditingPreviewCell({ rowKey: row.key, field: "category" })}>
             {editingPreviewCell?.rowKey === row.key && editingPreviewCell.field === "category" ? (
-              <div className="w-44">
+              <div className="w-full min-w-0">
                 <SmartSelect
                   mode="single"
                   value={previewCategorySelectValue(item.category, item.type)}
@@ -1890,6 +1891,7 @@ export default function EmailSettingsPage() {
                     selectableGroups: true,
                     groupSelectOnDoubleClick: false,
                     minDropdownWidth: 252,
+                    fitContent: true,
                     dropdownMaxHeight: 180,
                     density: "micro",
                     expandedGroupColumns: 4,

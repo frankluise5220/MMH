@@ -1479,6 +1479,7 @@ export function WealthFormModal({
               : undefined
           }
           hiddenFields={nestedEntityType === "wealth-account" ? ["kind", "investProductType", "groupId", "institutionId", "currency"] : undefined}
+          allowedAccountKinds={nestedEntityType === "wealth-account" ? undefined : ["bank_debit", "ewallet"]}
           nestedFieldData={nestedFieldData}
         />
       ) : null}

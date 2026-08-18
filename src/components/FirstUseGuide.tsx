@@ -21,6 +21,7 @@ import {
 import { InitModal } from "@/components/InitModal";
 import { FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 import { FIRST_USE_GUIDE_OPEN_EVENT } from "@/lib/client/onboardingGuide";
+import { APP_PREFS_EVENT, getSidebarHideInitialDataPreference } from "@/lib/client/appPreferences";
 import { useI18n } from "@/lib/i18n";
 
 type OnboardingStatus = {
@@ -187,6 +188,13 @@ export function FirstUseGuide({ children }: { children: ReactNode }) {
   }, []);
 
   const loadStatus = useCallback(async () => {
+    if (getSidebarHideInitialDataPreference()) {
+      manualOpenRef.current = false;
+      setVisible(false);
+      setRouteContentOpen(false);
+      setLoading(false);
+      return;
+    }
     try {
       const res = await fetch("/api/v1/onboarding/status", { cache: "no-store" });
       const data = await res.json() as { ok?: boolean; data?: OnboardingStatus };
@@ -205,6 +213,12 @@ export function FirstUseGuide({ children }: { children: ReactNode }) {
   }, [pathname, scrollGuideIntoView]);
 
   const openGuide = useCallback(() => {
+    if (getSidebarHideInitialDataPreference()) {
+      manualOpenRef.current = false;
+      setVisible(false);
+      setRouteContentOpen(false);
+      return;
+    }
     manualOpenRef.current = true;
     setVisible(true);
     setRouteContentOpen(false);
@@ -221,9 +235,11 @@ export function FirstUseGuide({ children }: { children: ReactNode }) {
     const refresh = () => { void loadStatus(); };
     const open = () => openGuide();
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, refresh);
+    window.addEventListener(APP_PREFS_EVENT, refresh);
     window.addEventListener(FIRST_USE_GUIDE_OPEN_EVENT, open);
     return () => {
       window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, refresh);
+      window.removeEventListener(APP_PREFS_EVENT, refresh);
       window.removeEventListener(FIRST_USE_GUIDE_OPEN_EVENT, open);
     };
   }, [loadStatus, openGuide]);

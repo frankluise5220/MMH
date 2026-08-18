@@ -142,6 +142,7 @@ export function EntryRowActions({
       const data = await deleteEntriesWithLinkedPrompt({
         entryIds: [entryId],
         confirmMessage: t("entryRowActions.deleteConfirm"),
+        t,
       });
       if (!data?.ok) {
         if (data?.code === "DELETE_CANCELLED" || data?.error === "已取消删除") return;

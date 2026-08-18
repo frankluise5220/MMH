@@ -160,6 +160,28 @@ export function InsuranceEntryEditModal({
         : t("insuranceEntryEdit.amount.premium");
   const isRefund = draft.insuranceAction === "refund";
 
+  if (nestedEntityType === "cash-account" && typeof document !== "undefined") {
+    return createPortal(
+      <NestedAddModal
+        mode="compact"
+        entityType="account"
+        open={true}
+        onClose={() => setNestedEntityType(null)}
+        onCreated={(id, name, extra) => {
+          const option = { id, label: name, subLabel: kindLabel(extra?.kind ?? "bank_debit") };
+          setCashAccountList((prev) => [...prev, option]);
+          setLocalCashSSOpts((prev) => (prev ? [...prev, option] : prev));
+          setDraft((prev) => (prev ? { ...prev, cashAccountId: id } : prev));
+          setNestedEntityType(null);
+        }}
+        allowedAccountKinds={["bank_debit", "ewallet"]}
+        hiddenFields={[]}
+        nestedFieldData={nestedFieldData}
+      />,
+      document.body,
+    );
+  }
+
   return createPortal(
     <div className="app-modal-backdrop z-[1200]">
       <div className="app-modal-panel max-w-xl">
@@ -292,25 +314,6 @@ export function InsuranceEntryEditModal({
           </div>
         </form>
       </div>
-
-      {nestedEntityType === "cash-account" && (
-        <NestedAddModal
-          mode="compact"
-          entityType="account"
-          open={true}
-          onClose={() => setNestedEntityType(null)}
-          onCreated={(id, name) => {
-            const option = { id, label: name, subLabel: kindLabel("bank_debit") };
-            setCashAccountList((prev) => [...prev, option]);
-            setLocalCashSSOpts((prev) => (prev ? [...prev, option] : prev));
-            setDraft((prev) => (prev ? { ...prev, cashAccountId: id } : prev));
-            setNestedEntityType(null);
-          }}
-          extraFields={{ kind: "bank_debit" }}
-          hiddenFields={["kind"]}
-          nestedFieldData={nestedFieldData}
-        />
-      )}
     </div>,
     document.body,
   );

@@ -82,6 +82,8 @@ type SmartSelectSharedBehavior = {
   headerExtra?: ReactNode;
   cycleAction?: SmartSelectCycleAction;
   minDropdownWidth?: number;
+  /** Expand the dropdown to the smallest width that fits its option labels. */
+  fitContent?: boolean;
   dropdownMaxHeight?: number;
   density?: SmartSelectDensity;
   expandedGroupColumns?: number;
@@ -361,6 +363,7 @@ function normalizeSingleBehavior(props: SingleModeProps, options: SmartSelectOpt
     headerExtra: behavior?.headerExtra ?? props.headerExtra,
     cycleAction,
     minDropdownWidth: behavior?.minDropdownWidth,
+    fitContent: behavior?.fitContent ?? false,
     dropdownMaxHeight: behavior?.dropdownMaxHeight,
     density: behavior?.density ?? "regular",
     expandedGroupColumns: behavior?.expandedGroupColumns,
@@ -398,6 +401,7 @@ function normalizeMultiBehavior(props: MultiModeProps, options: SmartSelectOptio
     headerExtra: behavior?.headerExtra,
     cycleAction: behavior?.cycleAction,
     minDropdownWidth: behavior?.minDropdownWidth,
+    fitContent: behavior?.fitContent ?? false,
     dropdownMaxHeight: behavior?.dropdownMaxHeight,
     density: behavior?.density ?? "regular",
     expandedGroupColumns: behavior?.expandedGroupColumns,
@@ -450,6 +454,7 @@ export function SmartSelect(props: SmartSelectProps) {
     headerExtra,
     cycleAction,
     minDropdownWidth,
+    fitContent,
     dropdownMaxHeight,
     density,
     expandedGroupColumns,
@@ -490,7 +495,7 @@ export function SmartSelect(props: SmartSelectProps) {
   const [search, setSearch] = useState("");
   const [focusedIndex, setFocusedIndex] = useState(-1);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
-  const [dropdownPos, setDropdownPos] = useState({ top: 0, left: 0, width: 0, maxHeight: 0 });
+  const [dropdownPos, setDropdownPos] = useState({ top: 0, left: 0, width: 0, minWidth: 0, maxHeight: 0 });
 
   const triggerRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -552,7 +557,27 @@ export function SmartSelect(props: SmartSelectProps) {
     const boundaryBottom = (boundaryRect?.bottom ?? window.innerHeight) - boundaryPadding;
     const minWidth = minDropdownWidth && minDropdownWidth > 0 ? minDropdownWidth : 0;
     const availableWidth = Math.max(120, boundaryRight - boundaryLeft);
-    const width = Math.min(Math.max(rect.width, minWidth), availableWidth);
+    let contentWidth = 0;
+    if (fitContent) {
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("2d");
+      if (context) {
+        const font = window.getComputedStyle(triggerRef.current).font;
+        context.font = font;
+        contentWidth = effectiveOptions.reduce((maxWidth, option) => {
+          const label = stripIndent(option.label);
+          const detail = option.subLabel || option.title || "";
+          const indentWidth = Math.max(0, option.label.length - label.length) * 5;
+          const measured = context.measureText(detail ? `${label} · ${detail}` : label).width + indentWidth;
+          return Math.max(maxWidth, measured);
+        }, 0) + (dense ? 48 : 56);
+        if (singleGridColumns && contentWidth > 0) {
+          contentWidth = contentWidth * singleGridColumns + (singleGridColumns - 1) * 4 + 16;
+        }
+      }
+    }
+    const requiredWidth = Math.max(rect.width, minWidth, contentWidth);
+    const width = Math.min(requiredWidth, availableWidth);
     const left = Math.min(Math.max(boundaryLeft, rect.left), Math.max(boundaryLeft, boundaryRight - width));
     const estimatedHeight = (searchable ? headerHeight : 0)
       + ((isSingleCreateButton || isMultiInlineCreate) ? headerHeight : 0)
@@ -568,8 +593,8 @@ export function SmartSelect(props: SmartSelectProps) {
     const maxHeight = Math.max(48, Math.min(estimatedHeight, availableHeight));
     const rawTop = openAbove ? rect.top - maxHeight - 4 : rect.bottom + 4;
     const top = Math.min(Math.max(boundaryTop, rawTop), Math.max(boundaryTop, boundaryBottom - maxHeight));
-    setDropdownPos({ top, left, width, maxHeight });
-  }, [effectiveOptions.length, headerHeight, isMultiInlineCreate, isSingleCreateButton, minDropdownWidth, resolvedDropdownMaxHeight, rowHeight, searchable, visible.length]);
+    setDropdownPos({ top, left, width, minWidth: width, maxHeight });
+  }, [dense, effectiveOptions, fitContent, headerHeight, isMultiInlineCreate, isSingleCreateButton, minDropdownWidth, resolvedDropdownMaxHeight, rowHeight, searchable, singleGridColumns, visible.length]);
 
   const openDropdown = useCallback((preferredIndex?: "first" | "last") => {
     const nextCollapsed = initialCollapsedGroups(
@@ -649,6 +674,12 @@ export function SmartSelect(props: SmartSelectProps) {
       window.removeEventListener("scroll", handleScroll, true);
       window.removeEventListener("resize", handleResize);
     };
+  }, [calcPosition, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const frame = window.requestAnimationFrame(() => calcPosition());
+    return () => window.cancelAnimationFrame(frame);
   }, [calcPosition, open]);
 
   useEffect(() => {
@@ -1082,7 +1113,7 @@ export function SmartSelect(props: SmartSelectProps) {
         top: dropdownPos.top,
         left: dropdownPos.left,
         width: dropdownPos.width,
-        minWidth: resizableDropdown ? Math.min(dropdownPos.width, micro ? 140 : dense ? 220 : 240) : dropdownPos.width,
+        minWidth: resizableDropdown ? dropdownPos.minWidth : dropdownPos.width,
         minHeight: resizableDropdown ? Math.min(180, dropdownPos.maxHeight || 180) : undefined,
         maxWidth: "calc(100vw - 16px)",
         maxHeight: dropdownPos.maxHeight || "calc(100vh - 16px)",

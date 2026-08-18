@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, type FormEvent } from "react";
+import { useEffect, useMemo, useState, useCallback, type FormEvent } from "react";
 import { Plus } from "lucide-react";
 import { kindOrder } from "@/lib/account-kinds";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
@@ -85,6 +85,10 @@ type CompactModeProps = {
   defaultName?: string;
   /** For institution creation: restrict type choices to a specific concept group */
   allowedInstitutionTypes?: string[];
+  /** For account creation: restrict selectable account kinds (e.g. a cash-account
+   *  field may only allow bank_debit and ewallet). When exactly one kind is
+   *  allowed the type selector is hidden and the kind is locked. */
+  allowedAccountKinds?: string[];
   /** Extra fields to merge into the POST body (e.g. { kind: "investment", investProductType: "fund" }) */
   extraFields?: Record<string, string>;
   /** Fields to hide from the form UI (e.g. ["kind"] when extraFields already specifies it) */
@@ -135,6 +139,8 @@ type FullModeProps = {
   defaultName?: string;
   /** For institution pages: restrict type choices to a specific concept group */
   allowedInstitutionTypes?: string[];
+  /** For account pages: restrict selectable account kinds (see CompactModeProps) */
+  allowedAccountKinds?: string[];
   /** Extra fields to merge into POST body */
   extraFields?: Record<string, string>;
   /** Fields to hide from the form UI */
@@ -387,6 +393,15 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   const readOnlyFields = mode === "compact" ? props.readOnlyFields ?? [] : props.readOnlyFields ?? [];
   const allowedInstitutionTypes =
     entityType === "institution" ? props.allowedInstitutionTypes : undefined;
+  const allowedAccountKinds =
+    entityType === "account" ? props.allowedAccountKinds : undefined;
+
+  const accountKindOptions = useMemo(
+    () => (entityType === "account" && allowedAccountKinds?.length
+      ? config.types.filter((option) => allowedAccountKinds.includes(option.value))
+      : config.types),
+    [entityType, allowedAccountKinds, config.types],
+  );
 
   // Compact mode: open/onClose
   const open = mode === "compact" ? props.open : undefined;
@@ -457,15 +472,22 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   const getDefaultTypeCompact = useCallback((): string => {
     const typeKey = config.typeKey;
     if (extraFields && typeKey && extraFields[typeKey]) {
-      if (config.types.some(t => t.value === extraFields[typeKey])) return extraFields[typeKey];
+      if (config.types.some(t => t.value === extraFields[typeKey])) {
+        if (!allowedAccountKinds?.length || allowedAccountKinds.includes(extraFields[typeKey])) return extraFields[typeKey];
+      }
     }
-    if (defaultType && config.types.some(t => t.value === defaultType)) return defaultType;
+    if (defaultType && config.types.some(t => t.value === defaultType)) {
+      if (!allowedAccountKinds?.length || allowedAccountKinds.includes(defaultType)) return defaultType;
+    }
     if (entityType === "institution") return "organization";
     if (entityType === "counterparty") return "person";
     if (entityType === "category") return "expense";
-    if (entityType === "account") return "bank_debit";
+    if (entityType === "account") {
+      if (allowedAccountKinds?.length) return allowedAccountKinds[0];
+      return "bank_debit";
+    }
     return "";
-  }, [config.typeKey, config.types, defaultType, entityType, extraFields]);
+  }, [config.typeKey, config.types, defaultType, entityType, extraFields, allowedAccountKinds]);
 
   /** Initialize form state */
   const initForm = useCallback(() => {
@@ -487,6 +509,12 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
           initial[field.key] = allowedInstitutionTypes.includes(field.defaultValue ?? "")
             ? field.defaultValue!
             : allowedInstitutionTypes[0];
+          continue;
+        }
+        if (field.key === "kind" && entityType === "account" && allowedAccountKinds?.length) {
+          initial[field.key] = allowedAccountKinds.includes(field.defaultValue ?? "")
+            ? field.defaultValue!
+            : allowedAccountKinds[0];
           continue;
         }
         const fieldDefaultValue = defaultValueForField(field);
@@ -525,6 +553,14 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
       ) {
         initial[typeKey] = allowedInstitutionTypes[0];
       }
+      if (
+        entityType === "account" &&
+        typeKey &&
+        allowedAccountKinds?.length &&
+        !allowedAccountKinds.includes(initial[typeKey] ?? "")
+      ) {
+        initial[typeKey] = allowedAccountKinds[0];
+      }
       // Apply extraFields
       if (extraFields) {
         Object.entries(extraFields).forEach(([k, v]) => {
@@ -542,7 +578,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     setSaving(false);
     setError("");
     setDupWarning("");
-  }, [mode, defaultName, defaultType, extraFields, defaultParentId, typeKey, config.fullFields, getDefaultTypeCompact, entityType, allowedInstitutionTypes, includeInitialBalanceFields, defaultValueForField, fallbackSelectValueForField]);
+  }, [mode, defaultName, defaultType, extraFields, defaultParentId, typeKey, config.fullFields, getDefaultTypeCompact, entityType, allowedInstitutionTypes, allowedAccountKinds, includeInitialBalanceFields, defaultValueForField, fallbackSelectValueForField]);
 
   useEffect(() => {
     if (mode === "compact" && open) {
@@ -564,6 +600,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   const shouldHideType = !typeKey
     || (hiddenFields?.includes(typeKey))
     || (extraFields && typeKey in extraFields)
+    || (entityType === "account" && allowedAccountKinds?.length === 1)
     || (entityType === "category" && form.parentId);
   const compactVisibleFields = config.fullFields.filter((field) => {
     if (field.key === "name" || field.key === typeKey || field.key === "parentId") return false;
@@ -902,7 +939,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                 />
                 {dupWarning && <div className="text-xs text-amber-600">{dupWarning}</div>}
               </div>
-              {!shouldHideType && config.typeLabelKey && config.types.length > 0 && (
+              {!shouldHideType && config.typeLabelKey && accountKindOptions.length > 0 && (
                 <div className="space-y-1">
                   <div className="form-label">{t(config.typeLabelKey)}</div>
                   <select
@@ -910,7 +947,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                     onChange={(e) => setForm(prev => ({ ...prev, ...(typeKey ? { [typeKey]: e.target.value } : {}), institutionId: "" }))}
                     className="form-input"
                   >
-                    {config.types.map((typeOption) => (
+                    {accountKindOptions.map((typeOption) => (
                       <option key={typeOption.value} value={typeOption.value}>{optionLabel(t, typeOption)}</option>
                     ))}
                   </select>

@@ -4,12 +4,12 @@ type AccountCurrencyLike = {
 };
 
 export const CURRENCY_OPTIONS = [
-  { value: "CNY", label: "人民币 CNY" },
-  { value: "USD", label: "美元 USD" },
-  { value: "JPY", label: "日元 JPY" },
-  { value: "EUR", label: "欧元 EUR" },
-  { value: "HKD", label: "港币 HKD" },
-  { value: "GBP", label: "英镑 GBP" },
+  { value: "CNY" },
+  { value: "USD" },
+  { value: "JPY" },
+  { value: "EUR" },
+  { value: "HKD" },
+  { value: "GBP" },
 ] as const;
 
 export function normalizeCurrency(value: unknown) {
@@ -27,9 +27,11 @@ export function resolveSameCurrencyTransfer(fromAccount: AccountCurrencyLike, to
   const fromCurrency = normalizeCurrency(fromAccount.currency);
   const toCurrency = normalizeCurrency(toAccount.currency);
   if (fromCurrency !== toCurrency) {
-    const fromName = fromAccount.name?.trim() || "转出账户";
-    const toName = toAccount.name?.trim() || "转入账户";
-    throw new Error(`普通转账只支持同币种账户。${fromName} 是 ${fromCurrency}，${toName} 是 ${toCurrency}；跨币种需要使用换汇/跨币种转账流程。`);
+    const fromName = fromAccount.name?.trim() || "source account";
+    const toName = toAccount.name?.trim() || "target account";
+    throw new Error(
+      `Standard transfers only support accounts with the same currency. ${fromName} is ${fromCurrency}, ${toName} is ${toCurrency}; use the currency exchange or cross-currency transfer flow for different currencies.`
+    );
   }
   return fromCurrency;
 }

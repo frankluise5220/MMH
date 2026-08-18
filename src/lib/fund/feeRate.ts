@@ -1,6 +1,13 @@
 import { prisma } from "@/lib/db/prisma";
 export type FundFeeRateType = "buy" | "redeem";
 
+export type FundFeeRateReplacementRow = {
+  fundCode: string;
+  feeType: FundFeeRateType;
+  rate: number;
+  effectiveDate: Date;
+};
+
 /**
  * Query the fund fee rate by confirmation date.
  * Returns the most recent rate whose effective date is <= confirmDate.
@@ -225,6 +232,37 @@ export async function setFundFeeRate(
   feeType: FundFeeRateType = "buy"
 ): Promise<void> {
   await setFundFeeRateByDate(accountId, fundCode, rate, new Date(), feeType);
+}
+
+export async function replaceFundFeeRates(
+  accountId: string,
+  rows: FundFeeRateReplacementRow[],
+  fundCode?: string
+): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await replaceFundFeeRatesInTx(tx, accountId, rows, fundCode);
+  });
+}
+
+export async function replaceFundFeeRatesInTx(
+  tx: any,
+  accountId: string,
+  rows: FundFeeRateReplacementRow[],
+  fundCode?: string
+): Promise<void> {
+  const where = fundCode ? { accountId, fundCode } : { accountId };
+  await tx.fundFeeRate.deleteMany({ where });
+  if (rows.length === 0) return;
+
+  await tx.fundFeeRate.createMany({
+    data: rows.map((row) => ({
+      accountId,
+      fundCode: row.fundCode,
+      feeType: row.feeType,
+      rate: row.rate,
+      effectiveDate: row.effectiveDate,
+    })),
+  });
 }
 
 /**

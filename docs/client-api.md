@@ -734,7 +734,7 @@ Notes:
 
 - `/api/v1/settings/users`
 - `/api/v1/settings/catalog`：GET 返回 Web 和 Android 共用的设置目录；可用 `?surface=web` 或 `?surface=android` 过滤客户端可用项。返回 `{ ok: true, data }`，目录源头为 `shared/settings/catalog.json`。
-- `/api/v1/settings/app-preferences`
+- `/api/v1/settings/app-preferences`：`sidebarHideInitialData` 是兼容保留字段名，当前产品语义为“隐藏使用向导”；为 `true` 时客户端应隐藏“使用向导”入口，并停用首次使用向导的自动和手动打开。`dateDisplayFormat` 支持 `yyyy-mm-dd`、`yyyy/mm/dd`、`mm/dd/yyyy`、`dd/mm/yyyy`，仅影响界面日期显示，不改变数据库、导入或 API 日期值。
 - `/api/v1/settings/color-scheme`
 - `/api/v1/settings/email`
 - `/api/v1/settings/email-accounts`

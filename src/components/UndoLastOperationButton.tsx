@@ -3,18 +3,97 @@
 import { useEffect, useState } from "react";
 import { Undo2 } from "lucide-react";
 
+import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import {
   dispatchFinanceDataChanged,
   FINANCE_DATA_CHANGED_EVENT,
 } from "@/lib/client/refresh";
+import { formatMoney } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
+
+type TFunction = (key: string, params?: Record<string, string | number>) => string;
+
+type UndoPreviewItem = {
+  id: string;
+  date: string;
+  type: string;
+  amount: number | null;
+  accountName: string;
+  toAccountName: string;
+  categoryName: string;
+  counterpartyInstitutionName: string;
+  fundCode: string;
+  fundName: string;
+  note: string;
+};
+
+type UndoPreview = {
+  count: number;
+  hiddenCount: number;
+  items: UndoPreviewItem[];
+};
 
 type UndoState = {
   label: string;
   canUndo: boolean;
   undoCount?: number;
   historyLimit?: number;
+  preview?: UndoPreview | null;
 } | null;
+
+const TRANSACTION_TYPE_LABEL_KEYS: Record<string, string> = {
+  expense: "transaction.type.expense",
+  income: "transaction.type.income",
+  transfer: "transaction.type.transfer",
+  investment: "transaction.type.investment",
+};
+
+function truncateText(value: string, maxLength = 48) {
+  const text = value.trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
+function transactionTypeLabel(type: string, t: TFunction) {
+  const key = TRANSACTION_TYPE_LABEL_KEYS[type];
+  return key ? t(key) : type;
+}
+
+function formatUndoAmount(amount: number | null) {
+  if (amount == null) return "";
+  const sign = amount > 0 ? "+" : amount < 0 ? "-" : "";
+  return `${sign}${formatMoney(Math.abs(amount))}`;
+}
+
+function formatUndoPreviewItem(item: UndoPreviewItem, t: TFunction) {
+  const main = [
+    item.date,
+    item.type ? transactionTypeLabel(item.type, t) : "",
+    formatUndoAmount(item.amount),
+  ].filter(Boolean).join(" | ");
+  const account = item.toAccountName
+    ? `${item.accountName || t("undo.previewUnknownAccount")} -> ${item.toAccountName}`
+    : item.accountName;
+  const subject = item.fundName || item.fundCode || item.categoryName || item.counterpartyInstitutionName;
+  const note = item.note ? t("undo.previewNote", { note: truncateText(item.note) }) : "";
+
+  return [main, account, subject, note].filter(Boolean).join(" | ");
+}
+
+function buildUndoConfirmMessage(operation: NonNullable<UndoState>, t: TFunction) {
+  const lines = [t("undo.confirmMessage", { label: operation.label })];
+  const preview = operation.preview;
+  if (preview?.items?.length) {
+    lines.push("");
+    lines.push(t("undo.previewHeader", { count: preview.count }));
+    for (const [index, item] of preview.items.entries()) {
+      lines.push(t("undo.previewItem", { index: index + 1, detail: formatUndoPreviewItem(item, t) }));
+    }
+    if (preview.hiddenCount > 0) {
+      lines.push(t("undo.previewMore", { count: preview.hiddenCount }));
+    }
+  }
+  return lines.join("\n");
+}
 
 export function UndoLastOperationButton({
   compact = false,
@@ -26,6 +105,7 @@ export function UndoLastOperationButton({
   iconSize?: number;
 }) {
   const [state, setState] = useState<UndoState>(null);
+  const [confirming, setConfirming] = useState(false);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const { t } = useI18n();
@@ -50,9 +130,26 @@ export function UndoLastOperationButton({
   }, []);
 
   async function undo() {
-    if (!state?.canUndo || loading) return;
-    setLoading(true);
+    const operation = state;
+    if (!operation?.canUndo || loading || confirming) return;
+
+    setConfirming(true);
     setMessage("");
+    let confirmed = false;
+    try {
+      confirmed = await showConfirmDialog({
+        title: t("undo.confirmTitle"),
+        message: buildUndoConfirmMessage(operation, t),
+        confirmLabel: t("undo.confirmButton"),
+        cancelLabel: t("common.cancel"),
+        tone: "danger",
+      });
+    } finally {
+      setConfirming(false);
+    }
+    if (!confirmed) return;
+
+    setLoading(true);
     try {
       const response = await fetch("/api/v1/undo", { method: "POST" });
       const result = await response.json().catch(() => ({ ok: false, error: t("undo.undoFailed") }));
@@ -82,7 +179,7 @@ export function UndoLastOperationButton({
       <button
         type="button"
         onClick={undo}
-        disabled={!state?.canUndo || loading}
+        disabled={!state?.canUndo || loading || confirming}
         className={className ?? "flex h-10 w-10 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-white hover:text-slate-900 disabled:cursor-not-allowed disabled:text-slate-300"}
         title={title}
         aria-label={title}
@@ -97,7 +194,7 @@ export function UndoLastOperationButton({
       <button
         type="button"
         onClick={undo}
-        disabled={!state?.canUndo || loading}
+        disabled={!state?.canUndo || loading || confirming}
         className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-slate-600 transition-colors hover:bg-white hover:text-slate-900 disabled:cursor-not-allowed disabled:text-slate-300"
         title={title}
       >

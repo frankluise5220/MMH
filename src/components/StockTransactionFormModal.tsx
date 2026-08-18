@@ -607,7 +607,6 @@ export function StockTransactionFormModal({
     [localCashAccounts],
   );
   const cashAccountCreateExtraFields = useMemo(() => ({
-    kind: "ewallet",
     ...(selectedAccount?.groupId ? { groupId: selectedAccount.groupId } : {}),
     ...(selectedAccount?.institutionId ? { institutionId: selectedAccount.institutionId } : {}),
     ...(selectedAccount?.currency ? { currency: selectedAccount.currency } : {}),
@@ -1482,7 +1481,8 @@ export function StockTransactionFormModal({
         namePlaceholder={t("stockTx.cashAccountNamePlaceholder")}
         defaultType="ewallet"
         extraFields={cashAccountCreateExtraFields}
-        hiddenFields={["kind"]}
+        hiddenFields={[]}
+        allowedAccountKinds={["bank_debit", "ewallet"]}
         readOnlyFields={cashAccountCreateReadOnlyFields}
         nestedFieldData={accountCreateFieldData}
         existingNames={existingCashAccountNames}

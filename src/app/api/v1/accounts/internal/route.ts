@@ -58,7 +58,7 @@ export async function GET(request: Request) {
 
     const [accounts, groups, institutions, counterparties, users] = await Promise.all([
       prisma.account.findMany({
-        where: { isPlaceholder: { not: true }, ...hidFilter },
+        where: { ...hidFilter },
         include: { Institution: true, Counterparty: true, AccountGroup: true, AccountAlias: true },
         orderBy: [{ isActive: "desc" }, { name: "asc" }],
       }),

@@ -75,6 +75,44 @@ export function formatDateLocal(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+export type DateDisplayFormat = "yyyy-mm-dd" | "yyyy/mm/dd" | "mm/dd/yyyy" | "dd/mm/yyyy";
+
+export const DEFAULT_DATE_DISPLAY_FORMAT: DateDisplayFormat = "yyyy-mm-dd";
+
+export function normalizeDateDisplayFormat(value: unknown): DateDisplayFormat {
+  if (value === "yyyy/mm/dd" || value === "mm/dd/yyyy" || value === "dd/mm/yyyy") return value;
+  return DEFAULT_DATE_DISPLAY_FORMAT;
+}
+
+function datePartsForDisplay(value: Date | string | number | null | undefined) {
+  if (value instanceof Date) {
+    if (!Number.isFinite(value.getTime())) return null;
+    return { year: value.getFullYear(), month: value.getMonth() + 1, day: value.getDate() };
+  }
+  const raw = String(value ?? "").trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(raw);
+  if (match) return { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) };
+  if (value == null || raw === "") return null;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return null;
+  return { year: date.getFullYear(), month: date.getMonth() + 1, day: date.getDate() };
+}
+
+export function formatDateDisplay(
+  value: Date | string | number | null | undefined,
+  format: DateDisplayFormat = DEFAULT_DATE_DISPLAY_FORMAT,
+): string {
+  const parts = datePartsForDisplay(value);
+  if (!parts) return "";
+  const year = String(parts.year).padStart(4, "0");
+  const month = String(parts.month).padStart(2, "0");
+  const day = String(parts.day).padStart(2, "0");
+  if (format === "yyyy/mm/dd") return `${year}/${month}/${day}`;
+  if (format === "mm/dd/yyyy") return `${month}/${day}/${year}`;
+  if (format === "dd/mm/yyyy") return `${day}/${month}/${year}`;
+  return `${year}-${month}-${day}`;
+}
+
 /** Today's local date as YYYY-MM-DD (used for date-input defaults etc.). */
 export function todayDateLocalYmd(): string {
   return formatDateLocal(new Date());

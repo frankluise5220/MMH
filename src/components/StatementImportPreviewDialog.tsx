@@ -22,6 +22,7 @@ import {
   importPreviewFlowAmountTextFor,
 } from "@/lib/client/colors";
 import { fetchSettingsBootstrap, type SettingsCategory } from "@/lib/client/settingsCache";
+import { statementPreviewCategorySyncKey } from "@/lib/statement/preview-category-sync";
 import { uniqueStatementInfoTexts } from "@/lib/statement/preview-meta";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { useI18n } from "@/lib/i18n";
@@ -153,6 +154,11 @@ function isPlaceholderText(value?: string | null) {
 function cleanText(value?: string | null) {
   const text = String(value ?? "").trim();
   return isPlaceholderText(text) ? "" : text;
+}
+
+function displayPreviewValue(value?: string | null) {
+  const text = String(value ?? "");
+  return text.trim() === "-" ? "" : text;
 }
 
 function normalizeDateOnlyText(value?: string | null) {
@@ -449,6 +455,7 @@ export function StatementImportPreviewDialog({
   const [editingPreviewCell, setEditingPreviewCell] = useState<{ rowKey: string; field: PreviewEditField } | null>(null);
   const [bookAccounts, setBookAccounts] = useState<BookAccount[]>([]);
   const [bookCategories, setBookCategories] = useState<BookCategory[]>([]);
+  const [categorySyncMessage, setCategorySyncMessage] = useState("");
   const { t } = useI18n();
 
   const accountDisplayOptions = useMemo(
@@ -504,6 +511,7 @@ export function StatementImportPreviewDialog({
     setRows(nextRows);
     setSelectedKeys(new Set(nextRows.filter((row) => row.ready).map((row) => row.key)));
     setEditingPreviewCell(null);
+    setCategorySyncMessage("");
   }, [accountLookup, defaultAccountName, items, open]);
 
   useEffect(() => {
@@ -601,8 +609,6 @@ export function StatementImportPreviewDialog({
       .map((option) => ({
         id: option.value,
         label: option.label,
-        subLabel: option.subLabel,
-        title: option.title,
         isHeader: option.isHeader,
         isGroup: option.isGroup,
         parentId: option.parentId,
@@ -702,6 +708,33 @@ export function StatementImportPreviewDialog({
   function updatePreviewRow(rowKey: string, patch: Partial<StatementImportPreviewItem>) {
     const nextRows = rows.map((row) => row.key === rowKey ? recomputeRow(row, patch) : row);
     recomputeState(nextRows);
+  }
+
+  function updatePreviewCategoryForMatchingRemarks(rowKey: string, categoryId: string) {
+    const sourceRows = rows.length > 0 ? rows : buildPreviewRows(items, defaultAccountName, accountLookup);
+    const sourceIndex = sourceRows.findIndex((row) => row.key === rowKey);
+    if (sourceIndex < 0) return;
+
+    const category = previewCategoryNameById(categoryId);
+    const sourceKey = statementPreviewCategorySyncKey(sourceRows[sourceIndex].item);
+    let propagatedCount = 0;
+    const nextRows = sourceRows.map((row, index) => {
+      const isSource = index === sourceIndex;
+      const isMatchingRemark = Boolean(sourceKey && statementPreviewCategorySyncKey(row.item) === sourceKey);
+      if (!isSource && !isMatchingRemark) return row;
+      if (!isSource && cleanText(row.item.category) === category) return row;
+      if (!isSource) propagatedCount += 1;
+      return recomputeRow(row, {
+        category: category || undefined,
+        categoryUserEdited: true,
+      });
+    });
+    recomputeState(nextRows);
+    setCategorySyncMessage(
+      propagatedCount > 0
+        ? t("statementImportPreview.sameRemarkCategoryApplied", { count: propagatedCount })
+        : "",
+    );
   }
 
   function applyPreviewReplace(field: PreviewEditField, value: string) {
@@ -805,7 +838,7 @@ export function StatementImportPreviewDialog({
         options: previewAccountReplaceOptions,
         placeholder: t("statementImportPreview.selectAccount"),
         allowEmpty: true,
-        smartSelectBehavior: { search: true, hierarchy: true, minDropdownWidth: 252, dropdownMaxHeight: 220, density: "micro", resizableDropdown: true },
+        smartSelectBehavior: { search: true, hierarchy: true, minDropdownWidth: 252, fitContent: true, dropdownMaxHeight: 220, density: "micro", resizableDropdown: true },
       },
       {
         value: "counterAccount",
@@ -814,7 +847,7 @@ export function StatementImportPreviewDialog({
         options: previewAccountReplaceOptions,
         placeholder: t("statementImportPreview.selectCounterAccount"),
         allowEmpty: true,
-        smartSelectBehavior: { search: true, hierarchy: true, minDropdownWidth: 252, dropdownMaxHeight: 220, density: "micro", resizableDropdown: true },
+        smartSelectBehavior: { search: true, hierarchy: true, minDropdownWidth: 252, fitContent: true, dropdownMaxHeight: 220, density: "micro", resizableDropdown: true },
       },
       {
         value: "category",
@@ -831,7 +864,8 @@ export function StatementImportPreviewDialog({
           selectableGroups: true,
           groupSelectOnDoubleClick: false,
           minDropdownWidth: 252,
-          dropdownMaxHeight: 180,
+          fitContent: true,
+          dropdownMaxHeight: 520,
           density: "micro",
           expandedGroupColumns: 4,
           resizableDropdown: true,
@@ -916,7 +950,7 @@ export function StatementImportPreviewDialog({
     return (
       <span
         data-row-double-click-ignore
-        className="block truncate cursor-pointer rounded px-1 py-0.5 text-slate-700 hover:bg-slate-100"
+        className="block min-h-5 w-full truncate cursor-pointer rounded px-1 py-0.5 text-slate-700 hover:bg-slate-100"
         title={titleText}
         onMouseDown={stopPreviewCellEvent}
         onClick={stopPreviewCellEvent}
@@ -925,7 +959,7 @@ export function StatementImportPreviewDialog({
           setEditingPreviewCell({ rowKey: row.key, field });
         }}
       >
-        {value || "-"}
+        {displayPreviewValue(value)}
       </span>
     );
   }
@@ -953,7 +987,7 @@ export function StatementImportPreviewDialog({
               }}
             />
           ) : (
-            <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title={t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.date) })}>{normalizeDateOnlyText(row.item.date) || "-"}</span>
+            <span className="block min-h-5 w-full cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title={t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.date) })}>{displayPreviewValue(normalizeDateOnlyText(row.item.date))}</span>
           )}
         </div>
       ),
@@ -980,7 +1014,7 @@ export function StatementImportPreviewDialog({
               }}
             />
           ) : (
-            <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title={t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.postedDate) })}>{normalizeDateOnlyText(row.item.postedDate) || "-"}</span>
+            <span className="block min-h-5 w-full cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title={t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.postedDate) })}>{displayPreviewValue(normalizeDateOnlyText(row.item.postedDate))}</span>
           )}
         </div>
       ),
@@ -1040,11 +1074,11 @@ export function StatementImportPreviewDialog({
                 placeholder={t("statementImportPreview.selectAccount")}
                 onCycleOwnerFilter={cycleOwnerFilter}
                 ownerFilterLabel={ownerFilterLabel}
-                behavior={{ search: true, hierarchy: true, clearable: true, cycleSelectionWithArrowKeys: true, minDropdownWidth: 216, dropdownMaxHeight: 180, density: "micro", resizableDropdown: true, autoOpen: true, onDropdownClose: () => setEditingPreviewCell(null) }}
+                behavior={{ search: true, hierarchy: true, clearable: true, cycleSelectionWithArrowKeys: true, minDropdownWidth: 216, fitContent: true, dropdownMaxHeight: 180, density: "micro", resizableDropdown: true, autoOpen: true, onDropdownClose: () => setEditingPreviewCell(null) }}
               />
             ) : (
-              <span className="block truncate cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title={previewAccountDisplayTitle(accountValue, row.item._meta)}>
-                {previewAccountDisplayText(accountValue, row.item._meta) || "-"}
+              <span className="block min-h-5 w-full truncate cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title={previewAccountDisplayTitle(accountValue, row.item._meta)}>
+                {displayPreviewValue(previewAccountDisplayText(accountValue, row.item._meta))}
               </span>
             )}
           </div>
@@ -1074,11 +1108,11 @@ export function StatementImportPreviewDialog({
                 placeholder={t("statementImportPreview.selectCounterAccount")}
                 onCycleOwnerFilter={cycleOwnerFilter}
                 ownerFilterLabel={ownerFilterLabel}
-                behavior={{ search: true, hierarchy: true, clearable: true, cycleSelectionWithArrowKeys: true, minDropdownWidth: 216, dropdownMaxHeight: 180, density: "micro", resizableDropdown: true, autoOpen: true, onDropdownClose: () => setEditingPreviewCell(null) }}
+                behavior={{ search: true, hierarchy: true, clearable: true, cycleSelectionWithArrowKeys: true, minDropdownWidth: 216, fitContent: true, dropdownMaxHeight: 180, density: "micro", resizableDropdown: true, autoOpen: true, onDropdownClose: () => setEditingPreviewCell(null) }}
               />
             ) : (
-              <span className="block truncate cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title={previewAccountDisplayTitle(accountValue)}>
-                {previewAccountDisplayText(accountValue) || "-"}
+              <span className="block min-h-5 w-full truncate cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title={previewAccountDisplayTitle(accountValue)}>
+                {displayPreviewValue(previewAccountDisplayText(accountValue))}
               </span>
             )}
           </div>
@@ -1092,24 +1126,24 @@ export function StatementImportPreviewDialog({
       minWidth: 88,
       filterText: (row) => systemCategoryLabel(row.item.category, t) || t("batchImport.emptyValue"),
       render: (row) => (
-        <div className="whitespace-nowrap text-slate-700" {...editableCellProps(row.key, "category")}>
+        <div className="w-full min-w-0 truncate whitespace-nowrap text-slate-700" {...editableCellProps(row.key, "category")}>
           {editingPreviewCell?.rowKey === row.key && editingPreviewCell.field === "category" ? (
-            <div className="w-44">
+            <div className="w-full min-w-0">
               <SmartSelect
                 mode="single"
                 value={previewCategorySelectValue(row.item.category, row.item.type)}
                 onChange={(categoryId) => {
-                  updatePreviewRow(row.key, { category: previewCategoryNameById(categoryId) || undefined, categoryUserEdited: true });
+                  updatePreviewCategoryForMatchingRemarks(row.key, categoryId);
                   setEditingPreviewCell(null);
                 }}
                 options={previewCategorySmartSelectOptionsFor(row.item.type)}
                 placeholder={t("statementImportPreview.selectCategory")}
                 searchable
-                behavior={{ hierarchy: true, search: true, initialCollapsedAll: true, accordionGroups: true, selectableGroups: true, groupSelectOnDoubleClick: false, minDropdownWidth: 252, dropdownMaxHeight: 180, density: "micro", expandedGroupColumns: 4, resizableDropdown: true, autoOpen: true, showGroupCounts: false, onDropdownClose: () => setEditingPreviewCell(null) }}
+                behavior={{ hierarchy: true, search: true, initialCollapsedAll: true, accordionGroups: true, selectableGroups: true, groupSelectOnDoubleClick: false, minDropdownWidth: 252, fitContent: true, dropdownMaxHeight: 520, density: "micro", expandedGroupColumns: 4, resizableDropdown: true, autoOpen: true, showGroupCounts: false, onDropdownClose: () => setEditingPreviewCell(null) }}
               />
             </div>
           ) : (
-            <span className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title={t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.category) })}>{systemCategoryLabel(row.item.category, t) || "-"}</span>
+            <span className="block min-h-5 w-full cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100" title={t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.category) })}>{displayPreviewValue(systemCategoryLabel(row.item.category, t))}</span>
           )}
         </div>
       ),
@@ -1138,8 +1172,8 @@ export function StatementImportPreviewDialog({
           {editingPreviewCell?.rowKey === row.key && editingPreviewCell.field === "amount" && amountEditorSide(row.item) === "inflow" ? (
             renderAmountInput(row)
           ) : (
-            <span className={`cursor-pointer whitespace-nowrap rounded px-1 py-0.5 tabular-nums hover:bg-slate-100 ${importPreviewFlowAmountColorFor(row.item, "inflow", getColorSchemeFromCookie(typeof document === "undefined" ? null : document.cookie))}`} title={t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.amount) })}>
-              {importPreviewFlowAmountTextFor(row.item, "inflow")}
+            <span className={`block min-h-5 w-full cursor-pointer whitespace-nowrap rounded px-1 py-0.5 tabular-nums hover:bg-slate-100 ${importPreviewFlowAmountColorFor(row.item, "inflow", getColorSchemeFromCookie(typeof document === "undefined" ? null : document.cookie))}`} title={t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.amount) })}>
+              {displayPreviewValue(importPreviewFlowAmountTextFor(row.item, "inflow"))}
             </span>
           )}
         </div>
@@ -1161,8 +1195,8 @@ export function StatementImportPreviewDialog({
           {editingPreviewCell?.rowKey === row.key && editingPreviewCell.field === "amount" && amountEditorSide(row.item) === "outflow" ? (
             renderAmountInput(row)
           ) : (
-            <span className={`cursor-pointer whitespace-nowrap rounded px-1 py-0.5 tabular-nums hover:bg-slate-100 ${importPreviewFlowAmountColorFor(row.item, "outflow", getColorSchemeFromCookie(typeof document === "undefined" ? null : document.cookie))}`} title={t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.amount) })}>
-              {importPreviewFlowAmountTextFor(row.item, "outflow")}
+            <span className={`block min-h-5 w-full cursor-pointer whitespace-nowrap rounded px-1 py-0.5 tabular-nums hover:bg-slate-100 ${importPreviewFlowAmountColorFor(row.item, "outflow", getColorSchemeFromCookie(typeof document === "undefined" ? null : document.cookie))}`} title={t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.amount) })}>
+              {displayPreviewValue(importPreviewFlowAmountTextFor(row.item, "outflow"))}
             </span>
           )}
         </div>
@@ -1203,6 +1237,7 @@ export function StatementImportPreviewDialog({
     ownerFilterLabel,
     rows,
     t,
+    updatePreviewCategoryForMatchingRemarks,
   ]);
 
   const fallbackRows = useMemo(
@@ -1218,7 +1253,7 @@ export function StatementImportPreviewDialog({
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4 py-6">
-      <div data-batch-popover-boundary data-smart-select-boundary className="flex h-[82vh] min-h-[420px] w-full min-w-0 max-w-6xl resize flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+      <div data-batch-popover-boundary data-smart-select-boundary className="flex h-[82vh] min-h-[420px] w-[72rem] min-w-0 max-w-[calc(100vw-2rem)] resize flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
         <div className="flex items-start justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
           <div className="min-w-0">
             <div className="text-sm font-semibold text-slate-800">{title}</div>
@@ -1244,6 +1279,7 @@ export function StatementImportPreviewDialog({
             emptyText={t("batchImport.noRecordsForFilter")}
             minTableWidth={1180}
             selectable
+            selectAllScope="renderedRows"
             selectedKeys={fallbackSelectedKeys}
             onSelectionChange={(keys) => {
               if (busy) return;
@@ -1277,7 +1313,10 @@ export function StatementImportPreviewDialog({
         </div>
 
         <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3">
-          <div className="text-xs text-slate-500">{t("statementImportPreview.willImport", { count: fallbackSelectedKeys.size })}</div>
+          <div className="flex min-w-0 items-center gap-3 text-xs">
+            <span className="shrink-0 text-slate-500">{t("statementImportPreview.willImport", { count: fallbackSelectedKeys.size })}</span>
+            {categorySyncMessage ? <span className="truncate text-blue-600" title={categorySyncMessage}>{categorySyncMessage}</span> : null}
+          </div>
           <div className="flex items-center gap-2">
             <button
               type="button"

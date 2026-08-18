@@ -943,7 +943,7 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
       accountId: accountId ?? "",
       accountName: currencyMeta?.name || accountName || "未识别账户",
       categoryId: category?.id ?? null,
-      categoryName: category?.name ?? item.category ?? null,
+      categoryName: category?.name ?? null,
       toAccountId: isInvestAccount ? accountId : null,
       toAccountName: isInvestAccount ? investAccountName : null,
       householdId,

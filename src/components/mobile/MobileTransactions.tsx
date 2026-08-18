@@ -7,6 +7,12 @@ import { formatMoneyYuan } from "@/lib/format";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
+import {
+  APP_PREFS_EVENT,
+  getDateDisplayFormatPreference,
+  type DateDisplayFormat,
+} from "@/lib/client/appPreferences";
+import { formatDateDisplay } from "@/lib/date-utils";
 
 export type MobileTransactionRow = {
   id: string;
@@ -32,6 +38,7 @@ type AccountSummary = {
 
 export function MobileTransactions({ entries, accountSummary }: { entries: MobileTransactionRow[]; accountSummary?: AccountSummary }) {
   const { t } = useI18n();
+  const [dateDisplayFormat, setDateDisplayFormat] = useState<DateDisplayFormat>("yyyy-mm-dd");
   const [visibleEntries, setVisibleEntries] = useState(entries);
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
@@ -41,6 +48,13 @@ export function MobileTransactions({ entries, accountSummary }: { entries: Mobil
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragX, setDragX] = useState(0);
   const dragRef = useRef<{ id: string; startX: number; startY: number; active: boolean } | null>(null);
+
+  useEffect(() => {
+    const syncDateDisplayFormat = () => setDateDisplayFormat(getDateDisplayFormatPreference());
+    syncDateDisplayFormat();
+    window.addEventListener(APP_PREFS_EVENT, syncDateDisplayFormat);
+    return () => window.removeEventListener(APP_PREFS_EVENT, syncDateDisplayFormat);
+  }, []);
 
   useEffect(() => {
     setVisibleEntries(entries);
@@ -174,7 +188,7 @@ export function MobileTransactions({ entries, accountSummary }: { entries: Mobil
         {grouped.map(([date, rows]) => (
           <section key={date} className="mb-3">
             <div className="flex items-center justify-between px-1 py-1.5">
-              <span className="text-xs font-semibold text-slate-600">{formatDateLabel(date, t)}</span>
+              <span className="text-xs font-semibold text-slate-600">{formatDateLabel(date, t, dateDisplayFormat)}</span>
               <span className="text-[11px] text-slate-400">{t("mobileTransactions.count", { count: rows.length })}</span>
             </div>
             <div className="divide-y divide-slate-100 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
@@ -286,12 +300,12 @@ function TransactionIcon({ type }: { type: string }) {
   return <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${config.className}`}><Icon size={19} /></span>;
 }
 
-function formatDateLabel(value: string, t: (key: string, params?: Record<string, string | number>) => string) {
+function formatDateLabel(value: string, t: (key: string, params?: Record<string, string | number>) => string, dateDisplayFormat: DateDisplayFormat) {
   const date = new Date(`${value}T00:00:00`);
   if (Number.isNaN(date.getTime())) return value;
   const day = date.getDay();
   const weekdayKey = `mobileTransactions.weekday.${day}` as const;
-  return `${t("mobileTransactions.dateShort", { month: date.getMonth() + 1, day: date.getDate() })} ${t(weekdayKey)}`;
+  return `${formatDateDisplay(value, dateDisplayFormat)} ${t(weekdayKey)}`;
 }
 
 function formatSignedAmount(entry: MobileTransactionRow) {
