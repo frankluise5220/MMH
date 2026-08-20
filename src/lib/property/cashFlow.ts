@@ -8,6 +8,7 @@ import {
   upsertEntryBusinessCashFlowLink,
   type EntryCashFlowDirection,
 } from "@/lib/server/entry-business-link";
+import { getCashFlowDate } from "@/lib/cash-flow-date";
 
 type TxClient = Prisma.TransactionClient | typeof prisma;
 
@@ -88,7 +89,11 @@ export async function ensurePropertyTransactionCashFlow(
       type: "investment",
     });
     const signedCashAmount = isCashIn ? Math.abs(cashAmount) : -Math.abs(cashAmount);
-    const cashDate = isCashIn ? (params.row.settlementDate ?? params.row.tradeDate) : params.row.tradeDate;
+    const cashDate = getCashFlowDate({
+      direction,
+      operationDate: params.row.tradeDate,
+      settlementDate: params.row.settlementDate,
+    });
     const cashEntryData = {
       householdId: params.householdId,
       date: cashDate,

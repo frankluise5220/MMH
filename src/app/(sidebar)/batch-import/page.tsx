@@ -8,6 +8,7 @@ import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchRepl
 import { evaluateCalcInputExpression } from "@/components/CalcInput";
 import { DateStepper } from "@/components/DateStepper";
 import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
+import { sortCategorySources } from "@/components/categorySmartSelect";
 import { formatAccountSelectorLabel, formatAccountTableLabel, formatAccountTableTitle } from "@/lib/account-display";
 import {
   IMPORT_ACCOUNT_ID_PREFIX,
@@ -166,7 +167,7 @@ type AccountOption = {
   AccountAlias?: Array<{ alias: string }> | null;
 };
 
-type BookCategory = { id: string; name: string; type: string; parentId?: string | null };
+type BookCategory = { id: string; name: string; type: string; parentId?: string | null; sortOrder?: number; isSystem?: boolean };
 type AccountPickerRole = "any" | "credit" | "repayment_source";
 type PreviewType = ParsedItem["type"] | CreditCardRepaymentBusinessType;
 type BillImportMode = "normal" | "credit_card";
@@ -181,6 +182,7 @@ type ImportCompletionState = {
   href: string | null;
   accountIds: string[];
   kind: "normal" | "fund";
+  importBatchId?: string | null;
 };
 type ServerImportProgress = {
   total: number;
@@ -240,8 +242,8 @@ function buildCategorySmartSelectOptions(
       list.push(category);
       childrenByParentId.set(key, list);
     }
-    for (const list of childrenByParentId.values()) {
-      list.sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+    for (const [parentId, list] of childrenByParentId) {
+      childrenByParentId.set(parentId, sortCategorySources(list));
     }
 
     const headerId = `category-type:${categoryType}`;
@@ -2897,7 +2899,7 @@ export default function BatchImportPage() {
         headers: { "Content-Type": "application/json", "X-Internal-Import": "batch-import" },
         body: JSON.stringify({ items: selectedItems, traceId }),
       });
-      const data = await res.json().catch(() => null) as { error?: string; createdCount?: number; trace?: string[]; failedRow?: { rowIndex?: number; error?: string } } | null;
+      const data = await res.json().catch(() => null) as { error?: string; createdCount?: number; importBatchId?: string | null; trace?: string[]; failedRow?: { rowIndex?: number; error?: string } } | null;
       if (!res.ok || !data || data.error) {
         postImportDebugLog(importTraceIdRef.current, "import_failed", {
           importKind: "bill",
@@ -2941,6 +2943,7 @@ export default function BatchImportPage() {
         href: completionTarget.href,
         accountIds: completionTarget.accountIds,
         kind: "normal",
+        importBatchId: data.importBatchId ?? null,
       });
       sessionStorage.removeItem("batchImportItems");
     } catch (error) {

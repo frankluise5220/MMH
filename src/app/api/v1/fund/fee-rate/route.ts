@@ -76,13 +76,16 @@ export async function GET(req: NextRequest) {
       }
       // Every stored fee-rate record (a fund can have multiple historical
       // rates keyed by effectiveDate), plus a placeholder row for funds that
-      // only appear in transactions without any stored rate yet.
+      // only appear in transactions without any stored rate yet. Buy and
+      // redeem records on the same date are returned as two columns.
       const codeSet = new Set<string>([...fundNameByCode.keys(), ...new Set(rateRecords.map((r) => r.fundCode))]);
       const rows: Array<{
         fundCode: string;
         fundName: string | null;
-        feeType: string;
-        rate: number;
+        buyRate: number | null;
+        redeemRate: number | null;
+        buyEffectiveDate: string | null;
+        redeemEffectiveDate: string | null;
         effectiveDate: string | null;
         placeholder: boolean;
       }> = [];
@@ -90,15 +93,46 @@ export async function GET(req: NextRequest) {
         const fundName = fundNameByCode.get(code) ?? null;
         const records = rateRecords.filter((r) => r.fundCode === code);
         if (records.length === 0) {
-          rows.push({ fundCode: code, fundName, feeType: "buy", rate: 0, effectiveDate: null, placeholder: true });
+          rows.push({
+            fundCode: code,
+            fundName,
+            buyRate: null,
+            redeemRate: null,
+            buyEffectiveDate: null,
+            redeemEffectiveDate: null,
+            effectiveDate: null,
+            placeholder: true,
+          });
         } else {
+          const rowsByDate = new Map<string, {
+            buyRate: number | null;
+            redeemRate: number | null;
+            buyEffectiveDate: string | null;
+            redeemEffectiveDate: string | null;
+          }>();
           for (const record of records) {
+            const effectiveDate = record.effectiveDate.toISOString().slice(0, 10);
+            const current = rowsByDate.get(effectiveDate) ?? {
+              buyRate: null,
+              redeemRate: null,
+              buyEffectiveDate: null,
+              redeemEffectiveDate: null,
+            };
+            if (record.feeType === "redeem") {
+              current.redeemRate = Number(record.rate);
+              current.redeemEffectiveDate = effectiveDate;
+            } else {
+              current.buyRate = Number(record.rate);
+              current.buyEffectiveDate = effectiveDate;
+            }
+            rowsByDate.set(effectiveDate, current);
+          }
+          for (const [effectiveDate, grouped] of rowsByDate) {
             rows.push({
               fundCode: code,
               fundName,
-              feeType: record.feeType,
-              rate: Number(record.rate),
-              effectiveDate: record.effectiveDate.toISOString().slice(0, 10),
+              ...grouped,
+              effectiveDate,
               placeholder: false,
             });
           }

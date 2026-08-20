@@ -33,6 +33,13 @@ export function isInsuranceAccount(account: AccountKindLike) {
   return account.kind === "insurance";
 }
 
+export function isSpendableAccount(account: AccountKindLike | null | undefined) {
+  return account?.kind === "cash" ||
+    account?.kind === "bank_debit" ||
+    account?.kind === "ewallet" ||
+    account?.kind === "bank_credit";
+}
+
 export function isBillLikeAccount(account: Pick<AccountKindLike, "kind"> & { billingDay?: number | null }) {
   return account.kind === "bank_credit" && !!account.billingDay;
 }

@@ -8,8 +8,10 @@ import { useI18n } from "@/lib/i18n";
 export type FeeRateRecord = {
   fundCode: string;
   fundName: string | null;
-  feeType: "buy" | "redeem";
-  rate: number;
+  buyRate: number | null;
+  redeemRate: number | null;
+  buyEffectiveDate: string | null;
+  redeemEffectiveDate: string | null;
   effectiveDate: string | null;
   placeholder?: boolean;
 };
@@ -57,8 +59,8 @@ export function FundFeeRatePanel({
   const [error, setError] = useState("");
   const [dirty, setDirty] = useState(false);
   const [newFundCode, setNewFundCode] = useState(initialFundCode ?? "");
-  const [newFeeType, setNewFeeType] = useState<"buy" | "redeem">("buy");
-  const [newRate, setNewRate] = useState("");
+  const [newBuyRate, setNewBuyRate] = useState("");
+  const [newRedeemRate, setNewRedeemRate] = useState("");
   const [newEffectiveDate, setNewEffectiveDate] = useState(todayStr);
 
   const loadRows = useCallback(async () => {
@@ -104,53 +106,98 @@ export function FundFeeRatePanel({
     // The fund code comes from the panel context (single-fund mode); no manual
     // code entry is needed. In account-level mode fall back to the input value.
     const code = (initialFundCode ?? newFundCode).trim();
-    const rate = normalizeRateValue(newRate);
     if (!code) return;
+    const hasBuyRate = newBuyRate.trim() !== "";
+    const hasRedeemRate = newRedeemRate.trim() !== "";
+    if (!hasBuyRate && !hasRedeemRate) return;
+    const buyRate = hasBuyRate ? normalizeRateValue(newBuyRate) : null;
+    const redeemRate = hasRedeemRate ? normalizeRateValue(newRedeemRate) : null;
     if (newEffectiveDate.trim()) {
       setRows((current) => [
         ...current,
         {
           fundCode: code,
           fundName: null,
-          feeType: newFeeType,
-          rate,
+          buyRate,
+          redeemRate,
+          buyEffectiveDate: hasBuyRate ? newEffectiveDate.trim() : null,
+          redeemEffectiveDate: hasRedeemRate ? newEffectiveDate.trim() : null,
           effectiveDate: newEffectiveDate.trim(),
         },
       ]);
     } else {
-      // Upsert-style: without a date, update the latest rate of that type.
-      const lastIndex = rows.map((r, i) => ({ r, i })).reverse().find(({ r }) => r.fundCode === code && r.feeType === newFeeType)?.i;
+      // Without a date, update the latest row for this fund or create a
+      // date-less placeholder that will receive today's date when saved.
+      const lastIndex = rows.map((r, i) => ({ r, i })).reverse().find(({ r }) => r.fundCode === code)?.i;
       if (lastIndex != null) {
-        setRows((current) => current.map((row, i) => (i === lastIndex ? { ...row, rate } : row)));
+        setRows((current) => current.map((row, i) => (i === lastIndex
+          ? {
+              ...row,
+              buyRate: buyRate ?? row.buyRate,
+              redeemRate: redeemRate ?? row.redeemRate,
+              buyEffectiveDate: buyRate != null ? null : row.buyEffectiveDate,
+              redeemEffectiveDate: redeemRate != null ? null : row.redeemEffectiveDate,
+              effectiveDate: null,
+            }
+          : row)));
       } else {
         setRows((current) => [
           ...current,
-          { fundCode: code, fundName: null, feeType: newFeeType, rate, effectiveDate: null },
+          {
+            fundCode: code,
+            fundName: null,
+            buyRate,
+            redeemRate,
+            buyEffectiveDate: null,
+            redeemEffectiveDate: null,
+            effectiveDate: null,
+          },
         ]);
       }
     }
     setNewFundCode(initialFundCode ?? "");
-    setNewRate("");
+    setNewBuyRate("");
+    setNewRedeemRate("");
     setNewEffectiveDate(todayStr);
     setError("");
     setDirty(true);
-  }, [initialFundCode, newFundCode, newFeeType, newRate, newEffectiveDate, rows, todayStr]);
+  }, [initialFundCode, newFundCode, newBuyRate, newRedeemRate, newEffectiveDate, rows, todayStr]);
 
   const saveRows = useCallback(async () => {
     if (!accountId) return;
     setSaving(true);
     setError("");
     try {
+      const payloadRows: Array<{
+        fundCode: string;
+        feeType: "buy" | "redeem";
+        rate: number;
+        effectiveDate?: string;
+      }> = [];
+      for (const row of rows) {
+        if (row.placeholder) continue;
+        if (row.buyRate != null) {
+          payloadRows.push({
+            fundCode: row.fundCode,
+            feeType: "buy",
+            rate: row.buyRate,
+            effectiveDate: row.buyEffectiveDate ?? row.effectiveDate ?? undefined,
+          });
+        }
+        if (row.redeemRate != null) {
+          payloadRows.push({
+            fundCode: row.fundCode,
+            feeType: "redeem",
+            rate: row.redeemRate,
+            effectiveDate: row.redeemEffectiveDate ?? row.effectiveDate ?? undefined,
+          });
+        }
+      }
       const payload = {
         accountId,
         replace: true,
         fundCode: initialFundCode || undefined,
-        rows: rows.filter((row) => !row.placeholder).map((row) => ({
-          fundCode: row.fundCode,
-          feeType: row.feeType,
-          rate: row.rate,
-          effectiveDate: row.effectiveDate || undefined,
-        })),
+        rows: payloadRows,
       };
       const response = await fetch("/api/v1/fund/fee-rate", {
         method: "POST",
@@ -185,22 +232,26 @@ export function FundFeeRatePanel({
             className="h-8 w-28 rounded-md border border-slate-200 px-2 text-xs outline-none focus:border-blue-400"
           />
         )}
-        <select
-          value={newFeeType}
-          onChange={(e) => setNewFeeType(e.target.value as "buy" | "redeem")}
-          className="h-8 rounded-md border border-slate-200 px-1.5 text-xs outline-none focus:border-blue-400"
-        >
-          <option value="buy">{t("fundFeeRates.type.buy")}</option>
-          <option value="redeem">{t("fundFeeRates.type.redeem")}</option>
-        </select>
         <div className="flex items-center gap-1">
           <input
             type="number"
             min={0}
             step="0.01"
-            value={newRate}
-            onChange={(e) => setNewRate(e.target.value)}
-            placeholder={t("fundFeeRates.newRatePlaceholder")}
+            value={newBuyRate}
+            onChange={(e) => setNewBuyRate(e.target.value)}
+            placeholder={t("fundFeeRates.buyRatePlaceholder")}
+            className="h-8 w-20 rounded-md border border-slate-200 px-2 text-right text-xs tabular-nums outline-none focus:border-blue-400"
+          />
+          <Percent className="h-3 w-3 shrink-0 text-slate-400" />
+        </div>
+        <div className="flex items-center gap-1">
+          <input
+            type="number"
+            min={0}
+            step="0.01"
+            value={newRedeemRate}
+            onChange={(e) => setNewRedeemRate(e.target.value)}
+            placeholder={t("fundFeeRates.redeemRatePlaceholder")}
             className="h-8 w-20 rounded-md border border-slate-200 px-2 text-right text-xs tabular-nums outline-none focus:border-blue-400"
           />
           <Percent className="h-3 w-3 shrink-0 text-slate-400" />
@@ -214,7 +265,7 @@ export function FundFeeRatePanel({
         <button
           type="button"
           onClick={addRow}
-          disabled={!newFundCode.trim() || !newRate}
+          disabled={!newFundCode.trim() || (!newBuyRate.trim() && !newRedeemRate.trim())}
           className="inline-flex h-8 items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50"
         >
           <Plus className="h-3.5 w-3.5" />
@@ -232,15 +283,15 @@ export function FundFeeRatePanel({
             <thead className="sticky top-0 z-10 bg-slate-50">
               <tr>
                 <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">{t("fundConfirmDays.col.fund")}</th>
-                <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">{t("fundFeeRates.col.type")}</th>
-                <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">{t("fundFeeRates.col.rate")}</th>
+                <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">{t("fundFeeRates.col.buyRate")}</th>
+                <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">{t("fundFeeRates.col.redeemRate")}</th>
                 <th className="border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">{t("fundFeeRates.col.effectiveDate")}</th>
                 <th className="w-10 border-b border-slate-200 px-2 py-2" />
               </tr>
             </thead>
             <tbody>
               {rows.map((row, index) => (
-                <tr key={`${row.fundCode}-${row.feeType}-${row.effectiveDate ?? "latest"}-${index}`} className="hover:bg-slate-50">
+                <tr key={`${row.fundCode}-${row.effectiveDate ?? "latest"}-${index}`} className="hover:bg-slate-50">
                   <td className="border-b border-slate-100 px-3 py-1.5">
                     <div className="min-w-0">
                       <div className="truncate text-xs font-medium text-slate-800" title={row.fundName ?? undefined}>
@@ -249,15 +300,18 @@ export function FundFeeRatePanel({
                       <div className="text-[11px] tabular-nums text-slate-400">{row.fundCode}</div>
                     </div>
                   </td>
-                  <td className="border-b border-slate-100 px-3 py-1.5">
-                    <select
-                      value={row.feeType}
-                      onChange={(e) => updateRow(index, { feeType: e.target.value as "buy" | "redeem" })}
-                      className="h-7 rounded border border-slate-200 px-1 text-xs outline-none focus:border-blue-400"
-                    >
-                      <option value="buy">{t("fundFeeRates.type.buy")}</option>
-                      <option value="redeem">{t("fundFeeRates.type.redeem")}</option>
-                    </select>
+                  <td className="border-b border-slate-100 px-3 py-1.5 text-right">
+                    <div className="flex items-center justify-end gap-1">
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        value={row.buyRate ?? ""}
+                        onChange={(e) => updateRow(index, { buyRate: e.target.value === "" ? null : normalizeRateValue(e.target.value), buyEffectiveDate: row.effectiveDate })}
+                        className="h-7 w-20 rounded border border-slate-200 px-1.5 text-right text-xs tabular-nums outline-none focus:border-blue-400"
+                      />
+                      <Percent className="h-3 w-3 shrink-0 text-slate-400" />
+                    </div>
                   </td>
                   <td className="border-b border-slate-100 px-3 py-1.5 text-right">
                     <div className="flex items-center justify-end gap-1">
@@ -265,8 +319,8 @@ export function FundFeeRatePanel({
                         type="number"
                         min={0}
                         step="0.01"
-                        value={row.rate}
-                        onChange={(e) => updateRow(index, { rate: normalizeRateValue(e.target.value) })}
+                        value={row.redeemRate ?? ""}
+                        onChange={(e) => updateRow(index, { redeemRate: e.target.value === "" ? null : normalizeRateValue(e.target.value), redeemEffectiveDate: row.effectiveDate })}
                         className="h-7 w-20 rounded border border-slate-200 px-1.5 text-right text-xs tabular-nums outline-none focus:border-blue-400"
                       />
                       <Percent className="h-3 w-3 shrink-0 text-slate-400" />
@@ -276,7 +330,14 @@ export function FundFeeRatePanel({
                     <input
                       type="date"
                       value={row.effectiveDate ?? ""}
-                      onChange={(e) => updateRow(index, { effectiveDate: e.target.value || null })}
+                      onChange={(e) => {
+                        const effectiveDate = e.target.value || null;
+                        updateRow(index, {
+                          effectiveDate,
+                          buyEffectiveDate: row.buyRate != null ? effectiveDate : null,
+                          redeemEffectiveDate: row.redeemRate != null ? effectiveDate : null,
+                        });
+                      }}
                       className="h-7 rounded border border-slate-200 px-1.5 text-xs tabular-nums outline-none focus:border-blue-400"
                     />
                   </td>

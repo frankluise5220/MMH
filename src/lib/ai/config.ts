@@ -7,6 +7,17 @@ export const localProvider = createOpenAI({
 
 export const defaultModel = process.env.LOCAL_AI_MODEL_NAME || "hermes";
 
+export type AiApiMode = "chat" | "responses";
+
+export const AI_API_MODES = [
+  { id: "chat", labelKey: "settings.ai.client.apiMode.chat" },
+  { id: "responses", labelKey: "settings.ai.client.apiMode.responses" },
+] as const;
+
+export function normalizeAiApiMode(value?: string | null): AiApiMode {
+  return value === "responses" ? "responses" : "chat";
+}
+
 /** AI channel type configuration */
 export const CHANNEL_TYPES = [
   { id: "openai", label: "OpenAI", modelsUrl: "/v1/models" },

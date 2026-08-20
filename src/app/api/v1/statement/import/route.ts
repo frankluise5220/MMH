@@ -14,6 +14,7 @@ import { assertInstitutionDisplayNamesUnique } from "@/lib/server/institution-na
 import { resolveDebtAccountByCounterpartyName } from "@/lib/server/import-debt-account";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
+import { refreshCreditCardCycleCachesForAccountIds } from "@/lib/server/credit-bill-page-data";
 import { revalidateAfterTxChange } from "@/lib/server/revalidate";
 import {
   CREDIT_CARD_STATEMENT_IMPORT_CYCLE_LOCK_SOURCE,
@@ -907,6 +908,9 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
       type: item.type === "income" ? "income" : item.type === "expense" ? "expense" : null,
     }),
   ]);
+  if (!accountId) {
+    throw new Error("Account is required and must match an existing account");
+  }
   const statementMonth = await statementMonthForAccountId(tx, accountId, confirmDate);
   const currencyMeta = await accountCurrencyMeta(tx, accountId);
 
@@ -1052,6 +1056,7 @@ export async function POST(req: Request) {
   await normalizeDefaultCategoryHierarchyForHousehold(prisma, householdId);
 
   const created: { id: string }[] = [];
+  const touchedAccountIds = new Set<string>();
   const errors: Array<{ index: number; rawText: string; error: string }> = [];
   const statementBillLocks: StatementBillLock[] = [];
   const mailSource = parse.data.mailSource;
@@ -1086,6 +1091,8 @@ export async function POST(req: Request) {
     try {
       const createdRecord = await createTransactionFromItem(prisma, householdId, item, defaultAccountName, options);
       created.push({ id: createdRecord.id });
+      if (createdRecord.accountId) touchedAccountIds.add(createdRecord.accountId);
+      if (createdRecord.toAccountId) touchedAccountIds.add(createdRecord.toAccountId);
       const statementBillLock = await statementBillLockForImportedRecord(prisma, householdId, item, {
         accountId: createdRecord.accountId,
         toAccountId: createdRecord.toAccountId,
@@ -1100,6 +1107,13 @@ export async function POST(req: Request) {
   const lockedStatementBills = statementBillLocks.length > 0
     ? await lockImportedStatementBills(prisma, statementBillLocks)
     : [];
+
+  await refreshCreditCardCycleCachesForAccountIds({
+    householdId,
+    accountIds: touchedAccountIds,
+  }).catch((error) => {
+    console.error("Failed to refresh credit-card cycles after statement import:", error);
+  });
 
   if (importBatchId && created.length === 0) {
     await prisma.importBatch.delete({ where: { id: importBatchId } }).catch(() => null);

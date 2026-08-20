@@ -129,7 +129,8 @@ export function getInvestmentCategoryName(entry: {
   }
 
   if (productType === "property") {
-    if (subtype === "redeem" || subtype === "switch_out") return SYSTEM_PROPERTY_SALE_CATEGORY;
+    if (subtype === "sale" || subtype === "redeem" || subtype === "switch_out") return SYSTEM_PROPERTY_SALE_CATEGORY;
+    if (subtype === "improvement") return SYSTEM_PROPERTY_IMPROVEMENT_CATEGORY;
     return SYSTEM_PROPERTY_PURCHASE_CATEGORY;
   }
 

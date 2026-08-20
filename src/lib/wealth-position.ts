@@ -181,7 +181,7 @@ export async function recalcWealthPositions(accountId: string) {
   });
   if (!account || account.kind !== "investment" || account.investProductType !== "wealth") return;
 
-  const fundUnitsDecimals = normalizeFundUnitsDecimals(account.fundUnitsDecimals, 3);
+  const fundUnitsDecimals = normalizeFundUnitsDecimals(account.fundUnitsDecimals, 2);
   const rows = await prisma.wealthTransaction.findMany({
     where: { accountId, deletedAt: null },
     orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }],

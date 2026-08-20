@@ -5,6 +5,7 @@ import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 import { logger } from "@/lib/logger";
 import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
+import { recalcPropertyAssetsFromTransactions } from "@/lib/property/transactions";
 import { recalcStockPositions } from "@/lib/stock/recalcPosition";
 import { recalcWealthPositions } from "@/lib/wealth-position";
 import { isAdmin } from "@/lib/server/auth";
@@ -34,6 +35,7 @@ function collectInvestmentRecalcTargets(
     metalAccountsToRecalc: Set<string>;
     stockAccountsToRecalc: Set<string>;
     wealthAccountsToRecalc: Set<string>;
+    propertyAssetIdsToRecalc?: Set<string>;
   },
 ) {
   if (txRecord.accountId) targets.accountsToRecalcBalance.add(txRecord.accountId);
@@ -72,6 +74,7 @@ type InvestmentRecalcTargets = {
   metalAccountsToRecalc: Set<string>;
   stockAccountsToRecalc: Set<string>;
   wealthAccountsToRecalc: Set<string>;
+  propertyAssetIdsToRecalc: Set<string>;
 };
 
 type IndependentBusinessDeleteResult = {
@@ -280,7 +283,7 @@ async function softDeleteIndependentBusinessRecordsByIds(
       deletedAt: null,
       OR: [{ id: { in: ids } }, { cashEntryId: { in: ids } }],
     },
-    select: { id: true, cashEntryId: true, accountId: true, cashAccountId: true },
+    select: { id: true, cashEntryId: true, accountId: true, cashAccountId: true, propertyAssetId: true },
   });
   for (const row of propertyRows) {
     const updated = await prisma.propertyTransaction.updateMany({
@@ -293,6 +296,7 @@ async function softDeleteIndependentBusinessRecordsByIds(
     pushRemovedIds(row.id, row.cashEntryId);
     addOptionalAccountId(targets, row.accountId);
     addOptionalAccountId(targets, row.cashAccountId);
+    targets.propertyAssetIdsToRecalc.add(row.propertyAssetId);
   }
 
   const independentBusinessIds = result.deletedEntryIds;
@@ -424,6 +428,7 @@ export async function softDeleteEntriesByIds(
   const metalAccountsToRecalc = new Set<string>();
   const stockAccountsToRecalc = new Set<string>();
   const wealthAccountsToRecalc = new Set<string>();
+  const propertyAssetIdsToRecalc = new Set<string>();
   const accountsToRecalcBalance = new Set<string>();
   const changedFundEntryIds: string[] = [];
   const processedInstallmentPlanIds = new Set<string>();
@@ -453,6 +458,7 @@ export async function softDeleteEntriesByIds(
           metalAccountsToRecalc,
           stockAccountsToRecalc,
           wealthAccountsToRecalc,
+          propertyAssetIdsToRecalc,
         });
         const businessAccount = businessAccountSnapshotOf(txRecord);
         if (businessAccount.id) accountsToRecalcBalance.add(businessAccount.id);
@@ -527,6 +533,7 @@ export async function softDeleteEntriesByIds(
       metalAccountsToRecalc,
       stockAccountsToRecalc,
       wealthAccountsToRecalc,
+      propertyAssetIdsToRecalc,
     });
 
   }
@@ -538,6 +545,7 @@ export async function softDeleteEntriesByIds(
       metalAccountsToRecalc,
       stockAccountsToRecalc,
       wealthAccountsToRecalc,
+      propertyAssetIdsToRecalc,
     });
     deletedCount += independentDelete.deletedCount;
     deletedEntryIds.push(...independentDelete.deletedEntryIds);
@@ -562,6 +570,7 @@ export async function softDeleteEntriesByIds(
       metalAccountsToRecalc,
       stockAccountsToRecalc,
       wealthAccountsToRecalc,
+      propertyAssetIdsToRecalc,
     },
   ).catch(logger.catchLog("收集基金重算目标失败", "entry-delete.ts"));
   for (const [accountId, fundCodes] of fundAccountsToRecalc) {
@@ -576,6 +585,10 @@ export async function softDeleteEntriesByIds(
   for (const accountId of wealthAccountsToRecalc) {
     await recalcWealthPositions(accountId).catch(logger.catchLog("理财持仓收益重算失败", "entry-delete.ts"));
   }
+  await recalcPropertyAssetsFromTransactions(prisma, {
+    householdId: ctx.householdId,
+    propertyAssetIds: Array.from(propertyAssetIdsToRecalc),
+  }).catch(logger.catchLog("房产资产重算失败", "entry-delete.ts"));
   for (const accountId of accountsToRecalcBalance) {
     await recalcAndSaveAccountBalance(accountId).catch(logger.catchLog("操作失败", "entry-delete.ts"));
   }

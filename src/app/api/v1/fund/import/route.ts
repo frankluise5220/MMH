@@ -355,8 +355,8 @@ async function enrichPreviewItem(
     } else if (!confirmDate) {
       confirmDate = date;
     }
-    if (!arrivalDate && (subtype === "buy" || (subtype === "buy_failed" && source === "regular_invest_refund")) && confirmDate && arrivalDays != null) {
-      arrivalDate = addTradingDaysUtc(confirmDate, arrivalDays, fundAccountMeta.tradingCalendar);
+    if (!arrivalDate && (subtype === "buy" || (subtype === "buy_failed" && source === "regular_invest_refund")) && date && arrivalDays != null) {
+      arrivalDate = addTradingDaysUtc(date, arrivalDays, fundAccountMeta.tradingCalendar);
     }
 
     if (feeRateInput != null) {
@@ -428,8 +428,8 @@ async function createFundTransaction(tx: Prisma.TransactionClient, householdId: 
 
   const confirmDate = item.confirmDate ? toUtcDate(item.confirmDate) : null;
   const arrivalDate = item.arrivalDate ? toUtcDate(item.arrivalDate) : (
-    (subtype === "buy" || isBuyFailedRefund) && item.confirmDate && item.arrivalDays != null
-      ? toUtcDate(addTradingDaysUtc(item.confirmDate, item.arrivalDays, fundAccount.tradingCalendar))
+    (subtype === "buy" || isBuyFailedRefund) && item.date && item.arrivalDays != null
+      ? toUtcDate(addTradingDaysUtc(item.date, item.arrivalDays, fundAccount.tradingCalendar))
       : null
   );
   const recordDate = toUtcDate(item.date);

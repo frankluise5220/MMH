@@ -13,7 +13,8 @@ import {
   SettingsTd,
   SettingsTh,
 } from "@/components/settings/SettingsPageScaffold";
-import { CHANNEL_TYPES, getModelsUrl } from "@/lib/ai/config";
+import { AI_API_MODES, CHANNEL_TYPES, getModelsUrl, normalizeAiApiMode, type AiApiMode } from "@/lib/ai/config";
+import { dispatchAiConfigChanged } from "@/lib/client/aiConfig";
 import { parseBaseUrl, buildBaseUrl, PROTOCOL_OPTIONS, PORT_SUGGESTIONS } from "@/lib/urlInput";
 import type { ParsedUrl } from "@/lib/urlInput";
 import { useI18n } from "@/lib/i18n";
@@ -27,6 +28,7 @@ type ModelEntry = {
   baseUrl: string;
   apiKey: string;
   model: string;
+  apiMode: AiApiMode;
   category?: string;
   supportsVision?: boolean;
 };
@@ -37,7 +39,7 @@ export type InitialAiChannel = {
   channelType: string;
   baseUrl: string;
   apiKey: string;
-  AiModel: Array<{ id: string; name: string | null; model: string; vision: boolean; active: boolean }>;
+  AiModel: Array<{ id: string; name: string | null; model: string; vision: boolean; apiMode?: string | null; active: boolean }>;
 };
 
 const MODELS_KEY = "mmh_ai_models";
@@ -65,7 +67,13 @@ function categoryLabel(category: string, t: (key: string, params?: Record<string
 }
 
 function loadModels(): ModelEntry[] {
-  try { const raw = localStorage.getItem(MODELS_KEY); if (raw) return JSON.parse(raw); } catch {}
+  try {
+    const raw = localStorage.getItem(MODELS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as ModelEntry[];
+      return parsed.map((entry) => ({ ...entry, apiMode: normalizeAiApiMode(entry.apiMode) }));
+    }
+  } catch {}
   return [];
 }
 function saveModels(models: ModelEntry[]) {
@@ -92,6 +100,7 @@ function buildModelsFromServer(channels: InitialAiChannel[]): ModelEntry[] {
         baseUrl: ch.baseUrl,
         apiKey: ch.apiKey ?? "",
         model: m.model,
+        apiMode: normalizeAiApiMode(m.apiMode),
         category: info.category,
         supportsVision: m.vision || info.supportsVision,
       });
@@ -191,6 +200,7 @@ function ModelModal({
     initial?.model ? [{ id: initial.model, category: initial.category ?? detectModelInfo(initial.model).category, supportsVision: initial.supportsVision ?? detectModelInfo(initial.model).supportsVision }] : []
   );
   const [selectedModel, setSelectedModel] = useState(initial?.model ?? "");
+  const [apiMode, setApiMode] = useState<AiApiMode>(initial?.apiMode ?? "chat");
 
   const currentBaseUrl = buildBaseUrl(urlParts);
 
@@ -212,9 +222,10 @@ function ModelModal({
     const name = channelName.trim() || selectedModel;
     const info = modelList.find(m => m.id === selectedModel) ?? detectModelInfo(selectedModel);
     onSave({
-      id: initial?.id ?? genId(), name, channelId: "", channelType,
+      id: initial?.id ?? genId(), name, channelId: initial?.channelId ?? "", channelType,
       channelName: name,
       baseUrl: currentBaseUrl, apiKey: apiKey.trim(), model: selectedModel,
+      apiMode: channelType === "ollama" ? "chat" : apiMode,
       category: info.category, supportsVision: info.supportsVision,
     });
   }
@@ -270,6 +281,17 @@ function ModelModal({
             </>
           ) : (
             <>
+              {channelType !== "ollama" && (
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.ai.client.apiMode")}</label>
+                  <select className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                    value={apiMode} onChange={e => setApiMode(e.target.value as AiApiMode)}>
+                    {AI_API_MODES.map(mode => (
+                      <option key={mode.id} value={mode.id}>{t(mode.labelKey)}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <select className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                 value={selectedModel} onChange={e => setSelectedModel(e.target.value)}>
                 {modelList.map(m => (
@@ -321,6 +343,7 @@ export default function AISettingsClient({
   const [quickFetching, setQuickFetching] = useState(false);
   const [quickModelList, setQuickModelList] = useState<ModelInfo[]>([]);
   const [quickSelected, setQuickSelected] = useState("");
+  const [quickApiMode, setQuickApiMode] = useState<AiApiMode>("chat");
 
   useEffect(() => {
     const serverModels = buildModelsFromServer(initialChannels);
@@ -350,10 +373,10 @@ export default function AISettingsClient({
     return () => window.removeEventListener("storage", handler);
   }, [pageReady]);
 
-  function handleAddModel(entry: ModelEntry) {
+  function handleAddModel(entry: ModelEntry): Promise<ModelEntry | null> {
     if (models.some(m => m.id !== entry.id && m.model === entry.model && m.channelName === entry.channelName)) {
       alert(t("settings.ai.client.duplicateModel"));
-      return;
+      return Promise.resolve(null);
     }
     const idx = models.findIndex(m => m.id === entry.id);
     let next: ModelEntry[];
@@ -366,17 +389,65 @@ export default function AISettingsClient({
     setShowModal(false);
     setEditingModel(null);
 
-    syncToServer(entry);
+    return syncToServer(entry)
+      .then(({ channelId, modelId }) => {
+        const savedEntry = {
+          ...entry,
+          channelId: channelId || entry.channelId,
+          id: modelId || entry.id,
+        };
+        setModels(prev => prev.map(item => (item.id === entry.id ? savedEntry : item)));
+        return savedEntry;
+      })
+      .catch(() => {
+        alert(t("settings.ai.client.syncFailed"));
+        return null;
+      });
   }
 
-  async function syncToServer(entry: ModelEntry) {
-    try {
-      await fetch("/api/v1/settings/ai-config", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: entry.channelName || entry.name, channelType: entry.channelType || "custom", baseUrl: entry.baseUrl, apiKey: entry.apiKey }),
-      });
-    } catch {}
+  async function syncToServer(entry: ModelEntry): Promise<{ channelId: string; modelId: string }> {
+    const headers = { "Content-Type": "application/json" };
+    const channelResponse = await fetch("/api/v1/settings/ai-config", {
+      method: entry.channelId ? "PUT" : "POST",
+      headers,
+      body: JSON.stringify({
+        ...(entry.channelId ? { channelId: entry.channelId } : {}),
+        name: entry.channelName || entry.name,
+        channelType: entry.channelType || "custom",
+        baseUrl: entry.baseUrl,
+        apiKey: entry.apiKey,
+      }),
+    });
+    const channelData = await channelResponse.json().catch(() => null) as any;
+    if (!channelResponse.ok || !channelData?.ok) {
+      throw new Error(channelData?.error ?? t("settings.ai.client.syncFailed"));
+    }
+    const channelId = entry.channelId || channelData.channel?.id;
+    if (!channelId) throw new Error(t("settings.ai.client.syncFailed"));
+
+    const modelResponse = await fetch("/api/v1/settings/ai-config", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify(entry.channelId ? {
+        updateModelId: entry.id,
+        model: entry.model,
+        name: entry.name,
+        vision: !!entry.supportsVision,
+        apiMode: entry.channelType === "ollama" ? "chat" : entry.apiMode,
+      } : {
+        model: entry.model,
+        name: entry.name,
+        channelId,
+        vision: !!entry.supportsVision,
+        apiMode: entry.channelType === "ollama" ? "chat" : entry.apiMode,
+      }),
+    });
+    const modelData = await modelResponse.json().catch(() => null) as any;
+    if (!modelResponse.ok || !modelData?.ok) {
+      throw new Error(modelData?.error ?? t("settings.ai.client.syncFailed"));
+    }
+    dispatchAiConfigChanged();
+    return { channelId, modelId: modelData.model?.id || entry.id };
   }
 
   function handleRemoveModel(id: string) {
@@ -389,11 +460,34 @@ export default function AISettingsClient({
       saveActiveModel(nextActive);
       setActiveModel(nextActive);
     }
+    if (entry.channelId) {
+      void fetch("/api/v1/settings/ai-config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deleteModelId: entry.id }),
+      }).then(async (response) => {
+        const data = await response.json().catch(() => null) as any;
+        if (!response.ok || !data?.ok) alert(t("settings.ai.client.syncFailed"));
+        else dispatchAiConfigChanged();
+      }).catch(() => alert(t("settings.ai.client.syncFailed")));
+    }
   }
 
-  function handleSetDefault(name: string) {
+  function handleSetDefault(name: string, entryOverride?: ModelEntry) {
+    const entry = entryOverride ?? models.find(item => item.name === name);
     saveActiveModel(name);
     setActiveModel(name);
+    if (entry?.channelId) {
+      void fetch("/api/v1/settings/ai-config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ activeModelId: entry.id }),
+      }).then(async (response) => {
+        const data = await response.json().catch(() => null) as any;
+        if (!response.ok || !data?.ok) alert(t("settings.ai.client.syncFailed"));
+        else dispatchAiConfigChanged();
+      }).catch(() => alert(t("settings.ai.client.syncFailed")));
+    }
   }
 
   function handleQuickAdd(base: ModelEntry) {
@@ -401,6 +495,7 @@ export default function AISettingsClient({
     setQuickFetching(true);
     setQuickModelList([]);
     setQuickSelected("");
+    setQuickApiMode(base.apiMode);
 
     const modelsUrl = getModelsUrl(base.channelType);
     fetchModelsForChannel(base.baseUrl, base.apiKey ?? "", modelsUrl, t)
@@ -433,11 +528,13 @@ export default function AISettingsClient({
       baseUrl: quickAdd.baseUrl,
       apiKey: quickAdd.apiKey ?? "",
       model: quickSelected,
+      apiMode: quickAdd.channelType === "ollama" ? "chat" : quickApiMode,
       category: info.category,
       supportsVision: info.supportsVision,
     };
-    handleAddModel(entry);
-    handleSetDefault(entry.name);
+    void handleAddModel(entry).then(savedEntry => {
+      if (savedEntry) handleSetDefault(savedEntry.name, savedEntry);
+    });
     setQuickAdd(null);
   }
 
@@ -493,7 +590,14 @@ export default function AISettingsClient({
                     <div className="mt-0.5 truncate text-[11px] text-slate-400">{m.channelType}</div>
                   </div>
                 </SettingsTd>
-                <SettingsTd>{categoryLabel(category, t)}</SettingsTd>
+                <SettingsTd>
+                  <div className="text-xs text-slate-600">{categoryLabel(category, t)}</div>
+                  {m.channelType !== "ollama" && (
+                    <div className="mt-0.5 text-[11px] text-slate-400">
+                      {t(AI_API_MODES.find(mode => mode.id === m.apiMode)?.labelKey ?? "settings.ai.client.apiMode.chat")}
+                    </div>
+                  )}
+                </SettingsTd>
                 <SettingsTd>
                   <div className="flex flex-wrap gap-1.5">
                     {supportsVision ? <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700">{t("settings.ai.client.category.vision")}</span> : null}
@@ -552,6 +656,17 @@ export default function AISettingsClient({
                 <div className="text-sm text-slate-500 text-center py-4">{t("settings.ai.client.fetchingModels")}</div>
               ) : quickModelList.length > 0 ? (
                 <>
+                  {quickAdd.channelType !== "ollama" && (
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.ai.client.apiMode")}</label>
+                      <select className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                        value={quickApiMode} onChange={e => setQuickApiMode(e.target.value as AiApiMode)}>
+                        {AI_API_MODES.map(mode => (
+                          <option key={mode.id} value={mode.id}>{t(mode.labelKey)}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                   <select className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={quickSelected} onChange={e => setQuickSelected(e.target.value)}>
                     {quickModelList.map(m => (
                       <option key={m.id} value={m.id}>{m.id}{m.supportsVision ? t("settings.ai.client.visionSuffix") : ""}</option>

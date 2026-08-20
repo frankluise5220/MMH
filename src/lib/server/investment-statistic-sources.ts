@@ -94,7 +94,7 @@ export async function loadWealthStatisticSourceEntries(
     rowsByAccountId.set(row.accountId, list);
   }
   for (const accountRows of rowsByAccountId.values()) {
-    const fundUnitsDecimals = normalizeFundUnitsDecimals(accountRows[0]?.Account?.fundUnitsDecimals, 3);
+    const fundUnitsDecimals = normalizeFundUnitsDecimals(accountRows[0]?.Account?.fundUnitsDecimals, 2);
     const calc = calculateWealthPositionsFromEntries(
       accountRows.map((row) => ({
         id: row.id,

@@ -55,7 +55,12 @@ type EntryBusinessLinkSummaryRow = {
   linkType?: string | null;
   CashEntry?: { id: string; deletedAt?: Date | null } | null;
   BusinessEntry?: { id: string; deletedAt?: Date | null } | null;
-  FundTransaction?: { id: string; deletedAt?: Date | null } | null;
+  FundTransaction?: {
+    id: string;
+    deletedAt?: Date | null;
+    fundAccountId?: string | null;
+    Account?: { id: string; name?: string | null } | null;
+  } | null;
   InsuranceTransaction?: { id: string; deletedAt?: Date | null } | null;
   WealthTransaction?: { id: string; deletedAt?: Date | null } | null;
   DepositTransaction?: { id: string; deletedAt?: Date | null } | null;
@@ -82,7 +87,14 @@ export const entryBusinessLinkSummaryInclude = {
       linkType: true,
       CashEntry: { select: { id: true, deletedAt: true } },
       BusinessEntry: { select: { id: true, deletedAt: true } },
-      FundTransaction: { select: { id: true, deletedAt: true } },
+      FundTransaction: {
+        select: {
+          id: true,
+          deletedAt: true,
+          fundAccountId: true,
+          Account: { select: { id: true, name: true } },
+        },
+      },
       InsuranceTransaction: { select: { id: true, deletedAt: true } },
       WealthTransaction: { select: { id: true, deletedAt: true } },
       DepositTransaction: { select: { id: true, deletedAt: true } },
@@ -108,7 +120,14 @@ export const entryBusinessLinkSummaryInclude = {
       linkType: true,
       CashEntry: { select: { id: true, deletedAt: true } },
       BusinessEntry: { select: { id: true, deletedAt: true } },
-      FundTransaction: { select: { id: true, deletedAt: true } },
+      FundTransaction: {
+        select: {
+          id: true,
+          deletedAt: true,
+          fundAccountId: true,
+          Account: { select: { id: true, name: true } },
+        },
+      },
       InsuranceTransaction: { select: { id: true, deletedAt: true } },
       WealthTransaction: { select: { id: true, deletedAt: true } },
       DepositTransaction: { select: { id: true, deletedAt: true } },
@@ -366,11 +385,14 @@ export function buildEntryBusinessLinkSummary(entry: {
     uniqueRows.set(key, row);
   }
   const labels = Array.from(new Set(Array.from(uniqueRows.values()).map((row) => entryBusinessTypeLabel(row.businessType))));
+  const fundAccountLink = Array.from(uniqueRows.values()).find((row) => row.FundTransaction?.fundAccountId);
   return {
     businessLinkCount: uniqueRows.size,
     businessLinkLabels: labels,
     businessLinkIds: Array.from(uniqueRows.values()).map((row) => row.id).filter(Boolean),
     businessLinkId: Array.from(uniqueRows.values()).find((row) => row.id)?.id ?? null,
+    relatedAccountId: fundAccountLink?.FundTransaction?.fundAccountId ?? null,
+    relatedAccountName: fundAccountLink?.FundTransaction?.Account?.name ?? null,
   };
 }
 

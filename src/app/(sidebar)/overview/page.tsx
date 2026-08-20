@@ -8,6 +8,7 @@ import { getServerDisplayLanguage } from "@/lib/server/i18n";
 import { computeInsuranceOverviewSummary } from "@/lib/server/insurance-overview-summary";
 import { computeOverviewSummary } from "@/lib/server/overview-summary";
 import { prisma } from "@/lib/db/prisma";
+import { categoryOrderBy } from "@/lib/category-order";
 
 export const dynamic = "force-dynamic";
 
@@ -40,8 +41,8 @@ export default async function OverviewPage() {
     }),
     prisma.category.findMany({
       where: { ...ctx.hidFilter, type: { in: ["expense", "income"] } },
-      orderBy: [{ type: "asc" }, { name: "asc" }],
-      select: { id: true, name: true, type: true },
+      orderBy: categoryOrderBy(),
+      select: { id: true, name: true, type: true, sortOrder: true, isSystem: true },
     }),
   ]);
 

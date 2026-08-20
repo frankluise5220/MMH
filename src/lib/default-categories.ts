@@ -1,6 +1,7 @@
 import { AccountKind, Prisma, TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { CREDIT_CARD_REPAYMENT_CATEGORY_NAME } from "@/lib/transaction-semantics";
+import { FIXED_ASSET_EXPENSE_CATEGORY_NAME } from "@/lib/fixed-asset";
 import {
   SYSTEM_DEPOSIT_INVESTMENT_ACTION_CATEGORIES,
   SYSTEM_DEPOSIT_INVESTMENT_CATEGORY,
@@ -31,7 +32,7 @@ export type DefaultCategoryTemplate = {
 };
 
 type CategoryWriter = typeof prisma | Prisma.TransactionClient;
-const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-08-13-property-investment-category-v1";
+export const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-08-20-category-order-and-remove-expense-repayment-v1";
 const DELETED_DEFAULT_CATEGORY_KEY_PREFIX = "category_deleted_default_templates:";
 
 type DefaultCategoryTemplateChild = {
@@ -87,13 +88,12 @@ const systemCategoryTemplateNames: Record<DefaultCategoryType, Set<string>> = {
     SYSTEM_INVESTMENT_DIVIDEND_CATEGORY,
   ]),
   expense: new Set([
-    "还款",
-    "贷款还款",
     "贷款",
     "贷款本金",
     "贷款利息",
     "贷款手续费",
     SYSTEM_BANK_INSTALLMENT_EXPENSE_CATEGORY,
+    FIXED_ASSET_EXPENSE_CATEGORY_NAME,
     SYSTEM_INSURANCE_EXPENSE_CATEGORY,
     SYSTEM_INVESTMENT_LOSS_CATEGORY,
     SYSTEM_FUND_LOSS_CATEGORY,
@@ -231,6 +231,12 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
   },
   {
     type: "expense",
+    name: FIXED_ASSET_EXPENSE_CATEGORY_NAME,
+    isSystem: true,
+    children: [],
+  },
+  {
+    type: "expense",
     name: "服饰装饰",
     children: ["服饰装扮", "服饰鞋包", "美妆护肤", "饰品配件", "美容美发", "洗护美发", "家居装饰"],
   },
@@ -273,11 +279,6 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
     type: "expense",
     name: "金融保险",
     children: [SYSTEM_INSURANCE_EXPENSE_CATEGORY, SYSTEM_BANK_INSTALLMENT_EXPENSE_CATEGORY, "保险", "互助保障", "信用借还", "账户存取", "手续费", "利息支出", "信用卡费用"],
-  },
-  {
-    type: "expense",
-    name: "还款",
-    children: ["贷款还款"],
   },
   {
     type: "expense",
@@ -434,6 +435,7 @@ export async function normalizeDefaultCategoryHierarchyForHousehold(writer: Cate
 
   await migrateCreditCardRepaymentCategoryType(writer, householdId);
   await ensureDefaultCategoryTemplatesForHousehold(writer, householdId);
+  await removeLegacyExpenseRepaymentCategories(writer, householdId);
   await normalizeCreditCardRepaymentTransferCategories(writer, householdId);
   await normalizeInvestmentTransactionCategories(writer, householdId);
 
@@ -446,6 +448,26 @@ export async function normalizeDefaultCategoryHierarchyForHousehold(writer: Cate
     update: { value: CATEGORY_HIERARCHY_NORMALIZATION_VERSION },
     create: { key: normalizationKey, value: CATEGORY_HIERARCHY_NORMALIZATION_VERSION },
   });
+}
+
+async function removeLegacyExpenseRepaymentCategories(writer: CategoryWriter, householdId: string) {
+  for (const name of ["贷款还款", "还款"]) {
+    const categories = await writer.category.findMany({
+      where: { householdId, type: "expense", name },
+      select: { id: true, parentId: true },
+    });
+    for (const category of categories) {
+      await writer.category.updateMany({
+        where: { householdId, parentId: category.id },
+        data: { parentId: category.parentId },
+      });
+      await writer.txRecord.updateMany({
+        where: { householdId, categoryId: category.id },
+        data: { categoryId: null, categoryName: name },
+      });
+      await writer.category.delete({ where: { id: category.id } });
+    }
+  }
 }
 
 async function normalizeInvestmentTransactionCategories(writer: CategoryWriter, householdId: string) {
@@ -959,8 +981,20 @@ async function ensureDefaultCategory(
 
   if (!category) {
     try {
+      const lastSibling = await writer.category.findFirst({
+        where: { householdId, type, parentId },
+        orderBy: [{ sortOrder: "desc" }, { name: "desc" }, { id: "desc" }],
+        select: { sortOrder: true },
+      });
       const created = await writer.category.create({
-        data: { type, name, parentId, householdId, isSystem },
+        data: {
+          type,
+          name,
+          parentId,
+          householdId,
+          isSystem,
+          sortOrder: (lastSibling?.sortOrder ?? -1) + 1,
+        },
         select: { id: true },
       });
       await mergeSameTypeCategoryNameDuplicates(writer, householdId, type, name, created.id);

@@ -117,6 +117,12 @@ const LEARNING_TRAILING_NOISE_PATTERNS = [
   /账单金额[\s\S]*$/i,
   /积分[\s\S]*$/i,
 ];
+const LEARNING_SEGMENT_SEPARATOR_PATTERN = /[\r\n/\\|,\uff0c;\uff1b]+/;
+const LEARNING_EMAIL_PATTERN = /\b[\w.+-]+\s*@\s*[\w.-]+(?:\s*\.\s*[A-Za-z]{2,})+\b/i;
+const LEARNING_EXTERNAL_ID_PATTERN = /\b[A-Z]{1,8}\d{6,}\b/i;
+const LEARNING_SUBJECT_HINT_PATTERN = /\u673a\u52a8\u8f66|\u767b\u8bb0\u8bc1\u4e66|\u8bc1\u4e66|\u6267\u7167|\u8bb8\u53ef\u8bc1|\u5de5\u672c\u8d39|\u8bfe\u7a0b|\u5b66\u8d39|\u4fdd\u9669|\u9152\u5e97|\u4f4f\u5bbf|\u623f\u578b|\u673a\u7968|\u8f66\u7968|\u505c\u8f66|\u5145\u7535/;
+const LEARNING_ORGANIZATION_NOISE_PATTERN = /\u516c\u5b89|\u8d22\u653f|\u7a0e\u52a1|\u653f\u5e9c|\u59d4\u5458\u4f1a|\u7ba1\u7406\u603b\u961f|\u7ba1\u7406\u5c40|\u670d\u52a1\u4e2d\u5fc3/;
+const LEARNING_GENERIC_SEGMENT_PATTERN = /^(?:\u6536\u94b1\u7801|\u626b\u4e8c\u7ef4\u7801|\u5feb\u6377|\u5e73\u53f0\u5546\u6237|\u5546\u6237|\u5e97)$/;
 
 function cleanupMerchantName(value: string) {
   return String(value ?? "")
@@ -202,6 +208,8 @@ function isGenericLearningKeyword(value: string) {
 
 function tidyLearningKeyword(value: string) {
   return value
+    .replace(new RegExp(LEARNING_EMAIL_PATTERN.source, "gi"), " ")
+    .replace(new RegExp(LEARNING_EXTERNAL_ID_PATTERN.source, "gi"), " ")
     .replace(/\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}(?:日)?/g, " ")
     .replace(/\d{1,2}:\d{2}(?::\d{2})?/g, " ")
     .replace(/付款尾号[:：]?\s*\d{2,8}/g, " ")
@@ -215,17 +223,50 @@ function tidyLearningKeyword(value: string) {
     .trim();
 }
 
+function cleanLearningCandidate(value: string) {
+  let text = cleanupMerchantName(value).replace(/\s+/g, " ").trim();
+  text = stripLearningPaymentPrefix(text);
+  text = stripLearningTrailingNoise(text);
+  text = tidyLearningKeyword(text);
+  text = truncateBeforeCompanySuffix(text);
+  text = text.replace(/\u5de5\u672c\u8d39(?:\u7b49)?\s*$/g, " ");
+  text = stripLearningNoiseTerms(text);
+  return tidyLearningKeyword(text);
+}
+
+function learningCandidateScore(raw: string, cleaned: string, index: number) {
+  if (!cleaned || isGenericLearningKeyword(cleaned) || LEARNING_GENERIC_SEGMENT_PATTERN.test(cleaned)) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  const searchable = normalizeStatementKeywordText(cleaned);
+  if (!searchable || /^\d+$/.test(searchable)) return Number.NEGATIVE_INFINITY;
+
+  let score = Math.min(30, searchable.length * 2) - index;
+  if (LEARNING_SUBJECT_HINT_PATTERN.test(raw) || LEARNING_SUBJECT_HINT_PATTERN.test(cleaned)) score += 45;
+  if (LEARNING_ORGANIZATION_NOISE_PATTERN.test(cleaned) && !LEARNING_SUBJECT_HINT_PATTERN.test(cleaned)) score -= 25;
+  if (LEARNING_EMAIL_PATTERN.test(raw)) score -= 40;
+  if (LEARNING_EXTERNAL_ID_PATTERN.test(raw)) score -= 35;
+  if (searchable.length > 48) score -= 15;
+  if (/[A-Za-z]{3,}/.test(cleaned)) score += 8;
+  return score;
+}
+
 export function extractStatementLearningKeyword(value?: string | null) {
-  let text = cleanupMerchantName(String(value ?? ""))
+  const source = cleanupMerchantName(String(value ?? ""))
     .replace(/\r?\n/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  if (isPlaceholderText(text)) return "";
+  if (isPlaceholderText(source)) return "";
 
-  text = stripLearningPaymentPrefix(text);
-  text = truncateBeforeCompanySuffix(text);
-  text = stripLearningTrailingNoise(text);
-  text = stripLearningNoiseTerms(tidyLearningKeyword(stripLearningPaymentPrefix(text)));
+  const candidates = source
+    .split(LEARNING_SEGMENT_SEPARATOR_PATTERN)
+    .map((raw, index) => {
+      const cleaned = cleanLearningCandidate(raw);
+      return { cleaned, score: learningCandidateScore(raw, cleaned, index) };
+    })
+    .filter((candidate) => Number.isFinite(candidate.score))
+    .sort((a, b) => b.score - a.score);
+  const text = candidates[0]?.cleaned || cleanLearningCandidate(source);
 
   if (isGenericLearningKeyword(text)) return "";
   const normalizedForMatch = normalizeStatementRecognitionText(text);

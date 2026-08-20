@@ -11,6 +11,7 @@
  * (user-created categories) are returned as-is.
  */
 import { translate } from "@/lib/i18n-core";
+import { FIXED_ASSET_EXPENSE_CATEGORY_NAME } from "@/lib/fixed-asset";
 
 type TFunc = (key: string, params?: Record<string, string | number>) => string;
 
@@ -51,6 +52,7 @@ const SYSTEM_CATEGORY_LABEL_KEYS: Record<string, string> = {
   "房产投资": "systemCategory.propertyInvestment",
   "房贷": "systemCategory.mortgage",
   "房租": "systemCategory.rent",
+  [FIXED_ASSET_EXPENSE_CATEGORY_NAME]: "systemCategory.fixedAsset",
   "分红再投资": "systemCategory.dividendReinvest",
   "服饰鞋包": "systemCategory.apparelShoesBags",
   "服饰装扮": "systemCategory.clothingFashion",

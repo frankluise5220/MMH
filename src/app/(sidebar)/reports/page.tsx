@@ -10,6 +10,7 @@ import {
 } from "@/components/InvestmentProfitScopeSelect";
 import { MissingFundNavPrompt } from "@/components/MissingFundNavPrompt";
 import { IncomeExpenseReportClient } from "@/components/IncomeExpenseReportClient";
+import { buildCategorySmartSelectOptions } from "@/components/categorySmartSelect";
 import { ReportTransactionEditHost } from "@/components/ReportTransactionEditHost";
 import { ReportSelector } from "@/components/ReportSelector";
 import type { ReportItem } from "@/components/ReportSelector";
@@ -656,10 +657,24 @@ export default async function ReportsPage({
   const editCounterparties = commonData.counterparties;
   const expenseCategories = editCategories
     .filter((category) => category.type === "expense")
-    .map((category) => ({ id: category.id, label: category.name, parentId: category.parentId, type: category.type }));
+    .map((category) => ({
+      id: category.id,
+      label: category.name,
+      parentId: category.parentId,
+      type: category.type,
+      sortOrder: category.sortOrder,
+      isSystem: category.isSystem,
+    }));
   const incomeCategories = editCategories
     .filter((category) => category.type === "income")
-    .map((category) => ({ id: category.id, label: category.name, parentId: category.parentId, type: category.type }));
+    .map((category) => ({
+      id: category.id,
+      label: category.name,
+      parentId: category.parentId,
+      type: category.type,
+      sortOrder: category.sortOrder,
+      isSystem: category.isSystem,
+    }));
   const nestedFieldData = {
     groupId: editGroups.map((group) => ({ id: group.id, name: group.name })),
     institutionId: editInstitutions.map((institution) => ({ id: institution.id, name: institution.name, type: institution.type ?? "" })),
@@ -862,11 +877,17 @@ export default async function ReportsPage({
             colorScheme={colorScheme}
             accountId={selectedAccount?.id ?? ""}
             accountOptions={accounts}
-            categoryOptions={[...expenseCategories, ...incomeCategories].map((category) => ({
-              value: category.id,
-              label: category.label,
-              parentId: category.parentId ?? undefined,
-            }))}
+            categoryOptions={buildCategorySmartSelectOptions({
+              categories: editCategories,
+              types: ["expense", "income"],
+              typeLabels: {
+                expense: t("stats.expenseCategories"),
+                income: t("categoryType.income"),
+              },
+              typeHeaderPrefix: "category-type",
+              includeTypeHeaders: true,
+              t,
+            }).map((option) => ({ ...option, value: option.id }))}
             investmentProductTypeByAccountId={investmentProductTypeByAccountId}
           />
           <ReportTransactionEditHost

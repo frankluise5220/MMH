@@ -60,14 +60,16 @@ import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude, upsertE
 import {
   loadDepositTransactionDetailLike,
   loadInsuranceTransactionDetailLike,
+  loadPropertyTransactionEntryLike,
   loadWealthTransactionEntryLike,
 } from "@/lib/server/business-transaction-entries";
 import { getInsuranceDetailCategoryName, getInsuranceDetailNote } from "@/lib/insurance/detail-display";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
+import { compareCategoryOrder, sortCategorySources } from "@/components/categorySmartSelect";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { insuranceCashValueDelta } from "@/lib/insurance/transaction";
 import { loadCommonData, loadSelectedAccount, loadEntriesForAccount, loadInvestAccountData } from "@/lib/server/cached-data";
-import { computeInvestBalances, computePositionDisplay } from "@/lib/invest-balance";
+import { computeFixedAssetPositionDisplay, computeInvestBalances, computePositionDisplay } from "@/lib/invest-balance";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import {
@@ -93,7 +95,9 @@ import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, applyBalanceRe
 import { isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/transaction-semantics";
 import { ensureSettlementTransferCategory, resolveCategorySnapshot, resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
+import { getCashFlowDate } from "@/lib/cash-flow-date";
 import { buildWealthCashFlowNote } from "@/lib/wealth-cash-note";
+import { linkExpenseToFixedAsset, syncLinkedFixedAssetTransactionFromCashEntry } from "@/lib/property/transactions";
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
 import { convertCurrencyAmounts, getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { resolveAdvanceTransfer } from "@/lib/advance-transfer";
@@ -108,6 +112,7 @@ import {
 import type { CreditCardInstallmentRateType } from "@/lib/credit/installment";
 import { getServerT } from "@/lib/server/i18n";
 import { touchAccountUsage } from "@/lib/server/account-usage";
+import { AccountTypeQuickEdit } from "@/components/AccountTypeQuickEdit";
 
 export const dynamic = "force-dynamic";
 
@@ -683,6 +688,8 @@ async function createTransaction(formData: FormData) {
   const postedAt = type === "expense" || type === "income" ? (postedAtInput ?? date) : null;
   const { householdId } = await getHouseholdScope();
   let createdEntryId: string | null = null;
+  let touchedFixedAsset = false;
+  const fixedAssetAccountIdsToRefresh = new Set<string>();
 
   if (!amountAbs) {
     return { ok: false as const, error: t("txForm.alert.invalidAmount") };
@@ -776,6 +783,8 @@ async function createTransaction(formData: FormData) {
     } else if (type === "expense") {
       const accountId = String(formData.get("accountId") ?? "").trim();
       const categoryId = String(formData.get("categoryId") ?? "").trim();
+      const fixedAssetAccountId = String(formData.get("fixedAssetAccountId") ?? "").trim();
+      const fixedAssetAssetId = String(formData.get("fixedAssetAssetId") ?? "").trim();
 
       await prisma.$transaction(async (tx) => {
         const [acc, cat] = await Promise.all([
@@ -826,6 +835,18 @@ async function createTransaction(formData: FormData) {
         createdEntryId = created.id;
         await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
 
+        if (fixedAssetAccountId) {
+          await linkExpenseToFixedAsset(tx, {
+            householdId,
+            propertyAccountId: fixedAssetAccountId,
+            propertyAssetId: fixedAssetAssetId || undefined,
+            cashEntry: created,
+            propertyName: note || cat?.name || undefined,
+          });
+          fixedAssetAccountIdsToRefresh.add(fixedAssetAccountId);
+          touchedFixedAsset = true;
+        }
+
         if (createInstallment) {
           if (!statementMonth) throw new Error(t("sidebar.action.creditCardMissingBillingDay"));
           await createCreditCardInstallmentPlan(tx, {
@@ -851,6 +872,9 @@ async function createTransaction(formData: FormData) {
       });
 
       await recalcAndSaveAccountBalance(accountId).catch(() => {});
+      for (const fixedAssetAccountId of fixedAssetAccountIdsToRefresh) {
+        await recalcAndSaveAccountBalance(fixedAssetAccountId).catch(() => {});
+      }
     } else if (type === "advance") {
       const accountId = String(formData.get("accountId") ?? "").trim();
       const categoryId = String(formData.get("categoryId") ?? "").trim();
@@ -1046,7 +1070,7 @@ async function createTransaction(formData: FormData) {
           where: { id: investAcc.id },
           select: { fundUnitsDecimals: true },
         });
-        const fundUnitsDecimals = normalizeFundUnitsDecimals(fundUnitsPrecisionAccount?.fundUnitsDecimals, 3);
+        const fundUnitsDecimals = normalizeFundUnitsDecimals(fundUnitsPrecisionAccount?.fundUnitsDecimals, 2);
         const roundedFundUnits = fundUnits != null ? roundFundUnits(fundUnits, fundUnitsDecimals) : null;
 
         const cashAcc = cashAccountIdInput
@@ -1344,10 +1368,10 @@ async function createTransaction(formData: FormData) {
         ? [String(formData.get("fromAccountId") ?? "").trim(), String(formData.get("toAccountId") ?? "").trim()]
         : type === "investment"
           ? [String(formData.get("accountId") ?? "").trim(), String(formData.get("cashAccountId") ?? "").trim()]
-          : [String(formData.get("accountId") ?? "").trim()];
+          : [String(formData.get("accountId") ?? "").trim(), ...fixedAssetAccountIdsToRefresh];
     await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(() => {});
     await touchAccountUsage(touchedAccountIds);
-    if (type === "investment") revalidateAfterInvestChange();
+    if (type === "investment" || touchedFixedAsset) revalidateAfterInvestChange();
     else revalidateAfterTxChange();
     return { ok: true as const, data: createdEntryId ? { id: createdEntryId } : undefined };
   } catch (e) {
@@ -1824,6 +1848,8 @@ async function editInvestment(formData: FormData) {
     const newToAccountIdStr = String(formData.get("toAccountId") ?? "").trim();
     const newToAccountId = hasNewToAccountId && newToAccountIdStr ? newToAccountIdStr : null;
     let usedIndependentFundTransaction = false;
+    let independentFundCategoryId: string | null = null;
+    let independentFundCategoryName: string | null = null;
 
     await prisma.$transaction(async (tx) => {
       const requestedInvestmentAccountId = newToAccountId ?? oldInvestmentAccId;
@@ -1854,7 +1880,7 @@ async function editInvestment(formData: FormData) {
       const finalCashAccountName = cashAccountInfo?.name ?? txRecord.accountName ?? "";
       const fundUnitsDecimals = normalizeFundUnitsDecimals(
         finalInvestmentAccountInfo?.fundUnitsDecimals,
-        3,
+        2,
       );
       const roundedFundUnits = fundUnits != null ? roundFundUnits(fundUnits, fundUnitsDecimals) : null;
       const metalType = fundProductType === "metal" && metalTypeIdInput
@@ -2017,8 +2043,26 @@ async function editInvestment(formData: FormData) {
             note: memo || null,
           },
         });
+        independentFundCategoryName = getInvestmentCategoryName({
+          fundProductType: fundProductType === "money_fund" ? "money" : (fundProductType || "fund"),
+          fundSubtype: finalFundSubtype,
+          source: sourceValue,
+        });
+        const independentFundCategory = independentFundCategoryName
+          ? await resolveCategorySnapshot(tx, householdId, {
+              categoryName: independentFundCategoryName,
+              type: "investment",
+            })
+          : null;
+        independentFundCategoryId = independentFundCategory?.id ?? null;
+        independentFundCategoryName = independentFundCategory?.name ?? independentFundCategoryName;
         if (independentFundTransaction.cashEntryId && finalCashAccountId && updateData.amount !== 0 && !isDividendReinvest) {
-          const cashFlowDate = redeemLike || isDividendCash || isBuyFailedRefund ? fundArrivalDate ?? date : date;
+          const cashFlowDate = getCashFlowDate({
+            direction: redeemLike || isDividendCash || isBuyFailedRefund ? "inflow" : "outflow",
+            operationDate: date,
+            settlementDate: isBuyFailedRefund ? fundArrivalDate ?? date : fundArrivalDate,
+            fallbackDate: date,
+          });
           const cashFlowKind =
             finalFundSubtype === FundSubtype.redeem || finalFundSubtype === FundSubtype.switch_out
               ? FundCashFlowKind.redeem_in
@@ -2073,7 +2117,13 @@ async function editInvestment(formData: FormData) {
 
       await tx.txRecord.update({
         where: { id: entryId },
-        data: updateData,
+        data: usedIndependentFundTransaction
+          ? {
+              ...updateData,
+              categoryId: independentFundCategoryId,
+              categoryName: independentFundCategoryName,
+            }
+          : updateData,
       });
       if (
         !isFundLikeIndependentEdit &&
@@ -2261,6 +2311,11 @@ async function updateTransactionFromDialog(formData: FormData) {
     const undo = await prepareEntryUndo(prisma, ctx.householdId, [entryId]);
     let investRecalcAccountId: string | null = null;
     let investRecalcFundCode: string | null = null;
+    const fixedAssetAccountId = String(formData.get("fixedAssetAccountId") ?? "").trim();
+    const fixedAssetAssetId = String(formData.get("fixedAssetAssetId") ?? "").trim();
+    let touchedFixedAsset = false;
+    let independentFundCategoryId: string | null = null;
+    let independentFundCategoryName: string | null = null;
     const touchedAccountIds = new Set<string>();
     await prisma.$transaction(async (tx) => {
       const entry = await tx.txRecord.findUnique({
@@ -2445,6 +2500,19 @@ async function updateTransactionFromDialog(formData: FormData) {
               note: note || null,
             },
           });
+          independentFundCategoryName = getInvestmentCategoryName({
+            fundProductType: productType === "money_fund" ? "money" : productType,
+            fundSubtype: subtype,
+            source: entry.source,
+          });
+          const independentFundCategory = independentFundCategoryName
+            ? await resolveCategorySnapshot(tx, ctx.householdId, {
+                categoryName: independentFundCategoryName,
+                type: "investment",
+              })
+            : null;
+          independentFundCategoryId = independentFundCategory?.id ?? null;
+          independentFundCategoryName = independentFundCategory?.name ?? independentFundCategoryName;
           if (independentFundTransaction.cashEntryId && cashAccId && signedAmount !== 0) {
             const cashFlowKind =
               subtype === "redeem" || subtype === "switch_out"
@@ -2460,13 +2528,23 @@ async function updateTransactionFromDialog(formData: FormData) {
                 txRecordId: independentFundTransaction.cashEntryId,
                 kind: cashFlowKind,
                 amount: Math.abs(signedAmount),
-                flowDate: redeemLike ? date : date,
+                flowDate: getCashFlowDate({
+                  direction: redeemLike ? "inflow" : "outflow",
+                  operationDate: date,
+                  settlementDate: independentFundTransaction.arrivalDate,
+                  fallbackDate: date,
+                }),
                 accountId: cashAccId,
               },
               update: {
                 kind: cashFlowKind,
                 amount: Math.abs(signedAmount),
-                flowDate: date,
+                flowDate: getCashFlowDate({
+                  direction: redeemLike ? "inflow" : "outflow",
+                  operationDate: date,
+                  settlementDate: independentFundTransaction.arrivalDate,
+                  fallbackDate: date,
+                }),
                 accountId: cashAccId,
               },
             });
@@ -2493,8 +2571,8 @@ async function updateTransactionFromDialog(formData: FormData) {
             amount: signedAmount,
             accountId: recordAccountId,
             accountName: recordAccountName,
-            categoryId: null,
-            categoryName: null,
+            categoryId: independentFundCategoryId,
+            categoryName: independentFundCategoryName,
             toAccountId: recordToAccountId,
             toAccountName: recordToAccountName,
             fundCode: null,
@@ -2622,8 +2700,34 @@ async function updateTransactionFromDialog(formData: FormData) {
       ).catch(() => {});
     }
 
+    const updatedEntry = await prisma.txRecord.findUnique({ where: { id: entryId } });
+    if (updatedEntry) {
+      if (type === "expense" && fixedAssetAccountId) {
+        await linkExpenseToFixedAsset(prisma, {
+          householdId: ctx.householdId,
+          propertyAccountId: fixedAssetAccountId,
+          propertyAssetId: fixedAssetAssetId || undefined,
+          cashEntry: updatedEntry,
+          propertyName: note || undefined,
+        });
+        touchedAccountIds.add(fixedAssetAccountId);
+        touchedFixedAsset = true;
+      } else {
+        const syncResult = await syncLinkedFixedAssetTransactionFromCashEntry(prisma, {
+          householdId: ctx.householdId,
+          cashEntry: updatedEntry,
+        });
+        if (syncResult.touched) {
+          touchedFixedAsset = true;
+          for (const accountId of syncResult.accountIds) touchedAccountIds.add(accountId);
+        }
+      }
+    }
+    for (const accountId of touchedAccountIds) {
+      await recalcAndSaveAccountBalance(accountId).catch(() => {});
+    }
     await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(() => {});
-    if (type === "investment") revalidateAfterInvestChange();
+    if (type === "investment" || touchedFixedAsset) revalidateAfterInvestChange();
     else revalidateAfterTxChange();
     await saveEntryUndo(prisma, ctx, undo, "edit", t("sidebar.undo.editEntry"));
     return { ok: true as const };
@@ -2679,7 +2783,7 @@ export default async function Home({
   const accountId = typeof params?.accountId === "string" ? params.accountId.trim() : "";
   const accountName = typeof params?.account === "string" ? params.account.trim() : "";
   // If no account is selected, default to the overview page.
-  if (!accountId && !accountName && params?.view !== "debt") {
+  if (!accountId && !accountName && params?.view !== "debt" && params?.view !== "investproperty") {
     redirect("/overview");
   }
   const viewParam =
@@ -2802,7 +2906,7 @@ export default async function Home({
   });
   // selectedAccount: per-account, deduplicated at request level.
   const selectedAccount = await loadSelectedAccount(accountId || undefined, hidFilter);
-  const fundUnitsDecimals = normalizeFundUnitsDecimals(selectedAccount?.fundUnitsDecimals, 3);
+  const fundUnitsDecimals = normalizeFundUnitsDecimals(selectedAccount?.fundUnitsDecimals, 2);
   const isBillAccount =
     (selectedAccount?.kind === AccountKind.bank_credit || selectedAccount?.kind === AccountKind.loan) ||
     !!selectedAccount?.billingDay;
@@ -3116,15 +3220,15 @@ export default async function Home({
   const expenseCategories = categories
     .filter((c) => c.type === "expense")
     .map((c) => ({ ...c, label: categoryLabels.get(c.id) ?? c.name }))
-    .sort((a, b) => a.label.localeCompare(b.label, "zh-Hans-CN"));
+    .sort(compareCategoryOrder);
   const incomeCategories = categories
     .filter((c) => c.type === "income")
     .map((c) => ({ ...c, label: categoryLabels.get(c.id) ?? c.name }))
-    .sort((a, b) => a.label.localeCompare(b.label, "zh-Hans-CN"));
+    .sort(compareCategoryOrder);
   const advanceCategories = categories
     .filter((c) => c.type === "advance")
     .map((c) => ({ ...c, label: categoryLabels.get(c.id) ?? c.name }))
-    .sort((a, b) => a.label.localeCompare(b.label, "zh-Hans-CN"));
+    .sort(compareCategoryOrder);
   const categoryBatchReplaceOptions = (() => {
     const typeLabels: Record<string, string> = {
       expense: t("stats.expenseCategories"),
@@ -3156,8 +3260,8 @@ export default async function Home({
         list.push(category);
         childrenByParentId.set(key, list);
       }
-      for (const list of childrenByParentId.values()) {
-        list.sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+      for (const [parentId, list] of childrenByParentId) {
+        childrenByParentId.set(parentId, sortCategorySources(list));
       }
 
       const headerId = `category-type:${type}`;
@@ -3250,6 +3354,7 @@ export default async function Home({
 
   const selectedAccountLabel = (() => {
     if (view === "debt") return t("account.kind.loan");
+    if (view === "investproperty") return t("txForm.fixedAssetToggle");
     if (selectedAccount) {
       const display = buildAccountDisplayOption({
         id: selectedAccount.id,
@@ -3772,9 +3877,17 @@ export default async function Home({
   const investstockData = view === "investstock" && accountId
     ? await computePositionDisplay(ctx, accountId)
     : null;
-  const investpropertyData = view === "investproperty" && accountId
-    ? await computePositionDisplay(ctx, accountId)
+  const investpropertyData = view === "investproperty"
+    ? accountId
+      ? await computePositionDisplay(ctx, accountId)
+      : await computeFixedAssetPositionDisplay(ctx)
     : null;
+  const investpropertyEntries = view === "investproperty"
+    ? await loadPropertyTransactionEntryLike({
+        accountIds: accountId ? [accountId] : propertyAccountOptions.map((account) => account.id),
+        householdId,
+      })
+    : [];
   const investfundData = view === "investfund" && accountId
     ? await loadInvestAccountData(investDataHidFilter, accountId, investDataParams)
     : null;
@@ -3787,9 +3900,17 @@ export default async function Home({
           ? investwealthData
           : null;
   const isFundLikeInvestView = view === "investfund" || view === "investmoney";
+  const selectedFundCode = currentInvestData?.selectedFundCode ?? "";
   const currentFundDefault = currentInvestData && isFundLikeInvestView
-    ? currentInvestData.positions.find((position) => position.fundCode === currentInvestData.selectedFundCode)
+    ? currentInvestData.positions.find((position) => position.fundCode === selectedFundCode)
     : null;
+  const currentFundConfirmDays = currentInvestData && isFundLikeInvestView
+    ? (selectedFundCode ? currentInvestData.confirmDaysMap[selectedFundCode] : undefined) ?? selectedAccount?.defaultConfirmDays ?? undefined
+    : selectedAccount?.defaultConfirmDays ?? undefined;
+  const currentFundInvestmentAccountId =
+    currentInvestData && selectedAccount && isPureInvestmentAccount(selectedAccount)
+      ? selectedAccount.id
+      : defaultFundInvestmentAccountId;
 
   const baseQuery = new URLSearchParams();
   if (accountId) baseQuery.set("accountId", accountId);
@@ -3811,10 +3932,28 @@ export default async function Home({
       .find((item: any) => item.wealthTransactionId && detailLinkedWealthById.has(item.wealthTransactionId));
     return link?.wealthTransactionId ? detailLinkedWealthById.get(link.wealthTransactionId) ?? null : null;
   };
+  const detailLinkedFundIds = Array.from(new Set((filteredEntries2 || []).flatMap((entry: any) =>
+    [...(entry.EntryBusinessLinkCash ?? []), ...(entry.EntryBusinessLinkBusiness ?? [])]
+      .map((link: any) => link.fundTransactionId)
+      .filter(Boolean),
+  )));
+  const detailLinkedFundRows = detailLinkedFundIds.length > 0
+    ? await prisma.fundTransaction.findMany({
+        where: { id: { in: detailLinkedFundIds }, householdId, deletedAt: null },
+        include: { Account: true, CashAccount: true },
+      })
+    : [];
+  const detailLinkedFundById = new Map(detailLinkedFundRows.map((row) => [row.id, row]));
+  const linkedFundRowOf = (entry: any) => {
+    const link = [...(entry.EntryBusinessLinkCash ?? []), ...(entry.EntryBusinessLinkBusiness ?? [])]
+      .find((item: any) => item.fundTransactionId && detailLinkedFundById.has(item.fundTransactionId));
+    return link?.fundTransactionId ? detailLinkedFundById.get(link.fundTransactionId) ?? null : null;
+  };
 
   // Convert filtered entries to serializable format for client-side detail paging.
   const allDetailEntries: DetailEntry[] = (filteredEntries2 || []).map((e) => {
     const linkedWealth = linkedWealthRowOf(e);
+    const linkedFund = linkedFundRowOf(e);
     const linkedWealthAction = linkedWealth?.action ?? null;
     const linkedWealthIsCashIn =
       linkedWealthAction === FundSubtype.redeem ||
@@ -3827,32 +3966,46 @@ export default async function Home({
         ? linkedWealthGrossAmount
         : -linkedWealthGrossAmount
       : toNumber(e.amount);
+    const linkedFundIsCashIn =
+      linkedFund?.fundSubtype === FundSubtype.redeem ||
+      linkedFund?.fundSubtype === FundSubtype.switch_out ||
+      linkedFund?.fundSubtype === FundSubtype.dividend_cash;
+    const linkedFundGrossAmount = linkedFund ? Math.abs(toNumber(linkedFund.grossAmount)) : null;
+    const linkedFundAmount = linkedFund && linkedFundGrossAmount != null
+      ? linkedFundIsCashIn
+        ? Math.abs(toNumber(linkedFund.arrivalAmount ?? linkedFund.grossAmount))
+        : -linkedFundGrossAmount
+      : linkedWealthAmount;
+    const linkedFundAccountId = linkedFund?.fundAccountId ?? null;
+    const linkedFundCashAccountId = linkedFund?.cashAccountId ?? e.accountId;
+    const linkedFundAccountName = linkedFund?.Account?.name ?? linkedFundAccountId ?? "";
+    const linkedFundCashAccountName = linkedFund?.CashAccount?.name ?? e.accountName ?? "";
     return ({
     id: e.id,
-    cashEntryId: linkedWealth?.cashEntryId ?? e.id,
-    businessTransactionId: linkedWealth?.id ?? null,
-    date: entryDisplayDate(e).toISOString().slice(0, 10),
+    cashEntryId: linkedWealth?.cashEntryId ?? linkedFund?.cashEntryId ?? e.id,
+    businessTransactionId: linkedWealth?.id ?? linkedFund?.id ?? null,
+    date: e.date.toISOString().slice(0, 10),
     postedAt: toDateOnlyLocalOrNull(e.postedAt),
     createdAt: toIsoOrNull(e.createdAt),
     dayOrder: e.dayOrder ?? 0,
-    amount: linkedWealthAmount,
+    amount: linkedFundAmount,
     currency: e.currency ?? "CNY",
     runningBalance: balanceByEntryId.get(e.id) ?? null,
     type: e.type,
     categoryId: e.categoryId,
     categoryName: e.categoryName,
-    accountId: e.accountId,
-    accountName: e.accountName,
-    accountKind: e.account?.kind ?? null,
+    accountId: linkedFund ? (linkedFundIsCashIn ? linkedFundAccountId : linkedFundCashAccountId) : e.accountId,
+    accountName: linkedFund ? (linkedFundIsCashIn ? linkedFundAccountName : linkedFundCashAccountName) : e.accountName,
+    accountKind: linkedFund ? (linkedFundIsCashIn ? linkedFund?.Account?.kind ?? null : linkedFund?.CashAccount?.kind ?? e.account?.kind ?? null) : e.account?.kind ?? null,
     accountDebtDirection: e.account?.debtDirection ?? null,
-    accountIsSettlementDebt: isSettlementDebtAccountId(e.accountId),
+    accountIsSettlementDebt: isSettlementDebtAccountId(linkedFund ? (linkedFundIsCashIn ? linkedFundAccountId : linkedFundCashAccountId) : e.accountId),
     counterpartyInstitutionId: e.counterpartyInstitutionId ?? null,
     counterpartyInstitutionName: e.counterpartyInstitutionName ?? null,
-    toAccountId: e.toAccountId,
-    toAccountName: e.toAccountName,
-    toAccountKind: e.toAccount?.kind ?? null,
+    toAccountId: linkedFund ? (linkedFundIsCashIn ? linkedFundCashAccountId : linkedFundAccountId) : e.toAccountId,
+    toAccountName: linkedFund ? (linkedFundIsCashIn ? linkedFundCashAccountName : linkedFundAccountName) : e.toAccountName,
+    toAccountKind: linkedFund ? (linkedFundIsCashIn ? linkedFund?.CashAccount?.kind ?? e.toAccount?.kind ?? null : linkedFund?.Account?.kind ?? null) : e.toAccount?.kind ?? null,
     toAccountDebtDirection: e.toAccount?.debtDirection ?? null,
-    toAccountIsSettlementDebt: isSettlementDebtAccountId(e.toAccountId),
+    toAccountIsSettlementDebt: isSettlementDebtAccountId(linkedFund ? (linkedFundIsCashIn ? linkedFundCashAccountId : linkedFundAccountId) : e.toAccountId),
     note: linkedWealth
       ? buildWealthCashFlowNote({
           action: linkedWealth.action,
@@ -3860,14 +4013,16 @@ export default async function Home({
           units: linkedWealth.units == null ? null : toNumber(linkedWealth.units),
           userNote: linkedWealth.note,
         })
+      : linkedFund
+        ? linkedFund.note ?? e.note
       : e.note,
     businessNote: linkedWealth?.note ?? null,
     toNote: e.toNote,
-    fundSubtype: linkedWealth?.action ?? e.fundSubtype,
-    fundCode: linkedWealth ? null : e.fundCode,
-    fundName: linkedWealth?.WealthProduct?.name ?? linkedWealth?.productName ?? e.fundName,
+    fundSubtype: linkedWealth?.action ?? linkedFund?.fundSubtype ?? e.fundSubtype,
+    fundCode: linkedWealth ? null : linkedFund?.fundCode ?? e.fundCode,
+    fundName: linkedWealth?.WealthProduct?.name ?? linkedWealth?.productName ?? linkedFund?.fundName ?? e.fundName,
     wealthProductId: linkedWealth?.wealthProductId ?? e.wealthProductId ?? null,
-    source: e.source,
+    source: linkedFund?.source ?? e.source,
     insuranceProductId: e.insuranceProductId ?? null,
     debtPrincipalAmount: e.debtPrincipalAmount != null ? toNumber(e.debtPrincipalAmount) : null,
     debtInterestAmount: e.debtInterestAmount != null ? toNumber(e.debtInterestAmount) : null,
@@ -3875,7 +4030,7 @@ export default async function Home({
     realizedProfit: e.realizedProfit != null ? toNumber(e.realizedProfit) : null,
     depositAnnualRate: linkedWealth?.annualRate != null ? toNumber(linkedWealth.annualRate) : e.depositAnnualRate != null ? toNumber(e.depositAnnualRate) : null,
     depositInterest: linkedWealth?.interest != null ? toNumber(linkedWealth.interest) : e.depositInterest != null ? toNumber(e.depositInterest) : null,
-    fundProductType: linkedWealth ? "wealth" : e.fundProductType,
+    fundProductType: linkedWealth ? "wealth" : linkedFund?.fundProductType ?? e.fundProductType,
     metalTypeId: e.metalTypeId ?? null,
     metalTypeName: e.metalTypeName ?? null,
     metalUnitId: e.metalUnitId ?? null,
@@ -3883,13 +4038,13 @@ export default async function Home({
     metalQuantity: e.metalQuantity != null ? toNumber(e.metalQuantity) : null,
     metalUnitPrice: e.metalUnitPrice != null ? toNumber(e.metalUnitPrice) : null,
     metalFee: e.metalFee != null ? toNumber(e.metalFee) : null,
-    fundUnits: linkedWealth?.units != null ? toNumber(linkedWealth.units) : e.fundUnits != null ? toNumber(e.fundUnits) : null,
-    fundNav: linkedWealth?.nav != null ? toNumber(linkedWealth.nav) : e.fundNav != null ? toNumber(e.fundNav) : null,
-    fundFee: linkedWealth?.fee != null ? toNumber(linkedWealth.fee) : e.fundFee != null ? toNumber(e.fundFee) : null,
-    fundConfirmDate: linkedWealth?.confirmDate ? toIsoOrNull(linkedWealth.confirmDate) : toIsoOrNull(e.fundConfirmDate),
-    fundArrivalDate: linkedWealth?.arrivalDate ? toIsoOrNull(linkedWealth.arrivalDate) : toIsoOrNull(e.fundArrivalDate),
+    fundUnits: linkedWealth?.units != null ? toNumber(linkedWealth.units) : linkedFund?.units != null ? toNumber(linkedFund.units) : e.fundUnits != null ? toNumber(e.fundUnits) : null,
+    fundNav: linkedWealth?.nav != null ? toNumber(linkedWealth.nav) : linkedFund?.nav != null ? toNumber(linkedFund.nav) : e.fundNav != null ? toNumber(e.fundNav) : null,
+    fundFee: linkedWealth?.fee != null ? toNumber(linkedWealth.fee) : linkedFund?.fee != null ? toNumber(linkedFund.fee) : e.fundFee != null ? toNumber(e.fundFee) : null,
+    fundConfirmDate: linkedWealth?.confirmDate ? toIsoOrNull(linkedWealth.confirmDate) : linkedFund?.confirmDate ? toIsoOrNull(linkedFund.confirmDate) : toIsoOrNull(e.fundConfirmDate),
+    fundArrivalDate: linkedWealth?.arrivalDate ? toIsoOrNull(linkedWealth.arrivalDate) : linkedFund?.arrivalDate ? toIsoOrNull(linkedFund.arrivalDate) : toIsoOrNull(e.fundArrivalDate),
     fundSourceEntryId: e.fundSourceEntryId ?? null,
-    fundArrivalAmount: linkedWealthArrivalAmount ?? (e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null),
+    fundArrivalAmount: linkedWealthArrivalAmount ?? (linkedFund?.arrivalAmount != null ? toNumber(linkedFund.arrivalAmount) : e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null),
     ...buildEntryBusinessLinkSummary(e),
     attachments: (e.Attachment || []).map((attachment: any) => ({
       id: attachment.id,
@@ -4471,7 +4626,9 @@ export default async function Home({
     : selectedAccountRawBalanceValue;
   const selectedViewHeaderAmount = view === "debt"
     ? debtDisplaySummaryValue
-    : selectedAccountDisplayValue;
+    : view === "investproperty" && investpropertyData
+      ? investpropertyData.totalMarketValue
+      : selectedAccountDisplayValue;
   const showDerivedViewHeaderAmount =
     !!currentInvestData ||
     (view === "investstock" && !!investstockData) ||
@@ -4529,6 +4686,28 @@ export default async function Home({
           ?? investmentAccountOptions.find((account) => account.investProductType === "wealth")?.id
           ?? ""
         : investmentAccountOptions.find((account) => account.investProductType === "wealth")?.id ?? "";
+  // Keep the server/client boundary plain: Prisma Decimal/Date fields and
+  // relation objects are not serializable as client component props.
+  const selectedAccountEditData = selectedAccount
+    ? {
+        id: selectedAccount.id,
+        name: selectedAccount.name,
+        kind: String(selectedAccount.kind),
+        currency: selectedAccount.currency,
+        note: selectedAccount.note,
+        groupId: selectedAccount.groupId,
+        institutionId: selectedAccount.institutionId,
+        billingDay: selectedAccount.billingDay,
+        repaymentDay: selectedAccount.repaymentDay,
+        creditLimit: selectedAccount.creditLimit == null ? null : String(selectedAccount.creditLimit),
+        creditBillMode: selectedAccount.creditBillMode,
+        numberMasked: selectedAccount.numberMasked,
+        investProductType: selectedAccount.investProductType,
+        costBasisMethod: selectedAccount.costBasisMethod,
+        fundUnitsDecimals: selectedAccount.fundUnitsDecimals,
+        tradingCalendar: selectedAccount.tradingCalendar,
+      }
+    : null;
 
   return (
     <div className="flex h-full w-full bg-transparent">
@@ -4536,7 +4715,14 @@ export default async function Home({
         <header className="page-header">
           <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 px-4 py-2 md:px-5">
             <div className="flex min-w-0 flex-wrap items-center gap-3 text-sm">
-              <span className="page-title">{selectedAccountLabel || t("statistics.allAccounts")}</span>
+              {view === "investproperty" && !selectedAccountEditData ? null : selectedAccountEditData ? (
+                <AccountTypeQuickEdit
+                  account={selectedAccountEditData}
+                  accountLabel={selectedAccountLabel || selectedAccountEditData.name}
+                />
+              ) : (
+                <span className="page-title">{selectedAccountLabel || t("statistics.allAccounts")}</span>
+              )}
               {view === "debt" ? (
                 <span className={`tabular-nums font-semibold ${pnlCls(debtDisplaySummaryValue)}`}>
                   {formatCurrencyMoney(debtDisplaySummaryValue, baseCurrency)}
@@ -4609,7 +4795,7 @@ export default async function Home({
                       ? (defaultStockCashAccountId || defaultStockTransferFromAccountId || (cashAccountList[0]?.id ?? ""))
                       : (selectedAccount?.id ?? accountId ?? ""),
                   defaultTransferToAccountId: isBillAccount ? (selectedAccount?.id ?? accountId ?? "") : "",
-                  defaultInvestmentAccountId: defaultFundInvestmentAccountId,
+                  defaultInvestmentAccountId: currentFundInvestmentAccountId,
                   defaultStockAccountId: defaultStockInvestmentAccountId,
                   defaultStockCashAccountId,
                   defaultStockTransferFromAccountId,
@@ -4621,7 +4807,7 @@ export default async function Home({
                   defaultInsuranceAccountId: isInsuranceView ? (selectedAccount?.id ?? "") : "",
                   defaultDebtAccountId: selectedDebtRow?.accountIds?.[0] ?? "",
                   defaultDebtInstitutionId: selectedDebtObjectValue,
-                  defaultFundCode: isFundLikeInvestView ? currentFundDefault?.fundCode ?? currentInvestData?.selectedFundCode ?? "" : "",
+                  defaultFundCode: isFundLikeInvestView ? selectedFundCode : "",
                   defaultFundName: currentFundDefault?.name ?? "",
                   defaultScheduledTaskType:
                     view === "regularinvest"
@@ -4651,10 +4837,32 @@ export default async function Home({
               <TransactionFormModal
                 accounts={spendingAccountOptions} transferAccounts={transferAccountOptions}
                 accountSSOptions={spendingAccountSSOptions} transferAccountSSOptions={transferAccountSSOptions}
+                fixedAssetAccounts={propertyAccountOptions} fixedAssetAccountSSOptions={propertyAccountSSOptions}
                 nestedFieldData={nestedFieldData}
-                expenseCategories={expenseCategories.map((c) => ({ id: c.id, label: c.label, parentId: c.parentId, type: c.type }))}
-                incomeCategories={incomeCategories.map((c) => ({ id: c.id, label: c.label, parentId: c.parentId, type: c.type }))}
-                advanceCategories={advanceCategories.map((c) => ({ id: c.id, label: c.label, parentId: c.parentId, type: c.type }))}
+                expenseCategories={expenseCategories.map((c) => ({
+                  id: c.id,
+                  label: c.label,
+                  parentId: c.parentId,
+                  type: c.type,
+                  sortOrder: c.sortOrder,
+                  isSystem: c.isSystem,
+                }))}
+                incomeCategories={incomeCategories.map((c) => ({
+                  id: c.id,
+                  label: c.label,
+                  parentId: c.parentId,
+                  type: c.type,
+                  sortOrder: c.sortOrder,
+                  isSystem: c.isSystem,
+                }))}
+                advanceCategories={advanceCategories.map((c) => ({
+                  id: c.id,
+                  label: c.label,
+                  parentId: c.parentId,
+                  type: c.type,
+                  sortOrder: c.sortOrder,
+                  isSystem: c.isSystem,
+                }))}
                 defaultAccountId={accountId || undefined}
                 lastRepayToAccountId={lastRepayToAccountId} lastRepayFromAccountId={lastRepayFromAccountId}
                 isCreditCardAccount={isBillAccount} showInvestment={isInvestAccount} action={createTransaction} editAction={updateTransactionFromDialog}
@@ -4685,12 +4893,13 @@ export default async function Home({
               <InvestmentFormModal
                 mode="create"
                 hideTrigger
-                accountId={defaultInvestmentCreateAccountId}
+                accountId={currentFundInvestmentAccountId}
                 accountProductType={selectedAccount && isPureInvestmentAccount(selectedAccount) ? selectedAccount.investProductType ?? null : null}
                 defaults={{
-                  fundCode: isFundLikeInvestView ? currentInvestData?.selectedFundCode ?? undefined : undefined,
+                  fundCode: isFundLikeInvestView ? selectedFundCode || undefined : undefined,
                   fundName: currentFundDefault?.name ?? undefined,
                   fundUnits: currentFundDefault?.units ?? undefined,
+                  confirmDays: currentFundConfirmDays,
                 }}
                 cashAccounts={cashAccountList}
                 investmentAccounts={investmentAccountOptions}
@@ -5070,12 +5279,13 @@ export default async function Home({
             />
           ) : view === "investproperty" && investpropertyData ? (
             <PropertyShell
-              key={`investproperty-${accountId}`}
-              accountId={accountId}
-              accountLabel={selectedAccountLabel}
+              key={`investproperty-${accountId || "all"}`}
+              accountId={accountId || defaultPropertyInvestmentAccountId}
+              defaultCashAccountId={defaultCashAccountForSelectedInstitution}
               currency={selectedAccount?.currency ?? baseCurrency}
               baseCurrency={baseCurrency}
               positions={JSON.parse(JSON.stringify(investpropertyData.positions))}
+              entries={JSON.parse(JSON.stringify(investpropertyEntries))}
               totalMarketValue={investpropertyData.totalMarketValue}
               totalCost={investpropertyData.totalCost}
               isRedUp={isRedUp}

@@ -1,27 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { FundCashFlowKind } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
-import { ensureFundTransactionCashFlowLinks, findFundTransactionForEntryId } from "@/lib/fund/transactions";
+import { ensureFundTransactionCashFlowLinks, findFundTransactionForEntryId, getFundCashFlowDate } from "@/lib/fund/transactions";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getFundConfirmDays } from "@/lib/fund/confirmDays";
 import { addWorkdaysUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
-
-function cashFlowDateForKind(kind: FundCashFlowKind, applyDate?: Date, arrivalDate?: Date | null) {
-  if (kind === FundCashFlowKind.buy_out || kind === FundCashFlowKind.switch_in) return applyDate;
-  if (
-    kind === FundCashFlowKind.redeem_in ||
-    kind === FundCashFlowKind.refund_in ||
-    kind === FundCashFlowKind.dividend_in ||
-    kind === FundCashFlowKind.switch_out
-  ) {
-    return arrivalDate ?? undefined;
-  }
-  return undefined;
-}
+import { getInvestmentCategoryName } from "@/lib/investment-category";
+import { resolveCategorySnapshot } from "@/lib/default-categories";
 
 /**
  * Updates a fund transaction entry.
@@ -85,19 +73,37 @@ export async function PUT(req: NextRequest) {
         data: updateData,
       });
 
+      const effectiveApplyDate = row.applyDate;
+      const effectiveArrivalDate = row.arrivalDate;
+      const categoryName = getInvestmentCategoryName({
+        fundProductType: row.fundProductType,
+        fundSubtype: row.fundSubtype,
+        source: row.source,
+      });
+      const category = categoryName
+        ? await resolveCategorySnapshot(tx, householdId, { categoryName, type: "investment" })
+        : null;
       const flows = await tx.fundTransactionCashFlow.findMany({
         where: { fundTransactionId: entry.id },
       });
       for (const flow of flows) {
-        const flowDate = cashFlowDateForKind(flow.kind, nextApplyDate, nextArrivalDate);
-        if (!flowDate) continue;
+        const flowDate = getFundCashFlowDate({
+          kind: flow.kind,
+          applyDate: effectiveApplyDate,
+          arrivalDate: effectiveArrivalDate,
+          requestedDate: flow.flowDate,
+        });
         await tx.fundTransactionCashFlow.update({
           where: { id: flow.id },
           data: { flowDate },
         });
         await tx.txRecord.update({
           where: { id: flow.txRecordId },
-          data: { date: flowDate },
+          data: {
+            date: flowDate,
+            categoryId: category?.id ?? null,
+            categoryName: category?.name ?? categoryName ?? null,
+          },
         }).catch(() => undefined);
       }
 

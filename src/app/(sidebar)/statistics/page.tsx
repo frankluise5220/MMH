@@ -18,6 +18,7 @@ import {
 import { addStatisticCategoryBucket, buildStatisticCategoryItemsFromBuckets, createStatisticCategoryResolver, getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
 import { isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
 import { getServerT } from "@/lib/server/i18n";
+import { categoryOrderBy } from "@/lib/category-order";
 
 export const dynamic = "force-dynamic";
 
@@ -77,6 +78,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
     prisma.category.findMany({
       where: { ...hidFilter, type: { in: ["income", "expense"] } },
       select: { id: true, name: true, type: true },
+      orderBy: categoryOrderBy(),
     }),
   ]);
 

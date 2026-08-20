@@ -14,6 +14,7 @@ import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 import { Repeat } from "lucide-react";
+import { addDepositTermUtc } from "@/lib/date-utils";
 
 type Entry = {
   id?: string;
@@ -879,8 +880,8 @@ export function DepositFormModal({
         const parsedTermDays = Number(termDays);
         if (Number.isFinite(parsedTermDays) && parsedTermDays > 0) {
           const maturityDate = new Date(`${date}T00:00:00.000Z`);
-          maturityDate.setUTCDate(maturityDate.getUTCDate() + parsedTermDays);
-          fd.set("fundArrivalDate", maturityDate.toISOString().slice(0, 10));
+          const normalizedMaturityDate = addDepositTermUtc(maturityDate, parsedTermDays);
+          fd.set("fundArrivalDate", normalizedMaturityDate.toISOString().slice(0, 10));
         } else {
           fd.set("fundArrivalDate", "");
         }

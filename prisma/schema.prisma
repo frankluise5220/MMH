@@ -48,7 +48,7 @@ model Account {
   defaultArrivalDays                                         Int?
   tradingCalendar                                            TradingCalendar?
   defaultFundQueryApiId                                      String?
-  fundUnitsDecimals                                          Int                         @default(3)
+  fundUnitsDecimals                                          Int                         @default(2)
   FundQueryApi                                               FundQueryApi?               @relation(fields: [defaultFundQueryApiId], references: [id], onDelete: SetNull)
   AccountGroup                                               AccountGroup                @relation(fields: [groupId], references: [id])
   Household                                                  Household                   @relation(fields: [householdId], references: [id])
@@ -140,6 +140,7 @@ model AiModel {
   name      String?
   channelId String
   vision    Boolean   @default(false)
+  apiMode   String    @default("chat")
   active    Boolean   @default(false)
   createdAt DateTime  @default(now())
   updatedAt DateTime  @default(now()) @updatedAt
@@ -182,6 +183,7 @@ model Category {
   icon                     String?
   parentId                 String?
   householdId              String?
+  sortOrder                Int                        @default(0)
   isSystem                 Boolean                    @default(false)
   Household                Household?                 @relation(fields: [householdId], references: [id])
   Category                 Category?                  @relation("CategoryToCategory", fields: [parentId], references: [id])
@@ -190,7 +192,7 @@ model Category {
   StatementRecognitionRule StatementRecognitionRule[]
 
   @@unique([householdId, name])
-  @@index([householdId, type, name])
+  @@index([householdId, type, parentId, sortOrder])
 }
 
 model StatementRecognitionRule {

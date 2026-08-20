@@ -125,7 +125,7 @@ export function HoldingPicker({
           <span className="font-medium">{h.fundCode}</span>{" "}
           <span className="text-slate-600">{h.name}</span>
           {showUnits && h.units != null && (
-            <span className="text-slate-400 ml-1">{t("holdingPicker.unitsSuffix", { units: Number(h.units).toFixed(3) })}</span>
+            <span className="text-slate-400 ml-1">{t("holdingPicker.unitsSuffix", { units: Number(h.units).toFixed(2) })}</span>
           )}
         </button>
       ))}

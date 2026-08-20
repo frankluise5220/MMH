@@ -15,7 +15,7 @@ import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAcc
 import { getColorSchemeFromCookie, pnlClassFromRedUp } from "@/lib/client/colors";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
-import { addTradingDaysUtc } from "@/lib/date-utils";
+import { addTradingDaysUtc, countTradingDaysUtc } from "@/lib/date-utils";
 import { findLinkedEntries, type RefundLinkableEntry } from "@/lib/fund/refund-link";
 import { formatFundUnitsValue, normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision-core";
 import {
@@ -177,6 +177,17 @@ type InvestmentEditDetail = {
   feeRate?: string | number | null;
 };
 
+function inferNonNegativeDays(startDate?: string | null, endDate?: string | null) {
+  const start = String(startDate ?? "").trim();
+  const end = String(endDate ?? "").trim();
+  if (!start || !end) return null;
+  const startTime = new Date(`${start.slice(0, 10)}T00:00:00Z`).getTime();
+  const endTime = new Date(`${end.slice(0, 10)}T00:00:00Z`).getTime();
+  if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) return null;
+  const diff = Math.round((endTime - startTime) / 86400000);
+  return diff >= 0 ? diff : null;
+}
+
 export function InvestmentFormModal({
   mode,
   accountId: defaultAccountId,
@@ -222,7 +233,7 @@ export function InvestmentFormModal({
 }) {
   const { t, language } = useI18n();
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
-  const fundUnitsDecimals = normalizeFundUnitsDecimals(fundUnitsDecimalsProp, 3);
+  const fundUnitsDecimals = normalizeFundUnitsDecimals(fundUnitsDecimalsProp, 2);
   const formatUnits = (value: number) => formatFundUnitsValue(value, fundUnitsDecimals);
 
   const fixedProductType: ProductType =
@@ -260,9 +271,9 @@ export function InvestmentFormModal({
   const initToAccountId = mode === "edit"
     ? (initCashReceivingEntry ? (entry?.accountId ?? defaultAccountId) : (entry?.toAccountId ?? defaultAccountId))
     : defaultAccountId;
-  const initConfirmDays = mode === "edit" && entry
-    ? (defaults?.confirmDays ?? 1)
-    : (defaults?.confirmDays ?? 1);
+  const initConfirmDays =
+    (mode === "edit" && entry ? inferNonNegativeDays(entry.date, entry.confirmDate ?? null) : null)
+    ?? (defaults?.confirmDays ?? 0);
   const initFeeRate = mode === "edit" ? String(entry?.feeRate ?? defaults?.feeRate ?? "0") : (defaults?.feeRate ?? "0");
   const initFundCode = mode === "edit" ? (entry?.fundCode ?? "") : (defaults?.fundCode ?? "");
   const initFundName = mode === "edit" ? (entry?.fundName ?? entry?.fundCode ?? "") : (defaults?.fundName ?? "");
@@ -295,6 +306,7 @@ export function InvestmentFormModal({
     mode === "edit" &&
     ((entry?.fundSubtype === "buy_failed" && entry?.source === "regular_invest_refund") ||
       (entry?.fundSubtype === "buy" && initRefundAmount > 0));
+  const initConfirmDaysValue = typeof initConfirmDays === "number" ? initConfirmDays : Number(initConfirmDays) || 0;
 
   const [open, setOpen] = useState(false);
   const [productType, setProductType] = useState<ProductType>(fixedProductType);
@@ -323,7 +335,7 @@ export function InvestmentFormModal({
   const [feeRateEdited, setFeeRateEdited] = useState(false);
   const [fee, setFee] = useState(initFee);
   const [feeEdited, setFeeEdited] = useState(false);
-  const [confirmDays, setConfirmDays] = useState(typeof initConfirmDays === "number" ? initConfirmDays : Number(initConfirmDays) || 0);
+  const [confirmDays, setConfirmDays] = useState(initConfirmDaysValue);
   const [confirmDaysEdited, setConfirmDaysEdited] = useState(false);
   const [redeemCostDays, setRedeemCostDays] = useState(1);
   const [arrivalDays, setArrivalDays] = useState(2);
@@ -432,7 +444,7 @@ export function InvestmentFormModal({
     if (enabled) {
       const applied = applyLinkedRefundToForm(firstLinkedRefund);
       if (!applied && !arrivalDate) {
-        const baseDate = confirmDate || applyDate;
+        const baseDate = applyDate || confirmDate;
         setArrivalDate(baseDate && arrivalDays > 0 ? addFundTradingDays(baseDate, arrivalDays) : baseDate);
       }
       return;
@@ -744,41 +756,75 @@ export function InvestmentFormModal({
     setFundCode(val);
   }
 
-  // Reset edit form state from entry props every time modal opens
+  // Reset edit form state from the resolved edit detail, not the stale row snapshot.
   useEffect(() => {
-    if (!open || mode !== "edit" || !entry) return;
-    setSubtype(initSubtype);
-    setApplyDate(initDate);
-    setConfirmDate(initConfirmDate);
-    setCashAccountId(initCashAccountId);
-    setToAccountId(initToAccountId);
-    setFundCode(initFundCode);
-    setFundName(initFundName);
-    setMetalTypeId(initMetalTypeId);
-    setMetalUnitId(initMetalUnitId);
-    setNav(initNav);
-    setUnits(initUnits);
-    setAmount(String(initAmount));
-    setFeeRate(initFeeRate);
-    setFee(initFee);
+    if (!open || mode !== "edit" || !currentEditEntry) return;
+    const editEntry = currentEditEntry;
+    const nextSubtype: FundSubtype =
+      editEntry.fundSubtype === "buy_failed" && editEntry.source === "regular_invest_refund"
+        ? "buy"
+        : editEntry.fundSubtype === "buy" && editEntry.source === "dividend"
+          ? "dividend_reinvest"
+          : editEntry.fundSubtype && KNOWN_SUBTYPES.has(editEntry.fundSubtype as FundSubtype)
+            ? editEntry.fundSubtype as FundSubtype
+            : editEntry.amount < 0
+              ? "buy"
+              : "redeem";
+    const nextCashReceivingEntry = isRedeemLike(nextSubtype) || nextSubtype === "dividend_cash";
+    const nextConfirmDays =
+      inferNonNegativeDays(editEntry.date, editEntry.confirmDate ?? null)
+      ?? (typeof initConfirmDays === "number" ? initConfirmDays : Number(initConfirmDays) || 0);
+    const nextArrivalDate = editEntry.fundArrivalDate ?? (() => {
+      const dt = editEntry.date;
+      if ((nextSubtype === "dividend_cash" || nextSubtype === "dividend_reinvest") && dt && nextConfirmDays >= 0) {
+        return addFundTradingDays(dt, nextConfirmDays);
+      }
+      return "";
+    })();
+    const nextRefundAmount = editEntry.fundSubtype === "buy" ? Math.max(0, Number(editEntry.refundAmount) || 0) : 0;
+    const nextArrivalAmount =
+      editEntry.fundSubtype === "buy" && nextRefundAmount > 0
+        ? String(nextRefundAmount)
+        : editEntry.fundArrivalAmount != null
+          ? String(editEntry.fundArrivalAmount)
+          : "";
+    const nextDisplayUnits = editEntry.displayFundUnits ?? editEntry.fundUnits;
+    const nextCashAccountId = nextCashReceivingEntry ? (editEntry.toAccountId ?? "") : (editEntry.accountId ?? "");
+    const nextToAccountId = nextCashReceivingEntry ? (editEntry.accountId ?? defaultAccountId) : (editEntry.toAccountId ?? defaultAccountId);
+
+    setSubtype(nextSubtype);
+    setApplyDate(editEntry.date);
+    setConfirmDate(editEntry.confirmDate ?? "");
+    setCashAccountId(nextCashAccountId ?? "");
+    setToAccountId(nextToAccountId ?? defaultAccountId);
+    setFundCode(editEntry.fundCode ?? "");
+    setFundName(editEntry.fundName ?? editEntry.fundCode ?? "");
+    setMetalTypeId(editEntry.metalTypeId ?? (editEntry.fundProductType === "metal" ? editEntry.fundCode ?? "" : ""));
+    setMetalUnitId(editEntry.metalUnitId ?? "");
+    setNav(editEntry.fundNav != null ? String(editEntry.fundNav) : "");
+    setUnits(nextDisplayUnits != null ? formatFundUnitsValue(Number(nextDisplayUnits), fundUnitsDecimals) : "");
+    setAmount(String(Math.abs(Number(editEntry.amount) || 0)));
+    setFeeRate(String(editEntry.feeRate ?? defaults?.feeRate ?? "0"));
+    setFee(editEntry.fundFee != null ? String(editEntry.fundFee) : "");
     setFeeEdited(false);
     setFeeRateEdited(false);
-    setConfirmDays(typeof initConfirmDays === "number" ? initConfirmDays : Number(initConfirmDays) || 0);
+    setConfirmDays(nextConfirmDays);
     setConfirmDaysEdited(false);
-    setMemo(initMemo);
-    setArrivalDate(initArrivalDate);
-    setArrivalAmount(initArrivalAmount);
+    setMemo(editEntry.memo ?? editEntry.note ?? "");
+    setArrivalDate(nextArrivalDate);
+    setArrivalAmount(nextArrivalAmount);
     unitsEditedRef.current = false;
     amountEditedRef.current = false;
     navEditedRef.current = false;
     arrivalDateEditedRef.current = false;
+    arrivalDaysEditedRef.current = false;
     lastNavFetchKey.current = "";
     editAutoNavEnabledRef.current = false;
     suppressFeeAutoCalcRef.current = true;
     cashAccountTouchedRef.current = false;
     cashAccountAutoRef.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, entry]);
+  }, [open, mode, currentEditEntry, defaultAccountId, defaults?.feeRate, fundUnitsDecimals, initConfirmDays]);
 
   // Fetch fund name/rate/confirmDays when AI sets a fund code
   useEffect(() => {
@@ -793,10 +839,12 @@ export function InvestmentFormModal({
       .catch(() => {})
       .finally(() => setNameLoading(false));
 
-    fetch(`/api/v1/fund/confirm-days?accountId=${encodeURIComponent(toAccountId)}&fundCode=${encodeURIComponent(code)}`)
-      .then(r => r.json())
-      .then(d => { if (d.ok && d.days != null) { setConfirmDays(d.days); if (d.redeemCostDays != null) setRedeemCostDays(d.redeemCostDays); if (d.arrivalDays != null) setArrivalDays(d.arrivalDays); } })
-      .catch(() => {});
+    if (!confirmDaysEdited) {
+      fetch(`/api/v1/fund/confirm-days?accountId=${encodeURIComponent(toAccountId)}&fundCode=${encodeURIComponent(code)}`)
+        .then(r => r.json())
+        .then(d => { if (d.ok && d.days != null) { setConfirmDays(d.days); if (d.redeemCostDays != null) setRedeemCostDays(d.redeemCostDays); if (d.arrivalDays != null) setArrivalDays(d.arrivalDays); } })
+        .catch(() => {});
+    }
     if (mode === "create") {
       fetch(`/api/v1/fund/fee-rate?accountId=${encodeURIComponent(toAccountId)}&fundCode=${encodeURIComponent(code)}&feeType=${isRedeemLike(subtype) ? "redeem" : "buy"}`)
         .then(r => r.json())
@@ -857,6 +905,7 @@ export function InvestmentFormModal({
         setApplyDate(aiDate);
       }
       arrivalDateEditedRef.current = false;
+      arrivalDaysEditedRef.current = false;
 
       if (fundCodeFromAi) {
         setFundCode(fundCodeFromAi);
@@ -1351,7 +1400,7 @@ export function InvestmentFormModal({
     return /^\d{6}$/.test(raw) ? raw : "";
   }, [fundCode]);
 
-  // After create mode opens, fill cash account, fee rate, and confirm days from the fund account/code.
+  // After create mode opens, fill cash account and fee rate from the fund account/code.
   useEffect(() => {
     if (mode !== "create" || !open || !toAccountId) return;
     const controller = new AbortController();
@@ -1381,18 +1430,28 @@ export function InvestmentFormModal({
         .then(r => r.json())
         .then(d => { if (!feeRateEdited) setFeeRate(d.ok && d.rate != null ? String(d.rate) : "0"); })
         .catch(() => { if (!feeRateEdited && !feeRate) setFeeRate("0"); });
-      fetch(`/api/v1/fund/confirm-days?accountId=${encodeURIComponent(toAccountId)}&fundCode=${encodeURIComponent(fundCodeKey)}`)
-        .then(r => r.json())
-        .then(d => { if (d.ok && d.days != null) { setConfirmDays(d.days); if (d.arrivalDays != null) setArrivalDays(d.arrivalDays); } })
-        .catch((e) => { console.error("Auto-fill error:", e); });
-    } else {
-      fetch(`/api/v1/fund/confirm-days?accountId=${encodeURIComponent(toAccountId)}`)
-        .then(r => r.json())
-        .then(d => { if (d.ok && d.days != null) { setConfirmDays(d.days); if (d.arrivalDays != null) setArrivalDays(d.arrivalDays); } })
-        .catch(() => {});
     }
     return () => controller.abort();
   }, [mode, open, toAccountId, fundCodeKey, cashAccounts, subtype, confirmDate]);
+
+  useEffect(() => {
+    if (!open || !toAccountId || confirmDaysEdited) return;
+    if (mode !== "create") return;
+    const controller = new AbortController();
+    const params = new URLSearchParams({ accountId: toAccountId });
+    if (fundCodeKey) params.set("fundCode", fundCodeKey);
+    fetch(`/api/v1/fund/confirm-days?${params.toString()}`, { signal: controller.signal })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.ok && d.days != null) {
+          setConfirmDays(d.days);
+          if (d.redeemCostDays != null) setRedeemCostDays(d.redeemCostDays);
+          if (d.arrivalDays != null) setArrivalDays(d.arrivalDays);
+        }
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [mode, open, toAccountId, fundCodeKey, confirmDaysEdited]);
 
   // In edit mode, re-fetch the fee rate for the new date and relink units after the fund account/code/confirm date changes.
   useEffect(() => {
@@ -1475,11 +1534,11 @@ export function InvestmentFormModal({
   useEffect(() => {
     if (buyResultStatus !== "refund" || subtype !== "buy") return;
     if (linkedRefundEntryId) return;
-    if (confirmDate && !arrivalDateEditedRef.current) {
-      const nextArrivalDate = arrivalDays > 0 ? addFundTradingDays(confirmDate, arrivalDays) : confirmDate;
+    if (applyDate && !arrivalDateEditedRef.current) {
+      const nextArrivalDate = arrivalDays > 0 ? addFundTradingDays(applyDate, arrivalDays) : applyDate;
       if (arrivalDate !== nextArrivalDate) setArrivalDate(nextArrivalDate);
     }
-  }, [buyResultStatus, subtype, confirmDate, arrivalDate, arrivalDays, linkedRefundEntryId]);
+  }, [buyResultStatus, subtype, applyDate, arrivalDate, arrivalDays, linkedRefundEntryId]);
 
   const computedUnits = investmentCalculation.computedUnits;
 
@@ -1570,7 +1629,8 @@ export function InvestmentFormModal({
     if (mode !== "create") return;
     if (!isBuyLike(subtype) || productType === "metal" || unitsEditedRef.current) return;
     if (units !== computedUnits) setUnits(computedUnits);
-  }, [computedUnits, mode, productType, subtype, units]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [computedUnits, mode, productType, subtype]);
 
   function calculateBuyUnits(
     nextAmountRaw: string,
@@ -1647,41 +1707,31 @@ export function InvestmentFormModal({
   }
 
   // When the apply date changes, update the confirm and arrival dates.
-  // The arrival date only feeds arrival days back; it never overrides the confirm date.
+  // The arrival date is a terminal field; it only back-fills arrivalDays and must not drive confirmDate.
   useEffect(() => {
     if (mode === "edit" && !editAutoNavEnabledRef.current) return;
     if ((isBuyLike(subtype) || isRedeemLike(subtype)) && applyDate && confirmDays >= 0) {
       const nextConfirmDate = addFundTradingDays(applyDate, confirmDays);
       setConfirmDate(nextConfirmDate);
-      // Derive the arrival date automatically when arrival days are known and the user has not edited it.
-      if (mode === "create" && isRedeemLike(subtype) && !arrivalDateEditedRef.current) {
-        setArrivalDate(applyDate);
-      } else if (arrivalDays > 0 && !arrivalDateEditedRef.current) {
-        setArrivalDate(addFundTradingDays(nextConfirmDate, arrivalDays));
+      // Derive the arrival date from the application date, skipping non-trading days.
+      if (!arrivalDateEditedRef.current) {
+        setArrivalDate(arrivalDays > 0 ? addFundTradingDays(applyDate, arrivalDays) : applyDate);
       }
     }
   }, [applyDate, confirmDays, subtype, open, mode]);
 
-  // When the user edits the arrival date, back-calculate and persist arrivalDays.
+  // When the user edits the arrival date, back-calculate arrivalDays.
   const arrivalDateEditedRef = useRef(false);
+  const arrivalDaysEditedRef = useRef(false);
   function onArrivalDateChange(val: string) {
     setArrivalDate(val);
     arrivalDateEditedRef.current = true;
-    // arrivalDate - confirmDate gives the arrival days.
-    if (val && confirmDate) {
-      const d1 = new Date(val + "T00:00:00Z");
-      const d2 = new Date(confirmDate + "T00:00:00Z");
-      const diff = Math.round((d1.getTime() - d2.getTime()) / 86400000);
-      if (diff >= 0) {
+    arrivalDaysEditedRef.current = true;
+    // arrivalDate - applyDate gives the arrival days on the fund trading calendar.
+    if (val && applyDate) {
+      const diff = countTradingDaysUtc(applyDate, val, "cn_fund");
+      if (diff != null) {
         setArrivalDays(diff);
-        // Persist only common short arrival-day spans so occasional long gaps do not pollute defaults.
-        if (toAccountId && fundCode.trim() && diff <= 3) {
-          fetch("/api/v1/fund/confirm-days", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ accountId: toAccountId, fundCode: fundCode.trim(), arrivalDays: diff }),
-          }).catch(() => {});
-        }
       }
     }
   }
@@ -1715,6 +1765,7 @@ export function InvestmentFormModal({
     if (!confirmDate || !code || !showUnitsFor(subtype, productType)) return;
     if (productType === "metal") return;
     if (mode === "edit" && !editAutoNavEnabledRef.current) return;
+    // Source fields drive NAV lookup; buy-flow units are terminal output and must not retrigger it.
     // Debounce NAV fetching to avoid consecutive requests when date/code link.
     if (navDebounce.current) clearTimeout(navDebounce.current);
     navDebounce.current = setTimeout(() => {
@@ -1747,7 +1798,7 @@ export function InvestmentFormModal({
         .finally(() => setNavLoading(false));
     }, 500);
     return () => { if (navDebounce.current) clearTimeout(navDebounce.current); };
-  }, [amount, arrivalAmount, buyResultStatus, confirmDate, fee, feeEdited, feeRate, fundCode, mode, productType, subtype, toAccountId, units]);
+  }, [amount, arrivalAmount, buyResultStatus, confirmDate, fee, feeEdited, feeRate, fundCode, mode, productType, subtype, toAccountId]);
 
   function resetForCreate(keepSubtype = false, options?: { preferDefaults?: boolean }) {
     // Read current fund from URL at click time (defaults prop may be stale from SSR)
@@ -1770,16 +1821,17 @@ export function InvestmentFormModal({
       setMetalUnitId("");
       const nextFundCode = urlFundCode ? urlFundCode : (defaults?.fundCode ?? "");
       const nextFundName = urlFundCode ? (defaults?.fundName ?? urlFundCode) : (defaults?.fundName ?? "");
+      const nextConfirmDays = typeof defaults?.confirmDays === "number" ? defaults.confirmDays : Number(defaults?.confirmDays) || 0;
       setFundCode(nextFundCode);
       setFundName(nextFundName);
       setHoldingSearch(nextFundCode ? `${nextFundCode} ${nextFundName || nextFundCode}` : "");
       setFeeRate(defaults?.feeRate ?? "0");
-      setConfirmDays(typeof defaults?.confirmDays === "number" ? defaults.confirmDays : Number(defaults?.confirmDays) || 1);
+      setConfirmDays(nextConfirmDays);
+      setConfirmDate(addFundTradingDays(today, nextConfirmDays));
       setFeeRateEdited(false);
     }
     // Reset date, amount, units, NAV, fee, and memo.
     setApplyDate(today);
-    setConfirmDate(addFundTradingDays(today, confirmDays));
     cashAccountTouchedRef.current = false;
     cashAccountAutoRef.current = false;
     prevSavedDateRef.current = null;
@@ -1787,6 +1839,7 @@ export function InvestmentFormModal({
     setArrivalAmount("");
     setArrivalDays(2);
     arrivalDateEditedRef.current = false;
+    arrivalDaysEditedRef.current = false;
     setNav("");
     setNavActualDate(null);
     lastNavFetchKey.current = "";
@@ -1835,10 +1888,6 @@ export function InvestmentFormModal({
       }
     }
 
-    fetch(`/api/v1/fund/confirm-days?accountId=${encodeURIComponent(toAccountId)}&fundCode=${encodeURIComponent(code)}`)
-      .then(r => r.json())
-      .then(d => { if (d.ok && d.days != null) { setConfirmDays(d.days); if (d.redeemCostDays != null) setRedeemCostDays(d.redeemCostDays); if (d.arrivalDays != null) setArrivalDays(d.arrivalDays); } })
-      .catch(() => {});
     if (!feeRateEdited) {
       fetch(`/api/v1/fund/fee-rate?accountId=${encodeURIComponent(toAccountId)}&fundCode=${encodeURIComponent(code)}&feeType=${isRedeemLike(subtype) ? "redeem" : "buy"}${confirmDate ? `&effectiveDate=${encodeURIComponent(confirmDate)}` : ""}`)
         .then(r => r.json())
@@ -1963,26 +2012,27 @@ export function InvestmentFormModal({
       ? finalUnits * p(nav)
       : (subtype === "dividend_reinvest" && !(finalAmount > 0) ? 0 : finalAmount);
 
+    const isCreateMode = mode === "create";
+    const shouldWriteConfirmRule = isCreateMode || confirmDaysEdited || arrivalDaysEditedRef.current;
+    const confirmRuleBody =
+      productType !== "metal" && fundCode.trim() && confirmDays >= 0 && shouldWriteConfirmRule
+        ? {
+            accountId: toAccountId,
+            rows: [{
+              fundCode: fundCode.trim(),
+              ...(isCreateMode || confirmDaysEdited ? { days: isDividend(subtype) ? 0 : confirmDays } : {}),
+              ...(isCreateMode || arrivalDaysEditedRef.current ? { arrivalDays } : {}),
+              ...(isCreateMode ? { redeemCostDays, effectiveDate: applyDate } : {}),
+            }],
+          }
+        : null;
+
     // Write the new rate for this confirm date only when the user edited the rate manually.
     if (mode === "create" && feeRateEdited && !isDividend(subtype) && (productType === "fund" || productType === "money") && fundCode.trim() && showFeeFor(subtype, productType)) {
       fetch("/api/v1/fund/fee-rate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ accountId: toAccountId, fundCode: fundCode.trim(), rate: finalFeeRate, feeType: isRedeemLike(subtype) ? "redeem" : "buy", effectiveDate: confirmDate || applyDate }),
-      }).catch(() => {});
-    }
-    if (productType !== "metal" && isBuyLike(subtype) && confirmDays >= 0) {
-      fetch("/api/v1/fund/confirm-days", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId: toAccountId, fundCode: fundCode.trim() || undefined, days: confirmDays, arrivalDays: mode === "create" && arrivalDays > 3 ? undefined : arrivalDays }),
-      }).catch(() => {});
-    }
-    if (productType !== "metal" && fundCode.trim() && isRedeemLike(subtype)) {
-      fetch("/api/v1/fund/confirm-days", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId: toAccountId, fundCode: fundCode.trim(), redeemCostDays, arrivalDays: mode === "create" && arrivalDays > 3 ? undefined : arrivalDays }),
       }).catch(() => {});
     }
 
@@ -2046,7 +2096,9 @@ export function InvestmentFormModal({
         }
       }
       if (feeRateEdited && !isDividend(subtype)) formData.set("feeRate", feeRate.trim() ? feeRate : "");
-      formData.set("confirmDays", isDividend(subtype) ? "0" : String(confirmDays));
+      if (isCreateMode || confirmDaysEdited) {
+        formData.set("confirmDays", isDividend(subtype) ? "0" : String(confirmDays));
+      }
     } else {
       formData.set("type", "investment");
       formData.set("subtype", subtype);
@@ -2093,6 +2145,13 @@ export function InvestmentFormModal({
     try {
       const res = mode === "edit" && editAction ? await editAction(formData) : await createAction(formData);
       if (!res.ok) { window.alert(res.error); return; }
+      if (confirmRuleBody) {
+        fetch("/api/v1/fund/confirm-days", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(confirmRuleBody),
+        }).catch(() => {});
+      }
       if (mode === "create" && requestIdRef.current) {
         notifyAiSuccess(requestIdRef.current);
         requestIdRef.current = null;
@@ -2122,6 +2181,7 @@ export function InvestmentFormModal({
           navEditedRef.current = false;
           setConfirmDaysEdited(true);
           arrivalDateEditedRef.current = false;
+          arrivalDaysEditedRef.current = false;
           // Preserve amount and fund, clear nav/units (user re-fetches or enters nav for new date)
           if (amount.trim() && fundCode.trim()) {
             // Check if nav is available in cache for the new date via API
@@ -2668,13 +2728,31 @@ export function InvestmentFormModal({
                 </div>
               ) : null}
 
-              {productType === "metal" ? renderMetalFields() : showCode ? (
+              {productType === "metal" ? renderMetalFields() : showCode && !fundCode.trim() && holdings && holdings.length > 0 ? (
+                <HoldingPicker
+                  holdings={holdings}
+                  fundCode={fundCode}
+                  fundName={fundName}
+                  searchText={holdingSearch}
+                  onSearchChange={setHoldingSearch}
+                  onSelect={(h) => {
+                    changeFundCode(h.fundCode);
+                    setFundName(h.name);
+                  }}
+                  onBlur={handleFundCodeBlur}
+                  placeholder={productCodePlaceholder}
+                />
+              ) : showCode ? (
                 <div className="grid grid-cols-[1fr_2fr] items-end gap-2">
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">{productCodeLabel}</div>
                     <input
                       value={fundCode}
-                      onChange={(e) => changeFundCode(e.target.value)}
+                      onChange={(e) => {
+                        const nextCode = e.target.value;
+                        changeFundCode(nextCode);
+                        if (!nextCode.trim()) setHoldingSearch("");
+                      }}
                       onBlur={handleFundCodeBlur}
                       placeholder={productCodePlaceholder}
                       className="form-input"
@@ -2783,7 +2861,7 @@ export function InvestmentFormModal({
                           setArrivalAmount(v);
                           if (p(v) > 0 && buyResultStatus !== "refund") setBuyResultStatus("refund");
                           if (p(v) > 0 && !arrivalDate) {
-                            const baseDate = confirmDate || applyDate;
+                            const baseDate = applyDate || confirmDate;
                             setArrivalDate(baseDate && arrivalDays > 0 ? addFundTradingDays(baseDate, arrivalDays) : baseDate);
                           }
                           calculateUnitsAfterRefundChange(v);

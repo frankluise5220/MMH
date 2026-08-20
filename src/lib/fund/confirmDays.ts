@@ -26,7 +26,7 @@ export async function getFundConfirmDays(accountId: string, fundCode: string): P
   const record = await prisma.fundConfirmDays.findUnique({
     where: { accountId_fundCode: { accountId, fundCode } },
   });
-  return normalizeNonNegativeDays(record?.days, 1);
+  return normalizeNonNegativeDays(record?.days, 0);
 }
 
 export async function getFundArrivalDays(accountId: string, fundCode: string): Promise<number> {
@@ -41,7 +41,7 @@ export async function getFundConfirmRule(accountId: string, fundCode: string): P
     where: { accountId_fundCode: { accountId, fundCode } },
   });
   return {
-    days: normalizeNonNegativeDays(record?.days, 1),
+    days: normalizeNonNegativeDays(record?.days, 0),
     arrivalDays: normalizeNonNegativeDays(record?.arrivalDays, 2),
     exists: !!record,
   };
@@ -60,7 +60,7 @@ export async function setFundArrivalDays(accountId: string, fundCode: string, ar
   const safeArrivalDays = normalizeNonNegativeDays(arrivalDays, 2);
   await prisma.fundConfirmDays.upsert({
     where: { accountId_fundCode: { accountId, fundCode } },
-    create: { accountId, fundCode, days: 1, arrivalDays: safeArrivalDays },
+    create: { accountId, fundCode, days: 0, arrivalDays: safeArrivalDays },
     update: { arrivalDays: safeArrivalDays },
   });
 }
@@ -78,7 +78,7 @@ export async function setFundArrivalDaysInTx(tx: any, accountId: string, fundCod
   const safeArrivalDays = normalizeNonNegativeDays(arrivalDays, 2);
   await tx.fundConfirmDays.upsert({
     where: { accountId_fundCode: { accountId, fundCode } },
-    create: { accountId, fundCode, days: 1, arrivalDays: safeArrivalDays },
+    create: { accountId, fundCode, days: 0, arrivalDays: safeArrivalDays },
     update: { arrivalDays: safeArrivalDays },
   });
 }

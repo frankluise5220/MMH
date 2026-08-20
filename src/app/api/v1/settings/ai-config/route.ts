@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import { getOrCreateMasterKey, encrypt, decrypt, isEncrypted } from "@/lib/auth/encrypt";
+import { normalizeAiApiMode } from "@/lib/ai/config";
 
 export const runtime = "nodejs";
 
@@ -12,6 +13,7 @@ export const runtime = "nodejs";
  * GET    /api/v1/settings/ai-config → list channels (with decrypted apiKey for admin review)
  * POST   /api/v1/settings/ai-config → create channel { name, channelType?, baseUrl, apiKey? }
  * PUT    /api/v1/settings/ai-config → update channel / add or remove models / set active model
+ * Model payloads accept apiMode: "chat" (Chat Completions) or "responses" (Responses API).
  * DELETE /api/v1/settings/ai-config?id=… → delete channel
  */
 async function requireAdmin(): Promise<NextResponse | null> {
@@ -90,6 +92,7 @@ const ModelSchema = z.object({
   name: z.string().max(80).optional(),
   channelId: z.string(),
   vision: z.boolean().optional(),
+  apiMode: z.enum(["chat", "responses"]).optional(),
 });
 
 export async function PUT(req: Request) {
@@ -128,21 +131,28 @@ export async function PUT(req: Request) {
     const parse = ModelSchema.safeParse(body);
     if (!parse.success) return NextResponse.json({ ok: false, code: "MISSING_REQUIRED_FIELDS", error: "缺少必填字段" }, { status: 400 });
     const created = await prisma.aiModel.create({
-      data: { model: parse.data.model, name: parse.data.name, channelId: parse.data.channelId, vision: parse.data.vision ?? false },
+      data: { model: parse.data.model, name: parse.data.name, channelId: parse.data.channelId, vision: parse.data.vision ?? false, apiMode: normalizeAiApiMode(parse.data.apiMode) },
     });
     return NextResponse.json({ ok: true, model: created });
   }
 
-  // Update model (updateModelId + name + vision)
+  // Update model (updateModelId + model + name + vision + apiMode)
   if (body && "updateModelId" in body) {
     const updateModelId = (body as any).updateModelId as string;
+    const model = (body as any).model as string | undefined;
     const name = (body as any).name as string | undefined;
     const vision = (body as any).vision as boolean | undefined;
+    const apiMode = (body as any).apiMode as string | undefined;
     const modelExists = await prisma.aiModel.findUnique({ where: { id: updateModelId } });
     if (!modelExists) return NextResponse.json({ ok: false, code: "MODEL_NOT_FOUND", error: "AI 模型不存在" }, { status: 404 });
     const updated = await prisma.aiModel.update({
       where: { id: updateModelId },
-      data: { ...(name !== undefined ? { name } : {}), ...(vision !== undefined ? { vision } : {}) },
+      data: {
+        ...(model !== undefined ? { model } : {}),
+        ...(name !== undefined ? { name } : {}),
+        ...(vision !== undefined ? { vision } : {}),
+        ...(apiMode !== undefined ? { apiMode: normalizeAiApiMode(apiMode) } : {}),
+      },
     });
     return NextResponse.json({ ok: true, model: updated });
   }

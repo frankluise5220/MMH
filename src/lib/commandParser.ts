@@ -1,4 +1,6 @@
 import { joinBaseUrl } from "@/lib/http";
+import type { AiApiMode } from "@/lib/ai/config";
+import { buildResponsesRequestBody, extractResponsesText } from "@/lib/ai/responses";
 
 export const CMD_ANALYZER_PROMPT = `你是一个专业的家庭理财记账专家。分析用户的自然语言，转化成对应的操作指令。
 
@@ -58,13 +60,25 @@ export function buildAnalyzerPrompt(opts: {
   fundContext?: { fundCode: string; fundName?: string; accountId: string } | null;
   today: string; rolePrompt?: string;
 }) {
+  const parts = buildAnalyzerPromptParts(opts);
+  return `${parts.systemPrompt}\n\n${parts.userMessage}`;
+}
+
+export function buildAnalyzerPromptParts(opts: {
+  text: string;
+  fundContext?: { fundCode: string; fundName?: string; accountId: string } | null;
+  today: string; rolePrompt?: string;
+}) {
   const ctx: string[] = [];
   ctx.push(`当前日期：${opts.today}`);
   if (opts.fundContext) {
     ctx.push(`当前页面基金：${opts.fundContext.fundCode}${opts.fundContext.fundName ? ` ${opts.fundContext.fundName}` : ""}`);
   }
   const systemPrompt = opts.rolePrompt?.trim() || CMD_ANALYZER_PROMPT;
-  return `${systemPrompt}\n\n${ctx.join("；")}\n\n用户输入：${opts.text}`;
+  return {
+    systemPrompt,
+    userMessage: `${ctx.join("；")}\n\n用户输入：${opts.text}`,
+  };
 }
 
 export async function callAiForCommand(opts: {
@@ -72,24 +86,57 @@ export async function callAiForCommand(opts: {
   fundContext?: { fundCode: string; fundName?: string; accountId: string } | null;
   today: string;
   modelName: string; baseUrl: string; apiKey: string; isOllama: boolean;
+  apiMode?: AiApiMode;
   rolePrompt?: string;
 }): Promise<AnalyzedCommand | null> {
-  const prompt = buildAnalyzerPrompt(opts);
+  const { systemPrompt, userMessage } = buildAnalyzerPromptParts(opts);
   const { isOllama, modelName, baseUrl: base, apiKey } = opts;
+  const apiMode = opts.apiMode ?? "chat";
   const cleanUrl = base.replace(/\/$/, "");
 
   try {
     const body = isOllama
-      ? { model: modelName, stream: false, messages: [{ role: "user", content: prompt }] }
-      : { model: modelName, messages: [{ role: "user", content: prompt }], max_tokens: 500, temperature: 0 };
-    const url = isOllama ? joinBaseUrl(cleanUrl, "/api/chat") : joinBaseUrl(cleanUrl, "/v1/chat/completions");
+      ? {
+          model: modelName,
+          stream: false,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userMessage },
+          ],
+        }
+      : apiMode === "responses"
+        ? buildResponsesRequestBody({
+            modelName,
+            instructions: systemPrompt,
+            userMessage,
+            temperature: 0,
+            maxOutputTokens: 500,
+          })
+        : {
+            model: modelName,
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: userMessage },
+            ],
+            max_tokens: 500,
+            temperature: 0,
+          };
+    const url = isOllama
+      ? joinBaseUrl(cleanUrl, "/api/chat")
+      : joinBaseUrl(cleanUrl, apiMode === "responses" ? "/v1/responses" : "/v1/chat/completions");
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (!isOllama && apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
     const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
     if (!res.ok) return null;
     const data = (await res.json().catch(() => null)) as any;
-    const raw = (data?.message?.content ?? data?.choices?.[0]?.message?.content ?? data?.response ?? "").trim();
+    const raw = (
+      isOllama
+        ? data?.message?.content ?? data?.response ?? ""
+        : apiMode === "responses"
+          ? extractResponsesText(data)
+          : data?.choices?.[0]?.message?.content ?? ""
+    ).trim();
     const m = raw.match(/\{[\s\S]*\}/);
     if (!m) return null;
     const parsed = JSON.parse(m[0]) as any;

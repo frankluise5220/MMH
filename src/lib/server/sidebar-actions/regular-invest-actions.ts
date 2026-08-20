@@ -56,8 +56,7 @@ function normalizeIntervalScheduleValue(unit: IntervalUnit, value: number): { un
   return { unit, value: safeValue };
 }
 
-function parseExecutionDayValue(raw: string, intervalUnit: IntervalUnit): number | null {
-  if (intervalUnit === "year") return null;
+function parseExecutionDayValue(raw: string): number | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
   const parsed = parseInt(trimmed, 10);
@@ -126,7 +125,7 @@ async function createRegularInvest(formData: FormData) {
   );
   const intervalValue = normalizedInterval.value;
   const intervalUnitValue = normalizedInterval.unit;
-  const executionDay = parseExecutionDayValue(executionDayRaw, intervalUnitValue);
+  const executionDay = parseExecutionDayValue(executionDayRaw);
   const startDate = isFundTask ? skipWeekend(parsedStartDate) : parsedStartDate;
   const nextRunDate = calcInitialScheduledRunDate(parsedStartDate, intervalUnitValue, intervalValue, executionDay, isFundTask);
   const endDate = endDateStr ? parseDateOnlyUtc(endDateStr) : null;
@@ -322,7 +321,7 @@ async function updateRegularInvest(formData: FormData) {
   const effectiveExecutionDay = effectiveIntervalUnit === "year"
     ? null
     : executionDayRaw
-      ? parseExecutionDayValue(executionDayRaw, effectiveIntervalUnit)
+      ? parseExecutionDayValue(executionDayRaw)
       : formData.has("executionDay")
         ? null
         : plan.executionDay;
@@ -367,7 +366,7 @@ async function updateRegularInvest(formData: FormData) {
     return { ok: false as const, error: "该计划已生成记录，不能修改任务类型。请新建计划处理不同类型的后续任务。" };
   }
   if (parsedStartDate) updateData.startDate = nextStoredStartDate;
-  if (effectiveIntervalUnit === "year") updateData.executionDay = null;
+  if (effectiveIntervalUnit === "year") updateData.executionDay = effectiveExecutionDay;
   else if (formData.has("executionDay")) updateData.executionDay = effectiveExecutionDay;
   if (scheduleChanged) {
     updateData.nextRunDate = await deriveRegularInvestNextRunDate(prisma, {
@@ -410,13 +409,13 @@ async function updateRegularInvest(formData: FormData) {
   } else if (isFundTask && formData.has("feeRate")) {
     updateData.feeRate = null;
   }
-  if (isFundTask && confirmDaysRaw) {
+  if (isFundTask && confirmDaysRaw !== "") {
     updateData.confirmDays = normalizeNonNegativeDays(confirmDaysRaw, 0);
   } else if (isFundTask && formData.has("confirmDays")) {
     updateData.confirmDays = null;
   }
 
-  if (isFundTask && arrivalDaysRaw) {
+  if (isFundTask && arrivalDaysRaw !== "") {
     updateData.arrivalDays = normalizeNonNegativeDays(arrivalDaysRaw, 2);
   } else if (isFundTask && formData.has("arrivalDays")) {
     updateData.arrivalDays = null;

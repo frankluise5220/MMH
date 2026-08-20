@@ -79,7 +79,7 @@ export async function ensureBrokerageCashAccountForStockAccount(
       investProductType: null,
       costBasisMethod: null,
       tradingCalendar: null,
-      fundUnitsDecimals: 3,
+      fundUnitsDecimals: 2,
     },
     include: {
       AccountGroup: { select: { id: true, name: true } },

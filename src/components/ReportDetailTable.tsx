@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { BasicDetailBatchDeleteMessage, BasicDetailSelectionProvider } from "@/components/BasicDetailSelection";
 import type { BasicDetailBatchCategoryOption } from "@/components/BasicDetailSelection";
+import type { BatchReplaceField } from "@/lib/client/batchReplaceEntries";
 import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
 import { DetailViewClient, type DetailEntry } from "@/components/DetailViewClient";
 import { formatMoney } from "@/lib/format";
@@ -20,6 +21,18 @@ type AccountOption = {
 };
 
 const PAGE_SIZE_OPTIONS = [10, 20, 40] as const;
+const REPORT_BATCH_REPLACE_FIELDS: BatchReplaceField[] = [
+  "date",
+  "postedAt",
+  "type",
+  "outflow",
+  "inflow",
+  "account",
+  "toAccount",
+  "categoryId",
+  "institution",
+  "remark",
+];
 
 function clampPage(page: number, totalPages: number) {
   return Math.min(Math.max(1, page), totalPages);
@@ -128,6 +141,7 @@ export function ReportDetailTable({
           storageKey="mmh_report_detail_table_v1"
           refreshOnGlobalEvent={false}
           toolbarMode="custom"
+          batchReplaceFields={REPORT_BATCH_REPLACE_FIELDS}
           toolbarTitle={(
             <span className="flex min-w-0 items-center">
               <span className="truncate text-xs font-normal text-slate-600" title={title}>{title}</span>

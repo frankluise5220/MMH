@@ -5,6 +5,7 @@ import { normalizeDefaultCategoryHierarchyForHousehold } from "@/lib/default-cat
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
+import { categoryOrderBy } from "@/lib/category-order";
 
 export const runtime = "nodejs";
 
@@ -15,7 +16,7 @@ export const runtime = "nodejs";
  * Query params:
  *   type? - optional filter: "expense" | "income" | "advance" | "transfer" | "investment"
  *
- * Response: { ok: true, categories: [{ id, name, type, parentId, isSystem }] }
+ * Response: { ok: true, categories: [{ id, name, type, parentId, sortOrder, isSystem }] }
  */
 export async function GET(req: Request) {
   try {
@@ -48,8 +49,8 @@ export async function GET(req: Request) {
 
     const categories = await prisma.category.findMany({
       where,
-      orderBy: [{ name: "asc" }],
-      select: { id: true, name: true, type: true, parentId: true, isSystem: true },
+      orderBy: categoryOrderBy(),
+      select: { id: true, name: true, type: true, parentId: true, sortOrder: true, isSystem: true },
     });
 
     return NextResponse.json({ ok: true, categories });
@@ -128,9 +129,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, code: "CATEGORY_NAME_EXISTS", error: "分类名称已存在" }, { status: 409 });
     }
 
+    const lastSibling = await prisma.category.findFirst({
+      where: { householdId, type, parentId, isSystem: false },
+      orderBy: [{ sortOrder: "desc" }, { name: "desc" }, { id: "desc" }],
+      select: { sortOrder: true },
+    });
     const category = await prisma.category.create({
-      data: { name, type, parentId, householdId, isSystem: false },
-      select: { id: true, name: true, type: true, parentId: true, isSystem: true },
+      data: { name, type, parentId, householdId, sortOrder: (lastSibling?.sortOrder ?? -1) + 1, isSystem: false },
+      select: { id: true, name: true, type: true, parentId: true, sortOrder: true, isSystem: true },
     });
 
     revalidateAfterSettingsChange();
@@ -148,7 +154,7 @@ export async function POST(req: NextRequest) {
  * PUT /api/v1/category
  * Updates the category name or moves the category in the hierarchy.
  *
- * Body: { id: string, name?: string, parentId?: string | null }
+ * Body: { id: string, name?: string, parentId?: string | null, orderedIds?: string[] }
  * - When name is present, the category name is updated.
  * - When parentId is present, the whole category node moves; child categories move with it.
  * - parentId empty/null means moving to the root of the current type.
@@ -156,6 +162,7 @@ export async function POST(req: NextRequest) {
  * - Category name must be globally unique within the same household, regardless of income/expense type or parent.
  * - System built-in categories cannot be renamed or moved, but user subcategories may be created under them.
  * - Renaming also updates categoryName on existing entries so old records stop showing the old name.
+ * - orderedIds reorders user sibling categories. System categories do not participate in the order and remain after user categories.
  *
  * Response: { ok: true, category: { id, name, type, parentId, isSystem } }
  */
@@ -166,13 +173,15 @@ export async function PUT(req: NextRequest) {
     const id = String(body.id ?? "").trim();
     const hasName = Object.prototype.hasOwnProperty.call(body, "name");
     const hasParentId = Object.prototype.hasOwnProperty.call(body, "parentId");
+    const hasOrderedIds = Array.isArray(body.orderedIds);
     const requestedName = hasName ? String(body.name ?? "").trim() : "";
     const requestedParentId = hasParentId ? String(body.parentId ?? "").trim() || null : undefined;
+    const requestedOrderedIds = hasOrderedIds ? body.orderedIds.filter((value: unknown): value is string => typeof value === "string" && Boolean(value.trim())).map((value: string) => value.trim()) : [];
 
     if (!id) {
       return NextResponse.json({ ok: false, code: "MISSING_CATEGORY_ID", error: "缺少分类 ID" }, { status: 400 });
     }
-    if (!hasName && !hasParentId) {
+    if (!hasName && !hasParentId && !hasOrderedIds) {
       return NextResponse.json({ ok: false, code: "MISSING_UPDATE_CONTENT", error: "缺少修改内容" }, { status: 400 });
     }
     if (hasName && (!requestedName || requestedName.length > 50)) {
@@ -184,7 +193,7 @@ export async function PUT(req: NextRequest) {
 
     const current = await prisma.category.findFirst({
       where: { id, householdId },
-      select: { id: true, name: true, type: true, parentId: true, isSystem: true },
+      select: { id: true, name: true, type: true, parentId: true, sortOrder: true, isSystem: true },
     });
     if (!current) {
       return NextResponse.json({ ok: false, code: "CATEGORY_NOT_FOUND", error: "分类不存在" }, { status: 404 });
@@ -194,7 +203,7 @@ export async function PUT(req: NextRequest) {
     const nameChanged = hasName && name !== current.name;
     const parentChanged = hasParentId && parentId !== current.parentId;
 
-    if (current.isSystem && (nameChanged || parentChanged)) {
+    if (current.isSystem && (nameChanged || parentChanged || hasOrderedIds)) {
       return NextResponse.json({ ok: false, code: "SYSTEM_CATEGORY_IMMUTABLE", error: "系统内置类别，无法修改" }, { status: 409 });
     }
 
@@ -232,14 +241,59 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ ok: false, code: "CATEGORY_NAME_EXISTS", error: "分类名称已存在" }, { status: 409 });
     }
 
+    if (hasOrderedIds) {
+      if (nameChanged || parentChanged || requestedOrderedIds.length === 0) {
+        return NextResponse.json({ ok: false, code: "INVALID_REORDER_REQUEST", error: "排序请求不正确" }, { status: 400 });
+      }
+      const siblings = await prisma.category.findMany({
+        where: { householdId, type: current.type, parentId: current.parentId },
+        orderBy: [{ isSystem: "asc" }, { sortOrder: "asc" }, { name: "asc" }, { id: "asc" }],
+        select: { id: true, sortOrder: true, isSystem: true },
+      });
+      const siblingIds = siblings.map((sibling) => sibling.id);
+      const sameIds = siblingIds.length === requestedOrderedIds.length
+        && siblingIds.every((siblingId) => requestedOrderedIds.includes(siblingId));
+      if (!sameIds) {
+        return NextResponse.json({ ok: false, code: "INVALID_REORDER_REQUEST", error: "排序范围不正确" }, { status: 400 });
+      }
+      for (let index = 0; index < siblings.length; index += 1) {
+        if (siblings[index]?.isSystem && requestedOrderedIds[index] !== siblings[index]?.id) {
+          return NextResponse.json({ ok: false, code: "SYSTEM_CATEGORY_IMMUTABLE", error: "系统内置类别，无法调整顺序" }, { status: 409 });
+        }
+      }
+      const category = await prisma.$transaction(async (tx) => {
+        for (let index = 0; index < requestedOrderedIds.length; index += 1) {
+          if (siblings[index]?.isSystem) continue;
+          await tx.category.update({
+            where: { id: requestedOrderedIds[index] },
+            data: { sortOrder: index },
+          });
+        }
+        return tx.category.findUniqueOrThrow({
+          where: { id },
+          select: { id: true, name: true, type: true, parentId: true, sortOrder: true, isSystem: true },
+        });
+      });
+      revalidateAfterSettingsChange();
+      return NextResponse.json({ ok: true, category });
+    }
+
     const category = await prisma.$transaction(async (tx) => {
+      const nextParentSortOrder = parentChanged
+        ? (await tx.category.findFirst({
+            where: { householdId, type: current.type, parentId, isSystem: false },
+            orderBy: [{ sortOrder: "desc" }, { name: "desc" }, { id: "desc" }],
+            select: { sortOrder: true },
+          }))?.sortOrder ?? -1
+        : current.sortOrder;
       const updated = await tx.category.update({
         where: { id },
         data: {
           ...(hasName && name !== current.name ? { name } : {}),
           ...(hasParentId && parentId !== current.parentId ? { parentId } : {}),
+          ...(parentChanged ? { sortOrder: nextParentSortOrder + 1 } : {}),
         },
-        select: { id: true, name: true, type: true, parentId: true, isSystem: true },
+        select: { id: true, name: true, type: true, parentId: true, sortOrder: true, isSystem: true },
       });
       if (hasName && name !== current.name) {
         await tx.txRecord.updateMany({

@@ -4,11 +4,17 @@ export interface ParsedItem {
   rawText: string;
   type: "expense" | "income" | "transfer" | "investment";
   date?: string;
+  /** Confirmed actual posting date; defaults to date during import when absent. */
+  postedAt?: string;
   amount: number;
+  accountId?: string;
   account?: string;
   fromAccount?: string;
   toAccount?: string;
+  categoryId?: string;
   category?: string;
+  institutionId?: string;
+  institution?: string;
   remark?: string;
   counterparty?: string;
 }
@@ -98,35 +104,55 @@ export function parseTransactionSuccessReminder(text: string, now: Date): { item
   const raw = String(text ?? "").replace(/\r/g, "\n");
   if (!/交易成功提醒|交易时间|交易金额|交易商户/.test(raw)) return null;
 
-  const timeLine = raw.match(/交易时间\s*[:：]\s*([^\n]+)/)?.[1]?.trim() ?? "";
-  const tail = timeLine.match(/尾号\s*([0-9]{4})(?=.*信用卡)|信用卡.*?尾号\s*([0-9]{4})/)?.slice(1).find(Boolean) ?? "";
-  const md = timeLine.match(/(\d{1,2})月(\d{1,2})日/);
-  const amountText = raw.match(/交易金额\s*[:：]\s*([+-]?\d+(?:,\d{3})*(?:\.\d{1,2})?)/)?.[1] ?? "";
-  const amount = Number(amountText.replace(/,/g, ""));
-  const merchant = raw.match(/交易商户\s*[:：]\s*([^\n]+)/)?.[1]?.trim() ?? "";
-  const typeText = raw.match(/交易类型\s*[:：]\s*([^\n]+)/)?.[1]?.trim() ?? "";
-  if (!md || !Number.isFinite(amount) || amount === 0) return null;
+  const reminderPattern = /交易(?:成功)?提醒/g;
+  const blockStarts: number[] = [];
+  for (let match = reminderPattern.exec(raw); match; match = reminderPattern.exec(raw)) {
+    blockStarts.push(match.index);
+    if (match.index === reminderPattern.lastIndex) reminderPattern.lastIndex += 1;
+  }
+  const reminderBlocks = blockStarts.length > 1
+    ? blockStarts.map((start, index) => raw.slice(start, blockStarts[index + 1] ?? raw.length).trim()).filter(Boolean)
+    : [raw.trim()].filter(Boolean);
 
-  const combinedText = `${typeText} ${merchant}`;
-  const isExpenseRefund = isExpenseRefundLike(combinedText);
-  const isIncome = !isExpenseRefund && /返还|收入|入账/.test(typeText) && !/消费/.test(typeText);
-  const account = tail ? `尾号${tail}信用卡` : undefined;
-  const counterparty = /支付宝/.test(merchant) ? "支付宝" : /微信/.test(merchant) ? "微信" : /银联/.test(merchant) ? "银联" : undefined;
-  const date = normalizeMonthDayDate(Number(md[1]), Number(md[2]), now);
-  if (!date) return null;
+  const items: ParsedItem[] = [];
+  for (const block of reminderBlocks) {
+    const item = (() => {
+      const timeLine = block.match(/交易时间\s*[:：]\s*([^\n]+)/)?.[1]?.trim() ?? "";
+      const tail = timeLine.match(/尾号\s*([0-9]{4})(?=.*信用卡)|信用卡.*?尾号\s*([0-9]{4})/)?.slice(1).find(Boolean) ?? "";
+      const md = timeLine.match(/(\d{1,2})月(\d{1,2})日/);
+      const amountText = block.match(/交易金额\s*[:：]\s*([+-]?\d+(?:,\d{3})*(?:\.\d{1,2})?)/)?.[1] ?? "";
+      const amount = Number(amountText.replace(/,/g, ""));
+      const merchant = block.match(/(?:交易商户|交易说明|商户名称|商户)\s*[:：]\s*([^\n]+)/)?.[1]?.trim() ?? "";
+      const typeText = block.match(/交易类型\s*[:：]\s*([^\n]+)/)?.[1]?.trim() ?? "";
+      if (!md || !Number.isFinite(amount) || amount === 0) return null;
 
-  return {
-    items: [{
-      rawText: raw.slice(0, 200),
-      type: isIncome ? "income" : "expense",
-      date,
-      amount: isExpenseRefund ? -Math.abs(amount) : Math.abs(amount),
-      account,
-      remark: merchant || typeText || undefined,
-      counterparty,
-    }],
-    directImport: true,
-  };
+      const combinedText = `${typeText} ${merchant}`;
+      const isExpenseRefund = isExpenseRefundLike(combinedText);
+      const isIncome = !isExpenseRefund && /返还|收入|入账/.test(typeText) && !/消费/.test(typeText);
+      const account = tail ? `尾号${tail}信用卡` : undefined;
+      const institution = (
+        merchant.match(/^(支付宝|微信(?:支付)?|财付通|云闪付|银联)\s*(?:--?|：|:)/i)?.[1]
+        ?? merchant
+      ) || undefined;
+      const date = normalizeMonthDayDate(Number(md[1]), Number(md[2]), now);
+      if (!date) return null;
+
+      return {
+        rawText: block.slice(0, 200),
+        type: isIncome ? "income" : "expense",
+        date,
+        amount: isExpenseRefund ? -Math.abs(amount) : Math.abs(amount),
+        account,
+        institution,
+        remark: merchant || typeText || undefined,
+        counterparty: institution,
+      } satisfies ParsedItem;
+    })();
+    if (item) items.push(item);
+  }
+
+  if (!items.length) return null;
+  return { items, directImport: true };
 }
 
 export function normalizeDate(dateInput: unknown, rawText: string, now: Date) {
@@ -298,11 +324,16 @@ export function parseItems(raw: string, now: Date, userTextForContext: string): 
       rawText,
       type,
       date,
+      postedAt: typeof item.postedAt === "string" && item.postedAt.trim() ? item.postedAt.trim() : undefined,
       amount,
+      accountId: typeof item.accountId === "string" && item.accountId.trim() ? item.accountId.trim() : undefined,
       account: item.account?.trim() ? item.account : undefined,
       fromAccount: item.fromAccount,
       toAccount: item.toAccount,
+      categoryId: typeof item.categoryId === "string" && item.categoryId.trim() ? item.categoryId.trim() : undefined,
       category: item.category,
+      institutionId: typeof item.institutionId === "string" && item.institutionId.trim() ? item.institutionId.trim() : undefined,
+      institution: item.institution,
       remark: item.remark,
       counterparty: item.counterparty,
     };

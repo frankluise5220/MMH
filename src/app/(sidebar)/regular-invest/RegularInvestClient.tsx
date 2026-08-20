@@ -6,11 +6,12 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Pause, Pencil, Play, Plus, RefreshCw, Square, Trash2 } from "lucide-react";
+import { Pause, Pencil, Play, RefreshCw, Square, Trash2 } from "lucide-react";
 import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTableSortState } from "@/components/AdvancedDataTable";
 import { DateStepper } from "@/components/DateStepper";
 import { RegularInvestForm } from "@/components/RegularInvestForm";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
+import { UnifiedEntryLauncher } from "@/components/UnifiedEntryLauncher";
 import type { SmartSelectOption } from "@/components/SmartSelect";
 import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
 import type { AccountDisplayOption } from "@/lib/account-display";
@@ -126,6 +127,7 @@ type InsuranceProductOption = {
   ownerGroupId?: string | null;
   ownerGroupName?: string | null;
   premiumAmount?: number | null;
+  premiumFrequencyMonths?: number | null;
 };
 
 const REGULAR_INVEST_COLUMNS: ReadonlyArray<{ key: RegularInvestColumnKey; labelKey: string }> = [
@@ -518,6 +520,16 @@ export function RegularInvestClient({
   useEffect(() => {
     setPlans(initialPlans);
   }, [initialPlans]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("create") !== "1") return;
+    setShowCreateForm(true);
+    params.delete("create");
+    const query = params.toString();
+    window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+  }, []);
 
   useEffect(() => {
     async function handleEditSuccess() {
@@ -1112,7 +1124,9 @@ export function RegularInvestClient({
             return <span className="tabular-nums text-slate-500">{formatDate(row.plan.startDate)}</span>;
           }
           if (column.key === "nextRunDate") {
-            return <span className="tabular-nums text-slate-700">{formatDate(row.plan.nextRunDate)}</span>;
+            return row.plan.status === "paused"
+              ? null
+              : <span className="tabular-nums text-slate-700">{formatDate(row.plan.nextRunDate)}</span>;
           }
           if (column.key === "targetAccount") {
             return <AccountCell label={planAccountLabel(row.plan)} title={row.plan.accountHoverTitle} />;
@@ -1210,9 +1224,31 @@ export function RegularInvestClient({
                 onOpenChange={setShowCreateForm}
                 apiAction={apiCreateAction}
               />
-              <button onClick={() => setShowCreateForm(true)} className="flex h-8 items-center gap-1 rounded-md bg-blue-600 px-3 text-sm text-white hover:bg-blue-700">
-                <Plus className="h-4 w-4" />{t("regularInvest.client.addPlan")}
-              </button>
+              <UnifiedEntryLauncher
+                defaultAction="regular-task"
+                hideDefaultActionInMenu
+                context={{
+                  defaultAccountId: investmentAccounts[0]?.id ?? "",
+                  defaultCashAccountId: cashAccounts[0]?.id ?? "",
+                  defaultScheduledTaskType: "fund_regular_invest",
+                }}
+                actions={[
+                  { key: "regular-task", label: t("regularInvest.client.addPlan") },
+                  { key: "transaction", label: t("entry.kind.transaction") },
+                  { key: "advance", label: t("entry.kind.advance") },
+                  { key: "transfer", label: t("entry.kind.transfer") },
+                  { key: "fx", label: t("entry.kind.fx") },
+                  { key: "investment", label: t("entry.kind.investment") },
+                  { key: "stock", label: t("entry.kind.stock") },
+                  { key: "stock-transfer", label: t("entry.kind.stockTransfer") },
+                  { key: "property", label: t("entry.kind.property") },
+                  { key: "metal", label: t("entry.kind.metal") },
+                  { key: "wealth", label: t("entry.kind.wealth") },
+                  { key: "deposit", label: t("entry.kind.deposit") },
+                  { key: "insurance", label: t("entry.kind.insurance") },
+                  { key: "debt", label: t("entry.kind.debt"), disabled: cashAccounts.length === 0 },
+                ]}
+              />
             </div>
           </header>
 

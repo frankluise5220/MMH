@@ -295,7 +295,7 @@ export async function POST(req: NextRequest) {
 
     // Precompute outside the transaction so NAV, fee-rate, and category lookups do not count toward the Prisma interactive transaction.
     const runDateStr = formatDateUtc(runDate);
-    const confirmDays = normalizeNonNegativeDays(plan.confirmDays ?? await getFundConfirmDays(plan.accountId, plan.fundCode), 1);
+    const confirmDays = normalizeNonNegativeDays(plan.confirmDays ?? await getFundConfirmDays(plan.accountId, plan.fundCode), 0);
     let confirmDateStr = addWorkdaysUtc(runDateStr, confirmDays);
     if (confirmDateStr < runDateStr) {
       logger.warn(`confirmDate ${confirmDateStr} < runDate ${runDateStr}, confirmDays=${confirmDays}, planId=${planId}`, "execute");

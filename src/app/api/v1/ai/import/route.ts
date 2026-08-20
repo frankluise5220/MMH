@@ -12,6 +12,9 @@ import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
 import { assertInstitutionDisplayNamesUnique } from "@/lib/server/institution-name-unique";
 import { findRecentTransactionDuplicate } from "@/lib/server/transaction-dedupe";
 import { createImportAccountMatcher } from "@/lib/account-import-match";
+import { enrichAiParsedItems } from "@/lib/statement/ai-import-enrichment";
+import type { ParsedItem } from "@/lib/ai/parser";
+import { isSpendableAccount } from "@/lib/account-kind-utils";
 
 export const runtime = "nodejs";
 
@@ -46,11 +49,16 @@ const ItemSchema = z.object({
   rawText: z.string(),
   type: z.enum(["expense", "income", "transfer", "investment"]),
   date: z.string().optional(),
+  postedAt: z.string().nullable().optional(),
   amount: z.number(),
+  accountId: z.string().nullable().optional(),
   account: z.string().optional(),
   fromAccount: z.string().optional(),
   toAccount: z.string().optional(),
+  categoryId: z.string().nullable().optional(),
   category: z.string().optional(),
+  institutionId: z.string().nullable().optional(),
+  institution: z.string().optional(),
   remark: z.string().optional(),
   counterparty: z.string().optional(),
 });
@@ -86,6 +94,26 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "NOTHING_TO_IMPORT", error: "没有可导入的记录" }, { status: 400 });
   }
 
+  const normalizedItems = await enrichAiParsedItems(
+    prisma,
+    householdId,
+    hidFilter,
+    items.map((item) => ({
+      ...item,
+      postedAt: item.postedAt ?? undefined,
+      accountId: item.accountId ?? undefined,
+      account: item.account ?? undefined,
+      fromAccount: item.fromAccount ?? undefined,
+      toAccount: item.toAccount ?? undefined,
+      categoryId: item.categoryId ?? undefined,
+      category: item.category ?? undefined,
+      institutionId: item.institutionId ?? undefined,
+      institution: item.institution ?? undefined,
+      remark: item.remark ?? undefined,
+      counterparty: item.counterparty ?? undefined,
+    }) as ParsedItem),
+  );
+
   const [accounts, categories, groups, users, institutions] = await Promise.all([
     prisma.account.findMany({
       where: { ...hidFilter },
@@ -104,6 +132,11 @@ export async function POST(req: NextRequest) {
   );
   const accountByAlias = new Map<string, (typeof accounts)[number]>();
   const requestAccount = requestAccountId ? accountById.get(requestAccountId) ?? null : null;
+  const canUseAsDefaultSpendableAccount = (account: (typeof accounts)[number] | null | undefined) =>
+    !!account && account.isActive && account.isPlaceholder !== true && isSpendableAccount(account);
+  const defaultSpendableAccount = canUseAsDefaultSpendableAccount(requestAccount)
+    ? requestAccount
+    : accounts.find(canUseAsDefaultSpendableAccount) ?? null;
   const matchImportAccount = createImportAccountMatcher(accounts);
 
   for (const account of accounts) {
@@ -196,7 +229,7 @@ export async function POST(req: NextRequest) {
     return narrowedByBank[0] ?? candidates[0] ?? null;
   }
 
-  const allRawText = items.map((x) => `${x.rawText ?? ""} ${x.remark ?? ""} ${x.counterparty ?? ""}`).join(" ");
+  const allRawText = normalizedItems.map((x) => `${x.rawText ?? ""} ${x.remark ?? ""} ${x.counterparty ?? ""}`).join(" ");
   const statementIssuer = extractBankKeyword(allRawText);
   const preferredCreditAccount = findCreditAccountFromText(allRawText) ?? (statementIssuer
     ? accounts.find((a) => a.kind === "bank_credit" && ((a.Institution?.name ?? "").includes(statementIssuer) || a.name.includes(statementIssuer))) ?? null
@@ -442,7 +475,12 @@ export async function POST(req: NextRequest) {
     return created;
   }
 
-  function findCategory(type: string, path: string | undefined) {
+  function findCategory(type: string, path: string | undefined, categoryId?: string | null) {
+    const id = String(categoryId ?? "").trim();
+    if (id) {
+      const byId = categories.find((category) => category.id === id && category.type === type);
+      if (byId) return byId;
+    }
     if (!path) return null;
     const parts = path.split(".").map((p) => p.trim()).filter(Boolean);
     let current: (typeof categories)[number] | null = null;
@@ -453,9 +491,12 @@ export async function POST(req: NextRequest) {
       } else {
         current = categories.find((c) => c.type === type && c.name === part && c.parentId === current!.id) ?? null;
       }
-      if (current) found = true;
+      if (!current) break;
+      found = true;
     }
-    return found ? current : null;
+    if (found && current) return current;
+    const exactMatches = categories.filter((category) => category.type === type && category.name === path.trim());
+    return exactMatches.length === 1 ? exactMatches[0] : null;
   }
 
   function upsertTag(name: string, householdId: string | undefined) {
@@ -470,6 +511,10 @@ export async function POST(req: NextRequest) {
   const errors: Array<{ index: number; rawText: string; error: string }> = [];
   const createdAccounts: Array<{ id: string; name: string; kind: string; institutionName?: string | null }> = [];
   const defaultAcc = (defaultAccountName ?? "").trim();
+  const defaultContextAccount = (() => {
+    const account = findAccount(defaultAcc);
+    return canUseAsDefaultSpendableAccount(account) ? account : null;
+  })();
 
   // Resolve fund name from nav cache for batch fund operations
   let resolvedFundName: string | null = null;
@@ -482,8 +527,8 @@ export async function POST(req: NextRequest) {
     } catch { /* best effort */ }
   }
 
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i]!;
+  for (let i = 0; i < normalizedItems.length; i++) {
+    const item = normalizedItems[i]!;
     try {
       const itemAmount = toNumber(item.amount);
       const entryAmount = Math.abs(itemAmount);
@@ -498,7 +543,17 @@ export async function POST(req: NextRequest) {
         ? new Date(rawDate.replace(/\//g, "-"))
         : new Date();
 
+      const rawPostedAt = item.postedAt?.trim();
+      const postedAt = item.type === "expense" || item.type === "income"
+        ? (rawPostedAt ? new Date(rawPostedAt.replace(/\//g, "-")) : new Date(date))
+        : null;
+      if (Number.isNaN(date.getTime()) || (postedAt && Number.isNaN(postedAt.getTime()))) {
+        errors.push({ index: i, rawText: item.rawText.slice(0, 60), error: "日期格式无效，无法导入" });
+        continue;
+      }
+
       const normalizedCounterparty = inferCounterparty(item);
+      const normalizedInstitution = item.institution?.trim() || normalizedCounterparty;
       const normalizedRemark = enrichRemark(item);
       let didCreate = false;
 
@@ -664,12 +719,13 @@ export async function POST(req: NextRequest) {
         }
       } else {
         const account =
+          (item.accountId ? accountById.get(item.accountId) ?? null : null) ??
           findCreditAccountFromText(`${item.account ?? ""} ${item.rawText ?? ""} ${item.remark ?? ""}`) ??
           (isCreditStatement ? preferredCreditAccount : null) ??
           findAccount(item.account) ??
-          requestAccount ??
-          findAccount(defaultAcc) ??
-          firstAccount;
+          defaultSpendableAccount ??
+          defaultContextAccount ??
+          (item.type === "expense" || item.type === "income" ? null : firstAccount);
 
         if (!account && item.account?.trim()) {
           throw new Error(`无法匹配账户"${item.account}"，请手动指定目标账户`);
@@ -703,14 +759,17 @@ export async function POST(req: NextRequest) {
             });
           }
         } catch { /* ignore */ }
-        const category = findCategory(item.type, item.category);
-        const counterpartyInstitution = findCounterpartyInstitution(normalizedCounterparty);
+        const category = findCategory(item.type, item.category, item.categoryId);
+        const counterpartyInstitution = item.institutionId
+          ? institutions.find((institution) => institution.id === item.institutionId) ?? null
+          : findCounterpartyInstitution(normalizedInstitution);
         const statementMonth =
           (account.kind === "bank_credit" || account.kind === "loan") && account.billingDay ? toStatementMonth(date, account.billingDay) : null;
         const entryData: Record<string, unknown> = {
           type: item.type as any,
           status: "posted",
           date,
+          postedAt,
           amount: item.type === "expense" ? (isExpenseRefund ? entryAmount : -entryAmount) : entryAmount,
           accountId: account.id,
           accountName: account.name,
@@ -720,7 +779,7 @@ export async function POST(req: NextRequest) {
           currency: normalizeCurrency(account.currency),
           source: "ai_import",
           counterpartyInstitutionId: counterpartyInstitution?.id ?? null,
-          counterpartyInstitutionName: counterpartyInstitution?.name ?? normalizedCounterparty ?? null,
+          counterpartyInstitutionName: counterpartyInstitution?.name ?? normalizedInstitution ?? null,
         };
         if (category) {
           entryData.categoryId = category.id;

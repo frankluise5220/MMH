@@ -4,7 +4,7 @@ export type SettingsAccountGroup = { id: string; name: string; sortOrder?: numbe
 export type SettingsInstitution = { id: string; name: string; shortName?: string | null; type?: string | null };
 export type SettingsCounterparty = { id: string; name: string; shortName?: string | null; type?: string | null };
 export type SettingsUser = { id: string; name: string };
-export type SettingsCategory = { id: string; name: string; type: string; parentId?: string | null; isSystem?: boolean };
+export type SettingsCategory = { id: string; name: string; type: string; parentId?: string | null; sortOrder?: number; isSystem?: boolean };
 export type SettingsAccountData = {
   baseCurrency?: string;
   accounts: unknown[];

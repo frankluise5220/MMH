@@ -33,6 +33,7 @@ type Props = {
   defaultAction: EntryKind;
   actions: EntryAction[];
   className?: string;
+  hideDefaultActionInMenu?: boolean;
   context?: {
     defaultAccountId?: string;
     defaultCashAccountId?: string;
@@ -183,12 +184,18 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"]) {
       );
       return;
     case "property":
+      const fixedAssetAccountId = context?.defaultPropertyAccountId ?? context?.defaultInvestmentAccountId ?? "";
       window.dispatchEvent(
-        new CustomEvent("mmh:property:create", {
+        new CustomEvent("mmh:create-transaction:open", {
           detail: {
             requestId,
-            defaultPropertyAccountId: context?.defaultPropertyAccountId ?? context?.defaultInvestmentAccountId ?? "",
-            defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
+            source: "launcher",
+            item: { type: "expense" },
+            lockedType: "expense",
+            defaultAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
+            fixedAssetAccountId,
+            fixedAssetRequired: true,
+            lockFixedAsset: Boolean(fixedAssetAccountId),
           },
         }),
       );
@@ -276,21 +283,25 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"]) {
       );
       return;
     case "regular-task":
-      window.dispatchEvent(
-        new CustomEvent("mmh:regular-task:create", {
-          detail: {
-            requestId,
-            taskType: context?.defaultScheduledTaskType ?? "fund_regular_invest",
-            defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
-            defaultAccountId: context?.defaultAccountId ?? "",
-          },
-        }),
-      );
+      if (window.location.pathname === "/regular-invest") {
+        window.dispatchEvent(
+          new CustomEvent("mmh:regular-task:create", {
+            detail: {
+              requestId,
+              taskType: context?.defaultScheduledTaskType ?? "fund_regular_invest",
+              defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
+              defaultAccountId: context?.defaultAccountId ?? "",
+            },
+          }),
+        );
+      } else {
+        window.location.assign("/regular-invest?create=1");
+      }
       return;
   }
 }
 
-export function UnifiedEntryLauncher({ defaultAction, actions, className, context }: Props) {
+export function UnifiedEntryLauncher({ defaultAction, actions, className, hideDefaultActionInMenu = false, context }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuStyle, setMenuStyle] = useState<CSSProperties | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -394,7 +405,7 @@ export function UnifiedEntryLauncher({ defaultAction, actions, className, contex
               data-menu-open="true"
               style={menuStyle ?? { position: "fixed", top: 0, left: 0, zIndex: 9999 }}
             >
-              {actions.map((item) => (
+              {actions.filter((item) => !hideDefaultActionInMenu || item.key !== defaultItem?.key).map((item) => (
                 <button
                   key={item.key}
                   type="button"

@@ -436,7 +436,7 @@ function shouldRequireExactNav(
 ) {
   if (dateKey >= todayKey) return false;
   if (isTradingClosedDate(dateKey, tradingCalendar ?? "cn_fund")) return false;
-  // QDII NAVs publish on the US trading calendar with a T+1 lag. Only flag a
+  // QDII NAVs publish after the relevant US trading day. Only flag a
   // missing date once the fund has published NAVs dated after it (a genuine
   // mid-history gap); trailing dates may simply not be published yet.
   if (meta.isQdii) return hasLaterNav;
@@ -802,7 +802,7 @@ export async function loadInvestmentProfitReport(
       name: account.name,
       investProductType: account.investProductType,
       costBasisMethod: account.costBasisMethod,
-      fundUnitsDecimals: account.fundUnitsDecimals ?? 3,
+      fundUnitsDecimals: account.fundUnitsDecimals ?? 2,
       tradingCalendar: account.tradingCalendar ?? "cn_fund",
     }));
   const snapshotAccountIds = new Set(snapshotAccounts.map((account) => account.id));

@@ -10,6 +10,7 @@ import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance"
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { optionalPrismaFindMany } from "@/lib/server/optional-prisma-delegate";
+import { categoryOrderBy } from "@/lib/category-order";
 
 export const runtime = "nodejs";
 
@@ -172,8 +173,8 @@ export async function GET(req: Request) {
       }),
       prisma.category.findMany({
         where: scope.hidFilter,
-        select: { id: true, name: true, type: true, parentId: true },
-        orderBy: [{ type: "asc" }, { name: "asc" }],
+        select: { id: true, name: true, type: true, parentId: true, sortOrder: true },
+        orderBy: categoryOrderBy(),
       }),
       prisma.txRecord.findMany({
         where: transactionWhere,

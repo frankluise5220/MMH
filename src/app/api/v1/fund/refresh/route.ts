@@ -99,7 +99,7 @@ export async function POST(req: NextRequest) {
         const confirmDays = entry.confirmDate ? null : await getFundConfirmDays(accountId, entry.fundCode);
         const confirmDate = entry.confirmDate
           ? entry.confirmDate.toISOString().slice(0, 10)
-          : addWorkdaysUtc(applyDate, confirmDays ?? 1);
+          : addWorkdaysUtc(applyDate, confirmDays ?? 0);
         if (confirmDate < applyDate) logger.warn(`confirmDate ${confirmDate} < applyDate ${applyDate}, confirmDays=${confirmDays}`, "fund/refresh");
 
         // First look it up in the preloaded NAV list

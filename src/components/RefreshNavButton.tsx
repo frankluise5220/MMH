@@ -43,15 +43,15 @@ export function RefreshNavButton({
 
   return (
     <div className="flex items-center gap-2">
-      {result && <span className="text-xs text-slate-500">{result}</span>}
       <button
         type="button"
         onClick={refresh}
         disabled={loading || symbols.length === 0}
-        className="h-7 px-2 rounded-md border border-slate-200 bg-white text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-1 disabled:opacity-50"
+        className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+        title={result ?? (loading ? t("refreshNav.fetching") : t("refreshNav.fetchLatestNav"))}
+        aria-label={loading ? t("refreshNav.fetching") : t("refreshNav.fetchLatestNav")}
       >
-        <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
-        {loading ? t("refreshNav.fetching") : t("refreshNav.fetchLatestNav")}
+        <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
       </button>
     </div>
   );

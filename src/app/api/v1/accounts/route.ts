@@ -9,7 +9,7 @@ import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { getOrCreateDefaultAccountGroupId } from "@/lib/server/account-group-default";
 import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
 import { resolveTradingCalendarForAccount } from "@/lib/fund/trading-calendar";
-import { supportsCostBasisMethod } from "@/lib/investment-config";
+import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
 import {
   getCreditCardInstitutionDefaults,
   normalizeCreditBillMode,
@@ -39,12 +39,11 @@ import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 
 export const runtime = "nodejs";
 
-const fundProductTypes = ["fund", "money", "wealth", "metal", "stock", "property"] as const;
 const costBasisMethods = ["moving_avg", "fifo", "lifo"] as const;
 
 function normalizeFundProductType(raw: unknown) {
   const value = String(raw ?? "").trim();
-  return fundProductTypes.includes(value as (typeof fundProductTypes)[number]) ? value : "fund";
+  return PRODUCT_TYPES.includes(value as (typeof PRODUCT_TYPES)[number]) ? value : "fund";
 }
 
 function normalizeCostBasisMethod(raw: unknown) {
@@ -194,7 +193,7 @@ export async function POST(req: NextRequest) {
           costBasisMethod: isInvestment && supportsCostBasisMethod(investProductType) ? normalizeCostBasisMethod(body.costBasisMethod) as any : null,
           ...(tradingCalendar ? { tradingCalendar: tradingCalendar as any } : {}),
           defaultFundQueryApiId: supportsDefaultFundQueryApi ? String(body.defaultFundQueryApiId ?? "").trim() || null : null,
-          fundUnitsDecimals: isInvestment ? normalizeFundUnitsDecimals(body.fundUnitsDecimals) : 3,
+          fundUnitsDecimals: isInvestment ? normalizeFundUnitsDecimals(body.fundUnitsDecimals, 2) : 2,
         },
         include: {
           AccountGroup: { select: { id: true, name: true } },

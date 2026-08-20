@@ -8,6 +8,9 @@ import { callAiForCommand, parseUpdateCommand, normalizeOperationText, type Anal
 import { SYSTEM_PROMPT, buildFundSystemPrompt, buildBillHeaderContext } from "@/lib/ai/prompts";
 import type { BillHeader } from "@/lib/ai/prompts";
 import { modelSupportsVision, buildAccountContextText, classifyInput } from "@/lib/ai/client";
+import { normalizeAiApiMode } from "@/lib/ai/config";
+import { buildResponsesRequestBody, extractResponsesText, type ChatContentPart } from "@/lib/ai/responses";
+import { isSpendableAccount } from "@/lib/account-kind-utils";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE } from "@/lib/balance-reconcile";
 import {
   type ParsedItem,
@@ -23,6 +26,7 @@ import {
   parseFundTradeFromText,
   parseTransactionSuccessReminder,
 } from "@/lib/ai/parser";
+import { enrichAiParsedItems } from "@/lib/statement/ai-import-enrichment";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { softDeleteEntriesByIds } from "@/lib/server/entry-delete";
 
@@ -1063,6 +1067,7 @@ export async function POST(req: Request) {
       baseUrl: z.string().optional(),
       apiKey: z.string().optional(),
       modelName: z.string().optional(),
+      apiMode: z.enum(["chat", "responses"]).optional(),
       accountId: z.string().optional(),
       accountName: z.string().optional(),
       fundContext: z.object({
@@ -1084,6 +1089,24 @@ export async function POST(req: Request) {
   const modelName = (parse.data.modelName ?? "").trim();
   const accountId = (parse.data.accountId ?? "").trim();
   const accountName = (parse.data.accountName ?? "").trim();
+  const currentAccount = accountId
+    ? await prisma.account.findFirst({
+        where: { id: accountId, ...hidFilter, isActive: true, isPlaceholder: { not: true } },
+        select: { id: true, name: true, kind: true },
+      })
+    : null;
+  const defaultSpendableAccount = isSpendableAccount(currentAccount)
+    ? currentAccount
+    : await prisma.account.findFirst({
+        where: {
+          ...hidFilter,
+          isActive: true,
+          isPlaceholder: { not: true },
+          OR: [{ kind: "cash" }, { kind: "bank_debit" }, { kind: "ewallet" }, { kind: "bank_credit" }],
+        },
+        select: { id: true, name: true, kind: true },
+        orderBy: { name: "asc" },
+      });
 
   if (!text && !imageDataUrl) {
     return NextResponse.json({ ok: false, code: "MISSING_INPUT", error: "缺少 text 或 imageDataUrl" }, { status: 400, headers: corsHeaders() });
@@ -1095,6 +1118,7 @@ export async function POST(req: Request) {
 
   const cleanUrl = baseUrl.replace(/\/$/, "");
   const isOllama = /:11434(\/|$)/.test(cleanUrl);
+  const apiMode = isOllama ? "chat" : normalizeAiApiMode(parse.data.apiMode);
 
   if (text) {
     const startMs = Date.now();
@@ -1106,6 +1130,7 @@ export async function POST(req: Request) {
       baseUrl,
       apiKey,
       isOllama,
+      apiMode,
     });
 
     const restorePlan = parseRestoreCommand(text);
@@ -1291,8 +1316,8 @@ export async function POST(req: Request) {
 
   if (text && !imageDataUrl) {
     const successReminder = parseTransactionSuccessReminder(text, new Date());
-    if (successReminder) {
-      const previewItems = await enrichPreviewAccountNames(successReminder.items, hidFilter, accountId);
+    if (successReminder && successReminder.items.length > 0) {
+      const previewItems = await enrichPreviewAccountNames(await enrichItems(successReminder.items), hidFilter, accountId);
       const result = {
         ok: true,
         items: previewItems,
@@ -1319,9 +1344,10 @@ export async function POST(req: Request) {
       const issuer = extractBankKeywordFromBill(text);
       const billItems = parseBillTxLines(billPre.txLines, billPre.header, issuer);
       if (billItems.length) {
+        const enrichedItems = await enrichItems(billItems);
         const result = {
           ok: true,
-          items: billItems,
+          items: enrichedItems,
           directImport: false,
           billHeader: billPre.header.statementDate ? {
             statementDate: billPre.header.statementDate,
@@ -1342,7 +1368,7 @@ export async function POST(req: Request) {
           source: "chat",
           rawInput: text,
           preprocessed: billPre.cleaned,
-          parsedItems: billItems,
+          parsedItems: enrichedItems,
           operationType: "bill_direct",
           finalResult: result,
           trace: result.trace,
@@ -1355,6 +1381,20 @@ export async function POST(req: Request) {
 
   const startMs = Date.now();
 
+  async function enrichItems(items: ParsedItem[]) {
+    const enriched = await enrichAiParsedItems(prisma, householdId ?? "", hidFilter, items);
+    if (!defaultSpendableAccount) return enriched;
+    return enriched.map((item) => {
+      if (item.type !== "expense" && item.type !== "income") return item;
+      if (item.accountId?.trim() || item.account?.trim()) return item;
+      return {
+        ...item,
+        accountId: defaultSpendableAccount.id,
+        account: defaultSpendableAccount.name,
+      };
+    });
+  }
+
   async function routeByType(inputType: string, text: string, now: Date) {
     const pre = preprocessBillText(text);
     if (inputType === "bill_statement") {
@@ -1362,9 +1402,10 @@ export async function POST(req: Request) {
         const issuer = extractBankKeywordFromBill(text);
         const billItems = parseBillTxLines(pre.txLines, pre.header, issuer);
         if (billItems.length) {
+          const enrichedItems = await enrichItems(billItems);
           return {
             ok: true,
-            items: billItems,
+            items: enrichedItems,
             directImport: false,
             billHeader: pre.header.statementDate ? {
               statementDate: pre.header.statementDate,
@@ -1388,7 +1429,7 @@ export async function POST(req: Request) {
       const parsedOut = isCMBFundRecord(text)
         ? parseCMBFundRecord(text, now)
         : parseItems(text, now, text);
-      const items = parsedOut.items;
+      const items = await enrichItems(parsedOut.items);
       if (items.length) {
         return {
           ok: true,
@@ -1411,10 +1452,11 @@ export async function POST(req: Request) {
       const now = new Date();
       const parsedOut = parseCMBFundRecord(text, now);
       if (parsedOut.items.length) {
+        const enrichedItems = await enrichItems(parsedOut.items);
         return NextResponse.json(
           {
             ok: true,
-            items: parsedOut.items,
+            items: enrichedItems,
             directImport: true,
             trace: [
               `招行基金交易记录解析 ${parsedOut.items.length} 条（无需模型）`,
@@ -1430,9 +1472,10 @@ export async function POST(req: Request) {
       const now = new Date();
       const fundTrade = parseFundTradeFromText(text, now, fundContext);
       if (fundTrade) {
+        const enrichedItems = await enrichItems(fundTrade.items);
         return NextResponse.json({
           ok: true,
-          items: fundTrade.items,
+          items: enrichedItems,
           directImport: fundTrade.directImport,
           trace: [
             `${fundContext ? "基金上下文直出" : "基金代码直出"}: ${fundTrade.items[0]?.remark ?? ""} (无需模型)`,
@@ -1443,7 +1486,7 @@ export async function POST(req: Request) {
     }
 
     if (text && !imageDataUrl) {
-      const classification = await classifyInput(text, modelName, cleanUrl, apiKey, isOllama, imageDataUrl);
+      const classification = await classifyInput(text, modelName, cleanUrl, apiKey, isOllama, apiMode, imageDataUrl);
       if (classification) {
         const routeResult = await routeByType(classification.inputType, text, new Date());
         if (routeResult) {
@@ -1455,7 +1498,7 @@ export async function POST(req: Request) {
     if (text && !imageDataUrl && looksLikeBatchLedgerText(text) && text.length > 300) {
       const now = new Date();
       const parsedOut = parseItems(text, now, text);
-      const items = parsedOut.items;
+      const items = await enrichItems(parsedOut.items);
       if (items.length) {
         const isBill = isBillStatement(text);
         const directImport = !isBill && items.every(isReadyForImport);
@@ -1476,7 +1519,7 @@ export async function POST(req: Request) {
     }
 
     const nowForPrompt = new Date();
-    const accountContext = await buildAccountContextText();
+    const accountContext = await buildAccountContextText(householdId);
     const pre = preprocessBillText(text ?? "");
     const billHeaderCtx = buildBillHeaderContext(pre.header);
     const txCtx = pre.txLines.length ? `预抽取交易行：${pre.txLines.join(" || ")}` : "";
@@ -1557,10 +1600,22 @@ export async function POST(req: Request) {
       const key = (apiKey ?? "").trim();
       if (key) headers.Authorization = `Bearer ${key}`;
 
-      const llmRes = await fetch(joinBaseUrl(cleanUrl, "/v1/chat/completions"), {
+      const chatMessages = (llmBody.messages ?? []) as Array<{
+        role: string;
+        content: string | ChatContentPart[];
+      }>;
+      const requestBody = apiMode === "responses"
+        ? buildResponsesRequestBody({
+            modelName,
+            instructions: systemPrompt,
+            userMessage: chatMessages.find((message) => message.role === "user")?.content ?? "",
+            temperature: 0.1,
+          })
+        : llmBody;
+      const llmRes = await fetch(joinBaseUrl(cleanUrl, apiMode === "responses" ? "/v1/responses" : "/v1/chat/completions"), {
         method: "POST",
         headers,
-        body: JSON.stringify(llmBody),
+        body: JSON.stringify(requestBody),
       });
 
       if (!llmRes.ok) {
@@ -1583,7 +1638,9 @@ export async function POST(req: Request) {
         );
       }
 
-      rawContent = llmData?.choices?.[0]?.message?.content ?? "";
+      rawContent = apiMode === "responses"
+        ? extractResponsesText(llmData)
+        : llmData?.choices?.[0]?.message?.content ?? "";
     }
 
     if (!rawContent) {
@@ -1640,7 +1697,7 @@ export async function POST(req: Request) {
     }
 
     const parsedOut = parseItems(rawContent, now, text ?? "");
-    const items = await enrichPreviewAccountNames(parsedOut.items, hidFilter, accountId);
+    const items = await enrichPreviewAccountNames(await enrichItems(parsedOut.items), hidFilter, accountId);
     const isBill = isBillStatement(text ?? "");
     const directImport = items.every(isReadyForImport);
     const finalDirectImport = !isBill && directImport;
@@ -1705,4 +1762,3 @@ export async function POST(req: Request) {
     );
   }
 }
-

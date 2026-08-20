@@ -18,6 +18,8 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
  * GET responses:
  * - single: { ok, days, redeemCostDays, arrivalDays }
  * - list: { ok, rows: [{ fundCode, fundName, days, arrivalDays, redeemCostDays, effectiveDate }] }
+ * `days` and `arrivalDays` are trading-day counts from the application date.
+ * `arrivalDays` drives the cash-arrival date directly and must skip weekends and fund holidays.
  *
  * POST /api/v1/fund/confirm-days
  * Body: { accountId, rows: [{ fundCode, days?, arrivalDays?, redeemCostDays?, effectiveDate? }] }
@@ -95,7 +97,7 @@ export async function GET(req: NextRequest) {
         return {
           fundCode: code,
           fundName: fundNameByCode.get(code) ?? null,
-          days: rule ? normalizeNonNegativeDays(rule.days, 1) : normalizeNonNegativeDays(account.defaultConfirmDays, 1),
+          days: rule ? normalizeNonNegativeDays(rule.days, 0) : normalizeNonNegativeDays(account.defaultConfirmDays, 0),
           arrivalDays: rule ? normalizeNonNegativeDays(rule.arrivalDays, 2) : normalizeNonNegativeDays(account.defaultArrivalDays, 2),
           redeemCostDays: rule ? normalizeNonNegativeDays(rule.redeemCostDays, 1) : 1,
           effectiveDate: rule?.effectiveDate ? rule.effectiveDate.toISOString().slice(0, 10) : null,
@@ -106,7 +108,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       ok: true,
-      days: normalizeNonNegativeDays(account.defaultConfirmDays, 1),
+      days: normalizeNonNegativeDays(account.defaultConfirmDays, 0),
       redeemCostDays: 1,
       arrivalDays: normalizeNonNegativeDays(account.defaultArrivalDays, 2),
     });
@@ -130,7 +132,7 @@ function parseRowInput(row: ConfirmDayRowInput) {
   const fundCode = String(row.fundCode ?? "").trim();
   return {
     fundCode,
-    days: typeof row.days === "number" ? normalizeNonNegativeDays(row.days, 1) : undefined,
+    days: typeof row.days === "number" ? normalizeNonNegativeDays(row.days, 0) : undefined,
     arrivalDays: typeof row.arrivalDays === "number" ? normalizeNonNegativeDays(row.arrivalDays, 2) : undefined,
     redeemCostDays: typeof row.redeemCostDays === "number" ? normalizeNonNegativeDays(row.redeemCostDays, 1) : undefined,
     effectiveDate: typeof row.effectiveDate === "string" && row.effectiveDate.trim() ? row.effectiveDate.trim() : undefined,
@@ -157,7 +159,7 @@ async function upsertRule(accountId: string, input: ReturnType<typeof parseRowIn
       data: {
         accountId,
         fundCode: input.fundCode,
-        days: input.days ?? 1,
+        days: input.days ?? 0,
         arrivalDays: input.arrivalDays ?? 2,
         redeemCostDays: input.redeemCostDays ?? 1,
         ...(input.effectiveDate ? { effectiveDate: new Date(`${input.effectiveDate}T00:00:00.000Z`) } : {}),
@@ -173,6 +175,11 @@ export async function POST(req: NextRequest) {
       rows?: ConfirmDayRowInput[];
       applyAccounts?: string[];
       institutionId?: string;
+      fundCode?: string;
+      days?: number;
+      arrivalDays?: number;
+      redeemCostDays?: number;
+      effectiveDate?: string | null;
     } | null;
     if (!body?.accountId) {
       return NextResponse.json({ ok: false, code: "MISSING_ACCOUNT_ID", error: "accountId is required." }, { status: 400 });
@@ -186,7 +193,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "Investment account not found." }, { status: 404 });
     }
 
-    const rows = Array.isArray(body.rows) ? body.rows : [];
+    const rows = Array.isArray(body.rows) && body.rows.length > 0
+      ? body.rows
+      : body.fundCode
+        ? [{
+            fundCode: body.fundCode,
+            days: body.days,
+            arrivalDays: body.arrivalDays,
+            redeemCostDays: body.redeemCostDays,
+            effectiveDate: body.effectiveDate,
+          }]
+        : [];
     for (const raw of rows) {
       const input = parseRowInput(raw);
       if (!input.fundCode) continue;

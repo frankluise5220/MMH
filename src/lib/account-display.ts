@@ -1,5 +1,6 @@
 import type { SmartSelectOption } from "@/components/SmartSelect";
 import { kindLabel } from "@/lib/account-kinds";
+import { FIXED_ASSET_EXPENSE_CATEGORY_NAME, isFixedAssetAccountLike } from "@/lib/fixed-asset";
 
 export type AccountDisplaySource = {
   id: string;
@@ -236,7 +237,8 @@ export function buildAccountDisplayOption(
   creditCardLabelTemplateOrMode: string | CreditCardLabelMode = DEFAULT_CREDIT_CARD_LABEL_TEMPLATE,
   options?: { suppressDuplicateCreditCardLast4?: boolean },
 ): AccountDisplayOption {
-  const institutionName = formatDisplayInstitutionName(account.Institution, true);
+  const isFixedAsset = isFixedAssetAccountLike(account);
+  const institutionName = isFixedAsset ? "" : formatDisplayInstitutionName(account.Institution, true);
   const showOwner = accountUsesOwnerInDisplay(account);
   const groupId = showOwner ? account.groupId ?? account.AccountGroup?.id ?? "" : "";
   const groupName = showOwner ? account.AccountGroup?.name?.trim() ?? "" : "";
@@ -257,11 +259,13 @@ export function buildAccountDisplayOption(
         })
       : account.kind === "insurance"
         ? account.name.trim()
+      : isFixedAsset
+        ? account.name.trim()
       : formatAccountDisplayName(account.name, institutionName);
 
   const selectorLabel = formatAccountSelectorLabel({
     accountName: account.name,
-    institution: account.Institution,
+    institution: isFixedAsset ? null : account.Institution,
     numberMasked: account.numberMasked,
   });
   const selectorCoreLabel = formatAccountSelectorCoreLabel({
@@ -271,6 +275,8 @@ export function buildAccountDisplayOption(
   const ownerQualifiedLabel =
     account.kind === "bank_credit"
       ? label
+      : isFixedAsset
+        ? joinAccountSubLabel([groupName, account.name, FIXED_ASSET_EXPENSE_CATEGORY_NAME])
       : formatOwnerQualifiedAccountLabel({
           accountName: account.name,
           kind: account.kind,
@@ -279,7 +285,7 @@ export function buildAccountDisplayOption(
           ownerName: groupName,
         });
 
-  const subLabel = kindLabel(account.kind);
+  const subLabel = isFixedAsset ? FIXED_ASSET_EXPENSE_CATEGORY_NAME : kindLabel(account.kind);
   const hoverTitle = formatAccountHoverTitle({
     groupName,
     label: selectorLabel || label,

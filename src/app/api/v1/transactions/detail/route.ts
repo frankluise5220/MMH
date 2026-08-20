@@ -79,6 +79,7 @@ import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import {
   createFundTransactionWithCashFlows,
   findFundTransactionForEntryId,
+  getFundCashFlowDate,
   syncFundTransactionsFromTxRecords,
   upsertFundTransactionRefundCashFlow,
   type FundCashFlowInput,
@@ -1311,6 +1312,38 @@ export async function GET(req: Request) {
             },
           })
         : null;
+      const linkedFundTransaction = record.type === TransactionType.investment
+        ? await findFundTransactionForEntryId(prisma, { id: record.id, householdId: hidFilter.householdId, syncLegacy: false })
+        : null;
+      const linkedFundAccount = linkedFundTransaction?.fundAccountId
+        ? await prisma.account.findFirst({
+            where: { id: linkedFundTransaction.fundAccountId, ...hidFilter },
+            select: { id: true, name: true },
+          })
+        : null;
+      const linkedFundCashAccount = linkedFundTransaction?.cashAccountId
+        ? await prisma.account.findFirst({
+            where: { id: linkedFundTransaction.cashAccountId, ...hidFilter },
+            select: { id: true, name: true },
+          })
+        : null;
+      const linkedFundCashReceipt = linkedFundTransaction ? isFundCashReceiptSubtype(linkedFundTransaction.fundSubtype) : false;
+      const linkedFundCashAccountId = linkedFundTransaction?.cashAccountId ?? record.accountId;
+      const linkedFundCandidateSeed = linkedFundTransaction
+        ? {
+            id: record.id,
+            type: TransactionType.investment,
+            fundCode: linkedFundTransaction.fundCode,
+            fundSubtype: linkedFundTransaction.fundSubtype,
+            source: linkedFundTransaction.source,
+            accountId: linkedFundCashReceipt
+              ? linkedFundTransaction.fundAccountId
+              : (linkedFundTransaction.cashAccountId ?? record.accountId),
+            toAccountId: linkedFundCashReceipt
+              ? (linkedFundTransaction.cashAccountId ?? record.accountId)
+              : linkedFundTransaction.fundAccountId,
+          }
+        : null;
       const fundFeeRate = await resolveRecordFundFeeRate(record);
       const entry = {
         id: record.id,
@@ -1377,11 +1410,41 @@ export async function GET(req: Request) {
         installmentSourceType: record.CreditCardInstallmentPlan?.sourceType ?? null,
         installmentSourceStatementMonth: record.CreditCardInstallmentPlan?.sourceStatementMonth ?? null,
         source: record.source,
+        ...(linkedFundTransaction ? {
+          date: formatDateLocal(linkedFundTransaction.applyDate),
+          amount: signedFundTransactionAmount(linkedFundTransaction),
+          businessTransactionId: linkedFundTransaction.id,
+          fundTransactionId: linkedFundTransaction.id,
+          cashAccountId: linkedFundCashAccountId,
+          accountId: linkedFundCashReceipt ? linkedFundTransaction.fundAccountId : linkedFundCashAccountId,
+          accountName: linkedFundCashReceipt
+            ? (linkedFundAccount?.name ?? linkedFundTransaction.fundAccountId)
+            : (linkedFundCashAccount?.name ?? accountDisplayName(record.account, record.accountName)),
+          toAccountId: linkedFundCashReceipt
+            ? linkedFundCashAccountId
+            : linkedFundTransaction.fundAccountId,
+          toAccountName: linkedFundCashReceipt
+            ? (linkedFundCashAccount?.name ?? accountDisplayName(record.account, record.accountName))
+            : (linkedFundAccount?.name ?? linkedFundTransaction.fundAccountId),
+          fundSubtype: linkedFundTransaction.fundSubtype,
+          fundCode: linkedFundTransaction.fundCode,
+          fundName: linkedFundTransaction.fundName,
+          fundProductType: linkedFundTransaction.fundProductType,
+          fundUnits: linkedFundTransaction.units ? toNumber(linkedFundTransaction.units) : null,
+          fundNav: linkedFundTransaction.nav ? toNumber(linkedFundTransaction.nav) : null,
+          fundFee: linkedFundTransaction.fee ? toNumber(linkedFundTransaction.fee) : null,
+          fundConfirmDate: linkedFundTransaction.confirmDate ? formatDateLocal(linkedFundTransaction.confirmDate) : null,
+          fundArrivalDate: linkedFundTransaction.arrivalDate ? formatDateLocal(linkedFundTransaction.arrivalDate) : null,
+          fundArrivalAmount: linkedFundTransaction.arrivalAmount ? toNumber(linkedFundTransaction.arrivalAmount) : null,
+          refundAmount: linkedFundTransaction.refundAmount ? toNumber(linkedFundTransaction.refundAmount) : 0,
+          note: linkedFundTransaction.note ?? record.note,
+          source: linkedFundTransaction.source,
+        } : {}),
         ...buildEntryBusinessLinkSummary(record),
         ...(linkedWealthTransaction ? linkedWealthDetailFields(record, linkedWealthTransaction) : {}),
         attachments: mapEntryAttachments(record),
         entryTags: mapEntryTags(record),
-        linkedCandidateEntries: await getFundLinkCandidateEntries(record, hidFilter.householdId),
+        linkedCandidateEntries: await getFundLinkCandidateEntries(linkedFundCandidateSeed ?? record, hidFilter.householdId),
       };
       return NextResponse.json({ ok: true, data: entry });
     }
@@ -3143,6 +3206,8 @@ export async function PUT(req: Request) {
         if (isFundLikeIndependentEdit && !independentFundTransaction) {
           throw new Error("基金交易不存在或尚未完成迁移");
         }
+        let independentFundCategoryId: string | null = null;
+        let independentFundCategoryName: string | null = null;
         if (independentFundTransaction && fundCode) {
           const confirmDateValue = toDateOrNull(body.fundConfirmDate);
           const arrivalDateValue = toDateOrNull(body.fundArrivalDate);
@@ -3171,14 +3236,32 @@ export async function PUT(req: Request) {
               note: note || null,
             },
           });
+          independentFundCategoryName = getInvestmentCategoryName({
+            fundProductType: productType === "money_fund" ? "money" : productType,
+            fundSubtype: subtype,
+            source: sourceValue,
+          });
+          const independentFundCategory = independentFundCategoryName
+            ? await resolveCategorySnapshot(tx, householdId, {
+                categoryName: independentFundCategoryName,
+                type: "investment",
+              })
+            : null;
+          independentFundCategoryId = independentFundCategory?.id ?? null;
+          independentFundCategoryName = independentFundCategory?.name ?? independentFundCategoryName;
           if (independentFundTransaction.cashEntryId && cashAccId && signedAmount !== 0 && subtype !== "dividend_reinvest") {
-            const cashFlowDate = cashReceivingLike ? (arrivalDateValue ?? date) : date;
             const cashFlowKind =
               subtype === "redeem" || subtype === "switch_out"
                 ? FundCashFlowKind.redeem_in
                 : subtype === "dividend_cash"
                   ? FundCashFlowKind.dividend_in
                   : FundCashFlowKind.buy_out;
+            const cashFlowDate = getFundCashFlowDate({
+              kind: cashFlowKind,
+              applyDate: date,
+              arrivalDate: arrivalDateValue,
+              requestedDate: date,
+            });
             await tx.fundTransactionCashFlow.upsert({
               where: { id: `cff_${independentFundTransaction.cashEntryId}` },
               create: {
@@ -3219,8 +3302,8 @@ export async function PUT(req: Request) {
             amount: signedAmount,
             accountId: recordAccountId,
             accountName: recordAccountName,
-            categoryId: null,
-            categoryName: null,
+            categoryId: independentFundCategoryId,
+            categoryName: independentFundCategoryName,
             toAccountId: recordToAccountId,
             toAccountName: recordToAccountName,
             fundCode: null,

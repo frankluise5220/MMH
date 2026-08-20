@@ -6,6 +6,26 @@ export function addDaysUtc(date: Date, days: number) {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + days));
 }
 
+/** Add calendar years while preserving month/day; clamp Feb 29 to Feb 28 when needed. */
+export function addCalendarYearsUtc(date: Date, years: number) {
+  const year = date.getUTCFullYear() + Math.trunc(years);
+  const month = date.getUTCMonth();
+  const day = Math.min(date.getUTCDate(), lastDayOfMonthUtc(year, month));
+  return new Date(Date.UTC(year, month, day));
+}
+
+/**
+ * Calculate a term-deposit maturity date. Short terms remain day-based, while
+ * two-year and longer standard terms follow the bank anniversary convention.
+ */
+export function addDepositTermUtc(date: Date, termDays: number) {
+  const normalizedDays = Math.trunc(termDays);
+  if (normalizedDays >= 730 && normalizedDays % 365 === 0) {
+    return addCalendarYearsUtc(date, normalizedDays / 365);
+  }
+  return addDaysUtc(date, normalizedDays);
+}
+
 export function addMonthsUtc(date: Date, months: number) {
   const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
   d.setUTCMonth(d.getUTCMonth() + months);
@@ -207,6 +227,21 @@ export function addTradingDaysUtc(dateStr: string, n: number, tradingCalendar?: 
   const rm = String(result.getUTCMonth() + 1).padStart(2, "0");
   const rd = String(result.getUTCDate()).padStart(2, "0");
   return `${ry}-${rm}-${rd}`;
+}
+
+export function countTradingDaysUtc(startDateStr: string, endDateStr: string, tradingCalendar?: string | null) {
+  const start = String(startDateStr ?? "").trim();
+  const end = String(endDateStr ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) return null;
+  const startMs = Date.UTC(Number(start.slice(0, 4)), Number(start.slice(5, 7)) - 1, Number(start.slice(8, 10)));
+  const endMs = Date.UTC(Number(end.slice(0, 4)), Number(end.slice(5, 7)) - 1, Number(end.slice(8, 10)));
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return null;
+  let count = 0;
+  for (let ms = startMs + 24 * 60 * 60 * 1000; ms <= endMs; ms += 24 * 60 * 60 * 1000) {
+    const dateStr = formatDateUtc(new Date(ms));
+    if (!isTradingClosedDate(dateStr, tradingCalendar)) count++;
+  }
+  return count;
 }
 
 export function addWorkdaysUtc(dateStr: string, n: number) {

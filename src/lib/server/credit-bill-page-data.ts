@@ -20,6 +20,7 @@ import {
 } from "@/lib/credit/billing";
 import { normalizeCreditCardInstallmentStatementMonths, materializeDueInstallmentPayments } from "@/lib/server/credit-card-installment";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
+import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
 import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude } from "@/lib/server/entry-business-link";
 
 type SelectedBillAccount = {
@@ -71,6 +72,7 @@ type LoadCreditBillPageDataParams = {
   hideSettledBills: boolean;
   showRecentBillCycles: boolean;
   view: string;
+  forceCycleRefresh?: boolean;
   categoryLabels: Map<string, string>;
   isSettlementDebtAccountId: (accountId: string | null | undefined) => boolean;
   isCreditCardRepaymentForDisplay: (entry: any) => boolean;
@@ -129,6 +131,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     hideSettledBills,
     showRecentBillCycles,
     view,
+    forceCycleRefresh = false,
     categoryLabels,
     isSettlementDebtAccountId,
     isCreditCardRepaymentForDisplay,
@@ -250,6 +253,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     isBillAccount &&
     selectedAccount &&
     (
+      forceCycleRefresh ||
       persistedCyclesInitial.length === 0 ||
       (
         activeBillTxCount === 0 &&
@@ -934,4 +938,75 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     hasCreditBillSummaries: billSummariesWithCumulative.length > 0,
     showAllCreditBillDetails,
   };
+}
+
+export async function refreshCreditCardCycleCachesForAccountIds(params: {
+  householdId: string;
+  accountIds: Iterable<string | null | undefined>;
+}) {
+  const accountIds = Array.from(
+    new Set(Array.from(params.accountIds).filter((accountId): accountId is string => Boolean(accountId))),
+  );
+  if (accountIds.length === 0) return 0;
+
+  const accounts = await prisma.account.findMany({
+    where: {
+      id: { in: accountIds },
+      householdId: params.householdId,
+      kind: AccountKind.bank_credit,
+      billingDay: { not: null },
+    },
+    select: {
+      id: true,
+      householdId: true,
+      institutionId: true,
+      kind: true,
+      billingDay: true,
+      repaymentDay: true,
+      creditBillMode: true,
+    },
+  });
+
+  const refreshGroups = new Map<
+    string,
+    {
+      selectedAccount: SelectedBillAccount;
+      billAccountIds: string[];
+      billStorageAccountId: string;
+    }
+  >();
+  for (const account of accounts) {
+    const billAccountIds = await getCreditBillAccountIds(prisma, account);
+    const billStorageAccountId = billAccountIds[0] ?? account.id;
+    if (refreshGroups.has(billStorageAccountId)) continue;
+    refreshGroups.set(billStorageAccountId, {
+      selectedAccount: account,
+      billAccountIds,
+      billStorageAccountId,
+    });
+  }
+
+  for (const group of refreshGroups.values()) {
+    await invalidateCreditCardCycleCacheForAccountIds(group.billAccountIds);
+    await loadCreditBillPageData({
+      householdId: params.householdId,
+      selectedAccount: group.selectedAccount,
+      isBillAccount: true,
+      billAccountIds: group.billAccountIds,
+      billStorageAccountId: group.billStorageAccountId,
+      billMonthParam: "",
+      billPage: 1,
+      billMonthsLimit: 120,
+      hideZeroBills: false,
+      hideSettledBills: false,
+      showRecentBillCycles: false,
+      view: "refresh",
+      forceCycleRefresh: true,
+      categoryLabels: new Map(),
+      isSettlementDebtAccountId: () => false,
+      isCreditCardRepaymentForDisplay: () => false,
+    });
+  }
+
+  return refreshGroups.size;
 }

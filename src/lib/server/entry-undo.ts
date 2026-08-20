@@ -130,7 +130,7 @@ export async function saveEntryUndo(
   db: DbWriter,
   ctx: HouseholdContext,
   input: PreparedEntryUndo,
-  action: "edit" | "batch_edit" | "delete" | "batch_delete",
+  action: "create" | "batch_create" | "edit" | "batch_edit" | "delete" | "batch_delete",
   label: string,
 ) {
   if (!input || input.snapshots.length === 0) return null;
@@ -306,7 +306,7 @@ export async function undoLatestEntryOperation(ctx: HouseholdContext) {
   if (!operation || operation.undoneAt) return null;
   const stored = await prisma.undoOperation.findUnique({
     where: { id: operation.id },
-    select: { snapshots: true },
+    select: { snapshots: true, action: true },
   });
   const snapshots = Array.isArray(stored?.snapshots)
     ? stored.snapshots as UndoSnapshot[]
@@ -314,6 +314,18 @@ export async function undoLatestEntryOperation(ctx: HouseholdContext) {
   if (snapshots.length === 0) return null;
 
   await prisma.$transaction(async (tx) => {
+    if (operation.action === "create" || operation.action === "batch_create") {
+      for (const snapshot of snapshots) {
+        const id = String(snapshot.id ?? "");
+        if (!id) continue;
+        await tx.txRecord.updateMany({
+          where: { id, OR: [{ householdId: ctx.householdId }, { householdId: null }], deletedAt: null },
+          data: { deletedAt: new Date() },
+        });
+      }
+      await tx.undoOperation.update({ where: { id: operation.id }, data: { undoneAt: new Date() } });
+      return;
+    }
     for (const snapshot of snapshots) {
       const id = String(snapshot.id ?? "");
       if (!id) continue;
@@ -356,5 +368,5 @@ export async function undoLatestEntryOperation(ctx: HouseholdContext) {
   });
   await recalculateRestoredEntries(restored);
   const remainingCount = await getAvailableEntryUndoCount(ctx);
-  return { operationId: operation.id, label: operation.label, restoredCount: restored.length, remainingCount, historyLimit: ENTRY_UNDO_HISTORY_LIMIT };
+  return { operationId: operation.id, label: operation.label, action: operation.action, restoredCount: restored.length, remainingCount, historyLimit: ENTRY_UNDO_HISTORY_LIMIT };
 }

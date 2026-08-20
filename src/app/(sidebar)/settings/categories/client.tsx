@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
-import { ArrowRight, ChevronRight, ChevronDown, Plus, Save, X } from "lucide-react";
+import { useEffect, useState, useRef, type DragEvent } from "react";
+import { ArrowRight, ChevronRight, ChevronDown, GripVertical, Plus, Save, X } from "lucide-react";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 import { SettingsActionButton } from "@/components/settings/SettingsPageScaffold";
@@ -16,6 +16,7 @@ type Category = {
   name: string;
   type: string;
   parentId: string | null;
+  sortOrder: number;
   isSystem: boolean;
 };
 
@@ -59,6 +60,9 @@ export default function SettingsCategoriesClient({
   const [savingEdit, setSavingEdit] = useState(false);
   const [inlineSavingId, setInlineSavingId] = useState<string | null>(null);
   const [movingParent, setMovingParent] = useState(false);
+  const [reorderingId, setReorderingId] = useState<string | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [pendingMoveParentValue, setPendingMoveParentValue] = useState("__root");
   const [editError, setEditError] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -85,7 +89,7 @@ export default function SettingsCategoriesClient({
       : "__root");
   }, [categories, selectedId]);
 
-  const roots = categories.filter(c => c.parentId === null);
+  const roots = sortCategories(categories.filter(c => c.parentId === null));
   const childrenMap = new Map<string, Category[]>();
   for (const c of categories) {
     if (c.parentId) {
@@ -94,7 +98,16 @@ export default function SettingsCategoriesClient({
       childrenMap.set(c.parentId, list);
     }
   }
-  function getChildren(id: string) { return childrenMap.get(id) || []; }
+  function getChildren(id: string) { return sortCategories(childrenMap.get(id) || []); }
+
+  function sortCategories(items: Category[]) {
+    return [...items].sort((a, b) =>
+      Number(a.isSystem) - Number(b.isSystem)
+      || a.sortOrder - b.sortOrder
+      || a.name.localeCompare(b.name)
+      || a.id.localeCompare(b.id)
+    );
+  }
 
   function getDescendantIds(id: string) {
     const ids = new Set<string>();
@@ -171,6 +184,12 @@ export default function SettingsCategoriesClient({
       name,
       type: parent?.type ?? addingType,
       parentId: addingUnder === "__root__" ? null : addingUnder || null,
+      sortOrder: Math.max(
+        -1,
+        ...categories
+          .filter(c => c.type === (parent?.type ?? addingType) && (c.parentId ?? null) === (addingUnder === "__root__" ? null : addingUnder || null))
+          .map(c => c.sortOrder),
+      ) + 1,
       isSystem: false,
     };
     setCategories(prev => {
@@ -275,7 +294,12 @@ export default function SettingsCategoriesClient({
         return false;
       }
       setCategories(prev => {
-        const next = prev.map(c => c.id === id ? { ...c, parentId: data.category.parentId ?? null, type: data.category.type } : c);
+        const next = prev.map(c => c.id === id ? {
+          ...c,
+          parentId: data.category.parentId ?? null,
+          type: data.category.type,
+          sortOrder: data.category.sortOrder,
+        } : c);
         setSettingsCategories(next);
         return next;
       });
@@ -290,6 +314,101 @@ export default function SettingsCategoriesClient({
     } finally {
       setMovingParent(false);
     }
+  }
+
+  async function persistCategoryOrder(category: Category, orderedIds: string[]) {
+    if (category.isSystem || reorderingId) return;
+    setEditError("");
+    setReorderingId(category.id);
+    try {
+      const res = await fetch("/api/v1/category", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: category.id, orderedIds }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setEditError(data.error ?? t("settings.categories.client.reorderFailed"));
+        return;
+      }
+      setCategories(prev => {
+        const orderById = new Map(orderedIds.map((id, position) => [id, position]));
+        const next = prev.map(item => {
+          const sortOrder = orderById.get(item.id);
+          return sortOrder === undefined ? item : { ...item, sortOrder };
+        });
+        setSettingsCategories(next);
+        return next;
+      });
+      void notifySettingsDataChanged({ scope: "categories", reason: "category:reorder", prefetch: true });
+    } catch {
+      setEditError(t("settings.categories.client.reorderFailed"));
+    } finally {
+      setReorderingId(null);
+    }
+  }
+
+  function getSiblingCategories(category: Category) {
+    return sortCategories(
+      categories.filter(c =>
+        c.type === category.type
+        && (c.parentId ?? null) === (category.parentId ?? null)
+      ),
+    );
+  }
+
+  async function reorderCategoryTo(category: Category, targetId: string) {
+    if (category.isSystem || reorderingId || category.id === targetId) return;
+    const siblings = getSiblingCategories(category);
+    const movable = siblings.filter(item => !item.isSystem);
+    const sourceIndex = movable.findIndex(item => item.id === category.id);
+    const targetIndex = movable.findIndex(item => item.id === targetId);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+
+    const nextMovable = [...movable];
+    const [moved] = nextMovable.splice(sourceIndex, 1);
+    nextMovable.splice(targetIndex, 0, moved!);
+    let movableIndex = 0;
+    const orderedIds = siblings.map(item => {
+      if (item.isSystem) return item.id;
+      const next = nextMovable[movableIndex];
+      movableIndex += 1;
+      return next!.id;
+    });
+    await persistCategoryOrder(category, orderedIds);
+  }
+
+  function handleCategoryDragStart(event: DragEvent<HTMLDivElement>, category: Category) {
+    if (category.isSystem || reorderingId) {
+      event.preventDefault();
+      return;
+    }
+    setDraggingId(category.id);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", category.id);
+  }
+
+  function handleCategoryDragOver(event: DragEvent<HTMLDivElement>, category: Category) {
+    if (!draggingId || category.isSystem || category.id === draggingId) return;
+    const source = categories.find(item => item.id === draggingId);
+    if (!source || source.type !== category.type || (source.parentId ?? null) !== (category.parentId ?? null)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    setDragOverId(category.id);
+  }
+
+  function handleCategoryDrop(event: DragEvent<HTMLDivElement>, category: Category) {
+    event.preventDefault();
+    const sourceId = draggingId || event.dataTransfer.getData("text/plain");
+    const source = categories.find(item => item.id === sourceId);
+    setDraggingId(null);
+    setDragOverId(null);
+    if (source) void reorderCategoryTo(source, category.id);
+  }
+
+  function handleCategoryDragEnd() {
+    setDraggingId(null);
+    setDragOverId(null);
   }
 
   async function handleRename() {
@@ -338,7 +457,7 @@ export default function SettingsCategoriesClient({
     }
     const opts: Array<{ id: string; name: string; label: string; type: string; depth: number; parentId?: string; isGroup?: boolean }> = [];
     function walk(pid: string | null, depth: number) {
-      const children = byParentId.get(pid) ?? [];
+      const children = sortCategories(byParentId.get(pid) ?? []);
       for (const child of children) {
         opts.push({
           id: child.id,
@@ -364,8 +483,16 @@ export default function SettingsCategoriesClient({
 
     return (
       <div key={cat.id}>
-        <div onClick={() => select(cat.id)}
-          className={`flex items-center gap-1 py-1 px-2 rounded cursor-pointer group ${isSelected ? "bg-blue-50" : "hover:bg-slate-50"}`}
+        <div
+          onClick={() => select(cat.id)}
+          draggable={!cat.isSystem}
+          onDragStart={(event) => handleCategoryDragStart(event, cat)}
+          onDragOver={(event) => handleCategoryDragOver(event, cat)}
+          onDrop={(event) => handleCategoryDrop(event, cat)}
+          onDragEnd={handleCategoryDragEnd}
+          className={`flex items-center gap-1 py-1 px-2 rounded cursor-pointer group ${
+            isSelected ? "bg-blue-50" : dragOverId === cat.id ? "bg-blue-50 ring-1 ring-inset ring-blue-300" : "hover:bg-slate-50"
+          } ${draggingId === cat.id ? "opacity-50" : ""} ${cat.isSystem ? "" : "cursor-grab active:cursor-grabbing"}`}
           style={{ paddingLeft: `${12 + depth * 18}px` }}>
           <button onClick={(e) => { e.stopPropagation(); toggleExpand(cat.id); }}
             className="w-4 h-4 flex items-center justify-center shrink-0 text-slate-400 hover:text-slate-600">
@@ -389,6 +516,11 @@ export default function SettingsCategoriesClient({
             />
           ) : (
             <span className={`text-sm flex-1 truncate ${isSelected ? "text-blue-700 font-medium" : "text-slate-700"}`}>{cat.isSystem ? systemCategoryLabel(cat.name, t) : cat.name}</span>
+          )}
+          {!cat.isSystem && (
+            <span title={t("settings.categories.client.dragToReorder")} aria-hidden="true">
+              <GripVertical className="h-3.5 w-3.5 shrink-0 text-slate-300" />
+            </span>
           )}
           {cat.isSystem && <span className="text-[10px] text-slate-400 shrink-0">{t("settings.users.status.system")}</span>}
           {hasChildren && !isExpanded && <span className="text-[10px] text-slate-400 shrink-0">{children.length}</span>}
@@ -697,6 +829,10 @@ export default function SettingsCategoriesClient({
                       name,
                       type: selectedCategory.type,
                       parentId: selectedId,
+                      sortOrder: Math.max(
+                        -1,
+                        ...selectedChildren.map(child => child.sortOrder),
+                      ) + 1,
                       isSystem: false,
                     };
                     setCategories(prev => {
@@ -725,8 +861,18 @@ export default function SettingsCategoriesClient({
                 ) : (
                   <div className="space-y-0.5">
                     {selectedChildren.map(child => (
-                      <div key={child.id} onClick={() => select(child.id)}
-                        className={`flex items-center justify-between gap-2 py-1.5 px-2 rounded cursor-pointer ${selectedId === child.id ? "bg-blue-50" : "hover:bg-slate-50"}`}>
+                      <div
+                        key={child.id}
+                        onClick={() => select(child.id)}
+                        draggable={!child.isSystem}
+                        onDragStart={(event) => handleCategoryDragStart(event, child)}
+                        onDragOver={(event) => handleCategoryDragOver(event, child)}
+                        onDrop={(event) => handleCategoryDrop(event, child)}
+                        onDragEnd={handleCategoryDragEnd}
+                        className={`flex items-center justify-between gap-2 py-1.5 px-2 rounded cursor-pointer ${
+                          selectedId === child.id ? "bg-blue-50" : dragOverId === child.id ? "bg-blue-50 ring-1 ring-inset ring-blue-300" : "hover:bg-slate-50"
+                        } ${draggingId === child.id ? "opacity-50" : ""} ${child.isSystem ? "" : "cursor-grab active:cursor-grabbing"}`}
+                      >
                         {inlineEditingId === child.id ? (
                           <input
                             value={inlineEditingName}
@@ -747,6 +893,11 @@ export default function SettingsCategoriesClient({
                           <span className="min-w-0 flex-1 truncate text-sm text-slate-700">{child.isSystem ? systemCategoryLabel(child.name, t) : child.name}</span>
                         )}
                         <div className="flex items-center gap-1">
+                          {!child.isSystem && (
+                            <span title={t("settings.categories.client.dragToReorder")} aria-hidden="true">
+                              <GripVertical className="h-3.5 w-3.5 shrink-0 text-slate-300" />
+                            </span>
+                          )}
                           {child.isSystem && <span className="text-[10px] text-slate-400">{t("settings.users.status.system")}</span>}
                           {inlineEditingId === child.id ? (
                             <>

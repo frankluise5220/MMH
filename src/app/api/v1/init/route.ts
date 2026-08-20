@@ -246,7 +246,7 @@ export async function POST(req: NextRequest) {
             } else {
               const riTxDate = ri.txDate ? new Date(ri.txDate) : date;
               const riConfirmDate = ri.confirmDate ? new Date(ri.confirmDate) : riTxDate;
-              const confirmDays = ri.tPlusN != null ? Number(ri.tPlusN) : 1;
+              const confirmDays = ri.tPlusN != null ? Number(ri.tPlusN) : 0;
               const arrivalDate = ri.arrivalDate ? new Date(ri.arrivalDate) : null;
 
               await tx.regularInvestPlan.create({

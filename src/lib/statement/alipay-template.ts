@@ -91,8 +91,9 @@ function normalizePaymentAccount(value: string) {
   return raw;
 }
 
-function isIgnoredStatus(value: string) {
-  return /\u5931\u8d25|\u53d6\u6d88/.test(value);
+function isIgnoredStatus(value: string, flow: string) {
+  if (/\u5931\u8d25|\u53d6\u6d88/.test(value)) return true;
+  return flow === "\u6536\u5165" && /\u4ea4\u6613\u5173\u95ed|\u5df2\u5173\u95ed/.test(value);
 }
 
 function isRefundLikeText(value: string) {
@@ -200,7 +201,7 @@ function normalizeAlipaySheetRows(sheet: StatementWorkbookSheetRows) {
     const flow = readCell(row, flowIndex);
     const amount = parseAmount(readCell(row, amountIndex));
     const date = normalizeAlipayDate(readCell(row, timeIndex));
-    if (!date || !amount || isIgnoredStatus(status)) return [];
+    if (!date || !amount || isIgnoredStatus(status, flow)) return [];
 
     const rawAccount = readCell(row, accountIndex);
     const account = normalizePaymentAccount(rawAccount);

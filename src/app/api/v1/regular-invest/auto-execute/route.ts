@@ -210,7 +210,10 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
       const cashAcc = plan.cashAccountId ? cashAccMap.get(plan.cashAccountId) ?? null : null;
       const runDate = skipWeekend(new Date(plan.nextRunDate));
       const runDateStr = formatDateUtc(runDate);
-      const confirmDays = normalizeNonNegativeDays(plan.confirmDays, 1);
+      const confirmDays = normalizeNonNegativeDays(
+        plan.confirmDays ?? await getFundConfirmDays(plan.accountId, plan.fundCode),
+        0,
+      );
       let confirmDateStr = addWorkdaysUtc(runDateStr, confirmDays);
       if (confirmDateStr < runDateStr) {
         logger.warn(`confirmDate ${confirmDateStr} < runDate ${runDateStr}, confirmDays=${confirmDays}`, "auto-execute");
@@ -254,7 +257,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
       const [acctId, code] = key.split(":");
       const matched = execs.find(e => e.plan.accountId === acctId && e.plan.fundCode === code);
       const days = matched?.plan.confirmDays !== null && matched?.plan.confirmDays !== undefined ? matched.plan.confirmDays : await getFundConfirmDays(acctId, code);
-      confirmDaysMap.set(key, normalizeNonNegativeDays(days, 1));
+      confirmDaysMap.set(key, normalizeNonNegativeDays(days, 0));
     }
     // Update confirmDates & arrivalDates based on actual confirmDays & arrivalDays
     const arrivalDaysKeys = [...new Set(execs.map(e => `${e.plan.accountId}:${e.plan.fundCode}`))];
@@ -266,7 +269,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
       arrivalDaysMap.set(key, normalizeNonNegativeDays(days, 2));
     }
     for (const e of execs) {
-      const cDays = confirmDaysMap.get(`${e.plan.accountId}:${e.plan.fundCode}`) ?? normalizeNonNegativeDays(e.plan.confirmDays, 1);
+      const cDays = confirmDaysMap.get(`${e.plan.accountId}:${e.plan.fundCode}`) ?? normalizeNonNegativeDays(e.plan.confirmDays, 0);
       const aDays = arrivalDaysMap.get(`${e.plan.accountId}:${e.plan.fundCode}`) ?? normalizeNonNegativeDays(e.plan.arrivalDays, 2);
       // Always recompute confirmDate/arrivalDate from final confirmDays+arrivalDays
       const runDateStr = formatDateUtc(e.runDate);

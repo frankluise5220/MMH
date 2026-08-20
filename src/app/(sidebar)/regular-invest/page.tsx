@@ -261,6 +261,7 @@ export default async function RegularInvestPage() {
     ownerGroupId: product.ownerGroupId ?? null,
     ownerGroupName: product.OwnerGroup?.name ?? null,
     premiumAmount: product.premiumAmount == null ? null : Number(product.premiumAmount),
+    premiumFrequencyMonths: product.premiumFrequencyMonths == null ? null : Number(product.premiumFrequencyMonths),
     subLabel: [
       product.Institution?.shortName || product.Institution?.name,
       product.OwnerGroup?.name,

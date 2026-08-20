@@ -95,12 +95,21 @@ export function MobileRegularInvest({ plans }: { plans: MobilePlan[] }) {
                 <Metric label={t("mobileRegularInvest.executionCycle")} value={formatInterval(plan, t)} />
                 <Metric label={t("regularInvest.client.recordsCol.executed")} value={t("mobileRegularInvest.executedCount", { count: plan.executedCount ?? 0 })} alignRight />
               </div>
-              <div className="mt-3 flex min-w-0 items-center gap-1.5 text-xs text-slate-500">
-                <CalendarClock size={14} className="shrink-0" />
-                <span className="truncate">{t("mobileRegularInvest.nextRun", { date: formatDate(plan.nextRunDate, t) })}</span>
-                {plan.cashAccountLabel ? <><span className="text-slate-300">·</span><span className="truncate">{plan.cashAccountLabel}</span></> : null}
-                <ChevronRight size={15} className="ml-auto shrink-0 text-slate-400" />
-              </div>
+              {plan.status === "paused" ? (
+                plan.cashAccountLabel ? (
+                  <div className="mt-3 flex min-w-0 items-center gap-1.5 text-xs text-slate-500">
+                    <span className="truncate">{plan.cashAccountLabel}</span>
+                    <ChevronRight size={15} className="ml-auto shrink-0 text-slate-400" />
+                  </div>
+                ) : null
+              ) : (
+                <div className="mt-3 flex min-w-0 items-center gap-1.5 text-xs text-slate-500">
+                  <CalendarClock size={14} className="shrink-0" />
+                  <span className="truncate">{t("mobileRegularInvest.nextRun", { date: formatDate(plan.nextRunDate, t) })}</span>
+                  {plan.cashAccountLabel ? <><span className="text-slate-300">·</span><span className="truncate">{plan.cashAccountLabel}</span></> : null}
+                  <ChevronRight size={15} className="ml-auto shrink-0 text-slate-400" />
+                </div>
+              )}
             </article>
           );
         })}

@@ -25,6 +25,7 @@ import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { ensureStockTransactionCashFlow } from "@/lib/stock/cashFlow";
 import { recalcStockPositions } from "@/lib/stock/recalcPosition";
 import { ensurePropertyTransactionCashFlow } from "@/lib/property/cashFlow";
+import { getCashFlowDate } from "@/lib/cash-flow-date";
 
 export const runtime = "nodejs";
 
@@ -86,7 +87,11 @@ export async function POST(req: Request) {
           ? await resolveCategorySnapshot(tx, householdId, { categoryName, type: "investment" })
           : null;
         const signedCashAmount = isCashIn ? Math.abs(cashAmount) : -Math.abs(cashAmount);
-        const cashDate = isCashIn ? (row.arrivalDate ?? row.tradeDate) : row.tradeDate;
+        const cashDate = getCashFlowDate({
+          direction: isCashIn ? "inflow" : "outflow",
+          operationDate: row.tradeDate,
+          settlementDate: row.arrivalDate,
+        });
         const cashNote = buildWealthCashFlowNote({
           action,
           productName: row.WealthProduct?.name ?? row.productName,
@@ -176,7 +181,11 @@ export async function POST(req: Request) {
         const signedCashAmount = isCashIn ? Math.abs(cashAmount) : -Math.abs(cashAmount);
         const cashEntryData = {
           householdId,
-          date: isCashIn ? (row.arrivalDate ?? row.tradeDate) : row.tradeDate,
+          date: getCashFlowDate({
+            direction: isCashIn ? "inflow" : "outflow",
+            operationDate: row.tradeDate,
+            settlementDate: row.arrivalDate,
+          }),
           type: TransactionType.investment,
           accountId: isCashIn ? row.accountId : row.cashAccountId,
           accountName: isCashIn ? row.Account.name : row.CashAccount.name,
@@ -240,7 +249,11 @@ export async function POST(req: Request) {
         const signedCashAmount = isCashIn ? Math.abs(cashAmount) : -Math.abs(cashAmount);
         const cashEntryData = {
           householdId,
-          date: isCashIn ? (row.arrivalDate ?? row.tradeDate) : row.tradeDate,
+          date: getCashFlowDate({
+            direction: isCashIn ? "inflow" : "outflow",
+            operationDate: row.tradeDate,
+            settlementDate: row.arrivalDate,
+          }),
           type: TransactionType.investment,
           accountId: isCashIn ? row.accountId : row.cashAccountId,
           accountName: isCashIn ? row.Account.name : row.CashAccount.name,
@@ -311,7 +324,11 @@ export async function POST(req: Request) {
           ? await resolveCategorySnapshot(tx, householdId, { categoryName, type: "investment" })
           : null;
         const signedCashAmount = isCashIn ? Math.abs(cashAmount) : -Math.abs(cashAmount);
-        const cashDate = isCashIn ? (row.arrivalDate ?? row.applyDate) : row.applyDate;
+        const cashDate = getCashFlowDate({
+          direction: isCashIn ? "inflow" : "outflow",
+          operationDate: row.applyDate,
+          settlementDate: row.arrivalDate,
+        });
         const cashEntryData = {
           householdId,
           date: cashDate,

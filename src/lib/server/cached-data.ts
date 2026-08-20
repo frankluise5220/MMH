@@ -11,6 +11,10 @@ import { cache } from "react";
 import { unstable_cache } from "next/cache";
 import { prisma } from "@/lib/db/prisma";
 import { computeInvestBalances, computePositionDisplay } from "@/lib/invest-balance";
+import {
+  CATEGORY_HIERARCHY_NORMALIZATION_VERSION,
+  normalizeDefaultCategoryHierarchyForHousehold,
+} from "@/lib/default-categories";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { loadStockHoldingReport } from "@/lib/server/stock-holding-report";
 import { listPreciousMetalDictionaries } from "@/lib/server/precious-metals";
@@ -22,6 +26,7 @@ import {
 } from "@/lib/server/business-transaction-entries";
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 import { readableTagWhere } from "@/lib/server/tag-scope";
+import { categoryOrderBy } from "@/lib/category-order";
 
 // ── Types ──
 
@@ -34,10 +39,12 @@ export type BaseData = CommonData & {
 // ── Common base data (shared across accounts, cached across requests) ──
 
 async function _loadCommonData(hidFilter: { householdId: string }) {
+  await normalizeDefaultCategoryHierarchyForHousehold(prisma, hidFilter.householdId);
+
   const [categories, accounts, tags, groups, institutions, counterparties, preciousMetalDictionaries] = await Promise.all([
     prisma.category.findMany({
       where: { ...hidFilter },
-      orderBy: [{ type: "asc" }, { name: "asc" }],
+      orderBy: categoryOrderBy(),
     }),
     prisma.account.findMany({
       where: { isPlaceholder: { not: true }, ...hidFilter },
@@ -66,7 +73,7 @@ async function _loadCommonData(hidFilter: { householdId: string }) {
 }
 
 /** Cross-request cache: data that does not vary by account */
-export const loadCommonData = unstable_cache(_loadCommonData, ["common-data"], {
+export const loadCommonData = unstable_cache(_loadCommonData, ["common-data", CATEGORY_HIERARCHY_NORMALIZATION_VERSION], {
   revalidate: false,
   tags: ["common-data"],
 });

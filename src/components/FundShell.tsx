@@ -17,7 +17,7 @@ import { toNumber } from "@/lib/date-utils";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 
-import { CalendarDays, CalendarSync, ChartLine, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Pause, Pencil, Play, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { CalendarDays, CalendarSync, ChartLine, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Pause, Pencil, Percent, Play, Settings2, SlidersHorizontal, Trash2, X } from "lucide-react";
 
 import { FundConfirmDaysModal } from "@/components/FundConfirmDaysModal";
 import { InvestmentFormModal } from "@/components/InvestmentFormModal";
@@ -47,6 +47,7 @@ import { ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewEx
 import { subtypeDisplay } from "@/lib/investment-config";
 
 import { useI18n } from "@/lib/i18n";
+import { useOutsideClose } from "@/lib/client/useOutsideClose";
 
 
 
@@ -139,6 +140,7 @@ type FundTableViewportKey = "summary" | "details";
 type FundColumnSpec = readonly [string, number];
 
 const FUND_TABLE_WIDTHS_KEY = "mmh_fund_shell_column_widths_v1";
+const FUND_POSITION_HIDDEN_COLUMNS_KEY = "mmh_fund_shell_position_hidden_columns_v1";
 const FUND_DETAIL_HIDDEN_COLUMNS_KEY = "mmh_fund_shell_detail_hidden_columns_v1";
 
 const POSITION_COLS: readonly FundColumnSpec[] = [
@@ -169,6 +171,10 @@ const WEALTH_POSITION_COLS: readonly FundColumnSpec[] = [
   ["historical", 108],
   ["actions", 112],
 ] as const;
+
+type PositionColumnKey = typeof WEALTH_POSITION_COLS[number][0];
+
+const FIXED_POSITION_COLUMNS = new Set<PositionColumnKey>(["fund", "actions"]);
 
 const CLEARED_COLS = [
   ["fund", 220],
@@ -665,9 +671,11 @@ export function FundShell(props: Props) {
   const [confirmDaysModalOpen, setConfirmDaysModalOpen] = useState(false);
   const [confirmDaysModalFundCode, setConfirmDaysModalFundCode] = useState<string | null>(null);
   const [confirmDaysModalFundName, setConfirmDaysModalFundName] = useState<string | null>(null);
-  const openConfirmDaysModal = useCallback((fundCode?: string | null, fundName?: string | null) => {
+  const [confirmDaysModalTab, setConfirmDaysModalTab] = useState<"confirm" | "fee">("confirm");
+  const openConfirmDaysModal = useCallback((fundCode?: string | null, fundName?: string | null, initialTab: "confirm" | "fee" = "confirm") => {
     setConfirmDaysModalFundCode(fundCode ?? null);
     setConfirmDaysModalFundName(fundName ?? null);
+    setConfirmDaysModalTab(initialTab);
     setConfirmDaysModalOpen(true);
   }, []);
 
@@ -696,7 +704,10 @@ export function FundShell(props: Props) {
   const [fetchedFundNames, setFetchedFundNames] = useState<Record<string, string>>({});
   const [regularPlans, setRegularPlans] = useState<any[]>([]);
   const [editingRegularPlan, setEditingRegularPlan] = useState<any | null>(null);
-  const [regularPlanMenu, setRegularPlanMenu] = useState<any | null>(null);
+  const [positionSettingsMenu, setPositionSettingsMenu] = useState<string | null>(null);
+  const positionSettingsMenuRef = useRef<HTMLDivElement>(null);
+  const closePositionSettingsMenu = useCallback(() => setPositionSettingsMenu(null), []);
+  useOutsideClose(positionSettingsMenuRef, positionSettingsMenu !== null, closePositionSettingsMenu);
   const [regularPlanActionBusy, setRegularPlanActionBusy] = useState(false);
   const [regularPlanBusyId, setRegularPlanBusyId] = useState<string | null>(null);
   const [positionEntryDefaults, setPositionEntryDefaults] = useState<any | null>(null);
@@ -709,15 +720,24 @@ export function FundShell(props: Props) {
   const [columnWidths, setColumnWidths] = useState<Record<string, Record<string, number>>>({});
   const summaryTableViewportRef = useRef<HTMLDivElement>(null);
   const detailTableViewportRef = useRef<HTMLDivElement>(null);
+  const positionColumnMenuRef = useRef<HTMLDivElement>(null);
   const detailColumnMenuRef = useRef<HTMLDivElement>(null);
   const [tableViewportWidths, setTableViewportWidths] = useState<Record<FundTableViewportKey, number>>({
     summary: 0,
     details: 0,
   });
+  const [positionColumnMenuOpen, setPositionColumnMenuOpen] = useState(false);
+  const [hiddenPositionColumns, setHiddenPositionColumns] = useState<Set<PositionColumnKey>>(new Set());
   const [detailColumnMenuOpen, setDetailColumnMenuOpen] = useState(false);
   const [hiddenDetailColumns, setHiddenDetailColumns] = useState<Set<DetailColumnKey>>(() => new Set(DEFAULT_HIDDEN_DETAIL_COLUMNS));
   const [fundChartMode, setFundChartMode] = useState<FundChartMode>("profit");
   const [fundChartRange, setFundChartRange] = useState<FundChartRange>("month");
+  const closePositionColumnMenu = useCallback(() => setPositionColumnMenuOpen(false), []);
+  const closeDetailColumnMenu = useCallback(() => setDetailColumnMenuOpen(false), []);
+  const closeExportMenu = useCallback(() => setShowExportMenu(false), []);
+  useOutsideClose(positionColumnMenuRef, positionColumnMenuOpen, closePositionColumnMenu);
+  useOutsideClose(detailColumnMenuRef, detailColumnMenuOpen, closeDetailColumnMenu);
+  useOutsideClose(exportRef, showExportMenu, closeExportMenu);
   const [fundNavHistoryState, setFundNavHistoryState] = useState<{
     code: string;
     loading: boolean;
@@ -848,6 +868,23 @@ export function FundShell(props: Props) {
 
   useEffect(() => {
     try {
+      const allowed = new Set(WEALTH_POSITION_COLS.map(([key]) => key).filter((key) => !FIXED_POSITION_COLUMNS.has(key)));
+      const raw = window.localStorage.getItem(FUND_POSITION_HIDDEN_COLUMNS_KEY);
+      const next = new Set<PositionColumnKey>();
+      if (raw) {
+        const saved = JSON.parse(raw);
+        if (Array.isArray(saved)) {
+          for (const key of saved) {
+            if (typeof key === "string" && allowed.has(key as PositionColumnKey)) next.add(key as PositionColumnKey);
+          }
+        }
+      }
+      setHiddenPositionColumns(next);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    try {
       const allowed = new Set(DETAIL_COLS.map(([key]) => key).filter((key) => !FIXED_DETAIL_COLUMNS.has(key)));
       const raw = window.localStorage.getItem(FUND_DETAIL_HIDDEN_COLUMNS_KEY);
       const defaultsApplied = window.localStorage.getItem(FUND_DETAIL_HIDDEN_COLUMNS_DEFAULTS_KEY) === "1";
@@ -871,17 +908,6 @@ export function FundShell(props: Props) {
     } catch {}
   }, []);
 
-  useEffect(() => {
-    if (!detailColumnMenuOpen) return;
-    const onPointerDown = (event: PointerEvent) => {
-      const node = detailColumnMenuRef.current;
-      if (!node || !(event.target instanceof Node) || node.contains(event.target)) return;
-      setDetailColumnMenuOpen(false);
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    return () => document.removeEventListener("pointerdown", onPointerDown);
-  }, [detailColumnMenuOpen]);
-
   const colWidth = useCallback((table: FundTableKey, key: string, fallback: number) => {
     const width = columnWidths[table]?.[key];
     const minWidth = minFundColWidth(table, key);
@@ -891,6 +917,10 @@ export function FundShell(props: Props) {
   const isSingleNormalFundScope = Boolean(fundCode && !isMetalAccount && !isWealthAccount);
   const isAllWealthDetailScope = Boolean(isWealthAccount && !fundCode);
   const hideRemainingUnitsDetailColumn = !isWealthAccount || isAllWealthDetailScope;
+  const visiblePositionCols = useMemo(
+    () => positionCols.filter(([key]) => !hiddenPositionColumns.has(key as PositionColumnKey)),
+    [hiddenPositionColumns, positionCols],
+  );
 
   const visibleDetailCols = useMemo(
     () => DETAIL_COLS.filter(([key]) =>
@@ -960,6 +990,14 @@ export function FundShell(props: Props) {
     const minTotal = cols.reduce((sum, [key]) => sum + minFundColWidth(table, key), 0);
     const preferredTotal = Math.max(minTableWidth, baseTotal);
     const availableWidth = viewportWidth || preferredTotal;
+    const hasManualWidths = Object.keys(columnWidths[table] ?? {}).length > 0;
+
+    if (hasManualWidths) {
+      return {
+        tableWidth: Math.max(minTableWidth, baseTotal),
+        colWidths: Object.fromEntries(baseWidths.map(([key, width]) => [key, width])),
+      };
+    }
 
     if (availableWidth >= baseTotal) {
       const scale = baseTotal > 0 ? availableWidth / baseTotal : 1;
@@ -993,7 +1031,7 @@ export function FundShell(props: Props) {
       tableWidth: minTotal,
       colWidths: Object.fromEntries(baseWidths.map(([key]) => [key, minFundColWidth(table, key)])),
     };
-  }, [colWidth]);
+  }, [columnWidths, colWidth]);
 
   const clearedLayout = useMemo(
     () => tableLayout("cleared", CLEARED_COLS, 820, tableViewportWidths.summary),
@@ -1755,7 +1793,7 @@ export function FundShell(props: Props) {
         window.alert(data?.error || t("fundShell.plan.actionFailed", { action: actionLabel }));
         return;
       }
-      setRegularPlanMenu(null);
+      setPositionSettingsMenu(null);
       await loadRegularPlans();
       dispatchFinanceDataChanged({ reason: "regular-invest-plan-status" });
     } catch (error) {
@@ -1892,7 +1930,8 @@ export function FundShell(props: Props) {
     const positionKey = positionAssetKey(p);
     const active = positionKey === fundCode;
     const plan = regularPlanByFundCode.get(p.fundCode);
-    const menuOpen = plan ? regularPlanMenu?.id === plan.id : false;
+    const settingsKey = positionKey || p.fundCode;
+    const menuOpen = positionSettingsMenu === settingsKey;
     return (
       <div
         data-row-double-click-ignore
@@ -1900,95 +1939,97 @@ export function FundShell(props: Props) {
         onClick={(event) => event.stopPropagation()}
         onDoubleClick={(event) => event.stopPropagation()}
       >
-        {plan ? (
-          <div className="relative">
-            <button
-              type="button"
-              disabled={regularPlanBusyId === plan.id || (plan.status !== "active" && plan.status !== "paused")}
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                setRegularPlanMenu(menuOpen ? null : plan);
-              }}
-              className={`relative inline-flex h-6 w-6 items-center justify-center rounded-md border transition-colors disabled:opacity-50 ${
-                plan.status === "paused"
-                  ? "border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100"
-                  : "border-blue-200 bg-blue-50 text-blue-700 hover:border-blue-300 hover:bg-blue-100"
-              }`}
-              title={plan.status === "paused" ? t("fundShell.plan.titlePaused") : t("fundShell.plan.titleActive")}
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
-            >
-              <CalendarSync className="h-3 w-3" />
-              {plan.status === "paused" ? (
-                <span aria-hidden="true" className="absolute right-0 top-0 flex h-1.5 w-1.5 items-center justify-center rounded-full bg-amber-500 ring-1 ring-white">
-                  <span className="h-1 w-[1px] rounded-full bg-white" />
-                  <span className="ml-[1px] h-1 w-[1px] rounded-full bg-white" />
-                </span>
-              ) : (
-                <span aria-hidden="true" className="absolute right-0 top-0 flex h-1.5 w-1.5 items-center justify-center rounded-full bg-emerald-500 ring-1 ring-white">
-                  <span className="ml-px h-0 w-0 border-y-[1.5px] border-l-[2.5px] border-y-transparent border-l-white" />
-                </span>
-              )}
-            </button>
-            {menuOpen ? (
-              <div
-                className="absolute right-0 top-7 z-50 w-28 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 text-left shadow-lg"
-                role="menu"
-                onClick={(event) => event.stopPropagation()}
-              >
-                {plan.status === "active" ? (
-                  <button
-                    type="button"
-                    disabled={regularPlanActionBusy}
-                    onClick={() => updateRegularPlanStatus(plan, "pause")}
-                    className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-50"
-                    role="menuitem"
-                  >
-                    <Pause className="h-3.5 w-3.5" />{t("fundShell.plan.pause")}
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    disabled={regularPlanActionBusy}
-                    onClick={() => updateRegularPlanStatus(plan, "resume")}
-                    className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
-                    role="menuitem"
-                  >
-                    <Play className="h-3.5 w-3.5" />{t("fundShell.plan.continue")}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditingRegularPlan(plan);
-                    setRegularPlanMenu(null);
-                  }}
-                  className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-blue-700 hover:bg-blue-50"
-                  role="menuitem"
-                >
-                  <CalendarSync className="h-3.5 w-3.5" />{t("common.edit")}
-                </button>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
         {!isMetalAccount ? (
           <>
             <AddNavButton accountId={accountId} positions={[p]} defaultFundCode={p.fundCode} trigger="icon" wealthMode={isWealthAccount} />
-            <button
-              type="button"
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                openConfirmDaysModal(p.fundCode || positionKey, p.name || null);
-              }}
-              className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 transition-colors hover:border-amber-200 hover:bg-amber-50 hover:text-amber-700"
-              title={t("fundRules.title")}
-              aria-label={t("fundRules.title")}
-            >
-              <CalendarDays className="h-3 w-3" />
-            </button>
+            <div ref={menuOpen ? positionSettingsMenuRef : null} className="relative">
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setPositionSettingsMenu(menuOpen ? null : settingsKey);
+                }}
+                className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+                title={t("fundRules.title")}
+                aria-label={t("fundRules.title")}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+              >
+                <Settings2 className="h-3.5 w-3.5" />
+              </button>
+              {menuOpen ? (
+                <div
+                  className="absolute right-0 top-7 z-50 w-36 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 text-left shadow-lg"
+                  role="menu"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPositionSettingsMenu(null);
+                      openConfirmDaysModal(p.fundCode || positionKey, p.name || null, "confirm");
+                    }}
+                    className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-slate-700 hover:bg-blue-50"
+                    role="menuitem"
+                  >
+                    <CalendarDays className="h-3.5 w-3.5 text-slate-500" />{t("fundRules.tab.confirm")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPositionSettingsMenu(null);
+                      openConfirmDaysModal(p.fundCode || positionKey, p.name || null, "fee");
+                    }}
+                    className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-slate-700 hover:bg-blue-50"
+                    role="menuitem"
+                  >
+                    <Percent className="h-3.5 w-3.5 text-slate-500" />{t("fundRules.tab.fee")}
+                  </button>
+                  {plan ? (
+                    <>
+                      <div className="my-1 border-t border-slate-100" />
+                      <div className="flex h-7 items-center gap-1.5 px-3 text-[11px] font-medium text-slate-500">
+                        <CalendarSync className={`h-3.5 w-3.5 ${plan.status === "paused" ? "text-amber-600" : "text-blue-600"}`} />
+                        {t("detailView.fundRegularInvest")}
+                      </div>
+                      {plan.status === "active" ? (
+                        <button
+                          type="button"
+                          disabled={regularPlanActionBusy || regularPlanBusyId === plan.id}
+                          onClick={() => updateRegularPlanStatus(plan, "pause")}
+                          className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-50"
+                          role="menuitem"
+                        >
+                          <Pause className="h-3.5 w-3.5" />{t("fundShell.plan.pause")}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={regularPlanActionBusy || regularPlanBusyId === plan.id}
+                          onClick={() => updateRegularPlanStatus(plan, "resume")}
+                          className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+                          role="menuitem"
+                        >
+                          <Play className="h-3.5 w-3.5" />{t("fundShell.plan.continue")}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingRegularPlan(plan);
+                          setPositionSettingsMenu(null);
+                        }}
+                        className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-blue-700 hover:bg-blue-50"
+                        role="menuitem"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />{t("common.edit")}
+                      </button>
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
             {!isWealthAccount ? (
               <button
                 type="button"
@@ -2024,13 +2065,13 @@ export function FundShell(props: Props) {
     regularPlanActionBusy,
     regularPlanBusyId,
     regularPlanByFundCode,
-    regularPlanMenu,
+    positionSettingsMenu,
     switchFund,
     updateRegularPlanStatus,
     t,
   ]);
 
-  const positionAdvancedColumns = useMemo<AdvancedDataTableColumn<any>[]>(() => {
+  const allPositionAdvancedColumns = useMemo<AdvancedDataTableColumn<any>[]>(() => {
     const columns: AdvancedDataTableColumn<any>[] = [
       {
         key: "fund",
@@ -2199,6 +2240,29 @@ export function FundShell(props: Props) {
     t,
   ]);
 
+  const positionColumnOptions = useMemo(
+    () => allPositionAdvancedColumns.filter((column) => !FIXED_POSITION_COLUMNS.has(column.key as PositionColumnKey)),
+    [allPositionAdvancedColumns],
+  );
+
+  const positionAdvancedColumns = useMemo(
+    () => allPositionAdvancedColumns.filter((column) => !hiddenPositionColumns.has(column.key as PositionColumnKey)),
+    [allPositionAdvancedColumns, hiddenPositionColumns],
+  );
+
+  function togglePositionColumnVisibility(key: string) {
+    if (FIXED_POSITION_COLUMNS.has(key as PositionColumnKey)) return;
+    setHiddenPositionColumns((prev) => {
+      const next = new Set(prev);
+      if (next.has(key as PositionColumnKey)) next.delete(key as PositionColumnKey);
+      else next.add(key as PositionColumnKey);
+      try {
+        window.localStorage.setItem(FUND_POSITION_HIDDEN_COLUMNS_KEY, JSON.stringify(Array.from(next)));
+      } catch {}
+      return next;
+    });
+  }
+
   const positionSummaryRow = useMemo(() => {
     if (d.positions.length === 0) return undefined;
     const floatingProfit = d.totalMarketValue - d.totalCost;
@@ -2300,24 +2364,6 @@ export function FundShell(props: Props) {
     });
 
   }, [filteredByColumnsIdSet]);
-
-
-
-  useEffect(() => {
-
-    if (!showExportMenu) return;
-
-    function onOutside(e: MouseEvent) {
-
-      if (exportRef.current && !exportRef.current.contains(e.target as Node)) setShowExportMenu(false);
-
-    }
-
-    document.addEventListener("mousedown", onOutside);
-
-    return () => document.removeEventListener("mousedown", onOutside);
-
-  }, [showExportMenu]);
 
 
 
@@ -2850,7 +2896,6 @@ export function FundShell(props: Props) {
     isWealthAccount,
     navColumnLabel,
     pnl,
-    refundAmountOf,
     statusOf,
     upCls,
     downCls,
@@ -3134,6 +3179,22 @@ export function FundShell(props: Props) {
               fundUnitsDecimals={fundUnitsDecimals}
             />
 
+            <div className="flex items-center gap-0.5">
+
+              <button onClick={() => toggleCleared(false)} className={`h-6 px-2 rounded text-xs ${!showCleared ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}>{holdingTabLabel}</button>
+
+              {!isMetalAccount ? <button onClick={() => toggleCleared(true)} className={`h-6 px-2 rounded text-xs ${showCleared ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}>{clearedTabLabel}</button> : null}
+
+            </div>
+
+          </div>
+
+          <div className="flex items-center gap-2 text-xs text-slate-500 min-h-[24px]">
+
+            {!showCleared && !isMetalAccount && !isWealthAccount && d.positions.length > 0 ? (
+              <RefreshNavButton accountId={accountId} symbols={d.positions.map((p: any) => p.fundCode).filter(Boolean)} />
+            ) : null}
+
             {!isMetalAccount ? (
               <button
                 type="button"
@@ -3158,20 +3219,43 @@ export function FundShell(props: Props) {
               />
             ) : null}
 
-            <div className="flex items-center gap-0.5">
+            {!showCleared ? (
+              <div className="relative hidden md:block order-last" ref={positionColumnMenuRef}>
+                <button
+                  type="button"
+                  onClick={() => setPositionColumnMenuOpen((open) => !open)}
+                  className="secondary-button h-7 px-2 text-xs"
+                  title={t("table.columnSettings")}
+                  aria-label={t("table.columnSettings")}
+                >
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                </button>
 
-              <button onClick={() => toggleCleared(false)} className={`h-6 px-2 rounded text-xs ${!showCleared ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}>{holdingTabLabel}</button>
-
-              {!isMetalAccount ? <button onClick={() => toggleCleared(true)} className={`h-6 px-2 rounded text-xs ${showCleared ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}>{clearedTabLabel}</button> : null}
-
-            </div>
-
-          </div>
-
-          <div className="flex items-center gap-2 text-xs text-slate-500 min-h-[24px]">
-
-            {!showCleared && !isMetalAccount && !isWealthAccount && d.positions.length > 0 ? (
-              <RefreshNavButton accountId={accountId} symbols={d.positions.map((p: any) => p.fundCode).filter(Boolean)} />
+                {positionColumnMenuOpen ? (
+                  <div className="absolute right-0 top-8 z-50 w-44 rounded-lg border border-slate-200 bg-white p-2 shadow-soft">
+                    <div className="mb-1 px-1 text-[11px] font-semibold text-slate-500">{t("table.visibleColumns")}</div>
+                    <div className="max-h-56 space-y-1 overflow-y-auto">
+                      {positionColumnOptions.map((column) => {
+                        const checked = !hiddenPositionColumns.has(column.key as PositionColumnKey);
+                        return (
+                          <label
+                            key={column.key}
+                            className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs text-slate-700 hover:bg-slate-50"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => togglePositionColumnVisibility(column.key)}
+                              className="h-3.5 w-3.5 rounded border-slate-300"
+                            />
+                            <span className="truncate">{column.label}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             ) : null}
 
           </div>
@@ -3283,7 +3367,7 @@ export function FundShell(props: Props) {
               rows={d.positions}
               rowKey={(p, index) => positionAssetKey(p) || p.fundCode || String(index)}
               emptyText={t("fundShell.empty.positions")}
-              minTableWidth={minFundTableWidth("positions", positionCols)}
+              minTableWidth={minFundTableWidth("positions", visiblePositionCols)}
               rowClassName={(p) => {
                 const positionKey = positionAssetKey(p);
                 const active = positionKey === fundCode;
@@ -3533,6 +3617,7 @@ export function FundShell(props: Props) {
         }}
         initialFundCode={confirmDaysModalFundCode}
         fundName={confirmDaysModalFundName}
+        initialTab={confirmDaysModalTab}
       />
 
       <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden">
@@ -3619,8 +3704,8 @@ export function FundShell(props: Props) {
                 type="button"
                 onClick={() => setDetailColumnMenuOpen((open) => !open)}
                 className="secondary-button h-7 px-2 text-xs"
-                title="Columns"
-                aria-label="Columns"
+                title={t("table.columnSettings")}
+                aria-label={t("table.columnSettings")}
               >
 
                 <SlidersHorizontal className="h-3.5 w-3.5" />
@@ -3631,7 +3716,7 @@ export function FundShell(props: Props) {
 
                 <div className="absolute right-0 top-8 z-50 w-44 rounded-lg border border-slate-200 bg-white p-2 shadow-soft">
 
-                  <div className="mb-1 px-1 text-[11px] font-semibold text-slate-500">Columns</div>
+                  <div className="mb-1 px-1 text-[11px] font-semibold text-slate-500">{t("table.visibleColumns")}</div>
 
                   <div className="max-h-56 space-y-1 overflow-y-auto">
 

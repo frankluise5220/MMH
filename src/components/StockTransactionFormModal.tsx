@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
-import { RefreshCcw, X } from "lucide-react";
+import { X } from "lucide-react";
 
+import { EntryAttachmentButton, uploadEntryAttachmentFiles } from "./EntryAttachmentPanel";
 import { CalcInput } from "./CalcInput";
 import { DateStepper } from "./DateStepper";
 import { EntityCreateForm } from "./EntityCreateForm";
@@ -26,6 +27,7 @@ type StockTransactionAction =
 
 type StockModalAction = "buy" | "sell" | "dividend" | "share_change";
 type StockDividendMode = "cash" | "shares" | "cash_shares";
+type SubmitMode = "close" | "repeat";
 
 type AccountOption = {
   id: string;
@@ -141,6 +143,17 @@ type StockFeeEstimateResponse = {
   };
 };
 
+type FeeDraftKey = "stampTax" | "commission" | "surcharge" | "transferFee";
+type FeeDraftState = Record<FeeDraftKey, string>;
+
+const EMPTY_FEE_DRAFT: FeeDraftState = {
+  stampTax: "",
+  commission: "",
+  surcharge: "",
+  transferFee: "",
+};
+const FEE_DRAFT_KEYS: FeeDraftKey[] = ["stampTax", "commission", "surcharge", "transferFee"];
+
 type StockCreateEventDetail = {
   requestId?: string;
   defaultStockAccountId?: string;
@@ -193,9 +206,19 @@ function formatStockQuantity(value?: number | null, locale = "zh-CN") {
   return Number(value).toLocaleString(locale, { maximumFractionDigits: 4 });
 }
 
-function formatFeeTooltipValue(t: (key: string) => string, key: string, value: number | null, currency: string) {
-  if (key === "commission" && value == null) return t("stockTx.feeNotSet");
-  return formatMoney(value ?? 0, currency);
+function sumFeeValues(values: Array<number | null | undefined>) {
+  return values.reduce<number>((sum, value) => sum + Math.max(0, Number(value ?? 0)), 0);
+}
+
+function feeDraftValue(value: number | null | undefined) {
+  return value == null || !Number.isFinite(Number(value)) ? "" : String(Number(value));
+}
+
+function parseFeeDraftValue(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 function normalizeStockCode(value: string) {
@@ -417,6 +440,12 @@ export function StockTransactionFormModal({
   const [nestedCashAccountOpen, setNestedCashAccountOpen] = useState(false);
   const autoCreateAttemptedRef = useRef(false);
   const cashAccountTouchedRef = useRef(false);
+  const feeManualOverrideRef = useRef<Record<FeeDraftKey, boolean>>({
+    stampTax: false,
+    commission: false,
+    surcharge: false,
+    transferFee: false,
+  });
 
   const [action, setAction] = useState<StockModalAction>("buy");
   const [dividendMode, setDividendMode] = useState<StockDividendMode>("cash");
@@ -429,7 +458,6 @@ export function StockTransactionFormModal({
   const [sellHoldingsLoading, setSellHoldingsLoading] = useState(false);
   const [sellHoldingsError, setSellHoldingsError] = useState("");
   const [tradeDate, setTradeDate] = useState(today);
-  const [settleDate, setSettleDate] = useState("");
   const [quantity, setQuantity] = useState("");
   const [price, setPrice] = useState("");
   const [grossAmount, setGrossAmount] = useState("");
@@ -439,9 +467,30 @@ export function StockTransactionFormModal({
   const [feeEstimateLoading, setFeeEstimateLoading] = useState(false);
   const [feeEstimateError, setFeeEstimateError] = useState("");
   const [feeEstimateStatus, setFeeEstimateStatus] = useState("");
-  const [brokerTradeId, setBrokerTradeId] = useState("");
+  const [feeDraft, setFeeDraft] = useState<FeeDraftState>(EMPTY_FEE_DRAFT);
+  const [pendingAttachmentFiles, setPendingAttachmentFiles] = useState<File[]>([]);
+  const [attachmentEntryId, setAttachmentEntryId] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const formRef = useRef<HTMLFormElement>(null);
+  const submitModeRef = useRef<SubmitMode>("close");
+
+  const resetFeeDraft = useCallback(() => {
+    feeManualOverrideRef.current = {
+      stampTax: false,
+      commission: false,
+      surcharge: false,
+      transferFee: false,
+    };
+    setFeeDraft({ ...EMPTY_FEE_DRAFT });
+    setPendingAttachmentFiles([]);
+    setAttachmentEntryId(null);
+  }, []);
+
+  const updateFeeDraft = useCallback((key: FeeDraftKey, value: string) => {
+    feeManualOverrideRef.current[key] = value.trim().length > 0;
+    setFeeDraft((prev) => ({ ...prev, [key]: value }));
+  }, []);
 
   useEffect(() => {
     setLocalStockAccounts((prev) => mergeAccounts(stockAccounts, prev));
@@ -539,7 +588,6 @@ export function StockTransactionFormModal({
   const showQuantityField = isBuySell || isShareAction || isDividendShares || isDividendCashShares;
   const showPriceField = isBuySell;
   const showAmountField = isCashAmountAction;
-  const showSettleDate = isBuySell || isDividendAction;
   const showNetAmount = isDividendCash || isDividendCashShares;
   const quantityFieldLabel = (isDividendShares || isDividendCashShares) ? t("stockTx.dividendShares") : quantityLabelForAction(t, transactionAction);
   const grossFromQuantity = parseNumber(quantity) * parseNumber(price);
@@ -550,34 +598,89 @@ export function StockTransactionFormModal({
       ? effectiveGrossAmount
       : 0;
   const displayCurrency = currencyForStockMarket(market, selectedCashAccount?.currency || selectedAccount?.currency);
-  const feeLineItems = [
-    { key: "commission", labelKey: "stockFee.feeType.commission", value: feeEstimate?.fees?.commission ?? null },
-    { key: "stampTax", labelKey: "stockFee.feeType.stamp_tax", value: feeEstimate?.fees?.stampTax ?? null },
-    { key: "transferFee", labelKey: "stockFee.feeType.transfer_fee", value: feeEstimate?.fees?.transferFee ?? null },
-    { key: "exchangeFee", labelKey: "stockFee.feeType.exchange_fee", value: feeEstimate?.fees?.exchangeFee ?? null },
-    { key: "regulatoryFee", labelKey: "stockFee.feeType.regulatory_fee", value: feeEstimate?.fees?.regulatoryFee ?? null },
-    { key: "otherFee", labelKey: "stockFee.feeType.other", value: (feeEstimate?.fees?.otherFee ?? 0) + (feeEstimate?.fees?.fee ?? 0) },
-  ];
-  const feeTotalDisplay = feeEstimateLoading
-    ? t("stockTx.calculating")
-    : feeEstimate
-      ? formatMoney(feeEstimate.totalFee ?? 0, displayCurrency)
-      : "-";
+  const feeInputConfigs = [
+    {
+      key: "stampTax" as const,
+      labelKey: "stockFee.feeType.stamp_tax",
+      estimateValue: feeEstimate?.fees?.stampTax ?? null,
+    },
+    {
+      key: "commission" as const,
+      labelKey: "stockFee.feeType.commission",
+      estimateValue: feeEstimate?.fees?.commission ?? null,
+    },
+    {
+      key: "surcharge" as const,
+      labelKey: "stockTx.feeType.surcharge",
+      estimateValue: feeEstimate
+        ? sumFeeValues([
+            feeEstimate.fees?.exchangeFee,
+            feeEstimate.fees?.regulatoryFee,
+            feeEstimate.fees?.otherFee,
+            feeEstimate.fees?.fee,
+          ])
+        : null,
+    },
+    {
+      key: "transferFee" as const,
+      labelKey: "stockFee.feeType.transfer_fee",
+      estimateValue: feeEstimate?.fees?.transferFee ?? null,
+    },
+  ] as const;
+  const feeDraftStampTax = parseFeeDraftValue(feeDraft.stampTax);
+  const feeDraftCommission = parseFeeDraftValue(feeDraft.commission);
+  const feeDraftSurcharge = parseFeeDraftValue(feeDraft.surcharge);
+  const feeDraftTransferFee = parseFeeDraftValue(feeDraft.transferFee);
+  const feeResolvedStampTax = feeDraftStampTax ?? feeEstimate?.fees?.stampTax ?? undefined;
+  const feeResolvedCommission = feeDraftCommission ?? feeEstimate?.fees?.commission ?? undefined;
+  const feeResolvedSurcharge = feeDraftSurcharge ?? (feeEstimate
+    ? sumFeeValues([
+        feeEstimate.fees?.exchangeFee,
+        feeEstimate.fees?.regulatoryFee,
+        feeEstimate.fees?.otherFee,
+        feeEstimate.fees?.fee,
+      ])
+    : undefined);
+  const feeResolvedTransferFee = feeDraftTransferFee ?? feeEstimate?.fees?.transferFee ?? undefined;
+  const feeDraftTotal = sumFeeValues([feeResolvedStampTax, feeResolvedCommission, feeResolvedSurcharge, feeResolvedTransferFee]);
+  const hasFeeDraftValue = FEE_DRAFT_KEYS.some((key) => feeDraft[key].trim().length > 0);
+  const feeCardVisible = Boolean(feeEstimate || hasFeeDraftValue);
   const finalCashAmountLabel = action === "buy" ? t("stockTx.expectedPayable") : t("stockTx.expectedArrival");
-  const finalCashAmountDisplay = feeEstimateLoading
-    ? t("stockTx.calculating")
-    : feeEstimate
-      ? formatMoney(feeEstimate.cashAmount ?? 0, displayCurrency)
-      : "-";
-  const feeBreakdownTitle = feeEstimate
+  const feeBreakdownTitle = feeCardVisible
     ? [
-        ...feeLineItems.map((item) => t("stockTx.feeBreakdownLine", { label: t(item.labelKey), value: formatFeeTooltipValue(t, item.key, item.value, displayCurrency) })),
-        t("stockTx.feeBreakdownTotal", { amount: formatMoney(feeEstimate.totalFee ?? 0, displayCurrency) }),
-        t("stockTx.feeBreakdownFinal", { label: finalCashAmountLabel, amount: formatMoney(feeEstimate.cashAmount ?? 0, displayCurrency) }),
+        t("stockTx.feeBreakdownLine", { label: t("stockFee.feeType.stamp_tax"), value: formatMoney(feeResolvedStampTax ?? 0, displayCurrency) }),
+        t("stockTx.feeBreakdownLine", { label: t("stockFee.feeType.commission"), value: formatMoney(feeResolvedCommission ?? 0, displayCurrency) }),
+        t("stockTx.feeBreakdownLine", { label: t("stockTx.feeType.surcharge"), value: formatMoney(feeResolvedSurcharge ?? 0, displayCurrency) }),
+        t("stockTx.feeBreakdownLine", { label: t("stockFee.feeType.transfer_fee"), value: formatMoney(feeResolvedTransferFee ?? 0, displayCurrency) }),
+        t("stockTx.feeBreakdownTotal", { amount: formatMoney(feeDraftTotal, displayCurrency) }),
+        t("stockTx.feeBreakdownFinal", {
+          label: finalCashAmountLabel,
+          amount: formatMoney(
+            action === "buy"
+              ? effectiveGrossAmount + feeDraftTotal
+              : Math.max(0, effectiveGrossAmount - feeDraftTotal),
+            displayCurrency,
+          ),
+        }),
       ].join("\n")
     : feeEstimateLoading
       ? t("stockTx.calculatingFees")
       : feeEstimateError || t("stockTx.feeAutoHint");
+  const feeTotalDisplay = feeEstimateLoading
+    ? t("stockTx.calculating")
+    : feeCardVisible
+      ? formatMoney(feeDraftTotal, displayCurrency)
+      : "-";
+  const finalCashAmountDisplay = feeEstimateLoading
+    ? t("stockTx.calculating")
+    : feeCardVisible
+      ? formatMoney(
+          action === "buy"
+            ? effectiveGrossAmount + feeDraftTotal
+            : Math.max(0, effectiveGrossAmount - feeDraftTotal),
+          displayCurrency,
+        )
+      : "-";
   const accountCreateFieldData = useMemo(() => {
     const accounts = mergeAccounts(localStockAccounts, localCashAccounts);
     const groups = new Map<string, { id: string; name: string }>();
@@ -642,7 +745,6 @@ export function StockTransactionFormModal({
     setSellHoldingsLoading(false);
     setSellHoldingsError("");
     setTradeDate(detail?.defaultDate ?? todayDateInputValue());
-    setSettleDate("");
     setQuantity("");
     setPrice("");
     setGrossAmount(detail?.defaultAmount ? String(detail.defaultAmount) : "");
@@ -652,14 +754,14 @@ export function StockTransactionFormModal({
     setFeeEstimateLoading(false);
     setFeeEstimateError("");
     setFeeEstimateStatus("");
-    setBrokerTradeId("");
+    resetFeeDraft();
     setNote("");
     setAutoCreateError("");
     autoCreateAttemptedRef.current = false;
     cashAccountTouchedRef.current = false;
     setStockAccountId(nextStockAccountId);
     setCashAccountId(nextCashAccountId);
-  }, [defaultCashAccountId, defaultStockAccountId, localCashAccounts, localStockAccounts]);
+  }, [defaultCashAccountId, defaultStockAccountId, localCashAccounts, localStockAccounts, resetFeeDraft]);
 
   const resetDraftForEdit = useCallback((detail: StockEditEventDetail) => {
     const tx = detail.transaction;
@@ -688,7 +790,6 @@ export function StockTransactionFormModal({
     setSellHoldingsLoading(false);
     setSellHoldingsError("");
     setTradeDate(tx.tradeDate || todayDateInputValue());
-    setSettleDate(tx.settleDate ?? "");
     setQuantity(tx.quantity == null ? "" : formatStockQuantity(Number(tx.quantity), language));
     setPrice(tx.price == null ? "" : String(Number(tx.price)));
     setGrossAmount(tx.grossAmount == null ? "" : String(Number(tx.grossAmount)));
@@ -698,19 +799,39 @@ export function StockTransactionFormModal({
     setFeeEstimateLoading(false);
     setFeeEstimateError("");
     setFeeEstimateStatus("");
-    setBrokerTradeId(tx.brokerTradeId ?? "");
+    resetFeeDraft();
     setNote(tx.note ?? "");
     setAutoCreateError("");
     autoCreateAttemptedRef.current = true;
     cashAccountTouchedRef.current = false;
     setStockAccountId(nextStockAccountId);
     setCashAccountId(tx.cashAccountId ?? "");
-  }, [defaultStockAccountId, localStockAccounts, language]);
+  }, [defaultStockAccountId, localStockAccounts, language, resetFeeDraft]);
 
   const close = useCallback(() => {
     if (submitting) return;
     setOpen(false);
   }, [submitting]);
+
+  const repeatDraft = useCallback(() => {
+    setRequestId(null);
+    setEditingId(null);
+    setQuantity("");
+    setPrice("");
+    setGrossAmount("");
+    setNetAmount("");
+    setFeeEstimate(null);
+    setFeeEstimateLoading(false);
+    setFeeEstimateError("");
+    setFeeEstimateStatus("");
+    resetFeeDraft();
+    setPendingAttachmentFiles([]);
+    setAttachmentEntryId(null);
+    setNote("");
+    submitModeRef.current = "close";
+    autoCreateAttemptedRef.current = true;
+    cashAccountTouchedRef.current = false;
+  }, [resetFeeDraft]);
 
   useCloseOnNavigation(open, () => setOpen(false));
 
@@ -957,7 +1078,7 @@ export function StockTransactionFormModal({
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [open, stockCode]);
+  }, [open, stockCode, t]);
 
   useEffect(() => {
     if (!open || !isHoldingSelectionAction || !stockAccountId || !tradeDate) {
@@ -1019,6 +1140,23 @@ export function StockTransactionFormModal({
       const data = await res.json().catch(() => null) as StockFeeEstimateResponse | null;
       if (!res.ok || !data?.ok) throw new Error(data?.error ?? t("stockTx.error.feeEstimateFailed"));
       setFeeEstimate(data.data ?? null);
+      const nextDraft: FeeDraftState = {
+        stampTax: feeDraftValue(data.data?.fees?.stampTax),
+        commission: feeDraftValue(data.data?.fees?.commission),
+        surcharge: feeDraftValue(sumFeeValues([
+          data.data?.fees?.exchangeFee,
+          data.data?.fees?.regulatoryFee,
+          data.data?.fees?.otherFee,
+          data.data?.fees?.fee,
+        ])),
+        transferFee: feeDraftValue(data.data?.fees?.transferFee),
+      };
+      setFeeDraft((prev) => ({
+        stampTax: feeManualOverrideRef.current.stampTax ? prev.stampTax : nextDraft.stampTax,
+        commission: feeManualOverrideRef.current.commission ? prev.commission : nextDraft.commission,
+        surcharge: feeManualOverrideRef.current.surcharge ? prev.surcharge : nextDraft.surcharge,
+        transferFee: feeManualOverrideRef.current.transferFee ? prev.transferFee : nextDraft.transferFee,
+      }));
       setFeeEstimateStatus(refresh ? t("stockTx.feeRateRefreshed") : "");
     } catch (error) {
       setFeeEstimateError(error instanceof Error ? error.message : t("stockTx.error.feeEstimateFailed"));
@@ -1041,6 +1179,39 @@ export function StockTransactionFormModal({
     }, 350);
     return () => window.clearTimeout(timer);
   }, [effectiveGrossAmount, editingId, isBuySell, loadFeeEstimate, open]);
+
+  useEffect(() => {
+    if (editingId || !open || !isBuySell || !stockAccountId) return;
+    const controller = new AbortController();
+    void fetch(`/api/v1/stocks/fee-rules?${new URLSearchParams({ accountId: stockAccountId, list: "1" }).toString()}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    }).catch(() => null);
+    return () => controller.abort();
+  }, [editingId, isBuySell, open, stockAccountId]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (!editingId) {
+      setAttachmentEntryId(null);
+      return;
+    }
+    if (!stockAccountId) return;
+    let cancelled = false;
+    fetch(`/api/v1/stocks/transactions?${new URLSearchParams({ accountId: stockAccountId, limit: "500" }).toString()}`, { cache: "no-store" })
+      .then((response) => response.json().catch(() => null) as Promise<{ ok?: boolean; data?: { transactions?: Array<{ id: string; cashEntryId?: string | null }> } }>)
+      .then((result) => {
+        if (cancelled) return;
+        const current = result?.ok ? result.data?.transactions?.find((item) => item.id === editingId) ?? null : null;
+        setAttachmentEntryId(current?.cashEntryId ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setAttachmentEntryId(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [editingId, open, stockAccountId]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1078,6 +1249,27 @@ export function StockTransactionFormModal({
       window.alert(t("stockTx.alert.enterAmount"));
       return;
     }
+    const feeOverrides = isBuySell
+      ? feeManualOverrideRef.current.surcharge
+        ? {
+            fee: 0,
+            exchangeFee: 0,
+            regulatoryFee: 0,
+            otherFee: feeDraftSurcharge ?? 0,
+            commission: feeDraftCommission,
+            stampTax: feeDraftStampTax,
+            transferFee: feeDraftTransferFee,
+          }
+        : {
+            fee: feeEstimate?.fees?.fee ?? undefined,
+            exchangeFee: feeEstimate?.fees?.exchangeFee ?? undefined,
+            regulatoryFee: feeEstimate?.fees?.regulatoryFee ?? undefined,
+            otherFee: feeEstimate?.fees?.otherFee ?? undefined,
+            commission: feeDraftCommission ?? feeEstimate?.fees?.commission ?? undefined,
+            stampTax: feeDraftStampTax ?? feeEstimate?.fees?.stampTax ?? undefined,
+            transferFee: feeDraftTransferFee ?? feeEstimate?.fees?.transferFee ?? undefined,
+          }
+      : {};
     setSubmitting(true);
     try {
       const commonPayload = {
@@ -1088,8 +1280,6 @@ export function StockTransactionFormModal({
         stockCode: normalizedCode,
         stockName: stockName.trim() || normalizedCode,
         tradeDate,
-        settleDate: showSettleDate ? settleDate || undefined : undefined,
-        brokerTradeId: brokerTradeId.trim() || undefined,
         note: note.trim() || undefined,
         source: "manual",
       };
@@ -1126,6 +1316,7 @@ export function StockTransactionFormModal({
         lastData = await postTransaction({
           ...commonPayload,
           action: transactionAction,
+          ...feeOverrides,
           quantity: showQuantityField ? quantity || undefined : undefined,
           price: showPriceField ? price || undefined : undefined,
           grossAmount: showAmountField ? effectiveGrossAmount || undefined : undefined,
@@ -1142,16 +1333,32 @@ export function StockTransactionFormModal({
           entryIds: [lastData?.data?.transaction?.cashEntryId ?? "", lastData?.data?.transaction?.id ?? ""].filter(Boolean),
         });
       });
-      setOpen(false);
-      if (editingId) {
-        setEditingId(null);
-        resetDraft();
+      const nextAttachmentEntryId = lastData?.data?.transaction?.cashEntryId ?? attachmentEntryId ?? null;
+      if (nextAttachmentEntryId && pendingAttachmentFiles.length > 0) {
+        try {
+          await uploadEntryAttachmentFiles(nextAttachmentEntryId, pendingAttachmentFiles);
+          setPendingAttachmentFiles([]);
+        } catch (attachmentError) {
+          window.alert(t("attachments.saveAfterCreateFailed", {
+            reason: attachmentError instanceof Error ? attachmentError.message : t("attachments.uploadFailed"),
+          }));
+        }
+      }
+      if (submitModeRef.current === "repeat" && !editingId) {
+        repeatDraft();
       } else {
-        resetDraft();
+        setOpen(false);
+        if (editingId) {
+          setEditingId(null);
+          resetDraft();
+        } else {
+          resetDraft();
+        }
       }
     } catch (error) {
       window.alert(error instanceof Error ? error.message : t("stockTx.error.saveFailed"));
     } finally {
+      submitModeRef.current = "close";
       setSubmitting(false);
     }
   }
@@ -1162,7 +1369,7 @@ export function StockTransactionFormModal({
     <>
       <div className="app-modal-backdrop z-[1000]">
         <div className="app-modal-panel max-w-[min(38rem,calc(100vw-1rem))]">
-          <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
+          <form ref={formRef} onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
             <div className="modal-header">
               <div className="text-sm font-semibold text-slate-800">{editingId ? t("stockTx.editTitle") : t("stockTx.title")}</div>
               <button type="button" onClick={close} className="secondary-button h-8 px-2" title={t("stockTx.close")}>
@@ -1267,15 +1474,21 @@ export function StockTransactionFormModal({
                 )}
               </div>
 
-              <div className={`grid gap-3 ${showSettleDate ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1"}`}>
+              <div className={`grid grid-cols-1 gap-3 ${isBuySell ? "sm:grid-cols-3" : "sm:grid-cols-1"}`}>
                 <div className="space-y-1">
                   <div className="form-label">{t("stockTx.tradeDateLabel")}</div>
                   <DateStepper value={tradeDate} onChange={handleTradeDateChange} />
                 </div>
-                {showSettleDate ? (
+                {isBuySell ? (
                   <div className="space-y-1">
-                    <div className="form-label">{t("stockTx.settleDateLabel")}</div>
-                    <DateStepper value={settleDate || tradeDate} onChange={(value) => setSettleDate(value === tradeDate ? "" : value)} />
+                    <div className="form-label">{quantityFieldLabel}</div>
+                    <CalcInput value={quantity} onChange={setQuantity} placeholder={t("stockTx.quantityPlaceholder")} label={quantityFieldLabel} precision={4} />
+                  </div>
+                ) : null}
+                {isBuySell ? (
+                  <div className="space-y-1">
+                    <div className="form-label">{t("stockTx.priceLabel")}</div>
+                    <CalcInput value={price} onChange={setPrice} placeholder={t("stockTx.pricePlaceholder")} label={t("stockTx.priceLabel")} precision={4} />
                   </div>
                 ) : null}
               </div>
@@ -1328,7 +1541,7 @@ export function StockTransactionFormModal({
                 </div>
               ) : null}
 
-              <div className={`grid grid-cols-1 gap-3 ${isBuySell ? "sm:grid-cols-2" : "sm:grid-cols-3"}`}>
+              <div className={`grid grid-cols-1 gap-3 ${isBuySell ? "sm:grid-cols-1" : "sm:grid-cols-3"}`}>
                 {isShareAction ? (
                   <div className="space-y-2 sm:col-span-3">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
@@ -1352,16 +1565,10 @@ export function StockTransactionFormModal({
                     </div>
                   </div>
                 ) : null}
-                {showQuantityField && !isDividendAction && !isShareAction ? (
+                {showQuantityField && !isBuySell && !isDividendAction && !isShareAction ? (
                   <div className="space-y-1">
                     <div className="form-label">{quantityFieldLabel}</div>
                     <CalcInput value={quantity} onChange={setQuantity} placeholder={t("stockTx.quantityPlaceholder")} label={quantityFieldLabel} precision={4} />
-                  </div>
-                ) : null}
-                {showPriceField ? (
-                  <div className="space-y-1">
-                    <div className="form-label">{t("stockTx.priceLabel")}</div>
-                    <CalcInput value={price} onChange={setPrice} placeholder={t("stockTx.pricePlaceholder")} label={t("stockTx.priceLabel")} precision={4} />
                   </div>
                 ) : null}
                 {showAmountField && !isBuySell && !isDividendAction ? (
@@ -1386,36 +1593,32 @@ export function StockTransactionFormModal({
 
               {isBuySell && !editingId ? (
                 <div className="space-y-2">
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-[2.25rem_1fr_1fr_1fr]">
-                    <button
-                      type="button"
-                      onClick={() => void loadFeeEstimate(true)}
-                      disabled={feeEstimateLoading || !stockAccountId || effectiveGrossAmount <= 0}
-                      className="flex h-9 w-9 items-center justify-center self-end rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-                      title={t("stockTx.refreshFeeTitle")}
-                    >
-                      <RefreshCcw className={`h-4 w-4 ${feeEstimateLoading ? "animate-spin" : ""}`} />
-                    </button>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+                    {feeInputConfigs.map((item) => (
+                      <div key={item.key} className="space-y-1">
+                        <div className="form-label">{t(item.labelKey)}</div>
+                        <CalcInput
+                          value={feeDraft[item.key] || (item.estimateValue == null ? "" : feeDraftValue(item.estimateValue))}
+                          onChange={(value) => updateFeeDraft(item.key, value)}
+                          placeholder={item.estimateValue == null ? t("stockFee.optional") : formatMoney(item.estimateValue, displayCurrency)}
+                          label={t(item.labelKey)}
+                          precision={2}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                     <div className="space-y-1">
-                      <div className="form-label">{t("stockTx.feeTotalWithCurrency", { currency: displayCurrency })}</div>
+                      <div className="form-label">{t("stockTx.feeSubtotalWithCurrency", { currency: displayCurrency })}</div>
                       <input
                         value={feeTotalDisplay}
                         readOnly
                         title={feeBreakdownTitle}
-                        className="form-input cursor-help bg-slate-50 text-right tabular-nums text-slate-700"
+                        className="form-input bg-slate-50 text-right font-semibold tabular-nums text-slate-900"
                       />
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">{t("stockTx.grossAmountWithCurrency", { currency: displayCurrency })}</div>
-                      <input
-                        value={effectiveGrossAmount > 0 ? formatMoney(effectiveGrossAmount, displayCurrency) : ""}
-                        readOnly
-                        className="form-input bg-slate-50 text-right tabular-nums text-slate-700"
-                        placeholder={t("stockTx.quantityTimesPrice")}
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <div className="form-label">{t("stockTx.amountWithCurrency", { label: finalCashAmountLabel, currency: displayCurrency })}</div>
+                      <div className="form-label">{t("stockTx.amountTotalWithCurrency", { currency: displayCurrency })}</div>
                       <input
                         value={finalCashAmountDisplay}
                         readOnly
@@ -1429,20 +1632,36 @@ export function StockTransactionFormModal({
                 </div>
               ) : null}
 
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div className="space-y-1">
-                  <div className="form-label">{t("stockPanel.batchField.brokerTradeId")}</div>
-                  <input value={brokerTradeId} onChange={(event) => setBrokerTradeId(event.target.value)} className="form-input" placeholder={t("stockFee.optional")} />
-                </div>
+              <div className="grid grid-cols-1 gap-3">
                 <div className="space-y-1">
                   <div className="form-label">{t("detail.column.remark")}</div>
-                  <input value={note} onChange={(event) => setNote(event.target.value)} className="form-input" placeholder={t("stockFee.optional")} />
+                  <div className="flex items-start gap-2">
+                    <input value={note} onChange={(event) => setNote(event.target.value)} className="form-input flex-1" placeholder={t("stockFee.optional")} />
+                    <EntryAttachmentButton
+                      entryId={attachmentEntryId}
+                      pendingFiles={pendingAttachmentFiles}
+                      onPendingFilesChange={setPendingAttachmentFiles}
+                    />
+                  </div>
                 </div>
               </div>
             </div>
 
             <div className="shrink-0 border-t border-slate-100 bg-white/95 px-3 py-3 sm:px-5">
               <div className="flex justify-end gap-2">
+                {!editingId ? (
+                  <button
+                    type="button"
+                    disabled={submitting || autoCreatingAccount}
+                    className="secondary-button h-9 px-4 text-sm disabled:opacity-50"
+                    onClick={() => {
+                      submitModeRef.current = "repeat";
+                      formRef.current?.requestSubmit();
+                    }}
+                  >
+                    {t("txForm.saveAndRepeat")}
+                  </button>
+                ) : null}
                 <button
                   type="submit"
                   disabled={submitting || autoCreatingAccount}

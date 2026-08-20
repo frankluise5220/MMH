@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getOrCreateMasterKey, decrypt, isEncrypted } from "@/lib/auth/encrypt";
+import { normalizeAiApiMode } from "@/lib/ai/config";
+import { buildResponsesRequestBody, extractResponsesText } from "@/lib/ai/responses";
 
 function joinBaseUrl(baseUrl: string, path: string) {
   const base = baseUrl.replace(/\/$/, "");
@@ -74,7 +76,10 @@ async function getActiveModel() {
     modelName: model.model,
     baseUrl: model.AiChannel.baseUrl,
     apiKey,
-    isOllama: /:11434(\/|$)/.test(model.AiChannel.baseUrl),
+    isOllama: model.AiChannel.channelType === "ollama",
+    apiMode: model.AiChannel.channelType === "ollama"
+      ? "chat"
+      : normalizeAiApiMode(model.apiMode),
   };
 }
 
@@ -83,7 +88,7 @@ export async function POST() {
     const config = await getActiveModel();
     if (!config) return NextResponse.json({ ok: false, error: "没有活跃的 AI 模型" }, { status: 400 });
 
-    const { baseUrl, apiKey, modelName, isOllama } = config;
+    const { baseUrl, apiKey, modelName, isOllama, apiMode } = config;
     const cleanUrl = baseUrl.replace(/\/$/, "");
     const today = new Date().toISOString().slice(0, 10);
 
@@ -94,7 +99,7 @@ export async function POST() {
 
     for (let i = 0; i < Math.min(TESTS.length, 20); i++) {
       const input = TESTS[i];
-      const prompt = `${SYS}\n\n当前日期：${today}\n\n用户输入：${input}`;
+      const userMessage = `当前日期：${today}\n\n用户输入：${input}`;
 
       let rawResponse = "";
       let parsed: any = null;
@@ -103,9 +108,34 @@ export async function POST() {
 
       try {
         const body = isOllama
-          ? { model: modelName, stream: false, messages: [{ role: "user", content: prompt }] }
-          : { model: modelName, messages: [{ role: "user", content: prompt }], max_tokens: 200, temperature: 0 };
-        const url = isOllama ? joinBaseUrl(cleanUrl, "/api/chat") : joinBaseUrl(cleanUrl, "/v1/chat/completions");
+          ? {
+              model: modelName,
+              stream: false,
+              messages: [
+                { role: "system", content: SYS },
+                { role: "user", content: userMessage },
+              ],
+            }
+          : apiMode === "responses"
+            ? buildResponsesRequestBody({
+                modelName,
+                instructions: SYS,
+                userMessage,
+                temperature: 0,
+                maxOutputTokens: 200,
+              })
+            : {
+                model: modelName,
+                messages: [
+                  { role: "system", content: SYS },
+                  { role: "user", content: userMessage },
+                ],
+                max_tokens: 200,
+                temperature: 0,
+              };
+        const url = isOllama
+          ? joinBaseUrl(cleanUrl, "/api/chat")
+          : joinBaseUrl(cleanUrl, apiMode === "responses" ? "/v1/responses" : "/v1/chat/completions");
         const h: Record<string, string> = { "Content-Type": "application/json" };
         if (!isOllama && apiKey) h.Authorization = `Bearer ${apiKey}`;
 
@@ -113,7 +143,13 @@ export async function POST() {
         if (!res.ok) { error = `HTTP ${res.status}`; failCount++; }
         else {
           const data = await res.json().catch(() => null) as any;
-          rawResponse = (data?.message?.content ?? data?.choices?.[0]?.message?.content ?? data?.response ?? "").trim();
+          rawResponse = (
+            isOllama
+              ? data?.message?.content ?? data?.response ?? ""
+              : apiMode === "responses"
+                ? extractResponsesText(data)
+                : data?.choices?.[0]?.message?.content ?? ""
+          ).trim();
           const m = rawResponse.match(/\{[\s\S]*\}/);
           if (m) { try { parsed = JSON.parse(m[0]); } catch { /* bad json */ } }
           if (parsed?.action === "编辑" && parsed.editField) {

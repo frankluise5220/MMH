@@ -5,8 +5,9 @@ import { createPortal } from "react-dom";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { PanelRightClose, PanelRightOpen, Send, X, Wand2, ImagePlus, Plus, Settings, ChevronDown, Sparkles, Trash2, Eye, Pencil, Mail } from "lucide-react";
 import { formatMoney } from "@/lib/format";
-import { CHANNEL_TYPES, getModelsUrl } from "@/lib/ai/config";
+import { AI_API_MODES, CHANNEL_TYPES, getModelsUrl, normalizeAiApiMode, type AiApiMode } from "@/lib/ai/config";
 import { callDeleteEntries, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
+import { AI_CONFIG_CHANGED_EVENT } from "@/lib/client/aiConfig";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { TableColumnFilter } from "@/components/TableColumnFilter";
@@ -33,11 +34,16 @@ type ParsedItem = {
   rawText: string;
   type: "expense" | "income" | "transfer" | "investment";
   date?: string;
+  postedAt?: string;
   amount: number;
+  accountId?: string;
   account?: string;
   fromAccount?: string;
   toAccount?: string;
+  categoryId?: string;
   category?: string;
+  institutionId?: string;
+  institution?: string;
   remark?: string;
   counterparty?: string;
   _meta?: ParsedItemMeta;
@@ -112,6 +118,25 @@ type CorrectionSkill = {
 /* ---- Constants & Helpers ---- */
 
 const SKILLS_KEY = "mmh_ai_skills";
+const AI_MODEL_CACHE_TTL_MS = 30_000;
+
+type AiModelConfig = {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  apiMode: AiApiMode;
+};
+
+type AiModelLoadResult = {
+  names: string[];
+  configs: Record<string, AiModelConfig>;
+  idsByName: Record<string, string>;
+  active: string;
+};
+
+let aiModelCache: { loadedAt: number; result: AiModelLoadResult } | null = null;
+let aiModelRequest: Promise<AiModelLoadResult | null> | null = null;
+let aiPanelMessagesCache: Message[] | null = null;
 
 function loadSkills(): CorrectionSkill[] {
   try {
@@ -131,6 +156,7 @@ function applySkills(items: ParsedItem[], rawText: string): ParsedItem[] {
         return {
           ...item,
           account: item.account || skill.account,
+          institution: item.institution || skill.counterparty,
           counterparty: item.counterparty || skill.counterparty,
           category: item.category || skill.category,
           remark: item.remark || skill.remark,
@@ -146,7 +172,7 @@ function isRowReadyForImport(item: ParsedItem) {
   const amountAbs = Math.abs(item.amount ?? 0);
   if (!Number.isFinite(amountAbs) || amountAbs <= 0) return false;
   if (item.type === "transfer") return !!(item.fromAccount?.trim() && item.toAccount?.trim());
-  if (!item.account?.trim() && !item._meta?.institutionName) return false;
+  if (!item.accountId?.trim() && !item.account?.trim() && !item._meta?.institutionName) return false;
   return true;
 }
 
@@ -158,7 +184,7 @@ function getMissingFields(item: ParsedItem, t: (key: string, params?: Record<str
     if (!item.fromAccount?.trim()) missing.push(t("txForm.transferFrom"));
     if (!item.toAccount?.trim()) missing.push(t("txForm.transferTo"));
   } else {
-    if (!item.account?.trim()) missing.push(t("common.account"));
+    if (!item.accountId?.trim() && !item.account?.trim()) missing.push(t("common.account"));
   }
   return missing;
 }
@@ -168,11 +194,16 @@ function normalizeItemForImport(item: ParsedItem): ParsedItem {
     rawText: item.rawText,
     type: item.type,
     date: item.date?.trim() || undefined,
+    postedAt: typeof item.postedAt === "string" ? item.postedAt.trim() || undefined : undefined,
     amount: Math.abs(item.amount ?? 0) || 0,
+    accountId: item.accountId?.trim() || undefined,
     account: item.account?.trim() || undefined,
     fromAccount: item.fromAccount?.trim() || undefined,
     toAccount: item.toAccount?.trim() || undefined,
+    categoryId: item.categoryId?.trim() || undefined,
     category: item.category?.trim() || undefined,
+    institutionId: item.institutionId?.trim() || undefined,
+    institution: item.institution?.trim() || undefined,
     remark: item.remark?.trim() || undefined,
     counterparty: item.counterparty?.trim() || undefined,
     _meta: item._meta ? {
@@ -200,7 +231,7 @@ function itemAccountLabel(item: ParsedItem, t: (key: string, params?: Record<str
     return `${from} -> ${to}`;
   }
   if (item._meta?.accountDisplayName?.trim()) return item._meta.accountDisplayName.trim();
-  return item.account?.trim() || item._meta?.institutionName?.trim() || t("aiPanel.noAccount");
+  return item.account?.trim() || item.accountId?.trim() || item._meta?.institutionName?.trim() || t("aiPanel.noAccount");
 }
 
 function formatRecognitionPreviewBlock(item: ParsedItem, index: number, t: (key: string, params?: Record<string, string | number>) => string) {
@@ -209,10 +240,12 @@ function formatRecognitionPreviewBlock(item: ParsedItem, index: number, t: (key:
   return [
     `${index + 1}.`,
     t("aiPanel.block.date", { value: date }),
+    t("aiPanel.block.postedAt", { value: item.postedAt?.trim() || date }),
     t("aiPanel.block.type", { value: itemTypeLabel(item.type, t) }),
     t("aiPanel.block.amount", { value: formatMoney(Math.abs(item.amount ?? 0)) }),
     t("aiPanel.block.account", { value: itemAccountLabel(item, t) }),
-    t("aiPanel.block.counterparty", { value: item.counterparty?.trim() || "-" }),
+    t("aiPanel.block.counterparty", { value: item.institution?.trim() || item.counterparty?.trim() || "-" }),
+    t("aiPanel.block.category", { value: item.category?.trim() || "-" }),
     t("aiPanel.block.remark", { value: remark }),
   ].join("\n");
 }
@@ -243,9 +276,9 @@ export function AIPanel({
   const [mounted, setMounted] = useState(false);
   const [enabled, setEnabled] = useState(() => getAiPanelEnabledPreference());
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<Message[]>([
-    { role: "assistant", text: t("aiPanel.welcome") },
-  ]);
+  const [messages, setMessages] = useState<Message[]>(() =>
+    aiPanelMessagesCache ?? [{ role: "assistant", text: t("aiPanel.welcome") }],
+  );
   const [loading, setLoading] = useState(false);
   const [collapsed, setCollapsedState] = useState(() => initialCollapsed || getAiPanelCollapsedPreference());
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
@@ -258,7 +291,7 @@ export function AIPanel({
     try { return localStorage.getItem("mmh_ai_active_model") ?? ""; } catch { return ""; }
   });
   const [modelNames, setModelNames] = useState<string[]>([]);
-  const [modelConfigs, setModelConfigs] = useState<Record<string, { baseUrl: string; apiKey: string; model: string }>>({});
+  const [modelConfigs, setModelConfigs] = useState<Record<string, { baseUrl: string; apiKey: string; model: string; apiMode: AiApiMode }>>({});
   const [modelIdsByName, setModelIdsByName] = useState<Record<string, string>>({});
   const [modelsLoading, setModelsLoading] = useState(true);
 
@@ -282,9 +315,19 @@ export function AIPanel({
   }, []);
 
   useEffect(() => {
+    const onAiConfigChanged = () => reloadModels(true);
+    window.addEventListener(AI_CONFIG_CHANGED_EVENT, onAiConfigChanged);
+    return () => window.removeEventListener(AI_CONFIG_CHANGED_EVENT, onAiConfigChanged);
+  }, []);
+
+  useEffect(() => {
+    aiPanelMessagesCache = messages;
+  }, [messages]);
+
+  useEffect(() => {
     if (!mounted) return;
     if (!enabled) return;
-    if (pathname.startsWith("/settings") && collapsed) {
+    if (collapsed) {
       setModelsLoading(false);
       return;
     }
@@ -299,7 +342,7 @@ export function AIPanel({
     }
     const timer = window.setTimeout(run, 800);
     return () => window.clearTimeout(timer);
-  }, [mounted, enabled, pathname, collapsed]);
+  }, [mounted, enabled]);
 
   useEffect(() => {
     if (!mounted) return;
@@ -322,33 +365,60 @@ export function AIPanel({
 
   /* ---- Models ---- */
 
-  async function loadModelsFromDB() {
+  async function loadModelsFromDB(): Promise<AiModelLoadResult | null> {
+    if (aiModelCache && Date.now() - aiModelCache.loadedAt < AI_MODEL_CACHE_TTL_MS) {
+      return aiModelCache.result;
+    }
+    if (aiModelRequest) return aiModelRequest;
+
+    aiModelRequest = (async () => {
     try {
       const res = await fetch("/api/v1/settings/ai-config");
       const data = await res.json();
       if (!data.ok || !data.channels) return null;
-      const models: Array<{ id: string; name: string; baseUrl: string; apiKey: string; model: string }> = [];
+      const models: Array<{ id: string; name: string; baseUrl: string; apiKey: string; model: string; apiMode: string | null | undefined }> = [];
       for (const ch of data.channels) {
         for (const m of ch.AiModel) {
-          models.push({ id: m.id, name: m.name || m.model, baseUrl: ch.baseUrl, apiKey: ch.apiKey ?? "", model: m.model });
+          models.push({
+            id: m.id,
+            name: m.name || m.model,
+            baseUrl: ch.baseUrl,
+            apiKey: ch.apiKey ?? "",
+            model: m.model,
+            apiMode: m.apiMode,
+          });
         }
       }
       if (models.length === 0) return null;
       const names = models.map((m) => m.name).filter(Boolean);
-      const configs: Record<string, { baseUrl: string; apiKey: string; model: string }> = {};
+      const configs: Record<string, { baseUrl: string; apiKey: string; model: string; apiMode: AiApiMode }> = {};
       const idsByName: Record<string, string> = {};
       for (const m of models) {
         if (!m.name) continue;
-        configs[m.name] = { baseUrl: m.baseUrl, apiKey: m.apiKey, model: m.model };
+        configs[m.name] = {
+          baseUrl: m.baseUrl,
+          apiKey: m.apiKey,
+          model: m.model,
+          apiMode: normalizeAiApiMode(m.apiMode),
+        };
         idsByName[m.name] = m.id;
       }
       const activeModelFromDB = models.find((m) => m.id === data.activeModelId);
       const active = activeModelFromDB?.name ?? names[0] ?? "";
       return { names, configs, idsByName, active };
-    } catch { return null; }
+    } catch {
+      return null;
+    }
+    })();
+
+    const result = await aiModelRequest;
+    aiModelRequest = null;
+    if (result) aiModelCache = { loadedAt: Date.now(), result };
+    return result;
   }
 
-  function reloadModels() {
+  function reloadModels(force = false) {
+    if (force) aiModelCache = null;
     loadModelsFromDB().then((dbResult) => {
       setModelsLoading(false);
       if (dbResult && dbResult.names.length > 0) {
@@ -398,10 +468,11 @@ export function AIPanel({
         baseUrl: cfg?.baseUrl?.trim() || undefined,
         apiKey: cfg?.apiKey?.trim() || undefined,
         modelName: cfg?.model || undefined,
+        apiMode: cfg?.apiMode || undefined,
         fundContext: fundContext || undefined,
       }),
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) throw new Error(await readApiError(res, `HTTP ${res.status}`));
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || t("aiPanel.parseFailed"));
     return data;
@@ -419,9 +490,21 @@ export function AIPanel({
         defaultAccountName: defaultAcc || viewAccount.accountName || undefined,
       }),
     });
+    if (!res.ok) throw new Error(await readApiError(res, `HTTP ${res.status}`));
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || t("creditBill.importFailed"));
     return data;
+  }
+
+  async function readApiError(res: Response, fallback: string) {
+    const text = await res.text().catch(() => "");
+    try {
+      const data = JSON.parse(text) as { code?: string; error?: string } | null;
+      if (data?.error) {
+        return data.code ? `${data.code}: ${data.error}` : data.error;
+      }
+    } catch { /* ignore */ }
+    return text.trim() || fallback;
   }
 
   /* ---- Handlers ---- */
@@ -750,10 +833,10 @@ export function AIPanel({
   const [settingsView, setSettingsView] = useState(false);
 
   /* ---- Settings state ---- */
-  type ChannelData = { id: string; name: string; channelType: string; baseUrl: string; apiKey: string; AiModel: Array<{ id: string; name: string; model: string; vision: boolean; active: boolean }> };
+  type ChannelData = { id: string; name: string; channelType: string; baseUrl: string; apiKey: string; AiModel: Array<{ id: string; name: string; model: string; vision: boolean; apiMode?: string | null; active: boolean }> };
   const [channels, setChannels] = useState<ChannelData[]>([]);
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
-  const [addChannelForm, setAddChannelForm] = useState<{ name: string; channelType: string; baseUrl: string; apiKey: string }>({ name: "", channelType: "deepseek", baseUrl: "", apiKey: "" });
+  const [addChannelForm, setAddChannelForm] = useState<{ name: string; channelType: string; baseUrl: string; apiKey: string; apiMode: AiApiMode }>({ name: "", channelType: "deepseek", baseUrl: "", apiKey: "", apiMode: "chat" });
   const [remoteModels, setRemoteModels] = useState<Array<{ id: string; category: string; supportsVision: boolean }>>([]);
   const [selectedRemoteModel, setSelectedRemoteModel] = useState("");
   const [newChannelId, setNewChannelId] = useState("");
@@ -773,12 +856,16 @@ export function AIPanel({
     apiKey: string;
     modelName: string;
     vision: boolean;
+    apiMode: AiApiMode;
   }>(null);
 
-  function openEditModelOverlay(modelName: string) {
+  async function openEditModelOverlay(modelName: string) {
     const modelDbId = modelIdsByName[modelName];
     if (!modelDbId) return;
-    for (const ch of channels) {
+    setModelDropdownOpen(false);
+    const freshChannels = await loadChannelsFromDB();
+    const sourceChannels = freshChannels ?? channels;
+    for (const ch of sourceChannels) {
       const m = ch.AiModel.find((m) => m.id === modelDbId);
       if (m) {
         setEditModelOverlay({
@@ -791,33 +878,11 @@ export function AIPanel({
           apiKey: ch.apiKey ?? "",
           modelName: m.name || m.model,
           vision: m.vision ?? false,
+          apiMode: ch.channelType === "ollama" ? "chat" : normalizeAiApiMode(m.apiMode),
         });
-        setModelDropdownOpen(false);
         return;
       }
     }
-    loadChannelsFromDB().then(() => {
-      setTimeout(() => {
-        for (const ch of channels) {
-          const m = ch.AiModel.find((m) => m.id === modelDbId);
-          if (m) {
-            setEditModelOverlay({
-              modelId: m.model,
-              modelDbId: m.id,
-              channelId: ch.id,
-              channelName: ch.name,
-              channelType: ch.channelType ?? "custom",
-              baseUrl: ch.baseUrl,
-              apiKey: ch.apiKey ?? "",
-              modelName: m.name || m.model,
-              vision: m.vision ?? false,
-            });
-            return;
-          }
-        }
-      }, 300);
-    });
-    setModelDropdownOpen(false);
   }
 
   async function saveEditModelOverlay() {
@@ -846,6 +911,7 @@ export function AIPanel({
           updateModelId: editModelOverlay.modelDbId,
           name: editModelOverlay.modelName,
           vision: editModelOverlay.vision,
+          apiMode: editModelOverlay.channelType === "ollama" ? "chat" : editModelOverlay.apiMode,
         }),
       });
       const mData = await mRes.json();
@@ -854,20 +920,23 @@ export function AIPanel({
       setEditModelOverlay(null);
       setSettingsError("");
       await loadChannelsFromDB();
-      reloadModels();
+      reloadModels(true);
     } catch (e: any) {
       setSettingsError(e.message);
     } finally { setSettingsLoading(false); }
   }
 
-  async function loadChannelsFromDB() {
+  async function loadChannelsFromDB(): Promise<ChannelData[] | null> {
     try {
       const res = await fetch("/api/v1/settings/ai-config");
-      const data = await res.json();
-      if (!data.ok) return;
-      setChannels(data.channels ?? []);
+      const data = await res.json() as { ok?: boolean; channels?: ChannelData[]; activeModelId?: string | null };
+      if (!data.ok) return null;
+      const nextChannels = data.channels ?? [];
+      setChannels(nextChannels);
       setActiveModelId(data.activeModelId ?? null);
+      return nextChannels;
     } catch { /* ignore */ }
+    return null;
   }
 
   async function fetchRemoteModels(baseUrl: string, apiKey: string, channelType: string) {
@@ -937,16 +1006,22 @@ export function AIPanel({
       const mRes = await fetch("/api/v1/settings/ai-config", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: selectedRemoteModel, name: addChannelForm.name || selectedRemoteModel, channelId: chId, vision: info?.supportsVision ?? false }),
+        body: JSON.stringify({
+          model: selectedRemoteModel,
+          name: addChannelForm.name || selectedRemoteModel,
+          channelId: chId,
+          vision: info?.supportsVision ?? false,
+          apiMode: addChannelForm.channelType === "ollama" ? "chat" : addChannelForm.apiMode,
+        }),
       });
       const mData = await mRes.json();
       if (!mData.ok) throw new Error(mData.error ?? t("aiPanel.addModelFailed"));
-      setAddChannelForm({ name: "", channelType: "deepseek", baseUrl: "", apiKey: "" });
+      setAddChannelForm({ name: "", channelType: "deepseek", baseUrl: "", apiKey: "", apiMode: "chat" });
       setRemoteModels([]);
       setSelectedRemoteModel("");
       setModelFetched(false);
       await loadChannelsFromDB();
-      reloadModels();
+      reloadModels(true);
     } catch (e: any) {
       setSettingsError(e.message);
     } finally { setSettingsLoading(false); }
@@ -961,7 +1036,7 @@ export function AIPanel({
         body: JSON.stringify({ deleteModelId: modelId }),
       });
       await loadChannelsFromDB();
-      reloadModels();
+      reloadModels(true);
     } catch { /* ignore */ }
     finally { setSettingsLoading(false); }
   }
@@ -971,7 +1046,7 @@ export function AIPanel({
     try {
       await fetch(`/api/v1/settings/ai-config?id=${channelId}`, { method: "DELETE" });
       await loadChannelsFromDB();
-      reloadModels();
+      reloadModels(true);
     } catch { /* ignore */ }
     finally { setSettingsLoading(false); }
   }
@@ -984,7 +1059,7 @@ export function AIPanel({
         body: JSON.stringify({ activeModelId: modelId }),
       });
       await loadChannelsFromDB();
-      reloadModels();
+      reloadModels(true);
     } catch { /* ignore */ }
   }
 
@@ -1229,7 +1304,7 @@ export function AIPanel({
                       </button>
                       <div className="flex items-center gap-1 shrink-0">
                         <button
-                          onClick={() => { loadChannelsFromDB(); openEditModelOverlay(name); }}
+                          onClick={() => { void openEditModelOverlay(name); }}
                           className="w-5 h-5 rounded flex items-center justify-center text-foreground/20 hover:text-foreground/50 hover:bg-foreground/10 transition-all"
                           title={t("settings.ai.client.action.edit")}
                         >
@@ -1288,7 +1363,7 @@ export function AIPanel({
                     <select
                       className="w-full h-10 rounded-xl bg-background/50 border border-foreground/10 px-4 text-sm outline-none focus:border-accent-green/30 text-foreground"
                       value={editModelOverlay.channelType}
-                      onChange={(e) => setEditModelOverlay(o => o ? { ...o, channelType: e.target.value } : null)}
+                      onChange={(e) => setEditModelOverlay(o => o ? { ...o, channelType: e.target.value, apiMode: e.target.value === "ollama" ? "chat" : o.apiMode } : null)}
                     >
                       {CHANNEL_TYPES.map(ct => <option key={ct.id} value={ct.id}>{t(`settings.ai.client.channelType.${ct.id}`)}</option>)}
                     </select>
@@ -1331,6 +1406,20 @@ export function AIPanel({
                       {editModelOverlay.modelId}
                     </div>
                   </div>
+                  {editModelOverlay.channelType !== "ollama" && (
+                    <div>
+                      <label className="block text-[10px] font-bold text-foreground/30 mb-1">{t("settings.ai.client.apiMode")}</label>
+                      <select
+                        className="w-full h-10 rounded-xl bg-background/50 border border-foreground/10 px-4 text-sm outline-none focus:border-accent-green/30 text-foreground"
+                        value={editModelOverlay.apiMode}
+                        onChange={(e) => setEditModelOverlay(o => o ? { ...o, apiMode: e.target.value as AiApiMode } : null)}
+                      >
+                        {AI_API_MODES.map((mode) => (
+                          <option key={mode.id} value={mode.id}>{t(mode.labelKey)}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                   <div className="flex items-center justify-between gap-3 py-2">
                     <span className="text-sm text-foreground/60">{t("aiPanel.visionSupport")}</span>
                     <button
@@ -1441,7 +1530,7 @@ export function AIPanel({
                     onChange={(e) => {
                       const ct = e.target.value;
                       const preset = ct === "ollama" ? "http://localhost:11434" : ct === "deepseek" ? "https://api.deepseek.com/v1" : ct === "openai" ? "https://api.openai.com/v1" : ct === "anthropic" ? "https://api.anthropic.com" : ct === "qwen" ? "https://dashscope.aliyuncs.com/compatible-mode/v1" : "";
-                      setAddChannelForm(f => ({ ...f, channelType: ct, baseUrl: preset || f.baseUrl }));
+                      setAddChannelForm(f => ({ ...f, channelType: ct, baseUrl: preset || f.baseUrl, apiMode: ct === "ollama" ? "chat" : f.apiMode }));
                       setModelFetched(false);
                       setRemoteModels([]);
                     }}
@@ -1474,6 +1563,20 @@ export function AIPanel({
               {/* Model selection area - always visible once the Key is filled */}
               {(addChannelForm.channelType === "ollama" || addChannelForm.apiKey.trim()) && addChannelForm.baseUrl.trim() ? (
                 <div className="space-y-2">
+                  {addChannelForm.channelType !== "ollama" && (
+                    <div>
+                      <label className="block text-[10px] font-bold text-foreground/30 mb-1">{t("settings.ai.client.apiMode")}</label>
+                      <select
+                        className="w-full h-9 rounded-xl bg-background/50 border border-foreground/10 px-3 text-sm outline-none focus:border-accent-green/30 text-foreground"
+                        value={addChannelForm.apiMode}
+                        onChange={(e) => setAddChannelForm(f => ({ ...f, apiMode: e.target.value as AiApiMode }))}
+                      >
+                        {AI_API_MODES.map((mode) => (
+                          <option key={mode.id} value={mode.id}>{t(mode.labelKey)}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                   <div className="flex items-center justify-between">
                     <label className="block text-[10px] font-bold text-foreground/30">{t("aiPanel.selectModel")}</label>
                     {fetchingModels && <span className="text-[10px] text-accent-green animate-pulse">{t("aiPanel.fetching")}</span>}
@@ -1535,7 +1638,7 @@ export function AIPanel({
 
               {/* Bottom buttons */}
               <div className="flex gap-2 pt-1">
-                <button onClick={() => { setSettingsView(false); setAddChannelForm({ name: "", channelType: "deepseek", baseUrl: "", apiKey: "" }); setRemoteModels([]); setSelectedRemoteModel(""); setModelFetched(false); setSettingsError(""); }} className="flex-1 py-2.5 bg-background border border-foreground/10 text-foreground/60 rounded-xl font-bold text-xs hover:bg-foreground/5 transition-colors">
+                <button onClick={() => { setSettingsView(false); setAddChannelForm({ name: "", channelType: "deepseek", baseUrl: "", apiKey: "", apiMode: "chat" }); setRemoteModels([]); setSelectedRemoteModel(""); setModelFetched(false); setSettingsError(""); }} className="flex-1 py-2.5 bg-background border border-foreground/10 text-foreground/60 rounded-xl font-bold text-xs hover:bg-foreground/5 transition-colors">
                   {t("common.cancel")}
                 </button>
                 <button
@@ -1597,10 +1700,12 @@ export function AIPanel({
                       <input type="checkbox" checked={selected} onChange={() => toggleImportItem(it.key)} className="mt-1" />
                       <div className="min-w-0 flex-1 space-y-1">
                         <div>{t("aiPanel.block.date", { value: it.item.date ?? t("aiPanel.noDate") })}</div>
+                        <div>{t("aiPanel.block.postedAt", { value: it.item.postedAt ?? it.item.date ?? t("aiPanel.noDate") })}</div>
                         <div>{t("aiPanel.block.type", { value: itemTypeLabel(it.item.type, t) })}</div>
                         <div>{t("aiPanel.block.amount", { value: formatMoney(Math.abs(it.item.amount ?? 0)) })}</div>
                         <div className="truncate" title={itemAccountLabel(it.item, t)}>{t("aiPanel.block.account", { value: itemAccountLabel(it.item, t) })}</div>
-                        <div className="truncate" title={it.item.counterparty ?? ""}>{t("aiPanel.block.counterparty", { value: it.item.counterparty ?? "-" })}</div>
+                        <div className="truncate" title={it.item.institution ?? it.item.counterparty ?? ""}>{t("aiPanel.block.counterparty", { value: it.item.institution ?? it.item.counterparty ?? "-" })}</div>
+                        <div className="truncate" title={it.item.category ?? ""}>{t("aiPanel.block.category", { value: it.item.category ?? "-" })}</div>
                         <div className="truncate text-foreground/60" title={it.item.remark ?? it.item.counterparty ?? ""}>
                           {t("aiPanel.block.remark", { value: it.item.remark ?? it.item.counterparty ?? "" })}
                         </div>
@@ -1844,7 +1949,7 @@ export function AIPanel({
                           <span className="text-foreground/55">{itemTypeLabel(it.item.type, t)}</span>
                           <span className="font-bold text-accent-green text-right shrink-0">¥{formatMoney(it.item.amount)}</span>
                         </div>
-                        <div className="mt-1 truncate text-foreground/50">{it.item.remark ?? it.item.counterparty ?? ""}</div>
+                        <div className="mt-1 truncate text-foreground/50">{it.item.postedAt ?? it.item.date ?? t("aiPanel.noDate")} · {it.item.institution ?? it.item.counterparty ?? ""} · {it.item.category ?? "-"}</div>
                         {!it.ready && it.missingFields.length > 0 && (
                           <div className="mt-1 text-[9px] text-red-400/80">{t("aiPanel.missing", { fields: it.missingFields.join("、") })}</div>
                         )}

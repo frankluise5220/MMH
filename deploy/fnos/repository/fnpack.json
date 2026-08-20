@@ -27,7 +27,7 @@
       "categories": [
         "生活服务"
       ],
-      "icon_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.37",
+      "icon_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.38",
       "readme_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/deploy/fnos/README.md",
       "bug_report_url": "https://github.com/frankluise5220/MMH/issues",
       "maintainer": "frankluise5220",
@@ -68,6 +68,18 @@
             },
             "arm": {
               "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.37/mmh-fnos-v0.1.37-arm64.fpk"
+            }
+          }
+        },
+        "0.1.38": {
+          "changelog": "发布 0.1.38：AI 导入与对话、邮件导入配置、分类排序和统一选择交互继续增强；基金确认日、费率、定投、股票和固定资产相关流程进一步整合；表格、侧栏、详情页和导入预览的联动体验继续打磨。手机端可直接用浏览器访问 Web 版（响应式，支持日常查看与快速记账）；Android 客户端与飞牛包继续按同版本同步发布。",
+          "os_min_version": "0.9.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.38/mmh-fnos-v0.1.38-x86_64.fpk"
+            },
+            "arm": {
+              "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.38/mmh-fnos-v0.1.38-arm64.fpk"
             }
           }
         }

@@ -15,9 +15,18 @@ export type BillHeader = {
   currency?: "CNY" | "USD";
 };
 
+export type AiRecognitionPromptInput = {
+  currentDate: string;
+  accountContext: string;
+  billHeaderContext?: string;
+  transactionLines?: string[];
+  text?: string;
+  image?: boolean;
+};
+
 export const SYSTEM_PROMPT = `你是一个出色的家庭帐簿记录管理专家，你需要将用户的自然语句提炼成可对数据库进行精确操作的指令。
 
-你的任务：识别用户语句中是否包含以下字段，并结构化返回：
+你的任务：识别用户语句中是否包含以下字段，并结构化返回。你只负责抽取事实，不要决定最终分类或最终机构，分类和机构会由系统的学习库/规则库后处理：
 1) 操作类型（operation）：create|delete|update|restore|query|stats
 2) 时间范围（timeRange）：某个时间段 / 不限时间段
 3) 账户范围（accountRange）：指定账户 / 不限账户
@@ -63,7 +72,10 @@ export const SYSTEM_PROMPT = `你是一个出色的家庭帐簿记录管理专�
 - 用户说"恢复这7条"可解析为 operation=restore，并在 scope 中体现 limit=7（可放在 reason 中补充）
 - 如果是账单明细解析任务，operation=create 且 items 返回结构化明细
 - 如果是银行/支付交易提醒，operation=create，items 使用入库模板：
-  {"rawText":"原始片段","type":"expense|income|transfer|investment","date":"YYYY-MM-DD","amount":数字,"account":"账户可匹配文本","category":"","remark":"商户/摘要","counterparty":"银行或支付机构"}
+  {"rawText":"原始片段","type":"expense|income|transfer|investment","date":"交易日期 YYYY-MM-DD","postedAt":"实际入账日期 YYYY-MM-DD 或 null","amount":数字,"account":"账户可匹配文本","accountId":"上下文中的账户ID或null","institution":"可见的支付平台或商户原文（可选，不要归一化成最终机构）","remark":"把交易说明、商户名、支付渠道、卡尾等尽量保留完整","counterparty":"兼容旧字段，填写原始商户或支付渠道"}
+- date 是交易发生日期；postedAt 是确认的实际入账日期。没有明确入账日期时，必须省略或返回 null，系统会自动将 postedAt 写成 date。
+- 不要输出 category、categoryId、institutionId，也不要尝试决定最终分类；如果能看见支付平台、商户、卡尾或商品说明，请优先完整保留到 remark/counterparty/institution 原文里，系统会在下一步用学习库和规则库自动补分类与机构。
+- 上下文中的账户行格式为 accountId|标准账户名|尾号；返回 accountId 和 account，优先使用唯一匹配的账户ID。
 - 信用卡提醒出现"尾号3833信用卡"时，account 必须保留为"尾号3833信用卡"这类卡尾文本，不要泛化成"信用卡"。
 - 消费/刷卡/支出默认 type=expense；原消费的退款/退货/冲正仍用 type=expense，amount 用负数表示抵减原支出；工资、利息、报销、红包等真实收入用 type=income 且 amount 用正数。
 - 只输出 JSON，不要解释文字，不要 markdown。`;
@@ -91,6 +103,39 @@ export const CLASSIFY_PROMPT = `你是 MMH 系统的输入分类器。你的任�
 }
 
 只输出 JSON，不要解释，不要 markdown。`;
+
+export function buildAiRecognitionUserPrompt(input: AiRecognitionPromptInput) {
+  const fieldRequirements = [
+    "系统字段前置要求：",
+    "- operation 只能是 create/delete/update/restore/query/stats。",
+    "- create.items[] 只能使用 rawText、type、date、postedAt、amount、accountId、account、fromAccount、toAccount、institution、counterparty、remark 等事实字段。",
+    "- type 只能是 expense/income/transfer/investment；消费、刷卡、付款默认 expense，退款/冲正仍为 expense 且 amount 用负数。",
+    "- date 是交易发生日期；postedAt 是实际入账日期。文本没有明确入账日期时，postedAt 返回 null 或省略。",
+    "- accountId 必须来自账户上下文；只有唯一匹配时才填写。account 保留用户文本里能看见的账户名、卡尾或渠道文本。",
+    "- transfer 必须尽量填写 fromAccount 和 toAccount；不能确定时不要编造。",
+    "- institution/counterparty 只保留原始商户、支付平台、银行或可见渠道文本，不要归一化成最终机构。",
+    "- 不要输出 category、categoryId、institutionId；分类和最终机构由 MMH 规则库在模型返回后补齐。",
+    "- rawText 和 remark 要尽量保留原始交易说明、商户名、支付渠道、卡尾和商品说明，方便后处理学习。",
+  ].join("\n");
+
+  const contextLines = [
+    `当前日期：${input.currentDate}`,
+    fieldRequirements,
+    `账户上下文：\n${input.accountContext || "（暂无可用账户上下文）"}`,
+    input.billHeaderContext ? `账单头部预识别：${input.billHeaderContext}` : "",
+    input.transactionLines?.length ? `预抽取交易行：${input.transactionLines.join(" || ")}` : "",
+  ].filter(Boolean);
+
+  const sourceText = input.image
+    ? "输入载体：账单或交易截图。请结合图片内容解析。"
+    : `用户原始输入：\n${input.text ?? ""}`;
+
+  return [
+    ...contextLines,
+    sourceText,
+    "只输出严格 JSON，不要解释文字，不要 markdown。",
+  ].join("\n\n");
+}
 
 /** Build fund-specific system prompt when user is viewing a fund's holdings page */
 export function buildFundSystemPrompt(ctx: FundContext) {

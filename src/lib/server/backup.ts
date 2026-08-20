@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { prisma } from "@/lib/db/prisma";
+import { normalizeAiApiMode } from "@/lib/ai/config";
+import { EMAIL_IMPORT_KEYWORD_SETTING_PREFIX } from "@/lib/mail/email-import-settings";
 import { upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
 import {
   getOptionalPrismaDelegate,
@@ -1456,6 +1458,7 @@ export async function decryptBackupBytes(
 const RESTORABLE_HOUSEHOLD_SETTING_PREFIXES = [
   "category_hierarchy_normalized:",
   "category_deleted_default_templates:",
+  EMAIL_IMPORT_KEYWORD_SETTING_PREFIX,
 ];
 
 function householdSystemSettingKeys(householdId: string) {
@@ -2354,6 +2357,7 @@ export async function restoreHouseholdBackup(
         name: item.name == null ? null : String(item.name),
         channelId: String(item.channelId),
         vision: Boolean(item.vision),
+        apiMode: normalizeAiApiMode(item.apiMode == null ? undefined : String(item.apiMode)),
         active: Boolean(item.active),
         createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
         updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
@@ -2366,6 +2370,7 @@ export async function restoreHouseholdBackup(
           name: record.name,
           channelId: record.channelId,
           vision: record.vision,
+          apiMode: record.apiMode,
           active: record.active,
           createdAt: record.createdAt,
           updatedAt: record.updatedAt,
@@ -2608,7 +2613,7 @@ export async function restoreHouseholdBackup(
             item.defaultFundQueryApiId && importedFundQueryApis.has(String(item.defaultFundQueryApiId))
               ? String(item.defaultFundQueryApiId)
               : null,
-          fundUnitsDecimals: item.fundUnitsDecimals == null ? 3 : Number(item.fundUnitsDecimals),
+          fundUnitsDecimals: item.fundUnitsDecimals == null ? 2 : Number(item.fundUnitsDecimals),
         })),
       });
     }

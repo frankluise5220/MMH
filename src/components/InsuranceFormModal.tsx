@@ -126,6 +126,7 @@ const PRODUCT_TYPE_OPTIONS = [
 ] as const;
 
 const PAYMENT_MODE_OPTIONS = [
+  { value: 1, labelKey: "insuranceShell.frequency.monthly" },
   { value: 12, labelKey: "insuranceFormModal.payMode.annual" },
   { value: 999999, labelKey: "insuranceShell.frequency.single" },
 ] as const;
@@ -332,7 +333,6 @@ export function InsuranceFormModal({
   const [insuredPersonId, setInsuredPersonId] = useState("");
   const [beneficiaryPersonId, setBeneficiaryPersonId] = useState("");
   const [premiumFrequencyMonths, setPremiumFrequencyMonths] = useState("12");
-  const isAnnualPayment = premiumFrequencyMonths === "12";
   const isSinglePayment = premiumFrequencyMonths === "999999";
   const [productStartDateTouched, setProductStartDateTouched] = useState(false);
   const [productStartDate, setProductStartDate] = useState(initDate);
@@ -539,7 +539,11 @@ export function InsuranceFormModal({
       amount: amountValue,
       planStartDate: formatDateOnly(start),
       currentRecordDate: formatDateOnly(currentEntryDate),
-      frequencyLabel: frequencyMonths === 12 ? t("insuranceShell.frequency.annual") : t("insuranceFormModal.frequencyMonths", { months: frequencyMonths }),
+      frequencyLabel: frequencyMonths === 1
+        ? t("insuranceShell.frequency.monthly")
+        : frequencyMonths === 12
+          ? t("insuranceShell.frequency.annual")
+          : t("insuranceFormModal.frequencyMonths", { months: frequencyMonths }),
     };
   }
 
@@ -552,44 +556,13 @@ export function InsuranceFormModal({
     });
   }
 
-  const cashOptionsForPolicyholder = useMemo<SmartSelectOption[] | undefined>(() => {
-    const sourceOptions = localCashSSOpts;
-    if (!sourceOptions || !selectedPolicyholderName) return sourceOptions;
-    const allowedAccountIds = new Set(
-      Object.values(accountMetaById)
-        .filter((account) => account.groupName?.trim() === selectedPolicyholderName)
-        .map((account) => account.id),
-    );
-    const optionById = new Map(sourceOptions.map((option) => [option.id, option]));
-    const keptIds = new Set<string>();
-    for (const accountId of allowedAccountIds) {
-      keptIds.add(accountId);
-      let parentId = optionById.get(accountId)?.parentId;
-      while (parentId) {
-        keptIds.add(parentId);
-        parentId = optionById.get(parentId)?.parentId;
-      }
-    }
-    return sourceOptions.filter((option) => keptIds.has(option.id));
-  }, [accountMetaById, localCashSSOpts, selectedPolicyholderName]);
-
-  const cashListForPolicyholder = useMemo(
-    () =>
-      selectedPolicyholderName
-        ? cashAccountList.filter(
-            (account) => accountMetaById[account.id]?.groupName?.trim() === selectedPolicyholderName,
-          )
-        : cashAccountList,
-    [accountMetaById, cashAccountList, selectedPolicyholderName],
-  );
-
   const {
     ownerFilterLabel: cashOwnerFilterLabel,
     cycleOwnerFilter: cycleCashOwnerFilter,
     filteredOptions: cashFiltered,
-  } = useAccountSSFilter(cashOptionsForPolicyholder);
+  } = useAccountSSFilter(localCashSSOpts);
 
-  const cashOwnerCycleButton = cashOptionsForPolicyholder?.some((option) => option.isHeader) ? (
+  const cashOwnerCycleButton = localCashSSOpts?.some((option) => option.isHeader) ? (
     <button
       type="button"
       onClick={cycleCashOwnerFilter}
@@ -1029,10 +1002,7 @@ export function InsuranceFormModal({
                       <SmartSelect
                         mode="single"
                         value={policyholderPersonId}
-                        onChange={(id) => {
-                          setPolicyholderPersonId(id);
-                          setCashAccountId("");
-                        }}
+                        onChange={setPolicyholderPersonId}
                         options={familyMemberOptions}
                         placeholder={t("insuranceFormModal.selectPolicyholder")}
                         behavior={{
@@ -1053,8 +1023,8 @@ export function InsuranceFormModal({
                         mode="single"
                         value={cashAccountId}
                         onChange={setCashAccountId}
-                        options={cashFiltered ?? cashListForPolicyholder}
-                        placeholder={policyholderPersonId ? t("wealthForm.selectAccount") : t("insuranceFormModal.selectPolicyholderFirst")}
+                        options={cashFiltered ?? cashAccountList}
+                        placeholder={t("wealthForm.selectAccount")}
                         behavior={{
                           hierarchy: false,
                           search: "auto",
@@ -1170,11 +1140,11 @@ export function InsuranceFormModal({
                       <input
                         type="number"
                         inputMode="numeric"
-                        value={isAnnualPayment ? paymentTermYears : ""}
+                        value={isSinglePayment ? "" : paymentTermYears}
                         onChange={(event) => setPaymentTermYears(event.target.value)}
                         min={2}
                         max={30}
-                        placeholder={isAnnualPayment ? "2-30" : t("insuranceFormModal.locked")}
+                        placeholder={isSinglePayment ? t("insuranceFormModal.locked") : "2-30"}
                         disabled={isSinglePayment}
                         className="form-input disabled:bg-slate-100 disabled:text-slate-400"
                       />

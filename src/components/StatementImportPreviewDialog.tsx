@@ -7,6 +7,7 @@ import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchRepl
 import { evaluateCalcInputExpression } from "@/components/CalcInput";
 import { DateStepper } from "@/components/DateStepper";
 import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
+import { CATEGORY_SMART_SELECT_BEHAVIOR, buildCategorySmartSelectOptions } from "@/components/categorySmartSelect";
 import { useAccountSSFilter } from "@/components/accountSSFilter";
 import {
   buildAccountDisplayOption,
@@ -377,49 +378,17 @@ export function isStatementImportReady(item: StatementImportPreviewItem, default
 
 function buildCategoryOptions(categories: BookCategory[], txType: StatementImportPreviewItem["type"] | undefined, t: (key: string) => string): BatchReplaceOption[] {
   const options: BatchReplaceOption[] = [{ value: "", label: t("statementImportPreview.clearCategory") }];
-  const indent = "　";
   const typeLabels: Record<string, string> = { expense: t("stats.expenseCategories"), income: t("statementImportPreview.incomeCategories") };
   const types = txType ? [txType === "income" ? "income" : "expense"] : ["expense", "income"];
   const scopedToOneType = Boolean(txType);
-
-  for (const type of types) {
-    const typedCategories = categories.filter((category) => category.type === type);
-    if (typedCategories.length === 0) continue;
-    const headerId = `preview-category-type:${type}`;
-    if (!scopedToOneType) {
-      options.push({ value: headerId, label: typeLabels[type] ?? type, isHeader: true });
-    }
-
-    const childrenByParentId = new Map<string | null, BookCategory[]>();
-    for (const category of typedCategories) {
-      const key = category.parentId ?? null;
-      const list = childrenByParentId.get(key) ?? [];
-      list.push(category);
-      childrenByParentId.set(key, list);
-    }
-    for (const list of childrenByParentId.values()) {
-      list.sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
-    }
-
-    function walk(parentId: string | null, level: number, parentOptionId?: string) {
-      const children = childrenByParentId.get(parentId) ?? [];
-      for (const child of children) {
-        const hasChildren = (childrenByParentId.get(child.id) ?? []).length > 0;
-        options.push({
-          value: child.id,
-          label: `${indent.repeat(level)}${systemCategoryLabel(child.name, t)}`,
-          subLabel: scopedToOneType ? undefined : typeLabels[type] ?? type,
-          parentId: parentOptionId,
-          isGroup: hasChildren,
-        });
-        if (hasChildren) walk(child.id, level + 1, child.id);
-      }
-    }
-
-    walk(null, 0, scopedToOneType ? undefined : headerId);
-  }
-
-  return options;
+  return options.concat(buildCategorySmartSelectOptions({
+    categories,
+    types,
+    typeLabels,
+    typeHeaderPrefix: "preview-category-type",
+    includeTypeHeaders: !scopedToOneType,
+    t,
+  }).map((option) => ({ ...option, value: option.id })));
 }
 
 function buildPreviewRows(items: StatementImportPreviewItem[], defaultAccountName: string, lookup: PreviewAccountLookup | null = null): ImportPreviewRow[] {
@@ -856,20 +825,7 @@ export function StatementImportPreviewDialog({
         options: previewCategoryReplaceOptions,
         placeholder: t("statementImportPreview.selectCategory"),
         allowEmpty: true,
-        smartSelectBehavior: {
-          hierarchy: true,
-          search: true,
-          initialCollapsedAll: true,
-          accordionGroups: true,
-          selectableGroups: true,
-          groupSelectOnDoubleClick: false,
-          minDropdownWidth: 252,
-          fitContent: true,
-          dropdownMaxHeight: 520,
-          density: "micro",
-          expandedGroupColumns: 4,
-          resizableDropdown: true,
-        },
+        smartSelectBehavior: CATEGORY_SMART_SELECT_BEHAVIOR,
       },
       { value: "institution", label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.institution), kind: "text", placeholder: t("statementImportPreview.institutionPlaceholder") },
       { value: "outflow", label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.outflow), kind: "number", placeholder: t("statementImportPreview.amountExpressionPlaceholder") },
@@ -1139,7 +1095,7 @@ export function StatementImportPreviewDialog({
                 options={previewCategorySmartSelectOptionsFor(row.item.type)}
                 placeholder={t("statementImportPreview.selectCategory")}
                 searchable
-                behavior={{ hierarchy: true, search: true, initialCollapsedAll: true, accordionGroups: true, selectableGroups: true, groupSelectOnDoubleClick: false, minDropdownWidth: 252, fitContent: true, dropdownMaxHeight: 520, density: "micro", expandedGroupColumns: 4, resizableDropdown: true, autoOpen: true, showGroupCounts: false, onDropdownClose: () => setEditingPreviewCell(null) }}
+                behavior={{ ...CATEGORY_SMART_SELECT_BEHAVIOR, autoOpen: true, showGroupCounts: false, onDropdownClose: () => setEditingPreviewCell(null) }}
               />
             </div>
           ) : (

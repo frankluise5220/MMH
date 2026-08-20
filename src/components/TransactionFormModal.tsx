@@ -27,6 +27,11 @@ import {
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { parseDateInputToUtc as dateInputToUtcDate } from "@/lib/date-utils";
+import {
+  FIXED_ASSET_EXPENSE_CATEGORY_NAME,
+  isFixedAssetAccountLike,
+  isFixedAssetExpenseCategoryPath,
+} from "@/lib/fixed-asset";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { useI18n } from "@/lib/i18n";
 import {
@@ -35,6 +40,7 @@ import {
   type CreditCardInstallmentRateType,
 } from "@/lib/credit/installment";
 import { filterIncomeExpenseInstitutions } from "@/lib/institution-rules";
+import { sortCategorySources } from "@/components/categorySmartSelect";
 
 type TxType = "expense" | "income" | "advance" | "transfer" | "fx" | "investment";
 type TransactionActionResult =
@@ -63,6 +69,8 @@ type CategoryOption = {
   label: string;
   parentId: string | null;
   type: string;
+  sortOrder?: number;
+  isSystem?: boolean;
 };
 
 type AiPrefillItem = {
@@ -91,6 +99,12 @@ type OpenFromAiDetail = {
   stockTransferMode?: boolean;
   stockCashAccountId?: string;
   stockCashAccountName?: string;
+  /** Opens an expense with a fixed-asset account already selected. */
+  fixedAssetAccountId?: string;
+  fixedAssetAssetId?: string;
+  /** Requires the expense to stay linked to a fixed asset, even before an account is selected. */
+  fixedAssetRequired?: boolean;
+  lockFixedAsset?: boolean;
 };
 
 function normalizeYmd(value: string | undefined) {
@@ -236,6 +250,8 @@ function buildCategoryOptionsFromSettings(categories: SettingsCategory[], type: 
       label: pathFor(category),
       parentId: category.parentId ?? null,
       type: category.type,
+      sortOrder: category.sortOrder,
+      isSystem: category.isSystem,
     }));
 }
 
@@ -315,6 +331,8 @@ export function TransactionFormModal({
   allTags,
   accountSSOptions,
   transferAccountSSOptions,
+  fixedAssetAccounts,
+  fixedAssetAccountSSOptions,
   nestedFieldData,
   hideTrigger = false,
 }: {
@@ -335,6 +353,10 @@ export function TransactionFormModal({
   accountSSOptions?: SmartSelectOption[];
   /** Hierarchical SmartSelect options for transfer account dropdown (grouped by AccountGroup) */
   transferAccountSSOptions?: SmartSelectOption[];
+  /** Property investment accounts usable as fixed asset targets from normal expense entries */
+  fixedAssetAccounts?: AccountOption[];
+  /** Hierarchical SmartSelect options for fixed asset account dropdown */
+  fixedAssetAccountSSOptions?: SmartSelectOption[];
   /** Groups & institutions data for NestedAddModal compact account creation */
   nestedFieldData?: NestedFieldData;
   hideTrigger?: boolean;
@@ -374,6 +396,8 @@ export function TransactionFormModal({
   const [transferAccountList, setTransferAccountList] = useState(transferAccounts);
   const [localAccountSSOpts, setLocalAccountSSOpts] = useState(accountSSOptions);
   const [localTransferAccountSSOpts, setLocalTransferAccountSSOpts] = useState(transferAccountSSOptions);
+  const [fixedAssetAccountList, setFixedAssetAccountList] = useState(fixedAssetAccounts ?? []);
+  const [localFixedAssetAccountSSOpts, setLocalFixedAssetAccountSSOpts] = useState(fixedAssetAccountSSOptions);
   const [localNestedFieldData, setLocalNestedFieldData] = useState<NestedFieldData | undefined>(nestedFieldData);
   const formRef = useRef<HTMLFormElement>(null);
   const submitModeRef = useRef<SubmitMode>("close");
@@ -484,6 +508,16 @@ export function TransactionFormModal({
     }
   }, [transferAccountSSOptions]);
 
+  useEffect(() => {
+    setFixedAssetAccountList(fixedAssetAccounts ?? []);
+  }, [fixedAssetAccounts]);
+
+  useEffect(() => {
+    if (fixedAssetAccountSSOptions) {
+      setLocalFixedAssetAccountSSOpts((prev) => mergeSmartSelectOptions(fixedAssetAccountSSOptions, prev));
+    }
+  }, [fixedAssetAccountSSOptions]);
+
   const currentCategoryType = useMemo(() =>
     txType === "income" ? "income" :
     txType === "advance" ? "advance" :
@@ -502,6 +536,9 @@ export function TransactionFormModal({
       const list = byParentId.get(c.parentId) ?? [];
       list.push(c);
       byParentId.set(c.parentId, list);
+    }
+    for (const [parentId, list] of byParentId) {
+      byParentId.set(parentId, sortCategorySources(list));
     }
 
     const options: Array<{ id: string; name: string; label: string; type: string; depth: number; parentId?: string; isGroup?: boolean }> = [];
@@ -542,6 +579,9 @@ export function TransactionFormModal({
       const list = byParentId.get(c.parentId) ?? [];
       list.push(c);
       byParentId.set(c.parentId, list);
+    }
+    for (const [parentId, list] of byParentId) {
+      byParentId.set(parentId, sortCategorySources(list));
     }
 
     const opts: SmartSelectOption[] = [];
@@ -609,6 +649,12 @@ export function TransactionFormModal({
   const [fromAccountId, setFromAccountId] = useState(isCreditCardAccount ? (lastRepayFromAccountId ?? defaultAccountId ?? "") : "");
   const [toAccountId, setToAccountId] = useState(isCreditCardAccount ? (defaultAccountId ?? "") : "");
   const [categoryId, setCategoryId] = useState("");
+  const [fixedAssetLinked, setFixedAssetLinked] = useState(false);
+  const [fixedAssetAccountId, setFixedAssetAccountId] = useState("");
+  const [fixedAssetAssetId, setFixedAssetAssetId] = useState("");
+  const [fixedAssetLinkLocked, setFixedAssetLinkLocked] = useState(false);
+  const [fixedAssetAccountNestedOpen, setFixedAssetAccountNestedOpen] = useState(false);
+  const [fixedAssetAccountAutoOpen, setFixedAssetAccountAutoOpen] = useState(false);
   const [counterpartyInstitutionId, setCounterpartyInstitutionId] = useState("");
   const [note, setNote] = useState("");
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
@@ -629,6 +675,7 @@ export function TransactionFormModal({
           .filter((kind): kind is string => Boolean(kind)),
       );
       const nextAccountOptions = allOptions.filter((option) => !allowedKinds.size || allowedKinds.has(option.kind ?? ""));
+      const nextFixedAssetAccountOptions = allOptions.filter(isFixedAssetAccountLike);
       const selectedIds = new Set([accountId, fromAccountId, toAccountId].filter(Boolean));
       setAccountList((prev) => {
         const selectedOnly = prev.filter((option) => selectedIds.has(option.id) && !nextAccountOptions.some((next) => next.id === option.id));
@@ -638,12 +685,20 @@ export function TransactionFormModal({
         const selectedOnly = prev.filter((option) => selectedIds.has(option.id) && !allOptions.some((next) => next.id === option.id));
         return mergeSmartSelectOptions(allOptions, selectedOnly);
       });
+      setFixedAssetAccountList((prev) => {
+        const selectedOnly = prev.filter((option) => fixedAssetAccountId === option.id && !nextFixedAssetAccountOptions.some((next) => next.id === option.id));
+        return mergeSmartSelectOptions(nextFixedAssetAccountOptions, selectedOnly);
+      });
       const groupedAll = buildGroupedOptionsFromSettingsAccounts(rawAccounts);
       const groupedAccount = buildGroupedOptionsFromSettingsAccounts(
         rawAccounts.filter((account) => !allowedKinds.size || allowedKinds.has(account.kind ?? "")),
       );
+      const groupedFixedAsset = buildGroupedOptionsFromSettingsAccounts(
+        rawAccounts.filter(isFixedAssetAccountLike),
+      );
       setLocalAccountSSOpts(groupedAccount);
       setLocalTransferAccountSSOpts(groupedAll);
+      setLocalFixedAssetAccountSSOpts(groupedFixedAsset);
       setLocalNestedFieldData({
         groupId: (data.groups ?? []).map((group) => ({ id: group.id, name: group.name })),
         institutionId: (data.institutions ?? []).map((institution) => ({
@@ -690,6 +745,7 @@ export function TransactionFormModal({
     accounts,
     currentCategoryType,
     fromAccountId,
+    fixedAssetAccountId,
     toAccountId,
   ]);
 
@@ -704,6 +760,10 @@ export function TransactionFormModal({
     filteredOptions: transferFiltered,
     visibleOptionIds: transferVisibleOptionIds,
   } = useAccountSSFilter(localTransferAccountSSOpts, ownerFilter);
+  const {
+    filteredOptions: fixedAssetFiltered,
+    visibleOptionIds: fixedAssetVisibleOptionIds,
+  } = useAccountSSFilter(localFixedAssetAccountSSOpts, ownerFilter);
 
   const accountUsage = useAccountUsage();
   const displayTransferOptions = useMemo(() => {
@@ -748,6 +808,19 @@ export function TransactionFormModal({
     }
     return sortByAccountUsage(base, accountUsage);
   }, [accountSSOptionsFiltered, accountList, accountUsage, accountVisibleOptionIds]);
+  const displayFixedAssetAccountOptions = useMemo(() => {
+    let base = mergeSmartSelectOptions(fixedAssetFiltered, fixedAssetAccountList);
+    const selected = fixedAssetAccountList.find((option) => option.id === fixedAssetAccountId);
+    if (fixedAssetVisibleOptionIds) {
+      base = base.filter((option) => fixedAssetVisibleOptionIds.has(option.id));
+    }
+    if (selected && !base.some((option) => option.id === selected.id)) base.push(selected);
+    return sortByAccountUsage(base, accountUsage);
+  }, [accountUsage, fixedAssetAccountId, fixedAssetAccountList, fixedAssetFiltered, fixedAssetVisibleOptionIds]);
+  const fixedAssetSelectableOptions = useMemo(
+    () => displayFixedAssetAccountOptions.filter((option) => !option.isHeader && !option.isGroup),
+    [displayFixedAssetAccountOptions],
+  );
   const incomeExpenseInstitutionOptions = useMemo(
     () => filterIncomeExpenseInstitutions(localNestedFieldData?.institutionId ?? nestedFieldData?.institutionId ?? []),
     [localNestedFieldData, nestedFieldData],
@@ -756,6 +829,21 @@ export function TransactionFormModal({
     density: "compact" as const,
     dropdownMaxHeight: 320,
   }), []);
+  const fixedAssetAccountSelectBehavior = useMemo(() => ({
+    ...compactAccountSelectBehavior,
+    autoOpen: fixedAssetAccountAutoOpen,
+    onDropdownClose: () => setFixedAssetAccountAutoOpen(false),
+  }), [compactAccountSelectBehavior, fixedAssetAccountAutoOpen]);
+
+  useEffect(() => {
+    if (!open || txType !== "expense" || !fixedAssetLinked) return;
+    if (fixedAssetAccountId) return;
+    if (fixedAssetSelectableOptions.length !== 1) return;
+    const [onlyOption] = fixedAssetSelectableOptions;
+    setFixedAssetAccountId(onlyOption.id);
+    setFixedAssetAssetId("");
+    setFixedAssetAccountAutoOpen(false);
+  }, [fixedAssetAccountId, fixedAssetLinked, fixedAssetSelectableOptions, open, txType]);
 
   const accountMetaById = useMemo(() => {
     const map = new Map<string, AccountOption>();
@@ -767,11 +855,12 @@ export function TransactionFormModal({
         map.set(option.id, next);
       }
     };
-    [...transferAccountList, ...accountList].forEach(add);
+    [...transferAccountList, ...accountList, ...fixedAssetAccountList].forEach(add);
     (localTransferAccountSSOpts ?? []).forEach(add);
     (localAccountSSOpts ?? []).forEach(add);
+    (localFixedAssetAccountSSOpts ?? []).forEach(add);
     return map;
-  }, [accountList, localAccountSSOpts, localTransferAccountSSOpts, transferAccountList]);
+  }, [accountList, fixedAssetAccountList, localAccountSSOpts, localFixedAssetAccountSSOpts, localTransferAccountSSOpts, transferAccountList]);
   const selectedAccountIsCreditCard = accountMetaById.get(accountId)?.kind === "bank_credit"
     || (isCreditCardAccount && accountId === (defaultAccountId ?? accountId));
   const fxFromCurrency = fromAccountId
@@ -876,7 +965,7 @@ export function TransactionFormModal({
     const quoteAmount = (fromValue / toValue) * quoteBase;
     if (!Number.isFinite(quoteAmount) || quoteAmount <= 0) return "";
     return t("txForm.fxCommonQuote", { base: quoteBase, to: fxToCurrency, amount: formatFxQuoteAmount(quoteAmount, language), from: fxFromCurrency });
-  }, [amount, fxFromCurrency, language, fxToAmount, fxToCurrency]);
+  }, [amount, fxFromCurrency, language, fxToAmount, fxToCurrency, t]);
   const installmentPreview = useMemo(() => {
     if (!createInstallment) return null;
     const account = accountMetaById.get(accountId);
@@ -1049,6 +1138,12 @@ export function TransactionFormModal({
       setToAccountId("");
     }
     setCategoryId("");
+    setFixedAssetLinked(false);
+    setFixedAssetAccountId("");
+    setFixedAssetAssetId("");
+    setFixedAssetLinkLocked(false);
+    setFixedAssetAccountNestedOpen(false);
+    setFixedAssetAccountAutoOpen(false);
     setCounterpartyInstitutionId("");
     setNote("");
     setSelectedTagIds([]);
@@ -1074,6 +1169,12 @@ export function TransactionFormModal({
     setCreateInstallment(false);
     setInstallmentAmount("");
     setInstallmentAmountEdited(false);
+    setFixedAssetLinked(false);
+    setFixedAssetAccountId("");
+    setFixedAssetAssetId("");
+    setFixedAssetLinkLocked(false);
+    setFixedAssetAccountNestedOpen(false);
+    setFixedAssetAccountAutoOpen(false);
     setPendingAttachmentFiles([]);
     setRequestId(null);
     setEditEntryId(null);
@@ -1094,6 +1195,7 @@ export function TransactionFormModal({
   }
 
   function switchType(nextType: TxType) {
+    if (lockedType && nextType !== lockedType) return;
     const currentType = txType;
     if ((nextType === "transfer" || nextType === "fx") && currentType !== "transfer" && currentType !== "fx") {
       setAmount((value) => {
@@ -1121,6 +1223,24 @@ export function TransactionFormModal({
       setFromAccountIdEdited(false);
     }
     setTxType(nextType);
+    if (nextType !== "expense") {
+      setFixedAssetLinked(false);
+      setFixedAssetAccountId("");
+      setFixedAssetAssetId("");
+      setFixedAssetLinkLocked(false);
+      setFixedAssetAccountNestedOpen(false);
+      setFixedAssetAccountAutoOpen(false);
+    }
+  }
+
+  function handleCategoryChange(nextCategoryId: string) {
+    setCategoryId(nextCategoryId);
+    if (txType !== "expense") return;
+    const selected = categoryList.find((category) => category.id === nextCategoryId);
+    if (!isFixedAssetExpenseCategoryPath(selected?.label)) return;
+    setFixedAssetLinked(true);
+    setFixedAssetAccountNestedOpen(true);
+    setFixedAssetAccountAutoOpen(false);
   }
 
   useEffect(() => {
@@ -1139,6 +1259,7 @@ export function TransactionFormModal({
             : item.type === "investment"
               ? "investment"
               : "expense";
+      const effectiveType = detail.lockedType ?? mappedType;
 
       setRequestId(detail.requestId);
       setOpen(true);
@@ -1146,7 +1267,19 @@ export function TransactionFormModal({
       setLockedType(detail.lockedType ?? null);
       setStockTransferMode(detail.stockTransferMode === true);
       setStockCashAccountId(detail.stockCashAccountId ?? "");
-      setTxType(mappedType);
+      const forcedFixedAssetAccountId = detail.fixedAssetAccountId?.trim() ?? "";
+      const fixedAssetRequired = effectiveType === "expense" && (
+        detail.fixedAssetRequired === true
+        || detail.lockFixedAsset === true
+        || Boolean(forcedFixedAssetAccountId)
+      );
+      setFixedAssetLinked(fixedAssetRequired);
+      setFixedAssetAccountId(forcedFixedAssetAccountId);
+      setFixedAssetAssetId(detail.fixedAssetAssetId?.trim() ?? "");
+      setFixedAssetLinkLocked(effectiveType === "expense" && detail.lockFixedAsset === true);
+      setFixedAssetAccountNestedOpen(false);
+      setFixedAssetAccountAutoOpen(fixedAssetRequired && !forcedFixedAssetAccountId);
+      setTxType(effectiveType);
 
       const dateStr = normalizeYmd(item.date) || today;
       setDate(dateStr);
@@ -1163,11 +1296,11 @@ export function TransactionFormModal({
       setFxRate("");
       setFxFeeAmount("");
 
-      if (mappedType === "transfer" || mappedType === "fx") {
+      if (effectiveType === "transfer" || effectiveType === "fx") {
         const nextFromAccountId = findAccountIdByLabel(item.fromAccount, transferAccounts) || detail.defaultFromAccountId || detail.defaultAccountId || (defaultAccountId ?? "");
         const rawNextToAccountId = findAccountIdByLabel(item.toAccount ?? item.account, transferAccounts) || detail.defaultToAccountId || "";
         const rawNextToAccount = transferAccounts.find((account) => account.id === rawNextToAccountId);
-        const nextToAccountId = mappedType === "fx" && rawNextToAccount && !isForeignCurrency(rawNextToAccount.currency)
+        const nextToAccountId = effectiveType === "fx" && rawNextToAccount && !isForeignCurrency(rawNextToAccount.currency)
           ? ""
           : rawNextToAccountId;
         // Stock-to-cash transfer: the target account is fixed to the securities cash account of the current stock institution.
@@ -1179,7 +1312,7 @@ export function TransactionFormModal({
           : nextFromAccountId;
         setFromAccountId(effectiveFromAccountId);
         setToAccountId(effectiveToAccountId);
-        if (mappedType === "fx") {
+        if (effectiveType === "fx") {
           const fromCurrency = transferAccounts.find((account) => account.id === nextFromAccountId)?.currency;
           const toCurrency = transferAccounts.find((account) => account.id === nextToAccountId)?.currency;
           setFxFromCurrencyDraft(normalizeCurrencyLabel(fromCurrency));
@@ -1192,8 +1325,12 @@ export function TransactionFormModal({
 
         const rawCat = (item.category ?? "").trim();
         const withTypePrefix = rawCat ? `支出.${rawCat}` : "";
-        const nextCatId = findCategoryIdByLabel(withTypePrefix, expenseCategories)
-          || findCategoryIdByLabel(rawCat, expenseCategories);
+        const nextCatId = fixedAssetRequired
+          ? findCategoryIdByLabel(FIXED_ASSET_EXPENSE_CATEGORY_NAME, expenseCategories)
+            || findCategoryIdByLabel(withTypePrefix, expenseCategories)
+            || findCategoryIdByLabel(rawCat, expenseCategories)
+          : findCategoryIdByLabel(withTypePrefix, expenseCategories)
+            || findCategoryIdByLabel(rawCat, expenseCategories);
         setCategoryId(nextCatId);
 
         setFromAccountId(defaultAccountId ?? "");
@@ -1271,6 +1408,12 @@ export function TransactionFormModal({
         toAccountId: detail.toAccountId ?? undefined,
       };
       setCreateInstallment(false);
+      setFixedAssetLinked(false);
+      setFixedAssetAccountId("");
+      setFixedAssetAssetId("");
+      setFixedAssetLinkLocked(false);
+      setFixedAssetAccountNestedOpen(false);
+      setFixedAssetAccountAutoOpen(false);
       setOpen(true);
       setTxType(detail.type);
       setDate(detail.date || today);
@@ -1352,6 +1495,7 @@ export function TransactionFormModal({
     today,
     transferAccountList,
     transferAccountSSOptions,
+    t,
   ]);
 
   useEffect(() => {
@@ -1412,7 +1556,7 @@ export function TransactionFormModal({
       ? compactIds([fromAccountId, toAccountId])
       : txType === "investment"
         ? compactIds([accountId, fromAccountId, toAccountId, defaultAccountId])
-        : compactIds([accountId, toAccountId, defaultAccountId]);
+        : compactIds([accountId, toAccountId, defaultAccountId, fixedAssetLinked ? fixedAssetAccountId : ""]);
 
     // A save only skips the heavy refresh when editing an existing record and
     // every balance-affecting field (type, amount, date, accounts) is unchanged.
@@ -1476,6 +1620,12 @@ export function TransactionFormModal({
         }
         return;
       }
+    }
+
+    const shouldLinkFixedAsset = txType === "expense" && (fixedAssetLinked || Boolean(fixedAssetAccountId));
+    if (shouldLinkFixedAsset && !fixedAssetAccountId) {
+      window.alert(t("txForm.alert.selectFixedAssetAccount"));
+      return;
     }
     
     if (txType === "fx") {
@@ -1605,6 +1755,10 @@ export function TransactionFormModal({
         } else {
           formData.set("accountId", accountId);
           formData.set("categoryId", categoryId);
+          if (shouldLinkFixedAsset) {
+            formData.set("fixedAssetAccountId", fixedAssetAccountId);
+            if (fixedAssetAssetId) formData.set("fixedAssetAssetId", fixedAssetAssetId);
+          }
       }
       formData.set("tagIds", JSON.stringify(selectedTagIds));
       if (txType === "expense" && createInstallment && !editEntryId) {
@@ -1965,7 +2119,7 @@ export function TransactionFormModal({
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <div className="form-label">{t("detail.column.category")}</div>
-                      <SmartSelect mode="single" value={categoryId} onChange={setCategoryId}
+                      <SmartSelect mode="single" value={categoryId} onChange={handleCategoryChange}
                         options={categorySSOptions} placeholder={t("txForm.uncategorized")}
                         onCreateClick={() => setCategoryNestedOpen(true)}
                         behavior={{
@@ -2005,16 +2159,86 @@ export function TransactionFormModal({
                     </div>
                   </div>
 
-                  <div className="space-y-1">
-                    <div className="form-label">{t("txForm.amount")}</div>
-                    <CalcInput value={amount} onChange={(value) => {
-                      setAmount(value);
-                      if (createInstallment && !installmentAmountEdited) {
-                        const numeric = Math.abs(Number(value));
-                        setInstallmentAmount(Number.isFinite(numeric) && numeric > 0 ? String(numeric) : "");
-                      }
-                    }} placeholder={txType === "expense" ? t("txForm.amountPlaceholderExpense") : t("txForm.amountPlaceholderIncome")} label={t("txForm.amount")} precision={2} />
+                  <div className={txType === "expense" ? "grid grid-cols-[4.5rem_minmax(0,1fr)] items-end gap-3" : "space-y-1"}>
+                    {txType === "expense" ? (
+                      <div className="space-y-1">
+                        <div className="form-label">{t("txForm.fixedAssetToggle")}</div>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={fixedAssetLinked}
+                          aria-disabled={fixedAssetLinkLocked}
+                          aria-label={t("txForm.fixedAssetToggle")}
+                          onClick={() => {
+                            if (fixedAssetLinkLocked) return;
+                            setFixedAssetLinked((current) => {
+                              const next = !current;
+                              if (next) {
+                                setFixedAssetAccountAutoOpen(true);
+                              } else {
+                                setFixedAssetAccountId("");
+                                setFixedAssetAccountAutoOpen(false);
+                              }
+                              return next;
+                            });
+                          }}
+                          className={[
+                            "flex h-9 w-12 items-center justify-center rounded-[10px] border px-2 text-xs font-medium transition",
+                            fixedAssetLinkLocked ? "cursor-not-allowed opacity-80" : "",
+                            fixedAssetLinked
+                              ? "border-blue-300 bg-blue-50 text-blue-700"
+                              : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50",
+                          ].join(" ")}
+                        >
+                          <span
+                            className={[
+                              "relative h-4 w-7 shrink-0 rounded-full transition",
+                              fixedAssetLinked ? "bg-blue-600" : "bg-slate-300",
+                            ].join(" ")}
+                          >
+                            <span
+                              className={[
+                                "absolute top-0.5 h-3 w-3 rounded-full bg-white shadow-sm transition",
+                                fixedAssetLinked ? "left-3.5" : "left-0.5",
+                              ].join(" ")}
+                            />
+                          </span>
+                        </button>
+                      </div>
+                    ) : null}
+                    <div className="min-w-0 space-y-1">
+                      <div className="form-label">{t("txForm.amount")}</div>
+                      <CalcInput value={amount} onChange={(value) => {
+                        setAmount(value);
+                        if (createInstallment && !installmentAmountEdited) {
+                          const numeric = Math.abs(Number(value));
+                          setInstallmentAmount(Number.isFinite(numeric) && numeric > 0 ? String(numeric) : "");
+                        }
+                      }} placeholder={txType === "expense" ? t("txForm.amountPlaceholderExpense") : t("txForm.amountPlaceholderIncome")} label={t("txForm.amount")} precision={2} />
+                    </div>
                   </div>
+
+                  {txType === "expense" && fixedAssetLinked ? (
+                    <div className="space-y-1">
+                      <div className="form-label">{t("txForm.fixedAssetAccount")}</div>
+                      <SmartSelect
+                        mode="single"
+                        value={fixedAssetAccountId}
+                        onChange={(id: string) => {
+                          setFixedAssetAccountId(id);
+                          setFixedAssetAssetId("");
+                          recordRecentAccount(id);
+                        }}
+                        options={displayFixedAssetAccountOptions}
+                        placeholder={t("txForm.selectFixedAssetAccount")}
+                        onCreateClick={() => setFixedAssetAccountNestedOpen(true)}
+                        createLabel={t("txForm.createFixedAssetAccount")}
+                        onCycleOwnerFilter={cycleOwnerFilter}
+                        ownerFilterLabel={ownerFilterLabel}
+                        behavior={fixedAssetAccountSelectBehavior}
+                      />
+                    </div>
+                  ) : null}
 
                   {txType === "expense" && selectedAccountIsCreditCard && !editEntryId ? (
                     <div className="border-y border-slate-200 py-3 space-y-3">
@@ -2466,6 +2690,41 @@ export function TransactionFormModal({
           else setAccountId(id);
           setAccountNestedOpen(false);
           setAccountCreateTarget("account");
+        }}
+        nestedFieldData={localNestedFieldData ?? nestedFieldData}
+      />,
+      document.body,
+    )}
+    {open && fixedAssetAccountNestedOpen && createPortal(
+      <NestedAddModal
+        mode="compact"
+        entityType="account"
+        open={fixedAssetAccountNestedOpen}
+        onClose={() => setFixedAssetAccountNestedOpen(false)}
+        title={t("txForm.createFixedAssetAccount")}
+        nameLabel={t("txForm.fixedAssetAccountName")}
+        namePlaceholder={t("txForm.fixedAssetAccountPlaceholder")}
+        defaultType="investment"
+        extraFields={{ kind: "investment", investProductType: "property" }}
+        hiddenFields={["kind", "investProductType", "institutionId", "fundUnitsDecimals", "tradingCalendar", "costBasisMethod"]}
+        onCreated={(id, name, extra) => {
+          const kind = "investment";
+          const groupId = extra?.groupId?.trim();
+          const groupName = extra?.groupName?.trim();
+          const option = {
+            id,
+            label: name,
+            subLabel: t("txForm.fixedAssetAccount"),
+            kind,
+            investProductType: "property",
+            currency: extra?.currency,
+          };
+          setFixedAssetAccountList((prev) => [...prev, option]);
+          setLocalFixedAssetAccountSSOpts((prev) => appendAccountOptionWithGroup(prev, option, groupId, groupName));
+          setFixedAssetLinked(true);
+          setFixedAssetAccountId(id);
+          setFixedAssetAccountNestedOpen(false);
+          setFixedAssetAccountAutoOpen(false);
         }}
         nestedFieldData={localNestedFieldData ?? nestedFieldData}
       />,

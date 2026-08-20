@@ -261,6 +261,7 @@ export function parseStatementTemplateRows(
     const signedDirection = hasExplicitFlow ? explicitDirection : signedAmountDirection(amountSigned, signedAmountInflowSign);
     const amount = Math.abs(amountSigned) || rawInflow || rawOutflow;
     const rawAccountValue = accountIndex >= 0 ? String(row[accountIndex] ?? "").trim() : defaultAccountName;
+    const contextAccount = accountIndex < 0 ? defaultAccountName : "";
     const cardLast4 = legacyCardAccountMode ? rawAccountValue.match(/\d{4}(?!\d)/)?.[0] ?? "" : "";
     const accountValue = legacyCardAccountMode
       ? cardAccountHint(knownInstitutionName, defaultAccountName, cardLast4)
@@ -286,9 +287,9 @@ export function parseStatementTemplateRows(
         : isCreditCardRepaymentLikeText(sourceText) || signedDirection !== "out";
       const fromAccount = transferIsInflow
         ? accountSideIsPrimary ? counterAccount : accountValue
-        : accountSideIsPrimary ? (accountValue || defaultAccountName) : (counterAccount || defaultAccountName);
+        : accountSideIsPrimary ? (accountValue || contextAccount) : (counterAccount || contextAccount);
       const toAccount = transferIsInflow
-        ? accountSideIsPrimary ? (accountValue || defaultAccountName) : (counterAccount || defaultAccountName)
+        ? accountSideIsPrimary ? (accountValue || contextAccount) : (counterAccount || contextAccount)
         : accountSideIsPrimary ? counterAccount : accountValue;
       return [{
         rawText: rowText(row),
@@ -311,7 +312,7 @@ export function parseStatementTemplateRows(
       }];
     }
 
-    const account = accountValue || defaultAccountName;
+    const account = accountValue || contextAccount;
     const resolvedType = explicitDirection === "out" ? "expense" : isIncome ? "income" : "expense";
     const accountSideInflow = explicitDirection
       ? explicitDirection === "in"

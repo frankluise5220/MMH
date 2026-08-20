@@ -35,11 +35,28 @@ type UndoPreview = {
 
 type UndoState = {
   label: string;
+  action?: string;
   canUndo: boolean;
   undoCount?: number;
   historyLimit?: number;
   preview?: UndoPreview | null;
 } | null;
+
+function undoLabel(operation: { label: string; action?: string }, t: TFunction) {
+  switch (operation.action) {
+    case "create":
+    case "batch_create":
+      return t("undo.action.revertCreate");
+    case "delete":
+    case "batch_delete":
+      return t("undo.action.restoreDeleted");
+    case "edit":
+    case "batch_edit":
+      return t("undo.action.revertEdit");
+    default:
+      return operation.label;
+  }
+}
 
 const TRANSACTION_TYPE_LABEL_KEYS: Record<string, string> = {
   expense: "transaction.type.expense",
@@ -80,7 +97,7 @@ function formatUndoPreviewItem(item: UndoPreviewItem, t: TFunction) {
 }
 
 function buildUndoConfirmMessage(operation: NonNullable<UndoState>, t: TFunction) {
-  const lines = [t("undo.confirmMessage", { label: operation.label })];
+  const lines = [t("undo.confirmMessage", { label: undoLabel(operation, t) })];
   const preview = operation.preview;
   if (preview?.items?.length) {
     lines.push("");
@@ -159,8 +176,8 @@ export function UndoLastOperationButton({
       }
       const remainingCount = Number(result.data?.remainingCount ?? 0);
       setMessage(remainingCount > 0
-        ? t("undo.doneWithMore", { label: result.data.label, count: remainingCount })
-        : t("undo.done", { label: result.data.label }));
+        ? t("undo.doneWithMore", { label: undoLabel({ label: result.data?.label ?? operation.label, action: result.data?.action ?? operation.action }, t), count: remainingCount })
+        : t("undo.done", { label: undoLabel({ label: result.data?.label ?? operation.label, action: result.data?.action ?? operation.action }, t) }));
       setState(null);
       dispatchFinanceDataChanged({ reason: "undo-entry-operation", entryIds: undefined });
     } finally {
@@ -171,8 +188,8 @@ export function UndoLastOperationButton({
   const undoCount = Number(state?.undoCount ?? 0);
   const title = state?.canUndo
     ? undoCount > 0
-      ? t("undo.titleWithMore", { label: state.label, count: undoCount })
-      : t("undo.title", { label: state.label })
+      ? t("undo.titleWithMore", { label: undoLabel(state, t), count: undoCount })
+      : t("undo.title", { label: undoLabel(state, t) })
     : t("undo.noOperations");
   if (compact) {
     return (

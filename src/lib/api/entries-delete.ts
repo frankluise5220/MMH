@@ -1,5 +1,4 @@
 import { showChoiceDialog, showConfirmDialog } from "@/lib/client/confirm-dialog";
-import { translate } from "@/lib/i18n-core";
 
 export type EntriesDeleteRequest = {
   entryIds: string[];
@@ -40,10 +39,6 @@ export type EntriesDeleteResponse =
 
 export type I18nT = (key: string, params?: Record<string, string | number>) => string;
 
-// Fallback translator used when callers do not pass `t`: renders English so the
-// dialogs never show raw keys. Callers should pass the `t` from useI18n().
-const defaultT: I18nT = (key, params) => translate("en-US", key, params);
-
 export async function callDeleteEntries(body: EntriesDeleteRequest): Promise<EntriesDeleteResponse> {
   const res = await fetch("/api/v1/entries/delete", {
     method: "POST",
@@ -67,7 +62,7 @@ export function getDeleteRefreshAccountIds(data: EntriesDeleteResponse) {
   return data.ok ? Array.from(new Set((data.accountIds ?? []).filter(Boolean))) : [];
 }
 
-function describeBusinessImpacts(impacts: EntryBusinessDeleteImpact[] = [], labelOverride?: string, t: I18nT = defaultT) {
+function describeBusinessImpacts(impacts: EntryBusinessDeleteImpact[] = [], t: I18nT, labelOverride?: string) {
   const counts = new Map<string, number>();
   for (const impact of impacts) {
     const label = labelOverride || impact.counterpartLabel || impact.businessLabel || t("entriesDelete.linkedRecord");
@@ -82,13 +77,13 @@ export async function deleteEntriesWithLinkedPrompt({
   confirmMessage,
   selectedRecordLabel,
   counterpartRecordLabel,
-  t = defaultT,
+  t,
 }: {
   entryIds: string[];
   confirmMessage: string;
   selectedRecordLabel?: string;
   counterpartRecordLabel?: string;
-  t?: I18nT;
+  t: I18nT;
 }): Promise<EntriesDeleteResponse> {
   if (entryIds.length === 0) return { ok: false, error: t("entriesDelete.noDeletableRecord") };
 
@@ -97,7 +92,7 @@ export async function deleteEntriesWithLinkedPrompt({
 
   const impacts = precheck.impacts ?? [];
   if (impacts.length > 0 || precheck.needConfirm) {
-    const impactText = describeBusinessImpacts(impacts, counterpartRecordLabel, t);
+    const impactText = describeBusinessImpacts(impacts, t, counterpartRecordLabel);
     const allBusinessSide = impacts.length > 0 && impacts.every((impact) => impact.selectedSide === "business");
     const businessRecordLabel = t("entriesDelete.businessRecord");
     const selectedLabel = allBusinessSide
@@ -119,7 +114,7 @@ export async function deleteEntriesWithLinkedPrompt({
       cancelLabel: t("common.cancel"),
       tone: "danger",
     });
-    if (!linkedAction) return { ok: false, code: "DELETE_CANCELLED", error: "已取消删除" };
+    if (!linkedAction) return { ok: false, code: "DELETE_CANCELLED", error: t("entriesDelete.cancelled") };
     return callDeleteEntries({ entryIds, linkedAction });
   }
 
@@ -130,7 +125,7 @@ export async function deleteEntriesWithLinkedPrompt({
     cancelLabel: t("common.cancel"),
     tone: "danger",
   });
-  if (!confirmed) return { ok: false, code: "DELETE_CANCELLED", error: "已取消删除" };
+  if (!confirmed) return { ok: false, code: "DELETE_CANCELLED", error: t("entriesDelete.cancelled") };
 
   return callDeleteEntries({ entryIds });
 }

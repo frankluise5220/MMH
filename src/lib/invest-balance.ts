@@ -26,6 +26,7 @@ export type InvestBalanceDetail = {
 /** Position detail display row — generated directly from the fundHolding table. */
 export type PositionDisplayRow = {
   fundCode: string;
+  accountId?: string | null;
   stockCode?: string | null;
   market?: string | null;
   securityId?: string | null;
@@ -58,6 +59,18 @@ export type ClearedPositionRow = {
   clearedDate: string;
   totalBuyAmount: number;
   totalRedeemAmount: number;
+};
+
+export type PositionDisplayResult = {
+  positions: PositionDisplayRow[];
+  clearedPositions: ClearedPositionRow[];
+  totalMarketValue: number;
+  totalCost: number;
+  totalHistoricalProfit: number;
+  cashBalance?: number;
+  cashAccountId?: string | null;
+  cashAccountName?: string | null;
+  totalAssetValue?: number;
 };
 
 type PropertyAssetDisplayRow = {
@@ -147,16 +160,65 @@ async function loadPropertyAssetsForInvestSummary(accountIds: string[]) {
   );
 }
 
-async function loadPropertyAssetsForPositionDisplay(accountId: string) {
+async function loadPropertyAssetsForPositionDisplay(accountIds: string[], householdId?: string) {
+  const ids = Array.from(new Set(accountIds.filter(Boolean)));
+  if (ids.length === 0) return [];
   return optionalPrismaFindMany<PropertyAssetDisplayRow>(
     prisma,
     "propertyAsset",
     {
-      where: { accountId, deletedAt: null },
+      where: { accountId: { in: ids }, ...(householdId ? { householdId } : {}), deletedAt: null },
       orderBy: [{ status: "asc" }, { latestValuationDate: "desc" }, { createdAt: "asc" }],
     },
     { tableNames: ["property_assets"] },
   );
+}
+
+function buildPropertyPositionDisplay(propertyAssets: PropertyAssetDisplayRow[]): PositionDisplayResult {
+  const positions: PositionDisplayRow[] = propertyAssets
+    .filter((asset) => asset.status !== "sold")
+    .map((asset) => {
+      const cost = toNumber(asset.cost);
+      const marketValue = toNumber(asset.marketValue);
+      const floatingPnL = marketValue - cost;
+      return {
+        fundCode: asset.id,
+        accountId: asset.accountId,
+        propertyAssetId: asset.id,
+        name: asset.name,
+        holdingDate: asset.purchaseDate ? asset.purchaseDate.toISOString().slice(0, 10) : "",
+        units: 0,
+        hasUnits: false,
+        avgCost: 0,
+        cost,
+        nav: null,
+        navDate: asset.latestValuationDate ? asset.latestValuationDate.toISOString().slice(0, 10) : "",
+        marketValue,
+        floatingPnL,
+        floatingPnLRate: cost > 0 ? floatingPnL / cost : 0,
+        pendingCost: 0,
+        historicalProfit: 0,
+      };
+    })
+    .sort((a, b) => b.marketValue - a.marketValue || a.name.localeCompare(b.name));
+  const clearedPositions: ClearedPositionRow[] = propertyAssets
+    .filter((asset) => asset.status === "sold")
+    .map((asset) => ({
+      fundCode: asset.id,
+      propertyAssetId: asset.id,
+      name: asset.name,
+      historicalProfit: toNumber(asset.marketValue) - toNumber(asset.cost),
+      totalInvested: toNumber(asset.cost),
+      returnRate: toNumber(asset.cost) > 0 ? (toNumber(asset.marketValue) - toNumber(asset.cost)) / toNumber(asset.cost) : 0,
+      firstBuyDate: asset.purchaseDate ? asset.purchaseDate.toISOString().slice(0, 10) : "",
+      clearedDate: asset.latestValuationDate ? asset.latestValuationDate.toISOString().slice(0, 10) : "",
+      totalBuyAmount: toNumber(asset.cost),
+      totalRedeemAmount: toNumber(asset.marketValue),
+    }));
+  const totalMarketValue = positions.reduce((sum, row) => sum + row.marketValue, 0);
+  const totalCost = positions.reduce((sum, row) => sum + row.cost, 0);
+  const totalHistoricalProfit = clearedPositions.reduce((sum, row) => sum + row.historicalProfit, 0);
+  return { positions, clearedPositions, totalMarketValue, totalCost, totalHistoricalProfit };
 }
 
 async function loadDisplayPendingCostByHoldingKey(ctx: HouseholdContext, accountIds: string[]) {
@@ -425,17 +487,7 @@ export const computePositionDisplay = cache(
   async (
     ctx: HouseholdContext,
     accountId: string,
-  ): Promise<{
-    positions: PositionDisplayRow[];
-    clearedPositions: ClearedPositionRow[];
-    totalMarketValue: number;
-    totalCost: number;
-    totalHistoricalProfit: number;
-    cashBalance?: number;
-    cashAccountId?: string | null;
-    cashAccountName?: string | null;
-    totalAssetValue?: number;
-  }> => {
+  ): Promise<PositionDisplayResult> => {
   const account = await prisma.account.findFirst({
     where: { id: accountId, ...ctx.hidFilter },
     select: { investProductType: true, institutionId: true },
@@ -445,50 +497,8 @@ export const computePositionDisplay = cache(
   }
 
   if (account.investProductType === "property") {
-    const propertyAssets = await loadPropertyAssetsForPositionDisplay(accountId);
-    const positions: PositionDisplayRow[] = propertyAssets
-      .filter((asset) => asset.status !== "sold")
-      .map((asset) => {
-        const cost = toNumber(asset.cost);
-        const marketValue = toNumber(asset.marketValue);
-        const floatingPnL = marketValue - cost;
-        return {
-          fundCode: asset.id,
-          propertyAssetId: asset.id,
-          name: asset.name,
-          holdingDate: asset.purchaseDate ? asset.purchaseDate.toISOString().slice(0, 10) : "",
-          units: 0,
-          hasUnits: false,
-          avgCost: 0,
-          cost,
-          nav: null,
-          navDate: asset.latestValuationDate ? asset.latestValuationDate.toISOString().slice(0, 10) : "",
-          marketValue,
-          floatingPnL,
-          floatingPnLRate: cost > 0 ? floatingPnL / cost : 0,
-          pendingCost: 0,
-          historicalProfit: 0,
-        };
-      })
-      .sort((a, b) => b.marketValue - a.marketValue || a.name.localeCompare(b.name));
-    const clearedPositions: ClearedPositionRow[] = propertyAssets
-      .filter((asset) => asset.status === "sold")
-      .map((asset) => ({
-        fundCode: asset.id,
-        propertyAssetId: asset.id,
-        name: asset.name,
-        historicalProfit: toNumber(asset.marketValue) - toNumber(asset.cost),
-        totalInvested: toNumber(asset.cost),
-        returnRate: toNumber(asset.cost) > 0 ? (toNumber(asset.marketValue) - toNumber(asset.cost)) / toNumber(asset.cost) : 0,
-        firstBuyDate: asset.purchaseDate ? asset.purchaseDate.toISOString().slice(0, 10) : "",
-        clearedDate: asset.latestValuationDate ? asset.latestValuationDate.toISOString().slice(0, 10) : "",
-        totalBuyAmount: toNumber(asset.cost),
-        totalRedeemAmount: toNumber(asset.marketValue),
-      }));
-    const totalMarketValue = positions.reduce((sum, row) => sum + row.marketValue, 0);
-    const totalCost = positions.reduce((sum, row) => sum + row.cost, 0);
-    const totalHistoricalProfit = clearedPositions.reduce((sum, row) => sum + row.historicalProfit, 0);
-    return { positions, clearedPositions, totalMarketValue, totalCost, totalHistoricalProfit };
+    const propertyAssets = await loadPropertyAssetsForPositionDisplay([accountId], ctx.householdId);
+    return buildPropertyPositionDisplay(propertyAssets);
   }
 
   if (account.investProductType === "stock") {
@@ -794,6 +804,25 @@ export const computePositionDisplay = cache(
 
   const fundCodes = [...new Set(holdings.map(h => h.fundCode))];
   const displayPendingByHoldingKey = await loadDisplayPendingCostByHoldingKey(ctx, [accountId]);
+  // Account-level money classification is the default for legacy holdings, but
+  // a fund transaction carries the more precise product type. This prevents a
+  // misclassified money account from forcing an ordinary fund's NAV to 1.
+  const fundProductTypeByCode = new Map<string, string>();
+  if (fundCodes.length > 0) {
+    const fundTransactions = await prisma.fundTransaction.findMany({
+      where: {
+        fundAccountId: accountId,
+        fundCode: { in: fundCodes },
+        deletedAt: null,
+      },
+      select: { fundCode: true, fundProductType: true },
+    });
+    for (const transaction of fundTransactions) {
+      if (transaction.fundCode && transaction.fundProductType) {
+        fundProductTypeByCode.set(transaction.fundCode, transaction.fundProductType);
+      }
+    }
+  }
   // Load the latest cached NAV for every held fund, money funds included, so the
   // position row can always pair the displayed NAV with its date. Money funds
   // keep NAV = 1 (their cached value is the per-10k yield, not the unit NAV).
@@ -817,7 +846,8 @@ export const computePositionDisplay = cache(
     const cost = Math.max(0, storedCost - storedPending) + pending;
     const avgCost = toNumber(h.avgCost);
     const navInfo = latestNavByCode.get(h.fundCode);
-    const latestNav = isMoney ? 1 : (navInfo?.nav ?? (h.nav != null ? toNumber(h.nav) : 0));
+    const isMoneyFund = isMoney && fundProductTypeByCode.get(h.fundCode) !== "fund";
+    const latestNav = isMoneyFund ? 1 : (navInfo?.nav ?? (h.nav != null ? toNumber(h.nav) : 0));
     const navDateStr = navInfo?.date ?? "";
     const displayName = navInfo?.name ?? h.fundName ?? h.fundCode;
     const historicalProfit = toNumber(h.historicalProfit);
@@ -965,4 +995,24 @@ export const computePositionDisplay = cache(
 
   return { positions, clearedPositions, totalMarketValue, totalCost, totalHistoricalProfit };
 },
+);
+
+export const computeFixedAssetPositionDisplay = cache(
+  async (ctx: HouseholdContext): Promise<PositionDisplayResult> => {
+    const accounts = await prisma.account.findMany({
+      where: {
+        ...ctx.hidFilter,
+        kind: AccountKind.investment,
+        investProductType: "property",
+        isActive: true,
+        isPlaceholder: { not: true },
+      },
+      select: { id: true },
+    });
+    const propertyAssets = await loadPropertyAssetsForPositionDisplay(
+      accounts.map((account) => account.id),
+      ctx.householdId,
+    );
+    return buildPropertyPositionDisplay(propertyAssets);
+  },
 );

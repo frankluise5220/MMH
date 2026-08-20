@@ -1,4 +1,4 @@
-export const DEFAULT_FUND_UNITS_DECIMALS = 3;
+export const DEFAULT_FUND_UNITS_DECIMALS = 2;
 export const MIN_FUND_UNITS_DECIMALS = 0;
 export const MAX_FUND_UNITS_DECIMALS = 6;
 

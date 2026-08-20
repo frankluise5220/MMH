@@ -612,21 +612,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
           categories,
           latestRecognitionSamples,
         );
-        const items = recognizedItems
-          .filter((item) => item.date && Number(item.amount) > 0)
-          .map((item) => {
-            if (item.type === "transfer") {
-              return {
-                ...item,
-                account: item.account || props.accountName,
-                toAccount: item.toAccount || item.account || props.accountName,
-              };
-            }
-            return {
-              ...item,
-              account: item.account || props.accountName,
-            };
-          });
+        const items = recognizedItems.filter((item) => item.date && Number(item.amount) > 0);
         if (items.length === 0) throw new Error(t("viewImport.noRows"));
         setPreviewItems(items);
         setPreviewOpen(true);
@@ -703,7 +689,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           items,
-          defaultAccountName: props.accountName,
+          defaultAccountName: "",
           autoCreateAccounts: false,
         }),
       });
@@ -880,7 +866,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
           title={t("viewImport.previewTitle")}
           description={t("viewImport.previewDescription")}
           items={previewItems}
-          defaultAccountName={props.accountName}
+          defaultAccountName=""
           busy={busy}
           onClose={() => setPreviewOpen(false)}
           onConfirm={confirmImport}

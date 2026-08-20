@@ -8,7 +8,7 @@ import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 
 type AccountOption = AccountDisplaySource;
-type CategoryOption = { id: string; name: string; type: string };
+type CategoryOption = { id: string; name: string; type: string; sortOrder?: number; isSystem?: boolean };
 type TransactionDraft = {
   id?: string;
   date: string;

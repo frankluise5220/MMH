@@ -11,6 +11,7 @@ import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getServerT } from "@/lib/server/i18n";
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
+import { categoryOrderBy } from "@/lib/category-order";
 
 export const dynamic = "force-dynamic";
 
@@ -49,8 +50,8 @@ export default async function MobileAccountDetailPage({ params }: { params: Prom
     }),
     prisma.category.findMany({
       where: { type: { in: ["expense", "income"] }, ...hidFilter },
-      orderBy: [{ type: "asc" }, { name: "asc" }],
-      select: { id: true, name: true, type: true },
+      orderBy: categoryOrderBy(),
+      select: { id: true, name: true, type: true, sortOrder: true, isSystem: true },
     }),
   ]);
   if (!account) notFound();

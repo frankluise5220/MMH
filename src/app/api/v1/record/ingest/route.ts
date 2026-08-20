@@ -39,6 +39,7 @@ import {
 import { INCOME_EXPENSE_INSTITUTION_TYPES } from "@/lib/institution-rules";
 import { upsertStatementCategoryRuleFromTx } from "@/lib/statement/category-rules";
 import { upsertStatementInstitutionRuleFromUserEdit } from "@/lib/statement/recognition-rules";
+import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 
 /**
  * POST /api/v1/record/ingest
@@ -938,6 +939,7 @@ export async function POST(req: Request) {
   startImportProgress(traceId, items.length);
   let importLockHouseholdId: string | null = null;
   let importLockAcquired = false;
+  let importBatchId: string | null = null;
 
   try {
     updateImportProgress(traceId, {
@@ -981,6 +983,14 @@ export async function POST(req: Request) {
       );
     }
     importLockAcquired = true;
+    const importBatch = await prisma.importBatch.create({
+      data: {
+        source: "excel_import",
+        note: traceId ? `batch-import:${traceId}` : "batch-import",
+        householdId: ctx.householdId,
+      },
+    });
+    importBatchId = importBatch.id;
     const transactionTimeoutMs = getImportTransactionTimeoutMs(items.length);
     if (traceId) {
       await writeImportDebugLog({
@@ -1065,9 +1075,14 @@ export async function POST(req: Request) {
     updateImportProgress(traceId, { phase: "writing", processed: 0, created: 0, currentRow: null });
     for (let batchStart = 0; batchStart < items.length; batchStart += BATCH) {
       if (isImportCancelled(traceId)) {
+        if (importBatchId && created.length > 0) {
+          const importedRecords = await prisma.txRecord.findMany({ where: { importBatchId, householdId: ctx.householdId, deletedAt: null } });
+          const undo = await prepareEntryUndo(prisma, ctx.householdId, importedRecords.map((record) => record.id));
+          await saveEntryUndo(prisma, await getHouseholdScope(), undo, "batch_create", "Batch import");
+        }
         finishImportProgress(traceId, { ok: true, processed: created.length, created: created.length, error: "已取消" });
         finishImportRun(ctx.householdId, traceId);
-        return NextResponse.json({ ok: true, imported: true, createdCount: created.length, cancelled: true, message: `已取消导入（已导入 ${created.length} 条记录）`, trace }, { headers: corsHeaders() });
+        return NextResponse.json({ ok: true, imported: true, createdCount: created.length, cancelled: true, importBatchId, message: `已取消导入（已导入 ${created.length} 条记录）`, trace }, { headers: corsHeaders() });
       }
       const batchEnd = Math.min(batchStart + BATCH, items.length);
       const batchData: any[] = [];
@@ -1102,12 +1117,15 @@ export async function POST(req: Request) {
             toAccountId: toId || "", toAccountName: toName || null, categoryId: null, categoryName: null,
             note, toNote: String(item.secondRemark ?? "").trim() || note || null,
             statementMonth: stmtMonth, counterpartyInstitutionId, counterpartyInstitutionName,
-            currency, householdId: ctx.householdId, fundCode: null, fundProductType: null, fundSubtype: null,
+            currency, householdId: ctx.householdId, importBatchId, source: "excel_import", fundCode: null, fundProductType: null, fundSubtype: null,
           });
           created.push({ accountId: sourceId || "", toAccountId: toId });
         } else {
           const accountName = pickAccountName(item.account, defaultAccountName);
           const accountId = lookupAccount(ctx, accountName, defaultAccountName);
+          if (!accountId) {
+            throw new ImportItemError(buildImportFailureDetail(i, item, new Error("Account is required and must match an existing account")));
+          }
           const meta = ctx.accountMetaById.get(accountId ?? "") ?? null;
           const storedName = accountId && meta ? meta.name : accountName;
           const postedAt = item.type === "expense" || item.type === "income" ? (parseOptionalDateTime(item.postedAt) ?? date) : null;
@@ -1119,7 +1137,7 @@ export async function POST(req: Request) {
             toAccountId: null, toAccountName: null, categoryId: cat?.id ?? null, categoryName: cat?.name ?? null,
             note, toNote: null,
             statementMonth: stmtMonth, counterpartyInstitutionId, counterpartyInstitutionName,
-            currency: normalizeCurrency(meta?.currency), householdId: ctx.householdId,
+            currency: normalizeCurrency(meta?.currency), householdId: ctx.householdId, importBatchId, source: "excel_import",
             fundCode: null, fundProductType: null, fundSubtype: null,
           });
           created.push({ accountId: accountId || "", toAccountId: null });
@@ -1167,6 +1185,14 @@ export async function POST(req: Request) {
         recalcFailedAccountIds.push(accountId);
       }
     }
+    if (importBatchId && created.length > 0) {
+      const importedRecords = await prisma.txRecord.findMany({
+        where: { importBatchId, householdId: ctx.householdId, deletedAt: null },
+      });
+      const undo = await prepareEntryUndo(prisma, ctx.householdId, importedRecords.map((record) => record.id));
+      const undoContext = await getHouseholdScope();
+      await saveEntryUndo(prisma, undoContext, undo, "batch_create", "Batch import");
+    }
     if (traceId) {
       await writeImportDebugLog({
         traceId,
@@ -1197,6 +1223,7 @@ export async function POST(req: Request) {
         items,
         imported: true,
         createdCount: created.length,
+        importBatchId,
         ids: created.map((t) => t.accountId),
         recalculatedAccountCount,
         recalcFailedAccountCount: recalcFailedAccountIds.length,

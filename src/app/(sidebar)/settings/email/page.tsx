@@ -10,6 +10,7 @@ import { DateStepper } from "@/components/DateStepper";
 import { SettingsActionButton, SettingsPrimaryAddButton } from "@/components/settings/SettingsPageScaffold";
 import type { SmartSelectOption } from "@/components/SmartSelect";
 import { StatementImportPreviewDialog, type StatementImportPreviewItem } from "@/components/StatementImportPreviewDialog";
+import { sortCategorySources } from "@/components/categorySmartSelect";
 import { useAccountSSFilter } from "@/components/accountSSFilter";
 import { buildAccountDisplayOption, buildGroupedAccountOptions, formatAccountTableLabel, formatAccountTableTitle } from "@/lib/account-display";
 import { createImportAccountResolver, encodeImportAccountId, parseImportAccountId } from "@/lib/account-import-match";
@@ -21,6 +22,7 @@ import {
 import { createImportTraceId, postImportDebugLog } from "@/lib/client/importDebugLog";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
+import { DEFAULT_EMAIL_IMPORT_KEYWORD, normalizeEmailImportKeyword } from "@/lib/mail/email-import-settings";
 import { inferKnownStatementMerchant } from "@/lib/statement/merchant-inference";
 import {
   formatStatementMoneyAmount as formatMoneyAmount,
@@ -44,7 +46,6 @@ const SmartSelect = dynamic(
 ) as SmartSelectComponent;
 
 const MAIL_DISPLAY_LIMIT = 5;
-const MAIL_FIXED_KEYWORD = "\u8d26\u5355"; // "bill": fixed subject keyword for matching Chinese bill emails
 
 const EMAIL_PROVIDER_PRESETS = (t: I18nT) => [
   { key: "qq", label: t("settings.email.providerQq"), imapHost: "imap.qq.com", imapPort: "993", smtpHost: "smtp.qq.com", smtpPort: "465" },
@@ -313,6 +314,9 @@ export default function EmailSettingsPage() {
   const [importing, setImporting] = useState(false);
   const [importComplete, setImportComplete] = useState<ImportCompleteState | null>(null);
   const [mailRange, setMailRange] = useState("month");
+  const [mailKeyword, setMailKeyword] = useState(DEFAULT_EMAIL_IMPORT_KEYWORD);
+  const [mailKeywordDraft, setMailKeywordDraft] = useState(DEFAULT_EMAIL_IMPORT_KEYWORD);
+  const [savingMailKeyword, setSavingMailKeyword] = useState(false);
   const [mailListHint, setMailListHint] = useState("");
   const [accountTested, setAccountTested] = useState(false);
   const [editingPreviewCell, setEditingPreviewCell] = useState<{ rowKey: string; field: ImportPreviewEditableCell } | null>(null);
@@ -320,11 +324,34 @@ export default function EmailSettingsPage() {
 
   useEffect(() => {
     const controller = new AbortController();
-    loadAccounts(controller.signal);
+    void initializeEmailSettings(controller.signal);
     return () => controller.abort();
   }, []);
 
-  async function loadAccounts(signal?: AbortSignal) {
+  async function initializeEmailSettings(signal?: AbortSignal) {
+    const keyword = await loadMailImportSettings(signal);
+    if (!signal?.aborted) await loadAccounts(signal, keyword);
+  }
+
+  async function loadMailImportSettings(signal?: AbortSignal) {
+    try {
+      const res = await fetch("/api/v1/settings/email-import", { signal });
+      const data = await res.json() as { ok?: boolean; data?: { keyword?: string | null } };
+      if (data.ok) {
+        const nextKeyword = normalizeEmailImportKeyword(data.data?.keyword);
+        setMailKeyword(nextKeyword);
+        setMailKeywordDraft(nextKeyword);
+        return nextKeyword;
+      }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return DEFAULT_EMAIL_IMPORT_KEYWORD;
+    }
+    setMailKeyword(DEFAULT_EMAIL_IMPORT_KEYWORD);
+    setMailKeywordDraft(DEFAULT_EMAIL_IMPORT_KEYWORD);
+    return DEFAULT_EMAIL_IMPORT_KEYWORD;
+  }
+
+  async function loadAccounts(signal?: AbortSignal, keywordOverride?: string) {
     setLoadingAccounts(true);
     try {
       const res = await fetch("/api/v1/settings/email-accounts", { signal });
@@ -336,7 +363,7 @@ export default function EmailSettingsPage() {
           const onlyAccount = nextAccounts[0];
           setSelectedId(onlyAccount.id);
           setInfo(t("settings.email.autoSelected", { account: onlyAccount.label || onlyAccount.username }));
-          void listMails(onlyAccount.id);
+          void listMails(onlyAccount.id, keywordOverride);
         }
       }
     } catch (error) {
@@ -499,7 +526,34 @@ export default function EmailSettingsPage() {
     finally { setTesting(false); }
   }
 
-  function buildMailListHint(meta: MailListMeta | undefined, itemCount: number) {
+  async function saveMailKeyword() {
+    const keyword = normalizeEmailImportKeyword(mailKeywordDraft);
+    setSavingMailKeyword(true);
+    setError("");
+    setInfo("");
+    try {
+      const res = await fetch("/api/v1/settings/email-import", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keyword }),
+      });
+      const data = await res.json() as { ok?: boolean; data?: { keyword?: string | null }; error?: string };
+      if (!res.ok || !data.ok) {
+        setError(data.error ?? t("settings.accounts.saveFailed"));
+        return;
+      }
+      const savedKeyword = normalizeEmailImportKeyword(data.data?.keyword);
+      setMailKeyword(savedKeyword);
+      setMailKeywordDraft(savedKeyword);
+      setInfo(t("settings.email.keywordSaved"));
+    } catch (error) {
+      setError(error instanceof Error ? error.message : t("settings.passwordRecovery.networkError"));
+    } finally {
+      setSavingMailKeyword(false);
+    }
+  }
+
+  function buildMailListHint(meta: MailListMeta | undefined, itemCount: number, keyword: string) {
     if (!meta) return "";
     const timing = typeof meta.timingMs?.total === "number"
       ? t("settings.email.timingSeconds", { seconds: (meta.timingMs.total / 1000).toFixed(1) })
@@ -508,9 +562,9 @@ export default function EmailSettingsPage() {
       ? (meta.sinceDate ? t("settings.email.mailSearchSince", { date: meta.sinceDate }) : t("settings.email.mailboxSearch"))
       : (meta.sinceDate ? t("settings.email.scanSince", { date: meta.sinceDate }) : t("settings.email.scanRecent", { limit: meta.scanLimit }));
     if (itemCount > 0) {
-      return t("settings.email.scanMatched", { scope, scanned: meta.scanned, keyword: MAIL_FIXED_KEYWORD, matched: meta.matched, itemCount, timing });
+      return t("settings.email.scanMatched", { scope, scanned: meta.scanned, keyword, matched: meta.matched, itemCount, timing });
     }
-    return t("settings.email.scanNoMatch", { scope, scanned: meta.scanned, keyword: MAIL_FIXED_KEYWORD, timing });
+    return t("settings.email.scanNoMatch", { scope, scanned: meta.scanned, keyword, timing });
   }
 
   function monthAgoDateString() {
@@ -527,8 +581,9 @@ export default function EmailSettingsPage() {
     return 100;
   }
 
-  async function listMails(accountId = selectedId) {
+  async function listMails(accountId = selectedId, keywordOverride?: string) {
     if (!accountId) return;
+    const activeKeyword = normalizeEmailImportKeyword(keywordOverride ?? mailKeywordDraft);
     setLoadingMails(true); setError(""); setSelectedMail(null); setMailListHint(""); setParsedItems([]); setImportPreview(null); setImportComplete(null);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 20000);
@@ -539,7 +594,7 @@ export default function EmailSettingsPage() {
       importKind: "credit_bill_mail",
       source: "settings_email",
       emailAccountId: accountId,
-      keyword: MAIL_FIXED_KEYWORD,
+      keyword: activeKeyword,
       scanLimit: scanLimitForRange(),
       sinceDate: mailRange === "month" ? monthAgoDateString() : null,
     });
@@ -551,14 +606,14 @@ export default function EmailSettingsPage() {
           limit: MAIL_DISPLAY_LIMIT,
           scanLimit: scanLimitForRange(),
           sinceDate: mailRange === "month" ? monthAgoDateString() : undefined,
-          keyword: MAIL_FIXED_KEYWORD,
+          keyword: activeKeyword,
         }),
         signal: controller.signal,
       });
       const data = await res.json();
       if (data.ok) {
         setMailItems(data.items);
-        setMailListHint(buildMailListHint(data.meta, Array.isArray(data.items) ? data.items.length : 0));
+        setMailListHint(buildMailListHint(data.meta, Array.isArray(data.items) ? data.items.length : 0, activeKeyword));
         postImportDebugLog(traceId, "email_list_succeeded", {
           importKind: "credit_bill_mail",
           source: "settings_email",
@@ -852,6 +907,8 @@ export default function EmailSettingsPage() {
   }
 
   const selectedAccount = accounts.find(a => a.id === selectedId);
+  const normalizedMailKeywordDraft = normalizeEmailImportKeyword(mailKeywordDraft);
+  const mailKeywordDirty = normalizedMailKeywordDraft !== mailKeyword;
 
   function selectAccountForMail(accountId: string) {
     setSelectedId(accountId);
@@ -1320,8 +1377,8 @@ export default function EmailSettingsPage() {
         list.push(category);
         childrenByParentId.set(key, list);
       }
-      for (const list of childrenByParentId.values()) {
-        list.sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+      for (const [parentId, list] of childrenByParentId) {
+        childrenByParentId.set(parentId, sortCategorySources(list));
       }
 
       const headerId = `preview-category-type:${type}`;
@@ -1357,8 +1414,8 @@ export default function EmailSettingsPage() {
       list.push(category);
       childrenByParentId.set(key, list);
     }
-    for (const list of childrenByParentId.values()) {
-      list.sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+    for (const [parentId, list] of childrenByParentId) {
+      childrenByParentId.set(parentId, sortCategorySources(list));
     }
 
     const options: SmartSelectOption[] = [{ id: "", label: t("statementImportPreview.clearCategory") }];
@@ -2020,10 +2077,20 @@ export default function EmailSettingsPage() {
             <div className="overflow-hidden rounded-md border border-slate-200">
               <div className="border-b border-slate-100 bg-slate-50 p-2">
                 <div className="mb-2 text-sm font-medium text-slate-800">{selectedAccount ? selectedAccount.label : t("settings.email.mailReading")}</div>
-                <div className="grid grid-cols-[minmax(92px,1fr)_120px_76px] items-center gap-2">
-                  <div className="flex h-8 items-center truncate rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-600">
-                    {t("settings.email.keywordLabel", { keyword: MAIL_FIXED_KEYWORD })}
-                  </div>
+                <div className="grid grid-cols-[minmax(92px,1fr)_58px_108px_76px] items-center gap-2">
+                  <label className="flex h-8 min-w-0 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-600">
+                    <span className="shrink-0 text-slate-500">{t("settings.email.keywordPrefix")}</span>
+                    <input
+                      aria-label={t("settings.email.keywordInputLabel")}
+                      className="min-w-0 flex-1 bg-transparent text-xs text-slate-700 outline-none"
+                      value={mailKeywordDraft}
+                      onChange={(e) => setMailKeywordDraft(e.target.value)}
+                      placeholder={DEFAULT_EMAIL_IMPORT_KEYWORD}
+                    />
+                  </label>
+                  <button className="h-8 rounded-md border border-slate-200 bg-white px-1 text-[11px] text-slate-600 hover:bg-slate-50 disabled:opacity-50" onClick={saveMailKeyword} disabled={!mailKeywordDirty || savingMailKeyword}>
+                    {savingMailKeyword ? t("settings.email.saving") : t("common.save")}
+                  </button>
                   <select className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs outline-none" value={mailRange} onChange={(e) => setMailRange(e.target.value)}>
                     <option value="month">{t("settings.email.rangeMonth")}</option>
                     <option value="50">{t("settings.email.rangeCount", { count: 50 })}</option>

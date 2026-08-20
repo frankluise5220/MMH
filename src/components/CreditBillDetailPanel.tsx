@@ -160,7 +160,7 @@ export function CreditBillDetailPanel({
           reorderAccountIds={reorderAccountIds}
           storageKey="mmh_credit_bill_detail_table_v1"
           resetKey={tableResetKey}
-          refreshOnGlobalEvent={false}
+          refreshOnGlobalEvent
           toolbarMode="custom"
           toolbarTitle={title}
           toolbarRightContent={

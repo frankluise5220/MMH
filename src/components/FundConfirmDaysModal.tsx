@@ -130,7 +130,7 @@ export function FundConfirmDaysPanel({
       {
         fundCode: code,
         fundName: newFundName.trim() || null,
-        days: 1,
+        days: 0,
         arrivalDays: 2,
         redeemCostDays: 1,
         effectiveDate: null,
@@ -323,6 +323,7 @@ export function FundConfirmDaysModal({
   onSaved,
   initialFundCode,
   fundName,
+  initialTab = "confirm",
 }: {
   accountId: string;
   open: boolean;
@@ -332,6 +333,7 @@ export function FundConfirmDaysModal({
   initialFundCode?: string | null;
   /** Display name for the single-fund mode. */
   fundName?: string | null;
+  initialTab?: "confirm" | "fee";
 }) {
   const { t } = useI18n();
   const singleFundMode = Boolean(initialFundCode);
@@ -339,8 +341,8 @@ export function FundConfirmDaysModal({
 
   useEffect(() => {
     if (!open) return;
-    setActiveTab("confirm");
-  }, [open]);
+    setActiveTab(initialTab);
+  }, [initialTab, open]);
 
   if (!open) return null;
 

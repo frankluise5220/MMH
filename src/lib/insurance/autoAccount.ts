@@ -26,14 +26,43 @@ export async function findInsuranceAccountByOwner(
   householdId: string,
   institutionId: string,
 ) {
-  return db.account.findFirst({
+  const normalizedInstitutionId = institutionId.trim();
+  const exactAccount = await db.account.findFirst({
     where: {
       kind: "insurance",
       groupId: ownerGroupId,
       householdId,
       isActive: true,
-      institutionId: institutionId.trim(),
+      institutionId: normalizedInstitutionId,
     },
+    include: {
+      AccountGroup: { select: { id: true, name: true } },
+      Institution: { select: { id: true, name: true, shortName: true } },
+    },
+  });
+  if (exactAccount) return exactAccount;
+
+  const genericAccounts = await db.account.findMany({
+    where: {
+      kind: "insurance",
+      groupId: ownerGroupId,
+      householdId,
+      isActive: true,
+      institutionId: null,
+    },
+    include: {
+      AccountGroup: { select: { id: true, name: true } },
+      Institution: { select: { id: true, name: true, shortName: true } },
+    },
+    orderBy: { id: "asc" },
+    take: 2,
+  });
+
+  if (genericAccounts.length !== 1) return null;
+
+  return db.account.update({
+    where: { id: genericAccounts[0].id },
+    data: { institutionId: normalizedInstitutionId },
     include: {
       AccountGroup: { select: { id: true, name: true } },
       Institution: { select: { id: true, name: true, shortName: true } },
@@ -86,4 +115,3 @@ export async function getOrCreateInsuranceAccount(
     },
   });
 }
-

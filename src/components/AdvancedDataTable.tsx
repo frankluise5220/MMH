@@ -83,6 +83,18 @@ type RowItem<T> = {
   key: string;
 };
 
+type ResizeGuide = {
+  x: number;
+  top: number;
+  height: number;
+};
+
+type ResizeSession = {
+  key: string;
+  width: number;
+  baseWidths: Record<string, number>;
+};
+
 function reorderRowItems<T>(items: RowItem<T>[], sourceKey: string, targetKey: string, position: AdvancedDataTableDropPosition) {
   const sourceIndex = items.findIndex((item) => item.key === sourceKey);
   const targetIndex = items.findIndex((item) => item.key === targetKey);
@@ -334,8 +346,11 @@ export function AdvancedDataTable<T>({
   const [internalSelectedKeys, setInternalSelectedKeys] = useState<Set<string>>(new Set());
   const [draggedRowKey, setDraggedRowKey] = useState<string | null>(null);
   const [dragTarget, setDragTarget] = useState<{ key: string; position: AdvancedDataTableDropPosition } | null>(null);
+  const [resizeGuide, setResizeGuide] = useState<ResizeGuide | null>(null);
+  const [resizeSession, setResizeSession] = useState<ResizeSession | null>(null);
   const suppressNextClickRef = useRef(false);
   const headerSortClickTimerRef = useRef<number | null>(null);
+  const resizeCleanupRef = useRef<(() => void) | null>(null);
   const lastResetKeyRef = useRef(resetKey);
   const tableDisplayStateHydratedRef = useRef(false);
   const skipNextFiltersWriteRef = useRef(false);
@@ -454,6 +469,14 @@ export function AdvancedDataTable<T>({
   useEffect(() => {
     return () => clearPendingHeaderSortClick();
   }, [clearPendingHeaderSortClick]);
+
+  useEffect(() => {
+    return () => {
+      resizeCleanupRef.current?.();
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+  }, []);
 
   useEffect(() => {
     if (resetKey == null) return;
@@ -689,8 +712,36 @@ export function AdvancedDataTable<T>({
     const preferredColumnsTotal = preferredWidths.reduce((sum, column) => sum + column.preferredWidth, 0);
     const minTotal = controlWidth + minColumnsTotal;
     const availableWidth = viewportWidth || preferredTotal;
+    const hasManualWidths = Object.keys(columnWidths).length > 0;
 
-    if (availableWidth >= controlWidth + preferredColumnsTotal) {
+    if (resizeSession) {
+      const resizingColumn = baseWidths.find((column) => column.key === resizeSession.key);
+      if (resizingColumn) {
+        const targetWidth = Math.max(resizingColumn.resizeMinWidth, resizeSession.width);
+        const otherColumns = baseWidths.filter((column) => column.key !== resizeSession.key);
+        const otherBaseTotal = otherColumns.reduce(
+          (sum, column) => sum + (resizeSession.baseWidths[column.key] ?? column.preferredWidth),
+          0,
+        );
+        const availableColumnWidth = Math.max(0, availableWidth - controlWidth, (minTableWidth ?? 0) - controlWidth);
+        const targetTotal = targetWidth + otherBaseTotal;
+        const extraWidth = Math.max(0, availableColumnWidth - targetTotal);
+        const otherScale = otherBaseTotal > 0 ? (otherBaseTotal + extraWidth) / otherBaseTotal : 1;
+        const colWidths = Object.fromEntries(baseWidths.map((column) => {
+          if (column.key === resizeSession.key) return [column.key, targetWidth];
+          const baseWidth = resizeSession.baseWidths[column.key] ?? column.preferredWidth;
+          return [column.key, baseWidth * otherScale];
+        }));
+        const resizedColumnsTotal = Object.values(colWidths).reduce((sum, width) => sum + width, 0);
+        return {
+          tableWidth: controlWidth + resizedColumnsTotal,
+          controlWidth,
+          colWidths,
+        };
+      }
+    }
+
+    if (!hasManualWidths && availableWidth >= controlWidth + preferredColumnsTotal) {
       const availableColumnWidth = Math.max(0, availableWidth - controlWidth);
       const growScale = preferredColumnsTotal > 0 ? availableColumnWidth / preferredColumnsTotal : 1;
       return {
@@ -702,7 +753,19 @@ export function AdvancedDataTable<T>({
       };
     }
 
-    if (availableWidth >= minTotal) {
+    if (hasManualWidths && availableWidth >= controlWidth + preferredColumnsTotal) {
+      const availableColumnWidth = Math.max(0, availableWidth - controlWidth);
+      const growScale = preferredColumnsTotal > 0 ? availableColumnWidth / preferredColumnsTotal : 1;
+      return {
+        tableWidth: availableWidth,
+        controlWidth,
+        colWidths: Object.fromEntries(
+          preferredWidths.map((column) => [column.key, column.preferredWidth * growScale]),
+        ),
+      };
+    }
+
+    if (!hasManualWidths && availableWidth >= minTotal) {
       const availableColumnWidth = Math.max(0, availableWidth - controlWidth);
       const shrinkNeeded = Math.max(0, preferredColumnsTotal - availableColumnWidth);
       const shrinkCapacity = preferredWidths.reduce(
@@ -723,11 +786,11 @@ export function AdvancedDataTable<T>({
     }
 
     return {
-      tableWidth: minTotal,
+      tableWidth: Math.max(minTableWidth ?? 0, controlWidth + basePreferredColumnsTotal),
       controlWidth,
-      colWidths: Object.fromEntries(baseWidths.map((column) => [column.key, column.minWidth])),
+      colWidths: Object.fromEntries(baseWidths.map((column) => [column.key, column.preferredWidth])),
     };
-  }, [columnWidths, draggableRows, minTableWidth, selectable, viewportWidth, visibleColumns]);
+  }, [columnWidths, draggableRows, minTableWidth, resizeSession, selectable, viewportWidth, visibleColumns]);
 
   const setSelection = useCallback((next: Set<string>) => {
     if (onSelectionChange) onSelectionChange(next);
@@ -745,22 +808,39 @@ export function AdvancedDataTable<T>({
   const beginResize = useCallback((event: ReactMouseEvent, column: AdvancedDataTableColumn<T>) => {
     event.preventDefault();
     event.stopPropagation();
+    resizeCleanupRef.current?.();
     const minWidth = column.resizeMinWidth ?? 52;
     const startX = event.clientX;
     const startWidth = layout.colWidths[column.key] ?? columnWidths[column.key] ?? column.width;
+    setResizeSession({ key: column.key, width: startWidth, baseWidths: layout.colWidths });
+    const updateResizeGuide = (clientX: number) => {
+      const viewportRect = viewportRef.current?.getBoundingClientRect();
+      if (!viewportRect) return;
+      setResizeGuide({ x: clientX, top: viewportRect.top, height: viewportRect.height });
+    };
     const onMove = (moveEvent: MouseEvent) => {
-      setColumnWidth(column.key, startWidth + moveEvent.clientX - startX, minWidth);
+      updateResizeGuide(moveEvent.clientX);
+      const width = Math.max(minWidth, startWidth + moveEvent.clientX - startX);
+      setResizeSession((current) => current ? { ...current, width } : current);
+      setColumnWidth(column.key, width, minWidth);
     };
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("blur", onUp);
+      resizeCleanupRef.current = null;
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
+      setResizeGuide(null);
+      setResizeSession(null);
     };
+    updateResizeGuide(startX);
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
+    window.addEventListener("blur", onUp);
+    resizeCleanupRef.current = onUp;
   }, [columnWidths, layout.colWidths, setColumnWidth]);
 
   function toggleColumn(key: string) {
@@ -1407,6 +1487,14 @@ export function AdvancedDataTable<T>({
           ) : null}
         </table>
       </div>
+      {resizeGuide ? (
+        <div
+          aria-hidden="true"
+          data-advanced-table-resize-guide
+          className="pointer-events-none fixed z-50 w-px bg-blue-500"
+          style={{ left: resizeGuide.x, top: resizeGuide.top, height: resizeGuide.height }}
+        />
+      ) : null}
     </div>
   );
 }

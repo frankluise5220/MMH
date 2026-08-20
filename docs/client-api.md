@@ -61,6 +61,14 @@
 - 金额、份额、净值、成本、收益字段应保持财务计算需要的精度。
 - 客户端显示的小数位可以受偏好设置影响，但 API 的原始数值不应为了显示而过早截断。
 
+### AI 模型接口方式
+
+- AI 模型配置包含 `apiMode` 字段。
+- `chat` 表示 OpenAI 兼容 Chat Completions 接口（`/v1/chat/completions`）。
+- `responses` 表示 OpenAI Responses API（`/v1/responses`）。
+- Ollama 渠道固定使用原生 `/api/chat`，不接受 `apiMode` 覆盖。
+- 旧配置和旧备份没有 `apiMode` 时按 `chat` 处理。
+
 ### 分页、排序和筛选
 
 列表接口应说明：
@@ -266,6 +274,7 @@
 - `/api/v1/record/ingest` 同一账簿同一时间只允许一批批量导入写库。已有导入未完成时，新的导入请求返回 409 和 `{ ok:false, error }`，客户端应提示用户等待当前导入完成，不能叠加第二批写入。
 - `/api/v1/record/ingest` 写入交易成功后，账户余额重算失败不应把导入结果改成失败；接口会返回 `recalcFailedAccountCount` 供客户端提示后续刷新。
 - `/api/v1/record/ingest` 和 `/api/v1/statement/import` 的导入项可传 `categoryUserEdited: true`，表示用户在普通 Excel 导入预览或邮箱/信用卡账单预览中手动改过分类。服务端只在该标记存在、且类型为收入/支出并能匹配到分类树节点时写入 `statement_recognition_rules(targetType="category")`，语义为“关键字 -> 分类树节点内容”；自动识别、AI 猜测、模板原始分类和未确认预览行不得设置该标记。导入项也可传 `institutionUserEdited: true`，表示用户手动填过收支机构；服务端只在该机构能匹配到机构表时保存并写入 `statement_recognition_rules(targetType="institution")`，匹配不到时留空，因为收支机构是可选项。
+- `/api/v1/ai/chat` 只负责抽取事实字段和原始备注，不直接决定最终分类或收支机构；`/api/v1/ai/import` 会在入库前按 `statement_recognition_rules`、历史样本和当前账簿分类树补齐分类/机构，再写入数据库。客户端不应把 AI 返回的 category / institution 当作最终值。
 - 批量导入前端区分普通账单和信用卡账单：普通账单逐行解析账户；信用卡账单先统一确定整份文件的信用卡账户，还款行再单独提供 `fromAccount`。
 - `GET /api/v1/statement/recognition-rules` 返回当前账簿的表化识别样本 `{ ok:true, samples }`，供邮箱账单和 Excel 预览匹配“备注/收支机构/支付渠道 -> 分类或机构”，也供导入表头匹配“源表头 -> MMH 字段名”。通用关键词规则统一写入 `statement_recognition_rules`，支持 `targetType="category"`、`targetType="institution"` 和 `targetType="field"`；字段规则使用 `fieldName` 表示 `transactionDate | postedAt | amount | sourceAccount | creditAccount | institution | remark` 等内部字段。`targetType="category"` 的语义是“关键字 -> 分类树节点内容”，例如关键字“供电”命中后填入分类“电费”；`targetType="institution"` 的语义是“关键字 -> 机构表内容”，例如关键字“云闪付”命中后填入机构表里的“银联”。不能用“教育、药店、医疗、快递、会员”这类分类或抽象标签充当机构。用户保存单笔或批量分类修改时也直接写入 `statement_recognition_rules(targetType="category")`，不再维护第二张分类学习表。
 - `GET /api/v1/statement/category-rules` 保留为分类学习样本兼容接口，但返回来源也是 `statement_recognition_rules(targetType="category")`。
@@ -281,7 +290,8 @@
 ### Categories
 
 - `/api/v1/category` 用于收支分类列表、新增、重命名和移动。
-- 分类返回字段包含 `isSystem`。`isSystem=true` 的系统内置分类不能改名、移动或删除；客户端应隐藏或禁用这些操作，但仍可允许在其下新增用户子分类。
+- 分类返回字段包含 `sortOrder`；同一类型、同一父分类下先展示用户分类并按 `sortOrder` 升序，再展示系统内置分类。`PUT /api/v1/category` 可传 `orderedIds` 调整用户分类顺序，系统内置分类不参与排序。
+- 分类返回字段包含 `isSystem`。`isSystem=true` 的系统内置分类不能改名、移动或删除；客户端应隐藏或禁用这些操作，但仍可允许在其下新增用户子分类。同一父分类下，系统分类不参与用户排序并固定排在用户分类之后。
 - 分类名称在同一账簿内必须全局唯一，不区分收入、支出、代付类型，也不区分父分类。
 - 新增或修改为已有名称时，接口返回 `{ ok:false, error:"分类名称已存在" }`，状态码为 `409`。
 - 修改系统内置分类时，接口返回 `{ ok:false, error:"系统内置类别，无法修改" }`，状态码为 `409`。
@@ -737,6 +747,7 @@ Notes:
 - `/api/v1/settings/app-preferences`：`sidebarHideInitialData` 是兼容保留字段名，当前产品语义为“隐藏使用向导”；为 `true` 时客户端应隐藏“使用向导”入口，并停用首次使用向导的自动和手动打开。`dateDisplayFormat` 支持 `yyyy-mm-dd`、`yyyy/mm/dd`、`mm/dd/yyyy`、`dd/mm/yyyy`，仅影响界面日期显示，不改变数据库、导入或 API 日期值。
 - `/api/v1/settings/color-scheme`
 - `/api/v1/settings/email`
+- `/api/v1/settings/email-import`：GET 返回当前账簿邮箱账单导入的邮件筛选关键词，默认 `账单`；PUT 提交 `{ keyword }` 后保存当前账簿配置，空值会回到默认 `账单`。
 - `/api/v1/settings/email-accounts`
 - `/api/v1/settings/resend`
 - `/api/v1/settings/fund-query-api`：GET/POST/PUT/DELETE 管理基金查询来源，PATCH 批量保存拖拽后的优先级；基金净值查询会优先使用账户默认 API，其次按机构场景（如支付宝基金账户优先支付宝来源），最后按全局优先级尝试。

@@ -153,7 +153,7 @@ export default function SettingsAccountsPage() {
       numberMasked: a.numberMasked || "",
       investProductType: normalizedKind === "investment" ? (a.investProductType || "fund") : "",
       costBasisMethod: a.costBasisMethod || "moving_avg",
-      fundUnitsDecimals: String(a.fundUnitsDecimals ?? 3),
+      fundUnitsDecimals: String(a.fundUnitsDecimals ?? 2),
       tradingCalendar: a.tradingCalendar || "cn_fund",
     });
   }
@@ -402,7 +402,7 @@ export default function SettingsAccountsPage() {
                       )}
                       {normalizedAccountKind(a) === "investment" && (a.investProductType ?? "fund") === "fund" && (
                         <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600">
-                          {tf("settings.accounts.unitsDecimals", { count: a.fundUnitsDecimals ?? 3 })}
+                          {tf("settings.accounts.unitsDecimals", { count: a.fundUnitsDecimals ?? 2 })}
                         </span>
                       )}
                       {supportsTradingCalendarForAccount(normalizedAccountKind(a), a.investProductType) && (
@@ -708,7 +708,7 @@ export default function SettingsAccountsPage() {
                     <div>
                       <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.fundUnitsDecimals")}</label>
                       <input
-                        value={editForm.fundUnitsDecimals || "3"}
+                        value={editForm.fundUnitsDecimals || "2"}
                         onChange={e => setEditForm(f => ({ ...f, fundUnitsDecimals: e.target.value }))}
                         className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
                         inputMode="numeric"

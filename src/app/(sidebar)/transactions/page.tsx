@@ -5,6 +5,7 @@ import { MobileTransactions, type MobileTransactionRow } from "@/components/mobi
 import { MobileTransactionForm } from "@/components/mobile/MobileTransactionForm";
 import { buildAccountDisplayOption, formatAccountTableLabel } from "@/lib/account-display";
 import { getServerT } from "@/lib/server/i18n";
+import { categoryOrderBy } from "@/lib/category-order";
 
 export const dynamic = "force-dynamic";
 
@@ -45,8 +46,8 @@ export default async function TransactionsPage() {
     }),
     prisma.category.findMany({
       where: { ...hidFilter, type: { in: ["expense", "income"] } },
-      orderBy: [{ type: "asc" }, { name: "asc" }],
-      select: { id: true, name: true, type: true },
+      orderBy: categoryOrderBy(),
+      select: { id: true, name: true, type: true, sortOrder: true, isSystem: true },
     }),
   ]);
 

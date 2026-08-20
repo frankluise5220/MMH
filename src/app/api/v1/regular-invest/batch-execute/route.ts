@@ -204,7 +204,7 @@ export async function POST(req: NextRequest) {
     let skippedCount = 0;
 
     // ── Pre-compute NAV: filter out paused purchases and no-NAV gaps ──
-    const confirmDays = normalizeNonNegativeDays(plan.confirmDays ?? await getFundConfirmDays(plan.accountId, plan.fundCode), 1);
+    const confirmDays = normalizeNonNegativeDays(plan.confirmDays ?? await getFundConfirmDays(plan.accountId, plan.fundCode), 0);
     const arrivalDays = normalizeNonNegativeDays(plan.arrivalDays ?? await getFundArrivalDays(plan.accountId, plan.fundCode), 2);
     const todayStr = formatDateUtc(now);
     const navResultMap = new Map<string, { hasNav: boolean; sgzt: string; confirmDateStr: string }>();

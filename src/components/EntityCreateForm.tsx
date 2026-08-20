@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback, type FormEvent } from "react";
+import { createPortal } from "react-dom";
+import { useEffect, useMemo, useState, useCallback, type FormEvent, type ReactNode } from "react";
 import { Plus } from "lucide-react";
 import { kindOrder } from "@/lib/account-kinds";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
@@ -220,6 +221,8 @@ const CREDIT_BILL_MODE_OPTIONS = [
   { value: "consolidated", labelKey: "entityForm.creditBillMode.consolidated" },
 ];
 
+const ENTITY_CREATE_MODAL_Z_INDEX = 40000;
+
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -276,7 +279,7 @@ const ENTITY_CONFIG = {
       { key: "name", labelKey: "entityForm.accountNameLabel", type: "text", placeholderKey: "entityForm.accountNamePlaceholder" },
       { key: "kind", labelKey: "entityForm.accountTypeLabel", type: "select", options: ACCOUNT_KIND_OPTIONS, defaultValue: "bank_debit" },
       { key: "investProductType", labelKey: "settings.accounts.investmentAccountType", type: "select", options: INVEST_PRODUCT_OPTIONS, defaultValue: "fund", condition: (f) => f.kind === "investment" },
-      { key: "fundUnitsDecimals", labelKey: "settings.accounts.fundUnitsDecimals", type: "text", defaultValue: "3", placeholderKey: "settings.accounts.defaultUnitsDecimals", condition: (f) => f.kind === "investment" && (f.investProductType ?? "fund") === "fund" },
+      { key: "fundUnitsDecimals", labelKey: "settings.accounts.fundUnitsDecimals", type: "text", defaultValue: "2", placeholderKey: "settings.accounts.defaultUnitsDecimals", condition: (f) => f.kind === "investment" && (f.investProductType ?? "fund") === "fund" },
       { key: "tradingCalendar", labelKey: "settings.accounts.tradingCalendar", type: "select", options: TRADING_CALENDAR_OPTIONS, defaultValue: "cn_fund", condition: (f) => supportsTradingCalendarForAccount(f.kind, f.investProductType ?? "fund") },
       { key: "groupId", labelKey: "settings.accounts.owner", type: "select", optionsFromData: "groupId", nestedCreate: "group" },
       { key: "institutionId", labelKey: "settings.accounts.institution", type: "select", optionsFromData: "institutionId", nestedCreate: "institution" },
@@ -365,6 +368,11 @@ function getSmartSelectCreateLabel(t: (key: string) => string, entityType: Neste
 
 function settingsScopeForEntity(entityType: NestedEntityType): SettingsDataScope {
   return entityType === "category" ? "categories" : "accounts";
+}
+
+function renderEntityCreatePortal(content: ReactNode) {
+  if (typeof document === "undefined") return content;
+  return createPortal(content, document.body);
 }
 
 /* ---- Main Component ---- */
@@ -915,9 +923,9 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   if (mode === "compact") {
     if (!open) return null;
 
-    return (
+    return renderEntityCreatePortal(
       <>
-        <div className="app-modal-backdrop z-[1200]">
+        <div className="app-modal-backdrop" style={{ zIndex: ENTITY_CREATE_MODAL_Z_INDEX }}>
           <div className="app-modal-panel max-w-sm">
             <div className="modal-header">
               <div className="text-sm font-semibold text-slate-800">{displayTitle}</div>
@@ -1185,9 +1193,9 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   if (layout === "modal") {
     if (mode !== "full" || !props.open) return null;
 
-    return (
+    return renderEntityCreatePortal(
       <>
-        <div className="app-modal-backdrop z-[1100]">
+        <div className="app-modal-backdrop" style={{ zIndex: ENTITY_CREATE_MODAL_Z_INDEX }}>
           <div className="app-modal-panel max-w-3xl">
             <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">{displayTitle}</div>

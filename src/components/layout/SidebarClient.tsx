@@ -7,12 +7,11 @@ import {
   LayoutDashboard,
   Users,
   CalendarClock,
-  ChevronLeft,
-  ChevronRight,
   ChevronDown,
   Repeat,
   EyeOff,
   Landmark,
+  Home,
   BarChart3,
   CreditCard,
   Compass,
@@ -89,35 +88,13 @@ function normalizeSidebarAccountItem(item: AccountItem): AccountItem {
   };
 }
 
-function HeaderHistoryButton({
-  direction,
-  title,
-  disabled,
-  onClick,
-}: {
-  direction: "back" | "forward";
-  title: string;
-  disabled: boolean;
-  onClick: () => void;
-}) {
-  const Icon = direction === "back" ? ChevronLeft : ChevronRight;
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className="flex h-7 w-6 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-transparent"
-      title={title}
-      aria-label={title}
-    >
-      <Icon size={16} />
-    </button>
-  );
-}
-
 const ASSET_KINDS = ["cash", "bank_debit", "ewallet", "deposit"];
 const CREDIT_KINDS = ["bank_credit"];
-const INVEST_KINDS = ["investment", "investment_fund", "investment_money", "investment_wealth", "investment_stock", "investment_property"];
+const INVEST_KINDS = ["investment", "investment_fund", "investment_money", "investment_wealth", "investment_stock"];
+const FIXED_ASSET_SUMMARY_KIND = "fixed_asset_summary";
+const FIXED_ASSET_SUMMARY_ID = "__fixed_assets__";
+const FIXED_ASSET_SECTION = "fixed_assets";
+const FIXED_ASSET_KINDS = [FIXED_ASSET_SUMMARY_KIND];
 const INSURANCE_KINDS = ["insurance"];
 const LIABILITY_KINDS = ["loan_summary", "loan"];
 const ASSET_SUBGROUPS: Array<{ key: string; label: string; kinds: string[] }> = [
@@ -130,6 +107,7 @@ const SECTION_ICON: Record<string, React.ElementType> = {
   资产: Landmark,
   信用卡: CreditCard,
   投资: BarChart3,
+  [FIXED_ASSET_SECTION]: Home,
   保险: Shield,
   往来款: Landmark,
 };
@@ -144,6 +122,7 @@ const KIND_SORT_ORDER = new Map<string, number>([
   ["investment_wealth", 53],
   ["investment_stock", 54],
   ["investment_property", 55],
+  [FIXED_ASSET_SUMMARY_KIND, 56],
   ["insurance", 55],
   ["bank_credit", 60],
   ["loan_summary", 70],
@@ -157,11 +136,41 @@ function isSidebarSettlementLoan(item: AccountItem) {
 }
 
 function isOwnerScopedSidebarItem(item: AccountItem) {
-  return item.kind !== "loan_summary" && !isSidebarSettlementLoan(item);
+  return item.kind !== "loan_summary" && item.kind !== FIXED_ASSET_SUMMARY_KIND && !isSidebarSettlementLoan(item);
 }
 
 function normalizeSidebarItems(items: AccountItem[], t: (key: string, params?: Record<string, string | number>) => string) {
-  const normalized = items.map(normalizeSidebarAccountItem);
+  const normalizedItems = items.map(normalizeSidebarAccountItem);
+  const propertyItems = normalizedItems.filter((item) => item.kind === "investment_property");
+  const fixedAssetSummary: AccountItem | null = propertyItems.length > 0
+    ? (() => {
+        const label = t("txForm.fixedAssetToggle");
+        const baseCurrency = propertyItems.find((item) => item.baseCurrency)?.baseCurrency ?? propertyItems[0]?.currency ?? null;
+        const convertedValues = propertyItems.map((item) => item.convertedBalance).filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+        const convertedBalance = convertedValues.length === propertyItems.length
+          ? convertedValues.reduce((sum, value) => sum + value, 0)
+          : null;
+        return {
+          id: FIXED_ASSET_SUMMARY_ID,
+          name: label,
+          label,
+          shortLabel: label,
+          hoverTitle: label,
+          balance: convertedBalance ?? propertyItems.reduce((sum, item) => sum + item.balance, 0),
+          convertedBalance,
+          currency: convertedBalance == null ? propertyItems[0]?.currency ?? baseCurrency : baseCurrency,
+          baseCurrency,
+          fxRateMissing: convertedBalance == null && propertyItems.some((item) => item.fxRateMissing),
+          kind: FIXED_ASSET_SUMMARY_KIND,
+          groupName: undefined,
+          institution: label,
+          children: propertyItems,
+        };
+      })()
+    : null;
+  const normalized = fixedAssetSummary
+    ? [...normalizedItems.filter((item) => item.kind !== "investment_property"), fixedAssetSummary]
+    : normalizedItems;
   const loanItems = normalized
     .filter(isSidebarSettlementLoan)
     .map((item) => ({
@@ -306,15 +315,10 @@ export function SidebarClient({
   const userMenuRef = useRef<HTMLDivElement>(null);
   const initializedSectionsRef = useRef(false);
   const initializedAssetSubgroupsRef = useRef(false);
-  const internalHistoryTargetRef = useRef<{ url: string; index: number } | null>(null);
   const prefetchedHrefRef = useRef<Set<string>>(new Set());
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [userMenuPosition, setUserMenuPosition] = useState<{ top: number; left: number } | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
-  const [appHistory, setAppHistory] = useState<{ entries: string[]; index: number }>({
-    entries: [],
-    index: -1,
-  });
   const householdId = household?.id ?? "";
   const ownerOptions = useMemo(
     () => Array.from(new Set(items.flatMap((item) => (item.children?.length ? item.children : [item])
@@ -391,38 +395,6 @@ export function SidebarClient({
       window.removeEventListener("scroll", updateUserMenuPosition, true);
     };
   }, [updateUserMenuPosition, userMenuOpen]);
-
-  useEffect(() => {
-    setAppHistory((prev) => {
-      const pendingTarget = internalHistoryTargetRef.current;
-      if (pendingTarget?.url === currentAppUrl) {
-        internalHistoryTargetRef.current = null;
-        return prev.entries[pendingTarget.index] === currentAppUrl
-          ? { entries: prev.entries, index: pendingTarget.index }
-          : prev;
-      }
-      if (prev.index >= 0 && prev.entries[prev.index] === currentAppUrl) return prev;
-
-      const currentStack = prev.index >= 0 ? prev.entries.slice(0, prev.index + 1) : [];
-      if (currentStack[currentStack.length - 1] === currentAppUrl) {
-        return { entries: currentStack, index: currentStack.length - 1 };
-      }
-
-      const entries = [...currentStack, currentAppUrl].slice(-50);
-      return { entries, index: entries.length - 1 };
-    });
-  }, [currentAppUrl]);
-
-  function navigateAppHistory(direction: "back" | "forward") {
-    const nextIndex = direction === "back" ? appHistory.index - 1 : appHistory.index + 1;
-    const targetUrl = appHistory.entries[nextIndex];
-    if (!targetUrl) return;
-    internalHistoryTargetRef.current = { url: targetUrl, index: nextIndex };
-    setAppHistory((prev) => ({ ...prev, index: nextIndex }));
-    startTransition(() => {
-      router.push(targetUrl, { scroll: false });
-    });
-  }
 
   // Refresh items when fund data changes (debounced)
   // Only updates items whose data actually changed to minimize React re-renders
@@ -658,9 +630,10 @@ export function SidebarClient({
   };
   const sectionBalanceCls = (kind: string, value: number) => balCls(displaySectionTotal(kind, value));
   const sectionLabel = (label: string) => {
-    if (label === "资产") return t("sidebar.section.assets");
+    if (label === "资产") return t("sidebar.section.fundingAccounts");
     if (label === "信用卡") return t("sidebar.section.creditCards");
     if (label === "投资") return t("sidebar.section.investments");
+    if (label === FIXED_ASSET_SECTION) return t("sidebar.section.fixedAssets");
     if (label === "保险") return t("sidebar.section.insurance");
     if (label === "往来款") return t("sidebar.section.liabilities");
     return label;
@@ -683,6 +656,7 @@ export function SidebarClient({
     if (kind === "investment_wealth") return t("sidebar.kind.wealth");
     if (kind === "investment_stock") return t("investment.product.stock");
     if (kind === "investment_property") return t("investment.product.property");
+    if (kind === FIXED_ASSET_SUMMARY_KIND) return t("sidebar.section.fixedAssets");
     if (kind === "insurance") return t("sidebar.kind.insurance");
     if (kind === "bank_credit") return t("sidebar.kind.creditCard");
     if (kind === "loan_summary" || kind === "loan") return t("sidebar.kind.loan");
@@ -709,6 +683,26 @@ export function SidebarClient({
       return passesCommonVisibility(item);
     };
     return items.flatMap((item) => {
+      if (item.kind === FIXED_ASSET_SUMMARY_KIND && item.children?.length) {
+        const children = item.children.filter(passesCommonVisibility);
+        if (children.length === 0) return [];
+        const convertedValues = children
+          .map(displayBalanceValue)
+          .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+        const allConverted = convertedValues.length === children.length;
+        const convertedTotal = convertedValues.reduce((sum, value) => sum + value, 0);
+        return [{
+          ...item,
+          children,
+          balance: allConverted
+            ? convertedTotal
+            : children.reduce((sum, child) => sum + child.balance, 0),
+          convertedBalance: allConverted ? convertedTotal : null,
+          currency: allConverted ? baseCurrency : children[0]?.currency ?? baseCurrency,
+          baseCurrency,
+          fxRateMissing: !allConverted,
+        }];
+      }
       if (item.kind !== "loan_summary" || !item.children?.length) {
         return isVisibleLeaf(item) ? [item] : [];
       }
@@ -743,7 +737,9 @@ export function SidebarClient({
     if (sidebarGroupBy === "institution") {
       const map = new Map<string, { kind: string; label: string; accounts: AccountItem[]; total: number; subgroups: never[] }>();
       for (const item of visibleItems) {
-        const label = item.institution?.trim() || t("insurance.noInstitution");
+        const label = item.kind === FIXED_ASSET_SUMMARY_KIND
+          ? FIXED_ASSET_SECTION
+          : item.institution?.trim() || t("insurance.noInstitution");
         const key = `institution:${label}`;
         const existing = map.get(key);
         if (existing) {
@@ -777,11 +773,12 @@ export function SidebarClient({
       { label: "资产", kinds: ASSET_KINDS },
       { label: "信用卡", kinds: CREDIT_KINDS },
       { label: "投资", kinds: INVEST_KINDS },
+      { label: FIXED_ASSET_SECTION, kinds: FIXED_ASSET_KINDS },
       { label: "保险", kinds: INSURANCE_KINDS },
       { label: "往来款", kinds: LIABILITY_KINDS }
     ];
     return groups.map(g => {
-      const filtered = visibleItems.filter(it => g.kinds.includes(it.kind) || (g.label === "投资" && it.kind.startsWith("investment_")));
+      const filtered = visibleItems.filter(it => g.kinds.includes(it.kind) || (g.label === "投资" && it.kind.startsWith("investment_") && it.kind !== "investment_property"));
       const subgroups =
         g.label === "资产"
           ? (() => {
@@ -826,6 +823,7 @@ export function SidebarClient({
       return selectedView === "debt" && (!selectedDebtPerson || (item.children?.some(isDebtAccountSelected) ?? false));
     }
     if (item.kind === "loan") return isDebtAccountSelected(item) || (!!item.id && selectedAccountId === item.id && selectedView === "debt");
+    if (item.kind === FIXED_ASSET_SUMMARY_KIND) return selectedView === "investproperty" && !selectedAccountId && !selectedAccount;
     return item.id ? selectedAccountId === item.id : !selectedAccountId && selectedAccount === item.name;
   }
 
@@ -1039,18 +1037,6 @@ export function SidebarClient({
             <ChevronDown size={12} className={`shrink-0 transition-transform ${userMenuOpen ? "rotate-180" : ""}`} />
           </button>
           <div className="flex shrink-0 items-center gap-0.5">
-            <HeaderHistoryButton
-              direction="back"
-              title={t("sidebarClient.historyBack")}
-              disabled={appHistory.index <= 0}
-              onClick={() => navigateAppHistory("back")}
-            />
-            <HeaderHistoryButton
-              direction="forward"
-              title={t("sidebarClient.historyForward")}
-              disabled={appHistory.index < 0 || appHistory.index >= appHistory.entries.length - 1}
-              onClick={() => navigateAppHistory("forward")}
-            />
             <UndoLastOperationButton
               compact
               iconSize={15}
@@ -1194,6 +1180,7 @@ export function SidebarClient({
                             {(sec.kind !== "资产" || !group.label || !collapsedAssetSubgroupKeys.has(group.key)) && group.accounts.map((it, index) => {
                               const active = isAccountItemActive(it);
                               const href = (() => {
+                                if (it.kind === FIXED_ASSET_SUMMARY_KIND) return "/?view=investproperty";
                                 if (it.kind === "loan_summary") return "/?view=debt";
                                 if (it.kind === "loan") {
                                   const q = new URLSearchParams();
@@ -1231,7 +1218,9 @@ export function SidebarClient({
                                   <span className="min-w-0 flex-1 pr-2">
                                     <span className="text-fade-right block min-w-0" title={itemTitle}>
                                     {sidebarGroupBy === "institution" && it.kind !== "loan_summary"
-                                      ? it.kind === "insurance"
+                                      ? it.kind === FIXED_ASSET_SUMMARY_KIND
+                                        ? it.label
+                                      : it.kind === "insurance"
                                         ? (it.shortLabel || it.label)
                                         : `${inlineKindLabel(it.kind)}·${it.shortLabel || it.label}`
                                       : it.label}

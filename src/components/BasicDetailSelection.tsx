@@ -3,6 +3,7 @@
 import { Trash2 } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
+import { CATEGORY_SMART_SELECT_BEHAVIOR } from "@/components/categorySmartSelect";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { batchReplaceEntries, type BatchReplaceField } from "@/lib/client/batchReplaceEntries";
@@ -48,10 +49,6 @@ function getTypeOptions(t: (key: string) => string) {
 }
 const defaultBatchReplaceFields: BatchReplaceField[] = ["date", "postedAt", "type", "outflow", "inflow", "amount", "account", "toAccount", "categoryId", "institution", "remark"];
 
-function stripLeadingIndent(label: string) {
-  return label.replace(/^[\u3000\s]+/, "");
-}
-
 function scopeBatchCategoryOptions(
   categoryOptions: BasicDetailBatchCategoryOption[],
   categoryTypes: string[] = [],
@@ -64,25 +61,13 @@ function scopeBatchCategoryOptions(
 
   const [categoryType] = Array.from(typeSet);
   const typeHeaderId = `category-type:${categoryType}`;
-  const optionById = new Map(scopedOptions.map((option) => [option.value, option]));
-  const hasChildById = new Map<string, boolean>();
-  for (const option of scopedOptions) {
-    if (option.parentId) hasChildById.set(option.parentId, true);
-  }
-
-  return scopedOptions.flatMap((option) => {
-    if (option.value === typeHeaderId) return [];
-    const isTopCategory = option.parentId === typeHeaderId;
-    if (!isTopCategory) return [option];
-    if (!hasChildById.get(option.value)) return [];
-    return [{
+  return scopedOptions
+    .filter((option) => option.value !== typeHeaderId)
+    .map((option) => ({
       ...option,
-      label: stripLeadingIndent(option.label),
-      parentId: undefined,
-      isHeader: true,
-      isGroup: false,
-    }];
-  }).filter((option) => optionById.has(option.value));
+      parentId: option.parentId === typeHeaderId ? undefined : option.parentId,
+      subLabel: undefined,
+    }));
 }
 
 const SelectionContext = createContext<SelectionContextValue | null>(null);
@@ -249,18 +234,7 @@ export function BasicDetailBatchReplaceButton({
         options: categorySelectOptions,
         placeholder: t("basicDetailSelection.selectCategory"),
         allowEmpty: true,
-        smartSelectBehavior: {
-          hierarchy: true,
-          search: true,
-          initialCollapsedAll: true,
-          accordionGroups: true,
-          selectableGroups: true,
-          groupSelectOnDoubleClick: false,
-          minDropdownWidth: 560,
-          dropdownMaxHeight: 420,
-          density: "compact",
-          expandedGroupColumns: 4,
-        },
+        smartSelectBehavior: CATEGORY_SMART_SELECT_BEHAVIOR,
       },
       institution: { value: "institution", label: fieldLabels.institution, kind: "text", placeholder: t("basicDetailSelection.institutionPlaceholder"), allowEmpty: true },
       remark: { value: "remark", label: fieldLabels.remark, kind: "text", placeholder: t("stockPanel.batchNotePlaceholder"), allowEmpty: true },

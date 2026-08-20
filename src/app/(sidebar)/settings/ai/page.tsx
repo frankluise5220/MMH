@@ -30,6 +30,7 @@ async function loadInitialAiConfig(): Promise<{
         name: model.name,
         model: model.model,
         vision: model.vision,
+        apiMode: model.apiMode,
         active: model.active,
       })),
     })),

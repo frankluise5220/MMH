@@ -1,6 +1,6 @@
 /**
  * GET /api/v1/undo: returns the latest undoable user entry operation and remaining undo count.
- * POST /api/v1/undo: restores the latest edit/delete operation as one atomic group.
+ * POST /api/v1/undo: applies the latest create/edit/delete reversal as one atomic group.
  */
 import { NextResponse } from "next/server";
 

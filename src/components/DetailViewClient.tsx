@@ -16,6 +16,7 @@ import { BasicDetailBatchDeleteButton,
   useBasicDetailSelection,
   usePruneBasicDetailSelection,
 } from "./BasicDetailSelection";
+import type { BatchReplaceField } from "@/lib/client/batchReplaceEntries";
 import { useI18n } from "@/lib/i18n";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, applyBalanceReconcileEntry, effectiveAmountForAccount, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
 import { compareDetailEntriesAsc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
@@ -102,6 +103,8 @@ export type DetailEntry = {
   fundArrivalAmount: number | null;
   businessLinkCount?: number;
   businessLinkLabels?: string[];
+  relatedAccountId?: string | null;
+  relatedAccountName?: string | null;
   attachments?: Array<{
     id: string;
     name: string;
@@ -464,6 +467,11 @@ function investmentCategoryLabel(
     if (subtype === "redeem") return t("detailView.metalSell");
     if (subtype === "buy") return t("detailView.metalBuy");
   }
+  if (productType === "property") {
+    if (subtype === "sale" || subtype === "redeem" || subtype === "switch_out") return t("propertyForm.action.sale");
+    if (subtype === "improvement") return t("propertyForm.action.improvement");
+    if (subtype === "purchase" || subtype === "buy") return t("propertyForm.action.purchase");
+  }
   if (productType === "fund" || productType === "money" || !productType) {
     if (subtype === "buy" && source === "regular_invest") return t("detailView.fundRegularInvest");
     if (subtype === "buy" && source === "dividend") return t("detailView.dividendInvest");
@@ -491,6 +499,7 @@ export function DetailViewClient({
   toolbarMode = "default",
   toolbarTitle,
   toolbarRightContent,
+  batchReplaceFields,
   resetKey,
   emptyText,
   draggableRows = true,
@@ -520,6 +529,7 @@ export function DetailViewClient({
   toolbarMode?: "default" | "custom" | "none";
   toolbarTitle?: ReactNode;
   toolbarRightContent?: ReactNode;
+  batchReplaceFields?: BatchReplaceField[];
   resetKey?: string;
   emptyText?: string;
   draggableRows?: boolean;
@@ -581,6 +591,9 @@ export function DetailViewClient({
   const relatedAccountTarget = useCallback((entry: DetailEntry) => {
     const sourceInScope = !!entry.accountId && accountColumnScopeIds.has(entry.accountId);
     const targetInScope = !!entry.toAccountId && accountColumnScopeIds.has(entry.toAccountId);
+    if (!entry.toAccountId && (entry.relatedAccountId || entry.relatedAccountName)) {
+      return { id: entry.relatedAccountId ?? null, name: entry.relatedAccountName ?? null };
+    }
     if (targetInScope && !sourceInScope) return { id: entry.accountId, name: entry.accountName };
     if (sourceInScope && !targetInScope) return { id: entry.toAccountId, name: entry.toAccountName };
     if (targetInScope) return { id: entry.accountId, name: entry.accountName };
@@ -1271,7 +1284,7 @@ export function DetailViewClient({
   const customToolbarLeft = toolbarMode === "custom" ? (
     <div className="flex min-w-0 items-center gap-2">
       {selectedCount > 0 ? <span className="text-xs font-medium text-slate-600">{tf("detail.selectedCount", { count: selectedCount })}</span> : null}
-      {selectedCount > 0 ? <BasicDetailBatchReplaceButton accountOptions={accountOptions} categoryOptions={categoryOptions} categoryTypes={selectedCategoryTypes} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} /> : null}
+      {selectedCount > 0 ? <BasicDetailBatchReplaceButton fields={batchReplaceFields} accountOptions={accountOptions} categoryOptions={categoryOptions} categoryTypes={selectedCategoryTypes} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} /> : null}
       {selectedCount > 0 ? <BasicDetailBatchDeleteButton /> : null}
       {selectedCount > 0 && toolbarTitle ? <span className="h-4 w-px bg-slate-200" /> : null}
       {toolbarTitle ? <div className="text-sm font-semibold text-slate-800">{toolbarTitle}</div> : null}
@@ -1416,7 +1429,7 @@ export function DetailViewClient({
       rowActionsMinWidth={104}
       batchActionSlot={toolbarMode === "default" ? (
         <>
-          <BasicDetailBatchReplaceButton accountOptions={accountOptions} categoryOptions={categoryOptions} categoryTypes={selectedCategoryTypes} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} />
+          <BasicDetailBatchReplaceButton fields={batchReplaceFields} accountOptions={accountOptions} categoryOptions={categoryOptions} categoryTypes={selectedCategoryTypes} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} />
           <BasicDetailBatchDeleteButton />
         </>
       ) : undefined}

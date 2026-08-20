@@ -202,7 +202,7 @@ export async function POST(req: NextRequest) {
     const normalizedInterval = normalizeIntervalSchedule(normalizeIntervalUnit(intervalUnit), parseInt(intervalValue) || 1);
     const unitVal = normalizedInterval.value;
     const intervalUnitValue = normalizedInterval.unit;
-    const executionDayInt = intervalUnitValue === IntervalUnit.year ? null : executionDay ? parseInt(executionDay) : null;
+    const executionDayInt = executionDay ? parseInt(executionDay) : null;
     const parsedStartDate = parseDateOnlyUtc(startDate);
     if (!parsedStartDate) {
       return NextResponse.json({ ok: false, code: "INVALID_START_DATE", error: "开始日期不正确" }, { status: 400 });
@@ -457,17 +457,15 @@ export async function PUT(req: NextRequest) {
     const normalizedEffectiveInterval = normalizeIntervalSchedule(rawEffectiveIntervalUnit, rawEffectiveIntervalValue);
     const effectiveIntervalUnit = normalizedEffectiveInterval.unit;
     const effectiveIntervalValue = normalizedEffectiveInterval.value;
-    const effectiveExecutionDay = effectiveIntervalUnit === IntervalUnit.year
-      ? null
-      : executionDay != null
-        ? (executionDay ? parseInt(executionDay) : null)
-        : existing.executionDay;
+    const effectiveExecutionDay = executionDay != null
+      ? (executionDay ? parseInt(executionDay) : null)
+      : existing.executionDay;
     const nextStoredStartDate = parsedStartDate
       ? isFundTask ? skipWeekend(parsedStartDate) : parsedStartDate
       : existing.startDate;
     const startDateChanged = parsedStartDate != null && !sameDateOnly(nextStoredStartDate, existing.startDate);
     const taskTypeChanged = nextTaskType !== existingTaskType;
-    const normalizedExistingExecutionDay = effectiveIntervalUnit === IntervalUnit.year ? null : existing.executionDay;
+    const normalizedExistingExecutionDay = existing.executionDay;
     const scheduleChanged =
       startDateChanged ||
       taskTypeChanged ||
@@ -511,8 +509,7 @@ export async function PUT(req: NextRequest) {
       updateData.intervalUnit = effectiveIntervalUnit;
       updateData.intervalValue = effectiveIntervalValue;
     }
-    if (effectiveIntervalUnit === IntervalUnit.year) updateData.executionDay = null;
-    else if (executionDay != null) updateData.executionDay = executionDay ? parseInt(executionDay) : null; // Execution day update
+    if (executionDay != null) updateData.executionDay = executionDay ? parseInt(executionDay) : null; // Execution day update
     if (scheduleChanged) {
       updateData.nextRunDate = await deriveRegularInvestNextRunDate(prisma, {
         id: existing.id,

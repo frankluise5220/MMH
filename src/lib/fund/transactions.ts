@@ -4,6 +4,9 @@ import { toNumber } from "@/lib/date-utils";
 import { entryBusinessTypeLabel, upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
 import { createManySkipDuplicatesCompat } from "@/lib/server/prisma-create-many";
 import { regularInvestRefundNote } from "@/lib/fund/regular-invest-display";
+import { getInvestmentCategoryName } from "@/lib/investment-category";
+import { resolveCategorySnapshot } from "@/lib/default-categories";
+import { getCashFlowDate } from "@/lib/cash-flow-date";
 
 type Tx = Prisma.TransactionClient;
 
@@ -83,6 +86,23 @@ function cashFlowKindOf(row: { fundSubtype?: string | null; source?: string | nu
   return FundCashFlowKind.other;
 }
 
+export function getFundCashFlowDate(params: {
+  kind: FundCashFlowKind;
+  applyDate: Date;
+  arrivalDate?: Date | null;
+  requestedDate?: Date | null;
+}) {
+  const direction = fundCashFlowDirectionForKind(params.kind);
+  return getCashFlowDate({
+    direction,
+    operationDate: params.applyDate,
+    settlementDate: params.kind === FundCashFlowKind.refund_in
+      ? params.requestedDate ?? params.arrivalDate
+      : params.arrivalDate,
+    fallbackDate: params.requestedDate,
+  });
+}
+
 export function signedFundAmount(ft: {
   fundSubtype: string;
   source?: string | null;
@@ -112,11 +132,25 @@ export async function createFundTransactionWithCashFlows(
   const createdCashEntries: Array<{ entry: Awaited<ReturnType<Tx["txRecord"]["create"]>>; flow: FundCashFlowInput }> = [];
 
   for (const flow of cashFlows) {
+    const flowDate = getFundCashFlowDate({
+      kind: flow.kind,
+      applyDate: params.applyDate,
+      arrivalDate: params.arrivalDate,
+      requestedDate: flow.date,
+    });
+    const categoryName = flow.categoryName ?? getInvestmentCategoryName({
+      fundProductType: params.fundProductType,
+      fundSubtype: params.fundSubtype,
+      source: flow.source ?? params.source,
+    });
+    const category = flow.categoryId || !categoryName
+      ? null
+      : await resolveCategorySnapshot(client, params.householdId, { categoryName, type: "investment" });
     const entry = await client.txRecord.create({
       data: {
         householdId: params.householdId,
         type: TransactionType.investment,
-        date: flow.date,
+        date: flowDate,
         accountId: flow.accountId,
         accountName: flow.accountName ?? "",
         toAccountId: null,
@@ -124,8 +158,8 @@ export async function createFundTransactionWithCashFlows(
         amount: flow.amount,
         currency: flow.currency ?? "CNY",
         source: flow.source ?? params.source ?? "manual",
-        categoryId: flow.categoryId ?? null,
-        categoryName: flow.categoryName ?? null,
+        categoryId: flow.categoryId ?? category?.id ?? null,
+        categoryName: flow.categoryName ?? category?.name ?? categoryName ?? null,
         regularInvestPlanId: flow.regularInvestPlanId ?? params.regularInvestPlanId ?? null,
         note: flow.note ?? params.note ?? undefined,
       },
@@ -171,7 +205,7 @@ export async function createFundTransactionWithCashFlows(
         txRecordId: entry.id,
         kind: flow.kind,
         amount: Math.abs(toNumber(flow.amount)),
-        flowDate: flow.date,
+        flowDate: entry.date,
         accountId: flow.accountId,
       },
     });
