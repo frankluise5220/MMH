@@ -22,7 +22,7 @@ appname=mmh
 - 飞牛版数据库升级不能依赖备份恢复来避免丢数据。新增字段必须通过幂等 SQLite 迁移补列；字段重命名、拆分、类型调整或表重组必须写显式迁移和数据回填，不能重建库、清空表或让旧库停留在不兼容结构。
 - 飞牛包生命周期脚本不能默认以 `mmh` 包用户执行。安装、升级和卸载初始化需要应用中心/root 权限处理包目录、权限和同级备份；真正启动服务时再降权到 `mmh` 用户运行 Node。
 - `config/privilege` 只声明 `username`/`groupname`，不声明 `defaults: { "run-as": "package" }`。fnOS 应用中心下载暂存目录会把 `cmd/*` 解压为 `700 root`；若生命周期脚本以包用户执行，`install_init` 会因无法读取 root 拥有的脚本而报 `fork/exec ... permission denied`（0.1.8、0.1.33 均因此失败）。移除 `run-as: package` 后脚本以 root 执行，暂存权限不再影响安装；服务启动时才降权到 `mmh`（`restart_start_as_package_user`）。
-- 通过 FN软仓客户端（fn-appstores-client）或 `appcenter-cli install-fpk` 安装时，CLI 需要 `--volume` 或已配置的默认卷。若 NAS 未设置默认卷，会报 `Use --volume to specify the volume index, or configure a default using appcenter-cli default-volume [index]` 且返回码为 0（假成功），客户端误报"安装假成功"。先执行 `sudo appcenter-cli default-volume 1`（或对应当前存储卷的索引）即可修复；排查安装失败时优先查看应用中心 error.log 与 FN软仓 app.log 中的 CLI 输出。
+- 通过 FN 软仓客户端（fn-appstores-client，下载地址：`https://gitee.com/hhxs2025/fn-appstores/releases/download/2.4.0/fn-appstores-client-2.4.0-x86.fpk`）或 `appcenter-cli install-fpk` 安装时，CLI 需要 `--volume` 或已配置的默认卷。若 NAS 未设置默认卷，会返回 `Use --volume to specify the volume index, or configure a default using appcenter-cli default-volume [index]`，且退出码仍可能为 0，客户端因此会误判为“安装成功”。请先执行 `sudo appcenter-cli default-volume 1`（或对应当前存储卷的索引）修复；排查安装失败时优先查看应用中心 error.log 与 FN 软仓 app.log 中的 CLI 输出。
 - 默认安全边界清楚：只暴露 Web 端口，不包含本机 `.env`、私有 token、SSH 信息、邮箱授权码、AI key 或数据库备份。
 
 ## 已落地
