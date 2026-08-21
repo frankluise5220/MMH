@@ -145,6 +145,7 @@ https://github.com/frankluise5220/MMH/releases
 | [3. 使用](#3-使用-2) | 安装完成后打开 MMH，并记住实际安装目录。 |
 
 ### 1. 安装
+ssh user_name@NAS_IP
 
 ```bash
 mkdir -p ~/mmh
