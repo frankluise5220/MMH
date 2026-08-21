@@ -72,13 +72,6 @@ MMH 面向自托管环境，但远程访问时仍需要明确的安全边界：
 
 MMH 的 NAS 版本以 Docker 预构建镜像为主。日常更新流程应保持简单，并避免在低功耗 NAS 上反复构建应用：
 
-```bash
-cd ~/mmh
-git pull
-sudo docker compose pull app
-sudo docker compose up -d app
-```
-
 完整说明见 [NAS / 飞牛 fnOS / 群晖 DSM 安装与更新](docs/nas-install-manual.md)。
 
 ## English
@@ -145,13 +138,6 @@ See [Security Hardening](docs/security-hardening.md) for details.
 
 The NAS version of MMH is designed to use prebuilt Docker images. Routine updates should stay simple and avoid repeated application builds on low-power NAS hardware:
 
-```bash
-cd ~/mmh
-git pull
-sudo docker compose pull app
-sudo docker compose up -d app
-```
-
 See [NAS / fnOS / Synology DSM Install And Update](docs/nas-install-manual.md) for the full guide.
 
 ## 日本語
@@ -217,13 +203,6 @@ MMH は自ホスト環境向けですが、リモートアクセスには明確�
 ### デプロイと更新
 
 MMH の NAS 版は、事前ビルド済み Docker イメージを使う方針です。日常更新は簡単に保ち、低消費電力 NAS 上でアプリを繰り返しビルドしないようにします。
-
-```bash
-cd ~/mmh
-git pull
-sudo docker compose pull app
-sudo docker compose up -d app
-```
 
 詳しくは [NAS / fnOS / Synology DSM インストールと更新](docs/nas-install-manual.md) を参照してください。
 
