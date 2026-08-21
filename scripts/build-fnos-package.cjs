@@ -12,6 +12,7 @@ const version = normalizeFnosVersion(rawVersion);
 const osMinVersion = process.env.FNOS_OS_MIN_VERSION || "0.9.0";
 const packageReleaseNotes = typeof pkg.mmhReleaseNotes === "string" ? pkg.mmhReleaseNotes.trim() : "";
 const changelog = process.env.FNOS_PACKAGE_CHANGELOG || packageReleaseNotes || "更新 MMH 飞牛 SQLite 原生包，优化本地安装、启动和更新验证流程。";
+const manifestChangelog = toSingleLineText(changelog);
 const appName = "mmh";
 const target = normalizeFnosTarget(process.env.FNOS_TARGET_ARCH || process.env.FNOS_TARGET || "x86");
 const outDir = path.join(root, "release-artifacts", "fnos");
@@ -30,6 +31,15 @@ function write(file, content, mode) {
   mkdirp(path.dirname(file));
   fs.writeFileSync(file, content.replace(/\r\n/g, "\n"), "utf8");
   if (mode) fs.chmodSync(file, mode);
+}
+
+function toSingleLineText(value) {
+  return String(value || "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(" ");
 }
 
 function makeFnosPackageEntriesReadable(dir) {
@@ -535,7 +545,7 @@ desktop_uidir=ui
 desktop_applaunchname=mmh.Application
 service_port=7777
 checkport=true
-changelog=${changelog}
+changelog=${manifestChangelog}
 `);
 
 write(path.join(stageDir, "config", "privilege"), JSON.stringify({
