@@ -6,7 +6,7 @@
  * POST ?mode=rebuild: does not pull code; only reinstalls dependencies, generates Prisma, syncs the database, and builds.
  *
  * Response format:
- * - GET: { ok, deploymentTarget, isDocker, isFnos, updateMode, localVersion, localReleaseNotes, localCommit, localCommitMsg, localCommitDate, remoteVersion, remoteCommit, remoteCommitMsg, needsUpdate, canCheckUpdate }
+ * - GET: { ok, deploymentTarget, isDocker, isFnos, isSynology, updateMode, localVersion, localReleaseNotes, localCommit, localCommitMsg, localCommitDate, remoteVersion, remoteCommit, remoteCommitMsg, needsUpdate, canCheckUpdate }
  * - POST: text/event-stream; each data is { step, status, output? }, ending with { type: "done", ok, error?, restartRequired }
  */
 import { NextRequest, NextResponse } from "next/server";
@@ -120,9 +120,11 @@ function isDockerEnvironment(): boolean {
   return process.env.DOCKER_CONTAINER === "true";
 }
 
-function getDeploymentTarget(): "docker" | "fnos" | "standalone" {
+function getDeploymentTarget(): "docker" | "fnos" | "synology" | "standalone" {
   if (isDockerEnvironment()) return "docker";
-  if (String(process.env.MMH_DEPLOY_TARGET ?? "").trim().toLowerCase() === "fnos") return "fnos";
+  const target = String(process.env.MMH_DEPLOY_TARGET ?? "").trim().toLowerCase();
+  if (target === "fnos") return "fnos";
+  if (target === "synology") return "synology";
   return "standalone";
 }
 
@@ -363,7 +365,9 @@ function getImageVersionSourceOrder(imageSourceConfig: ImageSourceConfig | null)
   const configuredSource = imageSourceConfig?.source || "auto";
   const customAppImage = imageSourceConfig?.customAppImage || "";
   if (configuredSource === "custom") return ["custom"];
-  if (configuredSource && configuredSource !== "auto") return [configuredSource];
+  if (configuredSource && configuredSource !== "auto") {
+    return [configuredSource, ...STANDARD_IMAGE_SOURCE_ORDER.filter((source) => source !== configuredSource)];
+  }
   return customAppImage ? [...STANDARD_IMAGE_SOURCE_ORDER, "custom"] : STANDARD_IMAGE_SOURCE_ORDER;
 }
 
@@ -374,18 +378,14 @@ function getImageVersionCheckBody(imageSourceConfig: ImageSourceConfig | null) {
     return { source: "custom", customAppImage, timeoutMs: IMAGE_VERSION_CHECK_TIMEOUT_MS };
   }
   if (configuredSource && configuredSource !== "auto") {
-    return { source: configuredSource, customAppImage, timeoutMs: IMAGE_VERSION_CHECK_TIMEOUT_MS };
+    return { customAppImage, timeoutMs: IMAGE_VERSION_CHECK_TIMEOUT_MS };
   }
   return { customAppImage, timeoutMs: IMAGE_VERSION_CHECK_TIMEOUT_MS };
 }
 
 function getImageVersionFetchError(imageSourceConfig: ImageSourceConfig | null) {
-  const configuredSource = imageSourceConfig?.source || "auto";
-  if (configuredSource === "auto") {
-    const sourceText = getImageVersionSourceOrder(imageSourceConfig).join("、");
-    return `镜像版本检查失败或超时，已按顺序尝试：${sourceText}`;
-  }
-  return `镜像版本检查失败或超时，已检查镜像源：${configuredSource}`;
+  const sourceText = getImageVersionSourceOrder(imageSourceConfig).join("、");
+  return `镜像版本检查失败或超时，已按顺序尝试：${sourceText}`;
 }
 
 async function getImageVersionFallback(
@@ -455,6 +455,8 @@ export async function GET(req: NextRequest) {
     const deploymentTarget = getDeploymentTarget();
     const dockerEnvironment = deploymentTarget === "docker";
     const fnosEnvironment = deploymentTarget === "fnos";
+    const synologyEnvironment = deploymentTarget === "synology";
+    const managedPackageEnvironment = fnosEnvironment || synologyEnvironment;
     const updaterEnabled = getUpdaterConfig().enabled;
     // The image source config comes from the local updater; load it whenever the
     // updater is reachable so the settings panel is available on first load,
@@ -523,7 +525,7 @@ export async function GET(req: NextRequest) {
           fetchError: github.githubFetchError,
         };
       }
-    } else if (checkRemote && !fnosEnvironment) {
+    } else if (checkRemote && !managedPackageEnvironment) {
       versionInfo = await getGitVersionInfo(projectRoot);
     }
 
@@ -532,7 +534,8 @@ export async function GET(req: NextRequest) {
       deploymentTarget,
       isDocker: dockerEnvironment,
       isFnos: fnosEnvironment,
-      updateMode: fnosEnvironment ? "fnos" : "git",
+      isSynology: synologyEnvironment,
+      updateMode: managedPackageEnvironment ? deploymentTarget : "git",
       updaterEnabled,
       imageSourceConfig,
       localVersion,
@@ -562,9 +565,16 @@ export async function POST(req: NextRequest) {
   if (auth) return auth;
 
   const { searchParams } = new URL(req.url);
-  if (getDeploymentTarget() === "fnos") {
+  const deploymentTarget = getDeploymentTarget();
+  if (deploymentTarget === "fnos") {
     return NextResponse.json(
       { ok: false, code: "FNOS_UPDATE_NOT_SUPPORTED", error: "飞牛版请通过飞牛应用中心更新 MMH 应用包" },
+      { status: 409 },
+    );
+  }
+  if (deploymentTarget === "synology") {
+    return NextResponse.json(
+      { ok: false, code: "SYNOLOGY_UPDATE_NOT_SUPPORTED", error: "Synology DSM package builds must be updated through Package Center or by installing a newer SPK." },
       { status: 409 },
     );
   }

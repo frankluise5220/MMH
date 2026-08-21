@@ -1,0 +1,67 @@
+# MMH Synology DSM SPK
+
+本文记录 MMH 面向群晖 DSM 的 `.spk` 分发方式。普通用户安装和更新请优先看 `docs/nas-install-manual.md`。
+
+群晖版使用 SQLite 原生运行方式：包内包含 Next standalone、Linux Node runtime、Prisma runtime、SQLite 初始化脚本和 DSM 套件启动脚本，不依赖 Docker/PostgreSQL。正式 Release 资产按架构发布：
+
+```text
+release-artifacts/synology/mmh-synology-v0.1.x-x86_64.spk
+release-artifacts/synology/mmh-synology-v0.1.x-arm64.spk
+```
+
+调试归档不是用户安装包：
+
+```text
+release-artifacts/synology/mmh-synology-v0.1.x-x86_64-spk-source.tgz
+release-artifacts/synology/mmh-synology-v0.1.x-arm64-spk-source.tgz
+```
+
+## 用户安装
+
+1. 打开 GitHub Release 页面。
+2. 下载适合当前群晖设备架构的 `.spk`：
+   - x86_64：`mmh-synology-v0.1.x-x86_64.spk`
+   - ARM64：`mmh-synology-v0.1.x-arm64.spk`
+3. 在 DSM 套件中心选择手动安装并上传 `.spk`。
+4. 安装完成后打开 `http://群晖IP:7777/`。
+
+## 用户更新
+
+下载更高版本、同架构的 `.spk`，在 DSM 套件中心对已安装的 MMH 覆盖安装。不要把卸载旧版再安装新版作为日常更新方式；覆盖升级应保留套件数据目录中的 SQLite 数据库。
+
+## 打包命令
+
+先构建 SQLite standalone：
+
+```bash
+npm run build:synology:app
+```
+
+再按架构打包：
+
+```bash
+SYNOLOGY_NODE_TARBALL=/path/to/node-v20.x-linux-x64.tar.gz npm run build:synology
+SYNOLOGY_TARGET_ARCH=arm64 SYNOLOGY_NODE_TARBALL=/path/to/node-v20.x-linux-arm64.tar.gz npm run build:synology
+```
+
+只生成调试 stage 归档：
+
+```bash
+SYNOLOGY_NODE_TARBALL=/path/to/node-v20.x-linux-x64.tar.gz npm run stage:synology
+SYNOLOGY_TARGET_ARCH=arm64 SYNOLOGY_NODE_TARBALL=/path/to/node-v20.x-linux-arm64.tar.gz npm run stage:synology
+```
+
+打包前后校验：
+
+```bash
+npm run check:synology
+SYNOLOGY_VERIFY_BUILT_SPK=1 npm run check:synology
+```
+
+## 发布规则
+
+- GitHub Release 通过 `.github/workflows/synology-release.yml` 构建并上传 `release-artifacts/synology/*.spk`。
+- Release workflow 必须重新构建 `.spk`，不能把 `*-spk-source.tgz` 当成用户安装包。
+- 包版本直接使用 `package.json` 的 `0.1.x`，与 GitHub Release tag、GHCR 镜像 tag、飞牛 `.fpk` 和 Android 版本保持同号。
+- 群晖版运行时设置 `MMH_DEPLOY_TARGET=synology`，系统更新页只展示套件版本；更新由 DSM 套件中心或手动安装新版 `.spk` 管理。
+- `.spk` 不得包含本机 `.env`、私有 token、SSH 信息、邮箱授权码、AI key 或数据库备份。

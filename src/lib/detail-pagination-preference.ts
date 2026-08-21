@@ -1,4 +1,5 @@
 export const DETAIL_PAGE_SIZE_OPTIONS = [10, 20, 40] as const;
+export const DETAIL_ALL_PAGE_SIZE = 50000;
 
 export type DetailPaginationPreference = {
   pageSize: number;

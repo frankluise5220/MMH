@@ -102,6 +102,7 @@ export async function computeAccountDisplayBalances(
       select: {
         id: true,
         date: true,
+        postedAt: true,
         createdAt: true,
         dayOrder: true,
         type: true,
@@ -158,6 +159,7 @@ export async function computeAccountDisplayBalances(
       select: {
         id: true,
         date: true,
+        postedAt: true,
         createdAt: true,
         dayOrder: true,
         type: true,

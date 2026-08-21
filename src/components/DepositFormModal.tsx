@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { parseNumber } from "@/lib/investment-config";
 import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
+import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { NestedAddModal } from "./EntityCreateForm";
@@ -143,6 +144,8 @@ export function DepositFormModal({
 }) {
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const { t } = useI18n();
+  const parentModalZIndex = useModalLayerZIndex();
+  const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
 
   const initIsRedeem = mode === "edit" && entry ? entry.amount > 0 : false;
   const initAmount = mode === "edit" && entry ? String(Math.abs(entry.amount)) : "";
@@ -959,9 +962,9 @@ export function DepositFormModal({
   ) : undefined;
 
   return (
-    <>
+    <ModalLayerProvider value={modalZIndex}>
       {createPortal(
-        <div className="app-modal-backdrop z-[1000]">
+        <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
           <div className="app-modal-panel max-w-[min(42rem,calc(100vw-1rem))]">
             <div className="modal-header">
               <div className="text-sm font-semibold text-slate-800">
@@ -1339,7 +1342,7 @@ export function DepositFormModal({
             document.body,
           )
         : null}
-    </>
+    </ModalLayerProvider>
   );
 }
 

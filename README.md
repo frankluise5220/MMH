@@ -79,7 +79,7 @@ sudo docker compose pull app
 sudo docker compose up -d app
 ```
 
-完整说明见 [NAS / 飞牛 fnOS 安装与更新](docs/nas-install-manual.md)。
+完整说明见 [NAS / 飞牛 fnOS / 群晖 DSM 安装与更新](docs/nas-install-manual.md)。
 
 ## English
 
@@ -152,7 +152,7 @@ sudo docker compose pull app
 sudo docker compose up -d app
 ```
 
-See [NAS / fnOS Install And Update](docs/nas-install-manual.md) for the full guide.
+See [NAS / fnOS / Synology DSM Install And Update](docs/nas-install-manual.md) for the full guide.
 
 ## 日本語
 
@@ -225,7 +225,7 @@ sudo docker compose pull app
 sudo docker compose up -d app
 ```
 
-詳しくは [NAS / fnOS インストールと更新](docs/nas-install-manual.md) を参照してください。
+詳しくは [NAS / fnOS / Synology DSM インストールと更新](docs/nas-install-manual.md) を参照してください。
 
 ## Developer Docs
 

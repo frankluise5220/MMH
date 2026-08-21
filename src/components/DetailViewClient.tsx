@@ -26,6 +26,7 @@ import { isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
 import { normalizeSettlementTransferCategoryName } from "@/lib/default-categories";
 import { advanceDialogAmount } from "@/lib/advance-transfer";
 import {
+  DETAIL_ALL_PAGE_SIZE,
   normalizeDetailPage,
   normalizeDetailPageSize,
   readStoredDetailPreference,
@@ -33,7 +34,7 @@ import {
 import { parseImportAccountId } from "@/lib/account-import-match";
 import { formatAccountTableLabel, formatAccountTableTitle } from "@/lib/account-display";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
-import { APP_PREFS_EVENT, getDateDisplayFormatPreference, type DateDisplayFormat } from "@/lib/client/appPreferences";
+import { APP_PREFS_EVENT, getDateDisplayFormatPreference, getDetailDateBackgroundPreference, type DateDisplayFormat } from "@/lib/client/appPreferences";
 
 /* Types */
 
@@ -549,12 +550,16 @@ export function DetailViewClient({
 }) {
   const { t } = useI18n();
   const [dateDisplayFormat, setDateDisplayFormat] = useState<DateDisplayFormat>("yyyy-mm-dd");
+  const [detailDateBackground, setDetailDateBackground] = useState(false);
 
   useEffect(() => {
-    const syncDateDisplayFormat = () => setDateDisplayFormat(getDateDisplayFormatPreference());
-    syncDateDisplayFormat();
-    window.addEventListener(APP_PREFS_EVENT, syncDateDisplayFormat);
-    return () => window.removeEventListener(APP_PREFS_EVENT, syncDateDisplayFormat);
+    const syncDisplayPreferences = () => {
+      setDateDisplayFormat(getDateDisplayFormatPreference());
+      setDetailDateBackground(getDetailDateBackgroundPreference());
+    };
+    syncDisplayPreferences();
+    window.addEventListener(APP_PREFS_EVENT, syncDisplayPreferences);
+    return () => window.removeEventListener(APP_PREFS_EVENT, syncDisplayPreferences);
   }, []);
   const [attachmentViewEntryId, setAttachmentViewEntryId] = useState<string | null>(null);
   const resolvedEmptyText = emptyText ?? t("detail.empty");
@@ -933,6 +938,19 @@ export function DetailViewClient({
     );
   }, [accountId]);
 
+  const rowDropTargetAtEnd = useCallback((source: DetailEntry, sourceIndex: number, orderedRows: DetailEntry[]) => {
+    const sourceDayKey = detailEntryDayKey(source, accountId);
+    let targetIndex = -1;
+    for (let index = 0; index < orderedRows.length; index += 1) {
+      const candidate = orderedRows[index];
+      if (detailEntryDayKey(candidate, accountId) !== sourceDayKey) continue;
+      if (!canDropDetailEntry(source, candidate, "after")) continue;
+      targetIndex = index;
+    }
+    if (targetIndex < 0 || targetIndex === sourceIndex) return null;
+    return { row: orderedRows[targetIndex], index: targetIndex };
+  }, [accountId, canDropDetailEntry]);
+
   const reorderEntryByDrag = useCallback(async (source: DetailEntry, target: DetailEntry, position: AdvancedDataTableDropPosition) => {
     if (source.id === target.id) return;
     if (!canManuallyReorderDetailEntry(source) || !canManuallyReorderDetailEntry(target)) return;
@@ -1010,7 +1028,7 @@ export function DetailViewClient({
       const params = new URLSearchParams({
         accountId,
         page: detailAll ? "1" : String(detailPage),
-        pageSize: detailAll ? "5000" : String(pageSize),
+        pageSize: detailAll ? String(DETAIL_ALL_PAGE_SIZE) : String(pageSize),
       });
       const seq = ++detailRefreshSeqRef.current;
       fetch(`/api/v1/transactions/detail?${params.toString()}`, { cache: "no-store" })
@@ -1035,8 +1053,9 @@ export function DetailViewClient({
       width: 96,
       minWidth: 78,
       filterKind: "dateRange",
-      filterText: (e) => (e.date ?? "").slice(0, 10),
-      render: (e) => <span className="tabular-nums text-slate-600">{formatDateDisplay(e.date, dateDisplayFormat)}</span>,
+      filterText: (e) => localDateKey(getDetailEntryDisplayDate(e, accountId)),
+      sortValue: (e) => getDetailEntryDisplayDate(e, accountId).getTime(),
+      render: (e) => <span className="tabular-nums text-slate-600">{formatDateDisplay(getDetailEntryDisplayDate(e, accountId), dateDisplayFormat)}</span>,
     },
     ...(showAccountColumn ? [{
       key: "account",
@@ -1294,13 +1313,13 @@ export function DetailViewClient({
   const mobileGroups = useMemo(() => {
     const groups: Array<{ date: string; entries: DetailEntry[] }> = [];
     for (const entry of entries) {
-      const date = (entry.date ?? "").slice(0, 10) || t("detailView.noDate");
+      const date = detailEntryDayKey(entry, accountId) || t("detailView.noDate");
       const current = groups[groups.length - 1];
       if (current?.date === date) current.entries.push(entry);
       else groups.push({ date, entries: [entry] });
     }
     return groups;
-  }, [entries, t]);
+  }, [accountId, entries, t]);
 
   return (
     <>
@@ -1308,12 +1327,12 @@ export function DetailViewClient({
       {mobileGroups.length > 0 ? (
         <div className="pb-4">
           {mobileGroups.map((group, groupIndex) => (
-            <section key={`${group.date}:${group.entries[0]?.id ?? groupIndex}`}>
+            <section key={`${group.date}:${group.entries[0]?.id ?? groupIndex}`} className={detailDateBackground ? (groupIndex % 2 === 0 ? "bg-sky-50/30" : "bg-emerald-50/30") : undefined}>
               <div className="sticky top-0 z-10 border-y border-slate-200 bg-slate-100/96 px-3 py-1.5 text-xs font-semibold text-slate-500 backdrop-blur">
                 {formatDateDisplay(group.date, dateDisplayFormat)}
               </div>
               <div className="divide-y divide-slate-100 bg-white">
-                {group.entries.map((entry) => {
+                {group.entries.map((entry, entryIndex) => {
                   const effectiveAmount = effectiveAmountForAccount(entry, accountId);
                   const entryFundProductType =
                     entry.fundProductType ??
@@ -1340,7 +1359,7 @@ export function DetailViewClient({
                         if (!edit && !customEditEvent) return;
                         dispatchEntryEdit({ entryId: entry.id, edit, customEditEvent });
                       }}
-                      className="flex min-h-[68px] w-full items-center gap-3 px-3 py-2.5 text-left"
+                      className={`flex min-h-[68px] w-full items-center gap-3 px-3 py-2.5 text-left ${detailDateBackground ? (entryIndex % 2 === 0 ? "bg-white/70" : "bg-white/40") : ""}`}
                     >
                       <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-xs font-semibold ${effectiveAmount >= 0 ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}>
                         {entry.type === "transfer"
@@ -1398,6 +1417,7 @@ export function DetailViewClient({
       draggableRows={draggableRows}
       rowDragDisabled={(entry) => !canManuallyReorderDetailEntry(entry)}
       rowDropAllowed={(source, target, _sourceIndex, _targetIndex, position) => canDropDetailEntry(source, target, position)}
+      rowDropTargetAtEnd={rowDropTargetAtEnd}
       onRowReorder={(source, target, _sourceIndex, _targetIndex, position) => reorderEntryByDrag(source, target, position)}
       rowActions={(entry) => {
         const { edit, customEditEvent } = buildEntryEditRequest(entry);
@@ -1436,11 +1456,14 @@ export function DetailViewClient({
       rowClassName={(entry) => entry.id === focusEntryId
         ? "bg-amber-50 ring-1 ring-inset ring-amber-300 hover:bg-amber-50"
         : "hover:bg-blue-50/40"}
+      rowBackgroundEnabled={detailDateBackground}
+      rowBackgroundGroupKey={(entry) => detailEntryDayKey(entry, accountId)}
       fillHeight
       compactRows={compactRows}
       toolbarMode={toolbarMode}
       toolbarLeftContent={customToolbarLeft}
       toolbarRightContent={toolbarRightContent}
+      showTableStateInCustomToolbar={toolbarMode === "custom"}
       sortable={sortable}
       onDisplayRowsChange={onDisplayRowsChange}
     />

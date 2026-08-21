@@ -6,20 +6,26 @@ import { useRouter } from "next/navigation";
 import { SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
 import {
   getCreditCardSidebarLabelTemplatePreference,
+  getCompactRowHeightPreference,
+  getDetailDateBackgroundPreference,
   getDateDisplayFormatPreference,
   getDisplayLanguagePreference,
   getSidebarGroupPreference,
   getSidebarHideInitialDataPreference,
   getSidebarHideZeroPreference,
+  getSidebarShowFixedAssetsPreference,
   getTimeZoneModePreference,
   getTimeZonePreference,
   setCreditCardSidebarLabelTemplatePreference,
+  setCompactRowHeightPreference,
+  setDetailDateBackgroundPreference,
   setDateDisplayFormatPreference,
   setCreditCardLabelTemplatePreference,
   setDisplayLanguagePreference,
   setSidebarGroupPreference,
   setSidebarHideInitialDataPreference,
   setSidebarHideZeroPreference,
+  setSidebarShowFixedAssetsPreference,
   setTimeZonePreference,
   type DisplayLanguage,
   type DateDisplayFormat,
@@ -183,6 +189,9 @@ export default function DisplaySettingsPage() {
   const [sidebarGroupBy, setSidebarGroupBy] = useState<SidebarGroupMode>("kind");
   const [sidebarHideZero, setSidebarHideZero] = useState(false);
   const [sidebarHideInitialData, setSidebarHideInitialData] = useState(false);
+  const [sidebarShowFixedAssets, setSidebarShowFixedAssets] = useState(true);
+  const [detailDateBackground, setDetailDateBackground] = useState(false);
+  const [compactRowHeight, setCompactRowHeight] = useState(30);
   const [savingScheme, setSavingScheme] = useState(false);
   const [savingBaseCurrency, setSavingBaseCurrency] = useState(false);
   const [savingTimeZone, setSavingTimeZone] = useState(false);
@@ -196,6 +205,9 @@ export default function DisplaySettingsPage() {
     setSidebarGroupBy(getSidebarGroupPreference());
     setSidebarHideZero(getSidebarHideZeroPreference());
     setSidebarHideInitialData(getSidebarHideInitialDataPreference());
+    setSidebarShowFixedAssets(getSidebarShowFixedAssetsPreference());
+    setDetailDateBackground(getDetailDateBackgroundPreference());
+    setCompactRowHeight(getCompactRowHeightPreference());
     setDisplayLanguage(getDisplayLanguagePreference());
     setDateDisplayFormat(getDateDisplayFormatPreference());
     setTimeZoneMode(getTimeZoneModePreference());
@@ -417,6 +429,73 @@ export default function DisplaySettingsPage() {
     }
   }
 
+  async function updateSidebarShowFixedAssets(next: boolean) {
+    const prev = sidebarShowFixedAssets;
+    setSidebarShowFixedAssets(next);
+    setSidebarShowFixedAssetsPreference(next);
+    try {
+      const res = await fetch("/api/v1/settings/app-preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sidebarShowFixedAssets: next }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setSidebarShowFixedAssets(prev);
+        setSidebarShowFixedAssetsPreference(prev);
+      }
+    } catch {
+      setSidebarShowFixedAssets(prev);
+      setSidebarShowFixedAssetsPreference(prev);
+    }
+  }
+
+  async function updateDetailDateBackground(next: boolean) {
+    const prev = detailDateBackground;
+    setDetailDateBackground(next);
+    setDetailDateBackgroundPreference(next);
+    try {
+      const res = await fetch("/api/v1/settings/app-preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ detailDateBackground: next }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setDetailDateBackground(prev);
+        setDetailDateBackgroundPreference(prev);
+      }
+    } catch {
+      setDetailDateBackground(prev);
+      setDetailDateBackgroundPreference(prev);
+    }
+  }
+
+  async function updateCompactRowHeight(next: number) {
+    const normalized = Math.min(Math.max(Math.round(next), 25), 35);
+    const prev = compactRowHeight;
+    setCompactRowHeight(normalized);
+    setCompactRowHeightPreference(normalized);
+    try {
+      const res = await fetch("/api/v1/settings/app-preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ compactRowHeight: normalized }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setCompactRowHeight(prev);
+        setCompactRowHeightPreference(prev);
+      } else if (typeof data.compactRowHeight === "number") {
+        setCompactRowHeight(data.compactRowHeight);
+        setCompactRowHeightPreference(data.compactRowHeight);
+      }
+    } catch {
+      setCompactRowHeight(prev);
+      setCompactRowHeightPreference(prev);
+    }
+  }
+
   const sidebarPreview = useMemo(
     () => previewCreditCardName(creditCardSidebarDisplayName, CREDIT_CARD_PREVIEW_SAMPLE),
     [creditCardSidebarDisplayName]
@@ -473,6 +552,14 @@ export default function DisplaySettingsPage() {
               className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
             />
           </SettingRow>
+          <SettingRow title={t("settings.display.showFixedAssets")} desc={t("settings.display.showFixedAssetsDesc")} hideDesc={hideSettingDescriptions}>
+            <input
+              type="checkbox"
+              checked={sidebarShowFixedAssets}
+              onChange={(e) => void updateSidebarShowFixedAssets(e.target.checked)}
+              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
+            />
+          </SettingRow>
           <SettingRow
             title={t("settings.display.hideInitialData")}
             desc={t("settings.display.hideInitialDataDesc")}
@@ -509,6 +596,28 @@ export default function DisplaySettingsPage() {
               <span className={`font-medium ${selectedColorOption.preview.down}`}>-0.56%</span>
               {savingScheme ? <span className="ml-2 text-slate-400">{t("settings.display.applying")}</span> : null}
             </div>
+          </div>
+        </SettingRow>
+        <SettingRow title={t("settings.display.detailDateBackground")} desc={t("settings.display.detailDateBackgroundDesc")} hideDesc={hideSettingDescriptions}>
+          <input
+            type="checkbox"
+            checked={detailDateBackground}
+            onChange={(e) => void updateDetailDateBackground(e.target.checked)}
+            className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
+          />
+        </SettingRow>
+        <SettingRow title={t("settings.display.compactRowHeight")} desc={t("settings.display.compactRowHeightDesc")} hideDesc={hideSettingDescriptions}>
+          <div className="flex w-full max-w-xl items-center gap-3">
+            <input
+              type="range"
+              min={25}
+              max={35}
+              step={1}
+              value={compactRowHeight}
+              onChange={(e) => void updateCompactRowHeight(Number(e.target.value))}
+              className="h-2 w-full cursor-pointer accent-blue-600"
+            />
+            <span className="w-14 shrink-0 text-right text-sm tabular-nums text-slate-600">{compactRowHeight}px</span>
           </div>
         </SettingRow>
       </section>

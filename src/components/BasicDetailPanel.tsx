@@ -12,6 +12,7 @@ import { DetailViewClient, type DetailEntry } from "@/components/DetailViewClien
 import { ViewExcelImportMenuButton } from "@/components/ViewExcelImportMenuButton";
 import { FINANCE_DATA_CHANGED_EVENT, type FinanceDataChangedDetail } from "@/lib/client/refresh";
 import {
+  DETAIL_ALL_PAGE_SIZE,
   DETAIL_PAGE_SIZE_OPTIONS,
   clampDetailPage as clampPage,
   normalizeDetailPageSize,
@@ -285,7 +286,7 @@ export function BasicDetailPanel({
     const params = new URLSearchParams({
       accountId,
       page: detailAll ? "1" : String(safePage),
-      pageSize: detailAll ? "5000" : String(pageSize),
+      pageSize: detailAll ? String(DETAIL_ALL_PAGE_SIZE) : String(pageSize),
     });
     setIsPageLoading(true);
     fetch(`/api/v1/transactions/detail?${params.toString()}`, {

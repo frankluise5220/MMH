@@ -7,6 +7,7 @@ import { createPortal } from "react-dom";
 import { CalcInput } from "./CalcInput";
 import { DateStepper } from "./DateStepper";
 import { EntityCreateForm } from "./EntityCreateForm";
+import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { institutionTypeLabel } from "@/lib/account-kinds";
@@ -291,6 +292,10 @@ export function DebtTransactionModal({
 }) {
   const today = useMemo(() => formatDateInput(new Date()), []);
   const { t, language } = useI18n();
+  const parentModalZIndex = useModalLayerZIndex();
+  const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
+  const confirmModalZIndex = getNextModalLayerZIndex(modalZIndex);
+  const rateModalZIndex = getNextModalLayerZIndex(confirmModalZIndex);
   const debtItemListId = useId();
   const [localDebtAccounts, setLocalDebtAccounts] = useState(debtAccounts);
   const [localDebtObjectOptions, setLocalDebtObjectOptions] = useState(debtObjectOptions);
@@ -1142,7 +1147,7 @@ export function DebtTransactionModal({
   }
 
   return (
-    <>
+    <ModalLayerProvider value={modalZIndex}>
       {showTriggerButton ? (
         <button
           type="button"
@@ -1161,7 +1166,7 @@ export function DebtTransactionModal({
 
       {open
         ? createPortal(
-            <div className="app-modal-backdrop z-50">
+            <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
               <div className="app-modal-panel max-w-xl">
                   <div className="modal-header shrink-0">
                     <div className="text-sm font-semibold text-slate-800">{editingEntryId ? t("debtTx.editRepayment") : t("debtTx.title")}</div>
@@ -1635,7 +1640,7 @@ export function DebtTransactionModal({
         : null}
       {open && historyConfirmOpen
         ? createPortal(
-            <div className="app-modal-backdrop z-[60]">
+            <div className="app-modal-backdrop" style={{ zIndex: confirmModalZIndex }}>
               <div className="app-modal-panel max-w-lg">
                 <div className="modal-header shrink-0">
                   <div className="text-sm font-semibold text-slate-800">{t("debtTx.historyConfirmTitle")}</div>
@@ -1736,7 +1741,7 @@ export function DebtTransactionModal({
         : null}
       {open && historicalRatesOpen
         ? createPortal(
-            <div className="app-modal-backdrop z-[70]">
+            <div className="app-modal-backdrop" style={{ zIndex: rateModalZIndex }}>
               <div className="app-modal-panel max-w-xl">
                 <div className="modal-header shrink-0">
                   <div className="text-sm font-semibold text-slate-800">{t("debtShell.rateAdjustment")}</div>
@@ -1967,6 +1972,6 @@ export function DebtTransactionModal({
             document.body,
           )
         : null}
-    </>
+    </ModalLayerProvider>
   );
 }

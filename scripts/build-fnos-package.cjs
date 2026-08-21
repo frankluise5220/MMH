@@ -1258,6 +1258,22 @@ const MIGRATIONS = [
       rebuildPropertyTransactionsCashEntryFk(db);
     },
   },
+  {
+    version: "20260819_add_category_sort_order",
+    description: "Add Category.sortOrder for stable category ordering",
+    apply(db) {
+      addCategorySortOrder(db);
+    },
+  },
+  {
+    version: "20260820_add_ai_model_api_mode",
+    description: "Add AiModel.apiMode provider mode",
+    apply(db) {
+      if (tableExists(db, "AiModel")) {
+        addColumnIfMissing(db, "AiModel", "apiMode", "TEXT NOT NULL DEFAULT 'chat'");
+      }
+    },
+  },
 ];
 
 function databasePathFromUrl(value) {
@@ -1289,6 +1305,25 @@ function addColumnIfMissing(db, tableName, columnName, definition) {
   }
   if (columnExists(db, tableName, columnName)) return;
   db.exec("ALTER TABLE " + quoteIdent(tableName) + " ADD COLUMN " + quoteIdent(columnName) + " " + definition);
+}
+
+function addCategorySortOrder(db) {
+  if (!tableExists(db, "Category")) return;
+  addColumnIfMissing(db, "Category", "sortOrder", "INTEGER NOT NULL DEFAULT 0");
+
+  const rows = db.prepare(
+    "SELECT \"id\", \"householdId\", \"type\", \"parentId\", \"name\" FROM \"Category\" ORDER BY \"householdId\" ASC, \"type\" ASC, \"parentId\" ASC, \"name\" ASC, \"id\" ASC",
+  ).all();
+  const nextOrderByBucket = new Map();
+  const update = db.prepare("UPDATE \"Category\" SET \"sortOrder\" = ? WHERE \"id\" = ?");
+  for (const row of rows) {
+    const bucketKey = [row.householdId ?? "", row.type ?? "", row.parentId ?? ""].join("\u001f");
+    const nextOrder = nextOrderByBucket.get(bucketKey) ?? 0;
+    update.run(nextOrder, row.id);
+    nextOrderByBucket.set(bucketKey, nextOrder + 1);
+  }
+
+  db.exec("CREATE INDEX IF NOT EXISTS \"Category_householdId_type_parentId_sortOrder_idx\" ON \"Category\"(\"householdId\", \"type\", \"parentId\", \"sortOrder\")");
 }
 
 function splitSqlStatements(sql) {

@@ -135,7 +135,7 @@ export function getInvestmentCategoryName(entry: {
   }
 
   if (productType === "fund" || productType === "money" || !productType) {
-    if ((subtype === "buy" || subtype === "regular_invest") && source === "regular_invest") return SYSTEM_FUND_REGULAR_INVEST_CATEGORY;
+    if ((subtype === "buy" || subtype === "regular_invest" || !subtype) && source === "regular_invest") return SYSTEM_FUND_REGULAR_INVEST_CATEGORY;
     if (subtype === "redeem" || subtype === "switch_out") return SYSTEM_FUND_REDEEM_CATEGORY;
     if (subtype === "dividend_cash") return SYSTEM_FUND_CASH_DIVIDEND_CATEGORY;
     if (subtype === "dividend_reinvest" || (subtype === "buy" && source === "dividend")) return SYSTEM_FUND_REINVEST_DIVIDEND_CATEGORY;

@@ -12,6 +12,9 @@ import { buildAccountDisplayOption } from "@/lib/account-display";
 import { convertCurrencyAmounts, getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { normalizeCurrency } from "@/lib/currency";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 function normalizeReturnedAccountKind<T extends { kind: AccountKind; investProductType?: string | null }>(account: T): T {
   if (account.kind === AccountKind.investment && account.investProductType === "deposit") {
     return { ...account, kind: AccountKind.deposit };

@@ -642,6 +642,24 @@ export async function syncFundTransactionsFromTxRecords(entryIds: string[], clie
       );
     }
 
+    for (const row of cashRows) {
+      const categoryName = getInvestmentCategoryName({
+        fundProductType: row.fundProductType ?? main.fundProductType,
+        fundSubtype: row.fundSubtype ?? main.fundSubtype,
+        source: row.source ?? main.source,
+      });
+      const category = categoryName
+        ? await resolveCategorySnapshot(client, main.householdId, { categoryName, type: "investment" })
+        : null;
+      await client.txRecord.update({
+        where: { id: row.id },
+        data: {
+          categoryId: category?.id ?? null,
+          categoryName: category?.name ?? categoryName ?? null,
+        },
+      }).catch(() => undefined);
+    }
+
     const refundAmount = refunds.reduce((sum, row) => sum + Math.abs(toNumber(row.fundArrivalAmount ?? row.amount)), 0);
     const lastRefundDate = refunds.reduce<Date | null>((latest, row) => {
       const date = row.fundArrivalDate ?? row.date;

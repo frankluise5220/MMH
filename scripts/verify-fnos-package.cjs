@@ -228,6 +228,7 @@ const systemUpdateRoute = read(path.join(root, "src", "app", "api", "v1", "setti
 const systemUpdatePage = read(path.join(root, "src", "app", "(sidebar)", "settings", "system-update", "page.tsx"));
 const authVerifyRoute = read(path.join(root, "src", "app", "api", "v1", "auth", "verify", "route.ts"));
 const backupSource = read(path.join(root, "src", "lib", "server", "backup.ts"));
+const scheduledTaskLock = read(path.join(root, "src", "lib", "server", "scheduled-task-lock.ts"));
 const repositoryExample = read(path.join(root, "deploy", "fnos", "repository", "apps.example.json"));
 const repositoryApiApps = read(path.join(root, "deploy", "fnos", "repository", "api", "apps"));
 const fnosReadme = read(path.join(root, "deploy", "fnos", "README.md"));
@@ -266,6 +267,7 @@ expect(/createTableColumnDefinitionsFromStatement/.test(buildScript) && /SQLite 
 expect(/canAddColumnFromCreateTableDefinition/.test(buildScript) && /SQLite schema column skipped from native-init.sql because it cannot be safely added/.test(buildScript), "fnOS SQLite column backfill must skip unsafe column transforms instead of guessing destructive migrations.");
 expect(/CREATE INDEX IF NOT EXISTS/.test(buildScript) && /createIndexStatementIfMissing/.test(buildScript), "fnOS SQLite schema backfill must make native-init.sql indexes idempotent for existing databases.");
 expect(/indexColumnsExist/.test(buildScript) && /SQLite schema index skipped from native-init.sql/.test(buildScript), "fnOS SQLite schema backfill must skip incompatible indexes instead of failing existing databases.");
+expect(/startsWith\("file:"\)/.test(scheduledTaskLock) && /if \(isSqliteDatabaseUrl\(\)\) return;\s*await tx\.\$executeRaw`SELECT pg_advisory_xact_lock/.test(scheduledTaskLock), "Scheduled-task locks must skip PostgreSQL advisory-lock SQL on fnOS SQLite.");
 expect(/20260812_account_note/.test(buildScript) && /addColumnIfMissing\(db, "Account", "note", "TEXT"\)/.test(buildScript), "fnOS SQLite migrations must add Account.note to existing databases without rebuilding tables.");
 expect(/20260812_user_session_days/.test(buildScript) && /addColumnIfMissing\(db, "UserSettings", "sessionDays", "INTEGER NOT NULL DEFAULT 30"\)/.test(buildScript), "fnOS SQLite migrations must add UserSettings.sessionDays to existing databases before restore writes user settings.");
 expect(/20260811_stock_domain/.test(buildScript) && /createStockDomainTables\(db\)/.test(buildScript), "fnOS SQLite migrations must create stock core tables for existing databases.");
@@ -274,6 +276,9 @@ expect(/20260812_stock_reference_tables/.test(buildScript) && /createStockRefere
 expect(/stock_market_fee_rules/.test(buildScript) && /stock_brokerage_catalog/.test(buildScript), "fnOS SQLite migrations must include stock market fee rules and brokerage catalog tables.");
 expect(/20260813_zz_unify_statement_learning_rules/.test(buildScript), "fnOS SQLite statement-rule migration version must match the finalized Prisma migration directory.");
 expect(/20260814_fix_property_cash_entry_fk/.test(buildScript) && /rebuildPropertyTransactionsCashEntryFk/.test(buildScript), "fnOS SQLite migrations must rebuild property_transactions when cashEntryId still references TxRecord.");
+expect(/20260819_add_category_sort_order/.test(buildScript) && /addCategorySortOrder\(db\)/.test(buildScript), "fnOS SQLite migrations must add Category.sortOrder for existing databases.");
+expect(/Category_householdId_type_parentId_sortOrder_idx/.test(buildScript), "fnOS SQLite Category.sortOrder migration must create the ordering index for existing databases.");
+expect(/20260820_add_ai_model_api_mode/.test(buildScript) && /addColumnIfMissing\(db, "AiModel", "apiMode", "TEXT NOT NULL DEFAULT 'chat'"\)/.test(buildScript), "fnOS SQLite migrations must add AiModel.apiMode for existing databases.");
 expect(/applyRuntimeMigrations\(db\)/.test(buildScript), "fnOS SQLite init must run runtime migrations for both fresh and existing databases.");
 expect(nativeSchemaBackfillCalls.length >= 2, "fnOS SQLite init must backfill missing native-init.sql schema objects for both fresh and existing databases.");
 expect(/applyRuntimeMigrations\(db\);\n\s+applyMissingSchemaObjectsFromInitSql\(db, sqlPath\);/.test(buildScript), "fnOS SQLite init must run schema-object backfill after explicit runtime migrations.");
@@ -313,7 +318,7 @@ expect(/MMH_DEPLOY_TARGET/.test(systemUpdateRoute), "System update API must dete
 expect(/isFnos/.test(systemUpdateRoute), "System update API must return an explicit isFnos flag.");
 expect(/remoteVersion/.test(systemUpdateRoute), "System update API must return the remote app version for update display.");
 expect(/飞牛版请通过飞牛应用中心更新 MMH 应用包/.test(systemUpdateRoute), "System update API must reject in-app updates for fnOS.");
-expect(/fnosManaged \? t\("settings\.systemUpdate\.versionInfo"\)/.test(systemUpdatePage), "System update page must label fnOS package details as version information.");
+expect(/packageManaged \? t\("settings\.systemUpdate\.versionInfo"\)/.test(systemUpdatePage), "System update page must label package-managed details as version information.");
 expect(/githubProjectUrl/.test(systemUpdatePage) && /systemUpdate\.githubHome/.test(systemUpdatePage), "System update page must expose the GitHub project link for fnOS users.");
 expect(/availableVersionText/.test(systemUpdatePage) && /systemUpdate\.availableVersion/.test(systemUpdatePage), "System update page must show the available app version beside the update commit.");
 expect(/systemUpdate\.fnosManagedInfo/.test(systemUpdatePage) && /systemUpdate\.managedByFnos/.test(systemUpdatePage), "System update page must guide fnOS users to update with the architecture-matched FPK.");

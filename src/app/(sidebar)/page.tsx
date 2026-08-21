@@ -104,6 +104,7 @@ import { resolveAdvanceTransfer } from "@/lib/advance-transfer";
 import { findRecentManualTransactionDuplicate } from "@/lib/server/transaction-dedupe";
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 import {
+  DETAIL_ALL_PAGE_SIZE,
   decodeDetailPaginationPreference,
   detailPaginationCookieName,
   normalizeDetailPage,
@@ -3000,7 +3001,7 @@ export default async function Home({
               toAccount: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
             },
             orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-            take: 5000,
+            take: DETAIL_ALL_PAGE_SIZE,
           })
         : view === "bill" && isBillAccount && billAccountIds.length > 0
           ? await prisma.txRecord.findMany({
@@ -3017,7 +3018,7 @@ export default async function Home({
                 toAccount: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
               },
               orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-              take: 5000,
+              take: DETAIL_ALL_PAGE_SIZE,
             })
         : await loadEntriesForAccount(accountId, JSON.stringify(hidFilter))
       : await prisma.txRecord.findMany({
@@ -3030,7 +3031,7 @@ export default async function Home({
             toAccount: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
           },
           orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-          take: 5000,
+          take: DETAIL_ALL_PAGE_SIZE,
         })
     : [];
   const entryDisplayDate = (e: (typeof rawEntries)[number]) => getDetailEntryDisplayDate(e, accountId);
@@ -4917,6 +4918,7 @@ export default async function Home({
                   fundArrivalDate: toYmdOrNull(e.fundArrivalDate),
                   fundSourceEntryId: e.fundSourceEntryId ?? null,
                   fundCode: e.fundCode ?? "",
+                  fundName: e.fundName ?? null,
                   fundSubtype: e.fundSubtype ?? "",
                   fundUnits: e.fundUnits != null ? Number(e.fundUnits) : null,
                   source: e.source ?? null,
@@ -4947,6 +4949,7 @@ export default async function Home({
                   fundArrivalDate: toYmdOrNull(e.fundArrivalDate),
                   fundSourceEntryId: e.fundSourceEntryId ?? null,
                   fundCode: e.fundCode ?? "",
+                  fundName: e.fundName ?? null,
                   fundSubtype: e.fundSubtype ?? "",
                   fundUnits: e.fundUnits != null ? Number(e.fundUnits) : null,
                   source: e.source ?? null,

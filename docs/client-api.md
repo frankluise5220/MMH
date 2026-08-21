@@ -371,6 +371,14 @@
 - `/api/v1/precious-metals/dictionaries`
 - `/api/v1/wealth-products`
 
+#### 基金净值查询
+
+- Method: `GET`
+- Path: `/api/v1/fund/nav`
+- Query: `code`, `date`, `accountId?`, `purpose?`, `applyDate?`
+- The query uses the account default or institution-priority source first, then tries at most three configured sources; it does not poll every active source. A date-query historical fallback also uses this same three-request limit.
+- When `purpose=buy` and `applyDate` is today or within the previous two trading days, a NAV from a different date is rejected with `code=EXACT_NAV_UNAVAILABLE`; clients should keep the buy NAV and units empty and retry through the startup pending-refresh task.
+
 #### 缺失基金净值补齐
 
 - Method: `POST`
@@ -744,7 +752,7 @@ Notes:
 
 - `/api/v1/settings/users`
 - `/api/v1/settings/catalog`：GET 返回 Web 和 Android 共用的设置目录；可用 `?surface=web` 或 `?surface=android` 过滤客户端可用项。返回 `{ ok: true, data }`，目录源头为 `shared/settings/catalog.json`。
-- `/api/v1/settings/app-preferences`：`sidebarHideInitialData` 是兼容保留字段名，当前产品语义为“隐藏使用向导”；为 `true` 时客户端应隐藏“使用向导”入口，并停用首次使用向导的自动和手动打开。`dateDisplayFormat` 支持 `yyyy-mm-dd`、`yyyy/mm/dd`、`mm/dd/yyyy`、`dd/mm/yyyy`，仅影响界面日期显示，不改变数据库、导入或 API 日期值。
+- `/api/v1/settings/app-preferences`：`sidebarHideInitialData` 是兼容保留字段名，当前产品语义为“隐藏使用向导”；为 `true` 时客户端应隐藏“使用向导”入口，并停用首次使用向导的自动和手动打开。`sidebarShowFixedAssets` 控制左侧侧边栏是否显示固定资产汇总入口，默认 `true`。`detailDateBackground` 控制明细表是否按日期使用双色背景并在同日期内交替深浅，默认 `false`。`compactRowHeight` 控制紧凑表格的行高，默认 `30`，可在 `25` 到 `35` 像素之间调整。`dateDisplayFormat` 支持 `yyyy-mm-dd`、`yyyy/mm/dd`、`mm/dd/yyyy`、`dd/mm/yyyy`，仅影响界面日期显示，不改变数据库、导入或 API 日期值。
 - `/api/v1/settings/color-scheme`
 - `/api/v1/settings/email`
 - `/api/v1/settings/email-import`：GET 返回当前账簿邮箱账单导入的邮件筛选关键词，默认 `账单`；PUT 提交 `{ keyword }` 后保存当前账簿配置，空值会回到默认 `账单`。

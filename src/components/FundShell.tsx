@@ -765,6 +765,7 @@ export function FundShell(props: Props) {
       accountId: entry.accountId ?? null,
       toAccountId: entry.toAccountId ?? null,
       fundCode: entryAssetKey(entry),
+      fundName: entry.fundName ?? entry.productName ?? null,
       fundSubtype: entry.fundSubtype ?? null,
       source: entry.source ?? null,
       fundSourceEntryId: entry.fundSourceEntryId ?? null,
@@ -3171,7 +3172,7 @@ export function FundShell(props: Props) {
               metalUnits={metalUnits}
               nestedFieldData={nestedFieldData}
               holdings={d.positions.map((p: any) => ({ fundCode: p.fundCode, name: p.name, units: p.units }))}
-              allEntries={d.allEntries.map((e: any) => ({ id: e.id, date: fmtDate(e.date), createdAt: e.createdAt, fundConfirmDate: fmtDate(e.fundConfirmDate), fundArrivalDate: fmtDate(e.fundArrivalDate), fundSourceEntryId: e.fundSourceEntryId ?? null, fundCode: entryAssetKey(e), fundSubtype: e.fundSubtype, fundUnits: displayUnitsOf(e), source: e.source ?? null, accountId: e.accountId ?? null, toAccountId: e.toAccountId ?? null, amount: toNumber(e.amount) }))}
+              allEntries={d.allEntries.map((e: any) => ({ id: e.id, date: fmtDate(e.date), createdAt: e.createdAt, fundConfirmDate: fmtDate(e.fundConfirmDate), fundArrivalDate: fmtDate(e.fundArrivalDate), fundSourceEntryId: e.fundSourceEntryId ?? null, fundCode: entryAssetKey(e), fundName: e.fundName ?? e.productName ?? null, fundSubtype: e.fundSubtype, fundUnits: displayUnitsOf(e), source: e.source ?? null, accountId: e.accountId ?? null, toAccountId: e.toAccountId ?? null, amount: toNumber(e.amount) }))}
               createAction={createAction}
               openSignal={positionEntryOpenSignal}
               hideTrigger

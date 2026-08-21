@@ -59,7 +59,7 @@ import { getFundConfirmDays, getFundArrivalDays } from "@/lib/fund/confirmDays";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { toNumber, addWorkdaysUtc, toStatementMonth, startOfDayUtc, formatDateLocal } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
-import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
+import { compareDetailEntriesAsc, compareDetailEntriesDesc } from "@/lib/detail-entry-order";
 import { isDepositAccount, isInsuranceAccount, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
 import { getOrCreateInsuranceAccount } from "@/lib/insurance/autoAccount";
 import { normalizeInsuranceAction } from "@/lib/insurance/transaction";
@@ -105,6 +105,7 @@ import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/bus
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 import { upsertStatementCategoryRuleFromSavedRecord } from "@/lib/statement/category-rules";
 import { upsertStatementInstitutionRuleFromUserEdit } from "@/lib/statement/recognition-rules";
+import { DETAIL_ALL_PAGE_SIZE } from "@/lib/detail-pagination-preference";
 
 export const runtime = "nodejs";
 
@@ -119,7 +120,6 @@ function accountDisplayName(
   return account?.name?.trim() || fallback?.trim() || "";
 }
 
-const DETAIL_LIST_MAX_PAGE_SIZE = 5000;
 const TX_EDIT_TRANSACTION_OPTIONS = {
   maxWait: 15_000,
   timeout: 20_000,
@@ -1280,7 +1280,7 @@ export async function GET(req: Request) {
   const accountId = (url.searchParams.get("accountId") ?? "").trim();
   const entryId = (url.searchParams.get("id") ?? "").trim();
   const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
-  const pageSize = Math.min(Math.max(1, parseInt(url.searchParams.get("pageSize") ?? "20", 10) || 20), DETAIL_LIST_MAX_PAGE_SIZE);
+  const pageSize = Math.min(Math.max(1, parseInt(url.searchParams.get("pageSize") ?? "20", 10) || 20), DETAIL_ALL_PAGE_SIZE);
 
   try {
     const { hidFilter } = await getHouseholdScope();
@@ -1481,6 +1481,7 @@ export async function GET(req: Request) {
         select: {
           id: true,
           date: true,
+          postedAt: true,
           createdAt: true,
           dayOrder: true,
           type: true,
@@ -1576,10 +1577,9 @@ export async function GET(req: Request) {
     const entries = pagedEntries.map((e) => {
       const linkedWealthId = linkedWealthTransactionIdOf(e);
       const linkedWealth = linkedWealthId ? linkedWealthById.get(linkedWealthId) ?? null : null;
-      const displayDateEntry = entryWithLinkedWealthDisplayDateFields(e, linkedWealth);
       return ({
       id: e.id,
-      date: formatDateLocal(getDetailEntryDisplayDate(displayDateEntry, accountId)),
+      date: formatDateLocal(e.date),
       postedAt: toDateOnlyLocal(e.postedAt),
       createdAt: e.createdAt?.toISOString?.() ?? null,
       dayOrder: e.dayOrder,

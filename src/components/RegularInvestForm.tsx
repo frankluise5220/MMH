@@ -5,6 +5,7 @@ import { useState, useEffect, useRef, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { CalcInput } from "./CalcInput";
 import { DateStepper } from "./DateStepper";
+import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { NestedAddModal } from "./EntityCreateForm";
@@ -321,6 +322,8 @@ export function RegularInvestForm({
   submitMethod?: "serverAction" | "api";
   onSuccess?: () => void;
 }) {
+  const parentModalZIndex = useModalLayerZIndex();
+  const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
   const [internalOpen, setInternalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [nameLoading, setNameLoading] = useState(false);
@@ -930,7 +933,7 @@ export function RegularInvestForm({
   }
 
   return (
-    <>
+    <ModalLayerProvider value={modalZIndex}>
       {showTriggerButton && mode === "create" && (
         <button
           type="button"
@@ -943,7 +946,7 @@ export function RegularInvestForm({
       )}
 
       {actualOpen && (
-        <div className="app-modal-backdrop z-50">
+        <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
           <div className="app-modal-panel max-w-[min(42rem,calc(100vw-1rem))]">
             <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">{title}</div>
@@ -1507,6 +1510,6 @@ export function RegularInvestForm({
         />,
         document.body,
       ) : null}
-    </>
+    </ModalLayerProvider>
   );
 }

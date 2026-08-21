@@ -38,6 +38,7 @@ import {
   getSidebarGroupPreference,
   getSidebarHideZeroPreference,
   getSidebarOwnerFilterPreference,
+  getSidebarShowFixedAssetsPreference,
   setSidebarCollapsedPreference,
   setSidebarGroupPreference,
   setSidebarHideZeroPreference,
@@ -275,6 +276,7 @@ export function SidebarClient({
     sidebarOwnerFilter: string;
     sidebarHideZero: boolean;
     sidebarHideInitialData: boolean;
+    sidebarShowFixedAssets: boolean;
     sidebarCollapsed: boolean;
     sidebarGroupBy: "kind" | "institution";
   };
@@ -301,6 +303,7 @@ export function SidebarClient({
 
   const [selectedOwnerFilter, setSelectedOwnerFilter] = useState(() => initialPreferences?.sidebarOwnerFilter ?? getSidebarOwnerFilterPreference());
   const [hideZero, setHideZero] = useState(() => initialPreferences?.sidebarHideZero ?? getSidebarHideZeroPreference());
+  const [showFixedAssets, setShowFixedAssets] = useState(() => initialPreferences?.sidebarShowFixedAssets ?? getSidebarShowFixedAssetsPreference());
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => initialPreferences?.sidebarCollapsed ?? getSidebarCollapsedPreference());
   const [sidebarGroupBy, setSidebarGroupBy] = useState<"kind" | "institution">(() => initialPreferences?.sidebarGroupBy ?? getSidebarGroupPreference());
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
@@ -400,6 +403,7 @@ export function SidebarClient({
   // Only updates items whose data actually changed to minimize React re-renders
   const sidebarRefreshTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const sidebarRefreshBusy = useRef(false);
+  const sidebarRefreshPending = useRef(false);
 
   useEffect(() => {
     startTransition(() => {
@@ -418,7 +422,10 @@ export function SidebarClient({
     const debouncedRefresh = () => {
       if (sidebarRefreshTimer.current) clearTimeout(sidebarRefreshTimer.current);
       sidebarRefreshTimer.current = setTimeout(async () => {
-        if (sidebarRefreshBusy.current) return;
+        if (sidebarRefreshBusy.current) {
+          sidebarRefreshPending.current = true;
+          return;
+        }
         sidebarRefreshBusy.current = true;
         try {
           const res = await fetch("/api/v1/accounts/internal", { cache: "no-store" });
@@ -459,6 +466,10 @@ export function SidebarClient({
         } catch {
         } finally {
           sidebarRefreshBusy.current = false;
+          if (sidebarRefreshPending.current) {
+            sidebarRefreshPending.current = false;
+            debouncedRefresh();
+          }
         }
       }, 100);
     };
@@ -472,14 +483,16 @@ export function SidebarClient({
     return () => {
       window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, onFinanceChanged);
       if (sidebarRefreshTimer.current) clearTimeout(sidebarRefreshTimer.current);
+      sidebarRefreshPending.current = false;
     };
-  }, [householdId]);
+  }, [householdId, t]);
 
   useEffect(() => {
     const applyPrefs = () => {
       const prefs = getAppPreferences();
       setSelectedOwnerFilter(prefs.sidebarOwnerFilter);
       setHideZero(prefs.sidebarHideZero);
+      setShowFixedAssets(prefs.sidebarShowFixedAssets);
       setHideFirstUseGuide(prefs.sidebarHideInitialData);
       setSidebarCollapsed(prefs.sidebarCollapsed);
       setSidebarGroupBy(getSidebarGroupPreference());
@@ -684,6 +697,7 @@ export function SidebarClient({
     };
     return items.flatMap((item) => {
       if (item.kind === FIXED_ASSET_SUMMARY_KIND && item.children?.length) {
+        if (!showFixedAssets) return [];
         const children = item.children.filter(passesCommonVisibility);
         if (children.length === 0) return [];
         const convertedValues = children
@@ -718,7 +732,7 @@ export function SidebarClient({
         baseCurrency,
       }];
     });
-  }, [items, hideZero, selectedOwnerFilter, baseCurrency, displayBalance, displayBalanceValue, t]);
+  }, [items, hideZero, selectedOwnerFilter, showFixedAssets, baseCurrency, displayBalance, displayBalanceValue, t]);
 
   const sections = useMemo(() => {
     const sortAccountsByUsage = (accounts: AccountItem[]) =>

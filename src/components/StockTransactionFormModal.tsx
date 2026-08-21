@@ -8,6 +8,7 @@ import { EntryAttachmentButton, uploadEntryAttachmentFiles } from "./EntryAttach
 import { CalcInput } from "./CalcInput";
 import { DateStepper } from "./DateStepper";
 import { EntityCreateForm } from "./EntityCreateForm";
+import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -424,6 +425,8 @@ export function StockTransactionFormModal({
   const today = useMemo(() => todayDateInputValue(), []);
   const recentAccountIds = useRecentAccountIds();
   const { t, language } = useI18n();
+  const parentModalZIndex = useModalLayerZIndex();
+  const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
 
   const [open, setOpen] = useState(false);
   const [requestId, setRequestId] = useState<string | null>(null);
@@ -1366,8 +1369,8 @@ export function StockTransactionFormModal({
   if (!open || typeof document === "undefined") return null;
 
   return createPortal(
-    <>
-      <div className="app-modal-backdrop z-[1000]">
+    <ModalLayerProvider value={modalZIndex}>
+      <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
         <div className="app-modal-panel max-w-[min(38rem,calc(100vw-1rem))]">
           <form ref={formRef} onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
             <div className="modal-header">
@@ -1706,7 +1709,7 @@ export function StockTransactionFormModal({
         nestedFieldData={accountCreateFieldData}
         existingNames={existingCashAccountNames}
       />
-    </>,
+    </ModalLayerProvider>,
     document.body,
   );
 }

@@ -66,17 +66,18 @@ SQLite 恢复兼容建表时，`TxRecord` 只是 Prisma 模型名，实际表名
 
 ### `docs/nas-install-manual.md`
 
-用途：用户在普通 NAS 和飞牛 fnOS 上安装和更新 MMH 的说明。
+用途：用户在普通 NAS、飞牛 fnOS 和群晖 DSM 上安装和更新 MMH 的说明。
 
 记录内容：
 
 - 飞牛 fnOS 的 FN 软仓安装/更新方式、手动 `.fpk` 安装方式和覆盖升级注意事项。
+- 群晖 DSM 的手动 `.spk` 安装/更新方式和覆盖升级注意事项。
 - 普通 NAS 的 Docker 图形界面安装方式和 Docker 命令行安装方式。
 - 环境变量、端口、数据库、更新命令、常见问题。
 
 更新时机：
 
-- `docker-compose.yml`、`Dockerfile`、镜像名、端口、环境变量、飞牛 `.fpk` 命名或软仓源地址发生变化。
+- `docker-compose.yml`、`Dockerfile`、镜像名、端口、环境变量、飞牛 `.fpk` 命名、群晖 `.spk` 命名或软仓源地址发生变化。
 - 安装流程、更新流程、系统更新页面能力发生变化。
 - 发布方式从本地测试源切换或同步到 GitHub/GHCR。
 
@@ -111,6 +112,22 @@ SQLite 恢复兼容建表时，`TxRecord` 只是 Prisma 模型名，实际表名
 
 - 生成新的飞牛官方提交包。
 - GitHub Release 资产、应用版本、端口、权限说明或审核要求发生变化。
+
+### `deploy/synology/README.md`
+
+用途：群晖 DSM `.spk` 包的构建、发布和手动安装说明。
+
+记录内容：
+
+- 群晖包的 SQLite 原生运行方向，以及 x86_64/ARM64 架构化资产。
+- `.spk` 正式产物和 `*-spk-source.tgz` 调试归档的区别。
+- 打包命令、校验命令、GitHub Release workflow 和覆盖升级原则。
+
+更新时机：
+
+- 新增或修改 `deploy/synology/`、`.github/workflows/synology-*.yml` 或 `scripts/build-synology-*.cjs`。
+- 群晖 `.spk` 的 INFO 字段、目录结构、启动脚本、端口或数据目录策略发生变化。
+- NAS/飞牛/群晖更新方式、发布资产命名或系统更新页展示逻辑发生变化。
 
 ### `docs/minibill-speed-security-reference.md`
 
@@ -376,9 +393,9 @@ SQLite 恢复兼容建表时，`TxRecord` 只是 Prisma 模型名，实际表名
 
 发布前至少确认：
 
-- 对外发布必须同时覆盖 GitHub/GHCR 的 Docker 更新链路、飞牛 x86/ARM64 `.fpk` 更新链路和随 Release 自动构建的 Android APK。三者版本号、构建时间和已验证结果一致后，才算发布完成。
-- 对外版本号统一使用 `package.json` 中的 `0.1.x`。每次正式公开 push/release 前先运行 `npm run release:version`，只递增一级 patch，例如 `0.1.9` -> `0.1.10`；GitHub Release tag 使用 `v0.1.x`，GHCR 镜像 tag、应用版本、全部飞牛 `.fpk` manifest 和飞牛源元数据都必须一致，不能再使用单独的 `-fnos` 版本号。
-- 发布前运行 `npm run check:release-version`，确认 `package.json`、`package-lock.json`、Docker workflow、飞牛 workflow 和飞牛源元数据没有版本分叉。
+- 对外发布必须同时覆盖 GitHub/GHCR 的 Docker 更新链路、飞牛 x86/ARM64 `.fpk` 更新链路、群晖 x86_64/ARM64 `.spk` 更新链路和随 Release 自动构建的 Android APK。各路径版本号、构建时间和已验证结果一致后，才算发布完成。
+- 对外版本号统一使用 `package.json` 中的 `0.1.x`。每次正式公开 push/release 前先运行 `npm run release:version`，只递增一级 patch，例如 `0.1.9` -> `0.1.10`；GitHub Release tag 使用 `v0.1.x`，GHCR 镜像 tag、应用版本、全部飞牛 `.fpk` manifest、飞牛源元数据和群晖 `.spk` INFO 都必须一致，不能再使用单独的 `-fnos` 或 `-synology` 版本号。
+- 发布前运行 `npm run check:release-version`，确认 `package.json`、`package-lock.json`、Docker workflow、飞牛 workflow、群晖 workflow 和飞牛源元数据没有版本分叉。
 - 新接口是否补了 route JSDoc 和 `docs/client-api.md`。
 - 安装或更新方式是否影响 `docs/nas-install-manual.md` 或 `scripts/install-windows.bat`。
 - Android 相关变更是否影响 `docs/android-release.md`。

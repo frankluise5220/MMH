@@ -109,6 +109,16 @@ for (const file of [".github/workflows/fnos-release.yml", ".github/workflows/fno
   expect(/default:\s*""/.test(workflow), `${file} manual package_version should default to blank so package.json owns the version.`);
 }
 
+for (const file of [".github/workflows/synology-release.yml", ".github/workflows/synology-stage.yml"]) {
+  const workflow = read(file);
+  expect(!/0\.1\.0-synology/.test(workflow), `${file} must not default to an old Synology package version.`);
+  expect(/default:\s*""/.test(workflow), `${file} manual package_version should default to blank so package.json owns the version.`);
+}
+
+const synologyReleaseWorkflow = read(".github/workflows/synology-release.yml");
+expect(/release-artifacts\/synology\/\*\.spk/.test(synologyReleaseWorkflow), "Synology release workflow must upload SPK assets.");
+expect(/target_arch/.test(synologyReleaseWorkflow) && /arm64/.test(synologyReleaseWorkflow), "Synology release workflow must build both x86_64 and arm64 packages.");
+
 expect(/org\.opencontainers\.image\.version=\$\{APP_VERSION\}/.test(read("Dockerfile")), "Dockerfile must label images with APP_VERSION.");
 expect(/org\.opencontainers\.image\.version=\$\{APP_VERSION\}/.test(read("Dockerfile.updater")), "Dockerfile.updater must label images with APP_VERSION.");
 

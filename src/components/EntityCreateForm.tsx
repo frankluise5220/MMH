@@ -7,6 +7,7 @@ import { kindOrder } from "@/lib/account-kinds";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
 import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
 import { DateStepper } from "@/components/DateStepper";
+import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "@/components/ModalLayer";
 import { notifySmartSelectOptionCreated, SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 import { notifySettingsDataChanged, type SettingsDataScope } from "@/lib/client/settingsCache";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -158,7 +159,7 @@ export type EntityCreateFormProps = CompactModeProps | FullModeProps;
 
 /* ---- Institution type options ---- */
 
-const INSTITUTION_TYPES = [
+const ALL_INSTITUTION_TYPES = [
   { value: "family_member", labelKey: "institution.type.family_member" },
   { value: "person", labelKey: "institution.type.person" },
   { value: "organization", labelKey: "institution.type.organization" },
@@ -170,6 +171,15 @@ const INSTITUTION_TYPES = [
   { value: "debt", labelKey: "institution.type.debt" },
   { value: "other", labelKey: "institution.type.other" },
 ];
+
+const INSTITUTION_TYPES = ALL_INSTITUTION_TYPES.filter((option) => (
+  option.value === "bank" ||
+  option.value === "insurance" ||
+  option.value === "brokerage" ||
+  option.value === "payment" ||
+  option.value === "ewallet" ||
+  option.value === "other"
+));
 
 /* ---- Category type options ---- */
 
@@ -221,8 +231,6 @@ const CREDIT_BILL_MODE_OPTIONS = [
   { value: "consolidated", labelKey: "entityForm.creditBillMode.consolidated" },
 ];
 
-const ENTITY_CREATE_MODAL_Z_INDEX = 40000;
-
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -231,18 +239,18 @@ function todayStr() {
 
 const ENTITY_CONFIG = {
   institution: {
-    titleKey: "txForm.addCounterparty",
-    namePlaceholderKey: "entityForm.contactNamePlaceholder",
-    nameLabelKey: "entityForm.contactNameLabel",
+    titleKey: "settings.accounts.addInstitution",
+    namePlaceholderKey: "settings.institutions.namePlaceholder",
+    nameLabelKey: "settings.institutions.nameLabel",
     typeLabelKey: "entityForm.typeLabel",
     typeKey: "type",
     types: INSTITUTION_TYPES,
     apiPath: "/api/v1/institution",
     bodyKey: { name: "name", type: "type" },
     fullFields: [
-      { key: "name", labelKey: "entityForm.contactNameLabel", type: "text", placeholderKey: "entityForm.contactNamePlaceholder" },
+      { key: "name", labelKey: "settings.institutions.nameLabel", type: "text", placeholderKey: "settings.institutions.namePlaceholder" },
       { key: "shortName", labelKey: "entityForm.shortNameLabel", type: "text", placeholderKey: "entityForm.institutionShortNamePlaceholder" },
-      { key: "type", labelKey: "entityForm.typeLabel", type: "select", options: INSTITUTION_TYPES, defaultValue: "organization" },
+      { key: "type", labelKey: "entityForm.typeLabel", type: "select", options: INSTITUTION_TYPES, defaultValue: "bank" },
     ] as FieldDef[],
   },
   counterparty: {
@@ -379,6 +387,8 @@ function renderEntityCreatePortal(content: ReactNode) {
 
 export function EntityCreateForm(props: EntityCreateFormProps) {
   const { t } = useI18n();
+  const parentModalZIndex = useModalLayerZIndex();
+  const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
   const mode = props.mode;
   const entityType = props.entityType;
   const config = ENTITY_CONFIG[entityType];
@@ -443,12 +453,14 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     return field.options?.[0]?.value ?? "";
   }, [accountDefaultCurrency, entityType, extraFields]);
   const selectOptionsForField = useCallback((field: FieldDef) => {
-    const opts = buildSelectOptions(field, nestedFieldData, parentCategories, undefined, t);
+    const opts = field.key === "type" && entityType === "institution" && allowedInstitutionTypes?.length
+      ? ALL_INSTITUTION_TYPES.filter((option) => allowedInstitutionTypes.includes(option.value))
+      : buildSelectOptions(field, nestedFieldData, parentCategories, undefined, t);
     if (entityType === "account" && field.key === "currency" && !accountDefaultCurrency && !(extraFields && field.key in extraFields)) {
       return [{ value: "", label: t("entityForm.ledgerDefaultCurrency") }, ...opts];
     }
     return opts;
-  }, [accountDefaultCurrency, entityType, extraFields, nestedFieldData, parentCategories, t]);
+  }, [accountDefaultCurrency, allowedInstitutionTypes, entityType, extraFields, nestedFieldData, parentCategories, t]);
 
   useEffect(() => {
     if (entityType !== "account" || form.kind !== "bank_credit" || !form.institutionId) return;
@@ -487,7 +499,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     if (defaultType && config.types.some(t => t.value === defaultType)) {
       if (!allowedAccountKinds?.length || allowedAccountKinds.includes(defaultType)) return defaultType;
     }
-    if (entityType === "institution") return "organization";
+    if (entityType === "institution") return allowedInstitutionTypes?.[0] ?? "bank";
     if (entityType === "counterparty") return "person";
     if (entityType === "category") return "expense";
     if (entityType === "account") {
@@ -495,7 +507,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
       return "bank_debit";
     }
     return "";
-  }, [config.typeKey, config.types, defaultType, entityType, extraFields, allowedAccountKinds]);
+  }, [config.typeKey, config.types, defaultType, entityType, extraFields, allowedAccountKinds, allowedInstitutionTypes]);
 
   /** Initialize form state */
   const initForm = useCallback(() => {
@@ -924,8 +936,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     if (!open) return null;
 
     return renderEntityCreatePortal(
-      <>
-        <div className="app-modal-backdrop" style={{ zIndex: ENTITY_CREATE_MODAL_Z_INDEX }}>
+      <ModalLayerProvider value={modalZIndex}>
+        <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
           <div className="app-modal-panel max-w-sm">
             <div className="modal-header">
               <div className="text-sm font-semibold text-slate-800">{displayTitle}</div>
@@ -1104,7 +1116,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
             allowedInstitutionTypes={nestedInstitutionAllowedTypes()}
           />
         )}
-      </>
+      </ModalLayerProvider>
     );
   }
 
@@ -1194,8 +1206,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     if (mode !== "full" || !props.open) return null;
 
     return renderEntityCreatePortal(
-      <>
-        <div className="app-modal-backdrop" style={{ zIndex: ENTITY_CREATE_MODAL_Z_INDEX }}>
+      <ModalLayerProvider value={modalZIndex}>
+        <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
           <div className="app-modal-panel max-w-3xl">
             <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">{displayTitle}</div>
@@ -1307,7 +1319,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
             allowedInstitutionTypes={nestedInstitutionAllowedTypes()}
           />
         )}
-      </>
+      </ModalLayerProvider>
     );
   }
 

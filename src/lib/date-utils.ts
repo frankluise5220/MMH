@@ -244,6 +244,34 @@ export function countTradingDaysUtc(startDateStr: string, endDateStr: string, tr
   return count;
 }
 
+/**
+ * Returns whether a date is within the current day or the previous N trading
+ * days relative to the reference date. The target date itself is not required
+ * to be an open trading day because imported/manual records may use a calendar
+ * date while their confirmation date is derived separately.
+ */
+export function isWithinRecentTradingDaysUtc(
+  targetDateStr: string,
+  referenceDateStr: string = formatDateUtc(new Date()),
+  maxTradingDays = 2,
+  tradingCalendar?: string | null,
+) {
+  const target = String(targetDateStr ?? "").trim();
+  const reference = String(referenceDateStr ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(target) || !/^\d{4}-\d{2}-\d{2}$/.test(reference)) return false;
+  if (!Number.isFinite(maxTradingDays) || maxTradingDays < 0) return false;
+
+  const targetMs = Date.UTC(Number(target.slice(0, 4)), Number(target.slice(5, 7)) - 1, Number(target.slice(8, 10)));
+  const referenceMs = Date.UTC(Number(reference.slice(0, 4)), Number(reference.slice(5, 7)) - 1, Number(reference.slice(8, 10)));
+  if (!Number.isFinite(targetMs) || !Number.isFinite(referenceMs) || targetMs > referenceMs) return false;
+
+  let tradingDaysAfterTarget = 0;
+  for (let ms = targetMs + 24 * 60 * 60 * 1000; ms <= referenceMs; ms += 24 * 60 * 60 * 1000) {
+    if (!isTradingClosedDate(formatDateUtc(new Date(ms)), tradingCalendar)) tradingDaysAfterTarget++;
+  }
+  return tradingDaysAfterTarget <= Math.trunc(maxTradingDays);
+}
+
 export function addWorkdaysUtc(dateStr: string, n: number) {
   return addTradingDaysUtc(dateStr, n, "generic_weekday");
 }

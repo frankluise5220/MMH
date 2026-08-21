@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { parseNumber } from "@/lib/investment-config";
 import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
+import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { NestedAddModal } from "./EntityCreateForm";
@@ -203,6 +204,8 @@ export function WealthFormModal({
 }) {
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const { t } = useI18n();
+  const parentModalZIndex = useModalLayerZIndex();
+  const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
 
   const initIsDividend = mode === "edit" && entry?.fundSubtype === "dividend_cash";
   const initIsRedeem = mode === "edit" && entry
@@ -1045,8 +1048,8 @@ export function WealthFormModal({
   if (!open) return null;
 
   return createPortal(
-    <>
-      <div className="app-modal-backdrop z-[1000]">
+    <ModalLayerProvider value={modalZIndex}>
+      <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
         <div className="app-modal-panel max-w-md">
           <div className="modal-header">
             <div className="text-sm font-semibold text-slate-800">
@@ -1484,7 +1487,7 @@ export function WealthFormModal({
         />
       ) : null}
       {productModalOpen ? (
-        <div className="app-modal-backdrop z-[1010]">
+        <div className="app-modal-backdrop" style={{ zIndex: getNextModalLayerZIndex(modalZIndex) }}>
           <div className="app-modal-panel max-w-[min(30rem,calc(100vw-1rem))]">
             <div className="modal-header">
               <div>
@@ -1582,7 +1585,7 @@ export function WealthFormModal({
           </div>
         </div>
       ) : null}
-    </>,
+    </ModalLayerProvider>,
     document.body,
   );
 }

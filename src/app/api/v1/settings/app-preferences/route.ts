@@ -5,6 +5,11 @@ import {
 } from "@/lib/account-display";
 import { normalizeDateDisplayFormat } from "@/lib/date-utils";
 
+/**
+ * GET /api/v1/settings/app-preferences returns browser-scoped display preferences.
+ * PUT /api/v1/settings/app-preferences accepts any subset of the returned fields and
+ * persists them as cookies without changing ledger data or financial calculations.
+ */
 const SESSION_DAYS_KEY = "mmh_session_days";
 const FUND_UNITS_DECIMALS_KEY = "mmh_fund_units_decimals";
 const AI_PANEL_ENABLED_KEY = "mmh_ai_panel_enabled";
@@ -19,6 +24,9 @@ const CREDIT_BILL_RECENT_CYCLES_KEY = "mmh_credit_recent_cycles";
 const DISPLAY_LANGUAGE_KEY = "mmh_display_language";
 const DATE_DISPLAY_FORMAT_KEY = "mmh_date_display_format";
 const SIDEBAR_HIDE_INITIAL_DATA_KEY = "sidebar_hide_initial_data";
+const SIDEBAR_SHOW_FIXED_ASSETS_KEY = "sidebar_show_fixed_assets";
+const DETAIL_DATE_BACKGROUND_KEY = "detail_date_background";
+const COMPACT_ROW_HEIGHT_KEY = "advanced_data_table_compact_row_height";
 const VERIFIED_KEY = "mmh_access_password_verified";
 const USER_ID_KEY = "mmh_user_id";
 const USERNAME_KEY = "mmh_username";
@@ -68,6 +76,12 @@ function normalizeDisplayLanguage(input: unknown) {
   return input === "en-US" || input === "ja-JP" || input === "zh-CN" ? input : "zh-CN";
 }
 
+function normalizeCompactRowHeight(input: unknown) {
+  const n = Number(input);
+  if (!Number.isFinite(n)) return 30;
+  return Math.min(Math.max(Math.round(n), 25), 35);
+}
+
 export async function GET(req: NextRequest) {
   const sessionDays = normalizeSessionDays(req.cookies.get(SESSION_DAYS_KEY)?.value ?? 30);
   const fundUnitsDecimals = normalizeFundUnitsDecimals(req.cookies.get(FUND_UNITS_DECIMALS_KEY)?.value ?? 2);
@@ -89,6 +103,9 @@ export async function GET(req: NextRequest) {
   const displayLanguage = normalizeDisplayLanguage(req.cookies.get(DISPLAY_LANGUAGE_KEY)?.value);
   const dateDisplayFormat = normalizeDateDisplayFormat(req.cookies.get(DATE_DISPLAY_FORMAT_KEY)?.value);
   const sidebarHideInitialData = normalizeBoolean(req.cookies.get(SIDEBAR_HIDE_INITIAL_DATA_KEY)?.value, false);
+  const sidebarShowFixedAssets = normalizeBoolean(req.cookies.get(SIDEBAR_SHOW_FIXED_ASSETS_KEY)?.value, true);
+  const detailDateBackground = normalizeBoolean(req.cookies.get(DETAIL_DATE_BACKGROUND_KEY)?.value, false);
+  const compactRowHeight = normalizeCompactRowHeight(req.cookies.get(COMPACT_ROW_HEIGHT_KEY)?.value);
   return NextResponse.json({
     ok: true,
     sessionDays,
@@ -105,6 +122,9 @@ export async function GET(req: NextRequest) {
     displayLanguage,
     dateDisplayFormat,
     sidebarHideInitialData,
+    sidebarShowFixedAssets,
+    detailDateBackground,
+    compactRowHeight,
   });
 }
 
@@ -125,6 +145,9 @@ export async function PUT(req: NextRequest) {
     displayLanguage?: unknown;
     dateDisplayFormat?: unknown;
     sidebarHideInitialData?: unknown;
+    sidebarShowFixedAssets?: unknown;
+    detailDateBackground?: unknown;
+    compactRowHeight?: unknown;
   } : {};
   const hasSessionDays = Object.prototype.hasOwnProperty.call(prefs, "sessionDays");
   const hasFundUnitsDecimals = Object.prototype.hasOwnProperty.call(prefs, "fundUnitsDecimals");
@@ -140,6 +163,9 @@ export async function PUT(req: NextRequest) {
   const hasDisplayLanguage = Object.prototype.hasOwnProperty.call(prefs, "displayLanguage");
   const hasDateDisplayFormat = Object.prototype.hasOwnProperty.call(prefs, "dateDisplayFormat");
   const hasSidebarHideInitialData = Object.prototype.hasOwnProperty.call(prefs, "sidebarHideInitialData");
+  const hasSidebarShowFixedAssets = Object.prototype.hasOwnProperty.call(prefs, "sidebarShowFixedAssets");
+  const hasDetailDateBackground = Object.prototype.hasOwnProperty.call(prefs, "detailDateBackground");
+  const hasCompactRowHeight = Object.prototype.hasOwnProperty.call(prefs, "compactRowHeight");
   const sessionDays = normalizeSessionDays(hasSessionDays ? prefs.sessionDays : req.cookies.get(SESSION_DAYS_KEY)?.value ?? 30);
   const fundUnitsDecimals = normalizeFundUnitsDecimals(hasFundUnitsDecimals ? prefs.fundUnitsDecimals : req.cookies.get(FUND_UNITS_DECIMALS_KEY)?.value ?? 2);
   const aiPanelEnabled = normalizeBoolean(hasAiPanelEnabled ? prefs.aiPanelEnabled : req.cookies.get(AI_PANEL_ENABLED_KEY)?.value, true);
@@ -178,6 +204,17 @@ export async function PUT(req: NextRequest) {
     hasSidebarHideInitialData ? prefs.sidebarHideInitialData : req.cookies.get(SIDEBAR_HIDE_INITIAL_DATA_KEY)?.value,
     false,
   );
+  const sidebarShowFixedAssets = normalizeBoolean(
+    hasSidebarShowFixedAssets ? prefs.sidebarShowFixedAssets : req.cookies.get(SIDEBAR_SHOW_FIXED_ASSETS_KEY)?.value,
+    true,
+  );
+  const detailDateBackground = normalizeBoolean(
+    hasDetailDateBackground ? prefs.detailDateBackground : req.cookies.get(DETAIL_DATE_BACKGROUND_KEY)?.value,
+    false,
+  );
+  const compactRowHeight = normalizeCompactRowHeight(
+    hasCompactRowHeight ? prefs.compactRowHeight : req.cookies.get(COMPACT_ROW_HEIGHT_KEY)?.value,
+  );
   const maxAge = sessionDays * 24 * 60 * 60;
 
   const response = NextResponse.json({
@@ -196,6 +233,9 @@ export async function PUT(req: NextRequest) {
     displayLanguage,
     dateDisplayFormat,
     sidebarHideInitialData,
+    sidebarShowFixedAssets,
+    detailDateBackground,
+    compactRowHeight,
   });
   response.cookies.set(SESSION_DAYS_KEY, String(sessionDays), {
     path: "/",
@@ -276,6 +316,24 @@ export async function PUT(req: NextRequest) {
     sameSite: "lax",
   });
   response.cookies.set(SIDEBAR_HIDE_INITIAL_DATA_KEY, String(sidebarHideInitialData), {
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365,
+    httpOnly: false,
+    sameSite: "lax",
+  });
+  response.cookies.set(SIDEBAR_SHOW_FIXED_ASSETS_KEY, String(sidebarShowFixedAssets), {
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365,
+    httpOnly: false,
+    sameSite: "lax",
+  });
+  response.cookies.set(DETAIL_DATE_BACKGROUND_KEY, String(detailDateBackground), {
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365,
+    httpOnly: false,
+    sameSite: "lax",
+  });
+  response.cookies.set(COMPACT_ROW_HEIGHT_KEY, String(compactRowHeight), {
     path: "/",
     maxAge: 60 * 60 * 24 * 365,
     httpOnly: false,

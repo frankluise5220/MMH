@@ -26,6 +26,7 @@ type TargetPosition = "before" | "after";
 type ReorderRow = {
   id: string;
   date: Date;
+  postedAt: Date | null;
   createdAt: Date;
   dayOrder: number | null;
   amount: unknown;
@@ -105,6 +106,7 @@ export async function POST(req: Request) {
     const reorderRowSelect = {
       id: true,
       date: true,
+      postedAt: true,
       createdAt: true,
       dayOrder: true,
       amount: true,

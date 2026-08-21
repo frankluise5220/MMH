@@ -14,6 +14,7 @@ import { GripVertical, Pencil, SlidersHorizontal, Trash2 } from "lucide-react";
 import { DateRangeColumnFilter, NumberRangeColumnFilter, TableColumnFilter, TextColumnFilter } from "./TableColumnFilter";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useI18n } from "@/lib/i18n";
+import { APP_PREFS_EVENT, getCompactRowHeightPreference } from "@/lib/client/appPreferences";
 
 const HORIZONTAL_SCROLL_TOLERANCE_PX = 4;
 const ROW_VIRTUALIZATION_THRESHOLD = 200;
@@ -69,6 +70,10 @@ export type AdvancedDataTableSummaryRow = {
 
 export type AdvancedDataTableDropPosition = "before" | "after";
 export type AdvancedDataTableSortState = { key: string; direction: "asc" | "desc" };
+export type AdvancedDataTableRowDropTarget<T> = {
+  row: T;
+  index: number;
+};
 
 export type AdvancedDataTablePagination = {
   page: number;
@@ -120,11 +125,14 @@ export type AdvancedDataTableProps<T> = {
   emptyText?: ReactNode;
   minTableWidth?: number;
   rowClassName?: (row: T, index: number) => string;
+  rowBackgroundGroupKey?: (row: T, index: number) => string | null | undefined;
+  rowBackgroundEnabled?: boolean;
   onRowClick?: (row: T, index: number) => void;
   onRowDoubleClick?: (row: T, index: number) => void;
   draggableRows?: boolean;
   rowDragDisabled?: (row: T, index: number) => boolean;
   rowDropAllowed?: (sourceRow: T, targetRow: T, sourceIndex: number, targetIndex: number, position: AdvancedDataTableDropPosition) => boolean;
+  rowDropTargetAtEnd?: (sourceRow: T, sourceIndex: number, orderedRows: T[]) => AdvancedDataTableRowDropTarget<T> | null;
   onRowReorder?: (sourceRow: T, targetRow: T, sourceIndex: number, targetIndex: number, position: AdvancedDataTableDropPosition) => void | Promise<void>;
   onDisplayRowsChange?: (rows: T[]) => void;
   selectable?: boolean;
@@ -144,6 +152,7 @@ export type AdvancedDataTableProps<T> = {
   toolbarTitle?: ReactNode;
   toolbarLeftContent?: ReactNode;
   toolbarRightContent?: ReactNode;
+  showTableStateInCustomToolbar?: boolean;
   showColumnVisibilityButton?: boolean;
   sortable?: boolean;
   defaultSort?: AdvancedDataTableSortState | null;
@@ -173,6 +182,15 @@ function batchActionToneClass(tone: AdvancedDataTableBatchAction["tone"]) {
   if (tone === "danger") return "border-red-200 bg-red-50 text-red-700 hover:bg-red-100";
   if (tone === "primary") return "border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100";
   return "border-slate-200 bg-white text-slate-700 hover:bg-slate-50";
+}
+
+function groupedRowBackgroundClass(groupIndex: number, rowInGroupIndex: number) {
+  const isFirstPalette = groupIndex % 2 === 0;
+  const isStrongShade = rowInGroupIndex % 2 === 1;
+  if (isFirstPalette) {
+    return isStrongShade ? "bg-sky-100/75 hover:bg-sky-200" : "bg-sky-50/90 hover:bg-sky-100";
+  }
+  return isStrongShade ? "bg-amber-100/75 hover:bg-amber-200" : "bg-amber-50/90 hover:bg-amber-100";
 }
 
 function inferBatchActionIcon(action: AdvancedDataTableBatchAction) {
@@ -290,11 +308,14 @@ export function AdvancedDataTable<T>({
   emptyText,
   minTableWidth,
   rowClassName,
+  rowBackgroundGroupKey,
+  rowBackgroundEnabled = false,
   onRowClick,
   onRowDoubleClick,
   draggableRows = false,
   rowDragDisabled,
   rowDropAllowed,
+  rowDropTargetAtEnd,
   onRowReorder,
   onDisplayRowsChange,
   selectable = false,
@@ -314,6 +335,7 @@ export function AdvancedDataTable<T>({
   toolbarTitle,
   toolbarLeftContent,
   toolbarRightContent,
+  showTableStateInCustomToolbar = false,
   showColumnVisibilityButton = true,
   sortable = true,
   defaultSort = null,
@@ -342,13 +364,17 @@ export function AdvancedDataTable<T>({
   const [filters, setFilters] = useState<Partial<Record<string, string[]>>>({});
   const [activeFilterColumn, setActiveFilterColumn] = useState<string | null>(null);
   const [sortState, setSortState] = useState<AdvancedDataTableSortState | null>(null);
-  const rowHeight = compactRows ? 30 : 38;
+  const [compactRowHeight, setCompactRowHeight] = useState(() => getCompactRowHeightPreference());
+  const rowHeight = compactRows ? compactRowHeight : 38;
+  const rowPaddingY = compactRows ? Math.max(2, Math.round((compactRowHeight - 18) / 2)) : 8;
+  const rowCellPaddingStyle = compactRows ? { paddingTop: rowPaddingY, paddingBottom: rowPaddingY } : undefined;
   const [internalSelectedKeys, setInternalSelectedKeys] = useState<Set<string>>(new Set());
   const [draggedRowKey, setDraggedRowKey] = useState<string | null>(null);
   const [dragTarget, setDragTarget] = useState<{ key: string; position: AdvancedDataTableDropPosition } | null>(null);
   const [resizeGuide, setResizeGuide] = useState<ResizeGuide | null>(null);
   const [resizeSession, setResizeSession] = useState<ResizeSession | null>(null);
   const suppressNextClickRef = useRef(false);
+  const dragCancelledRef = useRef(false);
   const headerSortClickTimerRef = useRef<number | null>(null);
   const resizeCleanupRef = useRef<(() => void) | null>(null);
   const lastResetKeyRef = useRef(resetKey);
@@ -359,6 +385,13 @@ export function AdvancedDataTable<T>({
   const paginationPageSize = pagination?.pageSize;
   const paginationOnPageChange = pagination?.onPageChange;
   const paginationOnRowCountChange = pagination?.onRowCountChange;
+
+  useEffect(() => {
+    const syncCompactRowHeight = () => setCompactRowHeight(getCompactRowHeightPreference());
+    syncCompactRowHeight();
+    window.addEventListener(APP_PREFS_EVENT, syncCompactRowHeight);
+    return () => window.removeEventListener(APP_PREFS_EVENT, syncCompactRowHeight);
+  }, []);
 
   const clearPendingHeaderSortClick = useCallback(() => {
     if (headerSortClickTimerRef.current == null) return;
@@ -653,6 +686,25 @@ export function AdvancedDataTable<T>({
     if (!draggedRowKey || !dragTarget) return rowItems;
     return reorderRowItems(rowItems, draggedRowKey, dragTarget.key, dragTarget.position);
   }, [dragTarget, draggedRowKey, rowItems]);
+  const rowBackgroundClassByKey = useMemo(() => {
+    const classByKey = new Map<string, string>();
+    if (!rowBackgroundEnabled || !rowBackgroundGroupKey) return classByKey;
+    let currentGroupKey = "";
+    let groupIndex = -1;
+    let rowInGroupIndex = 0;
+    for (const { row, index, key } of displayRowItems) {
+      const groupKey = String(rowBackgroundGroupKey(row, index) ?? "");
+      if (!groupKey) continue;
+      if (groupKey !== currentGroupKey) {
+        currentGroupKey = groupKey;
+        groupIndex += 1;
+        rowInGroupIndex = 0;
+      }
+      classByKey.set(key, groupedRowBackgroundClass(groupIndex, rowInGroupIndex));
+      rowInGroupIndex += 1;
+    }
+    return classByKey;
+  }, [displayRowItems, rowBackgroundEnabled, rowBackgroundGroupKey]);
 
   const shouldVirtualizeRows = displayRowItems.length > ROW_VIRTUALIZATION_THRESHOLD;
   // TanStack Virtual intentionally returns imperative helpers; keep it isolated here.
@@ -856,6 +908,10 @@ export function AdvancedDataTable<T>({
   }
 
   function toggleAllRows(checked: boolean) {
+    if (!checked && allSelected) {
+      setSelection(new Set());
+      return;
+    }
     const next = new Set(effectiveSelectedKeys);
     for (const key of selectableRowKeys) {
       if (checked) next.add(key);
@@ -911,6 +967,7 @@ export function AdvancedDataTable<T>({
     }
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", key);
+    dragCancelledRef.current = false;
     setDraggedRowKey(key);
     suppressNextClickRef.current = true;
   }
@@ -997,11 +1054,25 @@ export function AdvancedDataTable<T>({
   const getAllowedGlobalDragTarget = useCallback((clientX: number, clientY: number) => {
     if (!draggedRowKey) return null;
     const target = getGlobalDragTarget(clientX, clientY);
-    if (!target) return null;
-    const dragDisabled = (sortable && sortState != null) || (rowDragDisabled?.(target.row, target.index) ?? false);
-    if (!canDropOnRow(target.row, target.index, target.key, dragDisabled, target.position)) return null;
-    return target;
-  }, [canDropOnRow, draggedRowKey, getGlobalDragTarget, rowDragDisabled, sortState, sortable]);
+    if (target) {
+      const dragDisabled = (sortable && sortState != null) || (rowDragDisabled?.(target.row, target.index) ?? false);
+      if (canDropOnRow(target.row, target.index, target.key, dragDisabled, target.position)) return target;
+    }
+    if (!rowDropTargetAtEnd) return null;
+    const sourceIndex = orderedRows.findIndex((row, index) => rowKey(row, index) === draggedRowKey);
+    if (sourceIndex < 0) return null;
+    const tailTarget = rowDropTargetAtEnd(orderedRows[sourceIndex], sourceIndex, orderedRows);
+    if (!tailTarget || tailTarget.index < 0 || tailTarget.index >= orderedRows.length) return null;
+    const tailKey = rowKey(tailTarget.row, tailTarget.index);
+    if (tailKey === draggedRowKey) return null;
+    const tailElement = Array.from(
+      viewportRef.current?.querySelectorAll<HTMLElement>("[data-advanced-row-key]") ?? [],
+    ).find((element) => element.dataset.advancedRowKey === tailKey);
+    if (!tailElement || clientY < tailElement.getBoundingClientRect().bottom) return null;
+    const dragDisabled = (sortable && sortState != null) || (rowDragDisabled?.(tailTarget.row, tailTarget.index) ?? false);
+    if (!canDropOnRow(tailTarget.row, tailTarget.index, tailKey, dragDisabled, "after")) return null;
+    return { ...tailTarget, key: tailKey, position: "after" as const };
+  }, [canDropOnRow, draggedRowKey, getGlobalDragTarget, orderedRows, rowDropTargetAtEnd, rowDragDisabled, rowKey, sortState, sortable]);
 
   const updateGlobalDragTarget = useCallback((clientX: number, clientY: number) => {
     const target = getAllowedGlobalDragTarget(clientX, clientY);
@@ -1010,13 +1081,18 @@ export function AdvancedDataTable<T>({
     return true;
   }, [getAllowedGlobalDragTarget]);
 
-  function handleRowDragEnd() {
+  const handleRowDragEnd = useCallback(() => {
     setDraggedRowKey(null);
     setDragTarget(null);
     window.setTimeout(() => {
       suppressNextClickRef.current = false;
     }, 0);
-  }
+  }, []);
+
+  const cancelRowDrag = useCallback(() => {
+    dragCancelledRef.current = true;
+    handleRowDragEnd();
+  }, [handleRowDragEnd]);
 
   function hasActiveTextSelection() {
     if (typeof window === "undefined") return false;
@@ -1053,9 +1129,15 @@ export function AdvancedDataTable<T>({
 
   function handleRowDrop(event: ReactDragEvent<HTMLTableRowElement>, targetRow: T, targetIndex: number, targetKey: string, dragDisabled: boolean) {
     if (!draggableRows || dragDisabled) return;
+    const sourceKey = draggedRowKey ?? event.dataTransfer.getData("text/plain");
+    if (!sourceKey) return;
+    if (sourceKey === targetKey) {
+      if (!dragTarget) return;
+    } else if (!canDropOnRow(targetRow, targetIndex, targetKey, dragDisabled, getDropPosition(event))) {
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
-    const sourceKey = draggedRowKey ?? event.dataTransfer.getData("text/plain");
     const position = getDropPosition(event);
     dropOnRowAtPosition(event, sourceKey, targetRow, targetIndex, targetKey, dragDisabled, position);
   }
@@ -1069,15 +1151,16 @@ export function AdvancedDataTable<T>({
     dragDisabled: boolean,
     position: AdvancedDataTableDropPosition,
   ) {
-    handleRowDragEnd();
     if (dragDisabled || !sourceKey) return;
     if (sourceKey === targetKey) {
       dropOnPreviewTarget(sourceKey);
+      handleRowDragEnd();
       return;
     }
     const sourceIndex = orderedRows.findIndex((row, index) => rowKey(row, index) === sourceKey);
     if (sourceIndex < 0) return;
     if (!(rowDropAllowed?.(orderedRows[sourceIndex], targetRow, sourceIndex, targetIndex, position) ?? true)) return;
+    handleRowDragEnd();
     void onRowReorder?.(orderedRows[sourceIndex], targetRow, sourceIndex, targetIndex, position);
   }
 
@@ -1085,6 +1168,12 @@ export function AdvancedDataTable<T>({
     if (!draggableRows || !draggedRowKey) return;
 
     const handleGlobalDragOver = (event: DragEvent) => {
+      const viewport = viewportRef.current;
+      if (viewport && event.clientX < viewport.getBoundingClientRect().left) {
+        event.preventDefault();
+        cancelRowDrag();
+        return;
+      }
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
       updateGlobalDragTarget(event.clientX, event.clientY);
@@ -1092,6 +1181,10 @@ export function AdvancedDataTable<T>({
     const handleGlobalDrop = (event: DragEvent) => {
       if (event.defaultPrevented) return;
       event.preventDefault();
+      if (dragCancelledRef.current || event.dataTransfer?.dropEffect !== "move") {
+        handleRowDragEnd();
+        return;
+      }
       const sourceKey = draggedRowKey;
       const target = getAllowedGlobalDragTarget(event.clientX, event.clientY);
       if (target) {
@@ -1101,19 +1194,59 @@ export function AdvancedDataTable<T>({
       }
       handleRowDragEnd();
     };
+    const handleGlobalDragEnd = () => {
+      handleRowDragEnd();
+    };
+    const handleGlobalKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      cancelRowDrag();
+    };
 
     window.addEventListener("dragover", handleGlobalDragOver);
     window.addEventListener("drop", handleGlobalDrop);
+    window.addEventListener("dragend", handleGlobalDragEnd);
+    window.addEventListener("keydown", handleGlobalKeyDown);
     return () => {
       window.removeEventListener("dragover", handleGlobalDragOver);
       window.removeEventListener("drop", handleGlobalDrop);
+      window.removeEventListener("dragend", handleGlobalDragEnd);
+      window.removeEventListener("keydown", handleGlobalKeyDown);
     };
-  }, [draggableRows, draggedRowKey, dropOnPreviewTarget, dropOnResolvedTarget, getAllowedGlobalDragTarget, updateGlobalDragTarget]);
+  }, [cancelRowDrag, draggableRows, draggedRowKey, dropOnPreviewTarget, dropOnResolvedTarget, getAllowedGlobalDragTarget, handleRowDragEnd, updateGlobalDragTarget]);
 
   const selectedCount = effectiveSelectedKeys.size;
   const allSelected = selectableRowKeys.length > 0 && selectableRowKeys.every((key) => effectiveSelectedKeys.has(key));
   const partiallySelected = !allSelected && selectableRowKeys.some((key) => effectiveSelectedKeys.has(key));
   const hasAnyFilters = showFilters && Object.values(filters).some((values) => (values?.length ?? 0) > 0);
+  const clearFilters = () => {
+    setFilters({});
+    setActiveFilterColumn(null);
+  };
+  const clearSelection = () => setSelection(new Set());
+  const tableStateControls = (
+    <>
+      {selectedCount > 0 ? (
+        <button
+          type="button"
+          onClick={clearSelection}
+          className="text-xs text-blue-600 hover:text-blue-700"
+        >
+          {t("table.clearSelection")}
+        </button>
+      ) : null}
+      {hasAnyFilters ? <span>{filteredRows.length}/{rows.length}</span> : null}
+      {hasAnyFilters ? (
+        <button
+          type="button"
+          onClick={clearFilters}
+          className="text-xs text-blue-600 hover:text-blue-700"
+        >
+          {t("table.clearFilters")}
+        </button>
+      ) : null}
+    </>
+  );
   const headerPaddingClass = compactRows ? "px-3 py-1.5" : "px-3 py-2";
   const cellPaddingClass = compactRows ? "px-3 py-1.5" : "px-3 py-2";
   const selectPaddingClass = compactRows ? "px-2 py-1.5" : "px-2 py-2";
@@ -1131,7 +1264,9 @@ export function AdvancedDataTable<T>({
     (viewportWidth > 0 && layout.tableWidth > viewportWidth + HORIZONTAL_SCROLL_TOLERANCE_PX);
 
   return (
-    <div className={fillHeight ? "flex h-full min-h-0 flex-col" : "min-h-0"}>
+    <div
+      className={fillHeight ? "flex h-full min-h-0 flex-col" : "min-h-0"}
+    >
       {showToolbar ? (
         <div
           data-batch-popover-boundary
@@ -1140,7 +1275,16 @@ export function AdvancedDataTable<T>({
         >
           <div className="flex min-w-0 flex-1 items-center gap-2 text-[11px] text-slate-500">
             {toolbarMode === "custom" ? (
-              toolbarLeftContent
+              <>
+                {toolbarLeftContent}
+                <span
+                  aria-live="polite"
+                  className={`whitespace-nowrap text-[11px] font-medium text-blue-700 transition-opacity ${draggedRowKey ? "opacity-100" : "pointer-events-none w-0 overflow-hidden opacity-0"}`}
+                >
+                  {t("advancedTable.cancelDragHint")}
+                </span>
+                {showTableStateInCustomToolbar ? tableStateControls : null}
+              </>
             ) : (
               <>
                 {selectable && selectedCount > 0 ? <span className="font-medium text-slate-600">{tf("table.selectedCount", { count: selectedCount })}</span> : null}
@@ -1166,20 +1310,14 @@ export function AdvancedDataTable<T>({
                   );
                 }) : null}
                 {selectedCount > 0 ? batchActionSlot : null}
+                {tableStateControls}
                 {toolbarTitle ? <span className="font-semibold text-slate-700">{toolbarTitle}</span> : null}
-                {hasAnyFilters ? <span>{filteredRows.length}/{rows.length}</span> : null}
-                {hasAnyFilters ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setFilters({});
-                      setActiveFilterColumn(null);
-                    }}
-                    className="text-xs text-blue-600 hover:text-blue-700"
-                  >
-                    {t("table.clearFilters")}
-                  </button>
-                ) : null}
+                <span
+                  aria-live="polite"
+                  className={`whitespace-nowrap text-[11px] font-medium text-blue-700 transition-opacity ${draggedRowKey ? "opacity-100" : "pointer-events-none w-0 overflow-hidden opacity-0"}`}
+                >
+                  {t("advancedTable.cancelDragHint")}
+                </span>
               </>
             )}
           </div>
@@ -1378,6 +1516,8 @@ export function AdvancedDataTable<T>({
                 if (!selectable || !selectOnRowClick) return;
                 toggleRow(key, !isSelected);
               };
+              const rowBackgroundClass = rowBackgroundClassByKey.get(key);
+              const baseRowClassName = rowClassName?.(row, displayIndex) ?? (rowBackgroundClass ? "" : "hover:bg-slate-50");
               return (
                 <tr
                   key={key}
@@ -1401,15 +1541,17 @@ export function AdvancedDataTable<T>({
                   onDragOver={(event) => handleRowDragOver(event, row, index, key, dragDisabled)}
                   onDrop={(event) => handleRowDrop(event, row, index, key, dragDisabled)}
                   className={[
-                    rowClassName?.(row, displayIndex) ?? "hover:bg-slate-50",
+                    rowBackgroundClass,
+                    baseRowClassName,
                     selectable && selectOnRowClick ? "cursor-pointer" : "",
                     isBlockedDropTarget ? "cursor-not-allowed" : "",
-                    isDraggedRow ? "bg-blue-50/70 ring-1 ring-inset ring-blue-200 shadow-[inset_0_0_0_1px_#bfdbfe]" : "",
+                    isDraggedRow ? "relative z-10 bg-blue-50/80 outline outline-2 outline-blue-500 outline-offset-[-2px] shadow-[inset_0_0_0_1px_#2563eb]" : "",
                     isSelected ? "bg-blue-50/90 hover:bg-blue-100/80" : "",
                   ].filter(Boolean).join(" ")}
+                  style={{ height: rowHeight }}
                 >
                   {(selectable || draggableRows) ? (
-                    <td data-advanced-table-row-controls className={`border-b border-slate-100 text-center ${selectPaddingClass}`}>
+                    <td data-advanced-table-row-controls className={`border-b border-slate-100 text-center ${selectPaddingClass}`} style={rowCellPaddingStyle}>
                       <div className="flex items-center justify-center gap-1">
                         {draggableRows ? (
                           <button
@@ -1441,11 +1583,11 @@ export function AdvancedDataTable<T>({
                       </div>
                     ) : cellContent;
                     return (
-                      <td key={column.key} className={["select-text border-b border-slate-100 text-xs", cellPaddingClass, alignClass(column.align), column.className ?? ""].join(" ")}>
+                      <td key={column.key} className={["select-text border-b border-slate-100 text-xs", cellPaddingClass, alignClass(column.align), column.className ?? ""].join(" ")} style={rowCellPaddingStyle}>
                         {wrappedContent}
                       </td>
-                    );
-                  })}
+                  );
+                })}
                 </tr>
               );
             }) : (

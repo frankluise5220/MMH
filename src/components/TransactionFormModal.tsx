@@ -7,6 +7,7 @@ import { CalcInput } from "./CalcInput";
 import { DateStepper } from "./DateStepper";
 import { EntityCreateForm, NestedAddModal } from "./EntityCreateForm";
 import { EntryAttachmentButton, uploadEntryAttachmentFiles } from "./EntryAttachmentPanel";
+import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, SmartSelectOption } from "./SmartSelect";
 import { UnifiedEntryLauncher } from "./UnifiedEntryLauncher";
 import { useAccountSSFilter } from "./accountSSFilter";
@@ -362,6 +363,8 @@ export function TransactionFormModal({
   hideTrigger?: boolean;
 }) {
   const { t, language } = useI18n();
+  const parentModalZIndex = useModalLayerZIndex();
+  const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
   const quickEntryConsumedRef = useRef<string | null>(null);
   const [open, setOpen] = useState(false);
   const [txType, setTxType] = useState<TxType>("expense");
@@ -1811,7 +1814,7 @@ export function TransactionFormModal({
   }
 
   return (
-    <>
+    <ModalLayerProvider value={modalZIndex}>
       {!hideTrigger ? (
         <UnifiedEntryLauncher
           defaultAction="transaction"
@@ -1833,7 +1836,7 @@ export function TransactionFormModal({
       ) : null}
 
       {open ? createPortal(
-        <div className="app-modal-backdrop z-50">
+        <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
           <div className="app-modal-panel mobile-transaction-modal max-w-xl">
             <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">
@@ -2734,11 +2737,10 @@ export function TransactionFormModal({
       <EntityCreateForm
         mode="full"
         layout="modal"
-        entityType="institution"
+        entityType="counterparty"
         open={counterpartyNestedOpen}
         onClose={() => setCounterpartyNestedOpen(false)}
         defaultType="person"
-        allowedInstitutionTypes={["person", "organization"]}
         existingNames={(localNestedFieldData?.counterpartyId ?? nestedFieldData?.counterpartyId ?? []).map((item) => item.name)}
         onCreated={(id, name, extra) => {
           const next = { id, name, type: extra?.type ?? "person" };
@@ -2780,6 +2782,6 @@ export function TransactionFormModal({
       />,
       document.body,
     )}
-    </>
+    </ModalLayerProvider>
   );
 }

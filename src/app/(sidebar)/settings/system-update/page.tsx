@@ -12,11 +12,12 @@ import { useI18n } from "@/lib/i18n";
 
 type VersionInfo = {
   ok: boolean;
-  deploymentTarget?: "docker" | "fnos" | "standalone";
+  deploymentTarget?: "docker" | "fnos" | "synology" | "standalone";
   isDocker?: boolean;
   isFnos?: boolean;
+  isSynology?: boolean;
   updaterEnabled?: boolean;
-  updateMode?: "git" | "fnos";
+  updateMode?: "git" | "fnos" | "synology";
   versionSource?: "git" | "env";
   localVersion: string;
   localCommit: string;
@@ -513,9 +514,12 @@ export default function SystemUpdatePage() {
   const isLatest = versionInfo?.ok && canCheckUpdate && !versionInfo.needsUpdate;
   const needsUpdate = versionInfo?.ok && canCheckUpdate && versionInfo.needsUpdate;
   const dockerManaged = Boolean(versionInfo?.isDocker);
+  const synologyManaged = Boolean(versionInfo?.isSynology || versionInfo?.deploymentTarget === "synology");
   const fnosManaged = Boolean(versionInfo?.isFnos || versionInfo?.deploymentTarget === "fnos");
-  const currentVersionText = fnosManaged
-    ? `${cleanVersionPart(versionInfo?.localVersion) || "unknown"} FNOS`
+  const packageManaged = fnosManaged || synologyManaged;
+  const packageLabel = synologyManaged ? "SPK" : "FNOS";
+  const currentVersionText = packageManaged
+    ? `${cleanVersionPart(versionInfo?.localVersion) || "unknown"} ${packageLabel}`
     : formatVersionLine(versionInfo?.localVersion, versionInfo?.localCommit, versionInfo?.localCommitDate, timeZoneMode, timeZone);
   const localReleaseNotes = versionInfo?.localReleaseNotes?.trim() || "";
   const availableVersionText = formatVersionLine(
@@ -538,7 +542,7 @@ export default function SystemUpdatePage() {
     : isLatest
       ? t("settings.systemUpdate.isLatest")
       : t("settings.systemUpdate.unconfirmed");
-  const canStartUpdate = !fnosManaged && needsUpdate && (!dockerManaged || versionInfo.updaterEnabled);
+  const canStartUpdate = !packageManaged && needsUpdate && (!dockerManaged || versionInfo.updaterEnabled);
   const updateActionPanel = !updating && !updateDone && versionInfo?.ok && !canStartUpdate ? (
     <div className="border-t border-slate-100 pt-3">
       {isLatest ? (
@@ -567,12 +571,12 @@ export default function SystemUpdatePage() {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-sm font-semibold text-slate-800">{fnosManaged ? t("settings.systemUpdate.versionInfo") : t("settings.systemUpdate.title")}</h2>
+      <h2 className="text-sm font-semibold text-slate-800">{packageManaged ? t("settings.systemUpdate.versionInfo") : t("settings.systemUpdate.title")}</h2>
 
       <section className="rounded-lg border border-slate-200 bg-white p-4">
         <div className="mb-3 flex items-center justify-between gap-3">
           <div className="text-sm font-medium text-slate-800">
-            {fnosManaged ? t("settings.systemUpdate.versionInfo") : dockerManaged ? t("settings.systemUpdate.softwareUpdateImage") : t("settings.systemUpdate.softwareUpdate")}
+            {packageManaged ? t("settings.systemUpdate.versionInfo") : dockerManaged ? t("settings.systemUpdate.softwareUpdateImage") : t("settings.systemUpdate.softwareUpdate")}
           </div>
           <button
             onClick={() => loadVersionInfo({ checkRemote: true })}
@@ -586,7 +590,7 @@ export default function SystemUpdatePage() {
 
         {!loadingVersion && !versionInfo ? (
           <div className="rounded-md border border-dashed border-slate-200 bg-slate-50/80 px-4 py-6 text-center text-sm text-slate-500">
-            {fnosManaged ? t("settings.systemUpdate.readFailedFnos") : t("settings.systemUpdate.readFailed")}
+            {packageManaged ? t("settings.systemUpdate.readFailedFnos") : t("settings.systemUpdate.readFailed")}
           </div>
         ) : loadingVersion && !versionInfo ? (
           <div className="flex items-center gap-2 text-xs text-slate-500">
@@ -599,21 +603,21 @@ export default function SystemUpdatePage() {
               <div className="text-slate-500">{t("settings.systemUpdate.currentVersion")}</div>
               <div className="min-w-0">
                 <span className="font-semibold text-slate-900">{currentVersionText || "unknown"}</span>
-                {fnosManaged ? (
-                  <span className="ml-2 rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600">{t("settings.systemUpdate.fnosPackage")}</span>
+                {packageManaged ? (
+                  <span className="ml-2 rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600">{synologyManaged ? t("settings.systemUpdate.synologyPackage") : t("settings.systemUpdate.fnosPackage")}</span>
                 ) : versionInfo.localCommitMsg ? (
                   <span className="ml-2 text-xs text-slate-500">{versionInfo.localCommitMsg}</span>
                 ) : null}
               </div>
 
-              {fnosManaged && localReleaseNotes ? (
+              {packageManaged && localReleaseNotes ? (
                 <>
                   <div className="text-slate-500">{t("settings.systemUpdate.releaseNotes")}</div>
                   <div className="min-w-0 text-slate-700">{localReleaseNotes}</div>
                 </>
               ) : null}
 
-              {fnosManaged ? (
+              {packageManaged ? (
                 <>
                   <div className="text-slate-500">{t("settings.systemUpdate.projectUrl")}</div>
                   <div className="min-w-0">
@@ -641,10 +645,10 @@ export default function SystemUpdatePage() {
                 </>
               ) : null}
 
-              <div className="text-slate-500">{fnosManaged ? t("settings.systemUpdate.updateMethod") : needsUpdate ? t("settings.systemUpdate.availableVersion") : t("settings.systemUpdate.remoteVersion")}</div>
+              <div className="text-slate-500">{packageManaged ? t("settings.systemUpdate.updateMethod") : needsUpdate ? t("settings.systemUpdate.availableVersion") : t("settings.systemUpdate.remoteVersion")}</div>
               <div className="min-w-0">
-                {fnosManaged ? (
-                  <span className="text-slate-600">{t("settings.systemUpdate.managedByFnos")}</span>
+                {packageManaged ? (
+                  <span className="text-slate-600">{synologyManaged ? t("settings.systemUpdate.managedBySynology") : t("settings.systemUpdate.managedByFnos")}</span>
                 ) : canCheckUpdate ? (
                   <>
                     <span className="font-semibold text-slate-900">{availableVersionText || versionInfo.remoteCommit}</span>
@@ -667,13 +671,13 @@ export default function SystemUpdatePage() {
               ) : null}
             </div>
 
-            {fnosManaged ? (
+            {packageManaged ? (
               <div className="rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-                {t("settings.systemUpdate.fnosManagedInfo")}
+                {synologyManaged ? t("settings.systemUpdate.synologyManagedInfo") : t("settings.systemUpdate.fnosManagedInfo")}
               </div>
             ) : null}
 
-            {!fnosManaged && !isLatest ? (
+            {!packageManaged && !isLatest ? (
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <span
@@ -703,21 +707,21 @@ export default function SystemUpdatePage() {
               </div>
             ) : null}
 
-            {!fnosManaged && !canCheckUpdate && (versionInfo.fetchError || versionInfo.githubFetchError) ? (
+            {!packageManaged && !canCheckUpdate && (versionInfo.fetchError || versionInfo.githubFetchError) ? (
               <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
                 {t("settings.systemUpdate.fetchRemoteFailed", { error: versionInfo.fetchError || versionInfo.githubFetchError || "" })}
               </div>
             ) : null}
 
-            {!fnosManaged && canCheckUpdate && versionInfo.remoteName?.startsWith("image:") && versionInfo.githubFetchError ? (
+            {!packageManaged && canCheckUpdate && versionInfo.remoteName?.startsWith("image:") && versionInfo.githubFetchError ? (
               <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700">
                 {t("settings.systemUpdate.githubFallback")}
               </div>
             ) : null}
 
-            {!fnosManaged ? updateActionPanel : null}
+            {!packageManaged ? updateActionPanel : null}
 
-            {!fnosManaged && dockerManaged && versionInfo.imageSourceConfig ? (
+            {!packageManaged && dockerManaged && versionInfo.imageSourceConfig ? (
               <div className="border-t border-slate-100 pt-3">
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                   <div className="text-slate-500">{t("settings.systemUpdate.imageSource")}</div>

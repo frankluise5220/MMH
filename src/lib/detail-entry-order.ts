@@ -7,6 +7,7 @@ import {
 type DetailEntryLike = {
   id: string;
   date: Date | string | number | null | undefined;
+  postedAt?: Date | string | number | null | undefined;
   createdAt?: Date | string | number | null | undefined;
   dayOrder?: number | null | undefined;
   type: string;
@@ -43,6 +44,10 @@ function isBalanceAnchor(entry: DetailEntryLike) {
 }
 
 export function getDetailEntryDisplayDate(entry: DetailEntryLike, accountId?: string | null) {
+  if (entry.type === "expense" || entry.type === "income") {
+    return toValidDate(entry.postedAt) ?? toValidDate(entry.date) ?? new Date(0);
+  }
+
   const isFundBuyRefundCashReceipt =
     entry.type === "investment" &&
     accountId &&

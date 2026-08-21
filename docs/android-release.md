@@ -1,12 +1,13 @@
 # Android APK Release（与 v0.1.x 同步发布）
 
-这个 Android 客户端是 MMH 服务端的配套客户端。**从 0.1.33 起，Android APK 与服务端、飞牛包同步发布**：每次创建 `v0.1.x` GitHub Release，`.github/workflows/android-release.yml` 会自动构建签名 APK 并挂到同一个 Release 页面，不再单独发布 `android-v*` 版本。
+这个 Android 客户端是 MMH 服务端的配套客户端。**从 0.1.33 起，Android APK 与服务端、飞牛包同步发布；从加入群晖包后，Android 也与群晖包保持同一个 `v0.1.x` Release**：每次创建 `v0.1.x` GitHub Release，`.github/workflows/android-release.yml` 会自动构建签名 APK 并挂到同一个 Release 页面，不再单独发布 `android-v*` 版本。
 
 ## 1. 发布形态
 
 每个 `v0.1.x` Release 包含：
 
 - `mmh-fnos-v0.1.x-x86_64.fpk` / `mmh-fnos-v0.1.x-arm64.fpk`（飞牛）
+- `mmh-synology-v0.1.x-x86_64.spk` / `mmh-synology-v0.1.x-arm64.spk`（群晖）
 - `mmh-nas-v0.1.x.zip`（NAS Docker 源码包）
 - `mmh-android-v0.1.x.apk`（Android，签名 APK）
 

@@ -29,6 +29,9 @@ export const DATE_DISPLAY_FORMAT_COOKIE = "mmh_date_display_format";
 export const SIDEBAR_GROUP_BY_KEY = "sidebar_group_by";
 export const SIDEBAR_HIDE_ZERO_KEY = "sidebar_hide_zero";
 export const SIDEBAR_HIDE_INITIAL_DATA_KEY = "sidebar_hide_initial_data";
+export const SIDEBAR_SHOW_FIXED_ASSETS_KEY = "sidebar_show_fixed_assets";
+export const DETAIL_DATE_BACKGROUND_KEY = "detail_date_background";
+export const COMPACT_ROW_HEIGHT_KEY = "advanced_data_table_compact_row_height";
 export const SIDEBAR_COLLAPSED_KEY = "sidebar_collapsed";
 export const SIDEBAR_OWNER_FILTER_KEY = "sidebar_owner_filter";
 export const AI_PANEL_COLLAPSED_KEY = "mmh_ai_panel_collapsed";
@@ -57,6 +60,9 @@ export type AppPreferencesSnapshot = {
   sidebarOwnerFilter: string;
   sidebarHideZero: boolean;
   sidebarHideInitialData: boolean;
+  sidebarShowFixedAssets: boolean;
+  detailDateBackground: boolean;
+  compactRowHeight: number;
   sidebarCollapsed: boolean;
 };
 
@@ -65,6 +71,7 @@ const DEFAULT_FUND_UNITS_DECIMALS = 2;
 const DEFAULT_TIME_ZONE = "Asia/Shanghai";
 const DEFAULT_CREDIT_CARD_LABEL_MODE: CreditCardLabelMode = "short_last4";
 const DEFAULT_DISPLAY_LANGUAGE: DisplayLanguage = "zh-CN";
+const DEFAULT_COMPACT_ROW_HEIGHT = 30;
 
 function parseCookieValue(name: string): string | null {
   if (typeof document === "undefined") return null;
@@ -304,6 +311,66 @@ export function setSidebarHideInitialDataPreference(value: boolean) {
   emitPreferencesChanged();
 }
 
+export function getSidebarShowFixedAssetsPreference(): boolean {
+  try {
+    const value = localStorage.getItem(SIDEBAR_SHOW_FIXED_ASSETS_KEY) ?? parseCookieValue(SIDEBAR_SHOW_FIXED_ASSETS_KEY);
+    if (value == null) return true;
+    return value === "true" || value === "1";
+  } catch {
+    const value = parseCookieValue(SIDEBAR_SHOW_FIXED_ASSETS_KEY);
+    if (value == null) return true;
+    return value === "true" || value === "1";
+  }
+}
+
+export function setSidebarShowFixedAssetsPreference(value: boolean) {
+  try {
+    localStorage.setItem(SIDEBAR_SHOW_FIXED_ASSETS_KEY, String(value));
+  } catch {}
+  setCookieValue(SIDEBAR_SHOW_FIXED_ASSETS_KEY, String(value));
+  emitPreferencesChanged();
+}
+
+export function getDetailDateBackgroundPreference(): boolean {
+  try {
+    const value = localStorage.getItem(DETAIL_DATE_BACKGROUND_KEY) ?? parseCookieValue(DETAIL_DATE_BACKGROUND_KEY);
+    return value === "true" || value === "1";
+  } catch {
+    const value = parseCookieValue(DETAIL_DATE_BACKGROUND_KEY);
+    return value === "true" || value === "1";
+  }
+}
+
+export function setDetailDateBackgroundPreference(value: boolean) {
+  try {
+    localStorage.setItem(DETAIL_DATE_BACKGROUND_KEY, String(value));
+  } catch {}
+  setCookieValue(DETAIL_DATE_BACKGROUND_KEY, String(value));
+  emitPreferencesChanged();
+}
+
+export function getCompactRowHeightPreference(): number {
+  try {
+    const value = localStorage.getItem(COMPACT_ROW_HEIGHT_KEY) ?? parseCookieValue(COMPACT_ROW_HEIGHT_KEY);
+    const n = Number(value);
+    if (!Number.isFinite(n)) return DEFAULT_COMPACT_ROW_HEIGHT;
+    return Math.min(Math.max(Math.round(n), 25), 35);
+  } catch {
+    const value = parseCookieValue(COMPACT_ROW_HEIGHT_KEY);
+    const n = Number(value);
+    if (!Number.isFinite(n)) return DEFAULT_COMPACT_ROW_HEIGHT;
+    return Math.min(Math.max(Math.round(n), 25), 35);
+  }
+}
+
+export function setCompactRowHeightPreference(value: number) {
+  try {
+    localStorage.setItem(COMPACT_ROW_HEIGHT_KEY, String(Math.min(Math.max(Math.round(value), 25), 35)));
+  } catch {}
+  setCookieValue(COMPACT_ROW_HEIGHT_KEY, String(Math.min(Math.max(Math.round(value), 25), 35)));
+  emitPreferencesChanged();
+}
+
 export function getSidebarCollapsedPreference(): boolean {
   try {
     const value = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) ?? parseCookieValue(SIDEBAR_COLLAPSED_KEY);
@@ -357,6 +424,9 @@ export function getAppPreferences(): AppPreferencesSnapshot {
     sidebarOwnerFilter: getSidebarOwnerFilterPreference(),
     sidebarHideZero: getSidebarHideZeroPreference(),
     sidebarHideInitialData: getSidebarHideInitialDataPreference(),
+    sidebarShowFixedAssets: getSidebarShowFixedAssetsPreference(),
+    detailDateBackground: getDetailDateBackgroundPreference(),
+    compactRowHeight: getCompactRowHeightPreference(),
     sidebarCollapsed: getSidebarCollapsedPreference(),
   };
 }

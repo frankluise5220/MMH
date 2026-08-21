@@ -32,7 +32,7 @@ export type DefaultCategoryTemplate = {
 };
 
 type CategoryWriter = typeof prisma | Prisma.TransactionClient;
-export const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-08-20-category-order-and-remove-expense-repayment-v1";
+export const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-08-21-category-order-and-remove-expense-repayment-v2";
 const DELETED_DEFAULT_CATEGORY_KEY_PREFIX = "category_deleted_default_templates:";
 
 type DefaultCategoryTemplateChild = {
@@ -484,13 +484,21 @@ async function normalizeInvestmentTransactionCategories(writer: CategoryWriter, 
   };
 
   const assignments: Array<{ name: string; where: Prisma.TxRecordWhereInput }> = [
-    { name: getInvestmentCategoryName({ fundProductType: "fund", fundSubtype: "buy", source: "regular_invest" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: { in: ["fund", "money"] }, fundSubtype: { in: ["buy", "regular_invest"] }, source: "regular_invest" } },
+    { name: getInvestmentCategoryName({ fundProductType: "fund", fundSubtype: "buy", source: "regular_invest" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { source: "regular_invest", OR: [
+      { fundProductType: { in: ["fund", "money"] }, fundSubtype: { in: ["buy", "regular_invest"] } },
+      { fundProductType: null, fundSubtype: { in: ["buy", "regular_invest"] } },
+      { fundProductType: { in: ["fund", "money"] }, fundSubtype: null, regularInvestPlanId: { not: null } },
+      { fundProductType: null, fundSubtype: null, regularInvestPlanId: { not: null } },
+    ] } },
     { name: getInvestmentCategoryName({ fundProductType: "fund", fundSubtype: "buy_failed", source: "regular_invest_refund" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundSubtype: "buy_failed", source: "regular_invest_refund" } },
-    { name: getInvestmentCategoryName({ fundProductType: "fund", fundSubtype: "buy_failed" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundSubtype: "buy_failed" } },
+    { name: getInvestmentCategoryName({ fundProductType: "fund", fundSubtype: "buy_failed" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundSubtype: "buy_failed", OR: [{ source: { not: "regular_invest_refund" } }, { source: null }] } },
     { name: getInvestmentCategoryName({ fundProductType: "fund", fundSubtype: "redeem" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: { in: ["fund", "money"] }, fundSubtype: { in: ["redeem", "switch_out"] } } },
     { name: getInvestmentCategoryName({ fundProductType: "fund", fundSubtype: "dividend_cash" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: { in: ["fund", "money"] }, fundSubtype: "dividend_cash" } },
     { name: getInvestmentCategoryName({ fundProductType: "fund", fundSubtype: "dividend_reinvest" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: { in: ["fund", "money"] }, OR: [{ fundSubtype: "dividend_reinvest" }, { fundSubtype: "buy", source: "dividend" }] } },
-    { name: getInvestmentCategoryName({ fundProductType: "fund", fundSubtype: "buy" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: { in: ["fund", "money"] }, OR: [{ fundSubtype: "buy" }, { fundSubtype: null }] } },
+    { name: getInvestmentCategoryName({ fundProductType: "fund", fundSubtype: "buy" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: { in: ["fund", "money"] }, OR: [
+      { fundSubtype: "buy", OR: [{ source: { notIn: ["regular_invest", "dividend"] } }, { source: null }] },
+      { fundSubtype: null, OR: [{ source: { notIn: ["regular_invest", "dividend"] } }, { source: null }] },
+    ] } },
     { name: getInvestmentCategoryName({ fundProductType: "wealth", fundSubtype: "redeem" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: "wealth", fundSubtype: { in: ["redeem", "switch_out"] } } },
     { name: getInvestmentCategoryName({ fundProductType: "wealth", fundSubtype: "dividend_cash" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: "wealth", fundSubtype: "dividend_cash" } },
     { name: getInvestmentCategoryName({ fundProductType: "wealth", fundSubtype: "buy" }) ?? SYSTEM_OTHER_INVESTMENT_CATEGORY, where: { fundProductType: "wealth", OR: [{ fundSubtype: "buy" }, { fundSubtype: null }] } },

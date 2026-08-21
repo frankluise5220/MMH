@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
-import { addWorkdaysUtc } from "@/lib/date-utils";
+import { addWorkdaysUtc, isWithinRecentTradingDaysUtc } from "@/lib/date-utils";
 import { getFundNav, getLatestFundNav, refreshLatestFundNav, setFundNav } from "@/lib/fund/navCache";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { getFundConfirmDays } from "@/lib/fund/confirmDays";
@@ -10,6 +10,15 @@ import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { ensureFundTransactionCashFlowLinks, findFundTransactionForEntryId } from "@/lib/fund/transactions";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+
+/**
+ * GET /api/v1/fund/nav?code=&date=&accountId=&purpose=&applyDate=
+ * - Returns the exact requested NAV when available.
+ * - For recent buy applications (`purpose=buy`), a NAV from another date is
+ *   rejected so the client can leave NAV and units empty for startup retry.
+ * POST { entryId, date?, confirmDate?, amount?, fee? } backfills a fund entry.
+ * PUT { fundCode, date, nav } writes a manual NAV cache record.
+ */
 
 const toNum = (v: unknown) => { const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; };
 
@@ -114,6 +123,8 @@ export async function GET(req: NextRequest) {
   const fundCode = searchParams.get("code")?.trim();
   const date = searchParams.get("date")?.trim();
   const accountId = searchParams.get("accountId")?.trim() || undefined;
+  const purpose = searchParams.get("purpose")?.trim();
+  const applyDate = searchParams.get("applyDate")?.trim();
 
   if (!fundCode) {
     return NextResponse.json({ ok: false, code: "FUND_CODE_REQUIRED", error: "缺少基金代码" }, { status: 400 });
@@ -121,11 +132,26 @@ export async function GET(req: NextRequest) {
 
   try {
     if (date) {
+      const account = accountId
+        ? await prisma.account.findUnique({ where: { id: accountId }, select: { tradingCalendar: true } })
+        : null;
+      const recentBuyWithoutExactNav = purpose === "buy" && !!applyDate && isWithinRecentTradingDaysUtc(
+        applyDate,
+        new Date().toISOString().slice(0, 10),
+        2,
+        account?.tradingCalendar ?? "cn_fund",
+      );
       // Use getNav() (cache -> Eastmoney -> latest NAV fallback chain) so missing data for
       // future dates or non-trading days does not error directly
       const data = await getNav(fundCode, date, accountId);
       if (!data) {
         return NextResponse.json({ ok: false, code: "NAV_NOT_FOUND", error: `未找到基金代码 ${fundCode} 的净值，请确认代码是否正确` }, { status: 404 });
+      }
+      if (recentBuyWithoutExactNav && data.date !== date) {
+        return NextResponse.json(
+          { ok: false, code: "EXACT_NAV_UNAVAILABLE", error: "Exact NAV is not available yet; buy units were not calculated." },
+          { status: 404 },
+        );
       }
       return NextResponse.json({ ok: true, ...data });
     }

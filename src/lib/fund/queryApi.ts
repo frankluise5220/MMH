@@ -2,7 +2,7 @@
  * Unified fund NAV query entry point.
  *
  * Two calling modes:
- * 1. Query latest NAV: omit dateStr → try all APIs by priority and return the latest available NAV
+ * 1. Query latest NAV: omit dateStr → try up to three APIs by priority and return the latest available NAV
  * 2. Query a specific date: pass dateStr → only use APIs that support date filtering (baseUrl contains the {date} placeholder),
  *    skipping APIs without date filtering (e.g. eastmoney realtime estimate) to avoid returning a NAV for the wrong date
  *
@@ -41,6 +41,8 @@ const headers = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
   Referer: "http://fundf10.eastmoney.com/",
 };
+
+const MAX_FUND_QUERY_API_ATTEMPTS = 3;
 
 async function fetchFromUrl(url: string, parser: (data: any) => NavResult): Promise<NavResult> {
   try {
@@ -395,13 +397,13 @@ export async function queryFundNav(
     }
   }
 
-  // Try each API in priority order
-  for (const api of orderedApis) {
-    const parser = PARSERS[api.code];
-    if (!parser) continue;
+  // Try at most three valid APIs after account and institution priority rules are applied.
+  const candidateApis = orderedApis
+    .filter((api) => PARSERS[api.code] && (!dateStr || api.baseUrl.includes("{date}")))
+    .slice(0, MAX_FUND_QUERY_API_ATTEMPTS);
 
-    // When querying a specific date, skip APIs that do not support date filtering (baseUrl without the {date} placeholder)
-    if (dateStr && !api.baseUrl.includes("{date}")) continue;
+  for (const api of candidateApis) {
+    const parser = PARSERS[api.code]!;
 
     let url = api.baseUrl;
     url = url.replaceAll("{code}", fundCode);
@@ -411,8 +413,8 @@ export async function queryFundNav(
     if (result) return result;
   }
 
-  // Exact-date query failed; try the wider-range historical NAV query
-  if (dateStr) {
+  // Exact-date query failed; use the wider-range fallback only if it fits the same request budget.
+  if (dateStr && candidateApis.length < MAX_FUND_QUERY_API_ATTEMPTS) {
     const historicalResult = await queryHistoricalNav(fundCode, dateStr);
     if (historicalResult) return historicalResult;
   }

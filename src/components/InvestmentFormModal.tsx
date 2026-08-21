@@ -5,6 +5,7 @@ import { CalcInput } from "./CalcInput";
 import { DateStepper } from "./DateStepper";
 import { NestedAddModal } from "./EntityCreateForm";
 import { HoldingPicker } from "./HoldingPicker";
+import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { useI18n } from "@/lib/i18n";
@@ -46,12 +47,16 @@ function addFundTradingDays(date: string, days: number) {
   return days > 0 ? addTradingDaysUtc(date, days, "cn_fund") : date;
 }
 
-function buildFundNavUrl(code: string, date: string, accountId?: string) {
+function buildFundNavUrl(code: string, date: string, accountId?: string, applyDate?: string, subtype?: FundSubtype) {
   const params = new URLSearchParams({
     code,
     date,
   });
   if (accountId) params.set("accountId", accountId);
+  if (subtype === "buy" && applyDate) {
+    params.set("purpose", "buy");
+    params.set("applyDate", applyDate);
+  }
   return `/api/v1/fund/nav?${params.toString()}`;
 }
 
@@ -136,6 +141,7 @@ type LinkedCandidateEntry = {
   fundConfirmDate?: string | null;
   fundArrivalDate?: string | null;
   fundCode: string;
+  fundName?: string | null;
   fundSubtype: string;
   fundUnits: number | null;
   source: string | null;
@@ -232,6 +238,8 @@ export function InvestmentFormModal({
   fundUnitsDecimals?: number | null;
 }) {
   const { t, language } = useI18n();
+  const parentModalZIndex = useModalLayerZIndex();
+  const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const fundUnitsDecimals = normalizeFundUnitsDecimals(fundUnitsDecimalsProp, 2);
   const formatUnits = (value: number) => formatFundUnitsValue(value, fundUnitsDecimals);
@@ -734,25 +742,32 @@ export function InvestmentFormModal({
     if (mode === "edit") editAutoNavEnabledRef.current = true;
   }
 
-  function changeApplyDate(val: string) {
-    enableEditAutoNav();
-    setApplyDate(val);
-  }
-
-  function changeConfirmDate(val: string) {
-    enableEditAutoNav();
-    setConfirmDate(val);
-  }
-
-  function changeFundCode(val: string) {
-    enableEditAutoNav();
+  function clearUnavailableNav() {
     lastNavFetchKey.current = "";
     setNav("");
     setNavActualDate(null);
     navEditedRef.current = false;
     if (isBuyLike(subtype)) {
+      setUnits("");
       unitsEditedRef.current = false;
     }
+  }
+
+  function changeApplyDate(val: string) {
+    enableEditAutoNav();
+    clearUnavailableNav();
+    setApplyDate(val);
+  }
+
+  function changeConfirmDate(val: string) {
+    enableEditAutoNav();
+    clearUnavailableNav();
+    setConfirmDate(val);
+  }
+
+  function changeFundCode(val: string) {
+    enableEditAutoNav();
+    clearUnavailableNav();
     setFundCode(val);
   }
 
@@ -1159,9 +1174,13 @@ export function InvestmentFormModal({
     window.dispatchEvent(new CustomEvent("mmh:create-transaction:success", { detail: { requestId } }));
   }
 
-  // For redeems, replay units available as of the arrival-date basis; exclude the current redeem entry in edit mode so it is not deducted by itself.
+  const isFundHoldingAsOfMode =
+    (productType === "fund" || productType === "money") &&
+    (isRedeemLike(subtype) || isDividend(subtype));
+
+  // Replay fund units available on the application date for redemption and dividend flows.
   const holdingsAsOfDate = useMemo(() => {
-    if (!allEntries || !isRedeemLike(subtype) || !applyDate) return null;
+    if (!allEntries || !isFundHoldingAsOfMode || !applyDate) return null;
     const investmentAccountId = (toAccountId || defaultAccountId || "").trim();
     const excludedEntryIds = new Set<string>();
     if (mode === "edit" && currentEditEntry) {
@@ -1221,7 +1240,7 @@ export function InvestmentFormModal({
       map.set(row.code, Math.max(0, nextUnits));
     }
     return map;
-  }, [allEntries, applyDate, currentEditEntry, defaultAccountId, fundUnitsDecimals, mode, subtype, toAccountId]);
+  }, [allEntries, applyDate, currentEditEntry, defaultAccountId, fundUnitsDecimals, isFundHoldingAsOfMode, mode, subtype, toAccountId]);
 
   const isFundRedeemAsOfMode =
     isRedeemLike(subtype) &&
@@ -1263,17 +1282,26 @@ export function InvestmentFormModal({
     }));
   }, [holdingUnitsByFund, holdings, redeemAvailableUnitsByFund]);
 
-  const redeemFundOptions = useMemo<SmartSelectOption[]>(() => {
-    if (!isFundRedeemAsOfMode || !redeemAvailableUnitsByFund) return [];
-    const names = new Map((holdings ?? []).map((holding) => [holding.fundCode, holding.name]));
+  const holdingFundOptions = useMemo<SmartSelectOption[]>(() => {
+    if (!isFundHoldingAsOfMode || !redeemAvailableUnitsByFund) return [];
+    const names = new Map<string, string>();
+    for (const holding of holdings ?? []) {
+      if (holding.name?.trim()) names.set(holding.fundCode, holding.name.trim());
+    }
+    for (const entry of allEntries ?? []) {
+      if (entry.fundCode?.trim() && entry.fundName?.trim() && !names.has(entry.fundCode.trim())) {
+        names.set(entry.fundCode.trim(), entry.fundName.trim());
+      }
+    }
     if (fundCode.trim() && fundName.trim() && !names.has(fundCode.trim())) {
       names.set(fundCode.trim(), fundName.trim());
     }
-    const optionCodes = new Set([
-      ...Array.from(redeemAvailableUnitsByFund.keys()),
-      ...Array.from(holdingUnitsByFund.keys()),
-      ...(fundCode.trim() ? [fundCode.trim()] : []),
-    ]);
+    const optionCodes = new Set(
+      Array.from(redeemAvailableUnitsByFund.entries())
+        .filter(([, units]) => units > 0.0001)
+        .map(([code]) => code),
+    );
+    if (mode === "edit" && fundCode.trim()) optionCodes.add(fundCode.trim());
     return Array.from(optionCodes)
       .map((code) => {
         const availableUnits = redeemAvailableUnitsByFund.get(code) ?? 0;
@@ -1282,7 +1310,7 @@ export function InvestmentFormModal({
           code,
           availableUnits,
           currentUnits,
-          visible: availableUnits > 0.0001 || currentUnits > 0.0001 || code === fundCode.trim(),
+          visible: availableUnits > 0.0001 || code === fundCode.trim(),
         };
       })
       .filter((item) => item.visible)
@@ -1294,13 +1322,13 @@ export function InvestmentFormModal({
         return {
           id: code,
           label: names.get(code)?.trim() || code,
-          subLabel: `${code} · ${t("investForm.redeemOption.dateRemaining", { units: formatFundUnitsValue(displayAvailable, fundUnitsDecimals) })}${currentText}`,
+          subLabel: `${code} · ${t("investForm.redeemOption.dateRemaining", { units: formatFundUnitsValue(displayAvailable, fundUnitsDecimals) })}${isFundRedeemAsOfMode ? currentText : ""}`,
         };
       })
       .sort((left, right) => left.label.localeCompare(right.label, language));
-  }, [fundCode, fundName, fundUnitsDecimals, holdingUnitsByFund, holdings, isFundRedeemAsOfMode, redeemAvailableUnitsByFund, t]);
+  }, [allEntries, fundCode, fundName, fundUnitsDecimals, holdingUnitsByFund, holdings, isFundHoldingAsOfMode, isFundRedeemAsOfMode, language, mode, redeemAvailableUnitsByFund, t]);
 
-  function selectRedeemFund(code: string) {
+  function selectHoldingFund(code: string) {
     const nextCode = code.trim();
     changeFundCode(nextCode);
     setHoldingSearch("");
@@ -1313,8 +1341,11 @@ export function InvestmentFormModal({
     const holding = holdings?.find((item) => item.fundCode === nextCode);
     const availableUnits = redeemAvailableUnitsByFund?.get(nextCode) ?? 0;
     const currentUnits = holdingUnitsByFund.get(nextCode) ?? 0;
-    setFundName(holding?.name ?? "");
-    setUnits(availableUnits > 0.0001 ? formatUnits(availableUnits) : currentUnits > 0.0001 ? formatUnits(currentUnits) : "");
+    const historicalName = (allEntries ?? []).find((entry) => entry.fundCode === nextCode && entry.fundName?.trim())?.fundName?.trim();
+    setFundName(holding?.name ?? historicalName ?? "");
+    if (isFundRedeemAsOfMode) {
+      setUnits(availableUnits > 0.0001 ? formatUnits(availableUnits) : currentUnits > 0.0001 ? formatUnits(currentUnits) : "");
+    }
   }
 
   function findFundNameFromHoldings(code: string) {
@@ -1710,6 +1741,10 @@ export function InvestmentFormModal({
   // The arrival date is a terminal field; it only back-fills arrivalDays and must not drive confirmDate.
   useEffect(() => {
     if (mode === "edit" && !editAutoNavEnabledRef.current) return;
+    if (isDividend(subtype) && applyDate && !arrivalDateEditedRef.current) {
+      setArrivalDate(applyDate);
+      return;
+    }
     if ((isBuyLike(subtype) || isRedeemLike(subtype)) && applyDate && confirmDays >= 0) {
       const nextConfirmDate = addFundTradingDays(applyDate, confirmDays);
       setConfirmDate(nextConfirmDate);
@@ -1769,11 +1804,11 @@ export function InvestmentFormModal({
     // Debounce NAV fetching to avoid consecutive requests when date/code link.
     if (navDebounce.current) clearTimeout(navDebounce.current);
     navDebounce.current = setTimeout(() => {
-      const fetchKey = `${toAccountId}:${code}:${confirmDate}`;
+      const fetchKey = `${toAccountId}:${code}:${applyDate}:${confirmDate}:${subtype}`;
       if (lastNavFetchKey.current === fetchKey) return;
       lastNavFetchKey.current = fetchKey;
       setNavLoading(true);
-      fetch(buildFundNavUrl(code, confirmDate, toAccountId))
+      fetch(buildFundNavUrl(code, confirmDate, toAccountId, applyDate, subtype))
         .then(r => r.json())
         .then(d => {
           if (d.ok && d.nav) {
@@ -1798,7 +1833,7 @@ export function InvestmentFormModal({
         .finally(() => setNavLoading(false));
     }, 500);
     return () => { if (navDebounce.current) clearTimeout(navDebounce.current); };
-  }, [amount, arrivalAmount, buyResultStatus, confirmDate, fee, feeEdited, feeRate, fundCode, mode, productType, subtype, toAccountId]);
+  }, [amount, applyDate, arrivalAmount, buyResultStatus, confirmDate, fee, feeEdited, feeRate, fundCode, mode, productType, subtype, toAccountId]);
 
   function resetForCreate(keepSubtype = false, options?: { preferDefaults?: boolean }) {
     // Read current fund from URL at click time (defaults prop may be stale from SSR)
@@ -1907,7 +1942,7 @@ export function InvestmentFormModal({
     const fetchDate = confirmDate || applyDate;
     setNavLoading(true);
     try {
-      const res = await fetch(buildFundNavUrl(fundCode, fetchDate, toAccountId));
+      const res = await fetch(buildFundNavUrl(fundCode, fetchDate, toAccountId, applyDate, subtype));
       const data = await res.json();
       if (data.ok && data.nav) {
         const nextNav = String(data.nav);
@@ -1937,9 +1972,11 @@ export function InvestmentFormModal({
           }
         }
       } else {
+        clearUnavailableNav();
         window.alert(data.error ?? t("investForm.alert.navFetchFailed", { code: fundCode, date: fetchDate }));
       }
     } catch (err) {
+      clearUnavailableNav();
       window.alert(err instanceof Error ? err.message : t("investForm.alert.navFetchError"));
     } finally {
       setNavLoading(false);
@@ -1989,7 +2026,7 @@ export function InvestmentFormModal({
     const finalFundCode = productType === "metal" ? "" : fundCode.trim();
     const finalFundName = productType === "metal" ? "" : fundName.trim();
 
-    if (isFundRedeemAsOfMode && (mode === "create" || redeemAvailableUnitsByFund)) {
+    if (isFundHoldingAsOfMode && (mode === "create" || redeemAvailableUnitsByFund)) {
       const availableUnits = redeemAvailableUnitsByFund?.get(finalFundCode) ?? 0;
       const currentUnits = holdingUnitsByFund.get(finalFundCode) ?? 0;
       const redeemLimitUnits = availableUnits > 0.0001 ? availableUnits : currentUnits;
@@ -1997,11 +2034,11 @@ export function InvestmentFormModal({
         window.alert(t("investForm.alert.selectRedeemFund"));
         return;
       }
-      if (p(units) <= 0) {
+      if (isFundRedeemAsOfMode && p(units) <= 0) {
         window.alert(t("investForm.alert.redeemUnitsPositive"));
         return;
       }
-      if (p(units) > redeemLimitUnits + 0.0001) {
+      if (isFundRedeemAsOfMode && p(units) > redeemLimitUnits + 0.0001) {
         window.alert(t("investForm.alert.redeemUnitsExceed", { units: formatUnits(redeemLimitUnits) }));
         return;
       }
@@ -2013,7 +2050,9 @@ export function InvestmentFormModal({
       : (subtype === "dividend_reinvest" && !(finalAmount > 0) ? 0 : finalAmount);
 
     const isCreateMode = mode === "create";
-    const shouldWriteConfirmRule = isCreateMode || confirmDaysEdited || arrivalDaysEditedRef.current;
+    const shouldWriteConfirmRule =
+      !isDividend(subtype) &&
+      (isCreateMode || confirmDaysEdited || arrivalDaysEditedRef.current);
     const confirmRuleBody =
       productType !== "metal" && fundCode.trim() && confirmDays >= 0 && shouldWriteConfirmRule
         ? {
@@ -2037,8 +2076,8 @@ export function InvestmentFormModal({
     }
 
     const formData = new FormData();
-    // Cash dividend uses the arrival date as the record date; buy refunds create a separate refund entry from the buy form.
-    const effectiveDate = isDividend(subtype) ? (arrivalDate || applyDate) : applyDate;
+    // The business date is the application date; arrivalDate remains the cash-side arrival date.
+    const effectiveDate = applyDate;
     const submitSubtype: FundSubtype = subtype;
     const submitEntry = mode === "edit" ? (eventEditEntry ?? entry ?? null) : null;
     const submitSource = mode === "edit" ? (submitEntry?.source ?? "") : "";
@@ -2185,7 +2224,7 @@ export function InvestmentFormModal({
           // Preserve amount and fund, clear nav/units (user re-fetches or enters nav for new date)
           if (amount.trim() && fundCode.trim()) {
             // Check if nav is available in cache for the new date via API
-            fetch(buildFundNavUrl(fundCode.trim(), nextDate, toAccountId))
+            fetch(buildFundNavUrl(fundCode.trim(), nextDate, toAccountId, nextDate, subtype))
               .then(r => r.json())
               .then(d => {
                 if (d.ok && d.nav) {
@@ -2292,11 +2331,11 @@ export function InvestmentFormModal({
   );
 
   return (
-    <>
+    <ModalLayerProvider value={modalZIndex}>
       {!hideTrigger ? triggerButton : null}
 
       {open && typeof document !== "undefined" ? createPortal(
-        <div className="app-modal-backdrop z-[1000]">
+        <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
           <div className="app-modal-panel max-w-2xl">
               <div className="modal-header shrink-0">
                 <div className="text-sm font-semibold text-slate-800">
@@ -2332,6 +2371,17 @@ export function InvestmentFormModal({
 
               {isDividend(subtype) ? (
                 <>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">{t("investForm.applyDate")}</div>
+                      <DateStepper value={applyDate} onChange={changeApplyDate} />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">{t("investForm.arrivalDate")}</div>
+                      <DateStepper value={arrivalDate} onChange={onArrivalDateChange} />
+                    </div>
+                  </div>
+
                   {subtype === "dividend_reinvest" && investmentAccounts && investmentAccounts.length > 0 && (
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">{productAccountLabel}</div>
@@ -2339,19 +2389,8 @@ export function InvestmentFormModal({
                     </div>
                   )}
 
-                  {subtype === "dividend_reinvest" && (
-                    <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">{t("investForm.arrivalDate")}</div>
-                      <DateStepper value={arrivalDate} onChange={onArrivalDateChange} />
-                    </div>
-                  )}
-
                   {subtype === "dividend_cash" && (
                     <>
-                      <div className="space-y-1">
-                          <div className="text-xs font-medium text-slate-600">{t("investForm.arrivalDate")}</div>
-                        <DateStepper value={arrivalDate} onChange={onArrivalDateChange} />
-                      </div>
                       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         {investmentAccounts && investmentAccounts.length > 0 && (
                           <div className="space-y-1">
@@ -2369,7 +2408,19 @@ export function InvestmentFormModal({
                     </>
                   )}
 
-                  {productType === "metal" ? renderMetalFields() : showCode && effectiveHoldings && effectiveHoldings.length > 0 ? (
+                  {productType === "metal" ? renderMetalFields() : isFundHoldingAsOfMode && redeemAvailableUnitsByFund ? (
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">{t("txForm.fund")}</div>
+                      <SmartSelect
+                        mode="single"
+                        value={fundCode}
+                        onChange={selectHoldingFund}
+                        options={holdingFundOptions}
+                        placeholder={holdingFundOptions.length > 0 ? t("investForm.selectHoldingFund") : t("investForm.noHoldingFundOnDate")}
+                        behavior={{ search: true, clearable: false, density: "compact" }}
+                      />
+                    </div>
+                  ) : showCode && effectiveHoldings && effectiveHoldings.length > 0 ? (
                     <HoldingPicker
                       holdings={effectiveHoldings}
                       fundCode={fundCode}
@@ -2522,9 +2573,9 @@ export function InvestmentFormModal({
                       <SmartSelect
                         mode="single"
                         value={fundCode}
-                        onChange={selectRedeemFund}
-                        options={redeemFundOptions}
-                        placeholder={redeemFundOptions.length > 0 ? t("investForm.selectHoldingFund") : t("investForm.noRedeemableFund")}
+                        onChange={selectHoldingFund}
+                        options={holdingFundOptions}
+                        placeholder={holdingFundOptions.length > 0 ? t("investForm.selectHoldingFund") : t("investForm.noRedeemableFund")}
                         behavior={{ search: true, clearable: false, density: "compact" }}
                       />
                     </div>
@@ -2625,7 +2676,11 @@ export function InvestmentFormModal({
                               recalculateFeeFromRate: !feeEdited,
                             });
                           }}
-                          placeholder="1.2345"
+                          placeholder={navLoading
+                            ? t("investForm.fetching")
+                            : productType !== "metal" && fundCode.trim()
+                              ? t("investForm.navUnavailable")
+                              : "1.2345"}
                           style={{ caretColor: "var(--foreground)" }}
                           className="form-input caret-slate-800"
                         />
@@ -2810,7 +2865,11 @@ export function InvestmentFormModal({
                         calculateBuyUnits(amount, fee, arrivalAmount, nextNav);
                       }
                     }}
-                    placeholder="1.2345"
+                    placeholder={navLoading
+                      ? t("investForm.fetching")
+                      : productType !== "metal" && fundCode.trim()
+                        ? t("investForm.navUnavailable")
+                        : "1.2345"}
                     className="form-input"
                   />
                 </div>
@@ -2981,6 +3040,6 @@ export function InvestmentFormModal({
         />,
         document.body,
       ) : null}
-    </>
+    </ModalLayerProvider>
   );
 }

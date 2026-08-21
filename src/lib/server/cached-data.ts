@@ -27,6 +27,7 @@ import {
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 import { readableTagWhere } from "@/lib/server/tag-scope";
 import { categoryOrderBy } from "@/lib/category-order";
+import { DETAIL_ALL_PAGE_SIZE } from "@/lib/detail-pagination-preference";
 
 // ── Types ──
 
@@ -124,7 +125,7 @@ async function _loadEntriesForAccount(
       },
     },
     orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-    take: 5000,
+    take: DETAIL_ALL_PAGE_SIZE,
   });
 }
 
