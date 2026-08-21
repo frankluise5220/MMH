@@ -4,7 +4,7 @@
     {
       "id": "mmh",
       "name": "MMH",
-      "version": "0.1.38",
+      "version": "0.1.39",
       "platform": "x86",
       "platforms": [
         "x86",
@@ -12,16 +12,16 @@
       ],
       "author": "frankluise5220",
       "desc": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
-      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.38/mmh-fnos-v0.1.38-x86_64.fpk",
+      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.39/mmh-fnos-v0.1.39-x86_64.fpk",
       "download_urls": {
-        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.38/mmh-fnos-v0.1.38-x86_64.fpk",
-        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.38/mmh-fnos-v0.1.38-arm64.fpk"
+        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.39/mmh-fnos-v0.1.39-x86_64.fpk",
+        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.39/mmh-fnos-v0.1.39-arm64.fpk"
       },
-      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.38",
+      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.39",
       "repo": "https://github.com/frankluise5220/MMH",
       "screenshots": [],
       "tags": "财务,记账",
-      "changelog": "## 本次更新\n\n- AI 导入与对话、邮件导入配置继续增强。\n- 分类排序和统一选择交互继续优化。\n- 基金确认日、费率、定投相关流程进一步整合。\n- 股票与固定资产相关流程进一步整合。\n- 表格、侧栏、详情页和导入预览的联动体验继续打磨。\n\n## 手机端使用建议\n\n- 手机用户无需安装即可直接使用浏览器访问 MMH 服务地址（Web 版已针对手机浏览器优化，响应式布局）：日常查看、快速记账、概览、基金/股票持仓都可以在手机上完成。\n- 如果只需要日常查看和快速记账，直接把 Web 版添加到手机桌面即可。\n\n## 安装 / 更新说明\n\n- docker 版：[NAS Docker 安装说明](https://github.com/frankluise5220/MMH/blob/main/docs/nas-install-manual.md)\n- fnOS（官方 FPK）：应用中心或 FN 软仓源覆盖升级（x86_64 / arm64 两个 .fpk 随 Release 自动构建）。\n- fnOS（FN 软仓客户端安装）：先下载 [FN 软仓客户端](https://gitee.com/hhxs2025/fn-appstores/releases/download/2.4.0/fn-appstores-client-2.4.0-x86.fpk)，即可查询安装/覆盖升级 MMH。\n- Android：本次不发布 APK。"
+      "changelog": "## 本次更新\n\n- AI 导入与对话能力继续增强，邮件导入配置也进一步完善。\n- 分类排序和统一选择交互继续优化。\n- 基金确认日、费率、定投相关流程进一步整合。\n- 股票与固定资产相关流程进一步整合。\n- 表格、侧栏、详情页和导入预览的联动体验继续打磨。\n\n## 手机端使用建议\n\n- 手机用户无需安装即可直接使用浏览器访问 MMH 服务地址（Web 版已针对手机浏览器优化，响应式布局）：日常查看、快速记账、概览、基金/股票持仓都可以在手机上完成。\n- 如果只需要日常查看和快速记账，直接把 Web 版添加到手机桌面即可。\n\n## 安装 / 更新说明\n\n- docker 版：[NAS Docker 安装说明](https://github.com/frankluise5220/MMH/blob/main/docs/nas-install-manual.md)\n- fnOS（官方 FPK）：应用中心或 FN 软仓源覆盖升级（x86_64 / arm64 两个 .fpk 随 Release 自动构建）。\n- fnOS（FN 软仓客户端安装）：先下载 [FN 软仓客户端](https://gitee.com/hhxs2025/fn-appstores/releases/download/2.4.0/fn-appstores-client-2.4.0-x86.fpk)，即可查询安装/覆盖升级 MMH。\n- 群晖 DSM（官方 SPK）：x86_64 / arm64 两个 .spk 已随本次 Release 一起发布，欢迎安装后帮忙测试；我这边没有群晖环境，暂时无法自测。\n- Android：本次不发布 APK。"
     }
   ]
 }
