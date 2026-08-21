@@ -66,21 +66,19 @@ SQLite 恢复兼容建表时，`TxRecord` 只是 Prisma 模型名，实际表名
 
 ### `docs/nas-install-manual.md`
 
-用途：用户在 NAS 上安装和更新 MMH 的说明。
+用途：用户在普通 NAS 和飞牛 fnOS 上安装和更新 MMH 的说明。
 
 记录内容：
 
-- Docker Compose 安装方式。
-- GitHub/GHCR 正式源，以及 `fnvps` 自建 Docker Registry 镜像源（`fnapp.floatingice.win:5000`，需在 NAS Docker 配置 insecure-registries）。
-- 可选的本地测试源写法。
+- 飞牛 fnOS 的 FN 软仓安装/更新方式、手动 `.fpk` 安装方式和覆盖升级注意事项。
+- 普通 NAS 的 Docker 图形界面安装方式和 Docker 命令行安装方式。
 - 环境变量、端口、数据库、更新命令、常见问题。
 
 更新时机：
 
-- `docker-compose.yml`、`Dockerfile`、镜像名、端口、环境变量发生变化。
+- `docker-compose.yml`、`Dockerfile`、镜像名、端口、环境变量、飞牛 `.fpk` 命名或软仓源地址发生变化。
 - 安装流程、更新流程、系统更新页面能力发生变化。
 - 发布方式从本地测试源切换或同步到 GitHub/GHCR。
-- 镜像源列表（updater `scripts/mmh-updater-server.mjs`、前端系统更新页）或 VPS registry 部署变化。
 
 ### `docs/fnos-package-plan.md`
 

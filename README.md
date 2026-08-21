@@ -12,40 +12,43 @@
 
 ### 产品定位
 
-MoneyMoneyHome（MMH）是一个面向家庭和个人的本地优先智能财务系统。它把日常记账、账户资产、信用卡账单、基金投资、保险保单、房贷还款、往来款、计划任务、邮箱账单识别和多端 API 接入放进同一套可长期维护的家庭财务工作台。
+MoneyMoneyHome（MMH）是一个面向家庭和个人的本地优先智能财务系统。它把日常记账、账户资产、信用卡账单、基金投资、上市证券、固定资产、保险保单、房贷还款、往来款、计划任务、邮箱账单识别和多端 API 接入放进同一套可长期维护的家庭财务工作台。
 
 MMH 不是把家庭账本交给外部平台托管的 SaaS。它更适合部署在自己的 NAS、家庭服务器或本地 Docker 环境中，让敏感财务数据留在自己掌握的地方。
 
-### 核心能力
+你可以通过账单导入、明细核对、余额校准和报表查看，把账户记录与实际余额对齐，享用轻松对账的快乐。
 
-- **本地优先与自托管**：支持 Docker / NAS 部署，日常数据保存在自己的环境中。
-- **完整账户视图**：统一管理现金、借记卡、信用卡、电子钱包、存款、基金、理财、保险和往来款。
-- **信用卡账单管理**：支持账单日、还款日、交易日、入账日、账单期和还款状态。
-- **基金投资工作流**：支持基金交易、净值缓存、持仓重算、确认日、到账日、定投计划和收益统计。
-- **保险与保单管理**：维护保险产品、保单、投保记录、缴费计划、现金价值和保险概览。
-- **计划任务自动化**：可处理基金定投、转账、还贷款、保险缴费等周期性任务。
-- **AI 账单识别导入**：面向邮箱账单、文本账单、PDF 账单和截图账单，识别后进入可预览、可编辑、可批量导入的流程。
-- **多端统一语义**：Web 是主要工作台，移动端和开放 API 共享同一套数据含义与计算口径。
+### 你可以用它做什么
+
+- **把家庭财务放回自己手里**：部署在自己的 NAS、家庭服务器或 Docker 环境中，日常数据保存在自己的环境里。
+- **看清完整资产和负债**：把现金、银行卡、信用卡、基金、理财、上市证券、固定资产、保险、房贷和往来款放到同一套账里看。
+- **更轻松地对账**：通过账单导入、明细核对、余额校准和报表查看，把账户记录与实际余额对齐。
+- **减少重复录入**：用计划任务处理定投、转账、还贷款、保险缴费等周期事项。
+- **维护复杂资产变化**：跟踪基金确认/到账、股票买卖和分红、固定资产投入和估值、保险缴费和现金价值。
+- **从账单变成标准记录**：从邮箱、文本、PDF 或截图中识别账单，预览编辑后批量导入。
+- **在不同设备上使用同一本账**：Web 适合细致整理和核对，移动端适合日常查看和快速录入，开放 API 方便接入其他客户端。
 
 ### 它解决什么问题
 
 家庭财务数据通常分散在银行卡、信用卡、基金平台、贷款合同、保险合同、邮箱账单和手工表格里。时间久了，最麻烦的并不是记一笔账，而是保持统一口径：
 
 - 多账户、多家庭成员、多机构之间缺少统一资产视图。
-- 信用卡账单、基金定投、房贷、保险缴费和往来款很难长期追踪。
+- 信用卡账单、基金定投、股票交易、固定资产投入、房贷、保险缴费和往来款很难长期追踪。
 - 普通记账工具可以录入流水，但很难稳定维护持仓、账单期、净值、还款计划和保单计划。
 - 外部云平台虽然方便，但家庭财务数据不一定适合托管出去。
 
 MMH 的目标是建立一个可以长期维护的家庭财务底座：高频录入要快，复杂资产要算得清楚，同一笔数据在不同页面和客户端看到的含义一致。
 
-### 核心模块
+### 功能模块
 
 | 模块 | 说明 |
 | --- | --- |
-| 概览 | 汇总日常账户、信用卡、投资、保险、往来款和关键指标。 |
+| 概览 | 汇总日常账户、信用卡、投资、上市证券、固定资产、保险、往来款和关键指标。 |
 | 账户 | 管理现金、借记卡、电子钱包、存款、投资账户和账户归属。 |
 | 信用卡 | 维护信用卡账户、账单周期、交易明细、入账日期和还款记录。 |
 | 投资基金 | 管理基金交易、净值缓存、持仓、份额、成本、收益和确认/到账规则。 |
+| 上市证券 | 管理股票账户、证券资金账户、买卖交易、分红、费用、收盘价和持仓盈亏。 |
+| 固定资产 | 管理房产等固定资产、装修投入、资产估值、关联流水和资产明细。 |
 | 保险 | 维护保险产品、保单、投保记录、缴费计划、现金价值和保险概览。 |
 | 往来款 | 跟踪代付、借入、借出、还款和与往来对象相关的余额结果。 |
 | 计划任务 | 管理定投、还款、转账、缴费等周期任务，减少重复录入。 |
@@ -76,54 +79,49 @@ sudo docker compose pull app
 sudo docker compose up -d app
 ```
 
-完整说明见 [NAS Docker 安装与更新](docs/nas-install-manual.md)。
-
-### 产品方向
-
-- Web 是主要的细致工作台，负责复杂表格、资产核对、批量导入和系统设置。
-- 移动端负责日常查看、快速录入、摘要浏览和轻量编辑。
-- AI 识别、邮箱账单解析、批量记录、定期计划和开放 API 是长期重点能力。
-- 财务计算、日期归属、金额正负、涨跌颜色、账户选择和基金计算应保持统一口径。
-- 产品界面应紧凑、清晰、稳定，适合大量数字和大量记录的长期维护。
+完整说明见 [NAS / 飞牛 fnOS 安装与更新](docs/nas-install-manual.md)。
 
 ## English
 
 ### Product Positioning
 
-MoneyMoneyHome (MMH) is a local-first intelligent finance system for households and individuals. It brings daily bookkeeping, account assets, credit card bills, fund investments, insurance policies, mortgage repayment, settlements, scheduled tasks, email bill recognition, and multi-client APIs into one durable household finance workspace.
+MoneyMoneyHome (MMH) is a local-first intelligent finance system for households and individuals. It brings daily bookkeeping, account assets, credit card bills, fund investments, listed securities, fixed assets, insurance policies, mortgage repayment, settlements, scheduled tasks, email bill recognition, and multi-client APIs into one durable household finance workspace.
 
 MMH is not a SaaS product that asks you to hand your family ledger to an external platform. It is designed for your own NAS, home server, or local Docker environment, so sensitive financial data can stay under your control.
 
-### Highlights
+You can use statement import, detail review, balance reconciliation, and reports to align account records with actual balances, making reconciliation feel lighter and calmer.
 
-- **Local-first and self-hosted**: Run it with Docker on a NAS or home server while keeping daily data in your own environment.
-- **Complete account view**: Manage cash, debit cards, credit cards, e-wallets, deposits, funds, wealth products, insurance, and settlements together.
-- **Credit card bill management**: Track statement dates, due dates, transaction dates, posting dates, statement months, and repayment status.
-- **Fund investment workflow**: Handle fund transactions, NAV cache, holding recalculation, confirmation dates, arrival dates, recurring investment plans, and return statistics.
-- **Insurance and policy management**: Maintain insurance products, policies, purchase records, payment plans, cash value, and insurance overviews.
-- **Scheduled automation**: Run recurring tasks such as fund investments, transfers, loan repayment, and insurance premium payments.
-- **AI bill recognition and import**: Recognize email bills, text bills, PDF statements, and screenshots, then review, edit, and batch import structured records.
-- **Unified meaning across clients**: The Web app is the main workspace, while mobile apps and open APIs share the same data meaning and calculation rules.
+### What You Can Do
+
+- **Keep household finance under your control**: Run MMH on your own NAS, home server, or Docker environment while keeping daily data in your own environment.
+- **See assets and liabilities together**: View cash, bank cards, credit cards, funds, wealth products, listed securities, fixed assets, insurance, mortgages, and settlements in one ledger.
+- **Reconcile with less friction**: Use statement import, detail review, balance reconciliation, and reports to align account records with actual balances.
+- **Reduce repeated entry**: Use scheduled tasks for recurring investments, transfers, loan repayment, insurance premium payments, and other periodic work.
+- **Maintain complex asset changes**: Track fund confirmation/arrival, stock trades and dividends, fixed asset investments and valuations, insurance premiums, and cash value.
+- **Turn bills into standard records**: Recognize bills from email, text, PDF, or screenshots, then review, edit, and batch import them.
+- **Use the same ledger across devices**: Web is for detailed review and reconciliation, mobile is for daily viewing and quick entry, and open APIs support other clients.
 
 ### What It Solves
 
 Household finance data is often scattered across bank cards, credit cards, fund platforms, loan contracts, insurance contracts, email statements, and manual spreadsheets. Over time, the hard part is not simply recording one transaction. The hard part is keeping everything consistent:
 
 - Multiple accounts, family members, and institutions need one coherent asset view.
-- Credit card statements, recurring fund investments, mortgages, insurance payments, and settlements are difficult to track over the long term.
+- Credit card statements, recurring fund investments, stock trades, fixed asset investments, mortgages, insurance payments, and settlements are difficult to track over the long term.
 - Common bookkeeping tools can record cash flow, but they often cannot maintain holdings, statement periods, NAV data, repayment schedules, and policy plans consistently.
 - Cloud services are convenient, but sensitive household finance data may not be suitable for external hosting.
 
 MMH aims to become a long-term household finance foundation: frequent entry should be fast, complex assets should be calculated clearly, and the same data should carry the same meaning across pages and clients.
 
-### Core Modules
+### Feature Modules
 
 | Module | Description |
 | --- | --- |
-| Overview | Summarizes daily accounts, credit cards, investments, insurance, settlements, and key indicators. |
+| Overview | Summarizes daily accounts, credit cards, investments, listed securities, fixed assets, insurance, settlements, and key indicators. |
 | Accounts | Manages cash, debit cards, e-wallets, deposits, investment accounts, and ownership. |
 | Credit Cards | Maintains credit card accounts, statement cycles, transaction details, posting dates, and repayments. |
 | Fund Investments | Manages fund transactions, NAV cache, holdings, units, cost, returns, and confirmation/arrival rules. |
+| Listed Securities | Manages stock accounts, brokerage cash accounts, trades, dividends, fees, close prices, and holding profit/loss. |
+| Fixed Assets | Manages properties and other fixed assets, renovation investments, valuations, linked entries, and asset details. |
 | Insurance | Maintains insurance products, policies, purchase records, payment plans, cash value, and insurance summaries. |
 | Settlements | Tracks advance payments, borrowing, lending, repayment, and balances related to counterparties. |
 | Scheduled Tasks | Manages recurring investments, repayments, transfers, and payments to reduce repeated entry. |
@@ -154,54 +152,49 @@ sudo docker compose pull app
 sudo docker compose up -d app
 ```
 
-See [NAS Docker Install And Update](docs/nas-install-manual.md) for the full guide.
-
-### Product Direction
-
-- Web is the primary detailed workspace for complex tables, asset reconciliation, batch import, and system settings.
-- Mobile apps focus on daily viewing, quick entry, summary browsing, and lightweight edits.
-- AI recognition, email bill parsing, batch record creation, recurring tasks, and open APIs are long-term strategic capabilities.
-- Financial calculations, date ownership, amount signs, gain/loss colors, account selection, and fund calculations should follow one consistent rule set.
-- The interface should be dense, clear, and stable enough for long-term maintenance of many numbers and records.
+See [NAS / fnOS Install And Update](docs/nas-install-manual.md) for the full guide.
 
 ## 日本語
 
 ### 製品の位置づけ
 
-MoneyMoneyHome（MMH）は、家庭と個人のためのローカルファーストなスマート財務システムです。日々の記帳、口座資産、クレジットカード明細、投資信託、保険契約、住宅ローン返済、立替・貸借、予定タスク、メール明細認識、複数クライアント向け API を、長く使える家庭向け財務ワークスペースにまとめます。
+MoneyMoneyHome（MMH）は、家庭と個人のためのローカルファーストなスマート財務システムです。日々の記帳、口座資産、クレジットカード明細、投資信託、上場証券、固定資産、保険契約、住宅ローン返済、立替・貸借、予定タスク、メール明細認識、複数クライアント向け API を、長く使える家庭向け財務ワークスペースにまとめます。
 
 MMH は、家庭の帳簿を外部プラットフォームに預ける SaaS ではありません。自分の NAS、家庭サーバー、またはローカル Docker 環境で動かし、重要な財務データを自分の管理下に置くことを前提にしています。
 
-### 主な機能
+明細取込、明細確認、残高調整、レポートを使って、口座記録と実際の残高をそろえられます。照合の負担を軽くし、数字が合う安心感を得られます。
 
-- **ローカルファーストと自ホスト**：Docker / NAS で運用でき、日々のデータを自分の環境に保存できます。
-- **完全な口座ビュー**：現金、デビットカード、クレジットカード、電子ウォレット、預金、投資信託、理財商品、保険、立替・貸借をまとめて管理します。
-- **クレジットカード明細管理**：締め日、支払日、取引日、入金日、明細月、返済状態を追跡できます。
-- **投資信託ワークフロー**：取引、基準価額キャッシュ、保有再計算、約定日、入金日、積立計画、損益統計を扱います。
-- **保険と契約管理**：保険商品、契約、加入記録、支払計画、解約返戻金、保険サマリーを管理します。
-- **予定タスクの自動化**：積立、振替、ローン返済、保険料支払いなどの定期処理を扱います。
-- **AI 明細認識と取込**：メール明細、テキスト明細、PDF 明細、スクリーンショットを認識し、確認、編集、一括取込の流れに進めます。
-- **複数クライアントで同じ意味**：Web を主な作業台とし、モバイルアプリと公開 API は同じデータ意味と計算ルールを共有します。
+### できること
+
+- **家庭の財務を自分で管理する**：自分の NAS、家庭サーバー、Docker 環境で運用し、日々のデータを自分の環境に保存できます。
+- **資産と負債をまとめて見る**：現金、銀行カード、クレジットカード、投資信託、理財商品、上場証券、固定資産、保険、住宅ローン、立替・貸借を一つの帳簿で確認できます。
+- **残高照合を軽くする**：明細取込、明細確認、残高調整、レポートを使い、口座記録と実際の残高をそろえられます。
+- **繰り返し入力を減らす**：積立、振替、ローン返済、保険料支払いなどの周期的な作業を予定タスクで扱えます。
+- **複雑な資産変化を追跡する**：投資信託の約定/入金、株式の売買と配当、固定資産への支出と評価、保険料と解約返戻金を管理できます。
+- **明細を標準記録に変える**：メール、テキスト、PDF、スクリーンショットから明細を認識し、確認・編集してまとめて取り込めます。
+- **同じ帳簿を複数デバイスで使う**：Web は細かい整理と照合に、モバイルは日常確認と素早い入力に、公開 API は他のクライアント接続に使えます。
 
 ### 解決する課題
 
 家庭の財務データは、銀行カード、クレジットカード、投資信託プラットフォーム、ローン契約、保険契約、メール明細、手作業の表に分散しがちです。時間がたつほど難しくなるのは、単に一件の取引を記録することではなく、全体の口径をそろえることです。
 
 - 複数の口座、家族メンバー、金融機関をまたいだ統一的な資産ビューが必要です。
-- クレジットカード明細、積立投資、住宅ローン、保険料支払い、立替・貸借は長期的に追跡しにくいものです。
+- クレジットカード明細、積立投資、株式取引、固定資産への支出、住宅ローン、保険料支払い、立替・貸借は長期的に追跡しにくいものです。
 - 一般的な家計簿ツールは入出金を記録できますが、保有、明細期間、基準価額、返済計画、保険計画まで一貫して管理するのは難しい場合があります。
 - クラウドサービスは便利ですが、家庭の重要な財務データを外部に預けることが常に適切とは限りません。
 
 MMH の目標は、長く維持できる家庭財務の土台を作ることです。よく使う入力は速く、複雑な資産は明確に計算され、同じデータはどの画面やクライアントでも同じ意味を持つべきです。
 
-### コアモジュール
+### 機能モジュール
 
 | モジュール | 説明 |
 | --- | --- |
-| 概要 | 日常口座、クレジットカード、投資、保険、立替・貸借、主要指標を集計します。 |
+| 概要 | 日常口座、クレジットカード、投資、上場証券、固定資産、保険、立替・貸借、主要指標を集計します。 |
 | 口座 | 現金、デビットカード、電子ウォレット、預金、投資口座、所有者を管理します。 |
 | クレジットカード | カード口座、明細周期、取引明細、入金日、返済記録を管理します。 |
 | 投資信託 | 取引、基準価額キャッシュ、保有、口数、コスト、損益、約定/入金ルールを管理します。 |
+| 上場証券 | 株式口座、証券資金口座、売買、配当、費用、終値、保有損益を管理します。 |
+| 固定資産 | 不動産などの固定資産、改修投資、資産評価、関連記録、資産明細を管理します。 |
 | 保険 | 保険商品、契約、加入記録、支払計画、解約返戻金、保険サマリーを管理します。 |
 | 立替・貸借 | 立替払い、借入、貸付、返済、取引先に関係する残高を追跡します。 |
 | 予定タスク | 積立、返済、振替、支払いなどの定期処理を管理し、繰り返し入力を減らします。 |
@@ -232,15 +225,7 @@ sudo docker compose pull app
 sudo docker compose up -d app
 ```
 
-詳しくは [NAS Docker インストールと更新](docs/nas-install-manual.md) を参照してください。
-
-### 製品方針
-
-- Web は、複雑な表、資産照合、一括取込、システム設定を扱う主要な詳細ワークスペースです。
-- モバイルアプリは、日常確認、素早い入力、サマリー閲覧、軽い編集に重点を置きます。
-- AI 認識、メール明細解析、一括記録、予定タスク、公開 API は長期的に重要な機能です。
-- 財務計算、日付の帰属、金額の符号、損益色、口座選択、基金計算は一つの統一ルールに従うべきです。
-- 画面は、大量の数字と記録を長期管理できるよう、密度が高く、明確で、安定しているべきです。
+詳しくは [NAS / fnOS インストールと更新](docs/nas-install-manual.md) を参照してください。
 
 ## Developer Docs
 

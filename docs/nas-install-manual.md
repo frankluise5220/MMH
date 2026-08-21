@@ -1,95 +1,121 @@
-# MMH NAS Docker 安装与更新
+# MMH NAS / 飞牛 fnOS 安装与更新
 
-这份文档给最终用户使用。推荐先用 NAS 自带的 Docker 图形界面安装；终端命令只作为备用方案。
+这份文档给最终用户使用。先选择一种运行方式，再按该方式里的“安装、更新、使用”操作。
 
-飞牛 fnOS 用户后续可以优先参考仓库里的 `deploy/fnos/README.md`。本 NAS 安装手册仍只维护 Docker 安装与更新路径；飞牛包是额外分发形式，不改变这里的 Docker 方向。
+| 运行方式 | 适合谁 | 入口 |
+| --- | --- | --- |
+| 飞牛 fnOS 原生 | 飞牛 NAS 用户，想直接用原生应用包 | [查看飞牛 fnOS 原生](#飞牛-fnos-原生) |
+| Docker 图形界面 | 普通 NAS 用户，习惯用容器管理器界面 | [查看 Docker 图形界面](#docker-图形界面) |
+| Docker 命令行 | 需要 SSH / 终端部署或远程协助 | [查看 Docker 命令行](#docker-命令行) |
 
-安装只需要三件事：
+## 飞牛 fnOS 原生
 
-1. 准备部署文件。
-2. 修改 `.env` 里的数据库密码。
-3. 在 Docker 图形界面创建项目并启动。
+飞牛版是原生 `.fpk` 应用包，不依赖 Docker 和 PostgreSQL。安装后使用 SQLite 数据库，数据保存在飞牛应用数据目录里。
 
-## 1. 推荐：图形界面安装
+| 操作 | 你要做什么 |
+| --- | --- |
+| [1. 安装](#1-安装) | 第一次在飞牛上安装 MMH。 |
+| [2. 更新](#2-更新) | 已经安装 MMH 后升级到新版本。 |
+| [3. 使用](#3-使用) | 安装完成后打开 MMH，并了解数据保存位置。 |
 
-### 1.1 准备
+### 1. 安装
 
-NAS 上需要先安装 Docker、Container Manager、容器管理器或类似功能。
+推荐使用 FN 软仓安装：
 
-在 NAS 文件管理里新建一个目录，用来放 MMH 的部署文件。例如：
+1. 如果飞牛里还没有 FN 软仓客户端，先按 FN 软仓项目说明安装客户端：
+
+```text
+https://gitee.com/hhxs2025/fn-appstores/releases
+```
+
+2. 打开 FN 软仓客户端，搜索 `MMH` 或 `MMH 家庭财务工作台`。
+3. 点击安装。当前软仓已经内置 MMH 源，不需要手动添加应用源。
+4. 安装向导中通常只需要确认服务端口：
+
+```text
+7777
+```
+
+也可以手动安装 `.fpk`：
+
+1. 打开 GitHub Release 页面：
+
+```text
+https://github.com/frankluise5220/MMH/releases
+```
+
+2. 下载适合当前飞牛设备架构的安装包：
+   - x86_64 设备：`mmh-fnos-v0.1.x-x86_64.fpk`
+   - ARM64 设备：`mmh-fnos-v0.1.x-arm64.fpk`
+3. 在飞牛应用中心或支持手动安装 `.fpk` 的入口上传安装包。
+
+请下载同一个 Release 里的正式 `.fpk` 文件，不要下载 `*-fpk-source.tgz`，那只是调试包结构用的归档。
+
+### 2. 更新
+
+推荐在 FN 软仓客户端里更新：
+
+1. 打开 FN 软仓客户端，查看 MMH。
+2. 看到新版本后点击更新或覆盖安装。
+3. 更新完成后重新打开 MMH。
+
+手动安装的用户也可以下载更高版本、同架构的 `.fpk`，然后在已安装的 MMH 上直接覆盖安装。
+
+不要把“卸载旧版再安装新版”当作日常更新方式。覆盖升级会保留飞牛应用数据目录里的 `mmh.db` 数据库。高风险操作前，仍建议先在 MMH 里导出备份。
+
+### 3. 使用
+
+安装完成后，在浏览器打开：
+
+```text
+http://飞牛IP:7777/
+```
+
+把 `飞牛IP` 换成飞牛设备的实际 IP。
+
+飞牛版没有 PostgreSQL 连接密码。首次启动会在飞牛应用数据目录创建并初始化 SQLite 数据库 `mmh.db`。系统初始化、删除账簿等敏感操作验证当前登录用户自己的密码，操作仅管理员可见。
+
+## Docker 图形界面
+
+普通 NAS 用户优先使用 Docker、Container Manager、容器管理器、Compose、项目、应用栈或 Stack 的图形界面安装。
+
+| 操作 | 你要做什么 |
+| --- | --- |
+| [1. 安装](#1-安装-1) | 用 NAS 的 Docker 图形界面创建 MMH 项目。 |
+| [2. 更新](#2-更新-1) | 通过 MMH 网页或 Docker 图形界面更新容器。 |
+| [3. 使用](#3-使用-1) | 安装完成后打开 MMH，并连接 Android 客户端。 |
+
+### 1. 安装
+
+1. 在 NAS 上安装 Docker、Container Manager、容器管理器或类似功能。
+2. 在 NAS 文件管理里新建一个目录，用来放 MMH 的部署文件。例如：
 
 ```text
 docker/mmh
 ```
 
-目录位置可以按 NAS 习惯选择，只要三个部署文件放在同一个目录里即可。
-
-### 1.2 下载部署文件
-
-下载下面三个文件，放进刚才创建的目录：
-
-- `docker-compose.yml`：https://raw.githubusercontent.com/frankluise5220/MMH/main/deploy/nas/docker-compose.yml
-- `postgres-entrypoint.sh`：https://raw.githubusercontent.com/frankluise5220/MMH/main/deploy/nas/postgres-entrypoint.sh
-- `env.example`：https://raw.githubusercontent.com/frankluise5220/MMH/main/deploy/nas/env.example
-
-### 1.3 修改环境配置
-
-把 `env.example` 改名为 `.env`。
-
-打开 `.env`，只需要修改这一行：
-
-```env
-POSTGRES_PASSWORD="CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD"
-```
-
-图形界面安装使用的是静态 `.env` 文件，Docker 不会自动生成这个密码。
-
-不修改也可以启动，系统会把 `CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD` 当成真实数据库密码使用。正式使用请改成自己生成的长随机密码，例如：
+3. 下载下面三个文件，放进刚才创建的目录：
+   - `docker-compose.yml`：https://raw.githubusercontent.com/frankluise5220/MMH/main/deploy/nas/docker-compose.yml
+   - `postgres-entrypoint.sh`：https://raw.githubusercontent.com/frankluise5220/MMH/main/deploy/nas/postgres-entrypoint.sh
+   - `env.example`：https://raw.githubusercontent.com/frankluise5220/MMH/main/deploy/nas/env.example
+4. 把 `env.example` 改名为 `.env`。
+5. 打开 `.env`，修改数据库密码：
 
 ```env
 POSTGRES_PASSWORD="REPLACE_WITH_YOUR_OWN_LONG_RANDOM_PASSWORD"
 ```
 
-密码建议使用 24 位以上的字母和数字。改好后请保存；以后排查数据库问题时可能会用到。
+密码建议使用 24 位以上的字母和数字。图形界面安装使用静态 `.env` 文件，Docker 不会自动生成这个密码。
 
-其他内容先不用改。`DATABASE_URL` 和内部更新令牌会由部署文件自动处理。
+6. 在 NAS 的 Docker 图形界面里创建项目：
+   - 项目名称填写 `mmh`。
+   - 项目目录选择刚才放部署文件的目录。
+   - Compose 文件选择 `docker-compose.yml`。
+   - 点击部署、创建或启动。
 
-### 1.4 创建 Docker 项目
+首次启动需要拉取镜像，等待时间取决于 NAS 网络和镜像下载速度。
 
-打开 NAS 的 Docker 图形界面，找到 Compose、项目、应用栈或 Stack 功能。
-
-创建新项目时：
-
-- 项目名称填写 `mmh`。
-- 项目目录选择刚才放部署文件的目录。
-- Compose 文件选择 `docker-compose.yml`。
-- 点击部署、创建或启动。
-
-首次启动需要拉取镜像，等待时间取决于 NAS 网络和镜像源速度。
-
-### 1.5 打开 MMH
-
-部署完成后，在浏览器打开：
-
-```text
-http://NAS_IP:7777/
-```
-
-把 `NAS_IP` 换成 NAS 的实际 IP。
-
-Android 客户端可以下载安装：
-
-```text
-https://github.com/frankluise5220/MMH/releases/download/android-v1.0.0/mmh-android-v1.0.0.apk
-```
-
-安装后，服务器地址填写：
-
-```text
-http://NAS_IP:7777/
-```
-
-## 2. 日常更新
+### 2. 更新
 
 优先在 MMH 网页里更新：
 
@@ -99,58 +125,37 @@ http://NAS_IP:7777/
 
 网页更新会自动拉取新的应用镜像并重启服务。正常更新不需要重新安装，也不需要在 NAS 上重新构建源码。
 
-如果使用 NAS 的 Docker 图形界面更新，也只需要更新 MMH 的应用镜像，然后重启 `mmh-app` 和 `mmh-updater`。数据库容器 `mmh-db` 不需要删除，也不要选择“源码重新构建”。
+如果使用 NAS 的 Docker 图形界面更新，只需要更新 MMH 的应用镜像，然后重启 `mmh-app` 和 `mmh-updater`。数据库容器 `mmh-db` 不需要删除，也不要选择“源码重新构建”。
 
-## 3. 镜像源说明
+### 3. 使用
 
-MMH 默认使用预构建镜像，不在 NAS 上编译项目。
-
-`.env` 里默认镜像源是：
-
-```env
-MMH_IMAGE_SOURCE="dockerproxy"
-MMH_APP_IMAGE="ghcr.dockerproxy.net/frankluise5220/mmh:latest"
-MMH_UPDATER_IMAGE="ghcr.dockerproxy.net/frankluise5220/mmh-updater:latest"
-```
-
-如果这个源下载慢，可以在 MMH 网页里切换：
+部署完成后，在浏览器打开：
 
 ```text
-系统设置 -> 系统更新 -> 镜像源
+http://NAS_IP:7777/
 ```
 
-选择“自动选择”时，网页里的“刷新远端版本”和实际更新都会按镜像源顺序检测可用版本；不会只检查单一源。如果全部源都无法读取镜像版本，页面会显示失败原因。
+把 `NAS_IP` 换成 NAS 的实际 IP。
 
-固定选择 GHCR、dockerproxy、NJU、DaoCloud 或自定义源时，版本检查、`mmh-app` 和 `mmh-updater` 都统一使用用户选择的源。切换源后执行一次更新，两个容器会一起拉取并切换；不会把 NJU 或其他单一镜像源写死为所有用户的默认选择。
-
-选择自定义源时，只需填写应用镜像地址，更新器镜像会自动使用同源的 `mmh-updater` 镜像（例如应用镜像填 `registry.example.com/frankluise5220/mmh:latest`，更新器镜像自动为 `registry.example.com/frankluise5220/mmh-updater:latest`）。自定义源需要该镜像源同时提供 `mmh` 和 `mmh-updater` 两个镜像，系统不会把其中一个容器悄悄回退到其他镜像源。
-
-常用可选源：
-
-- `ghcr`：`ghcr.io/frankluise5220/mmh:latest`
-- `dockerproxy`：`ghcr.dockerproxy.net/frankluise5220/mmh:latest`
-- `nju`：`ghcr.nju.edu.cn/frankluise5220/mmh:latest`
-- `daocloud`：`ghcr.m.daocloud.io/frankluise5220/mmh:latest`
-- `fnvps`（自建源，推荐直连）：`fnapp.floatingice.win:5000/frankluise5220/mmh:latest`
-
-选择 `fnvps` 自建源时，MMH 应用和更新器镜像都从作者维护的 VPS Docker Registry 拉取，不依赖第三方加速源。该源由 VPS 定时从 GHCR 同步，发布新版后约 1 小时内在 VPS 上可用。使用前需要在 NAS 的 Docker 配置（`/etc/docker/daemon.json`）的 `insecure-registries` 里加入 `fnapp.floatingice.win:5000`，因为自建 registry 使用 HTTP 而非 HTTPS；不配置则 Docker 会拒绝连接。
-
-PostgreSQL 使用官方镜像：
+Android 客户端可以到同一个 GitHub Release 页面下载安装：
 
 ```text
-postgres:15-alpine
+https://github.com/frankluise5220/MMH/releases
 ```
 
-如果 Docker Hub 下载失败，可以先在 NAS 的镜像管理里搜索并下载 `postgres:15-alpine`。也可以用备用源下载后打标签：
+文件名通常是 `mmh-android-v0.1.x.apk`，其中 `0.1.x` 与服务端版本一致。安装后，服务器地址填写 `http://NAS_IP:7777/`。
 
-```bash
-sudo docker pull swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/postgres:15-alpine
-sudo docker tag swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/postgres:15-alpine postgres:15-alpine
-```
+## Docker 命令行
 
-## 4. 终端安装（备用）
+只有在 NAS 图形界面不支持 Compose、无法上传 `.env`、或需要远程协助时，才使用命令行。
 
-只有在 NAS 图形界面不支持 Compose、无法上传 `.env`、或需要远程协助时，才使用终端安装。
+| 操作 | 你要做什么 |
+| --- | --- |
+| [1. 安装](#1-安装-2) | 用终端命令下载部署文件、生成密码并启动服务。 |
+| [2. 更新](#2-更新-2) | 可用 MMH 网页、Docker 图形界面或终端命令更新。 |
+| [3. 使用](#3-使用-2) | 安装完成后打开 MMH，并记住实际安装目录。 |
+
+### 1. 安装
 
 ```bash
 mkdir -p ~/mmh
@@ -175,11 +180,17 @@ echo "配置文件: ~/mmh/.env"
 
 安装完成后，请把输出的数据库密码保存下来。`.env` 里也会保留同一个密码。
 
-终端安装会自动生成数据库密码；图形界面安装不修改默认值也能运行，但正式使用建议手动修改 `.env` 里的 `POSTGRES_PASSWORD`。
+### 2. 更新
 
-## 5. 终端更新（备用）
+命令行安装完成后，日常更新不一定要继续用命令行。你可以优先在 MMH 网页里更新：
 
-只有在网页打不开或更新异常中断时，才使用终端更新：
+```text
+系统设置 -> 系统更新 -> 刷新远端版本 -> 更新
+```
+
+也可以在 NAS 的 Docker 图形界面里更新 MMH 的应用镜像，然后重启 `mmh-app` 和 `mmh-updater`。数据库容器 `mmh-db` 不需要删除。
+
+只有在网页打不开、图形界面不方便操作或更新异常中断时，才进入安装目录执行终端更新：
 
 ```bash
 cd ~/mmh
@@ -189,9 +200,31 @@ sudo docker compose -p mmh up -d app updater
 
 这个过程只更新应用和更新器，不会删除数据库。
 
-## 6. 清空重装
+### 3. 使用
 
-清空重装会删除 MMH 数据库数据。确认不需要旧数据后再执行：
+安装完成后，在浏览器打开：
+
+```text
+http://NAS_IP:7777/
+```
+
+把 `NAS_IP` 换成 NAS 的实际 IP。如果你的安装目录不是 `~/mmh`，后续更新和排查时请进入实际安装目录再执行命令。
+
+Android 客户端可以到 GitHub Release 页面下载安装：
+
+```text
+https://github.com/frankluise5220/MMH/releases
+```
+
+安装后，服务器地址填写 `http://NAS_IP:7777/`。
+
+## 通用操作
+
+### 清空重装
+
+清空重装会删除 MMH 数据库数据。确认不需要旧数据后再执行。
+
+Docker 用户：
 
 ```bash
 cd ~/mmh
@@ -205,11 +238,21 @@ cd ~
 rm -rf ~/mmh
 ```
 
-然后重新按“图形界面安装”操作。
+飞牛用户请优先在飞牛应用中心卸载应用，并按飞牛系统界面确认是否保留应用数据。
 
-## 7. 常见问题
+### 常见问题
 
-### 7.1 打不开 `http://NAS_IP:7777/`
+飞牛软仓安装后找不到应用或打不开：
+
+先在飞牛应用中心确认 MMH 是否已经安装并正在运行。如果 FN 软仓客户端很快提示安装成功，但应用中心里没有 MMH，或 MMH 没有真正启动，可能是飞牛没有设置默认安装卷。可以在飞牛终端里设置默认卷后重试：
+
+```bash
+sudo appcenter-cli default-volume 1
+```
+
+如果你的应用安装卷不是 `1`，请换成当前飞牛设备实际使用的卷索引。排查时也可以查看飞牛应用中心日志和 FN 软仓客户端日志。
+
+Docker 页面打不开：
 
 先在 Docker 图形界面确认：
 
@@ -220,29 +263,15 @@ rm -rf ~/mmh
 
 如果容器在反复重启，查看 `mmh-app` 和 `mmh-db` 的日志。
 
-### 7.2 数据库密码错误
+数据库密码错误：
 
-如果是全新安装，最简单的处理方式是清空重装。
+如果是全新安装，最简单的处理方式是清空重装。如果已有重要数据，不要删除数据库卷。先备份，再排查 `.env` 里的 `POSTGRES_PASSWORD` 是否和数据库初始化时一致。
 
-如果已有重要数据，不要删除数据库卷。先备份，再排查 `.env` 里的 `POSTGRES_PASSWORD` 是否和数据库初始化时一致。
+更新页面提示“更新失败 / Failed to fetch”，但系统实际已更新：
 
-### 7.3 Docker Hub 下载失败
+网页更新会拉取新镜像并重启 `mmh-app`。应用冷启动在低功耗 NAS 上可能超过一分钟，期间页面会显示“服务正在重启，正在重新连接...”。
 
-优先在 NAS 的 Docker 图形界面里配置镜像加速源，或手动提前准备 `postgres:15-alpine`。
-
-MMH 应用镜像可以在网页的系统更新页切换镜像源。
-
-### 7.4 更新是不是每次下载全部镜像
-
-正常情况下不是。Docker 会复用已有镜像层，更新时只下载变化的层。
-
-第一次安装或第一次切换镜像源时，可能需要下载较大的基础层，这是正常现象。
-
-### 7.5 更新页面提示“更新失败 / Failed to fetch”，但系统实际已更新
-
-网页更新会拉取新镜像并重启 `mmh-app`。应用冷启动（数据库兼容迁移、Prisma 同步、Next.js 启动）在低功耗 NAS 上可能超过一分钟，期间页面会显示“服务正在重启，正在重新连接...”。
-
-如果页面在应用恢复之前就提示“更新失败 / Failed to fetch”，先不要急着重试，按下面步骤确认：
+如果页面在应用恢复之前就提示失败，先不要急着重试：
 
 1. 等 1 分钟，重新打开 `http://NAS_IP:7777/`。
 2. 进入 系统设置 -> 系统更新，看“当前版本”是否已经是新版本；如果是，说明更新实际已经成功，直接使用即可。
@@ -254,5 +283,3 @@ sudo docker compose -p mmh ps
 sudo docker compose -p mmh logs --tail 50 app
 sudo docker compose -p mmh up -d app
 ```
-
-说明：镜像拉取完成后，重启 `mmh-app` 不会删除数据，数据库容器 `mmh-db` 保持不变；“重启服务”之后更新进程会先确认应用能正常响应，再标记更新完成，所以页面最终会显示成功或给出可执行的恢复命令。

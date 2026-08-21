@@ -10,10 +10,24 @@ mmh
 
 飞牛专用 `.fpk` 使用 SQLite 原生运行方式：包内包含 Next standalone、Linux Node runtime、Prisma runtime、SQLite 初始化脚本和应用入口，不依赖 Docker/PostgreSQL。它不是源码包，也不是调试归档。由于包含原生二进制，正式 Release 资产只按架构发布两个文件：`mmh-fnos-v0.1.x-x86_64.fpk` 和 `mmh-fnos-v0.1.x-arm64.fpk`，但应用 ID 仍然是同一个 `mmh`。
 
-## 安装
+## 用户安装
+
+### 推荐：FN 软仓安装和更新
+
+如果飞牛里还没有 FN 软仓客户端，请先按 FN 软仓项目说明安装客户端：
+
+```text
+https://gitee.com/hhxs2025/fn-appstores/releases
+```
+
+打开 FN 软仓客户端，搜索 `MMH` 或 `MMH 家庭财务工作台`，点击安装。当前软仓已经内置 MMH 源，不需要手动添加应用源。软仓源提供 x86_64 和 arm64 两个架构的正式 `.fpk`，客户端会按设备架构下载对应安装包。
+
+以后更新时，在 FN 软仓客户端里查看 MMH，看到新版本后直接点击更新或覆盖安装。更新应当是同一个应用 `mmh` 的覆盖升级，不需要先卸载旧版。
+
+### 备用：手动安装 `.fpk`
 
 1. 下载 Release 资产中适合当前飞牛设备架构的 `.fpk`。x86_64 设备使用 `mmh-fnos-v0.1.x-x86_64.fpk`，ARM64 设备使用 `mmh-fnos-v0.1.x-arm64.fpk`。
-2. 在飞牛应用中心或第三方应用入口安装该 `.fpk`。
+2. 在飞牛应用中心或支持手动安装 `.fpk` 的入口上传安装包。
 3. 安装向导中只需确认服务端口。系统初始化、删除账簿等敏感操作验证当前登录用户的密码（操作仅管理员可见）。
 4. 启动后访问：
 
@@ -26,6 +40,8 @@ http://飞牛IP:7777/
 ```text
 mmh.db
 ```
+
+手动更新时，下载更高版本、同架构的 `.fpk`，然后在已安装的 MMH 上直接覆盖安装。不要把“卸载旧版再安装新版”当作日常更新方式；卸载只属于用户主动删除应用或异常恢复流程。
 
 ## 打包
 
@@ -76,11 +92,12 @@ mmh-fnos-v0.1.x-arm64.fpk
 - Release workflow 会按 x86 / arm64 安装对应架构的官方 `fnpack`；如果安装或验证失败，workflow 必须失败，不能上传 `*-fpk-source.tgz` 作为替代。
 - `repository/apps.example.json` 的 `download_url` 指向 Release 中的 `mmh-fnos-v0.1.x-x86_64.fpk`，`download_urls` 只提供 `mmh-fnos-v0.1.x-x86_64.fpk` 和 `mmh-fnos-v0.1.x-arm64.fpk`。
 
-## 软仓源
+## 软仓源维护说明
 
 - 当前验证过的公开源地址是：
   `https://raw.githubusercontent.com/frankluise5220/MMH/main/deploy/fnos/repository`
-- 飞牛会从这个源继续读取 `/api/apps`；如果界面要求直接填写 JSON 文件，则使用该目录下的 `fnpack.json`。
+- FN 软仓当前已经内置 MMH 源，普通用户不需要手动添加源。
+- 源服务会从这个地址继续读取 `/api/apps`；`fnpack.json` 作为源数据文件保留在同一目录。
 - 这个地址直接映射到 GitHub `frankluise5220/MMH` 仓库的 `main/deploy/fnos/repository` 目录，不需要访问 `192.168.*` 内网地址，也不需要 `5660` 服务。
 - 如果未来改用自建软仓服务，才需要另行配置稳定域名或 frp；不能把自建服务地址混入当前 GitHub 源配置。
 - 源数据仍指向 GitHub Release 中的两个正式 `.fpk` 文件：`mmh-fnos-v0.1.x-x86_64.fpk` 和 `mmh-fnos-v0.1.x-arm64.fpk`。
