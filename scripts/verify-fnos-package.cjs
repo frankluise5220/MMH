@@ -252,7 +252,9 @@ expect(/normalizeFnosTarget/.test(buildScript), "fnOS package build must normali
 expect(/normalizeFnosVersion/.test(buildScript), "fnOS package build must normalize Release tags into package versions.");
 expect(buildScript.includes("^0\\.1\\.\\d+$"), "fnOS package build must enforce the unified 0.1.x version format.");
 expect(/os_min_version=\$\{osMinVersion\}/.test(buildScript), "fnOS manifest must include os_min_version for official submission.");
-expect(/changelog=\$\{changelog\}/.test(buildScript), "fnOS manifest must include a changelog for official submission.");
+expect(/function toSingleLineText\(value\)/.test(buildScript), "fnOS package build must normalize release notes into single-line manifest text.");
+expect(/const manifestChangelog = toSingleLineText\(changelog\);/.test(buildScript), "fnOS package build must derive a single-line manifest changelog.");
+expect(/changelog=\$\{manifestChangelog\}/.test(buildScript), "fnOS manifest must include a changelog for official submission.");
 expect(/mmhReleaseNotes/.test(buildScript), "fnOS package build must copy release notes into the runtime package.json.");
 expect(!/path\.join\(stageDir,\s*"wizard",\s*"uninstall"\)/.test(buildScript), "fnOS package must not include an uninstall wizard; FN soft-store updates cannot complete when uninstall requires UI input.");
 expect(/backupLifecycle\("upgrade"\)/.test(buildScript), "fnOS package must create cmd/upgrade_init to back up app data before upgrades.");
