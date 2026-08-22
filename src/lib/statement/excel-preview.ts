@@ -12,6 +12,7 @@ import {
   type StatementImportField,
 } from "@/lib/statement/header-catalog";
 import { normalizeAlipayWorkbookRows } from "@/lib/statement/alipay-template";
+import { normalizeWechatWorkbookRows } from "@/lib/statement/wechat-template";
 import {
   alignStatementIncomeRefunds,
   enrichKnownStatementMerchantForImport,
@@ -56,7 +57,14 @@ type StatementFieldHeaders = Record<StatementImportField, readonly string[]>;
 
 function formatDateCell(value: unknown) {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+    const datePart = `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+    const hour = value.getHours();
+    const minute = value.getMinutes();
+    const second = value.getSeconds();
+    if (hour || minute || second) {
+      return `${datePart} ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:${String(second).padStart(2, "0")}`;
+    }
+    return datePart;
   }
   return String(value ?? "").trim();
 }
@@ -66,16 +74,18 @@ function normalizeHeader(value: string) {
 }
 
 function normalizeDate(value: string) {
-  const raw = value.trim();
+  const raw = value.trim().replace(/\s+/g, " ");
   if (!raw) return "";
   const compact = raw.match(/^(\d{4})(\d{2})(\d{2})$/);
   if (compact) return `${compact[1]}-${compact[2]}-${compact[3]}`;
+  const timeMatch = raw.match(/\s+(\d{1,2}:\d{2}(?::\d{2})?)$/);
   const match = raw
-    .replace(/[年月/.]/g, "-")
-    .replace(/[日号]/g, "")
-    .match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    .replace(/[\u5e74\u6708/.]/g, "-")
+    .replace(/[\u65e5\u53f7]/g, "")
+    .match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?/);
   if (!match) return raw.slice(0, 10);
-  return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
+  const datePart = `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
+  return timeMatch ? `${datePart} ${timeMatch[1]}` : datePart;
 }
 
 function parseAmount(value: string) {
@@ -356,7 +366,8 @@ export async function readStatementWorkbookRowsAndText(
     return { sheetName, rows };
   });
   const alipayRows = normalizeAlipayWorkbookRows(sheetRows);
-  const rows = alipayRows?.rows ?? mergeStatementWorkbookRows(sheetRows, fieldHeaders);
+  const wechatRows = normalizeWechatWorkbookRows(sheetRows);
+  const rows = alipayRows?.rows ?? wechatRows?.rows ?? mergeStatementWorkbookRows(sheetRows, fieldHeaders);
   const text = sheetRows
     .flatMap((sheet) => sheet.rows.filter((row) => row.some(Boolean)))
     .map((row) => row.join("\t"))

@@ -3,8 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { normalizeCurrency } from "@/lib/currency";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
-import { queryStockIdentity } from "@/lib/stock/queryApi";
-import { inferStockMarketFromCode, normalizeStockCode, normalizeStockMarket, resolveOrCreateStockSecurity } from "@/lib/stock/securities";
+import { getStockSecurityByCode, inferStockMarketFromCode, normalizeStockCode, normalizeStockMarket, resolveOrCreateStockSecurity } from "@/lib/stock/securities";
 
 export const runtime = "nodejs";
 
@@ -20,36 +19,14 @@ export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: corsHeaders() });
 }
 
-function usableStockName(value: unknown, stockCode: string) {
-  const name = String(value ?? "").trim();
-  return name && name !== stockCode ? name : null;
-}
-
-async function findLocalStockName(householdId: string, market: string, stockCode: string) {
-  const holding = await prisma.stockHolding.findFirst({
-    where: { householdId, market, stockCode, stockName: { not: null } },
-    orderBy: { updatedAt: "desc" },
-    select: { stockName: true },
-  });
-  const holdingName = usableStockName(holding?.stockName, stockCode);
-  if (holdingName) return holdingName;
-
-  const transaction = await prisma.stockTransaction.findFirst({
-    where: { householdId, market, stockCode, deletedAt: null, stockName: { not: null } },
-    orderBy: [{ tradeDate: "desc" }, { updatedAt: "desc" }],
-    select: { stockName: true },
-  });
-  return usableStockName(transaction?.stockName, stockCode);
-}
-
 /**
  * GET /api/v1/stocks/securities
  * Lists stock securities for the current household.
  *
  * Query:
  * - market?: string; omitted exact lookups infer market from code
- * - code?: exact stock code. When lookup=1, local miss falls back to stock identity API and caches the result.
- * - lookup?: "1" | "true"
+ * - code?: exact stock code. Exact lookup first checks local stock data and
+ *   then falls back to the stock identity API, caching the resolved name.
  * - q?: string matches stock code or name
  *
  * Response:
@@ -61,58 +38,20 @@ export async function GET(req: NextRequest) {
     const { householdId } = await getApiHouseholdScope(req);
     const marketRaw = req.nextUrl.searchParams.get("market")?.trim() || "";
     const codeRaw = req.nextUrl.searchParams.get("code")?.trim() || "";
-    const lookup = /^(1|true|yes)$/i.test(req.nextUrl.searchParams.get("lookup")?.trim() ?? "");
     const q = req.nextUrl.searchParams.get("q")?.trim() || "";
     const market = marketRaw ? normalizeStockMarket(marketRaw) : (codeRaw ? inferStockMarketFromCode(codeRaw) : "");
 
     if (codeRaw) {
-      const stockCode = normalizeStockCode(codeRaw);
-      let security = await prisma.stockSecurity.findFirst({
-        where: { householdId, isActive: true, market, stockCode },
+      const security = await getStockSecurityByCode(prisma, {
+        householdId,
+        market,
+        stockCode: codeRaw,
       });
-      // Default is local-only lookup: when StockSecurity misses, look for a saved name in
-      // StockHolding / StockTransaction without triggering the external stock query API.
-      // Only lookup=1 queries externally and caches when all local lookups miss.
-      if (!usableStockName(security?.stockName, stockCode)) {
-        const localStockName = await findLocalStockName(householdId, market, stockCode);
-        if (localStockName) {
-          security = await resolveOrCreateStockSecurity(prisma, {
-            householdId,
-            market,
-            stockCode,
-            stockName: localStockName,
-            currency: security?.currency,
-            exchange: security?.exchange,
-          });
-        }
-      }
-      if (lookup && !usableStockName(security?.stockName, stockCode)) {
-        const identity = await queryStockIdentity(market, stockCode);
-        if (identity?.stockName && identity.stockName !== stockCode) {
-          security = await resolveOrCreateStockSecurity(prisma, {
-            householdId,
-            market: identity.market,
-            stockCode: identity.stockCode,
-            stockName: identity.stockName,
-            currency: identity.currency,
-            exchange: identity.exchange,
-          });
-        }
-      }
 
       return NextResponse.json({
         ok: true,
         data: {
-          security: security
-            ? {
-                id: security.id,
-                market: security.market,
-                stockCode: security.stockCode,
-                stockName: security.stockName,
-                currency: security.currency,
-                exchange: security.exchange,
-              }
-            : null,
+          security,
         },
       }, { headers: corsHeaders() });
     }

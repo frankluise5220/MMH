@@ -131,6 +131,12 @@ type AccountOption = {
   investProductType?: string | null;
   institutionId?: string | null;
 };
+type FundHoldingOption = { fundCode: string; name: string; units: number };
+type LoadedFundAccountData = {
+  accountId: string;
+  holdings: FundHoldingOption[];
+  allEntries: LinkedCandidateEntry[];
+};
 type PreciousMetalTypeOption = { id: string; code: string; name: string; shortName?: string | null };
 type PreciousMetalUnitOption = { id: string; code: string; name: string; symbol?: string | null; decimals?: number | null };
 type BuyResultStatus = "normal" | "refund";
@@ -228,7 +234,7 @@ export function InvestmentFormModal({
   metalTypes?: PreciousMetalTypeOption[];
   metalUnits?: PreciousMetalUnitOption[];
   nestedFieldData?: NestedFieldData;
-  holdings?: { fundCode: string; name: string; units: number }[];
+  holdings?: FundHoldingOption[];
   allEntries?: LinkedCandidateEntry[];
   createAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
   editAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
@@ -352,7 +358,10 @@ export function InvestmentFormModal({
   const [buyResultStatus, setBuyResultStatus] = useState<BuyResultStatus>(initHasRefund ? "refund" : "normal");
   const [eventEditEntry, setEventEditEntry] = useState<InvestmentEntry | null>(null);
   const [eventLinkedEntries, setEventLinkedEntries] = useState<LinkedCandidateEntry[] | null>(null);
+  const [loadedFundAccountData, setLoadedFundAccountData] = useState<LoadedFundAccountData | null>(null);
+  const [holdingFundLoading, setHoldingFundLoading] = useState(false);
   const [linkedRefundEntryId, setLinkedRefundEntryId] = useState<string | null>(null);
+  const fundAccountDataCacheRef = useRef<Map<string, LoadedFundAccountData>>(new Map());
   const lastNavFetchKey = useRef<string>("");
   const navDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   function setNavFromApi(navStr: string) {
@@ -1177,11 +1186,87 @@ export function InvestmentFormModal({
   const isFundHoldingAsOfMode =
     (productType === "fund" || productType === "money") &&
     (isRedeemLike(subtype) || isDividend(subtype));
+  const selectedHoldingAccountId = (toAccountId || defaultAccountId || "").trim();
+  const propsProvideSelectedFundData =
+    selectedHoldingAccountId === String(defaultAccountId ?? "").trim() &&
+    Array.isArray(allEntries);
+  const activeLoadedFundData = loadedFundAccountData?.accountId === selectedHoldingAccountId
+    ? loadedFundAccountData
+    : null;
+  const activeHoldings = activeLoadedFundData?.holdings ?? (propsProvideSelectedFundData ? holdings : undefined);
+  const activeAllEntries = activeLoadedFundData?.allEntries ?? (propsProvideSelectedFundData ? allEntries : undefined);
+
+  useEffect(() => {
+    if (!open || !isFundHoldingAsOfMode || !selectedHoldingAccountId) {
+      setHoldingFundLoading(false);
+      return;
+    }
+    if (propsProvideSelectedFundData) {
+      setLoadedFundAccountData((current) => current?.accountId === selectedHoldingAccountId ? null : current);
+      setHoldingFundLoading(false);
+      return;
+    }
+    const cached = fundAccountDataCacheRef.current.get(selectedHoldingAccountId);
+    if (cached) {
+      setLoadedFundAccountData(cached);
+      setHoldingFundLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    setHoldingFundLoading(true);
+    const params = new URLSearchParams({
+      accountId: selectedHoldingAccountId,
+      entryScope: "account",
+    });
+    fetch(`/api/v1/fund/shell-data?${params.toString()}`, { signal: controller.signal })
+      .then((response) => response.json())
+      .then((data) => {
+        if (!data?.ok) throw new Error(String(data?.error ?? "Failed to load held funds"));
+        const nextData: LoadedFundAccountData = {
+          accountId: selectedHoldingAccountId,
+          holdings: Array.isArray(data.positions)
+            ? data.positions.map((position: any) => ({
+                fundCode: String(position.fundCode ?? ""),
+                name: String(position.name ?? position.fundCode ?? ""),
+                units: Number(position.units ?? 0),
+              })).filter((position: FundHoldingOption) => position.fundCode)
+            : [],
+          allEntries: Array.isArray(data.allEntries)
+            ? data.allEntries.map((entry: any) => ({
+                id: String(entry.id ?? ""),
+                date: normalizeYmd(entry.date),
+                createdAt: entry.createdAt ? String(entry.createdAt) : null,
+                fundConfirmDate: normalizeYmd(entry.fundConfirmDate) || null,
+                fundArrivalDate: normalizeYmd(entry.fundArrivalDate) || null,
+                fundCode: String(entry.fundCode ?? ""),
+                fundName: entry.fundName == null ? null : String(entry.fundName),
+                fundSubtype: String(entry.fundSubtype ?? ""),
+                fundUnits: entry.fundUnits == null ? null : Number(entry.fundUnits),
+                source: entry.source == null ? null : String(entry.source),
+                accountId: entry.accountId == null ? null : String(entry.accountId),
+                toAccountId: entry.toAccountId == null ? null : String(entry.toAccountId),
+                amount: entry.amount == null ? 0 : Number(entry.amount),
+                fundSourceEntryId: entry.fundSourceEntryId == null ? null : String(entry.fundSourceEntryId),
+              })).filter((entry: LinkedCandidateEntry) => entry.id || entry.fundCode)
+            : [],
+        };
+        fundAccountDataCacheRef.current.set(selectedHoldingAccountId, nextData);
+        setLoadedFundAccountData(nextData);
+      })
+      .catch((error) => {
+        if (error?.name !== "AbortError") console.error("Load fund holding candidates failed:", error);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setHoldingFundLoading(false);
+      });
+    return () => controller.abort();
+  }, [isFundHoldingAsOfMode, open, propsProvideSelectedFundData, selectedHoldingAccountId]);
 
   // Replay fund units available on the application date for redemption and dividend flows.
   const holdingsAsOfDate = useMemo(() => {
-    if (!allEntries || !isFundHoldingAsOfMode || !applyDate) return null;
-    const investmentAccountId = (toAccountId || defaultAccountId || "").trim();
+    if (!activeAllEntries || !isFundHoldingAsOfMode || !applyDate) return null;
+    const investmentAccountId = selectedHoldingAccountId;
     const excludedEntryIds = new Set<string>();
     if (mode === "edit" && currentEditEntry) {
       for (const id of [currentEditEntry.id, currentEditEntry.transactionId]) {
@@ -1197,7 +1282,7 @@ export function InvestmentFormModal({
       createdAt: string;
       delta: number;
     }> = [];
-    for (const e of allEntries) {
+    for (const e of activeAllEntries) {
       if (!e.fundCode) continue;
       if (investmentAccountId && e.accountId !== investmentAccountId && e.toAccountId !== investmentAccountId) continue;
       const entryId = String(e.id ?? "").trim();
@@ -1240,55 +1325,58 @@ export function InvestmentFormModal({
       map.set(row.code, Math.max(0, nextUnits));
     }
     return map;
-  }, [allEntries, applyDate, currentEditEntry, defaultAccountId, fundUnitsDecimals, isFundHoldingAsOfMode, mode, subtype, toAccountId]);
+  }, [activeAllEntries, applyDate, currentEditEntry, fundUnitsDecimals, isFundHoldingAsOfMode, mode, selectedHoldingAccountId, subtype]);
 
   const isFundRedeemAsOfMode =
     isRedeemLike(subtype) &&
     (productType === "fund" || productType === "money");
 
   const holdingUnitsByFund = useMemo(() => {
-    return new Map((holdings ?? []).map((holding) => [
+    return new Map((activeHoldings ?? []).map((holding) => [
       holding.fundCode,
       roundFundUnits(holding.units ?? 0, fundUnitsDecimals),
     ]));
-  }, [fundUnitsDecimals, holdings]);
+  }, [activeHoldings, fundUnitsDecimals]);
 
   const redeemAvailableUnitsByFund = useMemo(() => {
-    if (!holdingsAsOfDate) return null;
-    const adjusted = new Map(holdingsAsOfDate);
-    if (mode === "edit" && currentEditEntry && isRedeemLike(subtype)) {
+    if (!isFundHoldingAsOfMode) return null;
+    const adjusted = holdingsAsOfDate ? new Map(holdingsAsOfDate) : new Map<string, number>();
+    if (mode === "edit" && currentEditEntry) {
       const originalCode = String(currentEditEntry.fundCode ?? "").trim();
       const originalDate = normalizeYmd(currentEditEntry.date);
       const savedUnits = roundFundUnits(
         Math.abs(Number(currentEditEntry.displayFundUnits ?? currentEditEntry.fundUnits ?? 0)),
         fundUnitsDecimals,
       );
-      if (originalCode && originalDate === applyDate && savedUnits > 0) {
+      const originalAccountMatches =
+        selectedHoldingAccountId &&
+        (currentEditEntry.accountId === selectedHoldingAccountId || currentEditEntry.toAccountId === selectedHoldingAccountId);
+      if (originalCode && originalAccountMatches && (!holdingsAsOfDate || originalDate === applyDate)) {
         adjusted.set(originalCode, Math.max(adjusted.get(originalCode) ?? 0, savedUnits));
       }
     }
     return adjusted;
-  }, [applyDate, currentEditEntry, fundUnitsDecimals, holdingsAsOfDate, mode, subtype]);
+  }, [applyDate, currentEditEntry, fundUnitsDecimals, holdingsAsOfDate, isFundHoldingAsOfMode, mode, selectedHoldingAccountId]);
 
   const effectiveHoldings = useMemo(() => {
-    if (!holdings) return undefined;
-    if (!redeemAvailableUnitsByFund) return holdings;
+    if (!activeHoldings) return undefined;
+    if (!redeemAvailableUnitsByFund) return activeHoldings;
     // Redeem mode prefers units available on the redeem date; when replay is abnormal but the fund is still held, keep current holdings for manual correction.
-    return holdings.map(h => ({
+    return activeHoldings.map(h => ({
       ...h,
       units: (redeemAvailableUnitsByFund.get(h.fundCode) ?? 0) > 0.0001
         ? redeemAvailableUnitsByFund.get(h.fundCode)!
         : (holdingUnitsByFund.get(h.fundCode) ?? 0),
     }));
-  }, [holdingUnitsByFund, holdings, redeemAvailableUnitsByFund]);
+  }, [activeHoldings, holdingUnitsByFund, redeemAvailableUnitsByFund]);
 
   const holdingFundOptions = useMemo<SmartSelectOption[]>(() => {
     if (!isFundHoldingAsOfMode || !redeemAvailableUnitsByFund) return [];
     const names = new Map<string, string>();
-    for (const holding of holdings ?? []) {
+    for (const holding of activeHoldings ?? []) {
       if (holding.name?.trim()) names.set(holding.fundCode, holding.name.trim());
     }
-    for (const entry of allEntries ?? []) {
+    for (const entry of activeAllEntries ?? []) {
       if (entry.fundCode?.trim() && entry.fundName?.trim() && !names.has(entry.fundCode.trim())) {
         names.set(entry.fundCode.trim(), entry.fundName.trim());
       }
@@ -1326,7 +1414,7 @@ export function InvestmentFormModal({
         };
       })
       .sort((left, right) => left.label.localeCompare(right.label, language));
-  }, [allEntries, fundCode, fundName, fundUnitsDecimals, holdingUnitsByFund, holdings, isFundHoldingAsOfMode, isFundRedeemAsOfMode, language, mode, redeemAvailableUnitsByFund, t]);
+  }, [activeAllEntries, activeHoldings, fundCode, fundName, fundUnitsDecimals, holdingUnitsByFund, isFundHoldingAsOfMode, isFundRedeemAsOfMode, language, mode, redeemAvailableUnitsByFund, t]);
 
   function selectHoldingFund(code: string) {
     const nextCode = code.trim();
@@ -1338,10 +1426,10 @@ export function InvestmentFormModal({
       setUnits("");
       return;
     }
-    const holding = holdings?.find((item) => item.fundCode === nextCode);
+    const holding = activeHoldings?.find((item) => item.fundCode === nextCode);
     const availableUnits = redeemAvailableUnitsByFund?.get(nextCode) ?? 0;
     const currentUnits = holdingUnitsByFund.get(nextCode) ?? 0;
-    const historicalName = (allEntries ?? []).find((entry) => entry.fundCode === nextCode && entry.fundName?.trim())?.fundName?.trim();
+    const historicalName = (activeAllEntries ?? []).find((entry) => entry.fundCode === nextCode && entry.fundName?.trim())?.fundName?.trim();
     setFundName(holding?.name ?? historicalName ?? "");
     if (isFundRedeemAsOfMode) {
       setUnits(availableUnits > 0.0001 ? formatUnits(availableUnits) : currentUnits > 0.0001 ? formatUnits(currentUnits) : "");
@@ -1351,7 +1439,7 @@ export function InvestmentFormModal({
   function findFundNameFromHoldings(code: string) {
     const target = code.trim();
     if (!target) return "";
-    const match = (effectiveHoldings ?? holdings ?? []).find((item) => item.fundCode === target);
+    const match = (effectiveHoldings ?? activeHoldings ?? []).find((item) => item.fundCode === target);
     return match?.name?.trim() ?? "";
   }
 
@@ -1771,7 +1859,7 @@ export function InvestmentFormModal({
     }
   }
 
-  // Fund redeem restricts fund/units by redeem date; edit mode keeps saved units to avoid accidental full redemption.
+  // Held-fund flows restrict fund choices by application date; edit mode keeps saved values stable.
   useEffect(() => {
     if (isFundRedeemAsOfMode) {
       if (!redeemAvailableUnitsByFund || !fundCode) return;
@@ -1790,10 +1878,20 @@ export function InvestmentFormModal({
       }
       return;
     }
+    if (isFundHoldingAsOfMode) {
+      if (mode !== "create" || !holdingsAsOfDate || !fundCode) return;
+      const availableUnits = redeemAvailableUnitsByFund?.get(fundCode) ?? 0;
+      if (availableUnits <= 0.0001) {
+        changeFundCode("");
+        setFundName("");
+        setHoldingSearch("");
+      }
+      return;
+    }
     if (!isRedeemLike(subtype) || unitsEditedRef.current || !fundCode || !effectiveHoldings) return;
     const h = effectiveHoldings.find(p => p.fundCode === fundCode);
     if (h && h.units > 0) setUnits(formatUnits(Number(h.units)));
-  }, [applyDate, effectiveHoldings, fundCode, holdingUnitsByFund, isFundRedeemAsOfMode, mode, redeemAvailableUnitsByFund, subtype]);
+  }, [applyDate, effectiveHoldings, fundCode, holdingUnitsByFund, holdingsAsOfDate, isFundHoldingAsOfMode, isFundRedeemAsOfMode, mode, redeemAvailableUnitsByFund, subtype]);
 
   useEffect(() => {
     const code = fundCode.trim();
@@ -2408,7 +2506,7 @@ export function InvestmentFormModal({
                     </>
                   )}
 
-                  {productType === "metal" ? renderMetalFields() : isFundHoldingAsOfMode && redeemAvailableUnitsByFund ? (
+                  {productType === "metal" ? renderMetalFields() : isFundHoldingAsOfMode ? (
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">{t("txForm.fund")}</div>
                       <SmartSelect
@@ -2416,7 +2514,7 @@ export function InvestmentFormModal({
                         value={fundCode}
                         onChange={selectHoldingFund}
                         options={holdingFundOptions}
-                        placeholder={holdingFundOptions.length > 0 ? t("investForm.selectHoldingFund") : t("investForm.noHoldingFundOnDate")}
+                        placeholder={holdingFundLoading ? t("investForm.fetching") : holdingFundOptions.length > 0 ? t("investForm.selectHoldingFund") : t("investForm.noHoldingFundOnDate")}
                         behavior={{ search: true, clearable: false, density: "compact" }}
                       />
                     </div>
@@ -2567,7 +2665,7 @@ export function InvestmentFormModal({
                     </div>
                   )}
 
-                  {productType === "metal" ? renderMetalFields() : isFundRedeemAsOfMode && redeemAvailableUnitsByFund ? (
+                  {productType === "metal" ? renderMetalFields() : isFundRedeemAsOfMode ? (
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">{t("txForm.fund")}</div>
                       <SmartSelect
@@ -2575,7 +2673,7 @@ export function InvestmentFormModal({
                         value={fundCode}
                         onChange={selectHoldingFund}
                         options={holdingFundOptions}
-                        placeholder={holdingFundOptions.length > 0 ? t("investForm.selectHoldingFund") : t("investForm.noRedeemableFund")}
+                        placeholder={holdingFundLoading ? t("investForm.fetching") : holdingFundOptions.length > 0 ? t("investForm.selectHoldingFund") : t("investForm.noRedeemableFund")}
                         behavior={{ search: true, clearable: false, density: "compact" }}
                       />
                     </div>

@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import type { WorkBook } from "xlsx";
 import { useRouter } from "next/navigation";
+import { flushSync } from "react-dom";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
 import { evaluateCalcInputExpression } from "@/components/CalcInput";
@@ -36,6 +37,7 @@ import {
   type StatementImportField,
 } from "@/lib/statement/header-catalog";
 import { normalizeAlipayWorkbookRows } from "@/lib/statement/alipay-template";
+import { buildWechatImportTemplate, normalizeWechatWorkbookRows } from "@/lib/statement/wechat-template";
 import {
   inferSignedAmountInflowSign,
   isCreditCardCreditAdjustmentLikeText,
@@ -136,7 +138,7 @@ type FundRuleEditorRow = {
 };
 
 type ImportTemplate = {
-  key: "normal" | "credit" | "fund";
+  key: "normal" | "credit" | "fund" | "wechat";
   title: string;
   description: string;
   status: string;
@@ -410,6 +412,7 @@ function buildTemplates(t: (key: string, params?: Record<string, string | number
       t("batchImport.guide.normalBill"),
     ],
   },
+  buildWechatImportTemplate(t),
   {
     key: "fund",
     title: t("batchImport.template.fund.title"),
@@ -583,34 +586,67 @@ function formatDateParts(year: number, month: number, day: number) {
   return `${year}-${pad2(month)}-${pad2(day)}`;
 }
 
+function formatTimeParts(hour: number, minute: number, second: number | null) {
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || (second != null && (second < 0 || second > 59))) return "";
+  const time = `${pad2(hour)}:${pad2(minute)}`;
+  return second == null ? time : `${time}:${pad2(second)}`;
+}
+
+function appendNormalizedTime(datePart: string, hourText?: string, minuteText?: string, secondText?: string) {
+  if (!datePart || hourText == null || minuteText == null) return datePart;
+  const timePart = formatTimeParts(Number(hourText), Number(minuteText), secondText == null ? null : Number(secondText));
+  return timePart ? `${datePart} ${timePart}` : datePart;
+}
+
+function dateInputValue(value: string) {
+  return value.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? value;
+}
+
+function mergeDateInputWithExistingTime(dateValue: string, previousValue: string) {
+  const timeSuffix = previousValue.match(/^\d{4}-\d{2}-\d{2}(\s+\d{1,2}:\d{2}(?::\d{2})?)$/)?.[1] ?? "";
+  return `${dateValue}${timeSuffix}`;
+}
+
 function normalizeDateCell(value: string) {
-  const raw = value.trim();
+  const raw = value.trim().replace(/\s+/g, " ");
   if (!raw) return "";
 
   const excelSerial = Number(raw);
   if (Number.isFinite(excelSerial) && excelSerial > 20000 && excelSerial < 80000) {
     const utc = Date.UTC(1899, 11, 30) + excelSerial * 86400000;
     const date = new Date(utc);
-    return formatDateParts(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate());
+    const datePart = formatDateParts(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate());
+    const hour = date.getUTCHours();
+    const minute = date.getUTCMinutes();
+    const second = date.getUTCSeconds();
+    return hour || minute || second ? `${datePart} ${formatTimeParts(hour, minute, second)}` : datePart;
   }
 
   const normalized = raw
-    .replace(/[年月]/g, "-")
-    .replace(/[日号]/g, "")
+    .replace(/[\u5e74\u6708]/g, "-")
+    .replace(/[\u65e5\u53f7]/g, "")
     .replace(/[.\/]/g, "-")
-    .replace(/\s+.*/, "")
     .trim();
 
-  let match = normalized.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-  if (match) return formatDateParts(Number(match[1]), Number(match[2]), Number(match[3]));
+  let match = normalized.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (match) {
+    return appendNormalizedTime(formatDateParts(Number(match[1]), Number(match[2]), Number(match[3])), match[4], match[5], match[6]);
+  }
 
-  match = normalized.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
-  if (match) return formatDateParts(Number(match[3]), Number(match[1]), Number(match[2]));
+  match = normalized.match(/^(\d{1,2})-(\d{1,2})-(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (match) {
+    return appendNormalizedTime(formatDateParts(Number(match[3]), Number(match[1]), Number(match[2])), match[4], match[5], match[6]);
+  }
 
-  match = normalized.match(/^(\d{1,2})-(\d{1,2})-(\d{2})$/);
+  match = normalized.match(/^(\d{1,2})-(\d{1,2})-(\d{2})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
   if (match) {
     const year = Number(match[3]);
-    return formatDateParts(year >= 70 ? 1900 + year : 2000 + year, Number(match[1]), Number(match[2]));
+    return appendNormalizedTime(
+      formatDateParts(year >= 70 ? 1900 + year : 2000 + year, Number(match[1]), Number(match[2])),
+      match[4],
+      match[5],
+      match[6],
+    );
   }
 
   match = normalized.match(/^(\d{4})(\d{2})(\d{2})$/);
@@ -621,7 +657,7 @@ function normalizeDateCell(value: string) {
 
 function normalizeOptionalDateCell(value: string) {
   const normalized = normalizeDateCell(value);
-  return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : "";
+  return /^\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2}(?::\d{2})?)?$/.test(normalized) ? normalized : "";
 }
 
 function isExpenseRefundImportText(source: string) {
@@ -840,14 +876,11 @@ function mergeWorkbookRows(
   workbook: WorkBook,
   fieldHeaders: StatementFieldHeaders = STATEMENT_IMPORT_FIELD_HEADERS,
 ): ImportFileParseResult {
-  const sheetRows = workbook.SheetNames
-    .map((sheetName) => ({ sheetName, rows: trimWorkbookRowsToImportHeader(worksheetRows(XLSX, workbook, sheetName), fieldHeaders) }))
+  const rawSheetRows = workbook.SheetNames
+    .map((sheetName) => ({ sheetName, rows: worksheetRows(XLSX, workbook, sheetName) }))
     .filter((item) => item.rows.length > 0);
-  if (sheetRows.length === 0) {
-    return { rows: [], sourceDataRowCount: 0, workbook: { sheetCount: workbook.SheetNames.length, includedSheetCount: 0 } };
-  }
 
-  const alipayRows = normalizeAlipayWorkbookRows(sheetRows);
+  const alipayRows = normalizeAlipayWorkbookRows(rawSheetRows);
   if (alipayRows) {
     return {
       rows: alipayRows.rows,
@@ -857,6 +890,25 @@ function mergeWorkbookRows(
         includedSheetCount: alipayRows.includedSheetCount,
       },
     };
+  }
+
+  const wechatRows = normalizeWechatWorkbookRows(rawSheetRows);
+  if (wechatRows) {
+    return {
+      rows: wechatRows.rows,
+      sourceDataRowCount: wechatRows.sourceDataRowCount,
+      workbook: {
+        sheetCount: workbook.SheetNames.length,
+        includedSheetCount: wechatRows.includedSheetCount,
+      },
+    };
+  }
+
+  const sheetRows = rawSheetRows
+    .map((item) => ({ sheetName: item.sheetName, rows: trimWorkbookRowsToImportHeader(item.rows, fieldHeaders) }))
+    .filter((item) => item.rows.length > 0);
+  if (sheetRows.length === 0) {
+    return { rows: [], sourceDataRowCount: 0, workbook: { sheetCount: workbook.SheetNames.length, includedSheetCount: 0 } };
   }
 
   const groups = new Map<string, typeof sheetRows>();
@@ -907,6 +959,16 @@ async function parseImportFile(
   }
   const rows = parseCsv(await file.text());
   return { rows, sourceDataRowCount: Math.max(0, rows.length - 1) };
+}
+
+function waitForBrowserPaint() {
+  return new Promise<void>((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        setTimeout(resolve, 0);
+      });
+    });
+  });
 }
 
 function buildFundHeaderIndex(headers: string[]) {
@@ -1482,10 +1544,7 @@ export default function BatchImportPage() {
     tags: t(replaceFieldLabelKeys.tags),
     remark: t(replaceFieldLabelKeys.remark),
   }), [t]);
-  const visibleTemplates = useMemo<ImportTemplate[]>(() => {
-    void buildTemplates;
-    return [];
-  }, []);
+  const visibleTemplates = useMemo<ImportTemplate[]>(() => buildTemplates(t), [t]);
   const typeOptions = useMemo(
     () => [
       { value: "", label: t("batchImport.selectType") },
@@ -1905,6 +1964,7 @@ export default function BatchImportPage() {
     }
 
     setUploading(true);
+    await waitForBrowserPaint();
     try {
       const res = await fetch("/api/v1/fund/import", {
         method: "POST",
@@ -1954,21 +2014,23 @@ export default function BatchImportPage() {
       type: file.type || t("batchImport.fileTypeUnknown"),
       sizeKb: Math.round(file.size / 1024),
     });
-    setActiveImportKind("normal");
-    setUploadDebug(`${formatText("batchImport.fileSelectedStart", { fileInfo })}\n${traceLabel}`);
-    setMessage(formatText("batchImport.readingFileName", { name: file.name }));
-    setImportedCount(0);
-    setUploading(true);
-    setItems([]);
-    setFundUploadItems([]);
-    setFundPreviewItems([]);
-    setFundRuleRows([]);
-    setFundRulesDirty(false);
-    setDrafts({});
-    setSelected(new Set());
-    setFundSelected(new Set());
-    setShowImportIssuesOnly(false);
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    flushSync(() => {
+      setActiveImportKind("normal");
+      setUploadDebug(`${formatText("batchImport.fileSelectedStart", { fileInfo })}\n${traceLabel}`);
+      setMessage(formatText("batchImport.readingFileName", { name: file.name }));
+      setImportedCount(0);
+      setUploading(true);
+      setItems([]);
+      setFundUploadItems([]);
+      setFundPreviewItems([]);
+      setFundRuleRows([]);
+      setFundRulesDirty(false);
+      setDrafts({});
+      setSelected(new Set());
+      setFundSelected(new Set());
+      setShowImportIssuesOnly(false);
+    });
+    await waitForBrowserPaint();
     try {
       const latestCategoryRuleSamples = await refreshCategoryRuleSamples().catch(() => categoryRuleSamples);
       const parseResult = await parseImportFile(file, statementFieldHeaders);
@@ -2073,24 +2135,26 @@ export default function BatchImportPage() {
       type: file.type || t("batchImport.fileTypeUnknown"),
       sizeKb: Math.round(file.size / 1024),
     });
-    setActiveImportKind("fund");
-    setUploadDebug(formatText("batchImport.fileSelectedStart", { fileInfo }));
-    setMessage(formatText("batchImport.readingFileName", { name: file.name }));
-    setUploading(true);
-    setImporting(false);
-    setImportedCount(0);
-    setItems([]);
-    setFundUploadItems([]);
-    setDrafts({});
-    setSelected(new Set());
-    setFundPreviewItems([]);
-    setFundRuleRows([]);
-    setFundRulesDirty(false);
-    setFundSelected(new Set());
-    setEditingCell(null);
-    setShowImportIssuesOnly(false);
+    flushSync(() => {
+      setActiveImportKind("fund");
+      setUploadDebug(formatText("batchImport.fileSelectedStart", { fileInfo }));
+      setMessage(formatText("batchImport.readingFileName", { name: file.name }));
+      setUploading(true);
+      setImporting(false);
+      setImportedCount(0);
+      setItems([]);
+      setFundUploadItems([]);
+      setDrafts({});
+      setSelected(new Set());
+      setFundPreviewItems([]);
+      setFundRuleRows([]);
+      setFundRulesDirty(false);
+      setFundSelected(new Set());
+      setEditingCell(null);
+      setShowImportIssuesOnly(false);
+    });
 
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await waitForBrowserPaint();
     let previewRequested = false;
     try {
       const parseResult = await parseImportFile(file);
@@ -3177,21 +3241,37 @@ export default function BatchImportPage() {
         const item = items[idx];
         const draft = drafts[idx] ?? {};
         const date = draft.date ?? item.date ?? "";
+        const inputDate = dateInputValue(date);
         const editingField = editingCell?.idx === idx ? editingCell.field : null;
         return (
           <div className="whitespace-nowrap tabular-nums text-slate-700" onDoubleClick={() => openCellEdit(idx, "date")} title={t("batchImport.doubleClickToEdit")}>
             {editingField === "date" ? (
               <DateStepper
-                value={date}
+                value={inputDate}
                 autoFocus
                 onBlur={closeCellEdit}
                 onKeyDown={(event) => { if (event.key === "Enter" || event.key === "Escape") closeCellEdit(); }}
-                onChange={(value) => updateDraft(idx, "date", value)}
+                onChange={(value) => updateDraft(idx, "date", mergeDateInputWithExistingTime(value, date))}
                 className="h-6 w-28 rounded border border-blue-300 px-1.5 text-xs focus:outline-none"
               />
             ) : date}
           </div>
         );
+      },
+    },
+    {
+      key: "postedAt",
+      label: t("detail.column.postedAt"),
+      width: 116,
+      minWidth: 96,
+      hideable: true,
+      defaultHidden: true,
+      filterKind: "dateRange",
+      filterText: (row) => getItem(row.idx).postedAt || "-",
+      sortValue: (row) => getItem(row.idx).postedAt || "",
+      render: (row) => {
+        const postedAt = getItem(row.idx).postedAt || "";
+        return <span className="whitespace-nowrap tabular-nums text-slate-700">{postedAt || "-"}</span>;
       },
     },
     {
@@ -3475,6 +3555,7 @@ export default function BatchImportPage() {
       label: t("batchImport.field.counterAccount"),
       width: 220,
       minWidth: 150,
+      hideable: true,
       filterText: (row) => {
         const item = getItem(row.idx);
         const { counterAccount } = previewAccountValuesForItem(item);
@@ -3565,6 +3646,7 @@ export default function BatchImportPage() {
       label: t("batchImport.field.institution"),
       width: 150,
       minWidth: 110,
+      hideable: true,
       filterText: (row) => getItem(row.idx).institution || t("batchImport.emptyValue"),
       render: (row) => {
         const idx = row.idx;
@@ -3595,6 +3677,8 @@ export default function BatchImportPage() {
       label: t("batchImport.field.tags"),
       width: 170,
       minWidth: 120,
+      hideable: true,
+      defaultHidden: true,
       filterKind: "text",
       filterText: (row) => getItem(row.idx).tags || t("batchImport.emptyValue"),
       render: (row) => {
@@ -3729,6 +3813,10 @@ export default function BatchImportPage() {
     Boolean(message) ||
     Boolean(uploadDebug) ||
     Boolean(importCompletion);
+  const showUploadProcessingOverlay = uploading && (
+    (activeImportKind === "normal" && items.length === 0) ||
+    (activeImportKind === "fund" && fundPreviewItems.length === 0)
+  );
 
   useEffect(() => {
     if (!pendingFileChecked || hasVisibleImportWork) return;
@@ -3806,9 +3894,24 @@ export default function BatchImportPage() {
         </div>
       )}
 
-      {uploading && (
+      {uploading && !showUploadProcessingOverlay && (
         <div className="mx-4 mt-4 p-3 bg-blue-50 border border-blue-200 rounded-md text-blue-700 text-sm">
           {t("batchImport.loadingOverlay")}
+        </div>
+      )}
+
+      {showUploadProcessingOverlay && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/45 px-4 py-6">
+          <div role="status" aria-live="polite" className="w-full max-w-md rounded-xl border border-blue-200 bg-white p-5 text-sm shadow-2xl">
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-blue-200 border-t-blue-600" />
+              <div className="min-w-0">
+                <div className="text-base font-semibold text-slate-800">{t("batchImport.processingDataTitle")}</div>
+                <div className="mt-1 leading-5 text-slate-600">{t("batchImport.loadingOverlay")}</div>
+                <div className="mt-2 text-xs leading-5 text-slate-500">{t("batchImport.processingDataHint")}</div>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -3847,7 +3950,7 @@ export default function BatchImportPage() {
                 >
                   {template.downloadFormat === "xlsx" ? t("batchImport.downloadXlsxTemplate") : t("batchImport.downloadCsvTemplate")}
                 </button>
-                {template.key === "normal" && (
+                {(template.key === "normal" || template.key === "wechat") && (
                   <label className="px-3 py-1.5 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700 cursor-pointer inline-flex items-center">
                     {t("batchImport.uploadBillFile")}
                     <input
@@ -3901,7 +4004,7 @@ export default function BatchImportPage() {
         </section>
       </div>
 
-      {activeImportKind === "normal" && (items.length > 0 || uploading) && (
+      {activeImportKind === "normal" && (items.length > 0 || (uploading && !showUploadProcessingOverlay)) && (
         <div className="fixed inset-0 z-50 bg-slate-900/40 p-4 flex items-center justify-center">
           <div data-smart-select-boundary className="h-[82vh] min-h-[420px] w-[80rem] min-w-[720px] max-w-[calc(100vw-2rem)] resize overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl flex flex-col">
             <div className="shrink-0 px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3">
@@ -4073,14 +4176,13 @@ export default function BatchImportPage() {
                 compactRows
                 showFilters={false}
                 sortable={false}
-                showColumnVisibilityButton={false}
               />
             </div>
           </div>
         </div>
       )}
 
-      {activeImportKind === "fund" && (fundPreviewItems.length > 0 || uploading) && (
+      {activeImportKind === "fund" && (fundPreviewItems.length > 0 || (uploading && !showUploadProcessingOverlay)) && (
         <div className="fixed inset-0 z-50 bg-slate-900/40 p-4 flex items-center justify-center">
           <div data-smart-select-boundary className="h-[82vh] min-h-[420px] w-[80rem] min-w-[720px] max-w-[calc(100vw-2rem)] resize overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl flex flex-col">
             <div className="shrink-0 px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3">

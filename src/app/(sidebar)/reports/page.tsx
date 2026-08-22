@@ -467,14 +467,16 @@ export default async function ReportsPage({
               <ReportRefreshButton />
               <MissingFundNavPrompt items={investmentReport.missingNavs} className="ml-auto" />
             </div>
-            <InvestmentProfitReport
-              period={profitPeriod}
-              year={profitYear}
-              month={profitMonth}
-              rows={investmentReport.rows}
-              totals={investmentReport.totals}
-              isRedUp={colorScheme === "red_up_green_down"}
-            />
+            <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+              <InvestmentProfitReport
+                period={profitPeriod}
+                year={profitYear}
+                month={profitMonth}
+                rows={investmentReport.rows}
+                totals={investmentReport.totals}
+                isRedUp={colorScheme === "red_up_green_down"}
+              />
+            </div>
           </div>
         </div>
       </div>

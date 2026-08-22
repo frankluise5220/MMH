@@ -953,6 +953,7 @@ export function StatementImportPreviewDialog({
       label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.postedDate),
       width: 110,
       minWidth: 96,
+      hideable: true,
       filterKind: "dateRange",
       filterText: (row) => normalizeDateOnlyText(row.item.postedDate) || t("batchImport.emptyValue"),
       sortValue: (row) => normalizeDateOnlyText(row.item.postedDate) || "",
@@ -1046,6 +1047,7 @@ export function StatementImportPreviewDialog({
       label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.counterAccount),
       width: 170,
       minWidth: 120,
+      hideable: true,
       filterText: (row) => previewAccountDisplayText(counterAccountValue(row.item)) || t("batchImport.emptyValue"),
       render: (row) => {
         if (row.item.type !== "transfer") return <span className="text-slate-400">-</span>;
@@ -1109,6 +1111,7 @@ export function StatementImportPreviewDialog({
       label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.institution),
       width: 118,
       minWidth: 90,
+      hideable: true,
       filterText: (row) => cleanText(row.item.institution || row.item.counterparty) || t("batchImport.emptyValue"),
       render: (row) => renderTextEditCell(row, "institution", cleanText(row.item.institution || row.item.counterparty), t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.institution) })),
     },

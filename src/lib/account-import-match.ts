@@ -408,6 +408,52 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
     return matches.length === 1 ? matches[0].account : null;
   }
 
+  function pickUniqueThirdPartyPaymentProduct(raw: string) {
+    const key = normalizeImportAccountMatchKey(raw);
+    if (!key) return null;
+    const productGroups = [
+      {
+        bank: "\u5fae\u4fe1",
+        aliases: ["\u5fae\u4fe1\u96f6\u94b1\u901a", "\u5fae\u4fe1\u96f6\u94b1\u5b9d", "\u96f6\u94b1\u901a", "\u96f6\u94b1\u5b9d"],
+      },
+      {
+        bank: "\u5fae\u4fe1",
+        aliases: ["\u5fae\u4fe1\u96f6\u94b1", "\u96f6\u94b1"],
+        excludes: ["\u96f6\u94b1\u901a", "\u96f6\u94b1\u5b9d"],
+      },
+      {
+        bank: "\u652f\u4ed8\u5b9d",
+        aliases: ["\u652f\u4ed8\u5b9d\u4f59\u989d\u5b9d", "\u4f59\u989d\u5b9d"],
+      },
+      {
+        bank: "\u652f\u4ed8\u5b9d",
+        aliases: ["\u652f\u4ed8\u5b9d\u4f59\u989d", "\u8d26\u6237\u4f59\u989d", "\u4f59\u989d"],
+        excludes: ["\u4f59\u989d\u5b9d"],
+      },
+      {
+        bank: "\u652f\u4ed8\u5b9d",
+        aliases: ["\u652f\u4ed8\u5b9d\u82b1\u5457", "\u82b1\u5457"],
+      },
+    ];
+
+    for (const group of productGroups) {
+      const aliasKeys = group.aliases.map(normalizeImportAccountMatchKey).filter(Boolean);
+      if (!aliasKeys.some((aliasKey) => key.includes(aliasKey))) continue;
+      const excludeKeys = (group.excludes ?? []).map(normalizeImportAccountMatchKey).filter(Boolean);
+      if (excludeKeys.some((excludeKey) => key.includes(excludeKey))) continue;
+
+      const bankKeys = expandBankName(group.bank).map(normalizeImportAccountMatchKey).filter(Boolean);
+      const matches = indexed.filter((item) =>
+        bankKeyMatches(item, bankKeys) &&
+        item.keys.some((candidateKey) => aliasKeys.includes(candidateKey)),
+      );
+      if (matches.length === 1) return matches[0].account;
+      if (matches.length > 1) return null;
+    }
+
+    return null;
+  }
+
   return (accountName: string | undefined): ImportAccountMatchResult<T> => {
     const raw = String(accountName ?? "").trim();
     if (!raw) return result(null, [], { targetKind: null, targetBankNames: [] });
@@ -487,6 +533,11 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
 
     const alipayBalanceProduct = pickAlipayBalanceProduct(raw);
     if (alipayBalanceProduct) return result(alipayBalanceProduct, [], { targetKind, targetBankNames });
+
+    const uniqueThirdPartyPaymentProduct = pickUniqueThirdPartyPaymentProduct(raw);
+    if (uniqueThirdPartyPaymentProduct) {
+      return result(uniqueThirdPartyPaymentProduct, [], { targetKind, targetBankNames });
+    }
 
     if (targetKind && targetBankKeys.length > 0) {
       const byBankAndKind = indexed.filter((item) => {

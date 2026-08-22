@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { flushSync } from "react-dom";
 import { ChevronDown, Download, FileSpreadsheet, MailSearch, Upload } from "lucide-react";
 import { CreditBillMailImportDialog } from "@/components/CreditBillMailImportButton";
 import { StatementImportPreviewDialog, type StatementImportPreviewItem } from "@/components/StatementImportPreviewDialog";
@@ -503,6 +504,16 @@ function filenameWithDateRange(filename: string, start: string, end: string, fal
   return filename.replace(/\.xlsx$/i, `-${suffix}.xlsx`);
 }
 
+function waitForBrowserPaint() {
+  return new Promise<void>((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        setTimeout(resolve, 0);
+      });
+    });
+  });
+}
+
 export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps) {
   const { t } = useI18n();
   const router = useRouter();
@@ -515,6 +526,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
   const [excelExportEnd, setExcelExportEnd] = useState("");
   const [excelExportError, setExcelExportError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [processingFile, setProcessingFile] = useState(false);
   const [status, setStatus] = useState("");
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewItems, setPreviewItems] = useState<StatementImportPreviewItem[]>([]);
@@ -585,9 +597,13 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
   }
 
   async function handleImportFile(file: File) {
-    setOpen(false);
-    setBusy(true);
-    setStatus(t("viewImport.importing"));
+    flushSync(() => {
+      setOpen(false);
+      setBusy(true);
+      setProcessingFile(true);
+      setStatus(t("viewImport.importing"));
+    });
+    await waitForBrowserPaint();
     try {
       if (props.kind === "normal") {
         const latestRecognitionSamples = await refreshRecognitionSamples().catch(() => recognitionSamples);
@@ -664,6 +680,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
       setStatus(t("viewImport.failed", { reason: error instanceof Error ? error.message : String(error) }));
     } finally {
       setBusy(false);
+      setProcessingFile(false);
       if (inputRef.current) inputRef.current.value = "";
     }
   }
@@ -759,6 +776,20 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
 
   return (
     <div ref={menuRef} className={["relative inline-flex items-center", props.className ?? ""].filter(Boolean).join(" ")}>
+      {processingFile ? (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/45 px-4 py-6">
+          <div role="status" aria-live="polite" className="w-full max-w-md rounded-xl border border-blue-200 bg-white p-5 text-sm shadow-2xl">
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-blue-200 border-t-blue-600" />
+              <div className="min-w-0">
+                <div className="text-base font-semibold text-slate-800">{t("batchImport.processingDataTitle")}</div>
+                <div className="mt-1 leading-5 text-slate-600">{t("batchImport.loadingOverlay")}</div>
+                <div className="mt-2 text-xs leading-5 text-slate-500">{t("batchImport.processingDataHint")}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <button
         type="button"
         data-basic-detail-import={props.dataBasicDetailImport ? true : undefined}

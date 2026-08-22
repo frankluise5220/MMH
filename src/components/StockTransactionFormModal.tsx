@@ -1052,9 +1052,6 @@ export function StockTransactionFormModal({
       setStockLookupLoading(true);
       try {
         const lookupMarket = inferStockMarketFromCode(code);
-        // Only query locally saved stock master data / holdings / transaction names here;
-        // do not trigger the external stock query API. On the first buy save, the server
-        // completes the name via resolveOrCreateStockSecurity and caches it.
         const params = new URLSearchParams({ market: lookupMarket, code });
         const res = await fetch(`/api/v1/stocks/securities?${params.toString()}`, {
           signal: controller.signal,

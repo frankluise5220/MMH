@@ -257,8 +257,9 @@ function rowMatchesColumnFilter<T>(row: T, column: AdvancedDataTableColumn<T>, v
   const value = rawValue.trim() || "-";
   if (column.filterKind === "dateRange") {
     const [from = "", to = ""] = values ?? [];
-    if (from && value < from) return false;
-    if (to && value > to) return false;
+    const dateValue = value.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? value;
+    if (from && dateValue < from) return false;
+    if (to && dateValue > to) return false;
     return true;
   }
   if (column.filterKind === "numberRange") {

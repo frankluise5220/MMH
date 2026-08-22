@@ -393,7 +393,7 @@ SQLite 恢复兼容建表时，`TxRecord` 只是 Prisma 模型名，实际表名
 
 发布前至少确认：
 
-- 对外发布必须同时覆盖 GitHub/GHCR 的 Docker 更新链路、飞牛 x86/ARM64 `.fpk` 更新链路、群晖 x86_64/ARM64 `.spk` 更新链路和随 Release 自动构建的 Android APK。各路径版本号、构建时间和已验证结果一致后，才算发布完成。
+- 对外发布必须同时覆盖 GitHub/GHCR 的 Docker 更新链路、飞牛 x86/ARM64 `.fpk` 更新链路、群晖 x86_64/ARM64 `.spk` 更新链路；Android APK 只在本次 release 包含 `android/` 目录变更时随 Release 自动构建。各路径版本号、构建时间和已验证结果一致后，才算发布完成。
 - 对外版本号统一使用 `package.json` 中的 `0.1.x`。每次正式公开 push/release 前先运行 `npm run release:version`，只递增一级 patch，例如 `0.1.9` -> `0.1.10`；GitHub Release tag 使用 `v0.1.x`，GHCR 镜像 tag、应用版本、全部飞牛 `.fpk` manifest、飞牛源元数据和群晖 `.spk` INFO 都必须一致，不能再使用单独的 `-fnos` 或 `-synology` 版本号。
 - 发布前运行 `npm run check:release-version`，确认 `package.json`、`package-lock.json`、Docker workflow、飞牛 workflow、群晖 workflow 和飞牛源元数据没有版本分叉。
 - 新接口是否补了 route JSDoc 和 `docs/client-api.md`。

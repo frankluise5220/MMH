@@ -35,6 +35,16 @@ const ALIPAY_PAYMENT_ACCOUNT_HEADERS = [
   "\u6263\u6b3e\u65b9\u5f0f",
 ];
 
+const ALIPAY_OWNER_HEADERS = [
+  "\u59d3\u540d",
+  "\u7528\u6237",
+  "\u7528\u6237\u540d",
+  "\u6240\u6709\u4eba",
+  "\u8d26\u6237\u6240\u6709\u4eba",
+  "\u8d26\u53f7\u59d3\u540d",
+  "\u8d26\u6237\u540d",
+];
+
 function cleanText(value: unknown) {
   return String(value ?? "").trim();
 }
@@ -82,13 +92,64 @@ function parseAmount(value: string) {
   return Number.isFinite(amount) && amount > 0 ? String(amount) : "";
 }
 
-function normalizePaymentAccount(value: string) {
+function unwrapHeaderValue(value: string) {
+  return cleanText(value)
+    .replace(/^[\s\[\(\uff08\u3010\u3014]+/, "")
+    .replace(/[\s\]\)\uff09\u3011\u3015]+$/, "")
+    .trim();
+}
+
+function isUsefulOwnerHint(value: string) {
+  if (!value || value.length > 40) return false;
+  return !/^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}/.test(value) &&
+    !/\u8d26\u5355|\u5bfc\u51fa|\u8d77\u59cb|\u7ec8\u6b62|\u4ea4\u6613|\u65f6\u95f4|\u652f\u4ed8\u5b9d/.test(value);
+}
+
+function normalizeAlipayOwnerHint(value: string) {
+  const hint = unwrapHeaderValue(value);
+  return isUsefulOwnerHint(hint) ? hint : "";
+}
+
+function findAlipayOwnerHint(rows: string[][], headerRowIndex: number) {
+  for (const row of rows.slice(0, headerRowIndex)) {
+    for (let index = 0; index < row.length; index += 1) {
+      const cell = cleanText(row[index]);
+      if (!cell) continue;
+
+      const directLabel = ALIPAY_OWNER_HEADERS.some((header) => normalizeHeader(cell) === normalizeHeader(header));
+      if (directLabel) {
+        const nextValue = normalizeAlipayOwnerHint(row.slice(index + 1).map(cleanText).find(Boolean) ?? "");
+        if (nextValue) return nextValue;
+      }
+
+      const labelValueMatch = cell.match(/^([^:\uff1a]{1,16})[:\uff1a]\s*(.+)$/);
+      if (!labelValueMatch) continue;
+      const label = labelValueMatch[1] ?? "";
+      const value = labelValueMatch[2] ?? "";
+      const matchesOwnerLabel = ALIPAY_OWNER_HEADERS.some((header) => normalizeHeader(label) === normalizeHeader(header));
+      if (!matchesOwnerLabel) continue;
+      const hint = normalizeAlipayOwnerHint(value);
+      if (hint) return hint;
+    }
+  }
+  return "";
+}
+
+function isAlipayOwnedPaymentAccount(value: string) {
+  const key = normalizeHeader(value).replace(/[.\u00b7\u2022\-_]/g, "");
+  return /^(?:\u4f59\u989d|\u652f\u4ed8\u5b9d\u4f59\u989d|\u8d26\u6237\u4f59\u989d|\u4f59\u989d\u5b9d|\u82b1\u5457)$/.test(key);
+}
+
+function normalizePaymentAccount(value: string, ownerHint: string) {
   const raw = cleanText(value);
   if (!raw) return "";
   const [primary, ...rest] = raw.split(/[&\uff0b+]/).map((part) => part.trim()).filter(Boolean);
   if (primary && rest.join(" ").match(/\u7acb\u51cf|\u4f18\u60e0|\u7ea2\u5305|\u62b5\u6263/)) return primary;
-  if (/^\u82b1\u5457\u5206\u671f/.test(raw)) return "\u82b1\u5457";
-  return raw;
+  const normalized = /^\u82b1\u5457\u5206\u671f/.test(raw) ? "\u82b1\u5457" : raw;
+  if (ownerHint && isAlipayOwnedPaymentAccount(normalized)) {
+    return `${ownerHint}${ALIPAY_INSTITUTION}${normalized.replace(/^\u652f\u4ed8\u5b9d/, "")}`;
+  }
+  return normalized;
 }
 
 function isIgnoredStatus(value: string, flow: string) {
@@ -178,6 +239,7 @@ function normalizeAlipaySheetRows(sheet: StatementWorkbookSheetRows) {
 
   const headers = compactRows[headerRowIndex] ?? [];
   const dataRows = compactRows.slice(headerRowIndex + 1);
+  const ownerHint = findAlipayOwnerHint(compactRows, headerRowIndex);
   const timeIndex = findHeaderIndex(headers, ["\u4ea4\u6613\u65f6\u95f4"]);
   const categoryIndex = findHeaderIndex(headers, ["\u4ea4\u6613\u5206\u7c7b"]);
   const counterpartyIndex = (() => {
@@ -204,7 +266,7 @@ function normalizeAlipaySheetRows(sheet: StatementWorkbookSheetRows) {
     if (!date || !amount || isIgnoredStatus(status, flow)) return [];
 
     const rawAccount = readCell(row, accountIndex);
-    const account = normalizePaymentAccount(rawAccount);
+    const account = normalizePaymentAccount(rawAccount, ownerHint);
     const counterparty = normalizeAlipayCounterparty(readCell(row, counterpartyIndex));
     const category = readCell(row, categoryIndex);
     const description = readCell(row, descriptionIndex);
