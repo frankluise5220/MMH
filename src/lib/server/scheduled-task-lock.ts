@@ -19,7 +19,7 @@ export async function acquireScheduledTaskPlanLock(tx: Prisma.TransactionClient,
     // running on SQLite despite the guard above), skip the lock rather than
     // crashing. SQLite has its own transaction isolation so the advisory
     // lock is not needed. Re-throw genuine PostgreSQL errors.
-    const msg = String(error?.message ?? error);
+    const msg = String((error as { message?: unknown } | null | undefined)?.message ?? error);
     if (msg.includes("hashtext") || msg.includes("no such function")) {
       return;
     }

@@ -44,3 +44,5 @@ https://raw.githubusercontent.com/frankluise5220/MMH/main/deploy/fnos/repository
 `apps.example.json` 是字段草案。正式字段以飞牛应用源规范为准；但原则保持不变：同一个 `id=mmh` 和同一个 `version=0.1.x` 下，源索引必须能给 x86 与 arm64 机器拿到对应架构的 `.fpk`。
 
 更新时，源或应用中心应让飞牛在已安装的 `appname=mmh` 上直接安装更高版本、同架构的 `.fpk`。不要把常规更新做成先卸载再安装；卸载只属于用户主动删除应用或异常恢复流程。
+
+版本历史只保留最近 5 次 release。发布新版本时，仓库索引和 VPS 上对应的旧版本文件都应同步清理，避免旧版本无限堆积。

@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import {
   defaultStockCurrencyForMarket,
   inferStockExchangeFromCode,
+  inferStockMarketFromCode,
   normalizeStockCode,
   normalizeStockMarket,
 } from "@/lib/stock/market";
@@ -138,7 +139,7 @@ export async function getStockSecurityByCode(
     market?: string;
     stockCode: string;
   },
-): Promise<StockSecurityLookupItem> {
+): Promise<StockSecurityLookupItem | null> {
   const stockCode = normalizeStockCode(params.stockCode);
   const market = params.market ? normalizeStockMarket(params.market) : inferStockMarketFromCode(stockCode);
   if (!stockCode) return null;

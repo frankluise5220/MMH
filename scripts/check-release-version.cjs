@@ -35,6 +35,19 @@ function fnosDownloadUrls(version) {
   };
 }
 
+function parseVersion(version) {
+  const match = /^0\.1\.(\d+)$/.exec(String(version || "").trim());
+  if (!match) return null;
+  return Number(match[1]);
+}
+
+function compareVersions(left, right) {
+  const leftPatch = parseVersion(left);
+  const rightPatch = parseVersion(right);
+  if (leftPatch === null || rightPatch === null) return 0;
+  return leftPatch - rightPatch;
+}
+
 function getFndepotRelease(payload, version) {
   return payload.apps?.mmh?.releases?.[version];
 }
@@ -74,6 +87,11 @@ const fndepotFnpack = readJson("deploy/fnos/repository/fnpack.json");
 const fndepotApp = fndepotFnpack.apps?.mmh;
 expect(fndepotApp, "deploy/fnos/repository/fnpack.json must contain the mmh app entry under apps for FnDepot.");
 if (fndepotApp) {
+  const releaseVersions = Object.keys(fndepotApp.releases || {})
+    .filter((releaseVersion) => parseVersion(releaseVersion) !== null)
+    .sort(compareVersions);
+  expect(releaseVersions.length <= 5, "deploy/fnos/repository/fnpack.json must keep at most the latest 5 release versions.");
+  expect(releaseVersions.every((releaseVersion, index, list) => index === 0 || compareVersions(list[index - 1], releaseVersion) < 0), "deploy/fnos/repository/fnpack.json release versions must stay in ascending version order.");
   const fndepotRelease = fndepotApp.releases?.[version];
   expect(fndepotRelease, `deploy/fnos/repository/fnpack.json must contain a release entry for v${version}.`);
   if (fndepotRelease) {

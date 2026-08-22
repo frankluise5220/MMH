@@ -38,6 +38,7 @@ appname=mmh
 - `.github/workflows/fnos-release.yml` 发布时用 x86/arm64 矩阵构建并上传正式 `release-artifacts/fnos/*.fpk`。
 - `.github/workflows/fnos-stage.yml` 生成 x86/arm64 调试用 FPK 工程归档；该归档不能作为用户安装包。
 - `deploy/fnos/repository/apps.example.json` 只保留一个应用条目，`download_url` 指向 x86_64 包，`download_urls` 只提供 x86_64 和 arm64 下载地址。
+- `deploy/fnos/repository/fnpack.json` 的历史 release 只保留最近 5 次版本；新版本发布后，旧的仓库索引和 VPS 文件要同步裁掉。
 - 系统更新页在 `MMH_DEPLOY_TARGET=fnos` 时显示飞牛应用包更新方式，并拒绝在飞牛版内执行 Git/Docker 更新。
 
 ## 启动链

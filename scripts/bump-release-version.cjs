@@ -22,6 +22,10 @@ function parseVersion(version) {
   return Number(match[1]);
 }
 
+function compareVersions(left, right) {
+  return parseVersion(left) - parseVersion(right);
+}
+
 function nextVersion(current) {
   const patch = parseVersion(current);
   return `0.1.${patch + 1}`;
@@ -53,6 +57,13 @@ function fnosFndepotPackages(version) {
       download_url: urls.arm64,
     },
   };
+}
+
+function pruneReleaseHistory(releases, keepCount = 5) {
+  const ordered = Object.entries(releases || {})
+    .filter(([version]) => versionPattern.test(version))
+    .sort(([left], [right]) => compareVersions(left, right));
+  return Object.fromEntries(ordered.slice(-keepCount));
 }
 
 function updatePackageJson(version) {
@@ -110,7 +121,7 @@ function updateFndepotFnpackJson(version, releaseNotes) {
     os_min_version: current.os_min_version || "0.9.0",
     packages: fnosFndepotPackages(version),
   };
-  app.releases = releases;
+  app.releases = pruneReleaseHistory(releases);
   writeJson(file, payload);
 }
 
