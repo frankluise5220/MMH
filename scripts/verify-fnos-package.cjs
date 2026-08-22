@@ -269,7 +269,7 @@ expect(/createTableColumnDefinitionsFromStatement/.test(buildScript) && /SQLite 
 expect(/canAddColumnFromCreateTableDefinition/.test(buildScript) && /SQLite schema column skipped from native-init.sql because it cannot be safely added/.test(buildScript), "fnOS SQLite column backfill must skip unsafe column transforms instead of guessing destructive migrations.");
 expect(/CREATE INDEX IF NOT EXISTS/.test(buildScript) && /createIndexStatementIfMissing/.test(buildScript), "fnOS SQLite schema backfill must make native-init.sql indexes idempotent for existing databases.");
 expect(/indexColumnsExist/.test(buildScript) && /SQLite schema index skipped from native-init.sql/.test(buildScript), "fnOS SQLite schema backfill must skip incompatible indexes instead of failing existing databases.");
-expect(/startsWith\("file:"\)/.test(scheduledTaskLock) && /if \(isSqliteDatabaseUrl\(\)\) return;\s*await tx\.\$executeRaw`SELECT pg_advisory_xact_lock/.test(scheduledTaskLock), "Scheduled-task locks must skip PostgreSQL advisory-lock SQL on fnOS SQLite.");
+expect(/startsWith\("file:"\)/.test(scheduledTaskLock) && /if \(isSqliteDatabaseUrl\(\)\) return;/.test(scheduledTaskLock) && /pg_advisory_xact_lock/.test(scheduledTaskLock) && /catch \(error\)/.test(scheduledTaskLock), "Scheduled-task locks must skip PostgreSQL advisory-lock SQL on fnOS SQLite with defense-in-depth try-catch.");
 expect(/20260812_account_note/.test(buildScript) && /addColumnIfMissing\(db, "Account", "note", "TEXT"\)/.test(buildScript), "fnOS SQLite migrations must add Account.note to existing databases without rebuilding tables.");
 expect(/20260812_user_session_days/.test(buildScript) && /addColumnIfMissing\(db, "UserSettings", "sessionDays", "INTEGER NOT NULL DEFAULT 30"\)/.test(buildScript), "fnOS SQLite migrations must add UserSettings.sessionDays to existing databases before restore writes user settings.");
 expect(/20260811_stock_domain/.test(buildScript) && /createStockDomainTables\(db\)/.test(buildScript), "fnOS SQLite migrations must create stock core tables for existing databases.");
@@ -280,6 +280,38 @@ expect(/20260813_zz_unify_statement_learning_rules/.test(buildScript), "fnOS SQL
 expect(/20260814_fix_property_cash_entry_fk/.test(buildScript) && /rebuildPropertyTransactionsCashEntryFk/.test(buildScript), "fnOS SQLite migrations must rebuild property_transactions when cashEntryId still references TxRecord.");
 expect(/20260819_add_category_sort_order/.test(buildScript) && /addCategorySortOrder\(db\)/.test(buildScript), "fnOS SQLite migrations must add Category.sortOrder for existing databases.");
 expect(/Category_householdId_type_parentId_sortOrder_idx/.test(buildScript), "fnOS SQLite Category.sortOrder migration must create the ordering index for existing databases.");
+// Syntax-check the generated init-sqlite.cjs to catch template-literal quoting bugs
+(function validateInitSqliteSyntax() {
+  const startMarker = 'write(path.join(stageDir, "app", "server", "scripts", "init-sqlite.cjs"), `';
+  const startIdx = buildScript.indexOf(startMarker);
+  expect(startIdx !== -1, "fnOS build script must generate init-sqlite.cjs via a template literal.");
+  if (startIdx === -1) return;
+  const tplStart = startIdx + startMarker.length;
+  let endIdx = -1;
+  for (let i = tplStart; i < buildScript.length; i++) {
+    if (buildScript[i] === "`" && buildScript[i + 1] === ")" && buildScript[i + 2] === ";") {
+      let backslashes = 0;
+      for (let j = i - 1; j >= 0 && buildScript[j] === "\\"; j--) backslashes++;
+      if (backslashes % 2 === 0) { endIdx = i; break; }
+    }
+  }
+  expect(endIdx !== -1, "fnOS build script init-sqlite.cjs template literal must be properly closed.");
+  if (endIdx === -1) return;
+  const rawTemplate = buildScript.substring(tplStart, endIdx);
+  let generated;
+  try {
+    generated = eval("`" + rawTemplate + "`");
+  } catch (e) {
+    expect(false, "fnOS build script init-sqlite.cjs template literal must evaluate without error: " + e.message);
+    return;
+  }
+  try {
+    new Function(generated);
+  } catch (e) {
+    expect(false, "fnOS build script generated init-sqlite.cjs must pass JavaScript syntax check: " + e.message);
+  }
+})();
+
 expect(/20260820_add_ai_model_api_mode/.test(buildScript) && /addColumnIfMissing\(db, "AiModel", "apiMode", "TEXT NOT NULL DEFAULT 'chat'"\)/.test(buildScript), "fnOS SQLite migrations must add AiModel.apiMode for existing databases.");
 expect(/applyRuntimeMigrations\(db\)/.test(buildScript), "fnOS SQLite init must run runtime migrations for both fresh and existing databases.");
 expect(nativeSchemaBackfillCalls.length >= 2, "fnOS SQLite init must backfill missing native-init.sql schema objects for both fresh and existing databases.");

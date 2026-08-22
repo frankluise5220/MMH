@@ -1322,10 +1322,10 @@ function addCategorySortOrder(db) {
   addColumnIfMissing(db, "Category", "sortOrder", "INTEGER NOT NULL DEFAULT 0");
 
   const rows = db.prepare(
-    "SELECT \"id\", \"householdId\", \"type\", \"parentId\", \"name\" FROM \"Category\" ORDER BY \"householdId\" ASC, \"type\" ASC, \"parentId\" ASC, \"name\" ASC, \"id\" ASC",
+    "SELECT \\\"id\\\", \\\"householdId\\\", \\\"type\\\", \\\"parentId\\\", \\\"name\\\" FROM \\\"Category\\\" ORDER BY \\\"householdId\\\" ASC, \\\"type\\\" ASC, \\\"parentId\\\" ASC, \\\"name\\\" ASC, \\\"id\\\" ASC",
   ).all();
   const nextOrderByBucket = new Map();
-  const update = db.prepare("UPDATE \"Category\" SET \"sortOrder\" = ? WHERE \"id\" = ?");
+  const update = db.prepare("UPDATE \\\"Category\\\" SET \\\"sortOrder\\\" = ? WHERE \\\"id\\\" = ?");
   for (const row of rows) {
     const bucketKey = [row.householdId ?? "", row.type ?? "", row.parentId ?? ""].join("\u001f");
     const nextOrder = nextOrderByBucket.get(bucketKey) ?? 0;
@@ -1333,7 +1333,7 @@ function addCategorySortOrder(db) {
     nextOrderByBucket.set(bucketKey, nextOrder + 1);
   }
 
-  db.exec("CREATE INDEX IF NOT EXISTS \"Category_householdId_type_parentId_sortOrder_idx\" ON \"Category\"(\"householdId\", \"type\", \"parentId\", \"sortOrder\")");
+  db.exec("CREATE INDEX IF NOT EXISTS \\\"Category_householdId_type_parentId_sortOrder_idx\\\" ON \\\"Category\\\"(\\\"householdId\\\", \\\"type\\\", \\\"parentId\\\", \\\"sortOrder\\\")");
 }
 
 function splitSqlStatements(sql) {
