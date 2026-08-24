@@ -315,6 +315,19 @@ expect(/Category_householdId_type_parentId_sortOrder_idx/.test(buildScript), "fn
 })();
 
 expect(/20260820_add_ai_model_api_mode/.test(buildScript) && /addColumnIfMissing\(db, "AiModel", "apiMode", "TEXT NOT NULL DEFAULT 'chat'"\)/.test(buildScript), "fnOS SQLite migrations must add AiModel.apiMode for existing databases.");
+expect(/20260823_add_entry_origin/.test(buildScript) && /entryOrigin/.test(buildScript) && /TEXT NOT NULL DEFAULT 'manual'/.test(buildScript), "fnOS SQLite migrations must add transaction entryOrigin fields for existing databases.");
+for (const tableName of [
+  "transactions",
+  "fund_transactions",
+  "stock_transactions",
+  "insurance_transactions",
+  "wealth_transactions",
+  "deposit_transactions",
+  "precious_metal_transactions",
+  "property_transactions",
+]) {
+  expect(buildScript.includes(`"${tableName}"`), `fnOS SQLite entryOrigin migration must cover ${tableName}.`);
+}
 expect(/applyRuntimeMigrations\(db\)/.test(buildScript), "fnOS SQLite init must run runtime migrations for both fresh and existing databases.");
 expect(nativeSchemaBackfillCalls.length >= 2, "fnOS SQLite init must backfill missing native-init.sql schema objects for both fresh and existing databases.");
 expect(/applyRuntimeMigrations\(db\);\n\s+applyMissingSchemaObjectsFromInitSql\(db, sqlPath\);/.test(buildScript), "fnOS SQLite init must run schema-object backfill after explicit runtime migrations.");

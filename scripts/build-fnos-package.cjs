@@ -1270,6 +1270,26 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    version: "20260823_add_entry_origin",
+    description: "Add transaction entry origin fields",
+    apply(db) {
+      for (const tableName of [
+        "transactions",
+        "fund_transactions",
+        "stock_transactions",
+        "insurance_transactions",
+        "wealth_transactions",
+        "deposit_transactions",
+        "precious_metal_transactions",
+        "property_transactions",
+      ]) {
+        if (tableExists(db, tableName)) {
+          addColumnIfMissing(db, tableName, "entryOrigin", "TEXT NOT NULL DEFAULT 'manual'");
+        }
+      }
+    },
+  },
 ];
 
 function databasePathFromUrl(value) {
