@@ -11,9 +11,9 @@
         "arm"
       ],
       "description": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
-      "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.42/mmh-fnos-v0.1.42-x86_64.fpk",
+      "download_url": "http://fnapp.floatingice.win/apps/mmh-0.1.42.fpk",
       "download_urls": {
-        "x86_64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.42/mmh-fnos-v0.1.42-x86_64.fpk",
+        "x86_64": "http://fnapp.floatingice.win/apps/mmh-0.1.42.fpk",
         "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.42/mmh-fnos-v0.1.42-arm64.fpk"
       },
       "homepage": "https://github.com/frankluise5220/MMH",

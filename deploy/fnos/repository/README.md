@@ -29,7 +29,7 @@ mmh-fnos-v0.1.x-arm64.fpk
 https://raw.githubusercontent.com/frankluise5220/MMH/main/deploy/fnos/repository
 ```
 
-这个源返回的 `download_url` 默认指向 GitHub Release 中的 `mmh-fnos-v0.1.x-x86_64.fpk`，`download_urls` 只提供 x86_64 和 arm64 两个架构化下载地址。
+这个源返回的 `download_url` 默认指向 VPS 托管的 x86_64 包 `http://fnapp.floatingice.win/apps/mmh-0.1.x.fpk`；`download_urls.x86_64` 使用同一个 VPS 包地址，`download_urls.arm64` 指向 GitHub Release 中的 `mmh-fnos-v0.1.x-arm64.fpk`。如果 VPS 后续也托管 arm64 包，再把 arm64 地址切到同一域名下。
 
 源文件字段包括：
 
@@ -37,8 +37,8 @@ https://raw.githubusercontent.com/frankluise5220/MMH/main/deploy/fnos/repository
 - `version`：飞牛包版本，与 Release tag 对齐。
 - `platform`：默认兼容平台，当前保留 `x86` 以兼容旧软仓。
 - `platforms`：支持的平台数组，当前为 `x86` 和 `arm`。
-- `download_url`：指向 GitHub Release 中的 `mmh-fnos-v0.1.x-x86_64.fpk`。
-- `download_urls`：按架构指向 `mmh-fnos-v0.1.x-x86_64.fpk` 和 `mmh-fnos-v0.1.x-arm64.fpk`。
+- `download_url`：默认/旧客户端下载地址，当前指向 VPS 托管的 x86_64 包 `http://fnapp.floatingice.win/apps/mmh-0.1.x.fpk`。
+- `download_urls`：按架构提供下载地址；x86_64 指向 VPS 托管的 `mmh-0.1.x.fpk`，arm64 指向 GitHub Release 中的 `mmh-fnos-v0.1.x-arm64.fpk`。
 - `changelog`：面向用户的更新说明。
 
 `apps.example.json` 是字段草案。正式字段以飞牛应用源规范为准；但原则保持不变：同一个 `id=mmh` 和同一个 `version=0.1.x` 下，源索引必须能给 x86 与 arm64 机器拿到对应架构的 `.fpk`。
