@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { StockTransactionAction } from "@prisma/client";
+import { ENTRY_ORIGIN_EXCEL_IMPORT, ENTRY_ORIGIN_MANUAL, TRANSACTION_SOURCE_MANUAL } from "@/lib/transaction-semantics";
 import { normalizeCurrency } from "@/lib/currency";
 import { formatDateUtc, toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
@@ -11,7 +12,7 @@ import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { ensureStockTransactionCashFlow } from "@/lib/stock/cashFlow";
 import { calculateStockTransactionFeesByDate } from "@/lib/stock/feeRule";
 import { recalcStockPositions } from "@/lib/stock/recalcPosition";
-import { inferStockMarketFromCode, normalizeStockCode, normalizeStockMarket, resolveOrCreateStockSecurity } from "@/lib/stock/securities";
+import { inferStockMarketFromCode, normalizeStockCode, normalizeStockMarket, normalizeUsableStockName, resolveOrCreateStockSecurity } from "@/lib/stock/securities";
 
 export const runtime = "nodejs";
 
@@ -315,7 +316,7 @@ export async function POST(req: NextRequest) {
           householdId,
           market: body.market ? normalizeStockMarket(body.market) : inferStockMarketFromCode(body.stockCode),
           stockCode: normalizeStockCode(body.stockCode),
-          stockName: String(body.stockName ?? "").trim() || undefined,
+          stockName: normalizeUsableStockName(body.stockName, normalizeStockCode(body.stockCode)) ?? undefined,
           currency: normalizeCurrency(body.currency ?? stockAccount.currency),
           exchange: String(body.exchange ?? "").trim() || null,
         });
@@ -361,9 +362,10 @@ export async function POST(req: NextRequest) {
           securityId: security.id,
           market: security.market,
           stockCode: security.stockCode,
-          stockName: String(body.stockName ?? "").trim() || security.stockName,
+          stockName: normalizeUsableStockName(body.stockName, security.stockCode) ?? security.stockName,
           action,
-          source: String(body.source ?? "manual").trim() || "manual",
+          source: String(body.source ?? TRANSACTION_SOURCE_MANUAL).trim() || TRANSACTION_SOURCE_MANUAL,
+          entryOrigin: body.entryOrigin ? String(body.entryOrigin).trim() : (body.source === "excel_import" ? ENTRY_ORIGIN_EXCEL_IMPORT : ENTRY_ORIGIN_MANUAL),
           tradeDate,
           settleDate,
           grossAmount: String(grossAmount),
@@ -510,7 +512,7 @@ export async function PATCH(req: NextRequest) {
           householdId,
           market: body.market ? normalizeStockMarket(body.market) : inferStockMarketFromCode(rawCode),
           stockCode: rawCode,
-          stockName: String(body.stockName ?? "").trim() || undefined,
+          stockName: normalizeUsableStockName(body.stockName, rawCode) ?? undefined,
           currency: normalizeCurrency(body.currency ?? stockAccount.currency),
           exchange: String(body.exchange ?? "").trim() || null,
         })
@@ -543,9 +545,10 @@ export async function PATCH(req: NextRequest) {
           securityId: security.id,
           market: security.market,
           stockCode: security.stockCode,
-          stockName: String(body.stockName ?? existing.stockName ?? "").trim() || security.stockName,
+          stockName: normalizeUsableStockName(body.stockName ?? existing.stockName, security.stockCode) ?? security.stockName,
           action,
-          source: String(body.source ?? existing.source ?? "manual").trim() || "manual",
+          source: String(body.source ?? existing.source ?? TRANSACTION_SOURCE_MANUAL).trim() || TRANSACTION_SOURCE_MANUAL,
+          entryOrigin: body.entryOrigin ? String(body.entryOrigin).trim() : (existing.entryOrigin ?? ENTRY_ORIGIN_MANUAL),
           tradeDate,
           settleDate,
           grossAmount: String(grossAmount),

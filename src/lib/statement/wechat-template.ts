@@ -210,9 +210,13 @@ function isIgnoredWechatStatus(value: string) {
 }
 
 function classifyWechatFlow(flow: string) {
-  if (/^(\u6536\u5165|income|inflow|\u53ce\u5165)$/i.test(flow)) return { majorType: "\u6536\u5165", outflow: false, inflow: true };
-  if (/^(\u652f\u51fa|expense|outflow|\u652f\u6255\u3044|\u652f\u6255)$/i.test(flow)) return { majorType: "\u652f\u51fa", outflow: true, inflow: false };
+  if (/^(\u6536\u5165|income|inflow|\u53ce\u5165)$/i.test(flow)) return { majorType: "\u6536\u5165", outflow: false, inflow: true, requiresReview: false };
+  if (/^(\u652f\u51fa|expense|outflow|\u652f\u6255\u3044|\u652f\u6255)$/i.test(flow)) return { majorType: "\u652f\u51fa", outflow: true, inflow: false, requiresReview: false };
   return null;
+}
+
+function fallbackWechatFlow() {
+  return { majorType: "\u652f\u51fa", outflow: true, inflow: false, requiresReview: true };
 }
 
 function findWechatHeaderRow(rows: string[][]) {
@@ -254,10 +258,10 @@ function normalizeWechatSheetRows(sheet: StatementWorkbookSheetRows) {
     const flow = readCell(row, flowIndex);
     const amount = parseAmount(readCell(row, amountIndex));
     const date = normalizeWechatDate(readCell(row, timeIndex));
-    if (!date || !amount || isIgnoredWechatStatus(status)) return [];
+    if (!date || !amount) return [];
 
-    const classifiedFlow = classifyWechatFlow(flow);
-    if (!classifiedFlow) return [];
+    const classifiedFlow = classifyWechatFlow(flow) ?? fallbackWechatFlow();
+    const requiresReview = classifiedFlow.requiresReview || isIgnoredWechatStatus(status);
 
     const counterparty = normalizeWechatText(readCell(row, counterpartyIndex));
     const product = normalizeWechatText(readCell(row, productIndex));
@@ -269,10 +273,12 @@ function normalizeWechatSheetRows(sheet: StatementWorkbookSheetRows) {
 
     const visibleRemark = buildWechatVisibleRemark(transactionType, counterparty, product, rawRemark);
     const matchRemark = compactJoin([
+      requiresReview ? `\u5bfc\u5165\u515c\u5e95:\u8bf7\u786e\u8ba4\u7c7b\u578b\u548c\u8d26\u6237` : "",
+      flow && requiresReview ? `\u539f\u6536\u652f:${flow}` : "",
       rawRemark && !visibleRemark.includes(rawRemark) ? `\u539f\u59cb\u5907\u6ce8:${rawRemark}` : "",
       orderNo ? `\u5fae\u4fe1\u5355\u53f7:${orderNo}` : "",
       merchantOrderNo ? `\u5546\u6237\u5355\u53f7:${merchantOrderNo}` : "",
-      status && !/\u5df2\u5168\u989d\u9000\u6b3e|\u5df2\u9000\u8fd8/.test(status) ? `\u72b6\u6001:${status}` : "",
+      status && (requiresReview || !/\u5df2\u5168\u989d\u9000\u6b3e|\u5df2\u9000\u8fd8/.test(status)) ? `\u72b6\u6001:${status}` : "",
     ]);
 
     return [[
@@ -281,7 +287,7 @@ function normalizeWechatSheetRows(sheet: StatementWorkbookSheetRows) {
       classifiedFlow.outflow ? amount : "",
       classifiedFlow.inflow ? amount : "",
       amount,
-      account,
+      requiresReview ? "" : account,
       "",
       "",
       WECHAT_INSTITUTION,

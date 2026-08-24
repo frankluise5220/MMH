@@ -2,6 +2,7 @@ import { Prisma, TransactionType } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
+import { isFundUnitsReconcileEntry, isLicensedInsuranceEntry } from "@/lib/transaction-semantics";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 
 type TxClient = Prisma.TransactionClient | typeof prisma;
@@ -59,6 +60,7 @@ type EntryBusinessLinkSummaryRow = {
     id: string;
     deletedAt?: Date | null;
     fundAccountId?: string | null;
+    source?: string | null;
     Account?: { id: string; name?: string | null } | null;
   } | null;
   InsuranceTransaction?: { id: string; deletedAt?: Date | null } | null;
@@ -92,6 +94,7 @@ export const entryBusinessLinkSummaryInclude = {
           id: true,
           deletedAt: true,
           fundAccountId: true,
+          source: true,
           Account: { select: { id: true, name: true } },
         },
       },
@@ -125,6 +128,7 @@ export const entryBusinessLinkSummaryInclude = {
           id: true,
           deletedAt: true,
           fundAccountId: true,
+          source: true,
           Account: { select: { id: true, name: true } },
         },
       },
@@ -164,7 +168,7 @@ export function classifyEntryBusinessType(entry: BusinessEntryLike): EntryBusine
       entry.fundCode ||
       entry.wealthProductId ||
       entry.insuranceProductId ||
-      entry.source === "insurance" ||
+      isLicensedInsuranceEntry(entry) ||
       entry.metalTypeId ||
       entry.depositSourceEntryId ||
       entry.stockTransactionId ||
@@ -172,7 +176,7 @@ export function classifyEntryBusinessType(entry: BusinessEntryLike): EntryBusine
   );
   if (!isInvestmentEntry || !hasBusinessFields) return null;
 
-  if (entry.source === "insurance" || entry.insuranceProductId) return "insurance";
+  if (isLicensedInsuranceEntry(entry)) return "insurance";
   if (entry.fundProductType === "wealth" || entry.wealthProductId) return "wealth";
   if (entry.fundProductType === "deposit" || entry.depositSourceEntryId) return "deposit";
   if (entry.fundProductType === "metal" || entry.metalTypeId) return "metal";
@@ -457,7 +461,7 @@ export async function listEntryBusinessDeleteImpacts(
       linkType: true,
       CashEntry: { select: { id: true, deletedAt: true } },
       BusinessEntry: { select: { id: true, deletedAt: true } },
-      FundTransaction: { select: { id: true, deletedAt: true } },
+      FundTransaction: { select: { id: true, deletedAt: true, source: true } },
       InsuranceTransaction: { select: { id: true, deletedAt: true } },
       WealthTransaction: { select: { id: true, deletedAt: true } },
       DepositTransaction: { select: { id: true, deletedAt: true } },
@@ -470,8 +474,10 @@ export async function listEntryBusinessDeleteImpacts(
   const unique = new Map<string, EntryBusinessDeleteImpact>();
   for (const row of rows) {
     if (row.cashEntryId && !row.CashEntry) continue;
+    if (!row.cashEntryId) continue;
     if (row.businessEntryId && (!row.BusinessEntry || row.BusinessEntry.deletedAt)) continue;
     if (row.fundTransactionId && (!row.FundTransaction || row.FundTransaction.deletedAt)) continue;
+    if (row.FundTransaction && isFundUnitsReconcileEntry(row.FundTransaction)) continue;
     if (row.insuranceTransactionId && (!row.InsuranceTransaction || row.InsuranceTransaction.deletedAt)) continue;
     if (row.wealthTransactionId && (!row.WealthTransaction || row.WealthTransaction.deletedAt)) continue;
     if (row.depositTransactionId && (!row.DepositTransaction || row.DepositTransaction.deletedAt)) continue;

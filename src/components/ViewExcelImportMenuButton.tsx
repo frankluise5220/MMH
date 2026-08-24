@@ -1,15 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { flushSync } from "react-dom";
 import { ChevronDown, Download, FileSpreadsheet, MailSearch, Upload } from "lucide-react";
 import { CreditBillMailImportDialog } from "@/components/CreditBillMailImportButton";
+import { FundImportPreviewDialog, type FundImportDialogContext } from "@/components/FundImportPreviewDialog";
 import { StatementImportPreviewDialog, type StatementImportPreviewItem } from "@/components/StatementImportPreviewDialog";
-import {
-  BATCH_IMPORT_PENDING_FILE_STORAGE_KEY,
-  fileToBatchImportPayload,
-} from "@/lib/batch-import-transfer";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 import {
@@ -83,6 +79,7 @@ type TemplateSpec = {
   headers: string[];
   labelRow?: string[];
   rows: string[][];
+  footerRows?: string[][];
   notes: string[][];
 };
 
@@ -102,15 +99,14 @@ const NORMAL_HEADER_KEYS = [
 const FUND_HEADER_KEYS = [
   "detail.column.date",
   "viewImport.fundSubtype",
-  "viewImport.source",
   "viewImport.cashAccount",
   "viewImport.fundAccount",
   "viewImport.fundCode",
-  "viewImport.fundName",
   "viewImport.amount",
-  "viewImport.units",
-  "viewImport.nav",
+  "viewImport.feeRate",
   "viewImport.fee",
+  "viewImport.nav",
+  "viewImport.units",
   "viewImport.navDate",
   "detail.column.postedAt",
   "detail.column.remark",
@@ -213,23 +209,21 @@ function templateFor(props: ViewExcelImportMenuButtonProps, t: TranslateFn): Tem
       noteSheetName: t("viewImport.sheetNotes"),
       headers: localizedHeaders(FUND_HEADER_KEYS, t),
       rows: [
-        ["2026-06-03", t("viewImport.fundActionBuy"), "", "", fundAccountName, fundCode, "", "1000.00", "738.99", "1.3521", "1%", "2026-06-04", "2026-06-04", t("viewImport.sampleRemarkFundBuy")],
-        ["2026-06-10", t("viewImport.fundActionRecurringBuy"), "", "", fundAccountName, fundCode, "", "1000.00", "738.99", "1.3521", "1.00", "2026-06-11", "2026-06-11", t("viewImport.sampleRemarkFundRecurringBuy")],
-        ["2026-06-20", t("viewImport.fundActionRedeem"), "", "", fundAccountName, fundCode, "", "500.00", "360.00", "1.3889", "0.50", "2026-06-21", "2026-06-23", t("viewImport.sampleRemarkFundRedeem")],
+        ["2026-06-03", t("viewImport.fundActionBuy"), t("viewImport.sampleAccountDebit"), fundAccountName, fundCode, "1000.00", "1", "", "1.3521", "738.99", "2026-06-04", "2026-06-04", ""],
+        ["2026-06-10", t("viewImport.fundActionRedeem"), t("viewImport.sampleAccountDebit"), fundAccountName, fundCode, "500.00", "", "0.50", "1.3889", "360.00", "2026-06-11", "2026-06-12", ""],
+        ["2026-06-15", t("viewImport.fundActionDividendCash"), t("viewImport.sampleAccountDebit"), fundAccountName, fundCode, "300.00", "", "", "", "", "", "2026-06-16", ""],
+        ["2026-06-18", t("viewImport.fundActionDividendReinvest"), "", fundAccountName, fundCode, "", "", "", "1.4200", "210.00", "2026-06-18", "", ""],
       ],
-      notes: [
-        [t("viewImport.notesIntroLabel"), t("viewImport.notesIntroFund")],
-        [t("viewImport.notesRecognitionLabel"), t("viewImport.notesRecognitionFund")],
-        [t("viewImport.fundSubtype"), t("viewImport.notesFundSubtype")],
-        [t("viewImport.source"), t("viewImport.notesSource")],
-        [t("viewImport.cashAccount"), t("viewImport.notesCashAccount")],
-        [t("viewImport.fundAccount"), t("viewImport.notesFundAccount")],
-        [t("viewImport.fundCode"), t("viewImport.notesFundCode")],
-        [t("viewImport.amount"), t("viewImport.notesFundAmount")],
-        [t("viewImport.units"), t("viewImport.notesUnitsNavFee")],
-        [t("viewImport.navDate"), t("viewImport.notesConfirmArrival")],
-        [t("detail.column.remark"), t("viewImport.notesRemark")],
+      footerRows: [
+        [],
+        [],
+        [],
+        ...(t("batchImport.guide.fundImportNotes") as unknown as string)
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => line.split("\t")),
       ],
+      notes: [],
     };
   }
 
@@ -273,16 +267,23 @@ function templateFor(props: ViewExcelImportMenuButtonProps, t: TranslateFn): Tem
 export async function exportViewImportTemplate(spec: TemplateSpec) {
   const XLSX = await import("xlsx");
   const workbook = XLSX.utils.book_new();
-  const rows = [spec.headers, ...(spec.labelRow ? [spec.labelRow] : []), ...spec.rows];
+  const rows = [
+    spec.headers,
+    ...(spec.labelRow ? [spec.labelRow] : []),
+    ...spec.rows,
+    ...(Array.isArray(spec.footerRows) && spec.footerRows.length > 0 ? [["", ""], ...spec.footerRows] : []),
+  ];
   const sheet = XLSX.utils.aoa_to_sheet(rows);
   sheet["!cols"] = spec.headers.map((header, index) => ({
     wch: Math.max(header.length, spec.labelRow?.[index]?.length ?? 0, 14),
   }));
   XLSX.utils.book_append_sheet(workbook, sheet, spec.sheetName);
 
-  const noteSheet = XLSX.utils.aoa_to_sheet(spec.notes);
-  noteSheet["!cols"] = [{ wch: 18 }, { wch: 72 }];
-  XLSX.utils.book_append_sheet(workbook, noteSheet, spec.noteSheetName);
+  if (spec.notes.length > 0) {
+    const noteSheet = XLSX.utils.aoa_to_sheet(spec.notes);
+    noteSheet["!cols"] = [{ wch: 18 }, { wch: 72 }];
+    XLSX.utils.book_append_sheet(workbook, noteSheet, spec.noteSheetName);
+  }
   XLSX.writeFile(workbook, spec.filename, { compression: true });
 }
 
@@ -516,7 +517,6 @@ function waitForBrowserPaint() {
 
 export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps) {
   const { t } = useI18n();
-  const router = useRouter();
   const menuRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [open, setOpen] = useState(false);
@@ -530,6 +530,8 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
   const [status, setStatus] = useState("");
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewItems, setPreviewItems] = useState<StatementImportPreviewItem[]>([]);
+  const [fundPreviewFile, setFundPreviewFile] = useState<File | null>(null);
+  const [fundPreviewContext, setFundPreviewContext] = useState<FundImportDialogContext | null>(null);
   const [recognitionSamples, setRecognitionSamples] = useState<StatementHistoricalCategorySample[]>([]);
 
   useEffect(() => {
@@ -655,7 +657,8 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
             : {
               ...item,
               accountId: props.accountId,
-              source: "excel_import",
+              source: "manual",
+              entryOrigin: "excel_import",
               externalLinkId: item.brokerTradeId ? `stock-excel:${props.accountId}:${item.brokerTradeId}` : undefined,
             };
           const res = await fetch(endpoint, {
@@ -673,9 +676,14 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
         return;
       }
 
-      const payload = await fileToBatchImportPayload(file, props.kind === "fund" ? "fund" : "normal");
-      sessionStorage.setItem(BATCH_IMPORT_PENDING_FILE_STORAGE_KEY, JSON.stringify(payload));
-      router.push("/batch-import");
+      setFundPreviewContext({
+        fundAccountId: props.accountId,
+        fundAccount: props.fundAccountName,
+        fundCode: props.fundCode,
+        fundName: props.fundName,
+      });
+      setFundPreviewFile(file);
+      setStatus("");
     } catch (error) {
       setStatus(t("viewImport.failed", { reason: error instanceof Error ? error.message : String(error) }));
     } finally {
@@ -901,6 +909,20 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
           busy={busy}
           onClose={() => setPreviewOpen(false)}
           onConfirm={confirmImport}
+        />
+      ) : null}
+      {props.kind === "fund" ? (
+        <FundImportPreviewDialog
+          open={Boolean(fundPreviewFile)}
+          file={fundPreviewFile}
+          context={fundPreviewContext}
+          onClose={() => {
+            setFundPreviewFile(null);
+            setFundPreviewContext(null);
+          }}
+          onImported={({ count }) => {
+            setStatus(t("batchImport.fundImportSuccess", { count, redirectNote: "" }));
+          }}
         />
       ) : null}
       {props.excelExport && excelExportOpen ? (

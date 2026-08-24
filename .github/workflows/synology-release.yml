@@ -15,6 +15,9 @@ permissions:
 
 jobs:
   build-spk:
+    # Keep Synology deferred when the release notes explicitly state that
+    # the current package is not ready for real DSM installation.
+    if: github.event_name == 'workflow_dispatch' || !contains(github.event.release.body, '群晖 DSM（官方 SPK）：本次暂缓发布')
     name: Build and upload Synology DSM SQLite SPK (${{ matrix.target_arch }})
     runs-on: ${{ matrix.runner }}
     strategy:

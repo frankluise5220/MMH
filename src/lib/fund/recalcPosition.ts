@@ -3,6 +3,7 @@ import { FundCashFlowKind, FundSubtype } from "@prisma/client";
 import { toNumber } from "@/lib/date-utils";
 import { allocateBuyFailedRefunds, getEffectiveBuyUnits } from "@/lib/fund/refund-link";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
+import { isFundUnitsReconcileEntry } from "@/lib/transaction-semantics";
 
 function toNum(v: unknown): number {
   if (v === null || v === undefined) return 0;
@@ -72,6 +73,14 @@ function redeemProceeds(e: FundPositionEntryLike, amount: number): number {
   return Math.max(0, Math.abs(toNum(e.arrivalAmount ?? amount)));
 }
 
+function isIncreaseSubtype(subtype: string | null | undefined) {
+  return subtype === "buy" || subtype === "switch_in";
+}
+
+function isDecreaseSubtype(subtype: string | null | undefined) {
+  return subtype === "redeem" || subtype === "switch_out";
+}
+
 function calcByMovingAvg(entries: FundPositionEntryLike[], fundUnitsDecimals: number): FundPositionCalcResult {
   const map = new Map<string, FundHoldingCalc>();
   const realizedProfitByEntryId = new Map<string, number>();
@@ -91,6 +100,23 @@ function calcByMovingAvg(entries: FundPositionEntryLike[], fundUnitsDecimals: nu
     }
 
     const rec = map.get(code) ?? emptyHolding();
+
+    if (isFundUnitsReconcileEntry(e)) {
+      const u = Math.max(0, e.units ?? 0);
+      if (u > 0 && isIncreaseSubtype(subtype)) {
+        rec.units = roundFundUnits(rec.units + u, fundUnitsDecimals);
+      } else if (u > 0 && isDecreaseSubtype(subtype)) {
+        const reducingUnits = Math.min(rec.units, u);
+        const avgCost = rec.units > 0 ? rec.cost / rec.units : 0;
+        rec.cost -= avgCost * reducingUnits;
+        rec.units = roundFundUnits(rec.units - reducingUnits, fundUnitsDecimals);
+        realizedProfitByEntryId.set(e.id, 0);
+      }
+      rec.cost = Math.max(0, rec.cost);
+      rec.units = Math.max(0, roundFundUnits(rec.units, fundUnitsDecimals));
+      map.set(code, rec);
+      continue;
+    }
 
     if (subtype === "buy") {
       const costBasis = buyEntryCostBasis(e, amount);
@@ -145,6 +171,32 @@ function calcByFifo(entries: FundPositionEntryLike[], fundUnitsDecimals: number,
     if (!lots.has(code)) lots.set(code, []);
     const codeLots = lots.get(code)!;
     const rec = result.get(code) ?? emptyHolding();
+
+    if (isFundUnitsReconcileEntry(e)) {
+      const u = Math.max(0, e.units ?? 0);
+      if (u > 0 && isIncreaseSubtype(subtype)) {
+        codeLots.push({ units: u, costPerUnit: 0 });
+        rec.units = roundFundUnits(rec.units + u, fundUnitsDecimals);
+      } else if (u > 0 && isDecreaseSubtype(subtype)) {
+        const reducingUnits = Math.min(rec.units, u);
+        const actualQueue = lifo ? [...codeLots].reverse() : codeLots;
+        let remaining = reducingUnits;
+        let costReduced = 0;
+        for (const lot of actualQueue) {
+          if (remaining <= 0) break;
+          const take = Math.min(lot.units, remaining);
+          costReduced += take * lot.costPerUnit;
+          lot.units = Math.max(0, roundFundUnits(lot.units - take, fundUnitsDecimals));
+          remaining -= take;
+        }
+        lots.set(code, codeLots.filter((lot) => lot.units > 0));
+        rec.units = Math.max(0, roundFundUnits(rec.units - reducingUnits, fundUnitsDecimals));
+        rec.cost = Math.max(0, rec.cost - costReduced);
+        realizedProfitByEntryId.set(e.id, 0);
+      }
+      result.set(code, rec);
+      continue;
+    }
 
     if (subtype === "buy") {
       const costBasis = buyEntryCostBasis(e, amount);

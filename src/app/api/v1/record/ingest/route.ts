@@ -27,6 +27,7 @@ import {
   cancelImportProgress,
 } from "@/lib/server/import-progress";
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
+import { ENTRY_ORIGIN_EXCEL_IMPORT, TRANSACTION_SOURCE_MANUAL } from "@/lib/transaction-semantics";
 import { readableTagWhere } from "@/lib/server/tag-scope";
 import {
   CREDIT_CARD_REPAYMENT_BUSINESS_TYPE,
@@ -1117,7 +1118,7 @@ export async function POST(req: Request) {
             toAccountId: toId || "", toAccountName: toName || null, categoryId: null, categoryName: null,
             note, toNote: String(item.secondRemark ?? "").trim() || note || null,
             statementMonth: stmtMonth, counterpartyInstitutionId, counterpartyInstitutionName,
-            currency, householdId: ctx.householdId, importBatchId, source: "excel_import", fundCode: null, fundProductType: null, fundSubtype: null,
+            currency, householdId: ctx.householdId, importBatchId, source: TRANSACTION_SOURCE_MANUAL, entryOrigin: ENTRY_ORIGIN_EXCEL_IMPORT, fundCode: null, fundProductType: null, fundSubtype: null,
           });
           created.push({ accountId: sourceId || "", toAccountId: toId });
         } else {
@@ -1137,7 +1138,7 @@ export async function POST(req: Request) {
             toAccountId: null, toAccountName: null, categoryId: cat?.id ?? null, categoryName: cat?.name ?? null,
             note, toNote: null,
             statementMonth: stmtMonth, counterpartyInstitutionId, counterpartyInstitutionName,
-            currency: normalizeCurrency(meta?.currency), householdId: ctx.householdId, importBatchId, source: "excel_import",
+            currency: normalizeCurrency(meta?.currency), householdId: ctx.householdId, importBatchId, source: TRANSACTION_SOURCE_MANUAL, entryOrigin: ENTRY_ORIGIN_EXCEL_IMPORT,
             fundCode: null, fundProductType: null, fundSubtype: null,
           });
           created.push({ accountId: accountId || "", toAccountId: null });

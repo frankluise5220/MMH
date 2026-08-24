@@ -663,6 +663,7 @@ export function TransactionFormModal({
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [pendingAttachmentFiles, setPendingAttachmentFiles] = useState<File[]>([]);
   const [isFromButton, setIsFromButton] = useState(false);
+  const amountInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1188,6 +1189,14 @@ export function TransactionFormModal({
     if ((txType === "transfer" || txType === "fx") && !isCreditCardAccount && !fromAccountId && defaultAccountId) {
       setFromAccountId(defaultAccountId);
     }
+    focusAmountInput();
+  }
+
+  function focusAmountInput() {
+    if (txType === "fx" || txType === "investment") return;
+    requestAnimationFrame(() => {
+      amountInputRef.current?.focus();
+    });
   }
 
   function swapTransferAccounts() {
@@ -1541,6 +1550,11 @@ export function TransactionFormModal({
       cancelled = true;
     };
   }, [editEntryId, open, today, txType]);
+
+  useEffect(() => {
+    if (!open || txType === "fx" || txType === "investment") return;
+    focusAmountInput();
+  }, [open, txType]);
 
   useEffect(() => {
     if (!open || !isCreditCardAccount || txType !== "transfer") return;
@@ -2211,7 +2225,7 @@ export function TransactionFormModal({
                     ) : null}
                     <div className="min-w-0 space-y-1">
                       <div className="form-label">{t("txForm.amount")}</div>
-                      <CalcInput value={amount} onChange={(value) => {
+                      <CalcInput ref={amountInputRef} value={amount} onChange={(value) => {
                         setAmount(value);
                         if (createInstallment && !installmentAmountEdited) {
                           const numeric = Math.abs(Number(value));
@@ -2589,7 +2603,7 @@ export function TransactionFormModal({
                   {/* Row 3: amount */}
                   <div className="space-y-1">
                     <div className="form-label">{t("txForm.amount")}</div>
-                    <CalcInput value={amount} onChange={setAmount} placeholder={t("txForm.amountExample")} label={t("txForm.amount")} precision={2} />
+                    <CalcInput ref={amountInputRef} value={amount} onChange={setAmount} placeholder={t("txForm.amountExample")} label={t("txForm.amount")} precision={2} />
                   </div>
 
                   {/* Row 4: note + attachment */}

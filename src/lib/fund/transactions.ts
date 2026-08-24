@@ -7,6 +7,7 @@ import { regularInvestRefundNote } from "@/lib/fund/regular-invest-display";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
 import { resolveCategorySnapshot } from "@/lib/default-categories";
 import { getCashFlowDate } from "@/lib/cash-flow-date";
+import { ENTRY_ORIGIN_MANUAL, isRegularInvestRefundEntry, TRANSACTION_SOURCE_REGULAR_INVEST_REFUND } from "@/lib/transaction-semantics";
 
 type Tx = Prisma.TransactionClient;
 
@@ -18,6 +19,7 @@ export type FundCashFlowInput = {
   amount: number;
   currency?: string | null;
   source?: string | null;
+  entryOrigin?: string | null;
   note?: string | null;
   categoryId?: string | null;
   categoryName?: string | null;
@@ -33,6 +35,7 @@ export type CreateFundTransactionWithCashFlowsParams = {
   fundProductType?: FundProductType | string | null;
   fundSubtype: FundSubtype | string;
   source?: string | null;
+  entryOrigin?: string | null;
   applyDate: Date;
   confirmDate?: Date | null;
   arrivalDate?: Date | null;
@@ -48,6 +51,73 @@ export type CreateFundTransactionWithCashFlowsParams = {
   cashFlows?: FundCashFlowInput[];
 };
 
+export async function detachFundTransactionCashFlow(
+  client: Tx,
+  params: {
+    householdId: string;
+    fundTransactionId: string;
+    cashEntryId?: string | null;
+    source?: string | null;
+  },
+) {
+  const existingFlows = await client.fundTransactionCashFlow.findMany({
+    where: { fundTransactionId: params.fundTransactionId },
+    select: { txRecordId: true },
+  });
+  const linkedCashEntryIds = Array.from(new Set([
+    params.cashEntryId ?? null,
+    ...existingFlows.map((flow) => flow.txRecordId),
+  ].filter((id): id is string => !!id)));
+
+  await client.fundTransactionCashFlow.deleteMany({
+    where: { fundTransactionId: params.fundTransactionId },
+  });
+
+  if (linkedCashEntryIds.length > 0) {
+    await client.entryBusinessLink.updateMany({
+      where: {
+        householdId: params.householdId,
+        fundTransactionId: params.fundTransactionId,
+        cashEntryId: { in: linkedCashEntryIds },
+      },
+      data: { deletedAt: new Date() },
+    });
+    const secondaryCashEntryIds = linkedCashEntryIds.filter((id) => id !== params.cashEntryId);
+    if (secondaryCashEntryIds.length > 0) {
+      await client.txRecord.updateMany({
+        where: {
+          householdId: params.householdId,
+          id: { in: secondaryCashEntryIds },
+          deletedAt: null,
+        },
+        data: { deletedAt: new Date() },
+      });
+    }
+  }
+
+  await client.fundTransaction.update({
+    where: { id: params.fundTransactionId },
+    data: {
+      cashAccountId: null,
+      cashEntryId: null,
+    },
+  });
+
+  await upsertEntryBusinessCashFlowLink(client, {
+    householdId: params.householdId,
+    cashEntryId: null,
+    fundTransactionId: params.fundTransactionId,
+    businessType: "fund",
+    cashFlowDirection: "none",
+    source: params.source,
+    note: "Linked fund transaction without cash flow",
+    metadata: {
+      splitRecord: true,
+      independentBusinessTransaction: true,
+    },
+  });
+}
+
 function normalizeFundProductType(value: FundProductType | string | null | undefined): FundProductType {
   return value === FundProductType.money || value === "money" || value === "money_fund" ? FundProductType.money : FundProductType.fund;
 }
@@ -57,7 +127,7 @@ function normalizeFundSubtype(value: FundSubtype | string): FundSubtype {
 }
 
 function isRefundRow(row: { fundSubtype?: string | null; source?: string | null }) {
-  return row.fundSubtype === FundSubtype.buy_failed && row.source === "regular_invest_refund";
+  return isRegularInvestRefundEntry(row);
 }
 
 function isCashReceiptSubtype(subtype: string | null | undefined) {
@@ -111,7 +181,7 @@ export function signedFundAmount(ft: {
 }) {
   const gross = Math.abs(toNumber(ft.grossAmount));
   if (ft.fundSubtype === FundSubtype.buy_failed) {
-    return ft.source === "regular_invest_refund" ? -gross : gross;
+    return ft.source === TRANSACTION_SOURCE_REGULAR_INVEST_REFUND ? -gross : gross;
   }
   if (ft.fundSubtype === FundSubtype.buy || ft.fundSubtype === FundSubtype.switch_in) return gross;
   return Math.abs(toNumber(ft.arrivalAmount ?? ft.grossAmount));
@@ -158,6 +228,7 @@ export async function createFundTransactionWithCashFlows(
         amount: flow.amount,
         currency: flow.currency ?? "CNY",
         source: flow.source ?? params.source ?? "manual",
+        entryOrigin: flow.entryOrigin ?? params.entryOrigin ?? ENTRY_ORIGIN_MANUAL,
         categoryId: flow.categoryId ?? category?.id ?? null,
         categoryName: flow.categoryName ?? category?.name ?? categoryName ?? null,
         regularInvestPlanId: flow.regularInvestPlanId ?? params.regularInvestPlanId ?? null,
@@ -175,13 +246,14 @@ export async function createFundTransactionWithCashFlows(
     data: {
       householdId: params.householdId,
       fundAccountId: params.fundAccountId,
-      cashAccountId: params.cashAccountId ?? primaryCashEntry?.accountId ?? null,
+      cashAccountId: primaryCashEntry?.accountId ?? null,
       cashEntryId: primaryCashEntry?.id ?? null,
       fundCode,
       fundName: params.fundName ?? null,
       fundProductType: normalizeFundProductType(params.fundProductType),
       fundSubtype: normalizeFundSubtype(params.fundSubtype),
       source: params.source ?? "manual",
+      entryOrigin: params.entryOrigin ?? ENTRY_ORIGIN_MANUAL,
       applyDate: params.applyDate,
       confirmDate: params.confirmDate ?? null,
       arrivalDate: params.arrivalDate ?? null,

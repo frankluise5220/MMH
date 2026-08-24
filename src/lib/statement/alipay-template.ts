@@ -174,8 +174,8 @@ function classifyAlipayFlow(params: {
   counterparty: string;
   counterpartyAccount: string;
 }) {
-  if (params.flow === "\u652f\u51fa") return { majorType: "\u652f\u51fa", outflow: true, inflow: false };
-  if (params.flow === "\u6536\u5165") return { majorType: "\u6536\u5165", outflow: false, inflow: true };
+  if (params.flow === "\u652f\u51fa") return { majorType: "\u652f\u51fa", outflow: true, inflow: false, requiresReview: false };
+  if (params.flow === "\u6536\u5165") return { majorType: "\u6536\u5165", outflow: false, inflow: true, requiresReview: false };
 
   const source = [
     params.category,
@@ -186,10 +186,14 @@ function classifyAlipayFlow(params: {
     params.counterpartyAccount,
   ].join(" ");
   if (params.flow === "\u4e0d\u8ba1\u6536\u652f" && isRefundLikeText(source) && !isInvestmentLikeText(source)) {
-    return { majorType: "\u652f\u51fa", outflow: false, inflow: true };
+    return { majorType: "\u652f\u51fa", outflow: false, inflow: true, requiresReview: false };
   }
 
   return null;
+}
+
+function fallbackAlipayFlow() {
+  return { majorType: "\u652f\u51fa", outflow: true, inflow: false, requiresReview: true };
 }
 
 function readCell(row: string[], index: number) {
@@ -263,7 +267,7 @@ function normalizeAlipaySheetRows(sheet: StatementWorkbookSheetRows) {
     const flow = readCell(row, flowIndex);
     const amount = parseAmount(readCell(row, amountIndex));
     const date = normalizeAlipayDate(readCell(row, timeIndex));
-    if (!date || !amount || isIgnoredStatus(status, flow)) return [];
+    if (!date || !amount) return [];
 
     const rawAccount = readCell(row, accountIndex);
     const account = normalizePaymentAccount(rawAccount, ownerHint);
@@ -282,8 +286,8 @@ function normalizeAlipaySheetRows(sheet: StatementWorkbookSheetRows) {
       remark: rawRemark,
       counterparty,
       counterpartyAccount,
-    });
-    if (!classifiedFlow) return [];
+    }) ?? fallbackAlipayFlow();
+    const requiresReview = classifiedFlow.requiresReview || isIgnoredStatus(status, flow);
 
     const visibleRemark = buildAlipayVisibleRemark({
       description,
@@ -293,6 +297,8 @@ function normalizeAlipaySheetRows(sheet: StatementWorkbookSheetRows) {
       category,
     });
     const matchRemark = compactJoin([
+      requiresReview ? `\u5bfc\u5165\u515c\u5e95:\u8bf7\u786e\u8ba4\u7c7b\u578b\u548c\u8d26\u6237` : "",
+      flow && requiresReview ? `\u539f\u6536\u652f:${flow}` : "",
       counterparty ? `\u5546\u6237:${counterparty}` : "",
       rawRemark && !containsRemarkPart(visibleRemark, rawRemark) ? `\u539f\u5907\u6ce8:${rawRemark}` : "",
       rawAccount && rawAccount !== account ? `\u539f\u4ed8\u6b3e\u65b9\u5f0f:${rawAccount}` : "",
@@ -308,7 +314,7 @@ function normalizeAlipaySheetRows(sheet: StatementWorkbookSheetRows) {
       classifiedFlow.outflow ? amount : "",
       classifiedFlow.inflow ? amount : "",
       amount,
-      account,
+      requiresReview ? "" : account,
       "",
       "",
       ALIPAY_INSTITUTION,

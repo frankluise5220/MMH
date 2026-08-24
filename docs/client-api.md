@@ -286,6 +286,7 @@
 - `/api/v1/transactions/detail` 的交易项返回 `currency`，表示该流水原始币种。客户端明细金额应显示原币种；侧栏、净值和跨账户统计应使用账簿当前显示币种折算口径，不能把缺失汇率的外币金额按 1:1 混入。
 - 交易项中的 `date` 是业务发生日期。支出记录可带 `postedAt` 表示实际入账日期，格式为 `YYYY-MM-DD`；未提供时服务端在新增支出时默认按 `date` 写入，收入、转账和投资记录通常为 `null`。
 - 信用卡邮箱账单导入调用 `/api/v1/statement/import` 时，`mailSource` 可携带 `{ emailAccountId, uid, hash, subject, from, date }`。服务端会用 UID、邮件列表 hash 和解析后的稳定账单指纹阻止重复导入；稳定账单指纹优先使用机构、卡号后四位、银行账单周期，避免分类、备注、明细文本等解析规则变化造成同一账单被当作新账单。返回的 `lockedStatementBills` 可包含 `{ accountId, billAccountIds, statementMonth, amount, periodStart, periodEnd, dueDate }`，客户端应展示已锁定的账单金额、账期和到期还款日。
+- 邮箱账单导入的邮件列表使用 `POST /api/v1/email/imap/list`。请求可提交已保存的 `accountId`，或提交临时 IMAP 配置；`sinceDate` 和 `endDate` 是 `YYYY-MM-DD` 日期范围，按用户视角包含首尾两天。`limit` 和 `scanLimit` 最大均为 50，客户端不应请求或展示超过 50 封；若范围内匹配邮件少于 50 封，应展示全部匹配邮件。
 
 ### Categories
 
@@ -466,6 +467,12 @@ Request body:
 ```json
 {
   "mode": "preview",
+  "context": {
+    "fundAccountId": "fund-account-id",
+    "fundAccount": "招商基金账户",
+    "fundCode": "000001",
+    "fundName": "华夏成长混合"
+  },
   "overrides": [
     {
       "fundAccount": "招商基金账户",
@@ -487,6 +494,7 @@ Request body:
       "units": null,
       "nav": null,
       "fee": null,
+      "feeRateInput": null,
       "confirmDate": null,
       "arrivalDate": null,
       "remark": "定投"
@@ -497,18 +505,23 @@ Request body:
 
 规则：
 
-- `mode="preview"` 只返回预览和校验结果，不写库。
-- `mode="import"` 会先按同样规则重新校验，通过后整批写入；任一条阻断错误都会整批回滚。
-- `overrides` 用于预览弹窗表头上方的 T+N 规则块。键是 `基金账户 + 基金代码`，可覆盖确认天数与入账天数；`mode="import"` 时会把这次确认后的规则回写到确认天数库，供后续导入直接读取。
+- `mode="preview"` 只返回预览、补全值和校验结果，不写库。
+- `mode="import"` 会按同样规则重新校验，通过后整批写入；任一条阻断错误都会整批回滚。
+- `context` 是可选的当前基金视图上下文。当前基金账户有效且导入行未填 `fundAccount` 时，服务端可用该账户补全基金账户；当前基金代码有效且导入行未填 `fundCode` 时，可用该代码补全基金代码。
+- `overrides` 是可选字段。键是 `基金账户 + 基金代码`，可覆盖确认天数与入账天数；`mode="import"` 时会把这次确认后的规则回写到确认天数库，供后续导入直接读取。
+- `fee` 表示实际手续费金额；`feeRateInput` 或兼容字段 `feeRate` 表示手续费率百分比，例如 `1` 表示 1%。同一行同时传 `fee` 和费率时，服务端只使用 `fee`，避免双重扣减。
+- `fundName` 只作为显示辅助。导入行未填名称或名称等于基金代码时，预览和最终导入都会按基金代码查询权威名称，再回退到最新净值缓存；只有仍查不到时才临时显示代码。
 - `buy` / `buy_failed` / `refund` 等 buy 类动作会按绝对值处理金额。
+- `dividend_reinvest` 只增加基金业务侧份额，不产生现金金额，不要求也不保存 `cashAccount` / `cashAccountId`；即使调用方传入资金账户，服务端也会忽略该字段，不创建资金侧 `TxRecord` 或 `FundTransactionCashFlow`。
 - `refund` 是导入别名，服务端会兼容映射到现有退回记录子类型。
 - `confirmDate` 表示净值日期，写入 `fundConfirmDate`。
 - `arrivalDate` 表示入账日期，写入 `fundArrivalDate`。
 - 基金收益计算不会把 `confirmDate` 当作新增份额的同日收益生效日；买入和红利再投资份额从净值日期后的下一个基金交易日开始参与净值差额收益。
 - 基金买入和定投的现金侧发生日按申请日期 `date` 展示和排序；只有赎回、现金分红、买入退回等现金入账记录在现金/借记账户明细中按 `arrivalDate` 展示和排序。
 - 买入退回记录会通过 `fundSourceEntryId` 显式关联到源买入记录；借记卡/现金账户明细展示这类退回入账时，按实际到账日期显示和排序。基金交易明细按源买入申请日期归集展示，退回到账日期保留在到账日期字段。
-- 预览阶段会按基金账户已有配置或本次 `overrides` 自动补全确认天数、净值日期、入账日期、手续费；不会为了预览额外查询净值。
-- `cashAccount` 与 `fundAccount` 都按账户匹配规则解析，基金账户必须能匹配到开放式基金账户；如果导入行提供了 `cashAccount`，资金账户也必须匹配到资金侧账户，否则作为阻断错误返回，不能导入成未关联的基金交易。成功导入时，服务端会用匹配到的 `cashAccountId` 建立资金侧 `TxRecord`、`FundTransactionCashFlow` 和 `EntryBusinessLink`。
+- 预览和导入都会按基金账户已有配置或本次 `overrides` 自动补全确认天数、净值日期、入账日期、手续费；缺净值时会按申请日期/时间推导净值日期并尝试获取精确净值。
+- `cashAccount` 与 `fundAccount` 都按账户匹配规则解析，基金账户必须能匹配到开放式基金账户；如果导入行提供了 `cashAccount`，资金账户也必须匹配到资金侧账户，否则作为阻断错误返回，不能导入成未关联的基金交易。
+- 导入行未提供 `cashAccount` 且当前基金视图上下文能解析为同一个基金账户时，服务端会读取该基金账户最近 100 条未删除基金交易，按 `cashAccountId` 使用次数推断最常用资金账户；次数相同取最近出现的账户。无法推断或不在基金视图上下文中时，买入、赎回和现金分红行会作为缺少资金账户的阻断错误返回。成功导入时，服务端会用匹配或推断到的 `cashAccountId` 建立资金侧 `TxRecord`、`FundTransactionCashFlow` 和 `EntryBusinessLink`。
 
 Preview success:
 
@@ -521,11 +534,54 @@ Preview success:
       "fundSubtype": "buy",
       "amount": 100,
       "fee": 0.15,
+      "feeRate": 0.15,
       "confirmDays": 1,
       "confirmDate": "2026-06-09",
       "issues": []
     }
   ]
+}
+```
+
+#### 基金份额校准
+
+- Method: `POST`
+- Path: `/api/v1/fund/units-reconcile`
+- Auth: required
+- Context: server/book/user/role
+
+Request body:
+
+```json
+{
+  "accountId": "fund-account-id",
+  "fundCode": "000001",
+  "date": "2026-06-08",
+  "actualUnits": 1234.56,
+  "fundName": "华夏成长混合",
+  "note": "月末核对"
+}
+```
+
+规则：
+
+- `actualUnits` 是用户看到的最终实际份额，不是本次要增减的份额。
+- 服务端会先重算该基金当前持仓份额，再计算 `deltaUnits = actualUnits - currentUnits`；差额为 0 时不新增记录。
+- 差额不为 0 时，服务端创建一条 `source="fund_units_reconcile"` 的无现金流基金业务交易，`fundSubtype` 按差额方向写 `buy` 或 `redeem`，`fundUnits` 写差额绝对值。
+- 份额校准不创建 `TxRecord`、`FundTransactionCashFlow` 或现金账户余额变化，只影响基金业务份额和随后重算出的持仓。
+
+Success:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "entryId": "fund-transaction-id",
+    "currentUnits": 1200,
+    "actualUnits": 1234.56,
+    "deltaUnits": 34.56,
+    "noChange": false
+  }
 }
 ```
 
@@ -591,7 +647,7 @@ Notes:
 
 相关路径：
 
-- `GET /api/v1/stocks/securities?market=&q=` 返回 `{ ok:true, data:{ securities:[{ id, market, stockCode, stockName, currency, exchange }] } }`；`GET /api/v1/stocks/securities?market=CN&code=600519` 只查本地 `StockSecurity`，未命中时再从该账簿的 `StockHolding` / `StockTransaction` 找已保存的名称，不触发外部股票查询 API。`GET /api/v1/stocks/securities?market=CN&code=600519&lookup=1` 才会在本地全部未命中时按股票查询 API 获取名称并缓存；交易窗口输入股票代码默认走本地查询，只有首次买入保存时由 `POST /api/v1/stocks/transactions` 内部补全名称并缓存。`market` 可省略，服务端按股票代码优先推断 A 股、港股或美股，导入和特殊场景仍可显式传入市场。
+- `GET /api/v1/stocks/securities?market=&q=` 返回 `{ ok:true, data:{ securities:[{ id, market, stockCode, stockName, currency, exchange }] } }`；`GET /api/v1/stocks/securities?market=CN&code=600519` 只查本地 `StockSecurity`，未命中时再从该账簿的 `StockHolding` / `StockTransaction` 找已保存的名称，不触发外部股票查询 API。`GET /api/v1/stocks/securities?market=CN&code=600519&lookup=1` 才会在本地全部未命中时按股票查询 API 获取名称并缓存；交易窗口输入股票代码默认走本地查询，只有首次买入保存时由 `POST /api/v1/stocks/transactions` 内部补全名称并缓存。导入或保存时 `stockName` 为空或等于 `stockCode` 都视为未提供名称，不能覆盖服务端补全出的真实名称。`market` 可省略，服务端按股票代码优先推断 A 股、港股或美股，导入和特殊场景仍可显式传入市场。
 - `POST /api/v1/stocks/securities` 创建或返回股票标的。Body: `{ market?, stockCode, stockName?, currency?, exchange? }`；`market` 省略时按 `stockCode` 推断。
 - `GET /api/v1/stocks/transactions?accountId=&securityId=&market=&stockCode=&limit=` 返回独立股票交易列表。交易项包含 `id`、`linkId`、`cashEntryId`、`stockAccountId`、`cashAccountId`、`securityId`、`market`、`stockCode`、`action`、`tradeDate`、`settleDate`、数量、价格、费用、`realizedProfit`、`externalLinkId` 和 `brokerTradeId`。
 - `POST /api/v1/stocks/transactions` 创建股票交易；动作为 `buy`、`sell`、`dividend`、`fee_adjustment` 或 `tax_adjustment` 时，服务端会在 `cashAccountId` 指向的证券资金账户上创建或更新资金侧 `TxRecord`，未传 `cashAccountId` 时自动使用同券商资金账户，写入 `EntryBusinessLink`，重算 `StockHolding`，并返回 `{ ok:true, data:{ transaction, linkId, cashEntryId } }`。现金流水不生成“资金账户 ↔ 股票账户”的自转账；股票持仓变化只由 `StockTransaction` / `StockHolding` 表达。买卖交易可以省略 `commission`、`stampTax`、`transferFee`、`exchangeFee`、`regulatoryFee` 和 `otherFee`，服务端读取账户 `StockFeeRule` / 市场 `StockMarketFeeRule` 表中已保存的费率计算；账户规则未命中时再使用市场默认规则。交易保存本身不会刷新或改写费率表，只有 `GET /api/v1/stocks/fee-rules?estimate=1&refresh=1`（Web 交易窗口的“获取新费率”按钮）才刷新内置公开市场默认费率。
@@ -755,7 +811,7 @@ Notes:
 - `/api/v1/settings/app-preferences`：`sidebarHideInitialData` 是兼容保留字段名，当前产品语义为“隐藏使用向导”；为 `true` 时客户端应隐藏“使用向导”入口，并停用首次使用向导的自动和手动打开。`sidebarShowFixedAssets` 控制左侧侧边栏是否显示固定资产汇总入口，默认 `true`。`detailDateBackground` 控制明细表是否按日期使用双色背景并在同日期内交替深浅，默认 `false`。`compactRowHeight` 控制紧凑表格的行高，默认 `30`，可在 `25` 到 `35` 像素之间调整。`dateDisplayFormat` 支持 `yyyy-mm-dd`、`yyyy/mm/dd`、`mm/dd/yyyy`、`dd/mm/yyyy`，仅影响界面日期显示，不改变数据库、导入或 API 日期值。
 - `/api/v1/settings/color-scheme`
 - `/api/v1/settings/email`
-- `/api/v1/settings/email-import`：GET 返回当前账簿邮箱账单导入的邮件筛选关键词，默认 `账单`；PUT 提交 `{ keyword }` 后保存当前账簿配置，空值会回到默认 `账单`。
+- `/api/v1/settings/email-import`：GET 返回当前账簿邮箱账单导入的邮件筛选关键词；从未设置时默认 `账单`，PUT 提交 `{ keyword }` 后保存当前账簿配置，空值表示不按关键词筛选。
 - `/api/v1/settings/email-accounts`
 - `/api/v1/settings/resend`
 - `/api/v1/settings/fund-query-api`：GET/POST/PUT/DELETE 管理基金查询来源，PATCH 批量保存拖拽后的优先级；基金净值查询会优先使用账户默认 API，其次按机构场景（如支付宝基金账户优先支付宝来源），最后按全局优先级尝试。

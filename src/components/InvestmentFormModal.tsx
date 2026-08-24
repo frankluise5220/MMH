@@ -1477,7 +1477,10 @@ export function InvestmentFormModal({
     }
     if (isDividend(nextSubtype)) {
       if (!arrivalDateEditedRef.current) setArrivalDate(applyDate || today);
-      if (!cashAccountId && cashAccounts && cashAccounts.length > 0) {
+      if (nextSubtype === "dividend_reinvest") {
+        setCashAccountId("");
+        cashAccountAutoRef.current = false;
+      } else if (!cashAccountId && cashAccounts && cashAccounts.length > 0) {
         setCashAccountId(cashAccounts[0].id);
       }
       if (defaults?.fundCode && !fundCode) {
@@ -1505,7 +1508,7 @@ export function InvestmentFormModal({
 
   // Focus the amount input when the cash-dividend mode opens.
   useEffect(() => {
-    if (isDividend(subtype) && open) {
+    if (subtype === "dividend_cash" && open) {
       setTimeout(() => dividendAmountRef.current?.focus(), 100);
     }
   }, [subtype, open]);
@@ -1522,6 +1525,11 @@ export function InvestmentFormModal({
   // After create mode opens, fill cash account and fee rate from the fund account/code.
   useEffect(() => {
     if (mode !== "create" || !open || !toAccountId) return;
+    if (subtype === "dividend_reinvest") {
+      setCashAccountId("");
+      cashAccountAutoRef.current = false;
+      return;
+    }
     const controller = new AbortController();
     fetch(`/api/v1/fund/last-cash-account?accountId=${encodeURIComponent(toAccountId)}${fundCodeKey ? `&fundCode=${encodeURIComponent(fundCodeKey)}` : ""}`, { signal: controller.signal })
       .then(r => r.json())
@@ -2085,7 +2093,7 @@ export function InvestmentFormModal({
     e.preventDefault();
     if (submitting) return;
     const finalAmount = p(amount);
-    // Dividend reinvest does not require an amount; it can be derived from units and NAV.
+    // Dividend reinvest changes fund-side units only; it does not create a cash amount.
     if (isDividend(subtype) && subtype !== "dividend_cash") {
       // Only validate units; do not block an empty amount.
     } else if (!amount.trim() || finalAmount < 0) {
@@ -2109,6 +2117,10 @@ export function InvestmentFormModal({
         ? 0
         : (p(units) > 0 ? p(units) : (computedUnits ? p(computedUnits) : 0));
     const finalUnits = rawFinalUnits > 0 ? roundFundUnits(rawFinalUnits, fundUnitsDecimals) : 0;
+    if (subtype === "dividend_reinvest" && finalUnits <= 0) {
+      window.alert(t("fundUnitsReconcile.enterValidUnits"));
+      return;
+    }
     const finalFee = investmentCalculation.effectiveFee;
     const finalFeeRate = p(feeRate);
     const currentMetalType = productType === "metal" ? selectedMetalType() : null;
@@ -2142,10 +2154,9 @@ export function InvestmentFormModal({
       }
     }
 
-    // Dividend reinvest: amount = units * NAV.
-    const effectiveAmount = subtype === "dividend_reinvest" && !(finalAmount > 0) && finalUnits > 0 && p(nav) > 0
-      ? finalUnits * p(nav)
-      : (subtype === "dividend_reinvest" && !(finalAmount > 0) ? 0 : finalAmount);
+    const effectiveAmount = subtype === "dividend_reinvest" ? 0 : finalAmount;
+    const shouldSubmitCashAccount = subtype !== "dividend_reinvest";
+    const shouldSubmitFundNavFields = !isDividend(subtype) || subtype === "dividend_reinvest";
 
     const isCreateMode = mode === "create";
     const shouldWriteConfirmRule =
@@ -2185,6 +2196,7 @@ export function InvestmentFormModal({
       formData.set("entryId", editEntryId || submitEntry?.id || "");
       formData.set("transactionId", submitEntry?.transactionId || editEntryId || "");
       formData.set("subtype", submitSubtype);
+      formData.set("fundSubtype", submitSubtype);
       if (submitSource && !(submitSubtype === "buy" && submitSource === "regular_invest_refund")) formData.set("source", submitSource);
       formData.set("buyResultStatus", submitSubtype === "buy" ? buyResultStatus : "normal");
       if (linkedRefundEntryId) formData.set("linkedRefundEntryId", linkedRefundEntryId);
@@ -2214,14 +2226,14 @@ export function InvestmentFormModal({
           (subtype === "buy" && buyResultStatus === "refund");
         if (shouldSubmitFundUnits) formData.set("fundUnits", finalUnits > 0 ? String(finalUnits) : "");
       }
-      if (!isDividend(subtype)) {
+      if (shouldSubmitFundNavFields) {
         formData.set("fundNav", nav.trim() ? String(p(nav)) : "");
-        formData.set("fundFee", finalFee > 0 ? String(finalFee) : "");
+        if (!isDividend(subtype)) formData.set("fundFee", finalFee > 0 ? String(finalFee) : "");
         formData.set("fundConfirmDate", confirmDate || "");
       }
       formData.set("accountId", toAccountId);
       formData.set("toAccountId", toAccountId);
-      formData.set("cashAccountId", cashAccountId || "");
+      if (shouldSubmitCashAccount) formData.set("cashAccountId", cashAccountId || "");
       if (isDividend(subtype)) {
         formData.set("fundArrivalDate", arrivalDate || effectiveDate);
       } else {
@@ -2239,9 +2251,10 @@ export function InvestmentFormModal({
     } else {
       formData.set("type", "investment");
       formData.set("subtype", subtype);
+      formData.set("fundSubtype", subtype);
       formData.set("buyResultStatus", subtype === "buy" ? buyResultStatus : "normal");
       formData.set("accountId", toAccountId);
-      if (cashAccountId) formData.set("cashAccountId", cashAccountId);
+      if (shouldSubmitCashAccount && cashAccountId) formData.set("cashAccountId", cashAccountId);
       formData.set("date", effectiveDate);
       formData.set("amount", String(effectiveAmount));
       formData.set("note", memo.trim() || finalFundName || finalFundCode);
@@ -2260,9 +2273,9 @@ export function InvestmentFormModal({
       if (!isDividend(subtype) || subtype === "dividend_reinvest") {
         if (finalUnits > 0) formData.set("fundUnits", String(finalUnits));
       }
-      if (!isDividend(subtype)) {
+      if (shouldSubmitFundNavFields) {
         if (p(nav) > 0) formData.set("fundNav", String(p(nav)));
-        formData.set("fundFee", finalFee > 0 ? String(finalFee) : "");
+        if (!isDividend(subtype)) formData.set("fundFee", finalFee > 0 ? String(finalFee) : "");
         if (confirmDate) formData.set("fundConfirmDate", confirmDate);
       }
       if (isDividend(subtype)) {

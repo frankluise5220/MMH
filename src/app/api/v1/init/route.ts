@@ -39,6 +39,7 @@ import { prisma } from "@/lib/db/prisma";
 import { TransactionType, AccountKind, FundCashFlowKind, FundSubtype, RegularInvestStatus } from "@prisma/client";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { createFundTransactionWithCashFlows } from "@/lib/fund/transactions";
+import { ENTRY_ORIGIN_MANUAL } from "@/lib/transaction-semantics";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { logger } from "@/lib/logger";
@@ -166,6 +167,7 @@ export async function POST(req: NextRequest) {
             fundProductType: investAcc.investProductType ?? "fund",
             fundSubtype: FundSubtype.buy,
             source: "initialization",
+            entryOrigin: ENTRY_ORIGIN_MANUAL,
             applyDate: date,
             confirmDate: date,
             arrivalDate: arrivalDate ?? date,
@@ -200,6 +202,7 @@ export async function POST(req: NextRequest) {
               fundProductType: investAcc.investProductType ?? "fund",
               fundSubtype: FundSubtype.dividend_cash,
               source: "initialization",
+              entryOrigin: ENTRY_ORIGIN_MANUAL,
               applyDate: date,
               confirmDate: date,
               arrivalDate: arrivalDate ?? date,

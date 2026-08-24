@@ -433,6 +433,7 @@ model FundTransaction {
   fundProductType     FundProductType           @default(fund)
   fundSubtype         FundSubtype
   source              String?                   @default("manual")
+  entryOrigin         String?                   @default("manual")
   applyDate           DateTime
   confirmDate         DateTime?
   arrivalDate         DateTime?
@@ -488,6 +489,7 @@ model InsuranceTransaction {
   insuranceProductId String
   action             String              @default("premium")
   source             String?             @default("manual")
+  entryOrigin        String?             @default("manual")
   tradeDate          DateTime
   postedAt           DateTime?
   arrivalDate        DateTime?
@@ -521,6 +523,7 @@ model WealthTransaction {
   productName       String?
   action            FundSubtype         @default(buy)
   source            String?             @default("manual")
+  entryOrigin       String?             @default("manual")
   tradeDate         DateTime
   confirmDate       DateTime?
   arrivalDate       DateTime?
@@ -556,6 +559,7 @@ model DepositTransaction {
   cashAccountId              String?
   cashEntryId                String?              @unique
   sourceDepositTransactionId String?
+  entryOrigin                String?              @default("manual")
   productName                String?
   action                     FundSubtype          @default(buy)
   source                     String?              @default("manual")
@@ -598,6 +602,7 @@ model PreciousMetalTransaction {
   metalUnitName     String
   action            FundSubtype         @default(buy)
   source            String?             @default("manual")
+  entryOrigin       String?             @default("manual")
   tradeDate         DateTime
   amount            Decimal             @db.Decimal(18, 2)
   quantity          Decimal?            @db.Decimal(20, 6)
@@ -684,6 +689,7 @@ model StockTransaction {
   stockName         String?
   action            StockTransactionAction
   source            String?                @default("manual")
+  entryOrigin       String?                @default("manual")
   tradeDate         DateTime
   settleDate        DateTime?
   grossAmount       Decimal                @db.Decimal(18, 2)
@@ -869,6 +875,7 @@ model PropertyTransaction {
   propertyAssetId   String
   action            PropertyTransactionAction @default(purchase)
   source            String?                   @default("manual")
+  entryOrigin       String?                   @default("manual")
   tradeDate         DateTime
   settlementDate    DateTime?
   amount            Decimal                   @db.Decimal(18, 2)
@@ -1449,6 +1456,7 @@ model TxRecord {
   insuranceAction             String?
   insuranceProductName        String?
   source                      String?                     @default("manual")
+  entryOrigin                 String?                     @default("manual")
   Attachment                  Attachment[]
   EntryTag                    EntryTag[]
   account                     Account                     @relation("transactions_accountIdToAccount", fields: [accountId], references: [id])

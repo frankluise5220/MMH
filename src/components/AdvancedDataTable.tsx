@@ -14,7 +14,7 @@ import { GripVertical, Pencil, SlidersHorizontal, Trash2 } from "lucide-react";
 import { DateRangeColumnFilter, NumberRangeColumnFilter, TableColumnFilter, TextColumnFilter } from "./TableColumnFilter";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useI18n } from "@/lib/i18n";
-import { APP_PREFS_EVENT, getCompactRowHeightPreference } from "@/lib/client/appPreferences";
+import { APP_PREFS_EVENT, DEFAULT_COMPACT_ROW_HEIGHT, getCompactRowHeightPreference } from "@/lib/client/appPreferences";
 
 const HORIZONTAL_SCROLL_TOLERANCE_PX = 4;
 const ROW_VIRTUALIZATION_THRESHOLD = 200;
@@ -365,7 +365,7 @@ export function AdvancedDataTable<T>({
   const [filters, setFilters] = useState<Partial<Record<string, string[]>>>({});
   const [activeFilterColumn, setActiveFilterColumn] = useState<string | null>(null);
   const [sortState, setSortState] = useState<AdvancedDataTableSortState | null>(null);
-  const [compactRowHeight, setCompactRowHeight] = useState(() => getCompactRowHeightPreference());
+  const [compactRowHeight, setCompactRowHeight] = useState(DEFAULT_COMPACT_ROW_HEIGHT);
   const rowHeight = compactRows ? compactRowHeight : 38;
   const rowPaddingY = compactRows ? Math.max(2, Math.round((compactRowHeight - 18) / 2)) : 8;
   const rowCellPaddingStyle = compactRows ? { paddingTop: rowPaddingY, paddingBottom: rowPaddingY } : undefined;
@@ -614,6 +614,53 @@ export function AdvancedDataTable<T>({
       counts[column.key] = columnCounts;
     }
     return counts;
+  }, [filters, rows, showFilters, tableColumns]);
+  const filterOptionTitles = useMemo(() => {
+    const titlesByColumn: Record<string, Record<string, string>> = {};
+    for (const column of tableColumns) {
+      if (!column.filterText) continue;
+      if (column.filterKind === "dateRange" || column.filterKind === "numberRange" || column.filterKind === "text") continue;
+      const baseRows = showFilters
+        ? rows.filter((row) => rowMatchesFilters(row, tableColumns, filters, { excludeKey: column.key }))
+        : rows;
+      const columnTitles: Record<string, string> = {};
+      for (const row of baseRows) {
+        const rawValue = column.filterText(row);
+        if (rawValue == null) continue;
+        const value = rawValue.trim() || "-";
+        const title = column.filterTitle?.(row)?.trim();
+        if (title && !columnTitles[value]) columnTitles[value] = title;
+      }
+      titlesByColumn[column.key] = columnTitles;
+    }
+    return titlesByColumn;
+  }, [filters, rows, showFilters, tableColumns]);
+  const filterOptionSearchText = useMemo(() => {
+    const searchTextByColumn: Record<string, Record<string, string>> = {};
+    for (const column of tableColumns) {
+      if (!column.filterText) continue;
+      if (column.filterKind === "dateRange" || column.filterKind === "numberRange" || column.filterKind === "text") continue;
+      const baseRows = showFilters
+        ? rows.filter((row) => rowMatchesFilters(row, tableColumns, filters, { excludeKey: column.key }))
+        : rows;
+      const columnSearchText: Record<string, Set<string>> = {};
+      for (const row of baseRows) {
+        const rawValue = column.filterText(row);
+        if (rawValue == null) continue;
+        const value = rawValue.trim() || "-";
+        const searchText = [
+          column.filterSearchText?.(row) ?? "",
+          column.filterTitle?.(row) ?? "",
+        ].map((item) => item.trim()).filter(Boolean);
+        if (searchText.length === 0) continue;
+        columnSearchText[value] ??= new Set<string>();
+        for (const item of searchText) columnSearchText[value].add(item);
+      }
+      searchTextByColumn[column.key] = Object.fromEntries(
+        Object.entries(columnSearchText).map(([value, parts]) => [value, Array.from(parts).join(" ")]),
+      );
+    }
+    return searchTextByColumn;
   }, [filters, rows, showFilters, tableColumns]);
   const filteredRows = useMemo(() => {
     if (!showFilters) return rows;
@@ -1468,6 +1515,8 @@ export function AdvancedDataTable<T>({
                           label={labelText(column.label, column.key)}
                           options={filterOptions[column.key] ?? []}
                           optionCounts={filterOptionCounts[column.key]}
+                          optionTitles={filterOptionTitles[column.key]}
+                          optionSearchText={filterOptionSearchText[column.key]}
                           selectedValues={filters[column.key] ?? []}
                           open={activeFilterColumn === column.key}
                           showLabel={false}

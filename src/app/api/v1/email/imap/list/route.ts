@@ -6,6 +6,17 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export const runtime = "nodejs";
 
+const MAX_MAIL_SEARCH_LIMIT = 50;
+const DateOnlySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+
+/**
+ * POST /api/v1/email/imap/list
+ *
+ * Lists mailbox envelopes for one configured email account or an ad-hoc IMAP
+ * configuration. `sinceDate` and `endDate` are date-only bounds in YYYY-MM-DD
+ * format, both inclusive from the user's perspective. `limit` and `scanLimit`
+ * are capped at 50 so the import picker remains bounded.
+ */
 const BodySchema = z.object({
   accountId: z.string().optional(),
   host: z.string().optional(),
@@ -14,9 +25,10 @@ const BodySchema = z.object({
   user: z.string().optional(),
   password: z.string().optional(),
   mailbox: z.string().min(1).default("INBOX"),
-  limit: z.number().int().min(1).max(50).default(10),
-  scanLimit: z.number().int().min(1).max(1000).optional(),
-  sinceDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  limit: z.number().int().min(1).max(MAX_MAIL_SEARCH_LIMIT).default(MAX_MAIL_SEARCH_LIMIT),
+  scanLimit: z.number().int().min(1).max(MAX_MAIL_SEARCH_LIMIT).default(MAX_MAIL_SEARCH_LIMIT),
+  sinceDate: DateOnlySchema.optional(),
+  endDate: DateOnlySchema.optional(),
   keyword: z.string().optional(),
   keywords: z.array(z.string()).optional(),
   subjectIncludes: z.string().optional(),
@@ -28,13 +40,17 @@ export async function POST(req: NextRequest) {
   const { householdId } = await getHouseholdScope();
   const body = (await req.json().catch(() => null)) as unknown;
   const parsed = BodySchema.safeParse(body);
-  if (!parsed.success) return NextResponse.json({ ok: false, code: "INVALID_REQUEST", error: "参数格式不正确" }, { status: 400 });
+  if (!parsed.success) return NextResponse.json({ ok: false, code: "INVALID_REQUEST", error: "Invalid request body." }, { status: 400 });
 
-  let { host, port, secure, user, password, mailbox, limit, scanLimit, sinceDate, keyword, keywords, subjectIncludes, fromIncludes, debug } = parsed.data;
+  let { host, port, secure, user, password, mailbox, limit, scanLimit, sinceDate, endDate, keyword, keywords, subjectIncludes, fromIncludes, debug } = parsed.data;
+
+  if (sinceDate && endDate && sinceDate > endDate) {
+    return NextResponse.json({ ok: false, code: "INVALID_DATE_RANGE", error: "Start date must not be later than end date." }, { status: 400 });
+  }
 
   if (parsed.data.accountId) {
     const account = await prisma.emailAccount.findFirst({ where: { id: parsed.data.accountId, householdId } });
-    if (!account) return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "账户不存在" }, { status: 404 });
+    if (!account) return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "Email account not found." }, { status: 404 });
     host = account.imapHost;
     port = account.imapPort;
     secure = account.imapSecure;
@@ -44,7 +60,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (!host || !user || !password) {
-    return NextResponse.json({ ok: false, code: "INCOMPLETE_CONFIG", error: "请填写完整配置" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INCOMPLETE_CONFIG", error: "Complete IMAP configuration is required." }, { status: 400 });
   }
 
   const trace: string[] = [];
@@ -55,7 +71,7 @@ export async function POST(req: NextRequest) {
     const opened = await connectAndOpenBox({ host, port, secure, user, password, mailbox }, trace);
     const openedAt = Date.now();
     client = opened.client;
-    const result = await listMails(client, { limit, scanLimit, sinceDate, keyword, keywords, subjectIncludes, fromIncludes }, trace);
+    const result = await listMails(client, { limit, scanLimit, sinceDate, endDate, keyword, keywords, subjectIncludes, fromIncludes }, trace);
     const listedAt = Date.now();
     return NextResponse.json({
       ok: true,
@@ -72,7 +88,7 @@ export async function POST(req: NextRequest) {
       ...(debug ? { trace: [...trace, `list ok ${result.items.length}`] } : {}),
     });
   } catch (e) {
-    const rawMsg = e instanceof Error ? e.message : "邮箱连接失败";
+    const rawMsg = e instanceof Error ? e.message : "Mailbox connection failed.";
     return NextResponse.json({ ok: false, code: "IMAP_CONNECT_FAILED", error: formatImapError(rawMsg), ...(debug ? { trace: [...trace, `error: ${rawMsg}`] } : {}) }, { status: 500 });
   } finally {
     if (client) await closeImap(client);
@@ -82,13 +98,13 @@ export async function POST(req: NextRequest) {
 function formatImapError(message: string) {
   const lower = message.toLowerCase();
   if (lower.includes("authentication") || lower.includes("login") || lower.includes("auth")) {
-    return "邮箱登录失败，请确认 IMAP 已开启，并使用邮箱授权码/应用专用密码，不要使用网页登录密码。";
+    return "Mailbox login failed. Confirm that IMAP is enabled and use an app password instead of the web login password.";
   }
   if (lower.includes("timeout") || lower.includes("timed out")) {
-    return "邮箱连接超时，请检查 IMAP 服务器、端口、TLS 设置和网络连接。";
+    return "Mailbox connection timed out. Check the IMAP server, port, TLS setting, and network connection.";
   }
   if (lower.includes("mailbox") || lower.includes("not found")) {
-    return "邮箱文件夹打开失败，请确认文件夹名称，通常可先使用 INBOX。";
+    return "Mailbox folder could not be opened. Confirm the folder name; INBOX is usually the first value to try.";
   }
   return message;
 }

@@ -22,6 +22,7 @@ import {
 } from "@/lib/credit/billing";
 import { upsertStatementCategoryRuleFromTx } from "@/lib/statement/category-rules";
 import { upsertStatementInstitutionRuleFromUserEdit } from "@/lib/statement/recognition-rules";
+import { ENTRY_ORIGIN_EMAIL_IMPORT, ENTRY_ORIGIN_EXCEL_IMPORT } from "@/lib/transaction-semantics";
 
 export const runtime = "nodejs";
 
@@ -892,7 +893,8 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
         counterpartyInstitutionName: counterpartyInstitution.name,
         statementMonth: fromStatementMonth ?? undefined,
         importBatchId: options.importBatchId ?? undefined,
-        source: options.importBatchId ? "statement_import" : undefined,
+        source: options.importBatchId ? "statement_import" : "manual",
+        entryOrigin: options.importBatchId ? ENTRY_ORIGIN_EMAIL_IMPORT : ENTRY_ORIGIN_EXCEL_IMPORT,
         currency: transactionCurrency,
       } as any,
     });
@@ -957,7 +959,8 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
       counterpartyInstitutionName: counterpartyInstitution.name,
       statementMonth,
       importBatchId: options.importBatchId ?? undefined,
-      source: options.importBatchId ? "statement_import" : undefined,
+      source: options.importBatchId ? "statement_import" : "manual",
+      entryOrigin: options.importBatchId ? ENTRY_ORIGIN_EMAIL_IMPORT : ENTRY_ORIGIN_EXCEL_IMPORT,
       currency: normalizeCurrency(currencyMeta?.currency),
     },
   });

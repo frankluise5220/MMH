@@ -6,6 +6,7 @@
  */
 
 import { addWorkdaysUtc } from "@/lib/date-utils";
+import { TRANSACTION_SOURCE_FUND_UNITS_RECONCILE } from "@/lib/transaction-semantics";
 
 // Fund transaction types
 export type FundSubtype = "buy" | "redeem" | "dividend_cash" | "dividend_reinvest" | "buy_failed";
@@ -118,9 +119,11 @@ export type SubtypeDisplay = {
 
 const DISPLAY_MAP: Record<string, SubtypeDisplay> = {
   buy: { labelKey: "fund.subtype.buy", cls: "bg-blue-50 text-blue-600" },
+  [`buy|${TRANSACTION_SOURCE_FUND_UNITS_RECONCILE}`]: { labelKey: "fundShell.subtype.unitsReconcile", cls: "bg-violet-50 text-violet-600" },
   "buy|regular_invest": { labelKey: "fundShell.subtype.buyRegularInvest", cls: "bg-blue-50 text-blue-600" },
   "buy|dividend": { labelKey: "fund.subtype.dividend", cls: "bg-emerald-50 text-emerald-600", textCls: "text-emerald-600" },
   redeem: { labelKey: "fund.subtype.redeem", cls: "bg-orange-50 text-orange-600" },
+  [`redeem|${TRANSACTION_SOURCE_FUND_UNITS_RECONCILE}`]: { labelKey: "fundShell.subtype.unitsReconcile", cls: "bg-violet-50 text-violet-600" },
   dividend_reinvest: { labelKey: "fundShell.subtype.dividendReinvest", cls: "bg-emerald-50 text-emerald-600", textCls: "text-emerald-600" },
   dividend_cash: { labelKey: "fundShell.subtype.dividendCash", cls: "bg-emerald-50 text-emerald-600", textCls: "text-emerald-600" },
   "buy_failed|regular_invest": { labelKey: "fundShell.subtype.buyFailed", cls: "bg-red-50 text-red-600" },

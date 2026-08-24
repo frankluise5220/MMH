@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import {
+  DEFAULT_EMAIL_IMPORT_KEYWORD,
   emailImportKeywordSettingKey,
   normalizeEmailImportKeyword,
 } from "@/lib/mail/email-import-settings";
@@ -21,7 +22,7 @@ export async function GET() {
   });
   return NextResponse.json({
     ok: true,
-    data: { keyword: normalizeEmailImportKeyword(row?.value) },
+    data: { keyword: row ? normalizeEmailImportKeyword(row.value) : DEFAULT_EMAIL_IMPORT_KEYWORD },
   });
 }
 

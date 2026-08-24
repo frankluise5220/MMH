@@ -24,11 +24,6 @@ import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { useI18n } from "@/lib/i18n";
 import {
-  BATCH_IMPORT_PENDING_FILE_STORAGE_KEY,
-  batchImportPayloadToFile,
-  type BatchImportPendingFilePayload,
-} from "@/lib/batch-import-transfer";
-import {
   SPDB_CREDIT_CARD_TRANSACTION_REPORT_PROFILE,
   STATEMENT_IMPORT_FIELD_HEADERS,
   buildStatementImportFieldHeaders,
@@ -37,6 +32,7 @@ import {
   type StatementImportField,
 } from "@/lib/statement/header-catalog";
 import { normalizeAlipayWorkbookRows } from "@/lib/statement/alipay-template";
+import { buildJdImportTemplate, normalizeJdWorkbookRows } from "@/lib/statement/jd-template";
 import { buildWechatImportTemplate, normalizeWechatWorkbookRows } from "@/lib/statement/wechat-template";
 import {
   inferSignedAmountInflowSign,
@@ -97,11 +93,9 @@ type FundImportUploadItem = {
   rawText: string;
   date: string;
   fundSubtype: string;
-  source: string;
   cashAccount: string;
   fundAccount: string;
   fundCode: string;
-  fundName: string;
   amount: number;
   units: number | null;
   nav: number | null;
@@ -111,20 +105,24 @@ type FundImportUploadItem = {
   arrivalDate: string | null;
   remark: string;
 };
+type FundImportHeaderField = Exclude<keyof FundImportUploadItem, "rawText">;
 
-type FundPreviewIssue = {
+type FundImportPreviewIssue = {
   level: "error" | "warning";
+  code?: string;
   message: string;
 };
 
 type FundImportPreviewItem = FundImportUploadItem & {
+  source: string;
+  fundName: string | null;
   feeRate: number | null;
   confirmDays: number | null;
   arrivalDays: number | null;
   cashAccountId: string | null;
   fundAccountId: string | null;
   fundProductType: string | null;
-  issues: FundPreviewIssue[];
+  issues: FundImportPreviewIssue[];
 };
 
 type FundRuleEditorRow = {
@@ -138,7 +136,7 @@ type FundRuleEditorRow = {
 };
 
 type ImportTemplate = {
-  key: "normal" | "credit" | "fund" | "wechat";
+  key: "normal" | "credit" | "fund" | "wechat" | "jd";
   title: string;
   description: string;
   status: string;
@@ -148,6 +146,7 @@ type ImportTemplate = {
   headers: string[];
   exportHeaders?: string[];
   rows: string[][];
+  footerRows?: string[][];
   fields: Array<{ name: string; label?: string; required: boolean; note: string }>;
   guideNotes?: string[];
 };
@@ -176,9 +175,16 @@ type BillImportMode = "normal" | "credit_card";
 type EditableCell = "date" | "type" | "outflow" | "inflow" | "account" | "counterAccount" | "category" | "institution" | "tags" | "remark";
 type ReplaceField = EditableCell;
 type ImportIssue = { idx: number; level: "error" | "warning"; message: string };
+type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
 type NormalPreviewTableRow = { idx: number };
 type FundPreviewTableRow = FundImportPreviewItem & { idx: number };
 type FundImportKind = "normal" | "fund" | null;
+type FundImportContext = {
+  fundAccountId?: string;
+  fundAccount?: string;
+  fundCode?: string;
+  fundName?: string;
+};
 type ImportCompletionState = {
   count: number;
   href: string | null;
@@ -222,6 +228,30 @@ function postImportDebugLog(traceId: string, event: string, details: ImportDebug
   }).catch((error) => {
     console.warn("[batch-import] debug log upload failed", error);
   });
+}
+
+function normalizeFundImportContext(context?: FundImportContext | null): FundImportContext | null {
+  const fundAccountId = String(context?.fundAccountId ?? "").trim();
+  const fundAccount = String(context?.fundAccount ?? "").trim();
+  const fundCode = String(context?.fundCode ?? "").trim();
+  const fundName = String(context?.fundName ?? "").trim();
+  if (!fundAccountId && !fundAccount && !fundCode && !fundName) return null;
+  return {
+    ...(fundAccountId ? { fundAccountId } : {}),
+    ...(fundAccount ? { fundAccount } : {}),
+    ...(fundCode ? { fundCode } : {}),
+    ...(fundName ? { fundName } : {}),
+  };
+}
+
+function fundIssueMessage(issue: FundImportPreviewIssue, t: TranslateFn) {
+  if (issue.code === "MISSING_CASH_ACCOUNT" || issue.message === "MISSING_CASH_ACCOUNT") {
+    return t("batchImport.fundPreview.missingCashAccount");
+  }
+  if (issue.code === "INVALID_FUND_CODE" || issue.message === "INVALID_FUND_CODE") {
+    return t("batchImport.fundPreview.invalidFundCode");
+  }
+  return issue.message;
 }
 
 function buildCategorySmartSelectOptions(
@@ -276,15 +306,14 @@ function buildCategorySmartSelectOptions(
 const FUND_CANONICAL_HEADERS = [
   "date",
   "fundSubtype",
-  "source",
   "cashAccount",
   "fundAccount",
   "fundCode",
-  "fundName",
   "amount",
-  "units",
-  "nav",
+  "feeRateInput",
   "fee",
+  "nav",
+  "units",
   "confirmDate",
   "arrivalDate",
   "remark",
@@ -292,52 +321,50 @@ const FUND_CANONICAL_HEADERS = [
 const FUND_FIELD_LABEL_KEYS: Record<(typeof FUND_CANONICAL_HEADERS)[number], string> = {
   date: "batchImport.template.fund.label.date",
   fundSubtype: "batchImport.template.fund.label.fundSubtype",
-  source: "batchImport.template.fund.label.source",
   cashAccount: "batchImport.template.fund.label.cashAccount",
   fundAccount: "batchImport.template.fund.label.fundAccount",
   fundCode: "batchImport.template.fund.label.fundCode",
-  fundName: "batchImport.template.fund.label.fundName",
   amount: "batchImport.template.fund.label.amount",
-  units: "batchImport.template.fund.label.units",
-  nav: "batchImport.template.fund.label.nav",
+  feeRateInput: "batchImport.template.fund.label.feeRate",
   fee: "batchImport.template.fund.label.fee",
+  nav: "batchImport.template.fund.label.nav",
+  units: "batchImport.template.fund.label.units",
   confirmDate: "batchImport.template.fund.label.confirmDate",
   arrivalDate: "batchImport.template.fund.label.arrivalDate",
   remark: "batchImport.template.fund.label.remark",
 };
 const FUND_ACTION_HEADERS = {
   buy: "batchImport.template.fund.action.buy",
-  regularInvest: "batchImport.template.fund.action.regularInvest",
   redeem: "batchImport.template.fund.action.redeem",
+  dividendCash: "batchImport.template.fund.action.dividendCash",
+  dividendReinvest: "batchImport.template.fund.action.dividendReinvest",
 } as const;
 const FUND_LABEL_HEADER_SET = new Set([
   "日期",
   "基金动作",
-  "来源",
   "资金账户",
   "基金账户",
   "基金代码",
-  "基金名称",
   "金额",
-  "份额",
-  "净值",
+  "手续费率",
   "手续费",
+  "净值",
+  "份额",
   "净值日期",
   "入账日期",
   "备注",
 ]);
-const FUND_FIELD_ALIASES: Record<Exclude<keyof FundImportUploadItem, "rawText" | "feeRateInput">, string[]> = {
+const FUND_FIELD_ALIASES: Record<FundImportHeaderField, string[]> = {
   date: ["date", "日期", "交易日期", "申请日期", "Date", "日付"],
-  fundSubtype: ["fundSubtype", "基金动作", "基金类型", "动作", "Fund Action", "Action", "基金アクション", "ファンド操作"],
-  source: ["source", "来源", "Source", "発生元", "ソース"],
+  fundSubtype: ["fundSubtype", "基金动作", "基金类型", "动作", "Fund Action", "Action", "基金アクション", "ファンド操作", "cash dividend", "dividend reinvest", "現金分配", "分配金再投資"],
   cashAccount: ["cashAccount", "资金账户", "现金账户", "付款账户", "cash account", "Cash Account", "資金口座"],
   fundAccount: ["fundAccount", "基金账户", "投资账户", "account", "fund account", "Fund Account", "ファンド口座"],
   fundCode: ["fundCode", "基金代码", "代码", "fund code", "Fund Code", "ファンドコード", "基金コード"],
-  fundName: ["fundName", "基金名称", "名称", "fund name", "Fund Name", "ファンド名", "基金名"],
   amount: ["amount", "金额", "发生金额", "Amount", "金額"],
-  units: ["units", "份额", "确认份额", "Units", "口数"],
-  nav: ["nav", "净值", "成交净值", "NAV", "基準価額"],
+  feeRateInput: ["feeRateInput", "feeRate", "手续费率", "费率", "Fee Rate", "Fee Rate (%)", "手数料率"],
   fee: ["fee", "手续费", "Fee", "手数料"],
+  nav: ["nav", "净值", "成交净值", "NAV", "基準価額"],
+  units: ["units", "份额", "确认份额", "Units", "口数"],
   confirmDate: ["confirmDate", "确认日期", "净值日期", "NAV Date", "基準価額日"],
   arrivalDate: ["arrivalDate", "入账日期", "到账日期", "Posting Date", "入帳日"],
   remark: ["remark", "备注", "说明", "Remark", "Note", "備考", "メモ"],
@@ -413,6 +440,7 @@ function buildTemplates(t: (key: string, params?: Record<string, string | number
     ],
   },
   buildWechatImportTemplate(t),
+  buildJdImportTemplate(t),
   {
     key: "fund",
     title: t("batchImport.template.fund.title"),
@@ -423,27 +451,36 @@ function buildTemplates(t: (key: string, params?: Record<string, string | number
     sheetName: t("batchImport.sheet.template"),
     headers: fundHeaders,
     rows: [
-      ["2026-06-08", t(FUND_ACTION_HEADERS.buy), "", t("batchImport.template.sample.cashAccount"), t("batchImport.template.sample.fundAccount"), "000001", "", "100.00", "99.9000", "1.0010", "0.15%", "2026-06-10", "2026-06-11", t("batchImport.template.fund.sample.buyRemark")],
-      ["2026-06-12", t(FUND_ACTION_HEADERS.regularInvest), "", t("batchImport.template.sample.cashAccount"), t("batchImport.template.sample.fundAccount"), "000001", "", "100.00", "99.9000", "1.0010", "0.15", "2026-06-14", "2026-06-15", t("batchImport.template.fund.sample.regularInvestRemark")],
-      ["2026-06-20", t(FUND_ACTION_HEADERS.redeem), "", t("batchImport.template.sample.cashAccount"), t("batchImport.template.sample.fundAccount"), "000001", "", "500.00", "499.0000", "1.0020", "0.50", "2026-06-21", "2026-06-23", t("batchImport.template.fund.sample.redeemRemark")],
+      ["2026-06-03", t(FUND_ACTION_HEADERS.buy), t("batchImport.template.sample.cashAccount"), t("batchImport.template.sample.fundAccount"), "000001", "1000.00", "1", "", "1.3521", "738.99", "2026-06-04", "2026-06-04", ""],
+      ["2026-06-10", t(FUND_ACTION_HEADERS.redeem), t("batchImport.template.sample.cashAccount"), t("batchImport.template.sample.fundAccount"), "000001", "500.00", "", "0.50", "1.3889", "360.00", "2026-06-11", "2026-06-12", ""],
+      ["2026-06-15", t(FUND_ACTION_HEADERS.dividendCash), t("batchImport.template.sample.cashAccount"), t("batchImport.template.sample.fundAccount"), "000001", "300.00", "", "", "", "", "", "2026-06-16", ""],
+      ["2026-06-18", t(FUND_ACTION_HEADERS.dividendReinvest), "", t("batchImport.template.sample.fundAccount"), "000001", "", "", "", "1.4200", "210.00", "2026-06-18", "", ""],
+    ],
+    footerRows: [
+      [],
+      [],
+      [],
+      ...(t("batchImport.guide.fundImportNotes") as unknown as string)
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => line.split("\t")),
     ],
     fields: [
       { name: "date", label: t("batchImport.template.fund.label.date"), required: true, note: t("batchImport.template.fund.field.date") },
       { name: "fundSubtype", label: t("batchImport.template.fund.label.fundSubtype"), required: true, note: t("batchImport.template.fund.field.fundSubtype") },
-      { name: "source", label: t("batchImport.template.fund.label.source"), required: false, note: t("batchImport.template.fund.field.source") },
       { name: "cashAccount", label: t("batchImport.template.fund.label.cashAccount"), required: false, note: t("batchImport.template.fund.field.cashAccount") },
       { name: "fundAccount", label: t("batchImport.template.fund.label.fundAccount"), required: true, note: t("batchImport.template.fund.field.fundAccount") },
       { name: "fundCode", label: t("batchImport.template.fund.label.fundCode"), required: true, note: t("batchImport.template.fund.field.fundCode") },
-      { name: "fundName", label: t("batchImport.template.fund.label.fundName"), required: false, note: t("batchImport.template.fund.field.fundName") },
-      { name: "amount", label: t("batchImport.template.fund.label.amount"), required: true, note: t("batchImport.template.fund.field.amount") },
-      { name: "units", label: t("batchImport.template.fund.label.units"), required: false, note: t("batchImport.template.fund.field.units") },
-      { name: "nav", label: t("batchImport.template.fund.label.nav"), required: false, note: t("batchImport.template.fund.field.nav") },
+      { name: "amount", label: t("batchImport.template.fund.label.amount"), required: false, note: t("batchImport.template.fund.field.amount") },
+      { name: "feeRateInput", label: t("batchImport.template.fund.label.feeRate"), required: false, note: t("batchImport.template.fund.field.feeRate") },
       { name: "fee", label: t("batchImport.template.fund.label.fee"), required: false, note: t("batchImport.template.fund.field.fee") },
+      { name: "nav", label: t("batchImport.template.fund.label.nav"), required: false, note: t("batchImport.template.fund.field.nav") },
+      { name: "units", label: t("batchImport.template.fund.label.units"), required: false, note: t("batchImport.template.fund.field.units") },
       { name: "confirmDate", label: t("batchImport.template.fund.label.confirmDate"), required: false, note: t("batchImport.template.fund.field.confirmDate") },
       { name: "arrivalDate", label: t("batchImport.template.fund.label.arrivalDate"), required: false, note: t("batchImport.template.fund.field.arrivalDate") },
       { name: "remark", label: t("batchImport.template.fund.label.remark"), required: false, note: t("batchImport.template.fund.field.remark") },
     ],
-    guideNotes: [t("batchImport.guide.fundSubtypeSource")],
+    guideNotes: [(t("batchImport.guide.fundImportNotes") as unknown as string).split("\n")[0] ?? ""],
   },
   ];
 }
@@ -473,6 +510,9 @@ async function buildTemplateWorkbook(
     exportHeaders,
     ...(needsLabelRow ? [displayHeaders] : []),
     ...template.rows,
+    ...(Array.isArray(template.footerRows) && template.footerRows.length > 0
+      ? [["", ""], ...template.footerRows]
+      : []),
   ];
   const templateSheet = XLSX.utils.aoa_to_sheet(templateRows);
   templateSheet["!cols"] = template.headers.map((header, index) => ({
@@ -555,15 +595,20 @@ function parseLooseNumber(value: string) {
   return Number.isFinite(amount) ? amount : null;
 }
 
-function parseFundFeeInput(value: string, amount: number) {
+function parseFundFeeRateInput(value: string) {
+  const raw = value.trim();
+  if (!raw) return null;
+  const rate = parseLooseNumber(raw.replace(/%/g, ""));
+  return rate == null || rate < 0 ? null : rate;
+}
+
+function parseFundFeeInput(value: string) {
   const raw = value.trim();
   if (!raw) return { fee: null as number | null, feeRateInput: null as number | null };
   if (raw.includes("%")) {
-    const rate = parseLooseNumber(raw.replace(/%/g, ""));
-    if (rate == null || rate < 0) return { fee: null as number | null, feeRateInput: null as number | null };
     return {
-      fee: Number((Math.abs(amount) * rate / 100).toFixed(2)),
-      feeRateInput: rate,
+      fee: null as number | null,
+      feeRateInput: parseFundFeeRateInput(raw),
     };
   }
   const fee = parseLooseNumber(raw);
@@ -849,8 +894,7 @@ function fundHeaderScore(row: string[]) {
   if (index.has("amount")) score += 4;
   if (index.has("fundSubtype")) score += 2;
   if (index.has("cashAccount")) score += 1;
-  if (index.has("fundName")) score += 1;
-  return score >= 12 ? score : 0;
+  return score >= 11 ? score : 0;
 }
 
 function importHeaderScore(row: string[], fieldHeaders: StatementFieldHeaders = STATEMENT_IMPORT_FIELD_HEADERS) {
@@ -871,14 +915,21 @@ function trimWorkbookRowsToImportHeader(rows: string[][], fieldHeaders: Statemen
   return bestScore > 0 ? compactRows.slice(bestIndex) : compactRows;
 }
 
-function mergeWorkbookRows(
-  XLSX: typeof import("xlsx"),
-  workbook: WorkBook,
-  fieldHeaders: StatementFieldHeaders = STATEMENT_IMPORT_FIELD_HEADERS,
-): ImportFileParseResult {
-  const rawSheetRows = workbook.SheetNames
-    .map((sheetName) => ({ sheetName, rows: worksheetRows(XLSX, workbook, sheetName) }))
-    .filter((item) => item.rows.length > 0);
+function normalizeKnownPaymentWorkbookRows(
+  rawSheetRows: Array<{ sheetName: string; rows: string[][] }>,
+  sheetCount: number,
+): ImportFileParseResult | null {
+  const jdRows = normalizeJdWorkbookRows(rawSheetRows);
+  if (jdRows) {
+    return {
+      rows: jdRows.rows,
+      sourceDataRowCount: jdRows.sourceDataRowCount,
+      workbook: {
+        sheetCount,
+        includedSheetCount: jdRows.includedSheetCount,
+      },
+    };
+  }
 
   const alipayRows = normalizeAlipayWorkbookRows(rawSheetRows);
   if (alipayRows) {
@@ -886,7 +937,7 @@ function mergeWorkbookRows(
       rows: alipayRows.rows,
       sourceDataRowCount: alipayRows.sourceDataRowCount,
       workbook: {
-        sheetCount: workbook.SheetNames.length,
+        sheetCount,
         includedSheetCount: alipayRows.includedSheetCount,
       },
     };
@@ -898,11 +949,26 @@ function mergeWorkbookRows(
       rows: wechatRows.rows,
       sourceDataRowCount: wechatRows.sourceDataRowCount,
       workbook: {
-        sheetCount: workbook.SheetNames.length,
+        sheetCount,
         includedSheetCount: wechatRows.includedSheetCount,
       },
     };
   }
+
+  return null;
+}
+
+function mergeWorkbookRows(
+  XLSX: typeof import("xlsx"),
+  workbook: WorkBook,
+  fieldHeaders: StatementFieldHeaders = STATEMENT_IMPORT_FIELD_HEADERS,
+): ImportFileParseResult {
+  const rawSheetRows = workbook.SheetNames
+    .map((sheetName) => ({ sheetName, rows: worksheetRows(XLSX, workbook, sheetName) }))
+    .filter((item) => item.rows.length > 0);
+
+  const knownRows = normalizeKnownPaymentWorkbookRows(rawSheetRows, workbook.SheetNames.length);
+  if (knownRows) return knownRows;
 
   const sheetRows = rawSheetRows
     .map((item) => ({ sheetName: item.sheetName, rows: trimWorkbookRowsToImportHeader(item.rows, fieldHeaders) }))
@@ -958,7 +1024,11 @@ async function parseImportFile(
     return mergeWorkbookRows(XLSX, XLSX.read(data, { type: "array", cellDates: true }), fieldHeaders);
   }
   const rows = parseCsv(await file.text());
-  return { rows, sourceDataRowCount: Math.max(0, rows.length - 1) };
+  const rawSheetRows = [{ sheetName: file.name, rows }];
+  const knownRows = normalizeKnownPaymentWorkbookRows(rawSheetRows, 1);
+  if (knownRows) return knownRows;
+  const trimmedRows = trimWorkbookRowsToImportHeader(rows, fieldHeaders);
+  return { rows: trimmedRows, sourceDataRowCount: Math.max(0, trimmedRows.length - 1) };
 }
 
 function waitForBrowserPaint() {
@@ -973,16 +1043,16 @@ function waitForBrowserPaint() {
 
 function buildFundHeaderIndex(headers: string[]) {
   const normalizedHeaders = headers.map(normalizeFundHeaderText);
-  const map = new Map<Exclude<keyof FundImportUploadItem, "rawText" | "feeRateInput">, number>();
-  (Object.entries(FUND_FIELD_ALIASES) as Array<[Exclude<keyof FundImportUploadItem, "rawText" | "feeRateInput">, string[]]>).forEach(([field, aliases]) => {
+  const map = new Map<FundImportHeaderField, number>();
+  (Object.entries(FUND_FIELD_ALIASES) as Array<[FundImportHeaderField, string[]]>).forEach(([field, aliases]) => {
     const index = normalizedHeaders.findIndex((header) => aliases.some((alias) => normalizeFundHeaderText(alias) === header));
     if (index >= 0) map.set(field, index);
   });
   return map;
 }
 
-function hasLikelyFundHeaders(map: Map<Exclude<keyof FundImportUploadItem, "rawText" | "feeRateInput">, number>) {
-  return map.has("date") && map.has("fundAccount") && map.has("fundCode") && map.has("amount");
+function hasLikelyFundHeaders(map: Map<FundImportHeaderField, number>) {
+  return map.has("date") && map.has("fundAccount") && map.has("fundCode") && (map.has("amount") || map.has("units"));
 }
 
 function hasCanonicalFundHeaders(headers: string[]) {
@@ -994,22 +1064,17 @@ function looksLikeFundLabelRow(headers: string[]) {
 }
 
 function normalizeFundActionText(value: string) {
-  return value.trim().toLowerCase().replace(/[\s_-]+/g, "");
+  return value.trim().toLowerCase().replace(/[\s_\-（）()]+/g, "");
 }
 
-function normalizeFundImportAction(rawAction: string, rawSource: string) {
+function normalizeFundImportAction(rawAction: string) {
   const action = normalizeFundActionText(rawAction);
-  const source = String(rawSource ?? "").trim();
-  if (["regularinvest", "recurringinvest", "recurringbuy", "定投", "積立"].includes(action)) {
-    return { fundSubtype: "buy", source: "regular_invest" };
-  }
-  if (["redeem", "redemption", "sell", "赎回", "贖回", "解約"].includes(action)) {
-    return { fundSubtype: "redeem", source: source || "manual" };
-  }
-  if (["buy", "purchase", "申购", "買入", "买入", "購入"].includes(action)) {
-    return { fundSubtype: "buy", source: source || "manual" };
-  }
-  return { fundSubtype: rawAction, source };
+  if (["regularinvest", "recurringinvest", "recurringbuy", "定投", "積立"].includes(action)) return "buy";
+  if (["buy", "purchase", "subscribe", "申购", "買入", "买入", "購入"].includes(action)) return "buy";
+  if (["redeem", "redemption", "sell", "赎回", "贖回", "解約"].includes(action)) return "redeem";
+  if (["dividendcash", "cashdividend", "现金分红", "配当", "現金分配"].includes(action)) return "dividend_cash";
+  if (["dividendreinvest", "reinvestdividend", "红利再投", "再投資", "分配金再投資"].includes(action)) return "dividend_reinvest";
+  return "";
 }
 
 function fundRowsToItems(rows: string[][]): FundImportUploadItem[] {
@@ -1032,31 +1097,40 @@ function fundRowsToItems(rows: string[][]): FundImportUploadItem[] {
     dataRows = rows.slice(2);
   }
 
-  const readField = (row: string[], field: Exclude<keyof FundImportUploadItem, "rawText" | "feeRateInput">) => {
+  const readField = (row: string[], field: FundImportHeaderField) => {
     const index = headerIndex.get(field);
     return index == null ? "" : String(row[index] ?? "").trim();
   };
 
   return dataRows
     .filter((row) => row.some((cell) => String(cell ?? "").trim()))
+    .filter((row) => {
+      const bodyCells = row.map((cell) => String(cell ?? "").trim());
+      return !(
+        bodyCells.length >= 2 &&
+        bodyCells[0] &&
+        !/^\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(bodyCells[0]) &&
+        bodyCells.slice(1).every((cell) => !cell || /[A-Za-z\u4e00-\u9fff\u3040-\u30ff]/.test(cell)) &&
+        !bodyCells.some((cell) => /^\d+(?:\.\d+)?%?$/.test(cell) || /^(buy|redeem|dividend_cash|dividend_reinvest)$/.test(normalizeFundImportAction(cell)) || /^(buy|redeem|cashdividend|dividendreinvest)$/.test(normalizeFundActionText(cell)))
+      );
+    })
     .map((row) => {
       const amount = parseLooseNumber(readField(row, "amount")) ?? 0;
-      const parsedFee = parseFundFeeInput(readField(row, "fee"), amount);
-      const action = normalizeFundImportAction(readField(row, "fundSubtype"), readField(row, "source"));
+      const parsedFee = parseFundFeeInput(readField(row, "fee"));
+      const parsedFeeRate = parseFundFeeRateInput(readField(row, "feeRateInput"));
+      const fundSubtype = normalizeFundImportAction(readField(row, "fundSubtype")) || readField(row, "fundSubtype");
       return {
         rawText: row.join(" "),
         date: normalizeDateCell(readField(row, "date")),
-        fundSubtype: action.fundSubtype,
-        source: action.source,
+        fundSubtype,
         cashAccount: readField(row, "cashAccount"),
         fundAccount: readField(row, "fundAccount"),
         fundCode: readField(row, "fundCode"),
-        fundName: readField(row, "fundName"),
         amount,
         units: parseLooseNumber(readField(row, "units")),
         nav: parseLooseNumber(readField(row, "nav")),
         fee: parsedFee.fee,
-        feeRateInput: parsedFee.feeRateInput,
+        feeRateInput: parsedFee.fee == null ? (parsedFeeRate ?? parsedFee.feeRateInput) : null,
         confirmDate: normalizeDateCell(readField(row, "confirmDate")) || null,
         arrivalDate: normalizeDateCell(readField(row, "arrivalDate")) || null,
         remark: readField(row, "remark"),
@@ -1090,33 +1164,22 @@ function getFundImportSubtypeLabel(subtype: string, source: string, t: (key: str
 
 function getFundImportSourceLabel(source: string, t: (key: string) => string) {
   if (source === "regular_invest") return t("batchImport.fundSource.regularInvest");
-  if (source === "regular_invest_refund") return t("batchImport.fundSource.regularInvest");
+  if (source === "regular_invest_refund") return t("batchImport.fundSource.regularInvestRefund");
   if (source === "manual") return t("batchImport.fundSource.manual");
   if (source === "dividend") return t("batchImport.fundSource.dividend");
   return source || "-";
 }
 
-function buildFundRuleEditorRows(items: FundImportPreviewItem[]) {
-  const map = new Map<string, FundRuleEditorRow>();
-  for (const item of items) {
-    const fundCode = item.fundCode.trim();
-    const accountKey = item.fundAccountId || item.fundAccount.trim();
-    if (!fundCode || !accountKey) continue;
-    const key = `${accountKey}::${fundCode}`;
-    if (map.has(key)) continue;
-    map.set(key, {
-      key,
-      fundAccountId: item.fundAccountId,
-      fundAccount: item.fundAccount,
-      fundCode,
-      fundName: item.fundName || fundCode,
-      confirmDays: item.confirmDays != null ? String(item.confirmDays) : "",
-      arrivalDays: item.arrivalDays != null ? String(item.arrivalDays) : "",
-    });
-  }
-  return Array.from(map.values()).sort((a, b) =>
-    a.fundAccount.localeCompare(b.fundAccount, "zh-Hans-CN") || a.fundCode.localeCompare(b.fundCode, "zh-Hans-CN"),
-  );
+function buildFundRuleEditorRows(_items: FundImportPreviewItem[]) {
+  return [];
+}
+
+function hasFundBlockingIssue(item: FundImportPreviewItem | undefined) {
+  return !!item?.issues.some((issue) => issue.level === "error");
+}
+
+function selectableFundIndexes(items: FundImportPreviewItem[]) {
+  return new Set(items.flatMap((item, index) => hasFundBlockingIssue(item) ? [] : [index]));
 }
 
 function serializeFundRuleOverrides(rows: FundRuleEditorRow[], t: (key: string) => string) {
@@ -1522,7 +1585,6 @@ function parseDebtAccountNameFromImport(v: string): string | null {
 export default function BatchImportPage() {
   const router = useRouter();
   const importTraceIdRef = useRef(createImportTraceId());
-  const pendingFileConsumedRef = useRef(false);
   const { t } = useI18n();
   const formatText = useCallback((key: Parameters<typeof t>[0], values?: Record<string, string | number>) => {
     let text = t(key) as string;
@@ -1573,6 +1635,7 @@ export default function BatchImportPage() {
   const [fundPreviewItems, setFundPreviewItems] = useState<FundImportPreviewItem[]>([]);
   const [fundRuleRows, setFundRuleRows] = useState<FundRuleEditorRow[]>([]);
   const [fundRulesDirty, setFundRulesDirty] = useState(false);
+  const [fundImportContext, setFundImportContext] = useState<FundImportContext | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [fundSelected, setFundSelected] = useState<Set<number>>(new Set());
   const [drafts, setDrafts] = useState<Record<number, Partial<ParsedItem>>>({});
@@ -1602,7 +1665,7 @@ export default function BatchImportPage() {
     () => buildStatementImportFieldHeaders(categoryRuleSamples),
     [categoryRuleSamples],
   );
-  const [pendingFileChecked, setPendingFileChecked] = useState(false);
+  const pendingFileChecked = true;
   const [importCompletion, setImportCompletion] = useState<ImportCompletionState | null>(null);
   const [editingCell, setEditingCell] = useState<{ idx: number; field: EditableCell } | null>(null);
   const [showImportIssuesOnly, setShowImportIssuesOnly] = useState(false);
@@ -1953,6 +2016,7 @@ export default function BatchImportPage() {
     ruleRows: FundRuleEditorRow[],
     preserveSelection: boolean,
     fileInfo?: string,
+    context?: FundImportContext | null,
   ) => {
     const { overrides, invalidLabels } = serializeFundRuleOverrides(ruleRows, t);
     if (invalidLabels.length > 0) {
@@ -1966,10 +2030,16 @@ export default function BatchImportPage() {
     setUploading(true);
     await waitForBrowserPaint();
     try {
+      const requestContext = normalizeFundImportContext(context ?? fundImportContext);
       const res = await fetch("/api/v1/fund/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "preview", items: sourceItems, overrides }),
+        body: JSON.stringify({
+          mode: "preview",
+          items: sourceItems,
+          overrides,
+          ...(requestContext ? { context: requestContext } : {}),
+        }),
       });
       const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; items?: FundImportPreviewItem[] } | null;
       if (!res.ok || !data?.ok || !Array.isArray(data.items)) {
@@ -1979,9 +2049,9 @@ export default function BatchImportPage() {
       setFundRuleRows(buildFundRuleEditorRows(data.items));
       setFundRulesDirty(false);
       if (preserveSelection) {
-        setFundSelected((prev) => new Set(Array.from(prev).filter((idx) => idx < data.items!.length)));
+        setFundSelected((prev) => new Set(Array.from(prev).filter((idx) => idx < data.items!.length && !hasFundBlockingIssue(data.items![idx]))));
       } else {
-        setFundSelected(new Set());
+        setFundSelected(selectableFundIndexes(data.items));
       }
       setUploadDebug(null);
       setMessage(null);
@@ -1997,7 +2067,7 @@ export default function BatchImportPage() {
     } finally {
       setUploading(false);
     }
-  }, [formatText, t]);
+  }, [formatText, fundImportContext, t]);
 
   const handleNormalCsvFile = useCallback(async (file: File) => {
     const traceId = createImportTraceId();
@@ -2025,6 +2095,7 @@ export default function BatchImportPage() {
       setFundPreviewItems([]);
       setFundRuleRows([]);
       setFundRulesDirty(false);
+      setFundImportContext(null);
       setDrafts({});
       setSelected(new Set());
       setFundSelected(new Set());
@@ -2075,11 +2146,13 @@ export default function BatchImportPage() {
       if (parsed.length === 0) {
         const headers = rows[0]?.join("、") || t("batchImport.headersNotRead");
         setItems([]);
-        setDrafts({});
-        setSelected(new Set());
         setFundUploadItems([]);
         setFundPreviewItems([]);
         setFundRuleRows([]);
+        setFundRulesDirty(false);
+        setFundImportContext(null);
+        setDrafts({});
+        setSelected(new Set());
         setFundSelected(new Set());
         setShowImportIssuesOnly(false);
         setUploadDebug(`${formatText("batchImport.noRecordsRecognizedDebug", { headers, fileInfo })}\n${workbookDetail}\n${recognitionDetail}\n${traceLabel}`.trim());
@@ -2092,6 +2165,7 @@ export default function BatchImportPage() {
       setFundPreviewItems([]);
       setFundRuleRows([]);
       setFundRulesDirty(false);
+      setFundImportContext(null);
       setDrafts({});
       setSelected(new Set());
       setFundSelected(new Set());
@@ -2105,6 +2179,7 @@ export default function BatchImportPage() {
       setFundPreviewItems([]);
       setFundRuleRows([]);
       setFundRulesDirty(false);
+      setFundImportContext(null);
       setDrafts({});
       setSelected(new Set());
       setFundSelected(new Set());
@@ -2121,14 +2196,16 @@ export default function BatchImportPage() {
     }
   }, [bookCategories, categoryRuleSamples, formatText, isCreditAccountText, refreshCategoryRuleSamples, statementFieldHeaders, t]);
 
-  const handleFundFile = useCallback(async (file: File) => {
+  const handleFundFile = useCallback(async (file: File, context?: FundImportContext | null) => {
     const traceId = createImportTraceId();
     importTraceIdRef.current = traceId;
     const startedAt = performance.now();
+    const requestContext = normalizeFundImportContext(context);
     postImportDebugLog(traceId, "file_selected", {
       importKind: "fund",
       extension: file.name.split(".").pop()?.toLowerCase() ?? "",
       sizeBytes: file.size,
+      hasFundContext: Boolean(requestContext?.fundAccountId || requestContext?.fundAccount),
     });
     const fileInfo = formatText("batchImport.fileInfo", {
       name: file.name,
@@ -2144,11 +2221,12 @@ export default function BatchImportPage() {
       setImportedCount(0);
       setItems([]);
       setFundUploadItems([]);
-      setDrafts({});
-      setSelected(new Set());
       setFundPreviewItems([]);
       setFundRuleRows([]);
       setFundRulesDirty(false);
+      setFundImportContext(requestContext);
+      setDrafts({});
+      setSelected(new Set());
       setFundSelected(new Set());
       setEditingCell(null);
       setShowImportIssuesOnly(false);
@@ -2183,12 +2261,13 @@ export default function BatchImportPage() {
 
       setFundUploadItems(parsed);
       previewRequested = true;
-      await requestFundPreview(parsed, [], false, fileInfo);
+      await requestFundPreview(parsed, [], false, fileInfo, requestContext);
     } catch (error) {
       setFundUploadItems([]);
       setFundPreviewItems([]);
       setFundRuleRows([]);
       setFundRulesDirty(false);
+      setFundImportContext(requestContext);
       setFundSelected(new Set());
       const reason = error instanceof Error ? error.message : String(error);
       postImportDebugLog(traceId, "parse_failed", {
@@ -2202,43 +2281,6 @@ export default function BatchImportPage() {
       if (!previewRequested) setUploading(false);
     }
   }, [formatText, requestFundPreview, t]);
-
-  useEffect(() => {
-    if (pendingFileConsumedRef.current || !bookCategoriesLoaded || !categoryRuleSamplesLoaded) return;
-    pendingFileConsumedRef.current = true;
-    const raw = sessionStorage.getItem(BATCH_IMPORT_PENDING_FILE_STORAGE_KEY);
-    if (!raw) {
-      setPendingFileChecked(true);
-      return;
-    }
-
-    sessionStorage.removeItem(BATCH_IMPORT_PENDING_FILE_STORAGE_KEY);
-    try {
-      const payload = JSON.parse(raw) as BatchImportPendingFilePayload;
-      const file = batchImportPayloadToFile(payload);
-      setPendingFileChecked(true);
-      if (payload.kind === "fund") {
-        void handleFundFile(file);
-      } else {
-        void handleNormalCsvFile(file);
-      }
-    } catch (error) {
-      setPendingFileChecked(true);
-      const reason = error instanceof Error ? error.message : String(error);
-      setUploadDebug(formatText("batchImport.readFailedDebug", {
-        reason: reason || t("batchImport.unknownError"),
-        fileInfo: "",
-      }));
-      setMessage(formatText("batchImport.readFailedMessage", { reason: reason || t("batchImport.unknownError") }));
-    }
-  }, [
-    bookCategoriesLoaded,
-    categoryRuleSamplesLoaded,
-    formatText,
-    handleFundFile,
-    handleNormalCsvFile,
-    t,
-  ]);
 
   const handleApplyFundRules = useCallback(async () => {
     if (fundUploadItems.length === 0 || importing) return;
@@ -2706,8 +2748,12 @@ export default function BatchImportPage() {
 
   const fundImportIssues = useMemo(() => (
     Array.from(fundSelected)
-      .flatMap((idx) => (fundPreviewItems[idx]?.issues ?? []).map((issue) => ({ idx, ...issue })))
-  ), [fundSelected, fundPreviewItems]);
+      .flatMap((idx) => (fundPreviewItems[idx]?.issues ?? []).map((issue) => ({
+        idx,
+        ...issue,
+        message: fundIssueMessage(issue, t),
+      })))
+  ), [fundSelected, fundPreviewItems, t]);
   const fundImportErrorIssues = useMemo(() => fundImportIssues.filter((issue) => issue.level === "error"), [fundImportIssues]);
   const fundImportWarningIssues = useMemo(() => fundImportIssues.filter((issue) => issue.level === "warning"), [fundImportIssues]);
   const fundPreviewWarningGroups = useMemo(() => {
@@ -2716,27 +2762,20 @@ export default function BatchImportPage() {
       item.issues
         .filter((issue) => issue.level === "warning")
         .forEach((issue) => {
-          const current = grouped.get(issue.message);
+          const message = fundIssueMessage(issue, t);
+          const current = grouped.get(message);
           if (current) {
             current.count += 1;
             current.rows.push(idx + 1);
           } else {
-            grouped.set(issue.message, { message: issue.message, count: 1, rows: [idx + 1] });
+            grouped.set(message, { message, count: 1, rows: [idx + 1] });
           }
         });
     });
     return Array.from(grouped.values()).sort((a, b) => b.count - a.count || a.rows[0] - b.rows[0]);
-  }, [fundPreviewItems]);
+  }, [fundPreviewItems, t]);
   const fundPreviewWarningSummary = useMemo(() => {
     if (fundPreviewWarningGroups.length === 0) return "";
-    const confirmRuleWarnings = fundPreviewWarningGroups.filter((group) => /^未找到\s+\S+\s+的确认天数配置/.test(group.message));
-    if (confirmRuleWarnings.length > 0 && confirmRuleWarnings.length === fundPreviewWarningGroups.length) {
-      const items = confirmRuleWarnings.map((group) => {
-        const match = group.message.match(/^未找到\s+(\S+)\s+的确认天数配置/);
-        return `${match?.[1] ?? group.message}${t("batchImport.fundPreview.warningItemCount", { count: group.count })}`;
-      }).join("、");
-      return formatText("batchImport.fundPreview.warningMissingConfirmRules", { items });
-    }
     const main = fundPreviewWarningGroups
       .slice(0, 2)
       .map((group) => formatText("batchImport.fundPreview.warningCompactItem", {
@@ -3032,7 +3071,7 @@ export default function BatchImportPage() {
 
   const handleFundImport = useCallback(async () => {
     if (importing) return;
-    const selectedIndexes = Array.from(fundSelected);
+    const selectedIndexes = Array.from(fundSelected).sort((a, b) => a - b);
     const selectedItems = selectedIndexes.map((idx) => fundPreviewItems[idx]).filter(Boolean);
     if (selectedItems.length === 0) return;
 
@@ -3063,6 +3102,7 @@ export default function BatchImportPage() {
     }
 
     setImporting(true);
+    setImportedCount(0);
     setImportCompletion(null);
     setMessage(formatText("batchImport.fundImportingSelected", { count: selectedItems.length }));
     setUploadDebug(null);
@@ -3075,16 +3115,23 @@ export default function BatchImportPage() {
           more: invalidLabels.length > 3 ? t("batchImport.importValidationMore") : "",
         }));
       }
+      const requestContext = normalizeFundImportContext(fundImportContext);
       const res = await fetch("/api/v1/fund/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "import", items: selectedItems, overrides }),
+        body: JSON.stringify({
+          mode: "import",
+          items: selectedItems,
+          overrides,
+          ...(requestContext ? { context: requestContext } : {}),
+        }),
       });
       const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; createdCount?: number } | null;
       if (!res.ok || !data?.ok) {
         throw new Error(data?.error || res.statusText || `HTTP ${res.status}`);
       }
       const success = data.createdCount ?? selectedItems.length;
+      setImportedCount(success);
       setMessage(formatText("batchImport.fundImportSuccess", {
         count: success,
         redirectNote: "",
@@ -3100,7 +3147,7 @@ export default function BatchImportPage() {
     } finally {
       setImporting(false);
     }
-  }, [importing, fundSelected, fundPreviewItems, fundImportErrorIssues, fundImportIssues, fundRuleRows, formatText, t]);
+  }, [importing, fundSelected, fundPreviewItems, fundImportErrorIssues, fundImportIssues, fundRuleRows, fundImportContext, formatText, t]);
 
   const handleCancel = useCallback(() => {
     sessionStorage.removeItem("batchImportItems");
@@ -3113,6 +3160,7 @@ export default function BatchImportPage() {
     setFundPreviewItems([]);
     setFundRuleRows([]);
     setFundRulesDirty(false);
+    setFundImportContext(null);
     setSelected(new Set());
     setFundSelected(new Set());
     setDrafts({});
@@ -3679,7 +3727,6 @@ export default function BatchImportPage() {
       minWidth: 120,
       hideable: true,
       defaultHidden: true,
-      filterKind: "text",
       filterText: (row) => getItem(row.idx).tags || t("batchImport.emptyValue"),
       render: (row) => {
         const idx = row.idx;
@@ -3710,7 +3757,6 @@ export default function BatchImportPage() {
       label: t("batchImport.field.remark"),
       width: 260,
       minWidth: 160,
-      filterKind: "text",
       filterText: (row) => {
         const item = getItem(row.idx);
         return (item.remark || item.counterparty || "").trim() || t("batchImport.emptyValue");
@@ -3782,7 +3828,7 @@ export default function BatchImportPage() {
         return (
           <span
             className={`inline-flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-bold leading-none text-white ${rowHasError ? "bg-red-500" : rowHasWarning ? "bg-amber-500" : "bg-slate-300"}`}
-            title={row.issues.map((issue) => issue.message).join("；")}
+            title={row.issues.map((issue) => fundIssueMessage(issue, t)).join("；")}
           >
             !
           </span>
@@ -3790,17 +3836,16 @@ export default function BatchImportPage() {
       },
     },
     { key: "date", label: t("batchImport.template.fund.label.date"), width: 112, minWidth: 92, filterKind: "dateRange", filterText: (row) => row.date || "-", sortValue: (row) => row.date || "", render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.date || "-"}</span> },
-    { key: "fundSubtype", label: t("batchImport.template.fund.label.fundSubtype"), width: 112, minWidth: 88, filterText: (row) => getFundImportSubtypeLabel(row.fundSubtype, row.source, t), render: (row) => <span className="whitespace-nowrap text-slate-700">{getFundImportSubtypeLabel(row.fundSubtype, row.source, t)}</span> },
-    { key: "source", label: t("batchImport.template.fund.label.source"), width: 92, minWidth: 76, filterText: (row) => getFundImportSourceLabel(row.source, t), render: (row) => <span className="whitespace-nowrap text-slate-700">{getFundImportSourceLabel(row.source, t)}</span> },
+    { key: "fundSubtype", label: t("batchImport.template.fund.label.fundSubtype"), width: 116, minWidth: 92, filterText: (row) => getFundImportSubtypeLabel(row.fundSubtype, row.source, t), render: (row) => <span className="whitespace-nowrap text-slate-700">{getFundImportSubtypeLabel(row.fundSubtype, row.source, t)}</span> },
     { key: "cashAccount", label: t("batchImport.template.fund.label.cashAccount"), width: 180, minWidth: 130, filterText: (row) => row.cashAccount || "-", render: (row) => <span className="truncate text-slate-700" title={row.cashAccount || ""}>{row.cashAccount || "-"}</span> },
     { key: "fundAccount", label: t("batchImport.template.fund.label.fundAccount"), width: 180, minWidth: 130, filterText: (row) => row.fundAccount || "-", render: (row) => <span className="truncate text-slate-700" title={row.fundAccount || ""}>{row.fundAccount || "-"}</span> },
     { key: "fundCode", label: t("batchImport.template.fund.label.fundCode"), width: 96, minWidth: 76, filterText: (row) => row.fundCode || "-", render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.fundCode || "-"}</span> },
     { key: "fundName", label: t("batchImport.template.fund.label.fundName"), width: 220, minWidth: 150, filterText: (row) => row.fundName || "-", render: (row) => <span className="truncate text-slate-700" title={row.fundName || ""}>{row.fundName || "-"}</span> },
     { key: "amount", label: t("batchImport.template.fund.label.amount"), width: 116, minWidth: 90, align: "right", sortValue: (row) => row.amount, render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{formatOptionalNumber(row.amount, 2)}</span> },
-    { key: "units", label: t("batchImport.template.fund.label.units"), width: 116, minWidth: 90, align: "right", sortValue: (row) => row.units ?? 0, render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{formatOptionalNumber(row.units, 2)}</span> },
-    { key: "nav", label: t("batchImport.template.fund.label.nav"), width: 96, minWidth: 78, align: "right", sortValue: (row) => row.nav ?? 0, render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{formatOptionalNumber(row.nav, 4)}</span> },
-    { key: "feeRate", label: t("batchImport.fundPreview.feeRate"), width: 96, minWidth: 78, align: "right", sortValue: (row) => row.feeRate ?? 0, render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.feeRate != null ? `${row.feeRate.toFixed(4)}%` : "-"}</span> },
+    { key: "feeRate", label: t("batchImport.template.fund.label.feeRate"), width: 96, minWidth: 78, align: "right", sortValue: (row) => row.feeRate ?? 0, render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.feeRate != null ? `${row.feeRate.toFixed(4)}%` : "-"}</span> },
     { key: "fee", label: t("batchImport.template.fund.label.fee"), width: 96, minWidth: 76, align: "right", sortValue: (row) => row.fee ?? 0, render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{formatOptionalNumber(row.fee, 2)}</span> },
+    { key: "nav", label: t("batchImport.template.fund.label.nav"), width: 96, minWidth: 78, align: "right", sortValue: (row) => row.nav ?? 0, render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{formatOptionalNumber(row.nav, 4)}</span> },
+    { key: "units", label: t("batchImport.template.fund.label.units"), width: 116, minWidth: 90, align: "right", sortValue: (row) => row.units ?? 0, render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{formatOptionalNumber(row.units, 2)}</span> },
     { key: "confirmDate", label: t("batchImport.template.fund.label.confirmDate"), width: 112, minWidth: 92, filterKind: "dateRange", filterText: (row) => row.confirmDate || "-", sortValue: (row) => row.confirmDate || "", render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.confirmDate || "-"}</span> },
     { key: "arrivalDate", label: t("batchImport.template.fund.label.arrivalDate"), width: 112, minWidth: 92, filterKind: "dateRange", filterText: (row) => row.arrivalDate || "-", sortValue: (row) => row.arrivalDate || "", render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.arrivalDate || "-"}</span> },
     { key: "remark", label: t("batchImport.template.fund.label.remark"), width: 220, minWidth: 150, filterText: (row) => row.remark || "-", render: (row) => <span className="truncate text-slate-700" title={row.remark || ""}>{row.remark || "-"}</span> },
@@ -3950,7 +3995,7 @@ export default function BatchImportPage() {
                 >
                   {template.downloadFormat === "xlsx" ? t("batchImport.downloadXlsxTemplate") : t("batchImport.downloadCsvTemplate")}
                 </button>
-                {(template.key === "normal" || template.key === "wechat") && (
+                {(template.key === "normal" || template.key === "wechat" || template.key === "jd") && (
                   <label className="px-3 py-1.5 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700 cursor-pointer inline-flex items-center">
                     {t("batchImport.uploadBillFile")}
                     <input
@@ -4305,8 +4350,9 @@ export default function BatchImportPage() {
                 rows={uploading ? [] : fundPreviewRows}
                 rowKey={(row) => String(row.idx)}
                 emptyText={uploading ? t("batchImport.previewParsing") : t("batchImport.noRecordsForFilter")}
-                minTableWidth={1860}
+                minTableWidth={1760}
                 selectable
+                selectAllScope="renderedRows"
                 selectedKeys={selectedFundPreviewKeys}
                 onSelectionChange={(keys) => {
                   setFundSelected(new Set(Array.from(keys).map((key) => Number(key)).filter((idx) => Number.isInteger(idx))));

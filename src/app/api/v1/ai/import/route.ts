@@ -15,6 +15,7 @@ import { createImportAccountMatcher } from "@/lib/account-import-match";
 import { enrichAiParsedItems } from "@/lib/statement/ai-import-enrichment";
 import type { ParsedItem } from "@/lib/ai/parser";
 import { isSpendableAccount } from "@/lib/account-kind-utils";
+import { ENTRY_ORIGIN_AI_IMPORT } from "@/lib/transaction-semantics";
 
 export const runtime = "nodejs";
 
@@ -580,7 +581,8 @@ export async function POST(req: NextRequest) {
           fundName: resolvedFundName ?? fundContext.fundCode,
           fundProductType: productType,
           fundSubtype: fundSubtypeValue as FundSubtype,
-          source: "ai_import",
+          source: "ai_recognition",
+          entryOrigin: ENTRY_ORIGIN_AI_IMPORT,
           applyDate: date,
           grossAmount: entryAmount,
           cashFlows: cashAcc ? [{
@@ -590,7 +592,7 @@ export async function POST(req: NextRequest) {
             accountName: cashAcc.name,
             amount: fundSubtypeValue === "redeem" ? entryAmount : -entryAmount,
             currency: normalizeCurrency(cashAcc.currency ?? fundAcc.currency),
-            source: "ai_import",
+            source: "ai_recognition",
             note: normalizedRemark,
           }] : [],
           note: normalizedRemark,
@@ -631,7 +633,8 @@ export async function POST(req: NextRequest) {
             statementMonth: fromStatementMonth,
             householdId,
             currency: transferCurrency,
-            source: "ai_import",
+            source: "ai_recognition",
+            entryOrigin: ENTRY_ORIGIN_AI_IMPORT,
           },
         });
         didCreate = true;
@@ -688,7 +691,8 @@ export async function POST(req: NextRequest) {
               statementMonth,
               householdId,
               currency: normalizeCurrency(single.currency),
-              source: "ai_import",
+              source: "ai_recognition",
+              entryOrigin: ENTRY_ORIGIN_AI_IMPORT,
 
             },
           });
@@ -711,7 +715,8 @@ export async function POST(req: NextRequest) {
               statementMonth: fromStatementMonth,
               householdId,
               currency: normalizeCurrency(cashAccount?.currency ?? from.currency),
-              source: "ai_import",
+              source: "ai_recognition",
+              entryOrigin: ENTRY_ORIGIN_AI_IMPORT,
 
             },
           });
@@ -777,7 +782,8 @@ export async function POST(req: NextRequest) {
           statementMonth,
           householdId,
           currency: normalizeCurrency(account.currency),
-          source: "ai_import",
+          source: "ai_recognition",
+          entryOrigin: ENTRY_ORIGIN_AI_IMPORT,
           counterpartyInstitutionId: counterpartyInstitution?.id ?? null,
           counterpartyInstitutionName: counterpartyInstitution?.name ?? normalizedInstitution ?? null,
         };
@@ -794,7 +800,7 @@ export async function POST(req: NextRequest) {
             amount: entryData.amount as number,
             categoryId: category?.id ?? null,
             note: normalizedRemark ?? null,
-            source: "ai_import",
+            source: "ai_recognition",
           });
           if (duplicate) return;
           await tx.txRecord.create({ data: entryData as any });

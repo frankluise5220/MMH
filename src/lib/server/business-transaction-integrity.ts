@@ -10,6 +10,7 @@ import {
 } from "@/lib/server/entry-business-link";
 import { ensurePropertyTransactionCashFlow } from "@/lib/property/cashFlow";
 import { ensureStockTransactionCashFlow } from "@/lib/stock/cashFlow";
+import { isRegularInvestRefundEntry } from "@/lib/transaction-semantics";
 
 type BusinessIntegrityType = Exclude<EntryBusinessType, "other_investment">;
 
@@ -30,7 +31,7 @@ type ExpectedBusinessEntry = {
 const BUSINESS_TYPES: BusinessIntegrityType[] = ["fund", "stock", "insurance", "wealth", "deposit", "metal", "property"];
 
 function isRegularInvestRefund(entry: { fundSubtype?: string | null; source?: string | null }) {
-  return entry.fundSubtype === FundSubtype.buy_failed && entry.source === "regular_invest_refund";
+  return isRegularInvestRefundEntry(entry);
 }
 
 async function getExpectedBusinessEntries(householdId: string): Promise<ExpectedBusinessEntry[]> {

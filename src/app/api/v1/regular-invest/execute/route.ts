@@ -21,9 +21,10 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { decodeScheduledTaskMemo, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { calcNextScheduledRunDate as calcNextRunDate, skipWeekend } from "@/lib/scheduled-task-date";
-import { executeNonFundScheduledTaskPlan, isNonFundScheduledTask } from "@/lib/server/scheduled-task-executor";
+import { executeNonFundScheduledTaskPlan, getScheduledTaskSourceFilter, isNonFundScheduledTask, type NonFundTaskType } from "@/lib/server/scheduled-task-executor";
 import { resolveCategorySnapshot } from "@/lib/default-categories";
 import { acquireScheduledTaskPlanLock } from "@/lib/server/scheduled-task-lock";
+import { ENTRY_ORIGIN_SCHEDULED_TASK } from "@/lib/transaction-semantics";
 
 const SCHEDULED_EXECUTE_TRANSACTION_OPTIONS = {
   maxWait: 10_000,
@@ -139,7 +140,7 @@ export async function POST(req: NextRequest) {
 
       const today = startOfDayUtc(now);
       const effectiveEndDate = plan.endDate && startOfDayUtc(plan.endDate) < today ? startOfDayUtc(plan.endDate) : today;
-      const sourceFilter = task.type === "insurance_premium" ? ["insurance"] : ["scheduled_task"];
+      const sourceFilter = getScheduledTaskSourceFilter(task.type as NonFundTaskType);
       const existingTxRecords = await prisma.txRecord.findMany({
         where: {
           householdId,
@@ -225,6 +226,7 @@ export async function POST(req: NextRequest) {
                 toAccountName: fundAcc.name,
                 amount: -amountNum,
                 source: "scheduled_task",
+                entryOrigin: ENTRY_ORIGIN_SCHEDULED_TASK,
                 regularInvestPlanId: planId,
                 note: task.type === "loan_repayment" ? "计划任务：还贷款" : "计划任务：转账",
               },
@@ -245,6 +247,7 @@ export async function POST(req: NextRequest) {
                 insuranceAction: "premium",
                 insuranceProductName: insuranceProduct.name,
                 source: "insurance",
+                entryOrigin: ENTRY_ORIGIN_SCHEDULED_TASK,
                 insuranceProductId: insuranceProduct.id,
                 regularInvestPlanId: planId,
                 note: `计划任务：保险缴费：${insuranceProduct.name}`,
@@ -370,6 +373,7 @@ export async function POST(req: NextRequest) {
           fundProductType: plan.fundProductType || fundAcc.investProductType,
           fundSubtype: FundSubtype.buy_failed,
           source: "regular_invest",
+          entryOrigin: ENTRY_ORIGIN_SCHEDULED_TASK,
           applyDate: runDate,
           confirmDate,
           arrivalDate,
@@ -434,6 +438,7 @@ export async function POST(req: NextRequest) {
         fundProductType: plan.fundProductType || fundAcc.investProductType,
         fundSubtype: FundSubtype.buy,
         source: "regular_invest",
+        entryOrigin: ENTRY_ORIGIN_SCHEDULED_TASK,
         applyDate: runDate,
         confirmDate,
         arrivalDate,

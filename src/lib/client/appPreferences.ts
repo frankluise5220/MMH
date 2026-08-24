@@ -71,7 +71,7 @@ const DEFAULT_FUND_UNITS_DECIMALS = 2;
 const DEFAULT_TIME_ZONE = "Asia/Shanghai";
 const DEFAULT_CREDIT_CARD_LABEL_MODE: CreditCardLabelMode = "short_last4";
 const DEFAULT_DISPLAY_LANGUAGE: DisplayLanguage = "zh-CN";
-const DEFAULT_COMPACT_ROW_HEIGHT = 30;
+export const DEFAULT_COMPACT_ROW_HEIGHT = 30;
 
 function parseCookieValue(name: string): string | null {
   if (typeof document === "undefined") return null;

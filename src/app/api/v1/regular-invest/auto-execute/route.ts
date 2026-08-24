@@ -23,6 +23,7 @@ import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/serv
 import { calcInitialScheduledRunDate as calcInitialRunDate, calcNextScheduledRunDate as calcNextRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { executeNonFundScheduledTaskPlan, isNonFundScheduledTask } from "@/lib/server/scheduled-task-executor";
 import { resolveCategorySnapshot } from "@/lib/default-categories";
+import { ENTRY_ORIGIN_SCHEDULED_TASK } from "@/lib/transaction-semantics";
 import { acquireScheduledTaskPlanLock } from "@/lib/server/scheduled-task-lock";
 
 const AUTO_EXECUTE_TRANSACTION_OPTIONS = {
@@ -370,6 +371,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
             fundProductType: e.plan.fundProductType || e.fundAcc.investProductType,
             fundSubtype: FundSubtype.buy_failed,
             source: "regular_invest",
+            entryOrigin: ENTRY_ORIGIN_SCHEDULED_TASK,
             applyDate: e.runDate,
             confirmDate: e.confirmDate,
             arrivalDate: e.arrivalDate,
@@ -426,6 +428,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
             fundProductType: e.plan.fundProductType || e.fundAcc.investProductType,
             fundSubtype: FundSubtype.buy,
             source: "regular_invest",
+            entryOrigin: ENTRY_ORIGIN_SCHEDULED_TASK,
             applyDate: e.runDate,
             confirmDate: e.confirmDate,
             arrivalDate: e.arrivalDate,

@@ -1,4 +1,5 @@
 import { Prisma, StockTransactionAction, TransactionType } from "@prisma/client";
+import { ENTRY_ORIGIN_MANUAL } from "@/lib/transaction-semantics";
 
 import { toNumber } from "@/lib/date-utils";
 import { resolveCategorySnapshot } from "@/lib/default-categories";
@@ -19,6 +20,7 @@ export type StockCashFlowRow = {
   cashAccountId?: string | null;
   action: StockTransactionAction;
   source?: string | null;
+  entryOrigin?: string | null;
   tradeDate: Date;
   settleDate?: Date | null;
   grossAmount: unknown;
@@ -145,6 +147,7 @@ export async function ensureStockTransactionCashFlow(
       categoryName: category?.name ?? categoryName,
       currency: params.cashAccount.currency ?? params.stockAccount.currency ?? "CNY",
       source: params.row.source ?? "manual",
+      entryOrigin: params.row.entryOrigin ?? ENTRY_ORIGIN_MANUAL,
       note: buildStockCashFlowNote(params.row),
       fundCode: null,
       fundProductType: null,

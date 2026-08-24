@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { forwardRef, useEffect, useRef, useState, useCallback } from "react";
 import { Calculator } from "lucide-react";
 import { createPortal } from "react-dom";
 import { evaluateArithmeticExpression } from "@/lib/arithmetic-expression";
@@ -19,15 +19,7 @@ export function evaluateCalcInputExpression(expression: string, currentValue = 0
   return typeof computed === "number" && Number.isFinite(computed) ? computed : null;
 }
 
-export function CalcInput({
-  value,
-  onChange,
-  onBlur,
-  placeholder,
-  className,
-  label,
-  precision = 2,
-}: {
+export type CalcInputProps = {
   value: string;
   onChange: (v: string) => void;
   onBlur?: () => void;
@@ -35,7 +27,20 @@ export function CalcInput({
   className?: string;
   label?: string;
   precision?: number;
-}) {
+};
+
+export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function CalcInput(
+  {
+    value,
+    onChange,
+    onBlur,
+    placeholder,
+    className,
+    label,
+    precision = 2,
+  },
+  ref,
+) {
   const [open, setOpen] = useState(false);
   const [dialogPos, setDialogPos] = useState<{ top: number; left: number } | null>(null);
   const [expr, setExpr] = useState("");
@@ -166,6 +171,7 @@ export function CalcInput({
   return (
     <div className={`relative ${className ?? ""}`}>
       <input
+        ref={ref}
         inputMode="decimal"
         value={value}
         onChange={(e) => onChange(sanitizeCalcInputValue(e.target.value))}
@@ -255,4 +261,6 @@ export function CalcInput({
       ) : null}
     </div>
   );
-}
+});
+
+CalcInput.displayName = "CalcInput";

@@ -10,6 +10,7 @@ const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"))
 const rawVersion = process.env.SYNOLOGY_PACKAGE_VERSION || process.env.SYNOPKG_PACKAGE_VERSION || pkg.version || "0.1.0";
 const verifyVersion = normalizeVersion(rawVersion);
 const verifyTarget = normalizeTarget(process.env.SYNOLOGY_TARGET_ARCH || process.env.SYNOPKG_TARGET_ARCH || "x86_64");
+const expectedDsmMinVersion = "7.0-40000";
 
 function normalizeVersion(value) {
   const normalized = String(value || "")
@@ -72,8 +73,19 @@ function spkAssetName() {
   return `mmh-synology-v${verifyVersion}-${verifyTarget.assetSuffix}.spk`;
 }
 
-function tarList(file) {
-  const result = run("tar", ["-tzf", file]);
+function isGzipFile(file) {
+  const header = Buffer.alloc(2);
+  const fd = fs.openSync(file, "r");
+  try {
+    fs.readSync(fd, header, 0, 2, 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+  return header[0] === 0x1f && header[1] === 0x8b;
+}
+
+function tarList(file, options = {}) {
+  const result = run("tar", [options.gzip ? "-tzf" : "-tf", file]);
   expect(result.status === 0, `Unable to inspect tar archive ${path.relative(root, file)}.`);
   return (result.stdout || "").split(/\r?\n/).filter(Boolean).map((entry) => entry.replace(/^\.\//, ""));
 }
@@ -95,7 +107,9 @@ function verifySourceFiles() {
   expect(/MMH_DEPLOY_TARGET=synology/.test(packageScript), "Synology start script must mark runtime deployment as synology.");
   expect(/DATABASE_URL="file:\$DATA_DIR\/mmh\.db"/.test(packageScript), "Synology start script must store SQLite data under the package data directory.");
   expect(/package="\$\{appName\}"/.test(packageScript) && /const appName = "mmh"/.test(packageScript), "Synology INFO must keep the stable package id mmh.");
+  expect(/const dsmMinVersion = "7\.0-40000"/.test(packageScript), "Synology INFO must keep the DSM compatibility floor at 7.0-40000.");
   expect(/\$\{appName\}-synology-v\$\{version\}-\$\{target\.assetSuffix\}\.spk/.test(packageScript), "Synology SPK asset names must include version and architecture.");
+  expect(!/"-czf",\s*spkPath/.test(packageScript), "Synology SPK outer archive must be uncompressed tar; only package.tgz should be gzip-compressed.");
   expect(/release-artifacts\/synology\/\*\.spk/.test(releaseWorkflow), "Synology release workflow must upload SPK assets.");
   expect(/target_arch/.test(releaseWorkflow) && /arm64/.test(releaseWorkflow), "Synology release workflow must build x86_64 and arm64 packages.");
 }
@@ -103,10 +117,12 @@ function verifySourceFiles() {
 function verifyStagedSource() {
   const stageDir = path.join(root, "release-artifacts", "synology", verifyTarget.stageDirName);
   if (!fs.existsSync(stageDir)) return;
+  if (!fs.existsSync(path.join(stageDir, "INFO"))) return;
   const info = read(path.join(stageDir, "INFO"));
   const startScript = read(path.join(stageDir, "scripts", "start-stop-status"));
   expect(new RegExp(`version="${verifyVersion}"`).test(info), "Staged INFO must contain the package version.");
   expect(new RegExp(`arch="${verifyTarget.infoArch}"`).test(info), "Staged INFO must contain the target architecture.");
+  expect(new RegExp(`os_min_ver="${expectedDsmMinVersion}"`).test(info), "Staged INFO must keep the DSM compatibility floor at 7.0-40000.");
   expect(/MMH_DEPLOY_TARGET=synology/.test(startScript), "Staged start-stop-status must mark runtime deployment as synology.");
   expect(fs.existsSync(path.join(stageDir, "package", "app", "server", "server.js")), "Staged package must contain the Next standalone server.");
   expect(fs.existsSync(path.join(stageDir, "package", "app", "bin", "node")), `Staged package must contain a Linux ${verifyTarget.nodeArch} Node runtime.`);
@@ -115,6 +131,7 @@ function verifyStagedSource() {
 function verifyBuiltSpk() {
   const spkPath = path.join(root, "release-artifacts", "synology", spkAssetName());
   expect(fs.existsSync(spkPath), `Built Synology ${verifyTarget.id} SPK must exist before upload.`);
+  expect(!isGzipFile(spkPath), "Built SPK must be an uncompressed tar archive; only package.tgz should be gzip-compressed.");
   const entries = tarList(spkPath);
   for (const required of [
     "INFO",
@@ -131,9 +148,15 @@ function verifyBuiltSpk() {
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "mmh-synology-spk-"));
   try {
-    const extract = run("tar", ["-xzf", spkPath, "-C", tmpDir, "package.tgz"]);
+    const extract = run("tar", ["-xf", spkPath, "-C", tmpDir, "package.tgz"]);
     expect(extract.status === 0, "Unable to extract package.tgz from built SPK.");
-    const packageEntries = tarList(path.join(tmpDir, "package.tgz"));
+    const infoExtract = run("tar", ["-xf", spkPath, "-C", tmpDir, "INFO"]);
+    expect(infoExtract.status === 0, "Unable to extract INFO from built SPK.");
+    const builtInfo = read(path.join(tmpDir, "INFO"));
+    expect(new RegExp(`os_min_ver="${expectedDsmMinVersion}"`).test(builtInfo), "Built INFO must keep the DSM compatibility floor at 7.0-40000.");
+    const packageTgzPath = path.join(tmpDir, "package.tgz");
+    expect(isGzipFile(packageTgzPath), "Built package.tgz must remain gzip-compressed.");
+    const packageEntries = tarList(packageTgzPath, { gzip: true });
     for (const required of [
       "app/bin/node",
       "app/server/server.js",

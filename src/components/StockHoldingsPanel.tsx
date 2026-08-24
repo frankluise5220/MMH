@@ -709,7 +709,6 @@ export function StockHoldingsPanel({
         label: t("detail.column.remark"),
         width: 180,
         minWidth: 110,
-        filterKind: "text",
         filterText: (tx) => String(tx.note ?? tx.brokerTradeId ?? "").trim(),
         sortValue: (tx) => String(tx.note ?? "").trim() || null,
         truncate: true,

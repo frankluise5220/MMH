@@ -1166,7 +1166,6 @@ export function StatementImportPreviewDialog({
       label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.remark),
       width: 230,
       minWidth: 160,
-      filterKind: "text",
       filterText: (row) => (row.item.remark || row.item.rawText || "").trim() || t("batchImport.emptyValue"),
       render: (row) => renderTextEditCell(row, "remark", row.item.remark || row.item.rawText || "", t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.remark) })),
     },

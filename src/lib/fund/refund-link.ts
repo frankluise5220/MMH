@@ -1,3 +1,4 @@
+import { isRegularInvestRefundEntry } from "@/lib/transaction-semantics";
 type RefundLinkableEntry = {
   id: string;
   date: string | Date | null | undefined;
@@ -57,10 +58,7 @@ function sortKey(entry: RefundLinkableEntry): string {
 
 function buildFlowKey(entry: RefundLinkableEntry, kind: "buy" | "refund"): string | null {
   if (kind === "buy" && (entry.fundSubtype ?? "") !== "buy") return null;
-  if (kind === "refund") {
-    if ((entry.fundSubtype ?? "") !== "buy_failed") return null;
-    if ((entry.source ?? "") !== "regular_invest_refund") return null;
-  }
+  if (kind === "refund" && !isRegularInvestRefundEntry(entry)) return null;
   const fundCode = String(entry.fundCode ?? "").trim();
   const fundAccountId = String(kind === "buy" ? entry.toAccountId : entry.accountId).trim();
   const cashAccountId = String(kind === "buy" ? entry.accountId : entry.toAccountId).trim();
@@ -184,9 +182,7 @@ export function findLinkedEntries(
   target: RefundLinkableEntry,
   allEntries: RefundLinkableEntry[],
 ): { linkedBuys: RefundLinkableEntry[]; linkedRefunds: RefundLinkableEntry[] } {
-  const isRefund =
-    (target.fundSubtype ?? "") === "buy_failed" &&
-    (target.source ?? "") === "regular_invest_refund";
+  const isRefund = isRegularInvestRefundEntry(target);
   const isBuy = (target.fundSubtype ?? "") === "buy";
   if (!isRefund && !isBuy) return { linkedBuys: [], linkedRefunds: [] };
 
@@ -209,8 +205,7 @@ export function findLinkedEntries(
   const targetKey = buildFlowKey(target, "buy");
   const linkedRefundIds = allocation.refundIdsByBuyId.get(target.id) ?? new Set<string>();
   const linkedRefunds = allEntries.filter(e => {
-    if ((e.fundSubtype ?? "") !== "buy_failed") return false;
-    if ((e.source ?? "") !== "regular_invest_refund") return false;
+    if (!isRegularInvestRefundEntry(e)) return false;
     if (buildFlowKey(e, "refund") !== targetKey) return false;
     if (!isRefundLinkedToBuy(target, e)) return false;
     return linkedRefundIds.has(e.id);

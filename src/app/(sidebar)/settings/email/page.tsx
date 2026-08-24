@@ -45,7 +45,24 @@ const SmartSelect = dynamic(
   { ssr: false },
 ) as SmartSelectComponent;
 
-const MAIL_DISPLAY_LIMIT = 5;
+const MAIL_SEARCH_LIMIT = 50;
+
+function dateInputValue(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function todayDateString() {
+  return dateInputValue(new Date());
+}
+
+function monthAgoDateString() {
+  const date = new Date();
+  date.setMonth(date.getMonth() - 1);
+  return dateInputValue(date);
+}
 
 const EMAIL_PROVIDER_PRESETS = (t: I18nT) => [
   { key: "qq", label: t("settings.email.providerQq"), imapHost: "imap.qq.com", imapPort: "993", smtpHost: "smtp.qq.com", smtpPort: "465" },
@@ -112,6 +129,7 @@ type MailListMeta = {
   hasKeyword: boolean;
   scanLimit: number;
   sinceDate: string;
+  endDate: string;
   searchMode?: "imap" | "scan";
   timingMs?: {
     connect?: number;
@@ -313,7 +331,8 @@ export default function EmailSettingsPage() {
   const [savingAccountDraft, setSavingAccountDraft] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importComplete, setImportComplete] = useState<ImportCompleteState | null>(null);
-  const [mailRange, setMailRange] = useState("month");
+  const [mailStartDate, setMailStartDate] = useState(() => monthAgoDateString());
+  const [mailEndDate, setMailEndDate] = useState(() => todayDateString());
   const [mailKeyword, setMailKeyword] = useState(DEFAULT_EMAIL_IMPORT_KEYWORD);
   const [mailKeywordDraft, setMailKeywordDraft] = useState(DEFAULT_EMAIL_IMPORT_KEYWORD);
   const [savingMailKeyword, setSavingMailKeyword] = useState(false);
@@ -329,8 +348,8 @@ export default function EmailSettingsPage() {
   }, []);
 
   async function initializeEmailSettings(signal?: AbortSignal) {
-    const keyword = await loadMailImportSettings(signal);
-    if (!signal?.aborted) await loadAccounts(signal, keyword);
+    await loadMailImportSettings(signal);
+    if (!signal?.aborted) await loadAccounts(signal);
   }
 
   async function loadMailImportSettings(signal?: AbortSignal) {
@@ -351,7 +370,7 @@ export default function EmailSettingsPage() {
     return DEFAULT_EMAIL_IMPORT_KEYWORD;
   }
 
-  async function loadAccounts(signal?: AbortSignal, keywordOverride?: string) {
+  async function loadAccounts(signal?: AbortSignal) {
     setLoadingAccounts(true);
     try {
       const res = await fetch("/api/v1/settings/email-accounts", { signal });
@@ -363,7 +382,6 @@ export default function EmailSettingsPage() {
           const onlyAccount = nextAccounts[0];
           setSelectedId(onlyAccount.id);
           setInfo(t("settings.email.autoSelected", { account: onlyAccount.label || onlyAccount.username }));
-          void listMails(onlyAccount.id, keywordOverride);
         }
       }
     } catch (error) {
@@ -558,32 +576,42 @@ export default function EmailSettingsPage() {
     const timing = typeof meta.timingMs?.total === "number"
       ? t("settings.email.timingSeconds", { seconds: (meta.timingMs.total / 1000).toFixed(1) })
       : "";
+    const scopeParams = { start: meta.sinceDate, end: meta.endDate, date: meta.endDate };
     const scope = meta.searchMode === "imap"
-      ? (meta.sinceDate ? t("settings.email.mailSearchSince", { date: meta.sinceDate }) : t("settings.email.mailboxSearch"))
-      : (meta.sinceDate ? t("settings.email.scanSince", { date: meta.sinceDate }) : t("settings.email.scanRecent", { limit: meta.scanLimit }));
+      ? (meta.sinceDate && meta.endDate
+        ? t("settings.email.mailSearchRange", scopeParams)
+        : meta.sinceDate
+          ? t("settings.email.mailSearchSince", { date: meta.sinceDate })
+          : meta.endDate
+            ? t("settings.email.mailSearchUntil", { date: meta.endDate })
+            : t("settings.email.mailboxSearch"))
+      : (meta.sinceDate && meta.endDate
+        ? t("settings.email.scanRange", scopeParams)
+        : meta.sinceDate
+          ? t("settings.email.scanSince", { date: meta.sinceDate })
+          : meta.endDate
+            ? t("settings.email.scanUntil", { date: meta.endDate })
+            : t("settings.email.scanRecent", { limit: meta.scanLimit }));
+    const hasKeyword = Boolean(keyword.trim());
     if (itemCount > 0) {
-      return t("settings.email.scanMatched", { scope, scanned: meta.scanned, keyword, matched: meta.matched, itemCount, timing });
+      return hasKeyword
+        ? t("settings.email.scanMatched", { scope, scanned: meta.scanned, keyword, matched: meta.matched, itemCount, timing })
+        : t("settings.email.scanListed", { scope, scanned: meta.scanned, itemCount, timing });
     }
-    return t("settings.email.scanNoMatch", { scope, scanned: meta.scanned, keyword, timing });
-  }
-
-  function monthAgoDateString() {
-    const date = new Date();
-    date.setMonth(date.getMonth() - 1);
-    return date.toISOString().slice(0, 10);
-  }
-
-  function scanLimitForRange() {
-    if (mailRange === "50") return 50;
-    if (mailRange === "100") return 100;
-    if (mailRange === "500") return 500;
-    if (mailRange === "1000") return 1000;
-    return 100;
+    return hasKeyword
+      ? t("settings.email.scanNoMatch", { scope, scanned: meta.scanned, keyword, timing })
+      : t("settings.email.scanNoMail", { scope, scanned: meta.scanned, timing });
   }
 
   async function listMails(accountId = selectedId, keywordOverride?: string) {
     if (!accountId) return;
     const activeKeyword = normalizeEmailImportKeyword(keywordOverride ?? mailKeywordDraft);
+    const sinceDate = mailStartDate.trim() || undefined;
+    const endDate = mailEndDate.trim() || undefined;
+    if (sinceDate && endDate && sinceDate > endDate) {
+      setError(t("settings.email.invalidDateRange"));
+      return;
+    }
     setLoadingMails(true); setError(""); setSelectedMail(null); setMailListHint(""); setParsedItems([]); setImportPreview(null); setImportComplete(null);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 20000);
@@ -595,17 +623,19 @@ export default function EmailSettingsPage() {
       source: "settings_email",
       emailAccountId: accountId,
       keyword: activeKeyword,
-      scanLimit: scanLimitForRange(),
-      sinceDate: mailRange === "month" ? monthAgoDateString() : null,
+      scanLimit: MAIL_SEARCH_LIMIT,
+      sinceDate: sinceDate ?? null,
+      endDate: endDate ?? null,
     });
     try {
       const res = await fetch("/api/v1/email/imap/list", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           accountId,
-          limit: MAIL_DISPLAY_LIMIT,
-          scanLimit: scanLimitForRange(),
-          sinceDate: mailRange === "month" ? monthAgoDateString() : undefined,
+          limit: MAIL_SEARCH_LIMIT,
+          scanLimit: MAIL_SEARCH_LIMIT,
+          sinceDate,
+          endDate,
           keyword: activeKeyword,
         }),
         signal: controller.signal,
@@ -2005,7 +2035,6 @@ export default function EmailSettingsPage() {
       label: importPreviewFieldLabels.remark,
       width: 230,
       minWidth: 160,
-      filterKind: "text",
       filterText: (row) => (row.item.remark || row.item.rawText || "").trim() || t("settings.email.emptyFilter"),
       render: (row) => <span className="block truncate text-slate-600" title={row.item.remark || row.item.rawText}>{row.item.remark || row.item.rawText}</span>,
     },
@@ -2077,7 +2106,7 @@ export default function EmailSettingsPage() {
             <div className="overflow-hidden rounded-md border border-slate-200">
               <div className="border-b border-slate-100 bg-slate-50 p-2">
                 <div className="mb-2 text-sm font-medium text-slate-800">{selectedAccount ? selectedAccount.label : t("settings.email.mailReading")}</div>
-                <div className="grid grid-cols-[minmax(92px,1fr)_58px_108px_76px] items-center gap-2">
+                <div className="grid grid-cols-[minmax(0,1fr)_58px] items-center gap-2">
                   <label className="flex h-8 min-w-0 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-600">
                     <span className="shrink-0 text-slate-500">{t("settings.email.keywordPrefix")}</span>
                     <input
@@ -2085,23 +2114,39 @@ export default function EmailSettingsPage() {
                       className="min-w-0 flex-1 bg-transparent text-xs text-slate-700 outline-none"
                       value={mailKeywordDraft}
                       onChange={(e) => setMailKeywordDraft(e.target.value)}
-                      placeholder={DEFAULT_EMAIL_IMPORT_KEYWORD}
+                      placeholder={t("settings.email.keywordPlaceholder")}
                     />
                   </label>
                   <button className="h-8 rounded-md border border-slate-200 bg-white px-1 text-[11px] text-slate-600 hover:bg-slate-50 disabled:opacity-50" onClick={saveMailKeyword} disabled={!mailKeywordDirty || savingMailKeyword}>
                     {savingMailKeyword ? t("settings.email.saving") : t("common.save")}
                   </button>
-                  <select className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs outline-none" value={mailRange} onChange={(e) => setMailRange(e.target.value)}>
-                    <option value="month">{t("settings.email.rangeMonth")}</option>
-                    <option value="50">{t("settings.email.rangeCount", { count: 50 })}</option>
-                    <option value="100">{t("settings.email.rangeCount", { count: 100 })}</option>
-                    <option value="500">{t("settings.email.rangeCount", { count: 500 })}</option>
-                    <option value="1000">{t("settings.email.rangeCountSlow", { count: 1000 })}</option>
-                  </select>
+                </div>
+                <div className="mt-2 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_92px] items-center gap-2">
+                  <label className="flex h-8 min-w-0 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-600">
+                    <span className="shrink-0 text-slate-500">{t("settings.email.dateStart")}</span>
+                    <input
+                      aria-label={t("settings.email.startDateInputLabel")}
+                      className="min-w-0 flex-1 bg-transparent text-xs text-slate-700 outline-none"
+                      type="date"
+                      value={mailStartDate}
+                      onChange={(e) => setMailStartDate(e.target.value)}
+                    />
+                  </label>
+                  <label className="flex h-8 min-w-0 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-600">
+                    <span className="shrink-0 text-slate-500">{t("settings.email.dateEnd")}</span>
+                    <input
+                      aria-label={t("settings.email.endDateInputLabel")}
+                      className="min-w-0 flex-1 bg-transparent text-xs text-slate-700 outline-none"
+                      type="date"
+                      value={mailEndDate}
+                      onChange={(e) => setMailEndDate(e.target.value)}
+                    />
+                  </label>
                   <button className="h-8 rounded-md bg-blue-600 text-xs text-white hover:bg-blue-700 disabled:opacity-50" onClick={() => listMails()} disabled={!selectedAccount || loadingMails}>
                     {loadingMails ? t("settings.email.readingMails") : t("settings.email.fetchMails")}
                   </button>
                 </div>
+                <div className="text-[11px] leading-5 text-slate-500">{t("settings.email.searchLimitHint", { limit: MAIL_SEARCH_LIMIT })}</div>
                 {mailListHint && <div className="text-[11px] leading-5 text-blue-600">{mailListHint}</div>}
               </div>
               <div className="max-h-[430px] overflow-auto divide-y divide-slate-100">

@@ -117,7 +117,6 @@ export function PropertyShell({
       headerClassName: "text-left",
       className: "px-4",
       sortValue: (position) => position.name,
-      filterKind: "text",
       filterText: (position) => position.name,
       render: (position) => {
         const assetId = position.propertyAssetId ?? position.fundCode;
@@ -272,7 +271,6 @@ export function PropertyShell({
       label: t("depositShell.colAction"),
       width: 104,
       minWidth: 88,
-      filterKind: "text",
       filterText: (entry) => actionLabel(t, entry.propertyAction),
       sortValue: (entry) => actionLabel(t, entry.propertyAction),
       render: (entry) => <span className="text-xs text-slate-700">{actionLabel(t, entry.propertyAction)}</span>,
@@ -282,7 +280,6 @@ export function PropertyShell({
       label: t("depositShell.colCashAccount"),
       width: 180,
       minWidth: 120,
-      filterKind: "text",
       filterText: (entry) => entry.propertyAction === "sale" ? entry.toAccountName ?? "" : entry.accountName ?? "",
       sortValue: (entry) => entry.propertyAction === "sale" ? entry.toAccountName ?? "" : entry.accountName ?? "",
       truncate: true,
@@ -364,7 +361,6 @@ export function PropertyShell({
       label: t("detail.column.remark"),
       width: 180,
       minWidth: 120,
-      filterKind: "text",
       filterText: (entry) => entry.note ?? "",
       sortValue: (entry) => entry.note ?? "",
       truncate: true,

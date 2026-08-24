@@ -28,6 +28,7 @@ import { WealthFormModal } from "@/components/WealthFormModal";
 import { DepositFormModal } from "@/components/DepositFormModal";
 
 import { FillNavButton } from "@/components/FillNavButton";
+import { FundUnitsReconcileButton } from "@/components/FundUnitsReconcileButton";
 
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/components/BatchReplacePopoverButton";
 
@@ -45,6 +46,7 @@ import { ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewEx
 
 
 import { subtypeDisplay } from "@/lib/investment-config";
+import { TRANSACTION_SOURCE_FUND_UNITS_RECONCILE, isFundUnitsReconcileEntry } from "@/lib/transaction-semantics";
 
 import { useI18n } from "@/lib/i18n";
 import { useOutsideClose } from "@/lib/client/useOutsideClose";
@@ -52,6 +54,7 @@ import { useOutsideClose } from "@/lib/client/useOutsideClose";
 
 
 function fundSubtypeLabel(t: (key: string) => string, subtype: string | null | undefined, source: string | null | undefined) {
+  if (source === TRANSACTION_SOURCE_FUND_UNITS_RECONCILE) return t("fundShell.subtype.unitsReconcile");
   if (subtype === "buy" && source === "regular_invest") return t("fundShell.subtype.buyRegularInvest");
   if (subtype === "buy" && source === "dividend") return t("fund.subtype.dividend");
   if (subtype === "buy_failed" && source === "regular_invest_refund") return t("fundShell.subtype.buyRefund");
@@ -423,6 +426,7 @@ function buildFundProfitChartPoints(history: FundNavHistoryPoint[], entries: Fun
 function compactFundSubtypeLabel(t: (key: string) => string, entry: any, fallback: string) {
   const subtype = String(entry?.fundSubtype ?? "");
   const source = String(entry?.source ?? "");
+  if (source === TRANSACTION_SOURCE_FUND_UNITS_RECONCILE) return t("fundShell.subtypeCompact.unitsReconcile");
   if (subtype === "buy_failed" && source === "regular_invest_refund") return t("fundShell.subtypeCompact.refund");
   if (subtype === "buy_failed") return t("fundShell.subtypeCompact.failed");
   if (subtype === "buy" && source === "regular_invest") return t("fund.subtype.regular_invest");
@@ -667,7 +671,7 @@ export function FundShell(props: Props) {
 
   const [fundCode, setFundCode] = useState(initialFundCode);
   const [fundChartOpen, setFundChartOpen] = useState(false);
-  const [showAllRecords, setShowAllRecords] = useState(false);
+  const showAllRecords = false;
   const [confirmDaysModalOpen, setConfirmDaysModalOpen] = useState(false);
   const [confirmDaysModalFundCode, setConfirmDaysModalFundCode] = useState<string | null>(null);
   const [confirmDaysModalFundName, setConfirmDaysModalFundName] = useState<string | null>(null);
@@ -1396,7 +1400,6 @@ export function FundShell(props: Props) {
     if (!code) return;
 
     setFundCode(code);
-    setShowAllRecords(false);
     setFundPage(1);
 
     const q = new URLSearchParams(baseQuery);
@@ -1415,43 +1418,6 @@ export function FundShell(props: Props) {
     window.history.replaceState(null, "", `/?${q.toString()}`);
 
   }, [baseQuery, isWealthAccount, showCleared, view]);
-
-  function toggleAllWealthEntries() {
-    if (isMetalAccount) return;
-    if (showAllRecords) {
-      // Exit "all records": return to the first holding
-      const list = showCleared ? sortedClearedPositions : sortedPositions;
-      const first = positionAssetKey((list || [])[0] ?? null);
-      setShowAllRecords(false);
-      setFundCode(first);
-      setFundPage(1);
-      const q = new URLSearchParams(baseQuery);
-      q.set("view", view);
-      q.delete("fundCode");
-      if (isWealthAccount) {
-        if (first) q.set("wealthProductId", first);
-        else q.delete("wealthProductId");
-      } else {
-        if (first) q.set("fundCode", first);
-        q.delete("wealthProductId");
-      }
-      if (showCleared) q.set("showCleared", "1");
-      else q.delete("showCleared");
-      window.history.replaceState(null, "", `/?${q.toString()}`);
-      return;
-    }
-    // Enter "all records": show all transactions of the current account, keeping the holding list
-    setShowAllRecords(true);
-    setFundCode("");
-    setFundPage(1);
-    const q = new URLSearchParams(baseQuery);
-    q.set("view", view);
-    q.delete("fundCode");
-    q.delete("wealthProductId");
-    if (showCleared) q.set("showCleared", "1");
-    else q.delete("showCleared");
-    window.history.replaceState(null, "", `/?${q.toString()}`);
-  }
 
   function toggleCleared(on: boolean) {
 
@@ -2300,6 +2266,7 @@ export function FundShell(props: Props) {
   }, [accountOptions]);
 
   const statusOf = useCallback((e: any): "confirmed" | "pending" | "buy_failed" | "buy_refund" | "partial" => {
+    if (isFundUnitsReconcileEntry(e)) return "confirmed";
     if (e.fundSubtype === "buy_failed") {
       const amount = Math.abs(detailAmountOf(e));
       if (e.source === "regular_invest_refund") {
@@ -2696,7 +2663,6 @@ export function FundShell(props: Props) {
           key,
           label: detailNameLabel,
           ...common,
-          filterKind: "text",
           filterText: fundLabelOf,
           filterSearchText: fundSearchTextOf,
           filterTitle: fundSearchTextOf,
@@ -2788,10 +2754,11 @@ export function FundShell(props: Props) {
           ...common,
           align: "right",
           filterKind: "numberRange",
-          filterText: (e: any) => numberFilterText(Math.abs(detailAmountOf(e))),
-          filterNumber: (e: any) => Math.abs(detailAmountOf(e)),
-          sortValue: (e: any) => Math.abs(detailAmountOf(e)),
+          filterText: (e: any) => isFundUnitsReconcileEntry(e) ? null : numberFilterText(Math.abs(detailAmountOf(e))),
+          filterNumber: (e: any) => isFundUnitsReconcileEntry(e) ? null : Math.abs(detailAmountOf(e)),
+          sortValue: (e: any) => isFundUnitsReconcileEntry(e) ? null : Math.abs(detailAmountOf(e)),
           render: (e: any) => {
+            if (isFundUnitsReconcileEntry(e)) return <span className="text-slate-300">-</span>;
             const amount = detailAmountOf(e);
             const displayAmount = e.fundSubtype === "buy_failed" && e.source !== "regular_invest_refund"
               ? Math.abs(amount)
@@ -2864,7 +2831,6 @@ export function FundShell(props: Props) {
           key,
           label: t(DETAIL_COLUMN_LABEL_KEYS[key]),
           ...common,
-          filterKind: "text",
           filterText: (e: any) => String(e.note ?? "").trim(),
           sortValue: (e: any) => String(e.note ?? "").trim() || null,
           truncate: true,
@@ -2938,12 +2904,14 @@ export function FundShell(props: Props) {
         })()
       : null;
     const editableInvestmentEntry = linkedBuyForRefund ?? e;
+    const isUnitsReconcile = isFundUnitsReconcileEntry(e);
 
     return (
       <div className="flex items-center justify-end gap-1">
-        {!isWealthAccount && e.fundCode && e.fundSubtype === "buy" && statusOf(e) !== "buy_failed" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? <FillNavButton entryId={e.id} fundCode={e.fundCode} action={fillNavAction} onFilled={(data) => handleEntryNavFilled(e, data)} /> : null}
-        {e.fundProductType === "wealth" ? (
-          <WealthFormModal
+        {!isUnitsReconcile && !isWealthAccount && e.fundCode && e.fundSubtype === "buy" && statusOf(e) !== "buy_failed" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? <FillNavButton entryId={e.id} fundCode={e.fundCode} action={fillNavAction} onFilled={(data) => handleEntryNavFilled(e, data)} /> : null}
+        {!isUnitsReconcile ? (
+          e.fundProductType === "wealth" ? (
+            <WealthFormModal
             mode="edit"
             accountId={selectedAccount?.id ?? ""}
             entry={{
@@ -2977,8 +2945,8 @@ export function FundShell(props: Props) {
             createAction={createAction}
             editAction={editAction}
           />
-        ) : e.fundProductType === "deposit" ? (
-          <DepositFormModal
+          ) : e.fundProductType === "deposit" ? (
+            <DepositFormModal
             mode="edit"
             accountId={selectedAccount?.id ?? ""}
             entry={{
@@ -3002,8 +2970,8 @@ export function FundShell(props: Props) {
             createAction={createAction}
             editAction={editAction}
           />
-        ) : (
-          <InvestmentFormModal
+          ) : (
+            <InvestmentFormModal
             mode="edit"
             entry={{
               id: editableInvestmentEntry.id,
@@ -3058,37 +3026,42 @@ export function FundShell(props: Props) {
             fundUnitsDecimals={fundUnitsDecimals}
             hideTrigger
           />
-        )}
-        <button
-          type="button"
-          onClick={(ev) => {
-            ev.stopPropagation();
-            if (!isLinked) void linkDetailCashFlow(e);
-          }}
-          disabled={isLinked || linkingIds.has(String(e.id ?? ""))}
-          className={[
-            "flex h-6 w-6 items-center justify-center rounded border bg-white transition-colors disabled:cursor-default",
-            isLinked
-              ? "border-slate-200 text-slate-500"
-              : "border-amber-200 text-amber-700 hover:bg-amber-50 disabled:opacity-60",
-          ].join(" ")}
-          title={linkTitle}
-          aria-label={isLinked ? t("fundShell.linkedCashFlow") : t("detailView.notLinked")}
-        >
-          <LinkStatusIcon active={isLinked} title={linkTitle} />
-        </button>
-        <button
-          type="button"
-          onClick={(ev) => {
-            ev.stopPropagation();
-            openDetailEdit(e.id);
-          }}
-          className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50"
-          title={t("common.edit")}
-          aria-label={t("common.edit")}
-        >
-          <Pencil className="h-3.5 w-3.5" />
-        </button>
+          )
+        ) : null}
+        {!isUnitsReconcile ? (
+          <>
+            <button
+              type="button"
+              onClick={(ev) => {
+                ev.stopPropagation();
+                if (!isLinked) void linkDetailCashFlow(e);
+              }}
+              disabled={isLinked || linkingIds.has(String(e.id ?? ""))}
+              className={[
+                "flex h-6 w-6 items-center justify-center rounded border bg-white transition-colors disabled:cursor-default",
+                isLinked
+                  ? "border-slate-200 text-slate-500"
+                  : "border-amber-200 text-amber-700 hover:bg-amber-50 disabled:opacity-60",
+              ].join(" ")}
+              title={linkTitle}
+              aria-label={isLinked ? t("fundShell.linkedCashFlow") : t("detailView.notLinked")}
+            >
+              <LinkStatusIcon active={isLinked} title={linkTitle} />
+            </button>
+            <button
+              type="button"
+              onClick={(ev) => {
+                ev.stopPropagation();
+                openDetailEdit(e.id);
+              }}
+              className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50"
+              title={t("common.edit")}
+              aria-label={t("common.edit")}
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+          </>
+        ) : null}
         <button
           type="button"
           onClick={() => { void deleteDetailEntry(e); }}
@@ -3677,24 +3650,14 @@ export function FundShell(props: Props) {
 
           <div className="flex min-w-0 max-w-[62vw] items-center gap-1 overflow-x-auto whitespace-nowrap pb-0.5 text-xs md:max-w-none md:overflow-visible [&>*]:shrink-0">
 
-            {!isMetalAccount ? (
-              <button
-                type="button"
-                onClick={toggleAllWealthEntries}
-                className={`h-6 px-2 rounded border flex items-center gap-1 ${
-                  showAllRecords
-                    ? "border-blue-300 bg-blue-50 text-blue-700 font-medium"
-                    : "border-slate-200 bg-white text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                }`}
-                title={showAllRecords
-                  ? t("fundShell.toggleAllOff", {
-                      scope: isWealthAccount ? t("fundShell.allRecords.wealth") : t("fundShell.allRecords.fund"),
-                      kind: isWealthAccount ? t("fundShell.wealthProduct") : t("fundShell.holding.fund"),
-                    })
-                  : t("fundShell.toggleAllOn", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund") })}
-              >
-                {isWealthAccount ? t("fundShell.allRecords.wealth") : t("fundShell.allRecords.fund")}
-              </button>
+            {!isMetalAccount && !isWealthAccount && fundCode ? (
+              <FundUnitsReconcileButton
+                accountId={accountId}
+                fundCode={fundCode}
+                fundName={selectedAnyPosition?.name ?? selectedPosition?.name ?? fundNameByCode.get(fundCode) ?? null}
+                currentUnits={toNumber(selectedPosition?.units ?? 0)}
+                fundUnitsDecimals={fundUnitsDecimals}
+              />
             ) : null}
 
             {batchDeleteMessage ? <span className="px-1 text-[10px] text-rose-500">{batchDeleteMessage}</span> : null}
@@ -3873,6 +3836,11 @@ export function FundShell(props: Props) {
                 const businessLinkTitle = businessLinkInfo.active
                   ? (businessLinkInfo.labels.length > 0 ? businessLinkInfo.labels.join("；") : t("fundShell.linkedCashFlow"))
                   : t("fundShell.notLinked");
+                const isUnitsReconcile = isFundUnitsReconcileEntry(e);
+                const unitsReconcileDeltaText = units != null
+                  ? `${e.fundSubtype === "redeem" ? "-" : "+"}${formatFundUnits(Math.abs(toNumber(units)))}`
+                  : "-";
+                const unitsReconcileDeltaClass = e.fundSubtype === "redeem" ? downCls : upCls;
 
                 return (
                   <article
@@ -3886,7 +3854,9 @@ export function FundShell(props: Props) {
                       else next.add(e.id);
                       return next;
                     })}
-                    onDoubleClick={() => openDetailEdit(e.id)}
+                    onDoubleClick={() => {
+                      if (!isUnitsReconcile) openDetailEdit(e.id);
+                    }}
                   >
                     <div className="flex items-start justify-between gap-3 px-3 pt-3">
                       <div className="min-w-0 flex-1">
@@ -3908,7 +3878,9 @@ export function FundShell(props: Props) {
                         <div className={`text-base font-semibold tabular-nums ${
                           status === "buy_failed" ? "text-rose-600" : status === "buy_refund" ? "text-emerald-700" : "text-slate-900"
                         }`}>
-                          {e.source === "dividend" || e.fundSubtype === "dividend_cash" ? (
+                          {isUnitsReconcile ? (
+                            <span className={unitsReconcileDeltaClass}>{unitsReconcileDeltaText}</span>
+                          ) : e.source === "dividend" || e.fundSubtype === "dividend_cash" ? (
                             <span className={upCls}>+{formatMoney(Math.abs(amount))}</span>
                           ) : formatMoney(amount < 0 ? amount : Math.abs(amount))}
                         </div>
@@ -3957,35 +3929,39 @@ export function FundShell(props: Props) {
                         {t("fundShell.select")}
                       </label>
                       <div className="flex items-center gap-1.5">
-                        {!isWealthAccount && e.fundCode && e.fundSubtype === "buy" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? (
+                        {!isUnitsReconcile && !isWealthAccount && e.fundCode && e.fundSubtype === "buy" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? (
                           <FillNavButton entryId={e.id} fundCode={e.fundCode} action={fillNavAction} onFilled={(data) => handleEntryNavFilled(e, data)} />
                         ) : null}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (!businessLinkInfo.active) void linkDetailCashFlow(e);
-                          }}
-                          disabled={businessLinkInfo.active || linkingIds.has(String(e.id ?? ""))}
-                          className={[
-                            "flex h-8 w-8 items-center justify-center rounded border bg-white transition-colors disabled:cursor-default",
-                            businessLinkInfo.active
-                              ? "border-slate-200 text-slate-500"
-                              : "border-amber-200 text-amber-700 hover:bg-amber-50 disabled:opacity-60",
-                          ].join(" ")}
-                          title={businessLinkInfo.active ? businessLinkTitle : linkingIds.has(String(e.id ?? "")) ? t("fundShell.linking") : t("detailView.notLinked")}
-                          aria-label={businessLinkInfo.active ? businessLinkTitle : t("detailView.notLinked")}
-                        >
-                          <LinkStatusIcon active={businessLinkInfo.active} title={businessLinkTitle} />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => openDetailEdit(e.id)}
-                          className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50"
-                          title={t("insuranceShell.editButton")}
-                          aria-label={t("insuranceShell.editButton")}
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </button>
+                        {!isUnitsReconcile ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!businessLinkInfo.active) void linkDetailCashFlow(e);
+                              }}
+                              disabled={businessLinkInfo.active || linkingIds.has(String(e.id ?? ""))}
+                              className={[
+                                "flex h-8 w-8 items-center justify-center rounded border bg-white transition-colors disabled:cursor-default",
+                                businessLinkInfo.active
+                                  ? "border-slate-200 text-slate-500"
+                                  : "border-amber-200 text-amber-700 hover:bg-amber-50 disabled:opacity-60",
+                              ].join(" ")}
+                              title={businessLinkInfo.active ? businessLinkTitle : linkingIds.has(String(e.id ?? "")) ? t("fundShell.linking") : t("detailView.notLinked")}
+                              aria-label={businessLinkInfo.active ? businessLinkTitle : t("detailView.notLinked")}
+                            >
+                              <LinkStatusIcon active={businessLinkInfo.active} title={businessLinkTitle} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openDetailEdit(e.id)}
+                              className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50"
+                              title={t("insuranceShell.editButton")}
+                              aria-label={t("insuranceShell.editButton")}
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </button>
+                          </>
+                        ) : null}
                         <button
                           type="button"
                           onClick={() => { void deleteDetailEntry(e); }}
@@ -4026,7 +4002,9 @@ export function FundShell(props: Props) {
             selectAllScope="renderedRows"
             selectedKeys={selectedIds}
             onSelectionChange={setSelectedIds}
-            onRowDoubleClick={(entry) => openDetailEdit(entry.id)}
+            onRowDoubleClick={(entry) => {
+              if (!isFundUnitsReconcileEntry(entry)) openDetailEdit(entry.id);
+            }}
             rowActions={detailRowActions}
             rowActionsWidth={112}
             rowActionsMinWidth={92}

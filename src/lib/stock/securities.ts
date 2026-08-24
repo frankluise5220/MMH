@@ -23,9 +23,14 @@ type StockSecurityLookupItem = {
   exchange: string | null;
 };
 
-function hasUsableStockName(value: unknown, stockCode: string) {
+export function hasUsableStockName(value: unknown, stockCode: string) {
   const name = String(value ?? "").trim();
   return Boolean(name && name !== stockCode);
+}
+
+export function normalizeUsableStockName(value: unknown, stockCode: string) {
+  const name = String(value ?? "").trim();
+  return hasUsableStockName(name, stockCode) ? name : null;
 }
 
 async function findLocalStockName(client: TxClient, householdId: string, market: string, stockCode: string) {
@@ -77,7 +82,7 @@ export async function resolveOrCreateStockSecurity(
 ) {
   const market = normalizeStockMarket(params.market);
   const stockCode = normalizeStockCode(params.stockCode);
-  const explicitStockName = String(params.stockName ?? "").trim();
+  const explicitStockName = normalizeUsableStockName(params.stockName, stockCode);
   const explicitCurrency = String(params.currency ?? "").trim().toUpperCase();
   const explicitExchange = String(params.exchange ?? "").trim().toUpperCase();
 
@@ -94,7 +99,7 @@ export async function resolveOrCreateStockSecurity(
   });
   // The name uses existing data in the table first: an explicitly passed name, or a name already saved in StockSecurity that differs from the code, both count as usable.
   // Only when no usable name exists at all (first purchase with no historical name) do we query the external stock lookup API.
-  const explicitNameUsable = Boolean(explicitStockName && explicitStockName !== stockCode);
+  const explicitNameUsable = Boolean(explicitStockName);
   const storedNameUsable = Boolean(existing?.stockName && existing.stockName !== stockCode);
   const shouldQueryIdentity = !explicitNameUsable && !storedNameUsable;
   const identity = shouldQueryIdentity ? await queryStockIdentity(market, stockCode) : null;

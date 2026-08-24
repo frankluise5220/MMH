@@ -10,7 +10,7 @@ import { allocateBuyFailedRefunds, getConfirmedBuyAmount } from "@/lib/fund/refu
 import { RegularInvestClient } from "./RegularInvestClient";
 import { MobileRegularInvest } from "@/components/mobile/MobileRegularInvest";
 import { resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
-import { isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
+import { isCreditCardRepaymentTransfer, recordMatchesRegularInvestPlan } from "@/lib/transaction-semantics";
 
 async function unavailableCreateTransaction(_formData: FormData) {
   "use server";
@@ -103,9 +103,7 @@ async function updateScheduledTransferRecord(formData: FormData) {
 }
 
 function recordMatchesTask(taskType: string, entry: { source: string | null }) {
-  if (taskType === "fund_regular_invest") return entry.source === "regular_invest";
-  if (taskType === "insurance_premium") return entry.source === "insurance";
-  return entry.source === "scheduled_task";
+  return recordMatchesRegularInvestPlan(taskType, entry);
 }
 
 export default async function RegularInvestPage() {

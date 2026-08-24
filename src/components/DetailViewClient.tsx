@@ -22,7 +22,7 @@ import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, applyBalanceRe
 import { compareDetailEntriesAsc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import { DEFAULT_LOAN_PREPAY_STRATEGY, parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
-import { isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
+import { isCreditCardRepaymentTransfer, isLicensedInsuranceEntry, isRegularInvestRefundEntry, TRANSACTION_SOURCE_INSURANCE } from "@/lib/transaction-semantics";
 import { normalizeSettlementTransferCategoryName } from "@/lib/default-categories";
 import { advanceDialogAmount } from "@/lib/advance-transfer";
 import {
@@ -358,7 +358,7 @@ function displaySecondRemark(entry: { toNote?: string | null }) {
 }
 
 function displayDetailRemark(entry: DetailEntry, currentAccountId?: string | null) {
-  if (entry.source === "insurance") return getInsuranceDetailNote(entry);
+  if (isLicensedInsuranceEntry(entry)) return getInsuranceDetailNote(entry);
   if (entry.type === "transfer" && currentAccountId && entry.toAccountId === currentAccountId) {
     return (displaySecondRemark(entry).trim() || (entry.note ?? "").trim());
   }
@@ -436,7 +436,7 @@ type ReorderResponse = {
 function activityLabel(type: string, fundSubtype: string | null, source: string | null, t: (key: string) => string, balanceTarget: number | null = null): string {
   if (balanceTarget != null && source === BALANCE_INITIALIZATION_SOURCE) return t("detailView.initialBalance");
   if (source === BALANCE_RECONCILE_SOURCE) return t("detailView.balanceReconcile");
-  if (source === "insurance") {
+  if (source === TRANSACTION_SOURCE_INSURANCE) {
     return fundSubtype === "redeem" || fundSubtype === "switch_out" ? t("detailView.insuranceRefund") : t("detailView.insuranceExpense");
   }
   if (source === "advance") return t("txForm.advance");
@@ -449,7 +449,7 @@ function investmentCategoryLabel(
   entryFundProductType: string | null | undefined,
   t: (key: string) => string,
 ): string {
-  if (entry.source === "insurance") return getInsuranceDetailCategoryName(entry);
+  if (isLicensedInsuranceEntry(entry)) return getInsuranceDetailCategoryName(entry);
   if (entry.categoryName) return systemCategoryLabel(entry.categoryName, t);
   const subtype = String(entry.fundSubtype ?? "");
   const source = String(entry.source ?? "");
@@ -460,7 +460,7 @@ function investmentCategoryLabel(
   }
   if (productType === "wealth") {
     if (subtype === "redeem") return t("detailView.wealthRedeem");
-    if (subtype === "buy_failed" && source === "regular_invest_refund") return t("detailView.buyRefund");
+    if (isRegularInvestRefundEntry({ fundSubtype: subtype, source })) return t("detailView.buyRefund");
     if (subtype === "buy_failed") return t("detailView.buyFailed");
     if (subtype === "buy") return t("detailView.wealthBuy");
   }
@@ -479,7 +479,7 @@ function investmentCategoryLabel(
     if (subtype === "redeem") return t("detailView.fundRedeem");
     if (subtype === "dividend_cash") return t("detailView.dividendCash");
     if (subtype === "dividend_reinvest") return t("detailView.dividendReinvest");
-    if (subtype === "buy_failed" && source === "regular_invest_refund") return t("detailView.buyRefund");
+    if (isRegularInvestRefundEntry({ fundSubtype: subtype, source })) return t("detailView.buyRefund");
     if (subtype === "buy_failed") return t("detailView.buyFailed");
     if (subtype === "buy") return t("detailView.fundBuy");
   }
@@ -649,7 +649,7 @@ export function DetailViewClient({
       null;
     if (entry.type === "investment") return investmentCategoryLabel(entry, entryFundProductType, t);
     if (isCreditCardRepaymentDisplayEntry(entry)) return t("transaction.category.creditCardRepayment");
-    if (entry.source === "insurance") return getInsuranceDetailCategoryName(entry);
+    if (isLicensedInsuranceEntry(entry)) return getInsuranceDetailCategoryName(entry);
     return systemCategoryLabel(entry.categoryName, t);
   }, [accountOptionById, investmentProductTypeByAccountId, t]);
   const [refreshedEntries, setRefreshedEntries] = useState<{ accountId: string; entries: DetailEntry[] } | null>(null);
@@ -666,7 +666,7 @@ export function DetailViewClient({
           ? "deposit"
           : entry.fundProductType === "metal"
             ? "metal"
-            : entry.insuranceProductId || entry.insuranceAction || entry.source === "insurance"
+            : entry.insuranceProductId || entry.insuranceAction || isLicensedInsuranceEntry(entry)
               ? "insurance"
               : entry.fundProductType === "fund" || entry.fundCode
                 ? "fund"
@@ -799,9 +799,9 @@ export function DetailViewClient({
     const isRedeemEditEntry =
       e.fundSubtype === "redeem" ||
       e.fundSubtype === "switch_out" ||
-      (e.fundSubtype === "buy_failed" && e.source === "regular_invest_refund");
+      isRegularInvestRefundEntry(e);
     const targetInvestmentEditEntryId =
-      e.fundSubtype === "buy_failed" && e.source === "regular_invest_refund" && e.fundSourceEntryId
+      isRegularInvestRefundEntry(e) && e.fundSourceEntryId
         ? e.fundSourceEntryId
         : e.id;
     const investmentEditPayload =
@@ -1216,7 +1216,6 @@ export function DetailViewClient({
       minWidth: 96,
       hideable: true,
       defaultHidden: true,
-      filterKind: "text",
       filterText: (e) => e.counterpartyInstitutionName ?? "",
       render: (e) => <span className="block truncate text-slate-500" title={e.counterpartyInstitutionName ?? ""}>{e.counterpartyInstitutionName || <span className="text-slate-300">-</span>}</span>,
     },
@@ -1266,7 +1265,6 @@ export function DetailViewClient({
       width: 150,
       minWidth: 90,
       hideable: true,
-      filterKind: "text",
       filterText: (e) => e.entryTags?.map((et) => et.Tag?.name ?? "").join(" ") ?? "",
       render: (e) => e.entryTags && e.entryTags.length > 0 ? (
         <span className="inline-flex flex-wrap gap-0.5">
@@ -1291,7 +1289,6 @@ export function DetailViewClient({
       width: 220,
       minWidth: 120,
       hideable: true,
-      filterKind: "text",
       filterText: (e) => displayDetailRemark(e, accountId),
       render: (e) => {
         const text = displayDetailRemark(e, accountId);

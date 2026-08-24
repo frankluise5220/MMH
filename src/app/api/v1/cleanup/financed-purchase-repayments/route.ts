@@ -8,6 +8,7 @@ import { logger } from "@/lib/logger";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { revalidateAfterTxChange } from "@/lib/server/revalidate";
+import { ENTRY_ORIGIN_SCHEDULED_TASK } from "@/lib/transaction-semantics";
 
 /**
  * POST /api/v1/cleanup/financed-purchase-repayments
@@ -130,6 +131,7 @@ export async function POST(req: Request) {
             deletedAt: null,
             regularInvestPlanId: { in: planIds },
             source: "scheduled_task",
+            entryOrigin: ENTRY_ORIGIN_SCHEDULED_TASK,
             type: TransactionType.transfer,
             toAccountId: { in: financedLoanAccountIds },
             ...(mode === "future" ? { date: { gt: cutoffDate } } : {}),

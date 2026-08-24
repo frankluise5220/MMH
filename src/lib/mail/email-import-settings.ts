@@ -5,7 +5,8 @@ export function emailImportKeywordSettingKey(householdId: string) {
   return `${EMAIL_IMPORT_KEYWORD_SETTING_PREFIX}${householdId}`;
 }
 
-export function normalizeEmailImportKeyword(value: unknown) {
+export function normalizeEmailImportKeyword(value: unknown, options?: { fallbackToDefault?: boolean }) {
   const keyword = String(value ?? "").trim().replace(/\s+/g, " ");
-  return (keyword || DEFAULT_EMAIL_IMPORT_KEYWORD).slice(0, 40);
+  const normalized = keyword.slice(0, 40);
+  return normalized || (options?.fallbackToDefault ? DEFAULT_EMAIL_IMPORT_KEYWORD : "");
 }

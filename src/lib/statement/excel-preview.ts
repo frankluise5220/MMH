@@ -12,6 +12,7 @@ import {
   type StatementImportField,
 } from "@/lib/statement/header-catalog";
 import { normalizeAlipayWorkbookRows } from "@/lib/statement/alipay-template";
+import { normalizeJdWorkbookRows } from "@/lib/statement/jd-template";
 import { normalizeWechatWorkbookRows } from "@/lib/statement/wechat-template";
 import {
   alignStatementIncomeRefunds,
@@ -365,9 +366,10 @@ export async function readStatementWorkbookRowsAndText(
     }).map((row) => row.map(formatDateCell).map((cell) => cell.trim()));
     return { sheetName, rows };
   });
+  const jdRows = normalizeJdWorkbookRows(sheetRows);
   const alipayRows = normalizeAlipayWorkbookRows(sheetRows);
   const wechatRows = normalizeWechatWorkbookRows(sheetRows);
-  const rows = alipayRows?.rows ?? wechatRows?.rows ?? mergeStatementWorkbookRows(sheetRows, fieldHeaders);
+  const rows = jdRows?.rows ?? alipayRows?.rows ?? wechatRows?.rows ?? mergeStatementWorkbookRows(sheetRows, fieldHeaders);
   const text = sheetRows
     .flatMap((sheet) => sheet.rows.filter((row) => row.some(Boolean)))
     .map((row) => row.join("\t"))

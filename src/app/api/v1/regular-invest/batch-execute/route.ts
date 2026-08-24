@@ -21,6 +21,7 @@ import { decodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import { calcInitialScheduledRunDate, calcNextScheduledRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { executeNonFundScheduledTaskPlan, isNonFundScheduledTask } from "@/lib/server/scheduled-task-executor";
 import { resolveCategorySnapshot } from "@/lib/default-categories";
+import { ENTRY_ORIGIN_SCHEDULED_TASK } from "@/lib/transaction-semantics";
 import { acquireScheduledTaskPlanLock } from "@/lib/server/scheduled-task-lock";
 
 function utcDate(dateStr: string): Date {
@@ -365,6 +366,7 @@ export async function POST(req: NextRequest) {
             fundProductType: plan.fundProductType || fundAcc.investProductType,
             fundSubtype: FundSubtype.buy_failed,
             source: "regular_invest",
+            entryOrigin: ENTRY_ORIGIN_SCHEDULED_TASK,
             applyDate: run.runDate,
             confirmDate: run.confirmDate,
             arrivalDate: run.arrivalDate,

@@ -78,6 +78,7 @@ import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import {
   createFundTransactionWithCashFlows,
+  detachFundTransactionCashFlow,
   findFundTransactionForEntryId,
   getFundCashFlowDate,
   syncFundTransactionsFromTxRecords,
@@ -87,7 +88,7 @@ import {
 import { regularInvestRefundNote } from "@/lib/fund/regular-invest-display";
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
 import { resolveAdvanceTransfer } from "@/lib/advance-transfer";
-import { isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/transaction-semantics";
+import { ENTRY_ORIGIN_MANUAL, isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/transaction-semantics";
 import { ensureSettlementTransferCategory, resolveCategorySnapshot, resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
 import { buildWealthCashFlowNote } from "@/lib/wealth-cash-note";
@@ -1730,13 +1731,19 @@ export async function POST(req: Request) {
 
     // Accounts involved in this transaction: used to track usage frequency so
     // entry forms can order account selectors by most-used-first.
+    const earlyFundSubtypeForCreate = String(body.fundSubtype ?? body.subtype ?? "").trim();
     const usageAccountIds = [
       String(body.accountId ?? "").trim(),
       String(body.toAccountId ?? "").trim(),
-      String(body.cashAccountId ?? "").trim(),
+      earlyFundSubtypeForCreate === FundSubtype.dividend_reinvest ? "" : String(body.cashAccountId ?? "").trim(),
     ].filter(Boolean);
 
-    if (!amountAbs) {
+    const earlyFundUnitsForCreate = parseMoney(body.fundUnits);
+    const allowsZeroAmountInvestment =
+      type === "investment" &&
+      earlyFundSubtypeForCreate === FundSubtype.dividend_reinvest &&
+      earlyFundUnitsForCreate > 0;
+    if (!amountAbs && !allowsZeroAmountInvestment) {
       return NextResponse.json({ ok: false, code: "INVALID_AMOUNT", error: "金额不正确" }, { status: 400 });
     }
 
@@ -2023,7 +2030,7 @@ export async function POST(req: Request) {
     } else if (type === "investment") {
       changedInvestment = true;
       const accountId = String(body.accountId ?? "").trim();
-      const subtype = String(body.fundSubtype ?? "buy").trim();
+      const subtype = String(body.fundSubtype ?? body.subtype ?? "buy").trim();
       let fundCode = String(body.fundCode ?? "").trim() || null;
       const fundProductType = String(body.fundProductType ?? body.productType ?? "").trim() || null;
       const metalTypeIdInput = String(body.metalTypeId ?? "").trim();
@@ -2255,7 +2262,7 @@ export async function POST(req: Request) {
         const fundUnitsDecimals = normalizeFundUnitsDecimals(fundUnitsPrecisionAccount?.fundUnitsDecimals);
         const roundedFundUnits = fundUnits != null ? roundFundUnits(fundUnits, fundUnitsDecimals) : null;
 
-        const cashAcc = cashAccountIdInput
+        const cashAcc = cashAccountIdInput && !isDividendReinvest
           ? await tx.account.findUnique({ where: { id: cashAccountIdInput }, select: { id: true, name: true, kind: true, currency: true } })
           : null;
 
@@ -2429,7 +2436,7 @@ export async function POST(req: Request) {
           cashFlowAmount = signedAmount;
           cashFlowDate = fundArrivalDate ?? date;
         } else if (isDividendReinvest) {
-          signedAmount = -amountAbs;
+          signedAmount = 0;
           cashFlowAmount = 0;
         } else if (isDividendCash && cashAcc) {
           signedAmount = amountAbs;
@@ -2514,19 +2521,20 @@ export async function POST(req: Request) {
           const createdFund = await createFundTransactionWithCashFlows(tx, {
             householdId,
             fundAccountId: investAcc.id,
-            cashAccountId: cashAcc?.id ?? null,
+            cashAccountId: isDividendReinvest ? null : cashAcc?.id ?? null,
             fundCode: entryFundCode,
             fundName: entryFundName,
             fundProductType,
             fundSubtype: finalFundSubtype,
             source: sourceValue,
+            entryOrigin: ENTRY_ORIGIN_MANUAL,
             applyDate: date,
             confirmDate: computedConfirmDate,
             arrivalDate: computedArrivalDate,
-            grossAmount: amountAbs,
+            grossAmount: isDividendReinvest ? 0 : amountAbs,
             refundAmount: buyResultStatus === "refund" ? refundAmount ?? 0 : 0,
-            arrivalAmount: fundArrivalAmount ?? (redeemLike || isDividendCash ? Math.abs(cashFlowAmount) : null),
-            fee: fundFee ?? null,
+            arrivalAmount: isDividendReinvest ? null : fundArrivalAmount ?? (redeemLike || isDividendCash ? Math.abs(cashFlowAmount) : null),
+            fee: isDividendReinvest ? null : fundFee ?? null,
             nav: fundNav ?? null,
             units: roundedFundUnits ?? null,
             note: note || null,
@@ -2690,7 +2698,7 @@ export async function POST(req: Request) {
       if (finalInvestmentAccId) {
         await recalcAndSaveAccountBalance(finalInvestmentAccId).catch(logger.catchLog("操作失败", "route.ts"));
       }
-      if (cashAccountIdInput && cashAccountIdInput !== finalInvestmentAccId) {
+      if (!isDividendReinvest && cashAccountIdInput && cashAccountIdInput !== finalInvestmentAccId) {
         await recalcAndSaveAccountBalance(cashAccountIdInput).catch(logger.catchLog("操作失败", "route.ts"));
       }
     } else {
@@ -2859,7 +2867,13 @@ export async function PUT(req: Request) {
 
     const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
     const postedAt = type === "expense" || type === "income" ? (toDateOrNull(body.postedAt) ?? date) : null;
-    if (!amountAbs) {
+    const earlyFundSubtypeForEdit = String(body.fundSubtype ?? body.subtype ?? "").trim();
+    const earlyFundUnitsForEdit = parseMoney(body.fundUnits);
+    const allowsZeroAmountInvestmentEdit =
+      type === "investment" &&
+      earlyFundSubtypeForEdit === FundSubtype.dividend_reinvest &&
+      earlyFundUnitsForEdit > 0;
+    if (!amountAbs && !allowsZeroAmountInvestmentEdit) {
       return NextResponse.json({ ok: false, code: "INVALID_AMOUNT", error: "金额不正确" }, { status: 400 });
     }
 
@@ -3012,17 +3026,24 @@ export async function PUT(req: Request) {
     const insuranceProductId = String(body.insuranceProductId ?? "").trim() || entry.insuranceProductId || null;
     const ownerGroupIdFromBody = String(body.ownerGroupId ?? "").trim() || null;
     const productType = String(body.fundProductType ?? "fund").trim();
-    const subtype = String(body.fundSubtype ?? "buy").trim();
+    const subtype = String(body.fundSubtype ?? body.subtype ?? "buy").trim();
+    const validSubtypes = Object.values(FundSubtype);
+    const fundSubtypeValue: FundSubtype = validSubtypes.includes(subtype as FundSubtype)
+      ? (subtype as FundSubtype)
+      : FundSubtype.buy;
+    const isDividendReinvest = fundSubtypeValue === FundSubtype.dividend_reinvest;
+    const isDividendCash = fundSubtypeValue === FundSubtype.dividend_cash;
+    const finalFundSubtype: FundSubtype = isDividendReinvest ? FundSubtype.buy : fundSubtypeValue;
     const buyResultStatus = String(body.buyResultStatus ?? "normal").trim();
     const linkedRefundEntryId = String(body.linkedRefundEntryId ?? "").trim() || null;
     const refundAmountRaw = parseMoney(body.refundAmount);
     const refundDateStr = String(body.refundDate ?? "").trim();
     const refundAmount = refundAmountRaw > 0 ? Math.abs(refundAmountRaw) : null;
     const refundDate = refundDateStr ? dateFromYmd(refundDateStr) : null;
-    const redeemLike = subtype === "redeem" || subtype === "switch_out";
-    const sourceValue = String(body.source ?? entry.source ?? "manual").trim();
-    const isBuyFailedRefund = subtype === "buy_failed" && sourceValue === "regular_invest_refund";
-    const cashReceivingLike = redeemLike || subtype === "dividend_cash" || isBuyFailedRefund;
+    const redeemLike = fundSubtypeValue === FundSubtype.redeem || fundSubtypeValue === FundSubtype.switch_out;
+    const sourceValue = isDividendReinvest ? "dividend" : String(body.source ?? entry.source ?? "manual").trim();
+    const isBuyFailedRefund = fundSubtypeValue === FundSubtype.buy_failed && sourceValue === "regular_invest_refund";
+    const cashReceivingLike = redeemLike || isDividendCash || isBuyFailedRefund;
     const isInsuranceEdit = sourceValue === "insurance";
     const insuranceActionForEdit = isInsuranceEdit
       ? (redeemLike
@@ -3130,7 +3151,7 @@ export async function PUT(req: Request) {
           const cashAcc = await tx.account.findUnique({ where: { id: cashAccountIdFormData } });
           if (cashAcc) { cashAccId = cashAcc.id; cashAccName = cashAcc.name; cashAccCurrency = cashAcc.currency; }
         }
-        if (!cashAccId) {
+        if (!cashAccId && !isDividendReinvest) {
           if (redeemLike) {
             if (entry.toAccountId) {
               const acc = await tx.account.findUnique({ where: { id: entry.toAccountId } });
@@ -3164,11 +3185,17 @@ export async function PUT(req: Request) {
           recordAccountName = investAcc.name;
           recordToAccountId = cashAccId ?? investAcc.id;
           recordToAccountName = cashAccName ?? investAcc.name;
-          signedAmount = subtype === "dividend_cash"
+          signedAmount = isDividendCash
             ? amountAbs
             : (fundArrivalAmount > 0
                 ? fundArrivalAmount
                 : Math.max(0, amountAbs - (fundFee > 0 ? fundFee : 0)));
+        } else if (isDividendReinvest) {
+          recordAccountId = investAcc.id;
+          recordAccountName = investAcc.name;
+          recordToAccountId = investAcc.id;
+          recordToAccountName = investAcc.name;
+          signedAmount = 0;
         } else {
           recordAccountId = cashAccId ?? investAcc.id;
           recordAccountName = cashAccName ?? investAcc.name;
@@ -3178,7 +3205,8 @@ export async function PUT(req: Request) {
         }
 
         const recalculatedRefundUnits = (
-          (subtype as FundSubtype) === FundSubtype.buy &&
+          finalFundSubtype === FundSubtype.buy &&
+          !isDividendReinvest &&
           sourceValue !== "insurance" &&
           !isMetalProduct &&
           buyResultStatus === "refund" &&
@@ -3218,27 +3246,36 @@ export async function PUT(req: Request) {
             where: { id: independentFundTransaction.id },
             data: {
               fundAccountId: investAcc.id,
-              cashAccountId: cashAccId ?? null,
+              cashAccountId: isDividendReinvest ? null : cashAccId ?? null,
+              cashEntryId: isDividendReinvest ? null : undefined,
               fundCode,
               fundName: fundNameValue,
               fundProductType: productType === "money_fund" ? "money" : (productType as any),
-              fundSubtype: subtype as any,
+              fundSubtype: finalFundSubtype,
               source: sourceValue,
               applyDate: date,
               confirmDate: confirmDateValue,
               arrivalDate: arrivalDateValue,
-              grossAmount: amountAbs,
+              grossAmount: isDividendReinvest ? 0 : amountAbs,
               refundAmount: buyResultStatus === "refund" ? refundAmount ?? 0 : 0,
-              arrivalAmount: arrivalAmountValue,
-              fee: hasFundFee ? (fundFee > 0 ? fundFee : null) : independentFundTransaction.fee,
+              arrivalAmount: isDividendReinvest ? null : arrivalAmountValue,
+              fee: isDividendReinvest ? null : hasFundFee ? (fundFee > 0 ? fundFee : null) : independentFundTransaction.fee,
               nav: positiveNumber(body.fundNav),
               units: updateUnits,
               note: note || null,
             },
           });
+          if (isDividendReinvest) {
+            await detachFundTransactionCashFlow(tx, {
+              householdId,
+              fundTransactionId: independentFundTransaction.id,
+              cashEntryId: independentFundTransaction.cashEntryId,
+              source: sourceValue,
+            });
+          }
           independentFundCategoryName = getInvestmentCategoryName({
             fundProductType: productType === "money_fund" ? "money" : productType,
-            fundSubtype: subtype,
+            fundSubtype: finalFundSubtype,
             source: sourceValue,
           });
           const independentFundCategory = independentFundCategoryName
@@ -3249,11 +3286,11 @@ export async function PUT(req: Request) {
             : null;
           independentFundCategoryId = independentFundCategory?.id ?? null;
           independentFundCategoryName = independentFundCategory?.name ?? independentFundCategoryName;
-          if (independentFundTransaction.cashEntryId && cashAccId && signedAmount !== 0 && subtype !== "dividend_reinvest") {
+          if (independentFundTransaction.cashEntryId && cashAccId && signedAmount !== 0 && !isDividendReinvest) {
             const cashFlowKind =
-              subtype === "redeem" || subtype === "switch_out"
+              finalFundSubtype === FundSubtype.redeem || finalFundSubtype === FundSubtype.switch_out
                 ? FundCashFlowKind.redeem_in
-                : subtype === "dividend_cash"
+                : finalFundSubtype === FundSubtype.dividend_cash
                   ? FundCashFlowKind.dividend_in
                   : FundCashFlowKind.buy_out;
             const cashFlowDate = getFundCashFlowDate({
@@ -3322,16 +3359,17 @@ export async function PUT(req: Request) {
               ? (resolvedInsuranceProductName ?? entry.insuranceProductName ?? entry.fundName)
               : entry.insuranceProductName,
             fundProductType: isFundLikeIndependentEdit || isInsuranceEdit ? null : (productType as any) || null,
-            fundSubtype: isFundLikeIndependentEdit ? null : (subtype as any) || null,
+            fundSubtype: isFundLikeIndependentEdit ? null : finalFundSubtype,
             fundConfirmDate: isFundLikeIndependentEdit || isMetalProduct ? null : toDateOrNull(body.fundConfirmDate),
             fundArrivalDate: isFundLikeIndependentEdit || isMetalProduct ? null : toDateOrNull(body.fundArrivalDate),
-            fundArrivalAmount: isFundLikeIndependentEdit ? null : parseMoney(body.fundArrivalAmount) || null,
+            fundArrivalAmount: isFundLikeIndependentEdit || isDividendReinvest ? null : parseMoney(body.fundArrivalAmount) || null,
             fundUnits: isFundLikeIndependentEdit || isMetalProduct ? null : (recalculatedRefundUnits ?? (hasFundUnits ? roundedFundUnits : entry.fundUnits)),
             fundNav: isFundLikeIndependentEdit || isMetalProduct ? null : positiveNumber(body.fundNav),
-            fundFee: isFundLikeIndependentEdit || isMetalProduct ? null : hasFundFee ? (fundFee > 0 ? fundFee : null) : entry.fundFee,
+            fundFee: isFundLikeIndependentEdit || isMetalProduct || isDividendReinvest ? null : hasFundFee ? (fundFee > 0 ? fundFee : null) : entry.fundFee,
             depositAnnualRate: parseMoney(body.depositAnnualRate) || null,
             depositInterest: parseMoney(body.depositInterest) || null,
             depositSourceEntryId,
+            source: sourceValue,
             date,
             postedAt: null,
             type: TransactionType.investment,
@@ -3341,7 +3379,8 @@ export async function PUT(req: Request) {
 
         if (
           !isFundLikeIndependentEdit &&
-          (subtype as FundSubtype) === FundSubtype.buy &&
+          finalFundSubtype === FundSubtype.buy &&
+          !isDividendReinvest &&
           sourceValue !== "insurance" &&
           !isMetalProduct &&
           buyResultStatus === "refund" &&
@@ -3382,7 +3421,7 @@ export async function PUT(req: Request) {
               note,
             ),
           });
-        } else if ((subtype as FundSubtype) === FundSubtype.buy && linkedRefundEntryId) {
+        } else if (finalFundSubtype === FundSubtype.buy && !isDividendReinvest && linkedRefundEntryId) {
           await tx.txRecord.updateMany({
             where: {
               id: linkedRefundEntryId,
@@ -3395,7 +3434,8 @@ export async function PUT(req: Request) {
         }
         if (
           independentFundTransaction &&
-          (subtype as FundSubtype) === FundSubtype.buy &&
+          finalFundSubtype === FundSubtype.buy &&
+          !isDividendReinvest &&
           buyResultStatus === "refund" &&
           refundAmount &&
           refundAmount > 0 &&
@@ -3658,7 +3698,8 @@ return;
     } else if (type === "investment") {
       if (investmentAccId) accountsToRecalc.add(investmentAccId);
       const cashId = String(body.cashAccountId ?? "").trim();
-      if (cashId) accountsToRecalc.add(cashId);
+      const recalcFundSubtype = String(body.fundSubtype ?? body.subtype ?? "").trim();
+      if (cashId && recalcFundSubtype !== FundSubtype.dividend_reinvest) accountsToRecalc.add(cashId);
     } else if (type === "advance") {
       const accountId = String(body.accountId ?? "").trim();
       if (accountId) accountsToRecalc.add(accountId);

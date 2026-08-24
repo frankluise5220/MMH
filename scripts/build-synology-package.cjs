@@ -16,6 +16,7 @@ const packageRoot = path.join(stageDir, "package");
 const stageOnly = process.argv.includes("--stage-only");
 const nodeTarball = process.env.SYNOLOGY_NODE_TARBALL || process.env.SYNOPKG_NODE_TARBALL || process.env.FNOS_NODE_TARBALL || "";
 const packageReleaseNotes = typeof pkg.mmhReleaseNotes === "string" ? pkg.mmhReleaseNotes.trim() : "";
+const dsmMinVersion = "7.0-40000";
 
 function normalizeVersion(value) {
   const raw = String(value || "").trim();
@@ -153,7 +154,7 @@ description="Local-first household finance workspace with SQLite storage for Syn
 maintainer="frankluise5220"
 support_url="https://github.com/frankluise5220/MMH"
 arch="${target.infoArch}"
-os_min_ver="7.0-40000"
+os_min_ver="${dsmMinVersion}"
 startable="yes"
 ctl_stop="yes"
 silent_install="no"
@@ -393,8 +394,9 @@ function buildSpk() {
 
   const spkPath = path.join(outDir, spkAssetName());
   fs.rmSync(spkPath, { force: true });
+  // DSM expects the .spk itself to be a plain tar archive; only package.tgz is gzip-compressed.
   const spkTar = run("tar", [
-    "-czf",
+    "-cf",
     spkPath,
     "-C",
     stageDir,

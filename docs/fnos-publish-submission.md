@@ -30,6 +30,7 @@
 - 包内 `cmd/main` 必须使用飞牛应用数据目录保存 SQLite，不能回退到应用安装目录。
 - 包内 `better-sqlite3.node` 必须在 fnOS 目标 GLIBC 版本可加载。
 - 包内不能包含 `wizard/uninstall`；覆盖升级必须走 `cmd/upgrade_init` / `cmd/upgrade_callback`，卸载生命周期只作为用户主动卸载时的数据兜底。
+- 包内不能包含 `wizard/upgrade` 或 `wizard/config`；FN 软仓更新必须静默执行，不能再次弹出 `7777` 服务端口确认窗口。
 - 两个架构包必须保持同一个 `appname=mmh` 和同一个版本号；x86 manifest 使用 `arch=x86_64`、`platform=x86`，ARM64 manifest 使用 `arch=aarch64`、`platform=arm`。
 
 ## Manifest 摘要

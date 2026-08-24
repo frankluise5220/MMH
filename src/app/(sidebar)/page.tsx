@@ -51,7 +51,7 @@ import { formatCurrencyMoney, formatMoney } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { LiveAccountBalance } from "@/components/LiveAccountBalance";
 import { AccountFxRateInline } from "@/components/AccountFxRateInline";
-import { createFundTransactionWithCashFlows, findFundTransactionForEntryId, syncFundTransactionsFromTxRecords, upsertFundTransactionRefundCashFlow, type FundCashFlowInput } from "@/lib/fund/transactions";
+import { createFundTransactionWithCashFlows, detachFundTransactionCashFlow, findFundTransactionForEntryId, syncFundTransactionsFromTxRecords, upsertFundTransactionRefundCashFlow, type FundCashFlowInput } from "@/lib/fund/transactions";
 import { regularInvestRefundNote } from "@/lib/fund/regular-invest-display";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 import { getCachedHouseholdScope, getHouseholdScope } from "@/lib/server/household-scope";
@@ -92,7 +92,7 @@ import {
 } from "@/lib/server/loan-rate-adjustments";
 import { getInsuranceDisplayTypeLabel, getInsuranceMetricLabel, getInsuranceMetricMode } from "@/lib/insurance/display";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, applyBalanceReconcileEntry, effectiveAmountForAccount, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
-import { isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/transaction-semantics";
+import { ENTRY_ORIGIN_MANUAL, isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/transaction-semantics";
 import { ensureSettlementTransferCategory, resolveCategorySnapshot, resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
 import { getCashFlowDate } from "@/lib/cash-flow-date";
@@ -692,7 +692,17 @@ async function createTransaction(formData: FormData) {
   let touchedFixedAsset = false;
   const fixedAssetAccountIdsToRefresh = new Set<string>();
 
-  if (!amountAbs) {
+  const earlyFundSubtype =
+    String(formData.get("fundSubtype") ?? formData.get("subtype") ?? "").trim() ||
+    String(formData.get("subtype") ?? "").trim();
+  const earlyFundUnitsRaw = Number.parseFloat(String(formData.get("fundUnits") ?? ""));
+  const allowsZeroAmountInvestment =
+    type === "investment" &&
+    earlyFundSubtype === FundSubtype.dividend_reinvest &&
+    Number.isFinite(earlyFundUnitsRaw) &&
+    earlyFundUnitsRaw > 0;
+
+  if (!amountAbs && !allowsZeroAmountInvestment) {
     return { ok: false as const, error: t("txForm.alert.invalidAmount") };
   }
 
@@ -981,7 +991,10 @@ async function createTransaction(formData: FormData) {
       let createdInvestmentEntryId: string | null = null;
       let createdFundTransactionId: string | null = null;
       const accountId = String(formData.get("accountId") ?? "").trim();
-      const subtype = String(formData.get("subtype") ?? "buy").trim();
+      const subtype =
+        String(formData.get("fundSubtype") ?? formData.get("subtype") ?? "").trim() ||
+        String(formData.get("subtype") ?? "buy").trim() ||
+        "buy";
       let fundCode = String(formData.get("fundCode") ?? "").trim() || null;
       const fundProductType = String(formData.get("fundProductType") ?? "").trim() || null;
       const metalQuantityRaw = parseFloat(String(formData.get("metalQuantity") ?? formData.get("fundUnits") ?? ""));
@@ -1074,7 +1087,7 @@ async function createTransaction(formData: FormData) {
         const fundUnitsDecimals = normalizeFundUnitsDecimals(fundUnitsPrecisionAccount?.fundUnitsDecimals, 2);
         const roundedFundUnits = fundUnits != null ? roundFundUnits(fundUnits, fundUnitsDecimals) : null;
 
-        const cashAcc = cashAccountIdInput
+        const cashAcc = cashAccountIdInput && !isDividendReinvest
           ? await tx.account.findUnique({ where: { id: cashAccountIdInput }, select: { id: true, name: true, kind: true, currency: true } })
           : null;
 
@@ -1147,7 +1160,7 @@ async function createTransaction(formData: FormData) {
           recordAccountName = investAcc.name;
           recordToAccountId = investAcc.id;
           recordToAccountName = investAcc.name;
-          signedAmount = -amountAbs;
+          signedAmount = 0;
         } else if (isDividendCash && cashAcc) {
           // Cash dividend: investment account (source) → cash account (receiver), positive amount (cash inflow).
           recordAccountId = investAcc.id;
@@ -1243,19 +1256,20 @@ async function createTransaction(formData: FormData) {
           const createdFund = await createFundTransactionWithCashFlows(tx, {
             householdId,
             fundAccountId: investAcc.id,
-            cashAccountId: cashAcc?.id ?? null,
+            cashAccountId: isDividendReinvest ? null : cashAcc?.id ?? null,
             fundCode: entryFundCode,
             fundName: entryFundName,
             fundProductType,
             fundSubtype: finalFundSubtype,
             source: sourceValue,
+            entryOrigin: ENTRY_ORIGIN_MANUAL,
             applyDate: date,
             confirmDate: computedConfirmDate,
             arrivalDate: computedArrivalDate,
-            grossAmount: amountAbs,
+            grossAmount: isDividendReinvest ? 0 : amountAbs,
             refundAmount: buyResultStatus === "refund" ? refundAmount ?? 0 : 0,
-            arrivalAmount: entryArrivalAmount ?? (redeemLike || isDividendCash ? Math.abs(signedAmount) : null),
-            fee: fundFee ?? null,
+            arrivalAmount: isDividendReinvest ? null : entryArrivalAmount ?? (redeemLike || isDividendCash ? Math.abs(signedAmount) : null),
+            fee: isDividendReinvest ? null : fundFee ?? null,
             nav: fundNav ?? null,
             units: roundedFundUnits ?? null,
             note: note || null,
@@ -1357,7 +1371,7 @@ async function createTransaction(formData: FormData) {
       if (balanceAccountId) {
         await recalcAndSaveAccountBalance(balanceAccountId).catch(() => {});
       }
-      if (cashAccountIdInput && cashAccountIdInput !== balanceAccountId) {
+      if (!isDividendReinvest && cashAccountIdInput && cashAccountIdInput !== balanceAccountId) {
         await recalcAndSaveAccountBalance(cashAccountIdInput).catch(() => {});
       }
     } else {
@@ -1368,7 +1382,10 @@ async function createTransaction(formData: FormData) {
       type === "transfer"
         ? [String(formData.get("fromAccountId") ?? "").trim(), String(formData.get("toAccountId") ?? "").trim()]
         : type === "investment"
-          ? [String(formData.get("accountId") ?? "").trim(), String(formData.get("cashAccountId") ?? "").trim()]
+          ? [
+              String(formData.get("accountId") ?? "").trim(),
+              earlyFundSubtype === FundSubtype.dividend_reinvest ? "" : String(formData.get("cashAccountId") ?? "").trim(),
+            ]
           : [String(formData.get("accountId") ?? "").trim(), ...fixedAssetAccountIdsToRefresh];
     await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(() => {});
     await touchAccountUsage(touchedAccountIds);
@@ -1637,7 +1654,10 @@ async function editInvestment(formData: FormData) {
   const t = await getServerT();
   const { householdId } = await getHouseholdScope();
   const entryId = String(formData.get("entryId") ?? "").trim();
-  const subtype = String(formData.get("subtype") ?? "buy").trim();
+  const subtype =
+    String(formData.get("fundSubtype") ?? formData.get("subtype") ?? "").trim() ||
+    String(formData.get("subtype") ?? "buy").trim() ||
+    "buy";
   const dateStr = String(formData.get("date") ?? "").trim();
   const amountRaw = parseFloat(String(formData.get("amount") ?? ""));
   const memo = String(formData.get("memo") ?? "").trim();
@@ -1754,7 +1774,6 @@ async function editInvestment(formData: FormData) {
 
   if (!entryId) return { ok: false as const, error: t("sidebar.action.missingParams") };
   const amountAbs = Number.isFinite(amountRaw) ? Math.abs(amountRaw) : 0;
-  if (!amountAbs) return { ok: false as const, error: t("txForm.alert.invalidAmount") };
   if (!dateStr) return { ok: false as const, error: t("sidebar.action.applyDateRequired") };
   const date = new Date(dateStr);
   const redeemLike = subtype === "redeem" || subtype === "switch_out";
@@ -1762,6 +1781,9 @@ async function editInvestment(formData: FormData) {
   const fundSubtypeValue: FundSubtype = validSubtypes.includes(subtype as FundSubtype) ? (subtype as FundSubtype) : FundSubtype.buy;
   const isDividendReinvest = fundSubtypeValue === FundSubtype.dividend_reinvest;
   const isDividendCash = fundSubtypeValue === FundSubtype.dividend_cash;
+  if (!amountAbs && !(isDividendReinvest && fundUnits != null && fundUnits > 0)) {
+    return { ok: false as const, error: t("txForm.alert.invalidAmount") };
+  }
 
   try {
     // Query the TxRecord directly.
@@ -1854,7 +1876,7 @@ async function editInvestment(formData: FormData) {
 
     await prisma.$transaction(async (tx) => {
       const requestedInvestmentAccountId = newToAccountId ?? oldInvestmentAccId;
-      const requestedCashAccountId = cashAccountId ?? oldCashAccId;
+      const requestedCashAccountId = isDividendReinvest ? "" : cashAccountId ?? oldCashAccId;
       const resolvedWealthAccount = fundProductType === "wealth" && !redeemLike
         ? await resolveOrCreateWealthAccount(tx, {
             householdId,
@@ -1877,8 +1899,8 @@ async function editInvestment(formData: FormData) {
       const finalInvestmentAccountInfo = newInvestmentAccountInfo ?? existingInvestmentAccountInfo;
       const finalFundAccountId = finalInvestmentAccountInfo?.id ?? oldInvestmentAccId;
       const finalFundAccountName = finalInvestmentAccountInfo?.name ?? txRecord.toAccountName ?? txRecord.accountName ?? "";
-      const finalCashAccountId = cashAccountInfo?.id ?? oldCashAccId;
-      const finalCashAccountName = cashAccountInfo?.name ?? txRecord.accountName ?? "";
+      const finalCashAccountId = isDividendReinvest ? "" : cashAccountInfo?.id ?? oldCashAccId;
+      const finalCashAccountName = isDividendReinvest ? "" : cashAccountInfo?.name ?? txRecord.accountName ?? "";
       const fundUnitsDecimals = normalizeFundUnitsDecimals(
         finalInvestmentAccountInfo?.fundUnitsDecimals,
         2,
@@ -1932,9 +1954,11 @@ async function editInvestment(formData: FormData) {
       const isBuyFailedRefund =
         finalFundSubtype === FundSubtype.buy_failed &&
         sourceValue === "regular_invest_refund";
-      const signedAmount = (redeemLike || isBuyFailedRefund)
-        ? (fundArrivalAmount ?? Math.max(0, amountAbs + (depositInterest ?? 0) - (fundFee ?? 0)))
-        : (isDividendCash ? amountAbs : -amountAbs);
+      const signedAmount = isDividendReinvest
+        ? 0
+        : (redeemLike || isBuyFailedRefund)
+          ? (fundArrivalAmount ?? Math.max(0, amountAbs + (depositInterest ?? 0) - (fundFee ?? 0)))
+          : (isDividendCash ? amountAbs : -amountAbs);
       const isMetalProduct = fundProductType === "metal";
       const isWealthProduct = fundProductType === "wealth";
       const updateData: any = {
@@ -1997,7 +2021,7 @@ async function editInvestment(formData: FormData) {
           updateData.accountName = finalFundAccountName;
           updateData.toAccountId = finalFundAccountId;
           updateData.toAccountName = finalFundAccountName;
-          updateData.amount = amountAbs;
+          updateData.amount = 0;
           updateData.deletedAt = null;
         } else {
           updateData.accountId = finalCashAccountId || finalFundAccountId;
@@ -2021,12 +2045,13 @@ async function editInvestment(formData: FormData) {
         usedIndependentFundTransaction = true;
         const businessUnits = updateData.fundUnits;
         const businessNav = fundNav ?? independentFundTransaction.nav;
-        const businessFee = fundFee ?? independentFundTransaction.fee;
+        const businessFee = isDividendReinvest ? null : fundFee ?? independentFundTransaction.fee;
         await tx.fundTransaction.update({
           where: { id: independentFundTransaction.id },
           data: {
             fundAccountId: finalFundAccountId,
-            cashAccountId: finalCashAccountId || null,
+            cashAccountId: isDividendReinvest ? null : finalCashAccountId || null,
+            cashEntryId: isDividendReinvest ? null : undefined,
             fundCode,
             fundName: fundName || independentFundTransaction.fundName || fundCode,
             fundProductType: fundProductType === "money_fund" ? "money" : ((fundProductType || "fund") as any),
@@ -2035,15 +2060,23 @@ async function editInvestment(formData: FormData) {
             applyDate: date,
             confirmDate: fundConfirmDate ?? null,
             arrivalDate: fundArrivalDate ?? null,
-            grossAmount: amountAbs,
+            grossAmount: isDividendReinvest ? 0 : amountAbs,
             refundAmount: buyResultStatus === "refund" ? refundAmount ?? 0 : 0,
-            arrivalAmount: fundArrivalAmount ?? null,
+            arrivalAmount: isDividendReinvest ? null : fundArrivalAmount ?? null,
             fee: businessFee,
             nav: businessNav,
             units: businessUnits,
             note: memo || null,
           },
         });
+        if (isDividendReinvest) {
+          await detachFundTransactionCashFlow(tx, {
+            householdId,
+            fundTransactionId: independentFundTransaction.id,
+            cashEntryId: independentFundTransaction.cashEntryId,
+            source: sourceValue,
+          });
+        }
         independentFundCategoryName = getInvestmentCategoryName({
           fundProductType: fundProductType === "money_fund" ? "money" : (fundProductType || "fund"),
           fundSubtype: finalFundSubtype,
@@ -2305,7 +2338,16 @@ async function updateTransactionFromDialog(formData: FormData) {
 
   const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
   const postedAt = type === "expense" || type === "income" ? (postedAtInput ?? date) : null;
-  if (!amountAbs) return { ok: false as const, error: t("txForm.alert.invalidAmount") };
+  const earlyEditFundSubtype =
+    String(formData.get("fundSubtype") ?? formData.get("subtype") ?? "").trim() ||
+    String(formData.get("subtype") ?? "").trim();
+  const earlyEditFundUnitsRaw = Number.parseFloat(String(formData.get("fundUnits") ?? ""));
+  const allowsZeroAmountInvestmentEdit =
+    type === "investment" &&
+    earlyEditFundSubtype === FundSubtype.dividend_reinvest &&
+    Number.isFinite(earlyEditFundUnitsRaw) &&
+    earlyEditFundUnitsRaw > 0;
+  if (!amountAbs && !allowsZeroAmountInvestmentEdit) return { ok: false as const, error: t("txForm.alert.invalidAmount") };
 
   try {
     const ctx = await getHouseholdScope();
@@ -2414,8 +2456,12 @@ async function updateTransactionFromDialog(formData: FormData) {
         const cashAccountIdFormData = String(formData.get("cashAccountId") ?? "").trim();
         const fundCode = String(formData.get("fundCode") ?? "").trim();
         const productType = String(formData.get("productType") ?? "fund").trim();
-        const subtype = String(formData.get("subtype") ?? "buy").trim();
+        const subtype =
+          String(formData.get("fundSubtype") ?? formData.get("subtype") ?? "").trim() ||
+          String(formData.get("subtype") ?? "buy").trim() ||
+          "buy";
         const redeemLike = subtype === "redeem" || subtype === "switch_out";
+        const isDividendReinvest = subtype === FundSubtype.dividend_reinvest;
         const isInsuranceEntry = entry.source === "insurance" || !!entry.insuranceProductId;
 
         const investAcc = accountIdFormData ? await tx.account.findUnique({ where: { id: accountIdFormData } }) : null;
@@ -2430,7 +2476,7 @@ async function updateTransactionFromDialog(formData: FormData) {
           if (cashAcc) { cashAccId = cashAcc.id; cashAccName = cashAcc.name; touchedAccountIds.add(cashAcc.id); }
         }
         // Fallback: infer the cash account from the original record.
-        if (!cashAccId) {
+        if (!cashAccId && !isDividendReinvest) {
           if (redeemLike) {
             // Redeem records: toAccountId is the cash account (receiver).
             if (entry.toAccountId) {
@@ -2464,6 +2510,12 @@ async function updateTransactionFromDialog(formData: FormData) {
           signedAmount = Number.isFinite(fundArrivalAmount) && fundArrivalAmount > 0
             ? fundArrivalAmount
             : Math.max(0, amountAbs - (Number.isFinite(fundFee) && fundFee > 0 ? fundFee : 0));
+        } else if (isDividendReinvest) {
+          recordAccountId = investAcc.id;
+          recordAccountName = investAcc.name;
+          recordToAccountId = investAcc.id;
+          recordToAccountName = investAcc.name;
+          signedAmount = 0;
         } else {
           recordAccountId = cashAccId ?? investAcc.id;
           recordAccountName = cashAccName ?? investAcc.name;
@@ -2484,27 +2536,37 @@ async function updateTransactionFromDialog(formData: FormData) {
         }
         if (independentFundTransaction) {
           const arrivalAmount = Number.isFinite(fundArrivalAmount) && fundArrivalAmount > 0 ? fundArrivalAmount : null;
-          const fee = Number.isFinite(fundFee) && fundFee > 0 ? fundFee : independentFundTransaction.fee;
+          const fee = isDividendReinvest ? null : Number.isFinite(fundFee) && fundFee > 0 ? fundFee : independentFundTransaction.fee;
           await tx.fundTransaction.update({
             where: { id: independentFundTransaction.id },
             data: {
               fundAccountId: investAcc.id,
-              cashAccountId: cashAccId ?? null,
+              cashAccountId: isDividendReinvest ? null : cashAccId ?? null,
+              cashEntryId: isDividendReinvest ? null : undefined,
               fundCode,
               fundName: independentFundTransaction.fundName ?? fundCode,
               fundProductType: productType === "money_fund" ? "money" : (productType as any),
-              fundSubtype: subtype as any,
+              fundSubtype: isDividendReinvest ? FundSubtype.buy : (subtype as any),
+              source: isDividendReinvest ? "dividend" : entry.source,
               applyDate: date,
-              grossAmount: amountAbs,
-              arrivalAmount,
+              grossAmount: isDividendReinvest ? 0 : amountAbs,
+              arrivalAmount: isDividendReinvest ? null : arrivalAmount,
               fee,
               note: note || null,
             },
           });
+          if (isDividendReinvest) {
+            await detachFundTransactionCashFlow(tx, {
+              householdId: ctx.householdId,
+              fundTransactionId: independentFundTransaction.id,
+              cashEntryId: independentFundTransaction.cashEntryId,
+              source: "dividend",
+            });
+          }
           independentFundCategoryName = getInvestmentCategoryName({
             fundProductType: productType === "money_fund" ? "money" : productType,
-            fundSubtype: subtype,
-            source: entry.source,
+            fundSubtype: isDividendReinvest ? FundSubtype.buy : subtype,
+            source: isDividendReinvest ? "dividend" : entry.source,
           });
           const independentFundCategory = independentFundCategoryName
             ? await resolveCategorySnapshot(tx, ctx.householdId, {
@@ -2514,7 +2576,7 @@ async function updateTransactionFromDialog(formData: FormData) {
             : null;
           independentFundCategoryId = independentFundCategory?.id ?? null;
           independentFundCategoryName = independentFundCategory?.name ?? independentFundCategoryName;
-          if (independentFundTransaction.cashEntryId && cashAccId && signedAmount !== 0) {
+          if (independentFundTransaction.cashEntryId && cashAccId && signedAmount !== 0 && !isDividendReinvest) {
             const cashFlowKind =
               subtype === "redeem" || subtype === "switch_out"
                 ? FundCashFlowKind.redeem_in
@@ -2580,7 +2642,8 @@ async function updateTransactionFromDialog(formData: FormData) {
             insuranceAction: isInsuranceEntry ? (redeemLike ? "refund" : "premium") : entry.insuranceAction,
             insuranceProductName: isInsuranceEntry ? (entry.fundName ?? null) : entry.insuranceProductName,
             fundProductType: isFundLikeIndependentEdit || isInsuranceEntry ? null : (productType as any) || null,
-            fundSubtype: isFundLikeIndependentEdit ? null : (subtype as any) || null,
+            fundSubtype: isFundLikeIndependentEdit ? null : isDividendReinvest ? FundSubtype.buy : (subtype as any) || null,
+            source: isDividendReinvest ? "dividend" : entry.source,
             date,
             type: TransactionType.investment,
             note: note || null,

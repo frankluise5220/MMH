@@ -14,10 +14,10 @@ import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { listLoanRateAdjustmentsByAccountIds, resolveLoanRateAdjustments } from "@/lib/server/loan-rate-adjustments";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
-import { isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
+import { ENTRY_ORIGIN_SCHEDULED_TASK, isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 
-type NonFundTaskType = Exclude<ScheduledTaskType, "fund_regular_invest">;
+export type NonFundTaskType = Exclude<ScheduledTaskType, "fund_regular_invest">;
 
 const NON_FUND_SCHEDULED_TASK_TRANSACTION_OPTIONS = {
   maxWait: 10_000,
@@ -338,6 +338,7 @@ export async function executeNonFundScheduledTaskPlan(params: {
                 debtFeeAmount: 0,
                 realizedProfit: parts.interest > 0 ? -Math.abs(parts.interest) : null,
                 source: "scheduled_task",
+                entryOrigin: ENTRY_ORIGIN_SCHEDULED_TASK,
                 regularInvestPlanId: plan.id,
                 note: getTaskNote(task.type),
               },
@@ -359,6 +360,7 @@ export async function executeNonFundScheduledTaskPlan(params: {
                 debtInterestAmount: Math.abs(parts.interest),
                 debtFeeAmount: 0,
                 source: "loan_bill",
+                entryOrigin: ENTRY_ORIGIN_SCHEDULED_TASK,
                 regularInvestPlanId: plan.id,
                 note: `消费贷账单：本期应还 ${roundLoanMoney(parts.principal + parts.interest).toFixed(2)}`,
               },
@@ -379,6 +381,7 @@ export async function executeNonFundScheduledTaskPlan(params: {
             categoryId: repaymentCategory?.id ?? null,
             categoryName: repaymentCategory?.name ?? null,
             source: "scheduled_task",
+            entryOrigin: ENTRY_ORIGIN_SCHEDULED_TASK,
             regularInvestPlanId: plan.id,
             note: getTaskNote(task.type),
           },
@@ -400,6 +403,7 @@ export async function executeNonFundScheduledTaskPlan(params: {
             insuranceAction: "premium",
             insuranceProductName: insuranceProduct.name,
             source: "insurance",
+            entryOrigin: ENTRY_ORIGIN_SCHEDULED_TASK,
             insuranceProductId: insuranceProduct.id,
             regularInvestPlanId: plan.id,
             note: getTaskNote(task.type, insuranceProduct.name),

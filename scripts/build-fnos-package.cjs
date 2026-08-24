@@ -596,20 +596,6 @@ write(path.join(stageDir, "wizard", "install"), JSON.stringify([
     ],
   },
 ], null, 2));
-write(path.join(stageDir, "wizard", "config"), JSON.stringify([
-  {
-    stepTitle: "服务端口",
-    items: [
-      {
-        type: "text",
-        field: "wizard_port",
-        label: "服务端口",
-        initValue: "7777",
-        helpText: "默认使用 7777；如果该端口已被占用，可以改为其他未占用端口。",
-      },
-    ],
-  },
-], null, 2));
 write(path.join(stageDir, "app", "ui", "config"), JSON.stringify({
   ".url": {
     "mmh.Application": {

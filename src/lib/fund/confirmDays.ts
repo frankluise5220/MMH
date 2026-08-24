@@ -7,6 +7,11 @@ export type FundConfirmRule = {
   exists: boolean;
 };
 
+export type FundConfirmRuleFallback = {
+  days?: unknown;
+  arrivalDays?: unknown;
+};
+
 export function normalizeNonNegativeDays(value: unknown, fallback: number): number {
   const days = Number(value);
   if (!Number.isFinite(days)) return fallback;
@@ -36,13 +41,19 @@ export async function getFundArrivalDays(accountId: string, fundCode: string): P
   return normalizeNonNegativeDays(record?.arrivalDays, 2);
 }
 
-export async function getFundConfirmRule(accountId: string, fundCode: string): Promise<FundConfirmRule> {
+export async function getFundConfirmRule(
+  accountId: string,
+  fundCode: string,
+  fallback?: FundConfirmRuleFallback,
+): Promise<FundConfirmRule> {
   const record = await prisma.fundConfirmDays.findUnique({
     where: { accountId_fundCode: { accountId, fundCode } },
   });
+  const fallbackDays = normalizeNonNegativeDays(fallback?.days, 0);
+  const fallbackArrivalDays = normalizeNonNegativeDays(fallback?.arrivalDays, 2);
   return {
-    days: normalizeNonNegativeDays(record?.days, 0),
-    arrivalDays: normalizeNonNegativeDays(record?.arrivalDays, 2),
+    days: normalizeNonNegativeDays(record?.days, fallbackDays),
+    arrivalDays: normalizeNonNegativeDays(record?.arrivalDays, fallbackArrivalDays),
     exists: !!record,
   };
 }

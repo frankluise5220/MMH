@@ -20,6 +20,7 @@ import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { clearBackgroundTaskProgress, dispatchBackgroundTaskProgress } from "@/lib/client/background-tasks";
 import { useI18n } from "@/lib/i18n";
+import { recordMatchesRegularInvestPlan } from "@/lib/transaction-semantics";
 
 const WEEKDAY_LABELS: Record<number, string> = {
   1: "regularInvest.client.weekdayShort.1",
@@ -253,10 +254,7 @@ function getPlanTargetLabel(plan: RegularInvestPlanView): string {
 }
 
 function recordMatchesPlan(plan: RegularInvestPlanView, record: { source?: string | null }) {
-  const taskType = getPlanTaskType(plan);
-  if (taskType === "fund_regular_invest") return record.source === "regular_invest";
-  if (taskType === "insurance_premium") return record.source === "insurance";
-  return record.source === "scheduled_task";
+  return recordMatchesRegularInvestPlan(getPlanTaskType(plan), record);
 }
 
 function groupLabel(p: RegularInvestPlanView, mode: GroupByMode, t: (key: string, params?: Record<string, string | number>) => string): string {

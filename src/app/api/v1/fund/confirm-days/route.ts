@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { getFundArrivalDays, getFundConfirmDays, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
+import { getFundConfirmRule, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 
 /**
@@ -53,15 +53,15 @@ export async function GET(req: NextRequest) {
         where: { accountId_fundCode: { accountId, fundCode } },
         select: { redeemCostDays: true, effectiveDate: true },
       });
-      const [days, arrivalDays] = await Promise.all([
-        getFundConfirmDays(accountId, fundCode),
-        getFundArrivalDays(accountId, fundCode),
-      ]);
+      const rule = await getFundConfirmRule(accountId, fundCode, {
+        days: account.defaultConfirmDays,
+        arrivalDays: account.defaultArrivalDays,
+      });
       return NextResponse.json({
         ok: true,
-        days,
+        days: rule.days,
         redeemCostDays: normalizeNonNegativeDays(record?.redeemCostDays, 1),
-        arrivalDays,
+        arrivalDays: rule.arrivalDays,
         effectiveDate: record?.effectiveDate ? record.effectiveDate.toISOString().slice(0, 10) : null,
       });
     }

@@ -1,22 +1,34 @@
 export type SignedAmountInflowSign = "positive" | "negative";
 export type MoneyDirection = "in" | "out";
 
+const TOKEN_SEPARATOR = "[\\s/\\\\|,.;:(){}\\-_+\\u3000\\uff0c\\u3001\\uff1b\\uff1a\\uff08\\uff09\\u3010\\u3011]";
+const STANDALONE_REPAYMENT_RE = new RegExp(
+  `(?:^|${TOKEN_SEPARATOR})\\u8fd8\\u6b3e(?:$|${TOKEN_SEPARATOR})`,
+  "i",
+);
+const STANDALONE_PAYMENT_RE = /^\s*payment\s*$/i;
+const EXPLICIT_REPAYMENT_RE =
+  /\u94f6\u8054\u5165\u8d26|\u94f6\u8054\u8f6c\u8d26|\u4ed8\u6b3e\u5c3e\u53f7|\u6263\u6b3e\u5c3e\u53f7|\u8fd8\u6b3e\u5c3e\u53f7|\u81ea\u52a8\u8fd8\u6b3e|\u81ea\u52a8\u6263\u6b3e|\u4fe1\u7528\u5361\u8fd8\u6b3e|\u8fd8\u6b3e\u5165\u8d26|\u8fd8\u6b3e\u6210\u529f|\u6210\u529f\u8fd8\u6b3e|\u5df2\u8fd8\u6b3e|repayment|autopay|auto\s*pay|automatic\s+payment|payment\s+(?:received|posted|made|credited)|payment\s*[-\u2013\u2014]\s*thank\s+you|thank\s+you(?:\s+for)?(?:\s+your)?\s+payment/i;
+
 export function isCreditCardRepaymentLikeText(text: string) {
-  return /银联入账|银联转账|付款尾号|扣款尾号|还款尾号|自动还款|自动扣款|信用卡还款|还款入账|还款|repayment|payment|autopay/i.test(String(text ?? ""));
+  const normalized = String(text ?? "");
+  return EXPLICIT_REPAYMENT_RE.test(normalized) ||
+    STANDALONE_REPAYMENT_RE.test(normalized) ||
+    STANDALONE_PAYMENT_RE.test(normalized);
 }
 
 export function isExpenseRefundLikeText(text: string) {
   const normalized = String(text ?? "");
   if (!normalized.trim()) return false;
   if (isCreditCardRepaymentLikeText(normalized)) return false;
-  return /退款|退货|退回|消费撤销|交易撤销|冲正|撤销|Refund|Return|Reversal/i.test(normalized);
+  return /\u9000\u6b3e|\u9000\u8d27|\u9000\u56de|\u6d88\u8d39\u64a4\u9500|\u4ea4\u6613\u64a4\u9500|\u51b2\u6b63|\u64a4\u9500|Refund|Return|Reversal/i.test(normalized);
 }
 
 export function isCreditCardCreditAdjustmentLikeText(text: string) {
   const normalized = String(text ?? "");
   if (!normalized.trim()) return false;
   if (isCreditCardRepaymentLikeText(normalized)) return false;
-  return /刷卡金|抵扣|冲抵|减免|优惠|返现|退款|退货|退回|撤销|冲正|分期转分期付款|Credit|Refund|Return|Reversal/i.test(normalized);
+  return /\u5237\u5361\u91d1|\u62b5\u6263|\u51b2\u62b5|\u51cf\u514d|\u4f18\u60e0|\u8fd4\u73b0|\u9000\u6b3e|\u9000\u8d27|\u9000\u56de|\u64a4\u9500|\u51b2\u6b63|\u5206\u671f\u8f6c\u5206\u671f\u4ed8\u6b3e|Credit|Refund|Return|Reversal/i.test(normalized);
 }
 
 export function isDefiniteCreditCardInflowText(text: string) {

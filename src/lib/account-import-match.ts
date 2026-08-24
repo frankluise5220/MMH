@@ -53,7 +53,7 @@ export function parseImportAccountId(value?: string) {
 const BANK_ALIASES: Array<{ canonical: string; aliases: string[] }> = [
   { canonical: "支付宝", aliases: ["Alipay"] },
   { canonical: "微信", aliases: ["微信支付", "WeChat", "WeChat Pay"] },
-  { canonical: "京东金融", aliases: ["京东", "白条", "京东支付"] },
+  { canonical: "\u4eac\u4e1c", aliases: ["\u4eac\u4e1c\u91d1\u878d", "\u767d\u6761", "\u4eac\u4e1c\u652f\u4ed8"] },
   { canonical: "银联", aliases: ["云闪付", "银联支付"] },
   { canonical: "工商银行", aliases: ["中国工商银行", "工行"] },
   { canonical: "农业银行", aliases: ["中国农业银行", "农行"] },
@@ -76,7 +76,7 @@ const BANK_ALIASES: Array<{ canonical: string; aliases: string[] }> = [
 const ACCOUNT_KIND_ALIASES: Array<{ kind: ImportAccountKind; aliases: string[] }> = [
   { kind: "bank_credit", aliases: ["信用卡", "贷记卡"] },
   { kind: "bank_debit", aliases: ["储蓄卡", "借记卡", "银行卡"] },
-  { kind: "ewallet", aliases: ["电子钱包", "钱包", "零钱账户"] },
+  { kind: "ewallet", aliases: ["\u7535\u5b50\u94b1\u5305", "\u94b1\u5305", "\u96f6\u94b1\u8d26\u6237", "\u4eac\u4e1c\u5c0f\u91d1\u5e93", "\u5c0f\u91d1\u5e93"] },
   { kind: "cash", aliases: ["现金", "现金账户"] },
   { kind: "investment", aliases: ["投资账户", "投资"] },
   { kind: "loan", aliases: ["往来款"] },
@@ -434,6 +434,15 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
         bank: "\u652f\u4ed8\u5b9d",
         aliases: ["\u652f\u4ed8\u5b9d\u82b1\u5457", "\u82b1\u5457"],
       },
+      {
+        bank: "\u4eac\u4e1c",
+        aliases: ["\u4eac\u4e1c\u5c0f\u91d1\u5e93", "\u5c0f\u91d1\u5e93"],
+        targetKind: "ewallet",
+      },
+      {
+        bank: "\u4eac\u4e1c\u91d1\u878d",
+        aliases: ["\u4eac\u4e1c\u767d\u6761", "\u767d\u6761"],
+      },
     ];
 
     for (const group of productGroups) {
@@ -444,6 +453,7 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
 
       const bankKeys = expandBankName(group.bank).map(normalizeImportAccountMatchKey).filter(Boolean);
       const matches = indexed.filter((item) =>
+        (!group.targetKind || item.account.kind === group.targetKind) &&
         bankKeyMatches(item, bankKeys) &&
         item.keys.some((candidateKey) => aliasKeys.includes(candidateKey)),
       );
