@@ -38,6 +38,13 @@
 - 股票买入/卖出窗口只直接展示费用合计、成交金额和预计应付/到账，佣金、印花税、过户费、经手费、证管费、其他费用只在费用合计 hover 明细中展示；这些值只是同一套 `src/lib/stock/feeRule.ts` 计算结果的只读预估。保存交易时服务端再次按该规则计算并写入 `StockTransaction`，买入现金侧 `TxRecord` 金额应等于成交金额 + 费用合计，卖出现金侧 `TxRecord` 金额应等于成交金额 - 费用合计。
 - 券商导入或成交单去重使用 `externalLinkId` / `brokerTradeId`；它们不是基金买入退回 link，也不是 `fundSourceEntryId`。
 
+## 理财收益统计字段
+
+- 理财赎回的到账金额是本金 + 收益，只影响资金账户现金流水；报表统计和投资收益表只能计入经济收益或亏损。
+- 理财收益优先读取 `WealthTransaction.realizedProfit`；没有该字段时，用 `interest - fee`，或在同时有赎回本金 `grossAmount` 和到账额 `arrivalAmount` 时用 `arrivalAmount - grossAmount`。
+- 如果理财赎回只有到账额，缺少本金、份额、净值、利息和手续费，收益应按 0 处理，不能把整笔到账额归入“理财收益”或“投资收入”。
+- 核对异常月份时，先查该月 `WealthTransaction` 的 `grossAmount`、`arrivalAmount`、`interest`、`fee`、`realizedProfit` 和 `cashEntryId`；`cashEntryId` 对应的 `TxRecord.amount` 是现金流金额，不等同于收益。
+
 ## 房产资产字段
 
 - 房产账户使用 `Account.kind = "investment"` + `investProductType = "property"`；同一账簿可有多个房产账户，账户 ID 是归属来源。

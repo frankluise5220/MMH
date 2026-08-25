@@ -83,6 +83,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
         p.intervalValue,
         p.executionDay,
         !isNonFundTask,
+        p.secondaryExecutionDay,
       );
       const hasNoPendingHistoricalRun = hasPassedEndDate && nextRunDate > p.endDate!;
       if (hasReachedRunLimit || (!isNonFundTask && hasNoPendingHistoricalRun)) {
@@ -226,7 +227,14 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
       const arrivalDate = new Date(Date.UTC(parseInt(arrivalDateStr.slice(0, 4)), parseInt(arrivalDateStr.slice(5, 7)) - 1, parseInt(arrivalDateStr.slice(8, 10))));
       const amountNum = parseFloat(String(plan.amount));
       const newExecutedRuns = plan.executedRuns + 1;
-      const nextRun = calcNextRunDate(runDate, plan.intervalUnit as IntervalUnit, plan.intervalValue, plan.executionDay, true);
+      const nextRun = calcNextRunDate(
+        runDate,
+        plan.intervalUnit as IntervalUnit,
+        plan.intervalValue,
+        plan.executionDay,
+        true,
+        plan.secondaryExecutionDay,
+      );
       const willComplete = !!(
         (plan.totalRuns && newExecutedRuns >= plan.totalRuns) ||
         (plan.endDate && plan.endDate < nextRun));

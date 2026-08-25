@@ -104,6 +104,7 @@ function UserModal({
               value={role} onChange={(e) => setRole(e.target.value)} disabled={isSystemUser}>
               <option value="admin">{t("settings.users.roleOptionAdmin")}</option>
               <option value="user">{t("settings.users.roleOptionUser")}</option>
+              <option value="viewer">{t("settings.users.roleOptionViewer")}</option>
             </select>
             {isSystemUser && <div className="mt-1 text-[11px] text-slate-500">{t("settings.users.systemRoleFixed")}</div>}
             {isLastAdmin && !isSystemUser && <div className="mt-1 text-[11px] text-amber-600">{t("settings.users.lastAdminWarning")}</div>}
@@ -155,6 +156,7 @@ function UserModal({
 export default function UsersPage() {
   const { t } = useI18n();
   const [users, setUsers] = useState<ManagedUser[]>([]);
+  const [canManageUsers, setCanManageUsers] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [editingUser, setEditingUser] = useState<ManagedUser | null>(null);
@@ -172,22 +174,25 @@ export default function UsersPage() {
     try {
       const res = await fetch("/api/v1/settings/users");
       const text = await res.text();
-      let data: { ok?: boolean; users?: ManagedUser[]; error?: string } | { raw: string } = { raw: "" };
+      let data: { ok?: boolean; users?: ManagedUser[]; canManageUsers?: boolean; error?: string } | { raw: string } = { raw: "" };
       try {
-        data = JSON.parse(text) as { ok?: boolean; users?: ManagedUser[]; error?: string };
+        data = JSON.parse(text) as { ok?: boolean; users?: ManagedUser[]; canManageUsers?: boolean; error?: string };
       } catch {
         data = { raw: text.slice(0, 200) };
       }
       if ("ok" in data && data.ok && Array.isArray(data.users)) {
         setUsers(data.users);
+        setCanManageUsers(data.canManageUsers === true);
         setLoadError("");
       } else {
         setUsers([]);
+        setCanManageUsers(false);
         const hint = "ok" in data ? (data.error || t("settings.users.requestFailed", { status: res.status })) : t("settings.users.requestFailed", { status: res.status });
         setLoadError(hint);
       }
     } catch {
       setUsers([]);
+      setCanManageUsers(false);
       setLoadError(t("settings.users.networkError"));
     }
   }
@@ -284,9 +289,11 @@ export default function UsersPage() {
         title={t("settings.users.list")}
         count={users.length}
         actions={
-          <SettingsPrimaryAddButton onClick={() => { setEditingUser(null); setShowModal(true); }}>
-            {t("settings.users.add")}
-          </SettingsPrimaryAddButton>
+          canManageUsers ? (
+            <SettingsPrimaryAddButton onClick={() => { setEditingUser(null); setShowModal(true); }}>
+              {t("settings.users.add")}
+            </SettingsPrimaryAddButton>
+          ) : null
         }
       >
         <SettingsTable minWidth={820} maxWidth="full">
@@ -323,7 +330,7 @@ export default function UsersPage() {
                   <select
                     value={u.sessionDays ?? 30}
                     onChange={(event) => void saveUserSessionDays(u, Number(event.target.value))}
-                    disabled={savingSessionUserId === u.id}
+                    disabled={!canManageUsers || savingSessionUserId === u.id}
                     className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 outline-none disabled:opacity-60"
                     title={t("settings.users.sessionDaysTitle")}
                   >
@@ -333,8 +340,18 @@ export default function UsersPage() {
                   </select>
                 </SettingsTd>
                 <SettingsTd>
-                  <span className={`rounded-full px-2 py-0.5 text-xs ${u.role === "admin" ? "bg-blue-50 text-blue-700" : "bg-slate-100 text-slate-500"}`}>
-                    {u.role === "admin" ? t("settings.users.role.admin") : t("settings.users.role.user")}
+                  <span className={`rounded-full px-2 py-0.5 text-xs ${
+                    u.role === "admin"
+                      ? "bg-blue-50 text-blue-700"
+                      : u.role === "viewer"
+                        ? "bg-amber-50 text-amber-700"
+                        : "bg-slate-100 text-slate-500"
+                  }`}>
+                    {u.role === "admin"
+                      ? t("settings.users.role.admin")
+                      : u.role === "viewer"
+                        ? t("settings.users.role.viewer")
+                        : t("settings.users.role.user")}
                   </span>
                 </SettingsTd>
                 <SettingsTd>
@@ -345,24 +362,26 @@ export default function UsersPage() {
                   )}
                 </SettingsTd>
                 <SettingsTd align="right">
-                  <SettingsRowActions>
-                    <SettingsActionButton
-                      label={t("settings.users.edit")}
-                      variant="edit"
-                      onClick={() => { setEditingUser(u); setShowModal(true); }}
-                    />
-                    {!u.isSystem ? (
+                  {canManageUsers ? (
+                    <SettingsRowActions>
                       <SettingsActionButton
-                        label={t("settings.users.delete")}
-                        variant="delete"
-                        onClick={() => {
-                          setDeleteTarget(u);
-                          setDeletePassword("");
-                          setDeleteError("");
-                        }}
+                        label={t("settings.users.edit")}
+                        variant="edit"
+                        onClick={() => { setEditingUser(u); setShowModal(true); }}
                       />
-                    ) : null}
-                  </SettingsRowActions>
+                      {!u.isSystem ? (
+                        <SettingsActionButton
+                          label={t("settings.users.delete")}
+                          variant="delete"
+                          onClick={() => {
+                            setDeleteTarget(u);
+                            setDeletePassword("");
+                            setDeleteError("");
+                          }}
+                        />
+                      ) : null}
+                    </SettingsRowActions>
+                  ) : null}
                 </SettingsTd>
               </tr>
             )) : (

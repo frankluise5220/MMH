@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { z } from "zod";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
-import { readableTagWhere } from "@/lib/server/tag-scope";
+import { loadReadableTagsByRecentUse } from "@/lib/server/tag-scope";
 
 export const runtime = "nodejs";
 
@@ -24,13 +24,10 @@ export const runtime = "nodejs";
 export async function GET() {
   try {
     const { householdId } = await getHouseholdScope();
-    const tags = await prisma.tag.findMany({
-      where: readableTagWhere(householdId),
-      orderBy: { name: "asc" },
-    });
+    const tags = await loadReadableTagsByRecentUse(householdId);
     return NextResponse.json({ ok: true, tags });
   } catch {
-    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: "查询失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: "Failed to fetch tags" }, { status: 500 });
   }
 }
 
@@ -47,7 +44,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
   const parsed = CreateSchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json({ ok: false, code: "NAME_REQUIRED", error: "名称必填（1-40字）" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "NAME_REQUIRED", error: "Name is required (1-40 characters)" }, { status: 400 });
   }
 
   const { hidFilter } = await getHouseholdScope();
@@ -62,14 +59,14 @@ export async function PUT(req: NextRequest) {
   const body = await req.json().catch(() => null);
   const parsed = UpdateSchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json({ ok: false, code: "NAME_REQUIRED", error: "名称必填（1-40字）" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "NAME_REQUIRED", error: "Name is required (1-40 characters)" }, { status: 400 });
   }
 
   const { householdId } = await getHouseholdScope();
   const existing = await prisma.tag.findUnique({ where: { id: parsed.data.id } });
-  if (!existing) return NextResponse.json({ ok: false, code: "TAG_NOT_FOUND", error: "标签不存在" }, { status: 404 });
+  if (!existing) return NextResponse.json({ ok: false, code: "TAG_NOT_FOUND", error: "Tag not found" }, { status: 404 });
   if (householdId && existing.householdId && existing.householdId !== householdId) {
-    return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "越权操作" }, { status: 403 });
+    return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "Forbidden" }, { status: 403 });
   }
 
   const tag = await prisma.tag.update({
@@ -85,13 +82,13 @@ export async function PUT(req: NextRequest) {
 
 export async function DELETE(req: NextRequest) {
   const id = req.nextUrl.searchParams.get("id");
-  if (!id) return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
+  if (!id) return NextResponse.json({ ok: false, code: "MISSING_ID", error: "Missing id" }, { status: 400 });
 
   const { householdId } = await getHouseholdScope();
   const existing = await prisma.tag.findUnique({ where: { id } });
-  if (!existing) return NextResponse.json({ ok: false, code: "TAG_NOT_FOUND", error: "标签不存在" }, { status: 404 });
+  if (!existing) return NextResponse.json({ ok: false, code: "TAG_NOT_FOUND", error: "Tag not found" }, { status: 404 });
   if (householdId && existing.householdId && existing.householdId !== householdId) {
-    return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "越权操作" }, { status: 403 });
+    return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "Forbidden" }, { status: 403 });
   }
 
   await prisma.tag.delete({ where: { id } });

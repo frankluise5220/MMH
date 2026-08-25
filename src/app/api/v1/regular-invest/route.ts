@@ -11,6 +11,15 @@ import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/serv
 import { calcInitialScheduledRunDate as calcInitialRunDate, calcResumedScheduledRunDate as calcResumedRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { deriveRegularInvestNextRunDate } from "@/lib/server/regular-invest-plan";
 
+/**
+ * /api/v1/regular-invest
+ *
+ * GET lists scheduled tasks. POST creates fund regular-invest, transfer,
+ * insurance-premium, fixed-income, or fixed-expense tasks. PUT updates task
+ * metadata/status. Fixed income and fixed expense store category/note fields in
+ * the task memo and generate ordinary TxRecord rows when executed.
+ */
+
 function normalizeIntervalUnit(value: unknown): IntervalUnit {
   if (value === "day" || value === "week" || value === "biweek" || value === "month" || value === "year") {
     return value;
@@ -24,6 +33,27 @@ function normalizeIntervalSchedule(unit: IntervalUnit, value: number): { unit: I
     return { unit: IntervalUnit.week, value: safeValue * 2 };
   }
   return { unit, value: safeValue };
+}
+
+function parseSecondaryExecutionDay(
+  unit: IntervalUnit,
+  value: unknown,
+  fallback?: number | null,
+): number | null {
+  const parsed = value == null || value === ""
+    ? (fallback == null ? null : Number(fallback))
+    : typeof value === "number"
+      ? value
+      : parseInt(String(value), 10);
+  if (parsed == null || !Number.isFinite(parsed)) return null;
+  if (unit === "month") return parsed >= 1 && parsed <= 31 ? parsed : null;
+  if (unit === "week" || unit === "biweek") return parsed >= 1 && parsed <= 7 ? parsed : null;
+  if (unit === "year") {
+    const month = Math.floor(parsed / 100);
+    const day = parsed % 100;
+    return month >= 1 && month <= 12 && day >= 1 && day <= 31 ? parsed : null;
+  }
+  return null;
 }
 
 function parseDateOnlyUtc(value: string): Date | null {
@@ -57,6 +87,11 @@ function parseOptionalPositiveNumber(value: unknown): number | null {
 function parsePositiveInteger(value: unknown, fallback = 1): number {
   const parsed = typeof value === "number" ? value : parseInt(String(value ?? ""), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function cleanOptionalString(value: unknown): string | null {
+  const text = String(value ?? "").trim();
+  return text || null;
 }
 
 export async function GET(req: NextRequest) {
@@ -118,12 +153,16 @@ export async function POST(req: NextRequest) {
       endDate,
       totalRuns,
       executionDay,
+      secondaryExecutionDay,
       feeRate,
       confirmDays,
       arrivalDays,
       annualRate,
       repaymentMethod,
       repaymentIntervalMonths,
+      categoryId,
+      categoryName,
+      note,
       skipPendingPreceding,
     } = body;
 
@@ -131,10 +170,14 @@ export async function POST(req: NextRequest) {
     const isFundTask = scheduledTaskType === "fund_regular_invest";
     const isInsuranceTask = scheduledTaskType === "insurance_premium";
     const isLoanTask = scheduledTaskType === "loan_repayment";
+    const isOrdinaryTask = scheduledTaskType === "income" || scheduledTaskType === "expense";
     const requiresCashAccount = scheduledTaskType === "transfer" || scheduledTaskType === "loan_repayment" || isInsuranceTask;
     const loanAnnualRate = parseOptionalPositiveNumber(annualRate);
     const loanRepaymentMethod = typeof repaymentMethod === "string" && repaymentMethod.trim() ? repaymentMethod.trim() : "自由还款";
     const loanRepaymentIntervalMonths = parsePositiveInteger(repaymentIntervalMonths, 1);
+    const taskCategoryId = cleanOptionalString(categoryId);
+    const taskCategoryName = cleanOptionalString(categoryName);
+    const taskNote = cleanOptionalString(note);
 
     // Insurance tasks require insuranceProductId or accountId
     if (!amount || !startDate || (isFundTask && (!accountId || !fundCode))) {
@@ -189,9 +232,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, code: "SAME_TRANSFER_ACCOUNTS", error: "转出/转入账户不能相同" }, { status: 400 });
     }
 
+    const suppliedTaskName = cleanOptionalString(fundName);
     const taskTitle =
-      fundName ||
+      suppliedTaskName ||
       (isInsuranceTask && insuranceProductName) ||
+      (isOrdinaryTask && taskCategoryName) ||
       (isFundTask
         ? fundCode
         : scheduledTaskType === "transfer" && cashAcc
@@ -203,6 +248,15 @@ export async function POST(req: NextRequest) {
     const unitVal = normalizedInterval.value;
     const intervalUnitValue = normalizedInterval.unit;
     const executionDayInt = executionDay ? parseInt(executionDay) : null;
+    let secondaryExecutionDayInt = parseSecondaryExecutionDay(intervalUnitValue, secondaryExecutionDay);
+    if (unitVal !== 1) secondaryExecutionDayInt = null;
+    if (
+      secondaryExecutionDayInt != null &&
+      executionDayInt != null &&
+      secondaryExecutionDayInt === executionDayInt
+    ) {
+      secondaryExecutionDayInt = null;
+    }
     const parsedStartDate = parseDateOnlyUtc(startDate);
     if (!parsedStartDate) {
       return NextResponse.json({ ok: false, code: "INVALID_START_DATE", error: "开始日期不正确" }, { status: 400 });
@@ -212,7 +266,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, code: "INVALID_END_DATE", error: "Invalid endDate" }, { status: 400 });
     }
     const start = isFundTask ? skipWeekend(parsedStartDate) : parsedStartDate;
-    const initialRunDate = calcInitialRunDate(parsedStartDate, intervalUnitValue, unitVal, executionDayInt, isFundTask);
+    const initialRunDate = calcInitialRunDate(parsedStartDate, intervalUnitValue, unitVal, executionDayInt, isFundTask, secondaryExecutionDayInt);
 
     const safeConfirmDays = confirmDays != null ? normalizeNonNegativeDays(confirmDays, 0) : null;
     const safeArrivalDays = arrivalDays != null ? normalizeNonNegativeDays(arrivalDays, 2) : null;
@@ -235,6 +289,7 @@ export async function POST(req: NextRequest) {
           intervalUnit: intervalUnitValue,
           intervalValue: unitVal,
           executionDay: executionDayInt,
+          secondaryExecutionDay: secondaryExecutionDayInt,
           startDate: start,
           endDate: parsedEndDate,
           totalRuns: totalRunsInt,
@@ -249,7 +304,10 @@ export async function POST(req: NextRequest) {
             title: taskTitle,
             fromAccountId: cashAccountId || null,
             toAccountId: effectiveAccountId,
+            categoryId: isOrdinaryTask ? taskCategoryId : null,
+            categoryName: isOrdinaryTask ? taskCategoryName : null,
             insuranceProductId: insuranceProductId || null,
+            note: isOrdinaryTask ? taskNote : null,
             annualRate: isLoanTask ? loanAnnualRate : null,
             repaymentMethod: isLoanTask ? loanRepaymentMethod : null,
             repaymentIntervalMonths: isLoanTask ? loanRepaymentIntervalMonths : null,
@@ -292,10 +350,14 @@ export async function POST(req: NextRequest) {
         taskTitle,
         taskFromAccountId: cashAccountId || null,
         taskToAccountId: effectiveAccountId,
+        taskCategoryId: isOrdinaryTask ? taskCategoryId : null,
+        taskCategoryName: isOrdinaryTask ? taskCategoryName : null,
         taskInsuranceProductId: insuranceProductId || null,
+        taskNote: isOrdinaryTask ? taskNote : null,
         taskAnnualRate: isLoanTask ? loanAnnualRate : null,
         taskRepaymentMethod: isLoanTask ? loanRepaymentMethod : null,
         taskRepaymentIntervalMonths: isLoanTask ? loanRepaymentIntervalMonths : null,
+        secondaryExecutionDay: createdPlan.secondaryExecutionDay,
         amount: Number(createdPlan.amount),
         feeRate: createdPlan.feeRate == null ? null : Number(createdPlan.feeRate),
         startDate: createdPlan.startDate?.toISOString() ?? null,
@@ -320,6 +382,7 @@ export async function PUT(req: NextRequest) {
     const { householdId } = await getHouseholdScope();
 
     const body = await req.json();
+    const hasSecondaryExecutionDay = Object.prototype.hasOwnProperty.call(body, "secondaryExecutionDay");
     const {
       id,
       action,
@@ -332,9 +395,11 @@ export async function PUT(req: NextRequest) {
       intervalUnit,
       intervalValue,
       startDate,
+      nextRunDate,
       endDate,
       totalRuns,
       executionDay,
+      secondaryExecutionDay,
       feeRate,
       confirmDays,
       arrivalDays,
@@ -343,6 +408,9 @@ export async function PUT(req: NextRequest) {
       annualRate,
       repaymentMethod,
       repaymentIntervalMonths,
+      categoryId,
+      categoryName,
+      note,
       skipPendingPreceding,
     } = body;
 
@@ -411,6 +479,7 @@ export async function PUT(req: NextRequest) {
     const isFundTask = nextTaskType === "fund_regular_invest";
     const isInsuranceTask = nextTaskType === "insurance_premium";
     const isLoanTask = nextTaskType === "loan_repayment";
+    const isOrdinaryTask = nextTaskType === "income" || nextTaskType === "expense";
     const nextAnnualRate =
       annualRate !== undefined ? parseOptionalPositiveNumber(annualRate) : existingTask.annualRate ?? null;
     const nextRepaymentMethod =
@@ -419,6 +488,9 @@ export async function PUT(req: NextRequest) {
         : existingTask.repaymentMethod ?? "自由还款";
     const nextRepaymentIntervalMonths =
       repaymentIntervalMonths !== undefined ? parsePositiveInteger(repaymentIntervalMonths, 1) : existingTask.repaymentIntervalMonths ?? 1;
+    const nextCategoryId = categoryId !== undefined ? cleanOptionalString(categoryId) : existingTask.categoryId ?? null;
+    const nextCategoryName = categoryName !== undefined ? cleanOptionalString(categoryName) : existingTask.categoryName ?? null;
+    const nextNote = note !== undefined ? cleanOptionalString(note) : existingTask.note ?? null;
     const requiresCashAccount = nextTaskType === "transfer" || nextTaskType === "loan_repayment" || nextTaskType === "insurance_premium";
     const effectiveAccountIdForValidation = accountId || existing.accountId;
     const effectiveCashAccountIdForValidation =
@@ -448,6 +520,13 @@ export async function PUT(req: NextRequest) {
     if (startDate != null && !parsedStartDate) {
       return NextResponse.json({ ok: false, code: "INVALID_START_DATE", error: "开始日期不正确" }, { status: 400 });
     }
+    const parsedNextRunDate = nextRunDate != null ? parseDateOnlyUtc(nextRunDate) : null;
+    if (nextRunDate != null && !parsedNextRunDate) {
+      return NextResponse.json({ ok: false, code: "INVALID_NEXT_RUN_DATE", error: "下次执行日期不正确" }, { status: 400 });
+    }
+    if (parsedNextRunDate && existing.nextRunDate && parsedNextRunDate < existing.nextRunDate) {
+      return NextResponse.json({ ok: false, code: "NEXT_RUN_DATE_TOO_EARLY", error: "下次执行日期不能早于当前下次执行日期" }, { status: 400 });
+    }
     const parsedEndDate = endDate ? parseDateOnlyUtc(endDate) : null;
     if (endDate && !parsedEndDate) {
       return NextResponse.json({ ok: false, code: "INVALID_END_DATE", error: "Invalid endDate" }, { status: 400 });
@@ -460,18 +539,29 @@ export async function PUT(req: NextRequest) {
     const effectiveExecutionDay = executionDay != null
       ? (executionDay ? parseInt(executionDay) : null)
       : existing.executionDay;
+    const effectiveSecondaryExecutionDay = parseSecondaryExecutionDay(
+      effectiveIntervalUnit,
+      hasSecondaryExecutionDay ? secondaryExecutionDay : undefined,
+      hasSecondaryExecutionDay ? undefined : existing.secondaryExecutionDay,
+    );
+    const normalizedSecondaryExecutionDay = effectiveIntervalValue === 1 ? effectiveSecondaryExecutionDay : null;
     const nextStoredStartDate = parsedStartDate
       ? isFundTask ? skipWeekend(parsedStartDate) : parsedStartDate
       : existing.startDate;
     const startDateChanged = parsedStartDate != null && !sameDateOnly(nextStoredStartDate, existing.startDate);
     const taskTypeChanged = nextTaskType !== existingTaskType;
     const normalizedExistingExecutionDay = existing.executionDay;
+    const normalizedExistingSecondaryExecutionDay =
+      effectiveIntervalUnit === existing.intervalUnit
+        ? existing.secondaryExecutionDay
+        : null;
     const scheduleChanged =
       startDateChanged ||
       taskTypeChanged ||
       effectiveIntervalUnit !== existing.intervalUnit ||
       effectiveIntervalValue !== existing.intervalValue ||
-      effectiveExecutionDay !== normalizedExistingExecutionDay;
+      effectiveExecutionDay !== normalizedExistingExecutionDay ||
+      normalizedSecondaryExecutionDay !== normalizedExistingSecondaryExecutionDay;
     let linkedRecordCount: number | null = null;
     const getLinkedRecordCount = async () => {
       if (linkedRecordCount == null) {
@@ -497,12 +587,15 @@ export async function PUT(req: NextRequest) {
 
     if (parsedStartDate) updateData.startDate = nextStoredStartDate;
     if (fundCode != null && isFundTask) updateData.fundCode = fundCode;
-    if (fundName != null) updateData.fundName = fundName;
+    const suppliedFundName = fundName != null ? cleanOptionalString(fundName) : null;
+    if (fundName != null && suppliedFundName) updateData.fundName = suppliedFundName;
     updateData.taskType = nextTaskType;
     updateData.targetName =
       isInsuranceTask
-        ? nextInsuranceProductName ?? fundName ?? existing.targetName ?? existing.fundName ?? scheduledTaskTypeLabel(nextTaskType)
-        : fundName ?? existing.targetName ?? existing.fundName ?? scheduledTaskTypeLabel(nextTaskType);
+        ? nextInsuranceProductName ?? suppliedFundName ?? existing.targetName ?? existing.fundName ?? scheduledTaskTypeLabel(nextTaskType)
+        : isOrdinaryTask
+          ? suppliedFundName ?? nextCategoryName ?? existing.targetName ?? existing.fundName ?? scheduledTaskTypeLabel(nextTaskType)
+          : suppliedFundName ?? existing.targetName ?? existing.fundName ?? scheduledTaskTypeLabel(nextTaskType);
     updateData.insuranceProductName = isInsuranceTask ? nextInsuranceProductName ?? updateData.targetName : null;
     if (amount != null) updateData.amount = parseFloat(amount);
     if (intervalUnit != null || intervalValue != null) {
@@ -510,6 +603,11 @@ export async function PUT(req: NextRequest) {
       updateData.intervalValue = effectiveIntervalValue;
     }
     if (executionDay != null) updateData.executionDay = executionDay ? parseInt(executionDay) : null; // Execution day update
+    if (hasSecondaryExecutionDay) {
+      updateData.secondaryExecutionDay = normalizedSecondaryExecutionDay;
+    } else if (intervalUnit != null && effectiveIntervalUnit !== existing.intervalUnit) {
+      updateData.secondaryExecutionDay = null;
+    }
     if (scheduleChanged) {
       updateData.nextRunDate = await deriveRegularInvestNextRunDate(prisma, {
         id: existing.id,
@@ -520,7 +618,11 @@ export async function PUT(req: NextRequest) {
         intervalUnit: effectiveIntervalUnit,
         intervalValue: effectiveIntervalValue,
         executionDay: effectiveExecutionDay,
+        secondaryExecutionDay: updateData.secondaryExecutionDay ?? normalizedSecondaryExecutionDay,
       });
+    }
+    if (parsedNextRunDate) {
+      updateData.nextRunDate = parsedNextRunDate;
     }
     if (endDate != null) updateData.endDate = parsedEndDate;
     if (totalRuns != null) updateData.totalRuns = totalRuns ? parseInt(totalRuns) : null;
@@ -536,21 +638,28 @@ export async function PUT(req: NextRequest) {
       } else {
         updateData.cashAccountName = null;
       }
+    } else if (isOrdinaryTask) {
+      updateData.cashAccountId = null;
+      updateData.cashAccountName = null;
     }
     if (memo != null) updateData.memo = memo || null;
     if (skipPendingPreceding !== undefined) (updateData as any).skipPendingPreceding = skipPendingPreceding;
     updateData.memo = encodeScheduledTaskMemo({
       type: nextTaskType,
       title: updateData.targetName,
-      fromAccountId: cashAccountId != null ? cashAccountId || null : existing.cashAccountId,
+      fromAccountId: isOrdinaryTask ? null : cashAccountId != null ? cashAccountId || null : existing.cashAccountId,
       toAccountId: accountId || existing.accountId,
+      categoryId: isOrdinaryTask ? nextCategoryId : null,
+      categoryName: isOrdinaryTask ? nextCategoryName : null,
       insuranceProductId: effectiveInsuranceProductId,
+      note: isOrdinaryTask ? nextNote : null,
       annualRate: isLoanTask ? nextAnnualRate : null,
       repaymentMethod: isLoanTask ? nextRepaymentMethod : null,
       repaymentIntervalMonths: isLoanTask ? nextRepaymentIntervalMonths : null,
     });
     if (!isFundTask) {
       updateData.fundCode = nextTaskType;
+      updateData.fundName = updateData.targetName;
       updateData.fundProductType = null;
       updateData.confirmDays = 0;
       updateData.arrivalDays = 0;

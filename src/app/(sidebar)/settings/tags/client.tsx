@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { X } from "lucide-react";
+import { useRouter } from "next/navigation";
 import {
   SettingsActionButton,
   SettingsEmptyRow,
@@ -36,6 +37,7 @@ export default function SettingsTagsClient({
   initialLoaded?: boolean;
 }) {
   const { t } = useI18n();
+  const router = useRouter();
   const [tags, setTags] = useState<Tag[]>(initialTags);
   const [editing, setEditing] = useState<Tag | null>(null);
 
@@ -114,7 +116,18 @@ export default function SettingsTagsClient({
           </thead>
           <tbody className="text-sm">
             {tags.length ? tags.map((tag) => (
-              <tr key={tag.id} className="hover:bg-slate-50">
+              <tr
+                key={tag.id}
+                className="cursor-pointer hover:bg-slate-50"
+                onDoubleClick={() => {
+                  const params = new URLSearchParams({
+                    view: "detail",
+                    tagId: tag.id,
+                    detailAll: "1",
+                  });
+                  router.push(`/?${params.toString()}`);
+                }}
+              >
                 <SettingsTd className="text-sm font-medium text-slate-800">{tag.name}</SettingsTd>
                 <SettingsTd>
                   <div className="flex items-center gap-2">
@@ -122,7 +135,7 @@ export default function SettingsTagsClient({
                     <span className="font-mono text-[11px] text-slate-500">{tag.color || "#64748B"}</span>
                   </div>
                 </SettingsTd>
-                <SettingsTd align="right">
+                <SettingsTd align="right" onDoubleClick={(event) => event.stopPropagation()}>
                   <SettingsRowActions>
                     <SettingsActionButton
                       label={t("settings.tags.edit")}

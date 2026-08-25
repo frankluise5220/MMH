@@ -229,7 +229,22 @@ function parseEastmoneyKlineClose(row: unknown) {
   return { priceDate, closePrice };
 }
 
-async function queryEastmoneyCnLatestClose(stockCode: string, exchange?: string | null): Promise<StockClosePriceResult> {
+function normalizeEastmoneyKlineEndDate(value: unknown) {
+  const raw = String(value ?? "").trim();
+  if (/^\d{8}$/.test(raw)) return raw;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw.replace(/-/g, "");
+  const date = raw ? new Date(raw) : null;
+  return date && !Number.isNaN(date.getTime())
+    ? date.toISOString().slice(0, 10).replace(/-/g, "")
+    : "20500101";
+}
+
+async function queryEastmoneyCnClose(
+  stockCode: string,
+  exchange: string | null | undefined,
+  endDate: string,
+  source: string,
+): Promise<StockClosePriceResult> {
   for (const secid of eastmoneyCnSecidCandidates(stockCode, exchange)) {
     const params = new URLSearchParams({
       secid,
@@ -237,7 +252,7 @@ async function queryEastmoneyCnLatestClose(stockCode: string, exchange?: string 
       fields2: "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
       klt: "101",
       fqt: "1",
-      end: "20500101",
+      end: endDate,
       lmt: "1",
     });
     try {
@@ -253,13 +268,21 @@ async function queryEastmoneyCnLatestClose(stockCode: string, exchange?: string 
         priceDate: parsed.priceDate,
         currency: "CNY",
         exchange: exchangeFromSecid(secid, exchange ?? inferStockExchangeFromCode("CN", stockCode)),
-        source: "eastmoney-kline",
+        source,
       };
     } catch {
       // Try the next secid candidate.
     }
   }
   return null;
+}
+
+async function queryEastmoneyCnLatestClose(stockCode: string, exchange?: string | null): Promise<StockClosePriceResult> {
+  return queryEastmoneyCnClose(stockCode, exchange, "20500101", "eastmoney-kline");
+}
+
+async function queryEastmoneyCnCloseByDate(stockCode: string, dateRaw: unknown, exchange?: string | null): Promise<StockClosePriceResult> {
+  return queryEastmoneyCnClose(stockCode, exchange, normalizeEastmoneyKlineEndDate(dateRaw), "eastmoney-kline-date");
 }
 
 export async function queryStockIdentity(marketRaw: unknown, stockCodeRaw: unknown): Promise<StockIdentityResult> {
@@ -289,6 +312,19 @@ export async function queryStockLatestClosePrice(marketRaw: unknown, stockCodeRa
 
   if (market === "CN") {
     return queryEastmoneyCnLatestClose(stockCode, exchange);
+  }
+
+  return null;
+}
+
+export async function queryStockClosePriceByDate(marketRaw: unknown, stockCodeRaw: unknown, dateRaw: unknown, exchangeRaw?: unknown): Promise<StockClosePriceResult> {
+  const market = normalizeStockMarket(marketRaw);
+  const stockCode = normalizeStockCode(stockCodeRaw);
+  const exchange = String(exchangeRaw ?? "").trim() || inferStockExchangeFromCode(market, stockCode);
+  if (!stockCode) return null;
+
+  if (market === "CN") {
+    return queryEastmoneyCnCloseByDate(stockCode, dateRaw, exchange);
   }
 
   return null;

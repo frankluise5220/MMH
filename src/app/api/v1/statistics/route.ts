@@ -114,6 +114,8 @@ export async function GET(req: NextRequest) {
         debtInterestAmount: true,
         depositInterest: true,
         fundFee: true,
+        fundUnits: true,
+        fundNav: true,
         categoryId: true,
         categoryName: true,
         accountId: true,

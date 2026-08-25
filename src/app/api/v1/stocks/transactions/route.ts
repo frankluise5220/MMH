@@ -61,6 +61,10 @@ function normalizeStockAction(value: unknown) {
     : StockTransactionAction.buy;
 }
 
+function isBuySellAction(action: StockTransactionAction) {
+  return action === StockTransactionAction.buy || action === StockTransactionAction.sell;
+}
+
 async function assertStockAccount(accountId: string, householdId: string) {
   const account = await prisma.account.findFirst({
     where: { id: accountId, householdId, kind: "investment", investProductType: "stock" },
@@ -229,9 +233,9 @@ export async function GET(req: NextRequest) {
  *   dividend uses grossAmount and optional netAmount for cash dividends; bonus_share is the no-cash stock dividend/transfer action
  * - tradeDate: YYYY-MM-DD
  * - settleDate?: YYYY-MM-DD
- * - grossAmount?: amount before fees; defaults to quantity * price when possible
+ * - grossAmount?: amount before fees for cash-only actions; buy/sell amount is calculated from quantity * price
  * - netAmount?: settled cash amount
- * - quantity?, price?
+ * - quantity, price are required for buy/sell
  * - fee?, commission?, stampTax?, transferFee?, exchangeFee?, regulatoryFee?, otherFee? optional import/manual overrides; omitted values are calculated from account stock fee rules for buy/sell
  * - externalLinkId?: broker/import source id for dedupe
  * - brokerTradeId?: broker trade id
@@ -259,9 +263,10 @@ export async function POST(req: NextRequest) {
 
     const quantity = parseOptionalNonNegativeNumber(body.quantity);
     const price = parseOptionalNonNegativeNumber(body.price);
+    const buySellAction = isBuySellAction(action);
     const grossAmountInput = parseOptionalNonNegativeNumber(body.grossAmount ?? body.amount);
     const grossFromQuantity = quantity != null && price != null ? quantity * price : 0;
-    const grossAmount = grossAmountInput ?? grossFromQuantity;
+    const grossAmount = buySellAction ? grossFromQuantity : grossAmountInput ?? grossFromQuantity;
     const netAmount = parseOptionalNonNegativeNumber(body.netAmount);
     const fee = parseOptionalNonNegativeNumber(body.fee);
     const commission = parseOptionalNonNegativeNumber(body.commission);
@@ -273,8 +278,8 @@ export async function POST(req: NextRequest) {
     const externalLinkId = String(body.externalLinkId ?? "").trim() || null;
     const brokerTradeId = String(body.brokerTradeId ?? "").trim() || null;
 
-    if ((action === StockTransactionAction.buy || action === StockTransactionAction.sell) && (!quantity || grossAmount <= 0)) {
-      return NextResponse.json({ ok: false, code: "QUANTITY_AND_AMOUNT_REQUIRED", error: "买卖股票需要填写数量和成交金额" }, { status: 400, headers: corsHeaders() });
+    if (buySellAction && (!quantity || !price || grossAmount <= 0)) {
+      return NextResponse.json({ ok: false, code: "QUANTITY_AND_PRICE_REQUIRED", error: "Buy/sell stock transactions require quantity and price" }, { status: 400, headers: corsHeaders() });
     }
     if ((action === StockTransactionAction.dividend || action === StockTransactionAction.fee_adjustment || action === StockTransactionAction.tax_adjustment) && grossAmount <= 0) {
       return NextResponse.json({ ok: false, code: "AMOUNT_REQUIRED", error: "该股票交易需要填写金额" }, { status: 400, headers: corsHeaders() });
@@ -322,7 +327,7 @@ export async function POST(req: NextRequest) {
         });
     if (!security) return NextResponse.json({ ok: false, code: "SECURITY_NOT_FOUND", error: "股票标的不存在" }, { status: 400, headers: corsHeaders() });
 
-    const fees = (action === StockTransactionAction.buy || action === StockTransactionAction.sell)
+    const fees = buySellAction
       ? await (async () => {
           return calculateStockTransactionFeesByDate({
             accountId: stockAccountId,
@@ -480,9 +485,10 @@ export async function PATCH(req: NextRequest) {
     };
     const quantity = readNumber("quantity");
     const price = readNumber("price");
+    const buySellAction = isBuySellAction(action);
     const grossAmountInput = readNumber("grossAmount");
     const grossFromQuantity = quantity != null && price != null ? quantity * price : 0;
-    const grossAmount = grossAmountInput ?? grossFromQuantity;
+    const grossAmount = buySellAction ? grossFromQuantity : grossAmountInput ?? grossFromQuantity;
     const netAmount = readNumber("netAmount");
     const fee = readNumber("fee");
     const commission = readNumber("commission");
@@ -492,8 +498,8 @@ export async function PATCH(req: NextRequest) {
     const regulatoryFee = readNumber("regulatoryFee");
     const otherFee = readNumber("otherFee");
 
-    if ((action === StockTransactionAction.buy || action === StockTransactionAction.sell) && (!quantity || grossAmount <= 0)) {
-      return NextResponse.json({ ok: false, code: "QUANTITY_AND_AMOUNT_REQUIRED", error: "买卖股票需要填写数量和成交金额" }, { status: 400, headers: corsHeaders() });
+    if (buySellAction && (!quantity || !price || grossAmount <= 0)) {
+      return NextResponse.json({ ok: false, code: "QUANTITY_AND_PRICE_REQUIRED", error: "Buy/sell stock transactions require quantity and price" }, { status: 400, headers: corsHeaders() });
     }
     if ((action === StockTransactionAction.dividend || action === StockTransactionAction.fee_adjustment || action === StockTransactionAction.tax_adjustment) && grossAmount <= 0) {
       return NextResponse.json({ ok: false, code: "AMOUNT_REQUIRED", error: "该股票交易需要填写金额" }, { status: 400, headers: corsHeaders() });
@@ -521,7 +527,7 @@ export async function PATCH(req: NextRequest) {
         : null;
     if (!security) return NextResponse.json({ ok: false, code: "SECURITY_NOT_FOUND", error: "股票标的不存在" }, { status: 400, headers: corsHeaders() });
 
-    const fees = (action === StockTransactionAction.buy || action === StockTransactionAction.sell)
+    const fees = buySellAction
       ? await (async () => {
           return calculateStockTransactionFeesByDate({
             accountId: stockAccountId,

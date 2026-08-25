@@ -16,6 +16,7 @@ import { CREDIT_CARD_REPAYMENT_CATEGORY_NAME, isCreditCardRepaymentTransfer } fr
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 import { upsertStatementCategoryRuleFromSavedRecord } from "@/lib/statement/category-rules";
+import { replaceEntryTags, resolveWritableTagIds } from "@/lib/server/entry-tags";
 
 /**
  * Batch-updates transaction records.
@@ -30,9 +31,11 @@ import { upsertStatementCategoryRuleFromSavedRecord } from "@/lib/statement/cate
  *     inflow?: string | number;// inflow amount, becomes a positive inflow from the current account view
  *     outflow?: string | number;// outflow amount, becomes a negative outflow from the current account view
  *     account?: string;        // source account Account.id
+ *     viewAccount?: string;    // account on the current detail-view side; for credit bills this may be accountId or toAccountId
  *     toAccount?: string;      // destination account Account.id
  *     categoryId?: string;     // income/expense category Category.id, pass empty string to clear
  *     institution?: string;    // counterparty institution name/short name, pass empty string to clear
+ *     tagId?: string;           // readable Tag.id, pass empty string to clear all tags
  *     remark?: string;         // note, pass empty string to clear
  *     fundConfirmDate?: string;// confirm date YYYY-MM-DD, pass empty string to clear
  *     fundArrivalDate?: string;// arrival date YYYY-MM-DD, pass empty string to clear
@@ -55,9 +58,11 @@ type BatchUpdateItem = {
   inflow?: string | number;
   outflow?: string | number;
   account?: string;
+  viewAccount?: string;
   toAccount?: string;
   categoryId?: string;
   institution?: string;
+  tagId?: string;
   remark?: string;
   fundConfirmDate?: string;
   fundArrivalDate?: string;
@@ -124,6 +129,7 @@ export async function POST(req: NextRequest) {
         categoryId: true,
         categoryName: true,
         note: true,
+        EntryTag: { select: { tagId: true, Tag: { select: { name: true } } } },
         counterpartyInstitutionName: true,
         paymentChannelName: true,
         fundConfirmDate: true,
@@ -134,7 +140,7 @@ export async function POST(req: NextRequest) {
     const notFoundIds = ids.filter((id) => !existingMap.has(id));
     const undo = await prepareEntryUndo(prisma, ctx.householdId, existingRecords.map((record) => record.id));
 
-    const accountIds = Array.from(new Set(updates.flatMap((item) => [item.account, item.toAccount, item.cashAccountId, item.fundAccountId].map((id) => String(id ?? "").trim()).filter(Boolean))));
+    const accountIds = Array.from(new Set(updates.flatMap((item) => [item.account, item.viewAccount, item.toAccount, item.cashAccountId, item.fundAccountId].map((id) => String(id ?? "").trim()).filter(Boolean))));
     const accounts = accountIds.length > 0
       ? await prisma.account.findMany({ where: { id: { in: accountIds }, isActive: true, ...hidFilter }, select: { id: true, name: true, kind: true, investProductType: true } })
       : [];
@@ -151,6 +157,19 @@ export async function POST(req: NextRequest) {
       ? await prisma.category.findMany({ where: { id: { in: categoryIds }, ...hidFilter }, select: { id: true, name: true } })
       : [];
     const categoryById = new Map(categories.map((category) => [category.id, category]));
+    const tagIds = Array.from(new Set(updates.map((item) => String(item.tagId ?? "").trim()).filter(Boolean)));
+    const writableTagIds = await resolveWritableTagIds(prisma, ctx.householdId, tagIds);
+    if (writableTagIds.length !== tagIds.length) {
+      const invalidTagId = tagIds.find((id) => !writableTagIds.includes(id));
+      return NextResponse.json(
+        { ok: false, code: "TAG_NOT_FOUND", error: `Tag not found or not readable: ${invalidTagId ?? ""}` },
+        { status: 400 },
+      );
+    }
+    const tags = writableTagIds.length > 0
+      ? await prisma.tag.findMany({ where: { id: { in: writableTagIds } }, select: { id: true, name: true } })
+      : [];
+    const tagById = new Map(tags.map((tag) => [tag.id, tag]));
     const institutionNames = Array.from(new Set(updates.map((item) => String(item.institution ?? "").trim()).filter(Boolean)));
     const institutions = institutionNames.length > 0
       ? await prisma.institution.findMany({
@@ -183,6 +202,7 @@ export async function POST(req: NextRequest) {
       if (!existing) continue;
 
       const data: Record<string, unknown> = {};
+      const tagUpdateRequested = item.tagId !== undefined;
       let skipAutoRepaymentCategory = false;
       if (existing.accountId) balanceAccountIds.add(existing.accountId);
       if (existing.toAccountId) balanceAccountIds.add(existing.toAccountId);
@@ -223,6 +243,36 @@ export async function POST(req: NextRequest) {
         data.accountName = account?.name ?? accountName;
         if (account?.id) balanceAccountIds.add(account.id);
         changed.push({ id, date: ymd(existing.date), oldValue: existing.accountName ?? "-", newValue: account?.name ?? accountName, field: "account" });
+      }
+
+      if (item.viewAccount !== undefined) {
+        const viewAccountId = String(item.viewAccount).trim();
+        const account = accountById.get(viewAccountId);
+        if (!account) return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: `Account not found: ${viewAccountId}` }, { status: 400 });
+
+        const sourceInScope = !!existing.accountId && contextAccountIdSet.has(existing.accountId);
+        const targetInScope = !!existing.toAccountId && contextAccountIdSet.has(existing.toAccountId);
+        const updateTargetSide = targetInScope && (!sourceInScope || existing.toAccountId === contextAccountId);
+        const finalTypeForViewAccount = String(data.type ?? existing.type);
+
+        if (updateTargetSide) {
+          const otherAccountId = typeof data.accountId === "string" ? data.accountId : existing.accountId;
+          if (finalTypeForViewAccount === TransactionType.transfer && otherAccountId && account.id === otherAccountId) {
+            return NextResponse.json({ ok: false, code: "SAME_ACCOUNT_NOT_ALLOWED", error: "Account and counter account cannot be the same" }, { status: 400 });
+          }
+          data.toAccountId = account.id;
+          data.toAccountName = account.name;
+          changed.push({ id, date: ymd(existing.date), oldValue: existing.toAccountName ?? "-", newValue: account.name, field: "account" });
+        } else {
+          const otherAccountId = typeof data.toAccountId === "string" ? data.toAccountId : existing.toAccountId;
+          if (finalTypeForViewAccount === TransactionType.transfer && otherAccountId && account.id === otherAccountId) {
+            return NextResponse.json({ ok: false, code: "SAME_ACCOUNT_NOT_ALLOWED", error: "Account and counter account cannot be the same" }, { status: 400 });
+          }
+          data.accountId = account.id;
+          data.accountName = account.name;
+          changed.push({ id, date: ymd(existing.date), oldValue: existing.accountName ?? "-", newValue: account.name, field: "account" });
+        }
+        balanceAccountIds.add(account.id);
       }
 
       if (item.toAccount !== undefined) {
@@ -301,6 +351,22 @@ export async function POST(req: NextRequest) {
           oldValue: existing.counterpartyInstitutionName ?? "",
           newValue: institution?.name ?? institutionName,
           field: "institution",
+        });
+      }
+
+      if (tagUpdateRequested) {
+        const tagId = String(item.tagId ?? "").trim();
+        const tag = tagId ? tagById.get(tagId) : null;
+        const oldValue = existing.EntryTag
+          .map((entryTag) => entryTag.Tag.name.trim())
+          .filter(Boolean)
+          .join("、");
+        changed.push({
+          id,
+          date: ymd(existing.date),
+          oldValue,
+          newValue: tag?.name ?? "",
+          field: "tagId",
         });
       }
 
@@ -476,13 +542,25 @@ export async function POST(req: NextRequest) {
         data.categoryName = null;
       }
 
-      if (Object.keys(data).length === 0) continue;
+      const hasRecordDataUpdate = Object.keys(data).length > 0;
+      if (!hasRecordDataUpdate && !tagUpdateRequested) continue;
 
-      const result = await prisma.txRecord.updateMany({
-        where: { id, deletedAt: null, ...hidFilter },
-        data,
-      });
+      const result = hasRecordDataUpdate
+        ? await prisma.txRecord.updateMany({
+            where: { id, deletedAt: null, ...hidFilter },
+            data,
+          })
+        : { count: 1 };
       if (result.count > 0) {
+        if (tagUpdateRequested) {
+          const tagId = String(item.tagId ?? "").trim();
+          await replaceEntryTags({
+            tx: prisma,
+            entryId: id,
+            householdId: ctx.householdId,
+            tagIds: tagId ? [tagId] : [],
+          });
+        }
         updatedCount += result.count;
         touchedRecordIds.add(id);
         const learnedCategoryId = typeof data.categoryId === "string" ? data.categoryId : "";

@@ -307,7 +307,15 @@ Docker 页面打不开：
 
 群晖提示“套件文件格式不正确，请联系套件开发人员”：
 
-先确认上传的是正式 `.spk` 文件，例如 `mmh-synology-v0.1.x-x86_64.spk` 或 `mmh-synology-v0.1.x-arm64.spk`，不要上传 `*-spk-source.tgz`。如果正式 `.spk` 仍提示格式不正确，说明该 Release 的群晖包需要重新发布修复版；请改用下一个补丁版本的同架构 `.spk`。
+先确认上传的是正式 `.spk` 文件，例如 `mmh-synology-v0.1.x-x86_64.spk` 或 `mmh-synology-v0.1.x-arm64.spk`，不要上传 `*-spk-source.tgz`。如果正式 `.spk` 仍提示格式不正确，说明该 Release 的群晖包需要重新发布修复版；修复包应包含 `checksum`、`extractsize`、正确的 `conf/privilege`，并确保 `scripts/` 下的生命周期脚本在 tar header 中是可执行文件。请改用下一个补丁版本的同架构 `.spk`。
+
+群晖提示“MMH 以 root 权限运行，因此无法安装”：
+
+这是套件权限配置没有被 DSM 正确识别。请改用修复后的同架构 `.spk`；修复包的 `conf/privilege` 会使用 Synology 认可的 `"run-as": "package"`，让 MMH 以套件用户运行，而不是 root。
+
+群晖提示“System failed to start [MMH]”：
+
+这通常需要查看套件自己的启动日志，而不是只看 DSM 通知中心。修复包会把 SQLite 数据库、日志、pid 和运行环境文件写到 DSM 的 `SYNOPKG_PKGVAR` 持久数据目录，而不是只读/受限的套件程序目录。启动脚本会先执行 bundled Node 自检；若 Node/glibc、SQLite 初始化、端口占用或权限失败，错误会写入日志。若仍失败，请在 DSM SSH 里查看 `/var/packages/mmh/var/mmh.log` 和 `/var/log/synopkg.log`。
 
 数据库密码错误：
 

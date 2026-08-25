@@ -31,6 +31,7 @@ const REPORT_BATCH_REPLACE_FIELDS: BatchReplaceField[] = [
   "toAccount",
   "categoryId",
   "institution",
+  "tagId",
   "remark",
 ];
 
@@ -43,6 +44,7 @@ export function ReportDetailTable({
   entries,
   accountOptions,
   categoryOptions,
+  tagOptions = [],
   investmentProductTypeByAccountId,
   title,
   total,
@@ -56,6 +58,7 @@ export function ReportDetailTable({
   entries: DetailEntry[];
   accountOptions: AccountOption[];
   categoryOptions: BasicDetailBatchCategoryOption[];
+  tagOptions?: BasicDetailBatchCategoryOption[];
   investmentProductTypeByAccountId: Record<string, string | null | undefined>;
   title: string;
   total: number;
@@ -136,6 +139,7 @@ export function ReportDetailTable({
           initialEntries={pageEntries}
           accountOptions={accountOptions}
           categoryOptions={categoryOptions}
+          tagOptions={tagOptions}
           investmentProductTypeByAccountId={investmentProductTypeByAccountId}
           compactRows
           storageKey="mmh_report_detail_table_v1"

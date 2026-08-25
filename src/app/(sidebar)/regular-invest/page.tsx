@@ -1,6 +1,8 @@
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { buildAccountDisplayOption, buildFlatAccountOptions, buildGroupedAccountOptions } from "@/lib/account-display";
+import { buildCategorySmartSelectOptions } from "@/components/categorySmartSelect";
+import { categoryOrderBy } from "@/lib/category-order";
 import { decodeScheduledTaskMemo, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
 import { AccountKind, TransactionType } from "@prisma/client";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
@@ -11,12 +13,8 @@ import { RegularInvestClient } from "./RegularInvestClient";
 import { MobileRegularInvest } from "@/components/mobile/MobileRegularInvest";
 import { resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { isCreditCardRepaymentTransfer, recordMatchesRegularInvestPlan } from "@/lib/transaction-semantics";
-
-async function unavailableCreateTransaction(_formData: FormData) {
-  "use server";
-  void _formData;
-  return { ok: false as const, error: "Scheduled task page only supports editing generated records" };
-}
+import { getServerT } from "@/lib/server/i18n";
+import { createTransaction } from "@/lib/server/sidebar-actions/transaction-actions";
 
 async function updateScheduledTransferRecord(formData: FormData) {
   "use server";
@@ -108,8 +106,9 @@ function recordMatchesTask(taskType: string, entry: { source: string | null }) {
 
 export default async function RegularInvestPage() {
   const { hidFilter } = await getHouseholdScope();
+  const t = await getServerT();
 
-  const [plans, accounts, groups, institutions, insuranceProducts] = await Promise.all([
+  const [plans, accounts, groups, institutions, insuranceProducts, categories] = await Promise.all([
     prisma.regularInvestPlan.findMany({
       where: hidFilter,
       orderBy: { nextRunDate: "asc" },
@@ -135,6 +134,18 @@ export default async function RegularInvestPage() {
         OwnerGroup: true,
       },
       orderBy: [{ status: "asc" }, { name: "asc" }],
+    }),
+    prisma.category.findMany({
+      where: hidFilter,
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        parentId: true,
+        sortOrder: true,
+        isSystem: true,
+      },
+      orderBy: categoryOrderBy(),
     }),
   ]);
 
@@ -220,7 +231,10 @@ export default async function RegularInvestPage() {
       insuranceProductName: plan.insuranceProductName ?? null,
       taskFromAccountId: scheduledTask.fromAccountId ?? null,
       taskToAccountId: scheduledTask.toAccountId ?? null,
+      taskCategoryId: scheduledTask.categoryId ?? null,
+      taskCategoryName: scheduledTask.categoryName ?? null,
       taskInsuranceProductId: scheduledTask.insuranceProductId ?? null,
+      taskNote: scheduledTask.note ?? null,
       taskAnnualRate: scheduledTask.annualRate ?? null,
       taskRepaymentMethod: scheduledTask.repaymentMethod ?? null,
       taskRepaymentIntervalMonths: scheduledTask.repaymentIntervalMonths ?? null,
@@ -249,8 +263,34 @@ export default async function RegularInvestPage() {
 
   const investmentAccounts = accountOptions.filter((account) => account.kind === "investment" && account.investProductType === "fund");
   const cashAccounts = accountOptions.filter((account) => ["bank_debit", "ewallet", "cash"].includes(account.kind));
+  const ordinaryAccounts = accountOptions.filter((account) => ["bank_debit", "bank_credit", "ewallet", "cash"].includes(account.kind));
   const loanAccounts = accountOptions.filter((account) => account.kind === "loan");
   const transferTargetAccounts = accountOptions.filter((account) => !account.id || !["insurance"].includes(account.kind));
+  const incomeCategoryOptions = buildCategorySmartSelectOptions({
+    categories,
+    types: ["income"],
+    typeLabels: { income: t("categoryType.income") },
+    typeHeaderPrefix: "scheduled-income-category",
+    includeTypeHeaders: false,
+    t,
+  });
+  const expenseCategoryOptions = buildCategorySmartSelectOptions({
+    categories,
+    types: ["expense"],
+    typeLabels: { expense: t("stats.expenseCategories") },
+    typeHeaderPrefix: "scheduled-expense-category",
+    includeTypeHeaders: false,
+    t,
+  });
+  const expenseCategories = categories
+    .filter((c) => c.type === "expense")
+    .map((c) => ({ id: c.id, label: c.name, parentId: c.parentId, type: c.type, sortOrder: c.sortOrder, isSystem: c.isSystem }));
+  const incomeCategories = categories
+    .filter((c) => c.type === "income")
+    .map((c) => ({ id: c.id, label: c.name, parentId: c.parentId, type: c.type, sortOrder: c.sortOrder, isSystem: c.isSystem }));
+  const advanceCategories = categories
+    .filter((c) => c.type === "advance")
+    .map((c) => ({ id: c.id, label: c.name, parentId: c.parentId, type: c.type, sortOrder: c.sortOrder, isSystem: c.isSystem }));
   const insuranceProductOptions = insuranceProducts.map((product) => ({
     id: product.id,
     label: product.name,
@@ -278,16 +318,23 @@ export default async function RegularInvestPage() {
       cashAccounts={cashAccounts}
       loanAccounts={loanAccounts}
       transferTargetAccounts={transferTargetAccounts}
+      ordinaryAccounts={ordinaryAccounts}
       insuranceProductOptions={insuranceProductOptions}
       investmentAccountSSOptions={buildFlatAccountOptions(investmentAccounts)}
       cashAccountSSOptions={buildGroupedAccountOptions(cashAccounts)}
       transferTargetAccountSSOptions={buildGroupedAccountOptions(transferTargetAccounts)}
+      ordinaryAccountSSOptions={buildGroupedAccountOptions(ordinaryAccounts)}
+      incomeCategoryOptions={incomeCategoryOptions}
+      expenseCategoryOptions={expenseCategoryOptions}
+      expenseCategories={expenseCategories}
+      incomeCategories={incomeCategories}
+      advanceCategories={advanceCategories}
       allAccountSSOptions={buildGroupedAccountOptions(accountOptions)}
       nestedFieldData={{
         groupId: groups.map((group) => ({ id: group.id, name: group.name })),
         institutionId: institutions.map((institution) => ({ id: institution.id, name: institution.name, type: institution.type ?? undefined })),
       }}
-      transactionCreateAction={unavailableCreateTransaction}
+      transactionCreateAction={createTransaction}
           transactionEditAction={updateScheduledTransferRecord}
         />
       </div>

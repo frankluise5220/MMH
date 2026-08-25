@@ -47,6 +47,7 @@ import { ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewEx
 
 import { subtypeDisplay } from "@/lib/investment-config";
 import { TRANSACTION_SOURCE_FUND_UNITS_RECONCILE, isFundUnitsReconcileEntry } from "@/lib/transaction-semantics";
+import { decodeScheduledTaskMemo, normalizeScheduledTaskType } from "@/lib/scheduled-task";
 
 import { useI18n } from "@/lib/i18n";
 import { useOutsideClose } from "@/lib/client/useOutsideClose";
@@ -1776,7 +1777,7 @@ export function FundShell(props: Props) {
     for (const plan of regularPlans) {
       const code = String(plan?.fundCode ?? "").trim();
       if (!code || map.has(code)) continue;
-      map.set(code, plan);
+      map.set(code, { ...plan, secondaryExecutionDay: plan.secondaryExecutionDay ?? null });
     }
     return map;
   }, [regularPlans]);
@@ -3499,6 +3500,9 @@ export function FundShell(props: Props) {
           mode="edit"
           editData={{
             id: editingRegularPlan.id,
+            taskType: normalizeScheduledTaskType(
+              editingRegularPlan.taskType ?? decodeScheduledTaskMemo(editingRegularPlan.memo).type,
+            ),
             accountId: editingRegularPlan.accountId,
             fundCode: editingRegularPlan.fundCode,
             fundName: editingRegularPlan.fundName,
@@ -3506,6 +3510,10 @@ export function FundShell(props: Props) {
             intervalUnit: editingRegularPlan.intervalUnit,
             intervalValue: Number(editingRegularPlan.intervalValue ?? 1),
             executionDay: editingRegularPlan.executionDay ?? null,
+            secondaryExecutionDay:
+              editingRegularPlan.secondaryExecutionDay ??
+              editingRegularPlan.plan?.secondaryExecutionDay ??
+              null,
             startDate: String(editingRegularPlan.startDate ?? "").slice(0, 10),
             endDate: editingRegularPlan.endDate ? String(editingRegularPlan.endDate).slice(0, 10) : null,
             totalRuns: editingRegularPlan.totalRuns ?? null,
@@ -3605,13 +3613,6 @@ export function FundShell(props: Props) {
           <div className="flex min-w-0 items-center gap-1 text-left text-sm font-semibold text-slate-800">
             {batchTargetIds.length > 0 ? (
               <div className="flex shrink-0 items-center gap-1">
-                <span
-                  className="h-6 rounded border border-blue-200 bg-blue-50 px-2 text-xs font-medium leading-6 tabular-nums text-blue-700"
-                  title={t("fundShell.selectedTitle", { count: batchTargetIds.length })}
-                >
-                  {t("table.selectedCount", { count: batchTargetIds.length })}
-                </span>
-
                 <BatchReplacePopoverButton
                   fields={batchFields}
                   targetCount={batchTargetIds.length}
@@ -3632,6 +3633,12 @@ export function FundShell(props: Props) {
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
 
+                <span
+                  className="h-6 rounded border border-blue-200 bg-blue-50 px-2 text-xs font-medium leading-6 tabular-nums text-blue-700"
+                  title={t("fundShell.selectedTitle", { count: batchTargetIds.length })}
+                >
+                  {t("table.selectedCount", { count: batchTargetIds.length })}
+                </span>
                 <span className="mx-1 h-4 w-px bg-slate-200" />
               </div>
             ) : null}

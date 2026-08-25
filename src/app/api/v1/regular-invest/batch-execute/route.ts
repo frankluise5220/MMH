@@ -33,9 +33,17 @@ function calcNextRunDate(
   fromDate: Date,
   intervalUnit: string,
   intervalValue: number,
-  executionDay?: number | null
+  executionDay?: number | null,
+  secondaryExecutionDay?: number | null,
 ): Date {
-  return calcNextScheduledRunDate(fromDate, intervalUnit as IntervalUnit, intervalValue, executionDay, true);
+  return calcNextScheduledRunDate(
+    fromDate,
+    intervalUnit as IntervalUnit,
+    intervalValue,
+    executionDay,
+    true,
+    secondaryExecutionDay,
+  );
 }
 
 const BATCH_EXECUTE_TRANSACTION_OPTIONS = {
@@ -167,7 +175,13 @@ export async function POST(req: NextRequest) {
     if (existingFundTransactions.length > 0) {
       // Find the latest record date and start from the day after it
       const latestDate = existingFundTransactions.reduce((max, r) => (r.applyDate > max ? r.applyDate : max), new Date(0));
-      currentDate = calcNextRunDate(latestDate, plan.intervalUnit, plan.intervalValue, plan.executionDay);
+      currentDate = calcNextRunDate(
+        latestDate,
+        plan.intervalUnit,
+        plan.intervalValue,
+        plan.executionDay,
+        plan.secondaryExecutionDay,
+      );
     } else {
       currentDate = calcInitialScheduledRunDate(
         new Date(plan.startDate),
@@ -175,6 +189,7 @@ export async function POST(req: NextRequest) {
         plan.intervalValue,
         plan.executionDay,
         true,
+        plan.secondaryExecutionDay,
       );
     }
 
@@ -188,7 +203,13 @@ export async function POST(req: NextRequest) {
       if (!existingDates.has(dateStr)) {
         datesToExecute.push(new Date(currentDate));
       }
-      currentDate = calcNextRunDate(currentDate, plan.intervalUnit, plan.intervalValue, plan.executionDay);
+      currentDate = calcNextRunDate(
+        currentDate,
+        plan.intervalUnit,
+        plan.intervalValue,
+        plan.executionDay,
+        plan.secondaryExecutionDay,
+      );
     }
 
     if (datesToExecute.length === 0) {
@@ -448,7 +469,13 @@ export async function POST(req: NextRequest) {
       // Update the regular investment plan status
       const finalExecutedRuns = plan.executedRuns + actualRunsToCreate.length;
       const finalLastRunDate = actualRunsToCreate[actualRunsToCreate.length - 1]!.runDate;
-      const nextRunDate = calcNextRunDate(finalLastRunDate, plan.intervalUnit, plan.intervalValue, plan.executionDay);
+      const nextRunDate = calcNextRunDate(
+        finalLastRunDate,
+        plan.intervalUnit,
+        plan.intervalValue,
+        plan.executionDay,
+        plan.secondaryExecutionDay,
+      );
 
       const willComplete =
         (plan.totalRuns && finalExecutedRuns >= plan.totalRuns) ||

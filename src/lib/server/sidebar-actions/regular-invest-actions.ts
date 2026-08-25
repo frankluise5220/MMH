@@ -56,6 +56,23 @@ function normalizeIntervalScheduleValue(unit: IntervalUnit, value: number): { un
   return { unit, value: safeValue };
 }
 
+function parseSecondaryExecutionDayValue(
+  unit: IntervalUnit,
+  value: unknown,
+): number | null {
+  if (value == null || value === "") return null;
+  const parsed = typeof value === "number" ? value : parseInt(String(value), 10);
+  if (!Number.isFinite(parsed)) return null;
+  if (unit === "month") return parsed >= 1 && parsed <= 31 ? parsed : null;
+  if (unit === "week" || unit === "biweek") return parsed >= 1 && parsed <= 7 ? parsed : null;
+  if (unit === "year") {
+    const month = Math.floor(parsed / 100);
+    const day = parsed % 100;
+    return month >= 1 && month <= 12 && day >= 1 && day <= 31 ? parsed : null;
+  }
+  return null;
+}
+
 function parseExecutionDayValue(raw: string): number | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
@@ -70,10 +87,15 @@ async function createRegularInvest(formData: FormData) {
 
   const taskType = normalizeScheduledTaskType(formData.get("taskType"));
   const isFundTask = taskType === "fund_regular_invest";
+  const isOrdinaryTask = taskType === "income" || taskType === "expense";
+  const requiresCashAccount = taskType === "transfer" || taskType === "loan_repayment" || taskType === "insurance_premium";
   const accountId = String(formData.get("accountId") ?? "").trim();
   const fundCodeRaw = String(formData.get("fundCode") ?? "").trim();
   const fundCode = isFundTask ? fundCodeRaw : taskType;
-  const fundName = String(formData.get("fundName") ?? "").trim() || (isFundTask ? fundCode : scheduledTaskTypeLabel(taskType));
+  const categoryId = String(formData.get("categoryId") ?? "").trim() || null;
+  const categoryName = String(formData.get("categoryName") ?? "").trim() || null;
+  const note = String(formData.get("note") ?? "").trim() || null;
+  const fundName = String(formData.get("fundName") ?? "").trim() || (isOrdinaryTask ? categoryName ?? scheduledTaskTypeLabel(taskType) : isFundTask ? fundCode : scheduledTaskTypeLabel(taskType));
   const insuranceProductId = String(formData.get("insuranceProductId") ?? "").trim() || null;
   const amountRaw = parseFloat(String(formData.get("amount") ?? ""));
   const intervalUnit = String(formData.get("intervalUnit") ?? "month").trim();
@@ -82,6 +104,7 @@ async function createRegularInvest(formData: FormData) {
   const endDateStr = String(formData.get("endDate") ?? "").trim();
   const totalRunsRaw = String(formData.get("totalRuns") ?? "").trim();
   const executionDayRaw = String(formData.get("executionDay") ?? "").trim();
+  const secondaryExecutionDayRaw = String(formData.get("secondaryExecutionDay") ?? "").trim();
   const cashAccountId = String(formData.get("cashAccountId") ?? "").trim() || null;
   const feeRateRaw = String(formData.get("feeRate") ?? "").trim();
   const confirmDaysRaw = String(formData.get("confirmDays") ?? "").trim();
@@ -97,7 +120,7 @@ async function createRegularInvest(formData: FormData) {
   if (!Number.isFinite(amountRaw) || amountRaw <= 0) {
     return { ok: false as const, error: "金额不正确" };
   }
-  if (!isFundTask && !cashAccountId) {
+  if (requiresCashAccount && !cashAccountId) {
     return { ok: false as const, error: "计划任务缺少资金账户" };
   }
   if (taskType === "insurance_premium" && !insuranceProductId) {
@@ -126,8 +149,20 @@ async function createRegularInvest(formData: FormData) {
   const intervalValue = normalizedInterval.value;
   const intervalUnitValue = normalizedInterval.unit;
   const executionDay = parseExecutionDayValue(executionDayRaw);
+  const secondaryExecutionDay = parseSecondaryExecutionDayValue(intervalUnitValue, secondaryExecutionDayRaw);
+  const dedupedSecondaryExecutionDay =
+    intervalValue !== 1 || (secondaryExecutionDay != null && secondaryExecutionDay === executionDay)
+      ? null
+      : secondaryExecutionDay;
   const startDate = isFundTask ? skipWeekend(parsedStartDate) : parsedStartDate;
-  const nextRunDate = calcInitialScheduledRunDate(parsedStartDate, intervalUnitValue, intervalValue, executionDay, isFundTask);
+  const nextRunDate = calcInitialScheduledRunDate(
+    parsedStartDate,
+    intervalUnitValue,
+    intervalValue,
+    executionDay,
+    isFundTask,
+    dedupedSecondaryExecutionDay,
+  );
   const endDate = endDateStr ? parseDateOnlyUtc(endDateStr) : null;
   if (endDateStr && !endDate) return { ok: false as const, error: "结束日期不正确" };
   const totalRuns = totalRunsRaw ? parseInt(totalRunsRaw, 10) : null;
@@ -142,11 +177,15 @@ async function createRegularInvest(formData: FormData) {
           cashAccountName: cashAcc?.name || null,
           fundCode,
           fundName,
+          taskType,
+          targetName: fundName,
+          insuranceProductName: taskType === "insurance_premium" ? fundName : null,
           fundProductType: isFundTask ? (targetAcc.investProductType || null) : null,
           amount: amountRaw,
           intervalUnit: intervalUnitValue,
           intervalValue,
           executionDay: executionDay != null && Number.isFinite(executionDay) ? executionDay : null,
+          secondaryExecutionDay: dedupedSecondaryExecutionDay,
           startDate,
           nextRunDate,
           endDate: endDate && Number.isFinite(endDate.getTime()) ? endDate : null,
@@ -158,9 +197,12 @@ async function createRegularInvest(formData: FormData) {
           memo: encodeScheduledTaskMemo({
             type: taskType,
             title: fundName,
-            fromAccountId: cashAccountId || null,
+            fromAccountId: isOrdinaryTask ? null : cashAccountId || null,
             toAccountId: accountId,
+            categoryId: isOrdinaryTask ? categoryId : null,
+            categoryName: isOrdinaryTask ? categoryName : null,
             insuranceProductId,
+            note: isOrdinaryTask ? note : null,
             annualRate: taskType === "loan_repayment" ? annualRate : null,
             repaymentMethod: taskType === "loan_repayment" ? repaymentMethod : null,
             repaymentIntervalMonths: taskType === "loan_repayment" ? repaymentIntervalMonths : null,
@@ -257,18 +299,31 @@ async function updateRegularInvest(formData: FormData) {
   const existingTaskType = normalizeScheduledTaskType(plan.taskType ?? existingTask.type);
   const taskType = normalizeScheduledTaskType(formData.get("taskType") || existingTaskType);
   const isFundTask = taskType === "fund_regular_invest";
+  const isOrdinaryTask = taskType === "income" || taskType === "expense";
+  const requiresCashAccount = taskType === "transfer" || taskType === "loan_repayment" || taskType === "insurance_premium";
   const accountId = String(formData.get("accountId") ?? plan.accountId).trim();
   const fundCodeRaw = String(formData.get("fundCode") ?? plan.fundCode).trim();
   const fundCode = isFundTask ? fundCodeRaw : taskType;
   const insuranceProductId = String(formData.get("insuranceProductId") ?? "").trim() || existingTask.insuranceProductId || null;
   const fundName = String(formData.get("fundName") ?? "").trim();
+  const nextCategoryId = formData.has("categoryId")
+    ? String(formData.get("categoryId") ?? "").trim() || null
+    : existingTask.categoryId ?? null;
+  const nextCategoryName = formData.has("categoryName")
+    ? String(formData.get("categoryName") ?? "").trim() || null
+    : existingTask.categoryName ?? null;
+  const nextNote = formData.has("note")
+    ? String(formData.get("note") ?? "").trim() || null
+    : existingTask.note ?? null;
   const amountRaw = parseFloat(String(formData.get("amount") ?? ""));
   const intervalUnit = String(formData.get("intervalUnit") ?? "").trim();
   const intervalValueRaw = parseInt(String(formData.get("intervalValue") ?? "1"), 10);
   const startDateStr = String(formData.get("startDate") ?? "").trim();
+  const nextRunDateStr = String(formData.get("nextRunDate") ?? "").trim();
   const endDateStr = String(formData.get("endDate") ?? "").trim();
   const totalRunsRaw = String(formData.get("totalRuns") ?? "").trim();
   const executionDayRaw = String(formData.get("executionDay") ?? "").trim();
+  const secondaryExecutionDayRaw = String(formData.get("secondaryExecutionDay") ?? "").trim();
   const cashAccountId = String(formData.get("cashAccountId") ?? "").trim() || null;
   const feeRateRaw = String(formData.get("feeRate") ?? "").trim();
   const confirmDaysRaw = String(formData.get("confirmDays") ?? "").trim();
@@ -284,20 +339,26 @@ async function updateRegularInvest(formData: FormData) {
     : existingTask.repaymentIntervalMonths ?? 1;
 
   if (!accountId || (isFundTask && !fundCode)) return { ok: false as const, error: "缺少必填字段" };
-  if (!isFundTask && !cashAccountId) return { ok: false as const, error: "计划任务缺少资金账户" };
+  if (requiresCashAccount && !cashAccountId) return { ok: false as const, error: "计划任务缺少资金账户" };
   if (taskType === "insurance_premium" && !insuranceProductId) return { ok: false as const, error: "缴费计划缺少保险产品" };
 
   const updateData: any = {};
-  const displayName = fundName || (isFundTask ? plan.fundName || fundCode : scheduledTaskTypeLabel(taskType));
+  const displayName = fundName || (isOrdinaryTask ? nextCategoryName ?? plan.targetName ?? plan.fundName ?? scheduledTaskTypeLabel(taskType) : isFundTask ? plan.fundName || fundCode : scheduledTaskTypeLabel(taskType));
   updateData.accountId = accountId;
   updateData.fundCode = fundCode;
   updateData.fundName = displayName;
+  updateData.taskType = taskType;
+  updateData.targetName = displayName;
+  updateData.insuranceProductName = taskType === "insurance_premium" ? displayName : null;
   updateData.memo = encodeScheduledTaskMemo({
     type: taskType,
     title: displayName,
-    fromAccountId: cashAccountId || null,
+    fromAccountId: isOrdinaryTask ? null : cashAccountId || null,
     toAccountId: accountId,
+    categoryId: isOrdinaryTask ? nextCategoryId : null,
+    categoryName: isOrdinaryTask ? nextCategoryName : null,
     insuranceProductId,
+    note: isOrdinaryTask ? nextNote : null,
     annualRate: taskType === "loan_repayment" ? nextAnnualRate : null,
     repaymentMethod: taskType === "loan_repayment" ? nextRepaymentMethod : null,
     repaymentIntervalMonths: taskType === "loan_repayment" ? nextRepaymentIntervalMonths : null,
@@ -325,24 +386,37 @@ async function updateRegularInvest(formData: FormData) {
       : formData.has("executionDay")
         ? null
         : plan.executionDay;
+  const effectiveSecondaryExecutionDay = parseSecondaryExecutionDayValue(
+    effectiveIntervalUnit,
+    formData.has("secondaryExecutionDay")
+      ? secondaryExecutionDayRaw
+      : secondaryExecutionDayRaw || plan.secondaryExecutionDay,
+  );
+  const normalizedSecondaryExecutionDay = effectiveIntervalValue === 1 ? effectiveSecondaryExecutionDay : null;
   if (intervalUnit || (Number.isFinite(intervalValueRaw) && intervalValueRaw > 0)) {
     updateData.intervalUnit = effectiveIntervalUnit;
     updateData.intervalValue = effectiveIntervalValue;
   }
   const parsedStartDate = startDateStr ? parseDateOnlyUtc(startDateStr) : null;
   if (startDateStr && !parsedStartDate) return { ok: false as const, error: "开始日期不正确" };
+  const parsedNextRunDate = nextRunDateStr ? parseDateOnlyUtc(nextRunDateStr) : null;
+  if (nextRunDateStr && !parsedNextRunDate) return { ok: false as const, error: "下次执行日期不正确" };
+  if (parsedNextRunDate && plan.nextRunDate && parsedNextRunDate < plan.nextRunDate) return { ok: false as const, error: "下次执行日期不能早于当前下次执行日期" };
   const nextStoredStartDate = parsedStartDate
     ? isFundTask ? skipWeekend(parsedStartDate) : parsedStartDate
     : plan.startDate;
   const startDateChanged = parsedStartDate != null && !sameDateOnly(nextStoredStartDate, plan.startDate);
   const taskTypeChanged = taskType !== existingTaskType;
   const normalizedExistingExecutionDay = effectiveIntervalUnit === IntervalUnit.year ? null : plan.executionDay;
+  const normalizedExistingSecondaryExecutionDay =
+    effectiveIntervalUnit === plan.intervalUnit ? plan.secondaryExecutionDay : null;
   const scheduleChanged =
     startDateChanged ||
     taskTypeChanged ||
     effectiveIntervalUnit !== plan.intervalUnit ||
     effectiveIntervalValue !== plan.intervalValue ||
-    effectiveExecutionDay !== normalizedExistingExecutionDay;
+    effectiveExecutionDay !== normalizedExistingExecutionDay ||
+    normalizedSecondaryExecutionDay !== normalizedExistingSecondaryExecutionDay;
   let linkedRecordCount: number | null = null;
   const getLinkedRecordCount = async () => {
     if (linkedRecordCount == null) {
@@ -368,6 +442,8 @@ async function updateRegularInvest(formData: FormData) {
   if (parsedStartDate) updateData.startDate = nextStoredStartDate;
   if (effectiveIntervalUnit === "year") updateData.executionDay = effectiveExecutionDay;
   else if (formData.has("executionDay")) updateData.executionDay = effectiveExecutionDay;
+  if (formData.has("secondaryExecutionDay")) updateData.secondaryExecutionDay = normalizedSecondaryExecutionDay;
+  else if (effectiveIntervalUnit !== plan.intervalUnit) updateData.secondaryExecutionDay = null;
   if (scheduleChanged) {
     updateData.nextRunDate = await deriveRegularInvestNextRunDate(prisma, {
       id: plan.id,
@@ -378,8 +454,10 @@ async function updateRegularInvest(formData: FormData) {
       intervalUnit: effectiveIntervalUnit,
       intervalValue: effectiveIntervalValue,
       executionDay: effectiveExecutionDay,
+      secondaryExecutionDay: updateData.secondaryExecutionDay ?? normalizedSecondaryExecutionDay,
     });
   }
+  if (parsedNextRunDate) updateData.nextRunDate = parsedNextRunDate;
   if (endDateStr) {
     const endDate = parseDateOnlyUtc(endDateStr);
     if (!endDate) return { ok: false as const, error: "结束日期不正确" };
@@ -402,6 +480,9 @@ async function updateRegularInvest(formData: FormData) {
     } else {
       updateData.cashAccountName = null;
     }
+  } else if (isOrdinaryTask) {
+    updateData.cashAccountId = null;
+    updateData.cashAccountName = null;
   }
   if (isFundTask && feeRateRaw) {
     const feeRate = parseFloat(feeRateRaw);

@@ -169,6 +169,7 @@ export async function POST(req: NextRequest) {
             plan.intervalValue,
             plan.executionDay,
             false,
+            plan.secondaryExecutionDay,
           );
           guard++;
           if (guard > 1200) throw new Error("计划周期异常，已停止生成以避免无限循环");
@@ -206,6 +207,7 @@ export async function POST(req: NextRequest) {
         plan.intervalValue,
         plan.executionDay,
         false,
+        plan.secondaryExecutionDay,
       );
       const willComplete = !!(
         (plan.totalRuns && finalExecutedRuns >= plan.totalRuns) ||
@@ -289,6 +291,7 @@ export async function POST(req: NextRequest) {
       plan.intervalValue,
       plan.executionDay,
       usesBusinessDays,
+      plan.secondaryExecutionDay,
     );
 
     // Determine whether the completion condition is met after execution

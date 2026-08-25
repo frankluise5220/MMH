@@ -25,7 +25,7 @@ import {
   loadWealthTransactionEntryLike,
 } from "@/lib/server/business-transaction-entries";
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
-import { readableTagWhere } from "@/lib/server/tag-scope";
+import { loadReadableTagsByRecentUse } from "@/lib/server/tag-scope";
 import { categoryOrderBy } from "@/lib/category-order";
 import { DETAIL_ALL_PAGE_SIZE } from "@/lib/detail-pagination-preference";
 
@@ -52,10 +52,7 @@ async function _loadCommonData(hidFilter: { householdId: string }) {
       include: { Institution: true, Counterparty: true, AccountGroup: true, AccountAlias: true },
       orderBy: [{ isActive: "desc" }, { name: "asc" }],
     }),
-    prisma.tag.findMany({
-      where: readableTagWhere(hidFilter.householdId),
-      orderBy: { name: "asc" },
-    }),
+    loadReadableTagsByRecentUse(hidFilter.householdId),
     prisma.accountGroup.findMany({
       where: { ...hidFilter },
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],

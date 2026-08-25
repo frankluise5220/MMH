@@ -97,12 +97,14 @@ function reportMenuItems(
   currentType: ReportType,
   investmentHref: string,
   stockHref: string,
+  statisticsHref: string,
   t: (key: string) => string,
 ): ReportItem[] {
   return [
     { value: "income-expense", label: t("reports.menu.incomeExpense"), href: "/reports" },
     { value: "investment-profit", label: t("reports.menu.investmentProfit"), href: investmentHref },
     { value: "stock-holdings", label: t("reports.menu.stockHoldings"), href: stockHref },
+    { value: "cash-statistics", label: t("reports.menu.cashStatisticsCharts"), href: statisticsHref },
   ];
 }
 
@@ -128,6 +130,12 @@ function buildReportHref(
     if (normalizedScope !== PROFIT_SCOPE_ALL) query.set("profitScope", normalizedScope);
   }
   return `/reports${query.toString() ? `?${query.toString()}` : ""}`;
+}
+
+function buildStatisticsHref(year: number) {
+  const query = new URLSearchParams();
+  query.set("year", String(year));
+  return `/statistics?${query.toString()}`;
 }
 
 function parseMonthNumber(value: string | undefined, fallback: number) {
@@ -348,6 +356,7 @@ export default async function ReportsPage({
     undefined,
     selectedProfitScope,
   );
+  const currentStatisticsHref = buildStatisticsHref(profitYear);
   const allInvestmentScopeOption: InvestmentProfitScopeOption = {
     value: PROFIT_SCOPE_ALL,
     label: t("reports.allInvestmentAccounts"),
@@ -410,7 +419,7 @@ export default async function ReportsPage({
             <div className="flex items-center gap-2">
               <ReportSelector
                 currentType="investment-profit"
-                items={reportMenuItems("investment-profit", currentInvestmentHref, currentStockHref, t)}
+                items={reportMenuItems("investment-profit", currentInvestmentHref, currentStockHref, currentStatisticsHref, t)}
               />
             </div>
           </div>
@@ -613,7 +622,7 @@ export default async function ReportsPage({
             <div className="flex items-center gap-2">
               <ReportSelector
                 currentType="stock-holdings"
-                items={reportMenuItems("stock-holdings", currentInvestmentHref, currentStockHref, t)}
+                items={reportMenuItems("stock-holdings", currentInvestmentHref, currentStockHref, currentStatisticsHref, t)}
               />
             </div>
           </div>
@@ -767,6 +776,7 @@ export default async function ReportsPage({
                 "income-expense",
                 buildReportHref("investment-profit", "day", currentYear, currentMonth),
                 buildReportHref("stock-holdings"),
+                buildStatisticsHref(currentYear),
                 t,
               )}
             />
@@ -890,6 +900,7 @@ export default async function ReportsPage({
               includeTypeHeaders: true,
               t,
             }).map((option) => ({ ...option, value: option.id }))}
+            tagOptions={editTags.map((tag) => ({ value: tag.id, label: tag.name, color: tag.color }))}
             investmentProductTypeByAccountId={investmentProductTypeByAccountId}
           />
           <ReportTransactionEditHost

@@ -4,6 +4,8 @@ import { TransactionType } from "@prisma/client";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { toNumber } from "@/lib/date-utils";
 import { Suspense } from "react";
+import { ReportSelector } from "@/components/ReportSelector";
+import type { ReportItem } from "@/components/ReportSelector";
 import StatisticsCharts from "@/components/StatisticsCharts";
 import { StatisticsFilterPanel } from "@/components/StatisticsFilterPanel";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -44,6 +46,29 @@ type PnLItem = {
   profit: number;
   profitRate: number;
 };
+
+function buildStatisticsReportHref(year: number) {
+  const query = new URLSearchParams();
+  query.set("year", String(year));
+  return `/statistics?${query.toString()}`;
+}
+
+function buildStatisticsReportMenuItems(year: number, t: (key: string) => string): ReportItem[] {
+  const investmentQuery = new URLSearchParams();
+  investmentQuery.set("report", "investment-profit");
+  investmentQuery.set("profitPeriod", "day");
+  investmentQuery.set("profitYear", String(year));
+
+  const stockQuery = new URLSearchParams();
+  stockQuery.set("report", "stock-holdings");
+
+  return [
+    { value: "income-expense", label: t("reports.menu.incomeExpense"), href: "/reports" },
+    { value: "investment-profit", label: t("reports.menu.investmentProfit"), href: `/reports?${investmentQuery.toString()}` },
+    { value: "stock-holdings", label: t("reports.menu.stockHoldings"), href: `/reports?${stockQuery.toString()}` },
+    { value: "cash-statistics", label: t("reports.menu.cashStatisticsCharts"), href: buildStatisticsReportHref(year) },
+  ];
+}
 
 export default async function StatisticsPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const params = await searchParams;
@@ -118,6 +143,8 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
       debtInterestAmount: true,
       depositInterest: true,
       fundFee: true,
+      fundUnits: true,
+      fundNav: true,
       categoryId: true,
       categoryName: true,
       accountId: true,
@@ -334,15 +361,21 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
-      <header className="page-header px-6 py-3 flex items-center justify-between">
+      <header className="page-header flex items-center justify-between gap-3 px-6 py-3">
         <h1 className="text-lg page-title">{t("statistics.title")}</h1>
-        <Suspense fallback={<div className="text-xs text-slate-400">{t("statistics.loadingFilter")}</div>}>
-          <StatisticsFilterPanel
-            allAccounts={allAccounts}
-            allTags={allTags}
-            year={year}
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <ReportSelector
+            currentType="cash-statistics"
+            items={buildStatisticsReportMenuItems(year, t)}
           />
-        </Suspense>
+          <Suspense fallback={<div className="text-xs text-slate-400">{t("statistics.loadingFilter")}</div>}>
+            <StatisticsFilterPanel
+              allAccounts={allAccounts}
+              allTags={allTags}
+              year={year}
+            />
+          </Suspense>
+        </div>
       </header>
 
       <div className="flex-1 min-h-0 overflow-y-auto p-6">

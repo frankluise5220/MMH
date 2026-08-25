@@ -1,6 +1,6 @@
-import { FundSubtype, Prisma, RegularInvestStatus, TransactionType, type IntervalUnit, type RegularInvestPlan } from "@prisma/client";
+import { AccountKind, FundSubtype, Prisma, RegularInvestStatus, TransactionType, type IntervalUnit, type RegularInvestPlan } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import { formatDateUtc, startOfDayUtc, toNumber } from "@/lib/date-utils";
+import { formatDateUtc, startOfDayUtc, toNumber, toStatementMonth } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import {
   calcLoanRunPartsWithRateAdjustments,
@@ -13,7 +13,7 @@ import { calcNextScheduledRunDate } from "@/lib/scheduled-task-date";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { listLoanRateAdjustmentsByAccountIds, resolveLoanRateAdjustments } from "@/lib/server/loan-rate-adjustments";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
-import { resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
+import { resolveCategorySnapshot, resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { ENTRY_ORIGIN_SCHEDULED_TASK, isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 
@@ -34,6 +34,10 @@ export type NonFundScheduledTaskResult = {
   executedRuns: number;
   completed: boolean;
   stats: {
+    executedCount: number;
+    executedAmount: number;
+    confirmedCount: number;
+    confirmedAmount: number;
     plan: {
       executedRuns: number;
       lastRunDate: string | null;
@@ -59,6 +63,8 @@ function toPositiveAmount(value: unknown) {
 function getTaskNote(type: NonFundTaskType, label?: string | null) {
   if (type === "loan_repayment") return "计划任务：还贷款";
   if (type === "insurance_premium") return label ? `计划任务：保险缴费：${label}` : "计划任务：保险缴费";
+  if (type === "income") return label ? `Scheduled task: ${label}` : "Scheduled task: income";
+  if (type === "expense") return label ? `Scheduled task: ${label}` : "Scheduled task: expense";
   return "计划任务：转账";
 }
 
@@ -69,17 +75,28 @@ function makeNextRunDate(plan: RegularInvestPlan, fromDate: Date) {
     plan.intervalValue,
     plan.executionDay,
     false,
+    plan.secondaryExecutionDay,
   );
 }
 
 async function loadTaskAccounts(plan: RegularInvestPlan) {
   const [targetAcc, cashAcc] = await Promise.all([
-    prisma.account.findUnique({ where: { id: plan.accountId }, select: { id: true, name: true, kind: true } }),
+    prisma.account.findUnique({ where: { id: plan.accountId }, select: { id: true, name: true, kind: true, billingDay: true } }),
     plan.cashAccountId
-      ? prisma.account.findUnique({ where: { id: plan.cashAccountId }, select: { id: true, name: true, kind: true } })
+      ? prisma.account.findUnique({ where: { id: plan.cashAccountId }, select: { id: true, name: true, kind: true, billingDay: true } })
       : Promise.resolve(null),
   ]);
   return { targetAcc, cashAcc };
+}
+
+function requiresCashAccount(type: NonFundTaskType) {
+  return type === "transfer" || type === "loan_repayment" || type === "insurance_premium";
+}
+
+function statementMonthForSingleAccount(date: Date, account: { kind: string; billingDay: number | null }) {
+  return (account.kind === AccountKind.bank_credit || account.kind === AccountKind.loan) && account.billingDay
+    ? toStatementMonth(date, account.billingDay)
+    : null;
 }
 
 export async function executeNonFundScheduledTaskPlan(params: {
@@ -108,7 +125,7 @@ export async function executeNonFundScheduledTaskPlan(params: {
 
   const { targetAcc, cashAcc } = await loadTaskAccounts(plan);
   if (!targetAcc) throw new Error("目标账户不存在");
-  if (!cashAcc) throw new Error("计划任务缺少资金账户");
+  if (requiresCashAccount(task.type) && !cashAcc) throw new Error("计划任务缺少资金账户");
 
   const amountNum = params.overrideAmount && params.overrideAmount > 0
     ? params.overrideAmount
@@ -172,6 +189,10 @@ export async function executeNonFundScheduledTaskPlan(params: {
       executedRuns: plan.executedRuns,
       completed: false,
       stats: {
+        executedCount: existingTxRecords.length,
+        executedAmount: existingTxRecords.length * amountNum,
+        confirmedCount: 0,
+        confirmedAmount: 0,
         plan: {
           executedRuns: plan.executedRuns,
           lastRunDate: plan.lastRunDate?.toISOString() ?? null,
@@ -270,16 +291,26 @@ export async function executeNonFundScheduledTaskPlan(params: {
     : amountNum;
   const repaymentCategory = task.type === "transfer" && isCreditCardRepaymentTransfer({
     type: TransactionType.transfer,
-    accountKind: cashAcc.kind,
+    accountKind: cashAcc?.kind,
     toAccountKind: targetAcc.kind,
   })
     ? await resolveCreditCardRepaymentCategory(prisma, householdId)
     : null;
-  const affectedAccountIds = new Set<string>([cashAcc.id, targetAcc.id]);
+  const affectedAccountIds = new Set<string>([targetAcc.id]);
+  if (cashAcc) affectedAccountIds.add(cashAcc.id);
   const createdInvestmentEntryIds: string[] = [];
   await prisma.$transaction(async (tx) => {
+    const ordinaryCategory = task.type === "income" || task.type === "expense"
+      ? await resolveCategorySnapshot(tx, householdId, {
+          categoryId: task.categoryId,
+          categoryName: task.categoryName,
+          type: task.type,
+        })
+      : null;
+
     for (const [runIndex, runDate] of datesToProcess.entries()) {
       if (task.type === "loan_repayment") {
+        if (!cashAcc) throw new Error("计划任务缺少资金账户");
         applyPrepaymentsBefore(rollingPreviousRunDate);
         const remainingRunsForThisRun = plan.totalRuns
           ? Math.max(1, plan.totalRuns - plan.executedRuns - runIndex)
@@ -368,6 +399,7 @@ export async function executeNonFundScheduledTaskPlan(params: {
           }
         }
       } else if (task.type === "transfer") {
+        if (!cashAcc) throw new Error("计划任务缺少资金账户");
         await tx.txRecord.create({
           data: {
             householdId,
@@ -387,6 +419,7 @@ export async function executeNonFundScheduledTaskPlan(params: {
           },
         });
       } else if (task.type === "insurance_premium" && insuranceProduct) {
+        if (!cashAcc) throw new Error("计划任务缺少资金账户");
         affectedAccountIds.add(insuranceProduct.accountId);
         const created = await tx.txRecord.create({
           data: {
@@ -410,6 +443,24 @@ export async function executeNonFundScheduledTaskPlan(params: {
           },
         });
         createdInvestmentEntryIds.push(created.id);
+      } else if (task.type === "income" || task.type === "expense") {
+        await tx.txRecord.create({
+          data: {
+            householdId,
+            type: task.type === "income" ? TransactionType.income : TransactionType.expense,
+            date: runDate,
+            accountId: targetAcc.id,
+            accountName: targetAcc.name,
+            amount: task.type === "income" ? amountNum : -amountNum,
+            categoryId: ordinaryCategory?.id ?? null,
+            categoryName: ordinaryCategory?.name ?? null,
+            statementMonth: statementMonthForSingleAccount(runDate, targetAcc),
+            source: "scheduled_task",
+            entryOrigin: ENTRY_ORIGIN_SCHEDULED_TASK,
+            regularInvestPlanId: plan.id,
+            note: task.note?.trim() || getTaskNote(task.type, task.title),
+          },
+        });
       }
     }
 
@@ -435,6 +486,21 @@ export async function executeNonFundScheduledTaskPlan(params: {
   if (task.type === "insurance_premium") revalidateAfterInvestChange();
   else revalidateAfterTxChange();
 
+  const updatedRows = await prisma.txRecord.findMany({
+    where: {
+      householdId,
+      regularInvestPlanId: plan.id,
+      source: { in: sourceFilter },
+      deletedAt: null,
+    },
+    select: { amount: true, fundUnits: true },
+  });
+  const executedCount = updatedRows.length;
+  const executedAmount = updatedRows.reduce((sum, row) => sum + Math.abs(toNumber(row.amount)), 0);
+  const confirmedRows = updatedRows.filter((row) => row.fundUnits != null && toNumber(row.fundUnits) > 0);
+  const confirmedCount = confirmedRows.length;
+  const confirmedAmount = confirmedRows.reduce((sum, row) => sum + Math.abs(toNumber(row.amount)), 0);
+
   return {
     ok: true,
     taskType: task.type,
@@ -445,6 +511,10 @@ export async function executeNonFundScheduledTaskPlan(params: {
     executedRuns: finalExecutedRuns,
     completed: willComplete,
     stats: {
+      executedCount,
+      executedAmount,
+      confirmedCount,
+      confirmedAmount,
       plan: {
         executedRuns: finalExecutedRuns,
         lastRunDate: finalLastRunDate.toISOString(),

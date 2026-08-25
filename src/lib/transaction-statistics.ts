@@ -37,6 +37,8 @@ export type InvestmentStatisticType = "income" | "expense";
 
 type InvestmentProductKind = "fund" | "wealth" | "deposit";
 
+const MONEY_EPSILON = 0.005;
+
 export type InvestmentStatisticEntryLike = {
   id: string;
   amount: unknown;
@@ -48,6 +50,8 @@ export type InvestmentStatisticEntryLike = {
   debtInterestAmount?: unknown | null;
   depositInterest?: unknown | null;
   fundFee?: unknown | null;
+  fundUnits?: unknown | null;
+  fundNav?: unknown | null;
   fundCode?: string | null;
   fundName?: string | null;
 };
@@ -200,6 +204,15 @@ function classifyInvestmentProduct(entry: InvestmentStatisticEntryLike): Investm
   return "fund";
 }
 
+function storedResultLooksLikeCashReceiptTotal(entry: InvestmentStatisticEntryLike, result: number) {
+  const cashAmount = Math.abs(toNumber(entry.amount));
+  return cashAmount > MONEY_EPSILON && Math.abs(Math.abs(result) - cashAmount) <= MONEY_EPSILON;
+}
+
+function hasUnitBasedResultEvidence(entry: InvestmentStatisticEntryLike) {
+  return toNumber(entry.fundUnits) > 0 || toNumber(entry.fundNav) > 0;
+}
+
 function profitCategory(kind: InvestmentProductKind, value: number) {
   if (kind === "wealth") {
     return value >= 0
@@ -266,9 +279,11 @@ export function getInvestmentStatisticItems(entry: InvestmentStatisticEntryLike)
     const hasRealizedProfit = entry.realizedProfit !== null && entry.realizedProfit !== undefined;
     const hasInterest = entry.depositInterest !== null && entry.depositInterest !== undefined;
     const hasFee = entry.fundFee !== null && entry.fundFee !== undefined;
+    const hasUnitBasis = hasUnitBasedResultEvidence(entry);
     if (hasRealizedProfit || hasInterest || hasFee) {
-      const netProfit = hasRealizedProfit
-        ? toNumber(entry.realizedProfit)
+      const storedProfit = hasRealizedProfit ? toNumber(entry.realizedProfit) : null;
+      const netProfit = storedProfit != null
+        ? (!hasInterest && !hasFee && !hasUnitBasis && storedResultLooksLikeCashReceiptTotal(entry, storedProfit) ? 0 : storedProfit)
         : toNumber(entry.depositInterest) - toNumber(entry.fundFee);
       if (netProfit !== 0) {
         const category = profitCategory(kind, netProfit);

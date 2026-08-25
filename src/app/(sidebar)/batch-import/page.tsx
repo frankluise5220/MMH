@@ -1572,16 +1572,6 @@ function normalizeForStorage(item: ParsedItem): ParsedItem {
   };
 }
 
-
-
-
-
-const DEBT_ACCOUNT_NAME_RE = /^(.+?)的往来款$/;
-function parseDebtAccountNameFromImport(v: string): string | null {
-  const m = v.trim().match(DEBT_ACCOUNT_NAME_RE);
-  return m?.[1]?.trim() ?? null;
-}
-
 export default function BatchImportPage() {
   const router = useRouter();
   const importTraceIdRef = useRef(createImportTraceId());
@@ -2492,24 +2482,14 @@ export default function BatchImportPage() {
     if (item.type === "transfer" && counterAccount.trim()) {
       const counterMatch = getAccountMatch(counterAccount);
       if (!counterMatch.account) {
-        const counterpartyName = parseDebtAccountNameFromImport(counterAccount) || counterAccount;
-        const looksLikeCounterparty = counterpartyName && !counterMatch.targetBankNames?.length;
-        if (looksLikeCounterparty) {
-          issues.push({
-            idx,
-            level: "warning",
-            message: formatText("batchImport.issue.debtAccountWillCreate", { name: counterpartyName }),
-          });
-        } else {
-          issues.push({
-            idx,
-            level: "error",
-            message: accountIssueMessage(counterAccount, {
-              unmatched: "batchImport.issue.counterAccountUnmatched",
-              ambiguous: "batchImport.issue.counterAccountAmbiguous",
-            }),
-          });
-        }
+        issues.push({
+          idx,
+          level: "error",
+          message: accountIssueMessage(counterAccount, {
+            unmatched: "batchImport.issue.counterAccountUnmatched",
+            ambiguous: "batchImport.issue.counterAccountAmbiguous",
+          }),
+        });
       }
     } else if (item.type === "transfer" && !counterAccount.trim()) {
       issues.push({ idx, level: "error", message: t("batchImport.issue.counterAccountMissing") });
@@ -3893,25 +3873,6 @@ export default function BatchImportPage() {
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2">
-          {items.length > 0 && (
-            <button
-              onClick={importCompletion ? handleImportCompletionConfirm : handleCancel}
-              className="px-3 py-1.5 text-sm text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-md"
-            >
-              {importCompletion ? t("common.ok") : t("batchImport.clear")}
-            </button>
-          )}
-          {items.length > 0 && (
-            <button
-              onClick={handleImport}
-              disabled={Boolean(importCompletion) || importing || previewValidationRunning || importTargetCount === 0 || importErrorIssues.length > 0}
-              className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {importing ? t("batchImport.importing") : t("batchImport.confirmSelectedImport")}
-            </button>
-          )}
-        </div>
       </div>
 
       {activeImportKind !== "fund" && message && (
@@ -3952,8 +3913,8 @@ export default function BatchImportPage() {
               <div className="mt-0.5 h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-blue-200 border-t-blue-600" />
               <div className="min-w-0">
                 <div className="text-base font-semibold text-slate-800">{t("batchImport.processingDataTitle")}</div>
-                <div className="mt-1 leading-5 text-slate-600">{t("batchImport.loadingOverlay")}</div>
-                <div className="mt-2 text-xs leading-5 text-slate-500">{t("batchImport.processingDataHint")}</div>
+                <div className="mt-1 whitespace-normal break-words leading-5 text-slate-600">{t("batchImport.loadingOverlay")}</div>
+                <div className="mt-2 whitespace-normal break-words text-xs leading-5 text-slate-500">{t("batchImport.processingDataHint")}</div>
               </div>
             </div>
           </div>
@@ -4057,21 +4018,14 @@ export default function BatchImportPage() {
                 <div className="text-base font-semibold text-slate-800">{t("batchImport.previewTitle")}</div>
                 <div className="text-xs text-slate-500 mt-1">{uploading ? t("batchImport.previewParsing") : t("batchImport.previewHint")}</div>
               </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={importCompletion ? handleImportCompletionConfirm : handleCancel}
-                  className="px-3 py-1.5 text-sm text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-md"
-                >
-                  {importCompletion ? t("common.ok") : t("common.cancel")}
-                </button>
-                <button
-                  onClick={handleImport}
-                  disabled={Boolean(importCompletion) || uploading || importing || previewValidationRunning || importTargetCount === 0 || importErrorIssues.length > 0}
-                  className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {importing ? t("batchImport.importing") : t("batchImport.confirmSelectedImport")}
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={importCompletion ? handleImportCompletionConfirm : handleCancel}
+                className="h-8 w-8 rounded-md border border-slate-300 text-slate-500 hover:bg-slate-50"
+                aria-label={t("table.close")}
+              >
+                ×
+              </button>
             </div>
             {message && (
               <div className="shrink-0 border-b border-blue-100 bg-blue-50 px-4 py-2 text-sm text-blue-700">
@@ -4221,7 +4175,25 @@ export default function BatchImportPage() {
                 compactRows
                 showFilters={false}
                 sortable={false}
+                resetDisplayStateOnMount
               />
+            </div>
+            <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="flex min-w-0 items-center gap-3 text-xs">
+                <span className="shrink-0 text-slate-500">{formatText("batchImport.selectedSummary", { selected: importTargetCount, total: items.length })}</span>
+                {previewErrorRows.length > 0 ? <span className="shrink-0 font-medium text-red-600">{formatText("batchImport.errorCount", { count: previewErrorRows.length })}</span> : null}
+                {previewWarningRowCount > 0 ? <span className="shrink-0 font-medium text-amber-600">{formatText("batchImport.warningCount", { count: previewWarningRowCount })}</span> : null}
+              </div>
+              <div className="flex items-center justify-end">
+                <button
+                  type="button"
+                  onClick={handleImport}
+                  disabled={Boolean(importCompletion) || uploading || importing || previewValidationRunning || importTargetCount === 0 || importErrorIssues.length > 0}
+                  className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {importing ? t("batchImport.importing") : t("batchImport.confirmSelectedImport")}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -4237,21 +4209,14 @@ export default function BatchImportPage() {
                   {uploading ? t("batchImport.previewParsing") : formatText("batchImport.previewFundHint", { count: fundPreviewItems.length })}
                 </div>
               </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={importCompletion ? handleImportCompletionConfirm : handleCancel}
-                  className="px-3 py-1.5 text-sm text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-md"
-                >
-                  {importCompletion ? t("common.ok") : t("common.cancel")}
-                </button>
-                <button
-                  onClick={handleFundImport}
-                  disabled={Boolean(importCompletion) || uploading || importing || fundSelected.size === 0 || fundImportErrorIssues.length > 0}
-                  className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {importing ? t("batchImport.importing") : formatText("batchImport.confirmImport", { count: fundSelected.size })}
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={importCompletion ? handleImportCompletionConfirm : handleCancel}
+                className="h-8 w-8 rounded-md border border-slate-300 text-slate-500 hover:bg-slate-50"
+                aria-label={t("table.close")}
+              >
+                ×
+              </button>
             </div>
             {message && (
               <div className="shrink-0 border-b border-blue-100 bg-blue-50 px-4 py-2 text-sm text-blue-700">
@@ -4375,7 +4340,25 @@ export default function BatchImportPage() {
                 showFilters={false}
                 sortable={false}
                 showColumnVisibilityButton={false}
+                resetDisplayStateOnMount
               />
+            </div>
+            <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="flex min-w-0 items-center gap-3 text-xs">
+                <span className="shrink-0 text-slate-500">{formatText("batchImport.selectedSummary", { selected: fundSelected.size, total: fundPreviewItems.length })}</span>
+                {fundImportErrorIssues.length > 0 ? <span className="shrink-0 font-medium text-red-600">{formatText("batchImport.errorCount", { count: fundImportErrorIssues.length })}</span> : null}
+                {fundImportWarningIssues.length > 0 ? <span className="shrink-0 font-medium text-amber-600">{formatText("batchImport.warningCount", { count: fundImportWarningIssues.length })}</span> : null}
+              </div>
+              <div className="flex items-center justify-end">
+                <button
+                  type="button"
+                  onClick={handleFundImport}
+                  disabled={Boolean(importCompletion) || uploading || importing || fundSelected.size === 0 || fundImportErrorIssues.length > 0}
+                  className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {importing ? t("batchImport.importing") : formatText("batchImport.confirmImport", { count: fundSelected.size })}
+                </button>
+              </div>
             </div>
           </div>
         </div>

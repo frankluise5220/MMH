@@ -23,6 +23,10 @@ type StockSecurityLookupItem = {
   exchange: string | null;
 };
 
+function isUniqueConstraintError(error: unknown) {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
+}
+
 export function hasUsableStockName(value: unknown, stockCode: string) {
   const name = String(value ?? "").trim();
   return Boolean(name && name !== stockCode);
@@ -119,16 +123,39 @@ export async function resolveOrCreateStockSecurity(
     });
   }
 
-  return client.stockSecurity.create({
-    data: {
-      householdId: params.householdId,
-      market,
-      stockCode,
-      stockName,
-      currency,
-      exchange,
-    },
-  });
+  try {
+    return await client.stockSecurity.create({
+      data: {
+        householdId: params.householdId,
+        market,
+        stockCode,
+        stockName,
+        currency,
+        exchange,
+      },
+    });
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) throw error;
+    const createdByConcurrentLookup = await client.stockSecurity.findUnique({
+      where: {
+        householdId_market_stockCode: {
+          householdId: params.householdId,
+          market,
+          stockCode,
+        },
+      },
+    });
+    if (!createdByConcurrentLookup) throw error;
+    return client.stockSecurity.update({
+      where: { id: createdByConcurrentLookup.id },
+      data: {
+        stockName: explicitStockName || identity?.stockName || createdByConcurrentLookup.stockName || stockCode,
+        currency: explicitCurrency || identity?.currency || createdByConcurrentLookup.currency || defaultStockCurrencyForMarket(market),
+        exchange: explicitExchange || identity?.exchange || createdByConcurrentLookup.exchange || inferStockExchangeFromCode(market, stockCode),
+        isActive: true,
+      },
+    });
+  }
 }
 
 /**

@@ -11,6 +11,7 @@ import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { optionalPrismaFindMany } from "@/lib/server/optional-prisma-delegate";
 import { categoryOrderBy } from "@/lib/category-order";
+import { decodeScheduledTaskMemo, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
 
 export const runtime = "nodejs";
 
@@ -408,6 +409,9 @@ export async function GET(req: Request) {
           accountName: true,
           cashAccountId: true,
           cashAccountName: true,
+          taskType: true,
+          targetName: true,
+          insuranceProductName: true,
           fundCode: true,
           fundName: true,
           fundProductType: true,
@@ -415,6 +419,7 @@ export async function GET(req: Request) {
           intervalUnit: true,
           intervalValue: true,
           executionDay: true,
+          secondaryExecutionDay: true,
           startDate: true,
           endDate: true,
           totalRuns: true,
@@ -451,6 +456,10 @@ export async function GET(req: Request) {
     const confirmDaysBatch = fundConfirmDays.slice(0, limit);
     const feeRateBatch = fundFeeRates.slice(0, limit);
     const regularInvestPlanBatch = regularInvestPlans.slice(0, limit);
+    const fundRegularInvestPlanCodes = regularInvestPlanBatch
+      .filter((item) => normalizeScheduledTaskType(item.taskType ?? decodeScheduledTaskMemo(item.memo).type) === "fund_regular_invest")
+      .map((item) => item.fundCode)
+      .filter((code): code is string => /^\d{6}$/.test(String(code ?? "")));
 
     const currentHoldingCodes = await prisma.fundHolding.findMany({
       where: { Account: scope.hidFilter },
@@ -461,7 +470,7 @@ export async function GET(req: Request) {
       new Set([
         ...currentHoldingCodes.map((item) => item.fundCode),
         ...holdingBatch.map((item) => item.fundCode),
-        ...regularInvestPlanBatch.map((item) => item.fundCode),
+        ...fundRegularInvestPlanCodes,
         ...transactionBatch.map((item) => item.fundCode).filter((code): code is string => Boolean(code)),
       ]),
     );
@@ -727,37 +736,50 @@ export async function GET(req: Request) {
             updatedAt: item.updatedAt.toISOString(),
           })),
         deletedPropertyTransactionIds: propertyTransactionBatch.filter((item) => item.deletedAt).map((item) => item.id),
-        regularInvestPlans: regularInvestPlanBatch.map((item) => ({
-          id: item.id,
-          householdId: item.householdId ?? "",
-          accountId: item.accountId,
-          accountName: item.Account_RegularInvestPlan_accountIdToAccount?.name ?? item.accountName,
-          accountInstitutionName: item.Account_RegularInvestPlan_accountIdToAccount.Institution?.name ?? null,
-          cashAccountId: item.cashAccountId,
-          cashAccountName: item.Account_RegularInvestPlan_cashAccountIdToAccount?.name ?? item.cashAccountName,
-          cashAccountInstitutionName: item.Account_RegularInvestPlan_cashAccountIdToAccount?.Institution?.name ?? null,
-          fundCode: item.fundCode,
-          fundName: item.fundName ?? latestNavByCode.get(item.fundCode)?.name ?? "",
-          fundProductType: item.fundProductType,
-          amount: toNumber(item.amount),
-          intervalUnit: item.intervalUnit,
-          intervalValue: item.intervalValue,
-          executionDay: item.executionDay,
-          startDate: formatDateUtc(item.startDate),
-          endDate: item.endDate ? formatDateUtc(item.endDate) : null,
-          totalRuns: item.totalRuns,
-          executedRuns: item.executedRuns,
-          lastRunDate: item.lastRunDate ? formatDateUtc(item.lastRunDate) : null,
-          nextRunDate: formatDateUtc(item.nextRunDate),
-          status: item.status,
-          feeRate: item.feeRate == null ? null : toNumber(item.feeRate),
-          confirmDays: item.confirmDays,
-          arrivalDays: item.arrivalDays,
-          memo: item.memo,
-          skipPendingPreceding: item.skipPendingPreceding,
-          createdAt: item.createdAt.toISOString(),
-          updatedAt: item.updatedAt.toISOString(),
-        })),
+        regularInvestPlans: regularInvestPlanBatch.map((item) => {
+          const task = decodeScheduledTaskMemo(item.memo);
+          const taskType = normalizeScheduledTaskType(item.taskType ?? task.type);
+          return {
+            id: item.id,
+            householdId: item.householdId ?? "",
+            accountId: item.accountId,
+            accountName: item.Account_RegularInvestPlan_accountIdToAccount?.name ?? item.accountName,
+            accountInstitutionName: item.Account_RegularInvestPlan_accountIdToAccount.Institution?.name ?? null,
+            cashAccountId: item.cashAccountId,
+            cashAccountName: item.Account_RegularInvestPlan_cashAccountIdToAccount?.name ?? item.cashAccountName,
+            cashAccountInstitutionName: item.Account_RegularInvestPlan_cashAccountIdToAccount?.Institution?.name ?? null,
+            taskType,
+            taskTitle: item.targetName ?? task.title ?? null,
+            targetName: item.targetName,
+            insuranceProductName: item.insuranceProductName,
+            taskCategoryId: task.categoryId ?? null,
+            taskCategoryName: task.categoryName ?? null,
+            taskTypeLabel: scheduledTaskTypeLabel(taskType),
+            taskNote: task.note ?? null,
+            fundCode: item.fundCode,
+            fundName: item.fundName ?? (taskType === "fund_regular_invest" ? latestNavByCode.get(item.fundCode)?.name ?? "" : ""),
+            fundProductType: item.fundProductType,
+            amount: toNumber(item.amount),
+            intervalUnit: item.intervalUnit,
+            intervalValue: item.intervalValue,
+            executionDay: item.executionDay,
+            secondaryExecutionDay: item.secondaryExecutionDay,
+            startDate: formatDateUtc(item.startDate),
+            endDate: item.endDate ? formatDateUtc(item.endDate) : null,
+            totalRuns: item.totalRuns,
+            executedRuns: item.executedRuns,
+            lastRunDate: item.lastRunDate ? formatDateUtc(item.lastRunDate) : null,
+            nextRunDate: formatDateUtc(item.nextRunDate),
+            status: item.status,
+            feeRate: item.feeRate == null ? null : toNumber(item.feeRate),
+            confirmDays: item.confirmDays,
+            arrivalDays: item.arrivalDays,
+            memo: item.memo,
+            skipPendingPreceding: item.skipPendingPreceding,
+            createdAt: item.createdAt.toISOString(),
+            updatedAt: item.updatedAt.toISOString(),
+          };
+        }),
         fundConfirmDays: confirmDaysBatch.map((item) => ({
           id: item.id,
           accountId: item.accountId,

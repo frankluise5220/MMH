@@ -360,7 +360,9 @@ function normalizeJdSheetRows(sheet: StatementWorkbookSheetRows) {
       : classifyJdRow({ flow, status, description, rawRemark, category: rawCategory }) ?? fallbackJdFlow();
     const requiresReview = classifiedFlow.requiresReview || isIgnoredJdStatus(status);
 
-    const transferAccount = requiresReview ? "" : internalTransferDirection ? merchant : account;
+    // Keep a usable payment account on fallback rows so review does not erase
+    // information that can already be matched during preview.
+    const transferAccount = internalTransferDirection ? merchant : account;
     const transferCounterAccount = internalTransferDirection ? account : merchant;
     const matchedExpenseCategory = remarkCategoryKeys(description)
       .map((key) => expenseCategoryByRemark.get(key))
@@ -370,7 +372,7 @@ function normalizeJdSheetRows(sheet: StatementWorkbookSheetRows) {
     const merchantOrderNo = readCell(row, merchantOrderIndex);
     const visibleRemark = description || rawRemark || merchant || rawCategory;
     const matchRemark = compactJoin([
-      requiresReview ? `\u5bfc\u5165\u515c\u5e95:\u8bf7\u786e\u8ba4\u7c7b\u578b\u548c\u8d26\u6237` : "",
+      requiresReview ? `\u5bfc\u5165\u515c\u5e95:\u8bf7\u786e\u8ba4\u7c7b\u578b${account ? "" : "\u548c\u8d26\u6237"}` : "",
       flow && requiresReview ? `\u539f\u6536\u652f:${flow}` : "",
       merchant ? `\u5546\u6237:${merchant}` : "",
       rawRemark && rawRemark !== visibleRemark ? `\u539f\u5907\u6ce8:${rawRemark}` : "",

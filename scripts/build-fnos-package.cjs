@@ -1290,6 +1290,15 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    version: "20260825_add_secondary_scheduled_execution_day",
+    description: "Add RegularInvestPlan.secondaryExecutionDay for dual-date schedules",
+    apply(db) {
+      if (tableExists(db, "RegularInvestPlan")) {
+        addColumnIfMissing(db, "RegularInvestPlan", "secondaryExecutionDay", "INTEGER");
+      }
+    },
+  },
 ];
 
 function databasePathFromUrl(value) {

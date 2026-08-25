@@ -516,6 +516,7 @@ export default function DatabaseSettingsPage() {
   const [backupPassphrase, setBackupPassphrase] = useState("");
   const [backupCrossEnvironment, setBackupCrossEnvironment] = useState(false);
   const [backupScope, setBackupScope] = useState<"system" | "household">("household");
+  const [canBackupSystem, setCanBackupSystem] = useState(false);
   const [backupPasswordDialogOpen, setBackupPasswordDialogOpen] = useState(false);
 
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
@@ -562,6 +563,13 @@ export default function DatabaseSettingsPage() {
     setLedgerInviteError("");
     setOriginMessage("");
     setOriginError("");
+    try {
+      const permissionResponse = await fetch("/api/v1/households", { cache: "no-store" });
+      const permissionData = await permissionResponse.json().catch(() => null) as { canBackupSystem?: boolean } | null;
+      setCanBackupSystem(permissionData?.canBackupSystem === true);
+    } catch {
+      setCanBackupSystem(false);
+    }
     try {
       const keys = ["allowed_dev_origins", "origin_check_enabled"].join(",");
       const data = await fetchJsonWithTimeout<SettingsValuesResult>(
@@ -825,7 +833,7 @@ export default function DatabaseSettingsPage() {
       const result = await saveDataBackup({
         userPassword: password,
         backupPassphrase: passphrase,
-        backupScope,
+        backupScope: canBackupSystem ? backupScope : "household",
       }, t);
       if (!result) return;
       setBackupPasswordDialogOpen(false);
@@ -1115,20 +1123,22 @@ export default function DatabaseSettingsPage() {
               >
                 {t("settings.database.householdBackup")}
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setBackupScope("system");
-                  setBackupError("");
-                }}
-                className={`h-9 rounded-md border px-2 text-xs font-medium ${
-                  backupScope === "system"
-                    ? "border-red-300 bg-red-50 text-red-700"
-                    : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-                }`}
-              >
-                {t("settings.database.systemBackup")}
-              </button>
+              {canBackupSystem ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBackupScope("system");
+                    setBackupError("");
+                  }}
+                  className={`h-9 rounded-md border px-2 text-xs font-medium ${
+                    backupScope === "system"
+                      ? "border-red-300 bg-red-50 text-red-700"
+                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                  }`}
+                >
+                  {t("settings.database.systemBackup")}
+                </button>
+              ) : null}
             </div>
             {backupScope === "system" ? (
               <div className="mt-2 rounded-md bg-amber-50 px-2 py-1 text-[11px] text-amber-800">

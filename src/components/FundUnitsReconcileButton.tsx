@@ -115,7 +115,7 @@ export function FundUnitsReconcileButton({
       </button>
 
       {open ? (
-        <div className="fixed inset-0 z-[95] flex items-start justify-center bg-slate-900/25 px-4 py-[18vh]">
+        <div className="fixed inset-0 z-[95] flex items-center justify-center bg-slate-900/25 px-4 py-4">
           <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-2xl">
             <div className="border-b border-slate-100 px-4 py-3">
               <div className="text-sm font-semibold text-slate-800">{t("fundUnitsReconcile.title")}</div>

@@ -26,11 +26,16 @@ function requireAdmin(user: Awaited<ReturnType<typeof getCurrentUser>>) {
   return { ok: true as const };
 }
 
+function requireSignedIn(user: Awaited<ReturnType<typeof getCurrentUser>>) {
+  if (!user) return { ok: false as const, code: "UNAUTHORIZED" as const, error: "未登录", status: 401 };
+  return { ok: true as const };
+}
+
 /** GET /api/v1/settings/users — Returns all users within the current household. */
 export async function GET() {
   try {
     const currentUser = await getCurrentUser();
-    const auth = requireAdmin(currentUser);
+    const auth = requireSignedIn(currentUser);
     if (!auth.ok) return NextResponse.json({ ok: false, code: auth.code, error: auth.error }, { status: auth.status, headers: cors() });
 
     const { householdId, user } = await getHouseholdScope();
@@ -112,6 +117,7 @@ export async function GET() {
         hasPassword: !!u.passwordHash,
         passwordHash: undefined,
       })),
+      canManageUsers: isAdmin(currentUser),
     }, { headers: cors() });
   } catch {
     return NextResponse.json({ ok: false, code: "SERVER_ERROR", error: "服务器错误" }, { status: 500, headers: cors() });
@@ -121,7 +127,7 @@ export async function GET() {
 const CreateSchema = z.object({
   name: z.string().min(1).max(80),
   email: z.union([z.string().email(), z.literal("")]).optional(),
-  role: z.enum(["admin", "user"]).default("user"),
+  role: z.enum(["admin", "user", "viewer"]).default("user"),
   password: z.string().optional(),
   sessionDays: z.number().optional(),
 });
@@ -174,7 +180,7 @@ const UpdateSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1).max(80).optional(),
   email: z.union([z.string().email(), z.literal("")]).optional(),
-  role: z.enum(["admin", "user"]).optional(),
+  role: z.enum(["admin", "user", "viewer"]).optional(),
   password: z.string().optional(),
   sessionDays: z.number().optional(),
 });
@@ -208,11 +214,11 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "越权操作" }, { status: 403, headers: cors() });
   }
 
-  // The last admin cannot be demoted to a regular user
-  if (role === "user" && existing.role === "admin" && !existing.isSystem) {
+  // The last admin cannot be changed to a non-admin role.
+  if (role !== undefined && role !== "admin" && existing.role === "admin" && !existing.isSystem) {
     const adminCount = await prisma.user.count({ where: { householdId, role: "admin" } });
     if (adminCount <= 1) {
-      return NextResponse.json({ ok: false, code: "LAST_ADMIN_DEMOTE_BLOCKED", error: "不能将最后一个管理员降级为普通用户" }, { status: 409, headers: cors() });
+      return NextResponse.json({ ok: false, code: "LAST_ADMIN_DEMOTE_BLOCKED", error: "不能将最后一个管理员改为非管理员角色" }, { status: 409, headers: cors() });
     }
   }
 

@@ -785,7 +785,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
           },
         });
       }
-    });
+    }, { maxWait: 10_000, timeout: 60_000 });
   }
 
   const billSummariesWithCumulative = mergeCreditBillSummariesWithCascade(

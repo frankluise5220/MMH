@@ -175,6 +175,8 @@ export async function createCreditCardInstallmentPlan(
       billingDay: input.billingDay,
       firstPaymentDate: input.firstPaymentDate,
       tagIds: input.tagIds?.length ? JSON.stringify(input.tagIds) : null,
+      categoryId: input.category?.id ?? null,
+      categoryName: input.category?.name ?? null,
     },
   });
 
@@ -268,6 +270,8 @@ export async function materializeDueInstallmentPayments(
       firstPaymentDate: true,
       firstStatementMonth: true,
       tagIds: true,
+      categoryId: true,
+      categoryName: true,
       Account: { select: { name: true, billingDay: true } },
     },
   });
@@ -324,6 +328,8 @@ export async function materializeDueInstallmentPayments(
           householdId: input.householdId,
           accountId: plan.accountId,
           accountName: plan.Account?.name ?? "",
+          categoryId: plan.categoryId ?? null,
+          categoryName: plan.categoryName ?? null,
           amount: -row.principal,
           type: TransactionType.expense,
           date: row.date,
@@ -350,6 +356,8 @@ export async function materializeDueInstallmentPayments(
             householdId: input.householdId,
             accountId: plan.accountId,
             accountName: plan.Account?.name ?? "",
+            categoryId: plan.categoryId ?? null,
+            categoryName: plan.categoryName ?? null,
             amount: -row.interest,
             type: TransactionType.expense,
             date: row.date,

@@ -18,6 +18,7 @@ import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-prec
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { addTradingDaysUtc } from "@/lib/date-utils";
+import { getCurrentUser, isReadOnly } from "@/lib/server/auth";
 
 export const runtime = "nodejs";
 
@@ -30,6 +31,7 @@ export const runtime = "nodejs";
  *   fee is an actual fee amount; feeRateInput/feeRate is a percent value such as 1 for 1%.
  *   When fee and feeRateInput/feeRate are both provided, fee amount wins and fee rate is ignored.
  *   If NAV is blank, preview/import derives the NAV date from the application date/time and fetches the exact NAV when available.
+ *   Preview/import returns calculatedFields for system-derived numeric values such as NAV, fee rate, fee, and units.
  * - context?: optional current fund-account view context used only to fill blank fund/cash account fields.
  * - overrides?: optional T+N rules keyed by fund account + fund code, used for preview recalculation and persisted on import
  *
@@ -62,6 +64,17 @@ type ImportIssue = {
   message: string;
 };
 
+const FUND_IMPORT_CALCULATED_FIELDS = [
+  "feeRate",
+  "fee",
+  "nav",
+  "units",
+] as const;
+
+type FundImportCalculatedField = typeof FUND_IMPORT_CALCULATED_FIELDS[number];
+
+const FUND_IMPORT_CALCULATED_FIELD_SET = new Set<string>(FUND_IMPORT_CALCULATED_FIELDS);
+
 type FundImportInput = {
   rawText?: string;
   date?: string;
@@ -82,6 +95,7 @@ type FundImportInput = {
   confirmDate?: string | null;
   arrivalDate?: string | null;
   remark?: string;
+  calculatedFields?: FundImportCalculatedField[] | null;
 };
 
 type FundImportEnrichedItem = {
@@ -106,6 +120,7 @@ type FundImportEnrichedItem = {
   cashAccountId: string | null;
   fundAccountId: string | null;
   fundProductType: string | null;
+  calculatedFields: FundImportCalculatedField[];
   issues: ImportIssue[];
 };
 
@@ -231,6 +246,34 @@ function parseNonNegativeNumber(value: unknown): number | null {
   const num = Number(String(value).replace(/[,，￥¥\s]/g, ""));
   if (!Number.isFinite(num) || num < 0) return null;
   return num;
+}
+
+function importCalculatedFieldSet(input: FundImportInput) {
+  return new Set(
+    (input.calculatedFields ?? []).filter((field): field is FundImportCalculatedField =>
+      FUND_IMPORT_CALCULATED_FIELD_SET.has(String(field)),
+    ),
+  );
+}
+
+function parseUserPositiveNumber(
+  input: FundImportInput,
+  field: FundImportCalculatedField,
+  calculatedFields: Set<FundImportCalculatedField>,
+) {
+  return calculatedFields.has(field) ? null : parsePositiveNumber(input[field]);
+}
+
+function parseUserNonNegativeNumber(
+  input: FundImportInput,
+  field: "fee" | "feeRate",
+  calculatedFields: Set<FundImportCalculatedField>,
+) {
+  return calculatedFields.has(field) ? null : parseNonNegativeNumber(input[field]);
+}
+
+function sortedCalculatedFields(fields: Set<FundImportCalculatedField>) {
+  return FUND_IMPORT_CALCULATED_FIELDS.filter((field) => fields.has(field));
 }
 
 function normalizeUsableFundName(value: unknown, fundCode: string) {
@@ -507,6 +550,8 @@ async function enrichImportItem(
   input: FundImportInput,
   overrideMap: Map<string, ParsedRuleOverride>,
 ): Promise<FundImportEnrichedItem> {
+  const sourceCalculatedFields = importCalculatedFieldSet(input);
+  const calculatedFields = new Set<FundImportCalculatedField>();
   const date = String(input.date ?? "").trim();
   const rawSubtype = String(input.fundSubtype ?? "");
   const subtype = normalizeSubtype(rawSubtype);
@@ -576,10 +621,12 @@ async function enrichImportItem(
   let confirmDays: number | null = null;
   let arrivalDays: number | null = null;
   let confirmDate = normalizeImportDatePart(String(input.confirmDate ?? "").trim()) ?? null;
-  let nav = parsePositiveNumber(input.nav);
-  let fee = parseNonNegativeNumber(input.fee);
-  const feeRateInput = parseNonNegativeNumber(input.feeRateInput ?? input.feeRate);
-  let units = parsePositiveNumber(input.units);
+  let nav = parseUserPositiveNumber(input, "nav", sourceCalculatedFields);
+  let fee = parseUserNonNegativeNumber(input, "fee", sourceCalculatedFields);
+  const feeRateInput = sourceCalculatedFields.has("feeRate")
+    ? null
+    : parseNonNegativeNumber(input.feeRateInput ?? input.feeRate);
+  let units = parseUserPositiveNumber(input, "units", sourceCalculatedFields);
   let feeRate: number | null = fee == null ? feeRateInput : 0;
   let fundName = firstUsableFundName(fundCode, input.fundName, contextFundCodeUsed ? ctx.requestContext?.fundName : null);
   let arrivalDate = normalizeImportDatePart(String(input.arrivalDate ?? "").trim()) ?? null;
@@ -617,12 +664,14 @@ async function enrichImportItem(
       const navData = await navLookup;
       if (navData?.dateMatch && navData.nav > 0) {
         nav = navData.nav;
+        calculatedFields.add("nav");
         fundName = fundName ?? normalizeUsableFundName(navData.name, fundCode);
       }
     }
 
     if (fee == null && feeRateInput != null) {
       fee = Number((amount * (feeRateInput / 100)).toFixed(2));
+      calculatedFields.add("fee");
     } else if (fee == null) {
       const feeType = subtype === "redeem" ? "redeem" : "buy";
       const baseDate = confirmDate ? toUtcDate(confirmDate) : toUtcDate(date);
@@ -631,8 +680,10 @@ async function enrichImportItem(
         feeRateRaw = await getFundFeeRate(fundAccountMeta.id, fundCode, feeType).catch(() => 0);
       }
       feeRate = feeRateRaw || 0;
+      calculatedFields.add("feeRate");
       if (feeRate > 0 && (subtype === "buy" || subtype === "redeem")) {
         fee = Number((amount * (feeRate / 100)).toFixed(2));
+        calculatedFields.add("fee");
       }
     } else {
       feeRate = 0;
@@ -647,6 +698,7 @@ async function enrichImportItem(
         nav,
         roundUnits: (value) => roundFundUnits(value, fundUnitsDecimals),
       });
+      calculatedFields.add("units");
     }
   }
 
@@ -675,6 +727,7 @@ async function enrichImportItem(
     cashAccountId: isDividendReinvest ? null : cashAccountMeta?.id ?? null,
     fundAccountId: fundAccountMeta?.id ?? null,
     fundProductType: fundAccountMeta?.investProductType ?? "fund",
+    calculatedFields: sortedCalculatedFields(calculatedFields),
     issues,
   };
 }
@@ -781,6 +834,12 @@ export async function POST(req: Request) {
       context?: FundImportRequestContext | null;
     };
     const mode = body?.mode === "import" ? "import" : "preview";
+    if (mode === "import" && isReadOnly(await getCurrentUser())) {
+      return NextResponse.json(
+        { ok: false, code: "READ_ONLY", error: "Read-only users cannot import data." },
+        { status: 403, headers: corsHeaders() },
+      );
+    }
     const items = Array.isArray(body?.items) ? body.items : [];
     const overrideMap = buildRuleOverrideMap(Array.isArray(body?.overrides) ? body.overrides : []);
     if (items.length === 0) {

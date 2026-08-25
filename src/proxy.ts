@@ -6,6 +6,11 @@ import {
   isAccessHostnameAllowed,
   parseAllowedAccessList,
 } from "@/lib/access-whitelist";
+import {
+  HOUSEHOLD_COOKIE,
+  USER_ID_COOKIE,
+  USERNAME_COOKIE,
+} from "@/lib/server/session-cookies";
 
 const VERIFIED_KEY = "mmh_access_password_verified";
 const LEGACY_ACCESS_PASSWORD_KEY = "access_password";
@@ -22,6 +27,12 @@ const PUBLIC_PATHS = [
   "/manifest",
   "/sw.js",
   "/branding",
+];
+
+const READ_ONLY_PREVIEW_PATHS = [
+  "/api/v1/statement/parse",
+  "/api/v1/fund/import",
+  "/api/v1/stocks/import",
 ];
 
 function isPublicPath(pathname: string) {
@@ -113,6 +124,54 @@ async function isValidApiKey(key: string): Promise<boolean> {
   return !!legacy?.value && key === legacy.value;
 }
 
+async function isReadOnlySession(req: NextRequest): Promise<boolean> {
+  const userId = req.cookies.get(USER_ID_COOKIE)?.value?.trim();
+  const username = req.cookies.get(USERNAME_COOKIE)?.value?.trim();
+  const householdId = req.cookies.get(HOUSEHOLD_COOKIE)?.value?.trim();
+
+  const user = userId
+    ? await withTimeout(
+        prisma.user.findUnique({
+          where: { id: userId },
+          select: { role: true, isSystem: true },
+        }),
+        LOOKUP_TIMEOUT_MS,
+      )
+    : username
+      ? await withTimeout(
+          prisma.user.findFirst({
+            where: {
+              name: username,
+              ...(householdId ? { householdId } : {}),
+            },
+            select: { role: true, isSystem: true },
+            orderBy: { createdAt: "asc" },
+          }),
+          LOOKUP_TIMEOUT_MS,
+        )
+      : null;
+
+  return user?.role === "viewer" && user.isSystem !== true;
+}
+
+function isAllowedReadOnlyMutation(req: NextRequest): boolean {
+  const { pathname, searchParams } = req.nextUrl;
+  if (
+    pathname === "/api/v1/auth/logout" ||
+    pathname === "/api/v1/auth/verify" ||
+    pathname === "/api/v1/auth/password-reset/request" ||
+    pathname === "/api/v1/auth/password-reset/confirm"
+  ) {
+    return true;
+  }
+  if (pathname === "/api/v1/households/switch") return true;
+  if (pathname === "/api/v1/settings/backup") {
+    const mode = searchParams.get("mode");
+    return mode === "export" || mode === "table-export";
+  }
+  return READ_ONLY_PREVIEW_PATHS.includes(pathname);
+}
+
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
@@ -134,6 +193,18 @@ export async function proxy(req: NextRequest) {
 
   const verified = req.cookies.get(VERIFIED_KEY)?.value;
   if (verified === "ok") {
+    if (
+      req.method !== "GET" &&
+      req.method !== "HEAD" &&
+      req.method !== "OPTIONS" &&
+      !isAllowedReadOnlyMutation(req) &&
+      await isReadOnlySession(req)
+    ) {
+      return NextResponse.json(
+        { ok: false, code: "READ_ONLY", error: "Read-only users cannot modify data." },
+        { status: 403 },
+      );
+    }
     return NextResponse.next();
   }
 

@@ -226,6 +226,13 @@ function requireAdmin(user: Awaited<ReturnType<typeof getCurrentUser>>) {
   return null;
 }
 
+function requireSignedIn(user: Awaited<ReturnType<typeof getCurrentUser>>) {
+  if (!user) {
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "请先登录" }, { status: 401 });
+  }
+  return null;
+}
+
 function encodeRfc5987Value(value: string) {
   return encodeURIComponent(value).replace(/['()*]/g, (char) =>
     `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
@@ -344,7 +351,7 @@ export async function GET(req: NextRequest) {
 async function exportBackupPackage(req: NextRequest) {
   try {
     const currentUser = await getCurrentUser();
-    const denied = requireAdmin(currentUser);
+    const denied = requireSignedIn(currentUser);
     if (denied) return denied;
     if (!currentUser) {
       return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "请先登录" }, { status: 401 });
@@ -360,8 +367,14 @@ async function exportBackupPackage(req: NextRequest) {
     const exportedAt = new Date();
     const passphrase = credentials.backupPassphrase.trim() || credentials.userPassword;
     const backupScope = credentials.backupScope;
+    if (backupScope === "system" && !isAdmin(currentUser)) {
+      return NextResponse.json(
+        { ok: false, code: "SYSTEM_BACKUP_ADMIN_REQUIRED", error: "Only administrators can create a system backup." },
+        { status: 403 },
+      );
+    }
 
-    if (isSqliteFileDatabase()) {
+    if (isSqliteFileDatabase() && backupScope === "system") {
       const snapshotBytes = await createSqliteSnapshotBuffer();
       const encryptedPayload = await encryptBackupBytes(
         snapshotBytes,
@@ -405,14 +418,14 @@ async function exportBackupPackage(req: NextRequest) {
 async function exportTableWorkbook() {
   try {
     const currentUser = await getCurrentUser();
-    const denied = requireAdmin(currentUser);
+    const denied = requireSignedIn(currentUser);
     if (denied) return denied;
 
     const { householdId, user } = await getHouseholdScope();
     const payload = await buildHouseholdBackupPayload(
       householdId,
       user ? { id: user.id, name: user.name, role: user.role } : null,
-      { ensureBackupPackageKey: false, backupScope: "system" },
+      { ensureBackupPackageKey: false, backupScope: isAdmin(currentUser) ? "system" : "household" },
     );
 
     const workbook = await buildHouseholdTableExportWorkbook(payload);
@@ -439,8 +452,9 @@ async function exportTableWorkbook() {
  *
  * Export:
  * - `POST /api/v1/settings/backup?mode=export`
- * - JSON body: `{ userPassword, backupPassphrase? }`
+ * - JSON body: `{ userPassword, backupPassphrase?, backupScope?: "system" | "household" }`
  * - `userPassword` verifies the current logged-in user before exporting
+ * - `backupScope: "system"` requires an administrator; other authenticated users are limited to `"household"`
  * - `backupPassphrase` optionally encrypts the backup package; when omitted, `userPassword` is used
  * - returns an encrypted `.mmh-backup` package.
  *

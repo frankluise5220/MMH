@@ -4,12 +4,15 @@ import { useMemo, useState } from "react";
 import { CalendarClock, ChevronRight, Pause, Play, Repeat2 } from "lucide-react";
 import { formatMoneyYuan } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
+import type { ScheduledTaskType } from "@/lib/scheduled-task";
 
 type MobilePlan = {
   id: string;
+  taskType?: ScheduledTaskType;
   taskTypeLabel?: string | null;
   taskTitle?: string | null;
   targetName?: string | null;
+  taskCategoryName?: string | null;
   fundName?: string | null;
   fundCode: string;
   accountLabel?: string | null;
@@ -17,6 +20,9 @@ type MobilePlan = {
   amount: number;
   intervalUnit: string;
   intervalValue: number;
+  executionDay?: number | null;
+  secondaryExecutionDay?: number | null;
+  totalRuns?: number | null;
   nextRunDate?: string | null;
   executedCount?: number;
   status: string;
@@ -81,10 +87,10 @@ export function MobileRegularInvest({ plans }: { plans: MobilePlan[] }) {
                 </span>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <h2 className="truncate text-sm font-semibold text-slate-900">{plan.taskTitle || plan.targetName || plan.fundName || plan.fundCode}</h2>
+                    <h2 className="truncate text-sm font-semibold text-slate-900">{plan.taskTitle || plan.targetName || plan.taskCategoryName || plan.fundName || plan.fundCode}</h2>
                     <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium ${active ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{active ? t("regularInvest.client.status.active") : statusLabel(plan.status, t)}</span>
                   </div>
-                  <p className="mt-1 truncate text-xs text-slate-500">{plan.taskTypeLabel || t("batchImport.fundSource.regularInvest")} · {plan.accountLabel || t("mobileRegularInvest.noTargetAccount")}</p>
+                  <p className="mt-1 truncate text-xs text-slate-500">{taskTypeLabel(plan, t)} · {plan.accountLabel || t("mobileRegularInvest.noTargetAccount")}</p>
                 </div>
                 <button type="button" disabled={busyId === plan.id || (plan.status !== "active" && plan.status !== "paused")} onClick={() => updateStatus(plan)} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-600 disabled:opacity-40" aria-label={t(active ? "mobileRegularInvest.pausePlan" : "mobileRegularInvest.resumePlan")}>
                   {active ? <Pause size={18} /> : <Play size={18} />}
@@ -124,6 +130,7 @@ function Metric({ label, value, alignRight = false }: { label: string; value: st
 }
 
 function formatInterval(plan: MobilePlan, t: TFunc) {
+  if (plan.totalRuns === 1) return t("regularInvest.interval.once");
   const unitKey = plan.intervalUnit === "day"
     ? "mobileRegularInvest.unit.day"
     : plan.intervalUnit === "week"
@@ -131,6 +138,37 @@ function formatInterval(plan: MobilePlan, t: TFunc) {
       : plan.intervalUnit === "year"
         ? "mobileRegularInvest.unit.year"
         : "mobileRegularInvest.unit.month";
+  if (
+    (plan.intervalUnit === "week" || plan.intervalUnit === "biweek") &&
+    plan.intervalValue === 1 &&
+    plan.executionDay != null &&
+    plan.secondaryExecutionDay != null
+  ) {
+    const weekdayKey = (value: number) => `regularInvest.client.weekdayShort.${Math.min(7, Math.max(1, value))}` as const;
+    const primary = t(weekdayKey(plan.executionDay));
+    const secondary = t(weekdayKey(plan.secondaryExecutionDay));
+    if (primary && secondary) return `${primary} / ${secondary}`;
+  }
+  if (
+    (plan.intervalUnit === "month" || plan.intervalUnit === "year") &&
+    plan.intervalValue === 1 &&
+    plan.executionDay != null &&
+    plan.secondaryExecutionDay != null
+  ) {
+    const primary = plan.intervalUnit === "month"
+      ? t("regularInvest.daySuffix", { day: plan.executionDay })
+      : t("regularInvest.client.everyYearDate", {
+          month: Math.floor(plan.executionDay / 100),
+          day: plan.executionDay % 100,
+        });
+    const secondary = plan.intervalUnit === "month"
+      ? t("regularInvest.daySuffix", { day: plan.secondaryExecutionDay })
+      : t("regularInvest.client.everyYearDate", {
+          month: Math.floor(plan.secondaryExecutionDay / 100),
+          day: plan.secondaryExecutionDay % 100,
+        });
+    return `${primary} / ${secondary}`;
+  }
   return t("mobileRegularInvest.intervalFormat", { value: plan.intervalValue || 1, unit: t(unitKey) });
 }
 
@@ -145,4 +183,13 @@ function statusLabel(status: string, t: TFunc) {
   if (status === "completed") return t("regularInvest.client.status.completed");
   if (status === "stopped") return t("regularInvest.client.status.stopped");
   return status || t("mobileRegularInvest.status.unknown");
+}
+
+function taskTypeLabel(plan: MobilePlan, t: TFunc) {
+  if (plan.taskType === "fund_regular_invest") return t("detailView.fundRegularInvest");
+  if (plan.taskType === "transfer") return t("transaction.type.transfer");
+  if (plan.taskType === "insurance_premium") return t("regularInvest.taskType.insurancePremium");
+  if (plan.taskType === "income") return t("transaction.type.income");
+  if (plan.taskType === "expense") return t("transaction.type.expense");
+  return plan.taskTypeLabel || t("batchImport.fundSource.regularInvest");
 }

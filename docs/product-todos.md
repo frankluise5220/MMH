@@ -68,25 +68,25 @@ Goal:
 - Replace the current narrow regular-invest mental model with a broader scheduled-task model.
 - Keep fund regular invest as one task type, and add more task types later without duplicating scheduling logic.
 
-Expected task categories:
+Implemented task categories:
 - Fund regular investment.
 - Loan repayment.
 - Account transfer.
 - Insurance premium payment.
+- Fixed income.
+- Fixed expense.
 
 Direction:
 - Reuse the current regular-invest scheduler table and execution cadence fields where possible.
 - Keep one shared plan view with common columns: funding account, task type, cycle, next run, executed count, and start date.
-- Treat task-specific fields as task content: fund code/account, target account, loan account, or insurance product.
+- Treat task-specific fields as task content: fund code/account, target account, loan account, insurance product, or ordinary income/expense category and note.
+- One-time tasks use one total run. Twice-per-month or twice-per-year schedules remain separate plans for now.
 - Execution should call the existing transaction/investment/insurance semantics instead of inventing a new transaction type.
 - Keep execution logs and next-run calculation unified.
 - Daily auto execution may scan all active plans; plans whose next-run date has not arrived are skipped without creating transactions or recalculating balances.
 - Web first; mobile can later consume the same API semantics.
 
 Open implementation tasks:
-- Design a generic scheduled-task data model.
-- Decide whether to evolve `regularInvestPlan` in place or introduce a new table and migrate.
-- Define task-type-specific payloads and validation rules.
 - Define how insurance purchase tasks choose insurance account, product, owner, and funding account defaults.
 - Define how transfer tasks choose source and destination account defaults.
-- Update sidebar / navigation wording from `定投` to `计划任务` when the generic model is ready.
+- Decide later whether to migrate from the evolved `regularInvestPlan` table to a dedicated scheduled-task table.

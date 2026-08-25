@@ -185,14 +185,12 @@ html {
   }
 
   .app-modal-backdrop {
-    @apply fixed inset-0 z-[1000] flex items-start justify-center overflow-y-auto bg-slate-950/20 p-2 sm:items-start sm:p-4;
+    @apply fixed inset-0 z-[1000] flex items-center justify-center overflow-y-auto bg-slate-950/20 p-2 sm:p-4;
   }
 
   .app-modal-panel {
     @apply flex h-auto w-full max-h-[calc(100dvh-1rem)] flex-col overflow-hidden rounded-xl border bg-surface-white shadow-elevated sm:max-h-[calc(100dvh-2rem)];
     border-color: var(--line-strong);
-    margin-top: clamp(1rem, 12dvh, 7rem);
-    max-height: calc(100dvh - clamp(2rem, 16dvh, 8rem));
   }
 
   .app-modal-panel-dragging {

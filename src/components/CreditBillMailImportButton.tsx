@@ -6,8 +6,8 @@ import { createPortal } from "react-dom";
 import { MailSearch, X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 
-const EmailSettingsPage = dynamic(
-  () => import("@/app/(sidebar)/settings/email/page"),
+const EmailSettingsPanel = dynamic(
+  () => import("@/components/EmailSettingsPanel").then((mod) => mod.EmailSettingsPanel),
   {
     ssr: false,
     loading: () => <EmailSettingsLoading />,
@@ -43,14 +43,11 @@ export function CreditBillMailImportDialog({ open, onClose, accountId, accountNa
   if (!open || typeof document === "undefined") return null;
 
   return createPortal(
-    <div className="fixed inset-0 z-[90] flex items-start justify-center bg-slate-900/30 px-4 py-[4vh]">
-      <div className="flex h-[90vh] min-h-[560px] w-full max-w-7xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-slate-50 shadow-2xl">
+    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-900/30 px-4 py-4">
+      <div className="flex max-h-[90vh] w-full max-w-7xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-slate-50 shadow-2xl">
         <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3">
           <div className="min-w-0">
             <div className="text-sm font-semibold text-slate-800">{t("creditBill.fetchMailTitle")}</div>
-            <div className="mt-0.5 truncate text-xs text-slate-500">
-              {t("creditBill.mailImportSameFlow")}
-            </div>
           </div>
           <button
             type="button"
@@ -62,7 +59,7 @@ export function CreditBillMailImportDialog({ open, onClose, accountId, accountNa
           </button>
         </div>
         <div className="min-h-0 flex-1 overflow-auto px-4 py-4">
-          <EmailSettingsPage />
+          <EmailSettingsPanel embedded />
         </div>
       </div>
     </div>,
@@ -83,7 +80,7 @@ export function CreditBillMailImportButton(props: CreditBillMailImportButtonProp
         title={t("creditBill.fetchMailTitle")}
       >
         <MailSearch className="h-3.5 w-3.5" />
-        {t("creditBill.fetch")}
+        {t("creditBill.fetchMailTitle")}
       </button>
 
       <CreditBillMailImportDialog

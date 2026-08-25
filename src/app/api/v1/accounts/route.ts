@@ -528,10 +528,11 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "Forbidden" }, { status: 403 });
     }
 
-    // Count records referencing this account (as source or destination).
+    // Only active records require password confirmation. Soft-deleted history
+    // is already removed from normal views and must not block account cleanup.
     const [recordCount, toRecordCount] = await Promise.all([
-      prisma.txRecord.count({ where: { accountId: id } }),
-      prisma.txRecord.count({ where: { toAccountId: id } }),
+      prisma.txRecord.count({ where: { accountId: id, deletedAt: null } }),
+      prisma.txRecord.count({ where: { toAccountId: id, deletedAt: null } }),
     ]);
 
     let body: { password?: string } | null = null;

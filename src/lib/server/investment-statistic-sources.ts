@@ -148,6 +148,8 @@ export async function loadWealthStatisticSourceEntries(
       realizedProfit: profitByTransactionId.get(row.id) ?? row.realizedProfit,
       depositInterest: row.interest,
       fundFee: row.fee,
+      fundUnits: row.units,
+      fundNav: row.nav,
       fundCode: null,
       fundName: productName,
       accountId,

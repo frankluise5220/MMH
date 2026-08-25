@@ -1,12 +1,24 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent as ReactChangeEvent,
+  type FocusEvent as ReactFocusEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import type { WorkBook } from "xlsx";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/components/BatchReplacePopoverButton";
 import { evaluateCalcInputExpression } from "@/components/CalcInput";
+import { SmartSelect } from "@/components/SmartSelect";
 import {
   buildAccountDisplayOption,
+  buildGroupedAccountOptions,
   formatAccountTableLabel,
   formatAccountTableTitle,
   type AccountDisplayOption,
@@ -29,6 +41,8 @@ type FundImportUploadItem = {
   rawText: string;
   date: string;
   fundSubtype: string;
+  cashAccountId?: string | null;
+  fundAccountId?: string | null;
   cashAccount: string;
   fundAccount: string;
   fundCode: string;
@@ -42,13 +56,15 @@ type FundImportUploadItem = {
   remark: string;
 };
 
-type FundImportHeaderField = Exclude<keyof FundImportUploadItem, "rawText">;
+type FundImportHeaderField = Exclude<keyof FundImportUploadItem, "rawText" | "cashAccountId" | "fundAccountId">;
 
 type FundImportPreviewIssue = {
   level: "error" | "warning";
   code?: string;
   message: string;
 };
+
+type FundImportCalculatedField = "feeRate" | "fee" | "nav" | "units";
 
 type FundImportPreviewItem = FundImportUploadItem & {
   source: string;
@@ -59,6 +75,7 @@ type FundImportPreviewItem = FundImportUploadItem & {
   cashAccountId: string | null;
   fundAccountId: string | null;
   fundProductType: string | null;
+  calculatedFields?: FundImportCalculatedField[];
   issues: FundImportPreviewIssue[];
 };
 
@@ -73,7 +90,21 @@ type FundRuleEditorRow = {
 };
 
 type FundPreviewTableRow = FundImportPreviewItem & { idx: number };
-type FundPreviewEditField = "fee" | "confirmDate" | "arrivalDate";
+type FundPreviewBatchEditField = "fee" | "confirmDate" | "arrivalDate";
+type FundPreviewEditField =
+  | "date"
+  | "fundSubtype"
+  | "cashAccount"
+  | "fundAccount"
+  | "fundCode"
+  | "amount"
+  | "feeRate"
+  | "fee"
+  | "nav"
+  | "units"
+  | "confirmDate"
+  | "arrivalDate"
+  | "remark";
 type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
 
 type FundPreviewAccount = {
@@ -96,6 +127,26 @@ type FundImportFileParseResult = {
     sheetCount: number;
     includedSheetCount: number;
   };
+};
+
+const FUND_PREVIEW_SUBTYPES = ["buy", "redeem", "dividend_cash", "dividend_reinvest", "buy_failed"] as const;
+
+const FUND_PREVIEW_COMPONENT_NUMBER_FIELDS = ["amount", "feeRate", "fee", "nav", "units"] as const;
+
+const FUND_PREVIEW_FIELD_LABEL_KEYS: Record<FundPreviewEditField, string> = {
+  date: "batchImport.template.fund.label.date",
+  fundSubtype: "batchImport.template.fund.label.fundSubtype",
+  cashAccount: "batchImport.template.fund.label.cashAccount",
+  fundAccount: "batchImport.template.fund.label.fundAccount",
+  fundCode: "batchImport.template.fund.label.fundCode",
+  amount: "batchImport.template.fund.label.amount",
+  feeRate: "batchImport.template.fund.label.feeRate",
+  fee: "batchImport.template.fund.label.fee",
+  nav: "batchImport.template.fund.label.nav",
+  units: "batchImport.template.fund.label.units",
+  confirmDate: "batchImport.template.fund.label.confirmDate",
+  arrivalDate: "batchImport.template.fund.label.arrivalDate",
+  remark: "batchImport.template.fund.label.remark",
 };
 
 type Props = {
@@ -231,6 +282,16 @@ function parseLooseNumber(value: string) {
   if (!normalized) return null;
   const amount = Number(normalized);
   return Number.isFinite(amount) ? amount : null;
+}
+
+function parseEditableNumber(value: string) {
+  const parsed = parseLooseNumber(value.trim());
+  return parsed == null ? null : parsed;
+}
+
+function parseNonNegativeEditableNumber(value: string) {
+  const parsed = parseEditableNumber(value);
+  return parsed == null ? null : Math.abs(parsed);
 }
 
 function parseFundFeeRateInput(value: string) {
@@ -613,6 +674,14 @@ function selectableIndexes(items: FundImportPreviewItem[]) {
   return new Set(items.flatMap((item, index) => hasBlockingIssue(item) ? [] : [index]));
 }
 
+function isFundCashLikeAccount(account: FundPreviewAccount) {
+  return account.kind === "cash" || account.kind === "bank_debit" || account.kind === "ewallet";
+}
+
+function isFundImportAccount(account: FundPreviewAccount) {
+  return account.kind === "investment" && (!account.investProductType || account.investProductType === "fund" || account.investProductType === "money");
+}
+
 function buildPreviewAccountDisplayOption(account: FundPreviewAccount): AccountDisplayOption {
   return buildAccountDisplayOption({
     ...account,
@@ -644,6 +713,10 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
   const [importing, setImporting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [debugMessage, setDebugMessage] = useState<string | null>(null);
+  const [editingCell, setEditingCell] = useState<{ idx: number; field: FundPreviewEditField } | null>(null);
+  const [draftValue, setDraftValue] = useState("");
+  const [draftOriginalValue, setDraftOriginalValue] = useState("");
+  const skipNextEditCommitRef = useRef(false);
 
   const previewRows = useMemo<FundPreviewTableRow[]>(
     () => previewItems.map((item, idx) => ({ ...item, idx })),
@@ -657,6 +730,24 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
     })),
     [bookAccounts],
   );
+  const cashAccountDisplayOptions = useMemo<AccountDisplayOption[]>(
+    () => bookAccounts
+      .filter(isFundCashLikeAccount)
+      .map(buildPreviewAccountDisplayOption)
+      .sort((a, b) => a.selectorLabel.localeCompare(b.selectorLabel, "zh-Hans-CN")),
+    [bookAccounts],
+  );
+  const fundAccountDisplayOptions = useMemo<AccountDisplayOption[]>(
+    () => bookAccounts
+      .filter(isFundImportAccount)
+      .map(buildPreviewAccountDisplayOption)
+      .sort((a, b) => a.selectorLabel.localeCompare(b.selectorLabel, "zh-Hans-CN")),
+    [bookAccounts],
+  );
+  const cashAccountDisplayById = useMemo(() => new Map(cashAccountDisplayOptions.map((account) => [account.id, account])), [cashAccountDisplayOptions]);
+  const fundAccountDisplayById = useMemo(() => new Map(fundAccountDisplayOptions.map((account) => [account.id, account])), [fundAccountDisplayOptions]);
+  const cashAccountOptions = useMemo(() => buildGroupedAccountOptions(cashAccountDisplayOptions), [cashAccountDisplayOptions]);
+  const fundAccountOptions = useMemo(() => buildGroupedAccountOptions(fundAccountDisplayOptions), [fundAccountDisplayOptions]);
   const selectedKeys = useMemo(() => new Set(Array.from(selected).map((idx) => String(idx))), [selected]);
 
   const importIssues = useMemo(() => (
@@ -711,7 +802,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
     return display ? formatAccountTableTitle(display, fallback) : fallback.trim();
   }, [accountDisplayById]);
 
-  const previewReplaceFields = useMemo<BatchReplaceFieldConfig<FundPreviewEditField>[]>(
+  const previewReplaceFields = useMemo<BatchReplaceFieldConfig<FundPreviewBatchEditField>[]>(
     () => [
       {
         value: "fee",
@@ -735,7 +826,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
     [t],
   );
 
-  const applyPreviewReplace = useCallback((field: FundPreviewEditField, value: string) => {
+  const applyPreviewReplace = useCallback((field: FundPreviewBatchEditField, value: string) => {
     const selectedIndexes = new Set(Array.from(selected).filter((idx) => previewItems[idx]));
     if (selectedIndexes.size === 0) throw new Error(t("batchImport.fundPreview.selectRowsFirst"));
     let changed = 0;
@@ -852,6 +943,9 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
       setImporting(false);
       setMessage(null);
       setDebugMessage(null);
+      setEditingCell(null);
+      setDraftValue("");
+      setDraftOriginalValue("");
       return;
     }
 
@@ -872,6 +966,9 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
       setRuleRows([]);
       setRulesDirty(false);
       setSelected(new Set());
+      setEditingCell(null);
+      setDraftValue("");
+      setDraftOriginalValue("");
       try {
         const parseResult = await parseFundImportFile(file!);
         if (cancelled) return;
@@ -920,6 +1017,295 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
     if (uploadItems.length === 0 || importing) return;
     await requestPreview(uploadItems, ruleRows, true);
   }, [importing, requestPreview, ruleRows, uploadItems]);
+
+  const patchUploadItem = useCallback(async (idx: number, patch: Partial<FundImportUploadItem>) => {
+    const nextUploadItems = uploadItems.map((item, index) => index === idx ? { ...item, ...patch } : item);
+    setUploadItems(nextUploadItems);
+    setEditingCell(null);
+    setDraftValue("");
+    setDraftOriginalValue("");
+    await requestPreview(nextUploadItems, ruleRows, true);
+  }, [requestPreview, ruleRows, uploadItems]);
+
+  const editFieldLabel = useCallback((field: FundPreviewEditField) => t(FUND_PREVIEW_FIELD_LABEL_KEYS[field]), [t]);
+
+  const editTitle = useCallback(
+    (field: FundPreviewEditField, extra?: string) => {
+      const base = t("statementImportPreview.doubleClickEdit", { field: editFieldLabel(field) });
+      return extra ? `${base}\n${extra}` : base;
+    },
+    [editFieldLabel, t],
+  );
+
+  function draftValueFromRow(row: FundPreviewTableRow, field: FundPreviewEditField) {
+    switch (field) {
+      case "date": return row.date || "";
+      case "fundSubtype": return row.fundSubtype || "";
+      case "cashAccount": return row.cashAccount || "";
+      case "fundAccount": return row.fundAccount || "";
+      case "fundCode": return row.fundCode || "";
+      case "amount": return row.amount == null ? "" : String(row.amount);
+      case "feeRate": return row.feeRate == null ? "" : String(row.feeRate);
+      case "fee": return row.fee == null ? "" : String(row.fee);
+      case "nav": return row.nav == null ? "" : String(row.nav);
+      case "units": return row.units == null ? "" : String(row.units);
+      case "confirmDate": return row.confirmDate || "";
+      case "arrivalDate": return row.arrivalDate || "";
+      case "remark": return row.remark || "";
+      default: return "";
+    }
+  }
+
+  const beginCellEdit = useCallback((row: FundPreviewTableRow, field: FundPreviewEditField) => {
+    if (uploading || importing) return;
+    skipNextEditCommitRef.current = false;
+    const nextDraftValue = draftValueFromRow(row, field);
+    setEditingCell({ idx: row.idx, field });
+    setDraftValue(nextDraftValue);
+    setDraftOriginalValue(nextDraftValue);
+  }, [importing, uploading]);
+
+  const commitDraftEdit = useCallback(async () => {
+    if (skipNextEditCommitRef.current) {
+      skipNextEditCommitRef.current = false;
+      return;
+    }
+    const current = editingCell;
+    if (!current) return;
+    const value = draftValue.trim();
+    if (value === draftOriginalValue.trim()) {
+      setEditingCell(null);
+      setDraftValue("");
+      setDraftOriginalValue("");
+      return;
+    }
+
+    let patch: Partial<FundImportUploadItem> | null = null;
+    switch (current.field) {
+      case "date":
+        patch = { date: value };
+        break;
+      case "fundSubtype":
+        patch = { fundSubtype: value };
+        break;
+      case "cashAccount":
+        patch = { cashAccount: value, cashAccountId: null };
+        break;
+      case "fundAccount":
+        patch = { fundAccount: value, fundAccountId: null };
+        break;
+      case "fundCode":
+        patch = { fundCode: value };
+        break;
+      case "amount":
+        patch = { amount: parseEditableNumber(value) ?? 0 };
+        break;
+      case "feeRate":
+        patch = { feeRateInput: parseFundFeeRateInput(value), fee: null };
+        break;
+      case "fee":
+        patch = { fee: parseNonNegativeEditableNumber(value), feeRateInput: null };
+        break;
+      case "nav":
+        patch = { nav: parseNonNegativeEditableNumber(value) };
+        break;
+      case "units":
+        patch = { units: parseNonNegativeEditableNumber(value) };
+        break;
+      case "confirmDate":
+        patch = { confirmDate: value || null };
+        break;
+      case "arrivalDate":
+        patch = { arrivalDate: value || null };
+        break;
+      case "remark":
+        patch = { remark: value };
+        break;
+      default:
+        patch = null;
+    }
+    if (!patch) {
+      setEditingCell(null);
+      setDraftValue("");
+      setDraftOriginalValue("");
+      return;
+    }
+    await patchUploadItem(current.idx, patch);
+  }, [draftOriginalValue, draftValue, editingCell, patchUploadItem]);
+
+  function cancelDraftEdit() {
+    skipNextEditCommitRef.current = true;
+    setEditingCell(null);
+    setDraftValue("");
+    setDraftOriginalValue("");
+  }
+
+  function stopCellEvent(event: ReactMouseEvent<HTMLElement>) {
+    event.stopPropagation();
+  }
+
+  function editableCellProps(row: FundPreviewTableRow, field: FundPreviewEditField) {
+    return {
+      "data-row-double-click-ignore": true,
+      onMouseDown: stopCellEvent,
+      onClick: stopCellEvent,
+      onDoubleClick: (event: ReactMouseEvent<HTMLElement>) => {
+        event.stopPropagation();
+        beginCellEdit(row, field);
+      },
+    };
+  }
+
+  function editableInputProps(field: FundPreviewEditField) {
+    return {
+      "data-row-double-click-ignore": true,
+      autoFocus: true,
+      onMouseDown: stopCellEvent,
+      onClick: stopCellEvent,
+      onDoubleClick: stopCellEvent,
+      onFocus: (event: ReactFocusEvent<HTMLInputElement>) => event.currentTarget.select(),
+      onChange: (event: ReactChangeEvent<HTMLInputElement>) => setDraftValue(event.target.value),
+      onBlur: () => void commitDraftEdit(),
+      onKeyDown: (event: ReactKeyboardEvent<HTMLInputElement>) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+        if (event.key === "Escape") cancelDraftEdit();
+      },
+      className: [
+        "h-7 rounded-md border border-blue-200 bg-white px-2 text-xs outline-none",
+        field === "remark" || field === "fundCode" ? "w-full" : "w-24",
+        FUND_PREVIEW_COMPONENT_NUMBER_FIELDS.includes(field as typeof FUND_PREVIEW_COMPONENT_NUMBER_FIELDS[number])
+          ? "text-right tabular-nums"
+          : "",
+      ].filter(Boolean).join(" "),
+    };
+  }
+
+  function renderTextEditCell(row: FundPreviewTableRow, field: FundPreviewEditField, value: string | null | undefined, className = "text-slate-700") {
+    const isEditing = editingCell?.idx === row.idx && editingCell.field === field;
+    if (isEditing) {
+      return (
+        <input
+          type={field === "date" || field === "confirmDate" || field === "arrivalDate" ? "date" : "text"}
+          value={draftValue}
+          {...editableInputProps(field)}
+        />
+      );
+    }
+    return (
+      <span
+        className={`block min-h-5 w-full truncate cursor-pointer rounded px-1 py-0.5 hover:bg-slate-100 ${className}`}
+        title={editTitle(field)}
+        {...editableCellProps(row, field)}
+      >
+        {String(value ?? "").trim() || "-"}
+      </span>
+    );
+  }
+
+  function renderNumberEditCell(
+    row: FundPreviewTableRow,
+    field: FundPreviewEditField,
+    value: number | null | undefined,
+    digits = 2,
+    calculatedField?: FundImportCalculatedField,
+    suffix = "",
+  ) {
+    const isEditing = editingCell?.idx === row.idx && editingCell.field === field;
+    if (isEditing) {
+      return (
+        <input
+          type="text"
+          inputMode="decimal"
+          value={draftValue}
+          {...editableInputProps(field)}
+        />
+      );
+    }
+    const calculated = calculatedField ? row.calculatedFields?.includes(calculatedField) ?? false : false;
+    const formatted = formatOptionalNumber(value, digits);
+    return (
+      <span
+        className={`block min-h-5 w-full cursor-pointer rounded px-1 py-0.5 text-right tabular-nums hover:bg-slate-100 ${calculated ? "italic text-slate-500" : "text-slate-700"}`}
+        title={editTitle(field, calculated ? t("viewImport.calculatedValue") : undefined)}
+        {...editableCellProps(row, field)}
+      >
+        {formatted === "-" ? formatted : `${formatted}${suffix}`}
+      </span>
+    );
+  }
+
+  function renderSubtypeCell(row: FundPreviewTableRow) {
+    if (editingCell?.idx === row.idx && editingCell.field === "fundSubtype") {
+      const subtypeOptions = Array.from(new Set([row.fundSubtype, ...FUND_PREVIEW_SUBTYPES].filter(Boolean)));
+      return (
+        <select
+          data-row-double-click-ignore
+          autoFocus
+          className="h-7 w-full rounded-md border border-blue-200 bg-white px-2 text-xs outline-none"
+          value={row.fundSubtype}
+          onMouseDown={stopCellEvent}
+          onClick={stopCellEvent}
+          onDoubleClick={stopCellEvent}
+          onBlur={() => setEditingCell(null)}
+          onChange={(event) => void patchUploadItem(row.idx, { fundSubtype: event.target.value })}
+        >
+          {subtypeOptions.map((subtype) => (
+            <option key={subtype} value={subtype}>{getFundImportSubtypeLabel(subtype, row.source, t)}</option>
+          ))}
+        </select>
+      );
+    }
+    return renderTextEditCell(row, "fundSubtype", getFundImportSubtypeLabel(row.fundSubtype, row.source, t));
+  }
+
+  function renderAccountEditCell(row: FundPreviewTableRow, field: "cashAccount" | "fundAccount") {
+    const isCashField = field === "cashAccount";
+    const accountId = isCashField ? row.cashAccountId : row.fundAccountId;
+    const fallback = isCashField ? row.cashAccount : row.fundAccount;
+    const options = isCashField ? cashAccountOptions : fundAccountOptions;
+    const displayById = isCashField ? cashAccountDisplayById : fundAccountDisplayById;
+    const label = previewAccountLabel(accountId, fallback);
+    const title = previewAccountTitle(accountId, fallback) || editTitle(field);
+    if (editingCell?.idx === row.idx && editingCell.field === field) {
+      return (
+        <div data-row-double-click-ignore onMouseDown={stopCellEvent} onClick={stopCellEvent} onDoubleClick={stopCellEvent}>
+          <SmartSelect
+            mode="single"
+            value={accountId ?? ""}
+            onChange={(nextAccountId) => {
+              const account = displayById.get(nextAccountId);
+              void patchUploadItem(row.idx, isCashField
+                ? { cashAccountId: nextAccountId || null, cashAccount: account?.selectorLabel ?? "" }
+                : { fundAccountId: nextAccountId || null, fundAccount: account?.selectorLabel ?? "" });
+            }}
+            options={options}
+            placeholder={t(isCashField ? "batchImport.template.fund.label.cashAccount" : "batchImport.template.fund.label.fundAccount")}
+            behavior={{
+              search: true,
+              hierarchy: true,
+              clearable: true,
+              minDropdownWidth: 260,
+              fitContent: true,
+              dropdownMaxHeight: 240,
+              density: "micro",
+              resizableDropdown: true,
+              autoOpen: true,
+              onDropdownClose: () => setEditingCell(null),
+            }}
+          />
+        </div>
+      );
+    }
+    return (
+      <span
+        className="block min-h-5 w-full truncate cursor-pointer rounded px-1 py-0.5 text-slate-700 hover:bg-slate-100"
+        title={title}
+        {...editableCellProps(row, field)}
+      >
+        {label}
+      </span>
+    );
+  }
 
   const handleImport = useCallback(async () => {
     if (importing) return;
@@ -1013,18 +1399,15 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
         );
       },
     },
-    { key: "date", label: t("batchImport.template.fund.label.date"), width: 112, minWidth: 92, filterKind: "dateRange", filterText: (row) => row.date || "-", sortValue: (row) => row.date || "", render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.date || "-"}</span> },
-    { key: "fundSubtype", label: t("batchImport.template.fund.label.fundSubtype"), width: 116, minWidth: 92, filterText: (row) => getFundImportSubtypeLabel(row.fundSubtype, row.source, t), render: (row) => <span className="whitespace-nowrap text-slate-700">{getFundImportSubtypeLabel(row.fundSubtype, row.source, t)}</span> },
+    { key: "date", label: t("batchImport.template.fund.label.date"), width: 112, minWidth: 92, filterKind: "dateRange", filterText: (row) => row.date || "-", sortValue: (row) => row.date || "", render: (row) => renderTextEditCell(row, "date", row.date, "tabular-nums text-slate-700") },
+    { key: "fundSubtype", label: t("batchImport.template.fund.label.fundSubtype"), width: 116, minWidth: 92, filterText: (row) => getFundImportSubtypeLabel(row.fundSubtype, row.source, t), render: renderSubtypeCell },
     {
       key: "cashAccount",
       label: t("batchImport.template.fund.label.cashAccount"),
       width: 180,
       minWidth: 130,
       filterText: (row) => previewAccountLabel(row.cashAccountId, row.cashAccount),
-      render: (row) => {
-        const label = previewAccountLabel(row.cashAccountId, row.cashAccount);
-        return <span className="truncate text-slate-700" title={previewAccountTitle(row.cashAccountId, row.cashAccount)}>{label}</span>;
-      },
+      render: (row) => renderAccountEditCell(row, "cashAccount"),
     },
     {
       key: "fundAccount",
@@ -1032,22 +1415,19 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
       width: 180,
       minWidth: 130,
       filterText: (row) => previewAccountLabel(row.fundAccountId, row.fundAccount),
-      render: (row) => {
-        const label = previewAccountLabel(row.fundAccountId, row.fundAccount);
-        return <span className="truncate text-slate-700" title={previewAccountTitle(row.fundAccountId, row.fundAccount)}>{label}</span>;
-      },
+      render: (row) => renderAccountEditCell(row, "fundAccount"),
     },
-    { key: "fundCode", label: t("batchImport.template.fund.label.fundCode"), width: 96, minWidth: 76, filterText: (row) => row.fundCode || "-", render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.fundCode || "-"}</span> },
+    { key: "fundCode", label: t("batchImport.template.fund.label.fundCode"), width: 96, minWidth: 76, filterText: (row) => row.fundCode || "-", render: (row) => renderTextEditCell(row, "fundCode", row.fundCode, "tabular-nums text-slate-700") },
     { key: "fundName", label: t("batchImport.template.fund.label.fundName"), width: 220, minWidth: 150, filterText: (row) => row.fundName || "-", render: (row) => <span className="truncate text-slate-700" title={row.fundName || ""}>{row.fundName || "-"}</span> },
-    { key: "amount", label: t("batchImport.template.fund.label.amount"), width: 116, minWidth: 90, align: "right", filterKind: "numberRange", filterText: (row) => formatOptionalNumber(row.amount, 2), filterNumber: (row) => row.amount, sortValue: (row) => row.amount, render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{formatOptionalNumber(row.amount, 2)}</span> },
-    { key: "feeRate", label: t("batchImport.template.fund.label.feeRate"), width: 96, minWidth: 78, align: "right", filterKind: "numberRange", filterText: (row) => row.feeRate != null ? row.feeRate.toFixed(4) : "-", filterNumber: (row) => row.feeRate, sortValue: (row) => row.feeRate ?? 0, render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.feeRate != null ? `${row.feeRate.toFixed(4)}%` : "-"}</span> },
-    { key: "fee", label: t("batchImport.template.fund.label.fee"), width: 96, minWidth: 76, align: "right", filterKind: "numberRange", filterText: (row) => formatOptionalNumber(row.fee, 2), filterNumber: (row) => row.fee, sortValue: (row) => row.fee ?? 0, render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{formatOptionalNumber(row.fee, 2)}</span> },
-    { key: "nav", label: t("batchImport.template.fund.label.nav"), width: 96, minWidth: 78, align: "right", filterKind: "numberRange", filterText: (row) => formatOptionalNumber(row.nav, 4), filterNumber: (row) => row.nav, sortValue: (row) => row.nav ?? 0, render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{formatOptionalNumber(row.nav, 4)}</span> },
-    { key: "units", label: t("batchImport.template.fund.label.units"), width: 116, minWidth: 90, align: "right", filterKind: "numberRange", filterText: (row) => formatOptionalNumber(row.units, 2), filterNumber: (row) => row.units, sortValue: (row) => row.units ?? 0, render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{formatOptionalNumber(row.units, 2)}</span> },
-    { key: "confirmDate", label: t("batchImport.template.fund.label.confirmDate"), width: 112, minWidth: 92, filterKind: "dateRange", filterText: (row) => row.confirmDate || "-", sortValue: (row) => row.confirmDate || "", render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.confirmDate || "-"}</span> },
-    { key: "arrivalDate", label: t("batchImport.template.fund.label.arrivalDate"), width: 112, minWidth: 92, filterKind: "dateRange", filterText: (row) => row.arrivalDate || "-", sortValue: (row) => row.arrivalDate || "", render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.arrivalDate || "-"}</span> },
-    { key: "remark", label: t("batchImport.template.fund.label.remark"), width: 220, minWidth: 150, filterText: (row) => row.remark || "-", render: (row) => <span className="truncate text-slate-700" title={row.remark || ""}>{row.remark || "-"}</span> },
-  ], [previewAccountLabel, previewAccountTitle, t]);
+    { key: "amount", label: t("batchImport.template.fund.label.amount"), width: 116, minWidth: 90, align: "right", filterKind: "numberRange", filterText: (row) => formatOptionalNumber(row.amount, 2), filterNumber: (row) => row.amount, sortValue: (row) => row.amount, render: (row) => renderNumberEditCell(row, "amount", row.amount, 2) },
+    { key: "feeRate", label: t("batchImport.template.fund.label.feeRate"), width: 96, minWidth: 78, align: "right", filterKind: "numberRange", filterText: (row) => row.feeRate != null ? row.feeRate.toFixed(4) : "-", filterNumber: (row) => row.feeRate, sortValue: (row) => row.feeRate ?? 0, render: (row) => renderNumberEditCell(row, "feeRate", row.feeRate, 4, "feeRate", "%") },
+    { key: "fee", label: t("batchImport.template.fund.label.fee"), width: 96, minWidth: 76, align: "right", filterKind: "numberRange", filterText: (row) => formatOptionalNumber(row.fee, 2), filterNumber: (row) => row.fee, sortValue: (row) => row.fee ?? 0, render: (row) => renderNumberEditCell(row, "fee", row.fee, 2, "fee") },
+    { key: "nav", label: t("batchImport.template.fund.label.nav"), width: 96, minWidth: 78, align: "right", filterKind: "numberRange", filterText: (row) => formatOptionalNumber(row.nav, 4), filterNumber: (row) => row.nav, sortValue: (row) => row.nav ?? 0, render: (row) => renderNumberEditCell(row, "nav", row.nav, 4, "nav") },
+    { key: "units", label: t("batchImport.template.fund.label.units"), width: 116, minWidth: 90, align: "right", filterKind: "numberRange", filterText: (row) => formatOptionalNumber(row.units, 2), filterNumber: (row) => row.units, sortValue: (row) => row.units ?? 0, render: (row) => renderNumberEditCell(row, "units", row.units, 2, "units") },
+    { key: "confirmDate", label: t("batchImport.template.fund.label.confirmDate"), width: 112, minWidth: 92, filterKind: "dateRange", filterText: (row) => row.confirmDate || "-", sortValue: (row) => row.confirmDate || "", render: (row) => renderTextEditCell(row, "confirmDate", row.confirmDate, "tabular-nums text-slate-700") },
+    { key: "arrivalDate", label: t("batchImport.template.fund.label.arrivalDate"), width: 112, minWidth: 92, filterKind: "dateRange", filterText: (row) => row.arrivalDate || "-", sortValue: (row) => row.arrivalDate || "", render: (row) => renderTextEditCell(row, "arrivalDate", row.arrivalDate, "tabular-nums text-slate-700") },
+    { key: "remark", label: t("batchImport.template.fund.label.remark"), width: 220, minWidth: 150, filterText: (row) => row.remark || "-", render: (row) => renderTextEditCell(row, "remark", row.remark) },
+  ], [cashAccountDisplayById, cashAccountOptions, draftValue, editingCell, fundAccountDisplayById, fundAccountOptions, importing, patchUploadItem, previewAccountLabel, previewAccountTitle, t, uploading]);
 
   if (!open || !file) return null;
 
@@ -1062,24 +1442,15 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
                 {uploading ? t("batchImport.previewParsing") : formatText(t, "batchImport.previewFundHint", { count: previewItems.length })}
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={onClose}
-                disabled={importing}
-                className="rounded-md px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {t("common.cancel")}
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleImport()}
-                disabled={uploading || importing || selected.size === 0 || errorIssues.length > 0}
-                className="rounded-md bg-blue-600 px-4 py-1.5 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {importing ? t("batchImport.importing") : formatText(t, "batchImport.confirmImport", { count: selected.size })}
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={importing}
+              className="h-8 w-8 rounded-md border border-slate-300 text-slate-500 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+              aria-label={t("table.close")}
+            >
+              ×
+            </button>
           </div>
         </div>
         {message ? (
@@ -1101,6 +1472,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
             {warningIssues.length > 0 ? (
               <span className="font-medium text-amber-600">{formatText(t, "batchImport.warningCount", { count: warningIssues.length })}</span>
             ) : null}
+            <span className="italic text-slate-500">{t("viewImport.calculatedValueHint")}</span>
           </div>
           {ruleRows.length > 0 ? (
             <div className="mt-3 rounded-lg border border-slate-200 bg-white">
@@ -1182,9 +1554,12 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
             minTableWidth={1760}
             selectable
             selectAllScope="renderedRows"
+            rowSelectable={(row) => !hasBlockingIssue(row)}
             selectedKeys={selectedKeys}
             onSelectionChange={(keys) => {
-              setSelected(new Set(Array.from(keys).map((key) => Number(key)).filter((idx) => Number.isInteger(idx))));
+              setSelected(new Set(Array.from(keys)
+                .map((key) => Number(key))
+                .filter((idx) => Number.isInteger(idx) && !hasBlockingIssue(previewItems[idx]))));
             }}
             batchActionSlot={(
               <BatchReplacePopoverButton
@@ -1204,6 +1579,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
             toolbarRightContent={(
               <div className="flex items-center gap-3 text-xs text-slate-500">
                 <span>{formatText(t, "batchImport.selectedSummary", { selected: selected.size, total: previewItems.length })}</span>
+                <span className="italic">{t("viewImport.calculatedValueHint")}</span>
                 {errorIssues.length > 0 ? <span className="font-medium text-red-600">{formatText(t, "batchImport.errorCount", { count: errorIssues.length })}</span> : null}
                 {warningIssues.length > 0 ? <span className="font-medium text-amber-600">{formatText(t, "batchImport.warningCount", { count: warningIssues.length })}</span> : null}
               </div>
@@ -1218,7 +1594,25 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
             showFilters
             sortable
             showColumnVisibilityButton={false}
+            resetDisplayStateOnMount
           />
+        </div>
+        <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3">
+          <div className="flex min-w-0 items-center gap-3 text-xs">
+            <span className="shrink-0 text-slate-500">{formatText(t, "batchImport.selectedSummary", { selected: selected.size, total: previewItems.length })}</span>
+            {errorIssues.length > 0 ? <span className="shrink-0 font-medium text-red-600">{formatText(t, "batchImport.errorCount", { count: errorIssues.length })}</span> : null}
+            {warningIssues.length > 0 ? <span className="shrink-0 font-medium text-amber-600">{formatText(t, "batchImport.warningCount", { count: warningIssues.length })}</span> : null}
+          </div>
+          <div className="flex items-center justify-end">
+            <button
+              type="button"
+              onClick={() => void handleImport()}
+              disabled={uploading || importing || selected.size === 0 || errorIssues.length > 0}
+              className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {importing ? t("batchImport.importing") : formatText(t, "batchImport.confirmImport", { count: selected.size })}
+            </button>
+          </div>
         </div>
       </div>
     </div>

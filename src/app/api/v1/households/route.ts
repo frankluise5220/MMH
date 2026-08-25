@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { getCurrentUser, isAdmin } from "@/lib/server/auth";
+import { canWrite, getCurrentUser, isAdmin, isReadOnly } from "@/lib/server/auth";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getHouseholdDisplayName } from "@/lib/household-display";
 import { createLedgerWithDefaults } from "@/lib/households/create-ledger";
@@ -32,6 +32,10 @@ export async function GET() {
     households: displayHouseholds,
     isAdmin: isAdmin(user),
     isSystem: user?.isSystem === true,
+    role: user?.role ?? null,
+    isReadOnly: isReadOnly(user),
+    canWrite: canWrite(user),
+    canBackupSystem: isAdmin(user),
   });
 }
 

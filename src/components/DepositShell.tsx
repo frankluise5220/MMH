@@ -379,12 +379,6 @@ export function DepositShell({
             <div className="flex min-w-0 items-center gap-1 text-left text-sm font-semibold text-slate-800">
               {selectedEntryIds.size > 0 ? (
                 <div className="flex shrink-0 items-center gap-1">
-                  <span
-                    className="h-6 rounded border border-blue-200 bg-blue-50 px-2 text-xs font-medium leading-6 tabular-nums text-blue-700"
-                    title={t("fundShell.selectedTitle", { count: selectedEntryIds.size })}
-                  >
-                    {t("table.selectedCount", { count: selectedEntryIds.size })}
-                  </span>
                   <BatchReplacePopoverButton
                     fields={batchFields}
                     targetCount={selectedEntryIds.size}
@@ -403,6 +397,12 @@ export function DepositShell({
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
+                  <span
+                    className="h-6 rounded border border-blue-200 bg-blue-50 px-2 text-xs font-medium leading-6 tabular-nums text-blue-700"
+                    title={t("fundShell.selectedTitle", { count: selectedEntryIds.size })}
+                  >
+                    {t("table.selectedCount", { count: selectedEntryIds.size })}
+                  </span>
                   <span className="mx-1 h-4 w-px bg-slate-200" />
                 </div>
               ) : null}

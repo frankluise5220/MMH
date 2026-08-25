@@ -96,8 +96,12 @@ export function inferWealthUnitNav(value: { nav?: unknown | null; grossAmount?: 
 function fallbackNetProfit(entry: WealthPositionEntryLike) {
   const fee = Math.max(0, toNumber(entry.fee));
   if (entry.interest != null) return roundMoney(toNumber(entry.interest) - fee);
-  if (entry.arrivalAmount != null) return roundMoney(absNum(entry.arrivalAmount) - absNum(entry.grossAmount));
-  return fee > 0 ? roundMoney(-fee) : null;
+  if (fee > 0) return roundMoney(-fee);
+  if (entry.arrivalAmount != null) {
+    const principal = absNum(entry.grossAmount);
+    return principal > MONEY_EPS ? roundMoney(absNum(entry.arrivalAmount) - principal) : 0;
+  }
+  return 0;
 }
 
 export function calculateWealthPositionsFromEntries(

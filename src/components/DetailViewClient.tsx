@@ -272,6 +272,13 @@ function formatEntryCurrencyMoney(amount: number, entry: { currency?: string | n
   return formatCurrencyMoney(amount, currency);
 }
 
+function formatSelectedAmountsByCurrency(amounts: Map<string, number>) {
+  return Array.from(amounts.entries())
+    .sort(([currencyA], [currencyB]) => currencyA.localeCompare(currencyB))
+    .map(([currency, amount]) => formatCurrencyMoney(amount, currency))
+    .join(" + ");
+}
+
 function isCreditCardRepaymentDisplayEntry(entry: DetailEntry) {
   if (entry.accountIsSettlementDebt || entry.toAccountIsSettlementDebt) return false;
   if (entry.accountKind === "loan" || entry.toAccountKind === "loan") return false;
@@ -493,6 +500,7 @@ export function DetailViewClient({
   initialEntries,
   accountOptions,
   categoryOptions = [],
+  tagOptions = [],
   investmentProductTypeByAccountId,
   compactRows = false,
   storageKey = "mmh_basic_detail_table_v1",
@@ -523,6 +531,7 @@ export function DetailViewClient({
   initialEntries: DetailEntry[];
   accountOptions: DetailAccountOption[];
   categoryOptions?: BasicDetailBatchCategoryOption[];
+  tagOptions?: BasicDetailBatchCategoryOption[];
   investmentProductTypeByAccountId: Record<string, string | undefined | null>;
   compactRows?: boolean;
   storageKey?: string;
@@ -903,6 +912,26 @@ export function DetailViewClient({
   const { selectedIds, setSelection } = useBasicDetailSelection();
   const selectedCount = selectedIds.size;
   const currentEntryIds = useMemo(() => entries.map((entry) => entry.id), [entries]);
+  const selectedFlowSummary = useMemo(() => {
+    const inflowByCurrency = new Map<string, number>();
+    const outflowByCurrency = new Map<string, number>();
+    for (const entry of entries) {
+      if (!selectedIds.has(entry.id)) continue;
+      const amount = effectiveAmountForAccount(entry, accountId);
+      const currency = entryCurrency(entry);
+      if (!inflowByCurrency.has(currency)) inflowByCurrency.set(currency, 0);
+      if (!outflowByCurrency.has(currency)) outflowByCurrency.set(currency, 0);
+      if (amount > 0) {
+        inflowByCurrency.set(currency, (inflowByCurrency.get(currency) ?? 0) + amount);
+      } else if (amount < 0) {
+        outflowByCurrency.set(currency, (outflowByCurrency.get(currency) ?? 0) - amount);
+      }
+    }
+    return {
+      inflow: formatSelectedAmountsByCurrency(inflowByCurrency),
+      outflow: formatSelectedAmountsByCurrency(outflowByCurrency),
+    };
+  }, [accountId, entries, selectedIds]);
   const selectedCategoryTypes = useMemo(() => {
     const types = new Set<string>();
     for (const entry of entries) {
@@ -1299,11 +1328,12 @@ export function DetailViewClient({
 
   const customToolbarLeft = toolbarMode === "custom" ? (
     <div className="flex min-w-0 items-center gap-2">
-      {selectedCount > 0 ? <span className="text-xs font-medium text-slate-600">{tf("detail.selectedCount", { count: selectedCount })}</span> : null}
-      {selectedCount > 0 ? <BasicDetailBatchReplaceButton fields={batchReplaceFields} accountOptions={accountOptions} categoryOptions={categoryOptions} categoryTypes={selectedCategoryTypes} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} /> : null}
+      {selectedCount > 0 ? <BasicDetailBatchReplaceButton fields={batchReplaceFields} accountOptions={accountOptions} categoryOptions={categoryOptions} tagOptions={tagOptions} categoryTypes={selectedCategoryTypes} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} /> : null}
       {selectedCount > 0 ? <BasicDetailBatchDeleteButton /> : null}
-      {selectedCount > 0 && toolbarTitle ? <span className="h-4 w-px bg-slate-200" /> : null}
-      {toolbarTitle ? <div className="text-sm font-semibold text-slate-800">{toolbarTitle}</div> : null}
+      {selectedCount > 0 ? <span className="text-xs font-medium text-slate-600">{tf("detail.selectedCount", { count: selectedCount })}</span> : null}
+      {selectedCount > 0 ? <span className={`text-xs font-medium ${inflowCls}`}>{t("detail.column.inflow")} {selectedFlowSummary.inflow}</span> : null}
+      {selectedCount > 0 ? <span className={`text-xs font-medium ${outflowCls}`}>{t("detail.column.outflow")} {selectedFlowSummary.outflow}</span> : null}
+      {selectedCount === 0 && toolbarTitle ? <div className="text-sm font-semibold text-slate-800">{toolbarTitle}</div> : null}
     </div>
   ) : undefined;
   const tableResetKey = resetKey ?? `${accountId}:detail-table`;
@@ -1446,7 +1476,7 @@ export function DetailViewClient({
       rowActionsMinWidth={104}
       batchActionSlot={toolbarMode === "default" ? (
         <>
-          <BasicDetailBatchReplaceButton fields={batchReplaceFields} accountOptions={accountOptions} categoryOptions={categoryOptions} categoryTypes={selectedCategoryTypes} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} />
+          <BasicDetailBatchReplaceButton fields={batchReplaceFields} accountOptions={accountOptions} categoryOptions={categoryOptions} tagOptions={tagOptions} categoryTypes={selectedCategoryTypes} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} />
           <BasicDetailBatchDeleteButton />
         </>
       ) : undefined}

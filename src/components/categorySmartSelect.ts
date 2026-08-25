@@ -13,6 +13,7 @@ export type CategorySource = {
 
 export type CategorySmartSelectOption = SmartSelectOption & {
   categoryType?: string;
+  sourceName?: string;
 };
 
 type SingleSelectBehavior = Extract<SmartSelectProps, { mode: "single" }>["behavior"];
@@ -101,6 +102,7 @@ export function buildCategorySmartSelectOptions({
           parentId: parentOptionId,
           isGroup: hasChildren,
           categoryType: type,
+          sourceName: child.name ?? child.label ?? "",
         });
         if (hasChildren) walk(child.id, level + 1, child.id);
       }

@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { CalendarClock, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, X } from "lucide-react";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
@@ -22,6 +21,7 @@ import {
   setCreditBillShowRecentCyclesPreference,
 } from "@/lib/client/appPreferences";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
+import { dispatchCreditBillDetailSelection } from "@/lib/client/creditBillDetailSelection";
 import { notifySettingsDataChanged } from "@/lib/client/settingsCache";
 import { useI18n } from "@/lib/i18n";
 
@@ -110,6 +110,7 @@ export function CreditBillSummaryTable({
   const router = useRouter();
   const { t } = useI18n();
   const [localRows, setLocalRows] = useState(rows);
+  const [localSelectedBillMonth, setLocalSelectedBillMonth] = useState(selectedBillMonth);
   const [editingCycle, setEditingCycle] = useState<CreditBillSummaryRow | null>(null);
   const [cycleForm, setCycleForm] = useState({ periodStart: "", periodEnd: "", dueDate: "" });
   const [cycleSaving, setCycleSaving] = useState(false);
@@ -137,6 +138,10 @@ export function CreditBillSummaryTable({
   useEffect(() => {
     setLocalRows(rows);
   }, [rows]);
+
+  useEffect(() => {
+    setLocalSelectedBillMonth(selectedBillMonth);
+  }, [selectedBillMonth]);
 
   useEffect(() => {
     function handleBillOverrideChanged(event: Event) {
@@ -203,8 +208,8 @@ export function CreditBillSummaryTable({
   );
 
   const selectedBillRow = useMemo(
-    () => localRows.find((row) => row.month === selectedBillMonth && !row.isCurrentCycle) ?? null,
-    [localRows, selectedBillMonth],
+    () => localRows.find((row) => row.month === localSelectedBillMonth && !row.isCurrentCycle) ?? null,
+    [localRows, localSelectedBillMonth],
   );
   const defaultInstallmentRow = useMemo(
     () => selectedBillRow
@@ -356,7 +361,7 @@ export function CreditBillSummaryTable({
     const q = new URLSearchParams();
     q.set("view", "bill");
     if (accountId) q.set("accountId", accountId);
-    q.set("billMonth", selectedBillMonth || "all");
+    q.set("billMonth", localSelectedBillMonth || "all");
     q.set("billPage", String(safePage));
     if (hideZeroBills) q.set("hideZeroBills", "1");
     if (hideSettledBills) q.set("hideSettledBills", "1");
@@ -374,19 +379,34 @@ export function CreditBillSummaryTable({
   }
 
   function selectBillMonth(month: string) {
+    const nextBillMonth = localSelectedBillMonth === month ? "all" : month;
     const href = buildHref((q) => {
-      if (selectedBillMonth === month) q.set("billMonth", "all");
-      else q.set("billMonth", month);
+      q.set("billMonth", nextBillMonth);
       q.set("billPage", String(safePage));
     });
+    setLocalSelectedBillMonth(nextBillMonth === "all" ? "" : nextBillMonth);
+    if (nextBillMonth === "all") {
+      router.replace(href, { scroll: false });
+      return;
+    }
+    window.history.replaceState(window.history.state, "", href);
+    dispatchCreditBillDetailSelection({ accountId, billMonth: nextBillMonth, href });
+  }
+
+  function selectAllBillDetails() {
+    const href = buildHref((q) => {
+      q.set("billMonth", "all");
+      q.set("billPage", String(safePage));
+    });
+    setLocalSelectedBillMonth("");
     router.replace(href, { scroll: false });
   }
 
   function openExportDialog() {
     const options = exportBillOptions;
-    const selectedExists = selectedBillMonth && options.some((row) => row.month === selectedBillMonth);
-    const defaultStart = selectedExists ? selectedBillMonth : options[0]?.month ?? "";
-    const defaultEnd = selectedExists ? selectedBillMonth : options[options.length - 1]?.month ?? "";
+    const selectedExists = localSelectedBillMonth && options.some((row) => row.month === localSelectedBillMonth);
+    const defaultStart = selectedExists ? localSelectedBillMonth : options[0]?.month ?? "";
+    const defaultEnd = selectedExists ? localSelectedBillMonth : options[options.length - 1]?.month ?? "";
     setExportStartMonth(defaultStart);
     setExportEndMonth(defaultEnd);
     setExportError("");
@@ -469,17 +489,12 @@ export function CreditBillSummaryTable({
       minWidth: 104,
       hideable: false,
       render: (row) => {
-        const href = buildHref((q) => {
-          if (selectedBillMonth === row.month) q.set("billMonth", "all");
-          else q.set("billMonth", row.month);
-          q.set("billPage", String(safePage));
-        });
         return (
-          <Link href={href} prefetch={false} scroll={false} className="block">
+          <button type="button" onClick={(event) => { event.stopPropagation(); selectBillMonth(row.month); }} className="block text-left">
             <span className={`whitespace-nowrap text-xs font-semibold ${row.isCurrentCycle ? "text-amber-600" : "text-blue-700"}`}>
               {row.month}{row.isCurrentCycle ? `（${t("creditBill.currentCycle")}）` : row.month === settledBillMonth ? `（${t("creditBill.currentBill")}）` : ""}
             </span>
-          </Link>
+          </button>
         );
       },
     },
@@ -490,13 +505,8 @@ export function CreditBillSummaryTable({
       minWidth: 128,
       hideable: true,
       render: (row) => {
-        const href = buildHref((q) => {
-          if (selectedBillMonth === row.month) q.set("billMonth", "all");
-          else q.set("billMonth", row.month);
-          q.set("billPage", String(safePage));
-        });
         return (
-          <Link href={href} prefetch={false} scroll={false} className="block">
+          <button type="button" onClick={(event) => { event.stopPropagation(); selectBillMonth(row.month); }} className="block text-left">
             <span
               onDoubleClick={(event) => {
                 event.preventDefault();
@@ -508,7 +518,7 @@ export function CreditBillSummaryTable({
             >
               {row.periodLabel}
             </span>
-          </Link>
+          </button>
         );
       },
     },
@@ -614,9 +624,9 @@ export function CreditBillSummaryTable({
           toolbarLeftContent={(
             <div className="flex min-w-0 items-center gap-2">
               <span className="text-sm font-semibold text-slate-800">{t("creditBill.listTitle")}</span>
-              <Link href={buildHref((q) => q.set("billMonth", "all"))} prefetch={false} scroll={false} className={`flex h-6 items-center rounded border px-1.5 text-xs ${selectedBillMonth ? "border-slate-200 bg-white text-slate-600 hover:bg-slate-50" : "border-blue-300 bg-blue-50 text-blue-700"}`}>
+              <button type="button" onClick={selectAllBillDetails} className={`flex h-6 items-center rounded border px-1.5 text-xs ${localSelectedBillMonth ? "border-slate-200 bg-white text-slate-600 hover:bg-slate-50" : "border-blue-300 bg-blue-50 text-blue-700"}`}>
                 {t("creditBill.all")}
-              </Link>
+              </button>
               <span className="whitespace-nowrap text-xs text-slate-500">{t("creditBillSummary.cycleCount", { count: localRows.length })}</span>
               {totalPages > 1 ? (
                 <div className="ml-1 flex items-center gap-0.5">
@@ -721,7 +731,7 @@ export function CreditBillSummaryTable({
           )}
           onRowClick={(row) => selectBillMonth(row.month)}
           rowClassName={(row) => {
-            const active = selectedBillMonth === row.month || activeStatementMonth === row.month;
+            const active = localSelectedBillMonth ? localSelectedBillMonth === row.month : activeStatementMonth === row.month;
             return `cursor-pointer hover:bg-blue-50/40 ${active ? "bg-blue-50" : ""}`;
           }}
           emptyText={t("creditBillSummary.empty")}

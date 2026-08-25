@@ -1,11 +1,20 @@
-export type ScheduledTaskType = "fund_regular_invest" | "loan_repayment" | "transfer" | "insurance_premium";
+export type ScheduledTaskType =
+  | "fund_regular_invest"
+  | "loan_repayment"
+  | "transfer"
+  | "insurance_premium"
+  | "income"
+  | "expense";
 
 export type ScheduledTaskPayload = {
   type: ScheduledTaskType;
   title?: string | null;
   fromAccountId?: string | null;
   toAccountId?: string | null;
+  categoryId?: string | null;
+  categoryName?: string | null;
   insuranceProductId?: string | null;
+  note?: string | null;
   annualRate?: number | null;
   mortgageLprDiscount?: number | null;
   repaymentMethod?: string | null;
@@ -32,6 +41,8 @@ export const SCHEDULED_TASK_TYPE_LABEL: Record<ScheduledTaskType, string> = {
   loan_repayment: "还贷款",
   transfer: "转账",
   insurance_premium: "保费缴费",
+  income: "Income",
+  expense: "Expense",
 };
 
 export function normalizeScheduledTaskType(value: unknown): ScheduledTaskType {
@@ -39,7 +50,9 @@ export function normalizeScheduledTaskType(value: unknown): ScheduledTaskType {
     value === "fund_regular_invest" ||
     value === "loan_repayment" ||
     value === "transfer" ||
-    value === "insurance_premium"
+    value === "insurance_premium" ||
+    value === "income" ||
+    value === "expense"
   ) {
     return value;
   }
@@ -72,7 +85,10 @@ export function decodeScheduledTaskMemo(memo?: string | null): ScheduledTaskPayl
         title: parsed.title ?? null,
         fromAccountId: parsed.fromAccountId ?? null,
         toAccountId: parsed.toAccountId ?? null,
+        categoryId: parsed.categoryId ?? null,
+        categoryName: parsed.categoryName ?? null,
         insuranceProductId: parsed.insuranceProductId ?? null,
+        note: parsed.note ?? null,
         annualRate: typeof parsed.annualRate === "number" && Number.isFinite(parsed.annualRate) ? parsed.annualRate : null,
         mortgageLprDiscount,
         repaymentMethod: typeof parsed.repaymentMethod === "string" ? parsed.repaymentMethod : null,

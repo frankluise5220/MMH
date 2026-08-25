@@ -20,7 +20,9 @@ release-artifacts/synology/mmh-synology-v0.1.x-arm64-spk-source.tgz
 
 - `.spk` 最外层必须是未压缩 tar 归档，根目录包含 `INFO`、`scripts/`、`conf/`、图标和 `package.tgz`。
 - `package.tgz` 是 `.spk` 内部的 gzip tar 归档，用来承载 `app/` 运行目录。
-- `INFO` 里应写 `os_min_ver="7.0-40000"`，不要仅因 DSM 7.2 更常见而主动收窄 7.0/7.1 用户的安装入口；DSM 7.2 及更新版本作为优先测试面。
+- `INFO` 里应写 `os_min_ver="7.0-40000"`、`checksum="<package.tgz md5>"` 和 `extractsize="<package 解压后 KB>"`；不要仅因 DSM 7.2 更常见而主动收窄 7.0/7.1 用户的安装入口，DSM 7.2 及更新版本作为优先测试面。
+- `conf/privilege` 里应写 `"run-as": "package"`，不要写成无效的 `run_as`，否则 DSM 会判定套件以 root 权限运行并拒绝安装。
+- 最终 `.spk` tar header 里的生命周期脚本必须是可执行文件，`scripts/start-stop-status`、`postinst`、`preuninst`、`preupgrade`、`postupgrade` 使用 `0755`，普通元数据文件使用 `0644`，并以稳定的 numeric root ownership 归档。
 - 如果 DSM 提示“套件文件格式不正确，请联系套件开发人员”，先确认上传的是正式 `.spk`，不是 `*-spk-source.tgz`；如果正式 `.spk` 仍报错，应重新构建并发布下一个补丁版本。
 
 ## 用户安装

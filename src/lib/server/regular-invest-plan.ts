@@ -26,6 +26,7 @@ type RegularInvestPlanSchedule = {
   intervalUnit: IntervalUnit;
   intervalValue: number;
   executionDay?: number | null;
+  secondaryExecutionDay?: number | null;
 };
 
 export function getRegularInvestPlanRecordSources(taskType: string | null | undefined): string[] {
@@ -60,6 +61,7 @@ export async function deriveRegularInvestNextRunDate(
       plan.intervalValue,
       plan.executionDay,
       usesBusinessDays,
+      plan.secondaryExecutionDay,
     );
   }
 
@@ -69,5 +71,6 @@ export async function deriveRegularInvestNextRunDate(
     plan.intervalValue,
     plan.executionDay,
     usesBusinessDays,
+    plan.secondaryExecutionDay,
   );
 }

@@ -16,6 +16,10 @@ export type CurrentUser = {
   householdId: string | null;
 };
 
+export const USER_ROLE_ADMIN = "admin";
+export const USER_ROLE_USER = "user";
+export const USER_ROLE_VIEWER = "viewer";
+
 const currentUserSelect = {
   id: true,
   name: true,
@@ -156,5 +160,13 @@ export const getCurrentUser = cache(async function getCurrentUser(): Promise<Cur
  */
 export function isAdmin(user: CurrentUser | null): boolean {
   if (!user) return false;
-  return user.role === "admin" || user.isSystem === true;
+  return user.role === USER_ROLE_ADMIN || user.isSystem === true;
+}
+
+export function isReadOnly(user: CurrentUser | null): boolean {
+  return Boolean(user && !isAdmin(user) && user.role === USER_ROLE_VIEWER);
+}
+
+export function canWrite(user: CurrentUser | null): boolean {
+  return Boolean(user) && !isReadOnly(user);
 }

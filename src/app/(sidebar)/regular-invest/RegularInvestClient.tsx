@@ -13,6 +13,7 @@ import { RegularInvestForm } from "@/components/RegularInvestForm";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { UnifiedEntryLauncher } from "@/components/UnifiedEntryLauncher";
 import type { SmartSelectOption } from "@/components/SmartSelect";
+import type { CategorySmartSelectOption } from "@/components/categorySmartSelect";
 import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
 import type { AccountDisplayOption } from "@/lib/account-display";
 import { scheduledTaskTypeLabel, type ScheduledTaskType } from "@/lib/scheduled-task";
@@ -22,12 +23,23 @@ import { clearBackgroundTaskProgress, dispatchBackgroundTaskProgress } from "@/l
 import { useI18n } from "@/lib/i18n";
 import { recordMatchesRegularInvestPlan } from "@/lib/transaction-semantics";
 
+type CategoryOption = {
+  id: string;
+  label: string;
+  parentId: string | null;
+  type: string;
+  sortOrder?: number;
+  isSystem?: boolean;
+};
+
 const WEEKDAY_LABELS: Record<number, string> = {
   1: "regularInvest.client.weekdayShort.1",
   2: "regularInvest.client.weekdayShort.2",
   3: "regularInvest.client.weekdayShort.3",
   4: "regularInvest.client.weekdayShort.4",
   5: "regularInvest.client.weekdayShort.5",
+  6: "regularInvest.client.weekdayShort.6",
+  7: "regularInvest.client.weekdayShort.7",
 };
 
 const STATUS_MAP: Record<string, { labelKey: string; cls: string }> = {
@@ -61,7 +73,10 @@ type RegularInvestPlanView = {
   taskTitle?: string | null;
   taskFromAccountId?: string | null;
   taskToAccountId?: string | null;
+  taskCategoryId?: string | null;
+  taskCategoryName?: string | null;
   taskInsuranceProductId?: string | null;
+  taskNote?: string | null;
   taskAnnualRate?: number | null;
   taskRepaymentMethod?: string | null;
   taskRepaymentIntervalMonths?: number | null;
@@ -87,6 +102,7 @@ type RegularInvestPlanView = {
   intervalUnit: string;
   intervalValue: number;
   executionDay?: number | null;
+  secondaryExecutionDay?: number | null;
   startDate?: string | null;
   endDate?: string | null;
   nextRunDate?: string | null;
@@ -136,7 +152,7 @@ const REGULAR_INVEST_COLUMNS: ReadonlyArray<{ key: RegularInvestColumnKey; label
   { key: "taskType", labelKey: "batchImport.field.type" },
   { key: "startDate", labelKey: "viewImport.exportStartDate" },
   { key: "nextRunDate", labelKey: "regularInvest.client.column.nextRun" },
-  { key: "targetAccount", labelKey: "regularInvest.account.targetAccount" },
+  { key: "targetAccount", labelKey: "reports.account" },
   { key: "cashAccount", labelKey: "batchImport.template.fund.label.cashAccount" },
   { key: "amount", labelKey: "stats.amount" },
   { key: "interval", labelKey: "creditBill.period" },
@@ -179,9 +195,15 @@ const REGULAR_INVEST_MAIN_TABLE_MIN_WIDTH = REGULAR_INVEST_COLUMNS.reduce(
 );
 
 function formatInterval(p: RegularInvestPlanView, t: (key: string, params?: Record<string, string | number>) => string): string {
+  if (p.totalRuns === 1) return t("regularInvest.interval.once");
   const intervalUnit = p.intervalUnit === "biweek" ? "week" : p.intervalUnit;
   const intervalValue = p.intervalUnit === "biweek" ? Math.max(1, p.intervalValue || 1) * 2 : p.intervalValue;
   if (intervalUnit === "week") {
+    if (intervalValue === 1 && p.executionDay && p.secondaryExecutionDay != null) {
+      const primary = t(WEEKDAY_LABELS[p.executionDay] ?? "");
+      const secondary = t(WEEKDAY_LABELS[p.secondaryExecutionDay] ?? "");
+      if (primary && secondary) return `${primary} / ${secondary}`;
+    }
     const weekday = p.executionDay ? t(WEEKDAY_LABELS[p.executionDay] ?? "") : "";
     if (weekday) {
       return intervalValue > 1
@@ -189,6 +211,26 @@ function formatInterval(p: RegularInvestPlanView, t: (key: string, params?: Reco
         : t("regularInvest.client.weekLabel", { weekday });
     }
     return intervalValue > 1 ? t("regularInvest.client.everyNWeek", { count: intervalValue }) : t("regularInvest.interval.week");
+  }
+  if (
+    intervalValue === 1 &&
+    (intervalUnit === "month" || intervalUnit === "year") &&
+    p.executionDay &&
+    p.secondaryExecutionDay != null
+  ) {
+    const primary = intervalUnit === "month"
+      ? t("regularInvest.daySuffix", { day: p.executionDay })
+      : t("regularInvest.client.everyYearDate", {
+          month: Math.floor(p.executionDay / 100),
+          day: p.executionDay % 100,
+        });
+    const secondary = intervalUnit === "month"
+      ? t("regularInvest.daySuffix", { day: p.secondaryExecutionDay })
+      : t("regularInvest.client.everyYearDate", {
+          month: Math.floor(p.secondaryExecutionDay / 100),
+          day: p.secondaryExecutionDay % 100,
+        });
+    return `${primary} / ${secondary}`;
   }
   if (intervalUnit === "month" && p.executionDay) {
     return intervalValue > 1
@@ -233,7 +275,13 @@ function planAccountLabel(p: RegularInvestPlanView): string {
   return p.accountLabel || p.accountName || p.accountId || "-";
 }
 
+function isOrdinaryPlan(plan: RegularInvestPlanView): boolean {
+  const taskType = getPlanTaskType(plan);
+  return taskType === "income" || taskType === "expense";
+}
+
 function planCashAccountLabel(p: RegularInvestPlanView): string {
+  if (isOrdinaryPlan(p)) return "-";
   return p.cashAccountLabel || p.cashAccountName || "-";
 }
 
@@ -241,7 +289,19 @@ function getPlanTaskType(plan: RegularInvestPlanView): ScheduledTaskType {
   return plan.taskType ?? "fund_regular_invest";
 }
 
-function getPlanTaskLabel(plan: RegularInvestPlanView): string {
+function planTaskLabelKey(plan: RegularInvestPlanView): string | null {
+  const taskType = getPlanTaskType(plan);
+  if (taskType === "fund_regular_invest") return "detailView.fundRegularInvest";
+  if (taskType === "transfer") return "transaction.type.transfer";
+  if (taskType === "insurance_premium") return "regularInvest.taskType.insurancePremium";
+  if (taskType === "income") return "transaction.type.income";
+  if (taskType === "expense") return "transaction.type.expense";
+  return null;
+}
+
+function getPlanTaskLabel(plan: RegularInvestPlanView, t?: (key: string, params?: Record<string, string | number>) => string): string {
+  const labelKey = planTaskLabelKey(plan);
+  if (labelKey && t) return t(labelKey);
   return plan.taskTypeLabel || scheduledTaskTypeLabel(getPlanTaskType(plan));
 }
 
@@ -249,6 +309,7 @@ function getPlanTargetLabel(plan: RegularInvestPlanView): string {
   if (getPlanTaskType(plan) === "transfer") return `${planCashAccountLabel(plan)} → ${planAccountLabel(plan)}`;
   if (getPlanTaskType(plan) === "loan_repayment") return `${planCashAccountLabel(plan)} → ${planAccountLabel(plan)}`;
   if (getPlanTaskType(plan) === "insurance_premium") return plan.insuranceProductName || plan.targetName || plan.taskTitle || plan.fundName || planAccountLabel(plan);
+  if (isOrdinaryPlan(plan)) return plan.taskTitle || plan.targetName || plan.taskCategoryName || plan.fundName || planAccountLabel(plan);
   if (plan.taskTitle) return plan.taskTitle;
   return [plan.fundCode, plan.fundName && plan.fundName !== plan.fundCode ? plan.fundName : ""].filter(Boolean).join(" ");
 }
@@ -304,7 +365,7 @@ function compareText(a: string, b: string): number {
 
 function getRegularInvestSortValue(plan: RegularInvestPlanView, key: string, t: (key: string, params?: Record<string, string | number>) => string): string | number | null {
   if (key === "taskContent") return getPlanTargetLabel(plan);
-  if (key === "taskType") return getPlanTaskLabel(plan);
+  if (key === "taskType") return getPlanTaskLabel(plan, t);
   if (key === "startDate") return dateSortValue(plan.startDate);
   if (key === "nextRunDate") return dateSortValue(plan.nextRunDate);
   if (key === "targetAccount") return planAccountLabel(plan);
@@ -458,10 +519,17 @@ export function RegularInvestClient({
   cashAccounts,
   loanAccounts,
   transferTargetAccounts,
+  ordinaryAccounts,
   insuranceProductOptions,
   investmentAccountSSOptions,
   cashAccountSSOptions,
   transferTargetAccountSSOptions,
+  ordinaryAccountSSOptions,
+  incomeCategoryOptions,
+  expenseCategoryOptions,
+  expenseCategories,
+  incomeCategories,
+  advanceCategories,
   nestedFieldData,
   allAccountSSOptions,
   transactionCreateAction,
@@ -472,10 +540,17 @@ export function RegularInvestClient({
   cashAccounts: AccountDisplayOption[];
   loanAccounts: AccountDisplayOption[];
   transferTargetAccounts: AccountDisplayOption[];
+  ordinaryAccounts: AccountDisplayOption[];
   insuranceProductOptions: InsuranceProductOption[];
   investmentAccountSSOptions: SmartSelectOption[];
   cashAccountSSOptions: SmartSelectOption[];
   transferTargetAccountSSOptions: SmartSelectOption[];
+  ordinaryAccountSSOptions: SmartSelectOption[];
+  incomeCategoryOptions: CategorySmartSelectOption[];
+  expenseCategoryOptions: CategorySmartSelectOption[];
+  expenseCategories: CategoryOption[];
+  incomeCategories: CategoryOption[];
+  advanceCategories: CategoryOption[];
   allAccountSSOptions: SmartSelectOption[];
   nestedFieldData?: Record<string, Array<{ id: string; name: string; type?: string }>>;
   transactionCreateAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
@@ -538,17 +613,27 @@ export function RegularInvestClient({
   });
 
   function enrichPlanFromApi(plan: any): RegularInvestPlanView {
-    const fundAccount = investmentAccounts.find((account) => account.id === plan.accountId);
+    const taskType = plan.taskType ?? "fund_regular_invest";
+    const accountCandidates =
+      taskType === "fund_regular_invest"
+        ? investmentAccounts
+        : taskType === "loan_repayment"
+          ? loanAccounts
+          : taskType === "income" || taskType === "expense"
+            ? ordinaryAccounts
+            : transferTargetAccounts;
+    const fundAccount = accountCandidates.find((account) => account.id === plan.accountId);
     const cashAccount = cashAccounts.find((account) => account.id === plan.cashAccountId);
     return {
       ...plan,
       taskType: plan.taskType ?? "fund_regular_invest",
-      taskTypeLabel: plan.taskTypeLabel ?? scheduledTaskTypeLabel(plan.taskType ?? "fund_regular_invest"),
+      taskTypeLabel: plan.taskTypeLabel ?? scheduledTaskTypeLabel(taskType),
       amount: Number(plan.amount ?? 0),
       intervalValue: Number(plan.intervalValue ?? 1),
       executedRuns: plan.executedRuns == null ? null : Number(plan.executedRuns),
       totalRuns: plan.totalRuns == null ? null : Number(plan.totalRuns),
       executionDay: plan.executionDay == null ? null : Number(plan.executionDay),
+      secondaryExecutionDay: plan.secondaryExecutionDay == null ? null : Number(plan.secondaryExecutionDay),
       feeRate: plan.feeRate == null ? null : Number(plan.feeRate),
       confirmDays: plan.confirmDays == null ? null : Number(plan.confirmDays),
       arrivalDays: plan.arrivalDays == null ? null : Number(plan.arrivalDays),
@@ -560,10 +645,10 @@ export function RegularInvestClient({
       accountFullLabel: fundAccount?.fullLabel ?? plan.accountFullLabel ?? plan.accountName,
       accountHoverTitle: fundAccount?.hoverTitle ?? plan.accountHoverTitle ?? null,
       accountGroupName: fundAccount?.groupName ?? plan.accountGroupName ?? "",
-      cashAccountLabel: cashAccount?.label ?? plan.cashAccountLabel ?? plan.cashAccountName,
-      cashAccountFullLabel: cashAccount?.fullLabel ?? plan.cashAccountFullLabel ?? plan.cashAccountName,
-      cashAccountHoverTitle: cashAccount?.hoverTitle ?? plan.cashAccountHoverTitle ?? null,
-      cashAccountGroupName: cashAccount?.groupName ?? plan.cashAccountGroupName ?? "",
+      cashAccountLabel: taskType === "income" || taskType === "expense" ? null : cashAccount?.label ?? plan.cashAccountLabel ?? plan.cashAccountName,
+      cashAccountFullLabel: taskType === "income" || taskType === "expense" ? null : cashAccount?.fullLabel ?? plan.cashAccountFullLabel ?? plan.cashAccountName,
+      cashAccountHoverTitle: taskType === "income" || taskType === "expense" ? null : cashAccount?.hoverTitle ?? plan.cashAccountHoverTitle ?? null,
+      cashAccountGroupName: taskType === "income" || taskType === "expense" ? "" : cashAccount?.groupName ?? plan.cashAccountGroupName ?? "",
     };
   }
 
@@ -723,7 +808,7 @@ export function RegularInvestClient({
     const taskType = getPlanTaskType(plan);
     const confirmed = await showConfirmDialog({
       title: t("regularInvest.client.execute.title"),
-      message: t("regularInvest.client.execute.confirm", { name: getPlanTaskLabel(plan) }),
+      message: t("regularInvest.client.execute.confirm", { name: getPlanTaskLabel(plan, t) }),
     });
     if (!confirmed) return;
     setExecutionProgress({
@@ -1097,7 +1182,7 @@ export function RegularInvestClient({
         truncate: column.key !== "amount" && column.key !== "status",
         sortValue: (row) => row.kind === "plan" ? getRegularInvestSortValue(row.plan, column.key, t) : null,
         filterText: column.key === "taskType"
-          ? (row) => row.kind === "plan" ? getPlanTaskLabel(row.plan) : null
+          ? (row) => row.kind === "plan" ? getPlanTaskLabel(row.plan, t) : null
           : column.key === "status"
             ? (row) => row.kind === "plan" ? getStatusLabel(row.plan.status, t) : null
             : undefined,
@@ -1106,7 +1191,7 @@ export function RegularInvestClient({
           if (column.key === "taskContent") return getPlanTargetLabel(row.plan);
           if (column.key === "targetAccount") return row.plan.accountHoverTitle || planAccountLabel(row.plan);
           if (column.key === "cashAccount") return row.plan.cashAccountHoverTitle || planCashAccountLabel(row.plan);
-          if (column.key === "taskType") return getPlanTaskLabel(row.plan);
+          if (column.key === "taskType") return getPlanTaskLabel(row.plan, t);
           if (column.key === "interval") return formatInterval(row.plan, t);
           return "";
         },
@@ -1116,7 +1201,7 @@ export function RegularInvestClient({
             return <span className="font-medium text-slate-800">{getPlanTargetLabel(row.plan)}</span>;
           }
           if (column.key === "taskType") {
-            return <span className="text-slate-500">{getPlanTaskLabel(row.plan)}</span>;
+            return <span className="text-slate-500">{getPlanTaskLabel(row.plan, t)}</span>;
           }
           if (column.key === "startDate") {
             return <span className="tabular-nums text-slate-500">{formatDate(row.plan.startDate)}</span>;
@@ -1212,10 +1297,14 @@ export function RegularInvestClient({
                 cashAccounts={cashAccounts}
                 loanAccounts={loanAccounts}
                 transferTargetAccounts={transferTargetAccounts}
+                ordinaryAccounts={ordinaryAccounts}
                 insuranceProductOptions={insuranceProductOptions}
                 investmentAccountSSOptions={investmentAccountSSOptions}
                 cashAccountSSOptions={cashAccountSSOptions}
                 transferTargetAccountSSOptions={transferTargetAccountSSOptions}
+                ordinaryAccountSSOptions={ordinaryAccountSSOptions}
+                incomeCategoryOptions={incomeCategoryOptions}
+                expenseCategoryOptions={expenseCategoryOptions}
                 nestedFieldData={nestedFieldData}
                 showTriggerButton={false}
                 open={showCreateForm}
@@ -1409,6 +1498,9 @@ export function RegularInvestClient({
           id: editPlan.id,
           taskType: getPlanTaskType(editPlan),
           taskInsuranceProductId: editPlan.taskInsuranceProductId ?? null,
+          taskCategoryId: editPlan.taskCategoryId ?? null,
+          taskCategoryName: editPlan.taskCategoryName ?? null,
+          taskNote: editPlan.taskNote ?? null,
           accountId: editPlan.accountId || "",
           fundCode: editPlan.fundCode || "",
           fundName: editPlan.fundName || null,
@@ -1416,7 +1508,9 @@ export function RegularInvestClient({
           intervalUnit: editPlan.intervalUnit || "month",
           intervalValue: editPlan.intervalValue || 1,
           executionDay: editPlan.executionDay ?? null,
+          secondaryExecutionDay: editPlan.secondaryExecutionDay ?? null,
           startDate: toDateInput(editPlan.startDate) || todayInput(),
+          nextRunDate: toDateInput(editPlan.nextRunDate) || null,
           lastRunDate: toDateInput(editPlan.lastRunDate) || null,
           endDate: toDateInput(editPlan.endDate) || null,
           totalRuns: editPlan.totalRuns ?? null,
@@ -1435,10 +1529,14 @@ export function RegularInvestClient({
         cashAccounts={cashAccounts}
         loanAccounts={loanAccounts}
         transferTargetAccounts={transferTargetAccounts}
+        ordinaryAccounts={ordinaryAccounts}
         insuranceProductOptions={insuranceProductOptions}
         investmentAccountSSOptions={investmentAccountSSOptions}
         cashAccountSSOptions={cashAccountSSOptions}
         transferTargetAccountSSOptions={transferTargetAccountSSOptions}
+        ordinaryAccountSSOptions={ordinaryAccountSSOptions}
+        incomeCategoryOptions={incomeCategoryOptions}
+        expenseCategoryOptions={expenseCategoryOptions}
         nestedFieldData={nestedFieldData}
         showTriggerButton={false}
         open={editOpen}
@@ -1454,8 +1552,9 @@ export function RegularInvestClient({
           accountSSOptions={cashAccountSSOptions}
           transferAccountSSOptions={allAccountSSOptions}
           nestedFieldData={nestedFieldData}
-          expenseCategories={[]}
-          incomeCategories={[]}
+          expenseCategories={expenseCategories}
+          incomeCategories={incomeCategories}
+          advanceCategories={advanceCategories}
           defaultAccountId={cashAccounts[0]?.id}
           action={transactionCreateAction}
           editAction={transactionEditAction}

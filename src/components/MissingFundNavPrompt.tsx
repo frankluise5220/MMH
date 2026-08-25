@@ -33,6 +33,27 @@ function navKey(item: Pick<InvestmentProfitMissingNav, "fundCode" | "date">) {
   return `${item.fundCode.trim()}|${item.date}`;
 }
 
+type MissingNavResponse = {
+  ok?: boolean;
+  error?: string;
+  unresolvedItems?: InvestmentProfitMissingNav[];
+  resolvedItems?: InvestmentProfitMissingNav[];
+  written?: number;
+};
+
+async function readMissingNavResponse(res: Response, fallbackMessage: string): Promise<MissingNavResponse | null> {
+  const contentType = res.headers.get("content-type") ?? "";
+  if (contentType.toLowerCase().includes("application/json")) {
+    return await res.json().catch(() => null);
+  }
+
+  const text = await res.text().catch(() => "");
+  const plainText = text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  const detail = plainText && !plainText.startsWith("<!DOCTYPE") ? `: ${plainText.slice(0, 120)}` : "";
+  const status = res.status ? ` (HTTP ${res.status})` : "";
+  return { ok: false, error: `${fallbackMessage}${status}${detail}` };
+}
+
 export function MissingFundNavPrompt({
   items,
   className = "",
@@ -80,9 +101,9 @@ export function MissingFundNavPrompt({
             items: missingItems.map((item) => ({ fundCode: item.fundCode, date: item.date })),
           }),
         });
-        const data = await res.json();
-        if (!res.ok || !data.ok) {
-          window.alert(data.error ?? t("missingNav.fetchFailed"));
+        const data = await readMissingNavResponse(res, t("missingNav.fetchFailed"));
+        if (!data || !res.ok || !data.ok) {
+          window.alert(data?.error ?? t("missingNav.fetchFailed"));
           return;
         }
         const unresolvedItems = Array.isArray(data.unresolvedItems)

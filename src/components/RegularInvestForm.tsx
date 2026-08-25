@@ -6,8 +6,9 @@ import { createPortal } from "react-dom";
 import { CalcInput } from "./CalcInput";
 import { DateStepper } from "./DateStepper";
 import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
-import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
+import { SmartSelect, type SmartSelectOption, type SmartSelectProps } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
+import { CATEGORY_SMART_SELECT_BEHAVIOR, type CategorySmartSelectOption } from "./categorySmartSelect";
 import { NestedAddModal } from "./EntityCreateForm";
 import { useI18n } from "@/lib/i18n";
 import { scheduledTaskTypeLabel, type ScheduledTaskType } from "@/lib/scheduled-task";
@@ -17,11 +18,14 @@ import { formatDateUtc, lastDayOfMonthUtc } from "@/lib/date-utils";
 import { decodeYearlyExecutionDay, encodeYearlyExecutionDay, isYearlyExecutionDay } from "@/lib/scheduled-task-date";
 
 const INTERVAL_LABELS: Record<string, string> = {
+  once: "regularInvest.interval.once",
   day: "regularInvest.interval.day",
   week: "regularInvest.interval.week",
   month: "regularInvest.interval.month",
   year: "regularInvest.interval.year",
 };
+
+const REQUIRED_FIELD_CLASS = "rounded-[10px] ring-1 ring-rose-200/80";
 
 // Loan repayment is a system-level scheduled task: the repayment schedule is
 // derived from the loan and created automatically on loan setup, so it is not
@@ -30,7 +34,16 @@ const TASK_TYPE_OPTIONS: Array<{ value: ScheduledTaskType; labelKey: string }> =
   { value: "fund_regular_invest", labelKey: "detailView.fundRegularInvest" },
   { value: "transfer", labelKey: "transaction.type.transfer" },
   { value: "insurance_premium", labelKey: "regularInvest.taskType.insurancePremium" },
+  { value: "income", labelKey: "transaction.type.income" },
+  { value: "expense", labelKey: "transaction.type.expense" },
 ];
+
+type SingleSmartSelectBehavior = Extract<SmartSelectProps, { mode: "single" }>["behavior"];
+
+const REGULAR_INVEST_CATEGORY_SMART_SELECT_BEHAVIOR = {
+  ...CATEGORY_SMART_SELECT_BEHAVIOR,
+  density: "regular",
+} satisfies SingleSmartSelectBehavior;
 
 const ACCOUNT_KIND_LABEL_KEYS: Record<string, string> = {
   cash: "account.kind.cash",
@@ -119,6 +132,33 @@ function yearlyExecutionDateInStartYear(startDateValue: string, executionDay: st
   return decoded ? formatDateUtc(decoded) : startDateValue;
 }
 
+function secondaryExecutionDateInStartPeriod(
+  startDateValue: string,
+  unit: string,
+  encodedExecutionDay: string,
+): string {
+  const startDate = parseDateInput(startDateValue);
+  const encoded = parseInt(encodedExecutionDay, 10);
+  if (!startDate || !Number.isFinite(encoded)) return "";
+  if (unit === "week") {
+    if (encoded < 1 || encoded > 7) return "";
+    return weeklyExecutionDateInStartMonth(startDateValue, String(encoded));
+  }
+  if (unit === "month") {
+    if (encoded < 1 || encoded > 31) return "";
+    return formatDateUtc(new Date(Date.UTC(
+      startDate.getUTCFullYear(),
+      startDate.getUTCMonth(),
+      Math.min(encoded, lastDayOfMonthUtc(startDate.getUTCFullYear(), startDate.getUTCMonth())),
+    )));
+  }
+  if (unit === "year" && isYearlyExecutionDay(encoded)) {
+    const date = decodeYearlyExecutionDay(encoded, startDate.getUTCFullYear());
+    return date ? formatDateUtc(date) : "";
+  }
+  return "";
+}
+
 function monthBounds(value: string): { min: string; max: string } {
   const date = parseDateInput(value);
   if (!date) return { min: "1900-01-01", max: "2999-12-31" };
@@ -135,6 +175,17 @@ function serializeExecutionDay(executionDay: string): number | null {
   if (!trimmed) return null;
   const parsed = parseInt(trimmed, 10);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function serializeSecondaryExecutionDay(executionDate: string, unit: string): number | null {
+  const date = parseDateInput(executionDate);
+  if (!date) return null;
+  if (unit === "week") {
+    const weekday = date.getUTCDay();
+    return weekday === 0 ? 7 : weekday;
+  }
+  if (unit === "month") return date.getUTCDate();
+  return unit === "year" ? encodeYearlyExecutionDay(date) : null;
 }
 
 function remainingRunsInput(totalRuns?: number | null, executedRuns?: number | null): string {
@@ -185,20 +236,34 @@ function stripDefaultGroupOptions(options: SmartSelectOption[]) {
     .map((option) => defaultGroupIds.has(option.parentId ?? "") ? { ...option, parentId: undefined } : option);
 }
 
+function isOrdinaryTaskType(taskType: ScheduledTaskType) {
+  return taskType === "income" || taskType === "expense";
+}
+
+function cleanOptionLabel(label?: string) {
+  return (label ?? "").replace(/\u3000/g, "").trim();
+}
+
 interface RegularInvestFormData {
   taskType: ScheduledTaskType;
   accountId: string;
   fundCode: string;
   fundName: string;
+  categoryId: string;
+  categoryName: string;
   insuranceProductId: string;
   policyholderGroupId: string;
+  note: string;
   amount: string;
   intervalUnit: string;
   intervalValue: string;
   startDate: string;
   weeklyExecutionDate: string;
+  secondaryWeeklyExecutionDate: string;
   monthlyExecutionDate: string;
   yearlyExecutionDate: string;
+  secondaryMonthlyExecutionDate: string;
+  secondaryYearlyExecutionDate: string;
   endDate: string;
   totalRuns: string;
   executionDay: string;
@@ -216,6 +281,9 @@ interface EditData {
   id: string;
   taskType?: ScheduledTaskType;
   taskInsuranceProductId?: string | null;
+  taskCategoryId?: string | null;
+  taskCategoryName?: string | null;
+  taskNote?: string | null;
   accountId: string;
   fundCode: string;
   fundName: string | null;
@@ -223,7 +291,9 @@ interface EditData {
   intervalUnit: string;
   intervalValue: number;
   executionDay: number | null;
+  secondaryExecutionDay: number | null;
   startDate: string;
+  nextRunDate?: string | null;
   lastRunDate?: string | null;
   endDate: string | null;
   totalRuns: number | null;
@@ -256,10 +326,14 @@ export function RegularInvestForm({
   cashAccounts,
   loanAccounts,
   transferTargetAccounts,
+  ordinaryAccounts,
   insuranceProductOptions,
   investmentAccountSSOptions,
   cashAccountSSOptions,
   transferTargetAccountSSOptions,
+  ordinaryAccountSSOptions,
+  incomeCategoryOptions,
+  expenseCategoryOptions,
   nestedFieldData,
   prefilledFundCode,
   prefilledFundName,
@@ -285,6 +359,7 @@ export function RegularInvestForm({
   cashAccounts?: { id: string; label: string; icon?: string; subLabel?: string }[];
   loanAccounts?: { id: string; label: string; icon?: string; subLabel?: string }[];
   transferTargetAccounts?: { id: string; label: string; icon?: string; subLabel?: string }[];
+  ordinaryAccounts?: { id: string; label: string; icon?: string; subLabel?: string }[];
   insuranceProductOptions?: {
     id: string;
     label: string;
@@ -302,6 +377,10 @@ export function RegularInvestForm({
   cashAccountSSOptions?: SmartSelectOption[];
   /** Hierarchical SmartSelect options for transfer target account dropdown (grouped by AccountGroup) */
   transferTargetAccountSSOptions?: SmartSelectOption[];
+  /** Hierarchical SmartSelect options for fixed income/expense account dropdown */
+  ordinaryAccountSSOptions?: SmartSelectOption[];
+  incomeCategoryOptions?: CategorySmartSelectOption[];
+  expenseCategoryOptions?: CategorySmartSelectOption[];
   /** Groups & institutions data for nested account creation inside SmartSelect. */
   nestedFieldData?: NestedFieldData;
   prefilledFundCode?: string;
@@ -331,9 +410,11 @@ export function RegularInvestForm({
   const [investmentAccountList, setInvestmentAccountList] = useState(investmentAccounts ?? []);
   const [loanAccountList, setLoanAccountList] = useState(loanAccounts ?? []);
   const [transferTargetAccountList, setTransferTargetAccountList] = useState(transferTargetAccounts ?? []);
+  const [ordinaryAccountList, setOrdinaryAccountList] = useState(ordinaryAccounts ?? []);
   const [localCashSSOptions, setLocalCashSSOptions] = useState(cashAccountSSOptions);
   const [localInvestmentSSOptions, setLocalInvestmentSSOptions] = useState(investmentAccountSSOptions);
   const [localTransferTargetSSOptions, setLocalTransferTargetSSOptions] = useState(transferTargetAccountSSOptions);
+  const [localOrdinarySSOptions, setLocalOrdinarySSOptions] = useState(ordinaryAccountSSOptions);
   const confirmDaysTouchedRef = useRef(false);
   const arrivalDaysTouchedRef = useRef(false);
   const lastFundRuleKeyRef = useRef("");
@@ -343,6 +424,7 @@ export function RegularInvestForm({
   const { ownerFilter: cfOwnerFilter, ownerFilterLabel: cfLabel, cycleOwnerFilter: cfCycle, filteredOptions: cashFiltered } = useAccountSSFilter(localCashSSOptions);
   const { ownerFilterLabel: ifLabel, cycleOwnerFilter: ifCycle, filteredOptions: investFiltered } = useAccountSSFilter(localInvestmentSSOptions);
   const { filteredOptions: transferTargetFiltered } = useAccountSSFilter(localTransferTargetSSOptions, cfOwnerFilter);
+  const { ownerFilterLabel: ofLabel, cycleOwnerFilter: ofCycle, filteredOptions: ordinaryFiltered } = useAccountSSFilter(localOrdinarySSOptions);
   const [nestedEntityType, setNestedEntityType] = useState<"cash-account" | "invest-account" | null>(null);
 
   const actualOpen = showTriggerButton ? internalOpen : open ?? false;
@@ -361,33 +443,58 @@ export function RegularInvestForm({
         editData.intervalUnit || "day",
         String(editData.intervalValue || 1),
       );
-      const startDate = toDateInput(editData.startDate) || todayInput();
-      const executionDay = normalizedInterval.intervalUnit !== "year" && editData.executionDay != null ? String(editData.executionDay) : "";
+      const editTaskType = editData.taskType ?? "fund_regular_invest";
+      const isFundEditTask = editTaskType === "fund_regular_invest";
+      const isStoredOneTime = editData.totalRuns === 1;
+      const originalStartDate = toDateInput(editData.startDate) || todayInput();
+      const startDate = toDateInput(editData.nextRunDate) || originalStartDate;
+      const executionDay = editData.executionDay != null ? String(editData.executionDay) : "";
+      const secondaryExecutionDay = editData.secondaryExecutionDay != null ? String(editData.secondaryExecutionDay) : "";
       const yearlyExecutionDayValue = editData.executionDay != null ? String(editData.executionDay) : "";
       return {
-        taskType: editData.taskType ?? "fund_regular_invest",
+        taskType: editTaskType,
         accountId: editData.accountId || "",
-        fundCode: editData.fundCode || "",
-        fundName: editData.fundName || editData.fundCode || "",
+        // Non-fund plans use fundCode as a storage compatibility field. Never
+        // expose that task-type enum as a fund code in the form.
+        fundCode: isFundEditTask ? editData.fundCode || "" : "",
+        fundName: editData.fundName || editData.taskCategoryName || (
+          editTaskType === "income"
+            ? t("transaction.type.income")
+            : editTaskType === "expense"
+              ? t("transaction.type.expense")
+              : scheduledTaskTypeLabel(editTaskType)
+        ),
+        categoryId: editData.taskCategoryId || "",
+        categoryName: editData.taskCategoryName || "",
         insuranceProductId: editData.taskInsuranceProductId || "",
         policyholderGroupId: insuranceProduct?.ownerGroupId || "",
+        note: editData.taskNote || "",
         amount: String(editData.amount || ""),
-        intervalUnit: normalizedInterval.intervalUnit,
-        intervalValue: normalizedInterval.intervalValue,
+        intervalUnit: isStoredOneTime ? "once" : normalizedInterval.intervalUnit,
+        intervalValue: isStoredOneTime ? "1" : normalizedInterval.intervalValue,
         startDate,
-        weeklyExecutionDate: normalizedInterval.intervalUnit === "week"
-          ? weeklyExecutionDateInStartMonth(startDate, executionDay)
+        weeklyExecutionDate: !isStoredOneTime && normalizedInterval.intervalUnit === "week"
+          ? weeklyExecutionDateInStartMonth(originalStartDate, executionDay)
           : "",
-        monthlyExecutionDate: normalizedInterval.intervalUnit === "month"
-          ? monthlyExecutionDateInStartMonth(startDate, executionDay)
+        monthlyExecutionDate: !isStoredOneTime && normalizedInterval.intervalUnit === "month"
+          ? monthlyExecutionDateInStartMonth(originalStartDate, executionDay)
           : "",
-        yearlyExecutionDate: normalizedInterval.intervalUnit === "year"
-          ? yearlyExecutionDateInStartYear(startDate, yearlyExecutionDayValue)
+        yearlyExecutionDate: !isStoredOneTime && normalizedInterval.intervalUnit === "year"
+          ? yearlyExecutionDateInStartYear(originalStartDate, yearlyExecutionDayValue)
           : "",
-        endDate: toDateInput(editData.endDate),
-        totalRuns: remainingRunsInput(editData.totalRuns, editData.executedRuns),
-        executionDay,
-        cashAccountId: editData.cashAccountId || "",
+        secondaryWeeklyExecutionDate: !isStoredOneTime && normalizedInterval.intervalUnit === "week"
+          ? secondaryExecutionDateInStartPeriod(originalStartDate, "week", secondaryExecutionDay)
+          : "",
+        secondaryMonthlyExecutionDate: !isStoredOneTime && normalizedInterval.intervalUnit === "month"
+          ? secondaryExecutionDateInStartPeriod(originalStartDate, "month", secondaryExecutionDay)
+          : "",
+        secondaryYearlyExecutionDate: !isStoredOneTime && normalizedInterval.intervalUnit === "year"
+          ? secondaryExecutionDateInStartPeriod(originalStartDate, "year", secondaryExecutionDay)
+          : "",
+        endDate: isStoredOneTime ? "" : toDateInput(editData.endDate),
+        totalRuns: isStoredOneTime ? "" : remainingRunsInput(editData.totalRuns, editData.executedRuns),
+        executionDay: isStoredOneTime ? "" : executionDay,
+        cashAccountId: isOrdinaryTaskType(editTaskType) ? "" : editData.cashAccountId || "",
         feeRate: editData.feeRate != null ? String(editData.feeRate) : "0",
         confirmDays: editData.confirmDays != null ? String(editData.confirmDays) : "0",
         arrivalDays: editData.arrivalDays != null ? String(editData.arrivalDays) : "2",
@@ -402,15 +509,21 @@ export function RegularInvestForm({
       accountId: investmentAccounts && investmentAccounts.length > 0 ? "" : accountId,
       fundCode: prefilledFundCode ?? "",
       fundName: prefilledFundName ?? "",
+      categoryId: "",
+      categoryName: "",
       insuranceProductId: "",
       policyholderGroupId: "",
+      note: "",
       amount: "",
       intervalUnit: "day",
       intervalValue: "1",
       startDate: todayInput(),
       weeklyExecutionDate: "",
+      secondaryWeeklyExecutionDate: "",
       monthlyExecutionDate: "",
       yearlyExecutionDate: "",
+      secondaryMonthlyExecutionDate: "",
+      secondaryYearlyExecutionDate: "",
       endDate: "",
       totalRuns: "",
       executionDay: "",
@@ -438,9 +551,11 @@ export function RegularInvestForm({
   useEffect(() => { setInvestmentAccountList(investmentAccounts ?? []); }, [investmentAccounts]);
   useEffect(() => { setLoanAccountList(loanAccounts ?? []); }, [loanAccounts]);
   useEffect(() => { setTransferTargetAccountList(transferTargetAccounts ?? []); }, [transferTargetAccounts]);
+  useEffect(() => { setOrdinaryAccountList(ordinaryAccounts ?? []); }, [ordinaryAccounts]);
   useEffect(() => { setLocalCashSSOptions(cashAccountSSOptions); }, [cashAccountSSOptions]);
   useEffect(() => { setLocalInvestmentSSOptions(investmentAccountSSOptions); }, [investmentAccountSSOptions]);
   useEffect(() => { setLocalTransferTargetSSOptions(transferTargetAccountSSOptions); }, [transferTargetAccountSSOptions]);
+  useEffect(() => { setLocalOrdinarySSOptions(ordinaryAccountSSOptions); }, [ordinaryAccountSSOptions]);
 
   useEffect(() => {
     if (mode !== "create") return;
@@ -615,7 +730,9 @@ export function RegularInvestForm({
             ? t("regularInvest.account.loanAccount")
             : formData.taskType === "insurance_premium"
               ? t("settings.insuranceProducts")
-              : t("regularInvest.account.targetAccount");
+              : isOrdinaryTaskType(formData.taskType)
+                ? t("regularInvest.account.cashFundAccount")
+                : t("regularInvest.account.targetAccount");
       window.alert(t("regularInvest.alert.selectAccount", { label: accountLabel }));
       return;
     }
@@ -676,16 +793,38 @@ export function RegularInvestForm({
         }
       }
 
+      const isOneTimeInterval = formData.intervalUnit === "once";
       const normalizedInterval = normalizeBiweekFormData(formData.intervalUnit, formData.intervalValue);
-      const effectiveIntervalUnit = formData.taskType === "loan_repayment" ? "month" : normalizedInterval.intervalUnit;
-      const effectiveIntervalValue = formData.taskType === "loan_repayment"
+      const effectiveIntervalUnit = isOneTimeInterval ? "day" : formData.taskType === "loan_repayment" ? "month" : normalizedInterval.intervalUnit;
+      const effectiveIntervalValue = isOneTimeInterval ? "1" : formData.taskType === "loan_repayment"
           ? String(Number.isFinite(loanRepaymentIntervalMonths) && loanRepaymentIntervalMonths > 0 ? loanRepaymentIntervalMonths : 1)
           : normalizedInterval.intervalValue;
-      const serializedExecutionDay = serializeExecutionDay(formData.executionDay);
-      const serializedTotalRuns = serializeTotalRunsFromRemaining(
-        formData.totalRuns,
-        mode === "edit" ? editData?.executedRuns : 0,
-      );
+      const effectiveExecutionDay = isOneTimeInterval ? null : serializeExecutionDay(formData.executionDay);
+      const effectiveSecondaryExecutionDay = isOneTimeInterval ||
+        positiveIntervalValue(formData.intervalValue) !== 1 ||
+        !effectiveExecutionDay
+        ? null
+        : formData.intervalUnit === "week"
+          ? serializeSecondaryExecutionDay(formData.secondaryWeeklyExecutionDate, "week")
+          : formData.intervalUnit === "month"
+          ? serializeSecondaryExecutionDay(formData.secondaryMonthlyExecutionDate, "month")
+          : formData.intervalUnit === "year"
+            ? serializeSecondaryExecutionDay(formData.secondaryYearlyExecutionDate, "year")
+            : null;
+      const effectiveTotalRuns = isOneTimeInterval
+        ? Math.max(0, mode === "edit" ? editData?.executedRuns ?? 0 : 0) + 1
+        : serializeTotalRunsFromRemaining(
+            formData.totalRuns,
+            mode === "edit" ? editData?.executedRuns : 0,
+          );
+      const effectiveEndDate = isOneTimeInterval ? "" : formData.endDate;
+      const isOrdinaryTask = isOrdinaryTaskType(formData.taskType);
+      const taskTypeTitle = formData.taskType === "income" ? t("transaction.type.income") : formData.taskType === "expense" ? t("transaction.type.expense") : scheduledTaskTypeLabel(formData.taskType);
+      const submitFundCode = formData.taskType === "fund_regular_invest" ? formData.fundCode.trim() : formData.taskType;
+      const submitFundName = isOrdinaryTask
+        ? (formData.categoryName.trim() || formData.fundName.trim() || taskTypeTitle)
+        : (formData.fundName.trim() || formData.fundCode.trim() || scheduledTaskTypeLabel(formData.taskType));
+      const submitCashAccountId = isOrdinaryTask ? "" : formData.cashAccountId || "";
 
       if (mode === "edit" && editData) {
         if (submitMethod === "serverAction" && action) {
@@ -696,16 +835,20 @@ export function RegularInvestForm({
           fd.set("taskType", formData.taskType);
           fd.set("insuranceProductId", formData.insuranceProductId || "");
           fd.set("accountId", formData.accountId);
-          fd.set("fundCode", formData.taskType === "fund_regular_invest" ? formData.fundCode.trim() : formData.taskType);
-          fd.set("fundName", formData.fundName.trim() || formData.fundCode.trim() || scheduledTaskTypeLabel(formData.taskType));
+          fd.set("fundCode", submitFundCode);
+          fd.set("fundName", submitFundName);
+          fd.set("categoryId", isOrdinaryTask ? formData.categoryId : "");
+          fd.set("categoryName", isOrdinaryTask ? formData.categoryName.trim() : "");
+          fd.set("note", isOrdinaryTask ? formData.note.trim() : "");
           fd.set("amount", String(finalAmount));
           fd.set("intervalUnit", effectiveIntervalUnit);
           fd.set("intervalValue", effectiveIntervalValue);
-          fd.set("startDate", formData.startDate);
-          fd.set("endDate", formData.endDate || "");
-          fd.set("totalRuns", serializedTotalRuns != null ? String(serializedTotalRuns) : "");
-          fd.set("executionDay", formData.executionDay || "");
-          fd.set("cashAccountId", formData.cashAccountId || "");
+          fd.set("nextRunDate", formData.startDate);
+          fd.set("endDate", effectiveEndDate || "");
+          fd.set("totalRuns", effectiveTotalRuns != null ? String(effectiveTotalRuns) : "");
+          fd.set("executionDay", effectiveExecutionDay != null ? String(effectiveExecutionDay) : "");
+          fd.set("secondaryExecutionDay", effectiveSecondaryExecutionDay != null ? String(effectiveSecondaryExecutionDay) : "");
+          fd.set("cashAccountId", submitCashAccountId);
           fd.set("feeRate", formData.feeRate.trim() ? formData.feeRate : "");
           fd.set("confirmDays", submitConfirmDays.trim() ? submitConfirmDays : "");
           fd.set("arrivalDays", submitArrivalDays.trim() ? submitArrivalDays : "");
@@ -725,16 +868,20 @@ export function RegularInvestForm({
             taskType: formData.taskType,
             insuranceProductId: formData.insuranceProductId || null,
             accountId: formData.accountId,
-            fundCode: formData.taskType === "fund_regular_invest" ? formData.fundCode : formData.taskType,
-            fundName: formData.fundName || formData.fundCode || scheduledTaskTypeLabel(formData.taskType),
+            fundCode: submitFundCode,
+            fundName: submitFundName,
+            categoryId: isOrdinaryTask ? formData.categoryId || null : null,
+            categoryName: isOrdinaryTask ? formData.categoryName.trim() || null : null,
+            note: isOrdinaryTask ? formData.note.trim() || null : null,
             amount: finalAmount,
             intervalUnit: effectiveIntervalUnit,
             intervalValue: parseInt(effectiveIntervalValue) || 1,
-            executionDay: serializedExecutionDay,
-            startDate: formData.startDate,
-            endDate: formData.endDate || null,
-            totalRuns: serializedTotalRuns,
-            cashAccountId: formData.cashAccountId || null,
+            executionDay: effectiveExecutionDay,
+            secondaryExecutionDay: effectiveSecondaryExecutionDay,
+            nextRunDate: formData.startDate,
+            endDate: effectiveEndDate || null,
+            totalRuns: effectiveTotalRuns,
+            cashAccountId: submitCashAccountId || null,
             feeRate: formData.feeRate.trim() ? parseFloat(formData.feeRate) : 0,
             confirmDays: submitConfirmDays !== "" ? parseInt(submitConfirmDays) : 0,
             arrivalDays: submitArrivalDays !== "" ? parseInt(submitArrivalDays) : 2,
@@ -766,16 +913,20 @@ export function RegularInvestForm({
           fd.set("taskType", formData.taskType);
           fd.set("insuranceProductId", formData.insuranceProductId || "");
           fd.set("accountId", formData.accountId);
-          fd.set("fundCode", formData.taskType === "fund_regular_invest" ? formData.fundCode.trim() : formData.taskType);
-          fd.set("fundName", formData.fundName.trim() || formData.fundCode.trim() || scheduledTaskTypeLabel(formData.taskType));
+          fd.set("fundCode", submitFundCode);
+          fd.set("fundName", submitFundName);
+          fd.set("categoryId", isOrdinaryTask ? formData.categoryId : "");
+          fd.set("categoryName", isOrdinaryTask ? formData.categoryName.trim() : "");
+          fd.set("note", isOrdinaryTask ? formData.note.trim() : "");
           fd.set("amount", String(finalAmount));
           fd.set("intervalUnit", effectiveIntervalUnit);
           fd.set("intervalValue", effectiveIntervalValue);
           fd.set("startDate", formData.startDate);
-          fd.set("endDate", formData.endDate || "");
-          fd.set("totalRuns", serializedTotalRuns != null ? String(serializedTotalRuns) : "");
-          fd.set("executionDay", formData.executionDay || "");
-          fd.set("cashAccountId", formData.cashAccountId || "");
+          fd.set("endDate", effectiveEndDate || "");
+          fd.set("totalRuns", effectiveTotalRuns != null ? String(effectiveTotalRuns) : "");
+          fd.set("executionDay", effectiveExecutionDay != null ? String(effectiveExecutionDay) : "");
+          fd.set("secondaryExecutionDay", effectiveSecondaryExecutionDay != null ? String(effectiveSecondaryExecutionDay) : "");
+          fd.set("cashAccountId", submitCashAccountId);
           fd.set("feeRate", formData.feeRate.trim() ? formData.feeRate : "");
           fd.set("confirmDays", submitConfirmDays.trim() ? submitConfirmDays : "");
           fd.set("arrivalDays", submitArrivalDays.trim() ? submitArrivalDays : "");
@@ -796,16 +947,20 @@ export function RegularInvestForm({
             accountId: formData.accountId,
             taskType: formData.taskType,
             insuranceProductId: formData.insuranceProductId || null,
-            fundCode: formData.taskType === "fund_regular_invest" ? formData.fundCode : formData.taskType,
-            fundName: formData.fundName || formData.fundCode || scheduledTaskTypeLabel(formData.taskType),
+            fundCode: submitFundCode,
+            fundName: submitFundName,
+            categoryId: isOrdinaryTask ? formData.categoryId || null : null,
+            categoryName: isOrdinaryTask ? formData.categoryName.trim() || null : null,
+            note: isOrdinaryTask ? formData.note.trim() || null : null,
             amount: finalAmount,
             intervalUnit: effectiveIntervalUnit,
             intervalValue: parseInt(effectiveIntervalValue) || 1,
-            executionDay: serializedExecutionDay,
+            executionDay: effectiveExecutionDay,
+            secondaryExecutionDay: effectiveSecondaryExecutionDay,
             startDate: formData.startDate,
-            endDate: formData.endDate || null,
-            totalRuns: serializedTotalRuns,
-            cashAccountId: formData.cashAccountId || null,
+            endDate: effectiveEndDate || null,
+            totalRuns: effectiveTotalRuns,
+            cashAccountId: submitCashAccountId || null,
             feeRate: formData.feeRate.trim() ? parseFloat(formData.feeRate) : 0,
             confirmDays: submitConfirmDays !== "" ? parseInt(submitConfirmDays) : 0,
             arrivalDays: submitArrivalDays !== "" ? parseInt(submitArrivalDays) : 2,
@@ -844,7 +999,9 @@ export function RegularInvestForm({
   const cashOptions = sortOptionsByRecent(cashFiltered ?? cashAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel })), recentAccountIds);
   const loanOptions = loanAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel }));
   const transferTargetOptions = sortOptionsByRecent(transferTargetFiltered ?? transferTargetAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel })), recentAccountIds);
+  const ordinaryOptions = sortOptionsByRecent(ordinaryFiltered ?? ordinaryAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel })), recentAccountIds);
   const insuranceOptions = (insuranceProductOptions ?? []).map(item => ({ id: item.id, label: item.label, subLabel: item.subLabel ?? item.accountLabel ?? undefined }));
+  const ordinaryCategoryOptions = formData.taskType === "income" ? incomeCategoryOptions ?? [] : expenseCategoryOptions ?? [];
   const selectedInsuranceProduct = (insuranceProductOptions ?? []).find((item) => item.id === formData.insuranceProductId) ?? null;
   const policyholderOptions = (nestedFieldData?.groupId ?? [])
     .filter((item) => item.name && item.name !== "未指定")
@@ -853,10 +1010,13 @@ export function RegularInvestForm({
   const isLoanTask = formData.taskType === "loan_repayment";
   const isTransferTask = formData.taskType === "transfer";
   const isInsuranceTask = formData.taskType === "insurance_premium";
-  const scheduleLocked = isLoanTask;
+  const isOrdinaryTask = isOrdinaryTaskType(formData.taskType);
+  const scheduleLocked = isLoanTask || mode === "edit";
   const displayedIntervalUnit = isLoanTask ? "month" : formData.intervalUnit;
   const displayedIntervalValue = isLoanTask ? formData.repaymentIntervalMonths || "1" : formData.intervalValue;
-  const startDateLocked = mode === "edit" && !!editData && ((editData.executedRuns ?? 0) > 0 || !!editData.lastRunDate);
+  const isOneTimeInterval = displayedIntervalUnit === "once";
+  const startDateLocked = false;
+  const nextRunDateMin = mode === "edit" && editData?.nextRunDate ? toDateInput(editData.nextRunDate) : undefined;
   const readonlyTransferFromLabel =
     cashOptions.find((option) => option.id === formData.cashAccountId)?.label
     ?? cashAccountList.find((option) => option.id === formData.cashAccountId)?.label
@@ -871,17 +1031,33 @@ export function RegularInvestForm({
   function handleTaskTypeChange(taskType: ScheduledTaskType) {
     confirmDaysTouchedRef.current = false;
     arrivalDaysTouchedRef.current = false;
+    const nextIsOrdinaryTask = isOrdinaryTaskType(taskType);
     setFormData((prev) => ({
       ...prev,
       taskType,
-      accountId: taskType === "fund_regular_invest" ? "" : taskType === "loan_repayment" ? "" : taskType === "transfer" ? "" : selectedInsuranceProduct?.accountId ?? "",
-      fundCode: taskType === "fund_regular_invest" ? prev.fundCode : taskType,
-      fundName: taskType === "fund_regular_invest" ? prev.fundName : scheduledTaskTypeLabel(taskType),
+      accountId: taskType === "fund_regular_invest"
+        ? ""
+        : taskType === "loan_repayment"
+          ? ""
+          : taskType === "transfer"
+            ? ""
+            : nextIsOrdinaryTask
+              ? (ordinaryAccountList.some((item) => item.id === prev.accountId) ? prev.accountId : "")
+              : selectedInsuranceProduct?.accountId ?? "",
+      fundCode: taskType === "fund_regular_invest" && prev.taskType === "fund_regular_invest" ? prev.fundCode : "",
+      fundName: taskType === "fund_regular_invest"
+        ? prev.fundName
+        : nextIsOrdinaryTask
+          ? (taskType === "income" ? t("transaction.type.income") : t("transaction.type.expense"))
+          : scheduledTaskTypeLabel(taskType),
+      categoryId: nextIsOrdinaryTask && isOrdinaryTaskType(prev.taskType) && prev.taskType === taskType ? prev.categoryId : "",
+      categoryName: nextIsOrdinaryTask && isOrdinaryTaskType(prev.taskType) && prev.taskType === taskType ? prev.categoryName : "",
       insuranceProductId: taskType === "insurance_premium" ? prev.insuranceProductId : "",
       policyholderGroupId: taskType === "insurance_premium" ? prev.policyholderGroupId : "",
       intervalUnit: taskType === "insurance_premium" ? "month" : prev.intervalUnit,
       intervalValue: taskType === "insurance_premium" ? "1" : prev.intervalValue,
       executionDay: taskType === "insurance_premium" ? "" : prev.executionDay,
+      cashAccountId: nextIsOrdinaryTask ? "" : prev.cashAccountId,
       feeRate: taskType === "fund_regular_invest" ? prev.feeRate : "0",
       confirmDays: taskType === "fund_regular_invest" ? prev.confirmDays : "0",
       arrivalDays: taskType === "fund_regular_invest" ? prev.arrivalDays : "0",
@@ -896,14 +1072,20 @@ export function RegularInvestForm({
     setFormData((prev) => ({
       ...prev,
       intervalUnit,
+      intervalValue: intervalUnit === "once" ? "1" : prev.intervalValue,
+      endDate: intervalUnit === "once" ? "" : prev.endDate,
+      totalRuns: intervalUnit === "once" ? "" : prev.totalRuns,
       weeklyExecutionDate: intervalUnit === "week" ? prev.startDate : prev.weeklyExecutionDate,
       monthlyExecutionDate: intervalUnit === "month" ? prev.startDate : prev.monthlyExecutionDate,
       yearlyExecutionDate: intervalUnit === "year" ? prev.startDate : prev.yearlyExecutionDate,
+      secondaryWeeklyExecutionDate: intervalUnit === "week" ? prev.secondaryWeeklyExecutionDate : "",
+      secondaryMonthlyExecutionDate: intervalUnit === "month" ? prev.secondaryMonthlyExecutionDate : "",
+      secondaryYearlyExecutionDate: intervalUnit === "year" ? prev.secondaryYearlyExecutionDate : "",
       executionDay: intervalUnit === "week"
         ? weekdayFromDateInput(prev.startDate) || prev.executionDay
         : intervalUnit === "year"
           ? String(encodeYearlyExecutionDay(prev.startDate) ?? "")
-          : intervalUnit === "day"
+          : intervalUnit === "day" || intervalUnit === "once"
             ? ""
             : intervalUnit === "month"
               ? parseDateInput(prev.startDate)?.getUTCDate().toString() ?? prev.executionDay
@@ -912,7 +1094,20 @@ export function RegularInvestForm({
   }
 
   function changeIntervalValue(delta: number) {
-    setFormData((prev) => ({ ...prev, intervalValue: clampIntervalValue(prev.intervalValue, delta) }));
+    setFormData((prev) => {
+      const intervalValue = clampIntervalValue(prev.intervalValue, delta);
+      return {
+        ...prev,
+        intervalValue,
+        ...(positiveIntervalValue(intervalValue) !== 1
+          ? {
+              secondaryWeeklyExecutionDate: "",
+              secondaryMonthlyExecutionDate: "",
+              secondaryYearlyExecutionDate: "",
+            }
+          : {}),
+      };
+    });
   }
 
   function handleNestedAccountCreated(id: string, name: string, extra?: { kind?: string }) {
@@ -922,7 +1117,13 @@ export function RegularInvestForm({
     if (nestedEntityType === "cash-account") {
       setCashAccountList(prev => [...prev, option]);
       setLocalCashSSOptions(prev => prev ? [...prev, option] : prev);
-      setFormData(prev => ({ ...prev, cashAccountId: id }));
+      if (isOrdinaryTaskType(formData.taskType)) {
+        setOrdinaryAccountList(prev => [...prev, option]);
+        setLocalOrdinarySSOptions(prev => prev ? [...prev, option] : prev);
+        setFormData(prev => ({ ...prev, accountId: id }));
+      } else {
+        setFormData(prev => ({ ...prev, cashAccountId: id }));
+      }
     } else {
       setInvestmentAccountList(prev => [...prev, { id, name, label: name }]);
       setLocalInvestmentSSOptions(prev => prev ? [...prev, option] : prev);
@@ -960,20 +1161,21 @@ export function RegularInvestForm({
             </div>
 
             <form className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" onSubmit={onSubmit}>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-5 gap-2">
                 {TASK_TYPE_OPTIONS.map((item) => (
                   <button
                     key={item.value}
                     type="button"
                     onClick={() => mode === "create" ? handleTaskTypeChange(item.value) : undefined}
                     disabled={mode === "edit"}
-                    className={`rounded-lg border px-2 py-2 text-center transition-colors ${
+                    title={t(item.labelKey)}
+                    className={`min-w-0 whitespace-nowrap rounded-lg border px-1 py-2 text-center transition-colors ${
                       formData.taskType === item.value
                         ? "border-blue-200 bg-blue-50 text-blue-700"
                         : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-                    } disabled:cursor-not-allowed disabled:opacity-70`}
+                      } disabled:cursor-not-allowed disabled:opacity-70`}
                   >
-                    <div className="text-xs font-semibold">{t(item.labelKey)}</div>
+                    <div className="truncate whitespace-nowrap text-xs font-semibold">{t(item.labelKey)}</div>
                   </button>
                 ))}
               </div>
@@ -1087,6 +1289,40 @@ export function RegularInvestForm({
                           onCycleOwnerFilter={cfCycle} ownerFilterLabel={cfLabel} />
                       </div>
                     )}
+                  </div>
+                </div>
+              ) : isOrdinaryTask ? (
+                <div className="space-y-3 rounded-lg border border-slate-100 bg-slate-50/60 p-2">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">{t("regularInvest.account.cashFundAccount")}</div>
+                      <div className={REQUIRED_FIELD_CLASS}>
+                        <SmartSelect mode="single" value={formData.accountId}
+                          onChange={(id) => setFormData(d => ({ ...d, accountId: id }))}
+                          options={ordinaryOptions}
+                          placeholder={t("regularInvest.placeholder.cashFundAccount")}
+                          onCreateClick={() => setNestedEntityType("cash-account")}
+                          createLabel={t("settings.accounts.add")}
+                          onCycleOwnerFilter={ofCycle} ownerFilterLabel={ofLabel} />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">{t("regularInvest.category")}</div>
+                      <SmartSelect mode="single" value={formData.categoryId}
+                        onChange={(id) => {
+                          const category = ordinaryCategoryOptions.find((option) => option.id === id);
+                          const categoryName = category?.sourceName ?? cleanOptionLabel(category?.label);
+                          setFormData(d => ({
+                            ...d,
+                            categoryId: id,
+                            categoryName,
+                            fundName: categoryName || (d.taskType === "income" ? t("transaction.type.income") : t("transaction.type.expense")),
+                          }));
+                        }}
+                        options={ordinaryCategoryOptions}
+                        placeholder={t("regularInvest.placeholder.category")}
+                        behavior={REGULAR_INVEST_CATEGORY_SMART_SELECT_BEHAVIOR} />
+                    </div>
                   </div>
                 </div>
               ) : (
@@ -1223,63 +1459,95 @@ export function RegularInvestForm({
                 </div>
               )}
 
-              <div className="grid grid-cols-[minmax(0,3fr)_minmax(0,3fr)_minmax(0,1fr)] gap-3">
+              <div className={isOneTimeInterval ? "grid grid-cols-1 gap-3" : "grid grid-cols-[minmax(0,3fr)_minmax(0,3fr)_minmax(0,1fr)] gap-3"}>
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">{t("stockFee.effectiveDateLabel")}</div>
+                  <div className="text-xs font-medium text-slate-600">{mode === "edit" ? t("regularInvest.nextRunDateLabel") : t("stockFee.effectiveDateLabel")}</div>
                   <DateStepper
                     value={formData.startDate}
-                    onChange={(value) => setFormData(d => ({
+                    onChange={(value) => setFormData(d => mode === "edit"
+                        ? { ...d, startDate: value }
+                        : ({
                       ...d,
                       startDate: value,
                       weeklyExecutionDate: d.intervalUnit === "week"
                         ? weeklyExecutionDateInStartMonth(value, weekdayFromDateInput(d.weeklyExecutionDate) || d.executionDay)
                         : d.weeklyExecutionDate,
+                      secondaryWeeklyExecutionDate: d.intervalUnit === "week" && d.secondaryWeeklyExecutionDate
+                        ? weeklyExecutionDateInStartMonth(value, weekdayFromDateInput(d.secondaryWeeklyExecutionDate))
+                        : d.secondaryWeeklyExecutionDate,
                       monthlyExecutionDate: monthlyExecutionDateInStartMonth(value, d.executionDay),
                       yearlyExecutionDate: d.intervalUnit === "year"
                         ? yearlyExecutionDateInStartYear(value, d.executionDay || String(encodeYearlyExecutionDay(d.yearlyExecutionDate || d.startDate) ?? ""))
                         : d.yearlyExecutionDate,
-                    }))}
-                    disabled={startDateLocked}
-                  />
+                      secondaryMonthlyExecutionDate: d.intervalUnit === "month" && d.secondaryMonthlyExecutionDate
+                        ? secondaryExecutionDateInStartPeriod(
+                            value,
+                            "month",
+                            parseDateInput(d.secondaryMonthlyExecutionDate)?.getUTCDate().toString() ?? "",
+                          )
+                        : d.secondaryMonthlyExecutionDate,
+                      secondaryYearlyExecutionDate: d.intervalUnit === "year" && d.secondaryYearlyExecutionDate
+                        ? secondaryExecutionDateInStartPeriod(
+                            value,
+                            "year",
+                            String(encodeYearlyExecutionDay(d.secondaryYearlyExecutionDate) ?? ""),
+                          )
+                        : d.secondaryYearlyExecutionDate,
+                      }))}
+                      min={nextRunDateMin}
+                      disabled={startDateLocked}
+                      className={REQUIRED_FIELD_CLASS}
+                    />
                   {startDateLocked ? <div className="text-[11px] text-slate-400">{t("regularInvest.startDateLockedHint")}</div> : null}
                 </div>
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">{t("regularInvest.stopDateOptional")}</div>
-                  <DateStepper
-                    value={formData.endDate}
-                    onChange={(value) => setFormData(d => ({ ...d, endDate: value }))}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">
-                    {runsLabel}
+                {!isOneTimeInterval && (
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">{t("regularInvest.stopDateOptional")}</div>
+                    <DateStepper
+                      value={formData.endDate}
+                      onChange={(value) => setFormData(d => ({ ...d, endDate: value }))}
+                    />
                   </div>
-                  <input
-                    inputMode="numeric"
-                    min="1"
-                    value={formData.totalRuns}
-                    onChange={(e) => setFormData(d => ({ ...d, totalRuns: e.target.value }))}
-                    placeholder={t("regularInvest.unlimited")}
-                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                  />
-                </div>
+                )}
+                {!isOneTimeInterval && (
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">
+                      {runsLabel}
+                    </div>
+                    <input
+                      inputMode="numeric"
+                      min="1"
+                      value={formData.totalRuns}
+                      onChange={(e) => setFormData(d => ({ ...d, totalRuns: e.target.value }))}
+                      placeholder={t("regularInvest.unlimited")}
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                    />
+                  </div>
+                )}
               </div>
 
               <div className="space-y-2">
-                <div className="grid grid-cols-3 gap-3">
+                <div className={
+                    isOneTimeInterval
+                      ? "grid grid-cols-1 gap-3"
+                    : displayedIntervalUnit === "week" || displayedIntervalUnit === "month" || displayedIntervalUnit === "year"
+                      ? "grid grid-cols-4 gap-3"
+                      : "grid grid-cols-3 gap-3"
+                }>
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">{t("regularInvest.intervalUnit")}</div>
                     <select
                       value={displayedIntervalUnit}
                       onChange={(e) => handleIntervalUnitChange(e.target.value)}
                       disabled={scheduleLocked}
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
+                      className={`h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none ring-1 ring-rose-200/80 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500`}
                     >
                       {Object.entries(INTERVAL_LABELS).map(([v, labelKey]) => (
                         <option key={v} value={v}>{t(labelKey)}</option>
                       ))}
                     </select>
                   </div>
+                  {!isOneTimeInterval && (
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">{t("regularInvest.interval")}</div>
                     <div className="relative">
@@ -1287,9 +1555,19 @@ export function RegularInvestForm({
                         inputMode="numeric"
                         min="1"
                         value={scheduleLocked ? displayedIntervalValue : formData.intervalValue}
-                        onChange={(e) => setFormData(d => ({ ...d, intervalValue: e.target.value }))}
+                        onChange={(e) => setFormData(d => ({
+                          ...d,
+                          intervalValue: e.target.value,
+                          ...(positiveIntervalValue(e.target.value) !== 1
+                            ? {
+                                secondaryWeeklyExecutionDate: "",
+                                secondaryMonthlyExecutionDate: "",
+                                secondaryYearlyExecutionDate: "",
+                              }
+                            : {}),
+                        }))}
                         disabled={scheduleLocked}
-                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 pr-8 text-sm outline-none disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
+                        className={`h-9 w-full rounded-md border border-slate-200 bg-white px-3 pr-8 text-sm outline-none ring-1 ring-rose-200/80 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500`}
                       />
                       <div className="absolute bottom-px right-px top-px flex w-5 flex-col overflow-hidden rounded-r bg-white/95">
                         <button
@@ -1317,6 +1595,8 @@ export function RegularInvestForm({
                       </div>
                     </div>
                   </div>
+                  )}
+                  {!isOneTimeInterval && (
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">{t("regularInvest.executionDay")}</div>
                     {displayedIntervalUnit === "day" ? (
@@ -1339,6 +1619,7 @@ export function RegularInvestForm({
                               weeklyExecutionDate: value,
                               executionDay: weekdayFromDateInput(value),
                             }))}
+                            className={REQUIRED_FIELD_CLASS}
                           />
                         );
                       })()
@@ -1346,39 +1627,47 @@ export function RegularInvestForm({
                       (() => {
                         const monthlyBounds = monthBounds(formData.startDate);
                         return (
-                          <DateStepper
-                            value={formData.monthlyExecutionDate}
-                            min={monthlyBounds.min}
-                            max={monthlyBounds.max}
-                            onChange={(value) => setFormData(d => ({
-                              ...d,
-                              monthlyExecutionDate: value,
-                              executionDay: parseDateInput(value)?.getUTCDate().toString() ?? d.executionDay,
-                            }))}
-                          />
+                          <div className="space-y-1">
+                            <DateStepper
+                              value={formData.monthlyExecutionDate}
+                              min={monthlyBounds.min}
+                              max={monthlyBounds.max}
+                              onChange={(value) => setFormData(d => ({
+                                ...d,
+                                monthlyExecutionDate: value,
+                                executionDay: parseDateInput(value)?.getUTCDate().toString() ?? d.executionDay,
+                              }))}
+                              className={REQUIRED_FIELD_CLASS}
+                            />
+                            <div className="text-[11px] text-slate-400">{t("regularInvest.primaryExecutionDay")}</div>
+                          </div>
                         );
                       })()
                     ) : displayedIntervalUnit === "year" ? (
                       (() => {
                         const yearlyBounds = monthBounds(formData.startDate);
                         return (
-                          <DateStepper
-                            value={formData.yearlyExecutionDate}
-                            min={yearlyBounds.min}
-                            max={yearlyBounds.max}
-                            onChange={(value) => setFormData(d => ({
-                              ...d,
-                              yearlyExecutionDate: value,
-                              executionDay: encodeYearlyExecutionDay(value)?.toString() ?? d.executionDay,
-                            }))}
-                          />
+                          <div className="space-y-1">
+                            <DateStepper
+                              value={formData.yearlyExecutionDate}
+                              min={yearlyBounds.min}
+                              max={yearlyBounds.max}
+                              onChange={(value) => setFormData(d => ({
+                                ...d,
+                                yearlyExecutionDate: value,
+                                executionDay: encodeYearlyExecutionDay(value)?.toString() ?? d.executionDay,
+                              }))}
+                              className={REQUIRED_FIELD_CLASS}
+                            />
+                            <div className="text-[11px] text-slate-400">{t("regularInvest.primaryExecutionDay")}</div>
+                          </div>
                         );
                       })()
                     ) : (
                       <select
                         value={formData.executionDay}
                         onChange={(e) => setFormData(d => ({ ...d, executionDay: e.target.value }))}
-                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none ring-1 ring-rose-200/80"
                       >
                         <option value="">{t("regularInvest.notSpecified")}</option>
                         {Array.from({ length: 31 }, (_, i) => i + 1).map((day) => (
@@ -1387,6 +1676,29 @@ export function RegularInvestForm({
                       </select>
                     )}
                   </div>
+                  )}
+                  {!isOneTimeInterval &&
+                    mode !== "edit" &&
+                    positiveIntervalValue(formData.intervalValue) === 1 &&
+                    (displayedIntervalUnit === "week" || displayedIntervalUnit === "month" || displayedIntervalUnit === "year") && (
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">{t("regularInvest.secondaryExecutionDayOptional")}</div>
+                      <DateStepper
+                        value={displayedIntervalUnit === "week"
+                          ? formData.secondaryWeeklyExecutionDate
+                          : displayedIntervalUnit === "month"
+                          ? formData.secondaryMonthlyExecutionDate
+                          : formData.secondaryYearlyExecutionDate}
+                        min={monthBounds(formData.startDate).min}
+                        max={monthBounds(formData.startDate).max}
+                        onChange={(value) => setFormData(d => (displayedIntervalUnit === "week"
+                          ? { ...d, secondaryWeeklyExecutionDate: value }
+                          : displayedIntervalUnit === "month"
+                            ? { ...d, secondaryMonthlyExecutionDate: value }
+                          : { ...d, secondaryYearlyExecutionDate: value }))}
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1458,24 +1770,41 @@ export function RegularInvestForm({
                   </div>
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">{t("regularInvest.fundInvestAmount")}</div>
-                    <CalcInput
-                      value={formData.amount}
-                      onChange={(value) => setFormData(d => ({ ...d, amount: value }))}
-                      placeholder="0.00"
-                      label={t("regularInvest.fundInvestAmount")}
-                      precision={2}
-                    />
+                    <div className={REQUIRED_FIELD_CLASS}>
+                      <CalcInput
+                        value={formData.amount}
+                        onChange={(value) => setFormData(d => ({ ...d, amount: value }))}
+                        placeholder="0.00"
+                        label={t("regularInvest.fundInvestAmount")}
+                        precision={2}
+                      />
+                    </div>
                   </div>
                 </div>
               ) : (
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">{t("regularInvest.planAmount")}</div>
-                  <CalcInput
-                    value={formData.amount}
-                    onChange={(value) => setFormData(d => ({ ...d, amount: value }))}
-                    placeholder="0.00"
-                    label={t("regularInvest.planAmount")}
-                    precision={2}
+                  <div className={REQUIRED_FIELD_CLASS}>
+                    <CalcInput
+                      value={formData.amount}
+                      onChange={(value) => setFormData(d => ({ ...d, amount: value }))}
+                      placeholder="0.00"
+                      label={t("regularInvest.planAmount")}
+                      precision={2}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {isOrdinaryTask && (
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-slate-600">{t("regularInvest.noteOptional")}</div>
+                  <textarea
+                    value={formData.note}
+                    onChange={(e) => setFormData(d => ({ ...d, note: e.target.value }))}
+                    placeholder={t("regularInvest.placeholder.note")}
+                    rows={2}
+                    className="w-full resize-none rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none"
                   />
                 </div>
               )}

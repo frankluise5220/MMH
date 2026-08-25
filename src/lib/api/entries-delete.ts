@@ -93,6 +93,15 @@ export async function deleteEntriesWithLinkedPrompt({
   const impacts = precheck.impacts ?? [];
   if (impacts.length > 0 || precheck.needConfirm) {
     const impactText = describeBusinessImpacts(impacts, t, counterpartRecordLabel);
+    const selectedIdSet = new Set(entryIds);
+    const linkedSelectedEntryIds = new Set(
+      impacts
+        .map((impact) => impact.selectedEntryId || impact.entryId)
+        .filter((id): id is string => Boolean(id) && selectedIdSet.has(id)),
+    );
+    const linkedSelectedCount = linkedSelectedEntryIds.size;
+    const unlinkedSelectedCount = Math.max(0, entryIds.length - linkedSelectedCount);
+    const mixedSelection = linkedSelectedCount > 0 && unlinkedSelectedCount > 0;
     const allBusinessSide = impacts.length > 0 && impacts.every((impact) => impact.selectedSide === "business");
     const businessRecordLabel = t("entriesDelete.businessRecord");
     const selectedLabel = allBusinessSide
@@ -100,16 +109,26 @@ export async function deleteEntriesWithLinkedPrompt({
       : t("entriesDelete.thisAccountRecord");
     const effectiveSelectedLabel = selectedRecordLabel || selectedLabel;
     const counterpartLabel = counterpartRecordLabel || (allBusinessSide ? t("entriesDelete.linkedCashTransaction") : t("entriesDelete.businessSideRecord"));
+    const messageKey = mixedSelection ? "entriesDelete.rangeMessageMixed" : "entriesDelete.rangeMessage";
     const linkedAction = await showChoiceDialog<"keepBusiness" | "deleteBusiness">({
       title: entryIds.length > 1 ? t("entriesDelete.batchRangeTitle") : t("entriesDelete.rangeTitle"),
-      message: t("entriesDelete.rangeMessage", {
+      message: t(messageKey, {
         impactText,
         selectedLabel: effectiveSelectedLabel,
         counterpartLabel,
+        linkedCount: linkedSelectedCount,
+        unlinkedCount: unlinkedSelectedCount,
       }),
       choices: [
-        { value: "keepBusiness", label: t("entriesDelete.onlyDeleteLabel", { label: effectiveSelectedLabel }) },
-        { value: "deleteBusiness", label: t("entriesDelete.deleteBothLabel"), tone: "danger" },
+        {
+          value: "keepBusiness",
+          label: t(mixedSelection ? "entriesDelete.onlyDeleteMixedLabel" : "entriesDelete.onlyDeleteLabel", { label: effectiveSelectedLabel }),
+        },
+        {
+          value: "deleteBusiness",
+          label: t(mixedSelection ? "entriesDelete.deleteBothMixedLabel" : "entriesDelete.deleteBothLabel"),
+          tone: "danger",
+        },
       ],
       cancelLabel: t("common.cancel"),
       tone: "danger",

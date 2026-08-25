@@ -295,6 +295,8 @@ export async function getIncomeExpenseReport(
         realizedProfit: true,
         depositInterest: true,
         fundFee: true,
+        fundUnits: true,
+        fundNav: true,
         fundCode: true,
         fundName: true,
         accountId: true,

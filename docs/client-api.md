@@ -313,6 +313,8 @@
 - `/api/v1/entries/batch-edit`
 - `/api/v1/entries/batch-update`
   - 批量更新支持 `categoryId`，客户端应提交真实分类 ID；传空字符串表示清空分类。层级分类中，二级、三级以及带子分类的真实分类节点都可以作为 `categoryId`。
+  - 批量更新支持 `tagId`，客户端应提交当前账簿可读的真实标签 ID；传空字符串表示清除所选记录的全部标签。
+  - 批量更新账户字段时，`account` 表示底层来源账户，`toAccount` 表示对向/目标账户；信用卡账单详情若要修改当前账单账户侧，应提交 `viewAccount`，服务端会按当前账单账户范围写入对应的 `accountId` 或 `toAccountId`。
 
 ### External Agent / DB Maintenance
 
@@ -520,6 +522,7 @@ Request body:
 - 基金买入和定投的现金侧发生日按申请日期 `date` 展示和排序；只有赎回、现金分红、买入退回等现金入账记录在现金/借记账户明细中按 `arrivalDate` 展示和排序。
 - 买入退回记录会通过 `fundSourceEntryId` 显式关联到源买入记录；借记卡/现金账户明细展示这类退回入账时，按实际到账日期显示和排序。基金交易明细按源买入申请日期归集展示，退回到账日期保留在到账日期字段。
 - 预览和导入都会按基金账户已有配置或本次 `overrides` 自动补全确认天数、净值日期、入账日期、手续费；缺净值时会按申请日期/时间推导净值日期并尝试获取精确净值。
+- 预览响应中的 `calculatedFields` 标记由系统计算得到的数值字段，例如 `nav`、`feeRate`、`fee` 和 `units`；客户端应以斜体等样式区分这类值，确认导入时仍重新按服务端规则计算。
 - `cashAccount` 与 `fundAccount` 都按账户匹配规则解析，基金账户必须能匹配到开放式基金账户；如果导入行提供了 `cashAccount`，资金账户也必须匹配到资金侧账户，否则作为阻断错误返回，不能导入成未关联的基金交易。
 - 导入行未提供 `cashAccount` 且当前基金视图上下文能解析为同一个基金账户时，服务端会读取该基金账户最近 100 条未删除基金交易，按 `cashAccountId` 使用次数推断最常用资金账户；次数相同取最近出现的账户。无法推断或不在基金视图上下文中时，买入、赎回和现金分红行会作为缺少资金账户的阻断错误返回。成功导入时，服务端会用匹配或推断到的 `cashAccountId` 建立资金侧 `TxRecord`、`FundTransactionCashFlow` 和 `EntryBusinessLink`。
 
@@ -535,6 +538,7 @@ Preview success:
       "amount": 100,
       "fee": 0.15,
       "feeRate": 0.15,
+      "calculatedFields": ["fee", "feeRate"],
       "confirmDays": 1,
       "confirmDate": "2026-06-09",
       "issues": []
@@ -640,19 +644,20 @@ Notes:
 
 - 股票账户、股票标的、股票交易、股票持仓、股票手续费规则。
 - 股票归在 `Account.kind = "investment"` + `investProductType = "stock"` 下，但业务表、API、字段和 UI 语义都使用独立 `stock` 域。
-- 股票资金流水只表示现金侧，股票身份、数量、价格、手续费和券商成交号保存在 `StockTransaction`；二者通过 `EntryBusinessLink.stockTransactionId` 关联，返回给客户端的 `linkId` 可直接用于 UI 高亮、删除预检和后续补链。
+- 股票资金流水只表示现金侧，股票身份、数量、价格和手续费保存在 `StockTransaction`；二者通过 `EntryBusinessLink.stockTransactionId` 关联，返回给客户端的 `linkId` 可直接用于 UI 高亮、删除预检和后续补链。
 - 创建或更新股票账户时，`institutionId` 必须指向当前账簿内类型为证券/`brokerage` 的机构；缺失或选择银行、支付、保险等非证券机构时返回 `{ ok:false, error }`。校验通过后，服务端会确保同账簿、同所有人、同证券机构、同币种下存在一个现金/钱包类“证券资金账户”；不存在时自动创建，`POST /api/v1/accounts` 会在响应中返回 `brokerageCashAccount`。
 - 股票交易的 `cashAccountId` 表示买入、卖出、分红、费用或税费调整使用的证券资金账户/券商可用资金账户；它可以和同一证券公司名下的基金交易共用同一个现金/钱包类账户。`cashAccountId` 可省略，服务端会按股票账户的所有人、证券机构和币种自动确保并使用同券商资金账户；只有股票账户缺少证券机构或找不到资金账户时才兼容退回股票账户自身现金。银行卡与证券资金账户之间的资金移动应作为普通转账/银证转账创建，不应伪装成股票买入或卖出。
-- 股票不得复用 `fundCode`、`fundUnits`、`fundNav`、`fundFeeRate`、基金净值、确认天数或到账天数模块；外部券商流水号使用 `externalLinkId` / `brokerTradeId`，不能混同为基金 refund link。
+- 股票不得复用 `fundCode`、`fundUnits`、`fundNav`、`fundFeeRate`、基金净值、确认天数或到账天数模块；股票导入和交易不得混同为基金 refund link。
 
 相关路径：
 
 - `GET /api/v1/stocks/securities?market=&q=` 返回 `{ ok:true, data:{ securities:[{ id, market, stockCode, stockName, currency, exchange }] } }`；`GET /api/v1/stocks/securities?market=CN&code=600519` 只查本地 `StockSecurity`，未命中时再从该账簿的 `StockHolding` / `StockTransaction` 找已保存的名称，不触发外部股票查询 API。`GET /api/v1/stocks/securities?market=CN&code=600519&lookup=1` 才会在本地全部未命中时按股票查询 API 获取名称并缓存；交易窗口输入股票代码默认走本地查询，只有首次买入保存时由 `POST /api/v1/stocks/transactions` 内部补全名称并缓存。导入或保存时 `stockName` 为空或等于 `stockCode` 都视为未提供名称，不能覆盖服务端补全出的真实名称。`market` 可省略，服务端按股票代码优先推断 A 股、港股或美股，导入和特殊场景仍可显式传入市场。
 - `POST /api/v1/stocks/securities` 创建或返回股票标的。Body: `{ market?, stockCode, stockName?, currency?, exchange? }`；`market` 省略时按 `stockCode` 推断。
-- `GET /api/v1/stocks/transactions?accountId=&securityId=&market=&stockCode=&limit=` 返回独立股票交易列表。交易项包含 `id`、`linkId`、`cashEntryId`、`stockAccountId`、`cashAccountId`、`securityId`、`market`、`stockCode`、`action`、`tradeDate`、`settleDate`、数量、价格、费用、`realizedProfit`、`externalLinkId` 和 `brokerTradeId`。
-- `POST /api/v1/stocks/transactions` 创建股票交易；动作为 `buy`、`sell`、`dividend`、`fee_adjustment` 或 `tax_adjustment` 时，服务端会在 `cashAccountId` 指向的证券资金账户上创建或更新资金侧 `TxRecord`，未传 `cashAccountId` 时自动使用同券商资金账户，写入 `EntryBusinessLink`，重算 `StockHolding`，并返回 `{ ok:true, data:{ transaction, linkId, cashEntryId } }`。现金流水不生成“资金账户 ↔ 股票账户”的自转账；股票持仓变化只由 `StockTransaction` / `StockHolding` 表达。买卖交易可以省略 `commission`、`stampTax`、`transferFee`、`exchangeFee`、`regulatoryFee` 和 `otherFee`，服务端读取账户 `StockFeeRule` / 市场 `StockMarketFeeRule` 表中已保存的费率计算；账户规则未命中时再使用市场默认规则。交易保存本身不会刷新或改写费率表，只有 `GET /api/v1/stocks/fee-rules?estimate=1&refresh=1`（Web 交易窗口的“获取新费率”按钮）才刷新内置公开市场默认费率。
+- `GET /api/v1/stocks/transactions?accountId=&securityId=&market=&stockCode=&limit=` 返回独立股票交易列表。交易项包含 `id`、`linkId`、`cashEntryId`、`stockAccountId`、`cashAccountId`、`securityId`、`market`、`stockCode`、`action`、`tradeDate`、`settleDate`、数量、价格、费用、`realizedProfit` 和 `externalLinkId`。
+- `POST /api/v1/stocks/import` 执行上市证券 Excel 导入预览和确认导入。Body: `{ mode:"preview"|"import", context:{ stockAccountId, stockAccountName? }, items:[{ tradeDate, settleDate?, action, market?, stockCode?, stockName?, quantity?, price?, grossAmount?, netAmount?, bankAccount?, fee?, commission?, stampTax?, transferFee?, exchangeFee?, regulatoryFee?, otherFee?, note?, calculatedFields? }] }`；`fee` 表示总费用合计，填写后按该值作为总费用，不再叠加佣金、印花税等拆分费用；未填写 `fee` 但填写拆分费用时，按用户填写的拆分费用求和，不补算缺失拆分项；所有费用字段都空时，买入/卖出按 `StockFeeRule` / `StockMarketFeeRule` 估算拆分费用。买入/卖出导入行必须有 `quantity` 和可解析的 `price`：`price` 可由导入表提供，也可在预览阶段按 `tradeDate` 先查 `StockPriceCache`、再查股票 API 补全；补全价格会在 `preview.calculatedFields` 中标记。`grossAmount` 由服务端按 `quantity × price` 计算并在 `preview.calculatedFields` 中标记；导入表中的 `grossAmount` 不作为买卖行成交金额来源。`netAmount` 为空时，预览/导入按成交金额和最终总费用补算：买入为成交金额 + 总费用，卖出为成交金额 - 总费用。`stockName` 仅作为兼容 API 输入，不出现在模板中；证券名称解析先查 `StockSecurity`、现有持仓和历史 `StockTransaction`，本地没有时再查股票 API 补全；`preview` 返回 `{ ok:true, items:[..., issues, totalFee, cashAmount, calculatedFields, securityId, cashAccountId, duplicate] }`，其中 `calculatedFields` 标记由系统计算得到的数值字段，客户端应以斜体等样式区分；错误行保留在预览中但客户端默认不选中、也不能被全选选中；`import` 必须重新执行同一套服务端解析、账户匹配、费用估算和阻断校验后写入，返回 `{ ok:true, createdCount, skippedCount, ids, accountIds, items }`。普通股票动作用 `StockTransaction` + `EntryBusinessLink` 写业务和资金侧，未填证券资金账户时自动使用当前股票账户同券商下的证券资金账户；`bank_transfer` 使用同股票账户证券机构下的证券资金账户和导入行中的银行账户创建银证转账，正数为银行转入证券资金账户，负数为证券资金账户转回银行账户。`bankAccount` 表示银证转账的银行侧账户，模板显示为“银行账户”；银证转账行必须填写银行侧账户（所有人、机构、账户名称），也兼容具体账户 ID、别名或尾号；只写“借记卡”等账户类型不会匹配。上市证券导入模板不包含股票名称和成交号；服务端仅在调用方显式传入 `externalLinkId` 时做兼容去重。
+- `POST /api/v1/stocks/transactions` 创建股票交易；动作为 `buy`、`sell`、`dividend`、`fee_adjustment` 或 `tax_adjustment` 时，服务端会在 `cashAccountId` 指向的证券资金账户上创建或更新资金侧 `TxRecord`，未传 `cashAccountId` 时自动使用同券商资金账户，写入 `EntryBusinessLink`，重算 `StockHolding`，并返回 `{ ok:true, data:{ transaction, linkId, cashEntryId } }`。现金流水不生成“资金账户 ↔ 股票账户”的自转账；股票持仓变化只由 `StockTransaction` / `StockHolding` 表达。买卖交易以 `quantity` 和 `price` 为必填源字段，服务端按 `quantity × price` 写入 `grossAmount`；客户端不能直接提交 `grossAmount` 覆盖买卖成交金额。买卖交易可以省略 `commission`、`stampTax`、`transferFee`、`exchangeFee`、`regulatoryFee` 和 `otherFee`，服务端读取账户 `StockFeeRule` / 市场 `StockMarketFeeRule` 表中已保存的费率计算；账户规则未命中时再使用市场默认规则。交易保存本身不会刷新或改写费率表，只有 `GET /api/v1/stocks/fee-rules?estimate=1&refresh=1`（Web 交易窗口的“获取新费率”按钮）才刷新内置公开市场默认费率。
 - `PATCH /api/v1/stocks/transactions?id=...` 更新股票交易。Body 与 POST 相同，省略字段保留原值；动作、账户、日期、数量、价格、金额变更后，服务端同步更新关联资金侧 `TxRecord` 和 `EntryBusinessLink`（动作改为无现金的送转/拆并股时软删旧现金流水与旧 link），重算 `StockHolding` 与账户余额，返回 `{ ok:true, data:{ transaction, linkId, cashEntryId, oldCashEntryId } }`。编辑 Web 明细行通过双击行或行内编辑按钮打开股票交易弹窗，保存走该接口。
-- `POST /api/v1/stocks/transactions/batch-update` 批量修改股票交易的元数据字段（备注、券商成交号），Body: `{ updates: [{ id, note?, brokerTradeId? }] }`，一次事务更新后统一重算受影响账户的持仓与余额，返回 `{ ok:true, data:{ updatedCount, accountIds } }`。数量/价格/金额/日期/动作等会影响资金流水与持仓重建的字段必须走单条 `PATCH`，不能循环调该接口。
+- `POST /api/v1/stocks/transactions/batch-update` 批量修改股票交易的备注字段，Body: `{ updates: [{ id, note? }] }`，一次事务更新后统一重算受影响账户的持仓与余额，返回 `{ ok:true, data:{ updatedCount, accountIds } }`。数量/价格/金额/日期/动作等会影响资金流水与持仓重建的字段必须走单条 `PATCH`，不能循环调该接口。
 - `DELETE /api/v1/stocks/transactions?id=...` 或 `DELETE /api/v1/stocks/transactions?linkId=...` 软删除股票交易、关联现金流水和业务 link，并重算持仓。
 - `GET /api/v1/stocks/holdings?accountId=&includeZero=1` 返回某个股票账户的 `StockHolding`，包括数量、成本、最新价、市值、浮盈、历史收益和汇总值；传入 `tradeDate=YYYY-MM-DD` 时改为按该交易日回放 `StockTransaction`，只返回截至该日期仍有正数数量的股票，供股票卖出 SS 下拉使用。
 - `GET /api/v1/reports/stock-holdings?accountId=` 返回跨股票账户的持仓盈亏报表；Web 报表页「股票持仓盈亏」使用同一口径。
@@ -779,9 +784,10 @@ Notes:
 范围：
 
 - 定期计划任务。
-- 当前支持基金定投、还房贷、转账、保险缴费四类任务。
+- 当前支持基金定投、还房贷、转账、保险缴费、固定收入、固定支出六类任务。
 - 任务共用计划字段：资金账户、任务类型、周期、已执行次数、开始日期、停止日期。`nextRunDate` 是服务端内部执行游标，可用于到期判断和只读展示，但客户端不能把它作为编辑字段提交。
-- 任务内容按类型保存不同目标：基金代码/基金账户、贷款账户、转入账户、保险产品。
+- 任务内容按类型保存不同目标：基金代码/基金账户、贷款账户、转入账户、保险产品，或普通收入/支出的资金账户、分类和备注。
+- 一次性计划用 `totalRuns = 1` 表达。周频、双周频、月频和年频支持可选 `secondaryExecutionDay`：周频/双周频是第二个星期几（1-7，周一到周日），月频是第二个执行日（1-31），年频是第二个 `MMDD` 编码（101-1231）。两个锚点按所在周期内的日期顺序交替执行；留空时保持原有单执行日行为。
 - 执行时调用现有交易、基金、保险业务语义，不新增独立交易类型。
 - 每日自动执行扫描所有执行中计划，未到执行日的计划直接跳过。
 
@@ -815,12 +821,14 @@ Notes:
 - `/api/v1/settings/email-accounts`
 - `/api/v1/settings/resend`
 - `/api/v1/settings/fund-query-api`：GET/POST/PUT/DELETE 管理基金查询来源，PATCH 批量保存拖拽后的优先级；基金净值查询会优先使用账户默认 API，其次按机构场景（如支付宝基金账户优先支付宝来源），最后按全局优先级尝试。
-- `/api/v1/settings/backup`：导出/恢复当前账簿加密恢复包，也提供普通表格导出。备份导出使用 `POST /api/v1/settings/backup?mode=export`，JSON body 提交 `userPassword` 和可选 `backupPassphrase`；服务端先用 `userPassword` 验证当前登录用户，再用 `backupPassphrase` 加密 `.mmh-backup` 包，未提供时使用 `userPassword` 作为备份文件加密口令。恢复时 multipart body 提交扩展名为 `.mmh-backup` 的 `file`、`userPassword` 和可选 `backupPassphrase`；服务端先验证当前用户密码，然后返回 `{ ok: true, restoreId, task }` 并在后台解密、清空和写回；调用方应轮询 `GET /api/v1/settings/backup?mode=restore-status&id=<restoreId>`，直到 `task.status` 为 `success` 或 `error`。导出和恢复都不要求重复提交用户名。表格导出使用 `POST /api/v1/settings/backup?mode=table-export`，返回 `.xlsx` 文件，仅用于查看、核对和处理数据，不能用于恢复账簿，且不包含密码、API Key、邮箱密码等敏感恢复配置；其中交易和定投计划的账户名称列按 `accountId` / `toAccountId` / `cashAccountId` 从 Account 表生成，不依赖流水表里的旧名称快照。当前恢复上传上限为 128MB，超过限制应返回 `{ ok: false, error }` 而不是 HTTP 500。恢复包包含账簿基础资料、业务表数据、系统设置、访问 Key、AI API Key、邀请码、加密主密钥、旧版备份包加密密钥（如存在）、邮箱账户和接口配置等恢复状态所需数据。备份文件本身不是明文，应妥善保存。
+- `/api/v1/settings/backup`：导出/恢复当前账簿加密恢复包，也提供普通表格导出。备份导出使用 `POST /api/v1/settings/backup?mode=export`，JSON body 提交 `userPassword` 和可选 `backupPassphrase`；服务端先用 `userPassword` 验证当前登录用户，再用 `backupPassphrase` 加密 `.mmh-backup` 包，未提供时使用 `userPassword` 作为备份文件加密口令。恢复时 multipart body 提交扩展名为 `.mmh-backup` 的 `file`、`userPassword` 和可选 `backupPassphrase`；服务端先验证当前用户密码，然后返回 `{ ok: true, restoreId, task }` 并在后台解密、清空和写回；调用方应轮询 `GET /api/v1/settings/backup?mode=restore-status&id=<restoreId>`，直到 `task.status` 为 `success` 或 `error`。导出和恢复都不要求重复提交用户名。表格导出使用 `POST /api/v1/settings/backup?mode=table-export`，返回 `.xlsx` 文件，仅用于查看、核对和处理数据，不能用于恢复账簿，且不包含密码、API Key、邮箱密码等敏感恢复配置；其中交易和定投计划的账户名称列按 `accountId` / `toAccountId` / `cashAccountId` 从 Account 表生成，不依赖流水表里的旧名称快照。当前恢复上传上限为 128MB，超过限制应返回 `{ ok: false, error }` 而不是 HTTP 500。PostgreSQL JSON 恢复包会包含账簿基础资料（含基础币种）、全部家庭业务表、交易来源、账户使用字段、定投次执行日、基金快照，以及系统备份中的全局和当前账簿基金查询接口、基金净值缓存、证券公司目录、命令别名、AI 提取日志和命令测试结果；密码重置令牌和撤销历史属于安全/临时状态，不随备份恢复。SQLite 文件数据库仍使用加密整库快照。恢复包还包含系统设置、访问 Key、AI API Key、邀请码、加密主密钥、旧版备份包加密密钥（如存在）、邮箱账户和接口配置等恢复状态所需数据。备份文件本身不是明文，应妥善保存。
+- 备份角色边界：`admin` / `isSystem` 可以请求 `backupScope=system`；`user` 和 `viewer` 只能请求 `backupScope=household`。`viewer` 可以导出当前账簿备份和 `.xlsx` 表格，但不能恢复或执行任何保存、编辑、删除、导入等写入操作。SQLite 的系统备份使用加密整库快照，SQLite 的账簿备份使用与 PostgreSQL 相同的加密逻辑 JSON 包，以便隔离单个账簿。
 - `/api/v1/settings/system-update`：GET 返回部署方式、当前包版本 `localVersion`、本版说明 `localReleaseNotes`、远端版本/镜像信息和更新状态；飞牛版返回版本和说明，但更新动作由飞牛应用中心管理。
 
 用户设置规则：
 
 - `/api/v1/settings/users` 返回和更新 `sessionDays`，含义是该用户登录态保留几天后需要重新登录，不是用户角色或权限有效期。
+- `/api/v1/households` 的登录上下文返回 `role`、`isReadOnly`、`canWrite` 和 `canBackupSystem`；客户端可以据此显示只读状态，但写入权限仍必须由服务端校验。
 
 ### Mobile Sync
 
@@ -846,6 +854,8 @@ Notes:
 移动同步返回 `stockHoldings`、`stockTransactions` 和 `deletedStockTransactionIds`。股票同步项来自独立 stock 表，客户端不得从 `fundCode`、`fundUnits`、`fundNav` 或基金净值缓存推断股票持仓；`stockTransactions[].linkId` 是 `EntryBusinessLink` 的稳定关联 ID。
 
 移动同步返回 `propertyAssets`、`propertyTransactions`、`deletedPropertyAssetIds` 和 `deletedPropertyTransactionIds`。房产同步项来自独立 property 表，客户端不得从基金份额、净值或 `TxRecord` 余额推断房产市值；`propertyTransactions[].linkId` 是 `EntryBusinessLink` 的稳定关联 ID。
+
+移动同步的 `regularInvestPlans` 包含 `taskType`、`taskTitle`、`taskCategoryId`、`taskCategoryName` 和 `taskNote`。只有 `taskType = "fund_regular_invest"` 的计划参与基金净值刷新；固定收入和固定支出计划按普通 `TxRecord` 语义执行，客户端不得把它们当作基金代码查询净值。
 
 账户同步项包含 `creditBillMode`，值为 `separate` 或 `consolidated`，也包含用户自由备注 `note`。合并账单按同一账簿、同一机构下标记为 `consolidated` 的有效信用卡归组；交易的 `accountId` / `toAccountId` 仍指向具体信用卡，不改写为代表账户。
 

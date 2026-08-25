@@ -54,7 +54,6 @@ type StockTransaction = {
   regulatoryFee?: number | null;
   otherFee?: number | null;
   realizedProfit?: number | null;
-  brokerTradeId?: string | null;
   note?: string | null;
 };
 
@@ -347,12 +346,11 @@ export function StockHoldingsPanel({
     [selectedIds, transactions],
   );
 
-  const batchFields = useMemo<BatchReplaceFieldConfig<"note" | "brokerTradeId">[]>(() => [
+  const batchFields = useMemo<BatchReplaceFieldConfig<"note">[]>(() => [
     { value: "note", label: t("detail.column.remark"), kind: "text", placeholder: t("stockPanel.batchNotePlaceholder"), allowEmpty: true },
-    { value: "brokerTradeId", label: t("stockPanel.batchField.brokerTradeId"), kind: "text", placeholder: t("stockPanel.batchTradeIdPlaceholder"), allowEmpty: true },
   ], [t]);
 
-  async function applyBatch(field: "note" | "brokerTradeId", value: string) {
+  async function applyBatch(field: "note", value: string) {
     const ids = batchTargetIds;
     if (ids.length === 0) throw new Error(t("stockPanel.error.selectRowsFirst"));
     const updates = ids.map((id) => ({ id, [field]: value }));
@@ -402,7 +400,6 @@ export function StockHoldingsPanel({
           t("stockFee.feeType.exchange_fee"),
           t("stockFee.feeType.regulatory_fee"),
           t("stockFee.feeType.other"),
-          t("stockPanel.batchField.brokerTradeId"),
           t("detail.column.remark"),
         ],
         ...rows.map((tx) => [
@@ -425,7 +422,6 @@ export function StockHoldingsPanel({
           tx.exchangeFee ?? "",
           tx.regulatoryFee ?? "",
           tx.otherFee ?? "",
-          tx.brokerTradeId ?? "",
           tx.note ?? "",
         ]),
       ], `${t("viewImport.sheetStockTransactions")}_${accountLabel}_${new Date().toISOString().slice(0, 10)}.xlsx`, t("viewImport.sheetStockTransactions"));
@@ -709,12 +705,12 @@ export function StockHoldingsPanel({
         label: t("detail.column.remark"),
         width: 180,
         minWidth: 110,
-        filterText: (tx) => String(tx.note ?? tx.brokerTradeId ?? "").trim(),
+        filterText: (tx) => String(tx.note ?? "").trim(),
         sortValue: (tx) => String(tx.note ?? "").trim() || null,
         truncate: true,
-        cellTitle: (tx) => String(tx.note ?? tx.brokerTradeId ?? "").trim(),
+        cellTitle: (tx) => String(tx.note ?? "").trim(),
         render: (tx) => {
-          const note = String(tx.note ?? tx.brokerTradeId ?? "").trim();
+          const note = String(tx.note ?? "").trim();
           return note ? <span className="text-xs text-slate-600">{note}</span> : <span className="text-slate-300">-</span>;
         },
       },
@@ -740,7 +736,6 @@ export function StockHoldingsPanel({
           netAmount: tx.netAmount == null ? null : Number(tx.netAmount),
           quantity: tx.quantity == null ? null : Number(tx.quantity),
           price: tx.price == null ? null : Number(tx.price),
-          brokerTradeId: tx.brokerTradeId ?? null,
           note: tx.note ?? null,
         },
       },
@@ -873,9 +868,6 @@ export function StockHoldingsPanel({
               <div className="flex min-w-0 items-center gap-1 text-sm font-semibold text-slate-800">
                 {batchTargetIds.length > 0 ? (
                   <div className="flex shrink-0 items-center gap-1">
-                    <span className="shrink-0 text-xs font-medium tabular-nums text-blue-700">
-                      {t("detail.selectedCount", { count: batchTargetIds.length })}
-                    </span>
                     <BatchReplacePopoverButton
                       fields={batchFields}
                       targetCount={batchTargetIds.length}
@@ -894,6 +886,9 @@ export function StockHoldingsPanel({
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
+                    <span className="shrink-0 text-xs font-medium tabular-nums text-blue-700">
+                      {t("detail.selectedCount", { count: batchTargetIds.length })}
+                    </span>
                     <span className="mx-1 h-4 w-px bg-slate-200" />
                   </div>
                 ) : null}

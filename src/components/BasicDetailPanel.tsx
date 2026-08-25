@@ -36,9 +36,17 @@ type BasicDetailPanelProps = {
   normalExportRowsByEntryId?: Record<string, string[]>;
   accountOptions: Array<{ id: string; label: string; fullLabel?: string | null; title?: string | null }>;
   categoryOptions?: BasicDetailBatchCategoryOption[];
+  tagOptions?: BasicDetailBatchCategoryOption[];
   investmentProductTypeByAccountId: Record<string, string | undefined | null>;
   compactRows?: boolean;
   showBalanceReconcile?: boolean;
+  showImportExport?: boolean;
+  showAccountColumn?: boolean;
+  showRunningBalance?: boolean;
+  refreshOnGlobalEvent?: boolean;
+  draggableRows?: boolean;
+  sortable?: boolean;
+  showPagination?: boolean;
   accountKind?: string | null;
   accountName?: string;
   accountLabel?: string;
@@ -245,9 +253,17 @@ export function BasicDetailPanel({
   normalExportRowsByEntryId,
   accountOptions,
   categoryOptions = [],
+  tagOptions = [],
   investmentProductTypeByAccountId,
   compactRows = false,
   showBalanceReconcile = false,
+  showImportExport = true,
+  showAccountColumn = false,
+  showRunningBalance,
+  refreshOnGlobalEvent = true,
+  draggableRows = true,
+  sortable = true,
+  showPagination = true,
   accountKind = null,
   accountName = "",
   accountLabel = "",
@@ -555,18 +571,20 @@ export function BasicDetailPanel({
       <div ref={panelRef} className="relative flex-1 min-h-0 overflow-hidden">
         <div className="flex min-h-12 items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 md:hidden">
           <span className="text-xs text-slate-500">{t("creditBillDetail.recordCount", { count: localTotalCount })}</span>
-          <DetailTablePaginationControls
-            pageSize={pageSize}
-            pageSizeOptions={DETAIL_PAGE_SIZE_OPTIONS}
-            detailAll={detailAll}
-            safePage={safePage}
-            totalPages={totalPages}
-            canPrev={canPrev}
-            canNext={canNext}
-            onPageSizeChange={setPagedSize}
-            onShowAll={showAll}
-            onPageChange={goPage}
-          />
+          {showPagination ? (
+            <DetailTablePaginationControls
+              pageSize={pageSize}
+              pageSizeOptions={DETAIL_PAGE_SIZE_OPTIONS}
+              detailAll={detailAll}
+              safePage={safePage}
+              totalPages={totalPages}
+              canPrev={canPrev}
+              canNext={canNext}
+              onPageSizeChange={setPagedSize}
+              onShowAll={showAll}
+              onPageChange={goPage}
+            />
+          ) : null}
         </div>
         <DetailViewClient
           accountId={accountId}
@@ -574,35 +592,44 @@ export function BasicDetailPanel({
           initialEntries={pageEntries}
           accountOptions={accountOptions}
           categoryOptions={categoryOptions}
+          tagOptions={tagOptions}
           investmentProductTypeByAccountId={investmentProductTypeByAccountId}
           compactRows={compactRows}
           resetKey={tableResetKey}
           focusEntryId={focusEntryId}
+          showAccountColumn={showAccountColumn}
           toolbarMode="custom"
           toolbarTitle={t("basicDetail.entriesTitle")}
-          showRunningBalance={!isInvestAccount}
+          showRunningBalance={showRunningBalance ?? !isInvestAccount}
+          refreshOnGlobalEvent={refreshOnGlobalEvent}
+          draggableRows={draggableRows}
+          sortable={sortable}
           toolbarRightContent={
             <div className="flex items-center gap-2 text-xs">
               <span className="text-xs text-slate-600">{t("creditBillDetail.recordCount", { count: localTotalCount })}{hasDetailFilters ? t("basicDetail.filteredSuffix", { count: localOriginalCount }) : ""}{isPageLoading ? t("basicDetail.loadingSuffix") : ""}</span>
-              <span className="text-slate-400">|</span>
-              <ViewExcelImportMenuButton
-                kind="normal"
-                accountId={accountId}
-                accountName={accountName || accountLabel || t("basicDetail.currentAccount")}
-                mailImport={{
-                  accountId,
-                  accountName: accountName || accountLabel || t("basicDetail.currentAccount"),
-                }}
-                excelExport={{
-                  rows: visibleNormalExportRows,
-                  filename: normalExportFilename,
-                  sheetName: t("basicDetail.entriesTitle"),
-                  title: t("basicDetail.exportExcelTitle"),
-                  description: accountKind === "bank_credit" ? t("basicDetail.exportCreditDesc") : t("basicDetail.exportNormalDesc"),
-                  dateColumnIndex: 0,
-                }}
-                dataBasicDetailImport
-              />
+              {showImportExport ? (
+                <>
+                  <span className="text-slate-400">|</span>
+                  <ViewExcelImportMenuButton
+                    kind="normal"
+                    accountId={accountId}
+                    accountName={accountName || accountLabel || t("basicDetail.currentAccount")}
+                    mailImport={{
+                      accountId,
+                      accountName: accountName || accountLabel || t("basicDetail.currentAccount"),
+                    }}
+                    excelExport={{
+                      rows: visibleNormalExportRows,
+                      filename: normalExportFilename,
+                      sheetName: t("basicDetail.entriesTitle"),
+                      title: t("basicDetail.exportExcelTitle"),
+                      description: accountKind === "bank_credit" ? t("basicDetail.exportCreditDesc") : t("basicDetail.exportNormalDesc"),
+                      dateColumnIndex: 0,
+                    }}
+                    dataBasicDetailImport
+                  />
+                </>
+              ) : null}
               {showBalanceReconcile ? (
                 <DebitBalanceReconcileButton
                   accountId={accountId}
@@ -610,19 +637,23 @@ export function BasicDetailPanel({
                   currentBalance={currentBalance}
                 />
               ) : null}
-              <span className="text-slate-400">|</span>
-              <DetailTablePaginationControls
-                pageSize={pageSize}
-                pageSizeOptions={DETAIL_PAGE_SIZE_OPTIONS}
-                detailAll={detailAll}
-                safePage={safePage}
-                totalPages={totalPages}
-                canPrev={canPrev}
-                canNext={canNext}
-                onPageSizeChange={setPagedSize}
-                onShowAll={showAll}
-                onPageChange={goPage}
-              />
+              {showPagination ? (
+                <>
+                  <span className="text-slate-400">|</span>
+                  <DetailTablePaginationControls
+                    pageSize={pageSize}
+                    pageSizeOptions={DETAIL_PAGE_SIZE_OPTIONS}
+                    detailAll={detailAll}
+                    safePage={safePage}
+                    totalPages={totalPages}
+                    canPrev={canPrev}
+                    canNext={canNext}
+                    onPageSizeChange={setPagedSize}
+                    onShowAll={showAll}
+                    onPageChange={goPage}
+                  />
+                </>
+              ) : null}
             </div>
           }
           onDisplayRowsChange={handleDisplayRowsChange}

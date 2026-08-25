@@ -900,6 +900,8 @@ export async function loadInvestmentProfitReport(
       realizedProfit: true,
       depositInterest: true,
       fundFee: true,
+      fundUnits: true,
+      fundNav: true,
     },
     orderBy: [{ date: "asc" }, { createdAt: "asc" }, { id: "asc" }],
     take: 50000,

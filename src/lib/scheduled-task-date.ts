@@ -70,6 +70,70 @@ function dateAtYearAnchor(date: Date, encodedMonthDay: number): Date {
   return anchor ?? startOfDayUtc(date);
 }
 
+function isSecondaryExecutionDay(unit: IntervalUnit, value: number | null | undefined): value is number {
+  if (value == null || !Number.isFinite(value)) return false;
+  if (unit === "month") return value >= 1 && value <= 31;
+  if (unit === "week" || unit === "biweek") return value >= 1 && value <= 7;
+  return unit === "year" && isYearlyExecutionDay(value);
+}
+
+function dateAtAnchor(date: Date, unit: IntervalUnit, anchor: number): Date {
+  return unit === "month" ? dateAtMonthDay(date, anchor) : dateAtYearAnchor(date, anchor);
+}
+
+function advanceByInterval(date: Date, unit: IntervalUnit, intervalValue: number): Date {
+  return unit === "month" ? addMonthsClampedUtc(date, intervalValue) : addYearsClampedUtc(date, intervalValue);
+}
+
+function nextDualWeeklyAnchorDate(
+  fromDate: Date,
+  unit: IntervalUnit,
+  intervalValue: number,
+  primaryAnchor: number,
+  secondaryAnchor: number,
+  includeCurrent = false,
+): Date {
+  const stepWeeks = unit === "biweek" ? intervalValue * 2 : intervalValue;
+  const currentPrimary = dateAtWeekday(fromDate, primaryAnchor);
+  const currentSecondary = dateAtWeekday(fromDate, secondaryAnchor);
+  const firstDate = currentPrimary <= currentSecondary ? currentPrimary : currentSecondary;
+  const secondDate = firstDate.getTime() === currentPrimary.getTime() ? currentSecondary : currentPrimary;
+
+  if (fromDate < firstDate || (includeCurrent && fromDate.getTime() === firstDate.getTime())) return firstDate;
+  if (fromDate < secondDate || (includeCurrent && fromDate.getTime() === secondDate.getTime())) return secondDate;
+
+  // Adding whole weeks preserves the previous run's weekday; resolving both
+  // anchors from that base selects the earliest run in the next cycle.
+  return addWeeksUtc(firstDate, stepWeeks);
+}
+
+function nextDualAnchorDate(
+  fromDate: Date,
+  unit: IntervalUnit,
+  intervalValue: number,
+  primaryAnchor: number,
+  secondaryAnchor: number,
+  includeCurrent = false,
+): Date {
+  const currentPrimary = dateAtAnchor(fromDate, unit, primaryAnchor);
+  const currentSecondary = dateAtAnchor(fromDate, unit, secondaryAnchor);
+  const [firstAnchor] = currentPrimary <= currentSecondary
+    ? [primaryAnchor, secondaryAnchor]
+    : [secondaryAnchor, primaryAnchor];
+  const firstDate = dateAtAnchor(fromDate, unit, firstAnchor);
+  // Clamping can collapse distinct anchors (28/31 in February), so compare the
+  // resolved dates rather than assuming the ordered anchor is the earlier date.
+  const secondDate = firstDate.getTime() === currentPrimary.getTime()
+    ? currentSecondary
+    : firstDate.getTime() === currentSecondary.getTime()
+      ? currentPrimary
+      : currentPrimary < currentSecondary ? currentPrimary : currentSecondary;
+
+  if (fromDate < firstDate || (includeCurrent && fromDate.getTime() === firstDate.getTime())) return firstDate;
+  if (fromDate < secondDate || (includeCurrent && fromDate.getTime() === secondDate.getTime())) return secondDate;
+  return dateAtAnchor(advanceByInterval(firstDate, unit, intervalValue), unit, firstAnchor);
+}
+
 export function calcResumedScheduledRunDate(
   currentNextRunDate: Date,
   resumeDate: Date,
@@ -87,12 +151,27 @@ export function calcNextScheduledRunDate(
   value: number,
   executionDay?: number | null,
   skipNonBusinessDays = true,
+  secondaryExecutionDay?: number | null,
 ): Date {
   const intervalValue = Number.isFinite(value) && value > 0 ? value : 1;
   let nextDate: Date;
 
-  if (unit === "month" && executionDay != null && executionDay >= 1 && executionDay <= 31) {
-    nextDate = dateAtMonthDay(addMonthsClampedUtc(fromDate, intervalValue), executionDay);
+  if (
+    (unit === "month" || unit === "year") &&
+    executionDay != null &&
+    isSecondaryExecutionDay(unit, secondaryExecutionDay) &&
+    (unit !== "year" || isYearlyExecutionDay(executionDay)) &&
+    (unit !== "month" || (executionDay >= 1 && executionDay <= 31))
+  ) {
+    nextDate = nextDualAnchorDate(startOfDayUtc(fromDate), unit, intervalValue, executionDay, secondaryExecutionDay);
+  } else if (
+    (unit === "week" || unit === "biweek") &&
+    executionDay != null &&
+    executionDay >= 1 &&
+    executionDay <= 7 &&
+    isSecondaryExecutionDay(unit, secondaryExecutionDay)
+  ) {
+    nextDate = nextDualWeeklyAnchorDate(fromDate, unit, intervalValue, executionDay, secondaryExecutionDay);
   } else if (unit === "year" && isYearlyExecutionDay(executionDay)) {
     nextDate = dateAtYearAnchor(addYearsClampedUtc(fromDate, intervalValue), executionDay);
   } else if ((unit === "week" || unit === "biweek") && executionDay != null && executionDay >= 1 && executionDay <= 7) {
@@ -129,13 +208,27 @@ export function calcInitialScheduledRunDate(
   value: number,
   executionDay?: number | null,
   skipNonBusinessDays = true,
+  secondaryExecutionDay?: number | null,
 ): Date {
   const intervalValue = Number.isFinite(value) && value > 0 ? value : 1;
   let firstDate = startOfDayUtc(startDate);
 
-  if (unit === "month" && executionDay != null && executionDay >= 1 && executionDay <= 31) {
-    firstDate = dateAtMonthDay(firstDate, executionDay);
-    if (firstDate < startOfDayUtc(startDate)) firstDate = dateAtMonthDay(addMonthsClampedUtc(firstDate, intervalValue), executionDay);
+  if (
+    (unit === "month" || unit === "year") &&
+    executionDay != null &&
+    isSecondaryExecutionDay(unit, secondaryExecutionDay) &&
+    (unit !== "year" || isYearlyExecutionDay(executionDay)) &&
+    (unit !== "month" || (executionDay >= 1 && executionDay <= 31))
+  ) {
+    firstDate = nextDualAnchorDate(startOfDayUtc(startDate), unit, intervalValue, executionDay, secondaryExecutionDay, true);
+  } else if (
+    (unit === "week" || unit === "biweek") &&
+    executionDay != null &&
+    executionDay >= 1 &&
+    executionDay <= 7 &&
+    isSecondaryExecutionDay(unit, secondaryExecutionDay)
+  ) {
+    firstDate = nextDualWeeklyAnchorDate(startOfDayUtc(startDate), unit, intervalValue, executionDay, secondaryExecutionDay, true);
   } else if (unit === "year" && isYearlyExecutionDay(executionDay)) {
     firstDate = dateAtYearAnchor(firstDate, executionDay);
     if (firstDate < startOfDayUtc(startDate)) {

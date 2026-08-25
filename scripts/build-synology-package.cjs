@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const fs = require("node:fs");
+const crypto = require("node:crypto");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
@@ -95,6 +96,30 @@ function requirePath(targetPath, message) {
   if (!fs.existsSync(targetPath)) throw new Error(message);
 }
 
+function hashFileMd5(file) {
+  const hash = crypto.createHash("md5");
+  hash.update(fs.readFileSync(file));
+  return hash.digest("hex");
+}
+
+function directorySizeKb(dir) {
+  let bytes = 0;
+  const walk = (current) => {
+    const stat = fs.lstatSync(current);
+    if (stat.isDirectory()) {
+      for (const entry of fs.readdirSync(current)) walk(path.join(current, entry));
+      return;
+    }
+    if (stat.isFile()) bytes += stat.size;
+  };
+  walk(dir);
+  return Math.max(1, Math.ceil(bytes / 1024));
+}
+
+function tarOwnerArgs() {
+  return process.platform === "win32" ? [] : ["--owner=0", "--group=0", "--numeric-owner"];
+}
+
 function makeReadable(dir) {
   if (!fs.existsSync(dir)) return;
   const walk = (current) => {
@@ -146,7 +171,9 @@ function runFnosStage() {
   if (result.status !== 0) process.exit(result.status || 1);
 }
 
-function writeInfoFile() {
+function writeInfoFile(options = {}) {
+  const checksumLine = options.checksum ? `checksum="${options.checksum}"\n` : "";
+  const extractSizeLine = options.extractSizeKb ? `extractsize="${options.extractSizeKb}"\n` : "";
   write(path.join(stageDir, "INFO"), `package="${appName}"
 version="${version}"
 displayname="MMH"
@@ -155,6 +182,7 @@ maintainer="frankluise5220"
 support_url="https://github.com/frankluise5220/MMH"
 arch="${target.infoArch}"
 os_min_ver="${dsmMinVersion}"
+${checksumLine}${extractSizeLine}thirdparty="yes"
 startable="yes"
 ctl_stop="yes"
 silent_install="no"
@@ -162,7 +190,6 @@ silent_upgrade="yes"
 silent_uninstall="no"
 adminport="7777"
 adminurl="/"
-thirdparty="yes"
 `);
 }
 
@@ -173,12 +200,14 @@ PACKAGE="mmh"
 APP_DIR="\${SYNOPKG_PKGDEST:-/var/packages/$PACKAGE/target}"
 SERVER_DIR="$APP_DIR/app/server"
 NODE_BIN="$APP_DIR/app/bin/node"
-VAR_DIR="$APP_DIR/var"
+VAR_DIR="\${SYNOPKG_PKGVAR:-/var/packages/$PACKAGE/var}"
+LEGACY_VAR_DIR="$APP_DIR/var"
 DATA_DIR="$VAR_DIR/data"
 ENV_FILE="$VAR_DIR/mmh.env"
 SYSTEM_PASSWORD_FILE="$VAR_DIR/mmh-system-password.txt"
 PID_FILE="$VAR_DIR/mmh.pid"
 LOG_FILE="$VAR_DIR/mmh.log"
+DSM_LOG_FILE="\${SYNOPKG_TEMP_LOGFILE:-$VAR_DIR/synopkg-start.log}"
 
 read_env_value() {
   key="$1"
@@ -210,6 +239,29 @@ generate_system_password() {
   printf '%s' "$generated"
 }
 
+append_log() {
+  mkdir -p "$VAR_DIR" 2>/dev/null || true
+  message="$(date '+%Y-%m-%d %H:%M:%S') $*"
+  echo "$message" >>"$LOG_FILE" 2>/dev/null || true
+  if [ "$DSM_LOG_FILE" != "$LOG_FILE" ]; then
+    echo "$message" >>"$DSM_LOG_FILE" 2>/dev/null || true
+  fi
+}
+
+copy_log_tail_to_dsm() {
+  if [ -f "$LOG_FILE" ] && [ "$DSM_LOG_FILE" != "$LOG_FILE" ]; then
+    echo "---- MMH log tail ----" >>"$DSM_LOG_FILE" 2>/dev/null || true
+    tail -n 100 "$LOG_FILE" >>"$DSM_LOG_FILE" 2>/dev/null || true
+  fi
+}
+
+fail_start() {
+  append_log "ERROR: $*"
+  copy_log_tail_to_dsm
+  tail -n 100 "$LOG_FILE" >&2 2>/dev/null || true
+  exit 1
+}
+
 ensure_runtime_settings() {
   mkdir -p "$DATA_DIR"
   env_port="$(read_env_value PORT 2>/dev/null || true)"
@@ -222,7 +274,7 @@ ensure_runtime_settings() {
   fi
   if [ -z "$system_password" ]; then
     system_password="$(generate_system_password)"
-    echo "Generated MMH system password at $SYSTEM_PASSWORD_FILE" >>"$LOG_FILE" 2>/dev/null || true
+    append_log "Generated MMH system password at $SYSTEM_PASSWORD_FILE"
   fi
   export MMH_SYSTEM_PASSWORD="$system_password"
 
@@ -236,18 +288,26 @@ EOF
   chmod 600 "$SYSTEM_PASSWORD_FILE" 2>/dev/null || true
 }
 
+migrate_legacy_var_dir() {
+  if [ "$LEGACY_VAR_DIR" != "$VAR_DIR" ] && [ -d "$LEGACY_VAR_DIR" ] && [ ! -f "$DATA_DIR/mmh.db" ]; then
+    mkdir -p "$VAR_DIR" "$DATA_DIR"
+    cp -a "$LEGACY_VAR_DIR/." "$VAR_DIR/" 2>/dev/null || true
+  fi
+}
+
 start_app() {
   mkdir -p "$VAR_DIR" "$DATA_DIR"
+  migrate_legacy_var_dir
   ensure_runtime_settings
+  append_log "MMH start requested: app=$APP_DIR var=$VAR_DIR data=$DATA_DIR user=$(id -u 2>/dev/null || echo unknown):$(id -g 2>/dev/null || echo unknown) port=\${PORT:-7777}"
   if [ ! -x "$NODE_BIN" ]; then
-    echo "Bundled Linux Node runtime is missing: $NODE_BIN" >&2
-    exit 1
+    fail_start "Bundled Linux Node runtime is missing or not executable: $NODE_BIN"
   fi
   if [ ! -f "$SERVER_DIR/server.js" ]; then
-    echo "Next standalone server is missing: $SERVER_DIR/server.js" >&2
-    exit 1
+    fail_start "Next standalone server is missing: $SERVER_DIR/server.js"
   fi
   if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" >/dev/null 2>&1; then
+    append_log "MMH already running with pid $(cat "$PID_FILE")"
     exit 0
   fi
   export NODE_ENV=production
@@ -255,9 +315,27 @@ start_app() {
   export MMH_DEPLOY_TARGET=synology
   export DATABASE_URL="file:$DATA_DIR/mmh.db"
   export PRISMA_SCHEMA_PATH="$SERVER_DIR/prisma/schema.native.prisma"
-  (cd "$SERVER_DIR" && "$NODE_BIN" "$SERVER_DIR/scripts/init-sqlite.cjs") >>"$LOG_FILE" 2>&1 || exit 1
+  append_log "Testing bundled Node runtime: $NODE_BIN"
+  if ! "$NODE_BIN" -v >>"$LOG_FILE" 2>&1; then
+    append_log "Bundled Node runtime failed to execute; ldd output follows when available."
+    if command -v ldd >/dev/null 2>&1; then
+      ldd "$NODE_BIN" >>"$LOG_FILE" 2>&1 || true
+    fi
+    fail_start "Bundled Node runtime failed to execute."
+  fi
+  append_log "Initializing SQLite database at $DATA_DIR/mmh.db"
+  if ! (cd "$SERVER_DIR" && "$NODE_BIN" "$SERVER_DIR/scripts/init-sqlite.cjs") >>"$LOG_FILE" 2>&1; then
+    fail_start "SQLite initialization failed."
+  fi
+  append_log "Launching Next standalone server."
   nohup "$NODE_BIN" "$SERVER_DIR/server.js" >>"$LOG_FILE" 2>&1 &
   echo "$!" > "$PID_FILE"
+  sleep 2
+  if ! kill -0 "$(cat "$PID_FILE")" >/dev/null 2>&1; then
+    rm -f "$PID_FILE"
+    fail_start "MMH server process exited immediately."
+  fi
+  append_log "MMH started with pid $(cat "$PID_FILE")"
 }
 
 stop_app() {
@@ -301,7 +379,7 @@ function writeLifecycleScripts() {
 
 PACKAGE="mmh"
 APP_DIR="\${SYNOPKG_PKGDEST:-/var/packages/$PACKAGE/target}"
-VAR_DIR="$APP_DIR/var"
+VAR_DIR="\${SYNOPKG_PKGVAR:-/var/packages/$PACKAGE/var}"
 if [ -d "$VAR_DIR" ]; then
   BACKUP_ROOT="\${SYNOPKG_PKGDEST_VOL:-/volume1}/mmh-synology-uninstall-backups"
   STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -314,7 +392,7 @@ exit 0
 
 PACKAGE="mmh"
 APP_DIR="\${SYNOPKG_PKGDEST:-/var/packages/$PACKAGE/target}"
-VAR_DIR="$APP_DIR/var"
+VAR_DIR="\${SYNOPKG_PKGVAR:-/var/packages/$PACKAGE/var}"
 if [ -n "\${SYNOPKG_TEMP_UPGRADE_FOLDER:-}" ] && [ -d "$VAR_DIR" ]; then
   mkdir -p "$SYNOPKG_TEMP_UPGRADE_FOLDER"
   cp -a "$VAR_DIR" "$SYNOPKG_TEMP_UPGRADE_FOLDER/var" 2>/dev/null || true
@@ -325,9 +403,10 @@ exit 0
 
 PACKAGE="mmh"
 APP_DIR="\${SYNOPKG_PKGDEST:-/var/packages/$PACKAGE/target}"
-VAR_DIR="$APP_DIR/var"
-if [ -n "\${SYNOPKG_TEMP_UPGRADE_FOLDER:-}" ] && [ -d "$SYNOPKG_TEMP_UPGRADE_FOLDER/var" ] && [ ! -d "$VAR_DIR" ]; then
-  cp -a "$SYNOPKG_TEMP_UPGRADE_FOLDER/var" "$VAR_DIR" 2>/dev/null || true
+VAR_DIR="\${SYNOPKG_PKGVAR:-/var/packages/$PACKAGE/var}"
+if [ -n "\${SYNOPKG_TEMP_UPGRADE_FOLDER:-}" ] && [ -d "$SYNOPKG_TEMP_UPGRADE_FOLDER/var" ]; then
+  mkdir -p "$VAR_DIR"
+  cp -a "$SYNOPKG_TEMP_UPGRADE_FOLDER/var/." "$VAR_DIR/" 2>/dev/null || true
 fi
 exit 0
 `, 0o755);
@@ -336,7 +415,7 @@ exit 0
 function writePrivilege() {
   write(path.join(stageDir, "conf", "privilege"), JSON.stringify({
     defaults: {
-      run_as: "package",
+      "run-as": "package",
     },
     username: "mmh",
     groupname: "mmh",
@@ -386,16 +465,22 @@ function buildSpk() {
 
   const packageTgz = path.join(stageDir, "package.tgz");
   fs.rmSync(packageTgz, { force: true });
-  const packageTar = run("tar", ["-czf", packageTgz, "-C", packageRoot, "."]);
+  const packageTar = run("tar", [...tarOwnerArgs(), "-czf", packageTgz, "-C", packageRoot, "."]);
   if (packageTar.status !== 0) {
     console.error(packageTar.stderr || packageTar.stdout || "package.tgz packaging failed");
     process.exit(packageTar.status || 1);
   }
+  writeInfoFile({
+    checksum: hashFileMd5(packageTgz),
+    extractSizeKb: directorySizeKb(packageRoot),
+  });
+  makeReadable(stageDir);
 
   const spkPath = path.join(outDir, spkAssetName());
   fs.rmSync(spkPath, { force: true });
   // DSM expects the .spk itself to be a plain tar archive; only package.tgz is gzip-compressed.
   const spkTar = run("tar", [
+    ...tarOwnerArgs(),
     "-cf",
     spkPath,
     "-C",

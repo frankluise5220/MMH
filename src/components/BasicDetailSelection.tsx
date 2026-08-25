@@ -31,9 +31,11 @@ function getFieldLabels(t: (key: string) => string): Record<BatchReplaceField, s
     inflow: t("detail.column.inflow"),
     outflow: t("detail.column.outflow"),
     account: t("basicDetailSelection.accountLabel"),
+    viewAccount: t("basicDetailSelection.accountLabel"),
     toAccount: t("batchImport.field.counterAccount"),
     categoryId: t("detail.column.category"),
     institution: t("batchImport.field.institution"),
+    tagId: t("detail.column.tags"),
     remark: t("detail.column.remark"),
   };
 }
@@ -47,7 +49,7 @@ function getTypeOptions(t: (key: string) => string) {
     { value: "investment", label: t("transaction.type.investment") },
   ];
 }
-const defaultBatchReplaceFields: BatchReplaceField[] = ["date", "postedAt", "type", "outflow", "inflow", "amount", "account", "toAccount", "categoryId", "institution", "remark"];
+const defaultBatchReplaceFields: BatchReplaceField[] = ["date", "postedAt", "type", "outflow", "inflow", "amount", "viewAccount", "toAccount", "categoryId", "institution", "tagId", "remark"];
 
 function scopeBatchCategoryOptions(
   categoryOptions: BasicDetailBatchCategoryOption[],
@@ -180,6 +182,7 @@ export function BasicDetailRowCheckbox({ id }: { id: string }) {
 export function BasicDetailBatchReplaceButton({
   accountOptions,
   categoryOptions = [],
+  tagOptions = [],
   categoryTypes = [],
   fields = defaultBatchReplaceFields,
   targetLabel,
@@ -188,6 +191,7 @@ export function BasicDetailBatchReplaceButton({
 }: {
   accountOptions: AccountOption[];
   categoryOptions?: BasicDetailBatchCategoryOption[];
+  tagOptions?: BasicDetailBatchCategoryOption[];
   categoryTypes?: string[];
   fields?: BatchReplaceField[];
   targetLabel?: string;
@@ -208,6 +212,10 @@ export function BasicDetailBatchReplaceButton({
       { value: "", label: t("basicDetailSelection.clearCategory") },
       ...scopeBatchCategoryOptions(categoryOptions, categoryTypes),
     ];
+    const tagSelectOptions = [
+      { value: "", label: t("basicDetailSelection.clearTag") },
+      ...tagOptions,
+    ];
     const configByField: Record<BatchReplaceField, BatchReplaceFieldConfig<BatchReplaceField>> = {
       date: { value: "date", label: fieldLabels.date, kind: "date" },
       postedAt: { value: "postedAt", label: fieldLabels.postedAt, kind: "date", allowEmpty: true },
@@ -218,6 +226,12 @@ export function BasicDetailBatchReplaceButton({
       account: {
         value: "account",
         label: fieldLabels.account,
+        kind: "smartSelect",
+        options: accountSelectOptions,
+      },
+      viewAccount: {
+        value: "viewAccount",
+        label: fieldLabels.viewAccount,
         kind: "smartSelect",
         options: accountSelectOptions,
       },
@@ -237,10 +251,11 @@ export function BasicDetailBatchReplaceButton({
         smartSelectBehavior: CATEGORY_SMART_SELECT_BEHAVIOR,
       },
       institution: { value: "institution", label: fieldLabels.institution, kind: "text", placeholder: t("basicDetailSelection.institutionPlaceholder"), allowEmpty: true },
+      tagId: { value: "tagId", label: fieldLabels.tagId, kind: "select", options: tagSelectOptions, allowEmpty: true },
       remark: { value: "remark", label: fieldLabels.remark, kind: "text", placeholder: t("stockPanel.batchNotePlaceholder"), allowEmpty: true },
     };
     return fields.map((field) => configByField[field]).filter(Boolean);
-  }, [accountOptions, categoryOptions, categoryTypes, fields, t]);
+  }, [accountOptions, categoryOptions, categoryTypes, fields, t, tagOptions]);
 
   async function applyReplace(field: BatchReplaceField, value: string) {
     const entryIds = Array.from(selectedIds);

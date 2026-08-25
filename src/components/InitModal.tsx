@@ -458,7 +458,7 @@ export function InitModal({
       .init-modal-number::-webkit-outer-spin-button,
       .init-modal-number::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
       .init-modal-number { appearance: textfield; -moz-appearance: textfield; }`}</style>
-    <div className="fixed inset-0 flex items-start justify-center bg-black/35 p-4 pt-[5vh] overflow-auto" style={{ zIndex: modalZIndex }}>
+    <div className="fixed inset-0 flex items-center justify-center bg-black/35 p-4 overflow-auto" style={{ zIndex: modalZIndex }}>
       <div className="w-full max-w-6xl rounded-xl bg-white border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
         <div className="shrink-0 px-5 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
           <div className="text-base font-bold text-slate-800">📦 {t("nav.initialData")}</div>

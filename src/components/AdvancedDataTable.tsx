@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -138,6 +139,7 @@ export type AdvancedDataTableProps<T> = {
   selectable?: boolean;
   selectOnRowClick?: boolean;
   selectAllScope?: "allRows" | "renderedRows";
+  rowSelectable?: (row: T, index: number) => boolean;
   selectedKeys?: Set<string>;
   onSelectionChange?: (keys: Set<string>) => void;
   batchActions?: AdvancedDataTableBatchAction[];
@@ -170,6 +172,7 @@ export type AdvancedDataTableProps<T> = {
   columnVisibilityTriggerId?: string;
   summaryRow?: AdvancedDataTableSummaryRow;
   resetKey?: string;
+  resetDisplayStateOnMount?: boolean;
 };
 
 function alignClass(align?: "left" | "center" | "right") {
@@ -322,6 +325,7 @@ export function AdvancedDataTable<T>({
   selectable = false,
   selectOnRowClick = false,
   selectAllScope = "allRows",
+  rowSelectable,
   selectedKeys,
   onSelectionChange,
   batchActions = [],
@@ -346,6 +350,7 @@ export function AdvancedDataTable<T>({
   columnVisibilityTriggerId,
   summaryRow,
   resetKey,
+  resetDisplayStateOnMount = false,
 }: AdvancedDataTableProps<T>) {
   const { t } = useI18n();
   const tf = (key: string, values: Record<string, string | number>) => {
@@ -464,23 +469,30 @@ export function AdvancedDataTable<T>({
     tableDisplayStateHydratedRef.current = false;
     skipNextFiltersWriteRef.current = true;
     skipNextSortWriteRef.current = true;
-    setFilters(normalizeStoredFilters(
-      readJson<Partial<Record<string, string[]>>>(filtersStorageKey, {}),
-      filterableColumnKeys,
-    ));
-    if (!sortable) {
+    if (resetDisplayStateOnMount) {
+      setFilters({});
       setSortState(null);
       writeJson(sortStorageKey, null);
+      writeJson(filtersStorageKey, {});
     } else {
-      const storedSort = readJson<AdvancedDataTableSortState | null | undefined>(sortStorageKey, undefined);
-      setSortState(normalizeStoredSortState(
-        storedSort === undefined ? defaultSort : storedSort,
-        sortableColumnKeys,
+      setFilters(normalizeStoredFilters(
+        readJson<Partial<Record<string, string[]>>>(filtersStorageKey, {}),
+        filterableColumnKeys,
       ));
+      if (!sortable) {
+        setSortState(null);
+        writeJson(sortStorageKey, null);
+      } else {
+        const storedSort = readJson<AdvancedDataTableSortState | null | undefined>(sortStorageKey, undefined);
+        setSortState(normalizeStoredSortState(
+          storedSort === undefined ? defaultSort : storedSort,
+          sortableColumnKeys,
+        ));
+      }
     }
     setActiveFilterColumn(null);
     tableDisplayStateHydratedRef.current = true;
-  }, [defaultSort, filterableColumnKeys, filtersStorageKey, sortable, sortStorageKey, sortableColumnKeys]);
+  }, [defaultSort, filterableColumnKeys, filtersStorageKey, resetDisplayStateOnMount, sortable, sortStorageKey, sortableColumnKeys]);
 
   useEffect(() => {
     if (!tableDisplayStateHydratedRef.current) return;
@@ -499,6 +511,14 @@ export function AdvancedDataTable<T>({
     }
     writeJson(sortStorageKey, sortState);
   }, [sortState, sortStorageKey]);
+
+  useEffect(() => {
+    if (!resetDisplayStateOnMount) return;
+    return () => {
+      writeJson(filtersStorageKey, {});
+      writeJson(sortStorageKey, null);
+    };
+  }, [filtersStorageKey, resetDisplayStateOnMount, sortStorageKey]);
 
   useEffect(() => {
     return () => clearPendingHeaderSortClick();
@@ -578,90 +598,53 @@ export function AdvancedDataTable<T>({
     () => tableColumns.filter((column) => !column.hideable || !hiddenKeys.has(column.key)),
     [hiddenKeys, tableColumns],
   );
-  const filterOptions = useMemo(() => {
-    const options: Record<string, string[]> = {};
-    for (const column of tableColumns) {
-      if (!column.filterText) continue;
-      if (column.filterKind === "dateRange" || column.filterKind === "numberRange" || column.filterKind === "text") continue;
-      const baseRows = showFilters
-        ? rows.filter((row) => rowMatchesFilters(row, tableColumns, filters, { excludeKey: column.key }))
-        : rows;
-      const values: string[] = [];
-      for (const row of baseRows) {
-        const rawValue = column.filterText(row);
-        if (rawValue == null) continue;
-        values.push(rawValue.trim() || "-");
-      }
-      options[column.key] = Array.from(new Set(values)).sort(sortFilterValue);
+  const activeFilterMeta = useMemo(() => {
+    const empty = {
+      columnKey: null as string | null,
+      options: [] as string[],
+      counts: undefined as Record<string, number> | undefined,
+      titles: undefined as Record<string, string> | undefined,
+      searchText: undefined as Record<string, string> | undefined,
+    };
+    if (!activeFilterColumn) return empty;
+    const column = tableColumns.find((item) => item.key === activeFilterColumn);
+    if (!column?.filterText) return empty;
+    if (column.filterKind === "dateRange" || column.filterKind === "numberRange" || column.filterKind === "text") {
+      return empty;
     }
-    return options;
-  }, [filters, rows, showFilters, tableColumns]);
-  const filterOptionCounts = useMemo(() => {
-    const counts: Record<string, Record<string, number>> = {};
-    for (const column of tableColumns) {
-      if (!column.filterText) continue;
-      if (column.filterKind === "dateRange" || column.filterKind === "numberRange" || column.filterKind === "text") continue;
-      const columnCounts: Record<string, number> = {};
-      const baseRows = showFilters
-        ? rows.filter((row) => rowMatchesFilters(row, tableColumns, filters, { excludeKey: column.key }))
-        : rows;
-      for (const row of baseRows) {
-        const rawValue = column.filterText(row);
-        if (rawValue == null) continue;
-        const value = rawValue.trim() || "-";
-        columnCounts[value] = (columnCounts[value] ?? 0) + 1;
-      }
-      counts[column.key] = columnCounts;
+    const baseRows = showFilters
+      ? rows.filter((row) => rowMatchesFilters(row, tableColumns, filters, { excludeKey: column.key }))
+      : rows;
+    const values = new Set<string>();
+    const counts: Record<string, number> = {};
+    const titles: Record<string, string> = {};
+    const searchTextParts: Record<string, Set<string>> = {};
+    for (const row of baseRows) {
+      const rawValue = column.filterText(row);
+      if (rawValue == null) continue;
+      const value = rawValue.trim() || "-";
+      values.add(value);
+      counts[value] = (counts[value] ?? 0) + 1;
+      const title = column.filterTitle?.(row)?.trim();
+      if (title && !titles[value]) titles[value] = title;
+      const searchParts = [
+        column.filterSearchText?.(row) ?? "",
+        column.filterTitle?.(row) ?? "",
+      ].map((item) => item.trim()).filter(Boolean);
+      if (searchParts.length === 0) continue;
+      searchTextParts[value] ??= new Set<string>();
+      for (const item of searchParts) searchTextParts[value].add(item);
     }
-    return counts;
-  }, [filters, rows, showFilters, tableColumns]);
-  const filterOptionTitles = useMemo(() => {
-    const titlesByColumn: Record<string, Record<string, string>> = {};
-    for (const column of tableColumns) {
-      if (!column.filterText) continue;
-      if (column.filterKind === "dateRange" || column.filterKind === "numberRange" || column.filterKind === "text") continue;
-      const baseRows = showFilters
-        ? rows.filter((row) => rowMatchesFilters(row, tableColumns, filters, { excludeKey: column.key }))
-        : rows;
-      const columnTitles: Record<string, string> = {};
-      for (const row of baseRows) {
-        const rawValue = column.filterText(row);
-        if (rawValue == null) continue;
-        const value = rawValue.trim() || "-";
-        const title = column.filterTitle?.(row)?.trim();
-        if (title && !columnTitles[value]) columnTitles[value] = title;
-      }
-      titlesByColumn[column.key] = columnTitles;
-    }
-    return titlesByColumn;
-  }, [filters, rows, showFilters, tableColumns]);
-  const filterOptionSearchText = useMemo(() => {
-    const searchTextByColumn: Record<string, Record<string, string>> = {};
-    for (const column of tableColumns) {
-      if (!column.filterText) continue;
-      if (column.filterKind === "dateRange" || column.filterKind === "numberRange" || column.filterKind === "text") continue;
-      const baseRows = showFilters
-        ? rows.filter((row) => rowMatchesFilters(row, tableColumns, filters, { excludeKey: column.key }))
-        : rows;
-      const columnSearchText: Record<string, Set<string>> = {};
-      for (const row of baseRows) {
-        const rawValue = column.filterText(row);
-        if (rawValue == null) continue;
-        const value = rawValue.trim() || "-";
-        const searchText = [
-          column.filterSearchText?.(row) ?? "",
-          column.filterTitle?.(row) ?? "",
-        ].map((item) => item.trim()).filter(Boolean);
-        if (searchText.length === 0) continue;
-        columnSearchText[value] ??= new Set<string>();
-        for (const item of searchText) columnSearchText[value].add(item);
-      }
-      searchTextByColumn[column.key] = Object.fromEntries(
-        Object.entries(columnSearchText).map(([value, parts]) => [value, Array.from(parts).join(" ")]),
-      );
-    }
-    return searchTextByColumn;
-  }, [filters, rows, showFilters, tableColumns]);
+    return {
+      columnKey: column.key,
+      options: Array.from(values).sort(sortFilterValue),
+      counts,
+      titles,
+      searchText: Object.fromEntries(
+        Object.entries(searchTextParts).map(([value, parts]) => [value, Array.from(parts).join(" ")]),
+      ),
+    };
+  }, [activeFilterColumn, filters, rows, showFilters, tableColumns]);
   const filteredRows = useMemo(() => {
     if (!showFilters) return rows;
     const activeFilters = Object.entries(filters).filter(([, values]) => (values?.length ?? 0) > 0);
@@ -773,10 +756,19 @@ export function AdvancedDataTable<T>({
     : displayRowItems.map((item, displayIndex) => ({ item, displayIndex, virtualRow: null }));
   const selectableRowKeys = useMemo(
     () => selectAllScope === "renderedRows"
-      ? displayRowItems.map(({ key }) => key)
-      : allRowKeys,
-    [allRowKeys, displayRowItems, selectAllScope],
+      ? displayRowItems.filter(({ row, index }) => rowSelectable?.(row, index) ?? true).map(({ key }) => key)
+      : rowSelectable ? rowItems.filter(({ row, index }) => rowSelectable(row, index)).map(({ key }) => key) : allRowKeys,
+    [allRowKeys, displayRowItems, rowItems, rowSelectable, selectAllScope],
   );
+  const selectableRowKeySet = useMemo(() => new Set(selectableRowKeys), [selectableRowKeys]);
+  const selectedSelectableKeys = useMemo(() => {
+    if (!selectable || effectiveSelectedKeys.size === 0) return new Set<string>();
+    const next = new Set<string>();
+    for (const key of selectableRowKeys) {
+      if (effectiveSelectedKeys.has(key)) next.add(key);
+    }
+    return next;
+  }, [effectiveSelectedKeys, selectable, selectableRowKeys]);
   const virtualPaddingTop = shouldVirtualizeRows ? virtualRows[0]?.start ?? 0 : 0;
   const virtualPaddingBottom = shouldVirtualizeRows
     ? Math.max(0, rowVirtualizer.getTotalSize() - (virtualRows[virtualRows.length - 1]?.end ?? 0))
@@ -897,6 +889,23 @@ export function AdvancedDataTable<T>({
     else setInternalSelectedKeys(next);
   }, [onSelectionChange]);
 
+  useLayoutEffect(() => {
+    if (!selectable || effectiveSelectedKeys.size === 0) return;
+    let needsPrune = false;
+    for (const key of effectiveSelectedKeys) {
+      if (!selectableRowKeySet.has(key)) {
+        needsPrune = true;
+        break;
+      }
+    }
+    if (!needsPrune) return;
+    const next = new Set<string>();
+    for (const key of effectiveSelectedKeys) {
+      if (selectableRowKeySet.has(key)) next.add(key);
+    }
+    setSelection(next);
+  }, [effectiveSelectedKeys, selectable, selectableRowKeySet, setSelection]);
+
   const setColumnWidth = useCallback((key: string, width: number, minWidth: number) => {
     setColumnWidths((prev) => {
       const next = { ...prev, [key]: Math.max(minWidth, Math.round(width)) };
@@ -956,20 +965,11 @@ export function AdvancedDataTable<T>({
   }
 
   function toggleAllRows(checked: boolean) {
-    if (!checked && allSelected) {
-      setSelection(new Set());
-      return;
-    }
-    const next = new Set(effectiveSelectedKeys);
-    for (const key of selectableRowKeys) {
-      if (checked) next.add(key);
-      else next.delete(key);
-    }
-    setSelection(next);
+    setSelection(checked ? new Set(selectableRowKeys) : new Set());
   }
 
   function toggleRow(key: string, checked: boolean) {
-    const next = new Set(effectiveSelectedKeys);
+    const next = new Set(selectedSelectableKeys);
     if (checked) next.add(key);
     else next.delete(key);
     setSelection(next);
@@ -990,6 +990,9 @@ export function AdvancedDataTable<T>({
     }
     if (event.detail > 1) {
       clearPendingHeaderSortClick();
+      if (sortState?.key === key && sortState.direction === "desc") {
+        toggleSort(key);
+      }
       return;
     }
     clearPendingHeaderSortClick();
@@ -1263,9 +1266,10 @@ export function AdvancedDataTable<T>({
     };
   }, [cancelRowDrag, draggableRows, draggedRowKey, dropOnPreviewTarget, dropOnResolvedTarget, getAllowedGlobalDragTarget, handleRowDragEnd, updateGlobalDragTarget]);
 
-  const selectedCount = effectiveSelectedKeys.size;
-  const allSelected = selectableRowKeys.length > 0 && selectableRowKeys.every((key) => effectiveSelectedKeys.has(key));
-  const partiallySelected = !allSelected && selectableRowKeys.some((key) => effectiveSelectedKeys.has(key));
+  const selectedCount = selectedSelectableKeys.size;
+  const selectedSelectableCount = selectedSelectableKeys.size;
+  const allSelected = selectableRowKeys.length > 0 && selectedSelectableCount === selectableRowKeys.length;
+  const partiallySelected = selectedSelectableCount > 0 && selectedSelectableCount < selectableRowKeys.length;
   const hasAnyFilters = showFilters && Object.values(filters).some((values) => (values?.length ?? 0) > 0);
   const clearFilters = () => {
     setFilters({});
@@ -1335,6 +1339,7 @@ export function AdvancedDataTable<T>({
               </>
             ) : (
               <>
+                {selectedCount > 0 ? batchActionSlot : null}
                 {selectable && selectedCount > 0 ? <span className="font-medium text-slate-600">{tf("table.selectedCount", { count: selectedCount })}</span> : null}
                 {selectedCount > 0 ? batchActions.map((action) => {
                   const icon = inferBatchActionIcon(action);
@@ -1357,7 +1362,6 @@ export function AdvancedDataTable<T>({
                     </button>
                   );
                 }) : null}
-                {selectedCount > 0 ? batchActionSlot : null}
                 {tableStateControls}
                 {toolbarTitle ? <span className="font-semibold text-slate-700">{toolbarTitle}</span> : null}
                 <span
@@ -1513,10 +1517,10 @@ export function AdvancedDataTable<T>({
                       ) : (
                         <TableColumnFilter
                           label={labelText(column.label, column.key)}
-                          options={filterOptions[column.key] ?? []}
-                          optionCounts={filterOptionCounts[column.key]}
-                          optionTitles={filterOptionTitles[column.key]}
-                          optionSearchText={filterOptionSearchText[column.key]}
+                          options={activeFilterMeta.columnKey === column.key ? activeFilterMeta.options : []}
+                          optionCounts={activeFilterMeta.columnKey === column.key ? activeFilterMeta.counts : undefined}
+                          optionTitles={activeFilterMeta.columnKey === column.key ? activeFilterMeta.titles : undefined}
+                          optionSearchText={activeFilterMeta.columnKey === column.key ? activeFilterMeta.searchText : undefined}
                           selectedValues={filters[column.key] ?? []}
                           open={activeFilterColumn === column.key}
                           showLabel={false}
@@ -1555,6 +1559,11 @@ export function AdvancedDataTable<T>({
             ) : null}
             {displayRowItems.length > 0 ? renderedRowItems.map(({ item: { row, index, key }, displayIndex, virtualRow }) => {
               const isSelected = effectiveSelectedKeys.has(key);
+              const hasSelectedPreviousRow = displayIndex > 0
+                && effectiveSelectedKeys.has(displayRowItems[displayIndex - 1]?.key ?? "");
+              const hasSelectedNextRow = displayIndex < displayRowItems.length - 1
+                && effectiveSelectedKeys.has(displayRowItems[displayIndex + 1]?.key ?? "");
+              const isSelectableRow = selectable && (rowSelectable?.(row, index) ?? true);
               const dragDisabled = (sortable && sortState != null) || (rowDragDisabled?.(row, index) ?? false);
               const isDragging = draggedRowKey != null;
               const isDraggedRow = draggedRowKey === key;
@@ -1563,11 +1572,22 @@ export function AdvancedDataTable<T>({
                 : false;
               const isBlockedDropTarget = isDragging && !isDraggedRow && !isAllowedDropTarget;
               const toggleCurrentRow = () => {
-                if (!selectable || !selectOnRowClick) return;
+                if (!isSelectableRow || !selectOnRowClick) return;
                 toggleRow(key, !isSelected);
               };
               const rowBackgroundClass = rowBackgroundClassByKey.get(key);
               const baseRowClassName = rowClassName?.(row, displayIndex) ?? (rowBackgroundClass ? "" : "hover:bg-slate-50");
+              const selectionShadow = isSelected
+                ? [
+                    "inset 4px 0 0 #2563eb",
+                    "inset -1px 0 0 #60a5fa",
+                    hasSelectedPreviousRow ? "" : "inset 0 1px 0 #2563eb",
+                    hasSelectedNextRow ? "" : "inset 0 -1px 0 #2563eb",
+                  ].filter(Boolean).join(", ")
+                : undefined;
+              const selectionEndCellStyle = isSelected && !hasSelectedNextRow
+                ? { borderBottom: "2px solid #2563eb" }
+                : undefined;
               return (
                 <tr
                   key={key}
@@ -1593,15 +1613,21 @@ export function AdvancedDataTable<T>({
                   className={[
                     rowBackgroundClass,
                     baseRowClassName,
-                    selectable && selectOnRowClick ? "cursor-pointer" : "",
+                    isSelectableRow && selectOnRowClick ? "cursor-pointer" : "",
                     isBlockedDropTarget ? "cursor-not-allowed" : "",
                     isDraggedRow ? "relative z-10 bg-blue-50/80 outline outline-2 outline-blue-500 outline-offset-[-2px] shadow-[inset_0_0_0_1px_#2563eb]" : "",
-                    isSelected ? "bg-blue-50/90 hover:bg-blue-100/80" : "",
+                    isSelected
+                      ? "relative z-[1] bg-blue-50/75 hover:bg-blue-100/80"
+                      : "",
                   ].filter(Boolean).join(" ")}
-                  style={{ height: rowHeight }}
+                  style={{ height: rowHeight, ...(selectionShadow ? { boxShadow: selectionShadow } : {}) }}
                 >
                   {(selectable || draggableRows) ? (
-                    <td data-advanced-table-row-controls className={`border-b border-slate-100 text-center ${selectPaddingClass}`} style={rowCellPaddingStyle}>
+                    <td
+                      data-advanced-table-row-controls
+                      className={`border-b border-slate-100 text-center ${selectPaddingClass}`}
+                      style={{ ...rowCellPaddingStyle, ...selectionEndCellStyle }}
+                    >
                       <div className="flex items-center justify-center gap-1">
                         {draggableRows ? (
                           <button
@@ -1619,7 +1645,17 @@ export function AdvancedDataTable<T>({
                           </button>
                         ) : null}
                         {selectable ? (
-                          <input type="checkbox" checked={isSelected} onClick={(event) => event.stopPropagation()} onChange={(event) => toggleRow(key, event.target.checked)} className="h-3.5 w-3.5 rounded border-slate-300" aria-label={t("table.selectRow")} />
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            disabled={!isSelectableRow}
+                            onClick={(event) => event.stopPropagation()}
+                            onChange={(event) => {
+                              if (isSelectableRow) toggleRow(key, event.target.checked);
+                            }}
+                            className="h-3.5 w-3.5 rounded border-slate-300 disabled:cursor-not-allowed disabled:opacity-40"
+                            aria-label={t("table.selectRow")}
+                          />
                         ) : null}
                       </div>
                     </td>
@@ -1633,7 +1669,11 @@ export function AdvancedDataTable<T>({
                       </div>
                     ) : cellContent;
                     return (
-                      <td key={column.key} className={["select-text border-b border-slate-100 text-xs", cellPaddingClass, alignClass(column.align), column.className ?? ""].join(" ")} style={rowCellPaddingStyle}>
+                      <td
+                        key={column.key}
+                        className={["select-text border-b border-slate-100 text-xs", cellPaddingClass, alignClass(column.align), column.className ?? ""].join(" ")}
+                        style={{ ...rowCellPaddingStyle, ...selectionEndCellStyle }}
+                      >
                         {wrappedContent}
                       </td>
                   );

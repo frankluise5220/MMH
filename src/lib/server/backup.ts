@@ -96,12 +96,19 @@ function summaryRows(payload: HouseholdBackupPayload) {
     { field: "institutions", value: payload.counts.institutions },
     { field: "counterparties", value: payload.counts.counterparties },
     { field: "emailAccounts", value: payload.counts.emailAccounts },
+    { field: "fundQueryApis", value: payload.counts.fundQueryApis },
     { field: "regularInvestPlans", value: payload.counts.regularInvestPlans },
     { field: "businessTransactions", value: payload.counts.businessTransactions },
     { field: "systemSettings", value: payload.counts.systemSettings },
     { field: "accessKeys", value: payload.counts.accessKeys },
     { field: "aiChannels", value: payload.counts.aiChannels },
     { field: "aiModels", value: payload.counts.aiModels },
+    { field: "fundNavCaches", value: payload.counts.fundNavCaches },
+    { field: "fundSnapshots", value: payload.counts.fundSnapshots },
+    { field: "stockBrokerageCatalogs", value: payload.counts.stockBrokerageCatalogs },
+    { field: "distillLogs", value: payload.counts.distillLogs },
+    { field: "commandTestResults", value: payload.counts.commandTestResults },
+    { field: "commandAliases", value: payload.counts.commandAliases },
   ];
 }
 
@@ -1460,9 +1467,27 @@ const RESTORABLE_HOUSEHOLD_SETTING_PREFIXES = [
   "category_deleted_default_templates:",
   EMAIL_IMPORT_KEYWORD_SETTING_PREFIX,
 ];
+const RESTORABLE_GLOBAL_SYSTEM_SETTING_KEYS = new Set([
+  "access_password",
+  "api_key_encryption_master",
+  "backup_package_encryption_key",
+  "ledger_creation_invite_code",
+  "resend_config",
+]);
 
 function householdSystemSettingKeys(householdId: string) {
   return RESTORABLE_HOUSEHOLD_SETTING_PREFIXES.map((prefix) => `${prefix}${householdId}`);
+}
+
+function settingsForBackup(
+  settings: Array<{ key: string }>,
+  backupScope: BackupScope,
+) {
+  if (backupScope === "system") return settings;
+  return settings.filter((setting) =>
+    RESTORABLE_GLOBAL_SYSTEM_SETTING_KEYS.has(setting.key) ||
+    RESTORABLE_HOUSEHOLD_SETTING_PREFIXES.some((prefix) => setting.key.startsWith(prefix)),
+  );
 }
 
 function remapHouseholdSystemSettingKey(key: string, sourceHouseholdId: string, targetHouseholdId: string) {
@@ -1540,6 +1565,11 @@ export async function buildHouseholdBackupPayload(
     propertyValuations,
     propertyTransactions,
     entryBusinessLinks,
+    fundNavCaches,
+    stockBrokerageCatalogs,
+    distillLogs,
+    commandTestResults,
+    commandAliases,
     systemSettings,
     accessKeys,
     aiChannels,
@@ -1559,7 +1589,12 @@ export async function buildHouseholdBackupPayload(
     prisma.regularInvestPlan.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.creditCardInstallmentPlan.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.loanRateAdjustment.findMany({ where: { householdId }, orderBy: [{ effectiveDate: "asc" }] }),
-    prisma.fundQueryApi.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.fundQueryApi.findMany({
+      where: isSystemBackup
+        ? { OR: [{ householdId }, { householdId: null }] }
+        : { householdId },
+      orderBy: [{ createdAt: "asc" }],
+    }),
     prisma.statementRecognitionRule.findMany({ where: { householdId }, orderBy: [{ priority: "desc" }, { hitCount: "desc" }, { updatedAt: "desc" }] }),
     prisma.importBatch.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.txRecord.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
@@ -1633,11 +1668,32 @@ export async function buildHouseholdBackupPayload(
       { tableNames: ["property_transactions"] },
     ),
     prisma.entryBusinessLink.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    isSystemBackup
+      ? prisma.fundNavCache.findMany({ orderBy: [{ fundCode: "asc" }, { navDate: "asc" }] })
+      : Promise.resolve([]),
+    isSystemBackup
+      ? optionalPrismaFindMany<Record<string, unknown>>(
+          prisma,
+          "stockBrokerageCatalog",
+          { orderBy: [{ name: "asc" }] },
+          { tableNames: ["stock_brokerage_catalog"] },
+        )
+      : Promise.resolve([]),
+    isSystemBackup
+      ? prisma.distillLog.findMany({ orderBy: [{ createdAt: "asc" }] })
+      : Promise.resolve([]),
+    isSystemBackup
+      ? prisma.commandTestResult.findMany({ orderBy: [{ createdAt: "asc" }] })
+      : Promise.resolve([]),
+    isSystemBackup
+      ? prisma.commandAlias.findMany({ orderBy: [{ category: "asc" }, { key: "asc" }] })
+      : Promise.resolve([]),
     prisma.systemSetting.findMany({ orderBy: [{ key: "asc" }] }),
     prisma.accessKey.findMany({ orderBy: [{ createdAt: "asc" }] }),
     prisma.aiChannel.findMany({ orderBy: [{ createdAt: "asc" }] }),
     prisma.aiModel.findMany({ orderBy: [{ createdAt: "asc" }] }),
   ]);
+  const exportedSystemSettings = settingsForBackup(systemSettings, backupScope);
 
   const userIds = users.map((item) => item.id);
   const accountIds = accounts.map((item) => item.id);
@@ -1651,6 +1707,7 @@ export async function buildHouseholdBackupPayload(
     fundFeeRates,
     fundHoldings,
     preciousMetalHoldings,
+    fundSnapshots,
     attachments,
     entryTags,
   ] = await Promise.all([
@@ -1677,6 +1734,9 @@ export async function buildHouseholdBackupPayload(
       : Promise.resolve([]),
     accountIds.length > 0
       ? prisma.preciousMetalHolding.findMany({ where: { accountId: { in: accountIds } }, orderBy: [{ accountId: "asc" }, { metalTypeName: "asc" }] })
+      : Promise.resolve([]),
+    accountIds.length > 0
+      ? prisma.fundSnapshot.findMany({ where: { accountId: { in: accountIds } }, orderBy: [{ accountId: "asc" }, { snapshotDate: "asc" }] })
       : Promise.resolve([]),
     prisma.attachment.findMany({ where: { transactions: { householdId } }, orderBy: [{ createdAt: "asc" }] }),
     prisma.entryTag.findMany({
@@ -1707,6 +1767,7 @@ export async function buildHouseholdBackupPayload(
       institutions: institutions.length,
       counterparties: counterparties.length,
       emailAccounts: emailAccounts.length,
+      fundQueryApis: fundQueryApis.length,
       regularInvestPlans: regularInvestPlans.length,
       businessTransactions:
         fundTransactions.length +
@@ -1716,14 +1777,20 @@ export async function buildHouseholdBackupPayload(
         preciousMetalTransactions.length +
         stockTransactions.length +
         propertyTransactions.length,
-      systemSettings: systemSettings.length,
+      systemSettings: exportedSystemSettings.length,
       accessKeys: accessKeys.length,
       aiChannels: aiChannels.length,
       aiModels: aiModels.length,
+      fundNavCaches: fundNavCaches.length,
+      fundSnapshots: fundSnapshots.length,
+      stockBrokerageCatalogs: stockBrokerageCatalogs.length,
+      distillLogs: distillLogs.length,
+      commandTestResults: commandTestResults.length,
+      commandAliases: commandAliases.length,
     },
     data: {
       household,
-      systemSettings,
+      systemSettings: exportedSystemSettings,
       accessKeys,
       aiChannels,
       aiModels,
@@ -1772,6 +1839,12 @@ export async function buildHouseholdBackupPayload(
       propertyValuations,
       propertyTransactions,
       entryBusinessLinks,
+      fundNavCaches,
+      fundSnapshots,
+      stockBrokerageCatalogs,
+      distillLogs,
+      commandTestResults,
+      commandAliases,
       attachments,
       entryTags,
       emailAccounts,
@@ -1831,6 +1904,12 @@ export async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPaylo
     ["PropertyValuations", sheetRows(payload.data.propertyValuations)],
     ["PropertyTransactions", sheetRows(payload.data.propertyTransactions)],
     ["EntryBusinessLinks", sheetRows(payload.data.entryBusinessLinks)],
+    ["FundNavCache", sheetRows(payload.data.fundNavCaches)],
+    ["FundSnapshots", sheetRows(payload.data.fundSnapshots)],
+    ["StockBrokerageCatalog", sheetRows(payload.data.stockBrokerageCatalogs)],
+    ["DistillLogs", sheetRows(payload.data.distillLogs)],
+    ["CommandTestResults", sheetRows(payload.data.commandTestResults)],
+    ["CommandAliases", sheetRows(payload.data.commandAliases)],
     ["Attachments", sheetRows(payload.data.attachments)],
     ["EntryTags", sheetRows(payload.data.entryTags)],
     ["EmailAccounts", sheetRows(payload.data.emailAccounts)],
@@ -1994,6 +2073,12 @@ export function parseBackupPayload(raw: unknown) {
       propertyValuations: ensureArray(data.propertyValuations ?? [], "data.propertyValuations"),
       propertyTransactions: ensureArray(data.propertyTransactions ?? [], "data.propertyTransactions"),
       entryBusinessLinks: ensureArray(data.entryBusinessLinks ?? [], "data.entryBusinessLinks"),
+      fundNavCaches: ensureArray(data.fundNavCaches ?? [], "data.fundNavCaches"),
+      fundSnapshots: ensureArray(data.fundSnapshots ?? [], "data.fundSnapshots"),
+      stockBrokerageCatalogs: ensureArray(data.stockBrokerageCatalogs ?? [], "data.stockBrokerageCatalogs"),
+      distillLogs: ensureArray(data.distillLogs ?? [], "data.distillLogs"),
+      commandTestResults: ensureArray(data.commandTestResults ?? [], "data.commandTestResults"),
+      commandAliases: ensureArray(data.commandAliases ?? [], "data.commandAliases"),
       attachments: ensureArray(data.attachments ?? [], "data.attachments"),
       entryTags: ensureArray(data.entryTags ?? [], "data.entryTags"),
       emailAccounts: ensureArray(data.emailAccounts ?? [], "data.emailAccounts"),
@@ -2137,7 +2222,14 @@ export async function restoreHouseholdBackup(
     const propertyValuationDelegate = getOptionalPrismaDelegate<OptionalPrismaRestoreDelegate>(tx, "propertyValuation");
     const propertyTransactionDelegate = getOptionalPrismaDelegate<OptionalPrismaRestoreDelegate>(tx, "propertyTransaction");
 
-    await tx.systemSetting.deleteMany({ where: { key: { in: householdSystemSettingKeys(householdId) } } });
+    if (isSystemRestore) {
+      await tx.systemSetting.deleteMany({});
+      await tx.accessKey.deleteMany({});
+      await tx.aiModel.deleteMany({});
+      await tx.aiChannel.deleteMany({});
+    } else {
+      await tx.systemSetting.deleteMany({ where: { key: { in: householdSystemSettingKeys(householdId) } } });
+    }
     await tx.attachment.deleteMany({ where: { transactions: { householdId } } });
     await tx.entryTag.deleteMany({ where: { transactions: { householdId } } });
     await tx.entryBusinessLink.deleteMany({ where: { householdId } });
@@ -2225,6 +2317,7 @@ export async function restoreHouseholdBackup(
     await tx.loanRateAdjustment.deleteMany({ where: { householdId } });
 
     if (currentAccountIds.length > 0) {
+      await tx.fundSnapshot.deleteMany({ where: { accountId: { in: currentAccountIds } } });
       await tx.regularInvestPlan.deleteMany({
         where: {
           OR: [{ householdId }, { accountId: { in: currentAccountIds } }, { cashAccountId: { in: currentAccountIds } }],
@@ -2258,7 +2351,11 @@ export async function restoreHouseholdBackup(
     await tx.insuranceProductMaster.deleteMany({ where: { householdId } });
     await tx.wealthProduct.deleteMany({ where: { householdId } });
     await tx.importBatch.deleteMany({ where: { householdId } });
-    await tx.fundQueryApi.deleteMany({ where: { householdId } });
+    if (isSystemRestore) {
+      await tx.fundQueryApi.deleteMany({ where: { OR: [{ householdId }, { householdId: null }] } });
+    } else {
+      await tx.fundQueryApi.deleteMany({ where: { householdId } });
+    }
     await tx.preciousMetalType.deleteMany({ where: { householdId } });
     await tx.preciousMetalUnit.deleteMany({ where: { householdId } });
     await tx.fxRate.deleteMany({ where: { householdId } });
@@ -2281,11 +2378,26 @@ export async function restoreHouseholdBackup(
         importedUserSet.add(id);
       }
     }
+    if (isSystemRestore) {
+      await tx.fundNavCache.deleteMany({});
+      await tx.commandAlias.deleteMany({});
+      await optionalPrismaDeleteMany(
+        tx,
+        "stockBrokerageCatalog",
+        {},
+        { tableNames: ["stock_brokerage_catalog"] },
+      );
+      await tx.distillLog.deleteMany({});
+      await tx.commandTestResult.deleteMany({});
+    }
     await reportProgress({ stage: "importing", percent: 60, label: "导入基础数据", detail: "正在写入用户、账户和分类" });
 
     await tx.household.update({
       where: { id: householdId },
-      data: { name: String(data.household.name ?? payload.scope.householdName ?? "恢复账簿") },
+      data: {
+        name: String(data.household.name ?? payload.scope.householdName ?? "恢复账簿"),
+        baseCurrency: String(data.household.baseCurrency ?? "CNY"),
+      },
     });
 
     for (const item of data.systemSettings) {
@@ -2378,6 +2490,33 @@ export async function restoreHouseholdBackup(
       });
     }
 
+    if (isSystemRestore && data.fundNavCaches.length > 0) {
+      await createManyRecords(tx.fundNavCache, data.fundNavCaches);
+    }
+
+    if (isSystemRestore && data.stockBrokerageCatalogs.length > 0) {
+      const stockBrokerageCatalogDelegate = getOptionalPrismaDelegate<OptionalPrismaRestoreDelegate>(
+        tx,
+        "stockBrokerageCatalog",
+      );
+      if (!stockBrokerageCatalogDelegate) {
+        restoreError("当前系统版本不支持证券公司目录数据，请先升级后再恢复。");
+      }
+      await createManyRecords(stockBrokerageCatalogDelegate, data.stockBrokerageCatalogs);
+    }
+
+    if (isSystemRestore && data.distillLogs.length > 0) {
+      await createManyRecords(tx.distillLog, data.distillLogs);
+    }
+
+    if (isSystemRestore && data.commandTestResults.length > 0) {
+      await createManyRecords(tx.commandTestResult, data.commandTestResults);
+    }
+
+    if (isSystemRestore && data.commandAliases.length > 0) {
+      await createManyRecords(tx.commandAlias, data.commandAliases);
+    }
+
     if (data.users.length > 0) {
       await tx.user.createMany({
         data: data.users.map((item) => ({
@@ -2415,6 +2554,7 @@ export async function restoreHouseholdBackup(
             smtpFrom: item.smtpFrom == null ? null : String(item.smtpFrom),
             resendApiKey: item.resendApiKey == null ? null : String(item.resendApiKey),
             resendFrom: item.resendFrom == null ? null : String(item.resendFrom),
+            passwordResetEnabled: item.passwordResetEnabled == null ? true : Boolean(item.passwordResetEnabled),
             sessionDays: normalizeSessionDays(item.sessionDays, DEFAULT_SESSION_DAYS),
             colorScheme: item.colorScheme == null ? "red_up_green_down" : String(item.colorScheme),
             createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
@@ -2530,7 +2670,7 @@ export async function restoreHouseholdBackup(
           apiKey: item.apiKey == null ? null : String(item.apiKey),
           priority: Number(item.priority ?? 0),
           isActive: item.isActive == null ? true : Boolean(item.isActive),
-          householdId,
+          householdId: isSystemRestore && item.householdId == null ? null : householdId,
           createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
           updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
         })),
@@ -2593,6 +2733,8 @@ export async function restoreHouseholdBackup(
           numberMasked: item.numberMasked == null ? null : String(item.numberMasked),
           routeKey: item.routeKey == null ? null : String(item.routeKey),
           note: item.note == null ? null : String(item.note),
+          usageCount: Number(item.usageCount ?? 0),
+          lastUsedAt: item.lastUsedAt == null ? null : new Date(String(item.lastUsedAt)),
           householdId,
           institutionId:
             item.institutionId && importedInstitutions.has(String(item.institutionId)) ? String(item.institutionId) : null,
@@ -2630,6 +2772,13 @@ export async function restoreHouseholdBackup(
             updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
           })),
       });
+    }
+
+    if (data.fundSnapshots.length > 0) {
+      await createManyRecords(
+        tx.fundSnapshot,
+        data.fundSnapshots.filter((item) => importedAccounts.has(String(item.accountId))),
+      );
     }
 
     if (data.billOverrides.length > 0) {
@@ -3067,6 +3216,7 @@ export async function restoreHouseholdBackup(
               insuranceAction: item.insuranceAction == null ? null : String(item.insuranceAction),
               insuranceProductName: item.insuranceProductName == null ? null : String(item.insuranceProductName),
               source: item.source == null ? null : String(item.source),
+              entryOrigin: item.entryOrigin == null ? "manual" : String(item.entryOrigin),
             };
           },
         {
@@ -3547,6 +3697,7 @@ export async function restoreHouseholdBackup(
             status: String(item.status ?? "active") as never,
             totalRuns: item.totalRuns == null ? null : Number(item.totalRuns),
             executionDay: item.executionDay == null ? null : Number(item.executionDay),
+            secondaryExecutionDay: item.secondaryExecutionDay == null ? null : Number(item.secondaryExecutionDay),
             skipPendingPreceding: item.skipPendingPreceding == null ? true : Boolean(item.skipPendingPreceding),
             householdId,
           })),

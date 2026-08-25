@@ -158,6 +158,7 @@ export function IncomeExpenseReportClient({
   accountId,
   accountOptions,
   categoryOptions,
+  tagOptions = [],
   investmentProductTypeByAccountId,
 }: {
   report: IncomeExpenseReport;
@@ -167,6 +168,7 @@ export function IncomeExpenseReportClient({
   accountId: string;
   accountOptions: AccountOption[];
   categoryOptions: BasicDetailBatchCategoryOption[];
+  tagOptions?: BasicDetailBatchCategoryOption[];
   investmentProductTypeByAccountId: Record<string, string | null | undefined>;
 }) {
   const [activeDetails, setActiveDetails] = useState<IncomeExpenseReportDetails | null>(report.details);
@@ -520,6 +522,7 @@ export function IncomeExpenseReportClient({
             entries={detailEntries}
             accountOptions={accountOptions}
             categoryOptions={categoryOptions}
+            tagOptions={tagOptions}
             investmentProductTypeByAccountId={investmentProductTypeByAccountId}
             title={t("incomeExpense.detailTitle", {
               typeLabel: activeDetails.typeLabel,

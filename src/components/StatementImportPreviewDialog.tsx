@@ -359,15 +359,24 @@ function canonicalizePreviewItemAccounts(
       };
 }
 
-export function statementImportMissingFields(item: StatementImportPreviewItem, defaultAccountName: string) {
+export function statementImportMissingFields(
+  item: StatementImportPreviewItem,
+  defaultAccountName: string,
+  lookup: PreviewAccountLookup | null = null,
+) {
   const missing: string[] = [];
   if (!cleanText(item.date)) missing.push("date");
   if (!(Number(item.amount) > 0)) missing.push("amount");
   if (item.type === "transfer") {
-    if (!primaryAccountValue(item, defaultAccountName)) missing.push("account");
-    if (!counterAccountValue(item)) missing.push("counterAccount");
-  } else if (!cleanText(item.account) && !cleanText(defaultAccountName) && !cleanText(item._meta?.institutionName)) {
-    missing.push("account");
+    const primaryAccount = primaryAccountValue(item, defaultAccountName);
+    const counterAccount = counterAccountValue(item);
+    if (!primaryAccount || (lookup && !findPreviewAccount(primaryAccount, lookup, item._meta))) missing.push("account");
+    if (!counterAccount || (lookup && !findPreviewAccount(counterAccount, lookup))) missing.push("counterAccount");
+  } else {
+    const primaryAccount = cleanText(item.account) || cleanText(defaultAccountName) || cleanText(item._meta?.institutionName);
+    if (!primaryAccount || (lookup && !findPreviewAccount(primaryAccount, lookup, item._meta))) {
+      missing.push("account");
+    }
   }
   return Array.from(new Set(missing));
 }
@@ -399,7 +408,7 @@ function buildPreviewRows(items: StatementImportPreviewItem[], defaultAccountNam
       date: normalizeDateOnlyText(itemWithAccounts.date) || undefined,
       postedDate: normalizeDateOnlyText(itemWithAccounts.postedDate) || normalizeDateOnlyText(itemWithAccounts.date) || undefined,
     });
-    const missingFields = statementImportMissingFields(normalizedItem, defaultAccountName);
+    const missingFields = statementImportMissingFields(normalizedItem, defaultAccountName, lookup);
     return {
       key: `statement-${index}-${normalizedItem.date ?? ""}-${normalizedItem.amount ?? 0}-${normalizedItem.rawText ?? ""}`,
       item: normalizedItem,
@@ -501,7 +510,10 @@ export function StatementImportPreviewDialog({
   }, [open]);
 
   function closeDialog() {
+    setRows([]);
+    setSelectedKeys(new Set());
     setEditingPreviewCell(null);
+    setCategorySyncMessage("");
     onClose();
   }
 
@@ -660,7 +672,7 @@ export function StatementImportPreviewDialog({
     }
     if ("postedDate" in patch) item.postedDate = normalizeDateOnlyText(patch.postedDate) || undefined;
     item = normalizeTransferFlow(item);
-    const missingFields = statementImportMissingFields(item, defaultAccountName);
+    const missingFields = statementImportMissingFields(item, defaultAccountName, accountLookup);
     return {
       ...row,
       item,
@@ -670,8 +682,9 @@ export function StatementImportPreviewDialog({
   }
 
   function recomputeState(nextRows: ImportPreviewRow[]) {
+    const rowKeys = new Set(nextRows.map((row) => row.key));
     setRows(nextRows);
-    setSelectedKeys(new Set(nextRows.filter((row) => row.ready).map((row) => row.key)));
+    setSelectedKeys((current) => new Set(Array.from(current).filter((key) => rowKeys.has(key))));
   }
 
   function updatePreviewRow(rowKey: string, patch: Partial<StatementImportPreviewItem>) {
@@ -1238,11 +1251,12 @@ export function StatementImportPreviewDialog({
             minTableWidth={1180}
             selectable
             selectAllScope="renderedRows"
+            rowSelectable={(row) => row.ready}
             selectedKeys={fallbackSelectedKeys}
             onSelectionChange={(keys) => {
               if (busy) return;
-              const readyKeys = new Set(fallbackRows.filter((row) => row.ready).map((row) => row.key));
-              setSelectedKeys(new Set(Array.from(keys).filter((key) => readyKeys.has(key))));
+              const rowKeys = new Set(fallbackRows.filter((row) => row.ready).map((row) => row.key));
+              setSelectedKeys(new Set(Array.from(keys).filter((key) => rowKeys.has(key))));
             }}
             batchActionSlot={(
               <BatchReplacePopoverButton
@@ -1267,6 +1281,7 @@ export function StatementImportPreviewDialog({
             rowClassName={(row) => fallbackSelectedKeys.has(row.key) ? "bg-blue-50/40" : row.ready ? "bg-white" : "bg-amber-50/40"}
             fillHeight
             compactRows
+            resetDisplayStateOnMount
           />
         </div>
 
@@ -1275,15 +1290,7 @@ export function StatementImportPreviewDialog({
             <span className="shrink-0 text-slate-500">{t("statementImportPreview.willImport", { count: fallbackSelectedKeys.size })}</span>
             {categorySyncMessage ? <span className="truncate text-blue-600" title={categorySyncMessage}>{categorySyncMessage}</span> : null}
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              className="h-9 rounded-md border border-slate-300 bg-white px-4 text-sm hover:bg-slate-50 disabled:opacity-50"
-              onClick={closeDialog}
-              disabled={busy}
-            >
-              {t("common.cancel")}
-            </button>
+          <div className="flex items-center justify-end">
             <button
               type="button"
               className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
