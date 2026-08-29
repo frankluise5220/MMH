@@ -1,18 +1,29 @@
 "use client";
 
-import { Boxes, RefreshCcw } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { Boxes, Paperclip, Pencil, RefreshCcw } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
+import { FixedAssetEditModal, type FixedAssetEditMeta, type FixedAssetEditValue } from "@/components/FixedAssetEditModal";
 import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
+import { EntryAttachmentWindow } from "@/components/EntryAttachmentWindow";
+import { EntryRowActions } from "@/components/EntryRowActions";
+import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { formatCurrencyMoney, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { useI18n } from "@/lib/i18n";
+import { normalizeFixedAssetType } from "@/lib/fixed-asset";
 
 type PropertyPosition = {
   fundCode: string;
   accountId?: string | null;
   propertyAssetId?: string | null;
+  assetType?: string | null;
+  propertyType?: string | null;
+  address?: string | null;
+  attributes?: Record<string, unknown> | null;
+  purchasePrice?: number | null;
+  note?: string | null;
   name: string;
   holdingDate: string;
   cost: number;
@@ -24,22 +35,28 @@ type PropertyPosition = {
 
 type FixedAssetTransaction = {
   id: string;
+  accountId?: string | null;
+  toAccountId?: string | null;
   date: string;
   amount?: number | null;
   accountName?: string | null;
+  cashAccountId?: string | null;
   toAccountName?: string | null;
   propertyAssetId?: string | null;
+  assetType?: string | null;
   propertyAction?: string | null;
   propertySettlementDate?: string | null;
+  settlementDate?: string | null;
   propertyTax?: number | null;
+  tax?: number | null;
   fundFee?: number | null;
+  fee?: number | null;
   realizedProfit?: number | null;
   note?: string | null;
 };
 
 type Props = {
   accountId: string;
-  defaultCashAccountId?: string;
   currency: string;
   baseCurrency: string;
   positions: PropertyPosition[];
@@ -60,9 +77,35 @@ function actionLabel(t: (key: string) => string, action: string | null | undefin
   return action || "-";
 }
 
+function assetTypeLabel(t: (key: string) => string, assetType: string | null | undefined) {
+  const type = assetType || "property";
+  return t(`fixedAsset.type.${type}`);
+}
+
+function assetDetailText(position: PropertyPosition) {
+  const type = position.assetType || "property";
+  const attrs = position.attributes ?? {};
+  if (type === "property") {
+    const parts = [position.address, position.propertyType].filter((v) => v && String(v).trim());
+    return parts.join(" · ") || "-";
+  }
+  if (type === "vehicle") {
+    const parts = [attrs.plateNo, attrs.brandModel].filter((v) => v != null && String(v).trim());
+    return parts.join(" · ") || "-";
+  }
+  if (type === "equipment" || type === "furniture") {
+    const parts = [attrs.brand, attrs.model].filter((v) => v != null && String(v).trim());
+    return parts.join(" · ") || "-";
+  }
+  if (type === "collectible") {
+    const parts = [attrs.category, attrs.origin].filter((v) => v != null && String(v).trim());
+    return parts.join(" · ") || "-";
+  }
+  return "-";
+}
+
 export function PropertyShell({
   accountId,
-  defaultCashAccountId = "",
   currency,
   baseCurrency,
   positions,
@@ -77,6 +120,12 @@ export function PropertyShell({
   const floatingRate = totalCost > 0 ? floatingPnL / totalCost : 0;
   const pnlCls = useCallback((value: number) => pnlClassFromRedUp(value, isRedUp), [isRedUp]);
   const [selectedAssetId, setSelectedAssetId] = useState("");
+  const [editValue, setEditValue] = useState<FixedAssetEditValue | null>(null);
+  const [editMeta, setEditMeta] = useState<FixedAssetEditMeta | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [attachmentViewEntryId, setAttachmentViewEntryId] = useState<string | null>(null);
+  const [transactionPage, setTransactionPage] = useState(1);
+  const [transactionPageSize] = useState(20);
 
   const selectedPosition = useMemo(
     () => positions.find((position) => (position.propertyAssetId ?? position.fundCode) === selectedAssetId) ?? null,
@@ -89,23 +138,92 @@ export function PropertyShell({
     [entries, selectedAssetId],
   );
 
-  function openFixedAssetExpense(position: PropertyPosition) {
+  useEffect(() => {
+    setTransactionPage(1);
+  }, [selectedAssetId]);
+
+  function selectPosition(position: PropertyPosition) {
     const assetId = position.propertyAssetId ?? position.fundCode;
-    const fixedAssetAccountId = position.accountId ?? accountId;
-    setSelectedAssetId(assetId);
-    window.dispatchEvent(new CustomEvent("mmh:create-transaction:open", {
+    setSelectedAssetId((current) => (current === assetId ? "" : assetId));
+  }
+
+  function buildPropertyEditEvent(entry: FixedAssetTransaction) {
+    const amount = Number(entry.amount ?? 0);
+    const isCashIn = amount >= 0;
+    return {
+      name: "mmh:transaction:edit",
       detail: {
-        requestId: `fixed-asset-expense-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        source: "fixed-asset",
-        item: { type: "expense", remark: position.name },
-        lockedType: "expense",
-        defaultAccountId: defaultCashAccountId,
-        fixedAssetAccountId,
-        fixedAssetAssetId: assetId,
-        fixedAssetRequired: true,
-        lockFixedAsset: true,
+        requestId: "property-edit-" + Date.now(),
+        entryId: entry.id,
+        type: isCashIn ? "income" : "expense",
+        date: entry.date?.slice(0, 10) ?? "",
+        postedAt: entry.date ?? "",
+        // Keep the stored sign; the transaction dialog converts expense/income display amounts.
+        amount,
+        note: entry.note ?? "",
+        // Sale income edits receive money in the cash account; purchases/improvements spend from it.
+        accountId: (isCashIn ? entry.toAccountId ?? entry.accountId : entry.accountId) ?? "",
+        accountName: (isCashIn ? entry.toAccountName : entry.accountName) ?? "",
+        accountLabel: (isCashIn ? entry.toAccountName : entry.accountName) ?? "",
+        hasFundDetail: false,
+        // Purchases/improvements are fixed-asset expenses: keep the toggle on and prefill the linked account/asset.
+        fixedAssetLinked: !isCashIn,
+        fixedAssetAccountId: isCashIn ? "" : (entry.toAccountId ?? ""),
+        fixedAssetAssetId: isCashIn ? "" : (entry.propertyAssetId ?? ""),
       },
-    }));
+    };
+  }
+
+  function openFixedAssetEdit(position: PropertyPosition) {
+    const assetId = position.propertyAssetId ?? position.fundCode;
+    setEditValue({
+      id: assetId,
+      name: position.name,
+      assetType: normalizeFixedAssetType(position.assetType),
+      propertyType: position.propertyType ?? "",
+      address: position.address ?? "",
+      attributes: (position.attributes ?? {}) as Record<string, unknown>,
+      purchaseDate: position.holdingDate || "",
+      purchasePrice: position.purchasePrice != null ? String(position.purchasePrice) : "",
+      note: position.note ?? "",
+    });
+    setEditMeta({
+      accountName: position.name,
+      marketValue: position.marketValue,
+      cost: position.cost,
+    });
+  }
+
+  async function saveFixedAssetEdit(next: FixedAssetEditValue) {
+    setSavingEdit(true);
+    try {
+      const response = await fetch("/api/v1/properties", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          propertyAssetId: next.id,
+          name: next.name.trim(),
+          assetType: next.assetType,
+          propertyType: next.propertyType.trim() || undefined,
+          address: next.address.trim() || undefined,
+          attributes: next.attributes ?? undefined,
+          purchaseDate: next.purchaseDate.trim() || undefined,
+          purchasePrice: next.purchasePrice.trim() || undefined,
+          note: next.note.trim() || undefined,
+        }),
+      });
+      const data = (await response.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+      if (!response.ok || !data?.ok) {
+        throw new Error(data?.error || t("fixedAssetEdit.saveFailed"));
+      }
+      setEditValue(null);
+      setEditMeta(null);
+      dispatchFinanceDataChanged({ reason: "fixed-asset-save", accountIds: [accountId] });
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : t("fixedAssetEdit.saveFailed"));
+    } finally {
+      setSavingEdit(false);
+    }
   }
 
   const positionColumns = useMemo<AdvancedDataTableColumn<PropertyPosition>[]>(() => [
@@ -135,6 +253,26 @@ export function PropertyShell({
           </div>
         );
       },
+    },
+    {
+      key: "assetType",
+      label: t("fixedAssetEdit.assetType"),
+      width: 96,
+      minWidth: 80,
+      sortValue: (position) => assetTypeLabel(t, position.assetType),
+      filterText: (position) => assetTypeLabel(t, position.assetType),
+      render: (position) => <span className="text-xs text-slate-600">{assetTypeLabel(t, position.assetType)}</span>,
+    },
+    {
+      key: "assetDetail",
+      label: t("propertyShell.column.detail"),
+      width: 200,
+      minWidth: 140,
+      sortValue: (position) => assetDetailText(position),
+      filterText: (position) => assetDetailText(position),
+      truncate: true,
+      cellTitle: (position) => assetDetailText(position),
+      render: (position) => <span className="text-xs text-slate-600">{assetDetailText(position)}</span>,
     },
     {
       key: "holdingDate",
@@ -219,24 +357,38 @@ export function PropertyShell({
       render: (position) => {
         const assetId = position.propertyAssetId ?? position.fundCode;
         return (
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              window.dispatchEvent(new CustomEvent("mmh:property:valuation", {
-                detail: {
-                  defaultPropertyAccountId: position.accountId ?? accountId,
-                  propertyAssetId: assetId,
-                  propertyName: position.name,
-                  currentMarketValue: position.marketValue,
-                },
-              }));
-            }}
-            className="secondary-button h-7 gap-1 px-2 text-xs"
-          >
-            <RefreshCcw className="h-3.5 w-3.5" />
-            {t("propertyShell.updateValuation")}
-          </button>
+          <div className="flex items-center justify-end gap-1">
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                openFixedAssetEdit(position);
+              }}
+              title={t("fixedAssetEdit.editButton")}
+              aria-label={t("fixedAssetEdit.editButton")}
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-colors hover:bg-slate-50 hover:text-blue-600"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                window.dispatchEvent(new CustomEvent("mmh:property:valuation", {
+                  detail: {
+                    defaultPropertyAccountId: position.accountId ?? accountId,
+                    propertyAssetId: assetId,
+                    propertyName: position.name,
+                    currentMarketValue: position.marketValue,
+                  },
+                }));
+              }}
+              className="secondary-button h-7 gap-1 px-2 text-xs"
+            >
+              <RefreshCcw className="h-3.5 w-3.5" />
+              {t("propertyShell.updateValuation")}
+            </button>
+          </div>
         );
       },
     },
@@ -306,57 +458,6 @@ export function PropertyShell({
       },
     },
     {
-      key: "fee",
-      label: t("txForm.fee"),
-      width: 96,
-      minWidth: 76,
-      align: "right",
-      className: "tabular-nums",
-      filterKind: "numberRange",
-      filterText: (entry) => entry.fundFee == null ? null : String(entry.fundFee),
-      filterNumber: (entry) => entry.fundFee == null ? null : Number(entry.fundFee),
-      sortValue: (entry) => entry.fundFee == null ? null : Number(entry.fundFee),
-      render: (entry) => <span className="text-xs tabular-nums text-slate-600">{entry.fundFee == null ? "-" : formatCurrencyMoney(Number(entry.fundFee), displayCurrency)}</span>,
-    },
-    {
-      key: "tax",
-      label: t("propertyForm.tax"),
-      width: 96,
-      minWidth: 76,
-      align: "right",
-      className: "tabular-nums",
-      filterKind: "numberRange",
-      filterText: (entry) => entry.propertyTax == null ? null : String(entry.propertyTax),
-      filterNumber: (entry) => entry.propertyTax == null ? null : Number(entry.propertyTax),
-      sortValue: (entry) => entry.propertyTax == null ? null : Number(entry.propertyTax),
-      render: (entry) => <span className="text-xs tabular-nums text-slate-600">{entry.propertyTax == null ? "-" : formatCurrencyMoney(Number(entry.propertyTax), displayCurrency)}</span>,
-    },
-    {
-      key: "settlementDate",
-      label: t("propertyForm.settlementDate"),
-      width: 108,
-      minWidth: 92,
-      filterKind: "dateRange",
-      filterText: (entry) => entry.propertySettlementDate || null,
-      sortValue: (entry) => entry.propertySettlementDate || null,
-      render: (entry) => <span className="whitespace-nowrap text-xs tabular-nums text-slate-600">{entry.propertySettlementDate || "-"}</span>,
-    },
-    {
-      key: "realizedProfit",
-      label: t("stockHoldingReport.colRealized"),
-      width: 112,
-      minWidth: 88,
-      align: "right",
-      className: "tabular-nums",
-      filterKind: "numberRange",
-      filterText: (entry) => entry.realizedProfit == null ? null : String(entry.realizedProfit),
-      filterNumber: (entry) => entry.realizedProfit == null ? null : Number(entry.realizedProfit),
-      sortValue: (entry) => entry.realizedProfit == null ? null : Number(entry.realizedProfit),
-      render: (entry) => entry.realizedProfit == null
-        ? <span className="text-xs text-slate-300">-</span>
-        : <span className={`text-xs tabular-nums ${pnlCls(Number(entry.realizedProfit))}`}>{formatCurrencyMoney(Number(entry.realizedProfit), displayCurrency)}</span>,
-    },
-    {
       key: "note",
       label: t("detail.column.remark"),
       width: 180,
@@ -409,13 +510,14 @@ export function PropertyShell({
               rows={positions}
               rowKey={(position, index) => position.propertyAssetId ?? position.fundCode ?? String(index)}
               emptyText={t("propertyShell.emptyTitle")}
-              minTableWidth={920}
+              minTableWidth={1240}
               rowClassName={(position) => {
                 const assetId = position.propertyAssetId ?? position.fundCode;
                 const selected = assetId === selectedAssetId;
                 return `cursor-pointer ${selected ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-blue-50/40"}`;
               }}
-              onRowClick={openFixedAssetExpense}
+              onRowClick={selectPosition}
+              onRowDoubleClick={openFixedAssetEdit}
               showFilters={false}
               fillHeight
               compactRows
@@ -450,6 +552,30 @@ export function PropertyShell({
                 compactRows
                 toolbarMode="none"
                 showFilters
+                onRowDoubleClick={(entry) => {
+                  const event = buildPropertyEditEvent(entry);
+                  window.dispatchEvent(new CustomEvent(event.name, { detail: event.detail }));
+                }}
+                rowActions={(entry) => (
+                  <>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setAttachmentViewEntryId(entry.id);
+                      }}
+                      title={t("attachments.title")}
+                      aria-label={t("attachments.title")}
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-amber-200 bg-white text-amber-600 transition-colors hover:border-amber-300 hover:bg-amber-50"
+                    >
+                      <Paperclip className="h-3.5 w-3.5" />
+                    </button>
+                    <EntryRowActions entryId={entry.id} customEditEvent={buildPropertyEditEvent(entry)} />
+                  </>
+                )}
+                rowActionsWidth={112}
+                rowActionsMinWidth={92}
+                pagination={{ page: transactionPage, pageSize: transactionPageSize, onPageChange: setTransactionPage }}
                 sortable
                 defaultSort={{ key: "date", direction: "desc" }}
               />
@@ -457,6 +583,26 @@ export function PropertyShell({
           </div>
         ) : null}
       </ResizableVerticalSplit>
+
+      <FixedAssetEditModal
+        open={!!editValue}
+        saving={savingEdit}
+        value={editValue}
+        meta={editMeta}
+        onClose={() => {
+          if (savingEdit) return;
+          setEditValue(null);
+          setEditMeta(null);
+        }}
+        onChange={setEditValue}
+        onSaved={saveFixedAssetEdit}
+      />
+
+      <EntryAttachmentWindow
+        open={attachmentViewEntryId != null}
+        entryId={attachmentViewEntryId}
+        onClose={() => setAttachmentViewEntryId(null)}
+      />
     </div>
   );
 }

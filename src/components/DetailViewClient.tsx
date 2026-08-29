@@ -808,7 +808,12 @@ export function DetailViewClient({
     const isRedeemEditEntry =
       e.fundSubtype === "redeem" ||
       e.fundSubtype === "switch_out" ||
-      isRegularInvestRefundEntry(e);
+      isRegularInvestRefundEntry(e) ||
+      (e.type === "investment" &&
+        !e.fundSubtype &&
+        Boolean(e.toAccountId) &&
+        entryFundProductType != null &&
+        investmentProductTypeByAccountId[e.accountId ?? ""] === entryFundProductType);
     const targetInvestmentEditEntryId =
       isRegularInvestRefundEntry(e) && e.fundSourceEntryId
         ? e.fundSourceEntryId
@@ -846,7 +851,7 @@ export function DetailViewClient({
             metalQuantity: e.metalQuantity ?? null,
             metalUnitPrice: e.metalUnitPrice ?? null,
             metalFee: e.metalFee ?? null,
-            fundSubtype: e.fundSubtype ?? undefined,
+            fundSubtype: e.fundSubtype ?? (isRedeemEditEntry ? "redeem" : undefined),
             source: e.source,
             accountId: e.accountId ?? undefined,
             toAccountId: e.toAccountId ?? undefined,
@@ -1288,6 +1293,21 @@ export function DetailViewClient({
       defaultHidden: runningBalanceDefaultHidden,
       render: (e: DetailEntry) => <span className="whitespace-nowrap text-xs tabular-nums text-slate-700">{e.runningBalance != null ? formatEntryCurrencyMoney(toNumber(e.runningBalance), e) : ""}</span>,
     } satisfies AdvancedDataTableColumn<DetailEntry>] : []),
+    {
+      key: "profit",
+      label: t("reports.stock.realizedProfit"),
+      width: 110,
+      minWidth: 82,
+      align: "right" as const,
+      hideable: true,
+      defaultHidden: false,
+      filterNumber: (e) => e.realizedProfit ?? null,
+      sortValue: (e) => e.realizedProfit ?? null,
+      render: (e: DetailEntry) => {
+        const profit = e.realizedProfit;
+        return <span className={`whitespace-nowrap text-xs tabular-nums ${profit == null ? "text-slate-300" : pnlColor(profit, colorScheme)}`}>{profit == null ? "" : formatEntryCurrencyMoney(profit, e)}</span>;
+      },
+    } satisfies AdvancedDataTableColumn<DetailEntry>,
     {
       key: "tags",
       label: t("detail.column.tags"),

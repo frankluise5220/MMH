@@ -104,8 +104,9 @@ type FundImportUploadItem = {
   confirmDate: string | null;
   arrivalDate: string | null;
   remark: string;
+  source?: string;
 };
-type FundImportHeaderField = Exclude<keyof FundImportUploadItem, "rawText">;
+type FundImportHeaderField = Exclude<keyof FundImportUploadItem, "rawText" | "source">;
 
 type FundImportPreviewIssue = {
   level: "error" | "warning";
@@ -356,7 +357,7 @@ const FUND_LABEL_HEADER_SET = new Set([
 ]);
 const FUND_FIELD_ALIASES: Record<FundImportHeaderField, string[]> = {
   date: ["date", "日期", "交易日期", "申请日期", "Date", "日付"],
-  fundSubtype: ["fundSubtype", "基金动作", "基金类型", "动作", "Fund Action", "Action", "基金アクション", "ファンド操作", "cash dividend", "dividend reinvest", "現金分配", "分配金再投資"],
+  fundSubtype: ["fundSubtype", "分类", "业务类型", "基金动作", "基金类型", "动作", "Fund Action", "Action", "基金アクション", "ファンド操作", "cash dividend", "dividend reinvest", "現金分配", "分配金再投資"],
   cashAccount: ["cashAccount", "资金账户", "现金账户", "付款账户", "cash account", "Cash Account", "資金口座"],
   fundAccount: ["fundAccount", "基金账户", "投资账户", "account", "fund account", "Fund Account", "ファンド口座"],
   fundCode: ["fundCode", "基金代码", "代码", "fund code", "Fund Code", "ファンドコード", "基金コード"],
@@ -901,6 +902,11 @@ function importHeaderScore(row: string[], fieldHeaders: StatementFieldHeaders = 
   return Math.max(billHeaderScore(row, fieldHeaders), fundHeaderScore(row));
 }
 
+/** True when the parsed workbook rows carry fund-specific columns (fund code/account/amount). */
+function looksLikeFundImportFile(rows: string[][]) {
+  return fundHeaderScore(rows[0] ?? []) >= 11;
+}
+
 function trimWorkbookRowsToImportHeader(rows: string[][], fieldHeaders: StatementFieldHeaders = STATEMENT_IMPORT_FIELD_HEADERS) {
   const compactRows = rows.filter((row) => row.some((cell) => cell.trim()));
   let bestIndex = 0;
@@ -1069,11 +1075,16 @@ function normalizeFundActionText(value: string) {
 
 function normalizeFundImportAction(rawAction: string) {
   const action = normalizeFundActionText(rawAction);
-  if (["regularinvest", "recurringinvest", "recurringbuy", "定投", "積立"].includes(action)) return "buy";
-  if (["buy", "purchase", "subscribe", "申购", "買入", "买入", "購入"].includes(action)) return "buy";
-  if (["redeem", "redemption", "sell", "赎回", "贖回", "解約"].includes(action)) return "redeem";
-  if (["dividendcash", "cashdividend", "现金分红", "配当", "現金分配"].includes(action)) return "dividend_cash";
-  if (["dividendreinvest", "reinvestdividend", "红利再投", "再投資", "分配金再投資"].includes(action)) return "dividend_reinvest";
+  // 红利再投 / 再投 must be checked before 分红 so reinvest is not misread as cash dividend.
+  if (action.includes("红利再投") || action.includes("再投") || action.includes("再投資") || action.includes("分配金再投資")) return "dividend_reinvest";
+  if (action.includes("现金分红") || action.includes("分红") || action.includes("配当") || action.includes("現金分配")) return "dividend_cash";
+  if (action.includes("定投") || action.includes("積立")) return "buy";
+  if (action.includes("申购") || action.includes("買入") || action.includes("买入") || action.includes("購入")) return "buy";
+  if (action.includes("赎回") || action.includes("贖回") || action.includes("卖出") || action.includes("解約")) return "redeem";
+  if (["buy", "purchase", "subscribe", "regularinvest", "recurringinvest", "recurringbuy"].includes(action)) return "buy";
+  if (["redeem", "redemption", "sell"].includes(action)) return "redeem";
+  if (["dividendcash", "cashdividend"].includes(action)) return "dividend_cash";
+  if (["dividendreinvest", "reinvestdividend"].includes(action)) return "dividend_reinvest";
   return "";
 }
 
@@ -1102,6 +1113,14 @@ function fundRowsToItems(rows: string[][]): FundImportUploadItem[] {
     return index == null ? "" : String(row[index] ?? "").trim();
   };
 
+  // The 业务类型 column (e.g. 定投申购 / 定投申购（智汇定投）) distinguishes
+  // recurring buys from one-time purchases. It is not a fundSubtype header, so
+  // locate it separately to derive the regular-invest source.
+  const headerRow = headerIndex === firstHeaderIndex ? firstRow : secondRow;
+  const normalizedHeaderRow = headerRow.map(normalizeFundHeaderText);
+  const businessTypeIndex = normalizedHeaderRow.findIndex((header) => header === "业务类型" || header === "businesstype" || header === "transactiontype");
+  const readBusinessType = (row: string[]) => businessTypeIndex < 0 ? "" : String(row[businessTypeIndex] ?? "").trim();
+
   return dataRows
     .filter((row) => row.some((cell) => String(cell ?? "").trim()))
     .filter((row) => {
@@ -1119,10 +1138,13 @@ function fundRowsToItems(rows: string[][]): FundImportUploadItem[] {
       const parsedFee = parseFundFeeInput(readField(row, "fee"));
       const parsedFeeRate = parseFundFeeRateInput(readField(row, "feeRateInput"));
       const fundSubtype = normalizeFundImportAction(readField(row, "fundSubtype")) || readField(row, "fundSubtype");
+      const businessType = readBusinessType(row);
+      const source = businessType.includes("定投") || businessType.includes("積立") ? "regular_invest" : undefined;
       return {
         rawText: row.join(" "),
         date: normalizeDateCell(readField(row, "date")),
         fundSubtype,
+        source,
         cashAccount: readField(row, "cashAccount"),
         fundAccount: readField(row, "fundAccount"),
         fundCode: readField(row, "fundCode"),
@@ -1575,6 +1597,7 @@ function normalizeForStorage(item: ParsedItem): ParsedItem {
 export default function BatchImportPage() {
   const router = useRouter();
   const importTraceIdRef = useRef(createImportTraceId());
+  const handleFundFileRef = useRef<((file: File, context?: FundImportContext | null) => Promise<void>) | null>(null);
   const { t } = useI18n();
   const formatText = useCallback((key: Parameters<typeof t>[0], values?: Record<string, string | number>) => {
     let text = t(key) as string;
@@ -2092,10 +2115,18 @@ export default function BatchImportPage() {
       setShowImportIssuesOnly(false);
     });
     await waitForBrowserPaint();
+    let routedToFund = false;
     try {
       const latestCategoryRuleSamples = await refreshCategoryRuleSamples().catch(() => categoryRuleSamples);
       const parseResult = await parseImportFile(file, statementFieldHeaders);
       const rows = parseResult.rows;
+      if (looksLikeFundImportFile(rows)) {
+        // A fund transaction workbook (fund code/account/amount columns) must go
+        // through the fund recognition channel, not the bill channel.
+        routedToFund = true;
+        await handleFundFileRef.current?.(file);
+        return;
+      }
       const importMode = detectBillImportMode(rows, isCreditAccountText, statementFieldHeaders);
       setActiveBillMode(importMode);
       const workbookDetail = parseResult.workbook
@@ -2182,7 +2213,7 @@ export default function BatchImportPage() {
       setUploadDebug(`${formatText("batchImport.readFailedDebug", { reason: reason || t("batchImport.unknownError"), fileInfo })}\n${traceLabel}`);
       setMessage(formatText("batchImport.readFailedMessage", { reason: reason || t("batchImport.unknownError") }));
     } finally {
-      setUploading(false);
+      if (!routedToFund) setUploading(false);
     }
   }, [bookCategories, categoryRuleSamples, formatText, isCreditAccountText, refreshCategoryRuleSamples, statementFieldHeaders, t]);
 
@@ -2271,6 +2302,7 @@ export default function BatchImportPage() {
       if (!previewRequested) setUploading(false);
     }
   }, [formatText, requestFundPreview, t]);
+  handleFundFileRef.current = handleFundFile;
 
   const handleApplyFundRules = useCallback(async () => {
     if (fundUploadItems.length === 0 || importing) return;

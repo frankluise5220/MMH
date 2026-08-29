@@ -35,6 +35,8 @@ export type CreditBillFlowEntry = {
   accountId?: string | null;
   toAccountId?: string | null;
   amount?: unknown;
+  type?: string | null;
+  categoryName?: string | null;
 };
 
 export type CreditCardCyclePersistRow = {
@@ -144,6 +146,35 @@ export function signedCreditBillAmountFromCardSide(
   return null;
 }
 
+/**
+ * Classify a credit-bill flow row into the display side (outflow vs inflow)
+ * based on the transaction type and account direction.
+ *
+ * 流出 (outflow) = all expenses (negative amount on the card side).
+ * 流入 (inflow) = transfer repayments + refunds / income (money back into
+ *   the account, positive amount on the card side) + installment inflows.
+ *
+ * Returns "outflow" | "inflow" | null (null = skip, e.g. internal transfer).
+ */
+export function classifyCreditBillFlowSide(
+  entry: CreditBillFlowEntry,
+  billAccountIdSet: ReadonlySet<string>,
+): "outflow" | "inflow" | null {
+  const signedAmount = signedCreditBillAmountFromCardSide(entry, billAccountIdSet);
+  if (signedAmount == null || signedAmount === 0) return null;
+  const type = String(entry.type ?? "");
+  if (type === "transfer") return "inflow";
+  if (type === "income") return "inflow";
+  if (type === "expense") {
+    // Positive amount on the card side = money back into the account
+    // (refund or installment inflow) -> counts as inflow.
+    if (signedAmount > 0) return "inflow";
+    return "outflow";
+  }
+  // investment or unknown: fall back to account direction.
+  return signedAmount < 0 ? "outflow" : "inflow";
+}
+
 export function summarizeCreditBillSignedFlows(
   entries: readonly CreditBillFlowEntry[],
   billAccountIdSet: ReadonlySet<string>,
@@ -151,10 +182,13 @@ export function summarizeCreditBillSignedFlows(
   let expenseAbs = 0;
   let income = 0;
   for (const entry of entries) {
+    const side = classifyCreditBillFlowSide(entry, billAccountIdSet);
+    if (!side) continue;
     const signedAmount = signedCreditBillAmountFromCardSide(entry, billAccountIdSet);
-    if (signedAmount == null || signedAmount === 0) continue;
-    if (signedAmount < 0) expenseAbs += -signedAmount;
-    else income += signedAmount;
+    if (signedAmount == null) continue;
+    const abs = Math.abs(signedAmount);
+    if (side === "outflow") expenseAbs += abs;
+    else income += abs;
   }
   const roundedExpenseAbs = roundMoney(expenseAbs);
   const roundedIncome = roundMoney(income);

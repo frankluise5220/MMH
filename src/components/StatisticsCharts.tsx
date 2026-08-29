@@ -104,7 +104,7 @@ export default function StatisticsCharts({ monthData, incomeCats, expenseCats, i
   return (
     <div className="space-y-6">
       {/* ===== Summary cards ===== */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         {[
           { kind: "income", label: t("stats.totalIncome"), value: totalIncome, cls: pnlClsText },
           { kind: "expense", label: t("stats.totalExpense"), value: -totalExpense, cls: lossClsText },

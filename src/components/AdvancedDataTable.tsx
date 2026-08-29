@@ -79,6 +79,7 @@ export type AdvancedDataTableRowDropTarget<T> = {
 export type AdvancedDataTablePagination = {
   page: number;
   pageSize: number;
+  all?: boolean;
   onPageChange: (page: number) => void;
   onRowCountChange?: (count: number) => void;
 };
@@ -389,6 +390,7 @@ export function AdvancedDataTable<T>({
   const skipNextSortWriteRef = useRef(false);
   const paginationPage = pagination?.page;
   const paginationPageSize = pagination?.pageSize;
+  const paginationAll = pagination?.all ?? false;
   const paginationOnPageChange = pagination?.onPageChange;
   const paginationOnRowCountChange = pagination?.onRowCountChange;
 
@@ -690,9 +692,9 @@ export function AdvancedDataTable<T>({
     onDisplayRowsChange?.(orderedRows);
   }, [onDisplayRowsChange, orderedRows]);
   const hasPagination = paginationPage != null && !!paginationOnPageChange;
-  const pageSize = paginationPageSize && paginationPageSize > 0 ? paginationPageSize : orderedRows.length || 1;
-  const pageCount = Math.max(1, Math.ceil(orderedRows.length / pageSize));
-  const currentPage = Math.min(Math.max(1, paginationPage ?? 1), pageCount);
+  const pageSize = paginationAll ? Math.max(1, orderedRows.length) : paginationPageSize && paginationPageSize > 0 ? paginationPageSize : orderedRows.length || 1;
+  const pageCount = paginationAll ? 1 : Math.max(1, Math.ceil(orderedRows.length / pageSize));
+  const currentPage = paginationAll ? 1 : Math.min(Math.max(1, paginationPage ?? 1), pageCount);
   const pageStartIndex = hasPagination ? (currentPage - 1) * pageSize : 0;
   const paginatedRows = useMemo(
     () => hasPagination ? orderedRows.slice(pageStartIndex, pageStartIndex + pageSize) : orderedRows,

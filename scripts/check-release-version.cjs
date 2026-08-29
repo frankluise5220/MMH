@@ -85,6 +85,9 @@ for (const [file, key] of [
   expect(app.download_urls?.x86_64 === downloadUrls.x86_64, `${file} download_urls.x86_64 must use the unified v${version} Release tag.`);
   expect(app.download_urls?.arm64 === downloadUrls.arm64, `${file} download_urls.arm64 must use the unified v${version} Release tag.`);
   expect(app.changelog === releaseNotes, `${file} changelog must match package.json mmhReleaseNotes.`);
+  expect(app.type === "原生", `${file} type must be 原生 for the FN soft-store native filter.`);
+  expect(/^\d{4}-\d{2}-\d{2}$/.test(app.updated_at || ""), `${file} updated_at must use YYYY-MM-DD for the FN soft-store new-apps sort.`);
+  expect(Array.isArray(app.screenshots) && app.screenshots.length > 0, `${file} screenshots must list at least one preview image.`);
 }
 
 const fndepotFnpack = readJson("deploy/fnos/repository/fnpack.json");

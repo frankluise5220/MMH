@@ -410,6 +410,7 @@ function subtypeText(t: (key: string) => string, subtype: string, source: string
   if (subtype === "buy_failed" && source === "regular_invest_refund") return t("fundShell.subtype.buyRefund");
   if (subtype === "buy_failed") return t("fundShell.subtype.buyFailed");
   if (subtype === "buy" && source === "regular_invest") return t("fund.subtype.regular_invest");
+  if (subtype === "buy" && source === "dividend") return t("fund.subtype.dividend_reinvest");
   if (subtype === "buy") return t("fund.subtype.buy");
   if (subtype === "redeem") return t("fund.subtype.redeem");
   if (subtype === "dividend_cash") return t("fundShell.subtype.dividendCash");

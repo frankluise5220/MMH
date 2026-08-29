@@ -109,6 +109,7 @@ export async function GET(req: NextRequest) {
         avgCost: toNumber(item.avgCost),
         cost,
         latestPrice: item.latestPrice == null ? null : toNumber(item.latestPrice),
+        latestPriceDate: item.latestPriceDate ? item.latestPriceDate.toISOString().slice(0, 10) : null,
         marketValue,
         floatingPnL,
         floatingPnLRate: cost > 0 ? floatingPnL / cost : 0,

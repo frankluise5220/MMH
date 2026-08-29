@@ -66,6 +66,14 @@ export function InsuranceEntryEditModal({
   const [cashAccountList, setCashAccountList] = useState(cashAccounts ?? []);
   const [localCashSSOpts, setLocalCashSSOpts] = useState(cashAccountSSOptions);
   const [nestedEntityType, setNestedEntityType] = useState<"cash-account" | null>(null);
+  // Local copy of nested option data so newly created institutions/groups persist
+  // across account-dialog instances within this modal.
+  const [localNestedFieldData, setLocalNestedFieldData] = useState<NestedFieldData | undefined>(nestedFieldData);
+
+  // Keep local nested option data in sync when the server-provided prop changes.
+  useEffect(() => {
+    if (nestedFieldData) setLocalNestedFieldData(nestedFieldData);
+  }, [nestedFieldData]);
 
   useEffect(() => {
     setDraft(value);
@@ -79,6 +87,23 @@ export function InsuranceEntryEditModal({
   const { t } = useI18n();
   const parentModalZIndex = useModalLayerZIndex();
   const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
+
+  // Called when a nested institution/group is created inside an account dialog.
+  // Keep the shared nested option data fresh so subsequent account dialogs can
+  // select the newly created entity.
+  function handleNestedOptionCreated(id: string, name: string, extra?: { kind?: string; type?: string }) {
+    setLocalNestedFieldData((prev) => {
+      const base = prev ?? nestedFieldData ?? {};
+      if (extra?.type !== undefined) {
+        const existing = base.institutionId ?? [];
+        if (existing.some((item) => item.id === id)) return base;
+        return { ...base, institutionId: [...existing, { id, name, type: extra.type }] };
+      }
+      const existing = base.groupId ?? [];
+      if (existing.some((item) => item.id === id)) return base;
+      return { ...base, groupId: [...existing, { id, name }] };
+    });
+  }
 
   if (!open || !draft) return null;
 
@@ -180,7 +205,8 @@ export function InsuranceEntryEditModal({
           }}
           allowedAccountKinds={["bank_debit", "ewallet"]}
           hiddenFields={[]}
-          nestedFieldData={nestedFieldData}
+          nestedFieldData={localNestedFieldData ?? nestedFieldData}
+          onNestedCreated={handleNestedOptionCreated}
         />
       </ModalLayerProvider>,
       document.body,

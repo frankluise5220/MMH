@@ -187,10 +187,10 @@ export async function recalcStockPositions(accountId: string, securityIds?: stri
     where: { securityId: { in: Array.from(activeSecurityIds) } },
     orderBy: [{ priceDate: "desc" }],
   });
-  const latestPriceBySecurityId = new Map<string, number>();
+  const latestPriceBySecurityId = new Map<string, { price: number; date: Date | null }>();
   for (const row of latestPriceRows) {
     if (row.securityId && !latestPriceBySecurityId.has(row.securityId)) {
-      latestPriceBySecurityId.set(row.securityId, toNumber(row.closePrice));
+      latestPriceBySecurityId.set(row.securityId, { price: toNumber(row.closePrice), date: row.priceDate });
     }
   }
 
@@ -198,7 +198,9 @@ export async function recalcStockPositions(accountId: string, securityIds?: stri
     const quantity = roundQuantity(position.quantity);
     const cost = roundMoney(position.cost);
     const avgCost = quantity > 0 ? cost / quantity : 0;
-    const latestPrice = latestPriceBySecurityId.get(position.securityId) ?? (quantity > 0 ? avgCost : null);
+    const latestInfo = latestPriceBySecurityId.get(position.securityId);
+    const latestPrice = latestInfo ? latestInfo.price : (quantity > 0 ? avgCost : null);
+    const latestPriceDate = latestInfo ? latestInfo.date : null;
     const marketValue = quantity > 0 && latestPrice != null ? roundMoney(quantity * latestPrice) : 0;
 
     await prisma.stockHolding.upsert({
@@ -214,6 +216,7 @@ export async function recalcStockPositions(accountId: string, securityIds?: stri
         avgCost,
         cost,
         latestPrice,
+        latestPriceDate,
         marketValue,
         historicalProfit: position.historicalProfit,
       },
@@ -225,6 +228,7 @@ export async function recalcStockPositions(accountId: string, securityIds?: stri
         avgCost,
         cost,
         latestPrice,
+        latestPriceDate,
         marketValue,
         historicalProfit: position.historicalProfit,
       },

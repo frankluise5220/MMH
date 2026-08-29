@@ -17,13 +17,14 @@ import type { HouseholdContext } from "@/lib/server/household-scope";
 import { getInvestmentStatisticItems, type InvestmentStatisticEntryLike } from "@/lib/transaction-statistics";
 
 export type InvestmentProfitPeriod = "day" | "month" | "year";
-export type InvestmentProfitKind = "fund" | "wealth" | "deposit";
+export type InvestmentProfitKind = "fund" | "stock" | "wealth" | "deposit";
 
 export type InvestmentProfitReportRow = {
   key: string;
   label: string;
   subLabel: string;
   fundProfit: number;
+  stockProfit: number;
   wealthProfit: number;
   depositProfit: number;
   totalProfit: number;
@@ -182,6 +183,7 @@ function createRow(bucket: Pick<Bucket, "key" | "label" | "subLabel">): Investme
     label: bucket.label,
     subLabel: bucket.subLabel,
     fundProfit: 0,
+    stockProfit: 0,
     wealthProfit: 0,
     depositProfit: 0,
     totalProfit: 0,
@@ -191,7 +193,8 @@ function createRow(bucket: Pick<Bucket, "key" | "label" | "subLabel">): Investme
 
 function addProfit(row: InvestmentProfitReportRow, kind: InvestmentProfitKind, profit: number, count = 1) {
   if (profit === 0) return;
-  if (kind === "wealth") row.wealthProfit += profit;
+  if (kind === "stock") row.stockProfit += profit;
+  else if (kind === "wealth") row.wealthProfit += profit;
   else if (kind === "deposit") row.depositProfit += profit;
   else row.fundProfit += profit;
   row.totalProfit += profit;
@@ -402,13 +405,23 @@ function latestNavOnOrBefore(
   }
   return null;
 }
-
 function previousUtcDay(date: Date) {
   const result = new Date(date);
   result.setUTCDate(result.getUTCDate() - 1);
   return result;
 }
-
+function latestNavDateOnOrBefore(
+  navByCode: Map<string, Array<{ date: string; nav: number }>>,
+  fundCode: string,
+  date: string,
+) {
+  const rows = navByCode.get(fundCode);
+  if (!rows?.length) return null;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    if (rows[index]!.date <= date) return rows[index]!.date;
+  }
+  return null;
+}
 function exactNavOnDate(
   navByCode: Map<string, Array<{ date: string; nav: number }>>,
   fundCode: string,
@@ -512,6 +525,22 @@ function accountMarketValueAt(params: {
   };
 }
 
+function navRowIndexOnOrBefore(
+  rows: Array<{ date: string; nav: number }>,
+  dateKey: string,
+) {
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    if (rows[index]!.date <= dateKey) return index;
+  }
+  return -1;
+}
+
+function navDateOffset(dateKey: string, navDate: string) {
+  const date = new Date(dateKey + "T00:00:00Z");
+  const nav = new Date(navDate + "T00:00:00Z");
+  return Math.round((date.getTime() - nav.getTime()) / 86400000);
+}
+
 function accountDailyNavDeltaProfit(params: {
   account: FundLikeAccount;
   entries: FundPositionEntryLike[];
@@ -522,55 +551,51 @@ function accountDailyNavDeltaProfit(params: {
   missingNavByKey: Map<string, InvestmentProfitMissingNav>;
 }) {
   const dateKey = ymd(params.date);
-  const previousDate = previousUtcDay(params.date);
-  const previousDateKey = ymd(previousDate);
-  const entriesToPreviousDate = params.entries.filter((entry) => {
-    const calcDate = profitStartDateOf(entry);
-    return !!calcDate && calcDate <= previousDateKey;
-  });
-  const calc = calculateFundPositionsFromEntries(
-    entriesToPreviousDate,
-    normalizeFundUnitsDecimals(params.account.fundUnitsDecimals),
-    params.account.costBasisMethod,
-  );
-
+  if (isTradingClosedDate(dateKey, "cn_fund")) return { profit: 0, count: 0 };
   let profit = 0;
   let count = 0;
-  for (const [fundCode, holding] of calc.holdings) {
-    const units = holding.units;
-    if (units <= 0.0001) continue;
+  const fundCodes = new Set(params.entries.map((entry) => entry.fundCode).filter(Boolean) as string[]);
+  for (const fundCode of fundCodes) {
     const meta = params.fundMetaByCode.get(fundCode) ?? { isMoney: false, isQdii: false };
-    const calendar = meta.isQdii ? "us_fund" : (params.account.tradingCalendar ?? "cn_fund");
-
+    const navRows = params.navByCode.get(fundCode) ?? [];
+    const latestIndex = navRowIndexOnOrBefore(navRows, params.todayKey);
+    if (latestIndex < 1) continue;
+    const latestDate = navRows[latestIndex]!.date;
+    const lag = navDateOffset(params.todayKey, latestDate);
+    const calculationDate = new Date(params.date);
+    calculationDate.setUTCDate(calculationDate.getUTCDate() - lag);
+    const calculationDateKey = ymd(calculationDate);
+    if (calculationDateKey > latestDate) continue;
+    const currentIndex = navRowIndexOnOrBefore(navRows, calculationDateKey);
+    if (currentIndex <= 0) continue;
+    const currentRow = navRows[currentIndex]!;
+    const previousRow = navRows[currentIndex - 1]!;
+    const currentNav = currentRow.nav;
+    const previousNav = previousRow.nav;
+    const entriesToPositionDate = params.entries.filter((entry) => {
+      const calcDate = profitStartDateOf(entry);
+      return entry.fundCode === fundCode && !!calcDate && calcDate <= previousRow.date;
+    });
+    const calc = calculateFundPositionsFromEntries(
+      entriesToPositionDate,
+      normalizeFundUnitsDecimals(params.account.fundUnitsDecimals),
+      params.account.costBasisMethod,
+    );
+    const units = calc.holdings.get(fundCode)?.units ?? 0;
+    if (units <= 0.0001) continue;
     if (meta.isMoney) {
-      const exactNav = exactNavOnDate(params.navByCode, fundCode, dateKey);
-      if (exactNav != null && exactNav < 1) {
-        profit += (exactNav * units) / 10000;
+      if (currentNav < 1) {
+        profit += (currentNav * units) / 10000;
         count += 1;
       }
       continue;
     }
-
-    const exactNav = exactNavOnDate(params.navByCode, fundCode, dateKey);
-    if (exactNav == null && shouldRequireExactNav(dateKey, params.todayKey, calendar, meta, hasNavAfterDate(params.navByCode, fundCode, dateKey))) {
-      addMissingNav(params.missingNavByKey, {
-        fundCode,
-        date: dateKey,
-        accountId: params.account.id,
-        accountName: params.account.name,
-      });
-    }
-    const currentNav = exactNav ?? latestNavOnOrBefore(params.navByCode, fundCode, dateKey);
-    const previousNav = latestNavOnOrBefore(params.navByCode, fundCode, previousDateKey);
-    if (currentNav == null || previousNav == null) continue;
     const fundProfit = units * (currentNav - previousNav);
     if (fundProfit !== 0) count += 1;
     profit += fundProfit;
   }
-
   return { profit: roundMoney(profit), count };
 }
-
 function bucketDailyNavDeltaProfit(params: {
   bucket: Bucket;
   accounts: FundLikeAccount[];
@@ -945,11 +970,19 @@ export async function loadInvestmentProfitReport(
   const wealthCashEntryIds = new Set(
     wealthCashEntryRows.map((row) => row.cashEntryId).filter(Boolean) as string[],
   );
+  const stockCashEntryRows = await prisma.stockTransaction.findMany({
+    where: { householdId: ctx.householdId, cashEntryId: { not: null } },
+    select: { cashEntryId: true },
+  });
+  const stockCashEntryIds = new Set(
+    stockCashEntryRows.map((row) => row.cashEntryId).filter(Boolean) as string[],
+  );
+
   const events = [
     ...txEntries.flatMap((entry) => {
       const accountId = entry.toAccountId && accountTypeById.has(entry.toAccountId) ? entry.toAccountId : entry.accountId;
       if (snapshotAccountIds.has(accountId)) return [];
-      return eventsFromEntry(entry, wealthCashEntryIds.has(entry.id) ? "wealth" : undefined);
+      return eventsFromEntry(entry, stockCashEntryIds.has(entry.id) ? "stock" : wealthCashEntryIds.has(entry.id) ? "wealth" : undefined);
     }),
     ...wealthEntries.flatMap((entry) => eventsFromEntry(entry)),
   ].filter((event) => event.profit !== 0);
@@ -962,6 +995,7 @@ export async function loadInvestmentProfitReport(
   const orderedRows = buckets.map((bucket) => rows.get(bucket.key)!).map((row) => ({
     ...row,
     fundProfit: roundMoney(row.fundProfit),
+    stockProfit: roundMoney(row.stockProfit),
     wealthProfit: roundMoney(row.wealthProfit),
     depositProfit: roundMoney(row.depositProfit),
     totalProfit: roundMoney(row.totalProfit),
@@ -969,12 +1003,13 @@ export async function loadInvestmentProfitReport(
   const totals = orderedRows.reduce(
     (sum, row) => ({
       fundProfit: roundMoney(sum.fundProfit + row.fundProfit),
+      stockProfit: roundMoney(sum.stockProfit + row.stockProfit),
       wealthProfit: roundMoney(sum.wealthProfit + row.wealthProfit),
       depositProfit: roundMoney(sum.depositProfit + row.depositProfit),
       totalProfit: roundMoney(sum.totalProfit + row.totalProfit),
       count: sum.count + row.count,
     }),
-    { fundProfit: 0, wealthProfit: 0, depositProfit: 0, totalProfit: 0, count: 0 },
+    { fundProfit: 0, stockProfit: 0, wealthProfit: 0, depositProfit: 0, totalProfit: 0, count: 0 },
   );
 
   return {

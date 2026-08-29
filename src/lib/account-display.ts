@@ -249,13 +249,10 @@ export function buildAccountDisplayOption(
 
   const label =
     account.kind === "bank_credit"
-      ? formatCreditCardDisplayName({
+      ? formatAccountSelectorLabel({
           accountName: account.name,
           institution: account.Institution,
           numberMasked: account.numberMasked,
-          ownerName: groupName,
-          template: creditCardLabelTemplate,
-          suppressDuplicateLast4: options?.suppressDuplicateCreditCardLast4,
         })
       : account.kind === "insurance"
         ? account.name.trim()

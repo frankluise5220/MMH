@@ -3679,7 +3679,6 @@ return;
 
     if (changedInvestment) {
       await upsertLegacyCombinedEntryBusinessLinks([entryId]).catch(logger.catchLog("sync entry business link", "route.ts"));
-      await syncFundTransactionsFromTxRecords([entryId]).catch(logger.catchLog("sync fund transaction", "route.ts"));
       await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: entryId }).catch(
         logger.catchLog("sync independent business transaction", "route.ts"),
       );

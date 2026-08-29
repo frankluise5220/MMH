@@ -256,14 +256,21 @@ export async function syncLinkedFixedAssetTransactionFromCashEntry(
 ): Promise<FixedAssetSyncResult> {
   const row = await client.propertyTransaction.findFirst({
     where: { householdId: params.householdId, cashEntryId: params.cashEntry.id, deletedAt: null },
-    select: { id: true, propertyAssetId: true, accountId: true, cashAccountId: true },
+    select: { id: true, propertyAssetId: true, accountId: true, cashAccountId: true, action: true, fee: true, tax: true },
   });
   if (!row) return emptySyncResult();
 
   const propertyAssetIds = [row.propertyAssetId];
   const accountIds = compactStrings([row.accountId, row.cashAccountId, params.cashEntry.accountId]);
   const isExpense = params.cashEntry.type === TransactionType.expense || params.cashEntry.type === "expense";
-  if (!isExpense) {
+  const isCashIn = params.cashEntry.type === TransactionType.income || params.cashEntry.type === "income";
+  const isSale = row.action === PropertyTransactionAction.sale;
+  const feeAbs = Math.abs(toNumber(row.fee));
+  const taxAbs = Math.abs(toNumber(row.tax));
+
+  // A sale linked to an income cash entry stays a sale business record;
+  // only purchases/improvements linked to a converted non-expense entry are unlinked.
+  if (!isExpense && !(isCashIn && isSale)) {
     const deletedAt = new Date();
     await client.propertyTransaction.update({
       where: { id: row.id },
@@ -281,17 +288,22 @@ export async function syncLinkedFixedAssetTransactionFromCashEntry(
     return { touched: true, propertyAssetIds, accountIds };
   }
 
-  const amount = Math.abs(toNumber(params.cashEntry.amount));
-  if (amount <= 0) return emptySyncResult();
+  const cashAmount = Math.abs(toNumber(params.cashEntry.amount));
+  if (cashAmount <= 0) return emptySyncResult();
   const tradeDate = params.cashEntry.postedAt ?? params.cashEntry.date;
   const note = params.cashEntry.note?.trim() || null;
+  // Keep the business amount as the gross price; the cash entry stores the
+  // fee/tax-inclusive outflow or the fee/tax-exclusive sale inflow.
+  const businessAmount = isCashIn
+    ? cashAmount + feeAbs + taxAbs
+    : Math.max(0, cashAmount - feeAbs - taxAbs);
 
   await client.propertyTransaction.update({
     where: { id: row.id },
     data: {
       cashAccountId: params.cashEntry.accountId,
       tradeDate,
-      amount: String(amount),
+      amount: String(businessAmount),
       note,
       deletedAt: null,
     },

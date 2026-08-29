@@ -514,18 +514,18 @@ function buildStockHeaderIndex(headers: unknown[], t: TranslateFn) {
 type DetectedImportKind = "statement" | "fund" | "stock";
 
 const FUND_DETECT_HEADER_KEYS = {
-  date: ["date", "detail.column.date", "batchImport.template.fund.label.date"],
-  fundSubtype: ["fundSubtype", "viewImport.fundSubtype", "batchImport.template.fund.label.fundSubtype"],
-  cashAccount: ["cashAccount", "viewImport.cashAccount", "batchImport.template.fund.label.cashAccount"],
-  fundAccount: ["fundAccount", "viewImport.fundAccount", "batchImport.template.fund.label.fundAccount"],
-  fundCode: ["fundCode", "viewImport.fundCode", "batchImport.template.fund.label.fundCode"],
-  amount: ["amount", "viewImport.amount", "batchImport.template.fund.label.amount"],
-  units: ["units", "viewImport.units", "batchImport.template.fund.label.units"],
-  nav: ["nav", "viewImport.nav", "batchImport.template.fund.label.nav"],
+  date: ["date", "detail.column.date", "batchImport.template.fund.label.date", "交易日期", "申请日期"],
+  fundSubtype: ["fundSubtype", "viewImport.fundSubtype", "batchImport.template.fund.label.fundSubtype", "分类", "业务类型", "基金类型", "动作", "现金分红", "红利再投"],
+  cashAccount: ["cashAccount", "viewImport.cashAccount", "batchImport.template.fund.label.cashAccount", "现金账户", "付款账户"],
+  fundAccount: ["fundAccount", "viewImport.fundAccount", "batchImport.template.fund.label.fundAccount", "投资账户"],
+  fundCode: ["fundCode", "viewImport.fundCode", "batchImport.template.fund.label.fundCode", "代码"],
+  amount: ["amount", "viewImport.amount", "batchImport.template.fund.label.amount", "发生金额"],
+  units: ["units", "viewImport.units", "batchImport.template.fund.label.units", "确认份额"],
+  nav: ["nav", "viewImport.nav", "batchImport.template.fund.label.nav", "成交净值"],
   feeRate: ["feeRate", "feeRateInput", "viewImport.feeRate", "batchImport.template.fund.label.feeRate"],
-  fee: ["fee", "viewImport.fee", "batchImport.template.fund.label.fee"],
+  fee: ["fee", "viewImport.fee", "batchImport.template.fund.label.fee", "手数料"],
   confirmDate: ["confirmDate", "viewImport.navDate", "batchImport.template.fund.label.confirmDate"],
-  arrivalDate: ["arrivalDate", "detail.column.postedAt", "batchImport.template.fund.label.arrivalDate"],
+  arrivalDate: ["arrivalDate", "detail.column.postedAt", "batchImport.template.fund.label.arrivalDate", "入帳日"],
 } as const;
 
 function hasDetectedHeader(normalizedHeaders: Set<string>, keys: readonly string[], t: TranslateFn) {

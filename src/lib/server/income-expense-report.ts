@@ -10,6 +10,7 @@ import {
 import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
+import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE } from "@/lib/balance-reconcile";
 
 export type IncomeExpenseGroupBy = "month" | "year";
 
@@ -202,6 +203,9 @@ export async function getIncomeExpenseReport(
     end: string;
     groupBy: IncomeExpenseGroupBy;
     accountIds?: string[];
+    institutionId?: string;
+    institutionIds?: string[];
+    userIds?: string[];
     detail?: {
       type: IncomeExpenseReportDetailType;
       categoryKey?: string;
@@ -218,8 +222,21 @@ export async function getIncomeExpenseReport(
   const columnIndexByKey = new Map(columns.map((column, index) => [column.key, index]));
   const valueLength = columns.length;
   const { hidFilter } = ctx;
-  const accountFilter = params.accountIds?.length
-    ? { OR: [{ accountId: { in: params.accountIds } }, { toAccountId: { in: params.accountIds } }] }
+  const scopedAccounts = await prisma.account.findMany({
+    where: {
+      ...hidFilter,
+      isActive: true,
+      counterpartyId: null,
+      kind: { notIn: ["loan", "insurance"] },
+      ...((params.institutionIds?.length || params.institutionId) ? { institutionId: { in: params.institutionIds?.length ? params.institutionIds : [params.institutionId!] } } : {}),
+      ...(params.userIds?.length ? { groupId: { in: params.userIds } } : {}),
+      ...(params.accountIds?.length ? { id: { in: params.accountIds } } : {}),
+    },
+    select: { id: true },
+  });
+  const scopedAccountIds = scopedAccounts.map((account) => account.id);
+  const accountFilter = (params.institutionIds?.length || params.institutionId || params.userIds?.length || params.accountIds?.length)
+    ? { OR: [{ accountId: { in: scopedAccountIds } }, { toAccountId: { in: scopedAccountIds } }] }
     : {};
 
   await normalizeDefaultCategoryHierarchyForHousehold(prisma, ctx.householdId);
@@ -275,7 +292,7 @@ export async function getIncomeExpenseReport(
         type: TransactionType.investment,
         date: { gte: rangeStart, lt: endExclusive },
         AND: [
-          ...(params.accountIds?.length ? [accountFilter] : []),
+          ...((params.institutionIds?.length || params.institutionId || params.userIds?.length || params.accountIds?.length) ? [accountFilter] : []),
           {
             OR: [
               { realizedProfit: { not: null } },
@@ -314,7 +331,7 @@ export async function getIncomeExpenseReport(
         type: TransactionType.transfer,
         date: { gte: rangeStart, lt: endExclusive },
         AND: [
-          ...(params.accountIds?.length ? [accountFilter] : []),
+          ...((params.institutionIds?.length || params.institutionId || params.userIds?.length || params.accountIds?.length) ? [accountFilter] : []),
           {
             OR: [
               { realizedProfit: { not: null } },
@@ -345,7 +362,7 @@ export async function getIncomeExpenseReport(
     loadWealthStatisticSourceEntries(ctx, {
       start: rangeStart,
       endExclusive,
-      accountIds: params.accountIds,
+      accountIds: (params.institutionIds?.length || params.institutionId || params.userIds?.length || params.accountIds?.length) ? scopedAccountIds : undefined,
     }),
   ]);
 
@@ -429,8 +446,14 @@ export async function getIncomeExpenseReport(
     return record.categoryName ? findCategoryByName(record.type, [record.categoryName]) : null;
   }
 
-  const statisticRecords: ReportStatisticRecord[] = records.map((record) => {
+  const statisticRecords: ReportStatisticRecord[] = records.flatMap((record) => {
     const isInsurance = record.source === "insurance";
+    if (
+      record.source === BALANCE_RECONCILE_SOURCE ||
+      record.source === BALANCE_INITIALIZATION_SOURCE ||
+      record.type === TransactionType.transfer ||
+      (record.type === TransactionType.investment && !isInsurance)
+    ) return [];
     const insuranceType: ReportCategoryType =
       record.insuranceAction === "refund" || record.fundSubtype === "redeem" || record.fundSubtype === "switch_out"
         ? "income"
@@ -438,7 +461,7 @@ export async function getIncomeExpenseReport(
     const type: ReportCategoryType = isInsurance
       ? insuranceType
       : record.type === TransactionType.income ? "income" : "expense";
-    return {
+    return [{
       id: record.id,
       entryId: record.id,
       canEdit: true,
@@ -454,7 +477,7 @@ export async function getIncomeExpenseReport(
       counterpartyName: record.counterpartyInstitutionName,
       note: record.note,
       createdAt: record.createdAt,
-    };
+    }];
   });
 
   const representedInvestmentEntryIds = new Set(investmentRecords.map((record) => record.id));

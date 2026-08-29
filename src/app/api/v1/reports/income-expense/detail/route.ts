@@ -17,7 +17,7 @@ export const runtime = "nodejs";
  * - start: YYYY-MM-DD
  * - end: YYYY-MM-DD
  * - groupBy?: "month" | "year"
- * - accountId?: Account.id
+ * - accountId?: Account.id (comma-separated for multiple)
  * - detailType: "income" | "expense" | "net"
  * - detailCategoryKey?: Category.id or report uncategorized key
  * - detailColumnKey?: report column key, such as YYYY-MM
@@ -34,6 +34,11 @@ export async function GET(req: Request) {
     const groupByRaw = url.searchParams.get("groupBy") ?? "";
     const groupBy: IncomeExpenseGroupBy = groupByRaw === "year" ? "year" : "month";
     const accountId = url.searchParams.get("accountId")?.trim() || "";
+    const accountIds = accountId ? accountId.split(",").map((id) => id.trim()).filter(Boolean) : [];
+    const institutionId = url.searchParams.get("institutionId")?.trim() || "";
+    const institutionIds = (url.searchParams.get("institutionIds") ?? institutionId)
+      .split(",").map((id) => id.trim()).filter(Boolean);
+    const userIds = url.searchParams.get("userIds")?.split(",").map((id) => id.trim()).filter(Boolean) ?? [];
     const detailTypeRaw = url.searchParams.get("detailType") ?? "";
     const detailType: IncomeExpenseReportDetailType | null =
       detailTypeRaw === "income" || detailTypeRaw === "expense" || detailTypeRaw === "net"
@@ -49,7 +54,10 @@ export async function GET(req: Request) {
       start,
       end,
       groupBy,
-      accountIds: accountId ? [accountId] : undefined,
+      accountIds: accountIds.length > 0 ? accountIds : undefined,
+      institutionId: institutionId || undefined,
+      institutionIds: institutionIds.length > 0 ? institutionIds : undefined,
+      userIds: userIds.length > 0 ? userIds : undefined,
       detail: {
         type: detailType,
         categoryKey: url.searchParams.get("detailCategoryKey")?.trim() || undefined,

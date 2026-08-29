@@ -8,7 +8,6 @@ import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { allocateBuyFailedRefunds, calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
-import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 import { getAccountFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 import { resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
@@ -708,7 +707,6 @@ export async function POST(req: NextRequest) {
       for (const acctId of metalAccountsToRecalc) {
         await recalcPreciousMetalPositions(acctId).catch(() => {});
       }
-      await syncFundTransactionsFromTxRecords(Array.from(touchedRecordIds)).catch(() => {});
       for (const id of touchedRecordIds) {
         await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: id }).catch(() => {});
       }

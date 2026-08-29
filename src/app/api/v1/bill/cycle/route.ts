@@ -56,7 +56,10 @@ function statementMonthDate(statementMonth: string) {
 function cycleEndForMonth(statementMonth: string, billingDay: number) {
   const parsed = statementMonthDate(statementMonth);
   if (!parsed) return null;
-  return new Date(Date.UTC(parsed.year, parsed.monthIndex, clampDay(parsed.year, parsed.monthIndex, billingDay)));
+  // The billing cycle for statementMonth is [prev-month billingDay, this-month
+  // billingDay - 1]. E.g. billingDay=26 -> cycle is 26th of prev month to 25th
+  // of this month. This must match cycleForStatementMonth in billing.ts.
+  return new Date(Date.UTC(parsed.year, parsed.monthIndex, clampDay(parsed.year, parsed.monthIndex, billingDay - 1)));
 }
 
 function dueForCycle(periodEnd: Date, billingDay: number, repaymentDay: number | null) {
@@ -115,7 +118,10 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ ok: false, code: "CYCLE_NOT_FOUND", error: "这一期账单周期不存在，请先生成账单列表" }, { status: 404 });
     }
 
-    const billingDay = periodEnd.getUTCDate();
+    // billingDay is the day the cycle starts (periodStart), i.e. the 26th for
+    // a 26-25 cycle. periodEnd is the last day of the cycle (25th), so it must
+    // NOT be used to derive billingDay.
+    const billingDay = periodStart.getUTCDate();
     const repaymentDay = dueDate ? dueDate.getUTCDate() : null;
     const today = startOfDayUtc(new Date());
 
@@ -220,7 +226,7 @@ export async function PATCH(req: Request) {
             { OR: [{ accountId: { in: billAccountIds } }, { toAccountId: { in: billAccountIds } }] },
           ],
         },
-        select: { accountId: true, toAccountId: true, amount: true },
+        select: { accountId: true, toAccountId: true, amount: true, type: true, categoryName: true },
       });
 
       const flows = summarizeCreditBillSignedFlows(cycleFlowRows, billAccountIdSet);

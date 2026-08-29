@@ -54,9 +54,10 @@ type FundImportUploadItem = {
   confirmDate: string | null;
   arrivalDate: string | null;
   remark: string;
+  source?: string;
 };
 
-type FundImportHeaderField = Exclude<keyof FundImportUploadItem, "rawText" | "cashAccountId" | "fundAccountId">;
+type FundImportHeaderField = Exclude<keyof FundImportUploadItem, "rawText" | "cashAccountId" | "fundAccountId" | "source">;
 
 type FundImportPreviewIssue = {
   level: "error" | "warning";
@@ -191,7 +192,7 @@ const FUND_LABEL_HEADER_SET = new Set([
 
 const FUND_FIELD_ALIASES: Record<FundImportHeaderField, string[]> = {
   date: ["date", "\u65e5\u671f", "\u4ea4\u6613\u65e5\u671f", "\u7533\u8bf7\u65e5\u671f", "Date", "\u65e5\u4ed8"],
-  fundSubtype: ["fundSubtype", "\u57fa\u91d1\u52a8\u4f5c", "\u57fa\u91d1\u7c7b\u578b", "\u52a8\u4f5c", "Fund Action", "Action", "\u57fa\u91d1\u30a2\u30af\u30b7\u30e7\u30f3", "\u30d5\u30a1\u30f3\u30c9\u64cd\u4f5c", "cash dividend", "dividend reinvest", "\u73fe\u91d1\u5206\u914d", "\u5206\u914d\u91d1\u518d\u6295\u8cc7"],
+  fundSubtype: ["fundSubtype", "\u5206\u7c7b", "\u4e1a\u52a1\u7c7b\u578b", "\u57fa\u91d1\u52a8\u4f5c", "\u57fa\u91d1\u7c7b\u578b", "\u52a8\u4f5c", "Fund Action", "Action", "\u57fa\u91d1\u30a2\u30af\u30b7\u30e7\u30f3", "\u30d5\u30a1\u30f3\u30c9\u64cd\u4f5c", "cash dividend", "dividend reinvest", "\u73fe\u91d1\u5206\u914d", "\u5206\u914d\u91d1\u518d\u6295\u8cc7"],
   cashAccount: ["cashAccount", "\u8d44\u91d1\u8d26\u6237", "\u73b0\u91d1\u8d26\u6237", "\u4ed8\u6b3e\u8d26\u6237", "cash account", "Cash Account", "\u8cc7\u91d1\u53e3\u5ea7"],
   fundAccount: ["fundAccount", "\u57fa\u91d1\u8d26\u6237", "\u6295\u8d44\u8d26\u6237", "account", "fund account", "Fund Account", "\u30d5\u30a1\u30f3\u30c9\u53e3\u5ea7"],
   fundCode: ["fundCode", "\u57fa\u91d1\u4ee3\u7801", "\u4ee3\u7801", "fund code", "Fund Code", "\u30d5\u30a1\u30f3\u30c9\u30b3\u30fc\u30c9", "\u57fa\u91d1\u30b3\u30fc\u30c9"],
@@ -414,11 +415,16 @@ function normalizeFundActionText(value: string) {
 
 function normalizeFundImportAction(rawAction: string) {
   const action = normalizeFundActionText(rawAction);
-  if (["regularinvest", "recurringinvest", "recurringbuy", "\u5b9a\u6295", "\u7a4d\u7acb"].includes(action)) return "buy";
-  if (["buy", "purchase", "subscribe", "\u7533\u8d2d", "\u8cb7\u5165", "\u4e70\u5165", "\u8cfc\u5165"].includes(action)) return "buy";
-  if (["redeem", "redemption", "sell", "\u8d4e\u56de", "\u8d16\u56de", "\u89e3\u7d04"].includes(action)) return "redeem";
-  if (["dividendcash", "cashdividend", "\u73b0\u91d1\u5206\u7ea2", "\u914d\u5f53", "\u73fe\u91d1\u5206\u914d"].includes(action)) return "dividend_cash";
-  if (["dividendreinvest", "reinvestdividend", "\u7ea2\u5229\u518d\u6295", "\u518d\u6295\u8cc7", "\u5206\u914d\u91d1\u518d\u6295\u8cc7"].includes(action)) return "dividend_reinvest";
+  // 红利再投 / 再投 must be checked before 分红 so reinvest is not misread as cash dividend.
+  if (action.includes("\u7ea2\u5229\u518d\u6295") || action.includes("\u518d\u6295") || action.includes("\u518d\u6295\u8cc7") || action.includes("\u5206\u914d\u91d1\u518d\u6295\u8cc7")) return "dividend_reinvest";
+  if (action.includes("\u73b0\u91d1\u5206\u7ea2") || action.includes("\u5206\u7ea2") || action.includes("\u914d\u5f53") || action.includes("\u73fe\u91d1\u5206\u914d")) return "dividend_cash";
+  if (action.includes("\u5b9a\u6295") || action.includes("\u7a4d\u7acb")) return "buy";
+  if (action.includes("\u7533\u8d2d") || action.includes("\u8cb7\u5165") || action.includes("\u4e70\u5165") || action.includes("\u8cfc\u5165")) return "buy";
+  if (action.includes("\u8d4e\u56de") || action.includes("\u8d16\u56de") || action.includes("\u5356\u51fa") || action.includes("\u89e3\u7d04")) return "redeem";
+  if (["buy", "purchase", "subscribe", "regularinvest", "recurringinvest", "recurringbuy"].includes(action)) return "buy";
+  if (["redeem", "redemption", "sell"].includes(action)) return "redeem";
+  if (["dividendcash", "cashdividend"].includes(action)) return "dividend_cash";
+  if (["dividendreinvest", "reinvestdividend"].includes(action)) return "dividend_reinvest";
   return "";
 }
 
@@ -544,6 +550,14 @@ function fundRowsToItems(rows: string[][]): FundImportUploadItem[] {
     return index == null ? "" : String(row[index] ?? "").trim();
   };
 
+  // The 业务类型 column (e.g. 定投申购 / 定投申购（智汇定投）) distinguishes
+  // recurring buys from one-time purchases. It is not a fundSubtype header, so
+  // locate it separately to derive the regular-invest source.
+  const headerRow = headerIndex === firstHeaderIndex ? firstRow : secondRow;
+  const normalizedHeaderRow = headerRow.map(normalizeFundHeaderText);
+  const businessTypeIndex = normalizedHeaderRow.findIndex((header) => header === "\u4e1a\u52a1\u7c7b\u578b" || header === "businesstype" || header === "transactiontype");
+  const readBusinessType = (row: string[]) => businessTypeIndex < 0 ? "" : String(row[businessTypeIndex] ?? "").trim();
+
   return dataRows
     .filter((row) => row.some((cell) => String(cell ?? "").trim()))
     .filter((row) => {
@@ -561,10 +575,13 @@ function fundRowsToItems(rows: string[][]): FundImportUploadItem[] {
       const parsedFee = parseFundFeeInput(readField(row, "fee"));
       const parsedFeeRate = parseFundFeeRateInput(readField(row, "feeRateInput"));
       const fundSubtype = normalizeFundImportAction(readField(row, "fundSubtype")) || readField(row, "fundSubtype");
+      const businessType = readBusinessType(row);
+      const source = businessType.includes("\u5b9a\u6295") || businessType.includes("\u7a4d\u7acb") ? "regular_invest" : undefined;
       return {
         rawText: row.join(" "),
         date: normalizeDateCell(readField(row, "date")),
         fundSubtype,
+        source,
         cashAccount: readField(row, "cashAccount"),
         fundAccount: readField(row, "fundAccount"),
         fundCode: readField(row, "fundCode"),

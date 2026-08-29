@@ -23,6 +23,7 @@ type StockPosition = {
   avgCost: number;
   cost: number;
   nav: number | null;
+  navDate?: string | null;
   marketValue: number;
   floatingPnL: number;
   floatingPnLRate: number;
@@ -66,6 +67,7 @@ type RefreshPriceHolding = {
   avgCost: number;
   cost: number;
   latestPrice?: number | null;
+  latestPriceDate?: string | null;
   marketValue: number;
   floatingPnL: number;
   floatingPnLRate: number;
@@ -96,6 +98,11 @@ function pnlClass(value: number, isRedUp: boolean) {
 
 function positionKey(position: StockPosition) {
   return position.securityId || `${position.market ?? ""}:${position.stockCode}`;
+}
+
+function compactNavDate(value: string | null | undefined) {
+  const date = String(value ?? "").slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? `${date.slice(5, 7)}.${date.slice(8, 10)}` : String(value ?? "");
 }
 
 const ACTION_LABEL_KEYS: Record<string, string> = {
@@ -146,6 +153,7 @@ function mapApiHolding(item: RefreshPriceHolding): StockPosition {
     avgCost: Number(item.avgCost ?? 0),
     cost: Number(item.cost ?? 0),
     nav: item.latestPrice == null ? null : Number(item.latestPrice),
+    navDate: item.latestPriceDate ?? null,
     marketValue: Number(item.marketValue ?? 0),
     floatingPnL: Number(item.floatingPnL ?? 0),
     floatingPnLRate: Number(item.floatingPnLRate ?? 0),
@@ -498,8 +506,8 @@ export function StockHoldingsPanel({
     {
       key: "nav",
       label: t("stockHoldingReport.colClosePrice"),
-      width: 110,
-      minWidth: 84,
+      width: 160,
+      minWidth: 140,
       align: "right",
       className: "tabular-nums",
       filterKind: "numberRange",
@@ -507,7 +515,10 @@ export function StockHoldingsPanel({
       filterNumber: (p) => p.nav ?? null,
       sortValue: (p) => p.nav ?? null,
       render: (p) => (
-        <span className="text-xs text-slate-700">{p.nav == null ? <span className="text-slate-300">-</span> : p.nav.toFixed(4)}</span>
+        <span className="text-xs text-slate-700">
+          {p.nav == null ? <span className="text-slate-300">-</span> : p.nav.toFixed(4)}
+          {p.navDate ? <span className="ml-0.5 whitespace-nowrap text-slate-400">({compactNavDate(p.navDate)})</span> : null}
+        </span>
       ),
     },
     {
@@ -783,8 +794,7 @@ export function StockHoldingsPanel({
         <div className="panel-header shrink-0 gap-2">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-left">
             <div className="flex min-w-0 items-center gap-1 text-sm font-semibold text-slate-800">
-              <span className="flex h-6 min-w-0 shrink items-center truncate" title={accountLabel}>{accountLabel}</span>
-              <span className="ml-2 flex h-6 shrink-0 items-center text-xs font-normal text-slate-400">{t("stockPanel.stockAccountTitle")}</span>
+              <span className="flex h-6 min-w-0 shrink items-center truncate">{t("stockTx.holdingStock")}</span>
               <span className="flex h-6 shrink-0 items-center text-xs text-slate-500">
                 <span className="ml-2">{t("stockPanel.cashBalanceLabel")}</span>
                 <span className="ml-2 font-semibold tabular-nums text-slate-800">{formatCurrencyMoney(cashBalance, currency)}</span>

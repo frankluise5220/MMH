@@ -19,7 +19,7 @@ appname=mmh
 - 飞牛包必须在 Linux/fnOS 构建环境生成，不能用 Windows 构建产物冒充正式包。
 - 数据目录必须持久化，升级不得删除用户的 SQLite 数据库文件；SQLite 数据库必须位于飞牛应用数据目录，不允许回退到应用安装目录。
 - 飞牛版正常更新必须是同一 `appname=mmh` 的覆盖升级，走 `cmd/upgrade_init` / `cmd/upgrade_callback`；不要把先卸载旧包再安装新版作为常规升级方案。
-- FN 软仓更新必须静默执行直到成功，不应弹出 `7777` 端口确认窗口；包内只保留首次安装向导，不包含 `wizard/upgrade`、`wizard/config` 或 `wizard/uninstall`。
+- FN 软仓更新必须静默执行直到成功，并沿用已安装 MMH 的在用端口；包内只保留首次安装向导 `wizard/install`，不包含 `wizard/upgrade`、`wizard/config` 或 `wizard/uninstall`。端口解析顺序必须是已持久化 `.port` -> 已持久化 `mmh.env` 中的 `PORT` -> 首次安装 `wizard_port` -> `TRIM_SERVICE_PORT` -> 默认 `7777`，避免覆盖升级时把已确认端口重置为向导默认值。
 - 飞牛版数据库升级不能依赖备份恢复来避免丢数据。新增字段必须通过幂等 SQLite 迁移补列；字段重命名、拆分、类型调整或表重组必须写显式迁移和数据回填，不能重建库、清空表或让旧库停留在不兼容结构。
 - 飞牛包生命周期脚本不能默认以 `mmh` 包用户执行。安装、升级和卸载初始化需要应用中心/root 权限处理包目录、权限和同级备份；真正启动服务时再降权到 `mmh` 用户运行 Node。
 - `config/privilege` 只声明 `username`/`groupname`，不声明 `defaults: { "run-as": "package" }`。fnOS 应用中心下载暂存目录会把 `cmd/*` 解压为 `700 root`；若生命周期脚本以包用户执行，`install_init` 会因无法读取 root 拥有的脚本而报 `fork/exec ... permission denied`（0.1.8、0.1.33 均因此失败）。移除 `run-as: package` 后脚本以 root 执行，暂存权限不再影响安装；服务启动时才降权到 `mmh`（`restart_start_as_package_user`）。
@@ -48,7 +48,7 @@ appname=mmh
 2. 脚本定位应用目录和持久化数据目录；数据目录优先使用 `TRIM_DATADEST`，其次使用 `TRIM_PKGVAR/data`，再兜底到 `/vol*/@appdata/mmh/data`。
 3. 设置 `DATABASE_URL=file:$DATA_DEST/mmh.db`。
 4. 设置 `PRISMA_SCHEMA_PATH=$SERVER_DIR/prisma/schema.native.prisma`。
-5. 读取持久环境文件 `mmh.env`，导出 `PORT`；`MMH_SYSTEM_PASSWORD` 仅作兼容保留（未设置时首次启动随机生成并保存到 `mmh-system-password.txt`），敏感操作验证不再使用。
+5. 读取持久端口文件 `.port` 或持久环境文件 `mmh.env`，导出 `PORT`；`MMH_SYSTEM_PASSWORD` 仅作兼容保留（未设置时首次启动随机生成并保存到 `mmh-system-password.txt`），敏感操作验证不再使用。
 6. 如果 `cmd/main start` 是由应用中心/root 调起，先修正应用数据目录为 `mmh:mmh`，再降权到 `mmh` 用户继续启动。
 7. 使用包内 Node 运行 SQLite 初始化脚本；仅在数据库没有用户表时创建初始结构，已有数据库不会被重建，但会继续执行幂等运行时迁移并记录到 `_mmh_native_schema`，随后按 `native-init.sql` 补齐缺失的新表、可安全新增字段和可兼容索引。
 8. 启动包内 Next standalone `server.js`，对外暴露 `7777`。
@@ -68,14 +68,14 @@ appname=mmh
 - 构建正式包必须提供对应架构的 Linux Node runtime；x86 使用 `node-v20.x-linux-x64.tar.gz`，ARM64 使用 `node-v20.x-linux-arm64.tar.gz`。workflow 会自动下载，手动构建时通过 `FNOS_TARGET_ARCH` 与 `FNOS_NODE_TARBALL` 显式指定。
 - Windows 本地只能生成调试 stage 包，不能产出可安装的正式包。
 - 当前包包含 Linux Node runtime、Next standalone、Prisma runtime 和必要依赖，体积会明显大于 miniBill；除非后续把服务端重写为更轻的单二进制运行时，否则不承诺几 MB 级。
-- 飞牛包首次安装向导不要求提供系统密码；敏感操作验证当前登录用户自己的密码（仅管理员可执行）。启动脚本仍会为兼容保留自动生成 `MMH_SYSTEM_PASSWORD`。
+- 飞牛包不要求用户提供单独的系统密码；敏感操作验证当前登录用户自己的密码（仅管理员可执行）。启动脚本仍会为兼容保留自动生成 `MMH_SYSTEM_PASSWORD`。
 - 飞牛包不使用独立 `-fnos` 版本号；正式发布前用 `npm run release:version` 递增一次 `package.json` 的 `0.1.x`，并保持 GitHub Release、GHCR 镜像和所有架构 `.fpk` 同号。
-- 用户通过应用中心或手动选择新版 `.fpk` 时，应在已安装 `mmh` 上直接覆盖升级。`uninstall_init` 仅用于用户主动卸载或异常恢复时备份 appdata，不作为升级路径。
+- 用户通过应用中心或手动选择新版 `.fpk` 时，应在已安装 `mmh` 上直接覆盖升级，并复用已安装应用数据目录里的端口配置。`uninstall_init` 仅用于用户主动卸载或异常恢复时备份 appdata，不作为升级路径。
 
 ## 待确认
 
 - 飞牛 `.fpk` 的正式 manifest 字段、签名方式和目录结构。
-- 飞牛手动 `.fpk` 覆盖升级在 `manualInstall` 状态下的应用中心提示行为。
+- 飞牛手动 `.fpk` 覆盖升级在 `manualInstall` 状态下即使误触发 `wizard/install`，也必须复用已安装端口，不能把向导端口写回覆盖。
 - 系统更新页在 `MMH_DEPLOY_TARGET=fnos` 时显示飞牛包更新方式，而不是 Docker updater。
 
 ## 下一步清单
@@ -87,7 +87,7 @@ appname=mmh
 - [x] 建立 `npm run check:fnos` 飞牛包素材校验。
 - [x] 增加 GitHub Release workflow，发布时自动下载对应架构的 Linux Node runtime、安装对应架构官方 `fnpack` 并构建正式 `.fpk`。
 - [ ] 执行 `.github/workflows/fnos-release.yml`，确认正式 x86/arm64 `.fpk` 产出并通过内置校验。
-- [ ] 在 x86 与 ARM64 飞牛测试机安装旧版 `.fpk` 后，直接安装同一 `appname=mmh` 的新版 `.fpk`，验证覆盖升级、SQLite 数据保留、版本号变化和日志查看。
+- [ ] 在 x86 与 ARM64 飞牛测试机安装旧版 `.fpk` 后，直接安装同一 `appname=mmh` 的新版 `.fpk`，验证覆盖升级沿用旧端口、SQLite 数据保留、版本号变化和日志查看。
 - [x] 给系统更新页增加飞牛环境提示。
 - [ ] 将大列表接口改成分页或游标，优先处理账单、明细、导入预览。
 - [ ] 补 API mutation 的 Origin/CSRF 与登录失败限流。

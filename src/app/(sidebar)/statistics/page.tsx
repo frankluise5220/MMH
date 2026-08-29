@@ -9,7 +9,6 @@ import type { ReportItem } from "@/components/ReportSelector";
 import StatisticsCharts from "@/components/StatisticsCharts";
 import { StatisticsFilterPanel } from "@/components/StatisticsFilterPanel";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { readableTagWhere } from "@/lib/server/tag-scope";
 import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import {
@@ -83,10 +82,17 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
   const thisYear = now.getFullYear();
   const selectedYear = typeof params?.year === "string" ? parseInt(params.year, 10) : thisYear;
   const year = Number.isFinite(selectedYear) && selectedYear >= 2000 && selectedYear <= 2100 ? selectedYear : thisYear;
+  const level = params?.level === "month" ? "month" : "year";
+  const selectedMonth = typeof params?.month === "string" ? parseInt(params.month, 10) : 1;
+  const month = Number.isFinite(selectedMonth) && selectedMonth >= 1 && selectedMonth <= 12 ? selectedMonth : 1;
 
   const selectedAccountIds = typeof params?.accounts === "string" && params.accounts.trim()
     ? params.accounts.split(",").map(s => s.trim()).filter(Boolean)
     : null;
+  const selectedInstitutionIds = typeof params?.institutionIds === "string" && params.institutionIds.trim() ? params.institutionIds.split(",").filter(Boolean) : typeof params?.institutionId === "string" && params.institutionId.trim() ? [params.institutionId] : null;
+  const selectedUserIds = typeof params?.userIds === "string" && params.userIds.trim()
+    ? params.userIds.split(",").map((id) => id.trim()).filter(Boolean)
+    : typeof params?.userId === "string" && params.userId.trim() ? [params.userId] : null;
 
   const selectedTagIds = typeof params?.tags === "string" && params.tags.trim()
     ? params.tags.split(",").map(s => s.trim()).filter(Boolean)
@@ -94,10 +100,10 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
 
   await normalizeDefaultCategoryHierarchyForHousehold(prisma, ctx.householdId);
 
-  const [allAccounts, categories] = await Promise.all([
+  const [allAccounts, categories, allInstitutions, allUsers] = await Promise.all([
     prisma.account.findMany({
-      where: { ...hidFilter, isActive: true },
-      select: { id: true, name: true, kind: true, Institution: { select: { name: true } } },
+      where: { ...hidFilter, isActive: true, counterpartyId: null, kind: { not: "insurance" } },
+      select: { id: true, name: true, kind: true, userId: true, groupId: true, counterpartyId: true, numberMasked: true, Institution: { select: { id: true, name: true, type: true } } },
       orderBy: { name: "asc" },
     }),
     prisma.category.findMany({
@@ -105,27 +111,37 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
       select: { id: true, name: true, type: true },
       orderBy: categoryOrderBy(),
     }),
+    prisma.institution.findMany({ where: { householdId: ctx.householdId, Account: { some: { ...hidFilter, isActive: true, counterpartyId: null, kind: { not: "insurance" } } } }, select: { id: true, name: true, type: true }, orderBy: { name: "asc" } }),
+    prisma.accountGroup.findMany({ where: { householdId: ctx.householdId, Account: { some: { ...hidFilter, isActive: true, counterpartyId: null, kind: { not: "insurance" } } } }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
   ]);
-
-  const allTags = await prisma.tag.findMany({
-    where: readableTagWhere(ctx.householdId),
-    select: { id: true, name: true, color: true },
-    orderBy: { name: "asc" },
-  });
 
   const nonInvestAccountIds = allAccounts.filter((a) => !isPureInvestmentAccount(a)).map(a => a.id);
   const accountKindById = new Map(allAccounts.map((account) => [account.id, account.kind]));
 
-  const accountFilter = selectedAccountIds
-    ? { OR: [{ accountId: { in: selectedAccountIds } }, { toAccountId: { in: selectedAccountIds } }] }
-    : {};
+  const institutionAccountIds = selectedInstitutionIds
+    ? allAccounts.filter((account) => selectedInstitutionIds.includes(account.Institution?.id ?? "")).map((account) => account.id)
+    : null;
+  const userAccountIds = selectedUserIds
+    ? allAccounts.filter((account) => account.groupId && selectedUserIds.includes(account.groupId)).map((account) => account.id)
+    : null;
+  const accountScopes = [selectedAccountIds, institutionAccountIds, userAccountIds].filter((ids): ids is string[] => Boolean(ids));
+  const scopedAccountIds = accountScopes.length > 0
+    ? allAccounts.map((account) => account.id).filter((id) => accountScopes.every((ids) => ids.includes(id)))
+    : null;
+  const accountFilter = scopedAccountIds
+    ? { OR: [{ accountId: { in: scopedAccountIds } }, { toAccountId: { in: scopedAccountIds } }] }
+      : {};
 
-  // Fetch all transactions of the selected year (with EntryTag)
+  const periodStart = level === "month" ? new Date(Date.UTC(year, month - 1, 1)) : new Date(Date.UTC(year, 0, 1));
+  const periodEnd = level === "month" ? new Date(Date.UTC(year, month, 1)) : new Date(Date.UTC(year + 1, 0, 1));
+  const scopeAccountIds = scopedAccountIds ?? nonInvestAccountIds;
+
+  // Fetch transactions for the selected period (with EntryTag)
   const allEntries = await prisma.txRecord.findMany({
     where: {
       deletedAt: null,
       ...hidFilter,
-      date: { gte: new Date(Date.UTC(year, 0, 1)), lt: new Date(Date.UTC(year + 1, 0, 1)) },
+      date: { gte: periodStart, lt: periodEnd },
       ...accountFilter,
     },
     select: {
@@ -159,9 +175,9 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
       .map((entry) => entry.id),
   );
   const wealthStatisticEntries = await loadWealthStatisticSourceEntries(ctx, {
-    start: new Date(Date.UTC(year, 0, 1)),
-    endExclusive: new Date(Date.UTC(year + 1, 0, 1)),
-    accountIds: selectedAccountIds,
+    start: periodStart,
+    endExclusive: periodEnd,
+    accountIds: scopedAccountIds,
     tagIds: selectedTagIds,
     excludeEntryIds: representedInvestmentEntryIds,
   });
@@ -179,7 +195,6 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
   const expenseByTag = new Map<string, { id: string; name: string; color: string; value: number }>();
   const pnlItems: PnLItem[] = [];
 
-  const scopeAccountIds = selectedAccountIds ?? nonInvestAccountIds;
   const resolveCategory = createStatisticCategoryResolver(categories);
 
   for (const e of filteredEntries) {
@@ -363,21 +378,24 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
     <div className="flex-1 min-h-0 flex flex-col">
       <header className="page-header flex items-center justify-between gap-3 px-6 py-3">
         <h1 className="text-lg page-title">{t("statistics.title")}</h1>
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <ReportSelector
-            currentType="cash-statistics"
-            items={buildStatisticsReportMenuItems(year, t)}
-          />
+        <ReportSelector
+          currentType="cash-statistics"
+          items={buildStatisticsReportMenuItems(year, t)}
+        />
+      </header>
+
+      <div className="shrink-0 px-6 pt-3">
+        <div className="flex min-h-10 items-center overflow-visible border-b border-slate-200 bg-white px-1">
           <Suspense fallback={<div className="text-xs text-slate-400">{t("statistics.loadingFilter")}</div>}>
             <StatisticsFilterPanel
               allAccounts={allAccounts}
-              allTags={allTags}
+              allInstitutions={allInstitutions}
+              allUsers={allUsers}
               year={year}
             />
           </Suspense>
         </div>
-      </header>
-
+      </div>
       <div className="flex-1 min-h-0 overflow-y-auto p-6">
         <StatisticsCharts
           monthData={monthData}

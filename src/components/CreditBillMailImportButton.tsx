@@ -39,11 +39,17 @@ export function CreditBillMailImportDialog({ open, onClose, accountId, accountNa
   void accountId;
   void accountName;
   const { t } = useI18n();
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   if (!open || typeof document === "undefined") return null;
 
+  // When the statement preview opens, hide the mail dialog visually but keep
+  // the tree mounted so the preview dialog (a child of EmailSettingsPanel)
+  // stays alive. Fully close only after the preview is dismissed.
+  const mailOverlayHidden = previewOpen;
+
   return createPortal(
-    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-900/30 px-4 py-4">
+    <div className={`fixed inset-0 z-[90] flex items-center justify-center bg-slate-900/30 px-4 py-4${mailOverlayHidden ? " pointer-events-none opacity-0" : ""}`}>
       <div className="flex max-h-[90vh] w-full max-w-7xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-slate-50 shadow-2xl">
         <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3">
           <div className="min-w-0">
@@ -59,7 +65,11 @@ export function CreditBillMailImportDialog({ open, onClose, accountId, accountNa
           </button>
         </div>
         <div className="min-h-0 flex-1 overflow-auto px-4 py-4">
-          <EmailSettingsPanel embedded />
+          <EmailSettingsPanel
+            embedded
+            onStatementPreviewOpened={() => setPreviewOpen(true)}
+            onStatementPreviewClosed={onClose}
+          />
         </div>
       </div>
     </div>,

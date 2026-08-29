@@ -1,133 +1,115 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import Link from "next/link";
+import { useState } from "react";
 import { useI18n } from "@/lib/i18n";
+import {
+  AccountScopeFilter,
+  type AccountScopeValue,
+  type StatisticsAccountItem,
+  type StatisticsInstitutionItem,
+  type StatisticsUserItem,
+} from "@/components/AccountScopeFilter";
 
-type AccountItem = {
-  id: string;
-  name: string;
-  kind: string;
-  Institution?: { name: string } | null;
-};
+export type {
+  StatisticsAccountItem,
+  StatisticsInstitutionItem,
+  StatisticsUserItem,
+} from "@/components/AccountScopeFilter";
 
-type TagItem = {
-  id: string;
-  name: string;
-  color: string | null;
-};
-
-const accountLabel = (a: AccountItem) => {
-  const inst = a.Institution?.name?.trim();
-  return inst ? `${inst}·${a.name}` : a.name;
-};
-
-export function StatisticsFilterPanel({
-  allAccounts,
-  allTags,
-  year,
-}: {
-  allAccounts: AccountItem[];
-  allTags: TagItem[];
+type Props = {
+  allAccounts: StatisticsAccountItem[];
+  allInstitutions?: StatisticsInstitutionItem[];
+  allUsers?: StatisticsUserItem[];
   year: number;
-}) {
+  reportPath?: string;
+  exportHref?: string;
+  exportFilename?: string;
+  start?: string;
+  end?: string;
+  availableYears?: number[];
+  baseParams?: Record<string, string>;
+  accountParam?: string;
+  periodParam?: string;
+  hideRange?: boolean;
+};
+
+export function StatisticsFilterPanel({ allAccounts, allInstitutions = [], allUsers = [], year, reportPath = "/statistics", exportHref, exportFilename, start, end, availableYears = [], baseParams = {}, accountParam, periodParam, hideRange = false }: Props) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { t } = useI18n();
+  const [level, setLevel] = useState<"year" | "month">(searchParams.get(periodParam ?? "groupBy") === "month" || searchParams.get("level") === "month" ? "month" : "year");
+  const [accountId, setAccountId] = useState(searchParams.get(accountParam ?? "accounts") ?? "");
+  const [institutionId, setInstitutionId] = useState(searchParams.get("institutionIds") ?? searchParams.get("institutionId") ?? "");
+  const [userIds, setUserIds] = useState<string[]>(searchParams.get("userIds")?.split(",").filter(Boolean) ?? (searchParams.get("userId") ? [searchParams.get("userId")!] : []));
+  const [startMonth, setStartMonth] = useState(searchParams.get("startMonth") ?? start?.slice(0, 7) ?? `${year}-01`);
+  const [endMonth, setEndMonth] = useState(searchParams.get("endMonth") ?? end?.slice(0, 7) ?? `${year}-12`);
+  const [startYear, setStartYear] = useState(searchParams.get("startYear") ?? start?.slice(0, 4) ?? String(year));
+  const [endYear, setEndYear] = useState(searchParams.get("endYear") ?? end?.slice(0, 4) ?? String(year));
 
-  const selectedAccountIds = searchParams.get("accounts")
-    ? searchParams.get("accounts")!.split(",").filter(Boolean)
-    : [];
-  const selectedTagIds = searchParams.get("tags")
-    ? searchParams.get("tags")!.split(",").filter(Boolean)
-    : [];
+  const scopeValue: AccountScopeValue = {
+    userIds,
+    institutionIds: institutionId.split(",").filter(Boolean),
+    accountIds: accountId.split(",").filter(Boolean),
+  };
 
-  function buildHref(
-    accountIds: string[],
-    tagIds: string[],
-    overrides: {
-      year?: number;
-    } = {},
-  ) {
+  function generate(overrides: { nextUserIds?: string[]; nextInstitutionId?: string; nextAccountId?: string } = {}) {
+    const nextUserIds = overrides.nextUserIds ?? userIds;
+    const nextInstitutionId = overrides.nextInstitutionId ?? institutionId;
+    const nextAccountId = overrides.nextAccountId ?? accountId;
     const params = new URLSearchParams();
-    params.set("year", String(overrides.year ?? year));
-    if (accountIds.length > 0) params.set("accounts", accountIds.join(","));
-    if (tagIds.length > 0) params.set("tags", tagIds.join(","));
-    return `/statistics?${params.toString()}`;
+    Object.entries(baseParams).forEach(([key, value]) => params.set(key, value));
+    params.set("year", searchParams.get("year") ?? String(year));
+    if (periodParam) params.set(periodParam, level === "month" ? "month" : "year");
+    if (reportPath === "/reports") {
+      params.set("groupBy", level);
+      if (level === "month") { params.set("startMonth", startMonth); params.set("endMonth", endMonth); }
+      else { params.set("startYear", startYear); params.set("endYear", endYear); }
+    } else {
+      params.set("level", level);
+      if (level === "month") { params.set("startMonth", startMonth); params.set("endMonth", endMonth); }
+    }
+    if (nextAccountId) params.set(accountParam ?? (reportPath === "/reports" ? "accountId" : "accounts"), nextAccountId);
+    if (nextInstitutionId) {
+      params.set("institutionIds", nextInstitutionId);
+    }
+    if (nextUserIds.length > 0) params.set("userIds", nextUserIds.join(","));
+    router.push(`${reportPath}?${params.toString()}`, { scroll: false });
   }
 
-  function toggleAccount(id: string) {
-    const next = selectedAccountIds.includes(id)
-      ? selectedAccountIds.filter(x => x !== id)
-      : [...selectedAccountIds, id];
-    router.push(buildHref(next, selectedTagIds));
+  function handleScopeChange(next: AccountScopeValue) {
+    // Only update the local draft here. The cascading option lists inside
+    // AccountScopeFilter follow these values; the report itself recomputes
+    // only when the user clicks the refresh button (generate()).
+    setUserIds(next.userIds);
+    setInstitutionId(next.institutionIds.join(","));
+    setAccountId(next.accountIds.join(","));
   }
 
-  function toggleTag(id: string) {
-    const next = selectedTagIds.includes(id)
-      ? selectedTagIds.filter(x => x !== id)
-      : [...selectedTagIds, id];
-    router.push(buildHref(selectedAccountIds, next));
+  function clearFilters() {
+    setUserIds([]);
+    setInstitutionId("");
+    setAccountId("");
   }
-
-  const hrefYear = (y: number) => buildHref(selectedAccountIds, selectedTagIds, { year: y });
 
   return (
-    <div className="flex items-center gap-3">
-      <div className="flex items-center gap-1">
-        <Link href={hrefYear(year - 1)} className="h-7 w-7 rounded border border-slate-200 bg-white text-xs text-slate-500 hover:bg-slate-50 flex items-center justify-center">◀</Link>
-        <span className="text-sm font-semibold text-slate-700 w-16 text-center">{t("statistics.yearTitle", { year })}</span>
-        <Link href={hrefYear(year + 1)} className="h-7 w-7 rounded border border-slate-200 bg-white text-xs text-slate-500 hover:bg-slate-50 flex items-center justify-center">▶</Link>
-      </div>
-
-      {/* Account filter */}
-      <div className="relative group">
-        <span className="text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded cursor-pointer hover:bg-slate-200">
-          {selectedAccountIds.length > 0 ? t("statistics.selectedAccounts", { count: selectedAccountIds.length }) : t("statistics.allAccounts")}
-        </span>
-        <div className="absolute right-0 top-full mt-1 z-50 hidden group-hover:block bg-white border border-slate-200 rounded-lg shadow-lg p-2 min-w-[240px] max-h-64 overflow-y-auto">
-          {allAccounts.map(a => (
-            <label key={a.id} className="flex items-center gap-2 px-2 py-1 text-xs hover:bg-slate-50 rounded cursor-pointer">
-              <input
-                type="checkbox"
-                checked={selectedAccountIds.includes(a.id)}
-                onChange={() => toggleAccount(a.id)}
-                className="rounded"
-              />
-              {accountLabel(a)}
-            </label>
-          ))}
-        </div>
-      </div>
-
-      {/* Tag filter */}
-      {allTags.length > 0 && (
-        <div className="relative group">
-          <span className="text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded cursor-pointer hover:bg-slate-200">
-            {selectedTagIds.length > 0 ? t("statistics.selectedTags", { count: selectedTagIds.length }) : t("statistics.allTags")}
-          </span>
-          <div className="absolute right-0 top-full mt-1 z-50 hidden group-hover:block bg-white border border-slate-200 rounded-lg shadow-lg p-2 min-w-[200px] max-h-64 overflow-y-auto">
-            {allTags.map(t => {
-              const c = t.color || "#3B82F6";
-              const checked = selectedTagIds.includes(t.id);
-              return (
-                <label key={t.id} className="flex items-center gap-2 px-2 py-1 text-xs hover:bg-slate-50 rounded cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={() => toggleTag(t.id)}
-                    className="rounded"
-                  />
-                  <span className="inline-flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: c }} />
-                    {t.name}
-                  </span>
-                </label>
-              );
-            })}
-          </div>
-        </div>
-      )}
+    <div className="flex min-w-max items-center gap-3">
+      {!hideRange && <span className="text-xs font-medium text-slate-500">{t("statistics.range")}</span>}
+      {!hideRange && <select value={level} onChange={(event) => setLevel(event.target.value as "year" | "month")} className="h-8 w-20 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700">
+        <option value="year">{t("reports.year")}</option>
+        <option value="month">{t("reports.month")}</option>
+      </select>}
+      {!hideRange && level === "month" ? <><input type="month" value={startMonth} onChange={(event) => setStartMonth(event.target.value)} className="h-8 w-[132px] rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700" /><input type="month" value={endMonth} onChange={(event) => setEndMonth(event.target.value)} className="h-8 w-[132px] rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700" /></> : <><select value={startYear} onChange={(event) => setStartYear(event.target.value)} className="h-8 w-24 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700">{(availableYears.length > 0 ? availableYears : [year]).map((value) => <option key={`start-${value}`}>{value}</option>)}</select><select value={endYear} onChange={(event) => setEndYear(event.target.value)} className="h-8 w-24 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700">{(availableYears.length > 0 ? availableYears : [year]).map((value) => <option key={`end-${value}`}>{value}</option>)}</select></>}
+      <AccountScopeFilter
+        allAccounts={allAccounts}
+        allInstitutions={allInstitutions}
+        allUsers={allUsers}
+        value={scopeValue}
+        onChange={handleScopeChange}
+      />
+      <button type="button" onClick={() => generate()} className="h-8 rounded-md bg-slate-900 px-3 text-xs font-medium text-white hover:bg-slate-700">{t("reports.refresh")}</button>
+      <button type="button" onClick={clearFilters} className="h-8 rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-600 hover:bg-slate-50">{t("statistics.clearFilters")}</button>
+      {exportHref && <a href={exportHref} download={exportFilename ?? "export.csv"} className="h-8 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 hover:bg-blue-50">{t("reports.export")}</a>}
     </div>
   );
 }

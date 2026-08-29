@@ -209,6 +209,14 @@ export function DepositFormModal({
   const [localCashSSOpts, setLocalCashSSOpts] = useState(cashAccountSSOptions);
   const [localDepositSSOpts, setLocalDepositSSOpts] = useState(investmentAccountSSOptions);
   const [nestedEntityType, setNestedEntityType] = useState<"cash-account" | "deposit-account" | null>(null);
+  // Local copy of nested option data so newly created institutions/groups persist
+  // across account-dialog instances within this modal.
+  const [localNestedFieldData, setLocalNestedFieldData] = useState<NestedFieldData | undefined>(nestedFieldData);
+
+  // Keep local nested option data in sync when the server-provided prop changes.
+  useEffect(() => {
+    if (nestedFieldData) setLocalNestedFieldData(nestedFieldData);
+  }, [nestedFieldData]);
 
   const {
     ownerFilterLabel: cashOwnerFilterLabel,
@@ -937,6 +945,23 @@ export function DepositFormModal({
     setOpen(false);
     if (mode === "create") reset();
   });
+  // Called when a nested institution/group is created inside an account dialog.
+  // Keep the shared nested option data fresh so subsequent account dialogs can
+  // select the newly created entity.
+  function handleNestedOptionCreated(id: string, name: string, extra?: { kind?: string; type?: string }) {
+    setLocalNestedFieldData((prev) => {
+      const base = prev ?? nestedFieldData ?? {};
+      if (extra?.type !== undefined) {
+        const existing = base.institutionId ?? [];
+        if (existing.some((item) => item.id === id)) return base;
+        return { ...base, institutionId: [...existing, { id, name, type: extra.type }] };
+      }
+      const existing = base.groupId ?? [];
+      if (existing.some((item) => item.id === id)) return base;
+      return { ...base, groupId: [...existing, { id, name }] };
+    });
+  }
+
   if (!open) return null;
   const cashOwnerCycleButton = localCashSSOpts?.some((option) => option.isHeader) ? (
     <button
@@ -1337,7 +1362,8 @@ export function DepositFormModal({
               }
               hiddenFields={nestedEntityType === "cash-account" ? [] : ["kind"]}
               allowedAccountKinds={nestedEntityType === "cash-account" ? ["bank_debit", "ewallet"] : undefined}
-              nestedFieldData={nestedFieldData}
+              nestedFieldData={localNestedFieldData ?? nestedFieldData}
+              onNestedCreated={handleNestedOptionCreated}
             />,
             document.body,
           )

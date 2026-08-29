@@ -491,6 +491,62 @@ export async function createDebtTransaction(formData: FormData) {
           },
           data: { deletedAt: new Date() },
         });
+        if (mode === "borrow_in") {
+          const existingPlan = await tx.regularInvestPlan.findFirst({
+            where: {
+              householdId,
+              accountId: debtAccount.id,
+              fundCode: "loan_repayment",
+              status: { in: [RegularInvestStatus.active, RegularInvestStatus.paused] },
+            },
+            orderBy: [{ status: "asc" }, { nextRunDate: "asc" }],
+          });
+          if (existingPlan) {
+            const intervalMonths = Number.isFinite(repaymentIntervalMonths) && repaymentIntervalMonths > 0
+              ? repaymentIntervalMonths
+              : existingPlan.intervalValue;
+            const totalRuns = Number.isFinite(loanTotalRuns) && loanTotalRuns > 0
+              ? loanTotalRuns
+              : existingPlan.totalRuns ?? 0;
+            const startDate = firstRepaymentDate ?? existingPlan.startDate;
+            const executionDay = firstRepaymentDate ? firstRepaymentDate.getUTCDate() : existingPlan.executionDay;
+            const title = `还款：${debtAccount.Institution?.name ?? debtAccount.Counterparty?.name ?? debtAccount.name}`;
+            const nextRunDate = (existingPlan.executedRuns ?? 0) > 0 && existingPlan.nextRunDate
+              ? existingPlan.nextRunDate
+              : calcInitialScheduledRunDate(startDate, IntervalUnit.month, intervalMonths, executionDay, false);
+            await tx.regularInvestPlan.update({
+              where: { id: existingPlan.id },
+              data: {
+                cashAccountId: cashAccount.id,
+                cashAccountName: cashAccount.name,
+                amount: Number.isFinite(repaymentPlanAmount) && repaymentPlanAmount != null && repaymentPlanAmount > 0 ? repaymentPlanAmount : (existingPlan.amount ?? 0),
+                intervalValue: intervalMonths,
+                executionDay,
+                startDate,
+                nextRunDate,
+                totalRuns,
+                memo: encodeScheduledTaskMemo({
+                  type: "loan_repayment",
+                  title,
+                  fromAccountId: cashAccount.id,
+                  toAccountId: debtAccount.id,
+                  annualRate: annualRate ?? null,
+                  mortgageLprDiscount: mortgageLprDiscount ?? null,
+                  repaymentMethod,
+                  repaymentIntervalMonths: intervalMonths,
+                  originalTotalRuns: totalRuns,
+                  autoDebit,
+                }),
+              },
+            });
+            await replaceLoanRateAdjustmentsForAccount(tx, {
+              householdId,
+              accountId: debtAccount.id,
+              regularInvestPlanId: existingPlan.id,
+              adjustments: historicalLoanRateAdjustments,
+            });
+          }
+        }
         return;
       }
       const shouldCreateRepaymentPlan =

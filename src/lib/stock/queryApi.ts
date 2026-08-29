@@ -329,3 +329,78 @@ export async function queryStockClosePriceByDate(marketRaw: unknown, stockCodeRa
 
   return null;
 }
+
+export type StockClosePriceListResult = {
+  market: string;
+  stockCode: string;
+  currency: string;
+  exchange?: string | null;
+  source: string;
+  items: Array<{ priceDate: string; closePrice: number }>;
+} | null;
+
+async function queryEastmoneyCnCloseList(
+  stockCode: string,
+  exchange: string | null | undefined,
+  startDate: string,
+  endDate: string,
+  source: string,
+): Promise<StockClosePriceListResult> {
+  for (const secid of eastmoneyCnSecidCandidates(stockCode, exchange)) {
+    const params = new URLSearchParams({
+      secid,
+      fields1: "f1,f2,f3,f4,f5,f6",
+      fields2: "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+      klt: "101",
+      fqt: "1",
+      beg: startDate,
+      end: endDate,
+      lmt: "100000",
+    });
+    try {
+      const data: any = await fetchJson(`https://push2his.eastmoney.com/api/qt/stock/kline/get?${params.toString()}`)
+        ?? await fetchJson(`http://push2his.eastmoney.com/api/qt/stock/kline/get?${params.toString()}`);
+      const klines = Array.isArray(data?.data?.klines) ? data.data.klines : [];
+      const items = klines
+        .map(parseEastmoneyKlineClose)
+        .filter((item): item is { priceDate: string; closePrice: number } => item != null);
+      if (items.length === 0) continue;
+      return {
+        market: "CN",
+        stockCode,
+        currency: "CNY",
+        exchange: exchangeFromSecid(secid, exchange ?? inferStockExchangeFromCode("CN", stockCode)),
+        source,
+        items,
+      };
+    } catch {
+      // Try the next secid candidate.
+    }
+  }
+  return null;
+}
+
+export async function queryStockClosePriceList(
+  marketRaw: unknown,
+  stockCodeRaw: unknown,
+  startDateRaw: unknown,
+  endDateRaw: unknown,
+  exchangeRaw?: unknown,
+): Promise<StockClosePriceListResult> {
+  const market = normalizeStockMarket(marketRaw);
+  const stockCode = normalizeStockCode(stockCodeRaw);
+  const exchange = String(exchangeRaw ?? "").trim() || inferStockExchangeFromCode(market, stockCode);
+  if (!stockCode) return null;
+
+  if (market === "CN") {
+    return queryEastmoneyCnCloseList(
+      stockCode,
+      exchange,
+      normalizeEastmoneyKlineEndDate(startDateRaw),
+      normalizeEastmoneyKlineEndDate(endDateRaw),
+      "eastmoney-kline-list",
+    );
+  }
+
+  return null;
+}

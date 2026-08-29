@@ -1183,7 +1183,9 @@ export default async function Home({
   const propertyAccountSSOptions = buildAccountSSOptions(a => a.kind === "investment" && a.investProductType === "property");
   const debtTransferAccountSSOptions = buildAccountSSOptions(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet" || a.kind === "bank_credit");
   const debtCounterpartyOptions = counterparties;
-  const debtSourceInstitutions = institutions.filter((institution) => institution.type === "bank");
+  const debtSourceInstitutions = institutions.filter((institution) =>
+    institution.type === "bank" || institution.type === "debt" || institution.type === "organization" || institution.type === "other",
+  );
   const debtObjectOptions: SSOpt[] = [
     ...(debtCounterpartyOptions.length > 0
       ? [
@@ -2891,7 +2893,6 @@ export default async function Home({
             <PropertyShell
               key={`investproperty-${accountId || "all"}`}
               accountId={accountId || defaultPropertyInvestmentAccountId}
-              defaultCashAccountId={defaultCashAccountForSelectedInstitution}
               currency={selectedAccount?.currency ?? baseCurrency}
               baseCurrency={baseCurrency}
               positions={JSON.parse(JSON.stringify(investpropertyData.positions))}

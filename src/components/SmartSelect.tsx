@@ -496,6 +496,9 @@ export function SmartSelect(props: SmartSelectProps) {
   const [focusedIndex, setFocusedIndex] = useState(-1);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [dropdownPos, setDropdownPos] = useState({ top: 0, left: 0, width: 0, minWidth: 0, maxHeight: 0 });
+  // Multi-mode draft: checkbox/keyboard edits land here; committing happens
+  // on confirm button, label click (single-select), or outside click.
+  const [multiDraft, setMultiDraft] = useState<string[] | null>(null);
 
   const triggerRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -542,8 +545,18 @@ export function SmartSelect(props: SmartSelectProps) {
     setSearch("");
     setShowNew(false);
     setFocusedIndex(-1);
+    setMultiDraft(null);
     onDropdownClose?.();
   }, [onDropdownClose]);
+
+  // Commit the multi draft (if any) then close. Used by outside-click and
+  // the confirm button so checkbox edits are not lost when closing.
+  const commitMultiAndClose = useCallback(() => {
+    if (multiDraft !== null) {
+      (onChange as (ids: string[]) => void)(multiDraft);
+    }
+    closeDropdown();
+  }, [closeDropdown, multiDraft, onChange]);
 
   const calcPosition = useCallback(() => {
     if (!triggerRef.current) return;
@@ -688,11 +701,16 @@ export function SmartSelect(props: SmartSelectProps) {
       const path = event.composedPath();
       if (triggerRef.current && path.includes(triggerRef.current)) return;
       if (dropdownRef.current && path.includes(dropdownRef.current)) return;
+      // Commit pending multi-mode draft edits before closing so checkbox
+      // toggles made before clicking away are applied.
+      if (mode === "multi" && multiDraft !== null) {
+        (onChange as (ids: string[]) => void)(multiDraft);
+      }
       closeDropdown();
     };
     document.addEventListener("pointerdown", handlePointerDownOutside, true);
     return () => document.removeEventListener("pointerdown", handlePointerDownOutside, true);
-  }, [closeDropdown, open]);
+  }, [closeDropdown, mode, multiDraft, onChange, open]);
 
   useEffect(() => {
     if (!open || focusedIndex < 0) return;
@@ -743,11 +761,23 @@ export function SmartSelect(props: SmartSelectProps) {
   }
 
   function toggleMulti(id: string) {
-    const current = value as string[];
+    const current = multiDraft ?? (value as string[]);
     const next = current.includes(id)
       ? current.filter((item) => item !== id)
       : [...current, id];
-    (onChange as (ids: string[]) => void)(next);
+    // Checkbox interaction only updates the draft; the dropdown stays open
+    // until the user confirms, clicks a label (single-select), or clicks away.
+    setMultiDraft(next);
+  }
+
+  function commitMultiSelection(ids: string[]) {
+    (onChange as (ids: string[]) => void)(ids);
+    closeDropdown();
+  }
+
+  function selectMultiOnly(id: string) {
+    // Clicking the label row = single-select this option, commit and close.
+    commitMultiSelection([id]);
   }
 
   async function createInlineOption() {
@@ -757,7 +787,10 @@ export function SmartSelect(props: SmartSelectProps) {
       if (isMultiInlineCreate) {
         const newOption = await isMultiInlineCreate.onCreate(newName.trim(), newColor);
         setCreatedOptions((prev) => mergeSmartSelectOptions(prev, [newOption]));
-        toggleMulti(newOption.id);
+        // Creating a tag is an explicit intent to select it: add to the
+        // working draft (not auto-commit) so the user can still adjust.
+        const current = multiDraft ?? (value as string[]);
+        if (!current.includes(newOption.id)) setMultiDraft([...current, newOption.id]);
         isMultiInlineCreate.onCreated?.(newOption);
       } else {
         const res = await fetch("/api/v1/tags", {
@@ -775,7 +808,8 @@ export function SmartSelect(props: SmartSelectProps) {
           label: data.tag.name,
           color: data.tag.color,
         };
-        toggleMulti(newOption.id);
+        const current = multiDraft ?? (value as string[]);
+        if (!current.includes(newOption.id)) setMultiDraft([...current, newOption.id]);
       }
       setNewName("");
       setShowNew(false);
@@ -1346,35 +1380,54 @@ export function SmartSelect(props: SmartSelectProps) {
             style={{ maxHeight: resizableDropdown ? undefined : 240 }}
           >
             {visible.map((option, index) => {
-              const checked = (value as string[]).includes(option.id);
+              const checked = (multiDraft ?? (value as string[])).includes(option.id);
               const color = option.color || PRESET_COLORS[0];
               return (
-                <button
+                <div
                   key={option.id}
                   id={`${listId}-${index}`}
-                  type="button"
                   role="option"
                   aria-selected={checked}
-                  onClick={() => toggleMulti(option.id)}
                   onMouseEnter={() => setFocusedIndex(index)}
-                  className={`flex ${micro ? "h-5 px-1.5 text-[11px]" : dense ? "h-7 px-2 text-xs" : compact ? "h-8 px-2 text-xs" : "h-9 px-3 text-sm"} w-full items-center gap-2 text-left transition-colors ${
+                  className={`flex ${micro ? "h-5 px-1.5 text-[11px]" : dense ? "h-7 px-2 text-xs" : compact ? "h-8 px-2 text-xs" : "h-9 px-3 text-sm"} w-full items-center gap-2 text-left transition-colors cursor-pointer ${
                     index === focusedIndex ? "bg-blue-50" : ""
                   } ${checked ? "font-medium" : ""}`}
+                  onClick={() => selectMultiOnly(option.id)}
                 >
-                  <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
-                    checked ? "border-blue-600 bg-blue-600 text-white" : "border-slate-300 bg-surface-white"
-                  }`}>
+                  <span
+                    role="checkbox"
+                    aria-checked={checked}
+                    tabIndex={-1}
+                    className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
+                      checked ? "border-blue-600 bg-blue-600 text-white" : "border-slate-300 bg-surface-white"
+                    }`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggleMulti(option.id);
+                    }}
+                  >
                     {checked ? <Check className="h-3 w-3" /> : null}
                   </span>
                   <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: color }} />
                   <span className="truncate text-slate-700">{option.label}</span>
-                </button>
+                </div>
               );
             })}
             {visible.length === 0 && !showNew ? (
               <div className="px-3 py-4 text-center text-xs text-slate-400">{t("smartSelect.noOptions")}</div>
             ) : null}
           </div>
+          {multiDraft !== null ? (
+            <div className="border-t border-slate-200/70 bg-slate-50/90 px-3 py-2">
+              <button
+                type="button"
+                onClick={commitMultiAndClose}
+                className="primary-button h-8 w-full text-sm"
+              >
+                {t("table.confirm")}
+              </button>
+            </div>
+          ) : null}
         </>
       )}
     </div>
@@ -1386,7 +1439,7 @@ export function SmartSelect(props: SmartSelectProps) {
         ref={triggerRef}
         role="button"
         tabIndex={0}
-        onClick={() => (open ? closeDropdown() : openDropdown())}
+        onClick={() => (open ? commitMultiAndClose() : openDropdown())}
         onKeyDown={handleTriggerKeyDown}
         aria-expanded={open}
         aria-haspopup="listbox"

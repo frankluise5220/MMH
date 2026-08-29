@@ -20,6 +20,7 @@ import {
   importPreviewFlowAmountTextFor,
 } from "@/lib/client/colors";
 import { createImportTraceId, postImportDebugLog } from "@/lib/client/importDebugLog";
+import { showChoiceDialog } from "@/lib/client/confirm-dialog";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
 import { DEFAULT_EMAIL_IMPORT_KEYWORD, normalizeEmailImportKeyword } from "@/lib/mail/email-import-settings";
@@ -150,6 +151,7 @@ type ParsedItemMeta = {
   statementPeriodStart?: string;
   statementPeriodEnd?: string;
   statementDueDate?: string;
+  templateLocked?: boolean;
 };
 type ParsedItem = {
   rawText: string; type: "expense" | "income" | "transfer" | "investment";
@@ -252,6 +254,9 @@ function shouldTreatAsTransfer(item: ParsedItem) {
     .map((value) => cleanOptionalText(value))
     .filter(Boolean)
     .join(" ");
+  // "分期还款"/"分期付款" are installment payments, not card repayments —
+  // the word "还款" there must not flip them to transfer.
+  if (/分期还款|分期付款/.test(source)) return false;
   // Matches Chinese transfer/repayment keywords in user-entered remark text.
   return /\u8f6c\u8d26|\u8f6c\u5e10|\u8fd8\u6b3e|\u4fe1\u7528\u5361\u8fd8\u6b3e/.test(source);
 }
@@ -283,7 +288,7 @@ type AccountCreateDraft = {
   repaymentDay: string;
 };
 
-export function EmailSettingsPanel({ embedded = false }: { embedded?: boolean }) {
+export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened, onStatementPreviewClosed }: { embedded?: boolean; onStatementPreviewOpened?: () => void; onStatementPreviewClosed?: () => void }) {
   const { t } = useI18n();
   const importPreviewFieldLabels = useMemo(() => IMPORT_PREVIEW_FIELD_LABELS(t), [t]);
   const previewTypeOptions = useMemo(() => PREVIEW_TYPE_OPTIONS(t), [t]);
@@ -348,6 +353,10 @@ export function EmailSettingsPanel({ embedded = false }: { embedded?: boolean })
   }, []);
 
   async function initializeEmailSettings(signal?: AbortSignal) {
+    // Warm the book lookups (accounts/institutions/categories) in the
+    // background so the first mail import does not block on a full
+    // /settings/bootstrap round-trip before opening the preview dialog.
+    void loadBookLookups();
     await loadMailImportSettings(signal);
     if (!signal?.aborted) await loadAccounts(signal);
   }
@@ -764,6 +773,9 @@ export function EmailSettingsPanel({ embedded = false }: { embedded?: boolean })
       attachmentCount: Array.isArray(mail?.attachments) ? mail.attachments.length : 0,
     });
     try {
+      // Kick off the book lookups in parallel with the parse request so the
+      // preview dialog is not blocked on a full /settings/bootstrap round-trip.
+      const bookLookupsPromise = autoOpenPreview ? loadBookLookups() : Promise.resolve(bookLookupsRef.current);
       const res = await fetch("/api/v1/statement/parse", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: sourceContent }),
@@ -780,8 +792,11 @@ export function EmailSettingsPanel({ embedded = false }: { embedded?: boolean })
         });
         if (autoOpenPreview) {
           if (items.length > 0) {
-            await loadBookLookups();
+            await bookLookupsPromise;
             openImportPreview(items);
+            // The outer credit-card mail dialog can now close; the statement
+            // preview dialog lives at a higher z-index and stays visible.
+            onStatementPreviewOpened?.();
           }
           else setError(t("settings.email.noBillItems"));
         }
@@ -860,11 +875,43 @@ export function EmailSettingsPanel({ embedded = false }: { embedded?: boolean })
       selectedCount: sourceItems.length,
     });
     try {
-      const res = await fetch("/api/v1/statement/import", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ items: sourceItems, autoCreateAccounts: false, mailSource }),
-      });
-      const data = await res.json();
+      let conflictPolicy: "overwrite" | "keep" | undefined;
+      let res: Response | null = null;
+      let data: any = null;
+      // The import API pre-checks manual records in the same statement period.
+      // On MANUAL_RECORD_CONFLICT, ask the user to overwrite or keep; cancel aborts.
+      for (;;) {
+        res = await fetch("/api/v1/statement/import", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items: sourceItems, autoCreateAccounts: false, mailSource, manualRecordConflictPolicy: conflictPolicy }),
+        });
+        data = await res.json();
+        if (data.ok || data.code !== "MANUAL_RECORD_CONFLICT") break;
+        postImportDebugLog(traceId, "email_import_manual_conflict", {
+          ...mailDebugDetails(selectedMail, selectedId),
+          conflictCount: Number(data.conflict?.total ?? 0),
+        });
+        const conflictCount = Number(data.conflict?.total ?? 0);
+        setImporting(false);
+        const choice = await showChoiceDialog<"overwrite" | "keep">({
+          title: t("settings.email.manualConflictTitle"),
+          message: t("settings.email.manualConflictMessage", { count: conflictCount }),
+          choices: [
+            { value: "keep", label: t("settings.email.manualConflictKeep") },
+            { value: "overwrite", label: t("settings.email.manualConflictOverwrite"), tone: "danger" },
+          ],
+          cancelLabel: t("common.cancel"),
+        });
+        if (!choice) {
+          postImportDebugLog(traceId, "email_import_cancelled", {
+            ...mailDebugDetails(selectedMail, selectedId),
+            reason: "manual_record_conflict_cancelled",
+          });
+          return;
+        }
+        conflictPolicy = choice;
+        setImporting(true);
+      }
       if (data.ok) {
         const lockedAccountIds = Array.isArray(data.lockedStatementBills)
           ? data.lockedStatementBills.flatMap((item: any) => Array.isArray(item.billAccountIds) ? item.billAccountIds : [item.accountId]).filter(Boolean)
@@ -872,15 +919,19 @@ export function EmailSettingsPanel({ embedded = false }: { embedded?: boolean })
         const refreshAccountIds = Array.from(new Set([...(targetAccountId ? [targetAccountId] : []), ...lockedAccountIds]));
         const createdCount = data.createdCount ?? 0;
         const skippedCount = data.skippedCount ?? 0;
+        const deletedManualCount = Number(data.deletedManualRecordCount ?? 0);
         postImportDebugLog(traceId, "email_import_succeeded", {
           ...mailDebugDetails(selectedMail, selectedId),
           selectedCount: sourceItems.length,
           createdCount,
           skippedCount,
+          deletedManualRecordCount: deletedManualCount,
           importBatchId: data.importBatchId ?? null,
           durationMs: Math.round(performance.now() - startedAt),
         });
-        setInfo(t("settings.email.importCompleteInfo", { created: createdCount, skipped: skippedCount }));
+        setInfo(deletedManualCount > 0
+          ? t("settings.email.importCompleteWithOverwrite", { created: createdCount, skipped: skippedCount, deleted: deletedManualCount })
+          : t("settings.email.importCompleteInfo", { created: createdCount, skipped: skippedCount }));
         if ((data.skippedCount ?? 0) > 0) {
           const firstError = Array.isArray(data.errors) ? data.errors[0]?.error : "";
           setError(firstError ? t("settings.email.skippedWithError", { count: data.skippedCount, error: firstError }) : t("settings.email.skippedCheck", { count: data.skippedCount }));
@@ -899,7 +950,7 @@ export function EmailSettingsPanel({ embedded = false }: { embedded?: boolean })
         postImportDebugLog(traceId, "email_import_failed", {
           ...mailDebugDetails(selectedMail, selectedId),
           selectedCount: sourceItems.length,
-          httpStatus: res.status,
+          httpStatus: res?.status,
           errorMessage: data.error ?? t("settings.email.importFailed"),
           durationMs: Math.round(performance.now() - startedAt),
         });
@@ -1160,6 +1211,7 @@ export function EmailSettingsPanel({ embedded = false }: { embedded?: boolean })
         institutionName: cleanOptionalText(item._meta.institutionName),
         ownerName: cleanOptionalText(item._meta.ownerName),
         cardNumberMasked: cleanOptionalText(item._meta.cardNumberMasked),
+        statementCurrency: cleanOptionalText(item._meta.statementCurrency),
         creditLimit: item._meta.creditLimit,
         billingDay: item._meta.billingDay,
         repaymentDay: item._meta.repaymentDay,
@@ -1167,6 +1219,7 @@ export function EmailSettingsPanel({ embedded = false }: { embedded?: boolean })
         statementPeriodStart: item._meta.statementPeriodStart,
         statementPeriodEnd: item._meta.statementPeriodEnd,
         statementDueDate: item._meta.statementDueDate,
+        templateLocked: item._meta.templateLocked,
       } : undefined,
     });
   }
@@ -2215,13 +2268,16 @@ export function EmailSettingsPanel({ embedded = false }: { embedded?: boolean })
         defaultAccountName=""
         busy={importing}
         onClose={() => {
-          if (!importing) setImportPreview(null);
+          if (!importing) {
+            setImportPreview(null);
+            onStatementPreviewClosed?.();
+          }
         }}
         onConfirm={importItems}
       />
 
       {importComplete && !importPreview && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4 py-6">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 px-4 py-6">
           <div className="w-full max-w-2xl rounded-xl border border-slate-200 bg-white shadow-xl">
             <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
               <div className="text-sm font-semibold text-slate-800">{t("batchImport.importPhase.done")}</div>
@@ -2252,7 +2308,7 @@ export function EmailSettingsPanel({ embedded = false }: { embedded?: boolean })
       )}
 
       {renderLegacyImportPreview && importPreview && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4 py-6">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 px-4 py-6">
           <div data-smart-select-boundary className="flex h-[82vh] min-h-[420px] w-full min-w-0 max-w-6xl resize flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
             <div className="flex items-start justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
               <div>
@@ -2358,7 +2414,7 @@ export function EmailSettingsPanel({ embedded = false }: { embedded?: boolean })
       )}
 
       {accountDraft && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/40 px-4 py-6">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 px-4 py-6">
           <div className="w-full max-w-2xl rounded-xl border border-slate-200 bg-white p-4 shadow-xl">
             <div className="mb-3 flex items-start justify-between gap-3">
               <div>
@@ -2447,7 +2503,7 @@ export function EmailSettingsPanel({ embedded = false }: { embedded?: boolean })
       )}
 
       {showAccountModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4 py-6">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 px-4 py-6">
           <div className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-xl border border-slate-200 bg-white p-4 shadow-xl">
             <div className="mb-3 flex items-start justify-between gap-3">
               <div>

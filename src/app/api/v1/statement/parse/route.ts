@@ -19,9 +19,9 @@ import {
   alignStatementIncomeRefunds,
   alignStatementRecognitionToLedger,
   enrichKnownStatementMerchantForImport,
-  type StatementHistoricalCategorySample,
 } from "@/lib/statement/import-normalization";
 import { loadStatementRecognitionRuleSamples } from "@/lib/statement/recognition-rules";
+import { SYSTEM_BANK_INSTALLMENT_EXPENSE_CATEGORY } from "@/lib/default-categories";
 
 export const runtime = "nodejs";
 
@@ -38,6 +38,13 @@ type ParsedItemMeta = {
   statementPeriodStart?: string;
   statementPeriodEnd?: string;
   statementDueDate?: string;
+  /**
+   * True when the statement template (e.g. the CMB "分期" section) is
+   * authoritative for this row's type (一级分类/收支大类) and category
+   * (二级分类). Template rules take precedence over the generic learning
+   * library, so downstream normalization must not override them.
+   */
+  templateLocked?: boolean;
 };
 
 type ParsedItem = {
@@ -1196,8 +1203,8 @@ function extractIcbcCreditCardMeta(text: string): ParsedItemMeta & { accountName
     billingDay: period?.end.day,
     repaymentDay: directDueDate?.day ?? dueParts?.day,
     statementAmount: paymentSummary.statementAmount ?? extractStatementAmount(plain),
-    statementPeriodStart: period?.start.ymd,
-    statementPeriodEnd: period?.end.ymd,
+    statementPeriodStart: period?.start?.ymd,
+    statementPeriodEnd: period?.end?.ymd,
     statementDueDate: derivedDueDate,
     accountName,
   };
@@ -1326,6 +1333,438 @@ function parseIcbcCreditCardStatement(text: string): ParsedItem[] {
   return items;
 }
 
+const CMB_TRANSACTION_BREAK_RE = /(账单说明|温馨提示|风险提示|版权所有|客户服务热线|分期说明|分期计划|积分明细)/i;
+
+// CMB groups transactions under section headers: 还款 / 分期 / 消费 / 其他.
+// A row whose only non-empty cell is one of these labels is a section marker.
+const CMB_SECTION_LABELS = ["还款", "分期", "消费", "其他"] as const;
+type CmbSection = (typeof CMB_SECTION_LABELS)[number] | null;
+
+function detectCmbSection(cells: string[]): CmbSection {
+  const nonEmpty = cells.map((cell) => cell.trim()).filter(Boolean);
+  if (nonEmpty.length !== 1) return null;
+  const label = nonEmpty[0];
+  return (CMB_SECTION_LABELS as readonly string[]).includes(label) ? (label as CmbSection) : null;
+}
+
+type CmbTransactionHeaderIndexes = {
+  transactionDate: number;
+  postingDate: number;
+  description: number;
+  rmbAmount: number;
+  cardLast4: number;
+  foreignAmount: number;
+};
+
+function findCmbTransactionHeaderIndexes(cells: string[]): CmbTransactionHeaderIndexes | null {
+  const headers = cells.map(normalizeTableHeaderCell);
+  const find = (pattern: RegExp) => headers.findIndex((header) => pattern.test(header));
+  let rmbAmount = find(/人民币/);
+  if (rmbAmount < 0) rmbAmount = find(/记账金额|入账金额/);
+  if (rmbAmount < 0) rmbAmount = headers.findIndex((header) => /金额/.test(header) && !/交易地|原币/.test(header));
+  const raw = {
+    transactionDate: find(/交易日期|交易日/),
+    postingDate: find(/记账日期|记账日|入账日期|入账日/),
+    description: find(/交易摘要|交易说明|摘要|交易描述/),
+    rmbAmount,
+    cardLast4: find(/末四位|后四位/),
+    foreignAmount: headers.findIndex((header) => /交易地|原币/.test(header)),
+  };
+  if (raw.transactionDate < 0 || raw.postingDate < 0 || raw.description < 0 || raw.rmbAmount < 0) {
+    return null;
+  }
+  // CMB's two-row header carries leading spacer cells (e.g. 4 empty <td>s)
+  // that the data rows do not have (data rows have exactly 1 leading spacer).
+  // Normalize the header indexes to the data-row layout by subtracting the
+  // leading-empty-cell offset so column positions line up with data rows.
+  let leadingEmpty = 0;
+  while (leadingEmpty < headers.length && !headers[leadingEmpty].trim()) leadingEmpty += 1;
+  const offset = Math.max(0, leadingEmpty - 1);
+  return {
+    transactionDate: raw.transactionDate - offset,
+    postingDate: raw.postingDate - offset,
+    description: raw.description - offset,
+    rmbAmount: raw.rmbAmount - offset,
+    cardLast4: raw.cardLast4 - offset,
+    foreignAmount: raw.foreignAmount - offset,
+  };
+}
+
+/**
+ * CMB uses label-style summary lines (one label + one amount). Scan line-ish
+ * rows for the statement amount so that "上期应还金额" or "最低还款额" never
+ * shadow "本期应还金额" / "应还金额". In HTML tables the label and the value
+ * often land on separate lines, so fall through to the next line when the
+ * same line carries no number.
+ */
+function extractCmbLabeledMoney(text: string, labels: string[]) {
+  const lines = stripHtml(text).split(/\r?\n/).map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
+  for (const label of labels) {
+    const hasPreferredVariant = lines.some((line) => line.includes(label) && /本期|本账单/.test(line));
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (!line.includes(label) || /最低还款|积分/.test(line)) continue;
+      if (/上期|前期/.test(line)) continue;
+      if (hasPreferredVariant && !/本期|本账单/.test(line)) continue;
+      const after = line.slice(line.indexOf(label) + label.length);
+      const amount = parseLooseNumber(after);
+      if (amount !== undefined) return amount;
+      const next = lines[index + 1] ?? "";
+      if (!next || /信用额度|最低还款|最后还款|到期还款|还款日|账单日|额度|交易日|记账日/.test(next)) continue;
+      const nextAmount = parseLooseNumber(next);
+      if (nextAmount !== undefined) return nextAmount;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * CMB statement emails do not carry an explicit "X日至X日" period range.
+ * Instead they state "您YYYY年MM月信用卡账单已出，最后还款日MM月DD日".
+ * CMB's repayment day = billing day + 20 days, so we derive the billing day
+ * from the due date and reconstruct the period as [prev billing day, billing day].
+ */
+function extractCmbStatementPeriod(text: string) {
+  const plain = stripHtml(text);
+  const billMonth = plain.match(/(\d{4})年\s*(\d{1,2})月\s*信用卡账单已出/);
+  const due = plain.match(/最后还款日[^\d]{0,40}(\d{1,2})月\s*(\d{1,2})日/);
+  if (!billMonth || !due) return null;
+
+  const year = Number(billMonth[1]);
+  const billMonthNum = Number(billMonth[2]);
+  const dueMonth = Number(due[1]);
+  const dueDay = Number(due[2]);
+
+  // billing day = due day - 20 (CMB fixed interest-free period).
+  const billingDate = addDaysToYmd(`${year}-${String(dueMonth).padStart(2, "0")}-${String(dueDay).padStart(2, "0")}`, -20);
+  const billingParts = parseDateParts(billingDate);
+  if (!billingParts) return null;
+
+  const periodStart = addDaysToYmd(billingDate, -31);
+  const periodStartParts = parseDateParts(periodStart);
+
+  return {
+    start: periodStartParts,
+    end: billingParts,
+    billMonth: billMonthNum,
+    year,
+    dueDate: `${year}-${String(dueMonth).padStart(2, "0")}-${String(dueDay).padStart(2, "0")}`,
+  };
+}
+
+/**
+ * CMB transaction dates are "MMDD" (e.g. 0813). Resolve to a full YYYY-MM-DD
+ * using the statement period: a date whose month/day falls after the period
+ * start belongs to the period's year; otherwise it belongs to the prior year.
+ */
+function normalizeCmbDate(value: string | undefined, period: ReturnType<typeof extractCmbStatementPeriod>) {
+  const raw = String(value ?? "").trim().replace(/\s+/g, "");
+  const full = normalizeDateTimeCell(raw);
+  if (full) return full;
+  const match = raw.match(/^(\d{2})(\d{2})$/);
+  if (!match || !period) return undefined;
+  const month = Number(match[1]);
+  const day = Number(match[2]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return undefined;
+
+  const startSerial = period.start ? dateSerial(period.start) : 0;
+  const endSerial = period.end ? dateSerial(period.end) : 0;
+  const candidateYears = Array.from(new Set([period.year, period.year - 1, period.year + 1]));
+  for (const year of candidateYears) {
+    const ymd = ymdFromParts(year, month, day);
+    if (!ymd) continue;
+    const serial = Date.UTC(year, month - 1, day);
+    if (startSerial && endSerial && serial >= startSerial && serial <= endSerial) return ymd;
+  }
+  // Fallback: prefer the period's year, but if the month is clearly later than
+  // the bill month, it belongs to the previous year (cross-year statements).
+  return ymdFromParts(period.year, month, day);
+}
+
+function extractCmbCreditCardMeta(text: string): ParsedItemMeta & { accountName?: string } {
+  const plain = stripHtml(text);
+  const period = extractCmbStatementPeriod(text);
+  const statementAmount = extractCmbLabeledMoney(plain, [
+    "本期应还金额",
+    "本期应还总额",
+    "本期应还",
+    "应还金额",
+  ]);
+  const minimumPayment = extractCmbLabeledMoney(plain, ["最低还款额"]);
+  const creditLimit = extractCreditLimit(plain);
+  // CMB summary carries no masked card number; the card last-4 only appears in
+  // the transaction rows (multi-card statements). Do not use the generic
+  // extractCreditCardLast4 here — it would grab the "2026" year from the
+  // "您2026年08月信用卡账单已出" line. Per-row card numbers are resolved in
+  // the main parse loop instead.
+  const cardNumberMasked = undefined;
+  const ownerName = plain.match(/尊敬的\s*([\u4e00-\u9fa5·]{2,8})\s*(?:先生|女士|小姐)?/)?.[1]?.trim();
+  const accountName = "招商银行信用卡";
+  return {
+    institutionName: "招商银行",
+    ownerName: ownerName || undefined,
+    cardNumberMasked: cardNumberMasked || undefined,
+    statementCurrency: "CNY",
+    minimumPayment,
+    creditLimit,
+    billingDay: period?.end.day,
+    repaymentDay: period ? parseDateParts(period.dueDate)?.day : undefined,
+    statementAmount,
+    statementPeriodStart: period?.start?.ymd,
+    statementPeriodEnd: period?.end?.ymd,
+    statementDueDate: period?.dueDate,
+    accountName,
+  };
+}
+
+function isChinaMerchantsBankCreditCardStatement(text: string) {
+  const compact = compactStatementText(text);
+  return /(招商银行|招商信用卡|掌上生活|ChinaMerchantsBank|CMB)/i.test(compact) &&
+    /(信用卡|贷记卡)/i.test(compact) &&
+    /(交易日|记账日|应还金额|最低还款额)/i.test(compact);
+}
+
+function parseChinaMerchantsBankCreditCardStatement(text: string): ParsedItem[] {
+  if (!isChinaMerchantsBankCreditCardStatement(text)) return [];
+  const hasHtmlTable = /<tr[\s>]/i.test(text);
+
+  const meta = extractCmbCreditCardMeta(text);
+  const period = extractCmbStatementPeriod(text);
+  const baseMeta: ParsedItemMeta = {
+    institutionName: meta.institutionName,
+    ownerName: meta.ownerName,
+    cardNumberMasked: meta.cardNumberMasked,
+    statementCurrency: meta.statementCurrency,
+    minimumPayment: meta.minimumPayment,
+    creditLimit: meta.creditLimit,
+    billingDay: meta.billingDay,
+    repaymentDay: meta.repaymentDay,
+    statementAmount: meta.statementAmount,
+    statementPeriodStart: meta.statementPeriodStart,
+    statementPeriodEnd: meta.statementPeriodEnd,
+    statementDueDate: meta.statementDueDate,
+  };
+
+  type CmbRow = { rowText: string; cells: string[] };
+
+  const htmlRows: CmbRow[] = (text.match(/<tr\b[\s\S]*?<\/tr>/gi) ?? [])
+    .map((row) => ({ rowText: stripHtml(row), cells: extractTableCells(row).map((cell) => cell.trim()) }));
+
+  const lineRows: CmbRow[] = hasHtmlTable
+    ? []
+    : normalizeDelimitedStatementLines(text)
+      .map((line) => ({ rowText: line, cells: splitDelimitedStatementCells(line) }))
+      .filter((row) => row.cells.length > 0);
+
+  const sourceRows: CmbRow[] = hasHtmlTable ? htmlRows : lineRows;
+
+  const items: ParsedItem[] = [];
+  const seen = new Set<string>();
+  let headerIndexes: CmbTransactionHeaderIndexes | null = null;
+  let sawTransactionHeader = false;
+  let currentSection: CmbSection = null;
+
+  const signedAmountInflowSign = hasHtmlTable
+    ? inferCreditCardHtmlSignedAmountInflowSign(text)
+    : inferCmbDelimitedSignedAmountInflowSign(sourceRows, period);
+
+  for (const row of sourceRows) {
+    const rowText = row.rowText;
+    const cells = row.cells.map((cell) => cell.trim());
+
+    const detectedHeader = findCmbTransactionHeaderIndexes(cells);
+    if (detectedHeader) {
+      sawTransactionHeader = true;
+      headerIndexes = detectedHeader;
+      continue;
+    }
+    if (!sawTransactionHeader || !headerIndexes) continue;
+    if (CMB_TRANSACTION_BREAK_RE.test(rowText.replace(/\s+/g, ""))) break;
+
+    const section = detectCmbSection(cells);
+    if (section) {
+      currentSection = section;
+      continue;
+    }
+
+    const maxHeaderIndex = Math.max(headerIndexes.transactionDate, headerIndexes.postingDate, headerIndexes.description, headerIndexes.rmbAmount);
+    if (cells.length <= maxHeaderIndex) continue;
+
+    // The repayment row has no posting date, so its transaction date lands one
+    // cell to the right (the posting-date cell is empty). Only the transaction
+    // date shifts; description/amount/card keep their normal positions.
+    const transactionDateCell = cells[headerIndexes.transactionDate] ?? "";
+    const isRepaymentRow = !normalizeCmbDate(transactionDateCell, period)
+      && normalizeCmbDate(cells[headerIndexes.transactionDate + 1], period);
+
+    let date = normalizeCmbDate(isRepaymentRow ? cells[headerIndexes.transactionDate + 1] : transactionDateCell, period);
+    let postDate = isRepaymentRow
+      ? undefined
+      : normalizeCmbDate(cells[headerIndexes.postingDate], period) || date;
+    const description = cleanupMerchantName(cells[headerIndexes.description] ?? "");
+    const rmbRaw = cells[headerIndexes.rmbAmount] ?? "";
+    const rmbAmount = parseMoney(rmbRaw);
+    const rowCardNumberMasked = headerIndexes.cardLast4 >= 0
+      ? cells[headerIndexes.cardLast4]?.match(/\d{4}/)?.[0] ?? ""
+      : "";
+    const foreignRaw = headerIndexes.foreignAmount >= 0 ? cells[headerIndexes.foreignAmount] ?? "" : "";
+    const foreignCurrency = extractStatementCurrency(foreignRaw);
+    const foreignAmount = foreignCurrency ? parseMoney(foreignRaw) : null;
+
+    if (!date || !description) continue;
+    if (isStatementSummaryText(description) || isNoiseLine(description)) continue;
+
+    // Installment rows carry the ORIGINAL transaction date (a historical month,
+    // e.g. 0926/1127/0429) as 交易日, which falls outside the current period.
+    // The 记账日 (posting date) is when the installment actually hit this bill,
+    // so use it as the primary date for installment rows.
+    if (/分期/.test(description) && postDate && postDate !== date) {
+      const dateParts = parseDateParts(date);
+      const postParts = parseDateParts(postDate);
+      const periodStartSerial = period?.start ? dateSerial(period.start) : 0;
+      const periodEndSerial = period?.end ? dateSerial(period.end) : 0;
+      const dateInPeriod = dateParts && periodStartSerial && periodEndSerial
+        && dateSerial(dateParts) >= periodStartSerial && dateSerial(dateParts) <= periodEndSerial;
+      const postInPeriod = postParts && periodStartSerial && periodEndSerial
+        && dateSerial(postParts) >= periodStartSerial && dateSerial(postParts) <= periodEndSerial;
+      if (!dateInPeriod && postInPeriod) {
+        // The posting date is the meaningful date for this period. Use it as
+        // the primary date and drop the historical transaction date (it is not
+        // a posting date, so it must not be labelled "入账日").
+        date = postDate;
+        postDate = undefined;
+      }
+    }
+
+    // Foreign-currency rows without an RMB settlement amount must not be
+    // auto-converted; keep the row visible with amount 0 so the preview marks
+    // it not-ready and the user decides.
+    if ((rmbAmount === null || rmbAmount === 0) && !foreignCurrency) continue;
+    if (rmbAmount === null || rmbAmount === 0) {
+      if (foreignCurrency && foreignAmount !== null && foreignAmount !== 0) {
+        const key = `${date}|${postDate ?? ""}|${description}|foreign|${foreignAmount}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        items.push({
+          rawText: `${date} ${description} ${foreignRaw}`.trim(),
+          type: "expense",
+          date,
+          amount: 0,
+          account: meta.accountName,
+          remark: `${description}（原币 ${foreignCurrency} ${Math.abs(foreignAmount)}，缺人民币入账金额，请人工确认）`,
+          postedDate: postDate,
+          _meta: { ...baseMeta, cardNumberMasked: rowCardNumberMasked || baseMeta.cardNumberMasked },
+        });
+      }
+      continue;
+    }
+
+    const absAmount = Math.abs(rmbAmount);
+    const transferText = `${description} ${rmbRaw}`;
+    const classified = classifyCreditCardSignedAmount({
+      description,
+      transferText,
+      amount: rmbAmount,
+      signedAmountInflowSign,
+    });
+
+    // CMB's section header is authoritative: "分期" rows are installment
+    // payments (expense), not repayments — the word "还款" inside "分期还款"
+    // must not flip them to transfer. "还款" rows are the only true transfers.
+    let type = classified.type;
+    let isRepaymentTransfer = classified.isRepaymentTransfer;
+    let isExpenseRefund = classified.isExpenseRefund;
+    if (currentSection === "分期") {
+      // 分期 section 里所有交易统一归为支出大类，分类"银行分期"。
+      // 负数金额（财政贴息等贷项）也归为支出，但金额表现为负数（流入），
+      // 通过 inflow 表达"负支出"，导入时按 expense 退款方向记为正数流入。
+      type = "expense";
+      isRepaymentTransfer = false;
+      isExpenseRefund = rmbAmount < 0;
+    } else if (currentSection === "还款") {
+      type = "transfer";
+      isRepaymentTransfer = true;
+      isExpenseRefund = false;
+    } else if (currentSection === "消费") {
+      type = "expense";
+      isRepaymentTransfer = false;
+      isExpenseRefund = false;
+    } else if (currentSection === "其他") {
+      // 汇率补贴 etc. are credit adjustments; classify by sign.
+      type = rmbAmount < 0 ? "income" : "expense";
+      isRepaymentTransfer = false;
+      isExpenseRefund = false;
+    }
+
+    const paymentFromAccount = type === "transfer" ? paymentTailAccountName(transferText) : "";
+    const cardAccount = rowCardNumberMasked
+      ? `${meta.institutionName || "招商银行"}信用卡(${rowCardNumberMasked})`
+      : meta.accountName;
+    const key = `${date}|${postDate ?? ""}|${rowCardNumberMasked}|${description}|${rmbAmount}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const remarkBase = description;
+    const foreignNote = foreignCurrency && foreignAmount !== null && foreignAmount !== 0
+      ? `（原币 ${foreignCurrency} ${Math.abs(foreignAmount)}）`
+      : "";
+    const remark = /分期/i.test(description) ? `${remarkBase}（分期交易）` : `${remarkBase}${foreignNote}`;
+    const category = currentSection === "分期"
+      ? SYSTEM_BANK_INSTALLMENT_EXPENSE_CATEGORY
+      : aliasMatch(description).category || undefined;
+
+    items.push({
+      rawText: `${date} ${description} ${rmbRaw}${foreignRaw ? ` ${foreignRaw}` : ""}`.trim(),
+      type,
+      date,
+      amount: absAmount,
+      inflow: type === "income" || isExpenseRefund || isRepaymentTransfer ? absAmount : undefined,
+      outflow: type === "expense" && !isExpenseRefund ? absAmount : undefined,
+      account: cardAccount,
+      fromAccount: type === "transfer" ? paymentFromAccount || undefined : undefined,
+      toAccount: type === "transfer" ? cardAccount : undefined,
+      counterparty: aliasMatch(description).counterparty || undefined,
+      institution: aliasMatch(description).institution || undefined,
+      category: category,
+      remark: remark,
+      postedDate: postDate,
+      _meta: {
+        ...baseMeta,
+        cardNumberMasked: rowCardNumberMasked || baseMeta.cardNumberMasked,
+        templateLocked: currentSection === "分期",
+      },
+    });
+  }
+
+  return items;
+}
+
+function inferCmbDelimitedSignedAmountInflowSign(
+  rows: Array<{ rowText: string; cells: string[] }>,
+  period: ReturnType<typeof extractCmbStatementPeriod>,
+) {
+  const samples: Array<{ amount: number | null; text: string }> = [];
+  let headerIndexes: CmbTransactionHeaderIndexes | null = null;
+  for (const { rowText, cells } of rows) {
+    const detectedHeader = findCmbTransactionHeaderIndexes(cells);
+    if (detectedHeader) {
+      headerIndexes = detectedHeader;
+      continue;
+    }
+    if (!headerIndexes) continue;
+    if (CMB_TRANSACTION_BREAK_RE.test(rowText.replace(/\s+/g, ""))) break;
+    const maxHeaderIndex = Math.max(headerIndexes.transactionDate, headerIndexes.postingDate, headerIndexes.description, headerIndexes.rmbAmount);
+    if (cells.length <= maxHeaderIndex) continue;
+    const date = normalizeCmbDate(cells[headerIndexes.transactionDate], period);
+    const description = cleanupMerchantName(cells[headerIndexes.description] ?? "");
+    const amount = parseMoney(cells[headerIndexes.rmbAmount] ?? "");
+    if (!date || !description || amount === null || amount === 0) continue;
+    if (isStatementSummaryText(description) || isNoiseLine(description)) continue;
+    samples.push({ amount, text: `${description} ${rowText}` });
+  }
+  return inferSignedAmountInflowSign(samples);
+}
+
 type CreditCardStatementTemplate = {
   name: string;
   matches: (text: string) => boolean;
@@ -1333,6 +1772,11 @@ type CreditCardStatementTemplate = {
 };
 
 const CREDIT_CARD_STATEMENT_TEMPLATES: CreditCardStatementTemplate[] = [
+  {
+    name: "china-merchants-bank",
+    matches: isChinaMerchantsBankCreditCardStatement,
+    parse: parseChinaMerchantsBankCreditCardStatement,
+  },
   {
     name: "icbc",
     matches: isIcbcCreditCardStatement,
@@ -1650,61 +2094,26 @@ export async function POST(req: Request) {
       items = [{ rawText: text, type: "expense", amount: 0 }];
       parseMethod = "unparsed";
     } else {
-      items = normalizeExplicitStatementFlowDirections(items);
-      items = alignStatementIncomeRefunds(items.map(enrichKnownStatementMerchantForImport));
+      // Rows whose type/category are locked by the statement template (e.g.
+      // the CMB "分期" section) are authoritative and must not be re-classified
+      // by the generic learning library. Run downstream normalization only on
+      // the remaining rows, then merge the locked rows back unchanged.
+      const lockedItems = items.filter((item) => item._meta?.templateLocked);
+      const freeItems = items.filter((item) => !item._meta?.templateLocked);
+      let normalizedFree = normalizeExplicitStatementFlowDirections(freeItems);
+      normalizedFree = alignStatementIncomeRefunds(normalizedFree.map(enrichKnownStatementMerchantForImport));
       const categories = await prisma.category.findMany({
         where: {
           OR: [{ householdId }, { householdId: null }],
         },
         select: { id: true, name: true, type: true },
       });
-      const historicalSamples = await prisma.txRecord.findMany({
-        where: {
-          householdId,
-          deletedAt: null,
-          type: { in: ["income", "expense"] },
-          categoryName: { not: null },
-          AND: [
-            {
-              OR: [
-                { source: "manual" },
-                { source: null },
-              ],
-            },
-            {
-              OR: [
-                { note: { not: null } },
-                { counterpartyInstitutionName: { not: null } },
-                { paymentChannelName: { not: null } },
-              ],
-            },
-          ],
-        },
-        select: {
-          type: true,
-          categoryName: true,
-          note: true,
-          counterpartyInstitutionName: true,
-          paymentChannelName: true,
-        },
-        orderBy: { updatedAt: "desc" },
-        take: 5000,
-      });
-      const usableHistoricalSamples: StatementHistoricalCategorySample[] = historicalSamples
-        .filter((sample) => Boolean(sample.categoryName))
-        .map((sample) => ({
-          type: sample.type,
-          categoryName: sample.categoryName ?? "",
-          counterpartyInstitutionName: sample.counterpartyInstitutionName,
-          paymentChannelName: sample.paymentChannelName,
-          source: "history",
-          note: sample.note,
-        }));
+      // Category/institution recognition is driven by the learning library
+      // (statement_recognition_rules), not by scanning historical tx records.
+      // Scanning 5000 tx records on every parse is slow and unnecessary.
       const recognitionSamples = await loadStatementRecognitionRuleSamples(prisma, householdId);
-      items = alignStatementRecognitionToLedger(items, categories, [
-        ...recognitionSamples,
-        ...usableHistoricalSamples,
-      ]);
+      normalizedFree = alignStatementRecognitionToLedger(normalizedFree, categories, recognitionSamples);
+      items = [...normalizedFree, ...lockedItems];
     }
 
     return NextResponse.json({

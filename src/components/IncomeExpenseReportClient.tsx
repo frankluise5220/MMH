@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown } from "lucide-react";
 
 import { ReportDetailTable } from "@/components/ReportDetailTable";
 import { ReportResizableSplit } from "@/components/ReportResizableSplit";
@@ -29,6 +30,8 @@ type ReportQuery = {
   end: string;
   accountId: string;
   groupBy: IncomeExpenseGroupBy;
+  institutionId?: string;
+  userIds?: string[];
 };
 
 type DetailSelection = {
@@ -52,6 +55,8 @@ function buildDetailSearch(query: ReportQuery, detail: DetailSelection) {
   params.set("end", query.end);
   params.set("groupBy", query.groupBy);
   if (query.accountId) params.set("accountId", query.accountId);
+  if (query.institutionId) params.set("institutionId", query.institutionId);
+  if (query.userIds?.length) params.set("userIds", query.userIds.join(","));
   params.set("detailType", detail.type);
   if (detail.categoryKey) params.set("detailCategoryKey", detail.categoryKey);
   if (detail.columnKey) params.set("detailColumnKey", detail.columnKey);
@@ -62,6 +67,8 @@ function buildClearUrl(query: ReportQuery) {
   const params = new URLSearchParams();
   params.set("groupBy", query.groupBy);
   if (query.accountId) params.set("accountId", query.accountId);
+  if (query.institutionId) params.set("institutionId", query.institutionId);
+  if (query.userIds?.length) params.set("userIds", query.userIds.join(","));
   if (query.groupBy === "month") {
     params.set("startMonth", query.start.slice(0, 7));
     params.set("endMonth", query.end.slice(0, 7));
@@ -377,7 +384,10 @@ export function IncomeExpenseReportClient({
                     tabIndex={canToggle ? 0 : undefined}
                     title={canToggle ? (expanded ? t("incomeExpense.collapseCategory") : t("incomeExpense.expandCategory")) : undefined}
                   >
-                    <span className={`block truncate ${row.depth === 0 ? "font-semibold text-slate-800" : ""}`}>{row.name}</span>
+                    <span className="flex min-w-0 items-center gap-1">
+                      {canToggle ? <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${expanded ? "" : "-rotate-90"}`} /> : <span className="h-3.5 w-3.5 shrink-0" />}
+                      <span className={`block truncate ${row.depth === 0 ? "font-semibold text-slate-800" : ""}`}>{row.name}</span>
+                    </span>
                   </td>
                   {row.values.map((value, index) => (
                     <td key={`${row.key}-${index}`} className="border-b border-r border-slate-100 px-3 py-2 text-right text-xs tabular-nums text-slate-600">
@@ -446,7 +456,10 @@ export function IncomeExpenseReportClient({
                     tabIndex={canToggle ? 0 : undefined}
                     title={canToggle ? (expanded ? t("incomeExpense.collapseCategory") : t("incomeExpense.expandCategory")) : undefined}
                   >
-                    <span className={`block truncate ${row.depth === 0 ? "font-semibold text-slate-800" : ""}`}>{row.name}</span>
+                    <span className="flex min-w-0 items-center gap-1">
+                      {canToggle ? <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${expanded ? "" : "-rotate-90"}`} /> : <span className="h-3.5 w-3.5 shrink-0" />}
+                      <span className={`block truncate ${row.depth === 0 ? "font-semibold text-slate-800" : ""}`}>{row.name}</span>
+                    </span>
                   </td>
                   {row.values.map((value, index) => (
                     <td key={`${row.key}-${index}`} className="border-b border-r border-slate-100 px-3 py-2 text-right text-xs tabular-nums text-slate-600">
@@ -525,7 +538,7 @@ export function IncomeExpenseReportClient({
             tagOptions={tagOptions}
             investmentProductTypeByAccountId={investmentProductTypeByAccountId}
             title={t("incomeExpense.detailTitle", {
-              typeLabel: activeDetails.typeLabel,
+              typeLabel: t("incomeExpense.receiptDetailLabel"),
               categorySuffix: activeDetails.categoryName ? ` · ${activeDetails.categoryName}` : "",
               columnLabel: activeDetails.columnLabel,
             })}

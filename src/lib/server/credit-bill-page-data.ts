@@ -16,6 +16,7 @@ import {
   mergeCreditCardCycleLockSources,
   mergeCreditBillSummariesWithCascade,
   signedCreditBillAmountFromCardSide,
+  classifyCreditBillFlowSide,
   summarizeCreditBillSignedFlows,
 } from "@/lib/credit/billing";
 import { normalizeCreditCardInstallmentStatementMonths, materializeDueInstallmentPayments } from "@/lib/server/credit-card-installment";
@@ -163,7 +164,14 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
 
   const creditBillNow = new Date();
   const todayUtcStart = new Date(Date.UTC(creditBillNow.getUTCFullYear(), creditBillNow.getUTCMonth(), creditBillNow.getUTCDate()));
-  const creditBillSummaryLogicUpdatedAt = new Date(Date.UTC(2026, 6, 25, 14, 34, 0));
+  // Bump this timestamp whenever the credit-bill flow calculation logic
+  // changes (e.g. classifyCreditBillFlowSide). It forces persisted cycle
+  // summaries to be recomputed with the new logic instead of reusing stale
+  // cached values. Last bumped: 2026-08-28 22:41 (force full recompute —
+  // the previous 14:00 bump was ineffective because the persisted cache was
+  // written at 14:25 with the OLD logic, so latestCycleUpdatedAt (14:25) was
+  // already newer than the logic timestamp and stale stayed false).
+  const creditBillSummaryLogicUpdatedAt = new Date(Date.UTC(2026, 7, 28, 22, 41, 0));
   const currentStatementMonth = (() => {
     if (!isBillAccount || !selectedAccount?.billingDay) return "";
     const base = creditCardCycle(creditBillNow, selectedAccount.billingDay ?? 1, selectedAccount.repaymentDay ?? null);
@@ -276,22 +284,28 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     )
   );
 
+  // Available bill months are derived dynamically from transaction dates +
+  // billingDay (toStatementMonth), NOT from the persisted txRecord.statementMonth
+  // field. The field is a redundant write-time cache that can drift from the
+  // true date-based cycle (e.g. transactions on the billing day itself), which
+  // caused stale/incorrect bill periods. Deriving from dates keeps a single
+  // source of truth: date + billingDay.
   const availableBillMonths =
-    isBillAccount && selectedAccount
-      ? (!creditCycleCacheStale && persistedCyclesInitial.length > 0
-          ? persistedCyclesInitial.map((cycle) => cycle.statementMonth).filter(isDisplayableBillMonth)
-          : await prisma.txRecord
-              .groupBy({
-                by: ["statementMonth"],
-                where: {
-                  statementMonth: { not: null },
-                  deletedAt: null,
-                  AND: [...(billScope ? [billScope] : [])],
-                },
-                _count: { _all: true },
-                orderBy: { statementMonth: "desc" },
-              })
-              .then((rows) => rows.map((r) => r.statementMonth).filter((m): m is string => !!m && isDisplayableBillMonth(m))))
+    isBillAccount && selectedAccount?.billingDay
+      ? await (async () => {
+          const rows = await prisma.txRecord.findMany({
+            where: {
+              AND: [billScope!, { deletedAt: null }],
+            },
+            select: { date: true },
+          });
+          const months = new Set<string>();
+          for (const row of rows) {
+            const m = toStatementMonth(row.date, selectedAccount.billingDay!);
+            if (isDisplayableBillMonth(m)) months.add(m);
+          }
+          return Array.from(months).sort((a, b) => b.localeCompare(a));
+        })()
       : [];
 
   const showAllCreditBillDetails = billMonthParam === "all";
@@ -362,7 +376,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
                   { OR: [{ accountId: { in: billAccountIds } }, { toAccountId: { in: billAccountIds } }] },
                 ],
               },
-              select: { accountId: true, toAccountId: true, amount: true },
+              select: { accountId: true, toAccountId: true, amount: true, type: true, categoryName: true },
             }),
             prisma.txRecord.aggregate({
               where: {
@@ -556,11 +570,12 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
               ],
             },
             select: {
-              statementMonth: true,
               date: true,
               amount: true,
               accountId: true,
               toAccountId: true,
+              type: true,
+              categoryName: true,
             },
           });
         })()
@@ -581,14 +596,16 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     };
 
     for (const row of creditCycleActivityRows) {
+      const side = classifyCreditBillFlowSide(row, billAccountIdSet);
+      if (!side) continue;
       const signedAmount = signedCreditBillAmountFromCardSide(row, billAccountIdSet);
-      if (signedAmount == null || signedAmount === 0) continue;
+      if (signedAmount == null) continue;
       const month = findMonthByDate(row.date);
       if (!month) continue;
       const monthTotals = totals.get(month);
       if (!monthTotals) continue;
-      if (signedAmount < 0) monthTotals.outflow += -signedAmount;
-      else monthTotals.inflow += signedAmount;
+      if (side === "outflow") monthTotals.outflow += Math.abs(signedAmount);
+      else monthTotals.inflow += Math.abs(signedAmount);
     }
     return totals;
   })();

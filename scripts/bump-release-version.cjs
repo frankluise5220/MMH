@@ -35,6 +35,14 @@ function getReleaseNotes(pkg) {
   return String(pkg.mmhReleaseNotes || "").trim();
 }
 
+function todayDate() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 function fnosFpkAssetName(version, assetSuffix) {
   return `mmh-fnos-v${version}-${assetSuffix}.fpk`;
 }
@@ -103,6 +111,14 @@ function updateFnosRepositoryJson(version, file, rootKey, releaseNotes) {
     }
     if (releaseNotes) {
       app.changelog = releaseNotes;
+    }
+    app.type = "原生";
+    app.updated_at = todayDate();
+    if (!Array.isArray(app.screenshots) || app.screenshots.length === 0) {
+      app.screenshots = [
+        "http://fnapp.floatingice.win/previews/mmh/1.PNG",
+        "http://fnapp.floatingice.win/previews/mmh/2.PNG",
+      ];
     }
   }
   writeJson(fullPath, payload);

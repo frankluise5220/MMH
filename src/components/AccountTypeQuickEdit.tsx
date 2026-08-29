@@ -11,9 +11,9 @@ import { CURRENCY_OPTIONS, normalizeCurrency } from "@/lib/currency";
 import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
 import { isDepositAccount } from "@/lib/account-kind-utils";
 import { isStockAccountInstitutionType, isStockInvestmentAccount, STOCK_ACCOUNT_INSTITUTION_ERROR } from "@/lib/account-institution-rules";
-import { isFixedAssetAccountLike } from "@/lib/fixed-asset";
+import { FIXED_ASSET_TYPES, isFixedAssetAccountLike } from "@/lib/fixed-asset";
 
-type AccountKindValue = "cash" | "bank_debit" | "bank_credit" | "ewallet" | "deposit" | "investment" | "loan" | "other";
+type AccountKindValue = "cash" | "bank_debit" | "bank_credit" | "ewallet" | "deposit" | "investment" | "fixed_asset" | "loan" | "other";
 type Institution = { id: string; name: string; shortName?: string | null; type?: string | null };
 type Group = { id: string; name: string };
 type AccountValue = {
@@ -21,12 +21,13 @@ type AccountValue = {
   groupId?: string | null; institutionId?: string | null; billingDay?: number | null;
   repaymentDay?: number | null; creditLimit?: unknown; creditBillMode?: "separate" | "consolidated" | null;
   numberMasked?: string | null; investProductType?: string | null; costBasisMethod?: string | null;
-  fundUnitsDecimals?: number | null; tradingCalendar?: string | null;
+  fundUnitsDecimals?: number | null; tradingCalendar?: string | null; fixedAssetType?: string | null;
 };
 
-const ACCOUNT_KINDS: AccountKindValue[] = ["cash", "bank_debit", "bank_credit", "ewallet", "deposit", "investment", "loan", "other"];
+const ACCOUNT_KINDS: AccountKindValue[] = ["cash", "bank_debit", "bank_credit", "ewallet", "deposit", "investment", "fixed_asset", "loan", "other"];
 
 function normalizedKind(account: AccountValue): AccountKindValue {
+  if (isFixedAssetAccountLike(account)) return "fixed_asset";
   return isDepositAccount(account) ? "deposit" : (ACCOUNT_KINDS.includes(account.kind as AccountKindValue) ? account.kind as AccountKindValue : "other");
 }
 
@@ -48,7 +49,7 @@ export function AccountTypeQuickEdit({ account, accountLabel }: { account: Accou
 
   const kind = (form.kind || normalizedKind(account)) as AccountKindValue;
   const productType = form.investProductType || "fund";
-  const isFixedAssetAccount = isFixedAssetAccountLike({ kind, investProductType: productType });
+  const isFixedAssetAccount = kind === "fixed_asset" || isFixedAssetAccountLike({ kind, investProductType: productType });
   const isInvestment = kind === "investment";
   const isCredit = kind === "bank_credit";
   const supportsLastFour = isCredit || kind === "bank_debit";
@@ -65,8 +66,8 @@ export function AccountTypeQuickEdit({ account, accountLabel }: { account: Accou
       groupId: account.groupId ?? "", institutionId: account.institutionId ?? "", billingDay: account.billingDay == null ? "" : String(account.billingDay),
       repaymentDay: account.repaymentDay == null ? "" : String(account.repaymentDay), creditLimit: account.creditLimit == null ? "" : String(account.creditLimit),
       creditBillMode: account.creditBillMode === "consolidated" ? "consolidated" : "separate", numberMasked: account.numberMasked ?? "",
-      investProductType: nextKind === "investment" ? account.investProductType ?? "fund" : "", costBasisMethod: account.costBasisMethod ?? "moving_avg",
-      fundUnitsDecimals: String(account.fundUnitsDecimals ?? 2), tradingCalendar: account.tradingCalendar ?? "cn_fund",
+      investProductType: nextKind === "investment" ? account.investProductType ?? "fund" : nextKind === "fixed_asset" ? "property" : "", costBasisMethod: account.costBasisMethod ?? "moving_avg",
+      fundUnitsDecimals: String(account.fundUnitsDecimals ?? 2), tradingCalendar: account.tradingCalendar ?? "cn_fund", fixedAssetType: account.fixedAssetType ?? "property",
     });
     setError("");
   }
@@ -91,7 +92,7 @@ export function AccountTypeQuickEdit({ account, accountLabel }: { account: Accou
     setError("");
     try {
       const payload = isFixedAssetAccount
-        ? { ...form, kind: "investment", investProductType: "property", institutionId: "" }
+        ? { ...form, kind: "investment", investProductType: "property", institutionId: "", fixedAssetType: form.fixedAssetType || "property" }
         : form;
       const response = await fetch("/api/v1/accounts", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: account.id, ...payload }) });
       const data = await response.json().catch(() => null);
@@ -117,7 +118,8 @@ export function AccountTypeQuickEdit({ account, accountLabel }: { account: Accou
             <div className="mb-3 flex items-center justify-between"><h2 className="text-sm font-semibold text-slate-800">{t("settings.accounts.editTitle", { name: account.name })}</h2><button type="button" className="h-8 rounded border border-slate-200 px-2 text-sm text-slate-600" onClick={() => setOpen(false)}>{t("table.close")}</button></div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3">
               <Field label={t("settings.accounts.name")}><input value={form.name ?? ""} onChange={(event) => setField("name", event.target.value)} className={inputClass} /></Field>
-              <Field label={t("settings.accounts.type")}>{isFixedAssetAccount ? <input value={t("txForm.fixedAssetToggle")} readOnly className={`${inputClass} bg-slate-50 text-slate-500`} /> : <select value={kind} onChange={(event) => setForm((current) => ({ ...current, kind: event.target.value, institutionId: "", investProductType: event.target.value === "investment" ? current.investProductType || "fund" : "" }))} className={inputClass}>{ACCOUNT_KINDS.map((value) => <option key={value} value={value}>{t(`account.kind.${value}`)}</option>)}</select>}</Field>
+              <Field label={t("settings.accounts.type")}>{isFixedAssetAccount ? <input value={t("txForm.fixedAssetToggle")} readOnly className={`${inputClass} bg-slate-50 text-slate-500`} /> : <select value={kind} onChange={(event) => setForm((current) => ({ ...current, kind: event.target.value, institutionId: "", investProductType: event.target.value === "investment" ? current.investProductType || "fund" : event.target.value === "fixed_asset" ? "property" : "" }))} className={inputClass}>{ACCOUNT_KINDS.map((value) => <option key={value} value={value}>{t(`account.kind.${value}`)}</option>)}</select>}</Field>
+              {isFixedAssetAccount && <Field label={t("fixedAssetEdit.assetType")}><select value={form.fixedAssetType || "property"} onChange={(event) => setField("fixedAssetType", event.target.value)} className={inputClass}>{FIXED_ASSET_TYPES.map((value) => <option key={value} value={value}>{t(`fixedAsset.type.${value}`)}</option>)}</select></Field>}
               <Field label={t("settings.accounts.owner")}><select value={form.groupId ?? ""} onChange={(event) => setField("groupId", event.target.value)} className={inputClass}><option value="">{t("settings.accounts.selectOwner")}</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></Field>
               {!isFixedAssetAccount && <Field label={t("settings.accounts.institution")}><select value={form.institutionId ?? ""} onChange={(event) => setField("institutionId", event.target.value)} className={inputClass}><option value="">{t("settings.accounts.selectInstitution")}</option>{filteredInstitutions.map((institution) => <option key={institution.id} value={institution.id}>{institution.shortName?.trim() || institution.name}</option>)}</select></Field>}
               <Field label={t("settings.accounts.currency")}><select value={normalizeCurrency(form.currency || "CNY")} onChange={(event) => setField("currency", event.target.value)} className={inputClass}>{CURRENCY_OPTIONS.map((option) => <option key={option.value} value={option.value}>{t(`entityForm.currency.${option.value.toLowerCase()}`)}</option>)}</select></Field>

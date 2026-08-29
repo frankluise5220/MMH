@@ -1223,7 +1223,7 @@ export function StatementImportPreviewDialog({
   if (!open || typeof document === "undefined") return null;
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4 py-6">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 px-4 py-6">
       <div data-batch-popover-boundary data-smart-select-boundary className="flex h-[82vh] min-h-[420px] w-[72rem] min-w-0 max-w-[calc(100vw-2rem)] resize flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
         <div className="flex items-start justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
           <div className="min-w-0">

@@ -529,7 +529,7 @@ export function CreditBillSummaryTable({
       minWidth: 88,
       align: "right",
       hideable: true,
-      render: (row) => <span className="text-xs tabular-nums text-red-600">{formatMoney(row.expenseAbs)}</span>,
+      render: (row) => <span className="text-xs tabular-nums text-emerald-700">{formatMoney(row.expenseAbs)}</span>,
     },
     {
       key: "income",
@@ -538,7 +538,7 @@ export function CreditBillSummaryTable({
       minWidth: 88,
       align: "right",
       hideable: true,
-      render: (row) => <span className="text-xs tabular-nums text-emerald-700">{formatMoney(row.income)}</span>,
+      render: (row) => <span className="text-xs tabular-nums text-red-600">{formatMoney(row.income)}</span>,
     },
     {
       key: "netAmount",
@@ -549,7 +549,7 @@ export function CreditBillSummaryTable({
       hideable: true,
       render: (row) => {
         const net = row.expenseAbs - row.income;
-        const tone = net > 0 ? "text-red-600" : net < 0 ? "text-emerald-700" : "text-slate-500";
+        const tone = net > 0 ? "text-emerald-700" : net < 0 ? "text-red-600" : "text-slate-500";
         return <span className={`text-xs tabular-nums ${tone}`}>{formatMoney(net)}</span>;
       },
     },

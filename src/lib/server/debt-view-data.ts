@@ -151,6 +151,13 @@ export type DebtDetailEntry = {
     defaultRecalculateStartDate?: string | null;
     defaultPrepayStrategy?: string;
     defaultLoanFundingMode?: "cash_disbursement" | "financed_purchase";
+    defaultRepaymentMethod?: string | null;
+    defaultAnnualRate?: number | null;
+    defaultMortgageLprDiscount?: number | null;
+    defaultRepaymentIntervalMonths?: number | null;
+    defaultLoanTotalRuns?: number | null;
+    defaultFirstRepaymentDate?: string | null;
+    defaultLoanRateAdjustments?: Array<{ effectiveDate: string; annualRate: number }>;
   };
   edit?: {
     type: "expense" | "income" | "advance" | "transfer" | "investment";
@@ -607,22 +614,35 @@ export function buildDebtDetailEntriesViewData({
           }
         : undefined,
       debtEdit: !isBalanceReconcile && entry.type === TransactionType.transfer && entry.source !== "advance"
-        ? {
-            editEntryId: entry.id,
-            mode: debtEditMode,
-            defaultDebtAccountId: debtSideAccountId,
-            defaultCashAccountId: entry.source === "debt_financed_purchase" ? (selectedRepaymentPlan?.cashAccountId ?? "") : cashSideAccountId,
-            defaultLoanFundingMode: entry.source === "debt_financed_purchase" ? "financed_purchase" as const : "cash_disbursement" as const,
-            defaultDate: entryDateKey,
-            defaultPrincipal: displayAmount,
-            defaultInterest: interestAmount,
-            defaultNote: entry.note ?? "",
-            defaultPenalty: Math.abs(toNumber(entry.debtFeeAmount)),
-            defaultRecalculateStartDate,
-            defaultPrepayStrategy: entry.source === "debt_prepay_out"
-              ? parseLoanPrepayStrategy(entry.toNote) ?? DEFAULT_LOAN_PREPAY_STRATEGY
-              : undefined,
-          }
+        ? (() => {
+            const repaymentMemo = selectedRepaymentPlan ? decodeScheduledTaskMemo(selectedRepaymentPlan.memo) : null;
+            const isLoanRepaymentPlan = repaymentMemo?.type === "loan_repayment";
+            return {
+              editEntryId: entry.id,
+              mode: debtEditMode,
+              defaultDebtAccountId: debtSideAccountId,
+              defaultCashAccountId: entry.source === "debt_financed_purchase" ? (selectedRepaymentPlan?.cashAccountId ?? "") : cashSideAccountId,
+              defaultLoanFundingMode: entry.source === "debt_financed_purchase" ? "financed_purchase" as const : "cash_disbursement" as const,
+              defaultDate: entryDateKey,
+              defaultPrincipal: displayAmount,
+              defaultInterest: interestAmount,
+              defaultNote: entry.note ?? "",
+              defaultPenalty: Math.abs(toNumber(entry.debtFeeAmount)),
+              defaultRecalculateStartDate,
+              defaultPrepayStrategy: entry.source === "debt_prepay_out"
+                ? parseLoanPrepayStrategy(entry.toNote) ?? DEFAULT_LOAN_PREPAY_STRATEGY
+                : undefined,
+              defaultRepaymentMethod: isLoanRepaymentPlan ? (repaymentMemo.repaymentMethod ?? null) : null,
+              defaultAnnualRate: isLoanRepaymentPlan ? (repaymentMemo.annualRate ?? null) : null,
+              defaultMortgageLprDiscount: isLoanRepaymentPlan ? (repaymentMemo.mortgageLprDiscount ?? null) : null,
+              defaultRepaymentIntervalMonths: isLoanRepaymentPlan ? (repaymentMemo.repaymentIntervalMonths ?? null) : null,
+              defaultLoanTotalRuns: isLoanRepaymentPlan ? (repaymentMemo.originalTotalRuns ?? null) : null,
+              defaultFirstRepaymentDate: isLoanRepaymentPlan && selectedRepaymentPlan?.startDate
+                ? formatDateUtc(selectedRepaymentPlan.startDate)
+                : null,
+              defaultLoanRateAdjustments: isLoanRepaymentPlan ? (repaymentMemo.loanRateAdjustments ?? []) : [],
+            };
+          })()
         : undefined,
       edit: isBalanceReconcile
         ? undefined

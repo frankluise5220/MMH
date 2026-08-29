@@ -217,16 +217,16 @@ function profitCategory(kind: InvestmentProductKind, value: number) {
   if (kind === "wealth") {
     return value >= 0
       ? { name: SYSTEM_WEALTH_PROFIT_CATEGORY, candidates: [SYSTEM_WEALTH_PROFIT_CATEGORY, "投资收益", "投资收入"] }
-      : { name: SYSTEM_WEALTH_LOSS_CATEGORY, candidates: [SYSTEM_WEALTH_LOSS_CATEGORY, SYSTEM_INVESTMENT_LOSS_CATEGORY] };
+      : { name: SYSTEM_WEALTH_LOSS_CATEGORY, candidates: [SYSTEM_INVESTMENT_LOSS_CATEGORY, SYSTEM_WEALTH_LOSS_CATEGORY] };
   }
   if (kind === "deposit") {
     return value >= 0
       ? { name: SYSTEM_DEPOSIT_INTEREST_CATEGORY, candidates: [SYSTEM_DEPOSIT_INTEREST_CATEGORY, "利息", "投资收益"] }
-      : { name: SYSTEM_DEPOSIT_FEE_CATEGORY, candidates: [SYSTEM_DEPOSIT_FEE_CATEGORY, SYSTEM_INVESTMENT_LOSS_CATEGORY] };
+      : { name: SYSTEM_DEPOSIT_FEE_CATEGORY, candidates: [SYSTEM_INVESTMENT_LOSS_CATEGORY, SYSTEM_DEPOSIT_FEE_CATEGORY] };
   }
   return value >= 0
     ? { name: SYSTEM_FUND_PROFIT_CATEGORY, candidates: [SYSTEM_FUND_PROFIT_CATEGORY, "投资收益", "投资收入"] }
-    : { name: SYSTEM_FUND_LOSS_CATEGORY, candidates: [SYSTEM_FUND_LOSS_CATEGORY, SYSTEM_INVESTMENT_LOSS_CATEGORY] };
+    : { name: SYSTEM_FUND_LOSS_CATEGORY, candidates: [SYSTEM_INVESTMENT_LOSS_CATEGORY, SYSTEM_FUND_LOSS_CATEGORY] };
 }
 
 /**

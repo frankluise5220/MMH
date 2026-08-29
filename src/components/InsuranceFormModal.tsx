@@ -379,6 +379,14 @@ export function InsuranceFormModal({
   const [familyMemberOptions, setFamilyMemberOptions] = useState<OptionItem[]>([]);
   const [accountMetaById, setAccountMetaById] = useState<Record<string, AccountMeta>>({});
   const [nestedEntityType, setNestedEntityType] = useState<"cash-account" | "family-member" | null>(null);
+  // Local copy of nested option data so newly created institutions/groups persist
+  // across account-dialog instances within this modal.
+  const [localNestedFieldData, setLocalNestedFieldData] = useState<NestedFieldData | undefined>(nestedFieldData);
+
+  // Keep local nested option data in sync when the server-provided prop changes.
+  useEffect(() => {
+    if (nestedFieldData) setLocalNestedFieldData(nestedFieldData);
+  }, [nestedFieldData]);
 
   const selectedInsuranceProduct = useMemo(
     () => insuranceProductOptions.find((item) => item.id === insuranceProductId) ?? null,
@@ -869,6 +877,23 @@ export function InsuranceFormModal({
     await submitInsurance({ createPremiumPlan: false, backfillPastRecords: false });
   }
 
+  // Called when a nested institution/group is created inside an account dialog.
+  // Keep the shared nested option data fresh so subsequent account dialogs can
+  // select the newly created entity.
+  function handleNestedOptionCreated(id: string, name: string, extra?: { kind?: string; type?: string }) {
+    setLocalNestedFieldData((prev) => {
+      const base = prev ?? nestedFieldData ?? {};
+      if (extra?.type !== undefined) {
+        const existing = base.institutionId ?? [];
+        if (existing.some((item) => item.id === id)) return base;
+        return { ...base, institutionId: [...existing, { id, name, type: extra.type }] };
+      }
+      const existing = base.groupId ?? [];
+      if (existing.some((item) => item.id === id)) return base;
+      return { ...base, groupId: [...existing, { id, name }] };
+    });
+  }
+
   if (!open || typeof document === "undefined") return null;
 
   const isRedeem = subtype === "redeem";
@@ -1251,7 +1276,8 @@ export function InsuranceFormModal({
           }}
           allowedAccountKinds={["bank_debit", "ewallet"]}
           hiddenFields={[]}
-          nestedFieldData={nestedFieldData}
+          nestedFieldData={localNestedFieldData ?? nestedFieldData}
+          onNestedCreated={handleNestedOptionCreated}
         />
       )}
 
@@ -1268,7 +1294,8 @@ export function InsuranceFormModal({
           }}
           extraFields={{ type: "family_member" }}
           hiddenFields={["type"]}
-          nestedFieldData={nestedFieldData}
+          nestedFieldData={localNestedFieldData ?? nestedFieldData}
+          onNestedCreated={handleNestedOptionCreated}
         />
       )}
 

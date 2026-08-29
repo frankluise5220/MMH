@@ -32,7 +32,11 @@ export async function loadReportDetailEntries(
     postedAt: record.postedAt ? formatDateLocal(record.postedAt) : null,
     createdAt: record.createdAt.toISOString(),
     dayOrder: record.dayOrder,
-    amount: toNumber(record.amount),
+    // Redemption principal is a transfer between investment and cash accounts;
+    // only the realized result belongs in income/expense detail.
+    amount: record.type === "investment" && (record.fundSubtype === "redeem" || record.fundSubtype === "switch_out")
+      ? 0
+      : toNumber(record.amount),
     runningBalance: null,
     type: record.type,
     categoryId: record.categoryId,
@@ -69,6 +73,11 @@ export async function loadReportDetailEntries(
     fundProductType: record.fundProductType,
     fundUnits: record.fundUnits == null ? null : toNumber(record.fundUnits),
     fundNav: record.fundNav == null ? null : toNumber(record.fundNav),
+    realizedProfit: record.realizedProfit == null
+      ? (record.fundSubtype === "redeem" || record.fundSubtype === "switch_out"
+        ? (record.depositInterest == null ? null : toNumber(record.depositInterest))
+        : null)
+      : toNumber(record.realizedProfit),
     depositAnnualRate: record.depositAnnualRate == null ? null : toNumber(record.depositAnnualRate),
     depositInterest: record.depositInterest == null ? null : toNumber(record.depositInterest),
     depositSourceEntryId: record.depositSourceEntryId,

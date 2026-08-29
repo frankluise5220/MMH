@@ -205,6 +205,118 @@ type StatementBillLock = {
   dueDate?: Date | null;
 };
 
+type ManualRecordConflictDetail = {
+  accountId: string;
+  statementMonth: string;
+  count: number;
+  recordIds: string[];
+};
+
+/**
+ * Detect manual (hand-entered) records that fall inside the statement periods
+ * covered by the items being imported. Scope is precise: same household, the
+ * credit-card bill accounts (including shared bill accounts) resolved from the
+ * item metadata, and the statement month derived from the period/posted date.
+ * Manual transfers whose toAccountId is a bill account are matched by either
+ * statement month or the period date range, because transfers may not carry a
+ * statement month.
+ */
+async function detectManualRecordConflicts(
+  tx: Db,
+  householdId: string,
+  items: ParsedItem[],
+): Promise<{ total: number; details: ManualRecordConflictDetail[] }> {
+  type PeriodScope = { accountIds: string[]; months: Set<string>; periodStart: Date | null; periodEnd: Date | null };
+  const scopeByCardMonth = new Map<string, PeriodScope>();
+
+  for (const item of items) {
+    const meta = item._meta;
+    const accountName = pickAccountName(item.account) || pickAccountName(item.toAccount, pickAccountName(item.fromAccount));
+    const isCreditCard = Boolean(
+      meta?.cardNumberMasked ||
+      meta?.statementAmount !== undefined ||
+      meta?.statementPeriodStart ||
+      meta?.statementPeriodEnd ||
+      isCreditAccountText(accountName),
+    );
+    if (!isCreditCard) continue;
+
+    const account = await findCreditAccount(tx, householdId, accountName, meta);
+    if (!account?.billingDay) continue;
+
+    const fullAccount = await tx.account.findUnique({
+      where: { id: account.id },
+      select: {
+        id: true,
+        householdId: true,
+        institutionId: true,
+        kind: true,
+        creditBillMode: true,
+      },
+    });
+    const billAccountIds = fullAccount
+      ? await getCreditBillAccountIds(tx, fullAccount)
+      : [account.id];
+    const periodStart = parseDateOnlyUtc(meta?.statementPeriodStart);
+    const periodEnd = parseDateOnlyUtc(meta?.statementPeriodEnd);
+    const statementDate = periodEnd ?? postedDateForStatement(item, parseDate(item.date));
+    const statementMonth = toStatementMonth(statementDate, account.billingDay);
+    const key = `${account.id}:${statementMonth}`;
+    const scope = scopeByCardMonth.get(key) ?? {
+      accountIds: [],
+      months: new Set<string>(),
+      periodStart,
+      periodEnd,
+    };
+    for (const id of billAccountIds.length > 0 ? billAccountIds : [account.id]) scope.accountIds.push(id);
+    scope.months.add(statementMonth);
+    scope.periodStart = scope.periodStart ?? periodStart;
+    scope.periodEnd = scope.periodEnd ?? periodEnd;
+    scopeByCardMonth.set(key, scope);
+  }
+
+  const details: ManualRecordConflictDetail[] = [];
+  for (const [key, scope] of scopeByCardMonth) {
+    const accountIds = Array.from(new Set(scope.accountIds));
+    const months = Array.from(scope.months);
+    const accountId = key.split(":")[0] ?? "";
+
+    const accountFilters: Record<string, unknown>[] = [
+      { accountId: { in: accountIds }, statementMonth: { in: months } },
+      { toAccountId: { in: accountIds }, statementMonth: { in: months } },
+    ];
+    if (scope.periodStart && scope.periodEnd) {
+      accountFilters.push({
+        toAccountId: { in: accountIds },
+        date: { gte: scope.periodStart, lt: addDaysUtc(scope.periodEnd, 1) },
+      });
+    }
+
+    const records = await tx.txRecord.findMany({
+      where: {
+        householdId,
+        deletedAt: null,
+        AND: [
+          { OR: [{ source: "manual" }, { source: null }] },
+          { OR: accountFilters },
+        ],
+      },
+      select: { id: true },
+    });
+    if (records.length > 0) {
+      details.push({
+        accountId,
+        statementMonth: months[0] ?? "",
+        count: records.length,
+        recordIds: records.map((record) => record.id),
+      });
+    }
+  }
+
+  const total = details.reduce((sum, detail) => sum + detail.count, 0);
+  return { total, details };
+}
+
 async function statementBillLockForImportedRecord(tx: Db, householdId: string, item: ParsedItem, record: { accountId: string | null; toAccountId: string | null }): Promise<StatementBillLock | null> {
   const amount = Number.isFinite(item._meta?.statementAmount) ? item._meta?.statementAmount : undefined;
   const periodStart = parseDateOnlyUtc(item._meta?.statementPeriodStart);
@@ -1000,7 +1112,7 @@ export async function OPTIONS() {
  * POST /api/v1/statement/import
  * Import parsed transaction items from bill recognition, quick add, or credit-card mail.
  *
- * Body: { items, defaultAccountName?, autoCreateAccounts?, mailSource? }
+ * Body: { items, defaultAccountName?, autoCreateAccounts?, mailSource?, manualRecordConflictPolicy? }
  * - item.type is one of expense/income/transfer/investment.
  * - item.amount is the absolute display amount for statement-import callers.
  * - item.inflow/item.outflow may carry account-side direction. For an original-spend
@@ -1043,6 +1155,7 @@ export async function POST(req: Request) {
       defaultAccountName: z.string().optional(),
       autoCreateAccounts: z.boolean().optional().default(true),
       mailSource: MailSourceSchema.optional(),
+      manualRecordConflictPolicy: z.enum(["overwrite", "keep"]).optional(),
     })
     .safeParse(body);
   if (!parse.success) {
@@ -1065,6 +1178,47 @@ export async function POST(req: Request) {
   const mailSource = parse.data.mailSource;
   const statementFingerprint = mailSource ? buildStatementFingerprint(items, defaultAccountName) : "";
   let importBatchId: string | null = null;
+
+  // Credit-card mail import: before creating the import batch, check whether
+  // manual records already exist for the same household + bill accounts +
+  // statement periods. Without a policy, return a structured conflict so the
+  // caller can ask the user; with "overwrite", soft-delete only the exact
+  // conflicting manual records; with "keep", import alongside them.
+  let deletedManualRecordCount = 0;
+  if (mailSource) {
+    const conflict = await detectManualRecordConflicts(prisma, householdId, items);
+    if (conflict.total > 0) {
+      if (!parse.data.manualRecordConflictPolicy) {
+        return NextResponse.json({
+          ok: false,
+          code: "MANUAL_RECORD_CONFLICT",
+          error: "Manual records exist in the same statement period",
+          conflict: {
+            total: conflict.total,
+            details: conflict.details.map((detail) => ({
+              accountId: detail.accountId,
+              statementMonth: detail.statementMonth,
+              count: detail.count,
+            })),
+          },
+        }, { headers: corsHeaders() });
+      }
+      if (parse.data.manualRecordConflictPolicy === "overwrite") {
+        const conflictIds = conflict.details.flatMap((detail) => detail.recordIds);
+        if (conflictIds.length > 0) {
+          const deleted = await prisma.txRecord.updateMany({
+            where: {
+              id: { in: conflictIds },
+              householdId,
+              deletedAt: null,
+            },
+            data: { deletedAt: new Date() },
+          });
+          deletedManualRecordCount = deleted.count;
+        }
+      }
+    }
+  }
 
   if (mailSource) {
     const mailHash = normalizeHash(mailSource.hash);
@@ -1131,6 +1285,7 @@ export async function POST(req: Request) {
     skippedCount: errors.length,
     ids: created.map((t) => t.id),
     importBatchId,
+    deletedManualRecordCount,
     lockedStatementBills: lockedStatementBills.map((lock) => ({
       accountId: lock.storageAccountId,
       billAccountIds: lock.billAccountIds,

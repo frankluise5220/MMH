@@ -475,15 +475,19 @@ function matchExistingCategoryName(
   const scopedCategories = categories.filter((category) => category.type === type);
   if (scopedCategories.length === 0) return undefined;
 
-  const historicalCategoryName = matchHistoricalCategoryName(item, historicalSamples);
-  if (historicalCategoryName && scopedCategories.some((category) => category.name === historicalCategoryName)) {
-    return historicalCategoryName;
-  }
-
+  // An explicit category already set by the parser (e.g. the CMB "分期"
+  // section forcing "银行分期") is authoritative and must not be overridden
+  // by the learning library. Only fall back to historical samples when the
+  // parser did not provide a category that resolves to the ledger.
   const candidate = cleanOptionalText(item.category);
   if (candidate) {
     const exact = scopedCategories.find((category) => category.name === candidate);
     if (exact) return exact.name;
+  }
+
+  const historicalCategoryName = matchHistoricalCategoryName(item, historicalSamples);
+  if (historicalCategoryName && scopedCategories.some((category) => category.name === historicalCategoryName)) {
+    return historicalCategoryName;
   }
 
   const source = [

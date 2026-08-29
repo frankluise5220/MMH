@@ -308,7 +308,7 @@ export function DebtTransactionModal({
       subLabel: item.type === "person" ? t("debtTx.objectType.person") : t("debtTx.objectType.organization"),
     }));
     const bankInstitutionOptions = (localNestedFieldData?.institutionId ?? [])
-      .filter((item) => item.type === "bank")
+      .filter((item) => item.type === "bank" || item.type === "debt" || item.type === "organization" || item.type === "other")
       .map((item) => ({
         id: `institution:${item.id}`,
         label: item.name,
@@ -335,7 +335,7 @@ export function DebtTransactionModal({
     () => new Map<string, { id: string; name: string; type?: string }>([
       ...((localNestedFieldData?.counterpartyId ?? nestedFieldData?.counterpartyId ?? []).map((item) => [`counterparty:${item.id}`, item] as const)),
       ...((localNestedFieldData?.institutionId ?? nestedFieldData?.institutionId ?? [])
-        .filter((item) => item.type === "bank")
+        .filter((item) => item.type === "bank" || item.type === "debt" || item.type === "organization" || item.type === "other")
         .map((item) => [`institution:${item.id}`, item] as const)),
     ]),
     [localNestedFieldData, nestedFieldData],
@@ -520,7 +520,7 @@ export function DebtTransactionModal({
         subLabel: item.type === "person" ? t("debtTx.objectType.person") : t("debtTx.objectType.organization"),
       }));
       const institutionOptions = nextNested.institutionId
-        .filter((item) => item.type === "bank")
+        .filter((item) => item.type === "bank" || item.type === "debt" || item.type === "organization" || item.type === "other")
         .map((item) => ({
           id: debtObjectOptionId(item.id, item.type),
           label: item.name,
@@ -562,6 +562,11 @@ export function DebtTransactionModal({
         defaultLoanRateAdjustments?: LoanRateAdjustment[];
         defaultLoanFundingMode?: LoanFundingMode;
         defaultNote?: string | null;
+        defaultRepaymentMethod?: string | null;
+        defaultAnnualRate?: number | null;
+        defaultRepaymentIntervalMonths?: number | null;
+        defaultLoanTotalRuns?: number | null;
+        defaultFirstRepaymentDate?: string | null;
       }>).detail;
       resetDraft();
       if (detail?.editEntryId) setEditingEntryId(detail.editEntryId);
@@ -596,6 +601,26 @@ export function DebtTransactionModal({
       }
       if (detail?.defaultPrepayStrategy) setPrepayStrategy(detail.defaultPrepayStrategy);
       if (detail?.defaultNote != null) setNote(String(detail.defaultNote));
+      if (detail?.defaultRepaymentMethod) setRepaymentMethod(detail.defaultRepaymentMethod);
+      if (detail?.defaultAnnualRate != null && Number.isFinite(detail.defaultAnnualRate)) {
+        setAnnualRate(formatRateInput(detail.defaultAnnualRate));
+      }
+      if (detail?.defaultMortgageLprDiscount != null && Number.isFinite(detail.defaultMortgageLprDiscount)) {
+        setMortgageLprDiscount(formatRateInput(detail.defaultMortgageLprDiscount));
+      }
+      if (detail?.defaultRepaymentIntervalMonths != null && Number.isFinite(detail.defaultRepaymentIntervalMonths)) {
+        setRepaymentIntervalMonths(String(detail.defaultRepaymentIntervalMonths));
+      }
+      if (detail?.defaultLoanTotalRuns != null && Number.isFinite(detail.defaultLoanTotalRuns)) {
+        setLoanTotalRuns(String(detail.defaultLoanTotalRuns));
+      }
+      if (detail?.defaultFirstRepaymentDate) setFirstRepaymentDate(detail.defaultFirstRepaymentDate);
+      if (detail?.defaultLoanRateAdjustments && detail.defaultLoanRateAdjustments.length > 0) {
+        setHistoricalRateRows(detail.defaultLoanRateAdjustments.map((item) =>
+          createHistoricalRateRow(item.effectiveDate, formatRateInput(item.annualRate)),
+        ));
+        setShowHistoricalRates(true);
+      }
       if (detail?.mode === "repay_out" || detail?.mode === "prepay_out") {
         setRepaymentLprCheck({
           mortgageLprDiscount: detail.defaultMortgageLprDiscount ?? null,

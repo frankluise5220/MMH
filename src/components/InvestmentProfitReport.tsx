@@ -25,6 +25,7 @@ type Props = {
   rows: InvestmentProfitReportRow[];
   totals: {
     fundProfit: number;
+    stockProfit: number;
     wealthProfit: number;
     depositProfit: number;
     totalProfit: number;
@@ -68,12 +69,7 @@ function totalLabel(t: (key: string) => string, period: InvestmentProfitPeriod) 
   if (period === "day") return t("investmentProfitReport.total.day");
   if (period === "month") return t("investmentProfitReport.total.month");
   return t("investmentProfitReport.total.year");
-}
 
-function activePeriodLabel(t: (key: string) => string, period: InvestmentProfitPeriod) {
-  if (period === "day") return t("investmentProfitReport.activePeriod.day");
-  if (period === "month") return t("investmentProfitReport.activePeriod.month");
-  return t("investmentProfitReport.activePeriod.year");
 }
 
 function dailyCells(rows: InvestmentProfitReportRow[]) {
@@ -109,12 +105,12 @@ export function InvestmentProfitReport({ period, year, month, rows, totals, isRe
           { key: "fund", label: t("investmentProfitReport.summary.fundProfit"), value: totals.fundProfit },
           { key: "wealth", label: t("investmentProfitReport.summary.wealthProfit"), value: totals.wealthProfit },
           { key: "deposit", label: t("investmentProfitReport.summary.depositProfit"), value: totals.depositProfit },
-          { key: "active", label: activePeriodLabel(t, period), value: activeRows.length, count: true },
+          { key: "stock", label: t("investmentProfitReport.summary.stockProfit"), value: totals.stockProfit },
         ].map((item) => (
           <div key={item.key} className="rounded-lg border border-slate-200 bg-white p-3">
             <div className="text-[11px] text-slate-500">{item.label}</div>
-            <div className={`mt-1 text-base font-semibold tabular-nums ${item.count ? "text-slate-800" : valueClass(item.value, isRedUp)}`}>
-              {item.count ? item.value : signedMoney(item.value)}
+            <div className={`mt-1 text-base font-semibold tabular-nums ${valueClass(item.value, isRedUp)}`}>
+              {signedMoney(item.value)}
             </div>
           </div>
         ))}
@@ -157,21 +153,21 @@ export function InvestmentProfitReport({ period, year, month, rows, totals, isRe
                 return (
                   <div
                     key={row.key}
-                    className={`min-h-[76px] rounded-md border px-2 py-1.5 ${
+                    className={`flex min-h-[76px] flex-col rounded-md border px-2 py-1.5 ${
                       hasProfit ? "border-slate-200 bg-white" : "border-slate-100 bg-slate-50/50"
                     }`}
                     title={`${row.subLabel} ${signedMoney(row.totalProfit)}`}
                   >
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-semibold text-slate-600">{rowLabel(t, period, row.key)}</span>
-                      {row.count > 0 ? <span className="text-[10px] text-slate-400">{row.count}</span> : null}
-                    </div>
-                    <div className={`mt-1 text-xs font-semibold tabular-nums ${valueClass(row.totalProfit, isRedUp)}`}>
-                      {hasProfit ? signedMoney(row.totalProfit) : "-"}
+                      <span className={`text-sm font-bold tabular-nums ${valueClass(row.totalProfit, isRedUp)}`}>
+                        {hasProfit ? signedMoney(row.totalProfit) : "-"}
+                      </span>
                     </div>
                     {hasProfit ? (
-                      <div className="mt-1 space-y-0.5 text-[10px] tabular-nums text-slate-400">
+                      <div className="mt-auto space-y-0.5 text-[10px] tabular-nums text-slate-400">
                         {row.fundProfit !== 0 ? <div>{t("investmentProfitReport.daily.fund")} {signedMoney(row.fundProfit)}</div> : null}
+                        {row.stockProfit !== 0 ? <div>{t("investmentProfitReport.daily.stock")} {signedMoney(row.stockProfit)}</div> : null}
                         {row.wealthProfit !== 0 ? <div>{t("investmentProfitReport.daily.wealth")} {signedMoney(row.wealthProfit)}</div> : null}
                         {row.depositProfit !== 0 ? <div>{t("investmentProfitReport.daily.deposit")} {signedMoney(row.depositProfit)}</div> : null}
                       </div>

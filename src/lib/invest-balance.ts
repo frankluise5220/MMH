@@ -32,6 +32,12 @@ export type PositionDisplayRow = {
   securityId?: string | null;
   wealthProductId?: string | null;
   propertyAssetId?: string | null;
+  assetType?: string | null;
+  attributes?: unknown | null;
+  propertyType?: string | null;
+  address?: string | null;
+  purchasePrice?: number | null;
+  note?: string | null;
   name: string;
   holdingDate: string;
   units: number;
@@ -78,10 +84,16 @@ type PropertyAssetDisplayRow = {
   accountId: string;
   name: string;
   status: string | null;
+  assetType?: string | null;
+  propertyType?: string | null;
+  address?: string | null;
+  attributes?: unknown | null;
   purchaseDate?: Date | null;
+  purchasePrice?: unknown | null;
   cost: unknown;
   marketValue: unknown;
   latestValuationDate?: Date | null;
+  note?: string | null;
   createdAt?: Date;
 };
 
@@ -185,6 +197,12 @@ function buildPropertyPositionDisplay(propertyAssets: PropertyAssetDisplayRow[])
         fundCode: asset.id,
         accountId: asset.accountId,
         propertyAssetId: asset.id,
+        assetType: asset.assetType ?? null,
+        propertyType: asset.propertyType ?? null,
+        address: asset.address ?? null,
+        attributes: asset.attributes ?? null,
+        purchasePrice: asset.purchasePrice == null ? null : toNumber(asset.purchasePrice),
+        note: asset.note ?? null,
         name: asset.name,
         holdingDate: asset.purchaseDate ? asset.purchaseDate.toISOString().slice(0, 10) : "",
         units: 0,
@@ -525,7 +543,7 @@ export const computePositionDisplay = cache(
           avgCost: toNumber(holding.avgCost),
           cost,
           nav: latestPrice,
-          navDate: "",
+          navDate: holding.latestPriceDate ? holding.latestPriceDate.toISOString().slice(0, 10) : "",
           marketValue,
           floatingPnL,
           floatingPnLRate: cost > 0 ? floatingPnL / cost : 0,

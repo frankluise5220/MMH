@@ -75,6 +75,10 @@ type StatementInstitutionRow = {
 const SYSTEM_DEFAULT_SOURCE = "system_default";
 const MAX_TEXT_LENGTH = 500;
 let fieldNameColumnChecked = false;
+// Cache of householdIds whose default recognition rules have already been
+// seeded this process. Seeding runs ~100 INSERT ... ON CONFLICT DO NOTHING
+// statements; skipping it on every parse avoids a large fixed cost.
+const defaultRulesSeeded = new Set<string>();
 
 const DEFAULT_STATEMENT_RECOGNITION_RULES: DefaultStatementRecognitionRule[] = [
   { targetType: "category", transactionType: "expense", categoryName: "服饰装饰", keyword: "服装", priority: 110 },
@@ -488,7 +492,10 @@ export async function loadStatementRecognitionRuleSamples(
 
   try {
     await ensureStatementRecognitionRuleFieldNameColumn(client);
-    await ensureDefaultStatementRecognitionRules(client, scopedHouseholdId);
+    if (!defaultRulesSeeded.has(scopedHouseholdId)) {
+      await ensureDefaultStatementRecognitionRules(client, scopedHouseholdId);
+      defaultRulesSeeded.add(scopedHouseholdId);
+    }
     const rows = await client.$queryRaw<StatementRecognitionRuleRow[]>(Prisma.sql`
       SELECT
         "targetType",

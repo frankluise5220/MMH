@@ -799,10 +799,6 @@ resolve_port() {
     pkgvar="$(resolve_pkgvar)"
     port_file="\${pkgvar}/.port"
 
-    if [ -n "\${wizard_port:-}" ]; then
-        echo "\${wizard_port}"
-        return 0
-    fi
     if [ -f "$port_file" ]; then
         tr -d '[:space:]' < "$port_file"
         return 0
@@ -810,6 +806,10 @@ resolve_port() {
     env_port="$(read_env_value PORT 2>/dev/null || true)"
     if [ -n "$env_port" ]; then
         echo "$env_port"
+        return 0
+    fi
+    if [ -n "\${wizard_port:-}" ]; then
+        echo "\${wizard_port}"
         return 0
     fi
     if [ -n "\${TRIM_SERVICE_PORT:-}" ]; then
@@ -820,11 +820,12 @@ resolve_port() {
 }
 
 write_env_file() {
-    local port pkgvar system_password password_file
+    local port pkgvar system_password password_file port_file
     port="$(resolve_port)"
     pkgvar="$(resolve_pkgvar)"
     system_password="$(resolve_system_password)"
     password_file="\${pkgvar}/mmh-system-password.txt"
+    port_file="\${pkgvar}/.port"
     [ -n "$pkgvar" ] || return 1
     mkdir -p "\${pkgvar}/data" 2>/dev/null || true
 
@@ -834,6 +835,8 @@ TZ=Asia/Shanghai
 MMH_SYSTEM_PASSWORD=\${system_password}
 EOF
     chmod 600 "\${pkgvar}/mmh.env" 2>/dev/null || true
+    printf '%s\\n' "$port" > "$port_file"
+    chmod 600 "$port_file" 2>/dev/null || true
     printf '%s\\n' "$system_password" > "$password_file"
     chmod 600 "$password_file" 2>/dev/null || true
 
@@ -1132,7 +1135,7 @@ target="$backup_root/${reason}-$stamp"
 
 mkdir -p "$target/appdata"
 cp -a "$data_root/data" "$target/appdata/data"
-for file in "$data_root/mmh.env" "$data_root/mmh-system-password.txt"; do
+for file in "$data_root/mmh.env" "$data_root/.port" "$data_root/mmh-system-password.txt"; do
     if [ -f "$file" ]; then
         cp -a "$file" "$target/appdata/"
     fi

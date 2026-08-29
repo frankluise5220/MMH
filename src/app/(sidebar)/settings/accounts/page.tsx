@@ -15,6 +15,7 @@ import { getCreditCardLabelTemplatePreference } from "@/lib/client/appPreference
 import { fetchSettingsAccountData, getCachedSettingsAccountData, notifySettingsDataChanged } from "@/lib/client/settingsCache";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { isDepositAccount } from "@/lib/account-kind-utils";
+import { isFixedAssetAccountLike } from "@/lib/fixed-asset";
 import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
 import { useI18n } from "@/lib/i18n";
 import { CURRENCY_OPTIONS, normalizeCurrency } from "@/lib/currency";
@@ -56,8 +57,9 @@ type Account = {
 
 const investmentProductTypeOptions = PRODUCT_TYPES.map((value) => ({ value, labelKey: `investment.product.${value}` }));
 
-function normalizedAccountKind(account: Pick<Account, "kind" | "investProductType">): AccountKind {
-  return isDepositAccount(account) ? ("deposit" as AccountKind) : account.kind;
+function normalizedAccountKind(account: Pick<Account, "kind" | "investProductType">): string {
+  if (isFixedAssetAccountLike(account)) return "fixed_asset";
+  return isDepositAccount(account) ? "deposit" : account.kind;
 }
 
 function accountInstitutionTypeMatches(kind: string, investProductType: string | null | undefined, type: string | null | undefined) {
@@ -151,7 +153,7 @@ export default function SettingsAccountsPage() {
       creditLimit: a.creditLimit || "",
       creditBillMode: a.creditBillMode === "consolidated" ? "consolidated" : "separate",
       numberMasked: a.numberMasked || "",
-      investProductType: normalizedKind === "investment" ? (a.investProductType || "fund") : "",
+      investProductType: normalizedKind === "investment" ? (a.investProductType || "fund") : normalizedKind === "fixed_asset" ? "property" : "",
       costBasisMethod: a.costBasisMethod || "moving_avg",
       fundUnitsDecimals: String(a.fundUnitsDecimals ?? 2),
       tradingCalendar: a.tradingCalendar || "cn_fund",
@@ -170,10 +172,14 @@ export default function SettingsAccountsPage() {
       setEditError(STOCK_ACCOUNT_INSTITUTION_ERROR);
       return;
     }
+    const isFixedAssetKind = nextKind === "fixed_asset";
+    const payload = isFixedAssetKind
+      ? { ...editForm, kind: "investment", investProductType: "property", institutionId: "" }
+      : editForm;
     const res = await fetch("/api/v1/accounts", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: savedId, ...editForm }),
+      body: JSON.stringify({ id: savedId, ...payload }),
     });
     const data = await res.json().catch(() => null) as {
       ok?: boolean;
@@ -591,9 +597,10 @@ export default function SettingsAccountsPage() {
         const editingAccount = accounts.find((account) => account.id === editingId);
         if (!editingAccount) return null;
         const normalizedKind = normalizedAccountKind(editingAccount);
-        const editKind = (editForm.kind || normalizedKind) as AccountKind;
-        const isInvestmentKind = editKind === "investment";
-        const editInvestProductType = editForm.investProductType || "fund";
+        const editKind = (editForm.kind || normalizedKind) as AccountKind | "fixed_asset";
+        const isFixedAssetKind = editKind === "fixed_asset";
+        const isInvestmentKind = editKind === "investment" || isFixedAssetKind;
+        const editInvestProductType = editForm.investProductType || (isFixedAssetKind ? "property" : "fund");
         const showCostBasisMethod = isInvestmentKind && supportsCostBasisMethod(editInvestProductType);
         const isBillLikeKind = editKind === "bank_credit";
         const supportsLastFour = editKind === "bank_credit" || editKind === "bank_debit";
@@ -626,7 +633,7 @@ export default function SettingsAccountsPage() {
                       ...f,
                       kind: e.target.value,
                       institutionId: "",
-                      investProductType: e.target.value === "investment" ? (f.investProductType || "fund") : "",
+                      investProductType: e.target.value === "investment" ? (f.investProductType || "fund") : e.target.value === "fixed_asset" ? "property" : "",
                     }))}
                     className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
                   >
@@ -636,6 +643,7 @@ export default function SettingsAccountsPage() {
                     <option value="ewallet">{t("account.kind.ewallet")}</option>
                     <option value="deposit">{t("account.kind.deposit")}</option>
                     <option value="investment">{t("account.kind.investment")}</option>
+                    <option value="fixed_asset">{t("account.kind.fixed_asset")}</option>
                     <option value="loan">{t("account.kind.loan")}</option>
                     <option value="other">{t("account.kind.other")}</option>
                   </select>

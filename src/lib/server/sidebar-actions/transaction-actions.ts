@@ -570,7 +570,7 @@ export async function createTransaction(formData: FormData) {
             propertyAccountId: fixedAssetAccountId,
             propertyAssetId: fixedAssetAssetId || undefined,
             cashEntry: created,
-            propertyName: note || cat?.name || undefined,
+            propertyName: undefined,
           });
           fixedAssetAccountIdsToRefresh.add(fixedAssetAccountId);
           touchedFixedAsset = true;
@@ -1956,12 +1956,7 @@ export async function editInvestment(formData: FormData) {
           ),
         });
       }
-    });
-    if (fundProductType !== "wealth" && !usedIndependentFundTransaction) {
-      await syncFundTransactionsFromTxRecords([entryId]).catch((e) => {
-        console.error("editInvestment sync fund transaction:", e);
-      });
-    }
+    }, { maxWait: 10_000, timeout: 20_000 });
     if (!usedIndependentFundTransaction) {
       await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: entryId }).catch((e) => {
         console.error("editInvestment sync independent business transaction:", e);
@@ -2486,7 +2481,7 @@ export async function updateTransactionFromDialog(formData: FormData) {
           propertyAccountId: fixedAssetAccountId,
           propertyAssetId: fixedAssetAssetId || undefined,
           cashEntry: updatedEntry,
-          propertyName: note || undefined,
+          propertyName: undefined,
         });
         touchedAccountIds.add(fixedAssetAccountId);
         touchedFixedAsset = true;

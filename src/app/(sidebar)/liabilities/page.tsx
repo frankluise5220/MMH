@@ -207,13 +207,17 @@ export default async function LiabilitiesPage({
           })),
         ]
       : []),
-    ...(institutions.some((institution) => institution.type === "bank")
+    ...(institutions.some((institution) =>
+        institution.type === "bank" || institution.type === "debt" || institution.type === "organization" || institution.type === "other",
+      )
       ? [
           { id: "debt-institution-source-header", label: t("liabilities.fromInstitution"), isHeader: true },
-          ...institutions.filter((institution) => institution.type === "bank").map((institution) => ({
+          ...institutions.filter((institution) =>
+            institution.type === "bank" || institution.type === "debt" || institution.type === "organization" || institution.type === "other",
+          ).map((institution) => ({
             id: `institution:${institution.id}`,
             label: institution.shortName?.trim() || institution.name,
-            subLabel: t("institution.type.bank"),
+            subLabel: t(`institution.type.${institution.type || "other"}`),
           })),
         ]
       : []),

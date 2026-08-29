@@ -111,7 +111,10 @@ export function CreditBillDetailPanel({
       lastScopeKeyRef.current = propScopeKey;
       const storedPreference = readStoredDetailPreference(accountId);
       const nextPageSize = storedPreference?.pageSize ?? normalizedInitialPageSize;
-      const nextDetailAll = storedPreference?.detailAll ?? initialDetailAll;
+      // When the scope is a specific bill month (not "all"), show that
+      // month's details rather than the persisted "show all" preference.
+      const isAllScope = /:all:credit-bill-detail$/.test(propScopeKey);
+      const nextDetailAll = isAllScope ? (storedPreference?.detailAll ?? initialDetailAll) : false;
       const nextTotalPages = Math.max(1, Math.ceil(entries.length / nextPageSize));
       setPageSize(nextPageSize);
       setDetailAll(nextDetailAll);
@@ -137,7 +140,11 @@ export function CreditBillDetailPanel({
           const nextEntries = Array.isArray(payload.data?.entries) ? payload.data.entries : [];
           const storedPreference = readStoredDetailPreference(accountId);
           const nextPageSize = storedPreference?.pageSize ?? pageSize;
-          const nextDetailAll = storedPreference?.detailAll ?? detailAll;
+          // Switching to a specific bill month should show that month's
+          // details, not the persisted "show all" preference. Only the page
+          // size preference carries over; detailAll resets to false so the
+          // user sees the selected period's transactions.
+          const nextDetailAll = false;
           const nextTotalPages = Math.max(1, Math.ceil(nextEntries.length / nextPageSize));
           setLocalEntries(nextEntries);
           setPageSize(nextPageSize);

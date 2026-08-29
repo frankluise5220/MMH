@@ -35,6 +35,7 @@ import {
   isStockInvestmentAccount,
 } from "@/lib/account-institution-rules";
 import { normalizeCurrency } from "@/lib/currency";
+import { normalizeFixedAssetType } from "@/lib/fixed-asset";
 import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 
 export const runtime = "nodejs";
@@ -93,6 +94,7 @@ export async function POST(req: NextRequest) {
     const isInvestment = kind === "investment";
     const isCreditLike = kind === "bank_credit";
     const investProductType = isInvestment ? normalizeFundProductType(body.investProductType) : null;
+    const fixedAssetType = isInvestment && investProductType === "property" ? normalizeFixedAssetType(body.fixedAssetType) : null;
     const tradingCalendar = resolveTradingCalendarForAccount(kind, investProductType, body.tradingCalendar);
     const initialBalanceRaw = String(body.initialBalance ?? "").trim();
     const initialBalance = initialBalanceRaw ? Number(initialBalanceRaw) : null;
@@ -190,6 +192,7 @@ export async function POST(req: NextRequest) {
           numberMasked,
           note,
           investProductType: investProductType as any,
+          fixedAssetType: fixedAssetType as any,
           costBasisMethod: isInvestment && supportsCostBasisMethod(investProductType) ? normalizeCostBasisMethod(body.costBasisMethod) as any : null,
           ...(tradingCalendar ? { tradingCalendar: tradingCalendar as any } : {}),
           defaultFundQueryApiId: supportsDefaultFundQueryApi ? String(body.defaultFundQueryApiId ?? "").trim() || null : null,
@@ -338,6 +341,11 @@ export async function PUT(req: NextRequest) {
       data.costBasisMethod = null;
       data.tradingCalendar = null;
       data.defaultFundQueryApiId = null;
+    }
+    if (nextKind === "investment" && String(data.investProductType ?? existing.investProductType ?? "") === "property") {
+      data.fixedAssetType = normalizeFixedAssetType(body.fixedAssetType ?? existing.fixedAssetType) as any;
+    } else {
+      data.fixedAssetType = null;
     }
     const nextInvestProductTypeForInstitution = nextKind === "investment"
       ? String(data.investProductType ?? existing.investProductType ?? "fund")
@@ -647,6 +655,8 @@ export async function GET(req: Request) {
             : displayBalanceByAccountId.get(account.id) ?? toNumber(account.balance),
       count: 0,
       kind: account.kind,
+      investProductType: account.investProductType,
+      fixedAssetType: account.fixedAssetType,
       debtDirection: account.debtDirection,
       note: account.note,
       currency: account.currency,

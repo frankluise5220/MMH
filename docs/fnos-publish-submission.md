@@ -29,8 +29,7 @@
 - 包内 `manifest` 版本、仓库源 `version`、GitHub Release tag `v0.1.x`、GHCR 镜像 tag 和文件名必须一致；不再使用 `v0.1.x-fnos`。
 - 包内 `cmd/main` 必须使用飞牛应用数据目录保存 SQLite，不能回退到应用安装目录。
 - 包内 `better-sqlite3.node` 必须在 fnOS 目标 GLIBC 版本可加载。
-- 包内不能包含 `wizard/uninstall`；覆盖升级必须走 `cmd/upgrade_init` / `cmd/upgrade_callback`，卸载生命周期只作为用户主动卸载时的数据兜底。
-- 包内不能包含 `wizard/upgrade` 或 `wizard/config`；FN 软仓更新必须静默执行，不能再次弹出 `7777` 服务端口确认窗口。
+- 包内可以保留首次安装使用的 `wizard/install`，但不能包含 `wizard/uninstall`、`wizard/upgrade` 或 `wizard/config`；FN 软仓更新必须静默执行，并优先沿用已安装 MMH 的 `.port` / `mmh.env` 端口，不能把向导默认 `7777` 写回覆盖已有端口。
 - 两个架构包必须保持同一个 `appname=mmh` 和同一个版本号；x86 manifest 使用 `arch=x86_64`、`platform=x86`，ARM64 manifest 使用 `arch=aarch64`、`platform=arm`。
 
 ## Manifest 摘要
@@ -102,7 +101,7 @@ MMH 是一套本地部署的家庭记账与资产管理工具，支持账户流�
 - Release 包 manifest 版本为 `0.1.10`。
 - 正式提交包由 fnOS 测试机上的 `fnpack build` 生成。
 - GitHub Release 只应包含 x86 `mmh-x86_64.fpk` 和 ARM64 `mmh-arm64.fpk` 两个 FPK。
-- FN 软仓源应识别已安装旧版本到源版本 `0.1.10` 的更新；升级必须以同一 `appname=mmh` 覆盖安装新版 `.fpk`，完成后不应继续提示更新。
+- FN 软仓源应识别已安装旧版本到源版本 `0.1.10` 的更新；升级必须以同一 `appname=mmh` 覆盖安装新版 `.fpk`，完成后不应继续提示更新，且端口保持旧版 MMH 的在用端口。
 
 ## 待人工补充
 

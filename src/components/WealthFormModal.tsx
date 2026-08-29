@@ -15,6 +15,7 @@ import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAcc
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 import { isWealthAccountAllowedForCashAccount } from "@/lib/wealth-account-rules";
+import { EntryAttachmentButton, uploadEntryAttachmentFiles } from "./EntryAttachmentPanel";
 
 type Entry = {
   id?: string;
@@ -199,8 +200,8 @@ export function WealthFormModal({
   wealthHoldingOptions?: WealthHoldingOption[];
   /** Groups & institutions data for NestedAddModal compact account creation */
   nestedFieldData?: NestedFieldData;
-  createAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
-  editAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
+  createAction: (formData: FormData) => Promise<{ ok: true; data?: { id?: string; cashEntryId?: string } } | { ok: false; error: string }>;
+  editAction?: (formData: FormData) => Promise<{ ok: true; data?: { id?: string; cashEntryId?: string } } | { ok: false; error: string }>;
 }) {
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const { t } = useI18n();
@@ -252,6 +253,7 @@ export function WealthFormModal({
   const [selectedHoldingId, setSelectedHoldingId] = useState("");
   const [editingRedeemSource, setEditingRedeemSource] = useState<EditingWealthRedeemSource | null>(null);
   const [memo, setMemo] = useState(initMemo);
+  const [pendingAttachmentFiles, setPendingAttachmentFiles] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [requestId, setRequestId] = useState<string | null>(null);
   const [editEntryId, setEditEntryId] = useState<string | null>(null);
@@ -277,6 +279,14 @@ export function WealthFormModal({
   const [localInvestSSOpts, setLocalInvestSSOpts] = useState(investmentAccountSSOptions);
   const [nestedEntityType, setNestedEntityType] = useState<"cash-account" | "wealth-account" | null>(null);
   const [wealthProducts, setWealthProducts] = useState<WealthProductOption[]>([]);
+  // Local copy of nested option data so newly created institutions/groups persist
+  // across account-dialog instances within this modal.
+  const [localNestedFieldData, setLocalNestedFieldData] = useState<NestedFieldData | undefined>(nestedFieldData);
+
+  // Keep local nested option data in sync when the server-provided prop changes.
+  useEffect(() => {
+    if (nestedFieldData) setLocalNestedFieldData(nestedFieldData);
+  }, [nestedFieldData]);
 
   const { ownerFilterLabel: cfLabel, cycleOwnerFilter: cfCycle, filteredOptions: cashFiltered } = useAccountSSFilter(localCashSSOpts);
   const isRedeem = subtype === "redeem";
@@ -547,6 +557,7 @@ export function WealthFormModal({
     setSelectedHoldingId("");
     setEditingRedeemSource(null);
     setMemo("");
+    setPendingAttachmentFiles([]);
     setRequestId(null);
     setEditEntryId(null);
     setEditBusinessTransactionId(null);
@@ -1015,11 +1026,20 @@ export function WealthFormModal({
         fd.set("fundProductType", "wealth");
         const res = editAction ? await editAction(fd) : { ok: false as const, error: t("wealthForm.alert.missingEditAction") };
         if (!res.ok) throw new Error(res.error ?? t("wealthForm.alert.saveFailed"));
+        if (cashEntryIdForEdit && pendingAttachmentFiles.length > 0) {
+          await uploadEntryAttachmentFiles(cashEntryIdForEdit, pendingAttachmentFiles);
+          setPendingAttachmentFiles([]);
+        }
         window.dispatchEvent(new CustomEvent("mmh:wealth:edit:success", { detail: { requestId } }));
       } else {
         fd.set("fundProductType", "wealth");
         const res = await createAction(fd);
         if (!res.ok) throw new Error(res.error ?? t("txForm.alert.saveFailed"));
+        const createdEntryId = res.data?.id ?? res.data?.cashEntryId ?? null;
+        if (createdEntryId && pendingAttachmentFiles.length > 0) {
+          await uploadEntryAttachmentFiles(createdEntryId, pendingAttachmentFiles);
+          setPendingAttachmentFiles([]);
+        }
       }
       if (keepAdding && mode === "create") {
         resetAfterKeepAdding();
@@ -1045,12 +1065,29 @@ export function WealthFormModal({
     setOpen(false);
     if (mode === "create") reset();
   });
+  // Called when a nested institution/group is created inside an account dialog.
+  // Keep the shared nested option data fresh so subsequent account dialogs can
+  // select the newly created entity.
+  function handleNestedOptionCreated(id: string, name: string, extra?: { kind?: string; type?: string }) {
+    setLocalNestedFieldData((prev) => {
+      const base = prev ?? nestedFieldData ?? {};
+      if (extra?.type !== undefined) {
+        const existing = base.institutionId ?? [];
+        if (existing.some((item) => item.id === id)) return base;
+        return { ...base, institutionId: [...existing, { id, name, type: extra.type }] };
+      }
+      const existing = base.groupId ?? [];
+      if (existing.some((item) => item.id === id)) return base;
+      return { ...base, groupId: [...existing, { id, name }] };
+    });
+  }
+
   if (!open) return null;
 
   return createPortal(
     <ModalLayerProvider value={modalZIndex}>
       <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
-        <div className="app-modal-panel max-w-md">
+        <div className="app-modal-panel max-w-2xl">
           <div className="modal-header">
             <div className="text-sm font-semibold text-slate-800">
               {mode === "edit" ? t("wealthForm.title.edit") : t("wealthForm.title.create")}
@@ -1269,48 +1306,11 @@ export function WealthFormModal({
                 </>
               ) : (
                 <>
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div className="space-y-1">
                       <div className="form-label">{t("detail.column.date")}</div>
                       <DateStepper value={date} onChange={changeTradeDate} />
                     </div>
-                    <div className="space-y-1">
-                      <div className="form-label">{t("wealthForm.buyAmount")}</div>
-                      <CalcInput
-                        value={amount}
-                        onChange={setAmount}
-                        placeholder="0.00"
-                        label={t("fund.subtype.buy")}
-                        precision={2}
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <div className="form-label">{t("viewImport.units")}{selectedBuyProductRequiresUnits ? t("wealthForm.unitsRequiredSuffix") : ""}</div>
-                      <CalcInput
-                        value={units}
-                        onChange={(value) => {
-                          unitsEditedRef.current = true;
-                          setUnits(value);
-                        }}
-                        placeholder={selectedBuyProductRequiresUnits ? t("batchImport.required") : t("stockFee.optional")}
-                        label={t("viewImport.units")}
-                        precision={6}
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <div className="form-label">{t("wealthForm.avgPrice")}</div>
-                      <div className="form-input flex items-center justify-end text-xs tabular-nums text-slate-500">
-                        {parseNumber(units) > 0 && parseNumber(amount) > 0
-                          ? (parseNumber(amount) / parseNumber(units)).toFixed(4)
-                          : "-"}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <div className="form-label">{t("wealthForm.sourceAccount")}</div>
                       <SmartSelect
@@ -1325,6 +1325,9 @@ export function WealthFormModal({
                         ownerFilterLabel={cfLabel}
                       />
                     </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div className="space-y-1">
                       <div className="form-label">{t("wealthForm.accountLabel")}</div>
                       <SmartSelect
@@ -1339,39 +1342,48 @@ export function WealthFormModal({
                         ownerFilterLabel={wealthOwnerLabel}
                       />
                     </div>
+                    <div className="space-y-1">
+                      <div className="form-label">{t("wealthForm.productName")}</div>
+                      <SmartSelect
+                        mode="single"
+                        value={wealthProductId}
+                        onChange={(id) => {
+                          setWealthProductId(id);
+                          const product = wealthProducts.find((item) => item.id === id);
+                          setFundName(product?.name ?? "");
+                          if (product?.annualRate != null) setAnnualRate(String(product.annualRate));
+                          if (product?.termDays != null) setTermDays(String(product.termDays));
+                        }}
+                        options={wealthProductOptions}
+                        placeholder={wealthProductOptions.length > 0 ? t("wealthForm.selectProduct") : t("wealthForm.noProductClickAdd")}
+                        searchable
+                        onCreateClick={openWealthProductModal}
+                        createLabel={t("wealthForm.addProduct")}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <div className="space-y-1">
+                      <div className="form-label">{t("viewImport.units")}{selectedBuyProductRequiresUnits ? t("wealthForm.unitsRequiredSuffix") : ""}</div>
+                      <CalcInput value={units} onChange={(value) => { unitsEditedRef.current = true; setUnits(value); }} placeholder={selectedBuyProductRequiresUnits ? t("batchImport.required") : t("stockFee.optional")} label={t("viewImport.units")} precision={6} />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">{t("wealthForm.avgPrice")}</div>
+                      <div className="form-input flex items-center justify-end text-xs tabular-nums text-slate-500">{parseNumber(units) > 0 && parseNumber(amount) > 0 ? (parseNumber(amount) / parseNumber(units)).toFixed(4) : "-"}</div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">{t("wealthForm.annualRatePercent")}</div>
+                      <input inputMode="decimal" value={annualRate} onChange={(e) => setAnnualRate(e.target.value)} placeholder={t("wealthForm.rateExample")} className="form-input" />
+                    </div>
                   </div>
 
                   <div className="space-y-1">
-                    <div className="form-label">{t("wealthForm.productName")}</div>
-                    <SmartSelect
-                      mode="single"
-                      value={wealthProductId}
-                      onChange={(id) => {
-                        setWealthProductId(id);
-                        const product = wealthProducts.find((item) => item.id === id);
-                        setFundName(product?.name ?? "");
-                        if (product?.annualRate != null) setAnnualRate(String(product.annualRate));
-                        if (product?.termDays != null) setTermDays(String(product.termDays));
-                      }}
-                      options={wealthProductOptions}
-                      placeholder={wealthProductOptions.length > 0 ? t("wealthForm.selectProduct") : t("wealthForm.noProductClickAdd")}
-                      searchable
-                      onCreateClick={openWealthProductModal}
-                      createLabel={t("wealthForm.addProduct")}
-                    />
+                    <div className="form-label">{t("wealthForm.buyAmount")}</div>
+                    <CalcInput value={amount} onChange={setAmount} placeholder="0.00" label={t("fund.subtype.buy")} precision={2} />
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <div className="form-label">{t("wealthForm.annualRatePercent")}</div>
-                      <input
-                        inputMode="decimal"
-                        value={annualRate}
-                        onChange={(e) => setAnnualRate(e.target.value)}
-                        placeholder={t("wealthForm.rateExample")}
-                        className="form-input"
-                      />
-                    </div>
                     <div className="space-y-1">
                       <div className="form-label">{t("wealthForm.termDays")}</div>
                       <select
@@ -1396,12 +1408,10 @@ export function WealthFormModal({
 
               <div className="space-y-1">
                 <div className="form-label">{t("detail.column.remark")}</div>
-                <input
-                  value={memo}
-                  onChange={(e) => setMemo(e.target.value)}
-                  placeholder={t("stockFee.optional")}
-                  className="form-input"
-                />
+                <div className="flex items-start gap-2">
+                  <input value={memo} onChange={(e) => setMemo(e.target.value)} placeholder={t("stockFee.optional")} className="form-input flex-1" />
+                  <EntryAttachmentButton entryId={editEntryId} pendingFiles={pendingAttachmentFiles} onPendingFilesChange={setPendingAttachmentFiles} />
+                </div>
               </div>
 
               <div className="flex justify-end gap-2 pt-1">
@@ -1427,6 +1437,7 @@ export function WealthFormModal({
           </form>
         </div>
       </div>
+
       {nestedEntityType ? (
         <NestedAddModal
           mode="compact"
@@ -1481,9 +1492,11 @@ export function WealthFormModal({
                 }
               : undefined
           }
-          hiddenFields={nestedEntityType === "wealth-account" ? ["kind", "investProductType", "groupId", "institutionId", "currency"] : undefined}
+          hiddenFields={nestedEntityType === "wealth-account" ? ["kind", "investProductType"] : undefined}
+          readOnlyFields={nestedEntityType === "wealth-account" ? ["groupId", "institutionId", "currency"] : undefined}
           allowedAccountKinds={nestedEntityType === "wealth-account" ? undefined : ["bank_debit", "ewallet"]}
-          nestedFieldData={nestedFieldData}
+          nestedFieldData={localNestedFieldData ?? nestedFieldData}
+          onNestedCreated={handleNestedOptionCreated}
         />
       ) : null}
       {productModalOpen ? (

@@ -27,6 +27,11 @@ function formatRate(value: number) {
   return formatPercent(value);
 }
 
+function compactDate(value: string | null) {
+  const date = String(value ?? "").slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? `${date.slice(5, 7)}.${date.slice(8, 10)}` : String(value ?? "");
+}
+
 export function StockHoldingReport({ rows, totals, isRedUp }: Props) {
   const currency = rows[0]?.currency || "CNY";
   const best = [...rows].sort((a, b) => b.totalProfit - a.totalProfit)[0] ?? null;
@@ -95,7 +100,7 @@ export function StockHoldingReport({ rows, totals, isRedUp }: Props) {
                     <td className="px-3 py-2 text-right tabular-nums">{formatMoney(row.quantity)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{formatMoney(row.avgCost)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{formatCurrencyMoney(row.cost, row.currency)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{row.latestPrice == null ? "-" : formatMoney(row.latestPrice)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{row.latestPrice == null ? "-" : formatMoney(row.latestPrice)}{row.latestPriceDate ? <span className="ml-1 text-xs text-slate-400">({compactDate(row.latestPriceDate)})</span> : null}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{formatCurrencyMoney(row.marketValue, row.currency)}</td>
                     <td className={`px-3 py-2 text-right tabular-nums ${valueClass(row.floatingPnL, isRedUp)}`}>
                       {signedMoney(row.floatingPnL, row.currency)}

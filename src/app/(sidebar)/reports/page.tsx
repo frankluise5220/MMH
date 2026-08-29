@@ -4,17 +4,15 @@ import { ChevronLeft, ChevronRight, Download } from "lucide-react";
 import { TransactionType } from "@prisma/client";
 
 import { InvestmentProfitReport } from "@/components/InvestmentProfitReport";
-import {
-  InvestmentProfitScopeSelect,
-  type InvestmentProfitScopeOption,
-} from "@/components/InvestmentProfitScopeSelect";
+import { InvestmentProfitFilterSelect } from "@/components/InvestmentProfitFilterSelect";
 import { MissingFundNavPrompt } from "@/components/MissingFundNavPrompt";
 import { IncomeExpenseReportClient } from "@/components/IncomeExpenseReportClient";
 import { buildCategorySmartSelectOptions } from "@/components/categorySmartSelect";
 import { ReportTransactionEditHost } from "@/components/ReportTransactionEditHost";
 import { ReportSelector } from "@/components/ReportSelector";
+import { StatisticsFilterPanel } from "@/components/StatisticsFilterPanel";
+import { CASH_INSTITUTION_ID } from "@/components/AccountScopeFilter";
 import type { ReportItem } from "@/components/ReportSelector";
-import { ReportRefreshButton } from "@/components/ReportRefreshButton";
 import { StockHoldingReport } from "@/components/StockHoldingReport";
 import { buildAccountDisplayOption, buildGroupedAccountOptions, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { kindLabel } from "@/lib/account-kinds";
@@ -67,19 +65,9 @@ function parseYear(value: string | undefined) {
 }
 
 const PROFIT_SCOPE_ALL = "all";
-const NO_INSTITUTION_SCOPE_ID = "__none__";
-
 function normalizeProfitScope(value: string | undefined) {
   const raw = String(value ?? "").trim();
   return raw || PROFIT_SCOPE_ALL;
-}
-
-function investmentAccountScope(accountId: string) {
-  return `account:${accountId}`;
-}
-
-function investmentInstitutionScope(institutionId: string | null | undefined) {
-  return `institution:${institutionId || NO_INSTITUTION_SCOPE_ID}`;
 }
 
 function rowCsv(section: "income" | "expense", row: IncomeExpenseReportRow, t: (key: string) => string) {
@@ -132,6 +120,22 @@ function buildReportHref(
   return `/reports${query.toString() ? `?${query.toString()}` : ""}`;
 }
 
+function buildInvestmentFilterHref(
+  profitPeriod: InvestmentProfitPeriod,
+  profitYear: number,
+  profitMonth: number,
+  filters: { userIds: string[]; institutionIds: string[]; accountIds: string[] },
+) {
+  const query = new URLSearchParams();
+  query.set("report", "investment-profit");
+  query.set("profitPeriod", profitPeriod);
+  query.set("profitYear", String(profitYear));
+  query.set("profitMonth", String(profitMonth));
+  if (filters.userIds.length) query.set("userIds", filters.userIds.join(","));
+  if (filters.institutionIds.length) query.set("institutionIds", filters.institutionIds.join(","));
+  if (filters.accountIds.length) query.set("investmentAccounts", filters.accountIds.join(","));
+  return `/reports${query.toString() ? `?${query.toString()}` : ""}`;
+}
 function buildStatisticsHref(year: number) {
   const query = new URLSearchParams();
   query.set("year", String(year));
@@ -150,25 +154,6 @@ function shiftProfitWindow(period: InvestmentProfitPeriod, year: number, month: 
   }
   if (period === "month") return { year: year + delta, month };
   return { year, month };
-}
-
-function presetQuery(params: {
-  start: string;
-  end: string;
-  accountId: string;
-  groupBy: IncomeExpenseGroupBy;
-}) {
-  const query = new URLSearchParams();
-  if (params.accountId) query.set("accountId", params.accountId);
-  query.set("groupBy", params.groupBy);
-  if (params.groupBy === "month") {
-    query.set("startMonth", params.start.slice(0, 7));
-    query.set("endMonth", params.end.slice(0, 7));
-  } else {
-    query.set("startYear", params.start.slice(0, 4));
-    query.set("endYear", params.end.slice(0, 4));
-  }
-  return `/reports?${query.toString()}`;
 }
 
 export default async function ReportsPage({
@@ -239,11 +224,14 @@ export default async function ReportsPage({
     typeof params.profitMonth === "string" ? params.profitMonth : undefined,
     currentMonth,
   );
-  const rawProfitScope = normalizeProfitScope(typeof params.profitScope === "string" ? params.profitScope : undefined);
+
 
   const commonData = await loadCommonData(ctx.hidFilter);
   const allAccountRecords = commonData.accounts.filter((account) =>
     account.isActive && account.isPlaceholder !== true && account.name !== "未指定账户",
+  );
+  const groupsWithAccounts = commonData.groups.filter((group) =>
+    allAccountRecords.some((account) => account.groupId === group.id),
   );
   const accountRecords = allAccountRecords.filter((account) => !isPureInvestmentAccount(account));
   const allAccountDisplayOptions = allAccountRecords.map((account) =>
@@ -273,6 +261,43 @@ export default async function ReportsPage({
     currency: account.currency,
   }));
   const accountSSOptions = buildGroupedAccountOptions(accountDisplayOptions);
+  const incomeFilterAccounts = accountRecords.map((account) => ({
+    id: account.id,
+    name: account.name,
+    kind: account.kind,
+    label: allAccountDisplayById.get(account.id)?.fullLabel ?? allAccountDisplayById.get(account.id)?.label ?? account.name,
+    groupId: account.groupId,
+    Institution: account.Institution ? { id: account.Institution.id, name: account.Institution.name } : null,
+  }));
+  const incomeFilterInstitutions = commonData.institutions
+    .filter((institution) => incomeFilterAccounts.some((account) => account.Institution?.id === institution.id))
+    .map((institution) => ({ id: institution.id, name: institution.name, type: institution.type ?? null }));
+  const incomeFilterUsers = groupsWithAccounts.map((group) => ({ id: group.id, name: group.name }));
+  const selectedIncomeUserIds = typeof params.userIds === "string"
+    ? params.userIds.split(",").map((id) => id.trim()).filter(Boolean)
+    : [];
+  const selectedIncomeInstitutionIds = typeof params.institutionIds === "string"
+    ? params.institutionIds.split(",").map((id) => id.trim()).filter(Boolean)
+    : [];
+  const selectedIncomeAccountIds = typeof params.accountId === "string"
+    ? params.accountId.split(",").map((id) => id.trim()).filter(Boolean)
+    : [];
+  const scopedIncomeAccountIds = (() => {
+    const scopes: Array<string[]> = [];
+    if (selectedIncomeAccountIds.length) scopes.push(selectedIncomeAccountIds);
+    if (selectedIncomeInstitutionIds.length) {
+      scopes.push(accountRecords
+        .filter((account) => account.institutionId && selectedIncomeInstitutionIds.includes(account.institutionId))
+        .map((account) => account.id));
+    }
+    if (selectedIncomeUserIds.length) {
+      scopes.push(accountRecords
+        .filter((account) => account.groupId && selectedIncomeUserIds.includes(account.groupId))
+        .map((account) => account.id));
+    }
+    if (scopes.length === 0) return null;
+    return accountRecords.map((account) => account.id).filter((id) => scopes.every((ids) => ids.includes(id)));
+  })();
   const cashAccounts = accounts.filter((account) => ["cash", "bank_debit", "ewallet"].includes(account.kind));
   const cashAccountIds = new Set(cashAccounts.map((account) => account.id));
   const investmentAccountRecords = allAccountRecords.filter(isPureInvestmentAccount);
@@ -295,117 +320,78 @@ export default async function ReportsPage({
   const investmentAccountSSOptions = buildGroupedAccountOptions(
     allAccountDisplayOptions.filter((account) => investmentAccountIds.has(account.id)),
   );
-  const institutionScopeByValue = new Map<string, {
-    value: string;
-    label: string;
-    ids: string[];
-    sortLabel: string;
-    title: string;
-  }>();
-
-  for (const account of investmentAccountRecords) {
-    const value = investmentInstitutionScope(account.institutionId);
-    const institutionName =
-      account.Institution?.shortName?.trim()
-      || account.Institution?.name?.trim()
-      || t("reports.noInstitution");
-    const existing = institutionScopeByValue.get(value) ?? {
-      value,
-      label: t("reports.scopeByInstitution", { name: institutionName }),
-      ids: [],
-      sortLabel: institutionName,
-      title: "",
-    };
-    existing.ids.push(account.id);
-    institutionScopeByValue.set(value, existing);
-  }
-
-  const institutionScopeRows = Array.from(institutionScopeByValue.values())
-    .map((option) => ({
-      ...option,
-      title: t("reports.institutionScopeTitle", { label: option.label, count: option.ids.length }),
-    }))
-    .sort((a, b) => a.sortLabel.localeCompare(b.sortLabel, "zh-Hans-CN"));
-  const validProfitScopes = new Set<string>([
-    PROFIT_SCOPE_ALL,
-    ...institutionScopeRows.map((option) => option.value),
-    ...investmentAccountRecords.map((account) => investmentAccountScope(account.id)),
-  ]);
-  const selectedProfitScope = validProfitScopes.has(rawProfitScope) ? rawProfitScope : PROFIT_SCOPE_ALL;
-  const investmentAccountIdsForReport = (() => {
-    if (selectedProfitScope.startsWith("account:")) {
-      const accountId = selectedProfitScope.slice("account:".length);
-      return investmentAccountIds.has(accountId) ? [accountId] : undefined;
+  const selectedUserIds = typeof params.userIds === "string"
+    ? params.userIds.split(",").map((id) => id.trim()).filter(Boolean)
+    : [];
+  const selectedInstitutionIds = typeof params.institutionIds === "string"
+    ? params.institutionIds.split(",").map((id) => id.trim()).filter(Boolean)
+    : [];
+  const selectedInvestmentAccountIds = typeof params.investmentAccounts === "string"
+    ? params.investmentAccounts.split(",").map((id) => id.trim()).filter(Boolean)
+    : [];
+  const scopedInvestmentAccountIds = (() => {
+    const scopes: Array<string[]> = [];
+    if (selectedInvestmentAccountIds.length) scopes.push(selectedInvestmentAccountIds);
+    if (selectedInstitutionIds.length) {
+      scopes.push(investmentAccountRecords
+        .filter((account) => selectedInstitutionIds.includes(account.institutionId ?? CASH_INSTITUTION_ID))
+        .map((account) => account.id));
     }
-    if (selectedProfitScope.startsWith("institution:")) {
-      return institutionScopeByValue.get(selectedProfitScope)?.ids;
+    if (selectedUserIds.length) {
+      scopes.push(investmentAccountRecords
+        .filter((account) => account.groupId && selectedUserIds.includes(account.groupId))
+        .map((account) => account.id));
     }
-    return undefined;
+    if (scopes.length === 0) return null;
+    return investmentAccountRecords.map((account) => account.id).filter((id) => scopes.every((ids) => ids.includes(id)));
   })();
-  const currentInvestmentHref = buildReportHref(
-    "investment-profit",
-    profitPeriod,
-    profitYear,
-    profitMonth,
-    selectedProfitScope,
-  );
-  const currentStockHref = buildReportHref(
-    "stock-holdings",
-    undefined,
-    undefined,
-    undefined,
-    selectedProfitScope,
-  );
+  const currentInvestmentHref = buildInvestmentFilterHref(profitPeriod, profitYear, profitMonth, {
+    userIds: selectedUserIds,
+    institutionIds: selectedInstitutionIds,
+    accountIds: selectedInvestmentAccountIds,
+  });
+  const currentStockHref = buildReportHref("stock-holdings", undefined, undefined, undefined, PROFIT_SCOPE_ALL);
   const currentStatisticsHref = buildStatisticsHref(profitYear);
-  const allInvestmentScopeOption: InvestmentProfitScopeOption = {
-    value: PROFIT_SCOPE_ALL,
-    label: t("reports.allInvestmentAccounts"),
-    href: buildReportHref("investment-profit", profitPeriod, profitYear, profitMonth, PROFIT_SCOPE_ALL),
-  };
-  const investmentInstitutionScopeOptions: InvestmentProfitScopeOption[] = institutionScopeRows.map((option) => ({
-    value: option.value,
-    label: option.label,
-    href: buildReportHref("investment-profit", profitPeriod, profitYear, profitMonth, option.value),
-    title: option.title,
+  const investmentFilterUsers = commonData.groups
+    .filter((group) => investmentAccountRecords.some((account) => account.groupId === group.id))
+    .map((group) => ({ id: group.id, name: group.name }));
+  const investmentFilterInstitutions = commonData.institutions
+    .filter((institution) => investmentAccountRecords.some((account) => account.institutionId === institution.id))
+    .map((institution) => ({ id: institution.id, name: institution.name, type: institution.type ?? null }));
+  const investmentFilterAccounts = investmentAccountRecords.map((account) => ({
+    id: account.id,
+    name: account.name,
+    kind: account.kind,
+    label: allAccountDisplayById.get(account.id)?.fullLabel ?? allAccountDisplayById.get(account.id)?.label ?? account.name,
+    groupId: account.groupId,
+    Institution: account.Institution ? { id: account.Institution.id, name: account.Institution.name } : null,
   }));
-  const investmentAccountScopeOptions: InvestmentProfitScopeOption[] = investmentAccountRecords
-    .map((account) => {
-      const display = allAccountDisplayById.get(account.id);
-      const label = [display?.groupName, display?.label ?? account.name].filter(Boolean).join(" / ");
-      return {
-        value: investmentAccountScope(account.id),
-        label: t("reports.scopeByAccount", { name: label }),
-        href: buildReportHref("investment-profit", profitPeriod, profitYear, profitMonth, investmentAccountScope(account.id)),
-        title: display?.hoverTitle,
-      };
-    })
-    .sort((a, b) => a.label.localeCompare(b.label, "zh-Hans-CN"));
-
   if (reportType === "investment-profit") {
     const investmentReport = await loadInvestmentProfitReport(ctx, {
       period: profitPeriod,
       year: profitYear,
       month: profitMonth,
-      accountIds: investmentAccountIdsForReport,
+      accountIds: scopedInvestmentAccountIds,
+      fundValuationMode: "daily_nav_delta",
     }, language);
     const periodHref = (period: InvestmentProfitPeriod) =>
-      buildReportHref("investment-profit", period, profitYear, profitMonth, selectedProfitScope);
+      buildInvestmentFilterHref(period, profitYear, profitMonth, {
+        userIds: selectedUserIds,
+        institutionIds: selectedInstitutionIds,
+        accountIds: selectedInvestmentAccountIds,
+      });
     const previousWindow = shiftProfitWindow(profitPeriod, profitYear, profitMonth, -1);
     const nextWindow = shiftProfitWindow(profitPeriod, profitYear, profitMonth, 1);
-    const previousHref = buildReportHref(
-      "investment-profit",
-      profitPeriod,
-      previousWindow.year,
-      previousWindow.month,
-      selectedProfitScope,
-    );
-    const nextHref = buildReportHref(
-      "investment-profit",
-      profitPeriod,
-      nextWindow.year,
-      nextWindow.month,
-      selectedProfitScope,
-    );
+    const previousHref = buildInvestmentFilterHref(profitPeriod, previousWindow.year, previousWindow.month, {
+      userIds: selectedUserIds,
+      institutionIds: selectedInstitutionIds,
+      accountIds: selectedInvestmentAccountIds,
+    });
+    const nextHref = buildInvestmentFilterHref(profitPeriod, nextWindow.year, nextWindow.month, {
+      userIds: selectedUserIds,
+      institutionIds: selectedInstitutionIds,
+      accountIds: selectedInvestmentAccountIds,
+    });
     const rangeLabel = profitPeriod === "day"
       ? t("reports.rangeLabelDay", { year: profitYear, month: profitMonth })
       : profitPeriod === "month"
@@ -467,13 +453,15 @@ export default async function ReportsPage({
                   </Link>
                 ) : null}
               </div>
-              <InvestmentProfitScopeSelect
-                selectedScope={selectedProfitScope}
-                allOption={allInvestmentScopeOption}
-                institutionOptions={investmentInstitutionScopeOptions}
-                accountOptions={investmentAccountScopeOptions}
+              <InvestmentProfitFilterSelect
+                selectedUserIds={selectedUserIds}
+                selectedInstitutionIds={selectedInstitutionIds}
+                selectedAccountIds={selectedInvestmentAccountIds}
+                allUsers={investmentFilterUsers}
+                allInstitutions={investmentFilterInstitutions}
+                allAccounts={investmentFilterAccounts}
+                baseParams={{ report: "investment-profit", profitPeriod, profitYear: String(profitYear), profitMonth: String(profitMonth) }}
               />
-              <ReportRefreshButton />
               <MissingFundNavPrompt items={investmentReport.missingNavs} className="ml-auto" />
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto pr-1">
@@ -493,79 +481,40 @@ export default async function ReportsPage({
   }
 
   if (reportType === "stock-holdings") {
-    const stockAccountIds = new Set(stockAccountRecords.map((account) => account.id));
-    const institutionScopeByStockValue = new Map<string, {
-      value: string;
-      label: string;
-      ids: string[];
-      sortLabel: string;
-      title: string;
-    }>();
-    for (const account of stockAccountRecords) {
-      const value = investmentInstitutionScope(account.institutionId);
-      const institutionName =
-        account.Institution?.shortName?.trim()
-        || account.Institution?.name?.trim()
-        || t("reports.noInstitution");
-      const existing = institutionScopeByStockValue.get(value) ?? {
-        value,
-        label: t("reports.scopeByInstitution", { name: institutionName }),
-        ids: [],
-        sortLabel: institutionName,
-        title: "",
-      };
-      existing.ids.push(account.id);
-      institutionScopeByStockValue.set(value, existing);
-    }
-    const stockInstitutionScopeRows = Array.from(institutionScopeByStockValue.values())
-      .map((option) => ({
-        ...option,
-        title: t("reports.institutionScopeTitle", { label: option.label, count: option.ids.length }),
-      }))
-      .sort((a, b) => a.sortLabel.localeCompare(b.sortLabel, "zh-Hans-CN"));
-    const validStockScopes = new Set<string>([
-      PROFIT_SCOPE_ALL,
-      ...stockInstitutionScopeRows.map((option) => option.value),
-      ...stockAccountRecords.map((account) => investmentAccountScope(account.id)),
-    ]);
-    const selectedStockScope = validStockScopes.has(rawProfitScope) ? rawProfitScope : PROFIT_SCOPE_ALL;
-    const stockAccountIdsForReport = (() => {
-      if (selectedStockScope.startsWith("account:")) {
-        const accountId = selectedStockScope.slice("account:".length);
-        return stockAccountIds.has(accountId) ? [accountId] : undefined;
+    const stockScopedAccountIds = (() => {
+      const scopes: Array<string[]> = [];
+      if (selectedInvestmentAccountIds.length) scopes.push(selectedInvestmentAccountIds);
+      if (selectedInstitutionIds.length) {
+        scopes.push(stockAccountRecords
+          .filter((account) => selectedInstitutionIds.includes(account.institutionId ?? CASH_INSTITUTION_ID))
+          .map((account) => account.id));
       }
-      if (selectedStockScope.startsWith("institution:")) {
-        return institutionScopeByStockValue.get(selectedStockScope)?.ids;
+      if (selectedUserIds.length) {
+        scopes.push(stockAccountRecords
+          .filter((account) => account.groupId && selectedUserIds.includes(account.groupId))
+          .map((account) => account.id));
       }
-      return undefined;
+      if (scopes.length === 0) return null;
+      return stockAccountRecords.map((account) => account.id).filter((id) => scopes.every((ids) => ids.includes(id)));
     })();
     const stockReport = await loadCachedStockHoldingReport(
       JSON.stringify(ctx.hidFilter),
-      JSON.stringify(stockAccountIdsForReport ?? []),
+      JSON.stringify(stockScopedAccountIds ?? []),
     );
-    const allStockScopeOption: InvestmentProfitScopeOption = {
-      value: PROFIT_SCOPE_ALL,
-      label: t("reports.allStockAccounts"),
-      href: buildReportHref("stock-holdings", undefined, undefined, undefined, PROFIT_SCOPE_ALL),
-    };
-    const stockInstitutionScopeOptions: InvestmentProfitScopeOption[] = stockInstitutionScopeRows.map((option) => ({
-      value: option.value,
-      label: option.label,
-      href: buildReportHref("stock-holdings", undefined, undefined, undefined, option.value),
-      title: option.title,
+    const stockFilterUsers = commonData.groups
+      .filter((group) => stockAccountRecords.some((account) => account.groupId === group.id))
+      .map((group) => ({ id: group.id, name: group.name }));
+    const stockFilterInstitutions = commonData.institutions
+      .filter((institution) => stockAccountRecords.some((account) => account.institutionId === institution.id))
+      .map((institution) => ({ id: institution.id, name: institution.name, type: institution.type ?? null }));
+    const stockFilterAccounts = stockAccountRecords.map((account) => ({
+      id: account.id,
+      name: account.name,
+      kind: account.kind,
+      label: allAccountDisplayById.get(account.id)?.fullLabel ?? allAccountDisplayById.get(account.id)?.label ?? account.name,
+      groupId: account.groupId,
+      Institution: account.Institution ? { id: account.Institution.id, name: account.Institution.name } : null,
     }));
-    const stockAccountScopeOptions: InvestmentProfitScopeOption[] = stockAccountRecords
-      .map((account) => {
-        const display = allAccountDisplayById.get(account.id);
-        const label = [display?.groupName, display?.label ?? account.name].filter(Boolean).join(" / ");
-        return {
-          value: investmentAccountScope(account.id),
-          label: t("reports.scopeByAccount", { name: label }),
-          href: buildReportHref("stock-holdings", undefined, undefined, undefined, investmentAccountScope(account.id)),
-          title: display?.hoverTitle,
-        };
-      })
-      .sort((a, b) => a.label.localeCompare(b.label, "zh-Hans-CN"));
     const stockExportHref = buildCsvDataUri([
       [
         t("reports.stock.market"),
@@ -631,13 +580,15 @@ export default async function ReportsPage({
         <div className="min-h-0 flex-1 overflow-hidden p-4 md:p-5">
           <div className="flex h-full min-h-0 flex-col gap-3">
             <div className="flex min-h-10 shrink-0 flex-wrap items-center gap-3 border-b border-slate-200 bg-white px-1 pb-2">
-              <InvestmentProfitScopeSelect
-                selectedScope={selectedStockScope}
-                allOption={allStockScopeOption}
-                institutionOptions={stockInstitutionScopeOptions}
-                accountOptions={stockAccountScopeOptions}
+              <InvestmentProfitFilterSelect
+                selectedUserIds={selectedUserIds}
+                selectedInstitutionIds={selectedInstitutionIds}
+                selectedAccountIds={selectedInvestmentAccountIds}
+                allUsers={stockFilterUsers}
+                allInstitutions={stockFilterInstitutions}
+                allAccounts={stockFilterAccounts}
+                baseParams={{ report: "stock-holdings" }}
               />
-              <ReportRefreshButton />
               <a
                 href={stockExportHref}
                 download={`${t("reports.filename.stockHoldings")}.csv`}
@@ -704,8 +655,8 @@ export default async function ReportsPage({
         ...ctx.hidFilter,
         deletedAt: null,
         type: { in: [TransactionType.income, TransactionType.expense, TransactionType.investment] },
-        ...(selectedAccount
-          ? { OR: [{ accountId: selectedAccount.id }, { toAccountId: selectedAccount.id }] }
+        ...(scopedIncomeAccountIds && scopedIncomeAccountIds.length
+          ? { OR: [{ accountId: { in: scopedIncomeAccountIds } }, { toAccountId: { in: scopedIncomeAccountIds } }] }
           : {}),
       },
       _min: { date: true },
@@ -725,7 +676,7 @@ export default async function ReportsPage({
     start: formatDateUtc(requestedStart),
     end: formatDateUtc(requestedEnd),
     groupBy,
-    accountIds: selectedAccount ? [selectedAccount.id] : undefined,
+    accountIds: scopedIncomeAccountIds ?? undefined,
     detail: detailType
       ? {
           type: detailType,
@@ -745,7 +696,9 @@ export default async function ReportsPage({
 
   const exportRows = [
     [t("reports.scope"), `${report.start} ~ ${report.end}`],
-    [t("reports.account"), selectedAccount?.label ?? t("reports.allAccounts")],
+    [t("reports.account"), scopedIncomeAccountIds && scopedIncomeAccountIds.length
+      ? scopedIncomeAccountIds.map((id) => accounts.find((account) => account.id === id)?.label ?? id).join(", ")
+      : t("reports.allAccounts")],
     [t("reports.granularity"), report.groupBy === "year" ? t("reports.period.year") : t("reports.period.month")],
     [],
     [t("reports.type"), t("reports.category"), ...report.columns.map((column) => column.label), t("reports.total")],
@@ -756,11 +709,11 @@ export default async function ReportsPage({
     [t("reports.net"), t("reports.net"), ...report.netPeriodTotals.map((value) => value.toFixed(2)), report.netTotal.toFixed(2)],
   ];
   const exportHref = buildCsvDataUri(exportRows);
-  const exportFilename = `${t("reports.filename.incomeExpense")}-${report.start}-${report.end}${selectedAccount ? `-${selectedAccount.label}` : ""}.csv`;
+  const exportFilename = `${t("reports.filename.incomeExpense")}-${report.start}-${report.end}${scopedIncomeAccountIds && scopedIncomeAccountIds.length ? `-${scopedIncomeAccountIds.length}accounts` : ""}.csv`;
   const currentReportQuery = {
     start: report.start,
     end: report.end,
-    accountId: selectedAccount?.id ?? "",
+    accountId: scopedIncomeAccountIds?.join(",") ?? "",
     groupBy: report.groupBy,
   };
 
@@ -786,108 +739,28 @@ export default async function ReportsPage({
 
       <div className="min-h-0 flex-1 overflow-hidden p-4 md:p-5">
         <div className="flex h-full min-h-0 flex-col gap-3">
-          <form className="flex h-10 shrink-0 items-center gap-3 overflow-x-auto border-b border-slate-200 bg-white px-1" method="get">
-              <input type="hidden" name="groupBy" value={report.groupBy} />
-              <div className="flex shrink-0 items-center gap-1.5">
-                <span className="text-xs font-medium text-slate-500">{t("reports.groupBy")}</span>
-                <div className="inline-flex h-8 overflow-hidden rounded-md border border-slate-200 bg-white text-xs">
-                  <Link
-                    href={presetQuery({ ...currentReportQuery, groupBy: "year" })}
-                    className={`flex items-center px-2.5 ${report.groupBy === "year" ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-100"}`}
-                  >
-                    {t("reports.year")}
-                  </Link>
-                  <Link
-                    href={presetQuery({ ...currentReportQuery, groupBy: "month" })}
-                    className={`flex items-center border-l border-slate-200 px-2.5 ${report.groupBy === "month" ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-100"}`}
-                  >
-                    {t("reports.month")}
-                  </Link>
-                </div>
-              </div>
-              {report.groupBy === "month" ? (
-                <>
-                  <label className="flex shrink-0 items-center gap-1.5">
-                    <span className="text-xs font-medium text-slate-500">{t("reports.startMonth")}</span>
-                    <input
-                      type="month"
-                      name="startMonth"
-                      defaultValue={report.start.slice(0, 7)}
-                      className="h-8 w-[132px] rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
-                    />
-                  </label>
-                  <label className="flex shrink-0 items-center gap-1.5">
-                    <span className="text-xs font-medium text-slate-500">{t("reports.endMonth")}</span>
-                    <input
-                      type="month"
-                      name="endMonth"
-                      defaultValue={report.end.slice(0, 7)}
-                      className="h-8 w-[132px] rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
-                    />
-                  </label>
-                </>
-              ) : (
-                <>
-                  <label className="flex shrink-0 items-center gap-1.5">
-                    <span className="text-xs font-medium text-slate-500">{t("reports.startYear")}</span>
-                    <select
-                      name="startYear"
-                      defaultValue={report.start.slice(0, 4)}
-                      className="h-8 w-24 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
-                    >
-                      {availableYears.map((year) => <option key={`start-${year}`} value={year}>{year}</option>)}
-                    </select>
-                  </label>
-                  <label className="flex shrink-0 items-center gap-1.5">
-                    <span className="text-xs font-medium text-slate-500">{t("reports.endYear")}</span>
-                    <select
-                      name="endYear"
-                      defaultValue={report.end.slice(0, 4)}
-                      className="h-8 w-24 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
-                    >
-                      {availableYears.map((year) => <option key={`end-${year}`} value={year}>{year}</option>)}
-                    </select>
-                  </label>
-                </>
-              )}
-              <label className="flex shrink-0 items-center gap-1.5">
-                <span className="text-xs font-medium text-slate-500">{t("reports.account")}</span>
-                <select
-                  name="accountId"
-                  defaultValue={selectedAccount?.id ?? ""}
-                  className="h-8 w-48 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
-                >
-                  <option value="">{t("reports.allAccounts")}</option>
-                  {accounts.map((account) => (
-                    <option key={account.id} value={account.id}>
-                      {account.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                type="submit"
-                className="inline-flex h-8 shrink-0 items-center rounded-md bg-slate-900 px-3 text-xs font-medium text-white transition hover:bg-slate-700"
-              >
-                {t("reports.refresh")}
-              </button>
-              <a
-                href={exportHref}
-                download={exportFilename}
-                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-700"
-                title={t("reports.exportIncomeExpenseTitle")}
-              >
-                <Download className="h-3.5 w-3.5" />
-                {t("reports.export")}
-              </a>
-          </form>
+          <StatisticsFilterPanel
+            allAccounts={incomeFilterAccounts}
+            allInstitutions={incomeFilterInstitutions}
+            allUsers={incomeFilterUsers}
+            year={currentYear}
+            reportPath="/reports"
+            accountParam="accountId"
+            start={report.start}
+            end={report.end}
+            availableYears={availableYears.length > 0 ? availableYears : [currentYear]}
+            exportHref={exportHref}
+            exportFilename={exportFilename}
+            baseParams={{ report: "income-expense" }}
+            periodParam="groupBy"
+          />
 
           <IncomeExpenseReportClient
             report={report}
             initialDetailEntries={detailEntries}
             currentReportQuery={currentReportQuery}
             colorScheme={colorScheme}
-            accountId={selectedAccount?.id ?? ""}
+            accountId={scopedIncomeAccountIds?.join(",") ?? ""}
             accountOptions={accounts}
             categoryOptions={buildCategorySmartSelectOptions({
               categories: editCategories,

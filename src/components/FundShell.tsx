@@ -17,7 +17,7 @@ import { toNumber } from "@/lib/date-utils";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 
-import { CalendarDays, CalendarSync, ChartLine, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Pause, Pencil, Percent, Play, Settings2, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { CalendarDays, CalendarSync, ChartLine, Download, Pause, Pencil, Percent, Play, Settings2, SlidersHorizontal, Trash2, X } from "lucide-react";
 
 import { FundConfirmDaysModal } from "@/components/FundConfirmDaysModal";
 import { InvestmentFormModal } from "@/components/InvestmentFormModal";
@@ -41,6 +41,7 @@ import { RefreshNavButton } from "@/components/RefreshNavButton";
 import { AddNavButton } from "@/components/AddNavButton";
 
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
+import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
 import { ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewExcelImportMenuButton";
 
 
@@ -431,6 +432,7 @@ function compactFundSubtypeLabel(t: (key: string) => string, entry: any, fallbac
   if (subtype === "buy_failed" && source === "regular_invest_refund") return t("fundShell.subtypeCompact.refund");
   if (subtype === "buy_failed") return t("fundShell.subtypeCompact.failed");
   if (subtype === "buy" && source === "regular_invest") return t("fund.subtype.regular_invest");
+  if (subtype === "buy" && source === "dividend") return t("fund.subtype.dividend_reinvest");
   if (subtype === "buy") return t("fundShell.subtypeCompact.buy");
   if (subtype === "redeem") return t("fund.subtype.redeem");
   if (subtype === "dividend_cash") return t("fundShell.subtype.dividendCash");
@@ -689,6 +691,7 @@ export function FundShell(props: Props) {
   const [fundPage, setFundPage] = useState(1);
 
   const [fundPageSize, setFundPageSize] = useState(20);
+  const [fundDetailAll, setFundDetailAll] = useState(false);
   const [detailTableRowCount, setDetailTableRowCount] = useState(0);
 
   const [sortKey, setSortKey] = useState("marketValue");
@@ -2304,13 +2307,35 @@ export function FundShell(props: Props) {
     setDetailTableRowCount(filteredByColumns.length);
   }, [filteredByColumns.length]);
 
-  const totalPages = Math.max(1, Math.ceil(detailTableRowCount / fundPageSize));
+  const effectiveFundRowCount = detailTableRowCount || filteredByColumns.length;
+
+  const effectiveFundPageSize = fundDetailAll ? Math.max(1, effectiveFundRowCount) : fundPageSize;
+
+  const totalPages = Math.max(1, Math.ceil(effectiveFundRowCount / effectiveFundPageSize));
 
   const safePage = Math.min(fundPage, totalPages);
 
-  const allFundPageSize = Math.max(1, detailTableRowCount);
+  const paged = fundDetailAll ? filteredByColumns : filteredByColumns.slice((safePage - 1) * effectiveFundPageSize, safePage * effectiveFundPageSize);
 
-  const paged = filteredByColumns.slice((safePage - 1) * fundPageSize, safePage * fundPageSize);
+  const setPagedFundPageSize = useCallback((nextPageSize: number) => {
+    setFundDetailAll(false);
+    setFundPageSize(nextPageSize);
+    setFundPage(1);
+  }, []);
+
+  const showAllFundDetailRows = useCallback(() => {
+    setFundDetailAll(true);
+    setFundPage(1);
+  }, []);
+
+  const goFundPage = useCallback((nextPage: number) => {
+    if (fundDetailAll) return;
+    setFundPage(Math.min(Math.max(1, nextPage), totalPages));
+  }, [fundDetailAll, totalPages]);
+
+  const canPrevFundPage = !fundDetailAll && safePage > 1;
+
+  const canNextFundPage = !fundDetailAll && safePage < totalPages;
 
 
 
@@ -3778,45 +3803,17 @@ export function FundShell(props: Props) {
 
               <span className="text-slate-300">|</span>
 
-              {[10, 20, 40].map((n) => (
-
-                <button key={n} onClick={() => { setFundPageSize(n); setFundPage(1); }} className={`h-6 px-1.5 rounded border ${fundPageSize === n ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}>{n}</button>
-
-              ))}
-
-              <button onClick={() => { setFundPageSize(allFundPageSize); setFundPage(1); }} className={`h-6 px-1.5 rounded border ${fundPageSize === allFundPageSize ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}>{t("stockPanel.all")}</button>
-
-              <span className="text-slate-300">|</span>
-
-              {safePage > 1 ? (<>
-
-                <button onClick={() => setFundPage(1)} className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50"><ChevronsLeft className="h-3 w-3"/></button>
-
-                <button onClick={() => setFundPage(safePage - 1)} className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50"><ChevronLeft className="h-3 w-3"/></button>
-
-              </>) : (<>
-
-                <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronsLeft className="h-3 w-3"/></span>
-
-                <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronLeft className="h-3 w-3"/></span>
-
-              </>)}
-
-              <span className="text-slate-500 px-0.5">{safePage}/{totalPages}</span>
-
-              {safePage < totalPages ? (<>
-
-                <button onClick={() => setFundPage(safePage + 1)} className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50"><ChevronRight className="h-3 w-3"/></button>
-
-                <button onClick={() => setFundPage(totalPages)} className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50"><ChevronsRight className="h-3 w-3"/></button>
-
-              </>) : (<>
-
-                <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronRight className="h-3 w-3"/></span>
-
-                <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronsRight className="h-3 w-3"/></span>
-
-              </>)}
+              <DetailTablePaginationControls
+                pageSize={fundPageSize}
+                detailAll={fundDetailAll}
+                safePage={safePage}
+                totalPages={totalPages}
+                canPrev={canPrevFundPage}
+                canNext={canNextFundPage}
+                onPageSizeChange={setPagedFundPageSize}
+                onShowAll={showAllFundDetailRows}
+                onPageChange={goFundPage}
+              />
 
             </div>
 
@@ -4025,7 +4022,8 @@ export function FundShell(props: Props) {
             pagination={{
               page: safePage,
               pageSize: fundPageSize,
-              onPageChange: setFundPage,
+              all: fundDetailAll,
+              onPageChange: goFundPage,
               onRowCountChange: setDetailTableRowCount,
             }}
           />

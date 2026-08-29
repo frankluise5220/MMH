@@ -1405,6 +1405,9 @@ export function TransactionFormModal({
         fundProductType?: string;
         tagIds?: string[];
         tags?: EditTagOption[];
+        fixedAssetAccountId?: string;
+        fixedAssetAssetId?: string;
+        fixedAssetLinked?: boolean;
       }>).detail;
       if (!detail?.requestId || !detail.entryId) return;
       setRequestId(detail.requestId);
@@ -1420,9 +1423,9 @@ export function TransactionFormModal({
         toAccountId: detail.toAccountId ?? undefined,
       };
       setCreateInstallment(false);
-      setFixedAssetLinked(false);
-      setFixedAssetAccountId("");
-      setFixedAssetAssetId("");
+      setFixedAssetLinked(detail.fixedAssetLinked === true || Boolean(detail.fixedAssetAccountId));
+      setFixedAssetAccountId(detail.fixedAssetAccountId?.trim() ?? "");
+      setFixedAssetAssetId(detail.fixedAssetAssetId?.trim() ?? "");
       setFixedAssetLinkLocked(false);
       setFixedAssetAccountNestedOpen(false);
       setFixedAssetAccountAutoOpen(false);

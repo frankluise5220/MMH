@@ -1,7 +1,7 @@
 "use client";
 
 import { createPortal } from "react-dom";
-import { useEffect, useMemo, useState, useCallback, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback, type FormEvent, type ReactNode } from "react";
 import { Plus } from "lucide-react";
 import { kindOrder } from "@/lib/account-kinds";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
@@ -17,6 +17,7 @@ import {
   isStockInvestmentAccount,
 } from "@/lib/account-institution-rules";
 import { useI18n } from "@/lib/i18n";
+import { FIXED_ASSET_TYPES } from "@/lib/fixed-asset";
 
 /* ---- Types ---- */
 
@@ -76,6 +77,9 @@ type CompactModeProps = {
   open: boolean;
   onClose: () => void;
   onCreated: (id: string, name: string, extra?: EntityCreatedExtra) => void;
+  /** Optional callback fired when a nested entity (e.g. institution/group) is
+   *  created inside this form, so the parent can keep shared option data fresh. */
+  onNestedCreated?: (id: string, name: string, extra?: { kind?: string; type?: string }) => void;
   defaultType?: string;
   /** Optional UI title override for reused entity concepts */
   title?: string;
@@ -121,6 +125,9 @@ type FullModeProps = {
   open?: boolean;
   onClose?: () => void;
   onCreated: (id: string, name: string, extra?: EntityCreatedExtra) => void;
+  /** Optional callback fired when a nested entity (e.g. institution/group) is
+   *  created inside this form, so the parent can keep shared option data fresh. */
+  onNestedCreated?: (id: string, name: string, extra?: { kind?: string; type?: string }) => void;
   /** Dynamic data for select fields that need runtime-populated options */
   fieldData?: Record<string, Array<{ id: string; name: string; type?: string }>>;
   /** Existing entity names for client-side duplicate check */
@@ -210,6 +217,13 @@ const INVEST_PRODUCT_OPTIONS = PRODUCT_TYPES.map((pt) => ({
   labelKey: `investment.product.${pt}`,
 }));
 
+/* ---- Fixed asset type options ---- */
+
+const FIXED_ASSET_TYPE_OPTIONS = FIXED_ASSET_TYPES.map((value) => ({
+  value,
+  labelKey: `fixedAsset.type.${value}`,
+}));
+
 /* ---- Trading calendar options ---- */
 
 const TRADING_CALENDAR_OPTIONS = TRADING_CALENDARS.map((value) => ({
@@ -286,6 +300,7 @@ const ENTITY_CONFIG = {
     fullFields: [
       { key: "name", labelKey: "entityForm.accountNameLabel", type: "text", placeholderKey: "entityForm.accountNamePlaceholder" },
       { key: "kind", labelKey: "entityForm.accountTypeLabel", type: "select", options: ACCOUNT_KIND_OPTIONS, defaultValue: "bank_debit" },
+      { key: "fixedAssetType", labelKey: "fixedAssetEdit.assetType", type: "select", options: FIXED_ASSET_TYPE_OPTIONS, defaultValue: "property", condition: (f) => f.kind === "fixed_asset" },
       { key: "investProductType", labelKey: "settings.accounts.investmentAccountType", type: "select", options: INVEST_PRODUCT_OPTIONS, defaultValue: "fund", condition: (f) => f.kind === "investment" },
       { key: "fundUnitsDecimals", labelKey: "settings.accounts.fundUnitsDecimals", type: "text", defaultValue: "2", placeholderKey: "settings.accounts.defaultUnitsDecimals", condition: (f) => f.kind === "investment" && (f.investProductType ?? "fund") === "fund" },
       { key: "tradingCalendar", labelKey: "settings.accounts.tradingCalendar", type: "select", options: TRADING_CALENDAR_OPTIONS, defaultValue: "cn_fund", condition: (f) => supportsTradingCalendarForAccount(f.kind, f.investProductType ?? "fund") },
@@ -401,6 +416,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
 
   // Unpack mode-specific props
   const onCreated = props.onCreated;
+  const onNestedCreated = props.onNestedCreated;
   const existingNames = props.existingNames;
   const extraFields = props.extraFields;
   const parentCategories = mode === "compact" ? props.parentCategories : props.parentCategories;
@@ -440,6 +456,9 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   const [nestedEntityType, setNestedEntityType] = useState<NestedEntityType | null>(null);
   const [nestedOpen, setNestedOpen] = useState(false);
   const [nestedFieldData, setNestedFieldData] = useState<Record<string, Array<{ id: string; name: string; type?: string }>>>(fieldData ?? compactNestedFieldData ?? {});
+  // Set when a nested entity is created so the compact sync effect does not
+  // re-initialize (and wipe) the form that just gained the new entity.
+  const nestedCreatedRef = useRef(false);
   const hasAccountDefaultCurrency = entityType === "account" && String(props.defaultCurrency ?? "").trim() !== "";
   const accountDefaultCurrency = hasAccountDefaultCurrency ? normalizeCurrency(props.defaultCurrency) : "";
   const defaultValueForField = useCallback((field: FieldDef) => {
@@ -602,11 +621,21 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
 
   useEffect(() => {
     if (mode === "compact" && open) {
-      initForm();
+      // When a nested entity was just created, keep the current form state
+      // (including the newly selected entity) instead of re-initializing it.
+      if (!nestedCreatedRef.current) initForm();
+      nestedCreatedRef.current = false;
       // Sync nestedFieldData with compact prop changes
       if (compactNestedFieldData) setNestedFieldData(compactNestedFieldData);
     }
   }, [mode, open, initForm, compactNestedFieldData]);
+
+  // Clear the nested-created flag after every render so it never lingers into
+  // a later sync pass (e.g. when a nested entity is created without a parent
+  // onNestedCreated callback and the prop does not change).
+  useEffect(() => {
+    nestedCreatedRef.current = false;
+  });
 
   useEffect(() => {
     if (mode === "full") {
@@ -688,8 +717,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   const shouldShowInitialBalanceFields =
     includeInitialBalanceFields &&
     entityType === "account" &&
-    (form.kind || form.type || defaultType) !== "investment";
-
+    (form.kind || form.type || defaultType) !== "investment" &&
+    (form.kind || form.type || defaultType) !== "fixed_asset";
   function renderInitialBalanceFields() {
     if (!shouldShowInitialBalanceFields) return null;
     return (
@@ -842,6 +871,12 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
           if (v !== undefined && v !== "") body[k] = v;
         });
       }
+      if (entityType === "account" && body.kind === "fixed_asset") {
+        body.kind = "investment";
+        body.investProductType = "property";
+        body.institutionId = "";
+        body.fixedAssetType = form.fixedAssetType || "property";
+      }
       if (shouldShowInitialBalanceFields && form.initialBalance?.trim()) {
         body.initialBalance = form.initialBalance.trim();
         body.initialBalanceDate = form.initialBalanceDate || todayStr();
@@ -927,6 +962,10 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
       }));
       setForm(prev => ({ ...prev, groupId: id }));
     }
+    // Notify the parent so shared option data stays fresh across dialog instances.
+    onNestedCreated?.(id, name, extra);
+    // Keep the current form (with the newly selected entity) on the next sync.
+    nestedCreatedRef.current = true;
     setNestedOpen(false);
     setNestedEntityType(null);
   }

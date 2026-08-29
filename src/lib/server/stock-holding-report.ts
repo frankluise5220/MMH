@@ -14,6 +14,7 @@ export type StockHoldingReportRow = {
   avgCost: number;
   cost: number;
   latestPrice: number | null;
+  latestPriceDate: string | null;
   marketValue: number;
   floatingPnL: number;
   floatingPnLRate: number;
@@ -116,6 +117,7 @@ export async function loadStockHoldingReport(
         avgCost: toNumber(item.avgCost),
         cost,
         latestPrice: item.latestPrice == null ? null : toNumber(item.latestPrice),
+        latestPriceDate: item.latestPriceDate ? item.latestPriceDate.toISOString().slice(0, 10) : null,
         marketValue,
         floatingPnL,
         floatingPnLRate: cost > 0 ? floatingPnL / cost : 0,

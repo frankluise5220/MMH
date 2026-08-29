@@ -16,8 +16,9 @@ function hasUsefulChange(result: unknown) {
   const filled = Number(data.filled ?? data.entryFilled ?? 0);
   const navFilled = Number(data.navFilled ?? data.entryNavFilled ?? 0);
   const holdingNavRefreshed = Number(data.holdingNavRefreshed ?? 0);
+  const stockRefreshed = Number(data.refreshed ?? 0);
   const nameFixed = Number(data.nameFixed ?? 0);
-  return executedCount > 0 || filled > 0 || navFilled > 0 || holdingNavRefreshed > 0 || nameFixed > 0;
+  return executedCount > 0 || filled > 0 || navFilled > 0 || holdingNavRefreshed > 0 || nameFixed > 0 || stockRefreshed > 0;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -70,7 +71,14 @@ export function DailyTaskCheck() {
         const pendingData = await pendingRes.json().catch(() => null);
         assertOkResponse(pendingRes, pendingData, "fund pending refresh");
 
-        if (hasUsefulChange(planData) || hasUsefulChange(pendingData)) {
+        const stockRes = await fetch("/api/v1/stocks/prices/refresh-daily", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+        const stockData = await stockRes.json().catch(() => null);
+        assertOkResponse(stockRes, stockData, "stock close price refresh");
+
+        if (hasUsefulChange(planData) || hasUsefulChange(pendingData) || hasUsefulChange(stockData)) {
           dispatchFinanceDataChanged({ reason: "startup-check", entryIds: getEntryIds(pendingData) });
         }
         startupCheckCompleted = true;

@@ -17,6 +17,7 @@ import { useI18n } from "@/lib/i18n";
 type AccountOption = { id: string; label: string; kind: string };
 type EntityOption = { id: string; name: string; type?: string };
 type CashAccountOption = { id: string; label: string };
+type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
 
 type AccountBalanceRow = {
   tempId: string;
@@ -373,6 +374,14 @@ export function InitModal({
       .filter((institution) => institution.id && institution.name)
       .map((institution) => ({ id: institution.id, name: institution.name, type: institution.type })),
   }), [accountGroups, institutions]);
+  // Local copy of nested option data so newly created institutions/groups persist
+  // across account-dialog instances within this modal.
+  const [localNestedFieldData, setLocalNestedFieldData] = useState<NestedFieldData | undefined>(accountNestedFieldData);
+
+  // Keep local nested option data in sync when the server-provided data changes.
+  useEffect(() => {
+    if (accountNestedFieldData) setLocalNestedFieldData(accountNestedFieldData);
+  }, [accountNestedFieldData]);
 
   async function fillFundRowFromCode(tempId: string, accountId: string, rawCode: string) {
     const fundCode = rawCode.trim();
@@ -447,6 +456,23 @@ export function InitModal({
   }
 
   function handleClose() { if (!busy) onOpenChange(false); }
+
+  // Called when a nested institution/group is created inside an account dialog.
+  // Keep the shared nested option data fresh so subsequent account dialogs can
+  // select the newly created entity.
+  function handleNestedOptionCreated(id: string, name: string, extra?: { kind?: string; type?: string }) {
+    setLocalNestedFieldData((prev) => {
+      const base = prev ?? accountNestedFieldData ?? {};
+      if (extra?.type !== undefined) {
+        const existing = base.institutionId ?? [];
+        if (existing.some((item) => item.id === id)) return base;
+        return { ...base, institutionId: [...existing, { id, name, type: extra.type }] };
+      }
+      const existing = base.groupId ?? [];
+      if (existing.some((item) => item.id === id)) return base;
+      return { ...base, groupId: [...existing, { id, name }] };
+    });
+  }
 
   if (!open) return null;
 
@@ -714,7 +740,8 @@ export function InitModal({
       <NestedAddModal key="init-invest-account" mode="compact" entityType="account" open={investNestedOpen}
         onClose={() => { pendingInvestCreateFromAccountId.current = ""; setInvestNestedOpen(false); }}
         onCreated={handleInvestAccountCreated}
-        nestedFieldData={accountNestedFieldData}
+        nestedFieldData={localNestedFieldData ?? accountNestedFieldData}
+        onNestedCreated={handleNestedOptionCreated}
         extraFields={{ kind: "investment", investProductType: "fund" }}
         hiddenFields={["kind", "investProductType"]}
       />, document.body
@@ -724,7 +751,8 @@ export function InitModal({
       <NestedAddModal key="init-balance-account" mode="compact" entityType="account" open={balanceNestedOpen}
         onClose={() => { pendingBalanceCreateRowId.current = ""; setBalanceNestedOpen(false); }}
         onCreated={handleBalanceAccountCreated}
-        nestedFieldData={accountNestedFieldData}
+        nestedFieldData={localNestedFieldData ?? accountNestedFieldData}
+        onNestedCreated={handleNestedOptionCreated}
       />, document.body
     )}
     </ModalLayerProvider>

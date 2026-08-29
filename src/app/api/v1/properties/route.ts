@@ -9,16 +9,22 @@
  *   Body: {
  *     accountId, cashAccountId?, propertyAssetId?,
  *     action: "purchase" | "improvement" | "sale",
- *     name?, propertyType?, address?, tradeDate, settlementDate?,
+ *     name?, assetType?, propertyType?, address?, attributes?, tradeDate, settlementDate?,
  *     amount, fee?, tax?, marketValue?, note?
  *   }
  *   Creates/updates the property asset, writes a PropertyTransaction, and
  *   creates the linked cash-side TxRecord when cashAccountId is supplied.
+ *
+ * PUT
+ *   Body: { propertyAssetId, name?, assetType?, propertyType?, address?, attributes?, purchaseDate?,
+ *          purchasePrice?, note? }
+ *   Updates the fixed asset info fields on the PropertyAsset record.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { AccountKind, PropertyTransactionAction } from "@prisma/client";
+import { AccountKind, Prisma, PropertyTransactionAction } from "@prisma/client";
 
 import { normalizeCurrency } from "@/lib/currency";
+import { normalizeFixedAssetType } from "@/lib/fixed-asset";
 import { formatDateUtc, toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { ensurePropertyTransactionCashFlow } from "@/lib/property/cashFlow";
@@ -34,7 +40,7 @@ const PROPERTY_ACTIONS = new Set(Object.values(PropertyTransactionAction));
 function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,PUT,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Api-Key",
   } as const;
 }
@@ -67,6 +73,20 @@ function decimalString(value: number | null) {
   return value == null ? null : String(value);
 }
 
+function parseAttributes(value: unknown): Prisma.InputJsonValue | typeof Prisma.JsonNull {
+  if (value == null) return Prisma.JsonNull;
+  if (typeof value === "object" && !Array.isArray(value)) return value as Prisma.InputJsonValue;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Prisma.InputJsonValue) : Prisma.JsonNull;
+    } catch {
+      return Prisma.JsonNull;
+    }
+  }
+  return Prisma.JsonNull;
+}
+
 function normalizePropertyAction(value: unknown) {
   const action = String(value ?? PropertyTransactionAction.purchase).trim();
   return PROPERTY_ACTIONS.has(action as PropertyTransactionAction)
@@ -77,7 +97,7 @@ function normalizePropertyAction(value: unknown) {
 async function assertPropertyAccount(accountId: string, householdId: string) {
   const account = await prisma.account.findFirst({
     where: { id: accountId, householdId, kind: AccountKind.investment, investProductType: "property" },
-    select: { id: true, householdId: true, name: true, currency: true },
+    select: { id: true, householdId: true, name: true, currency: true, fixedAssetType: true },
   });
   if (!account) throw new Error("房产账户不存在或不属于当前账簿");
   return account;
@@ -99,8 +119,10 @@ function serializeAsset(row: {
   id: string;
   accountId: string;
   name: string;
+  assetType?: string | null;
   propertyType?: string | null;
   address?: string | null;
+  attributes?: unknown | null;
   currency?: string | null;
   purchaseDate?: Date | null;
   purchasePrice?: unknown | null;
@@ -114,8 +136,10 @@ function serializeAsset(row: {
     id: row.id,
     accountId: row.accountId,
     name: row.name,
+    assetType: normalizeFixedAssetType(row.assetType),
     propertyType: row.propertyType ?? null,
     address: row.address ?? null,
+    attributes: row.attributes ?? null,
     currency: normalizeCurrency(row.currency),
     purchaseDate: row.purchaseDate ? formatDateUtc(row.purchaseDate) : null,
     purchasePrice: row.purchasePrice == null ? null : toNumber(row.purchasePrice),
@@ -249,8 +273,10 @@ export async function POST(req: NextRequest) {
             householdId,
             accountId,
             name: assetName,
+            assetType: normalizeFixedAssetType(body.assetType ?? propertyAccount.fixedAssetType),
             propertyType: String(body.propertyType ?? "").trim() || null,
             address: String(body.address ?? "").trim() || null,
+            attributes: parseAttributes(body.attributes),
             currency: propertyAccount.currency ?? cashAccount?.currency ?? "CNY",
             purchaseDate: tradeDate,
             purchasePrice: decimalString(amount),
@@ -360,6 +386,53 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     return NextResponse.json(
       { ok: false, code: "CREATE_FAILED", error: error instanceof Error ? error.message : "创建失败" },
+      { status: 500, headers: corsHeaders() },
+    );
+  }
+}
+
+
+export async function PUT(req: NextRequest) {
+  try {
+    const { householdId } = await getApiHouseholdScope(req);
+    const body = await req.json().catch(() => null) as Record<string, unknown> | null;
+    const propertyAssetId = String(body?.propertyAssetId ?? "").trim();
+    if (!propertyAssetId) {
+      return NextResponse.json({ ok: false, code: "MISSING_PROPERTY_ASSET_ID", error: "Missing propertyAssetId" }, { status: 400, headers: corsHeaders() });
+    }
+    const asset = await prisma.propertyAsset.findFirst({
+      where: { id: propertyAssetId, householdId, deletedAt: null },
+    });
+    if (!asset) {
+      return NextResponse.json({ ok: false, code: "PROPERTY_ASSET_NOT_FOUND", error: "Property asset not found" }, { status: 404, headers: corsHeaders() });
+    }
+    const name = String(body?.name ?? "").trim();
+    if (!name) {
+      return NextResponse.json({ ok: false, code: "INVALID_NAME", error: "Asset name is required" }, { status: 400, headers: corsHeaders() });
+    }
+    const purchaseDate = parseDateOnly(body?.purchaseDate);
+    const purchasePrice = parseOptionalNonNegativeNumber(body?.purchasePrice);
+    const updated = await prisma.$transaction(async (tx) => {
+      const updatedAsset = await tx.propertyAsset.update({
+        where: { id: propertyAssetId },
+        data: {
+          name,
+          assetType: normalizeFixedAssetType(body?.assetType),
+          propertyType: String(body?.propertyType ?? "").trim() || null,
+          address: String(body?.address ?? "").trim() || null,
+          attributes: parseAttributes(body?.attributes),
+          purchaseDate,
+          purchasePrice: purchasePrice == null ? null : String(purchasePrice),
+          note: String(body?.note ?? "").trim() || null,
+        },
+      });
+      return updatedAsset;
+    });
+    revalidateAfterInvestChange();
+    return NextResponse.json({ ok: true, data: { asset: serializeAsset(updated) } }, { headers: corsHeaders() });
+  } catch (error) {
+    return NextResponse.json(
+      { ok: false, code: "UPDATE_FAILED", error: error instanceof Error ? error.message : "Update failed" },
       { status: 500, headers: corsHeaders() },
     );
   }

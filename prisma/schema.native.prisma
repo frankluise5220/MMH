@@ -30,6 +30,7 @@ model Account {
   isActive                                                   Boolean                     @default(true)
   isPlaceholder                                              Boolean                     @default(false)
   investProductType                                          FundProductType?
+  fixedAssetType                                            FixedAssetType?
   creditLimit                                                Decimal?
   billingDay                                                 Int?
   repaymentDay                                               Int?
@@ -60,6 +61,7 @@ model Account {
   User                                                       User?                       @relation(fields: [userId], references: [id], onDelete: SetNull)
   AccountAlias                                               AccountAlias[]
   BillOverride                                               BillOverride[]
+  CreditCardBillingDay                                       CreditCardBillingDay[]
   CreditCardCycle                                            CreditCardCycle[]
   CreditCardInstallmentPlan                                  CreditCardInstallmentPlan[]
   FundConfirmDays                                            FundConfirmDays[]
@@ -254,6 +256,18 @@ model CreditCardCycle {
   @@index([accountId])
   @@index([isCurrentCycle])
   @@index([statementMonth])
+}
+
+model CreditCardBillingDay {
+  id            String   @id @default(cuid())
+  accountId     String
+  effectiveDate DateTime
+  billingDay    Int
+  createdAt     DateTime @default(now())
+  Account       Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, effectiveDate])
+  @@index([accountId])
 }
 
 model CreditCardInstallmentPlan {
@@ -667,6 +681,7 @@ model StockHolding {
   avgCost          Decimal       @default(0)
   cost             Decimal       @default(0)
   latestPrice      Decimal?
+  latestPriceDate  DateTime?
   marketValue      Decimal       @default(0)
   historicalProfit Decimal       @default(0)
   updatedAt        DateTime      @default(now()) @updatedAt
@@ -828,8 +843,10 @@ model PropertyAsset {
   householdId         String
   accountId           String
   name                String
+  assetType           FixedAssetType        @default(property)
   propertyType        String?
   address             String?
+  attributes          Json?
   currency            String                @default("CNY")
   purchaseDate        DateTime?
   purchasePrice       Decimal?
@@ -1653,6 +1670,15 @@ enum EntryBusinessType {
   metal
   property
   other_investment
+}
+
+enum FixedAssetType {
+  property
+  vehicle
+  equipment
+  furniture
+  collectible
+  other
 }
 
 enum PropertyTransactionAction {

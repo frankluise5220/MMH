@@ -689,62 +689,9 @@ export default function DisplaySettingsPage() {
 
       <section className="panel-surface overflow-hidden">
         <div>
-          <SettingRow title={t("settings.display.creditCardSidebar")} desc={t("settings.display.creditCardSidebarDesc")} hideDesc={hideSettingDescriptions} wide>
-            <div className="space-y-2">
-              <input
-                value={creditCardSidebarDisplayName}
-                onChange={(e) => setCreditCardSidebarDisplayName(e.target.value)}
-                className="form-input"
-                placeholder={SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE}
-              />
-              <div className="flex flex-wrap gap-2">
-                {CREDIT_CARD_NAME_FIELDS.map((field) => {
-                  const fieldLabel = t(field.labelKey);
-                  return (
-                  <button
-                    key={field.value}
-                    type="button"
-                    onClick={() => setCreditCardSidebarDisplayName((current) => `${current}${field.value}`)}
-                    className="secondary-button h-7 px-2 text-[11px]"
-                    title={t("settings.display.insertField", { field: fieldLabel })}
-                  >
-                    {fieldLabel}
-                  </button>
-                  );
-                })}
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-                  {CREDIT_CARD_NAME_PRESETS.map((preset) => (
-                    <button
-                      key={`credit-card-${preset.value}`}
-                      type="button"
-                      onClick={() => setCreditCardSidebarDisplayName(preset.value)}
-                      className="secondary-button h-8 px-3 text-xs"
-                      title={previewCreditCardName(preset.value, CREDIT_CARD_PREVIEW_SAMPLE)}
-                    >
-                      {t(preset.labelKey)}
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    disabled={savingCreditCardSidebarDisplayName}
-                    onClick={() => setCreditCardSidebarDisplayName(SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE)}
-                    className="secondary-button h-8 px-3 text-xs"
-                  >
-                    {t("settings.display.default")}
-                  </button>
-                </div>
-                <button
-                  type="button"
-                  disabled={savingCreditCardSidebarDisplayName}
-                  onClick={() => void saveCreditCardSidebarDisplayName(creditCardSidebarDisplayName)}
-                  className="primary-button ml-auto h-8 px-4 text-xs"
-                >
-                  {t("common.save")}
-                </button>
-              </div>
-              <div className="text-xs text-slate-500">{t("settings.display.preview")}<span className="font-medium text-slate-800">{sidebarPreview || t("settings.display.previewEmpty")}</span></div>
+          <SettingRow title={t("settings.display.accountFormat")} desc={t("settings.display.accountFormatDesc")} hideDesc={hideSettingDescriptions} wide>
+            <div className="text-sm text-slate-700">
+              {t("settings.display.accountFormatExample")}
             </div>
           </SettingRow>
         </div>
