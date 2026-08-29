@@ -306,10 +306,6 @@ start_app() {
   if [ ! -f "$SERVER_DIR/server.js" ]; then
     fail_start "Next standalone server is missing: $SERVER_DIR/server.js"
   fi
-  if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" >/dev/null 2>&1; then
-    append_log "MMH already running with pid $(cat "$PID_FILE")"
-    exit 0
-  fi
   export NODE_ENV=production
   export HOSTNAME=0.0.0.0
   export MMH_DEPLOY_TARGET=synology
@@ -326,6 +322,10 @@ start_app() {
   append_log "Initializing SQLite database at $DATA_DIR/mmh.db"
   if ! (cd "$SERVER_DIR" && "$NODE_BIN" "$SERVER_DIR/scripts/init-sqlite.cjs") >>"$LOG_FILE" 2>&1; then
     fail_start "SQLite initialization failed."
+  fi
+  if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" >/dev/null 2>&1; then
+    append_log "MMH already running with pid $(cat "$PID_FILE")"
+    exit 0
   fi
   append_log "Launching Next standalone server."
   nohup "$NODE_BIN" "$SERVER_DIR/server.js" >>"$LOG_FILE" 2>&1 &

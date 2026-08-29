@@ -2,14 +2,15 @@ import { AccountKind, CreditCardInstallmentSourceType, TransactionType, type Pri
 import type { DetailEntry } from "@/components/DetailViewClient";
 import type { CreditBillSummaryRow } from "@/components/CreditBillSummaryTable";
 import { prisma } from "@/lib/db/prisma";
-import { addDaysUtc, creditCardCycle, formatDateLocal, toNumber, toStatementMonth } from "@/lib/date-utils";
+import { addDaysUtc, formatDateLocal, toNumber } from "@/lib/date-utils";
 import {
   CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE,
   CREDIT_CARD_STATEMENT_IMPORT_CYCLE_LOCK_SOURCE,
   applyNextCyclePaidToCreditBillSummaries,
   buildCreditCardCyclePersistRows,
+  buildCreditBillCycleDefinitionsFromBillingDayRules,
   computeCreditBillCascade,
-  cycleForStatementMonth,
+  cycleForStatementMonthWithBillingDayRules,
   fillMissingCreditBillSummaries,
   hasCreditCardCycleLockSource,
   isCreditBillSettled,
@@ -73,6 +74,7 @@ type LoadCreditBillPageDataParams = {
   hideSettledBills: boolean;
   showRecentBillCycles: boolean;
   view: string;
+  t: (key: string) => string;
   forceCycleRefresh?: boolean;
   categoryLabels: Map<string, string>;
   isSettlementDebtAccountId: (accountId: string | null | undefined) => boolean;
@@ -132,6 +134,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     hideSettledBills,
     showRecentBillCycles,
     view,
+    t,
     forceCycleRefresh = false,
     categoryLabels,
     isSettlementDebtAccountId,
@@ -164,19 +167,41 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
 
   const creditBillNow = new Date();
   const todayUtcStart = new Date(Date.UTC(creditBillNow.getUTCFullYear(), creditBillNow.getUTCMonth(), creditBillNow.getUTCDate()));
+  const billingDayRules = isBillAccount && selectedAccount?.kind === AccountKind.bank_credit && billAccountIds.length > 0
+    ? await prisma.creditCardBillingDay.findMany({
+        where: { accountId: { in: billAccountIds } },
+        select: { effectiveDate: true, billingDay: true, updatedAt: true },
+        orderBy: { effectiveDate: "asc" },
+      })
+    : [];
+  const fallbackBillingDay = selectedAccount?.billingDay ?? null;
+  const hasBillingDayRules = billingDayRules.length > 0 || !!fallbackBillingDay;
   // Bump this timestamp whenever the credit-bill flow calculation logic
   // changes (e.g. classifyCreditBillFlowSide). It forces persisted cycle
   // summaries to be recomputed with the new logic instead of reusing stale
-  // cached values. Last bumped: 2026-08-28 22:41 (force full recompute —
-  // the previous 14:00 bump was ineffective because the persisted cache was
-  // written at 14:25 with the OLD logic, so latestCycleUpdatedAt (14:25) was
-  // already newer than the logic timestamp and stale stayed false).
-  const creditBillSummaryLogicUpdatedAt = new Date(Date.UTC(2026, 7, 28, 22, 41, 0));
+  // cached values. Last bumped: 2026-08-29 15:55 (transfer rows now follow
+  // the signed credit-card-side amount instead of always counting as inflow).
+  const creditBillSummaryLogicUpdatedAt = new Date(Date.UTC(2026, 7, 29, 7, 55, 0));
+  const latestBillingDayRuleUpdatedAt = billingDayRules.reduce<Date | null>(
+    (latest, rule) => (!latest || rule.updatedAt > latest ? rule.updatedAt : latest),
+    null,
+  );
   const currentStatementMonth = (() => {
-    if (!isBillAccount || !selectedAccount?.billingDay) return "";
-    const base = creditCardCycle(creditBillNow, selectedAccount.billingDay ?? 1, selectedAccount.repaymentDay ?? null);
-    if (!base) return "";
-    return toStatementMonth(base.end, selectedAccount.billingDay ?? 1);
+    if (!isBillAccount || !selectedAccount || !hasBillingDayRules) return "";
+    const currentMonth = `${creditBillNow.getUTCFullYear()}-${String(creditBillNow.getUTCMonth() + 1).padStart(2, "0")}`;
+    const nextMonthDate = new Date(Date.UTC(creditBillNow.getUTCFullYear(), creditBillNow.getUTCMonth() + 1, 1));
+    const nextMonth = `${nextMonthDate.getUTCFullYear()}-${String(nextMonthDate.getUTCMonth() + 1).padStart(2, "0")}`;
+    const definitions = buildCreditBillCycleDefinitionsFromBillingDayRules({
+      months: [currentMonth, nextMonth],
+      billingDayRules,
+      repaymentDay: selectedAccount.repaymentDay ?? null,
+      now: creditBillNow,
+      fallbackBillingDay,
+    });
+    const today = todayUtcStart.getTime();
+    return Array.from(definitions.entries()).find(([, cycle]) => (
+      today >= cycle.start.getTime() && today < addDaysUtc(cycle.end, 1).getTime()
+    ))?.[0] ?? currentMonth;
   })();
 
   const normalizedCreditInstallments =
@@ -278,20 +303,18 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
       !latestCycleUpdatedAt ||
       latestCycleUpdatedAt < creditBillSummaryLogicUpdatedAt ||
       latestCycleUpdatedAt < todayUtcStart ||
+      (!!latestBillingDayRuleUpdatedAt && latestBillingDayRuleUpdatedAt > latestCycleUpdatedAt) ||
       importedStatementCycleNeedsRecalc ||
       (!!latestBillTxUpdatedAt?.updatedAt && latestBillTxUpdatedAt.updatedAt > latestCycleUpdatedAt) ||
       (!!latestOverrideUpdatedAt && latestOverrideUpdatedAt > latestCycleUpdatedAt)
     )
   );
 
-  // Available bill months are derived dynamically from transaction dates +
-  // billingDay (toStatementMonth), NOT from the persisted txRecord.statementMonth
-  // field. The field is a redundant write-time cache that can drift from the
-  // true date-based cycle (e.g. transactions on the billing day itself), which
-  // caused stale/incorrect bill periods. Deriving from dates keeps a single
-  // source of truth: date + billingDay.
+  // Available bill months are derived from the billing-day history table. The
+  // billing day is the cycle end date; if it changes mid-cycle, the current
+  // cycle's end date moves to the newly effective billing day.
   const availableBillMonths =
-    isBillAccount && selectedAccount?.billingDay
+    isBillAccount && selectedAccount && hasBillingDayRules
       ? await (async () => {
           const rows = await prisma.txRecord.findMany({
             where: {
@@ -299,10 +322,27 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
             },
             select: { date: true },
           });
+          const candidateMonths = new Set<string>();
+          for (const row of rows) {
+            const date = row.date;
+            candidateMonths.add(`${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`);
+            const nextMonth = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1));
+            candidateMonths.add(`${nextMonth.getUTCFullYear()}-${String(nextMonth.getUTCMonth() + 1).padStart(2, "0")}`);
+          }
+          const cycleByMonth = buildCreditBillCycleDefinitionsFromBillingDayRules({
+            months: Array.from(candidateMonths),
+            billingDayRules,
+            repaymentDay: selectedAccount.repaymentDay ?? null,
+            now: creditBillNow,
+            fallbackBillingDay,
+          });
           const months = new Set<string>();
           for (const row of rows) {
-            const m = toStatementMonth(row.date, selectedAccount.billingDay!);
-            if (isDisplayableBillMonth(m)) months.add(m);
+            const timestamp = row.date.getTime();
+            const matchedMonth = Array.from(cycleByMonth.entries()).find(([, cycle]) => (
+              timestamp >= cycle.start.getTime() && timestamp < addDaysUtc(cycle.end, 1).getTime()
+            ))?.[0];
+            if (matchedMonth && isDisplayableBillMonth(matchedMonth)) months.add(matchedMonth);
           }
           return Array.from(months).sort((a, b) => b.localeCompare(a));
         })()
@@ -315,7 +355,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
       : "";
 
   const creditCardBill =
-    isBillAccount && selectedAccount?.billingDay
+    isBillAccount && selectedAccount && hasBillingDayRules
       ? await (async () => {
           const base = selectedBillMonth
             ? (() => {
@@ -330,14 +370,26 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
                     isCurrentCycle: today >= persisted.periodStart && today < addDaysUtc(persisted.periodEnd, 1),
                   };
                 }
-                return cycleForStatementMonth(selectedBillMonth, selectedAccount.billingDay ?? 1, selectedAccount.repaymentDay ?? null, creditBillNow);
+                return cycleForStatementMonthWithBillingDayRules({
+                  statementMonth: selectedBillMonth,
+                  billingDayRules,
+                  repaymentDay: selectedAccount.repaymentDay ?? null,
+                  now: creditBillNow,
+                  fallbackBillingDay,
+                });
               })()
-            : creditCardCycle(creditBillNow, selectedAccount.billingDay ?? 1, selectedAccount.repaymentDay ?? null);
+            : cycleForStatementMonthWithBillingDayRules({
+                statementMonth: currentStatementMonth,
+                billingDayRules,
+                repaymentDay: selectedAccount.repaymentDay ?? null,
+                now: creditBillNow,
+                fallbackBillingDay,
+              });
           if (!base) return null;
 
           const { start, end, due, today, isCurrentCycle } = base;
           const repayEnd = due && due.getTime() < today.getTime() ? due : today;
-          const statementMonth = selectedBillMonth || toStatementMonth(end, selectedAccount.billingDay ?? 1);
+          const statementMonth = selectedBillMonth || currentStatementMonth;
           const cachedCycle = !creditCycleCacheStale
             ? persistedCyclesInitial.find((cycle) => cycle.statementMonth === statementMonth)
             : null;
@@ -489,6 +541,14 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     return full;
   })();
 
+  const cycleDefinitionByMonth = buildCreditBillCycleDefinitionsFromBillingDayRules({
+    months: Array.from(new Set([...billMonthsForCumulative, ...billMonthsForList, currentStatementMonth, selectedBillMonth].filter(Boolean))),
+    billingDayRules,
+    repaymentDay: selectedAccount?.repaymentDay ?? null,
+    now: creditBillNow,
+    fallbackBillingDay,
+  });
+
   const creditCycleDefinitions = (() => {
     const definitions: Array<{
       month: string;
@@ -499,7 +559,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
       isCurrentCycle: boolean;
     }> = [];
     const account = selectedAccount;
-    if (!isBillAccount || !account?.billingDay) return definitions;
+    if (!isBillAccount || !account || !hasBillingDayRules) return definitions;
 
     for (const month of billMonthsForCumulative) {
       const persisted = persistedCycleByMonth.get(month);
@@ -517,12 +577,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
               isCurrentCycle: today >= persisted.periodStart && today < addDaysUtc(persisted.periodEnd, 1),
             };
           })()
-        : cycleForStatementMonth(
-            month,
-            account.billingDay,
-            account.repaymentDay ?? null,
-            creditBillNow,
-          );
+        : cycleDefinitionByMonth.get(month);
       if (!base) continue;
       definitions.push({
         month,
@@ -627,7 +682,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
   const billSummariesAll =
     !creditCycleCacheStale
       ? persistedBillSummariesAll.filter((summary) => billMonthsForCumulative.includes(summary.month))
-      : isBillAccount && selectedAccount?.billingDay && creditCycleDefinitions.length
+      : isBillAccount && selectedAccount && hasBillingDayRules && creditCycleDefinitions.length
         ? creditCycleDefinitions.map(({ month, start, end, due, isCurrentCycle }) => {
             const activity = creditCycleActivityByMonth.get(month) ?? {
               outflow: 0,
@@ -660,6 +715,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     billingDay: selectedAccount?.billingDay ?? 1,
     repaymentDay: selectedAccount?.repaymentDay ?? null,
     now: creditBillNow,
+    cycleByMonth: cycleDefinitionByMonth,
   });
 
   const cachedOverrideByMonth = new Map<string, number>(
@@ -717,6 +773,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     cumulativeByMonth,
     overrideByMonth,
     now: creditBillNow,
+    cycleByMonth: cycleDefinitionByMonth,
   });
 
   if (creditCycleCacheStale && isBillAccount && selectedAccount) {
@@ -880,10 +937,10 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
             categoryName:
               e.type === TransactionType.expense || e.type === TransactionType.income
                 ? e.categoryId
-                  ? categoryLabels.get(e.categoryId) ?? e.categoryName ?? "未分类"
-                  : e.categoryName ?? "未分类"
+                  ? categoryLabels.get(e.categoryId) ?? e.categoryName ?? t("txForm.uncategorized")
+                  : e.categoryName ?? t("txForm.uncategorized")
                 : isCreditCardRepaymentForDisplay(e)
-                  ? "信用卡还款"
+                  ? t("transaction.category.creditCardRepayment")
                   : e.categoryName,
             accountId: e.accountId,
             accountName: e.accountName,
@@ -1018,6 +1075,7 @@ export async function refreshCreditCardCycleCachesForAccountIds(params: {
       hideSettledBills: false,
       showRecentBillCycles: false,
       view: "refresh",
+      t: (key) => key,
       forceCycleRefresh: true,
       categoryLabels: new Map(),
       isSettlementDebtAccountId: () => false,

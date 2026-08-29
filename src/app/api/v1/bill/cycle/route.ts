@@ -56,10 +56,11 @@ function statementMonthDate(statementMonth: string) {
 function cycleEndForMonth(statementMonth: string, billingDay: number) {
   const parsed = statementMonthDate(statementMonth);
   if (!parsed) return null;
-  // The billing cycle for statementMonth is [prev-month billingDay, this-month
-  // billingDay - 1]. E.g. billingDay=26 -> cycle is 26th of prev month to 25th
-  // of this month. This must match cycleForStatementMonth in billing.ts.
-  return new Date(Date.UTC(parsed.year, parsed.monthIndex, clampDay(parsed.year, parsed.monthIndex, billingDay - 1)));
+  // The billing cycle for statementMonth ends on this-month billingDay.
+  // e.g. billingDay=10 -> cycle ends on the 10th of the statement month.
+  // This must match cycleForStatementMonth in billing.ts so that mid-cycle
+  // edits, persisted cycles and computed cycles all share one boundary.
+  return new Date(Date.UTC(parsed.year, parsed.monthIndex, clampDay(parsed.year, parsed.monthIndex, billingDay)));
 }
 
 function dueForCycle(periodEnd: Date, billingDay: number, repaymentDay: number | null) {
@@ -118,10 +119,12 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ ok: false, code: "CYCLE_NOT_FOUND", error: "这一期账单周期不存在，请先生成账单列表" }, { status: 404 });
     }
 
-    // billingDay is the day the cycle starts (periodStart), i.e. the 26th for
-    // a 26-25 cycle. periodEnd is the last day of the cycle (25th), so it must
-    // NOT be used to derive billingDay.
-    const billingDay = periodStart.getUTCDate();
+    // The billing day is the closing date of the cycle, i.e. periodEnd.
+    // e.g. billingDay=10 means the cycle closes on the 10th of every month,
+    // and the next cycle starts on the 11th. PeriodStart stays whatever the
+    // user picked (it may have been extended backwards by a prior manual
+    // edit); we only normalize the end + all subsequent cycles from here.
+    const billingDay = periodEnd.getUTCDate();
     const repaymentDay = dueDate ? dueDate.getUTCDate() : null;
     const today = startOfDayUtc(new Date());
 

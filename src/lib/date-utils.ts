@@ -34,7 +34,7 @@ export function addMonthsUtc(date: Date, months: number) {
 
 export function toStatementMonth(date: Date, billingDay: number) {
   const day = date.getUTCDate();
-  const monthBase = day < billingDay ? date : addMonthsUtc(date, 1);
+  const monthBase = day <= billingDay ? date : addMonthsUtc(date, 1);
   const y = monthBase.getUTCFullYear();
   const m = String(monthBase.getUTCMonth() + 1).padStart(2, "0");
   return `${y}-${m}`;
@@ -53,15 +53,15 @@ export function creditCardCycle(now: Date, billingDay: number, repaymentDay?: nu
   const y = today.getUTCFullYear();
   const m = today.getUTCMonth();
 
-  const thisStart = new Date(Date.UTC(y, m, clampDay(y, m, billingDay)));
-  const start =
-    today.getTime() >= thisStart.getTime()
-      ? thisStart
-      : new Date(Date.UTC(y, m - 1, clampDay(y, m - 1, billingDay)));
-  const nextStart = new Date(
-    Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, clampDay(start.getUTCFullYear(), start.getUTCMonth() + 1, billingDay)),
+  const thisEnd = new Date(Date.UTC(y, m, clampDay(y, m, billingDay)));
+  const end =
+    today.getTime() <= thisEnd.getTime()
+      ? thisEnd
+      : new Date(Date.UTC(y, m + 1, clampDay(y, m + 1, billingDay)));
+  const previousEnd = new Date(
+    Date.UTC(end.getUTCFullYear(), end.getUTCMonth() - 1, clampDay(end.getUTCFullYear(), end.getUTCMonth() - 1, billingDay)),
   );
-  const end = addDaysUtc(nextStart, -1);
+  const start = addDaysUtc(previousEnd, 1);
   const nextEnd = addDaysUtc(end, 1);
   const isCurrentCycle = today.getTime() >= start.getTime() && today.getTime() < nextEnd.getTime();
 

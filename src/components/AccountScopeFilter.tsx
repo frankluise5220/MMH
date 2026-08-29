@@ -180,7 +180,7 @@ export function AccountScopeFilter({
     if (type === "cash") return "cash";
     if (type === "bank") return "bank";
     if (type === "payment" || type === "ewallet") return "payment";
-    if (type === "brokerage" || type === "investment") return "investment";
+    if (type === "brokerage" || type === "fund_company" || type === "investment") return "investment";
     return "other";
   }
 

@@ -2,7 +2,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { findInstitutionDisplayNameConflict } from "@/lib/server/institution-name-unique";
 
-export type DefaultInstitutionType = "bank" | "insurance" | "brokerage" | "payment" | "ewallet" | "debt" | "other";
+export type DefaultInstitutionType = "bank" | "insurance" | "brokerage" | "fund_company" | "payment" | "ewallet" | "debt" | "other";
 
 export type DefaultInstitutionTemplate = {
   name: string;

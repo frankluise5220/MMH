@@ -1449,6 +1449,7 @@ export default async function Home({
     hideSettledBills,
     showRecentBillCycles,
     view,
+    t,
     categoryLabels,
     isSettlementDebtAccountId,
     isCreditCardRepaymentForDisplay,

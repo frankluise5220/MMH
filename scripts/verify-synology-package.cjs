@@ -179,6 +179,8 @@ function verifySourceFiles() {
   const appBuildScript = read(path.join(root, "scripts", "build-synology-app.cjs"));
   const packageScript = read(path.join(root, "scripts", "build-synology-package.cjs"));
   const releaseWorkflow = read(path.join(root, ".github", "workflows", "synology-release.yml"));
+  const sqliteInitIndex = packageScript.indexOf('"$NODE_BIN" "$SERVER_DIR/scripts/init-sqlite.cjs"');
+  const pidCheckIndex = packageScript.indexOf('if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")"');
 
   expect(/build:synology:app/.test(packageJson), "package.json must expose build:synology:app.");
   expect(/build:synology/.test(packageJson), "package.json must expose build:synology.");
@@ -197,6 +199,7 @@ function verifySourceFiles() {
   expect(!/run_as:\s*"package"/.test(packageScript), "Synology privilege config must not use the invalid run_as key.");
   expect(/\$\{appName\}-synology-v\$\{version\}-\$\{target\.assetSuffix\}\.spk/.test(packageScript), "Synology SPK asset names must include version and architecture.");
   expect(!/"-czf",\s*spkPath/.test(packageScript), "Synology SPK outer archive must be uncompressed tar; only package.tgz should be gzip-compressed.");
+  expect(sqliteInitIndex !== -1 && pidCheckIndex !== -1 && sqliteInitIndex < pidCheckIndex, "Synology start script must run SQLite init before returning for an already-running process.");
   expect(/release-artifacts\/synology\/\*\.spk/.test(releaseWorkflow), "Synology release workflow must upload SPK assets.");
   expect(/target_arch/.test(releaseWorkflow) && /arm64/.test(releaseWorkflow), "Synology release workflow must build x86_64 and arm64 packages.");
 }

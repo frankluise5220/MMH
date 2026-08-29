@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
 
   const { householdId } = await getHouseholdScope();
 
-  const validTypes = ["family_member", "person", "organization", "bank", "insurance", "brokerage", "payment", "ewallet", "debt", "other"];
+  const validTypes = ["family_member", "person", "organization", "bank", "insurance", "brokerage", "fund_company", "payment", "ewallet", "debt", "other"];
   const safeType = validTypes.includes(type) ? type : "organization";
 
   try {

@@ -520,6 +520,7 @@ export default function SettingsAccountsPage() {
           defaultType={
             nestedEntityType !== "institution" ? undefined
               : isStockInvestmentAccount(editForm.kind, editForm.investProductType || "fund") ? "brokerage"
+              : editForm.kind === "investment" && (["fund", "money"].includes(editForm.investProductType || "fund")) ? "fund_company"
               : editForm.kind === "loan" ? "debt"
               : undefined
           }

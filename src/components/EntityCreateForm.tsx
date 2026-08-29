@@ -17,7 +17,7 @@ import {
   isStockInvestmentAccount,
 } from "@/lib/account-institution-rules";
 import { useI18n } from "@/lib/i18n";
-import { FIXED_ASSET_TYPES } from "@/lib/fixed-asset";
+import { FIXED_ASSET_TYPES, isFixedAssetAccountLike } from "@/lib/fixed-asset";
 
 /* ---- Types ---- */
 
@@ -173,6 +173,7 @@ const ALL_INSTITUTION_TYPES = [
   { value: "bank", labelKey: "institution.type.bank" },
   { value: "insurance", labelKey: "institution.type.insurance" },
   { value: "brokerage", labelKey: "institution.type.brokerage" },
+  { value: "fund_company", labelKey: "institution.type.fund_company" },
   { value: "payment", labelKey: "institution.type.payment" },
   { value: "ewallet", labelKey: "institution.type.ewallet" },
   { value: "debt", labelKey: "institution.type.debt" },
@@ -183,6 +184,7 @@ const INSTITUTION_TYPES = ALL_INSTITUTION_TYPES.filter((option) => (
   option.value === "bank" ||
   option.value === "insurance" ||
   option.value === "brokerage" ||
+  option.value === "fund_company" ||
   option.value === "payment" ||
   option.value === "ewallet" ||
   option.value === "other"
@@ -300,7 +302,7 @@ const ENTITY_CONFIG = {
     fullFields: [
       { key: "name", labelKey: "entityForm.accountNameLabel", type: "text", placeholderKey: "entityForm.accountNamePlaceholder" },
       { key: "kind", labelKey: "entityForm.accountTypeLabel", type: "select", options: ACCOUNT_KIND_OPTIONS, defaultValue: "bank_debit" },
-      { key: "fixedAssetType", labelKey: "fixedAssetEdit.assetType", type: "select", options: FIXED_ASSET_TYPE_OPTIONS, defaultValue: "property", condition: (f) => f.kind === "fixed_asset" },
+      { key: "fixedAssetType", labelKey: "fixedAssetEdit.assetType", type: "select", options: FIXED_ASSET_TYPE_OPTIONS, defaultValue: "property", condition: (f) => isFixedAssetAccountLike(f) },
       { key: "investProductType", labelKey: "settings.accounts.investmentAccountType", type: "select", options: INVEST_PRODUCT_OPTIONS, defaultValue: "fund", condition: (f) => f.kind === "investment" },
       { key: "fundUnitsDecimals", labelKey: "settings.accounts.fundUnitsDecimals", type: "text", defaultValue: "2", placeholderKey: "settings.accounts.defaultUnitsDecimals", condition: (f) => f.kind === "investment" && (f.investProductType ?? "fund") === "fund" },
       { key: "tradingCalendar", labelKey: "settings.accounts.tradingCalendar", type: "select", options: TRADING_CALENDAR_OPTIONS, defaultValue: "cn_fund", condition: (f) => supportsTradingCalendarForAccount(f.kind, f.investProductType ?? "fund") },
@@ -680,7 +682,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     if (accountKind === "loan") {
       return dataList.filter((item) => ["person", "organization"].includes(item.type ?? ""));
     }
-    return dataList.filter((item) => ["bank", "insurance", "brokerage", "payment", "ewallet", "other"].includes(item.type ?? ""));
+    return dataList.filter((item) => ["bank", "insurance", "brokerage", "fund_company", "payment", "ewallet", "other"].includes(item.type ?? ""));
   }
 
   function institutionTypeMatchesCurrentAccount(type?: string) {
@@ -691,9 +693,9 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
       return isStockAccountInstitutionType(type);
     }
     if (accountKind === "loan") {
-      return ["person", "organization", "bank", "insurance", "brokerage", "payment", "ewallet", "debt", "other"].includes(type ?? "");
+      return ["person", "organization", "bank", "insurance", "brokerage", "fund_company", "payment", "ewallet", "debt", "other"].includes(type ?? "");
     }
-    return ["bank", "insurance", "brokerage", "payment", "ewallet", "other"].includes(type ?? "");
+    return ["bank", "insurance", "brokerage", "fund_company", "payment", "ewallet", "other"].includes(type ?? "");
   }
 
   function nestedInstitutionDefaultType() {
@@ -701,6 +703,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     const accountKind = form.kind || form.type || extraFields?.kind || defaultType;
     const investProductType = form.investProductType || extraFields?.investProductType || "fund";
     if (isStockInvestmentAccount(accountKind, investProductType)) return "brokerage";
+    if (accountKind === "investment" && (investProductType === "fund" || investProductType === "money")) return "fund_company";
     if (accountKind === "loan") return "person";
     return undefined;
   }

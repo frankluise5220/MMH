@@ -37,6 +37,10 @@ import {
 import { normalizeCurrency } from "@/lib/currency";
 import { normalizeFixedAssetType } from "@/lib/fixed-asset";
 import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
+import {
+  ensureInitialCreditCardBillingDayRules,
+  recordCreditCardBillingDayChange,
+} from "@/lib/server/credit-card-billing-day-rules";
 
 export const runtime = "nodejs";
 
@@ -67,6 +71,17 @@ function parseDateOnly(raw: unknown) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
   const date = new Date(`${value}T00:00:00.000Z`);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function groupCreditCardIdsByBillingDay(rows: Array<{ id: string; billingDay: number | null }>) {
+  const groups = new Map<number, string[]>();
+  for (const row of rows) {
+    if (row.billingDay == null) continue;
+    const ids = groups.get(row.billingDay) ?? [];
+    ids.push(row.id);
+    groups.set(row.billingDay, ids);
+  }
+  return groups;
 }
 
 function corsHeaders() {
@@ -226,6 +241,13 @@ export async function POST(req: NextRequest) {
         });
       }
 
+      if (createdAccount.kind === AccountKind.bank_credit) {
+        await ensureInitialCreditCardBillingDayRules(tx, {
+          accountIds: [createdAccount.id],
+          billingDay: createdAccount.billingDay,
+        });
+      }
+
       if (createdAccount.kind === AccountKind.investment && createdAccount.investProductType === "stock") {
         brokerageCashAccount = await ensureBrokerageCashAccountForStockAccount(tx, createdAccount);
       }
@@ -249,7 +271,14 @@ export async function POST(req: NextRequest) {
             select: { id: true },
           })
         : [{ id: account.id }];
-      await invalidateCreditCardCycleCacheForAccountIds(institutionCards.map((item) => item.id), { deleteManualCycles: true });
+      const institutionCardIds = institutionCards.map((item) => item.id);
+      await prisma.$transaction(async (tx) => {
+        await ensureInitialCreditCardBillingDayRules(tx, {
+          accountIds: institutionCardIds,
+          billingDay: account.billingDay,
+        });
+      });
+      await invalidateCreditCardCycleCacheForAccountIds(institutionCardIds, { deleteManualCycles: true });
     }
     revalidateAfterSettingsChange();
     // Client-side handles page refresh
@@ -401,6 +430,18 @@ export async function PUT(req: NextRequest) {
         : null;
     let affectedCreditAccountIds: string[] = [];
     if (updated.kind === "bank_credit") {
+      const institutionCardsBeforeSync = updated.institutionId
+        ? await prisma.account.findMany({
+            where: { householdId: updated.householdId, institutionId: updated.institutionId, kind: "bank_credit" },
+            select: { id: true, billingDay: true },
+          })
+        : [{ id: updated.id, billingDay: updated.billingDay }];
+      const priorBillingDayRows = institutionCardsBeforeSync.map((account) => ({
+        id: account.id,
+        billingDay: account.id === existing.id && existing.kind === "bank_credit"
+          ? existing.billingDay
+          : account.billingDay,
+      }));
       await syncCreditCardInstitutionSettings(prisma, {
         householdId: updated.householdId,
         institutionId: updated.institutionId,
@@ -415,6 +456,17 @@ export async function PUT(req: NextRequest) {
           })
         : [{ id: updated.id }];
       affectedCreditAccountIds = institutionCards.map((item) => item.id);
+      await prisma.$transaction(async (tx) => {
+        for (const [billingDay, accountIds] of groupCreditCardIdsByBillingDay(priorBillingDayRows)) {
+          await ensureInitialCreditCardBillingDayRules(tx, { accountIds, billingDay });
+        }
+        if (body.billingDay !== undefined && data.billingDay !== existing.billingDay && updated.billingDay != null) {
+          await recordCreditCardBillingDayChange(tx, {
+            accountIds: affectedCreditAccountIds,
+            billingDay: updated.billingDay,
+          });
+        }
+      });
       await invalidateCreditCardCycleCacheForAccountIds(
         affectedCreditAccountIds,
         { deleteManualCycles: false },

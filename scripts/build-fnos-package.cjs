@@ -1004,15 +1004,15 @@ start_app () {
     echo "Next standalone server is missing: $SERVER_DIR/server.js" >&2
     exit 1
   fi
-  if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" >/dev/null 2>&1; then
-    exit 0
-  fi
   export NODE_ENV=production
   export HOSTNAME=0.0.0.0
   export MMH_DEPLOY_TARGET=fnos
   export DATABASE_URL="file:$DATA_DEST/mmh.db"
   export PRISMA_SCHEMA_PATH="$SERVER_DIR/prisma/schema.native.prisma"
   (cd "$SERVER_DIR" && "$NODE_BIN" "$SERVER_DIR/scripts/init-sqlite.cjs") >>"$LOG_FILE" 2>&1 || exit 1
+  if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" >/dev/null 2>&1; then
+    exit 0
+  fi
   nohup "$NODE_BIN" "$SERVER_DIR/server.js" >>"$LOG_FILE" 2>&1 &
   echo "$!" > "$PID_FILE"
 }
@@ -1302,6 +1302,35 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    version: "20260826_add_stock_latest_price_date",
+    description: "Add StockHolding.latestPriceDate for latest stock valuation timestamps",
+    apply(db) {
+      if (tableExists(db, "stock_holdings")) {
+        addColumnIfMissing(db, "stock_holdings", "latestPriceDate", "DATETIME");
+      }
+    },
+  },
+  {
+    version: "20260828_add_fixed_asset_type",
+    description: "Add fixed asset subtype fields to accounts and property assets",
+    apply(db) {
+      if (tableExists(db, "Account")) {
+        addColumnIfMissing(db, "Account", "fixedAssetType", "TEXT");
+      }
+      if (tableExists(db, "property_assets")) {
+        addColumnIfMissing(db, "property_assets", "assetType", "TEXT NOT NULL DEFAULT 'property'");
+        addColumnIfMissing(db, "property_assets", "attributes", "TEXT");
+      }
+    },
+  },
+  {
+    version: "20260829_add_credit_card_billing_day",
+    description: "Add credit-card billing-day history table",
+    apply(db) {
+      createCreditCardBillingDayTable(db);
+    },
+  },
 ];
 
 function databasePathFromUrl(value) {
@@ -1352,6 +1381,17 @@ function addCategorySortOrder(db) {
   }
 
   db.exec("CREATE INDEX IF NOT EXISTS \\\"Category_householdId_type_parentId_sortOrder_idx\\\" ON \\\"Category\\\"(\\\"householdId\\\", \\\"type\\\", \\\"parentId\\\", \\\"sortOrder\\\")");
+}
+
+function createCreditCardBillingDayTable(db) {
+  db.exec([
+    "CREATE TABLE IF NOT EXISTS \\\"CreditCardBillingDay\\\" (\\\"id\\\" TEXT NOT NULL PRIMARY KEY, \\\"accountId\\\" TEXT NOT NULL, \\\"effectiveDate\\\" DATETIME NOT NULL, \\\"billingDay\\\" INTEGER NOT NULL, \\\"createdAt\\\" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, \\\"updatedAt\\\" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT \\\"CreditCardBillingDay_accountId_fkey\\\" FOREIGN KEY (\\\"accountId\\\") REFERENCES \\\"Account\\\"(\\\"id\\\") ON DELETE CASCADE ON UPDATE CASCADE)",
+    "CREATE INDEX IF NOT EXISTS \\\"CreditCardBillingDay_accountId_idx\\\" ON \\\"CreditCardBillingDay\\\"(\\\"accountId\\\")",
+    "CREATE UNIQUE INDEX IF NOT EXISTS \\\"CreditCardBillingDay_accountId_effectiveDate_key\\\" ON \\\"CreditCardBillingDay\\\"(\\\"accountId\\\", \\\"effectiveDate\\\")",
+  ].join(";"));
+  addColumnIfMissing(db, "CreditCardBillingDay", "updatedAt", "DATETIME NOT NULL DEFAULT '1970-01-01 00:00:00'");
+  if (!tableExists(db, "Account")) return;
+  db.exec("INSERT OR IGNORE INTO \\\"CreditCardBillingDay\\\" (\\\"id\\\", \\\"accountId\\\", \\\"effectiveDate\\\", \\\"billingDay\\\") SELECT 'ccbd_' || \\\"id\\\" || '_19000101', \\\"id\\\", '1900-01-01 00:00:00', \\\"billingDay\\\" FROM \\\"Account\\\" WHERE \\\"kind\\\" = 'bank_credit' AND \\\"billingDay\\\" IS NOT NULL");
 }
 
 function splitSqlStatements(sql) {
@@ -1809,6 +1849,7 @@ fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
 const db = new Database(dbPath);
 try {
+  db.pragma("busy_timeout = 10000");
   const existing = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1").get();
   if (!existing) {
     db.exec(fs.readFileSync(sqlPath, "utf8"));

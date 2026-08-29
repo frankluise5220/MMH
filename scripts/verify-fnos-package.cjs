@@ -251,6 +251,8 @@ const publicAssetCopyIndex = buildScript.indexOf("copyFnosPublicAssets(publicDir
 const persistedPortFileIndex = buildScript.indexOf('if [ -f "$port_file" ]; then');
 const persistedEnvPortIndex = buildScript.indexOf('env_port="$(read_env_value PORT');
 const wizardPortIndex = buildScript.indexOf('if [ -n "\\${wizard_port:-}" ]; then');
+const fnosInitSqliteIndex = buildScript.indexOf('(cd "$SERVER_DIR" && "$NODE_BIN" "$SERVER_DIR/scripts/init-sqlite.cjs")');
+const fnosPidCheckIndex = buildScript.indexOf('if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")"');
 
 expect(/provider = "sqlite"/.test(schemaScript), "Native schema generator must switch datasource provider to sqlite.");
 expect(/@db\\\./.test(schemaScript), "Native schema generator must strip PostgreSQL native column annotations.");
@@ -287,6 +289,8 @@ expect(/createTableColumnDefinitionsFromStatement/.test(buildScript) && /SQLite 
 expect(/canAddColumnFromCreateTableDefinition/.test(buildScript) && /SQLite schema column skipped from native-init.sql because it cannot be safely added/.test(buildScript), "fnOS SQLite column backfill must skip unsafe column transforms instead of guessing destructive migrations.");
 expect(/CREATE INDEX IF NOT EXISTS/.test(buildScript) && /createIndexStatementIfMissing/.test(buildScript), "fnOS SQLite schema backfill must make native-init.sql indexes idempotent for existing databases.");
 expect(/indexColumnsExist/.test(buildScript) && /SQLite schema index skipped from native-init.sql/.test(buildScript), "fnOS SQLite schema backfill must skip incompatible indexes instead of failing existing databases.");
+expect(/busy_timeout = 10000/.test(buildScript), "fnOS SQLite init must wait briefly for database locks during package upgrades.");
+expect(fnosInitSqliteIndex !== -1 && fnosPidCheckIndex !== -1 && fnosInitSqliteIndex < fnosPidCheckIndex, "fnOS start must run SQLite init before returning for an already-running process.");
 expect(/startsWith\("file:"\)/.test(scheduledTaskLock) && /if \(isSqliteDatabaseUrl\(\)\) return;/.test(scheduledTaskLock) && /pg_advisory_xact_lock/.test(scheduledTaskLock) && /catch \(error\)/.test(scheduledTaskLock), "Scheduled-task locks must skip PostgreSQL advisory-lock SQL on fnOS SQLite with defense-in-depth try-catch.");
 expect(/20260812_account_note/.test(buildScript) && /addColumnIfMissing\(db, "Account", "note", "TEXT"\)/.test(buildScript), "fnOS SQLite migrations must add Account.note to existing databases without rebuilding tables.");
 expect(/20260812_user_session_days/.test(buildScript) && /addColumnIfMissing\(db, "UserSettings", "sessionDays", "INTEGER NOT NULL DEFAULT 30"\)/.test(buildScript), "fnOS SQLite migrations must add UserSettings.sessionDays to existing databases before restore writes user settings.");
@@ -332,6 +336,9 @@ expect(/Category_householdId_type_parentId_sortOrder_idx/.test(buildScript), "fn
 
 expect(/20260820_add_ai_model_api_mode/.test(buildScript) && /addColumnIfMissing\(db, "AiModel", "apiMode", "TEXT NOT NULL DEFAULT 'chat'"\)/.test(buildScript), "fnOS SQLite migrations must add AiModel.apiMode for existing databases.");
 expect(/20260823_add_entry_origin/.test(buildScript) && /entryOrigin/.test(buildScript) && /TEXT NOT NULL DEFAULT 'manual'/.test(buildScript), "fnOS SQLite migrations must add transaction entryOrigin fields for existing databases.");
+expect(/20260826_add_stock_latest_price_date/.test(buildScript) && /addColumnIfMissing\(db, "stock_holdings", "latestPriceDate", "DATETIME"\)/.test(buildScript), "fnOS SQLite migrations must add StockHolding.latestPriceDate for existing databases.");
+expect(/20260828_add_fixed_asset_type/.test(buildScript) && /addColumnIfMissing\(db, "Account", "fixedAssetType", "TEXT"\)/.test(buildScript) && /addColumnIfMissing\(db, "property_assets", "assetType", "TEXT NOT NULL DEFAULT 'property'"\)/.test(buildScript), "fnOS SQLite migrations must add fixed asset type fields for existing databases.");
+expect(/20260829_add_credit_card_billing_day/.test(buildScript) && /createCreditCardBillingDayTable\(db\)/.test(buildScript) && /CreditCardBillingDay_accountId_effectiveDate_key/.test(buildScript) && /CreditCardBillingDay/.test(buildScript) && /updatedAt/.test(buildScript), "fnOS SQLite migrations must create, index, and timestamp CreditCardBillingDay for existing databases.");
 for (const tableName of [
   "transactions",
   "fund_transactions",
