@@ -232,10 +232,14 @@ export function buildImportAccountCandidates(account: ImportAccountMatchSource) 
     for (const ownerName of ownerNames) {
       candidates.add(`${ownerName}${name}`);
       candidates.add(`${ownerName}·${name}`);
+      candidates.add(`${name}(${ownerName})`);
+      candidates.add(`${name}·${ownerName}`);
       if (last4) {
         candidates.add(`${ownerName}${name}${last4}`);
         candidates.add(`${ownerName}${name}(${last4})`);
         candidates.add(`${ownerName}·${name}·${last4}`);
+        candidates.add(`${name}(${ownerName})${last4}`);
+        candidates.add(`${name}·${ownerName}·${last4}`);
       }
     }
     for (const institutionName of institutionNames) {
@@ -259,6 +263,10 @@ export function buildImportAccountCandidates(account: ImportAccountMatchSource) 
         if (last4) candidates.add(`${expandedInstitution}${name}(${last4})`);
       }
       for (const ownerName of ownerNames) {
+        candidates.add(`${institutionName}${name}(${ownerName})`);
+        candidates.add(`${institutionName}·${name}(${ownerName})`);
+        candidates.add(`${institutionName}${name}·${ownerName}`);
+        candidates.add(`${institutionName}·${name}·${ownerName}`);
         candidates.add(`${ownerName}${institutionName}${name}`);
         candidates.add(`${ownerName}·${institutionName}·${name}`);
         candidates.add(`${ownerName}${institutionName}·${name}`);
@@ -273,6 +281,8 @@ export function buildImportAccountCandidates(account: ImportAccountMatchSource) 
           candidates.add(`${ownerName}${institutionName}${name}${last4}`);
           candidates.add(`${ownerName}${institutionName}${name}(${last4})`);
           candidates.add(`${ownerName}·${institutionName}·${name}·${last4}`);
+          candidates.add(`${institutionName}${name}(${ownerName})${last4}`);
+          candidates.add(`${institutionName}·${name}(${ownerName})·${last4}`);
           for (const kindName of kindNames) {
             candidates.add(`${ownerName}${institutionName}${name}${last4}${kindName}`);
             candidates.add(`${ownerName}·${institutionName}·${name}·${last4}·${kindName}`);

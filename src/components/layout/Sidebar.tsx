@@ -126,6 +126,7 @@ async function getSidebarData() {
       institutionType: account.Institution?.type ?? null,
       counterpartyId: account.counterpartyId ?? null,
       investProductType: account.investProductType || undefined,
+      fixedAssetType: account.fixedAssetType ?? null,
     };
   });
   const conversion = await convertCurrencyAmounts({

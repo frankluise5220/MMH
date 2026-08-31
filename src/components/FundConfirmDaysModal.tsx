@@ -27,6 +27,17 @@ function normalizeDaysValue(value: string) {
   return Math.max(0, Math.trunc(parsed));
 }
 
+function defaultConfirmDayRow(fundCode: string, fundName: string | null | undefined): ConfirmDayRow {
+  return {
+    fundCode,
+    fundName: fundName ?? null,
+    days: 1,
+    arrivalDays: 2,
+    redeemCostDays: 1,
+    effectiveDate: null,
+  };
+}
+
 /**
  * Editable fund confirm-day rule list. Renders the table body only (no modal
  * overlay), so it can be embedded into an account edit dialog or shown inside
@@ -37,6 +48,7 @@ export function FundConfirmDaysPanel({
   initialFundCode,
   fundName,
   onSaved,
+  preloadedRows,
   compact = false,
 }: {
   accountId: string;
@@ -44,7 +56,9 @@ export function FundConfirmDaysPanel({
   initialFundCode?: string | null;
   /** Display name for the single-fund mode. */
   fundName?: string | null;
-  onSaved?: () => void;
+  onSaved?: (result: { fundCode: string; rows: ConfirmDayRow[] }) => void;
+  /** Preloaded account rules used by the fund profile dialog to avoid refetching on navigation. */
+  preloadedRows?: ConfirmDayRow[];
   /** Compact variant for embedding inside a dialog. */
   compact?: boolean;
 }) {
@@ -64,6 +78,12 @@ export function FundConfirmDaysPanel({
     setError("");
     try {
       if (singleFundMode && initialFundCode) {
+        if (preloadedRows) {
+          const row = preloadedRows.find((item) => item.fundCode === initialFundCode);
+          setRows([row ? { ...row, fundName: row.fundName ?? fundName ?? null } : defaultConfirmDayRow(initialFundCode, fundName)]);
+          setDirty(false);
+          return;
+        }
         const url = `/api/v1/fund/confirm-days?accountId=${encodeURIComponent(accountId)}&fundCode=${encodeURIComponent(initialFundCode)}`;
         const response = await fetch(url, { cache: "no-store" });
         const data = (await response.json().catch(() => null)) as {
@@ -105,7 +125,7 @@ export function FundConfirmDaysPanel({
     } finally {
       setLoading(false);
     }
-  }, [accountId, initialFundCode, singleFundMode, fundName, t]);
+  }, [accountId, initialFundCode, singleFundMode, fundName, preloadedRows, t]);
 
   useEffect(() => {
     setNewFundCode("");
@@ -173,13 +193,13 @@ export function FundConfirmDaysPanel({
       const data = (await response.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
       if (!data?.ok) throw new Error(data?.error || t("fundConfirmDays.saveFailed"));
       setDirty(false);
-      onSaved?.();
+      onSaved?.({ fundCode: initialFundCode ?? rows[0]?.fundCode ?? "", rows });
     } catch (e) {
       setError(e instanceof Error ? e.message : t("fundConfirmDays.saveFailed"));
     } finally {
       setSaving(false);
     }
-  }, [accountId, buildPayloadRows, onSaved, t]);
+  }, [accountId, buildPayloadRows, initialFundCode, onSaved, rows, t]);
 
   return (
     <div className={compact ? "flex h-full min-h-0 flex-col" : "flex h-full min-h-0 flex-1 flex-col"}>

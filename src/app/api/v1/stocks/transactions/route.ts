@@ -4,11 +4,13 @@ import { ENTRY_ORIGIN_EXCEL_IMPORT, ENTRY_ORIGIN_MANUAL, TRANSACTION_SOURCE_MANU
 import { normalizeCurrency } from "@/lib/currency";
 import { formatDateUtc, toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
+import { logger } from "@/lib/logger";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { ensureBrokerageCashAccountForStockAccount } from "@/lib/server/brokerage-cash-account";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
+import { loadCachedStockTransactions, serializeStockTransaction } from "@/lib/server/stock-transactions";
 import { ensureStockTransactionCashFlow } from "@/lib/stock/cashFlow";
 import { calculateStockTransactionFeesByDate } from "@/lib/stock/feeRule";
 import { recalcStockPositions } from "@/lib/stock/recalcPosition";
@@ -50,6 +52,86 @@ function parseOptionalNonNegativeNumber(value: unknown) {
   return parseNonNegativeNumber(value);
 }
 
+function parseDeleteIds(raw: string | null) {
+  return Array.from(new Set((raw ?? "").split(",").map((item) => item.trim()).filter(Boolean)));
+}
+
+type StockTransactionDeleteRow = {
+  id: string;
+  stockAccountId: string;
+  cashAccountId: string | null;
+  cashEntryId: string | null;
+  securityId: string | null;
+  EntryBusinessLink: Array<{ id: string }>;
+};
+
+async function deleteStockTransactionRows(householdId: string, rows: StockTransactionDeleteRow[]) {
+  const deletedAt = new Date();
+  const deletedIds = rows.map((row) => row.id);
+  const cashEntryIds = Array.from(new Set(rows.map((row) => row.cashEntryId).filter((id): id is string => Boolean(id))));
+  const linkIds = Array.from(new Set(rows.flatMap((row) => row.EntryBusinessLink.map((link) => link.id))));
+  const stockAccountIds = new Set<string>();
+  const cashAccountIds = new Set<string>();
+  const stockRecalcMap = new Map<string, { full: boolean; securityIds: Set<string> }>();
+
+  for (const row of rows) {
+    stockAccountIds.add(row.stockAccountId);
+    if (row.cashAccountId) cashAccountIds.add(row.cashAccountId);
+    const info = stockRecalcMap.get(row.stockAccountId) ?? { full: false, securityIds: new Set<string>() };
+    if (!row.securityId) info.full = true;
+    else if (!info.full) info.securityIds.add(row.securityId);
+    stockRecalcMap.set(row.stockAccountId, info);
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.stockTransaction.updateMany({
+      where: { id: { in: deletedIds }, householdId },
+      data: { deletedAt },
+    });
+    if (cashEntryIds.length > 0) {
+      await tx.txRecord.updateMany({
+        where: { id: { in: cashEntryIds }, householdId },
+        data: { deletedAt },
+      });
+    }
+    await tx.entryBusinessLink.updateMany({
+      where: {
+        householdId,
+        deletedAt: null,
+        OR: [
+          { stockTransactionId: { in: deletedIds } },
+          ...(cashEntryIds.length > 0 ? [{ cashEntryId: { in: cashEntryIds } }] : []),
+        ],
+      },
+      data: { deletedAt },
+    });
+  });
+
+  for (const [accountId, info] of stockRecalcMap) {
+    await recalcStockPositions(accountId, info.full ? undefined : Array.from(info.securityIds)).catch(
+      logger.catchLog("stock-position-recalc-failed", "route.ts"),
+    );
+  }
+
+  const balanceAccountIds = new Set([...stockAccountIds, ...cashAccountIds]);
+  for (const accountId of balanceAccountIds) {
+    await recalcAndSaveAccountBalance(accountId).catch(logger.catchLog("account-balance-recalc-failed", "route.ts"));
+  }
+
+  await invalidateCreditCardCycleCacheForAccountIds(balanceAccountIds).catch(
+    logger.catchLog("credit-card-cycle-cache-invalidation-failed", "route.ts"),
+  );
+  revalidateAfterInvestChange();
+
+  return {
+    deletedIds,
+    cashEntryIds,
+    linkIds,
+    stockAccountIds: Array.from(stockAccountIds),
+    cashAccountIds: Array.from(cashAccountIds),
+  };
+}
+
 function decimalString(value: number | null) {
   return value == null ? null : String(value);
 }
@@ -87,78 +169,6 @@ async function findCashAccount(accountId: string | null, householdId: string, le
   return account;
 }
 
-function serializeStockTransaction(row: {
-  id: string;
-  stockAccountId: string;
-  cashAccountId?: string | null;
-  cashEntryId?: string | null;
-  securityId?: string | null;
-  market: string;
-  stockCode: string;
-  stockName?: string | null;
-  action: StockTransactionAction;
-  source?: string | null;
-  tradeDate: Date;
-  settleDate?: Date | null;
-  grossAmount: unknown;
-  netAmount?: unknown | null;
-  quantity?: unknown | null;
-  price?: unknown | null;
-  fee?: unknown | null;
-  commission?: unknown | null;
-  stampTax?: unknown | null;
-  transferFee?: unknown | null;
-  exchangeFee?: unknown | null;
-  regulatoryFee?: unknown | null;
-  otherFee?: unknown | null;
-  realizedProfit?: unknown | null;
-  externalLinkId?: string | null;
-  brokerTradeId?: string | null;
-  note?: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-  StockAccount?: { name: string; currency?: string | null } | null;
-  CashAccount?: { name: string; currency?: string | null } | null;
-  EntryBusinessLink?: Array<{ id: string; cashEntryId?: string | null }> | null;
-}) {
-  const linkIds = (row.EntryBusinessLink ?? []).map((link) => link.id);
-  return {
-    id: row.id,
-    linkId: linkIds[0] ?? null,
-    linkIds,
-    cashEntryId: row.cashEntryId ?? null,
-    stockAccountId: row.stockAccountId,
-    stockAccountName: row.StockAccount?.name ?? "",
-    cashAccountId: row.cashAccountId ?? null,
-    cashAccountName: row.CashAccount?.name ?? null,
-    securityId: row.securityId ?? null,
-    market: row.market,
-    stockCode: row.stockCode,
-    stockName: row.stockName ?? null,
-    action: row.action,
-    source: row.source ?? "manual",
-    tradeDate: formatDateUtc(row.tradeDate),
-    settleDate: row.settleDate ? formatDateUtc(row.settleDate) : null,
-    grossAmount: toNumber(row.grossAmount),
-    netAmount: row.netAmount == null ? null : toNumber(row.netAmount),
-    quantity: row.quantity == null ? null : toNumber(row.quantity),
-    price: row.price == null ? null : toNumber(row.price),
-    fee: row.fee == null ? null : toNumber(row.fee),
-    commission: row.commission == null ? null : toNumber(row.commission),
-    stampTax: row.stampTax == null ? null : toNumber(row.stampTax),
-    transferFee: row.transferFee == null ? null : toNumber(row.transferFee),
-    exchangeFee: row.exchangeFee == null ? null : toNumber(row.exchangeFee),
-    regulatoryFee: row.regulatoryFee == null ? null : toNumber(row.regulatoryFee),
-    otherFee: row.otherFee == null ? null : toNumber(row.otherFee),
-    realizedProfit: row.realizedProfit == null ? null : toNumber(row.realizedProfit),
-    externalLinkId: row.externalLinkId ?? null,
-    brokerTradeId: row.brokerTradeId ?? null,
-    note: row.note ?? null,
-    createdAt: row.createdAt.toISOString(),
-    updatedAt: row.updatedAt.toISOString(),
-  };
-}
-
 /**
  * GET /api/v1/stocks/transactions
  * Lists stock transactions from the independent stock domain.
@@ -185,29 +195,17 @@ export async function GET(req: NextRequest) {
 
     if (accountId) await assertStockAccount(accountId, householdId);
 
-    const rows = await prisma.stockTransaction.findMany({
-      where: {
-        householdId,
-        deletedAt: null,
-        ...(accountId ? { stockAccountId: accountId } : {}),
-        ...(securityId ? { securityId } : {}),
-        ...(marketRaw ? { market: normalizeStockMarket(marketRaw) } : {}),
-        ...(stockCodeRaw ? { stockCode: normalizeStockCode(stockCodeRaw) } : {}),
-      },
-      include: {
-        StockAccount: { select: { name: true, currency: true } },
-        CashAccount: { select: { name: true, currency: true } },
-        EntryBusinessLink: {
-          where: { deletedAt: null },
-          select: { id: true, cashEntryId: true },
-        },
-      },
-      orderBy: [{ tradeDate: "desc" }, { createdAt: "desc" }, { id: "desc" }],
-      take: limit,
+    const rows = await loadCachedStockTransactions({
+      householdId,
+      accountId,
+      securityId,
+      market: marketRaw,
+      stockCode: stockCodeRaw,
+      limit,
     });
 
     return NextResponse.json(
-      { ok: true, data: { transactions: rows.map(serializeStockTransaction) } },
+      { ok: true, data: { transactions: rows } },
       { headers: corsHeaders() },
     );
   } catch (error) {
@@ -635,30 +633,36 @@ export async function PATCH(req: NextRequest) {
 
 /**
  * DELETE /api/v1/stocks/transactions
- * Soft-deletes a stock transaction by stock transaction id, cash entry id, or linkId.
+ * Soft-deletes one or more stock transactions by stock transaction id, cash entry id, linkId, or ids.
  *
  * Query:
  * - id?: stock transaction id or cashEntryId
+ * - ids?: comma-separated stock transaction ids for batch delete
  * - linkId?: EntryBusinessLink id
  *
  * Response:
- * - { ok: true, data: { id, cashEntryId, linkIds } }
+ * - single delete: { ok: true, data: { id, cashEntryId, linkIds } }
+ * - batch delete: { ok: true, data: { deletedIds, cashEntryIds, linkIds, count } }
  */
 export async function DELETE(req: NextRequest) {
   try {
     const { householdId } = await getApiHouseholdScope(req);
     const id = req.nextUrl.searchParams.get("id")?.trim() || "";
+    const ids = parseDeleteIds(req.nextUrl.searchParams.get("ids"));
     const linkId = req.nextUrl.searchParams.get("linkId")?.trim() || "";
-    if (!id && !linkId) {
+    const targetIds = ids.length > 0 ? ids : id ? [id] : [];
+    const isBatchDelete = ids.length > 0;
+
+    if (targetIds.length === 0 && !linkId) {
       return NextResponse.json({ ok: false, code: "MISSING_ID_OR_LINK_ID", error: "缺少 id 或 linkId" }, { status: 400, headers: corsHeaders() });
     }
 
-    const row = await prisma.stockTransaction.findFirst({
+    const rows = await prisma.stockTransaction.findMany({
       where: {
         householdId,
         deletedAt: null,
         OR: [
-          ...(id ? [{ id }, { cashEntryId: id }] : []),
+          ...(targetIds.length > 0 ? [{ id: { in: targetIds } }, { cashEntryId: { in: targetIds } }] : []),
           ...(linkId ? [{ EntryBusinessLink: { some: { id: linkId, deletedAt: null } } }] : []),
         ],
       },
@@ -666,33 +670,24 @@ export async function DELETE(req: NextRequest) {
         EntryBusinessLink: { where: { deletedAt: null }, select: { id: true } },
       },
     });
-    if (!row) return NextResponse.json({ ok: false, code: "TRANSACTION_NOT_FOUND", error: "股票交易不存在" }, { status: 404, headers: corsHeaders() });
+    if (rows.length === 0) return NextResponse.json({ ok: false, code: "TRANSACTION_NOT_FOUND", error: "股票交易不存在" }, { status: 404, headers: corsHeaders() });
 
-    const deletedAt = new Date();
-    await prisma.$transaction(async (tx) => {
-      await tx.stockTransaction.update({ where: { id: row.id }, data: { deletedAt } });
-      if (row.cashEntryId) {
-        await tx.txRecord.updateMany({ where: { id: row.cashEntryId, householdId }, data: { deletedAt } });
-      }
-      await tx.entryBusinessLink.updateMany({
-        where: {
-          householdId,
-          deletedAt: null,
-          OR: [
-            { stockTransactionId: row.id },
-            ...(row.cashEntryId ? [{ cashEntryId: row.cashEntryId }] : []),
-          ],
+    const summary = await deleteStockTransactionRows(householdId, rows);
+    const shouldReturnBatch = isBatchDelete || rows.length > 1;
+
+    if (shouldReturnBatch) {
+      return NextResponse.json({
+        ok: true,
+        data: {
+          deletedIds: summary.deletedIds,
+          cashEntryIds: summary.cashEntryIds,
+          linkIds: summary.linkIds,
+          count: summary.deletedIds.length,
         },
-        data: { deletedAt },
-      });
-    });
+      }, { headers: corsHeaders() });
+    }
 
-    await recalcStockPositions(row.stockAccountId, row.securityId ? [row.securityId] : undefined);
-    await recalcAndSaveAccountBalance(row.stockAccountId).catch(() => undefined);
-    if (row.cashAccountId) await recalcAndSaveAccountBalance(row.cashAccountId).catch(() => undefined);
-    await invalidateCreditCardCycleCacheForAccountIds(new Set([row.stockAccountId, row.cashAccountId].filter((item): item is string => Boolean(item)))).catch(() => undefined);
-    revalidateAfterInvestChange();
-
+    const row = rows[0];
     return NextResponse.json({
       ok: true,
       data: {

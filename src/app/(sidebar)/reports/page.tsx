@@ -12,8 +12,11 @@ import { ReportTransactionEditHost } from "@/components/ReportTransactionEditHos
 import { ReportSelector } from "@/components/ReportSelector";
 import { StatisticsFilterPanel } from "@/components/StatisticsFilterPanel";
 import { CASH_INSTITUTION_ID } from "@/components/AccountScopeFilter";
+import { splitInstitutionSelection } from "@/lib/fund-company-filter";
 import type { ReportItem } from "@/components/ReportSelector";
 import { StockHoldingReport } from "@/components/StockHoldingReport";
+import { FundHoldingReport, type FundGroupMode } from "@/components/FundHoldingReport";
+import { FundGroupModeFilter } from "@/components/FundGroupModeFilter";
 import { buildAccountDisplayOption, buildGroupedAccountOptions, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { kindLabel } from "@/lib/account-kinds";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
@@ -27,7 +30,7 @@ import {
   type IncomeExpenseReportRow,
 } from "@/lib/server/income-expense-report";
 import { loadInvestmentProfitReport, type InvestmentProfitPeriod } from "@/lib/server/investment-profit-report";
-import { loadCommonData, loadCachedStockHoldingReport } from "@/lib/server/cached-data";
+import { loadCommonData, loadCachedStockHoldingReport, loadCachedFundHoldingReport } from "@/lib/server/cached-data";
 import { stockMarketLabel } from "@/lib/stock/market";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -79,12 +82,13 @@ function rowCsv(section: "income" | "expense", row: IncomeExpenseReportRow, t: (
   ];
 }
 
-type ReportType = "income-expense" | "investment-profit" | "stock-holdings";
+type ReportType = "income-expense" | "investment-profit" | "stock-holdings" | "fund-holdings";
 
 function reportMenuItems(
   currentType: ReportType,
   investmentHref: string,
   stockHref: string,
+  fundHref: string,
   statisticsHref: string,
   t: (key: string) => string,
 ): ReportItem[] {
@@ -92,6 +96,7 @@ function reportMenuItems(
     { value: "income-expense", label: t("reports.menu.incomeExpense"), href: "/reports" },
     { value: "investment-profit", label: t("reports.menu.investmentProfit"), href: investmentHref },
     { value: "stock-holdings", label: t("reports.menu.stockHoldings"), href: stockHref },
+    { value: "fund-holdings", label: t("reports.menu.fundHoldings"), href: fundHref },
     { value: "cash-statistics", label: t("reports.menu.cashStatisticsCharts"), href: statisticsHref },
   ];
 }
@@ -112,7 +117,7 @@ function buildReportHref(
     const normalizedScope = normalizeProfitScope(profitScope);
     if (normalizedScope !== PROFIT_SCOPE_ALL) query.set("profitScope", normalizedScope);
   }
-  if (reportType === "stock-holdings") {
+  if (reportType === "stock-holdings" || reportType === "fund-holdings") {
     query.set("report", reportType);
     const normalizedScope = normalizeProfitScope(profitScope);
     if (normalizedScope !== PROFIT_SCOPE_ALL) query.set("profitScope", normalizedScope);
@@ -166,7 +171,7 @@ export default async function ReportsPage({
   const language = await getServerDisplayLanguage();
   const now = new Date();
   const reportType: ReportType =
-    params.report === "investment-profit" || params.report === "stock-holdings"
+    params.report === "investment-profit" || params.report === "stock-holdings" || params.report === "fund-holdings"
       ? params.report
       : "income-expense";
   const profitPeriod: InvestmentProfitPeriod =
@@ -329,6 +334,12 @@ export default async function ReportsPage({
   const selectedInvestmentAccountIds = typeof params.investmentAccounts === "string"
     ? params.investmentAccounts.split(",").map((id) => id.trim()).filter(Boolean)
     : [];
+  // Fund companies ride inside `institutionIds` under the `__fundcompany__:` prefix
+  // (they are FundProfile names, not Institution rows). Split them out so the
+  // account scoping below only sees real institutions.
+  const { fundCompanies: selectedFundCompanies, institutionIds: selectedRealInstitutionIds } =
+    splitInstitutionSelection(selectedInstitutionIds);
+  const fundGroupMode: FundGroupMode = params.fundGroup === "company" ? "company" : "account";
   const scopedInvestmentAccountIds = (() => {
     const scopes: Array<string[]> = [];
     if (selectedInvestmentAccountIds.length) scopes.push(selectedInvestmentAccountIds);
@@ -351,6 +362,7 @@ export default async function ReportsPage({
     accountIds: selectedInvestmentAccountIds,
   });
   const currentStockHref = buildReportHref("stock-holdings", undefined, undefined, undefined, PROFIT_SCOPE_ALL);
+  const currentFundHref = buildReportHref("fund-holdings", undefined, undefined, undefined, PROFIT_SCOPE_ALL);
   const currentStatisticsHref = buildStatisticsHref(profitYear);
   const investmentFilterUsers = commonData.groups
     .filter((group) => investmentAccountRecords.some((account) => account.groupId === group.id))
@@ -405,7 +417,7 @@ export default async function ReportsPage({
             <div className="flex items-center gap-2">
               <ReportSelector
                 currentType="investment-profit"
-                items={reportMenuItems("investment-profit", currentInvestmentHref, currentStockHref, currentStatisticsHref, t)}
+                items={reportMenuItems("investment-profit", currentInvestmentHref, currentStockHref, currentFundHref, currentStatisticsHref, t)}
               />
             </div>
           </div>
@@ -571,7 +583,7 @@ export default async function ReportsPage({
             <div className="flex items-center gap-2">
               <ReportSelector
                 currentType="stock-holdings"
-                items={reportMenuItems("stock-holdings", currentInvestmentHref, currentStockHref, currentStatisticsHref, t)}
+                items={reportMenuItems("stock-holdings", currentInvestmentHref, currentStockHref, currentFundHref, currentStatisticsHref, t)}
               />
             </div>
           </div>
@@ -603,6 +615,169 @@ export default async function ReportsPage({
               rows={stockReport.rows}
               totals={stockReport.totals}
               isRedUp={colorScheme === "red_up_green_down"}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (reportType === "fund-holdings") {
+    const fundAccountRecords = investmentAccountRecords.filter(
+      (account) => account.investProductType === "fund" || account.investProductType === "money",
+    );
+    const fundScopedAccountIds = (() => {
+      const scopes: Array<string[]> = [];
+      if (selectedInvestmentAccountIds.length) scopes.push(selectedInvestmentAccountIds);
+      // Fund-company selections filter report rows, not accounts; they are applied
+      // by loadFundHoldingReport via `fundCompanies`.
+      if (selectedRealInstitutionIds.length) {
+        scopes.push(fundAccountRecords
+          .filter((account) => selectedRealInstitutionIds.includes(account.institutionId ?? CASH_INSTITUTION_ID))
+          .map((account) => account.id));
+      }
+      if (selectedUserIds.length) {
+        scopes.push(fundAccountRecords
+          .filter((account) => account.groupId && selectedUserIds.includes(account.groupId))
+          .map((account) => account.id));
+      }
+      if (scopes.length === 0) return null;
+      return fundAccountRecords.map((account) => account.id).filter((id) => scopes.every((ids) => ids.includes(id)));
+    })();
+    const fundReport = await loadCachedFundHoldingReport(
+      JSON.stringify(ctx.hidFilter),
+      JSON.stringify(fundScopedAccountIds ?? []),
+      JSON.stringify(selectedFundCompanies),
+    );
+    const fundFilterUsers = commonData.groups
+      .filter((group) => fundAccountRecords.some((account) => account.groupId === group.id))
+      .map((group) => ({ id: group.id, name: group.name }));
+    const fundFilterInstitutions = commonData.institutions
+      .filter((institution) => fundAccountRecords.some((account) => account.institutionId === institution.id))
+      .map((institution) => ({ id: institution.id, name: institution.name, type: institution.type ?? null }));
+    const fundFilterAccounts = fundAccountRecords.map((account) => ({
+      id: account.id,
+      name: account.name,
+      kind: account.kind,
+      label: allAccountDisplayById.get(account.id)?.fullLabel ?? allAccountDisplayById.get(account.id)?.label ?? account.name,
+      groupId: account.groupId,
+      Institution: account.Institution ? { id: account.Institution.id, name: account.Institution.name } : null,
+    }));
+    // Shared across the fund-holdings filter controls so switching one filter
+    // does not silently drop the others.
+    const fundBaseParams: Record<string, string> = { report: "fund-holdings", fundGroup: fundGroupMode };
+    for (const key of ["userIds", "institutionIds", "investmentAccounts"] as const) {
+      const value = params[key];
+      if (typeof value === "string" && value.trim()) fundBaseParams[key] = value.trim();
+    }
+    const fundExportHref = buildCsvDataUri([
+      [
+        t("reports.fund.code"),
+        t("reports.fund.name"),
+        t("reports.fund.account"),
+        t("reports.fund.institution"),
+        t("reports.fund.units"),
+        t("reports.fund.avgCost"),
+        t("reports.fund.nav"),
+        t("reports.fund.cost"),
+        t("reports.fund.marketValue"),
+        t("reports.fund.floatingPnL"),
+        t("reports.fund.floatingPnLRate"),
+        t("reports.fund.realizedProfit"),
+        t("reports.fund.totalProfit"),
+      ],
+      ...fundReport.rows.map((row) => [
+        row.fundCode,
+        row.fundName,
+        row.accountName,
+        row.institutionName,
+        String(row.units),
+        row.avgCost.toFixed(4),
+        row.nav == null ? "" : row.nav.toFixed(4),
+        row.cost.toFixed(2),
+        row.marketValue.toFixed(2),
+        row.floatingPnL.toFixed(2),
+        (row.floatingPnLRate * 100).toFixed(2),
+        row.historicalProfit.toFixed(2),
+        row.totalProfit.toFixed(2),
+      ]),
+      [],
+      [
+        t("reports.fund.code"),
+        t("reports.fund.name"),
+        t("reports.fund.account"),
+        t("reports.fund.institution"),
+        t("reports.fund.firstBuy"),
+        t("reports.fund.clearedDate"),
+        t("reports.fund.totalInvested"),
+        t("reports.fund.buyAmount"),
+        t("reports.fund.redeemAmount"),
+        t("reports.fund.realizedProfit"),
+        t("reports.fund.returnRate"),
+      ],
+      ...fundReport.clearedRows.map((row) => [
+        row.fundCode,
+        row.fundName,
+        row.accountName,
+        row.institutionName,
+        row.firstBuyDate,
+        row.clearedDate,
+        row.totalInvested.toFixed(2),
+        row.totalBuyAmount.toFixed(2),
+        row.totalRedeemAmount.toFixed(2),
+        row.historicalProfit.toFixed(2),
+        (row.returnRate * 100).toFixed(2),
+      ]),
+    ]);
+
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <header className="page-header">
+          <div className="flex h-12 items-center justify-between px-4">
+            <div className="text-sm page-title">{t("reports.menu.fundHoldings")}</div>
+            <div className="flex items-center gap-2">
+              <ReportSelector
+                currentType="fund-holdings"
+                items={reportMenuItems("fund-holdings", currentInvestmentHref, currentStockHref, currentFundHref, currentStatisticsHref, t)}
+              />
+            </div>
+          </div>
+        </header>
+
+        <div className="min-h-0 flex-1 overflow-hidden p-4 md:p-5">
+          <div className="flex h-full min-h-0 flex-col gap-3">
+            <div className="flex min-h-10 shrink-0 flex-wrap items-center gap-3 border-b border-slate-200 bg-white px-1 pb-2">
+              <FundGroupModeFilter
+                groupMode={fundGroupMode}
+                baseParams={fundBaseParams}
+              />
+              <InvestmentProfitFilterSelect
+                selectedUserIds={selectedUserIds}
+                selectedInstitutionIds={selectedInstitutionIds}
+                selectedAccountIds={selectedInvestmentAccountIds}
+                allUsers={fundFilterUsers}
+                allInstitutions={fundFilterInstitutions}
+                allAccounts={fundFilterAccounts}
+                fundCompanies={fundReport.fundCompanies}
+                clearedOnlyFundCompanies={fundReport.clearedOnlyFundCompanies}
+                baseParams={fundBaseParams}
+              />
+              <a
+                href={fundExportHref}
+                download={`${t("reports.filename.fundHoldings")}.csv`}
+                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-600 hover:bg-blue-50 hover:text-blue-700"
+                title={t("reports.exportFundTitle")}
+              >
+                <Download className="h-3.5 w-3.5" />
+                {t("reports.export")}
+              </a>
+            </div>
+            <FundHoldingReport
+              rows={fundReport.rows}
+              clearedRows={fundReport.clearedRows}
+              totals={fundReport.totals}
+              isRedUp={colorScheme === "red_up_green_down"}
+              groupMode={fundGroupMode}
             />
           </div>
         </div>
@@ -729,6 +904,7 @@ export default async function ReportsPage({
                 "income-expense",
                 buildReportHref("investment-profit", "day", currentYear, currentMonth),
                 buildReportHref("stock-holdings"),
+                buildReportHref("fund-holdings"),
                 buildStatisticsHref(currentYear),
                 t,
               )}

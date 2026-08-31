@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Pencil, RefreshCcw, Trash2 } from "lucide-react";
 
 import { formatCurrencyMoney, formatMoney, formatPercent } from "@/lib/format";
@@ -201,6 +201,7 @@ export function StockHoldingsPanel({
   const [detailPage, setDetailPage] = useState(1);
   const [detailPageSize, setDetailPageSize] = useState(20);
   const [detailTableRowCount, setDetailTableRowCount] = useState(0);
+  const transactionCacheRef = useRef(new Map<string, StockTransaction[]>());
 
   useEffect(() => {
     setPositions(initialPositions);
@@ -223,11 +224,21 @@ export function StockHoldingsPanel({
 
   const floatingPnL = marketValue - cost;
 
-  const loadTransactions = useCallback(async (position: StockPosition) => {
+  const loadTransactions = useCallback(async (position: StockPosition, force = false) => {
     const market = position.market ?? "";
     const stockCode = position.stockCode;
     if (!stockCode) return;
+    const cacheKey = `${accountId}:${position.securityId ?? `${market}:${stockCode}`}`;
     setSelectedKey(positionKey(position));
+    const cached = force ? null : transactionCacheRef.current.get(cacheKey);
+    if (cached) {
+      setTransactions(cached);
+      setTransactionsLoading(false);
+      setTransactionsError("");
+      setSelectedIds(new Set());
+      setDetailPage(1);
+      return;
+    }
     setTransactionsLoading(true);
     setTransactionsError("");
     setSelectedIds(new Set());
@@ -239,10 +250,13 @@ export function StockHoldingsPanel({
         limit: "200",
       });
       if (market) params.set("market", market);
+      if (position.securityId) params.set("securityId", position.securityId);
       const res = await fetch(`/api/v1/stocks/transactions?${params.toString()}`, { cache: "no-store" });
       const data = await res.json().catch(() => null) as StockTransactionsResponse | null;
       if (!res.ok || !data?.ok) throw new Error(data?.error ?? t("stockPanel.error.transactionsLoadFailed"));
-      setTransactions(data.data?.transactions ?? []);
+      const nextTransactions = data.data?.transactions ?? [];
+      transactionCacheRef.current.set(cacheKey, nextTransactions);
+      setTransactions(nextTransactions);
     } catch (error) {
       setTransactions([]);
       setTransactionsError(error instanceof Error ? error.message : t("stockPanel.error.transactionsLoadFailed"));
@@ -254,7 +268,7 @@ export function StockHoldingsPanel({
   useEffect(() => {
     function onEditSaved() {
       if (!selectedPosition) return;
-      void loadTransactions(selectedPosition);
+      void loadTransactions(selectedPosition, true);
     }
     window.addEventListener("mmh:stock:edit:success", onEditSaved);
     return () => window.removeEventListener("mmh:stock:edit:success", onEditSaved);
@@ -304,7 +318,7 @@ export function StockHoldingsPanel({
       setTransactions((prev) => prev.filter((tx) => tx.id !== id));
       setDeleteMessage(t("stockPanel.deletedSingle"));
       dispatchFinanceDataChanged({ reason: "stock-transaction-delete", accountIds: [accountId] });
-      if (selectedPosition) void loadTransactions(selectedPosition);
+      if (selectedPosition) void loadTransactions(selectedPosition, true);
     } catch (error) {
       setDeleteMessage(error instanceof Error ? error.message : t("stockPanel.error.deleteFailed"));
     } finally {
@@ -317,7 +331,7 @@ export function StockHoldingsPanel({
   }, [accountId, deletingIds, loadTransactions, selectedPosition, t]);
 
   async function applyBatchDelete() {
-    const ids = Array.from(selectedIds);
+    const ids = batchTargetIds;
     if (ids.length === 0 || batchDeleting) return;
     const ok = await showConfirmDialog({
       title: t("stockPanel.batchDeleteTitle"),
@@ -326,22 +340,26 @@ export function StockHoldingsPanel({
     });
     if (!ok) return;
     setBatchDeleting(true);
-    setDeleteMessage("");
+    setDeleteMessage(t("stockPanel.deleting"));
     try {
-      let deleted = 0;
-      for (const id of ids) {
-        const res = await fetch(`/api/v1/stocks/transactions?id=${encodeURIComponent(id)}`, {
-          method: "DELETE",
-          cache: "no-store",
-        });
-        const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
-        if (res.ok && data?.ok) deleted += 1;
-      }
-      setTransactions((prev) => prev.filter((tx) => !selectedIds.has(tx.id)));
-      setSelectedIds(new Set());
-      setDeleteMessage(t("stockPanel.deletedCount", { count: deleted }));
+      const res = await fetch(`/api/v1/stocks/transactions?${new URLSearchParams({ ids: ids.join(",") }).toString()}`, {
+        method: "DELETE",
+        cache: "no-store",
+      });
+      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; data?: { deletedIds?: string[]; count?: number } } | null;
+      if (!res.ok || !data?.ok) throw new Error(data?.error ?? t("stockPanel.error.batchDeleteFailed"));
+      const deletedIds = data.data?.deletedIds ?? ids;
+      const deletedIdSet = new Set(deletedIds);
+      setTransactions((prev) => prev.filter((tx) => !deletedIdSet.has(tx.id)));
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        deletedIdSet.forEach((id) => next.delete(id));
+        return next;
+      });
+      const deletedCount = data.data?.count ?? deletedIds.length;
+      setDeleteMessage(t("stockPanel.deletedCount", { count: deletedCount }));
       dispatchFinanceDataChanged({ reason: "stock-transaction-batch-delete", accountIds: [accountId] });
-      if (selectedPosition) void loadTransactions(selectedPosition);
+      if (selectedPosition) void loadTransactions(selectedPosition, true);
     } catch {
       setDeleteMessage(t("stockPanel.error.batchDeleteFailed"));
     } finally {
@@ -375,7 +393,7 @@ export function StockHoldingsPanel({
       return next;
     });
     dispatchFinanceDataChanged({ reason: "stock-transaction-batch-update", accountIds: [accountId] });
-    if (selectedPosition) void loadTransactions(selectedPosition);
+    if (selectedPosition) void loadTransactions(selectedPosition, true);
     return t("stockPanel.updatedCount", { count: data.data?.updatedCount ?? ids.length });
   }
 

@@ -9,12 +9,14 @@ import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { toStatementMonth } from "@/lib/date-utils";
 import { allocateBuyFailedRefunds, getConfirmedBuyAmount } from "@/lib/fund/refund-link";
+import { getFundProfileNameMap, normalizeFundDisplayName } from "@/lib/fund/fundProfile";
 import { RegularInvestClient } from "./RegularInvestClient";
 import { MobileRegularInvest } from "@/components/mobile/MobileRegularInvest";
 import { resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { isCreditCardRepaymentTransfer, recordMatchesRegularInvestPlan } from "@/lib/transaction-semantics";
 import { getServerT } from "@/lib/server/i18n";
 import { createTransaction } from "@/lib/server/sidebar-actions/transaction-actions";
+import { normalizeLoanRepaymentMethod } from "@/lib/loan-repayment";
 
 async function updateScheduledTransferRecord(formData: FormData) {
   "use server";
@@ -214,6 +216,11 @@ export default async function RegularInvestPage() {
 
   const accountOptions = accounts.map((account) => buildAccountDisplayOption(account));
   const accountById = new Map(accountOptions.map((account) => [account.id, account]));
+  const profileFundNames = await getFundProfileNameMap(
+    plans
+      .filter((plan) => normalizeScheduledTaskType(plan.taskType ?? scheduledTaskByPlanId.get(plan.id)?.type) === "fund_regular_invest")
+      .map((plan) => plan.fundCode),
+  );
 
   const plansData = plans.map((plan) => {
     const stats = statsByPlanId.get(plan.id) ?? { executedCount: 0, executedAmount: 0, confirmedCount: 0, confirmedAmount: 0 };
@@ -221,13 +228,19 @@ export default async function RegularInvestPage() {
     const cashAccount = plan.cashAccountId ? accountById.get(plan.cashAccountId) : null;
     const scheduledTask = scheduledTaskByPlanId.get(plan.id) ?? decodeScheduledTaskMemo(plan.memo);
     const taskType = normalizeScheduledTaskType(plan.taskType ?? scheduledTask.type);
+    const profileFundName = taskType === "fund_regular_invest" ? profileFundNames.get(plan.fundCode) ?? null : null;
+    const displayFundName = profileFundName ?? normalizeFundDisplayName(plan.fundCode, plan.fundName) ?? plan.fundName;
+    const displayTargetName = taskType === "fund_regular_invest"
+      ? profileFundName ?? normalizeFundDisplayName(plan.fundCode, plan.targetName) ?? displayFundName
+      : plan.targetName;
 
     return {
       ...plan,
+      fundName: displayFundName,
       taskType,
       taskTypeLabel: scheduledTaskTypeLabel(taskType),
-      taskTitle: plan.targetName ?? scheduledTask.title ?? null,
-      targetName: plan.targetName ?? null,
+      taskTitle: displayTargetName ?? scheduledTask.title ?? null,
+      targetName: displayTargetName ?? null,
       insuranceProductName: plan.insuranceProductName ?? null,
       taskFromAccountId: scheduledTask.fromAccountId ?? null,
       taskToAccountId: scheduledTask.toAccountId ?? null,
@@ -236,7 +249,7 @@ export default async function RegularInvestPage() {
       taskInsuranceProductId: scheduledTask.insuranceProductId ?? null,
       taskNote: scheduledTask.note ?? null,
       taskAnnualRate: scheduledTask.annualRate ?? null,
-      taskRepaymentMethod: scheduledTask.repaymentMethod ?? null,
+      taskRepaymentMethod: scheduledTask.repaymentMethod ? normalizeLoanRepaymentMethod(scheduledTask.repaymentMethod) : null,
       taskRepaymentIntervalMonths: scheduledTask.repaymentIntervalMonths ?? null,
       amount: Number(plan.amount),
       feeRate: plan.feeRate ? Number(plan.feeRate) : null,

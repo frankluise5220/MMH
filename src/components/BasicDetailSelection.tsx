@@ -271,7 +271,6 @@ export function BasicDetailBatchReplaceButton({
       fields={fieldConfigs}
       targetCount={selectedCount}
       targetLabel={targetLabel}
-      buttonTitle={t("common.edit")}
       buttonClassName="flex h-6 w-6 items-center justify-center rounded border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40 [&_svg]:h-3.5 [&_svg]:w-3.5"
       onApply={applyReplace}
     />

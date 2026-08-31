@@ -61,10 +61,14 @@ function buildStatisticsReportMenuItems(year: number, t: (key: string) => string
   const stockQuery = new URLSearchParams();
   stockQuery.set("report", "stock-holdings");
 
+  const fundQuery = new URLSearchParams();
+  fundQuery.set("report", "fund-holdings");
+
   return [
     { value: "income-expense", label: t("reports.menu.incomeExpense"), href: "/reports" },
     { value: "investment-profit", label: t("reports.menu.investmentProfit"), href: `/reports?${investmentQuery.toString()}` },
     { value: "stock-holdings", label: t("reports.menu.stockHoldings"), href: `/reports?${stockQuery.toString()}` },
+    { value: "fund-holdings", label: t("reports.menu.fundHoldings"), href: `/reports?${fundQuery.toString()}` },
     { value: "cash-statistics", label: t("reports.menu.cashStatisticsCharts"), href: buildStatisticsReportHref(year) },
   ];
 }

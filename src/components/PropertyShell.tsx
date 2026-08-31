@@ -8,11 +8,24 @@ import { FixedAssetEditModal, type FixedAssetEditMeta, type FixedAssetEditValue 
 import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 import { EntryAttachmentWindow } from "@/components/EntryAttachmentWindow";
 import { EntryRowActions } from "@/components/EntryRowActions";
+import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
+import {
+  BasicDetailBatchDeleteButton,
+  BasicDetailBatchDeleteMessage,
+  BasicDetailBatchReplaceButton,
+  BasicDetailSelectionProvider,
+  type BasicDetailBatchCategoryOption,
+  useBasicDetailSelection,
+  usePruneBasicDetailSelection,
+} from "@/components/BasicDetailSelection";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { formatDateDisplay } from "@/lib/date-utils";
 import { formatCurrencyMoney, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { useI18n } from "@/lib/i18n";
 import { normalizeFixedAssetType } from "@/lib/fixed-asset";
+import { formatAccountTableLabel, formatAccountTableTitle, type AccountTableDisplaySource } from "@/lib/account-display";
+import { systemCategoryLabel } from "@/lib/system-category-labels";
 
 type PropertyPosition = {
   fundCode: string;
@@ -35,6 +48,7 @@ type PropertyPosition = {
 
 type FixedAssetTransaction = {
   id: string;
+  cashEntryId?: string | null;
   accountId?: string | null;
   toAccountId?: string | null;
   date: string;
@@ -44,6 +58,14 @@ type FixedAssetTransaction = {
   toAccountName?: string | null;
   propertyAssetId?: string | null;
   assetType?: string | null;
+  type?: string | null;
+  categoryId?: string | null;
+  categoryName?: string | null;
+  postedAt?: string | null;
+  currency?: string | null;
+  counterpartyInstitutionId?: string | null;
+  counterpartyInstitutionName?: string | null;
+  entryTags?: Array<{ tagId: string; Tag?: { name?: string | null; color?: string | null } | null }>;
   propertyAction?: string | null;
   propertySettlementDate?: string | null;
   settlementDate?: string | null;
@@ -53,6 +75,7 @@ type FixedAssetTransaction = {
   fee?: number | null;
   realizedProfit?: number | null;
   note?: string | null;
+  attachments?: Array<{ id: string; name: string; mimeType?: string | null; url?: string | null }>;
 };
 
 type Props = {
@@ -64,17 +87,28 @@ type Props = {
   totalMarketValue: number;
   totalCost: number;
   isRedUp: boolean;
+  assetType?: string | null;
+  accountOptions?: Array<AccountTableDisplaySource & { id: string }>;
+  categoryOptions?: BasicDetailBatchCategoryOption[];
+  tagOptions?: BasicDetailBatchCategoryOption[];
 };
 
 function rate(value: number) {
   return formatPercent(value);
 }
 
-function actionLabel(t: (key: string) => string, action: string | null | undefined) {
-  if (action === "purchase") return t("propertyForm.action.purchase");
-  if (action === "improvement") return t("propertyForm.action.improvement");
-  if (action === "sale") return t("propertyForm.action.sale");
-  return action || "-";
+function transactionTypeLabel(t: (key: string) => string, entry: FixedAssetTransaction) {
+  if (entry.type === "income" || entry.type === "expense") {
+    return t(entry.type === "income" ? "transaction.type.income" : "transaction.type.expense");
+  }
+  const amount = Number(entry.amount ?? 0);
+  if (amount > 0) return t("transaction.type.income");
+  if (amount < 0) return t("transaction.type.expense");
+  return "-";
+}
+
+function transactionCategoryLabel(t: (key: string) => string, categoryName: string | null | undefined) {
+  return systemCategoryLabel(categoryName, t) || t("txForm.uncategorized");
 }
 
 function assetTypeLabel(t: (key: string) => string, assetType: string | null | undefined) {
@@ -104,6 +138,221 @@ function assetDetailText(position: PropertyPosition) {
   return "-";
 }
 
+function attrText(attrs: Record<string, unknown> | null | undefined, key: string) {
+  const value = attrs?.[key];
+  return value != null && String(value).trim() ? String(value).trim() : "-";
+}
+
+// Data columns that are specific to each fixed-asset subtype. The first entry is
+// the sortable/filterable "detail" column, followed by any extra typed columns.
+type TypedDetailColumns = Array<{
+  key: string;
+  labelKey: string;
+  text: (position: PropertyPosition) => string;
+}>;
+
+function typedDetailColumnsFor(assetType: string | null | undefined): TypedDetailColumns {
+  switch (assetType || "") {
+    case "property":
+      return [
+        { key: "address", labelKey: "propertyForm.address", text: (p) => p.address && String(p.address).trim() ? String(p.address) : "-" },
+        { key: "propertyType", labelKey: "propertyForm.propertyType", text: (p) => p.propertyType && String(p.propertyType).trim() ? String(p.propertyType) : "-" },
+      ];
+    case "vehicle":
+      return [
+        { key: "plateNo", labelKey: "fixedAssetEdit.attr.plateNo", text: (p) => attrText(p.attributes as Record<string, unknown>, "plateNo") },
+        { key: "brandModel", labelKey: "fixedAssetEdit.attr.brandModel", text: (p) => attrText(p.attributes as Record<string, unknown>, "brandModel") },
+      ];
+    case "equipment":
+    case "furniture":
+      return [
+        { key: "brand", labelKey: "fixedAssetEdit.attr.brand", text: (p) => attrText(p.attributes as Record<string, unknown>, "brand") },
+        { key: "model", labelKey: "fixedAssetEdit.attr.model", text: (p) => attrText(p.attributes as Record<string, unknown>, "model") },
+      ];
+    case "collectible":
+      return [
+        { key: "category", labelKey: "fixedAssetEdit.attr.category", text: (p) => attrText(p.attributes as Record<string, unknown>, "category") },
+        { key: "origin", labelKey: "fixedAssetEdit.attr.origin", text: (p) => attrText(p.attributes as Record<string, unknown>, "origin") },
+      ];
+    default:
+      return [{ key: "assetDetail", labelKey: "propertyShell.column.detail", text: (p) => assetDetailText(p) }];
+  }
+}
+
+type FixedAssetTransactionTableProps = {
+  accountId: string;
+  selectedAssetId: string;
+  selectedPosition: PropertyPosition;
+  selectedEntries: FixedAssetTransaction[];
+  transactionColumns: AdvancedDataTableColumn<FixedAssetTransaction>[];
+  accountOptions: Array<AccountTableDisplaySource & { id: string }>;
+  categoryOptions: BasicDetailBatchCategoryOption[];
+  tagOptions: BasicDetailBatchCategoryOption[];
+  transactionPage: number;
+  transactionPageSize: number;
+  transactionPageAll: boolean;
+  transactionSafePage: number;
+  transactionTotalPages: number;
+  setTransactionPage: (page: number) => void;
+  setTransactionPageSize: (pageSize: number) => void;
+  setTransactionPageAll: (all: boolean) => void;
+  setTransactionRowCount: (count: number) => void;
+  onAttachmentView: (entryId: string) => void;
+  buildPropertyEditEvent: (entry: FixedAssetTransaction) => { name: string; detail: Record<string, unknown> };
+};
+
+function FixedAssetTransactionTable({
+  accountId,
+  selectedAssetId,
+  selectedPosition,
+  selectedEntries,
+  transactionColumns,
+  accountOptions,
+  categoryOptions,
+  tagOptions,
+  transactionPage,
+  transactionPageSize,
+  transactionPageAll,
+  transactionSafePage,
+  transactionTotalPages,
+  setTransactionPage,
+  setTransactionPageSize,
+  setTransactionPageAll,
+  setTransactionRowCount,
+  onAttachmentView,
+  buildPropertyEditEvent,
+}: FixedAssetTransactionTableProps) {
+  const { t } = useI18n();
+  const { selectedIds, setSelection } = useBasicDetailSelection();
+  const currentEntryIds = useMemo(() => selectedEntries.map((entry) => entry.id), [selectedEntries]);
+  usePruneBasicDetailSelection(currentEntryIds);
+  const normalizedAccountOptions = useMemo(
+    () => accountOptions.map((account) => {
+      const label = formatAccountTableLabel(account, account.name ?? "");
+      return {
+        id: account.id,
+        label: label || account.name?.trim() || account.id,
+        title: formatAccountTableTitle(account, label),
+      };
+    }),
+    [accountOptions],
+  );
+  const categoryTypes = useMemo(() => {
+    const types = new Set<string>();
+    for (const entry of selectedEntries) {
+      if (entry.type === "income" || entry.type === "expense") {
+        types.add(entry.type);
+      } else {
+        types.add(Number(entry.amount ?? 0) >= 0 ? "income" : "expense");
+      }
+    }
+    return Array.from(types);
+  }, [selectedEntries]);
+
+  return (
+    <AdvancedDataTable
+      storageKey="mmh_fixed_asset_transaction_details_v1"
+      resetKey={`${accountId}:${selectedAssetId}`}
+      columns={transactionColumns}
+      rows={selectedEntries}
+      rowKey={(entry) => entry.id}
+      selectable
+      selectOnRowClick
+      selectAllScope="renderedRows"
+      // Generic batch edit/delete APIs operate on TxRecord ids. Keep legacy
+      // business-only property rows visible and editable by double-click, but
+      // do not let them enter a batch operation that cannot address them.
+      rowSelectable={(entry) => Boolean(entry.cashEntryId)}
+      selectedKeys={selectedIds}
+      onSelectionChange={setSelection}
+      emptyText={t("propertyShell.emptyTransactions")}
+      minTableWidth={980}
+      fillHeight
+      compactRows
+      toolbarMode="default"
+      toolbarTitle={(
+        <div className="flex min-w-0 items-center gap-2">
+          <span>{t("propertyShell.transactionDetails")}</span>
+          <span className="truncate text-xs font-normal text-slate-500">{selectedPosition.name}</span>
+          <span className="text-xs font-normal text-slate-400">{t("propertyShell.transactionCount", { count: selectedEntries.length })}</span>
+        </div>
+      )}
+      toolbarRightContent={(
+        <DetailTablePaginationControls
+          pageSize={transactionPageSize}
+          detailAll={transactionPageAll}
+          safePage={transactionSafePage}
+          totalPages={transactionTotalPages}
+          canPrev={!transactionPageAll && transactionSafePage > 1}
+          canNext={!transactionPageAll && transactionSafePage < transactionTotalPages}
+          onPageSizeChange={(pageSize) => {
+            setTransactionPageSize(pageSize);
+            setTransactionPageAll(false);
+            setTransactionPage(1);
+          }}
+          onShowAll={() => {
+            setTransactionPageAll(true);
+            setTransactionPage(1);
+          }}
+          onPageChange={(page) => {
+            setTransactionPageAll(false);
+            setTransactionPage(page);
+          }}
+        />
+      )}
+      batchActionSlot={(
+        <>
+          <BasicDetailBatchReplaceButton
+            accountOptions={normalizedAccountOptions}
+            categoryOptions={categoryOptions}
+            tagOptions={tagOptions}
+            categoryTypes={categoryTypes}
+            targetLabel={t("propertyShell.transactionDetails")}
+            contextAccountId={accountId}
+          />
+          <BasicDetailBatchDeleteButton />
+        </>
+      )}
+      showFilters
+      onRowDoubleClick={(entry) => {
+        if (!entry.cashEntryId) return;
+        const event = buildPropertyEditEvent(entry);
+        window.dispatchEvent(new CustomEvent(event.name, { detail: event.detail }));
+      }}
+      rowActions={(entry) => (
+        <>
+          {entry.attachments && entry.attachments.length > 0 ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onAttachmentView(entry.id);
+              }}
+              title={entry.attachments.map((attachment) => attachment.name).join(", ") || t("attachments.title")}
+              aria-label={t("attachments.title")}
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-amber-200 bg-white text-amber-600 transition-colors hover:border-amber-300 hover:bg-amber-50"
+            >
+              <Paperclip className="h-3.5 w-3.5" />
+            </button>
+          ) : null}
+          {entry.cashEntryId ? <EntryRowActions entryId={entry.id} customEditEvent={buildPropertyEditEvent(entry)} /> : null}
+        </>
+      )}
+      rowActionsWidth={112}
+      rowActionsMinWidth={92}
+      pagination={{
+        page: transactionPage,
+        pageSize: transactionPageSize,
+        all: transactionPageAll,
+        onPageChange: setTransactionPage,
+        onRowCountChange: setTransactionRowCount,
+      }}
+      sortable
+      defaultSort={{ key: "date", direction: "desc" }}
+    />
+  );
+}
+
 export function PropertyShell({
   accountId,
   currency,
@@ -113,6 +362,10 @@ export function PropertyShell({
   totalMarketValue,
   totalCost,
   isRedUp,
+  assetType,
+  accountOptions = [],
+  categoryOptions = [],
+  tagOptions = [],
 }: Props) {
   const { t } = useI18n();
   const displayCurrency = currency || baseCurrency || "CNY";
@@ -125,7 +378,18 @@ export function PropertyShell({
   const [savingEdit, setSavingEdit] = useState(false);
   const [attachmentViewEntryId, setAttachmentViewEntryId] = useState<string | null>(null);
   const [transactionPage, setTransactionPage] = useState(1);
-  const [transactionPageSize] = useState(20);
+  const [transactionPageSize, setTransactionPageSize] = useState(20);
+  const [transactionPageAll, setTransactionPageAll] = useState(false);
+  const [transactionRowCount, setTransactionRowCount] = useState(entries.length);
+  const accountOptionById = useMemo(
+    () => new Map((accountOptions ?? []).map((account) => [account.id, account])),
+    [accountOptions],
+  );
+
+  const typedDetailColumns = useMemo(
+    () => typedDetailColumnsFor(assetType),
+    [assetType],
+  );
 
   const selectedPosition = useMemo(
     () => positions.find((position) => (position.propertyAssetId ?? position.fundCode) === selectedAssetId) ?? null,
@@ -140,7 +404,14 @@ export function PropertyShell({
 
   useEffect(() => {
     setTransactionPage(1);
-  }, [selectedAssetId]);
+    setTransactionPageAll(false);
+    setTransactionRowCount(selectedEntries.length);
+  }, [selectedAssetId, selectedEntries.length]);
+
+  const transactionTotalPages = Math.max(1, Math.ceil(transactionRowCount / transactionPageSize));
+  const transactionSafePage = transactionPageAll
+    ? 1
+    : Math.min(Math.max(1, transactionPage), transactionTotalPages);
 
   function selectPosition(position: PropertyPosition) {
     const assetId = position.propertyAssetId ?? position.fundCode;
@@ -149,7 +420,9 @@ export function PropertyShell({
 
   function buildPropertyEditEvent(entry: FixedAssetTransaction) {
     const amount = Number(entry.amount ?? 0);
-    const isCashIn = amount >= 0;
+    const isCashIn = entry.type ? entry.type === "income" : amount >= 0;
+    const accountId = entry.accountId ?? "";
+    const accountName = entry.accountName ?? "";
     return {
       name: "mmh:transaction:edit",
       detail: {
@@ -157,16 +430,22 @@ export function PropertyShell({
         entryId: entry.id,
         type: isCashIn ? "income" : "expense",
         date: entry.date?.slice(0, 10) ?? "",
-        postedAt: entry.date ?? "",
-        // Keep the stored sign; the transaction dialog converts expense/income display amounts.
+        postedAt: entry.postedAt ?? entry.date ?? "",
         amount,
         note: entry.note ?? "",
-        // Sale income edits receive money in the cash account; purchases/improvements spend from it.
-        accountId: (isCashIn ? entry.toAccountId ?? entry.accountId : entry.accountId) ?? "",
-        accountName: (isCashIn ? entry.toAccountName : entry.accountName) ?? "",
-        accountLabel: (isCashIn ? entry.toAccountName : entry.accountName) ?? "",
+        accountId,
+        accountName,
+        accountLabel: accountName,
+        categoryId: entry.categoryId ?? "",
+        categoryName: entry.categoryName ?? "",
+        counterpartyInstitutionId: entry.counterpartyInstitutionId ?? "",
+        tagIds: entry.entryTags?.map((tag) => tag.tagId) ?? [],
+        tags: entry.entryTags?.map((tag) => ({
+          id: tag.tagId,
+          name: tag.Tag?.name ?? "",
+          color: tag.Tag?.color ?? null,
+        })) ?? [],
         hasFundDetail: false,
-        // Purchases/improvements are fixed-asset expenses: keep the toggle on and prefill the linked account/asset.
         fixedAssetLinked: !isCashIn,
         fixedAssetAccountId: isCashIn ? "" : (entry.toAccountId ?? ""),
         fixedAssetAssetId: isCashIn ? "" : (entry.propertyAssetId ?? ""),
@@ -248,32 +527,33 @@ export function PropertyShell({
               <div className={`truncate text-xs font-medium ${selected ? "text-blue-700" : "text-slate-700"}`} title={position.name}>
                 {position.name}
               </div>
-              <div className="truncate text-[11px] text-slate-400">{assetId}</div>
             </div>
           </div>
         );
       },
     },
-    {
-      key: "assetType",
-      label: t("fixedAssetEdit.assetType"),
-      width: 96,
-      minWidth: 80,
-      sortValue: (position) => assetTypeLabel(t, position.assetType),
-      filterText: (position) => assetTypeLabel(t, position.assetType),
-      render: (position) => <span className="text-xs text-slate-600">{assetTypeLabel(t, position.assetType)}</span>,
-    },
-    {
-      key: "assetDetail",
-      label: t("propertyShell.column.detail"),
-      width: 200,
-      minWidth: 140,
-      sortValue: (position) => assetDetailText(position),
-      filterText: (position) => assetDetailText(position),
+    ...(assetType
+      ? []
+      : [{
+          key: "assetType",
+          label: t("fixedAssetEdit.assetType"),
+          width: 96,
+          minWidth: 80,
+          sortValue: (position) => assetTypeLabel(t, position.assetType),
+          filterText: (position) => assetTypeLabel(t, position.assetType),
+          render: (position) => <span className="text-xs text-slate-600">{assetTypeLabel(t, position.assetType)}</span>,
+        }]),
+    ...typedDetailColumns.map((column): AdvancedDataTableColumn<PropertyPosition> => ({
+      key: column.key,
+      label: t(column.labelKey),
+      width: 160,
+      minWidth: 120,
+      sortValue: (position) => column.text(position),
+      filterText: (position) => column.text(position),
       truncate: true,
-      cellTitle: (position) => assetDetailText(position),
-      render: (position) => <span className="text-xs text-slate-600">{assetDetailText(position)}</span>,
-    },
+      cellTitle: (position) => column.text(position),
+      render: (position) => <span className="text-xs text-slate-600">{column.text(position)}</span>,
+    })),
     {
       key: "holdingDate",
       label: t("propertyShell.column.purchaseDate"),
@@ -392,7 +672,7 @@ export function PropertyShell({
         );
       },
     },
-  ], [accountId, displayCurrency, pnlCls, selectedAssetId, t]);
+  ], [accountId, displayCurrency, pnlCls, selectedAssetId, t, typedDetailColumns, assetType]);
 
   const positionSummaryRow = useMemo(() => {
     if (positions.length === 0) return undefined;
@@ -407,68 +687,171 @@ export function PropertyShell({
     };
   }, [displayCurrency, floatingPnL, floatingRate, pnlCls, positions.length, t, totalCost, totalMarketValue]);
 
-  const transactionColumns = useMemo<AdvancedDataTableColumn<FixedAssetTransaction>[]>(() => [
-    {
-      key: "date",
-      label: t("propertyForm.dateTransaction"),
-      width: 108,
-      minWidth: 92,
-      filterKind: "dateRange",
-      filterText: (entry) => entry.date,
-      sortValue: (entry) => entry.date,
-      render: (entry) => <span className="whitespace-nowrap text-xs tabular-nums text-slate-700">{entry.date || "-"}</span>,
-    },
-    {
-      key: "action",
-      label: t("depositShell.colAction"),
-      width: 104,
-      minWidth: 88,
-      filterText: (entry) => actionLabel(t, entry.propertyAction),
-      sortValue: (entry) => actionLabel(t, entry.propertyAction),
-      render: (entry) => <span className="text-xs text-slate-700">{actionLabel(t, entry.propertyAction)}</span>,
-    },
-    {
-      key: "cashAccount",
-      label: t("depositShell.colCashAccount"),
-      width: 180,
-      minWidth: 120,
-      filterText: (entry) => entry.propertyAction === "sale" ? entry.toAccountName ?? "" : entry.accountName ?? "",
-      sortValue: (entry) => entry.propertyAction === "sale" ? entry.toAccountName ?? "" : entry.accountName ?? "",
-      truncate: true,
-      cellTitle: (entry) => entry.propertyAction === "sale" ? entry.toAccountName ?? "" : entry.accountName ?? "",
-      render: (entry) => {
-        const value = entry.propertyAction === "sale" ? entry.toAccountName : entry.accountName;
-        return value ? <span className="text-xs text-slate-700">{value}</span> : <span className="text-slate-300">-</span>;
+  const transactionColumns = useMemo<AdvancedDataTableColumn<FixedAssetTransaction>[]>(() => {
+    const accountDisplay = (id: string | null | undefined, fallback: string | null | undefined) => {
+      const source = id ? accountOptionById.get(id) : undefined;
+      const label = source ? formatAccountTableLabel(source, fallback ?? "") : (fallback ?? "").trim();
+      return { label: label || "-", title: source ? formatAccountTableTitle(source, label) : label };
+    };
+    const currencyFor = (entry: FixedAssetTransaction) => entry.currency || displayCurrency;
+    const flowAmount = (entry: FixedAssetTransaction) => Number(entry.amount ?? 0);
+    const renderAmount = (value: number | null, currency: string, className: string) => (
+      <span className={`whitespace-nowrap text-xs tabular-nums ${className}`}>{value == null ? "" : formatCurrencyMoney(value, currency)}</span>
+    );
+    return [
+      {
+        key: "date",
+        label: t("detail.column.date"),
+        width: 96,
+        minWidth: 78,
+        filterKind: "dateRange",
+        filterText: (entry) => entry.date,
+        sortValue: (entry) => entry.date,
+        render: (entry) => <span className="whitespace-nowrap text-xs tabular-nums text-slate-600">{formatDateDisplay(entry.date)}</span>,
       },
-    },
-    {
-      key: "amount",
-      label: t("depositShell.colAmount"),
-      width: 124,
-      minWidth: 96,
-      align: "right",
-      className: "tabular-nums",
-      filterKind: "numberRange",
-      filterText: (entry) => entry.amount == null ? null : String(entry.amount),
-      filterNumber: (entry) => entry.amount == null ? null : Number(entry.amount),
-      sortValue: (entry) => entry.amount == null ? null : Number(entry.amount),
-      render: (entry) => {
-        const value = Number(entry.amount ?? 0);
-        return <span className={`text-xs tabular-nums ${pnlCls(value)}`}>{formatCurrencyMoney(value, displayCurrency)}</span>;
+      {
+        key: "postedAt",
+        label: t("detail.column.postedAt"),
+        width: 132,
+        minWidth: 110,
+        hideable: true,
+        filterKind: "dateRange",
+        filterText: (entry) => (entry.postedAt ?? "").slice(0, 10),
+        render: (entry) => <span className="whitespace-nowrap text-xs tabular-nums text-slate-500">{entry.postedAt ? formatDateDisplay(entry.postedAt) : ""}</span>,
       },
-    },
-    {
-      key: "note",
-      label: t("detail.column.remark"),
-      width: 180,
-      minWidth: 120,
-      filterText: (entry) => entry.note ?? "",
-      sortValue: (entry) => entry.note ?? "",
-      truncate: true,
-      cellTitle: (entry) => entry.note ?? "",
-      render: (entry) => entry.note ? <span className="text-xs text-slate-600">{entry.note}</span> : <span className="text-slate-300">-</span>,
-    },
-  ], [displayCurrency, pnlCls, t]);
+      {
+        key: "account",
+        label: t("detail.column.account"),
+        width: 190,
+        minWidth: 110,
+        filterText: (entry) => accountDisplay(entry.accountId, entry.accountName).label,
+        filterTitle: (entry) => accountDisplay(entry.accountId, entry.accountName).title,
+        filterSearchText: (entry) => {
+          const display = accountDisplay(entry.accountId, entry.accountName);
+          return [display.label, display.title, entry.accountName].filter(Boolean).join(" ");
+        },
+        truncate: true,
+        cellTitle: (entry) => accountDisplay(entry.accountId, entry.accountName).title,
+        render: (entry) => {
+          const display = accountDisplay(entry.accountId, entry.accountName);
+          return <span className="block truncate text-xs text-slate-600" title={display.title}>{display.label}</span>;
+        },
+      },
+      {
+        key: "inflow",
+        label: t("detail.column.inflow"),
+        width: 96,
+        minWidth: 76,
+        align: "right",
+        filterKind: "numberRange",
+        filterText: (entry) => flowAmount(entry) > 0 ? String(flowAmount(entry)) : "",
+        filterNumber: (entry) => flowAmount(entry) > 0 ? flowAmount(entry) : null,
+        sortValue: (entry) => flowAmount(entry) > 0 ? flowAmount(entry) : null,
+        render: (entry) => {
+          const amount = flowAmount(entry);
+          return renderAmount(amount > 0 ? amount : null, currencyFor(entry), amount > 0 ? pnlCls(1) : "text-slate-700");
+        },
+      },
+      {
+        key: "outflow",
+        label: t("detail.column.outflow"),
+        width: 96,
+        minWidth: 76,
+        align: "right",
+        filterKind: "numberRange",
+        filterText: (entry) => flowAmount(entry) < 0 ? String(-flowAmount(entry)) : "",
+        filterNumber: (entry) => flowAmount(entry) < 0 ? -flowAmount(entry) : null,
+        sortValue: (entry) => flowAmount(entry) < 0 ? -flowAmount(entry) : null,
+        render: (entry) => {
+          const amount = flowAmount(entry);
+          return renderAmount(amount < 0 ? -amount : null, currencyFor(entry), amount < 0 ? pnlCls(-1) : "text-slate-700");
+        },
+      },
+      {
+        key: "currency",
+        label: t("detail.column.currency"),
+        width: 68,
+        minWidth: 54,
+        hideable: true,
+        filterText: (entry) => currencyFor(entry),
+        render: (entry) => <span className="block truncate text-center text-xs font-medium tabular-nums text-slate-500">{currencyFor(entry)}</span>,
+      },
+      {
+        key: "type",
+        label: t("detail.column.activityType"),
+        width: 96,
+        minWidth: 80,
+        filterText: (entry) => transactionTypeLabel(t, entry),
+        sortValue: (entry) => transactionTypeLabel(t, entry),
+        render: (entry) => <span className="text-xs text-slate-700">{transactionTypeLabel(t, entry)}</span>,
+      },
+      {
+        key: "category",
+        label: t("detail.column.category"),
+        width: 160,
+        minWidth: 100,
+        filterText: (entry) => transactionCategoryLabel(t, entry.categoryName),
+        sortValue: (entry) => transactionCategoryLabel(t, entry.categoryName),
+        truncate: true,
+        cellTitle: (entry) => transactionCategoryLabel(t, entry.categoryName),
+        render: (entry) => <span className="block truncate text-xs text-slate-500" title={transactionCategoryLabel(t, entry.categoryName)}>{transactionCategoryLabel(t, entry.categoryName)}</span>,
+      },
+      {
+        key: "counterpartyInstitution",
+        label: t("detail.column.counterparty"),
+        width: 140,
+        minWidth: 96,
+        hideable: true,
+        defaultHidden: true,
+        filterText: (entry) => entry.counterpartyInstitutionName ?? "",
+        render: (entry) => <span className="block truncate text-xs text-slate-500" title={entry.counterpartyInstitutionName ?? ""}>{entry.counterpartyInstitutionName || <span className="text-slate-300">-</span>}</span>,
+      },
+      {
+        key: "related",
+        label: t("detail.column.relatedAccount"),
+        width: 190,
+        minWidth: 110,
+        hideable: true,
+        filterText: (entry) => accountDisplay(entry.toAccountId, entry.toAccountName).label,
+        filterTitle: (entry) => accountDisplay(entry.toAccountId, entry.toAccountName).title,
+        filterSearchText: (entry) => {
+          const display = accountDisplay(entry.toAccountId, entry.toAccountName);
+          return [display.label, display.title, entry.toAccountName].filter(Boolean).join(" ");
+        },
+        truncate: true,
+        cellTitle: (entry) => accountDisplay(entry.toAccountId, entry.toAccountName).title,
+        render: (entry) => {
+          const display = accountDisplay(entry.toAccountId, entry.toAccountName);
+          return <span className="block truncate text-xs text-slate-500" title={display.title}>{display.label}</span>;
+        },
+      },
+      {
+        key: "tags",
+        label: t("detail.column.tags"),
+        width: 150,
+        minWidth: 90,
+        hideable: true,
+        filterText: (entry) => entry.entryTags?.map((tag) => tag.Tag?.name ?? "").join(" ") ?? "",
+        render: (entry) => entry.entryTags && entry.entryTags.length > 0 ? (
+          <span className="inline-flex flex-wrap gap-0.5">
+            {entry.entryTags.map((tag) => {
+              const color = tag.Tag?.color || "#3B82F6";
+              return <span key={tag.tagId} className="rounded-full border px-1 py-0.5 text-[10px] leading-none" style={{ backgroundColor: color + "18", color, borderColor: color + "60" }}>{tag.Tag?.name}</span>;
+            })}
+          </span>
+        ) : null,
+      },
+      {
+        key: "remark",
+        label: t("detail.column.remark"),
+        width: 220,
+        minWidth: 120,
+        hideable: true,
+        filterText: (entry) => entry.note ?? "",
+        render: (entry) => <span className="block truncate text-xs text-slate-500" title={entry.note ?? ""}>{entry.note || ""}</span>,
+      },
+    ];
+  }, [accountOptionById, displayCurrency, pnlCls, t]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-transparent p-4 md:p-5">
@@ -531,56 +914,34 @@ export function PropertyShell({
         </div>
 
         {selectedPosition ? (
-          <div className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
-            <div className="panel-header h-12 shrink-0">
-              <div className="flex min-w-0 items-center gap-2 text-sm font-semibold text-slate-800">
-                <span>{t("propertyShell.transactionDetails")}</span>
-                <span className="truncate text-xs font-normal text-slate-500">{selectedPosition.name}</span>
-                <span className="text-xs font-normal text-slate-400">{t("propertyShell.transactionCount", { count: selectedEntries.length })}</span>
+          <BasicDetailSelectionProvider resetKey={`${accountId}:${selectedAssetId}`}>
+            <div className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
+              <BasicDetailBatchDeleteMessage />
+              <div className="min-h-0 flex-1">
+                <FixedAssetTransactionTable
+                  accountId={accountId}
+                  selectedAssetId={selectedAssetId}
+                  selectedPosition={selectedPosition}
+                  selectedEntries={selectedEntries}
+                  transactionColumns={transactionColumns}
+                  accountOptions={accountOptions}
+                  categoryOptions={categoryOptions}
+                  tagOptions={tagOptions}
+                  transactionPage={transactionPage}
+                  transactionPageSize={transactionPageSize}
+                  transactionPageAll={transactionPageAll}
+                  transactionSafePage={transactionSafePage}
+                  transactionTotalPages={transactionTotalPages}
+                  setTransactionPage={setTransactionPage}
+                  setTransactionPageSize={setTransactionPageSize}
+                  setTransactionPageAll={setTransactionPageAll}
+                  setTransactionRowCount={setTransactionRowCount}
+                  onAttachmentView={setAttachmentViewEntryId}
+                  buildPropertyEditEvent={buildPropertyEditEvent}
+                />
               </div>
             </div>
-            <div className="min-h-0 flex-1">
-              <AdvancedDataTable
-                storageKey="mmh_fixed_asset_transaction_details_v1"
-                resetKey={`${accountId}:${selectedAssetId}`}
-                columns={transactionColumns}
-                rows={selectedEntries}
-                rowKey={(entry) => entry.id}
-                emptyText={t("propertyShell.emptyTransactions")}
-                minTableWidth={980}
-                fillHeight
-                compactRows
-                toolbarMode="none"
-                showFilters
-                onRowDoubleClick={(entry) => {
-                  const event = buildPropertyEditEvent(entry);
-                  window.dispatchEvent(new CustomEvent(event.name, { detail: event.detail }));
-                }}
-                rowActions={(entry) => (
-                  <>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setAttachmentViewEntryId(entry.id);
-                      }}
-                      title={t("attachments.title")}
-                      aria-label={t("attachments.title")}
-                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-amber-200 bg-white text-amber-600 transition-colors hover:border-amber-300 hover:bg-amber-50"
-                    >
-                      <Paperclip className="h-3.5 w-3.5" />
-                    </button>
-                    <EntryRowActions entryId={entry.id} customEditEvent={buildPropertyEditEvent(entry)} />
-                  </>
-                )}
-                rowActionsWidth={112}
-                rowActionsMinWidth={92}
-                pagination={{ page: transactionPage, pageSize: transactionPageSize, onPageChange: setTransactionPage }}
-                sortable
-                defaultSort={{ key: "date", direction: "desc" }}
-              />
-            </div>
-          </div>
+          </BasicDetailSelectionProvider>
         ) : null}
       </ResizableVerticalSplit>
 

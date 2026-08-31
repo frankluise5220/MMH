@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { findInstitutionDisplayNameConflict } from "@/lib/server/institution-name-unique";
+import { defaultFundCompanyNames } from "@/lib/default-fund-companies";
 
 export type DefaultInstitutionType = "bank" | "insurance" | "brokerage" | "fund_company" | "payment" | "ewallet" | "debt" | "other";
 
@@ -40,6 +41,8 @@ export const defaultInstitutionTemplates: DefaultInstitutionTemplate[] = [
   { name: "农商银行", type: "bank" },
   { name: "证券账户", type: "brokerage" },
   { name: "现金钱包", type: "ewallet" },
+  // 全国公募基金管理公司（fund_company 类型默认值）
+  ...defaultFundCompanyNames.map((name) => ({ name, type: "fund_company" as const })),
 ];
 
 export async function createDefaultInstitutionsForHousehold(writer: InstitutionWriter, householdId: string) {

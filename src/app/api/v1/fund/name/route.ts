@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 import { getLatestFundNav, refreshLatestFundNav, setFundNav } from "@/lib/fund/navCache";
-import { queryFundIdentity } from "@/lib/fund/queryApi";
+import { resolveFundName } from "@/lib/fund/fundProfile";
+import { getHouseholdScope } from "@/lib/server/household-scope";
 
 /**
  * Resolves a fund name, preferring the authoritative code source, then the NAV
@@ -143,13 +144,15 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // 1. Query the authoritative identity by fund code first, so a wrong name in the historical NAV cache cannot pollute the display.
-    const identity = await queryFundIdentity(fundCode);
-    if (identity?.name) {
+    const { householdId } = await getHouseholdScope();
+    // 1. Resolve the fund name through the unified fund-profile lookup (FundProfile
+    //    cache first, then the fund company / detail API, which also writes back).
+    const resolvedName = await resolveFundName(fundCode, { householdId });
+    if (resolvedName) {
       return NextResponse.json({
         ok: true,
-        name: identity.name,
-        source: identity.source,
+        name: resolvedName,
+        source: "fundprofile",
       });
     }
 

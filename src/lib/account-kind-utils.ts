@@ -2,6 +2,7 @@ export type AccountKindLike = {
   kind?: string | null;
   investProductType?: string | null;
   debtDirection?: string | null;
+  isConsumerLoan?: boolean | null;
 };
 
 export type CashTargetOperation = "transfer" | "investment" | "wealth" | "deposit" | "debt";
@@ -33,11 +34,16 @@ export function isInsuranceAccount(account: AccountKindLike) {
   return account.kind === "insurance";
 }
 
+export function isConsumerLoanAccount(account: AccountKindLike | null | undefined) {
+  return account?.kind === "loan" && account.isConsumerLoan === true;
+}
+
 export function isSpendableAccount(account: AccountKindLike | null | undefined) {
   return account?.kind === "cash" ||
     account?.kind === "bank_debit" ||
     account?.kind === "ewallet" ||
-    account?.kind === "bank_credit";
+    account?.kind === "bank_credit" ||
+    isConsumerLoanAccount(account);
 }
 
 export function isBillLikeAccount(account: Pick<AccountKindLike, "kind"> & { billingDay?: number | null }) {

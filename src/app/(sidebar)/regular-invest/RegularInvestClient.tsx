@@ -1542,7 +1542,14 @@ export function RegularInvestClient({
         open={editOpen}
         onOpenChange={(open) => { setEditOpen(open); if (!open) setEditPlan(null); }}
         submitMethod="api"
-        onSuccess={() => { setEditPlan(null); }}
+        onSuccess={(savedPlan) => {
+          if (savedPlan && typeof savedPlan === "object" && "id" in savedPlan) {
+            const updatedPlan = enrichPlanFromApi(savedPlan);
+            setPlans((prev) => prev.map((plan) => plan.id === updatedPlan.id ? updatedPlan : plan));
+            setSelectedPlan((prev) => prev?.id === updatedPlan.id ? updatedPlan : prev);
+          }
+          setEditPlan(null);
+        }}
       />
 
       <div className="hidden">

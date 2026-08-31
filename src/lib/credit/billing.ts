@@ -1,4 +1,5 @@
 import { addDaysUtc, clampDay, startOfDayUtc, toNumber } from "@/lib/date-utils";
+import { TransactionType, type Prisma } from "@prisma/client";
 
 export type CreditBillSummary = {
   month: string;
@@ -37,6 +38,8 @@ export type CreditBillFlowEntry = {
   amount?: unknown;
   type?: string | null;
   categoryName?: string | null;
+  date?: Date | null;
+  postedAt?: Date | null;
 };
 
 export type CreditCardCyclePersistRow = {
@@ -160,6 +163,45 @@ export function signedCreditBillAmountFromCardSide(
   if (fromBillAccount) return amount;
   if (toBillAccount) return -amount;
   return null;
+}
+
+/**
+ * Credit-card expense and income rows are grouped by their posting date when
+ * available. Other bill flows, such as transfers and investments, keep using
+ * their business date because they normally do not have a posting date.
+ */
+export function creditBillEffectiveDate(entry: {
+  type?: string | null;
+  date?: Date | null;
+  postedAt?: Date | null;
+}) {
+  if (
+    (entry.type === TransactionType.expense || entry.type === TransactionType.income) &&
+    entry.postedAt
+  ) {
+    return entry.postedAt;
+  }
+  return entry.date ?? null;
+}
+
+/**
+ * Build the Prisma date predicate used by credit-bill cycle queries. Prisma
+ * cannot express a per-row COALESCE in a normal date filter, so expense and
+ * income rows are split into posted-date and legacy date-fallback branches.
+ */
+export function creditBillDateRangeWhere(
+  start: Date,
+  endExclusive: Date,
+): Prisma.TxRecordWhereInput {
+  const postedDateTypes = [TransactionType.expense, TransactionType.income];
+  const dateRange = { gte: start, lt: endExclusive };
+  return {
+    OR: [
+      { type: { in: postedDateTypes }, postedAt: dateRange },
+      { type: { in: postedDateTypes }, postedAt: null, date: dateRange },
+      { type: { notIn: postedDateTypes }, date: dateRange },
+    ],
+  };
 }
 
 /**

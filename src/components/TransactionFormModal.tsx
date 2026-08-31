@@ -389,6 +389,7 @@ export function TransactionFormModal({
   } | null>(null);
   const [fromAccountIdEdited, setFromAccountIdEdited] = useState(false);
   const [categoryList, setCategoryList] = useState(expenseCategories);
+  const [editCategoryFallback, setEditCategoryFallback] = useState<CategoryOption | null>(null);
   const [categoryNestedOpen, setCategoryNestedOpen] = useState(false);
   const [accountNestedOpen, setAccountNestedOpen] = useState(false);
   const [counterpartyNestedOpen, setCounterpartyNestedOpen] = useState(false);
@@ -626,9 +627,15 @@ export function TransactionFormModal({
 
   useEffect(() => {
     const nextCategoryList = txType === "income" ? incomeCategories : txType === "advance" ? (advanceCategories ?? []) : expenseCategories;
-    setCategoryList(nextCategoryList);
-    setCategoryId((current) => current && nextCategoryList.some((c) => c.id === current) ? current : "");
-  }, [txType, incomeCategories, advanceCategories, expenseCategories]);
+    const fallback = editCategoryFallback && editCategoryFallback.type === currentCategoryType
+      ? editCategoryFallback
+      : null;
+    setCategoryList(() => {
+      if (!fallback || nextCategoryList.some((category) => category.id === fallback.id)) return nextCategoryList;
+      return [...nextCategoryList, fallback];
+    });
+    setCategoryId((current) => current && (nextCategoryList.some((c) => c.id === current) || fallback?.id === current) ? current : "");
+  }, [currentCategoryType, editCategoryFallback, txType, incomeCategories, advanceCategories, expenseCategories]);
 
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
@@ -1142,6 +1149,7 @@ export function TransactionFormModal({
       setToAccountId("");
     }
     setCategoryId("");
+    setEditCategoryFallback(null);
     setFixedAssetLinked(false);
     setFixedAssetAccountId("");
     setFixedAssetAssetId("");
@@ -1225,6 +1233,7 @@ export function TransactionFormModal({
         setFromAccountIdEdited(true);
       }
       setCategoryId("");
+      setEditCategoryFallback(null);
     } else if ((currentType === "transfer" || currentType === "fx") && nextType !== "transfer" && nextType !== "fx") {
       const transferFromAccountId = fromAccountId || editOriginalTransferAccounts?.fromAccountId || "";
       const transferToAccountId = toAccountId || editOriginalTransferAccounts?.toAccountId || "";
@@ -1405,6 +1414,7 @@ export function TransactionFormModal({
         fundProductType?: string;
         tagIds?: string[];
         tags?: EditTagOption[];
+        categoryName?: string;
         fixedAssetAccountId?: string;
         fixedAssetAssetId?: string;
         fixedAssetLinked?: boolean;
@@ -1443,6 +1453,9 @@ export function TransactionFormModal({
       );
       setNote(detail.note ?? "");
       setCounterpartyInstitutionId(detail.counterpartyInstitutionId ?? "");
+      setEditCategoryFallback(detail.categoryId && detail.categoryName
+        ? { id: detail.categoryId, label: detail.categoryName, parentId: null, type: detail.type === "income" ? "income" : "expense" }
+        : null);
       const detailTags = normalizeEditTagOptions(detail.tags);
       const nextTagIds = detail.tagIds?.length ? detail.tagIds : detailTags.map((tag) => tag.id);
       setTagList((prev) => {

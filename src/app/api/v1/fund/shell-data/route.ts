@@ -2,10 +2,10 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { computePositionDisplay } from "@/lib/invest-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { loadFixedAssetPositionDisplay, loadFixedAssetTransactionEntries } from "@/lib/server/cached-data";
 import { loadFundTransactionEntryLike } from "@/lib/fund/transactions";
 import {
   loadPreciousMetalTransactionEntryLike,
-  loadPropertyTransactionEntryLike,
   loadWealthTransactionEntryLike,
 } from "@/lib/server/business-transaction-entries";
 
@@ -33,7 +33,9 @@ export async function GET(req: Request) {
     }
 
     // Compute positions
-    const positionDisplay = await computePositionDisplay(ctx, accountId);
+    const positionDisplay = account.investProductType === "property"
+      ? await loadFixedAssetPositionDisplay(JSON.stringify(hidFilter), accountId)
+      : await computePositionDisplay(ctx, accountId);
 
     const selectedFundCode =
       account.investProductType === "wealth"
@@ -58,10 +60,10 @@ export async function GET(req: Request) {
               householdId: ctx.householdId,
             })
           : account.investProductType === "property"
-            ? await loadPropertyTransactionEntryLike({
-                accountIds: [accountId],
-                householdId: ctx.householdId,
-              })
+            ? await loadFixedAssetTransactionEntries(
+                ctx.householdId,
+                JSON.stringify([accountId]),
+              )
           : await loadFundTransactionEntryLike({
               accountId,
               householdId: ctx.householdId,
@@ -109,8 +111,9 @@ export async function GET(req: Request) {
     const sortedCleared = [...positionDisplay.clearedPositions].sort((a, b) => b.clearedDate.localeCompare(a.clearedDate));
     const totalMarketValue = sortedPositions.reduce((sum, p) => sum + p.marketValue, 0);
     const totalCost = sortedPositions.reduce((sum, p) => sum + p.cost, 0);
-    const totalHistoricalProfit = sortedPositions.reduce((sum, p) => sum + p.historicalProfit, 0)
-      + sortedCleared.reduce((sum, p) => sum + p.historicalProfit, 0);
+    const positionHistoricalProfit = sortedPositions.reduce((sum, p) => sum + p.historicalProfit, 0);
+    const clearedHistoricalProfit = sortedCleared.reduce((sum, p) => sum + p.historicalProfit, 0);
+    const totalHistoricalProfit = positionHistoricalProfit + clearedHistoricalProfit;
 
     return NextResponse.json({
       ok: true,
@@ -122,6 +125,8 @@ export async function GET(req: Request) {
       selectedWealthProductId: account.investProductType === "wealth" ? selectedFundCode : "",
       totalMarketValue,
       totalCost,
+      positionHistoricalProfit,
+      clearedHistoricalProfit,
       totalHistoricalProfit,
       confirmDaysMap,
       feeRateMap,

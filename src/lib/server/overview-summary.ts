@@ -1,13 +1,16 @@
 import { AccountKind, TransactionType } from "@prisma/client";
 
 import { buildAccountDisplayOption, DEFAULT_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
+import { normalizeCurrency } from "@/lib/currency";
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
+import { isFixedAssetAccountLike } from "@/lib/fixed-asset";
 import { translate } from "@/lib/i18n-core";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { computeDebtDisplaySummary } from "@/lib/server/debt-display-summary";
+import { getConversionRate, getHouseholdBaseCurrency, type ConversionRate } from "@/lib/server/fx-rates";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { isLegacyDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { getIncomeExpenseStatisticAmount } from "@/lib/transaction-statistics";
@@ -32,9 +35,19 @@ export type AccountListRow = {
   id: string;
   name: string;
   kind: string;
+  /** Display balance in the account's own currency. */
   balance: number;
   groupName: string;
   institutionName: string;
+  /** Currency the account is denominated in. */
+  currency: string;
+  /** Same balance restated in the household base currency; null when no rate is available. */
+  convertedBalance: number | null;
+  /** Rate used for the conversion; null when the rate is missing. */
+  fxRate: number | null;
+  fxRateDate: string | null;
+  /** True when the account currency differs from the base currency and no rate was available. */
+  fxRateMissing: boolean;
 };
 
 export type CreditAccountRow = AccountListRow & {
@@ -48,6 +61,11 @@ export type CreditAccountRow = AccountListRow & {
   paid: number;
   remain: number;
   dueDate: string | null;
+  /** Base-currency mirrors; null when the card's currency has no rate. */
+  convertedCreditLimit: number | null;
+  convertedCurrentBill: number | null;
+  convertedPaid: number | null;
+  convertedCurrentAmount: number | null;
 };
 
 export type AccountTypeTotals = {
@@ -58,6 +76,8 @@ export type AccountTypeTotals = {
   investmentMarketValue: number;
   investmentCost: number;
   investmentFloatingPnL: number;
+  fixedAssetMarketValue: number;
+  fixedAssetCost: number;
   creditUsed: number;
   creditLimit: number;
   creditAvailable: number;
@@ -73,14 +93,39 @@ export type AccountTypeTotals = {
   totalNetWorth: number;
 };
 
+export type FixedAssetRow = {
+  accountId: string;
+  name: string;
+  assetType: string | null;
+  groupName: string;
+  /** Market value in the account's own currency. */
+  marketValue: number;
+  cost: number;
+  floatingPnL: number;
+  floatingPnLRate: number;
+  currency: string;
+  /** Market value restated in the household base currency; null when no rate is available. */
+  convertedMarketValue: number | null;
+  fxRate: number | null;
+  fxRateDate: string | null;
+  fxRateMissing: boolean;
+};
+
 export type TopPositionRow = {
   accountId?: string;
   investProductType?: string | null;
   fundCode: string;
   name: string;
+  /** Values in the account's own currency. */
   marketValue: number;
   floatingPnL: number;
   floatingPnLRate: number;
+  currency?: string;
+  /** Base-currency mirrors; null when the account currency has no rate. */
+  convertedMarketValue?: number | null;
+  convertedFloatingPnL?: number | null;
+  fxRate?: number | null;
+  fxRateMissing?: boolean;
 };
 
 export type OverviewSummary = {
@@ -110,11 +155,73 @@ export type OverviewSummary = {
   investmentCost: number;
   investmentFloatingPnL: number;
   investmentFloatingPnLRate: number;
+  fixedAssetAccountList: FixedAssetRow[];
+  fixedAssetCount: number;
+  fixedAssetMarketValue: number;
+  fixedAssetCost: number;
+  fixedAssetFloatingPnL: number;
+  fixedAssetFloatingPnLRate: number;
   insuranceAsset: number;
+  baseCurrency: string;
+  missingFxCurrencies: string[];
 };
 
 function dateToIso(date: Date | null | undefined) {
   return date ? date.toISOString().slice(0, 10) : null;
+}
+
+export type FxConverter = {
+  baseCurrency: string;
+  /** Restate an amount into the base currency; null when no rate is available (never 1:1). */
+  convert: (amount: number, currency?: string | null) => number | null;
+  /** Same as convert, but missing-rate amounts collapse to 0 so they stay out of totals. */
+  convertForTotal: (amount: number, currency?: string | null) => number;
+  rateOf: (currency?: string | null) => ConversionRate | null;
+  isMissing: (currency?: string | null) => boolean;
+  missingCurrencies: string[];
+};
+
+/**
+ * Build a converter that restates amounts into the household base currency.
+ *
+ * Overview numbers sit side by side and are summed into one net worth, so they have to
+ * share a currency. Accounts keep their own currency, so every balance is converted with
+ * the household FX rate. When a rate is missing the amount is reported as `null` and kept
+ * out of the totals instead of being silently treated as if 1 unit equalled 1 unit.
+ */
+async function buildFxConverter(householdId: string, currencies: Iterable<string | null | undefined>): Promise<FxConverter> {
+  const baseCurrency = await getHouseholdBaseCurrency(householdId);
+  const sources = Array.from(new Set(Array.from(currencies).map((currency) => normalizeCurrency(currency))));
+  const rateRows = await Promise.all(
+    sources.map((fromCurrency) =>
+      getConversionRate({ householdId, fromCurrency, toCurrency: baseCurrency, refreshMissing: true }),
+    ),
+  );
+  const rateByCurrency = new Map(rateRows.map((row) => [row.fromCurrency, row]));
+
+  const rateOf = (currency?: string | null) => {
+    const from = normalizeCurrency(currency);
+    if (from === baseCurrency) {
+      return { fromCurrency: from, toCurrency: baseCurrency, rate: 1, rateDate: null, source: "same_currency", missing: false } satisfies ConversionRate;
+    }
+    const row = rateByCurrency.get(from);
+    if (!row || row.rate == null || !Number.isFinite(row.rate)) return null;
+    return row;
+  };
+
+  const convert = (amount: number, currency?: string | null) => {
+    const rate = rateOf(currency)?.rate;
+    return rate == null ? null : amount * rate;
+  };
+
+  return {
+    baseCurrency,
+    convert,
+    convertForTotal: (amount, currency) => convert(amount, currency) ?? 0,
+    rateOf,
+    isMissing: (currency?: string | null) => rateOf(currency) == null,
+    missingCurrencies: Array.from(new Set(rateRows.filter((row) => row.rate == null).map((row) => row.fromCurrency))),
+  };
 }
 
 function buildDistribution(rows: AccountListRow[], language: DisplayLanguage) {
@@ -122,7 +229,7 @@ function buildDistribution(rows: AccountListRow[], language: DisplayLanguage) {
   for (const kind of DAILY_KIND_ORDER) totals.set(kind, 0);
 
   for (const row of rows) {
-    totals.set(row.kind, (totals.get(row.kind) ?? 0) + row.balance);
+    totals.set(row.kind, (totals.get(row.kind) ?? 0) + (row.convertedBalance ?? 0));
   }
 
   const totalAbs = Array.from(totals.values()).reduce((sum, value) => sum + Math.abs(value), 0);
@@ -159,6 +266,8 @@ export async function computeOverviewSummary(
       kind: true,
       groupId: true,
       balance: true,
+      currency: true,
+      fixedAssetType: true,
       creditLimit: true,
       billingDay: true,
       repaymentDay: true,
@@ -172,8 +281,19 @@ export async function computeOverviewSummary(
     orderBy: [{ kind: "asc" }, { name: "asc" }],
   });
 
+  const fx = await buildFxConverter(
+    ctx.householdId,
+    accounts.map((account) => account.currency),
+  );
+
+  const currencyOf = (account: { currency?: string | null }) => normalizeCurrency(account.currency);
+
   const legacyDepositAccounts = accounts.filter(isLegacyDepositAccount);
   const pureInvestmentAccounts = accounts.filter(isPureInvestmentAccount);
+  // Fixed assets are stored as investment + property accounts for compatibility, but they
+  // are shown in their own overview card instead of being mixed into the investment totals.
+  const fixedAssetAccounts = pureInvestmentAccounts.filter(isFixedAssetAccountLike);
+  const investmentOnlyAccounts = pureInvestmentAccounts.filter((account) => !isFixedAssetAccountLike(account));
   const creditAccounts = accounts.filter((account) => account.kind === AccountKind.bank_credit);
   const debtAccounts = accounts.filter((account) => account.kind === AccountKind.loan);
   const insuranceAccounts = accounts.filter((account) => account.kind === AccountKind.insurance);
@@ -192,6 +312,7 @@ export async function computeOverviewSummary(
     ...legacyDepositAccounts.map((account) => ({ ...account, summaryKind: "deposit" })),
   ];
   const dailyAccountIds = dailyAccounts.map((account) => account.id);
+  const dailyCurrencyByAccountId = new Map(dailyAccounts.map((account) => [account.id, currencyOf(account)]));
   const dailyAndDebtDisplayBalanceByAccountId = await computeAccountDisplayBalances(
     [...dailyAccounts, ...debtAccounts].map((account) => ({
       id: account.id,
@@ -201,7 +322,7 @@ export async function computeOverviewSummary(
     })),
     hidFilter,
   );
-  const debtDisplaySummary = await computeDebtDisplaySummary(ctx);
+  const debtDisplaySummary = await computeDebtDisplaySummary(ctx, fx);
 
   let monthIncome = 0;
   let monthExpense = 0;
@@ -221,14 +342,16 @@ export async function computeOverviewSummary(
       const amount = toNumber(entry.amount);
       const isToDaily = dailyAccountIds.includes(entry.toAccountId ?? "");
       const isFromDaily = dailyAccountIds.includes(entry.accountId);
+      const convertFor = (value: number, accountId: string | null | undefined) =>
+        fx.convertForTotal(value, dailyCurrencyByAccountId.get(accountId ?? ""));
 
       if (entry.type === TransactionType.income && isToDaily) {
-        monthIncome += getIncomeExpenseStatisticAmount(entry.type, amount);
+        monthIncome += convertFor(getIncomeExpenseStatisticAmount(entry.type, amount), entry.toAccountId);
       } else if (entry.type === TransactionType.expense && isFromDaily) {
-        monthExpense += getIncomeExpenseStatisticAmount(entry.type, amount);
+        monthExpense += convertFor(getIncomeExpenseStatisticAmount(entry.type, amount), entry.accountId);
       } else if (entry.type === TransactionType.transfer) {
-        if (isToDaily && !isFromDaily) monthIncome += Math.abs(amount);
-        if (isFromDaily && !isToDaily) monthExpense += Math.abs(amount);
+        if (isToDaily && !isFromDaily) monthIncome += Math.abs(convertFor(amount, entry.toAccountId));
+        if (isFromDaily && !isToDaily) monthExpense += Math.abs(convertFor(amount, entry.accountId));
       }
     }
   }
@@ -248,13 +371,23 @@ export async function computeOverviewSummary(
       creditCardLabelTemplate,
     );
 
+    const accountCurrency = currencyOf(account);
+    const balance =
+      dailyAndDebtDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance);
+    const rate = fx.rateOf(accountCurrency);
+
     return {
       id: account.id,
       name: display.label,
       kind: account.summaryKind,
-      balance: dailyAndDebtDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance),
+      balance,
       groupName: account.AccountGroup?.name?.trim() || translate(language, "invest.noOwner"),
       institutionName: display.institutionName,
+      currency: accountCurrency,
+      convertedBalance: fx.convert(balance, accountCurrency),
+      fxRate: rate?.rate ?? null,
+      fxRateDate: rate?.rateDate ?? null,
+      fxRateMissing: fx.isMissing(accountCurrency),
     };
   });
 
@@ -324,6 +457,9 @@ export async function computeOverviewSummary(
       },
       creditCardLabelTemplate,
     );
+    const groupCurrency = currencyOf(storageAccount);
+    const groupRate = fx.rateOf(groupCurrency);
+    const convert = (amount: number) => fx.convert(amount, groupCurrency);
     const creditLimit = groupAccounts.reduce((sum, account) => sum + toNumber(account.creditLimit), 0);
     const cycle = cycleByAccountId.get(storageId);
     const balance = cycle
@@ -343,6 +479,11 @@ export async function computeOverviewSummary(
       balance,
       groupName: storageAccount.AccountGroup?.name?.trim() || translate(language, "invest.noOwner"),
       institutionName: isConsolidatedGroup ? consolidatedInstitutionName : institutionName,
+      currency: groupCurrency,
+      convertedBalance: convert(balance),
+      fxRate: groupRate?.rate ?? null,
+      fxRateDate: groupRate?.rateDate ?? null,
+      fxRateMissing: fx.isMissing(groupCurrency),
       creditLimit,
       availableLimit: Math.max(0, creditLimit - Math.max(0, balance)),
       currentAmount,
@@ -353,6 +494,11 @@ export async function computeOverviewSummary(
       paid: toNumber(cycle?.paid),
       remain: toNumber(cycle?.cumulativeRemain),
       dueDate: dateToIso(cycle?.dueDate),
+      // Base-currency mirrors of the amounts this card renders; null when the rate is missing.
+      convertedCreditLimit: convert(creditLimit),
+      convertedCurrentBill: convert(toNumber(cycle?.effectiveBill)),
+      convertedPaid: convert(toNumber(cycle?.paid)),
+      convertedCurrentAmount: convert(currentAmount),
     };
   });
 
@@ -369,30 +515,47 @@ export async function computeOverviewSummary(
       },
       creditCardLabelTemplate,
     );
+    const accountCurrency = currencyOf(account);
+    const balance =
+      debtDisplaySummary.balanceByAccountId.get(account.id) ??
+      dailyAndDebtDisplayBalanceByAccountId.get(account.id) ??
+      toNumber(account.balance);
+    const rate = fx.rateOf(accountCurrency);
+
     return {
       id: account.id,
       name: display.label,
       kind: account.kind,
-      balance: debtDisplaySummary.balanceByAccountId.get(account.id) ?? dailyAndDebtDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance),
+      balance,
       groupName: display.groupName,
       institutionName: display.institutionName,
+      currency: accountCurrency,
+      convertedBalance: fx.convert(balance, accountCurrency),
+      fxRate: rate?.rate ?? null,
+      fxRateDate: rate?.rateDate ?? null,
+      fxRateMissing: fx.isMissing(accountCurrency),
     };
   });
 
-  const cash = dailyAccountList.filter((account) => account.kind === AccountKind.cash).reduce((sum, account) => sum + account.balance, 0);
-  const bankDebit = dailyAccountList.filter((account) => account.kind === AccountKind.bank_debit).reduce((sum, account) => sum + account.balance, 0);
-  const ewallet = dailyAccountList.filter((account) => account.kind === AccountKind.ewallet).reduce((sum, account) => sum + account.balance, 0);
-  const deposit = dailyAccountList.filter((account) => account.kind === "deposit").reduce((sum, account) => sum + account.balance, 0);
-  const other = dailyAccountList.filter((account) => account.kind === AccountKind.other).reduce((sum, account) => sum + account.balance, 0);
+  // Aggregates are base-currency sums: amounts without a rate contribute 0 instead of
+  // being added at face value, so a missing FX rate can never inflate net worth.
+  const sumConverted = (rows: AccountListRow[], predicate: (row: AccountListRow) => boolean) =>
+    rows.filter(predicate).reduce((sum, row) => sum + (row.convertedBalance ?? 0), 0);
+
+  const cash = sumConverted(dailyAccountList, (account) => account.kind === AccountKind.cash);
+  const bankDebit = sumConverted(dailyAccountList, (account) => account.kind === AccountKind.bank_debit);
+  const ewallet = sumConverted(dailyAccountList, (account) => account.kind === AccountKind.ewallet);
+  const deposit = sumConverted(dailyAccountList, (account) => account.kind === "deposit");
+  const other = sumConverted(dailyAccountList, (account) => account.kind === AccountKind.other);
 
   const loan = debtDisplaySummary.totalPayable;
   const loanReceivable = debtDisplaySummary.totalReceivable;
 
-  const creditUsedTotal = creditAccountList.reduce((sum, account) => sum + Math.max(0, account.balance), 0);
-  const creditLimitTotal = creditAccountList.reduce((sum, account) => sum + account.creditLimit, 0);
+  const creditUsedTotal = creditAccountList.reduce((sum, account) => sum + Math.max(0, account.convertedBalance ?? 0), 0);
+  const creditLimitTotal = creditAccountList.reduce((sum, account) => sum + (account.convertedCreditLimit ?? 0), 0);
   const creditAvailableTotal = Math.max(0, creditLimitTotal - creditUsedTotal);
-  const creditCurrentAmountTotal = creditAccountList.reduce((sum, account) => sum + account.currentAmount, 0);
-  const creditCurrentBillTotal = creditAccountList.reduce((sum, account) => sum + account.currentBill, 0);
+  const creditCurrentAmountTotal = creditAccountList.reduce((sum, account) => sum + (account.convertedCurrentAmount ?? 0), 0);
+  const creditCurrentBillTotal = creditAccountList.reduce((sum, account) => sum + (account.convertedCurrentBill ?? 0), 0);
 
   const liquidAssets = cash + bankDebit + ewallet + deposit + Math.max(0, other);
   const liabilities = loan + creditUsedTotal;
@@ -400,9 +563,10 @@ export async function computeOverviewSummary(
   const dailyAssetDistribution = buildDistribution(dailyAccountList, language);
 
   const investBalByAccountId = await computeInvestBalances(ctx);
-  const investmentAccountList: TopPositionRow[] = pureInvestmentAccounts
+  const investmentAccountList: TopPositionRow[] = investmentOnlyAccounts
     .map((account) => {
       const detail = investBalByAccountId.get(account.id);
+      const accountCurrency = currencyOf(account);
       const marketValue = detail?.marketValue ?? 0;
       const totalCost = detail?.totalCost ?? 0;
       const floatingPnL = detail?.floatingPnL ?? 0;
@@ -427,23 +591,79 @@ export async function computeOverviewSummary(
         marketValue,
         floatingPnL,
         floatingPnLRate: totalCost > 0 ? floatingPnL / totalCost : 0,
+        currency: accountCurrency,
+        convertedMarketValue: fx.convert(marketValue, accountCurrency),
+        convertedFloatingPnL: fx.convert(floatingPnL, accountCurrency),
+        fxRate: fx.rateOf(accountCurrency)?.rate ?? null,
+        fxRateMissing: fx.isMissing(accountCurrency),
       };
     })
-    .sort((a, b) => b.marketValue - a.marketValue);
+    .sort((a, b) => (b.convertedMarketValue ?? 0) - (a.convertedMarketValue ?? 0));
 
-  const investmentMarketValue = investmentAccountList.reduce((sum, row) => sum + row.marketValue, 0);
-  const investmentCost = pureInvestmentAccounts.reduce((sum, account) => sum + (investBalByAccountId.get(account.id)?.totalCost ?? 0), 0);
-  const investmentFloatingPnL = investmentAccountList.reduce((sum, row) => sum + row.floatingPnL, 0);
+  const investmentMarketValue = investmentAccountList.reduce((sum, row) => sum + (row.convertedMarketValue ?? 0), 0);
+  const investmentCost = investmentOnlyAccounts.reduce(
+    (sum, account) => sum + fx.convertForTotal(investBalByAccountId.get(account.id)?.totalCost ?? 0, currencyOf(account)),
+    0,
+  );
+  const investmentFloatingPnL = investmentAccountList.reduce((sum, row) => sum + (row.convertedFloatingPnL ?? 0), 0);
   const investmentFloatingPnLRate = investmentCost > 0 ? investmentFloatingPnL / investmentCost : 0;
+
+  const fixedAssetAccountList: FixedAssetRow[] = fixedAssetAccounts
+    .map((account) => {
+      const detail = investBalByAccountId.get(account.id);
+      const accountCurrency = currencyOf(account);
+      const marketValue = detail?.marketValue ?? 0;
+      const cost = detail?.totalCost ?? 0;
+      const floatingPnL = detail?.floatingPnL ?? 0;
+      const rate = fx.rateOf(accountCurrency);
+      const display = buildAccountDisplayOption(
+        {
+          id: account.id,
+          name: account.name,
+          kind: account.kind,
+          numberMasked: account.numberMasked,
+          groupId: account.groupId,
+          investProductType: account.investProductType,
+          Institution: account.Institution,
+          AccountGroup: account.AccountGroup ? { id: "", name: account.AccountGroup.name } : null,
+        },
+        creditCardLabelTemplate,
+      );
+      return {
+        accountId: account.id,
+        name: display.label,
+        assetType: account.fixedAssetType ?? null,
+        groupName: account.AccountGroup?.name?.trim() || translate(language, "invest.noOwner"),
+        marketValue,
+        cost,
+        floatingPnL,
+        floatingPnLRate: cost > 0 ? floatingPnL / cost : 0,
+        currency: accountCurrency,
+        convertedMarketValue: fx.convert(marketValue, accountCurrency),
+        fxRate: rate?.rate ?? null,
+        fxRateDate: rate?.rateDate ?? null,
+        fxRateMissing: fx.isMissing(accountCurrency),
+      };
+    })
+    .sort((a, b) => (b.convertedMarketValue ?? 0) - (a.convertedMarketValue ?? 0));
+
+  const fixedAssetMarketValue = fixedAssetAccountList.reduce((sum, row) => sum + (row.convertedMarketValue ?? 0), 0);
+  const fixedAssetCost = fixedAssetAccounts.reduce(
+    (sum, account) => sum + fx.convertForTotal(investBalByAccountId.get(account.id)?.totalCost ?? 0, currencyOf(account)),
+    0,
+  );
+  const fixedAssetFloatingPnL = fixedAssetMarketValue - fixedAssetCost;
+  const fixedAssetFloatingPnLRate = fixedAssetCost > 0 ? fixedAssetFloatingPnL / fixedAssetCost : 0;
+
   const insuranceDisplayBalanceByAccountId = await computeInsuranceAccountDisplayBalances(
     insuranceAccounts.map((account) => account.id),
     hidFilter,
   );
   const insuranceAsset = insuranceAccounts.reduce(
-    (sum, account) => sum + (insuranceDisplayBalanceByAccountId.get(account.id) ?? 0),
+    (sum, account) => sum + fx.convertForTotal(insuranceDisplayBalanceByAccountId.get(account.id) ?? 0, currencyOf(account)),
     0,
   );
-  const totalNetWorth = dailyNetWorth + investmentMarketValue + insuranceAsset;
+  const totalNetWorth = dailyNetWorth + investmentMarketValue + fixedAssetMarketValue + insuranceAsset;
 
   const accountTypeTotals: AccountTypeTotals = {
     cash,
@@ -453,6 +673,8 @@ export async function computeOverviewSummary(
     investmentMarketValue,
     investmentCost,
     investmentFloatingPnL,
+    fixedAssetMarketValue,
+    fixedAssetCost,
     creditUsed: creditUsedTotal,
     creditLimit: creditLimitTotal,
     creditAvailable: creditAvailableTotal,
@@ -478,7 +700,7 @@ export async function computeOverviewSummary(
     accountList: dailyAccountList,
     topPositions: investmentAccountList.slice(0, 5),
     investmentAccountList,
-    investmentAccountCount: pureInvestmentAccounts.length,
+    investmentAccountCount: investmentOnlyAccounts.length,
     insuranceAccountCount: insuranceAccounts.length,
     dailyNetWorth,
     dailyAssetDistribution,
@@ -495,6 +717,14 @@ export async function computeOverviewSummary(
     investmentCost,
     investmentFloatingPnL,
     investmentFloatingPnLRate,
+    fixedAssetAccountList,
+    fixedAssetCount: fixedAssetAccounts.length,
+    fixedAssetMarketValue,
+    fixedAssetCost,
+    fixedAssetFloatingPnL,
+    fixedAssetFloatingPnLRate,
     insuranceAsset,
+    baseCurrency: fx.baseCurrency,
+    missingFxCurrencies: fx.missingCurrencies,
   };
 }

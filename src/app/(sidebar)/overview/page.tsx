@@ -64,7 +64,15 @@ export default async function OverviewPage() {
       investmentCost={summary.investmentCost}
       investmentFloatingPnL={summary.investmentFloatingPnL}
       investmentFloatingPnLRate={summary.investmentFloatingPnLRate}
+      fixedAssetAccountList={summary.fixedAssetAccountList}
+      fixedAssetCount={summary.fixedAssetCount}
+      fixedAssetMarketValue={summary.fixedAssetMarketValue}
+      fixedAssetCost={summary.fixedAssetCost}
+      fixedAssetFloatingPnL={summary.fixedAssetFloatingPnL}
+      fixedAssetFloatingPnLRate={summary.fixedAssetFloatingPnLRate}
       insuranceOverview={insuranceOverview}
+      baseCurrency={summary.baseCurrency}
+      missingFxCurrencies={summary.missingFxCurrencies}
       isRedUp={isRedUp}
     />
     <div className="md:hidden">

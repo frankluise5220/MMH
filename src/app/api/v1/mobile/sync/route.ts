@@ -3,6 +3,7 @@ import { AccountKind } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { formatDateUtc, toNumber } from "@/lib/date-utils";
 import { getLatestFundNav, refreshLatestFundNav } from "@/lib/fund/navCache";
+import { getFundProfileNameMap, normalizeFundDisplayName } from "@/lib/fund/fundProfile";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { computeInvestBalances } from "@/lib/invest-balance";
@@ -486,6 +487,7 @@ export async function GET(req: Request) {
       }),
     );
     const latestNavByCode = new Map(latestNavEntries.filter((item): item is readonly [string, NonNullable<Awaited<ReturnType<typeof getLatestFundNav>>>] => item != null));
+    const fundProfileNameByCode = await getFundProfileNameMap(fundCodes);
 
     const fundNav = fundCodes.length
       ? await prisma.fundNavCache.findMany({
@@ -739,6 +741,16 @@ export async function GET(req: Request) {
         regularInvestPlans: regularInvestPlanBatch.map((item) => {
           const task = decodeScheduledTaskMemo(item.memo);
           const taskType = normalizeScheduledTaskType(item.taskType ?? task.type);
+          const itemFundCode = String(item.fundCode ?? "").trim();
+          const isFundRegularInvest = taskType === "fund_regular_invest" && /^\d{6}$/.test(itemFundCode);
+          const displayFundName = isFundRegularInvest
+            ? fundProfileNameByCode.get(itemFundCode)
+              ?? normalizeFundDisplayName(itemFundCode, item.fundName)
+              ?? normalizeFundDisplayName(itemFundCode, item.targetName)
+              ?? normalizeFundDisplayName(itemFundCode, latestNavByCode.get(itemFundCode)?.name)
+              ?? itemFundCode
+            : item.fundName ?? "";
+          const displayTargetName = isFundRegularInvest ? displayFundName : item.targetName;
           return {
             id: item.id,
             householdId: item.householdId ?? "",
@@ -749,15 +761,15 @@ export async function GET(req: Request) {
             cashAccountName: item.Account_RegularInvestPlan_cashAccountIdToAccount?.name ?? item.cashAccountName,
             cashAccountInstitutionName: item.Account_RegularInvestPlan_cashAccountIdToAccount?.Institution?.name ?? null,
             taskType,
-            taskTitle: item.targetName ?? task.title ?? null,
-            targetName: item.targetName,
+            taskTitle: isFundRegularInvest ? displayFundName : item.targetName ?? task.title ?? null,
+            targetName: displayTargetName,
             insuranceProductName: item.insuranceProductName,
             taskCategoryId: task.categoryId ?? null,
             taskCategoryName: task.categoryName ?? null,
             taskTypeLabel: scheduledTaskTypeLabel(taskType),
             taskNote: task.note ?? null,
             fundCode: item.fundCode,
-            fundName: item.fundName ?? (taskType === "fund_regular_invest" ? latestNavByCode.get(item.fundCode)?.name ?? "" : ""),
+            fundName: displayFundName,
             fundProductType: item.fundProductType,
             amount: toNumber(item.amount),
             intervalUnit: item.intervalUnit,

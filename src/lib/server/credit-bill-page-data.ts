@@ -10,6 +10,8 @@ import {
   buildCreditCardCyclePersistRows,
   buildCreditBillCycleDefinitionsFromBillingDayRules,
   computeCreditBillCascade,
+  creditBillDateRangeWhere,
+  creditBillEffectiveDate,
   cycleForStatementMonthWithBillingDayRules,
   fillMissingCreditBillSummaries,
   hasCreditCardCycleLockSource,
@@ -320,11 +322,12 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
             where: {
               AND: [billScope!, { deletedAt: null }],
             },
-            select: { date: true },
+            select: { date: true, postedAt: true, type: true },
           });
           const candidateMonths = new Set<string>();
           for (const row of rows) {
-            const date = row.date;
+            const date = creditBillEffectiveDate(row);
+            if (!date) continue;
             candidateMonths.add(`${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`);
             const nextMonth = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1));
             candidateMonths.add(`${nextMonth.getUTCFullYear()}-${String(nextMonth.getUTCMonth() + 1).padStart(2, "0")}`);
@@ -338,7 +341,9 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
           });
           const months = new Set<string>();
           for (const row of rows) {
-            const timestamp = row.date.getTime();
+            const date = creditBillEffectiveDate(row);
+            if (!date) continue;
+            const timestamp = date.getTime();
             const matchedMonth = Array.from(cycleByMonth.entries()).find(([, cycle]) => (
               timestamp >= cycle.start.getTime() && timestamp < addDaysUtc(cycle.end, 1).getTime()
             ))?.[0];
@@ -409,7 +414,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
           }
 
           const cycleMatch = {
-            date: { gte: start, lt: addDaysUtc(end, 1) },
+            ...creditBillDateRangeWhere(start, addDaysUtc(end, 1)),
             deletedAt: null,
           };
           const repaymentMatch = {
@@ -619,13 +624,16 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
                 billScope,
                 { deletedAt: null },
                 {
-                  OR: [{ accountId: { in: billAccountIds } }, { toAccountId: { in: billAccountIds } }],
-                  date: { gte: rangeStart, lt: rangeEndExclusive },
+                  AND: [
+                    { OR: [{ accountId: { in: billAccountIds } }, { toAccountId: { in: billAccountIds } }] },
+                    creditBillDateRangeWhere(rangeStart, rangeEndExclusive),
+                  ],
                 },
               ],
             },
             select: {
               date: true,
+              postedAt: true,
               amount: true,
               accountId: true,
               toAccountId: true,
@@ -643,7 +651,8 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
         { outflow: 0, inflow: 0 },
       ]),
     );
-    const findMonthByDate = (date: Date) => {
+    const findMonthByDate = (date: Date | null) => {
+      if (!date) return undefined;
       const timestamp = date.getTime();
       return creditCycleDefinitions.find(
         (cycle) => timestamp >= cycle.start.getTime() && timestamp < cycle.endExclusive.getTime(),
@@ -655,7 +664,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
       if (!side) continue;
       const signedAmount = signedCreditBillAmountFromCardSide(row, billAccountIdSet);
       if (signedAmount == null) continue;
-      const month = findMonthByDate(row.date);
+      const month = findMonthByDate(creditBillEffectiveDate(row));
       if (!month) continue;
       const monthTotals = totals.get(month);
       if (!monthTotals) continue;
@@ -908,7 +917,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
           const cycleMatch = {
             type: { in: [TransactionType.expense, TransactionType.income, TransactionType.transfer, TransactionType.investment] },
             deletedAt: null,
-            date: { gte: start, lt: addDaysUtc(end, 1) },
+            ...creditBillDateRangeWhere(start, addDaysUtc(end, 1)),
           };
           const cycleEntries = await prisma.txRecord.findMany({
             where: {

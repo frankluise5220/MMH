@@ -41,6 +41,7 @@ import { INCOME_EXPENSE_INSTITUTION_TYPES } from "@/lib/institution-rules";
 import { upsertStatementCategoryRuleFromTx } from "@/lib/statement/category-rules";
 import { upsertStatementInstitutionRuleFromUserEdit } from "@/lib/statement/recognition-rules";
 import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
+import { creditBillEffectiveDate } from "@/lib/credit/billing";
 
 /**
  * POST /api/v1/record/ingest
@@ -441,13 +442,19 @@ async function attachTags(ctx: ImportContext, tx: Db, entryId: string, tags?: st
   await createManySkipDuplicatesCompat(tx.entryTag, tagIds.map((tagId) => ({ entryId, tagId })));
 }
 
-function statementMonthForAccountMeta(ctx: ImportContext, accountId: string | null, date: Date) {
+function statementMonthForAccountMeta(
+  ctx: ImportContext,
+  accountId: string | null,
+  date: Date,
+  type?: string | null,
+  postedAt?: Date | null,
+) {
   if (!accountId) return null;
   const meta = ctx.accountMetaById.get(accountId);
   if (!meta) return null;
   if (meta.kind !== AccountKind.bank_credit && meta.kind !== AccountKind.loan) return null;
   if (!meta.billingDay) return null;
-  return toStatementMonth(date, meta.billingDay);
+  return toStatementMonth(creditBillEffectiveDate({ type, date, postedAt }) ?? date, meta.billingDay);
 }
 
 async function accountMetaFor(ctx: ImportContext, tx: Db, accountId: string | null) {
@@ -609,7 +616,7 @@ async function buildTransactionRow(ctx: ImportContext, item: ParsedItem, default
   const amount = accountSideAmountForImportItem(item);
   const postedAt = item.type === "expense" || item.type === "income" ? (parseOptionalDateTime(item.postedAt) ?? date) : null;
   const cat = resolveCategorySnapshotFromContext(ctx, { categoryName: item.category, type: item.type === "income" ? "income" : item.type === "expense" ? "expense" : null });
-  const stmtMonth2 = accountId ? statementMonthForAccountMeta(ctx, accountId, date) : null;
+  const stmtMonth2 = accountId ? statementMonthForAccountMeta(ctx, accountId, date, item.type, postedAt) : null;
   const currency2 = normalizeCurrency(meta?.currency);
   return { type: item.type, amount, date, postedAt,
     accountId: accountId ?? "", accountName: storedAccountName || "未识别账户",
@@ -733,7 +740,6 @@ async function createTransactionFromItem(ctx: ImportContext, tx: Db, item: Parse
     categoryName: item.category,
     type: item.type === "income" ? "income" : item.type === "expense" ? "expense" : null,
   });
-  const statementMonth = statementMonthForAccountMeta(ctx, accountId, date);
   const accountMeta = await accountMetaFor(ctx, tx, accountId);
   assertImportAccountIdentity(
     ctx,
@@ -748,6 +754,7 @@ async function createTransactionFromItem(ctx: ImportContext, tx: Db, item: Parse
   const sign = item.type === "income" ? 1 : -1;
   const amount = sign * Math.abs(item.amount);
   const postedAt = item.type === "expense" || item.type === "income" ? (parseOptionalDateTime(item.postedAt) ?? date) : null;
+  const statementMonth = statementMonthForAccountMeta(ctx, accountId, date, item.type, postedAt);
 
   // For investment transactions, detect fund fields
   let fundCode: string | null = null;
@@ -1131,7 +1138,7 @@ export async function POST(req: Request) {
           const storedName = accountId && meta ? meta.name : accountName;
           const postedAt = item.type === "expense" || item.type === "income" ? (parseOptionalDateTime(item.postedAt) ?? date) : null;
           const cat = resolveCategorySnapshotFromContext(ctx, { categoryName: item.category, type: item.type === "income" ? "income" : item.type === "expense" ? "expense" : null });
-          const stmtMonth = accountId ? statementMonthForAccountMeta(ctx, accountId, date) : null;
+          const stmtMonth = accountId ? statementMonthForAccountMeta(ctx, accountId, date, item.type, postedAt) : null;
           batchData.push({
             type: item.type, amount: accountSideAmountForImportItem(item), date, postedAt,
             accountId: accountId || "", accountName: storedName || "未识别账户",

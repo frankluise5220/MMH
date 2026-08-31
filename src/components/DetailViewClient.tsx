@@ -263,6 +263,14 @@ function formatType(type: string, t: (key: string) => string) {
   return type;
 }
 
+function propertyIncomeExpenseType(entry: DetailEntry): "income" | "expense" | null {
+  if (entry.type === "income" || entry.type === "expense") return entry.type;
+  const amount = toNumber(entry.amount);
+  if (amount > 0) return "income";
+  if (amount < 0) return "expense";
+  return null;
+}
+
 function entryCurrency(entry: { currency?: string | null }) {
   return String(entry.currency ?? "CNY").trim().toUpperCase() || "CNY";
 }
@@ -475,11 +483,6 @@ function investmentCategoryLabel(
     if (subtype === "redeem") return t("detailView.metalSell");
     if (subtype === "buy") return t("detailView.metalBuy");
   }
-  if (productType === "property") {
-    if (subtype === "sale" || subtype === "redeem" || subtype === "switch_out") return t("propertyForm.action.sale");
-    if (subtype === "improvement") return t("propertyForm.action.improvement");
-    if (subtype === "purchase" || subtype === "buy") return t("propertyForm.action.purchase");
-  }
   if (productType === "fund" || productType === "money" || !productType) {
     if (subtype === "buy" && source === "regular_invest") return t("detailView.fundRegularInvest");
     if (subtype === "buy" && source === "dividend") return t("detailView.dividendInvest");
@@ -656,6 +659,7 @@ export function DetailViewClient({
       (entry.toAccountId ? investmentProductTypeByAccountId[entry.toAccountId] : undefined) ??
       (entry.accountId ? investmentProductTypeByAccountId[entry.accountId] : undefined) ??
       null;
+    if (entryFundProductType === "property" && entry.type === "investment") return systemCategoryLabel(entry.categoryName, t);
     if (entry.type === "investment") return investmentCategoryLabel(entry, entryFundProductType, t);
     if (isCreditCardRepaymentDisplayEntry(entry)) return t("transaction.category.creditCardRepayment");
     if (isLicensedInsuranceEntry(entry)) return getInsuranceDetailCategoryName(entry);
@@ -1197,6 +1201,10 @@ export function DetailViewClient({
           null;
         const displaySource = entryFundProductType === "deposit" ? "deposit" : e.source;
         if (isDebtActivityEntry(e, accountOptionById)) return t("transaction.type.transfer");
+        if (entryFundProductType === "property" && e.type === "investment") {
+          const ordinaryType = propertyIncomeExpenseType(e);
+          if (ordinaryType) return formatType(ordinaryType, t);
+        }
         if (e.type === "investment") return t("transaction.type.investment");
         const balanceTarget = getBalanceReconcileTarget(e);
         return activityLabel(e.type, e.fundSubtype, displaySource, t, balanceTarget);
@@ -1210,11 +1218,14 @@ export function DetailViewClient({
           null;
         const displaySource = entryFundProductType === "deposit" ? "deposit" : e.source;
         const balanceTarget = getBalanceReconcileTarget(e);
+        const ordinaryPropertyType = entryFundProductType === "property" && e.type === "investment" ? propertyIncomeExpenseType(e) : null;
         const actLabel = isDebtActivity
           ? t("transaction.type.transfer")
-          : e.type === "investment"
-          ? t("transaction.type.investment")
-          : activityLabel(e.type, e.fundSubtype, displaySource, t, balanceTarget);
+          : ordinaryPropertyType
+            ? formatType(ordinaryPropertyType, t)
+            : e.type === "investment"
+              ? t("transaction.type.investment")
+              : activityLabel(e.type, e.fundSubtype, displaySource, t, balanceTarget);
         return (
           <>
             {balanceTarget != null && e.source === BALANCE_INITIALIZATION_SOURCE ? (

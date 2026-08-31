@@ -21,7 +21,7 @@ function addDays(value: string, delta: number) {
   return `${nextYear}-${nextMonth}-${nextDay}`;
 }
 
-export function DateStepper({ value, onChange, onBlur, onKeyDown, min = "1900-01-01", max = "2999-12-31", className, disabled, name, autoFocus }: {
+export function DateStepper({ value, onChange, onBlur, onKeyDown, min = "1900-01-01", max = "2999-12-31", className, disabled, name, autoFocus, compact = false }: {
   value: string;
   onChange: (v: string) => void;
   onBlur?: () => void;
@@ -32,6 +32,7 @@ export function DateStepper({ value, onChange, onBlur, onKeyDown, min = "1900-01
   disabled?: boolean;
   name?: string;
   autoFocus?: boolean;
+  compact?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -76,14 +77,14 @@ export function DateStepper({ value, onChange, onBlur, onKeyDown, min = "1900-01
           setPickerOpen(false);
           onBlur?.();
         }}
-        className={`form-input date-stepper-input min-w-0 pr-12 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500 invalid:border-rose-400 invalid:text-rose-700 invalid:focus:border-rose-400 ${className ?? ""}`}
+        className={`form-input date-stepper-input min-w-0 ${compact ? "pr-1" : "pr-12"} disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500 invalid:border-rose-400 invalid:text-rose-700 invalid:focus:border-rose-400 ${className ?? ""}`}
       />
       <button
         type="button"
         onMouseDown={(event) => event.preventDefault()}
         onClick={togglePicker}
         disabled={disabled}
-        className="absolute bottom-px right-5 top-px flex w-7 items-center justify-center text-slate-500 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+        className={`absolute bottom-px ${compact ? "right-1" : "right-5"} top-px flex w-7 items-center justify-center text-slate-500 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40`}
         title={t("dateStepper.pickDate")}
         aria-label={t("dateStepper.pickDate")}
       >
@@ -91,6 +92,7 @@ export function DateStepper({ value, onChange, onBlur, onKeyDown, min = "1900-01
           <path d="M7 3v3M17 3v3M4.5 9h15M6.5 5h11a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-11a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
         </svg>
       </button>
+      {!compact && (
       <div className="absolute bottom-px right-px top-px flex w-5 flex-col overflow-hidden rounded-r bg-white/95">
         <button
           type="button"
@@ -113,6 +115,7 @@ export function DateStepper({ value, onChange, onBlur, onKeyDown, min = "1900-01
           <span className="rotate-90 text-[13px] leading-none">›</span>
         </button>
       </div>
+      )}
     </div>
   );
 }

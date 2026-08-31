@@ -11,7 +11,7 @@ import { replaceLoanRateAdjustmentsForAccount } from "@/lib/server/loan-rate-adj
 import { revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { executeNonFundScheduledTaskPlan } from "@/lib/server/scheduled-task-executor";
 import { encodeLoanPrepayStrategy, normalizeLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
-import { calcLoanScheduledAmount, normalizeLoanRateAdjustments } from "@/lib/loan-repayment";
+import { calcLoanScheduledAmount, isInstallmentRepaymentMethod, normalizeLoanRateAdjustments, normalizeLoanRepaymentMethod, INSTALLMENT_REPAYMENT_METHOD } from "@/lib/loan-repayment";
 import { buildMortgageLprRateAdjustments, MORTGAGE_BASE_BENCHMARK_RATE } from "@/lib/loan-lpr";
 import { decodeScheduledTaskMemo, encodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import { calcInitialScheduledRunDate } from "@/lib/scheduled-task-date";
@@ -122,10 +122,10 @@ async function resolveDebtObject(
   const sourceId = refMatch?.[2] ?? debtObjectId;
   if (sourceKind === "institution") {
     const institution = await tx.institution.findFirst({
-      where: { id: sourceId, householdId, type: "bank" },
+      where: { id: sourceId, householdId, type: { in: ["bank", "debt"] } },
       select: { id: true, name: true, shortName: true, type: true },
     });
-    if (!institution) throw new Error("贷款机构只能选择银行");
+    if (!institution) throw new Error("贷款机构只能选择银行或贷款机构");
     return { ...institution, kind: "institution" as const };
   }
 
@@ -155,8 +155,7 @@ function parseDateOnlyUtc(value: string): Date | null {
   return date;
 }
 
-const INTEREST_FREE_LOAN_REPAYMENT_METHOD = "免息分期还本";
-const FIXED_LOAN_REPAYMENT_METHODS = new Set(["等额本息", "等额本金", INTEREST_FREE_LOAN_REPAYMENT_METHOD, "先还利息一次性还本"]);
+const FIXED_LOAN_REPAYMENT_METHODS = new Set(["等额本息", "等额本金", INSTALLMENT_REPAYMENT_METHOD, "先还利息一次性还本"]);
 
 function parseLoanRateAdjustmentsText(value: unknown) {
   const text = String(value ?? "").trim();
@@ -207,8 +206,8 @@ export async function createDebtTransaction(formData: FormData) {
   const prepayStrategy = normalizeLoanPrepayStrategy(prepayStrategyRaw);
   const annualRateRaw = String(formData.get("annualRate") ?? "").trim();
   const mortgageLprDiscountRaw = String(formData.get("mortgageLprDiscount") ?? "").trim();
-  const repaymentMethod = String(formData.get("repaymentMethod") ?? "").trim() || "自由还款";
-  const isInterestFreeRepayment = repaymentMethod === INTEREST_FREE_LOAN_REPAYMENT_METHOD;
+  const repaymentMethod = normalizeLoanRepaymentMethod(String(formData.get("repaymentMethod") ?? "").trim());
+  const isInstallmentRepayment = isInstallmentRepaymentMethod(repaymentMethod);
   const loanYearsRaw = parseInt(String(formData.get("loanYears") ?? ""), 10);
   const repaymentIntervalMonthsRaw = parseInt(String(formData.get("repaymentIntervalMonths") ?? "1"), 10);
   const loanTotalRunsRaw = parseInt(String(formData.get("loanTotalRuns") ?? ""), 10);
@@ -251,26 +250,26 @@ export async function createDebtTransaction(formData: FormData) {
     : null;
 
   const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
-  const mortgageLprDiscount = isInterestFreeRepayment
-    ? null
-    : mortgageLprDiscountRaw
-      ? parseFloat(mortgageLprDiscountRaw)
-      : null;
+  const mortgageLprDiscount = mortgageLprDiscountRaw
+    ? parseFloat(mortgageLprDiscountRaw)
+    : null;
   if (
-    !isInterestFreeRepayment &&
     mortgageLprDiscountRaw &&
     (mortgageLprDiscount == null || !Number.isFinite(mortgageLprDiscount) || mortgageLprDiscount <= 0)
   ) {
     return { ok: false as const, error: "LPR 利率折扣不正确" };
   }
-  const annualRate = isInterestFreeRepayment
-    ? 0
-    : annualRateRaw
-      ? parseFloat(annualRateRaw)
-      : mortgageLprDiscount != null
-        ? Math.round(MORTGAGE_BASE_BENCHMARK_RATE * mortgageLprDiscount * 1000) / 1000
+  const annualRate = annualRateRaw
+    ? parseFloat(annualRateRaw)
+    : mortgageLprDiscount != null
+      ? Math.round(MORTGAGE_BASE_BENCHMARK_RATE * mortgageLprDiscount * 1000) / 1000
+      : isInstallmentRepayment
+        ? 0
         : null;
-  if (!isInterestFreeRepayment && annualRateRaw && (annualRate == null || !Number.isFinite(annualRate) || annualRate <= 0)) {
+  if (
+    annualRateRaw &&
+    (annualRate == null || !Number.isFinite(annualRate) || annualRate < 0 || (!isInstallmentRepayment && annualRate <= 0))
+  ) {
     return { ok: false as const, error: "年利率不正确" };
   }
   const acceptedLprRateEffectiveDate = acceptedLprRateEffectiveDateStr
@@ -307,7 +306,7 @@ export async function createDebtTransaction(formData: FormData) {
   const repaymentPlanAmount = calculatedPlanAmount;
 
   if (mode === "borrow_in" && isFixedRepaymentMethod) {
-    if (!isInterestFreeRepayment && (annualRate == null || !Number.isFinite(annualRate) || annualRate <= 0)) {
+    if (annualRate == null || !Number.isFinite(annualRate) || annualRate < 0 || (!isInstallmentRepayment && annualRate <= 0)) {
       return { ok: false as const, error: "固定还款方式需要填写年利率" };
     }
     if (!Number.isFinite(repaymentIntervalMonths) || repaymentIntervalMonths <= 0) {
@@ -325,11 +324,11 @@ export async function createDebtTransaction(formData: FormData) {
   }
   let historicalLoanRateAdjustments: ReturnType<typeof parseLoanRateAdjustmentsText> = [];
   try {
-    historicalLoanRateAdjustments = isInterestFreeRepayment ? [] : parseLoanRateAdjustmentsText(historicalLoanRatesText);
+    historicalLoanRateAdjustments = parseLoanRateAdjustmentsText(historicalLoanRatesText);
   } catch (error) {
     return { ok: false as const, error: error instanceof Error ? error.message : "历史利率格式不正确" };
   }
-  if (!isInterestFreeRepayment && historicalLoanRateAdjustments.length === 0 && mortgageLprDiscount != null && mortgageLprDiscount > 0) {
+  if (historicalLoanRateAdjustments.length === 0 && mortgageLprDiscount != null && mortgageLprDiscount > 0) {
     historicalLoanRateAdjustments = buildMortgageLprRateAdjustments({
       discount: mortgageLprDiscount,
       throughDate: formatDateUtc(new Date()),
@@ -411,7 +410,7 @@ export async function createDebtTransaction(formData: FormData) {
         mode === "borrow_in" &&
         !!debtAccount.institutionId &&
         !!debtAccount.Institution &&
-        debtAccount.Institution.type === "bank";
+        (debtAccount.Institution.type === "bank" || debtAccount.Institution.type === "debt");
       const isFinancedPurchaseForRecord = isInstitutionBorrow && isFinancedPurchase;
       if (editEntryId) {
         if (!["borrow_in", "repay_out", "prepay_out", "lend_out", "collect_in"].includes(mode)) {
@@ -551,7 +550,6 @@ export async function createDebtTransaction(formData: FormData) {
       }
       const shouldCreateRepaymentPlan =
         mode === "borrow_in" &&
-        isInstitutionBorrow &&
         createRepaymentPlan &&
         !!firstRepaymentDate &&
         !!repaymentPlanAmount &&
@@ -586,16 +584,16 @@ export async function createDebtTransaction(formData: FormData) {
           type: TransactionType.transfer,
           date,
           note: mode === "borrow_in"
-            ? isInstitutionBorrow
+            ? (isInstitutionBorrow || isFixedRepaymentMethod)
               ? [
-                  note || (isFinancedPurchaseForRecord ? "消费分期" : "机构借入"),
+                  note || (isFinancedPurchaseForRecord ? "消费分期" : isInstitutionBorrow ? "机构借入" : "借入"),
                   `还款方式：${repaymentMethod}`,
                   isFixedRepaymentMethod && Number.isFinite(repaymentIntervalMonths) && repaymentIntervalMonths > 0
                     ? `周期：每${repaymentIntervalMonths === 1 ? "月" : `${repaymentIntervalMonths}个月`}`
                     : "",
                   isFixedRepaymentMethod && Number.isFinite(loanTotalRuns) && loanTotalRuns > 0 ? `期数：${loanTotalRuns}` : "",
                   isFixedRepaymentMethod && annualRate != null ? `年利率：${annualRate}%` : "",
-                  isFixedRepaymentMethod && mortgageLprDiscount != null ? `LPR折扣：${mortgageLprDiscount}` : "",
+                  isInstitutionBorrow && isFixedRepaymentMethod && mortgageLprDiscount != null ? `LPR折扣：${mortgageLprDiscount}` : "",
                 ].filter(Boolean).join("；")
               : note || "借入"
             : note || null,

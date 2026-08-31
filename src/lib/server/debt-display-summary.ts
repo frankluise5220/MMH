@@ -22,13 +22,23 @@ function parseMortgageLprDiscountFromText(value?: string | null) {
 }
 
 export type DebtDisplaySummary = {
+  /** Balances in each account's own currency. */
   balanceByAccountId: Map<string, number>;
+  /** Totals in the household base currency when an `fx` converter is supplied, otherwise raw sums. */
   totalPayable: number;
   totalReceivable: number;
   net: number;
 };
 
-export async function computeDebtDisplaySummary(ctx: Pick<HouseholdContext, "householdId" | "hidFilter">): Promise<DebtDisplaySummary> {
+export type DebtDisplayFxConverter = {
+  /** Restate an amount into the base currency; missing-rate amounts must contribute 0, not 1:1. */
+  convertForTotal: (amount: number, currency?: string | null) => number;
+};
+
+export async function computeDebtDisplaySummary(
+  ctx: Pick<HouseholdContext, "householdId" | "hidFilter">,
+  fx?: DebtDisplayFxConverter | null,
+): Promise<DebtDisplaySummary> {
   const debtAccounts = await prisma.account.findMany({
     where: {
       ...ctx.hidFilter,
@@ -39,6 +49,7 @@ export async function computeDebtDisplaySummary(ctx: Pick<HouseholdContext, "hou
       id: true,
       name: true,
       balance: true,
+      currency: true,
       kind: true,
       isActive: true,
       debtDirection: true,
@@ -49,8 +60,18 @@ export async function computeDebtDisplaySummary(ctx: Pick<HouseholdContext, "hou
     },
   });
   if (debtAccounts.length === 0) {
-    return { balanceByAccountId: new Map(), totalPayable: 0, totalReceivable: 0, net: 0 };
+    return {
+      balanceByAccountId: new Map(),
+      totalPayable: 0,
+      totalReceivable: 0,
+      net: 0,
+    };
   }
+  const debtCurrencyByAccountId = new Map(debtAccounts.map((account) => [account.id, account.currency]));
+  const convertRow = (amount: number, rowAccountIds: string[]) => {
+    if (!fx) return amount;
+    return fx.convertForTotal(amount, debtCurrencyByAccountId.get(rowAccountIds[0]) ?? null);
+  };
 
   const debtAccountIds = debtAccounts.map((account) => account.id);
   const cashDisplayBalanceByAccountId = await computeAccountDisplayBalances(
@@ -179,8 +200,9 @@ export async function computeDebtDisplaySummary(ctx: Pick<HouseholdContext, "hou
     const value = Number.isFinite(row.remainingTotal) && Math.abs(row.remainingTotal) > 0
       ? row.remainingTotal
       : row.net;
-    if (value < 0) totalPayable += Math.abs(value);
-    if (value > 0) totalReceivable += value;
+    const totalValue = convertRow(value, row.accountIds);
+    if (totalValue < 0) totalPayable += Math.abs(totalValue);
+    if (totalValue > 0) totalReceivable += totalValue;
     if (row.accountIds.length === 1) {
       balanceByAccountId.set(row.accountIds[0], value);
       continue;

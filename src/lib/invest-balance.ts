@@ -13,6 +13,7 @@ import { toNumber } from "@/lib/date-utils";
 import { AccountKind, FundCashFlowKind, FundSubtype } from "@prisma/client";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { getLatestFundNavMap } from "@/lib/fund/navCache";
+import { getFundProfileNameMap, normalizeFundDisplayName } from "@/lib/fund/fundProfile";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { optionalPrismaFindMany } from "@/lib/server/optional-prisma-delegate";
@@ -72,6 +73,8 @@ export type PositionDisplayResult = {
   clearedPositions: ClearedPositionRow[];
   totalMarketValue: number;
   totalCost: number;
+  positionHistoricalProfit: number;
+  clearedHistoricalProfit: number;
   totalHistoricalProfit: number;
   cashBalance?: number;
   cashAccountId?: string | null;
@@ -235,8 +238,10 @@ function buildPropertyPositionDisplay(propertyAssets: PropertyAssetDisplayRow[])
     }));
   const totalMarketValue = positions.reduce((sum, row) => sum + row.marketValue, 0);
   const totalCost = positions.reduce((sum, row) => sum + row.cost, 0);
-  const totalHistoricalProfit = clearedPositions.reduce((sum, row) => sum + row.historicalProfit, 0);
-  return { positions, clearedPositions, totalMarketValue, totalCost, totalHistoricalProfit };
+  const positionHistoricalProfit = positions.reduce((sum, row) => sum + row.historicalProfit, 0);
+  const clearedHistoricalProfit = clearedPositions.reduce((sum, row) => sum + row.historicalProfit, 0);
+  const totalHistoricalProfit = positionHistoricalProfit + clearedHistoricalProfit;
+  return { positions, clearedPositions, totalMarketValue, totalCost, positionHistoricalProfit, clearedHistoricalProfit, totalHistoricalProfit };
 }
 
 async function loadDisplayPendingCostByHoldingKey(ctx: HouseholdContext, accountIds: string[]) {
@@ -511,7 +516,7 @@ export const computePositionDisplay = cache(
     select: { investProductType: true, institutionId: true },
   });
   if (!account) {
-    return { positions: [], clearedPositions: [], totalMarketValue: 0, totalCost: 0, totalHistoricalProfit: 0 };
+    return { positions: [], clearedPositions: [], totalMarketValue: 0, totalCost: 0, positionHistoricalProfit: 0, clearedHistoricalProfit: 0, totalHistoricalProfit: 0 };
   }
 
   if (account.investProductType === "property") {
@@ -553,7 +558,9 @@ export const computePositionDisplay = cache(
       });
     const totalMarketValue = positions.reduce((sum, row) => sum + row.marketValue, 0);
     const totalCost = positions.reduce((sum, row) => sum + row.cost, 0);
-    const totalHistoricalProfit = positions.reduce((sum, row) => sum + row.historicalProfit, 0);
+    const positionHistoricalProfit = positions.reduce((sum, row) => sum + row.historicalProfit, 0);
+    const clearedHistoricalProfit = 0;
+    const totalHistoricalProfit = positionHistoricalProfit + clearedHistoricalProfit;
     const brokerageCashAccount = account.institutionId
       ? await prisma.account.findFirst({
           where: {
@@ -581,6 +588,8 @@ export const computePositionDisplay = cache(
       clearedPositions: [],
       totalMarketValue,
       totalCost,
+      positionHistoricalProfit,
+      clearedHistoricalProfit,
       totalHistoricalProfit,
       cashBalance,
       cashAccountId,
@@ -620,8 +629,10 @@ export const computePositionDisplay = cache(
       });
     const totalMarketValue = positions.reduce((sum, row) => sum + row.marketValue, 0);
     const totalCost = positions.reduce((sum, row) => sum + row.cost, 0);
-    const totalHistoricalProfit = positions.reduce((sum, row) => sum + row.historicalProfit, 0);
-    return { positions, clearedPositions: [], totalMarketValue, totalCost, totalHistoricalProfit };
+    const positionHistoricalProfit = positions.reduce((sum, row) => sum + row.historicalProfit, 0);
+    const clearedHistoricalProfit = 0;
+    const totalHistoricalProfit = positionHistoricalProfit + clearedHistoricalProfit;
+    return { positions, clearedPositions: [], totalMarketValue, totalCost, positionHistoricalProfit, clearedHistoricalProfit, totalHistoricalProfit };
   }
 
   if (account.investProductType === "wealth") {
@@ -807,10 +818,10 @@ export const computePositionDisplay = cache(
     clearedPositions.sort((a, b) => b.clearedDate.localeCompare(a.clearedDate));
     const totalMarketValue = positions.reduce((sum, row) => sum + row.marketValue, 0);
     const totalCost = positions.reduce((sum, row) => sum + row.cost, 0);
-    const totalHistoricalProfit =
-      positions.reduce((sum, row) => sum + row.historicalProfit, 0) +
-      clearedPositions.reduce((sum, row) => sum + row.historicalProfit, 0);
-    return { positions, clearedPositions, totalMarketValue, totalCost, totalHistoricalProfit };
+    const positionHistoricalProfit = positions.reduce((sum, row) => sum + row.historicalProfit, 0);
+    const clearedHistoricalProfit = clearedPositions.reduce((sum, row) => sum + row.historicalProfit, 0);
+    const totalHistoricalProfit = positionHistoricalProfit + clearedHistoricalProfit;
+    return { positions, clearedPositions, totalMarketValue, totalCost, positionHistoricalProfit, clearedHistoricalProfit, totalHistoricalProfit };
   }
 
   const holdings = await prisma.fundHolding.findMany({
@@ -845,6 +856,7 @@ export const computePositionDisplay = cache(
   // position row can always pair the displayed NAV with its date. Money funds
   // keep NAV = 1 (their cached value is the per-10k yield, not the unit NAV).
   const latestNavByCode = new Map<string, { nav: number; date: string; name: string | null }>();
+  const profileNameByCode = await getFundProfileNameMap(fundCodes);
   if (fundCodes.length > 0) {
     const caches = await getLatestFundNavMap(fundCodes);
     for (const [fundCode, c] of caches) {
@@ -867,7 +879,10 @@ export const computePositionDisplay = cache(
     const isMoneyFund = isMoney && fundProductTypeByCode.get(h.fundCode) !== "fund";
     const latestNav = isMoneyFund ? 1 : (navInfo?.nav ?? (h.nav != null ? toNumber(h.nav) : 0));
     const navDateStr = navInfo?.date ?? "";
-    const displayName = navInfo?.name ?? h.fundName ?? h.fundCode;
+    const profileName = profileNameByCode.get(h.fundCode);
+    const cachedNavName = normalizeFundDisplayName(h.fundCode, navInfo?.name);
+    const storedName = normalizeFundDisplayName(h.fundCode, h.fundName);
+    const displayName = profileName || cachedNavName || storedName || h.fundCode;
     const historicalProfit = toNumber(h.historicalProfit);
 
     const confirmedCost = Math.max(0, storedCost - storedPending);
@@ -1007,11 +1022,11 @@ export const computePositionDisplay = cache(
 
   const totalMarketValue = positions.reduce((s, p) => s + p.marketValue, 0);
   const totalCost = positions.reduce((s, p) => s + p.cost, 0);
-  const totalHistoricalProfit =
-    positions.reduce((s, p) => s + p.historicalProfit, 0) +
-    clearedPositions.reduce((s, c) => s + c.historicalProfit, 0);
+  const positionHistoricalProfit = positions.reduce((s, p) => s + p.historicalProfit, 0);
+  const clearedHistoricalProfit = clearedPositions.reduce((s, c) => s + c.historicalProfit, 0);
+  const totalHistoricalProfit = positionHistoricalProfit + clearedHistoricalProfit;
 
-  return { positions, clearedPositions, totalMarketValue, totalCost, totalHistoricalProfit };
+  return { positions, clearedPositions, totalMarketValue, totalCost, positionHistoricalProfit, clearedHistoricalProfit, totalHistoricalProfit };
 },
 );
 

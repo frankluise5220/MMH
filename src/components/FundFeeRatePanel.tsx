@@ -37,12 +37,15 @@ export function FundFeeRatePanel({
   accountId,
   initialFundCode,
   onSaved,
+  preloadedRows,
   compact = false,
 }: {
   accountId: string;
   /** When set, the panel edits only this fund's rates (row-action entry point). */
   initialFundCode?: string | null;
-  onSaved?: () => void;
+  onSaved?: (result: { fundCode: string; rows: FeeRateRecord[] }) => void;
+  /** Preloaded account fee rates used by the fund profile dialog to avoid refetching on navigation. */
+  preloadedRows?: FeeRateRecord[];
   /** Compact variant for embedding inside a dialog. */
   compact?: boolean;
 }) {
@@ -68,6 +71,14 @@ export function FundFeeRatePanel({
     setLoading(true);
     setError("");
     try {
+      if (preloadedRows) {
+        const list = initialFundCode
+          ? preloadedRows.filter((row) => row.fundCode === initialFundCode)
+          : preloadedRows;
+        setRows(list);
+        setDirty(false);
+        return;
+      }
       const url = `/api/v1/fund/fee-rate?accountId=${encodeURIComponent(accountId)}&list=1`;
       const response = await fetch(url, { cache: "no-store" });
       const data = (await response.json().catch(() => null)) as FeeRateListResponse | null;
@@ -75,7 +86,7 @@ export function FundFeeRatePanel({
         setError(data?.error || t("fundFeeRates.loadFailed"));
         return;
       }
-      let list = Array.isArray(data.rows) ? data.rows : [];
+      let list = preloadedRows ?? (Array.isArray(data.rows) ? data.rows : []);
       if (initialFundCode) {
         list = list.filter((row) => row.fundCode === initialFundCode);
       }
@@ -86,7 +97,7 @@ export function FundFeeRatePanel({
     } finally {
       setLoading(false);
     }
-  }, [accountId, initialFundCode, t]);
+  }, [accountId, initialFundCode, preloadedRows, t]);
 
   useEffect(() => {
     void loadRows();
@@ -207,14 +218,14 @@ export function FundFeeRatePanel({
       const data = (await response.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
       if (!data?.ok) throw new Error(data?.error || t("fundFeeRates.saveFailed"));
       setDirty(false);
-      onSaved?.();
-      void loadRows();
+      onSaved?.({ fundCode: initialFundCode ?? rows[0]?.fundCode ?? "", rows });
+      if (!preloadedRows) void loadRows();
     } catch (e) {
       setError(e instanceof Error ? e.message : t("fundFeeRates.saveFailed"));
     } finally {
       setSaving(false);
     }
-  }, [accountId, initialFundCode, rows, onSaved, t, loadRows]);
+  }, [accountId, initialFundCode, rows, onSaved, t, loadRows, preloadedRows]);
 
   return (
     <div className={compact ? "flex h-full min-h-0 flex-col" : "flex h-full min-h-0 flex-1 flex-col"}>

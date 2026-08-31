@@ -4,11 +4,13 @@ import { IntervalUnit, RegularInvestStatus } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { normalizeNonNegativeDays, setFundArrivalDays, setFundArrivalDaysInTx, setFundConfirmDays, setFundConfirmDaysInTx } from "@/lib/fund/confirmDays";
 import { setFundFeeRateByDateInTx } from "@/lib/fund/feeRate";
+import { normalizeFundDisplayName, resolveFundName } from "@/lib/fund/fundProfile";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { calcInitialScheduledRunDate, calcResumedScheduledRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { deriveRegularInvestNextRunDate } from "@/lib/server/regular-invest-plan";
+import { isInstallmentRepaymentMethod, normalizeLoanRepaymentMethod } from "@/lib/loan-repayment";
 
 function parseDateOnlyUtc(value: string): Date | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
@@ -32,10 +34,10 @@ function sameDateOnly(a: Date | null | undefined, b: Date | null | undefined) {
   return a.toISOString().slice(0, 10) === b.toISOString().slice(0, 10);
 }
 
-function parseOptionalPositiveNumber(value: unknown): number | null {
+function parseOptionalNonNegativeNumber(value: unknown): number | null {
   if (value == null || value === "") return null;
   const parsed = typeof value === "number" ? value : parseFloat(String(value));
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function parsePositiveInteger(value: unknown, fallback = 1): number {
@@ -95,7 +97,7 @@ async function createRegularInvest(formData: FormData) {
   const categoryId = String(formData.get("categoryId") ?? "").trim() || null;
   const categoryName = String(formData.get("categoryName") ?? "").trim() || null;
   const note = String(formData.get("note") ?? "").trim() || null;
-  const fundName = String(formData.get("fundName") ?? "").trim() || (isOrdinaryTask ? categoryName ?? scheduledTaskTypeLabel(taskType) : isFundTask ? fundCode : scheduledTaskTypeLabel(taskType));
+  const suppliedFundName = String(formData.get("fundName") ?? "").trim() || null;
   const insuranceProductId = String(formData.get("insuranceProductId") ?? "").trim() || null;
   const amountRaw = parseFloat(String(formData.get("amount") ?? ""));
   const intervalUnit = String(formData.get("intervalUnit") ?? "month").trim();
@@ -109,8 +111,9 @@ async function createRegularInvest(formData: FormData) {
   const feeRateRaw = String(formData.get("feeRate") ?? "").trim();
   const confirmDaysRaw = String(formData.get("confirmDays") ?? "").trim();
   const arrivalDaysRaw = String(formData.get("arrivalDays") ?? "").trim();
-  const annualRate = parseOptionalPositiveNumber(formData.get("annualRate"));
-  const repaymentMethod = String(formData.get("repaymentMethod") ?? "").trim() || "自由还款";
+  const repaymentMethod = normalizeLoanRepaymentMethod(formData.get("repaymentMethod") as string | null);
+  const parsedAnnualRate = parseOptionalNonNegativeNumber(formData.get("annualRate"));
+  const annualRate = parsedAnnualRate ?? (taskType === "loan_repayment" && isInstallmentRepaymentMethod(repaymentMethod) ? 0 : null);
   const repaymentIntervalMonths = parsePositiveInteger(formData.get("repaymentIntervalMonths"), 1);
   const skipPendingPreceding = formData.get("skipPendingPreceding") !== "false"; // default true
 
@@ -166,6 +169,10 @@ async function createRegularInvest(formData: FormData) {
   const endDate = endDateStr ? parseDateOnlyUtc(endDateStr) : null;
   if (endDateStr && !endDate) return { ok: false as const, error: "结束日期不正确" };
   const totalRuns = totalRunsRaw ? parseInt(totalRunsRaw, 10) : null;
+  const profileFundName = isFundTask ? await resolveFundName(fundCode, { householdId }) : null;
+  const fundName = isFundTask
+    ? profileFundName ?? normalizeFundDisplayName(fundCode, suppliedFundName) ?? fundCode
+    : suppliedFundName ?? (isOrdinaryTask ? categoryName ?? scheduledTaskTypeLabel(taskType) : scheduledTaskTypeLabel(taskType));
 
   try {
     await prisma.$transaction(async (tx) => {
@@ -305,7 +312,7 @@ async function updateRegularInvest(formData: FormData) {
   const fundCodeRaw = String(formData.get("fundCode") ?? plan.fundCode).trim();
   const fundCode = isFundTask ? fundCodeRaw : taskType;
   const insuranceProductId = String(formData.get("insuranceProductId") ?? "").trim() || existingTask.insuranceProductId || null;
-  const fundName = String(formData.get("fundName") ?? "").trim();
+  const suppliedFundName = String(formData.get("fundName") ?? "").trim() || null;
   const nextCategoryId = formData.has("categoryId")
     ? String(formData.get("categoryId") ?? "").trim() || null
     : existingTask.categoryId ?? null;
@@ -328,12 +335,13 @@ async function updateRegularInvest(formData: FormData) {
   const feeRateRaw = String(formData.get("feeRate") ?? "").trim();
   const confirmDaysRaw = String(formData.get("confirmDays") ?? "").trim();
   const arrivalDaysRaw = String(formData.get("arrivalDays") ?? "").trim();
-  const nextAnnualRate = formData.has("annualRate")
-    ? parseOptionalPositiveNumber(formData.get("annualRate"))
-    : existingTask.annualRate ?? null;
   const nextRepaymentMethod = formData.has("repaymentMethod") && String(formData.get("repaymentMethod") ?? "").trim()
-    ? String(formData.get("repaymentMethod") ?? "").trim()
-    : existingTask.repaymentMethod ?? "自由还款";
+    ? normalizeLoanRepaymentMethod(formData.get("repaymentMethod") as string | null)
+    : normalizeLoanRepaymentMethod(existingTask.repaymentMethod);
+  const parsedNextAnnualRate = formData.has("annualRate")
+    ? parseOptionalNonNegativeNumber(formData.get("annualRate"))
+    : existingTask.annualRate ?? null;
+  const nextAnnualRate = parsedNextAnnualRate ?? (taskType === "loan_repayment" && isInstallmentRepaymentMethod(nextRepaymentMethod) ? 0 : null);
   const nextRepaymentIntervalMonths = formData.has("repaymentIntervalMonths")
     ? parsePositiveInteger(formData.get("repaymentIntervalMonths"), 1)
     : existingTask.repaymentIntervalMonths ?? 1;
@@ -343,7 +351,10 @@ async function updateRegularInvest(formData: FormData) {
   if (taskType === "insurance_premium" && !insuranceProductId) return { ok: false as const, error: "缴费计划缺少保险产品" };
 
   const updateData: any = {};
-  const displayName = fundName || (isOrdinaryTask ? nextCategoryName ?? plan.targetName ?? plan.fundName ?? scheduledTaskTypeLabel(taskType) : isFundTask ? plan.fundName || fundCode : scheduledTaskTypeLabel(taskType));
+  const profileFundName = isFundTask ? await resolveFundName(fundCode, { householdId }) : null;
+  const displayName = isFundTask
+    ? profileFundName ?? normalizeFundDisplayName(fundCode, suppliedFundName) ?? normalizeFundDisplayName(fundCode, plan.fundName) ?? fundCode
+    : suppliedFundName || (isOrdinaryTask ? nextCategoryName ?? plan.targetName ?? plan.fundName ?? scheduledTaskTypeLabel(taskType) : scheduledTaskTypeLabel(taskType));
   updateData.accountId = accountId;
   updateData.fundCode = fundCode;
   updateData.fundName = displayName;
@@ -401,10 +412,10 @@ async function updateRegularInvest(formData: FormData) {
   if (startDateStr && !parsedStartDate) return { ok: false as const, error: "开始日期不正确" };
   const parsedNextRunDate = nextRunDateStr ? parseDateOnlyUtc(nextRunDateStr) : null;
   if (nextRunDateStr && !parsedNextRunDate) return { ok: false as const, error: "下次执行日期不正确" };
-  if (parsedNextRunDate && plan.nextRunDate && parsedNextRunDate < plan.nextRunDate) return { ok: false as const, error: "下次执行日期不能早于当前下次执行日期" };
   const nextStoredStartDate = parsedStartDate
     ? isFundTask ? skipWeekend(parsedStartDate) : parsedStartDate
     : plan.startDate;
+  if (parsedNextRunDate && parsedNextRunDate < nextStoredStartDate) return { ok: false as const, code: "NEXT_RUN_DATE_BEFORE_START_DATE", error: "Next run date cannot be earlier than the effective date." };
   const startDateChanged = parsedStartDate != null && !sameDateOnly(nextStoredStartDate, plan.startDate);
   const taskTypeChanged = taskType !== existingTaskType;
   const normalizedExistingExecutionDay = effectiveIntervalUnit === IntervalUnit.year ? null : plan.executionDay;

@@ -10,6 +10,7 @@ import {
 import { fundUnitsProfitStartDate } from "@/lib/fund/confirmDays";
 import { allocateBuyFailedRefunds } from "@/lib/fund/refund-link";
 import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
+import { getFundNavDateOffsets } from "@/lib/fund/fundProfile";
 import { translate } from "@/lib/i18n-core";
 import type { DisplayLanguage } from "@/lib/client/appPreferences";
 import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
@@ -405,23 +406,6 @@ function latestNavOnOrBefore(
   }
   return null;
 }
-function previousUtcDay(date: Date) {
-  const result = new Date(date);
-  result.setUTCDate(result.getUTCDate() - 1);
-  return result;
-}
-function latestNavDateOnOrBefore(
-  navByCode: Map<string, Array<{ date: string; nav: number }>>,
-  fundCode: string,
-  date: string,
-) {
-  const rows = navByCode.get(fundCode);
-  if (!rows?.length) return null;
-  for (let index = rows.length - 1; index >= 0; index -= 1) {
-    if (rows[index]!.date <= date) return rows[index]!.date;
-  }
-  return null;
-}
 function exactNavOnDate(
   navByCode: Map<string, Array<{ date: string; nav: number }>>,
   fundCode: string,
@@ -525,6 +509,12 @@ function accountMarketValueAt(params: {
   };
 }
 
+function addUtcDays(date: Date, days: number) {
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next;
+}
+
 function navRowIndexOnOrBefore(
   rows: Array<{ date: string; nav: number }>,
   dateKey: string,
@@ -535,46 +525,47 @@ function navRowIndexOnOrBefore(
   return -1;
 }
 
-function navDateOffset(dateKey: string, navDate: string) {
-  const date = new Date(dateKey + "T00:00:00Z");
-  const nav = new Date(navDate + "T00:00:00Z");
-  return Math.round((date.getTime() - nav.getTime()) / 86400000);
-}
-
 function accountDailyNavDeltaProfit(params: {
   account: FundLikeAccount;
   entries: FundPositionEntryLike[];
   navByCode: Map<string, Array<{ date: string; nav: number }>>;
   fundMetaByCode: Map<string, FundNavMeta>;
+  navDateOffsetByCode?: Map<string, number>;
   date: Date;
   todayKey: string;
   missingNavByKey: Map<string, InvestmentProfitMissingNav>;
 }) {
-  const dateKey = ymd(params.date);
-  if (isTradingClosedDate(dateKey, "cn_fund")) return { profit: 0, count: 0 };
+  const reportDateKey = ymd(params.date);
+  // Future report dates must not reuse the latest historical NAV and create
+  // a duplicated profit row before that date has actually occurred.
+  if (reportDateKey > params.todayKey) return { profit: 0, count: 0 };
   let profit = 0;
   let count = 0;
   const fundCodes = new Set(params.entries.map((entry) => entry.fundCode).filter(Boolean) as string[]);
   for (const fundCode of fundCodes) {
     const meta = params.fundMetaByCode.get(fundCode) ?? { isMoney: false, isQdii: false };
     const navRows = params.navByCode.get(fundCode) ?? [];
-    const latestIndex = navRowIndexOnOrBefore(navRows, params.todayKey);
-    if (latestIndex < 1) continue;
-    const latestDate = navRows[latestIndex]!.date;
-    const lag = navDateOffset(params.todayKey, latestDate);
-    const calculationDate = new Date(params.date);
-    calculationDate.setUTCDate(calculationDate.getUTCDate() - lag);
-    const calculationDateKey = ymd(calculationDate);
-    if (calculationDateKey > latestDate) continue;
-    const currentIndex = navRowIndexOnOrBefore(navRows, calculationDateKey);
-    if (currentIndex <= 0) continue;
+    const navDate = addUtcDays(params.date, -(params.navDateOffsetByCode?.get(fundCode) ?? 0));
+    const dateKey = ymd(navDate);
+    const currentIndex = navRowIndexOnOrBefore(navRows, dateKey);
+    if (currentIndex < 1) continue;
     const currentRow = navRows[currentIndex]!;
     const previousRow = navRows[currentIndex - 1]!;
-    const currentNav = currentRow.nav;
-    const previousNav = previousRow.nav;
+    const calendar = meta.isQdii ? "us_fund" : (params.account.tradingCalendar ?? "cn_fund");
+    if (isTradingClosedDate(reportDateKey, calendar)) continue;
+    const hasExactNav = currentRow.date === dateKey;
+    const hasLaterNav = hasNavAfterDate(params.navByCode, fundCode, dateKey);
+    if (!hasExactNav && shouldRequireExactNav(dateKey, params.todayKey, calendar, meta, hasLaterNav)) {
+      addMissingNav(params.missingNavByKey, {
+        fundCode,
+        date: dateKey,
+        accountId: params.account.id,
+        accountName: params.account.name,
+      });
+    }
     const entriesToPositionDate = params.entries.filter((entry) => {
       const calcDate = profitStartDateOf(entry);
-      return entry.fundCode === fundCode && !!calcDate && calcDate <= previousRow.date;
+      return entry.fundCode === fundCode && !!calcDate && calcDate <= currentRow.date;
     });
     const calc = calculateFundPositionsFromEntries(
       entriesToPositionDate,
@@ -584,13 +575,13 @@ function accountDailyNavDeltaProfit(params: {
     const units = calc.holdings.get(fundCode)?.units ?? 0;
     if (units <= 0.0001) continue;
     if (meta.isMoney) {
-      if (currentNav < 1) {
-        profit += (currentNav * units) / 10000;
+      if (currentRow.nav < 1) {
+        profit += (currentRow.nav * units) / 10000;
         count += 1;
       }
       continue;
     }
-    const fundProfit = units * (currentNav - previousNav);
+    const fundProfit = units * (currentRow.nav - previousRow.nav);
     if (fundProfit !== 0) count += 1;
     profit += fundProfit;
   }
@@ -602,6 +593,7 @@ function bucketDailyNavDeltaProfit(params: {
   entriesByAccountId: Map<string, FundPositionEntryLike[]>;
   navByCode: Map<string, Array<{ date: string; nav: number }>>;
   fundMetaByCode: Map<string, FundNavMeta>;
+  navDateOffsetByCode: Map<string, number>;
   todayKey: string;
   missingNavByKey: Map<string, InvestmentProfitMissingNav>;
 }) {
@@ -618,6 +610,7 @@ function bucketDailyNavDeltaProfit(params: {
         entries: params.entriesByAccountId.get(account.id) ?? [],
         navByCode: params.navByCode,
         fundMetaByCode: params.fundMetaByCode,
+        navDateOffsetByCode: params.navDateOffsetByCode,
         date,
         todayKey: params.todayKey,
         missingNavByKey: params.missingNavByKey,
@@ -700,6 +693,10 @@ async function applyFundValuationProfit(params: {
 
   if (fundCodes.size === 0) return [];
 
+  const navDateOffsetByCode = params.valuationMode === "daily_nav_delta"
+    ? await getFundNavDateOffsets(fundCodes)
+    : new Map<string, number>();
+
   const maxBoundary = params.buckets[params.buckets.length - 1]!.end;
   const navRows = await prisma.fundNavCache.findMany({
     where: {
@@ -726,6 +723,7 @@ async function applyFundValuationProfit(params: {
         entriesByAccountId,
         navByCode,
         fundMetaByCode,
+        navDateOffsetByCode,
         todayKey,
         missingNavByKey,
       });

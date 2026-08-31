@@ -13,6 +13,7 @@ import { getFundArrivalDays, getFundConfirmDays, setFundConfirmDays, setFundArri
 import { setFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { createFundTransactionWithCashFlows, detachFundTransactionCashFlow, findFundTransactionForEntryId, syncFundTransactionsFromTxRecords, upsertFundTransactionRefundCashFlow, type FundCashFlowInput } from "@/lib/fund/transactions";
 import { regularInvestRefundNote } from "@/lib/fund/regular-invest-display";
+import { normalizeFundDisplayName, resolveFundName } from "@/lib/fund/fundProfile";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
@@ -35,6 +36,7 @@ import { resolveAdvanceTransfer } from "@/lib/advance-transfer";
 import { findRecentManualTransactionDuplicate } from "@/lib/server/transaction-dedupe";
 import { getServerT } from "@/lib/server/i18n";
 import { touchAccountUsage } from "@/lib/server/account-usage";
+import { creditBillEffectiveDate } from "@/lib/credit/billing";
 import { toStatementMonth, toNumber, addWorkdaysUtc } from "@/lib/date-utils";
 import type { CreditCardInstallmentRateType } from "@/lib/credit/installment";
 
@@ -532,7 +534,7 @@ export async function createTransaction(formData: FormData) {
 
         const statementMonth =
           (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
-            ? toStatementMonth(date, acc.billingDay)
+            ? toStatementMonth(creditBillEffectiveDate({ type, date, postedAt }) ?? date, acc.billingDay)
             : null;
         const duplicate = createInstallment
           ? null
@@ -668,7 +670,7 @@ export async function createTransaction(formData: FormData) {
 
         const statementMonth =
           acc && (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
-            ? toStatementMonth(date, acc.billingDay)
+            ? toStatementMonth(creditBillEffectiveDate({ type, date, postedAt }) ?? date, acc.billingDay)
             : null;
         if (acc) {
           const duplicate = await findRecentManualTransactionDuplicate(tx, {
@@ -691,6 +693,7 @@ export async function createTransaction(formData: FormData) {
             amount: amountRaw,
             type: TransactionType.income,
             date,
+            postedAt,
             note: note || undefined,
             statementMonth: statementMonth ?? undefined,
             ...{ householdId },
@@ -852,8 +855,17 @@ export async function createTransaction(formData: FormData) {
         const isMetalProduct = fundProductType === "metal";
         const isWealthProduct = fundProductType === "wealth";
         const entryFundCode = isMetalProduct || isWealthProduct ? null : fundCode || null;
+        const profileCreateFundDisplayName = entryFundCode
+          ? await resolveFundName(entryFundCode, { householdId })
+          : null;
+        const inputCreateFundDisplayName = entryFundCode
+          ? normalizeFundDisplayName(entryFundCode, fundNameInput)
+          : fundNameInput || null;
+        const effectiveCreateFundDisplayName = profileCreateFundDisplayName ?? inputCreateFundDisplayName;
         // fundName stores fund/deposit product names; precious metal names come from metalTypeName.
-        const entryFundName = isMetalProduct ? null : (wealthProduct?.name || fundNameInput || fundCode || null);
+        const entryFundName = isMetalProduct
+          ? null
+          : (wealthProduct?.name || effectiveCreateFundDisplayName || entryFundCode || null);
 
 
         // Create the TxRecord, including all fund fields directly.
@@ -1502,6 +1514,10 @@ export async function editInvestment(formData: FormData) {
   }
 
   try {
+    const profileFundDisplayName = fundCode ? await resolveFundName(fundCode, { householdId }) : null;
+    const inputFundDisplayName = fundCode ? normalizeFundDisplayName(fundCode, fundName) : fundName;
+    const effectiveFundDisplayName = profileFundDisplayName ?? inputFundDisplayName;
+
     // Query the TxRecord directly.
     let txRecord = await prisma.txRecord.findUnique({
       where: { id: entryId },
@@ -1680,7 +1696,7 @@ export async function editInvestment(formData: FormData) {
       const updateData: any = {
         date,
         fundCode: isMetalProduct || isWealthProduct ? null : fundCode,
-        fundName: isMetalProduct ? null : (wealthProduct?.name || fundName),
+        fundName: isMetalProduct ? null : (wealthProduct?.name || effectiveFundDisplayName),
         wealthProductId: wealthProduct?.id ?? null,
         fundProductType,
         metalTypeId: metalType?.id ?? null,
@@ -1769,7 +1785,7 @@ export async function editInvestment(formData: FormData) {
             cashAccountId: isDividendReinvest ? null : finalCashAccountId || null,
             cashEntryId: isDividendReinvest ? null : undefined,
             fundCode,
-            fundName: fundName || independentFundTransaction.fundName || fundCode,
+            fundName: profileFundDisplayName ?? inputFundDisplayName ?? normalizeFundDisplayName(fundCode, independentFundTransaction.fundName) ?? fundCode,
             fundProductType: fundProductType === "money_fund" ? "money" : ((fundProductType || "fund") as any),
             fundSubtype: finalFundSubtype,
             source: sourceValue,
@@ -1902,14 +1918,14 @@ export async function editInvestment(formData: FormData) {
           cashAccountName: finalCashAccountName,
           currency: finalInvestmentAccountInfo?.currency ?? txRecord.currency ?? "CNY",
           fundCode,
-          fundName: wealthProduct?.name || fundName,
+          fundName: wealthProduct?.name || effectiveFundDisplayName,
           fundProductType,
           fundConfirmDate: fundConfirmDate ?? null,
           fundArrivalDate: effectiveRefundDate,
           regularInvestPlanId: txRecord.regularInvestPlanId ?? null,
           note: regularInvestRefundNote(
             fundCode,
-            wealthProduct?.name || fundName || fundCode,
+            wealthProduct?.name || effectiveFundDisplayName || fundCode,
             refundAmount,
             date,
             finalInvestmentAccountInfo?.currency ?? txRecord.currency ?? "CNY",
@@ -1948,7 +1964,7 @@ export async function editInvestment(formData: FormData) {
           source: "regular_invest_refund",
           note: regularInvestRefundNote(
             fundCode,
-            fundName,
+            effectiveFundDisplayName ?? fundName,
             refundAmount,
             date,
             finalInvestmentAccountInfo?.currency ?? txRecord.currency ?? "CNY",
@@ -2243,6 +2259,16 @@ export async function updateTransactionFromDialog(formData: FormData) {
         if (isFundLikeIndependentEdit && !independentFundTransaction) {
           throw new Error(t("sidebar.action.fundTransactionNotMigrated"));
         }
+        const independentFundNameInput = String(formData.get("fundName") ?? "").trim() || null;
+        const independentProfileFundName = isFundLikeIndependentEdit
+          ? await resolveFundName(fundCode, { householdId: ctx.householdId })
+          : null;
+        const independentFundDisplayName = isFundLikeIndependentEdit
+          ? independentProfileFundName
+            ?? normalizeFundDisplayName(fundCode, independentFundNameInput)
+            ?? normalizeFundDisplayName(fundCode, independentFundTransaction?.fundName)
+            ?? fundCode
+          : null;
         if (independentFundTransaction) {
           const arrivalAmount = Number.isFinite(fundArrivalAmount) && fundArrivalAmount > 0 ? fundArrivalAmount : null;
           const fee = isDividendReinvest ? null : Number.isFinite(fundFee) && fundFee > 0 ? fundFee : independentFundTransaction.fee;
@@ -2253,7 +2279,7 @@ export async function updateTransactionFromDialog(formData: FormData) {
               cashAccountId: isDividendReinvest ? null : cashAccId ?? null,
               cashEntryId: isDividendReinvest ? null : undefined,
               fundCode,
-              fundName: independentFundTransaction.fundName ?? fundCode,
+              fundName: independentFundDisplayName,
               fundProductType: productType === "money_fund" ? "money" : (productType as any),
               fundSubtype: isDividendReinvest ? FundSubtype.buy : (subtype as any),
               source: isDividendReinvest ? "dividend" : entry.source,
@@ -2430,7 +2456,7 @@ export async function updateTransactionFromDialog(formData: FormData) {
 
       const statementMonth =
         (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
-          ? toStatementMonth(date, acc.billingDay)
+          ? toStatementMonth(creditBillEffectiveDate({ type, date, postedAt }) ?? date, acc.billingDay)
           : null;
 
       const expenseOrIncomeData: Record<string, unknown> = {
@@ -2509,4 +2535,3 @@ export async function updateTransactionFromDialog(formData: FormData) {
     return { ok: false as const, error: msg };
   }
 }
-

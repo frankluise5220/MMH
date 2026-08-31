@@ -10,6 +10,7 @@ import {
   calcLoanScheduledAmountForPeriodStart,
   getEffectiveLoanAnnualRate,
   normalizeLoanRateAdjustments,
+  normalizeLoanRepaymentMethod,
 } from "@/lib/loan-repayment";
 import { inferMortgageLprDiscountFromRateAdjustments } from "@/lib/loan-lpr";
 import { decodeScheduledTaskMemo } from "@/lib/scheduled-task";
@@ -894,7 +895,7 @@ export function buildDebtRowsViewData({
     if (balance >= 0) current.receivable += balance;
     else current.payable += Math.abs(balance);
     if (loanPlan) {
-      current.repaymentMethod = loanMemo?.repaymentMethod || current.repaymentMethod;
+      current.repaymentMethod = loanMemo?.repaymentMethod ? normalizeLoanRepaymentMethod(loanMemo.repaymentMethod) : current.repaymentMethod;
       current.repaymentCycle = repaymentCycle || current.repaymentCycle;
       current.annualRate = nextEffectiveAnnualRate ?? current.annualRate;
       current.mortgageLprDiscount =

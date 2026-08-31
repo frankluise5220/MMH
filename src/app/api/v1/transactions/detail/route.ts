@@ -54,7 +54,7 @@ import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
-import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
+import { creditBillEffectiveDate, creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { getFundConfirmDays, getFundArrivalDays } from "@/lib/fund/confirmDays";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { toNumber, addWorkdaysUtc, toStatementMonth, startOfDayUtc, formatDateLocal } from "@/lib/date-utils";
@@ -86,6 +86,7 @@ import {
   type FundCashFlowInput,
 } from "@/lib/fund/transactions";
 import { regularInvestRefundNote } from "@/lib/fund/regular-invest-display";
+import { normalizeFundDisplayName, resolveFundName } from "@/lib/fund/fundProfile";
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
 import { resolveAdvanceTransfer } from "@/lib/advance-transfer";
 import { ENTRY_ORIGIN_MANUAL, isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/transaction-semantics";
@@ -1908,7 +1909,7 @@ export async function POST(req: Request) {
 
         const statementMonth =
           (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
-            ? toStatementMonth(date, acc.billingDay)
+            ? toStatementMonth(creditBillEffectiveDate({ type, date, postedAt }) ?? date, acc.billingDay)
             : null;
         const duplicate = await findRecentManualTransactionDuplicate(tx, {
           householdId,
@@ -1977,7 +1978,7 @@ export async function POST(req: Request) {
 
         const statementMonth =
           acc && (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
-            ? toStatementMonth(date, acc.billingDay)
+            ? toStatementMonth(creditBillEffectiveDate({ type, date, postedAt }) ?? date, acc.billingDay)
             : null;
         if (acc) {
           const duplicate = await findRecentManualTransactionDuplicate(tx, {
@@ -2071,6 +2072,9 @@ export async function POST(req: Request) {
       }
 
       const fundNameInput = String(body.fundName ?? "").trim();
+      const profileFundDisplayName = fundCode ? await resolveFundName(fundCode, { householdId }) : null;
+      const inputFundDisplayName = fundCode ? normalizeFundDisplayName(fundCode, fundNameInput) : fundNameInput || null;
+      const effectiveFundDisplayName = profileFundDisplayName ?? inputFundDisplayName;
       const wealthProductIdInput = String(body.wealthProductId ?? "").trim();
       if (fundProductType === "wealth") {
         const created = await createSplitWealthTransactionFromBody(body, householdId, tagIds);
@@ -2310,7 +2314,7 @@ export async function POST(req: Request) {
 
         const isMetalProduct = fundProductType === "metal";
         const entryFundCode = isMetalProduct ? null : fundCode || null;
-        const entryFundName = isMetalProduct ? null : resolvedInsuranceProductName || wealthProduct?.name || fundNameInput || fundCode || null;
+        const entryFundName = isMetalProduct ? null : resolvedInsuranceProductName || wealthProduct?.name || effectiveFundDisplayName || fundCode || null;
         const isInsurancePremiumBuy = isInsurance && insuranceActionForEntry === "premium" && finalFundSubtype === FundSubtype.buy && !redeemLike;
         const premiumFrequencyMonths = insuranceProductForPlan
           ? Number(insuranceProductForPlan.premiumFrequencyMonths ?? 0)
@@ -2879,6 +2883,11 @@ export async function PUT(req: Request) {
 
     const { householdId } = ctx;
     const undo = entryId ? await prepareEntryUndo(prisma, householdId, [entryId]) : null;
+    const requestFundCode = String(body.fundCode ?? "").trim();
+    const requestFundName = String(body.fundName ?? "").trim() || null;
+    const profileEditFundDisplayName = requestFundCode ? await resolveFundName(requestFundCode, { householdId }) : null;
+    const inputEditFundDisplayName = requestFundCode ? normalizeFundDisplayName(requestFundCode, requestFundName) : requestFundName;
+    const effectiveEditFundDisplayName = profileEditFundDisplayName ?? inputEditFundDisplayName;
 
     let oldAccountId: string | undefined;
     let oldToAccountId: string | undefined;
@@ -3240,7 +3249,7 @@ export async function PUT(req: Request) {
           const confirmDateValue = toDateOrNull(body.fundConfirmDate);
           const arrivalDateValue = toDateOrNull(body.fundArrivalDate);
           const arrivalAmountValue = parseMoney(body.fundArrivalAmount) || null;
-          const fundNameValue = fundNameInput || independentFundTransaction.fundName || fundCode;
+          const fundNameValue = profileEditFundDisplayName ?? inputEditFundDisplayName ?? normalizeFundDisplayName(fundCode, independentFundTransaction.fundName) ?? fundCode;
           const updateUnits = recalculatedRefundUnits ?? (hasFundUnits ? roundedFundUnits : independentFundTransaction.units);
           await tx.fundTransaction.update({
             where: { id: independentFundTransaction.id },
@@ -3344,7 +3353,7 @@ export async function PUT(req: Request) {
             toAccountId: recordToAccountId,
             toAccountName: recordToAccountName,
             fundCode: null,
-            fundName: isFundLikeIndependentEdit || isMetalProduct ? null : (resolvedInsuranceProductName || wealthProduct?.name || fundNameInput || entry.fundName),
+            fundName: isFundLikeIndependentEdit || isMetalProduct ? null : (resolvedInsuranceProductName || wealthProduct?.name || effectiveEditFundDisplayName || normalizeFundDisplayName(fundCode ?? "", entry.fundName) || entry.fundName),
             wealthProductId: wealthProduct?.id ?? null,
             metalTypeId: metalType?.id ?? null,
             metalTypeName: metalType?.name ?? null,
@@ -3407,14 +3416,14 @@ export async function PUT(req: Request) {
             cashAccountName: cashAccName ?? "",
             currency: investAcc.currency ?? entry.currency ?? "CNY",
             fundCode,
-            fundName: resolvedInsuranceProductName || wealthProduct?.name || fundNameInput || entry.fundName,
+            fundName: resolvedInsuranceProductName || wealthProduct?.name || effectiveEditFundDisplayName || normalizeFundDisplayName(fundCode ?? "", entry.fundName) || entry.fundName,
             fundProductType: productType,
             fundConfirmDate: toDateOrNull(body.fundConfirmDate),
             fundArrivalDate: effectiveRefundDate,
             regularInvestPlanId: entry.regularInvestPlanId ?? null,
             note: regularInvestRefundNote(
               fundCode,
-              resolvedInsuranceProductName || wealthProduct?.name || fundNameInput || fundCode,
+              resolvedInsuranceProductName || wealthProduct?.name || effectiveEditFundDisplayName || fundCode,
               refundAmount,
               date,
               cashAccCurrency ?? investAcc.currency ?? entry.currency ?? "CNY",
@@ -3458,7 +3467,7 @@ export async function PUT(req: Request) {
             source: "regular_invest_refund",
             note: regularInvestRefundNote(
               fundCode,
-              fundNameInput || fundCode,
+              effectiveEditFundDisplayName || fundCode,
               refundAmount,
               date,
               cashAccCurrency ?? investAcc.currency ?? entry.currency ?? "CNY",
@@ -3584,7 +3593,7 @@ return;
 
       const statementMonth =
         (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
-          ? toStatementMonth(date, acc.billingDay)
+          ? toStatementMonth(creditBillEffectiveDate({ type, date, postedAt }) ?? date, acc.billingDay)
           : null;
 
       await tx.txRecord.update({

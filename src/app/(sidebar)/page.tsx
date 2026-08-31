@@ -60,7 +60,6 @@ import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude, upsertE
 import {
   loadDepositTransactionDetailLike,
   loadInsuranceTransactionDetailLike,
-  loadPropertyTransactionEntryLike,
   loadWealthTransactionEntryLike,
 } from "@/lib/server/business-transaction-entries";
 import { getInsuranceDetailCategoryName, getInsuranceDetailNote } from "@/lib/insurance/detail-display";
@@ -68,8 +67,8 @@ import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { compareCategoryOrder, sortCategorySources } from "@/components/categorySmartSelect";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { insuranceCashValueDelta } from "@/lib/insurance/transaction";
-import { loadCommonData, loadSelectedAccount, loadEntriesForAccount, loadInvestAccountData } from "@/lib/server/cached-data";
-import { computeFixedAssetPositionDisplay, computeInvestBalances, computePositionDisplay } from "@/lib/invest-balance";
+import { loadCommonData, loadSelectedAccount, loadEntriesForAccount, loadInvestAccountData, loadInvestBalances, loadFixedAssetPositionDisplay, loadFixedAssetTransactionEntries } from "@/lib/server/cached-data";
+import { computePositionDisplay } from "@/lib/invest-balance";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import {
@@ -179,12 +178,6 @@ function fundSubtypeInfo(
 }
 
 const ymdUtc = formatDateUtc;
-
-function mdUtcDots(d: Date) {
-  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(d.getUTCDate()).padStart(2, "0");
-  return `${m}.${day}`;
-}
 
 function toValidDate(value: unknown): Date | null {
   if (value instanceof Date) {
@@ -349,6 +342,7 @@ export default async function Home({
     fundPageSize?: string;
     fundPage?: string;
     showCleared?: string;
+    fixedAssetType?: string;
     debtPerson?: string;
     detailAll?: string;
     detailFilterDate?: string;
@@ -373,6 +367,7 @@ export default async function Home({
   const accountId = typeof params?.accountId === "string" ? params.accountId.trim() : "";
   const accountName = typeof params?.account === "string" ? params.account.trim() : "";
   const tagIdParam = typeof params?.tagId === "string" ? params.tagId.trim() : "";
+  const fixedAssetTypeParam = typeof params?.fixedAssetType === "string" ? params.fixedAssetType.trim() : "";
   // If no account is selected, default to the overview page.
   if (!accountId && !accountName && !tagIdParam && params?.view !== "debt" && params?.view !== "investproperty") {
     redirect("/overview");
@@ -894,25 +889,28 @@ export default async function Home({
     color: tag.color,
   }));
 
-  const cashDisplayBalanceByAccountId = await computeAccountDisplayBalances(
-    accounts
-      .filter((account) => !isPureInvestmentAccount(account) && account.kind !== AccountKind.insurance)
-      .map((account) => ({
-        id: account.id,
-        kind: account.kind,
-        investProductType: account.investProductType,
-        billingDay: account.billingDay,
-      })),
-    hidFilter,
-  );
-  const insuranceDisplayBalanceByAccountId = await computeInsuranceAccountDisplayBalances(
-    accounts
-      .filter((account) => account.kind === AccountKind.insurance)
-      .map((account) => account.id),
-    hidFilter,
-  );
-  const debtDisplaySummary = await computeDebtDisplaySummary(ctx);
-  const investBalByAccountId = await computeInvestBalances(ctx);
+  const [cashDisplayBalanceByAccountId, insuranceDisplayBalanceByAccountId, debtDisplaySummary, investBalances] = await Promise.all([
+    computeAccountDisplayBalances(
+      accounts
+        .filter((account) => !isPureInvestmentAccount(account) && account.kind !== AccountKind.insurance)
+        .map((account) => ({
+          id: account.id,
+          kind: account.kind,
+          investProductType: account.investProductType,
+          billingDay: account.billingDay,
+        })),
+      hidFilter,
+    ),
+    computeInsuranceAccountDisplayBalances(
+      accounts
+        .filter((account) => account.kind === AccountKind.insurance)
+        .map((account) => account.id),
+      hidFilter,
+    ),
+    computeDebtDisplaySummary(ctx),
+    loadInvestBalances(JSON.stringify(hidFilter)),
+  ]);
+  const investBalByAccountId = new Map(Object.entries(investBalances));
 
   const accountDisplayValueById = new Map<string, number>();
   for (const account of accounts) {
@@ -1486,17 +1484,27 @@ export default async function Home({
   const investstockData = view === "investstock" && accountId
     ? await computePositionDisplay(ctx, accountId)
     : null;
-  const investpropertyData = view === "investproperty"
-    ? accountId
-      ? await computePositionDisplay(ctx, accountId)
-      : await computeFixedAssetPositionDisplay(ctx)
-    : null;
-  const investpropertyEntries = view === "investproperty"
-    ? await loadPropertyTransactionEntryLike({
-        accountIds: accountId ? [accountId] : propertyAccountOptions.map((account) => account.id),
-        householdId,
-      })
-    : [];
+  let investpropertyData: Awaited<ReturnType<typeof loadFixedAssetPositionDisplay>> | null = null;
+  let investpropertyEntries: Awaited<ReturnType<typeof loadFixedAssetTransactionEntries>> = [];
+  if (view === "investproperty") {
+    const propertyAccountIds = accountId
+      ? [accountId]
+      : propertyAccountOptions.map((account) => account.id);
+    [investpropertyData, investpropertyEntries] = await Promise.all([
+      loadFixedAssetPositionDisplay(investDataHidFilter, accountId || ""),
+      loadFixedAssetTransactionEntries(householdId, JSON.stringify(propertyAccountIds)),
+    ]);
+  }
+  const investpropertyFilteredData = investpropertyData && fixedAssetTypeParam
+    ? (() => {
+        const positions = investpropertyData.positions.filter(
+          (position) => (position.assetType ?? "property") === fixedAssetTypeParam,
+        );
+        const totalMarketValue = positions.reduce((sum, row) => sum + row.marketValue, 0);
+        const totalCost = positions.reduce((sum, row) => sum + row.cost, 0);
+        return { ...investpropertyData, positions, totalMarketValue, totalCost };
+      })()
+    : investpropertyData;
   const investfundData = view === "investfund" && accountId
     ? await loadInvestAccountData(investDataHidFilter, accountId, investDataParams)
     : null;
@@ -2235,13 +2243,13 @@ export default async function Home({
     : selectedAccountRawBalanceValue;
   const selectedViewHeaderAmount = view === "debt"
     ? debtDisplaySummaryValue
-    : view === "investproperty" && investpropertyData
-      ? investpropertyData.totalMarketValue
+    : view === "investproperty" && investpropertyFilteredData
+      ? investpropertyFilteredData.totalMarketValue
       : selectedAccountDisplayValue;
   const showDerivedViewHeaderAmount =
     !!currentInvestData ||
     (view === "investstock" && !!investstockData) ||
-    (view === "investproperty" && !!investpropertyData) ||
+    (view === "investproperty" && !!investpropertyFilteredData) ||
     (view === "insurance" && !!selectedAccount) ||
     (view === "deposit" && !!selectedAccount);
   const headerFxBalance = showDerivedViewHeaderAmount ? selectedViewHeaderAmount : selectedAccountRawBalanceValue;
@@ -2315,6 +2323,7 @@ export default async function Home({
         costBasisMethod: selectedAccount.costBasisMethod,
         fundUnitsDecimals: selectedAccount.fundUnitsDecimals,
         tradingCalendar: selectedAccount.tradingCalendar,
+        fixedAssetType: selectedAccount.fixedAssetType,
       }
     : null;
 
@@ -2324,7 +2333,11 @@ export default async function Home({
         <header className="page-header">
           <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 px-4 py-2 md:px-5">
             <div className="flex min-w-0 flex-wrap items-center gap-3 text-sm">
-              {view === "investproperty" && !selectedAccountEditData ? null : selectedAccountEditData ? (
+              {view === "investproperty" && !selectedAccountEditData ? (
+                <span className="page-title">
+                  {fixedAssetTypeParam ? t(`fixedAsset.type.${fixedAssetTypeParam}`) : t("txForm.fixedAssetToggle")}
+                </span>
+              ) : selectedAccountEditData ? (
                 <AccountTypeQuickEdit
                   account={selectedAccountEditData}
                   accountLabel={selectedAccountLabel || selectedAccountEditData.name}
@@ -2335,6 +2348,10 @@ export default async function Home({
               {view === "debt" ? (
                 <span className={`tabular-nums font-semibold ${pnlCls(debtDisplaySummaryValue)}`}>
                   {formatCurrencyMoney(debtDisplaySummaryValue, baseCurrency)}
+                </span>
+              ) : view === "investproperty" && investpropertyFilteredData ? (
+                <span className={`tabular-nums font-semibold ${pnlCls(investpropertyFilteredData.totalMarketValue)}`}>
+                  {formatCurrencyMoney(investpropertyFilteredData.totalMarketValue, selectedAccountCurrency)}
                 </span>
               ) : !selectedAccount ? (
                 <LiveAccountBalance mode="total" initialValue={totalNetWorthValue} isRedUp={isRedUp} baseCurrency={baseCurrency} />
@@ -2439,6 +2456,14 @@ export default async function Home({
                   { key: "deposit", label: t("entry.kind.deposit") },
                   { key: "insurance", label: t("entry.kind.insurance") },
                   { key: "debt", label: t("entry.kind.debt"), disabled: cashAccountList.length === 0 },
+                  {
+                    key: "loan",
+                    label: t("entry.kind.loan"),
+                    children: [
+                      { key: "loan", label: t("entry.kind.consumerLoan"), loanType: "consumer" },
+                      { key: "loan", label: t("entry.kind.mortgageLoan"), loanType: "mortgage" },
+                    ],
+                  },
                   { key: "regular-task", label: t("entry.kind.regularTask") },
                 ]}
               />
@@ -2493,7 +2518,7 @@ export default async function Home({
                 propertyAccountSSOptions={propertyAccountSSOptions}
                 cashAccounts={cashAccountList}
                 cashAccountSSOptions={cashAccountSSOptions}
-                propertyAssets={investpropertyData?.positions.map((position) => ({
+                propertyAssets={investpropertyFilteredData?.positions.map((position) => ({
                   id: position.propertyAssetId ?? position.fundCode,
                   name: position.name,
                   marketValue: position.marketValue,
@@ -2656,6 +2681,7 @@ export default async function Home({
                   counterpartyId: account.counterpartyId ?? null,
                   institutionType: account.Institution?.type ?? account.Counterparty?.type ?? null,
                   isInstitutionLoan: !!account.institutionId && account.Institution?.type === "bank",
+                  isConsumerLoan: account.isConsumerLoan === true,
                   debtDirection: account.debtDirection ?? null,
                 }))}
                 cashAccounts={debtTransferAccountList}
@@ -2737,11 +2763,6 @@ export default async function Home({
                     resetKey={`${selectedAccount?.id ?? ""}:${selectedCreditBillMonth || "all"}:credit-bill-detail`}
                     selectedBillMonth={selectedCreditBillMonth}
                     title={creditBillDetailTitle}
-                    periodLabel={
-                      !showAllCreditBillDetails && creditCardBill
-                        ? <>{t("creditBill.period")}：{mdUtcDots(creditCardBill.start)} ~ {mdUtcDots(creditCardBill.end)} · {creditCardBill.isCurrentCycle ? t("creditBill.currentCycle") : t("creditBill.currentBill")}</>
-                        : undefined
-                    }
                     accountOptions={accountOptions}
                     categoryOptions={categoryBatchReplaceOptions}
                     tagOptions={tagBatchReplaceOptions}
@@ -2890,17 +2911,21 @@ export default async function Home({
               isRedUp={isRedUp}
               fundUnitsDecimals={fundUnitsDecimals}
             />
-          ) : view === "investproperty" && investpropertyData ? (
+          ) : view === "investproperty" && investpropertyFilteredData ? (
             <PropertyShell
-              key={`investproperty-${accountId || "all"}`}
+              key={`investproperty-${accountId || "all"}${fixedAssetTypeParam ? `-${fixedAssetTypeParam}` : ""}`}
               accountId={accountId || defaultPropertyInvestmentAccountId}
               currency={selectedAccount?.currency ?? baseCurrency}
               baseCurrency={baseCurrency}
-              positions={JSON.parse(JSON.stringify(investpropertyData.positions))}
+              positions={JSON.parse(JSON.stringify(investpropertyFilteredData.positions))}
               entries={JSON.parse(JSON.stringify(investpropertyEntries))}
-              totalMarketValue={investpropertyData.totalMarketValue}
-              totalCost={investpropertyData.totalCost}
+              totalMarketValue={investpropertyFilteredData.totalMarketValue}
+              totalCost={investpropertyFilteredData.totalCost}
               isRedUp={isRedUp}
+              assetType={fixedAssetTypeParam || selectedAccount?.fixedAssetType || null}
+              accountOptions={accountOptions}
+              categoryOptions={categoryBatchReplaceOptions}
+              tagOptions={tagBatchReplaceOptions}
             />
           ) : view === "investstock" && investstockData ? (
             <StockHoldingsPanel

@@ -2,15 +2,29 @@ import { NextRequest, NextResponse } from "next/server";
 import { FundCashFlowKind, FundProductType, FundSubtype } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
-import { addWorkdaysUtc } from "@/lib/date-utils";
+import { addWorkdaysUtc, isWithinRecentTradingDaysUtc } from "@/lib/date-utils";
 import { getFundConfirmDays } from "@/lib/fund/confirmDays";
-import { getFundNav, fetchHistoricalNavList, preloadNavListToCache, refreshHeldFundLatestNavs, NavListItem } from "@/lib/fund/navCache";
+import { getFundNav, getFundNavFromCacheOnly, refreshHeldFundLatestNavs } from "@/lib/fund/navCache";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { getAccountFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { ensureFundTransactionCashFlowLinks } from "@/lib/fund/transactions";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+
+/**
+ * POST /api/v1/fund/refresh
+ *
+ * Refreshes the current fund view for one fund account. It fills exact NAVs
+ * already present in the cache regardless of age, fetches missing exact NAVs
+ * only for confirmation dates within today or the previous three trading days,
+ * skips older cache misses for manual backfill, recalculates affected holdings,
+ * and refreshes the latest available NAV for current holdings.
+ *
+ * Body: { accountId: string, symbols?: string[] }
+ * `symbols` is accepted for client compatibility and does not expand the
+ * refresh scope beyond the selected account's current holdings.
+ */
 
 const toNum = (v: unknown) => { const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; };
 
@@ -40,11 +54,20 @@ export async function POST(req: NextRequest) {
     let entryFilled = 0;
     let entryFailed = 0;
     let entryNavFilled = 0;
+    let entryDeferred = 0;
     const syncedEntryIds: string[] = [];
+
+    const account = await prisma.account.findFirst({
+      where: { id: accountId, householdId },
+      select: { tradingCalendar: true },
+    });
+    if (!account) {
+      return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "基金账户不存在" }, { status: 404 });
+    }
+
     const fundUnitsDecimals = await getAccountFundUnitsDecimals(accountId);
 
     // Query unconfirmed fund transactions directly from FundTransaction.
-    const requestedSymbols: string[] = Array.isArray(body.symbols) ? body.symbols.map(String).filter(Boolean) : [];
     const unconfirmedEntries = await prisma.fundTransaction.findMany({
       where: {
         householdId,
@@ -62,35 +85,8 @@ export async function POST(req: NextRequest) {
       orderBy: { createdAt: "asc" },
     });
 
-    // Group by fund code and fetch historical NAV for each fund in one pass
-    const fundCodes = [...new Set([...unconfirmedEntries.map(e => e.fundCode).filter(Boolean), ...requestedSymbols])];
-    const navCacheByFund: Map<string, NavListItem[]> = new Map();
-
-    // Find the earliest date among all records; fall back to 30 days ago when there are no unconfirmed records
     const now = new Date();
-    let earliestDate = now.toISOString().slice(0, 10);
-    for (const entry of unconfirmedEntries) {
-      if (!entry.fundCode) continue;
-      const applyDate = entry.applyDate.toISOString().slice(0, 10);
-      if (applyDate < earliestDate) earliestDate = applyDate;
-    }
-    // When explicit symbols are requested but no unconfirmed records exist, start from 30 days ago
-    if (requestedSymbols.length > 0 && unconfirmedEntries.length === 0) {
-      const d = new Date(now);
-      d.setDate(d.getDate() - 30);
-      earliestDate = d.toISOString().slice(0, 10);
-    }
-
-    // Preload historical NAV for each fund (from the earliest apply date to today)
-    for (const fundCode of fundCodes) {
-      if (!fundCode) continue;
-      const navList = await fetchHistoricalNavList(fundCode, earliestDate, now.toISOString().slice(0, 10));
-      if (navList.length > 0) {
-        navCacheByFund.set(fundCode, navList);
-        // Write NAV into the cache table (including purchase status)
-        await preloadNavListToCache(fundCode, navList);
-      }
-    }
+    const todayDate = now.toISOString().slice(0, 10);
 
     for (const entry of unconfirmedEntries) {
       if (!entry.fundCode) continue;
@@ -102,29 +98,27 @@ export async function POST(req: NextRequest) {
           : addWorkdaysUtc(applyDate, confirmDays ?? 0);
         if (confirmDate < applyDate) logger.warn(`confirmDate ${confirmDate} < applyDate ${applyDate}, confirmDays=${confirmDays}`, "fund/refresh");
 
-        // First look it up in the preloaded NAV list
-        const navList = navCacheByFund.get(entry.fundCode);
-        let navData: { nav: number; cumNav: number | null; name: string | null; dateMatch: boolean; actualDate?: string } | null = null;
-
-        if (navList && navList.length > 0) {
-          const found = navList.find((item) => item.date === confirmDate);
-          if (found) {
-            navData = {
-              nav: found.nav,
-              cumNav: found.cumNav,
-              name: null,
-              dateMatch: true,
-              actualDate: found.date,
-            };
-          }
-        }
-
-        // When the preloaded list has no match, fall back to the original lookup
-        if (!navData) {
+        // Existing exact cache data is valid regardless of age. Only query the
+        // external API for recent confirmation dates; older misses are manual.
+        const cachedNav = await getFundNavFromCacheOnly(entry.fundCode, utcDate(confirmDate));
+        let navData: { nav: number; cumNav: number | null; name: string | null; dateMatch: boolean; actualDate?: string } | null = cachedNav
+          ? { ...cachedNav, dateMatch: true, actualDate: confirmDate }
+          : null;
+        const isRecentConfirmation = isWithinRecentTradingDaysUtc(
+          confirmDate,
+          todayDate,
+          3,
+          account.tradingCalendar ?? "cn_fund",
+        );
+        if (!navData && isRecentConfirmation) {
           navData = await getFundNav(entry.fundCode, utcDate(confirmDate), accountId);
         }
 
         const hasExactNav = !!navData && navData.dateMatch;
+        if (!hasExactNav || !navData || !(navData.nav > 0)) {
+          entryDeferred++;
+          continue;
+        }
 
         const actualConfirmDate = utcDate(confirmDate);
 
@@ -142,20 +136,18 @@ export async function POST(req: NextRequest) {
         const fee = confirmedAmount * feeRate;
 
         let units: number | null = null;
-        if (hasExactNav && navData && navData.nav > 0) {
-          if (entry.fundSubtype === FundSubtype.redeem || entry.fundSubtype === FundSubtype.switch_out) {
-            // Redeem: received = units * nav * (1 - feeRate) => units = received / (nav * (1 - feeRate))
-            const divisor = navData.nav * (1 - feeRate);
-            units = divisor > 0 ? roundFundUnits(amount / divisor, fundUnitsDecimals) : null;
-          } else {
-            units = calculateConfirmedBuyUnits({
-              grossAmount: amount,
-              refundAmount,
-              fee,
-              nav: navData.nav,
-              roundUnits: (value) => roundFundUnits(value, fundUnitsDecimals),
-            });
-          }
+        if (entry.fundSubtype === FundSubtype.redeem || entry.fundSubtype === FundSubtype.switch_out) {
+          // Redeem: received = units * nav * (1 - feeRate) => units = received / (nav * (1 - feeRate))
+          const divisor = navData.nav * (1 - feeRate);
+          units = divisor > 0 ? roundFundUnits(amount / divisor, fundUnitsDecimals) : null;
+        } else {
+          units = calculateConfirmedBuyUnits({
+            grossAmount: amount,
+            refundAmount,
+            fee,
+            nav: navData.nav,
+            roundUnits: (value) => roundFundUnits(value, fundUnitsDecimals),
+          });
         }
 
         // Update FundTransaction: write NAV, confirm date, fee, and units.
@@ -205,6 +197,7 @@ export async function POST(req: NextRequest) {
       entryFilled,
       entryNavFilled,
       entryFailed,
+      entryDeferred,
       holdingNavChecked: heldNavResult.checked,
       holdingNavRefreshed: heldNavResult.latestNavAvailable,
       holdingNavFailed: heldNavResult.failed,

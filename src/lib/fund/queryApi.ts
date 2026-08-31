@@ -209,7 +209,7 @@ export async function queryFundIdentity(fundCode: string): Promise<FundIdentityR
     if (res.ok) {
       const html = await res.text();
       const patterns = [
-        /<title[^>]*>\s*([^<]*?)\s*[（(]\s*(\d{6})\s*[）)]/i,
+        /<title[^>]*>\s*([^<]*?)\s*[\uFF08(]\s*(\d{6})\s*[\uFF09)]/i,
         /<meta\s+name=["']keywords["']\s+content=["']([^,"']+),\s*(\d{6})[,"]/i,
         /<meta\s+name=["']description["']\s+content=["'][^"']*?提供([^("']+)[（(](\d{6})[）)]/i,
       ];
@@ -259,6 +259,69 @@ const PARSERS: Record<string, (data: any) => NavResult> = {
   alipay: parseAlipay,
 };
 
+export type FundProfileResult = {
+  code: string;
+  name?: string;
+  fundCompany?: string;
+  custodian?: string;
+  manager?: string;
+  source: string;
+} | null;
+
+/**
+ * Extract a labeled field from the fund overview page.
+ * Provider link identifiers are not regulator-issued fund company codes, so
+ * the parser returns display text only and ignores those identifiers.
+ */
+function extractLabeledField(html: string, label: string): { text: string } | null {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`<th[^>]*>\\s*${escaped}\\s*</th>\\s*<td[^>]*>([\\s\\S]*?)</td>`, "i");
+  const m = html.match(re);
+  if (!m) return null;
+  const cell = m[1] ?? "";
+  const text = cell.replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").trim();
+  if (!text) return null;
+  return { text };
+}
+
+/**
+ * Fetch a fund profile from the Tiantian Fund overview page.
+ * This is fund-level metadata, independent of the holding account.
+ */
+export async function queryFundProfile(fundCode: string): Promise<FundProfileResult> {
+  const code = fundCode.trim();
+  if (!/^\d{6}$/.test(code)) return null;
+
+  try {
+    const url = `http://fundf10.eastmoney.com/jbgk_${code}.html`;
+    const res = await fetch(url, {
+      headers: { ...headers, Referer: url },
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+
+    const fundCompany = extractLabeledField(html, "\u57FA\u91D1\u7BA1\u7406\u4EBA");
+    const custodian = extractLabeledField(html, "\u57FA\u91D1\u6258\u7BA1\u4EBA");
+    const manager = extractLabeledField(html, "\u57FA\u91D1\u7ECF\u7406\u4EBA");
+
+    const titleMatch = html.match(/<title[^>]*>\s*([^<]*?)\s*[\uFF08(]\s*(\d{6})\s*[\uFF09)]/i);
+    const name = titleMatch && titleMatch[2] === code ? normalizeFundName(titleMatch[1]) : undefined;
+
+    if (!fundCompany && !custodian && !manager && !name) return null;
+
+    return {
+      code,
+      name: name ?? undefined,
+      fundCompany: fundCompany?.text,
+      custodian: custodian?.text,
+      manager: manager?.text,
+      source: "eastmoney-f10",
+    };
+  } catch {
+    return null;
+  }
+}
 /**
  * Get all active query APIs (sorted by priority).
  */

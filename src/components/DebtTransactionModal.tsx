@@ -32,9 +32,12 @@ import {
   MORTGAGE_LPR_CONVERSION_BASE_RATE,
 } from "@/lib/loan-lpr";
 import {
+  INSTALLMENT_REPAYMENT_METHOD,
   buildLoanRepaymentSchedulePreview,
   getEffectiveLoanAnnualRate,
+  isInstallmentRepaymentMethod,
   normalizeLoanRateAdjustments,
+  normalizeLoanRepaymentMethod,
   type LoanRateAdjustment,
 } from "@/lib/loan-repayment";
 import { formatLoanRecalculateSuccessMessage } from "@/lib/loan-repayment-recalculate-result";
@@ -42,7 +45,6 @@ import { DEFAULT_LOAN_PREPAY_STRATEGY, type LoanPrepayStrategy } from "@/lib/loa
 import { useI18n } from "@/lib/i18n";
 
 type DebtMode = "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
-type SimpleTransferDirection = "transfer_in" | "transfer_out";
 type PrepayStrategy = LoanPrepayStrategy;
 type LoanFundingMode = "cash_disbursement" | "financed_purchase";
 
@@ -55,6 +57,7 @@ type AccountOption = {
   counterpartyId?: string | null;
   institutionType?: string | null;
   isInstitutionLoan?: boolean;
+  isConsumerLoan?: boolean;
   debtDirection?: "payable" | "receivable" | null;
 };
 
@@ -71,6 +74,7 @@ type SettingsAccountRecord = {
   Institution?: { name: string | null; shortName?: string | null; type?: string | null } | null;
   Counterparty?: { name: string | null; shortName?: string | null; type?: string | null } | null;
   AccountGroup?: { id: string; name: string | null } | null;
+  isConsumerLoan?: boolean | null;
 };
 type HistoricalRateRow = { key: string; effectiveDate: string; annualRate: string };
 type RepaymentLprCheck = {
@@ -95,8 +99,11 @@ const PREPAY_STRATEGY_LABELS: Record<PrepayStrategy, string> = {
   settle: "debtTx.prepayStrategy.settle",
 };
 
-const INTEREST_FREE_REPAYMENT_METHOD = "免息分期还本";
-const FIXED_REPAYMENT_METHODS = new Set(["等额本息", "等额本金", INTEREST_FREE_REPAYMENT_METHOD, "先还利息一次性还本"]);
+const FIXED_REPAYMENT_METHODS = new Set(["等额本息", "等额本金", INSTALLMENT_REPAYMENT_METHOD, "先还利息一次性还本"]);
+
+function isFixedRepaymentMethodValue(method: string) {
+  return FIXED_REPAYMENT_METHODS.has(normalizeLoanRepaymentMethod(method));
+}
 
 function addMonthsInput(dateInput: string, months: number) {
   const date = new Date(`${dateInput}T00:00:00`);
@@ -124,9 +131,21 @@ function shouldPromptHistoricalRepayments(params: {
   return firstTime != null && thresholdTime != null && firstTime <= thresholdTime;
 }
 
+function parseNumberText(value: string) {
+  const text = value.replace(/,/g, "").trim();
+  if (!text) return null;
+  const num = Number(text);
+  return Number.isFinite(num) ? num : null;
+}
+
 function parsePositiveNumberText(value: string) {
-  const num = Number(value.replace(/,/g, ""));
-  return Number.isFinite(num) && num > 0 ? num : null;
+  const num = parseNumberText(value);
+  return num != null && num > 0 ? num : null;
+}
+
+function parseNonNegativeNumberText(value: string) {
+  const num = parseNumberText(value);
+  return num != null && num >= 0 ? num : null;
 }
 
 function parseMoneyText(value: string) {
@@ -191,18 +210,6 @@ function canSwitchDebtEditMode(currentMode: DebtMode, nextMode: DebtMode) {
   return canCreateDebtItemForMode(currentMode) && canCreateDebtItemForMode(nextMode);
 }
 
-function simpleTransferDirectionForMode(mode: DebtMode): SimpleTransferDirection {
-  return mode === "borrow_in" || mode === "collect_in" ? "transfer_in" : "transfer_out";
-}
-
-function debtModeForSimpleTransferDirection(
-  direction: SimpleTransferDirection,
-  debtDirection?: "payable" | "receivable" | null,
-): DebtMode {
-  if (direction === "transfer_in") return debtDirection === "receivable" ? "collect_in" : "borrow_in";
-  return debtDirection === "payable" ? "repay_out" : "lend_out";
-}
-
 function settingsAccountToDebtOption(account: SettingsAccountRecord, t: (key: string, params?: Record<string, string | number>) => string): AccountOption {
   const display = buildAccountDisplayOption(account as Parameters<typeof buildAccountDisplayOption>[0]);
   const counterpartyName = account.Counterparty?.shortName?.trim() || account.Counterparty?.name?.trim() || "";
@@ -216,6 +223,7 @@ function settingsAccountToDebtOption(account: SettingsAccountRecord, t: (key: st
     counterpartyId: account.counterpartyId ?? null,
     institutionType,
     isInstitutionLoan: Boolean(account.institutionId && !account.counterpartyId),
+    isConsumerLoan: account.isConsumerLoan === true,
     debtDirection: account.debtDirection ?? null,
   };
 }
@@ -369,6 +377,7 @@ export function DebtTransactionModal({
   const [debtAccountNestedOpen, setDebtAccountNestedOpen] = useState(false);
   const [mode, setMode] = useState<DebtMode>("borrow_in");
   const [loanFundingMode, setLoanFundingMode] = useState<LoanFundingMode>("cash_disbursement");
+  const [loanType, setLoanType] = useState<"consumer" | "mortgage" | null>(null);
   const [date, setDate] = useState(today);
   const [debtAccountId, setDebtAccountId] = useState(defaultDebtAccountId ?? debtAccounts[0]?.id ?? "");
   const [debtInstitutionId, setDebtInstitutionId] = useState(normalizeDebtObjectValue(defaultDebtInstitutionId, nestedFieldData));
@@ -435,7 +444,7 @@ export function DebtTransactionModal({
   }
 
   function openDebtAccountCreate() {
-    if (!selectedDebtObjectIsCounterparty) return;
+    if (!isDebtObjectRef(debtInstitutionId)) return;
     setDebtAccountNestedOpen(true);
   }
 
@@ -448,6 +457,7 @@ export function DebtTransactionModal({
     const nextDebtObjectId = normalizedDefaultObject || defaultAccountObject;
     setMode("borrow_in");
     setLoanFundingMode("cash_disbursement");
+    setLoanType(null);
     setEditingEntryId("");
     setDate(today);
     setDebtInstitutionId(nextDebtObjectId);
@@ -548,6 +558,7 @@ export function DebtTransactionModal({
         requestId?: string;
         editEntryId?: string;
         mode?: DebtMode;
+        loanType?: "consumer" | "mortgage";
         defaultDebtAccountId?: string;
         defaultDebtInstitutionId?: string;
         defaultCashAccountId?: string;
@@ -571,6 +582,22 @@ export function DebtTransactionModal({
       resetDraft();
       if (detail?.editEntryId) setEditingEntryId(detail.editEntryId);
       if (detail?.mode) setMode(detail.mode);
+      if (detail?.loanType) {
+        setLoanType(detail.loanType);
+        // 贷款类型预设：消费贷款 = 提前支出（financed_purchase）+ 固定利率分期；
+        // 抵押贷款 = 放款（cash_disbursement）+ LPR 折扣 + 等额本息长期。
+        if (detail.loanType === "consumer") {
+          setLoanFundingMode("financed_purchase");
+          setRepaymentMethod("等额本息");
+          setLoanTotalRuns("12");
+          setAutoDebit(false);
+        } else {
+          setLoanFundingMode("cash_disbursement");
+          setRepaymentMethod("等额本息");
+          setLoanTotalRuns("300");
+          setAutoDebit(true);
+        }
+      }
       if (detail?.defaultLoanFundingMode) setLoanFundingMode(detail.defaultLoanFundingMode);
       if (detail?.defaultDate) setDate(detail.defaultDate);
       const eventDebtAccount = detail?.defaultDebtAccountId
@@ -582,7 +609,18 @@ export function DebtTransactionModal({
       } else if (eventDebtObject) {
         setDebtInstitutionId(eventDebtObject);
       }
-      if (detail?.defaultDebtAccountId) setDebtAccountId(detail.defaultDebtAccountId);
+      if (detail?.defaultDebtAccountId) {
+        setDebtAccountId(detail.defaultDebtAccountId);
+      } else if (detail?.loanType) {
+        // 未指定账户时，按贷款类型自动选中第一个匹配账户。
+        const matched = localDebtAccounts.find((account) =>
+          detail.loanType === "consumer" ? account.isConsumerLoan === true : account.isConsumerLoan !== true,
+        );
+        if (matched) {
+          setDebtAccountId(matched.id);
+          setDebtInstitutionId(debtObjectValueForAccount(matched));
+        }
+      }
       if (detail?.defaultCashAccountId) setCashAccountId(detail.defaultCashAccountId);
       if (detail?.defaultPrincipal != null) {
         const nextPrincipal = String(parseAbsMoneyText(String(detail.defaultPrincipal)));
@@ -601,9 +639,11 @@ export function DebtTransactionModal({
       }
       if (detail?.defaultPrepayStrategy) setPrepayStrategy(detail.defaultPrepayStrategy);
       if (detail?.defaultNote != null) setNote(String(detail.defaultNote));
-      if (detail?.defaultRepaymentMethod) setRepaymentMethod(detail.defaultRepaymentMethod);
+      if (detail?.defaultRepaymentMethod) setRepaymentMethod(normalizeLoanRepaymentMethod(detail.defaultRepaymentMethod));
       if (detail?.defaultAnnualRate != null && Number.isFinite(detail.defaultAnnualRate)) {
         setAnnualRate(formatRateInput(detail.defaultAnnualRate));
+      } else if (detail?.defaultRepaymentMethod && isInstallmentRepaymentMethod(detail.defaultRepaymentMethod)) {
+        setAnnualRate("0");
       }
       if (detail?.defaultMortgageLprDiscount != null && Number.isFinite(detail.defaultMortgageLprDiscount)) {
         setMortgageLprDiscount(formatRateInput(detail.defaultMortgageLprDiscount));
@@ -649,16 +689,21 @@ export function DebtTransactionModal({
     setPrepayTotal(prepayComputedTotal);
   }, [mode, prepayComputedTotal, prepayTotalManual]);
 
-  useEffect(() => {
-    if (!!editingEntryId || !canCreateDebtItemForMode(mode) || !isDebtObjectRef(debtInstitutionId)) return;
-    const rawId = rawDebtObjectId(debtInstitutionId);
-    const existingAccount = localDebtAccounts.find((account) => {
-      if (debtInstitutionId.startsWith("counterparty:")) return account.counterpartyId === rawId;
-      if (account.debtDirection !== debtDirectionForMode(mode)) return false;
+  const findDebtAccountForObject = useCallback((objectValue: string, direction: "payable" | "receivable") => {
+    if (!isDebtObjectRef(objectValue)) return null;
+    const rawId = rawDebtObjectId(objectValue);
+    const matchedAccounts = localDebtAccounts.filter((account) => {
+      if (objectValue.startsWith("counterparty:")) return account.counterpartyId === rawId;
       return account.institutionId === rawId;
     });
+    return matchedAccounts.find((account) => account.debtDirection === direction) ?? matchedAccounts[0] ?? null;
+  }, [localDebtAccounts]);
+
+  useEffect(() => {
+    if (!!editingEntryId || mode === "prepay_out" || !debtInstitutionId.startsWith("counterparty:")) return;
+    const existingAccount = findDebtAccountForObject(debtInstitutionId, debtDirectionForMode(mode));
     setDebtAccountId(existingAccount?.id ?? "");
-  }, [debtInstitutionId, editingEntryId, localDebtAccounts, mode]);
+  }, [debtInstitutionId, editingEntryId, findDebtAccountForObject, mode]);
 
   function applyPrepayTotalDraft(options?: { alertOnInvalid?: boolean }) {
     if (mode !== "prepay_out" || !prepayTotal.trim()) return penalty;
@@ -692,16 +737,6 @@ export function DebtTransactionModal({
     setPrepayTotalManual(true);
   }
 
-  function findDebtAccountForObject(objectValue: string, direction: "payable" | "receivable") {
-    if (!isDebtObjectRef(objectValue)) return null;
-    const rawId = rawDebtObjectId(objectValue);
-    const matchedAccounts = localDebtAccounts.filter((account) => {
-      if (objectValue.startsWith("counterparty:")) return account.counterpartyId === rawId;
-      return account.institutionId === rawId;
-    });
-    return matchedAccounts.find((account) => account.debtDirection === direction) ?? matchedAccounts[0] ?? null;
-  }
-
   function debtObjectValueForAccount(account: AccountOption | undefined) {
     if (!account) return "";
     if (account.counterpartyId) return `counterparty:${account.counterpartyId}`;
@@ -723,11 +758,7 @@ export function DebtTransactionModal({
       handleDebtAccountChange(id);
       return;
     }
-    const shouldAutoPickAccount = id.startsWith("counterparty:");
-    const existingAccount = shouldAutoPickAccount ? findDebtAccountForObject(id, debtDirectionForMode(mode)) : null;
-    if (shouldAutoPickAccount && existingAccount) {
-      setMode(debtModeForSimpleTransferDirection(simpleTransferDirectionForMode(mode), existingAccount.debtDirection));
-    }
+    const existingAccount = id.startsWith("counterparty:") ? findDebtAccountForObject(id, debtDirectionForMode(mode)) : null;
     setDebtInstitutionId(id);
     setDebtAccountId(existingAccount?.id ?? "");
     setDebtItemName("");
@@ -737,19 +768,25 @@ export function DebtTransactionModal({
     if (editingEntryId && !canSwitchDebtEditMode(mode, nextMode)) return;
     setMode(nextMode);
     if (principal.trim()) setPrincipal(String(parseAbsMoneyText(principal)));
-    if (!canCreateDebtItemForMode(nextMode)) {
+    if (nextMode === "prepay_out") {
       setDebtInstitutionId("");
+      setDebtAccountId("");
+      setDebtItemName("");
+      return;
     }
-  }
-
-  function handleSimpleTransferDirectionSelect(direction: SimpleTransferDirection) {
-    const account = localDebtAccounts.find((item) => item.id === debtAccountId);
-    const nextMode = debtModeForSimpleTransferDirection(direction, account?.debtDirection);
-    setMode(nextMode);
-    if (principal.trim()) setPrincipal(String(parseAbsMoneyText(principal)));
-    if (account) {
-      const objectValue = debtObjectValueForAccount(account);
-      if (objectValue) setDebtInstitutionId(objectValue);
+    if (!isDebtObjectRef(debtInstitutionId)) return;
+    if (debtInstitutionId.startsWith("counterparty:")) {
+      const existingAccount = findDebtAccountForObject(debtInstitutionId, debtDirectionForMode(nextMode));
+      setDebtAccountId(existingAccount?.id ?? "");
+      return;
+    }
+    const currentDebtAccount = localDebtAccounts.find((item) => item.id === debtAccountId);
+    if (
+      currentDebtAccount?.institutionId &&
+      currentDebtAccount.debtDirection &&
+      currentDebtAccount.debtDirection !== debtDirectionForMode(nextMode)
+    ) {
+      setDebtAccountId("");
     }
   }
 
@@ -776,9 +813,12 @@ export function DebtTransactionModal({
 
   async function saveDebtTransaction(keepAdding: boolean, options?: { skipHistoryPrompt?: boolean }) {
     if (submitting) return;
-    const requiresLoanScheduleFields = showBorrowPlan && FIXED_REPAYMENT_METHODS.has(repaymentMethod);
+    const requiresLoanScheduleFields = showBorrowPlan && isFixedRepaymentMethodValue(repaymentMethod);
     if (requiresLoanScheduleFields) {
-      if (repaymentMethod !== INTEREST_FREE_REPAYMENT_METHOD && !parsePositiveNumberText(annualRate)) {
+      const parsedAnnualRate = isInstallmentRepaymentMethod(repaymentMethod)
+        ? parseNonNegativeNumberText(annualRate)
+        : parsePositiveNumberText(annualRate);
+      if (parsedAnnualRate == null) {
         window.alert(t("debtTx.alert.annualRateRequired"));
         return;
       }
@@ -860,19 +900,20 @@ export function DebtTransactionModal({
     formData.set("mode", mode);
     formData.set("loanFundingMode", submittedLoanFundingMode);
     formData.set("date", date);
-    const shouldUseDebtObject = !editingEntryId && canSelectDebtObject && !!debtInstitutionId && !debtAccountId;
+    const canResolveDebtObjectWithoutSelectedAccount = canCreateDebtItem || debtInstitutionId.startsWith("counterparty:");
+    const shouldUseDebtObject = !editingEntryId && canSelectDebtObject && canResolveDebtObjectWithoutSelectedAccount && !!debtInstitutionId && !debtAccountId;
     formData.set("debtAccountId", shouldUseDebtObject ? "" : debtAccountId);
     formData.set("debtObjectId", shouldUseDebtObject ? debtInstitutionId : "");
     formData.set("debtInstitutionId", shouldUseDebtObject ? rawDebtObjectId(debtInstitutionId) : "");
     formData.set("debtItemName", debtItemName);
     formData.set("cashAccountId", cashAccountId);
     formData.set("principal", String(parseAbsMoneyText(principal)));
-    formData.set("interest", showSimpleTransferMode ? "0" : interest);
-    formData.set("penalty", showSimpleTransferMode ? "0" : penaltyForSubmit);
+    formData.set("interest", showInterest ? interest : "0");
+    formData.set("penalty", showPrepayment ? penaltyForSubmit : "0");
     formData.set("prepayStrategy", prepayStrategy);
     formData.set("annualRate", annualRate);
     formData.set("mortgageLprDiscount", mortgageLprDiscount);
-    formData.set("repaymentMethod", repaymentMethod);
+    formData.set("repaymentMethod", normalizeLoanRepaymentMethod(repaymentMethod));
     formData.set("repaymentIntervalMonths", repaymentIntervalMonths);
     formData.set("loanTotalRuns", loanTotalRuns);
     formData.set("firstRepaymentDate", firstRepaymentDate);
@@ -984,14 +1025,14 @@ export function DebtTransactionModal({
   const selectedDebtAccount = localDebtAccounts.find((account) => account.id === debtAccountId);
   const selectedDebtObjectIsCounterparty = debtInstitutionId.startsWith("counterparty:") || !!selectedDebtAccount?.counterpartyId;
   const selectedDebtAccountIsBankLoan = !!selectedDebtAccount?.institutionId && selectedDebtAccount.institutionType === "bank";
-  const showSimpleTransferMode = selectedDebtObjectIsCounterparty && mode !== "prepay_out";
-  const simpleTransferDirection = simpleTransferDirectionForMode(mode);
-  const showInterest = !showSimpleTransferMode && (mode === "repay_out" || mode === "collect_in" || mode === "lend_out");
+  const selectedDebtAccountIsConsumerLoan = selectedDebtAccount?.isConsumerLoan === true;
+  const showInterest = mode === "repay_out" || mode === "collect_in" || mode === "lend_out";
   const showPrepayment = mode === "prepay_out";
   const canCreateDebtItem = canCreateDebtItemForMode(mode);
-  const canSelectDebtObject = !!editingEntryId || canCreateDebtItem || showSimpleTransferMode;
-  const showLoanBorrowOptions = mode === "borrow_in" && !selectedDebtObjectIsCounterparty && selectedDebtAccountIsBankLoan;
-  const showBorrowPlan = showLoanBorrowOptions;
+  const canSelectDebtObject = !!editingEntryId || mode !== "prepay_out";
+  const showLoanBorrowOptions = mode === "borrow_in" && !selectedDebtObjectIsCounterparty && (selectedDebtAccountIsBankLoan || selectedDebtAccountIsConsumerLoan);
+  const hasBorrowPlanTarget = !!debtAccountId || isDebtObjectRef(debtInstitutionId);
+  const showBorrowPlan = mode === "borrow_in" && hasBorrowPlanTarget;
   useEffect(() => {
     if (selectedDebtObjectIsCounterparty && mode === "prepay_out") {
       setMode("repay_out");
@@ -1002,19 +1043,25 @@ export function DebtTransactionModal({
       setLoanFundingMode("cash_disbursement");
     }
   }, [loanFundingMode, showLoanBorrowOptions]);
+  useEffect(() => {
+    if (showLoanBorrowOptions) return;
+    if (bankExecutionRate) setBankExecutionRate("");
+    if (mortgageLprDiscount) setMortgageLprDiscount("");
+    if (showHistoricalRates) setShowHistoricalRates(false);
+    if (historicalRateRows.length > 0) setHistoricalRateRows([]);
+    if (historicalRatesOpen) setHistoricalRatesOpen(false);
+  }, [bankExecutionRate, historicalRateRows.length, historicalRatesOpen, mortgageLprDiscount, showHistoricalRates, showLoanBorrowOptions]);
   const repaymentTotal = useMemo(() => {
     if (!principal.trim() && !interest.trim() && !penalty.trim()) return "";
     return (parseMoneyText(principal) + (showInterest ? parseMoneyText(interest) : 0) + (showPrepayment ? parseMoneyText(penalty) : 0)).toFixed(2);
   }, [interest, penalty, principal, showInterest, showPrepayment]);
-  const cashAccountLabel = showSimpleTransferMode
-    ? simpleTransferDirection === "transfer_in" ? t("txForm.transferTo") : t("txForm.transferFrom")
-    : mode === "borrow_in"
-      ? (showLoanBorrowOptions && loanFundingMode === "financed_purchase" ? t("debtTx.accountLabel.repaymentAccount") : t("debtTx.accountLabel.postingAccount"))
-      : mode === "repay_out" || mode === "prepay_out"
-        ? t("debtTx.accountLabel.expenseAccount")
-        : mode === "collect_in"
-          ? t("debtTx.accountLabel.incomeAccount")
-          : t("debtTx.accountLabel.expenseAccount");
+  const cashAccountLabel = mode === "borrow_in"
+    ? (showLoanBorrowOptions && loanFundingMode === "financed_purchase" ? t("debtTx.accountLabel.repaymentAccount") : t("debtTx.accountLabel.postingAccount"))
+    : mode === "repay_out" || mode === "prepay_out"
+      ? t("debtTx.accountLabel.expenseAccount")
+      : mode === "collect_in"
+        ? t("debtTx.accountLabel.incomeAccount")
+        : t("debtTx.accountLabel.expenseAccount");
   const debtAccountOptions: SmartSelectOption[] = useMemo(
     () => localDebtAccounts
       .filter((account) => {
@@ -1025,8 +1072,14 @@ export function DebtTransactionModal({
         if (mode === "lend_out") return account.debtDirection === "receivable";
         return true;
       })
+      .filter((account) => {
+        // 贷款类型过滤：消费贷款菜单只显示消费贷款账户，抵押贷款菜单只显示银行机构贷款账户。
+        if (loanType === "consumer") return account.isConsumerLoan === true;
+        if (loanType === "mortgage") return account.isConsumerLoan !== true;
+        return true;
+      })
       .map((account) => ({ id: account.id, label: account.label, subLabel: account.subLabel })),
-    [localDebtAccounts, mode],
+    [localDebtAccounts, mode, loanType],
   );
   const debtObjectAccountOptions: SmartSelectOption[] = useMemo(
     () => localDebtAccounts
@@ -1035,7 +1088,9 @@ export function DebtTransactionModal({
         if (!isDebtObjectRef(debtInstitutionId)) return false;
         const rawId = rawDebtObjectId(debtInstitutionId);
         if (debtInstitutionId.startsWith("counterparty:")) return account.counterpartyId === rawId;
-        return account.institutionId === rawId;
+        if (account.institutionId !== rawId) return false;
+        const expectedDirection = debtDirectionForMode(mode);
+        return !account.debtDirection || account.debtDirection === expectedDirection;
       })
       .map((account) => {
         const directionLabel = account.debtDirection === "payable" ? t(MODE_LABELS.borrow_in) : account.debtDirection === "receivable" ? t(MODE_LABELS.lend_out) : t("debtTx.direction.unspecified");
@@ -1045,7 +1100,7 @@ export function DebtTransactionModal({
           subLabel: [directionLabel, account.subLabel].filter(Boolean).join(" · "),
         };
       }),
-    [canSelectDebtObject, debtAccountOptions, debtInstitutionId, localDebtAccounts, t],
+    [canSelectDebtObject, debtAccountOptions, debtInstitutionId, localDebtAccounts, mode, t],
   );
   const debtItemSuggestions = useMemo(
     () => Array.from(new Set(localDebtAccounts
@@ -1063,21 +1118,23 @@ export function DebtTransactionModal({
   const editingExistingDebtItem = !!editingEntryId && canSelectDebtObject;
   const selectedExistingDebtItem = editingExistingDebtItem || !!debtAccountId;
   const disabled = cashAccounts.length === 0;
-  const isFixedRepaymentMethod = FIXED_REPAYMENT_METHODS.has(repaymentMethod);
-  const isInterestFreeRepaymentMethod = repaymentMethod === INTEREST_FREE_REPAYMENT_METHOD;
+  const isFixedRepaymentMethod = isFixedRepaymentMethodValue(repaymentMethod);
+  const isInstallmentRepayment = isInstallmentRepaymentMethod(repaymentMethod);
   const loanSchedulePreview = useMemo(() => {
     if (!showBorrowPlan || !isFixedRepaymentMethod) return null;
     const firstRunDate = dateInputToUtcDate(firstRepaymentDate);
     const principalAmount = parseAbsMoneyText(principal);
     const totalRuns = Number.parseInt(loanTotalRuns || "0", 10);
     const intervalMonths = Number.parseInt(repaymentIntervalMonths || "1", 10);
-    const baseAnnualRate = isInterestFreeRepaymentMethod ? 0 : Number(annualRate);
+    const baseAnnualRate = Number(annualRate);
     if (
       !firstRunDate ||
       principalAmount <= 0 ||
       !Number.isFinite(totalRuns) ||
       totalRuns <= 0 ||
-      (!isInterestFreeRepaymentMethod && (!Number.isFinite(baseAnnualRate) || baseAnnualRate <= 0))
+      (isInstallmentRepayment
+        ? (!Number.isFinite(baseAnnualRate) || baseAnnualRate < 0)
+        : (!Number.isFinite(baseAnnualRate) || baseAnnualRate <= 0))
     ) {
       return null;
     }
@@ -1112,7 +1169,7 @@ export function DebtTransactionModal({
     firstRepaymentDate,
     historicalRateRows,
     isFixedRepaymentMethod,
-    isInterestFreeRepaymentMethod,
+    isInstallmentRepayment,
     loanTotalRuns,
     principal,
     repaymentIntervalMonths,
@@ -1210,37 +1267,19 @@ export function DebtTransactionModal({
                   </div>
 
                   <form className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" onSubmit={onSubmit}>
-                    {showSimpleTransferMode ? (
-                      <div className="grid grid-cols-2 gap-2">
-                        {([
-                          ["transfer_in", "debtTx.transferIn"],
-                          ["transfer_out", "debtTx.transferOut"],
-                        ] as const).map(([direction, labelKey]) => (
-                          <button
-                            key={direction}
-                            type="button"
-                            onClick={() => handleSimpleTransferDirectionSelect(direction)}
-                            className={`segment-button h-9 ${simpleTransferDirection === direction ? "segment-button-active" : ""}`}
-                          >
-                            {t(labelKey)}
-                          </button>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-5 gap-2">
-                        {(Object.keys(MODE_LABELS) as DebtMode[]).map((item) => (
-                          <button
-                            key={item}
-                            type="button"
-                            onClick={() => handleModeSelect(item)}
-                            disabled={!!editingEntryId && !canSwitchDebtEditMode(mode, item)}
-                            className={`segment-button h-9 ${mode === item ? "segment-button-active" : ""}`}
-                          >
-                            {t(MODE_LABELS[item])}
-                          </button>
-                        ))}
-                      </div>
-                    )}
+                    <div className="grid grid-cols-5 gap-2">
+                      {(Object.keys(MODE_LABELS) as DebtMode[]).map((item) => (
+                        <button
+                          key={item}
+                          type="button"
+                          onClick={() => handleModeSelect(item)}
+                          disabled={!!editingEntryId && !canSwitchDebtEditMode(mode, item)}
+                          className={`segment-button h-9 ${mode === item ? "segment-button-active" : ""}`}
+                        >
+                          {t(MODE_LABELS[item])}
+                        </button>
+                      ))}
+                    </div>
 
                     <div className="grid grid-cols-2 gap-3">
                       <div className="space-y-1">
@@ -1295,7 +1334,7 @@ export function DebtTransactionModal({
                             onChange={handleDebtAccountChange}
                             options={debtObjectAccountOptions}
                             placeholder={debtInstitutionId ? t("debtTx.placeholder.autoReuseOrCreate") : t("debtTx.placeholder.selectObjectFirst")}
-                            onCreateClick={selectedDebtObjectIsCounterparty ? () => { void openDebtAccountCreate(); } : undefined}
+                            onCreateClick={canCreateDebtItem && isDebtObjectRef(debtInstitutionId) ? () => { void openDebtAccountCreate(); } : undefined}
                             createLabel={t("debtTx.addAccount")}
                             behavior={{
                               hierarchy: false,
@@ -1362,7 +1401,7 @@ export function DebtTransactionModal({
                     {!showPrepayment && !showBorrowPlan ? (
                     <div className={`grid gap-3 ${showInterest ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-1"}`}>
                       <div className="space-y-1">
-                        <div className="form-label">{showSimpleTransferMode ? t("txForm.amount") : mode === "borrow_in" ? (showLoanBorrowOptions && loanFundingMode === "financed_purchase" ? t("debtTx.installmentPrincipal") : t("debtTx.totalBorrowing")) : mode === "repay_out" || mode === "collect_in" || mode === "lend_out" ? t("debtShell.colPrincipal") : t("txForm.amount")}</div>
+                        <div className="form-label">{mode === "borrow_in" ? (showLoanBorrowOptions && loanFundingMode === "financed_purchase" ? t("debtTx.installmentPrincipal") : t("debtTx.totalBorrowing")) : mode === "repay_out" || mode === "collect_in" || mode === "lend_out" ? t("debtShell.colPrincipal") : t("txForm.amount")}</div>
                         <CalcInput value={principal} onChange={setPrincipal} placeholder={t("debtTx.placeholder.exampleAmount")} label={t("txForm.amount")} precision={2} />
                       </div>
                       {showInterest ? (
@@ -1431,18 +1470,14 @@ export function DebtTransactionModal({
                             <select value={repaymentMethod} onChange={(event) => {
                               const method = event.target.value;
                               setRepaymentMethod(method);
-                              if (method === INTEREST_FREE_REPAYMENT_METHOD) {
+                              if (isInstallmentRepaymentMethod(method) && parseNonNegativeNumberText(annualRate) == null) {
                                 setAnnualRate("0");
                                 setAnnualRateManuallyEdited(false);
-                                setMortgageLprDiscount("");
-                                setBankExecutionRate("");
-                                setShowHistoricalRates(false);
-                                setHistoricalRateRows([]);
                               }
                             }} className="form-input">
                               <option value="等额本息">{t("debtTx.method.equalInstallment")}</option>
                               <option value="等额本金">{t("debtTx.method.equalPrincipal")}</option>
-                              <option value={INTEREST_FREE_REPAYMENT_METHOD}>{t("debtTx.method.interestFreeInstallment")}</option>
+                              <option value={INSTALLMENT_REPAYMENT_METHOD}>{t("debtTx.method.interestFreeInstallment")}</option>
                               <option value="自由还款">{t("debtTx.method.freeRepayment")}</option>
                               <option value="先还利息一次性还本">{t("debtTx.method.interestFirstThenPrincipal")}</option>
                             </select>
@@ -1457,42 +1492,45 @@ export function DebtTransactionModal({
 
                         {isFixedRepaymentMethod ? (
                           <>
-                            {!isInterestFreeRepaymentMethod ? <>
-                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
-                              <div className="space-y-1">
-                                <div className="form-label">
-                                  {t("debtTx.bankExecutionRate")}
+                            {showLoanBorrowOptions ? (
+                              <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+                                <div className="space-y-1">
+                                  <div className="form-label">
+                                    {t("debtTx.bankExecutionRate")}
+                                  </div>
+                                  <input
+                                    value={bankExecutionRate}
+                                    onChange={(event) => setBankExecutionRate(event.target.value)}
+                                    placeholder={t("debtTx.placeholder.exampleBankRate")}
+                                    inputMode="decimal"
+                                    className="form-input"
+                                  />
                                 </div>
-                                <input
-                                  value={bankExecutionRate}
-                                  onChange={(event) => setBankExecutionRate(event.target.value)}
-                                  placeholder={t("debtTx.placeholder.exampleBankRate")}
-                                  inputMode="decimal"
-                                  className="form-input"
-                                />
+                                <div className="flex items-end">
+                                  <button
+                                    type="button"
+                                    className="secondary-button h-9 shrink-0 px-3 text-xs"
+                                    onClick={fetchBankExecutionRate}
+                                  >
+                                    {t("debtTx.fetch")}
+                                  </button>
+                                </div>
                               </div>
-                              <div className="flex items-end">
-                                <button
-                                  type="button"
-                                  className="secondary-button h-9 shrink-0 px-3 text-xs"
-                                  onClick={fetchBankExecutionRate}
-                                >
-                                  {t("debtTx.fetch")}
-                                </button>
-                              </div>
-                            </div>
-                            <div className="grid grid-cols-2 gap-3">
-                              <div className="space-y-1">
-                                <div className="form-label">{t("debtTx.mortgageLprDiscount")} <span className="text-slate-400">{t("stockFee.optional")}</span></div>
-                                <input
-                                  value={mortgageLprDiscount}
-                                  onChange={(event) => setMortgageLprDiscount(event.target.value)}
-                                  onBlur={handleMortgageLprDiscountBlur}
-                                  placeholder={t("debtShell.lpr.discountPlaceholder")}
-                                  inputMode="decimal"
-                                  className="form-input"
-                                />
-                              </div>
+                            ) : null}
+                            <div className={`grid gap-3 ${showLoanBorrowOptions ? "grid-cols-2" : "grid-cols-1"}`}>
+                              {showLoanBorrowOptions ? (
+                                <div className="space-y-1">
+                                  <div className="form-label">{t("debtTx.mortgageLprDiscount")} <span className="text-slate-400">{t("stockFee.optional")}</span></div>
+                                  <input
+                                    value={mortgageLprDiscount}
+                                    onChange={(event) => setMortgageLprDiscount(event.target.value)}
+                                    onBlur={handleMortgageLprDiscountBlur}
+                                    placeholder={t("debtShell.lpr.discountPlaceholder")}
+                                    inputMode="decimal"
+                                    className="form-input"
+                                  />
+                                </div>
+                              ) : null}
                               <div className="space-y-1">
                                 <div className="form-label">
                                   {t("debtShell.rateAdjust.annualRateLabel")} <span className="text-red-500">*</span>
@@ -1509,11 +1547,6 @@ export function DebtTransactionModal({
                                 />
                               </div>
                             </div>
-                            </> : (
-                              <div className="border-y border-slate-100 py-2 text-xs text-slate-500">
-                                {t("debtTx.interestFreeHint")}
-                              </div>
-                            )}
                             <div className="grid grid-cols-2 gap-3">
                               <div className="space-y-1">
                                 <div className="form-label">{t("debtTx.totalRuns")} <span className="text-red-500">*</span></div>
@@ -1532,7 +1565,7 @@ export function DebtTransactionModal({
                               </div>
                             </div>
 
-                            {!isInterestFreeRepaymentMethod ? (
+                            {showLoanBorrowOptions ? (
                               <div className="flex items-center justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
                                 <div>
                                   <div className="text-xs font-medium text-slate-700">{t("debtShell.rateAdjustment")}</div>
@@ -1609,18 +1642,20 @@ export function DebtTransactionModal({
                           </div>
                         )}
 
-                        <label className="flex cursor-pointer select-none items-start gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
-                          <input
-                            type="checkbox"
-                            checked={autoDebit}
-                            onChange={(event) => setAutoDebit(event.target.checked)}
-                            className="mt-0.5 h-3.5 w-3.5 accent-blue-600"
-                          />
-                          <span>
-                            {t("debtTx.autoDebitLabel")}
-                            <span className="block text-[11px] text-slate-400">{t("debtTx.autoDebitHint")}</span>
-                          </span>
-                        </label>
+                        {isFixedRepaymentMethod ? (
+                          <label className="flex cursor-pointer select-none items-start gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+                            <input
+                              type="checkbox"
+                              checked={autoDebit}
+                              onChange={(event) => setAutoDebit(event.target.checked)}
+                              className="mt-0.5 h-3.5 w-3.5 accent-blue-600"
+                            />
+                            <span>
+                              {t("debtTx.autoDebitLabel")}
+                              <span className="block text-[11px] text-slate-400">{t("debtTx.autoDebitHint")}</span>
+                            </span>
+                          </label>
+                        ) : null}
                       </>
                     ) : null}
 
@@ -1696,30 +1731,32 @@ export function DebtTransactionModal({
                     </span>
                   </label>
 
-                  {!isInterestFreeRepaymentMethod ? <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
-                    <input
-                      type="checkbox"
-                      checked={showHistoricalRates}
-                      onChange={(event) => {
-                        const checked = event.target.checked;
-                        setShowHistoricalRates(checked);
-                        if (checked) {
-                          setHistoricalRateRows((prev) => prev.length > 0 ? prev : [createHistoricalRateRow()]);
-                          setHistoricalRatesOpen(true);
-                        } else {
-                          setHistoricalRateRows([]);
-                          setHistoricalRatesOpen(false);
-                        }
-                      }}
-                      className="mt-0.5 h-4 w-4 accent-blue-600"
-                    />
-                    <span>
-                      <span className="block font-medium text-slate-800">{t("debtTx.historyPrompt.hasRateAdjustments")}</span>
-                      <span className="block text-xs text-slate-500">{t("debtTx.historyPrompt.rateAdjustmentsHint")}</span>
-                    </span>
-                  </label> : null}
+                  {showLoanBorrowOptions ? (
+                    <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
+                      <input
+                        type="checkbox"
+                        checked={showHistoricalRates}
+                        onChange={(event) => {
+                          const checked = event.target.checked;
+                          setShowHistoricalRates(checked);
+                          if (checked) {
+                            setHistoricalRateRows((prev) => prev.length > 0 ? prev : [createHistoricalRateRow()]);
+                            setHistoricalRatesOpen(true);
+                          } else {
+                            setHistoricalRateRows([]);
+                            setHistoricalRatesOpen(false);
+                          }
+                        }}
+                        className="mt-0.5 h-4 w-4 accent-blue-600"
+                      />
+                      <span>
+                        <span className="block font-medium text-slate-800">{t("debtTx.historyPrompt.hasRateAdjustments")}</span>
+                        <span className="block text-xs text-slate-500">{t("debtTx.historyPrompt.rateAdjustmentsHint")}</span>
+                      </span>
+                    </label>
+                  ) : null}
 
-                  {showHistoricalRates ? (
+                  {showLoanBorrowOptions && showHistoricalRates ? (
                     <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
                       <div>
                         <div className="text-xs font-medium text-slate-700">
@@ -1979,15 +2016,20 @@ export function DebtTransactionModal({
               ]}
               extraFields={{
                 kind: "loan",
-                counterpartyId: rawDebtObjectId(debtInstitutionId),
+                ...(debtInstitutionId.startsWith("institution:")
+                  ? { institutionId: rawDebtObjectId(debtInstitutionId) }
+                  : { counterpartyId: rawDebtObjectId(debtInstitutionId) }),
+                debtDirection: debtDirectionForMode(mode),
               }}
               onCreated={(id, name, extra) => {
+                const ownerName = extra?.counterpartyName ?? extra?.institutionShortName ?? extra?.institutionName;
                 const nextOption: AccountOption = {
                   id,
                   label: name,
-                  subLabel: extra?.counterpartyName ? t("debtTx.subLabel.settlement", { name: extra.counterpartyName }) : t("debtTx.subLabel.settlementPlain"),
-                  counterpartyId: extra?.counterpartyId ?? rawDebtObjectId(debtInstitutionId),
-                  debtDirection: "receivable" as const,
+                  subLabel: ownerName ? t("debtTx.subLabel.settlement", { name: ownerName }) : t("debtTx.subLabel.settlementPlain"),
+                  counterpartyId: extra?.counterpartyId ?? (debtInstitutionId.startsWith("counterparty:") ? rawDebtObjectId(debtInstitutionId) : null),
+                  institutionId: extra?.institutionId ?? (debtInstitutionId.startsWith("institution:") ? rawDebtObjectId(debtInstitutionId) : null),
+                  debtDirection: extra?.debtDirection ?? debtDirectionForMode(mode),
                 };
                 setLocalDebtAccounts((prev) => (prev.some((item) => item.id === id) ? prev : [...prev, nextOption]));
                 setDebtAccountId(id);

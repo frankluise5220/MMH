@@ -22,6 +22,20 @@ export type LoanRepaymentSchedulePreviewRow = {
   annualRate: number | null;
 };
 
+const FREE_REPAYMENT_METHOD = "\u81ea\u7531\u8fd8\u6b3e";
+export const INSTALLMENT_REPAYMENT_METHOD = "\u5206\u671f\u8fd8\u6b3e";
+export const LEGACY_INTEREST_FREE_INSTALLMENT_REPAYMENT_METHOD = "\u514d\u606f\u5206\u671f\u8fd8\u672c";
+
+export function normalizeLoanRepaymentMethod(method?: string | null) {
+  const value = String(method ?? "").trim();
+  if (!value) return FREE_REPAYMENT_METHOD;
+  return value === LEGACY_INTEREST_FREE_INSTALLMENT_REPAYMENT_METHOD ? INSTALLMENT_REPAYMENT_METHOD : value;
+}
+
+export function isInstallmentRepaymentMethod(method?: string | null) {
+  return normalizeLoanRepaymentMethod(method) === INSTALLMENT_REPAYMENT_METHOD;
+}
+
 export function normalizeLoanRateAdjustments(adjustments?: LoanRateAdjustment[] | null) {
   return [...(adjustments ?? [])]
     .map((item) => ({
@@ -160,11 +174,15 @@ export function calcLoanScheduledAmount(params: {
   totalRuns: number;
   intervalMonths?: number | null;
 }) {
-  const method = params.repaymentMethod || "自由还款";
+  const method = normalizeLoanRepaymentMethod(params.repaymentMethod);
   const principal = Math.max(0, params.principal);
   const totalRuns = Math.max(0, params.totalRuns);
-  if (method === "免息分期还本" && principal > 0 && totalRuns > 0) {
-    return roundLoanMoney(principal / totalRuns);
+  if (isInstallmentRepaymentMethod(method) && principal > 0 && totalRuns > 0) {
+    const periodRate =
+      params.annualRate != null && Number.isFinite(params.annualRate) && params.annualRate > 0
+        ? (params.annualRate / 100 / 12) * Math.max(1, params.intervalMonths || 1)
+        : 0;
+    return roundLoanMoney((principal / totalRuns) + (principal * periodRate));
   }
   if (
     principal <= 0 ||
@@ -199,11 +217,15 @@ export function calcLoanScheduledAmountExact(params: {
   totalRuns: number;
   intervalMonths?: number | null;
 }) {
-  const method = params.repaymentMethod || "自由还款";
+  const method = normalizeLoanRepaymentMethod(params.repaymentMethod);
   const principal = Math.max(0, params.principal);
   const totalRuns = Math.max(0, params.totalRuns);
-  if (method === "免息分期还本" && principal > 0 && totalRuns > 0) {
-    return principal / totalRuns;
+  if (isInstallmentRepaymentMethod(method) && principal > 0 && totalRuns > 0) {
+    const periodRate =
+      params.annualRate != null && Number.isFinite(params.annualRate) && params.annualRate > 0
+        ? (params.annualRate / 100 / 12) * Math.max(1, params.intervalMonths || 1)
+        : 0;
+    return (principal / totalRuns) + (principal * periodRate);
   }
   if (
     method !== "等额本息" ||
@@ -254,7 +276,7 @@ export function calcLoanRunParts(params: {
   remainingPrincipal: number;
   remainingRuns: number;
 }) {
-  const method = params.repaymentMethod || "自由还款";
+  const method = normalizeLoanRepaymentMethod(params.repaymentMethod);
   const remainingPrincipal = Math.max(0, params.remainingPrincipal);
   const remainingRuns = Math.max(1, params.remainingRuns);
   const periodRate =
@@ -277,11 +299,11 @@ export function calcLoanRunParts(params: {
     };
   }
 
-  if (method === "免息分期还本") {
+  if (isInstallmentRepaymentMethod(method)) {
     return {
       principal: roundLoanMoney(Math.min(remainingPrincipal, remainingPrincipal / remainingRuns)),
       principalExact: Math.min(remainingPrincipal, remainingPrincipal / remainingRuns),
-      interest: 0,
+      interest,
     };
   }
 

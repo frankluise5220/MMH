@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CalendarClock, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, X } from "lucide-react";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
@@ -131,7 +131,8 @@ export function CreditBillSummaryTable({
   const [exportEndMonth, setExportEndMonth] = useState("");
   const [exportError, setExportError] = useState("");
   const [exportBusy, setExportBusy] = useState(false);
-  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const summaryRefreshSeqRef = useRef(0);
+  const totalPages = Math.max(1, Math.ceil(localRows.length / pageSize));
   const [page, setPage] = useState(() => clampPage(initialPage, totalPages));
   const safePage = clampPage(page, totalPages);
 
@@ -185,6 +186,54 @@ export function CreditBillSummaryTable({
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
     return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
   }, [accountId, router]);
+
+  useEffect(() => {
+    const handleBillOverrideChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ reason?: string; accountIds?: string[]; statementMonth?: string }>).detail;
+      if (detail?.reason !== "bill-override" && detail?.reason !== "bill-override-reset") return;
+      if (!detail.statementMonth) return;
+      if (detail.accountIds?.length && !detail.accountIds.includes(accountId)) return;
+
+      const url = new URL(window.location.href);
+      const params = new URLSearchParams({
+        accountId,
+        billMonth: url.searchParams.get("billMonth") || "all",
+        hideZeroBills: hideZeroBills ? "1" : "0",
+        hideSettledBills: hideSettledBills ? "1" : "0",
+        billMonthsLimit: showRecentBillCycles ? "10" : "all",
+      });
+      const seq = ++summaryRefreshSeqRef.current;
+      fetch(`/api/v1/bill/summary?${params.toString()}`, { cache: "no-store" })
+        .then(async (response) => {
+          const payload = await response.json().catch(() => null) as {
+            ok?: boolean;
+            error?: string;
+            data?: { rows?: CreditBillSummaryRow[] };
+          } | null;
+          if (!response.ok || !payload?.ok) throw new Error(payload?.error ?? t("creditBill.readFailed"));
+          if (seq !== summaryRefreshSeqRef.current || !Array.isArray(payload.data?.rows)) return;
+          setLocalRows(payload.data.rows);
+          const refreshedRow = payload.data.rows.find((row) => row.month === detail.statementMonth);
+          if (refreshedRow) {
+            window.dispatchEvent(
+              new CustomEvent("mmh:bill-override:changed", {
+                detail: {
+                  accountId,
+                  statementMonth: refreshedRow.month,
+                  amount: refreshedRow.effectiveBill,
+                  hasOverride: refreshedRow.hasOverride,
+                },
+              }),
+            );
+          }
+        })
+        .catch((error) => {
+          console.error("Refresh credit bill summary failed:", error);
+        });
+    };
+    window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handleBillOverrideChange as EventListener);
+    return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handleBillOverrideChange as EventListener);
+  }, [accountId, hideSettledBills, hideZeroBills, showRecentBillCycles, t]);
 
   useEffect(() => {
     if (page === safePage) return;
@@ -379,27 +428,14 @@ export function CreditBillSummaryTable({
   }
 
   function selectBillMonth(month: string) {
-    const nextBillMonth = localSelectedBillMonth === month ? "all" : month;
+    if (localSelectedBillMonth === month) return;
     const href = buildHref((q) => {
-      q.set("billMonth", nextBillMonth);
+      q.set("billMonth", month);
       q.set("billPage", String(safePage));
     });
-    setLocalSelectedBillMonth(nextBillMonth === "all" ? "" : nextBillMonth);
-    if (nextBillMonth === "all") {
-      router.replace(href, { scroll: false });
-      return;
-    }
+    setLocalSelectedBillMonth(month);
     window.history.replaceState(window.history.state, "", href);
-    dispatchCreditBillDetailSelection({ accountId, billMonth: nextBillMonth, href });
-  }
-
-  function selectAllBillDetails() {
-    const href = buildHref((q) => {
-      q.set("billMonth", "all");
-      q.set("billPage", String(safePage));
-    });
-    setLocalSelectedBillMonth("");
-    router.replace(href, { scroll: false });
+    dispatchCreditBillDetailSelection({ accountId, billMonth: month, href });
   }
 
   function openExportDialog() {
@@ -624,9 +660,6 @@ export function CreditBillSummaryTable({
           toolbarLeftContent={(
             <div className="flex min-w-0 items-center gap-2">
               <span className="text-sm font-semibold text-slate-800">{t("creditBill.listTitle")}</span>
-              <button type="button" onClick={selectAllBillDetails} className={`flex h-6 items-center rounded border px-1.5 text-xs ${localSelectedBillMonth ? "border-slate-200 bg-white text-slate-600 hover:bg-slate-50" : "border-blue-300 bg-blue-50 text-blue-700"}`}>
-                {t("creditBill.all")}
-              </button>
               <span className="whitespace-nowrap text-xs text-slate-500">{t("creditBillSummary.cycleCount", { count: localRows.length })}</span>
               {totalPages > 1 ? (
                 <div className="ml-1 flex items-center gap-0.5">

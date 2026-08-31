@@ -19,6 +19,8 @@ export function InvestmentProfitFilterSelect({
   allUsers,
   allInstitutions,
   allAccounts,
+  fundCompanies,
+  clearedOnlyFundCompanies,
   baseParams,
 }: {
   selectedUserIds: string[];
@@ -27,6 +29,9 @@ export function InvestmentProfitFilterSelect({
   allUsers: StatisticsUserItem[];
   allInstitutions: StatisticsInstitutionItem[];
   allAccounts: StatisticsAccountItem[];
+  fundCompanies?: string[];
+  /** Subset of `fundCompanies` without any current holding; rendered as a separate group. */
+  clearedOnlyFundCompanies?: string[];
   baseParams: Record<string, string>;
 }) {
   const router = useRouter();
@@ -85,6 +90,8 @@ export function InvestmentProfitFilterSelect({
         allAccounts={allAccounts}
         allInstitutions={allInstitutions}
         allUsers={allUsers}
+        fundCompanies={fundCompanies}
+        clearedOnlyFundCompanies={clearedOnlyFundCompanies}
         value={scope}
         onChange={handleChange}
       />

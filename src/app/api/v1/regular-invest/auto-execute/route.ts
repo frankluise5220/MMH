@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { FundCashFlowKind, FundSubtype, IntervalUnit, RegularInvestStatus, type Prisma } from "@prisma/client";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
+import { getFundProfileNameMap, normalizeFundDisplayName, resolveFundName } from "@/lib/fund/fundProfile";
 import { createFundTransactionWithCashFlows } from "@/lib/fund/transactions";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getFundConfirmDays, getFundArrivalDays, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
@@ -149,6 +150,14 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
     // Batch-check already-run-today
     plansToRun.splice(0, plansToRun.length, ...fundPlans);
     const fundCodeSet = new Set(plansToRun.map(p => p.fundCode));
+    const fundNameByCode = await getFundProfileNameMap(fundCodeSet);
+    await Promise.all([...fundCodeSet].map(async (code) => {
+      if (fundNameByCode.has(code)) return;
+      const resolvedName = await resolveFundName(code, { householdId });
+      if (resolvedName) fundNameByCode.set(code, resolvedName);
+    }));
+    const fundDisplayNameForPlan = (plan: typeof plansToRun[number]) =>
+      fundNameByCode.get(plan.fundCode) ?? normalizeFundDisplayName(plan.fundCode, plan.fundName) ?? plan.fundCode;
     const alreadyRunToday = await prisma.fundTransaction.findMany({
       where: { fundCode: { in: [...fundCodeSet] }, source: "regular_invest", applyDate: { gte: new Date(todayStr + "T00:00:00Z"), lte: new Date(todayStr + "T23:59:59Z") }, deletedAt: null },
       select: { fundCode: true, fundAccountId: true },
@@ -375,7 +384,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
             fundAccountId: e.fundAcc.id,
             cashAccountId: e.cashAcc?.id ?? null,
             fundCode: e.plan.fundCode,
-            fundName: e.plan.fundName || e.plan.fundCode,
+            fundName: fundDisplayNameForPlan(e.plan),
             fundProductType: e.plan.fundProductType || e.fundAcc.investProductType,
             fundSubtype: FundSubtype.buy_failed,
             source: "regular_invest",
@@ -389,7 +398,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
             nav: null,
             units: null,
             regularInvestPlanId: e.plan.id,
-            note: regularInvestFailureNote(e.plan.fundCode, e.plan.fundName || e.plan.fundCode, e.runDate),
+            note: regularInvestFailureNote(e.plan.fundCode, fundDisplayNameForPlan(e.plan), e.runDate),
             cashFlows: e.cashAcc ? [
               {
                 kind: FundCashFlowKind.buy_out,
@@ -400,7 +409,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
                 currency: e.cashAcc.currency ?? e.fundAcc.currency ?? "CNY",
                 source: "regular_invest",
                 regularInvestPlanId: e.plan.id,
-                note: regularInvestFailureNote(e.plan.fundCode, e.plan.fundName || e.plan.fundCode, e.runDate),
+                note: regularInvestFailureNote(e.plan.fundCode, fundDisplayNameForPlan(e.plan), e.runDate),
               },
               {
                 kind: FundCashFlowKind.refund_in,
@@ -413,7 +422,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
                 regularInvestPlanId: e.plan.id,
                 note: regularInvestRefundNote(
                   e.plan.fundCode,
-                  e.plan.fundName || e.plan.fundCode,
+                  fundDisplayNameForPlan(e.plan),
                   e.amountNum,
                   e.runDate,
                   e.cashAcc.currency ?? e.fundAcc.currency ?? "CNY",
@@ -422,7 +431,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
             ] : [],
           });
         } else {
-          const fundName = e.plan.fundName || e.plan.fundCode;
+          const fundName = fundDisplayNameForPlan(e.plan);
           const category = await resolveCategorySnapshot(tx, householdId, {
             categoryName: REGULAR_INVEST_CATEGORY_NAME,
             type: "investment",
@@ -556,13 +565,15 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
             nav,
             roundUnits: (value) => roundFundUnits(value, r.fundUnitsDecimals),
           });
-          const name = (n.name ?? "").trim();
+          const profileName = fundNameByCode.get(r.fundCode);
+          const navName = normalizeFundDisplayName(r.fundCode, n.name);
+          const displayName = profileName ?? navName;
           await prisma.fundTransaction.update({
             where: { id: r.id },
             data: {
               nav,
               units,
-              ...(name && name !== r.fundCode ? { fundName: name } : {}),
+              ...(displayName ? { fundName: displayName } : {}),
             },
           });
           return true;

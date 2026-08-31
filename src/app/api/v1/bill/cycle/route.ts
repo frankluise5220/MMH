@@ -30,6 +30,7 @@ import {
   computeCreditBillCascade,
   mergeCreditCardCycleLockSources,
   summarizeCreditBillSignedFlows,
+  creditBillDateRangeWhere,
   type CreditBillSummary,
 } from "@/lib/credit/billing";
 
@@ -196,9 +197,11 @@ export async function PATCH(req: Request) {
 
       await tx.txRecord.updateMany({
         where: {
-          deletedAt: null,
-          OR: [{ accountId: { in: billAccountIds } }, { toAccountId: { in: billAccountIds } }],
-          date: { gte: minDate, lt: addDaysUtc(maxDate, 1) },
+          AND: [
+            { deletedAt: null },
+            { OR: [{ accountId: { in: billAccountIds } }, { toAccountId: { in: billAccountIds } }] },
+            creditBillDateRangeWhere(minDate, addDaysUtc(maxDate, 1)),
+          ],
         },
         data: { statementMonth: null },
       });
@@ -206,9 +209,11 @@ export async function PATCH(req: Request) {
       for (const cycle of changedCycles) {
         await tx.txRecord.updateMany({
           where: {
-            deletedAt: null,
-            OR: [{ accountId: { in: billAccountIds } }, { toAccountId: { in: billAccountIds } }],
-            date: { gte: cycle.periodStart, lt: addDaysUtc(cycle.periodEnd, 1) },
+            AND: [
+              { deletedAt: null },
+              { OR: [{ accountId: { in: billAccountIds } }, { toAccountId: { in: billAccountIds } }] },
+              creditBillDateRangeWhere(cycle.periodStart, addDaysUtc(cycle.periodEnd, 1)),
+            ],
           },
           data: { statementMonth: cycle.statementMonth },
         });
@@ -219,7 +224,7 @@ export async function PATCH(req: Request) {
     const recalculatedSummaries: CreditBillSummary[] = [];
     for (const cycle of adjustedCycles) {
       const cycleWindow = {
-        date: { gte: cycle.periodStart, lt: addDaysUtc(cycle.periodEnd, 1) },
+        ...creditBillDateRangeWhere(cycle.periodStart, addDaysUtc(cycle.periodEnd, 1)),
         deletedAt: null,
       };
       const cycleFlowRows = await prisma.txRecord.findMany({

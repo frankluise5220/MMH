@@ -44,11 +44,11 @@ import {
   setSidebarHideZeroPreference,
   setSidebarOwnerFilterPreference,
 } from "@/lib/client/appPreferences";
-import { warmSettingsBootstrap } from "@/lib/client/settingsCache";
 import { useI18n } from "@/lib/i18n";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { UndoLastOperationButton } from "@/components/UndoLastOperationButton";
 import { getInvestmentAccountView } from "@/lib/account-kind-utils";
+import { FIXED_ASSET_TYPES } from "@/lib/fixed-asset";
 import { dispatchFirstUseGuideOpen } from "@/lib/client/onboardingGuide";
 
 type AccountItem = {
@@ -69,6 +69,7 @@ type AccountItem = {
   institutionType?: string | null;
   counterpartyId?: string | null;
   investProductType?: string;
+  fixedAssetType?: string | null;
   children?: AccountItem[];
 };
 
@@ -137,40 +138,49 @@ function isSidebarSettlementLoan(item: AccountItem) {
 }
 
 function isOwnerScopedSidebarItem(item: AccountItem) {
-  return item.kind !== "loan_summary" && item.kind !== FIXED_ASSET_SUMMARY_KIND && !isSidebarSettlementLoan(item);
+  return item.kind !== "loan_summary" && item.kind !== FIXED_ASSET_SUMMARY_KIND && item.kind !== "investment_property" && !isSidebarSettlementLoan(item);
+}
+
+function fixedAssetTypeLabel(type: string, t: (key: string, params?: Record<string, string | number>) => string) {
+  const key = `fixedAsset.type.${type}`;
+  const label = t(key);
+  return label && label !== key ? label : t("txForm.fixedAssetToggle");
 }
 
 function normalizeSidebarItems(items: AccountItem[], t: (key: string, params?: Record<string, string | number>) => string) {
   const normalizedItems = items.map(normalizeSidebarAccountItem);
   const propertyItems = normalizedItems.filter((item) => item.kind === "investment_property");
-  const fixedAssetSummary: AccountItem | null = propertyItems.length > 0
-    ? (() => {
-        const label = t("txForm.fixedAssetToggle");
-        const baseCurrency = propertyItems.find((item) => item.baseCurrency)?.baseCurrency ?? propertyItems[0]?.currency ?? null;
-        const convertedValues = propertyItems.map((item) => item.convertedBalance).filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-        const convertedBalance = convertedValues.length === propertyItems.length
+  // 按账户的 fixedAssetType 分组，每个类别生成一个小类节点，下面挂对应账户。
+  const fixedAssetGroups: AccountItem[] = propertyItems.length > 0
+    ? FIXED_ASSET_TYPES.map((type) => {
+        const children = propertyItems.filter((item) => (item.fixedAssetType ?? "property") === type);
+        if (children.length === 0) return null;
+        const label = fixedAssetTypeLabel(type, t);
+        const baseCurrency = children.find((item) => item.baseCurrency)?.baseCurrency ?? children[0]?.currency ?? null;
+        const convertedValues = children.map((item) => item.convertedBalance).filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+        const convertedBalance = convertedValues.length === children.length
           ? convertedValues.reduce((sum, value) => sum + value, 0)
           : null;
         return {
-          id: FIXED_ASSET_SUMMARY_ID,
+          id: `${FIXED_ASSET_SUMMARY_ID}:${type}`,
           name: label,
           label,
           shortLabel: label,
           hoverTitle: label,
-          balance: convertedBalance ?? propertyItems.reduce((sum, item) => sum + item.balance, 0),
+          balance: convertedBalance ?? children.reduce((sum, item) => sum + item.balance, 0),
           convertedBalance,
-          currency: convertedBalance == null ? propertyItems[0]?.currency ?? baseCurrency : baseCurrency,
+          currency: convertedBalance == null ? children[0]?.currency ?? baseCurrency : baseCurrency,
           baseCurrency,
-          fxRateMissing: convertedBalance == null && propertyItems.some((item) => item.fxRateMissing),
+          fxRateMissing: convertedBalance == null && children.some((item) => item.fxRateMissing),
           kind: FIXED_ASSET_SUMMARY_KIND,
           groupName: undefined,
           institution: label,
-          children: propertyItems,
-        };
-      })()
-    : null;
-  const normalized = fixedAssetSummary
-    ? [...normalizedItems.filter((item) => item.kind !== "investment_property"), fixedAssetSummary]
+          children,
+        } as AccountItem;
+      }).filter((item): item is AccountItem => item !== null)
+    : [];
+  const normalized = fixedAssetGroups.length > 0
+    ? [...normalizedItems.filter((item) => item.kind !== "investment_property"), ...fixedAssetGroups]
     : normalizedItems;
   const loanItems = normalized
     .filter(isSidebarSettlementLoan)
@@ -224,6 +234,7 @@ function getSidebarItemSignature(item: AccountItem): string {
     item.institutionType ?? "",
     item.counterpartyId ?? "",
     item.investProductType ?? "",
+    item.fixedAssetType ?? "",
     childSignature,
   ].join("\u0001");
 }
@@ -258,6 +269,7 @@ function toSidebarAccountItem(a: any, t: (key: string, params?: Record<string, s
     institutionType: a.Institution?.type ?? a.institutionType ?? null,
     counterpartyId: a.counterpartyId ?? null,
     investProductType: a.investProductType || undefined,
+    fixedAssetType: a.fixedAssetType ?? null,
   };
 }
 
@@ -292,6 +304,7 @@ export function SidebarClient({
   const selectedAccountId = (searchParams.get("accountId") ?? "").trim();
   const selectedAccount = (searchParams.get("account") ?? "").trim();
   const selectedView = (searchParams.get("view") ?? "").trim();
+  const selectedFixedAssetType = (searchParams.get("fixedAssetType") ?? "").trim();
   const isRootInvestmentView =
     pathname === "/" &&
     (selectedView === "investfund" ||
@@ -501,18 +514,6 @@ export function SidebarClient({
     window.addEventListener(APP_PREFS_EVENT, applyPrefs as EventListener);
     return () => window.removeEventListener(APP_PREFS_EVENT, applyPrefs as EventListener);
   }, []);
-
-  useEffect(() => {
-    if (pathname.startsWith("/settings")) return;
-    const warm = () => warmSettingsBootstrap();
-    const requestIdle = window.requestIdleCallback;
-    if (requestIdle) {
-      const idleId = requestIdle(warm, { timeout: 1500 });
-      return () => window.cancelIdleCallback?.(idleId);
-    }
-    const timer = window.setTimeout(warm, 500);
-    return () => window.clearTimeout(timer);
-  }, [pathname]);
 
   useEffect(() => {
     if (pathname.startsWith("/settings")) setPendingSettings(false);
@@ -837,7 +838,15 @@ export function SidebarClient({
       return selectedView === "debt" && (!selectedDebtPerson || (item.children?.some(isDebtAccountSelected) ?? false));
     }
     if (item.kind === "loan") return isDebtAccountSelected(item) || (!!item.id && selectedAccountId === item.id && selectedView === "debt");
-    if (item.kind === FIXED_ASSET_SUMMARY_KIND) return selectedView === "investproperty" && !selectedAccountId && !selectedAccount;
+    if (item.kind === FIXED_ASSET_SUMMARY_KIND) {
+      if (selectedFixedAssetType) {
+        const itemType = item.id?.startsWith(`${FIXED_ASSET_SUMMARY_ID}:`)
+          ? item.id.slice(FIXED_ASSET_SUMMARY_ID.length + 1)
+          : "";
+        return selectedView === "investproperty" && itemType === selectedFixedAssetType;
+      }
+      return selectedView === "investproperty" && !selectedAccountId && !selectedAccount;
+    }
     return item.id ? selectedAccountId === item.id : !selectedAccountId && selectedAccount === item.name;
   }
 
@@ -1194,7 +1203,15 @@ export function SidebarClient({
                             {(sec.kind !== "资产" || !group.label || !collapsedAssetSubgroupKeys.has(group.key)) && group.accounts.map((it, index) => {
                               const active = isAccountItemActive(it);
                               const href = (() => {
-                                if (it.kind === FIXED_ASSET_SUMMARY_KIND) return "/?view=investproperty";
+                                if (it.kind === FIXED_ASSET_SUMMARY_KIND) {
+                                  const type = it.id?.startsWith(`${FIXED_ASSET_SUMMARY_ID}:`)
+                                    ? it.id.slice(FIXED_ASSET_SUMMARY_ID.length + 1)
+                                    : "";
+                                  const q = new URLSearchParams();
+                                  q.set("view", "investproperty");
+                                  if (type) q.set("fixedAssetType", type);
+                                  return `/?${q.toString()}`;
+                                }
                                 if (it.kind === "loan_summary") return "/?view=debt";
                                 if (it.kind === "loan") {
                                   const q = new URLSearchParams();

@@ -54,6 +54,7 @@ fun OverviewScreen(
     var cashSummaryExpanded by rememberSaveable { mutableStateOf(true) }
     var creditExpanded by rememberSaveable { mutableStateOf(true) }
     var investExpanded by rememberSaveable { mutableStateOf(true) }
+    var fixedAssetExpanded by rememberSaveable { mutableStateOf(true) }
     var dailyExpanded by rememberSaveable { mutableStateOf(true) }
 
     LaunchedEffect(Unit) { viewModel.loadOverview() }
@@ -144,6 +145,26 @@ fun OverviewScreen(
                                 accountCount = uiState.investmentAccountList.size,
                                 showAmounts = showAmounts,
                                 onClick = onNavigateToFunds
+                            )
+                        }
+                    }
+                }
+
+                if (uiState.fixedAssetAccountList.isNotEmpty()) {
+                    item {
+                        CollapsibleHeader(
+                            text = "固定资产",
+                            expanded = fixedAssetExpanded,
+                            onToggle = { fixedAssetExpanded = !fixedAssetExpanded }
+                        )
+                    }
+                    if (fixedAssetExpanded) {
+                        item {
+                            FixedAssetSummaryCard(
+                                totalMarketValue = uiState.fixedAssetMarketValue,
+                                totalCost = uiState.fixedAssetCost,
+                                assetCount = uiState.fixedAssetAccountList.size,
+                                showAmounts = showAmounts
                             )
                         }
                     }
@@ -429,6 +450,54 @@ private fun InvestmentSummaryCard(
                     contentDescription = null,
                     tint = Color.Gray,
                     modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 固定资产汇总卡：固定资产（房产、车辆等）已从投资市值中拆出，单独展示。
+ */
+@Composable
+private fun FixedAssetSummaryCard(
+    totalMarketValue: Double,
+    totalCost: Double,
+    assetCount: Int,
+    showAmounts: Boolean
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CompactMetric(
+                label = "现值",
+                value = if (showAmounts) formatAmount(totalMarketValue) else MASKED_AMOUNT,
+                modifier = Modifier.weight(1f)
+            )
+            CompactMetric(
+                label = "成本",
+                value = if (showAmounts) formatAmount(totalCost) else MASKED_AMOUNT,
+                modifier = Modifier.weight(1f)
+            )
+            CompactMetric(
+                label = "增值",
+                value = if (showAmounts) formatPnl(totalMarketValue - totalCost) else MASKED_AMOUNT,
+                valueColor = pnlColor(totalMarketValue - totalCost),
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    text = "$assetCount 项",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
                 )
             }
         }

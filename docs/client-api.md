@@ -241,8 +241,13 @@
 - `/api/v1/overview/summary` 的 `creditAccountList[].currentAmount` 和 `creditCurrentAmountTotal` 表示当前信用卡账期的“本期金额”，口径为 `expenseAbs - income`，用于展示本期支出扣除本期收入/退款后的净发生额；它不同于用户锁定或滚动后的 `currentBill`/待还金额。
 - `/api/v1/overview/summary` 的 `creditAccountList` 按账单存储口径返回。合并账单信用卡按同一机构/账单存储分组只返回一条机构级账单行，名称使用机构全称（如“招商银行”），客户端不得再按组内每张卡重复展示同一个 `currentBill`。
 - `/api/v1/overview/summary` 返回 `investmentAccountCount` 和 `insuranceAccountCount`。客户端应优先用账户数量判断概览里的投资/保险模块是否显示，不要用金额是否为 0 推断账户是否存在。
+- `/api/v1/overview/summary` 的金额一律折为账簿本位币。响应顶层返回 `baseCurrency` 和 `missingFxCurrencies`；`accountList[]`、`debtAccountList[]`、`creditAccountList[]`、`topPositions[]`、`fixedAssetAccountList[]` 在保留原始币种金额的同时附带 `currency` 和折算镜像字段（`convertedBalance`、`convertedCreditLimit`、`convertedCurrentBill`、`convertedPaid`、`convertedCurrentAmount`、`convertedMarketValue`、`convertedFloatingPnL`）以及 `fxRate`、`fxRateDate`、`fxRateMissing`。折算镜像在无可用汇率时为 `null`，客户端应退回显示原始金额并提示缺汇率，不得按 1:1 显示。
+- `/api/v1/overview/summary` 的合计口径与 `/api/v1/accounts/internal` 一致：所有汇总金额（净资产、流动资金、投资市值、固定资产现值、保险资产、信用卡额度/已用、本月收支等）都是本位币合计，缺少汇率的金额按 0 计入，即被排除在合计之外，不会被按 1:1 混入。因此各账户行的折算镜像之和可能与合计不完全相等，这是预期行为。
+- `/api/v1/overview/summary` 的 `investmentAccountCount`、`investmentMarketValue`、`investmentCost`、`investmentAccountList` 只统计普通投资账户，不含固定资产。固定资产单独由 `fixedAssetCount`、`fixedAssetMarketValue`、`fixedAssetCost`、`fixedAssetFloatingPnL`、`fixedAssetFloatingPnLRate`、`fixedAssetAccountList` 表达，客户端应据此单独渲染“固定资产”卡片，且 `totalNetWorth` 已包含固定资产现值。固定资产底层仍是 `investment` + `property` 账户，属兼容实现，客户端不应再把它并入投资模块。
 - 信用卡账单明细和汇总按账期日期窗口归属。`statementMonth` 是缓存/兼容字段，不能让一条入账日期落在其他周期内的交易进入本期，也不能把本期日期内的交易排除出去。
 - `/api/v1/institution` 新增机构时，`name` 和 `shortName` 共用同一账簿内的机构名称池。提交的全称或简称只要与任何机构的全称或简称重复，或同一机构全称和简称相同，接口返回 `{ ok:false, error }`，状态码为 `409`。
+- `GET /api/v1/institution?type=fund_company` 返回当前账簿中仅分类为 `fund_company` 的机构，供基金资料设置中的基金公司 SS 选择；识别基金公司资料时，如果当前账簿不存在对应机构，服务端会自动创建或归类为 `fund_company`。
+- `/api/v1/fund/name?code=xxxxxx` 对合法六位基金代码会先确保 `FundProfile` 记录存在，再进行外部资料查询；即使外部查询失败，也会保留仅含基金代码和默认 `navDateOffset=0` 的基金资料记录。
 - `/api/v1/accounts` 新增或编辑账户时，同一账簿内按“所有人 + 机构 + 账户类型 + 尾号/名称”阻止不可区分的重复账户。借记卡和信用卡的 `numberMasked` 都会保存并参与查重；重复时返回 `{ ok:false, error }`，状态码为 `409`。
 - `POST /api/v1/accounts` 省略 `currency` 或传空值时，`PUT /api/v1/accounts` 传空 `currency` 时，服务端使用当前账簿 `Household.baseCurrency` 作为账户默认币种；Web 新增/编辑账户界面也使用同一套币种下拉选项，不再让用户手填币种代码。
 - 账户对象包含 `note` 作为用户自由备注；`POST /api/v1/accounts` 和 `PUT /api/v1/accounts` 接受 `note?`，空字符串按 `null` 保存，服务端不限制用户在备注里的用途。
@@ -259,6 +264,7 @@
 - `GET /api/v1/fx-rates?from=JPY,USD&to=CNY&refresh=1` 返回 `{ ok:true, baseCurrency, rates }`。`from` 省略时使用当前账簿启用账户中的币种；`to` 省略时使用账簿当前显示币种；未传 `refresh=1` 时，服务端先查缓存 `FxRate`，缺缓存时可用最近一次同账簿 `FxConversion` 正向或反向推导；传 `refresh=1` 时，服务端先强制获取外部最新汇率并写入缓存，失败时才回退已有缓存或购汇记录。
 - `rates[]` 形如 `{ fromCurrency, toCurrency, rate, rateDate, source, missing, refreshed? }`。`rate` 表示 `1 fromCurrency = rate toCurrency`；`source` 可为 `manual`、外部来源或 `fx_conversion`；用户主动刷新并成功获取外部最新汇率时 `refreshed=true`；`missing=true` 时客户端应提示缺少汇率，不得自行按 1:1 折算。
 - `POST /api/v1/fx-rates` 支持 `{ baseCurrency }` 修改当前显示币种，也支持 `{ fromCurrency, toCurrency?, rate, rateDate?, source? }` 写入手工汇率。手工汇率必须是正数，同币种不需要写入。
+- 概览页与 `/api/v1/overview/summary` 使用同一套汇率与同一套折算规则，详见上方“概览汇总”相关约定：原始金额保留在 `balance`/`marketValue` 等字段，本位币金额放在 `converted*` 镜像字段，合计排除无汇率金额。
 
 ### Transactions
 
@@ -367,12 +373,30 @@
 - `/api/v1/fund/position`
 - `/api/v1/fund/fee-rate`
 - `/api/v1/fund/confirm-days`
+- `/api/v1/fund/profile`
 - `/api/v1/fund/refresh`
 - `/api/v1/fund/sync-position`
 - `/api/v1/fund/import`
 - `/api/v1/invest/monthly-floating-pnl`
 - `/api/v1/precious-metals/dictionaries`
 - `/api/v1/wealth-products`
+
+#### 基金资料设置
+
+- Method: `GET` / `PATCH` / `POST`
+- Path: `/api/v1/fund/profile`
+- Auth: required
+- GET query: `fundCode` 或 `list=1`；单基金查询可传 `syncInstitution=0` 以只读取资料而不创建机构
+- PATCH body: { fundCode, fundName?, fundCompany?, custodian?, manager?, navDateOffset?: 0 | 1 }；保存基金资料时会在当前账簿中确保基金公司机构存在
+- POST body: { fundCode, syncInstitution?: boolean }；重新从外部基金资料源获取并保存基金公司侧资料，不修改 `navDateOffset`、T+N 或费率。设置页获取资料时传 `syncInstitution=false`，只回填未手动修改的字段；用户点击保存后才创建未匹配的 `fund_company` 机构。外部数据源中的公司链接编号不作为基金公司代码使用。
+- Success: GET 单基金返回 `{ ok: true, fundCode, profile }`；列表默认返回 `{ ok: true, rows }`，传 `includeProfiles=1` 时追加 `profiles`；PATCH/POST 返回 `{ ok: true, profile }`
+
+说明：
+
+- `FundProfile` 保存按基金代码共享的基金公司侧资料，包括净值日期偏移；`navDateOffset` 只允许 `0` 或 `1`。
+- 基金公司名称识别成功后，按当前账簿自动确保对应的 `fund_company` 机构存在；如果同名机构已存在则复用，不会把已有银行、代销机构等机构强制改类型。
+- T+N 确认/到账规则仍通过 `/api/v1/fund/confirm-days` 保存当前持仓账户的生效规则；统一设置页面将它们放在基金资料区域。
+- 费率仍通过 `/api/v1/fund/fee-rate` 保存，属于代销机构/持仓账户侧设置。
 
 #### 基金净值查询
 
@@ -397,6 +421,21 @@
 - 投资收益表用它补齐持仓基金工作日净值缺口；周末/非交易日仍允许沿用上一可用交易日净值。
 - `resolvedItems/unresolvedItems` 用于前端判断本次补齐结果；投资收益表请求成功后应局部消隐当前提示，调用方不需要整页刷新来确认补齐结果。
 
+#### 基金视图刷新
+
+- Method: `POST`
+- Path: `/api/v1/fund/refresh`
+- Auth: required
+- Body: `{ accountId: string, symbols?: string[] }`
+- Success: `{ ok: true, entryFilled, entryNavFilled, entryFailed, entryDeferred, holdingNavChecked, holdingNavRefreshed, holdingNavFailed, nameFixed, message }`
+
+说明：
+
+- 该接口只刷新当前基金账户的未确认基金交易和当前持仓最新净值，不再按基金最早申请日批量拉取整段历史净值。
+- 处理未确认交易时，先使用 `FundNavCache` 中已有的精确确认日净值；缓存记录不受日期限制。
+- 缓存没有精确净值时，只自动查询今天或往前三个交易日内的确认日；交易日历使用当前基金账户的 `tradingCalendar`。
+- 更早且缓存仍缺失的确认日计入 `entryDeferred`，不在表头刷新时自动拉取，用户可在基金明细中单独手工补净值。投资收益表的历史净值补齐仍使用 `/api/v1/fund/nav/missing`。
+- 成功处理后，服务端重算受影响持仓；Web 客户端应在请求成功后刷新当前基金视图及相关汇总。`symbols` 仅为兼容字段，不会扩大刷新范围。
 #### 银行理财产品主数据
 
 - Method: `GET`
@@ -878,6 +917,14 @@ Notes:
 - `installmentSourceStatementMonth`: 账单分期的来源账单月份（`YYYY-MM`）；消费分期为 `null`。
 
 消费分期支持仅对原支出的部分金额分期；账单分期支持对已出账且未结清账单的部分金额分期。客户端不得把原消费、冲抵和全部分期再次相加；账单口径是“保留原消费、在来源账单冲抵分期本金、从首期账单开始逐期加入本金与费用”。冲抵行是信用卡账户流入/支出抵减，保存为 `type=expense` 且 `amount` 为正数；账单摘要的流出/流入按信用卡视角的金额正负统计，不按 `type` 大类统计，因此该冲抵行计入流入。每期扣款日期按首期入账日期逐月推进，例如首期入账日期为 `11-27` 时第二期日期为 `12-27`；账单分期窗口中首期入账日期默认等于分期日期，但可单独指定。每期本金和手续费/利息生成同日两条流水（无手续费/利息时不生成零金额手续费流水）。首期本金/手续费所属账期按首期入账日期和账单日计算，不强制归到来源账单的下一期。费率类型必须区分 `annual_interest`（年利率）与 `period_fee`（每期手续费率）。
+
+### 刷新信用卡账单汇总
+
+- Method: `GET`
+- Path: `/api/v1/bill/summary`
+- Auth: required
+- Query: `accountId`（信用卡账户 ID）、可选的 `billMonth`、`hideZeroBills`、`hideSettledBills`、`billMonthsLimit`、`billDateFrom` 和 `billDateTo`。
+- 返回当前筛选条件下重新计算的 `rows` 和 `creditBillBalanceValue`；该接口只返回账单汇总，不返回下方交易明细，用于账单金额覆盖后的局部刷新。
 
 ### 创建账单分期
 

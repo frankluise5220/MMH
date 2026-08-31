@@ -5,11 +5,13 @@ import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { normalizeNonNegativeDays, setFundConfirmDays, setFundConfirmDaysInTx, setFundArrivalDays, setFundArrivalDaysInTx } from "@/lib/fund/confirmDays";
 import { setFundFeeRate, setFundFeeRateInTx } from "@/lib/fund/feeRate";
+import { getFundProfileNameMap, normalizeFundDisplayName, resolveFundName } from "@/lib/fund/fundProfile";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { calcInitialScheduledRunDate as calcInitialRunDate, calcResumedScheduledRunDate as calcResumedRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { deriveRegularInvestNextRunDate } from "@/lib/server/regular-invest-plan";
+import { isInstallmentRepaymentMethod, normalizeLoanRepaymentMethod } from "@/lib/loan-repayment";
 
 /**
  * /api/v1/regular-invest
@@ -78,10 +80,10 @@ function sameDateOnly(a: Date | null | undefined, b: Date | null | undefined) {
   return a.toISOString().slice(0, 10) === b.toISOString().slice(0, 10);
 }
 
-function parseOptionalPositiveNumber(value: unknown): number | null {
+function parseOptionalNonNegativeNumber(value: unknown): number | null {
   if (value == null || value === "") return null;
   const parsed = typeof value === "number" ? value : parseFloat(String(value));
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function parsePositiveInteger(value: unknown, fallback = 1): number {
@@ -117,16 +119,33 @@ export async function GET(req: NextRequest) {
       orderBy: { nextRunDate: "asc" },
     });
 
+    const profileFundNames = await getFundProfileNameMap(
+      plans
+        .filter((plan) => normalizeScheduledTaskType(plan.taskType ?? decodeScheduledTaskMemo(plan.memo).type) === "fund_regular_invest")
+        .map((plan) => plan.fundCode),
+    );
+
     // System-level scheduled tasks (loan repayment plans) are shown in the plan
     // table but marked read-only: users can see the schedule, not stop/edit it.
     return NextResponse.json({
       ok: true,
-      plans: plans.map((plan) => ({
-        ...plan,
-        isSystemTask: decodeScheduledTaskMemo(plan.memo).type === "loan_repayment",
-        accountInstitutionName: plan.Account_RegularInvestPlan_accountIdToAccount.Institution?.name ?? "",
-        cashAccountInstitutionName: plan.Account_RegularInvestPlan_cashAccountIdToAccount?.Institution?.name ?? "",
-      })),
+      plans: plans.map((plan) => {
+        const scheduledTask = decodeScheduledTaskMemo(plan.memo);
+        const resolvedTaskType = normalizeScheduledTaskType(plan.taskType ?? scheduledTask.type);
+        const profileFundName = resolvedTaskType === "fund_regular_invest" ? profileFundNames.get(plan.fundCode) ?? null : null;
+        const displayFundName = profileFundName ?? normalizeFundDisplayName(plan.fundCode, plan.fundName) ?? plan.fundName;
+        const displayTargetName = resolvedTaskType === "fund_regular_invest"
+          ? profileFundName ?? normalizeFundDisplayName(plan.fundCode, plan.targetName) ?? displayFundName
+          : plan.targetName;
+        return {
+          ...plan,
+          fundName: displayFundName,
+          targetName: displayTargetName,
+          isSystemTask: scheduledTask.type === "loan_repayment",
+          accountInstitutionName: plan.Account_RegularInvestPlan_accountIdToAccount.Institution?.name ?? "",
+          cashAccountInstitutionName: plan.Account_RegularInvestPlan_cashAccountIdToAccount?.Institution?.name ?? "",
+        };
+      }),
     });
   } catch (e) {
     return NextResponse.json({ ok: false, code: "FETCH_FAILED", error: e instanceof Error ? e.message : "查询失败" }, { status: 500 });
@@ -172,8 +191,9 @@ export async function POST(req: NextRequest) {
     const isLoanTask = scheduledTaskType === "loan_repayment";
     const isOrdinaryTask = scheduledTaskType === "income" || scheduledTaskType === "expense";
     const requiresCashAccount = scheduledTaskType === "transfer" || scheduledTaskType === "loan_repayment" || isInsuranceTask;
-    const loanAnnualRate = parseOptionalPositiveNumber(annualRate);
-    const loanRepaymentMethod = typeof repaymentMethod === "string" && repaymentMethod.trim() ? repaymentMethod.trim() : "自由还款";
+    const loanRepaymentMethod = normalizeLoanRepaymentMethod(typeof repaymentMethod === "string" ? repaymentMethod : null);
+    const parsedLoanAnnualRate = parseOptionalNonNegativeNumber(annualRate);
+    const loanAnnualRate = parsedLoanAnnualRate ?? (isLoanTask && isInstallmentRepaymentMethod(loanRepaymentMethod) ? 0 : null);
     const loanRepaymentIntervalMonths = parsePositiveInteger(repaymentIntervalMonths, 1);
     const taskCategoryId = cleanOptionalString(categoryId);
     const taskCategoryName = cleanOptionalString(categoryName);
@@ -233,8 +253,10 @@ export async function POST(req: NextRequest) {
     }
 
     const suppliedTaskName = cleanOptionalString(fundName);
+    const profileFundName = isFundTask ? await resolveFundName(fundCode, { householdId }) : null;
+    const normalizedSuppliedFundName = isFundTask ? normalizeFundDisplayName(fundCode, suppliedTaskName) : suppliedTaskName;
     const taskTitle =
-      suppliedTaskName ||
+      (isFundTask ? profileFundName ?? normalizedSuppliedFundName : suppliedTaskName) ||
       (isInsuranceTask && insuranceProductName) ||
       (isOrdinaryTask && taskCategoryName) ||
       (isFundTask
@@ -480,12 +502,13 @@ export async function PUT(req: NextRequest) {
     const isInsuranceTask = nextTaskType === "insurance_premium";
     const isLoanTask = nextTaskType === "loan_repayment";
     const isOrdinaryTask = nextTaskType === "income" || nextTaskType === "expense";
-    const nextAnnualRate =
-      annualRate !== undefined ? parseOptionalPositiveNumber(annualRate) : existingTask.annualRate ?? null;
     const nextRepaymentMethod =
       repaymentMethod !== undefined && String(repaymentMethod).trim()
-        ? String(repaymentMethod).trim()
-        : existingTask.repaymentMethod ?? "自由还款";
+        ? normalizeLoanRepaymentMethod(String(repaymentMethod))
+        : normalizeLoanRepaymentMethod(existingTask.repaymentMethod);
+    const parsedNextAnnualRate =
+      annualRate !== undefined ? parseOptionalNonNegativeNumber(annualRate) : existingTask.annualRate ?? null;
+    const nextAnnualRate = parsedNextAnnualRate ?? (isLoanTask && isInstallmentRepaymentMethod(nextRepaymentMethod) ? 0 : null);
     const nextRepaymentIntervalMonths =
       repaymentIntervalMonths !== undefined ? parsePositiveInteger(repaymentIntervalMonths, 1) : existingTask.repaymentIntervalMonths ?? 1;
     const nextCategoryId = categoryId !== undefined ? cleanOptionalString(categoryId) : existingTask.categoryId ?? null;
@@ -524,9 +547,6 @@ export async function PUT(req: NextRequest) {
     if (nextRunDate != null && !parsedNextRunDate) {
       return NextResponse.json({ ok: false, code: "INVALID_NEXT_RUN_DATE", error: "下次执行日期不正确" }, { status: 400 });
     }
-    if (parsedNextRunDate && existing.nextRunDate && parsedNextRunDate < existing.nextRunDate) {
-      return NextResponse.json({ ok: false, code: "NEXT_RUN_DATE_TOO_EARLY", error: "下次执行日期不能早于当前下次执行日期" }, { status: 400 });
-    }
     const parsedEndDate = endDate ? parseDateOnlyUtc(endDate) : null;
     if (endDate && !parsedEndDate) {
       return NextResponse.json({ ok: false, code: "INVALID_END_DATE", error: "Invalid endDate" }, { status: 400 });
@@ -548,6 +568,9 @@ export async function PUT(req: NextRequest) {
     const nextStoredStartDate = parsedStartDate
       ? isFundTask ? skipWeekend(parsedStartDate) : parsedStartDate
       : existing.startDate;
+    if (parsedNextRunDate && parsedNextRunDate < nextStoredStartDate) {
+      return NextResponse.json({ ok: false, code: "NEXT_RUN_DATE_BEFORE_START_DATE", error: "Next run date cannot be earlier than the effective date." }, { status: 400 });
+    }
     const startDateChanged = parsedStartDate != null && !sameDateOnly(nextStoredStartDate, existing.startDate);
     const taskTypeChanged = nextTaskType !== existingTaskType;
     const normalizedExistingExecutionDay = existing.executionDay;
@@ -586,16 +609,28 @@ export async function PUT(req: NextRequest) {
     }
 
     if (parsedStartDate) updateData.startDate = nextStoredStartDate;
-    if (fundCode != null && isFundTask) updateData.fundCode = fundCode;
+    const effectiveFundCode = isFundTask ? cleanOptionalString(fundCode) ?? existing.fundCode : nextTaskType;
+    if (fundCode != null && isFundTask) updateData.fundCode = effectiveFundCode;
     const suppliedFundName = fundName != null ? cleanOptionalString(fundName) : null;
-    if (fundName != null && suppliedFundName) updateData.fundName = suppliedFundName;
+    const profileUpdateFundName = isFundTask
+      ? await resolveFundName(effectiveFundCode, { householdId })
+      : null;
+    const normalizedSuppliedFundName = isFundTask
+      ? normalizeFundDisplayName(effectiveFundCode, suppliedFundName)
+      : suppliedFundName;
+    const normalizedExistingFundName = isFundTask
+      ? normalizeFundDisplayName(effectiveFundCode, existing.fundName)
+      : existing.fundName;
+    const fundDisplayName = isFundTask ? profileUpdateFundName ?? normalizedSuppliedFundName ?? normalizedExistingFundName ?? effectiveFundCode : null;
+    if (isFundTask) updateData.fundName = fundDisplayName;
+    else if (fundName != null && suppliedFundName) updateData.fundName = suppliedFundName;
     updateData.taskType = nextTaskType;
     updateData.targetName =
       isInsuranceTask
         ? nextInsuranceProductName ?? suppliedFundName ?? existing.targetName ?? existing.fundName ?? scheduledTaskTypeLabel(nextTaskType)
         : isOrdinaryTask
           ? suppliedFundName ?? nextCategoryName ?? existing.targetName ?? existing.fundName ?? scheduledTaskTypeLabel(nextTaskType)
-          : suppliedFundName ?? existing.targetName ?? existing.fundName ?? scheduledTaskTypeLabel(nextTaskType);
+          : fundDisplayName ?? scheduledTaskTypeLabel(nextTaskType);
     updateData.insuranceProductName = isInsuranceTask ? nextInsuranceProductName ?? updateData.targetName : null;
     if (amount != null) updateData.amount = parseFloat(amount);
     if (intervalUnit != null || intervalValue != null) {
@@ -674,15 +709,15 @@ export async function PUT(req: NextRequest) {
 
     // Sync confirm days and fee rate to the unified store
     const effectiveAccountId = accountId || existing.accountId;
-    const effectiveFundCode = fundCode || existing.fundCode;
-    if (isFundTask && confirmDays != null && effectiveAccountId && effectiveFundCode) {
-      await setFundConfirmDays(effectiveAccountId, effectiveFundCode, normalizeNonNegativeDays(confirmDays, 0));
+    const effectiveRuleFundCode = effectiveFundCode;
+    if (isFundTask && confirmDays != null && effectiveAccountId && effectiveRuleFundCode) {
+      await setFundConfirmDays(effectiveAccountId, effectiveRuleFundCode, normalizeNonNegativeDays(confirmDays, 0));
     }
-    if (isFundTask && arrivalDays != null && effectiveAccountId && effectiveFundCode) {
-      await setFundArrivalDays(effectiveAccountId, effectiveFundCode, normalizeNonNegativeDays(arrivalDays, 2));
+    if (isFundTask && arrivalDays != null && effectiveAccountId && effectiveRuleFundCode) {
+      await setFundArrivalDays(effectiveAccountId, effectiveRuleFundCode, normalizeNonNegativeDays(arrivalDays, 2));
     }
-    if (isFundTask && feeRate != null && effectiveAccountId && effectiveFundCode) {
-      await setFundFeeRate(effectiveAccountId, effectiveFundCode, parseFloat(feeRate));
+    if (isFundTask && feeRate != null && effectiveAccountId && effectiveRuleFundCode) {
+      await setFundFeeRate(effectiveAccountId, effectiveRuleFundCode, parseFloat(feeRate));
     }
 
     // Client-side handles page refresh

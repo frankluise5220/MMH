@@ -3,6 +3,11 @@
 import { ChevronDown } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n";
+import {
+  FUND_COMPANY_INSTITUTION_PREFIX,
+  fundCompanyInstitutionId,
+  parseFundCompanyInstitutionId,
+} from "@/lib/fund-company-filter";
 
 export type StatisticsAccountItem = {
   id: string;
@@ -17,6 +22,12 @@ export type StatisticsAccountItem = {
 export type StatisticsInstitutionItem = { id: string; name: string; type?: string | null };
 export type StatisticsUserItem = { id: string; name: string };
 export const CASH_INSTITUTION_ID = "__cash__";
+// NOTE: `FUND_COMPANY_INSTITUTION_PREFIX` / `fundCompanyInstitutionId` /
+// `parseFundCompanyInstitutionId` / `splitInstitutionSelection` are deliberately
+// NOT re-exported here. Re-exporting a function from a `"use client"` module turns
+// it into a client reference, so a server component importing it from here fails at
+// runtime with "Attempted to call ... from the server". Import them directly from
+// `@/lib/fund-company-filter` instead.
 
 export type AccountScopeValue = {
   userIds: string[];
@@ -28,6 +39,10 @@ type Props = {
   allAccounts: StatisticsAccountItem[];
   allInstitutions?: StatisticsInstitutionItem[];
   allUsers?: StatisticsUserItem[];
+  /** Fund company names shown as an extra group inside the institution menu. */
+  fundCompanies?: string[];
+  /** Subset of `fundCompanies` that no longer holds a position. Rendered as its own sub-group so the union list is not mistaken for a miscount. */
+  clearedOnlyFundCompanies?: string[];
   value: AccountScopeValue;
   onChange: (next: AccountScopeValue) => void;
 };
@@ -36,6 +51,8 @@ export function AccountScopeFilter({
   allAccounts,
   allInstitutions = [],
   allUsers = [],
+  fundCompanies = [],
+  clearedOnlyFundCompanies = [],
   value,
   onChange,
 }: Props) {
@@ -74,19 +91,49 @@ export function AccountScopeFilter({
   const userFilteredAccounts = useMemo(() => validAccounts.filter((account) =>
     userIds.length === 0 || (account.groupId && userIds.includes(account.groupId)),
   ), [validAccounts, userIds]);
+  const fundCompanyOptions = useMemo(() => Array.from(new Set(
+    fundCompanies.map((name) => name.trim()).filter((name) => name.length > 0),
+  )).sort((left, right) => left.localeCompare(right, "zh-Hans-CN")).map((name) => ({
+    id: fundCompanyInstitutionId(name),
+    name,
+    type: "fund_company" as const,
+  })), [fundCompanies]);
+  // Fund managers split by whether they still hold anything. A cleared-only
+  // manager produces an empty holdings table, so it must be visibly separated.
+  const fundCompanyGroups = useMemo(() => {
+    const clearedNames = new Set(clearedOnlyFundCompanies.map((name) => name.trim()).filter(Boolean));
+    const holding: typeof fundCompanyOptions = [];
+    const cleared: typeof fundCompanyOptions = [];
+    for (const item of fundCompanyOptions) {
+      (clearedNames.has(item.name) ? cleared : holding).push(item);
+    }
+    return [
+      { key: "holding", title: t("statistics.fundCompanyHolding"), items: holding },
+      { key: "cleared", title: t("statistics.fundCompanyClearedOnly"), items: cleared },
+    ].filter((group) => group.items.length > 0);
+  }, [fundCompanyOptions, clearedOnlyFundCompanies, t]);
   const institutionOptions = useMemo(() => {
     const ids = new Set(userFilteredAccounts.map((account) => account.Institution?.id).filter(Boolean));
-    const options = (allInstitutions.length > 0 ? allInstitutions : Array.from(new Map(validAccounts.filter((a) => a.Institution?.id).map((a) => [a.Institution!.id!, { id: a.Institution!.id!, name: a.Institution!.name, type: null }])).values())).filter((institution) => ids.has(institution.id));
+    const dedupeNames = new Set(fundCompanyOptions.map((item) => item.name));
+    const options = (allInstitutions.length > 0 ? allInstitutions : Array.from(new Map(validAccounts.filter((a) => a.Institution?.id).map((a) => [a.Institution!.id!, { id: a.Institution!.id!, name: a.Institution!.name, type: null }])).values())).filter((institution) => ids.has(institution.id)
+      // Names shown in the dedicated fund-company group are hidden here to avoid duplicates.
+      && !(institution.type === "fund_company" && dedupeNames.has(institution.name.trim())));
     if (userFilteredAccounts.some((account) => !account.Institution?.id)) options.push({ id: CASH_INSTITUTION_ID, name: t("statistics.cashInstitution"), type: "cash" });
     return options;
-  }, [validAccounts, allInstitutions, userFilteredAccounts, t]);
+  }, [validAccounts, allInstitutions, userFilteredAccounts, fundCompanyOptions, t]);
+  // Fund-company selections carry no accounts of their own (they filter the
+  // report rows instead), so they must not shrink the account option list.
+  const realInstitutionIds = useMemo(
+    () => institutionIds.filter((id) => !id.startsWith(FUND_COMPANY_INSTITUTION_PREFIX)),
+    [institutionIds],
+  );
   const accountOptions = useMemo(() => [...userFilteredAccounts.filter((account) =>
-    institutionIds.length === 0 || institutionIds.some((id) => id === (account.Institution?.id ?? CASH_INSTITUTION_ID)),
+    realInstitutionIds.length === 0 || realInstitutionIds.some((id) => id === (account.Institution?.id ?? CASH_INSTITUTION_ID)),
   )].sort((left, right) => {
     const institutionCompare = (left.Institution?.name ?? "").localeCompare(right.Institution?.name ?? "", "zh-CN");
     if (institutionCompare !== 0) return institutionCompare;
     return (left.label ?? left.name).localeCompare(right.label ?? right.name, "zh-CN");
-  }), [userFilteredAccounts, institutionIds]);
+  }), [userFilteredAccounts, realInstitutionIds]);
   const userOptions = allUsers;
 
   useEffect(() => {
@@ -118,6 +165,12 @@ export function AccountScopeFilter({
       onChange({ userIds: [id], institutionIds, accountIds: validAccountIds });
     }
     if (kind === "institutions") {
+      if (id.startsWith(FUND_COMPANY_INSTITUTION_PREFIX)) {
+        setDraftInstitutionIds([id]);
+        setOpenMenu(null);
+        onChange({ userIds, institutionIds: [id], accountIds });
+        return;
+      }
       const validAccountIds = accountIds.filter((accountIdValue) => validAccounts.some((account) => account.id === accountIdValue && account.Institution?.id === id));
       setDraftInstitutionIds([id]);
       setDraftAccountIds(validAccountIds);
@@ -140,8 +193,9 @@ export function AccountScopeFilter({
     }
     if (kind === "institutions") {
       const next = draftInstitutionIds;
+      const realIds = next.filter((id) => !id.startsWith(FUND_COMPANY_INSTITUTION_PREFIX));
       const nextAccount = draftAccountIds.filter((id) => allAccounts.some((account) =>
-        account.id === id && (next.length === 0 || next.includes(account.Institution?.id ?? "")) && (userIds.length === 0 || (account.groupId && userIds.includes(account.groupId))),
+        account.id === id && (realIds.length === 0 || realIds.includes(account.Institution?.id ?? "")) && (userIds.length === 0 || (account.groupId && userIds.includes(account.groupId))),
       ));
       setDraftAccountIds(nextAccount);
       setOpenMenu(null);
@@ -160,6 +214,13 @@ export function AccountScopeFilter({
 
   function toggleInstitutionType(type: string) {
     const ids = institutionOptions.filter((institution) => institutionGroupKey(institution.type) === type).map((institution) => institution.id);
+    setDraftInstitutionIds((current) => ids.every((id) => current.includes(id))
+      ? current.filter((id) => !ids.includes(id))
+      : [...new Set([...current, ...ids])]);
+  }
+
+  function toggleFundCompanyGroup() {
+    const ids = fundCompanyOptions.map((item) => item.id);
     setDraftInstitutionIds((current) => ids.every((id) => current.includes(id))
       ? current.filter((id) => !ids.includes(id))
       : [...new Set([...current, ...ids])]);
@@ -209,7 +270,10 @@ export function AccountScopeFilter({
     }
     const labels = selected.map((id) => {
       if (kind === "users") return allUsers.find((user) => user.id === id)?.name ?? id;
-      if (kind === "institutions") return institutionOptions.find((institution) => institution.id === id)?.name ?? id;
+      if (kind === "institutions") return institutionOptions.find((institution) => institution.id === id)?.name
+        ?? fundCompanyOptions.find((item) => item.id === id)?.name
+        ?? parseFundCompanyInstitutionId(id)
+        ?? id;
       const account = allAccounts.find((item) => item.id === id);
       return accountLabel(account);
     });
@@ -225,6 +289,46 @@ export function AccountScopeFilter({
     if (!('Institution' in account)) return account.name;
     return account.Institution?.name ? `${account.Institution.name}·${account.name}` : account.name;
   }
+
+  const fundCompanyGroupBlock = fundCompanyOptions.length === 0 ? null : (
+    <div className="grid grid-cols-[96px_1fr] items-start gap-2 border-b border-slate-200 py-2 last:border-b-0">
+      <label className="flex min-h-7 items-center gap-1.5 px-2 text-xs font-medium text-slate-600">
+        <input
+          type="checkbox"
+          checked={fundCompanyOptions.every((item) => draftInstitutionIds.includes(item.id))}
+          onChange={toggleFundCompanyGroup}
+        />
+        {t("statistics.fundCompanies")}
+      </label>
+      <div className="space-y-1.5">
+        {fundCompanyGroups.map((group) => (
+          <div key={group.key}>
+            <div className="px-1 pb-0.5 text-[11px] font-medium text-slate-400">
+              {group.title}（{group.items.length}）
+            </div>
+            <div className="grid grid-cols-3 items-start gap-x-2 gap-y-1">
+              {group.items.map((item) => (
+                <div key={item.id} className="flex min-h-7 min-w-0 items-center gap-1.5 rounded px-1 py-1 text-xs hover:bg-slate-50">
+                  <input
+                    type="checkbox"
+                    className="shrink-0"
+                    checked={draftInstitutionIds.includes(item.id)}
+                    onChange={() => toggleDraft("institutions", item.id)}
+                  />
+                  <button
+                    type="button"
+                    className={`min-w-0 flex-1 truncate text-left ${group.key === "cleared" ? "text-slate-500" : ""}`}
+                    title={item.name}
+                    onClick={() => selectSingle("institutions", item.id)}
+                  >{item.name}</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 
   return (
     <div className="flex min-w-max items-center gap-3">
@@ -247,6 +351,7 @@ export function AccountScopeFilter({
               <input type="checkbox" checked={draft.includes(item.id)} onChange={() => toggleDraft(kind, item.id)} />
               <button type="button" className="min-w-0 flex-1 truncate text-left" onClick={() => selectSingle(kind, item.id)}>{isUsers ? (allUsers.find((user) => user.id === item.id)?.name ?? item.id) : isInstitutions ? (institutionOptions.find((institution) => institution.id === item.id)?.name ?? item.id) : accountLabel(accountOptions.find((account) => account.id === item.id))}</button>
             </div>)}
+            {isInstitutions ? fundCompanyGroupBlock : null}
             <div className="sticky bottom-0 mt-1 border-t border-slate-200 bg-white pt-1.5">
               <button type="button" className="h-7 w-full rounded bg-slate-900 px-3 text-xs font-medium text-white hover:bg-slate-700" onClick={() => confirm(kind)}>{t("table.confirm")}</button>
             </div>

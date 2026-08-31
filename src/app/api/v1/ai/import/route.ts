@@ -16,6 +16,7 @@ import { enrichAiParsedItems } from "@/lib/statement/ai-import-enrichment";
 import type { ParsedItem } from "@/lib/ai/parser";
 import { isSpendableAccount } from "@/lib/account-kind-utils";
 import { ENTRY_ORIGIN_AI_IMPORT } from "@/lib/transaction-semantics";
+import { creditBillEffectiveDate } from "@/lib/credit/billing";
 
 export const runtime = "nodejs";
 
@@ -769,7 +770,9 @@ export async function POST(req: NextRequest) {
           ? institutions.find((institution) => institution.id === item.institutionId) ?? null
           : findCounterpartyInstitution(normalizedInstitution);
         const statementMonth =
-          (account.kind === "bank_credit" || account.kind === "loan") && account.billingDay ? toStatementMonth(date, account.billingDay) : null;
+          (account.kind === "bank_credit" || account.kind === "loan") && account.billingDay
+            ? toStatementMonth(creditBillEffectiveDate({ type: item.type, date, postedAt }) ?? date, account.billingDay)
+            : null;
         const entryData: Record<string, unknown> = {
           type: item.type as any,
           status: "posted",

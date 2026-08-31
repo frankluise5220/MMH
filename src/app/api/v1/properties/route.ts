@@ -263,6 +263,11 @@ export async function POST(req: NextRequest) {
       let existingAsset = propertyAssetId
         ? await tx.propertyAsset.findFirst({ where: { id: propertyAssetId, householdId, accountId, deletedAt: null } })
         : null;
+      const nextAssetType = normalizeFixedAssetType(
+        action === PropertyTransactionAction.purchase
+          ? body.assetType ?? propertyAccount.fixedAssetType
+          : existingAsset?.assetType ?? propertyAccount.fixedAssetType,
+      );
 
       if (action === PropertyTransactionAction.purchase) {
         const assetName = String(body.name ?? "").trim();
@@ -273,7 +278,7 @@ export async function POST(req: NextRequest) {
             householdId,
             accountId,
             name: assetName,
-            assetType: normalizeFixedAssetType(body.assetType ?? propertyAccount.fixedAssetType),
+            assetType: nextAssetType,
             propertyType: String(body.propertyType ?? "").trim() || null,
             address: String(body.address ?? "").trim() || null,
             attributes: parseAttributes(body.attributes),
@@ -308,6 +313,7 @@ export async function POST(req: NextRequest) {
         await tx.propertyAsset.update({
           where: { id: existingAsset.id },
           data: {
+            assetType: nextAssetType,
             cost: String(nextCost),
             marketValue: String(nextMarketValue),
             latestValuationDate: marketValueInput != null || action === PropertyTransactionAction.sale ? (settlementDate ?? tradeDate) : existingAsset.latestValuationDate,
@@ -327,6 +333,11 @@ export async function POST(req: NextRequest) {
           });
         }
       }
+
+      await tx.account.update({
+        where: { id: accountId },
+        data: { fixedAssetType: nextAssetType as any },
+      });
 
       const realizedProfit = action === PropertyTransactionAction.sale && existingAsset
         ? Math.max(0, amount - (fee ?? 0) - (tax ?? 0)) - toNumber(existingAsset.cost)
@@ -413,11 +424,12 @@ export async function PUT(req: NextRequest) {
     const purchaseDate = parseDateOnly(body?.purchaseDate);
     const purchasePrice = parseOptionalNonNegativeNumber(body?.purchasePrice);
     const updated = await prisma.$transaction(async (tx) => {
+      const nextAssetType = normalizeFixedAssetType(body?.assetType);
       const updatedAsset = await tx.propertyAsset.update({
         where: { id: propertyAssetId },
         data: {
           name,
-          assetType: normalizeFixedAssetType(body?.assetType),
+          assetType: nextAssetType,
           propertyType: String(body?.propertyType ?? "").trim() || null,
           address: String(body?.address ?? "").trim() || null,
           attributes: parseAttributes(body?.attributes),
@@ -425,6 +437,10 @@ export async function PUT(req: NextRequest) {
           purchasePrice: purchasePrice == null ? null : String(purchasePrice),
           note: String(body?.note ?? "").trim() || null,
         },
+      });
+      await tx.account.updateMany({
+        where: { id: updatedAsset.accountId, householdId, kind: AccountKind.investment, investProductType: "property" },
+        data: { fixedAssetType: nextAssetType as any },
       });
       return updatedAsset;
     });

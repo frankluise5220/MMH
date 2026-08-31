@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, ChevronDown, ChevronRight, X } from "lucide-react";
 import type { AccountKind } from "@prisma/client";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
@@ -14,8 +14,8 @@ import { buildAccountDisplayOption } from "@/lib/account-display";
 import { getCreditCardLabelTemplatePreference } from "@/lib/client/appPreferences";
 import { fetchSettingsAccountData, getCachedSettingsAccountData, notifySettingsDataChanged } from "@/lib/client/settingsCache";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
-import { isDepositAccount } from "@/lib/account-kind-utils";
-import { isFixedAssetAccountLike } from "@/lib/fixed-asset";
+import { getInvestmentAccountView, isDepositAccount } from "@/lib/account-kind-utils";
+import { FIXED_ASSET_TYPES, isFixedAssetAccountLike } from "@/lib/fixed-asset";
 import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
 import { useI18n } from "@/lib/i18n";
 import { CURRENCY_OPTIONS, normalizeCurrency } from "@/lib/currency";
@@ -53,6 +53,8 @@ type Account = {
   investProductType: string | null; costBasisMethod: string | null;
   fundUnitsDecimals?: number | null;
   tradingCalendar?: string | null;
+  fixedAssetType?: string | null;
+  isConsumerLoan?: boolean | null;
 };
 
 const investmentProductTypeOptions = PRODUCT_TYPES.map((value) => ({ value, labelKey: `investment.product.${value}` }));
@@ -68,7 +70,31 @@ function accountInstitutionTypeMatches(kind: string, investProductType: string |
   return type !== "debt";
 }
 
+function getAccountDetailHref(account: Account) {
+  const query = new URLSearchParams();
+  if (account.kind === "loan") {
+    // Match the sidebar's per-person debt entry instead of selecting a detail account.
+    query.set("view", "debt");
+    query.set("debtPerson", `account:${account.id}`);
+    return `/?${query.toString()}`;
+  }
+  query.set("accountId", account.id);
+  const detailView =
+    isDepositAccount(account)
+      ? "deposit"
+      : account.kind === "investment"
+        ? getInvestmentAccountView(account)
+        : account.kind === "insurance"
+          ? "insurance"
+          : account.kind === "bank_credit"
+            ? "bill"
+            : "detail";
+  query.set("view", detailView);
+  return `/?${query.toString()}`;
+}
+
 export default function SettingsAccountsPage() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const { t } = useI18n();
   const tf = (key: string, values: Record<string, string | number>) => {
@@ -81,6 +107,7 @@ export default function SettingsAccountsPage() {
   const accountKindLabel = (kind: string) => t(`account.kind.${kind}`);
   const institutionKindLabel = (type: string | null | undefined) => t(`institution.type.${type ?? "other"}`);
   const investmentLabel = (value: string | null | undefined) => t(`investment.product.${value || "fund"}`);
+  const fixedAssetTypeLabel = (value: string | null | undefined) => t(`fixedAsset.type.${value || "property"}`);
   const tradingCalendarLabel = (value: string | null | undefined) => value ? t(`tradingCalendar.${value}`) : t("settings.accounts.tradingCalendarDefault");
   const [groups, setGroups] = useState<Group[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -95,6 +122,7 @@ export default function SettingsAccountsPage() {
   const [editError, setEditError] = useState("");
   const [collapsedKinds, setCollapsedKinds] = useState<Set<string>>(new Set());
   const [showCreateAccount, setShowCreateAccount] = useState(false);
+  const [showCreateConsumerLoan, setShowCreateConsumerLoan] = useState(false);
   const guideAccountSetup = searchParams.get("guide") === "accounts";
 
   // Delete account with password verification
@@ -154,9 +182,11 @@ export default function SettingsAccountsPage() {
       creditBillMode: a.creditBillMode === "consolidated" ? "consolidated" : "separate",
       numberMasked: a.numberMasked || "",
       investProductType: normalizedKind === "investment" ? (a.investProductType || "fund") : normalizedKind === "fixed_asset" ? "property" : "",
+      fixedAssetType: normalizedKind === "fixed_asset" ? (a.fixedAssetType || "property") : "",
       costBasisMethod: a.costBasisMethod || "moving_avg",
       fundUnitsDecimals: String(a.fundUnitsDecimals ?? 2),
       tradingCalendar: a.tradingCalendar || "cn_fund",
+      isConsumerLoan: a.isConsumerLoan === true ? "true" : "false",
     });
   }
 
@@ -173,8 +203,13 @@ export default function SettingsAccountsPage() {
       return;
     }
     const isFixedAssetKind = nextKind === "fixed_asset";
+    const isConsumerLoan = editForm.isConsumerLoan === "true";
+    if (isConsumerLoan && (nextKind !== "loan" || !editForm.institutionId || nextInstitution?.type !== "debt")) {
+      setEditError(t("settings.accounts.consumerLoanInstitutionRequired"));
+      return;
+    }
     const payload = isFixedAssetKind
-      ? { ...editForm, kind: "investment", investProductType: "property", institutionId: "" }
+      ? { ...editForm, kind: "investment", investProductType: "property", institutionId: "", fixedAssetType: editForm.fixedAssetType || "property", isConsumerLoan: "false" }
       : editForm;
     const res = await fetch("/api/v1/accounts", {
       method: "PUT",
@@ -277,6 +312,7 @@ export default function SettingsAccountsPage() {
       account.Institution?.shortName,
       accountKindLabel(normalizedAccountKind(account)),
       investmentLabel(account.investProductType),
+      fixedAssetTypeLabel(account.fixedAssetType),
     ].map(normalizeSearchText).join(" ");
     return tokens.every((token) => haystack.includes(token));
   };
@@ -360,7 +396,8 @@ export default function SettingsAccountsPage() {
               placeholder={t("settings.accounts.filterKind")}
             />
           </div>
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-2">
+            <SettingsPrimaryAddButton onClick={() => setShowCreateConsumerLoan(true)}>{t("settings.accounts.addConsumerLoan")}</SettingsPrimaryAddButton>
             <SettingsPrimaryAddButton onClick={() => setShowCreateAccount(true)}>{t("settings.accounts.add")}</SettingsPrimaryAddButton>
           </div>
           </>
@@ -389,11 +426,29 @@ export default function SettingsAccountsPage() {
             <div className="divide-y divide-slate-100">
               {list.map(a => (
                   /* ---- View mode ---- */
-                  <div key={a.id} className={`px-4 py-2.5 flex items-center justify-between ${a.isPlaceholder ? "opacity-40 bg-slate-50" : !a.isActive ? "opacity-60" : ""} ${!a.isPlaceholder ? "hover:bg-slate-50" : ""} transition-colors`}>
+                  <div
+                    key={a.id}
+                    role={a.isPlaceholder ? undefined : "link"}
+                    tabIndex={a.isPlaceholder ? undefined : 0}
+                    onClick={() => {
+                      if (a.isPlaceholder) return;
+                      void router.push(getAccountDetailHref(a));
+                    }}
+                    onKeyDown={(event) => {
+                      if (a.isPlaceholder) return;
+                      if (event.key !== "Enter" && event.key !== " ") return;
+                      event.preventDefault();
+                      void router.push(getAccountDetailHref(a));
+                    }}
+                    className={`px-4 py-2.5 flex items-center justify-between ${a.isPlaceholder ? "opacity-40 bg-slate-50" : !a.isActive ? "opacity-60" : ""} ${!a.isPlaceholder ? "cursor-pointer hover:bg-slate-50 focus-visible:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-200" : ""} transition-colors`}
+                  >
                     <div className="flex-1 min-w-0 flex items-center gap-2">
                       <span className="text-sm font-medium text-slate-800 truncate">{accountDisplayName(a)}</span>
                       {a.isPlaceholder && (
                         <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-slate-300 bg-slate-100 text-slate-400">{t("settings.accounts.placeholder")}</span>
+                      )}
+                      {a.isConsumerLoan && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-amber-200 bg-amber-50 text-amber-700">{t("account.kind.consumer_loan")}</span>
                       )}
                       {a.AccountGroup && (
                         <span className="text-xs px-1.5 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600">{a.AccountGroup.name}</span>
@@ -434,39 +489,40 @@ export default function SettingsAccountsPage() {
                       <SettingsActionButton
                         label={a.isActive ? t("common.disabled") : t("common.enabled")}
                         icon={a.isActive ? <PowerOff className="w-3.5 h-3.5" /> : <Power className="w-3.5 h-3.5" />}
-                        onClick={() => toggleActive(a.id)}
+                        onClick={(event) => { event.stopPropagation(); toggleActive(a.id); }}
                       />
                       )}
                       {!a.isPlaceholder && (
                       <SettingsActionButton
                         label={t("common.edit")}
                         variant="edit"
-                        onClick={() => openEdit(a)}
+                        onClick={(event) => { event.stopPropagation(); openEdit(a); }}
                       />
                       )}
                       <SettingsActionButton
                         label={t("common.delete")}
                         variant="delete"
-                        onClick={async () => {
-                        if (!confirm(tf("settings.accounts.deleteConfirm", { name: a.name }))) return;
-                        const res = await fetch(`/api/v1/accounts?id=${a.id}`, { method: "DELETE" });
-                        const data = await res.json();
-                        if (data.ok) {
-                          void refreshSettingsAccounts("account:delete");
-                          return;
-                        }
-                        if (data.needPassword) {
-                          setDeleteTarget({
-                            account: a,
-                            recordCount: Number(data.recordCount ?? 0),
-                            toRecordCount: Number(data.toRecordCount ?? 0),
-                          });
-                          setDeletePassword("");
-                          setDeleteError("");
-                          return;
-                        }
-                        window.alert(data.error);
-                      }}
+                        onClick={async (event) => {
+                          event.stopPropagation();
+                          if (!confirm(tf("settings.accounts.deleteConfirm", { name: a.name }))) return;
+                          const res = await fetch(`/api/v1/accounts?id=${a.id}`, { method: "DELETE" });
+                          const data = await res.json();
+                          if (data.ok) {
+                            void refreshSettingsAccounts("account:delete");
+                            return;
+                          }
+                          if (data.needPassword) {
+                            setDeleteTarget({
+                              account: a,
+                              recordCount: Number(data.recordCount ?? 0),
+                              toRecordCount: Number(data.toRecordCount ?? 0),
+                            });
+                            setDeletePassword("");
+                            setDeleteError("");
+                            return;
+                          }
+                          window.alert(data.error);
+                        }}
                       />
                     </div>
                   </div>
@@ -495,6 +551,25 @@ export default function SettingsAccountsPage() {
         onCreated={() => {
           setShowCreateAccount(false);
           void refreshSettingsAccounts("account:create");
+        }}
+        existingNames={accounts.map(a => a.name)}
+      />
+
+      <EntityCreateForm
+        mode="full"
+        layout="modal"
+        entityType="account"
+        open={showCreateConsumerLoan}
+        onClose={() => setShowCreateConsumerLoan(false)}
+        fieldData={{ groupId: groups, institutionId: institutions }}
+        allowedAccountKinds={["loan"]}
+        extraFields={{ kind: "loan", isConsumerLoan: "true" }}
+        hiddenFields={["kind"]}
+        allowedInstitutionTypes={["debt"]}
+        defaultCurrency={baseCurrency}
+        onCreated={() => {
+          setShowCreateConsumerLoan(false);
+          void refreshSettingsAccounts("account:create-consumer-loan");
         }}
         existingNames={accounts.map(a => a.name)}
       />
@@ -602,6 +677,7 @@ export default function SettingsAccountsPage() {
         const isFixedAssetKind = editKind === "fixed_asset";
         const isInvestmentKind = editKind === "investment" || isFixedAssetKind;
         const editInvestProductType = editForm.investProductType || (isFixedAssetKind ? "property" : "fund");
+        const editFixedAssetType = editForm.fixedAssetType || "property";
         const showCostBasisMethod = isInvestmentKind && supportsCostBasisMethod(editInvestProductType);
         const isBillLikeKind = editKind === "bank_credit";
         const supportsLastFour = editKind === "bank_credit" || editKind === "bank_debit";
@@ -635,6 +711,7 @@ export default function SettingsAccountsPage() {
                       kind: e.target.value,
                       institutionId: "",
                       investProductType: e.target.value === "investment" ? (f.investProductType || "fund") : e.target.value === "fixed_asset" ? "property" : "",
+                      fixedAssetType: e.target.value === "fixed_asset" ? (f.fixedAssetType || "property") : "",
                     }))}
                     className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
                   >
@@ -682,21 +759,36 @@ export default function SettingsAccountsPage() {
                   </select>
                 </div>
                 {isInvestmentKind && (
-                  <div>
-                    <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.investmentAccountType")}</label>
-                    <select value={editInvestProductType} onChange={e => setEditForm(f => {
-                      const nextInvestProductType = e.target.value;
-                      const selectedInstitution = institutions.find((institution) => institution.id === f.institutionId);
-                      return {
-                        ...f,
-                        investProductType: nextInvestProductType,
-                        ...(isStockInvestmentAccount(editKind, nextInvestProductType) && selectedInstitution && !isStockAccountInstitutionType(selectedInstitution.type) ? { institutionId: "" } : {}),
-                      };
-                    })}
-                      className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none">
-                      {investmentProductTypeOptions.map((item) => <option key={item.value} value={item.value}>{investmentLabel(item.value)}</option>)}
-                    </select>
-                  </div>
+                  isFixedAssetKind ? (
+                    <div>
+                      <label className="block text-xs text-slate-500 mb-1">{t("fixedAssetEdit.assetType")}</label>
+                      <select
+                        value={editForm.fixedAssetType || "property"}
+                        onChange={e => setEditForm(f => ({ ...f, fixedAssetType: e.target.value }))}
+                        className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
+                      >
+                        {FIXED_ASSET_TYPES.map((value) => (
+                          <option key={value} value={value}>{t(`fixedAsset.type.${value}`)}</option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.investmentAccountType")}</label>
+                      <select value={editInvestProductType} onChange={e => setEditForm(f => {
+                        const nextInvestProductType = e.target.value;
+                        const selectedInstitution = institutions.find((institution) => institution.id === f.institutionId);
+                        return {
+                          ...f,
+                          investProductType: nextInvestProductType,
+                          ...(isStockInvestmentAccount(editKind, nextInvestProductType) && selectedInstitution && !isStockAccountInstitutionType(selectedInstitution.type) ? { institutionId: "" } : {}),
+                        };
+                      })}
+                        className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none">
+                        {investmentProductTypeOptions.map((item) => <option key={item.value} value={item.value}>{investmentLabel(item.value)}</option>)}
+                      </select>
+                    </div>
+                  )
                 )}
               </div>
 

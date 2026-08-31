@@ -29,7 +29,6 @@ type CreditBillDetailPanelProps = {
   resetKey: string;
   selectedBillMonth: string;
   title: ReactNode;
-  periodLabel?: ReactNode;
   accountOptions: Array<{ id: string; label: string; fullLabel?: string | null; title?: string | null; kind?: string | null; debtDirection?: string | null; numberMasked?: string | null }>;
   categoryOptions?: BasicDetailBatchCategoryOption[];
   tagOptions?: BasicDetailBatchCategoryOption[];
@@ -78,7 +77,6 @@ export function CreditBillDetailPanel({
   resetKey,
   selectedBillMonth,
   title,
-  periodLabel,
   accountOptions,
   categoryOptions = [],
   tagOptions = [],
@@ -92,7 +90,6 @@ export function CreditBillDetailPanel({
   const [detailAll, setDetailAll] = useState(initialDetailAll);
   const [isSwitchLoading, setIsSwitchLoading] = useState(false);
   const [clientTitle, setClientTitle] = useState(title);
-  const [clientPeriodLabel, setClientPeriodLabel] = useState(periodLabel);
   const [clientScopeKey, setClientScopeKey] = useState(resetKey || `${accountId}:credit-bill-detail`);
   const totalPages = Math.max(1, Math.ceil(localEntries.length / pageSize));
   const [page, setPage] = useState(() => initialDetailAll ? 1 : clampPage(initialPage, totalPages));
@@ -105,7 +102,6 @@ export function CreditBillDetailPanel({
   useEffect(() => {
     setLocalEntries(entries);
     setClientTitle(title);
-    setClientPeriodLabel(periodLabel);
     setClientScopeKey(propScopeKey);
     if (lastScopeKeyRef.current !== propScopeKey) {
       lastScopeKeyRef.current = propScopeKey;
@@ -120,7 +116,7 @@ export function CreditBillDetailPanel({
       setDetailAll(nextDetailAll);
       setPage(nextDetailAll ? 1 : clampPage(storedPreference?.detailPage ?? initialPage, nextTotalPages));
     }
-  }, [accountId, entries, initialDetailAll, initialPage, normalizedInitialPageSize, periodLabel, propScopeKey, selectedBillMonth, title]);
+  }, [accountId, entries, initialDetailAll, initialPage, normalizedInitialPageSize, propScopeKey, selectedBillMonth, title]);
 
   useEffect(() => {
     const handleSelection = (event: Event) => {
@@ -153,16 +149,10 @@ export function CreditBillDetailPanel({
           setClientScopeKey(`${accountId}:${billMonth}:credit-bill-detail`);
           if (payload.data?.showAllDetails) {
             setClientTitle(t("creditBill.allDetails"));
-            setClientPeriodLabel(undefined);
           } else {
             const cycle = payload.data?.cycle;
             const statementMonth = cycle?.statementMonth || billMonth;
             setClientTitle(t("creditBill.detailTitleWithMonth", { month: statementMonth }));
-            setClientPeriodLabel(
-              cycle?.periodLabel
-                ? <>{t("creditBill.period")}: {cycle.periodLabel} · {cycle.isCurrentCycle ? t("creditBill.currentCycle") : t("creditBill.currentBill")}</>
-                : undefined,
-            );
           }
         })
         .catch((error) => {
@@ -180,17 +170,16 @@ export function CreditBillDetailPanel({
   useEffect(() => {
     const handleFinanceChange = (event: Event) => {
       const detail = (event as CustomEvent<{ reason?: string; accountIds?: string[]; deletedEntryIds?: string[] }>).detail;
-      if (
-        detail?.reason === "bill-cycle" &&
-        (!detail.accountIds?.length || detail.accountIds.includes(accountId))
-      ) {
-        router.refresh();
-        return;
-      }
-      const deletedEntryIds = detail?.deletedEntryIds ?? [];
-      if (deletedEntryIds.length === 0) return;
-      const deletedSet = new Set(deletedEntryIds);
-      setLocalEntries((current) => current.filter((entry) => !deletedSet.has(entry.id)));
+      if (detail?.reason === "bill-override" || detail?.reason === "bill-override-reset") return;
+      const accountIds = detail?.accountIds ?? [];
+      if (accountIds.length > 0 && !accountIds.includes(accountId)) return;
+      // The bill-month selector uses the browser history API for a lightweight
+      // client-side switch. Refreshing through the router alone can therefore
+      // use an older router URL and fall back to an empty/current bill scope.
+      // Re-submit the URL currently visible in the address bar so the selected
+      // bill month remains part of the server-render request.
+      const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      router.replace(currentHref, { scroll: false });
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
     return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
@@ -234,6 +223,14 @@ export function CreditBillDetailPanel({
     setPage(1);
   };
 
+  const showAllBillDetails = () => {
+    if (!selectedBillMonth) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("view", "bill");
+    url.searchParams.set("billMonth", "all");
+    router.replace(`${url.pathname}${url.search}${url.hash}`, { scroll: false });
+  };
+
   const goPage = (nextPage: number) => {
     if (detailAll) return;
     setPage(clampPage(nextPage, totalPages));
@@ -265,13 +262,24 @@ export function CreditBillDetailPanel({
           reorderAccountIds={reorderAccountIds}
           storageKey="mmh_credit_bill_detail_table_v1"
           resetKey={tableResetKey}
-          refreshOnGlobalEvent
+          refreshOnGlobalEvent={false}
           toolbarMode="custom"
           batchReplaceFields={CREDIT_BILL_BATCH_REPLACE_FIELDS}
           toolbarTitle={clientTitle}
           toolbarRightContent={
             <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 text-xs text-slate-500 tabular-nums">
-              {clientPeriodLabel ? <span className="hidden whitespace-nowrap md:inline">{clientPeriodLabel}</span> : null}
+              <button
+                type="button"
+                onClick={showAllBillDetails}
+                disabled={!selectedBillMonth}
+                className={`inline-flex h-7 items-center rounded-md border px-2 text-xs ${
+                  selectedBillMonth
+                    ? "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                    : "border-blue-300 bg-blue-50 text-blue-700"
+                }`}
+              >
+                {t("creditBill.showAllDetails")}
+              </button>
               <span className="whitespace-nowrap text-slate-600">
                 {t("creditBillDetail.recordCount", { count: localEntries.length })}
                 {isSwitchLoading ? t("basicDetail.loadingSuffix") : ""}

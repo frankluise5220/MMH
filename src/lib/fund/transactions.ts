@@ -8,6 +8,7 @@ import { getInvestmentCategoryName } from "@/lib/investment-category";
 import { resolveCategorySnapshot } from "@/lib/default-categories";
 import { getCashFlowDate } from "@/lib/cash-flow-date";
 import { ENTRY_ORIGIN_MANUAL, isRegularInvestRefundEntry, TRANSACTION_SOURCE_REGULAR_INVEST_REFUND } from "@/lib/transaction-semantics";
+import { getFundProfileNameMap, normalizeFundDisplayName } from "@/lib/fund/fundProfile";
 
 type Tx = Prisma.TransactionClient;
 
@@ -774,8 +775,10 @@ export async function loadFundTransactionEntryLike(params: {
     orderBy: [{ applyDate: "desc" }, { createdAt: "desc" }],
   });
 
+  const fundNameByCode = await getFundProfileNameMap(rows.map((row) => row.fundCode));
   const entries: any[] = [];
   for (const row of rows) {
+    const displayFundName = fundNameByCode.get(row.fundCode) ?? normalizeFundDisplayName(row.fundCode, row.fundName) ?? row.fundName;
     const mainFlow = row.cashFlows.find((flow) => flow.txRecordId === row.cashEntryId) ?? row.cashFlows[0];
     const validBusinessLinks = row.EntryBusinessLink.filter((link) => (
       !!link.cashEntryId && !!link.CashEntry && link.CashEntry.deletedAt == null
@@ -792,7 +795,7 @@ export async function loadFundTransactionEntryLike(params: {
       toAccountId: isCashReceiptSubtype(row.fundSubtype) ? row.cashAccountId : row.fundAccountId,
       toAccountName: null,
       fundCode: row.fundCode,
-      fundName: row.fundName,
+      fundName: displayFundName,
       fundProductType: row.fundProductType,
       fundSubtype: row.fundSubtype,
       source: row.source,
@@ -825,7 +828,7 @@ export async function loadFundTransactionEntryLike(params: {
         toAccountId: flow.accountId ?? row.cashAccountId,
         toAccountName: null,
         fundCode: row.fundCode,
-        fundName: row.fundName,
+        fundName: displayFundName,
         fundProductType: row.fundProductType,
         fundSubtype: FundSubtype.buy_failed,
         source: "regular_invest_refund",
@@ -838,7 +841,7 @@ export async function loadFundTransactionEntryLike(params: {
         fundSourceEntryId: row.cashEntryId ?? row.id,
         regularInvestPlanId: row.regularInvestPlanId,
         realizedProfit: null,
-        note: regularInvestRefundNote(row.fundCode, row.fundName, toNumber(flow.amount), row.applyDate),
+        note: regularInvestRefundNote(row.fundCode, displayFundName, toNumber(flow.amount), row.applyDate),
         fundCashFlowOnly: true,
         businessLinkCount: validBusinessLinks.length,
         businessLinkLabels,

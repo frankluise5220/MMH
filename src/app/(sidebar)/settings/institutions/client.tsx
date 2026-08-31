@@ -43,6 +43,8 @@ export function SettingsInstitutionsClient({
   const { t } = useI18n();
   const [institutions, setInstitutions] = useState<Institution[]>(initialInstitutions);
   const [showCreate, setShowCreate] = useState(false);
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const allowedTypes =
     mode === "institution" ? INSTITUTION_TYPES : mode === "family" ? FAMILY_MEMBER_TYPES : COUNTERPARTY_TYPES;
   const typeLabel = (type: string | null | undefined) => t(`institution.type.${type ?? "other"}`);
@@ -66,10 +68,19 @@ export function SettingsInstitutionsClient({
     setInstitutions(initialInstitutions);
   }, [initialInstitutions]);
 
+  useEffect(() => {
+    setTypeFilter("all");
+    setSelectedIds(new Set());
+  }, [mode]);
+
   const visibleInstitutions = useMemo(
-    () => institutions.filter((item) => allowedTypes.includes((item.type ?? "other") as never)),
-    [allowedTypes, institutions],
+    () => institutions.filter((item) => {
+      const type = item.type ?? "other";
+      return allowedTypes.includes(type as never) && (mode !== "institution" || typeFilter === "all" || type === typeFilter);
+    }),
+    [allowedTypes, institutions, mode, typeFilter],
   );
+  const allVisibleSelected = visibleInstitutions.length > 0 && visibleInstitutions.every((item) => selectedIds.has(item.id));
   const createExistingNames = visibleInstitutions.flatMap((item) => [
     item.name,
     item.shortName?.trim() || "",
@@ -116,11 +127,38 @@ export function SettingsInstitutionsClient({
       <SettingsSection
         title={listTitle}
         count={visibleInstitutions.length}
-        actions={<SettingsPrimaryAddButton onClick={() => setShowCreate(true)}>{createTitle}</SettingsPrimaryAddButton>}
+        actions={<div className="flex flex-wrap items-center justify-end gap-2">
+          {mode === "institution" ? (
+            <label className="flex items-center gap-2 text-xs text-slate-500">
+              <span>{t("settings.institutions.filterLabel")}</span>
+              <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)} className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 outline-none focus:border-blue-400">
+                <option value="all">{t("settings.institutions.allTypes")}</option>
+                {allowedTypes.map((type) => <option key={type} value={type}>{typeLabel(type)}</option>)}
+              </select>
+            </label>
+          ) : null}
+          {selectedIds.size > 0 ? <span className="text-xs text-slate-500">{t("settings.institutions.selectedCount", { count: selectedIds.size })}</span> : null}
+          <SettingsPrimaryAddButton onClick={() => setShowCreate(true)}>{createTitle}</SettingsPrimaryAddButton>
+        </div>}
       >
         <SettingsTable minWidth={780}>
             <thead className="sticky top-0 z-10">
               <tr>
+                <SettingsTh>
+                  <input
+                    type="checkbox"
+                    checked={allVisibleSelected}
+                    onChange={(event) => setSelectedIds((current) => {
+                      const next = new Set(current);
+                      for (const item of visibleInstitutions) {
+                        if (event.target.checked) next.add(item.id);
+                        else next.delete(item.id);
+                      }
+                      return next;
+                    })}
+                    aria-label={t("settings.institutions.selectAll")}
+                  />
+                </SettingsTh>
                 <SettingsTh>{t("settings.institutions.name")}</SettingsTh>
                 <SettingsTh>{t("settings.institutions.shortName")}</SettingsTh>
                 <SettingsTh>{t("settings.institutions.type")}</SettingsTh>
@@ -130,6 +168,19 @@ export function SettingsInstitutionsClient({
             <tbody className="text-sm">
               {visibleInstitutions.length ? visibleInstitutions.map((item) => (
                 <tr key={item.id} className="hover:bg-slate-50">
+                  <SettingsTd className="w-10">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(item.id)}
+                      onChange={(event) => setSelectedIds((current) => {
+                        const next = new Set(current);
+                        if (event.target.checked) next.add(item.id);
+                        else next.delete(item.id);
+                        return next;
+                      })}
+                      aria-label={t("settings.institutions.selectRow", { name: item.name })}
+                    />
+                  </SettingsTd>
                   <SettingsTd className="text-sm font-medium text-slate-800">{item.name}</SettingsTd>
                   <SettingsTd>{item.shortName?.trim() || "-"}</SettingsTd>
                   <SettingsTd>{typeLabel(item.type)}</SettingsTd>
@@ -147,16 +198,23 @@ export function SettingsInstitutionsClient({
                         }}
                       />
                       <SettingsDeleteButton
-                        label={`${deleteLabel}：${item.name}`}
+                        label={`${deleteLabel}: ${item.name}`}
                         entity={mode === "counterparty" ? "counterparty" : "institution"}
                         id={item.id}
-                        onDeleted={() => setInstitutions((prev) => prev.filter((row) => row.id !== item.id))}
+                        onDeleted={() => {
+                          setInstitutions((prev) => prev.filter((row) => row.id !== item.id));
+                          setSelectedIds((current) => {
+                            const next = new Set(current);
+                            next.delete(item.id);
+                            return next;
+                          });
+                        }}
                       />
                     </SettingsRowActions>
                   </SettingsTd>
                 </tr>
               )) : (
-                <SettingsEmptyRow colSpan={4}>{emptyText}</SettingsEmptyRow>
+                <SettingsEmptyRow colSpan={5}>{emptyText}</SettingsEmptyRow>
               )}
             </tbody>
         </SettingsTable>

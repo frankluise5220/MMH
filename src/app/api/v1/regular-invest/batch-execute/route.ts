@@ -4,6 +4,7 @@ import { FundCashFlowKind, FundSubtype, IntervalUnit, RegularInvestStatus } from
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { getFundConfirmDays, getFundArrivalDays, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
 import { getFundFeeRate, getFundFeeRateByDate } from "@/lib/fund/feeRate";
+import { normalizeFundDisplayName, resolveFundName } from "@/lib/fund/fundProfile";
 import { createFundTransactionWithCashFlows } from "@/lib/fund/transactions";
 import { getFundNavFromCacheOnly } from "@/lib/fund/navCache";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
@@ -291,6 +292,9 @@ export async function POST(req: NextRequest) {
       categoryName: REGULAR_INVEST_CATEGORY_NAME,
       type: "investment",
     });
+    const fundDisplayName = await resolveFundName(plan.fundCode, { householdId })
+      ?? normalizeFundDisplayName(plan.fundCode, plan.fundName)
+      ?? plan.fundCode;
     const runsToCreate: Array<{
       runDate: Date;
       confirmDate: Date;
@@ -334,7 +338,7 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      let note = regularInvestBuyNote(plan.fundCode, plan.fundName || plan.fundCode);
+      let note = regularInvestBuyNote(plan.fundCode, fundDisplayName);
       if (sgzt && (sgzt.includes("限制") || sgzt.includes("限额"))) {
         note += `（${sgzt}，请确认定投金额是否超限）`;
       }
@@ -383,7 +387,7 @@ export async function POST(req: NextRequest) {
             fundAccountId: fundAcc.id,
             cashAccountId: cashAcc?.id ?? null,
             fundCode: plan.fundCode,
-            fundName: plan.fundName || plan.fundCode,
+            fundName: fundDisplayName,
             fundProductType: plan.fundProductType || fundAcc.investProductType,
             fundSubtype: FundSubtype.buy_failed,
             source: "regular_invest",
@@ -397,7 +401,7 @@ export async function POST(req: NextRequest) {
             nav: null,
             units: null,
             regularInvestPlanId: planId,
-            note: regularInvestFailureNote(plan.fundCode, plan.fundName || plan.fundCode, run.runDate),
+            note: regularInvestFailureNote(plan.fundCode, fundDisplayName, run.runDate),
             cashFlows: cashAcc ? [
               {
                 kind: FundCashFlowKind.buy_out,
@@ -408,7 +412,7 @@ export async function POST(req: NextRequest) {
                 currency: cashAcc.currency ?? fundAcc.currency ?? "CNY",
                 source: "regular_invest",
                 regularInvestPlanId: planId,
-                note: regularInvestFailureNote(plan.fundCode, plan.fundName || plan.fundCode, run.runDate),
+                note: regularInvestFailureNote(plan.fundCode, fundDisplayName, run.runDate),
               },
               {
                 kind: FundCashFlowKind.refund_in,
@@ -421,7 +425,7 @@ export async function POST(req: NextRequest) {
                 regularInvestPlanId: planId,
                 note: regularInvestRefundNote(
                   plan.fundCode,
-                  plan.fundName || plan.fundCode,
+                  fundDisplayName,
                   amountNum,
                   run.runDate,
                   cashAcc.currency ?? fundAcc.currency ?? "CNY",
@@ -437,7 +441,7 @@ export async function POST(req: NextRequest) {
           fundAccountId: fundAcc.id,
           cashAccountId: cashAcc?.id ?? null,
           fundCode: plan.fundCode,
-          fundName: plan.fundName || plan.fundCode,
+          fundName: fundDisplayName,
           fundProductType: plan.fundProductType || fundAcc.investProductType,
           fundSubtype: FundSubtype.buy,
           source: "regular_invest",

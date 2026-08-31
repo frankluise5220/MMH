@@ -11,7 +11,7 @@ import {
 import { getFundConfirmRule, normalizeNonNegativeDays, setFundConfirmRuleInTx } from "@/lib/fund/confirmDays";
 import { getFundFeeRate, getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { getFundNav, getLatestFundNav } from "@/lib/fund/navCache";
-import { queryFundIdentity } from "@/lib/fund/queryApi";
+import { resolveFundName } from "@/lib/fund/fundProfile";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { createFundTransactionWithCashFlows, type FundCashFlowInput } from "@/lib/fund/transactions";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision-core";
@@ -370,9 +370,9 @@ async function resolveFundNameByCode(ctx: ImportContext, fundCode: string) {
   if (existing) return existing;
 
   const lookup = (async () => {
-    const identity = await queryFundIdentity(code).catch(() => null);
-    const identityName = normalizeUsableFundName(identity?.name, code);
-    if (identityName) return identityName;
+    const resolved = await resolveFundName(code, { householdId: ctx.householdId }).catch(() => null);
+    const resolvedName = normalizeUsableFundName(resolved, code);
+    if (resolvedName) return resolvedName;
 
     const latestNav = await getLatestFundNav(code).catch(() => null);
     return normalizeUsableFundName(latestNav?.name, code);

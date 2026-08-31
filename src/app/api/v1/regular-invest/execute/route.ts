@@ -5,6 +5,7 @@ import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getFundConfirmDays, getFundArrivalDays, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
 import { getFundFeeRate, getFundFeeRateByDate } from "@/lib/fund/feeRate";
+import { normalizeFundDisplayName, resolveFundName } from "@/lib/fund/fundProfile";
 import { createFundTransactionWithCashFlows } from "@/lib/fund/transactions";
 import { getFundNavFromCacheOnly } from "@/lib/fund/navCache";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
@@ -345,6 +346,9 @@ export async function POST(req: NextRequest) {
       categoryName: REGULAR_INVEST_CATEGORY_NAME,
       type: "investment",
     });
+    const fundDisplayName = await resolveFundName(plan.fundCode, { householdId })
+      ?? normalizeFundDisplayName(plan.fundCode, plan.fundName)
+      ?? plan.fundCode;
 
     const result = await prisma.$transaction(async (tx) => {
       await acquireScheduledTaskPlanLock(tx, planId);
@@ -372,7 +376,7 @@ export async function POST(req: NextRequest) {
           fundAccountId: fundAcc.id,
           cashAccountId: cashAcc?.id ?? null,
           fundCode: plan.fundCode,
-          fundName: plan.fundName || plan.fundCode,
+          fundName: fundDisplayName,
           fundProductType: plan.fundProductType || fundAcc.investProductType,
           fundSubtype: FundSubtype.buy_failed,
           source: "regular_invest",
@@ -386,7 +390,7 @@ export async function POST(req: NextRequest) {
           nav: null,
           units: null,
           regularInvestPlanId: planId,
-          note: regularInvestFailureNote(plan.fundCode, plan.fundName || plan.fundCode, runDate),
+          note: regularInvestFailureNote(plan.fundCode, fundDisplayName, runDate),
           cashFlows: cashAcc ? [
             {
               kind: FundCashFlowKind.buy_out,
@@ -397,7 +401,7 @@ export async function POST(req: NextRequest) {
               currency: cashAcc.currency ?? fundAcc.currency ?? "CNY",
               source: "regular_invest",
               regularInvestPlanId: planId,
-              note: regularInvestFailureNote(plan.fundCode, plan.fundName || plan.fundCode, runDate),
+              note: regularInvestFailureNote(plan.fundCode, fundDisplayName, runDate),
             },
             {
               kind: FundCashFlowKind.refund_in,
@@ -410,7 +414,7 @@ export async function POST(req: NextRequest) {
               regularInvestPlanId: planId,
               note: regularInvestRefundNote(
                 plan.fundCode,
-                plan.fundName || plan.fundCode,
+                fundDisplayName,
                 amountNum,
                 runDate,
                 cashAcc.currency ?? fundAcc.currency ?? "CNY",
@@ -437,7 +441,7 @@ export async function POST(req: NextRequest) {
         fundAccountId: fundAcc.id,
         cashAccountId: cashAcc?.id ?? null,
         fundCode: plan.fundCode,
-        fundName: plan.fundName || plan.fundCode,
+        fundName: fundDisplayName,
         fundProductType: plan.fundProductType || fundAcc.investProductType,
         fundSubtype: FundSubtype.buy,
         source: "regular_invest",
@@ -450,7 +454,7 @@ export async function POST(req: NextRequest) {
         nav: fundNav,
         units: fundUnits,
         regularInvestPlanId: planId,
-        note: regularInvestBuyNote(plan.fundCode, plan.fundName || plan.fundCode),
+        note: regularInvestBuyNote(plan.fundCode, fundDisplayName),
         cashFlows: cashAcc ? [{
           kind: FundCashFlowKind.buy_out,
           date: runDate,
@@ -462,7 +466,7 @@ export async function POST(req: NextRequest) {
           categoryId: category?.id ?? null,
           categoryName: category?.name ?? REGULAR_INVEST_CATEGORY_NAME,
           regularInvestPlanId: planId,
-          note: regularInvestBuyNote(plan.fundCode, plan.fundName || plan.fundCode),
+          note: regularInvestBuyNote(plan.fundCode, fundDisplayName),
         }] : [],
       });
 

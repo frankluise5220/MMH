@@ -110,7 +110,7 @@ export default function EditBillAmount({
             },
           }),
         );
-        dispatchFinanceDataChanged({ reason: "bill-override", accountIds: [accountId], statementMonth });
+        dispatchFinanceDataChanged({ reason: "bill-override", accountIds: [accountId], statementMonth, balanceChanged: true });
         setEditing(false);
         setSaving(false);
         return;
@@ -120,7 +120,7 @@ export default function EditBillAmount({
       setErrMsg(t("editBill.networkError"));
     }
     setSaving(false);
-  }, [accountId, postOverrideAdjustment, statementMonth]);
+  }, [accountId, postOverrideAdjustment, statementMonth, t]);
 
   const reset = useCallback(async () => {
     if (!accountId || !statementMonth) return;
@@ -128,7 +128,7 @@ export default function EditBillAmount({
     try {
       await fetch(`/api/v1/bill/override?accountId=${accountId}&statementMonth=${statementMonth}`, { method: "DELETE" });
       await new Promise((resolve) => setTimeout(resolve, 60));
-      dispatchFinanceDataChanged({ reason: "bill-override-reset", accountIds: [accountId], statementMonth });
+      dispatchFinanceDataChanged({ reason: "bill-override-reset", accountIds: [accountId], statementMonth, balanceChanged: true });
     } catch {
       // ignore
     }

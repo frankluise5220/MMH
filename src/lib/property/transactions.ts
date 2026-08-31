@@ -1,6 +1,7 @@
 import { AccountKind, Prisma, PropertyTransactionAction, TransactionType } from "@prisma/client";
 
 import { toNumber } from "@/lib/date-utils";
+import { normalizeFixedAssetType } from "@/lib/fixed-asset";
 import { prisma } from "@/lib/db/prisma";
 import { upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
 
@@ -70,7 +71,7 @@ export async function linkExpenseToFixedAsset(
       isActive: true,
       isPlaceholder: { not: true },
     },
-    select: { id: true, name: true, kind: true, investProductType: true, currency: true },
+    select: { id: true, name: true, kind: true, investProductType: true, fixedAssetType: true, currency: true },
   });
   if (!propertyAccount) throw new Error("Fixed asset account not found");
 
@@ -93,6 +94,7 @@ export async function linkExpenseToFixedAsset(
   const tradeDate = params.cashEntry.postedAt ?? params.cashEntry.date;
   const note = params.cashEntry.note?.trim() || null;
   const propertyName = params.propertyName?.trim() || propertyAccount.name;
+  const nextAssetType = normalizeFixedAssetType(propertyAccount.fixedAssetType);
 
   const existingLinked = await client.propertyTransaction.findFirst({
     where: { householdId: params.householdId, cashEntryId: params.cashEntry.id, deletedAt: null },
@@ -118,6 +120,7 @@ export async function linkExpenseToFixedAsset(
           householdId: params.householdId,
           accountId: propertyAccount.id,
           name: propertyName,
+          assetType: nextAssetType,
           propertyType: "fixed_asset",
           currency: propertyAccount.currency ?? params.cashEntry.currency ?? "CNY",
           purchaseDate: tradeDate,
@@ -128,6 +131,9 @@ export async function linkExpenseToFixedAsset(
           note,
         },
       });
+      if (targetAsset.assetType !== nextAssetType) {
+        await client.propertyAsset.update({ where: { id: targetAsset.id }, data: { assetType: nextAssetType } });
+      }
       targetPropertyAssetId = targetAsset.id;
     }
     await client.propertyTransaction.update({
@@ -141,6 +147,10 @@ export async function linkExpenseToFixedAsset(
         note,
         deletedAt: null,
       },
+    });
+    await client.account.update({
+      where: { id: propertyAccount.id },
+      data: { fixedAssetType: nextAssetType },
     });
     await upsertEntryBusinessCashFlowLink(client, {
       householdId: params.householdId,
@@ -185,6 +195,7 @@ export async function linkExpenseToFixedAsset(
           householdId: params.householdId,
           accountId: propertyAccount.id,
           name: propertyName,
+          assetType: nextAssetType,
           propertyType: "fixed_asset",
           currency: propertyAccount.currency ?? params.cashEntry.currency ?? "CNY",
           purchaseDate: tradeDate,
@@ -208,6 +219,11 @@ export async function linkExpenseToFixedAsset(
       },
     });
   }
+
+  await client.account.update({
+    where: { id: propertyAccount.id },
+    data: { fixedAssetType: nextAssetType },
+  });
 
   const row = await client.propertyTransaction.create({
     data: {

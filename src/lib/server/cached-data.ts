@@ -10,18 +10,20 @@
 import { cache } from "react";
 import { unstable_cache } from "next/cache";
 import { prisma } from "@/lib/db/prisma";
-import { computeInvestBalances, computePositionDisplay } from "@/lib/invest-balance";
+import { computeFixedAssetPositionDisplay, computeInvestBalances, computePositionDisplay } from "@/lib/invest-balance";
 import {
   CATEGORY_HIERARCHY_NORMALIZATION_VERSION,
   normalizeDefaultCategoryHierarchyForHousehold,
 } from "@/lib/default-categories";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { loadStockHoldingReport } from "@/lib/server/stock-holding-report";
+import { loadFundHoldingReport } from "@/lib/server/fund-holding-report";
 import { listPreciousMetalDictionaries } from "@/lib/server/precious-metals";
 import { entryBusinessLinkSummaryInclude } from "@/lib/server/entry-business-link";
 import { loadFundTransactionEntryLike } from "@/lib/fund/transactions";
 import {
   loadPreciousMetalTransactionEntryLike,
+  loadPropertyTransactionEntryLike,
   loadWealthTransactionEntryLike,
 } from "@/lib/server/business-transaction-entries";
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
@@ -150,6 +152,37 @@ export const loadInvestBalances = unstable_cache(
   { revalidate: false, tags: ["invest-balances", "fund-holding"] },
 );
 
+async function _loadFixedAssetPositionDisplay(hidFilterStr: string, accountId: string) {
+  const hidFilter = JSON.parse(hidFilterStr) as { householdId: string };
+  const ctx: HouseholdContext = {
+    householdId: hidFilter.householdId,
+    hidFilter,
+    user: null,
+  };
+  return accountId
+    ? computePositionDisplay(ctx, accountId)
+    : computeFixedAssetPositionDisplay(ctx);
+}
+
+/** Cross-request cache for fixed-asset positions. */
+export const loadFixedAssetPositionDisplay = unstable_cache(
+  _loadFixedAssetPositionDisplay,
+  ["fixed-asset-display"],
+  { revalidate: false, tags: ["fixed-asset-display", "invest-balances"] },
+);
+
+async function _loadFixedAssetTransactionEntries(householdId: string, accountIdsStr: string) {
+  const accountIds = JSON.parse(accountIdsStr) as string[];
+  return loadPropertyTransactionEntryLike({ householdId, accountIds });
+}
+
+/** Cross-request cache for the serialized fixed-asset transaction detail list. */
+export const loadFixedAssetTransactionEntries = unstable_cache(
+  _loadFixedAssetTransactionEntries,
+  ["fixed-asset-transactions"],
+  { revalidate: false, tags: ["fixed-asset-transactions"] },
+);
+
 async function _loadStockHoldingReport(
   hidFilterStr: string,
   accountIdsStr: string,
@@ -171,6 +204,32 @@ export const loadCachedStockHoldingReport = unstable_cache(
   _loadStockHoldingReport,
   ["stock-holding-report"],
   { revalidate: false, tags: ["stock-holding-report", "invest-balances"] },
+);
+
+async function _loadFundHoldingReport(
+  hidFilterStr: string,
+  accountIdsStr: string,
+  fundCompaniesStr: string,
+) {
+  const hidFilter = JSON.parse(hidFilterStr) as { householdId: string };
+  const accountIds = JSON.parse(accountIdsStr) as string[];
+  const fundCompanies = JSON.parse(fundCompaniesStr) as string[];
+  const ctx: HouseholdContext = {
+    householdId: hidFilter.householdId,
+    hidFilter,
+    user: null,
+  };
+  return loadFundHoldingReport(ctx, {
+    accountIds: accountIds.length > 0 ? accountIds : undefined,
+    fundCompanies: fundCompanies.length > 0 ? fundCompanies : undefined,
+  });
+}
+
+/** Cross-request cache: the fund holding summary reads the display layer (FundHolding) so numbers stay consistent with the fund detail view */
+export const loadCachedFundHoldingReport = unstable_cache(
+  _loadFundHoldingReport,
+  ["fund-holding-report"],
+  { revalidate: false, tags: ["fund-holding-report", "invest-balances"] },
 );
 
 // ── Investment account holding data (request-level cache) ──

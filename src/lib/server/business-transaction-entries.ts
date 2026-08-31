@@ -154,9 +154,9 @@ export async function loadDepositTransactionDetailLike(params: {
       id: row.cashEntryId ?? row.id,
       cashEntryId: row.cashEntryId,
       businessTransactionId: row.id,
-      date: row.tradeDate,
-      createdAt: row.createdAt,
-      deletedAt: row.deletedAt,
+      date: ymd(row.tradeDate),
+      createdAt: iso(row.createdAt),
+      deletedAt: iso(row.deletedAt),
       type: "investment",
       accountId: isCashIn ? row.accountId : row.cashAccountId,
       accountName: isCashIn ? row.Account.name : row.CashAccount?.name ?? "",
@@ -424,9 +424,9 @@ export async function loadPropertyTransactionEntryLike(params: {
         deletedAt: null,
       },
       include: {
-        Account: true,
-        CashAccount: true,
-        PropertyAsset: true,
+        Account: { select: { name: true, currency: true } },
+        CashAccount: { select: { name: true, currency: true } },
+        PropertyAsset: { select: { name: true } },
         EntryBusinessLink: {
           where: { deletedAt: null },
           select: {
@@ -441,29 +441,97 @@ export async function loadPropertyTransactionEntryLike(params: {
     { tableNames: ["property_transactions"] },
   );
 
+  // Older property rows may have lost their direct cashEntryId while the
+  // corresponding EntryBusinessLink still retains the cash-side reference.
+  // Resolve both shapes so the detail table keeps the standard TxRecord data
+  // (category, posted date, attachments, tags, and institution) available.
+  const linkedCashEntryIdByPropertyId = new Map<string, string>();
+  for (const row of rows) {
+    if (row.cashEntryId) continue;
+    const linkedCashEntryId = row.EntryBusinessLink.find((link: { cashEntryId?: string | null; CashEntry?: { id: string; deletedAt?: Date | null } | null }) =>
+      Boolean(link.cashEntryId && link.CashEntry && link.CashEntry.deletedAt == null),
+    )?.cashEntryId;
+    if (linkedCashEntryId) linkedCashEntryIdByPropertyId.set(row.id, linkedCashEntryId);
+  }
+  const cashEntryIds = Array.from(new Set(rows.map((row) => row.cashEntryId ?? linkedCashEntryIdByPropertyId.get(row.id)).filter(Boolean)));
+  const cashEntries = cashEntryIds.length > 0
+    ? await prisma.txRecord.findMany({
+        where: {
+          householdId: params.householdId,
+          id: { in: cashEntryIds },
+          deletedAt: null,
+        },
+        select: {
+          id: true,
+          type: true,
+          categoryId: true,
+          categoryName: true,
+          postedAt: true,
+          currency: true,
+          counterpartyInstitutionId: true,
+          counterpartyInstitutionName: true,
+          Attachment: { select: { id: true, name: true, mimeType: true, url: true } },
+          EntryTag: {
+            select: {
+              tagId: true,
+              Tag: {
+                select: {
+                  name: true,
+                  color: true,
+                },
+              },
+            },
+          },
+        },
+      })
+    : [];
+  const cashEntryById = new Map(cashEntries.map((row) => [row.id, row]));
+
   return rows.map((row) => {
+    const candidateCashEntryId = row.cashEntryId ?? linkedCashEntryIdByPropertyId.get(row.id) ?? null;
+    const cashEntry = candidateCashEntryId ? cashEntryById.get(candidateCashEntryId) ?? null : null;
+    const linkedCashEntryId = cashEntry?.id ?? null;
     const isCashIn = row.action === "sale";
     const amount = Math.abs(toNumber(row.amount));
     const fee = row.fee == null ? null : toNumber(row.fee);
     const tax = row.tax == null ? null : toNumber(row.tax);
+    const type = cashEntry?.type === "income" || cashEntry?.type === "expense"
+      ? cashEntry.type
+      : isCashIn
+        ? "income"
+        : "expense";
     return {
-      id: row.cashEntryId ?? row.id,
-      cashEntryId: row.cashEntryId,
+      id: linkedCashEntryId ?? row.id,
+      cashEntryId: linkedCashEntryId,
       businessTransactionId: row.id,
-      date: row.tradeDate,
-      createdAt: row.createdAt,
-      deletedAt: row.deletedAt,
-      accountId: isCashIn ? row.accountId : row.cashAccountId,
-      accountName: isCashIn ? row.Account.name : row.CashAccount?.name ?? "",
-      toAccountId: isCashIn ? row.cashAccountId : row.accountId,
-      toAccountName: isCashIn ? row.CashAccount?.name ?? "" : row.Account.name,
+      date: ymd(row.tradeDate),
+      postedAt: cashEntry?.postedAt ? ymd(cashEntry.postedAt) : ymd(row.tradeDate),
+      createdAt: iso(row.createdAt),
+      deletedAt: iso(row.deletedAt),
+      accountId: row.cashAccountId ?? row.accountId,
+      accountName: row.CashAccount?.name ?? row.Account.name,
+      toAccountId: row.accountId,
+      toAccountName: row.Account.name,
+      currency: cashEntry?.currency ?? row.CashAccount?.currency ?? row.Account.currency ?? "CNY",
       amount: isCashIn ? amount : -amount,
+      type,
+      categoryId: cashEntry?.categoryId ?? null,
+      categoryName: cashEntry?.categoryName ?? null,
+      counterpartyInstitutionId: cashEntry?.counterpartyInstitutionId ?? null,
+      counterpartyInstitutionName: cashEntry?.counterpartyInstitutionName ?? null,
+      entryTags: cashEntry?.EntryTag ?? [],
+      attachments: (cashEntry?.Attachment ?? []).map((attachment: { id: string; name: string | null; mimeType: string | null; url: string | null }) => ({
+        id: attachment.id,
+        name: attachment.name ?? "",
+        mimeType: attachment.mimeType,
+        url: attachment.url ?? `/api/v1/attachments/${encodeURIComponent(attachment.id)}`,
+      })),
       fundCode: row.propertyAssetId,
-      fundName: row.PropertyAsset?.name ?? "房产",
+      fundName: row.PropertyAsset?.name ?? "",
       fundProductType: "property",
       fundSubtype: row.action,
       fundFee: fee,
-      realizedProfit: row.realizedProfit,
+      realizedProfit: row.realizedProfit == null ? null : toNumber(row.realizedProfit),
       propertyAssetId: row.propertyAssetId,
       propertyAction: row.action,
       propertySettlementDate: ymd(row.settlementDate),

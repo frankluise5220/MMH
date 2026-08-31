@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { TransactionType } from "@prisma/client";
+import { AccountKind, TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { evaluateArithmeticExpression } from "@/lib/arithmetic-expression";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -16,6 +16,8 @@ import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 import { upsertStatementCategoryRuleFromSavedRecord } from "@/lib/statement/category-rules";
 import { replaceEntryTags, resolveWritableTagIds } from "@/lib/server/entry-tags";
+import { creditBillEffectiveDate } from "@/lib/credit/billing";
+import { toStatementMonth } from "@/lib/date-utils";
 
 /**
  * Batch-updates transaction records.
@@ -121,10 +123,10 @@ export async function POST(req: NextRequest) {
         source: true,
         accountId: true,
         accountName: true,
-        account: { select: { id: true, name: true, kind: true, investProductType: true } },
+        account: { select: { id: true, name: true, kind: true, investProductType: true, billingDay: true } },
         toAccountId: true,
         toAccountName: true,
-        toAccount: { select: { id: true, name: true, kind: true, investProductType: true } },
+        toAccount: { select: { id: true, name: true, kind: true, investProductType: true, billingDay: true } },
         categoryId: true,
         categoryName: true,
         note: true,
@@ -141,7 +143,7 @@ export async function POST(req: NextRequest) {
 
     const accountIds = Array.from(new Set(updates.flatMap((item) => [item.account, item.viewAccount, item.toAccount, item.cashAccountId, item.fundAccountId].map((id) => String(id ?? "").trim()).filter(Boolean))));
     const accounts = accountIds.length > 0
-      ? await prisma.account.findMany({ where: { id: { in: accountIds }, isActive: true, ...hidFilter }, select: { id: true, name: true, kind: true, investProductType: true } })
+      ? await prisma.account.findMany({ where: { id: { in: accountIds }, isActive: true, ...hidFilter }, select: { id: true, name: true, kind: true, investProductType: true, billingDay: true } })
       : [];
     const accountById = new Map(accounts.map((account) => [account.id, account]));
     const existingAccountById = new Map(
@@ -523,6 +525,16 @@ export async function POST(req: NextRequest) {
       const finalToAccountId = typeof data.toAccountId === "string" ? data.toAccountId : existing.toAccountId;
       const finalAccount = resolveAccountMeta(finalAccountId);
       const finalToAccount = resolveAccountMeta(finalToAccountId);
+      if (finalType === TransactionType.expense || finalType === TransactionType.income) {
+        const finalDate = data.date instanceof Date ? data.date : existing.date;
+        const finalPostedAt = Object.prototype.hasOwnProperty.call(data, "postedAt")
+          ? (data.postedAt as Date | null)
+          : existing.postedAt;
+        data.statementMonth =
+          finalAccount && (finalAccount.kind === AccountKind.bank_credit || finalAccount.kind === AccountKind.loan) && finalAccount.billingDay
+            ? toStatementMonth(creditBillEffectiveDate({ type: finalType, date: finalDate, postedAt: finalPostedAt }) ?? finalDate, finalAccount.billingDay)
+            : null;
+      }
       if (!skipAutoRepaymentCategory && isCreditCardRepaymentTransfer({
         type: finalType,
         accountKind: finalAccount?.kind,

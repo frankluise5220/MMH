@@ -16,6 +16,11 @@ import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAcc
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { formatDateUtc, lastDayOfMonthUtc } from "@/lib/date-utils";
 import { decodeYearlyExecutionDay, encodeYearlyExecutionDay, isYearlyExecutionDay } from "@/lib/scheduled-task-date";
+import {
+  INSTALLMENT_REPAYMENT_METHOD,
+  isInstallmentRepaymentMethod,
+  normalizeLoanRepaymentMethod,
+} from "@/lib/loan-repayment";
 
 const INTERVAL_LABELS: Record<string, string> = {
   once: "regularInvest.interval.once",
@@ -63,13 +68,37 @@ function accountKindLabel(t: (key: string) => string, kind: string) {
   return labelKey ? t(labelKey) : kind;
 }
 
-const INTEREST_FREE_LOAN_REPAYMENT_METHOD = "免息分期还本";
-const LOAN_REPAYMENT_METHOD_OPTIONS = ["等额本息", "等额本金", INTEREST_FREE_LOAN_REPAYMENT_METHOD, "自由还款", "先还利息一次性还本"];
-const FIXED_LOAN_REPAYMENT_METHODS = new Set(["等额本息", "等额本金", INTEREST_FREE_LOAN_REPAYMENT_METHOD, "先还利息一次性还本"]);
+const LOAN_REPAYMENT_METHOD_OPTIONS = ["等额本息", "等额本金", INSTALLMENT_REPAYMENT_METHOD, "自由还款", "先还利息一次性还本"];
+const LOAN_REPAYMENT_METHOD_LABEL_KEYS = new Map([
+  [LOAN_REPAYMENT_METHOD_OPTIONS[0], "debtTx.method.equalInstallment"],
+  [LOAN_REPAYMENT_METHOD_OPTIONS[1], "debtTx.method.equalPrincipal"],
+  [INSTALLMENT_REPAYMENT_METHOD, "debtTx.method.interestFreeInstallment"],
+  [LOAN_REPAYMENT_METHOD_OPTIONS[3], "debtTx.method.freeRepayment"],
+  [LOAN_REPAYMENT_METHOD_OPTIONS[4], "debtTx.method.interestFirstThenPrincipal"],
+]);
+const FIXED_LOAN_REPAYMENT_METHODS = new Set(["等额本息", "等额本金", INSTALLMENT_REPAYMENT_METHOD, "先还利息一次性还本"]);
 
-type SaveAction = (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
-type ApiAction = (payload: any) => Promise<{ ok: boolean; error?: string; message?: string }>;
+function parseLoanAnnualRateInput(value: string, allowZero: boolean) {
+  const text = value.trim();
+  if (!text) return allowZero ? 0 : null;
+  const parsed = Number(text);
+  if (!Number.isFinite(parsed)) return null;
+  return allowZero ? (parsed >= 0 ? parsed : null) : (parsed > 0 ? parsed : null);
+}
+
+type SaveAction = (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string; code?: string }>;
+type ApiAction = (payload: any) => Promise<{ ok: boolean; error?: string; message?: string; code?: string }>;
 type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
+
+function getRegularInvestSaveErrorMessage(
+  result: { error?: string; message?: string; code?: string } | undefined,
+  t: (key: string, params?: Record<string, string | number>) => string,
+) {
+  if (result?.code === "NEXT_RUN_DATE_BEFORE_START_DATE") {
+    return t("regularInvest.alert.nextRunDateBeforeStartDate");
+  }
+  return result?.error || result?.message || t("regularInvest.alert.saveFailed");
+}
 
 function toDateInput(value?: string | Date | null): string {
   if (!value) return "";
@@ -110,7 +139,9 @@ function weeklyExecutionDateInStartMonth(startDateValue: string, executionDay: s
 
   const year = startDate.getUTCFullYear();
   const month = startDate.getUTCMonth();
-  return firstWeekdayInMonth(year, month, weekday);
+  let candidate = new Date(firstWeekdayInMonth(year, month, weekday) + 'T00:00:00.000Z');
+  while (candidate < startDate) candidate = new Date(candidate.getTime() + 7 * 24 * 60 * 60 * 1000);
+  return formatDateUtc(candidate);
 }
 
 function monthlyExecutionDateInStartMonth(startDateValue: string, executionDay: string): string {
@@ -121,14 +152,21 @@ function monthlyExecutionDateInStartMonth(startDateValue: string, executionDay: 
 
   const year = startDate.getUTCFullYear();
   const month = startDate.getUTCMonth();
-  return formatDateUtc(new Date(Date.UTC(year, month, Math.min(day, lastDayOfMonthUtc(year, month)))));
+  let candidate = new Date(Date.UTC(year, month, Math.min(day, lastDayOfMonthUtc(year, month))));
+  if (candidate < startDate) {
+    const nextYear = month === 11 ? year + 1 : year;
+    const nextMonth = (month + 1) % 12;
+    candidate = new Date(Date.UTC(nextYear, nextMonth, Math.min(day, lastDayOfMonthUtc(nextYear, nextMonth))));
+  }
+  return formatDateUtc(candidate);
 }
 
 function yearlyExecutionDateInStartYear(startDateValue: string, executionDay: string): string {
   const startDate = parseDateInput(startDateValue);
   const encoded = parseInt(executionDay, 10);
   if (!startDate || !Number.isFinite(encoded) || !isYearlyExecutionDay(encoded)) return startDateValue;
-  const decoded = decodeYearlyExecutionDay(encoded, startDate.getUTCFullYear());
+  let decoded = decodeYearlyExecutionDay(encoded, startDate.getUTCFullYear());
+  if (decoded && decoded < startDate) decoded = decodeYearlyExecutionDay(encoded, startDate.getUTCFullYear() + 1);
   return decoded ? formatDateUtc(decoded) : startDateValue;
 }
 
@@ -159,15 +197,45 @@ function secondaryExecutionDateInStartPeriod(
   return "";
 }
 
-function monthBounds(value: string): { min: string; max: string } {
-  const date = parseDateInput(value);
+// Execution-day bounds are anchored to the plan's effective date. In edit mode
+// the same field is the next run date, but it may still be moved within the
+// plan's effective-date boundary.
+function executionDayBounds(value: string, minDate?: string): { min: string; max: string } {
+  return {
+    min: minDate || value || "1900-01-01",
+    max: "2999-12-31",
+  };
+}
+
+// Secondary execution-day bounds. The second execution day must fall within
+// the same period as the primary execution day (same week for weekly, same
+// month for monthly, same year for yearly) AND be strictly after the primary
+// execution day.
+function secondaryExecutionDayBounds(primaryDate: string, unit: string): { min: string; max: string } {
+  const date = parseDateInput(primaryDate);
   if (!date) return { min: "1900-01-01", max: "2999-12-31" };
   const year = date.getUTCFullYear();
   const month = date.getUTCMonth();
-  return {
-    min: formatDateUtc(new Date(Date.UTC(year, month, 1))),
-    max: formatDateUtc(new Date(Date.UTC(year, month, lastDayOfMonthUtc(year, month)))),
-  };
+  const dayAfter = new Date(Date.UTC(year, month, date.getUTCDate() + 1));
+  if (unit === "week") {
+    const dow = date.getUTCDay();
+    const mondayOffset = dow === 0 ? -6 : 1 - dow;
+    const sunday = new Date(Date.UTC(year, month, date.getUTCDate() + mondayOffset + 6));
+    return { min: formatDateUtc(dayAfter), max: formatDateUtc(sunday) };
+  }
+  if (unit === "month") {
+    return {
+      min: formatDateUtc(dayAfter),
+      max: formatDateUtc(new Date(Date.UTC(year, month, lastDayOfMonthUtc(year, month)))),
+    };
+  }
+  if (unit === "year") {
+    return {
+      min: formatDateUtc(dayAfter),
+      max: formatDateUtc(new Date(Date.UTC(year, 11, 31))),
+    };
+  }
+  return { min: "1900-01-01", max: "2999-12-31" };
 }
 
 function serializeExecutionDay(executionDay: string): number | null {
@@ -258,6 +326,7 @@ interface RegularInvestFormData {
   intervalUnit: string;
   intervalValue: string;
   startDate: string;
+  nextRunDate: string;
   weeklyExecutionDate: string;
   secondaryWeeklyExecutionDate: string;
   monthlyExecutionDate: string;
@@ -399,7 +468,7 @@ export function RegularInvestForm({
   editData?: EditData;
   editAccountLabel?: string;
   submitMethod?: "serverAction" | "api";
-  onSuccess?: () => void;
+  onSuccess?: (plan?: unknown) => void;
 }) {
   const parentModalZIndex = useModalLayerZIndex();
   const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
@@ -455,7 +524,8 @@ export function RegularInvestForm({
       const isFundEditTask = editTaskType === "fund_regular_invest";
       const isStoredOneTime = editData.totalRuns === 1;
       const originalStartDate = toDateInput(editData.startDate) || todayInput();
-      const startDate = toDateInput(editData.nextRunDate) || originalStartDate;
+      const startDate = originalStartDate;
+      const nextRunDate = toDateInput(editData.nextRunDate) || originalStartDate;
       const executionDay = editData.executionDay != null ? String(editData.executionDay) : "";
       const secondaryExecutionDay = editData.secondaryExecutionDay != null ? String(editData.secondaryExecutionDay) : "";
       const yearlyExecutionDayValue = editData.executionDay != null ? String(editData.executionDay) : "";
@@ -481,6 +551,7 @@ export function RegularInvestForm({
         intervalUnit: isStoredOneTime ? "once" : normalizedInterval.intervalUnit,
         intervalValue: isStoredOneTime ? "1" : normalizedInterval.intervalValue,
         startDate,
+        nextRunDate,
         weeklyExecutionDate: !isStoredOneTime && normalizedInterval.intervalUnit === "week"
           ? weeklyExecutionDateInStartMonth(originalStartDate, executionDay)
           : "",
@@ -507,7 +578,7 @@ export function RegularInvestForm({
         confirmDays: editData.confirmDays != null ? String(editData.confirmDays) : "0",
         arrivalDays: editData.arrivalDays != null ? String(editData.arrivalDays) : "2",
         annualRate: editData.annualRate != null ? String(editData.annualRate) : "",
-        repaymentMethod: editData.repaymentMethod || "自由还款",
+        repaymentMethod: normalizeLoanRepaymentMethod(editData.repaymentMethod),
         repaymentIntervalMonths: editData.repaymentIntervalMonths != null ? String(editData.repaymentIntervalMonths) : "1",
         skipPendingPreceding: editData.skipPendingPreceding !== undefined ? editData.skipPendingPreceding : true,
       };
@@ -526,6 +597,7 @@ export function RegularInvestForm({
       intervalUnit: "day",
       intervalValue: "1",
       startDate: todayInput(),
+      nextRunDate: "",
       weeklyExecutionDate: "",
       secondaryWeeklyExecutionDate: "",
       monthlyExecutionDate: "",
@@ -760,12 +832,13 @@ export function RegularInvestForm({
       window.alert(t("regularInvest.alert.sameTransferAccounts"));
       return;
     }
-    const isFixedLoanRepayment = formData.taskType === "loan_repayment" && FIXED_LOAN_REPAYMENT_METHODS.has(formData.repaymentMethod);
-    const isInterestFreeLoanRepayment = formData.repaymentMethod === INTEREST_FREE_LOAN_REPAYMENT_METHOD;
-    const loanAnnualRate = formData.annualRate.trim() ? parseFloat(formData.annualRate) : null;
-    const loanRepaymentIntervalMonths = parseInt(formData.repaymentIntervalMonths || "1", 10);
+    const submitRepaymentMethod = normalizeLoanRepaymentMethod(formData.repaymentMethod);
+    const isInstallmentLoanRepayment = isInstallmentRepaymentMethod(submitRepaymentMethod);
+    const isFixedLoanRepayment = formData.taskType === "loan_repayment" && FIXED_LOAN_REPAYMENT_METHODS.has(submitRepaymentMethod);
+    const loanAnnualRate = parseLoanAnnualRateInput(formData.annualRate, isInstallmentLoanRepayment);
+    const loanRepaymentIntervalMonths = parseInt(lockedLoanRepaymentIntervalMonths || "1", 10);
     if (isFixedLoanRepayment) {
-      if (!isInterestFreeLoanRepayment && (loanAnnualRate == null || !Number.isFinite(loanAnnualRate) || loanAnnualRate <= 0)) {
+      if (loanAnnualRate == null) {
         window.alert(t("regularInvest.alert.fixedRepaymentRateRequired"));
         return;
       }
@@ -801,22 +874,24 @@ export function RegularInvestForm({
         }
       }
 
-      const isOneTimeInterval = formData.intervalUnit === "once";
-      const normalizedInterval = normalizeBiweekFormData(formData.intervalUnit, formData.intervalValue);
+      const rawIntervalUnit = mode === "edit" && editData ? editData.intervalUnit || "day" : formData.intervalUnit;
+      const rawIntervalValue = mode === "edit" && editData ? String(editData.intervalValue || 1) : formData.intervalValue;
+      const isOneTimeInterval = rawIntervalUnit === "once";
+      const normalizedInterval = normalizeBiweekFormData(rawIntervalUnit, rawIntervalValue);
       const effectiveIntervalUnit = isOneTimeInterval ? "day" : formData.taskType === "loan_repayment" ? "month" : normalizedInterval.intervalUnit;
       const effectiveIntervalValue = isOneTimeInterval ? "1" : formData.taskType === "loan_repayment"
           ? String(Number.isFinite(loanRepaymentIntervalMonths) && loanRepaymentIntervalMonths > 0 ? loanRepaymentIntervalMonths : 1)
           : normalizedInterval.intervalValue;
       const effectiveExecutionDay = isOneTimeInterval ? null : serializeExecutionDay(formData.executionDay);
       const effectiveSecondaryExecutionDay = isOneTimeInterval ||
-        positiveIntervalValue(formData.intervalValue) !== 1 ||
+        positiveIntervalValue(normalizedInterval.intervalValue) !== 1 ||
         !effectiveExecutionDay
         ? null
-        : formData.intervalUnit === "week"
+        : normalizedInterval.intervalUnit === "week"
           ? serializeSecondaryExecutionDay(formData.secondaryWeeklyExecutionDate, "week")
-          : formData.intervalUnit === "month"
+          : normalizedInterval.intervalUnit === "month"
           ? serializeSecondaryExecutionDay(formData.secondaryMonthlyExecutionDate, "month")
-          : formData.intervalUnit === "year"
+          : normalizedInterval.intervalUnit === "year"
             ? serializeSecondaryExecutionDay(formData.secondaryYearlyExecutionDate, "year")
             : null;
       const effectiveTotalRuns = isOneTimeInterval
@@ -835,6 +910,7 @@ export function RegularInvestForm({
       const submitCashAccountId = isOrdinaryTask ? "" : formData.cashAccountId || "";
 
       if (mode === "edit" && editData) {
+        let savedPlan: unknown;
         if (submitMethod === "serverAction" && action) {
           // Server Action path (home page)
           const fd = new FormData();
@@ -851,7 +927,7 @@ export function RegularInvestForm({
           fd.set("amount", String(finalAmount));
           fd.set("intervalUnit", effectiveIntervalUnit);
           fd.set("intervalValue", effectiveIntervalValue);
-          fd.set("nextRunDate", formData.startDate);
+          fd.set("nextRunDate", mode === "edit" ? formData.nextRunDate : formData.startDate);
           fd.set("endDate", effectiveEndDate || "");
           fd.set("totalRuns", effectiveTotalRuns != null ? String(effectiveTotalRuns) : "");
           fd.set("executionDay", effectiveExecutionDay != null ? String(effectiveExecutionDay) : "");
@@ -861,12 +937,12 @@ export function RegularInvestForm({
           fd.set("confirmDays", submitConfirmDays.trim() ? submitConfirmDays : "");
           fd.set("arrivalDays", submitArrivalDays.trim() ? submitArrivalDays : "");
           fd.set("annualRate", formData.annualRate.trim());
-          fd.set("repaymentMethod", formData.repaymentMethod);
+          fd.set("repaymentMethod", submitRepaymentMethod);
           fd.set("repaymentIntervalMonths", String(Number.isFinite(loanRepaymentIntervalMonths) && loanRepaymentIntervalMonths > 0 ? loanRepaymentIntervalMonths : 1));
           fd.set("skipPendingPreceding", formData.skipPendingPreceding ? "true" : "false");
           const res = await action(fd);
           if (!res.ok) {
-            window.alert(res.error);
+            window.alert(getRegularInvestSaveErrorMessage(res, t));
             return;
           }
         } else {
@@ -886,7 +962,7 @@ export function RegularInvestForm({
             intervalValue: parseInt(effectiveIntervalValue) || 1,
             executionDay: effectiveExecutionDay,
             secondaryExecutionDay: effectiveSecondaryExecutionDay,
-            nextRunDate: formData.startDate,
+            nextRunDate: mode === "edit" ? formData.nextRunDate : formData.startDate,
             endDate: effectiveEndDate || null,
             totalRuns: effectiveTotalRuns,
             cashAccountId: submitCashAccountId || null,
@@ -894,7 +970,7 @@ export function RegularInvestForm({
             confirmDays: submitConfirmDays !== "" ? parseInt(submitConfirmDays) : 0,
             arrivalDays: submitArrivalDays !== "" ? parseInt(submitArrivalDays) : 2,
             annualRate: loanAnnualRate,
-            repaymentMethod: formData.repaymentMethod,
+            repaymentMethod: submitRepaymentMethod,
             repaymentIntervalMonths: Number.isFinite(loanRepaymentIntervalMonths) && loanRepaymentIntervalMonths > 0 ? loanRepaymentIntervalMonths : 1,
             skipPendingPreceding: formData.skipPendingPreceding,
             action: "update",
@@ -906,13 +982,14 @@ export function RegularInvestForm({
           });
           const data = await res.json();
           if (!data.ok) {
-            window.alert(data.error || t("regularInvest.alert.saveFailed"));
+            window.alert(getRegularInvestSaveErrorMessage(data, t));
             return;
           }
+          savedPlan = data.plan;
         }
 
         setActualOpen(false);
-        onSuccess?.();
+        onSuccess?.(savedPlan);
       } else {
         // Create mode
         if (action) {
@@ -939,7 +1016,7 @@ export function RegularInvestForm({
           fd.set("confirmDays", submitConfirmDays.trim() ? submitConfirmDays : "");
           fd.set("arrivalDays", submitArrivalDays.trim() ? submitArrivalDays : "");
           fd.set("annualRate", formData.annualRate.trim());
-          fd.set("repaymentMethod", formData.repaymentMethod);
+          fd.set("repaymentMethod", submitRepaymentMethod);
           fd.set("repaymentIntervalMonths", String(Number.isFinite(loanRepaymentIntervalMonths) && loanRepaymentIntervalMonths > 0 ? loanRepaymentIntervalMonths : 1));
           fd.set("skipPendingPreceding", formData.skipPendingPreceding ? "true" : "false");
 
@@ -973,14 +1050,14 @@ export function RegularInvestForm({
             confirmDays: submitConfirmDays !== "" ? parseInt(submitConfirmDays) : 0,
             arrivalDays: submitArrivalDays !== "" ? parseInt(submitArrivalDays) : 2,
             annualRate: loanAnnualRate,
-            repaymentMethod: formData.repaymentMethod,
+            repaymentMethod: submitRepaymentMethod,
             repaymentIntervalMonths: Number.isFinite(loanRepaymentIntervalMonths) && loanRepaymentIntervalMonths > 0 ? loanRepaymentIntervalMonths : 1,
             skipPendingPreceding: formData.skipPendingPreceding,
           };
 
           const res = await apiAction(payload);
           if (!res.ok) {
-            window.alert(res.error || res.message || t("regularInvest.alert.saveFailed"));
+            window.alert(getRegularInvestSaveErrorMessage(res, t));
             return;
           }
           setActualOpen(false);
@@ -1020,20 +1097,24 @@ export function RegularInvestForm({
   const isInsuranceTask = formData.taskType === "insurance_premium";
   const isOrdinaryTask = isOrdinaryTaskType(formData.taskType);
   const scheduleLocked = isLoanTask || mode === "edit";
-  const displayedIntervalUnit = isLoanTask ? "month" : formData.intervalUnit;
-  const displayedIntervalValue = isLoanTask ? formData.repaymentIntervalMonths || "1" : formData.intervalValue;
+  const lockedEditInterval = mode === "edit" && editData
+    ? normalizeBiweekFormData(editData.intervalUnit || "day", String(editData.intervalValue || 1))
+    : null;
+  const lockedLoanRepaymentIntervalMonths = mode === "edit" && editData
+    ? String(editData.repaymentIntervalMonths ?? 1)
+    : formData.repaymentIntervalMonths;
+  const displayedIntervalUnit = isLoanTask ? "month" : lockedEditInterval?.intervalUnit ?? formData.intervalUnit;
+  const displayedIntervalValue = isLoanTask ? lockedLoanRepaymentIntervalMonths || "1" : lockedEditInterval?.intervalValue ?? formData.intervalValue;
   const isOneTimeInterval = displayedIntervalUnit === "once";
-  const startDateLocked = false;
-  const nextRunDateMin = mode === "edit" && editData?.nextRunDate ? toDateInput(editData.nextRunDate) : undefined;
+  const startDateLocked = mode === "edit";
+  const nextRunDateMin = mode === "edit" ? toDateInput(editData?.startDate) : undefined;
   const readonlyTransferFromLabel =
     cashOptions.find((option) => option.id === formData.cashAccountId)?.label
     ?? cashAccountList.find((option) => option.id === formData.cashAccountId)?.label
     ?? t("batchImport.unselected");
-  const executedRuns = Math.max(0, editData?.executedRuns ?? 0);
-  const totalRunsHint = editData?.totalRuns == null ? t("regularInvest.unlimited") : String(editData.totalRuns);
   const runsLabel =
     mode === "edit"
-      ? t("regularInvest.remainingRunsLabel", { total: totalRunsHint, executed: executedRuns })
+      ? t("regularInvest.remainingRunsLabel")
       : t("regularInvest.runsOptional");
 
   function handleTaskTypeChange(taskType: ScheduledTaskType) {
@@ -1070,13 +1151,14 @@ export function RegularInvestForm({
       confirmDays: taskType === "fund_regular_invest" ? prev.confirmDays : "0",
       arrivalDays: taskType === "fund_regular_invest" ? prev.arrivalDays : "0",
       annualRate: taskType === "loan_repayment" ? prev.annualRate : "",
-      repaymentMethod: taskType === "loan_repayment" ? prev.repaymentMethod : "自由还款",
+      repaymentMethod: taskType === "loan_repayment" ? normalizeLoanRepaymentMethod(prev.repaymentMethod) : "自由还款",
       repaymentIntervalMonths: taskType === "loan_repayment" ? prev.repaymentIntervalMonths : "1",
       skipPendingPreceding: taskType === "fund_regular_invest" ? prev.skipPendingPreceding : false,
     }));
   }
 
   function handleIntervalUnitChange(intervalUnit: string) {
+    if (mode === "edit") return;
     setFormData((prev) => ({
       ...prev,
       intervalUnit,
@@ -1102,6 +1184,7 @@ export function RegularInvestForm({
   }
 
   function changeIntervalValue(delta: number) {
+    if (mode === "edit") return;
     setFormData((prev) => {
       const intervalValue = clampIntervalValue(prev.intervalValue, delta);
       return {
@@ -1358,13 +1441,15 @@ export function RegularInvestForm({
                     </div>
                     {isFundTask ? (
                       investmentAccountList.length > 0 ? (
-                        <SmartSelect mode="single" value={formData.accountId}
-                          onChange={(id) => setFormData(d => ({ ...d, accountId: id }))}
-                          options={investmentOptions}
-                          placeholder={t("regularInvest.placeholder.fundAccount")}
-                          onCreateClick={() => setNestedEntityType("invest-account")}
-                          createLabel={t("settings.accounts.add")}
-                          onCycleOwnerFilter={ifCycle} ownerFilterLabel={ifLabel} />
+                        <div className={REQUIRED_FIELD_CLASS}>
+                          <SmartSelect mode="single" value={formData.accountId}
+                            onChange={(id) => setFormData(d => ({ ...d, accountId: id }))}
+                            options={investmentOptions}
+                            placeholder={t("regularInvest.placeholder.fundAccount")}
+                            onCreateClick={() => setNestedEntityType("invest-account")}
+                            createLabel={t("settings.accounts.add")}
+                            onCycleOwnerFilter={ifCycle} ownerFilterLabel={ifLabel} />
+                        </div>
                       ) : (
                         <div className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 flex items-center">
                           {displayAccountLabel}
@@ -1398,13 +1483,15 @@ export function RegularInvestForm({
                   {cashAccountList.length > 0 && (
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">{t("txForm.cashAccount")}</div>
-                      <SmartSelect mode="single" value={formData.cashAccountId}
-                        onChange={(id) => setFormData(d => ({ ...d, cashAccountId: id }))}
-                        options={cashOptions}
-                        placeholder={t("regularInvest.placeholder.account")}
-                        onCreateClick={() => setNestedEntityType("cash-account")}
-                        createLabel={t("settings.accounts.add")}
-                        onCycleOwnerFilter={cfCycle} ownerFilterLabel={cfLabel} />
+                      <div className={REQUIRED_FIELD_CLASS}>
+                        <SmartSelect mode="single" value={formData.cashAccountId}
+                          onChange={(id) => setFormData(d => ({ ...d, cashAccountId: id }))}
+                          options={cashOptions}
+                          placeholder={t("regularInvest.placeholder.account")}
+                          onCreateClick={() => setNestedEntityType("cash-account")}
+                          createLabel={t("settings.accounts.add")}
+                          onCycleOwnerFilter={cfCycle} ownerFilterLabel={cfLabel} />
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1422,7 +1509,7 @@ export function RegularInvestForm({
                         onChange={(e) => setFormData(d => ({ ...d, fundCode: e.target.value }))}
                         onBlur={handleFundCodeBlur}
                         placeholder={t("regularInvest.codePlaceholder")}
-                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                        className={`h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none ${REQUIRED_FIELD_CLASS}`}
                       />
                     )}
                   </div>
@@ -1486,7 +1573,7 @@ export function RegularInvestForm({
 
               <div className={isOneTimeInterval ? "grid grid-cols-1 gap-3" : "grid grid-cols-[minmax(0,3fr)_minmax(0,3fr)_minmax(0,1fr)] gap-3"}>
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">{mode === "edit" ? t("regularInvest.nextRunDateLabel") : t("stockFee.effectiveDateLabel")}</div>
+                  <div className="text-xs font-medium text-slate-600">{t("stockFee.effectiveDateLabel")}</div>
                   <DateStepper
                     value={formData.startDate}
                     onChange={(value) => setFormData(d => mode === "edit"
@@ -1519,7 +1606,6 @@ export function RegularInvestForm({
                           )
                         : d.secondaryYearlyExecutionDate,
                       }))}
-                      min={nextRunDateMin}
                       disabled={startDateLocked}
                       className={REQUIRED_FIELD_CLASS}
                     />
@@ -1623,7 +1709,7 @@ export function RegularInvestForm({
                   )}
                   {!isOneTimeInterval && (
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">{t("regularInvest.executionDay")}</div>
+                    <div className="text-xs font-medium text-slate-600">{mode === "edit" ? t("regularInvest.nextRunDateLabel") : t("regularInvest.executionDay")}</div>
                     {displayedIntervalUnit === "day" ? (
                       <input
                         type="text"
@@ -1633,35 +1719,39 @@ export function RegularInvestForm({
                       />
                     ) : displayedIntervalUnit === "week" ? (
                       (() => {
-                        const weeklyBounds = monthBounds(formData.startDate);
+                        const weeklyBounds = executionDayBounds(formData.startDate, nextRunDateMin);
                         return (
                           <DateStepper
-                            value={formData.weeklyExecutionDate}
+                            value={mode === "edit" ? formData.nextRunDate : formData.weeklyExecutionDate}
                             min={weeklyBounds.min}
                             max={weeklyBounds.max}
-                            onChange={(value) => setFormData(d => ({
-                              ...d,
-                              weeklyExecutionDate: value,
-                              executionDay: weekdayFromDateInput(value),
-                            }))}
+                            onChange={(value) => setFormData(d => mode === "edit"
+                              ? { ...d, nextRunDate: value, executionDay: weekdayFromDateInput(value) }
+                              : {
+                                  ...d,
+                                  weeklyExecutionDate: value,
+                                  executionDay: weekdayFromDateInput(value),
+                                })}
                             className={REQUIRED_FIELD_CLASS}
                           />
                         );
                       })()
                     ) : displayedIntervalUnit === "month" ? (
                       (() => {
-                        const monthlyBounds = monthBounds(formData.startDate);
+                        const monthlyBounds = executionDayBounds(formData.startDate, nextRunDateMin);
                         return (
                           <div className="space-y-1">
                             <DateStepper
-                              value={formData.monthlyExecutionDate}
+                              value={mode === "edit" ? formData.nextRunDate : formData.monthlyExecutionDate}
                               min={monthlyBounds.min}
                               max={monthlyBounds.max}
-                              onChange={(value) => setFormData(d => ({
-                                ...d,
-                                monthlyExecutionDate: value,
-                                executionDay: parseDateInput(value)?.getUTCDate().toString() ?? d.executionDay,
-                              }))}
+                              onChange={(value) => setFormData(d => mode === "edit"
+                                ? { ...d, nextRunDate: value, executionDay: parseDateInput(value)?.getUTCDate().toString() ?? d.executionDay }
+                                : {
+                                    ...d,
+                                    monthlyExecutionDate: value,
+                                    executionDay: parseDateInput(value)?.getUTCDate().toString() ?? d.executionDay,
+                                  })}
                               className={REQUIRED_FIELD_CLASS}
                             />
                             <div className="text-[11px] text-slate-400">{t("regularInvest.primaryExecutionDay")}</div>
@@ -1670,18 +1760,20 @@ export function RegularInvestForm({
                       })()
                     ) : displayedIntervalUnit === "year" ? (
                       (() => {
-                        const yearlyBounds = monthBounds(formData.startDate);
+                        const yearlyBounds = executionDayBounds(formData.startDate, nextRunDateMin);
                         return (
                           <div className="space-y-1">
                             <DateStepper
-                              value={formData.yearlyExecutionDate}
+                              value={mode === "edit" ? formData.nextRunDate : formData.yearlyExecutionDate}
                               min={yearlyBounds.min}
                               max={yearlyBounds.max}
-                              onChange={(value) => setFormData(d => ({
-                                ...d,
-                                yearlyExecutionDate: value,
-                                executionDay: encodeYearlyExecutionDay(value)?.toString() ?? d.executionDay,
-                              }))}
+                              onChange={(value) => setFormData(d => mode === "edit"
+                                ? { ...d, nextRunDate: value, executionDay: encodeYearlyExecutionDay(value)?.toString() ?? d.executionDay }
+                                : {
+                                    ...d,
+                                    yearlyExecutionDate: value,
+                                    executionDay: encodeYearlyExecutionDay(value)?.toString() ?? d.executionDay,
+                                  })}
                               className={REQUIRED_FIELD_CLASS}
                             />
                             <div className="text-[11px] text-slate-400">{t("regularInvest.primaryExecutionDay")}</div>
@@ -1714,8 +1806,22 @@ export function RegularInvestForm({
                           : displayedIntervalUnit === "month"
                           ? formData.secondaryMonthlyExecutionDate
                           : formData.secondaryYearlyExecutionDate}
-                        min={monthBounds(formData.startDate).min}
-                        max={monthBounds(formData.startDate).max}
+                        min={secondaryExecutionDayBounds(
+                          displayedIntervalUnit === "week"
+                            ? formData.weeklyExecutionDate
+                            : displayedIntervalUnit === "month"
+                              ? formData.monthlyExecutionDate
+                              : formData.yearlyExecutionDate,
+                          displayedIntervalUnit,
+                        ).min}
+                        max={secondaryExecutionDayBounds(
+                          displayedIntervalUnit === "week"
+                            ? formData.weeklyExecutionDate
+                            : displayedIntervalUnit === "month"
+                              ? formData.monthlyExecutionDate
+                              : formData.yearlyExecutionDate,
+                          displayedIntervalUnit,
+                        ).max}
                         onChange={(value) => setFormData(d => (displayedIntervalUnit === "week"
                           ? { ...d, secondaryWeeklyExecutionDate: value }
                           : displayedIntervalUnit === "month"
@@ -1742,15 +1848,18 @@ export function RegularInvestForm({
                     <div className="text-xs font-medium text-slate-600">{t("regularInvest.repaymentMethod")}</div>
                     <select
                       value={formData.repaymentMethod}
-                      onChange={(e) => setFormData(d => ({
-                        ...d,
-                        repaymentMethod: e.target.value,
-                        annualRate: e.target.value === INTEREST_FREE_LOAN_REPAYMENT_METHOD ? "0" : d.annualRate,
-                      }))}
+                      onChange={(e) => setFormData(d => {
+                        const method = normalizeLoanRepaymentMethod(e.target.value);
+                        return {
+                          ...d,
+                          repaymentMethod: method,
+                          annualRate: isInstallmentRepaymentMethod(method) && parseLoanAnnualRateInput(d.annualRate, true) == null ? "0" : d.annualRate,
+                        };
+                      })}
                       className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                     >
                       {LOAN_REPAYMENT_METHOD_OPTIONS.map((method) => (
-                        <option key={method} value={method}>{method}</option>
+                        <option key={method} value={method}>{t(LOAN_REPAYMENT_METHOD_LABEL_KEYS.get(method) ?? method)}</option>
                       ))}
                     </select>
                   </div>
@@ -1761,8 +1870,7 @@ export function RegularInvestForm({
                       step="0.001"
                       value={formData.annualRate}
                       onChange={(e) => setFormData(d => ({ ...d, annualRate: e.target.value }))}
-                      disabled={formData.repaymentMethod === INTEREST_FREE_LOAN_REPAYMENT_METHOD}
-                      placeholder={formData.repaymentMethod === INTEREST_FREE_LOAN_REPAYMENT_METHOD ? "0" : FIXED_LOAN_REPAYMENT_METHODS.has(formData.repaymentMethod) ? t("batchImport.required") : t("stockFee.optional")}
+                      placeholder={isInstallmentRepaymentMethod(formData.repaymentMethod) ? "0" : FIXED_LOAN_REPAYMENT_METHODS.has(formData.repaymentMethod) ? t("batchImport.required") : t("stockFee.optional")}
                       className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                     />
                   </div>
@@ -1773,8 +1881,9 @@ export function RegularInvestForm({
                       min="1"
                       value={formData.repaymentIntervalMonths}
                       onChange={(e) => setFormData(d => ({ ...d, repaymentIntervalMonths: e.target.value }))}
+                      disabled={mode === "edit"}
                       placeholder="1"
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
                     />
                   </div>
                 </div>

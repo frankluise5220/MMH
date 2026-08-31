@@ -21,12 +21,17 @@ type EntryKind =
   | "deposit-redeem"
   | "insurance"
   | "debt"
+  | "loan"
   | "regular-task";
+
+export type LoanType = "consumer" | "mortgage";
 
 type EntryAction = {
   key: EntryKind;
   label: string;
   disabled?: boolean;
+  loanType?: LoanType;
+  children?: EntryAction[];
 };
 
 type Props = {
@@ -87,7 +92,7 @@ function getCurrentFundContext(context?: Props["context"]) {
   }
 }
 
-function dispatchEntryAction(kind: EntryKind, context?: Props["context"]) {
+function dispatchEntryAction(kind: EntryKind, context?: Props["context"], loanType?: LoanType) {
   if (typeof window === "undefined") return;
   const requestId = makeRequestId(kind);
   switch (kind) {
@@ -282,6 +287,19 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"]) {
         }),
       );
       return;
+    case "loan":
+      window.dispatchEvent(
+        new CustomEvent("mmh:debt:create", {
+          detail: {
+            requestId,
+            loanType: loanType ?? "consumer",
+            defaultDebtAccountId: context?.defaultDebtAccountId ?? "",
+            defaultDebtInstitutionId: context?.defaultDebtInstitutionId ?? "",
+            defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
+          },
+        }),
+      );
+      return;
     case "regular-task":
       if (window.location.pathname === "/regular-invest") {
         window.dispatchEvent(
@@ -405,20 +423,45 @@ export function UnifiedEntryLauncher({ defaultAction, actions, className, hideDe
               data-menu-open="true"
               style={menuStyle ?? { position: "fixed", top: 0, left: 0, zIndex: 9999 }}
             >
-              {actions.filter((item) => !hideDefaultActionInMenu || item.key !== defaultItem?.key).map((item) => (
-                <button
-                  key={item.key}
-                  type="button"
-                  disabled={item.disabled}
-                  onClick={() => {
-                    setMenuOpen(false);
-                    if (!item.disabled) dispatchEntryAction(item.key, context);
-                  }}
-                  className="flex w-full items-center px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white"
-                >
-                  {item.label}
-                </button>
-              ))}
+              {actions.filter((item) => !hideDefaultActionInMenu || item.key !== defaultItem?.key).map((item) => {
+                if (item.children && item.children.length > 0) {
+                  return (
+                    <div key={item.key} className="py-1">
+                      <div className="flex items-center px-3 py-1 text-xs font-medium text-slate-400">
+                        {item.label}
+                      </div>
+                      {item.children.map((child) => (
+                        <button
+                          key={child.key}
+                          type="button"
+                          disabled={child.disabled}
+                          onClick={() => {
+                            setMenuOpen(false);
+                            if (!child.disabled) dispatchEntryAction(child.key, context, child.loanType);
+                          }}
+                          className="flex w-full items-center px-3 py-2 pl-6 text-left text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white"
+                        >
+                          {child.label}
+                        </button>
+                      ))}
+                    </div>
+                  );
+                }
+                return (
+                  <button
+                    key={item.key}
+                    type="button"
+                    disabled={item.disabled}
+                    onClick={() => {
+                      setMenuOpen(false);
+                      if (!item.disabled) dispatchEntryAction(item.key, context, item.loanType);
+                    }}
+                    className="flex w-full items-center px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white"
+                  >
+                    {item.label}
+                  </button>
+                );
+              })}
             </div>,
             document.body,
           )

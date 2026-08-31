@@ -5,13 +5,14 @@ import type { ElementType } from "react";
 import {
   ArrowDownRight,
   ArrowUpRight,
+  Building2,
   CreditCard,
   HandCoins,
   PiggyBank,
   Wallet,
 } from "lucide-react";
 
-import { formatMoney, formatMoneyYuan, formatPercent } from "@/lib/format";
+import { formatCurrencyMoney, formatMoney, formatMoneyYuan, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { InsuranceOverviewCard, type InsuranceOverview } from "@/components/InsuranceOverviewCard";
 import { getInvestmentAccountView } from "@/lib/account-kind-utils";
@@ -29,8 +30,18 @@ export type AccountItem = {
   id: string;
   name: string;
   kind: string;
+  /** Balance in the account's own currency. */
   balance: number;
+  currency?: string;
+  /** Same balance restated in the household base currency; null when no rate is available. */
+  convertedBalance?: number | null;
+  fxRateMissing?: boolean;
 };
+
+/** Prefer the base-currency amount; fall back to the raw amount only when no rate exists. */
+function baseAmount(item: { balance: number; convertedBalance?: number | null }) {
+  return item.convertedBalance ?? item.balance;
+}
 
 export type CreditAccountItem = AccountItem & {
   creditLimit: number;
@@ -38,6 +49,24 @@ export type CreditAccountItem = AccountItem & {
   currentBill: number;
   paid: number;
   dueDate?: string | null;
+  /** Base-currency mirrors; null when the card's currency has no rate. */
+  convertedCreditLimit?: number | null;
+  convertedCurrentBill?: number | null;
+  convertedPaid?: number | null;
+  convertedCurrentAmount?: number | null;
+};
+
+export type FixedAssetItem = {
+  accountId: string;
+  name: string;
+  assetType?: string | null;
+  marketValue: number;
+  cost: number;
+  floatingPnL: number;
+  floatingPnLRate: number;
+  currency?: string;
+  convertedMarketValue?: number | null;
+  fxRateMissing?: boolean;
 };
 
 export type AccountTypeTotals = {
@@ -48,6 +77,8 @@ export type AccountTypeTotals = {
   investmentMarketValue: number;
   investmentCost: number;
   investmentFloatingPnL: number;
+  fixedAssetMarketValue: number;
+  fixedAssetCost: number;
   insuranceAsset: number;
   creditUsed: number;
   creditLimit: number;
@@ -70,6 +101,10 @@ export type InvestmentOverviewItem = {
   marketValue: number;
   floatingPnL: number;
   floatingPnLRate: number;
+  currency?: string;
+  convertedMarketValue?: number | null;
+  convertedFloatingPnL?: number | null;
+  fxRateMissing?: boolean;
 };
 
 export type OverviewDashboardProps = {
@@ -88,7 +123,15 @@ export type OverviewDashboardProps = {
   investmentCost?: number;
   investmentFloatingPnL?: number;
   investmentFloatingPnLRate?: number;
+  fixedAssetAccountList?: FixedAssetItem[];
+  fixedAssetCount?: number;
+  fixedAssetMarketValue?: number;
+  fixedAssetCost?: number;
+  fixedAssetFloatingPnL?: number;
+  fixedAssetFloatingPnLRate?: number;
   insuranceOverview?: InsuranceOverview | null;
+  baseCurrency?: string;
+  missingFxCurrencies?: string[];
   isRedUp: boolean;
 };
 
@@ -100,6 +143,8 @@ const ZERO_TOTALS: AccountTypeTotals = {
   investmentMarketValue: 0,
   investmentCost: 0,
   investmentFloatingPnL: 0,
+  fixedAssetMarketValue: 0,
+  fixedAssetCost: 0,
   insuranceAsset: 0,
   creditUsed: 0,
   creditLimit: 0,
@@ -113,6 +158,12 @@ const ZERO_TOTALS: AccountTypeTotals = {
   dailyNetWorth: 0,
   totalNetWorth: 0,
 };
+
+/** True when the row is denominated in a currency other than the household base currency. */
+function isForeign(item: { currency?: string; fxMissing?: boolean }, baseCurrency: string) {
+  const currency = String(item.currency ?? baseCurrency).trim().toUpperCase() || baseCurrency;
+  return currency !== baseCurrency;
+}
 
 function directionalClass(value: number, isRedUp: boolean) {
   return pnlClassFromRedUp(value, isRedUp, "softMuted");
@@ -147,7 +198,15 @@ export function OverviewDashboard({
   investmentCost,
   investmentFloatingPnL,
   investmentFloatingPnLRate,
+  fixedAssetAccountList = [],
+  fixedAssetCount,
+  fixedAssetMarketValue,
+  fixedAssetCost,
+  fixedAssetFloatingPnL,
+  fixedAssetFloatingPnLRate,
   insuranceOverview,
+  baseCurrency = "CNY",
+  missingFxCurrencies = [],
   isRedUp,
 }: OverviewDashboardProps) {
   const totals: AccountTypeTotals = { ...ZERO_TOTALS, ...(accountTypeTotals ?? {}) };
@@ -156,6 +215,10 @@ export function OverviewDashboard({
   const investCost = investmentCost ?? totals.investmentCost;
   const investFloatingPnL = investmentFloatingPnL ?? totals.investmentFloatingPnL;
   const investFloatingRate = investmentFloatingPnLRate ?? (investCost > 0 ? investFloatingPnL / investCost : 0);
+  const fixedValue = fixedAssetMarketValue ?? totals.fixedAssetMarketValue;
+  const fixedCostValue = fixedAssetCost ?? totals.fixedAssetCost;
+  const fixedPnL = fixedAssetFloatingPnL ?? fixedValue - fixedCostValue;
+  const fixedRate = fixedAssetFloatingPnLRate ?? (fixedCostValue > 0 ? fixedPnL / fixedCostValue : 0);
   const monthNet = monthIncome - monthExpense;
   const netLiabilities = totals.liabilities - totals.loanReceivable;
   const netDebtLabel = netLiabilities >= 0 ? t("overview.netDebt") : t("overview.netCredit");
@@ -163,13 +226,25 @@ export function OverviewDashboard({
   const netDebtClass = netLiabilities >= 0
     ? liabilityClass(netDebtAmount, isRedUp)
     : directionalClass(netDebtAmount, isRedUp);
-  const topAccounts = accountList.slice().sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance)).slice(0, 5);
+  const hasForeignCurrency =
+    accountList.some((account) => isForeign(account, baseCurrency)) ||
+    debtAccountList.some((account) => isForeign(account, baseCurrency)) ||
+    fixedAssetAccountList.some((item) => isForeign(item, baseCurrency));
+  const topAccounts = accountList
+    .slice()
+    .sort((a, b) => Math.abs(baseAmount(b)) - Math.abs(baseAmount(a)))
+    .slice(0, 5);
+  const creditBillOf = (account: CreditAccountItem) => account.convertedCurrentBill ?? account.currentBill;
+  const paidOf = (account: CreditAccountItem) => account.convertedPaid ?? account.paid;
   const creditCards = creditAccountList
-    .filter((account) => account.currentBill > 0)
-    .sort((a, b) => b.currentBill - a.currentBill)
+    .filter((account) => creditBillOf(account) > 0)
+    .sort((a, b) => creditBillOf(b) - creditBillOf(a))
     .slice(0, 10);
-  const creditBillTotal = creditCards.reduce((sum, account) => sum + Math.max(0, account.currentBill), 0);
-  const creditPaidTotal = creditCards.reduce((sum, account) => sum + Math.max(0, Math.min(account.paid, account.currentBill)), 0);
+  const creditBillTotal = creditCards.reduce((sum, account) => sum + Math.max(0, creditBillOf(account)), 0);
+  const creditPaidTotal = creditCards.reduce(
+    (sum, account) => sum + Math.max(0, Math.min(paidOf(account), Math.max(0, creditBillOf(account)))),
+    0,
+  );
   const debtAccounts = debtAccountList.filter((account) => account.balance !== 0);
   const showInvestmentOverview = investmentAccountCount == null
     ? topPositions.length > 0 || investMarketValue !== 0 || investCost !== 0
@@ -177,16 +252,21 @@ export function OverviewDashboard({
   const showInsuranceOverview = insuranceAccountCount == null
     ? (insuranceOverview?.productCount ?? 0) > 0 || totals.insuranceAsset !== 0
     : insuranceAccountCount > 0;
+  const showFixedAssetOverview = fixedAssetCount == null
+    ? fixedAssetAccountList.length > 0 || fixedValue !== 0 || fixedCostValue !== 0
+    : fixedAssetCount > 0;
   const overviewModuleCount =
     1 +
     (showInvestmentOverview ? 1 : 0) +
+    (showFixedAssetOverview ? 1 : 0) +
     (showInsuranceOverview ? 1 : 0) +
     (creditCards.length > 0 ? 1 : 0) +
     (debtAccounts.length > 0 ? 1 : 0);
   const investmentModuleIndex = showInvestmentOverview ? 0 : -1;
   const dailyModuleIndex = showInvestmentOverview ? 1 : 0;
-  const insuranceModuleIndex = dailyModuleIndex + 1;
-  const creditModuleIndex = dailyModuleIndex + 1 + (showInsuranceOverview ? 1 : 0);
+  const fixedAssetModuleIndex = dailyModuleIndex + 1;
+  const insuranceModuleIndex = fixedAssetModuleIndex + (showFixedAssetOverview ? 1 : 0);
+  const creditModuleIndex = insuranceModuleIndex + (showInsuranceOverview ? 1 : 0);
   const debtModuleIndex = creditModuleIndex + (creditCards.length > 0 ? 1 : 0);
   const moduleClass = (index: number) =>
     `panel-surface ${overviewModuleCount === 3 && index === 0 ? "xl:col-span-2" : ""}`;
@@ -210,7 +290,15 @@ export function OverviewDashboard({
         investmentCost={investmentCost}
         investmentFloatingPnL={investmentFloatingPnL}
         investmentFloatingPnLRate={investmentFloatingPnLRate}
+        fixedAssetAccountList={fixedAssetAccountList}
+        fixedAssetCount={fixedAssetCount}
+        fixedAssetMarketValue={fixedAssetMarketValue}
+        fixedAssetCost={fixedAssetCost}
+        fixedAssetFloatingPnL={fixedAssetFloatingPnL}
+        fixedAssetFloatingPnLRate={fixedAssetFloatingPnLRate}
         insuranceOverview={insuranceOverview}
+        baseCurrency={baseCurrency}
+        missingFxCurrencies={missingFxCurrencies}
         isRedUp={isRedUp}
       />
     </div>
@@ -232,10 +320,22 @@ export function OverviewDashboard({
               {showInvestmentOverview ? (
                 <MetricCard label={t("overview.investMarketValue")} value={formatMoneyYuan(investMarketValue)} valueClass={directionalClass(investMarketValue, isRedUp)} />
               ) : null}
+              {showFixedAssetOverview ? (
+                <MetricCard label={t("overview.fixedAssetValue")} value={formatMoneyYuan(fixedValue)} valueClass={directionalClass(fixedValue, isRedUp)} />
+              ) : null}
               {showInsuranceOverview ? (
                 <MetricCard label={t("overview.insuranceCashValue")} value={formatMoneyYuan(totals.insuranceAsset)} valueClass={directionalClass(totals.insuranceAsset, isRedUp)} />
               ) : null}
             </div>
+            {missingFxCurrencies.length > 0 ? (
+              <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
+                {t("overview.missingFxRateDetail", { currencies: missingFxCurrencies.join("、") })}
+              </div>
+            ) : hasForeignCurrency ? (
+              <div className="mt-3 text-[11px] text-slate-400">
+                {t("overview.convertedToBase", { currency: baseCurrency })}
+              </div>
+            ) : null}
           </div>
         </section>
 
@@ -270,8 +370,8 @@ export function OverviewDashboard({
                       className="grid grid-cols-[minmax(0,1fr)_96px] items-center gap-3 px-4 py-3 hover:bg-slate-50 sm:grid-cols-[minmax(0,1fr)_96px_96px_72px]"
                     >
                       <div className="truncate text-sm font-semibold text-slate-800">{item.name}</div>
-                      <div className={`text-right text-xs font-semibold tabular-nums ${directionalClass(item.marketValue, isRedUp)}`}>{formatMoney(item.marketValue)}</div>
-                      <div className={`hidden text-right text-xs font-semibold tabular-nums sm:block ${directionalClass(item.floatingPnL, isRedUp)}`}>{formatMoney(item.floatingPnL)}</div>
+                      <div className={`text-right text-xs font-semibold tabular-nums ${directionalClass(item.convertedMarketValue ?? item.marketValue, isRedUp)}`}>{formatMoney(item.convertedMarketValue ?? item.marketValue)}</div>
+                      <div className={`hidden text-right text-xs font-semibold tabular-nums sm:block ${directionalClass(item.convertedFloatingPnL ?? item.floatingPnL, isRedUp)}`}>{formatMoney(item.convertedFloatingPnL ?? item.floatingPnL)}</div>
                       <div className={`hidden text-right text-xs font-semibold tabular-nums sm:block ${directionalClass(item.floatingPnLRate, isRedUp)}`}>{formatRate(item.floatingPnLRate)}</div>
                     </Link>
                   ))
@@ -304,9 +404,12 @@ export function OverviewDashboard({
                   <Link key={account.id} href={`/?accountId=${account.id}&view=detail`} scroll={false} className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-slate-50">
                     <div className="min-w-0">
                       <div className="truncate text-sm font-semibold text-slate-800">{account.name}</div>
-                      <div className="mt-1 text-[11px] text-slate-400">{account.kind}</div>
+                      <div className="mt-1 truncate text-[11px] text-slate-400">
+                        {account.kind}
+                        {isForeign(account, baseCurrency) ? ` · ${t("overview.originalAmount", { amount: formatCurrencyMoney(account.balance, account.currency) })}` : ""}
+                      </div>
                     </div>
-                    <div className={`shrink-0 text-sm font-semibold tabular-nums ${directionalClass(account.balance, isRedUp)}`}>{formatMoney(account.balance)}</div>
+                    <div className={`shrink-0 text-sm font-semibold tabular-nums ${directionalClass(baseAmount(account), isRedUp)}`}>{formatMoney(baseAmount(account))}</div>
                   </Link>
                 ))
               ) : (
@@ -314,6 +417,48 @@ export function OverviewDashboard({
               )}
             </div>
           </div>
+
+          {showFixedAssetOverview ? (
+            <div className={moduleClass(fixedAssetModuleIndex)}>
+              <div className="panel-header">
+                <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+                  <Building2 className="h-4 w-4 text-slate-500" />
+                  {t("overview.fixedAssets")}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3 px-4 py-4 md:grid-cols-4">
+                <MetricCard label={t("overview.fixedAssetValue")} value={formatMoneyYuan(fixedValue)} valueClass={directionalClass(fixedValue, isRedUp)} />
+                <MetricCard label={t("overview.fixedAssetCost")} value={formatMoneyYuan(fixedCostValue)} />
+                <MetricCard label={t("overview.fixedAssetPnL")} value={formatMoneyYuan(fixedPnL)} valueClass={directionalClass(fixedPnL, isRedUp)} />
+                <MetricCard label={t("overview.fixedAssetRate")} value={formatRate(fixedRate)} valueClass={directionalClass(fixedRate, isRedUp)} />
+              </div>
+              <div className="divide-y divide-slate-100 border-t border-slate-100">
+                {fixedAssetAccountList.length > 0 ? (
+                  fixedAssetAccountList.slice(0, 5).map((item) => (
+                    <Link
+                      key={item.accountId}
+                      href={`/?accountId=${item.accountId}&view=investproperty`}
+                      scroll={false}
+                      className="grid grid-cols-[minmax(0,1fr)_96px] items-center gap-3 px-4 py-3 hover:bg-slate-50 sm:grid-cols-[minmax(0,1fr)_96px_96px_72px]"
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-semibold text-slate-800">{item.name}</div>
+                        <div className="mt-1 truncate text-[11px] text-slate-400">
+                          {item.assetType ? t(`fixedAsset.type.${item.assetType}`) : t("account.kind.fixed_asset")}
+                          {isForeign(item, baseCurrency) ? ` · ${t("overview.originalAmount", { amount: formatCurrencyMoney(item.marketValue, item.currency) })}` : ""}
+                        </div>
+                      </div>
+                      <div className={`text-right text-xs font-semibold tabular-nums ${directionalClass(item.convertedMarketValue ?? item.marketValue, isRedUp)}`}>{formatMoney(item.convertedMarketValue ?? item.marketValue)}</div>
+                      <div className={`hidden text-right text-xs font-semibold tabular-nums sm:block ${directionalClass(item.floatingPnL, isRedUp)}`}>{formatMoney(item.floatingPnL)}</div>
+                      <div className={`hidden text-right text-xs font-semibold tabular-nums sm:block ${directionalClass(item.floatingPnLRate, isRedUp)}`}>{formatRate(item.floatingPnLRate)}</div>
+                    </Link>
+                  ))
+                ) : (
+                  <div className="px-4 py-8 text-center text-sm text-slate-400">{t("overview.noFixedAssets")}</div>
+                )}
+              </div>
+            </div>
+          ) : null}
 
           {showInsuranceOverview ? (
             <InsuranceOverviewCard className={moduleClass(insuranceModuleIndex)} insuranceOverview={insuranceOverview} isRedUp={isRedUp} />
@@ -341,7 +486,7 @@ export function OverviewDashboard({
                     <div className="min-w-0">
                       <div className="truncate text-sm font-semibold text-slate-800">{account.name}</div>
                     </div>
-                    <div className={`shrink-0 text-sm font-semibold tabular-nums ${liabilityClass(account.currentBill, isRedUp)}`}>{formatMoney(account.currentBill)}</div>
+                    <div className={`shrink-0 text-sm font-semibold tabular-nums ${liabilityClass(creditBillOf(account), isRedUp)}`}>{formatMoney(creditBillOf(account))}</div>
                   </Link>
                 ))}
                 {creditCards.length === 0 && (
@@ -373,8 +518,11 @@ export function OverviewDashboard({
                     className="rounded-lg border border-slate-100 bg-slate-50/80 px-3 py-3 transition-colors hover:border-rose-200 hover:bg-rose-50/30"
                   >
                     <div className="line-clamp-2 min-h-[40px] text-sm font-semibold leading-5 text-slate-800">{account.name}</div>
-                    <div className="mt-3 text-[11px] text-slate-400">{account.balance >= 0 ? t("overview.owedToMe") : t("overview.iOwe")}</div>
-                    <div className={`mt-0.5 text-base font-semibold tabular-nums ${directionalClass(account.balance, isRedUp)}`}>{formatMoney(account.balance)}</div>
+                    <div className="mt-3 truncate text-[11px] text-slate-400">
+                      {baseAmount(account) >= 0 ? t("overview.owedToMe") : t("overview.iOwe")}
+                      {isForeign(account, baseCurrency) ? ` · ${t("overview.originalAmount", { amount: formatCurrencyMoney(account.balance, account.currency) })}` : ""}
+                    </div>
+                    <div className={`mt-0.5 text-base font-semibold tabular-nums ${directionalClass(baseAmount(account), isRedUp)}`}>{formatMoney(baseAmount(account))}</div>
                   </Link>
                 ))}
               </div>

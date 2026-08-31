@@ -34,6 +34,7 @@ type EntityCreatedExtra = {
   institutionShortName?: string;
   counterpartyId?: string;
   counterpartyName?: string;
+  debtDirection?: "payable" | "receivable" | null;
   currency?: string;
   brokerageCashAccount?: {
     id: string;
@@ -680,7 +681,10 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
       return dataList.filter((item) => isStockAccountInstitutionType(item.type));
     }
     if (accountKind === "loan") {
-      return dataList.filter((item) => ["person", "organization"].includes(item.type ?? ""));
+      const isConsumerLoan = form.isConsumerLoan === "true" || extraFields?.isConsumerLoan === "true";
+      return dataList.filter((item) => isConsumerLoan
+        ? item.type === "debt"
+        : ["person", "organization"].includes(item.type ?? ""));
     }
     return dataList.filter((item) => ["bank", "insurance", "brokerage", "fund_company", "payment", "ewallet", "other"].includes(item.type ?? ""));
   }
@@ -693,7 +697,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
       return isStockAccountInstitutionType(type);
     }
     if (accountKind === "loan") {
-      return ["person", "organization", "bank", "insurance", "brokerage", "fund_company", "payment", "ewallet", "debt", "other"].includes(type ?? "");
+      const isConsumerLoan = form.isConsumerLoan === "true" || extraFields?.isConsumerLoan === "true";
+      return isConsumerLoan ? type === "debt" : ["person", "organization", "bank", "insurance", "brokerage", "fund_company", "payment", "ewallet", "debt", "other"].includes(type ?? "");
     }
     return ["bank", "insurance", "brokerage", "fund_company", "payment", "ewallet", "other"].includes(type ?? "");
   }
@@ -704,7 +709,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     const investProductType = form.investProductType || extraFields?.investProductType || "fund";
     if (isStockInvestmentAccount(accountKind, investProductType)) return "brokerage";
     if (accountKind === "investment" && (investProductType === "fund" || investProductType === "money")) return "fund_company";
-    if (accountKind === "loan") return "person";
+    if (accountKind === "loan") return (form.isConsumerLoan === "true" || extraFields?.isConsumerLoan === "true") ? "debt" : "person";
     return undefined;
   }
 
@@ -713,7 +718,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     const accountKind = form.kind || form.type || extraFields?.kind || defaultType;
     const investProductType = form.investProductType || extraFields?.investProductType || "fund";
     if (isStockInvestmentAccount(accountKind, investProductType)) return ["brokerage"];
-    if (accountKind === "loan") return ["person", "organization"];
+    if (accountKind === "loan") return (form.isConsumerLoan === "true" || extraFields?.isConsumerLoan === "true") ? ["debt"] : ["person", "organization"];
     return undefined;
   }
 
@@ -924,6 +929,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
           institutionShortName: entityType === "account" ? created.Institution?.shortName : undefined,
           counterpartyId: entityType === "account" ? created.counterpartyId ?? form.counterpartyId ?? undefined : undefined,
           counterpartyName: entityType === "account" ? created.Counterparty?.name : undefined,
+          debtDirection: entityType === "account" ? created.debtDirection ?? undefined : undefined,
           currency: entityType === "account" ? created.currency ?? form.currency ?? undefined : undefined,
           brokerageCashAccount: entityType === "account" ? data.brokerageCashAccount ?? null : undefined,
           type: entityType === "institution" || entityType === "counterparty" || entityType === "category" ? selectedTypeValue : undefined,

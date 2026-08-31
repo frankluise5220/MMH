@@ -33,6 +33,8 @@ const ZERO_TOTALS = {
   investmentMarketValue: 0,
   investmentCost: 0,
   investmentFloatingPnL: 0,
+  fixedAssetMarketValue: 0,
+  fixedAssetCost: 0,
   insuranceAsset: 0,
   creditUsed: 0,
   creditLimit: 0,
@@ -60,6 +62,13 @@ export function MobileOverviewDashboard({
   investmentCost,
   investmentFloatingPnL,
   investmentFloatingPnLRate,
+  fixedAssetAccountList = [],
+  fixedAssetCount,
+  fixedAssetMarketValue,
+  fixedAssetCost,
+  fixedAssetFloatingPnL,
+  fixedAssetFloatingPnLRate,
+  missingFxCurrencies = [],
   isRedUp,
 }: OverviewDashboardProps) {
   const { t } = useI18n();
@@ -69,13 +78,17 @@ export function MobileOverviewDashboard({
   const investCost = investmentCost ?? totals.investmentCost;
   const investFloatingPnL = investmentFloatingPnL ?? totals.investmentFloatingPnL;
   const investFloatingRate = investmentFloatingPnLRate ?? (investCost > 0 ? investFloatingPnL / investCost : 0);
+  const fixedValue = fixedAssetMarketValue ?? totals.fixedAssetMarketValue;
+  const fixedCostValue = fixedAssetCost ?? totals.fixedAssetCost;
+  const fixedPnL = fixedAssetFloatingPnL ?? fixedValue - fixedCostValue;
+  const fixedRate = fixedAssetFloatingPnLRate ?? (fixedCostValue > 0 ? fixedPnL / fixedCostValue : 0);
   const monthNet = monthIncome - monthExpense;
   const netLiabilities = totals.liabilities - totals.loanReceivable;
   const netDebtLabel = netLiabilities >= 0 ? t("overview.netDebt") : t("overview.netCredit");
   const netDebtAmount = Math.abs(netLiabilities);
-  const creditUsed = creditAccountList.reduce((sum, account) => sum + Math.max(0, account.balance), 0);
+  const creditUsed = creditAccountList.reduce((sum, account) => sum + Math.max(0, account.convertedBalance ?? account.balance), 0);
   const creditAvailable = creditAccountList.reduce((sum, account) => sum + Math.max(0, account.availableLimit), 0);
-  const creditBill = creditAccountList.reduce((sum, account) => sum + Math.max(0, account.currentBill), 0);
+  const creditBill = creditAccountList.reduce((sum, account) => sum + Math.max(0, account.convertedCurrentBill ?? account.currentBill), 0);
   const creditCardsWithBills = creditAccountList
     .filter((account) => account.currentBill > 0 && daysUntil(account.dueDate) != null && daysUntil(account.dueDate)! >= 0 && daysUntil(account.dueDate)! <= 10)
     .sort((a, b) => (daysUntil(a.dueDate) ?? 999) - (daysUntil(b.dueDate) ?? 999))
@@ -86,6 +99,9 @@ export function MobileOverviewDashboard({
   const showInsuranceOverview = insuranceAccountCount == null
     ? totals.insuranceAsset !== 0
     : insuranceAccountCount > 0;
+  const showFixedAssetOverview = fixedAssetCount == null
+    ? fixedAssetAccountList.length > 0 || fixedValue !== 0 || fixedCostValue !== 0
+    : fixedAssetCount > 0;
 
   const amount = (value: number) => showAmounts ? formatMoneyYuan(value) : "****";
   const percent = (value: number) => showAmounts ? formatPercent(value) : "****";
@@ -115,6 +131,7 @@ export function MobileOverviewDashboard({
               <HeroMetric label={t("overview.liquidAssets")} value={amount(totals.liquidAssets)} />
               <HeroMetric label={netDebtLabel} value={amount(netDebtAmount)} />
               {showInvestmentOverview ? <HeroMetric label={t("overview.investMarketValue")} value={amount(investMarketValue)} /> : null}
+              {showFixedAssetOverview ? <HeroMetric label={t("overview.fixedAssetValue")} value={amount(fixedValue)} /> : null}
               {showInsuranceOverview ? <HeroMetric label={t("account.kind.insurance")} value={amount(totals.insuranceAsset)} /> : null}
             </div>
           </div>
@@ -124,6 +141,12 @@ export function MobileOverviewDashboard({
             <HeroFlowMetric label={t("mobileOverview.balance")} value={amount(monthNet)} />
           </div>
         </section>
+
+        {missingFxCurrencies.length > 0 ? (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
+            {t("overview.missingFxRateDetail", { currencies: missingFxCurrencies.join("、") })}
+          </div>
+        ) : null}
 
         <section className="grid grid-cols-2 gap-2">
           <Link href="/accounts" className="rounded-2xl bg-white p-3 shadow-sm ring-1 ring-slate-200 active:bg-slate-50">
@@ -153,6 +176,34 @@ export function MobileOverviewDashboard({
                 <TinyPanel label={t("overview.floatingRate")} value={percent(investFloatingRate)} valueClass={valueClass(investFloatingRate)} align="right" />
               </div>
 
+            </div>
+          </section>
+        ) : null}
+
+        {showFixedAssetOverview ? (
+          <section className="rounded-2xl bg-white shadow-sm ring-1 ring-slate-200">
+            <MobileSectionHeader label={t("overview.fixedAssets")} href="/?view=investproperty" t={t} />
+            <div className="px-3 pb-3">
+              <div className="grid grid-cols-2 gap-2">
+                <TinyPanel label={t("overview.fixedAssetValue")} value={amount(fixedValue)} />
+                <TinyPanel label={t("overview.fixedAssetPnL")} value={amount(fixedPnL)} valueClass={valueClass(fixedPnL)} align="right" />
+                <TinyPanel label={t("overview.fixedAssetCost")} value={amount(fixedCostValue)} />
+                <TinyPanel label={t("overview.fixedAssetRate")} value={percent(fixedRate)} valueClass={valueClass(fixedRate)} align="right" />
+              </div>
+              {fixedAssetAccountList.length > 0 ? (
+                <div className="mt-2 space-y-1">
+                  {fixedAssetAccountList.slice(0, 3).map((item) => (
+                    <Link
+                      key={item.accountId}
+                      href={`/?accountId=${item.accountId}&view=investproperty`}
+                      className="flex items-center justify-between gap-2 rounded-xl bg-slate-50 px-2.5 py-2"
+                    >
+                      <span className="min-w-0 flex-1 truncate text-xs font-medium text-slate-900">{item.name}</span>
+                      <span className={`shrink-0 text-xs font-semibold tabular-nums ${valueClass(item.convertedMarketValue ?? item.marketValue)}`}>{amount(item.convertedMarketValue ?? item.marketValue)}</span>
+                    </Link>
+                  ))}
+                </div>
+              ) : null}
             </div>
           </section>
         ) : null}

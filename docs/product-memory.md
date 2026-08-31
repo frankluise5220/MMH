@@ -21,6 +21,10 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 
 ## Stable Product Preferences
 
+### Fund Company Institutions
+
+- When a fund profile identifies a fund company by name, automatically ensure that the current household has a corresponding `fund_company` institution. Do not use external provider link identifiers such as 8-digit numbers as the institution identity; reuse an existing same-name institution and do not change its existing type automatically.
+
 ### General
 
 - Avoid requiring the user to repeat the same requirement across turns.
@@ -115,8 +119,8 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - When showing grouped account lists, avoid repeating institution names inside child account labels if the parent group already shows the institution.
 - Sidebar debt grouping under "往来款" should keep the left navigation compact: show concrete bank loan/settlement accounts directly, and show one "借入借出" summary item that aggregates ordinary counterparty/person/company settlement accounts. Do not list each ordinary settlement object in the left sidebar; the debt page/table should show those concrete objects after entering "借入借出". Do not hardcode names for this layout; derive it from account kind plus counterparty/institution ownership. Cleared zero-balance bank loans should not clutter the debt group by default.
 - Ordinary counterparty settlement workflow is object-first: the user selects a `Counterparty`/往来对象 first, and settlement accounts are child accounts under that object. A normal person/company counterparty should not get separate same-name accounts solely because one operation is 借入 and another is 借出; borrow/lend are transaction modes on the object-owned account. Institution/bank loan items may still be represented by concrete loan accounts where the account itself is the managed item.
-- Selecting a bank institution such as 招行 as the debt object must not by itself switch the borrow/lend dialog into bank-loan mode or auto-pick a loan account. Bank-loan fields such as repayment method and schedule are shown only after a concrete bank-owned loan account is selected.
-- Ordinary counterparty borrow/lend dialogs are not bank-loan dialogs. For `Counterparty`-owned settlement accounts, do not show or save loan-only fields such as 资金到账/消费分期、还款方式、还款周期、期数、利率、LPR 折扣 or historical rate settings. Those fields belong only to bank/institution loan items. Even for bank/institution borrow creation, the ordinary debt modal should not expose a `资金到账/消费分期` toggle; new borrow records created there are cash-disbursed by default, while `消费分期` belongs to the expense/credit-card financed-purchase flow.
+- Selecting a bank institution such as 招行 as the debt object must not by itself switch the borrow/lend dialog into another operation mode or auto-pick a loan account. After an object is selected, the adjacent settlement-account SS should show accounts under that object and support create/select where the operation can create a debt item.
+- Repayment method is a property of the selected or created settlement/loan account plan, not a separate debt object type. Borrow-in may use 等额本息, 等额本金, 自由还款, 分期还款, or other supported methods for both ordinary counterparty settlement accounts and institution loan accounts; fixed methods create a compact repayment-plan preview and a `loan_repayment` scheduled task. LPR discount, bank execution-rate, historical rate adjustment, and financed-purchase toggles remain bank/institution-loan-specific. Mortgage/collateral changes the loan context or collateral metadata, not the repayment method by itself.
 - 往来对象/往来账户没有“所有人”这个显示维度。数据库中的账户分组只是账户表必填字段，不应出现在往来账户名称、悬停标题、SS 下拉分组、导入匹配候选、概览或移动同步的显示 groupName 中；例如应显示“甄宋·债务/债权”，不能显示“张四·甄宋·债务/债权”。
 
 ### Amount And Color Rules
@@ -390,7 +394,7 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Ordinary debt borrow creation no longer exposes `资金到账/消费分期` as a user choice. Cash-disbursed loans create a transfer into the selected cash account. `消费分期` is handled from the expense/credit-card financed-purchase flow, not from the ordinary borrow/lend window; existing `debt_financed_purchase` rows remain supported for compatibility and must round-trip without being accidentally converted.
 - Vehicle and other financed-purchase loan creation must not bulk-generate repayment `TxRecord` rows. Saving the loan creates the liability and a `loan_repayment` scheduled task; repayment transaction rows are created only when the scheduled task executes for due periods. If a historical catch-up is ever offered, it must require explicit user confirmation and must never create future rows.
 - Old auto-generated financed-purchase repayment rows can be corrected through the internal cleanup endpoint `/api/v1/cleanup/financed-purchase-repayments`; it defaults to dry-run and only targets generated `scheduled_task` rows linked to financed-purchase loan plans.
-- Interest-free vehicle and other standalone financed purchases may use the explicit repayment method `免息分期还本`. The plan divides principal across the selected runs, records zero interest, and must not require a positive annual rate, LPR, or historical rate adjustment.
+- Vehicle and other standalone financed purchases may use the explicit repayment method `分期还款`. The plan divides principal across the selected runs, supports an annual rate of `0`, and keeps legacy `免息分期还本` records compatible.
 
 - Debt/claim displays should match the user mental model for personal/family finance, not corporate finance wording.
 - Names such as borrower/lender, borrowed/lent, or institution/person context matter and should be chosen carefully.
@@ -416,6 +420,8 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 - Income/expense reports should prioritize dense statistical rows and must not spend vertical space on duplicate total-income, total-expense, net, or column-count cards above the table.
 - Report filters such as hierarchy, start/end year-month, and account should use one compact toolbar row without a separate summary row or tall filter card.
 - 投资收益表展示的是市值收益，不是赎回时确认的投资收入。按日视图顶部合计只汇总当前月份，按月视图顶部合计只汇总当前年份，按年视图才展示有收益以来到当前年的累计合计；前翻/后翻与按日、按月、按年粒度切换放在同一组控件中。投资收益表发现已发生工作日的持仓基金净值缺失时，必须在统计范围控件最右侧以内联提示显示并询问用户是否获取缺失净值，不应另占一行；周末/非交易日可以沿用上一可用交易日净值，不应造成永久缺失提示。用户确认获取缺失净值且请求成功结束后，当前提示条应局部消隐，不应整页刷新。
+- 基金视图表头“获取净值”只处理当前账户未确认交易和当前持仓最新净值：先用缓存中已有精确确认日净值，缓存缺失时只自动查询今天及往前三个交易日；更早缺失交由用户在基金明细中手工补齐。投资收益表是唯一需要批量补历史净值的场景。
+- 基金持仓行右侧的设置按钮直接进入统一基金资料设置页：基金代码、基金公司、托管人、基金经理和净值日期偏移属于基金资料侧；T+N 确认/到账规则在该页的基金交易区域维护；费率仍属于代销机构侧设置。页面不再先弹出 T+N/费率二选菜单。
 - 基金买入和红利再投资的 `confirmDate` / `fundConfirmDate` 表示净值日期，不表示新增份额已经可以参与同日收益。收益日历按“前一日已收益生效份额 × 当日净值变化”计算；新份额从净值日期后的下一个基金交易日开始参与收益。
 - 投资收益表与每日盈亏必须只有一条计算路径：收益表是所选范围内每日盈亏的总和。每只基金先取统计日（本地时间）之前可用的最后净值日期作为当前净值日，再取该净值日之前的上一条净值；盈亏 =（当前净值 − 上一净值）× 上一净值日已确认且已生效份额。若最后净值日期等于统计日，则按“统计日净值 − 前一净值日净值”计算；若最后净值日期比统计日晚一天（例如25号只能取得24号净值），则按“24号净值 − 21号净值”计算，并使用21号份额。不得根据基金名称或 QDII 标签判断计算方式；计算方式只由本地统计日期与该基金实际最后可用净值日期的差决定。
 - 基金红利再投不是现金分红再买入的资金流水模拟。它只在基金业务侧增加份额，不产生金额、不关联资金账户、不创建资金侧 `TxRecord` 或 `FundTransactionCashFlow`；如果导入表或接口传了资金账户，红利再投也应忽略该字段。
@@ -490,6 +496,7 @@ Do not use this file for temporary tasks. Put temporary work in `docs/product-to
 
 ### Investments And Precious Metals
 
+- Fund code is the identity key for fund records, but `FundProfile.fundName` is the authoritative display name when available. Fund holdings, fund detail cards, transaction detail read/write paths, regular-invest plan lists, and scheduled-task generated records must prefer the profile name and fall back to code only when no usable profile/stored/display name exists.
 - Mobile investment/fund pages should have one visible product home under bottom navigation "投资". Do not keep a separate mobile fund-holding implementation under account-like routes when the FundShell investment detail already owns the active fund card, chart, and transaction-card workflow.
 - 股票应作为独立 `stock` 投资域实现，归在 `Account.kind = "investment"` + `investProductType = "stock"` 下面以支持多个股票账户；股票账户、股票持仓、股票交易、股票价格、股票手续费、股票 API 和股票 UI 都使用 `stock` 命名空间，不能复用或暴露 `fund` 字段、表名、路由、组件名、URL 参数或业务文案。股票身份字段使用 `stockCode` / `stockName` / `market` / `securityId` 等股票专用语义，不得借用 `fundCode`、`fundName`、`fundUnits`、`fundNav`、`FundTransaction`、`FundHolding`、`fundFeeRate` 或基金净值/确认/到账模块。
 - 股票业务应新增独立业务表和统一服务模块，例如 `StockSecurity`、`StockTransaction`、`StockHolding`、`StockPriceCache`、`StockFeeRule`、`StockMarketFeeRule`、`StockBrokerageCatalog` 和 `src/lib/stock/**`；股票手续费规则可以借鉴现有按账户、产品代码、费用类型和生效日期查询的模式，但代码和数据模型必须归入 stock 域。市场公开规则（印花税、过户费、经手费、监管费等）存入 `StockMarketFeeRule`，账户/券商/客户协议覆盖（佣金、最低收费、特殊市场/标的规则）存入 `StockFeeRule`，证券公司公开名录和别名存入 `StockBrokerageCatalog`。

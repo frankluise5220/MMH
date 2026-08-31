@@ -9,6 +9,31 @@ import {
 import { ensureCounterpartyForInstitution } from "@/lib/server/counterparty-sync";
 import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 
+const VALID_INSTITUTION_TYPES = ["family_member", "person", "organization", "bank", "insurance", "brokerage", "fund_company", "payment", "ewallet", "debt", "other"] as const;
+
+/**
+ * GET /api/v1/institution?type=fund_company
+ * Success: { ok: true, institutions: Array<{ id, name, shortName, type }> }
+ */
+export async function GET(req: NextRequest) {
+  try {
+    const { householdId } = await getHouseholdScope();
+    const requestedType = new URL(req.url).searchParams.get("type")?.trim() || "";
+    const type = (VALID_INSTITUTION_TYPES as readonly string[]).includes(requestedType) ? requestedType : null;
+    const institutions = await prisma.institution.findMany({
+      where: { householdId, ...(type ? { type } : {}) },
+      select: { id: true, name: true, shortName: true, type: true },
+      orderBy: [{ type: "asc" }, { name: "asc" }],
+    });
+    return NextResponse.json({ ok: true, institutions });
+  } catch (error) {
+    return NextResponse.json(
+      { ok: false, code: "FETCH_FAILED", error: error instanceof Error ? error.message : "Failed to fetch institutions." },
+      { status: 500 },
+    );
+  }
+}
+
 /**
  * POST /api/v1/institution
  * Body: { name: string, shortName?: string, type?: string }
@@ -23,13 +48,12 @@ export async function POST(req: NextRequest) {
   const type = typeof body?.type === "string" ? body.type.trim() : "bank";
 
   if (!name) {
-    return NextResponse.json({ ok: false, code: "NAME_REQUIRED", error: "机构名称不能为空" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "NAME_REQUIRED", error: "Institution name is required." }, { status: 400 });
   }
 
   const { householdId } = await getHouseholdScope();
 
-  const validTypes = ["family_member", "person", "organization", "bank", "insurance", "brokerage", "fund_company", "payment", "ewallet", "debt", "other"];
-  const safeType = validTypes.includes(type) ? type : "organization";
+  const safeType = VALID_INSTITUTION_TYPES.includes(type as typeof VALID_INSTITUTION_TYPES[number]) ? type : "organization";
 
   try {
     const created = await prisma.$transaction(async (tx) => {
@@ -59,6 +83,6 @@ export async function POST(req: NextRequest) {
     if (isInstitutionNameUniqueError(error)) {
       return NextResponse.json({ ok: false, code: "INSTITUTION_NAME_CONFLICT", error: error.message }, { status: error.status });
     }
-    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: "创建失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: "Failed to create institution." }, { status: 500 });
   }
 }

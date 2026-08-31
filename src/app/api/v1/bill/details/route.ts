@@ -12,7 +12,7 @@ import { AccountKind, TransactionType, type Prisma } from "@prisma/client";
 import type { DetailEntry } from "@/components/DetailViewClient";
 import { prisma } from "@/lib/db/prisma";
 import { addDaysUtc, formatDateLocal, toNumber } from "@/lib/date-utils";
-import { cycleForStatementMonth } from "@/lib/credit/billing";
+import { creditBillDateRangeWhere, cycleForStatementMonth } from "@/lib/credit/billing";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
 import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude } from "@/lib/server/entry-business-link";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -227,7 +227,7 @@ export async function GET(req: Request) {
     }
 
     const dateScope: Prisma.TxRecordWhereInput[] = cycle
-      ? [{ date: { gte: cycle.start, lt: addDaysUtc(cycle.end, 1) } }]
+      ? [creditBillDateRangeWhere(cycle.start, addDaysUtc(cycle.end, 1))]
       : [];
     const where: Prisma.TxRecordWhereInput = {
       householdId,

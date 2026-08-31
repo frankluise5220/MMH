@@ -1,3 +1,5 @@
+import { normalizeLoanRepaymentMethod } from "@/lib/loan-repayment";
+
 export type ScheduledTaskType =
   | "fund_regular_invest"
   | "loan_repayment"
@@ -91,7 +93,7 @@ export function decodeScheduledTaskMemo(memo?: string | null): ScheduledTaskPayl
         note: parsed.note ?? null,
         annualRate: typeof parsed.annualRate === "number" && Number.isFinite(parsed.annualRate) ? parsed.annualRate : null,
         mortgageLprDiscount,
-        repaymentMethod: typeof parsed.repaymentMethod === "string" ? parsed.repaymentMethod : null,
+        repaymentMethod: typeof parsed.repaymentMethod === "string" ? normalizeLoanRepaymentMethod(parsed.repaymentMethod) : null,
         repaymentIntervalMonths: typeof parsed.repaymentIntervalMonths === "number" && Number.isFinite(parsed.repaymentIntervalMonths) ? parsed.repaymentIntervalMonths : null,
         originalTotalRuns: typeof parsed.originalTotalRuns === "number" && Number.isFinite(parsed.originalTotalRuns) && parsed.originalTotalRuns > 0
           ? Math.floor(parsed.originalTotalRuns)

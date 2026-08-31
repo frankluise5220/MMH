@@ -73,11 +73,11 @@ function seedBootstrapCaches(value: SettingsBootstrapData) {
   setCacheValue(TAGS_KEY, value.tags);
 }
 
-async function getSharedSettingsBootstrap(options?: { force?: boolean }) {
+function getSharedSettingsBootstrap(options?: { force?: boolean }) {
   if (options?.force) return null;
   const entry = cache.get(BOOTSTRAP_KEY) as CacheEntry<SettingsBootstrapData> | undefined;
+  // Page-specific settings fetches must not wait for the broader bootstrap request.
   if (entry?.value) return entry.value;
-  if (entry?.promise) return entry.promise;
   return null;
 }
 

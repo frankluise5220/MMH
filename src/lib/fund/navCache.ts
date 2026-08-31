@@ -1,5 +1,10 @@
 import { prisma } from "@/lib/db/prisma";
 import { queryFundNav } from "@/lib/fund/queryApi";
+import {
+  ensureFundProfile,
+  fundTradingCalendarForName,
+  syncFundNavDateOffsetFromLatestNav,
+} from "@/lib/fund/fundProfile";
 import { AccountKind, FundProductType } from "@prisma/client";
 
 const NAV_HEADERS = {
@@ -229,6 +234,16 @@ function utcDate(dateStr: string): Date {
   return new Date(Date.UTC(y, m - 1, d));
 }
 
+async function ensureFundProfileForAccount(fundCode: string, accountId?: string) {
+  const householdId = accountId
+    ? (await prisma.account.findUnique({
+        where: { id: accountId },
+        select: { householdId: true },
+      }))?.householdId
+    : null;
+  await ensureFundProfile(fundCode, { householdId });
+}
+
 /**
  * Query a fund NAV (smart fetch).
  * Flow: check cache first → call the API when missing → write to cache → return the result.
@@ -258,7 +273,12 @@ export async function getFundNav(
   // 1. Query the cache table first
   const cached = await getFundNavFromCacheOnly(fundCode, navDate);
 
-  if (cached) return { ...cached, dateMatch: true }; // Cache dates always match
+  if (cached) {
+    // Best-effort: ensure the fund's static profile (fund company etc.) is
+    // cached too. Fire-and-forget so a profile fetch never blocks NAV reads.
+    void ensureFundProfileForAccount(fundCode, accountId).catch(() => {});
+    return { ...cached, dateMatch: true }; // Cache dates always match
+  }
 
   // 2. Cache miss: fetch from the external API (trying configured priorities)
   const dateStr = navDate.toISOString().slice(0, 10);
@@ -284,6 +304,9 @@ export async function getFundNav(
   } catch (error) {
     console.warn("Failed to cache fund NAV", { fundCode, navDate: actualDateStr, error });
   }
+
+  // Best-effort: also cache the fund's static profile (fund company etc.).
+  void ensureFundProfileForAccount(fundCode, accountId).catch(() => {});
 
   // 5. Return the result (including date-match info and the actual NAV date)
   return {
@@ -515,7 +538,17 @@ export async function refreshLatestFundNav(
   accountId?: string,
 ): Promise<{ id: string; nav: number; cumNav: number | null; navDate: Date; name: string | null } | null> {
   const apiData = await queryFundNav(fundCode, undefined, accountId);
-  if (!apiData?.date || !Number.isFinite(apiData.nav)) return getLatestFundNav(fundCode);
+  if (!apiData?.date || !Number.isFinite(apiData.nav)) {
+    const cached = await getLatestFundNav(fundCode);
+    if (cached) {
+      await syncFundNavDateOffsetFromLatestNav({
+        fundCode,
+        lastNavDate: cached.navDate,
+        tradingCalendar: fundTradingCalendarForName(cached.name),
+      });
+    }
+    return cached;
+  }
 
   const navDate = utcDate(apiData.date);
   await setFundNav(
@@ -526,7 +559,15 @@ export async function refreshLatestFundNav(
     apiData.name ?? null,
   );
 
-  return getLatestFundNav(fundCode);
+  const latest = await getLatestFundNav(fundCode);
+  if (latest) {
+    await syncFundNavDateOffsetFromLatestNav({
+      fundCode,
+      lastNavDate: latest.navDate,
+      tradingCalendar: fundTradingCalendarForName(latest.name ?? apiData.name),
+    });
+  }
+  return latest;
 }
 
 export type RefreshHeldFundLatestNavsResult = {
@@ -536,6 +577,8 @@ export type RefreshHeldFundLatestNavsResult = {
   failed: number;
   fundCodes: string[];
 };
+
+const HOLDING_NAV_REFRESH_CONCURRENCY = 4;
 
 /**
  * Refresh latest NAV for currently held fund-like positions.
@@ -587,26 +630,29 @@ export async function refreshHeldFundLatestNavs(options: {
   let failed = 0;
   const fundCodes = new Set<string>();
 
-  for (const holding of holdings) {
-    const fundCode = holding.fundCode.trim();
-    if (!fundCode) continue;
-    fundCodes.add(fundCode);
-    try {
-      const latestNav = await refreshLatestFundNav(fundCode, holding.accountId);
-      if (!latestNav) continue;
-      latestNavAvailable++;
+  for (let offset = 0; offset < holdings.length; offset += HOLDING_NAV_REFRESH_CONCURRENCY) {
+    const batch = holdings.slice(offset, offset + HOLDING_NAV_REFRESH_CONCURRENCY);
+    await Promise.all(batch.map(async (holding) => {
+      const fundCode = holding.fundCode.trim();
+      if (!fundCode) return;
+      fundCodes.add(fundCode);
+      try {
+        const latestNav = await refreshLatestFundNav(fundCode, holding.accountId);
+        if (!latestNav) return;
+        latestNavAvailable++;
 
-      const name = (latestNav.name ?? "").trim();
-      if (name && name !== fundCode && name !== (holding.fundName ?? "").trim()) {
-        await prisma.fundHolding.update({
-          where: { accountId_fundCode: { accountId: holding.accountId, fundCode } },
-          data: { fundName: name },
-        });
-        nameFixed++;
+        const name = (latestNav.name ?? "").trim();
+        if (name && name !== fundCode && name !== (holding.fundName ?? "").trim()) {
+          await prisma.fundHolding.update({
+            where: { accountId_fundCode: { accountId: holding.accountId, fundCode } },
+            data: { fundName: name },
+          });
+          nameFixed++;
+        }
+      } catch {
+        failed++;
       }
-    } catch {
-      failed++;
-    }
+    }));
   }
 
   return {

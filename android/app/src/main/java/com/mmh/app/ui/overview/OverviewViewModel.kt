@@ -6,6 +6,7 @@ import com.mmh.app.data.remote.dto.AccountTypeTotalsDto
 import com.mmh.app.data.remote.dto.AccountListRowDto
 import com.mmh.app.data.remote.dto.AssetDistributionItemDto
 import com.mmh.app.data.remote.dto.CreditAccountRowDto
+import com.mmh.app.data.remote.dto.FixedAssetRowDto
 import com.mmh.app.data.remote.dto.TopPositionRowDto
 import com.mmh.app.data.repository.OverviewRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -43,6 +44,14 @@ data class OverviewUiState(
     val investmentCost: Double = 0.0,
     val investmentFloatingPnL: Double = 0.0,
     val investmentFloatingPnLRate: Double = 0.0,
+    val fixedAssetAccountList: List<FixedAssetRowDto> = emptyList(),
+    val fixedAssetCount: Int = 0,
+    val fixedAssetMarketValue: Double = 0.0,
+    val fixedAssetCost: Double = 0.0,
+    val fixedAssetFloatingPnL: Double = 0.0,
+    val fixedAssetFloatingPnLRate: Double = 0.0,
+    val baseCurrency: String = "CNY",
+    val missingFxCurrencies: List<String> = emptyList(),
     val error: String? = null
 )
 
@@ -83,7 +92,15 @@ class OverviewViewModel @Inject constructor(
                         investmentMarketValue = d.investmentMarketValue,
                         investmentCost = d.investmentCost,
                         investmentFloatingPnL = d.investmentFloatingPnL,
-                        investmentFloatingPnLRate = d.investmentFloatingPnLRate
+                        investmentFloatingPnLRate = d.investmentFloatingPnLRate,
+                        fixedAssetAccountList = d.fixedAssetAccountList,
+                        fixedAssetCount = d.fixedAssetCount,
+                        fixedAssetMarketValue = d.fixedAssetMarketValue,
+                        fixedAssetCost = d.fixedAssetCost,
+                        fixedAssetFloatingPnL = d.fixedAssetFloatingPnL,
+                        fixedAssetFloatingPnLRate = d.fixedAssetFloatingPnLRate,
+                        baseCurrency = d.baseCurrency,
+                        missingFxCurrencies = d.missingFxCurrencies
                     )
                 }
                 is com.mmh.app.domain.model.Resource.Error -> {

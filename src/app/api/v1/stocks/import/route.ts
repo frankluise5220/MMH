@@ -3,6 +3,7 @@ import { AccountKind, Prisma, StockTransactionAction, TransactionType } from "@p
 
 import {
   buildImportAccountCandidates,
+  createImportAccountMatcher,
   normalizeImportAccountMatchKey,
 } from "@/lib/account-import-match";
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
@@ -199,6 +200,7 @@ type ImportContext = {
   stockAccount: StockAccountRow;
   accountLookupRows: AccountLookupRow[];
   accountIdByMatchKey: Map<string, string>;
+  accountMatcher: (accountName?: string) => { account: AccountLookupRow | null };
   brokerageCashAccount: AccountLookupRow | null | undefined;
 };
 
@@ -358,6 +360,7 @@ async function buildImportContext(req: NextRequest, stockAccountId: string): Pro
     stockAccount,
     accountLookupRows: accounts,
     accountIdByMatchKey,
+    accountMatcher: createImportAccountMatcher(accounts),
     brokerageCashAccount: undefined,
   };
 }
@@ -367,57 +370,11 @@ function findAccountById(ctx: ImportContext, accountId: string | null | undefine
   return id ? ctx.accountLookupRows.find((item) => item.id === id) ?? null : null;
 }
 
-function accountLast4ForStrictMatch(account: AccountLookupRow) {
-  const values = [
-    account.numberMasked ?? "",
-    account.name,
-    ...(account.AccountAlias ?? []).map((alias) => alias.alias),
-  ];
-  for (const value of values) {
-    const matches = Array.from(String(value ?? "").matchAll(/\d{4}(?!\d)/g));
-    if (matches.length > 0) return matches[matches.length - 1][0];
-  }
-  return "";
-}
-
-function inputLast4ForStrictMatch(value: string) {
-  const matches = Array.from(String(value ?? "").matchAll(/\d{4}(?!\d)/g));
-  return matches.length > 0 ? matches[matches.length - 1][0] : "";
-}
-
-function hasExplicitAccountIdentity(account: AccountLookupRow, normalizedTarget: string) {
-  const exactNames = [
-    account.name,
-    ...(account.AccountAlias ?? []).map((alias) => alias.alias),
-  ].map(normalizeImportAccountMatchKey).filter(Boolean);
-  if (exactNames.includes(normalizedTarget)) return true;
-  const last4 = accountLast4ForStrictMatch(account);
-  return !!last4 && normalizedTarget.includes(last4);
-}
-
 async function resolveAccount(ctx: ImportContext, accountName: string) {
   const normalizedTarget = normalizeImportAccountMatchKey(accountName);
   if (!normalizedTarget) return null;
   if (GENERIC_BANK_ACCOUNT_INPUT_KEYS.has(normalizedTarget)) return null;
-  const exactMatches = ctx.accountLookupRows.filter((account) => {
-    const exactNames = [
-      account.name,
-      ...(account.AccountAlias ?? []).map((alias) => alias.alias),
-    ].map(normalizeImportAccountMatchKey).filter(Boolean);
-    return exactNames.includes(normalizedTarget);
-  });
-  if (exactMatches.length === 1) return exactMatches[0];
-  const targetLast4 = inputLast4ForStrictMatch(accountName);
-  if (targetLast4) {
-    const last4Matches = ctx.accountLookupRows.filter((account) => accountLast4ForStrictMatch(account) === targetLast4);
-    if (last4Matches.length === 1) return last4Matches[0];
-  }
-  const matches = ctx.accountLookupRows.filter((account) => {
-    const candidateMatched = buildImportAccountCandidates(account)
-      .some((candidate) => normalizeImportAccountMatchKey(candidate) === normalizedTarget);
-    return candidateMatched && hasExplicitAccountIdentity(account, normalizedTarget);
-  });
-  return matches.length === 1 ? matches[0] : null;
+  return ctx.accountMatcher(accountName).account;
 }
 
 async function resolveAccountInput(

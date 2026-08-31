@@ -17,9 +17,11 @@ import { toNumber } from "@/lib/date-utils";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 
-import { CalendarDays, CalendarSync, ChartLine, Download, Pause, Pencil, Percent, Play, Settings2, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { CalendarDays, CalendarSync, ChartLine, Download, Pause, Pencil, Play, Settings2, SlidersHorizontal, Trash2, X } from "lucide-react";
 
 import { FundConfirmDaysModal } from "@/components/FundConfirmDaysModal";
+import { FundProfileSettingsModal } from "@/components/FundProfileSettingsModal";
+import type { FundProfileNavigationItem } from "@/components/FundProfileSettingsClient";
 import { InvestmentFormModal } from "@/components/InvestmentFormModal";
 import { allocateBuyFailedRefunds, findLinkedEntries, getConfirmedBuyAmount, getEffectiveBuyUnitsByRefunds, type RefundLinkableEntry } from "@/lib/fund/refund-link";
 
@@ -685,6 +687,14 @@ export function FundShell(props: Props) {
     setConfirmDaysModalTab(initialTab);
     setConfirmDaysModalOpen(true);
   }, []);
+  const [fundSettingsCode, setFundSettingsCode] = useState<string | null>(null);
+  const [fundSettingsName, setFundSettingsName] = useState<string | null>(null);
+  const openFundSettings = useCallback((code: string | null | undefined, name?: string | null) => {
+    const normalizedCode = String(code ?? "").trim();
+    if (!/^\d{6}$/.test(normalizedCode)) return;
+    setFundSettingsCode(normalizedCode);
+    setFundSettingsName(name?.trim() || null);
+  }, []);
 
   const [showCleared, setShowCleared] = useState(initialShowCleared);
 
@@ -708,7 +718,18 @@ export function FundShell(props: Props) {
 
   const [adjustedNavByCode, setAdjustedNavByCode] = useState<Record<string, { nav: number; date: string }>>({});
 
-  const [localData, setLocalData] = useState({ positions, clearedPositions, allEntries, totalMarketValue, totalCost, totalHistoricalProfit, confirmDaysMap, feeRateMap });
+  const [localData, setLocalData] = useState({
+    positions,
+    clearedPositions,
+    allEntries,
+    totalMarketValue,
+    totalCost,
+    positionHistoricalProfit: positions.reduce((sum: number, row: any) => sum + toNumber(row.historicalProfit ?? 0), 0),
+    clearedHistoricalProfit: clearedPositions.reduce((sum: number, row: any) => sum + toNumber(row.historicalProfit ?? 0), 0),
+    totalHistoricalProfit,
+    confirmDaysMap,
+    feeRateMap,
+  });
   const [fetchedFundNames, setFetchedFundNames] = useState<Record<string, string>>({});
   const [regularPlans, setRegularPlans] = useState<any[]>([]);
   const [editingRegularPlan, setEditingRegularPlan] = useState<any | null>(null);
@@ -755,6 +776,20 @@ export function FundShell(props: Props) {
 
   // Shadow props with reactive local state
   const d = localData;
+
+  const fundSettingsFunds = useMemo<FundProfileNavigationItem[]>(() => {
+    const map = new Map<string, FundProfileNavigationItem>();
+    for (const position of [...(d.positions || []), ...(d.clearedPositions || [])] as any[]) {
+      const code = String(position?.fundCode ?? "").trim();
+      if (!/^\d{6}$/.test(code) || map.has(code)) continue;
+      const name = String(position?.name ?? position?.fundName ?? "").trim();
+      map.set(code, { fundCode: code, fundName: name && name !== code ? name : null });
+    }
+    if (fundSettingsCode && !map.has(fundSettingsCode)) {
+      map.set(fundSettingsCode, { fundCode: fundSettingsCode, fundName: fundSettingsName });
+    }
+    return Array.from(map.values()).sort((a, b) => a.fundCode.localeCompare(b.fundCode));
+  }, [d.clearedPositions, d.positions, fundSettingsCode, fundSettingsName]);
 
   useEffect(() => {
     if (!detailEditSignal) return;
@@ -846,7 +881,18 @@ export function FundShell(props: Props) {
   const [batchDeleting, setBatchDeleting] = useState(false);
 
   useEffect(() => {
-    setLocalData({ positions, clearedPositions, allEntries, totalMarketValue, totalCost, totalHistoricalProfit, confirmDaysMap, feeRateMap });
+    setLocalData({
+      positions,
+      clearedPositions,
+      allEntries,
+      totalMarketValue,
+      totalCost,
+      positionHistoricalProfit: positions.reduce((sum: number, row: any) => sum + toNumber(row.historicalProfit ?? 0), 0),
+      clearedHistoricalProfit: clearedPositions.reduce((sum: number, row: any) => sum + toNumber(row.historicalProfit ?? 0), 0),
+      totalHistoricalProfit,
+      confirmDaysMap,
+      feeRateMap,
+    });
     setFundCode(initialFundCode || "");
     setShowCleared(initialShowCleared);
     setFundPage(1);
@@ -1491,6 +1537,8 @@ export function FundShell(props: Props) {
               allEntries: nextAllEntries,
               totalMarketValue: json.totalMarketValue,
               totalCost: json.totalCost,
+              positionHistoricalProfit: json.positionHistoricalProfit ?? 0,
+              clearedHistoricalProfit: json.clearedHistoricalProfit ?? 0,
               totalHistoricalProfit: json.totalHistoricalProfit,
               confirmDaysMap: json.confirmDaysMap,
               feeRateMap: json.feeRateMap,
@@ -1580,6 +1628,8 @@ export function FundShell(props: Props) {
                 allEntries: nextAllEntries,
                 totalMarketValue: json.totalMarketValue,
                 totalCost: json.totalCost,
+                positionHistoricalProfit: json.positionHistoricalProfit ?? 0,
+                clearedHistoricalProfit: json.clearedHistoricalProfit ?? 0,
                 totalHistoricalProfit: json.totalHistoricalProfit,
                 confirmDaysMap: json.confirmDaysMap,
                 feeRateMap: json.feeRateMap,
@@ -1648,6 +1698,21 @@ export function FundShell(props: Props) {
     () => ([...(d.positions || []), ...(d.clearedPositions || [])] as any[]).find((p: any) => positionAssetKey(p) === fundCode) ?? null,
     [d.positions, d.clearedPositions, fundCode, positionAssetKey],
   );
+  const selectedFundDisplayName = useMemo(() => {
+    if (!fundCode) return "";
+    if (isWealthAccount) return String(selectedPosition?.name ?? "").trim();
+    const candidates = [
+      selectedAnyPosition?.name,
+      selectedPosition?.name,
+      fundNameByCode.get(fundCode),
+      fetchedFundNames[fundCode],
+    ];
+    for (const candidate of candidates) {
+      const name = String(candidate ?? "").trim();
+      if (name && !isGenericFundName(name, fundCode)) return name;
+    }
+    return fundCode;
+  }, [fetchedFundNames, fundCode, fundNameByCode, isWealthAccount, selectedAnyPosition?.name, selectedPosition?.name]);
   const selectedFundCodeCls = selectedPosition ? pnl(toNumber(selectedPosition.historicalProfit ?? selectedPosition.floatingPnL ?? 0)) : "text-slate-500";
   const selectedFundChartEntries = useMemo<FundChartEntry[]>(() => {
     if (!fundCode || isMetalAccount || isWealthAccount) return [];
@@ -1668,7 +1733,7 @@ export function FundShell(props: Props) {
     return selectedFundFirstBuyDate && selectedFundFirstBuyDate < oneYearAgo ? selectedFundFirstBuyDate : oneYearAgo;
   }, [selectedFundFirstBuyDate]);
   const showSelectedFundChart = Boolean(fundChartOpen && fundCode && !isMetalAccount && !isWealthAccount);
-  const selectedFundNameForChart = String(selectedAnyPosition?.name ?? "").trim() || fundNameByCode.get(fundCode) || fetchedFundNames[fundCode] || fundCode;
+  const selectedFundNameForChart = selectedFundDisplayName || fundCode;
   const selectedFundConfirmDays = Number(d.confirmDaysMap?.[fundCode] ?? selectedAccount?.defaultConfirmDays ?? 0) || 0;
 
   useEffect(() => {
@@ -1913,7 +1978,20 @@ export function FundShell(props: Props) {
         {!isMetalAccount ? (
           <>
             <AddNavButton accountId={accountId} positions={[p]} defaultFundCode={p.fundCode} trigger="icon" wealthMode={isWealthAccount} />
-            <div ref={menuOpen ? positionSettingsMenuRef : null} className="relative">
+            {!isWealthAccount ? <button
+              type="button"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                openFundSettings(p.fundCode || positionKey, p.name);
+              }}
+              className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+              title={t("fundSettings.title")}
+              aria-label={t("fundSettings.title")}
+            >
+              <Settings2 className="h-3.5 w-3.5" />
+            </button> : null}
+            {plan ? <div ref={menuOpen ? positionSettingsMenuRef : null} className="relative">
               <button
                 type="button"
                 onClick={(event) => {
@@ -1922,12 +2000,12 @@ export function FundShell(props: Props) {
                   setPositionSettingsMenu(menuOpen ? null : settingsKey);
                 }}
                 className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
-                title={t("fundRules.title")}
-                aria-label={t("fundRules.title")}
+                title={t("detailView.fundRegularInvest")}
+                aria-label={t("detailView.fundRegularInvest")}
                 aria-haspopup="menu"
                 aria-expanded={menuOpen}
               >
-                <Settings2 className="h-3.5 w-3.5" />
+                <CalendarSync className="h-3.5 w-3.5" />
               </button>
               {menuOpen ? (
                 <div
@@ -1935,36 +2013,11 @@ export function FundShell(props: Props) {
                   role="menu"
                   onClick={(event) => event.stopPropagation()}
                 >
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPositionSettingsMenu(null);
-                      openConfirmDaysModal(p.fundCode || positionKey, p.name || null, "confirm");
-                    }}
-                    className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-slate-700 hover:bg-blue-50"
-                    role="menuitem"
-                  >
-                    <CalendarDays className="h-3.5 w-3.5 text-slate-500" />{t("fundRules.tab.confirm")}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPositionSettingsMenu(null);
-                      openConfirmDaysModal(p.fundCode || positionKey, p.name || null, "fee");
-                    }}
-                    className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-slate-700 hover:bg-blue-50"
-                    role="menuitem"
-                  >
-                    <Percent className="h-3.5 w-3.5 text-slate-500" />{t("fundRules.tab.fee")}
-                  </button>
-                  {plan ? (
-                    <>
-                      <div className="my-1 border-t border-slate-100" />
-                      <div className="flex h-7 items-center gap-1.5 px-3 text-[11px] font-medium text-slate-500">
-                        <CalendarSync className={`h-3.5 w-3.5 ${plan.status === "paused" ? "text-amber-600" : "text-blue-600"}`} />
-                        {t("detailView.fundRegularInvest")}
-                      </div>
-                      {plan.status === "active" ? (
+                  <div className="flex h-7 items-center gap-1.5 px-3 text-[11px] font-medium text-slate-500">
+                    <CalendarSync className={`h-3.5 w-3.5 ${plan.status === "paused" ? "text-amber-600" : "text-blue-600"}`} />
+                    {t("detailView.fundRegularInvest")}
+                  </div>
+                  {plan.status === "active" ? (
                         <button
                           type="button"
                           disabled={regularPlanActionBusy || regularPlanBusyId === plan.id}
@@ -1974,7 +2027,7 @@ export function FundShell(props: Props) {
                         >
                           <Pause className="h-3.5 w-3.5" />{t("fundShell.plan.pause")}
                         </button>
-                      ) : (
+                  ) : (
                         <button
                           type="button"
                           disabled={regularPlanActionBusy || regularPlanBusyId === plan.id}
@@ -1984,23 +2037,21 @@ export function FundShell(props: Props) {
                         >
                           <Play className="h-3.5 w-3.5" />{t("fundShell.plan.continue")}
                         </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingRegularPlan(plan);
-                          setPositionSettingsMenu(null);
-                        }}
-                        className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-blue-700 hover:bg-blue-50"
-                        role="menuitem"
-                      >
-                        <Pencil className="h-3.5 w-3.5" />{t("common.edit")}
-                      </button>
-                    </>
-                  ) : null}
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingRegularPlan(plan);
+                      setPositionSettingsMenu(null);
+                    }}
+                    className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-blue-700 hover:bg-blue-50"
+                    role="menuitem"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />{t("common.edit")}
+                  </button>
                 </div>
               ) : null}
-            </div>
+            </div> : null}
             {!isWealthAccount ? (
               <button
                 type="button"
@@ -2031,7 +2082,7 @@ export function FundShell(props: Props) {
     fundCode,
     isMetalAccount,
     isWealthAccount,
-    openConfirmDaysModal,
+    openFundSettings,
     positionAssetKey,
     regularPlanActionBusy,
     regularPlanBusyId,
@@ -2244,10 +2295,10 @@ export function FundShell(props: Props) {
         marketValue: <span className={`tabular-nums ${pnl(d.totalMarketValue)}`}>{formatMoney(d.totalMarketValue)}</span>,
         floatingPnL: <span className={`tabular-nums ${pnl(floatingProfit)}`}>{formatMoney(floatingProfit)}</span>,
         floatingRate: <span className={`tabular-nums ${pnl(floatingProfit)}`}>{d.totalCost !== 0 ? formatPercent(floatingProfit / d.totalCost) : "-"}</span>,
-        historical: <span className={`tabular-nums ${pnl(d.totalHistoricalProfit)}`}>{formatMoney(d.totalHistoricalProfit)}</span>,
+        historical: <span className={`tabular-nums ${pnl(d.positionHistoricalProfit)}`}>{formatMoney(d.positionHistoricalProfit)}</span>,
       },
     };
-  }, [d.positions.length, d.totalCost, d.totalHistoricalProfit, d.totalMarketValue, pnl, t]);
+  }, [d.positions.length, d.totalCost, d.totalMarketValue, d.positionHistoricalProfit, pnl, t]);
 
 
   const cashAccountInfoOf = useCallback((e: any) => {
@@ -3485,7 +3536,7 @@ export function FundShell(props: Props) {
 
                 const totalRedeemAmt = sortedClearedPositions.reduce((s: number, c: any) => s + c.totalRedeemAmount, 0);
 
-                const totalReturnRate = totalBuyAmt > 0 ? (d.totalHistoricalProfit / totalBuyAmt) : 0;
+                const totalReturnRate = totalBuyAmt > 0 ? (d.clearedHistoricalProfit / totalBuyAmt) : 0;
 
                 return (
 
@@ -3499,7 +3550,7 @@ export function FundShell(props: Props) {
 
                       <td className="px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums text-slate-800">{formatMoney(totalRedeemAmt)}</td>
 
-                      <td className={`px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums ${pnl(d.totalHistoricalProfit)}`}>{formatMoney(d.totalHistoricalProfit)}</td>
+                      <td className={`px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums ${pnl(d.clearedHistoricalProfit)}`}>{formatMoney(d.clearedHistoricalProfit)}</td>
 
                       <td className={`px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums ${pnl(totalReturnRate)}`}>{totalBuyAmt > 0 ? formatPercent(totalReturnRate) : "-"}</td>
 
@@ -3540,6 +3591,7 @@ export function FundShell(props: Props) {
               editingRegularPlan.plan?.secondaryExecutionDay ??
               null,
             startDate: String(editingRegularPlan.startDate ?? "").slice(0, 10),
+            nextRunDate: editingRegularPlan.nextRunDate ? String(editingRegularPlan.nextRunDate).slice(0, 10) : null,
             endDate: editingRegularPlan.endDate ? String(editingRegularPlan.endDate).slice(0, 10) : null,
             totalRuns: editingRegularPlan.totalRuns ?? null,
             cashAccountId: editingRegularPlan.cashAccountId ?? null,
@@ -3627,6 +3679,22 @@ export function FundShell(props: Props) {
         initialTab={confirmDaysModalTab}
       />
 
+      <FundProfileSettingsModal
+        open={fundSettingsCode !== null}
+        account={{
+          id: accountId,
+          name: selectedAccount?.name ?? t("viewImport.fundAccount"),
+          institutionName: selectedAccount?.Institution?.shortName?.trim() || selectedAccount?.Institution?.name?.trim() || null,
+        }}
+        fundCode={fundSettingsCode ?? ""}
+        fallbackFundName={fundSettingsName}
+        funds={fundSettingsFunds}
+        onClose={() => {
+          setFundSettingsCode(null);
+          setFundSettingsName(null);
+        }}
+      />
+
       <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden">
 
       {/* Transaction details */}
@@ -3672,7 +3740,7 @@ export function FundShell(props: Props) {
 
             {fundCode && (
               <span className={`ml-2 text-xs font-normal ${selectedFundCodeCls}`}>
-                {isWealthAccount ? selectedPosition?.name ?? "" : fundCode}
+                {isWealthAccount ? selectedPosition?.name ?? "" : selectedFundDisplayName}
               </span>
             )}
 
@@ -3686,7 +3754,7 @@ export function FundShell(props: Props) {
               <FundUnitsReconcileButton
                 accountId={accountId}
                 fundCode={fundCode}
-                fundName={selectedAnyPosition?.name ?? selectedPosition?.name ?? fundNameByCode.get(fundCode) ?? null}
+                fundName={selectedFundDisplayName || null}
                 currentUnits={toNumber(selectedPosition?.units ?? 0)}
                 fundUnitsDecimals={fundUnitsDecimals}
               />

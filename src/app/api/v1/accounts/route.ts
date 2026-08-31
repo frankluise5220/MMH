@@ -36,6 +36,7 @@ import {
 } from "@/lib/account-institution-rules";
 import { normalizeCurrency } from "@/lib/currency";
 import { normalizeFixedAssetType } from "@/lib/fixed-asset";
+import { normalizeDebtDirection } from "@/lib/debt";
 import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import {
   ensureInitialCreditCardBillingDayRules,
@@ -106,6 +107,7 @@ export async function POST(req: NextRequest) {
     const requestedInstitutionId = String(body.institutionId ?? "").trim() || null;
     const requestedCounterpartyId = String(body.counterpartyId ?? "").trim() || null;
     const requestedUserId = String(body.userId ?? "").trim() || null;
+    const isConsumerLoan = body.isConsumerLoan === true || String(body.isConsumerLoan ?? "").trim().toLowerCase() === "true";
     const isInvestment = kind === "investment";
     const isCreditLike = kind === "bank_credit";
     const investProductType = isInvestment ? normalizeFundProductType(body.investProductType) : null;
@@ -115,6 +117,9 @@ export async function POST(req: NextRequest) {
     const initialBalance = initialBalanceRaw ? Number(initialBalanceRaw) : null;
     const initialBalanceDate = initialBalanceRaw ? parseDateOnly(body.initialBalanceDate) : null;
 
+    if (isConsumerLoan && kind !== "loan") {
+      return NextResponse.json({ ok: false, code: "CONSUMER_LOAN_KIND_REQUIRED", error: "Consumer loan accounts must use loan account kind" }, { status: 400 });
+    }
     if (!name) return NextResponse.json({ ok: false, code: "NAME_REQUIRED", error: "名称必填" }, { status: 400 });
     if (initialBalanceRaw && !Number.isFinite(initialBalance)) {
       return NextResponse.json({ ok: false, code: "INVALID_BALANCE", error: "余额必须是有效数字" }, { status: 400 });
@@ -136,6 +141,9 @@ export async function POST(req: NextRequest) {
       ? await prisma.institution.findFirst({ where: { id: requestedInstitutionId, householdId } })
       : null;
     if (requestedInstitutionId && !institution) return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "机构不存在或不属于当前账簿" }, { status: 400 });
+    if (isConsumerLoan && (!institution || institution.type !== "debt")) {
+      return NextResponse.json({ ok: false, code: "CONSUMER_LOAN_INSTITUTION_REQUIRED", error: "Consumer loan accounts must be linked to a lending institution" }, { status: 400 });
+    }
     if (isStockInvestmentAccount(kind, investProductType) && !isStockAccountInstitutionType(institution?.type)) {
       return NextResponse.json({ ok: false, code: "STOCK_ACCOUNT_INSTITUTION_REQUIRED", error: STOCK_ACCOUNT_INSTITUTION_ERROR }, { status: 400 });
     }
@@ -143,6 +151,9 @@ export async function POST(req: NextRequest) {
       ? await prisma.counterparty.findFirst({ where: { id: requestedCounterpartyId, householdId } })
       : null;
     if (requestedCounterpartyId && !counterparty) return NextResponse.json({ ok: false, code: "COUNTERPARTY_NOT_FOUND", error: "往来对象不存在或不属于当前账簿" }, { status: 400 });
+    if (isConsumerLoan && requestedCounterpartyId) {
+      return NextResponse.json({ ok: false, code: "CONSUMER_LOAN_COUNTERPARTY_FORBIDDEN", error: "Consumer loan accounts must not be linked to a counterparty" }, { status: 400 });
+    }
 
     const owner = requestedUserId
       ? await prisma.user.findFirst({ where: { id: requestedUserId, householdId } })
@@ -183,6 +194,7 @@ export async function POST(req: NextRequest) {
       numberMasked,
     });
 
+    const requestedDebtDirection = body.debtDirection !== undefined ? normalizeDebtDirection(kind, body.debtDirection) : null;
     const supportsDefaultFundQueryApi = isInvestment && (investProductType === "fund" || investProductType === "money");
     const shouldCreateInitialBalance = !isInvestment && initialBalance != null && initialBalance !== 0;
     let brokerageCashAccount: Awaited<ReturnType<typeof ensureBrokerageCashAccountForStockAccount>> = null;
@@ -191,12 +203,16 @@ export async function POST(req: NextRequest) {
         data: {
           name,
           kind,
-          debtDirection: kind === "bank_credit" ? "payable" : null,
-          ...(kind === "loan" && counterparty?.id ? { debtDirection: "receivable" } : {}),
+          debtDirection: kind === "bank_credit" || isConsumerLoan
+            ? "payable"
+            : kind === "loan" && !isConsumerLoan && (counterparty?.id || institution?.id)
+              ? requestedDebtDirection ?? (institution?.id ? "payable" : "receivable")
+              : null,
+          isConsumerLoan,
           currency,
           groupId: ensuredGroup.id,
           institutionId: institution?.id ?? null,
-          counterpartyId: counterparty?.id ?? null,
+          counterpartyId: isConsumerLoan ? null : counterparty?.id ?? null,
           userId: owner?.id ?? null,
           householdId,
           isActive: true,
@@ -315,6 +331,9 @@ export async function PUT(req: NextRequest) {
     if (body.groupId !== undefined) data.groupId = String(body.groupId).trim() || null;
     if (body.institutionId !== undefined) data.institutionId = String(body.institutionId).trim() || null;
     if (body.counterpartyId !== undefined) data.counterpartyId = String(body.counterpartyId).trim() || null;
+    if (body.isConsumerLoan !== undefined) {
+      data.isConsumerLoan = body.isConsumerLoan === true || String(body.isConsumerLoan ?? "").trim().toLowerCase() === "true";
+    }
     if (body.note !== undefined) data.note = String(body.note ?? "").trim() || null;
 
     if (body.fundUnitsDecimals !== undefined) {
@@ -322,12 +341,16 @@ export async function PUT(req: NextRequest) {
     }
 
     const nextKind = String(data.kind ?? existing.kind);
+    const nextIsConsumerLoan = data.isConsumerLoan === undefined ? existing.isConsumerLoan : data.isConsumerLoan === true;
+    if (nextIsConsumerLoan && nextKind !== "loan") {
+      return NextResponse.json({ ok: false, code: "CONSUMER_LOAN_KIND_REQUIRED", error: "Consumer loan accounts must use loan account kind" }, { status: 400 });
+    }
     const nextCounterpartyId = data.counterpartyId === undefined ? existing.counterpartyId : (data.counterpartyId ? String(data.counterpartyId) : null);
     const nextCounterparty = nextCounterpartyId
       ? await prisma.counterparty.findFirst({ where: { id: nextCounterpartyId, householdId } })
       : null;
     if (nextCounterpartyId && !nextCounterparty) return NextResponse.json({ ok: false, code: "COUNTERPARTY_NOT_FOUND", error: "往来对象不存在或不属于当前账簿" }, { status: 400 });
-    data.debtDirection = nextKind === "bank_credit" ? "payable" : nextKind === "loan" && nextCounterparty ? "receivable" : null;
+    const requestedDebtDirection = body.debtDirection !== undefined ? normalizeDebtDirection(nextKind, body.debtDirection) : null;
     if (nextKind === "bank_credit") {
       data.billingDay = body.billingDay !== undefined ? parseDay(body.billingDay) : existing.billingDay;
       data.repaymentDay = body.repaymentDay !== undefined ? parseDay(body.repaymentDay) : existing.repaymentDay;
@@ -347,7 +370,7 @@ export async function PUT(req: NextRequest) {
         : null;
       data.creditBillMode = normalizeCreditBillMode(null);
     }
-    if (nextKind !== "loan") {
+    if (nextKind !== "loan" || nextIsConsumerLoan) {
       data.counterpartyId = null;
     } else if (data.counterpartyId === undefined) {
       data.counterpartyId = nextCounterparty?.id ?? existing.counterpartyId ?? null;
@@ -399,14 +422,25 @@ export async function PUT(req: NextRequest) {
     if (nextInstitutionId) {
       if (!nextInstitution) return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "机构不存在或不属于当前账簿" }, { status: 400 });
     }
+    if (nextIsConsumerLoan && (!nextInstitution || nextInstitution.type !== "debt")) {
+      return NextResponse.json({ ok: false, code: "CONSUMER_LOAN_INSTITUTION_REQUIRED", error: "Consumer loan accounts must be linked to a lending institution" }, { status: 400 });
+    }
     if (isStockInvestmentAccount(nextKind, nextInvestProductTypeForInstitution) && !isStockAccountInstitutionType(nextInstitution?.type)) {
       return NextResponse.json({ ok: false, code: "STOCK_ACCOUNT_INSTITUTION_REQUIRED", error: STOCK_ACCOUNT_INSTITUTION_ERROR }, { status: 400 });
     }
+    const hasDebtOwner = Boolean(nextCounterparty?.id || nextInstitution?.id);
+    data.debtDirection = nextKind === "bank_credit" || nextIsConsumerLoan
+      ? "payable"
+      : nextKind === "loan" && hasDebtOwner
+        ? requestedDebtDirection ?? existing.debtDirection ?? (nextInstitution?.id ? "payable" : "receivable")
+        : null;
     await assertAccountIdentityUnique(prisma, {
       householdId,
       groupId: nextGroupId,
       institutionId: nextInstitutionId,
-      counterpartyId: (data.counterpartyId === undefined ? existing.counterpartyId : data.counterpartyId) as string | null,
+      counterpartyId: (nextIsConsumerLoan
+        ? null
+        : data.counterpartyId === undefined ? existing.counterpartyId : data.counterpartyId) as string | null,
       kind: nextKind,
       name: nextName,
       numberMasked: nextNumberMasked,

@@ -145,7 +145,12 @@ data class AssetDistributionItemDto(
     val pct: Double = 0.0
 )
 
-/** 账户余额展示行（投资账户 balance 字段即 marketValue） */
+/**
+ * 账户余额展示行（投资账户 balance 字段即 marketValue）。
+ *
+ * balance 是账户原币金额；convertedBalance 是按家庭本位币 baseCurrency 折算后的金额，
+ * 缺少汇率时为 null，客户端不得按 1:1 当作本位币展示。
+ */
 @Serializable
 data class AccountListRowDto(
     val id: String = "",
@@ -153,10 +158,15 @@ data class AccountListRowDto(
     val kind: String = "other",
     val balance: Double = 0.0,
     val groupName: String? = null,
-    val institutionName: String? = null
+    val institutionName: String? = null,
+    val currency: String = "CNY",
+    val convertedBalance: Double? = null,
+    val fxRate: Double? = null,
+    val fxRateDate: String? = null,
+    val fxRateMissing: Boolean = false
 )
 
-/** 信用卡账户展示行 */
+/** 信用卡账户展示行。金额字段为原币，converted* 为折算到本位币的镜像值。 */
 @Serializable
 data class CreditAccountRowDto(
     val id: String = "",
@@ -165,6 +175,11 @@ data class CreditAccountRowDto(
     val balance: Double = 0.0,
     val groupName: String? = null,
     val institutionName: String? = null,
+    val currency: String = "CNY",
+    val convertedBalance: Double? = null,
+    val fxRate: Double? = null,
+    val fxRateDate: String? = null,
+    val fxRateMissing: Boolean = false,
     val creditLimit: Double = 0.0,
     val availableLimit: Double = 0.0,
     val billingDay: Int? = null,
@@ -172,7 +187,11 @@ data class CreditAccountRowDto(
     val currentBill: Double = 0.0,
     val paid: Double = 0.0,
     val remain: Double = 0.0,
-    val dueDate: String? = null
+    val dueDate: String? = null,
+    val convertedCreditLimit: Double? = null,
+    val convertedCurrentBill: Double? = null,
+    val convertedPaid: Double? = null,
+    val convertedCurrentAmount: Double? = null
 )
 
 /** 首页分类汇总。字段名与 /api/v1/overview/summary 保持一致。 */
@@ -185,6 +204,8 @@ data class AccountTypeTotalsDto(
     val investmentMarketValue: Double = 0.0,
     val investmentCost: Double = 0.0,
     val investmentFloatingPnL: Double = 0.0,
+    val fixedAssetMarketValue: Double = 0.0,
+    val fixedAssetCost: Double = 0.0,
     val creditUsed: Double = 0.0,
     val creditLimit: Double = 0.0,
     val creditAvailable: Double = 0.0,
@@ -198,7 +219,7 @@ data class AccountTypeTotalsDto(
     val totalNetWorth: Double = 0.0
 )
 
-/** 投资持仓摘要行（Top N，按市值降序） */
+/** 投资持仓摘要行（Top N，按市值降序）。converted* 为折算到本位币的镜像值。 */
 @Serializable
 data class TopPositionRowDto(
     val accountId: String = "",
@@ -206,7 +227,33 @@ data class TopPositionRowDto(
     val name: String = "",
     val marketValue: Double = 0.0,
     val floatingPnL: Double = 0.0,
-    val floatingPnLRate: Double = 0.0
+    val floatingPnLRate: Double = 0.0,
+    val currency: String = "CNY",
+    val convertedMarketValue: Double? = null,
+    val convertedFloatingPnL: Double? = null,
+    val fxRate: Double? = null,
+    val fxRateMissing: Boolean = false
+)
+
+/**
+ * 固定资产行。固定资产（房产、车辆等）不再计入投资市值，单独展示。
+ * marketValue 是原币金额，convertedMarketValue 是折算到本位币的金额。
+ */
+@Serializable
+data class FixedAssetRowDto(
+    val accountId: String = "",
+    val name: String = "",
+    val assetType: String? = null,
+    val groupName: String? = null,
+    val marketValue: Double = 0.0,
+    val cost: Double = 0.0,
+    val floatingPnL: Double = 0.0,
+    val floatingPnLRate: Double = 0.0,
+    val currency: String = "CNY",
+    val convertedMarketValue: Double? = null,
+    val fxRate: Double? = null,
+    val fxRateDate: String? = null,
+    val fxRateMissing: Boolean = false
 )
 
 /** 总览汇总数据。与网页总览页同一计算源，金额一致。 */
@@ -234,7 +281,15 @@ data class OverviewSummaryDto(
     val investmentMarketValue: Double = 0.0,
     val investmentCost: Double = 0.0,
     val investmentFloatingPnL: Double = 0.0,
-    val investmentFloatingPnLRate: Double = 0.0
+    val investmentFloatingPnLRate: Double = 0.0,
+    val fixedAssetAccountList: List<FixedAssetRowDto> = emptyList(),
+    val fixedAssetCount: Int = 0,
+    val fixedAssetMarketValue: Double = 0.0,
+    val fixedAssetCost: Double = 0.0,
+    val fixedAssetFloatingPnL: Double = 0.0,
+    val fixedAssetFloatingPnLRate: Double = 0.0,
+    val baseCurrency: String = "CNY",
+    val missingFxCurrencies: List<String> = emptyList()
 )
 
 /** GET /api/v1/overview/summary 响应 */
