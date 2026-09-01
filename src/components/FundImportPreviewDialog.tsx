@@ -29,6 +29,7 @@ import { addTradingDaysUtc } from "@/lib/date-utils";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision-core";
 import { useI18n } from "@/lib/i18n";
+import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
 
 export type FundImportDialogContext = {
   fundAccountId?: string;
@@ -714,7 +715,7 @@ function buildPreviewAccountDisplayOption(account: FundPreviewAccount): AccountD
           name: account.AccountGroup.name ?? null,
         }
       : null,
-  });
+  }, undefined, { fields: getAccountLabelFieldsPreference() });
 }
 
 export function FundImportPreviewDialog({ open, file, context, onClose, onImported }: Props) {
@@ -811,12 +812,12 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
 
   const previewAccountLabel = useCallback((accountId: string | null | undefined, fallback: string) => {
     const display = accountId ? accountDisplayById.get(accountId) : undefined;
-    return display ? formatAccountTableLabel(display, fallback) : fallback.trim() || "-";
+    return display ? formatAccountTableLabel(display, fallback, getAccountLabelFieldsPreference()) : fallback.trim() || "-";
   }, [accountDisplayById]);
 
   const previewAccountTitle = useCallback((accountId: string | null | undefined, fallback: string) => {
     const display = accountId ? accountDisplayById.get(accountId) : undefined;
-    return display ? formatAccountTableTitle(display, fallback) : fallback.trim();
+    return display ? formatAccountTableTitle(display, fallback, getAccountLabelFieldsPreference()) : fallback.trim();
   }, [accountDisplayById]);
 
   const previewReplaceFields = useMemo<BatchReplaceFieldConfig<FundPreviewBatchEditField>[]>(

@@ -3,7 +3,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { buildAccountDisplayOption, buildFlatAccountOptions, buildGroupedAccountOptions } from "@/lib/account-display";
 import { buildCategorySmartSelectOptions } from "@/components/categorySmartSelect";
 import { categoryOrderBy } from "@/lib/category-order";
-import { decodeScheduledTaskMemo, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
+import { decodeScheduledTaskMemo, getLoanScheduledPlanRole, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
 import { AccountKind, TransactionType } from "@prisma/client";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { revalidateAfterTxChange } from "@/lib/server/revalidate";
@@ -14,6 +14,7 @@ import { RegularInvestClient } from "./RegularInvestClient";
 import { MobileRegularInvest } from "@/components/mobile/MobileRegularInvest";
 import { resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { isCreditCardRepaymentTransfer, recordMatchesRegularInvestPlan } from "@/lib/transaction-semantics";
+import { getServerAccountLabelFields } from "@/lib/server/account-label-fields";
 import { getServerT } from "@/lib/server/i18n";
 import { createTransaction } from "@/lib/server/sidebar-actions/transaction-actions";
 import { normalizeLoanRepaymentMethod } from "@/lib/loan-repayment";
@@ -109,6 +110,7 @@ function recordMatchesTask(taskType: string, entry: { source: string | null }) {
 export default async function RegularInvestPage() {
   const { hidFilter } = await getHouseholdScope();
   const t = await getServerT();
+  const accountLabelFields = await getServerAccountLabelFields();
 
   const [plans, accounts, groups, institutions, insuranceProducts, categories] = await Promise.all([
     prisma.regularInvestPlan.findMany({
@@ -214,7 +216,7 @@ export default async function RegularInvestPage() {
     }
   }
 
-  const accountOptions = accounts.map((account) => buildAccountDisplayOption(account));
+  const accountOptions = accounts.map((account) => buildAccountDisplayOption(account, undefined, { fields: accountLabelFields }));
   const accountById = new Map(accountOptions.map((account) => [account.id, account]));
   const profileFundNames = await getFundProfileNameMap(
     plans
@@ -251,6 +253,7 @@ export default async function RegularInvestPage() {
       taskAnnualRate: scheduledTask.annualRate ?? null,
       taskRepaymentMethod: scheduledTask.repaymentMethod ? normalizeLoanRepaymentMethod(scheduledTask.repaymentMethod) : null,
       taskRepaymentIntervalMonths: scheduledTask.repaymentIntervalMonths ?? null,
+      taskLoanPlanRole: getLoanScheduledPlanRole(scheduledTask),
       amount: Number(plan.amount),
       feeRate: plan.feeRate ? Number(plan.feeRate) : null,
       startDate: plan.startDate && Number.isFinite(plan.startDate.getTime()) ? plan.startDate.toISOString() : null,

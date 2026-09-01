@@ -13,6 +13,7 @@ import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "@/lib/server/account-label-fields";
 import { getServerT } from "@/lib/server/i18n";
 import { MobileAccounts } from "@/components/mobile/MobileAccounts";
 
@@ -92,6 +93,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
   const ctx = await getHouseholdScope();
   const { hidFilter } = ctx;
   const cookieStore = await cookies();
+  const accountLabelFields = accountLabelFieldsFromCookieValue(cookieStore.get(ACCOUNT_LABEL_FIELDS_COOKIE)?.value);
   const creditCardLabelMode = cookieStore.get("mmh_credit_card_label_mode")?.value === "full_name" ? "full_name" : "short_last4";
   const creditCardLabelTemplate = normalizeCreditCardLabelTemplate(
     cookieStore.get("mmh_credit_card_label_template")?.value,
@@ -154,7 +156,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         investProductType: account.investProductType,
         Institution: account.Institution,
         AccountGroup: account.AccountGroup,
-      }, creditCardLabelTemplate);
+      }, creditCardLabelTemplate, { fields: accountLabelFields });
       return {
         id: account.id,
         name: display.label,
@@ -177,7 +179,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         investProductType: account.investProductType,
         Institution: account.Institution,
         AccountGroup: account.AccountGroup,
-      }, creditCardLabelTemplate);
+      }, creditCardLabelTemplate, { fields: accountLabelFields });
       const cycle = cycleByAccountId.get(account.id);
       const balance = cycle
         ? creditCardDisplayBalanceFromCurrentCycle(cycle)

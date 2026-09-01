@@ -11,7 +11,12 @@ import {
   getEffectiveLoanAnnualRate,
   roundLoanMoney,
 } from "@/lib/loan-repayment";
-import { decodeScheduledTaskMemo, encodeScheduledTaskMemo } from "@/lib/scheduled-task";
+import {
+  decodeScheduledTaskMemo,
+  encodeScheduledTaskMemo,
+  shouldPreferLoanAutoDebitPlan,
+  shouldPreferLoanScheduledPlan,
+} from "@/lib/scheduled-task";
 import {
   DEFAULT_LOAN_PREPAY_STRATEGY,
   parseLoanPrepayStrategy,
@@ -124,7 +129,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, code: "INVALID_START_DATE", error: "重算起始日期不正确" }, { status: 400 });
     }
 
-    const plan = await prisma.regularInvestPlan.findFirst({
+    const plans = await prisma.regularInvestPlan.findMany({
       where: {
         householdId,
         accountId,
@@ -138,6 +143,13 @@ export async function POST(req: Request) {
       },
       orderBy: [{ status: "asc" }, { nextRunDate: "asc" }],
     });
+    let scheduledPlan: (typeof plans)[number] | null = null;
+    let autoDebitPlan: (typeof plans)[number] | null = null;
+    for (const candidate of plans) {
+      if (shouldPreferLoanScheduledPlan(candidate, scheduledPlan)) scheduledPlan = candidate;
+      if (shouldPreferLoanAutoDebitPlan(candidate, autoDebitPlan)) autoDebitPlan = candidate;
+    }
+    const plan = autoDebitPlan ?? scheduledPlan;
     if (!plan) return NextResponse.json({ ok: false, code: "RECALC_PLAN_NOT_FOUND", error: "未找到可重算的还款计划" }, { status: 404 });
 
     const memo = decodeScheduledTaskMemo(plan.memo);

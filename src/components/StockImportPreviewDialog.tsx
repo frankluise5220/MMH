@@ -22,12 +22,17 @@ import {
 } from "@/lib/account-display";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
+import { addTradingDaysUtc } from "@/lib/date-utils";
 import { useI18n } from "@/lib/i18n";
+import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
 
 export type StockImportUploadItem = {
   rawText?: string;
   tradeDate: string;
   settleDate?: string | null;
+  stockAccount?: string;
+  stockAccountId?: string | null;
+  accountId?: string | null;
   action: string;
   market?: string;
   stockCode: string;
@@ -90,10 +95,11 @@ type StockImportPreviewItem = StockImportUploadItem & {
 };
 
 type StockPreviewTableRow = StockImportPreviewItem & { idx: number };
-type StockPreviewBatchEditField = "fee" | "settleDate" | "bankAccount";
+type StockPreviewBatchEditField = "fee" | "settleDate" | "stockAccount" | "bankAccount";
 type StockPreviewEditField =
   | "tradeDate"
   | "settleDate"
+  | "stockAccount"
   | "action"
   | "market"
   | "stockCode"
@@ -160,16 +166,20 @@ function stockActionLabel(action: string, t: TranslateFn) {
   return label === key ? action || "-" : label;
 }
 
-function hasBlockingIssue(item: StockImportPreviewItem | undefined) {
-  return !!item?.issues.some((issue) => issue.level === "error");
-}
-
 function selectableIndexes(items: StockImportPreviewItem[]) {
-  return new Set(items.flatMap((item, index) => hasBlockingIssue(item) ? [] : [index]));
+  return new Set(items.map((_, index) => index));
 }
 
 function isValidDate(value: string) {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function applyStockSettleDateOffset(item: StockImportUploadItem, value: string) {
+  const offset = evaluateCalcInputExpression(value, 0);
+  if (offset == null || !Number.isInteger(offset) || offset < 0) return undefined;
+  const tradeDate = String(item.tradeDate ?? "").trim();
+  if (!isValidDate(tradeDate)) return undefined;
+  return addTradingDaysUtc(tradeDate, offset);
 }
 
 function cleanText(value: unknown) {
@@ -189,6 +199,10 @@ function isBuySellAction(action: string) {
 
 function isCashLikeAccount(account: BookAccount) {
   return account.kind === "cash" || account.kind === "bank_debit" || account.kind === "ewallet";
+}
+
+function isStockAccount(account: BookAccount) {
+  return account.kind === "investment" && account.investProductType === "stock";
 }
 
 const STOCK_PREVIEW_ACTIONS = [
@@ -217,6 +231,7 @@ const STOCK_PREVIEW_COMPONENT_FEE_FIELDS = [
 const STOCK_PREVIEW_FIELD_LABEL_KEYS: Record<StockPreviewEditField, string> = {
   tradeDate: "detail.column.date",
   settleDate: "stockTx.settleDateLabel",
+  stockAccount: "viewImport.stockAccount",
   action: "depositShell.colAction",
   market: "reports.stock.market",
   stockCode: "stockTx.stockCodeLabel",
@@ -264,7 +279,88 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
       })))
   ), [previewItems, selected, t]);
   const errorIssues = useMemo(() => importIssues.filter((issue) => issue.level === "error"), [importIssues]);
-  const warningIssues = useMemo(() => importIssues.filter((issue) => issue.level === "warning"), [importIssues]);
+  const allImportIssues = useMemo(() => (
+    previewItems.flatMap((item, idx) => item.issues.map((issue) => ({
+      idx,
+      ...issue,
+      message: stockIssueMessage(issue, t),
+    })))
+  ), [previewItems, t]);
+  const allErrorIssues = useMemo(() => allImportIssues.filter((issue) => issue.level === "error"), [allImportIssues]);
+  const allWarningIssues = useMemo(() => allImportIssues.filter((issue) => issue.level === "warning"), [allImportIssues]);
+  const previewErrorText = useMemo(() => {
+    if (allErrorIssues.length === 0) return "";
+    const preview = allErrorIssues
+      .slice(0, 6)
+      .map((rowIssue) => formatText(t, "batchImport.issueLine", {
+        index: rowIssue.idx + 1,
+        level: t("batchImport.levelError"),
+        message: rowIssue.message,
+      }))
+      .join("; ");
+    const more = allErrorIssues.length > 6
+      ? formatText(t, "batchImport.previewBlockingMore", { count: allErrorIssues.length - 6 })
+      : "";
+    return `${preview}${more}`;
+  }, [allErrorIssues, t]);
+  const previewWarningText = useMemo(() => {
+    if (allWarningIssues.length === 0) return "";
+    const preview = allWarningIssues
+      .slice(0, 4)
+      .map((rowIssue) => formatText(t, "batchImport.issueLine", {
+        index: rowIssue.idx + 1,
+        level: t("batchImport.levelWarning"),
+        message: rowIssue.message,
+      }))
+      .join("; ");
+    const more = allWarningIssues.length > 4
+      ? formatText(t, "batchImport.previewWarningMore", { count: allWarningIssues.length - 4 })
+      : "";
+    return `${preview}${more}`;
+  }, [allWarningIssues, t]);
+  const stockAccountDisplayOptions = useMemo<AccountDisplayOption[]>(
+    () => bookAccounts
+      .filter(isStockAccount)
+      .map((account) => buildAccountDisplayOption({
+        ...account,
+        Institution: account.Institution
+          ? {
+              name: account.Institution.name ?? null,
+              shortName: account.Institution.shortName ?? null,
+            }
+          : null,
+        AccountGroup: account.AccountGroup
+          ? {
+              id: account.AccountGroup.id,
+              name: account.AccountGroup.name ?? null,
+            }
+          : null,
+      }, undefined, { fields: getAccountLabelFieldsPreference() }))
+      .sort((a, b) => a.selectorLabel.localeCompare(b.selectorLabel, "zh-Hans-CN")),
+    [bookAccounts],
+  );
+  const stockAccountDisplayById = useMemo(
+    () => new Map(stockAccountDisplayOptions.map((account) => [account.id, account])),
+    [stockAccountDisplayOptions],
+  );
+  const stockAccountOptions = useMemo(() => buildGroupedAccountOptions(stockAccountDisplayOptions), [stockAccountDisplayOptions]);
+  const stockAccountBatchOptions = useMemo(
+    () => stockAccountOptions.map((option) => ({
+      value: option.id,
+      label: option.label,
+      subLabel: option.subLabel,
+      title: option.title,
+      color: option.color,
+      isHeader: option.isHeader,
+      isGroup: option.isGroup,
+      parentId: option.parentId,
+      kind: option.kind,
+      investProductType: option.investProductType,
+      institutionId: option.institutionId,
+      currency: option.currency,
+    })),
+    [stockAccountOptions],
+  );
   const bankAccountDisplayOptions = useMemo<AccountDisplayOption[]>(
     () => bookAccounts
       .filter(isCashLikeAccount)
@@ -282,7 +378,7 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
               name: account.AccountGroup.name ?? null,
             }
           : null,
-      }))
+      }, undefined, { fields: getAccountLabelFieldsPreference() }))
       .sort((a, b) => a.selectorLabel.localeCompare(b.selectorLabel, "zh-Hans-CN")),
     [bookAccounts],
   );
@@ -291,14 +387,25 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
     [bankAccountDisplayOptions],
   );
   const bankAccountOptions = useMemo(() => buildGroupedAccountOptions(bankAccountDisplayOptions), [bankAccountDisplayOptions]);
+  const bankAccountBatchOptions = useMemo(
+    () => bankAccountOptions.map((option) => ({
+      value: option.id,
+      label: option.label,
+      subLabel: option.subLabel,
+      title: option.title,
+      color: option.color,
+      isHeader: option.isHeader,
+      isGroup: option.isGroup,
+      parentId: option.parentId,
+      kind: option.kind,
+      investProductType: option.investProductType,
+      institutionId: option.institutionId,
+      currency: option.currency,
+    })),
+    [bankAccountOptions],
+  );
 
   const requestPreview = useCallback(async (sourceItems: StockImportUploadItem[], preserveSelection: boolean) => {
-    if (!context?.stockAccountId) {
-      setMessage(t("viewImport.stockPreview.missingContext"));
-      setPreviewItems([]);
-      setSelected(new Set());
-      return false;
-    }
     setUploading(true);
     try {
       const res = await fetch("/api/v1/stocks/import", {
@@ -306,7 +413,7 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mode: "preview",
-          context,
+          context: context ?? null,
           items: sourceItems,
         }),
       });
@@ -316,7 +423,7 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
       }
       setPreviewItems(data.items);
       setSelected((prev) => preserveSelection
-        ? new Set(Array.from(prev).filter((idx) => idx < data.items!.length && !hasBlockingIssue(data.items![idx])))
+        ? new Set(Array.from(prev).filter((idx) => idx < data.items!.length))
         : selectableIndexes(data.items!));
       setDebugMessage(null);
       setMessage(null);
@@ -382,17 +489,45 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
     },
     {
       value: "settleDate",
-      label: t("stockTx.settleDateLabel"),
-      kind: "date",
-      placeholder: "YYYY-MM-DD",
+      label: t("viewImport.stockPreview.settleDateOffset"),
+      kind: "number",
+      placeholder: t("batchImport.fundPreview.dateOffsetPlaceholder"),
+    },
+    {
+      value: "stockAccount",
+      label: t("viewImport.stockAccount"),
+      kind: "smartSelect",
+      options: stockAccountBatchOptions,
+      placeholder: t("viewImport.stockPreview.stockAccountPlaceholder"),
+      smartSelectBehavior: {
+        search: true,
+        hierarchy: true,
+        clearable: true,
+        minDropdownWidth: 260,
+        fitContent: true,
+        dropdownMaxHeight: 260,
+        density: "micro",
+        resizableDropdown: true,
+      },
     },
     {
       value: "bankAccount",
       label: t("viewImport.bankAccount"),
-      kind: "text",
+      kind: "smartSelect",
+      options: bankAccountBatchOptions,
       placeholder: t("viewImport.stockPreview.bankAccountPlaceholder"),
+      smartSelectBehavior: {
+        search: true,
+        hierarchy: true,
+        clearable: true,
+        minDropdownWidth: 260,
+        fitContent: true,
+        dropdownMaxHeight: 260,
+        density: "micro",
+        resizableDropdown: true,
+      },
     },
-  ], [t]);
+  ], [bankAccountBatchOptions, stockAccountBatchOptions, t]);
 
   const applyPreviewReplace = useCallback(async (field: StockPreviewBatchEditField, value: string) => {
     const selectedIndexes = new Set(Array.from(selected).filter((idx) => uploadItems[idx]));
@@ -412,30 +547,56 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
         return { ...item, fee: Number(nextFee.toFixed(2)) };
       }
       if (field === "settleDate") {
-        const nextDate = value.trim();
-        if (!isValidDate(nextDate)) {
+        const nextDate = applyStockSettleDateOffset(item, value);
+        if (nextDate === undefined) {
           invalid += 1;
           return item;
         }
         changed += 1;
         return { ...item, settleDate: nextDate };
       }
+      if (field === "stockAccount") {
+        const account = stockAccountDisplayById.get(value);
+        if (!account) {
+          invalid += 1;
+          return item;
+        }
+        changed += 1;
+        return {
+          ...item,
+          stockAccount: account.selectorLabel,
+          stockAccountId: account.id,
+          accountId: account.id,
+        };
+      }
+      const account = bankAccountDisplayById.get(value);
+      if (!account) {
+        invalid += 1;
+        return item;
+      }
       changed += 1;
-      return { ...item, bankAccount: value.trim() };
+      return {
+        ...item,
+        bankAccount: account.selectorLabel,
+        bankAccountId: account.id,
+        cashAccountId: account.id,
+      };
     });
     setUploadItems(nextUploadItems);
     await requestPreview(nextUploadItems, true);
     const fieldLabel = field === "fee"
       ? t("stockPanel.colFee")
       : field === "settleDate"
-        ? t("stockTx.settleDateLabel")
-        : t("viewImport.bankAccount");
+        ? t("viewImport.stockPreview.settleDateOffset")
+        : field === "stockAccount"
+          ? t("viewImport.stockAccount")
+          : t("viewImport.bankAccount");
     const invalidSuffix = invalid > 0 ? t("viewImport.stockPreview.invalidRowsSkipped", { count: invalid }) : "";
     return t("viewImport.stockPreview.batchReplaceResult", { count: changed, field: fieldLabel, invalidSuffix });
-  }, [previewItems, requestPreview, selected, t, uploadItems]);
+  }, [bankAccountDisplayById, previewItems, requestPreview, selected, stockAccountDisplayById, t, uploadItems]);
 
   const handleImport = useCallback(async () => {
-    if (importing || !context?.stockAccountId) return;
+    if (importing) return;
     const selectedIndexes = Array.from(selected).sort((a, b) => a - b);
     const selectedItems = selectedIndexes.map((idx) => previewItems[idx]).filter(Boolean);
     if (selectedItems.length === 0) return;
@@ -465,7 +626,7 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mode: "import",
-          context,
+          context: context ?? null,
           items: selectedItems,
         }),
       });
@@ -475,7 +636,9 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
       }
       const created = data.createdCount ?? 0;
       const skipped = data.skippedCount ?? 0;
-      const accountIds = Array.isArray(data.accountIds) ? data.accountIds : [context.stockAccountId];
+      const accountIds = Array.isArray(data.accountIds)
+        ? data.accountIds
+        : [context?.stockAccountId].filter((id): id is string => Boolean(id));
       dispatchFinanceDataChanged({ reason: "stock-excel-import", accountIds });
       onImported?.({ created, skipped, accountIds });
       onClose();
@@ -509,6 +672,7 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
     switch (field) {
       case "tradeDate": return row.tradeDate || "";
       case "settleDate": return row.settleDate || "";
+      case "stockAccount": return row.stockAccountName || row.stockAccount || "";
       case "action": return row.action || "";
       case "market": return row.market || "";
       case "stockCode": return row.stockCode || "";
@@ -560,6 +724,9 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
         break;
       case "settleDate":
         patch = { settleDate: value || null };
+        break;
+      case "stockAccount":
+        patch = { stockAccount: value, stockAccountId: null, accountId: null };
         break;
       case "action":
         patch = { action: value };
@@ -778,6 +945,54 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
     return renderTextCell(row, "market", row.market);
   }
 
+  function renderStockAccountCell(row: StockPreviewTableRow) {
+    const display = stockAccountDisplayById.get(row.stockAccountId ?? "")?.selectorLabel
+      ?? row.stockAccountName
+      ?? row.stockAccount
+      ?? "";
+    if (editingCell?.idx === row.idx && editingCell.field === "stockAccount") {
+      return (
+        <div data-row-double-click-ignore onMouseDown={stopCellEvent} onClick={stopCellEvent} onDoubleClick={stopCellEvent}>
+          <SmartSelect
+            mode="single"
+            value={row.stockAccountId ?? ""}
+            onChange={(accountId) => {
+              const account = stockAccountDisplayById.get(accountId);
+              void patchUploadItem(row.idx, {
+                stockAccountId: accountId || null,
+                accountId: accountId || null,
+                stockAccount: account?.selectorLabel ?? "",
+              });
+            }}
+            options={stockAccountOptions}
+            placeholder={t("viewImport.stockPreview.stockAccountPlaceholder")}
+            behavior={{
+              search: true,
+              hierarchy: true,
+              clearable: true,
+              minDropdownWidth: 240,
+              fitContent: true,
+              dropdownMaxHeight: 220,
+              density: "micro",
+              resizableDropdown: true,
+              autoOpen: true,
+              onDropdownClose: () => setEditingCell(null),
+            }}
+          />
+        </div>
+      );
+    }
+    return (
+      <span
+        className="block min-h-5 w-full truncate cursor-pointer rounded px-1 py-0.5 text-slate-700 hover:bg-slate-100"
+        title={row.stockAccountId ? stockAccountDisplayById.get(row.stockAccountId)?.hoverTitle ?? display : editTitle("stockAccount")}
+        {...editableCellProps(row, "stockAccount")}
+      >
+        {display || "-"}
+      </span>
+    );
+  }
+
   function renderBankAccountCell(row: StockPreviewTableRow) {
     if (editingCell?.idx === row.idx && editingCell.field === "bankAccount") {
       return (
@@ -843,6 +1058,7 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
         );
       },
     },
+    { key: "stockAccount", label: t("viewImport.stockAccount"), width: 180, minWidth: 130, filterText: (row) => row.stockAccountName || row.stockAccount || "-", render: renderStockAccountCell },
     { key: "tradeDate", label: t("detail.column.date"), width: 112, minWidth: 92, filterKind: "dateRange", filterText: (row) => row.tradeDate || "-", sortValue: (row) => row.tradeDate || "", render: (row) => renderTextCell(row, "tradeDate", row.tradeDate, "tabular-nums text-slate-700") },
     { key: "settleDate", label: t("stockTx.settleDateLabel"), width: 112, minWidth: 92, filterKind: "dateRange", filterText: (row) => row.settleDate || "-", sortValue: (row) => row.settleDate || "", render: (row) => renderTextCell(row, "settleDate", row.settleDate, "tabular-nums text-slate-700") },
     { key: "action", label: t("depositShell.colAction"), width: 116, minWidth: 92, filterText: (row) => stockActionLabel(row.action, t), render: renderActionCell },
@@ -863,7 +1079,7 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
     { key: "otherFee", label: t("stockFee.feeType.other"), width: 92, minWidth: 74, align: "right", filterKind: "numberRange", filterText: (row) => formatOptionalNumber(row.otherFee, 2), filterNumber: (row) => row.otherFee, sortValue: (row) => row.otherFee ?? 0, render: (row) => renderNumberCell(row, "otherFee", row.otherFee, 2, "otherFee") },
     { key: "cashAmount", label: t("viewImport.stockPreview.cashAmount"), width: 116, minWidth: 92, align: "right", filterKind: "numberRange", filterText: (row) => formatOptionalNumber(row.cashAmount, 2), filterNumber: (row) => row.cashAmount, sortValue: (row) => row.cashAmount ?? 0, render: (row) => renderNumberCell(row, "netAmount", row.cashAmount, 2, "cashAmount", false) },
     { key: "note", label: t("detail.column.remark"), width: 220, minWidth: 150, filterText: (row) => row.note || "-", render: (row) => renderTextCell(row, "note", row.note) },
-  ], [bankAccountDisplayById, bankAccountOptions, draftValue, editingCell, importing, patchUploadItem, t, uploading]);
+  ], [bankAccountDisplayById, bankAccountOptions, draftValue, editingCell, importing, patchUploadItem, stockAccountDisplayById, stockAccountOptions, t, uploading]);
 
   if (!open) return null;
 
@@ -902,14 +1118,26 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
         <div className="shrink-0 border-b border-slate-200 bg-slate-50 px-4 py-3">
           <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
             <span className="font-medium text-slate-700">{formatText(t, "batchImport.selectedSummary", { selected: selected.size, total: previewItems.length })}</span>
-            {errorIssues.length > 0 ? (
-              <span className="font-medium text-red-600">{formatText(t, "batchImport.errorCount", { count: errorIssues.length })}</span>
+            {allErrorIssues.length > 0 ? (
+              <span className="font-medium text-red-600">{formatText(t, "batchImport.errorCount", { count: allErrorIssues.length })}</span>
             ) : null}
-            {warningIssues.length > 0 ? (
-              <span className="font-medium text-amber-600">{formatText(t, "batchImport.warningCount", { count: warningIssues.length })}</span>
+            {allWarningIssues.length > 0 ? (
+              <span className="font-medium text-amber-600">{formatText(t, "batchImport.warningCount", { count: allWarningIssues.length })}</span>
             ) : null}
             <span className="italic text-slate-500">{t("viewImport.calculatedValueHint")}</span>
           </div>
+          {previewErrorText ? (
+            <div className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+              <div className="font-semibold text-red-800">{t("batchImport.previewBlockingHint")}</div>
+              <div className="mt-1 leading-5">{previewErrorText}</div>
+            </div>
+          ) : null}
+          {previewWarningText ? (
+            <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+              <div className="font-semibold text-amber-800">{t("batchImport.previewWarningHint")}</div>
+              <div className="mt-1 leading-5">{previewWarningText}</div>
+            </div>
+          ) : null}
         </div>
         <div className="min-h-0 flex-1">
           <AdvancedDataTable
@@ -918,15 +1146,14 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
             rows={uploading ? [] : previewRows}
             rowKey={(row) => String(row.idx)}
             emptyText={uploading ? t("batchImport.previewParsing") : t("batchImport.noRecordsForFilter")}
-            minTableWidth={2180}
+            minTableWidth={2360}
             selectable
             selectAllScope="renderedRows"
-            rowSelectable={(row) => !hasBlockingIssue(row)}
             selectedKeys={selectedKeys}
             onSelectionChange={(keys) => {
               setSelected(new Set(Array.from(keys)
                 .map((key) => Number(key))
-                .filter((idx) => Number.isInteger(idx) && !hasBlockingIssue(previewItems[idx]))));
+                .filter((idx) => Number.isInteger(idx) && previewItems[idx])));
             }}
             batchActionSlot={(
               <BatchReplacePopoverButton
@@ -947,8 +1174,8 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
               <div className="flex items-center gap-3 text-xs text-slate-500">
                 <span>{formatText(t, "batchImport.selectedSummary", { selected: selected.size, total: previewItems.length })}</span>
                 <span className="italic">{t("viewImport.calculatedValueHint")}</span>
-                {errorIssues.length > 0 ? <span className="font-medium text-red-600">{formatText(t, "batchImport.errorCount", { count: errorIssues.length })}</span> : null}
-                {warningIssues.length > 0 ? <span className="font-medium text-amber-600">{formatText(t, "batchImport.warningCount", { count: warningIssues.length })}</span> : null}
+                {allErrorIssues.length > 0 ? <span className="font-medium text-red-600">{formatText(t, "batchImport.errorCount", { count: allErrorIssues.length })}</span> : null}
+                {allWarningIssues.length > 0 ? <span className="font-medium text-amber-600">{formatText(t, "batchImport.warningCount", { count: allWarningIssues.length })}</span> : null}
               </div>
             )}
             rowClassName={(row) => {
@@ -967,8 +1194,8 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
         <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3">
           <div className="flex min-w-0 items-center gap-3 text-xs">
             <span className="shrink-0 text-slate-500">{formatText(t, "batchImport.selectedSummary", { selected: selected.size, total: previewItems.length })}</span>
-            {errorIssues.length > 0 ? <span className="shrink-0 font-medium text-red-600">{formatText(t, "batchImport.errorCount", { count: errorIssues.length })}</span> : null}
-            {warningIssues.length > 0 ? <span className="shrink-0 font-medium text-amber-600">{formatText(t, "batchImport.warningCount", { count: warningIssues.length })}</span> : null}
+            {allErrorIssues.length > 0 ? <span className="shrink-0 font-medium text-red-600">{formatText(t, "batchImport.errorCount", { count: allErrorIssues.length })}</span> : null}
+            {allWarningIssues.length > 0 ? <span className="shrink-0 font-medium text-amber-600">{formatText(t, "batchImport.warningCount", { count: allWarningIssues.length })}</span> : null}
           </div>
           <div className="flex items-center justify-end">
             <button

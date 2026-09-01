@@ -4,7 +4,8 @@ import { prisma } from "@/lib/db/prisma";
 import { normalizeDefaultCategoryHierarchyForHousehold } from "@/lib/default-categories";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { loadCommonData } from "@/lib/server/cached-data";
-import { buildAccountDisplayOption } from "@/lib/account-display";
+import { buildAccountDisplayOption, type AccountLabelField } from "@/lib/account-display";
+import { getServerAccountLabelFields } from "@/lib/server/account-label-fields";
 import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 
 export const runtime = "nodejs";
@@ -25,12 +26,15 @@ function withAccountDisplayFields<T extends {
   investProductType?: string | null;
   Institution?: { name: string | null; shortName?: string | null } | null;
   AccountGroup?: { id: string; name: string | null } | null;
-}>(account: T) {
+}>(account: T, fields?: AccountLabelField[] | null) {
   const normalized = normalizeReturnedAccountKind(account);
-  const display = buildAccountDisplayOption(normalized);
+  const display = buildAccountDisplayOption(normalized, undefined, { fields });
   return {
     ...normalized,
     label: display.selectorLabel || display.label,
+    // Table cells render `listLabel`, which follows the configured display
+    // fields (owner and account kind included).
+    listLabel: display.listLabel,
     selectorLabel: display.selectorLabel,
     selectorCoreLabel: display.selectorCoreLabel,
     fullLabel: display.fullLabel,
@@ -48,6 +52,7 @@ function withAccountDisplayFields<T extends {
 export async function GET() {
   try {
     const { householdId, hidFilter } = await getHouseholdScope();
+    const accountLabelFields = await getServerAccountLabelFields();
     await normalizeDefaultCategoryHierarchyForHousehold(prisma, householdId);
     const [{ accounts, groups, institutions, counterparties, categories, tags }, users, baseCurrency] = await Promise.all([
       loadCommonData(hidFilter),
@@ -63,7 +68,7 @@ export async function GET() {
     return NextResponse.json({
       ok: true,
       baseCurrency,
-      accounts: accounts.map(withAccountDisplayFields),
+      accounts: accounts.map((account) => withAccountDisplayFields(account, accountLabelFields)),
       groups,
       institutions,
       counterparties,

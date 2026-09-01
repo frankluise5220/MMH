@@ -21,6 +21,7 @@ import {
   UserRound,
   Table2,
   LogOut,
+  MessageSquare,
 } from "lucide-react";
 import { MmhLogo } from "@/components/MmhLogo";
 import { LedgerSwitcher } from "../LedgerSwitcher";
@@ -1065,6 +1066,14 @@ export function SidebarClient({
               iconSize={15}
               className="flex h-7 w-6 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:text-slate-300"
             />
+            <Link
+              href="/settings/feedback"
+              className="flex h-7 w-6 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800"
+              title={t("settings.feedback.buttonTitle")}
+              aria-label={t("settings.feedback.buttonTitle")}
+            >
+              <MessageSquare size={15} />
+            </Link>
           </div>
           <div className="ml-auto flex items-center justify-end gap-1">
             <LanguageSwitcher />

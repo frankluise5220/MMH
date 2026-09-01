@@ -11,7 +11,7 @@ import { FundConfirmDaysPanel } from "@/components/FundConfirmDaysModal";
 import { SmartSelect } from "@/components/SmartSelect";
 import { SettingsActionButton, SettingsPageHeader, SettingsPrimaryAddButton } from "@/components/settings/SettingsPageScaffold";
 import { buildAccountDisplayOption } from "@/lib/account-display";
-import { getCreditCardLabelTemplatePreference } from "@/lib/client/appPreferences";
+import { getAccountLabelFieldsPreference, getCreditCardLabelTemplatePreference } from "@/lib/client/appPreferences";
 import { fetchSettingsAccountData, getCachedSettingsAccountData, notifySettingsDataChanged } from "@/lib/client/settingsCache";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { getInvestmentAccountView, isDepositAccount } from "@/lib/account-kind-utils";
@@ -294,8 +294,7 @@ export default function SettingsAccountsPage() {
         Institution: account.Institution,
         AccountGroup: account.AccountGroup,
       },
-      getCreditCardLabelTemplatePreference(),
-    ).label;
+      getCreditCardLabelTemplatePreference(), { fields: getAccountLabelFieldsPreference() }).label;
   };
 
   const normalizeSearchText = (value: string | null | undefined) => value?.trim().toLowerCase() ?? "";

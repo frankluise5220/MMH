@@ -510,6 +510,14 @@ function findStandaloneAppDir(baseDir) {
 }
 
 fs.rmSync(stageDir, { recursive: true, force: true });
+// The package must NOT ship `wizard/install`.
+// The FN soft-store client parses only `wizard/install`: when that file exists it
+// renders the wizard and waits for user input before installing, so shipping it
+// makes every update ask for the service port again. Without it the client
+// installs silently and the port is resolved from persisted state.
+// `wizard/config` is safe: the soft-store client never reads it, and the fnOS
+// App Center only shows it when the user opens the app's settings, which is how
+// the service port stays editable after a silent install.
 for (const dir of [
   "app/bin",
   "app/data",
@@ -572,7 +580,10 @@ write(path.join(stageDir, "config", "resource"), JSON.stringify({
   },
 }, null, 2));
 
-write(path.join(stageDir, "wizard", "install"), JSON.stringify([
+// Settings wizard: lets users change the service port after install.
+// Deliberately not `wizard/install`, which the FN soft-store client would show
+// on every update.
+write(path.join(stageDir, "wizard", "config"), JSON.stringify([
   {
     stepTitle: "服务端口",
     items: [
@@ -581,17 +592,14 @@ write(path.join(stageDir, "wizard", "install"), JSON.stringify([
         field: "wizard_port",
         label: "服务端口",
         initValue: "7777",
-        helpText: "默认使用 7777；如果该端口已被占用，可以改为其他未占用端口。",
-      },
-    ],
-  },
-  {
-    stepTitle: "数据目录",
-    items: [
-      {
-        type: "tips",
-        field: "wizard_data_dir_tips",
-        helpText: "SQLite 数据会保存在应用数据目录中，默认即可。",
+        rules: [
+          { required: true, message: "请输入服务端口" },
+          {
+            pattern: "^([1-9][0-9]{3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$",
+            message: "请输入 1000-65535 之间的端口",
+          },
+        ],
+        helpText: "保存后会重启 MMH 服务。端口会写入应用数据目录，后续更新会继续沿用，不会被包内默认值覆盖。默认值固定为 7777，不一定是当前在用的端口。",
       },
     ],
   },
@@ -794,8 +802,35 @@ resolve_system_password() {
     generate_system_password
 }
 
+port_in_use() {
+    local p="$1"
+    case "$p" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    (exec 3<>"/dev/tcp/127.0.0.1/$p") >/dev/null 2>&1
+}
+
+probe_free_port() {
+    local start="$1"
+    local p i
+    case "$start" in
+        ''|*[!0-9]*) start=7777 ;;
+    esac
+    p="$start"
+    i=0
+    while [ "$i" -lt 200 ]; do
+        if ! port_in_use "$p"; then
+            echo "$p"
+            return 0
+        fi
+        p=$((p + 1))
+        i=$((i + 1))
+    done
+    echo "$start"
+}
+
 resolve_port() {
-    local pkgvar port_file env_port
+    local pkgvar port_file env_port start_port
     pkgvar="$(resolve_pkgvar)"
     port_file="\${pkgvar}/.port"
 
@@ -808,20 +843,21 @@ resolve_port() {
         echo "$env_port"
         return 0
     fi
-    if [ -n "\${wizard_port:-}" ]; then
-        echo "\${wizard_port}"
-        return 0
-    fi
-    if [ -n "\${TRIM_SERVICE_PORT:-}" ]; then
-        echo "\${TRIM_SERVICE_PORT}"
-        return 0
-    fi
-    echo "7777"
+    # No install wizard ships with this package: fresh installs never ask for a
+    # port, so probe for a free one instead of deadlocking on a taken 7777.
+    # Reinstalls and updates reuse .port above and never reach this probe.
+    start_port="\${TRIM_SERVICE_PORT:-7777}"
+    probe_free_port "$start_port"
 }
 
 write_env_file() {
+    local requested_port="$1"
     local port pkgvar system_password password_file port_file
-    port="$(resolve_port)"
+    if [ -n "$requested_port" ]; then
+        port="$(printf '%s' "$requested_port" | tr -d '[:space:]')"
+    else
+        port="$(resolve_port)"
+    fi
     pkgvar="$(resolve_pkgvar)"
     system_password="$(resolve_system_password)"
     password_file="\${pkgvar}/mmh-system-password.txt"
@@ -1083,6 +1119,54 @@ fi
 exit 0
 `;
 
+// Changing the port goes through the settings wizard, not an install wizard.
+// resolve_port() prefers the persisted .port, so the new value must be applied
+// explicitly here, then the service is restarted to pick it up.
+const configCallbackLifecycle = `#!/bin/bash
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -z "\${TRIM_APPNAME:-}" ]; then
+    TRIM_APPNAME=mmh
+fi
+if [ -f "$SCRIPT_DIR/app-layout" ]; then
+    . "$SCRIPT_DIR/app-layout"
+    ensure_app_ready >/dev/null 2>&1 || true
+    # cmd/main locates the bundled Node runtime through TRIM_APPDEST. App Center
+    # normally exports it, but resolve it ourselves: otherwise a config change
+    # would stop the service and then fail to start it again.
+    if [ -z "\${TRIM_APPDEST:-}" ] || [ ! -d "\${TRIM_APPDEST}" ]; then
+        TRIM_APPDEST="$(resolve_app_dest)"
+        export TRIM_APPDEST
+    fi
+fi
+if [ ! -f "$SCRIPT_DIR/apply-settings" ]; then
+    exit 0
+fi
+. "$SCRIPT_DIR/apply-settings"
+
+LOG_TARGET="\${TRIM_TEMP_LOGFILE:-/dev/null}"
+NEW_PORT="$(printf '%s' "\${wizard_port:-}" | tr -d '[:space:]')"
+[ -n "$NEW_PORT" ] || exit 0
+
+case "$NEW_PORT" in
+    *[!0-9]*)
+        echo "服务端口必须是数字：$NEW_PORT" > "$LOG_TARGET" 2>/dev/null || true
+        exit 1
+        ;;
+esac
+if [ "$NEW_PORT" -lt 1000 ] || [ "$NEW_PORT" -gt 65535 ]; then
+    echo "服务端口必须在 1000-65535 之间：$NEW_PORT" > "$LOG_TARGET" 2>/dev/null || true
+    exit 1
+fi
+
+"$SCRIPT_DIR/main" stop >/dev/null 2>&1 || true
+write_env_file "$NEW_PORT" >/dev/null
+"$SCRIPT_DIR/main" start
+
+exit 0
+`;
+
 const backupLifecycle = (reason) => `#!/bin/bash
 set -e
 
@@ -1158,10 +1242,10 @@ for (const name of [
 for (const name of [
   "install_callback",
   "upgrade_callback",
-  "config_callback",
 ]) {
   write(path.join(stageDir, "cmd", name), settingsLifecycle, 0o755);
 }
+write(path.join(stageDir, "cmd", "config_callback"), configCallbackLifecycle, 0o755);
 write(path.join(stageDir, "cmd", "upgrade_init"), backupLifecycle("upgrade"), 0o755);
 write(path.join(stageDir, "cmd", "uninstall_init"), backupLifecycle("uninstall"), 0o755);
 
@@ -1428,6 +1512,16 @@ function splitSqlStatements(sql) {
   return statements;
 }
 
+function stripLeadingSqlComments(statement) {
+  let value = statement.trim();
+  while (value.startsWith("--")) {
+    const newline = value.indexOf("\\n");
+    if (newline < 0) return "";
+    value = value.slice(newline + 1).trim();
+  }
+  return value;
+}
+
 function createTableNameFromStatement(statement) {
   const match = /^CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?"?([^"\\s(]+)"?/i.exec(statement.trim());
   return match ? match[1] : "";
@@ -1610,18 +1704,21 @@ function indexColumnsExist(db, tableName, columnNames) {
 
 function applyMissingSchemaObjectsFromInitSql(db, sqlPath) {
   const statements = splitSqlStatements(fs.readFileSync(sqlPath, "utf8"));
-  for (const statement of statements) {
+  for (const rawStatement of statements) {
+    const statement = stripLeadingSqlComments(rawStatement);
     if (!/^CREATE\\s+TABLE\\s+/i.test(statement)) continue;
     const tableName = createTableNameFromStatement(statement);
     if (!tableName || tableExists(db, tableName)) continue;
     db.exec(statement);
     console.log("SQLite schema table added from native-init.sql: " + tableName);
   }
-  for (const statement of statements) {
+  for (const rawStatement of statements) {
+    const statement = stripLeadingSqlComments(rawStatement);
     if (!/^CREATE\\s+TABLE\\s+/i.test(statement)) continue;
     applyMissingColumnsFromCreateTableStatement(db, statement);
   }
-  for (const statement of statements) {
+  for (const rawStatement of statements) {
+    const statement = stripLeadingSqlComments(rawStatement);
     if (!/^CREATE\\s+(?:UNIQUE\\s+)?INDEX\\s+/i.test(statement)) continue;
     const tableName = createIndexTableNameFromStatement(statement);
     if (!tableName || !tableExists(db, tableName)) continue;
@@ -1982,10 +2079,10 @@ if (manualFpk) {
     "app.tgz",
     "cmd",
     "config",
+    "wizard",
     "ICON.PNG",
     "ICON_256.PNG",
     "manifest",
-    "wizard",
   ];
   const fpkTar = run("tar", ["-czf", fpkPath, "-C", stageDir, ...fpkEntries]);
   if (fpkTar.status !== 0) {

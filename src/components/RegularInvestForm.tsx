@@ -18,7 +18,7 @@ import { formatDateUtc, lastDayOfMonthUtc } from "@/lib/date-utils";
 import { decodeYearlyExecutionDay, encodeYearlyExecutionDay, isYearlyExecutionDay } from "@/lib/scheduled-task-date";
 import {
   INSTALLMENT_REPAYMENT_METHOD,
-  isInstallmentRepaymentMethod,
+  allowsZeroAnnualRateRepaymentMethod,
   normalizeLoanRepaymentMethod,
 } from "@/lib/loan-repayment";
 
@@ -833,9 +833,9 @@ export function RegularInvestForm({
       return;
     }
     const submitRepaymentMethod = normalizeLoanRepaymentMethod(formData.repaymentMethod);
-    const isInstallmentLoanRepayment = isInstallmentRepaymentMethod(submitRepaymentMethod);
+    const allowsZeroLoanAnnualRate = allowsZeroAnnualRateRepaymentMethod(submitRepaymentMethod);
     const isFixedLoanRepayment = formData.taskType === "loan_repayment" && FIXED_LOAN_REPAYMENT_METHODS.has(submitRepaymentMethod);
-    const loanAnnualRate = parseLoanAnnualRateInput(formData.annualRate, isInstallmentLoanRepayment);
+    const loanAnnualRate = parseLoanAnnualRateInput(formData.annualRate, allowsZeroLoanAnnualRate);
     const loanRepaymentIntervalMonths = parseInt(lockedLoanRepaymentIntervalMonths || "1", 10);
     if (isFixedLoanRepayment) {
       if (loanAnnualRate == null) {
@@ -1853,7 +1853,7 @@ export function RegularInvestForm({
                         return {
                           ...d,
                           repaymentMethod: method,
-                          annualRate: isInstallmentRepaymentMethod(method) && parseLoanAnnualRateInput(d.annualRate, true) == null ? "0" : d.annualRate,
+                          annualRate: allowsZeroAnnualRateRepaymentMethod(method) && parseLoanAnnualRateInput(d.annualRate, true) == null ? "0" : d.annualRate,
                         };
                       })}
                       className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
@@ -1870,7 +1870,7 @@ export function RegularInvestForm({
                       step="0.001"
                       value={formData.annualRate}
                       onChange={(e) => setFormData(d => ({ ...d, annualRate: e.target.value }))}
-                      placeholder={isInstallmentRepaymentMethod(formData.repaymentMethod) ? "0" : FIXED_LOAN_REPAYMENT_METHODS.has(formData.repaymentMethod) ? t("batchImport.required") : t("stockFee.optional")}
+                      placeholder={allowsZeroAnnualRateRepaymentMethod(formData.repaymentMethod) ? "0" : FIXED_LOAN_REPAYMENT_METHODS.has(formData.repaymentMethod) ? t("batchImport.required") : t("stockFee.optional")}
                       className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                     />
                   </div>

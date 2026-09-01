@@ -11,15 +11,13 @@ import { CartesianGrid, Line, LineChart as RechartsLineChart, ResponsiveContaine
 import { formatMoney, formatPercent } from "@/lib/format";
 import { formatDateLocal } from "@/lib/date-utils";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
-import { showConfirmDialog } from "@/lib/client/confirm-dialog";
-
+import { useOutsideClose } from "@/lib/client/useOutsideClose";
 import { toNumber } from "@/lib/date-utils";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 
-import { CalendarDays, CalendarSync, ChartLine, Download, Pause, Pencil, Play, Settings2, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { ChartLine, Download, Pencil, Settings2, SlidersHorizontal, Trash2, X } from "lucide-react";
 
-import { FundConfirmDaysModal } from "@/components/FundConfirmDaysModal";
 import { FundProfileSettingsModal } from "@/components/FundProfileSettingsModal";
 import type { FundProfileNavigationItem } from "@/components/FundProfileSettingsClient";
 import { InvestmentFormModal } from "@/components/InvestmentFormModal";
@@ -34,8 +32,6 @@ import { FundUnitsReconcileButton } from "@/components/FundUnitsReconcileButton"
 
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/components/BatchReplacePopoverButton";
 
-import { RegularInvestForm } from "@/components/RegularInvestForm";
-
 import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 
 import { RefreshNavButton } from "@/components/RefreshNavButton";
@@ -49,13 +45,10 @@ import { ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewEx
 
 
 import { subtypeDisplay } from "@/lib/investment-config";
+import { isFundLikeInvestmentAccount } from "@/lib/account-kind-utils";
 import { TRANSACTION_SOURCE_FUND_UNITS_RECONCILE, isFundUnitsReconcileEntry } from "@/lib/transaction-semantics";
-import { decodeScheduledTaskMemo, normalizeScheduledTaskType } from "@/lib/scheduled-task";
-
 import { useI18n } from "@/lib/i18n";
-import { useOutsideClose } from "@/lib/client/useOutsideClose";
-
-
+ 
 
 function fundSubtypeLabel(t: (key: string) => string, subtype: string | null | undefined, source: string | null | undefined) {
   if (source === TRANSACTION_SOURCE_FUND_UNITS_RECONCILE) return t("fundShell.subtype.unitsReconcile");
@@ -656,6 +649,7 @@ export function FundShell(props: Props) {
   const noClearedText = isWealthAccount ? t("fundShell.empty.cleared.wealth") : t("fundShell.empty.cleared.fund");
   const chooseHoldingText = isWealthAccount ? t("fundShell.selectHoldingFirst.wealth") : t("fundShell.selectHoldingFirst.fund");
   const investmentAccountLabel = isWealthAccount ? t("fundShell.account.wealth") : t("viewImport.fundAccount");
+  const fundAccountOptions = useMemo(() => investmentAccounts.filter((account: any) => isFundLikeInvestmentAccount(account)), [investmentAccounts]);
   const detailNameLabel = isWealthAccount ? t("fundShell.wealthProduct") : t("txForm.fund");
   const navColumnLabel = isMetalAccount ? t("fundShell.nav.unitPrice") : isWealthAccount ? t("fundShell.nav.wealth") : t("viewImport.nav");
   const detailAmountColumnLabel = isWealthAccount ? t("fundShell.amount.wealth") : t("txForm.amount");
@@ -677,16 +671,6 @@ export function FundShell(props: Props) {
   const [fundCode, setFundCode] = useState(initialFundCode);
   const [fundChartOpen, setFundChartOpen] = useState(false);
   const showAllRecords = false;
-  const [confirmDaysModalOpen, setConfirmDaysModalOpen] = useState(false);
-  const [confirmDaysModalFundCode, setConfirmDaysModalFundCode] = useState<string | null>(null);
-  const [confirmDaysModalFundName, setConfirmDaysModalFundName] = useState<string | null>(null);
-  const [confirmDaysModalTab, setConfirmDaysModalTab] = useState<"confirm" | "fee">("confirm");
-  const openConfirmDaysModal = useCallback((fundCode?: string | null, fundName?: string | null, initialTab: "confirm" | "fee" = "confirm") => {
-    setConfirmDaysModalFundCode(fundCode ?? null);
-    setConfirmDaysModalFundName(fundName ?? null);
-    setConfirmDaysModalTab(initialTab);
-    setConfirmDaysModalOpen(true);
-  }, []);
   const [fundSettingsCode, setFundSettingsCode] = useState<string | null>(null);
   const [fundSettingsName, setFundSettingsName] = useState<string | null>(null);
   const openFundSettings = useCallback((code: string | null | undefined, name?: string | null) => {
@@ -731,14 +715,6 @@ export function FundShell(props: Props) {
     feeRateMap,
   });
   const [fetchedFundNames, setFetchedFundNames] = useState<Record<string, string>>({});
-  const [regularPlans, setRegularPlans] = useState<any[]>([]);
-  const [editingRegularPlan, setEditingRegularPlan] = useState<any | null>(null);
-  const [positionSettingsMenu, setPositionSettingsMenu] = useState<string | null>(null);
-  const positionSettingsMenuRef = useRef<HTMLDivElement>(null);
-  const closePositionSettingsMenu = useCallback(() => setPositionSettingsMenu(null), []);
-  useOutsideClose(positionSettingsMenuRef, positionSettingsMenu !== null, closePositionSettingsMenu);
-  const [regularPlanActionBusy, setRegularPlanActionBusy] = useState(false);
-  const [regularPlanBusyId, setRegularPlanBusyId] = useState<string | null>(null);
   const [positionEntryDefaults, setPositionEntryDefaults] = useState<any | null>(null);
   const positionEntryDefaultsRef = useRef<any | null>(null);
   const [positionEntryOpenSignal, setPositionEntryOpenSignal] = useState(0);
@@ -903,7 +879,7 @@ export function FundShell(props: Props) {
 
 
 
-  type FundBatchField = "cashAccountId" | "fundAccountId" | "amount" | "fundConfirmDate" | "fundArrivalDate" | "remark";
+  type FundBatchField = "cashAccountId" | "fundAccountId" | "amount" | "fundFee" | "feeRate" | "fundConfirmDate" | "fundArrivalDate" | "remark";
 
 
 
@@ -1778,78 +1754,6 @@ export function FundShell(props: Props) {
     return () => controller.abort();
   }, [fundCode, selectedFundChartStartDate, showSelectedFundChart, t]);
 
-  const loadRegularPlans = useCallback(async () => {
-    if (!accountId) {
-      setRegularPlans([]);
-      return;
-    }
-    try {
-      const res = await fetch(`/api/v1/regular-invest?accountId=${encodeURIComponent(accountId)}`, { cache: "no-store" });
-      const data = await res.json().catch(() => null);
-      if (!data?.ok || !Array.isArray(data.plans)) return;
-      setRegularPlans(data.plans.filter((plan: any) => plan.status !== "stopped" && plan.status !== "completed"));
-    } catch {}
-  }, [accountId]);
-
-  useEffect(() => {
-    void loadRegularPlans();
-  }, [loadRegularPlans]);
-
-  useEffect(() => {
-    const onFundChanged = (event: Event) => {
-      const detail = (event as CustomEvent<{ balanceChanged?: boolean }>).detail;
-      if (detail?.balanceChanged === false) return;
-      void loadRegularPlans();
-    };
-    window.addEventListener(FINANCE_DATA_CHANGED_EVENT, onFundChanged);
-    return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, onFundChanged);
-  }, [loadRegularPlans]);
-
-  const updateRegularPlanStatus = useCallback(async (plan: any, action: "pause" | "resume" | "stop") => {
-    if (!plan?.id || regularPlanActionBusy) return;
-    const actionLabel = action === "pause" ? t("fundShell.plan.pause") : action === "resume" ? t("fundShell.plan.resume") : t("fundShell.plan.stop");
-    if (action === "stop") {
-      const confirmed = await showConfirmDialog({
-        title: t("fundShell.plan.stopTitle"),
-        message: t("fundShell.plan.stopConfirm", { code: plan.fundCode }),
-        tone: "danger",
-      });
-      if (!confirmed) return;
-    }
-    setRegularPlanActionBusy(true);
-    setRegularPlanBusyId(String(plan.id));
-    try {
-      const res = await fetch("/api/v1/regular-invest", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: plan.id, action }),
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data?.ok) {
-        window.alert(data?.error || t("fundShell.plan.actionFailed", { action: actionLabel }));
-        return;
-      }
-      setPositionSettingsMenu(null);
-      await loadRegularPlans();
-      dispatchFinanceDataChanged({ reason: "regular-invest-plan-status" });
-    } catch (error) {
-      window.alert(error instanceof Error ? error.message : t("fundShell.plan.actionFailed", { action: actionLabel }));
-    } finally {
-      setRegularPlanActionBusy(false);
-      setRegularPlanBusyId(null);
-    }
-  }, [loadRegularPlans, regularPlanActionBusy, t]);
-
-  const regularPlanByFundCode = useMemo(() => {
-    const map = new Map<string, any>();
-    for (const plan of regularPlans) {
-      const code = String(plan?.fundCode ?? "").trim();
-      if (!code || map.has(code)) continue;
-      map.set(code, { ...plan, secondaryExecutionDay: plan.secondaryExecutionDay ?? null });
-    }
-    return map;
-  }, [regularPlans]);
-
   useEffect(() => {
     const candidates = new Map<string, string>();
     for (const e of filtered as any[]) {
@@ -1965,9 +1869,6 @@ export function FundShell(props: Props) {
   const renderPositionActions = useCallback((p: any) => {
     const positionKey = positionAssetKey(p);
     const active = positionKey === fundCode;
-    const plan = regularPlanByFundCode.get(p.fundCode);
-    const settingsKey = positionKey || p.fundCode;
-    const menuOpen = positionSettingsMenu === settingsKey;
     return (
       <div
         data-row-double-click-ignore
@@ -1988,70 +1889,9 @@ export function FundShell(props: Props) {
               className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
               title={t("fundSettings.title")}
               aria-label={t("fundSettings.title")}
-            >
+              >
               <Settings2 className="h-3.5 w-3.5" />
             </button> : null}
-            {plan ? <div ref={menuOpen ? positionSettingsMenuRef : null} className="relative">
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  setPositionSettingsMenu(menuOpen ? null : settingsKey);
-                }}
-                className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
-                title={t("detailView.fundRegularInvest")}
-                aria-label={t("detailView.fundRegularInvest")}
-                aria-haspopup="menu"
-                aria-expanded={menuOpen}
-              >
-                <CalendarSync className="h-3.5 w-3.5" />
-              </button>
-              {menuOpen ? (
-                <div
-                  className="absolute right-0 top-7 z-50 w-36 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 text-left shadow-lg"
-                  role="menu"
-                  onClick={(event) => event.stopPropagation()}
-                >
-                  <div className="flex h-7 items-center gap-1.5 px-3 text-[11px] font-medium text-slate-500">
-                    <CalendarSync className={`h-3.5 w-3.5 ${plan.status === "paused" ? "text-amber-600" : "text-blue-600"}`} />
-                    {t("detailView.fundRegularInvest")}
-                  </div>
-                  {plan.status === "active" ? (
-                        <button
-                          type="button"
-                          disabled={regularPlanActionBusy || regularPlanBusyId === plan.id}
-                          onClick={() => updateRegularPlanStatus(plan, "pause")}
-                          className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-50"
-                          role="menuitem"
-                        >
-                          <Pause className="h-3.5 w-3.5" />{t("fundShell.plan.pause")}
-                        </button>
-                  ) : (
-                        <button
-                          type="button"
-                          disabled={regularPlanActionBusy || regularPlanBusyId === plan.id}
-                          onClick={() => updateRegularPlanStatus(plan, "resume")}
-                          className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
-                          role="menuitem"
-                        >
-                          <Play className="h-3.5 w-3.5" />{t("fundShell.plan.continue")}
-                        </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditingRegularPlan(plan);
-                      setPositionSettingsMenu(null);
-                    }}
-                    className="flex h-8 w-full items-center gap-1.5 px-3 text-xs text-blue-700 hover:bg-blue-50"
-                    role="menuitem"
-                  >
-                    <Pencil className="h-3.5 w-3.5" />{t("common.edit")}
-                  </button>
-                </div>
-              ) : null}
-            </div> : null}
             {!isWealthAccount ? (
               <button
                 type="button"
@@ -2084,12 +1924,7 @@ export function FundShell(props: Props) {
     isWealthAccount,
     openFundSettings,
     positionAssetKey,
-    regularPlanActionBusy,
-    regularPlanBusyId,
-    regularPlanByFundCode,
-    positionSettingsMenu,
     switchFund,
-    updateRegularPlanStatus,
     t,
   ]);
 
@@ -2109,7 +1944,7 @@ export function FundShell(props: Props) {
           const { displayPnL } = positionDisplayMetrics(p);
           return (
             <span
-              className={`block truncate text-xs font-medium ${active ? "text-blue-700" : "text-slate-700"}`}
+              className={`block truncate font-medium ${active ? "text-blue-700" : "text-slate-700"}`}
               title={isWealthAccount ? p.name : `${p.name} ${p.fundCode}`}
             >
               {p.name}
@@ -2434,19 +2269,37 @@ export function FundShell(props: Props) {
 
       kind: "select",
 
-      options: [{ value: "", label: t("fundShell.selectAccount") }, ...investmentAccounts.map((a: any) => ({ value: a.id, label: a.label }))],
+      options: [{ value: "", label: t("fundShell.selectAccount") }, ...fundAccountOptions.map((a: any) => ({ value: a.id, label: a.label }))],
 
     },
 
     { value: "amount", label: t("txForm.amount"), kind: "number", placeholder: t("fundShell.batch.amountPlaceholder") },
 
-    { value: "fundConfirmDate", label: t("fundShell.col.confirmDate"), kind: "date", allowEmpty: true },
+    { value: "fundFee", label: t("investForm.feeAmount"), kind: "number", placeholder: "0.00", allowEmpty: true },
 
-    { value: "fundArrivalDate", label: t("fundShell.col.arrivalDate"), kind: "date", allowEmpty: true },
+    { value: "feeRate", label: t("investForm.feeRatePercent"), kind: "number", placeholder: "0" },
+
+    {
+      value: "fundConfirmDate",
+      label: t("batchImport.fundPreview.confirmDateOffset"),
+      kind: "number",
+      placeholder: t("batchImport.fundPreview.dateOffsetPlaceholder"),
+      allowEmpty: true,
+      precision: 0,
+    },
+
+    {
+      value: "fundArrivalDate",
+      label: t("batchImport.fundPreview.arrivalDateOffset"),
+      kind: "number",
+      placeholder: t("batchImport.fundPreview.dateOffsetPlaceholder"),
+      allowEmpty: true,
+      precision: 0,
+    },
 
     { value: "remark", label: t("detail.column.remark"), kind: "text", placeholder: t("stockPanel.batchNotePlaceholder"), allowEmpty: true },
 
-  ], [cashAccounts, investmentAccountLabel, investmentAccounts, t]);
+  ], [cashAccounts, fundAccountOptions, investmentAccountLabel, investmentAccounts, t]);
 
 
 
@@ -2465,6 +2318,10 @@ export function FundShell(props: Props) {
       if (field === "fundConfirmDate") return { id, fundConfirmDate: value };
 
       if (field === "fundArrivalDate") return { id, fundArrivalDate: value };
+
+      if (field === "fundFee") return { id, fundFee: value };
+
+      if (field === "feeRate") return { id, feeRate: value };
 
       if (field === "cashAccountId") return { id, cashAccountId: value };
 
@@ -2502,7 +2359,8 @@ export function FundShell(props: Props) {
 
     });
 
-    dispatchFinanceDataChanged({ reason: "fund-batch-note-update" }); return t("stockPanel.updatedCount", { count: data.updatedCount ?? 0 });
+    dispatchFinanceDataChanged({ reason: "fund-batch-update" });
+    return t("stockPanel.updatedCount", { count: data.updatedCount ?? 0 });
 
   }
 
@@ -2676,7 +2534,7 @@ export function FundShell(props: Props) {
           filterKind: "dateRange",
           filterText: (e: any) => fundApplyDateOf(e) || "",
           sortValue: (e: any) => fundApplyDateOf(e) || null,
-          render: (e: any) => <span className="tabular-nums text-xs text-slate-600">{fundApplyDateOf(e)}</span>,
+          render: (e: any) => <span className="tabular-nums text-slate-600">{fundApplyDateOf(e)}</span>,
         } satisfies AdvancedDataTableColumn<any>;
       }
 
@@ -2689,7 +2547,7 @@ export function FundShell(props: Props) {
           filterText: (e: any) => fmtDate(e.fundConfirmDate) || "",
           sortValue: (e: any) => fmtDate(e.fundConfirmDate) || null,
           render: (e: any) => (
-            <span className="tabular-nums text-xs text-slate-500">
+            <span className="tabular-nums text-slate-500">
               {e.fundConfirmDate ? fmtDate(e.fundConfirmDate) : <span className="text-slate-300">-</span>}
             </span>
           ),
@@ -2705,7 +2563,7 @@ export function FundShell(props: Props) {
           filterText: (e: any) => fmtDate(e.fundArrivalDate) || "",
           sortValue: (e: any) => fmtDate(e.fundArrivalDate) || null,
           render: (e: any) => (
-            <span className="tabular-nums text-xs text-slate-500">
+            <span className="tabular-nums text-slate-500">
               {e.fundArrivalDate ? fmtDate(e.fundArrivalDate) : <span className="text-slate-300">-</span>}
             </span>
           ),
@@ -2745,7 +2603,7 @@ export function FundShell(props: Props) {
           filterTitle: fundSearchTextOf,
           sortValue: fundLabelOf,
           render: (e: any) => (
-            <div className="truncate text-xs text-slate-700" title={isWealthAccount ? displayFundName(e) : `${displayFundName(e)} ${e.fundCode || ""}`}>
+            <div className="truncate text-slate-700" title={isWealthAccount ? displayFundName(e) : `${displayFundName(e)} ${e.fundCode || ""}`}>
               {displayFundName(e)}
               {!isWealthAccount && e.fundCode && displayFundName(e) !== e.fundCode && <span className="ml-1 text-slate-400">{e.fundCode}</span>}
             </div>
@@ -2765,7 +2623,7 @@ export function FundShell(props: Props) {
           sortValue: navValueOf,
           render: (e: any) => {
             const nav = navValueOf(e);
-            return <span className="whitespace-nowrap tabular-nums text-xs text-slate-700">{nav != null ? nav.toFixed(4) : <span className="text-slate-300">-</span>}</span>;
+            return <span className="whitespace-nowrap tabular-nums text-slate-700">{nav != null ? nav.toFixed(4) : <span className="text-slate-300">-</span>}</span>;
           },
         } satisfies AdvancedDataTableColumn<any>;
       }
@@ -2782,7 +2640,7 @@ export function FundShell(props: Props) {
           sortValue: displayUnitsOf,
           render: (e: any) => {
             const units = displayUnitsOf(e);
-            return <span className="whitespace-nowrap tabular-nums text-xs text-slate-700">{units != null ? formatFundUnits(units) : <span className="text-slate-300">-</span>}</span>;
+            return <span className="whitespace-nowrap tabular-nums text-slate-700">{units != null ? formatFundUnits(units) : <span className="text-slate-300">-</span>}</span>;
           },
         } satisfies AdvancedDataTableColumn<any>;
       }
@@ -2798,7 +2656,7 @@ export function FundShell(props: Props) {
           filterNumber: remainingUnitsValueOf,
           sortValue: remainingUnitsValueOf,
           render: (e: any) => (
-            <span className="whitespace-nowrap tabular-nums text-xs text-slate-600">
+            <span className="whitespace-nowrap tabular-nums text-slate-600">
               {remainingUnitsValueOf(e) != null ? formatFundUnits(remainingUnitsValueOf(e) ?? 0) : <span className="text-slate-300">-</span>}
             </span>
           ),
@@ -2850,7 +2708,7 @@ export function FundShell(props: Props) {
               : entryStatus === "buy_refund"
                 ? "text-emerald-700"
               : displayAmount < 0 ? downCls : "text-slate-700";
-            return <span className={`tabular-nums text-xs ${amountClass}`}>{displayText}</span>;
+            return <span className={`tabular-nums ${amountClass}`}>{displayText}</span>;
           },
         } satisfies AdvancedDataTableColumn<any>;
       }
@@ -2877,7 +2735,7 @@ export function FundShell(props: Props) {
           render: (e: any) => {
             const profit = e.realizedProfit != null ? toNumber(e.realizedProfit) : null;
             return (
-              <span className={`tabular-nums text-xs ${pnl(profit ?? 0)}`}>
+              <span className={`tabular-nums ${pnl(profit ?? 0)}`}>
                 {profit != null && (e.fundSubtype === "redeem" || e.fundSubtype === "dividend_cash") ? formatMoney(profit) : <span className="text-slate-300">-</span>}
               </span>
             );
@@ -2914,7 +2772,7 @@ export function FundShell(props: Props) {
           cellTitle: (e: any) => String(e.note ?? "").trim(),
           render: (e: any) => {
             const note = String(e.note ?? "").trim();
-            return note ? <span className="text-xs text-slate-600">{note}</span> : <span className="text-slate-300">-</span>;
+            return note ? <span className="text-slate-600">{note}</span> : <span className="text-slate-300">-</span>;
           },
         } satisfies AdvancedDataTableColumn<any>;
       }
@@ -3246,18 +3104,6 @@ export function FundShell(props: Props) {
               <RefreshNavButton accountId={accountId} symbols={d.positions.map((p: any) => p.fundCode).filter(Boolean)} />
             ) : null}
 
-            {!isMetalAccount ? (
-              <button
-                type="button"
-                onClick={() => openConfirmDaysModal()}
-                className="inline-flex h-6 items-center gap-1 rounded border border-slate-200 bg-white px-2 text-xs text-slate-600 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
-                title={t("fundRules.title")}
-              >
-                <CalendarDays className="h-3.5 w-3.5" />
-                {t("fundRules.title")}
-              </button>
-            ) : null}
-
             {!isMetalAccount && !isWealthAccount ? (
               <ViewExcelImportMenuButton
                 kind="fund"
@@ -3430,7 +3276,6 @@ export function FundShell(props: Props) {
               }}
               showFilters={false}
               fillHeight
-              compactRows
               toolbarMode="none"
               draggableRows={false}
               defaultSort={positionDefaultSort}
@@ -3571,56 +3416,6 @@ export function FundShell(props: Props) {
 
       </div>
 
-      {editingRegularPlan ? (
-        <RegularInvestForm
-          mode="edit"
-          editData={{
-            id: editingRegularPlan.id,
-            taskType: normalizeScheduledTaskType(
-              editingRegularPlan.taskType ?? decodeScheduledTaskMemo(editingRegularPlan.memo).type,
-            ),
-            accountId: editingRegularPlan.accountId,
-            fundCode: editingRegularPlan.fundCode,
-            fundName: editingRegularPlan.fundName,
-            amount: Number(editingRegularPlan.amount ?? 0),
-            intervalUnit: editingRegularPlan.intervalUnit,
-            intervalValue: Number(editingRegularPlan.intervalValue ?? 1),
-            executionDay: editingRegularPlan.executionDay ?? null,
-            secondaryExecutionDay:
-              editingRegularPlan.secondaryExecutionDay ??
-              editingRegularPlan.plan?.secondaryExecutionDay ??
-              null,
-            startDate: String(editingRegularPlan.startDate ?? "").slice(0, 10),
-            nextRunDate: editingRegularPlan.nextRunDate ? String(editingRegularPlan.nextRunDate).slice(0, 10) : null,
-            endDate: editingRegularPlan.endDate ? String(editingRegularPlan.endDate).slice(0, 10) : null,
-            totalRuns: editingRegularPlan.totalRuns ?? null,
-            cashAccountId: editingRegularPlan.cashAccountId ?? null,
-            feeRate: editingRegularPlan.feeRate ?? null,
-            confirmDays: editingRegularPlan.confirmDays ?? null,
-            arrivalDays: editingRegularPlan.arrivalDays ?? null,
-            skipPendingPreceding: editingRegularPlan.skipPendingPreceding ?? true,
-          }}
-          accountId={editingRegularPlan.accountId}
-          accountLabel={editingRegularPlan.accountName ?? ""}
-          editAccountLabel={editingRegularPlan.accountName ?? ""}
-          cashAccounts={cashAccounts}
-          cashAccountSSOptions={cashAccountSSOptions}
-          investmentAccountSSOptions={investmentAccountSSOptions}
-          nestedFieldData={nestedFieldData}
-          showTriggerButton={false}
-          open={true}
-          onOpenChange={(open) => {
-            if (!open) setEditingRegularPlan(null);
-          }}
-          submitMethod="api"
-          onSuccess={() => {
-            setEditingRegularPlan(null);
-            void loadRegularPlans();
-            dispatchFinanceDataChanged({ reason: "regular-invest-plan:edit" });
-          }}
-        />
-      ) : null}
-
       {showSelectedFundChart ? (
         <div
           className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/10 p-4"
@@ -3665,19 +3460,6 @@ export function FundShell(props: Props) {
           </div>
         </div>
       ) : null}
-
-      <FundConfirmDaysModal
-        accountId={accountId}
-        open={confirmDaysModalOpen}
-        onClose={() => setConfirmDaysModalOpen(false)}
-        onSaved={() => {
-          setConfirmDaysModalOpen(false);
-          dispatchFinanceDataChanged({ reason: "fund-confirm-days:save", accountIds: [accountId] });
-        }}
-        initialFundCode={confirmDaysModalFundCode}
-        fundName={confirmDaysModalFundName}
-        initialTab={confirmDaysModalTab}
-      />
 
       <FundProfileSettingsModal
         open={fundSettingsCode !== null}
@@ -4082,7 +3864,6 @@ export function FundShell(props: Props) {
             rowActionsMinWidth={92}
             rowClassName={(entry) => (selectedIds.has(entry.id) ? "bg-blue-50/70 hover:bg-blue-50/70" : "hover:bg-blue-50/40")}
             fillHeight
-            compactRows
             toolbarMode="none"
             showFilters
             showColumnVisibilityButton={false}

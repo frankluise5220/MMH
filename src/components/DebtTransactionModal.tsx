@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronDown, Plus, Repeat } from "lucide-react";
-import { useCallback, useEffect, useId, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 
 import { CalcInput } from "./CalcInput";
@@ -10,9 +10,10 @@ import { EntityCreateForm } from "./EntityCreateForm";
 import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
+import { buildCategoryTreeOptions, type CategorySource } from "./categorySmartSelect";
 import { institutionTypeLabel } from "@/lib/account-kinds";
 import { buildAccountDisplayOption } from "@/lib/account-display";
-import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
+import { recordRecentAccount, sortByAccountUsage, sortOptionsByRecent, useAccountUsage, useRecentAccountIds } from "@/lib/client/recentAccounts";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
@@ -32,7 +33,12 @@ import {
   MORTGAGE_LPR_CONVERSION_BASE_RATE,
 } from "@/lib/loan-lpr";
 import {
+  EQUAL_PAYMENT_REPAYMENT_METHOD,
+  EQUAL_PRINCIPAL_REPAYMENT_METHOD,
+  FREE_REPAYMENT_METHOD,
   INSTALLMENT_REPAYMENT_METHOD,
+  INTEREST_FIRST_REPAYMENT_METHOD,
+  allowsZeroAnnualRateRepaymentMethod,
   buildLoanRepaymentSchedulePreview,
   getEffectiveLoanAnnualRate,
   isInstallmentRepaymentMethod,
@@ -43,10 +49,21 @@ import {
 import { formatLoanRecalculateSuccessMessage } from "@/lib/loan-repayment-recalculate-result";
 import { DEFAULT_LOAN_PREPAY_STRATEGY, type LoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
 import { useI18n } from "@/lib/i18n";
+import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
 
 type DebtMode = "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
 type PrepayStrategy = LoanPrepayStrategy;
 type LoanFundingMode = "cash_disbursement" | "financed_purchase";
+type LoanTab = "consumer" | "mortgage" | "repay_out";
+type CategoryOption = {
+  id: string;
+  label: string;
+  name?: string;
+  parentId: string | null;
+  type: string;
+  sortOrder?: number;
+  isSystem?: boolean;
+};
 
 type AccountOption = {
   id: string;
@@ -82,6 +99,7 @@ type RepaymentLprCheck = {
   currentAnnualRate: number | null;
   loanRateAdjustments: LoanRateAdjustment[];
 };
+type RepayableLoanAccountRow = { accountId: string; balance: number };
 
 const COUNTERPARTY_TYPES = new Set(["person", "organization"]);
 
@@ -91,6 +109,14 @@ const MODE_LABELS: Record<DebtMode, string> = {
   prepay_out: "debtShell.prepayment",
   lend_out: "debtTx.mode.lendOut",
   collect_in: "debtTx.mode.collectIn",
+};
+
+const LOAN_TABS: LoanTab[] = ["consumer", "mortgage", "repay_out"];
+
+const LOAN_TAB_LABELS: Record<LoanTab, string> = {
+  consumer: "debtTx.loanMode.consumerLoan",
+  mortgage: "debtTx.loanMode.mortgage",
+  repay_out: "debtTx.loanMode.repayment",
 };
 
 const PREPAY_STRATEGY_LABELS: Record<PrepayStrategy, string> = {
@@ -211,7 +237,7 @@ function canSwitchDebtEditMode(currentMode: DebtMode, nextMode: DebtMode) {
 }
 
 function settingsAccountToDebtOption(account: SettingsAccountRecord, t: (key: string, params?: Record<string, string | number>) => string): AccountOption {
-  const display = buildAccountDisplayOption(account as Parameters<typeof buildAccountDisplayOption>[0]);
+  const display = buildAccountDisplayOption(account as Parameters<typeof buildAccountDisplayOption>[0], undefined, { fields: getAccountLabelFieldsPreference() });
   const counterpartyName = account.Counterparty?.shortName?.trim() || account.Counterparty?.name?.trim() || "";
   const institutionType = account.Institution?.type ?? null;
   return {
@@ -271,11 +297,15 @@ function serializeHistoricalRateRows(rows: HistoricalRateRow[], t: (key: string,
 }
 
 export function DebtTransactionModal({
+  dialogType = "debt",
   debtAccounts,
   cashAccounts,
   debtObjectOptions,
   cashAccountSSOptions,
   nestedFieldData,
+  expenseCategories,
+  fixedAssetAccounts,
+  fixedAssetAccountSSOptions,
   defaultDebtAccountId,
   defaultDebtInstitutionId,
   defaultCashAccountId,
@@ -283,11 +313,15 @@ export function DebtTransactionModal({
   showTriggerButton = true,
   triggerLabel,
 }: {
+  dialogType?: "debt" | "loan";
   debtAccounts: AccountOption[];
   cashAccounts: AccountOption[];
   debtObjectOptions?: SmartSelectOption[];
   cashAccountSSOptions?: SmartSelectOption[];
   nestedFieldData?: NestedFieldData;
+  expenseCategories?: CategoryOption[];
+  fixedAssetAccounts?: SmartSelectOption[];
+  fixedAssetAccountSSOptions?: SmartSelectOption[];
   defaultDebtAccountId?: string;
   defaultDebtInstitutionId?: string;
   defaultCashAccountId?: string;
@@ -298,55 +332,48 @@ export function DebtTransactionModal({
   showTriggerButton?: boolean;
   triggerLabel?: string;
 }) {
+  const isLoanDialog = dialogType === "loan";
   const today = useMemo(() => formatDateInput(new Date()), []);
   const { t, language } = useI18n();
   const parentModalZIndex = useModalLayerZIndex();
   const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
   const confirmModalZIndex = getNextModalLayerZIndex(modalZIndex);
   const rateModalZIndex = getNextModalLayerZIndex(confirmModalZIndex);
-  const debtItemListId = useId();
   const [localDebtAccounts, setLocalDebtAccounts] = useState(debtAccounts);
   const [localDebtObjectOptions, setLocalDebtObjectOptions] = useState(debtObjectOptions);
   const [localNestedFieldData, setLocalNestedFieldData] = useState<NestedFieldData | undefined>(nestedFieldData);
   const [debtObjectNestedOpen, setDebtObjectNestedOpen] = useState(false);
   const fallbackDebtObjectOptions: SmartSelectOption[] = useMemo(() => {
-    const counterpartyOptions = (localNestedFieldData?.counterpartyId ?? []).map((item) => ({
+    const counterpartyOptions = isLoanDialog ? [] : (localNestedFieldData?.counterpartyId ?? []).map((item) => ({
       id: `counterparty:${item.id}`,
       label: item.name,
       subLabel: item.type === "person" ? t("debtTx.objectType.person") : t("debtTx.objectType.organization"),
     }));
-    const bankInstitutionOptions = (localNestedFieldData?.institutionId ?? [])
-      .filter((item) => item.type === "bank" || item.type === "debt" || item.type === "organization" || item.type === "other")
-      .map((item) => ({
-        id: `institution:${item.id}`,
-        label: item.name,
-        subLabel: institutionTypeLabel(item.type ?? null),
-      }));
+    const institutionOptions = isLoanDialog
+      ? (localNestedFieldData?.institutionId ?? [])
+          .filter((item) => item.type === "bank" || item.type === "debt")
+          .map((item) => ({
+            id: `institution:${item.id}`,
+            label: item.name,
+            subLabel: institutionTypeLabel(item.type ?? null),
+          }))
+      : [];
 
     return [
       ...(counterpartyOptions.length > 0
         ? [{ id: "debt-counterparty-header", label: t("txForm.counterparty"), isHeader: true }, ...counterpartyOptions]
         : []),
-      ...(bankInstitutionOptions.length > 0
-        ? [{ id: "debt-institution-source-header", label: t("debtTx.objectSourceHeader"), isHeader: true }, ...bankInstitutionOptions]
+      ...(institutionOptions.length > 0
+        ? [{ id: "debt-institution-source-header", label: t("debtTx.loanInstitutionHeader"), isHeader: true }, ...institutionOptions]
         : []),
     ];
-  }, [localNestedFieldData, t]);
+  }, [isLoanDialog, localNestedFieldData, t]);
   const visibleDebtObjectOptions = useMemo(
     () => mergeSmartSelectOptions(
       mergeSmartSelectOptions(debtObjectOptions, localDebtObjectOptions),
       fallbackDebtObjectOptions,
     ),
     [debtObjectOptions, fallbackDebtObjectOptions, localDebtObjectOptions],
-  );
-  const debtObjectById = useMemo(
-    () => new Map<string, { id: string; name: string; type?: string }>([
-      ...((localNestedFieldData?.counterpartyId ?? nestedFieldData?.counterpartyId ?? []).map((item) => [`counterparty:${item.id}`, item] as const)),
-      ...((localNestedFieldData?.institutionId ?? nestedFieldData?.institutionId ?? [])
-        .filter((item) => item.type === "bank" || item.type === "debt" || item.type === "organization" || item.type === "other")
-        .map((item) => [`institution:${item.id}`, item] as const)),
-    ]),
-    [localNestedFieldData, nestedFieldData],
   );
   const cashOptions: SmartSelectOption[] = useMemo(
     () => cashAccounts.map((item) => ({ id: item.id, label: item.label, subLabel: item.subLabel, kind: item.kind })),
@@ -391,14 +418,14 @@ export function DebtTransactionModal({
   const [prepayTotal, setPrepayTotal] = useState("");
   const [prepayTotalManual, setPrepayTotalManual] = useState(false);
   const [prepayStrategy, setPrepayStrategy] = useState<PrepayStrategy>(DEFAULT_LOAN_PREPAY_STRATEGY);
-  const [bankExecutionRate, setBankExecutionRate] = useState("");
   const [annualRate, setAnnualRate] = useState("");
   const [annualRateManuallyEdited, setAnnualRateManuallyEdited] = useState(false);
   const [mortgageLprDiscount, setMortgageLprDiscount] = useState("");
-  const [repaymentMethod, setRepaymentMethod] = useState("自由还款");
+  const [repaymentMethod, setRepaymentMethod] = useState(FREE_REPAYMENT_METHOD);
   // Loan repayment execution mode: auto-debit (mortgage-style) or bill-only
   // (consumer loan without auto-debit, paid manually).
   const [autoDebit, setAutoDebit] = useState(true);
+  const [autoDebitFirstDate, setAutoDebitFirstDate] = useState(addMonthsInput(today, 1));
   const [repaymentIntervalMonths, setRepaymentIntervalMonths] = useState("1");
   const [loanTotalRuns, setLoanTotalRuns] = useState("300");
   const [firstRepaymentDate, setFirstRepaymentDate] = useState(addMonthsInput(today, 1));
@@ -410,6 +437,16 @@ export function DebtTransactionModal({
   const [historicalRateRows, setHistoricalRateRows] = useState<HistoricalRateRow[]>([]);
   const [historicalRatesOpen, setHistoricalRatesOpen] = useState(false);
   const [repaymentLprCheck, setRepaymentLprCheck] = useState<RepaymentLprCheck | null>(null);
+  const [repayableLoanAccountRows, setRepayableLoanAccountRows] = useState<RepayableLoanAccountRow[]>([]);
+  const [repayableLoanAccountsLoading, setRepayableLoanAccountsLoading] = useState(false);
+  const [activeLoanTab, setActiveLoanTab] = useState<LoanTab>("consumer");
+  const [loanPurposeCategoryId, setLoanPurposeCategoryId] = useState("");
+  const [fixedAssetLinked, setFixedAssetLinked] = useState(false);
+  const [fixedAssetAccountId, setFixedAssetAccountId] = useState("");
+  const [fixedAssetAssetId, setFixedAssetAssetId] = useState("");
+  const [fixedAssetAccountList, setFixedAssetAccountList] = useState<SmartSelectOption[]>(fixedAssetAccounts ?? []);
+  const [localFixedAssetAccountSSOpts, setLocalFixedAssetAccountSSOpts] = useState<SmartSelectOption[] | undefined>(fixedAssetAccountSSOptions);
+  const [fixedAssetAccountNestedOpen, setFixedAssetAccountNestedOpen] = useState(false);
 
   function mergeSmartSelectOptions(base?: SmartSelectOption[], extra?: SmartSelectOption[]) {
     const merged = [...(base ?? [])];
@@ -456,7 +493,7 @@ export function DebtTransactionModal({
     const defaultAccountObject = debtObjectValueForAccount(defaultDebtAccount);
     const nextDebtObjectId = normalizedDefaultObject || defaultAccountObject;
     setMode("borrow_in");
-    setLoanFundingMode("cash_disbursement");
+    setLoanFundingMode(isLoanDialog ? "financed_purchase" : "cash_disbursement");
     setLoanType(null);
     setEditingEntryId("");
     setDate(today);
@@ -472,11 +509,12 @@ export function DebtTransactionModal({
     setPrepayTotal("");
     setPrepayTotalManual(false);
     setPrepayStrategy(DEFAULT_LOAN_PREPAY_STRATEGY);
-    setBankExecutionRate("");
     setAnnualRate("");
     setAnnualRateManuallyEdited(false);
     setMortgageLprDiscount("");
-    setRepaymentMethod("自由还款");
+    setRepaymentMethod(FREE_REPAYMENT_METHOD);
+    setAutoDebit(isLoanDialog ? false : true);
+    setAutoDebitFirstDate(addMonthsInput(today, 1));
     setRepaymentIntervalMonths("1");
     setLoanTotalRuns("300");
     setFirstRepaymentDate(addMonthsInput(today, 1));
@@ -488,7 +526,15 @@ export function DebtTransactionModal({
     setHistoricalRateRows([]);
     setHistoricalRatesOpen(false);
     setRepaymentLprCheck(null);
-  }, [cashAccounts, defaultCashAccountId, defaultDebtAccountId, defaultDebtInstitutionId, localDebtAccounts, localNestedFieldData, nestedFieldData, today]);
+    setRepayableLoanAccountRows([]);
+    setRepayableLoanAccountsLoading(false);
+    setActiveLoanTab("consumer");
+    setLoanPurposeCategoryId("");
+    setFixedAssetLinked(false);
+    setFixedAssetAccountId("");
+    setFixedAssetAssetId("");
+    setFixedAssetAccountNestedOpen(false);
+  }, [cashAccounts, defaultCashAccountId, defaultDebtAccountId, defaultDebtInstitutionId, isLoanDialog, localDebtAccounts, localNestedFieldData, nestedFieldData, today]);
 
   useEffect(() => {
     setLocalDebtAccounts(debtAccounts);
@@ -501,6 +547,16 @@ export function DebtTransactionModal({
   useEffect(() => {
     setLocalNestedFieldData(nestedFieldData);
   }, [nestedFieldData]);
+
+  useEffect(() => {
+    setFixedAssetAccountList(fixedAssetAccounts ?? []);
+  }, [fixedAssetAccounts]);
+
+  useEffect(() => {
+    if (fixedAssetAccountSSOptions) {
+      setLocalFixedAssetAccountSSOpts((prev) => mergeSmartSelectOptions(fixedAssetAccountSSOptions, prev));
+    }
+  }, [fixedAssetAccountSSOptions]);
 
   useEffect(() => {
     let cancelled = false;
@@ -530,13 +586,13 @@ export function DebtTransactionModal({
         subLabel: item.type === "person" ? t("debtTx.objectType.person") : t("debtTx.objectType.organization"),
       }));
       const institutionOptions = nextNested.institutionId
-        .filter((item) => item.type === "bank" || item.type === "debt" || item.type === "organization" || item.type === "other")
+        .filter((item) => item.type === "bank" || item.type === "debt")
         .map((item) => ({
           id: debtObjectOptionId(item.id, item.type),
           label: item.name,
           subLabel: institutionTypeLabel(item.type ?? null),
         }));
-      setLocalDebtObjectOptions(mergeSmartSelectOptions(debtObjectOptions, [...counterpartyOptions, ...institutionOptions]));
+      setLocalDebtObjectOptions(mergeSmartSelectOptions(debtObjectOptions, isLoanDialog ? institutionOptions : counterpartyOptions));
     }
 
     function onSettingsChanged(ev: Event) {
@@ -550,7 +606,7 @@ export function DebtTransactionModal({
       cancelled = true;
       window.removeEventListener(SETTINGS_DATA_CHANGED_EVENT, onSettingsChanged as EventListener);
     };
-  }, [debtObjectOptions, t]);
+  }, [debtObjectOptions, isLoanDialog, t]);
 
   useEffect(() => {
     function onCreate(ev: Event) {
@@ -578,25 +634,33 @@ export function DebtTransactionModal({
         defaultRepaymentIntervalMonths?: number | null;
         defaultLoanTotalRuns?: number | null;
         defaultFirstRepaymentDate?: string | null;
+        defaultAutoDebit?: boolean | null;
+        defaultAutoDebitFirstDate?: string | null;
       }>).detail;
       resetDraft();
       if (detail?.editEntryId) setEditingEntryId(detail.editEntryId);
       if (detail?.mode) setMode(detail.mode);
       if (detail?.loanType) {
         setLoanType(detail.loanType);
-        // 贷款类型预设：消费贷款 = 提前支出（financed_purchase）+ 固定利率分期；
-        // 抵押贷款 = 放款（cash_disbursement）+ LPR 折扣 + 等额本息长期。
+        setActiveLoanTab(detail.loanType);
+        // Loan setup is a direct financed purchase: no cash is deposited into
+        // the repayment account. Mortgage adds fixed-asset and LPR fields.
         if (detail.loanType === "consumer") {
           setLoanFundingMode("financed_purchase");
-          setRepaymentMethod("等额本息");
+          setRepaymentMethod(EQUAL_PAYMENT_REPAYMENT_METHOD);
           setLoanTotalRuns("12");
           setAutoDebit(false);
+          setAutoDebitFirstDate(addMonthsInput(today, 1));
         } else {
-          setLoanFundingMode("cash_disbursement");
-          setRepaymentMethod("等额本息");
+          setLoanFundingMode("financed_purchase");
+          setRepaymentMethod(EQUAL_PAYMENT_REPAYMENT_METHOD);
           setLoanTotalRuns("300");
           setAutoDebit(true);
+          setAutoDebitFirstDate(addMonthsInput(today, 1));
         }
+      } else if (detail?.mode === "repay_out") {
+        setMode("repay_out");
+        setActiveLoanTab("repay_out");
       }
       if (detail?.defaultLoanFundingMode) setLoanFundingMode(detail.defaultLoanFundingMode);
       if (detail?.defaultDate) setDate(detail.defaultDate);
@@ -612,7 +676,7 @@ export function DebtTransactionModal({
       if (detail?.defaultDebtAccountId) {
         setDebtAccountId(detail.defaultDebtAccountId);
       } else if (detail?.loanType) {
-        // 未指定账户时，按贷款类型自动选中第一个匹配账户。
+        // When no account is supplied, select the first account matching the loan type.
         const matched = localDebtAccounts.find((account) =>
           detail.loanType === "consumer" ? account.isConsumerLoan === true : account.isConsumerLoan !== true,
         );
@@ -622,6 +686,7 @@ export function DebtTransactionModal({
         }
       }
       if (detail?.defaultCashAccountId) setCashAccountId(detail.defaultCashAccountId);
+      if (detail?.defaultAutoDebit != null) setAutoDebit(detail.defaultAutoDebit);
       if (detail?.defaultPrincipal != null) {
         const nextPrincipal = String(parseAbsMoneyText(String(detail.defaultPrincipal)));
         setPrincipal(nextPrincipal);
@@ -655,6 +720,8 @@ export function DebtTransactionModal({
         setLoanTotalRuns(String(detail.defaultLoanTotalRuns));
       }
       if (detail?.defaultFirstRepaymentDate) setFirstRepaymentDate(detail.defaultFirstRepaymentDate);
+      if (detail?.defaultAutoDebitFirstDate) setAutoDebitFirstDate(detail.defaultAutoDebitFirstDate);
+      else if (detail?.defaultFirstRepaymentDate) setAutoDebitFirstDate(detail.defaultFirstRepaymentDate);
       if (detail?.defaultLoanRateAdjustments && detail.defaultLoanRateAdjustments.length > 0) {
         setHistoricalRateRows(detail.defaultLoanRateAdjustments.map((item) =>
           createHistoricalRateRow(item.effectiveDate, formatRateInput(item.annualRate)),
@@ -670,9 +737,10 @@ export function DebtTransactionModal({
       }
       setOpen(true);
     }
-    window.addEventListener("mmh:debt:create", onCreate as EventListener);
-    return () => window.removeEventListener("mmh:debt:create", onCreate as EventListener);
-  }, [defaultCashAccountId, defaultDebtAccountId, localDebtAccounts, localNestedFieldData, nestedFieldData, resetDraft]);
+    const createEventName = isLoanDialog ? "mmh:loan:create" : "mmh:debt:create";
+    window.addEventListener(createEventName, onCreate as EventListener);
+    return () => window.removeEventListener(createEventName, onCreate as EventListener);
+  }, [defaultCashAccountId, defaultDebtAccountId, isLoanDialog, localDebtAccounts, localNestedFieldData, nestedFieldData, resetDraft]);
   useCloseOnNavigation(open, () => {
     setOpen(false);
     resetDraft();
@@ -790,6 +858,59 @@ export function DebtTransactionModal({
     }
   }
 
+  function handleLoanTabSelect(tab: LoanTab) {
+    setActiveLoanTab(tab);
+    setLoanPurposeCategoryId("");
+    setFixedAssetLinked(false);
+    setFixedAssetAccountId("");
+    setFixedAssetAssetId("");
+    setDebtAccountId("");
+    setDebtInstitutionId("");
+    setDebtItemName("");
+    setPrincipal("");
+    setAnnualRate("");
+    setAnnualRateManuallyEdited(false);
+    setMortgageLprDiscount("");
+    setShowHistoricalRates(false);
+    setHistoricalRateRows([]);
+    if (tab === "repay_out") {
+      setMode("repay_out");
+      setLoanType(null);
+      setLoanFundingMode("cash_disbursement");
+      return;
+    }
+    setMode("borrow_in");
+    setLoanType(tab);
+    if (tab === "consumer") {
+      setLoanFundingMode("financed_purchase");
+      setRepaymentMethod(EQUAL_PAYMENT_REPAYMENT_METHOD);
+      setLoanTotalRuns("12");
+      setAutoDebit(false);
+      setAutoDebitFirstDate(firstRepaymentDate || addMonthsInput(today, 1));
+    } else {
+      setLoanFundingMode("financed_purchase");
+      setRepaymentMethod(EQUAL_PAYMENT_REPAYMENT_METHOD);
+      setLoanTotalRuns("300");
+      setAutoDebit(true);
+      setAutoDebitFirstDate(firstRepaymentDate || addMonthsInput(today, 1));
+    }
+  }
+
+  function handleLoanPurposeChange(id: string) {
+    setLoanPurposeCategoryId(id);
+  }
+
+  function handleFixedAssetToggle() {
+    setFixedAssetLinked((current) => {
+      const next = !current;
+      if (!next) {
+        setFixedAssetAccountId("");
+        setFixedAssetAssetId("");
+      }
+      return next;
+    });
+  }
+
   function getPendingRepaymentLprAdjustment() {
     if (mode !== "repay_out" || editingEntryId || !repaymentLprCheck) return null;
     const discount = repaymentLprCheck.mortgageLprDiscount;
@@ -811,13 +932,38 @@ export function DebtTransactionModal({
     };
   }
 
+  function getDebtActionErrorMessage(error: string) {
+    if (error === "REPAYMENT_REQUIRES_EXISTING_LOAN_ACCOUNT") return t("debtTx.alert.selectRepayableLoanAccount");
+    if (error === "LOAN_ACCOUNT_HAS_NO_PAYABLE_BALANCE") return t("debtTx.alert.noPayableLoanAccountOnDate");
+    return error;
+  }
+
   async function saveDebtTransaction(keepAdding: boolean, options?: { skipHistoryPrompt?: boolean }) {
     if (submitting) return;
+    if (isLoanRepaymentMode && !debtAccountId) {
+      window.alert(t("debtTx.alert.selectRepayableLoanAccount"));
+      return;
+    }
+    if (isLoanDialog && activeLoanTab === "consumer" && mode === "borrow_in" && !loanPurposeCategoryId) {
+      window.alert(t("debtTx.alert.selectLoanPurpose"));
+      return;
+    }
+    if (isLoanDialog && mode === "borrow_in" && fixedAssetLinked && !fixedAssetAccountId) {
+      window.alert(t("txForm.selectFixedAssetAccount"));
+      return;
+    }
     const requiresLoanScheduleFields = showBorrowPlan && isFixedRepaymentMethodValue(repaymentMethod);
     if (requiresLoanScheduleFields) {
-      const parsedAnnualRate = isInstallmentRepaymentMethod(repaymentMethod)
-        ? parseNonNegativeNumberText(annualRate)
-        : parsePositiveNumberText(annualRate);
+      const allowZeroAnnualRate =
+        isInstallmentRepaymentMethod(repaymentMethod) ||
+        (isConsumerLoanBorrow && allowsZeroAnnualRateRepaymentMethod(repaymentMethod));
+      const parsedAnnualRate = annualRate.trim()
+        ? allowZeroAnnualRate
+          ? parseNonNegativeNumberText(annualRate)
+          : parsePositiveNumberText(annualRate)
+        : allowZeroAnnualRate
+          ? 0
+          : null;
       if (parsedAnnualRate == null) {
         window.alert(t("debtTx.alert.annualRateRequired"));
         return;
@@ -829,6 +975,17 @@ export function DebtTransactionModal({
       if (!firstRepaymentDate) {
         window.alert(t("debtTx.alert.firstRepaymentDateRequired"));
         return;
+      }
+      const requiresRepaymentAccount = isMortgageLoan || autoDebit;
+      if (requiresRepaymentAccount) {
+        if (!cashAccountId) {
+          window.alert(t("debtTx.alert.autoDebitAccountRequired"));
+          return;
+        }
+        if (!autoDebitFirstDate || !isValidDateInput(autoDebitFirstDate)) {
+          window.alert(t("debtTx.alert.autoDebitDateRequired"));
+          return;
+        }
       }
     }
     if (
@@ -893,8 +1050,11 @@ export function DebtTransactionModal({
       return;
     }
 
+    const submittedAutoDebit = isMortgageLoan || autoDebit;
     const submittedLoanFundingMode =
-      editingEntryId && loanFundingMode === "financed_purchase" ? "financed_purchase" : "cash_disbursement";
+      (isLoanDialog && mode === "borrow_in") || (editingEntryId && loanFundingMode === "financed_purchase")
+        ? "financed_purchase"
+        : "cash_disbursement";
     const formData = new FormData();
     formData.set("editEntryId", editingEntryId);
     formData.set("mode", mode);
@@ -905,20 +1065,25 @@ export function DebtTransactionModal({
     formData.set("debtAccountId", shouldUseDebtObject ? "" : debtAccountId);
     formData.set("debtObjectId", shouldUseDebtObject ? debtInstitutionId : "");
     formData.set("debtInstitutionId", shouldUseDebtObject ? rawDebtObjectId(debtInstitutionId) : "");
-    formData.set("debtItemName", debtItemName);
-    formData.set("cashAccountId", cashAccountId);
+    formData.set("debtItemName", isLoanDialog ? debtItemName : "");
+    formData.set("loanType", isLoanDialog ? activeLoanTab : "");
+    formData.set("cashAccountId", isLoanBorrow ? (submittedAutoDebit ? cashAccountId : "") : cashAccountId);
     formData.set("principal", String(parseAbsMoneyText(principal)));
     formData.set("interest", showInterest ? interest : "0");
     formData.set("penalty", showPrepayment ? penaltyForSubmit : "0");
     formData.set("prepayStrategy", prepayStrategy);
-    formData.set("annualRate", annualRate);
+    const allowZeroAnnualRateForSubmit =
+      isInstallmentRepaymentMethod(repaymentMethod) ||
+      (isConsumerLoanBorrow && allowsZeroAnnualRateRepaymentMethod(repaymentMethod));
+    formData.set("annualRate", !annualRate.trim() && allowZeroAnnualRateForSubmit ? "0" : annualRate);
     formData.set("mortgageLprDiscount", mortgageLprDiscount);
     formData.set("repaymentMethod", normalizeLoanRepaymentMethod(repaymentMethod));
     formData.set("repaymentIntervalMonths", repaymentIntervalMonths);
     formData.set("loanTotalRuns", loanTotalRuns);
     formData.set("firstRepaymentDate", firstRepaymentDate);
     formData.set("createRepaymentPlan", showBorrowPlan && isFixedRepaymentMethod ? "true" : "false");
-    formData.set("autoDebit", autoDebit ? "true" : "false");
+    formData.set("autoDebit", submittedAutoDebit ? "true" : "false");
+    formData.set("autoDebitFirstDate", autoDebitFirstDate || firstRepaymentDate);
     formData.set(
       "createHistoricalRepaymentRecords",
       submittedLoanFundingMode === "financed_purchase" ? "false" : createHistoricalRepaymentRecords ? "true" : "false",
@@ -929,12 +1094,19 @@ export function DebtTransactionModal({
       formData.set("acceptedLprAnnualRate", String(acceptedLprAdjustment.annualRate));
     }
     formData.set("note", note);
+    if (isLoanDialog && mode === "borrow_in") {
+      formData.set("loanPurposeCategoryId", loanPurposeCategoryId);
+      if (fixedAssetLinked && fixedAssetAccountId) {
+        formData.set("fixedAssetAccountId", fixedAssetAccountId);
+        if (fixedAssetAssetId) formData.set("fixedAssetAssetId", fixedAssetAssetId);
+      }
+    }
 
     setSubmitting(true);
     try {
       const res = await action(formData);
       if (!res.ok) {
-        window.alert(res.error);
+        window.alert(getDebtActionErrorMessage(res.error));
         return;
       }
       if (res.warning) {
@@ -987,10 +1159,9 @@ export function DebtTransactionModal({
         setPrepayTotal("");
         setPrepayTotalManual(false);
         setPrepayStrategy(DEFAULT_LOAN_PREPAY_STRATEGY);
-        setBankExecutionRate("");
         setAnnualRate("");
         setMortgageLprDiscount("");
-        setRepaymentMethod("自由还款");
+      setRepaymentMethod(FREE_REPAYMENT_METHOD);
         setRepaymentIntervalMonths("1");
         setLoanTotalRuns("300");
         setFirstRepaymentDate(addMonthsInput(today, 1));
@@ -1000,6 +1171,10 @@ export function DebtTransactionModal({
         setHistoricalRatesOpen(false);
         setDebtItemName("");
         setNote("");
+        setLoanPurposeCategoryId("");
+        setFixedAssetLinked(false);
+        setFixedAssetAccountId("");
+        setFixedAssetAssetId("");
       } else {
         setOpen(false);
         setHistoryConfirmOpen(false);
@@ -1028,35 +1203,99 @@ export function DebtTransactionModal({
   const selectedDebtAccountIsConsumerLoan = selectedDebtAccount?.isConsumerLoan === true;
   const showInterest = mode === "repay_out" || mode === "collect_in" || mode === "lend_out";
   const showPrepayment = mode === "prepay_out";
+  const isLoanRepaymentMode = isLoanDialog && (mode === "repay_out" || mode === "prepay_out");
   const canCreateDebtItem = canCreateDebtItemForMode(mode);
-  const canSelectDebtObject = !!editingEntryId || mode !== "prepay_out";
-  const showLoanBorrowOptions = mode === "borrow_in" && !selectedDebtObjectIsCounterparty && (selectedDebtAccountIsBankLoan || selectedDebtAccountIsConsumerLoan);
-  const hasBorrowPlanTarget = !!debtAccountId || isDebtObjectRef(debtInstitutionId);
-  const showBorrowPlan = mode === "borrow_in" && hasBorrowPlanTarget;
+  const canSelectDebtObject = !isLoanRepaymentMode && (!!editingEntryId || mode !== "prepay_out");
+  const isLoanBorrow = isLoanDialog && mode === "borrow_in";
+  const isConsumerLoanBorrow = isLoanBorrow && activeLoanTab === "consumer";
+  const isMortgageLoan = isLoanDialog && activeLoanTab === "mortgage";
+  const showLoanPurpose = isLoanBorrow && activeLoanTab === "consumer";
+  const showMortgageLoanFields = isMortgageLoan && isLoanBorrow;
+  const showLoanFixedAssetFields = isLoanBorrow && (activeLoanTab === "consumer" || activeLoanTab === "mortgage");
+  const showLoanBorrowOptions = isMortgageLoan && mode === "borrow_in" && !selectedDebtObjectIsCounterparty && (selectedDebtAccountIsBankLoan || selectedDebtAccountIsConsumerLoan);
+  const showBorrowPlan = isLoanDialog && mode === "borrow_in";
+  const loanPurposeOptions = useMemo(
+    () => buildCategoryTreeOptions((expenseCategories ?? []) as CategorySource[], t),
+    [expenseCategories, t],
+  );
+  const accountUsage = useAccountUsage();
+  const {
+    filteredOptions: fixedAssetFiltered,
+    visibleOptionIds: fixedAssetVisibleOptionIds,
+  } = useAccountSSFilter(localFixedAssetAccountSSOpts);
+  const fixedAssetAccountOptions = useMemo(() => {
+    let base = mergeSmartSelectOptions(fixedAssetFiltered, fixedAssetAccountList);
+    const selected = fixedAssetAccountList.find((option) => option.id === fixedAssetAccountId);
+    if (fixedAssetVisibleOptionIds) {
+      base = base.filter((option) => fixedAssetVisibleOptionIds.has(option.id));
+    }
+    if (selected && !base.some((option) => option.id === selected.id)) base.push(selected);
+    return sortByAccountUsage(base, accountUsage);
+  }, [accountUsage, fixedAssetAccountId, fixedAssetAccountList, fixedAssetFiltered, fixedAssetVisibleOptionIds]);
+
   useEffect(() => {
     if (selectedDebtObjectIsCounterparty && mode === "prepay_out") {
       setMode("repay_out");
     }
   }, [mode, selectedDebtObjectIsCounterparty]);
   useEffect(() => {
-    if (!showLoanBorrowOptions && loanFundingMode !== "cash_disbursement") {
+    if (isLoanBorrow && loanFundingMode !== "financed_purchase") {
+      setLoanFundingMode("financed_purchase");
+      return;
+    }
+    if (!isLoanBorrow && !editingEntryId && loanFundingMode !== "cash_disbursement") {
       setLoanFundingMode("cash_disbursement");
     }
-  }, [loanFundingMode, showLoanBorrowOptions]);
+  }, [editingEntryId, isLoanBorrow, loanFundingMode]);
   useEffect(() => {
-    if (showLoanBorrowOptions) return;
-    if (bankExecutionRate) setBankExecutionRate("");
+    if (isMortgageLoan && !autoDebit) setAutoDebit(true);
+  }, [autoDebit, isMortgageLoan]);
+  useEffect(() => {
+    if (showMortgageLoanFields) return;
     if (mortgageLprDiscount) setMortgageLprDiscount("");
-    if (showHistoricalRates) setShowHistoricalRates(false);
-    if (historicalRateRows.length > 0) setHistoricalRateRows([]);
-    if (historicalRatesOpen) setHistoricalRatesOpen(false);
-  }, [bankExecutionRate, historicalRateRows.length, historicalRatesOpen, mortgageLprDiscount, showHistoricalRates, showLoanBorrowOptions]);
+  }, [mortgageLprDiscount, showMortgageLoanFields]);
+  useEffect(() => {
+    if (!open || !isLoanRepaymentMode || !isValidDateInput(date)) {
+      setRepayableLoanAccountRows([]);
+      setRepayableLoanAccountsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    const controller = new AbortController();
+    const params = new URLSearchParams({ date });
+    if (editingEntryId) params.set("excludeEntryId", editingEntryId);
+    setRepayableLoanAccountsLoading(true);
+    fetch(`/api/v1/debt/repayable-loan-accounts?${params.toString()}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => response.ok ? response.json() : null)
+      .then((payload) => {
+        if (cancelled) return;
+        const rows = Array.isArray(payload?.data) ? payload.data : [];
+        setRepayableLoanAccountRows(rows.flatMap((row: { accountId?: unknown; balance?: unknown }) => {
+          const accountId = typeof row.accountId === "string" ? row.accountId : "";
+          const balance = Number(row.balance);
+          return accountId && Number.isFinite(balance) ? [{ accountId, balance }] : [];
+        }));
+      })
+      .catch(() => {
+        if (!cancelled) setRepayableLoanAccountRows([]);
+      })
+      .finally(() => {
+        if (!cancelled) setRepayableLoanAccountsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [date, editingEntryId, isLoanRepaymentMode, open]);
   const repaymentTotal = useMemo(() => {
     if (!principal.trim() && !interest.trim() && !penalty.trim()) return "";
     return (parseMoneyText(principal) + (showInterest ? parseMoneyText(interest) : 0) + (showPrepayment ? parseMoneyText(penalty) : 0)).toFixed(2);
   }, [interest, penalty, principal, showInterest, showPrepayment]);
   const cashAccountLabel = mode === "borrow_in"
-    ? (showLoanBorrowOptions && loanFundingMode === "financed_purchase" ? t("debtTx.accountLabel.repaymentAccount") : t("debtTx.accountLabel.postingAccount"))
+    ? (isLoanBorrow ? t("debtTx.accountLabel.repaymentAccount") : t("debtTx.accountLabel.postingAccount"))
     : mode === "repay_out" || mode === "prepay_out"
       ? t("debtTx.accountLabel.expenseAccount")
       : mode === "collect_in"
@@ -1081,12 +1320,42 @@ export function DebtTransactionModal({
       .map((account) => ({ id: account.id, label: account.label, subLabel: account.subLabel })),
     [localDebtAccounts, mode, loanType],
   );
+  const repayableLoanBalanceByAccountId = useMemo(
+    () => new Map(repayableLoanAccountRows.map((row) => [row.accountId, row.balance])),
+    [repayableLoanAccountRows],
+  );
+  const repayableLoanAccountOptions: SmartSelectOption[] = useMemo(
+    () => repayableLoanAccountRows.flatMap((row) => {
+      const account = localDebtAccounts.find((item) => item.id === row.accountId);
+      // The API already restricts rows to loan accounts. Some callers build
+      // AccountOption without kind, so checking it here would silently empty the list.
+      if (!account || account.isInstitutionLoan !== true) return [];
+      const balance = Math.abs(row.balance);
+        return {
+          id: account.id,
+          label: account.label,
+          subLabel: [
+            account.subLabel,
+            t("debtTx.repayableBalanceSubLabel", { date, amount: formatMoneyPreview(balance, language) }),
+          ].filter(Boolean).join(" · "),
+        };
+    }),
+    [date, language, localDebtAccounts, repayableLoanAccountRows, t],
+  );
+  useEffect(() => {
+    if (!isLoanRepaymentMode || editingEntryId || repayableLoanAccountsLoading || !debtAccountId) return;
+    if (!repayableLoanAccountOptions.some((option) => option.id === debtAccountId)) {
+      setDebtAccountId("");
+      setDebtInstitutionId("");
+    }
+  }, [debtAccountId, editingEntryId, isLoanRepaymentMode, repayableLoanAccountOptions, repayableLoanAccountsLoading]);
   const debtObjectAccountOptions: SmartSelectOption[] = useMemo(
     () => localDebtAccounts
       .filter((account) => {
         if (!canSelectDebtObject) return debtAccountOptions.some((option) => option.id === account.id);
         if (!isDebtObjectRef(debtInstitutionId)) return false;
         const rawId = rawDebtObjectId(debtInstitutionId);
+        if (!isLoanDialog) return account.counterpartyId === rawId;
         if (debtInstitutionId.startsWith("counterparty:")) return account.counterpartyId === rawId;
         if (account.institutionId !== rawId) return false;
         const expectedDirection = debtDirectionForMode(mode);
@@ -1100,24 +1369,9 @@ export function DebtTransactionModal({
           subLabel: [directionLabel, account.subLabel].filter(Boolean).join(" · "),
         };
       }),
-    [canSelectDebtObject, debtAccountOptions, debtInstitutionId, localDebtAccounts, mode, t],
+    [canSelectDebtObject, debtAccountOptions, debtInstitutionId, isLoanDialog, localDebtAccounts, mode, t],
   );
-  const debtItemSuggestions = useMemo(
-    () => Array.from(new Set(localDebtAccounts
-      .filter((account) => {
-        if (!debtInstitutionId) return true;
-        const rawId = rawDebtObjectId(debtInstitutionId);
-        if (debtInstitutionId.startsWith("counterparty:")) return account.counterpartyId === rawId;
-        return account.institutionId === rawId;
-      })
-      .map((account) => account.label.trim())
-      .filter(Boolean))),
-    [debtInstitutionId, localDebtAccounts],
-  );
-  const selectedDebtObjectName = debtObjectById.get(debtInstitutionId)?.name?.trim() || t("txForm.counterparty");
-  const editingExistingDebtItem = !!editingEntryId && canSelectDebtObject;
-  const selectedExistingDebtItem = editingExistingDebtItem || !!debtAccountId;
-  const disabled = cashAccounts.length === 0;
+  const disabled = !isLoanDialog && cashAccounts.length === 0;
   const isFixedRepaymentMethod = isFixedRepaymentMethodValue(repaymentMethod);
   const isInstallmentRepayment = isInstallmentRepaymentMethod(repaymentMethod);
   const loanSchedulePreview = useMemo(() => {
@@ -1126,13 +1380,16 @@ export function DebtTransactionModal({
     const principalAmount = parseAbsMoneyText(principal);
     const totalRuns = Number.parseInt(loanTotalRuns || "0", 10);
     const intervalMonths = Number.parseInt(repaymentIntervalMonths || "1", 10);
-    const baseAnnualRate = Number(annualRate);
+    const allowZeroAnnualRate =
+      isInstallmentRepayment ||
+      (isConsumerLoanBorrow && allowsZeroAnnualRateRepaymentMethod(repaymentMethod));
+    const baseAnnualRate = annualRate.trim() ? Number(annualRate) : allowZeroAnnualRate ? 0 : NaN;
     if (
       !firstRunDate ||
       principalAmount <= 0 ||
       !Number.isFinite(totalRuns) ||
       totalRuns <= 0 ||
-      (isInstallmentRepayment
+      (allowZeroAnnualRate
         ? (!Number.isFinite(baseAnnualRate) || baseAnnualRate < 0)
         : (!Number.isFinite(baseAnnualRate) || baseAnnualRate <= 0))
     ) {
@@ -1170,6 +1427,7 @@ export function DebtTransactionModal({
     historicalRateRows,
     isFixedRepaymentMethod,
     isInstallmentRepayment,
+    isConsumerLoanBorrow,
     loanTotalRuns,
     principal,
     repaymentIntervalMonths,
@@ -1178,42 +1436,26 @@ export function DebtTransactionModal({
     showHistoricalRates,
   ]);
   const formatRateInput = (value: number) => value.toFixed(3).replace(/\.?0+$/, "");
-  function computeAnnualRateFromBankExecutionRate(discount: number, baseRate = Number(bankExecutionRate.trim())) {
-    if (!Number.isFinite(baseRate) || baseRate <= 0) return;
-    if (!annualRateManuallyEdited) {
-      setAnnualRate(formatRateInput(baseRate * discount));
-    }
-  }
-  function fetchBankExecutionRate() {
-    const quote = getMortgageBankExecutionRate(date || today);
-    if (!quote) {
-      window.alert(t("debtTx.alert.bankRateNotFound"));
-      return;
-    }
-    const baseRate = quote.rate;
-    setBankExecutionRate(formatRateInput(baseRate));
-    const discount = Number(mortgageLprDiscount.trim());
-    if (Number.isFinite(discount) && discount > 0) {
-      computeAnnualRateFromBankExecutionRate(discount, baseRate);
-    }
-  }
   function applyMortgageLprDiscount(options?: { silent?: boolean }) {
-    const discount = Number(mortgageLprDiscount.trim());
+    const rawDiscount = mortgageLprDiscount.trim();
+    const discount = rawDiscount ? Number(rawDiscount) : 1;
     if (!Number.isFinite(discount) || discount <= 0) {
       if (!options?.silent) window.alert(t("debtTx.alert.lprDiscountInvalid"));
       return;
     }
-    const currentBankRate = Number(bankExecutionRate.trim());
-    if (Number.isFinite(currentBankRate) && currentBankRate > 0) {
-      computeAnnualRateFromBankExecutionRate(discount, currentBankRate);
-    } else {
-      const quote = getMortgageBankExecutionRate(date || today);
-      if (!quote) return;
-      const baseRate = quote.rate;
-      setBankExecutionRate(formatRateInput(baseRate));
-      computeAnnualRateFromBankExecutionRate(discount, baseRate);
+    const loanDate = isValidDateInput(date) ? date : today;
+    if (!rawDiscount && !options?.silent) setMortgageLprDiscount(formatRateInput(discount));
+    const quote = getMortgageBankExecutionRate(loanDate);
+    const fetchedAnnualRate = quote ? quote.rate * discount : null;
+    if (fetchedAnnualRate != null && (!annualRateManuallyEdited || !options?.silent || !annualRate.trim())) {
+      setAnnualRate(formatRateInput(fetchedAnnualRate));
     }
-    const adjustments = buildMortgageLprRateAdjustments({ discount, throughDate: today });
+    const adjustments = buildMortgageLprRateAdjustments({
+      discount,
+      throughDate: today,
+      fromDate: loanDate,
+      includeUnchanged: true,
+    });
     if (adjustments.length > 0) {
       setHistoricalRateRows(adjustments.map((item) => createHistoricalRateRow(
         item.effectiveDate,
@@ -1227,6 +1469,278 @@ export function DebtTransactionModal({
     if (!mortgageLprDiscount.trim()) return;
     applyMortgageLprDiscount({ silent: true });
   }
+
+  const renderDateField = () => (
+    <div className="space-y-1">
+      <div className="form-label">{isLoanRepaymentMode ? t("debtTx.date.repayment") : mode === "borrow_in" ? (isLoanBorrow ? t("debtTx.date.occurred") : t("detail.column.postedAt")) : t("detail.column.date")}</div>
+      <DateStepper name="date" value={date} onChange={setDate} />
+    </div>
+  );
+
+  const renderCashAccountField = (options?: { label?: string }) => (
+    <div className="space-y-1">
+      <div className="form-label">{options?.label ?? cashAccountLabel}</div>
+      <SmartSelect
+        mode="single"
+        value={cashAccountId}
+        onChange={setCashAccountId}
+        options={visibleCashOptions}
+        placeholder={t("txForm.selectPlaceholder")}
+        behavior={{
+          hierarchy: "auto",
+          search: "auto",
+          clearable: false,
+          headerExtra: cashOwnerCycleButton,
+        }}
+      />
+    </div>
+  );
+
+  function handleFirstRepaymentDateChange(value: string) {
+    setFirstRepaymentDate(value);
+    if (!autoDebitFirstDate || autoDebitFirstDate === firstRepaymentDate) {
+      setAutoDebitFirstDate(value);
+    }
+  }
+
+  const renderDebtObjectField = () => canSelectDebtObject ? (
+    <div className="space-y-1">
+      <div className="form-label">{isLoanDialog ? t("debtTx.loanInstitution") : t("txForm.counterparty")}</div>
+      <SmartSelect
+        mode="single"
+        value={debtInstitutionId}
+        onChange={handleDebtItemOrObjectChange}
+        options={visibleDebtObjectOptions}
+        placeholder={isLoanDialog ? t("debtTx.placeholder.selectLoanInstitution") : t("debtTx.placeholder.selectCounterparty")}
+        onCreateClick={() => { void openDebtObjectCreate(); }}
+        createLabel={isLoanDialog ? t("debtTx.addLoanInstitution") : t("txForm.addCounterparty")}
+        behavior={{
+          hierarchy: false,
+          search: true,
+          clearable: false,
+          minDropdownWidth: 320,
+        }}
+      />
+    </div>
+  ) : null;
+
+  const renderRepayableLoanAccountField = () => (
+    <div className="space-y-1">
+      <div className="form-label">{t("debtTx.loanAccount")} <span className="text-red-500">*</span></div>
+      <SmartSelect
+        mode="single"
+        value={debtAccountId}
+        onChange={handleDebtAccountChange}
+        options={repayableLoanAccountOptions}
+        placeholder={repayableLoanAccountsLoading ? t("debtTx.placeholder.loadingRepayableLoanAccounts") : t("debtTx.placeholder.selectRepayableLoanAccount")}
+        behavior={{
+          hierarchy: false,
+          search: true,
+          clearable: false,
+          minDropdownWidth: 420,
+        }}
+      />
+      <div className="text-[11px] text-slate-500">
+        {!repayableLoanAccountsLoading && repayableLoanAccountOptions.length === 0
+          ? t("debtTx.noRepayableLoanAccountsForDate")
+          : t("debtTx.repayableLoanAccountHint")}
+      </div>
+    </div>
+  );
+
+  const renderDebtAccountField = () => canSelectDebtObject ? (
+    <div className="space-y-1">
+      <div className="form-label">{isLoanDialog ? t("debtTx.loanAccount") : t("debtTx.counterpartyAccount")}</div>
+      <SmartSelect
+        mode="single"
+        value={debtAccountId}
+        onChange={handleDebtAccountChange}
+        options={debtObjectAccountOptions}
+        placeholder={debtInstitutionId ? t("debtTx.placeholder.autoReuseOrCreate") : t("debtTx.placeholder.selectObjectFirst")}
+        onCreateClick={isLoanDialog && canCreateDebtItem && isDebtObjectRef(debtInstitutionId) ? () => { void openDebtAccountCreate(); } : undefined}
+        createLabel={t("debtTx.addAccount")}
+        behavior={{
+          hierarchy: false,
+          search: true,
+          clearable: true,
+          minDropdownWidth: 360,
+        }}
+      />
+    </div>
+  ) : showPrepayment ? (
+    <div className="col-span-2 space-y-1">
+      <div className="form-label">{t("debtTx.borrowItem")}</div>
+      <SmartSelect
+        mode="single"
+        value={debtAccountId}
+        onChange={setDebtAccountId}
+        options={debtAccountOptions}
+        placeholder={t("debtTx.placeholder.selectExistingBorrowing")}
+        behavior={{
+          hierarchy: false,
+          search: true,
+          clearable: false,
+          minDropdownWidth: 360,
+        }}
+      />
+    </div>
+  ) : (
+    <div className="col-span-2 space-y-1">
+      <div className="form-label">{mode === "repay_out" ? t("debtTx.borrowItem") : t("debtTx.lendItem")}</div>
+      <SmartSelect
+        mode="single"
+        value={debtAccountId}
+        onChange={setDebtAccountId}
+        options={debtAccountOptions}
+        placeholder={mode === "repay_out" ? t("debtTx.placeholder.selectExistingBorrowing") : t("debtTx.placeholder.selectExistingLending")}
+        behavior={{
+          hierarchy: false,
+          search: true,
+          clearable: false,
+          minDropdownWidth: 360,
+        }}
+      />
+    </div>
+  );
+
+  const renderLoanTotalField = () => (
+    <div className="space-y-1">
+      <div className="form-label">{t("debtTx.totalBorrowing")}</div>
+      <CalcInput value={principal} onChange={setPrincipal} placeholder={t("debtTx.placeholder.exampleAmount")} label={t("debtTx.totalBorrowing")} precision={2} />
+    </div>
+  );
+
+  const renderFixedAssetAccountSelect = () => (
+    <SmartSelect
+      mode="single"
+      value={fixedAssetAccountId}
+      onChange={(id: string) => {
+        setFixedAssetAccountId(id);
+        setFixedAssetAssetId("");
+        recordRecentAccount(id);
+      }}
+      options={fixedAssetAccountOptions}
+      placeholder={t("txForm.selectFixedAssetAccount")}
+      onCreateClick={() => setFixedAssetAccountNestedOpen(true)}
+      createLabel={t("txForm.createFixedAssetAccount")}
+      behavior={{
+        hierarchy: "auto",
+        search: "auto",
+        clearable: false,
+        minDropdownWidth: 360,
+      }}
+    />
+  );
+
+  const renderLoanFixedAssetField = (options?: { accountSelect?: "inline" | "separate" }) => showLoanFixedAssetFields ? (
+    <div className="space-y-1">
+      <div className="form-label">{t("txForm.fixedAssetToggle")}</div>
+      <div className="flex h-8 items-center gap-2">
+        <button
+          type="button"
+          role="switch"
+          aria-checked={fixedAssetLinked}
+          aria-label={t("txForm.fixedAssetToggle")}
+          onClick={handleFixedAssetToggle}
+          className={[
+            "flex h-8 w-12 items-center justify-center rounded-full border px-1.5 text-xs font-medium transition",
+            fixedAssetLinked
+              ? "border-blue-300 bg-blue-50 text-blue-700"
+              : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50",
+          ].join(" ")}
+        >
+          <span
+            className={[
+              "relative h-4 w-7 shrink-0 rounded-full transition",
+              fixedAssetLinked ? "bg-blue-600" : "bg-slate-300",
+            ].join(" ")}
+          >
+            <span
+              className={[
+                "absolute top-0.5 h-3 w-3 rounded-full bg-white shadow-sm transition",
+                fixedAssetLinked ? "left-3.5" : "left-0.5",
+              ].join(" ")}
+            />
+          </span>
+        </button>
+      </div>
+      {fixedAssetLinked && options?.accountSelect !== "separate" ? renderFixedAssetAccountSelect() : null}
+    </div>
+  ) : null;
+
+  const renderRepaymentMethodField = () => (
+    <div className="space-y-1">
+      <div className="form-label">{t("debtTx.repaymentMethod")}</div>
+      <select value={repaymentMethod} onChange={(event) => {
+        const method = event.target.value;
+        setRepaymentMethod(method);
+        if (isInstallmentRepaymentMethod(method) && parseNonNegativeNumberText(annualRate) == null) {
+          setAnnualRate("0");
+          setAnnualRateManuallyEdited(false);
+        }
+      }}
+      className={isConsumerLoanBorrow ? "form-input rounded-[8px] px-2 text-xs" : "form-input"}
+      style={isConsumerLoanBorrow ? { height: 32, minHeight: 32 } : undefined}
+      >
+        <option value={EQUAL_PAYMENT_REPAYMENT_METHOD}>{t("debtTx.method.equalInstallment")}</option>
+        <option value={EQUAL_PRINCIPAL_REPAYMENT_METHOD}>{t("debtTx.method.equalPrincipal")}</option>
+        <option value={INSTALLMENT_REPAYMENT_METHOD}>{t("debtTx.method.interestFreeInstallment")}</option>
+        <option value={FREE_REPAYMENT_METHOD}>{t("debtTx.method.freeRepayment")}</option>
+        <option value={INTEREST_FIRST_REPAYMENT_METHOD}>{t("debtTx.method.interestFirstThenPrincipal")}</option>
+      </select>
+    </div>
+  );
+
+  const renderFirstRepaymentDateField = () => (
+    <div className="space-y-1">
+      <div className="form-label">{t("debtTx.firstRepaymentDate")} <span className="text-red-500">*</span></div>
+      <DateStepper value={firstRepaymentDate} onChange={handleFirstRepaymentDateChange} />
+    </div>
+  );
+
+  const renderAutoDebitDateField = () => (
+    <div className="space-y-1">
+      <div className="form-label">{t("debtTx.autoDebitDate")} <span className="text-red-500">*</span></div>
+      <DateStepper value={autoDebitFirstDate} onChange={setAutoDebitFirstDate} />
+    </div>
+  );
+
+  const renderLoanTotalRunsField = () => (
+    <div className="space-y-1">
+      <div className="form-label">{t("debtTx.totalRuns")} <span className="text-red-500">*</span></div>
+      <input
+        type="number"
+        min={1}
+        max={600}
+        value={loanTotalRuns}
+        onChange={(event) => setLoanTotalRuns(event.target.value)}
+        className="form-input"
+      />
+    </div>
+  );
+
+  const renderAnnualRateField = () => (
+    <div className="space-y-1">
+      <div className="form-label">
+        {t("debtShell.rateAdjust.annualRateLabel")}
+        {isConsumerLoanBorrow && allowsZeroAnnualRateRepaymentMethod(repaymentMethod) ? (
+          <span className="text-slate-400"> {t("stockFee.optional")}</span>
+        ) : (
+          <span className="text-red-500"> *</span>
+        )}
+      </div>
+      <input
+        value={annualRate}
+        onChange={(event) => {
+          setAnnualRateManuallyEdited(true);
+          setAnnualRate(event.target.value);
+        }}
+        placeholder={t("debtTx.placeholder.exampleAnnualRate")}
+        inputMode="decimal"
+        className="form-input"
+      />
+    </div>
+  );
 
   return (
     <ModalLayerProvider value={modalZIndex}>
@@ -1251,7 +1765,11 @@ export function DebtTransactionModal({
             <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
               <div className="app-modal-panel max-w-xl">
                   <div className="modal-header shrink-0">
-                    <div className="text-sm font-semibold text-slate-800">{editingEntryId ? t("debtTx.editRepayment") : t("debtTx.title")}</div>
+                    <div className="text-sm font-semibold text-slate-800">
+                      {editingEntryId
+                        ? (isLoanDialog ? t("debtTx.editLoan") : t("debtTx.editRepayment"))
+                        : isLoanDialog ? t("debtTx.loanTitle") : t("debtTx.title")}
+                    </div>
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
@@ -1267,141 +1785,73 @@ export function DebtTransactionModal({
                   </div>
 
                   <form className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" onSubmit={onSubmit}>
-                    <div className="grid grid-cols-5 gap-2">
-                      {(Object.keys(MODE_LABELS) as DebtMode[]).map((item) => (
-                        <button
-                          key={item}
-                          type="button"
-                          onClick={() => handleModeSelect(item)}
-                          disabled={!!editingEntryId && !canSwitchDebtEditMode(mode, item)}
-                          className={`segment-button h-9 ${mode === item ? "segment-button-active" : ""}`}
-                        >
-                          {t(MODE_LABELS[item])}
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-1">
-                        <div className="form-label">{mode === "borrow_in" ? (showLoanBorrowOptions && loanFundingMode === "financed_purchase" ? t("debtTx.date.occurred") : t("detail.column.postedAt")) : t("detail.column.date")}</div>
-                        <DateStepper name="date" value={date} onChange={setDate} />
+                    {isLoanDialog ? (
+                      <div className="grid grid-cols-3 gap-2">
+                        {LOAN_TABS.map((tab) => (
+                          <button
+                            key={tab}
+                            type="button"
+                            onClick={() => handleLoanTabSelect(tab)}
+                            disabled={!!editingEntryId && tab !== activeLoanTab}
+                            className={`segment-button h-9 ${activeLoanTab === tab ? "segment-button-active" : ""}`}
+                          >
+                            {t(LOAN_TAB_LABELS[tab])}
+                          </button>
+                        ))}
                       </div>
-                      <div className="space-y-1">
-                        <div className="form-label">{cashAccountLabel}</div>
-                        <SmartSelect
-                          mode="single"
-                          value={cashAccountId}
-                          onChange={setCashAccountId}
-                          options={visibleCashOptions}
-                          placeholder={t("txForm.selectPlaceholder")}
-                          behavior={{
-                            hierarchy: "auto",
-                            search: "auto",
-                            clearable: false,
-                            headerExtra: cashOwnerCycleButton,
-                          }}
-                        />
+                    ) : (
+                      <div className="grid grid-cols-5 gap-2">
+                        {(Object.keys(MODE_LABELS) as DebtMode[]).map((item) => (
+                          <button
+                            key={item}
+                            type="button"
+                            onClick={() => handleModeSelect(item)}
+                            disabled={!!editingEntryId && !canSwitchDebtEditMode(mode, item)}
+                            className={`segment-button h-9 ${mode === item ? "segment-button-active" : ""}`}
+                          >
+                            {t(MODE_LABELS[item])}
+                          </button>
+                        ))}
                       </div>
-                    </div>
+                    )}
 
-                    <div className="grid grid-cols-2 gap-3">
-                      {canSelectDebtObject ? (
-                        <div className="space-y-1">
-                          <div className="form-label">{t("txForm.counterparty")}</div>
-                          <SmartSelect
-                            mode="single"
-                            value={debtInstitutionId}
-                            onChange={handleDebtItemOrObjectChange}
-                            options={visibleDebtObjectOptions}
-                            placeholder={t("debtTx.placeholder.selectCounterparty")}
-                            onCreateClick={() => { void openDebtObjectCreate(); }}
-                            createLabel={t("txForm.addCounterparty")}
-                            behavior={{
-                              hierarchy: false,
-                              search: true,
-                              clearable: false,
-                              minDropdownWidth: 320,
-                            }}
-                          />
+                    {isLoanBorrow ? (
+                      <>
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          {renderDateField()}
+                          {renderDebtObjectField()}
                         </div>
-                      ) : null}
-                      {canSelectDebtObject ? (
-                        <div className="space-y-1">
-                          <div className="form-label">{t("debtTx.counterpartyAccount")}</div>
-                          <SmartSelect
-                            mode="single"
-                            value={debtAccountId}
-                            onChange={handleDebtAccountChange}
-                            options={debtObjectAccountOptions}
-                            placeholder={debtInstitutionId ? t("debtTx.placeholder.autoReuseOrCreate") : t("debtTx.placeholder.selectObjectFirst")}
-                            onCreateClick={canCreateDebtItem && isDebtObjectRef(debtInstitutionId) ? () => { void openDebtAccountCreate(); } : undefined}
-                            createLabel={t("debtTx.addAccount")}
-                            behavior={{
-                              hierarchy: false,
-                              search: true,
-                              clearable: true,
-                              minDropdownWidth: 360,
-                            }}
-                          />
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          {renderDebtAccountField()}
+                          {renderLoanTotalField()}
                         </div>
-                      ) : showPrepayment ? (
-                        <div className="col-span-2 space-y-1">
-                          <div className="form-label">{t("debtTx.borrowItem")}</div>
-                          <SmartSelect
-                            mode="single"
-                            value={debtAccountId}
-                            onChange={setDebtAccountId}
-                            options={debtAccountOptions}
-                            placeholder={t("debtTx.placeholder.selectExistingBorrowing")}
-                            behavior={{
-                              hierarchy: false,
-                              search: true,
-                              clearable: false,
-                              minDropdownWidth: 360,
-                            }}
-                          />
+                      </>
+                    ) : isLoanRepaymentMode ? (
+                      <>
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          {renderDateField()}
+                          {renderCashAccountField()}
                         </div>
-                      ) : (
-                        <div className="col-span-2 space-y-1">
-                          <div className="form-label">{mode === "repay_out" ? t("debtTx.borrowItem") : t("debtTx.lendItem")}</div>
-                          <SmartSelect
-                            mode="single"
-                            value={debtAccountId}
-                            onChange={setDebtAccountId}
-                            options={debtAccountOptions}
-                            placeholder={mode === "repay_out" ? t("debtTx.placeholder.selectExistingBorrowing") : t("debtTx.placeholder.selectExistingLending")}
-                            behavior={{
-                              hierarchy: false,
-                              search: true,
-                              clearable: false,
-                              minDropdownWidth: 360,
-                            }}
-                          />
+                        {renderRepayableLoanAccountField()}
+                      </>
+                    ) : (
+                      <>
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          {renderDateField()}
+                          {renderCashAccountField()}
                         </div>
-                      )}
-                    </div>
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          {renderDebtObjectField()}
+                          {renderDebtAccountField()}
+                        </div>
+                      </>
+                    )}
 
-                    {canSelectDebtObject && !debtAccountId ? (
-                      <div className="space-y-1">
-                        <div className="form-label">{t("debtTx.newAccountName")} <span className="text-slate-400">{t("stockFee.optional")}</span></div>
-                          <input
-                            value={debtItemName}
-                            onChange={(event) => setDebtItemName(event.target.value)}
-                            list={debtItemListId}
-                            disabled={selectedExistingDebtItem}
-                            placeholder={t("debtTx.placeholder.autoName", { name: selectedDebtObjectName })}
-                            className="form-input"
-                          />
-                          <datalist id={debtItemListId}>
-                            {debtItemSuggestions.map((name) => <option key={name} value={name} />)}
-                          </datalist>
-                      </div>
-                    ) : null}
 
                     {!showPrepayment && !showBorrowPlan ? (
                     <div className={`grid gap-3 ${showInterest ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-1"}`}>
                       <div className="space-y-1">
-                        <div className="form-label">{mode === "borrow_in" ? (showLoanBorrowOptions && loanFundingMode === "financed_purchase" ? t("debtTx.installmentPrincipal") : t("debtTx.totalBorrowing")) : mode === "repay_out" || mode === "collect_in" || mode === "lend_out" ? t("debtShell.colPrincipal") : t("txForm.amount")}</div>
+                        <div className="form-label">{mode === "borrow_in" ? t("debtTx.totalBorrowing") : mode === "repay_out" || mode === "collect_in" || mode === "lend_out" ? t("debtShell.colPrincipal") : t("txForm.amount")}</div>
                         <CalcInput value={principal} onChange={setPrincipal} placeholder={t("debtTx.placeholder.exampleAmount")} label={t("txForm.amount")} precision={2} />
                       </div>
                       {showInterest ? (
@@ -1464,108 +1914,126 @@ export function DebtTransactionModal({
 
                     {showBorrowPlan ? (
                       <>
-                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                          <div className="space-y-1">
-                            <div className="form-label">{t("debtTx.repaymentMethod")}</div>
-                            <select value={repaymentMethod} onChange={(event) => {
-                              const method = event.target.value;
-                              setRepaymentMethod(method);
-                              if (isInstallmentRepaymentMethod(method) && parseNonNegativeNumberText(annualRate) == null) {
-                                setAnnualRate("0");
-                                setAnnualRateManuallyEdited(false);
-                              }
-                            }} className="form-input">
-                              <option value="等额本息">{t("debtTx.method.equalInstallment")}</option>
-                              <option value="等额本金">{t("debtTx.method.equalPrincipal")}</option>
-                              <option value={INSTALLMENT_REPAYMENT_METHOD}>{t("debtTx.method.interestFreeInstallment")}</option>
-                              <option value="自由还款">{t("debtTx.method.freeRepayment")}</option>
-                              <option value="先还利息一次性还本">{t("debtTx.method.interestFirstThenPrincipal")}</option>
-                            </select>
-                          </div>
-                          <div className="space-y-1">
-                            <div className="form-label">
-                              {loanFundingMode === "financed_purchase" ? t("debtTx.installmentPrincipal") : t("debtTx.totalBorrowing")}
-                            </div>
-                            <CalcInput value={principal} onChange={setPrincipal} placeholder={t("debtTx.placeholder.exampleAmount")} label={t("debtTx.totalBorrowing")} precision={2} />
-                          </div>
-                        </div>
-
-                        {isFixedRepaymentMethod ? (
+                        {isConsumerLoanBorrow ? (
                           <>
-                            {showLoanBorrowOptions ? (
-                              <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                              {showLoanPurpose ? (
                                 <div className="space-y-1">
-                                  <div className="form-label">
-                                    {t("debtTx.bankExecutionRate")}
-                                  </div>
-                                  <input
-                                    value={bankExecutionRate}
-                                    onChange={(event) => setBankExecutionRate(event.target.value)}
-                                    placeholder={t("debtTx.placeholder.exampleBankRate")}
-                                    inputMode="decimal"
-                                    className="form-input"
-                                  />
-                                </div>
-                                <div className="flex items-end">
-                                  <button
-                                    type="button"
-                                    className="secondary-button h-9 shrink-0 px-3 text-xs"
-                                    onClick={fetchBankExecutionRate}
-                                  >
-                                    {t("debtTx.fetch")}
-                                  </button>
-                                </div>
-                              </div>
-                            ) : null}
-                            <div className={`grid gap-3 ${showLoanBorrowOptions ? "grid-cols-2" : "grid-cols-1"}`}>
-                              {showLoanBorrowOptions ? (
-                                <div className="space-y-1">
-                                  <div className="form-label">{t("debtTx.mortgageLprDiscount")} <span className="text-slate-400">{t("stockFee.optional")}</span></div>
-                                  <input
-                                    value={mortgageLprDiscount}
-                                    onChange={(event) => setMortgageLprDiscount(event.target.value)}
-                                    onBlur={handleMortgageLprDiscountBlur}
-                                    placeholder={t("debtShell.lpr.discountPlaceholder")}
-                                    inputMode="decimal"
-                                    className="form-input"
+                                  <div className="form-label">{t("debtTx.loanPurpose")} <span className="text-red-500">*</span></div>
+                                  <SmartSelect
+                                    mode="single"
+                                    value={loanPurposeCategoryId}
+                                    onChange={handleLoanPurposeChange}
+                                    options={loanPurposeOptions}
+                                    placeholder={t("debtTx.loanPurposePlaceholder")}
+                                    behavior={{
+                                      hierarchy: true,
+                                      search: true,
+                                      initialCollapsedAll: true,
+                                      accordionGroups: true,
+                                      selectableGroups: true,
+                                      groupSelectOnDoubleClick: false,
+                                      minDropdownWidth: 560,
+                                      dropdownMaxHeight: 420,
+                                      density: "compact",
+                                      expandedGroupColumns: 4,
+                                    }}
                                   />
                                 </div>
                               ) : null}
-                              <div className="space-y-1">
-                                <div className="form-label">
-                                  {t("debtShell.rateAdjust.annualRateLabel")} <span className="text-red-500">*</span>
-                                </div>
-                                <input
-                                  value={annualRate}
-                                  onChange={(event) => {
-                                    setAnnualRateManuallyEdited(true);
-                                    setAnnualRate(event.target.value);
-                                  }}
-                                  placeholder={t("debtTx.placeholder.exampleAnnualRate")}
-                                  inputMode="decimal"
-                                  className="form-input"
-                                />
-                              </div>
+                              {renderLoanFixedAssetField({ accountSelect: "separate" })}
+                              {renderRepaymentMethodField()}
                             </div>
-                            <div className="grid grid-cols-2 gap-3">
+                            {fixedAssetLinked ? (
                               <div className="space-y-1">
-                                <div className="form-label">{t("debtTx.totalRuns")} <span className="text-red-500">*</span></div>
-                                <input
-                                  type="number"
-                                  min={1}
-                                  max={600}
-                                  value={loanTotalRuns}
-                                  onChange={(event) => setLoanTotalRuns(event.target.value)}
-                                  className="form-input"
-                                />
+                                <div className="form-label">{t("txForm.fixedAssetAccount")}</div>
+                                {renderFixedAssetAccountSelect()}
                               </div>
-                              <div className="space-y-1">
-                                <div className="form-label">{t("debtTx.firstRepaymentDate")} <span className="text-red-500">*</span></div>
-                                <DateStepper value={firstRepaymentDate} onChange={setFirstRepaymentDate} />
-                              </div>
-                            </div>
+                            ) : null}
+                          </>
+                        ) : (
+                          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            {renderLoanFixedAssetField()}
+                            {renderRepaymentMethodField()}
+                          </div>
+                        )}
 
-                            {showLoanBorrowOptions ? (
+                        {isFixedRepaymentMethod ? (
+                          <>
+                            {isConsumerLoanBorrow ? (
+                              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                                {renderFirstRepaymentDateField()}
+                                {renderLoanTotalRunsField()}
+                                {renderAnnualRateField()}
+                              </div>
+                            ) : (
+                              <>
+                                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                                  {renderFirstRepaymentDateField()}
+                                  {renderLoanTotalRunsField()}
+                                </div>
+
+                                <div className={`grid grid-cols-1 gap-3 ${showMortgageLoanFields ? "sm:grid-cols-[minmax(0,1.2fr)_auto_minmax(0,1fr)]" : "sm:grid-cols-1"}`}>
+                                  {renderAnnualRateField()}
+                                  {showMortgageLoanFields ? (
+                                    <div className="flex items-end">
+                                      <button
+                                        type="button"
+                                        className="secondary-button h-9 shrink-0 px-3 text-xs"
+                                        onClick={() => { void applyMortgageLprDiscount(); }}
+                                      >
+                                        {t("debtTx.fetch")}
+                                      </button>
+                                    </div>
+                                  ) : null}
+                                  {showMortgageLoanFields ? (
+                                    <div className="space-y-1">
+                                      <div className="form-label">{t("debtTx.mortgageLprDiscount")} <span className="text-slate-400">{t("stockFee.optional")}</span></div>
+                                      <input
+                                        value={mortgageLprDiscount}
+                                        onChange={(event) => setMortgageLprDiscount(event.target.value)}
+                                        onBlur={handleMortgageLprDiscountBlur}
+                                        placeholder={t("debtShell.lpr.discountPlaceholder")}
+                                        inputMode="decimal"
+                                        className="form-input"
+                                      />
+                                    </div>
+                                  ) : null}
+                                </div>
+                              </>
+                            )}
+
+                            {isMortgageLoan ? (
+                              <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                                  {renderAutoDebitDateField()}
+                                  {renderCashAccountField({ label: t("debtTx.autoDebitAccount") })}
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="space-y-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                                <label className="flex cursor-pointer select-none items-start gap-2 text-xs text-slate-600">
+                                  <input
+                                    type="checkbox"
+                                    checked={autoDebit}
+                                    onChange={(event) => setAutoDebit(event.target.checked)}
+                                    className="mt-0.5 h-3.5 w-3.5 accent-blue-600"
+                                  />
+                                  <span>
+                                    {t("debtTx.autoDebitLabel")}
+                                    <span className="block text-[11px] text-slate-400">{t("debtTx.autoDebitHint")}</span>
+                                  </span>
+                                </label>
+                                {autoDebit ? (
+                                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                                    {renderAutoDebitDateField()}
+                                    {renderCashAccountField({ label: t("debtTx.autoDebitAccount") })}
+                                  </div>
+                                ) : null}
+                              </div>
+                            )}
+
+                            {showMortgageLoanFields ? (
                               <div className="flex items-center justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
                                 <div>
                                   <div className="text-xs font-medium text-slate-700">{t("debtShell.rateAdjustment")}</div>
@@ -1642,20 +2110,6 @@ export function DebtTransactionModal({
                           </div>
                         )}
 
-                        {isFixedRepaymentMethod ? (
-                          <label className="flex cursor-pointer select-none items-start gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
-                            <input
-                              type="checkbox"
-                              checked={autoDebit}
-                              onChange={(event) => setAutoDebit(event.target.checked)}
-                              className="mt-0.5 h-3.5 w-3.5 accent-blue-600"
-                            />
-                            <span>
-                              {t("debtTx.autoDebitLabel")}
-                              <span className="block text-[11px] text-slate-400">{t("debtTx.autoDebitHint")}</span>
-                            </span>
-                          </label>
-                        ) : null}
                       </>
                     ) : null}
 
@@ -2034,6 +2488,43 @@ export function DebtTransactionModal({
                 setLocalDebtAccounts((prev) => (prev.some((item) => item.id === id) ? prev : [...prev, nextOption]));
                 setDebtAccountId(id);
                 setDebtAccountNestedOpen(false);
+              }}
+            />,
+            document.body,
+          )
+        : null}
+      {open && fixedAssetAccountNestedOpen
+        ? createPortal(
+            <EntityCreateForm
+              mode="compact"
+              entityType="account"
+              open={fixedAssetAccountNestedOpen}
+              onClose={() => setFixedAssetAccountNestedOpen(false)}
+              title={t("txForm.createFixedAssetAccount")}
+              nameLabel={t("txForm.fixedAssetAccountName")}
+              namePlaceholder={t("txForm.fixedAssetAccountPlaceholder")}
+              defaultType="investment"
+              hiddenFields={[
+                "kind",
+                "investProductType",
+                "institutionId",
+                "fundUnitsDecimals",
+                "tradingCalendar",
+                "costBasisMethod",
+              ]}
+              extraFields={{ kind: "investment", investProductType: "property" }}
+              onCreated={(id, name) => {
+                const option: SmartSelectOption = {
+                  id,
+                  label: name,
+                  subLabel: t("txForm.fixedAssetAccount"),
+                };
+                setFixedAssetAccountList((prev) => (prev.some((item) => item.id === id) ? prev : [...prev, option]));
+                setLocalFixedAssetAccountSSOpts((prev) => mergeSmartSelectOptions(prev, [option]));
+                setFixedAssetLinked(true);
+                setFixedAssetAccountId(id);
+                setFixedAssetAssetId("");
+                setFixedAssetAccountNestedOpen(false);
               }}
             />,
             document.body,

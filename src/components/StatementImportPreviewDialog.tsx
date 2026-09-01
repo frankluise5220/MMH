@@ -27,6 +27,7 @@ import { statementPreviewCategorySyncKey } from "@/lib/statement/preview-categor
 import { uniqueStatementInfoTexts } from "@/lib/statement/preview-meta";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { useI18n } from "@/lib/i18n";
+import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
 
 type BookAccount = {
   id: string;
@@ -249,7 +250,7 @@ function buildBookAccountDisplayOption(account: BookAccount): AccountDisplayOpti
           name: account.AccountGroup.name ?? null,
         }
       : null,
-  });
+  }, undefined, { fields: getAccountLabelFieldsPreference() });
 }
 
 function isTransferOut(item: StatementImportPreviewItem) {
@@ -552,7 +553,7 @@ export function StatementImportPreviewDialog({
     if (!text) return "";
     const matchedId = findPreviewAccountId(text, meta);
     const display = matchedId ? accountDisplayById.get(matchedId) : undefined;
-    if (display) return formatAccountTableLabel(display, text);
+    if (display) return formatAccountTableLabel(display, text, getAccountLabelFieldsPreference());
     return text;
   }
 
@@ -561,7 +562,7 @@ export function StatementImportPreviewDialog({
     if (!text) return t("statementImportPreview.doubleClickEdit", { field: t("batchImport.field.account") });
     const matchedId = findPreviewAccountId(text, meta);
     const display = matchedId ? accountDisplayById.get(matchedId) : undefined;
-    if (display) return formatAccountTableTitle(display, text);
+    if (display) return formatAccountTableTitle(display, text, getAccountLabelFieldsPreference());
     return text;
   }
 
@@ -795,8 +796,8 @@ export function StatementImportPreviewDialog({
       { value: "", label: t("batchImport.unselected") },
       ...accountDisplayOptions.map((account) => ({
         value: account.id,
-        label: formatAccountTableLabel(account),
-        title: formatAccountTableTitle(account),
+        label: formatAccountTableLabel(account, "", getAccountLabelFieldsPreference()),
+        title: formatAccountTableTitle(account, "", getAccountLabelFieldsPreference()),
       })),
     ],
     [accountDisplayOptions, t],

@@ -12,6 +12,7 @@ import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { createDebtTransaction } from "@/lib/server/sidebar-actions/debt-actions";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "@/lib/server/account-label-fields";
 import { getServerT } from "@/lib/server/i18n";
 
 export const dynamic = "force-dynamic";
@@ -79,6 +80,7 @@ export default async function LiabilitiesPage({
   const guideMode = params.guide === "settlements";
   const t = await getServerT();
   const cookieStore = await cookies();
+  const accountLabelFields = accountLabelFieldsFromCookieValue(cookieStore.get(ACCOUNT_LABEL_FIELDS_COOKIE)?.value);
   const creditCardLabelMode = cookieStore.get("mmh_credit_card_label_mode")?.value === "full_name" ? "full_name" : "short_last4";
   const creditCardLabelTemplate = normalizeCreditCardLabelTemplate(
     cookieStore.get("mmh_credit_card_label_template")?.value,
@@ -115,12 +117,15 @@ export default async function LiabilitiesPage({
       investProductType: account.investProductType,
       Institution: account.Institution,
       AccountGroup: account.AccountGroup,
-    }, creditCardLabelTemplate);
+    }, creditCardLabelTemplate, { fields: accountLabelFields });
     return {
       id: account.id,
       name: account.name,
       kind: account.kind,
       label: display.selectorLabel,
+      // Table cells render `listLabel`, which follows the configured display
+      // fields; `label` stays the dropdown-shaped label.
+      listLabel: display.listLabel,
       title: display.hoverTitle,
       hoverTitle: display.hoverTitle,
       groupId: display.groupId,
@@ -254,7 +259,7 @@ export default async function LiabilitiesPage({
         groupId: account.groupId,
         Institution: account.Institution,
         AccountGroup: account.AccountGroup,
-      }, creditCardLabelTemplate);
+      }, creditCardLabelTemplate, { fields: accountLabelFields });
       return {
         id: account.id,
         label: display.label,
@@ -323,7 +328,7 @@ export default async function LiabilitiesPage({
       groupId: account.groupId,
       Institution: account.Institution,
       AccountGroup: account.AccountGroup,
-    }, creditCardLabelTemplate);
+    }, creditCardLabelTemplate, { fields: accountLabelFields });
     const institutionName = display.institutionName || t("liabilities.noCounterparty");
     const debtPersonKey = institutionName
       ? `institution:${account.institutionId ?? institutionName}`

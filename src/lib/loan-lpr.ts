@@ -130,24 +130,37 @@ export function inferMortgageLprDiscountFromRateAdjustments(adjustments: LoanRat
 export function buildMortgageLprRateAdjustments(params: {
   discount: number;
   throughDate: string;
+  fromDate?: string;
   repriceMonth?: number;
   repriceDay?: number;
   firstRepriceYear?: number;
+  includeUnchanged?: boolean;
 }) {
   const through = dateOnlyToUtcDate(params.throughDate);
   if (!through || !Number.isFinite(params.discount) || params.discount <= 0) return [];
 
   const repriceMonth = Math.min(12, Math.max(1, Math.trunc(params.repriceMonth ?? 1)));
   const repriceDay = Math.min(31, Math.max(1, Math.trunc(params.repriceDay ?? 1)));
-  const firstRepriceYear = Math.max(2020, Math.trunc(params.firstRepriceYear ?? 2021));
+  const from = params.fromDate ? dateOnlyToUtcDate(params.fromDate) : null;
+  const firstRepriceYearFromDate = from
+    ? (() => {
+        const fromYear = from.getUTCFullYear();
+        const sameYearRepriceDate = new Date(Date.UTC(fromYear, repriceMonth - 1, repriceDay));
+        return sameYearRepriceDate <= from ? fromYear + 1 : fromYear;
+      })()
+    : 2021;
+  const firstRepriceYear = Math.max(2020, Math.trunc(params.firstRepriceYear ?? firstRepriceYearFromDate));
   const throughYear = through.getUTCFullYear();
   const spread = calcMortgageLprSpreadFromDiscount(params.discount);
-  let previousRate = roundRate(MORTGAGE_BASE_BENCHMARK_RATE * params.discount);
+  let previousRate = roundRate((from && params.fromDate
+    ? (getMortgageBankExecutionRate(params.fromDate)?.rate ?? MORTGAGE_BASE_BENCHMARK_RATE)
+    : MORTGAGE_BASE_BENCHMARK_RATE) * params.discount);
   const rows: LoanRateAdjustment[] = [];
 
   for (let year = firstRepriceYear; year <= throughYear; year += 1) {
     const effectiveDate = new Date(Date.UTC(year, repriceMonth - 1, repriceDay));
     if (effectiveDate > through) break;
+    if (from && effectiveDate <= from) continue;
     if (effectiveDate.getUTCMonth() !== repriceMonth - 1) continue;
 
     const lprLookupDate = formatDateOnly(addUtcDays(effectiveDate, -1));
@@ -155,7 +168,7 @@ export function buildMortgageLprRateAdjustments(params: {
     if (!lpr) continue;
 
     const annualRate = roundRate(lpr.fiveYearRate + spread);
-    if (Math.abs(annualRate - previousRate) >= 0.0005) {
+    if (params.includeUnchanged || Math.abs(annualRate - previousRate) >= 0.0005) {
       rows.push({ effectiveDate: formatDateOnly(effectiveDate), annualRate });
       previousRate = annualRate;
     }

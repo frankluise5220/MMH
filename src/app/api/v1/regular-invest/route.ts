@@ -7,11 +7,11 @@ import { normalizeNonNegativeDays, setFundConfirmDays, setFundConfirmDaysInTx, s
 import { setFundFeeRate, setFundFeeRateInTx } from "@/lib/fund/feeRate";
 import { getFundProfileNameMap, normalizeFundDisplayName, resolveFundName } from "@/lib/fund/fundProfile";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
+import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, getLoanScheduledPlanRole, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { calcInitialScheduledRunDate as calcInitialRunDate, calcResumedScheduledRunDate as calcResumedRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { deriveRegularInvestNextRunDate } from "@/lib/server/regular-invest-plan";
-import { isInstallmentRepaymentMethod, normalizeLoanRepaymentMethod } from "@/lib/loan-repayment";
+import { allowsZeroAnnualRateRepaymentMethod, normalizeLoanRepaymentMethod } from "@/lib/loan-repayment";
 
 /**
  * /api/v1/regular-invest
@@ -142,6 +142,7 @@ export async function GET(req: NextRequest) {
           fundName: displayFundName,
           targetName: displayTargetName,
           isSystemTask: scheduledTask.type === "loan_repayment",
+          taskLoanPlanRole: getLoanScheduledPlanRole(scheduledTask),
           accountInstitutionName: plan.Account_RegularInvestPlan_accountIdToAccount.Institution?.name ?? "",
           cashAccountInstitutionName: plan.Account_RegularInvestPlan_cashAccountIdToAccount?.Institution?.name ?? "",
         };
@@ -193,7 +194,7 @@ export async function POST(req: NextRequest) {
     const requiresCashAccount = scheduledTaskType === "transfer" || scheduledTaskType === "loan_repayment" || isInsuranceTask;
     const loanRepaymentMethod = normalizeLoanRepaymentMethod(typeof repaymentMethod === "string" ? repaymentMethod : null);
     const parsedLoanAnnualRate = parseOptionalNonNegativeNumber(annualRate);
-    const loanAnnualRate = parsedLoanAnnualRate ?? (isLoanTask && isInstallmentRepaymentMethod(loanRepaymentMethod) ? 0 : null);
+    const loanAnnualRate = parsedLoanAnnualRate ?? (isLoanTask && allowsZeroAnnualRateRepaymentMethod(loanRepaymentMethod) ? 0 : null);
     const loanRepaymentIntervalMonths = parsePositiveInteger(repaymentIntervalMonths, 1);
     const taskCategoryId = cleanOptionalString(categoryId);
     const taskCategoryName = cleanOptionalString(categoryName);
@@ -333,6 +334,7 @@ export async function POST(req: NextRequest) {
             annualRate: isLoanTask ? loanAnnualRate : null,
             repaymentMethod: isLoanTask ? loanRepaymentMethod : null,
             repaymentIntervalMonths: isLoanTask ? loanRepaymentIntervalMonths : null,
+            loanPlanRole: isLoanTask ? "auto_debit" : null,
           }),
           skipPendingPreceding: isFundTask ? skipPendingPreceding !== false : false,
         },
@@ -468,7 +470,15 @@ export async function PUT(req: NextRequest) {
         return NextResponse.json({ ok: false, code: "PLAN_NOT_PAUSED", error: "只有暂停状态的计划才能恢复" }, { status: 400 });
       }
       // Resume from the current period; do not backfill runs missed while paused.
-      const nextRunDate = calcResumedRunDate(existing.nextRunDate, new Date(), actionUsesBusinessDays);
+      const nextRunDate = calcResumedRunDate(
+        existing.nextRunDate,
+        new Date(),
+        existing.intervalUnit,
+        existing.intervalValue,
+        existing.executionDay,
+        actionUsesBusinessDays,
+        existing.secondaryExecutionDay,
+      );
 
       const plan = await prisma.regularInvestPlan.update({
         where: { id },
@@ -508,7 +518,7 @@ export async function PUT(req: NextRequest) {
         : normalizeLoanRepaymentMethod(existingTask.repaymentMethod);
     const parsedNextAnnualRate =
       annualRate !== undefined ? parseOptionalNonNegativeNumber(annualRate) : existingTask.annualRate ?? null;
-    const nextAnnualRate = parsedNextAnnualRate ?? (isLoanTask && isInstallmentRepaymentMethod(nextRepaymentMethod) ? 0 : null);
+    const nextAnnualRate = parsedNextAnnualRate ?? (isLoanTask && allowsZeroAnnualRateRepaymentMethod(nextRepaymentMethod) ? 0 : null);
     const nextRepaymentIntervalMonths =
       repaymentIntervalMonths !== undefined ? parsePositiveInteger(repaymentIntervalMonths, 1) : existingTask.repaymentIntervalMonths ?? 1;
     const nextCategoryId = categoryId !== undefined ? cleanOptionalString(categoryId) : existingTask.categoryId ?? null;
@@ -691,6 +701,7 @@ export async function PUT(req: NextRequest) {
       annualRate: isLoanTask ? nextAnnualRate : null,
       repaymentMethod: isLoanTask ? nextRepaymentMethod : null,
       repaymentIntervalMonths: isLoanTask ? nextRepaymentIntervalMonths : null,
+      loanPlanRole: isLoanTask ? getLoanScheduledPlanRole(existingTask) ?? "auto_debit" : null,
     });
     if (!isFundTask) {
       updateData.fundCode = nextTaskType;

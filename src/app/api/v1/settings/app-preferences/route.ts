@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  DEFAULT_ACCOUNT_LABEL_FIELDS,
   SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE,
+  normalizeAccountLabelFields,
   normalizeCreditCardLabelTemplate,
+  serializeAccountLabelFields,
+  type AccountLabelField,
 } from "@/lib/account-display";
 import { normalizeDateDisplayFormat } from "@/lib/date-utils";
 
@@ -26,7 +30,8 @@ const DATE_DISPLAY_FORMAT_KEY = "mmh_date_display_format";
 const SIDEBAR_HIDE_INITIAL_DATA_KEY = "sidebar_hide_initial_data";
 const SIDEBAR_SHOW_FIXED_ASSETS_KEY = "sidebar_show_fixed_assets";
 const DETAIL_DATE_BACKGROUND_KEY = "detail_date_background";
-const COMPACT_ROW_HEIGHT_KEY = "advanced_data_table_compact_row_height";
+const ROW_HEIGHT_MODE_KEY = "advanced_data_table_row_height_mode";
+const ACCOUNT_LABEL_FIELDS_KEY = "mmh_account_label_fields";
 const VERIFIED_KEY = "mmh_access_password_verified";
 const USER_ID_KEY = "mmh_user_id";
 const USERNAME_KEY = "mmh_username";
@@ -76,10 +81,18 @@ function normalizeDisplayLanguage(input: unknown) {
   return input === "en-US" || input === "ja-JP" || input === "zh-CN" ? input : "zh-CN";
 }
 
-function normalizeCompactRowHeight(input: unknown) {
-  const n = Number(input);
-  if (!Number.isFinite(n)) return 30;
-  return Math.min(Math.max(Math.round(n), 25), 35);
+function normalizeAccountLabelFieldsPreference(input: unknown): AccountLabelField[] {
+  if (Array.isArray(input) || typeof input === "string") {
+    // An explicitly provided value wins even when it is empty: the user may
+    // want to strip the label down to the raw account name.
+    return normalizeAccountLabelFields(input, []);
+  }
+  if (input === null) return [];
+  return [...DEFAULT_ACCOUNT_LABEL_FIELDS];
+}
+
+function normalizeRowHeightMode(input: unknown) {
+  return input === "large" || input === "small" ? input : "medium";
 }
 
 export async function GET(req: NextRequest) {
@@ -105,7 +118,10 @@ export async function GET(req: NextRequest) {
   const sidebarHideInitialData = normalizeBoolean(req.cookies.get(SIDEBAR_HIDE_INITIAL_DATA_KEY)?.value, false);
   const sidebarShowFixedAssets = normalizeBoolean(req.cookies.get(SIDEBAR_SHOW_FIXED_ASSETS_KEY)?.value, true);
   const detailDateBackground = normalizeBoolean(req.cookies.get(DETAIL_DATE_BACKGROUND_KEY)?.value, false);
-  const compactRowHeight = normalizeCompactRowHeight(req.cookies.get(COMPACT_ROW_HEIGHT_KEY)?.value);
+  const rowHeightMode = normalizeRowHeightMode(req.cookies.get(ROW_HEIGHT_MODE_KEY)?.value);
+  const accountLabelFields = normalizeAccountLabelFieldsPreference(
+    req.cookies.get(ACCOUNT_LABEL_FIELDS_KEY)?.value ?? null,
+  );
   return NextResponse.json({
     ok: true,
     sessionDays,
@@ -124,7 +140,8 @@ export async function GET(req: NextRequest) {
     sidebarHideInitialData,
     sidebarShowFixedAssets,
     detailDateBackground,
-    compactRowHeight,
+    rowHeightMode,
+    accountLabelFields,
   });
 }
 
@@ -147,7 +164,8 @@ export async function PUT(req: NextRequest) {
     sidebarHideInitialData?: unknown;
     sidebarShowFixedAssets?: unknown;
     detailDateBackground?: unknown;
-    compactRowHeight?: unknown;
+    rowHeightMode?: unknown;
+    accountLabelFields?: unknown;
   } : {};
   const hasSessionDays = Object.prototype.hasOwnProperty.call(prefs, "sessionDays");
   const hasFundUnitsDecimals = Object.prototype.hasOwnProperty.call(prefs, "fundUnitsDecimals");
@@ -165,7 +183,8 @@ export async function PUT(req: NextRequest) {
   const hasSidebarHideInitialData = Object.prototype.hasOwnProperty.call(prefs, "sidebarHideInitialData");
   const hasSidebarShowFixedAssets = Object.prototype.hasOwnProperty.call(prefs, "sidebarShowFixedAssets");
   const hasDetailDateBackground = Object.prototype.hasOwnProperty.call(prefs, "detailDateBackground");
-  const hasCompactRowHeight = Object.prototype.hasOwnProperty.call(prefs, "compactRowHeight");
+  const hasRowHeightMode = Object.prototype.hasOwnProperty.call(prefs, "rowHeightMode");
+  const hasAccountLabelFields = Object.prototype.hasOwnProperty.call(prefs, "accountLabelFields");
   const sessionDays = normalizeSessionDays(hasSessionDays ? prefs.sessionDays : req.cookies.get(SESSION_DAYS_KEY)?.value ?? 30);
   const fundUnitsDecimals = normalizeFundUnitsDecimals(hasFundUnitsDecimals ? prefs.fundUnitsDecimals : req.cookies.get(FUND_UNITS_DECIMALS_KEY)?.value ?? 2);
   const aiPanelEnabled = normalizeBoolean(hasAiPanelEnabled ? prefs.aiPanelEnabled : req.cookies.get(AI_PANEL_ENABLED_KEY)?.value, true);
@@ -212,8 +231,11 @@ export async function PUT(req: NextRequest) {
     hasDetailDateBackground ? prefs.detailDateBackground : req.cookies.get(DETAIL_DATE_BACKGROUND_KEY)?.value,
     false,
   );
-  const compactRowHeight = normalizeCompactRowHeight(
-    hasCompactRowHeight ? prefs.compactRowHeight : req.cookies.get(COMPACT_ROW_HEIGHT_KEY)?.value,
+  const rowHeightMode = normalizeRowHeightMode(
+    hasRowHeightMode ? prefs.rowHeightMode : req.cookies.get(ROW_HEIGHT_MODE_KEY)?.value,
+  );
+  const accountLabelFields = normalizeAccountLabelFieldsPreference(
+    hasAccountLabelFields ? prefs.accountLabelFields : req.cookies.get(ACCOUNT_LABEL_FIELDS_KEY)?.value ?? null,
   );
   const maxAge = sessionDays * 24 * 60 * 60;
 
@@ -235,7 +257,8 @@ export async function PUT(req: NextRequest) {
     sidebarHideInitialData,
     sidebarShowFixedAssets,
     detailDateBackground,
-    compactRowHeight,
+    rowHeightMode,
+    accountLabelFields,
   });
   response.cookies.set(SESSION_DAYS_KEY, String(sessionDays), {
     path: "/",
@@ -333,7 +356,13 @@ export async function PUT(req: NextRequest) {
     httpOnly: false,
     sameSite: "lax",
   });
-  response.cookies.set(COMPACT_ROW_HEIGHT_KEY, String(compactRowHeight), {
+  response.cookies.set(ROW_HEIGHT_MODE_KEY, String(rowHeightMode), {
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365,
+    httpOnly: false,
+    sameSite: "lax",
+  });
+  response.cookies.set(ACCOUNT_LABEL_FIELDS_KEY, serializeAccountLabelFields(accountLabelFields), {
     path: "/",
     maxAge: 60 * 60 * 24 * 365,
     httpOnly: false,

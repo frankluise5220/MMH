@@ -6,6 +6,7 @@ import { buildGroupedAccountOptions, buildAccountDisplayOption, type AccountDisp
 import { SmartSelect } from "@/components/SmartSelect";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
+import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
 
 type AccountOption = AccountDisplaySource;
 type CategoryOption = { id: string; name: string; type: string; sortOrder?: number; isSystem?: boolean };
@@ -49,7 +50,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
     [categories, draft.type],
   );
   const accountOptions = useMemo(
-    () => buildGroupedAccountOptions(accounts.map((account) => buildAccountDisplayOption(account))),
+    () => buildGroupedAccountOptions(accounts.map((account) => buildAccountDisplayOption(account, undefined, { fields: getAccountLabelFieldsPreference() }))),
     [accounts],
   );
   const transferAccountOptions = useMemo(

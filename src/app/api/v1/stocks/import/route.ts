@@ -96,6 +96,7 @@ const STOCK_IMPORT_CALCULATED_FIELD_SET = new Set<string>(STOCK_IMPORT_CALCULATE
 
 type AccountLookupRow = {
   id: string;
+  householdId: string;
   name: string;
   kind: AccountKind;
   investProductType: string | null;
@@ -128,6 +129,8 @@ type ImportIssue = {
 type StockImportInput = {
   rawText?: string;
   stockAccountId?: string | null;
+  stockAccount?: string | null;
+  stockAccountName?: string | null;
   accountId?: string | null;
   tradeDate?: string | null;
   settleDate?: string | null;
@@ -203,6 +206,8 @@ type ImportContext = {
   accountMatcher: (accountName?: string) => { account: AccountLookupRow | null };
   brokerageCashAccount: AccountLookupRow | null | undefined;
 };
+
+type ImportContextBase = Omit<ImportContext, "stockAccount" | "brokerageCashAccount">;
 
 function corsHeaders() {
   return {
@@ -323,22 +328,13 @@ function indexAccountLookup(map: Map<string, string>, account: AccountLookupRow)
   }
 }
 
-async function assertStockAccount(stockAccountId: string, householdId: string) {
-  const account = await prisma.account.findFirst({
-    where: { id: stockAccountId, householdId, kind: AccountKind.investment, investProductType: "stock" },
-    select: { id: true, householdId: true, groupId: true, institutionId: true, name: true, currency: true },
-  });
-  if (!account) throw new Error("Stock account not found");
-  return account;
-}
-
-async function buildImportContext(req: NextRequest, stockAccountId: string): Promise<ImportContext> {
+async function buildImportContextBase(req: NextRequest): Promise<ImportContextBase> {
   const { householdId } = await getApiHouseholdScope(req);
-  const stockAccount = await assertStockAccount(stockAccountId, householdId);
   const accounts = await prisma.account.findMany({
     where: { householdId, isPlaceholder: { not: true } },
     select: {
       id: true,
+      householdId: true,
       name: true,
       kind: true,
       investProductType: true,
@@ -357,17 +353,59 @@ async function buildImportContext(req: NextRequest, stockAccountId: string): Pro
   for (const account of accounts) indexAccountLookup(accountIdByMatchKey, account);
   return {
     householdId,
-    stockAccount,
     accountLookupRows: accounts,
     accountIdByMatchKey,
     accountMatcher: createImportAccountMatcher(accounts),
+  };
+}
+
+function isStockAccount(account: AccountLookupRow | null | undefined): account is AccountLookupRow {
+  return !!account && account.kind === AccountKind.investment && account.investProductType === "stock";
+}
+
+function toStockAccountRow(account: AccountLookupRow): StockAccountRow {
+  return {
+    id: account.id,
+    householdId: account.householdId,
+    groupId: account.groupId,
+    institutionId: account.institutionId,
+    name: account.name,
+    currency: account.currency,
+  };
+}
+
+function buildImportContext(base: ImportContextBase, stockAccount: AccountLookupRow): ImportContext {
+  return {
+    ...base,
+    stockAccount: toStockAccountRow(stockAccount),
     brokerageCashAccount: undefined,
   };
 }
 
-function findAccountById(ctx: ImportContext, accountId: string | null | undefined) {
+function findAccountById(ctx: Pick<ImportContext, "accountLookupRows">, accountId: string | null | undefined) {
   const id = String(accountId ?? "").trim();
   return id ? ctx.accountLookupRows.find((item) => item.id === id) ?? null : null;
+}
+
+function resolveStockAccountInput(
+  base: ImportContextBase,
+  input: StockImportInput,
+  fallbackStockAccount: AccountLookupRow | null,
+) {
+  const rawStockAccountId = String(input.stockAccountId ?? input.accountId ?? "").trim();
+  const rawStockAccount = String(input.stockAccount ?? input.stockAccountName ?? "").trim();
+  if (rawStockAccountId) {
+    const account = findAccountById(base, rawStockAccountId);
+    if (isStockAccount(account)) return { account, issueCode: null };
+    return { account: null, issueCode: account ? "INVALID_STOCK_ACCOUNT_KIND" : "STOCK_ACCOUNT_NOT_FOUND" };
+  }
+  if (rawStockAccount) {
+    const account = base.accountMatcher(rawStockAccount).account;
+    if (isStockAccount(account)) return { account, issueCode: null };
+    return { account: null, issueCode: account ? "INVALID_STOCK_ACCOUNT_KIND" : "STOCK_ACCOUNT_NOT_FOUND" };
+  }
+  if (fallbackStockAccount) return { account: fallbackStockAccount, issueCode: null };
+  return { account: null, issueCode: "STOCK_ACCOUNT_REQUIRED" };
 }
 
 async function resolveAccount(ctx: ImportContext, accountName: string) {
@@ -387,6 +425,137 @@ async function resolveAccountInput(
 
 function isCashLikeAccount(account: AccountLookupRow | null | undefined) {
   return !!account && isCashLikeBrokerageFundingKind(account.kind);
+}
+
+function enrichImportItemWithoutStockAccount(
+  input: StockImportInput,
+  stockAccountIssueCode: string,
+): StockImportEnrichedItem {
+  const issues: ImportIssue[] = [issue("error", stockAccountIssueCode)];
+  const sourceCalculatedFields = importCalculatedFieldSet(input);
+  const calculatedFields = new Set<StockImportCalculatedField>();
+  const action = normalizeAction(input.action);
+  const tradeDate = formatParsedDate(input.tradeDate);
+  const parsedTradeDate = parseDateOnly(input.tradeDate);
+  const settleDate = input.settleDate ? formatParsedDate(input.settleDate) || null : null;
+  const externalLinkId = String(input.externalLinkId ?? "").trim() || null;
+  const stockCode = normalizeStockCode(input.stockCode);
+  const market = isBankTransferAction(action) && !stockCode
+    ? ""
+    : stockCode ? normalizeStockMarket(input.market || inferStockMarketFromCode(stockCode)) : normalizeStockMarket(input.market || "CN");
+  const quantity = parseOptionalNonNegativeNumber(input.quantity);
+  const price = sourceCalculatedFields.has("price") ? null : parseOptionalNonNegativeNumber(input.price);
+  const buySellAction = isBuySellAction(action);
+  const grossAmountRaw = sourceCalculatedFields.has("grossAmount")
+    ? null
+    : parseOptionalNumber(input.grossAmount ?? input.amount);
+  const netAmountRaw = parseUserOptionalNumber(input, "netAmount", sourceCalculatedFields);
+  let grossAmount: number | null = isBankTransferAction(action) ? grossAmountRaw ?? netAmountRaw : null;
+  const rawBankAccount = String(input.bankAccount ?? input.cashAccount ?? "").trim();
+  const rawBankAccountId = String(input.bankAccountId ?? input.cashAccountId ?? "").trim();
+  const rawStockAccount = String(input.stockAccount ?? input.stockAccountName ?? "").trim();
+  const note = String(input.note ?? "").trim() || null;
+
+  if (!tradeDate || !parsedTradeDate) issues.push(issue("error", "INVALID_TRADE_DATE"));
+  if (!action) issues.push(issue("error", "INVALID_ACTION"));
+  if (isBankTransferAction(action)) {
+    if (!rawBankAccount && !rawBankAccountId) issues.push(issue("error", "BANK_ACCOUNT_REQUIRED"));
+    if (!grossAmount || grossAmount === 0) issues.push(issue("error", "AMOUNT_REQUIRED"));
+  } else {
+    if (!stockCode) issues.push(issue("error", "MISSING_STOCK_CODE"));
+    const grossFromQuantity = quantity != null && price != null ? roundMoney(quantity * price) : null;
+    if (buySellAction && grossFromQuantity != null) {
+      grossAmount = grossFromQuantity;
+      calculatedFields.add("grossAmount");
+    } else if (!buySellAction && grossAmountRaw != null) {
+      grossAmount = Math.abs(grossAmountRaw);
+    }
+    if (buySellAction && (!quantity || !price || !grossAmount || grossAmount <= 0)) {
+      issues.push(issue("error", "QUANTITY_AND_PRICE_REQUIRED"));
+    }
+    if ((action === StockTransactionAction.dividend || action === StockTransactionAction.fee_adjustment || action === StockTransactionAction.tax_adjustment) && (!grossAmount || grossAmount <= 0)) {
+      issues.push(issue("error", "AMOUNT_REQUIRED"));
+    }
+    if (isShareOnlyAction(action) && !quantity) issues.push(issue("error", "QUANTITY_REQUIRED"));
+  }
+
+  const fee = parseUserOptionalNonNegativeNumber(input, "fee", sourceCalculatedFields);
+  const commission = fee == null ? parseUserOptionalNonNegativeNumber(input, "commission", sourceCalculatedFields) : null;
+  const stampTax = fee == null ? parseUserOptionalNonNegativeNumber(input, "stampTax", sourceCalculatedFields) : null;
+  const transferFee = fee == null ? parseUserOptionalNonNegativeNumber(input, "transferFee", sourceCalculatedFields) : null;
+  const exchangeFee = fee == null ? parseUserOptionalNonNegativeNumber(input, "exchangeFee", sourceCalculatedFields) : null;
+  const regulatoryFee = fee == null ? parseUserOptionalNonNegativeNumber(input, "regulatoryFee", sourceCalculatedFields) : null;
+  const otherFee = fee == null ? parseUserOptionalNonNegativeNumber(input, "otherFee", sourceCalculatedFields) : null;
+  const totalFeeAmount = isBankTransferAction(action) ? 0 : stockImportTotalFee({
+    fee,
+    commission,
+    stampTax,
+    transferFee,
+    exchangeFee,
+    regulatoryFee,
+    otherFee,
+  });
+  let netAmount = netAmountRaw == null ? null : Math.abs(netAmountRaw);
+  if (netAmount == null && grossAmount != null && isBankTransferAction(action)) {
+    netAmount = Math.abs(grossAmount);
+    calculatedFields.add("netAmount");
+  } else if (netAmount == null && grossAmount != null && grossAmount > 0 && isCashStockAction(action)) {
+    const grossAbs = Math.abs(grossAmount);
+    netAmount = action === StockTransactionAction.sell || action === StockTransactionAction.dividend
+      ? roundMoney(Math.max(0, grossAbs - totalFeeAmount))
+      : roundMoney(grossAbs + totalFeeAmount);
+    calculatedFields.add("netAmount");
+  }
+  const previewRow = {
+    action: action as StockTransactionAction,
+    grossAmount: Math.abs(grossAmount ?? 0),
+    netAmount,
+    fee,
+    commission,
+    stampTax,
+    transferFee,
+    exchangeFee,
+    regulatoryFee,
+    otherFee,
+  };
+  const cashAmount = isBankTransferAction(action)
+    ? Math.abs(grossAmount ?? 0)
+    : stockCashAmount(previewRow);
+  if (isBankTransferAction(action) || isCashStockAction(action)) calculatedFields.add("cashAmount");
+
+  return {
+    rawText: String(input.rawText ?? "").trim() || JSON.stringify(input),
+    stockAccountId: "",
+    stockAccountName: rawStockAccount,
+    tradeDate,
+    settleDate,
+    action,
+    market,
+    stockCode,
+    stockName: normalizeUsableStockName(input.stockName, stockCode),
+    securityId: null,
+    quantity,
+    price,
+    grossAmount: grossAmount ?? null,
+    netAmount,
+    bankAccount: rawBankAccount,
+    bankAccountId: null,
+    cashAccountId: null,
+    fee,
+    commission,
+    stampTax,
+    transferFee,
+    exchangeFee,
+    regulatoryFee,
+    otherFee,
+    totalFee: totalFeeAmount,
+    cashAmount,
+    calculatedFields: sortedCalculatedFields(calculatedFields),
+    externalLinkId,
+    note,
+    duplicate: false,
+    issues,
+  };
 }
 
 async function findExistingBrokerageCashAccount(ctx: ImportContext) {
@@ -411,6 +580,7 @@ async function findExistingBrokerageCashAccount(ctx: ImportContext) {
     },
     select: {
       id: true,
+      householdId: true,
       name: true,
       kind: true,
       investProductType: true,
@@ -871,7 +1041,8 @@ export async function OPTIONS() {
  *
  * Body:
  * - mode: "preview" | "import"; omitted mode defaults to preview
- * - context.stockAccountId: target stock investment account
+ * - context.stockAccountId: default target stock investment account; row-level
+ *   stockAccountId/accountId/stockAccount can override it
  * - items: listed security import rows parsed from the workbook template
  * - fee is treated as the total fee. When it is present, split fee components
  *   are not added on top of it. When all fee fields are blank, buy/sell rows
@@ -909,8 +1080,9 @@ export async function POST(req: NextRequest) {
     if (items.length === 0) {
       return NextResponse.json({ ok: false, code: "MISSING_IMPORT_ITEMS", error: "Import items are required" }, { status: 400, headers: corsHeaders() });
     }
+    const base = await buildImportContextBase(req);
     const firstItem = items[0] as StockImportInput | undefined;
-    const stockAccountId = String(
+    const defaultStockAccountId = String(
       body?.context?.stockAccountId ??
       body?.stockAccountId ??
       body?.accountId ??
@@ -918,12 +1090,38 @@ export async function POST(req: NextRequest) {
       firstItem?.accountId ??
       "",
     ).trim();
-    if (!stockAccountId) {
-      return NextResponse.json({ ok: false, code: "STOCK_ACCOUNT_REQUIRED", error: "Stock account is required" }, { status: 400, headers: corsHeaders() });
+
+    let fallbackStockAccount: AccountLookupRow | null = null;
+    if (defaultStockAccountId) {
+      const account = findAccountById(base, defaultStockAccountId);
+      if (!isStockAccount(account)) {
+        return NextResponse.json(
+          {
+            ok: false,
+            code: account ? "INVALID_STOCK_ACCOUNT_KIND" : "STOCK_ACCOUNT_NOT_FOUND",
+            error: account ? "Stock account kind is invalid" : "Stock account was not found",
+          },
+          { status: 400, headers: corsHeaders() },
+        );
+      }
+      fallbackStockAccount = account;
     }
 
-    const ctx = await buildImportContext(req, stockAccountId);
-    const enrichedItems = markDuplicateImportRows(await Promise.all(items.map((item) => enrichImportItem(ctx, item as StockImportInput))));
+    const contextByStockAccountId = new Map<string, ImportContext>();
+    const getItemContext = (stockAccount: AccountLookupRow) => {
+      const existing = contextByStockAccountId.get(stockAccount.id);
+      if (existing) return existing;
+      const ctx = buildImportContext(base, stockAccount);
+      contextByStockAccountId.set(stockAccount.id, ctx);
+      return ctx;
+    };
+    const enrichedItems = markDuplicateImportRows(await Promise.all(items.map((item) => {
+      const input = item as StockImportInput;
+      const resolved = resolveStockAccountInput(base, input, fallbackStockAccount);
+      return resolved.account
+        ? enrichImportItem(getItemContext(resolved.account), input)
+        : Promise.resolve(enrichImportItemWithoutStockAccount(input, resolved.issueCode ?? "STOCK_ACCOUNT_REQUIRED"));
+    })));
 
     if (mode === "preview") {
       return NextResponse.json({ ok: true, items: enrichedItems }, { headers: corsHeaders() });
@@ -940,17 +1138,20 @@ export async function POST(req: NextRequest) {
     }
 
     const created = await prisma.$transaction(async (tx) => {
-      const rows: Array<{ id: string | null; skipped: boolean; accountIds: string[]; securityId?: string | null }> = [];
+      const rows: Array<{ id: string | null; skipped: boolean; accountIds: string[]; stockAccountId?: string | null; securityId?: string | null }> = [];
       for (const item of enrichedItems) {
+        const itemCtx = contextByStockAccountId.get(item.stockAccountId);
+        if (!itemCtx) throw new Error("Stock account was not resolved");
         if (isBankTransferAction(item.action)) {
-          const transfer = await createBankTransfer(tx, ctx, item);
-          rows.push({ id: transfer.id, skipped: transfer.skipped, accountIds: transfer.accountIds });
+          const transfer = await createBankTransfer(tx, itemCtx, item);
+          rows.push({ id: transfer.id, skipped: transfer.skipped, accountIds: transfer.accountIds, stockAccountId: itemCtx.stockAccount.id });
         } else {
-          const stockTx = await createStockImportTransaction(tx, ctx, item);
+          const stockTx = await createStockImportTransaction(tx, itemCtx, item);
           rows.push({
             id: stockTx.id,
             skipped: stockTx.skipped,
-            accountIds: [ctx.stockAccount.id, stockTx.cashAccountId].filter((id): id is string => Boolean(id)),
+            accountIds: [itemCtx.stockAccount.id, stockTx.cashAccountId].filter((id): id is string => Boolean(id)),
+            stockAccountId: itemCtx.stockAccount.id,
             securityId: stockTx.securityId,
           });
         }
@@ -961,14 +1162,18 @@ export async function POST(req: NextRequest) {
       timeout: 60_000,
     });
 
-    const accountIds = new Set<string>([ctx.stockAccount.id]);
-    const securityIds = new Set<string>();
+    const accountIds = new Set<string>();
+    const stockSecurityIdsByAccountId = new Map<string, Set<string>>();
     for (const row of created) {
       for (const accountId of row.accountIds) accountIds.add(accountId);
-      if (row.securityId) securityIds.add(row.securityId);
+      if (row.stockAccountId && row.securityId) {
+        const set = stockSecurityIdsByAccountId.get(row.stockAccountId) ?? new Set<string>();
+        set.add(row.securityId);
+        stockSecurityIdsByAccountId.set(row.stockAccountId, set);
+      }
     }
-    if (securityIds.size > 0) {
-      await recalcStockPositions(ctx.stockAccount.id, Array.from(securityIds)).catch(() => undefined);
+    for (const [stockAccountId, securityIds] of stockSecurityIdsByAccountId) {
+      await recalcStockPositions(stockAccountId, Array.from(securityIds)).catch(() => undefined);
     }
     for (const accountId of accountIds) {
       await recalcAndSaveAccountBalance(accountId).catch(() => undefined);

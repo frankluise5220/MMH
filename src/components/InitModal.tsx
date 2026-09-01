@@ -11,6 +11,7 @@ import { kindLabel } from "@/lib/account-kinds";
 import { buildAccountDisplayOption } from "@/lib/account-display";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
+import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
 
 /* Types */
 
@@ -107,7 +108,7 @@ export function InitModal({
       const data = await res.json();
       if (data.ok && data.accounts) {
         const accounts: AccountOption[] = data.accounts.map((a: any) => {
-          const display = buildAccountDisplayOption(a);
+          const display = buildAccountDisplayOption(a, undefined, { fields: getAccountLabelFieldsPreference() });
           return { id: a.id, label: display.selectorLabel || display.label, kind: a.kind };
         });
         const cashAccounts = accounts.filter((a) => ["cash", "bank_debit", "ewallet"].includes(a.kind));

@@ -137,12 +137,46 @@ function nextDualAnchorDate(
 export function calcResumedScheduledRunDate(
   currentNextRunDate: Date,
   resumeDate: Date,
+  unit: IntervalUnit,
+  value: number,
+  executionDay?: number | null,
   skipNonBusinessDays = true,
+  secondaryExecutionDay?: number | null,
 ): Date {
-  const currentNextRunDay = startOfDayUtc(currentNextRunDate);
   const resumeDay = startOfDayUtc(resumeDate);
-  const nextRunDay = currentNextRunDay <= resumeDay ? resumeDay : currentNextRunDay;
-  return applyWeekendPolicy(nextRunDay, skipNonBusinessDays);
+  let nextRunDay = applyWeekendPolicy(startOfDayUtc(currentNextRunDate), skipNonBusinessDays);
+
+  // Resuming a paused plan should skip any due/missed run rather than making
+  // it immediately executable. Preserve the plan cadence by advancing from the
+  // stored next-run cursor until the first scheduled date after the resume day.
+  let guard = 0;
+  while (nextRunDay <= resumeDay) {
+    const previous = nextRunDay;
+    nextRunDay = calcNextScheduledRunDate(
+      nextRunDay,
+      unit,
+      value,
+      executionDay,
+      skipNonBusinessDays,
+      secondaryExecutionDay,
+    );
+    if (nextRunDay <= previous) {
+      nextRunDay = applyWeekendPolicy(addDaysUtc(previous, 1), skipNonBusinessDays);
+    }
+    guard += 1;
+    if (guard > 10000) {
+      return calcNextScheduledRunDate(
+        resumeDay,
+        unit,
+        value,
+        executionDay,
+        skipNonBusinessDays,
+        secondaryExecutionDay,
+      );
+    }
+  }
+
+  return nextRunDay;
 }
 
 export function calcNextScheduledRunDate(

@@ -1420,7 +1420,8 @@ export async function editInvestment(formData: FormData) {
   const hasFundArrivalAmount = formData.has("fundArrivalAmount");
   const hasDepositSourceEntryId = formData.has("depositSourceEntryId");
   const hasConfirmDays = formData.has("confirmDays");
-  const hasFeeRate = formData.has("feeRate");
+  const feeRateWasEdited = String(formData.get("feeRateEdited") ?? "").trim() === "1";
+  const hasFeeRate = feeRateWasEdited && formData.has("feeRate");
   const hasArrivalDays = formData.has("arrivalDays");
 
   const fundUnitsStr = String(formData.get("fundUnits") ?? "").trim();
@@ -2026,8 +2027,8 @@ export async function editInvestment(formData: FormData) {
     }
     }
 
-    // Update the fee rate in the unified fee-rate store, split by buy/redeem.
-    if (fundProductType !== "metal" && fundProductType !== "wealth" && finalInvestmentAccId && fundCode && feeRate !== undefined && feeRate !== null) {
+    // Update the fee-rate rule only when the user explicitly edited the rate.
+    if (fundProductType !== "metal" && fundProductType !== "wealth" && finalInvestmentAccId && fundCode && feeRateWasEdited && feeRate !== undefined && feeRate !== null) {
       await setFundFeeRateByDate(finalInvestmentAccId, fundCode, feeRate, fundConfirmDate ?? date, redeemLike ? "redeem" : "buy").catch(() => {});
     }
 

@@ -117,6 +117,7 @@ const FUND_HEADER_KEYS = [
 const STOCK_HEADER_KEYS = [
   "detail.column.date",
   "stockTx.settleDateLabel",
+  "viewImport.stockAccount",
   "depositShell.colAction",
   "reports.stock.market",
   "stockTx.stockCodeLabel",
@@ -136,7 +137,7 @@ const STOCK_HEADER_KEYS = [
 ] as const;
 
 type StockImportItem = StockImportUploadItem;
-type StockImportHeaderField = Exclude<keyof StockImportItem, "rawText" | "stockName" | "bankAccountId" | "cashAccountId">;
+type StockImportHeaderField = Exclude<keyof StockImportItem, "rawText" | "stockName" | "stockAccountId" | "accountId" | "bankAccountId" | "cashAccountId">;
 
 type ImportCategoryOption = {
   name: string;
@@ -159,12 +160,12 @@ function templateFor(props: ViewExcelImportMenuButtonProps, t: TranslateFn): Tem
       sheetName: t("viewImport.sheetStockTransactions"),
       noteSheetName: t("viewImport.sheetNotes"),
       headers: localizedHeaders(STOCK_HEADER_KEYS, t),
-      requiredHeaderIndexes: [0, 2, 4, 5, 6],
+      requiredHeaderIndexes: [0, 3, 5, 6, 7],
       rows: [
-        ["2026-06-08", "2026-06-08", t("stockPanel.action.buy"), "CN", "600519", "100", "1580.00", "", "", "", "5.00", "3.00", "", "1.00", "0.50", "0.50", "", t("viewImport.sampleRemarkStockBuy")],
-        ["2026-06-20", "2026-06-20", t("stockPanel.action.sell"), "CN", "600519", "50", "1620.00", "", "", "", "10.00", "3.00", "", "1.00", "0.50", "0.50", "5.00", t("viewImport.sampleRemarkStockSell")],
-        ["2026-06-25", "2026-06-25", t("viewImport.stockActionBankTransfer"), "", "", "", "", "10000.00", "", t("viewImport.sampleStockBankAccount"), "", "", "", "", "", "", "", t("viewImport.sampleRemarkStockTransferIn")],
-        ["2026-06-30", "2026-06-30", t("stockPanel.action.dividend"), "CN", "600519", "", "", "300.00", "300.00", "", "", "", "", "", "", "", "", t("viewImport.sampleRemarkStockDividend")],
+        ["2026-06-08", "2026-06-08", stockAccountName, t("stockPanel.action.buy"), "CN", "600519", "100", "1580.00", "", "", "", "5.00", "3.00", "", "1.00", "0.50", "0.50", "", t("viewImport.sampleRemarkStockBuy")],
+        ["2026-06-20", "2026-06-20", stockAccountName, t("stockPanel.action.sell"), "CN", "600519", "50", "1620.00", "", "", "", "10.00", "3.00", "", "1.00", "0.50", "0.50", "5.00", t("viewImport.sampleRemarkStockSell")],
+        ["2026-06-25", "2026-06-25", stockAccountName, t("viewImport.stockActionBankTransfer"), "", "", "", "", "10000.00", "", t("viewImport.sampleStockBankAccount"), "", "", "", "", "", "", "", t("viewImport.sampleRemarkStockTransferIn")],
+        ["2026-06-30", "2026-06-30", stockAccountName, t("stockPanel.action.dividend"), "CN", "600519", "", "", "300.00", "300.00", "", "", "", "", "", "", "", "", t("viewImport.sampleRemarkStockDividend")],
       ],
       footerRows: [
         [],
@@ -172,6 +173,7 @@ function templateFor(props: ViewExcelImportMenuButtonProps, t: TranslateFn): Tem
         [],
         [t("detail.column.date"), t("viewImport.notesDate")],
         [t("stockTx.settleDateLabel"), t("viewImport.notesStockSettleDate")],
+        [t("viewImport.stockAccount"), t("viewImport.notesStockAccount")],
         [t("depositShell.colAction"), t("viewImport.notesStockAction")],
         [t("reports.stock.market"), t("viewImport.notesStockMarket")],
         [t("stockTx.stockCodeLabel"), t("viewImport.notesStockCode")],
@@ -450,6 +452,7 @@ function parseDateCell(value: unknown) {
 const STOCK_FIELDS = [
   "tradeDate",
   "settleDate",
+  "stockAccount",
   "action",
   "market",
   "stockCode",
@@ -471,6 +474,7 @@ const STOCK_FIELDS = [
 const STOCK_FIELD_ALIAS_KEYS: Record<StockImportHeaderField, string> = {
   tradeDate: "viewImport.stockAlias.tradeDate",
   settleDate: "viewImport.stockAlias.settleDate",
+  stockAccount: "viewImport.stockAlias.stockAccount",
   action: "viewImport.stockAlias.action",
   market: "viewImport.stockAlias.market",
   stockCode: "viewImport.stockAlias.stockCode",
@@ -564,6 +568,7 @@ function stockHeaderDetectionScore(headers: unknown[], t: TranslateFn) {
   if (index.has("tradeDate")) score += 4;
   if (index.has("action")) score += 4;
   if (index.has("stockCode")) score += 4;
+  if (index.has("stockAccount")) score += 1;
   if (index.has("market")) score += 2;
   if (index.has("quantity")) score += 2;
   if (index.has("price")) score += 2;
@@ -677,6 +682,7 @@ async function parseStockImportFile(file: File, t: TranslateFn): Promise<StockIm
     const rawAction = readField(row, "action");
     const action = normalizeStockImportAction(rawAction, t);
     const tradeDate = parseDateCell(row[bestHeader.get("tradeDate") ?? -1]);
+    const stockAccount = readField(row, "stockAccount");
     const stockCode = readField(row, "stockCode");
     const bankAccount = readField(row, "bankAccount");
     if (tradeDate && (stockCode || bankAccount) && rawAction && !action) unsupportedActions.add(rawAction);
@@ -684,6 +690,7 @@ async function parseStockImportFile(file: File, t: TranslateFn): Promise<StockIm
       rawText: row.map((cell) => normalizeCellText(cell)).filter(Boolean).join(" "),
       tradeDate,
       settleDate: bestHeader.has("settleDate") ? parseDateCell(row[bestHeader.get("settleDate") ?? -1]) || null : null,
+      stockAccount,
       action,
       market: readField(row, "market"),
       stockCode,

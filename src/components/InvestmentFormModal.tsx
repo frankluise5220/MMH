@@ -354,15 +354,23 @@ export function InvestmentFormModal({
   const [fee, setFee] = useState(initFee);
   const [feeEdited, setFeeEdited] = useState(false);
   const redeemTermsRef = useRef({
+    mode,
     productType: fixedProductType,
     subtype: initSubtype,
     units: initUnits,
     nav: initNav,
     fee: initFee,
     feeRate: initFeeRate,
+    feeRateEdited,
     feeEdited: false,
   });
-  redeemTermsRef.current = { productType, subtype, units, nav, fee, feeRate, feeEdited };
+  redeemTermsRef.current = { mode, productType, subtype, units, nav, fee, feeRate, feeRateEdited, feeEdited };
+  function shouldRecalculateFeeFromRateForCurrentInputs() {
+    return showFeeFor(subtype, productType) && !feeEdited && (mode === "create" || feeRateEdited);
+  }
+  function shouldRecalculateFeeFromRateForTerms(terms: typeof redeemTermsRef.current) {
+    return showFeeFor(terms.subtype, terms.productType) && !terms.feeEdited && (terms.mode === "create" || terms.feeRateEdited);
+  }
   const [confirmDays, setConfirmDays] = useState(initConfirmDaysValue);
   const [confirmDaysEdited, setConfirmDaysEdited] = useState(false);
   const [redeemCostDays, setRedeemCostDays] = useState(1);
@@ -1646,7 +1654,8 @@ export function InvestmentFormModal({
     return () => controller.abort();
   }, [mode, open, toAccountId, fundCodeKey, confirmDaysEdited]);
 
-  // In edit mode, re-fetch the fee rate for the new date and relink amounts after the fund account/code/confirm date changes.
+  // In edit mode, refresh the displayed fee rate after source fields change, but
+  // never recalculate the saved fee unless the user edits the rate input itself.
   useEffect(() => {
     if (mode !== "edit") return;
     if (!open || !toAccountId || !fundCodeKey) return;
@@ -1661,11 +1670,10 @@ export function InvestmentFormModal({
         if (!d.ok || d.rate == null || feeRateEdited) return;
         const nextRate = String(d.rate);
         setFeeRate(prev => prev === nextRate ? prev : nextRate);
-        if (!feeEdited) calculateFeeFromRate(nextRate);
       })
       .catch(() => {});
     return () => controller.abort();
-  }, [open, mode, toAccountId, fundCodeKey, confirmDate, subtype, productType, feeEdited, feeRateEdited]);
+  }, [open, mode, toAccountId, fundCodeKey, confirmDate, subtype, productType, feeRateEdited]);
 
 
   function buildInvestmentCalculation(options?: {
@@ -1676,6 +1684,8 @@ export function InvestmentFormModal({
     refundRaw?: string;
     refundEnabled?: boolean;
   }) {
+    const hasFeeRawOption = Object.prototype.hasOwnProperty.call(options ?? {}, "feeRaw");
+    const hasFeeRateRawOption = Object.prototype.hasOwnProperty.call(options ?? {}, "feeRateRaw");
     const amountN = Math.max(0, p(options?.amountRaw ?? amount));
     const navN = p(options?.navRaw ?? nav);
     const feeInputN = Math.max(0, p(options?.feeRaw ?? fee));
@@ -1693,9 +1703,10 @@ export function InvestmentFormModal({
     const calculatedFeeN = feeBaseAmount > 0 && feeRateN > 0 && showFeeFor(subtype, productType)
       ? feeBaseAmount * feeRateN / 100
       : 0;
-    const effectiveFeeN = feeEdited
+    const shouldDeriveFeeFromRate = hasFeeRateRawOption || (mode === "create" && !feeEdited);
+    const effectiveFeeN = hasFeeRawOption && !hasFeeRateRawOption
       ? feeInputN
-      : feeRateN > 0
+      : shouldDeriveFeeFromRate && feeRateN > 0
         ? calculatedFeeN
         : feeInputN;
     let unitsText = "";
@@ -1716,7 +1727,7 @@ export function InvestmentFormModal({
 
   const investmentCalculation = useMemo(
     () => buildInvestmentCalculation(),
-    [amount, arrivalAmount, buyResultStatus, defaults?.fundUnits, fee, feeEdited, feeRate, nav, productType, subtype, units],
+    [amount, arrivalAmount, buyResultStatus, defaults?.fundUnits, fee, feeEdited, feeRate, mode, nav, productType, subtype, units],
   );
   const redeemGrossAmount = investmentCalculation.redeemGrossAmount;
   const confirmedBuyAmount = investmentCalculation.confirmedBuyAmount;
@@ -1772,6 +1783,7 @@ export function InvestmentFormModal({
       nextNavRaw,
       buyResultStatus === "refund",
       true,
+      options?.feeRateRaw,
     );
     return true;
   }
@@ -1791,7 +1803,7 @@ export function InvestmentFormModal({
     const navN = Math.max(0, p(options?.navRaw ?? redeemTerms.nav));
     if (unitsN <= 0 || navN <= 0) return false;
 
-    const recalculateFeeFromRate = options?.recalculateFeeFromRate ?? (options?.feeRaw === undefined && !redeemTerms.feeEdited);
+    const recalculateFeeFromRate = options?.recalculateFeeFromRate ?? (options?.feeRaw === undefined && shouldRecalculateFeeFromRateForTerms(redeemTerms));
     const grossAmountN = unitsN * navN;
     const feeN = recalculateFeeFromRate
       ? grossAmountN * Math.max(0, p(options?.feeRateRaw ?? redeemTerms.feeRate)) / 100
@@ -1818,7 +1830,7 @@ export function InvestmentFormModal({
       unitsRaw: redeemTerms.units,
       feeRaw: redeemTerms.fee,
       feeRateRaw: redeemTerms.feeRate,
-      recalculateFeeFromRate: options?.recalculateFeeFromRate ?? !redeemTerms.feeEdited,
+      recalculateFeeFromRate: options?.recalculateFeeFromRate ?? shouldRecalculateFeeFromRateForTerms(redeemTerms),
     });
   }
 
@@ -1829,8 +1841,8 @@ export function InvestmentFormModal({
     if (!open || productType === "metal" || !isRedeemLike(subtype)) return;
     if (mode === "edit" && !editAutoNavEnabledRef.current && !navEditedRef.current) return;
     if (!nav.trim()) return;
-    recalculateRedeemAmountsFromTerms({ recalculateFeeFromRate: !feeEdited });
-  }, [feeEdited, feeRate, mode, nav, open, productType, subtype, units]);
+    recalculateRedeemAmountsFromTerms({ recalculateFeeFromRate: shouldRecalculateFeeFromRateForCurrentInputs() });
+  }, [feeEdited, feeRate, feeRateEdited, mode, nav, open, productType, subtype, units]);
 
   useEffect(() => {
     if (mode !== "create") return;
@@ -1858,12 +1870,14 @@ export function InvestmentFormModal({
     nextNavRaw = nav,
     refundEnabled = buyResultStatus === "refund",
     force = false,
+    nextFeeRateRaw?: string,
   ) {
     suppressFeeAutoCalcRef.current = false;
     if (!isBuyLike(subtype) || (!force && unitsEditedRef.current)) return;
     const nextCalc = buildInvestmentCalculation({
       amountRaw: nextAmountRaw,
       feeRaw: nextFeeRaw,
+      feeRateRaw: nextFeeRateRaw,
       refundRaw: nextRefundRaw,
       navRaw: nextNavRaw,
       refundEnabled,
@@ -1882,8 +1896,8 @@ export function InvestmentFormModal({
 
   function calculateUnitsAfterAmountChange(nextAmountRaw: string) {
     if (
-      !recalculateBuyUnitsFromInputs({ amountRaw: nextAmountRaw, recalculateFeeFromRate: !feeEdited }) &&
-      !recalculateRedeemAmountsFromTerms({ recalculateFeeFromRate: !feeEdited })
+      !recalculateBuyUnitsFromInputs({ amountRaw: nextAmountRaw, recalculateFeeFromRate: shouldRecalculateFeeFromRateForCurrentInputs() }) &&
+      !recalculateRedeemAmountsFromTerms({ recalculateFeeFromRate: shouldRecalculateFeeFromRateForCurrentInputs() })
     ) {
       calculateBuyUnits(nextAmountRaw, fee);
     }
@@ -1891,7 +1905,7 @@ export function InvestmentFormModal({
 
   function calculateUnitsAfterRefundChange(nextRefundRaw: string) {
     unitsEditedRef.current = false;
-    if (!recalculateBuyUnitsFromInputs({ refundRaw: nextRefundRaw, recalculateFeeFromRate: !feeEdited })) {
+    if (!recalculateBuyUnitsFromInputs({ refundRaw: nextRefundRaw, recalculateFeeFromRate: shouldRecalculateFeeFromRateForCurrentInputs() })) {
       calculateBuyUnits(amount, fee, nextRefundRaw, nav, p(nextRefundRaw) > 0 || buyResultStatus === "refund", true);
     }
   }
@@ -2016,7 +2030,7 @@ export function InvestmentFormModal({
             const recalculated = subtype === "buy"
               ? recalculateBuyUnitsFromInputs({
                   navRaw: nextNav,
-                  recalculateFeeFromRate: !feeEdited,
+                  recalculateFeeFromRate: shouldRecalculateFeeFromRateForCurrentInputs(),
                 })
               : recalculateRedeemAmountsFromNav(nextNav);
             if (!recalculated && isBuyLike(subtype)) {
@@ -2028,7 +2042,7 @@ export function InvestmentFormModal({
         .finally(() => setNavLoading(false));
     }, 500);
     return () => { if (navDebounce.current) clearTimeout(navDebounce.current); };
-  }, [amount, applyDate, arrivalAmount, buyResultStatus, confirmDate, fee, feeEdited, feeRate, fundCode, mode, productType, subtype, toAccountId]);
+  }, [amount, applyDate, arrivalAmount, buyResultStatus, confirmDate, fee, feeEdited, feeRate, feeRateEdited, fundCode, mode, productType, subtype, toAccountId]);
 
   function resetForCreate(keepSubtype = false, options?: { preferDefaults?: boolean }) {
     // Read current fund from URL at click time (defaults prop may be stale from SSR)
@@ -2125,7 +2139,7 @@ export function InvestmentFormModal({
           if (!d.ok || d.rate == null || feeRateEdited) return;
           const nextRate = String(d.rate);
           setFeeRate(prev => prev === nextRate ? prev : nextRate);
-          if (mode !== "edit" || editAutoNavEnabledRef.current) calculateFeeFromRate(nextRate);
+          if (mode === "create") calculateFeeFromRate(nextRate);
         })
         .catch(() => {});
     }
@@ -2147,7 +2161,7 @@ export function InvestmentFormModal({
         const recalculated = subtype === "buy"
           ? recalculateBuyUnitsFromInputs({
               navRaw: nextNav,
-              recalculateFeeFromRate: !feeEdited,
+              recalculateFeeFromRate: shouldRecalculateFeeFromRateForCurrentInputs(),
             })
           : recalculateRedeemAmountsFromNav(nextNav);
         if (!recalculated && isBuyLike(subtype)) {
@@ -2324,7 +2338,10 @@ export function InvestmentFormModal({
           formData.set("refundDate", arrivalDate || confirmDate || effectiveDate);
         }
       }
-      if (!isDividend(subtype) && showFeeFor(subtype, productType)) formData.set("feeRate", feeRate.trim() ? feeRate : "");
+      if (!isDividend(subtype) && showFeeFor(subtype, productType)) {
+        formData.set("feeRate", feeRate.trim() ? feeRate : "");
+        if (feeRateEdited) formData.set("feeRateEdited", "1");
+      }
       if (!isDividend(subtype)) {
         formData.set("confirmDays", String(confirmDays));
         formData.set("arrivalDays", String(arrivalDays));
@@ -2428,7 +2445,7 @@ export function InvestmentFormModal({
                   const recalculated = subtype === "buy"
                     ? recalculateBuyUnitsFromInputs({
                         navRaw: nextNav,
-                        recalculateFeeFromRate: !feeEdited,
+                        recalculateFeeFromRate: shouldRecalculateFeeFromRateForCurrentInputs(),
                       })
                     : recalculateRedeemAmountsFromNav(nextNav);
                   if (!recalculated && isBuyLike(subtype) && navN > 0 && amountN > 0) {
@@ -2861,7 +2878,7 @@ export function InvestmentFormModal({
                             setNav(nextNav);
                             navEditedRef.current = true;
                             recalculateRedeemAmountsFromNav(nextNav, {
-                              recalculateFeeFromRate: !feeEdited,
+                              recalculateFeeFromRate: shouldRecalculateFeeFromRateForCurrentInputs(),
                             });
                           }}
                           placeholder={navLoading
@@ -3046,7 +3063,7 @@ export function InvestmentFormModal({
                       if (subtype === "buy") {
                         recalculateBuyUnitsFromInputs({
                           navRaw: nextNav,
-                          recalculateFeeFromRate: !feeEdited,
+                          recalculateFeeFromRate: shouldRecalculateFeeFromRateForCurrentInputs(),
                         });
                       } else {
                         calculateBuyUnits(amount, fee, arrivalAmount, nextNav);

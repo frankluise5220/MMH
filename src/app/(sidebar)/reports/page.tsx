@@ -18,6 +18,7 @@ import { StockHoldingReport } from "@/components/StockHoldingReport";
 import { FundHoldingReport, type FundGroupMode } from "@/components/FundHoldingReport";
 import { FundGroupModeFilter } from "@/components/FundGroupModeFilter";
 import { buildAccountDisplayOption, buildGroupedAccountOptions, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
+import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "@/lib/server/account-label-fields";
 import { kindLabel } from "@/lib/account-kinds";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { prisma } from "@/lib/db/prisma";
@@ -213,6 +214,7 @@ export default async function ReportsPage({
   const detailColumnKey =
     typeof params.detailColumnKey === "string" ? params.detailColumnKey.trim() : "";
   const cookieStore = await cookies();
+  const accountLabelFields = accountLabelFieldsFromCookieValue(cookieStore.get(ACCOUNT_LABEL_FIELDS_COOKIE)?.value);
   const colorScheme = (cookieStore.get("colorScheme")?.value === "green_up_red_down"
     ? "green_up_red_down"
     : "red_up_green_down") satisfies ColorScheme;
@@ -249,7 +251,7 @@ export default async function ReportsPage({
       investProductType: account.investProductType,
       Institution: account.Institution,
       AccountGroup: account.AccountGroup,
-    }, creditCardLabelTemplate),
+    }, creditCardLabelTemplate, { fields: accountLabelFields }),
   );
   const allAccountDisplayById = new Map(allAccountDisplayOptions.map((account) => [account.id, account]));
   const accountDisplayOptions = accountRecords.map((account) => allAccountDisplayById.get(account.id)!).filter(Boolean);

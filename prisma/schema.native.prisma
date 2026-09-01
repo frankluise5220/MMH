@@ -412,6 +412,7 @@ model FundProfile {
   fundCode        String   @id // 6 位基金代码，全局唯一（跨账户、跨账本共享的基金维度）
   fundName        String? // 基金简称
   fundCompany     String? // 基金管理人（如「嘉实基金」）
+  fundCompanyCode String? // 基金管理人代码
   custodian       String? // 基金托管人（如「中国银行」）
   manager         String? // 基金经理
   navDateOffset   Int      @default(0) // Binary NAV publication-lag mode: 0=current-day, 1=older latest NAV

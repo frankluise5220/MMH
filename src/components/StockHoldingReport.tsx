@@ -32,6 +32,21 @@ function compactDate(value: string | null) {
   return /^\d{4}-\d{2}-\d{2}$/.test(date) ? `${date.slice(5, 7)}.${date.slice(8, 10)}` : String(value ?? "");
 }
 
+function renderReportStockNameCode(row: StockHoldingReportRow) {
+  const displayName = String(row.stockName || row.stockCode || "-").trim() || "-";
+  const code = [stockMarketLabel(row.market), row.stockCode].filter(Boolean).join(" ");
+  return (
+    <div className="flex min-w-0 items-center gap-1.5" title={[displayName, code].filter(Boolean).join(" ")}>
+      <span className="min-w-0 truncate font-medium text-slate-900">{displayName}</span>
+      {code ? (
+        <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] leading-none text-slate-500">
+          {code}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 export function StockHoldingReport({ rows, totals, isRedUp }: Props) {
   const currency = rows[0]?.currency || "CNY";
   const best = [...rows].sort((a, b) => b.totalProfit - a.totalProfit)[0] ?? null;
@@ -93,8 +108,7 @@ export function StockHoldingReport({ rows, totals, isRedUp }: Props) {
                 {rows.map((row) => (
                   <tr key={row.id} className="border-b border-slate-100 hover:bg-slate-50">
                     <td className="px-3 py-2">
-                      <div className="font-medium text-slate-900">{row.stockName}</div>
-                      <div className="text-xs text-slate-500">{stockMarketLabel(row.market)} {row.stockCode}</div>
+                      {renderReportStockNameCode(row)}
                     </td>
                     <td className="px-3 py-2 text-xs text-slate-600">{row.accountName}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{formatMoney(row.quantity)}</td>

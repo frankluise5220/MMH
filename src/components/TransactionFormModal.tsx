@@ -33,7 +33,6 @@ import {
   isFixedAssetAccountLike,
   isFixedAssetExpenseCategoryPath,
 } from "@/lib/fixed-asset";
-import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { useI18n } from "@/lib/i18n";
 import {
   buildCreditCardInstallmentSchedule,
@@ -41,7 +40,8 @@ import {
   type CreditCardInstallmentRateType,
 } from "@/lib/credit/installment";
 import { filterIncomeExpenseInstitutions } from "@/lib/institution-rules";
-import { sortCategorySources } from "@/components/categorySmartSelect";
+import { buildCategoryParentOptions, buildCategoryTreeOptions } from "@/components/categorySmartSelect";
+import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
 
 type TxType = "expense" | "income" | "advance" | "transfer" | "fx" | "investment";
 type TransactionActionResult =
@@ -58,6 +58,10 @@ type AccountOption = {
   investProductType?: string | null;
   debtDirection?: string | null;
   institutionId?: string | null;
+  institutionType?: string | null;
+  counterpartyId?: string | null;
+  isSettlementDebt?: boolean | null;
+  isConsumerLoan?: boolean | null;
   currency?: string | null;
   billingDay?: number | null;
   isHeader?: boolean;
@@ -199,6 +203,15 @@ function inferDebtTransferMode(
   return null;
 }
 
+function isLoanDialogAccount(account: AccountOption | SmartSelectOption | undefined) {
+  const option = account as AccountOption | undefined;
+  return option?.kind === "loan" && option.isSettlementDebt !== true;
+}
+
+function debtDialogEventName(sourceAccount: AccountOption | SmartSelectOption | undefined, targetAccount: AccountOption | SmartSelectOption | undefined) {
+  return isLoanDialogAccount(sourceAccount) || isLoanDialogAccount(targetAccount) ? "mmh:loan:create" : "mmh:debt:create";
+}
+
 function findAccountIdByLabel(input: string | undefined, options: AccountOption[]) {
   const raw = (input ?? "").trim();
   if (!raw) return "";
@@ -257,7 +270,7 @@ function buildCategoryOptionsFromSettings(categories: SettingsCategory[], type: 
 }
 
 function settingsAccountToOption(account: SettingsAccountRecord): AccountOption {
-  const display = buildAccountDisplayOption(account as Parameters<typeof buildAccountDisplayOption>[0]);
+  const display = buildAccountDisplayOption(account as Parameters<typeof buildAccountDisplayOption>[0], undefined, { fields: getAccountLabelFieldsPreference() });
   return {
     id: account.id,
     label: display.selectorLabel || display.label,
@@ -272,7 +285,7 @@ function settingsAccountToOption(account: SettingsAccountRecord): AccountOption 
 }
 
 function buildGroupedOptionsFromSettingsAccounts(accounts: SettingsAccountRecord[]): SmartSelectOption[] {
-  const displayOptions = accounts.map((account) => buildAccountDisplayOption(account as Parameters<typeof buildAccountDisplayOption>[0]));
+  const displayOptions = accounts.map((account) => buildAccountDisplayOption(account as Parameters<typeof buildAccountDisplayOption>[0], undefined, { fields: getAccountLabelFieldsPreference() }));
   const metaById = new Map(accounts.map((account) => [account.id, settingsAccountToOption(account)]));
   return buildGroupedAccountOptions(displayOptions).map((option) => (
     option.isHeader || option.isGroup ? option : { ...option, ...metaById.get(option.id) }
@@ -533,97 +546,16 @@ export function TransactionFormModal({
    * so every existing category, including top-level categories, can be selected
    * as the parent.
    */
-  const categoryParentOptions = useMemo(() => {
-    // Build a parent-id → children map for all categories of current type
-    const byParentId = new Map<string | null, CategoryOption[]>();
-    for (const c of categoryList) {
-      const list = byParentId.get(c.parentId) ?? [];
-      list.push(c);
-      byParentId.set(c.parentId, list);
-    }
-    for (const [parentId, list] of byParentId) {
-      byParentId.set(parentId, sortCategorySources(list));
-    }
-
-    const options: Array<{ id: string; name: string; label: string; type: string; depth: number; parentId?: string; isGroup?: boolean }> = [];
-
-    // Recursively walk the tree, building indented options
-    function walk(parentId: string | null, depth: number, pathPrefix: string) {
-      const children = byParentId.get(parentId) ?? [];
-      for (const child of children) {
-        const rawShortName = child.label.includes(".") ? child.label.split(".").pop() ?? child.label : child.label;
-        const shortName = systemCategoryLabel(rawShortName, t);
-        const fullLabel = pathPrefix ? `${pathPrefix}.${shortName}` : shortName;
-        options.push({
-          id: child.id,
-          name: shortName,
-          label: fullLabel,
-          type: currentCategoryType,
-          depth,
-          parentId: child.parentId ?? undefined,
-          isGroup: (byParentId.get(child.id) ?? []).length > 0,
-        });
-        walk(child.id, depth + 1, fullLabel);
-      }
-    }
-
-    // Start from root (parentId=null)
-    walk(null, 0, "");
-
-    return options;
-  }, [categoryList, currentCategoryType, t]);
+  const categoryParentOptions = useMemo(
+    () => buildCategoryParentOptions(categoryList, t, currentCategoryType),
+    [categoryList, currentCategoryType, t],
+  );
 
   /** Build hierarchical SmartSelect options for category dropdown.
    * All real categories are selectable. Categories with children are collapsible
    * groups, and their caret toggles expansion without taking away selection.
    */
-  const categorySSOptions = useMemo(() => {
-    const byParentId = new Map<string | null, CategoryOption[]>();
-    for (const c of categoryList) {
-      const list = byParentId.get(c.parentId) ?? [];
-      list.push(c);
-      byParentId.set(c.parentId, list);
-    }
-    for (const [parentId, list] of byParentId) {
-      byParentId.set(parentId, sortCategorySources(list));
-    }
-
-    const opts: SmartSelectOption[] = [];
-    const INDENT = "　";
-
-    /** Walk the tree recursively.
-     *  currentGroupId tracks the nearest isHeader or isGroup ancestor for parentId linkage. */
-    function walk(parentId: string | null, level: number, currentGroupId?: string) {
-      const children = byParentId.get(parentId) ?? [];
-      for (const child of children) {
-        const rawShortName = child.label.includes(".") ? child.label.split(".").pop() ?? child.label : child.label;
-        const shortName = systemCategoryLabel(rawShortName, t);
-        const grandChildren = byParentId.get(child.id) ?? [];
-
-        if (grandChildren.length > 0) {
-          // Category with children -> collapsible group and selectable category.
-          opts.push({
-            id: child.id,
-            label: `${INDENT.repeat(level)}${shortName}`,
-            isGroup: true,
-            parentId: currentGroupId,
-          });
-          walk(child.id, level + 1, child.id);
-        } else {
-          // Leaf → regular selectable item
-          opts.push({
-            id: child.id,
-            label: `${INDENT.repeat(level)}${shortName}`,
-            parentId: currentGroupId,
-          });
-          // No deeper walk needed for leaf
-        }
-      }
-    }
-
-    walk(null, 0);
-    return opts;
-  }, [categoryList, t]);
+  const categorySSOptions = useMemo(() => buildCategoryTreeOptions(categoryList, t), [categoryList, t]);
 
   useEffect(() => {
     const nextCategoryList = txType === "income" ? incomeCategories : txType === "advance" ? (advanceCategories ?? []) : expenseCategories;
@@ -1027,7 +959,7 @@ export function TransactionFormModal({
           return true;
         }
 
-        window.dispatchEvent(new CustomEvent("mmh:debt:create", {
+        window.dispatchEvent(new CustomEvent(debtDialogEventName(sourceAccount, targetAccount), {
           detail: {
             requestId: requestId ?? makeRequestId(operation),
             editEntryId,
@@ -1096,7 +1028,7 @@ export function TransactionFormModal({
         },
       }));
     } else if (operation === "debt") {
-      window.dispatchEvent(new CustomEvent("mmh:debt:create", {
+      window.dispatchEvent(new CustomEvent(debtDialogEventName(sourceAccount, targetAccount), {
         detail: {
           requestId: nextRequestId,
           mode: debtMode ?? (targetAccount?.debtDirection === "receivable" ? "lend_out" : "repay_out"),

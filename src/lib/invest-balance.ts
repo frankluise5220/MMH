@@ -10,7 +10,7 @@
 import { prisma } from "@/lib/db/prisma";
 import { cache } from "react";
 import { toNumber } from "@/lib/date-utils";
-import { AccountKind, FundCashFlowKind, FundSubtype } from "@prisma/client";
+import { AccountKind, FundCashFlowKind, FundSubtype, StockTransactionAction } from "@prisma/client";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { getLatestFundNavMap } from "@/lib/fund/navCache";
 import { getFundProfileNameMap, normalizeFundDisplayName } from "@/lib/fund/fundProfile";
@@ -56,9 +56,21 @@ export type PositionDisplayRow = {
 
 export type ClearedPositionRow = {
   fundCode: string;
+  accountId?: string | null;
+  stockCode?: string | null;
+  market?: string | null;
+  securityId?: string | null;
   wealthProductId?: string | null;
   propertyAssetId?: string | null;
   name: string;
+  units?: number;
+  avgCost?: number;
+  cost?: number;
+  nav?: number | null;
+  navDate?: string;
+  marketValue?: number;
+  floatingPnL?: number;
+  floatingPnLRate?: number;
   historicalProfit: number;
   totalInvested: number;
   returnRate: number;
@@ -127,6 +139,34 @@ function roundMoney(value: number) {
 
 function holdingKey(accountId: string, fundCode: string) {
   return `${accountId}::${fundCode}`;
+}
+
+function dateOnlyString(value: Date | null | undefined) {
+  return value ? value.toISOString().slice(0, 10) : "";
+}
+
+function stockFeeTotal(row: {
+  fee?: unknown;
+  commission?: unknown;
+  stampTax?: unknown;
+  transferFee?: unknown;
+  exchangeFee?: unknown;
+  regulatoryFee?: unknown;
+  otherFee?: unknown;
+}) {
+  return toNumber(row.fee) +
+    toNumber(row.commission) +
+    toNumber(row.stampTax) +
+    toNumber(row.transferFee) +
+    toNumber(row.exchangeFee) +
+    toNumber(row.regulatoryFee) +
+    toNumber(row.otherFee);
+}
+
+function stockSellProceeds(row: { grossAmount?: unknown; netAmount?: unknown; fee?: unknown; commission?: unknown; stampTax?: unknown; transferFee?: unknown; exchangeFee?: unknown; regulatoryFee?: unknown; otherFee?: unknown }) {
+  const grossAmount = Math.abs(toNumber(row.grossAmount));
+  const netAmount = row.netAmount == null ? null : Math.abs(toNumber(row.netAmount));
+  return netAmount ?? Math.max(0, grossAmount - stockFeeTotal(row));
 }
 
 function displayPendingAmount(row: {
@@ -526,40 +566,127 @@ export const computePositionDisplay = cache(
 
   if (account.investProductType === "stock") {
     const stockHoldings = await prisma.stockHolding.findMany({
-      where: { accountId },
+      where: { accountId, householdId: ctx.householdId },
       orderBy: [{ market: "asc" }, { stockCode: "asc" }],
     });
-    const positions: PositionDisplayRow[] = stockHoldings
+    const mapStockHolding = (holding: (typeof stockHoldings)[number]): PositionDisplayRow => {
+      const quantity = toNumber(holding.quantity);
+      const cost = toNumber(holding.cost);
+      const latestPrice = holding.latestPrice != null ? toNumber(holding.latestPrice) : null;
+      const marketValue = toNumber(holding.marketValue);
+      const floatingPnL = marketValue - cost;
+      return {
+        fundCode: `${holding.market}:${holding.stockCode}`,
+        accountId: holding.accountId,
+        stockCode: holding.stockCode,
+        market: holding.market,
+        securityId: holding.securityId,
+        name: holding.stockName || holding.stockCode,
+        holdingDate: "",
+        units: quantity,
+        avgCost: toNumber(holding.avgCost),
+        cost,
+        nav: latestPrice,
+        navDate: dateOnlyString(holding.latestPriceDate),
+        marketValue,
+        floatingPnL,
+        floatingPnLRate: cost > 0 ? floatingPnL / cost : 0,
+        pendingCost: 0,
+        historicalProfit: toNumber(holding.historicalProfit),
+      };
+    };
+    const positions = stockHoldings
       .filter((holding) => toNumber(holding.quantity) > 0.000001)
-      .map((holding) => {
-        const quantity = toNumber(holding.quantity);
-        const cost = toNumber(holding.cost);
-        const latestPrice = holding.latestPrice != null ? toNumber(holding.latestPrice) : null;
-        const marketValue = toNumber(holding.marketValue);
-        const floatingPnL = marketValue - cost;
-        return {
-          fundCode: `${holding.market}:${holding.stockCode}`,
-          stockCode: holding.stockCode,
-          market: holding.market,
-          securityId: holding.securityId,
-          name: holding.stockName || holding.stockCode,
-          holdingDate: "",
-          units: quantity,
-          avgCost: toNumber(holding.avgCost),
-          cost,
-          nav: latestPrice,
-          navDate: holding.latestPriceDate ? holding.latestPriceDate.toISOString().slice(0, 10) : "",
-          marketValue,
-          floatingPnL,
-          floatingPnLRate: cost > 0 ? floatingPnL / cost : 0,
-          pendingCost: 0,
-          historicalProfit: toNumber(holding.historicalProfit),
+      .map(mapStockHolding);
+    const clearedHoldings = stockHoldings.filter((holding) => toNumber(holding.quantity) <= 0.000001);
+    const clearedSecurityIds = Array.from(
+      new Set(clearedHoldings.map((holding) => holding.securityId).filter((securityId): securityId is string => Boolean(securityId))),
+    );
+    const clearedStats = new Map<string, { firstBuyDate: string; clearedDate: string; totalBuyAmount: number; totalRedeemAmount: number }>();
+    if (clearedSecurityIds.length > 0) {
+      const clearedTransactions = await prisma.stockTransaction.findMany({
+        where: {
+          householdId: ctx.householdId,
+          stockAccountId: accountId,
+          deletedAt: null,
+          securityId: { in: clearedSecurityIds },
+        },
+        select: {
+          securityId: true,
+          action: true,
+          tradeDate: true,
+          grossAmount: true,
+          netAmount: true,
+          fee: true,
+          commission: true,
+          stampTax: true,
+          transferFee: true,
+          exchangeFee: true,
+          regulatoryFee: true,
+          otherFee: true,
+        },
+        orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+      });
+      for (const row of clearedTransactions) {
+        if (!row.securityId) continue;
+        const stats = clearedStats.get(row.securityId) ?? {
+          firstBuyDate: "",
+          clearedDate: "",
+          totalBuyAmount: 0,
+          totalRedeemAmount: 0,
         };
+        const tradeDate = dateOnlyString(row.tradeDate);
+        if (row.action === StockTransactionAction.buy) {
+          if (!stats.firstBuyDate || tradeDate < stats.firstBuyDate) stats.firstBuyDate = tradeDate;
+          stats.totalBuyAmount += Math.abs(toNumber(row.grossAmount)) + stockFeeTotal(row);
+        } else if (row.action === StockTransactionAction.sell) {
+          stats.clearedDate = tradeDate || stats.clearedDate;
+          stats.totalRedeemAmount += stockSellProceeds(row);
+        } else if (row.action === StockTransactionAction.merge_share) {
+          stats.clearedDate = tradeDate || stats.clearedDate;
+        }
+        clearedStats.set(row.securityId, stats);
+      }
+    }
+    const clearedPositions: ClearedPositionRow[] = clearedHoldings
+      .map((holding) => {
+        const row = mapStockHolding(holding);
+        const stats = clearedStats.get(holding.securityId);
+        const totalInvested = roundMoney(stats?.totalBuyAmount ?? 0);
+        const historicalProfit = roundMoney(row.historicalProfit);
+        return {
+          fundCode: row.fundCode,
+          accountId: row.accountId,
+          stockCode: row.stockCode,
+          market: row.market,
+          securityId: row.securityId,
+          name: row.name,
+          units: row.units,
+          avgCost: row.avgCost,
+          cost: row.cost,
+          nav: row.nav,
+          navDate: row.navDate,
+          marketValue: row.marketValue,
+          floatingPnL: row.floatingPnL,
+          floatingPnLRate: row.floatingPnLRate,
+          historicalProfit,
+          totalInvested,
+          returnRate: totalInvested > 0 ? historicalProfit / totalInvested : 0,
+          firstBuyDate: stats?.firstBuyDate ?? "",
+          clearedDate: stats?.clearedDate ?? "",
+          totalBuyAmount: totalInvested,
+          totalRedeemAmount: roundMoney(stats?.totalRedeemAmount ?? 0),
+        };
+      })
+      .sort((left, right) => {
+        const dateCompare = (right.clearedDate || "").localeCompare(left.clearedDate || "");
+        if (dateCompare !== 0) return dateCompare;
+        return left.fundCode.localeCompare(right.fundCode);
       });
     const totalMarketValue = positions.reduce((sum, row) => sum + row.marketValue, 0);
     const totalCost = positions.reduce((sum, row) => sum + row.cost, 0);
     const positionHistoricalProfit = positions.reduce((sum, row) => sum + row.historicalProfit, 0);
-    const clearedHistoricalProfit = 0;
+    const clearedHistoricalProfit = clearedPositions.reduce((sum, row) => sum + row.historicalProfit, 0);
     const totalHistoricalProfit = positionHistoricalProfit + clearedHistoricalProfit;
     const brokerageCashAccount = account.institutionId
       ? await prisma.account.findFirst({
@@ -585,7 +712,7 @@ export const computePositionDisplay = cache(
     const cashBalance = stockCashBalanceMap.get(cashAccountId) ?? 0;
     return {
       positions,
-      clearedPositions: [],
+      clearedPositions,
       totalMarketValue,
       totalCost,
       positionHistoricalProfit,

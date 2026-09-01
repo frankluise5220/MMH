@@ -1,6 +1,10 @@
 import { AccountKind, TransactionType } from "@prisma/client";
 
-import { buildAccountDisplayOption, DEFAULT_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
+import {
+  buildAccountDisplayOption,
+  DEFAULT_CREDIT_CARD_LABEL_TEMPLATE,
+  type AccountLabelField,
+} from "@/lib/account-display";
 import { normalizeCurrency } from "@/lib/currency";
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
@@ -252,8 +256,10 @@ export async function computeOverviewSummary(
   ctx: HouseholdContext,
   creditCardLabelTemplate: string = DEFAULT_CREDIT_CARD_LABEL_TEMPLATE,
   language: DisplayLanguage = "zh-CN",
+  options?: { accountLabelFields?: AccountLabelField[] | null },
 ): Promise<OverviewSummary> {
   const { hidFilter } = ctx;
+  const accountLabelFields = options?.accountLabelFields ?? null;
   const now = new Date();
   const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
   const monthEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
@@ -369,6 +375,7 @@ export async function computeOverviewSummary(
         AccountGroup: account.AccountGroup ? { id: "", name: account.AccountGroup.name } : null,
       },
       creditCardLabelTemplate,
+      { fields: accountLabelFields },
     );
 
     const accountCurrency = currencyOf(account);
@@ -456,6 +463,7 @@ export async function computeOverviewSummary(
         AccountGroup: storageAccount.AccountGroup ? { id: "", name: storageAccount.AccountGroup.name } : null,
       },
       creditCardLabelTemplate,
+      { fields: accountLabelFields },
     );
     const groupCurrency = currencyOf(storageAccount);
     const groupRate = fx.rateOf(groupCurrency);
@@ -514,6 +522,7 @@ export async function computeOverviewSummary(
         AccountGroup: account.AccountGroup ? { id: "", name: account.AccountGroup.name } : null,
       },
       creditCardLabelTemplate,
+      { fields: accountLabelFields },
     );
     const accountCurrency = currencyOf(account);
     const balance =
@@ -582,6 +591,7 @@ export async function computeOverviewSummary(
           AccountGroup: account.AccountGroup ? { id: "", name: account.AccountGroup.name } : null,
         },
         creditCardLabelTemplate,
+        { fields: accountLabelFields },
       );
       return {
         accountId: account.id,
@@ -628,6 +638,7 @@ export async function computeOverviewSummary(
           AccountGroup: account.AccountGroup ? { id: "", name: account.AccountGroup.name } : null,
         },
         creditCardLabelTemplate,
+        { fields: accountLabelFields },
       );
       return {
         accountId: account.id,

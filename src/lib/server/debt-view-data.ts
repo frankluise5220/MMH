@@ -24,6 +24,21 @@ import {
 
 export const ACTIVE_DEBT_EPSILON = 0.005;
 
+const SETTLEMENT_ACCOUNT_SUFFIX = "\u7684\u5f80\u6765\u6b3e";
+const SETTLEMENT_ITEM_NAME = "\u5f80\u6765\u6b3e";
+const BANK_LOAN_OBJECT_TYPE = "\u94f6\u884c\u8d37\u6b3e";
+const BANK_RECEIVABLE_OBJECT_TYPE = "\u94f6\u884c\u5e94\u6536";
+const PERSONAL_SETTLEMENT_OBJECT_TYPE = "\u4e2a\u4eba\u5f80\u6765";
+const ORGANIZATION_SETTLEMENT_OBJECT_TYPE = "\u7ec4\u7ec7\u5f80\u6765";
+const RECEIVABLE_ITEM_TYPE = "\u3010\u503a\u6743\u3011\u5e94\u6536\u6b3e";
+const PAYABLE_ITEM_TYPE = "\u3010\u503a\u52a1\u3011\u5e94\u4ed8\u6b3e";
+const FINANCED_PURCHASE_LABEL = "\u6d88\u8d39\u5206\u671f";
+const LOAN_DISBURSEMENT_LABEL = "\u8d37\u6b3e\u53d1\u653e";
+const LOAN_REPAYMENT_LABEL = "\u8d37\u6b3e\u8fd8\u6b3e";
+const LOAN_PREPAYMENT_LABEL = "\u63d0\u524d\u8fd8\u6b3e";
+const BANK_LENDING_LABEL = "\u94f6\u884c\u653e\u6b3e";
+const BANK_COLLECTION_LABEL = "\u94f6\u884c\u6536\u56de";
+
 function roundDebtDisplayMoney(value: number) {
   return Math.round(value * 100) / 100;
 }
@@ -86,6 +101,7 @@ export type DebtViewRow = {
   repaymentCycle: string;
   annualRate: number | null;
   mortgageLprDiscount: number | null;
+  loanStartDate: string;
   remainingRuns: number | null;
   paidPrincipal: number;
   paidInterest: number;
@@ -106,6 +122,7 @@ export type DebtViewRow = {
   parentKey: string | null;
   depth: number;
   isGroup: boolean;
+  isLoan: boolean;
 };
 
 export type DebtRepaymentScheduleRow = {
@@ -158,6 +175,8 @@ export type DebtDetailEntry = {
     defaultRepaymentIntervalMonths?: number | null;
     defaultLoanTotalRuns?: number | null;
     defaultFirstRepaymentDate?: string | null;
+    defaultAutoDebit?: boolean | null;
+    defaultAutoDebitFirstDate?: string | null;
     defaultLoanRateAdjustments?: Array<{ effectiveDate: string; annualRate: number }>;
   };
   edit?: {
@@ -185,13 +204,13 @@ function formatDebtEntryType(type: string) {
 }
 
 function bankDebtTransferTypeLabel(source: string | null | undefined, mode: DebtEntryMode) {
-  if (source === "debt_financed_purchase") return "消费分期";
-  if (mode === "borrow_in") return "贷款发放";
-  if (mode === "repay_out") return "贷款还款";
-  if (mode === "prepay_out") return "提前还款";
-  if (mode === "lend_out") return "银行放款";
-  if (mode === "collect_in") return "银行收回";
-  return "银行贷款";
+  if (source === "debt_financed_purchase") return FINANCED_PURCHASE_LABEL;
+  if (mode === "borrow_in") return LOAN_DISBURSEMENT_LABEL;
+  if (mode === "repay_out") return LOAN_REPAYMENT_LABEL;
+  if (mode === "prepay_out") return LOAN_PREPAYMENT_LABEL;
+  if (mode === "lend_out") return BANK_LENDING_LABEL;
+  if (mode === "collect_in") return BANK_COLLECTION_LABEL;
+  return BANK_LOAN_OBJECT_TYPE;
 }
 
 export type DebtMetricEntry = {
@@ -294,6 +313,7 @@ export function applyDebtRowEntryMetrics({
   displayAccountId?: string | null;
 }) {
   for (const row of debtRows) {
+    if (row.isGroup) continue;
     const rowAccountIds = new Set(row.accountIds);
     const rowPlanIds = new Set(
       loanRepaymentPlans
@@ -421,6 +441,31 @@ export function applyDebtRowEntryMetrics({
     }
     row.remainingTotal = signedRemainingTotal(row.net, row.remainingPrincipal, row.remainingInterest);
   }
+
+  const childRowsByParentKey = new Map<string, DebtViewRow[]>();
+  for (const row of debtRows) {
+    if (!row.parentKey) continue;
+    const childRows = childRowsByParentKey.get(row.parentKey) ?? [];
+    childRows.push(row);
+    childRowsByParentKey.set(row.parentKey, childRows);
+  }
+  for (const row of debtRows) {
+    if (!row.isGroup) continue;
+    const childRows = childRowsByParentKey.get(row.key) ?? [];
+    if (childRows.length === 0) continue;
+    row.payable = childRows.reduce((sum, child) => sum + child.payable, 0);
+    row.receivable = childRows.reduce((sum, child) => sum + child.receivable, 0);
+    row.net = childRows.reduce((sum, child) => sum + child.net, 0);
+    row.paidPrincipal = childRows.reduce((sum, child) => sum + Math.abs(child.paidPrincipal), 0);
+    row.paidInterest = childRows.reduce((sum, child) => sum + Math.abs(child.paidInterest), 0);
+    row.remainingPrincipal = Math.abs(row.net);
+    row.remainingInterest = childRows.reduce((sum, child) => sum + Math.abs(child.remainingInterest), 0);
+    row.remainingTotal = signedRemainingTotal(row.net, row.remainingPrincipal, row.remainingInterest);
+    row.itemType = row.net >= 0 ? RECEIVABLE_ITEM_TYPE : PAYABLE_ITEM_TYPE;
+    row.accountCount = childRows.reduce((sum, child) => sum + child.accountCount, 0);
+    row.accountIds = childRows.flatMap((child) => child.accountIds);
+    row.accountLabels = childRows.flatMap((child) => child.accountLabels);
+  }
 }
 
 export function buildDebtDetailEntriesViewData({
@@ -429,6 +474,7 @@ export function buildDebtDetailEntriesViewData({
   selectedLoanRepaymentPlanIds,
   selectedDebtRow,
   selectedRepaymentPlan,
+  selectedAutoDebitPlan,
   repaymentScheduleRows,
   accountLabelById,
   debtDirectionByAccountId,
@@ -439,6 +485,7 @@ export function buildDebtDetailEntriesViewData({
   selectedLoanRepaymentPlanIds: Set<string>;
   selectedDebtRow: DebtViewRow | null;
   selectedRepaymentPlan: DebtViewPlan | null;
+  selectedAutoDebitPlan?: DebtViewPlan | null;
   repaymentScheduleRows: DebtRepaymentScheduleRow[];
   accountLabelById: Map<string, string>;
   debtDirectionByAccountId: Map<string, DebtDirection | string | null>;
@@ -532,7 +579,7 @@ export function buildDebtDetailEntriesViewData({
     const cashFlowAmount = isBalanceReconcile ? displayAmount : debtCashFlowForAccountSide(entry, selectedDebtAccountIds);
     const interestAmount = Math.abs(toNumber(entry.debtInterestAmount)) + (debtInterestByPrincipalKey.get(principalKey(entry)) ?? 0);
     const feeAmount = Math.abs(toNumber(entry.debtFeeAmount)) + (debtFeeByPrincipalKey.get(principalKey(entry)) ?? 0);
-    const isSelectedBankLoan = selectedDebtRow?.objectType === "银行贷款";
+    const isSelectedBankLoan = selectedDebtRow?.isLoan === true;
     const paymentTotal = isSelectedBankLoan
       ? interestAmount > 0 || feeAmount > 0 || entry.source === "debt_repay_out" || entry.source === "debt_prepay_out" || entry.source === "debt_collect_in" || entry.source === "scheduled_task"
         ? debtPaymentTotal(entry, interestAmount, feeAmount) || Math.abs(displayAmount) + interestAmount + feeAmount
@@ -617,12 +664,16 @@ export function buildDebtDetailEntriesViewData({
       debtEdit: !isBalanceReconcile && entry.type === TransactionType.transfer && entry.source !== "advance"
         ? (() => {
             const repaymentMemo = selectedRepaymentPlan ? decodeScheduledTaskMemo(selectedRepaymentPlan.memo) : null;
+            const autoDebitMemo = selectedAutoDebitPlan ? decodeScheduledTaskMemo(selectedAutoDebitPlan.memo) : null;
             const isLoanRepaymentPlan = repaymentMemo?.type === "loan_repayment";
+            const isLoanAutoDebitPlan = autoDebitMemo?.type === "loan_repayment";
+            const defaultAutoDebitCashAccountId = selectedAutoDebitPlan?.cashAccountId ?? selectedRepaymentPlan?.cashAccountId ?? "";
             return {
               editEntryId: entry.id,
               mode: debtEditMode,
+              dialogType: isSelectedBankLoan ? "loan" : "debt",
               defaultDebtAccountId: debtSideAccountId,
-              defaultCashAccountId: entry.source === "debt_financed_purchase" ? (selectedRepaymentPlan?.cashAccountId ?? "") : cashSideAccountId,
+              defaultCashAccountId: entry.source === "debt_financed_purchase" ? defaultAutoDebitCashAccountId : cashSideAccountId,
               defaultLoanFundingMode: entry.source === "debt_financed_purchase" ? "financed_purchase" as const : "cash_disbursement" as const,
               defaultDate: entryDateKey,
               defaultPrincipal: displayAmount,
@@ -640,6 +691,10 @@ export function buildDebtDetailEntriesViewData({
               defaultLoanTotalRuns: isLoanRepaymentPlan ? (repaymentMemo.originalTotalRuns ?? null) : null,
               defaultFirstRepaymentDate: isLoanRepaymentPlan && selectedRepaymentPlan?.startDate
                 ? formatDateUtc(selectedRepaymentPlan.startDate)
+                : null,
+              defaultAutoDebit: entry.source === "debt_financed_purchase" ? isLoanAutoDebitPlan : undefined,
+              defaultAutoDebitFirstDate: isLoanAutoDebitPlan && selectedAutoDebitPlan?.startDate
+                ? formatDateUtc(selectedAutoDebitPlan.startDate)
                 : null,
               defaultLoanRateAdjustments: isLoanRepaymentPlan ? (repaymentMemo.loanRateAdjustments ?? []) : [],
             };
@@ -748,6 +803,7 @@ export function buildDebtRowsViewData({
   loanRepaymentPlanByAccountId,
   loanRateAdjustmentsByAccountId,
   debtBorrowLprDiscountByAccountId,
+  debtBorrowStartDateByAccountId,
   selectedAccountId,
   selectedAccountKind,
   debtPersonParam,
@@ -757,6 +813,7 @@ export function buildDebtRowsViewData({
   loanRepaymentPlanByAccountId: Map<string, DebtViewPlan>;
   loanRateAdjustmentsByAccountId: Map<string, Array<{ effectiveDate: string; annualRate: number }>>;
   debtBorrowLprDiscountByAccountId: Map<string, number>;
+  debtBorrowStartDateByAccountId?: Map<string, string>;
   selectedAccountId?: string | null;
   selectedAccountKind?: AccountKind | null;
   debtPersonParam: string;
@@ -766,32 +823,77 @@ export function buildDebtRowsViewData({
   const debtGroupKeyByInstitutionId = new Map<string, string>();
   const debtGroupKeyByCounterpartyId = new Map<string, string>();
   const ordinaryDebtAccountIds: string[] = [];
+  const visibleDebtAccounts: Array<{
+    account: DebtViewAccount;
+    institutionName: string;
+    counterpartyName: string;
+    objectName: string;
+    balance: number;
+    isBankSettlementAccount: boolean;
+    isLoanAccount: boolean;
+    ordinaryGroupKey: string;
+  }> = [];
+  const ordinaryAccountIdsByGroupKey = new Map<string, string[]>();
 
   for (const account of debtAccounts) {
     const institutionName = (account.Institution?.shortName?.trim() || account.Institution?.name || "").trim();
     const counterpartyName = (account.Counterparty?.shortName?.trim() || account.Counterparty?.name || "").trim();
     const objectName = counterpartyName || institutionName || account.name;
-    const defaultItemName = objectName ? `${objectName}的往来款` : "";
-    const itemName = objectName && (account.name === defaultItemName || account.name === objectName)
-      ? "往来款"
-      : account.name;
     const balance = cashDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance);
-    const loanPlan = loanRepaymentPlanByAccountId.get(account.id);
     const isBankSettlementAccount = !!account.institutionId && account.Institution?.type === "bank";
+    const isLoanAccount = isBankSettlementAccount && account.debtDirection !== DebtDirection.receivable;
     if (isBankSettlementAccount && Math.abs(balance) < ACTIVE_DEBT_EPSILON) continue;
     if (!isBankSettlementAccount && !account.isActive && Math.abs(balance) < ACTIVE_DEBT_EPSILON) continue;
+    const ordinaryGroupKey = objectName ? `settlement-object:${objectName}` : `settlement-account:${account.id}`;
+    visibleDebtAccounts.push({
+      account,
+      institutionName,
+      counterpartyName,
+      objectName,
+      balance,
+      isBankSettlementAccount,
+      isLoanAccount,
+      ordinaryGroupKey,
+    });
+    if (!isBankSettlementAccount) {
+      const accountIds = ordinaryAccountIdsByGroupKey.get(ordinaryGroupKey) ?? [];
+      accountIds.push(account.id);
+      ordinaryAccountIdsByGroupKey.set(ordinaryGroupKey, accountIds);
+    }
+  }
+
+  for (const visibleAccount of visibleDebtAccounts) {
+    const {
+      account,
+      objectName,
+      balance,
+      isBankSettlementAccount,
+      isLoanAccount,
+      ordinaryGroupKey,
+    } = visibleAccount;
+    const loanPlan = loanRepaymentPlanByAccountId.get(account.id);
     if (!isBankSettlementAccount) ordinaryDebtAccountIds.push(account.id);
 
+    const groupedOrdinaryAccount = !isBankSettlementAccount && (ordinaryAccountIdsByGroupKey.get(ordinaryGroupKey)?.length ?? 0) > 1;
+    const defaultItemName = objectName ? `${objectName}${SETTLEMENT_ACCOUNT_SUFFIX}` : "";
+    const itemName = groupedOrdinaryAccount
+      ? account.name
+      : objectName && (account.name === defaultItemName || account.name === objectName)
+        ? SETTLEMENT_ITEM_NAME
+        : account.name;
     const accountRowKey = `account:${account.id}`;
-    const accountRowName = objectName && objectName !== itemName ? `${objectName} | ${itemName}` : account.name;
+    const accountRowName = groupedOrdinaryAccount
+      ? account.name
+      : objectName && objectName !== itemName ? `${objectName} | ${itemName}` : account.name;
+    const rowKey = accountRowKey;
     const accountObjectType = isBankSettlementAccount
-      ? account.debtDirection === DebtDirection.receivable ? "银行应收" : "银行贷款"
+      ? isLoanAccount ? BANK_LOAN_OBJECT_TYPE : BANK_RECEIVABLE_OBJECT_TYPE
       : account.Counterparty?.type === "person" || account.Institution?.type === "person"
-        ? "个人往来"
-        : "组织往来";
+        ? PERSONAL_SETTLEMENT_OBJECT_TYPE
+        : ORGANIZATION_SETTLEMENT_OBJECT_TYPE;
     debtGroupKeyByAccountId.set(account.id, accountRowKey);
-    if (account.institutionId) debtGroupKeyByInstitutionId.set(account.institutionId, accountRowKey);
-    if (account.counterpartyId) debtGroupKeyByCounterpartyId.set(account.counterpartyId, accountRowKey);
+    if (account.institutionId) debtGroupKeyByInstitutionId.set(account.institutionId, groupedOrdinaryAccount ? ordinaryGroupKey : accountRowKey);
+    if (account.counterpartyId) debtGroupKeyByCounterpartyId.set(account.counterpartyId, groupedOrdinaryAccount ? ordinaryGroupKey : accountRowKey);
 
     const loanMemo = loanPlan ? decodeScheduledTaskMemo(loanPlan.memo) : null;
     const loanRateAdjustments = resolveLoanRateAdjustments({
@@ -810,6 +912,7 @@ export function buildDebtRowsViewData({
         })
       : null;
     const loanIntervalMonths = loanMemo?.repaymentIntervalMonths ?? (loanPlan?.intervalUnit === IntervalUnit.month ? loanPlan.intervalValue : null);
+    const loanStartDate = debtBorrowStartDateByAccountId?.get(account.id) ?? (loanPlan?.startDate ? formatDateUtc(loanPlan.startDate) : "");
     const nextPreviousRunDateKey = loanPlan?.lastRunDate
       ? formatDateUtc(loanPlan.lastRunDate)
       : loanPlan?.startDate
@@ -852,8 +955,8 @@ export function buildDebtRowsViewData({
         })()
       : "";
 
-    const current = debtRowMap.get(accountRowKey) ?? {
-      key: accountRowKey,
+    const current = debtRowMap.get(rowKey) ?? {
+      key: rowKey,
       name: accountRowName,
       objectType: accountObjectType,
       objectName,
@@ -866,6 +969,7 @@ export function buildDebtRowsViewData({
       repaymentCycle: "",
       annualRate: null,
       mortgageLprDiscount: null,
+      loanStartDate,
       remainingRuns: null,
       paidPrincipal: 0,
       paidInterest: 0,
@@ -883,9 +987,10 @@ export function buildDebtRowsViewData({
       accountCount: 0,
       accountIds: [],
       accountLabels: [],
-      parentKey: null,
-      depth: 0,
+      parentKey: groupedOrdinaryAccount ? ordinaryGroupKey : null,
+      depth: groupedOrdinaryAccount ? 1 : 0,
       isGroup: false,
+      isLoan: isLoanAccount,
     } satisfies DebtViewRow;
 
     current.accountCount += 1;
@@ -903,6 +1008,7 @@ export function buildDebtRowsViewData({
         debtBorrowLprDiscountByAccountId.get(account.id) ??
         inferMortgageLprDiscountFromRateAdjustments(loanRateAdjustments) ??
         current.mortgageLprDiscount;
+      current.loanStartDate = loanStartDate || current.loanStartDate;
       current.remainingRuns = remainingRuns ?? current.remainingRuns;
       current.nextRepaymentDate = loanPlan.nextRunDate ? formatDateUtc(loanPlan.nextRunDate) : current.nextRepaymentDate;
       current.nextRepaymentPrincipal = nextRepaymentParts?.principal ?? current.nextRepaymentPrincipal;
@@ -913,14 +1019,79 @@ export function buildDebtRowsViewData({
     current.itemType = current.net >= 0 ? "【债权】应收款" : "【债务】应付款";
     current.remainingPrincipal = Math.abs(current.net);
     current.remainingTotal = signedRemainingTotal(current.net, current.remainingPrincipal, current.remainingInterest);
-    debtRowMap.set(accountRowKey, current);
+    debtRowMap.set(rowKey, current);
   }
 
-  const debtRows = Array.from(debtRowMap.values()).sort((a, b) => {
+  const childRowsByParentKey = new Map<string, DebtViewRow[]>();
+  for (const row of debtRowMap.values()) {
+    if (!row.parentKey) continue;
+    const childRows = childRowsByParentKey.get(row.parentKey) ?? [];
+    childRows.push(row);
+    childRowsByParentKey.set(row.parentKey, childRows);
+  }
+
+  for (const [parentKey, childRows] of childRowsByParentKey) {
+    const first = childRows[0];
+    if (!first) continue;
+    const net = childRows.reduce((sum, row) => sum + row.net, 0);
+    const payable = childRows.reduce((sum, row) => sum + row.payable, 0);
+    const receivable = childRows.reduce((sum, row) => sum + row.receivable, 0);
+    const counterpartyIds = childRows.map((row) => row.counterpartyId).filter(Boolean);
+    const institutionIds = childRows.map((row) => row.institutionId).filter(Boolean);
+    const remainingPrincipal = Math.abs(net);
+    debtRowMap.set(parentKey, {
+      key: parentKey,
+      name: first.objectName || first.name,
+      objectType: first.objectType,
+      objectName: first.objectName,
+      itemName: SETTLEMENT_ITEM_NAME,
+      accountId: "",
+      institutionId: institutionIds[0] ?? "",
+      counterpartyId: counterpartyIds[0] ?? "",
+      itemType: net >= 0 ? RECEIVABLE_ITEM_TYPE : PAYABLE_ITEM_TYPE,
+      repaymentMethod: "",
+      repaymentCycle: "",
+      annualRate: null,
+      mortgageLprDiscount: null,
+      loanStartDate: "",
+      remainingRuns: null,
+      paidPrincipal: childRows.reduce((sum, row) => sum + Math.abs(row.paidPrincipal), 0),
+      paidInterest: childRows.reduce((sum, row) => sum + Math.abs(row.paidInterest), 0),
+      remainingPrincipal,
+      remainingInterest: childRows.reduce((sum, row) => sum + Math.abs(row.remainingInterest), 0),
+      remainingTotal: signedRemainingTotal(net, remainingPrincipal, childRows.reduce((sum, row) => sum + Math.abs(row.remainingInterest), 0)),
+      nextRepaymentDate: "",
+      nextRepaymentPrincipal: null,
+      nextRepaymentInterest: null,
+      nextRepaymentCashAccountId: "",
+      loanRateAdjustments: [],
+      payable,
+      receivable,
+      net,
+      accountCount: childRows.reduce((sum, row) => sum + row.accountCount, 0),
+      accountIds: childRows.flatMap((row) => row.accountIds),
+      accountLabels: childRows.flatMap((row) => row.accountLabels),
+      parentKey: null,
+      depth: 0,
+      isGroup: true,
+      isLoan: false,
+    } satisfies DebtViewRow);
+  }
+
+  const compareDebtRows = (a: DebtViewRow, b: DebtViewRow) => {
     const amountDiff = (b.payable + b.receivable) - (a.payable + a.receivable);
     if (Math.abs(amountDiff) > ACTIVE_DEBT_EPSILON) return amountDiff;
     return a.name.localeCompare(b.name, "zh-CN");
-  });
+  };
+  const topDebtRows = Array.from(debtRowMap.values())
+    .filter((row) => !row.parentKey)
+    .sort(compareDebtRows);
+  const debtRows: DebtViewRow[] = [];
+  for (const row of topDebtRows) {
+    debtRows.push(row);
+    const childRows = childRowsByParentKey.get(row.key);
+    if (childRows?.length) debtRows.push(...[...childRows].sort(compareDebtRows));
+  }
   const derivedDebtKey = selectedAccountKind === AccountKind.loan && selectedAccountId
     ? debtGroupKeyByAccountId.get(selectedAccountId) ?? `account:${selectedAccountId}`
     : "";
@@ -951,8 +1122,8 @@ export function buildDebtRowsViewData({
     : selectedDebtRow?.institutionId
       ? `institution:${selectedDebtRow.institutionId}`
       : "";
-  const totalDebtPayable = debtRows.reduce((sum, row) => sum + row.payable, 0);
-  const totalDebtReceivable = debtRows.reduce((sum, row) => sum + row.receivable, 0);
+  const totalDebtPayable = debtRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + row.payable, 0);
+  const totalDebtReceivable = debtRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + row.receivable, 0);
 
   return {
     debtRows,

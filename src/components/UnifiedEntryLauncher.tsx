@@ -31,6 +31,7 @@ type EntryAction = {
   label: string;
   disabled?: boolean;
   loanType?: LoanType;
+  mode?: "repay_out";
   children?: EntryAction[];
 };
 
@@ -92,7 +93,7 @@ function getCurrentFundContext(context?: Props["context"]) {
   }
 }
 
-function dispatchEntryAction(kind: EntryKind, context?: Props["context"], loanType?: LoanType) {
+function dispatchEntryAction(kind: EntryKind, context?: Props["context"], loanType?: LoanType, loanMode?: "repay_out") {
   if (typeof window === "undefined") return;
   const requestId = makeRequestId(kind);
   switch (kind) {
@@ -289,10 +290,10 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"], loanTy
       return;
     case "loan":
       window.dispatchEvent(
-        new CustomEvent("mmh:debt:create", {
+        new CustomEvent("mmh:loan:create", {
           detail: {
             requestId,
-            loanType: loanType ?? "consumer",
+            ...(loanMode ? { mode: loanMode } : { loanType: loanType ?? "consumer" }),
             defaultDebtAccountId: context?.defaultDebtAccountId ?? "",
             defaultDebtInstitutionId: context?.defaultDebtInstitutionId ?? "",
             defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
@@ -427,17 +428,25 @@ export function UnifiedEntryLauncher({ defaultAction, actions, className, hideDe
                 if (item.children && item.children.length > 0) {
                   return (
                     <div key={item.key} className="py-1">
-                      <div className="flex items-center px-3 py-1 text-xs font-medium text-slate-400">
+                      <button
+                        type="button"
+                        disabled={item.disabled}
+                        onClick={() => {
+                          setMenuOpen(false);
+                          if (!item.disabled) dispatchEntryAction(item.key, context, item.loanType, item.mode);
+                        }}
+                        className="flex w-full items-center px-3 py-2 text-left text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white"
+                      >
                         {item.label}
-                      </div>
+                      </button>
                       {item.children.map((child) => (
                         <button
-                          key={child.key}
+                          key={`${item.key}:${child.key}:${child.loanType ?? child.mode ?? "default"}`}
                           type="button"
                           disabled={child.disabled}
                           onClick={() => {
                             setMenuOpen(false);
-                            if (!child.disabled) dispatchEntryAction(child.key, context, child.loanType);
+                            if (!child.disabled) dispatchEntryAction(child.key, context, child.loanType, child.mode);
                           }}
                           className="flex w-full items-center px-3 py-2 pl-6 text-left text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white"
                         >
@@ -454,7 +463,7 @@ export function UnifiedEntryLauncher({ defaultAction, actions, className, hideDe
                     disabled={item.disabled}
                     onClick={() => {
                       setMenuOpen(false);
-                      if (!item.disabled) dispatchEntryAction(item.key, context, item.loanType);
+                      if (!item.disabled) dispatchEntryAction(item.key, context, item.loanType, item.mode);
                     }}
                     className="flex w-full items-center px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white"
                   >

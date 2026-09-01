@@ -16,7 +16,7 @@ import type { SmartSelectOption } from "@/components/SmartSelect";
 import type { CategorySmartSelectOption } from "@/components/categorySmartSelect";
 import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
 import type { AccountDisplayOption } from "@/lib/account-display";
-import { scheduledTaskTypeLabel, type ScheduledTaskType } from "@/lib/scheduled-task";
+import { scheduledTaskTypeLabel, type LoanScheduledPlanRole, type ScheduledTaskType } from "@/lib/scheduled-task";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { clearBackgroundTaskProgress, dispatchBackgroundTaskProgress } from "@/lib/client/background-tasks";
@@ -80,6 +80,7 @@ type RegularInvestPlanView = {
   taskAnnualRate?: number | null;
   taskRepaymentMethod?: string | null;
   taskRepaymentIntervalMonths?: number | null;
+  taskLoanPlanRole?: LoanScheduledPlanRole | null;
   /** System-level plans (e.g. loan repayment) are shown but read-only. */
   isSystemTask?: boolean;
   targetName?: string | null;
@@ -307,7 +308,10 @@ function getPlanTaskLabel(plan: RegularInvestPlanView, t?: (key: string, params?
 
 function getPlanTargetLabel(plan: RegularInvestPlanView): string {
   if (getPlanTaskType(plan) === "transfer") return `${planCashAccountLabel(plan)} → ${planAccountLabel(plan)}`;
-  if (getPlanTaskType(plan) === "loan_repayment") return `${planCashAccountLabel(plan)} → ${planAccountLabel(plan)}`;
+  if (getPlanTaskType(plan) === "loan_repayment") {
+    if (plan.taskLoanPlanRole === "bill") return plan.taskTitle || plan.fundName || planAccountLabel(plan);
+    return `${planCashAccountLabel(plan)} → ${planAccountLabel(plan)}`;
+  }
   if (getPlanTaskType(plan) === "insurance_premium") return plan.insuranceProductName || plan.targetName || plan.taskTitle || plan.fundName || planAccountLabel(plan);
   if (isOrdinaryPlan(plan)) return plan.taskTitle || plan.targetName || plan.taskCategoryName || plan.fundName || planAccountLabel(plan);
   if (plan.taskTitle) return plan.taskTitle;
@@ -569,6 +573,7 @@ export function RegularInvestClient({
   const [editingRecord, setEditingRecord] = useState<any>(null);
   const [showEnded, setShowEnded] = useState(false);
   const [executionProgress, setExecutionProgress] = useState<ExecutionProgressState | null>(null);
+  const [runningExecution, setRunningExecution] = useState<{ mode: "single" | "all"; planId?: string } | null>(null);
   const executionBusy = executionProgress?.status === "running";
   const groupBy: GroupByMode = "fundGroup";
 
@@ -794,8 +799,15 @@ export function RegularInvestClient({
     if (data.ok) {
       setPlans((prev) => prev.map((plan) => {
         if (plan.id !== planId) return plan;
-        const status = action === "pause" ? "paused" : action === "resume" ? "active" : "stopped";
-        return { ...plan, status };
+        const fallbackStatus = action === "pause" ? "paused" : action === "resume" ? "active" : "stopped";
+        const updatedPlan = data.plan ?? {};
+        return {
+          ...plan,
+          status: updatedPlan.status ?? fallbackStatus,
+          nextRunDate: updatedPlan.nextRunDate ?? plan.nextRunDate,
+          lastRunDate: updatedPlan.lastRunDate ?? plan.lastRunDate,
+          executedRuns: updatedPlan.executedRuns ?? plan.executedRuns,
+        };
       }));
     } else {
       window.alert(data.error || t("settings.fundApi.actionFailed"));
@@ -811,6 +823,7 @@ export function RegularInvestClient({
       message: t("regularInvest.client.execute.confirm", { name: getPlanTaskLabel(plan, t) }),
     });
     if (!confirmed) return;
+    setRunningExecution({ mode: "single", planId });
     setExecutionProgress({
       title: t("regularInvest.client.execute.taskTitle"),
       status: "running",
@@ -876,6 +889,8 @@ export function RegularInvestClient({
         currentLabel: t("regularInvest.client.execute.failed"),
         messages: [e instanceof Error ? e.message : t("regularInvest.client.execute.failed")],
       } : prev);
+    } finally {
+      setRunningExecution(null);
     }
   }
 
@@ -890,6 +905,7 @@ export function RegularInvestClient({
       message: t("regularInvest.client.executeAll.confirm", { count: activePlans.length }),
     });
     if (!confirmed) return;
+    setRunningExecution({ mode: "all" });
     setExecutionProgress({
       title: t("regularInvest.client.executeAll.taskTitle"),
       status: "running",
@@ -923,6 +939,7 @@ export function RegularInvestClient({
       const messages: string[] = [];
       for (let index = 0; index < activePlans.length; index += 1) {
         const plan = activePlans[index];
+        setRunningExecution({ mode: "all", planId: plan.id });
         setExecutionProgress((prev) => prev ? {
           ...prev,
           current: index,
@@ -975,6 +992,8 @@ export function RegularInvestClient({
         currentLabel: t("regularInvest.client.executeAll.failed"),
         messages: [e instanceof Error ? e.message : t("regularInvest.client.executeAll.failed")],
       } : prev);
+    } finally {
+      setRunningExecution(null);
     }
   }
 
@@ -1257,10 +1276,10 @@ export function RegularInvestClient({
             <button
               onClick={() => handleBatchExecute(plan.id)}
               disabled={executionBusy}
-              title={t("regularInvest.client.executeAll.title")}
+              title={t("regularInvest.client.execute.title")}
               className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-purple-200 hover:bg-purple-50 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              <RefreshCw className={`h-3 w-3 text-purple-600 ${executionBusy ? "animate-spin" : ""}`} />
+              <RefreshCw className={`h-3 w-3 text-purple-600 ${executionBusy && runningExecution?.planId === plan.id ? "animate-spin" : ""}`} />
             </button>
             <button onClick={() => handleAction(plan.id, "pause")} title={t("fundShell.plan.pause")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-yellow-200 hover:bg-yellow-50">
               <Pause className="h-3 w-3 text-yellow-600" />
@@ -1313,13 +1332,21 @@ export function RegularInvestClient({
               />
               <UnifiedEntryLauncher
                 defaultAction="regular-task"
-                hideDefaultActionInMenu
                 context={{
                   defaultAccountId: investmentAccounts[0]?.id ?? "",
                   defaultCashAccountId: cashAccounts[0]?.id ?? "",
                   defaultScheduledTaskType: "fund_regular_invest",
                 }}
                 actions={[
+                  {
+                    key: "loan",
+                    label: t("entry.kind.loan"),
+                    children: [
+                      { key: "loan", label: t("entry.kind.consumerLoan"), loanType: "consumer" },
+                      { key: "loan", label: t("entry.kind.mortgageLoan"), loanType: "mortgage" },
+                      { key: "loan", label: t("debtTx.loanMode.repayment"), mode: "repay_out" },
+                    ],
+                  },
                   { key: "regular-task", label: t("regularInvest.client.addPlan") },
                   { key: "transaction", label: t("entry.kind.transaction") },
                   { key: "advance", label: t("entry.kind.advance") },
@@ -1348,7 +1375,6 @@ export function RegularInvestClient({
                 rowKey={(row) => row.kind === "group" ? row.key : row.plan.id}
                 minTableWidth={REGULAR_INVEST_MAIN_TABLE_MIN_WIDTH}
                 fillHeight
-                compactRows
                 showFilters
                 sortable
                 defaultSort={REGULAR_INVEST_DEFAULT_SORT}
@@ -1391,7 +1417,7 @@ export function RegularInvestClient({
                       title={t("regularInvest.client.executeAll.title")}
                       className="flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      <RefreshCw className={`h-3.5 w-3.5 ${executionBusy ? "animate-spin" : ""}`} />{t("regularInvest.client.executeAll.short")}
+                      <RefreshCw className={`h-3.5 w-3.5 ${executionBusy && runningExecution?.mode === "all" ? "animate-spin" : ""}`} />{t("regularInvest.client.executeAll.short")}
                     </button>
                   </>
                 )}

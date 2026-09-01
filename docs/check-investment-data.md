@@ -34,6 +34,7 @@
 - 股票交易事实字段以 `StockTransaction` 为准，现金流水只在需要时创建普通 `TxRecord`，二者通过 `EntryBusinessLink.stockTransactionId` 和返回的 `linkId` 关联。
 - 股票买入、卖出、分红和税费调整使用 `cashAccountId` 指向的证券资金账户/券商可用资金账户；同一证券公司名下的股票和基金可以共用同一个现金/钱包类资金账户。检查余额时应把证券资金账户现金和 `StockHolding` 市值区分开。银证转账是银行/现金账户与证券资金账户之间的普通转账，不写入 `StockTransaction`。
 - 股票持仓以 `StockHolding` 为准，数量、成本、最新价、市值、浮盈和历史收益都由 `src/lib/stock/recalcPosition.ts` 重算；最新收盘价写入 `StockPriceCache`，刷新后必须再次重算 `StockHolding`。不要从 `FundHolding` 或基金净值缓存推断股票值。
+- 股票账户页应把 `StockHolding.quantity > 0` 的行显示在“持仓”，把零份额清仓行显示在“清仓”；清仓行保留历史收益并可点击查看对应 `StockTransaction` 明细，但不计入当前市值和当前成本。
 - 报表页「股票持仓盈亏」必须与股票账户持仓表使用同一套 `StockHolding` 数字：市值、成本、浮动盈亏、已实现收益。核对时先看股票账户页，再看 `/reports?report=stock-holdings`，两边同一只股票的金额不能各算各的。
 - 股票手续费规则先看账户级 `StockFeeRule`，未命中时使用市场默认 `StockMarketFeeRule`；证券公司公开名录和别名存入 `StockBrokerageCatalog`。这些规则支持佣金、印花税、过户费、经手费、监管费、平台费、最低收费和买卖方向；不要复用 `fundFeeRate`。
 - 股票买入/卖出窗口只直接展示费用合计、成交金额和预计应付/到账，佣金、印花税、过户费、经手费、证管费、其他费用只在费用合计 hover 明细中展示；这些值只是同一套 `src/lib/stock/feeRule.ts` 计算结果的只读预估。保存交易时服务端再次按该规则计算并写入 `StockTransaction`，买入现金侧 `TxRecord` 金额应等于成交金额 + 费用合计，卖出现金侧 `TxRecord` 金额应等于成交金额 - 费用合计。
@@ -68,6 +69,8 @@
   - 货币基金（名称含“货币”）不做缺净值提示：其单位净值恒为 1，缓存里存的是万份收益，缺失万份收益不影响市值。
   - 其余基金按账户交易日历判断，已发生工作日缺当日净值即提示。
 - 投资收益表的快照估值覆盖 `fund`、无类型和 `money` 类型的投资账户：货币基金市值 = 份额 × 1（单位净值恒 1），当日收益按缓存中的万份收益 × 份额 ÷ 10000 计入；货币账户里普通债券/股票型基金按正常净值估值。
+- 投资收益表的股票列覆盖 `stock` 类型投资账户：按 `StockTransaction` 回放历史持仓，使用 `StockPriceCache` 中统计日及之前最后收盘价估值，并把买入、卖出、分红、费用/税费调整作为现金流修正股票收益；没有可用收盘价时以回放成本兜底，不能因此漏掉已卖出收益或现金分红。
+- 投资收益表的固定资产列覆盖 `property` 类型投资账户：只统计 `PropertyTransaction.action = sale` 的 `realizedProfit`，归属日期优先使用 `settlementDate`，否则使用 `tradeDate`；购入、装修投入和手动估值不进入收益，关联现金侧 `TxRecord` 不再重复归到基金收益。
 - 理财现金流水（`wealthTransaction.cashEntryId` 关联的 `TxRecord`）的已实现收益归入“理财收益”列，不再因 `fundProductType` 为空而误归到“基金”列。
 
 ## 买入退回与确认份额

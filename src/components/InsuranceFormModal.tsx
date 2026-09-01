@@ -15,6 +15,7 @@ import { buildAccountDisplayOption } from "@/lib/account-display";
 import { formatMoneyLoose as formatMoney } from "@/lib/format";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
+import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
 
 type Entry = {
   id?: string;
@@ -700,7 +701,7 @@ export function InsuranceFormModal({
                     name: item.AccountGroup.name ?? null,
                   }
                 : null,
-            });
+            }, undefined, { fields: getAccountLabelFieldsPreference() });
             nextMeta[item.id] = {
               id: item.id,
               name: item.name,

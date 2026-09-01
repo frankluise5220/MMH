@@ -7,10 +7,10 @@ import { setFundFeeRateByDateInTx } from "@/lib/fund/feeRate";
 import { normalizeFundDisplayName, resolveFundName } from "@/lib/fund/fundProfile";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { calcInitialScheduledRunDate, calcResumedScheduledRunDate, skipWeekend } from "@/lib/scheduled-task-date";
-import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
+import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, getLoanScheduledPlanRole, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { deriveRegularInvestNextRunDate } from "@/lib/server/regular-invest-plan";
-import { isInstallmentRepaymentMethod, normalizeLoanRepaymentMethod } from "@/lib/loan-repayment";
+import { allowsZeroAnnualRateRepaymentMethod, normalizeLoanRepaymentMethod } from "@/lib/loan-repayment";
 
 function parseDateOnlyUtc(value: string): Date | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
@@ -113,7 +113,7 @@ async function createRegularInvest(formData: FormData) {
   const arrivalDaysRaw = String(formData.get("arrivalDays") ?? "").trim();
   const repaymentMethod = normalizeLoanRepaymentMethod(formData.get("repaymentMethod") as string | null);
   const parsedAnnualRate = parseOptionalNonNegativeNumber(formData.get("annualRate"));
-  const annualRate = parsedAnnualRate ?? (taskType === "loan_repayment" && isInstallmentRepaymentMethod(repaymentMethod) ? 0 : null);
+  const annualRate = parsedAnnualRate ?? (taskType === "loan_repayment" && allowsZeroAnnualRateRepaymentMethod(repaymentMethod) ? 0 : null);
   const repaymentIntervalMonths = parsePositiveInteger(formData.get("repaymentIntervalMonths"), 1);
   const skipPendingPreceding = formData.get("skipPendingPreceding") !== "false"; // default true
 
@@ -213,6 +213,7 @@ async function createRegularInvest(formData: FormData) {
             annualRate: taskType === "loan_repayment" ? annualRate : null,
             repaymentMethod: taskType === "loan_repayment" ? repaymentMethod : null,
             repaymentIntervalMonths: taskType === "loan_repayment" ? repaymentIntervalMonths : null,
+            loanPlanRole: taskType === "loan_repayment" ? "auto_debit" : null,
           }),
           skipPendingPreceding: isFundTask ? skipPendingPreceding : false,
           ...{ householdId },
@@ -265,7 +266,15 @@ async function regularInvestAction(formData: FormData) {
       }
       const task = decodeScheduledTaskMemo(plan.memo);
       const usesBusinessDays = task.type === "fund_regular_invest";
-      const nextRunDate = calcResumedScheduledRunDate(plan.nextRunDate, new Date(), usesBusinessDays);
+      const nextRunDate = calcResumedScheduledRunDate(
+        plan.nextRunDate,
+        new Date(),
+        plan.intervalUnit,
+        plan.intervalValue,
+        plan.executionDay,
+        usesBusinessDays,
+        plan.secondaryExecutionDay,
+      );
 
       await prisma.regularInvestPlan.update({
         where: { id: planId },
@@ -341,7 +350,7 @@ async function updateRegularInvest(formData: FormData) {
   const parsedNextAnnualRate = formData.has("annualRate")
     ? parseOptionalNonNegativeNumber(formData.get("annualRate"))
     : existingTask.annualRate ?? null;
-  const nextAnnualRate = parsedNextAnnualRate ?? (taskType === "loan_repayment" && isInstallmentRepaymentMethod(nextRepaymentMethod) ? 0 : null);
+  const nextAnnualRate = parsedNextAnnualRate ?? (taskType === "loan_repayment" && allowsZeroAnnualRateRepaymentMethod(nextRepaymentMethod) ? 0 : null);
   const nextRepaymentIntervalMonths = formData.has("repaymentIntervalMonths")
     ? parsePositiveInteger(formData.get("repaymentIntervalMonths"), 1)
     : existingTask.repaymentIntervalMonths ?? 1;
@@ -373,6 +382,7 @@ async function updateRegularInvest(formData: FormData) {
     annualRate: taskType === "loan_repayment" ? nextAnnualRate : null,
     repaymentMethod: taskType === "loan_repayment" ? nextRepaymentMethod : null,
     repaymentIntervalMonths: taskType === "loan_repayment" ? nextRepaymentIntervalMonths : null,
+    loanPlanRole: taskType === "loan_repayment" ? getLoanScheduledPlanRole(existingTask) ?? "auto_debit" : null,
   });
   if (accountId !== plan.accountId || formData.has("accountId")) {
     const targetAcc = await prisma.account.findUnique({ where: { id: accountId }, select: { name: true, householdId: true, investProductType: true } });

@@ -67,9 +67,49 @@ type EntryBusinessLinkSummaryRow = {
   WealthTransaction?: { id: string; deletedAt?: Date | null } | null;
   DepositTransaction?: { id: string; deletedAt?: Date | null } | null;
   PreciousMetalTransaction?: { id: string; deletedAt?: Date | null } | null;
-  StockTransaction?: { id: string; deletedAt?: Date | null } | null;
+  StockTransaction?: {
+    id: string;
+    deletedAt?: Date | null;
+    cashEntryId?: string | null;
+    stockAccountId?: string | null;
+    cashAccountId?: string | null;
+    securityId?: string | null;
+    market?: string | null;
+    stockCode?: string | null;
+    stockName?: string | null;
+    action?: string | null;
+    tradeDate?: Date | null;
+    settleDate?: Date | null;
+    grossAmount?: unknown;
+    netAmount?: unknown;
+    quantity?: unknown;
+    price?: unknown;
+    brokerTradeId?: string | null;
+    note?: string | null;
+  } | null;
   PropertyTransaction?: { id: string; deletedAt?: Date | null } | null;
 };
+
+const STOCK_TRANSACTION_SUMMARY_SELECT = {
+  id: true,
+  deletedAt: true,
+  cashEntryId: true,
+  stockAccountId: true,
+  cashAccountId: true,
+  securityId: true,
+  market: true,
+  stockCode: true,
+  stockName: true,
+  action: true,
+  tradeDate: true,
+  settleDate: true,
+  grossAmount: true,
+  netAmount: true,
+  quantity: true,
+  price: true,
+  brokerTradeId: true,
+  note: true,
+} as const;
 
 export const entryBusinessLinkSummaryInclude = {
   EntryBusinessLinkCash: {
@@ -102,7 +142,7 @@ export const entryBusinessLinkSummaryInclude = {
       WealthTransaction: { select: { id: true, deletedAt: true } },
       DepositTransaction: { select: { id: true, deletedAt: true } },
       PreciousMetalTransaction: { select: { id: true, deletedAt: true } },
-      StockTransaction: { select: { id: true, deletedAt: true } },
+      StockTransaction: { select: STOCK_TRANSACTION_SUMMARY_SELECT },
       PropertyTransaction: { select: { id: true, deletedAt: true } },
     },
   },
@@ -136,7 +176,7 @@ export const entryBusinessLinkSummaryInclude = {
       WealthTransaction: { select: { id: true, deletedAt: true } },
       DepositTransaction: { select: { id: true, deletedAt: true } },
       PreciousMetalTransaction: { select: { id: true, deletedAt: true } },
-      StockTransaction: { select: { id: true, deletedAt: true } },
+      StockTransaction: { select: STOCK_TRANSACTION_SUMMARY_SELECT },
       PropertyTransaction: { select: { id: true, deletedAt: true } },
     },
   },

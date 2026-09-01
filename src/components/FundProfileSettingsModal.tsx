@@ -73,7 +73,6 @@ function institutionOptions(rows: InstitutionResponse["institutions"] = []): Sma
 
 export function FundProfileSettingsModal({ open, account, fundCode, fallbackFundName, funds = [], onClose }: FundProfileSettingsModalProps) {
   const { t } = useI18n();
-  const [activeFund, setActiveFund] = useState<FundProfileNavigationItem>({ fundCode, fundName: fallbackFundName?.trim() || null });
   const [profile, setProfile] = useState<FundProfileSettingsData>(() => fallbackProfile(fundCode, fallbackFundName));
   const [fundCompanyOptions, setFundCompanyOptions] = useState<SmartSelectOption[]>([]);
   const [profilesByCode, setProfilesByCode] = useState<Record<string, FundProfileSettingsData>>({});
@@ -87,8 +86,6 @@ export function FundProfileSettingsModal({ open, account, fundCode, fallbackFund
 
   useEffect(() => {
     if (!open) return;
-    const initial = funds.find((item) => item.fundCode === fundCode) ?? { fundCode, fundName: fallbackFundName?.trim() || null };
-    setActiveFund(initial);
     setDirty(false);
   }, [fallbackFundName, funds, fundCode, open]);
 
@@ -180,23 +177,13 @@ export function FundProfileSettingsModal({ open, account, fundCode, fallbackFund
 
   useEffect(() => {
     if (!open) return;
-    setProfile(profilesByCode[activeFund.fundCode] ?? fallbackProfile(activeFund.fundCode, activeFund.fundName));
-  }, [activeFund, open, profilesByCode]);
-
-  const currentIndex = useMemo(() => fundItems.findIndex((item) => item.fundCode === activeFund.fundCode), [activeFund.fundCode, fundItems]);
-  const previousFund = currentIndex > 0 ? fundItems[currentIndex - 1] : null;
-  const nextFund = currentIndex >= 0 && currentIndex < fundItems.length - 1 ? fundItems[currentIndex + 1] : null;
+    setProfile(profilesByCode[fundCode] ?? fallbackProfile(fundCode, fallbackFundName));
+  }, [fallbackFundName, fundCode, open, profilesByCode]);
 
   const handleClose = useCallback(() => {
     if (dirty && !window.confirm(t("fundSettings.unsavedChanges"))) return;
     onClose();
   }, [dirty, onClose, t]);
-
-  const handleNavigate = useCallback((fund: FundProfileNavigationItem) => {
-    if (dirty && !window.confirm(t("fundSettings.unsavedChanges"))) return;
-    setDirty(false);
-    setActiveFund(fund);
-  }, [dirty, t]);
 
   const handleProfileSaved = useCallback((savedProfile: FundProfileSettingsData) => {
     setProfilesByCode((current) => ({ ...current, [savedProfile.fundCode]: savedProfile }));
@@ -243,7 +230,7 @@ export function FundProfileSettingsModal({ open, account, fundCode, fallbackFund
       }}
     >
       <div
-        className="relative flex h-[calc(100vh-1rem)] max-h-[calc(100vh-1rem)] w-full max-w-6xl min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl sm:h-[calc(100vh-2rem)] sm:max-h-[calc(100vh-2rem)]"
+        className="relative flex max-h-[calc(100vh-1rem)] w-full max-w-xl min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl sm:max-h-[calc(100vh-2rem)]"
         role="dialog"
         aria-modal="true"
         aria-labelledby="fund-profile-settings-title"
@@ -255,9 +242,6 @@ export function FundProfileSettingsModal({ open, account, fundCode, fallbackFund
           onClose={handleClose}
           modal
           fundCompanyOptions={fundCompanyOptions}
-          previousFund={previousFund}
-          nextFund={nextFund}
-          onNavigate={handleNavigate}
           onDirtyChange={setDirty}
           confirmDayRows={confirmDayRows}
           feeRateRows={feeRateRows}
@@ -266,7 +250,7 @@ export function FundProfileSettingsModal({ open, account, fundCode, fallbackFund
           onFeeRatesSaved={handleFeeRatesSaved}
         />
         {loading ? (
-          <div className="pointer-events-none absolute right-4 top-4 z-10 inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white/95 px-2.5 py-1.5 text-xs text-slate-500 shadow-sm">
+          <div className="pointer-events-none absolute right-14 top-3 z-10 inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white/95 px-2.5 py-1.5 text-xs text-slate-500 shadow-sm">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
             {t("common.loading")}
           </div>

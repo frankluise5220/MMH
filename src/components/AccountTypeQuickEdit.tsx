@@ -1,7 +1,7 @@
 "use client";
 
 import { createPortal } from "react-dom";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useI18n } from "@/lib/i18n";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
@@ -16,28 +16,36 @@ import { FIXED_ASSET_TYPES, isFixedAssetAccountLike } from "@/lib/fixed-asset";
 type AccountKindValue = "cash" | "bank_debit" | "bank_credit" | "ewallet" | "deposit" | "investment" | "fixed_asset" | "loan" | "other";
 type Institution = { id: string; name: string; shortName?: string | null; type?: string | null };
 type Group = { id: string; name: string };
-type AccountValue = {
+export type AccountQuickEditValue = {
   id: string; name: string; kind: string; currency?: string | null; note?: string | null;
   groupId?: string | null; institutionId?: string | null; billingDay?: number | null;
   repaymentDay?: number | null; creditLimit?: unknown; creditBillMode?: "separate" | "consolidated" | null;
   numberMasked?: string | null; investProductType?: string | null; costBasisMethod?: string | null;
   fundUnitsDecimals?: number | null; tradingCalendar?: string | null; fixedAssetType?: string | null;
+  counterpartyId?: string | null; debtDirection?: string | null; isConsumerLoan?: boolean | null;
+};
+
+type AccountTypeQuickEditProps = {
+  account: AccountQuickEditValue;
+  accountLabel?: string;
+  openSignal?: number;
+  showTrigger?: boolean;
 };
 
 const ACCOUNT_KINDS: AccountKindValue[] = ["cash", "bank_debit", "bank_credit", "ewallet", "deposit", "investment", "fixed_asset", "loan", "other"];
 
-function normalizedKind(account: AccountValue): AccountKindValue {
+function normalizedKind(account: AccountQuickEditValue): AccountKindValue {
   if (isFixedAssetAccountLike(account)) return "fixed_asset";
   return isDepositAccount(account) ? "deposit" : (ACCOUNT_KINDS.includes(account.kind as AccountKindValue) ? account.kind as AccountKindValue : "other");
 }
 
 function institutionMatches(kind: AccountKindValue, productType: string, institution: Institution) {
   if (isStockInvestmentAccount(kind, productType)) return isStockAccountInstitutionType(institution.type);
-  if (kind === "loan") return institution.type === "debt";
+  if (kind === "loan") return institution.type === "debt" || institution.type === "bank";
   return institution.type !== "debt";
 }
 
-export function AccountTypeQuickEdit({ account, accountLabel }: { account: AccountValue; accountLabel?: string }) {
+export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, showTrigger = true }: AccountTypeQuickEditProps) {
   const { t } = useI18n();
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -59,7 +67,7 @@ export function AccountTypeQuickEdit({ account, accountLabel }: { account: Accou
     [institutions, isFixedAssetAccount, kind, productType],
   );
 
-  function resetForm() {
+  const resetForm = useCallback(() => {
     const nextKind = normalizedKind(account);
     setForm({
       name: account.name, kind: nextKind, note: account.note ?? "", currency: normalizeCurrency(account.currency ?? "CNY"),
@@ -70,9 +78,9 @@ export function AccountTypeQuickEdit({ account, accountLabel }: { account: Accou
       fundUnitsDecimals: String(account.fundUnitsDecimals ?? 2), tradingCalendar: account.tradingCalendar ?? "cn_fund", fixedAssetType: account.fixedAssetType ?? "property",
     });
     setError("");
-  }
+  }, [account]);
 
-  async function openEditor() {
+  const openEditor = useCallback(async () => {
     resetForm();
     setOpen(true);
     const data = await fetchSettingsAccountData().catch(() => null);
@@ -80,7 +88,12 @@ export function AccountTypeQuickEdit({ account, accountLabel }: { account: Accou
       setGroups(data.groups as Group[]);
       setInstitutions(data.institutions as Institution[]);
     }
-  }
+  }, [resetForm]);
+
+  useEffect(() => {
+    if (openSignal <= 0) return;
+    void openEditor();
+  }, [openEditor, openSignal]);
 
   async function save() {
     if (saving) return;
@@ -111,7 +124,9 @@ export function AccountTypeQuickEdit({ account, accountLabel }: { account: Accou
 
   return (
     <>
-      <span className="page-title cursor-pointer" onDoubleClick={openEditor} title={t("accountTypeQuickEdit.doubleClickTitle")}>{accountLabel || account.name}</span>
+      {showTrigger ? (
+        <span className="page-title cursor-pointer" onDoubleClick={() => { void openEditor(); }} title={t("accountTypeQuickEdit.doubleClickTitle")}>{accountLabel || account.name}</span>
+      ) : null}
       {open && typeof document !== "undefined" ? createPortal(
         <div className="fixed inset-0 z-[1000] flex items-center justify-center overflow-y-auto bg-slate-950/30 p-4" onMouseDown={() => !saving && setOpen(false)}>
           <div className="max-h-[calc(100dvh-2rem)] w-[720px] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 shadow-xl" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>

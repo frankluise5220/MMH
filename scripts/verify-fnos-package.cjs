@@ -250,7 +250,6 @@ const standaloneEnvScrubIndex = buildScript.indexOf('for (const envFile of [".en
 const publicAssetCopyIndex = buildScript.indexOf("copyFnosPublicAssets(publicDir");
 const persistedPortFileIndex = buildScript.indexOf('if [ -f "$port_file" ]; then');
 const persistedEnvPortIndex = buildScript.indexOf('env_port="$(read_env_value PORT');
-const wizardPortIndex = buildScript.indexOf('if [ -n "\\${wizard_port:-}" ]; then');
 const fnosInitSqliteIndex = buildScript.indexOf('(cd "$SERVER_DIR" && "$NODE_BIN" "$SERVER_DIR/scripts/init-sqlite.cjs")');
 const fnosPidCheckIndex = buildScript.indexOf('if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")"');
 
@@ -269,13 +268,15 @@ expect(/function toSingleLineText\(value\)/.test(buildScript), "fnOS package bui
 expect(/const manifestChangelog = toSingleLineText\(changelog\);/.test(buildScript), "fnOS package build must derive a single-line manifest changelog.");
 expect(/changelog=\$\{manifestChangelog\}/.test(buildScript), "fnOS manifest must include a changelog for official submission.");
 expect(/mmhReleaseNotes/.test(buildScript), "fnOS package build must copy release notes into the runtime package.json.");
-expect(/path\.join\(stageDir,\s*"wizard",\s*"install"\)/.test(buildScript), "fnOS package should keep the first-install wizard for initial service-port setup.");
-expect(!/path\.join\(stageDir,\s*"wizard",\s*"uninstall"\)/.test(buildScript), "fnOS package must not include an uninstall wizard; FN soft-store updates cannot complete when uninstall requires UI input.");
-expect(!/path\.join\(stageDir,\s*"wizard",\s*"upgrade"\)/.test(buildScript), "fnOS package must not include an upgrade wizard; FN soft-store updates must run without UI input.");
-expect(!/path\.join\(stageDir,\s*"wizard",\s*"config"\)/.test(buildScript), "fnOS package must not include a config wizard; FN soft-store updates must not ask for the service port again.");
-expect(/wizard_port/.test(buildScript), "fnOS first-install wizard port must be persisted into package runtime settings.");
-expect(persistedPortFileIndex !== -1 && persistedEnvPortIndex !== -1 && wizardPortIndex !== -1, "fnOS port resolver must check persisted .port, persisted mmh.env PORT, and first-install wizard_port.");
-expect(persistedPortFileIndex < persistedEnvPortIndex && persistedEnvPortIndex < wizardPortIndex, "fnOS port resolver must reuse the installed port before considering wizard_port during overlay updates.");
+expect(!/path\.join\(stageDir,\s*"wizard",\s*"install"\)/.test(buildScript), "fnOS package must not ship wizard/install; the FN soft-store client only parses that file, and shipping it makes every update wait for the service port again.");
+expect(!/path\.join\(stageDir,\s*"wizard",\s*"upgrade"\)/.test(buildScript), "fnOS package must not ship wizard/upgrade; updates must not ask for the service port.");
+expect(!/path\.join\(stageDir,\s*"wizard",\s*"uninstall"\)/.test(buildScript), "fnOS package must not ship wizard/uninstall; uninstall must stay non-interactive.");
+expect(/path\.join\(stageDir,\s*"wizard",\s*"config"\)/.test(buildScript), "fnOS package must ship wizard/config so the service port stays editable from App Center settings without an install wizard.");
+expect(/\$\{wizard_port:-\}/.test(buildScript), "fnOS settings wizard must expose wizard_port so config_callback can apply a changed port.");
+expect(/write_env_file "\$NEW_PORT"/.test(buildScript), "fnOS config_callback must apply the wizard port explicitly, because resolve_port prefers the persisted .port.");
+expect(/probe_free_port/.test(buildScript), "fnOS first installs must probe for a free port; without an install wizard a taken 7777 would otherwise deadlock the install.");
+expect(persistedPortFileIndex !== -1 && persistedEnvPortIndex !== -1, "fnOS port resolver must reuse the persisted .port before the persisted mmh.env PORT during overlay updates.");
+expect(persistedPortFileIndex < persistedEnvPortIndex, "fnOS port resolver must reuse the installed port before falling back to package defaults.");
 expect(/backupLifecycle\("upgrade"\)/.test(buildScript), "fnOS package must create cmd/upgrade_init to back up app data before upgrades.");
 expect(/backupLifecycle\("uninstall"\)/.test(buildScript), "fnOS package must create cmd/uninstall_init to back up app data before uninstall/reinstall flows.");
 expect(/upgrade-backups/.test(buildScript) && /sha256sum/.test(buildScript), "fnOS backup lifecycle must copy appdata to an upgrade backup directory and record the SQLite checksum when available.");
@@ -285,6 +286,8 @@ expect(/cp -a "\$data_root\/data"/.test(buildScript), "fnOS backup lifecycle mus
 expect(/upgrade_callback/.test(buildScript), "fnOS package must include upgrade_callback for overlay upgrades.");
 expect(/const MIGRATIONS = \[/.test(buildScript), "fnOS SQLite init must include an explicit runtime migration list for existing databases.");
 expect(/function splitSqlStatements\(sql\)/.test(buildScript) && /function applyMissingSchemaObjectsFromInitSql\(db, sqlPath\)/.test(buildScript), "fnOS SQLite init must parse native-init.sql to backfill newly added tables for existing databases.");
+expect(/function stripLeadingSqlComments\(statement\)/.test(buildScript), "fnOS SQLite init must ignore leading Prisma SQL comments before parsing schema statements.");
+expect(/for \(const rawStatement of statements\)/.test(buildScript) && /stripLeadingSqlComments\(rawStatement\)/.test(buildScript), "fnOS SQLite schema backfill must normalize raw native-init.sql statements before checking tables, columns, and indexes.");
 expect(/createTableColumnDefinitionsFromStatement/.test(buildScript) && /SQLite schema column added from native-init.sql/.test(buildScript), "fnOS SQLite init must backfill safe newly added columns from native-init.sql for existing databases.");
 expect(/canAddColumnFromCreateTableDefinition/.test(buildScript) && /SQLite schema column skipped from native-init.sql because it cannot be safely added/.test(buildScript), "fnOS SQLite column backfill must skip unsafe column transforms instead of guessing destructive migrations.");
 expect(/CREATE INDEX IF NOT EXISTS/.test(buildScript) && /createIndexStatementIfMissing/.test(buildScript), "fnOS SQLite schema backfill must make native-init.sql indexes idempotent for existing databases.");
@@ -437,10 +440,8 @@ if (fs.existsSync(stageDir)) {
   expect(!/"run-as"\s*:\s*"package"/.test(stagePrivilege), `fnOS ${verifyTarget.id} stage privilege must not run lifecycle scripts as the package user.`);
   expect(/"username"\s*:\s*"mmh"/.test(stagePrivilege) && /"groupname"\s*:\s*"mmh"/.test(stagePrivilege), `fnOS ${verifyTarget.id} stage privilege must still declare the mmh package user and group.`);
   expect(/restart_start_as_package_user/.test(stageMainScript) && /runuser -u mmh/.test(stageMainScript), `fnOS ${verifyTarget.id} stage cmd/main must drop root-started service execution to the mmh user.`);
-  expect(fs.existsSync(path.join(stageDir, "wizard", "install")), `fnOS ${verifyTarget.id} stage must include wizard/install for first-install service-port setup.`);
-  expect(!fs.existsSync(path.join(stageDir, "wizard", "upgrade")), `fnOS ${verifyTarget.id} stage must not include wizard/upgrade; soft-store updates must be silent.`);
-  expect(!fs.existsSync(path.join(stageDir, "wizard", "config")), `fnOS ${verifyTarget.id} stage must not include wizard/config; updates must not ask for the service port again.`);
-  expect(!fs.existsSync(path.join(stageDir, "wizard", "uninstall")), `fnOS ${verifyTarget.id} stage must not include wizard/uninstall; soft-store updates must be non-interactive.`);
+  expect(!fs.existsSync(path.join(stageDir, "wizard", "install")), `fnOS ${verifyTarget.id} stage must not include wizard/install; the FN soft-store client parses it and would block silent updates on user input.`);
+  expect(fs.existsSync(path.join(stageDir, "wizard", "config")), `fnOS ${verifyTarget.id} stage must include wizard/config so the service port stays editable after a silent install.`);
   for (const envFile of [".env", ".env.local", ".env.production", ".env.development"]) {
     expect(!fs.existsSync(path.join(stageDir, "app", "server", envFile)), `fnOS stage must not include ${envFile}.`);
   }
@@ -462,14 +463,15 @@ if (process.env.FNOS_VERIFY_BUILT_FPK === "1") {
   expect(/version\s*=/.test(manifest), "Built fnOS .fpk manifest must include a version.");
   expect(new RegExp(`arch\\s*=\\s*${verifyTarget.manifestArch}`).test(manifest), `Built fnOS .fpk manifest must declare arch=${verifyTarget.manifestArch}.`);
   expect(new RegExp(`platform\\s*=\\s*${verifyTarget.manifestPlatform}`).test(manifest), `Built fnOS .fpk manifest must declare platform=${verifyTarget.manifestPlatform}.`);
-  expect(tarHasEntry(builtFpk, "wizard/install"), "Built fnOS .fpk must include wizard/install for first-install service-port setup.");
-  expect(!tarHasEntryOrChild(builtFpk, "wizard/uninstall"), "Built fnOS .fpk must not include wizard/uninstall; soft-store updates need non-interactive uninstall.");
-  expect(!tarHasEntryOrChild(builtFpk, "wizard/upgrade"), "Built fnOS .fpk must not include wizard/upgrade; soft-store updates need non-interactive upgrade.");
-  expect(!tarHasEntryOrChild(builtFpk, "wizard/config"), "Built fnOS .fpk must not include wizard/config; soft-store updates must not ask for the service port again.");
+  expect(!tarHasEntryOrChild(builtFpk, "wizard/install"), "Built fnOS .fpk must not include wizard/install; the FN soft-store client parses it and would block silent updates on user input.");
+  expect(!tarHasEntryOrChild(builtFpk, "wizard/upgrade"), "Built fnOS .fpk must not include wizard/upgrade; updates must not ask for the service port.");
+  expect(!tarHasEntryOrChild(builtFpk, "wizard/uninstall"), "Built fnOS .fpk must not include wizard/uninstall; uninstall must stay non-interactive.");
+  expect(tarHasEntry(builtFpk, "wizard/config"), "Built fnOS .fpk must include wizard/config so the service port stays editable from App Center settings.");
+  expect(tarHasEntry(builtFpk, "cmd/config_callback"), "Built fnOS .fpk must include cmd/config_callback to apply a changed service port.");
   expect(tarHasEntry(builtFpk, "cmd/upgrade_init"), "Built fnOS .fpk must include cmd/upgrade_init to back up app data before upgrades.");
   expect(tarHasEntry(builtFpk, "cmd/upgrade_callback"), "Built fnOS .fpk must include cmd/upgrade_callback for overlay upgrades.");
   expect(tarHasEntry(builtFpk, "cmd/uninstall_init"), "Built fnOS .fpk must include cmd/uninstall_init to back up app data before uninstall/reinstall flows.");
-  for (const entry of ["cmd", "config", "wizard"]) {
+  for (const entry of ["cmd", "config"]) {
     expectTarEntryModeAtLeast(builtFpk, entry, 0o755, "Built fnOS .fpk");
   }
   for (const entry of [

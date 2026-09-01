@@ -4,7 +4,7 @@ import { RegularInvestStatus } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { revalidateAfterTxChange } from "@/lib/server/revalidate";
-import { decodeScheduledTaskMemo, encodeScheduledTaskMemo } from "@/lib/scheduled-task";
+import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, shouldPreferLoanScheduledPlan } from "@/lib/scheduled-task";
 import {
   listLoanRateAdjustmentsByAccountIds,
   replaceLoanRateAdjustmentsForAccount,
@@ -64,7 +64,7 @@ export async function POST(req: Request) {
       }
     }
 
-    const plan = await prisma.regularInvestPlan.findFirst({
+    const plans = await prisma.regularInvestPlan.findMany({
       where: {
         householdId,
         accountId,
@@ -78,6 +78,10 @@ export async function POST(req: Request) {
       },
       orderBy: [{ status: "asc" }, { nextRunDate: "asc" }],
     });
+    let plan: (typeof plans)[number] | null = null;
+    for (const item of plans) {
+      if (shouldPreferLoanScheduledPlan(item, plan)) plan = item;
+    }
     if (!plan) return NextResponse.json({ ok: false, code: "LOAN_PLAN_NOT_FOUND", error: "未找到贷款还款计划" }, { status: 404 });
 
     const memo = decodeScheduledTaskMemo(plan.memo);

@@ -57,6 +57,7 @@ import {
   isCreditCardRepaymentTargetAccountKind,
   type CreditCardRepaymentBusinessType,
 } from "@/lib/transaction-semantics";
+import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
 
 type ParsedItem = {
   rawText: string;
@@ -157,6 +158,8 @@ type AccountOption = {
   name: string;
   kind: "cash" | "bank_debit" | "bank_credit" | string;
   label?: string | null;
+  /** Table/list label that follows the configured display fields. */
+  listLabel?: string | null;
   selectorLabel?: string | null;
   selectorCoreLabel?: string | null;
   fullLabel?: string | null;
@@ -1760,7 +1763,7 @@ export default function BatchImportPage() {
   }, [refreshCategoryRuleSamples]);
 
   const accountDisplayLabel = useCallback((account: AccountOption) => {
-    const provided = formatAccountTableLabel(account);
+    const provided = formatAccountTableLabel(account, "", getAccountLabelFieldsPreference());
     if (provided) return provided;
     return formatAccountSelectorLabel({
       accountName: account.name,
@@ -1771,11 +1774,12 @@ export default function BatchImportPage() {
         }
         : null,
       numberMasked: account.numberMasked,
+      fields: getAccountLabelFieldsPreference(),
     });
   }, []);
 
   const accountHoverTitle = useCallback((account: AccountOption) => {
-    return formatAccountTableTitle(account, accountDisplayLabel(account));
+    return formatAccountTableTitle(account, accountDisplayLabel(account), getAccountLabelFieldsPreference());
   }, [accountDisplayLabel]);
 
   const activeAccountOptions = useMemo(

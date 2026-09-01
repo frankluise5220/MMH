@@ -226,6 +226,12 @@ function normalizeStockCode(value: string) {
   return value.trim().toUpperCase();
 }
 
+function hasUsableDisplayStockName(value: string, stockCode: string) {
+  const name = value.trim();
+  const code = normalizeStockCode(stockCode);
+  return Boolean(name && name !== code);
+}
+
 function inferStockMarketFromCode(value: string) {
   const code = normalizeStockCode(value);
   if (/^\d{6}$/.test(code)) return "CN";
@@ -247,6 +253,10 @@ function sameBrokerageFundingAccount(stockAccount: AccountOption | null, cashAcc
   if (stockAccount.groupId && cashAccount.groupId && cashAccount.groupId !== stockAccount.groupId) return false;
   if (stockAccount.currency && cashAccount.currency && cashAccount.currency !== stockAccount.currency) return false;
   return true;
+}
+
+function isSelectableStockFundingAccount(account: AccountOption) {
+  return account.kind === "cash" || account.kind === "bank_debit" || account.kind === "ewallet";
 }
 
 function mergeAccounts(primary: AccountOption[], secondary: AccountOption[]) {
@@ -317,14 +327,14 @@ function createdCashAccountToOption(account: CreatedAccountPayload, t: (key: str
   };
 }
 
-function inferBrokerageNameFromStockAccount(account: AccountOption | null) {
+function inferBrokerageNameFromStockAccount(account: AccountOption | null, defaultStockAccountName: string) {
   if (!account) return "";
   const accountName = account.name?.trim() || "";
   const groupName = account.groupName?.trim() || "";
   for (const label of [account.label, account.title, account.hoverTitle]) {
     const parts = (label ?? "").split("·").map((part) => part.trim()).filter(Boolean);
     // Data matching: exclude a generic stock-account label part from the parsed brokerage name.
-    const candidate = parts.find((part) => part !== accountName && part !== groupName && part !== "股票账户");
+    const candidate = parts.find((part) => part !== accountName && part !== groupName && part !== defaultStockAccountName);
     if (candidate) return candidate;
   }
   return "";
@@ -387,11 +397,12 @@ function resolveDefaultCashAccountId(params: {
   const explicit = params.explicitCashAccountId?.trim();
   if (explicit && (cashIds.has(explicit) || explicit === params.stockAccountId)) return explicit;
 
+  const fallback = params.fallbackCashAccountId?.trim();
+  if (fallback && cashIds.has(fallback)) return fallback;
+
   const sameInstitutionCash = params.cashAccounts.find((account) => sameBrokerageFundingAccount(stockAccount, account)) ?? null;
   if (sameInstitutionCash?.id) return sameInstitutionCash.id;
 
-  const fallback = params.fallbackCashAccountId?.trim();
-  if (fallback && cashIds.has(fallback)) return fallback;
   return "";
 }
 
@@ -522,8 +533,8 @@ export function StockTransactionFormModal({
   const { ownerFilterLabel, cycleOwnerFilter, filteredOptions } = useAccountSSFilter(stockAccountOptions);
   const selectedAccount = localStockAccounts.find((account) => account.id === stockAccountId) ?? null;
   const eligibleCashAccounts = useMemo(
-    () => localCashAccounts.filter((account) => sameBrokerageFundingAccount(selectedAccount, account)),
-    [localCashAccounts, selectedAccount],
+    () => localCashAccounts.filter(isSelectableStockFundingAccount),
+    [localCashAccounts],
   );
   const eligibleCashAccountOptions = useMemo<SmartSelectOption[]>(() => {
     const fallback = eligibleCashAccounts.map(cashAccountToSmartOption);
@@ -532,7 +543,6 @@ export function StockTransactionFormModal({
     return mergeOptions(scoped.length > 0 ? scoped : fallback, fallback);
   }, [eligibleCashAccounts, localCashSSOptions]);
   const selectedCashAccount = eligibleCashAccounts.find((account) => account.id === cashAccountId)
-    ?? eligibleCashAccounts[0]
     ?? null;
   const sellHoldingOptions = useMemo<SmartSelectOption[]>(
     () => sellHoldings.map((holding) => ({
@@ -806,7 +816,7 @@ export function StockTransactionFormModal({
     setNote(tx.note ?? "");
     setAutoCreateError("");
     autoCreateAttemptedRef.current = true;
-    cashAccountTouchedRef.current = false;
+    cashAccountTouchedRef.current = true;
     setStockAccountId(nextStockAccountId);
     setCashAccountId(tx.cashAccountId ?? "");
   }, [defaultStockAccountId, localStockAccounts, language, resetFeeDraft]);
@@ -895,7 +905,7 @@ export function StockTransactionFormModal({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           // Kept as data: this is the stored default account name for auto-created stock accounts.
-          name: "股票账户",
+          name: t("stockTx.defaultStockAccountName"),
           kind: "investment",
           investProductType: "stock",
           groupId: seedCashAccount?.groupId ?? undefined,
@@ -984,7 +994,7 @@ export function StockTransactionFormModal({
   function handleCashAccountCreated(id: string, name: string, extra?: StockAccountCreatedExtra) {
     const institutionName = extra?.institutionShortName?.trim()
       || extra?.institutionName?.trim()
-      || inferBrokerageNameFromStockAccount(selectedAccount);
+      || inferBrokerageNameFromStockAccount(selectedAccount, t("stockTx.defaultStockAccountName"));
     const groupName = extra?.groupName ?? selectedAccount?.groupName ?? "";
     const labelParts = name.includes(institutionName)
       ? [groupName, name]
@@ -1028,7 +1038,7 @@ export function StockTransactionFormModal({
   }, [defaultStockAccountId, localStockAccounts, stockAccountId]);
 
   useEffect(() => {
-    if (!open || cashAccountTouchedRef.current) return;
+    if (!open || editingId || cashAccountTouchedRef.current) return;
     const nextCashAccountId = resolveDefaultCashAccountId({
       stockAccountId,
       stockAccounts: localStockAccounts,
@@ -1036,7 +1046,7 @@ export function StockTransactionFormModal({
       fallbackCashAccountId: defaultCashAccountId,
     });
     setCashAccountId((prev) => (prev === nextCashAccountId ? prev : nextCashAccountId));
-  }, [defaultCashAccountId, localCashAccounts, localStockAccounts, open, stockAccountId]);
+  }, [defaultCashAccountId, editingId, localCashAccounts, localStockAccounts, open, stockAccountId]);
 
   useEffect(() => {
     if (!open) return;
@@ -1046,13 +1056,17 @@ export function StockTransactionFormModal({
       setStockLookupLoading(false);
       return;
     }
+    if (hasUsableDisplayStockName(stockName, code)) {
+      setStockLookupLoading(false);
+      return;
+    }
 
     const controller = new AbortController();
     const timer = window.setTimeout(async () => {
       setStockLookupLoading(true);
       try {
         const lookupMarket = inferStockMarketFromCode(code);
-        const params = new URLSearchParams({ market: lookupMarket, code });
+        const params = new URLSearchParams({ market: lookupMarket, code, localOnly: "1" });
         const res = await fetch(`/api/v1/stocks/securities?${params.toString()}`, {
           signal: controller.signal,
           cache: "no-store",
@@ -1072,13 +1086,13 @@ export function StockTransactionFormModal({
       } finally {
         if (!controller.signal.aborted) setStockLookupLoading(false);
       }
-    }, 600);
+    }, 150);
 
     return () => {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [open, stockCode, t]);
+  }, [open, stockCode, stockName, t]);
 
   useEffect(() => {
     if (!open || !isHoldingSelectionAction || !stockAccountId || !tradeDate) {
@@ -1274,7 +1288,7 @@ export function StockTransactionFormModal({
     try {
       const commonPayload = {
         stockAccountId,
-        cashAccountId: selectedCashAccount?.id || undefined,
+        cashAccountId: selectedCashAccount?.id || cashAccountId || undefined,
         securityId: selectedSecurityId || undefined,
         market,
         stockCode: normalizedCode,
@@ -1458,6 +1472,7 @@ export function StockTransactionFormModal({
                         onChange={(event) => {
                           const nextCode = event.target.value.toUpperCase();
                           setStockCode(nextCode);
+                          setStockName("");
                           setMarket(inferStockMarketFromCode(nextCode));
                         }}
                         className="form-input"

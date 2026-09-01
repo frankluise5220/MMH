@@ -8,6 +8,7 @@ import { formatMoneyYuan, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { getInvestmentAccountView } from "@/lib/account-kind-utils";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "@/lib/server/account-label-fields";
 import { getServerT } from "@/lib/server/i18n";
 import { getInvestmentStatisticItems } from "@/lib/transaction-statistics";
 import { cookies } from "next/headers";
@@ -39,6 +40,7 @@ const investProductTypeLabel = (type: string | null, t: (key: string) => string)
   const pageSizeParam = typeof params?.pageSize === "string" ? parseInt(params.pageSize, 10) : 10;
   const pageSize = [10, 20, 40].includes(pageSizeParam) ? pageSizeParam : 10;
   const cookieStore = await cookies();
+  const accountLabelFields = accountLabelFieldsFromCookieValue(cookieStore.get(ACCOUNT_LABEL_FIELDS_COOKIE)?.value);
   const colorScheme = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") as "red_up_green_down" | "green_up_red_down";
   const creditCardLabelMode = cookieStore.get("mmh_credit_card_label_mode")?.value === "full_name" ? "full_name" : "short_last4";
   const creditCardLabelTemplate = normalizeCreditCardLabelTemplate(
@@ -215,7 +217,7 @@ const investProductTypeLabel = (type: string | null, t: (key: string) => string)
       investProductType: a.investProductType,
       Institution: a.Institution,
       AccountGroup: a.AccountGroup,
-    }, creditCardLabelTemplate);
+    }, creditCardLabelTemplate, { fields: accountLabelFields });
     const label = display.label;
     const groupName = a.AccountGroup?.name?.trim() || t("invest.noOwner");
     const productTypeLabel = investProductTypeLabel(a.investProductType, t);

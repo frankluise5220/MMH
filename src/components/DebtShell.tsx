@@ -1,10 +1,11 @@
 "use client";
 
-import { HandCoins, Percent, RefreshCw } from "lucide-react";
+import { ChevronDown, ChevronRight, HandCoins, Percent, RefreshCw } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { AdvancedDataTable, type AdvancedDataTableColumn } from "./AdvancedDataTable";
+import { AccountTypeQuickEdit, type AccountQuickEditValue } from "./AccountTypeQuickEdit";
+import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTableSortState } from "./AdvancedDataTable";
 import { DateStepper } from "./DateStepper";
 import { DebitBalanceReconcileButton } from "./DebitBalanceReconcileButton";
 import { dispatchEntryEdit, EntryRowActions } from "./EntryRowActions";
@@ -45,6 +46,7 @@ type DebtRow = {
   repaymentCycle: string;
   annualRate: number | null;
   mortgageLprDiscount: number | null;
+  loanStartDate: string;
   remainingRuns: number | null;
   paidPrincipal: number;
   paidInterest: number;
@@ -63,6 +65,7 @@ type DebtRow = {
   parentKey?: string | null;
   depth?: number;
   isGroup?: boolean;
+  isLoan?: boolean;
 };
 
 type DebtEntry = {
@@ -96,6 +99,16 @@ type DebtEntry = {
     defaultRecalculateStartDate?: string | null;
     defaultPrepayStrategy?: string;
     defaultLoanFundingMode?: "cash_disbursement" | "financed_purchase";
+    defaultRepaymentMethod?: string | null;
+    defaultAnnualRate?: number | null;
+    defaultMortgageLprDiscount?: number | null;
+    defaultRepaymentIntervalMonths?: number | null;
+    defaultLoanTotalRuns?: number | null;
+    defaultFirstRepaymentDate?: string | null;
+    defaultAutoDebit?: boolean | null;
+    defaultAutoDebitFirstDate?: string | null;
+    defaultLoanRateAdjustments?: Array<{ effectiveDate: string; annualRate: number }>;
+    dialogType?: "debt" | "loan";
   };
   edit?: {
     type: "expense" | "income" | "advance" | "transfer" | "investment";
@@ -131,6 +144,8 @@ type RateAdjustmentDraft = {
 
 type AccountOption = { id: string; label: string; title?: string | null; hoverTitle?: string | null };
 
+const EMPTY_ACCOUNT_EDIT_DATA: AccountQuickEditValue[] = [];
+
 function amountClass(value: number, isRedUp: boolean) {
   return pnlClassFromRedUp(value, isRedUp, "strongMuted");
 }
@@ -146,15 +161,117 @@ function isSettledDebtRow(row: DebtRow) {
   return Math.abs(row.net) < SETTLED_DEBT_EPSILON && row.payable + row.receivable < SETTLED_DEBT_EPSILON;
 }
 
-function moneyInputValue(value: number | null | undefined) {
-  if (value == null || !Number.isFinite(value)) return undefined;
-  return value.toFixed(2);
-}
-
 function makeDraftId() {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function hasActiveDebtFilters(filters: Partial<Record<string, string[]>>) {
+  return Object.values(filters).some((values) => (values?.length ?? 0) > 0);
+}
+
+function debtRowMatchesFilters(
+  row: DebtRow,
+  filters: Partial<Record<string, string[]>>,
+  columns: AdvancedDataTableColumn<DebtRow>[],
+) {
+  for (const [key, values] of Object.entries(filters)) {
+    if ((values?.length ?? 0) === 0) continue;
+    const column = columns.find((item) => item.key === key);
+    if (!column?.filterText) continue;
+    const value = column.filterText(row)?.trim() || "-";
+    if (!values?.includes(value)) return false;
+  }
+  return true;
+}
+
+function compareDebtSortValues(
+  left: string | number | null | undefined,
+  right: string | number | null | undefined,
+) {
+  const leftEmpty = left == null || left === "";
+  const rightEmpty = right == null || right === "";
+  if (leftEmpty || rightEmpty) {
+    if (leftEmpty && rightEmpty) return 0;
+    return leftEmpty ? 1 : -1;
+  }
+  return typeof left === "number" && typeof right === "number"
+    ? left - right
+    : String(left).localeCompare(String(right), "zh-CN", { numeric: true });
+}
+
+function collectDebtChildrenByParentKey(rows: DebtRow[]) {
+  const childrenByParentKey = new Map<string, DebtRow[]>();
+  for (const row of rows) {
+    if (!row.parentKey) continue;
+    const children = childrenByParentKey.get(row.parentKey) ?? [];
+    children.push(row);
+    childrenByParentKey.set(row.parentKey, children);
+  }
+  return childrenByParentKey;
+}
+
+function buildDebtTreeRows(
+  rows: DebtRow[],
+  filters: Partial<Record<string, string[]>>,
+  columns: AdvancedDataTableColumn<DebtRow>[],
+  expandedKeys: ReadonlySet<string>,
+) {
+  const filtersActive = hasActiveDebtFilters(filters);
+  const childrenByParentKey = collectDebtChildrenByParentKey(rows);
+  const output: DebtRow[] = [];
+
+  for (const row of rows) {
+    if (row.parentKey) continue;
+    const children = childrenByParentKey.get(row.key) ?? [];
+    if (!row.isGroup) {
+      if (!filtersActive || debtRowMatchesFilters(row, filters, columns)) output.push(row);
+      continue;
+    }
+
+    if (!filtersActive) {
+      output.push(row);
+      if (expandedKeys.has(row.key)) output.push(...children);
+      continue;
+    }
+
+    const rowMatches = debtRowMatchesFilters(row, filters, columns);
+    const matchingChildren = children.filter((child) => debtRowMatchesFilters(child, filters, columns));
+    if (!rowMatches && matchingChildren.length === 0) continue;
+    output.push(row);
+    output.push(...(rowMatches ? children : matchingChildren));
+  }
+
+  return output;
+}
+
+function sortDebtTreeRows(
+  rows: DebtRow[],
+  sortState: AdvancedDataTableSortState | null,
+  columns: AdvancedDataTableColumn<DebtRow>[],
+) {
+  if (!sortState) return rows;
+  const column = columns.find((item) => item.key === sortState.key);
+  const readValue = column?.sortValue ?? column?.filterText;
+  if (!readValue) return rows;
+
+  const direction = sortState.direction === "asc" ? 1 : -1;
+  const originalIndexByKey = new Map(rows.map((row, index) => [row.key, index]));
+  const compareRows = (left: DebtRow, right: DebtRow) => {
+    const compared = compareDebtSortValues(readValue(left), readValue(right));
+    if (compared !== 0) return compared * direction;
+    return (originalIndexByKey.get(left.key) ?? 0) - (originalIndexByKey.get(right.key) ?? 0);
+  };
+  const childrenByParentKey = collectDebtChildrenByParentKey(rows);
+  const sortedRows: DebtRow[] = [];
+  const topRows = rows.filter((row) => !row.parentKey).sort(compareRows);
+  for (const row of topRows) {
+    sortedRows.push(row);
+    const children = childrenByParentKey.get(row.key);
+    if (children?.length) sortedRows.push(...[...children].sort(compareRows));
+  }
+  return sortedRows;
 }
 
 export function DebtShell({
@@ -166,6 +283,7 @@ export function DebtShell({
   isRedUp,
   accountOptions,
   categoryOptions,
+  accountEditData = EMPTY_ACCOUNT_EDIT_DATA,
 }: {
   rows: DebtRow[];
   selectedKey: string;
@@ -177,6 +295,7 @@ export function DebtShell({
   isRedUp: boolean;
   accountOptions: AccountOption[];
   categoryOptions: BasicDetailBatchCategoryOption[];
+  accountEditData?: AccountQuickEditValue[];
 }) {
   const router = useRouter();
   const { t, language } = useI18n();
@@ -193,13 +312,22 @@ export function DebtShell({
     const selected = rows.find((row) => row.key === selectedKey);
     return selected ? isSettledDebtRow(selected) : false;
   });
+  const [expandedDebtRowKeys, setExpandedDebtRowKeys] = useState<Set<string>>(() => new Set());
+  const [editingDebtAccount, setEditingDebtAccount] = useState<AccountQuickEditValue | null>(null);
+  const [accountEditOpenSignal, setAccountEditOpenSignal] = useState(0);
   const rowClickTimerRef = useRef<number | null>(null);
-  const visibleRows = useMemo(
+  const baseRows = useMemo(
     () => showSettledRows ? rows : rows.filter((row) => !isSettledDebtRow(row)),
     [rows, showSettledRows],
   );
+  const childrenByParentKey = useMemo(() => collectDebtChildrenByParentKey(baseRows), [baseRows]);
+  const safeAccountEditData = Array.isArray(accountEditData) ? accountEditData : EMPTY_ACCOUNT_EDIT_DATA;
+  const accountEditDataById = useMemo(
+    () => new Map(safeAccountEditData.map((account) => [account.id, account])),
+    [safeAccountEditData],
+  );
   const selectedRow =
-    visibleRows.find((row) => row.key === selectedKey) ??
+    baseRows.find((row) => row.key === selectedKey) ??
     rows.find((row) => row.key === selectedKey) ??
     null;
   const remainingTotalLabel = selectedRow?.objectType === "银行贷款"
@@ -207,18 +335,36 @@ export function DebtShell({
     : selectedRow?.objectType === "银行应收"
       ? t("debtShell.remainingTotal.receivable")
       : t("debtShell.remainingTotal.both");
-  const settledCount = rows.filter(isSettledDebtRow).length;
-  const isSelectedBankLoan = !!selectedRow && !selectedRow.isGroup && selectedRow.objectType === "银行贷款";
+  const settledCount = rows.filter((row) => !row.parentKey && isSettledDebtRow(row)).length;
+  const isSelectedBankLoan = !!selectedRow && !selectedRow.isGroup && selectedRow.isLoan === true;
   const canRepaySelectedRow = !!selectedRow && !selectedRow.isGroup && selectedRow.net < -SETTLED_DEBT_EPSILON;
   const canReconcileSelectedRow = !!selectedRow && !selectedRow.isGroup && !!selectedRow.accountId;
   const canAdjustRateSelectedRow = isSelectedBankLoan && canRepaySelectedRow && !!selectedRow?.accountId;
   const canRecalculateSelectedRow = isSelectedBankLoan && canRepaySelectedRow && !!selectedRow?.accountId && !!selectedRow?.remainingRuns;
+  const filterDebtRows = useCallback((
+    tableRows: DebtRow[],
+    filters: Partial<Record<string, string[]>>,
+    columns: AdvancedDataTableColumn<DebtRow>[],
+  ) => buildDebtTreeRows(tableRows, filters, columns, expandedDebtRowKeys), [expandedDebtRowKeys]);
+  const sortDebtRows = useCallback((
+    tableRows: DebtRow[],
+    sortState: AdvancedDataTableSortState | null,
+    columns: AdvancedDataTableColumn<DebtRow>[],
+  ) => sortDebtTreeRows(tableRows, sortState, columns), []);
+  const toggleDebtRowExpanded = useCallback((rowKey: string) => {
+    setExpandedDebtRowKeys((current) => {
+      const next = new Set(current);
+      if (next.has(rowKey)) next.delete(rowKey);
+      else next.add(rowKey);
+      return next;
+    });
+  }, []);
   const visibleRepaymentScheduleRows = useMemo(
     () => showPaidScheduleRows ? repaymentScheduleRows : repaymentScheduleRows.filter((row) => row.status !== "paid"),
     [repaymentScheduleRows, showPaidScheduleRows],
   );
   const debtRowSummary = useMemo(() => {
-    const summaryRows = visibleRows.filter((row) => !row.parentKey);
+    const summaryRows = baseRows.filter((row) => !row.parentKey);
     const net = summaryRows.reduce((sum, row) => sum + row.net, 0);
     return {
       paidPrincipal: summaryRows.reduce((sum, row) => sum + Math.abs(row.paidPrincipal), 0),
@@ -228,7 +374,7 @@ export function DebtShell({
       remainingTotal: Math.abs(summaryRemainingTotal),
       net,
     };
-  }, [visibleRows, summaryRemainingTotal]);
+  }, [baseRows, summaryRemainingTotal]);
   useEffect(() => {
     return () => {
       if (rowClickTimerRef.current) {
@@ -245,32 +391,21 @@ export function DebtShell({
   }, [rows, selectedKey]);
 
   useEffect(() => {
+    const selected = rows.find((row) => row.key === selectedKey);
+    if (!selected?.parentKey) return;
+    setExpandedDebtRowKeys((current) => {
+      if (current.has(selected.parentKey ?? "")) return current;
+      const next = new Set(current);
+      next.add(selected.parentKey ?? "");
+      return next;
+    });
+  }, [rows, selectedKey]);
+
+  useEffect(() => {
     if (!isSelectedBankLoan && detailTab === "schedule") {
       setDetailTab("entries");
     }
   }, [detailTab, isSelectedBankLoan]);
-
-  function openRepayment(row: DebtRow) {
-    if (rowClickTimerRef.current) {
-      window.clearTimeout(rowClickTimerRef.current);
-      rowClickTimerRef.current = null;
-    }
-    if (row.isGroup || !row.accountId || row.net >= 0) return;
-    window.dispatchEvent(new CustomEvent("mmh:debt:create", {
-      detail: {
-        mode: "repay_out",
-        defaultDebtAccountId: row.accountId,
-        defaultDebtInstitutionId: row.institutionId,
-        defaultCashAccountId: row.nextRepaymentCashAccountId,
-        defaultDate: row.nextRepaymentDate,
-        defaultPrincipal: moneyInputValue(row.nextRepaymentPrincipal ?? Math.abs(row.net)),
-        defaultInterest: moneyInputValue(row.nextRepaymentInterest),
-        defaultCurrentAnnualRate: row.annualRate,
-        defaultMortgageLprDiscount: row.mortgageLprDiscount,
-        defaultLoanRateAdjustments: row.loanRateAdjustments,
-      },
-    }));
-  }
 
   function openDebtRow(row: DebtRow) {
     if (rowClickTimerRef.current) {
@@ -283,6 +418,21 @@ export function DebtShell({
       router.push(`/?${params.toString()}`, { scroll: false });
       rowClickTimerRef.current = null;
     }, 360);
+  }
+
+  function openDebtAccountProperties(row: DebtRow) {
+    if (rowClickTimerRef.current) {
+      window.clearTimeout(rowClickTimerRef.current);
+      rowClickTimerRef.current = null;
+    }
+    if (row.isGroup) {
+      toggleDebtRowExpanded(row.key);
+      return;
+    }
+    const account = row.accountId ? accountEditDataById.get(row.accountId) : null;
+    if (!account) return;
+    setEditingDebtAccount(account);
+    setAccountEditOpenSignal((value) => value + 1);
   }
 
   function openRateAdjustment(row: DebtRow) {
@@ -319,14 +469,18 @@ export function DebtShell({
   }
 
   function generateLprRateDrafts() {
-    const discount = Number(lprDiscount.trim());
+    const rawDiscount = lprDiscount.trim();
+    const discount = rawDiscount ? Number(rawDiscount) : 1;
     if (!Number.isFinite(discount) || discount <= 0) {
       window.alert(t("debtShell.alert.lprDiscountInvalid"));
       return;
     }
+    if (!rawDiscount) setLprDiscount("1");
     const adjustments = buildMortgageLprRateAdjustments({
       discount,
       throughDate: new Date().toISOString().slice(0, 10),
+      fromDate: selectedRow?.loanStartDate || undefined,
+      includeUnchanged: true,
     });
     if (adjustments.length === 0) {
       window.alert(t("debtShell.alert.lprNoAdjustments"));
@@ -431,6 +585,7 @@ export function DebtShell({
       width: 112,
       minWidth: 84,
       filterText: (row) => row.objectType,
+      sortValue: (row) => row.objectType,
       render: (row) => (
         <span className={amountClass(row.net, isRedUp)}>
           {row.objectType}
@@ -443,16 +598,38 @@ export function DebtShell({
       width: 180,
       minWidth: 120,
       filterText: (row) => row.objectName,
-      render: (row) => (
-        <span
-          className={`block truncate text-sm ${row.isGroup ? "font-semibold text-slate-900" : "font-medium text-slate-800"}`}
-          style={{ paddingLeft: `${Math.max(0, row.depth ?? 0) * 18}px` }}
-          title={row.objectName || row.name}
-        >
-          {row.depth ? <span className="mr-1 text-slate-300">└</span> : null}
-          {row.objectName || "-"}
-        </span>
-      ),
+      sortValue: (row) => row.objectName,
+      render: (row) => {
+        const childCount = row.isGroup ? childrenByParentKey.get(row.key)?.length ?? 0 : 0;
+        const expanded = expandedDebtRowKeys.has(row.key);
+        return (
+          <span
+            className={`flex min-w-0 items-center truncate text-sm ${row.isGroup ? "font-semibold text-slate-900" : "font-medium text-slate-800"}`}
+            style={{ paddingLeft: `${Math.max(0, row.depth ?? 0) * 18}px` }}
+            title={row.objectName || row.name}
+          >
+            {childCount > 0 ? (
+              <button
+                type="button"
+                className="mr-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                title={t(expanded ? "common.collapse" : "common.expand")}
+                aria-label={t(expanded ? "common.collapse" : "common.expand")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  toggleDebtRowExpanded(row.key);
+                }}
+              >
+                {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+              </button>
+            ) : row.depth ? (
+              <span className="mr-1 inline-flex h-5 w-5 shrink-0 items-center justify-center text-slate-300">└</span>
+            ) : (
+              <span className="mr-1 h-5 w-5 shrink-0" />
+            )}
+            <span className="truncate">{row.objectName || "-"}</span>
+          </span>
+        );
+      },
     },
     {
       key: "itemName",
@@ -460,6 +637,7 @@ export function DebtShell({
       width: 190,
       minWidth: 120,
       filterText: (row) => row.itemName,
+      sortValue: (row) => row.itemName,
       render: (row) => (
         <span className={`block truncate ${row.isGroup ? "font-medium text-slate-800" : "text-slate-700"}`} title={row.name}>
           {row.itemName || "-"}
@@ -472,6 +650,7 @@ export function DebtShell({
       width: 150,
       minWidth: 110,
       filterText: (row) => row.itemType,
+      sortValue: (row) => row.itemType,
       render: (row) => <span className={amountClass(row.net, isRedUp)}>{row.itemType}</span>,
     },
     {
@@ -481,6 +660,7 @@ export function DebtShell({
       minWidth: 100,
       hideable: true,
       filterText: (row) => row.repaymentMethod || "-",
+      sortValue: (row) => row.repaymentMethod || "",
       render: (row) => <span className="text-slate-600">{row.repaymentMethod || "-"}</span>,
     },
     {
@@ -490,6 +670,7 @@ export function DebtShell({
       minWidth: 80,
       align: "right",
       hideable: true,
+      sortValue: (row) => row.annualRate,
       render: (row) => <span className="tabular-nums text-slate-600">{formatRate(row.annualRate, language)}</span>,
     },
     {
@@ -499,6 +680,7 @@ export function DebtShell({
       minWidth: 80,
       align: "right",
       hideable: true,
+      sortValue: (row) => row.remainingRuns,
       render: (row) => <span className="tabular-nums text-slate-600">{row.remainingRuns == null ? "-" : row.remainingRuns}</span>,
     },
     {
@@ -508,6 +690,7 @@ export function DebtShell({
       minWidth: 96,
       align: "right",
       hideable: true,
+      sortValue: (row) => Math.abs(row.paidPrincipal),
       render: (row) => <span className="tabular-nums text-emerald-700">{formatMoney(Math.abs(row.paidPrincipal))}</span>,
     },
     {
@@ -517,6 +700,7 @@ export function DebtShell({
       minWidth: 96,
       align: "right",
       hideable: true,
+      sortValue: (row) => Math.abs(row.paidInterest),
       render: (row) => <span className="tabular-nums text-amber-700">{formatMoney(Math.abs(row.paidInterest))}</span>,
     },
     {
@@ -526,6 +710,7 @@ export function DebtShell({
       minWidth: 96,
       align: "right",
       hideable: true,
+      sortValue: (row) => Math.abs(row.remainingInterest),
       render: (row) => <span className="tabular-nums text-amber-700">{formatMoney(Math.abs(row.remainingInterest))}</span>,
     },
     {
@@ -535,6 +720,7 @@ export function DebtShell({
       minWidth: 96,
       align: "right",
       hideable: true,
+      sortValue: (row) => Math.abs(row.remainingPrincipal),
       render: (row) => <span className="tabular-nums text-slate-700">{formatMoney(Math.abs(row.remainingPrincipal))}</span>,
     },
     {
@@ -543,9 +729,10 @@ export function DebtShell({
       width: 150,
       minWidth: 112,
       align: "right",
+      sortValue: (row) => Math.abs(row.remainingTotal),
       render: (row) => <span className={`font-semibold tabular-nums ${amountClass(row.net, isRedUp)}`}>{formatMoney(Math.abs(row.remainingTotal))}</span>,
     },
-  ], [t, language, isRedUp, remainingTotalLabel]);
+  ], [t, language, isRedUp, remainingTotalLabel, childrenByParentKey, expandedDebtRowKeys, toggleDebtRowExpanded]);
 
   const entryColumns = useMemo<AdvancedDataTableColumn<DebtEntry>[]>(() => [
     { key: "date", label: t("detail.column.date"), width: 100, minWidth: 80, filterText: (entry) => entry.date, render: (entry) => <span className="tabular-nums text-slate-700">{entry.date}</span> },
@@ -637,6 +824,14 @@ export function DebtShell({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent p-4 md:p-5">
+      {editingDebtAccount ? (
+        <AccountTypeQuickEdit
+          account={editingDebtAccount}
+          accountLabel={editingDebtAccount.name}
+          openSignal={accountEditOpenSignal}
+          showTrigger={false}
+        />
+      ) : null}
       <ResizableVerticalSplit
         storageKey="mmh:debt:split-height"
         hasLowerPane={!!selectedRow}
@@ -648,12 +843,13 @@ export function DebtShell({
           <AdvancedDataTable
             storageKey="mmh_debt_rows_table_v1"
             columns={rowColumns}
-            rows={visibleRows}
+            rows={baseRows}
             rowKey={(row) => row.key}
             minTableWidth={1040}
             emptyText={t("debtShell.emptyRows")}
             fillHeight
-            compactRows
+            filterRows={filterDebtRows}
+            sortRows={sortDebtRows}
             toolbarTitle={(
               <span className="inline-flex items-center gap-2 text-sm font-semibold text-slate-800">
                 <HandCoins className="h-4 w-4 text-amber-500" />
@@ -682,8 +878,12 @@ export function DebtShell({
               </div>
             )}
             onRowClick={(row) => openDebtRow(row)}
-            onRowDoubleClick={(row) => { if (!row.isGroup) openRepayment(row); }}
-            rowClassName={(row) => `cursor-pointer ${row.key === (selectedRow?.key ?? "") ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-slate-50"}`}
+            onRowDoubleClick={(row) => openDebtAccountProperties(row)}
+            rowClassName={(row) => {
+              if (row.key === (selectedRow?.key ?? "")) return "cursor-pointer bg-blue-50 hover:bg-blue-50";
+              if (row.parentKey) return "cursor-pointer bg-slate-50/70 hover:bg-slate-100";
+              return "cursor-pointer hover:bg-slate-50";
+            }}
             summaryRow={{
               rowClassName: "bg-slate-50",
               cellClassName: "py-2.5",
@@ -771,7 +971,6 @@ export function DebtShell({
               minTableWidth={920}
               emptyText={t("debtShell.emptySchedule")}
               fillHeight
-              compactRows
               toolbarMode="custom"
               toolbarLeftContent={(
                 <span>
@@ -1044,7 +1243,7 @@ function DebtEntriesTable({
   const getCustomEditEvent = (entry: DebtEntry) => entry.balanceReconcileEdit
     ? { name: "mmh:balance-reconcile:edit", detail: entry.balanceReconcileEdit }
     : entry.debtEdit
-      ? { name: "mmh:debt:create", detail: entry.debtEdit }
+      ? { name: entry.debtEdit.dialogType === "loan" ? "mmh:loan:create" : "mmh:debt:create", detail: entry.debtEdit }
       : undefined;
 
   return (
@@ -1057,7 +1256,6 @@ function DebtEntriesTable({
       minTableWidth={1240}
       emptyText={t("debtShell.emptyEntries")}
       fillHeight
-      compactRows
       toolbarTitle={t("debtShell.tabEntries")}
       toolbarRightContent={<span className="text-xs text-slate-500">{t("debtShell.entryCount", { count: entries.length })}</span>}
       selectable
