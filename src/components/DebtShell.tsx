@@ -167,6 +167,10 @@ function makeDraftId() {
     : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+function formatRateDraftValue(value: number) {
+  return value.toFixed(3).replace(/\.?0+$/, "");
+}
+
 function hasActiveDebtFilters(filters: Partial<Record<string, string[]>>) {
   return Object.values(filters).some((values) => (values?.length ?? 0) > 0);
 }
@@ -437,12 +441,27 @@ export function DebtShell({
 
   function openRateAdjustment(row: DebtRow) {
     if (!row.accountId) return;
+    const generatedDrafts = row.loanRateAdjustments.length === 0 && row.mortgageLprDiscount != null && row.mortgageLprDiscount > 0
+      ? buildMortgageLprRateAdjustments({
+          discount: row.mortgageLprDiscount,
+          throughDate: new Date().toISOString().slice(0, 10),
+          fromDate: row.loanStartDate || undefined,
+          includeUnchanged: true,
+          basis: "lpr_quote",
+        }).map((item) => ({
+          id: makeDraftId(),
+          effectiveDate: item.effectiveDate,
+          annualRate: formatRateDraftValue(item.annualRate),
+        }))
+      : [];
     const drafts = row.loanRateAdjustments.length > 0
       ? row.loanRateAdjustments.map((item) => ({
           id: makeDraftId(),
           effectiveDate: item.effectiveDate,
           annualRate: String(item.annualRate),
         }))
+      : generatedDrafts.length > 0
+        ? generatedDrafts
       : [{
           id: makeDraftId(),
           effectiveDate: new Date().toISOString().slice(0, 10),
@@ -481,6 +500,7 @@ export function DebtShell({
       throughDate: new Date().toISOString().slice(0, 10),
       fromDate: selectedRow?.loanStartDate || undefined,
       includeUnchanged: true,
+      basis: "lpr_quote",
     });
     if (adjustments.length === 0) {
       window.alert(t("debtShell.alert.lprNoAdjustments"));
@@ -489,7 +509,7 @@ export function DebtShell({
     setRateDrafts(adjustments.map((item) => ({
       id: makeDraftId(),
       effectiveDate: item.effectiveDate,
-      annualRate: item.annualRate.toFixed(3).replace(/\.?0+$/, ""),
+      annualRate: formatRateDraftValue(item.annualRate),
     })));
   }
 
@@ -523,6 +543,7 @@ export function DebtShell({
           accountId: selectedRow.accountId,
           adjustments,
           mortgageLprDiscount: lprDiscount.trim() ? Number(lprDiscount.trim()) : null,
+          loanStartDate: selectedRow.loanStartDate || null,
         }),
       });
       const data = await response.json().catch(() => null);

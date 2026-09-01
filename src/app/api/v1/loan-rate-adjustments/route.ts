@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { RegularInvestStatus } from "@prisma/client";
+import { RegularInvestStatus, TransactionType } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -15,7 +15,8 @@ import {
   getEffectiveLoanAnnualRate,
   normalizeLoanRateAdjustments,
 } from "@/lib/loan-repayment";
-import { toNumber } from "@/lib/date-utils";
+import { buildMortgageLprRateAdjustments } from "@/lib/loan-lpr";
+import { formatDateUtc, toNumber } from "@/lib/date-utils";
 
 export const runtime = "nodejs";
 
@@ -40,7 +41,7 @@ export async function POST(req: Request) {
     const { householdId } = await getHouseholdScope();
     const body = await req.json().catch(() => null);
     const accountId = String(body?.accountId ?? "").trim();
-    const replacementAdjustments = parseAdjustmentList(body?.adjustments);
+    let replacementAdjustments = parseAdjustmentList(body?.adjustments);
     const effectiveDate = parseDateOnly(body?.effectiveDate);
     const annualRate = Number(body?.annualRate);
     const mortgageLprDiscountRaw = body?.mortgageLprDiscount;
@@ -48,6 +49,7 @@ export async function POST(req: Request) {
       mortgageLprDiscountRaw == null || mortgageLprDiscountRaw === ""
         ? null
         : Number(mortgageLprDiscountRaw);
+    const loanStartDate = parseDateOnly(body?.loanStartDate);
 
     if (!accountId) return NextResponse.json({ ok: false, code: "MISSING_LOAN_ACCOUNT", error: "缺少贷款账户" }, { status: 400 });
     if (
@@ -93,6 +95,29 @@ export async function POST(req: Request) {
       tableAdjustments,
       memoAdjustments: memo.loanRateAdjustments,
     });
+    const lprDiscountForGeneration = mortgageLprDiscount ?? memo.mortgageLprDiscount ?? null;
+    if (replacementAdjustments && replacementAdjustments.length === 0 && lprDiscountForGeneration != null && lprDiscountForGeneration > 0) {
+      const loanStartEntry = loanStartDate
+        ? null
+        : await prisma.txRecord.findFirst({
+            where: {
+              householdId,
+              accountId: plan.accountId,
+              type: TransactionType.transfer,
+              source: { in: ["debt_borrow_in", "debt_financed_purchase"] },
+              deletedAt: null,
+            },
+            orderBy: [{ date: "asc" }, { createdAt: "asc" }],
+            select: { date: true },
+          });
+      replacementAdjustments = buildMortgageLprRateAdjustments({
+        discount: lprDiscountForGeneration,
+        throughDate: formatDateUtc(new Date()),
+        fromDate: loanStartDate || (loanStartEntry ? formatDateUtc(loanStartEntry.date) : plan.startDate ? formatDateUtc(plan.startDate) : undefined),
+        includeUnchanged: true,
+        basis: "lpr_quote",
+      });
+    }
     const adjustments = replacementAdjustments ?? currentAdjustments
       .filter((item) => item.effectiveDate !== effectiveDate);
     if (!replacementAdjustments) adjustments.push({ effectiveDate, annualRate });

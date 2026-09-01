@@ -14,6 +14,8 @@ export type MortgageBankExecutionRate = {
   source: "benchmark" | "lpr";
 };
 
+export type MortgageLprAdjustmentBasis = "annual_reprice" | "lpr_quote";
+
 // PBOC RMB loan benchmark rates, over-5-year term. Used for pre-LPR mortgage loans.
 export const MORTGAGE_BENCHMARK_RATE_HISTORY: MortgageBankExecutionRate[] = [
   { date: "2010-10-20", rate: 6.14, source: "benchmark" },
@@ -110,7 +112,9 @@ export function inferMortgageLprDiscountFromRateAdjustments(adjustments: LoanRat
     const effectiveDate = dateOnlyToUtcDate(adjustment.effectiveDate);
     if (!effectiveDate || !Number.isFinite(adjustment.annualRate) || adjustment.annualRate <= 0) continue;
 
-    const lpr = getLatestFiveYearLpr(formatDateOnly(addUtcDays(effectiveDate, -1)));
+    const lpr =
+      getLatestFiveYearLpr(adjustment.effectiveDate) ??
+      getLatestFiveYearLpr(formatDateOnly(addUtcDays(effectiveDate, -1)));
     if (!lpr) continue;
 
     const spread = roundRate(adjustment.annualRate - lpr.fiveYearRate);
@@ -135,6 +139,7 @@ export function buildMortgageLprRateAdjustments(params: {
   repriceDay?: number;
   firstRepriceYear?: number;
   includeUnchanged?: boolean;
+  basis?: MortgageLprAdjustmentBasis;
 }) {
   const through = dateOnlyToUtcDate(params.throughDate);
   if (!through || !Number.isFinite(params.discount) || params.discount <= 0) return [];
@@ -142,6 +147,7 @@ export function buildMortgageLprRateAdjustments(params: {
   const repriceMonth = Math.min(12, Math.max(1, Math.trunc(params.repriceMonth ?? 1)));
   const repriceDay = Math.min(31, Math.max(1, Math.trunc(params.repriceDay ?? 1)));
   const from = params.fromDate ? dateOnlyToUtcDate(params.fromDate) : null;
+  const basis = params.basis ?? (from ? "lpr_quote" : "annual_reprice");
   const firstRepriceYearFromDate = from
     ? (() => {
         const fromYear = from.getUTCFullYear();
@@ -156,6 +162,23 @@ export function buildMortgageLprRateAdjustments(params: {
     ? (getMortgageBankExecutionRate(params.fromDate)?.rate ?? MORTGAGE_BASE_BENCHMARK_RATE)
     : MORTGAGE_BASE_BENCHMARK_RATE) * params.discount);
   const rows: LoanRateAdjustment[] = [];
+
+  if (basis === "lpr_quote") {
+    for (const quote of FIVE_YEAR_LPR_HISTORY) {
+      const effectiveDate = dateOnlyToUtcDate(quote.date);
+      if (!effectiveDate) continue;
+      if (effectiveDate > through) break;
+      if (from && effectiveDate <= from) continue;
+
+      const annualRate = roundRate(quote.fiveYearRate + spread);
+      if (params.includeUnchanged || Math.abs(annualRate - previousRate) >= 0.0005) {
+        rows.push({ effectiveDate: quote.date, annualRate });
+        previousRate = annualRate;
+      }
+    }
+
+    return normalizeLoanRateAdjustments(rows);
+  }
 
   for (let year = firstRepriceYear; year <= throughYear; year += 1) {
     const effectiveDate = new Date(Date.UTC(year, repriceMonth - 1, repriceDay));

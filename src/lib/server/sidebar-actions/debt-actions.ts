@@ -418,6 +418,7 @@ export async function createDebtTransaction(formData: FormData) {
       throughDate: formatDateUtc(new Date()),
       fromDate: formatDateUtc(date),
       includeUnchanged: true,
+      basis: "lpr_quote",
     });
   }
 

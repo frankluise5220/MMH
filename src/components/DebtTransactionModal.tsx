@@ -1008,9 +1008,17 @@ export function DebtTransactionModal({
       setHistoryConfirmOpen(true);
       return;
     }
+    let generatedMortgageRateRows: HistoricalRateRow[] = [];
+    if (!showHistoricalRates && showMortgageLoanFields && mortgageLprDiscount.trim()) {
+      const generated = buildCurrentMortgageLprGeneration({ alertOnInvalid: true });
+      if (!generated) return;
+      generatedMortgageRateRows = generated.rows;
+    }
     const historicalRates = showHistoricalRates
       ? serializeHistoricalRateRows(historicalRateRows, t)
-      : { ok: true as const, text: "" };
+      : generatedMortgageRateRows.length > 0
+        ? serializeHistoricalRateRows(generatedMortgageRateRows, t)
+        : { ok: true as const, text: "" };
     if (!historicalRates.ok) {
       window.alert(historicalRates.error);
       setHistoricalRatesOpen(true);
@@ -1436,31 +1444,49 @@ export function DebtTransactionModal({
     showHistoricalRates,
   ]);
   const formatRateInput = (value: number) => value.toFixed(3).replace(/\.?0+$/, "");
-  function applyMortgageLprDiscount(options?: { silent?: boolean }) {
-    const rawDiscount = mortgageLprDiscount.trim();
-    const discount = rawDiscount ? Number(rawDiscount) : 1;
-    if (!Number.isFinite(discount) || discount <= 0) {
-      if (!options?.silent) window.alert(t("debtTx.alert.lprDiscountInvalid"));
-      return;
-    }
-    const loanDate = isValidDateInput(date) ? date : today;
-    if (!rawDiscount && !options?.silent) setMortgageLprDiscount(formatRateInput(discount));
-    const quote = getMortgageBankExecutionRate(loanDate);
-    const fetchedAnnualRate = quote ? quote.rate * discount : null;
-    if (fetchedAnnualRate != null && (!annualRateManuallyEdited || !options?.silent || !annualRate.trim())) {
-      setAnnualRate(formatRateInput(fetchedAnnualRate));
-    }
-    const adjustments = buildMortgageLprRateAdjustments({
+  function buildMortgageLprHistoricalRateRows(discount: number, loanDate: string) {
+    return buildMortgageLprRateAdjustments({
       discount,
       throughDate: today,
       fromDate: loanDate,
       includeUnchanged: true,
+      basis: "lpr_quote",
+    }).map((item) => createHistoricalRateRow(
+      item.effectiveDate,
+      formatRateInput(item.annualRate),
+    ));
+  }
+
+  function buildCurrentMortgageLprGeneration(options?: { alertOnInvalid?: boolean; fillDefaultDiscount?: boolean }) {
+    const rawDiscount = mortgageLprDiscount.trim();
+    const discount = rawDiscount ? Number(rawDiscount) : 1;
+    if (!Number.isFinite(discount) || discount <= 0) {
+      if (options?.alertOnInvalid) window.alert(t("debtTx.alert.lprDiscountInvalid"));
+      return null;
+    }
+    const loanDate = isValidDateInput(date) ? date : today;
+    if (!rawDiscount && options?.fillDefaultDiscount) setMortgageLprDiscount(formatRateInput(discount));
+    return {
+      discount,
+      loanDate,
+      rows: buildMortgageLprHistoricalRateRows(discount, loanDate),
+    };
+  }
+
+  function applyMortgageLprDiscount(options?: { silent?: boolean }) {
+    const generated = buildCurrentMortgageLprGeneration({
+      alertOnInvalid: !options?.silent,
+      fillDefaultDiscount: !options?.silent,
     });
-    if (adjustments.length > 0) {
-      setHistoricalRateRows(adjustments.map((item) => createHistoricalRateRow(
-        item.effectiveDate,
-        formatRateInput(item.annualRate),
-      )));
+    if (!generated) return;
+
+    const quote = getMortgageBankExecutionRate(generated.loanDate);
+    const fetchedAnnualRate = quote ? quote.rate * generated.discount : null;
+    if (fetchedAnnualRate != null && (!annualRateManuallyEdited || !options?.silent || !annualRate.trim())) {
+      setAnnualRate(formatRateInput(fetchedAnnualRate));
+    }
+    if (generated.rows.length > 0) {
+      setHistoricalRateRows(generated.rows);
       setShowHistoricalRates(true);
     }
   }
@@ -2047,8 +2073,17 @@ export function DebtTransactionModal({
                                   type="button"
                                   className="secondary-button h-8 shrink-0 px-3 text-xs"
                                   onClick={() => {
+                                    const generated = buildCurrentMortgageLprGeneration({
+                                      alertOnInvalid: true,
+                                      fillDefaultDiscount: true,
+                                    });
+                                    if (!generated) return;
                                     setShowHistoricalRates(true);
-                                    setHistoricalRateRows((prev) => prev.length > 0 ? prev : [createHistoricalRateRow(firstRepaymentDate, annualRate)]);
+                                    setHistoricalRateRows((prev) => prev.length > 0
+                                      ? prev
+                                      : generated.rows.length > 0
+                                        ? generated.rows
+                                        : [createHistoricalRateRow(firstRepaymentDate, annualRate)]);
                                     setHistoricalRatesOpen(true);
                                   }}
                                 >
@@ -2192,11 +2227,21 @@ export function DebtTransactionModal({
                         checked={showHistoricalRates}
                         onChange={(event) => {
                           const checked = event.target.checked;
-                          setShowHistoricalRates(checked);
                           if (checked) {
-                            setHistoricalRateRows((prev) => prev.length > 0 ? prev : [createHistoricalRateRow()]);
+                            const generated = buildCurrentMortgageLprGeneration({
+                              alertOnInvalid: true,
+                              fillDefaultDiscount: true,
+                            });
+                            if (!generated) return;
+                            setShowHistoricalRates(true);
+                            setHistoricalRateRows((prev) => prev.length > 0
+                              ? prev
+                              : generated.rows.length > 0
+                                ? generated.rows
+                                : [createHistoricalRateRow()]);
                             setHistoricalRatesOpen(true);
                           } else {
+                            setShowHistoricalRates(false);
                             setHistoricalRateRows([]);
                             setHistoricalRatesOpen(false);
                           }
@@ -2222,7 +2267,16 @@ export function DebtTransactionModal({
                         type="button"
                         className="secondary-button h-8 px-3 text-xs"
                         onClick={() => {
-                          setHistoricalRateRows((prev) => prev.length > 0 ? prev : [createHistoricalRateRow()]);
+                          const generated = buildCurrentMortgageLprGeneration({
+                            alertOnInvalid: true,
+                            fillDefaultDiscount: true,
+                          });
+                          if (!generated) return;
+                          setHistoricalRateRows((prev) => prev.length > 0
+                            ? prev
+                            : generated.rows.length > 0
+                              ? generated.rows
+                              : [createHistoricalRateRow()]);
                           setHistoricalRatesOpen(true);
                         }}
                       >
