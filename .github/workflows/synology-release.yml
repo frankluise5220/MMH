@@ -1,6 +1,8 @@
 name: Release Synology DSM SQLite SPK
 
 on:
+  push:
+    branches: [codex/mmh-0.1.47-test]
   release:
     types: [published]
   workflow_dispatch:
