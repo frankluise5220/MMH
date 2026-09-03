@@ -783,6 +783,99 @@ function parseCategoryTreeRows(
   });
 }
 
+type DuplicateNameTarget = "institution" | "familyMember" | "counterparty";
+
+/**
+ * Preview-stage duplicate-name check for master data (institution / family member / counterparty).
+ * Within each kind, name and shortName share one uniqueness pool: a later row whose name or
+ * shortName equals any earlier row's name/shortName (same kind), or any existing record's
+ * name/shortName, is marked as an error so it cannot be imported.
+ * This mirrors the server-side 409 behavior of assertInstitutionDisplayNamesUnique /
+ * assertCounterpartyDisplayNamesUnique. Counterparty rows additionally conflict with the whole
+ * institution name space (existing + earlier in-batch institution/family-member rows), because
+ * creating a counterparty syncs an institution mirror through assertInstitutionDisplayNamesUnique.
+ */
+function validateDuplicateNames(
+  rows: ImportAccountRow[],
+  options: {
+    groups: Array<{ id: string; name: string }>;
+    institutions: Array<{ id: string; name: string; shortName?: string | null; type?: string | null }>;
+    counterparties: Array<{ id: string; name: string; shortName?: string | null; type?: string | null }>;
+    t: (key: string, params?: Record<string, string | number>) => string;
+  },
+) {
+  const existingByTarget: Record<DuplicateNameTarget, Set<string>> = {
+    institution: new Set<string>(),
+    familyMember: new Set<string>(),
+    counterparty: new Set<string>(),
+  };
+  const addToExisting = (target: DuplicateNameTarget, value: unknown) => {
+    const key = normalizeImportHeader(value);
+    if (key) existingByTarget[target].add(key);
+  };
+  for (const item of options.institutions) {
+    addToExisting("institution", item.name);
+    addToExisting("institution", item.shortName);
+    // Creating a counterparty syncs an institution mirror, so a counterparty row also
+    // conflicts with every existing institution name/shortName.
+    addToExisting("counterparty", item.name);
+    addToExisting("counterparty", item.shortName);
+    if (item.type === "family_member") {
+      addToExisting("familyMember", item.name);
+      addToExisting("familyMember", item.shortName);
+    }
+  }
+  for (const item of options.counterparties) {
+    addToExisting("counterparty", item.name);
+    addToExisting("counterparty", item.shortName);
+  }
+  for (const item of options.groups) {
+    addToExisting("familyMember", item.name);
+  }
+
+  // Same-batch claimed names: value -> owning row (sheet + row number). Claim priority follows
+  // MASTER_TARGETS import order (institution -> familyMember -> counterparty), so the row that
+  // would actually be created first wins and later conflicting rows are flagged.
+  const batchClaimed: Record<DuplicateNameTarget, Map<string, { sheet: string; sourceRow: number }>> = {
+    institution: new Map(),
+    familyMember: new Map(),
+    counterparty: new Map(),
+  };
+  const findBatchOwner = (target: ImportTarget, key: string) => {
+    const direct = batchClaimed[target as DuplicateNameTarget]?.get(key);
+    if (direct) return direct;
+    if (target === "counterparty") {
+      return batchClaimed.institution.get(key) ?? batchClaimed.familyMember.get(key);
+    }
+    return undefined;
+  };
+
+  for (const target of ["institution", "familyMember", "counterparty"] as const) {
+    for (const row of rows.filter((item) => item.target === target)) {
+      const nameKey = normalizeImportHeader(row.name);
+      const shortKey = normalizeImportHeader(row.shortName);
+      if (nameKey && shortKey && nameKey === shortKey) {
+        row.errors.push(options.t("settings.accounts.import.nameEqualsShortName"));
+        continue;
+      }
+      for (const [value, key] of [[row.name, nameKey], [row.shortName, shortKey]] as const) {
+        if (!key) continue;
+        const batchOwner = findBatchOwner(target, key);
+        if (batchOwner) {
+          row.errors.push(options.t("settings.accounts.import.duplicateNameInBatch", { value, sheet: batchOwner.sheet, row: batchOwner.sourceRow }));
+          continue;
+        }
+        if (existingByTarget[target].has(key)) {
+          row.errors.push(options.t("settings.accounts.import.duplicateNameExisting", { value }));
+          continue;
+        }
+        batchClaimed[target].set(key, { sheet: row.sheet, sourceRow: row.sourceRow });
+      }
+    }
+  }
+  return rows;
+}
+
 function validateReferences(
   rows: ImportAccountRow[],
   options: {
@@ -949,7 +1042,7 @@ function buildAccountImportRows(
         : [];
       parsedRows.push(...(nextRows.length > 0 ? nextRows : parseSheetRows(sheetName, definition, sheetRows, t, options.baseCurrency)));
     }
-    return validateReferences(parsedRows, { ...options, t });
+    return validateReferences(validateDuplicateNames(parsedRows, { ...options, t }), { ...options, t });
   });
 }
 
