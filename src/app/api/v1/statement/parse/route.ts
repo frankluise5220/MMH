@@ -6,6 +6,8 @@ import {
   SPDB_CREDIT_CARD_TRANSACTION_REPORT_PROFILE,
   matchStatementHeaderProfile,
   type SpdbCreditCardTransactionField,
+  CREDIT_CARD_HTML_TRANSACTION_FIELD_HEADERS,
+  findFirstStatementHeaderIndex,
 } from "@/lib/statement/header-catalog";
 import {
   inferSignedAmountInflowSign,
@@ -1765,6 +1767,322 @@ function inferCmbDelimitedSignedAmountInflowSign(
   return inferSignedAmountInflowSign(samples);
 }
 
+type MinshengTransactionHeaderIndexes = {
+  transactionDate: number;
+  postingDate: number;
+  description: number;
+  transactionAmount: number;
+  cardLast4: number;
+};
+
+type MinshengRow = { rowText: string; cells: string[] };
+
+function findMinshengTransactionHeaderIndexes(cells: string[]): MinshengTransactionHeaderIndexes | null {
+  const headers = cells.map(normalizeTableHeaderCell);
+  const find = (pattern: RegExp) => headers.findIndex((header) => pattern.test(header));
+  const indexes = {
+    transactionDate: find(/交易日期|交易日/),
+    postingDate: find(/记账日期|记账日|入账日期|入账日/),
+    description: find(/交易摘要|交易说明|摘要|交易描述/),
+    transactionAmount: find(/交易金额/),
+    cardLast4: find(/卡号末四位|卡号后四位|末四位|后四位/),
+  };
+  if (indexes.transactionDate < 0 || indexes.postingDate < 0 || indexes.description < 0 || indexes.transactionAmount < 0 || indexes.cardLast4 < 0) return null;
+  return indexes;
+}
+
+function extractMinshengLabeledMoney(text: string, labels: string[]) {
+  const normalized = stripHtml(text);
+  for (const label of labels) {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = normalized.match(new RegExp(`${escaped}\\s*[:：]?\\s*([+-]?[\\d,]+(?:\\.\\d+)?)`, "i"));
+    const amount = parseLooseNumber(match?.[1]);
+    if (amount !== undefined) return amount;
+  }
+  return undefined;
+}
+
+function extractMinshengCreditCardMeta(text: string): ParsedItemMeta & { accountName?: string } {
+  const plain = stripHtml(text);
+  const period = extractStatementPeriod(text);
+  const billingDay = extractDateAfterLabels(plain, ["本期账单日"]);
+  const dueDate = extractDateAfterLabels(plain, ["本期最后还款日", "最后还款日"]);
+  const statementAmount = extractMinshengLabeledMoney(plain, [
+    "本期应还金额",
+    "本期应还款金额",
+    "本期应还款总额",
+    "应还金额",
+  ]);
+  const minimumPayment = extractMinshengLabeledMoney(plain, ["最低还款额"]);
+  const creditLimit = extractCreditLimit(plain);
+  const cardNumberMasked = extractCreditCardLast4(plain, "民生银行");
+  const ownerName = plain.match(/尊敬的\s*([\u4e00-\u9fa5·]{2,8})\s*(?:先生|女士|小姐)?/)?.[1]?.trim();
+  const accountCore = `民生银行信用卡${cardNumberMasked ? `(${cardNumberMasked})` : ""}`;
+  const accountName = ownerName ? `${ownerName}的${accountCore}` : accountCore;
+
+  return {
+    institutionName: "民生银行",
+    ownerName: ownerName || undefined,
+    cardNumberMasked: cardNumberMasked || undefined,
+    statementCurrency: "CNY",
+    minimumPayment,
+    creditLimit,
+    billingDay: billingDay?.day,
+    repaymentDay: dueDate?.day,
+    statementAmount,
+    statementPeriodStart: period?.start?.ymd,
+    statementPeriodEnd: period?.end?.ymd ?? billingDay?.ymd,
+    statementDueDate: dueDate?.ymd,
+    accountName,
+  };
+}
+
+function isMinshengCreditCardStatement(text: string) {
+  const compact = compactStatementText(text);
+  return /(民生银行|民生信用卡|ChinaMinshengBank|CMBC)/i.test(compact) &&
+    /(信用卡|贷记卡)/i.test(compact) &&
+    /(本期账单日|本期最后还款日|本期应还金额)/i.test(compact) &&
+    /(交易日|记账日|交易摘要|交易金额)/i.test(compact);
+}
+
+function cleanMinshengCells(cells: string[]) {
+  return cells
+    .map((cell) => cell.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+}
+
+function isMinshengHeaderOrSectionText(value: string) {
+  const compact = normalizeTableHeaderCell(value).toLowerCase();
+  return /^(交易日期|交易日|sold|记账日期|记账日|posted|交易摘要|交易说明|摘要|description|交易金额|amount|卡号末四位|卡号后四位|末四位|后四位|last4digits|其他|其它)$/.test(compact);
+}
+
+function normalizeMinshengDateCell(
+  value: string | undefined,
+  period: ReturnType<typeof extractStatementPeriod>,
+  meta: ParsedItemMeta,
+) {
+  const raw = String(value ?? "").trim().replace(/\s+/g, "");
+  const fullDate = normalizeDateTimeCell(raw);
+  if (fullDate) return fullDate;
+
+  const periodDate = normalizeStatementMonthDayCell(raw, period);
+  if (periodDate) return periodDate;
+
+  const match = raw.match(/^(\d{1,2})[\/.\-](\d{1,2})$/);
+  if (!match) return undefined;
+
+  const month = Number(match[1]);
+  const day = Number(match[2]);
+  const anchors = [
+    period?.end,
+    parseDateParts(meta.statementPeriodEnd),
+    parseDateParts(meta.statementDueDate),
+    parseDateParts(meta.statementPeriodStart),
+  ].filter((item): item is StatementDateParts => Boolean(item));
+
+  for (const anchor of anchors) {
+    const ymd = ymdFromParts(anchor.year, month, day);
+    if (ymd) return ymd;
+  }
+
+  return undefined;
+}
+
+function addMinshengParsedItem(
+  items: ParsedItem[],
+  seen: Set<string>,
+  params: {
+    meta: ParsedItemMeta & { accountName?: string };
+    baseMeta: ParsedItemMeta;
+    date: string;
+    postDate?: string;
+    description: string;
+    amountRaw: string;
+    amount: number;
+    rowCardNumberMasked?: string;
+  },
+) {
+  const { meta, baseMeta, date, postDate, description, amountRaw, amount, rowCardNumberMasked = "" } = params;
+  const transferText = `${description} ${amountRaw}`;
+  const classified = classifyCreditCardSignedAmount({
+    description,
+    transferText,
+    amount,
+    signedAmountInflowSign: null,
+  });
+  const cardAccount = rowCardNumberMasked
+    ? `${meta.institutionName || "民生银行"}信用卡(${rowCardNumberMasked})`
+    : meta.accountName;
+  const key = `${date}|${postDate ?? ""}|${rowCardNumberMasked}|${description}|${amount}`;
+  if (seen.has(key)) return;
+  seen.add(key);
+
+  items.push({
+    rawText: `${date} ${description} ${amountRaw}`,
+    type: classified.type,
+    date,
+    amount: Math.abs(amount),
+    inflow: classified.isInflow ? Math.abs(amount) : undefined,
+    outflow: !classified.isInflow ? Math.abs(amount) : undefined,
+    account: cardAccount,
+    fromAccount: classified.isRepaymentTransfer ? paymentTailAccountName(transferText) || undefined : undefined,
+    toAccount: classified.isRepaymentTransfer ? cardAccount : undefined,
+    counterparty: aliasMatch(description).counterparty || undefined,
+    institution: aliasMatch(description).institution || undefined,
+    category: aliasMatch(description).category || undefined,
+    remark: postDate && postDate !== date ? `${description}（入账日 ${postDate}）` : description,
+    postedDate: postDate,
+    _meta: {
+      ...baseMeta,
+      cardNumberMasked: rowCardNumberMasked || baseMeta.cardNumberMasked,
+    },
+  });
+}
+
+function parseMinshengCreditCardStatement(text: string): ParsedItem[] {
+  if (!isMinshengCreditCardStatement(text) || !/<tr[\s>]/i.test(text)) return [];
+
+  const meta = extractMinshengCreditCardMeta(text);
+  const period = extractStatementPeriod(text);
+  const baseMeta: ParsedItemMeta = {
+    institutionName: meta.institutionName,
+    ownerName: meta.ownerName,
+    cardNumberMasked: meta.cardNumberMasked,
+    statementCurrency: meta.statementCurrency,
+    minimumPayment: meta.minimumPayment,
+    creditLimit: meta.creditLimit,
+    billingDay: meta.billingDay,
+    repaymentDay: meta.repaymentDay,
+    statementAmount: meta.statementAmount,
+    statementPeriodStart: meta.statementPeriodStart,
+    statementPeriodEnd: meta.statementPeriodEnd,
+    statementDueDate: meta.statementDueDate,
+  };
+
+  let inCurrentTransactions = false;
+  let transactionRows: MinshengRow[] = [];
+
+  for (const row of text.match(/<tr\b[\s\S]*?<\/tr>/gi) ?? []) {
+    const rowText = stripHtml(row);
+    const compactRowText = rowText.replace(/\s+/g, "");
+    const cells = extractTableCells(row).map((cell) => cell.trim());
+
+    if (/(上期|前期)账单交易明细/.test(compactRowText)) {
+      inCurrentTransactions = false;
+      transactionRows = [];
+      continue;
+    }
+    if (/本期账单交易明细/.test(compactRowText)) {
+      inCurrentTransactions = true;
+      transactionRows = [];
+      continue;
+    }
+    if (!inCurrentTransactions) continue;
+    if (/(还款明细|积分明细|分期说明|分期计划|账单说明|温馨提示|风险提示|版权所有|客户服务热线)/i.test(compactRowText)) break;
+
+    transactionRows.push({ rowText, cells });
+  }
+
+  const items: ParsedItem[] = [];
+  const seen = new Set<string>();
+  const headerRowIndex = transactionRows.findIndex((row) => Boolean(findMinshengTransactionHeaderIndexes(row.cells)));
+  const headerIndexes = headerRowIndex >= 0
+    ? findMinshengTransactionHeaderIndexes(transactionRows[headerRowIndex]?.cells ?? [])
+    : null;
+
+  if (headerIndexes) {
+    for (const { cells } of transactionRows.slice(headerRowIndex + 1)) {
+      const maxHeaderIndex = Math.max(...Object.values(headerIndexes));
+      if (cells.length <= maxHeaderIndex) continue;
+
+      const date = normalizeMinshengDateCell(cells[headerIndexes.transactionDate], period, baseMeta);
+      const postDate = normalizeMinshengDateCell(cells[headerIndexes.postingDate], period, baseMeta) || date;
+      const description = cleanupMerchantName(cells[headerIndexes.description] ?? "");
+      const amountRaw = cells[headerIndexes.transactionAmount] ?? "";
+      const amount = parseMoney(amountRaw);
+      if (!date || !description || amount === null || amount === 0) continue;
+      if (isStatementSummaryText(description) || isNoiseLine(description)) continue;
+
+      addMinshengParsedItem(items, seen, {
+        meta,
+        baseMeta,
+        date,
+        postDate,
+        description,
+        amountRaw,
+        amount,
+        rowCardNumberMasked: cells[headerIndexes.cardLast4]?.match(/\d{4}/)?.[0] ?? "",
+      });
+    }
+    return items;
+  }
+
+  for (let rowIndex = 0; rowIndex < transactionRows.length; rowIndex += 1) {
+    const values = cleanMinshengCells(transactionRows[rowIndex]?.cells ?? []);
+    const dates = values
+      .map((value) => normalizeMinshengDateCell(value, period, baseMeta))
+      .filter((value): value is string => Boolean(value));
+    if (!dates[0]) continue;
+
+    const date = dates[0];
+    const postDate = dates[1] ?? date;
+    let description = "";
+    let amountRaw = "";
+    let amount: number | null = null;
+    let rowCardNumberMasked = "";
+
+    for (let nextIndex = rowIndex + 1; nextIndex < Math.min(transactionRows.length, rowIndex + 9); nextIndex += 1) {
+      const nextValues = cleanMinshengCells(transactionRows[nextIndex]?.cells ?? []);
+      if (nextValues.some((value) => normalizeMinshengDateCell(value, period, baseMeta))) break;
+      const meaningfulValues = nextValues.filter((value) => !isMinshengHeaderOrSectionText(value));
+      if (meaningfulValues.length === 0) continue;
+
+      if (!description) {
+        const descriptionCandidate = meaningfulValues.find((value) =>
+          parseMoney(value) === null &&
+          !/^\d{4}$/.test(value) &&
+          !normalizeMinshengDateCell(value, period, baseMeta)
+        );
+        if (descriptionCandidate) description = cleanupMerchantName(descriptionCandidate);
+      }
+
+      if (amount === null) {
+        for (const value of meaningfulValues) {
+          if (/^\d{4}$/.test(value) || normalizeMinshengDateCell(value, period, baseMeta)) continue;
+          const parsedAmount = parseMoney(value);
+          if (parsedAmount !== null && parsedAmount !== 0) {
+            amount = parsedAmount;
+            amountRaw = value;
+            break;
+          }
+        }
+      }
+
+      if (!rowCardNumberMasked) {
+        rowCardNumberMasked = meaningfulValues.find((value) => /^\d{4}$/.test(value)) ?? "";
+      }
+
+      if (description && amount !== null && rowCardNumberMasked) break;
+    }
+
+    if (!description || amount === null || amount === 0) continue;
+    if (isStatementSummaryText(description) || isNoiseLine(description)) continue;
+
+    addMinshengParsedItem(items, seen, {
+      meta,
+      baseMeta,
+      date,
+      postDate,
+      description,
+      amountRaw,
+      amount,
+      rowCardNumberMasked,
+    });
+  }
+
+  return items;
+}
+
 type CreditCardStatementTemplate = {
   name: string;
   matches: (text: string) => boolean;
@@ -1772,6 +2090,11 @@ type CreditCardStatementTemplate = {
 };
 
 const CREDIT_CARD_STATEMENT_TEMPLATES: CreditCardStatementTemplate[] = [
+  {
+    name: "minsheng",
+    matches: isMinshengCreditCardStatement,
+    parse: parseMinshengCreditCardStatement,
+  },
   {
     name: "china-merchants-bank",
     matches: isChinaMerchantsBankCreditCardStatement,
@@ -1956,10 +2279,199 @@ function parseCreditCardHtmlStatement(text: string): ParsedItem[] {
   return items;
 }
 
+type GenericCreditCardHtmlHeaderIndexes = {
+  transactionDate: number;
+  postedAt: number;
+  description: number;
+  amount: number;
+  outflow: number;
+  inflow: number;
+  cardLast4: number;
+  transactionType: number;
+  counterAccount: number;
+  remark: number;
+  currency: number;
+  originalAmount: number;
+};
+
+const CREDIT_CARD_HTML_TRANSACTION_BREAK_RE =
+  /(账单说明|温馨提示|分期说明|分期计划|积分明细|还款明细|版权所有|客户服务热线)/i;
+
+function findGenericCreditCardHtmlHeaderIndexes(cells: string[]): GenericCreditCardHtmlHeaderIndexes | null {
+  const indexes = {
+    transactionDate: findFirstStatementHeaderIndex(cells, CREDIT_CARD_HTML_TRANSACTION_FIELD_HEADERS.transactionDate),
+    postedAt: findFirstStatementHeaderIndex(cells, CREDIT_CARD_HTML_TRANSACTION_FIELD_HEADERS.postedAt),
+    description: findFirstStatementHeaderIndex(cells, CREDIT_CARD_HTML_TRANSACTION_FIELD_HEADERS.description),
+    amount: findFirstStatementHeaderIndex(cells, CREDIT_CARD_HTML_TRANSACTION_FIELD_HEADERS.amount),
+    outflow: findFirstStatementHeaderIndex(cells, CREDIT_CARD_HTML_TRANSACTION_FIELD_HEADERS.outflow),
+    inflow: findFirstStatementHeaderIndex(cells, CREDIT_CARD_HTML_TRANSACTION_FIELD_HEADERS.inflow),
+    cardLast4: findFirstStatementHeaderIndex(cells, CREDIT_CARD_HTML_TRANSACTION_FIELD_HEADERS.cardLast4),
+    transactionType: findFirstStatementHeaderIndex(cells, CREDIT_CARD_HTML_TRANSACTION_FIELD_HEADERS.transactionType),
+    counterAccount: findFirstStatementHeaderIndex(cells, CREDIT_CARD_HTML_TRANSACTION_FIELD_HEADERS.counterAccount),
+    remark: findFirstStatementHeaderIndex(cells, CREDIT_CARD_HTML_TRANSACTION_FIELD_HEADERS.remark),
+    currency: findFirstStatementHeaderIndex(cells, CREDIT_CARD_HTML_TRANSACTION_FIELD_HEADERS.currency),
+    originalAmount: findFirstStatementHeaderIndex(cells, CREDIT_CARD_HTML_TRANSACTION_FIELD_HEADERS.originalAmount),
+  };
+
+  const hasDate = indexes.transactionDate >= 0;
+  const hasAmount = indexes.amount >= 0 || indexes.outflow >= 0 || indexes.inflow >= 0;
+  const hasDescription = indexes.description >= 0 || indexes.remark >= 0;
+  return hasDate && hasAmount && hasDescription ? indexes : null;
+}
+
+function findGenericCreditCardHtmlHeader(text: string) {
+  for (const row of text.match(/<tr\b[\s\S]*?<\/tr>/gi) ?? []) {
+    const cells = extractTableCells(row).map((cell) => cell.trim());
+    const headerIndexes = findGenericCreditCardHtmlHeaderIndexes(cells);
+    if (headerIndexes) {
+      return { rowText: stripHtml(row), cells, headerIndexes };
+    }
+  }
+  return null;
+}
+
+function parseGenericCreditCardHtmlStatement(text: string): ParsedItem[] {
+  const header = findGenericCreditCardHtmlHeader(text);
+  if (!header) return [];
+
+  const meta = extractCreditCardMeta(text);
+  const period = extractStatementPeriod(text);
+  const institutionName = meta.institutionName || "信用卡";
+  const baseMeta: ParsedItemMeta = {
+    institutionName,
+    ownerName: meta.ownerName,
+    cardNumberMasked: meta.cardNumberMasked,
+    creditLimit: meta.creditLimit,
+    billingDay: meta.billingDay,
+    repaymentDay: meta.repaymentDay,
+    statementAmount: meta.statementAmount,
+    statementPeriodStart: meta.statementPeriodStart,
+    statementPeriodEnd: meta.statementPeriodEnd,
+    statementDueDate: meta.statementDueDate,
+  };
+
+  const items: ParsedItem[] = [];
+  const seen = new Set<string>();
+  let headerIndexes: GenericCreditCardHtmlHeaderIndexes | null = null;
+  let sawTransactionHeader = false;
+  const signedAmountInflowSign = inferCreditCardHtmlSignedAmountInflowSign(text);
+
+  for (const row of text.match(/<tr\b[\s\S]*?<\/tr>/gi) ?? []) {
+    const rowText = stripHtml(row);
+    const cells = extractTableCells(row).map((cell) => cell.trim());
+
+    const detectedHeader = findGenericCreditCardHtmlHeaderIndexes(cells);
+    if (detectedHeader) {
+      sawTransactionHeader = true;
+      headerIndexes = detectedHeader;
+      continue;
+    }
+    if (!sawTransactionHeader || !headerIndexes) continue;
+    if (CREDIT_CARD_HTML_TRANSACTION_BREAK_RE.test(rowText.replace(/\s+/g, ""))) break;
+    if (isStatementSummaryText(rowText)) continue;
+
+    const maxHeaderIndex = Math.max(
+      headerIndexes.transactionDate,
+      headerIndexes.postedAt,
+      headerIndexes.description,
+      headerIndexes.amount,
+      headerIndexes.outflow,
+      headerIndexes.inflow,
+    );
+    if (cells.length <= maxHeaderIndex) continue;
+
+    const date = normalizeStatementMonthDayCell(cells[headerIndexes.transactionDate], period);
+    const postDate = headerIndexes.postedAt >= 0
+      ? normalizeStatementMonthDayCell(cells[headerIndexes.postedAt], period) || date
+      : date;
+    const description = cleanupMerchantName(
+      (headerIndexes.description >= 0 ? cells[headerIndexes.description] : cells[headerIndexes.remark]) ?? "",
+    );
+    if (!date || !description) continue;
+    if (isStatementSummaryText(description) || isNoiseLine(description)) continue;
+
+    let amountRaw = headerIndexes.amount >= 0 ? cells[headerIndexes.amount] ?? "" : "";
+    let amount = parseMoney(amountRaw);
+    if (amount === null || amount === 0) {
+      const outflowRaw = headerIndexes.outflow >= 0 ? cells[headerIndexes.outflow] ?? "" : "";
+      const inflowRaw = headerIndexes.inflow >= 0 ? cells[headerIndexes.inflow] ?? "" : "";
+      const outflowAmount = parseMoney(outflowRaw);
+      const inflowAmount = parseMoney(inflowRaw);
+      if (outflowAmount !== null && outflowAmount !== 0) {
+        amount = -Math.abs(outflowAmount);
+        amountRaw = outflowRaw;
+      } else if (inflowAmount !== null && inflowAmount !== 0) {
+        amount = Math.abs(inflowAmount);
+        amountRaw = inflowRaw;
+      }
+    }
+    if (amount === null || amount === 0) continue;
+
+    const rowCardNumberMasked = headerIndexes.cardLast4 >= 0
+      ? extractSpdbCardLast4(cells[headerIndexes.cardLast4] ?? "")
+      : "";
+    const counterAccount = headerIndexes.counterAccount >= 0
+      ? cleanupMerchantName(cells[headerIndexes.counterAccount] ?? "")
+      : "";
+    const currency = headerIndexes.currency >= 0
+      ? extractStatementCurrency(cells[headerIndexes.currency] ?? "")
+      : undefined;
+
+    const absAmount = Math.abs(amount);
+    const transferText = `${description} ${amountRaw}`;
+    const { type, isRepaymentTransfer, isInflow } = classifyCreditCardSignedAmount({
+      description,
+      transferText,
+      amount,
+      signedAmountInflowSign,
+    });
+    const paymentFromAccount = type === "transfer"
+      ? counterAccount || paymentTailAccountName(transferText)
+      : "";
+    const cardAccount = rowCardNumberMasked
+      ? `${institutionName}信用卡(${rowCardNumberMasked})`
+      : meta.accountName || `${institutionName}信用卡`;
+    const key = `${date}|${postDate ?? ""}|${rowCardNumberMasked}|${description}|${amount}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    items.push({
+      rawText: `${date} ${description} ${amountRaw}`.trim(),
+      type,
+      date,
+      amount: absAmount,
+      inflow: isInflow ? absAmount : undefined,
+      outflow: !isInflow ? absAmount : undefined,
+      account: cardAccount,
+      fromAccount: isRepaymentTransfer ? paymentFromAccount || undefined : undefined,
+      toAccount: isRepaymentTransfer ? cardAccount : undefined,
+      counterparty: aliasMatch(description).counterparty || undefined,
+      institution: aliasMatch(description).institution || undefined,
+      category: aliasMatch(description).category || undefined,
+      remark: postDate && postDate !== date ? `${description}（入账日 ${postDate}）` : description,
+      postedDate: postDate,
+      _meta: {
+        ...baseMeta,
+        cardNumberMasked: rowCardNumberMasked || baseMeta.cardNumberMasked,
+        statementCurrency: currency ?? baseMeta.statementCurrency,
+      },
+    });
+  }
+
+  return items;
+}
+
 function parseStructuredStatement(text: string): ParsedItem[] {
   const bankTemplateItems = parseKnownBankCreditCardStatement(text);
   if (bankTemplateItems.length > 0) return bankTemplateItems;
+
+  const genericHtmlItems = parseGenericCreditCardHtmlStatement(text);
+  if (genericHtmlItems.length > 0) return genericHtmlItems;
   if (hasSpdbCreditCardTransactionHeader(text)) return [];
+
+  if (/<[^>]+>/.test(text) && !findGenericCreditCardHtmlHeader(text) && !hasSpdbCreditCardTransactionHeader(text)) {
+    return [];
+  }
 
   const htmlItems = parseCreditCardHtmlStatement(text);
   if (htmlItems.length > 0) return htmlItems;

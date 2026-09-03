@@ -104,7 +104,7 @@ const ASSET_SUBGROUPS: Array<{ key: string; label: string; kinds: string[] }> = 
   { key: "cash_like", label: "现金", kinds: ["cash"] },
   { key: "bank_debit_like", label: "借记卡", kinds: ["bank_debit"] },
   { key: "ewallet_like", label: "电子钱包", kinds: ["ewallet"] },
-  { key: "deposit_like", label: "定期", kinds: ["deposit"] },
+  { key: "deposit_like", label: "存款", kinds: ["deposit"] },
 ];
 const SECTION_ICON: Record<string, React.ElementType> = {
   资产: Landmark,

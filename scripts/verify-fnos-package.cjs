@@ -23,6 +23,26 @@ function expect(condition, message) {
   if (!condition) failures.push(message);
 }
 
+// Migration SQL files are executed verbatim by `prisma migrate deploy`; a
+// UTF-8 BOM is parsed as an invalid statement prefix and fails every deploy
+// with "syntax error at or near \ufeff". Shipping a BOM'd migration would
+// break every dev/test database updated after the release.
+function scanMigrationSqlForBom() {
+  const migrationsDir = path.join(root, "prisma", "migrations");
+  if (!fs.existsSync(migrationsDir)) return;
+  for (const entry of fs.readdirSync(migrationsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const sqlPath = path.join(migrationsDir, entry.name, "migration.sql");
+    if (!fs.existsSync(sqlPath)) continue;
+    const buffer = fs.readFileSync(sqlPath);
+    if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
+      failures.push(`prisma/migrations/${entry.name}/migration.sql starts with a UTF-8 BOM; strip it before releasing (prisma migrate deploy would fail with "syntax error at or near \\ufeff").`);
+    }
+  }
+}
+
+scanMigrationSqlForBom();
+
 function normalizeFnosTarget(value) {
   const raw = String(value || "").trim().toLowerCase().replace(/_/g, "-");
   if (["", "x86", "x86-64", "x64", "amd64"].includes(raw)) {
@@ -342,6 +362,10 @@ expect(/20260823_add_entry_origin/.test(buildScript) && /entryOrigin/.test(build
 expect(/20260826_add_stock_latest_price_date/.test(buildScript) && /addColumnIfMissing\(db, "stock_holdings", "latestPriceDate", "DATETIME"\)/.test(buildScript), "fnOS SQLite migrations must add StockHolding.latestPriceDate for existing databases.");
 expect(/20260828_add_fixed_asset_type/.test(buildScript) && /addColumnIfMissing\(db, "Account", "fixedAssetType", "TEXT"\)/.test(buildScript) && /addColumnIfMissing\(db, "property_assets", "assetType", "TEXT NOT NULL DEFAULT 'property'"\)/.test(buildScript), "fnOS SQLite migrations must add fixed asset type fields for existing databases.");
 expect(/20260829_add_credit_card_billing_day/.test(buildScript) && /createCreditCardBillingDayTable\(db\)/.test(buildScript) && /CreditCardBillingDay_accountId_effectiveDate_key/.test(buildScript) && /CreditCardBillingDay/.test(buildScript) && /updatedAt/.test(buildScript), "fnOS SQLite migrations must create, index, and timestamp CreditCardBillingDay for existing databases.");
+expect(/20260902_add_regular_invest_plan_name/.test(buildScript) && /addColumnIfMissing\(db, "RegularInvestPlan", "planName", "TEXT"\)/.test(buildScript), "fnOS SQLite migrations must add RegularInvestPlan.planName for existing databases.");
+expect(/20260903_normalize_ewallet_institution_type/.test(buildScript) && /SET \\+"type\\+" = 'payment' WHERE \\+"type\\+" = 'ewallet'/.test(buildScript), "fnOS SQLite migrations must normalize legacy ewallet institutions to the payment type for existing databases.");
+expect(/20260903_add_fund_profile_trading_calendar/.test(buildScript) && /addColumnIfMissing\(db, "FundProfile", "tradingCalendar", "TEXT"\)/.test(buildScript) && /jp_fund/.test(buildScript), "fnOS SQLite migrations must add FundProfile.tradingCalendar and Japan fund calendar support for existing databases.");
+expect(/20260903_restore_fund_profile_company_code/.test(buildScript) && /addColumnIfMissing\(db, "FundProfile", "fundCompanyCode", "TEXT"\)/.test(buildScript), "fnOS SQLite migrations must restore FundProfile.fundCompanyCode for existing databases.");
 for (const tableName of [
   "transactions",
   "fund_transactions",

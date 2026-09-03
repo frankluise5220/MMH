@@ -224,16 +224,16 @@ export function parseStatementTemplateRows(
   const accountIndex = plainAccountIndex >= 0 ? plainAccountIndex : legacyCardIndex;
   const legacyCardAccountMode = plainAccountIndex < 0 && legacyCardIndex >= 0;
   const counterIndex = reader.findIndex([...fieldHeaders.transferCounterAccount, ...fieldHeaders.repaymentAccount]);
-  const amountIndex = spdbIndexes?.amount ?? reader.findFieldIndex("amount");
   const outflowIndex = reader.findFieldIndex("outflow");
   const inflowIndex = reader.findFieldIndex("inflow");
+  const amountIndex = spdbIndexes?.amount ?? reader.findFieldIndex("amount");
   const categoryIndex = reader.findFieldIndex("category");
   const merchantIndex = reader.findFieldIndex("institution");
   const tagsIndex = reader.findFieldIndex("tags");
   const remarkIndex = spdbIndexes?.description ?? reader.findFieldIndex("remark");
   const postedIndex = spdbIndexes?.postingDate ?? reader.findFieldIndex("postedAt");
 
-  if (dateIndex < 0 || amountIndex < 0) return [];
+  if (dateIndex < 0 || (amountIndex < 0 && inflowIndex < 0 && outflowIndex < 0)) return [];
 
   const signedAmountInflowSign = inferSignedAmountInflowSign(dataRows.flatMap((row) => {
     const rawInflowText = inflowIndex >= 0 ? String(row[inflowIndex] ?? "").trim() : "";
@@ -249,15 +249,14 @@ export function parseStatementTemplateRows(
     const institution = String(row[merchantIndex] ?? "").trim();
     const remark = String(row[remarkIndex] ?? "").trim();
     return [{
-      amount: parseAmount(row[amountIndex] ?? ""),
+      amount: amountIndex >= 0 ? parseAmount(row[amountIndex] ?? "") : null,
       text: `${typeText} ${category} ${institution} ${remark} ${rowText(row)}`,
     }];
   }));
 
   return dataRows.flatMap<StatementExcelPreviewItem>((row) => {
     const date = normalizeDate(row[dateIndex] ?? "");
-    const amountSigned = parseAmount(row[amountIndex] ?? "");
-    if (!date || amountSigned === null || amountSigned === 0) return [];
+    if (!date) return [];
 
     const typeText = String(row[typeIndex] ?? "").trim().toLowerCase();
     const rawOutflow = parsePositiveAmountCell(row, outflowIndex);
@@ -265,12 +264,16 @@ export function parseStatementTemplateRows(
     const rawOutflowText = outflowIndex >= 0 ? String(row[outflowIndex] ?? "").trim() : "";
     const rawInflowText = inflowIndex >= 0 ? String(row[inflowIndex] ?? "").trim() : "";
     const hasExplicitFlow = rawInflow > 0 || rawOutflow > 0 || !!rawInflowText || !!rawOutflowText;
+    const amountSigned = amountIndex >= 0 ? parseAmount(row[amountIndex] ?? "") : null;
+    const amount = amountSigned === null
+      ? rawInflow || rawOutflow
+      : Math.abs(amountSigned) || rawInflow || rawOutflow;
+    if (amount === 0) return [];
     const explicitDirection: "in" | "out" | null =
       rawInflow > 0 && rawOutflow <= 0 ? "in"
       : rawOutflow > 0 && rawInflow <= 0 ? "out"
       : null;
     const signedDirection = hasExplicitFlow ? explicitDirection : signedAmountDirection(amountSigned, signedAmountInflowSign);
-    const amount = Math.abs(amountSigned) || rawInflow || rawOutflow;
     const rawAccountValue = accountIndex >= 0 ? String(row[accountIndex] ?? "").trim() : defaultAccountName;
     const contextAccount = accountIndex < 0 ? defaultAccountName : "";
     const cardLast4 = legacyCardAccountMode ? rawAccountValue.match(/\d{4}(?!\d)/)?.[0] ?? "" : "";

@@ -12,7 +12,7 @@ import { cache } from "react";
 import { toNumber } from "@/lib/date-utils";
 import { AccountKind, FundCashFlowKind, FundSubtype, StockTransactionAction } from "@prisma/client";
 import type { HouseholdContext } from "@/lib/server/household-scope";
-import { getLatestFundNavMap } from "@/lib/fund/navCache";
+import { getEffectiveLatestFundNavMap } from "@/lib/fund/navCache";
 import { getFundProfileNameMap, normalizeFundDisplayName } from "@/lib/fund/fundProfile";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
@@ -400,7 +400,7 @@ export const computeInvestBalances = cache(
   const displayPendingByHoldingKey = await loadDisplayPendingCostByHoldingKey(ctx, fundAccountIds);
   const latestNavByCode = new Map<string, { nav: number; date: string }>();
   if (fundCodes.length > 0) {
-    const caches = await getLatestFundNavMap(fundCodes);
+    const caches = await getEffectiveLatestFundNavMap(fundCodes);
     for (const [fundCode, c] of caches) {
       const d = c.navDate;
       const dateStr = `${String(d.getUTCMonth() + 1).padStart(2, "0")}.${String(d.getUTCDate()).padStart(2, "0")}`;
@@ -985,7 +985,7 @@ export const computePositionDisplay = cache(
   const latestNavByCode = new Map<string, { nav: number; date: string; name: string | null }>();
   const profileNameByCode = await getFundProfileNameMap(fundCodes);
   if (fundCodes.length > 0) {
-    const caches = await getLatestFundNavMap(fundCodes);
+    const caches = await getEffectiveLatestFundNavMap(fundCodes);
     for (const [fundCode, c] of caches) {
       // Keep the full YYYY-MM-DD date in the payload; clients format for display.
       latestNavByCode.set(fundCode, { nav: c.nav, date: c.navDate.toISOString().slice(0, 10), name: c.name });

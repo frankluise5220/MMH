@@ -1387,6 +1387,48 @@ const MIGRATIONS = [
     },
   },
   {
+    version: "20260902_add_regular_invest_plan_name",
+    description: "Add RegularInvestPlan.planName for editable scheduled task names",
+    apply(db) {
+      if (tableExists(db, "RegularInvestPlan")) {
+        addColumnIfMissing(db, "RegularInvestPlan", "planName", "TEXT");
+      }
+    },
+  },
+  {
+    version: "20260903_normalize_ewallet_institution_type",
+    description: "Normalize legacy wallet institutions to the payment-platform type",
+    apply(db) {
+      if (tableExists(db, "Institution")) {
+        db.prepare("UPDATE \\"Institution\\" SET \\"type\\" = 'payment' WHERE \\"type\\" = 'ewallet'").run();
+      }
+    },
+  },
+  {
+    version: "20260903_add_fund_profile_trading_calendar",
+    description: "Add fund-level NAV trading calendar to fund profiles",
+    apply(db) {
+      if (!tableExists(db, "FundProfile")) return;
+      addColumnIfMissing(db, "FundProfile", "tradingCalendar", "TEXT");
+      db.prepare(
+        "UPDATE \\"FundProfile\\" SET \\"tradingCalendar\\" = CASE " +
+          "WHEN \\"fundName\\" LIKE '%\\u9999\\u6E2F%' OR \\"fundName\\" LIKE '%\\u6E2F\\u80A1%' OR \\"fundName\\" LIKE '%Hang Seng%' OR \\"fundName\\" LIKE '%Hong Kong%' THEN 'hk_fund' " +
+          "WHEN \\"fundName\\" LIKE '%\\u65E5\\u672C%' OR \\"fundName\\" LIKE '%Nikkei%' OR \\"fundName\\" LIKE '%TOPIX%' OR \\"fundName\\" LIKE '%Japan%' THEN 'jp_fund' " +
+          "WHEN \\"fundName\\" LIKE '%QDII%' OR \\"fundName\\" LIKE '%\\u7F8E\\u56FD%' OR \\"fundName\\" LIKE '%\\u5168\\u7403%' OR \\"fundName\\" LIKE '%NASDAQ%' OR \\"fundName\\" LIKE '%USA%' THEN 'us_fund' " +
+          "ELSE 'cn_fund' END WHERE \\"tradingCalendar\\" IS NULL",
+      ).run();
+    },
+  },
+  {
+    version: "20260903_restore_fund_profile_company_code",
+    description: "Restore FundProfile.fundCompanyCode for schema convergence",
+    apply(db) {
+      if (tableExists(db, "FundProfile")) {
+        addColumnIfMissing(db, "FundProfile", "fundCompanyCode", "TEXT");
+      }
+    },
+  },
+  {
     version: "20260826_add_stock_latest_price_date",
     description: "Add StockHolding.latestPriceDate for latest stock valuation timestamps",
     apply(db) {

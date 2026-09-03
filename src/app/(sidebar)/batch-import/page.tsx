@@ -217,6 +217,9 @@ type ImportFileParseResult = {
 };
 type ImportDebugDetails = Record<string, string | number | boolean | null>;
 
+const BATCH_IMPORT_ITEMS_STORAGE_KEY = "batchImportItems:v2";
+const LEGACY_BATCH_IMPORT_ITEMS_STORAGE_KEY = "batchImportItems";
+
 function createImportTraceId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
   return `import-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -1667,6 +1670,8 @@ export default function BatchImportPage() {
   const [bookCategoriesLoaded, setBookCategoriesLoaded] = useState(false);
   const [categoryRuleSamples, setCategoryRuleSamples] = useState<StatementHistoricalCategorySample[]>([]);
   const [categoryRuleSamplesLoaded, setCategoryRuleSamplesLoaded] = useState(false);
+  const accountMatcherRef = useRef(createImportAccountMatcher<AccountOption>([]));
+  const accountIdentityConflictRef = useRef(createImportAccountIdentityConflictChecker<AccountOption>([]));
   const refreshCategoryRuleSamples = useCallback(async () => {
     const res = await fetch("/api/v1/statement/recognition-rules", { cache: "no-store" });
     const data = await res.json().catch(() => null) as { samples?: StatementHistoricalCategorySample[] } | null;
@@ -1691,7 +1696,8 @@ export default function BatchImportPage() {
 
   useEffect(() => {
     try {
-      const data = sessionStorage.getItem("batchImportItems");
+      sessionStorage.removeItem(LEGACY_BATCH_IMPORT_ITEMS_STORAGE_KEY);
+      const data = sessionStorage.getItem(BATCH_IMPORT_ITEMS_STORAGE_KEY);
       const storedItems = data ? JSON.parse(data) as ParsedItem[] : [];
       if (Array.isArray(storedItems) && storedItems.length > 0) {
         setActiveImportKind("normal");
@@ -1700,7 +1706,7 @@ export default function BatchImportPage() {
         setSelected(new Set());
       }
     } catch {
-      sessionStorage.removeItem("batchImportItems");
+      sessionStorage.removeItem(BATCH_IMPORT_ITEMS_STORAGE_KEY);
     }
   }, []);
 
@@ -1712,6 +1718,9 @@ export default function BatchImportPage() {
       .then((res) => res.json())
       .then((data) => {
         if (cancelled || !data?.ok || !Array.isArray(data.accounts)) return;
+        const activeAccounts = data.accounts.filter((account: AccountOption) => account.isActive !== false);
+        accountMatcherRef.current = createImportAccountMatcher(activeAccounts);
+        accountIdentityConflictRef.current = createImportAccountIdentityConflictChecker(activeAccounts);
         setAccountOptions(data.accounts);
         postImportDebugLog(importTraceIdRef.current, "accounts_request_succeeded", {
           accountCount: data.accounts.length,
@@ -1786,21 +1795,11 @@ export default function BatchImportPage() {
     () => accountOptions.filter((account) => account.isActive !== false),
     [accountOptions],
   );
-  const getAccountMatch = useMemo(() => {
-    const matchImportAccount = createImportAccountMatcher(activeAccountOptions);
-    const cache = new Map<string, ReturnType<typeof matchImportAccount>>();
-    return (value: string): ReturnType<typeof matchImportAccount> => {
-      const key = value.trim();
-      if (cache.has(key)) return cache.get(key)!;
-      const match = matchImportAccount(key);
-      cache.set(key, match);
-      return match;
-    };
-  }, [activeAccountOptions]);
   const getAccountIdentityConflict = useMemo(
-    () => createImportAccountIdentityConflictChecker(activeAccountOptions),
-    [activeAccountOptions],
+    () => accountIdentityConflictRef.current,
+    [],
   );
+  const getAccountMatch = useCallback((value: string) => accountMatcherRef.current(value.trim()), []);
   const findMatchedAccountId = useCallback((value: string): string | null => (
     getAccountMatch(value).account?.id ?? null
   ), [getAccountMatch]);
@@ -2184,7 +2183,7 @@ export default function BatchImportPage() {
         setMessage(formatText("batchImport.noRecordsRecognizedMessage", { name: file.name, headers }));
         return;
       }
-      sessionStorage.setItem("batchImportItems", JSON.stringify(parsed));
+      sessionStorage.setItem(BATCH_IMPORT_ITEMS_STORAGE_KEY, JSON.stringify(parsed));
       setItems(parsed);
       setFundUploadItems([]);
       setFundPreviewItems([]);
@@ -3064,7 +3063,7 @@ export default function BatchImportPage() {
         kind: "normal",
         importBatchId: data.importBatchId ?? null,
       });
-      sessionStorage.removeItem("batchImportItems");
+      sessionStorage.removeItem(BATCH_IMPORT_ITEMS_STORAGE_KEY);
     } catch (error) {
       postImportDebugLog(importTraceIdRef.current, "import_failed", {
         importKind: "bill",
@@ -3166,7 +3165,7 @@ export default function BatchImportPage() {
   }, [importing, fundSelected, fundPreviewItems, fundImportErrorIssues, fundImportIssues, fundRuleRows, fundImportContext, formatText, t]);
 
   const handleCancel = useCallback(() => {
-    sessionStorage.removeItem("batchImportItems");
+    sessionStorage.removeItem(BATCH_IMPORT_ITEMS_STORAGE_KEY);
     setActiveImportKind(null);
     setImporting(false);
     setUploading(false);

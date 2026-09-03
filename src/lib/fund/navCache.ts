@@ -2,8 +2,10 @@ import { prisma } from "@/lib/db/prisma";
 import { queryFundNav } from "@/lib/fund/queryApi";
 import {
   ensureFundProfile,
-  fundTradingCalendarForName,
-  syncFundNavDateOffsetFromLatestNav,
+  fundTradingCalendarForProfile,
+  getFundProfile,
+  getFundProfiles,
+  latestFundNavTargetDateForOffset,
 } from "@/lib/fund/fundProfile";
 import { AccountKind, FundProductType } from "@prisma/client";
 
@@ -36,8 +38,10 @@ export async function fetchHistoricalNavList(
 
   while (true) {
     const url = `http://api.fund.eastmoney.com/f10/lsjz?fundCode=${fundCode}&pageIndex=${pageIndex}&pageSize=${pageSize}&startDate=${startDate}&endDate=${endDate}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
     try {
-      const res = await fetch(url, { headers: NAV_HEADERS, cache: "no-store" });
+      const res = await fetch(url, { headers: NAV_HEADERS, cache: "no-store", signal: controller.signal });
       if (!res.ok) break;
       const text = await res.text();
       let data: any;
@@ -58,6 +62,8 @@ export async function fetchHistoricalNavList(
       pageIndex++;
     } catch {
       break;
+    } finally {
+      clearTimeout(timeout);
     }
   }
   return allItems;
@@ -111,15 +117,15 @@ export async function preloadNavListToCache(
   navList: NavListItem[]
 ): Promise<number> {
   let written = 0;
-  // Check if any entry has a restricted ("限制") status and fetch purchase limit if so
-  const hasRestriction = navList.some(n => n.sgzt?.includes("限制"));
+  // Check if any entry has a restricted purchase status and fetch purchase limit if so
+  const hasRestriction = navList.some(n => n.sgzt?.includes("\u9650\u5236"));
   let purchaseLimit: number | null = null;
   if (hasRestriction) {
     purchaseLimit = await fetchPurchaseLimit(fundCode);
   }
   for (const navItem of navList) {
     try {
-      const limit = (navItem.sgzt?.includes("限制")) ? purchaseLimit : undefined;
+      const limit = (navItem.sgzt?.includes("\u9650\u5236")) ? purchaseLimit : undefined;
       await setFundNav(fundCode, utcDate(navItem.date), navItem.nav, navItem.cumNav, undefined, navItem.sgzt, limit ?? undefined);
       written++;
     } catch {
@@ -210,7 +216,7 @@ export async function refreshFundNavCacheRanges(
         fetched: 0,
         written: 0,
         ok: false,
-        error: error instanceof Error ? error.message : "获取失败",
+        error: error instanceof Error ? error.message : "Fetch failed",
       });
     }
   }
@@ -242,6 +248,14 @@ async function ensureFundProfileForAccount(fundCode: string, accountId?: string)
       }))?.householdId
     : null;
   await ensureFundProfile(fundCode, { householdId });
+}
+
+async function getFundAccountNavContext(accountId?: string) {
+  if (!accountId) return null;
+  return prisma.account.findUnique({
+    where: { id: accountId },
+    select: { householdId: true, tradingCalendar: true },
+  });
 }
 
 /**
@@ -352,7 +366,7 @@ export async function getFundNavFromCacheOnly(
 
 /**
  * Scrape the fund's daily purchase limit from the Tiantian Fund detail page.
- * Only called when sgzt contains "限制" (restricted).
+ * Only called when sgzt contains the restricted purchase status token.
  */
 const PURCHASE_LIMIT_CACHE = new Map<string, number | null>();
 
@@ -364,7 +378,7 @@ export async function fetchPurchaseLimit(fundCode: string): Promise<number | nul
       cache: "no-store",
     });
     const html = await res.text();
-    const m = html.match(/单日累计购买上限(\d+)元/);
+    const m = html.match(/\u5355\u65E5\u7D2F\u8BA1\u8D2D\u4E70\u4E0A\u9650(\d+)\u5143/);
     const limit = m ? parseInt(m[1], 10) : null;
     PURCHASE_LIMIT_CACHE.set(fundCode, limit);
     return limit;
@@ -383,7 +397,7 @@ export async function fetchPurchaseLimit(fundCode: string): Promise<number | nul
  * @param nav Unit NAV
  * @param cumNav Cumulative NAV (optional)
  * @param name Fund name (optional)
- * @param sgzt Purchase status (optional, e.g. "开放申购", "暂停申购", "限制大额申购")
+ * @param sgzt Purchase status from the external provider.
  */
 export async function setFundNav(
   fundCode: string,
@@ -471,6 +485,26 @@ export async function getLatestFundNav(
   };
 }
 
+export async function getLatestFundNavOnOrBefore(
+  fundCode: string,
+  navDate: Date,
+): Promise<{ id: string; nav: number; cumNav: number | null; navDate: Date; name: string | null } | null> {
+  const record = await prisma.fundNavCache.findFirst({
+    where: { fundCode, navDate: { lte: navDate } },
+    orderBy: { navDate: "desc" },
+  });
+
+  if (!record) return null;
+
+  return {
+    id: record.id,
+    nav: Number(record.nav),
+    cumNav: record.cumNav ? Number(record.cumNav) : null,
+    navDate: record.navDate,
+    name: record.name,
+  };
+}
+
 /**
  * Batch query the latest NAV for multiple fund codes.
  *
@@ -525,6 +559,51 @@ export async function getLatestFundNavMap(
   return result;
 }
 
+export async function getEffectiveLatestFundNavMap(
+  fundCodes: string[],
+  now: Date = new Date(),
+): Promise<Map<string, { id: string; nav: number; cumNav: number | null; navDate: Date; name: string | null }>> {
+  const codes = [...new Set(fundCodes.map((code) => code.trim()).filter(Boolean))];
+  const rawLatest = await getLatestFundNavMap(codes);
+  if (codes.length === 0) return rawLatest;
+
+  const profiles = await getFundProfiles(codes);
+  const profileByCode = new Map(profiles.map((profile) => [profile.fundCode, profile]));
+  const result = new Map<string, { id: string; nav: number; cumNav: number | null; navDate: Date; name: string | null }>();
+
+  await Promise.all(codes.map(async (fundCode) => {
+    const profile = profileByCode.get(fundCode);
+    const targetDate = latestFundNavTargetDateForOffset({
+      navDateOffset: profile?.navDateOffset ?? 0,
+      tradingCalendar: profile ? fundTradingCalendarForProfile(profile) : "cn_fund",
+      now,
+    });
+    const targetNavDate = utcDate(targetDate);
+    const latest = rawLatest.get(fundCode);
+    if (latest && latest.navDate.getTime() <= targetNavDate.getTime()) {
+      result.set(fundCode, latest);
+      return;
+    }
+    const bounded = await getLatestFundNavOnOrBefore(fundCode, targetNavDate);
+    if (bounded) result.set(fundCode, bounded);
+  }));
+
+  return result;
+}
+
+async function resolveEffectiveLatestNavTarget(fundCode: string, accountId?: string, now: Date = new Date()) {
+  const account = await getFundAccountNavContext(accountId);
+  const profile = await getFundProfile(fundCode);
+  const tradingCalendar = profile
+    ? fundTradingCalendarForProfile(profile)
+    : account?.tradingCalendar ?? "cn_fund";
+  return latestFundNavTargetDateForOffset({
+    navDateOffset: profile?.navDateOffset ?? 0,
+    tradingCalendar,
+    now,
+  });
+}
+
 /**
  * Refresh the latest available NAV for a fund and persist it through FundNavCache.
  *
@@ -537,17 +616,14 @@ export async function refreshLatestFundNav(
   fundCode: string,
   accountId?: string,
 ): Promise<{ id: string; nav: number; cumNav: number | null; navDate: Date; name: string | null } | null> {
-  const apiData = await queryFundNav(fundCode, undefined, accountId);
+  const targetDate = await resolveEffectiveLatestNavTarget(fundCode, accountId);
+  const targetNavDate = utcDate(targetDate);
+  const cached = await getFundNavFromCacheOnly(fundCode, targetNavDate);
+  if (cached) return getLatestFundNavOnOrBefore(fundCode, targetNavDate);
+
+  const apiData = await queryFundNav(fundCode, targetDate, accountId);
   if (!apiData?.date || !Number.isFinite(apiData.nav)) {
-    const cached = await getLatestFundNav(fundCode);
-    if (cached) {
-      await syncFundNavDateOffsetFromLatestNav({
-        fundCode,
-        lastNavDate: cached.navDate,
-        tradingCalendar: fundTradingCalendarForName(cached.name),
-      });
-    }
-    return cached;
+    return getLatestFundNavOnOrBefore(fundCode, targetNavDate);
   }
 
   const navDate = utcDate(apiData.date);
@@ -559,15 +635,7 @@ export async function refreshLatestFundNav(
     apiData.name ?? null,
   );
 
-  const latest = await getLatestFundNav(fundCode);
-  if (latest) {
-    await syncFundNavDateOffsetFromLatestNav({
-      fundCode,
-      lastNavDate: latest.navDate,
-      tradingCalendar: fundTradingCalendarForName(latest.name ?? apiData.name),
-    });
-  }
-  return latest;
+  return getLatestFundNavOnOrBefore(fundCode, targetNavDate);
 }
 
 export type RefreshHeldFundLatestNavsResult = {

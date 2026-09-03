@@ -30,7 +30,11 @@ import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 import { BALANCE_INITIALIZATION_SOURCE, encodeBalanceReconcileTarget } from "@/lib/balance-reconcile";
 import { ensureBrokerageCashAccountForStockAccount } from "@/lib/server/brokerage-cash-account";
 import {
+  ACCOUNT_INSTITUTION_REQUIRED_ERROR,
+  ACCOUNT_INSTITUTION_TYPE_ERROR,
   STOCK_ACCOUNT_INSTITUTION_ERROR,
+  accountInstitutionTypeIsAllowed,
+  accountRequiresInstitution,
   isStockAccountInstitutionType,
   isStockInvestmentAccount,
 } from "@/lib/account-institution-rules";
@@ -141,11 +145,17 @@ export async function POST(req: NextRequest) {
       ? await prisma.institution.findFirst({ where: { id: requestedInstitutionId, householdId } })
       : null;
     if (requestedInstitutionId && !institution) return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "机构不存在或不属于当前账簿" }, { status: 400 });
+    if (accountRequiresInstitution(kind, investProductType) && !institution) {
+      return NextResponse.json({ ok: false, code: "ACCOUNT_INSTITUTION_REQUIRED", error: ACCOUNT_INSTITUTION_REQUIRED_ERROR }, { status: 400 });
+    }
     if (isConsumerLoan && (!institution || institution.type !== "debt")) {
       return NextResponse.json({ ok: false, code: "CONSUMER_LOAN_INSTITUTION_REQUIRED", error: "Consumer loan accounts must be linked to a lending institution" }, { status: 400 });
     }
     if (isStockInvestmentAccount(kind, investProductType) && !isStockAccountInstitutionType(institution?.type)) {
       return NextResponse.json({ ok: false, code: "STOCK_ACCOUNT_INSTITUTION_REQUIRED", error: STOCK_ACCOUNT_INSTITUTION_ERROR }, { status: 400 });
+    }
+    if (institution && !accountInstitutionTypeIsAllowed(kind, investProductType, institution.type, { includeLegacyDebtInstitution: true })) {
+      return NextResponse.json({ ok: false, code: "ACCOUNT_INSTITUTION_TYPE_MISMATCH", error: ACCOUNT_INSTITUTION_TYPE_ERROR }, { status: 400 });
     }
     const counterparty = requestedCounterpartyId
       ? await prisma.counterparty.findFirst({ where: { id: requestedCounterpartyId, householdId } })
@@ -422,11 +432,17 @@ export async function PUT(req: NextRequest) {
     if (nextInstitutionId) {
       if (!nextInstitution) return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "机构不存在或不属于当前账簿" }, { status: 400 });
     }
+    if (accountRequiresInstitution(nextKind, nextInvestProductTypeForInstitution) && !nextInstitution) {
+      return NextResponse.json({ ok: false, code: "ACCOUNT_INSTITUTION_REQUIRED", error: ACCOUNT_INSTITUTION_REQUIRED_ERROR }, { status: 400 });
+    }
     if (nextIsConsumerLoan && (!nextInstitution || nextInstitution.type !== "debt")) {
       return NextResponse.json({ ok: false, code: "CONSUMER_LOAN_INSTITUTION_REQUIRED", error: "Consumer loan accounts must be linked to a lending institution" }, { status: 400 });
     }
     if (isStockInvestmentAccount(nextKind, nextInvestProductTypeForInstitution) && !isStockAccountInstitutionType(nextInstitution?.type)) {
       return NextResponse.json({ ok: false, code: "STOCK_ACCOUNT_INSTITUTION_REQUIRED", error: STOCK_ACCOUNT_INSTITUTION_ERROR }, { status: 400 });
+    }
+    if (nextInstitution && !accountInstitutionTypeIsAllowed(nextKind, nextInvestProductTypeForInstitution, nextInstitution.type, { includeLegacyDebtInstitution: true })) {
+      return NextResponse.json({ ok: false, code: "ACCOUNT_INSTITUTION_TYPE_MISMATCH", error: ACCOUNT_INSTITUTION_TYPE_ERROR }, { status: 400 });
     }
     const hasDebtOwner = Boolean(nextCounterparty?.id || nextInstitution?.id);
     data.debtDirection = nextKind === "bank_credit" || nextIsConsumerLoan

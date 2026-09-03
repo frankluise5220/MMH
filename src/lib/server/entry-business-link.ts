@@ -3,6 +3,7 @@ import { Prisma, TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 import { isFundUnitsReconcileEntry, isLicensedInsuranceEntry } from "@/lib/transaction-semantics";
+import { chunk, IN_CHUNK_SIZE } from "@/lib/server/prisma-in-chunks";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 
 type TxClient = Prisma.TransactionClient | typeof prisma;
@@ -470,46 +471,63 @@ export async function listEntryBusinessDeleteImpacts(
     row.propertyTransactionId ??
     null;
 
-  const rows = await prisma.entryBusinessLink.findMany({
-    where: {
-      householdId: ctx.householdId,
-      deletedAt: null,
-      OR: [
-        { cashEntryId: { in: ids } },
-        { businessEntryId: { in: ids } },
-        { fundTransactionId: { in: ids } },
-        { insuranceTransactionId: { in: ids } },
-        { wealthTransactionId: { in: ids } },
-        { depositTransactionId: { in: ids } },
-        { preciousMetalTransactionId: { in: ids } },
-        { stockTransactionId: { in: ids } },
-        { propertyTransactionId: { in: ids } },
-      ],
-    },
-    select: {
-      id: true,
-      cashEntryId: true,
-      businessEntryId: true,
-      fundTransactionId: true,
-      insuranceTransactionId: true,
-      wealthTransactionId: true,
-      depositTransactionId: true,
-      preciousMetalTransactionId: true,
-      stockTransactionId: true,
-      propertyTransactionId: true,
-      businessType: true,
-      linkType: true,
-      CashEntry: { select: { id: true, deletedAt: true } },
-      BusinessEntry: { select: { id: true, deletedAt: true } },
-      FundTransaction: { select: { id: true, deletedAt: true, source: true } },
-      InsuranceTransaction: { select: { id: true, deletedAt: true } },
-      WealthTransaction: { select: { id: true, deletedAt: true } },
-      DepositTransaction: { select: { id: true, deletedAt: true } },
-      PreciousMetalTransaction: { select: { id: true, deletedAt: true } },
-      StockTransaction: { select: { id: true, deletedAt: true } },
-      PropertyTransaction: { select: { id: true, deletedAt: true } },
-    },
-  });
+  // This query's OR contains 9 `{ in: ids }` clauses. A large batch (for
+  // example 195 rows) would accumulate about 9 x 195 = 1755 bound parameters,
+  // exceeding SQLite's 999 limit. Query in id chunks and merge with dedupe.
+  const linkSelect = {
+    id: true,
+    cashEntryId: true,
+    businessEntryId: true,
+    fundTransactionId: true,
+    insuranceTransactionId: true,
+    wealthTransactionId: true,
+    depositTransactionId: true,
+    preciousMetalTransactionId: true,
+    stockTransactionId: true,
+    propertyTransactionId: true,
+    businessType: true,
+    linkType: true,
+    CashEntry: { select: { id: true, deletedAt: true } },
+    BusinessEntry: { select: { id: true, deletedAt: true } },
+    FundTransaction: { select: { id: true, deletedAt: true, source: true } },
+    InsuranceTransaction: { select: { id: true, deletedAt: true } },
+    WealthTransaction: { select: { id: true, deletedAt: true } },
+    DepositTransaction: { select: { id: true, deletedAt: true } },
+    PreciousMetalTransaction: { select: { id: true, deletedAt: true } },
+    StockTransaction: { select: { id: true, deletedAt: true } },
+    PropertyTransaction: { select: { id: true, deletedAt: true } },
+  } as const;
+
+  const fetchLinks = (part: string[]) =>
+    prisma.entryBusinessLink.findMany({
+      where: {
+        householdId: ctx.householdId,
+        deletedAt: null,
+        OR: [
+          { cashEntryId: { in: part } },
+          { businessEntryId: { in: part } },
+          { fundTransactionId: { in: part } },
+          { insuranceTransactionId: { in: part } },
+          { wealthTransactionId: { in: part } },
+          { depositTransactionId: { in: part } },
+          { preciousMetalTransactionId: { in: part } },
+          { stockTransactionId: { in: part } },
+          { propertyTransactionId: { in: part } },
+        ],
+      },
+      select: linkSelect,
+    });
+
+  const seenLinkIds = new Set<string>();
+  const rows: Awaited<ReturnType<typeof fetchLinks>> = [];
+  for (const part of chunk(ids, IN_CHUNK_SIZE)) {
+    const partRows = await fetchLinks(part);
+    for (const row of partRows) {
+      if (seenLinkIds.has(row.id)) continue;
+      seenLinkIds.add(row.id);
+      rows.push(row);
+    }
+  }
 
   const unique = new Map<string, EntryBusinessDeleteImpact>();
   for (const row of rows) {
@@ -563,7 +581,7 @@ export async function listEntryBusinessDeleteImpacts(
       entryId: row.cashEntryId ?? "",
       businessEntryId: businessEntryId ?? "",
       counterpartEntryId,
-      businessType: row.businessType,
+      businessType: row.businessType as EntryBusinessType,
       linkType: row.linkType,
       legacyCombinedRecord: Boolean(row.cashEntryId && row.cashEntryId === row.businessEntryId),
       businessLabel,

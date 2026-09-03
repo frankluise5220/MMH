@@ -1,4 +1,4 @@
-﻿import { Suspense } from "react";
+import { Suspense } from "react";
 import { connection } from "next/server";
 import { cookies } from "next/headers";
 import { AccountKind } from "@prisma/client";

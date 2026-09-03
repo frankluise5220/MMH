@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, ChevronDown, ChevronRight, X } from "lucide-react";
 import type { AccountKind } from "@prisma/client";
@@ -8,7 +8,17 @@ import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config"
 import { kindIconName, kindColor, kindOrder } from "@/lib/account-kinds";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { FundConfirmDaysPanel } from "@/components/FundConfirmDaysModal";
+import { MultiSelectFilterDropdown } from "@/components/MultiSelectFilterDropdown";
 import { SmartSelect } from "@/components/SmartSelect";
+import {
+  AccountScopeFilter,
+  CASH_INSTITUTION_ID,
+  type AccountScopeValue,
+  type StatisticsAccountItem,
+  type StatisticsInstitutionItem,
+  type StatisticsUserItem,
+} from "@/components/AccountScopeFilter";
+import { AccountBatchImportButton } from "@/components/settings/AccountBatchImportButton";
 import { SettingsActionButton, SettingsPageHeader, SettingsPrimaryAddButton } from "@/components/settings/SettingsPageScaffold";
 import { buildAccountDisplayOption } from "@/lib/account-display";
 import { getAccountLabelFieldsPreference, getCreditCardLabelTemplatePreference } from "@/lib/client/appPreferences";
@@ -20,7 +30,9 @@ import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund
 import { useI18n } from "@/lib/i18n";
 import { CURRENCY_OPTIONS, normalizeCurrency } from "@/lib/currency";
 import {
-  STOCK_ACCOUNT_INSTITUTION_ERROR,
+  accountInstitutionTypeIsAllowed,
+  accountRequiresInstitution,
+  allowedInstitutionTypesForAccount,
   isStockAccountInstitutionType,
   isStockInvestmentAccount,
 } from "@/lib/account-institution-rules";
@@ -40,6 +52,7 @@ function kindIcon(k: string) {
 
 type Group = { id: string; name: string; sortOrder: number };
 type Institution = { id: string; name: string; shortName?: string | null; type?: string };
+type Counterparty = { id: string; name: string; shortName?: string | null; type?: string | null };
 type Account = {
   id: string; name: string; kind: AccountKind; currency: string; isActive: boolean;
   note: string | null;
@@ -57,7 +70,9 @@ type Account = {
   isConsumerLoan?: boolean | null;
 };
 
-const investmentProductTypeOptions = PRODUCT_TYPES.map((value) => ({ value, labelKey: `investment.product.${value}` }));
+const investmentProductTypeOptions = PRODUCT_TYPES
+  .filter((value) => value !== "deposit")
+  .map((value) => ({ value, labelKey: `investment.product.${value}` }));
 
 function normalizedAccountKind(account: Pick<Account, "kind" | "investProductType">): string {
   if (isFixedAssetAccountLike(account)) return "fixed_asset";
@@ -65,10 +80,14 @@ function normalizedAccountKind(account: Pick<Account, "kind" | "investProductTyp
 }
 
 function accountInstitutionTypeMatches(kind: string, investProductType: string | null | undefined, type: string | null | undefined) {
-  if (isStockInvestmentAccount(kind, investProductType)) return isStockAccountInstitutionType(type);
-  if (kind === "loan") return type === "debt";
-  return type !== "debt";
+  return accountInstitutionTypeIsAllowed(kind, investProductType, type, { includeLegacyDebtInstitution: true });
 }
+
+function allowedInstitutionTypesForEdit(kind: string | null | undefined, investProductType: string | null | undefined) {
+  return allowedInstitutionTypesForAccount(kind, investProductType, { includeLegacyDebtInstitution: true });
+}
+
+const SETTINGS_ACCOUNT_KIND_OPTIONS = kindOrder.filter((kind) => kind !== "loan");
 
 function getAccountDetailHref(account: Account) {
   const query = new URLSearchParams();
@@ -112,9 +131,10 @@ export default function SettingsAccountsPage() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [institutions, setInstitutions] = useState<Institution[]>([]);
-  const [selectedGroup, setSelectedGroup] = useState<string>("");
-  const [selectedInstitution, setSelectedInstitution] = useState<string>("");
-  const [selectedKinds, setSelectedKinds] = useState<string[]>([]);
+  const [counterparties, setCounterparties] = useState<Counterparty[]>([]);
+  const [scope, setScope] = useState<AccountScopeValue>({ userIds: [], institutionIds: [], accountIds: [] });
+  const [selectedAccountKinds, setSelectedAccountKinds] = useState<string[]>([]);
+  const [hideInactiveAccounts, setHideInactiveAccounts] = useState(false);
   const [baseCurrency, setBaseCurrency] = useState("CNY");
   const [accountNameQuery, setAccountNameQuery] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -122,7 +142,6 @@ export default function SettingsAccountsPage() {
   const [editError, setEditError] = useState("");
   const [collapsedKinds, setCollapsedKinds] = useState<Set<string>>(new Set());
   const [showCreateAccount, setShowCreateAccount] = useState(false);
-  const [showCreateConsumerLoan, setShowCreateConsumerLoan] = useState(false);
   const guideAccountSetup = searchParams.get("guide") === "accounts";
 
   // Delete account with password verification
@@ -139,6 +158,7 @@ export default function SettingsAccountsPage() {
       setGroups(cached.groups as Group[]);
       setAccounts(cached.accounts as Account[]);
       setInstitutions(cached.institutions as Institution[]);
+      setCounterparties((cached.counterparties ?? []) as Counterparty[]);
       setBaseCurrency(normalizeCurrency(cached.baseCurrency));
       return;
     }
@@ -151,6 +171,7 @@ export default function SettingsAccountsPage() {
     setGroups(data.groups as Group[]);
     setAccounts(data.accounts as Account[]);
     setInstitutions(data.institutions as Institution[]);
+    setCounterparties((data.counterparties ?? []) as Counterparty[]);
     setBaseCurrency(normalizeCurrency(data.baseCurrency));
   }
 
@@ -167,22 +188,25 @@ export default function SettingsAccountsPage() {
   // ---- Account handlers ----
   function openEdit(a: Account) {
     const normalizedKind = normalizedAccountKind(a);
+    const editKind = normalizedKind;
+    const editInvestProductType = editKind === "investment" ? (a.investProductType || "fund") : editKind === "fixed_asset" ? "property" : "";
+    const supportsInstitution = allowedInstitutionTypesForEdit(editKind, editInvestProductType).length > 0;
     setEditingId(a.id);
     setEditError("");
     setEditForm({
       name: a.name,
       note: a.note || "",
-      kind: normalizedKind,
+      kind: editKind,
       currency: normalizeCurrency(a.currency || baseCurrency),
       groupId: a.groupId || "",
-      institutionId: a.institutionId || "",
+      institutionId: supportsInstitution ? a.institutionId || "" : "",
       billingDay: a.billingDay?.toString() || "",
       repaymentDay: a.repaymentDay?.toString() || "",
       creditLimit: a.creditLimit || "",
       creditBillMode: a.creditBillMode === "consolidated" ? "consolidated" : "separate",
       numberMasked: a.numberMasked || "",
-      investProductType: normalizedKind === "investment" ? (a.investProductType || "fund") : normalizedKind === "fixed_asset" ? "property" : "",
-      fixedAssetType: normalizedKind === "fixed_asset" ? (a.fixedAssetType || "property") : "",
+      investProductType: editInvestProductType,
+      fixedAssetType: editKind === "fixed_asset" ? (a.fixedAssetType || "property") : "",
       costBasisMethod: a.costBasisMethod || "moving_avg",
       fundUnitsDecimals: String(a.fundUnitsDecimals ?? 2),
       tradingCalendar: a.tradingCalendar || "cn_fund",
@@ -199,7 +223,15 @@ export default function SettingsAccountsPage() {
     const nextInvestProductType = editForm.investProductType || "fund";
     const nextInstitution = institutions.find((institution) => institution.id === editForm.institutionId);
     if (isStockInvestmentAccount(nextKind, nextInvestProductType) && (!editForm.institutionId || !isStockAccountInstitutionType(nextInstitution?.type))) {
-      setEditError(STOCK_ACCOUNT_INSTITUTION_ERROR);
+      setEditError(t("entityForm.error.stockAccountInstitution"));
+      return;
+    }
+    if (accountRequiresInstitution(nextKind, nextInvestProductType) && !editForm.institutionId) {
+      setEditError(t("settings.accounts.import.institutionRequired"));
+      return;
+    }
+    if (editForm.institutionId && !accountInstitutionTypeMatches(nextKind, nextInvestProductType, nextInstitution?.type)) {
+      setEditError(t("settings.accounts.import.institutionNotAllowed"));
       return;
     }
     const isFixedAssetKind = nextKind === "fixed_asset";
@@ -316,10 +348,42 @@ export default function SettingsAccountsPage() {
     return tokens.every((token) => haystack.includes(token));
   };
 
+  const statisticsAccounts: StatisticsAccountItem[] = accounts.map((account) => ({
+    id: account.id,
+    name: account.name,
+    kind: normalizedAccountKind(account),
+    label: accountDisplayName(account),
+    isPlaceholder: account.isPlaceholder,
+    groupId: account.groupId ?? undefined,
+    Institution: account.Institution
+      ? {
+          id: account.Institution.id || account.institutionId || undefined,
+          name: account.Institution.name || account.Institution.shortName || "",
+        }
+      : null,
+  }));
+  const statisticsInstitutions: StatisticsInstitutionItem[] = institutions.map((institution) => ({
+    id: institution.id,
+    name: institution.shortName?.trim() || institution.name,
+    type: institution.type,
+  }));
+  const statisticsUsers: StatisticsUserItem[] = groups.map((group) => ({
+    id: group.id,
+    name: group.name,
+  }));
+  const accountKindFilterOptions = useMemo(() => kindOrder.filter((kind) =>
+    accounts.some((account) => normalizedAccountKind(account) === kind),
+  ), [accounts]);
+
   const filteredAccounts = accounts.filter(a => {
-    if (selectedGroup && a.groupId !== selectedGroup) return false;
-    if (selectedInstitution && a.institutionId !== selectedInstitution) return false;
-    if (selectedKinds.length > 0 && !selectedKinds.includes(normalizedAccountKind(a))) return false;
+    if (scope.userIds.length > 0 && !scope.userIds.includes(a.groupId ?? "")) return false;
+    if (scope.institutionIds.length > 0) {
+      const institutionKey = a.Institution?.id ?? a.institutionId ?? CASH_INSTITUTION_ID;
+      if (!scope.institutionIds.includes(institutionKey)) return false;
+    }
+    if (scope.accountIds.length > 0 && !scope.accountIds.includes(a.id)) return false;
+    if (selectedAccountKinds.length > 0 && !selectedAccountKinds.includes(normalizedAccountKind(a))) return false;
+    if (hideInactiveAccounts && !a.isActive) return false;
     if (!accountMatchesNameQuery(a, accountNameQuery)) return false;
     return true;
   });
@@ -332,23 +396,6 @@ export default function SettingsAccountsPage() {
     list.push(a);
     grouped.set(normalizedKind, list);
   }
-
-  const groupFilterOptions = [
-    { id: "", label: t("settings.accounts.allOwners") },
-    ...groups.map((g) => ({ id: g.id, label: g.name })),
-  ];
-  const institutionFilterOptions = [
-    { id: "", label: t("settings.accounts.allInstitutions") },
-    ...institutions.map((i) => ({
-      id: i.id,
-      label: i.shortName?.trim() || i.name,
-      subLabel: [i.shortName?.trim() ? i.name : "", institutionKindLabel(i.type)].filter(Boolean).join(" · "),
-    })),
-  ];
-  const kindFilterOptions = kindOrder.map((kind) => ({
-    id: kind,
-    label: accountKindLabel(kind),
-  }));
 
   return (
     <div className="space-y-4">
@@ -367,36 +414,46 @@ export default function SettingsAccountsPage() {
               className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
             />
           </div>
-          <div className="w-52 max-w-full">
-            <SmartSelect
-              mode="single"
-              value={selectedGroup}
-              onChange={setSelectedGroup}
-              options={groupFilterOptions}
-              placeholder={t("settings.accounts.filterOwner")}
+          <AccountScopeFilter
+            allAccounts={statisticsAccounts}
+            allInstitutions={statisticsInstitutions}
+            allUsers={statisticsUsers}
+            value={scope}
+            onChange={setScope}
+            showAccountFilter={false}
+          />
+          <MultiSelectFilterDropdown
+            options={accountKindFilterOptions}
+            selectedValues={selectedAccountKinds}
+            onChange={setSelectedAccountKinds}
+            labelFor={accountKindLabel}
+            allLabel={t("settings.accounts.type")}
+            selectedSummaryLabel={(first, count) => t("settings.accounts.selectedTypesSummary", { first, count })}
+            clearLabel={t("statistics.clearSelection")}
+            emptyLabel={t("table.empty")}
+            renderOptionLeading={(kind) => (
+              <span className={`inline-flex shrink-0 items-center gap-1.5 rounded border px-1.5 py-0.5 font-semibold ${kindColor(kind)}`}>
+                {kindIcon(kind)}
+              </span>
+            )}
+          />
+          <label className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-600 shadow-sm">
+            <input
+              type="checkbox"
+              checked={hideInactiveAccounts}
+              onChange={(event) => setHideInactiveAccounts(event.target.checked)}
+              className="h-3.5 w-3.5 accent-blue-600"
             />
-          </div>
-          <div className="w-64 max-w-full">
-            <SmartSelect
-              mode="single"
-              value={selectedInstitution}
-              onChange={setSelectedInstitution}
-              options={institutionFilterOptions}
-              placeholder={t("settings.accounts.filterInstitution")}
-              searchable={true}
-            />
-          </div>
-          <div className="w-72 max-w-full">
-            <SmartSelect
-              mode="multi"
-              value={selectedKinds}
-              onChange={setSelectedKinds}
-              options={kindFilterOptions}
-              placeholder={t("settings.accounts.filterKind")}
-            />
-          </div>
+            <span>{t("settings.accounts.hideInactiveAccounts")}</span>
+          </label>
           <div className="ml-auto flex items-center gap-2">
-            <SettingsPrimaryAddButton onClick={() => setShowCreateConsumerLoan(true)}>{t("settings.accounts.addConsumerLoan")}</SettingsPrimaryAddButton>
+            <AccountBatchImportButton
+              groups={statisticsUsers}
+              institutions={institutions}
+              counterparties={counterparties}
+              baseCurrency={baseCurrency}
+              onImported={() => void refreshSettingsAccounts("account:import")}
+            />
             <SettingsPrimaryAddButton onClick={() => setShowCreateAccount(true)}>{t("settings.accounts.add")}</SettingsPrimaryAddButton>
           </div>
           </>
@@ -554,25 +611,6 @@ export default function SettingsAccountsPage() {
         existingNames={accounts.map(a => a.name)}
       />
 
-      <EntityCreateForm
-        mode="full"
-        layout="modal"
-        entityType="account"
-        open={showCreateConsumerLoan}
-        onClose={() => setShowCreateConsumerLoan(false)}
-        fieldData={{ groupId: groups, institutionId: institutions }}
-        allowedAccountKinds={["loan"]}
-        extraFields={{ kind: "loan", isConsumerLoan: "true" }}
-        hiddenFields={["kind"]}
-        allowedInstitutionTypes={["debt"]}
-        defaultCurrency={baseCurrency}
-        onCreated={() => {
-          setShowCreateConsumerLoan(false);
-          void refreshSettingsAccounts("account:create-consumer-loan");
-        }}
-        existingNames={accounts.map(a => a.name)}
-      />
-
       {/* Nested creation modals from SmartSelect in inline edit */}
       {nestedEntityType && (
         <EntityCreateForm
@@ -596,12 +634,14 @@ export default function SettingsAccountsPage() {
               : isStockInvestmentAccount(editForm.kind, editForm.investProductType || "fund") ? "brokerage"
               : editForm.kind === "investment" && (["fund", "money"].includes(editForm.investProductType || "fund")) ? "fund_company"
               : editForm.kind === "loan" ? "debt"
+              : allowedInstitutionTypesForEdit(editForm.kind, editForm.investProductType || "fund").length === 1 ? allowedInstitutionTypesForEdit(editForm.kind, editForm.investProductType || "fund")[0]
               : undefined
           }
           allowedInstitutionTypes={
             nestedEntityType !== "institution" ? undefined
               : isStockInvestmentAccount(editForm.kind, editForm.investProductType || "fund") ? ["brokerage"]
               : editForm.kind === "loan" ? ["debt"]
+              : allowedInstitutionTypesForEdit(editForm.kind, editForm.investProductType || "fund").length > 0 ? allowedInstitutionTypesForEdit(editForm.kind, editForm.investProductType || "fund")
               : undefined
           }
         />
@@ -676,10 +716,11 @@ export default function SettingsAccountsPage() {
         const isFixedAssetKind = editKind === "fixed_asset";
         const isInvestmentKind = editKind === "investment" || isFixedAssetKind;
         const editInvestProductType = editForm.investProductType || (isFixedAssetKind ? "property" : "fund");
-        const editFixedAssetType = editForm.fixedAssetType || "property";
         const showCostBasisMethod = isInvestmentKind && supportsCostBasisMethod(editInvestProductType);
         const isBillLikeKind = editKind === "bank_credit";
         const supportsLastFour = editKind === "bank_credit" || editKind === "bank_debit";
+        const editKindOptions = normalizedKind === "loan" ? [...SETTINGS_ACCOUNT_KIND_OPTIONS, "loan"] : SETTINGS_ACCOUNT_KIND_OPTIONS;
+        const supportsInstitution = allowedInstitutionTypesForEdit(editKind, editInvestProductType).length > 0;
         const filteredInstitutions = institutions.filter((institution) =>
           accountInstitutionTypeMatches(editKind, editInvestProductType, institution.type),
         );
@@ -714,15 +755,9 @@ export default function SettingsAccountsPage() {
                     }))}
                     className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
                   >
-                    <option value="cash">{t("account.kind.cash")}</option>
-                    <option value="bank_debit">{t("account.kind.bank_debit")}</option>
-                    <option value="bank_credit">{t("account.kind.bank_credit")}</option>
-                    <option value="ewallet">{t("account.kind.ewallet")}</option>
-                    <option value="deposit">{t("account.kind.deposit")}</option>
-                    <option value="investment">{t("account.kind.investment")}</option>
-                    <option value="fixed_asset">{t("account.kind.fixed_asset")}</option>
-                    <option value="loan">{t("account.kind.loan")}</option>
-                    <option value="other">{t("account.kind.other")}</option>
+                    {editKindOptions.map((value) => (
+                      <option key={value} value={value}>{t(`account.kind.${value}`)}</option>
+                    ))}
                   </select>
                 </div>
                 <div>
@@ -733,18 +768,20 @@ export default function SettingsAccountsPage() {
                     placeholder={t("settings.accounts.selectOwner")}
                     onCreateClick={() => setNestedEntityType("group")} createLabel={t("settings.accounts.addOwner")} />
                 </div>
-                <div>
-                  <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.institution")}</label>
-                  <SmartSelect mode="single" value={editForm.institutionId || ""}
-                    onChange={changeEditInstitution}
-                    options={filteredInstitutions.map(i => ({
-                      id: i.id,
-                      label: i.shortName?.trim() || i.name,
-                      subLabel: [i.shortName?.trim() ? i.name : "", institutionKindLabel(i.type)].filter(Boolean).join(" · "),
-                    }))}
-                    placeholder={t("settings.accounts.selectInstitution")}
-                    onCreateClick={() => setNestedEntityType("institution")} createLabel={t("settings.accounts.addInstitution")} />
-                </div>
+                {supportsInstitution && (
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.institution")}</label>
+                    <SmartSelect mode="single" value={editForm.institutionId || ""}
+                      onChange={changeEditInstitution}
+                      options={filteredInstitutions.map(i => ({
+                        id: i.id,
+                        label: i.shortName?.trim() || i.name,
+                        subLabel: [i.shortName?.trim() ? i.name : "", institutionKindLabel(i.type)].filter(Boolean).join(" · "),
+                      }))}
+                      placeholder={t("settings.accounts.selectInstitution")}
+                      onCreateClick={() => setNestedEntityType("institution")} createLabel={t("settings.accounts.addInstitution")} />
+                  </div>
+                )}
                 <div>
                   <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.currency")}</label>
                   <select

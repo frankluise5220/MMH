@@ -35,7 +35,7 @@ export function getIncomeExpenseStatisticAmount(
 
 export type InvestmentStatisticType = "income" | "expense";
 
-type InvestmentProductKind = "fund" | "wealth" | "deposit";
+type InvestmentProductKind = "fund" | "wealth" | "deposit" | "debt";
 
 const MONEY_EPSILON = 0.005;
 
@@ -59,6 +59,7 @@ export type InvestmentStatisticEntryLike = {
 export type InvestmentStatisticItem = {
   idSuffix: string;
   type: InvestmentStatisticType;
+  productKind: InvestmentProductKind;
   amount: number;
   categoryName: string;
   categoryCandidates: string[];
@@ -252,6 +253,7 @@ export function getInvestmentStatisticItems(entry: InvestmentStatisticEntryLike)
       items.push({
         idSuffix: "dividend",
         type: "income",
+        productKind: kind,
         amount,
         categoryName: category.name,
         categoryCandidates: category.candidates,
@@ -267,6 +269,7 @@ export function getInvestmentStatisticItems(entry: InvestmentStatisticEntryLike)
       items.push({
         idSuffix: "realized-profit",
         type: profit > 0 ? "income" : "expense",
+        productKind: kind,
         amount: Math.abs(profit),
         categoryName: category.name,
         categoryCandidates: category.candidates,
@@ -290,6 +293,7 @@ export function getInvestmentStatisticItems(entry: InvestmentStatisticEntryLike)
         items.push({
           idSuffix: "yield",
           type: netProfit > 0 ? "income" : "expense",
+          productKind: kind,
           amount: Math.abs(netProfit),
           categoryName: category.name,
           categoryCandidates: category.candidates,
@@ -335,6 +339,7 @@ export function getBusinessResultStatisticItems(entry: InvestmentStatisticEntryL
   return [{
     idSuffix: "realized-profit",
     type: positive ? "income" : "expense",
+    productKind: "debt",
     amount: Math.abs(profit),
     categoryName: positive ? "利息" : "贷款利息",
     categoryCandidates: positive

@@ -27,7 +27,7 @@ type Institution = {
 
 type InstitutionSettingMode = "institution" | "counterparty" | "family";
 
-const INSTITUTION_TYPES = ["bank", "insurance", "brokerage", "fund_company", "payment", "ewallet", "other"] as const;
+const INSTITUTION_TYPES = ["bank", "insurance", "brokerage", "fund_company", "payment", "other"] as const;
 const COUNTERPARTY_TYPES = ["person", "organization"] as const;
 const FAMILY_MEMBER_TYPES = ["family_member"] as const;
 

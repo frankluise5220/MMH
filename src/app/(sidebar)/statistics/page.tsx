@@ -290,12 +290,13 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
       }
       for (const item of getInvestmentStatisticItems(e)) {
         const signedProfit = item.type === "income" ? item.amount : -item.amount;
-        row.investPnL += signedProfit;
         if (item.type === "income") {
           addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
         } else {
           addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
         }
+        if (item.productKind === "deposit") continue;
+        row.investPnL += signedProfit;
         const costBase = Math.abs(amount);
         const rate = costBase > 0 ? signedProfit / costBase : 0;
         pnlItems.push({
@@ -315,12 +316,13 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
 
     for (const item of getInvestmentStatisticItems(e)) {
       const signedProfit = item.type === "income" ? item.amount : -item.amount;
-      row.investPnL += signedProfit;
       if (item.type === "income") {
         addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
       } else {
         addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
       }
+      if (item.productKind === "deposit") continue;
+      row.investPnL += signedProfit;
       const costBase = Math.abs(amount);
       const rate = costBase > 0 ? signedProfit / costBase : 0;
       pnlItems.push({

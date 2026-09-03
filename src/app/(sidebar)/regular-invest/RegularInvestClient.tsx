@@ -9,6 +9,7 @@ import {
 import { Pause, Pencil, Play, RefreshCw, Square, Trash2 } from "lucide-react";
 import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTableSortState } from "@/components/AdvancedDataTable";
 import { DateStepper } from "@/components/DateStepper";
+import { MultiSelectFilterDropdown } from "@/components/MultiSelectFilterDropdown";
 import { RegularInvestForm } from "@/components/RegularInvestForm";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { UnifiedEntryLauncher } from "@/components/UnifiedEntryLauncher";
@@ -49,6 +50,15 @@ const STATUS_MAP: Record<string, { labelKey: string; cls: string }> = {
   completed: { labelKey: "regularInvest.client.status.completed", cls: "text-blue-600" },
 };
 
+const SCHEDULED_TASK_TYPES: ScheduledTaskType[] = [
+  "fund_regular_invest",
+  "loan_repayment",
+  "transfer",
+  "insurance_premium",
+  "income",
+  "expense",
+];
+
 function getStatusLabel(status: string, t: (key: string, params?: Record<string, string | number>) => string) {
   return STATUS_MAP[status] ? t(STATUS_MAP[status].labelKey) : status;
 }
@@ -71,6 +81,7 @@ type RegularInvestPlanView = {
   taskType?: ScheduledTaskType;
   taskTypeLabel?: string | null;
   taskTitle?: string | null;
+  planName?: string | null;
   taskFromAccountId?: string | null;
   taskToAccountId?: string | null;
   taskCategoryId?: string | null;
@@ -295,6 +306,7 @@ function planTaskLabelKey(plan: RegularInvestPlanView): string | null {
   if (taskType === "fund_regular_invest") return "detailView.fundRegularInvest";
   if (taskType === "transfer") return "transaction.type.transfer";
   if (taskType === "insurance_premium") return "regularInvest.taskType.insurancePremium";
+  if (taskType === "loan_repayment") return "regularInvest.taskType.loanRepayment";
   if (taskType === "income") return "transaction.type.income";
   if (taskType === "expense") return "transaction.type.expense";
   return null;
@@ -304,6 +316,12 @@ function getPlanTaskLabel(plan: RegularInvestPlanView, t?: (key: string, params?
   const labelKey = planTaskLabelKey(plan);
   if (labelKey && t) return t(labelKey);
   return plan.taskTypeLabel || scheduledTaskTypeLabel(getPlanTaskType(plan));
+}
+
+function getTaskTypeLabel(taskType: ScheduledTaskType, t: (key: string, params?: Record<string, string | number>) => string): string {
+  const labelKey = planTaskLabelKey({ taskType } as RegularInvestPlanView);
+  if (labelKey) return t(labelKey);
+  return scheduledTaskTypeLabel(taskType);
 }
 
 function getPlanTargetLabel(plan: RegularInvestPlanView): string {
@@ -316,6 +334,10 @@ function getPlanTargetLabel(plan: RegularInvestPlanView): string {
   if (isOrdinaryPlan(plan)) return plan.taskTitle || plan.targetName || plan.taskCategoryName || plan.fundName || planAccountLabel(plan);
   if (plan.taskTitle) return plan.taskTitle;
   return [plan.fundCode, plan.fundName && plan.fundName !== plan.fundCode ? plan.fundName : ""].filter(Boolean).join(" ");
+}
+
+function getPlanDisplayName(plan: RegularInvestPlanView): string {
+  return plan.planName?.trim() || getPlanTargetLabel(plan);
 }
 
 function recordMatchesPlan(plan: RegularInvestPlanView, record: { source?: string | null }) {
@@ -368,7 +390,7 @@ function compareText(a: string, b: string): number {
 }
 
 function getRegularInvestSortValue(plan: RegularInvestPlanView, key: string, t: (key: string, params?: Record<string, string | number>) => string): string | number | null {
-  if (key === "taskContent") return getPlanTargetLabel(plan);
+  if (key === "taskContent") return getPlanDisplayName(plan);
   if (key === "taskType") return getPlanTaskLabel(plan, t);
   if (key === "startDate") return dateSortValue(plan.startDate);
   if (key === "nextRunDate") return dateSortValue(plan.nextRunDate);
@@ -497,7 +519,7 @@ function sortPlansByDefault(plans: readonly RegularInvestPlanView[], t: (key: st
       "asc",
     );
     if (nextRunCompare !== 0) return nextRunCompare;
-    return compareText(getPlanTargetLabel(left), getPlanTargetLabel(right));
+    return compareText(getPlanDisplayName(left), getPlanDisplayName(right));
   });
 }
 
@@ -572,6 +594,8 @@ export function RegularInvestClient({
   const [deleteConfirm, setDeleteConfirm] = useState<{ planId: string; planName: string } | null>(null);
   const [editingRecord, setEditingRecord] = useState<any>(null);
   const [showEnded, setShowEnded] = useState(false);
+  const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
+  const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
   const [executionProgress, setExecutionProgress] = useState<ExecutionProgressState | null>(null);
   const [runningExecution, setRunningExecution] = useState<{ mode: "single" | "all"; planId?: string } | null>(null);
   const executionBusy = executionProgress?.status === "running";
@@ -633,6 +657,7 @@ export function RegularInvestClient({
       ...plan,
       taskType: plan.taskType ?? "fund_regular_invest",
       taskTypeLabel: plan.taskTypeLabel ?? scheduledTaskTypeLabel(taskType),
+      planName: plan.planName ?? null,
       amount: Number(plan.amount ?? 0),
       intervalValue: Number(plan.intervalValue ?? 1),
       executedRuns: plan.executedRuns == null ? null : Number(plan.executedRuns),
@@ -820,7 +845,7 @@ export function RegularInvestClient({
     const taskType = getPlanTaskType(plan);
     const confirmed = await showConfirmDialog({
       title: t("regularInvest.client.execute.title"),
-      message: t("regularInvest.client.execute.confirm", { name: getPlanTaskLabel(plan, t) }),
+      message: t("regularInvest.client.execute.confirm", { name: getPlanDisplayName(plan) }),
     });
     if (!confirmed) return;
     setRunningExecution({ mode: "single", planId });
@@ -829,7 +854,7 @@ export function RegularInvestClient({
       status: "running",
       current: 0,
       total: 1,
-      currentLabel: t("regularInvest.client.execute.preparing", { name: getPlanTargetLabel(plan) }),
+      currentLabel: t("regularInvest.client.execute.preparing", { name: getPlanDisplayName(plan) }),
       ok: 0,
       fail: 0,
       messages: [],
@@ -920,7 +945,7 @@ export function RegularInvestClient({
       const endDate = todayInput();
       for (const plan of activePlans) {
         if (getPlanTaskType(plan) !== "fund_regular_invest" || !plan.fundCode) continue;
-        setExecutionProgress((prev) => prev ? { ...prev, currentLabel: t("regularInvest.client.executeAll.preloadNav", { name: getPlanTargetLabel(plan) }) } : prev);
+        setExecutionProgress((prev) => prev ? { ...prev, currentLabel: t("regularInvest.client.executeAll.preloadNav", { name: getPlanDisplayName(plan) }) } : prev);
         const preloadStart = plan.lastRunDate
           ? toDateInput(plan.lastRunDate)
           : toDateInput(plan.startDate) || todayInput();
@@ -943,7 +968,7 @@ export function RegularInvestClient({
         setExecutionProgress((prev) => prev ? {
           ...prev,
           current: index,
-          currentLabel: t("regularInvest.client.executeAll.running", { current: index + 1, total: activePlans.length, name: getPlanTargetLabel(plan) }),
+          currentLabel: t("regularInvest.client.executeAll.running", { current: index + 1, total: activePlans.length, name: getPlanDisplayName(plan) }),
           ok,
           fail,
         } : prev);
@@ -957,14 +982,14 @@ export function RegularInvestClient({
           if (res.ok && data?.ok) {
             ok++;
             updatePlanFromExecutionResult(plan.id, data);
-            messages.push(t("regularInvest.client.execute.message", { name: getPlanTargetLabel(plan), message: data.message || t("regularInvest.client.execute.done") }));
+            messages.push(t("regularInvest.client.execute.message", { name: getPlanDisplayName(plan), message: data.message || t("regularInvest.client.execute.done") }));
           } else {
             fail++;
-            messages.push(t("regularInvest.client.execute.message", { name: getPlanTargetLabel(plan), message: data?.error || t("regularInvest.client.execute.failedStatus", { status: res.status }) }));
+            messages.push(t("regularInvest.client.execute.message", { name: getPlanDisplayName(plan), message: data?.error || t("regularInvest.client.execute.failedStatus", { status: res.status }) }));
           }
         } catch (error) {
           fail++;
-          messages.push(t("regularInvest.client.execute.message", { name: getPlanTargetLabel(plan), message: error instanceof Error ? error.message : t("regularInvest.client.execute.failed") }));
+          messages.push(t("regularInvest.client.execute.message", { name: getPlanDisplayName(plan), message: error instanceof Error ? error.message : t("regularInvest.client.execute.failed") }));
         }
         setExecutionProgress((prev) => prev ? {
           ...prev,
@@ -1038,7 +1063,7 @@ export function RegularInvestClient({
 
   function handleDelete(planId: string) {
     const plan = plans.find((item) => item.id === planId);
-    setDeleteConfirm({ planId, planName: plan ? getPlanTargetLabel(plan) : t("nav.scheduledTasks") });
+    setDeleteConfirm({ planId, planName: plan ? getPlanDisplayName(plan) : t("nav.scheduledTasks") });
   }
 
   async function deleteRegularInvestRecordIds(recordIds: string[], plan: RegularInvestPlanView) {
@@ -1152,8 +1177,27 @@ export function RegularInvestClient({
     }
   }
 
+  const accountFilterOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const plan of plans) {
+      // Dropdown text follows the account display format setting
+      // (institution + account name), same as table cells elsewhere.
+      const targetLabel = plan.accountLabel || plan.accountName;
+      if (plan.accountId && targetLabel) map.set(plan.accountId, targetLabel);
+      const cashLabel = plan.cashAccountLabel || plan.cashAccountName;
+      if (plan.cashAccountId && cashLabel) map.set(plan.cashAccountId, cashLabel);
+    }
+    return Array.from(map.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => compareText(a.name, b.name));
+  }, [plans]);
+
   const filteredPlans = plans.filter((plan) => {
     if (!showEnded && (plan.status === "stopped" || plan.status === "completed")) return false;
+    if (selectedTypes.length > 0 && !selectedTypes.includes(getPlanTaskType(plan))) return false;
+    if (selectedAccountIds.length > 0
+      && !(plan.accountId && selectedAccountIds.includes(plan.accountId))
+      && !(plan.cashAccountId && selectedAccountIds.includes(plan.cashAccountId))) return false;
     return true;
   });
   const todayStart = new Date();
@@ -1207,7 +1251,7 @@ export function RegularInvestClient({
             : undefined,
         cellTitle: (row) => {
           if (row.kind === "group") return column.key === "taskContent" ? row.title : "";
-          if (column.key === "taskContent") return getPlanTargetLabel(row.plan);
+          if (column.key === "taskContent") return getPlanDisplayName(row.plan);
           if (column.key === "targetAccount") return row.plan.accountHoverTitle || planAccountLabel(row.plan);
           if (column.key === "cashAccount") return row.plan.cashAccountHoverTitle || planCashAccountLabel(row.plan);
           if (column.key === "taskType") return getPlanTaskLabel(row.plan, t);
@@ -1217,7 +1261,7 @@ export function RegularInvestClient({
         render: (row) => {
           if (row.kind === "group") return column.key === "taskContent" ? groupCell(row) : null;
           if (column.key === "taskContent") {
-            return <span className="font-medium text-slate-800">{getPlanTargetLabel(row.plan)}</span>;
+            return <span className="font-medium text-slate-800">{getPlanDisplayName(row.plan)}</span>;
           }
           if (column.key === "taskType") {
             return <span className="text-slate-500">{getPlanTaskLabel(row.plan, t)}</span>;
@@ -1260,8 +1304,9 @@ export function RegularInvestClient({
   }, [t]);
 
   function renderPlanActions(plan: RegularInvestPlanView) {
-    // System-level plans (loan repayment) are read-only in the plan table:
-    // the schedule is derived from the loan, so no pause/stop/edit/delete.
+    // System-level plans (mortgage "bill" loan plans) are read-only in the
+    // plan table: the schedule is derived from the loan, so no
+    // pause/stop/edit/delete.
     if (plan.isSystemTask) {
       return (
         <span className="inline-flex h-6 items-center rounded border border-slate-200 bg-slate-50 px-1.5 text-[10px] text-slate-400" title={t("regularInvest.client.systemTask.title")}>
@@ -1269,6 +1314,9 @@ export function RegularInvestClient({
         </span>
       );
     }
+    // Auto-debit loan transfer plans are editable but system-owned: they
+    // cannot be deleted manually, only paused/stopped/edited.
+    const isLoanPlan = getPlanTaskType(plan) === "loan_repayment";
     return (
       <>
         {plan.status === "active" && (
@@ -1297,9 +1345,11 @@ export function RegularInvestClient({
         <button onClick={() => { setEditPlan(plan); setEditOpen(true); }} title={t("regularInvest.client.action.edit")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-blue-200 hover:bg-blue-50">
           <Pencil className="h-3 w-3 text-blue-600" />
         </button>
-        <button onClick={() => handleDelete(plan.id)} title={t("common.delete")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
-          <Trash2 className="h-3 w-3 text-red-500" />
-        </button>
+        {!isLoanPlan && (
+          <button onClick={() => handleDelete(plan.id)} title={t("common.delete")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
+            <Trash2 className="h-3 w-3 text-red-500" />
+          </button>
+        )}
       </>
     );
   }
@@ -1403,6 +1453,26 @@ export function RegularInvestClient({
                         {t("regularInvest.client.overdue", { count: overduePlans.length })}
                       </span>
                     ) : null}
+                    <MultiSelectFilterDropdown
+                      options={SCHEDULED_TASK_TYPES}
+                      selectedValues={selectedTypes}
+                      onChange={setSelectedTypes}
+                      labelFor={(value) => getTaskTypeLabel(value as ScheduledTaskType, t)}
+                      allLabel={t("regularInvest.client.filter.allTypes")}
+                      selectedSummaryLabel={(first, count) => t("regularInvest.client.filter.selectedSummary", { first, count })}
+                      clearLabel={t("statistics.clearSelection")}
+                      emptyLabel={t("table.empty")}
+                    />
+                    <MultiSelectFilterDropdown
+                      options={accountFilterOptions.map((option) => option.id)}
+                      selectedValues={selectedAccountIds}
+                      onChange={setSelectedAccountIds}
+                      labelFor={(id) => accountFilterOptions.find((option) => option.id === id)?.name ?? id}
+                      allLabel={t("regularInvest.client.filter.allAccount")}
+                      selectedSummaryLabel={(first, count) => t("regularInvest.client.filter.selectedSummary", { first, count })}
+                      clearLabel={t("statistics.clearSelection")}
+                      emptyLabel={t("table.empty")}
+                    />
                   </div>
                 )}
                 toolbarRightContent={(
@@ -1427,7 +1497,7 @@ export function RegularInvestClient({
             {selectedPlan && (
               <div className="flex h-80 shrink-0 flex-col bg-slate-50">
                 <div className="flex h-10 shrink-0 items-center justify-between border-b border-slate-100 bg-white px-4">
-                  <div className="text-xs font-semibold text-slate-700">{t("regularInvest.client.recordsTitle", { name: getPlanTargetLabel(selectedPlan) })}</div>
+                  <div className="text-xs font-semibold text-slate-700">{t("regularInvest.client.recordsTitle", { name: getPlanDisplayName(selectedPlan) })}</div>
                   <div className="flex items-center gap-2">
                     {selectedVisibleRecordIds.length > 0 && (
                       <>
@@ -1530,6 +1600,7 @@ export function RegularInvestClient({
           accountId: editPlan.accountId || "",
           fundCode: editPlan.fundCode || "",
           fundName: editPlan.fundName || null,
+          planName: editPlan.planName ?? null,
           amount: editPlan.amount,
           intervalUnit: editPlan.intervalUnit || "month",
           intervalValue: editPlan.intervalValue || 1,
@@ -1548,6 +1619,7 @@ export function RegularInvestClient({
           annualRate: editPlan.taskAnnualRate ?? null,
           repaymentMethod: editPlan.taskRepaymentMethod ?? null,
           repaymentIntervalMonths: editPlan.taskRepaymentIntervalMonths ?? null,
+          taskLoanPlanRole: editPlan.taskLoanPlanRole ?? null,
           skipPendingPreceding: editPlan.skipPendingPreceding ?? true,
         } : undefined}
         accountId={editPlan?.accountId ?? investmentAccounts[0]?.id ?? ""}

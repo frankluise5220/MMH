@@ -33,23 +33,32 @@ const ROW_BORDER_HEIGHT = 1;
 const ROW_ACTIONS_COMPACT_CLASS =
   " [&_button]:h-5 [&_button]:w-5 [&_button]:min-h-0 [&_svg]:h-3 [&_svg]:w-3";
 const ROW_ACTIONS_SIZE_CLASS: Record<RowHeightMode, string> = {
-  large: " [&_button]:max-h-7",
-  medium: " [&_button]:max-h-[27px]",
-  small: " [&_button]:max-h-[26px]",
+  41: " [&_button]:max-h-7",
+  39: " [&_button]:max-h-[27px]",
+  37: " [&_button]:max-h-[26px]",
+  35: " [&_button]:max-h-[26px]",
+  33: " [&_button]:max-h-6",
+  31: " [&_button]:max-h-[22px]",
 };
 const HEADER_PADDING_CLASS: Record<RowHeightMode, string> = {
-  large: "px-3 py-1.5",
-  medium: "px-3 py-[5px]",
-  small: "px-3 py-1",
+  41: "px-3 py-1.5",
+  39: "px-3 py-[5px]",
+  37: "px-3 py-[5px]",
+  35: "px-3 py-1",
+  33: "px-2.5 py-[3px]",
+  31: "px-2.5 py-[3px]",
 };
-// Body text size tracks row-height mode: large 14px, medium 13px, small 12px.
+// Body text size tracks row-height mode: 41px rows are 14px, 39/37px rows are 13px, and compact rows are 12px.
 // Column render callbacks should inherit this instead of hardcoding text-xs.
 // Small secondary labels and button text keep their own explicit sizing.
 const BODY_TEXT_CLASS: Record<RowHeightMode, string> = {
-  large: "text-sm",
+  41: "text-sm",
   // Arbitrary font-size classes need an explicit line-height to keep rows stable.
-  medium: "text-[13px]/[18px]",
-  small: "text-xs",
+  39: "text-[13px]/[18px]",
+  37: "text-[13px]/[18px]",
+  35: "text-xs",
+  33: "text-xs",
+  31: "text-xs",
 };
 
 function isInteractiveRowTarget(target: EventTarget | null) {

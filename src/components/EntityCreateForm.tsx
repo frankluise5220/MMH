@@ -13,6 +13,9 @@ import { notifySettingsDataChanged, type SettingsDataScope } from "@/lib/client/
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { CURRENCY_OPTIONS, normalizeCurrency } from "@/lib/currency";
 import {
+  accountInstitutionTypeIsAllowed,
+  accountRequiresInstitution,
+  allowedInstitutionTypesForAccount,
   isStockAccountInstitutionType,
   isStockInvestmentAccount,
 } from "@/lib/account-institution-rules";
@@ -176,7 +179,6 @@ const ALL_INSTITUTION_TYPES = [
   { value: "brokerage", labelKey: "institution.type.brokerage" },
   { value: "fund_company", labelKey: "institution.type.fund_company" },
   { value: "payment", labelKey: "institution.type.payment" },
-  { value: "ewallet", labelKey: "institution.type.ewallet" },
   { value: "debt", labelKey: "institution.type.debt" },
   { value: "other", labelKey: "institution.type.other" },
 ];
@@ -187,7 +189,6 @@ const INSTITUTION_TYPES = ALL_INSTITUTION_TYPES.filter((option) => (
   option.value === "brokerage" ||
   option.value === "fund_company" ||
   option.value === "payment" ||
-  option.value === "ewallet" ||
   option.value === "other"
 ));
 
@@ -211,14 +212,18 @@ const COST_BASIS_OPTIONS = [
 
 /* ---- Account kind options (from account-kinds.ts) ---- */
 
-const ACCOUNT_KIND_OPTIONS = kindOrder.map((k) => ({ value: k, labelKey: `account.kind.${k}` }));
+const ACCOUNT_KIND_OPTIONS = kindOrder
+  .filter((k) => k !== "loan")
+  .map((k) => ({ value: k, labelKey: `account.kind.${k}` }));
 
 /* ---- Investment product type options (from investment-config.ts) ---- */
 
-const INVEST_PRODUCT_OPTIONS = PRODUCT_TYPES.map((pt) => ({
-  value: pt,
-  labelKey: `investment.product.${pt}`,
-}));
+const INVEST_PRODUCT_OPTIONS = PRODUCT_TYPES
+  .filter((pt) => pt !== "deposit")
+  .map((pt) => ({
+    value: pt,
+    labelKey: `investment.product.${pt}`,
+  }));
 
 /* ---- Fixed asset type options ---- */
 
@@ -308,7 +313,14 @@ const ENTITY_CONFIG = {
       { key: "fundUnitsDecimals", labelKey: "settings.accounts.fundUnitsDecimals", type: "text", defaultValue: "2", placeholderKey: "settings.accounts.defaultUnitsDecimals", condition: (f) => f.kind === "investment" && (f.investProductType ?? "fund") === "fund" },
       { key: "tradingCalendar", labelKey: "settings.accounts.tradingCalendar", type: "select", options: TRADING_CALENDAR_OPTIONS, defaultValue: "cn_fund", condition: (f) => supportsTradingCalendarForAccount(f.kind, f.investProductType ?? "fund") },
       { key: "groupId", labelKey: "settings.accounts.owner", type: "select", optionsFromData: "groupId", nestedCreate: "group" },
-      { key: "institutionId", labelKey: "settings.accounts.institution", type: "select", optionsFromData: "institutionId", nestedCreate: "institution" },
+      {
+        key: "institutionId",
+        labelKey: "settings.accounts.institution",
+        type: "select",
+        optionsFromData: "institutionId",
+        nestedCreate: "institution",
+        condition: (f) => allowedInstitutionTypesForAccount(f.kind, f.investProductType ?? "fund", { includeLegacyDebtInstitution: true }).length > 0,
+      },
       { key: "currency", labelKey: "detail.column.currency", type: "select", options: CURRENCY_OPTION_KEYS, defaultValue: "CNY" },
       { key: "billingDay", labelKey: "settings.accounts.billingDayLabel", type: "text", placeholderKey: "entityForm.dayRangePlaceholder", condition: (f) => f.kind === "bank_credit" },
       { key: "repaymentDay", labelKey: "settings.accounts.repaymentDayLabel", type: "text", placeholderKey: "entityForm.dayRangePlaceholder", condition: (f) => f.kind === "bank_credit" },
@@ -686,7 +698,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
         ? item.type === "debt"
         : ["person", "organization"].includes(item.type ?? ""));
     }
-    return dataList.filter((item) => ["bank", "insurance", "brokerage", "fund_company", "payment", "ewallet", "other"].includes(item.type ?? ""));
+    return dataList.filter((item) => accountInstitutionTypeIsAllowed(accountKind, investProductType, item.type));
   }
 
   function institutionTypeMatchesCurrentAccount(type?: string) {
@@ -698,18 +710,20 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     }
     if (accountKind === "loan") {
       const isConsumerLoan = form.isConsumerLoan === "true" || extraFields?.isConsumerLoan === "true";
-      return isConsumerLoan ? type === "debt" : ["person", "organization", "bank", "insurance", "brokerage", "fund_company", "payment", "ewallet", "debt", "other"].includes(type ?? "");
+      return isConsumerLoan ? type === "debt" : ["person", "organization", "bank", "insurance", "brokerage", "fund_company", "payment", "other"].includes(type ?? "");
     }
-    return ["bank", "insurance", "brokerage", "fund_company", "payment", "ewallet", "other"].includes(type ?? "");
+    return accountInstitutionTypeIsAllowed(accountKind, investProductType, type);
   }
 
   function nestedInstitutionDefaultType() {
     if (entityType !== "account" || nestedEntityType !== "institution") return undefined;
     const accountKind = form.kind || form.type || extraFields?.kind || defaultType;
     const investProductType = form.investProductType || extraFields?.investProductType || "fund";
+    const allowedTypes = allowedInstitutionTypesForAccount(accountKind, investProductType, { includeLegacyDebtInstitution: true });
     if (isStockInvestmentAccount(accountKind, investProductType)) return "brokerage";
     if (accountKind === "investment" && (investProductType === "fund" || investProductType === "money")) return "fund_company";
     if (accountKind === "loan") return (form.isConsumerLoan === "true" || extraFields?.isConsumerLoan === "true") ? "debt" : "person";
+    if (allowedTypes.length === 1) return allowedTypes[0];
     return undefined;
   }
 
@@ -719,7 +733,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     const investProductType = form.investProductType || extraFields?.investProductType || "fund";
     if (isStockInvestmentAccount(accountKind, investProductType)) return ["brokerage"];
     if (accountKind === "loan") return (form.isConsumerLoan === "true" || extraFields?.isConsumerLoan === "true") ? ["debt"] : ["person", "organization"];
-    return undefined;
+    const allowedTypes = allowedInstitutionTypesForAccount(accountKind, investProductType, { includeLegacyDebtInstitution: true });
+    return allowedTypes.length > 0 ? allowedTypes : undefined;
   }
 
   const shouldShowInitialBalanceFields =
@@ -853,6 +868,19 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
       const selectedInstitution = (nestedFieldData.institutionId ?? []).find((item) => item.id === form.institutionId);
       if (!form.institutionId || (selectedInstitution && !isStockAccountInstitutionType(selectedInstitution.type))) {
         setError(t("entityForm.error.stockAccountInstitution"));
+        return;
+      }
+    }
+    if (entityType === "account") {
+      const accountKind = form.kind || extraFields?.kind || defaultType;
+      const investProductType = form.investProductType || extraFields?.investProductType || "fund";
+      const selectedInstitution = (nestedFieldData.institutionId ?? []).find((item) => item.id === form.institutionId);
+      if (accountRequiresInstitution(accountKind, investProductType) && !form.institutionId) {
+        setError(t("settings.accounts.import.institutionRequired"));
+        return;
+      }
+      if (form.institutionId && !accountInstitutionTypeIsAllowed(accountKind, investProductType, selectedInstitution?.type)) {
+        setError(t("settings.accounts.import.institutionNotAllowed"));
         return;
       }
     }

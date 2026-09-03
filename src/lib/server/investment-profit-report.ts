@@ -10,7 +10,7 @@ import {
 import { fundUnitsProfitStartDate } from "@/lib/fund/confirmDays";
 import { allocateBuyFailedRefunds } from "@/lib/fund/refund-link";
 import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
-import { getFundNavDateOffsets } from "@/lib/fund/fundProfile";
+import { fundNavTargetDateForOffset, fundTradingCalendarForName, getFundNavDateOffsets, getFundProfiles } from "@/lib/fund/fundProfile";
 import { translate } from "@/lib/i18n-core";
 import type { DisplayLanguage } from "@/lib/client/appPreferences";
 import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
@@ -165,22 +165,27 @@ type PropertyTxRow = {
  * is worth flagging:
  * - Money funds keep a constant unit NAV of 1; their cached "nav" is the
  *   per-10k daily yield, so a missing "NAV" row must never be flagged.
- * - QDII funds publish NAV on the underlying (US) trading calendar with a
- *   lag, so trailing dates may legitimately have no NAV yet.
+ * - Offshore funds publish NAV on their underlying market calendar with a lag,
+ *   so trailing dates may legitimately have no NAV yet.
  */
 type FundNavMeta = {
   isMoney: boolean;
   isQdii: boolean;
+  tradingCalendar: string | null;
+  calendarLocked?: boolean;
 };
 
-function fundNavMetaOf(name: string | null | undefined): FundNavMeta {
+function fundNavMetaOf(name: string | null | undefined, tradingCalendar?: string | null): FundNavMeta {
   const value = String(name ?? "");
+  const calendar = tradingCalendar ?? (value.trim() ? fundTradingCalendarForName(value) : null);
   return {
-    isMoney: /货币/.test(value),
-    // QDII funds track non-CN markets (US indices, global themes). Their names
-    // often omit the literal "QDII" (e.g. 博时标普500ETF联接A), so match the
-    // market markers that a domestic CN fund cannot carry.
-    isQdii: /QDII|标普|纳斯达克|纳指|道琼斯|美国|全球/i.test(value),
+    isMoney: /\u8D27\u5E01/.test(value),
+    // Offshore funds often publish on a non-CN market calendar and may lag the
+    // report date. Their names may omit the literal "QDII", so use the canonical
+    // fund-profile calendar inference instead of duplicating marker lists here.
+    isQdii: Boolean(calendar && calendar !== "cn_fund"),
+    tradingCalendar: calendar,
+    calendarLocked: tradingCalendar != null,
   };
 }
 
@@ -188,13 +193,30 @@ function mergeFundNavMeta(
   map: Map<string, FundNavMeta>,
   fundCode: string,
   name: string | null | undefined,
+  tradingCalendar?: string | null,
 ) {
-  const next = fundNavMetaOf(name);
+  const next = fundNavMetaOf(name, tradingCalendar);
   const current = map.get(fundCode);
+  const calendarLocked = Boolean(current?.calendarLocked || next.calendarLocked);
+  const finalCalendar = current?.calendarLocked && !next.calendarLocked
+    ? current.tradingCalendar
+    : next.calendarLocked
+      ? next.tradingCalendar
+      : next.tradingCalendar && next.tradingCalendar !== "cn_fund"
+        ? next.tradingCalendar
+        : current?.tradingCalendar ?? next.tradingCalendar ?? null;
   map.set(fundCode, {
     isMoney: Boolean(current?.isMoney || next.isMoney),
-    isQdii: Boolean(current?.isQdii || next.isQdii),
+    isQdii: Boolean(finalCalendar && finalCalendar !== "cn_fund"),
+    tradingCalendar: finalCalendar,
+    calendarLocked,
   });
+}
+
+function fundValuationCalendar(account: FundLikeAccount, meta: FundNavMeta) {
+  return meta.tradingCalendar && meta.tradingCalendar !== "cn_fund"
+    ? meta.tradingCalendar
+    : (account.tradingCalendar ?? "cn_fund");
 }
 
 function roundMoney(value: number) {
@@ -507,17 +529,19 @@ function shouldRequireExactNav(
 ) {
   if (dateKey >= todayKey) return false;
   if (isTradingClosedDate(dateKey, tradingCalendar ?? "cn_fund")) return false;
-  // QDII NAVs publish after the relevant US trading day. Only flag a
+  // Offshore NAVs publish after the relevant market trading day. Only flag a
   // missing date once the fund has published NAVs dated after it (a genuine
   // mid-history gap); trailing dates may simply not be published yet.
-  if (meta.isQdii) return hasLaterNav;
+  if (meta.isQdii || tradingCalendar !== "cn_fund") return hasLaterNav;
   return true;
 }
 
 function addMissingNav(
   missingNavByKey: Map<string, InvestmentProfitMissingNav>,
   item: InvestmentProfitMissingNav,
+  tradingCalendar?: string | null,
 ) {
+  if (isTradingClosedDate(item.date, tradingCalendar ?? "cn_fund")) return;
   const key = `${item.fundCode}|${item.date}`;
   if (!missingNavByKey.has(key)) missingNavByKey.set(key, item);
 }
@@ -549,12 +573,12 @@ function accountMarketValueAt(params: {
     const pending = holding.pendingCost;
     const confirmedCost = holding.cost;
     if (units <= 0.0001 && pending <= 0.01) continue;
-    const meta = params.fundMetaByCode.get(fundCode) ?? { isMoney: false, isQdii: false };
-    const calendar = meta.isQdii ? "us_fund" : (params.account.tradingCalendar ?? "cn_fund");
+    const meta = params.fundMetaByCode.get(fundCode) ?? { isMoney: false, isQdii: false, tradingCalendar: null };
+    const calendar = fundValuationCalendar(params.account, meta);
 
     if (meta.isMoney) {
       // Money funds keep a constant unit NAV of 1. The cached nav is the
-      // per-10k daily yield (万份收益) when below 1, so market value is always
+      // per-10k daily yield when below 1, so market value is always
       // units x 1 and the yield is counted as same-day income.
       marketValue += units * 1 + pending;
       const exactNav = exactNavOnDate(params.navByCode, fundCode, dateKey);
@@ -571,7 +595,7 @@ function accountMarketValueAt(params: {
         date: dateKey,
         accountId: params.account.id,
         accountName: params.account.name,
-      });
+      }, calendar);
     }
     const nav = exactNav ?? latestNavOnOrBefore(params.navByCode, fundCode, dateKey);
     const confirmedMarketValue = nav != null && units > 0 ? units * nav : confirmedCost;
@@ -581,12 +605,6 @@ function accountMarketValueAt(params: {
     marketValue: roundMoney(marketValue),
     moneyIncome,
   };
-}
-
-function addUtcDays(date: Date, days: number) {
-  const next = new Date(date);
-  next.setUTCDate(next.getUTCDate() + days);
-  return next;
 }
 
 function navRowIndexOnOrBefore(
@@ -617,16 +635,19 @@ function accountDailyNavDeltaProfit(params: {
   let count = 0;
   const fundCodes = new Set(params.entries.map((entry) => entry.fundCode).filter(Boolean) as string[]);
   for (const fundCode of fundCodes) {
-    const meta = params.fundMetaByCode.get(fundCode) ?? { isMoney: false, isQdii: false };
+    const meta = params.fundMetaByCode.get(fundCode) ?? { isMoney: false, isQdii: false, tradingCalendar: null };
     const navRows = params.navByCode.get(fundCode) ?? [];
-    const navDate = addUtcDays(params.date, -(params.navDateOffsetByCode?.get(fundCode) ?? 0));
-    const dateKey = ymd(navDate);
+    const calendar = fundValuationCalendar(params.account, meta);
+    if (isTradingClosedDate(reportDateKey, calendar)) continue;
+    const dateKey = fundNavTargetDateForOffset({
+      referenceDate: params.date,
+      navDateOffset: params.navDateOffsetByCode?.get(fundCode) ?? 0,
+      tradingCalendar: calendar,
+    });
     const currentIndex = navRowIndexOnOrBefore(navRows, dateKey);
     if (currentIndex < 1) continue;
     const currentRow = navRows[currentIndex]!;
     const previousRow = navRows[currentIndex - 1]!;
-    const calendar = meta.isQdii ? "us_fund" : (params.account.tradingCalendar ?? "cn_fund");
-    if (isTradingClosedDate(reportDateKey, calendar)) continue;
     const hasExactNav = currentRow.date === dateKey;
     const hasLaterNav = hasNavAfterDate(params.navByCode, fundCode, dateKey);
     if (!hasExactNav && shouldRequireExactNav(dateKey, params.todayKey, calendar, meta, hasLaterNav)) {
@@ -635,7 +656,7 @@ function accountDailyNavDeltaProfit(params: {
         date: dateKey,
         accountId: params.account.id,
         accountName: params.account.name,
-      });
+      }, calendar);
     }
     const entriesToPositionDate = params.entries.filter((entry) => {
       const calcDate = profitStartDateOf(entry);
@@ -947,6 +968,11 @@ async function applyFundValuationProfit(params: {
   }
 
   if (fundCodes.size === 0) return [];
+
+  const fundProfiles = await getFundProfiles(fundCodes);
+  for (const profile of fundProfiles) {
+    mergeFundNavMeta(fundMetaByCode, profile.fundCode, profile.fundName, profile.tradingCalendar);
+  }
 
   const navDateOffsetByCode = params.valuationMode === "daily_nav_delta"
     ? await getFundNavDateOffsets(fundCodes)
@@ -1352,7 +1378,7 @@ export async function loadInvestmentProfitReport(
     }),
     ...wealthEntries.flatMap((entry) => eventsFromEntry(entry)),
     ...fixedAssetEvents,
-  ].filter((event) => event.profit !== 0);
+  ].filter((event) => event.profit !== 0 && event.kind !== "deposit");
 
   for (const event of events) {
     const row = rows.get(eventBucketKey(event.date, params.period));

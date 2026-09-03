@@ -31,6 +31,7 @@ export const ACCOUNT_LABEL_FIELD_KEYS = [
 export type AccountLabelField = (typeof ACCOUNT_LABEL_FIELD_KEYS)[number];
 
 export const ACCOUNT_LABEL_SEPARATOR = "·";
+export const EMPTY_ACCOUNT_LABEL_FIELDS_VALUE = "__empty";
 
 /**
  * Default selection matches the documented non-sidebar format:
@@ -86,11 +87,13 @@ export function normalizeAccountLabelFields(
 }
 
 export function serializeAccountLabelFields(fields: AccountLabelField[]) {
-  return normalizeAccountLabelFields(fields).join(",");
+  const normalized = normalizeAccountLabelFields(fields, []);
+  return normalized.length === 0 ? EMPTY_ACCOUNT_LABEL_FIELDS_VALUE : normalized.join(",");
 }
 
 export function parseAccountLabelFields(value: unknown): AccountLabelField[] {
   if (typeof value !== "string" || !value.trim()) return [...DEFAULT_ACCOUNT_LABEL_FIELDS];
+  if (value.trim() === EMPTY_ACCOUNT_LABEL_FIELDS_VALUE) return [];
   return normalizeAccountLabelFields(value);
 }
 

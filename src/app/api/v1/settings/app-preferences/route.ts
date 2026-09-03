@@ -1,13 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   DEFAULT_ACCOUNT_LABEL_FIELDS,
+  EMPTY_ACCOUNT_LABEL_FIELDS_VALUE,
   SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE,
   normalizeAccountLabelFields,
   normalizeCreditCardLabelTemplate,
+  parseAccountLabelFields,
   serializeAccountLabelFields,
   type AccountLabelField,
 } from "@/lib/account-display";
 import { normalizeDateDisplayFormat } from "@/lib/date-utils";
+import { normalizeRowHeightMode } from "@/lib/row-height";
 
 /**
  * GET /api/v1/settings/app-preferences returns browser-scoped display preferences.
@@ -82,17 +85,24 @@ function normalizeDisplayLanguage(input: unknown) {
 }
 
 function normalizeAccountLabelFieldsPreference(input: unknown): AccountLabelField[] {
-  if (Array.isArray(input) || typeof input === "string") {
+  if (Array.isArray(input)) {
     // An explicitly provided value wins even when it is empty: the user may
     // want to strip the label down to the raw account name.
     return normalizeAccountLabelFields(input, []);
+  }
+  if (typeof input === "string") {
+    const value = input.trim();
+    if (!value) return [];
+    if (value === EMPTY_ACCOUNT_LABEL_FIELDS_VALUE) return [];
+    return parseAccountLabelFields(value);
   }
   if (input === null) return [];
   return [...DEFAULT_ACCOUNT_LABEL_FIELDS];
 }
 
-function normalizeRowHeightMode(input: unknown) {
-  return input === "large" || input === "small" ? input : "medium";
+function accountLabelFieldsFromPreferenceCookie(value: string | undefined): AccountLabelField[] {
+  if (value === undefined) return [...DEFAULT_ACCOUNT_LABEL_FIELDS];
+  return parseAccountLabelFields(value);
 }
 
 export async function GET(req: NextRequest) {
@@ -119,9 +129,7 @@ export async function GET(req: NextRequest) {
   const sidebarShowFixedAssets = normalizeBoolean(req.cookies.get(SIDEBAR_SHOW_FIXED_ASSETS_KEY)?.value, true);
   const detailDateBackground = normalizeBoolean(req.cookies.get(DETAIL_DATE_BACKGROUND_KEY)?.value, false);
   const rowHeightMode = normalizeRowHeightMode(req.cookies.get(ROW_HEIGHT_MODE_KEY)?.value);
-  const accountLabelFields = normalizeAccountLabelFieldsPreference(
-    req.cookies.get(ACCOUNT_LABEL_FIELDS_KEY)?.value ?? null,
-  );
+  const accountLabelFields = accountLabelFieldsFromPreferenceCookie(req.cookies.get(ACCOUNT_LABEL_FIELDS_KEY)?.value);
   return NextResponse.json({
     ok: true,
     sessionDays,
@@ -234,9 +242,9 @@ export async function PUT(req: NextRequest) {
   const rowHeightMode = normalizeRowHeightMode(
     hasRowHeightMode ? prefs.rowHeightMode : req.cookies.get(ROW_HEIGHT_MODE_KEY)?.value,
   );
-  const accountLabelFields = normalizeAccountLabelFieldsPreference(
-    hasAccountLabelFields ? prefs.accountLabelFields : req.cookies.get(ACCOUNT_LABEL_FIELDS_KEY)?.value ?? null,
-  );
+  const accountLabelFields = hasAccountLabelFields
+    ? normalizeAccountLabelFieldsPreference(prefs.accountLabelFields)
+    : accountLabelFieldsFromPreferenceCookie(req.cookies.get(ACCOUNT_LABEL_FIELDS_KEY)?.value);
   const maxAge = sessionDays * 24 * 60 * 60;
 
   const response = NextResponse.json({

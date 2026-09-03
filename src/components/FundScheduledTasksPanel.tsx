@@ -1,16 +1,22 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, Pause, Play } from "lucide-react";
+import { Loader2, Pause, Pencil, Play } from "lucide-react";
 
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 
-type RelatedScheduledTask = {
+export type RelatedScheduledTask = {
   id: string;
   taskType?: string | null;
   taskTitle?: string | null;
+  planName?: string | null;
   targetName?: string | null;
+  accountId?: string | null;
+  accountName?: string | null;
+  accountInstitutionName?: string | null;
+  cashAccountId?: string | null;
+  cashAccountName?: string | null;
   fundCode?: string | null;
   fundName?: string | null;
   amount?: number | string | null;
@@ -19,8 +25,15 @@ type RelatedScheduledTask = {
   executionDay?: number | string | null;
   secondaryExecutionDay?: number | string | null;
   startDate?: string | null;
+  endDate?: string | null;
   nextRunDate?: string | null;
+  lastRunDate?: string | null;
   totalRuns?: number | string | null;
+  executedRuns?: number | string | null;
+  feeRate?: number | string | null;
+  confirmDays?: number | string | null;
+  arrivalDays?: number | string | null;
+  skipPendingPreceding?: boolean | null;
   status?: string | null;
   isSystemTask?: boolean | null;
 };
@@ -70,7 +83,7 @@ function statusLabel(status: string | null | undefined, t: (key: string, params?
 }
 
 function taskLabel(plan: RelatedScheduledTask) {
-  return plan.taskTitle || plan.targetName || plan.fundName || plan.fundCode || "-";
+  return plan.planName?.trim() || plan.taskTitle || plan.targetName || plan.fundName || plan.fundCode || "-";
 }
 
 function formatInterval(plan: RelatedScheduledTask, t: (key: string, params?: Record<string, string | number>) => string) {
@@ -124,15 +137,35 @@ function compareTasks(a: RelatedScheduledTask, b: RelatedScheduledTask) {
   return taskLabel(a).localeCompare(taskLabel(b), undefined, { numeric: true });
 }
 
+function isVisibleRelatedFundTask(plan: RelatedScheduledTask, fundCode: string) {
+  return (plan.taskType || "fund_regular_invest") === "fund_regular_invest"
+    && plan.fundCode === fundCode
+    && String(plan.status ?? "").toLowerCase() !== "completed";
+}
+
+function relatedFundTasks(plans: RelatedScheduledTask[], fundCode: string) {
+  return plans
+    .filter((plan) => isVisibleRelatedFundTask(plan, fundCode))
+    .sort(compareTasks);
+}
+
 export function FundScheduledTasksPanel({
   accountId,
   fundCode,
+  preloadedPlans,
+  onEdit,
+  reloadToken,
 }: {
   accountId: string;
   fundCode: string;
+  preloadedPlans?: RelatedScheduledTask[];
+  onEdit?: (plan: RelatedScheduledTask) => void;
+  reloadToken?: number;
 }) {
   const { t } = useI18n();
-  const [tasks, setTasks] = useState<RelatedScheduledTask[]>([]);
+  const [tasks, setTasks] = useState<RelatedScheduledTask[]>(() =>
+    relatedFundTasks(preloadedPlans ?? [], fundCode),
+  );
   const [loading, setLoading] = useState(false);
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -150,9 +183,7 @@ export function FundScheduledTasksPanel({
         throw new Error(data?.error || t("fundSettings.scheduledTaskLoadFailed"));
       }
       if (sequence !== loadSequence.current) return;
-      setTasks(data.plans
-        .filter((plan) => (plan.taskType || "fund_regular_invest") === "fund_regular_invest" && plan.fundCode === fundCode)
-        .sort(compareTasks));
+      setTasks(relatedFundTasks(data.plans, fundCode));
     } catch (e) {
       if (sequence === loadSequence.current) {
         setError(e instanceof Error ? e.message : t("fundSettings.scheduledTaskLoadFailed"));
@@ -163,8 +194,16 @@ export function FundScheduledTasksPanel({
   }, [accountId, fundCode, t]);
 
   useEffect(() => {
+    setTasks(relatedFundTasks(preloadedPlans ?? [], fundCode));
+  }, [fundCode, preloadedPlans]);
+
+  useEffect(() => {
     void loadTasks();
   }, [loadTasks]);
+
+  useEffect(() => {
+    if (reloadToken) void loadTasks();
+  }, [reloadToken, loadTasks]);
 
   const updateStatus = useCallback(async (planId: string, action: "pause" | "resume") => {
     setBusyTaskId(planId);
@@ -186,6 +225,7 @@ export function FundScheduledTasksPanel({
               nextRunDate: data.plan?.nextRunDate ?? plan.nextRunDate,
             }
           : plan)
+        .filter((plan) => isVisibleRelatedFundTask(plan, fundCode))
         .sort(compareTasks));
       dispatchFinanceDataChanged({ reason: "fund-profile-scheduled-task-status", accountIds: [accountId] });
     } catch (e) {
@@ -193,9 +233,9 @@ export function FundScheduledTasksPanel({
     } finally {
       setBusyTaskId(null);
     }
-  }, [accountId, t]);
+  }, [accountId, fundCode, t]);
 
-  if (loading) {
+  if (loading && tasks.length === 0) {
     return (
       <div className="flex h-20 items-center justify-center rounded-md border border-slate-200 bg-white text-sm text-slate-400">
         <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
@@ -215,15 +255,15 @@ export function FundScheduledTasksPanel({
   return (
     <div className="space-y-2">
       <div className="max-h-[160px] overflow-auto rounded-md border border-slate-200">
-        <table className="w-full min-w-[620px] border-collapse text-xs">
+        <table className="w-full border-collapse text-xs">
           <thead className="bg-slate-50">
             <tr>
-              <th className="border-b border-slate-200 px-2 py-1.5 text-left font-semibold text-slate-600">{t("regularInvest.client.column.taskContent")}</th>
-              <th className="border-b border-slate-200 px-2 py-1.5 text-right font-semibold text-slate-600">{t("stats.amount")}</th>
-              <th className="border-b border-slate-200 px-2 py-1.5 text-left font-semibold text-slate-600">{t("creditBill.period")}</th>
-              <th className="border-b border-slate-200 px-2 py-1.5 text-left font-semibold text-slate-600">{t("regularInvest.client.column.nextRun")}</th>
-              <th className="border-b border-slate-200 px-2 py-1.5 text-left font-semibold text-slate-600">{t("depositShell.colStatus")}</th>
-              <th className="w-16 border-b border-slate-200 px-2 py-1.5 text-right font-semibold text-slate-600">{t("detail.column.actions")}</th>
+              <th className="border-b border-slate-200 px-1.5 py-1.5 text-left font-semibold text-slate-600">{t("viewImport.fundAccount")}</th>
+              <th className="border-b border-slate-200 px-1.5 py-1.5 text-right font-semibold text-slate-600">{t("stats.amount")}</th>
+              <th className="border-b border-slate-200 px-1.5 py-1.5 text-left font-semibold text-slate-600">{t("creditBill.period")}</th>
+              <th className="border-b border-slate-200 px-1.5 py-1.5 text-left font-semibold text-slate-600">{t("regularInvest.client.column.nextRun")}</th>
+              <th className="border-b border-slate-200 px-1.5 py-1.5 text-left font-semibold text-slate-600">{t("depositShell.colStatus")}</th>
+              <th className="w-20 border-b border-slate-200 px-1.5 py-1.5 text-right font-semibold text-slate-600">{t("detail.column.actions")}</th>
             </tr>
           </thead>
           <tbody>
@@ -232,42 +272,57 @@ export function FundScheduledTasksPanel({
               const busy = busyTaskId === plan.id;
               return (
                 <tr key={plan.id} className="hover:bg-slate-50">
-                  <td className="border-b border-slate-100 px-2 py-1.5 font-medium text-slate-800" title={taskLabel(plan)}>
-                    <div className="max-w-[220px] truncate">{taskLabel(plan)}</div>
-                    <div className="mt-0.5 text-[11px] tabular-nums text-slate-400">{plan.fundCode}</div>
+                  <td className="border-b border-slate-100 px-1.5 py-1.5 font-medium text-slate-800" title={plan.accountName || ""}>
+                    <div className="max-w-[150px] truncate">{plan.accountName || "-"}</div>
+                    {plan.accountInstitutionName ? (
+                      <div className="mt-0.5 max-w-[150px] truncate text-[11px] text-slate-400" title={plan.accountInstitutionName}>{plan.accountInstitutionName}</div>
+                    ) : null}
                   </td>
-                  <td className="border-b border-slate-100 px-2 py-1.5 text-right tabular-nums text-slate-700">{toNumber(plan.amount).toFixed(2)}</td>
-                  <td className="border-b border-slate-100 px-2 py-1.5 text-slate-500">{formatInterval(plan, t)}</td>
-                  <td className="border-b border-slate-100 px-2 py-1.5 tabular-nums text-slate-500">{status === "paused" ? "-" : formatDate(plan.nextRunDate)}</td>
-                  <td className="border-b border-slate-100 px-2 py-1.5">
+                  <td className="border-b border-slate-100 px-1.5 py-1.5 text-right tabular-nums text-slate-700">{toNumber(plan.amount).toFixed(2)}</td>
+                  <td className="border-b border-slate-100 px-1.5 py-1.5 text-slate-500">{formatInterval(plan, t)}</td>
+                  <td className="border-b border-slate-100 px-1.5 py-1.5 tabular-nums text-slate-500">{status === "paused" ? "-" : formatDate(plan.nextRunDate)}</td>
+                  <td className="border-b border-slate-100 px-1.5 py-1.5">
                     <span className={STATUS_MAP[status]?.cls || "text-slate-600"}>{statusLabel(status, t)}</span>
                   </td>
-                  <td className="border-b border-slate-100 px-2 py-1.5 text-right">
-                    {status === "active" ? (
-                      <button
-                        type="button"
-                        onClick={() => void updateStatus(plan.id, "pause")}
-                        disabled={busy}
-                        className="inline-flex h-7 w-7 items-center justify-center rounded border border-slate-200 bg-white text-amber-600 hover:border-amber-200 hover:bg-amber-50 disabled:opacity-50"
-                        title={t("fundShell.plan.pause")}
-                        aria-label={t("fundShell.plan.pause")}
-                      >
-                        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Pause className="h-3.5 w-3.5" />}
-                      </button>
-                    ) : status === "paused" ? (
-                      <button
-                        type="button"
-                        onClick={() => void updateStatus(plan.id, "resume")}
-                        disabled={busy}
-                        className="inline-flex h-7 w-7 items-center justify-center rounded border border-slate-200 bg-white text-emerald-600 hover:border-emerald-200 hover:bg-emerald-50 disabled:opacity-50"
-                        title={t("fundShell.plan.resume")}
-                        aria-label={t("fundShell.plan.resume")}
-                      >
-                        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-                      </button>
-                    ) : (
-                      <span className="text-slate-300">-</span>
-                    )}
+                  <td className="border-b border-slate-100 px-1.5 py-1.5">
+                    <div className="flex items-center justify-end gap-1">
+                      {status === "active" ? (
+                        <button
+                          type="button"
+                          onClick={() => void updateStatus(plan.id, "pause")}
+                          disabled={busy}
+                          className="inline-flex h-7 w-7 items-center justify-center rounded border border-slate-200 bg-white text-amber-600 hover:border-amber-200 hover:bg-amber-50 disabled:opacity-50"
+                          title={t("fundShell.plan.pause")}
+                          aria-label={t("fundShell.plan.pause")}
+                        >
+                          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Pause className="h-3.5 w-3.5" />}
+                        </button>
+                      ) : status === "paused" ? (
+                        <button
+                          type="button"
+                          onClick={() => void updateStatus(plan.id, "resume")}
+                          disabled={busy}
+                          className="inline-flex h-7 w-7 items-center justify-center rounded border border-slate-200 bg-white text-emerald-600 hover:border-emerald-200 hover:bg-emerald-50 disabled:opacity-50"
+                          title={t("fundShell.plan.resume")}
+                          aria-label={t("fundShell.plan.resume")}
+                        >
+                          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                        </button>
+                      ) : (
+                        <span className="text-slate-300">-</span>
+                      )}
+                      {onEdit ? (
+                        <button
+                          type="button"
+                          onClick={() => onEdit(plan)}
+                          className="inline-flex h-7 w-7 items-center justify-center rounded border border-slate-200 bg-white text-blue-600 hover:border-blue-200 hover:bg-blue-50"
+                          title={t("regularInvest.client.action.edit")}
+                          aria-label={t("regularInvest.client.action.edit")}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                      ) : null}
+                    </div>
                   </td>
                 </tr>
               );

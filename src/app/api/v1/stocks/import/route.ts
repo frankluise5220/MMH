@@ -25,6 +25,7 @@ import { recalcStockPositions } from "@/lib/stock/recalcPosition";
 import { getCurrentUser, isReadOnly } from "@/lib/server/auth";
 import {
   getStockSecurityByCode,
+  inferStockExchangeFromCode,
   inferStockMarketFromCode,
   normalizeStockCode,
   normalizeStockMarket,
@@ -136,6 +137,7 @@ type StockImportInput = {
   settleDate?: string | null;
   action?: string | null;
   market?: string | null;
+  exchange?: string | null;
   stockCode?: string | null;
   stockName?: string | null;
   quantity?: number | string | null;
@@ -172,6 +174,7 @@ type StockImportEnrichedItem = {
   settleDate: string | null;
   action: string;
   market: string;
+  exchange: string | null;
   stockCode: string;
   stockName: string | null;
   securityId: string | null;
@@ -440,9 +443,11 @@ function enrichImportItemWithoutStockAccount(
   const settleDate = input.settleDate ? formatParsedDate(input.settleDate) || null : null;
   const externalLinkId = String(input.externalLinkId ?? "").trim() || null;
   const stockCode = normalizeStockCode(input.stockCode);
+  const marketInput = input.market || inferStockMarketFromCode(stockCode);
   const market = isBankTransferAction(action) && !stockCode
     ? ""
-    : stockCode ? normalizeStockMarket(input.market || inferStockMarketFromCode(stockCode)) : normalizeStockMarket(input.market || "CN");
+    : stockCode ? normalizeStockMarket(marketInput) : normalizeStockMarket(input.market || "CN");
+  const exchange = stockCode ? inferStockExchangeFromCode(input.exchange || marketInput, stockCode) : null;
   const quantity = parseOptionalNonNegativeNumber(input.quantity);
   const price = sourceCalculatedFields.has("price") ? null : parseOptionalNonNegativeNumber(input.price);
   const buySellAction = isBuySellAction(action);
@@ -531,6 +536,7 @@ function enrichImportItemWithoutStockAccount(
     settleDate,
     action,
     market,
+    exchange,
     stockCode,
     stockName: normalizeUsableStockName(input.stockName, stockCode),
     securityId: null,
@@ -610,9 +616,11 @@ async function enrichImportItem(ctx: ImportContext, input: StockImportInput): Pr
   const settleDate = input.settleDate ? formatParsedDate(input.settleDate) || null : null;
   const externalLinkId = String(input.externalLinkId ?? "").trim() || null;
   const stockCode = normalizeStockCode(input.stockCode);
+  const marketInput = input.market || inferStockMarketFromCode(stockCode);
   const market = isBankTransferAction(action) && !stockCode
     ? ""
-    : stockCode ? normalizeStockMarket(input.market || inferStockMarketFromCode(stockCode)) : normalizeStockMarket(input.market || "CN");
+    : stockCode ? normalizeStockMarket(marketInput) : normalizeStockMarket(input.market || "CN");
+  const exchange = stockCode ? inferStockExchangeFromCode(input.exchange || marketInput, stockCode) : null;
   const quantity = parseOptionalNonNegativeNumber(input.quantity);
   let price = sourceCalculatedFields.has("price") ? null : parseOptionalNonNegativeNumber(input.price);
   const buySellAction = isBuySellAction(action);
@@ -698,7 +706,7 @@ async function enrichImportItem(ctx: ImportContext, input: StockImportInput): Pr
           market,
           stockCode,
           priceDate: tradeDate,
-          exchange: security?.exchange,
+          exchange: security?.exchange ?? exchange,
         }).catch(() => null);
         if (closePrice) {
           price = closePrice.closePrice;
@@ -859,6 +867,7 @@ async function enrichImportItem(ctx: ImportContext, input: StockImportInput): Pr
     settleDate,
     action,
     market,
+    exchange,
     stockCode,
     stockName,
     securityId,
@@ -919,6 +928,7 @@ async function createStockImportTransaction(
     stockCode: normalizeStockCode(item.stockCode),
     stockName: normalizeUsableStockName(item.stockName, item.stockCode) ?? undefined,
     currency: normalizeCurrency(stockAccount.currency),
+    exchange: item.exchange,
   });
   let cashAccount = item.cashAccountId
     ? await tx.account.findFirst({

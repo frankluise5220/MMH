@@ -1,12 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Building2, CalendarClock, CalendarDays, Check, CircleDollarSign, Loader2, RefreshCw, Save, X } from "lucide-react";
+import { Building2, CalendarClock, CalendarDays, Check, ChevronLeft, ChevronRight, CircleDollarSign, Loader2, RefreshCw, Save, X } from "lucide-react";
 import Link from "next/link";
 
 import { FundConfirmDaysPanel, type ConfirmDayRow } from "@/components/FundConfirmDaysModal";
 import { FundFeeRatePanel, type FeeRateRecord } from "@/components/FundFeeRatePanel";
-import { FundScheduledTasksPanel } from "@/components/FundScheduledTasksPanel";
+import { FundScheduledTasksPanel, type RelatedScheduledTask } from "@/components/FundScheduledTasksPanel";
+import { RegularInvestForm } from "@/components/RegularInvestForm";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
@@ -18,6 +19,7 @@ export type FundProfileSettingsData = {
   custodian: string | null;
   manager: string | null;
   navDateOffset: number;
+  tradingCalendar: string | null;
 };
 
 export type FundProfileNavigationItem = {
@@ -42,13 +44,29 @@ type FundProfileSettingsClientProps = {
   onProfileSaved?: (profile: FundProfileSettingsData) => void;
   onConfirmDaysSaved?: (result: { fundCode: string; rows: ConfirmDayRow[] }) => void;
   onFeeRatesSaved?: (result: { fundCode: string; rows: FeeRateRecord[] }) => void;
+  preloadedPlans?: RelatedScheduledTask[];
+  investmentAccounts?: { id: string; name: string; label: string }[];
+  cashAccounts?: { id: string; label: string; icon?: string; subLabel?: string }[];
+  investmentAccountSSOptions?: SmartSelectOption[];
+  cashAccountSSOptions?: SmartSelectOption[];
+  onEditPlanOpenChange?: (open: boolean) => void;
+  previousFund?: FundProfileNavigationItem | null;
+  nextFund?: FundProfileNavigationItem | null;
+  onFundNavigate?: (target: FundProfileNavigationItem | null) => void;
+  fundNavigationDisabled?: boolean;
 };
 
-type ProfileForm = Omit<FundProfileSettingsData, "navDateOffset"> & { navDateOffset: 0 | 1 };
+type ProfileForm = Omit<FundProfileSettingsData, "navDateOffset" | "tradingCalendar"> & {
+  navDateOffset: 0 | 1;
+};
 
 function toForm(profile: FundProfileSettingsData): ProfileForm {
   return {
-    ...profile,
+    fundCode: profile.fundCode,
+    fundName: profile.fundName,
+    fundCompany: profile.fundCompany,
+    custodian: profile.custodian,
+    manager: profile.manager,
     navDateOffset: profile.navDateOffset === 1 ? 1 : 0,
   };
 }
@@ -77,7 +95,49 @@ function Field({
   );
 }
 
-export function FundProfileSettingsClient({ account, profile, backHref, onClose, modal = false, fundCompanyOptions = [], onDirtyChange, confirmDayRows, feeRateRows, onProfileSaved, onConfirmDaysSaved, onFeeRatesSaved }: FundProfileSettingsClientProps) {
+function toDateInput(value?: string | null): string {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 10) : "";
+}
+
+function todayInput(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function toOptionalInt(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const parsed = typeof value === "number" ? value : parseInt(String(value), 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function planToEditData(plan: RelatedScheduledTask) {
+  return {
+    id: plan.id,
+    taskType: "fund_regular_invest" as const,
+    accountId: plan.accountId || "",
+    fundCode: plan.fundCode || "",
+    fundName: plan.fundName || null,
+    amount: Number(plan.amount) || 0,
+    intervalUnit: plan.intervalUnit || "month",
+    intervalValue: Number(plan.intervalValue) || 1,
+    executionDay: toOptionalInt(plan.executionDay),
+    secondaryExecutionDay: toOptionalInt(plan.secondaryExecutionDay),
+    startDate: toDateInput(plan.startDate) || todayInput(),
+    nextRunDate: plan.nextRunDate ? toDateInput(plan.nextRunDate) || null : null,
+    lastRunDate: plan.lastRunDate ? toDateInput(plan.lastRunDate) || null : null,
+    endDate: plan.endDate ? toDateInput(plan.endDate) || null : null,
+    totalRuns: toOptionalInt(plan.totalRuns),
+    executedRuns: toOptionalInt(plan.executedRuns) ?? null,
+    cashAccountId: plan.cashAccountId || null,
+    feeRate: plan.feeRate == null ? null : Number(plan.feeRate),
+    confirmDays: plan.confirmDays == null ? null : Number(plan.confirmDays),
+    arrivalDays: plan.arrivalDays == null ? null : Number(plan.arrivalDays),
+    skipPendingPreceding: plan.skipPendingPreceding !== false,
+  };
+}
+
+export function FundProfileSettingsClient({ account, profile, backHref, onClose, modal = false, fundCompanyOptions = [], onDirtyChange, confirmDayRows, feeRateRows, onProfileSaved, onConfirmDaysSaved, onFeeRatesSaved, preloadedPlans, investmentAccounts, cashAccounts, investmentAccountSSOptions, cashAccountSSOptions, onEditPlanOpenChange, previousFund = null, nextFund = null, onFundNavigate, fundNavigationDisabled = false }: FundProfileSettingsClientProps) {
   const { t } = useI18n();
   const [form, setForm] = useState<ProfileForm>(() => toForm(profile));
   const [dirtyFields, setDirtyFields] = useState<Set<keyof ProfileForm>>(() => new Set());
@@ -85,6 +145,8 @@ export function FundProfileSettingsClient({ account, profile, backHref, onClose,
   const [fetching, setFetching] = useState(false);
   const [saveMessage, setSaveMessage] = useState("");
   const [saveError, setSaveError] = useState("");
+  const [editPlan, setEditPlan] = useState<RelatedScheduledTask | null>(null);
+  const [scheduledReloadToken, setScheduledReloadToken] = useState(0);
 
   useEffect(() => {
     setForm(toForm(profile));
@@ -96,6 +158,10 @@ export function FundProfileSettingsClient({ account, profile, backHref, onClose,
   useEffect(() => {
     onDirtyChange?.(dirtyFields.size > 0);
   }, [dirtyFields, onDirtyChange]);
+
+  useEffect(() => {
+    onEditPlanOpenChange?.(editPlan !== null);
+  }, [editPlan, onEditPlanOpenChange]);
 
   const pendingFundCompanyOption = useMemo<SmartSelectOption | null>(() => {
     const value = form.fundCompany?.trim();
@@ -211,35 +277,62 @@ export function FundProfileSettingsClient({ account, profile, backHref, onClose,
   return (
     <div className={[modal ? "min-h-0 flex-1" : "flex min-h-0 flex-1", "flex flex-col overflow-hidden bg-slate-50/60"].join(" ")}>
       <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto w-full max-w-xl space-y-2 px-2.5 py-2 md:px-3">
-        <div className="px-0.5 py-0.5">
-          <div className="flex items-start justify-between gap-3">
+      <div className={["mx-auto w-full space-y-2 px-2.5 py-2 md:px-3", "max-w-xl"].join(" ")}>
+        <div className={modal ? "modal-header" : "px-0.5 py-0.5"}>
+          <div className={modal ? "grid flex-1 grid-cols-[minmax(0,1fr)_auto] items-center gap-3" : "grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3"}>
             <div className="min-w-0">
               <h1 id="fund-profile-settings-title" className="text-sm font-semibold text-slate-900">{t("fundSettings.profileSection")}</h1>
-              <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-sm">
-                <div className="min-w-0 truncate font-medium text-slate-800" title={currentFundName}>
-                  {currentFundName}
+              <div className={onFundNavigate ? "mt-1 grid min-w-0 grid-cols-[1.75rem_minmax(0,1fr)_1.75rem] items-center gap-1.5 text-sm" : "mt-1 flex min-w-0 items-center gap-2 text-sm"}>
+                {onFundNavigate ? (
+                  <button
+                    type="button"
+                    onClick={() => onFundNavigate(previousFund)}
+                    disabled={!previousFund || fundNavigationDisabled}
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-30"
+                    title={t("fundSettings.previousFund")}
+                    aria-label={t("fundSettings.previousFund")}
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                ) : null}
+                <div className="min-w-0" title={`${currentFundName} / ${form.fundCode}`}>
+                  <div className="truncate font-medium text-slate-800">
+                    {currentFundName}
+                  </div>
+                  <div className="truncate text-xs tabular-nums text-slate-500">
+                    {form.fundCode}
+                  </div>
                 </div>
-                <span className="text-slate-300">/</span>
-                <div className="tabular-nums text-slate-600" title={form.fundCode}>
-                  {form.fundCode}
-                </div>
+                {onFundNavigate ? (
+                  <button
+                    type="button"
+                    onClick={() => onFundNavigate(nextFund)}
+                    disabled={!nextFund || fundNavigationDisabled}
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-30"
+                    title={t("fundSettings.nextFund")}
+                    aria-label={t("fundSettings.nextFund")}
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                ) : null}
               </div>
             </div>
-            {onClose ? (
-              <button type="button" onClick={onClose} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700" aria-label={t("common.cancel")} title={t("common.cancel")}>
-                <X className="h-4 w-4" />
-              </button>
-            ) : backHref ? (
-              <Link
-                href={backHref}
-                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
-                aria-label={t("fundSettings.backToHolding")}
-                title={t("fundSettings.backToHolding")}
-              >
-                <X className="h-4 w-4 rotate-45" />
-              </Link>
-            ) : null}
+            <div className="flex h-8 w-8 items-center justify-center">
+              {onClose ? (
+                <button type="button" onClick={onClose} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700" aria-label={t("common.cancel")} title={t("common.cancel")}>
+                  <X className="h-4 w-4" />
+                </button>
+              ) : backHref ? (
+                <Link
+                  href={backHref}
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+                  aria-label={t("fundSettings.backToHolding")}
+                  title={t("fundSettings.backToHolding")}
+                >
+                  <X className="h-4 w-4 rotate-45" />
+                </Link>
+              ) : null}
+            </div>
           </div>
         </div>
 
@@ -320,21 +413,43 @@ export function FundProfileSettingsClient({ account, profile, backHref, onClose,
               hideFundColumn
             />
           </div>
-        </section>
-
-        <section className={sectionClass}>
-          <div className={sectionHeaderClass}>
-            <div className="flex min-w-0 items-center gap-2">
-              <CalendarClock className="h-4 w-4 shrink-0 text-indigo-600" />
-              <h2 className="text-sm font-semibold text-slate-900">{t("fundSettings.scheduledTaskSection")}</h2>
+          <div className="border-t border-slate-100 p-2.5 pt-2">
+            <div className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+              <CalendarClock className="h-3.5 w-3.5 text-indigo-600" />
+              {t("fundSettings.scheduledTaskSection")}
             </div>
-          </div>
-          <div className="p-2.5">
-            <FundScheduledTasksPanel accountId={account.id} fundCode={profile.fundCode} />
+            <FundScheduledTasksPanel
+              accountId={account.id}
+              fundCode={profile.fundCode}
+              preloadedPlans={preloadedPlans}
+              reloadToken={scheduledReloadToken}
+              onEdit={setEditPlan}
+            />
           </div>
         </section>
       </div>
       </div>
+      {editPlan ? (
+        <RegularInvestForm
+          key={editPlan.id}
+          mode="edit"
+          editData={planToEditData(editPlan)}
+          accountId={editPlan.accountId || account.id || ""}
+          investmentAccounts={investmentAccounts}
+          cashAccounts={cashAccounts}
+          investmentAccountSSOptions={investmentAccountSSOptions}
+          cashAccountSSOptions={cashAccountSSOptions}
+          showTriggerButton={false}
+          open={editPlan !== null}
+          onOpenChange={(open) => { if (!open) setEditPlan(null); }}
+          submitMethod="api"
+          onSuccess={() => {
+            setEditPlan(null);
+            setScheduledReloadToken((n) => n + 1);
+            dispatchFinanceDataChanged({ reason: "fund-profile-scheduled-task-edit", accountIds: [account.id] });
+          }}
+        />
+      ) : null}
     </div>
   );
 }

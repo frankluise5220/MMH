@@ -137,7 +137,7 @@ const STOCK_HEADER_KEYS = [
 ] as const;
 
 type StockImportItem = StockImportUploadItem;
-type StockImportHeaderField = Exclude<keyof StockImportItem, "rawText" | "stockName" | "stockAccountId" | "accountId" | "bankAccountId" | "cashAccountId">;
+type StockImportHeaderField = Exclude<keyof StockImportItem, "rawText" | "stockName" | "stockAccountId" | "accountId" | "bankAccountId" | "cashAccountId" | "exchange">;
 
 type ImportCategoryOption = {
   name: string;
@@ -162,10 +162,10 @@ function templateFor(props: ViewExcelImportMenuButtonProps, t: TranslateFn): Tem
       headers: localizedHeaders(STOCK_HEADER_KEYS, t),
       requiredHeaderIndexes: [0, 3, 5, 6, 7],
       rows: [
-        ["2026-06-08", "2026-06-08", stockAccountName, t("stockPanel.action.buy"), "CN", "600519", "100", "1580.00", "", "", "", "5.00", "3.00", "", "1.00", "0.50", "0.50", "", t("viewImport.sampleRemarkStockBuy")],
-        ["2026-06-20", "2026-06-20", stockAccountName, t("stockPanel.action.sell"), "CN", "600519", "50", "1620.00", "", "", "", "10.00", "3.00", "", "1.00", "0.50", "0.50", "5.00", t("viewImport.sampleRemarkStockSell")],
+        ["2026-06-08", "2026-06-08", stockAccountName, t("stockPanel.action.buy"), "CN_SH", "600519", "100", "1580.00", "", "", "", "5.00", "3.00", "", "1.00", "0.50", "0.50", "", t("viewImport.sampleRemarkStockBuy")],
+        ["2026-06-20", "2026-06-20", stockAccountName, t("stockPanel.action.sell"), "CN_SZ", "000001", "50", "12.00", "", "", "", "10.00", "3.00", "", "1.00", "0.50", "0.50", "5.00", t("viewImport.sampleRemarkStockSell")],
         ["2026-06-25", "2026-06-25", stockAccountName, t("viewImport.stockActionBankTransfer"), "", "", "", "", "10000.00", "", t("viewImport.sampleStockBankAccount"), "", "", "", "", "", "", "", t("viewImport.sampleRemarkStockTransferIn")],
-        ["2026-06-30", "2026-06-30", stockAccountName, t("stockPanel.action.dividend"), "CN", "600519", "", "", "300.00", "300.00", "", "", "", "", "", "", "", "", t("viewImport.sampleRemarkStockDividend")],
+        ["2026-06-30", "2026-06-30", stockAccountName, t("stockPanel.action.dividend"), "CN_SH", "600519", "", "", "300.00", "300.00", "", "", "", "", "", "", "", "", t("viewImport.sampleRemarkStockDividend")],
       ],
       footerRows: [
         [],

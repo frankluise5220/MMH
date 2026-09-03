@@ -16,18 +16,13 @@ import {
 } from "@/components/settings/SettingsPageScaffold";
 import { fetchSettingsTags, getCachedSettingsTags, notifySettingsDataChanged, setSettingsTags } from "@/lib/client/settingsCache";
 import { useI18n } from "@/lib/i18n";
+import { TAG_COLORS } from "@/lib/tag-colors";
 
 type Tag = {
   id: string;
   name: string;
   color: string | null;
 };
-
-const COLORS = [
-  "#EF4444", "#F97316", "#F59E0B", "#EAB308", "#22C55E",
-  "#14B8A6", "#3B82F6", "#6366F1", "#8B5CF6", "#EC4899",
-  "#64748B", "#0EA5E9",
-];
 
 export default function SettingsTagsClient({
   initialTags,
@@ -104,7 +99,7 @@ export default function SettingsTagsClient({
       <SettingsSection
         title={t("settings.tags.listTitle")}
         count={tags.length}
-        actions={<SettingsPrimaryAddButton onClick={() => setEditing({ id: "", name: "", color: COLORS[6] })}>{t("settings.tags.add")}</SettingsPrimaryAddButton>}
+        actions={<SettingsPrimaryAddButton onClick={() => setEditing({ id: "", name: "", color: TAG_COLORS[6] })}>{t("settings.tags.add")}</SettingsPrimaryAddButton>}
       >
         <SettingsTable minWidth={640}>
           <thead className="sticky top-0 z-10">
@@ -182,7 +177,7 @@ function TagEditModal({
 }) {
   const { t } = useI18n();
   const [name, setName] = useState(tag?.name ?? "");
-  const [color, setColor] = useState(tag?.color || COLORS[6]);
+  const [color, setColor] = useState(tag?.color || TAG_COLORS[6]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -224,7 +219,7 @@ function TagEditModal({
           <div className="space-y-2">
             <div className="form-label">{t("settings.tags.color")}</div>
             <div className="grid grid-cols-6 gap-2">
-              {COLORS.map((item) => (
+              {TAG_COLORS.map((item) => (
                 <button
                   key={item}
                   type="button"

@@ -218,7 +218,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
 
         <label className="mt-3 block">
           <span className="text-xs text-slate-500">{draft.type === "transfer" ? t("mobileTxForm.transferFromAccount") : t("mobileTxForm.account")}</span>
-          <div className="mt-1 [&>[role=button]]:h-11">
+          <div className="mt-1 rounded-[10px] ring-1 ring-rose-200/80 [&>[role=button]]:h-11">
             <SmartSelect
               mode="single"
               value={draft.accountId}
@@ -233,7 +233,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
         {draft.type === "transfer" ? (
           <label className="mt-3 block">
             <span className="text-xs text-slate-500">{t("mobileTxForm.transferToAccount")}</span>
-            <div className="mt-1 [&>[role=button]]:h-11">
+            <div className="mt-1 rounded-[10px] ring-1 ring-rose-200/80 [&>[role=button]]:h-11">
               <SmartSelect
                 mode="single"
                 value={draft.toAccountId}

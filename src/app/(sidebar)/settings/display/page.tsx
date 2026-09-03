@@ -20,8 +20,10 @@ import {
   getSidebarShowFixedAssetsPreference,
   getTimeZoneModePreference,
   getTimeZonePreference,
+  DEFAULT_ROW_HEIGHT_MODE,
+  ROW_HEIGHT_OPTIONS,
   getRowHeightModePreference,
-  ROW_HEIGHT_PRESETS,
+  normalizeRowHeightMode,
   setAccountLabelFieldsPreference,
   setRowHeightModePreference,
   setDetailDateBackgroundPreference,
@@ -135,7 +137,7 @@ function SettingRow({
         <div className="text-sm font-medium text-slate-800">{title}</div>
         {showDesc ? <div className="mt-1 text-xs text-slate-500">{desc}</div> : null}
       </div>
-      <div className={wide ? "min-w-0 flex-1 lg:max-w-3xl" : "min-w-0 lg:min-w-[280px] lg:max-w-xl"}>
+      <div className={wide ? "min-w-0 flex-1 lg:max-w-none" : "min-w-0 lg:min-w-[280px] lg:max-w-xl"}>
         {children}
       </div>
     </div>
@@ -157,7 +159,7 @@ export default function DisplaySettingsPage() {
   const [sidebarHideInitialData, setSidebarHideInitialData] = useState(false);
   const [sidebarShowFixedAssets, setSidebarShowFixedAssets] = useState(true);
   const [detailDateBackground, setDetailDateBackground] = useState(false);
-  const [rowHeightMode, setRowHeightMode] = useState<RowHeightMode>("medium");
+  const [rowHeightMode, setRowHeightMode] = useState<RowHeightMode>(DEFAULT_ROW_HEIGHT_MODE);
   const [savingScheme, setSavingScheme] = useState(false);
   const [savingBaseCurrency, setSavingBaseCurrency] = useState(false);
   const [savingTimeZone, setSavingTimeZone] = useState(false);
@@ -481,13 +483,10 @@ export default function DisplaySettingsPage() {
       if (!data.ok) {
         setRowHeightMode(prev);
         setRowHeightModePreference(prev);
-      } else if (
-        data.rowHeightMode === "large" ||
-        data.rowHeightMode === "medium" ||
-        data.rowHeightMode === "small"
-      ) {
-        setRowHeightMode(data.rowHeightMode);
-        setRowHeightModePreference(data.rowHeightMode);
+      } else {
+        const saved = normalizeRowHeightMode(data.rowHeightMode);
+        setRowHeightMode(saved);
+        setRowHeightModePreference(saved);
       }
     } catch {
       setRowHeightMode(prev);
@@ -531,6 +530,7 @@ export default function DisplaySettingsPage() {
     },
   ];
   const selectedColorOption = colorOptions.find((opt) => opt.value === scheme) ?? colorOptions[0];
+  const rowHeightSliderIndex = Math.max(0, ROW_HEIGHT_OPTIONS.indexOf(rowHeightMode));
 
   return (
     <div className="space-y-5">
@@ -622,30 +622,30 @@ export default function DisplaySettingsPage() {
           />
         </SettingRow>
         <SettingRow title={t("settings.display.rowHeight")} desc={t("settings.display.rowHeightDesc")} hideDesc={hideSettingDescriptions}>
-          <div className="inline-flex shrink-0 rounded-lg border border-slate-200 bg-slate-50 p-0.5">
-            {(["large", "medium", "small"] as RowHeightMode[]).map((mode) => {
-              const labelKey =
-                mode === "large"
-                  ? "settings.display.rowHeightLarge"
-                  : mode === "medium"
-                    ? "settings.display.rowHeightMedium"
-                    : "settings.display.rowHeightSmall";
-              return (
-                <button
-                  key={mode}
-                  type="button"
-                  onClick={() => void updateRowHeightMode(mode)}
-                  className={`h-7 rounded-md px-3 text-xs transition-colors ${
-                    rowHeightMode === mode
-                      ? "bg-white font-medium text-blue-700 shadow-sm"
-                      : "text-slate-500 hover:text-slate-700"
-                  }`}
-                  title={`${ROW_HEIGHT_PRESETS[mode].height}px`}
-                >
-                  {t(labelKey)}
-                </button>
-              );
-            })}
+          <div className="w-full max-w-md space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-medium text-slate-700">{rowHeightMode}px</span>
+              <span className="text-slate-400">{ROW_HEIGHT_OPTIONS[0]}px / {ROW_HEIGHT_OPTIONS[ROW_HEIGHT_OPTIONS.length - 1]}px</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={ROW_HEIGHT_OPTIONS.length - 1}
+              step={1}
+              value={rowHeightSliderIndex}
+              onChange={(event) => {
+                const index = Number(event.currentTarget.value);
+                const next = ROW_HEIGHT_OPTIONS[index] ?? DEFAULT_ROW_HEIGHT_MODE;
+                void updateRowHeightMode(next);
+              }}
+              className="h-2 w-full cursor-pointer accent-blue-600"
+              aria-label={t("settings.display.rowHeight")}
+            />
+            <div className="flex justify-between text-[11px] tabular-nums text-slate-400">
+              {ROW_HEIGHT_OPTIONS.map((height) => (
+                <span key={height}>{height}</span>
+              ))}
+            </div>
           </div>
         </SettingRow>
       </section>
@@ -718,9 +718,9 @@ export default function DisplaySettingsPage() {
       <section className="panel-surface overflow-hidden">
         <div>
           <SettingRow title={t("settings.display.accountFormat")} desc={t("settings.display.accountFormatDesc")} hideDesc={hideSettingDescriptions} wide>
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:gap-6">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:gap-4 xl:gap-6">
               <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex min-h-8 flex-nowrap items-center gap-2 overflow-x-auto pb-1">
                   {accountLabelFields.length === 0 ? (
                     <span className="text-xs text-slate-400">{t("settings.display.accountFormatEmpty")}</span>
                   ) : (
@@ -757,21 +757,21 @@ export default function DisplaySettingsPage() {
                           }}
                           onDragEnd={clearAccountLabelDragState}
                           title={t("settings.display.accountFormatDragHint")}
-                          className={`flex h-8 cursor-grab items-center gap-1 rounded-[8px] border px-2 text-xs active:cursor-grabbing ${
+                          className={`flex h-8 shrink-0 cursor-grab items-center gap-1 rounded-[8px] border px-2 text-xs shadow-sm active:cursor-grabbing ${
                             isDropTarget
-                              ? "border-blue-400 bg-blue-50 ring-1 ring-inset ring-blue-300"
-                              : "border-slate-200 bg-white"
+                              ? "border-blue-400 bg-blue-100 text-blue-800 ring-1 ring-inset ring-blue-300"
+                              : "border-blue-200 bg-blue-50/70 text-blue-700"
                           } ${isDragging ? "opacity-50" : ""}`}
                         >
-                          <GripVertical className="h-3.5 w-3.5 shrink-0 text-slate-300" aria-hidden="true" />
-                          <span className="shrink-0 tabular-nums text-slate-400">{index + 1}.</span>
-                          <span className="whitespace-nowrap font-medium text-slate-700">{t(option.labelKey)}</span>
+                          <GripVertical className="h-3.5 w-3.5 shrink-0 text-blue-300" aria-hidden="true" />
+                          <span className="shrink-0 tabular-nums text-blue-400">{index + 1}.</span>
+                          <span className="whitespace-nowrap font-medium">{t(option.labelKey)}</span>
                           <button
                             type="button"
                             onClick={() => toggleAccountLabelField(field)}
                             title={t("settings.display.accountFormatRemove")}
                             aria-label={t("settings.display.accountFormatRemove")}
-                            className="ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                            className="ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded text-blue-400 hover:bg-blue-100 hover:text-blue-700"
                           >
                             <X className="h-3 w-3" />
                           </button>
@@ -807,7 +807,7 @@ export default function DisplaySettingsPage() {
                   {savingAccountLabelFields ? <span className="text-slate-400">{t("settings.display.applying")}</span> : null}
                 </div>
               </div>
-              <div className="w-full shrink-0 rounded-[10px] border border-slate-200 bg-slate-50/70 px-3 py-2 lg:w-72">
+              <div className="w-full shrink-0 rounded-[10px] border border-slate-200 bg-slate-50/70 px-3 py-2 lg:w-64 xl:w-72">
                 <div className="text-xs text-slate-500">{t("settings.display.preview")}</div>
                 <div className="mt-1 space-y-1">
                   {accountFormatPreviews.map((preview) => (

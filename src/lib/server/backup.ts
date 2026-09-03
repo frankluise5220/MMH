@@ -3690,6 +3690,7 @@ export async function restoreHouseholdBackup(
             executedRuns: Number(item.executedRuns ?? 0),
             fundProductType: item.fundProductType == null ? null : (String(item.fundProductType) as never),
             taskType: item.taskType == null ? null : String(item.taskType),
+            planName: item.planName == null ? null : String(item.planName),
             targetName: item.targetName == null ? null : String(item.targetName),
             insuranceProductName: item.insuranceProductName == null ? null : String(item.insuranceProductName),
             memo: item.memo == null ? null : String(item.memo),

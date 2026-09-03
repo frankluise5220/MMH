@@ -238,6 +238,7 @@ export default async function RegularInvestPage() {
 
     return {
       ...plan,
+      planName: plan.planName ?? null,
       fundName: displayFundName,
       taskType,
       taskTypeLabel: scheduledTaskTypeLabel(taskType),
@@ -254,6 +255,7 @@ export default async function RegularInvestPage() {
       taskRepaymentMethod: scheduledTask.repaymentMethod ? normalizeLoanRepaymentMethod(scheduledTask.repaymentMethod) : null,
       taskRepaymentIntervalMonths: scheduledTask.repaymentIntervalMonths ?? null,
       taskLoanPlanRole: getLoanScheduledPlanRole(scheduledTask),
+      isSystemTask: scheduledTask.type === "loan_repayment" && getLoanScheduledPlanRole(scheduledTask) === "bill",
       amount: Number(plan.amount),
       feeRate: plan.feeRate ? Number(plan.feeRate) : null,
       startDate: plan.startDate && Number.isFinite(plan.startDate.getTime()) ? plan.startDate.toISOString() : null,

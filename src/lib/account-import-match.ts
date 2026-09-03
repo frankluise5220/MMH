@@ -82,10 +82,18 @@ const ACCOUNT_KIND_ALIASES: Array<{ kind: ImportAccountKind; aliases: string[] }
   { kind: "loan", aliases: ["往来款"] },
 ];
 
+const ACCOUNT_KIND_SEPARATOR_WORDS = [
+  "\u4fe1\u7528\u5361",
+  "\u8d37\u8bb0\u5361",
+  "\u50a8\u84c4\u5361",
+  "\u501f\u8bb0\u5361",
+  "\u94f6\u884c\u5361",
+];
+
 export function normalizeImportAccountMatchKey(value?: string) {
   return String(value ?? "")
     .trim()
-    .replace(/[·•\-—_\s()[\]（）【】]/g, "")
+    .replace(/[·•\-—_\s()[\]（）【】\u7684]/g, "")
     .toLowerCase();
 }
 
@@ -359,6 +367,10 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
     };
   }
 
+  function hasCompatibleLast4(item: (typeof indexed)[number], targetLast4: string) {
+    return !targetLast4 || !item.last4 || item.last4 === targetLast4;
+  }
+
   function pickUnique(matches: Array<(typeof indexed)[number]>, criteria: {
     last4: string;
     targetKind: ImportAccountKind | null;
@@ -494,21 +506,29 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
 
     for (const targetKey of targetKeys) {
       const exactMatches = indexed.filter((item) => item.keys.includes(targetKey));
-      if (exactMatches.length > 0) {
-        const narrowed = pickUnique(exactMatches, { last4, targetKind, targetBankKeys });
+      const compatibleExactMatches = exactMatches.filter((item) => hasCompatibleLast4(item, last4));
+      if (compatibleExactMatches.length > 0) {
+        const narrowed = pickUnique(compatibleExactMatches, { last4, targetKind, targetBankKeys });
         if (narrowed) return result(narrowed, [], { targetKind, targetBankNames });
-        if (exactMatches.length === 1 && (!targetKind || !exactMatches[0].account.kind || exactMatches[0].account.kind === targetKind)) {
-          return result(exactMatches[0].account, [], { targetKind, targetBankNames });
+        if (
+          compatibleExactMatches.length === 1 &&
+          (!targetKind || !compatibleExactMatches[0].account.kind || compatibleExactMatches[0].account.kind === targetKind)
+        ) {
+          return result(compatibleExactMatches[0].account, [], { targetKind, targetBankNames });
         }
-        if (!targetKind && exactMatches.length > 1 && isImportUnionPayDebitTailSourceHint(raw)) {
-          const paymentSource = pickUnionPayDebitSource(exactMatches);
+        if (!targetKind && compatibleExactMatches.length > 1 && isImportUnionPayDebitTailSourceHint(raw)) {
+          const paymentSource = pickUnionPayDebitSource(compatibleExactMatches);
           if (paymentSource) return result(paymentSource, [], { targetKind, targetBankNames });
         }
-        if (!targetKind && exactMatches.length > 1 && isBareLast4Hint(raw)) {
-          const paymentSource = pickPaymentTailSource(exactMatches);
+        if (!targetKind && compatibleExactMatches.length > 1 && isBareLast4Hint(raw)) {
+          const paymentSource = pickPaymentTailSource(compatibleExactMatches);
           if (paymentSource) return result(paymentSource, [], { targetKind, targetBankNames });
         }
-        if (!targetKind && exactMatches.length > 1) return result(null, exactMatches, { targetKind, targetBankNames });
+        if (!targetKind && compatibleExactMatches.length > 1) {
+          return result(null, compatibleExactMatches, { targetKind, targetBankNames });
+        }
+      }
+    }
 
     // "XX的往来款" pattern: try to match extracted counterparty name directly
     // against loan account names, bypassing kind-alias partial matching.
@@ -524,8 +544,6 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
             return result(loanMatches[0].account, [], { targetKind, targetBankNames });
           }
         }
-      }
-    }
       }
     }
 
@@ -562,6 +580,7 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
     if (targetKind && targetBankKeys.length > 0) {
       const byBankAndKind = indexed.filter((item) => {
         if (item.account.kind !== targetKind) return false;
+        if (!hasCompatibleLast4(item, last4)) return false;
         return bankKeyMatches(item, targetBankKeys);
       });
       if (byBankAndKind.length === 1) return result(byBankAndKind[0].account, [], { targetKind, targetBankNames });
@@ -572,11 +591,19 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
       const partialMatches = indexed.filter((item) =>
         item.keys.some((key) => key.length >= 3 && (targetKey.includes(key) || key.includes(targetKey))),
       );
-      if (partialMatches.length === 1) return result(partialMatches[0].account, [], { targetKind, targetBankNames });
-      if (partialMatches.length > 1) {
-        const narrowed = pickUnique(partialMatches, { last4, targetKind, targetBankKeys });
+      const compatiblePartialMatches = partialMatches.filter((item) => {
+        if (!hasCompatibleLast4(item, last4)) return false;
+        if (targetKind && item.account.kind && item.account.kind !== targetKind) return false;
+        if (targetBankKeys.length > 0 && !bankKeyMatches(item, targetBankKeys)) return false;
+        return true;
+      });
+      if (compatiblePartialMatches.length === 1) {
+        return result(compatiblePartialMatches[0].account, [], { targetKind, targetBankNames });
+      }
+      if (compatiblePartialMatches.length > 1) {
+        const narrowed = pickUnique(compatiblePartialMatches, { last4, targetKind, targetBankKeys });
         if (narrowed) return result(narrowed, [], { targetKind, targetBankNames });
-        return result(null, partialMatches, { targetKind, targetBankNames });
+        return result(null, compatiblePartialMatches, { targetKind, targetBankNames });
       }
     }
 
@@ -645,6 +672,18 @@ function expandBankName(value: string) {
   return expandImportBankName(value);
 }
 
+function stripAccountKindSeparatorWords(value: string) {
+  const names = new Set<string>();
+  for (const word of ACCOUNT_KIND_SEPARATOR_WORDS) {
+    const normalizedWord = normalizeImportAccountMatchKey(word);
+    const key = normalizeImportAccountMatchKey(value);
+    if (!normalizedWord || !key.includes(normalizedWord)) continue;
+    const next = value.replaceAll(word, "").trim();
+    if (next) names.add(next);
+  }
+  return Array.from(names);
+}
+
 function expandImportAccountName(value: string) {
   const names = new Set<string>([value.trim()]);
   const last4 = extractImportAccountLast4(value);
@@ -686,6 +725,10 @@ function expandImportAccountName(value: string) {
         names.add(`${bank}${cardKind}(${last4})`);
       }
     }
+  }
+
+  for (const name of [...names]) {
+    for (const stripped of stripAccountKindSeparatorWords(name)) names.add(stripped);
   }
 
   return Array.from(names).filter(Boolean);

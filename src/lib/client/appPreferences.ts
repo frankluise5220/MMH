@@ -15,8 +15,19 @@ import {
   normalizeDateDisplayFormat,
   type DateDisplayFormat,
 } from "@/lib/date-utils";
+import {
+  normalizeRowHeightMode,
+  type RowHeightMode,
+} from "@/lib/row-height";
 
 export type { DateDisplayFormat } from "@/lib/date-utils";
+export {
+  DEFAULT_ROW_HEIGHT_MODE,
+  ROW_HEIGHT_OPTIONS,
+  ROW_HEIGHT_PRESETS,
+  normalizeRowHeightMode,
+} from "@/lib/row-height";
+export type { RowHeightMode } from "@/lib/row-height";
 
 export const SESSION_DAYS_COOKIE = "mmh_session_days";
 export const FUND_UNITS_DECIMALS_COOKIE = "mmh_fund_units_decimals";
@@ -47,7 +58,6 @@ export type SidebarGroupMode = "kind" | "institution";
 export type TimeZoneMode = "system" | "specified";
 export type CreditCardLabelMode = "short_last4" | "full_name";
 export type DisplayLanguage = "zh-CN" | "en-US" | "ja-JP";
-export type RowHeightMode = "large" | "medium" | "small";
 
 export type AppPreferencesSnapshot = {
   sessionDays: number;
@@ -79,16 +89,6 @@ const DEFAULT_FUND_UNITS_DECIMALS = 2;
 const DEFAULT_TIME_ZONE = "Asia/Shanghai";
 const DEFAULT_CREDIT_CARD_LABEL_MODE: CreditCardLabelMode = "short_last4";
 const DEFAULT_DISPLAY_LANGUAGE: DisplayLanguage = "zh-CN";
-export const DEFAULT_ROW_HEIGHT_MODE: RowHeightMode = "medium";
-
-// Row height equals content + vertical padding * 2 + the 1px cell border.
-// Body text size tracks the same mode in AdvancedDataTable.BODY_TEXT_CLASS.
-// Compact rows remain fixed at 12px.
-export const ROW_HEIGHT_PRESETS: Record<RowHeightMode, { height: number; content: number; padding: number }> = {
-  large: { height: 41, content: 28, padding: 6 },
-  medium: { height: 38, content: 27, padding: 5 },
-  small: { height: 35, content: 26, padding: 4 },
-};
 
 function parseCookieValue(name: string): string | null {
   if (typeof document === "undefined") return null;
@@ -366,10 +366,6 @@ export function setDetailDateBackgroundPreference(value: boolean) {
   emitPreferencesChanged();
 }
 
-export function normalizeRowHeightMode(value: unknown): RowHeightMode {
-  return value === "large" || value === "medium" || value === "small" ? value : DEFAULT_ROW_HEIGHT_MODE;
-}
-
 export function getRowHeightModePreference(): RowHeightMode {
   try {
     return normalizeRowHeightMode(
@@ -383,9 +379,9 @@ export function getRowHeightModePreference(): RowHeightMode {
 export function setRowHeightModePreference(value: RowHeightMode) {
   const normalized = normalizeRowHeightMode(value);
   try {
-    localStorage.setItem(ROW_HEIGHT_MODE_KEY, normalized);
+    localStorage.setItem(ROW_HEIGHT_MODE_KEY, String(normalized));
   } catch {}
-  setCookieValue(ROW_HEIGHT_MODE_KEY, normalized);
+  setCookieValue(ROW_HEIGHT_MODE_KEY, String(normalized));
   emitPreferencesChanged();
 }
 
@@ -425,7 +421,7 @@ export function setAiPanelCollapsedPreference(value: boolean) {
 
 export function getAccountLabelFieldsPreference(): AccountLabelField[] {
   const raw = parseCookieValue(ACCOUNT_LABEL_FIELDS_COOKIE);
-  if (raw == null || !raw.trim()) return [...DEFAULT_ACCOUNT_LABEL_FIELDS];
+  if (raw == null) return [...DEFAULT_ACCOUNT_LABEL_FIELDS];
   return parseAccountLabelFields(raw);
 }
 

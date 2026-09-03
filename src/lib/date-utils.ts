@@ -191,6 +191,48 @@ const US_FUND_HOLIDAYS = new Set<string>([
   "2026-07-03", "2026-09-07", "2026-11-26", "2026-12-25",
 ]);
 
+// Hong Kong securities market holidays for HK-linked funds.
+const HK_FUND_HOLIDAYS = new Set<string>([
+  "2024-01-01",
+  "2024-02-12", "2024-02-13",
+  "2024-03-29", "2024-04-01", "2024-04-04",
+  "2024-05-01", "2024-05-15",
+  "2024-06-10",
+  "2024-07-01",
+  "2024-09-18",
+  "2024-10-01", "2024-10-11",
+  "2024-12-25", "2024-12-26",
+  "2025-01-01",
+  "2025-01-29", "2025-01-30", "2025-01-31",
+  "2025-04-04", "2025-04-18", "2025-04-21",
+  "2025-05-01", "2025-05-05", "2025-05-31",
+  "2025-07-01",
+  "2025-10-01", "2025-10-07", "2025-10-29",
+  "2025-12-25", "2025-12-26",
+  "2026-01-01",
+  "2026-02-17", "2026-02-18", "2026-02-19",
+  "2026-04-03", "2026-04-06", "2026-04-07",
+  "2026-05-01", "2026-05-25",
+  "2026-06-19",
+  "2026-07-01",
+  "2026-10-01", "2026-10-19",
+  "2026-12-25",
+]);
+
+// Japan Exchange Group market holidays for Japan-linked funds.
+const JP_FUND_HOLIDAYS = new Set<string>([
+  "2024-01-01", "2024-01-02", "2024-01-03", "2024-01-08", "2024-02-12", "2024-02-23",
+  "2024-03-20", "2024-04-29", "2024-05-03", "2024-05-06", "2024-07-15", "2024-08-12",
+  "2024-09-16", "2024-09-23", "2024-10-14", "2024-11-04", "2024-12-31",
+  "2025-01-01", "2025-01-02", "2025-01-03", "2025-01-13", "2025-02-11", "2025-02-24",
+  "2025-03-20", "2025-04-29", "2025-05-05", "2025-05-06", "2025-07-21", "2025-08-11",
+  "2025-09-15", "2025-09-23", "2025-10-13", "2025-11-03", "2025-11-24", "2025-12-31",
+  "2026-01-01", "2026-01-02", "2026-01-12", "2026-02-11", "2026-02-23", "2026-03-20",
+  "2026-04-29", "2026-05-04", "2026-05-05", "2026-05-06", "2026-07-20", "2026-08-11",
+  "2026-09-21", "2026-09-22", "2026-09-23", "2026-10-12", "2026-11-03", "2026-11-23",
+  "2026-12-31",
+]);
+
 function isWeekendUtc(ms: number) {
   const dow = new Date(ms).getUTCDay();
   return dow === 0 || dow === 6;
@@ -204,11 +246,21 @@ function isUsFundHoliday(dateStr: string) {
   return US_FUND_HOLIDAYS.has(dateStr);
 }
 
+function isHkFundHoliday(dateStr: string) {
+  return HK_FUND_HOLIDAYS.has(dateStr);
+}
+
+function isJpFundHoliday(dateStr: string) {
+  return JP_FUND_HOLIDAYS.has(dateStr);
+}
+
 export function isTradingClosedDate(dateStr: string, tradingCalendar?: string | null) {
   const [y, m, d] = dateStr.split("-").map(Number);
   const ms = Date.UTC(y, (m || 1) - 1, d || 1);
   if (isWeekendUtc(ms)) return true;
   if (tradingCalendar === "cn_fund") return isCnFundHoliday(dateStr);
+  if (tradingCalendar === "hk_fund") return isHkFundHoliday(dateStr);
+  if (tradingCalendar === "jp_fund") return isJpFundHoliday(dateStr);
   if (tradingCalendar === "us_fund") return isUsFundHoliday(dateStr);
   return false;
 }
@@ -227,6 +279,21 @@ export function addTradingDaysUtc(dateStr: string, n: number, tradingCalendar?: 
   const rm = String(result.getUTCMonth() + 1).padStart(2, "0");
   const rd = String(result.getUTCDate()).padStart(2, "0");
   return `${ry}-${rm}-${rd}`;
+}
+
+export function subtractTradingDaysUtc(dateStr: string, n: number, tradingCalendar?: string | null) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  let ms = Date.UTC(y, m - 1, d);
+  while (isTradingClosedDate(formatDateUtc(new Date(ms)), tradingCalendar)) {
+    ms -= 24 * 60 * 60 * 1000;
+  }
+  let subtracted = 0;
+  while (subtracted < n) {
+    ms -= 24 * 60 * 60 * 1000;
+    const nextDate = formatDateUtc(new Date(ms));
+    if (!isTradingClosedDate(nextDate, tradingCalendar)) subtracted++;
+  }
+  return formatDateUtc(new Date(ms));
 }
 
 export function countTradingDaysUtc(startDateStr: string, endDateStr: string, tradingCalendar?: string | null) {

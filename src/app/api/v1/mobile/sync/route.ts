@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { AccountKind } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { formatDateUtc, toNumber } from "@/lib/date-utils";
-import { getLatestFundNav, refreshLatestFundNav } from "@/lib/fund/navCache";
+import { getEffectiveLatestFundNavMap, getLatestFundNav, refreshLatestFundNav } from "@/lib/fund/navCache";
 import { getFundProfileNameMap, normalizeFundDisplayName } from "@/lib/fund/fundProfile";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
@@ -411,6 +411,7 @@ export async function GET(req: Request) {
           cashAccountId: true,
           cashAccountName: true,
           taskType: true,
+          planName: true,
           targetName: true,
           insuranceProductName: true,
           fundCode: true,
@@ -480,13 +481,7 @@ export async function GET(req: Request) {
       await Promise.allSettled(fundCodes.map((fundCode) => refreshLatestFundNav(fundCode)));
     }
 
-    const latestNavEntries = await Promise.all(
-      fundCodes.map(async (fundCode) => {
-        const latest = await getLatestFundNav(fundCode);
-        return latest ? [fundCode, latest] as const : null;
-      }),
-    );
-    const latestNavByCode = new Map(latestNavEntries.filter((item): item is readonly [string, NonNullable<Awaited<ReturnType<typeof getLatestFundNav>>>] => item != null));
+    const latestNavByCode = await getEffectiveLatestFundNavMap(fundCodes);
     const fundProfileNameByCode = await getFundProfileNameMap(fundCodes);
 
     const fundNav = fundCodes.length
@@ -761,6 +756,7 @@ export async function GET(req: Request) {
             cashAccountName: item.Account_RegularInvestPlan_cashAccountIdToAccount?.name ?? item.cashAccountName,
             cashAccountInstitutionName: item.Account_RegularInvestPlan_cashAccountIdToAccount?.Institution?.name ?? null,
             taskType,
+            planName: item.planName ?? null,
             taskTitle: isFundRegularInvest ? displayFundName : item.targetName ?? task.title ?? null,
             targetName: displayTargetName,
             insuranceProductName: item.insuranceProductName,

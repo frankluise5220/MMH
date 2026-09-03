@@ -13,7 +13,7 @@ import {
 export const ACCOUNT_LABEL_FIELDS_COOKIE = "mmh_account_label_fields";
 
 export function accountLabelFieldsFromCookieValue(value: string | undefined): AccountLabelField[] {
-  if (!value || !value.trim()) return [...DEFAULT_ACCOUNT_LABEL_FIELDS];
+  if (value === undefined) return [...DEFAULT_ACCOUNT_LABEL_FIELDS];
   return parseAccountLabelFields(value);
 }
 

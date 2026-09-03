@@ -35,6 +35,7 @@ export type StockImportUploadItem = {
   accountId?: string | null;
   action: string;
   market?: string;
+  exchange?: string | null;
   stockCode: string;
   stockName?: string;
   quantity?: number | null;
@@ -166,6 +167,21 @@ function stockActionLabel(action: string, t: TranslateFn) {
   return label === key ? action || "-" : label;
 }
 
+function stockImportMarketLabel(market: string, t: TranslateFn) {
+  const value = market || "CN";
+  const key = `stockFee.scope.${value}`;
+  const label = t(key);
+  return label === key ? value : `${label} (${value})`;
+}
+
+function stockImportMarketDisplayValue(market: string | undefined, exchange: string | null | undefined) {
+  const normalizedExchange = String(exchange ?? "").trim().toUpperCase();
+  if ((market || "CN") === "CN" && ["SH", "SZ", "BJ"].includes(normalizedExchange)) {
+    return `CN_${normalizedExchange}`;
+  }
+  return market || "CN";
+}
+
 function selectableIndexes(items: StockImportPreviewItem[]) {
   return new Set(items.map((_, index) => index));
 }
@@ -217,7 +233,7 @@ const STOCK_PREVIEW_ACTIONS = [
   "bank_transfer",
 ] as const;
 
-const STOCK_PREVIEW_MARKETS = ["CN", "HK", "US"] as const;
+const STOCK_PREVIEW_MARKETS = ["CN_SH", "CN_SZ", "CN_BJ", "CN", "HK", "US"] as const;
 
 const STOCK_PREVIEW_COMPONENT_FEE_FIELDS = [
   "commission",
@@ -924,25 +940,26 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
   }
 
   function renderMarketCell(row: StockPreviewTableRow) {
-    const marketOptions = Array.from(new Set([row.market, ...STOCK_PREVIEW_MARKETS].filter(Boolean)));
+    const currentMarket = stockImportMarketDisplayValue(row.market, row.exchange);
+    const marketOptions = Array.from(new Set([currentMarket, ...STOCK_PREVIEW_MARKETS].filter(Boolean)));
     if (editingCell?.idx === row.idx && editingCell.field === "market") {
       return (
         <select
           data-row-double-click-ignore
           autoFocus
           className="h-7 w-full rounded-md border border-blue-200 bg-white px-2 text-xs outline-none"
-          value={row.market || "CN"}
+          value={currentMarket}
           onMouseDown={stopCellEvent}
           onClick={stopCellEvent}
           onDoubleClick={stopCellEvent}
           onBlur={() => setEditingCell(null)}
           onChange={(event) => void patchUploadItem(row.idx, { market: event.target.value })}
         >
-          {marketOptions.map((market) => <option key={market} value={market}>{market}</option>)}
+          {marketOptions.map((market) => <option key={market} value={market}>{stockImportMarketLabel(market, t)}</option>)}
         </select>
       );
     }
-    return renderTextCell(row, "market", row.market);
+    return renderTextCell(row, "market", stockImportMarketLabel(currentMarket, t));
   }
 
   function renderStockAccountCell(row: StockPreviewTableRow) {
@@ -1062,7 +1079,7 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
     { key: "tradeDate", label: t("detail.column.date"), width: 112, minWidth: 92, filterKind: "dateRange", filterText: (row) => row.tradeDate || "-", sortValue: (row) => row.tradeDate || "", render: (row) => renderTextCell(row, "tradeDate", row.tradeDate, "tabular-nums text-slate-700") },
     { key: "settleDate", label: t("stockTx.settleDateLabel"), width: 112, minWidth: 92, filterKind: "dateRange", filterText: (row) => row.settleDate || "-", sortValue: (row) => row.settleDate || "", render: (row) => renderTextCell(row, "settleDate", row.settleDate, "tabular-nums text-slate-700") },
     { key: "action", label: t("depositShell.colAction"), width: 116, minWidth: 92, filterText: (row) => stockActionLabel(row.action, t), render: renderActionCell },
-    { key: "market", label: t("reports.stock.market"), width: 80, minWidth: 68, filterText: (row) => row.market || "-", render: renderMarketCell },
+    { key: "market", label: t("reports.stock.market"), width: 112, minWidth: 86, filterText: (row) => stockImportMarketLabel(stockImportMarketDisplayValue(row.market, row.exchange), t), render: renderMarketCell },
     { key: "stockCode", label: t("stockTx.stockCodeLabel"), width: 96, minWidth: 76, filterText: (row) => row.stockCode || "-", render: (row) => renderTextCell(row, "stockCode", row.stockCode, "tabular-nums text-slate-700") },
     { key: "stockName", label: t("stockTx.stockNameLabel"), width: 200, minWidth: 140, filterText: (row) => row.stockName || "-", render: (row) => <span className="truncate text-slate-700" title={row.stockName || ""}>{row.stockName || "-"}</span> },
     { key: "quantity", label: t("stockHoldingReport.colQuantity"), width: 116, minWidth: 92, align: "right", filterKind: "numberRange", filterText: (row) => formatOptionalNumber(row.quantity, 2), filterNumber: (row) => row.quantity, sortValue: (row) => row.quantity ?? 0, render: (row) => renderNumberCell(row, "quantity", row.quantity, 2) },

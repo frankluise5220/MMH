@@ -86,7 +86,6 @@ const INSTITUTION_TYPE_LABEL_KEYS: Record<string, string> = {
   brokerage: "institution.type.brokerage",
   fund_company: "institution.type.fund_company",
   payment: "institution.type.payment",
-  ewallet: "institution.type.ewallet",
   debt: "institution.type.debt",
   other: "institution.type.other",
 };
@@ -101,7 +100,6 @@ const INSTITUTION_TYPE_LABEL_FALLBACK: Record<string, string> = {
   brokerage: "证券",
   fund_company: "Fund Company",
   payment: "第三方支付",
-  ewallet: "钱包",
   debt: "债权债务",
   other: "其他",
 };
@@ -118,7 +116,6 @@ export function institutionTypeIconName(t: string | null): string {
   if (t === "brokerage") return "building-2";
   if (t === "fund_company") return "building-2";
   if (t === "payment") return "credit-card";
-  if (t === "ewallet") return "wallet";
   if (t === "debt") return "hand-coins";
   return "building-2";
 }
