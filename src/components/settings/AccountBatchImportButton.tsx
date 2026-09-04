@@ -1661,7 +1661,7 @@ function appendSheetGuideRows(
   const rows = [
     ...dataRows,
     [],
-    guideWideRow([`${t("settings.accounts.import.sheetGuideTitle")}\n${t("settings.accounts.import.guideNoRepeatImport")}`]),
+    guideWideRow([`${t("settings.accounts.import.sheetGuideTitle")}${t("settings.accounts.import.sheetGuideIgnoreNote")}\n${t("settings.accounts.import.guideNoRepeatImport")}`]),
     guideWideRow([t("settings.accounts.import.guideField"), t("settings.accounts.import.guideValue"), t("settings.accounts.import.guideNote")]),
   ];
   for (const [field, allowedValues, note, options] of guideRows.filter(([field]) => fields.includes(field))) {
@@ -1914,7 +1914,7 @@ function appendCategoryStyledSheet(
   const allRows = [
     ...dataRows,
     [],
-    guideWideRow([`${t("settings.accounts.import.sheetGuideTitle")}\n${t("settings.accounts.import.guideNoRepeatImportCategory")}`]),
+    guideWideRow([`${t("settings.accounts.import.sheetGuideTitle")}${t("settings.accounts.import.sheetGuideIgnoreNote")}\n${t("settings.accounts.import.guideNoRepeatImportCategory")}`]),
     guideWideRow([t("settings.accounts.import.guideField"), t("settings.accounts.import.guideValue"), t("settings.accounts.import.guideNote")]),
     ...guideDataRows,
   ];
