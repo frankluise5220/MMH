@@ -326,7 +326,8 @@ const GUIDE_NOTE_COLUMN_START = 2;
 const GUIDE_NOTE_COLUMN_SPAN = 5;
 const GUIDE_NOTE_COLUMN_END = GUIDE_NOTE_COLUMN_START + GUIDE_NOTE_COLUMN_SPAN - 1;
 const GUIDE_COLUMN_COUNT = GUIDE_NOTE_COLUMN_END + 1;
-const GUIDE_TITLE_ROW_HEIGHT = 72;
+const GUIDE_TITLE_ROW_HEIGHT = 24;
+const GUIDE_NOTICE_ROW_HEIGHT = 42;
 const GENERIC_TYPE_FIELDS = new Set<AccountBatchImportField>([
   "institutionType",
   "counterpartyType",
@@ -1626,7 +1627,9 @@ function guideWideRow(cells: string[]) {
 function applyGuideMerges(sheet: WorksheetWithMerges, guideStartRow: number, guideHeaderRow: number, rows: string[][]) {
   const rowCount = rows.length;
   const merges = sheet["!merges"] ?? [];
-  merges.push({ s: { r: guideStartRow, c: 0 }, e: { r: guideStartRow, c: GUIDE_NOTE_COLUMN_END } });
+  for (let rowIndex = guideStartRow; rowIndex < guideHeaderRow; rowIndex += 1) {
+    merges.push({ s: { r: rowIndex, c: 0 }, e: { r: rowIndex, c: GUIDE_NOTE_COLUMN_END } });
+  }
   for (let rowIndex = guideHeaderRow; rowIndex < rowCount; rowIndex += 1) {
     merges.push({ s: { r: rowIndex, c: GUIDE_NOTE_COLUMN_START }, e: { r: rowIndex, c: GUIDE_NOTE_COLUMN_END } });
   }
@@ -1661,7 +1664,9 @@ function appendSheetGuideRows(
   const rows = [
     ...dataRows,
     [],
-    guideWideRow([`${t("settings.accounts.import.sheetGuideTitle")}${t("settings.accounts.import.sheetGuideIgnoreNote")}\n${t("settings.accounts.import.guideNoRepeatImport")}`]),
+    guideWideRow([t("settings.accounts.import.sheetGuideTitle")]),
+    guideWideRow([t("settings.accounts.import.sheetGuideIgnoreNote")]),
+    guideWideRow([t("settings.accounts.import.guideNoRepeatImport")]),
     guideWideRow([t("settings.accounts.import.guideField"), t("settings.accounts.import.guideValue"), t("settings.accounts.import.guideNote")]),
   ];
   for (const [field, allowedValues, note, options] of guideRows.filter(([field]) => fields.includes(field))) {
@@ -1727,19 +1732,24 @@ function appendStyledSheet(
     }
   });
   const guideStartRow = dataRows.length + 1;
-  const guideTitleCell = XLSX.utils.encode_cell({ r: guideStartRow, c: 0 });
-  if (sheet[guideTitleCell]) {
-    sheet[guideTitleCell].s = {
-      font: { bold: true, color: { rgb: "1F2937" } },
-      fill: { patternType: "solid", fgColor: { rgb: "DBEAFE" } },
-      alignment: { horizontal: "left", vertical: "center", wrapText: true },
-    };
+  const guideHeaderRow = guideStartRow + 3;
+  for (let rowIndex = guideStartRow; rowIndex < guideHeaderRow; rowIndex += 1) {
+    const guideIntroCell = XLSX.utils.encode_cell({ r: rowIndex, c: 0 });
+    if (sheet[guideIntroCell]) {
+      sheet[guideIntroCell].s = {
+        font: { bold: rowIndex === guideStartRow, color: { rgb: rowIndex === guideStartRow ? "1F2937" : "374151" } },
+        fill: { patternType: "solid", fgColor: { rgb: "DBEAFE" } },
+        alignment: { horizontal: "left", vertical: "center", wrapText: true },
+        border,
+      };
+    }
   }
-  // Merged cells do not auto-fit row height in Excel, so reserve space for the title plus note.
+  // Merged cells do not auto-fit row height in Excel, so reserve space for guide notice rows.
   const guideRowHeights = sheet["!rows"] ?? [];
   guideRowHeights[guideStartRow] = { hpt: GUIDE_TITLE_ROW_HEIGHT };
+  guideRowHeights[guideStartRow + 1] = { hpt: GUIDE_NOTICE_ROW_HEIGHT };
+  guideRowHeights[guideStartRow + 2] = { hpt: GUIDE_NOTICE_ROW_HEIGHT };
   sheet["!rows"] = guideRowHeights;
-  const guideHeaderRow = guideStartRow + 1;
   applyGuideMerges(sheet, guideStartRow, guideHeaderRow, allRows);
   for (let columnIndex = 0; columnIndex < GUIDE_COLUMN_COUNT; columnIndex += 1) {
     const address = XLSX.utils.encode_cell({ r: guideHeaderRow, c: columnIndex });
@@ -1914,7 +1924,9 @@ function appendCategoryStyledSheet(
   const allRows = [
     ...dataRows,
     [],
-    guideWideRow([`${t("settings.accounts.import.sheetGuideTitle")}${t("settings.accounts.import.sheetGuideIgnoreNote")}\n${t("settings.accounts.import.guideNoRepeatImportCategory")}`]),
+    guideWideRow([t("settings.accounts.import.sheetGuideTitle")]),
+    guideWideRow([t("settings.accounts.import.sheetGuideIgnoreNote")]),
+    guideWideRow([t("settings.accounts.import.guideNoRepeatImportCategory")]),
     guideWideRow([t("settings.accounts.import.guideField"), t("settings.accounts.import.guideValue"), t("settings.accounts.import.guideNote")]),
     ...guideDataRows,
   ];
@@ -1944,19 +1956,24 @@ function appendCategoryStyledSheet(
     }
   }
   const guideStartRow = dataRows.length + 1;
-  const guideTitleCell = XLSX.utils.encode_cell({ r: guideStartRow, c: 0 });
-  if (sheet[guideTitleCell]) {
-    sheet[guideTitleCell].s = {
-      font: { bold: true, color: { rgb: "1F2937" } },
-      fill: { patternType: "solid", fgColor: { rgb: "DBEAFE" } },
-      alignment: { horizontal: "left", vertical: "center", wrapText: true },
-    };
+  const guideHeaderRow = guideStartRow + 3;
+  for (let rowIndex = guideStartRow; rowIndex < guideHeaderRow; rowIndex += 1) {
+    const guideIntroCell = XLSX.utils.encode_cell({ r: rowIndex, c: 0 });
+    if (sheet[guideIntroCell]) {
+      sheet[guideIntroCell].s = {
+        font: { bold: rowIndex === guideStartRow, color: { rgb: rowIndex === guideStartRow ? "1F2937" : "374151" } },
+        fill: { patternType: "solid", fgColor: { rgb: "DBEAFE" } },
+        alignment: { horizontal: "left", vertical: "center", wrapText: true },
+        border,
+      };
+    }
   }
-  // Merged cells do not auto-fit row height in Excel, so reserve space for the title plus note.
+  // Merged cells do not auto-fit row height in Excel, so reserve space for guide notice rows.
   const guideRowHeights = sheet["!rows"] ?? [];
   guideRowHeights[guideStartRow] = { hpt: GUIDE_TITLE_ROW_HEIGHT };
+  guideRowHeights[guideStartRow + 1] = { hpt: GUIDE_NOTICE_ROW_HEIGHT };
+  guideRowHeights[guideStartRow + 2] = { hpt: GUIDE_NOTICE_ROW_HEIGHT };
   sheet["!rows"] = guideRowHeights;
-  const guideHeaderRow = guideStartRow + 1;
   applyGuideMerges(sheet, guideStartRow, guideHeaderRow, allRows);
   const requiredGuideLabels = new Set(guideRows.filter(([, , , required]) => required).map(([field]) => field));
   const mergedGuideFieldRows = mergedFieldLabelStartRows(sheet);
