@@ -674,12 +674,7 @@ export async function DELETE(req: NextRequest) {
       const match = await verifyPassword(password, currentUser.passwordHash);
       if (!match) return NextResponse.json({ ok: false, code: "INVALID_PASSWORD", error: "Incorrect password" }, { status: 401 });
     } else {
-      // No passwordHash → check legacy SystemSetting password
-      const legacy = await prisma.systemSetting.findUnique({ where: { key: "access_password" } });
-      if (!legacy || !legacy.value) {
-        return NextResponse.json({ ok: false, code: "PASSWORD_NOT_SET", error: "Please set a password first" }, { status: 400 });
-      }
-      if (password !== legacy.value) return NextResponse.json({ ok: false, code: "INVALID_PASSWORD", error: "Incorrect password" }, { status: 401 });
+      return NextResponse.json({ ok: false, code: "PASSWORD_NOT_SET", error: "Please set a password first" }, { status: 400 });
     }
 
     await deleteAccountPermanently(id);

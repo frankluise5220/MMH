@@ -198,6 +198,8 @@ function verifySourceFiles() {
   expect(/hashFileMd5/.test(packageScript) && /directorySizeKb/.test(packageScript), "Synology package build must calculate checksum and extractsize.");
   expect(/tarOwnerArgs/.test(packageScript), "Synology package build must archive release tarballs with stable numeric root ownership.");
   expect(/"run-as":\s*"package"/.test(packageScript), "Synology privilege config must use run-as=package.");
+  expect(/MMH_SESSION_SECRET/.test(packageScript) && /mmh-session-secret\.txt/.test(packageScript), "Synology start script must persist a strong session secret for signed login cookies.");
+  expect(/chmod -R go-rwx/.test(packageScript), "Synology uninstall backups must remove group and other permissions from copied app data.");
   expect(!/run_as:\s*"package"/.test(packageScript), "Synology privilege config must not use the invalid run_as key.");
   expect(/\$\{appName\}-synology-v\$\{version\}-\$\{target\.assetSuffix\}\.spk/.test(packageScript), "Synology SPK asset names must include version and architecture.");
   expect(!/"-czf",\s*spkPath/.test(packageScript), "Synology SPK outer archive must be uncompressed tar; only package.tgz should be gzip-compressed.");
@@ -275,6 +277,7 @@ function verifyBuiltSpk() {
     expect(startScript.status === 0, "Unable to read scripts/start-stop-status from built SPK.");
     expect(/SYNOPKG_PKGVAR/.test(startScript.stdout || ""), "Built start-stop-status must use SYNOPKG_PKGVAR for writable runtime data.");
     expect(!/^VAR_DIR="\$APP_DIR\/var"/m.test(startScript.stdout || ""), "Built start-stop-status must not write runtime data under SYNOPKG_PKGDEST/target.");
+    expect(/MMH_SESSION_SECRET/.test(startScript.stdout || "") && /mmh-session-secret\.txt/.test(startScript.stdout || ""), "Built start-stop-status must persist the signed-session secret.");
     const packageEntries = tarList(packageTgzPath, { gzip: true });
     for (const required of [
       "app/bin/node",

@@ -52,7 +52,7 @@ appname=mmh
 2. 脚本定位应用目录和持久化数据目录；数据目录优先使用 `TRIM_DATADEST`，其次使用 `TRIM_PKGVAR/data`，再兜底到 `/vol*/@appdata/mmh/data`。
 3. 设置 `DATABASE_URL=file:$DATA_DEST/mmh.db`。
 4. 设置 `PRISMA_SCHEMA_PATH=$SERVER_DIR/prisma/schema.native.prisma`。
-5. 读取持久端口文件 `.port` 或持久环境文件 `mmh.env`，导出 `PORT`；`MMH_SYSTEM_PASSWORD` 仅作兼容保留（未设置时首次启动随机生成并保存到 `mmh-system-password.txt`），敏感操作验证不再使用。
+5. 读取持久端口文件 `.port` 或持久环境文件 `mmh.env`，导出 `PORT`；`MMH_SYSTEM_PASSWORD` 仅作兼容保留（未设置时首次启动随机生成并保存到 `mmh-system-password.txt`），同时生成并持久化 `MMH_SESSION_SECRET` 到 `mmh-session-secret.txt`，用于签名登录 Cookie；敏感操作验证不再使用系统密码。
 6. 如果 `cmd/main start` 是由应用中心/root 调起，先修正应用数据目录为 `mmh:mmh`，再降权到 `mmh` 用户继续启动。
 7. 使用包内 Node 运行 SQLite 初始化脚本；仅在数据库没有用户表时创建初始结构，已有数据库不会被重建，但会继续执行幂等运行时迁移并记录到 `_mmh_native_schema`，随后按 `native-init.sql` 补齐缺失的新表、可安全新增字段和可兼容索引。
 8. 启动包内 Next standalone `server.js`，对外暴露 `7777`。

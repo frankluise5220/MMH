@@ -47,13 +47,9 @@ async function verifySensitiveOperationPassword(
     return { ok: false, code: "INVALID_PASSWORD", error: "当前用户密码错误", status: 401 };
   }
 
-  // Legacy fallback: when the user has no password set yet, check the old access password in system settings.
-  const legacy = await withTimeout(
-    prisma.systemSetting.findUnique({ where: { key: LEGACY_PASSWORD_KEY }, select: { value: true } }),
-    AUTH_LOOKUP_TIMEOUT_MS,
-  );
-  if (legacy?.value && password === legacy.value) return { ok: true };
-  return { ok: false, code: "INVALID_PASSWORD", error: "当前用户密码错误", status: 401 };
+  // The legacy global password remains a login migration bridge only. It must
+  // never authorize a sensitive operation after the user session is established.
+  return { ok: false, code: "PASSWORD_NOT_SET", error: "当前用户尚未设置密码", status: 400 };
 }
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T | null> {

@@ -223,6 +223,10 @@ export async function proxy(req: NextRequest) {
     );
   }
 
+  if (isPublicPath(pathname)) {
+    return NextResponse.next();
+  }
+
   const originCheck = await getOriginCheckEnabledState();
   if (!originCheck.ok && pathname.startsWith("/api/")) {
     return NextResponse.json(
@@ -249,10 +253,6 @@ export async function proxy(req: NextRequest) {
         { status: 403 },
       );
     }
-  }
-
-  if (isPublicPath(pathname)) {
-    return NextResponse.next();
   }
 
   const cookieUserId = req.cookies.get(USER_ID_COOKIE)?.value?.trim();

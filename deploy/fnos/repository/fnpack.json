@@ -27,7 +27,7 @@
       "categories": [
         "生活服务"
       ],
-      "icon_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.50",
+      "icon_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.51",
       "readme_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/deploy/fnos/README.md",
       "bug_report_url": "https://github.com/frankluise5220/MMH/issues",
       "maintainer": "frankluise5220",
@@ -47,18 +47,6 @@
         }
       },
       "releases": {
-        "0.1.46": {
-          "changelog": "## 本次更新\n\n### 需求响应\n\n- 响应 issue #4 中关于房产/固定资产、投资报表和股票使用体验的反馈：本次完善固定资产的独立记录、筛选和汇总展示，并继续优化股票交易与收益报表相关入口；账户所有人维护等尚未完成的方向不在本次发布范围内。\n- 响应 issue #15 的支付宝、微信及多张信用卡账单核对场景：新增账单汇总接口，支持按账期读取明细、汇总和局部刷新，减少导入后需要整页重载的问题。\n- 响应 issue #17 中关于基金净值和定期任务的反馈：改进基金净值刷新与历史数据读取，优化定期任务的周期/执行日选择、定期投资名称补全和编辑后的列表刷新。\n\n### 功能改进\n\n- 总览、统计和报表支持按本位币汇总多币种资产；缺少汇率时不再使用 1:1 参与合计，并明确提示缺少汇率的币种。\n- 固定资产从投资资产中拆分，单独展示现值、成本、增值和资产数量；Web 与 Android 总览接口和页面同步增加固定资产数据。\n- 新增基金档案维护，可记录基金公司、托管人、基金经理等信息；基金公司支持机构筛选、账户新增和基金持仓报告分组。\n- 增加基金持仓/已清仓报告，并支持按基金公司查看；基金净值刷新减少不必要的历史请求并优化并发处理。\n- 股票交易增加缓存和批量删除能力，股票导入的账户匹配复用统一匹配逻辑，降低重复账户或错误归属的概率。\n- 优化定期任务、贷款还款和分期利息计算，改进周/月/年执行日期的边界处理；保存后优先刷新受影响的列表和汇总。\n- 信用卡账单新增汇总与局部刷新链路，账期、明细、导入覆盖和账单日规则之间的缓存刷新保持一致。\n- Web、移动 API 和 Android 总览字段保持一致，Android 总览新增固定资产卡片及本位币/缺少汇率信息。\n\n### Bug 修复\n\n- 修复多币种总览在缺少汇率时把不同币种按 1:1 相加，避免资产合计和分布被错误放大或缩小。\n- 修复固定资产被混入投资资产统计的问题，统一固定资产账户在总览、报表、交易和账户选择中的识别。\n- 修复基金净值刷新过程中重复请求历史数据、日期回退和并发过高导致的报错或等待过久问题。\n- 修复定期任务编辑后列表仍显示旧数据、执行日期在周期边界上偏移，以及定期投资名称为空时无法正确补全的问题。\n- 修复贷款还款方式和分期利息计算在不同入口口径不一致的问题。\n- 修复账单汇总、账单明细和账期切换的局部刷新不完整问题，避免导入或修改账单规则后继续显示旧缓存。\n- 修复股票交易导入、批量删除和交易明细在账户切换后出现的匹配或刷新不一致问题。\n\n### 打包与部署\n\n- 本次发布包含 Docker 镜像、NAS ZIP、fnOS x86_64 / arm64 FPK、群晖 DSM x86_64 / arm64 SPK，以及 Android APK。\n- 群晖 SPK 已随本次重新打包；由于缺少可用的群晖真实环境，请安装后继续测试并反馈安装、启动和升级结果。\n- Android 本次确有总览代码改动，因此按实际变动发布同版本 APK，不创建独立的 Android 版本。\n- fnOS 软仓客户端地址：[FN 软仓客户端](https://gitee.com/hhxs2025/fn-appstores/releases/download/2.4.1/fn-appstores-client-2.4.1-x86.fpk)。\n\n## 手机端使用建议\n\n- 手机用户无需安装客户端，直接用浏览器访问 MMH 服务地址即可；Web 版已针对手机浏览器做响应式优化，日常查看、快速记账、概览、基金和股票持仓都可以在手机上完成。\n- 如果主要进行日常查看和快速记账，可以把 Web 版添加到手机桌面，后续服务端更新后直接刷新使用。\n\n## 安装 / 更新说明\n\n- Docker 版：查看 [NAS Docker 安装说明](https://github.com/frankluise5220/MMH/blob/main/docs/nas-install-manual.md) 后按文档安装或更新。\n- fnOS（官方 FPK）：可通过应用中心或 FN 软仓源覆盖升级，本次提供 x86_64 / arm64 两个 FPK。\n- fnOS（FN 软仓客户端安装）：先下载 [FN 软仓客户端](https://gitee.com/hhxs2025/fn-appstores/releases/download/2.4.1/fn-appstores-client-2.4.1-x86.fpk)，即可查询安装/覆盖升级 MMH。\n- 群晖 DSM（官方 SPK）：本次提供 x86_64 / arm64 两个 SPK；由于缺少群晖真实环境，请大家继续测试安装、启动和升级。\n- Android：本次包含 Android 总览改动，随本版本发布 APK。",
-          "os_min_version": "0.9.0",
-          "packages": {
-            "x86": {
-              "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.46/mmh-fnos-v0.1.46-x86_64.fpk"
-            },
-            "arm": {
-              "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.46/mmh-fnos-v0.1.46-arm64.fpk"
-            }
-          }
-        },
         "0.1.47": {
           "changelog": "## 本次更新\n\n> 0.1.47 是一次 NAS 安装/升级补救发布，同时合并近期已完成的账单、贷款、基金定时任务、意见反馈和部署改进。重点解决 v0.1.46 原生包升级后可能无法启动或页面打不开的问题。\n\n### 发布恢复与安装修复\n\n- Bug 修复：解决 v0.1.46 在 fnOS/NAS 原生 SQLite 包升级后，可能因 FundProfile 缺少 fundCompanyCode 字段导致页面打不开或服务启动失败的问题；native schema 与主 schema 已补齐。\n- Bug 修复：修复 fnOS 旧数据库升级时 native-init.sql 带 Prisma 注释会导致表、字段和索引补齐逻辑跳过的问题，降低旧版本覆盖升级后的 schema drift。\n- Bug 修复：修复债务/贷款页面服务端行数据缺少贷款标记导致生产构建失败、贷款入口上下文不稳定的问题。\n- 功能改进：fnOS 更新不再弹出安装向导。包内已移除 `wizard/install`、`wizard/upgrade`、`wizard/uninstall`，只保留 `wizard/config`。FN 软仓客户端（fn-appstores-client）只解析 `wizard/install`，只要该文件存在，每次更新都会渲染“服务端口”输入页并等待输入；移除后安装与更新全程无向导，端口沿用已保存的 `.port` / `mmh.env`。\n- 功能改进：端口修改迁移到应用设置里，不再依赖安装向导。用户在应用中心主动打开 MMH 设置时才会显示配置页；保存后由 `config_callback` 校验端口、停服、写入新端口并重启。\n- 功能改进：fnOS 首次安装不再要求输入端口，改为自动从 `7777` 开始探测空闲端口，若被占用则顺延到下一个可用端口；重装和更新会沿用已保存的 `.port` / `mmh.env`，不会被包内默认值覆盖。\n\n### 需求响应\n\n- 响应 issue #4：继续包含 v0.1.46 已完成的房产/固定资产、股票确认和报表相关改进，并在本次补上 NAS 包启动/升级修复。\n- 响应 issue #15：继续包含支付宝、微信和多信用卡账单核对/导入相关改进，账单汇总与局部刷新链路随本次版本一起发布。\n- 响应 issue #17：继续包含基金净值刷新和定期任务灵活性相关改进。\n- 贷款录入：拆分往来款和贷款弹窗上下文，新增贷款机构/贷款账户入口；消费贷按账单/分期出账计划处理，房贷固定还款区直接填写扣款日和还款资金账户，并按自动扣款计划处理。\n- 房贷 LPR：按贷款发生日之后、截至当前日期的 5 年期以上 LPR 发布变动日自动生成历史利率，不再要求用户手工填写历史过程。\n- 意见建议：新增 Web 端意见建议入口和提交接口，可从侧边栏进入反馈页面，通过已配置 SMTP 或 Resend 发送到 MMH 反馈邮箱。\n\n### Bug 修复\n\n- 修复贷款还款方式在不同入口使用硬编码导致匹配不一致的问题，统一自由还款、等额本息、等额本金、分期还款和先息后本的内部判断。\n- 修复贷款弹窗新增机构/账户时机构类型、消费贷标记和关联账户范围不够明确的问题，减少误把普通往来对象当作贷款机构的情况。\n- 修复 issue #4 追加反馈中的房贷 LPR 历史调整生成问题：不再按固定年份或首次还款日推算，统一改为按实际 LPR 发布变动日生成。\n- 修复/补齐贷款弹窗新增文案的三语 i18n key，避免运行时显示空 key 或页面不稳定。\n\n### 打包与部署\n\n- fnOS：发布 x86_64 / arm64 两个 FPK 安装包。\n- 群晖 DSM：发布 x86_64 / arm64 两个 SPK 安装包；本次已经过用户实际运行测试，请更多群晖环境继续测试安装、启动和页面访问结果。\n- Docker/GHCR：随正式发布同步更新 `latest` 和 `0.1.47` 镜像标签。\n- Android：本次未更新 Android，不发布 APK。\n- fnOS 软仓客户端地址：[FN 软仓客户端](https://gitee.com/hhxs2025/fn-appstores/releases/download/2.4.1/fn-appstores-client-2.4.1-x86.fpk)。\n\n## 手机端使用建议\n\n- 手机用户无需安装客户端，直接用浏览器访问 MMH 服务地址即可；Web 版已针对手机浏览器做响应式优化，日常查看、快速记账、概览、基金和股票持仓都可以在手机上完成。\n- 如果主要进行日常查看和快速记账，可以把 Web 版添加到手机桌面，后续服务端更新后直接刷新使用。\n\n## 安装 / 更新说明\n\n- Docker 版：查看 [NAS Docker 安装说明](https://github.com/frankluise5220/MMH/blob/main/docs/nas-install-manual.md) 后按文档安装或更新。\n- fnOS（官方 FPK）：从本次 GitHub Release 下载对应架构的 x86_64 / arm64 FPK 后手动安装或覆盖升级。\n- fnOS（FN 软仓客户端安装）：先下载 [FN 软仓客户端](https://gitee.com/hhxs2025/fn-appstores/releases/download/2.4.1/fn-appstores-client-2.4.1-x86.fpk)，即可查询安装/覆盖升级 MMH。\n- 专属软件源：如果 FN 软仓更新较慢，可以从 [GitHub Releases](https://github.com/frankluise5220/MMH/releases) 手动下载对应架构 FPK 安装。\n- 群晖 DSM（官方 SPK）：从本次 GitHub Release 下载对应架构的 x86_64 / arm64 SPK 后在套件中心手动安装或覆盖升级；请继续反馈不同 DSM 环境的安装和启动结果。\n- Android：本次未更新 Android，不发布 APK。",
           "os_min_version": "0.9.0",
@@ -104,6 +92,18 @@
             },
             "arm": {
               "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.50/mmh-fnos-v0.1.50-arm64.fpk"
+            }
+          }
+        },
+        "0.1.51": {
+          "changelog": "## 本次更新\n\n> 0.1.51 是 0.1.50 Draft 的补救版。本版本引用 0.1.50 的业务更新说明作为本次发布的功能内容，并额外修复实机安装后登录 500、公开登录状态接口冷启动误报、fnOS 启动目录定位等打包/运行问题。issue 只标注本次实际覆盖的内容，不代表该 issue 的所有历史建议都已完成。\n\n### 0.1.51 补救修复\n\n- 登录 500：修复签名 session Cookie 安全加固后，fnOS / 群晖 / Docker 生产环境未生成 `MMH_SESSION_SECRET` 时登录接口异常的问题；包脚本现在会自动生成、持久化并复用 session secret。\n- 登录信息加载：公开认证接口不再因为冷启动读取访问白名单设置超时而返回 503，减少“无法获取账簿登录信息，请刷新页面重试”的误报。\n- fnOS 启动：`cmd/main` 在缺少 `TRIM_APPDEST` 时会重新发现 `/vol*/@appcenter/mmh` 安装目录，避免错误查找 `/var/apps/mmh/bin/node` 导致服务无法启动。\n- 安全加固：访问 Key 仅用于受限业务数据接口，不再覆盖用户、设置、认证、初始化、调试、AI、邮件、移动同步等高风险接口；备份、工厂重置、账户永久删除、保险删除等敏感操作必须验证当前管理员用户自己的密码。\n\n### 引用 0.1.50 的业务更新说明\n\n#### 需求响应\n\n- issue #4（追加需求）：完善账户和基础资料工作区，支持账户合并、账户所有人/机构/币种选择、基础资料导入，以及机构、家庭成员、往来对象和标签的统一管理入口。\n- issue #4（追加需求）：补充统计页面的可用年份筛选、基金名称回填和房产处置流程；自定义报表、家庭成员统计等未在本次宣称全部完成。\n- issue #15：继续保留支付宝、微信账单 Excel 导入能力；本次新增财智8账单识别，可直接将财智8明细转换为 MMH 标准导入数据，支持收入、支出、转账识别，并过滤余额调整行。\n- 账单导入：增加财智8文件识别和标准化预览，减少手动修改表头和整理收支方向的工作。\n- 自定义货币：增加货币申请、审核和账户/系统设置中的智能选择，支持使用已批准的货币。\n- 账户与资料维护：增加基础数据导入入口，支持账户合并前的类型、所有人、机构、币种等条件校验。\n- 股票交易：费用小计和金额合计支持手动输入；修改金额合计时会按数量和费用反推成交价格，逐项费用变化后自动恢复计算链。\n\n#### Bug 修复\n\n- issue #4（追加反馈中与本次代码对应的部分）：修复部分投资记录只保存代码、统计和投资收益页面无法稳定显示基金名称的问题；现在会结合基金画像、净值缓存和已关联交易补全名称。\n- 资金流联动：修复存款交易重新建立资金侧记录时丢失基金代码、基金名称、单位、净值、费用、确认/到账日期和已实现收益的问题。\n- 明细刷新：删除当前分页的全部记录后自动补充后续记录，避免页面看起来被清空但下一页数据没有顶上来。\n- 房产资产：增加房产废弃/处置动作，正确更新资产状态、市场价值、回收金额和已实现收益，并从持仓统计中排除已处置资产。\n- 账单导入：财智8的余额调整记录不再被误导入为收入，避免污染账户余额和统计结果。\n\n### 打包与部署\n\n- fnOS：Draft 提供 x86_64 / arm64 两个 FPK，供安装、覆盖升级和启动测试。\n- 群晖 DSM：Draft 提供 x86_64 / arm64 两个 SPK；已修复一些已知错误，请继续测试 SPK 的安装、启动和页面访问，因为本人没有完整群晖验证环境。\n- Docker / GHCR：Draft 测试阶段暂不更新公开镜像；确认测试通过后再同步对应的 0.1.51 镜像。\n- Android：本次没有 Android 代码、资源、清单或发布文档改动，不发布 APK。\n- fnOS 软仓客户端：[FN 软仓客户端](https://gitee.com/hhxs2025/fn-appstores/releases/download/2.4.1/fn-appstores-client-2.4.1-x86.fpk)。\n\n## 手机端使用建议\n\n- 手机用户可以直接用浏览器访问 MMH 服务地址；Web 版适合日常查看、快速记账、概览、基金和股票持仓。\n- Android 本次未更新，不需要更新 APK；如只使用手机浏览器访问 Web 版，也无需安装 APK。\n\n## 安装 / 更新说明\n\n- Docker 版：查看 [NAS Docker 安装说明](https://github.com/frankluise5220/MMH/blob/main/docs/nas-install-manual.md) 后按文档安装或更新；Draft 测试阶段暂不更新公开 GHCR 镜像。\n- fnOS（官方 FPK）：从本次 GitHub Draft Release 下载对应架构的 x86_64 / arm64 FPK 后手动安装或覆盖升级。\n- fnOS（FN 软仓客户端安装）：先下载 [FN 软仓客户端](https://gitee.com/hhxs2025/fn-appstores/releases/download/2.4.1/fn-appstores-client-2.4.1-x86.fpk)，即可查询安装/覆盖升级 MMH。\n- 专属软件源：如果 FN 软仓更新较慢，可以从 [GitHub Releases](https://github.com/frankluise5220/MMH/releases) 手动下载对应架构 FPK 安装。\n- 群晖 DSM（官方 SPK）：从本次 GitHub Draft Release 下载对应架构的 x86_64 / arm64 SPK 后在套件中心手动安装或覆盖升级；本人没有完整群晖验证环境，请先测试 SPK 的安装、启动和页面访问。\n- Android：本次未更新，不发布 APK。",
+          "os_min_version": "0.9.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.51/mmh-fnos-v0.1.51-x86_64.fpk"
+            },
+            "arm": {
+              "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.51/mmh-fnos-v0.1.51-arm64.fpk"
             }
           }
         }

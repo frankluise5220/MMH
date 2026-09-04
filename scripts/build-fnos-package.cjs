@@ -802,6 +802,47 @@ resolve_system_password() {
     generate_system_password
 }
 
+generate_session_secret() {
+    local generated=""
+    if command -v openssl >/dev/null 2>&1; then
+        generated="$(openssl rand -base64 48 2>/dev/null | tr -d '[:space:]' || true)"
+    fi
+    if [ -z "$generated" ] && [ -n "\${APP_BIN:-}" ] && [ -x "$APP_BIN" ]; then
+        generated="$("$APP_BIN" -e 'process.stdout.write(require("node:crypto").randomBytes(48).toString("base64url"))' 2>/dev/null || true)"
+    fi
+    if [ -n "$generated" ] && [ "\${#generated}" -ge 32 ]; then
+        printf '%s' "$generated"
+        return 0
+    fi
+    return 1
+}
+
+resolve_session_secret() {
+    local pkgvar secret_file env_secret
+    pkgvar="$(resolve_pkgvar)"
+    secret_file="\${pkgvar}/mmh-session-secret.txt"
+
+    env_secret="$(read_env_value MMH_SESSION_SECRET 2>/dev/null || true)"
+    case "$env_secret" in
+        CHANGE_ME*) env_secret="" ;;
+    esac
+    if [ -n "$env_secret" ] && [ "\${#env_secret}" -ge 32 ]; then
+        printf '%s' "$env_secret"
+        return 0
+    fi
+    if [ -f "$secret_file" ]; then
+        env_secret="$(tr -d '[:space:]' < "$secret_file")"
+        case "$env_secret" in
+            CHANGE_ME*) env_secret="" ;;
+        esac
+        if [ -n "$env_secret" ] && [ "\${#env_secret}" -ge 32 ]; then
+            printf '%s' "$env_secret"
+            return 0
+        fi
+    fi
+    generate_session_secret
+}
+
 port_in_use() {
     local p="$1"
     case "$p" in
@@ -852,7 +893,7 @@ resolve_port() {
 
 write_env_file() {
     local requested_port="$1"
-    local port pkgvar system_password password_file port_file
+    local port pkgvar system_password session_secret password_file session_secret_file port_file
     if [ -n "$requested_port" ]; then
         port="$(printf '%s' "$requested_port" | tr -d '[:space:]')"
     else
@@ -860,7 +901,9 @@ write_env_file() {
     fi
     pkgvar="$(resolve_pkgvar)"
     system_password="$(resolve_system_password)"
+    session_secret="$(resolve_session_secret)"
     password_file="\${pkgvar}/mmh-system-password.txt"
+    session_secret_file="\${pkgvar}/mmh-session-secret.txt"
     port_file="\${pkgvar}/.port"
     [ -n "$pkgvar" ] || return 1
     mkdir -p "\${pkgvar}/data" 2>/dev/null || true
@@ -869,12 +912,15 @@ write_env_file() {
 PORT=\${port}
 TZ=Asia/Shanghai
 MMH_SYSTEM_PASSWORD=\${system_password}
+MMH_SESSION_SECRET=\${session_secret}
 EOF
     chmod 600 "\${pkgvar}/mmh.env" 2>/dev/null || true
     printf '%s\\n' "$port" > "$port_file"
     chmod 600 "$port_file" 2>/dev/null || true
     printf '%s\\n' "$system_password" > "$password_file"
     chmod 600 "$password_file" 2>/dev/null || true
+    printf '%s\\n' "$session_secret" > "$session_secret_file"
+    chmod 600 "$session_secret_file" 2>/dev/null || true
 
     if [ -n "\${APP_ROOT:-}" ] && [ -f "\${APP_ROOT}/ui/config" ]; then
         sed -i 's/"port": "[0-9]*"/"port": "'"\${port}"'"/' "\${APP_ROOT}/ui/config"
@@ -896,10 +942,29 @@ EOF
 
 write(path.join(stageDir, "cmd", "main"), `#!/bin/bash
 
-APP_DEST="\${TRIM_APPDEST:-}"
-if [ -z "$APP_DEST" ]; then
-  APP_DEST="$(cd "$(dirname "$0")/.." && pwd)"
-fi
+resolve_app_dest () {
+  if [ -n "\${TRIM_APPDEST:-}" ] && [ -d "\${TRIM_APPDEST}" ]; then
+    echo "\${TRIM_APPDEST}"
+    return 0
+  fi
+
+  local appname="\${TRIM_APPNAME:-mmh}"
+  local d
+  for d in /vol*/@appcenter/"$appname" /usr/local/apps/@appcenter/"$appname" /var/apps/"$appname"; do
+    if [ -d "$d" ] && [ -f "$d/server/server.js" ]; then
+      echo "$d"
+      return 0
+    fi
+    if [ -d "$d" ] && [ -f "$d/app/server/server.js" ]; then
+      echo "$d/app"
+      return 0
+    fi
+  done
+
+  cd "$(dirname "$0")/.." && pwd
+}
+
+APP_DEST="$(resolve_app_dest)"
 
 resolve_data_dest () {
   if [ -n "\${TRIM_DATADEST:-}" ]; then
@@ -931,6 +996,7 @@ else
 fi
 ENV_FILE="$DATA_ROOT/mmh.env"
 SYSTEM_PASSWORD_FILE="$DATA_ROOT/mmh-system-password.txt"
+SESSION_SECRET_FILE="$DATA_ROOT/mmh-session-secret.txt"
 SERVER_DIR="$APP_DEST/server"
 NODE_BIN="$APP_DEST/bin/node"
 PID_FILE="$DATA_DEST/mmh.pid"
@@ -967,8 +1033,23 @@ generate_system_password () {
   printf '%s' "$generated"
 }
 
+generate_session_secret () {
+  local generated=""
+  if command -v openssl >/dev/null 2>&1; then
+    generated="$(openssl rand -base64 48 2>/dev/null | tr -d '[:space:]' || true)"
+  fi
+  if [ -z "$generated" ] && [ -x "$NODE_BIN" ]; then
+    generated="$("$NODE_BIN" -e 'process.stdout.write(require("node:crypto").randomBytes(48).toString("base64url"))' 2>/dev/null || true)"
+  fi
+  if [ -n "$generated" ] && [ "\${#generated}" -ge 32 ]; then
+    printf '%s' "$generated"
+    return 0
+  fi
+  return 1
+}
+
 ensure_runtime_settings () {
-  local env_port env_password system_password
+  local env_port env_password system_password env_session_secret session_secret
   mkdir -p "$DATA_DEST" "$DATA_ROOT"
 
   env_port="$(read_env_value PORT 2>/dev/null || true)"
@@ -985,14 +1066,30 @@ ensure_runtime_settings () {
   fi
   export MMH_SYSTEM_PASSWORD="$system_password"
 
+  env_session_secret="$(read_env_value MMH_SESSION_SECRET 2>/dev/null || true)"
+  session_secret="\${MMH_SESSION_SECRET:-$env_session_secret}"
+  if [ -z "$session_secret" ] && [ -f "$SESSION_SECRET_FILE" ]; then
+    session_secret="$(tr -d '[:space:]' < "$SESSION_SECRET_FILE")"
+  fi
+  if [ -z "$session_secret" ] || [ "\${#session_secret}" -lt 32 ]; then
+    session_secret="$(generate_session_secret)" || {
+      echo "Unable to generate a strong MMH session secret." >&2
+      return 1
+    }
+  fi
+  export MMH_SESSION_SECRET="$session_secret"
+
   cat > "$ENV_FILE" <<EOF
 PORT=\${PORT}
 TZ=Asia/Shanghai
 MMH_SYSTEM_PASSWORD=\${MMH_SYSTEM_PASSWORD}
+MMH_SESSION_SECRET=\${MMH_SESSION_SECRET}
 EOF
   chmod 600 "$ENV_FILE" 2>/dev/null || true
   printf '%s\\n' "$MMH_SYSTEM_PASSWORD" > "$SYSTEM_PASSWORD_FILE"
   chmod 600 "$SYSTEM_PASSWORD_FILE" 2>/dev/null || true
+  printf '%s\\n' "$MMH_SESSION_SECRET" > "$SESSION_SECRET_FILE"
+  chmod 600 "$SESSION_SECRET_FILE" 2>/dev/null || true
 }
 
 ensure_runtime_owner () {
@@ -1221,7 +1318,7 @@ target="$backup_root/${reason}-$stamp"
 mkdir -p "$target/appdata"
 chmod 700 "$backup_root" "$target" "$target/appdata" 2>/dev/null || true
 cp -a "$data_root/data" "$target/appdata/data"
-for file in "$data_root/mmh.env" "$data_root/.port" "$data_root/mmh-system-password.txt"; do
+for file in "$data_root/mmh.env" "$data_root/.port" "$data_root/mmh-system-password.txt" "$data_root/mmh-session-secret.txt"; do
     if [ -f "$file" ]; then
         cp -a "$file" "$target/appdata/"
     fi

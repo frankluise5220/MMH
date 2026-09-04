@@ -39,8 +39,10 @@ export async function getApiHouseholdScope(req: Request): Promise<ApiHouseholdCo
   // Strategy 1: cookie-based session auth
   try {
     const ctx = await getHouseholdScope();
-    // If householdId was resolved and the user exists, return it directly
-    if (ctx.householdId) {
+    // A household can be auto-created/resolved for setup and server-rendered
+    // pages even when there is no authenticated user. That must not count as
+    // API authentication when middleware is bypassed or unavailable.
+    if (ctx.user && ctx.householdId) {
       return { ...ctx, authMethod: "session" };
     }
   } catch {

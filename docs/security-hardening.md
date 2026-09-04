@@ -22,7 +22,9 @@
 
 - Web 同源请求使用签名 cookie session；外部 Agent、CLI 和原生移动端使用设置页创建的独立访问 Key。
 - `Authorization: Bearer` 和 `X-Api-Key` 只接受 `AccessKey` 表中的访问 Key，不再把管理员密码或旧版 `access_password` 当作 API Key。
+- 访问 Key 仅用于受限的业务数据接口；不能访问通用数据库 API、用户/设置/认证、初始化、调试、清理、AI、邮件和移动同步接口。Android 当前使用登录 Cookie，不依赖访问 Key。
 - 新建访问 Key 只在创建弹窗显示一次明文，服务端保存哈希，列表接口只返回 `keyPreview`；旧版明文 Key 首次成功使用后会自动升级为哈希。
+- 旧版 `access_password` 只作为旧用户登录时的一次性迁移桥接；备份、工厂重置、账户永久删除、保险删除等敏感操作必须先为当前用户设置 bcrypt 密码。
 - `/api/v1` route 不再返回 `Access-Control-Allow-Origin: *`。带浏览器 `Origin` 的跨站 API 请求默认由 `proxy.ts` 拒绝；无 `Origin` 的原生 App、CLI 和服务端 Agent 请求不受浏览器 CORS 限制。
 - 如果只允许固定域名或固定内网地址访问，请在系统设置里的“访问白名单”中维护允许访问的域名或 IP。这里的域名或 IP 指用户当前访问 MMH 的地址，不是用户设备 IP，也不是数据库服务器 IP。`localhost`、`127.0.0.1` 和 `::1` 是本机救援地址，始终由代码默认允许，不显示为白名单条目。新装且没有任何白名单条目时，该功能应处于关闭状态；点击开启时，系统会先把当前非本机访问地址写入白名单并显示出来，再保存开关状态。开启后，未列入白名单的访问 Host 会被应用层直接拒绝；保存和删除白名单时也必须阻止把当前非本机访问地址排除在外。
 - `proxy.ts` 读取白名单设置超时时不会把 `false` 或空列表写入缓存；已有缓存继续生效，避免慢数据库把安全设置静默降级。
@@ -30,7 +32,7 @@
 ## NAS 与备份
 
 - Docker 容器入口会先修复既有 `/app/data` volume 的归属，再降权为 `node` 用户启动应用；这样旧版 root 容器创建的数据卷升级后仍可写，同时 Next.js 进程不以 root 身份运行。
-- fnOS 生命周期脚本创建的 `upgrade-backups` / `uninstall` 备份目录应为 `700`，备份出的 appdata、SQLite 数据库、环境文件和系统密码文件去掉 group/other 权限。
+- fnOS / 群晖生命周期脚本创建的 `upgrade-backups` / `uninstall` 备份目录应为 `700`，备份出的 appdata、SQLite 数据库、环境文件、session secret 和系统密码文件都要去掉 group/other 权限。
 
 ## 账簿隔离
 

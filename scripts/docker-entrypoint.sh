@@ -42,11 +42,29 @@ generate_secret() {
 
 ensure_session_secret() {
   if [ -n "${MMH_SESSION_SECRET:-}" ]; then
+    case "$MMH_SESSION_SECRET" in
+      CHANGE_ME*)
+        echo "[mmh] MMH_SESSION_SECRET is a placeholder; set a strong random value or leave it empty for automatic generation." >&2
+        exit 78
+        ;;
+    esac
+    if [ "${#MMH_SESSION_SECRET}" -lt 32 ]; then
+      echo "[mmh] MMH_SESSION_SECRET must contain at least 32 characters." >&2
+      exit 78
+    fi
     return 0
   fi
   secret_file="/app/data/mmh-session-secret.txt"
   if [ -f "$secret_file" ]; then
     MMH_SESSION_SECRET="$(tr -d '[:space:]' < "$secret_file")"
+  fi
+  case "${MMH_SESSION_SECRET:-}" in
+    CHANGE_ME*)
+      MMH_SESSION_SECRET=""
+      ;;
+  esac
+  if [ -n "${MMH_SESSION_SECRET:-}" ] && [ "${#MMH_SESSION_SECRET}" -lt 32 ]; then
+    MMH_SESSION_SECRET=""
   fi
   if [ -z "${MMH_SESSION_SECRET:-}" ]; then
     umask 077
