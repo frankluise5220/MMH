@@ -13,7 +13,7 @@ import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
 import { fundNavTargetDateForOffset, fundTradingCalendarForName, getFundNavDateOffsets, getFundProfiles } from "@/lib/fund/fundProfile";
 import { translate } from "@/lib/i18n-core";
 import type { DisplayLanguage } from "@/lib/client/appPreferences";
-import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
+import { loadFundStatisticSourceEntries, loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { isStockCashInAction, isStockCashOutAction, stockCashAmount, totalStockFee } from "@/lib/stock/cashFlow";
 import { getInvestmentStatisticItems, type InvestmentStatisticEntryLike } from "@/lib/transaction-statistics";
@@ -1229,13 +1229,17 @@ export async function loadInvestmentProfitReport(
     : {};
   const tagFilter = tagIds.length ? { EntryTag: { some: { tagId: { in: tagIds } } } } : {};
 
-  const propertyTxRows: PropertyTxRow[] = propertyAccountIds.length > 0
+  const propertyActions = [
+    PropertyTransactionAction.sale,
+    PropertyTransactionAction.disposal,
+  ].filter((value): value is NonNullable<typeof value> => value !== undefined);
+  const propertyTxRows: PropertyTxRow[] = propertyAccountIds.length > 0 && propertyActions.length > 0
     ? await prisma.propertyTransaction.findMany({
         where: {
           householdId: ctx.householdId,
           deletedAt: null,
           accountId: { in: propertyAccountIds },
-          action: PropertyTransactionAction.sale,
+          action: { in: propertyActions },
           realizedProfit: { not: null },
           OR: [
             { settlementDate: { gte: broadStart, lt: broadEndExclusive } },
@@ -1310,21 +1314,33 @@ export async function loadInvestmentProfitReport(
     take: 50000,
   });
 
-  const representedInvestmentEntryIds = new Set(
-    txEntries
-      .filter((entry) => getInvestmentStatisticItems(entry).length > 0)
-      .map((entry) => entry.id),
-  );
-  const wealthEntries = await loadWealthStatisticSourceEntries(ctx, {
-    start: broadStart,
-    endExclusive: broadEndExclusive,
-    accountIds: investmentAccountIds,
-    tagIds,
-    excludeEntryIds: representedInvestmentEntryIds,
-  });
+  const [fundStatisticEntries, wealthEntries] = await Promise.all([
+    loadFundStatisticSourceEntries(ctx, {
+      start: broadStart,
+      endExclusive: broadEndExclusive,
+      accountIds: accountIds.length ? accountIds : undefined,
+      tagIds,
+    }),
+    loadWealthStatisticSourceEntries(ctx, {
+      start: broadStart,
+      endExclusive: broadEndExclusive,
+      accountIds: accountIds.length ? accountIds : undefined,
+      tagIds,
+    }),
+  ]);
+  const independentStatisticEntryIds = new Set([
+    ...fundStatisticEntries.flatMap((entry) => [entry.id, entry.entryId]),
+    ...wealthEntries.flatMap((entry) => [entry.id, entry.entryId]),
+  ]);
 
   const firstYear = params.period === "year"
-    ? findFirstDataYear({ currentYear, txRows: fundTxRows, stockTxRows, propertyTxRows: scopedPropertyTxRows, eventRows: [...txEntries, ...wealthEntries] })
+    ? findFirstDataYear({
+        currentYear,
+        txRows: fundTxRows,
+        stockTxRows,
+        propertyTxRows: scopedPropertyTxRows,
+        eventRows: [...txEntries, ...fundStatisticEntries, ...wealthEntries],
+      })
     : params.year;
   const buckets = buildBuckets(params.period, params.year, params.month, currentYear, firstYear, language);
   const rows = new Map(buckets.map((bucket) => [bucket.key, createRow(bucket)]));
@@ -1370,12 +1386,14 @@ export async function loadInvestmentProfitReport(
 
   const events = [
     ...txEntries.flatMap((entry) => {
+      if (independentStatisticEntryIds.has(entry.id)) return [];
       const accountId = entry.toAccountId && accountTypeById.has(entry.toAccountId) ? entry.toAccountId : entry.accountId;
       if (snapshotAccountIds.has(accountId)) return [];
       if (stockCashEntryIds.has(entry.id)) return [];
       if (propertyCashEntryIdsInScope.has(entry.id)) return [];
       return eventsFromEntry(entry, wealthCashEntryIds.has(entry.id) ? "wealth" : undefined);
     }),
+    ...fundStatisticEntries.flatMap((entry) => eventsFromEntry(entry)),
     ...wealthEntries.flatMap((entry) => eventsFromEntry(entry)),
     ...fixedAssetEvents,
   ].filter((event) => event.profit !== 0 && event.kind !== "deposit");

@@ -261,6 +261,7 @@
 ### Currency And FX Rates
 
 - 当前显示币种是账簿级设置，保存在 `Household.baseCurrency`。交易和账户仍保存自己的原始 `currency`。
+- `GET /api/v1/currencies?includeSystem=true` 返回系统内置币种和当前系统已添加的币种，统一形如 `{ code, nameZh, nameEn, countryZh, countryEn, source }`；系统内置币种当前包含 CNY、USD、JPY、EUR、HKD、GBP、KRW、SGD、TWD、AUD、CAD、CHF、THB、MYR、VND、INR、PHP、IDR、MOP。`POST /api/v1/currency-requests` 的 Body 为 `{ code, nameZh, nameEn, countryZh }`，保存成功后立即写入可用币种字典并返回 `{ ok:true, code, currency }`，不需要额外审核；四个字段均为必填，代码必须为 2-10 位英文字母。账户、系统显示设置和购汇窗口应复用同一套币种 SS。
 - `GET /api/v1/fx-rates?from=JPY,USD&to=CNY&refresh=1` 返回 `{ ok:true, baseCurrency, rates }`。`from` 省略时使用当前账簿启用账户中的币种；`to` 省略时使用账簿当前显示币种；未传 `refresh=1` 时，服务端先查缓存 `FxRate`，缺缓存时可用最近一次同账簿 `FxConversion` 正向或反向推导；传 `refresh=1` 时，服务端先强制获取外部最新汇率并写入缓存，失败时才回退已有缓存或购汇记录。
 - `rates[]` 形如 `{ fromCurrency, toCurrency, rate, rateDate, source, missing, refreshed? }`。`rate` 表示 `1 fromCurrency = rate toCurrency`；`source` 可为 `manual`、外部来源或 `fx_conversion`；用户主动刷新并成功获取外部最新汇率时 `refreshed=true`；`missing=true` 时客户端应提示缺少汇率，不得自行按 1:1 折算。
 - `POST /api/v1/fx-rates` 支持 `{ baseCurrency }` 修改当前显示币种，也支持 `{ fromCurrency, toCurrency?, rate, rateDate?, source? }` 写入手工汇率。手工汇率必须是正数，同币种不需要写入。

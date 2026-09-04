@@ -1209,6 +1209,7 @@ parent_dir="$(dirname "$data_root")"
 backup_root=""
 for candidate in "$parent_dir/$TRIM_APPNAME-upgrade-backups" "$data_root/upgrade-backups"; do
     if mkdir -p "$candidate" 2>/dev/null && [ -w "$candidate" ]; then
+        chmod 700 "$candidate" 2>/dev/null || true
         backup_root="$candidate"
         break
     fi
@@ -1218,14 +1219,17 @@ stamp="$(date +%Y%m%d-%H%M%S)"
 target="$backup_root/${reason}-$stamp"
 
 mkdir -p "$target/appdata"
+chmod 700 "$backup_root" "$target" "$target/appdata" 2>/dev/null || true
 cp -a "$data_root/data" "$target/appdata/data"
 for file in "$data_root/mmh.env" "$data_root/.port" "$data_root/mmh-system-password.txt"; do
     if [ -f "$file" ]; then
         cp -a "$file" "$target/appdata/"
     fi
 done
+chmod -R go-rwx "$target/appdata" 2>/dev/null || true
 if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$data_root/data/mmh.db" > "$target/mmh.db.sha256"
+    chmod 600 "$target/mmh.db.sha256" 2>/dev/null || true
 fi
 
 echo "MMH app data backed up to $target"
@@ -1426,6 +1430,13 @@ const MIGRATIONS = [
       if (tableExists(db, "FundProfile")) {
         addColumnIfMissing(db, "FundProfile", "fundCompanyCode", "TEXT");
       }
+    },
+  },
+  {
+    version: "20260903_z_repair_investment_business_sources",
+    description: "Repair split fund and wealth business sources",
+    apply(db) {
+      repairInvestmentBusinessSources(db);
     },
   },
   {
@@ -1955,6 +1966,139 @@ function cleanupStatementRecognitionRuleKeywords(db) {
     } else {
       updateRule.run(keyword, normalizedKeyword, row.id);
     }
+  }
+}
+
+function repairInvestmentBusinessSources(db) {
+  if (!tableExists(db, "transactions") || !tableExists(db, "entry_business_links")) return;
+
+  if (tableExists(db, "fund_transactions") && tableExists(db, "FundProfile")) {
+    db.exec(
+      "UPDATE fund_transactions " +
+        "SET fundName = (SELECT fp.fundName FROM FundProfile fp WHERE fp.fundCode = fund_transactions.fundCode) " +
+        "WHERE (fundName IS NULL OR TRIM(fundName) = '' OR fundName = fundCode) " +
+        "AND EXISTS (SELECT 1 FROM FundProfile fp WHERE fp.fundCode = fund_transactions.fundCode AND fp.fundName IS NOT NULL AND TRIM(fp.fundName) <> '')",
+    );
+  }
+
+  if (tableExists(db, "fund_transactions") && tableExists(db, "fund_transaction_cash_flows")) {
+    db.exec(
+      "INSERT INTO entry_business_links " +
+        "(id, householdId, cashEntryId, businessEntryId, fundTransactionId, businessType, linkType, cashFlowDirection, source, note, metadata, deletedAt, createdAt, updatedAt) " +
+        "SELECT " +
+          "'ebl_' || cf.txRecordId || '_fund_' || cf.fundTransactionId, " +
+          "ft.householdId, cf.txRecordId, NULL, cf.fundTransactionId, 'fund', 'cash_flow', " +
+          "CASE WHEN cf.kind IN ('buy_out', 'switch_in') THEN 'outflow' " +
+            "WHEN cf.kind IN ('refund_in', 'redeem_in', 'dividend_in') THEN 'inflow' ELSE 'none' END, " +
+          "COALESCE(ft.source, 'manual'), 'Repaired link to fund transaction', " +
+          "'{\\\"splitRecord\\\":true,\\\"independentBusinessTransaction\\\":true,\\\"repairedBy\\\":\\\"20260903_z_repair_investment_business_sources\\\"}', " +
+          "NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP " +
+        "FROM fund_transaction_cash_flows cf " +
+        "JOIN fund_transactions ft ON ft.id = cf.fundTransactionId " +
+        "JOIN transactions cash ON cash.id = cf.txRecordId " +
+        "WHERE ft.deletedAt IS NULL AND cash.deletedAt IS NULL " +
+        "ON CONFLICT(id) DO UPDATE SET " +
+          "cashEntryId = excluded.cashEntryId, businessEntryId = NULL, fundTransactionId = excluded.fundTransactionId, " +
+          "businessType = excluded.businessType, linkType = excluded.linkType, cashFlowDirection = excluded.cashFlowDirection, " +
+          "source = excluded.source, note = excluded.note, metadata = excluded.metadata, deletedAt = NULL, updatedAt = CURRENT_TIMESTAMP",
+    );
+  }
+
+  if (tableExists(db, "fund_transactions")) {
+    db.exec(
+      "INSERT INTO entry_business_links " +
+        "(id, householdId, cashEntryId, businessEntryId, fundTransactionId, businessType, linkType, cashFlowDirection, source, note, metadata, deletedAt, createdAt, updatedAt) " +
+        "SELECT " +
+          "'ebl_' || ft.cashEntryId || '_fund_' || ft.id, ft.householdId, ft.cashEntryId, NULL, ft.id, 'fund', 'cash_flow', " +
+          "CASE WHEN cash.amount < 0 THEN 'outflow' WHEN cash.amount > 0 THEN 'inflow' ELSE 'none' END, " +
+          "COALESCE(ft.source, 'manual'), 'Repaired link to fund transaction', " +
+          "'{\\\"splitRecord\\\":true,\\\"independentBusinessTransaction\\\":true,\\\"repairedBy\\\":\\\"20260903_z_repair_investment_business_sources\\\"}', " +
+          "NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP " +
+        "FROM fund_transactions ft " +
+        "JOIN transactions cash ON cash.id = ft.cashEntryId " +
+        "WHERE ft.deletedAt IS NULL AND ft.cashEntryId IS NOT NULL AND cash.deletedAt IS NULL " +
+          "AND NOT EXISTS (SELECT 1 FROM fund_transaction_cash_flows cf WHERE cf.fundTransactionId = ft.id) " +
+        "ON CONFLICT(id) DO UPDATE SET " +
+          "cashEntryId = excluded.cashEntryId, businessEntryId = NULL, fundTransactionId = excluded.fundTransactionId, " +
+          "businessType = excluded.businessType, linkType = excluded.linkType, cashFlowDirection = excluded.cashFlowDirection, " +
+          "source = excluded.source, note = excluded.note, metadata = excluded.metadata, deletedAt = NULL, updatedAt = CURRENT_TIMESTAMP",
+    );
+  }
+
+  if (!tableExists(db, "wealth_transactions")) return;
+  const candidates = db.prepare(
+    "SELECT t.id, t.householdId, t.accountId, t.toAccountId, t.amount, t.fundName, t.fundSubtype, " +
+      "t.source, t.entryOrigin, t.date, t.fundConfirmDate, t.fundArrivalDate, t.fundArrivalAmount, " +
+      "t.fundUnits, t.fundNav, t.fundFee, t.depositAnnualRate, t.depositInterest, t.realizedProfit, t.note, " +
+      "a.investProductType AS accountProductType, ta.investProductType AS toAccountProductType " +
+      "FROM transactions t " +
+      "LEFT JOIN Account a ON a.id = t.accountId " +
+      "LEFT JOIN Account ta ON ta.id = t.toAccountId " +
+      "WHERE t.householdId IS NOT NULL AND t.type = 'investment' AND t.deletedAt IS NULL " +
+        "AND (a.investProductType = 'wealth' OR ta.investProductType = 'wealth')",
+  ).all();
+  const existing = db.prepare(
+    "SELECT id FROM wealth_transactions WHERE id = ? OR cashEntryId = ? LIMIT 1",
+  );
+  const insertWealth = db.prepare(
+    "INSERT OR IGNORE INTO wealth_transactions " +
+      "(id, householdId, accountId, cashAccountId, cashEntryId, wealthProductId, productName, action, source, entryOrigin, " +
+      "tradeDate, confirmDate, arrivalDate, grossAmount, arrivalAmount, units, nav, interest, fee, annualRate, realizedProfit, note, deletedAt, createdAt, updatedAt) " +
+      "VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, CURRENT_TIMESTAMP)",
+  );
+  const upsertWealthLink = db.prepare(
+    "INSERT INTO entry_business_links " +
+      "(id, householdId, cashEntryId, businessEntryId, wealthTransactionId, businessType, linkType, cashFlowDirection, source, note, metadata, deletedAt, createdAt, updatedAt) " +
+      "VALUES (?, ?, ?, NULL, ?, 'wealth', 'cash_flow', ?, ?, 'Repaired link to wealth transaction', ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) " +
+      "ON CONFLICT(id) DO UPDATE SET cashEntryId = excluded.cashEntryId, businessEntryId = NULL, wealthTransactionId = excluded.wealthTransactionId, " +
+        "businessType = excluded.businessType, linkType = excluded.linkType, cashFlowDirection = excluded.cashFlowDirection, source = excluded.source, " +
+        "note = excluded.note, metadata = excluded.metadata, deletedAt = NULL, updatedAt = CURRENT_TIMESTAMP",
+  );
+  for (const row of candidates) {
+    if (existing.get(row.id, row.id)) continue;
+    const action = row.fundSubtype || (Number(row.amount) < 0 ? "buy" : "redeem");
+    const businessAccountId = row.accountProductType === "wealth" ? row.accountId : row.toAccountId;
+    const cashAccountId = row.accountProductType === "wealth" ? row.toAccountId : row.accountId;
+    if (!businessAccountId) continue;
+    const rawProfit = row.realizedProfit != null
+      ? Number(row.realizedProfit)
+      : Number(row.depositInterest || 0) - Number(row.fundFee || 0);
+    const grossAmount = action === "redeem" || action === "switch_out"
+      ? Math.max(0, Math.abs(Number(row.amount)) - (Number.isFinite(rawProfit) ? rawProfit : 0))
+      : Math.abs(Number(row.amount));
+    insertWealth.run(
+      row.id,
+      row.householdId,
+      businessAccountId,
+      cashAccountId || null,
+      row.id,
+      row.fundName || null,
+      action,
+      row.source || "manual",
+      row.entryOrigin || "manual",
+      row.date,
+      row.fundConfirmDate || row.date,
+      row.fundArrivalDate || null,
+      grossAmount,
+      row.fundArrivalAmount == null ? null : Math.abs(Number(row.fundArrivalAmount)),
+      row.fundUnits == null ? null : row.fundUnits,
+      row.fundNav == null ? null : row.fundNav,
+      row.depositInterest == null ? null : row.depositInterest,
+      row.fundFee == null ? null : row.fundFee,
+      row.depositAnnualRate == null ? null : row.depositAnnualRate,
+      row.realizedProfit == null ? null : row.realizedProfit,
+      row.note || null,
+      row.createdAt || new Date().toISOString(),
+    );
+    upsertWealthLink.run(
+      "ebl_" + row.id + "_wealth_" + row.id,
+      row.householdId,
+      row.id,
+      row.id,
+      Number(row.amount) < 0 ? "outflow" : Number(row.amount) > 0 ? "inflow" : "none",
+      row.source || "manual",
+      "{\\\"splitRecord\\\":true,\\\"independentBusinessTransaction\\\":true,\\\"repairedBy\\\":\\\"20260903_z_repair_investment_business_sources\\\"}",
+    );
   }
 }
 

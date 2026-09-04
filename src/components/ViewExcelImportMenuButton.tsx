@@ -10,6 +10,7 @@ import { StockImportPreviewDialog, type StockImportDialogContext, type StockImpo
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 import {
+  STATEMENT_IMPORT_FIELD_HEADERS,
   buildStatementImportFieldHeaders,
   createStatementHeaderReader,
 } from "@/lib/statement/header-catalog";
@@ -19,7 +20,10 @@ import {
 } from "@/lib/statement/import-normalization";
 import {
   hasImportableStatementRows,
+  normalizeStatementExcelParsedItems,
   parseStatementExcelFile,
+  parseStatementTemplateRows,
+  readStatementWorkbookRowsAndText,
 } from "@/lib/statement/excel-preview";
 
 type ViewExcelImportExportItem = {
@@ -880,6 +884,31 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
       }
 
       {
+        // 财智8检测：文件名含 "财智" → 走财智专用通道
+        const isCaizhiFile = /财智/.test(file.name);
+
+        if (isCaizhiFile) {
+          const { rows, caizhiRows } = await readStatementWorkbookRowsAndText(file, STATEMENT_IMPORT_FIELD_HEADERS);
+          if (!caizhiRows || caizhiRows.length === 0) {
+            throw new Error(t("viewImport.noRows"));
+          }
+          const MMH_STANDARD_HEADERS = [
+            "日期", "入账日期", "收支大类", "流出", "流入", "账户", "对向账户",
+            "分类", "收支机构", "标签", "备注",
+          ];
+          const headerPrefixedRows = [MMH_STANDARD_HEADERS, ...caizhiRows];
+          const localItems = normalizeStatementExcelParsedItems(
+            parseStatementTemplateRows(headerPrefixedRows, statementDefaultAccountName(props), STATEMENT_IMPORT_FIELD_HEADERS)
+          );
+          const items = localItems.filter((item) => item.date && Number(item.amount) > 0);
+          if (items.length === 0) throw new Error(t("viewImport.noRows"));
+          setPreviewItems(items);
+          setPreviewOpen(true);
+          setStatus(t("viewImport.recognizedCount", { count: items.length }));
+          return;
+        }
+
+        // 普通文件：走原有京东/支付宝/微信/标准模板链路
         const latestRecognitionSamples = await refreshRecognitionSamples().catch(() => recognitionSamples);
         const categories = await loadImportCategories();
         const latestFieldHeaders = buildStatementImportFieldHeaders(latestRecognitionSamples);

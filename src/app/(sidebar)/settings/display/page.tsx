@@ -41,7 +41,7 @@ import {
   type TimeZoneMode,
 } from "@/lib/client/appPreferences";
 import { kindLabel } from "@/lib/account-kinds";
-import { CURRENCY_OPTIONS } from "@/lib/currency";
+import { CurrencySmartSelect } from "@/components/CurrencySmartSelect";
 import { useI18n } from "@/lib/i18n";
 import { GripVertical, X } from "lucide-react";
 
@@ -653,18 +653,17 @@ export default function DisplaySettingsPage() {
       <section className="panel-surface overflow-hidden">
         <div>
           <SettingRow title={t("settings.display.baseCurrency")} desc={t("settings.display.baseCurrencyDesc")} hideDesc={hideSettingDescriptions}>
-            <select
-              value={baseCurrency}
-              onChange={(e) => void saveBaseCurrency(e.target.value)}
-              disabled={savingBaseCurrency}
-              className="form-input"
-            >
-              {CURRENCY_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {t(`entityForm.currency.${option.value.toLowerCase()}`)}
-                </option>
-              ))}
-            </select>
+            <div className="w-full sm:max-w-xs">
+              <CurrencySmartSelect
+                value={baseCurrency}
+                onChange={(code) => void saveBaseCurrency(code)}
+                labelSystem={(code) => t(`entityForm.currency.${code.toLowerCase()}`, { defaultValue: code })}
+                placeholder={t("settings.display.baseCurrencyPlaceholder")}
+              />
+              {savingBaseCurrency ? (
+                <p className="mt-1 text-[11px] text-slate-400">{t("common.loading")}</p>
+              ) : null}
+            </div>
           </SettingRow>
           <SettingRow title={t("settings.display.language")} desc={t("settings.display.languageDesc")} hideDesc={hideSettingDescriptions}>
             <select

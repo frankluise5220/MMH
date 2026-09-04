@@ -250,13 +250,6 @@ async function ensureFundProfileForAccount(fundCode: string, accountId?: string)
   await ensureFundProfile(fundCode, { householdId });
 }
 
-async function getFundAccountNavContext(accountId?: string) {
-  if (!accountId) return null;
-  return prisma.account.findUnique({
-    where: { id: accountId },
-    select: { householdId: true, tradingCalendar: true },
-  });
-}
 
 /**
  * Query a fund NAV (smart fetch).
@@ -591,39 +584,28 @@ export async function getEffectiveLatestFundNavMap(
   return result;
 }
 
-async function resolveEffectiveLatestNavTarget(fundCode: string, accountId?: string, now: Date = new Date()) {
-  const account = await getFundAccountNavContext(accountId);
-  const profile = await getFundProfile(fundCode);
-  const tradingCalendar = profile
-    ? fundTradingCalendarForProfile(profile)
-    : account?.tradingCalendar ?? "cn_fund";
-  return latestFundNavTargetDateForOffset({
-    navDateOffset: profile?.navDateOffset ?? 0,
-    tradingCalendar,
-    now,
-  });
-}
-
 /**
  * Refresh the latest available NAV for a fund and persist it through FundNavCache.
  *
- * This is intended for mobile/background daily sync. It deliberately asks the
- * configured fund API for the latest available trading-day NAV without using
- * the phone's local date as business truth. The API result's own date is used
- * as the cache key.
+ * "Latest" means the newest NAV the data source can provide right now — the
+ * real-time estimate during the trading day, or the most recently confirmed
+ * trading-day NAV outside market hours.  The API result's own date is used as
+ * the cache key so the cached record reflects what the source actually said.
+ *
+ * navDateOffset is NOT used here.  It only controls which cached record is
+ * chosen when displaying or calculating profit (getEffectiveLatestFundNavMap).
  */
 export async function refreshLatestFundNav(
   fundCode: string,
   accountId?: string,
 ): Promise<{ id: string; nav: number; cumNav: number | null; navDate: Date; name: string | null } | null> {
-  const targetDate = await resolveEffectiveLatestNavTarget(fundCode, accountId);
-  const targetNavDate = utcDate(targetDate);
-  const cached = await getFundNavFromCacheOnly(fundCode, targetNavDate);
-  if (cached) return getLatestFundNavOnOrBefore(fundCode, targetNavDate);
-
-  const apiData = await queryFundNav(fundCode, targetDate, accountId);
+  // Fetch the very latest NAV from the data source (no date constraint so the
+  // real-time estimate API is eligible; dateStr would restrict us to date-aware
+  // APIs only and defeat the purpose of "latest").
+  const apiData = await queryFundNav(fundCode, undefined, accountId);
   if (!apiData?.date || !Number.isFinite(apiData.nav)) {
-    return getLatestFundNavOnOrBefore(fundCode, targetNavDate);
+    // Nothing from the API; fall back to the newest record we already have.
+    return getLatestFundNav(fundCode);
   }
 
   const navDate = utcDate(apiData.date);
@@ -635,7 +617,8 @@ export async function refreshLatestFundNav(
     apiData.name ?? null,
   );
 
-  return getLatestFundNavOnOrBefore(fundCode, targetNavDate);
+  // Return the record we just wrote.
+  return getLatestFundNavOnOrBefore(fundCode, navDate);
 }
 
 export type RefreshHeldFundLatestNavsResult = {

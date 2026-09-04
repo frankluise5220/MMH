@@ -21,7 +21,6 @@ const MAX_LIMIT = 5000;
 
 function corsHeaders() {
   return {
-    "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Api-Key",
   } as const;

@@ -292,8 +292,16 @@ export function AccountScopeFilter({
       return;
     }
     menuAnchorRef.current = button;
+    // 在挂载弹层前先同步计算好位置，避免弹层以初始 {left:0, top:0} 闪现一帧
+    // 再被 setMenuPosition 跳到正确位置。
+    const rect = button.getBoundingClientRect();
+    const menuWidth = kind === "users" ? 224 : 620;
+    const left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - menuWidth - 8));
+    const menuHeight = Math.min(window.innerHeight * 0.7, 520);
+    const openUpward = rect.bottom + 4 + menuHeight > window.innerHeight - 8 && rect.top - 4 - menuHeight > 8;
+    const top = openUpward ? rect.top - menuHeight - 4 : rect.bottom + 4;
+    setMenuPosition({ left, top });
     setOpenMenu(kind);
-    window.requestAnimationFrame(() => positionMenu(kind));
   }
 
   function selectionLabel(kind: "users" | "institutions" | "accounts", selected: string[]) {

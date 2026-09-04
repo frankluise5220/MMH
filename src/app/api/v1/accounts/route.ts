@@ -91,7 +91,6 @@ function groupCreditCardIdsByBillingDay(rows: Array<{ id: string; billingDay: nu
 
 function corsHeaders() {
   return {
-    "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Api-Key",
   } as const;

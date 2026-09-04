@@ -10,6 +10,7 @@ import {
   USER_ID_COOKIE,
   USERNAME_COOKIE,
   VERIFIED_COOKIE,
+  createVerifiedSessionValue,
   sessionCookieOptions,
 } from "@/lib/server/session-cookies";
 import { normalizeSessionDays, sessionDaysToMaxAge } from "@/lib/session-days";
@@ -272,7 +273,7 @@ export async function POST(req: NextRequest) {
   const sessionDays = await getUserSessionDays(user.id);
   const maxAge = sessionDaysToMaxAge(sessionDays);
   const cookieOptions = sessionCookieOptions(maxAge, req);
-  response.cookies.set(VERIFIED_COOKIE, "ok", cookieOptions);
+  response.cookies.set(VERIFIED_COOKIE, createVerifiedSessionValue(user.id, maxAge), cookieOptions);
   response.cookies.set(USER_ID_COOKIE, user.id, cookieOptions);
   response.cookies.set(USERNAME_COOKIE, user.name, cookieOptions);
   response.cookies.set(SESSION_DAYS_COOKIE, String(sessionDays), {

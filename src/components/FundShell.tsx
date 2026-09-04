@@ -199,6 +199,7 @@ const DETAIL_COLS = [
   ["amount", 76],
   ["profit", 76],
   ["status", 72],
+  ["tags", 110],
   ["note", 160],
   ["actions", 112],
 ] as const;
@@ -206,8 +207,8 @@ const DETAIL_COLS = [
 type DetailColumnKey = typeof DETAIL_COLS[number][0];
 
 const FIXED_DETAIL_COLUMNS = new Set<DetailColumnKey>(["select", "actions"]);
-const DEFAULT_HIDDEN_DETAIL_COLUMNS = new Set<DetailColumnKey>(["confirmDate", "note"]);
-const FUND_DETAIL_HIDDEN_COLUMNS_DEFAULTS_KEY = `${FUND_DETAIL_HIDDEN_COLUMNS_KEY}:defaults_v2`;
+const DEFAULT_HIDDEN_DETAIL_COLUMNS = new Set<DetailColumnKey>(["confirmDate", "note", "tags"]);
+const FUND_DETAIL_HIDDEN_COLUMNS_DEFAULTS_KEY = `${FUND_DETAIL_HIDDEN_COLUMNS_KEY}:defaults_v3`;
 const DETAIL_COLUMN_LABEL_KEYS: Record<DetailColumnKey, string> = {
   select: "",
   date: "fundShell.col.applyDate",
@@ -222,6 +223,7 @@ const DETAIL_COLUMN_LABEL_KEYS: Record<DetailColumnKey, string> = {
   amount: "txForm.amount",
   profit: "overview.profit",
   status: "fundShell.col.status",
+  tags: "detail.column.tags",
   note: "detail.column.remark",
   actions: "",
 };
@@ -2063,6 +2065,12 @@ export function FundShell(props: Props) {
     return units != null && units > 0 ? "confirmed" : "pending";
   }, [detailAmountOf, displayUnitsOf, refundAmountOf]);
 
+  const entryTagsOf = useCallback((e: any): Array<{ tagId?: string; Tag?: { name?: string | null; color?: string | null } | null; name?: string; color?: string | null }> => {
+    if (Array.isArray(e?.entryTags)) return e.entryTags;
+    if (Array.isArray(e?.tags)) return e.tags;
+    return [];
+  }, []);
+
   const filteredByColumns = filtered;
 
 
@@ -2644,6 +2652,36 @@ export function FundShell(props: Props) {
         } satisfies AdvancedDataTableColumn<any>;
       }
 
+      if (key === "tags") {
+        return {
+          key,
+          label: t(DETAIL_COLUMN_LABEL_KEYS[key]),
+          ...common,
+          filterText: (e: any) => entryTagsOf(e).map((et: any) => et.Tag?.name ?? et.name ?? "").join(" "),
+          render: (e: any) => {
+            const tags = entryTagsOf(e);
+            if (tags.length === 0) return <span className="text-slate-300">-</span>;
+            return (
+              <span className="inline-flex flex-wrap gap-0.5">
+                {tags.map((et: any, idx: number) => {
+                  const c = et.Tag?.color || et.color || "#3B82F6";
+                  const name = et.Tag?.name || et.name || "";
+                  return (
+                    <span
+                      key={et.tagId ?? `${idx}-${name}`}
+                      className="rounded-full border px-1 py-0.5 text-[10px] leading-none"
+                      style={{ backgroundColor: c + "18", color: c, borderColor: c + "60" }}
+                    >
+                      {name}
+                    </span>
+                  );
+                })}
+              </span>
+            );
+          },
+        } satisfies AdvancedDataTableColumn<any>;
+      }
+
       if (key === "note") {
         return {
           key,
@@ -2675,6 +2713,7 @@ export function FundShell(props: Props) {
     detailNameLabel,
     displayFundName,
     displayUnitsOf,
+    entryTagsOf,
     formatFundUnits,
     fundApplyDateOf,
     isSingleNormalFundScope,

@@ -231,7 +231,7 @@ async function loadPropertyAssetsForPositionDisplay(accountIds: string[], househ
 
 function buildPropertyPositionDisplay(propertyAssets: PropertyAssetDisplayRow[]): PositionDisplayResult {
   const positions: PositionDisplayRow[] = propertyAssets
-    .filter((asset) => asset.status !== "sold")
+    .filter((asset) => asset.status !== "sold" && asset.status !== "disposed")
     .map((asset) => {
       const cost = toNumber(asset.cost);
       const marketValue = toNumber(asset.marketValue);
@@ -263,7 +263,7 @@ function buildPropertyPositionDisplay(propertyAssets: PropertyAssetDisplayRow[])
     })
     .sort((a, b) => b.marketValue - a.marketValue || a.name.localeCompare(b.name));
   const clearedPositions: ClearedPositionRow[] = propertyAssets
-    .filter((asset) => asset.status === "sold")
+    .filter((asset) => asset.status === "sold" || asset.status === "disposed")
     .map((asset) => ({
       fundCode: asset.id,
       propertyAssetId: asset.id,
@@ -527,7 +527,7 @@ export const computeInvestBalances = cache(
   }
 
   for (const acctId of propertyAccountIds) {
-    const assets = allPropertyAssets.filter((asset) => asset.accountId === acctId && asset.status !== "sold");
+    const assets = allPropertyAssets.filter((asset) => asset.accountId === acctId && asset.status !== "sold" && asset.status !== "disposed");
     const marketValue = assets.reduce((sum, asset) => sum + toNumber(asset.marketValue), 0);
     const totalCost = assets.reduce((sum, asset) => sum + toNumber(asset.cost), 0);
     result.set(acctId, { marketValue, totalCost, floatingPnL: marketValue - totalCost });

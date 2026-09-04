@@ -22,7 +22,6 @@ const STOCK_ACTIONS = new Set(Object.values(StockTransactionAction));
 
 function corsHeaders() {
   return {
-    "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Api-Key",
   } as const;

@@ -353,18 +353,20 @@ export async function recalcPropertyAssetsFromTransactions(
     }
 
     const firstPurchase = rows.find((row) => row.action === PropertyTransactionAction.purchase);
-    const latestSale = [...rows].reverse().find((row) => row.action === PropertyTransactionAction.sale);
+    const latestTerminal = [...rows].reverse().find(
+      (row) => row.action === PropertyTransactionAction.sale || row.action === PropertyTransactionAction.disposal,
+    );
     const cost = rows.reduce((sum, row) => sum + transactionCost(row), 0);
     const manualValuation = await client.propertyValuation.findFirst({
       where: { householdId: params.householdId, propertyAssetId, source: "manual" },
       orderBy: [{ valuationDate: "desc" }, { createdAt: "desc" }],
     });
-    const marketValue = latestSale
-      ? saleRecovery(latestSale)
+    const marketValue = latestTerminal
+      ? saleRecovery(latestTerminal)
       : manualValuation
         ? toNumber(manualValuation.marketValue)
         : cost;
-    const latestValuationDate = latestSale?.settlementDate ?? latestSale?.tradeDate ?? manualValuation?.valuationDate ?? firstPurchase?.tradeDate ?? rows[0]?.tradeDate ?? null;
+    const latestValuationDate = latestTerminal?.settlementDate ?? latestTerminal?.tradeDate ?? manualValuation?.valuationDate ?? firstPurchase?.tradeDate ?? rows[0]?.tradeDate ?? null;
 
     await client.propertyAsset.updateMany({
       where: { id: propertyAssetId, householdId: params.householdId },
@@ -373,7 +375,9 @@ export async function recalcPropertyAssetsFromTransactions(
         cost: String(cost),
         marketValue: String(marketValue),
         latestValuationDate,
-        status: latestSale ? "sold" : "active",
+        status: latestTerminal
+          ? latestTerminal.action === PropertyTransactionAction.disposal ? "disposed" : "sold"
+          : "active",
         purchaseDate: firstPurchase?.tradeDate ?? rows[0]?.tradeDate ?? null,
         purchasePrice: decimalString(firstPurchase ? Math.abs(toNumber(firstPurchase.amount)) : null),
       },

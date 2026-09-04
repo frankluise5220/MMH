@@ -142,10 +142,10 @@ function buildInvestmentFilterHref(
   if (filters.accountIds.length) query.set("investmentAccounts", filters.accountIds.join(","));
   return `/reports${query.toString() ? `?${query.toString()}` : ""}`;
 }
-function buildStatisticsHref(year: number) {
-  const query = new URLSearchParams();
-  query.set("year", String(year));
-  return `/statistics?${query.toString()}`;
+function buildStatisticsHref() {
+  // 资金统计默认展示"按月、最近 12 期"（/statistics 无参数即命中该默认）。
+  // 不携带 ?year=xxx，避免 level 被判定为年模式而回退到单年/全历史。
+  return `/statistics`;
 }
 
 function parseMonthNumber(value: string | undefined, fallback: number) {
@@ -365,7 +365,7 @@ export default async function ReportsPage({
   });
   const currentStockHref = buildReportHref("stock-holdings", undefined, undefined, undefined, PROFIT_SCOPE_ALL);
   const currentFundHref = buildReportHref("fund-holdings", undefined, undefined, undefined, PROFIT_SCOPE_ALL);
-  const currentStatisticsHref = buildStatisticsHref(profitYear);
+  const currentStatisticsHref = buildStatisticsHref();
   const investmentFilterUsers = commonData.groups
     .filter((group) => investmentAccountRecords.some((account) => account.groupId === group.id))
     .map((group) => ({ id: group.id, name: group.name }));
@@ -907,7 +907,7 @@ export default async function ReportsPage({
                 buildReportHref("investment-profit", "day", currentYear, currentMonth),
                 buildReportHref("stock-holdings"),
                 buildReportHref("fund-holdings"),
-                buildStatisticsHref(currentYear),
+                buildStatisticsHref(),
                 t,
               )}
             />

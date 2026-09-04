@@ -43,7 +43,7 @@
  *
  * Authentication (mixed):
  * - cookie session (browser users)
- * - X-Api-Key header (Android client, password verified)
+ * - X-Api-Key header (Android client access key)
  */
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
@@ -329,9 +329,9 @@ async function upsertFundBuyRefundRecord(
     toAccountName: params.cashAccountName,
     amount: refundAmount,
     currency: params.currency ?? "CNY",
-    fundCode: null,
-    fundName: null,
-    fundProductType: null,
+    fundCode: params.fundCode,
+    fundName: params.fundName,
+    fundProductType: params.fundProductType,
     fundSubtype: FundSubtype.buy_failed,
     source: "regular_invest_refund",
     fundUnits: null,
@@ -3308,11 +3308,13 @@ export async function PUT(req: Request) {
         }
         let independentFundCategoryId: string | null = null;
         let independentFundCategoryName: string | null = null;
+        let independentFundDisplayName: string | null = null;
         if (independentFundTransaction && fundCode) {
           const confirmDateValue = toDateOrNull(body.fundConfirmDate);
           const arrivalDateValue = toDateOrNull(body.fundArrivalDate);
           const arrivalAmountValue = parseMoney(body.fundArrivalAmount) || null;
           const fundNameValue = profileEditFundDisplayName ?? inputEditFundDisplayName ?? normalizeFundDisplayName(fundCode, independentFundTransaction.fundName) ?? fundCode;
+          independentFundDisplayName = fundNameValue;
           const updateUnits = recalculatedRefundUnits ?? (hasFundUnits ? roundedFundUnits : independentFundTransaction.units);
           await tx.fundTransaction.update({
             where: { id: independentFundTransaction.id },
@@ -3415,8 +3417,10 @@ export async function PUT(req: Request) {
             categoryName: independentFundCategoryName,
             toAccountId: recordToAccountId,
             toAccountName: recordToAccountName,
-            fundCode: null,
-            fundName: isFundLikeIndependentEdit || isMetalProduct ? null : (resolvedInsuranceProductName || wealthProduct?.name || effectiveEditFundDisplayName || normalizeFundDisplayName(fundCode ?? "", entry.fundName) || entry.fundName),
+            fundCode: isFundLikeIndependentEdit ? fundCode : null,
+            fundName: isFundLikeIndependentEdit
+              ? independentFundDisplayName
+              : isMetalProduct ? null : (resolvedInsuranceProductName || wealthProduct?.name || effectiveEditFundDisplayName || normalizeFundDisplayName(fundCode ?? "", entry.fundName) || entry.fundName),
             wealthProductId: wealthProduct?.id ?? null,
             metalTypeId: metalType?.id ?? null,
             metalTypeName: metalType?.name ?? null,
@@ -3430,8 +3434,10 @@ export async function PUT(req: Request) {
             insuranceProductName: isInsuranceEdit
               ? (resolvedInsuranceProductName ?? entry.insuranceProductName ?? entry.fundName)
               : entry.insuranceProductName,
-            fundProductType: isFundLikeIndependentEdit || isInsuranceEdit ? null : (productType as any) || null,
-            fundSubtype: isFundLikeIndependentEdit ? null : finalFundSubtype,
+            fundProductType: isFundLikeIndependentEdit
+              ? (productType === "money_fund" ? "money" : (productType as any) || "fund")
+              : isInsuranceEdit ? null : (productType as any) || null,
+            fundSubtype: isFundLikeIndependentEdit ? finalFundSubtype : finalFundSubtype,
             fundConfirmDate: isFundLikeIndependentEdit || isMetalProduct ? null : toDateOrNull(body.fundConfirmDate),
             fundArrivalDate: isFundLikeIndependentEdit || isMetalProduct ? null : toDateOrNull(body.fundArrivalDate),
             fundArrivalAmount: isFundLikeIndependentEdit || isDividendReinvest ? null : parseMoney(body.fundArrivalAmount) || null,
@@ -3524,13 +3530,18 @@ export async function PUT(req: Request) {
             linkedRefundEntryId,
             refundDate: effectiveRefundDate,
             refundAmount,
+            fundAccountId: investAcc.id,
+            fundAccountName: investAcc.name,
             cashAccountId: cashAccId,
             cashAccountName: cashAccName ?? "",
+            fundCode: independentFundTransaction.fundCode,
+            fundName: effectiveEditFundDisplayName || independentFundTransaction.fundName || independentFundTransaction.fundCode,
+            fundProductType: productType,
             currency: cashAccCurrency ?? investAcc.currency ?? entry.currency ?? "CNY",
             source: "regular_invest_refund",
             note: regularInvestRefundNote(
-              fundCode,
-              effectiveEditFundDisplayName || fundCode,
+              independentFundTransaction.fundCode,
+              effectiveEditFundDisplayName || independentFundTransaction.fundName || independentFundTransaction.fundCode,
               refundAmount,
               date,
               cashAccCurrency ?? investAcc.currency ?? entry.currency ?? "CNY",

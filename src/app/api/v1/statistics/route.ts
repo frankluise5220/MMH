@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
+import { loadFundStatisticSourceEntries, loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
 import { TransactionType } from "@prisma/client";
 import { toNumber } from "@/lib/date-utils";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
@@ -12,7 +12,8 @@ import {
   SYSTEM_INSURANCE_RETURN_CATEGORY,
 } from "@/lib/default-categories";
 import { addStatisticCategoryBucket, buildStatisticCategoryItemsFromBuckets, createStatisticCategoryResolver, getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
-import { isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
+import { isCreditCardRepaymentTransfer, isDebtPrincipalTransfer } from "@/lib/transaction-semantics";
+import { buildStatisticsFundDisplayResolver } from "@/lib/server/statistics-fund-display";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +30,8 @@ export const dynamic = "force-dynamic";
  *
  * Expense totals preserve category offsets: a stored positive expense cash flow
  * is returned as a negative expense statistic instead of being made absolute.
+ * Fund names are resolved from cached fund profiles/NAV metadata when legacy
+ * transaction rows only stored a fund code.
  *
  * Response 200:
  * {
@@ -124,23 +127,32 @@ export async function GET(req: NextRequest) {
       },
       orderBy: { date: "asc" },
     });
-    const representedInvestmentEntryIds = new Set(
-      allEntries
-        .filter((entry) => entry.type === TransactionType.investment && getInvestmentStatisticItems(entry).length > 0)
-        .map((entry) => entry.id),
-    );
-    const wealthStatisticEntries = await loadWealthStatisticSourceEntries(ctx, {
-      start: new Date(Date.UTC(year, 0, 1)),
-      endExclusive: new Date(Date.UTC(year + 1, 0, 1)),
-      accountIds: selectedAccountIds,
-      tagIds: selectedTagIds,
-      excludeEntryIds: representedInvestmentEntryIds,
-    });
-
+    const [fundStatisticEntries, wealthStatisticEntries] = await Promise.all([
+      loadFundStatisticSourceEntries(ctx, {
+        start: new Date(Date.UTC(year, 0, 1)),
+        endExclusive: new Date(Date.UTC(year + 1, 0, 1)),
+        accountIds: selectedAccountIds,
+        tagIds: selectedTagIds,
+      }),
+      loadWealthStatisticSourceEntries(ctx, {
+        start: new Date(Date.UTC(year, 0, 1)),
+        endExclusive: new Date(Date.UTC(year + 1, 0, 1)),
+        accountIds: selectedAccountIds,
+        tagIds: selectedTagIds,
+      }),
+    ]);
+    const independentStatisticEntryIds = new Set([
+      ...fundStatisticEntries.flatMap((entry) => [entry.id, entry.entryId]),
+      ...wealthStatisticEntries.flatMap((entry) => [entry.id, entry.entryId]),
+    ]);
     // Tag filter
     const filteredEntries = selectedTagIds
       ? allEntries.filter(e => e.EntryTag.some(et => selectedTagIds.includes(et.tagId)))
       : allEntries;
+    const resolvePnlFundDisplay = await buildStatisticsFundDisplayResolver(
+      [...filteredEntries, ...fundStatisticEntries, ...wealthStatisticEntries],
+      householdId,
+    );
 
     // Aggregation maps
     const monthMap = new Map<string, { income: number; expense: number; investPnL: number }>();
@@ -185,19 +197,28 @@ export async function GET(req: NextRequest) {
           accountKind: accountKindById.get(e.accountId),
           toAccountKind: accountKindById.get(e.toAccountId ?? ""),
         })) continue;
+        // Borrow / lend / repay / collect / scheduled repayments: the principal
+        // itself is a balance-sheet move, not income/expense.  Skip the principal
+        // here; the interest portion is still reported via
+        // getBusinessResultStatisticItems below.
+        const isDebtPrincipal = isDebtPrincipalTransfer(e);
         if (isToSelf && !isFromSelf) {
-          row.income += Math.abs(amount);
-          addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", categoryId: e.categoryId, categoryName: e.categoryName }), Math.abs(amount));
-          for (const et of e.EntryTag) {
-            const existing = incomeByTag.get(et.tagId);
-            incomeByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + Math.abs(amount) });
+          if (!isDebtPrincipal) {
+            row.income += Math.abs(amount);
+            addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", categoryId: e.categoryId, categoryName: e.categoryName }), Math.abs(amount));
+            for (const et of e.EntryTag) {
+              const existing = incomeByTag.get(et.tagId);
+              incomeByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + Math.abs(amount) });
+            }
           }
         } else if (isFromSelf && !isToSelf) {
-          row.expense += Math.abs(amount);
-          addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", categoryId: e.categoryId, categoryName: e.categoryName }), Math.abs(amount));
-          for (const et of e.EntryTag) {
-            const existing = expenseByTag.get(et.tagId);
-            expenseByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + Math.abs(amount) });
+          if (!isDebtPrincipal) {
+            row.expense += Math.abs(amount);
+            addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", categoryId: e.categoryId, categoryName: e.categoryName }), Math.abs(amount));
+            for (const et of e.EntryTag) {
+              const existing = expenseByTag.get(et.tagId);
+              expenseByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + Math.abs(amount) });
+            }
           }
         }
         for (const item of getBusinessResultStatisticItems(e)) {
@@ -218,6 +239,7 @@ export async function GET(req: NextRequest) {
           }
         }
       } else if (e.type === TransactionType.investment) {
+        if (independentStatisticEntryIds.has(e.id)) continue;
         if (e.source === "insurance") {
           const effectiveAmount = Math.abs(amount);
           const isRefund = e.insuranceAction === "refund" || e.fundSubtype === "redeem" || e.fundSubtype === "switch_out";
@@ -249,11 +271,44 @@ export async function GET(req: NextRequest) {
           row.investPnL += signedProfit;
           const costBase = Math.abs(amount);
           const rate = costBase > 0 ? signedProfit / costBase : 0;
+          const fundDisplay = resolvePnlFundDisplay(e);
           pnlItems.push({
-            id: e.id, date: d.toISOString().slice(0, 10), fundCode: e.fundCode ?? "", fundName: e.fundName ?? "",
+            id: e.id, date: d.toISOString().slice(0, 10), fundCode: fundDisplay.fundCode, fundName: fundDisplay.fundName,
             subtype: item.label, amount: item.amount, profit: signedProfit, profitRate: rate,
           });
         }
+      }
+    }
+
+    for (const e of fundStatisticEntries) {
+      const d = e.date;
+      const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+      if (!monthMap.has(m)) monthMap.set(m, { income: 0, expense: 0, investPnL: 0 });
+      const row = monthMap.get(m)!;
+      const amount = toNumber(e.amount);
+
+      for (const item of getInvestmentStatisticItems(e)) {
+        const signedProfit = item.type === "income" ? item.amount : -item.amount;
+        if (item.type === "income") {
+          addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+        } else {
+          addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+        }
+        if (item.productKind === "deposit") continue;
+        row.investPnL += signedProfit;
+        const costBase = Math.abs(amount);
+        const rate = costBase > 0 ? signedProfit / costBase : 0;
+        const fundDisplay = resolvePnlFundDisplay(e);
+        pnlItems.push({
+          id: e.id,
+          date: d.toISOString().slice(0, 10),
+          fundCode: fundDisplay.fundCode,
+          fundName: fundDisplay.fundName,
+          subtype: item.label,
+          amount: item.amount,
+          profit: signedProfit,
+          profitRate: rate,
+        });
       }
     }
 
@@ -275,11 +330,12 @@ export async function GET(req: NextRequest) {
         row.investPnL += signedProfit;
         const costBase = Math.abs(amount);
         const rate = costBase > 0 ? signedProfit / costBase : 0;
+        const fundDisplay = resolvePnlFundDisplay(e);
         pnlItems.push({
           id: e.id,
           date: d.toISOString().slice(0, 10),
-          fundCode: e.fundCode ?? "",
-          fundName: e.fundName ?? "",
+          fundCode: fundDisplay.fundCode,
+          fundName: fundDisplay.fundName,
           subtype: item.label,
           amount: item.amount,
           profit: signedProfit,
@@ -341,7 +397,7 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "统计数据读取失败";
+    const message = error instanceof Error ? error.message : "Failed to fetch statistics data";
     return NextResponse.json({ ok: false, code: "FETCH_FAILED", error: message }, { status: 500 });
   }
 }

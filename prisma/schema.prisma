@@ -455,6 +455,24 @@ model FundSnapshot {
   @@index([snapshotDate])
 }
 
+/// Cache for external benchmark NAV series (e.g. 沪深300 = "000300").
+/// Used by the statistics page to overlay market baseline against portfolio performance.
+model BenchmarkCache {
+  id      String   @id @default(cuid())
+  code    String
+  navDate DateTime
+  nav     Decimal  @db.Decimal(20, 6)
+  cumNav  Decimal? @db.Decimal(20, 6)
+  name    String?
+  source  String?  @default("eastmoney")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@unique([code, navDate])
+  @@index([code])
+  @@index([navDate])
+}
+
 model FundTransaction {
   id                  String                    @id @default(cuid())
   householdId         String
@@ -1701,6 +1719,7 @@ enum PropertyTransactionAction {
   purchase
   improvement
   sale
+  disposal
 }
 
 enum StockTransactionAction {
@@ -1813,4 +1832,42 @@ enum CreditCardInstallmentStatus {
   active
   completed
   cancelled
+}
+
+model ApprovedCurrency {
+  id         String   @id @default(cuid())
+  code       String   @unique // ISO 4217 code, e.g. "KRW", "SGD"
+  nameZh     String   // 中文名称
+  nameEn     String   // English name
+  countryZh  String?  // 中文国家名（用于自动联想）
+  countryEn  String?  // English country name
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @default(now()) @updatedAt
+  createdBy  String?  // userId of the approver
+}
+
+model CustomCurrencyRequest {
+  id          String                      @id @default(cuid())
+  code        String                      // ISO 4217 code, e.g. "KRW"
+  nameZh      String                      // 用户填写的中文名称
+  nameEn      String                      // 用户填写的英文名称
+  countryZh   String                      // 用户填写的中文国家名
+  countryEn   String?
+  status      CustomCurrencyRequestStatus @default(pending)
+  requesterId String                      // userId of the requester
+  householdId String?                     // optional household context
+  approverId  String?
+  rejectReason String?
+  createdAt   DateTime                    @default(now())
+  updatedAt   DateTime                    @default(now()) @updatedAt
+
+  @@index([status])
+  @@index([requesterId])
+  @@index([code])
+}
+
+enum CustomCurrencyRequestStatus {
+  pending
+  approved
+  rejected
 }

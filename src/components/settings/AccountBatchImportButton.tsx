@@ -1,8 +1,10 @@
 "use client";
 
 import { createPortal } from "react-dom";
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { Download, FileUp, X } from "lucide-react";
+import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
+import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/components/BatchReplacePopoverButton";
 import { normalizeCurrency } from "@/lib/currency";
 import { PRODUCT_TYPES } from "@/lib/investment-config";
 import { FIXED_ASSET_TYPES } from "@/lib/fixed-asset";
@@ -90,6 +92,8 @@ type ImportAccountRow = {
   note: string;
   errors: string[];
   selected: boolean;
+  /** Set once the user manually toggles this row's checkbox; re-validation then keeps their choice. */
+  touchedSelection?: boolean;
 };
 
 type ImportResult = {
@@ -105,6 +109,7 @@ type AccountBatchImportButtonProps = {
   onImported: () => void;
 };
 
+type Translate = (key: string, params?: Record<string, string | number>) => string;
 type AccountImportOption = { value: string; labelKey: string };
 
 type ImportSheetDefinition = {
@@ -168,7 +173,7 @@ const HEADER_LABELS: Record<AccountBatchImportField, (t: (key: string) => string
   color: (t) => t("settings.tags.color"),
   kind: (t) => t("settings.accounts.type"),
   institutionType: (t) => t("settings.accounts.import.institutionType"),
-  counterpartyType: (t) => t("settings.accounts.import.counterpartyType"),
+  counterpartyType: (t) => t("settings.accounts.type"),
   categoryType: (t) => t("settings.accounts.import.categoryType"),
   parentCategory: (t) => t("settings.accounts.import.parentCategory"),
   shortName: (t) => t("settings.accounts.import.shortName"),
@@ -219,9 +224,9 @@ const SHEETS: ImportSheetDefinition[] = [
   },
   {
     type: "funding",
-    sheetKey: "settings.accounts.import.sheet.funding",
+    sheetKey: "settings.accounts.import.sheet.fundingCredit",
     target: "account",
-    fields: ["name", "kind", "institution", "owner", "currency", "numberMasked", "initialBalance", "initialBalanceDate", "note", "sample"],
+    fields: ["name", "kind", "institution", "owner", "currency", "numberMasked", "billingDay", "repaymentDay", "creditLimit", "creditBillMode", "initialBalance", "initialBalanceDate", "note", "sample"],
   },
   {
     type: "settlement",
@@ -229,13 +234,6 @@ const SHEETS: ImportSheetDefinition[] = [
     target: "account",
     defaultKind: "loan",
     fields: ["name", "institution", "counterparty", "owner", "currency", "initialBalance", "initialBalanceDate", "note", "sample"],
-  },
-  {
-    type: "credit",
-    sheetKey: "settings.accounts.import.sheet.credit",
-    target: "account",
-    defaultKind: "bank_credit",
-    fields: ["name", "institution", "owner", "currency", "numberMasked", "billingDay", "repaymentDay", "creditLimit", "creditBillMode", "note", "sample"],
   },
   {
     type: "investment",
@@ -254,6 +252,19 @@ const SHEETS: ImportSheetDefinition[] = [
 ];
 
 const LEGACY_IMPORT_SHEETS: ImportSheetDefinition[] = [
+  {
+    type: "funding",
+    sheetKey: "settings.accounts.import.sheet.funding",
+    target: "account",
+    fields: ["name", "kind", "institution", "owner", "currency", "numberMasked", "initialBalance", "initialBalanceDate", "note", "sample"],
+  },
+  {
+    type: "credit",
+    sheetKey: "settings.accounts.import.sheet.credit",
+    target: "account",
+    defaultKind: "bank_credit",
+    fields: ["name", "institution", "owner", "currency", "numberMasked", "billingDay", "repaymentDay", "creditLimit", "creditBillMode", "note", "sample"],
+  },
   {
     type: "familyMember",
     sheetKey: "settings.accounts.import.sheet.familyMember",
@@ -282,6 +293,7 @@ const FUNDING_ACCOUNT_KIND_OPTIONS: AccountImportOption[] = [
   { value: "cash", labelKey: "account.kind.cash" },
   { value: "bank_debit", labelKey: "account.kind.bank_debit" },
   { value: "ewallet", labelKey: "account.kind.ewallet" },
+  { value: "bank_credit", labelKey: "account.kind.bank_credit" },
 ];
 const INVEST_PRODUCT_OPTIONS: AccountImportOption[] = PRODUCT_TYPES
   .filter((value) => value !== "property" && value !== "deposit")
@@ -293,6 +305,7 @@ const COST_BASIS_OPTIONS: AccountImportOption[] = [
   { value: "lifo", labelKey: "settings.accounts.lifo" },
 ];
 const TRADING_CALENDAR_OPTIONS: AccountImportOption[] = TRADING_CALENDARS.map((value) => ({ value, labelKey: `tradingCalendar.${value}` }));
+const TAG_COLOR_OPTIONS: AccountImportOption[] = TAG_COLORS.map((value) => ({ value, labelKey: TAG_COLOR_NAME_KEYS[value] }));
 const CREDIT_BILL_MODE_OPTIONS: AccountImportOption[] = [
   { value: "separate", labelKey: "entityForm.creditBillMode.separate" },
   { value: "consolidated", labelKey: "entityForm.creditBillMode.consolidated" },
@@ -313,6 +326,17 @@ const GUIDE_NOTE_COLUMN_START = 2;
 const GUIDE_NOTE_COLUMN_SPAN = 5;
 const GUIDE_NOTE_COLUMN_END = GUIDE_NOTE_COLUMN_START + GUIDE_NOTE_COLUMN_SPAN - 1;
 const GUIDE_COLUMN_COUNT = GUIDE_NOTE_COLUMN_END + 1;
+const GUIDE_TITLE_ROW_HEIGHT = 72;
+const GENERIC_TYPE_FIELDS = new Set<AccountBatchImportField>([
+  "institutionType",
+  "counterpartyType",
+  "categoryType",
+  "investProductType",
+  "fixedAssetType",
+]);
+const HEADER_LABEL_ALIAS_KEYS: Partial<Record<AccountBatchImportField, string[]>> = {
+  counterpartyType: ["settings.accounts.import.counterpartyType"],
+};
 
 function categoryTypeLabel(value: string, t: (key: string) => string) {
   const option = CATEGORY_TYPE_OPTIONS.find((item) => item.value === value);
@@ -321,6 +345,12 @@ function categoryTypeLabel(value: string, t: (key: string) => string) {
 
 function normalizeImportHeader(value: unknown) {
   return String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+// The exported guide title cell holds the title plus an explanatory note in one
+// wrapped cell, so match on the leading title text instead of the full cell.
+function isGuideTitleCell(value: unknown, guideTitle: string) {
+  return normalizeImportHeader(value).startsWith(guideTitle);
 }
 
 function normalizeImportCell(value: unknown) {
@@ -413,10 +443,14 @@ function resolveNamedOption(
 function matchesPendingName(value: string, rows: ImportAccountRow[], target: ImportTarget) {
   const normalized = normalizeImportHeader(value);
   if (!normalized) return false;
+  // Only rows the user has explicitly checked can claim a name slot and serve as a
+  // reference for later rows. This mirrors the wizard's "only checked rows are imported"
+  // semantics: if row A is checked, rows that follow can reference A; if A is not
+  // checked, A's claim does not block subsequent rows from using the same name.
   return rows.some((row) =>
     row.target === target &&
     row.name &&
-    row.errors.length === 0 &&
+    row.selected &&
     (normalizeImportHeader(row.name) === normalized || normalizeImportHeader(row.shortName) === normalized)
   );
 }
@@ -427,7 +461,7 @@ function pendingRowByName(value: string, rows: ImportAccountRow[], target: Impor
   return rows.find((row) =>
     row.target === target &&
     row.name &&
-    row.errors.length === 0 &&
+    row.selected &&
     (normalizeImportHeader(row.name) === normalized || normalizeImportHeader(row.shortName) === normalized)
   ) ?? null;
 }
@@ -462,7 +496,12 @@ function isAccountInstitutionEntityType(type: string | null | undefined) {
 function buildImportHeaders(fields: AccountBatchImportField[], t: (key: string) => string) {
   return fields.map((field) => ({
     field,
-    aliases: [...HEADER_ALIASES[field], HEADER_LABELS[field](t)],
+    aliases: [
+      ...HEADER_ALIASES[field],
+      ...(GENERIC_TYPE_FIELDS.has(field) ? [t("settings.accounts.type")] : []),
+      ...(HEADER_LABEL_ALIAS_KEYS[field] ?? []).map((key) => t(key)),
+      HEADER_LABELS[field](t),
+    ],
   }));
 }
 
@@ -500,7 +539,7 @@ function parseSheetRows(
 
   const bodyRows = rows.slice(headerIndex + 1);
   const guideTitle = normalizeImportHeader(t("settings.accounts.import.sheetGuideTitle"));
-  const guideOffset = bodyRows.findIndex((row) => row.some((cell) => normalizeImportHeader(cell) === guideTitle));
+  const guideOffset = bodyRows.findIndex((row) => row.some((cell) => isGuideTitleCell(cell, guideTitle)));
   const importRows = guideOffset >= 0 ? bodyRows.slice(0, guideOffset) : bodyRows;
 
   return importRows.flatMap((source, offset): ImportAccountRow[] => {
@@ -591,11 +630,12 @@ function parseSheetRows(
     const creditLimitRaw = parseImportNumber(valueAt("creditLimit"));
     if (valueAt("creditLimit") && !creditLimitRaw) errors.push(t("settings.accounts.import.creditLimitInvalid"));
     const rawCreditBillMode = valueAt("creditBillMode");
+    const parsedCreditBillMode = parseImportEnum(rawCreditBillMode, CREDIT_BILL_MODE_OPTIONS, t);
     const creditBillMode = kind === "bank_credit"
-      ? parseImportEnum(rawCreditBillMode, CREDIT_BILL_MODE_OPTIONS, t) || "separate"
+      ? parsedCreditBillMode
       : "";
-    if (definition.type === "credit" && !rawCreditBillMode) errors.push(requiredFieldError("creditBillMode", t));
-    if (rawCreditBillMode && !parseImportEnum(rawCreditBillMode, CREDIT_BILL_MODE_OPTIONS, t)) errors.push(t("settings.accounts.import.invalidEnum"));
+    if (kind === "bank_credit" && !rawCreditBillMode) errors.push(requiredFieldError("creditBillMode", t));
+    if (rawCreditBillMode && !parsedCreditBillMode) errors.push(t("settings.accounts.import.invalidEnum"));
 
     const fundUnitsDecimalsRaw = parseImportNumber(valueAt("fundUnitsDecimals"));
     if (valueAt("fundUnitsDecimals") && !fundUnitsDecimalsRaw) errors.push(t("settings.accounts.import.unitDecimalsInvalid"));
@@ -616,7 +656,7 @@ function parseSheetRows(
     if (initialBalanceRaw && !initialBalanceDate) errors.push(t("settings.accounts.import.balanceDateInvalid"));
 
     return [{
-      key: `${definition.type}:${sourceRow}`,
+      key: `${definition.type}:${sheetName}:${sourceRow}`,
       sheetType: definition.type,
       sheet: sheetName,
       sourceRow,
@@ -742,7 +782,7 @@ function parseCategoryTreeRows(
   if (headerIndex < 0) return [];
   const bodyRows = rows.slice(headerIndex + 1);
   const guideTitle = normalizeImportHeader(t("settings.accounts.import.sheetGuideTitle"));
-  const guideOffset = bodyRows.findIndex((row) => row.some((cell) => normalizeImportHeader(cell) === guideTitle));
+  const guideOffset = bodyRows.findIndex((row) => row.some((cell) => isGuideTitleCell(cell, guideTitle)));
   const importRows = guideOffset >= 0 ? bodyRows.slice(0, guideOffset) : bodyRows;
 
   return importRows.flatMap((source, offset): ImportAccountRow[] => {
@@ -781,6 +821,105 @@ function parseCategoryTreeRows(
     })));
     return rowsForSource;
   });
+}
+
+type DuplicateNameTarget = "institution" | "familyMember" | "counterparty";
+
+/**
+ * Preview-stage duplicate-name check for master data (institution / family member / counterparty).
+ * Within each kind, name and shortName share one uniqueness pool: a later row whose name or
+ * shortName equals any earlier row's name/shortName (same kind), or any existing record's
+ * name/shortName, is marked as an error so it cannot be imported.
+ * This mirrors the server-side 409 behavior of assertInstitutionDisplayNamesUnique /
+ * assertCounterpartyDisplayNamesUnique. Counterparty rows additionally conflict with the whole
+ * institution name space (existing + earlier in-batch institution/family-member rows), because
+ * creating a counterparty syncs an institution mirror through assertInstitutionDisplayNamesUnique.
+ */
+function validateDuplicateNames(
+  rows: ImportAccountRow[],
+  options: {
+    groups: Array<{ id: string; name: string }>;
+    institutions: Array<{ id: string; name: string; shortName?: string | null; type?: string | null }>;
+    counterparties: Array<{ id: string; name: string; shortName?: string | null; type?: string | null }>;
+    t: (key: string, params?: Record<string, string | number>) => string;
+  },
+) {
+  const existingByTarget: Record<DuplicateNameTarget, Set<string>> = {
+    institution: new Set<string>(),
+    familyMember: new Set<string>(),
+    counterparty: new Set<string>(),
+  };
+  const addToExisting = (target: DuplicateNameTarget, value: unknown) => {
+    const key = normalizeImportHeader(value);
+    if (key) existingByTarget[target].add(key);
+  };
+  for (const item of options.institutions) {
+    addToExisting("institution", item.name);
+    addToExisting("institution", item.shortName);
+    // Creating a counterparty syncs an institution mirror, so a counterparty row also
+    // conflicts with every existing institution name/shortName.
+    addToExisting("counterparty", item.name);
+    addToExisting("counterparty", item.shortName);
+    if (item.type === "family_member") {
+      addToExisting("familyMember", item.name);
+      addToExisting("familyMember", item.shortName);
+    }
+  }
+  for (const item of options.counterparties) {
+    addToExisting("counterparty", item.name);
+    addToExisting("counterparty", item.shortName);
+  }
+  for (const item of options.groups) {
+    addToExisting("familyMember", item.name);
+  }
+
+  // Same-batch claimed names: value -> owning row (sheet + row number). Claim priority follows
+  // MASTER_TARGETS import order (institution -> familyMember -> counterparty), so the row that
+  // would actually be created first wins and later conflicting rows are flagged.
+  const batchClaimed: Record<DuplicateNameTarget, Map<string, { sheet: string; sourceRow: number }>> = {
+    institution: new Map(),
+    familyMember: new Map(),
+    counterparty: new Map(),
+  };
+  const findBatchOwner = (target: ImportTarget, key: string) => {
+    const direct = batchClaimed[target as DuplicateNameTarget]?.get(key);
+    if (direct) return direct;
+    if (target === "counterparty") {
+      return batchClaimed.institution.get(key) ?? batchClaimed.familyMember.get(key);
+    }
+    return undefined;
+  };
+
+  for (const target of ["institution", "familyMember", "counterparty"] as const) {
+    for (const row of rows.filter((item) => item.target === target)) {
+      const nameKey = normalizeImportHeader(row.name);
+      const shortKey = normalizeImportHeader(row.shortName);
+      if (nameKey && shortKey && nameKey === shortKey) {
+        row.errors.push(options.t("settings.accounts.import.nameEqualsShortName"));
+        continue;
+      }
+      // Only checked rows claim their name/shortName slot in the batch pool. Unchecked
+      // rows won't be imported, so they must not block later checked rows from using
+      // the same name (the duplicate check still runs against existing DB records below).
+      const rowClaimsSlot = row.selected;
+      for (const [value, key] of [[row.name, nameKey], [row.shortName, shortKey]] as const) {
+        if (!key) continue;
+        const batchOwner = findBatchOwner(target, key);
+        if (batchOwner) {
+          row.errors.push(options.t("settings.accounts.import.duplicateNameInBatch", { value, sheet: batchOwner.sheet, row: batchOwner.sourceRow }));
+          continue;
+        }
+        if (existingByTarget[target].has(key)) {
+          row.errors.push(options.t("settings.accounts.import.duplicateNameExisting", { value }));
+          continue;
+        }
+        if (rowClaimsSlot) {
+          batchClaimed[target].set(key, { sheet: row.sheet, sourceRow: row.sourceRow });
+        }
+      }
+    }
+  }
+  return rows;
 }
 
 function validateReferences(
@@ -912,6 +1051,522 @@ function validateReferences(
   });
 }
 
+const FIELD_SELECT_OPTIONS: Partial<Record<AccountBatchImportField, AccountImportOption[]>> = {
+  color: TAG_COLOR_OPTIONS,
+  kind: FUNDING_ACCOUNT_KIND_OPTIONS,
+  institutionType: INSTITUTION_TYPE_OPTIONS,
+  counterpartyType: OBJECT_TYPE_OPTIONS,
+  categoryType: CATEGORY_TYPE_OPTIONS,
+  investProductType: INVEST_PRODUCT_OPTIONS,
+  fixedAssetType: FIXED_ASSET_TYPE_OPTIONS,
+  creditBillMode: CREDIT_BILL_MODE_OPTIONS,
+  costBasisMethod: COST_BASIS_OPTIONS,
+  tradingCalendar: TRADING_CALENDAR_OPTIONS,
+};
+
+const EDITABLE_MASTER_FIELDS = new Set<AccountBatchImportField>(["name", "shortName", "institutionType", "counterpartyType", "note"]);
+const EDITABLE_CATEGORY_FIELDS = new Set<AccountBatchImportField>(["name", "categoryType", "parentCategory", "note"]);
+const EDITABLE_TAG_FIELDS = new Set<AccountBatchImportField>(["name", "color"]);
+
+const EDITABLE_ACCOUNT_FIELDS_BY_SHEET: Partial<Record<ImportSheetType, AccountBatchImportField[]>> = {
+  funding: ["name", "kind", "institution", "owner", "currency", "numberMasked", "billingDay", "repaymentDay", "creditLimit", "creditBillMode", "initialBalance", "initialBalanceDate", "note"],
+  settlement: ["name", "institution", "counterparty", "owner", "currency", "initialBalance", "initialBalanceDate", "note"],
+  credit: ["name", "institution", "owner", "currency", "numberMasked", "billingDay", "repaymentDay", "creditLimit", "creditBillMode", "note"],
+  investment: ["name", "investProductType", "institution", "owner", "currency", "fundUnitsDecimals", "costBasisMethod", "tradingCalendar", "note"],
+  fixedAsset: ["name", "fixedAssetType", "owner", "currency", "note"],
+};
+
+const FIELD_COLUMN_MIN_WIDTH: Partial<Record<AccountBatchImportField, number>> = {
+  name: 150,
+  shortName: 100,
+  institution: 140,
+  counterparty: 120,
+  owner: 100,
+  kind: 100,
+  institutionType: 110,
+  counterpartyType: 110,
+  investProductType: 130,
+  fixedAssetType: 120,
+  creditBillMode: 110,
+  currency: 70,
+  numberMasked: 80,
+  billingDay: 80,
+  repaymentDay: 80,
+  creditLimit: 90,
+  initialBalance: 100,
+  initialBalanceDate: 130,
+  note: 160,
+  categoryType: 90,
+  parentCategory: 120,
+  color: 90,
+  fundUnitsDecimals: 90,
+  costBasisMethod: 100,
+  tradingCalendar: 100,
+};
+
+function isRowFieldEditable(row: ImportAccountRow, field: AccountBatchImportField) {
+  if (row.target === "institution" || row.target === "familyMember" || row.target === "counterparty") {
+    return EDITABLE_MASTER_FIELDS.has(field);
+  }
+  if (row.target === "category") {
+    return EDITABLE_CATEGORY_FIELDS.has(field);
+  }
+  if (row.target === "tag") {
+    return EDITABLE_TAG_FIELDS.has(field);
+  }
+  if (row.target === "account") {
+    if (row.sheetType === "funding" && ["billingDay", "repaymentDay", "creditLimit", "creditBillMode"].includes(field)) {
+      return row.kind === "bank_credit";
+    }
+    return EDITABLE_ACCOUNT_FIELDS_BY_SHEET[row.sheetType]?.includes(field) ?? false;
+  }
+  return false;
+}
+
+function rowFieldValue(row: ImportAccountRow, field: AccountBatchImportField): string {
+  switch (field) {
+    case "name": return row.name;
+    case "shortName": return row.shortName;
+    case "institution": return row.institutionName;
+    case "counterparty": return row.counterpartyName;
+    case "owner": return row.ownerName;
+    case "numberMasked": return row.numberMasked;
+    case "note": return row.note;
+    case "parentCategory": return row.parentCategoryName;
+    case "kind": return row.kind;
+    case "institutionType": return row.institutionType;
+    case "counterpartyType": return row.counterpartyType;
+    case "categoryType": return row.categoryType;
+    case "investProductType": return row.investProductType;
+    case "fixedAssetType": return row.fixedAssetType;
+    case "creditBillMode": return row.creditBillMode;
+    case "costBasisMethod": return row.costBasisMethod;
+    case "tradingCalendar": return row.tradingCalendar;
+    case "fundUnitsDecimals": return row.fundUnitsDecimals;
+    case "billingDay": return row.billingDay;
+    case "repaymentDay": return row.repaymentDay;
+    case "creditLimit": return row.creditLimit;
+    case "initialBalance": return row.initialBalance;
+    case "initialBalanceDate": return row.initialBalanceDate;
+    case "currency": return row.currency;
+    case "color": return row.color;
+    default: return "";
+  }
+}
+
+function rowFieldDisplay(row: ImportAccountRow, field: AccountBatchImportField, t: (key: string) => string): string {
+  switch (field) {
+    case "color": {
+      const colorLabelKey = TAG_COLOR_NAME_KEYS[row.color as keyof typeof TAG_COLOR_NAME_KEYS];
+      return row.color ? `${colorLabelKey ? t(colorLabelKey) : row.color} ${row.color}` : "";
+    }
+    case "kind": return row.kind ? t(`account.kind.${row.kind}`) : "";
+    case "institutionType": return row.institutionType ? t(`institution.type.${row.institutionType}`) : "";
+    case "counterpartyType": return row.counterpartyType ? t(`institution.type.${row.counterpartyType}`) : "";
+    case "categoryType": return categoryTypeLabel(row.categoryType, t);
+    case "investProductType": return row.investProductType ? t(`investment.product.${row.investProductType}`) : "";
+    case "fixedAssetType": return row.fixedAssetType ? t(`fixedAsset.type.${row.fixedAssetType}`) : "";
+    case "creditBillMode": return row.creditBillMode ? t(`entityForm.creditBillMode.${row.creditBillMode}`) : "";
+    case "costBasisMethod": return row.costBasisMethod ? displayCostBasisMethod(row.costBasisMethod, t) : "";
+    case "tradingCalendar": return row.tradingCalendar ? t(`tradingCalendar.${row.tradingCalendar}`) : "";
+    default: return rowFieldValue(row, field);
+  }
+}
+
+/** Normalize a user-edited cell into the row. Raw text is kept for invalid numbers/dates so the user still sees what they typed; validation flags it. */
+function applyRowEdit(row: ImportAccountRow, field: AccountBatchImportField, raw: string): ImportAccountRow {
+  const next = { ...row };
+  const trimmed = raw.trim();
+  switch (field) {
+    case "name": next.name = trimmed; break;
+    case "shortName": next.shortName = trimmed; break;
+    case "color": next.color = trimmed ? (parseImportTagColor(trimmed) || trimmed) : ""; break;
+    case "institution": next.institutionName = trimmed; next.institutionId = ""; break;
+    case "counterparty": next.counterpartyName = trimmed; next.counterpartyId = ""; break;
+    case "owner": next.ownerName = trimmed; next.ownerId = ""; break;
+    case "currency": next.currency = trimmed ? normalizeCurrency(trimmed) : ""; break;
+    case "numberMasked": next.numberMasked = trimmed; break;
+    case "note": next.note = trimmed; break;
+    case "parentCategory": next.parentCategoryName = trimmed; next.parentCategoryId = ""; break;
+    case "initialBalanceDate": next.initialBalanceDate = trimmed ? (parseImportDate(trimmed) || trimmed) : ""; break;
+    case "initialBalance": next.initialBalance = trimmed ? (parseImportNumber(trimmed) || trimmed) : ""; break;
+    case "fundUnitsDecimals": next.fundUnitsDecimals = trimmed ? (parseImportNumber(trimmed) || trimmed) : ""; break;
+    case "billingDay":
+    case "repaymentDay": {
+      const parsed = parseImportNumber(trimmed);
+      next[field] = trimmed && parsed ? String(Number(parsed)) : trimmed;
+      break;
+    }
+    case "creditLimit": next.creditLimit = trimmed ? (parseImportNumber(trimmed) || trimmed) : ""; break;
+    case "kind": {
+      next.kind = trimmed;
+      if (trimmed !== "bank_credit") {
+        next.billingDay = "";
+        next.repaymentDay = "";
+        next.creditLimit = "";
+        next.creditBillMode = "";
+      }
+      break;
+    }
+    case "institutionType": next.institutionType = trimmed; break;
+    case "counterpartyType": {
+      next.counterpartyType = trimmed;
+      // The object sheet routes rows by this type: family_member rows are family members, others are counterparties.
+      next.target = trimmed === "family_member" ? "familyMember" : "counterparty";
+      break;
+    }
+    case "categoryType": next.categoryType = trimmed; break;
+    case "investProductType": next.investProductType = trimmed; break;
+    case "fixedAssetType": next.fixedAssetType = trimmed; break;
+    case "creditBillMode": next.creditBillMode = trimmed; break;
+    case "costBasisMethod": next.costBasisMethod = trimmed; break;
+    case "tradingCalendar": next.tradingCalendar = trimmed; break;
+    default: break;
+  }
+  return next;
+}
+
+/**
+ * Full re-validation after an in-place edit: rebuilds per-row field errors (required fields,
+ * number/date formats), then re-runs duplicate-name and reference validation so cross-row
+ * effects (renames, retargets) are reflected immediately. Rows keep their manual checkbox
+ * choice when it was touched manually.
+ */
+function revalidateRows(
+  rows: ImportAccountRow[],
+  options: {
+    groups: Array<{ id: string; name: string }>;
+    institutions: Array<{ id: string; name: string; shortName?: string | null; type?: string | null }>;
+    counterparties: Array<{ id: string; name: string; shortName?: string | null; type?: string | null }>;
+    categories: ExistingCategory[];
+    t: (key: string, params?: Record<string, string | number>) => string;
+  },
+) {
+  const t = options.t;
+  const selectionByRow = new Map(rows.map((row) => [row.key, { selected: row.selected, touched: row.touchedSelection ?? false }]));
+  const rebuilt = rows.map((row) => {
+    const errors: string[] = [];
+    if (!row.name.trim()) errors.push(requiredFieldError("name", t));
+    if (row.target === "institution" && !row.institutionType) errors.push(requiredFieldError("institutionType", t));
+    if ((row.sheetType === "object" || row.sheetType === "counterparty") && !row.counterpartyType) {
+      errors.push(requiredFieldError("counterpartyType", t));
+    }
+    if (row.target === "category" && !row.categoryType) errors.push(requiredFieldError("categoryType", t));
+    if (row.target === "tag" && row.color && !parseImportTagColor(row.color)) errors.push(t("settings.accounts.import.invalidEnum"));
+
+    if (row.target === "account") {
+      if (row.sheetType === "funding" && !row.kind) errors.push(t("settings.accounts.import.kindRequired"));
+      if (row.sheetType === "investment" && !row.investProductType) errors.push(t("settings.accounts.import.investProductTypeRequired"));
+      if (row.sheetType === "fixedAsset" && !row.fixedAssetType) errors.push(requiredFieldError("fixedAssetType", t));
+      if (row.kind === "bank_credit" && !row.creditBillMode) errors.push(requiredFieldError("creditBillMode", t));
+
+      if (row.billingDay) {
+        const day = Number(parseImportNumber(row.billingDay));
+        if (!Number.isInteger(day) || day < 1 || day > 31) errors.push(t("settings.accounts.import.billingDayInvalid"));
+      }
+      if (row.repaymentDay) {
+        const day = Number(parseImportNumber(row.repaymentDay));
+        if (!Number.isInteger(day) || day < 1 || day > 31) errors.push(t("settings.accounts.import.repaymentDayInvalid"));
+      }
+      if (row.creditLimit && !parseImportNumber(row.creditLimit)) errors.push(t("settings.accounts.import.creditLimitInvalid"));
+      if (row.fundUnitsDecimals && !parseImportNumber(row.fundUnitsDecimals)) errors.push(t("settings.accounts.import.unitDecimalsInvalid"));
+      if (row.initialBalance && !parseImportNumber(row.initialBalance)) errors.push(t("settings.accounts.import.balanceInvalid"));
+      if (row.initialBalance && !parseImportDate(row.initialBalanceDate)) errors.push(t("settings.accounts.import.balanceDateInvalid"));
+      if (row.initialBalanceDate && !parseImportDate(row.initialBalanceDate)) errors.push(t("settings.accounts.import.dateInvalid"));
+    }
+
+    return { ...row, errors };
+  });
+  const duplicateChecked = validateDuplicateNames(rebuilt, options);
+  const validated = validateReferences(duplicateChecked, options);
+  return validated.map((row) => {
+    const preference = selectionByRow.get(row.key);
+    if (preference?.touched) return { ...row, selected: preference.selected };
+    return row;
+  });
+}
+
+type PreviewTableProps = {
+  rows: ImportAccountRow[];
+  columns: AccountBatchImportField[];
+  importing: boolean;
+  selectedKeys: Set<string>;
+  batchReplaceFields: BatchReplaceFieldConfig<AccountBatchImportField>[];
+  batchTargetCount: number;
+  resetKey: string;
+  t: Translate;
+  onSelectionChange: (keys: Set<string>) => void;
+  onEditField: (key: string, field: AccountBatchImportField, raw: string) => void;
+  onBatchEdit: (field: AccountBatchImportField, raw: string) => string | void;
+};
+
+const CELL_INPUT_CLASS = "h-7 w-full min-w-0 rounded-md border border-blue-200 bg-white px-2 text-xs text-slate-800 outline-none focus:border-blue-500";
+const CELL_SELECT_CLASS = "h-7 w-full min-w-0 rounded-md border border-blue-200 bg-white px-1.5 text-xs text-slate-800 outline-none focus:border-blue-500";
+const NUMERIC_IMPORT_FIELDS = new Set<AccountBatchImportField>(["billingDay", "repaymentDay", "creditLimit", "fundUnitsDecimals", "initialBalance"]);
+const DATE_IMPORT_FIELDS = new Set<AccountBatchImportField>(["initialBalanceDate"]);
+const CLEARABLE_BATCH_FIELDS = new Set<AccountBatchImportField>([
+  "shortName",
+  "color",
+  "institution",
+  "counterparty",
+  "owner",
+  "currency",
+  "numberMasked",
+  "billingDay",
+  "repaymentDay",
+  "creditLimit",
+  "fundUnitsDecimals",
+  "costBasisMethod",
+  "tradingCalendar",
+  "initialBalance",
+  "initialBalanceDate",
+  "parentCategory",
+  "note",
+]);
+
+function stopCellEvent(event: ReactMouseEvent<HTMLElement>) {
+  event.stopPropagation();
+}
+
+function selectOptionsForRowField(row: ImportAccountRow, field: AccountBatchImportField) {
+  if (field === "counterpartyType" && row.sheetType === "counterparty") return COUNTERPARTY_TYPE_OPTIONS;
+  return FIELD_SELECT_OPTIONS[field];
+}
+
+function selectOptionsForBatchField(field: AccountBatchImportField, rows: ImportAccountRow[]) {
+  if (field === "counterpartyType" && rows.length > 0 && rows.every((row) => row.sheetType === "counterparty")) {
+    return COUNTERPARTY_TYPE_OPTIONS;
+  }
+  return FIELD_SELECT_OPTIONS[field];
+}
+
+function batchSelectOptions(options: AccountImportOption[] | undefined, t: Translate, allowEmpty: boolean) {
+  const mapped = (options ?? []).map((option) => ({ value: option.value, label: t(option.labelKey) }));
+  return allowEmpty ? [{ value: "", label: t("batchImport.emptyValue") }, ...mapped] : mapped;
+}
+
+function buildBatchReplaceFields(
+  fields: AccountBatchImportField[],
+  candidateRows: ImportAccountRow[],
+  t: Translate,
+): BatchReplaceFieldConfig<AccountBatchImportField>[] {
+  return fields
+    .filter((field) => candidateRows.some((row) => isRowFieldEditable(row, field)))
+    .map((field) => {
+      const allowEmpty = CLEARABLE_BATCH_FIELDS.has(field);
+      const selectOptions = selectOptionsForBatchField(field, candidateRows);
+      return {
+        value: field,
+        label: HEADER_LABELS[field](t),
+        kind: selectOptions ? "select" : DATE_IMPORT_FIELDS.has(field) ? "date" : NUMERIC_IMPORT_FIELDS.has(field) ? "number" : "text",
+        options: selectOptions ? batchSelectOptions(selectOptions, t, allowEmpty) : undefined,
+        allowEmpty,
+        precision: field === "billingDay" || field === "repaymentDay" || field === "fundUnitsDecimals" ? 0 : 2,
+        placeholder: DATE_IMPORT_FIELDS.has(field)
+          ? "YYYY-MM-DD"
+          : NUMERIC_IMPORT_FIELDS.has(field)
+            ? t("batchImport.numberExpressionPlaceholder")
+            : undefined,
+      };
+    });
+}
+
+function PreviewTable({
+  rows,
+  columns,
+  importing,
+  selectedKeys,
+  batchReplaceFields,
+  batchTargetCount,
+  resetKey,
+  t,
+  onSelectionChange,
+  onEditField,
+  onBatchEdit,
+}: PreviewTableProps) {
+  const [editingCell, setEditingCell] = useState<{ rowKey: string; field: AccountBatchImportField } | null>(null);
+  const minWidth = Math.min(1600, Math.max(760, 160 + columns.length * 140));
+
+  function beginEdit(row: ImportAccountRow, field: AccountBatchImportField) {
+    if (importing || !isRowFieldEditable(row, field)) return;
+    setEditingCell({ rowKey: row.key, field });
+  }
+
+  function renderDisplayCell(row: ImportAccountRow, field: AccountBatchImportField, display: string, title: string) {
+    const editable = isRowFieldEditable(row, field);
+    const color = field === "color" ? row.color : "";
+    return (
+      <span
+        data-row-double-click-ignore
+        className={`flex min-h-5 w-full min-w-0 items-center gap-1.5 rounded px-1 py-0.5 ${editable ? "cursor-pointer hover:bg-slate-100" : "text-slate-500"}`}
+        title={editable ? title : display}
+        onMouseDown={stopCellEvent}
+        onClick={stopCellEvent}
+        onDoubleClick={(event) => {
+          event.stopPropagation();
+          beginEdit(row, field);
+        }}
+      >
+        {color ? <span className="h-3 w-3 shrink-0 rounded-full border border-white shadow-sm" style={{ backgroundColor: color }} aria-hidden="true" /> : null}
+        <span className="min-w-0 truncate">{display || "-"}</span>
+      </span>
+    );
+  }
+
+  function renderCell(row: ImportAccountRow, field: AccountBatchImportField) {
+    const value = rowFieldValue(row, field);
+    const display = rowFieldDisplay(row, field, t);
+    const editTitle = t("statementImportPreview.doubleClickEdit", { field: HEADER_LABELS[field](t) });
+    if (editingCell?.rowKey === row.key && editingCell.field === field && isRowFieldEditable(row, field)) {
+      const selectOptions = selectOptionsForRowField(row, field);
+      if (selectOptions) {
+        const known = selectOptions.some((option) => option.value === value);
+        return (
+          <select
+            data-row-double-click-ignore
+            value={value}
+            autoFocus
+            onMouseDown={stopCellEvent}
+            onClick={stopCellEvent}
+            onDoubleClick={stopCellEvent}
+            onChange={(event) => {
+              onEditField(row.key, field, event.target.value);
+              setEditingCell(null);
+            }}
+            onBlur={() => setEditingCell(null)}
+            className={CELL_SELECT_CLASS}
+            disabled={importing}
+          >
+            <option value="">{t("batchImport.emptyValue")}</option>
+            {!known && value ? <option value={value}>{display}</option> : null}
+            {selectOptions.map((option) => (
+              <option key={option.value} value={option.value}>{t(option.labelKey)}</option>
+            ))}
+          </select>
+        );
+      }
+      return (
+        <input
+          data-row-double-click-ignore
+          type="text"
+          value={value}
+          autoFocus
+          onMouseDown={stopCellEvent}
+          onClick={stopCellEvent}
+          onDoubleClick={stopCellEvent}
+          onFocus={(event) => event.currentTarget.select()}
+          onChange={(event) => onEditField(row.key, field, event.target.value)}
+          onBlur={() => setEditingCell(null)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === "Escape") setEditingCell(null);
+          }}
+          className={CELL_INPUT_CLASS}
+          placeholder={DATE_IMPORT_FIELDS.has(field) ? "YYYY-MM-DD" : undefined}
+          disabled={importing}
+        />
+      );
+    }
+    return renderDisplayCell(row, field, display, editTitle);
+  }
+
+  const tableColumns: AdvancedDataTableColumn<ImportAccountRow>[] = [
+    {
+      key: "sourceRow",
+      label: "#",
+      width: 56,
+      minWidth: 48,
+      align: "right",
+      filterKind: "numberRange",
+      filterText: (row) => String(row.sourceRow),
+      filterNumber: (row) => row.sourceRow,
+      sortValue: (row) => row.sourceRow,
+      render: (row) => <span className="tabular-nums text-slate-500">{row.sourceRow}</span>,
+    },
+    ...columns.map((field): AdvancedDataTableColumn<ImportAccountRow> => {
+      const isNumeric = NUMERIC_IMPORT_FIELDS.has(field);
+      const isDate = DATE_IMPORT_FIELDS.has(field);
+      const isSelect = Boolean(FIELD_SELECT_OPTIONS[field]);
+      return {
+        key: field,
+        label: HEADER_LABELS[field](t),
+        width: Math.max(FIELD_COLUMN_MIN_WIDTH[field] ?? 120, 96),
+        minWidth: Math.min(Math.max(FIELD_COLUMN_MIN_WIDTH[field] ?? 120, 88), 180),
+        align: isNumeric ? "right" : "left",
+        filterKind: isDate ? "dateRange" : isNumeric ? "numberRange" : isSelect ? "multi" : "text",
+        filterText: (row) => rowFieldDisplay(row, field, t) || t("batchImport.emptyValue"),
+        filterNumber: isNumeric ? (row) => {
+          const parsed = Number(parseImportNumber(rowFieldValue(row, field)));
+          return Number.isFinite(parsed) ? parsed : null;
+        } : undefined,
+        sortValue: (row) => {
+          if (isNumeric) {
+            const parsed = Number(parseImportNumber(rowFieldValue(row, field)));
+            return Number.isFinite(parsed) ? parsed : null;
+          }
+          return rowFieldDisplay(row, field, t) || "";
+        },
+        truncate: false,
+        cellTitle: (row) => rowFieldDisplay(row, field, t),
+        render: (row) => renderCell(row, field),
+      };
+    }),
+    {
+      key: "status",
+      label: t("settings.accounts.import.notes"),
+      width: 220,
+      minWidth: 160,
+      filterKind: "text",
+      filterText: (row) => row.errors.length > 0 ? row.errors.join(" / ") : t("batchImport.emptyValue"),
+      render: (row) => row.errors.length > 0 ? (
+        <span className="block truncate text-red-600" title={row.errors.join(" / ")}>{row.errors.join(" / ")}</span>
+      ) : (
+        <span className="text-slate-400">-</span>
+      ),
+    },
+  ];
+
+  return (
+    <AdvancedDataTable
+      storageKey={`mmh_basic_data_import_preview_table_v1:${resetKey}`}
+      columns={tableColumns}
+      rows={rows}
+      rowKey={(row) => row.key}
+      emptyText={t("settings.accounts.import.noPreview")}
+      minTableWidth={minWidth}
+      selectable
+      selectAllScope="renderedRows"
+      selectedKeys={selectedKeys}
+      onSelectionChange={(keys) => {
+        if (importing) return;
+        onSelectionChange(keys);
+      }}
+      batchActionSlot={(
+        <BatchReplacePopoverButton
+          fields={batchReplaceFields}
+          targetCount={batchTargetCount}
+          targetLabel={t("batchImport.selectedTargetLabel")}
+          disabledTitle={t("statementImportPreview.selectRowsFirst")}
+          buttonTitle={t("statementImportPreview.batchEditSelected", { count: batchTargetCount })}
+          panelAlign="left"
+          messageClassName="sr-only"
+          onApply={onBatchEdit}
+        />
+      )}
+      toolbarTitle={t("settings.accounts.import.previewTitle")}
+      toolbarRightContent={<span className="text-xs text-slate-500">{t("settings.accounts.import.selectedCount", { selected: selectedKeys.size, total: rows.length })}</span>}
+      rowClassName={(row) => row.errors.length > 0 ? "bg-red-50/60 hover:bg-red-100" : row.selected ? "bg-blue-50/40 hover:bg-blue-100" : "bg-white hover:bg-slate-50"}
+      onRowDoubleClick={(row) => {
+        const firstEditableField = columns.find((field) => isRowFieldEditable(row, field));
+        if (firstEditableField) beginEdit(row, firstEditableField);
+      }}
+      fillHeight
+      compactRows
+      resetKey={resetKey}
+      resetDisplayStateOnMount
+    />
+  );
+}
+
 async function fetchCategories(): Promise<ExistingCategory[]> {
   const response = await fetch("/api/v1/category", { cache: "no-store" });
   const data = await response.json().catch(() => null) as { ok?: boolean; categories?: ExistingCategory[] } | null;
@@ -949,7 +1604,7 @@ function buildAccountImportRows(
         : [];
       parsedRows.push(...(nextRows.length > 0 ? nextRows : parseSheetRows(sheetName, definition, sheetRows, t, options.baseCurrency)));
     }
-    return validateReferences(parsedRows, { ...options, t });
+    return validateReferences(validateDuplicateNames(parsedRows, { ...options, t }), { ...options, t });
   });
 }
 
@@ -1006,7 +1661,7 @@ function appendSheetGuideRows(
   const rows = [
     ...dataRows,
     [],
-    guideWideRow([t("settings.accounts.import.sheetGuideTitle")]),
+    guideWideRow([`${t("settings.accounts.import.sheetGuideTitle")}\n${t("settings.accounts.import.guideNoRepeatImport")}`]),
     guideWideRow([t("settings.accounts.import.guideField"), t("settings.accounts.import.guideValue"), t("settings.accounts.import.guideNote")]),
   ];
   for (const [field, allowedValues, note, options] of guideRows.filter(([field]) => fields.includes(field))) {
@@ -1077,9 +1732,13 @@ function appendStyledSheet(
     sheet[guideTitleCell].s = {
       font: { bold: true, color: { rgb: "1F2937" } },
       fill: { patternType: "solid", fgColor: { rgb: "DBEAFE" } },
-      alignment: { horizontal: "left", vertical: "center" },
+      alignment: { horizontal: "left", vertical: "center", wrapText: true },
     };
   }
+  // Merged cells do not auto-fit row height in Excel, so reserve space for the title plus note.
+  const guideRowHeights = sheet["!rows"] ?? [];
+  guideRowHeights[guideStartRow] = { hpt: GUIDE_TITLE_ROW_HEIGHT };
+  sheet["!rows"] = guideRowHeights;
   const guideHeaderRow = guideStartRow + 1;
   applyGuideMerges(sheet, guideStartRow, guideHeaderRow, allRows);
   for (let columnIndex = 0; columnIndex < GUIDE_COLUMN_COUNT; columnIndex += 1) {
@@ -1255,7 +1914,7 @@ function appendCategoryStyledSheet(
   const allRows = [
     ...dataRows,
     [],
-    guideWideRow([t("settings.accounts.import.sheetGuideTitle")]),
+    guideWideRow([`${t("settings.accounts.import.sheetGuideTitle")}\n${t("settings.accounts.import.guideNoRepeatImportCategory")}`]),
     guideWideRow([t("settings.accounts.import.guideField"), t("settings.accounts.import.guideValue"), t("settings.accounts.import.guideNote")]),
     ...guideDataRows,
   ];
@@ -1290,9 +1949,13 @@ function appendCategoryStyledSheet(
     sheet[guideTitleCell].s = {
       font: { bold: true, color: { rgb: "1F2937" } },
       fill: { patternType: "solid", fgColor: { rgb: "DBEAFE" } },
-      alignment: { horizontal: "left", vertical: "center" },
+      alignment: { horizontal: "left", vertical: "center", wrapText: true },
     };
   }
+  // Merged cells do not auto-fit row height in Excel, so reserve space for the title plus note.
+  const guideRowHeights = sheet["!rows"] ?? [];
+  guideRowHeights[guideStartRow] = { hpt: GUIDE_TITLE_ROW_HEIGHT };
+  sheet["!rows"] = guideRowHeights;
   const guideHeaderRow = guideStartRow + 1;
   applyGuideMerges(sheet, guideStartRow, guideHeaderRow, allRows);
   const requiredGuideLabels = new Set(guideRows.filter(([, , , required]) => required).map(([field]) => field));
@@ -1320,15 +1983,6 @@ function appendCategoryStyledSheet(
     }
   }
   XLSX.utils.book_append_sheet(workbook, sheet, sheetName);
-}
-
-function rowTargetLabel(row: ImportAccountRow, t: (key: string) => string) {
-  if (row.target === "institution") return t("settings.accounts.import.rowType.institution");
-  if (row.target === "counterparty") return t("settings.accounts.import.rowType.counterparty");
-  if (row.target === "familyMember") return t("settings.accounts.import.rowType.familyMember");
-  if (row.target === "category") return t("settings.accounts.import.rowType.category");
-  if (row.target === "tag") return t("settings.accounts.import.rowType.tag");
-  return t(`account.kind.${row.kind === "fixed_asset" ? "fixed_asset" : row.kind || "other"}`);
 }
 
 function displayCostBasisMethod(value: string, t: (key: string) => string) {
@@ -1367,36 +2021,120 @@ export function AccountBatchImportButton({
   const [rows, setRows] = useState<ImportAccountRow[]>([]);
   const [importing, setImporting] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
+  const [activeSheet, setActiveSheet] = useState("");
+  const [importCategories, setImportCategories] = useState<ExistingCategory[]>([]);
 
   const selectedRows = useMemo(() => rows.filter((row) => row.selected), [rows]);
-  const hasBlockingErrors = useMemo(() => rows.some((row) => row.selected && row.errors.length > 0), [rows]);
-  const validRowCount = useMemo(() => rows.filter((row) => row.errors.length === 0).length, [rows]);
 
-  function rowDetail(row: ImportAccountRow) {
-    const detailParts: string[] = [];
-    if (row.institutionType) detailParts.push(t(`institution.type.${row.institutionType}`));
-    if (row.counterpartyType) detailParts.push(t(`institution.type.${row.counterpartyType}`));
-    if (row.categoryType) detailParts.push(categoryTypeLabel(row.categoryType, t));
-    if (row.parentCategoryName) detailParts.push(`${t("settings.accounts.import.parentCategory")}: ${row.parentCategoryName}`);
-    if (row.color) detailParts.push(`${t("settings.tags.color")}: ${row.color}`);
-    if (row.institutionName) detailParts.push(row.institutionName);
-    if (row.counterpartyName) detailParts.push(row.counterpartyName);
-    if (row.ownerName) detailParts.push(row.ownerName);
-    if (row.investProductType) detailParts.push(t(`investment.product.${row.investProductType}`));
-    if (row.fixedAssetType) detailParts.push(t(`fixedAsset.type.${row.fixedAssetType}`));
-    if (row.numberMasked) detailParts.push(`${t("settings.accounts.lastFourLabel")}: ${row.numberMasked}`);
-    if (row.billingDay) detailParts.push(`${t("settings.accounts.billingDayLabel")}: ${row.billingDay}`);
-    if (row.repaymentDay) detailParts.push(`${t("settings.accounts.repaymentDayLabel")}: ${row.repaymentDay}`);
-    if (row.creditLimit) detailParts.push(`${t("settings.accounts.creditLimitLabel")}: ${row.creditLimit}`);
-    if (row.creditBillMode) detailParts.push(t(`entityForm.creditBillMode.${row.creditBillMode}`));
-    if (row.fundUnitsDecimals) detailParts.push(`${t("settings.accounts.fundUnitsDecimals")}: ${row.fundUnitsDecimals}`);
-    if (row.costBasisMethod) detailParts.push(displayCostBasisMethod(row.costBasisMethod, t));
-    if (row.tradingCalendar) detailParts.push(t(`tradingCalendar.${row.tradingCalendar}`));
-    if (row.initialBalance) detailParts.push(`${t("detail.column.balance")}: ${row.initialBalance}`);
-    if (row.initialBalanceDate) detailParts.push(`${t("settings.accounts.import.initialBalanceDate")}: ${row.initialBalanceDate}`);
-    if (row.shortName) detailParts.push(`${t("settings.accounts.import.shortName")}: ${row.shortName}`);
-    if (row.note) detailParts.push(row.note);
-    return detailParts.filter(Boolean).join(" · ");
+  const sheetOptions = useMemo(() => {
+    const names: string[] = [];
+    const seen = new Set<string>();
+    for (const row of rows) {
+      if (!seen.has(row.sheet)) {
+        seen.add(row.sheet);
+        names.push(row.sheet);
+      }
+    }
+    return names;
+  }, [rows]);
+
+  const sheetStats = useMemo(() => {
+    const stats = new Map<string, { total: number; errors: number; selected: number }>();
+    for (const row of rows) {
+      const stat = stats.get(row.sheet) ?? { total: 0, errors: 0, selected: 0 };
+      stat.total += 1;
+      if (row.errors.length > 0) stat.errors += 1;
+      if (row.selected) stat.selected += 1;
+      stats.set(row.sheet, stat);
+    }
+    return stats;
+  }, [rows]);
+
+  const activeSheetIndex = useMemo(
+    () => Math.max(0, sheetOptions.indexOf(activeSheet)),
+    [sheetOptions, activeSheet],
+  );
+  const isFirstSheet = activeSheetIndex <= 0;
+  const isLastSheet = activeSheetIndex >= sheetOptions.length - 1;
+  const activeSheetStats = activeSheet ? sheetStats.get(activeSheet) : undefined;
+  const activeSheetSelected = activeSheetStats?.selected ?? 0;
+  const selectedRowsWithErrors = useMemo(() => selectedRows.filter((row) => row.errors.length > 0), [selectedRows]);
+  const canGoNext = !isLastSheet;
+  const canImport = selectedRows.length > 0 && selectedRowsWithErrors.length === 0;
+
+  const visibleRows = useMemo(
+    () => rows.filter((row) => !activeSheet || row.sheet === activeSheet),
+    [rows, activeSheet],
+  );
+
+  const sheetColumns = useMemo(() => {
+    const fieldsBySheetName = new Map(IMPORT_SHEETS.map((definition) => [normalizeImportHeader(t(definition.sheetKey)), definition.fields]));
+    const columnsBySheet = new Map<string, AccountBatchImportField[]>();
+    for (const row of rows) {
+      if (columnsBySheet.has(row.sheet)) continue;
+      const fields = (fieldsBySheetName.get(normalizeImportHeader(row.sheet)) ?? []).filter((field) => field !== "sample");
+      columnsBySheet.set(row.sheet, fields);
+    }
+    return columnsBySheet;
+  }, [rows, t]);
+
+  const activeSheetColumns = useMemo(
+    () => sheetColumns.get(activeSheet) ?? sheetColumns.get(visibleRows[0]?.sheet ?? "") ?? [],
+    [activeSheet, sheetColumns, visibleRows],
+  );
+  const activeSelectedRows = useMemo(() => visibleRows.filter((row) => row.selected), [visibleRows]);
+  const visibleSelectedKeys = useMemo(() => new Set(activeSelectedRows.map((row) => row.key)), [activeSelectedRows]);
+  const activeBatchReplaceFields = useMemo(
+    () => buildBatchReplaceFields(activeSheetColumns, activeSelectedRows.length > 0 ? activeSelectedRows : visibleRows, t),
+    [activeSelectedRows, activeSheetColumns, t, visibleRows],
+  );
+
+  function updateRowField(key: string, field: AccountBatchImportField, raw: string) {
+    setRows((current) => {
+      const edited = current.map((row) => (row.key === key ? applyRowEdit(row, field, raw) : row));
+      return revalidateRows(edited, { groups, institutions, counterparties, categories: importCategories, t });
+    });
+  }
+
+  function updateVisibleSelection(keys: Set<string>) {
+    const visibleKeySet = new Set(visibleRows.map((row) => row.key));
+    setRows((current) => {
+      const edited = current.map((row) => (
+        visibleKeySet.has(row.key)
+          ? { ...row, selected: keys.has(row.key), touchedSelection: true }
+          : row
+      ));
+      return revalidateRows(edited, { groups, institutions, counterparties, categories: importCategories, t });
+    });
+  }
+
+  function applyBatchEdit(field: AccountBatchImportField, raw: string) {
+    const targetKeys = new Set(visibleRows.filter((row) => row.selected && isRowFieldEditable(row, field)).map((row) => row.key));
+    if (targetKeys.size === 0) throw new Error(t("statementImportPreview.selectRowsFirst"));
+    setRows((current) => {
+      const edited = current.map((row) => (targetKeys.has(row.key) ? applyRowEdit(row, field, raw) : row));
+      return revalidateRows(edited, { groups, institutions, counterparties, categories: importCategories, t });
+    });
+    return t("statementImportPreview.batchReplaceResult", {
+      count: targetKeys.size,
+      field: HEADER_LABELS[field](t),
+      invalidSuffix: "",
+    });
+  }
+
+  function goToSheet(index: number) {
+    if (index < 0 || index >= sheetOptions.length) return;
+    setActiveSheet(sheetOptions[index]);
+  }
+
+  function goNext() {
+    if (!canGoNext) return;
+    goToSheet(activeSheetIndex + 1);
+  }
+
+  function goPrev() {
+    if (isFirstSheet) return;
+    goToSheet(activeSheetIndex - 1);
   }
 
   function commonAccountGuideRows(): SheetGuideRow[] {
@@ -1463,11 +2201,17 @@ export function AccountBatchImportButton({
       ];
     }
     if (sheetType === "funding") {
+      const accountGuideRows = commonAccountGuideRows();
       return [
         ["name", t("settings.accounts.import.guideRequiredValue"), t("settings.accounts.import.guideAccountName")],
         ["kind", optionList(FUNDING_ACCOUNT_KIND_OPTIONS, t), t("settings.accounts.import.guideFundingSheet")],
         ["institution", t("settings.accounts.import.guideInstitutionNameValue"), t("settings.accounts.import.guideFundingInstitution")],
-        ...commonAccountGuideRows(),
+        ...accountGuideRows.filter(([field]) => field !== "sample"),
+        ["billingDay", "1-31", t("settings.accounts.import.guideCreditFields")],
+        ["repaymentDay", "1-31", t("settings.accounts.import.guideCreditFields")],
+        ["creditLimit", t("settings.accounts.import.guideNumberValue"), t("settings.accounts.import.guideCreditFields")],
+        ["creditBillMode", optionList(CREDIT_BILL_MODE_OPTIONS, t), t("settings.accounts.import.guideCreditBillMode")],
+        accountGuideRows.find(([field]) => field === "sample")!,
       ];
     }
     if (sheetType === "settlement") {
@@ -1535,11 +2279,10 @@ export function AccountBatchImportButton({
     const objectSheet = sheetByType.get("object")!;
     const fundingSheet = sheetByType.get("funding")!;
     const settlementSheet = sheetByType.get("settlement")!;
-    const creditSheet = sheetByType.get("credit")!;
     const investmentSheet = sheetByType.get("investment")!;
     const fixedAssetSheet = sheetByType.get("fixedAsset")!;
 
-    appendStyledSheet(XLSX, workbook, t("settings.accounts.import.sheet.institution"), institutionSheet.type, institutionSheet.fields, [
+    appendStyledSheet(XLSX, workbook, t(institutionSheet.sheetKey), institutionSheet.type, institutionSheet.fields, [
       { name: t("settings.accounts.importSampleBank"), institutionType: t("institution.type.bank"), shortName: t("settings.accounts.importSampleBankShort") },
       { name: t("settings.accounts.importSampleBankAlt"), institutionType: t("institution.type.bank"), shortName: t("settings.accounts.importSampleBankAltShort") },
       { name: t("settings.accounts.importSampleInsurance"), institutionType: t("institution.type.insurance"), shortName: t("settings.accounts.importSampleInsuranceShort") },
@@ -1550,7 +2293,7 @@ export function AccountBatchImportButton({
       { name: t("settings.accounts.importSampleDebtInstitution"), institutionType: t("institution.type.other"), shortName: t("settings.accounts.importSampleDebtInstitutionShort") },
       { name: t("settings.accounts.importSampleOtherInstitution"), institutionType: t("institution.type.other"), shortName: t("settings.accounts.importSampleOtherInstitutionShort") },
     ], guideRowsForSheet("institution"), t);
-    appendStyledSheet(XLSX, workbook, t("settings.accounts.import.sheet.object"), objectSheet.type, objectSheet.fields, [
+    appendStyledSheet(XLSX, workbook, t(objectSheet.sheetKey), objectSheet.type, objectSheet.fields, [
       { name: owner, counterpartyType: t("institution.type.family_member"), shortName: owner },
       { name: spouse, counterpartyType: t("institution.type.family_member"), shortName: spouse },
       { name: counterparty, counterpartyType: t("institution.type.person"), shortName: t("settings.accounts.importSampleCounterpartyShort") },
@@ -1564,21 +2307,14 @@ export function AccountBatchImportButton({
       { name: t("settings.accounts.importSampleTagOne"), color: "#F59E0B" },
       { name: t("settings.accounts.importSampleTagTwo"), color: "#14B8A6" },
     ], guideRowsForSheet("tag"), t, tagSwatches);
-    appendStyledSheet(XLSX, workbook, t("settings.accounts.import.sheet.funding"), fundingSheet.type, fundingSheet.fields, [
+    appendStyledSheet(XLSX, workbook, t(fundingSheet.sheetKey), fundingSheet.type, fundingSheet.fields, [
       { name: t("settings.accounts.importSampleCash"), kind: t("account.kind.cash"), owner, currency: baseCurrency },
       { name: t("settings.accounts.importSampleDebit"), kind: t("account.kind.bank_debit"), institution: bankInstitution, owner, currency: baseCurrency, numberMasked: "1234", note: t("settings.accounts.importSampleNote") },
       { name: t("settings.accounts.importSampleWallet"), kind: t("account.kind.ewallet"), institution: paymentInstitution, owner, currency: baseCurrency },
       { name: t("settings.accounts.importSampleLooseChange"), kind: t("account.kind.ewallet"), institution: ewalletInstitution, owner, currency: baseCurrency },
-    ], guideRowsForSheet("funding"), t);
-    appendStyledSheet(XLSX, workbook, t("settings.accounts.import.sheet.settlement"), settlementSheet.type, settlementSheet.fields, [
-      { name: t("settings.accounts.importSampleLoan"), counterparty, owner, currency: baseCurrency },
-      { name: t("settings.accounts.importSampleSettlementInstitution"), institution: debtInstitution, owner, currency: baseCurrency },
-      { name: t("settings.accounts.importSampleMmhTransferAccount"), counterparty: mmhCounterpartyShort, owner, currency: baseCurrency },
-      { name: t("settings.accounts.importSampleMmhSettlementAccount"), counterparty: mmhCounterpartyShort, owner, currency: baseCurrency },
-    ], guideRowsForSheet("settlement"), t);
-    appendStyledSheet(XLSX, workbook, t("settings.accounts.import.sheet.credit"), creditSheet.type, creditSheet.fields, [
       {
         name: t("settings.accounts.importSampleCredit"),
+        kind: t("account.kind.bank_credit"),
         institution: bankInstitution,
         owner,
         currency: baseCurrency,
@@ -1588,8 +2324,14 @@ export function AccountBatchImportButton({
         creditLimit: "50000",
         creditBillMode: t("entityForm.creditBillMode.separate"),
       },
-    ], guideRowsForSheet("credit"), t);
-    appendStyledSheet(XLSX, workbook, t("settings.accounts.import.sheet.investment"), investmentSheet.type, investmentSheet.fields, [
+    ], guideRowsForSheet("funding"), t);
+    appendStyledSheet(XLSX, workbook, t(settlementSheet.sheetKey), settlementSheet.type, settlementSheet.fields, [
+      { name: t("settings.accounts.importSampleLoan"), counterparty, owner, currency: baseCurrency },
+      { name: t("settings.accounts.importSampleSettlementInstitution"), institution: debtInstitution, owner, currency: baseCurrency },
+      { name: t("settings.accounts.importSampleMmhTransferAccount"), counterparty: mmhCounterpartyShort, owner, currency: baseCurrency },
+      { name: t("settings.accounts.importSampleMmhSettlementAccount"), counterparty: mmhCounterpartyShort, owner, currency: baseCurrency },
+    ], guideRowsForSheet("settlement"), t);
+    appendStyledSheet(XLSX, workbook, t(investmentSheet.sheetKey), investmentSheet.type, investmentSheet.fields, [
       {
         name: t("settings.accounts.importSampleFund"),
         investProductType: t("investment.product.fund"),
@@ -1604,7 +2346,7 @@ export function AccountBatchImportButton({
       { name: t("settings.accounts.importSampleMetal"), investProductType: t("investment.product.metal"), institution: bankInstitution, owner, currency: baseCurrency },
       { name: t("settings.accounts.importSampleStock"), investProductType: t("investment.product.stock"), institution: brokerageInstitution, owner, currency: baseCurrency, costBasisMethod: t("settings.accounts.movingAverage") },
     ], guideRowsForSheet("investment"), t);
-    appendStyledSheet(XLSX, workbook, t("settings.accounts.import.sheet.fixedAsset"), fixedAssetSheet.type, fixedAssetSheet.fields, [
+    appendStyledSheet(XLSX, workbook, t(fixedAssetSheet.sheetKey), fixedAssetSheet.type, fixedAssetSheet.fields, [
       { name: t("settings.accounts.importSampleFixedAsset"), fixedAssetType: t("fixedAsset.type.property"), owner, currency: baseCurrency },
       { name: t("settings.accounts.importSampleVehicle"), fixedAssetType: t("fixedAsset.type.vehicle"), owner, currency: baseCurrency },
       { name: t("settings.accounts.importSampleEquipment"), fixedAssetType: t("fixedAsset.type.equipment"), owner, currency: baseCurrency },
@@ -1623,15 +2365,19 @@ export function AccountBatchImportButton({
     try {
       const categories = await fetchCategories();
       const nextRows = await buildAccountImportRows(file, t, { groups, institutions, counterparties, categories, baseCurrency });
+      setImportCategories(categories);
       if (nextRows.length === 0) {
         setRows([]);
+        setActiveSheet("");
         setParseError(t("settings.accounts.import.noRows"));
       } else {
         setRows(nextRows);
+        setActiveSheet(nextRows[0]?.sheet ?? "");
       }
       setOpen(true);
     } catch (error) {
       setRows([]);
+      setActiveSheet("");
       setParseError(t("settings.accounts.import.readFailed", { reason: error instanceof Error ? error.message : String(error) }));
       setOpen(true);
     }
@@ -1648,7 +2394,20 @@ export function AccountBatchImportButton({
   }
 
   async function importSelected() {
-    if (importing || selectedRows.length === 0 || hasBlockingErrors) return;
+    if (importing || selectedRows.length === 0) return;
+    if (selectedRowsWithErrors.length > 0) {
+      setResult({
+        created: 0,
+        errors: selectedRowsWithErrors.map((row) => ({
+          key: row.key,
+          sheet: row.sheet,
+          sourceRow: row.sourceRow,
+          name: row.name,
+          message: row.errors.join(" / ") || t("settings.accounts.import.rowFailed"),
+        })),
+      });
+      return;
+    }
     setImporting(true);
     setResult(null);
     const created: ImportAccountRow[] = [];
@@ -1774,23 +2533,21 @@ export function AccountBatchImportButton({
     if (created.length > 0) onImported();
   }
 
-  function toggleRow(key: string) {
-    setRows((current) => current.map((row) => row.key === key ? { ...row, selected: !row.selected } : row));
-  }
-
   function close() {
     if (importing) return;
     setOpen(false);
     setFileName("");
     setParseError("");
     setRows([]);
+    setActiveSheet("");
     setResult(null);
   }
 
   const dialog = open ? createPortal(
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/40 p-4" onMouseDown={close}>
       <div
-        className="flex max-h-[86vh] w-[980px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl"
+        data-batch-popover-boundary
+        className="flex h-[86vh] w-[1120px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl"
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
@@ -1819,60 +2576,93 @@ export function AccountBatchImportButton({
 
         {rows.length > 0 ? (
           <>
-            <div className="min-h-0 flex-1 overflow-auto">
-              <table className="w-full min-w-[980px] border-collapse text-left text-xs">
-                <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600">
-                  <tr>
-                    <th className="w-10 border-b border-slate-200 px-3 py-2 text-center">
-                      <input
-                        type="checkbox"
-                        checked={validRowCount > 0 && rows.filter((row) => row.errors.length === 0).every((row) => row.selected)}
-                        onChange={(event) => {
-                          const checked = event.target.checked;
-                          setRows((current) => current.map((row) => row.errors.length === 0 ? { ...row, selected: checked } : row));
-                        }}
-                        disabled={validRowCount === 0 || importing}
-                      />
-                    </th>
-                    <th className="border-b border-slate-200 px-3 py-2">{t("settings.accounts.import.sourceSheet")}</th>
-                    <th className="border-b border-slate-200 px-3 py-2">{t("settings.accounts.import.sourceRow")}</th>
-                    <th className="border-b border-slate-200 px-3 py-2">{t("settings.accounts.type")}</th>
-                    <th className="border-b border-slate-200 px-3 py-2">{t("settings.accounts.name")}</th>
-                    <th className="border-b border-slate-200 px-3 py-2">{t("settings.accounts.import.previewDetails")}</th>
-                    <th className="border-b border-slate-200 px-3 py-2">{t("settings.accounts.import.notes")}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {rows.map((row) => (
-                    <tr key={row.key} className={row.errors.length > 0 ? "bg-red-50/70" : row.selected ? "bg-blue-50/50" : "opacity-60"}>
-                      <td className="px-3 py-2 text-center">
-                        <input type="checkbox" checked={row.selected} disabled={row.errors.length > 0} onChange={() => toggleRow(row.key)} />
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-2 text-slate-600">{row.sheet}</td>
-                      <td className="whitespace-nowrap px-3 py-2 text-slate-500">{row.sourceRow}</td>
-                      <td className="whitespace-nowrap px-3 py-2">{rowTargetLabel(row, t)}</td>
-                      <td className="px-3 py-2 font-medium text-slate-800">{row.name}</td>
-                      <td className="px-3 py-2 text-slate-600">{rowDetail(row)}</td>
-                      <td className="px-3 py-2">
-                        {row.errors.length > 0 ? <span className="text-red-600">{row.errors.join(" / ")}</span> : <span className="text-slate-500">{row.note}</span>}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            {sheetOptions.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-200 px-3 py-2">
+                {sheetOptions.map((sheetName) => {
+                  const stat = sheetStats.get(sheetName);
+                  const isActive = sheetName === activeSheet;
+                  const errors = stat?.errors ?? 0;
+                  const total = stat?.total ?? 0;
+                  const selected = stat?.selected ?? 0;
+                  return (
+                    <button
+                      key={sheetName}
+                      type="button"
+                      onClick={() => setActiveSheet(sheetName)}
+                      title={errors > 0 ? t("settings.accounts.import.sheetErrorCount", { count: errors }) : undefined}
+                      className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors ${
+                        isActive ? "border-blue-600 bg-blue-600 text-white" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-100"
+                      }`}
+                    >
+                      {sheetName}
+                      {errors > 0 ? (
+                        <span className={`inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-medium ${isActive ? "bg-white text-red-600" : "bg-red-600 text-white"}`}>
+                          {errors}
+                        </span>
+                      ) : (
+                        <span className={`inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none ${isActive ? "bg-white/25 text-white" : "bg-slate-100 text-slate-500"}`}>
+                          {total > 0 && selected > 0 && selected < total ? `${selected}/${total}` : total}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <div className="min-h-0 flex-1">
+              <PreviewTable
+                rows={visibleRows}
+                columns={activeSheetColumns}
+                importing={importing}
+                selectedKeys={visibleSelectedKeys}
+                batchReplaceFields={activeBatchReplaceFields}
+                batchTargetCount={activeSelectedRows.length}
+                resetKey={`${normalizeImportHeader(activeSheet || visibleRows[0]?.sheet || "preview")}:${activeSheetColumns.join("|")}`}
+                t={t}
+                onSelectionChange={updateVisibleSelection}
+                onEditField={updateRowField}
+                onBatchEdit={applyBatchEdit}
+              />
             </div>
             <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3">
-              <div className="text-xs text-slate-500">
-                {t("settings.accounts.import.selectedCount", { selected: selectedRows.length, total: rows.length })}
+              <div className="flex items-center gap-2 text-xs text-slate-500">
+                <span className="font-medium text-slate-700">
+                  {t("settings.accounts.import.stepProgress", { current: activeSheetIndex + 1, total: sheetOptions.length })}
+                </span>
+                <span aria-hidden>·</span>
+                <span>{activeSheet}</span>
+                <span aria-hidden>·</span>
+                <span>{t("settings.accounts.import.selectedCount", { selected: activeSheetSelected, total: activeSheetStats?.total ?? 0 })}</span>
               </div>
-              <button
-                type="button"
-                onClick={importSelected}
-                disabled={importing || selectedRows.length === 0 || hasBlockingErrors}
-                className="h-9 rounded-md bg-blue-600 px-4 text-xs font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {importing ? t("batchImport.importing") : t("settings.accounts.import.confirmImport")}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={goPrev}
+                  disabled={isFirstSheet || importing}
+                  className="h-9 rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {t("settings.accounts.import.prevSheet")}
+                </button>
+                {!isLastSheet ? (
+                  <button
+                    type="button"
+                    onClick={goNext}
+                    disabled={!canGoNext || importing}
+                    className="h-9 rounded-md bg-blue-600 px-4 text-xs font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {t("settings.accounts.import.nextSheet")}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={importSelected}
+                    disabled={!canImport || importing}
+                    className="h-9 rounded-md bg-blue-600 px-4 text-xs font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {importing ? t("batchImport.importing") : t("settings.accounts.import.confirmImport")}
+                  </button>
+                )}
+              </div>
             </div>
           </>
         ) : (

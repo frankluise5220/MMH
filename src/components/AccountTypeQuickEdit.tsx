@@ -7,7 +7,7 @@ import { useI18n } from "@/lib/i18n";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
 import { fetchSettingsAccountData, notifySettingsDataChanged } from "@/lib/client/settingsCache";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
-import { CURRENCY_OPTIONS, normalizeCurrency } from "@/lib/currency";
+import { normalizeCurrency } from "@/lib/currency";
 import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
 import { isDepositAccount } from "@/lib/account-kind-utils";
 import {
@@ -18,6 +18,7 @@ import {
   isStockInvestmentAccount,
 } from "@/lib/account-institution-rules";
 import { FIXED_ASSET_TYPES, isFixedAssetAccountLike } from "@/lib/fixed-asset";
+import { CurrencySmartSelect } from "@/components/CurrencySmartSelect";
 
 type AccountKindValue = "cash" | "bank_debit" | "bank_credit" | "ewallet" | "deposit" | "investment" | "fixed_asset" | "loan" | "other";
 type Institution = { id: string; name: string; shortName?: string | null; type?: string | null };
@@ -135,6 +136,8 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
   const setField = (key: string, value: string) => setForm((current) => ({ ...current, [key]: value }));
   const inputClass = "h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-100 disabled:bg-slate-100 disabled:text-slate-400";
 
+  const currentCurrency = normalizeCurrency(form.currency || "CNY");
+
   return (
     <>
       {showTrigger ? (
@@ -150,7 +153,13 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
               {isFixedAssetAccount && <Field label={t("fixedAssetEdit.assetType")}><select value={form.fixedAssetType || "property"} onChange={(event) => setField("fixedAssetType", event.target.value)} className={inputClass}>{FIXED_ASSET_TYPES.map((value) => <option key={value} value={value}>{t(`fixedAsset.type.${value}`)}</option>)}</select></Field>}
               <Field label={t("settings.accounts.owner")}><select value={form.groupId ?? ""} onChange={(event) => setField("groupId", event.target.value)} className={inputClass}><option value="">{t("settings.accounts.selectOwner")}</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></Field>
               {supportsInstitution && !isFixedAssetAccount && <Field label={t("settings.accounts.institution")}><select value={form.institutionId ?? ""} onChange={(event) => setField("institutionId", event.target.value)} className={inputClass}><option value="">{t("settings.accounts.selectInstitution")}</option>{filteredInstitutions.map((institution) => <option key={institution.id} value={institution.id}>{institution.shortName?.trim() || institution.name}</option>)}</select></Field>}
-              <Field label={t("settings.accounts.currency")}><select value={normalizeCurrency(form.currency || "CNY")} onChange={(event) => setField("currency", event.target.value)} className={inputClass}>{CURRENCY_OPTIONS.map((option) => <option key={option.value} value={option.value}>{t(`entityForm.currency.${option.value.toLowerCase()}`)}</option>)}</select></Field>
+              <Field label={t("settings.accounts.currency")}>
+                <CurrencySmartSelect
+                  value={currentCurrency}
+                  onChange={(val) => setField("currency", val)}
+                  labelSystem={(code) => t(`entityForm.currency.${code.toLowerCase()}`, { defaultValue: code })}
+                />
+              </Field>
               {isInvestment && !isFixedAssetAccount && <Field label={t("settings.accounts.investmentAccountType")}><select value={productType} onChange={(event) => setField("investProductType", event.target.value)} className={inputClass}>{PRODUCT_TYPES.map((value) => <option key={value} value={value}>{t(`investment.product.${value}`)}</option>)}</select></Field>}
               {showCostBasis && <Field label={t("settings.accounts.costBasisMethod")}><select value={form.costBasisMethod || "moving_avg"} onChange={(event) => setField("costBasisMethod", event.target.value)} className={inputClass}><option value="moving_avg">{t("settings.accounts.movingAverage")}</option><option value="fifo">{t("settings.accounts.fifo")}</option><option value="lifo">{t("settings.accounts.lifo")}</option></select></Field>}
               {isInvestment && productType === "fund" && <Field label={t("settings.accounts.fundUnitsDecimals")}><input value={form.fundUnitsDecimals ?? "2"} onChange={(event) => setField("fundUnitsDecimals", event.target.value)} className={inputClass} inputMode="numeric" /></Field>}

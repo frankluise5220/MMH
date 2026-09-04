@@ -460,7 +460,6 @@ export function StockTransactionFormModal({
     surcharge: false,
     transferFee: false,
   });
-
   const [action, setAction] = useState<StockModalAction>("buy");
   const [dividendMode, setDividendMode] = useState<StockDividendMode>("cash");
   const [shareChangeAction, setShareChangeAction] = useState<Extract<StockTransactionAction, "bonus_share" | "split_share" | "merge_share">>("bonus_share");
@@ -482,12 +481,35 @@ export function StockTransactionFormModal({
   const [feeEstimateError, setFeeEstimateError] = useState("");
   const [feeEstimateStatus, setFeeEstimateStatus] = useState("");
   const [feeDraft, setFeeDraft] = useState<FeeDraftState>(EMPTY_FEE_DRAFT);
+  // 用户手动输入的费用小计（空表示未手动覆盖，沿用 4 项费用之和）
+  const [feeSubtotalOverride, setFeeSubtotalOverride] = useState("");
+  const [feeSubtotalManual, setFeeSubtotalManual] = useState(false);
+  // 用户手动输入的金额合计（空表示未手动覆盖，沿用 gross ± fee）
+  const [amountTotalOverride, setAmountTotalOverride] = useState("");
+  const [amountTotalManual, setAmountTotalManual] = useState(false);
   const [pendingAttachmentFiles, setPendingAttachmentFiles] = useState<File[]>([]);
   const [attachmentEntryId, setAttachmentEntryId] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
   const submitModeRef = useRef<SubmitMode>("close");
+
+  const feeDraftStampTax = parseFeeDraftValue(feeDraft.stampTax);
+  const feeDraftCommission = parseFeeDraftValue(feeDraft.commission);
+  const feeDraftSurcharge = parseFeeDraftValue(feeDraft.surcharge);
+  const feeDraftTransferFee = parseFeeDraftValue(feeDraft.transferFee);
+  const feeResolvedStampTax = feeDraftStampTax ?? feeEstimate?.fees?.stampTax ?? undefined;
+  const feeResolvedCommission = feeDraftCommission ?? feeEstimate?.fees?.commission ?? undefined;
+  const feeResolvedSurcharge = feeDraftSurcharge ?? (feeEstimate
+    ? sumFeeValues([
+        feeEstimate.fees?.exchangeFee,
+        feeEstimate.fees?.regulatoryFee,
+        feeEstimate.fees?.otherFee,
+        feeEstimate.fees?.fee,
+      ])
+    : undefined);
+  const feeResolvedTransferFee = feeDraftTransferFee ?? feeEstimate?.fees?.transferFee ?? undefined;
+  const feeDraftTotal = sumFeeValues([feeResolvedStampTax, feeResolvedCommission, feeResolvedSurcharge, feeResolvedTransferFee]);
 
   const resetFeeDraft = useCallback(() => {
     feeManualOverrideRef.current = {
@@ -496,6 +518,11 @@ export function StockTransactionFormModal({
       surcharge: false,
       transferFee: false,
     };
+    setFeeSubtotalManual(false);
+    setAmountTotalManual(false);
+    setAmountTotalManual(false);
+    setFeeSubtotalOverride("");
+    setAmountTotalOverride("");
     setFeeDraft({ ...EMPTY_FEE_DRAFT });
     setPendingAttachmentFiles([]);
     setAttachmentEntryId(null);
@@ -504,6 +531,54 @@ export function StockTransactionFormModal({
   const updateFeeDraft = useCallback((key: FeeDraftKey, value: string) => {
     feeManualOverrideRef.current[key] = value.trim().length > 0;
     setFeeDraft((prev) => ({ ...prev, [key]: value }));
+    // 逐项费用变化 → 清除费用小计与金额合计的手动覆盖，回到自动链
+    setFeeSubtotalManual(false);
+    setFeeSubtotalOverride("");
+    setAmountTotalManual(false);
+    setAmountTotalOverride("");
+  }, []);
+
+  // 手动改费用小计：标记覆盖并清除金额合计覆盖，令金额合计重新按 gross ± fee 计算
+  const updateFeeSubtotal = useCallback((value: string) => {
+    setFeeSubtotalManual(value.trim().length > 0);
+    setFeeSubtotalOverride(value);
+    setAmountTotalManual(false);
+    setAmountTotalOverride("");
+  }, []);
+
+  // 手动改金额合计：(金额合计 ∓ 费用小计) / 数量 反推成交价格
+  // 购入: amountTotal = gross + fee → gross = amountTotal - fee → price = gross / quantity
+  // 赎回: amountTotal = gross - fee → gross = amountTotal + fee → price = gross / quantity
+  const updateAmountTotal = useCallback((value: string) => {
+    const hasValue = value.trim().length > 0;
+    setAmountTotalManual(hasValue);
+    setAmountTotalOverride(value);
+    if (!hasValue) return;
+    const num = Number(value);
+    if (!Number.isFinite(num) || num < 0) return;
+    const qty = parseNumber(quantity);
+    if (qty <= 0) return;
+    // 当前费用小计：用户手动值优先，否则取 4 项费用之和
+    const effectiveFee = feeSubtotalManual ? parseNumber(feeSubtotalOverride) : feeDraftTotal;
+    const gross = action === "sell" ? num + effectiveFee : num - effectiveFee;
+    if (gross < 0) return;
+    const backPrice = gross / qty;
+    if (!Number.isFinite(backPrice) || backPrice < 0) return;
+    setPrice(backPrice.toFixed(4).replace(/\.?0+$/, ""));
+  }, [action, feeDraftTotal, feeSubtotalManual, feeSubtotalOverride, quantity]);
+
+  // 数量变化 → 清除金额合计手动覆盖，回到 gross ± fee 自动驱动
+  const updateQuantity = useCallback((value: string) => {
+    setQuantity(value);
+    setAmountTotalManual(false);
+    setAmountTotalOverride("");
+  }, []);
+
+  // 成交价格变化 → 清除金额合计手动覆盖，回到 gross ± fee 自动驱动
+  const updatePrice = useCallback((value: string) => {
+    setPrice(value);
+    setAmountTotalManual(false);
+    setAmountTotalOverride("");
   }, []);
 
   useEffect(() => {
@@ -640,60 +715,50 @@ export function StockTransactionFormModal({
       estimateValue: feeEstimate?.fees?.transferFee ?? null,
     },
   ] as const;
-  const feeDraftStampTax = parseFeeDraftValue(feeDraft.stampTax);
-  const feeDraftCommission = parseFeeDraftValue(feeDraft.commission);
-  const feeDraftSurcharge = parseFeeDraftValue(feeDraft.surcharge);
-  const feeDraftTransferFee = parseFeeDraftValue(feeDraft.transferFee);
-  const feeResolvedStampTax = feeDraftStampTax ?? feeEstimate?.fees?.stampTax ?? undefined;
-  const feeResolvedCommission = feeDraftCommission ?? feeEstimate?.fees?.commission ?? undefined;
-  const feeResolvedSurcharge = feeDraftSurcharge ?? (feeEstimate
-    ? sumFeeValues([
-        feeEstimate.fees?.exchangeFee,
-        feeEstimate.fees?.regulatoryFee,
-        feeEstimate.fees?.otherFee,
-        feeEstimate.fees?.fee,
-      ])
-    : undefined);
-  const feeResolvedTransferFee = feeDraftTransferFee ?? feeEstimate?.fees?.transferFee ?? undefined;
-  const feeDraftTotal = sumFeeValues([feeResolvedStampTax, feeResolvedCommission, feeResolvedSurcharge, feeResolvedTransferFee]);
   const hasFeeDraftValue = FEE_DRAFT_KEYS.some((key) => feeDraft[key].trim().length > 0);
   const feeCardVisible = Boolean(feeEstimate || hasFeeDraftValue);
   const finalCashAmountLabel = action === "buy" ? t("stockTx.expectedPayable") : t("stockTx.expectedArrival");
+  // 有效费用小计：手动覆盖优先，其次 4 项费用之和
+  const effectiveFeeSubtotal = feeSubtotalManual
+    ? parseNumber(feeSubtotalOverride)
+    : feeDraftTotal;
+  // 有效金额合计：手动覆盖优先，其次 gross ± feeSubtotal
+  const effectiveAmountTotal = amountTotalManual
+    ? parseNumber(amountTotalOverride)
+    : action === "buy"
+      ? effectiveGrossAmount + effectiveFeeSubtotal
+      : Math.max(0, effectiveGrossAmount - effectiveFeeSubtotal);
+  // 计算框展示用纯数字（不带币种/千分位），空态返回空字符串
+  const plainMoney = (value: number) => (Number.isFinite(value) ? String(Number(value.toFixed(2))) : "");
   const feeBreakdownTitle = feeCardVisible
     ? [
         t("stockTx.feeBreakdownLine", { label: t("stockFee.feeType.stamp_tax"), value: formatMoney(feeResolvedStampTax ?? 0, displayCurrency) }),
         t("stockTx.feeBreakdownLine", { label: t("stockFee.feeType.commission"), value: formatMoney(feeResolvedCommission ?? 0, displayCurrency) }),
         t("stockTx.feeBreakdownLine", { label: t("stockTx.feeType.surcharge"), value: formatMoney(feeResolvedSurcharge ?? 0, displayCurrency) }),
         t("stockTx.feeBreakdownLine", { label: t("stockFee.feeType.transfer_fee"), value: formatMoney(feeResolvedTransferFee ?? 0, displayCurrency) }),
-        t("stockTx.feeBreakdownTotal", { amount: formatMoney(feeDraftTotal, displayCurrency) }),
+        t("stockTx.feeBreakdownTotal", { amount: formatMoney(effectiveFeeSubtotal, displayCurrency) }),
         t("stockTx.feeBreakdownFinal", {
           label: finalCashAmountLabel,
-          amount: formatMoney(
-            action === "buy"
-              ? effectiveGrossAmount + feeDraftTotal
-              : Math.max(0, effectiveGrossAmount - feeDraftTotal),
-            displayCurrency,
-          ),
+          amount: formatMoney(effectiveAmountTotal, displayCurrency),
         }),
       ].join("\n")
     : feeEstimateLoading
       ? t("stockTx.calculatingFees")
       : feeEstimateError || t("stockTx.feeAutoHint");
-  const feeTotalDisplay = feeEstimateLoading
-    ? t("stockTx.calculating")
-    : feeCardVisible
-      ? formatMoney(feeDraftTotal, displayCurrency)
-      : "-";
-  const finalCashAmountDisplay = feeEstimateLoading
-    ? t("stockTx.calculating")
-    : feeCardVisible
-      ? formatMoney(
-          action === "buy"
-            ? effectiveGrossAmount + feeDraftTotal
-            : Math.max(0, effectiveGrossAmount - feeDraftTotal),
-          displayCurrency,
-        )
-      : "-";
+  const feeTotalDisplay = feeSubtotalManual
+    ? feeSubtotalOverride
+    : feeEstimateLoading
+      ? ""
+      : feeCardVisible
+        ? plainMoney(feeDraftTotal)
+        : "";
+  const finalCashAmountDisplay = amountTotalManual
+    ? amountTotalOverride
+    : feeEstimateLoading
+      ? ""
+      : feeCardVisible
+        ? plainMoney(effectiveAmountTotal)
+        : "";
   const accountCreateFieldData = useMemo(() => {
     const accounts = mergeAccounts(localStockAccounts, localCashAccounts);
     const groups = new Map<string, { id: string; name: string }>();
@@ -1264,25 +1329,43 @@ export function StockTransactionFormModal({
       return;
     }
     const feeOverrides = isBuySell
-      ? feeManualOverrideRef.current.surcharge
-        ? {
-            fee: 0,
-            exchangeFee: 0,
-            regulatoryFee: 0,
-            otherFee: feeDraftSurcharge ?? 0,
-            commission: feeDraftCommission,
-            stampTax: feeDraftStampTax,
-            transferFee: feeDraftTransferFee,
-          }
-        : {
-            fee: feeEstimate?.fees?.fee ?? undefined,
-            exchangeFee: feeEstimate?.fees?.exchangeFee ?? undefined,
-            regulatoryFee: feeEstimate?.fees?.regulatoryFee ?? undefined,
-            otherFee: feeEstimate?.fees?.otherFee ?? undefined,
-            commission: feeDraftCommission ?? feeEstimate?.fees?.commission ?? undefined,
-            stampTax: feeDraftStampTax ?? feeEstimate?.fees?.stampTax ?? undefined,
-            transferFee: feeDraftTransferFee ?? feeEstimate?.fees?.transferFee ?? undefined,
-          }
+      ? feeSubtotalManual
+        ? (() => {
+            // 费用小计被手动覆盖：保留印花税/佣金/过户费，把差额收进 otherFee，使各项之和 = 手动费用小计
+            const manualTotal = parseNumber(feeSubtotalOverride);
+            const stamp = feeResolvedStampTax ?? 0;
+            const comm = feeResolvedCommission ?? 0;
+            const transfer = feeResolvedTransferFee ?? 0;
+            const other = Math.max(0, manualTotal - stamp - comm - transfer);
+            return {
+              fee: 0,
+              exchangeFee: 0,
+              regulatoryFee: 0,
+              otherFee: other,
+              commission: comm || undefined,
+              stampTax: stamp || undefined,
+              transferFee: transfer || undefined,
+            };
+          })()
+        : feeManualOverrideRef.current.surcharge
+          ? {
+              fee: 0,
+              exchangeFee: 0,
+              regulatoryFee: 0,
+              otherFee: feeDraftSurcharge ?? 0,
+              commission: feeDraftCommission,
+              stampTax: feeDraftStampTax,
+              transferFee: feeDraftTransferFee,
+            }
+          : {
+              fee: feeEstimate?.fees?.fee ?? undefined,
+              exchangeFee: feeEstimate?.fees?.exchangeFee ?? undefined,
+              regulatoryFee: feeEstimate?.fees?.regulatoryFee ?? undefined,
+              otherFee: feeEstimate?.fees?.otherFee ?? undefined,
+              commission: feeDraftCommission ?? feeEstimate?.fees?.commission ?? undefined,
+              stampTax: feeDraftStampTax ?? feeEstimate?.fees?.stampTax ?? undefined,
+              transferFee: feeDraftTransferFee ?? feeEstimate?.fees?.transferFee ?? undefined,
+            }
       : {};
     setSubmitting(true);
     try {
@@ -1497,13 +1580,13 @@ export function StockTransactionFormModal({
                 {isBuySell ? (
                   <div className="space-y-1">
                     <div className="form-label">{quantityFieldLabel}</div>
-                    <CalcInput value={quantity} onChange={setQuantity} placeholder={t("stockTx.quantityPlaceholder")} label={quantityFieldLabel} precision={4} />
+                    <CalcInput value={quantity} onChange={updateQuantity} placeholder={t("stockTx.quantityPlaceholder")} label={quantityFieldLabel} precision={4} />
                   </div>
                 ) : null}
                 {isBuySell ? (
                   <div className="space-y-1">
                     <div className="form-label">{t("stockTx.priceLabel")}</div>
-                    <CalcInput value={price} onChange={setPrice} placeholder={t("stockTx.pricePlaceholder")} label={t("stockTx.priceLabel")} precision={4} />
+                    <CalcInput value={price} onChange={updatePrice} placeholder={t("stockTx.pricePlaceholder")} label={t("stockTx.priceLabel")} precision={4} />
                   </div>
                 ) : null}
               </div>
@@ -1624,21 +1707,23 @@ export function StockTransactionFormModal({
                   </div>
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                     <div className="space-y-1">
-                      <div className="form-label">{t("stockTx.feeSubtotalWithCurrency", { currency: displayCurrency })}</div>
-                      <input
+                      <div className="form-label">{t("stockTx.feeSubtotal")}</div>
+                      <CalcInput
                         value={feeTotalDisplay}
-                        readOnly
-                        title={feeBreakdownTitle}
-                        className="form-input bg-slate-50 text-right font-semibold tabular-nums text-slate-900"
+                        onChange={updateFeeSubtotal}
+                        placeholder={t("stockFee.optional")}
+                        label={t("stockTx.feeSubtotal")}
+                        precision={2}
                       />
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">{t("stockTx.amountTotalWithCurrency", { currency: displayCurrency })}</div>
-                      <input
+                      <div className="form-label">{t("stockTx.amountTotal")}</div>
+                      <CalcInput
                         value={finalCashAmountDisplay}
-                        readOnly
-                        title={action === "buy" ? t("stockTx.finalCashDebitTitle") : t("stockTx.finalCashCreditTitle")}
-                        className="form-input bg-slate-50 text-right font-semibold tabular-nums text-slate-900"
+                        onChange={updateAmountTotal}
+                        placeholder={t("stockFee.optional")}
+                        label={t("stockTx.amountTotal")}
+                        precision={2}
                       />
                     </div>
                   </div>

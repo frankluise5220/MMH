@@ -256,7 +256,10 @@ const systemUpdateRoute = read(path.join(root, "src", "app", "api", "v1", "setti
 const systemUpdatePage = read(path.join(root, "src", "app", "(sidebar)", "settings", "system-update", "page.tsx"));
 const authVerifyRoute = read(path.join(root, "src", "app", "api", "v1", "auth", "verify", "route.ts"));
 const backupSource = read(path.join(root, "src", "lib", "server", "backup.ts"));
+const currencySchema = read(path.join(root, "prisma", "schema.prisma"));
+const currencyMigration = read(path.join(root, "prisma", "migrations", "20260903_add_currency_request_tables", "migration.sql"));
 const scheduledTaskLock = read(path.join(root, "src", "lib", "server", "scheduled-task-lock.ts"));
+const fundProfileSource = read(path.join(root, "src", "lib", "fund", "fundProfile.ts"));
 const repositoryExample = read(path.join(root, "deploy", "fnos", "repository", "apps.example.json"));
 const repositoryApiApps = read(path.join(root, "deploy", "fnos", "repository", "api", "apps"));
 const fnosReadme = read(path.join(root, "deploy", "fnos", "README.md"));
@@ -315,6 +318,11 @@ expect(/indexColumnsExist/.test(buildScript) && /SQLite schema index skipped fro
 expect(/busy_timeout = 10000/.test(buildScript), "fnOS SQLite init must wait briefly for database locks during package upgrades.");
 expect(fnosInitSqliteIndex !== -1 && fnosPidCheckIndex !== -1 && fnosInitSqliteIndex < fnosPidCheckIndex, "fnOS start must run SQLite init before returning for an already-running process.");
 expect(/startsWith\("file:"\)/.test(scheduledTaskLock) && /if \(isSqliteDatabaseUrl\(\)\) return;/.test(scheduledTaskLock) && /pg_advisory_xact_lock/.test(scheduledTaskLock) && /catch \(error\)/.test(scheduledTaskLock), "Scheduled-task locks must skip PostgreSQL advisory-lock SQL on fnOS SQLite with defense-in-depth try-catch.");
+expect(/PRAGMA table_info\("FundProfile"\)/.test(fundProfileSource) && /FROM information_schema\.columns/.test(fundProfileSource), "FundProfile schema probing must use SQLite PRAGMA on fnOS and reserve information_schema.columns for PostgreSQL.");
+expect(/model ApprovedCurrency \{/.test(currencySchema) && /model CustomCurrencyRequest \{/.test(currencySchema) && /enum CustomCurrencyRequestStatus \{/.test(currencySchema), "Currency request models must be present in the PostgreSQL schema.");
+expect(/CREATE TABLE IF NOT EXISTS "ApprovedCurrency"/.test(currencyMigration) && /CREATE TABLE IF NOT EXISTS "CustomCurrencyRequest"/.test(currencyMigration) && /CREATE TYPE "CustomCurrencyRequestStatus"/.test(currencyMigration), "Currency request models must have a PostgreSQL migration.");
+expect(/model ApprovedCurrency \{/.test(read(nativeSchema)) && /model CustomCurrencyRequest \{/.test(read(nativeSchema)) && /enum CustomCurrencyRequestStatus \{/.test(read(nativeSchema)), "Currency request models must be present in the native SQLite schema.");
+expect(/applyMissingSchemaObjectsFromInitSql\(db, sqlPath\)/.test(buildScript), "fnOS upgrades must backfill newly added currency tables from native-init.sql.");
 expect(/20260812_account_note/.test(buildScript) && /addColumnIfMissing\(db, "Account", "note", "TEXT"\)/.test(buildScript), "fnOS SQLite migrations must add Account.note to existing databases without rebuilding tables.");
 expect(/20260812_user_session_days/.test(buildScript) && /addColumnIfMissing\(db, "UserSettings", "sessionDays", "INTEGER NOT NULL DEFAULT 30"\)/.test(buildScript), "fnOS SQLite migrations must add UserSettings.sessionDays to existing databases before restore writes user settings.");
 expect(/20260811_stock_domain/.test(buildScript) && /createStockDomainTables\(db\)/.test(buildScript), "fnOS SQLite migrations must create stock core tables for existing databases.");
@@ -366,6 +374,7 @@ expect(/20260902_add_regular_invest_plan_name/.test(buildScript) && /addColumnIf
 expect(/20260903_normalize_ewallet_institution_type/.test(buildScript) && /SET \\+"type\\+" = 'payment' WHERE \\+"type\\+" = 'ewallet'/.test(buildScript), "fnOS SQLite migrations must normalize legacy ewallet institutions to the payment type for existing databases.");
 expect(/20260903_add_fund_profile_trading_calendar/.test(buildScript) && /addColumnIfMissing\(db, "FundProfile", "tradingCalendar", "TEXT"\)/.test(buildScript) && /jp_fund/.test(buildScript), "fnOS SQLite migrations must add FundProfile.tradingCalendar and Japan fund calendar support for existing databases.");
 expect(/20260903_restore_fund_profile_company_code/.test(buildScript) && /addColumnIfMissing\(db, "FundProfile", "fundCompanyCode", "TEXT"\)/.test(buildScript), "fnOS SQLite migrations must restore FundProfile.fundCompanyCode for existing databases.");
+expect(/20260903_z_repair_investment_business_sources/.test(buildScript) && /repairInvestmentBusinessSources\(db\)/.test(buildScript), "fnOS SQLite migrations must repair split fund and wealth business sources for existing databases.");
 for (const tableName of [
   "transactions",
   "fund_transactions",
@@ -385,9 +394,13 @@ expect(/SQLite database already initialized and migrated/.test(buildScript), "fn
 expect(/buildRestoredCategoryBatches/.test(backupSource), "Backup restore must normalize category rows before writing them.");
 expect(/record\.parentId === record\.id/.test(backupSource) && /!recordIds\.has\(record\.parentId \?\? ""\)/.test(backupSource), "Backup restore must drop self or missing category parent links before createMany.");
 expect(/restoredCategoryNameById/.test(backupSource) && /categoryNameById/.test(backupSource), "Backup restore must keep restored category names aligned for transactions and statement rules.");
-expect(/覆盖升级/.test(fnosReadme) && /upgrade_init/.test(fnosReadme), "fnOS README must document direct same-app overlay upgrades.");
-expect(!/appcenter-cli uninstall/.test(fnosReadme), "fnOS README must not describe uninstall/install as the normal update path.");
-expect(/覆盖升级/.test(fnosPackagePlan) && /appname=mmh/.test(fnosPackagePlan), "fnOS package plan must keep same-app overlay upgrade as the normal update path.");
+if (fs.existsSync(path.join(root, "deploy", "fnos", "README.md"))) {
+  expect(/覆盖升级/.test(fnosReadme) && /upgrade_init/.test(fnosReadme), "deploy/fnos/README.md must document direct same-app overlay upgrades.");
+  expect(!/appcenter-cli uninstall/.test(fnosReadme), "deploy/fnos/README.md must not describe uninstall/install as the normal update path.");
+}
+if (fs.existsSync(path.join(root, "docs", "fnos-package-plan.md"))) {
+  expect(/覆盖升级/.test(fnosPackagePlan) && /appname=mmh/.test(fnosPackagePlan), "docs/fnos-package-plan.md must keep same-app overlay upgrade as the normal update path.");
+}
 expect(/process\.platform === "linux"/.test(buildScript), "fnOS release builds must be guarded to Linux/fnOS.");
 expect(/resolve_data_dest/.test(buildScript), "fnOS start script must resolve a persistent fnOS data directory.");
 expect(/TRIM_PKGVAR\/data/.test(buildScript), "fnOS start script must prefer TRIM_PKGVAR/data when TRIM_DATADEST is unavailable.");

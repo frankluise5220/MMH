@@ -54,6 +54,8 @@ export type InvestmentStatisticEntryLike = {
   fundNav?: unknown | null;
   fundCode?: string | null;
   fundName?: string | null;
+  wealthProductId?: string | null;
+  depositSourceEntryId?: string | null;
 };
 
 export type InvestmentStatisticItem = {
@@ -199,10 +201,19 @@ export function buildStatisticCategoryItemsFromBuckets(
   }));
 }
 
-function classifyInvestmentProduct(entry: InvestmentStatisticEntryLike): InvestmentProductKind {
+function classifyInvestmentProduct(entry: InvestmentStatisticEntryLike): Exclude<InvestmentProductKind, "debt"> | null {
   if (entry.fundProductType === "wealth") return "wealth";
+  if (entry.wealthProductId) return "wealth";
   if (entry.fundProductType === "deposit") return "deposit";
-  return "fund";
+  if (entry.depositSourceEntryId) return "deposit";
+  if (
+    entry.fundProductType === "fund" ||
+    entry.fundProductType === "money" ||
+    String(entry.fundCode ?? "").trim()
+  ) {
+    return "fund";
+  }
+  return null;
 }
 
 function storedResultLooksLikeCashReceiptTotal(entry: InvestmentStatisticEntryLike, result: number) {
@@ -242,6 +253,7 @@ function profitCategory(kind: InvestmentProductKind, value: number) {
 export function getInvestmentStatisticItems(entry: InvestmentStatisticEntryLike): InvestmentStatisticItem[] {
   const items: InvestmentStatisticItem[] = [];
   const kind = classifyInvestmentProduct(entry);
+  if (!kind) return items;
   const subtype = entry.fundSubtype ?? "";
 
   if (subtype === "dividend_cash") {

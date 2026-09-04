@@ -11,13 +11,22 @@ import {
 } from "@/lib/account-display";
 import { normalizeDateDisplayFormat } from "@/lib/date-utils";
 import { normalizeRowHeightMode } from "@/lib/row-height";
+import {
+  HOUSEHOLD_COOKIE as HOUSEHOLD_KEY,
+  SESSION_DAYS_COOKIE as SESSION_DAYS_KEY,
+  USER_ID_COOKIE as USER_ID_KEY,
+  USERNAME_COOKIE as USERNAME_KEY,
+  VERIFIED_COOKIE as VERIFIED_KEY,
+  createVerifiedSessionValue,
+  sessionCookieOptions,
+  verifyVerifiedSessionValue,
+} from "@/lib/server/session-cookies";
 
 /**
  * GET /api/v1/settings/app-preferences returns browser-scoped display preferences.
  * PUT /api/v1/settings/app-preferences accepts any subset of the returned fields and
  * persists them as cookies without changing ledger data or financial calculations.
  */
-const SESSION_DAYS_KEY = "mmh_session_days";
 const FUND_UNITS_DECIMALS_KEY = "mmh_fund_units_decimals";
 const AI_PANEL_ENABLED_KEY = "mmh_ai_panel_enabled";
 const TIME_ZONE_MODE_KEY = "mmh_time_zone_mode";
@@ -35,10 +44,6 @@ const SIDEBAR_SHOW_FIXED_ASSETS_KEY = "sidebar_show_fixed_assets";
 const DETAIL_DATE_BACKGROUND_KEY = "detail_date_background";
 const ROW_HEIGHT_MODE_KEY = "advanced_data_table_row_height_mode";
 const ACCOUNT_LABEL_FIELDS_KEY = "mmh_account_label_fields";
-const VERIFIED_KEY = "mmh_access_password_verified";
-const USER_ID_KEY = "mmh_user_id";
-const USERNAME_KEY = "mmh_username";
-const HOUSEHOLD_KEY = "householdId";
 
 function normalizeSessionDays(input: unknown) {
   const n = Number(input);
@@ -381,37 +386,19 @@ export async function PUT(req: NextRequest) {
   const userId = req.cookies.get(USER_ID_KEY)?.value;
   const username = req.cookies.get(USERNAME_KEY)?.value;
   const householdId = req.cookies.get(HOUSEHOLD_KEY)?.value;
-  if (verified === "ok") {
-    response.cookies.set(VERIFIED_KEY, verified, {
-      path: "/",
-      maxAge,
-      httpOnly: true,
-      sameSite: "lax",
-    });
+  const verifiedSession = verifyVerifiedSessionValue(verified, userId);
+  const authCookieOptions = sessionCookieOptions(maxAge, req);
+  if (verifiedSession.ok) {
+    response.cookies.set(VERIFIED_KEY, createVerifiedSessionValue(verifiedSession.userId, maxAge), authCookieOptions);
   }
   if (userId) {
-    response.cookies.set(USER_ID_KEY, userId, {
-      path: "/",
-      maxAge,
-      httpOnly: true,
-      sameSite: "lax",
-    });
+    response.cookies.set(USER_ID_KEY, userId, authCookieOptions);
   }
   if (username) {
-    response.cookies.set(USERNAME_KEY, username, {
-      path: "/",
-      maxAge,
-      httpOnly: false,
-      sameSite: "lax",
-    });
+    response.cookies.set(USERNAME_KEY, username, authCookieOptions);
   }
   if (householdId) {
-    response.cookies.set(HOUSEHOLD_KEY, householdId, {
-      path: "/",
-      maxAge,
-      httpOnly: false,
-      sameSite: "lax",
-    });
+    response.cookies.set(HOUSEHOLD_KEY, householdId, authCookieOptions);
   }
 
   return response;

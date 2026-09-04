@@ -98,15 +98,15 @@ mmh-fnos-v0.1.x-arm64.fpk
 - 飞牛包版本直接使用 `package.json` 的 `0.1.x`，与 GitHub Release tag `v0.1.x` 和 GHCR 镜像 tag 一致；不要再发布 `v0.1.x-fnos` 或包内 `-fnos` 版本。
 - 上传前必须运行 `FNOS_VERIFY_BUILT_FPK=1 npm run check:fnos`，确认包内 `cmd/main`、manifest 和数据目录逻辑来自当前源码。
 - Release workflow 会按 x86 / arm64 安装对应架构的官方 `fnpack`；如果安装或验证失败，workflow 必须失败，不能上传 `*-fpk-source.tgz` 作为替代。
-- `repository/apps.example.json` 的 `download_url` / `download_urls.x86_64` 指向 VPS 托管的 `http://fnapp.floatingice.win/apps/mmh-0.1.x.fpk`，`download_urls.arm64` 指向 GitHub Release 中的 `mmh-fnos-v0.1.x-arm64.fpk`。
+- `repository/apps.example.json` 的 `download_url` / `download_urls.x86_64` 指向 GitHub Release 中的 `mmh-fnos-v0.1.x-x86_64.fpk`，`download_urls.arm64` 指向 GitHub Release 中的 `mmh-fnos-v0.1.x-arm64.fpk`。
 
 ## 软仓源维护说明
 
-- 当前验证过的公开源地址是：
-  `http://fnapp.floatingice.win:5660`
+- 当前公开源地址是 GitHub raw 目录：
+  `https://raw.githubusercontent.com/frankluise5220/MMH/main/deploy/fnos/repository`
 - FN 软仓当前已经内置 MMH 源，普通用户不需要手动添加源。
-- VPS 软仓服务同步 GitHub `frankluise5220/MMH` 仓库的 `main/deploy/fnos/repository` 目录并对外提供 `/api/apps`；`fnpack.json` 作为源数据文件保留在同一目录。
-- `download_url` 和 `download_urls.x86_64` 指向 VPS 托管的 x86_64 包 `http://fnapp.floatingice.win/apps/mmh-0.1.x.fpk`，`download_urls.arm64` 仍指向 GitHub Release 中的 arm64 FPK，直到 VPS 也托管 arm64 本地包。
+- 软仓源数据即仓库的 `main/deploy/fnos/repository` 目录；`api/apps` 是可直接访问的静态源文件，`fnpack.json` 作为源数据文件保留在同一目录。
+- `download_url` 和 `download_urls.x86_64` 指向 GitHub Release 中的 x86_64 包 `mmh-fnos-v0.1.x-x86_64.fpk`，`download_urls.arm64` 指向 GitHub Release 中的 arm64 FPK。
 
 ## 升级边界
 

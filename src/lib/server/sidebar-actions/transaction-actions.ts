@@ -128,9 +128,9 @@ async function upsertFundBuyRefundRecord(
     toAccountName: params.cashAccountName,
     amount: refundAmount,
     currency: params.currency ?? "CNY",
-    fundCode: null,
-    fundName: null,
-    fundProductType: null,
+    fundCode: params.fundCode,
+    fundName: params.fundName,
+    fundProductType: params.fundProductType,
     fundSubtype: FundSubtype.buy_failed,
     source: "regular_invest_refund",
     fundUnits: null,
@@ -233,6 +233,8 @@ async function createSplitWealthTransaction(
   const productNameInput = String(formData.get("fundName") ?? "").trim();
   const wealthProductIdInput = String(formData.get("wealthProductId") ?? "").trim();
   const note = String(formData.get("note") ?? formData.get("memo") ?? "").trim();
+  const tagIdsValue = String(formData.get("tagIds") ?? "[]").trim();
+  const tagIds: string[] = tagIdsValue ? JSON.parse(tagIdsValue).filter((id: string) => typeof id === "string" && id.length > 0) : [];
   const unitsRaw = parseFloat(String(formData.get("fundUnits") ?? ""));
   const navRaw = parseFloat(String(formData.get("fundNav") ?? ""));
   const annualRateRaw = parseFloat(String(formData.get("depositAnnualRate") ?? ""));
@@ -375,6 +377,7 @@ async function createSplitWealthTransaction(
       metadata: { splitRecord: true, independentBusinessTransaction: true },
     });
     touchedAccountIds = Array.from(new Set([cashAcc.id, wealthAcc.id].filter(Boolean)));
+    await attachEntryTags({ tx: tx as any, entryId: cashEntry.id, householdId, tagIds });
   });
 
   for (const id of touchedAccountIds) {
@@ -1104,6 +1107,11 @@ export async function createTransaction(formData: FormData) {
       if (!isDividendReinvest && cashAccountIdInput && cashAccountIdInput !== balanceAccountId) {
         await recalcAndSaveAccountBalance(cashAccountIdInput).catch(() => {});
       }
+      // Attach tags to the created investment/cash entry (must run after the
+      // entry id is resolved; prisma client satisfies the entry-tag tx shape).
+      if (createdEntryId && tagIds.length > 0) {
+        await attachEntryTags({ tx: prisma as any, entryId: createdEntryId, householdId, tagIds }).catch(() => {});
+      }
     } else {
       return { ok: false as const, error: t("sidebar.action.invalidType") };
     }
@@ -1151,6 +1159,14 @@ async function editSplitWealthTransaction(
   const productNameInput = String(formData.get("fundName") ?? "").trim();
   const wealthProductIdInput = String(formData.get("wealthProductId") ?? "").trim();
   const note = String(formData.get("memo") ?? formData.get("note") ?? "").trim();
+  const editRealWealthTagIds = (() => {
+    try {
+      const raw = JSON.parse(String(formData.get("tagIds") ?? "[]"));
+      return Array.isArray(raw) ? raw.filter((id: string) => typeof id === "string" && id.length > 0) : [];
+    } catch {
+      return [];
+    }
+  })();
   const unitsRaw = parseFloat(String(formData.get("fundUnits") ?? ""));
   const navRaw = parseFloat(String(formData.get("fundNav") ?? ""));
   const annualRateRaw = parseFloat(String(formData.get("depositAnnualRate") ?? ""));
@@ -1312,6 +1328,7 @@ async function editSplitWealthTransaction(
     const cashEntry = oldCashEntry
       ? await tx.txRecord.update({ where: { id: oldCashEntry.id }, data: cashEntryData })
       : await tx.txRecord.create({ data: cashEntryData });
+    await replaceEntryTags({ tx: tx as any, entryId: cashEntry.id, householdId, tagIds: editRealWealthTagIds });
 
     await tx.wealthTransaction.update({
       where: { id: wealthRow.id },
@@ -1423,6 +1440,15 @@ export async function editInvestment(formData: FormData) {
   const feeRateWasEdited = String(formData.get("feeRateEdited") ?? "").trim() === "1";
   const hasFeeRate = feeRateWasEdited && formData.has("feeRate");
   const hasArrivalDays = formData.has("arrivalDays");
+  const tagsWerePassed = formData.has("tagIds");
+  const editInvestmentTagIds = tagsWerePassed ? (() => {
+    try {
+      const raw = JSON.parse(String(formData.get("tagIds") ?? "[]"));
+      return Array.isArray(raw) ? raw.filter((id: string) => typeof id === "string" && id.length > 0) : [];
+    } catch {
+      return [];
+    }
+  })() : [];
 
   const fundUnitsStr = String(formData.get("fundUnits") ?? "").trim();
   const fundNavStr = String(formData.get("fundNav") ?? "").trim();
@@ -1575,6 +1601,9 @@ export async function editInvestment(formData: FormData) {
             memo || txRecord.note,
           ),
         });
+        if (tagsWerePassed) {
+          await replaceEntryTags({ tx: tx as any, entryId: txRecord.id, householdId, tagIds: editInvestmentTagIds });
+        }
       });
       await syncFundTransactionsFromTxRecords([sourceBuy.id]).catch((e) => {
         console.error("editInvestment sync linked refund fund transaction:", e);
@@ -1869,10 +1898,13 @@ export async function editInvestment(formData: FormData) {
           });
         }
         Object.assign(updateData, {
-          fundCode: null,
-          fundName: null,
-          fundProductType: null,
-          fundSubtype: null,
+          fundCode,
+          fundName: profileFundDisplayName
+            ?? inputFundDisplayName
+            ?? normalizeFundDisplayName(fundCode, independentFundTransaction.fundName)
+            ?? fundCode,
+          fundProductType: fundProductType === "money_fund" ? "money" : (fundProductType || "fund"),
+          fundSubtype: finalFundSubtype,
           fundUnits: null,
           fundNav: null,
           fundFee: null,
@@ -1892,6 +1924,9 @@ export async function editInvestment(formData: FormData) {
             }
           : updateData,
       });
+      if (tagsWerePassed) {
+        await replaceEntryTags({ tx: tx as any, entryId, householdId: txRecord.householdId, tagIds: editInvestmentTagIds });
+      }
       if (
         !isFundLikeIndependentEdit &&
         finalFundSubtype === FundSubtype.buy &&
@@ -1959,13 +1994,18 @@ export async function editInvestment(formData: FormData) {
           linkedRefundEntryId,
           refundDate: effectiveRefundDate,
           refundAmount,
+          fundAccountId: finalFundAccountId,
+          fundAccountName: finalFundAccountName,
           cashAccountId: finalCashAccountId,
           cashAccountName: finalCashAccountName,
+          fundCode: independentFundTransaction.fundCode,
+          fundName: effectiveFundDisplayName ?? independentFundTransaction.fundName ?? independentFundTransaction.fundCode,
+          fundProductType,
           currency: finalInvestmentAccountInfo?.currency ?? txRecord.currency ?? "CNY",
           source: "regular_invest_refund",
           note: regularInvestRefundNote(
-            fundCode,
-            effectiveFundDisplayName ?? fundName,
+            independentFundTransaction.fundCode,
+            effectiveFundDisplayName ?? independentFundTransaction.fundName ?? independentFundTransaction.fundCode,
             refundAmount,
             date,
             finalInvestmentAccountInfo?.currency ?? txRecord.currency ?? "CNY",
@@ -2374,11 +2414,14 @@ export async function updateTransactionFromDialog(formData: FormData) {
             categoryName: independentFundCategoryName,
             toAccountId: recordToAccountId,
             toAccountName: recordToAccountName,
-            fundCode: null,
+            fundCode: isFundLikeIndependentEdit ? fundCode : null,
+            fundName: isFundLikeIndependentEdit ? independentFundDisplayName : (isInsuranceEntry ? (entry.fundName ?? null) : null),
             insuranceAction: isInsuranceEntry ? (redeemLike ? "refund" : "premium") : entry.insuranceAction,
             insuranceProductName: isInsuranceEntry ? (entry.fundName ?? null) : entry.insuranceProductName,
-            fundProductType: isFundLikeIndependentEdit || isInsuranceEntry ? null : (productType as any) || null,
-            fundSubtype: isFundLikeIndependentEdit ? null : isDividendReinvest ? FundSubtype.buy : (subtype as any) || null,
+            fundProductType: isFundLikeIndependentEdit
+              ? (productType === "money_fund" ? "money" : (productType as any) || "fund")
+              : isInsuranceEntry ? null : (productType as any) || null,
+            fundSubtype: isFundLikeIndependentEdit ? (subtype as any) || FundSubtype.buy : isDividendReinvest ? FundSubtype.buy : (subtype as any) || null,
             source: isDividendReinvest ? "dividend" : entry.source,
             date,
             type: TransactionType.investment,

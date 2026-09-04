@@ -6,6 +6,7 @@ import { createPortal } from "react-dom";
 import { Repeat } from "lucide-react";
 import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
+import { EntryTagsField } from "./EntryTagsField";
 import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
@@ -32,6 +33,8 @@ type Entry = {
   source?: string | null;
   insuranceProductId?: string | null;
   fundArrivalDate?: string | null;
+  tags?: Array<{ id?: string; tagId?: string }> | null;
+  tagIds?: string[] | null;
 };
 
 type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
@@ -326,6 +329,11 @@ export function InsuranceFormModal({
   const [amount, setAmount] = useState(initAmount);
   const [cashAccountId, setCashAccountId] = useState(initCashAccountId);
   const [memo, setMemo] = useState(initMemo);
+  const [selectedTagIds, setSelectedTagIds] = useState<string[]>(() =>
+    mode === "edit" && entry
+      ? (entry.tags as Array<{ id?: string; tagId?: string }> | undefined)?.map((tag) => tag.id ?? tag.tagId ?? "").filter(Boolean) ?? entry.tagIds ?? []
+      : [],
+  );
   const [requestId, setRequestId] = useState<string | null>(null);
   const [editEntryId, setEditEntryId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -612,6 +620,7 @@ export function InsuranceFormModal({
     setAmount("");
     setCashAccountId(defaults?.defaultCashAccountId ?? "");
     setMemo("");
+    setSelectedTagIds([]);
     setRequestId(defaults?.requestId ?? null);
     setEditEntryId(null);
     setInsuranceProductId("");
@@ -833,6 +842,7 @@ export function InsuranceFormModal({
         fundSubtype: subtype === "redeem" ? "redeem" : "buy",
         fundArrivalDate: subtype === "redeem" ? (arrivalDate || submitDate) : undefined,
         source: "insurance",
+        tagIds: selectedTagIds,
         createInsurancePremiumPlan: options.createPremiumPlan,
         insurancePremiumBackfillPastRecords: options.backfillPastRecords,
       };
@@ -1020,6 +1030,8 @@ export function InsuranceFormModal({
                       className="form-input"
                     />
                   </div>
+
+                  <EntryTagsField value={selectedTagIds} onChange={setSelectedTagIds} />
                 </>
               ) : (
                 /* ========== Buy mode ========== */
@@ -1242,6 +1254,8 @@ export function InsuranceFormModal({
                       className="form-input"
                     />
                   </div>
+
+                  <EntryTagsField value={selectedTagIds} onChange={setSelectedTagIds} />
                 </>
               )}
             </div>

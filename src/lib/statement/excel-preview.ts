@@ -12,6 +12,7 @@ import {
   type StatementImportField,
 } from "@/lib/statement/header-catalog";
 import { normalizeAlipayWorkbookRows } from "@/lib/statement/alipay-template";
+import { normalizeCaizhiWorkbookRows, detectCaizhiHeaders, type CaizhiWorkbookSheetRows } from "@/lib/statement/caizhi-template";
 import { normalizeJdWorkbookRows } from "@/lib/statement/jd-template";
 import { normalizeWechatWorkbookRows } from "@/lib/statement/wechat-template";
 import {
@@ -352,10 +353,28 @@ export function parseStatementTemplateRows(
   });
 }
 
+export type ReadStatementWorkbookResult = {
+  rows: string[][];
+  text: string;
+  /** 如果检测为财智8格式，则为标准化后的行；否则 undefined */
+  caizhiRows?: string[][];
+};
+
+/**
+ * 尝试从文件名中提取财智8导出的账户名。
+ * 格式：「XXX的YYY_明细_YYYY-MM-DD.xls」
+ */
+function guessCaizhiAccountNameFromFilename(filename: string): string {
+  const match = filename.match(/^(.+?)的(.+?)_明细_/);
+  if (match) return `${match[1]}的${match[2]}`;
+  const noExt = filename.replace(/\.(xls|xlsx)$/i, "");
+  return noExt || "财智账户";
+}
+
 export async function readStatementWorkbookRowsAndText(
   file: File,
   fieldHeaders: StatementFieldHeaders = STATEMENT_IMPORT_FIELD_HEADERS,
-) {
+): Promise<ReadStatementWorkbookResult> {
   const XLSX = await import("xlsx");
   const data = await file.arrayBuffer();
   const workbook = XLSX.read(data, { type: "array", cellDates: true });
@@ -369,15 +388,31 @@ export async function readStatementWorkbookRowsAndText(
     }).map((row) => row.map(formatDateCell).map((cell) => cell.trim()));
     return { sheetName, rows };
   });
+
   const jdRows = normalizeJdWorkbookRows(sheetRows);
   const alipayRows = normalizeAlipayWorkbookRows(sheetRows);
   const wechatRows = normalizeWechatWorkbookRows(sheetRows);
-  const rows = jdRows?.rows ?? alipayRows?.rows ?? wechatRows?.rows ?? mergeStatementWorkbookRows(sheetRows, fieldHeaders);
+
+  // 优先检测财智8格式（需要从文件名猜账户名）
+  const accountNameFromFile = guessCaizhiAccountNameFromFilename(file.name);
+  const caizhiRows = normalizeCaizhiWorkbookRows(sheetRows as CaizhiWorkbookSheetRows[], accountNameFromFile);
+
+  const rows = caizhiRows?.rows
+    ?? jdRows?.rows
+    ?? alipayRows?.rows
+    ?? wechatRows?.rows
+    ?? mergeStatementWorkbookRows(sheetRows, fieldHeaders);
+
   const text = sheetRows
     .flatMap((sheet) => sheet.rows.filter((row) => row.some(Boolean)))
     .map((row) => row.join("\t"))
     .join("\n");
-  return { rows, text };
+
+  return {
+    rows,
+    text,
+    caizhiRows: caizhiRows?.rows,
+  };
 }
 
 export async function parseStatementExcelFile(

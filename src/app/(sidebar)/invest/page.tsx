@@ -14,8 +14,10 @@ import { getInvestmentStatisticItems } from "@/lib/transaction-statistics";
 import { cookies } from "next/headers";
 import Link from "next/link";
 import StatisticsCharts from "@/components/StatisticsCharts";
+import FundPortfolioTrendChart from "@/components/FundPortfolioTrendChart";
 import { DailyPnlCalendar } from "@/components/DailyPnlCalendar";
 import { InvestAccountSummaryTable, type InvestAccountSummaryRow } from "@/components/InvestAccountSummaryTable";
+import { loadFundPortfolioTrendData } from "@/lib/server/fund-portfolio-trend";
 
 export const dynamic = "force-dynamic";
 

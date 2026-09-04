@@ -280,7 +280,7 @@ export default async function RegularInvestPage() {
   });
 
   const investmentAccounts = accountOptions.filter((account) => account.kind === "investment" && account.investProductType === "fund");
-  const cashAccounts = accountOptions.filter((account) => ["bank_debit", "ewallet", "cash"].includes(account.kind));
+  const cashAccounts = accountOptions.filter((account) => ["bank_debit", "ewallet", "cash", "bank_credit"].includes(account.kind));
   const ordinaryAccounts = accountOptions.filter((account) => ["bank_debit", "bank_credit", "ewallet", "cash"].includes(account.kind));
   const loanAccounts = accountOptions.filter((account) => account.kind === "loan");
   const transferTargetAccounts = accountOptions.filter((account) => !account.id || !["insurance"].includes(account.kind));

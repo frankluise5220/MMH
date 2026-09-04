@@ -9,6 +9,7 @@ import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund
 import { DateStepper } from "@/components/DateStepper";
 import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "@/components/ModalLayer";
 import { notifySmartSelectOptionCreated, SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
+import { CurrencySmartSelect } from "@/components/CurrencySmartSelect";
 import { notifySettingsDataChanged, type SettingsDataScope } from "@/lib/client/settingsCache";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { CURRENCY_OPTIONS, normalizeCurrency } from "@/lib/currency";
@@ -1109,6 +1110,30 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                   );
                 }
 
+                // Currency uses SmartSelect with system + user-added currencies.
+                if (field.key === "currency" && field.type === "select") {
+                  const current = form[field.key] ?? defaultValueForField(field);
+                  return (
+                    <div key={field.key} className="space-y-1">
+                      <div className="form-label">{t(field.labelKey)}</div>
+                      {isReadOnlyField ? (
+                        <div className="form-input flex h-9 items-center bg-slate-50 text-slate-500">
+                          {current ? t(`entityForm.currency.${String(current).toLowerCase()}`, { defaultValue: current }) : t("entityForm.ledgerDefaultCurrency")}
+                        </div>
+                      ) : (
+                        <CurrencySmartSelect
+                          value={current}
+                          onChange={(id) => setForm((prev) => ({
+                            ...prev,
+                            ...selectFieldPatch(field, id, prev),
+                          }))}
+                          labelSystem={(code) => t(`entityForm.currency.${code.toLowerCase()}`, { defaultValue: code })}
+                        />
+                      )}
+                    </div>
+                  );
+                }
+
                 return (
                   <div key={field.key} className="space-y-1">
                     <div className="form-label">{t(field.labelKey)}</div>
@@ -1221,6 +1246,21 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
             // Select field
             const opts = selectOptionsForField(field);
             if (opts.length === 0) return null; // No data yet for dynamic select
+            if (field.key === "currency" && field.type === "select") {
+              const current = form[field.key] ?? defaultValueForField(field);
+              return (
+                <div key={field.key} className="min-w-[160px] flex-1">
+                  <CurrencySmartSelect
+                    value={current}
+                    onChange={(id) => setForm((prev) => ({
+                      ...prev,
+                      ...selectFieldPatch(field, id, prev),
+                    }))}
+                    labelSystem={(code) => t(`entityForm.currency.${code.toLowerCase()}`, { defaultValue: code })}
+                  />
+                </div>
+              );
+            }
             return (
               <select
                 key={field.key}
@@ -1340,6 +1380,24 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                           searchable={field.key === "institutionId"}
                           onCreateClick={() => { setNestedEntityType(field.nestedCreate!); setNestedOpen(true); }}
                           createLabel={getSmartSelectCreateLabel(t, field.nestedCreate)}
+                        />
+                      </div>
+                    );
+                  }
+
+                  // Currency uses SmartSelect with system + user-added currencies.
+                  if (field.key === "currency" && field.type === "select") {
+                    const current = form[field.key] ?? defaultValueForField(field);
+                    return (
+                      <div key={field.key}>
+                        <label className="form-label mb-1 block">{t(field.labelKey)}</label>
+                        <CurrencySmartSelect
+                          value={current}
+                          onChange={(id) => setForm((prev) => ({
+                            ...prev,
+                            ...selectFieldPatch(field, id, prev),
+                          }))}
+                          labelSystem={(code) => t(`entityForm.currency.${code.toLowerCase()}`, { defaultValue: code })}
                         />
                       </div>
                     );
@@ -1468,6 +1526,24 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                         searchable={field.key === "institutionId"}
                         onCreateClick={() => { setNestedEntityType(field.nestedCreate!); setNestedOpen(true); }}
                         createLabel={getSmartSelectCreateLabel(t, field.nestedCreate)}
+                      />
+                    </div>
+                  );
+                }
+
+                // Currency uses SmartSelect with system + user-added currencies.
+                if (field.key === "currency" && field.type === "select") {
+                  const current = form[field.key] ?? defaultValueForField(field);
+                  return (
+                    <div key={field.key}>
+                      <label className="form-label mb-1 block">{t(field.labelKey)}</label>
+                      <CurrencySmartSelect
+                        value={current}
+                        onChange={(id) => setForm((prev) => ({
+                          ...prev,
+                          ...selectFieldPatch(field, id, prev),
+                        }))}
+                        labelSystem={(code) => t(`entityForm.currency.${code.toLowerCase()}`, { defaultValue: code })}
                       />
                     </div>
                   );

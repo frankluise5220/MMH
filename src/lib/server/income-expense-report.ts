@@ -7,7 +7,7 @@ import {
   SYSTEM_INSURANCE_EXPENSE_CATEGORY,
   SYSTEM_INSURANCE_RETURN_CATEGORY,
 } from "@/lib/default-categories";
-import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
+import { loadFundStatisticSourceEntries, loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE } from "@/lib/balance-reconcile";
@@ -241,7 +241,13 @@ export async function getIncomeExpenseReport(
 
   await normalizeDefaultCategoryHierarchyForHousehold(prisma, ctx.householdId);
 
-  const [categories, records, investmentRecords, businessResultRecords, wealthStatisticRecords] = await Promise.all([
+  const hasScopedAccountFilter = Boolean(
+    params.institutionIds?.length ||
+    params.institutionId ||
+    params.userIds?.length ||
+    params.accountIds?.length,
+  );
+  const [categories, records, fundStatisticRecords, investmentRecords, businessResultRecords, wealthStatisticRecords] = await Promise.all([
     prisma.category.findMany({
       where: {
         ...hidFilter,
@@ -284,6 +290,11 @@ export async function getIncomeExpenseReport(
         createdAt: true,
       },
       orderBy: [{ date: "desc" }, { createdAt: "desc" }, { id: "desc" }],
+    }),
+    loadFundStatisticSourceEntries(ctx, {
+      start: rangeStart,
+      endExclusive,
+      accountIds: hasScopedAccountFilter ? scopedAccountIds : undefined,
     }),
     prisma.txRecord.findMany({
       where: {
@@ -480,9 +491,21 @@ export async function getIncomeExpenseReport(
     }];
   });
 
-  const representedInvestmentEntryIds = new Set(investmentRecords.map((record) => record.id));
+  const independentFundEntryIds = new Set(
+    fundStatisticRecords.flatMap((record) => [record.id, record.entryId]),
+  );
+  const representedLegacyInvestmentEntryIds = new Set(
+    investmentRecords
+      .filter((record) => getInvestmentStatisticItems(record).length > 0)
+      .map((record) => record.id),
+  );
+  const representedStatisticEntryIds = new Set([
+    ...independentFundEntryIds,
+    ...representedLegacyInvestmentEntryIds,
+  ]);
 
   for (const record of investmentRecords) {
+    if (independentFundEntryIds.has(record.id)) continue;
     const investmentName = record.fundName?.trim() || record.fundCode?.trim() || "";
     for (const item of getInvestmentStatisticItems(record)) {
       const category = findCategoryByName(item.type, item.categoryCandidates);
@@ -497,6 +520,28 @@ export async function getIncomeExpenseReport(
         categoryName: category?.name ?? item.categoryName,
         accountId: record.accountId,
         accountName: accountDisplayName(record.account, record.accountName),
+        counterpartyName: investmentName || item.label,
+        note: record.note,
+        createdAt: record.createdAt,
+      });
+    }
+  }
+
+  for (const record of fundStatisticRecords) {
+    const investmentName = record.fundName?.trim() || record.fundCode?.trim() || "";
+    for (const item of getInvestmentStatisticItems(record)) {
+      const category = findCategoryByName(item.type, item.categoryCandidates);
+      statisticRecords.push({
+        id: `${record.id}:${item.idSuffix}`,
+        entryId: record.entryId,
+        canEdit: false,
+        date: record.date,
+        type: item.type,
+        amount: item.amount,
+        categoryId: category?.id ?? null,
+        categoryName: category?.name ?? item.categoryName,
+        accountId: record.accountId,
+        accountName: record.accountName,
         counterpartyName: investmentName || item.label,
         note: record.note,
         createdAt: record.createdAt,
@@ -528,7 +573,7 @@ export async function getIncomeExpenseReport(
   }
 
   for (const record of wealthStatisticRecords) {
-    if (representedInvestmentEntryIds.has(record.id) || representedInvestmentEntryIds.has(record.entryId)) continue;
+    if (representedStatisticEntryIds.has(record.id) || representedStatisticEntryIds.has(record.entryId)) continue;
     const investmentName = record.fundName?.trim() || record.fundCode?.trim() || record.counterpartyName?.trim() || "";
     for (const item of getInvestmentStatisticItems(record)) {
       const category = findCategoryByName(item.type, item.categoryCandidates);

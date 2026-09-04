@@ -176,6 +176,8 @@ function verifyPrivilegeConfig(config, context) {
 
 function verifySourceFiles() {
   const packageJson = read(path.join(root, "package.json"));
+  const nativeSchema = read(path.join(root, "prisma", "schema.native.prisma"));
+  const currencyMigration = read(path.join(root, "prisma", "migrations", "20260903_add_currency_request_tables", "migration.sql"));
   const appBuildScript = read(path.join(root, "scripts", "build-synology-app.cjs"));
   const packageScript = read(path.join(root, "scripts", "build-synology-package.cjs"));
   const releaseWorkflow = read(path.join(root, ".github", "workflows", "synology-release.yml"));
@@ -202,6 +204,8 @@ function verifySourceFiles() {
   expect(sqliteInitIndex !== -1 && pidCheckIndex !== -1 && sqliteInitIndex < pidCheckIndex, "Synology start script must run SQLite init before returning for an already-running process.");
   expect(/release-artifacts\/synology\/\*\.spk/.test(releaseWorkflow), "Synology release workflow must upload SPK assets.");
   expect(/target_arch/.test(releaseWorkflow) && /arm64/.test(releaseWorkflow), "Synology release workflow must build x86_64 and arm64 packages.");
+  expect(/model ApprovedCurrency \{/.test(nativeSchema) && /model CustomCurrencyRequest \{/.test(nativeSchema) && /enum CustomCurrencyRequestStatus \{/.test(nativeSchema), "Synology native schema must contain the currency request models.");
+  expect(/CREATE TABLE IF NOT EXISTS "ApprovedCurrency"/.test(currencyMigration) && /CREATE TABLE IF NOT EXISTS "CustomCurrencyRequest"/.test(currencyMigration), "Synology source must keep the PostgreSQL currency migration alongside the native schema.");
 }
 
 function verifyStagedSource() {

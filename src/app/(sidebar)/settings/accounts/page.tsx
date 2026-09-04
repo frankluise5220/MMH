@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, ChevronDown, ChevronRight, X } from "lucide-react";
+import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, ChevronDown, ChevronRight, X, ArrowUpDown } from "lucide-react";
 import type { AccountKind } from "@prisma/client";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
 import { kindIconName, kindColor, kindOrder } from "@/lib/account-kinds";
@@ -10,6 +10,7 @@ import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { FundConfirmDaysPanel } from "@/components/FundConfirmDaysModal";
 import { MultiSelectFilterDropdown } from "@/components/MultiSelectFilterDropdown";
 import { SmartSelect } from "@/components/SmartSelect";
+import { CurrencySmartSelect } from "@/components/CurrencySmartSelect";
 import {
   AccountScopeFilter,
   CASH_INSTITUTION_ID,
@@ -18,7 +19,7 @@ import {
   type StatisticsInstitutionItem,
   type StatisticsUserItem,
 } from "@/components/AccountScopeFilter";
-import { AccountBatchImportButton } from "@/components/settings/AccountBatchImportButton";
+import { BasicDataImportExport } from "@/components/settings/BasicDataImportExport";
 import { SettingsActionButton, SettingsPageHeader, SettingsPrimaryAddButton } from "@/components/settings/SettingsPageScaffold";
 import { buildAccountDisplayOption } from "@/lib/account-display";
 import { getAccountLabelFieldsPreference, getCreditCardLabelTemplatePreference } from "@/lib/client/appPreferences";
@@ -28,7 +29,7 @@ import { getInvestmentAccountView, isDepositAccount } from "@/lib/account-kind-u
 import { FIXED_ASSET_TYPES, isFixedAssetAccountLike } from "@/lib/fixed-asset";
 import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
 import { useI18n } from "@/lib/i18n";
-import { CURRENCY_OPTIONS, normalizeCurrency } from "@/lib/currency";
+import { normalizeCurrency } from "@/lib/currency";
 import {
   accountInstitutionTypeIsAllowed,
   accountRequiresInstitution,
@@ -68,6 +69,8 @@ type Account = {
   tradingCalendar?: string | null;
   fixedAssetType?: string | null;
   isConsumerLoan?: boolean | null;
+  debtDirection?: string | null;
+  usageCount?: number;
 };
 
 const investmentProductTypeOptions = PRODUCT_TYPES
@@ -128,6 +131,28 @@ export default function SettingsAccountsPage() {
   const investmentLabel = (value: string | null | undefined) => t(`investment.product.${value || "fund"}`);
   const fixedAssetTypeLabel = (value: string | null | undefined) => t(`fixedAsset.type.${value || "property"}`);
   const tradingCalendarLabel = (value: string | null | undefined) => value ? t(`tradingCalendar.${value}`) : t("settings.accounts.tradingCalendarDefault");
+  type AccountSortBy = "name" | "institution" | "owner" | "lastFour";
+  const SORT_OPTIONS: Record<AccountSortBy, string> = {
+    name: t("settings.accounts.sortBy.name"),
+    institution: t("settings.accounts.sortBy.institution"),
+    owner: t("settings.accounts.sortBy.owner"),
+    lastFour: t("settings.accounts.sortBy.lastFour"),
+  };
+  const accountSortByLabel = (key: AccountSortBy) => SORT_OPTIONS[key];
+  function sortAccounts(list: Account[], by: AccountSortBy, dir: "asc" | "desc") {
+    const sign = dir === "asc" ? 1 : -1;
+    const get = (a: Account): string => {
+      if (by === "name") return a.name;
+      if (by === "institution") return a.Institution?.name || a.Institution?.shortName || "";
+      if (by === "owner") return a.AccountGroup?.name || "";
+      return a.numberMasked || "";
+    };
+    return [...list].sort((a, b) => {
+      const va = get(a);
+      const vb = get(b);
+      return va.localeCompare(vb, "zh-Hans-CN") * sign;
+    });
+  }
   const [groups, setGroups] = useState<Group[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [institutions, setInstitutions] = useState<Institution[]>([]);
@@ -142,12 +167,23 @@ export default function SettingsAccountsPage() {
   const [editError, setEditError] = useState("");
   const [collapsedKinds, setCollapsedKinds] = useState<Set<string>>(new Set());
   const [showCreateAccount, setShowCreateAccount] = useState(false);
+  const [accountSortBy, setAccountSortBy] = useState<AccountSortBy>("name");
+  const [accountSortDir, setAccountSortDir] = useState<"asc" | "desc">("asc");
+  const [accountSortMenuOpen, setAccountSortMenuOpen] = useState(false);
+  const accountSortMenuRef = useRef<HTMLDivElement>(null);
   const guideAccountSetup = searchParams.get("guide") === "accounts";
 
   // Delete account with password verification
   const [deleteTarget, setDeleteTarget] = useState<{ account: Account; recordCount: number; toRecordCount: number } | null>(null);
   const [deletePassword, setDeletePassword] = useState("");
   const [deleteError, setDeleteError] = useState("");
+
+  // Merge accounts: checkbox-select 2 accounts of the same type/owner/institution
+  const [mergeSelectedIds, setMergeSelectedIds] = useState<string[]>([]);
+  const [mergeModalOpen, setMergeModalOpen] = useState(false);
+  const [mergeKeepId, setMergeKeepId] = useState("");
+  const [mergeBusy, setMergeBusy] = useState(false);
+  const [mergeError, setMergeError] = useState("");
 
   // Nested creation from SmartSelect in inline edit
   const [nestedEntityType, setNestedEntityType] = useState<"institution" | "group" | null>(null);
@@ -164,6 +200,18 @@ export default function SettingsAccountsPage() {
     }
     loadAll();
   }, []);
+
+  // Close sort menu on outside click
+  useEffect(() => {
+    if (!accountSortMenuOpen) return;
+    const handler = (event: MouseEvent) => {
+      if (accountSortMenuRef.current && !accountSortMenuRef.current.contains(event.target as Node)) {
+        setAccountSortMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [accountSortMenuOpen]);
 
   async function loadAll(options?: { force?: boolean }) {
     const data = await fetchSettingsAccountData(options).catch(() => null);
@@ -375,6 +423,70 @@ export default function SettingsAccountsPage() {
     accounts.some((account) => normalizedAccountKind(account) === kind),
   ), [accounts]);
 
+  // ---- Account merge: allow merging exactly 2 accounts with the same type,
+  // same owner, and same institution (currency and, for investment/loan
+  // accounts, product type / debt direction must also match). ----
+  const toggleMergeSelected = (id: string) => {
+    setMergeSelectedIds((prev) => prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id].slice(-2));
+  };
+
+  const mergeCheck = useMemo(() => {
+    if (mergeSelectedIds.length < 2) return { ok: false, reason: t("settings.accounts.merge.needTwo") };
+    const [first, second] = mergeSelectedIds
+      .map((id) => accounts.find((account) => account.id === id))
+      .filter((account): account is Account => Boolean(account));
+    if (!first || !second) return { ok: false, reason: t("settings.accounts.merge.needTwo") };
+    if (normalizedAccountKind(first) !== normalizedAccountKind(second)) {
+      return { ok: false, reason: t("settings.accounts.merge.hint.type") };
+    }
+    if (
+      normalizedAccountKind(first) === "investment" &&
+      (first.investProductType ?? "") !== (second.investProductType ?? "")
+    ) {
+      return { ok: false, reason: t("settings.accounts.merge.hint.investType") };
+    }
+    if (first.kind === "loan" && (first.debtDirection ?? "") !== (second.debtDirection ?? "")) {
+      return { ok: false, reason: t("settings.accounts.merge.hint.debtDirection") };
+    }
+    if ((first.groupId ?? "") !== (second.groupId ?? "")) {
+      return { ok: false, reason: t("settings.accounts.merge.hint.owner") };
+    }
+    if ((first.institutionId ?? "") !== (second.institutionId ?? "")) {
+      return { ok: false, reason: t("settings.accounts.merge.hint.institution") };
+    }
+    if (normalizeCurrency(first.currency || baseCurrency) !== normalizeCurrency(second.currency || baseCurrency)) {
+      return { ok: false, reason: t("settings.accounts.merge.hint.currency") };
+    }
+    return { ok: true, reason: t("settings.accounts.merge.hint.same") };
+  }, [accounts, mergeSelectedIds, baseCurrency, t]);
+
+  const mergeSelectedAccounts = mergeSelectedIds
+    .map((id) => accounts.find((account) => account.id === id))
+    .filter((account): account is Account => Boolean(account));
+
+  async function submitMerge(keepId: string, mergeId: string) {
+    setMergeBusy(true);
+    setMergeError("");
+    try {
+      const res = await fetch("/api/v1/accounts/merge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keepId, mergeId }),
+      });
+      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+      if (!res.ok || data?.ok === false) {
+        setMergeError(data?.error || t("settings.accounts.merge.failed"));
+        return;
+      }
+      setMergeModalOpen(false);
+      setMergeSelectedIds([]);
+      window.alert(t("settings.accounts.merge.success"));
+      void refreshSettingsAccounts("account:merge");
+    } finally {
+      setMergeBusy(false);
+    }
+  }
+
   const filteredAccounts = accounts.filter(a => {
     if (scope.userIds.length > 0 && !scope.userIds.includes(a.groupId ?? "")) return false;
     if (scope.institutionIds.length > 0) {
@@ -404,6 +516,19 @@ export default function SettingsAccountsPage() {
         title={t("settings.accounts.title")}
         description={guideAccountSetup ? t("settings.accounts.guideDescription") : t("settings.accounts.description")}
         count={filteredAccounts.length}
+        actions={
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <BasicDataImportExport
+              compact
+              groups={statisticsUsers}
+              institutions={institutions}
+              counterparties={counterparties}
+              baseCurrency={baseCurrency}
+              onImported={() => void refreshSettingsAccounts("account:import")}
+            />
+            <SettingsPrimaryAddButton onClick={() => setShowCreateAccount(true)}>{t("settings.accounts.add")}</SettingsPrimaryAddButton>
+          </div>
+        }
         toolbar={
           <>
           <div className="w-64 max-w-full">
@@ -446,15 +571,40 @@ export default function SettingsAccountsPage() {
             />
             <span>{t("settings.accounts.hideInactiveAccounts")}</span>
           </label>
-          <div className="ml-auto flex items-center gap-2">
-            <AccountBatchImportButton
-              groups={statisticsUsers}
-              institutions={institutions}
-              counterparties={counterparties}
-              baseCurrency={baseCurrency}
-              onImported={() => void refreshSettingsAccounts("account:import")}
-            />
-            <SettingsPrimaryAddButton onClick={() => setShowCreateAccount(true)}>{t("settings.accounts.add")}</SettingsPrimaryAddButton>
+          <div ref={accountSortMenuRef} className="relative">
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setAccountSortMenuOpen(o => !o); }}
+              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-600 shadow-sm hover:bg-slate-50"
+            >
+              <ArrowUpDown className="h-3.5 w-3.5 shrink-0" />
+              <span>{accountSortByLabel(accountSortBy)}</span>
+            </button>
+            {accountSortMenuOpen && (
+              <div className="absolute right-0 top-full mt-1 z-30 min-w-[140px] rounded-md border border-slate-200 bg-white shadow-md">
+                {(Object.keys(SORT_OPTIONS) as AccountSortBy[]).map((key) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => {
+                      if (accountSortBy === key) {
+                        setAccountSortDir(d => d === "asc" ? "desc" : "asc");
+                      } else {
+                        setAccountSortBy(key);
+                        setAccountSortDir("asc");
+                      }
+                      setAccountSortMenuOpen(false);
+                    }}
+                    className={`w-full px-3 py-2 text-left text-xs hover:bg-slate-50 ${accountSortBy === key ? "font-medium text-blue-600" : "text-slate-700"}`}
+                  >
+                    {accountSortByLabel(key)}
+                    {accountSortBy === key && (
+                      <span className="ml-1">{accountSortDir === "asc" ? "↑" : "↓"}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           </>
         }
@@ -480,7 +630,7 @@ export default function SettingsAccountsPage() {
             </button>
             {!collapsed && (
             <div className="divide-y divide-slate-100">
-              {list.map(a => (
+              {sortAccounts(list, accountSortBy, accountSortDir).map(a => (
                   /* ---- View mode ---- */
                   <div
                     key={a.id}
@@ -498,6 +648,20 @@ export default function SettingsAccountsPage() {
                     }}
                     className={`px-4 py-2.5 flex items-center justify-between ${a.isPlaceholder ? "opacity-40 bg-slate-50" : !a.isActive ? "opacity-60" : ""} ${!a.isPlaceholder ? "cursor-pointer hover:bg-slate-50 focus-visible:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-200" : ""} transition-colors`}
                   >
+                    <label
+                      className="flex shrink-0 cursor-pointer items-center self-center pr-2"
+                      onClick={(event) => event.stopPropagation()}
+                      onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") event.stopPropagation(); }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={mergeSelectedIds.includes(a.id)}
+                        onChange={(event) => { event.stopPropagation(); toggleMergeSelected(a.id); }}
+                        onClick={(event) => event.stopPropagation()}
+                        className="h-3.5 w-3.5 accent-blue-600"
+                        aria-label={t("settings.accounts.merge.action")}
+                      />
+                    </label>
                     <div className="flex-1 min-w-0 flex items-center gap-2">
                       <span className="text-sm font-medium text-slate-800 truncate">{accountDisplayName(a)}</span>
                       {a.isPlaceholder && (
@@ -647,6 +811,88 @@ export default function SettingsAccountsPage() {
         />
       )}
 
+      {/* ===== Merge selection bar (bottom floating) ===== */}
+      {mergeSelectedIds.length > 0 && (
+        <div className="fixed bottom-6 left-1/2 z-40 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-3 rounded-full border border-slate-200 bg-white px-4 py-2 shadow-lg">
+          <span className="shrink-0 text-xs font-medium text-slate-700">
+            {tf("settings.accounts.merge.selected", { count: mergeSelectedIds.length })}
+          </span>
+          {mergeSelectedIds.length === 2 && (
+            <span className={`shrink-0 text-xs ${mergeCheck.ok ? "text-emerald-600" : "text-amber-600"}`}>{mergeCheck.reason}</span>
+          )}
+          <button
+            type="button"
+            disabled={!mergeCheck.ok}
+            onClick={() => { setMergeKeepId(mergeSelectedIds[0] ?? ""); setMergeError(""); setMergeModalOpen(true); }}
+            className="h-7 shrink-0 rounded-full bg-blue-600 px-3 text-xs font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+          >
+            {t("settings.accounts.merge.action")}
+          </button>
+          <button
+            type="button"
+            onClick={() => setMergeSelectedIds([])}
+            className="h-7 shrink-0 rounded-full border border-slate-200 px-3 text-xs text-slate-600 transition hover:bg-slate-50"
+          >
+            {t("settings.accounts.merge.clear")}
+          </button>
+        </div>
+      )}
+
+      {/* ===== Merge confirm modal ===== */}
+      {mergeModalOpen && mergeSelectedAccounts.length === 2 && (() => {
+        const [first, second] = mergeSelectedAccounts;
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-[1px] p-4"
+            onMouseDown={() => { if (!mergeBusy) setMergeModalOpen(false); }}>
+            <div className="w-[420px] max-w-[calc(100vw-2rem)] rounded-xl border border-slate-200 bg-white shadow-xl p-4"
+              onMouseDown={e => e.stopPropagation()}>
+              <div className="text-sm font-semibold text-slate-800 mb-1">{t("settings.accounts.merge.title")}</div>
+              <div className="text-xs text-slate-500 mb-3">{t("settings.accounts.merge.desc")}</div>
+              <div className="mb-1.5 text-xs font-medium text-slate-600">{t("settings.accounts.merge.chooseName")}</div>
+              <div className="space-y-2">
+                {[first, second].map((account) => {
+                  const isKeep = mergeKeepId === account.id;
+                  return (
+                    <label key={account.id}
+                      className={`flex cursor-pointer items-center gap-2.5 rounded-lg border px-3 py-2.5 transition-colors ${isKeep ? "border-blue-300 bg-blue-50/60" : "border-slate-200 bg-white hover:bg-slate-50"}`}
+                      onClick={() => setMergeKeepId(account.id)}
+                    >
+                      <input
+                        type="radio"
+                        name="merge-keep-account"
+                        checked={isKeep}
+                        onChange={() => setMergeKeepId(account.id)}
+                        className="h-3.5 w-3.5 accent-blue-600"
+                      />
+                      <span className="min-w-0 flex-1 truncate text-sm text-slate-800">{accountDisplayName(account)}</span>
+                      <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded-full border ${isKeep ? "border-blue-200 bg-blue-50 text-blue-600" : "border-slate-200 bg-slate-50 text-slate-500"}`}>
+                        {isKeep ? t("settings.accounts.merge.keepLabel") : t("settings.accounts.merge.mergedLabel")}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+              {mergeError && <div className="text-xs text-red-500 mt-2">{mergeError}</div>}
+              <div className="flex justify-end gap-2 mt-4">
+                <button type="button" disabled={mergeBusy}
+                  onClick={() => setMergeModalOpen(false)}
+                  className="h-8 px-3 rounded-md border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-60">
+                  {t("common.cancel")}
+                </button>
+                <button type="button" disabled={mergeBusy || !mergeKeepId}
+                  onClick={() => {
+                    const mergeId = mergeSelectedIds.find((id) => id !== mergeKeepId) ?? "";
+                    if (mergeKeepId && mergeId) void submitMerge(mergeKeepId, mergeId);
+                  }}
+                  className="h-8 px-3 rounded-md bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60">
+                  {mergeBusy ? "..." : t("settings.accounts.merge.confirm")}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Password confirmation dialog for deleting account with records */}
       {deleteTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-[1px] p-4"
@@ -784,15 +1030,11 @@ export default function SettingsAccountsPage() {
                 )}
                 <div>
                   <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.currency")}</label>
-                  <select
+                  <CurrencySmartSelect
                     value={normalizeCurrency(editForm.currency || baseCurrency)}
-                    onChange={e => setEditForm(f => ({ ...f, currency: e.target.value }))}
-                    className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
-                  >
-                    {CURRENCY_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>{t(`entityForm.currency.${option.value.toLowerCase()}`)}</option>
-                    ))}
-                  </select>
+                    onChange={(code) => setEditForm((f) => ({ ...f, currency: code }))}
+                    labelSystem={(code) => t(`entityForm.currency.${code.toLowerCase()}`, { defaultValue: code })}
+                  />
                 </div>
                 {isInvestmentKind && (
                   isFixedAssetKind ? (
