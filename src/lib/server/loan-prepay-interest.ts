@@ -20,7 +20,6 @@ import { formatDateUtc, toNumber } from "@/lib/date-utils";
 import { compareDetailEntriesAsc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import { debtPrincipalForAccountSide } from "@/lib/debt";
 import { calcLoanAccruedInterestBetweenDates } from "@/lib/loan-repayment";
-import { resolveLoanTypeValue } from "@/lib/loan-type";
 import { decodeScheduledTaskMemo, shouldPreferLoanScheduledPlan } from "@/lib/scheduled-task";
 import {
   listLoanRateAdjustmentsByAccountIds,
@@ -84,8 +83,10 @@ export async function computeLoanPrepayInterestPreview(params: {
   ]);
 
   if (!account) return null;
-  // 按产品口径只对消费贷计算提前还款应计利息；房贷等利息随分期计划。
-  if (resolveLoanTypeValue(account.loanType, account.isConsumerLoan) !== "consumer") return null;
+  // 所有贷款类型（消费贷/房贷/抵押等）提前还款都按「利随本清」显示应计利息：
+  // 自借款日（或最近一次已结息日）到提前还款日按日计息，允许用户修改。
+  // 有还款计划的贷款（房贷类）计息起点会落在最近一次自动扣款日之后，
+  // 未到首期的贷款则从借款日起算——与银行结清实收口径一致。
 
   const orderedRows = txRows
     .slice()
