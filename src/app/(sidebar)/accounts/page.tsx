@@ -332,7 +332,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
                         </div>
                         <div className="text-left md:text-right">
                           <div className="text-xs text-slate-400">{t("accountsPage.usedLimit")}</div>
-                          <div className="mt-1 text-sm font-semibold tabular-nums text-red-700">
+                          <div className={`mt-1 text-sm font-semibold tabular-nums ${pnlClassFromRedUp(-account.balance, isRedUp, "strong")}`}>
                             {formatMoney(-account.balance)}
                           </div>
                         </div>
