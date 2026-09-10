@@ -111,7 +111,7 @@ export default async function MobileAccountDetailPage({ params }: { params: Prom
     };
   });
   const balance = account.kind === AccountKind.bank_credit
-    ? creditCardDisplayBalanceFromCurrentCycle(currentCreditCycle, toNumber(account.balance))
+    ? -creditCardDisplayBalanceFromCurrentCycle(currentCreditCycle, toNumber(account.balance))
     : balances.get(account.id) ?? toNumber(account.balance);
   const kind = String(account.kind);
 

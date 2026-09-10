@@ -162,7 +162,7 @@ export function MobileAccounts({
                           <span className="block truncate text-sm font-medium text-slate-900">{account.name}</span>
                           <span className="mt-0.5 block truncate text-xs text-slate-500">{account.groupName}</span>
                         </span>
-                        <span className={`shrink-0 text-sm font-semibold tabular-nums ${moneyClass(account.kind, account.balance, isRedUp)}`}>{formatMoneyYuan(account.balance)}</span>
+                        <span className={`shrink-0 text-sm font-semibold tabular-nums ${moneyClass(account.kind, account.balance, isRedUp)}`}>{formatMoneyYuan(account.kind === "bank_credit" ? -account.balance : account.balance)}</span>
                         <ChevronRight size={18} className="shrink-0 text-slate-400" />
                       </Link>
                     );

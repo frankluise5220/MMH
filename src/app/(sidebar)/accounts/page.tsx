@@ -11,6 +11,7 @@ import { prisma } from "@/lib/db/prisma";
 import { formatMoney, formatMoneyYuan } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
+import { isCreditCardMonthEndBillingDay } from "@/lib/credit/rules";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "@/lib/server/account-label-fields";
@@ -71,6 +72,12 @@ function kindLabel(t: T, kind: string) {
 
 function dateLabel(t: T, date: Date | null | undefined) {
   return date ? date.toISOString().slice(0, 10) : t("accountsPage.notGenerated");
+}
+
+function billingDayDisplayValue(day: number, t: T) {
+  return isCreditCardMonthEndBillingDay(day)
+    ? t("settings.accounts.billingDayMonthEndValue")
+    : t("settings.accounts.billingDayValue", { day });
 }
 
 function neutralMoneyClass(value: number) {
@@ -203,6 +210,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         currentAmount,
         billingDay: account.billingDay,
         repaymentDay: account.repaymentDay,
+        repaymentOffsetDays: account.repaymentOffsetDays,
         currentBill: toNumber(cycle?.effectiveBill),
         paid: toNumber(cycle?.paid),
         remain: toNumber(cycle?.cumulativeRemain),
@@ -317,15 +325,15 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
                           <div className="truncate text-sm font-semibold text-slate-800" title={account.hoverTitle}>{account.name}</div>
                           <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
                             <span className="rounded bg-slate-100 px-1.5 py-0.5">{account.groupName}</span>
-                            <span>{account.billingDay ? t("settings.accounts.billingDay", { day: account.billingDay }) : t("liabilities.notSet")}</span>
-                            <span>{account.repaymentDay ? t("settings.accounts.repaymentDay", { day: account.repaymentDay }) : t("liabilities.notSet")}</span>
+                            <span>{account.billingDay ? t("settings.accounts.billingDay", { day: billingDayDisplayValue(account.billingDay, t) }) : t("liabilities.notSet")}</span>
+                            <span>{account.repaymentOffsetDays != null ? t("settings.accounts.repaymentOffsetDays", { days: account.repaymentOffsetDays }) : account.repaymentDay ? t("settings.accounts.repaymentDay", { day: account.repaymentDay }) : t("liabilities.notSet")}</span>
                             <span>{t("depositShell.colMaturityDate")} {dateLabel(t, account.dueDate)}</span>
                           </div>
                         </div>
                         <div className="text-left md:text-right">
                           <div className="text-xs text-slate-400">{t("accountsPage.usedLimit")}</div>
-                          <div className={`mt-1 text-sm font-semibold tabular-nums ${liabilityMoneyClass(account.balance, isRedUp)}`}>
-                            {formatMoney(account.balance)}
+                          <div className="mt-1 text-sm font-semibold tabular-nums text-red-700">
+                            {formatMoney(-account.balance)}
                           </div>
                         </div>
                       </div>
