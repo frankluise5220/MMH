@@ -4,41 +4,23 @@ import { cookies } from "next/headers";
 import { SettingsCatalogIcon } from "@/components/settings/SettingsCatalogIcon";
 import { localizeSettingsCatalog } from "@/lib/settings/catalog";
 import { getServerT } from "@/lib/server/i18n";
-
-const BASIC_DATA_SECONDARY_IDS = new Set(["family-members", "counterparties", "institutions", "tags"]);
-const BASIC_DATA_PRIMARY_HREF = "/settings/family-members";
+import { shouldShowSponsor } from "@/lib/server/sponsor-visibility";
 
 export default async function SettingsPage() {
   const t = await getServerT();
   const cookieStore = await cookies();
   const hideDescriptions = cookieStore.get("sidebar_hide_initial_data")?.value === "true";
-  const catalog = localizeSettingsCatalog(t, "web");
-  const displayGroups = catalog.groups.map((group) => {
-    if (group.id !== "master-data") return group;
-    return {
-      ...group,
-      items: group.items.flatMap((item) => {
-        if (item.id === "institutions") {
-          return [{
-            ...item,
-            id: "basic-data",
-            label: t("settings.basicDataSubmenu"),
-            description: t("settings.basicDataSubmenu.desc"),
-            icon: "database",
-            webHref: BASIC_DATA_PRIMARY_HREF,
-          }];
-        }
-        return BASIC_DATA_SECONDARY_IDS.has(item.id) ? [] : [item];
-      }),
-    };
-  });
+  const showSponsor = await shouldShowSponsor();
+  // localizeSettingsCatalog already folds the four basic-data entries into one
+  // "基本资料" entry for web.
+  const catalog = localizeSettingsCatalog(t, "web", showSponsor ? ["sponsor"] : undefined);
 
   // Desktop-app-only group. The /settings/desktop page and /api/desktop/config
   // only exist for the Windows Electron build; hide it on web/NAS/mobile.
   const isWindowsDesktop = process.env.MMH_DEPLOY_TARGET === "windows";
   const groupsWithDesktop = isWindowsDesktop
     ? [
-        ...displayGroups,
+        ...catalog.groups,
         {
           id: "desktop",
           label: t("settings.group.desktop"),
@@ -55,7 +37,7 @@ export default async function SettingsPage() {
           ],
         },
       ]
-    : displayGroups;
+    : catalog.groups;
 
   return (
     <>

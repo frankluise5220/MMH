@@ -11,11 +11,43 @@ const GITHUB_REPO_URL = "https://github.com/frankluise5220/MMH";
 
 type QrTab = "wechat" | "alipay";
 
+const QR_URLS: Record<QrTab, string> = {
+  wechat: WECHAT_QR_URL,
+  alipay: ALIPAY_QR_URL,
+};
+const ALL_TABS: QrTab[] = ["wechat", "alipay"];
+
 export function SponsorPanel() {
   const { t } = useI18n();
-  const [activeTab, setActiveTab] = useState<QrTab>("wechat");
+  const [availableTabs, setAvailableTabs] = useState<QrTab[]>([]);
+  const [activeTab, setActiveTab] = useState<QrTab>("alipay");
   const [failedTabs, setFailedTabs] = useState<Record<QrTab, boolean>>({ wechat: false, alipay: false });
   const [zoomed, setZoomed] = useState(false);
+
+  // Probe which QR images actually exist so only configured tabs are shown
+  // (e.g. only Alipay while no WeChat QR has been placed in public/reward).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const results = await Promise.all(
+        ALL_TABS.map(async (tab) => {
+          try {
+            const res = await fetch(QR_URLS[tab], { method: "HEAD" });
+            return res.ok;
+          } catch {
+            return false;
+          }
+        }),
+      );
+      if (cancelled) return;
+      const tabs = ALL_TABS.filter((_, index) => results[index]);
+      setAvailableTabs(tabs);
+      setActiveTab((current) => (tabs.includes(current) ? current : (tabs[0] ?? "alipay")));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!zoomed) return;
@@ -56,25 +88,27 @@ export function SponsorPanel() {
 
       {/* QR codes */}
       <section className="rounded-xl border border-slate-200 bg-white px-4 py-4">
-        <div className="mx-auto flex w-fit gap-1 rounded-lg bg-slate-100 p-1">
-          {(["wechat", "alipay"] as QrTab[]).map((tab) => (
-            <button
-              key={tab}
-              type="button"
-              onClick={() => setActiveTab(tab)}
-              className={`h-8 rounded-md px-4 text-sm transition-colors ${
-                activeTab === tab
-                  ? "bg-white font-medium text-slate-900 shadow-sm"
-                  : "text-slate-500 hover:text-slate-700"
-              }`}
-            >
-              {tab === "wechat" ? t("settings.sponsor.tabWechat") : t("settings.sponsor.tabAlipay")}
-            </button>
-          ))}
-        </div>
+        {availableTabs.length > 0 ? (
+          <div className="mx-auto flex w-fit gap-1 rounded-lg bg-slate-100 p-1">
+            {availableTabs.map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => setActiveTab(tab)}
+                className={`h-8 rounded-md px-4 text-sm transition-colors ${
+                  activeTab === tab
+                    ? "bg-white font-medium text-slate-900 shadow-sm"
+                    : "text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                {tab === "wechat" ? t("settings.sponsor.tabWechat") : t("settings.sponsor.tabAlipay")}
+              </button>
+            ))}
+          </div>
+        ) : null}
 
         <div className="mt-4 flex flex-col items-center">
-          {activeQrFailed ? (
+          {availableTabs.length === 0 || activeQrFailed ? (
             <div className="flex h-56 w-56 flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-200 bg-slate-50 px-4 text-center">
               <QrCode className="h-8 w-8 text-slate-300" />
               <div className="text-sm font-medium text-slate-500">{t("settings.sponsor.qrMissing")}</div>
@@ -101,8 +135,12 @@ export function SponsorPanel() {
             </button>
           )}
 
-          <p className="mt-3 text-xs text-slate-500">{activeQrHint}</p>
-          {activeQrFailed ? null : <p className="mt-0.5 text-[11px] text-slate-400">{t("settings.sponsor.zoomHint")}</p>}
+          {availableTabs.length === 0 ? null : (
+            <>
+              <p className="mt-3 text-xs text-slate-500">{activeQrHint}</p>
+              {activeQrFailed ? null : <p className="mt-0.5 text-[11px] text-slate-400">{t("settings.sponsor.zoomHint")}</p>}
+            </>
+          )}
         </div>
       </section>
 

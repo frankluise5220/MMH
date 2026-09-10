@@ -6,14 +6,36 @@ import { useEffect, useState } from "react";
 import { ChevronRight, Loader2, Settings } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { SettingsCatalogIcon } from "@/components/settings/SettingsCatalogIcon";
-import { getSettingsItemsForSurface, localizeSettingsItem } from "@/lib/settings/catalog";
+import { getSettingsItemsForSurface, isBasicDataSettingsPath, localizeSettingsItem, mergeBasicDataNavItems, type SettingsCatalogItem } from "@/lib/settings/catalog";
 
-const navItems = getSettingsItemsForSurface("web").filter((item) => item.webHref);
+const staticNavItems = mergeBasicDataNavItems(getSettingsItemsForSurface("web")).filter((item) => item.webHref);
 
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [pendingHref, setPendingHref] = useState<string | null>(null);
+  const [navItems, setNavItems] = useState<SettingsCatalogItem[]>(staticNavItems);
   const { t } = useI18n();
+
+  // Refresh the nav from the catalog API after mount so conditionally hidden
+  // entries (e.g. the sponsor page) appear when the server unlocks them.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/v1/settings/catalog?surface=web")
+      .then((res) => res.json())
+      .then((body: { ok?: boolean; data?: { groups?: { items?: SettingsCatalogItem[] }[] } }) => {
+        if (cancelled || !body?.ok) return;
+        const fetched = (body.data?.groups ?? [])
+          .flatMap((group) => group.items ?? [])
+          .filter((item) => item.webHref);
+        if (fetched.length > 0) setNavItems(mergeBasicDataNavItems(fetched));
+      })
+      .catch(() => {
+        // Keep the static list when the catalog fetch fails.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     setPendingHref(null);
@@ -32,7 +54,10 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
             const href = item.webHref ?? "/settings";
             const localized = localizeSettingsItem(t, item);
             const pending = pendingHref === href && pathname !== href;
-            const active = pathname === href || pending;
+            const active =
+              pathname === href ||
+              pending ||
+              (item.id === "basic-data" && isBasicDataSettingsPath(pathname));
             return (
               <Link
                 key={item.id}
