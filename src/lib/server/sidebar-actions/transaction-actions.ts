@@ -19,7 +19,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
 import { upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
-import { isDepositAccount, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
+import { isDepositAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
 import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
@@ -444,8 +444,8 @@ export async function createTransaction(formData: FormData) {
         const counterpartyInstitution = counterpartyInstitutionId
           ? await tx.institution.findUnique({ where: { id: counterpartyInstitutionId } })
           : null;
-        const isDebtTransfer = fromAcc.kind === AccountKind.loan || toAcc.kind === AccountKind.loan;
-        if (fromAcc.kind === AccountKind.loan && toAcc.kind === AccountKind.loan) {
+        const isDebtTransfer = isLoanOrSettlementAccountKind(fromAcc.kind) || isLoanOrSettlementAccountKind(toAcc.kind);
+        if (isLoanOrSettlementAccountKind(fromAcc.kind) && isLoanOrSettlementAccountKind(toAcc.kind)) {
           throw new Error(t("sidebar.action.settlementTransferNotAllowed"));
         }
         if (!isDebtTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc))) {
@@ -453,7 +453,7 @@ export async function createTransaction(formData: FormData) {
         }
         const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
         const debtMode = isDebtTransfer
-          ? fromAcc.kind === AccountKind.loan
+          ? isLoanOrSettlementAccountKind(fromAcc.kind)
             ? fromAcc.debtDirection === "receivable" ? "collect_in" : "borrow_in"
             : toAcc.debtDirection === "receivable" ? "lend_out" : "repay_out"
           : null;
@@ -2117,8 +2117,8 @@ export async function updateTransactionFromDialog(formData: FormData) {
           : null;
         touchedAccountIds.add(fromAcc.id);
         touchedAccountIds.add(toAcc.id);
-        const isDebtTransfer = fromAcc.kind === AccountKind.loan || toAcc.kind === AccountKind.loan;
-        if (fromAcc.kind === AccountKind.loan && toAcc.kind === AccountKind.loan) {
+        const isDebtTransfer = isLoanOrSettlementAccountKind(fromAcc.kind) || isLoanOrSettlementAccountKind(toAcc.kind);
+        if (isLoanOrSettlementAccountKind(fromAcc.kind) && isLoanOrSettlementAccountKind(toAcc.kind)) {
           throw new Error(t("sidebar.action.settlementTransferNotAllowed"));
         }
         if (!isDebtTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc))) {
@@ -2126,7 +2126,7 @@ export async function updateTransactionFromDialog(formData: FormData) {
         }
         const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
         const debtMode = isDebtTransfer
-          ? fromAcc.kind === AccountKind.loan
+          ? isLoanOrSettlementAccountKind(fromAcc.kind)
             ? fromAcc.debtDirection === "receivable" ? "collect_in" : "borrow_in"
             : toAcc.debtDirection === "receivable" ? "lend_out" : "repay_out"
           : null;

@@ -960,6 +960,13 @@ export function TransactionFormModal({
     const operation = debtMode ? "debt" : getCashTargetOperation(targetAccount);
     if (operation === "transfer") return false;
 
+    // Settlement accounts are identified by the account kind, not by the entry
+    // dialog. A transfer into/out of a settlement account is saved directly and
+    // the server records it as a debt entry (borrow/lend/repay/collect) based on
+    // the account's debtDirection and the cash flow. Loan accounts keep the
+    // dedicated dialog because they carry extra fields beyond a plain transfer.
+    if (operation === "debt" && !debtMode) return false;
+
     if (editEntryId) {
       if (operation === "debt" && debtMode && editEntryOriginalType !== "transfer") {
         return false;
