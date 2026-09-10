@@ -59,7 +59,7 @@ async function getSidebarData() {
       billingDay: account.billingDay,
     }));
   const creditIds = accounts
-    .filter((account) => account.kind === AccountKind.bank_credit && !!account.billingDay)
+    .filter((account) => account.kind === AccountKind.bank_credit)
     .map((account) => account.id);
   const insuranceAccountIds = accounts
     .filter((account) => account.kind === AccountKind.insurance)
@@ -95,7 +95,7 @@ async function getSidebarData() {
         ? (insuranceDisplayBalanceByAccountId.get(account.id) ?? 0)
       : isDepositAccount(account)
         ? (cashDisplayBalanceByAccountId.get(account.id) ?? Number(account.balance))
-      : account.kind === AccountKind.bank_credit && account.billingDay
+      : account.kind === AccountKind.bank_credit
         ? (currentCreditBalanceByAccountId.get(account.id) ?? cashDisplayBalanceByAccountId.get(account.id) ?? Number(account.balance))
       : isLoanOrSettlementAccountKind(account.kind)
         ? (debtDisplaySummary.balanceByAccountId.get(account.id) ?? cashDisplayBalanceByAccountId.get(account.id) ?? Number(account.balance))

@@ -9,6 +9,7 @@ import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { formatMoney } from "@/lib/format";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
+import { isCreditCardMonthEndBillingDay } from "@/lib/credit/rules";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { createDebtTransaction } from "@/lib/server/sidebar-actions/debt-actions";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -44,6 +45,13 @@ function kindLabel(kind: AccountKind, t: (key: string) => string) {
 
 function dayLabel(day: number | null, t: (key: string, params?: Record<string, string | number>) => string) {
   return day ? t("liabilities.day", { day }) : t("liabilities.notSet");
+}
+
+function billingDayDisplayValue(day: number | null, t: (key: string, params?: Record<string, string | number>) => string) {
+  if (!day) return t("liabilities.notSet");
+  return isCreditCardMonthEndBillingDay(day)
+    ? t("settings.accounts.billingDayMonthEndValue")
+    : t("settings.accounts.billingDayValue", { day });
 }
 
 type SmartSelectOptionLike = {
@@ -190,7 +198,7 @@ export default async function LiabilitiesPage({
       })),
     hidFilter,
   );
-  const creditIds = accounts.filter((account) => account.kind === AccountKind.bank_credit && !!account.billingDay).map((account) => account.id);
+  const creditIds = accounts.filter((account) => account.kind === AccountKind.bank_credit).map((account) => account.id);
   const currentCreditCycles = creditIds.length > 0
     ? await prisma.creditCardCycle.findMany({
         where: { accountId: { in: creditIds }, isCurrentCycle: true },
@@ -350,6 +358,7 @@ export default async function LiabilitiesPage({
       institutionName,
       billingDay: account.billingDay,
       repaymentDay: account.repaymentDay,
+      repaymentOffsetDays: account.repaymentOffsetDays,
       creditLimit: account.creditLimit == null ? 0 : toNumber(account.creditLimit),
       numberMasked: account.numberMasked,
       debtPersonKey,
@@ -469,8 +478,8 @@ export default async function LiabilitiesPage({
                             >
                               {row.direction === "receivable" ? t("liabilities.lent") : t("liabilities.borrowed")}
                             </span>
-                            <span>{t("liabilities.billingDayLabel", { day: dayLabel(row.billingDay, t) })}</span>
-                            <span>{t("liabilities.repaymentDayLabel", { day: dayLabel(row.repaymentDay, t) })}</span>
+                            <span>{t("liabilities.billingDayLabel", { day: billingDayDisplayValue(row.billingDay, t) })}</span>
+                            <span>{row.repaymentOffsetDays != null ? t("settings.accounts.repaymentOffsetDays", { days: row.repaymentOffsetDays }) : t("liabilities.repaymentDayLabel", { day: dayLabel(row.repaymentDay, t) })}</span>
                             {row.numberMasked ? <span>{t("liabilities.lastFour", { value: row.numberMasked })}</span> : null}
                           </div>
                         </div>

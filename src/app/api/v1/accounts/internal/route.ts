@@ -102,7 +102,7 @@ export async function GET(request: Request) {
       hidFilter,
     );
     const creditIds = accounts
-      .filter((account) => account.kind === AccountKind.bank_credit && !!account.billingDay)
+      .filter((account) => account.kind === AccountKind.bank_credit)
       .map((account) => account.id);
     const currentCreditCycles =
       creditIds.length > 0
@@ -137,7 +137,7 @@ export async function GET(request: Request) {
         const displayBalance = cashDisplayBalanceByAccountId.get(a.id);
         return displayBalance == null ? a : { ...a, balance: displayBalance };
       }
-      if (a.kind === AccountKind.bank_credit && a.billingDay) {
+      if (a.kind === AccountKind.bank_credit) {
         const creditDisplayBalance = currentCreditBalanceByAccountId.get(a.id);
         if (creditDisplayBalance != null) return { ...a, balance: creditDisplayBalance };
       }

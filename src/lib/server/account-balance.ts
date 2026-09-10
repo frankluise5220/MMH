@@ -190,8 +190,11 @@ export async function computeAccountDisplayBalances(
     }
 
     for (const account of nonDepositAccounts) {
-      const isCreditBill = account.kind === AccountKind.bank_credit && !!account.billingDay;
-      if (isCreditBill) {
+      if (account.kind === AccountKind.bank_credit) {
+        // Credit-card balances always come from the CreditCardCycle cache
+        // (billing.ts). Fold to 0 here even when billingDay is unset, so a
+        // card without a billing day is never treated as a plain account
+        // whose balance accumulates transaction flows.
         result.set(account.id, 0);
         continue;
       }
@@ -312,12 +315,13 @@ export async function recalcAndSaveAccountBalance(accountId: string) {
   });
   if (!acc) return;
 
-  // Credit-bill accounts (bank_credit with a billing day) always fold to a
-  // display balance of 0 — computeAccountDisplayBalances discards the folded
-  // sum for them because the shown balance is derived from the
-  // CreditCardCycle cache. Skip the full transaction-history scan entirely so
-  // saving entries on a credit card does not pull its entire ledger.
-  if (acc.kind === AccountKind.bank_credit && acc.billingDay) {
+  // Credit-bill accounts (bank_credit) always fold to a display balance of 0
+  // — computeAccountDisplayBalances discards the folded sum for them because
+  // the shown balance is derived from the CreditCardCycle cache. This applies
+  // even when billingDay is unset: a card without a billing day must not be
+  // treated as a plain account. Skip the full transaction-history scan
+  // entirely so saving entries on a credit card does not pull its ledger.
+  if (acc.kind === AccountKind.bank_credit) {
     await prisma.account
       .update({ where: { id: accountId }, data: { balance: "0" } })
       .catch(() => {});

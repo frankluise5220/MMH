@@ -66,7 +66,7 @@ export async function GET(req: Request) {
       ),
       prisma.creditCardCycle.findMany({
         where: {
-          accountId: { in: accounts.filter((account) => account.kind === AccountKind.bank_credit && !!account.billingDay).map((account) => account.id) },
+          accountId: { in: accounts.filter((account) => account.kind === AccountKind.bank_credit).map((account) => account.id) },
           isCurrentCycle: true,
         },
         select: { accountId: true, effectiveBill: true, cumulativeRemain: true, cumulativeOverpaid: true },
@@ -90,7 +90,7 @@ export async function GET(req: Request) {
         ? investBalByAccountId.get(a.id)?.marketValue ?? 0
         : a.kind === AccountKind.insurance
           ? insuranceDisplayBalanceByAccountId.get(a.id) ?? 0
-          : a.kind === AccountKind.bank_credit && a.billingDay
+          : a.kind === AccountKind.bank_credit
             ? currentCreditBalanceByAccountId.get(a.id) ?? toNumber(a.balance)
           : a.kind === AccountKind.loan || a.kind === AccountKind.settlement
             ? debtDisplaySummary.balanceByAccountId.get(a.id) ?? displayBalanceByAccountId.get(a.id) ?? toNumber(a.balance)

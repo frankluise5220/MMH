@@ -162,6 +162,7 @@ export async function GET(req: Request) {
           billingDay: true,
           billingDayTxPeriod: true,
           repaymentDay: true,
+          repaymentOffsetDays: true,
           creditBillMode: true,
           numberMasked: true,
           institutionId: true,
@@ -532,7 +533,7 @@ export async function GET(req: Request) {
       ),
       prisma.creditCardCycle.findMany({
         where: {
-          accountId: { in: accountBatch.filter((account) => account.kind === AccountKind.bank_credit && !!account.billingDay).map((account) => account.id) },
+          accountId: { in: accountBatch.filter((account) => account.kind === AccountKind.bank_credit).map((account) => account.id) },
           isCurrentCycle: true,
         },
         select: { accountId: true, effectiveBill: true, cumulativeRemain: true, cumulativeOverpaid: true },
@@ -562,7 +563,7 @@ export async function GET(req: Request) {
             ? investBalByAccountId.get(account.id)?.marketValue ?? 0
             : account.kind === AccountKind.insurance
               ? insuranceDisplayBalanceByAccountId.get(account.id) ?? 0
-              : account.kind === AccountKind.bank_credit && account.billingDay
+              : account.kind === AccountKind.bank_credit
                 ? currentCreditBalanceByAccountId.get(account.id) ?? toNumber(account.balance)
                 : displayBalanceByAccountId.get(account.id) ?? toNumber(account.balance),
           kind: account.kind,
@@ -576,6 +577,7 @@ export async function GET(req: Request) {
           billingDay: account.billingDay,
           billingDayTxPeriod: account.billingDayTxPeriod,
           repaymentDay: account.repaymentDay,
+          repaymentOffsetDays: account.repaymentOffsetDays,
           creditBillMode: account.creditBillMode,
           numberMasked: account.numberMasked,
           institutionId: account.institutionId,

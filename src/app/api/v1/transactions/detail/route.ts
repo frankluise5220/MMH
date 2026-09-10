@@ -62,7 +62,7 @@ import { getFundConfirmDays, getFundArrivalDays } from "@/lib/fund/confirmDays";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { toNumber, addWorkdaysUtc, toStatementMonth, startOfDayUtc, formatDateLocal } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
-import { compareDetailEntriesAsc, compareDetailEntriesDesc } from "@/lib/detail-entry-order";
+import { compareDetailEntriesAsc, compareDetailEntriesDesc, locateDetailEntryPageDesc } from "@/lib/detail-entry-order";
 import { isDepositAccount, isInsuranceAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
 import { getOrCreateInsuranceAccount } from "@/lib/insurance/autoAccount";
 import { normalizeInsuranceAction } from "@/lib/insurance/transaction";
@@ -207,7 +207,7 @@ async function resolveAccountDisplayBalance(
     return balances.get(account.id) ?? toNumber(account.balance);
   }
 
-  if (account.kind === AccountKind.bank_credit && account.billingDay) {
+  if (account.kind === AccountKind.bank_credit) {
     const cycle = await prisma.creditCardCycle.findFirst({
       where: { accountId: account.id, isCurrentCycle: true },
       select: { effectiveBill: true, cumulativeRemain: true, cumulativeOverpaid: true },
@@ -1591,6 +1591,32 @@ export async function GET(req: Request) {
 
     const accountDisplayBalancePromise = resolveAccountDisplayBalance(account, hidFilter);
     const orderedEntries = [...orderingEntries].sort((a, b) => compareDetailEntriesDesc(displayDateEntryOf(a), displayDateEntryOf(b), accountId));
+
+    // Date locate mode: jump straight to the page containing the first entry
+    // on or before the requested date. Ordering fields are already fully
+    // loaded above, so the page index is computed in memory for free.
+    const locateDateParam = (url.searchParams.get("locateDate") ?? "").trim();
+    if (locateDateParam) {
+      const located = locateDetailEntryPageDesc(
+        orderedEntries.map(displayDateEntryOf),
+        locateDateParam,
+        pageSize,
+        accountId,
+      );
+      return NextResponse.json({
+        ok: true,
+        data: {
+          accountId: account.id,
+          locateDate: locateDateParam,
+          locatePage: located.page,
+          locateIndex: located.index,
+          totalCount,
+          page,
+          pageSize,
+        },
+      });
+    }
+
     const ascEntries = [...orderedEntries].sort((a, b) => compareDetailEntriesAsc(displayDateEntryOf(a), displayDateEntryOf(b), accountId));
     const runningBalanceById = new Map<string, number>();
     let runningBalance = 0;

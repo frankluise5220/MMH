@@ -21,7 +21,11 @@ import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { computeAccountDisplayBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
-import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
+import {
+  CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS,
+  CREDIT_CARD_MONTH_END_BILLING_DAY,
+  creditCardDisplayBalanceFromCurrentCycle,
+} from "@/lib/credit/billing";
 import {
   accountSupportsNumberMasked,
   assertAccountIdentityUnique,
@@ -47,6 +51,7 @@ import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import {
   ensureInitialCreditCardBillingDayRules,
   recordCreditCardBillingDayChange,
+  syncCreditCardBillingDaysFromRules,
 } from "@/lib/server/credit-card-billing-day-rules";
 
 export const runtime = "nodejs";
@@ -68,8 +73,33 @@ function parseDay(raw: unknown) {
   const s = String(raw ?? "").trim();
   if (!s) return null;
   const n = Number(s);
-  if (!Number.isFinite(n) || n < 1 || n > 31) return undefined;
+  if (!Number.isInteger(n) || n < 1 || n > 31) return undefined;
   return n;
+}
+
+function parseBillingDay(raw: unknown) {
+  if (raw === undefined) return undefined;
+  const s = String(raw ?? "").trim().toLowerCase();
+  if (s === "month_end" || s === "last_day" || s === "end_of_month") {
+    return CREDIT_CARD_MONTH_END_BILLING_DAY;
+  }
+  return parseDay(raw);
+}
+
+function parseRepaymentOffsetDays(raw: unknown) {
+  if (raw === undefined) return undefined;
+  const s = String(raw ?? "").trim();
+  if (!s) return null;
+  const n = Number(s);
+  if (!Number.isInteger(n) || n < 0 || n > CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS) return undefined;
+  return n;
+}
+
+function normalizeRepaymentDayMode(raw: unknown, fallbackOffsetDays?: number | null) {
+  const value = String(raw ?? "").trim();
+  if (value === "offset") return "offset";
+  if (value === "fixed") return "fixed";
+  return fallbackOffsetDays != null ? "offset" : "fixed";
 }
 
 function parseDateOnly(raw: unknown) {
@@ -129,12 +159,12 @@ export async function POST(req: NextRequest) {
     if (isConsumerLoan && kind !== "loan") {
       return NextResponse.json({ ok: false, code: "CONSUMER_LOAN_KIND_REQUIRED", error: "Consumer loan accounts must use loan account kind" }, { status: 400 });
     }
-    if (!name) return NextResponse.json({ ok: false, code: "NAME_REQUIRED", error: "名称必填" }, { status: 400 });
+    if (!name) return NextResponse.json({ ok: false, code: "NAME_REQUIRED", error: "Name is required" }, { status: 400 });
     if (initialBalanceRaw && !Number.isFinite(initialBalance)) {
-      return NextResponse.json({ ok: false, code: "INVALID_BALANCE", error: "余额必须是有效数字" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_BALANCE", error: "Initial balance must be a valid number" }, { status: 400 });
     }
     if (initialBalanceRaw && !initialBalanceDate) {
-      return NextResponse.json({ ok: false, code: "INVALID_DATE_FORMAT", error: "时间节点格式必须是 YYYY-MM-DD" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVALID_DATE_FORMAT", error: "Initial balance date must be YYYY-MM-DD" }, { status: 400 });
     }
 
     const { householdId } = await getHouseholdScope();
@@ -149,7 +179,7 @@ export async function POST(req: NextRequest) {
     const institution = requestedInstitutionId
       ? await prisma.institution.findFirst({ where: { id: requestedInstitutionId, householdId } })
       : null;
-    if (requestedInstitutionId && !institution) return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "机构不存在或不属于当前账簿" }, { status: 400 });
+    if (requestedInstitutionId && !institution) return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "Institution not found in this household" }, { status: 400 });
     if (kind === "settlement" && requestedInstitutionId) {
       return NextResponse.json({ ok: false, code: "SETTLEMENT_INSTITUTION_FORBIDDEN", error: "Settlement accounts must be linked to a counterparty, not an institution" }, { status: 400 });
     }
@@ -168,7 +198,7 @@ export async function POST(req: NextRequest) {
     const counterparty = requestedCounterpartyId
       ? await prisma.counterparty.findFirst({ where: { id: requestedCounterpartyId, householdId } })
       : null;
-    if (requestedCounterpartyId && !counterparty) return NextResponse.json({ ok: false, code: "COUNTERPARTY_NOT_FOUND", error: "往来对象不存在或不属于当前账簿" }, { status: 400 });
+    if (requestedCounterpartyId && !counterparty) return NextResponse.json({ ok: false, code: "COUNTERPARTY_NOT_FOUND", error: "Counterparty not found in this household" }, { status: 400 });
     if (isConsumerLoan && requestedCounterpartyId) {
       return NextResponse.json({ ok: false, code: "CONSUMER_LOAN_COUNTERPARTY_FORBIDDEN", error: "Consumer loan accounts must not be linked to a counterparty" }, { status: 400 });
     }
@@ -182,18 +212,44 @@ export async function POST(req: NextRequest) {
     const owner = requestedUserId
       ? await prisma.user.findFirst({ where: { id: requestedUserId, householdId } })
       : null;
-    if (requestedUserId && !owner) return NextResponse.json({ ok: false, code: "OWNER_NOT_FOUND", error: "所有人不存在或不属于当前账簿" }, { status: 400 });
+    if (requestedUserId && !owner) return NextResponse.json({ ok: false, code: "OWNER_NOT_FOUND", error: "Owner not found in this household" }, { status: 400 });
 
     const creditDefaults = isCreditLike
       ? await getCreditCardInstitutionDefaults(prisma, householdId, institution?.id)
       : null;
-    const requestedBillingDay = parseDay(body.billingDay);
+    const requestedBillingDay = parseBillingDay(body.billingDay);
     const requestedRepaymentDay = parseDay(body.repaymentDay);
+    const requestedRepaymentOffsetDays = parseRepaymentOffsetDays(body.repaymentOffsetDays);
+    const repaymentDayMode = isCreditLike
+      ? normalizeRepaymentDayMode(
+          body.repaymentDayMode,
+          requestedRepaymentOffsetDays !== undefined
+            ? requestedRepaymentOffsetDays
+            : creditDefaults?.repaymentOffsetDays ?? null,
+        )
+      : "fixed";
+    if (isCreditLike && body.billingDay !== undefined && requestedBillingDay === undefined) {
+      return NextResponse.json({ ok: false, code: "INVALID_BILLING_DAY", error: "Billing day must be a day between 1 and 31 or month_end" }, { status: 400 });
+    }
+    if (isCreditLike && repaymentDayMode === "fixed" && body.repaymentDay !== undefined && requestedRepaymentDay === undefined) {
+      return NextResponse.json({ ok: false, code: "INVALID_REPAYMENT_DAY", error: "Repayment day must be an integer between 1 and 31" }, { status: 400 });
+    }
+    if (isCreditLike && repaymentDayMode === "offset" && body.repaymentOffsetDays !== undefined && requestedRepaymentOffsetDays === undefined) {
+      return NextResponse.json({ ok: false, code: "INVALID_REPAYMENT_OFFSET_DAYS", error: `Repayment offset days must be an integer between 0 and ${CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS}` }, { status: 400 });
+    }
     const billingDay = isCreditLike
       ? requestedBillingDay ?? creditDefaults?.billingDay ?? null
       : null;
+    const repaymentOffsetDays = isCreditLike && repaymentDayMode === "offset"
+      ? requestedRepaymentOffsetDays ?? creditDefaults?.repaymentOffsetDays ?? null
+      : null;
+    if (isCreditLike && repaymentDayMode === "offset" && repaymentOffsetDays == null) {
+      return NextResponse.json({ ok: false, code: "INVALID_REPAYMENT_OFFSET_DAYS", error: `Repayment offset days must be an integer between 0 and ${CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS}` }, { status: 400 });
+    }
     const repaymentDay = isCreditLike
-      ? requestedRepaymentDay ?? creditDefaults?.repaymentDay ?? null
+      ? repaymentDayMode === "offset"
+        ? null
+        : requestedRepaymentDay ?? creditDefaults?.repaymentDay ?? null
       : null;
     const creditLimit = isCreditLike
       ? String(body.creditLimit ?? "").trim() || creditDefaults?.creditLimit || null
@@ -250,6 +306,7 @@ export async function POST(req: NextRequest) {
           isActive: true,
           billingDay,
           repaymentDay,
+          repaymentOffsetDays,
           creditLimit,
           creditBillMode,
           billingDayTxPeriod,
@@ -310,8 +367,8 @@ export async function POST(req: NextRequest) {
       await syncCreditCardInstitutionSettings(prisma, {
         householdId,
         institutionId: account.institutionId,
-        billingDay: account.billingDay,
         repaymentDay: account.repaymentDay,
+        repaymentOffsetDays: account.repaymentOffsetDays,
         creditBillMode: account.creditBillMode,
         billingDayTxPeriod: account.billingDayTxPeriod,
       });
@@ -327,6 +384,15 @@ export async function POST(req: NextRequest) {
           accountIds: institutionCardIds,
           billingDay: account.billingDay,
         });
+        if (body.billingDay !== undefined && account.billingDay != null) {
+          await recordCreditCardBillingDayChange(tx, {
+            accountIds: institutionCardIds,
+            billingDay: account.billingDay,
+          });
+        }
+        await syncCreditCardBillingDaysFromRules(tx, {
+          accountIds: institutionCardIds,
+        });
       });
       await invalidateCreditCardCycleCacheForAccountIds(institutionCardIds, { deleteManualCycles: true });
     }
@@ -337,7 +403,7 @@ export async function POST(req: NextRequest) {
     if (isAccountIdentityUniqueError(e)) {
       return NextResponse.json({ ok: false, code: "ACCOUNT_IDENTITY_CONFLICT", error: e.message }, { status: e.status });
     }
-    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: e instanceof Error ? e.message : "创建失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: e instanceof Error ? e.message : "Create account failed" }, { status: 500 });
   }
 }
 
@@ -347,12 +413,12 @@ export async function PUT(req: NextRequest) {
     const { householdId, user } = await getHouseholdScope();
     const body = await req.json();
     const id = String(body.id ?? "").trim();
-    if (!id) return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
+    if (!id) return NextResponse.json({ ok: false, code: "MISSING_ID", error: "Missing account id" }, { status: 400 });
 
     const existing = await prisma.account.findUnique({ where: { id } });
-    if (!existing) return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "账户不存在" }, { status: 404 });
+    if (!existing) return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "Account not found" }, { status: 404 });
     if (!isAdmin(user) && existing.householdId !== householdId) {
-      return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "越权操作" }, { status: 403 });
+      return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "Forbidden" }, { status: 403 });
     }
 
     const data: Record<string, unknown> = {};
@@ -398,7 +464,7 @@ export async function PUT(req: NextRequest) {
     const nextCounterparty = nextCounterpartyId
       ? await prisma.counterparty.findFirst({ where: { id: nextCounterpartyId, householdId } })
       : null;
-    if (nextCounterpartyId && !nextCounterparty) return NextResponse.json({ ok: false, code: "COUNTERPARTY_NOT_FOUND", error: "往来对象不存在或不属于当前账簿" }, { status: 400 });
+    if (nextCounterpartyId && !nextCounterparty) return NextResponse.json({ ok: false, code: "COUNTERPARTY_NOT_FOUND", error: "Counterparty not found in this household" }, { status: 400 });
     if (nextKind === "settlement" && !nextCounterparty) {
       return NextResponse.json({ ok: false, code: "SETTLEMENT_COUNTERPARTY_REQUIRED", error: "Settlement accounts must be linked to a counterparty" }, { status: 400 });
     }
@@ -406,17 +472,44 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ ok: false, code: "LOAN_COUNTERPARTY_FORBIDDEN", error: "Loan accounts must not be linked to a counterparty" }, { status: 400 });
     }
     const requestedDebtDirection = body.debtDirection !== undefined ? normalizeDebtDirection(nextKind, body.debtDirection) : null;
+    let nextCreditBillingDay: number | null = null;
     if (nextKind === "bank_credit") {
-      data.billingDay = body.billingDay !== undefined ? parseDay(body.billingDay) : existing.billingDay;
-      data.repaymentDay = body.repaymentDay !== undefined ? parseDay(body.repaymentDay) : existing.repaymentDay;
+      const nextBillingDay = body.billingDay !== undefined ? parseBillingDay(body.billingDay) : existing.billingDay;
+      const nextRepaymentDay = body.repaymentDay !== undefined ? parseDay(body.repaymentDay) : existing.repaymentDay;
+      const nextRepaymentOffsetDays = body.repaymentOffsetDays !== undefined
+        ? parseRepaymentOffsetDays(body.repaymentOffsetDays)
+        : existing.repaymentOffsetDays;
+      const nextRepaymentDayMode = normalizeRepaymentDayMode(
+        body.repaymentDayMode,
+        body.repaymentOffsetDays !== undefined ? nextRepaymentOffsetDays : existing.repaymentOffsetDays,
+      );
+      if (body.billingDay !== undefined && nextBillingDay === undefined) {
+        return NextResponse.json({ ok: false, code: "INVALID_BILLING_DAY", error: "Billing day must be a day between 1 and 31 or month_end" }, { status: 400 });
+      }
+      if (nextRepaymentDayMode === "fixed" && body.repaymentDay !== undefined && nextRepaymentDay === undefined) {
+        return NextResponse.json({ ok: false, code: "INVALID_REPAYMENT_DAY", error: "Repayment day must be an integer between 1 and 31" }, { status: 400 });
+      }
+      if (nextRepaymentDayMode === "offset" && body.repaymentOffsetDays !== undefined && nextRepaymentOffsetDays === undefined) {
+        return NextResponse.json({ ok: false, code: "INVALID_REPAYMENT_OFFSET_DAYS", error: `Repayment offset days must be an integer between 0 and ${CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS}` }, { status: 400 });
+      }
+      if (nextRepaymentDayMode === "offset" && nextRepaymentOffsetDays == null) {
+        return NextResponse.json({ ok: false, code: "INVALID_REPAYMENT_OFFSET_DAYS", error: `Repayment offset days must be an integer between 0 and ${CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS}` }, { status: 400 });
+      }
+      nextCreditBillingDay = nextBillingDay ?? null;
+      data.repaymentDay = nextRepaymentDayMode === "offset" ? null : nextRepaymentDay;
+      data.repaymentOffsetDays = nextRepaymentDayMode === "offset" ? nextRepaymentOffsetDays : null;
       data.creditLimit = body.creditLimit !== undefined ? (String(body.creditLimit ?? "").trim() || null) : existing.creditLimit;
       data.numberMasked = body.numberMasked !== undefined ? (String(body.numberMasked ?? "").trim() || null) : existing.numberMasked;
       data.creditBillMode = body.creditBillMode !== undefined
         ? normalizeCreditBillMode(body.creditBillMode)
         : existing.creditBillMode;
+      data.billingDayTxPeriod = body.billingDayTxPeriod !== undefined
+        ? normalizeCreditBillingDayTxPeriod(body.billingDayTxPeriod)
+        : existing.billingDayTxPeriod;
     } else {
       data.billingDay = null;
       data.repaymentDay = null;
+      data.repaymentOffsetDays = null;
       data.creditLimit = null;
       data.numberMasked = accountSupportsNumberMasked(nextKind)
         ? body.numberMasked !== undefined
@@ -464,10 +557,10 @@ export async function PUT(req: NextRequest) {
     const hasNextNumberMasked = Object.prototype.hasOwnProperty.call(data, "numberMasked");
     const nextName = hasNextName ? String(data.name ?? "").trim() : existing.name;
     const nextNumberMasked = hasNextNumberMasked ? data.numberMasked : existing.numberMasked;
-    if (!nextName) return NextResponse.json({ ok: false, code: "NAME_REQUIRED", error: "名称必填" }, { status: 400 });
+    if (!nextName) return NextResponse.json({ ok: false, code: "NAME_REQUIRED", error: "Name is required" }, { status: 400 });
 
     const nextGroupId = data.groupId === undefined ? existing.groupId : String(data.groupId ?? "");
-    if (!nextGroupId) return NextResponse.json({ ok: false, code: "OWNER_REQUIRED", error: "请选择所有人" }, { status: 400 });
+    if (!nextGroupId) return NextResponse.json({ ok: false, code: "OWNER_REQUIRED", error: "Owner is required" }, { status: 400 });
     const nextInstitutionId = nextKind === "settlement"
       ? null
       : data.institutionId === undefined
@@ -477,13 +570,13 @@ export async function PUT(req: NextRequest) {
           : null;
     if (nextGroupId) {
       const group = await prisma.accountGroup.findFirst({ where: { id: nextGroupId, householdId } });
-      if (!group) return NextResponse.json({ ok: false, code: "OWNER_NOT_FOUND", error: "所有人不存在或不属于当前账簿" }, { status: 400 });
+      if (!group) return NextResponse.json({ ok: false, code: "OWNER_NOT_FOUND", error: "Owner not found in this household" }, { status: 400 });
     }
     const nextInstitution = nextInstitutionId
       ? await prisma.institution.findFirst({ where: { id: nextInstitutionId, householdId } })
       : null;
     if (nextInstitutionId) {
-      if (!nextInstitution) return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "机构不存在或不属于当前账簿" }, { status: 400 });
+      if (!nextInstitution) return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "Institution not found in this household" }, { status: 400 });
     }
     if (accountRequiresInstitution(nextKind, nextInvestProductTypeForInstitution) && !nextInstitution) {
       return NextResponse.json({ ok: false, code: "ACCOUNT_INSTITUTION_REQUIRED", error: ACCOUNT_INSTITUTION_REQUIRED_ERROR }, { status: 400 });
@@ -521,8 +614,11 @@ export async function PUT(req: NextRequest) {
       (
         existing.kind !== "bank_credit" ||
         nextInstitutionId !== existing.institutionId ||
-        (body.billingDay !== undefined && data.billingDay !== existing.billingDay) ||
+        (body.billingDay !== undefined && nextCreditBillingDay !== existing.billingDay) ||
         (body.repaymentDay !== undefined && data.repaymentDay !== existing.repaymentDay) ||
+        (body.repaymentDayMode !== undefined && data.repaymentOffsetDays !== existing.repaymentOffsetDays) ||
+        (body.repaymentOffsetDays !== undefined && data.repaymentOffsetDays !== existing.repaymentOffsetDays) ||
+        (body.billingDayTxPeriod !== undefined && data.billingDayTxPeriod !== existing.billingDayTxPeriod) ||
         (body.creditBillMode !== undefined && data.creditBillMode !== existing.creditBillMode)
       );
 
@@ -532,6 +628,7 @@ export async function PUT(req: NextRequest) {
         ? await ensureBrokerageCashAccountForStockAccount(prisma, updated)
         : null;
     let affectedCreditAccountIds: string[] = [];
+    let finalBillingDay = updated.billingDay;
     if (updated.kind === "bank_credit") {
       const institutionCardsBeforeSync = updated.institutionId
         ? await prisma.account.findMany({
@@ -548,8 +645,8 @@ export async function PUT(req: NextRequest) {
       await syncCreditCardInstitutionSettings(prisma, {
         householdId: updated.householdId,
         institutionId: updated.institutionId,
-        billingDay: updated.billingDay,
         repaymentDay: updated.repaymentDay,
+        repaymentOffsetDays: updated.repaymentOffsetDays,
         creditBillMode: updated.creditBillMode,
         billingDayTxPeriod: updated.billingDayTxPeriod,
       });
@@ -564,11 +661,17 @@ export async function PUT(req: NextRequest) {
         for (const [billingDay, accountIds] of groupCreditCardIdsByBillingDay(priorBillingDayRows)) {
           await ensureInitialCreditCardBillingDayRules(tx, { accountIds, billingDay });
         }
-        if (body.billingDay !== undefined && data.billingDay !== existing.billingDay && updated.billingDay != null) {
+        if (body.billingDay !== undefined && nextCreditBillingDay !== existing.billingDay && nextCreditBillingDay != null) {
           await recordCreditCardBillingDayChange(tx, {
             accountIds: affectedCreditAccountIds,
-            billingDay: updated.billingDay,
+            billingDay: nextCreditBillingDay,
           });
+        }
+        const syncedBillingDays = await syncCreditCardBillingDaysFromRules(tx, {
+          accountIds: affectedCreditAccountIds,
+        });
+        if (syncedBillingDays.has(updated.id)) {
+          finalBillingDay = syncedBillingDays.get(updated.id) ?? null;
         }
       });
       await invalidateCreditCardCycleCacheForAccountIds(
@@ -582,9 +685,11 @@ export async function PUT(req: NextRequest) {
       data: {
         id: updated.id,
         kind: updated.kind,
-        billingDay: updated.billingDay,
+        billingDay: finalBillingDay,
         repaymentDay: updated.repaymentDay,
+        repaymentOffsetDays: updated.repaymentOffsetDays,
         creditBillMode: updated.creditBillMode,
+        billingDayTxPeriod: updated.billingDayTxPeriod,
         institutionId: updated.institutionId,
         note: updated.note,
         brokerageCashAccountId: brokerageCashAccount?.id ?? null,
@@ -596,7 +701,7 @@ export async function PUT(req: NextRequest) {
     if (isAccountIdentityUniqueError(e)) {
       return NextResponse.json({ ok: false, code: "ACCOUNT_IDENTITY_CONFLICT", error: e.message }, { status: e.status });
     }
-    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: e instanceof Error ? e.message : "更新失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: e instanceof Error ? e.message : "Update account failed" }, { status: 500 });
   }
 }
 
@@ -606,19 +711,19 @@ export async function PATCH(req: NextRequest) {
     const { householdId, user } = await getHouseholdScope();
     const body = await req.json();
     const id = String(body.id ?? "").trim();
-    if (!id) return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
+    if (!id) return NextResponse.json({ ok: false, code: "MISSING_ID", error: "Missing account id" }, { status: 400 });
 
     const existing = await prisma.account.findUnique({ where: { id } });
-    if (!existing) return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "账户不存在" }, { status: 404 });
+    if (!existing) return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "Account not found" }, { status: 404 });
     if (!isAdmin(user) && existing.householdId !== householdId) {
-      return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "越权操作" }, { status: 403 });
+      return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "Forbidden" }, { status: 403 });
     }
 
     await prisma.account.update({ where: { id }, data: { isActive: !existing.isActive } });
     revalidateAfterSettingsChange();
     return NextResponse.json({ ok: true });
   } catch (e) {
-    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: e instanceof Error ? e.message : "操作失败" }, { status: 500 });
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: e instanceof Error ? e.message : "Operation failed" }, { status: 500 });
   }
 }
 
@@ -751,7 +856,7 @@ export async function GET(req: Request) {
   try {
     scope = await getApiHouseholdScope(req);
   } catch (e) {
-    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: e instanceof Error ? e.message : "未授权" }, { status: 401, headers: corsHeaders() });
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: e instanceof Error ? e.message : "Unauthorized" }, { status: 401, headers: corsHeaders() });
   }
 
   const rows = await prisma.account.findMany({
@@ -781,7 +886,7 @@ export async function GET(req: Request) {
     ),
     prisma.creditCardCycle.findMany({
       where: {
-        accountId: { in: rows.filter((account) => account.kind === AccountKind.bank_credit && !!account.billingDay).map((account) => account.id) },
+        accountId: { in: rows.filter((account) => account.kind === AccountKind.bank_credit).map((account) => account.id) },
         isCurrentCycle: true,
       },
       select: { accountId: true, effectiveBill: true, cumulativeRemain: true, cumulativeOverpaid: true },
@@ -806,7 +911,7 @@ export async function GET(req: Request) {
         ? investBalByAccountId.get(account.id)?.marketValue ?? 0
         : account.kind === AccountKind.insurance
           ? insuranceDisplayBalanceByAccountId.get(account.id) ?? 0
-          : account.kind === AccountKind.bank_credit && account.billingDay
+          : account.kind === AccountKind.bank_credit
             ? currentCreditBalanceByAccountId.get(account.id) ?? toNumber(account.balance)
             : displayBalanceByAccountId.get(account.id) ?? toNumber(account.balance),
       count: 0,
