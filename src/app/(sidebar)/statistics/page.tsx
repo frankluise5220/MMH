@@ -8,8 +8,12 @@ import { ReportSelector } from "@/components/ReportSelector";
 import type { ReportItem } from "@/components/ReportSelector";
 import StatisticsCharts from "@/components/StatisticsCharts";
 import { StatisticsFilterPanel } from "@/components/StatisticsFilterPanel";
+import FundPortfolioTrendChart from "@/components/FundPortfolioTrendChart";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { loadFundPortfolioTrendData } from "@/lib/server/fund-portfolio-trend";
 import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
+import { buildStatisticsCurrencyConverter } from "@/lib/server/statistics-currency";
+import { buildStatisticsFundDisplayResolver } from "@/lib/server/statistics-fund-display";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import {
   normalizeDefaultCategoryHierarchyForHousehold,
@@ -191,6 +195,19 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
     ? allEntries.filter(e => e.EntryTag.some(et => selectedTagIds.includes(et.tagId)))
     : allEntries;
 
+  // Multi-currency statistics: every entry is converted to the household base
+  // currency using the latest stored FX rates. Entries whose currency has no
+  // stored rate stay out of the totals (reported via missingFxCurrencies).
+  const fx = await buildStatisticsCurrencyConverter(ctx.householdId, [
+    ...filteredEntries,
+    ...wealthStatisticEntries,
+    ...allAccounts.map((account) => ({ accountId: account.id })),
+  ]);
+  const resolvePnlFundDisplay = await buildStatisticsFundDisplayResolver(
+    [...filteredEntries, ...wealthStatisticEntries],
+    ctx.householdId,
+  );
+
   // ── Monthly aggregation ──
   const monthMap = new Map<string, { income: number; expense: number; investPnL: number; investCost: number }>();
   const incomeByCat = new Map<string, { id: string | null; name: string; type: "income"; value: number }>();
@@ -206,7 +223,8 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
     const m = String(d.getUTCMonth() + 1).padStart(2, "0");
     if (!monthMap.has(m)) monthMap.set(m, { income: 0, expense: 0, investPnL: 0, investCost: 0 });
     const row = monthMap.get(m)!;
-    const amount = toNumber(e.amount);
+    const amount = fx.convert(e, toNumber(e.amount));
+    if (amount == null) continue;
 
     const isToSelf = e.toAccountId && scopeAccountIds.includes(e.toAccountId);
     const isFromSelf = e.accountId && scopeAccountIds.includes(e.accountId);
@@ -297,7 +315,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
         }
         continue;
       }
-      for (const item of getInvestmentStatisticItems(e)) {
+      for (const item of fx.convertItems(e, getInvestmentStatisticItems(e))) {
         const signedProfit = item.type === "income" ? item.amount : -item.amount;
         if (item.type === "income") {
           addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
@@ -308,8 +326,9 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
         row.investPnL += signedProfit;
         const costBase = Math.abs(amount);
         const rate = costBase > 0 ? signedProfit / costBase : 0;
+        const fundDisplay = resolvePnlFundDisplay(e);
         pnlItems.push({
-          id: e.id, date: d.toISOString().slice(0, 10), fundCode: e.fundCode ?? "", fundName: e.fundName ?? "",
+          id: e.id, date: d.toISOString().slice(0, 10), fundCode: fundDisplay.fundCode, fundName: fundDisplay.fundName,
           subtype: item.label, amount: item.amount, profit: signedProfit, profitRate: rate,
         });
       }
@@ -389,6 +408,14 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
   // ── P&L list sorted by date descending ──
   pnlItems.sort((a, b) => b.date.localeCompare(a.date));
 
+  // Fund portfolio trend (cost/market value, monthly net flow, CSI 300
+  // benchmark) — prefetched in RSC to avoid a blank first screen. The
+  // simulation always walks from the earliest transaction so cost basis
+  // inside the window is correct; startMonth/endMonth only clip the window.
+  const fundTrendData = await loadFundPortfolioTrendData(ctx, {
+    includeBenchmark: true,
+  });
+
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       <header className="page-header flex items-center justify-between gap-3 px-6 py-3">
@@ -412,6 +439,9 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
         </div>
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto p-6">
+        <div className="mb-4">
+          <FundPortfolioTrendChart initialData={{ ok: true, ...fundTrendData }} />
+        </div>
         <StatisticsCharts
           monthData={monthData}
           incomeCats={incomeCats}

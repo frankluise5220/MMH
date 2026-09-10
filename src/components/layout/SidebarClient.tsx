@@ -32,6 +32,7 @@ import { formatCurrencyMoney, isDisplayZeroMoney, roundDisplayNumber } from "@/l
 import { resolveAccountCurrencyDisplayValue } from "@/lib/account-currency-display";
 import { buildAccountDisplayOption, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
 import { FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
+import { fetchInternalAccountBalances } from "@/lib/client/account-balances-fetch";
 import {
   APP_PREFS_EVENT,
   getAppPreferences,
@@ -487,14 +488,12 @@ export function SidebarClient({
         }
         sidebarRefreshBusy.current = true;
         try {
-          const res = await fetch("/api/v1/accounts/internal", { cache: "no-store" });
-          const contentType = res.headers.get("content-type") || "";
-          if (!res.ok || !contentType.includes("application/json")) return;
-          const data = await res.json().catch(() => null);
-          if (data?.ok && Array.isArray(data?.accounts)) {
+          const data = await fetchInternalAccountBalances();
+          const freshAccounts = data?.ok && Array.isArray(data.accounts) ? data.accounts : null;
+          if (freshAccounts) {
             startTransition(() => {
               setItems(prev => {
-                const fresh: AccountItem[] = normalizeSidebarItems(data.accounts
+                const fresh: AccountItem[] = normalizeSidebarItems(freshAccounts
                   .filter((a: any) => a.isActive !== false)
                   .map((a: any) => toSidebarAccountItem(a, t, getAppPreferences().creditCardSidebarLabelTemplate)), t);
                 // Merge: only update items whose data actually changed

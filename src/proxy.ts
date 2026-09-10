@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { verifyPassword } from "@/lib/auth/password";
+import { getApiKeyPolicyDecision } from "@/lib/api-key-policy";
+import { verifyAccessKey } from "@/lib/server/access-key-auth";
 import {
   extractAccessHostnames,
   isAccessHostnameAllowed,
@@ -13,7 +14,6 @@ import {
 } from "@/lib/server/session-cookies";
 
 const VERIFIED_KEY = "mmh_access_password_verified";
-const LEGACY_ACCESS_PASSWORD_KEY = "access_password";
 const CACHE_TTL = 5_000;
 const LOOKUP_TIMEOUT_MS = 1_200;
 
@@ -96,32 +96,12 @@ function getProvidedApiKey(req: NextRequest): string | null {
 }
 
 /**
- * Validate an X-Api-Key / Bearer credential the same way src/lib/server/api-auth.ts does:
- * bcrypt-compare against the admin user's password hash, with a legacy
- * plaintext `access_password` fallback. Without this check, merely *having* an
+ * Validate an X-Api-Key / Bearer credential against the independent AccessKey
+ * table (bcrypt-sha256 hashes). Without this check, merely *having* an
  * api-key header would bypass the auth gate.
  */
 async function isValidApiKey(key: string): Promise<boolean> {
-  const adminUser = await withTimeout(
-    prisma.user.findFirst({
-      where: { OR: [{ role: "admin" }, { isSystem: true }] },
-      orderBy: [{ isSystem: "desc" }, { createdAt: "asc" }],
-      select: { passwordHash: true },
-    }),
-    LOOKUP_TIMEOUT_MS,
-  );
-  if (adminUser?.passwordHash) {
-    try {
-      return await verifyPassword(key, adminUser.passwordHash);
-    } catch {
-      return false;
-    }
-  }
-  const legacy = await withTimeout(
-    prisma.systemSetting.findUnique({ where: { key: LEGACY_ACCESS_PASSWORD_KEY }, select: { value: true } }),
-    LOOKUP_TIMEOUT_MS,
-  );
-  return !!legacy?.value && key === legacy.value;
+  return Boolean(await withTimeout(verifyAccessKey(key), LOOKUP_TIMEOUT_MS));
 }
 
 async function isReadOnlySession(req: NextRequest): Promise<boolean> {
@@ -211,6 +191,13 @@ export async function proxy(req: NextRequest) {
   if (pathname.startsWith("/api/")) {
     const apiKey = getProvidedApiKey(req);
     if (apiKey && (await isValidApiKey(apiKey))) {
+      const policy = getApiKeyPolicyDecision(pathname, req.method);
+      if (!policy.ok) {
+        return NextResponse.json(
+          { ok: false, code: policy.code ?? "API_KEY_SCOPE_DENIED", error: policy.error ?? "API key access is not allowed for this endpoint." },
+          { status: 403 },
+        );
+      }
       return NextResponse.next();
     }
     return NextResponse.json({ ok: false, error: apiKey ? "API Key 无效" : "未登录" }, { status: 401 });

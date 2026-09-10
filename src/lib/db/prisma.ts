@@ -1,5 +1,5 @@
 import { PrismaClient } from "@prisma/client";
-import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
+import { PrismaBetterSqlite3WithSafeRollback } from "./sqlite-adapter";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
 
@@ -15,7 +15,7 @@ function createClient(): PrismaClient {
   }
 
   if (connectionString === ":memory:" || connectionString.startsWith("file:")) {
-    const adapter = new PrismaBetterSqlite3({
+    const adapter = new PrismaBetterSqlite3WithSafeRollback({
       url: connectionString,
     });
     return new PrismaClient({
