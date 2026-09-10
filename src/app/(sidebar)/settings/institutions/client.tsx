@@ -16,6 +16,8 @@ import {
   SettingsTh,
 } from "@/components/settings/SettingsPageScaffold";
 import { fetchSettingsAccountData, notifySettingsDataChanged } from "@/lib/client/settingsCache";
+import { showConfirmDialog } from "@/lib/client/confirm-dialog";
+import { BasicDataSubmenuHeader } from "@/components/settings/BasicDataImportExport";
 import { useI18n } from "@/lib/i18n";
 
 type Institution = {
@@ -23,6 +25,8 @@ type Institution = {
   name: string;
   shortName?: string | null;
   type: string | null;
+  /** Number of accounts linked to this institution / family member / counterparty. */
+  accountCount?: number;
 };
 
 type InstitutionSettingMode = "institution" | "counterparty" | "family";
@@ -45,6 +49,7 @@ export function SettingsInstitutionsClient({
   const [showCreate, setShowCreate] = useState(false);
   const [typeFilter, setTypeFilter] = useState("all");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [batchDeleting, setBatchDeleting] = useState(false);
   const allowedTypes =
     mode === "institution" ? INSTITUTION_TYPES : mode === "family" ? FAMILY_MEMBER_TYPES : COUNTERPARTY_TYPES;
   const typeLabel = (type: string | null | undefined) => t(`institution.type.${type ?? "other"}`);
@@ -101,8 +106,52 @@ export function SettingsInstitutionsClient({
     void refreshList({ force: true });
   }
 
+  const batchDeleteEntity = mode === "counterparty" ? "counterparty" : "institution";
+
+  async function handleBatchDelete() {
+    const ids = [...selectedIds];
+    if (batchDeleting || ids.length === 0) return;
+    const confirmed = await showConfirmDialog({
+      title: t("settings.batchDelete.title"),
+      message: t("settings.batchDelete.confirm", { count: ids.length }),
+      tone: "danger",
+    });
+    if (!confirmed) return;
+
+    setBatchDeleting(true);
+    try {
+      let deleted = 0;
+      for (const id of ids) {
+        try {
+          const res = await fetch("/api/v1/settings/delete", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ entity: batchDeleteEntity, id }),
+          });
+          const data = (await res.json().catch(() => null)) as { ok?: boolean } | null;
+          if (data?.ok) deleted += 1;
+        } catch {
+          // keep going; the summary below reports what failed
+        }
+      }
+      setSelectedIds(new Set());
+      if (deleted > 0) {
+        void notifySettingsDataChanged({ scope: "accounts", reason: `${mode}:batchDelete`, prefetch: true });
+        void refreshList({ force: true });
+      }
+      const failed = ids.length - deleted;
+      if (failed > 0) {
+        window.alert(t("settings.batchDelete.result", { deleted, failed }));
+      }
+    } finally {
+      setBatchDeleting(false);
+    }
+  }
+
   return (
     <div className="space-y-4">
+      <BasicDataSubmenuHeader onImported={() => void refreshList({ force: true })} />
+
       <SettingsPageHeader
         title={pageTitle}
         description={pageDescription}
@@ -138,6 +187,16 @@ export function SettingsInstitutionsClient({
             </label>
           ) : null}
           {selectedIds.size > 0 ? <span className="text-xs text-slate-500">{t("settings.institutions.selectedCount", { count: selectedIds.size })}</span> : null}
+          {selectedIds.size > 0 ? (
+            <button
+              type="button"
+              disabled={batchDeleting}
+              onClick={() => void handleBatchDelete()}
+              className="inline-flex h-8 items-center rounded-md border border-red-200 bg-red-50 px-3 text-xs font-medium text-red-600 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {t("settings.batchDelete.title")}
+            </button>
+          ) : null}
           <SettingsPrimaryAddButton onClick={() => setShowCreate(true)}>{createTitle}</SettingsPrimaryAddButton>
         </div>}
       >
@@ -162,6 +221,7 @@ export function SettingsInstitutionsClient({
                 <SettingsTh>{t("settings.institutions.name")}</SettingsTh>
                 <SettingsTh>{t("settings.institutions.shortName")}</SettingsTh>
                 <SettingsTh>{t("settings.institutions.type")}</SettingsTh>
+                <SettingsTh align="right">{t("settings.institutions.accountCountColumn")}</SettingsTh>
                 <SettingsTh align="right">{t("settings.institutions.actions")}</SettingsTh>
               </tr>
             </thead>
@@ -184,6 +244,14 @@ export function SettingsInstitutionsClient({
                   <SettingsTd className="text-sm font-medium text-slate-800">{item.name}</SettingsTd>
                   <SettingsTd>{item.shortName?.trim() || "-"}</SettingsTd>
                   <SettingsTd>{typeLabel(item.type)}</SettingsTd>
+                  <SettingsTd align="right">
+                    <span
+                      className={`tabular-nums ${(item.accountCount ?? 0) > 0 ? "text-slate-700" : "text-slate-400"}`}
+                      title={t("settings.institutions.accountCount", { count: item.accountCount ?? 0 })}
+                    >
+                      {item.accountCount ?? 0}
+                    </span>
+                  </SettingsTd>
                   <SettingsTd align="right">
                     <SettingsRowActions>
                       <InstitutionEditButton
@@ -214,7 +282,7 @@ export function SettingsInstitutionsClient({
                   </SettingsTd>
                 </tr>
               )) : (
-                <SettingsEmptyRow colSpan={5}>{emptyText}</SettingsEmptyRow>
+                <SettingsEmptyRow colSpan={6}>{emptyText}</SettingsEmptyRow>
               )}
             </tbody>
         </SettingsTable>

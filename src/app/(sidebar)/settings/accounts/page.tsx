@@ -64,13 +64,13 @@ type Account = {
   Counterparty: { id: string; name: string; shortName?: string | null } | null;
   billingDay: number | null; repaymentDay: number | null;
   creditBillMode?: "separate" | "consolidated";
-  billingDayTxPeriod?: string | null;
   creditLimit: string | null; numberMasked: string | null;
   investProductType: string | null; costBasisMethod: string | null;
   fundUnitsDecimals?: number | null;
   tradingCalendar?: string | null;
   fixedAssetType?: string | null;
   isConsumerLoan?: boolean | null;
+  debtDirection?: string | null;
 };
 
 const investmentProductTypeOptions = PRODUCT_TYPES
@@ -152,6 +152,13 @@ export default function SettingsAccountsPage() {
   const [deletePassword, setDeletePassword] = useState("");
   const [deleteError, setDeleteError] = useState("");
 
+  // Account merge: exactly 2 same-type accounts can be merged into one.
+  const [mergeSelectedIds, setMergeSelectedIds] = useState<string[]>([]);
+  const [mergeModalOpen, setMergeModalOpen] = useState(false);
+  const [mergeKeepId, setMergeKeepId] = useState("");
+  const [mergeBusy, setMergeBusy] = useState(false);
+  const [mergeError, setMergeError] = useState("");
+
   // Nested creation from SmartSelect in inline edit
   const [nestedEntityType, setNestedEntityType] = useState<"institution" | "group" | null>(null);
 
@@ -207,7 +214,6 @@ export default function SettingsAccountsPage() {
       repaymentDay: a.repaymentDay?.toString() || "",
       creditLimit: a.creditLimit || "",
       creditBillMode: a.creditBillMode === "consolidated" ? "consolidated" : "separate",
-      billingDayTxPeriod: a.billingDayTxPeriod === "next" ? "next" : "current",
       numberMasked: a.numberMasked || "",
       investProductType: editInvestProductType,
       fixedAssetType: editKind === "fixed_asset" ? (a.fixedAssetType || "property") : "",
@@ -287,8 +293,7 @@ export default function SettingsAccountsPage() {
         String(previousAccount.institutionId ?? "") !== String(editForm.institutionId ?? "") ||
         String(previousAccount.billingDay ?? "") !== String(editForm.billingDay ?? "") ||
         String(previousAccount.repaymentDay ?? "") !== String(editForm.repaymentDay ?? "") ||
-        String(previousAccount.creditBillMode ?? "separate") !== String(editForm.creditBillMode ?? "separate") ||
-        String(previousAccount.billingDayTxPeriod ?? "current") !== String(editForm.billingDayTxPeriod ?? "current")
+        String(previousAccount.creditBillMode ?? "separate") !== String(editForm.creditBillMode ?? "separate")
       ),
     );
     if (creditRuleChanged) {
@@ -418,6 +423,70 @@ export default function SettingsAccountsPage() {
     accounts.some((account) => normalizedAccountKind(account) === kind),
   ), [accounts]);
 
+  // ---- Account merge: allow merging exactly 2 accounts with the same type,
+  // same owner, and same institution (currency and, for investment/loan
+  // accounts, product type / debt direction must also match). ----
+  const toggleMergeSelected = (id: string) => {
+    setMergeSelectedIds((prev) => prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id].slice(-2));
+  };
+
+  const mergeCheck = useMemo(() => {
+    if (mergeSelectedIds.length < 2) return { ok: false, reason: t("settings.accounts.merge.needTwo") };
+    const [first, second] = mergeSelectedIds
+      .map((id) => accounts.find((account) => account.id === id))
+      .filter((account): account is Account => Boolean(account));
+    if (!first || !second) return { ok: false, reason: t("settings.accounts.merge.needTwo") };
+    if (normalizedAccountKind(first) !== normalizedAccountKind(second)) {
+      return { ok: false, reason: t("settings.accounts.merge.hint.type") };
+    }
+    if (
+      normalizedAccountKind(first) === "investment" &&
+      (first.investProductType ?? "") !== (second.investProductType ?? "")
+    ) {
+      return { ok: false, reason: t("settings.accounts.merge.hint.investType") };
+    }
+    if ((first.kind === "loan" || first.kind === "settlement") && (first.debtDirection ?? "") !== (second.debtDirection ?? "")) {
+      return { ok: false, reason: t("settings.accounts.merge.hint.debtDirection") };
+    }
+    if ((first.groupId ?? "") !== (second.groupId ?? "")) {
+      return { ok: false, reason: t("settings.accounts.merge.hint.owner") };
+    }
+    if ((first.institutionId ?? "") !== (second.institutionId ?? "")) {
+      return { ok: false, reason: t("settings.accounts.merge.hint.institution") };
+    }
+    if (normalizeCurrency(first.currency || baseCurrency) !== normalizeCurrency(second.currency || baseCurrency)) {
+      return { ok: false, reason: t("settings.accounts.merge.hint.currency") };
+    }
+    return { ok: true, reason: t("settings.accounts.merge.hint.same") };
+  }, [accounts, mergeSelectedIds, baseCurrency, t]);
+
+  const mergeSelectedAccounts = mergeSelectedIds
+    .map((id) => accounts.find((account) => account.id === id))
+    .filter((account): account is Account => Boolean(account));
+
+  async function submitMerge(keepId: string, mergeId: string) {
+    setMergeBusy(true);
+    setMergeError("");
+    try {
+      const res = await fetch("/api/v1/accounts/merge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keepId, mergeId }),
+      });
+      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+      if (!res.ok || data?.ok === false) {
+        setMergeError(data?.error || t("settings.accounts.merge.failed"));
+        return;
+      }
+      setMergeModalOpen(false);
+      setMergeSelectedIds([]);
+      window.alert(t("settings.accounts.merge.success"));
+      void refreshSettingsAccounts("account:merge");
+    } finally {
+      setMergeBusy(false);
+    }
+  }
+
   const filteredAccounts = accounts.filter(a => {
     if (scope.userIds.length > 0 && !scope.userIds.includes(a.groupId ?? "")) return false;
     if (scope.institutionIds.length > 0) {
@@ -541,6 +610,20 @@ export default function SettingsAccountsPage() {
                     }}
                     className={`px-4 py-2.5 flex items-center justify-between ${a.isPlaceholder ? "opacity-40 bg-slate-50" : !a.isActive ? "opacity-60" : ""} ${!a.isPlaceholder ? "cursor-pointer hover:bg-slate-50 focus-visible:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-200" : ""} transition-colors`}
                   >
+                    <label
+                      className="flex shrink-0 cursor-pointer items-center self-center pr-2"
+                      onClick={(event) => event.stopPropagation()}
+                      onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") event.stopPropagation(); }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={mergeSelectedIds.includes(a.id)}
+                        onChange={(event) => { event.stopPropagation(); toggleMergeSelected(a.id); }}
+                        onClick={(event) => event.stopPropagation()}
+                        className="h-3.5 w-3.5 accent-blue-600"
+                        aria-label={t("settings.accounts.merge.action")}
+                      />
+                    </label>
                     <div className="flex-1 min-w-0 flex items-center gap-2">
                       <span className="text-sm font-medium text-slate-800 truncate">{accountDisplayName(a)}</span>
                       {a.isPlaceholder && (
@@ -577,7 +660,6 @@ export default function SettingsAccountsPage() {
                           {normalizedAccountKind(a) === "bank_credit" && a.creditLimit && <span className="text-[10px] text-slate-400">{tf("settings.accounts.creditLimit", { amount: a.creditLimit })}</span>}
                           {a.numberMasked && <span className="text-[10px] text-slate-400">{tf("settings.accounts.lastFour", { value: a.numberMasked })}</span>}
                           {normalizedAccountKind(a) === "bank_credit" && <span className="text-[10px] text-slate-400">{a.creditBillMode === "consolidated" ? t("settings.accounts.consolidatedBill") : t("settings.accounts.separateBill")}</span>}
-                          {normalizedAccountKind(a) === "bank_credit" && a.billingDay && <span className="text-[10px] text-slate-400">{t("settings.accounts.billingDayTxPeriod." + (a.billingDayTxPeriod === "next" ? "next" : "current"))}</span>}
                         </>
                       )}
                       {a.note && (
@@ -947,19 +1029,6 @@ export default function SettingsAccountsPage() {
                       </select>
                     </div>
                   )}
-                  {isBillLikeKind && (
-                    <div>
-                      <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.billingDayTxPeriodLabel")}</label>
-                      <select
-                        value={editForm.billingDayTxPeriod || "current"}
-                        onChange={e => setEditForm(f => ({ ...f, billingDayTxPeriod: e.target.value }))}
-                        className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
-                      >
-                        <option value="current">{t("settings.accounts.billingDayTxPeriod.current")}</option>
-                        <option value="next">{t("settings.accounts.billingDayTxPeriod.next")}</option>
-                      </select>
-                    </div>
-                  )}
                 </div>
               )}
 
@@ -996,6 +1065,88 @@ export default function SettingsAccountsPage() {
                   className="h-8 px-3 rounded-md border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50">{t("common.cancel")}</button>
                 <button onClick={saveEdit}
                   className="h-8 px-4 rounded-md bg-blue-600 text-white text-xs hover:bg-blue-700">{t("common.save")}</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ===== Merge selection bar (bottom floating) ===== */}
+      {mergeSelectedIds.length > 0 && (
+        <div className="fixed bottom-6 left-1/2 z-40 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-3 rounded-full border border-slate-200 bg-white px-4 py-2 shadow-lg">
+          <span className="shrink-0 text-xs font-medium text-slate-700">
+            {tf("settings.accounts.merge.selected", { count: mergeSelectedIds.length })}
+          </span>
+          {mergeSelectedIds.length === 2 && (
+            <span className={`shrink-0 text-xs ${mergeCheck.ok ? "text-emerald-600" : "text-amber-600"}`}>{mergeCheck.reason}</span>
+          )}
+          <button
+            type="button"
+            disabled={!mergeCheck.ok}
+            onClick={() => { setMergeKeepId(mergeSelectedIds[0] ?? ""); setMergeError(""); setMergeModalOpen(true); }}
+            className="h-7 shrink-0 rounded-full bg-blue-600 px-3 text-xs font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+          >
+            {t("settings.accounts.merge.action")}
+          </button>
+          <button
+            type="button"
+            onClick={() => setMergeSelectedIds([])}
+            className="h-7 shrink-0 rounded-full border border-slate-200 px-3 text-xs text-slate-600 transition hover:bg-slate-50"
+          >
+            {t("settings.accounts.merge.clear")}
+          </button>
+        </div>
+      )}
+
+      {/* ===== Merge confirm modal ===== */}
+      {mergeModalOpen && mergeSelectedAccounts.length === 2 && (() => {
+        const [first, second] = mergeSelectedAccounts;
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-[1px] p-4"
+            onMouseDown={() => { if (!mergeBusy) setMergeModalOpen(false); }}>
+            <div className="w-[420px] max-w-[calc(100vw-2rem)] rounded-xl border border-slate-200 bg-white shadow-xl p-4"
+              onMouseDown={e => e.stopPropagation()}>
+              <div className="text-sm font-semibold text-slate-800 mb-1">{t("settings.accounts.merge.title")}</div>
+              <div className="text-xs text-slate-500 mb-3">{t("settings.accounts.merge.desc")}</div>
+              <div className="mb-1.5 text-xs font-medium text-slate-600">{t("settings.accounts.merge.chooseName")}</div>
+              <div className="space-y-2">
+                {[first, second].map((account) => {
+                  const isKeep = mergeKeepId === account.id;
+                  return (
+                    <label key={account.id}
+                      className={`flex cursor-pointer items-center gap-2.5 rounded-lg border px-3 py-2.5 transition-colors ${isKeep ? "border-blue-300 bg-blue-50/60" : "border-slate-200 bg-white hover:bg-slate-50"}`}
+                      onClick={() => setMergeKeepId(account.id)}
+                    >
+                      <input
+                        type="radio"
+                        name="merge-keep-account"
+                        checked={isKeep}
+                        onChange={() => setMergeKeepId(account.id)}
+                        className="h-3.5 w-3.5 accent-blue-600"
+                      />
+                      <span className="min-w-0 flex-1 truncate text-sm text-slate-800">{accountDisplayName(account)}</span>
+                      <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded-full border ${isKeep ? "border-blue-200 bg-blue-50 text-blue-600" : "border-slate-200 bg-slate-50 text-slate-500"}`}>
+                        {isKeep ? t("settings.accounts.merge.keepLabel") : t("settings.accounts.merge.mergedLabel")}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+              {mergeError && <div className="text-xs text-red-500 mt-2">{mergeError}</div>}
+              <div className="flex justify-end gap-2 mt-4">
+                <button type="button" disabled={mergeBusy}
+                  onClick={() => setMergeModalOpen(false)}
+                  className="h-8 px-3 rounded-md border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-60">
+                  {t("common.cancel")}
+                </button>
+                <button type="button" disabled={mergeBusy || !mergeKeepId}
+                  onClick={() => {
+                    const mergeId = mergeSelectedIds.find((id) => id !== mergeKeepId) ?? "";
+                    if (mergeKeepId && mergeId) void submitMerge(mergeKeepId, mergeId);
+                  }}
+                  className="h-8 px-3 rounded-md bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60">
+                  {mergeBusy ? "..." : t("settings.accounts.merge.confirm")}
+                </button>
               </div>
             </div>
           </div>
