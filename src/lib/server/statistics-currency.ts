@@ -1,4 +1,4 @@
-﻿import { normalizeCurrency } from "@/lib/currency";
+import { normalizeCurrency } from "@/lib/currency";
 import { prisma } from "@/lib/db/prisma";
 import { convertCurrencyAmounts, getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 
@@ -24,8 +24,12 @@ export async function buildStatisticsCurrencyConverter(
   ]);
   // Include inactive accounts: their historical transactions still belong in reports.
   const currencyById = new Map(accounts.map((account) => [account.id, account.currency]));
+  // The transaction's own currency (e.g. a USD purchase on a CNY credit card)
+  // is authoritative; the account currency only serves as a fallback.
   const currencyOf = (entry: StatisticCurrencySource) =>
-    normalizeCurrency(currencyById.get(entry.accountId) ?? entry.currency);
+    normalizeCurrency(
+      entry.currency && entry.currency.trim() ? entry.currency : (currencyById.get(entry.accountId) ?? entry.currency),
+    );
   const currencies = Array.from(new Set(entries.map(currencyOf)));
   const { rates, missingCurrencies } = await convertCurrencyAmounts({
     householdId,
