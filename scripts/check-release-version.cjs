@@ -125,8 +125,11 @@ if (legacyApp) {
 }
 
 const dockerWorkflow = read(".github/workflows/docker-build.yml");
-expect(/ghcr\.io\/\$\{\{\s*github\.repository_owner\s*\}\}\/mmh:\$\{\{\s*steps\.package\.outputs\.version\s*\}\}/.test(dockerWorkflow), "Docker workflow must publish the app image with the package version tag.");
-expect(/ghcr\.io\/\$\{\{\s*github\.repository_owner\s*\}\}\/mmh-updater:\$\{\{\s*steps\.package\.outputs\.version\s*\}\}/.test(dockerWorkflow), "Docker workflow must publish the updater image with the package version tag.");
+expect(/tags:\s*\n\s*-\s*"v\*"/.test(dockerWorkflow), "Docker workflow must run on v* tag pushes so release images can be published from the release tag.");
+expect(/npm run check:docker/.test(dockerWorkflow), "Docker workflow must run check:docker before publishing images.");
+expect(/type=raw,value=latest,enable=\$\{\{\s*startsWith\(github\.ref,\s*'refs\/tags\/v'\)\s*\}\}/.test(dockerWorkflow), "Docker workflow must publish latest only from v* release tags.");
+expect(/type=semver,pattern=\{\{version\}\},enable=\$\{\{\s*startsWith\(github\.ref,\s*'refs\/tags\/v'\)\s*\}\}/.test(dockerWorkflow), "Docker workflow must publish the package version tag only from v* release tags.");
+expect(/type=raw,value=main,enable=\$\{\{\s*endsWith\(github\.ref,\s*'\/heads\/main'\)\s*\}\}/.test(dockerWorkflow), "Docker workflow must publish main snapshots without moving latest.");
 
 for (const file of [".github/workflows/fnos-release.yml", ".github/workflows/fnos-stage.yml"]) {
   const workflow = read(file);

@@ -3,6 +3,8 @@ name: Build and Push Docker Image
 on:
   push:
     branches: [main]
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -32,6 +34,9 @@ jobs:
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Docker entrypoint
+        run: npm run check:docker
 
       # Tag ownership rules:
       # - Release refs (v* tags, dispatched by the release process) own the
