@@ -25,6 +25,7 @@ import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
 import { addTradingDaysUtc } from "@/lib/date-utils";
 import { useI18n } from "@/lib/i18n";
 import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
+import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
 
 export type StockImportUploadItem = {
   rawText?: string;
@@ -53,6 +54,7 @@ export type StockImportUploadItem = {
   regulatoryFee?: number | null;
   otherFee?: number | null;
   note?: string | null;
+  tags?: string | null;
 };
 
 export type StockImportDialogContext = {
@@ -116,7 +118,8 @@ type StockPreviewEditField =
   | "exchangeFee"
   | "regulatoryFee"
   | "otherFee"
-  | "note";
+  | "note"
+  | "tags";
 type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
 
 type BookAccount = {
@@ -264,6 +267,7 @@ const STOCK_PREVIEW_FIELD_LABEL_KEYS: Record<StockPreviewEditField, string> = {
   regulatoryFee: "stockFee.feeType.regulatory_fee",
   otherFee: "stockFee.feeType.other",
   note: "detail.column.remark",
+  tags: "detail.column.tags",
 };
 
 export function StockImportPreviewDialog({ open, items, context, onClose, onImported }: Props) {
@@ -273,6 +277,7 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [uploading, setUploading] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState<{ imported: number; total: number } | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [debugMessage, setDebugMessage] = useState<string | null>(null);
   const [editingCell, setEditingCell] = useState<{ idx: number; field: StockPreviewEditField } | null>(null);
@@ -335,8 +340,7 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
     return `${preview}${more}`;
   }, [allWarningIssues, t]);
   const stockAccountDisplayOptions = useMemo<AccountDisplayOption[]>(
-    () => bookAccounts
-      .filter(isStockAccount)
+    () => restrictAccountsByType(bookAccounts, isStockAccount)
       .map((account) => buildAccountDisplayOption({
         ...account,
         Institution: account.Institution
@@ -378,8 +382,7 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
     [stockAccountOptions],
   );
   const bankAccountDisplayOptions = useMemo<AccountDisplayOption[]>(
-    () => bookAccounts
-      .filter(isCashLikeAccount)
+    () => restrictAccountsByType(bookAccounts, isCashLikeAccount)
       .map((account) => buildAccountDisplayOption({
         ...account,
         Institution: account.Institution
@@ -636,34 +639,56 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
     setImporting(true);
     setMessage(formatText(t, "viewImport.stockPreview.importingSelected", { count: selectedItems.length }));
     setDebugMessage(null);
+    setImportProgress({ imported: 0, total: selectedItems.length });
+    let created = 0;
+    let skipped = 0;
+    let importedRows = 0;
+    const accountIds = new Set<string>();
+    const IMPORT_BATCH_SIZE = Math.max(1, Math.ceil(selectedItems.length / 10));
     try {
-      const res = await fetch("/api/v1/stocks/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: "import",
-          context: context ?? null,
-          items: selectedItems,
-        }),
-      });
-      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; createdCount?: number; skippedCount?: number; accountIds?: string[] } | null;
-      if (!res.ok || !data?.ok) {
-        throw new Error(data?.error || res.statusText || `HTTP ${res.status}`);
+      for (let start = 0; start < selectedItems.length; start += IMPORT_BATCH_SIZE) {
+        const batchItems = selectedItems.slice(start, start + IMPORT_BATCH_SIZE);
+        setImportProgress({ imported: importedRows, total: selectedItems.length });
+        const res = await fetch("/api/v1/stocks/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            mode: "import",
+            context: context ?? null,
+            items: batchItems,
+          }),
+        });
+        const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; createdCount?: number; skippedCount?: number; accountIds?: string[] } | null;
+        if (!res.ok || !data?.ok) {
+          throw new Error(data?.error || res.statusText || `HTTP ${res.status}`);
+        }
+        created += data.createdCount ?? 0;
+        skipped += data.skippedCount ?? 0;
+        for (const id of Array.isArray(data.accountIds) ? data.accountIds : []) accountIds.add(id);
+        importedRows += batchItems.length;
       }
-      const created = data.createdCount ?? 0;
-      const skipped = data.skippedCount ?? 0;
-      const accountIds = Array.isArray(data.accountIds)
-        ? data.accountIds
+      const effectiveAccountIds = accountIds.size > 0
+        ? Array.from(accountIds)
         : [context?.stockAccountId].filter((id): id is string => Boolean(id));
-      dispatchFinanceDataChanged({ reason: "stock-excel-import", accountIds });
-      onImported?.({ created, skipped, accountIds });
+      dispatchFinanceDataChanged({ reason: "stock-excel-import", accountIds: effectiveAccountIds });
+      onImported?.({ created, skipped, accountIds: effectiveAccountIds });
       onClose();
     } catch (error) {
-      setMessage(formatText(t, "batchImport.importFailedRollback", { reason: error instanceof Error ? error.message : String(error) }));
+      const reason = error instanceof Error ? error.message : String(error);
+      if (created + skipped > 0) {
+        setMessage(formatText(t, "viewImport.stockPreview.importPartialFailed", {
+          imported: created,
+          remaining: selectedItems.length - importedRows,
+          reason,
+        }));
+      } else {
+        setMessage(formatText(t, "batchImport.importFailedRollback", { reason }));
+      }
     } finally {
       setImporting(false);
+      setImportProgress(null);
     }
-  }, [context, errorIssues, importing, onClose, onImported, previewItems, selected, t]);
+  }, [context, errorIssues, importing, onClose, onImported, previewItems, selected, t, setImportProgress]);
 
   const patchUploadItem = useCallback(async (idx: number, patch: Partial<StockImportUploadItem>) => {
     const nextUploadItems = uploadItems.map((item, index) => index === idx ? { ...item, ...patch } : item);
@@ -705,6 +730,7 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
       case "regulatoryFee": return row.regulatoryFee == null ? "" : String(row.regulatoryFee);
       case "otherFee": return row.otherFee == null ? "" : String(row.otherFee);
       case "note": return row.note || "";
+      case "tags": return row.tags || "";
       default: return "";
     }
   }
@@ -801,6 +827,9 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
       case "note":
         patch = { note: value || null };
         break;
+      case "tags":
+        patch = { tags: value || null };
+        break;
       case "bankAccount":
         patch = { bankAccount: value, bankAccountId: null };
         break;
@@ -855,7 +884,7 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
       },
       className: [
         "h-7 rounded-md border border-blue-200 bg-white px-2 text-xs outline-none",
-        field === "note" || field === "stockCode" ? "w-full" : "w-24",
+        field === "note" || field === "stockCode" || field === "tags" ? "w-full" : "w-24",
         field === "quantity" || field === "price" || field === "grossAmount" || field === "netAmount" || field === "fee" || STOCK_PREVIEW_COMPONENT_FEE_FIELDS.includes(field as typeof STOCK_PREVIEW_COMPONENT_FEE_FIELDS[number])
           ? "text-right tabular-nums"
           : "",
@@ -1096,6 +1125,7 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
     { key: "otherFee", label: t("stockFee.feeType.other"), width: 92, minWidth: 74, align: "right", filterKind: "numberRange", filterText: (row) => formatOptionalNumber(row.otherFee, 2), filterNumber: (row) => row.otherFee, sortValue: (row) => row.otherFee ?? 0, render: (row) => renderNumberCell(row, "otherFee", row.otherFee, 2, "otherFee") },
     { key: "cashAmount", label: t("viewImport.stockPreview.cashAmount"), width: 116, minWidth: 92, align: "right", filterKind: "numberRange", filterText: (row) => formatOptionalNumber(row.cashAmount, 2), filterNumber: (row) => row.cashAmount, sortValue: (row) => row.cashAmount ?? 0, render: (row) => renderNumberCell(row, "netAmount", row.cashAmount, 2, "cashAmount", false) },
     { key: "note", label: t("detail.column.remark"), width: 220, minWidth: 150, filterText: (row) => row.note || "-", render: (row) => renderTextCell(row, "note", row.note) },
+    { key: "tags", label: t("detail.column.tags"), width: 150, minWidth: 110, filterText: (row) => row.tags || "-", render: (row) => renderTextCell(row, "tags", row.tags) },
   ], [bankAccountDisplayById, bankAccountOptions, draftValue, editingCell, importing, patchUploadItem, stockAccountDisplayById, stockAccountOptions, t, uploading]);
 
   if (!open) return null;
@@ -1125,6 +1155,19 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
         {message ? (
           <div className="shrink-0 border-b border-blue-100 bg-blue-50 px-4 py-2 text-sm text-blue-700">
             {message}
+          </div>
+        ) : null}
+        {importProgress && importProgress.total > 0 ? (
+          <div className="shrink-0 border-b border-blue-100 bg-blue-50 px-4 py-2">
+            <div className="flex h-2 overflow-hidden rounded-full bg-blue-100">
+              <div
+                className="h-full bg-blue-600 transition-all duration-200"
+                style={{ width: `${Math.max(2, Math.round((importProgress.imported / importProgress.total) * 100))}%` }}
+              />
+            </div>
+            <div className="mt-1 text-xs text-blue-700">
+              {formatText(t, "viewImport.stockPreview.importingProgress", { imported: importProgress.imported, total: importProgress.total })}
+            </div>
           </div>
         ) : null}
         {debugMessage ? (

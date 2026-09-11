@@ -8,7 +8,13 @@ import {
   type SpdbCreditCardTransactionField,
   CREDIT_CARD_HTML_TRANSACTION_FIELD_HEADERS,
   findFirstStatementHeaderIndex,
+  normalizeSpdbCurrencyCode,
+  parseSpdbOriginalAmount,
 } from "@/lib/statement/header-catalog";
+import {
+  hasImportableStatementRows,
+  parseStatementTemplateRows,
+} from "@/lib/statement/excel-preview";
 import {
   inferSignedAmountInflowSign,
   isCreditCardCreditAdjustmentLikeText,
@@ -24,6 +30,7 @@ import {
 } from "@/lib/statement/import-normalization";
 import { loadStatementRecognitionRuleSamples } from "@/lib/statement/recognition-rules";
 import { SYSTEM_BANK_INSTALLMENT_EXPENSE_CATEGORY } from "@/lib/default-categories";
+import { creditCardBillingDayFromCycleEndDate } from "@/lib/credit/billing";
 
 export const runtime = "nodejs";
 
@@ -59,12 +66,15 @@ type ParsedItem = {
   account?: string;
   fromAccount?: string;
   toAccount?: string;
+  transferDirection?: "in" | "out";
   category?: string;
   remark?: string;
   counterparty?: string;
   institution?: string;
   postedDate?: string;
   currency?: string;
+  originalCurrency?: string;
+  originalAmount?: number;
   _meta?: ParsedItemMeta;
 };
 
@@ -200,10 +210,37 @@ function isStatementSummaryText(text: string): boolean {
   return /(本期应缴余额|上期账单余额|已还金额|本期账单金额|本期调整金额|循环利息|本期应还款总额|本期最低还款额|最低还款额|固定额度|预借现金额度|账单周期|到期还款日|分期未还总金额|账单说明|New Balance|Previous Balance|Payment\s*&\s*Credit|New Activity|Adjustment|Finance Charge|Minimum Payment|Credit Limit|Cash Advance Limit|Statement Cycle|Payment Due Date|Bonus Point Balance|Previous Bonus Point|Statement description)/i.test(normalized);
 }
 
+function dateNumberSpans(text: string) {
+  return [
+    ...text.matchAll(/\b\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}(?:日)?(?=\D|$)/g),
+    ...text.matchAll(/\b\d{8}\b/g),
+  ].map((match) => ({
+    start: match.index ?? 0,
+    end: (match.index ?? 0) + match[0].length,
+  }));
+}
+
+function isInSpan(index: number, spans: Array<{ start: number; end: number }>) {
+  return spans.some((span) => index >= span.start && index < span.end);
+}
+
+function isLikelyAccountTailNumber(text: string, index: number, raw: string) {
+  const compact = raw.replace(/,/g, "");
+  if (!/^\d{4}$/.test(compact)) return false;
+  const before = text.slice(Math.max(0, index - 16), index).replace(/[\s·.。:：_\-—–/\(（]+$/g, "");
+  const after = text.slice(index + raw.length, index + raw.length + 8);
+  return /(尾号|末四位|后四位|账号|帐号|卡号|信用卡|贷记卡|借记卡|银行卡|账户|帐户|银行|招行|招商|工行|农行|中行|建行|交行|广发|光大|平安|浦发|民生|兴业|邮储|支付宝|微信)$/i.test(before) ||
+    /^(?:卡|账户|帐户|户|号|[)）])/i.test(after);
+}
+
 function extractAmount(text: string): number {
-  const nums = text.match(/[\d,]+\.?\d*/g) ?? [];
+  const dateSpans = dateNumberSpans(text);
+  const nums = [...text.matchAll(/[\d,]+\.?\d*/g)];
   let best = 0;
-  for (const s of nums) {
+  for (const match of nums) {
+    const s = match[0];
+    const index = match.index ?? 0;
+    if (isInSpan(index, dateSpans) || isLikelyAccountTailNumber(text, index, s)) continue;
     const v = parseFloat(s.replace(/,/g, ""));
     if (!Number.isFinite(v) || v <= 0) continue;
     best = v;
@@ -444,6 +481,46 @@ function parseDateParts(value?: string) {
 
 type StatementDateParts = NonNullable<ReturnType<typeof parseDateParts>>;
 
+function dateFromStatementParts(parts?: StatementDateParts | null) {
+  if (!parts) return null;
+  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
+  if (
+    date.getUTCFullYear() !== parts.year ||
+    date.getUTCMonth() !== parts.month - 1 ||
+    date.getUTCDate() !== parts.day
+  ) {
+    return null;
+  }
+  return date;
+}
+
+function billingDayFromStatementParts(parts?: StatementDateParts | null) {
+  const date = dateFromStatementParts(parts);
+  return date ? creditCardBillingDayFromCycleEndDate(date) : undefined;
+}
+
+function normalizeParsedCreditCardBillingDay(input: {
+  explicitDay?: number;
+  explicitDate?: StatementDateParts | null;
+  periodEnd?: StatementDateParts | null;
+}) {
+  const explicitDateDay = billingDayFromStatementParts(input.explicitDate);
+  if (explicitDateDay) return explicitDateDay;
+  if (input.explicitDay && input.explicitDay >= 1 && input.explicitDay <= 31) return input.explicitDay;
+  return billingDayFromStatementParts(input.periodEnd);
+}
+
+function extractImmediateDateAfterLabels(text: string, labels: string[]) {
+  const normalized = stripHtml(text);
+  for (const label of labels) {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = normalized.match(new RegExp(`${escaped}\\s*[:：]?\\s*(\\d{4}[年\\/\\-.]\\d{1,2}[月\\/\\-.]\\d{1,2})`, "i"));
+    const parts = parseDateParts(match?.[1] ?? "");
+    if (parts) return parts;
+  }
+  return null;
+}
+
 function ymdFromParts(year: number, month: number, day: number) {
   const date = new Date(Date.UTC(year, month - 1, day));
   if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return undefined;
@@ -587,9 +664,14 @@ function extractCreditCardMeta(text: string): ParsedItemMeta & { accountName?: s
   const periodMatch = plain.match(/(\d{4}[年\/\-.]\d{1,2}[月\/\-.]\d{1,2})日?\s*[-~至—]\s*(\d{4}[年\/\-.]\d{1,2}[月\/\-.]\d{1,2})日?/);
   const periodStart = parseDateParts(periodMatch?.[1] ?? "");
   const periodEnd = parseDateParts(periodMatch?.[2] ?? "");
-  const directBillingDay = parseLooseNumber(plain.match(/账单日\s*[:：]?\s*(\d{1,2})\s*日?/)?.[1]);
+  const directBillingDate = extractImmediateDateAfterLabels(plain, ["本期账单日", "账单日"]);
+  const directBillingDay = directBillingDate ? undefined : parseLooseNumber(plain.match(/账单日\s*[:：]?\s*(\d{1,2})\s*日?/)?.[1]);
   const dueDate = extractDateAfterLabels(plain, ["到期还款日", "最后还款日", "还款日", "Payment Due Date", "Due Date"]);
-  const billingDay = directBillingDay && directBillingDay >= 1 && directBillingDay <= 31 ? directBillingDay : periodStart?.day ?? periodEnd?.day;
+  const billingDay = normalizeParsedCreditCardBillingDay({
+    explicitDay: directBillingDay,
+    explicitDate: directBillingDate,
+    periodEnd,
+  });
   const repaymentDay = dueDate?.day;
   const statementAmount = extractStatementAmount(plain);
   const accountCore = institutionName ? `${institutionName}信用卡${cardNumberMasked ? `(${cardNumberMasked})` : ""}` : undefined;
@@ -801,6 +883,75 @@ function splitDelimitedStatementCells(line: string) {
   return raw.map((cell) => cell.trim()).filter(Boolean);
 }
 
+function splitStatementImportTableCells(line: string) {
+  const cleaned = stripStatementMarkup(line);
+  if (cleaned.includes("\t")) {
+    return cleaned.split("\t").map((cell) => stripStatementMarkup(cell));
+  }
+  const trimmed = cleaned.trim();
+  if (!trimmed.includes("|")) return null;
+  return trimmed
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => stripStatementMarkup(cell));
+}
+
+function isMarkdownSeparatorRow(cells: string[]) {
+  return cells.length > 0 && cells.every((cell) => /^:?-{2,}:?$/.test(cell.replace(/\s+/g, "")));
+}
+
+function parsePlainStatementImportTable(text: string): ParsedItem[] {
+  const rows = normalizeDelimitedStatementLines(text)
+    .map(splitStatementImportTableCells)
+    .filter((cells): cells is string[] => Boolean(cells && cells.some((cell) => cell.trim())))
+    .filter((cells) => !isMarkdownSeparatorRow(cells));
+
+  for (let index = 0; index < Math.min(rows.length, 25); index += 1) {
+    const items = parseStatementTemplateRows(rows.slice(index), "");
+    if (hasImportableStatementRows(items)) return items;
+  }
+
+  return [];
+}
+
+function positiveMoneyCell(value: string) {
+  const amount = parseMoney(value);
+  return amount === null ? 0 : Math.abs(amount);
+}
+
+function extractDelimitedTransferAccounts(line: string) {
+  const cells = splitStatementImportTableCells(line);
+  if (!cells || cells.length < 7) return null;
+  const typeText = cells[2]?.trim() ?? "";
+  if (!/^(?:转账|transfer|振替)$/i.test(typeText)) return null;
+
+  const outflow = positiveMoneyCell(cells[3] ?? "");
+  const inflow = positiveMoneyCell(cells[4] ?? "");
+  const account = cleanupMerchantName(cells[5] ?? "");
+  const counterAccount = cleanupMerchantName(cells[6] ?? "");
+  if (!account || !counterAccount) return null;
+
+  if (outflow > 0 && inflow <= 0) {
+    return {
+      account,
+      fromAccount: account,
+      toAccount: counterAccount,
+      transferDirection: "out" as const,
+    };
+  }
+  if (inflow > 0 && outflow <= 0) {
+    return {
+      account,
+      fromAccount: counterAccount,
+      toAccount: account,
+      transferDirection: "in" as const,
+    };
+  }
+
+  return null;
+}
+
 type SpdbTransactionTableMatch = {
   lines: string[];
   headerLineIndex: number;
@@ -832,6 +983,21 @@ function isSpdbCurrencyCell(value: string) {
 function isSpdbOriginalAmountCell(value: string) {
   const normalized = String(value ?? "").trim().replace(/\s+/g, "").toUpperCase();
   return /^[+-]?\d+(?:,\d{3})*(?:\.\d{1,2})?\((?:RMB|CNY|USD|HKD|JPY|EUR|GBP)\)$/.test(normalized);
+}
+
+// The settlement provenance only matters when the original foreign spend
+// differs from the posted (CNY) amount in either currency or value.
+function settlementDiffersFromAmount(
+  originalAmount: number | null,
+  postedAmount: number,
+  originalCurrency: string,
+) {
+  if (originalAmount == null || !originalCurrency || originalCurrency === "CNY") return false;
+  return Math.abs(originalAmount - Math.abs(postedAmount)) > 0.005;
+}
+
+function settlementCurrencyToPosting(currency: string) {
+  return currency || "CNY";
 }
 
 function isValidSpdbTransactionSampleRow(cells: string[], headerIndexes: SpdbTransactionHeaderIndexes) {
@@ -993,6 +1159,14 @@ function parseSpdbCreditCardTransactionReport(text: string): ParsedItem[] {
     if (!date || !description || amount === null || amount === 0) continue;
     if (isStatementSummaryText(description) || isNoiseLine(description)) continue;
 
+    // Settlement facts: "交易币种" + "原始交易金额&币种" (e.g. USD100.00) keep
+    // the original foreign-currency spend when the bank posted CNY.
+    const settlementCurrency = normalizeSpdbCurrencyCode(cells[headerIndexes.currency] ?? "");
+    const originalSettlement = parseSpdbOriginalAmount(cells[headerIndexes.originalAmount] ?? "");
+    const originalDiffersFromPosting = Boolean(
+      settlementDiffersFromAmount(originalSettlement, amount, settlementCurrencyToPosting(settlementCurrency)),
+    );
+
     const absAmount = Math.abs(amount);
     const transferText = `${description} ${amountRaw}`;
     const { type, isRepaymentTransfer, isInflow } = classifyCreditCardSignedAmount({
@@ -1022,6 +1196,8 @@ function parseSpdbCreditCardTransactionReport(text: string): ParsedItem[] {
       category: category || undefined,
       remark: postDate && postDate !== date ? `${description}（入账日 ${postDate}）` : description,
       postedDate: postDate,
+      originalCurrency: originalSettlement && originalDiffersFromPosting ? settlementCurrency : undefined,
+      originalAmount: originalSettlement && originalDiffersFromPosting ? originalSettlement : undefined,
       _meta: {
         institutionName,
         cardNumberMasked: rowCardNumberMasked || undefined,
@@ -1202,7 +1378,7 @@ function extractIcbcCreditCardMeta(text: string): ParsedItemMeta & { accountName
     statementCurrency: paymentSummary.currency,
     minimumPayment: paymentSummary.minimumPayment,
     creditLimit,
-    billingDay: period?.end.day,
+    billingDay: billingDayFromStatementParts(period?.end),
     repaymentDay: directDueDate?.day ?? dueParts?.day,
     statementAmount: paymentSummary.statementAmount ?? extractStatementAmount(plain),
     statementPeriodStart: period?.start?.ymd,
@@ -1509,7 +1685,7 @@ function extractCmbCreditCardMeta(text: string): ParsedItemMeta & { accountName?
     statementCurrency: "CNY",
     minimumPayment,
     creditLimit,
-    billingDay: period?.end.day,
+    billingDay: billingDayFromStatementParts(period?.end),
     repaymentDay: period ? parseDateParts(period.dueDate)?.day : undefined,
     statementAmount,
     statementPeriodStart: period?.start?.ymd,
@@ -1827,7 +2003,10 @@ function extractMinshengCreditCardMeta(text: string): ParsedItemMeta & { account
     statementCurrency: "CNY",
     minimumPayment,
     creditLimit,
-    billingDay: billingDay?.day,
+    billingDay: normalizeParsedCreditCardBillingDay({
+      explicitDate: billingDay,
+      periodEnd: period?.end,
+    }),
     repaymentDay: dueDate?.day,
     statementAmount,
     statementPeriodStart: period?.start?.ymd,
@@ -2476,6 +2655,9 @@ function parseStructuredStatement(text: string): ParsedItem[] {
   const htmlItems = parseCreditCardHtmlStatement(text);
   if (htmlItems.length > 0) return htmlItems;
 
+  const plainTableItems = parsePlainStatementImportTable(text);
+  if (plainTableItems.length > 0) return plainTableItems;
+
   const sourceText = /<[^>]+>/.test(text) ? htmlToLooseText(text) : text;
   const lines = sourceText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const items: ParsedItem[] = [];
@@ -2494,20 +2676,25 @@ function parseStructuredStatement(text: string): ParsedItem[] {
     const isIncome = !isExpenseRefund && /收入|工资|报销|退款|返现|返利|到账|奖金|红包/i.test(line);
     const isTransfer = isRepaymentTransfer || isLikelyTransfer(line);
     const paymentFromAccount = isTransfer ? paymentTailAccountName(line) : "";
+    const transferAccounts = isTransfer ? extractDelimitedTransferAccounts(line) : null;
 
     const type = isTransfer ? "transfer" : isIncome ? "income" : "expense";
+    const transferDirection = transferAccounts?.transferDirection;
 
     items.push({
       rawText: line,
       type,
       date,
       amount: amount || 0,
-      inflow: type === "income" || isExpenseRefund || isRepaymentTransfer ? amount || 0 : undefined,
-      outflow: type === "expense" && !isExpenseRefund ? amount || 0 : undefined,
+      inflow: transferDirection === "in" || type === "income" || isExpenseRefund || isRepaymentTransfer ? amount || 0 : undefined,
+      outflow: transferDirection === "out" || (type === "expense" && !isExpenseRefund) ? amount || 0 : undefined,
+      account: transferAccounts?.account,
       counterparty: counterparty || undefined,
       institution: institution || undefined,
       category: category || undefined,
-      fromAccount: paymentFromAccount || undefined,
+      fromAccount: transferAccounts?.fromAccount || paymentFromAccount || undefined,
+      toAccount: transferAccounts?.toAccount || undefined,
+      transferDirection,
       remark: line,
     });
   }
@@ -2554,6 +2741,15 @@ function normalizeExplicitStatementFlowDirections(items: ParsedItem[]) {
     const isRefund = isExpenseRefundLike(source) || /(?:^|\s)(?:退款|退货|撤销|冲正)(?:\s|$)/.test(source);
 
     if (item.type === "transfer" || isRepaymentTransfer) {
+      if (item.transferDirection === "in" || item.transferDirection === "out") {
+        return {
+          ...item,
+          type: "transfer" as const,
+          amount,
+          inflow: item.transferDirection === "in" ? amount : undefined,
+          outflow: item.transferDirection === "out" ? amount : undefined,
+        };
+      }
       return {
         ...item,
         type: "transfer" as const,

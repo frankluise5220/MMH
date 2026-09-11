@@ -242,6 +242,38 @@ export function matchStatementHeaderProfile<TField extends string>(
   return indexes;
 }
 
+// ── SPDB settlement-fact cells (shared by server parse & local excel fallback) ──
+
+/** "USD" / "美元" style cell -> ISO code; "" when unrecognized. */
+export function normalizeSpdbCurrencyCode(value: string) {
+  const normalized = String(value ?? "").trim().replace(/\s+/g, "").toUpperCase();
+  const codeByLabel: Record<string, string> = {
+    "人民币": "CNY",
+    RMB: "CNY",
+    CNY: "CNY",
+    "美元": "USD",
+    USD: "USD",
+    "港币": "HKD",
+    HKD: "HKD",
+    "日元": "JPY",
+    JPY: "JPY",
+    "欧元": "EUR",
+    EUR: "EUR",
+    "英镑": "GBP",
+    GBP: "GBP",
+  };
+  return codeByLabel[normalized] ?? "";
+}
+
+/** "USD100.00" / "-12,345.67(USD)" style cell -> absolute amount; null when unparsable. */
+export function parseSpdbOriginalAmount(value: string) {
+  const normalized = String(value ?? "").trim().replace(/\s+/g, "").toUpperCase();
+  const match = normalized.match(/^([+-]?\d+(?:,\d{3})*(?:\.\d{1,2})?)\((?:RMB|CNY|USD|HKD|JPY|EUR|GBP)\)$/);
+  if (!match) return null;
+  const amount = Number(match[1].replace(/,/g, ""));
+  return Number.isFinite(amount) && amount !== 0 ? Math.abs(amount) : null;
+}
+
 export function createStatementHeaderReader(
   headers: readonly string[],
   fieldHeaders: Record<StatementImportField, readonly string[]> = STATEMENT_IMPORT_FIELD_HEADERS,

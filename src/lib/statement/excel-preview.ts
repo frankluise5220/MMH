@@ -1,3 +1,10 @@
+import { parseFlexibleDateToYmd } from "@/lib/date-utils";
+import {
+  dropTemplateSampleRows,
+  findTemplateGuideTitleRowIndex,
+  findTemplateSampleColumnIndex,
+  rowsBeforeTemplateGuide,
+} from "@/lib/import-template-sample";
 import {
   inferSignedAmountInflowSign,
   isCreditCardRepaymentLikeText,
@@ -9,9 +16,12 @@ import {
   SPDB_CREDIT_CARD_TRANSACTION_REPORT_PROFILE,
   createStatementHeaderReader,
   matchStatementHeaderProfile,
+  normalizeSpdbCurrencyCode,
+  parseSpdbOriginalAmount,
   type StatementImportField,
 } from "@/lib/statement/header-catalog";
 import { normalizeAlipayWorkbookRows } from "@/lib/statement/alipay-template";
+import { normalizeCaizhiWorkbookRows, detectCaizhiHeaders, type CaizhiWorkbookSheetRows } from "@/lib/statement/caizhi-template";
 import { normalizeJdWorkbookRows } from "@/lib/statement/jd-template";
 import { normalizeWechatWorkbookRows } from "@/lib/statement/wechat-template";
 import {
@@ -38,6 +48,8 @@ export type StatementExcelPreviewItem = {
   institutionUserEdited?: boolean;
   postedDate?: string;
   currency?: string;
+  originalCurrency?: string;
+  originalAmount?: number;
   _meta?: {
     institutionName?: string;
     ownerName?: string;
@@ -81,12 +93,16 @@ function normalizeDate(value: string) {
   if (compact) return `${compact[1]}-${compact[2]}-${compact[3]}`;
   const timeMatch = raw.match(/\s+(\d{1,2}:\d{2}(?::\d{2})?)$/);
   const match = raw
-    .replace(/[\u5e74\u6708/.]/g, "-")
+    .replace(/[\u5e74\u6708]/g, "-")
     .replace(/[\u65e5\u53f7]/g, "")
     .match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?/);
-  if (!match) return raw.slice(0, 10);
-  const datePart = `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
-  return timeMatch ? `${datePart} ${timeMatch[1]}` : datePart;
+  if (match) {
+    const datePart = `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
+    return timeMatch ? `${datePart} ${timeMatch[1]}` : datePart;
+  }
+  // Lenient fallback (e.g. "26-02-2026" day-first); re-append time if present.
+  const fallback = parseFlexibleDateToYmd(raw);
+  return fallback ? (timeMatch ? `${fallback} ${timeMatch[1]}` : fallback) : raw.slice(0, 10);
 }
 
 function parseAmount(value: string) {
@@ -212,8 +228,14 @@ export function parseStatementTemplateRows(
   rows: string[][],
   defaultAccountName: string,
   fieldHeaders: StatementFieldHeaders = STATEMENT_IMPORT_FIELD_HEADERS,
+  /** 模板说明区标题行文案；传入后会截断标题行以下的所有说明行 */
+  guideTitle = "",
 ): StatementExcelPreviewItem[] {
-  const [headers = [], ...dataRows] = rows;
+  const [headers = [], ...rawDataRows] = rows;
+  // 模板自带的样板行和底部字段说明区都不是真实账单数据。
+  const guideTitleRowIndex = findTemplateGuideTitleRowIndex(rawDataRows, guideTitle);
+  const sampleColumnIndex = findTemplateSampleColumnIndex(headers);
+  const dataRows = dropTemplateSampleRows(rowsBeforeTemplateGuide(rawDataRows, guideTitleRowIndex), sampleColumnIndex);
   const spdbIndexes = matchStatementHeaderProfile(headers, SPDB_CREDIT_CARD_TRANSACTION_REPORT_PROFILE);
   const knownInstitutionName = spdbIndexes ? SPDB_CREDIT_CARD_TRANSACTION_REPORT_PROFILE.institutionName : undefined;
   const reader = createStatementHeaderReader(headers, fieldHeaders);
@@ -232,6 +254,8 @@ export function parseStatementTemplateRows(
   const tagsIndex = reader.findFieldIndex("tags");
   const remarkIndex = spdbIndexes?.description ?? reader.findFieldIndex("remark");
   const postedIndex = spdbIndexes?.postingDate ?? reader.findFieldIndex("postedAt");
+  const currencyIndex = spdbIndexes?.currency ?? -1;
+  const originalAmountIndex = spdbIndexes?.originalAmount ?? -1;
 
   if (dateIndex < 0 || (amountIndex < 0 && inflowIndex < 0 && outflowIndex < 0)) return [];
 
@@ -331,6 +355,12 @@ export function parseStatementTemplateRows(
     const accountSideInflow = explicitDirection
       ? explicitDirection === "in"
       : isIncome || isRefund;
+    // SPDB settlement facts: 交易币种 + 原始交易金额&币种 keep the foreign
+    // provenance when the posted amount differs from the original spend.
+    const settlementCurrency = currencyIndex >= 0 ? normalizeSpdbCurrencyCode(row[currencyIndex] ?? "") : "";
+    const settlementAmount = originalAmountIndex >= 0 ? parseSpdbOriginalAmount(row[originalAmountIndex] ?? "") : null;
+    const settlementDiffers = settlementCurrency !== "" && settlementCurrency !== "CNY"
+      && settlementAmount != null && Math.abs(settlementAmount - amount) > 0.005;
     return [{
       rawText: rowText(row),
       type: resolvedType,
@@ -344,6 +374,8 @@ export function parseStatementTemplateRows(
       counterparty: institution || undefined,
       remark,
       postedDate,
+      originalCurrency: settlementDiffers ? settlementCurrency : undefined,
+      originalAmount: settlementDiffers ? settlementAmount ?? undefined : undefined,
       _meta: cardLast4 || knownInstitutionName ? {
         institutionName: knownInstitutionName,
         cardNumberMasked: cardLast4 || undefined,
@@ -352,10 +384,28 @@ export function parseStatementTemplateRows(
   });
 }
 
+export type ReadStatementWorkbookResult = {
+  rows: string[][];
+  text: string;
+  /** 如果检测为财智8格式，则为标准化后的行；否则 undefined */
+  caizhiRows?: string[][];
+};
+
+/**
+ * 尝试从文件名中提取财智8导出的账户名。
+ * 格式：「XXX的YYY_明细_YYYY-MM-DD.xls」
+ */
+function guessCaizhiAccountNameFromFilename(filename: string): string {
+  const match = filename.match(/^(.+?)的(.+?)_明细_/);
+  if (match) return `${match[1]}的${match[2]}`;
+  const noExt = filename.replace(/\.(xls|xlsx)$/i, "");
+  return noExt || "财智账户";
+}
+
 export async function readStatementWorkbookRowsAndText(
   file: File,
   fieldHeaders: StatementFieldHeaders = STATEMENT_IMPORT_FIELD_HEADERS,
-) {
+): Promise<ReadStatementWorkbookResult> {
   const XLSX = await import("xlsx");
   const data = await file.arrayBuffer();
   const workbook = XLSX.read(data, { type: "array", cellDates: true });
@@ -369,24 +419,43 @@ export async function readStatementWorkbookRowsAndText(
     }).map((row) => row.map(formatDateCell).map((cell) => cell.trim()));
     return { sheetName, rows };
   });
+
   const jdRows = normalizeJdWorkbookRows(sheetRows);
   const alipayRows = normalizeAlipayWorkbookRows(sheetRows);
   const wechatRows = normalizeWechatWorkbookRows(sheetRows);
-  const rows = jdRows?.rows ?? alipayRows?.rows ?? wechatRows?.rows ?? mergeStatementWorkbookRows(sheetRows, fieldHeaders);
+
+  // 优先检测财智8格式（需要从文件名猜账户名）
+  const accountNameFromFile = guessCaizhiAccountNameFromFilename(file.name);
+  const caizhiRows = normalizeCaizhiWorkbookRows(sheetRows as CaizhiWorkbookSheetRows[], accountNameFromFile);
+
+  const rows = caizhiRows?.rows
+    ?? jdRows?.rows
+    ?? alipayRows?.rows
+    ?? wechatRows?.rows
+    ?? mergeStatementWorkbookRows(sheetRows, fieldHeaders);
+
   const text = sheetRows
     .flatMap((sheet) => sheet.rows.filter((row) => row.some(Boolean)))
     .map((row) => row.join("\t"))
     .join("\n");
-  return { rows, text };
+
+  return {
+    rows,
+    text,
+    caizhiRows: caizhiRows?.rows,
+  };
 }
 
 export async function parseStatementExcelFile(
   file: File,
   defaultAccountName: string,
   fieldHeaders: StatementFieldHeaders = STATEMENT_IMPORT_FIELD_HEADERS,
+  guideTitle = "",
 ) {
   const { rows, text } = await readStatementWorkbookRowsAndText(file, fieldHeaders);
-  const localItems = normalizeStatementExcelParsedItems(parseStatementTemplateRows(rows, defaultAccountName, fieldHeaders));
+  const localItems = normalizeStatementExcelParsedItems(
+    parseStatementTemplateRows(rows, defaultAccountName, fieldHeaders, guideTitle),
+  );
   return {
     rows,
     text,

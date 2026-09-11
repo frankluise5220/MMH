@@ -21,6 +21,7 @@ import {
 } from "@/lib/account-import-match";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
+import { parseFlexibleDateToYmd } from "@/lib/date-utils";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { useI18n } from "@/lib/i18n";
 import {
@@ -687,24 +688,26 @@ function normalizeDateCell(value: string) {
 
   match = normalized.match(/^(\d{1,2})-(\d{1,2})-(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
   if (match) {
-    return appendNormalizedTime(formatDateParts(Number(match[3]), Number(match[1]), Number(match[2])), match[4], match[5], match[6]);
+    const datePart = formatDateParts(Number(match[3]), Number(match[1]), Number(match[2]));
+    if (datePart) {
+      return appendNormalizedTime(datePart, match[4], match[5], match[6]);
+    }
   }
 
   match = normalized.match(/^(\d{1,2})-(\d{1,2})-(\d{2})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
   if (match) {
     const year = Number(match[3]);
-    return appendNormalizedTime(
-      formatDateParts(year >= 70 ? 1900 + year : 2000 + year, Number(match[1]), Number(match[2])),
-      match[4],
-      match[5],
-      match[6],
-    );
+    const datePart = formatDateParts(year >= 70 ? 1900 + year : 2000 + year, Number(match[1]), Number(match[2]));
+    if (datePart) {
+      return appendNormalizedTime(datePart, match[4], match[5], match[6]);
+    }
   }
 
   match = normalized.match(/^(\d{4})(\d{2})(\d{2})$/);
   if (match) return formatDateParts(Number(match[1]), Number(match[2]), Number(match[3]));
 
-  return raw;
+  // Lenient fallback (e.g. "26-02-2026" day-first, "Jan 26, 2026"); date part only.
+  return parseFlexibleDateToYmd(raw) ?? raw;
 }
 
 function normalizeOptionalDateCell(value: string) {

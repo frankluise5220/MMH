@@ -7,7 +7,7 @@ import {
   normalizeImportAccountMatchKey,
 } from "@/lib/account-import-match";
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
-import { formatDateUtc } from "@/lib/date-utils";
+import { formatDateUtc, parseDateInputToUtc, parseFlexibleDateToYmd } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
@@ -16,6 +16,7 @@ import {
   isCashLikeBrokerageFundingKind,
 } from "@/lib/server/brokerage-cash-account";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
+import { attachEntryTagsByNames, parseTagNamesInput } from "@/lib/server/entry-tags";
 import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { findRecentManualTransactionDuplicate } from "@/lib/server/transaction-dedupe";
 import { ensureStockTransactionCashFlow, stockCashAmount } from "@/lib/stock/cashFlow";
@@ -158,6 +159,7 @@ type StockImportInput = {
   otherFee?: number | string | null;
   externalLinkId?: string | null;
   note?: string | null;
+  tags?: string | string[] | null;
   calculatedFields?: StockImportCalculatedField[] | null;
 };
 
@@ -197,20 +199,54 @@ type StockImportEnrichedItem = {
   calculatedFields: StockImportCalculatedField[];
   externalLinkId: string | null;
   note: string | null;
+  tags: string;
   duplicate: boolean;
   issues: ImportIssue[];
 };
 
-type ImportContext = {
+type SecurityLookupPromise = ReturnType<typeof getStockSecurityByCode>;
+type ClosePriceLookupPromise = ReturnType<typeof getStockClosePriceByDate>;
+
+type ImportContextBase = {
   householdId: string;
-  stockAccount: StockAccountRow;
   accountLookupRows: AccountLookupRow[];
   accountIdByMatchKey: Map<string, string>;
   accountMatcher: (accountName?: string) => { account: AccountLookupRow | null };
+  // Per-request caches: imports repeat the same securities/prices across many
+  // rows, so each unique lookup should hit the database (or the external quote
+  // API) at most once per request. Promises are cached including failures.
+  securityLookupByKey: Map<string, SecurityLookupPromise>;
+  closePriceLookupByKey: Map<string, ClosePriceLookupPromise>;
+  // Preloaded (stockAccountId|externalLinkId) pairs that already exist in the
+  // database, filled once per request instead of one findFirst per row.
+  existingExternalLinkKeys: Set<string>;
+};
+
+type ImportContext = ImportContextBase & {
+  stockAccount: StockAccountRow;
   brokerageCashAccount: AccountLookupRow | null | undefined;
 };
 
-type ImportContextBase = Omit<ImportContext, "stockAccount" | "brokerageCashAccount">;
+// Enrichment runs per-row DB and external-API lookups; cap the concurrency so
+// large imports do not exhaust the pg pool (and its connection wait timeout).
+const ENRICH_CONCURRENCY = Math.max(1, Number(process.env.STOCK_IMPORT_ENRICH_CONCURRENCY ?? 6));
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++;
+      results[index] = await worker(items[index], index);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
 
 function corsHeaders() {
   return {
@@ -225,12 +261,8 @@ function issue(level: ImportIssue["level"], code: string): ImportIssue {
 }
 
 function parseDateOnly(value: unknown) {
-  const raw = String(value ?? "").trim();
-  if (!raw) return null;
-  const date = /^\d{4}-\d{2}-\d{2}$/.test(raw)
-    ? new Date(`${raw}T00:00:00.000Z`)
-    : new Date(raw);
-  return Number.isNaN(date.getTime()) ? null : date;
+  const ymd = parseFlexibleDateToYmd(value);
+  return ymd ? parseDateInputToUtc(ymd) : null;
 }
 
 function formatParsedDate(value: unknown) {
@@ -359,7 +391,46 @@ async function buildImportContextBase(req: NextRequest): Promise<ImportContextBa
     accountLookupRows: accounts,
     accountIdByMatchKey,
     accountMatcher: createImportAccountMatcher(accounts),
+    securityLookupByKey: new Map(),
+    closePriceLookupByKey: new Map(),
+    existingExternalLinkKeys: new Set<string>(),
   };
+}
+
+function lookupStockSecurity(
+  cache: Pick<ImportContextBase, "securityLookupByKey">,
+  params: {
+    householdId: string;
+    market?: string;
+    stockCode: string;
+  },
+) {
+  const key = `${params.market ?? ""}|${normalizeStockCode(params.stockCode)}`;
+  let pending = cache.securityLookupByKey.get(key);
+  if (!pending) {
+    pending = getStockSecurityByCode(prisma, params);
+    cache.securityLookupByKey.set(key, pending);
+  }
+  return pending;
+}
+
+function lookupStockClosePrice(
+  cache: Pick<ImportContextBase, "closePriceLookupByKey">,
+  params: {
+    securityId?: string | null;
+    market?: string;
+    stockCode: string;
+    priceDate: string;
+    exchange?: string | null;
+  },
+) {
+  const key = `${params.market ?? ""}|${normalizeStockCode(params.stockCode)}|${params.priceDate}|${params.exchange ?? ""}`;
+  let pending = cache.closePriceLookupByKey.get(key);
+  if (!pending) {
+    pending = getStockClosePriceByDate(prisma, params).catch(() => null);
+    cache.closePriceLookupByKey.set(key, pending);
+  }
+  return pending;
 }
 
 function isStockAccount(account: AccountLookupRow | null | undefined): account is AccountLookupRow {
@@ -559,6 +630,7 @@ function enrichImportItemWithoutStockAccount(
     calculatedFields: sortedCalculatedFields(calculatedFields),
     externalLinkId,
     note,
+    tags: parseTagNamesInput(input.tags).join(","),
     duplicate: false,
     issues,
   };
@@ -689,7 +761,7 @@ async function enrichImportItem(ctx: ImportContext, input: StockImportInput): Pr
     if (!stockCode) {
       issues.push(issue("error", "MISSING_STOCK_CODE"));
     } else {
-      const security = await getStockSecurityByCode(prisma, {
+      const security = await lookupStockSecurity(ctx, {
         householdId: ctx.householdId,
         market,
         stockCode,
@@ -701,13 +773,13 @@ async function enrichImportItem(ctx: ImportContext, input: StockImportInput): Pr
         issues.push(issue("warning", "STOCK_NAME_UNRESOLVED"));
       }
       if (buySellAction && price == null && parsedTradeDate) {
-        const closePrice = await getStockClosePriceByDate(prisma, {
+        const closePrice = await lookupStockClosePrice(ctx, {
           securityId,
           market,
           stockCode,
           priceDate: tradeDate,
           exchange: security?.exchange ?? exchange,
-        }).catch(() => null);
+        });
         if (closePrice) {
           price = closePrice.closePrice;
           calculatedFields.add("price");
@@ -792,15 +864,7 @@ async function enrichImportItem(ctx: ImportContext, input: StockImportInput): Pr
 
   let duplicate = false;
   if (externalLinkId) {
-    duplicate = Boolean(await prisma.stockTransaction.findFirst({
-      where: {
-        householdId: ctx.householdId,
-        stockAccountId: ctx.stockAccount.id,
-        externalLinkId,
-        deletedAt: null,
-      },
-      select: { id: true },
-    }));
+    duplicate = ctx.existingExternalLinkKeys.has(`${ctx.stockAccount.id}|${externalLinkId}`);
     if (duplicate) issues.push(issue("warning", "DUPLICATE_IMPORT_ROW"));
   }
 
@@ -890,6 +954,7 @@ async function enrichImportItem(ctx: ImportContext, input: StockImportInput): Pr
     calculatedFields: sortedCalculatedFields(calculatedFields),
     externalLinkId,
     note,
+    tags: parseTagNamesInput(input.tags).join(","),
     duplicate,
     issues,
   };
@@ -971,13 +1036,22 @@ async function createStockImportTransaction(
     },
   });
 
-  await ensureStockTransactionCashFlow(tx, {
+  const cashFlow = await ensureStockTransactionCashFlow(tx, {
     householdId: ctx.householdId,
     row,
     stockAccount,
     cashAccount,
     metadata: { createdBy: "stocks-import-api" },
   });
+  const tagNames = parseTagNamesInput(item.tags);
+  if (cashFlow.cashEntryId && tagNames.length > 0) {
+    await attachEntryTagsByNames({
+      tx,
+      entryId: cashFlow.cashEntryId,
+      householdId: ctx.householdId,
+      names: tagNames,
+    });
+  }
   return { skipped: false as const, id: row.id, cashAccountId: cashAccount?.id ?? null, securityId: security.id };
 }
 
@@ -1039,6 +1113,15 @@ async function createBankTransfer(
       entryOrigin: ENTRY_ORIGIN_EXCEL_IMPORT,
     },
   });
+  const tagNames = parseTagNamesInput(item.tags);
+  if (tagNames.length > 0) {
+    await attachEntryTagsByNames({
+      tx,
+      entryId: row.id,
+      householdId: ctx.householdId,
+      names: tagNames,
+    });
+  }
   return { skipped: false as const, id: row.id, accountIds: [fromAccount.id, toAccount.id] };
 }
 
@@ -1125,13 +1208,54 @@ export async function POST(req: NextRequest) {
       contextByStockAccountId.set(stockAccount.id, ctx);
       return ctx;
     };
-    const enrichedItems = markDuplicateImportRows(await Promise.all(items.map((item) => {
+
+    // Resolve each row's stock account up front (sync, no DB) so the duplicate
+    // link check can be batched into a single query.
+    const resolvedRows = items.map((item) => {
       const input = item as StockImportInput;
-      const resolved = resolveStockAccountInput(base, input, fallbackStockAccount);
-      return resolved.account
+      return { input, resolved: resolveStockAccountInput(base, input, fallbackStockAccount) };
+    });
+
+    for (const { resolved } of resolvedRows) {
+      if (resolved.account && !contextByStockAccountId.has(resolved.account.id)) {
+        contextByStockAccountId.set(resolved.account.id, buildImportContext(base, resolved.account));
+      }
+    }
+    // Pre-warm the memoized brokerage cash account lookup so concurrent
+    // enrichment workers do not issue duplicate identical queries.
+    await Promise.all(
+      Array.from(contextByStockAccountId.values()).map((ctx) =>
+        findExistingBrokerageCashAccount(ctx).catch(() => null),
+      ),
+    );
+
+    const existingExternalLinkKeys = base.existingExternalLinkKeys;
+    const linkIdCandidates = new Set<string>();
+    for (const { input, resolved } of resolvedRows) {
+      const externalLinkId = String(input.externalLinkId ?? "").trim();
+      if (externalLinkId && resolved.account) linkIdCandidates.add(externalLinkId);
+    }
+    if (linkIdCandidates.size > 0) {
+      const existingRows = await prisma.stockTransaction.findMany({
+        where: {
+          householdId: base.householdId,
+          externalLinkId: { in: Array.from(linkIdCandidates) },
+          deletedAt: null,
+        },
+        select: { stockAccountId: true, externalLinkId: true },
+      });
+      for (const row of existingRows) {
+        existingExternalLinkKeys.add(`${row.stockAccountId}|${row.externalLinkId}`);
+      }
+    }
+
+    const enrichedItems = markDuplicateImportRows(await mapWithConcurrency(
+      resolvedRows,
+      ENRICH_CONCURRENCY,
+      async ({ input, resolved }) => resolved.account
         ? enrichImportItem(getItemContext(resolved.account), input)
-        : Promise.resolve(enrichImportItemWithoutStockAccount(input, resolved.issueCode ?? "STOCK_ACCOUNT_REQUIRED"));
-    })));
+        : enrichImportItemWithoutStockAccount(input, resolved.issueCode ?? "STOCK_ACCOUNT_REQUIRED"),
+    ));
 
     if (mode === "preview") {
       return NextResponse.json({ ok: true, items: enrichedItems }, { headers: corsHeaders() });
