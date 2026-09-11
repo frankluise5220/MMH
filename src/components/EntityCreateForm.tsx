@@ -3,7 +3,7 @@
 import { createPortal } from "react-dom";
 import { useEffect, useMemo, useRef, useState, useCallback, type FormEvent, type ReactNode } from "react";
 import { Plus } from "lucide-react";
-import { kindOrder } from "@/lib/account-kinds";
+import { COUNTERPARTY_TYPE_OPTIONS, institutionTypeLabel, institutionTypeOptions, kindOrder } from "@/lib/account-kinds";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
 import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
 import { DateStepper } from "@/components/DateStepper";
@@ -61,7 +61,7 @@ type EntityCreatedExtra = {
 type FieldDef = {
   key: string;
   labelKey: string;
-  type: "text" | "select";
+  type: "text" | "select" | "date";
   placeholderKey?: string;
   /** Render text fields as a taller multiline textarea. */
   multiline?: boolean;
@@ -101,6 +101,8 @@ type CompactModeProps = {
   defaultName?: string;
   /** For institution creation: restrict type choices to a specific concept group */
   allowedInstitutionTypes?: string[];
+  /** 往来对象：限制可选类型（例如「往来款对象」只能是 person/organization） */
+  allowedCounterpartyTypes?: string[];
   /** For account creation: restrict selectable account kinds (e.g. a cash-account
    *  field may only allow bank_debit and ewallet). When exactly one kind is
    *  allowed the type selector is hidden and the kind is locked. */
@@ -158,6 +160,8 @@ type FullModeProps = {
   defaultName?: string;
   /** For institution pages: restrict type choices to a specific concept group */
   allowedInstitutionTypes?: string[];
+  /** 往来对象：限制可选类型（例如「往来款对象」只能是 person/organization） */
+  allowedCounterpartyTypes?: string[];
   /** For account pages: restrict selectable account kinds (see CompactModeProps) */
   allowedAccountKinds?: string[];
   /** Extra fields to merge into POST body */
@@ -176,27 +180,9 @@ export type EntityCreateFormProps = CompactModeProps | FullModeProps;
 
 /* ---- Institution type options ---- */
 
-const ALL_INSTITUTION_TYPES = [
-  { value: "family_member", labelKey: "institution.type.family_member" },
-  { value: "person", labelKey: "institution.type.person" },
-  { value: "organization", labelKey: "institution.type.organization" },
-  { value: "bank", labelKey: "institution.type.bank" },
-  { value: "insurance", labelKey: "institution.type.insurance" },
-  { value: "brokerage", labelKey: "institution.type.brokerage" },
-  { value: "fund_company", labelKey: "institution.type.fund_company" },
-  { value: "payment", labelKey: "institution.type.payment" },
-  { value: "debt", labelKey: "institution.type.debt" },
-  { value: "other", labelKey: "institution.type.other" },
-];
+const ALL_INSTITUTION_TYPES = institutionTypeOptions();
 
-const INSTITUTION_TYPES = ALL_INSTITUTION_TYPES.filter((option) => (
-  option.value === "bank" ||
-  option.value === "insurance" ||
-  option.value === "brokerage" ||
-  option.value === "fund_company" ||
-  option.value === "payment" ||
-  option.value === "other"
-));
+const INSTITUTION_TYPES = institutionTypeOptions(["bank", "insurance", "brokerage", "fund_company", "payment", "other"]);
 
 /* ---- Category type options ---- */
 
@@ -305,19 +291,13 @@ const ENTITY_CONFIG = {
     nameLabelKey: "entityForm.contactNameLabel",
     typeLabelKey: "entityForm.typeLabel",
     typeKey: "type",
-    types: [
-      { value: "person", labelKey: "institution.type.person" },
-      { value: "organization", labelKey: "institution.type.organization" },
-    ],
+    types: COUNTERPARTY_TYPE_OPTIONS,
     apiPath: "/api/v1/counterparty",
     bodyKey: { name: "name", type: "type" },
     fullFields: [
       { key: "name", labelKey: "entityForm.contactNameLabel", type: "text", placeholderKey: "entityForm.counterpartyNamePlaceholder" },
       { key: "shortName", labelKey: "entityForm.shortNameLabel", type: "text", placeholderKey: "entityForm.optional" },
-      { key: "type", labelKey: "entityForm.typeLabel", type: "select", options: [
-        { value: "person", labelKey: "institution.type.person" },
-        { value: "organization", labelKey: "institution.type.organization" },
-      ], defaultValue: "person" },
+      { key: "type", labelKey: "entityForm.typeLabel", type: "select", options: COUNTERPARTY_TYPE_OPTIONS, defaultValue: "person" },
     ] as FieldDef[],
   },
   account: {
@@ -491,6 +471,10 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     entityType === "institution" ? props.allowedInstitutionTypes : undefined;
   const allowedAccountKinds =
     entityType === "account" ? props.allowedAccountKinds : undefined;
+  const allowedCounterpartyTypes =
+    entityType === "counterparty" ? props.allowedCounterpartyTypes : undefined;
+  /** 类型下拉白名单：机构用 allowedInstitutionTypes、往来对象用 allowedCounterpartyTypes。 */
+  const allowedTypeValues = allowedInstitutionTypes?.length ? allowedInstitutionTypes : allowedCounterpartyTypes;
 
   const accountKindOptions = useMemo(
     () => (entityType === "account" && allowedAccountKinds?.length
@@ -534,14 +518,14 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     return field.options?.[0]?.value ?? "";
   }, [accountDefaultCurrency, entityType, extraFields]);
   const selectOptionsForField = useCallback((field: FieldDef) => {
-    const opts = field.key === "type" && entityType === "institution" && allowedInstitutionTypes?.length
-      ? ALL_INSTITUTION_TYPES.filter((option) => allowedInstitutionTypes.includes(option.value))
+    const opts = field.key === "type" && allowedTypeValues?.length
+      ? (entityType === "institution" ? ALL_INSTITUTION_TYPES : config.types).filter((option) => allowedTypeValues.includes(option.value))
       : buildSelectOptions(field, nestedFieldData, parentCategories, undefined, t);
     if (entityType === "account" && field.key === "currency" && !accountDefaultCurrency && !(extraFields && field.key in extraFields)) {
       return [{ value: "", label: t("entityForm.ledgerDefaultCurrency") }, ...opts];
     }
     return opts;
-  }, [accountDefaultCurrency, allowedInstitutionTypes, entityType, extraFields, nestedFieldData, parentCategories, t]);
+  }, [accountDefaultCurrency, allowedTypeValues, config.types, entityType, extraFields, nestedFieldData, parentCategories, t]);
 
   useEffect(() => {
     if (entityType !== "account" || form.kind !== "bank_credit" || !form.institutionId) return;
@@ -585,14 +569,17 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
       if (!allowedAccountKinds?.length || allowedAccountKinds.includes(defaultType)) return defaultType;
     }
     if (entityType === "institution") return allowedInstitutionTypes?.[0] ?? "bank";
-    if (entityType === "counterparty") return "person";
+    if (entityType === "counterparty") {
+      if (allowedTypeValues?.length) return allowedTypeValues.includes(defaultType ?? "") ? defaultType! : allowedTypeValues[0];
+      return "person";
+    }
     if (entityType === "category") return "expense";
     if (entityType === "account") {
       if (allowedAccountKinds?.length) return allowedAccountKinds[0];
       return "bank_debit";
     }
     return "";
-  }, [config.typeKey, config.types, defaultType, entityType, extraFields, allowedAccountKinds, allowedInstitutionTypes]);
+  }, [config.typeKey, config.types, defaultType, entityType, extraFields, allowedAccountKinds, allowedInstitutionTypes, allowedTypeValues]);
 
   /** Initialize form state */
   const initForm = useCallback(() => {
@@ -610,10 +597,10 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
       for (const field of config.fullFields) {
         if (field.condition && !field.condition(initial)) continue;
         if (initial[field.key] !== undefined) continue;
-        if (field.key === "type" && entityType === "institution" && allowedInstitutionTypes?.length) {
-          initial[field.key] = allowedInstitutionTypes.includes(field.defaultValue ?? "")
+        if (field.key === "type" && allowedTypeValues?.length) {
+          initial[field.key] = allowedTypeValues.includes(field.defaultValue ?? "")
             ? field.defaultValue!
-            : allowedInstitutionTypes[0];
+            : allowedTypeValues[0];
           continue;
         }
         if (field.key === "kind" && entityType === "account" && allowedAccountKinds?.length) {
@@ -626,7 +613,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
         if (fieldDefaultValue) initial[field.key] = fieldDefaultValue;
         if (field.optionsFromData) initial[field.key] = "";
         if (field.type === "select" && !fieldDefaultValue && !field.optionsFromData) initial[field.key] = fallbackSelectValueForField(field);
-        if (field.type === "text" && !fieldDefaultValue) initial[field.key] = "";
+        if ((field.type === "text" || field.type === "date") && !fieldDefaultValue) initial[field.key] = "";
       }
     } else {
       // Full mode: set parentId first so type condition can evaluate correctly
@@ -646,17 +633,12 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
         // For conditional selects without defaultValue, set to empty
         if (field.type === "select" && !fieldDefaultValue && !field.optionsFromData) initial[field.key] = fallbackSelectValueForField(field);
         // For text fields without defaultValue, set to empty
-        if (field.type === "text" && !fieldDefaultValue) initial[field.key] = "";
+        if ((field.type === "text" || field.type === "date") && !fieldDefaultValue) initial[field.key] = "";
       }
       // Apply defaultType override
       if (defaultType && typeKey) initial[typeKey] = defaultType;
-      if (
-        entityType === "institution" &&
-        typeKey &&
-        allowedInstitutionTypes?.length &&
-        !allowedInstitutionTypes.includes(initial[typeKey] ?? "")
-      ) {
-        initial[typeKey] = allowedInstitutionTypes[0];
+      if (typeKey && allowedTypeValues?.length && !allowedTypeValues.includes(initial[typeKey] ?? "")) {
+        initial[typeKey] = allowedTypeValues[0];
       }
       if (
         entityType === "account" &&
@@ -877,8 +859,9 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
+        type={field.type === "date" ? "date" : undefined}
         className={textFieldClassName(field, options?.className, readOnly)}
-        inputMode={textFieldInputMode(field)}
+        inputMode={field.type === "date" ? undefined : textFieldInputMode(field)}
         readOnly={readOnly}
         required={options?.required}
       />
@@ -1005,10 +988,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
           label: created.shortName?.trim?.() || created.name,
           subLabel: entityType === "account"
             ? (created.AccountGroup?.name || (created.kind ? t(`account.kind.${created.kind}`) : undefined))
-            : entityType === "institution"
-              ? t(`institution.type.${selectedTypeValue || created.type || "other"}`)
-              : entityType === "counterparty"
-                ? t(selectedTypeValue === "person" ? "institution.type.person" : "institution.type.organization")
+            : entityType === "institution" || entityType === "counterparty"
+              ? institutionTypeLabel(selectedTypeValue || created.type, t)
               : undefined,
         });
         void notifySettingsDataChanged({
@@ -1131,7 +1112,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
               )}
               {compactVisibleFields.map((field) => {
                 const isReadOnlyField = readOnlyFields.includes(field.key);
-                if (field.type === "text") {
+                if (field.type === "text" || field.type === "date") {
                   return (
                     <div key={field.key} className="space-y-1">
                       <div className="form-label">{t(field.labelKey)}</div>
@@ -1152,7 +1133,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                     ? dataList.map((item) => ({
                         id: item.id,
                         label: item.name,
-                        subLabel: t(`institution.type.${item.type || "other"}`),
+                        subLabel: institutionTypeLabel(item.type, t),
                       }))
                     : dataList.map((item) => ({
                         id: item.id,
@@ -1225,8 +1206,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                       className={`form-input ${isReadOnlyField ? "bg-slate-50 text-slate-500" : ""}`}
                       disabled={isReadOnlyField}
                     >
-                      {(field.key === "type" && entityType === "institution" && allowedInstitutionTypes?.length
-                        ? opts.filter((option) => allowedInstitutionTypes.includes(option.value))
+                      {(field.key === "type" && allowedTypeValues?.length
+                        ? opts.filter((option) => allowedTypeValues.includes(option.value))
                         : opts
                       ).map((option) => (
                         <option key={option.value} value={option.value}>{optionLabel(t, option)}</option>
@@ -1294,6 +1275,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
             onCreated={handleNestedCreated}
             defaultType={nestedInstitutionDefaultType()}
             allowedInstitutionTypes={nestedInstitutionAllowedTypes()}
+            // 往来对象不能是「常用商户」（用户定版）
+            allowedCounterpartyTypes={nestedEntityType === "counterparty" ? ["person", "organization"] : undefined}
           />
         )}
       </ModalLayerProvider>
@@ -1315,7 +1298,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
       <>
         <form className="flex items-center gap-2" onSubmit={onSubmit}>
           {visibleFields.map(field => {
-            if (field.type === "text") {
+            if (field.type === "text" || field.type === "date") {
               return renderTextControl(field, {
                 className: field.multiline ? "min-w-[240px]" : "flex-1 min-w-[120px]",
                 placeholder: field.key === "name" ? displayNamePlaceholder : (field.placeholderKey ? t(field.placeholderKey) : t(field.labelKey)),
@@ -1340,15 +1323,18 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                 </div>
               );
             }
+            const isReadOnlySelect = readOnlyFields.includes(field.key);
             return (
               <select
                 key={field.key}
                 value={form[field.key] ?? defaultValueForField(field)}
                 onChange={e => setForm(prev => ({ ...prev, ...selectFieldPatch(field, e.target.value, prev) }))}
-                className="form-input"
+                disabled={isReadOnlySelect}
+                aria-readonly={isReadOnlySelect || undefined}
+                className={isReadOnlySelect ? "form-input opacity-70 cursor-not-allowed" : "form-input"}
               >
-                {(field.key === "type" && entityType === "institution" && allowedInstitutionTypes?.length
-                  ? opts.filter((option) => allowedInstitutionTypes.includes(option.value))
+                {(field.key === "type" && allowedTypeValues?.length
+                  ? opts.filter((option) => allowedTypeValues.includes(option.value))
                   : opts
                 ).map(o => <option key={o.value} value={o.value}>{optionLabel(t, o)}</option>)}
               </select>
@@ -1391,6 +1377,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
             onCreated={handleNestedCreated}
             defaultType={nestedInstitutionDefaultType()}
             allowedInstitutionTypes={nestedInstitutionAllowedTypes()}
+            // 往来对象不能是「常用商户」（用户定版）
+            allowedCounterpartyTypes={nestedEntityType === "counterparty" ? ["person", "organization"] : undefined}
           />
         )}
       </>
@@ -1418,7 +1406,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
               {error && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{error}</div>}
               <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
                 {visibleFields.map(field => {
-                  if (field.type === "text") {
+                  if (field.type === "text" || field.type === "date") {
                     return (
                       <div key={field.key} className={textFieldWrapperClassName(field)}>
                         <label className="form-label mb-1 block">{t(field.labelKey)}</label>
@@ -1439,7 +1427,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                       ? dataList.map(d => ({
                           id: d.id,
                           label: d.name,
-                          subLabel: t(`institution.type.${(d as { type?: string }).type || "other"}`),
+                          subLabel: institutionTypeLabel((d as { type?: string }).type, t),
                         }))
                       : dataList.map(d => ({
                           id: d.id,
@@ -1490,8 +1478,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                         onChange={e => setForm(prev => ({ ...prev, ...selectFieldPatch(field, e.target.value, prev) }))}
                         className="form-input"
                       >
-                        {(field.key === "type" && entityType === "institution" && allowedInstitutionTypes?.length
-                          ? opts.filter((option) => allowedInstitutionTypes.includes(option.value))
+                        {(field.key === "type" && allowedTypeValues?.length
+                          ? opts.filter((option) => allowedTypeValues.includes(option.value))
                           : opts
                         ).map(o => <option key={o.value} value={o.value}>{optionLabel(t, o)}</option>)}
                       </select>
@@ -1530,6 +1518,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
             onCreated={handleNestedCreated}
             defaultType={nestedInstitutionDefaultType()}
             allowedInstitutionTypes={nestedInstitutionAllowedTypes()}
+            // 往来对象不能是「常用商户」（用户定版）
+            allowedCounterpartyTypes={nestedEntityType === "counterparty" ? ["person", "organization"] : undefined}
           />
         )}
       </ModalLayerProvider>
@@ -1556,7 +1546,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
           <form className="p-4 space-y-3" onSubmit={onSubmit}>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {visibleFields.map(field => {
-                if (field.type === "text") {
+                if (field.type === "text" || field.type === "date") {
                   return (
                     <div key={field.key} className={textFieldWrapperClassName(field)}>
                       <label className="form-label mb-1 block">{t(field.labelKey)}</label>
@@ -1581,7 +1571,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                     ssOptions = dataList.map(d => ({
                       id: d.id,
                       label: d.name,
-                      subLabel: t(`institution.type.${(d as { type?: string }).type || "other"}`),
+                      subLabel: institutionTypeLabel((d as { type?: string }).type, t),
                     }));
                   } else {
                     ssOptions = dataList.map(d => ({
@@ -1640,8 +1630,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                       }))}
                       className="form-input"
                     >
-                      {(field.key === "type" && entityType === "institution" && allowedInstitutionTypes?.length
-                        ? opts.filter((option) => allowedInstitutionTypes.includes(option.value))
+                      {(field.key === "type" && allowedTypeValues?.length
+                        ? opts.filter((option) => allowedTypeValues.includes(option.value))
                         : opts
                       ).map(o => <option key={o.value} value={o.value}>{optionLabel(t, o)}</option>)}
                     </select>
@@ -1681,6 +1671,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
           onCreated={handleNestedCreated}
           defaultType={nestedInstitutionDefaultType()}
           allowedInstitutionTypes={nestedInstitutionAllowedTypes()}
+          // 往来对象不能是「常用商户」（用户定版）
+          allowedCounterpartyTypes={nestedEntityType === "counterparty" ? ["person", "organization"] : undefined}
         />
       )}
     </>

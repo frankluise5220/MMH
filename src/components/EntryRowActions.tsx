@@ -27,6 +27,8 @@ export type EditPayload = {
   categoryId?: string;
   categoryName?: string;
   counterpartyInstitutionId?: string;
+  /** Advance (代付) settlement account picked in the dialog; empty = auto resolve/create. */
+  advanceAccountId?: string;
   fromAccountId?: string;
   fromAccountName?: string;
   toAccountId?: string;
@@ -76,6 +78,10 @@ export type EditPayload = {
   }>;
   tagIds?: string[];
   currency?: string | null;
+  originalCurrency?: string | null;
+  originalAmount?: number | null;
+  locationId?: string;
+  locationName?: string;
   tags?: Array<{
     id?: string;
     tagId?: string;

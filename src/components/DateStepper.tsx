@@ -93,7 +93,7 @@ export function DateStepper({ value, onChange, onBlur, onKeyDown, min = "1900-01
         </svg>
       </button>
       {!compact && (
-      <div className="absolute bottom-px right-px top-px flex w-5 flex-col overflow-hidden rounded-r bg-white/95">
+      <div className="absolute inset-y-0.5 right-0.5 flex w-5 flex-col overflow-hidden rounded-r-[8px] border-l border-slate-200/60 bg-white/80">
         <button
           type="button"
           onClick={() => changeByDays(1)}

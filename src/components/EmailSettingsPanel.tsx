@@ -159,6 +159,7 @@ type ParsedItemMeta = {
 type ParsedItem = {
   rawText: string; type: "expense" | "income" | "transfer" | "investment";
   date?: string; amount: number; inflow?: number; outflow?: number; account?: string; fromAccount?: string; toAccount?: string; category?: string; remark?: string; counterparty?: string; institution?: string; postedDate?: string; currency?: string; transferDirection?: "in" | "out";
+  originalCurrency?: string; originalAmount?: number;
   _meta?: ParsedItemMeta;
 };
 type ImportPreviewEditableCell = "date" | "postedDate" | "type" | "account" | "counterAccount" | "category" | "institution" | "inflow" | "outflow" | "amount" | "remark";
@@ -1210,6 +1211,8 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
       counterparty: treatAsTransfer ? cleanOptionalText(item.counterparty) : cleanOptionalText(item.counterparty) || merchant.counterparty,
       institution: treatAsTransfer ? cleanOptionalText(item.institution) : cleanOptionalText(item.institution) || merchant.institution,
       postedDate,
+      originalCurrency: item.originalCurrency,
+      originalAmount: item.originalAmount,
       _meta: item._meta ? {
         institutionName: cleanOptionalText(item._meta.institutionName),
         ownerName: cleanOptionalText(item._meta.ownerName),

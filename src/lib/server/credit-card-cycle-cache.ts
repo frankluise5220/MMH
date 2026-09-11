@@ -16,7 +16,10 @@ export async function invalidateCreditCardCycleCacheForAccountIds(
     where: {
       id: { in: ids },
       kind: { in: [AccountKind.bank_credit, AccountKind.loan] },
-      billingDay: { not: null },
+      OR: [
+        { kind: AccountKind.bank_credit },
+        { billingDay: { not: null } },
+      ],
     },
     select: { id: true },
   });

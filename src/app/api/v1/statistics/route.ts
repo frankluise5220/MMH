@@ -160,6 +160,13 @@ export async function GET(req: NextRequest) {
       const row = monthMap.get(m)!;
       const amount = toNumber(e.amount);
 
+      // 账户现状 kind：历史 debt_* source 是否仍按债务口径统计，以账户为准。
+      const debtKindEntry = {
+        ...e,
+        accountKind: accountKindById.get(e.accountId),
+        toAccountKind: accountKindById.get(e.toAccountId ?? ""),
+      };
+
       const isToSelf = e.toAccountId && scopeAccountIds.includes(e.toAccountId);
       const isFromSelf = e.accountId && scopeAccountIds.includes(e.accountId);
 
@@ -189,7 +196,7 @@ export async function GET(req: NextRequest) {
         // itself is a balance-sheet move, not income/expense.  Skip the principal
         // here; the interest portion is still reported via
         // getBusinessResultStatisticItems below.
-        const isDebtPrincipal = isDebtPrincipalTransfer(e);
+        const isDebtPrincipal = isDebtPrincipalTransfer(debtKindEntry);
         if (isToSelf && !isFromSelf) {
           if (!isDebtPrincipal) {
             row.income += Math.abs(amount);
@@ -209,7 +216,7 @@ export async function GET(req: NextRequest) {
             }
           }
         }
-        for (const item of getBusinessResultStatisticItems(e)) {
+        for (const item of getBusinessResultStatisticItems(debtKindEntry)) {
           if (item.type === "income") {
             row.income += item.amount;
             addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);

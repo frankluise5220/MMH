@@ -31,5 +31,6 @@ export function advanceDialogAmount(input: {
 }) {
   if (input.source !== "advance") return input.amount;
   const amountAbs = Math.abs(input.amount);
-  return input.accountKind === "loan" ? -amountAbs : amountAbs;
+  // Settlement side of an advance entry (legacy rows use kind=loan).
+  return input.accountKind === "loan" || input.accountKind === "settlement" ? -amountAbs : amountAbs;
 }

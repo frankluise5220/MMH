@@ -11,6 +11,7 @@ import { PRODUCT_TYPES } from "@/lib/investment-config";
 import { FIXED_ASSET_TYPES } from "@/lib/fixed-asset";
 import { TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
 import { allowedInstitutionTypesForAccount } from "@/lib/account-institution-rules";
+import { COUNTERPARTY_TYPE_OPTIONS, institutionTypeLabel, institutionTypeOptions } from "@/lib/account-kinds";
 import { useI18n } from "@/lib/i18n";
 import { TAG_COLORS, TAG_COLOR_NAME_KEYS } from "@/lib/tag-colors";
 import { isCreditCardMonthEndBillingDay } from "@/lib/credit/rules";
@@ -312,12 +313,7 @@ const CREDIT_BILL_MODE_OPTIONS: AccountImportOption[] = [
   { value: "separate", labelKey: "entityForm.creditBillMode.separate" },
   { value: "consolidated", labelKey: "entityForm.creditBillMode.consolidated" },
 ];
-const OBJECT_TYPE_OPTIONS: AccountImportOption[] = [
-  { value: "family_member", labelKey: "institution.type.family_member" },
-  { value: "person", labelKey: "institution.type.person" },
-  { value: "organization", labelKey: "institution.type.organization" },
-];
-const COUNTERPARTY_TYPE_OPTIONS = OBJECT_TYPE_OPTIONS.filter((option) => option.value !== "family_member");
+const OBJECT_TYPE_OPTIONS: AccountImportOption[] = institutionTypeOptions(["family_member", "person", "organization"]);
 const CATEGORY_TYPE_OPTIONS: AccountImportOption[] = [
   { value: "expense", labelKey: "transaction.type.expense" },
   { value: "income", labelKey: "transaction.type.income" },
@@ -1172,8 +1168,8 @@ function rowFieldDisplay(row: ImportAccountRow, field: AccountBatchImportField, 
       return row.color ? `${colorLabelKey ? t(colorLabelKey) : row.color} ${row.color}` : "";
     }
     case "kind": return row.kind ? t(`account.kind.${row.kind}`) : "";
-    case "institutionType": return row.institutionType ? t(`institution.type.${row.institutionType}`) : "";
-    case "counterpartyType": return row.counterpartyType ? t(`institution.type.${row.counterpartyType}`) : "";
+    case "institutionType": return row.institutionType ? institutionTypeLabel(row.institutionType, t) : "";
+    case "counterpartyType": return row.counterpartyType ? institutionTypeLabel(row.counterpartyType, t) : "";
     case "categoryType": return categoryTypeLabel(row.categoryType, t);
     case "investProductType": return row.investProductType ? t(`investment.product.${row.investProductType}`) : "";
     case "fixedAssetType": return row.fixedAssetType ? t(`fixedAsset.type.${row.fixedAssetType}`) : "";

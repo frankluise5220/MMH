@@ -32,10 +32,9 @@ export async function buildStatisticsFundDisplayResolver(
   const linkedFundByEntryId = new Map<string, LinkedFundDisplaySource>();
 
   if (entryIds.length > 0) {
-    // 跨年区间可能让 entryIds 远超 999（SQLITE_MAX_VARIABLE_NUMBER），
-    // OR 里有 3 个 in 子句更是放大风险。按 IN_CHUNK_SIZE 分批查然后去重合并。
-    // 注意：单次 findMany 返回的 fundTransaction 可能在多个 chunk 中同时被命中
-    // （如 cashEntryId 在 chunkA、cashFlows.txRecordId 在 chunkB），用 fundTransaction.id 去重。
+    // Cross-year ranges can exceed SQLite's variable limit, and the OR query
+    // multiplies that pressure across three IN clauses. Query in chunks and
+    // dedupe by fundTransaction.id because one row can match multiple chunks.
     const select = {
       id: true,
       cashEntryId: true,

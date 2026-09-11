@@ -12,6 +12,7 @@ import {
   SYSTEM_WEALTH_LOSS_CATEGORY,
   SYSTEM_WEALTH_PROFIT_CATEGORY,
 } from "@/lib/default-categories";
+import { isDebtPrincipalTransfer } from "@/lib/transaction-semantics";
 
 /**
  * Converts stored cash-flow amounts into category-statistics amounts.
@@ -44,6 +45,9 @@ export type InvestmentStatisticEntryLike = {
   amount: unknown;
   type?: TransactionType | string | null;
   source?: string | null;
+  /** 账户现状 kind，用于判断历史 source 是否仍应按债务口径统计。 */
+  accountKind?: string | null;
+  toAccountKind?: string | null;
   fundSubtype?: FundSubtype | string | null;
   fundProductType?: FundProductType | string | null;
   realizedProfit?: unknown | null;
@@ -313,6 +317,8 @@ function debtResultProfitFallback(entry: InvestmentStatisticEntryLike) {
   if (entry.debtInterestAmount === null || entry.debtInterestAmount === undefined) return 0;
   const interest = Math.abs(toNumber(entry.debtInterestAmount));
   if (interest === 0) return 0;
+  // 账户两端都已改成普通账户时，历史 source 不再按债务利息口径决定正负号。
+  if (!isDebtPrincipalTransfer(entry)) return 0;
   const source = String(entry.source ?? "");
   if (source === "debt_collect_in") return interest;
   if (source === "debt_repay_out" || source === "debt_prepay_out" || source === "scheduled_task" || source === "debt_lend_out") {

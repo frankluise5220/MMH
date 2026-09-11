@@ -649,6 +649,7 @@ export async function createTransaction(formData: FormData) {
       const accountId = String(formData.get("accountId") ?? "").trim();
       const categoryId = String(formData.get("categoryId") ?? "").trim();
       const counterpartyInstitutionId = String(formData.get("counterpartyInstitutionId") ?? "").trim();
+      const preferredAdvanceAccountId = String(formData.get("advanceAccountId") ?? "").trim();
       if (!accountId) return { ok: false as const, error: t("investForm.selectCashAccount") };
       if (!counterpartyInstitutionId) return { ok: false as const, error: t("debtTx.placeholder.selectCounterparty") };
 
@@ -664,6 +665,7 @@ export async function createTransaction(formData: FormData) {
           householdId,
           cashAccountId: acc.id,
           debtObjectId: counterpartyInstitutionId,
+          preferredAccountId: preferredAdvanceAccountId,
         });
         const advanceAccount = resolvedAdvance.account;
         if (advanceAccount.id === acc.id) throw new Error(t("sidebar.action.cashAccountSameAsSettlement"));
@@ -2759,6 +2761,7 @@ export async function updateTransactionFromDialog(formData: FormData) {
         const accountId = String(formData.get("accountId") ?? "").trim();
         const categoryId = String(formData.get("categoryId") ?? "").trim();
         const debtObjectId = String(formData.get("counterpartyInstitutionId") ?? "").trim();
+        const preferredAdvanceAccountId = String(formData.get("advanceAccountId") ?? "").trim();
         if (!accountId) throw new Error(t("investForm.selectCashAccount"));
         if (!debtObjectId) throw new Error(t("debtTx.placeholder.selectCounterparty"));
         const [acc, cat] = await Promise.all([
@@ -2771,6 +2774,7 @@ export async function updateTransactionFromDialog(formData: FormData) {
           householdId: ctx.householdId,
           cashAccountId: acc.id,
           debtObjectId,
+          preferredAccountId: preferredAdvanceAccountId,
         });
         const transfer = resolveAdvanceTransfer({ amount: amountRaw, cashAccount: acc, advanceAccount: resolvedAdvance.account });
         const statementMonth = statementMonthForTransfer(date, transfer.fromAccount, transfer.toAccount);

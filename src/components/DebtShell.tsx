@@ -134,6 +134,7 @@ type DebtEntry = {
     accountId?: string;
     categoryId?: string;
     counterpartyInstitutionId?: string;
+    advanceAccountId?: string;
     fromAccountId?: string;
     toAccountId?: string;
   };
@@ -283,11 +284,11 @@ function buildLoanRateDrafts(row: DebtRow, options: { todayKey: string; generate
       discount: row.mortgageLprDiscount,
       throughDate: options.todayKey,
       fromDate: row.loanStartDate || undefined,
-    }).map((item) => makeRateDraft(item.effectiveDate, item.annualRate, {
-      // 首行 = 放款日当天的执行利率，与消费贷起始行一致：日期锁定、不可删除。
-      isInitial: !!row.loanStartDate && item.effectiveDate === row.loanStartDate,
-    }));
-    if (generated.length > 0) return generated;
+    }).map((item) => makeRateDraft(item.effectiveDate, item.annualRate));
+    if (generated.length > 0) {
+      generated[0] = { ...generated[0], isInitial: true };
+      return generated;
+    }
   }
 
   const loanDate = row.loanStartDate || row.loanRateAdjustments[0]?.effectiveDate || options.todayKey;
@@ -527,6 +528,9 @@ export function DebtShell({
   const isSelectedBankLoan = !!selectedRow && !selectedRow.isGroup && selectedRow.isLoan === true;
   const canRepaySelectedRow = !!selectedRow && !selectedRow.isGroup && selectedRow.net < -SETTLED_DEBT_EPSILON;
   const selectedRowLoanType = selectedRow?.loanType ?? null;
+  // Collateral (抵押物) is a mortgage-loan-only field: the borrow dialog only
+  // links collateral assets for loanType="mortgage" accounts.
+  const isSelectedCollateralLoan = isSelectedBankLoan && selectedRowLoanType === "mortgage";
   const isSelectedConsumerLoan = selectedRowLoanType === "consumer" || selectedRow?.isConsumerLoan === true;
   const isSelectedMortgageLoan = isSelectedBankLoan && !isSelectedConsumerLoan && (
     selectedRowLoanType == null || selectedRowLoanType === "home"
@@ -1321,69 +1325,77 @@ export function DebtShell({
     },
   ], [t, language, isRedUp, remainingTotalLabel, childrenByParentKey, expandedDebtRowKeys, toggleDebtRowExpanded, isLoanTableView, loanViewTypeLabel, openDebtAccountProperties]);
 
-  const entryColumns = useMemo<AdvancedDataTableColumn<DebtEntry>[]>(() => [
-    { key: "date", label: t("detail.column.date"), width: 100, minWidth: 80, filterText: (entry) => entry.date, render: (entry) => <span className="tabular-nums text-slate-700">{entry.date}</span> },
-    { key: "type", label: t("debtShell.colType"), width: 90, minWidth: 70, filterText: (entry) => entry.typeLabel, render: (entry) => <span className="text-slate-700">{entry.typeLabel}</span> },
-    { key: "relatedAccount", label: t("debtShell.colCashAccount"), width: 160, minWidth: 100, filterText: (entry) => entry.relatedAccountLabel, render: (entry) => <span className="block truncate text-slate-600" title={entry.relatedAccountTitle || entry.relatedAccountLabel}>{entry.relatedAccountLabel || "-"}</span> },
-    {
-      key: "collateral",
-      label: t("debtShell.colCollateral"),
-      width: 140,
-      minWidth: 100,
-      hideable: true,
-      filterText: (entry) => entry.collateralLabel ?? "",
-      render: (entry) => <span className="block truncate text-slate-600" title={entry.collateralLabel ?? ""}>{entry.collateralLabel || "-"}</span>,
-    },
-    {
-      key: "outflow",
-      label: t("detail.column.outflow"),
-      width: 110,
-      minWidth: 86,
-      align: "right",
-      render: (entry) => (
-        <span className="font-semibold tabular-nums text-rose-700">
-          {entry.principal < 0 ? formatMoney(Math.abs(entry.principal)) : "-"}
-        </span>
-      ),
-    },
-    {
-      key: "inflow",
-      label: t("detail.column.inflow"),
-      width: 110,
-      minWidth: 86,
-      align: "right",
-      render: (entry) => (
-        <span className="font-semibold tabular-nums text-emerald-700">
-          {entry.principal > 0 ? formatMoney(entry.principal) : "-"}
-        </span>
-      ),
-    },
-    {
-      key: "interest",
-      label: t("debtShell.colInterest"),
-      width: 110,
-      minWidth: 80,
-      align: "right",
-      hideable: true,
-      render: (entry) => <span className="tabular-nums text-amber-700">{entry.interest ? formatMoney(entry.interest) : "-"}</span>,
-    },
-    {
-      key: "paymentTotal",
-      label: isSelectedBankLoan ? t("debtShell.colPaymentTotalLoan") : t("debtShell.colPaymentTotalInflow"),
-      width: 120,
-      minWidth: 92,
-      align: "right",
-      hideable: true,
-      filterText: (entry) => entry.paymentTotal == null ? "-" : entry.paymentTotal.toFixed(2),
-      render: (entry) => (
-        <span className="font-semibold tabular-nums text-slate-700">
-          {entry.paymentTotal == null ? "-" : formatMoney(entry.paymentTotal)}
-        </span>
-      ),
-    },
-    { key: "balance", label: t("debtShell.colBalance"), width: 130, minWidth: 92, align: "right", render: (entry) => <span className={`font-semibold tabular-nums ${amountClass(entry.balance, isRedUp)}`}>{formatMoney(entry.balance)}</span> },
-    { key: "note", label: t("detail.column.remark"), width: 260, minWidth: 120, hideable: true, filterText: (entry) => entry.note, render: (entry) => <span className="block truncate text-slate-600" title={entry.note}>{entry.note || "-"}</span> },
-  ], [t, isRedUp, isSelectedBankLoan]);
+  const entryColumns = useMemo<AdvancedDataTableColumn<DebtEntry>[]>(() => {
+    const columns: AdvancedDataTableColumn<DebtEntry>[] = [
+      { key: "date", label: t("detail.column.date"), width: 100, minWidth: 80, filterText: (entry) => entry.date, render: (entry) => <span className="tabular-nums text-slate-700">{entry.date}</span> },
+      { key: "type", label: t("debtShell.colType"), width: 90, minWidth: 70, filterText: (entry) => entry.typeLabel, render: (entry) => <span className="text-slate-700">{entry.typeLabel}</span> },
+      { key: "relatedAccount", label: t("debtShell.colCashAccount"), width: 160, minWidth: 100, filterText: (entry) => entry.relatedAccountLabel, render: (entry) => <span className="block truncate text-slate-600" title={entry.relatedAccountTitle || entry.relatedAccountLabel}>{entry.relatedAccountLabel || "-"}</span> },
+    ];
+    // 抵押物是抵押贷款专属字段：往来款/房贷/消费贷明细不展示该列。
+    if (isSelectedCollateralLoan) {
+      columns.push({
+        key: "collateral",
+        label: t("debtShell.colCollateral"),
+        width: 140,
+        minWidth: 100,
+        hideable: true,
+        filterText: (entry) => entry.collateralLabel ?? "",
+        render: (entry) => <span className="block truncate text-slate-600" title={entry.collateralLabel ?? ""}>{entry.collateralLabel || "-"}</span>,
+      });
+    }
+    columns.push(
+      {
+        key: "outflow",
+        label: t("detail.column.outflow"),
+        width: 110,
+        minWidth: 86,
+        align: "right",
+        render: (entry) => (
+          <span className="font-semibold tabular-nums text-rose-700">
+            {entry.principal < 0 ? formatMoney(Math.abs(entry.principal)) : "-"}
+          </span>
+        ),
+      },
+      {
+        key: "inflow",
+        label: t("detail.column.inflow"),
+        width: 110,
+        minWidth: 86,
+        align: "right",
+        render: (entry) => (
+          <span className="font-semibold tabular-nums text-emerald-700">
+            {entry.principal > 0 ? formatMoney(entry.principal) : "-"}
+          </span>
+        ),
+      },
+      {
+        key: "interest",
+        label: t("debtShell.colInterest"),
+        width: 110,
+        minWidth: 80,
+        align: "right",
+        hideable: true,
+        render: (entry) => <span className="tabular-nums text-amber-700">{entry.interest ? formatMoney(entry.interest) : "-"}</span>,
+      },
+      {
+        key: "paymentTotal",
+        label: isSelectedBankLoan ? t("debtShell.colPaymentTotalLoan") : t("debtShell.colPaymentTotalInflow"),
+        width: 120,
+        minWidth: 92,
+        align: "right",
+        hideable: true,
+        filterText: (entry) => entry.paymentTotal == null ? "-" : entry.paymentTotal.toFixed(2),
+        render: (entry) => (
+          <span className="font-semibold tabular-nums text-slate-700">
+            {entry.paymentTotal == null ? "-" : formatMoney(entry.paymentTotal)}
+          </span>
+        ),
+      },
+      { key: "balance", label: t("debtShell.colBalance"), width: 130, minWidth: 92, align: "right", render: (entry) => <span className={`font-semibold tabular-nums ${amountClass(entry.balance, isRedUp)}`}>{formatMoney(entry.balance)}</span> },
+      { key: "note", label: t("detail.column.remark"), width: 260, minWidth: 120, hideable: true, filterText: (entry) => entry.note, render: (entry) => <span className="block truncate text-slate-600" title={entry.note}>{entry.note || "-"}</span> },
+    );
+    return columns;
+  }, [t, isRedUp, isSelectedBankLoan, isSelectedCollateralLoan]);
 
   const repaymentScheduleColumns = useMemo<AdvancedDataTableColumn<RepaymentScheduleRow>[]>(() => [
     {

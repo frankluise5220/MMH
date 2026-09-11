@@ -122,17 +122,52 @@ function statementMonthForBillSide(date: Date, account: StatementAccountLike | n
  * 本金会落入"收入来源"饼图。这是统计页与 API 端点都必须调用的过滤函数，
  * 任何漏配都会让借到的钱变成"收入"被错误呈现。
  */
-export function isDebtPrincipalTransfer(entry: { source?: string | null } | null | undefined) {
-  const src = entry?.source ?? "";
-  return (
-    src === "debt_borrow_in" ||
-    src === "debt_financed_purchase" ||
-    src === "debt_lend_out" ||
-    src === "debt_collect_in" ||
-    src === "debt_repay_out" ||
-    src === "debt_prepay_out" ||
-    src === "scheduled_task"
-  );
+/** 债务账户 kind：往来款（settlement）与贷款（loan，含银行贷与往来款贷款）。 */
+export function isDebtAccountKind(kind?: string | null) {
+  return kind === "settlement" || kind === "loan";
+}
+
+/**
+ * 以账户现状判断这笔转账是否仍构成债务活动。
+ *
+ * `source` 只记录写入时的业务语义（借出/收回/借入/还款）；账户被改成普通资金账户后，
+ * 历史 `source` 不应再让该行按债务口径展示或统计。账户 kind 是账户当前属性的唯一权威。
+ *
+ * 返回 `null` 表示"两端都没有拿到账户 kind、无法判定"，由调用方维持原行为，避免信息缺失时
+ * 静默改变统计口径。
+ */
+export function isDebtActivityByAccount(
+  entry: { accountKind?: string | null; toAccountKind?: string | null } | null | undefined,
+) {
+  if (!entry) return null;
+  const sourceKind = entry.accountKind ?? null;
+  const targetKind = entry.toAccountKind ?? null;
+  if (!sourceKind && !targetKind) return null;
+  return isDebtAccountKind(sourceKind) || isDebtAccountKind(targetKind);
+}
+
+const DEBT_PRINCIPAL_SOURCES = new Set([
+  "debt_borrow_in",
+  "debt_financed_purchase",
+  "debt_lend_out",
+  "debt_collect_in",
+  "debt_repay_out",
+  "debt_prepay_out",
+  "scheduled_task",
+]);
+
+export function isDebtPrincipalSource(source?: string | null) {
+  return DEBT_PRINCIPAL_SOURCES.has(source ?? "");
+}
+
+export function isDebtPrincipalTransfer(entry: {
+  source?: string | null;
+  accountKind?: string | null;
+  toAccountKind?: string | null;
+} | null | undefined) {
+  if (!isDebtPrincipalSource(entry?.source)) return false;
+  // 账户两端都已不是债务账户时，历史 source 不再按债务本金处理；拿不到账户信息时保持原口径。
+  return isDebtActivityByAccount(entry) ?? true;
 }
 
 export function statementMonthForTransfer(

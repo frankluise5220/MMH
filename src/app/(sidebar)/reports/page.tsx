@@ -858,6 +858,12 @@ export default async function ReportsPage({
       name: counterparty.shortName?.trim() || counterparty.name,
       type: counterparty.type,
     })),
+    merchantId: editCounterparties
+      .filter((counterparty) => counterparty.type === "merchant")
+      .map((counterparty) => ({
+        id: counterparty.id,
+        name: counterparty.shortName?.trim() || counterparty.name,
+      })),
   };
 
   const selectedAccount = accounts.find((account) => account.id === selectedAccountId) ?? null;

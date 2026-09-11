@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 /**
  * GET /api/v1/loan-lpr/latest
  *
- * Returns the latest 5-year LPR quote for the "查询新LPR" button in the
+ * Returns the latest 5-year LPR quote for the refresh-LPR button in the
  * loan rate-adjustment dialog. Live source is ChinaMoney (official LPR
  * publisher); falls back to the built-in static table when the network
  * fetch fails. Results are cached in memory for 6 hours (LPR quotes are

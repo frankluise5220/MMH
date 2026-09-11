@@ -209,6 +209,10 @@ export async function POST(req: NextRequest) {
     if (kind === "loan" && requestedCounterpartyId) {
       return NextResponse.json({ ok: false, code: "LOAN_COUNTERPARTY_FORBIDDEN", error: "Loan accounts must not be linked to a counterparty" }, { status: 400 });
     }
+    // 用户定版：常用商户（merchant）不能作为往来款对象，即不能挂到往来款/结算账户上。
+    if (kind === "settlement" && counterparty?.type === "merchant") {
+      return NextResponse.json({ ok: false, code: "SETTLEMENT_COUNTERPARTY_MERCHANT_FORBIDDEN", error: "A merchant counterparty cannot be used as a settlement (advance) account owner" }, { status: 400 });
+    }
 
     const owner = requestedUserId
       ? await prisma.user.findFirst({ where: { id: requestedUserId, householdId } })
@@ -477,6 +481,14 @@ export async function PUT(req: NextRequest) {
     if (nextCounterpartyId && !nextCounterparty) return NextResponse.json({ ok: false, code: "COUNTERPARTY_NOT_FOUND", error: "Counterparty not found in this household" }, { status: 400 });
     if (nextKind === "settlement" && !nextCounterparty) {
       return NextResponse.json({ ok: false, code: "SETTLEMENT_COUNTERPARTY_REQUIRED", error: "Settlement accounts must be linked to a counterparty" }, { status: 400 });
+    }
+    // 用户定版：常用商户（merchant）不能作为往来款对象。
+    if (nextKind === "settlement" && nextCounterparty?.type === "merchant") {
+      return NextResponse.json({ ok: false, code: "SETTLEMENT_COUNTERPARTY_MERCHANT_FORBIDDEN", error: "A merchant counterparty cannot be used as a settlement (advance) account owner" }, { status: 400 });
+    }
+    // 用户定版：常用商户（merchant）不能作为往来款对象。
+    if (nextKind === "settlement" && nextCounterparty?.type === "merchant") {
+      return NextResponse.json({ ok: false, code: "SETTLEMENT_COUNTERPARTY_MERCHANT_FORBIDDEN", error: "A merchant counterparty cannot be used as a settlement (advance) account owner" }, { status: 400 });
     }
     if (nextKind === "loan" && body.counterpartyId !== undefined && String(body.counterpartyId ?? "").trim()) {
       return NextResponse.json({ ok: false, code: "LOAN_COUNTERPARTY_FORBIDDEN", error: "Loan accounts must not be linked to a counterparty" }, { status: 400 });

@@ -5,6 +5,7 @@ import Link from "next/link";
 
 import { LiabilitiesGuideClient } from "@/components/LiabilitiesGuideClient";
 import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
+import { institutionTypeLabel, isSettlementCounterpartyType } from "@/lib/account-kinds";
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { formatMoney } from "@/lib/format";
@@ -211,14 +212,15 @@ export default async function LiabilitiesPage({
       creditCardDisplayBalanceFromCurrentCycle(cycle),
     ]),
   );
+  const accountLinkedCounterparties = counterparties.filter((counterparty) => isSettlementCounterpartyType(counterparty.type));
   const debtObjectOptions: SmartSelectOptionLike[] = [
-    ...(counterparties.length > 0
+    ...(accountLinkedCounterparties.length > 0
       ? [
           { id: "debt-counterparty-header", label: t("liabilities.counterparties"), isHeader: true },
-          ...counterparties.map((counterparty) => ({
+          ...accountLinkedCounterparties.map((counterparty) => ({
             id: `counterparty:${counterparty.id}`,
             label: counterparty.shortName?.trim() || counterparty.name,
-            subLabel: counterparty.type === "person" ? t("institution.type.person") : t("institution.type.organization"),
+            subLabel: institutionTypeLabel(counterparty.type, t),
           })),
         ]
       : []),
@@ -232,7 +234,7 @@ export default async function LiabilitiesPage({
           ).map((institution) => ({
             id: `institution:${institution.id}`,
             label: institution.shortName?.trim() || institution.name,
-            subLabel: t(`institution.type.${institution.type || "other"}`),
+            subLabel: institutionTypeLabel(institution.type, t),
           })),
         ]
       : []),
@@ -303,7 +305,7 @@ export default async function LiabilitiesPage({
   const nestedFieldData = {
     groupId: groups.filter((group) => group.name !== "未指定").map((group) => ({ id: group.id, name: group.name })),
     institutionId: institutions.map((institution) => ({ id: institution.id, name: institution.name, type: institution.type ?? "" })),
-    counterpartyId: counterparties.map((counterparty) => ({
+    counterpartyId: accountLinkedCounterparties.map((counterparty) => ({
       id: counterparty.id,
       name: counterparty.shortName?.trim() || counterparty.name,
       type: counterparty.type ?? "organization",

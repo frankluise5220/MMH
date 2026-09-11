@@ -13,7 +13,7 @@ import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { buildCategoryTreeOptions, type CategorySource } from "./categorySmartSelect";
-import { institutionTypeLabel } from "@/lib/account-kinds";
+import { institutionTypeLabel, isSettlementCounterpartyType } from "@/lib/account-kinds";
 import { buildAccountDisplayOption } from "@/lib/account-display";
 import { recordRecentAccount, sortByAccountUsage, sortOptionsByRecent, useAccountUsage, useRecentAccountIds } from "@/lib/client/recentAccounts";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
@@ -137,7 +137,6 @@ type FixedAssetLinkedTransaction = {
   propertyAssetId: string;
 };
 
-const COUNTERPARTY_TYPES = new Set(["person", "organization"]);
 
 const MODE_LABELS: Record<DebtMode, string> = {
   borrow_in: "debtTx.mode.borrowIn",
@@ -248,7 +247,7 @@ function createHistoricalRateRow(defaultDate = "", defaultRate = ""): Historical
 }
 
 function debtObjectOptionId(id: string, type?: string | null) {
-  return `${COUNTERPARTY_TYPES.has(type ?? "") ? "counterparty" : "institution"}:${id}`;
+  return `${isSettlementCounterpartyType(type) ? "counterparty" : "institution"}:${id}`;
 }
 
 function isDebtObjectRef(value: string) {
@@ -344,6 +343,138 @@ function serializeHistoricalRateRows(rows: HistoricalRateRow[], t: (key: string,
   return { ok: true as const, text };
 }
 
+function FixedAssetCreateDialog({
+  open,
+  onClose,
+  accountOptions,
+  accountValue,
+  onAccountChange,
+  onAccountCreateClick,
+  accountCreateForm,
+  name,
+  onNameChange,
+  purchaseDate,
+  onPurchaseDateChange,
+  amount,
+  onAmountChange,
+  submitting,
+  onSubmit,
+}: {
+  open: boolean;
+  onClose: () => void;
+  accountOptions: SmartSelectOption[];
+  accountValue: string;
+  onAccountChange: (id: string) => void;
+  onAccountCreateClick: () => void;
+  accountCreateForm?: ReactNode;
+  name: string;
+  onNameChange: (value: string) => void;
+  purchaseDate: string;
+  onPurchaseDateChange: (value: string) => void;
+  amount: string;
+  onAmountChange: (value: string) => void;
+  submitting: boolean;
+  onSubmit: () => void;
+}) {
+  const { t } = useI18n();
+  const parentModalZIndex = useModalLayerZIndex();
+  const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
+  if (!open) return null;
+  return (
+    <ModalLayerProvider value={modalZIndex}>
+      {createPortal(
+        <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
+          <div className="app-modal-panel max-w-md">
+            <div className="modal-header shrink-0">
+              <div className="text-sm font-semibold text-slate-800">{t("txForm.createFixedAsset")}</div>
+              <button
+                type="button"
+                onClick={onClose}
+                className="secondary-button h-8 px-2"
+                disabled={submitting}
+              >
+                {t("table.close")}
+              </button>
+            </div>
+            <form
+              className="space-y-3 p-4"
+              onSubmit={(event) => {
+                event.preventDefault();
+                onSubmit();
+              }}
+            >
+              <div className="space-y-1">
+                <div className="form-label">{t("txForm.fixedAssetAccount")}</div>
+                <SmartSelect
+                  mode="single"
+                  value={accountValue}
+                  onChange={onAccountChange}
+                  options={accountOptions}
+                  placeholder={t("txForm.selectFixedAssetAccount")}
+                  onCreateClick={onAccountCreateClick}
+                  createLabel={t("txForm.createFixedAssetAccount")}
+                  behavior={{
+                    hierarchy: "auto",
+                    search: "auto",
+                    clearable: false,
+                    minDropdownWidth: 360,
+                  }}
+                />
+              </div>
+              <div className="space-y-1">
+                <div className="form-label">
+                  {t("txForm.fixedAssetName")} <span className="text-red-500">*</span>
+                </div>
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(event) => onNameChange(event.target.value)}
+                  placeholder={t("txForm.fixedAssetName")}
+                  className="form-input rounded-[8px] px-2 text-xs"
+                  style={{ height: 32, minHeight: 32 }}
+                />
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="space-y-1">
+                  <div className="form-label">{t("txForm.fixedAssetPurchaseDate")}</div>
+                  <DateStepper value={purchaseDate} onChange={onPurchaseDateChange} />
+                </div>
+                <div className="space-y-1">
+                  <div className="form-label">
+                    {t("txForm.fixedAssetPurchaseAmount")} <span className="text-red-500">*</span>
+                  </div>
+                  <CalcInput
+                    value={amount}
+                    onChange={onAmountChange}
+                    placeholder={t("debtTx.placeholder.exampleAmount")}
+                    label={t("txForm.fixedAssetPurchaseAmount")}
+                    precision={2}
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  className="secondary-button h-9 px-3"
+                  disabled={submitting}
+                  onClick={onClose}
+                >
+                  {t("common.cancel")}
+                </button>
+                <button type="submit" className="primary-button h-9 px-3" disabled={submitting}>
+                  {submitting ? t("txForm.saving") : t("txForm.createFixedAsset")}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>,
+        document.body,
+      )}
+      {accountCreateForm}
+    </ModalLayerProvider>
+  );
+}
+
 export function DebtTransactionModal({
   dialogType = "debt",
   debtAccounts,
@@ -403,7 +534,7 @@ export function DebtTransactionModal({
           .map((item) => ({
             id: `institution:${item.id}`,
             label: item.name,
-            subLabel: institutionTypeLabel(item.type ?? null),
+            subLabel: institutionTypeLabel(item.type ?? null, t),
           }))
       : [];
 
@@ -423,6 +554,9 @@ export function DebtTransactionModal({
     ),
     [debtObjectOptions, fallbackDebtObjectOptions, localDebtObjectOptions],
   );
+  // 资金账户下拉里新增的账户（本地追加，供当前弹窗立刻可选）
+  const [cashAccountNestedOpen, setCashAccountNestedOpen] = useState(false);
+  const [localCashAccountList, setLocalCashAccountList] = useState<SmartSelectOption[]>([]);
   const cashOptions: SmartSelectOption[] = useMemo(
     () => cashAccounts.map((item) => ({ id: item.id, label: item.label, subLabel: item.subLabel, kind: item.kind })),
     [cashAccounts],
@@ -433,7 +567,10 @@ export function DebtTransactionModal({
     filteredOptions: cashAccountSSFiltered,
   } = useAccountSSFilter(cashAccountSSOptions);
   const recentAccountIds = useRecentAccountIds();
-  const visibleCashOptions = sortOptionsByRecent(cashAccountSSFiltered ?? cashAccountSSOptions ?? cashOptions, recentAccountIds);
+  const visibleCashOptions = sortOptionsByRecent(
+    [...(cashAccountSSFiltered ?? cashAccountSSOptions ?? cashOptions), ...localCashAccountList],
+    recentAccountIds,
+  );
   const cashOwnerCycleButton = cashAccountSSOptions?.some((option) => option.isHeader) ? (
     <button
       type="button"
@@ -514,6 +651,12 @@ export function DebtTransactionModal({
   // Linked fixed asset of the edited borrow record; undefined until fetched.
   const [fixedAssetLinkedTx, setFixedAssetLinkedTx] = useState<FixedAssetLinkedTransaction | null | undefined>(undefined);
   const [fixedAssetAccountNestedOpen, setFixedAssetAccountNestedOpen] = useState(false);
+  const [fixedAssetAssetNestedOpen, setFixedAssetAssetNestedOpen] = useState(false);
+  const [fixedAssetCreateAccountId, setFixedAssetCreateAccountId] = useState("");
+  const [fixedAssetCreateName, setFixedAssetCreateName] = useState("");
+  const [fixedAssetCreateDate, setFixedAssetCreateDate] = useState("");
+  const [fixedAssetCreateAmount, setFixedAssetCreateAmount] = useState("");
+  const [fixedAssetCreateSubmitting, setFixedAssetCreateSubmitting] = useState(false);
   // One-shot guard: prefill the linked fixed asset at most once per edit open,
   // so the user can still unlink it afterwards.
   const fixedAssetLinkPrefilledRef = useRef(false);
@@ -612,6 +755,12 @@ export function DebtTransactionModal({
     setFixedAssetAssets([]);
     setFixedAssetAssetsLoading(false);
     setFixedAssetAccountNestedOpen(false);
+    setFixedAssetAssetNestedOpen(false);
+    setFixedAssetCreateAccountId("");
+    setFixedAssetCreateName("");
+    setFixedAssetCreateDate("");
+    setFixedAssetCreateAmount("");
+    setFixedAssetCreateSubmitting(false);
   }, [cashAccounts, defaultCashAccountId, defaultDebtAccountId, defaultDebtInstitutionId, isLoanDialog, localDebtAccounts, localNestedFieldData, nestedFieldData, today]);
 
   useEffect(() => {
@@ -728,7 +877,7 @@ export function DebtTransactionModal({
         .map((item) => ({
           id: debtObjectOptionId(item.id, item.type),
           label: item.name,
-          subLabel: institutionTypeLabel(item.type ?? null),
+          subLabel: institutionTypeLabel(item.type ?? null, t),
         }));
       setLocalDebtObjectOptions(mergeSmartSelectOptions(debtObjectOptions, isLoanDialog ? institutionOptions : counterpartyOptions));
     }
@@ -1562,6 +1711,9 @@ export function DebtTransactionModal({
     setPrincipal(diff > 0 ? diff.toFixed(2) : "0");
   }
   const isLoanBorrow = isLoanDialog && mode === "borrow_in";
+  // 「新增账户」要建哪种 kind：由**往来对象 ref** 决定（institution: → 贷款账户；counterparty: → 往来款账户）。
+  // 账户 kind 本身在分辨这件事，不需要再借 isLoanDialog 代指（新增表单两个窗口共用）。
+  const accountCreateKind: "loan" | "settlement" = debtInstitutionId.startsWith("institution:") ? "loan" : "settlement";
   const isConsumerLoanBorrow = isLoanBorrow && activeLoanTab === "consumer";
   const isHomeLoanBorrow = isLoanBorrow && activeLoanTab === "home";
   const isCollateralLoanBorrow = isLoanBorrow && activeLoanTab === "mortgage";
@@ -2059,6 +2211,8 @@ export function DebtTransactionModal({
         onChange={options?.onChange ?? setCashAccountId}
         options={visibleCashOptions}
         placeholder={t("txForm.selectPlaceholder")}
+        onCreateClick={() => setCashAccountNestedOpen(true)}
+        createLabel={t("settings.accounts.add")}
         behavior={{
           hierarchy: "auto",
           search: "auto",
@@ -2136,7 +2290,7 @@ export function DebtTransactionModal({
         onChange={handleDebtAccountChange}
         options={debtObjectAccountOptions}
         placeholder={debtInstitutionId ? t("debtTx.placeholder.autoReuseOrCreate") : t(isLoanDialog ? "debtTx.placeholder.selectLoanInstitutionFirst" : "debtTx.placeholder.selectObjectFirst")}
-        onCreateClick={isLoanDialog && canCreateDebtItem && isDebtObjectRef(debtInstitutionId) ? () => { void openDebtAccountCreate(); } : undefined}
+        onCreateClick={canCreateDebtItem && isDebtObjectRef(debtInstitutionId) ? () => { void openDebtAccountCreate(); } : undefined}
         createLabel={isLoanDialog ? t("debtTx.addLoanAccount") : t("debtTx.addAccount")}
         behavior={{
           hierarchy: false,
@@ -2256,6 +2410,16 @@ export function DebtTransactionModal({
         onChange={handleCollateralFixedAssetChange}
         options={fixedAssetAssetOptions}
         placeholder={fixedAssetAssetsLoading ? t("common.loading") : t("debtTx.fixedAssetPlaceholder")}
+        onCreateClick={() => {
+          setFixedAssetCreateAccountId(
+            fixedAssetAccountId || (fixedAssetAccountOptions.find((option) => !option.isHeader && !option.isGroup)?.id ?? ""),
+          );
+          setFixedAssetCreateName("");
+          setFixedAssetCreateDate(today);
+          setFixedAssetCreateAmount("");
+          setFixedAssetAssetNestedOpen(true);
+        }}
+        createLabel={t("txForm.createFixedAsset")}
         behavior={{
           hierarchy: false,
           search: true,
@@ -2265,6 +2429,101 @@ export function DebtTransactionModal({
       />
     </div>
   );
+
+  const renderFixedAssetAccountCreateForm = () => (
+    <EntityCreateForm
+      mode="compact"
+      entityType="account"
+      open={fixedAssetAccountNestedOpen}
+      onClose={() => setFixedAssetAccountNestedOpen(false)}
+      title={t("txForm.createFixedAssetAccount")}
+      nameLabel={t("txForm.fixedAssetAccountName")}
+      namePlaceholder={t("txForm.fixedAssetAccountPlaceholder")}
+      defaultType="investment"
+      nestedFieldData={localNestedFieldData ?? nestedFieldData}
+      hiddenFields={[
+        "kind",
+        "investProductType",
+        "institutionId",
+        "fundUnitsDecimals",
+        "tradingCalendar",
+        "costBasisMethod",
+      ]}
+      extraFields={{ kind: "investment", investProductType: "property" }}
+      onCreated={(id, name) => {
+        const option: SmartSelectOption = {
+          id,
+          label: name,
+          subLabel: t("txForm.fixedAssetAccount"),
+        };
+        setFixedAssetAccountList((prev) => (prev.some((item) => item.id === id) ? prev : [...prev, option]));
+        setLocalFixedAssetAccountSSOpts((prev) => mergeSmartSelectOptions(prev, [option]));
+        setFixedAssetLinked(true);
+        setFixedAssetAccountId(id);
+        setFixedAssetCreateAccountId(id);
+        setFixedAssetAssetId("");
+        setFixedAssetAccountNestedOpen(false);
+      }}
+    />
+  );
+
+  async function submitFixedAssetCreate() {
+    if (fixedAssetCreateSubmitting) return;
+    const accountId = fixedAssetCreateAccountId.trim();
+    const name = fixedAssetCreateName.trim();
+    const amount = parseAbsMoneyText(fixedAssetCreateAmount);
+    if (!accountId) {
+      window.alert(t("txForm.alert.selectFixedAssetAccount"));
+      return;
+    }
+    if (!name) {
+      window.alert(t("txForm.alert.enterFixedAssetName"));
+      return;
+    }
+    if (amount <= 0) {
+      window.alert(t("txForm.alert.enterFixedAssetAmount"));
+      return;
+    }
+    const tradeDate = fixedAssetCreateDate.trim() || today;
+    setFixedAssetCreateSubmitting(true);
+    try {
+      const res = await fetch("/api/v1/properties", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          accountId,
+          name,
+          tradeDate,
+          amount: fixedAssetCreateAmount,
+          action: "purchase",
+        }),
+      });
+      const data = await res.json().catch(() => null) as {
+        ok?: boolean;
+        error?: string;
+        data?: { transaction?: { propertyAssetId?: string; accountId?: string; propertyName?: string | null } | null };
+      } | null;
+      if (!res.ok || !data?.ok) throw new Error(data?.error ?? t("txForm.alert.createFixedAssetFailed"));
+      const created = data.data?.transaction;
+      if (created?.propertyAssetId) {
+        const option: FixedAssetAssetOption = {
+          id: created.propertyAssetId,
+          accountId: created.accountId ?? accountId,
+          name: created.propertyName ?? name,
+          mortgageLoanAccountId: null,
+          status: "active",
+        };
+        setFixedAssetAssets((prev) => (prev.some((item) => item.id === option.id) ? prev : [option, ...prev]));
+        setFixedAssetAccountId(option.accountId);
+        setFixedAssetAssetId(option.id);
+      }
+      setFixedAssetAssetNestedOpen(false);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : t("txForm.alert.createFixedAssetFailed"));
+    } finally {
+      setFixedAssetCreateSubmitting(false);
+    }
+  }
 
   const renderRepaymentMethodField = () => (
     <div className="space-y-1">
@@ -3149,6 +3408,7 @@ export function DebtTransactionModal({
             <EntityCreateForm
               mode="compact"
               entityType={isLoanDialog ? "institution" : "counterparty"}
+              allowedCounterpartyTypes={isLoanDialog ? undefined : ["person", "organization"]}
               open={debtObjectNestedOpen}
               onClose={() => setDebtObjectNestedOpen(false)}
               title={isLoanDialog ? t("debtTx.addLoanInstitution") : t("txForm.addCounterparty")}
@@ -3158,7 +3418,7 @@ export function DebtTransactionModal({
               allowedInstitutionTypes={isLoanDialog ? ["bank", "debt"] : undefined}
               onCreated={(id, name, extra) => {
                 const type = extra?.type ?? (isLoanDialog ? "bank" : "person");
-                const option = { id: debtObjectOptionId(id, type), label: name, subLabel: institutionTypeLabel(type) };
+                const option = { id: debtObjectOptionId(id, type), label: name, subLabel: institutionTypeLabel(type, t) };
                 const fieldKey = isLoanDialog ? "institutionId" : "counterpartyId";
                 setLocalNestedFieldData((prev) => ({
                   ...(prev ?? nestedFieldData ?? {}),
@@ -3173,6 +3433,37 @@ export function DebtTransactionModal({
             document.body,
           )
         : null}
+      {open && cashAccountNestedOpen
+        ? createPortal(
+            <EntityCreateForm
+              mode="compact"
+              entityType="account"
+              open={cashAccountNestedOpen}
+              onClose={() => setCashAccountNestedOpen(false)}
+              title={t("settings.accounts.add")}
+              nestedFieldData={localNestedFieldData ?? nestedFieldData}
+              onCreated={(id, name, extra) => {
+                const institution = extra?.institutionShortName?.trim() || extra?.institutionName;
+                setLocalCashAccountList((prev) =>
+                  prev.some((item) => item.id === id)
+                    ? prev
+                    : [
+                        ...prev,
+                        {
+                          id,
+                          label: institution ? `${institution}·${name}` : name,
+                          subLabel: extra?.kind ? t(`account.kind.${extra.kind}`) : undefined,
+                          kind: extra?.kind,
+                        },
+                      ],
+                );
+                setCashAccountId(id);
+                setCashAccountNestedOpen(false);
+              }}
+            />,
+            document.body,
+          )
+        : null}
       {open && debtAccountNestedOpen
         ? createPortal(
             <EntityCreateForm
@@ -3180,10 +3471,10 @@ export function DebtTransactionModal({
               entityType="account"
               open={debtAccountNestedOpen}
               onClose={() => setDebtAccountNestedOpen(false)}
-              title={isLoanDialog ? t("debtTx.addLoanAccount") : t("debtTx.addCounterpartyAccount")}
-              nameLabel={isLoanDialog ? t("debtTx.loanAccountName") : t("debtTx.counterpartyAccountName")}
-              namePlaceholder={isLoanDialog ? t("debtTx.loanAccountNamePlaceholder") : t("debtTx.counterpartyAccountNamePlaceholder")}
-              defaultType={isLoanDialog ? "loan" : "settlement"}
+              title={accountCreateKind === "loan" ? t("debtTx.addLoanAccount") : t("debtTx.addCounterpartyAccount")}
+              nameLabel={accountCreateKind === "loan" ? t("debtTx.loanAccountName") : t("debtTx.counterpartyAccountName")}
+              namePlaceholder={accountCreateKind === "loan" ? t("debtTx.loanAccountNamePlaceholder") : t("debtTx.counterpartyAccountNamePlaceholder")}
+              defaultType={accountCreateKind}
               nestedFieldData={localNestedFieldData ?? nestedFieldData}
               hiddenFields={[
                 "kind",
@@ -3202,8 +3493,8 @@ export function DebtTransactionModal({
                 "defaultFundQueryApiId",
               ]}
               extraFields={{
-                kind: isLoanDialog ? "loan" : "settlement",
-                ...(isLoanDialog && activeLoanTab !== "repay_out" ? { loanType: activeLoanTab } : {}),
+                kind: accountCreateKind,
+                ...(accountCreateKind === "loan" && activeLoanTab !== "repay_out" ? { loanType: activeLoanTab } : {}),
                 ...(debtInstitutionId.startsWith("institution:")
                   ? { institutionId: rawDebtObjectId(debtInstitutionId) }
                   : { counterpartyId: rawDebtObjectId(debtInstitutionId) }),
@@ -3211,7 +3502,7 @@ export function DebtTransactionModal({
               }}
               onCreated={(id, name, extra) => {
                 const ownerName = extra?.counterpartyName ?? extra?.institutionShortName ?? extra?.institutionName;
-                const nextKind = extra?.kind ?? (isLoanDialog ? "loan" : "settlement");
+                const nextKind = extra?.kind ?? accountCreateKind;
                 const nextCounterpartyId = extra?.counterpartyId ?? (debtInstitutionId.startsWith("counterparty:") ? rawDebtObjectId(debtInstitutionId) : null);
                 const nextInstitutionId = extra?.institutionId ?? (debtInstitutionId.startsWith("institution:") ? rawDebtObjectId(debtInstitutionId) : null);
                 const nextLoanType = nextKind === "loan" ? resolveLoanTypeValue(extra?.loanType, extra?.isConsumerLoan) : null;
@@ -3235,44 +3526,28 @@ export function DebtTransactionModal({
             document.body,
           )
         : null}
-      {open && fixedAssetAccountNestedOpen
-        ? createPortal(
-            <EntityCreateForm
-              mode="compact"
-              entityType="account"
-              open={fixedAssetAccountNestedOpen}
-              onClose={() => setFixedAssetAccountNestedOpen(false)}
-              title={t("txForm.createFixedAssetAccount")}
-              nameLabel={t("txForm.fixedAssetAccountName")}
-              namePlaceholder={t("txForm.fixedAssetAccountPlaceholder")}
-              defaultType="investment"
-              nestedFieldData={localNestedFieldData ?? nestedFieldData}
-              hiddenFields={[
-                "kind",
-                "investProductType",
-                "institutionId",
-                "fundUnitsDecimals",
-                "tradingCalendar",
-                "costBasisMethod",
-              ]}
-              extraFields={{ kind: "investment", investProductType: "property" }}
-              onCreated={(id, name) => {
-                const option: SmartSelectOption = {
-                  id,
-                  label: name,
-                  subLabel: t("txForm.fixedAssetAccount"),
-                };
-                setFixedAssetAccountList((prev) => (prev.some((item) => item.id === id) ? prev : [...prev, option]));
-                setLocalFixedAssetAccountSSOpts((prev) => mergeSmartSelectOptions(prev, [option]));
-                setFixedAssetLinked(true);
-                setFixedAssetAccountId(id);
-                setFixedAssetAssetId("");
-                setFixedAssetAccountNestedOpen(false);
-              }}
-            />,
-            document.body,
-          )
+      {open && fixedAssetAccountNestedOpen && !fixedAssetAssetNestedOpen
+        ? createPortal(renderFixedAssetAccountCreateForm(), document.body)
         : null}
+      {open && fixedAssetAssetNestedOpen ? (
+        <FixedAssetCreateDialog
+          open={fixedAssetAssetNestedOpen}
+          onClose={() => setFixedAssetAssetNestedOpen(false)}
+          accountOptions={fixedAssetAccountOptions}
+          accountValue={fixedAssetCreateAccountId}
+          onAccountChange={setFixedAssetCreateAccountId}
+          onAccountCreateClick={() => setFixedAssetAccountNestedOpen(true)}
+          accountCreateForm={open && fixedAssetAccountNestedOpen ? renderFixedAssetAccountCreateForm() : undefined}
+          name={fixedAssetCreateName}
+          onNameChange={setFixedAssetCreateName}
+          purchaseDate={fixedAssetCreateDate}
+          onPurchaseDateChange={setFixedAssetCreateDate}
+          amount={fixedAssetCreateAmount}
+          onAmountChange={setFixedAssetCreateAmount}
+          submitting={fixedAssetCreateSubmitting}
+          onSubmit={() => { void submitFixedAssetCreate(); }}
+        />
+      ) : null}
     </ModalLayerProvider>
   );
 }

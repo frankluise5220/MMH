@@ -14,7 +14,9 @@ import {
   SettingsTd,
   SettingsTh,
 } from "@/components/settings/SettingsPageScaffold";
+import { COUNTERPARTY_TYPE_VALUES, institutionTypeLabel } from "@/lib/account-kinds";
 import { fetchSettingsAccountData, notifySettingsDataChanged } from "@/lib/client/settingsCache";
+import { showBlockingLoading } from "@/lib/client/blocking-loading";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { BasicDataSubmenuHeader } from "@/components/settings/BasicDataImportExport";
 import { useI18n } from "@/lib/i18n";
@@ -31,7 +33,7 @@ type Institution = {
 type InstitutionSettingMode = "institution" | "counterparty" | "family";
 
 const INSTITUTION_TYPES = ["bank", "insurance", "brokerage", "fund_company", "payment", "other"] as const;
-const COUNTERPARTY_TYPES = ["person", "organization"] as const;
+const COUNTERPARTY_TYPES = COUNTERPARTY_TYPE_VALUES;
 const FAMILY_MEMBER_TYPES = ["family_member"] as const;
 
 export function SettingsInstitutionsClient({
@@ -51,7 +53,7 @@ export function SettingsInstitutionsClient({
   const [batchDeleting, setBatchDeleting] = useState(false);
   const allowedTypes =
     mode === "institution" ? INSTITUTION_TYPES : mode === "family" ? FAMILY_MEMBER_TYPES : COUNTERPARTY_TYPES;
-  const typeLabel = (type: string | null | undefined) => t(`institution.type.${type ?? "other"}`);
+  const typeLabel = (type: string | null | undefined) => institutionTypeLabel(type, t);
   const listTitle = mode === "institution" ? t("settings.institutions.listTitle") : mode === "family" ? t("settings.familyMembers.listTitle") : t("settings.counterparties.listTitle");
   const emptyText = mode === "institution" ? t("settings.institutions.empty") : mode === "family" ? t("settings.familyMembers.empty") : t("settings.counterparties.empty");
   const deleteLabel = mode === "institution" ? t("settings.institutions") : mode === "family" ? t("settings.familyMembers") : t("settings.counterparties");
@@ -111,6 +113,7 @@ export function SettingsInstitutionsClient({
     if (!confirmed) return;
 
     setBatchDeleting(true);
+    const closeBlocking = showBlockingLoading(t("common.batchDeleting"));
     try {
       let deleted = 0;
       for (const id of ids) {
@@ -136,6 +139,7 @@ export function SettingsInstitutionsClient({
         window.alert(t("settings.batchDelete.result", { deleted, failed }));
       }
     } finally {
+      closeBlocking();
       setBatchDeleting(false);
     }
   }

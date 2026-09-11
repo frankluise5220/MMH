@@ -31,5 +31,17 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", "scripts", "mmh-doc-edit", "check-*.ts", "fix-*.ts", "_*.ts", "_*.mjs"]
+  "exclude": [
+    "node_modules",
+    "scripts",
+    "mmh-doc-edit",
+    "check-*.ts",
+    "fix-*.ts",
+    "_*.ts",
+    "_*.tsx",
+    "_*.mts",
+    "_*.mjs",
+    "_tmp_*",
+    ".tmp*"
+  ]
 }

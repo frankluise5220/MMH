@@ -5,6 +5,7 @@ import { Building2, CheckCircle2, Landmark, Plus, UserRound } from "lucide-react
 
 import { DebtTransactionModal } from "@/components/DebtTransactionModal";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
+import { institutionTypeLabel, type I18nT } from "@/lib/account-kinds";
 import { formatMoney } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 
@@ -46,8 +47,8 @@ type SmartSelectLikeOption = {
 
 type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
 
-function typeLabel(t: (key: string) => string, type?: string | null) {
-  return type === "organization" ? t("institution.type.organization") : t("institution.type.person");
+function typeLabel(t: I18nT, type?: string | null) {
+  return institutionTypeLabel(type, t);
 }
 
 const GUIDE_STEPS = [
@@ -137,6 +138,7 @@ export function LiabilitiesGuideClient({
         onClose={() => setShowCreate(false)}
         entityType="counterparty"
         defaultType="person"
+        allowedCounterpartyTypes={["person", "organization"]}
         title={t("liabilitiesGuide.addCounterparty")}
         nameLabel={t("liabilitiesGuide.nameLabel")}
         namePlaceholder={t("liabilitiesGuide.namePlaceholder")}

@@ -79,6 +79,10 @@ export type DetailEntry = {
   accountInstitutionName?: string | null;
   counterpartyInstitutionId?: string | null;
   counterpartyInstitutionName?: string | null;
+  originalCurrency?: string | null;
+  originalAmount?: number | null;
+  locationId?: string | null;
+  locationName?: string | null;
   toAccountId: string | null;
   toAccountName: string | null;
   toAccountKind?: string | null;
@@ -180,7 +184,8 @@ function EntryAttachmentIndicator({
 }
 
 function buildBasicEntryEditPayload(entry: DetailEntry, currentAccountId?: string | null) {
-  const isAdvanceReturn = entry.source === "advance" && entry.accountKind === "loan";
+  // Settlement side of an advance entry (legacy rows use kind=loan).
+  const isAdvanceReturn = entry.source === "advance" && (entry.accountKind === "loan" || entry.accountKind === "settlement");
   const numericAmount = toNumber(entry.amount);
   const dialogAmount = entry.type === "transfer" && entry.source !== "advance"
     ? Math.abs(numericAmount)
@@ -198,8 +203,15 @@ function buildBasicEntryEditPayload(entry: DetailEntry, currentAccountId?: strin
     categoryName: entry.categoryName ?? undefined,
     accountId: (isAdvanceReturn ? entry.toAccountId : entry.accountId) ?? undefined,
     accountName: (isAdvanceReturn ? entry.toAccountName : entry.accountName) ?? undefined,
+    advanceAccountId: entry.source === "advance"
+      ? ((isAdvanceReturn ? entry.accountId : entry.toAccountId) ?? undefined)
+      : undefined,
     counterpartyInstitutionId: entry.counterpartyInstitutionId ?? undefined,
     counterpartyInstitutionName: entry.counterpartyInstitutionName ?? undefined,
+    originalCurrency: entry.originalCurrency ?? null,
+    originalAmount: entry.originalAmount != null ? toNumber(entry.originalAmount) : null,
+    locationId: entry.locationId ?? undefined,
+    locationName: entry.locationName ?? undefined,
     fromAccountId: entry.type === "transfer" ? entry.accountId ?? undefined : undefined,
     fromAccountName: entry.type === "transfer" ? entry.accountName ?? undefined : undefined,
     toAccountId: entry.toAccountId ?? undefined,
@@ -298,6 +310,19 @@ function entryCurrency(entry: { currency?: string | null }) {
   return String(entry.currency ?? "CNY").trim().toUpperCase() || "CNY";
 }
 
+// Small provenance badge next to the amount: the original settlement amount in
+// its own currency (e.g. "USD 100") when the bank posted a different local amount.
+function entryOriginalAmountBadge(entry: DetailEntry) {
+  const currency = String(entry.originalCurrency ?? "").trim().toUpperCase();
+  const amount = entry.originalAmount == null ? null : toNumber(entry.originalAmount);
+  if (!currency || currency === entryCurrency(entry) || amount == null || Math.abs(amount) < 0.005) return null;
+  return (
+    <span className="ml-1 text-[10px] font-normal text-slate-400">
+      {currency} {formatCurrencyMoney(Math.abs(amount), currency).replace(/^\D+/, "")}
+    </span>
+  );
+}
+
 function formatEntryCurrencyMoney(amount: number, entry: { currency?: string | null }) {
   const currency = entryCurrency(entry);
   return formatCurrencyMoney(amount, currency);
@@ -327,26 +352,45 @@ function debtModeFromSource(source: string, note?: string | null): DebtMode | nu
   return null;
 }
 
+/** 账户现状是否仍是债务账户（往来款 settlement / 贷款 loan）。 */
+function isDebtAccountSide(kind?: string | null, isSettlementDebt?: boolean | null) {
+  return isSettlementDebt === true || kind === "settlement" || kind === "loan";
+}
+
 function inferDebtMode(
   entry: {
     type: string;
     source: string | null;
     note?: string | null;
+    accountId?: string | null;
     accountKind?: string | null;
     accountDebtDirection?: string | null;
+    accountIsSettlementDebt?: boolean | null;
+    toAccountId?: string | null;
     toAccountKind?: string | null;
     toAccountDebtDirection?: string | null;
+    toAccountIsSettlementDebt?: boolean | null;
   },
   accountById?: Map<string, DetailAccountOption>,
 ): DebtMode | null {
   if (entry.type !== "transfer") return null;
   if (entry.source === "advance") return null;
-  const sourceMode = debtModeFromSource(String(entry.source ?? ""), entry.note);
-  if (sourceMode) return sourceMode;
-  const sourceAccount = accountById?.get((entry as { accountId?: string | null }).accountId ?? "");
-  const targetAccount = accountById?.get((entry as { toAccountId?: string | null }).toAccountId ?? "");
+  const sourceAccount = accountById?.get(entry.accountId ?? "");
+  const targetAccount = accountById?.get(entry.toAccountId ?? "");
   const sourceKind = entry.accountKind ?? sourceAccount?.kind ?? null;
   const targetKind = entry.toAccountKind ?? targetAccount?.kind ?? null;
+  const sourceMode = debtModeFromSource(String(entry.source ?? ""), entry.note);
+  if (sourceMode) {
+    // `source` 只记录写入时的业务语义；账户被改成普通资金账户后，历史 source 不应再让该行
+    // 按债务口径展示/编辑（分类列、类型列、编辑入口都走这里）。账户信息缺失时维持原行为。
+    const hasAccountInfo = Boolean(
+      sourceKind || targetKind || entry.accountIsSettlementDebt != null || entry.toAccountIsSettlementDebt != null,
+    );
+    if (!hasAccountInfo) return sourceMode;
+    const involvesDebtAccount = isDebtAccountSide(sourceKind, entry.accountIsSettlementDebt)
+      || isDebtAccountSide(targetKind, entry.toAccountIsSettlementDebt);
+    if (involvesDebtAccount) return sourceMode;
+  }
   const sourceDirection = entry.accountDebtDirection ?? sourceAccount?.debtDirection ?? null;
   const targetDirection = entry.toAccountDebtDirection ?? targetAccount?.debtDirection ?? null;
   if (sourceKind === "loan") return sourceDirection === "receivable" ? "collect_in" : "borrow_in";
@@ -1212,7 +1256,16 @@ export function DetailViewClient({
       render: (e) => {
         const effectiveAmount = effectiveAmountForAccount(e, accountId);
         const inflow = effectiveAmount > 0 ? effectiveAmount : null;
-        return <span className={`whitespace-nowrap tabular-nums ${inflow !== null ? inflowCls : "text-slate-700"}`}>{inflow !== null ? formatEntryCurrencyMoney(inflow, e) : ""}</span>;
+        return (
+          <span className={`whitespace-nowrap tabular-nums ${inflow !== null ? inflowCls : "text-slate-700"}`}>
+            {inflow !== null ? (
+              <>
+                {formatEntryCurrencyMoney(inflow, e)}
+                {entryOriginalAmountBadge(e)}
+              </>
+            ) : ""}
+          </span>
+        );
       },
     },
     {
@@ -1237,7 +1290,16 @@ export function DetailViewClient({
       render: (e) => {
         const effectiveAmount = effectiveAmountForAccount(e, accountId);
         const outflow = effectiveAmount < 0 ? -effectiveAmount : null;
-        return <span className={`whitespace-nowrap tabular-nums ${outflow !== null ? outflowCls : "text-slate-700"}`}>{outflow !== null ? formatEntryCurrencyMoney(outflow, e) : ""}</span>;
+        return (
+          <span className={`whitespace-nowrap tabular-nums ${outflow !== null ? outflowCls : "text-slate-700"}`}>
+            {outflow !== null ? (
+              <>
+                {formatEntryCurrencyMoney(outflow, e)}
+                {entryOriginalAmountBadge(e)}
+              </>
+            ) : ""}
+          </span>
+        );
       },
     },
     {

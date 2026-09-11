@@ -13,7 +13,7 @@ import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from
 import { SmartSelect, SmartSelectOption } from "./SmartSelect";
 import { UnifiedEntryLauncher } from "./UnifiedEntryLauncher";
 import { useAccountSSFilter } from "./accountSSFilter";
-import { kindLabel } from "@/lib/account-kinds";
+import { isSettlementCounterpartyType, kindLabel } from "@/lib/account-kinds";
 import { getCashTargetOperation } from "@/lib/account-kind-utils";
 import { buildAccountDisplayOption, buildGroupedAccountOptions } from "@/lib/account-display";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
@@ -318,7 +318,6 @@ type EditTagOption = {
 
 type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
 type SubmitMode = "close" | "repeat";
-const COUNTERPARTY_TYPES = new Set(["person", "organization"]);
 
 type SettingsAccountRecord = {
   id: string;
@@ -415,8 +414,10 @@ export function TransactionFormModal({
   const [categoryNestedOpen, setCategoryNestedOpen] = useState(false);
   const [accountNestedOpen, setAccountNestedOpen] = useState(false);
   const [counterpartyNestedOpen, setCounterpartyNestedOpen] = useState(false);
+  /** 交易地点（常用商户）下拉里新增 —— 新增的往来对象类型固定为「常用商户」 */
+  const [locationNestedOpen, setLocationNestedOpen] = useState(false);
   const [institutionNestedOpen, setInstitutionNestedOpen] = useState(false);
-  const [accountCreateTarget, setAccountCreateTarget] = useState<"account" | "from" | "to">("account");
+  const [accountCreateTarget, setAccountCreateTarget] = useState<"account" | "from" | "to" | "advance">("account");
   const [tagList, setTagList] = useState(allTags ?? []);
   const [accountList, setAccountList] = useState(accounts);
   const [transferAccountList, setTransferAccountList] = useState(transferAccounts);
@@ -490,7 +491,7 @@ export function TransactionFormModal({
     return next;
   }
 
-  async function openAccountCreate(target: "account" | "from" | "to") {
+  async function openAccountCreate(target: "account" | "from" | "to" | "advance") {
     setAccountCreateTarget(target);
     setAccountNestedOpen(true);
     void (async () => {
@@ -506,7 +507,7 @@ export function TransactionFormModal({
               type: institution.type ?? "",
             })),
             counterpartyId: (data.counterparties ?? [])
-              .filter((counterparty: { type?: string | null }) => COUNTERPARTY_TYPES.has(counterparty.type ?? "other"))
+              .filter((counterparty: { type?: string | null }) => isSettlementCounterpartyType(counterparty.type))
               .map((counterparty: { id: string; name: string; shortName?: string | null; type?: string | null }) => ({
                 id: counterparty.id,
                 name: counterparty.shortName?.trim() || counterparty.name,
@@ -620,6 +621,7 @@ export function TransactionFormModal({
   const [txCurrency, setTxCurrency] = useState("");
   const [convertingPostedAmount, setConvertingPostedAmount] = useState(false);
   const [counterpartyInstitutionId, setCounterpartyInstitutionId] = useState("");
+  const [advanceAccountId, setAdvanceAccountId] = useState("");
   const [locationId, setLocationId] = useState("");
   const [note, setNote] = useState("");
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
@@ -774,6 +776,48 @@ export function TransactionFormModal({
     }
     return sortByAccountUsage(base, accountUsage);
   }, [accountSSOptionsFiltered, accountList, accountUsage, accountVisibleOptionIds]);
+  // Advance (代付) account pickers: funding side excludes loan/settlement rows,
+  // the settlement side lists only the counterparty's loan/settlement accounts.
+  const isDebtAccountKind = (kind?: string | null) => kind === "loan" || kind === "settlement";
+  const advanceCashAccountOptions = useMemo(
+    () => displayAccountOptions.filter((option) => option.isHeader || option.isGroup || !isDebtAccountKind(option.kind)),
+    [displayAccountOptions],
+  );
+  const advanceAccountOptions = useMemo(() => {
+    if (txType !== "advance" || !counterpartyInstitutionId) return [];
+    const seen = new Set<string>();
+    const options: AccountOption[] = [];
+    for (const option of [...displayAccountOptions, ...accountList]) {
+      if (option.isHeader || option.isGroup) continue;
+      if (!isDebtAccountKind(option.kind)) continue;
+      // SS hierarchy options are plain SmartSelectOption rows without counterpartyId.
+      const counterpartyId = (option as Partial<AccountOption>).counterpartyId ?? "";
+      if (counterpartyId !== counterpartyInstitutionId) continue;
+      if (seen.has(option.id)) continue;
+      seen.add(option.id);
+      options.push(option);
+    }
+    // Settlement accounts first so the auto-default picks "XX的往来款".
+    return options.sort((a, b) => Number(b.kind === "settlement") - Number(a.kind === "settlement"));
+  }, [txType, counterpartyInstitutionId, displayAccountOptions, accountList]);
+  const advanceAccountPlaceholder = useMemo(() => {
+    if (!counterpartyInstitutionId || advanceAccountOptions.some((option) => option.id === advanceAccountId)) {
+      return t("txForm.selectPlaceholder");
+    }
+    const objectName = (localNestedFieldData ?? nestedFieldData)?.counterpartyId
+      ?.find((item) => item.id === counterpartyInstitutionId)?.name ?? "";
+    return objectName ? t("txForm.advanceAccountAutoCreate", { name: objectName }) : t("debtTx.placeholder.autoReuseOrCreate");
+  }, [advanceAccountId, advanceAccountOptions, counterpartyInstitutionId, localNestedFieldData, nestedFieldData, t]);
+  // Auto-default to the counterparty's existing settlement account ("安盾的往来款");
+  // empty selection means "resolve or create on save". Keeps a picked account
+  // that still belongs to the selected counterparty (e.g. edit prefill).
+  useEffect(() => {
+    if (!open || txType !== "advance") return;
+    setAdvanceAccountId((current) => {
+      if (current && advanceAccountOptions.some((option) => option.id === current)) return current;
+      return advanceAccountOptions[0]?.id ?? "";
+    });
+  }, [open, txType, advanceAccountOptions]);
   const displayFixedAssetAccountOptions = useMemo(() => {
     let base = mergeSmartSelectOptions(fixedAssetFiltered, fixedAssetAccountList);
     const selected = fixedAssetAccountList.find((option) => option.id === fixedAssetAccountId);
@@ -1173,6 +1217,7 @@ export function TransactionFormModal({
     setFixedAssetAccountAutoOpen(false);
     setTxCurrency("");
     setCounterpartyInstitutionId("");
+    setAdvanceAccountId("");
     setLocationId("");
     setLocalAmount("");
     setFxPostingV2(true);
@@ -1217,6 +1262,11 @@ export function TransactionFormModal({
     setEditEntryHasFundDetail(false);
     setEditOriginalTransferAccounts(null);
     editOriginalRef.current = null;
+    if (txType === "advance") {
+      setAdvanceAccountId((current) => (advanceAccountOptions.some((option) => option.id === current) ? current : ""));
+      setNote("");
+      setSelectedTagIds([]);
+    }
     if ((txType === "transfer" || txType === "fx") && !isCreditCardAccount && !fromAccountId && defaultAccountId) {
       setFromAccountId(defaultAccountId);
     }
@@ -1438,6 +1488,7 @@ export function TransactionFormModal({
         accountLabel?: string;
         categoryId?: string;
         counterpartyInstitutionId?: string;
+        advanceAccountId?: string;
         accountName?: string;
         fromAccountName?: string;
         fromAccountId?: string;
@@ -1523,6 +1574,7 @@ export function TransactionFormModal({
       }
       setNote(detail.note ?? "");
       setCounterpartyInstitutionId(detail.counterpartyInstitutionId ?? "");
+      setAdvanceAccountId(detail.advanceAccountId ?? "");
       setEditCategoryFallback(detail.categoryId && detail.categoryName
         ? { id: detail.categoryId, label: detail.categoryName, parentId: null, type: detail.type === "income" ? "income" : "expense" }
         : null);
@@ -1887,6 +1939,7 @@ export function TransactionFormModal({
           formData.set("accountId", accountId);
           formData.set("categoryId", categoryId);
           formData.set("counterpartyInstitutionId", counterpartyInstitutionId);
+          formData.set("advanceAccountId", advanceAccountId);
         } else {
           formData.set("accountId", accountId);
           formData.set("categoryId", categoryId);
@@ -2216,9 +2269,9 @@ export function TransactionFormModal({
                           <SmartSelect
                             mode="single"
                             value={counterpartyInstitutionId}
-                            onChange={setCounterpartyInstitutionId}
+                            onChange={(id: string) => { setCounterpartyInstitutionId(id); setAdvanceAccountId(""); }}
                             options={((localNestedFieldData ?? nestedFieldData)?.counterpartyId ?? [])
-                              .filter((item) => COUNTERPARTY_TYPES.has(item.type ?? "other"))
+                              .filter((item) => isSettlementCounterpartyType(item.type))
                               .map((item) => ({ id: item.id, label: item.name }))}
                             placeholder={t("txForm.selectPlaceholder")}
                             onCreateClick={() => setCounterpartyNestedOpen(true)}
@@ -2231,13 +2284,26 @@ export function TransactionFormModal({
                           <div className={REQUIRED_FIELD_CLASS}>
                             <SmartSelect mode="single" value={accountId}
                               onChange={(id: string) => { setAccountId(id); recordRecentAccount(id); }}
-                              options={displayAccountOptions} placeholder={t("txForm.selectPlaceholder")}
+                              options={advanceCashAccountOptions} placeholder={t("txForm.selectPlaceholder")}
                               onCreateClick={() => { void openAccountCreate("account"); }}
                               onCycleOwnerFilter={cycleOwnerFilter}
                               ownerFilterLabel={ownerFilterLabel}
                               behavior={compactAccountSelectBehavior} />
                           </div>
                         </div>
+                      </div>
+                      <div className="space-y-1">
+                        <div className="form-label">{t("txForm.advanceAccount")}</div>
+                        <SmartSelect
+                          mode="single"
+                          value={advanceAccountId}
+                          onChange={(id: string) => setAdvanceAccountId(id)}
+                          options={advanceAccountOptions.map((option) => ({ id: option.id, label: option.label, subLabel: option.subLabel }))}
+                          placeholder={advanceAccountPlaceholder}
+                          onCreateClick={() => { void openAccountCreate("advance"); }}
+                          createLabel={t("txForm.addAdvanceAccount")}
+                          behavior={{ ...compactAccountSelectBehavior, clearable: true }}
+                        />
                       </div>
                     </>
                   ) : (
@@ -2342,6 +2408,8 @@ export function TransactionFormModal({
                             .map((item) => ({ id: item.id, label: item.name }))}
                           placeholder={t("stockFee.optional")}
                           searchable
+                          onCreateClick={() => setLocationNestedOpen(true)}
+                          createLabel={t("txForm.addMerchant")}
                         />
                       </div>
                     ) : null}
@@ -2934,6 +3002,10 @@ export function TransactionFormModal({
         entityType="account"
         open={accountNestedOpen}
         onClose={() => setAccountNestedOpen(false)}
+        title={accountCreateTarget === "advance" ? t("txForm.addAdvanceAccount") : undefined}
+        allowedAccountKinds={accountCreateTarget === "advance" ? ["settlement"] : undefined}
+        extraFields={accountCreateTarget === "advance" ? { counterpartyId: counterpartyInstitutionId } : undefined}
+        hiddenFields={accountCreateTarget === "advance" ? ["counterpartyId"] : undefined}
         onCreated={(id, name, extra) => {
           const kind = extra?.kind || "bank_debit";
           const institutionLabel = extra?.institutionShortName?.trim() || extra?.institutionName;
@@ -2946,7 +3018,11 @@ export function TransactionFormModal({
           setTransferAccountList(prev => [...prev, option]);
           setLocalAccountSSOpts(prev => appendAccountOptionWithGroup(prev, option, groupId, groupName));
           setLocalTransferAccountSSOpts(prev => appendAccountOptionWithGroup(prev, option, groupId, groupName));
-          if (accountCreateTarget === "from") setFromAccountId(id);
+          if (accountCreateTarget === "advance") {
+            // 下拉里新建的往来款账户：选项必须带 counterpartyId 才会进「往来款账户」候选
+            setAccountList(prev => [...prev, { ...option, counterpartyId: extra?.counterpartyId ?? counterpartyInstitutionId }]);
+            setAdvanceAccountId(id);
+          } else if (accountCreateTarget === "from") setFromAccountId(id);
           else if (accountCreateTarget === "to") setToAccountId(id);
           else setAccountId(id);
           setAccountNestedOpen(false);
@@ -2991,6 +3067,28 @@ export function TransactionFormModal({
       />,
       document.body,
     )}
+    {open && locationNestedOpen && createPortal(
+      <NestedAddModal
+        mode="compact"
+        entityType="counterparty"
+        open={locationNestedOpen}
+        onClose={() => setLocationNestedOpen(false)}
+        title={t("txForm.addMerchant")}
+        defaultType="merchant"
+        allowedCounterpartyTypes={["merchant"]}
+        hiddenFields={["type"]}
+        existingNames={((localNestedFieldData ?? nestedFieldData)?.merchantId ?? []).map((item) => item.name)}
+        onCreated={(id, name, extra) => {
+          setLocalNestedFieldData((prev) => ({
+            ...(prev ?? nestedFieldData ?? {}),
+            merchantId: [...((prev ?? nestedFieldData)?.merchantId ?? []), { id, name, type: extra?.type ?? "merchant" }],
+          }));
+          setLocationId(id);
+          setLocationNestedOpen(false);
+        }}
+      />,
+      document.body,
+    )}
     {open && counterpartyNestedOpen && createPortal(
       <EntityCreateForm
         mode="full"
@@ -2999,6 +3097,7 @@ export function TransactionFormModal({
         open={counterpartyNestedOpen}
         onClose={() => setCounterpartyNestedOpen(false)}
         defaultType="person"
+        allowedCounterpartyTypes={["person", "organization"]}
         existingNames={(localNestedFieldData?.counterpartyId ?? nestedFieldData?.counterpartyId ?? []).map((item) => item.name)}
         onCreated={(id, name, extra) => {
           const next = { id, name, type: extra?.type ?? "person" };

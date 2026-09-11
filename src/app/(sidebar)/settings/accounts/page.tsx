@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, ChevronDown, ChevronRight, X, ArrowUpDown } from "lucide-react";
 import type { AccountKind } from "@prisma/client";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
-import { kindIconName, kindColor, kindOrder } from "@/lib/account-kinds";
+import { institutionTypeLabel, kindIconName, kindColor, kindOrder } from "@/lib/account-kinds";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
 import { FundConfirmDaysPanel } from "@/components/FundConfirmDaysModal";
@@ -148,7 +148,7 @@ export default function SettingsAccountsPage() {
     return text;
   };
   const accountKindLabel = (kind: string) => t(`account.kind.${kind}`);
-  const institutionKindLabel = (type: string | null | undefined) => t(`institution.type.${type ?? "other"}`);
+  const institutionKindLabel = (type: string | null | undefined) => institutionTypeLabel(type, t);
   const investmentLabel = (value: string | null | undefined) => t(`investment.product.${value || "fund"}`);
   const fixedAssetTypeLabel = (value: string | null | undefined) => t(`fixedAsset.type.${value || "property"}`);
   const tradingCalendarLabel = (value: string | null | undefined) => value ? t(`tradingCalendar.${value}`) : t("settings.accounts.tradingCalendarDefault");

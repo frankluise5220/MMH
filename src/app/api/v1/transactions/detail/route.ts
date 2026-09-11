@@ -1872,6 +1872,7 @@ export async function POST(req: Request) {
       const accountId = String(body.accountId ?? "").trim();
       const categoryId = String(body.categoryId ?? "").trim();
       const categoryName = String(body.categoryName ?? "").trim();
+      const preferredAdvanceAccountId = String(body.advanceAccountId ?? "").trim();
       if (!accountId || !counterpartyInstitutionId) {
         return NextResponse.json({ ok: false, code: "MISSING_ACCOUNT_OR_COUNTERPARTY", error: !accountId ? "请选择资金账户" : "请选择往来对象" }, { status: 400 });
       }
@@ -1887,6 +1888,7 @@ export async function POST(req: Request) {
           householdId,
           cashAccountId: acc.id,
           debtObjectId: counterpartyInstitutionId,
+          preferredAccountId: preferredAdvanceAccountId,
         });
         advanceAccountId = resolvedAdvance.account.id;
         const transfer = resolveAdvanceTransfer({ amount: amountRaw, cashAccount: acc, advanceAccount: resolvedAdvance.account });
@@ -3604,6 +3606,7 @@ return;
       if (type === "advance") {
         const accountId = String(body.accountId ?? "").trim();
         const categoryId = String(body.categoryId ?? "").trim();
+        const preferredAdvanceAccountId = String(body.advanceAccountId ?? "").trim();
         if (!accountId) throw new Error("请选择资金账户");
         if (!counterpartyInstitutionId) throw new Error("请选择往来对象");
         const [acc, cat] = await Promise.all([
@@ -3616,6 +3619,7 @@ return;
           householdId,
           cashAccountId: acc.id,
           debtObjectId: counterpartyInstitutionId,
+          preferredAccountId: preferredAdvanceAccountId,
         });
         advanceAccountId = resolvedAdvance.account.id;
         const transfer = resolveAdvanceTransfer({ amount: amountRaw, cashAccount: acc, advanceAccount: resolvedAdvance.account });

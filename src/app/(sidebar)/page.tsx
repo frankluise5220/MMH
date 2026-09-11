@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { connection } from "next/server";
 import { cookies } from "next/headers";
 import { AccountKind, CreditCardInstallmentSourceType, FundCashFlowKind, TransactionType, FundSubtype, RegularInvestStatus } from "@prisma/client";
-import { institutionTypeLabel, kindLabel } from "@/lib/account-kinds";
+import { institutionTypeLabel, isSettlementCounterpartyType, kindLabel } from "@/lib/account-kinds";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { InvestmentFormModal } from "@/components/InvestmentFormModal";
 import { StockTransactionFormModal } from "@/components/StockTransactionFormModal";
@@ -1257,7 +1257,8 @@ export default async function Home({
   const stockAccountSSOptions = buildAccountSSOptions(a => a.kind === "investment" && a.investProductType === "stock");
   const propertyAccountSSOptions = buildAccountSSOptions(a => a.kind === "investment" && a.investProductType === "property");
   const debtTransferAccountSSOptions = buildAccountSSOptions(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet" || a.kind === "bank_credit");
-  const debtCounterpartyOptions = counterparties;
+  // 不是所有往来对象都能当「往来款对象」—— 常用商户（merchant）排除
+  const debtCounterpartyOptions = counterparties.filter((counterparty) => isSettlementCounterpartyType(counterparty.type));
   const loanSourceInstitutions = institutions.filter((institution) => institution.type === "bank" || institution.type === "debt");
   const debtObjectOptions: SSOpt[] = debtCounterpartyOptions.length > 0
     ? [
@@ -1265,7 +1266,7 @@ export default async function Home({
         ...debtCounterpartyOptions.map((counterparty) => ({
           id: `counterparty:${counterparty.id}`,
           label: counterparty.shortName?.trim() || counterparty.name,
-          subLabel: counterparty.type === "person" ? t("sidebar.debt.counterpartyPerson") : t("sidebar.debt.counterpartyOrganization"),
+          subLabel: institutionTypeLabel(counterparty.type, t),
         })),
       ]
     : [];
@@ -1275,7 +1276,7 @@ export default async function Home({
         ...loanSourceInstitutions.map((institution) => ({
           id: `institution:${institution.id}`,
           label: institution.shortName?.trim() || institution.name,
-          subLabel: institutionTypeLabel(institution.type ?? null),
+          subLabel: institutionTypeLabel(institution.type ?? null, t),
         })),
       ]
     : [];
@@ -1338,7 +1339,7 @@ export default async function Home({
   const nestedFieldData = {
     groupId: groups.filter(g => g.name !== "未指定").map(g => ({ id: g.id, name: g.name })),
     institutionId: institutions.map(it => ({ id: it.id, name: it.name, type: it.type ?? "" })),
-    counterpartyId: counterparties.filter((it) => (it.type ?? "organization") !== "merchant").map((it) => ({ id: it.id, name: it.shortName?.trim() || it.name, type: it.type ?? "organization" })),
+    counterpartyId: counterparties.filter((it) => isSettlementCounterpartyType(it.type)).map((it) => ({ id: it.id, name: it.shortName?.trim() || it.name, type: it.type ?? "person" })),
     merchantId: counterparties.filter((it) => it.type === "merchant").map((it) => ({ id: it.id, name: it.shortName?.trim() || it.name })),
   };
 
@@ -1754,6 +1755,10 @@ export default async function Home({
     accountIsSettlementDebt: isSettlementDebtAccountId(linkedFund ? (linkedFundIsCashIn ? linkedFundAccountId : linkedFundCashAccountId) : e.accountId),
     counterpartyInstitutionId: e.counterpartyInstitutionId ?? null,
     counterpartyInstitutionName: e.counterpartyInstitutionName ?? null,
+    originalCurrency: e.originalCurrency ?? null,
+    originalAmount: e.originalAmount == null ? null : toNumber(e.originalAmount),
+    locationId: e.locationId ?? null,
+    locationName: e.locationName ?? null,
     toAccountId: linkedFund ? (linkedFundIsCashIn ? linkedFundCashAccountId : linkedFundAccountId) : e.toAccountId,
     toAccountName: linkedFund ? (linkedFundIsCashIn ? linkedFundCashAccountName : linkedFundAccountName) : e.toAccountName,
     toAccountKind: linkedFund ? (linkedFundIsCashIn ? linkedFund?.CashAccount?.kind ?? e.toAccount?.kind ?? null : linkedFund?.Account?.kind ?? null) : e.toAccount?.kind ?? null,
@@ -3229,6 +3234,7 @@ export default async function Home({
                   initialPage={safeDetailPage}
                   initialPageSize={pageSize}
                   initialDetailAll={detailAll}
+                  initialAutoFit={detailPaginationPref?.autoFit !== false}
                   normalExportFilename={normalExportFilename}
                   normalExportRows={normalExportRows}
                   normalExportRowsByEntryId={normalExportRowsByEntryId}

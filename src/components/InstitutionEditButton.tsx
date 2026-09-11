@@ -3,21 +3,11 @@
 import { useState, type FormEvent } from "react";
 import { SettingsActionButton } from "@/components/settings/SettingsPageScaffold";
 import { notifySettingsDataChanged } from "@/lib/client/settingsCache";
+import { INSTITUTION_TYPE_VALUES, institutionTypeLabel, type I18nT } from "@/lib/account-kinds";
 import { useI18n } from "@/lib/i18n";
 
-type InstitutionType = "family_member" | "person" | "organization" | "bank" | "insurance" | "brokerage" | "fund_company" | "payment" | "debt" | "other";
-const TYPE_LABEL_KEYS: Record<InstitutionType, string> = {
-  family_member: "institution.type.family_member",
-  person: "institution.type.person",
-  organization: "institution.type.organization",
-  bank: "institution.type.bank",
-  insurance: "institution.type.insurance",
-  brokerage: "institution.type.brokerage",
-  fund_company: "institution.type.fund_company",
-  payment: "institution.type.payment",
-  debt: "institution.type.debt",
-  other: "institution.type.other",
-};
+type InstitutionType = "family_member" | "person" | "organization" | "merchant" | "bank" | "insurance" | "brokerage" | "fund_company" | "payment" | "debt" | "other";
+
 
 export function InstitutionEditButton({
   institution,
@@ -117,10 +107,10 @@ export function InstitutionEditButton({
                   onChange={(e) => setType(e.target.value as InstitutionType)}
                   className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                 >
-                  {(Object.keys(TYPE_LABEL_KEYS) as InstitutionType[])
+                  {(INSTITUTION_TYPE_VALUES as readonly InstitutionType[])
                     .filter((typeKey) => !allowedTypes?.length || allowedTypes.includes(typeKey))
                     .map((typeKey) => (
-                    <option key={typeKey} value={typeKey}>{t(TYPE_LABEL_KEYS[typeKey])}</option>
+                    <option key={typeKey} value={typeKey}>{institutionTypeLabel(typeKey, t)}</option>
                   ))}
                 </select>
               </div>

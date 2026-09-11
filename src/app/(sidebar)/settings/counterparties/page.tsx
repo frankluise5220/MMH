@@ -23,7 +23,7 @@ async function updateCounterpartyRow(formData: FormData) {
   const type = String(formData.get("type") ?? "").trim();
   if (!counterpartyId || !name) return { ok: false, error: "Missing required fields" };
 
-  const safeType = ["person", "organization"].includes(type) ? type : "person";
+  const safeType = ["person", "organization", "merchant"].includes(type) ? type : "person";
   const existing = await prisma.counterparty.findFirst({ where: { id: counterpartyId, householdId } });
   if (!existing) return { ok: false, error: "Counterparty not found" };
 

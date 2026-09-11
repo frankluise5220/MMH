@@ -106,11 +106,28 @@ export function kindIconName(k: string): string {
   return "building-2";
 }
 
-// Catalog keys for institution-type labels; keep in sync with the institution.type.* entries in i18n-core.ts.
-const INSTITUTION_TYPE_LABEL_KEYS: Record<string, string> = {
+// ⚠️ 类型 → 文案键的**唯一来源**。新增类型只改这张表：
+// 下拉选项用 institutionTypeOptions() 生成、取文案用 institutionTypeLabel()，禁止各处再手抄一份
+// （历史上抄了 5 份，AccountBatchImportButton 那份就漏了 merchant，导致新类型显示成「往来组织」）。
+export const INSTITUTION_TYPE_VALUES = [
+  "family_member",
+  "person",
+  "organization",
+  "merchant",
+  "bank",
+  "insurance",
+  "brokerage",
+  "fund_company",
+  "payment",
+  "debt",
+  "other",
+] as const;
+
+export const INSTITUTION_TYPE_LABEL_KEYS: Record<string, string> = {
   family_member: "institution.type.family_member",
   person: "institution.type.person",
   organization: "institution.type.organization",
+  merchant: "institution.type.merchant",
   bank: "institution.type.bank",
   insurance: "institution.type.insurance",
   brokerage: "institution.type.brokerage",
@@ -130,13 +147,39 @@ const INSTITUTION_TYPE_LABEL_FALLBACK: Record<string, string> = {
   brokerage: "证券",
   fund_company: "Fund Company",
   payment: "第三方支付",
+  merchant: "常用商户",
   debt: "债权债务",
   other: "其他",
 };
 
-export function institutionTypeLabel(type: string | null, t?: I18nT): string {
+/** 类型 → 下拉选项（{ value, labelKey }）。传 values 可只取子集，顺序按传入顺序。 */
+export function institutionTypeOptions(values?: readonly string[]): Array<{ value: string; labelKey: string }> {
+  const list = values ?? INSTITUTION_TYPE_VALUES;
+  return list.map((value) => ({ value, labelKey: INSTITUTION_TYPE_LABEL_KEYS[value] ?? INSTITUTION_TYPE_LABEL_KEYS.other }));
+}
+
+/** 往来对象类型的子集（同一张表派生，别再手抄）。 */
+export const COUNTERPARTY_TYPE_VALUES = ["person", "organization", "merchant"] as const;
+export const COUNTERPARTY_TYPE_OPTIONS = institutionTypeOptions(COUNTERPARTY_TYPE_VALUES);
+
+/**
+ * 能当「往来款对象」的类型：**不含常用商户**（用户定版）。
+ * 所有「往来对象」下拉/列表都必须用它过滤，禁止各处再写 `!== "merchant"`（黑名单会漏 company 这类非法类型）。
+ */
+export const SETTLEMENT_COUNTERPARTY_TYPE_VALUES = ["person", "organization"] as const;
+export function isSettlementCounterpartyType(type: string | null | undefined): boolean {
+  return (SETTLEMENT_COUNTERPARTY_TYPE_VALUES as readonly string[]).includes(type ?? "");
+}
+
+/**
+ * 类型 → 展示文案的唯一入口。`t` 必传：不传会掉到只含中文的兜底表，
+ * 英文/日文界面就会串成中文（历史 bug）。
+ */
+export function institutionTypeLabel(type: string | null | undefined, t: I18nT): string {
   const key = INSTITUTION_TYPE_LABEL_KEYS[type ?? "other"];
-  if (t && key) return t(key);
+  // 运行时容错：`t` 可能是 undefined（热更新时新旧模块混用、或调用方漏传）——
+  // 这种情况下掉到中文兜底表，**绝不抛错**（曾因直接调用导致整页崩）。
+  if (typeof t === "function" && key) return t(key);
   return INSTITUTION_TYPE_LABEL_FALLBACK[type ?? "other"] ?? type ?? INSTITUTION_TYPE_LABEL_FALLBACK.other;
 }
 

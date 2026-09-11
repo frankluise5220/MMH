@@ -782,6 +782,7 @@ export function buildDebtDetailEntriesViewData({
             amount: isToDebtAccount ? Math.abs(amount) : -Math.abs(amount),
             note: entry.note ?? "",
             accountId: cashSideAccountId,
+            advanceAccountId: debtSideAccountId,
             categoryId: entry.categoryId ?? "",
             counterpartyInstitutionId: entry.counterpartyInstitutionId ?? "",
           }

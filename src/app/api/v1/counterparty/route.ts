@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
   }
 
   const { householdId } = await getHouseholdScope();
-  const safeType = type === "organization" ? "organization" : "person";
+  const safeType = type === "organization" || type === "merchant" ? type : "person";
 
   let created: { id: string; name: string; shortName: string | null; type: string | null };
   try {

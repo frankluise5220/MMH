@@ -13,13 +13,13 @@ export const dynamic = "force-dynamic";
  *
  * Aggregates monthly fund portfolio data across all investment accounts in the
  * household: cost basis, market value, floating P/L, and net invested flow per month.
- * Optionally overlays 沪深300 normalised NAV as a benchmark.
+ * Optionally overlays CSI 300 normalised NAV as a benchmark.
  *
  * Query params:
  *   start: YYYY-MM (optional, default = earliest transaction)
  *   end:   YYYY-MM (optional, default = current month)
  *   accountIds: comma-separated account IDs (optional, default = all investment accounts)
- *   benchmark:  "1" to include 沪深300 baseline (default off; auto-fetches if cache is empty)
+ *   benchmark:  "1" to include CSI 300 baseline (default off; auto-fetches if cache is empty)
  */
 export async function GET(req: NextRequest) {
   const currentUser = await getCurrentUser();

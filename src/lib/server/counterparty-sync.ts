@@ -1,3 +1,4 @@
+import { isSettlementCounterpartyType } from "@/lib/account-kinds";
 import type { Prisma } from "@prisma/client";
 import { assertInstitutionDisplayNamesUnique } from "@/lib/server/institution-name-unique";
 
@@ -29,14 +30,14 @@ type CounterpartyLike = {
   sourceInstitutionId?: string | null;
 };
 
-const COUNTERPARTY_TYPES = new Set(["person", "organization"]);
 
 function normalizeCounterpartyType(type?: string | null) {
   return type === "organization" ? "organization" : "person";
 }
 
 function isCounterpartyType(type?: string | null) {
-  return COUNTERPARTY_TYPES.has(type ?? "");
+  // 与「能当往来款对象的类型」同一口径（person/organization，不含常用商户）
+  return isSettlementCounterpartyType(type);
 }
 
 function normalizeCounterpartySyncText(value?: string | null) {

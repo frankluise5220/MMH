@@ -23,7 +23,8 @@ export function allowedInstitutionTypesForAccount(
   const accountKind = kind ?? "";
   const productType = investProductType ?? "";
   if (accountKind === "fixed_asset" || productType === "property") return [];
-  if (accountKind === "bank_credit" || accountKind === "bank_debit" || accountKind === "deposit") return ["bank"];
+  if (accountKind === "bank_credit") return ["bank", "payment"];
+  if (accountKind === "bank_debit" || accountKind === "deposit") return ["bank"];
   if (accountKind === "ewallet") return ["payment"];
   if (accountKind === "insurance") return ["insurance"];
   if (accountKind === "loan") {
