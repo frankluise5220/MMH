@@ -152,6 +152,31 @@ async function listRules(accountId: string, billAccountIds: string[]): Promise<{
   return { rules: serializeRules(await loadRuleRows(accountId, billAccountIds)) };
 }
 
+/**
+ * GET ?accountId=<id>
+ *        Read the billing-day rule history of the account's bill group
+ *        (used by the shared 账单日设置 dialog outside the bill page).
+ */
+export async function GET(req: Request) {
+  try {
+    const { householdId } = await getHouseholdScope();
+    const accountId = (new URL(req.url).searchParams.get("accountId") ?? "").trim();
+    if (!accountId) {
+      return NextResponse.json({ ok: false, code: "MISSING_ACCOUNT_ID", error: "缺少账户" }, { status: 400 });
+    }
+
+    const group = await resolveBillGroup(householdId, accountId);
+    if (!group) {
+      return NextResponse.json({ ok: false, code: "CREDIT_ACCOUNT_NOT_FOUND", error: "信用卡账户不存在" }, { status: 404 });
+    }
+
+    return NextResponse.json({ ok: true, data: await listRules(accountId, group.billAccountIds) });
+  } catch (error) {
+    console.error("GET /api/v1/bill/billing-day-rules error:", error);
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: error instanceof Error ? error.message : "读取账单日记录失败" }, { status: 500 });
+  }
+}
+
 export async function POST(req: Request) {
   try {
     const { householdId } = await getHouseholdScope();

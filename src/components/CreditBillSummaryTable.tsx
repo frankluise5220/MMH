@@ -2,10 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CalendarClock, CalendarDays, Check, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Pencil, Plus, Trash2, X } from "lucide-react";
+import { CalendarClock, CalendarDays, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, X } from "lucide-react";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { CalcInput } from "@/components/CalcInput";
 import { DateStepper } from "@/components/DateStepper";
+import { CreditCardBillingDaySettingsDialog } from "@/components/CreditCardBillingDaySettingsDialog";
+import { currentBillingDayFromRules, type CreditBillingDayRuleView } from "@/lib/credit/billing-day-rules";
 import EditBillAmount from "@/components/EditBillAmount";
 import { ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewExcelImportMenuButton";
 import { formatMoney } from "@/lib/format";
@@ -14,8 +16,7 @@ import {
   summarizeCreditCardInstallments,
   type CreditCardInstallmentRateType,
 } from "@/lib/credit/installment";
-import { creditBillUnpaidAmount, isCreditBillSettled, normalizeBillingDayTxPeriod, type BillingDayTxPeriod } from "@/lib/credit/billing";
-import { CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS, isCreditCardMonthEndBillingDay } from "@/lib/credit/rules";
+import { creditBillUnpaidAmount, isCreditBillSettled, type BillingDayTxPeriod } from "@/lib/credit/billing";
 import {
   setCreditBillHideSettledPreference,
   setCreditBillHideZeroPreference,
@@ -26,13 +27,7 @@ import { dispatchCreditBillDetailSelection } from "@/lib/client/creditBillDetail
 import { notifySettingsDataChanged } from "@/lib/client/settingsCache";
 import { useI18n } from "@/lib/i18n";
 
-export type CreditBillingDayRuleView = {
-  id?: string;
-  accountId?: string;
-  effectiveDate: string;
-  billingDay: number;
-  isInitial: boolean;
-};
+export type { CreditBillingDayRuleView } from "@/lib/credit/billing-day-rules";
 
 export type CreditBillSummaryRow = {
   month: string;
@@ -104,31 +99,6 @@ function creditBillStatusLabel(row: CreditBillSummaryRow, t: (key: string, param
   return "-";
 }
 
-function billingDayDisplayValue(day: number, t: (key: string, params?: Record<string, string | number>) => string) {
-  return isCreditCardMonthEndBillingDay(day)
-    ? t("settings.accounts.billingDayMonthEndValue")
-    : t("settings.accounts.billingDayValue", { day });
-}
-
-function billingDayRuleKey(rule: CreditBillingDayRuleView) {
-  return rule.id || rule.effectiveDate;
-}
-
-function currentBillingDayFromRules(rules: readonly CreditBillingDayRuleView[], fallback: number | null) {
-  const validRules = rules
-    .filter((rule) => /^\d{4}-\d{2}-\d{2}$/.test(rule.effectiveDate) && Number.isInteger(rule.billingDay))
-    .sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
-  if (validRules.length === 0) return fallback;
-
-  const today = new Date().toISOString().slice(0, 10);
-  let active = validRules[0]!;
-  for (const rule of validRules) {
-    if (rule.effectiveDate > today) break;
-    active = rule;
-  }
-  return active.billingDay;
-}
-
 export function CreditBillSummaryTable({
   accountId,
   accountName,
@@ -155,16 +125,6 @@ export function CreditBillSummaryTable({
   const [localSelectedBillMonth, setLocalSelectedBillMonth] = useState(selectedBillMonth);
   const [billingDaySettingsOpen, setBillingDaySettingsOpen] = useState(false);
   const [billingDayRulesLocal, setBillingDayRulesLocal] = useState<CreditBillingDayRuleView[]>(billingDayRules ?? []);
-  const [billingDayRuleEditing, setBillingDayRuleEditing] = useState<string | null>(null);
-  const [billingDayRuleForm, setBillingDayRuleForm] = useState({ effectiveDate: "", billingDay: "" });
-  const [billingDayRuleSaving, setBillingDayRuleSaving] = useState(false);
-  const [billingDayRuleError, setBillingDayRuleError] = useState("");
-  const [txPeriodDraft, setTxPeriodDraft] = useState<BillingDayTxPeriod>(normalizeBillingDayTxPeriod(billingDayTxPeriod));
-  const [repaymentDayModeDraft, setRepaymentDayModeDraft] = useState<"fixed" | "offset">(repaymentOffsetDays == null ? "fixed" : "offset");
-  const [repaymentDayDraft, setRepaymentDayDraft] = useState(repaymentDay == null ? "" : String(repaymentDay));
-  const [repaymentOffsetDaysDraft, setRepaymentOffsetDaysDraft] = useState(repaymentOffsetDays == null ? "" : String(repaymentOffsetDays));
-  const [accountSettingsSaving, setAccountSettingsSaving] = useState(false);
-  const [accountSettingsError, setAccountSettingsError] = useState("");
   const [editingCycle, setEditingCycle] = useState<CreditBillSummaryRow | null>(null);
   const [cycleForm, setCycleForm] = useState({ periodStart: "", periodEnd: "", dueDate: "" });
   const [cycleSaving, setCycleSaving] = useState(false);
@@ -193,7 +153,6 @@ export function CreditBillSummaryTable({
     () => currentBillingDayFromRules(billingDayRulesLocal, billingDay),
     [billingDay, billingDayRulesLocal],
   );
-  const effectiveBillingDayDisplay = effectiveBillingDay ? billingDayDisplayValue(effectiveBillingDay, t) : "";
 
   useEffect(() => {
     setLocalRows(rows);
@@ -249,161 +208,6 @@ export function CreditBillSummaryTable({
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
     return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
   }, [accountId, router]);
-
-  useEffect(() => {
-    if (!billingDaySettingsOpen) return;
-    setTxPeriodDraft(normalizeBillingDayTxPeriod(billingDayTxPeriod));
-    setRepaymentDayModeDraft(repaymentOffsetDays == null ? "fixed" : "offset");
-    setRepaymentDayDraft(repaymentDay == null ? "" : String(repaymentDay));
-    setRepaymentOffsetDaysDraft(repaymentOffsetDays == null ? "" : String(repaymentOffsetDays));
-    setAccountSettingsError("");
-  }, [billingDaySettingsOpen, billingDayTxPeriod, repaymentDay, repaymentOffsetDays]);
-
-  const accountSettingsDirty =
-    txPeriodDraft !== normalizeBillingDayTxPeriod(billingDayTxPeriod) ||
-    repaymentDayModeDraft !== (repaymentOffsetDays == null ? "fixed" : "offset") ||
-    repaymentDayDraft.trim() !== (repaymentDay == null ? "" : String(repaymentDay)) ||
-    repaymentOffsetDaysDraft.trim() !== (repaymentOffsetDays == null ? "" : String(repaymentOffsetDays));
-
-  async function saveBillingDayAccountSettings() {
-    if (!accountId || accountSettingsSaving) return;
-    const dayText = repaymentDayDraft.trim();
-    const offsetDaysText = repaymentOffsetDaysDraft.trim();
-    if (repaymentDayModeDraft === "fixed" && dayText !== "") {
-      const day = Number(dayText);
-      if (!Number.isInteger(day) || day < 1 || day > 31) {
-        setAccountSettingsError(t("creditBill.billingDayInvalidRepaymentDay"));
-        return;
-      }
-    }
-    if (repaymentDayModeDraft === "offset") {
-      const days = Number(offsetDaysText);
-      if (!Number.isInteger(days) || days < 0 || days > CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS) {
-        setAccountSettingsError(t("creditBill.billingDayInvalidRepaymentOffsetDays"));
-        return;
-      }
-    }
-    setAccountSettingsSaving(true);
-    setAccountSettingsError("");
-    try {
-      const fixedMode = repaymentDayModeDraft === "fixed";
-      const response = await fetch("/api/v1/bill/billing-day-rules", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          accountId,
-          billingDayTxPeriod: txPeriodDraft,
-          repaymentDayMode: repaymentDayModeDraft,
-          repaymentDay: fixedMode && dayText !== "" ? Number(dayText) : null,
-          repaymentOffsetDays: !fixedMode ? Number(offsetDaysText) : null,
-        }),
-      });
-      const data = await response.json().catch(() => null) as {
-        ok?: boolean;
-        error?: string;
-        data?: { accountIds?: string[]; repaymentDay?: number | null; repaymentOffsetDays?: number | null };
-      } | null;
-      if (!response.ok || !data?.ok) {
-        setAccountSettingsError(data?.error || t("creditBill.billingDayAccountSaveFailed"));
-        return;
-      }
-      setRepaymentDayDraft(data.data?.repaymentDay == null ? "" : String(data.data.repaymentDay));
-      setRepaymentOffsetDaysDraft(data.data?.repaymentOffsetDays == null ? "" : String(data.data.repaymentOffsetDays));
-      setRepaymentDayModeDraft(data.data?.repaymentOffsetDays == null ? "fixed" : "offset");
-      void notifySettingsDataChanged({ scope: "accounts", reason: "billing-day-settings", prefetch: true });
-      dispatchFinanceDataChanged({
-        reason: "account-credit-cycle-settings",
-        accountIds: Array.isArray(data.data?.accountIds) && data.data.accountIds.length > 0 ? data.data.accountIds : [accountId],
-        balanceChanged: true,
-      });
-    } catch {
-      setAccountSettingsError(t("creditBill.billingDayAccountSaveFailed"));
-    } finally {
-      setAccountSettingsSaving(false);
-    }
-  }
-
-  const resetBillingDayRuleEditor = () => {
-    setBillingDayRuleEditing(null);
-    setBillingDayRuleForm({ effectiveDate: "", billingDay: "" });
-    setBillingDayRuleError("");
-  };
-
-  const applyBillingDayRulesResponse = (data: { rules?: CreditBillingDayRuleView[] } | null | undefined) => {
-    if (Array.isArray(data?.rules)) {
-      setBillingDayRulesLocal(data.rules);
-      dispatchFinanceDataChanged({ reason: "billing-day-rule", accountIds: [accountId], balanceChanged: true });
-      router.refresh();
-      return true;
-    }
-    return false;
-  };
-
-  async function saveBillingDayRule(mode: "create" | "edit") {
-    if (!accountId || billingDayRuleSaving) return;
-    const dayValue = Number(billingDayRuleForm.billingDay);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(billingDayRuleForm.effectiveDate.trim())) {
-      setBillingDayRuleError(t("creditBill.billingDayRuleInvalidDate"));
-      return;
-    }
-    if (!Number.isInteger(dayValue) || dayValue < 1 || dayValue > 31) {
-      setBillingDayRuleError(t("creditBill.billingDayRuleInvalidDay"));
-      return;
-    }
-    setBillingDayRuleSaving(true);
-    setBillingDayRuleError("");
-    try {
-      const originalRule = mode === "edit" && billingDayRuleEditing
-        ? billingDayRulesLocal.find((rule) => billingDayRuleKey(rule) === billingDayRuleEditing)
-        : undefined;
-      const original = originalRule?.effectiveDate;
-      const response = await fetch("/api/v1/bill/billing-day-rules", {
-        method: original ? "PUT" : "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          accountId,
-          billingDay: dayValue,
-          effectiveDate: billingDayRuleForm.effectiveDate.trim(),
-          ...(original ? { originalEffectiveDate: original } : {}),
-        }),
-      });
-      const data = await response.json().catch(() => null);
-      if (!response.ok || !data?.ok) {
-        setBillingDayRuleError(data?.error || t("creditBill.billingDayRuleSaveFailed"));
-        return;
-      }
-      if (applyBillingDayRulesResponse(data.data)) resetBillingDayRuleEditor();
-    } catch {
-      setBillingDayRuleError(t("creditBill.billingDayRuleSaveFailed"));
-    } finally {
-      setBillingDayRuleSaving(false);
-    }
-  }
-
-  async function deleteBillingDayRule(rule: CreditBillingDayRuleView) {
-    if (!accountId || billingDayRuleSaving) return;
-    if (!window.confirm(t("creditBill.billingDayRuleDeleteConfirm", { date: rule.effectiveDate, day: billingDayDisplayValue(rule.billingDay, t) }))) return;
-    setBillingDayRuleSaving(true);
-    setBillingDayRuleError("");
-    try {
-      const response = await fetch("/api/v1/bill/billing-day-rules", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId, ruleId: rule.id, effectiveDate: rule.effectiveDate }),
-      });
-      const data = await response.json().catch(() => null);
-      if (!response.ok || !data?.ok) {
-        setBillingDayRuleError(data?.error || t("creditBill.billingDayRuleDeleteFailed"));
-        return;
-      }
-      applyBillingDayRulesResponse(data.data);
-      if (billingDayRuleEditing === billingDayRuleKey(rule)) resetBillingDayRuleEditor();
-    } catch {
-      setBillingDayRuleError(t("creditBill.billingDayRuleDeleteFailed"));
-    } finally {
-      setBillingDayRuleSaving(false);
-    }
-  }
 
   useEffect(() => {
     const handleBillOverrideChange = (event: Event) => {
@@ -997,253 +801,17 @@ export function CreditBillSummaryTable({
           emptyText={t("creditBillSummary.empty")}
         />
       </div>
-      {billingDaySettingsOpen ? (
-        <div className="app-modal-backdrop">
-          <div className="app-modal-panel max-w-lg">
-            <div className="modal-header shrink-0 gap-3">
-              <div className="min-w-0">
-                <div className="text-sm font-semibold text-slate-800">{t("creditBill.billingDaySettingsTitle")}</div>
-                <div className="mt-0.5 text-xs text-slate-500">{t("creditBill.billingDaySettingsDesc", { day: effectiveBillingDayDisplay })}</div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setBillingDaySettingsOpen(false)}
-                className="secondary-button h-8 min-w-14 shrink-0 whitespace-nowrap px-3"
-              >
-                {t("table.close")}
-              </button>
-            </div>
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
-              <div className="rounded-lg border border-slate-200 bg-white p-3">
-                <div className="mb-2 flex items-center justify-between">
-                  <span className="text-xs font-medium text-slate-500">{t("creditBill.billingDayAccountSection")}</span>
-                  <button
-                    type="button"
-                    onClick={() => void saveBillingDayAccountSettings()}
-                    disabled={!accountSettingsDirty || accountSettingsSaving}
-                    className="primary-button h-7 px-3 text-xs"
-                  >
-                    {accountSettingsSaving ? t("creditBill.saving") : t("common.save")}
-                  </button>
-                </div>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                  <label className="block">
-                    <span className="mb-1 block text-xs text-slate-500">{t("settings.accounts.billingDayTxPeriodLabel")}</span>
-                    <select
-                      value={txPeriodDraft}
-                      onChange={(event) => setTxPeriodDraft(normalizeBillingDayTxPeriod(event.target.value))}
-                      className="form-input w-full text-xs"
-                    >
-                      <option value="current">{t("creditBill.billingDayTxPeriod.current")}</option>
-                      <option value="next">{t("creditBill.billingDayTxPeriod.next")}</option>
-                    </select>
-                  </label>
-                  <label className="block">
-                    <span className="mb-1 block text-xs text-slate-500">{t("settings.accounts.repaymentDayModeLabel")}</span>
-                    <select
-                      value={repaymentDayModeDraft}
-                      onChange={(event) => setRepaymentDayModeDraft(event.target.value === "offset" ? "offset" : "fixed")}
-                      className="form-input w-full text-xs"
-                    >
-                      <option value="fixed">{t("entityForm.repaymentDayMode.fixed")}</option>
-                      <option value="offset">{t("entityForm.repaymentDayMode.offset")}</option>
-                    </select>
-                  </label>
-                  {repaymentDayModeDraft === "fixed" ? (
-                    <label className="block">
-                      <span className="mb-1 block text-xs text-slate-500">{t("settings.accounts.repaymentDayLabel")}</span>
-                      <input
-                        value={repaymentDayDraft}
-                        onChange={(event) => setRepaymentDayDraft(event.target.value)}
-                        inputMode="numeric"
-                        placeholder={t("creditBill.repaymentDayPlaceholder")}
-                        className="form-input w-full text-xs"
-                      />
-                    </label>
-                  ) : (
-                    <label className="block">
-                      <span className="mb-1 block text-xs text-slate-500">{t("settings.accounts.repaymentOffsetDaysLabel")}</span>
-                      <input
-                        value={repaymentOffsetDaysDraft}
-                        onChange={(event) => setRepaymentOffsetDaysDraft(event.target.value)}
-                        inputMode="numeric"
-                        placeholder={t("creditBill.repaymentOffsetDaysPlaceholder")}
-                        className="form-input w-full text-xs"
-                      />
-                    </label>
-                  )}
-                </div>
-                {accountSettingsError ? <div className="mt-2 text-xs text-red-600">{accountSettingsError}</div> : null}
-              </div>
-              <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
-                <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">
-                  <span className="text-xs font-medium text-slate-500">{t("creditBill.billingDayRuleSectionTitle")}</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setBillingDayRuleEditing("new");
-                      setBillingDayRuleForm({
-                        effectiveDate: new Date().toISOString().slice(0, 10),
-                        billingDay: effectiveBillingDay ? String(effectiveBillingDay) : "",
-                      });
-                      setBillingDayRuleError("");
-                    }}
-                    disabled={billingDayRuleSaving || billingDayRuleEditing !== null}
-                    className="secondary-button inline-flex h-7 items-center gap-1 px-2 text-xs disabled:opacity-50"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                    {t("creditBill.billingDayRuleAdd")}
-                  </button>
-                </div>
-                <div className="max-h-[260px] overflow-y-auto">
-                  <table className="min-w-full table-fixed text-sm">
-                    <thead className="sticky top-0 bg-slate-50 text-xs font-medium text-slate-500 shadow-[0_1px_0_0_#e2e8f0]">
-                      <tr>
-                        <th className="w-[44%] px-3 py-2 text-left">{t("creditBill.billingDayRuleDate")}</th>
-                        <th className="w-[26%] px-3 py-2 text-right">{t("creditBill.billingDayRuleDay")}</th>
-                        <th className="w-[30%] px-3 py-2 text-right">{t("creditBill.billingDayRuleActions")}</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {billingDayRulesLocal.length === 0 && billingDayRuleEditing !== "new" ? (
-                        <tr>
-                          <td colSpan={3} className="px-3 py-8 text-center text-sm text-slate-500">{t("creditBill.billingDayRuleEmpty")}</td>
-                        </tr>
-                      ) : null}
-                      {billingDayRulesLocal.map((rule) => (
-                        billingDayRuleEditing === billingDayRuleKey(rule) ? (
-                          <tr key={billingDayRuleKey(rule)} className="bg-amber-50/50">
-                            <td className="px-3 py-2 align-middle">
-                              <DateStepper
-                                value={billingDayRuleForm.effectiveDate}
-                                onChange={(value) => setBillingDayRuleForm((current) => ({ ...current, effectiveDate: value }))}
-                              />
-                            </td>
-                            <td className="px-3 py-2 text-right align-middle">
-                              <input
-                                value={billingDayRuleForm.billingDay}
-                                onChange={(event) => setBillingDayRuleForm((current) => ({ ...current, billingDay: event.target.value }))}
-                                inputMode="numeric"
-                                placeholder={t("entityForm.billingDayPlaceholder")}
-                                className="form-input text-right"
-                              />
-                            </td>
-                            <td className="px-3 py-2 text-right align-middle">
-                              <div className="inline-flex items-center gap-1.5">
-                                <button
-                                  type="button"
-                                  onClick={() => void saveBillingDayRule("edit")}
-                                  disabled={billingDayRuleSaving}
-                                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-emerald-600 transition-colors hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
-                                  title={t("common.save")}
-                                  aria-label={t("common.save")}
-                                >
-                                  <Check className="h-3.5 w-3.5" />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={resetBillingDayRuleEditor}
-                                  disabled={billingDayRuleSaving}
-                                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-slate-500 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-                                  title={t("common.cancel")}
-                                  aria-label={t("common.cancel")}
-                                >
-                                  <X className="h-3.5 w-3.5" />
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        ) : (
-                          <tr key={billingDayRuleKey(rule)} className={rule.isInitial ? "bg-blue-50/50" : "bg-white"}>
-                            <td className="px-3 py-2 align-middle">
-                              <span className="tabular-nums text-slate-700">{rule.effectiveDate}</span>
-                              {rule.isInitial ? <span className="ml-1.5 rounded bg-slate-100 px-1 py-0.5 text-[10px] text-slate-500">{t("creditBill.billingDayRuleInitial")}</span> : null}
-                            </td>
-                            <td className="px-3 py-2 text-right align-middle tabular-nums text-slate-700">{billingDayDisplayValue(rule.billingDay, t)}</td>
-                            <td className="px-3 py-2 text-right align-middle">
-                              <div className="inline-flex items-center gap-1.5">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setBillingDayRuleEditing(billingDayRuleKey(rule));
-                                    setBillingDayRuleForm({ effectiveDate: rule.effectiveDate, billingDay: String(rule.billingDay) });
-                                    setBillingDayRuleError("");
-                                  }}
-                                  disabled={billingDayRuleSaving}
-                                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
-                                  title={t("common.edit")}
-                                  aria-label={t("creditBill.billingDayRuleEdit")}
-                                >
-                                  <Pencil className="h-3.5 w-3.5" />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => void deleteBillingDayRule(rule)}
-                                  disabled={billingDayRuleSaving || rule.isInitial}
-                                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-rose-600 transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
-                                  title={rule.isInitial ? t("creditBill.billingDayRuleDeleteInitialHint") : t("common.delete")}
-                                  aria-label={t("creditBill.billingDayRuleDelete")}
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        )
-                      ))}
-                      {billingDayRuleEditing === "new" ? (
-                        <tr className="bg-amber-50/50">
-                          <td className="px-3 py-2 align-middle">
-                            <DateStepper
-                              value={billingDayRuleForm.effectiveDate}
-                              onChange={(value) => setBillingDayRuleForm((current) => ({ ...current, effectiveDate: value }))}
-                            />
-                          </td>
-                          <td className="px-3 py-2 text-right align-middle">
-                            <input
-                              value={billingDayRuleForm.billingDay}
-                              onChange={(event) => setBillingDayRuleForm((current) => ({ ...current, billingDay: event.target.value }))}
-                              inputMode="numeric"
-                              placeholder={t("entityForm.billingDayPlaceholder")}
-                              className="form-input text-right"
-                            />
-                          </td>
-                          <td className="px-3 py-2 text-right align-middle">
-                            <div className="inline-flex items-center gap-1.5">
-                              <button
-                                type="button"
-                                onClick={() => void saveBillingDayRule("create")}
-                                disabled={billingDayRuleSaving}
-                                className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-emerald-600 transition-colors hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
-                                title={t("common.save")}
-                                aria-label={t("common.save")}
-                              >
-                                <Check className="h-3.5 w-3.5" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={resetBillingDayRuleEditor}
-                                disabled={billingDayRuleSaving}
-                                className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-slate-500 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-                                title={t("common.cancel")}
-                                aria-label={t("common.cancel")}
-                              >
-                                <X className="h-3.5 w-3.5" />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ) : null}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-              {billingDayRuleError ? <div className="text-xs text-red-600">{billingDayRuleError}</div> : null}
-              <div className="text-xs leading-5 text-slate-500">{t("creditBill.billingDayRuleHint")}</div>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <CreditCardBillingDaySettingsDialog
+        open={billingDaySettingsOpen}
+        onClose={() => setBillingDaySettingsOpen(false)}
+        accountId={accountId}
+        billingDay={billingDay}
+        billingDayTxPeriod={billingDayTxPeriod}
+        repaymentDay={repaymentDay}
+        repaymentOffsetDays={repaymentOffsetDays}
+        rules={billingDayRulesLocal}
+        onRulesChanged={setBillingDayRulesLocal}
+      />
       {exportOpen ? (
         <div className="fixed inset-0 z-[85] flex items-center justify-center bg-slate-900/25 px-4">
           <div className="w-full max-w-md overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">

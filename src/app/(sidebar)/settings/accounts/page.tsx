@@ -19,6 +19,9 @@ import {
   type StatisticsUserItem,
 } from "@/components/AccountScopeFilter";
 import { AccountBatchImportButton } from "@/components/settings/AccountBatchImportButton";
+import { CreditCardBillingDayRulesTable } from "@/components/CreditCardBillingDayRulesTable";
+import { currentBillingDayFromRules, type CreditBillingDayRuleView } from "@/lib/credit/billing-day-rules";
+import { CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS } from "@/lib/credit/rules";
 import { SettingsActionButton, SettingsPageHeader, SettingsPrimaryAddButton } from "@/components/settings/SettingsPageScaffold";
 import { buildAccountDisplayOption } from "@/lib/account-display";
 import { getAccountLabelFieldsPreference, getCreditCardLabelTemplatePreference } from "@/lib/client/appPreferences";
@@ -37,6 +40,7 @@ import {
   isStockAccountInstitutionType,
   isStockInvestmentAccount,
 } from "@/lib/account-institution-rules";
+import { isCreditCardMonthEndBillingDay } from "@/lib/credit/rules";
 
 /* ---- Render icon from kindIconName ---- */
 function kindIcon(k: string) {
@@ -62,8 +66,9 @@ type Account = {
   Institution: { id: string; name: string; shortName?: string | null } | null;
   AccountGroup: { id: string; name: string } | null;
   Counterparty: { id: string; name: string; shortName?: string | null } | null;
-  billingDay: number | null; repaymentDay: number | null;
+  billingDay: number | null; repaymentDay: number | null; repaymentOffsetDays?: number | null;
   creditBillMode?: "separate" | "consolidated";
+  billingDayTxPeriod?: string | null;
   creditLimit: string | null; numberMasked: string | null;
   investProductType: string | null; costBasisMethod: string | null;
   fundUnitsDecimals?: number | null;
@@ -90,6 +95,19 @@ function accountInstitutionTypeMatches(kind: string, investProductType: string |
 
 function allowedInstitutionTypesForEdit(kind: string | null | undefined, investProductType: string | null | undefined) {
   return allowedInstitutionTypesForAccount(kind, investProductType, { includeLegacyDebtInstitution: true });
+}
+
+function parseOptionalIntegerField(value: string, min: number, max: number) {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  const numberValue = Number(text);
+  return Number.isInteger(numberValue) && numberValue >= min && numberValue <= max ? numberValue : undefined;
+}
+
+function billingDayDisplayValue(day: number, t: (key: string, params?: Record<string, string | number>) => string) {
+  return isCreditCardMonthEndBillingDay(day)
+    ? t("settings.accounts.billingDayMonthEndValue")
+    : t("settings.accounts.billingDayValue", { day });
 }
 
 const SETTINGS_ACCOUNT_KIND_OPTIONS = kindOrder.filter((kind) => kind !== "loan" && kind !== "settlement");
@@ -166,6 +184,8 @@ export default function SettingsAccountsPage() {
   const [accountNameQuery, setAccountNameQuery] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
+  const [billingDayRules, setBillingDayRules] = useState<CreditBillingDayRuleView[]>([]);
+  const [billingDayRulesLoading, setBillingDayRulesLoading] = useState(false);
   const [editError, setEditError] = useState("");
   const [collapsedKinds, setCollapsedKinds] = useState<Set<string>>(new Set());
   const [showCreateAccount, setShowCreateAccount] = useState(false);
@@ -235,6 +255,32 @@ export default function SettingsAccountsPage() {
     notifySidebarChanged();
   }
 
+  // 正在编辑的信用卡账户：账单日设置走「账单日设置」弹窗（按生效日期的规则表），
+  // 这里只读展示当前生效值：账单日 · 还款日（固定日 / 账单日后 N 天）· 交易归属期。
+  const editingBillingAccount = useMemo(
+    () => (editingId ? accounts.find((account) => account.id === editingId) ?? null : null),
+    [accounts, editingId],
+  );
+  const editingBillingDayText = useMemo(() => {
+    if (!editingBillingAccount || normalizedAccountKind(editingBillingAccount) !== "bank_credit") return "";
+    const effectiveDay = currentBillingDayFromRules(billingDayRules, editingBillingAccount.billingDay);
+    return effectiveDay ? billingDayDisplayValue(effectiveDay, t) : "";
+  }, [billingDayRules, editingBillingAccount, t]);
+
+  async function loadBillingDayRules(accountId: string) {
+    setBillingDayRulesLoading(true);
+    try {
+      const response = await fetch(
+        `/api/v1/bill/billing-day-rules?accountId=${encodeURIComponent(accountId)}`,
+        { cache: "no-store" },
+      );
+      const data = await response.json().catch(() => null) as { ok?: boolean; data?: { rules?: CreditBillingDayRuleView[] } } | null;
+      setBillingDayRules(response.ok && data?.ok && Array.isArray(data.data?.rules) ? data.data.rules : []);
+    } finally {
+      setBillingDayRulesLoading(false);
+    }
+  }
+
   // ---- Account handlers ----
   function openEdit(a: Account) {
     const normalizedKind = normalizedAccountKind(a);
@@ -243,6 +289,8 @@ export default function SettingsAccountsPage() {
     const supportsInstitution = editKind !== "settlement" && allowedInstitutionTypesForEdit(editKind, editInvestProductType).length > 0;
     setEditingId(a.id);
     setEditError("");
+    if (normalizedKind === "bank_credit") void loadBillingDayRules(a.id);
+    else setBillingDayRules([]);
     setEditForm({
       name: a.name,
       note: a.note || "",
@@ -252,8 +300,11 @@ export default function SettingsAccountsPage() {
       institutionId: supportsInstitution ? a.institutionId || "" : "",
       billingDay: a.billingDay?.toString() || "",
       repaymentDay: a.repaymentDay?.toString() || "",
+      repaymentOffsetDays: a.repaymentOffsetDays == null ? "" : String(a.repaymentOffsetDays),
+      repaymentDayMode: a.repaymentOffsetDays == null ? "fixed" : "offset",
       creditLimit: a.creditLimit || "",
       creditBillMode: a.creditBillMode === "consolidated" ? "consolidated" : "separate",
+      billingDayTxPeriod: a.billingDayTxPeriod === "next" ? "next" : "current",
       numberMasked: a.numberMasked || "",
       investProductType: editInvestProductType,
       fixedAssetType: editKind === "fixed_asset" ? (a.fixedAssetType || "property") : "",
@@ -290,6 +341,21 @@ export default function SettingsAccountsPage() {
       setEditError(t("settings.accounts.consumerLoanInstitutionRequired"));
       return;
     }
+    if (nextKind === "bank_credit") {
+      if (editForm.repaymentDayMode === "offset") {
+        const offsetDays = parseOptionalIntegerField(editForm.repaymentOffsetDays, 0, CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS);
+        if (offsetDays == null) {
+          setEditError(t("creditBill.billingDayInvalidRepaymentOffsetDays"));
+          return;
+        }
+      } else {
+        const repaymentDay = parseOptionalIntegerField(editForm.repaymentDay, 1, 31);
+        if (String(editForm.repaymentDay ?? "").trim() && repaymentDay === undefined) {
+          setEditError(t("creditBill.billingDayInvalidRepaymentDay"));
+          return;
+        }
+      }
+    }
     if (previousAccount?.kind === "bank_credit" && nextKind !== "bank_credit") {
       const confirmed = await showConfirmDialog({
         title: t("settings.accounts.loseCreditConfirmTitle"),
@@ -298,9 +364,14 @@ export default function SettingsAccountsPage() {
       });
       if (!confirmed) return;
     }
-    const payload = isFixedAssetKind
+    const payload: Record<string, string> = isFixedAssetKind
       ? { ...editForm, kind: "investment", investProductType: "property", institutionId: "", fixedAssetType: editForm.fixedAssetType || "property", isConsumerLoan: "false" }
-      : editForm;
+      : { ...editForm };
+    // 账单日由下方「账单日历史」表按生效日期保存，不随本表单提交 —— 否则表单里的旧值
+    // 会把刚加的规则覆盖回去。还款日 / 交易归属期 仍走本表单。
+    if (previousAccount?.kind === "bank_credit" && nextKind === "bank_credit") {
+      delete payload.billingDay;
+    }
     const res = await fetch("/api/v1/accounts", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -331,8 +402,6 @@ export default function SettingsAccountsPage() {
       (
         previousAccount.kind !== nextKind ||
         String(previousAccount.institutionId ?? "") !== String(editForm.institutionId ?? "") ||
-        String(previousAccount.billingDay ?? "") !== String(editForm.billingDay ?? "") ||
-        String(previousAccount.repaymentDay ?? "") !== String(editForm.repaymentDay ?? "") ||
         String(previousAccount.creditBillMode ?? "separate") !== String(editForm.creditBillMode ?? "separate")
       ),
     );
@@ -355,11 +424,15 @@ export default function SettingsAccountsPage() {
         return null;
       });
     if (!result?.ok || !result.data) return;
+    const offsetDays = result.data.repaymentOffsetDays == null ? "" : String(result.data.repaymentOffsetDays);
     setEditForm((current) => current.institutionId !== institutionId ? current : ({
       ...current,
       billingDay: result.data.billingDay == null ? "" : String(result.data.billingDay),
       repaymentDay: result.data.repaymentDay == null ? "" : String(result.data.repaymentDay),
+      repaymentOffsetDays: offsetDays,
+      repaymentDayMode: offsetDays ? "offset" : "fixed",
       creditBillMode: result.data.creditBillMode === "consolidated" ? "consolidated" : "separate",
+      billingDayTxPeriod: result.data.billingDayTxPeriod === "next" ? "next" : "current",
     }));
   }
 
@@ -385,10 +458,15 @@ export default function SettingsAccountsPage() {
         return null;
       });
     if (!result?.ok || !result.data) return;
+    const offsetDays = result.data.repaymentOffsetDays == null ? "" : String(result.data.repaymentOffsetDays);
     setEditForm((current) => current.kind !== "bank_credit" || current.institutionId !== nextInstitutionId ? current : ({
       ...current,
       billingDay: current.billingDay || (result.data.billingDay == null ? "" : String(result.data.billingDay)),
       repaymentDay: current.repaymentDay || (result.data.repaymentDay == null ? "" : String(result.data.repaymentDay)),
+      repaymentOffsetDays: current.repaymentOffsetDays || offsetDays,
+      repaymentDayMode: current.repaymentDay || current.repaymentOffsetDays
+        ? current.repaymentDayMode || (current.repaymentOffsetDays ? "offset" : "fixed")
+        : offsetDays ? "offset" : "fixed",
     }));
   }
 
@@ -731,11 +809,13 @@ export default function SettingsAccountsPage() {
                       )}
                       {(normalizedAccountKind(a) === "bank_credit" || normalizedAccountKind(a) === "bank_debit") && (
                         <>
-                          {normalizedAccountKind(a) === "bank_credit" && a.billingDay && <span className="text-[10px] text-slate-400">{tf("settings.accounts.billingDay", { day: a.billingDay })}</span>}
-                          {normalizedAccountKind(a) === "bank_credit" && a.repaymentDay && <span className="text-[10px] text-slate-400">{tf("settings.accounts.repaymentDay", { day: a.repaymentDay })}</span>}
+                          {normalizedAccountKind(a) === "bank_credit" && a.billingDay && <span className="text-[10px] text-slate-400">{t("settings.accounts.billingDay", { day: billingDayDisplayValue(a.billingDay, t) })}</span>}
+                          {normalizedAccountKind(a) === "bank_credit" && a.repaymentOffsetDays != null && <span className="text-[10px] text-slate-400">{tf("settings.accounts.repaymentOffsetDays", { days: a.repaymentOffsetDays })}</span>}
+                          {normalizedAccountKind(a) === "bank_credit" && a.repaymentOffsetDays == null && a.repaymentDay && <span className="text-[10px] text-slate-400">{tf("settings.accounts.repaymentDay", { day: a.repaymentDay })}</span>}
                           {normalizedAccountKind(a) === "bank_credit" && a.creditLimit && <span className="text-[10px] text-slate-400">{tf("settings.accounts.creditLimit", { amount: a.creditLimit })}</span>}
                           {a.numberMasked && <span className="text-[10px] text-slate-400">{tf("settings.accounts.lastFour", { value: a.numberMasked })}</span>}
                           {normalizedAccountKind(a) === "bank_credit" && <span className="text-[10px] text-slate-400">{a.creditBillMode === "consolidated" ? t("settings.accounts.consolidatedBill") : t("settings.accounts.separateBill")}</span>}
+                          {normalizedAccountKind(a) === "bank_credit" && a.billingDay && <span className="text-[10px] text-slate-400">{t("settings.accounts.billingDayTxPeriod." + (a.billingDayTxPeriod === "next" ? "next" : "current"))}</span>}
                         </>
                       )}
                       {a.note && (
@@ -1080,22 +1160,56 @@ export default function SettingsAccountsPage() {
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
                   {isBillLikeKind && (
                     <>
+                      {/* 账单日由下方的「账单日历史」表按生效日期管理，这里只读展示当前生效值。 */}
                       <div>
                         <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.billingDayLabel")}</label>
-                        <input value={editForm.billingDay || ""} onChange={e => setEditForm(f => ({ ...f, billingDay: e.target.value }))}
-                          className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" placeholder="1-31" />
+                        <div className="flex h-8 items-center">
+                          <span className="text-sm text-slate-700">{editingBillingDayText || "-"}</span>
+                        </div>
                       </div>
                       <div>
-                        <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.repaymentDayLabel")}</label>
-                        <input value={editForm.repaymentDay || ""} onChange={e => setEditForm(f => ({ ...f, repaymentDay: e.target.value }))}
-                          className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" placeholder="1-31" />
+                        <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.repaymentDayModeLabel")}</label>
+                        <select
+                          value={editForm.repaymentDayMode || "fixed"}
+                          onChange={e => setEditForm(f => ({ ...f, repaymentDayMode: e.target.value }))}
+                          className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
+                        >
+                          <option value="fixed">{t("entityForm.repaymentDayMode.fixed")}</option>
+                          <option value="offset">{t("entityForm.repaymentDayMode.offset")}</option>
+                        </select>
                       </div>
+                      {editForm.repaymentDayMode === "offset" ? (
+                        <div>
+                          <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.repaymentOffsetDaysLabel")}</label>
+                          <input value={editForm.repaymentOffsetDays || ""} onChange={e => setEditForm(f => ({ ...f, repaymentOffsetDays: e.target.value }))}
+                            className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" inputMode="numeric" placeholder={t("entityForm.repaymentOffsetDaysPlaceholder")} />
+                        </div>
+                      ) : (
+                        <div>
+                          <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.repaymentDayLabel")}</label>
+                          <input value={editForm.repaymentDay || ""} onChange={e => setEditForm(f => ({ ...f, repaymentDay: e.target.value }))}
+                            className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" inputMode="numeric" placeholder={t("entityForm.dayRangePlaceholder")} />
+                        </div>
+                      )}
                       <div>
                         <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.creditLimitLabel")}</label>
                         <input value={editForm.creditLimit || ""} onChange={e => setEditForm(f => ({ ...f, creditLimit: e.target.value }))}
                           className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" />
                       </div>
                     </>
+                  )}
+                  {isBillLikeKind && (
+                    <div>
+                      <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.billingDayTxPeriodLabel")}</label>
+                      <select
+                        value={editForm.billingDayTxPeriod || "current"}
+                        onChange={e => setEditForm(f => ({ ...f, billingDayTxPeriod: e.target.value }))}
+                        className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
+                      >
+                        <option value="current">{t("settings.accounts.billingDayTxPeriod.current")}</option>
+                        <option value="next">{t("settings.accounts.billingDayTxPeriod.next")}</option>
+                      </select>
+                    </div>
                   )}
                   <div>
                     <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.lastFourLabel")}</label>
@@ -1117,6 +1231,19 @@ export default function SettingsAccountsPage() {
                   )}
                 </div>
               )}
+
+              {isBillLikeKind && editingBillingAccount ? (
+                <div className="mt-3">
+                  <div className="mb-1 text-xs font-medium text-slate-500">{t("creditBill.billingDayRuleSectionTitle")}</div>
+                  <CreditCardBillingDayRulesTable
+                    accountId={editingBillingAccount.id}
+                    rules={billingDayRules}
+                    onRulesChanged={setBillingDayRules}
+                    billingDay={editingBillingAccount.billingDay}
+                  />
+                  {billingDayRulesLoading ? <div className="mt-1 text-xs text-slate-400">{t("settings.basicDataImportExport.loading")}</div> : null}
+                </div>
+              ) : null}
 
               <div className="mt-3">
                 <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.note")}</label>

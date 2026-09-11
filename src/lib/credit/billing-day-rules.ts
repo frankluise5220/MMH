@@ -1,3 +1,5 @@
+import { isCreditCardMonthEndBillingDay } from "@/lib/credit/rules";
+
 export type BillingDayRuleInitialLike = {
   id?: string | null;
   effectiveDate: Date | string | number;
@@ -37,4 +39,39 @@ export function isInitialBillingDayRule<T extends BillingDayRuleInitialLike>(
     if (target.effectiveDate == null) return false;
     return timeOfDate(row.effectiveDate) === timeOfDate(target.effectiveDate);
   });
+}
+
+export type CreditBillingDayRuleView = {
+  id?: string;
+  accountId?: string;
+  effectiveDate: string;
+  billingDay: number;
+  isInitial: boolean;
+};
+
+export function billingDayRuleKey(rule: CreditBillingDayRuleView) {
+  return rule.id || rule.effectiveDate;
+}
+
+/** 按生效日期取「当前」账单日（未来生效的规则不参与）；规则为空时回退基础值。 */
+export function currentBillingDayFromRules(rules: readonly CreditBillingDayRuleView[], fallback: number | null) {
+  const validRules = rules
+    .filter((rule) => /^\d{4}-\d{2}-\d{2}$/.test(rule.effectiveDate) && Number.isInteger(rule.billingDay))
+    .sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
+  if (validRules.length === 0) return fallback;
+
+  const today = new Date().toISOString().slice(0, 10);
+  let active = validRules[0]!;
+  for (const rule of validRules) {
+    if (rule.effectiveDate > today) break;
+    active = rule;
+  }
+  return active.billingDay;
+}
+
+/** 账单日的用户可见文案（含「月末」）。 */
+export function billingDayDisplayValue(day: number, t: (key: string, params?: Record<string, string | number>) => string) {
+  return isCreditCardMonthEndBillingDay(day)
+    ? t("settings.accounts.billingDayMonthEndValue")
+    : t("settings.accounts.billingDayValue", { day });
 }
