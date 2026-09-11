@@ -30,6 +30,10 @@ const HEADER_SORT_CLICK_DELAY_MS = 220;
 const COMPACT_ROW_HEIGHT = 30;
 const COMPACT_ROW_CONTENT_HEIGHT = 20;
 const ROW_BORDER_HEIGHT = 1;
+/** 量行高时最多采样开头几行取最大值：只量首行时，若首行比其它行矮（其它行备注
+ *  换行被撑高），行高会被低估 → 自适应页数算多 → 逼出表格内部滚动条。
+ *  取最大值可杜绝这类溢出；代价只是页数偏保守（底部可能留一点空）。 */
+const ROW_HEIGHT_SAMPLE_SIZE = 3;
 const ROW_ACTIONS_COMPACT_CLASS =
   " [&_button]:h-5 [&_button]:w-5 [&_button]:min-h-0 [&_svg]:h-3 [&_svg]:w-3";
 const ROW_ACTIONS_SIZE_CLASS: Record<RowHeightMode, string> = {
@@ -665,9 +669,13 @@ export function AdvancedDataTable<T>({
     if (!report) return;
     const viewport = viewportRef.current;
     if (!viewport || viewport.clientHeight <= 0) return;
-    const bodyRow = viewport.querySelector<HTMLElement>("[data-advanced-table-body-row]");
-    if (!bodyRow) return;
-    const measuredRowHeight = bodyRow.getBoundingClientRect().height;
+    const bodyRows = viewport.querySelectorAll<HTMLElement>("[data-advanced-table-body-row]");
+    if (bodyRows.length === 0) return;
+    let measuredRowHeight = 0;
+    for (let i = 0; i < Math.min(bodyRows.length, ROW_HEIGHT_SAMPLE_SIZE); i += 1) {
+      const height = bodyRows[i].getBoundingClientRect().height;
+      if (height > measuredRowHeight) measuredRowHeight = height;
+    }
     if (measuredRowHeight <= 0) return;
     const headerRow = viewport.querySelector<HTMLElement>("[data-advanced-table-header-row]");
     const summaryRowElement = viewport.querySelector<HTMLElement>("[data-advanced-table-summary-row]");
