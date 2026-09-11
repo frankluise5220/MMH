@@ -3,6 +3,16 @@ import { getCurrentUser } from "@/lib/server/auth";
 import { getCachedHouseholdScope } from "@/lib/server/household-scope";
 
 /**
+ * Global kill switch for the sponsor (tip) settings entry.
+ *
+ * While this is false the entry is never revealed on any surface, no matter
+ * what the data-driven conditions below say. The rest of the visibility
+ * logic is kept intact so the entry can be restored by flipping this flag
+ * back to true.
+ */
+export const SPONSOR_ENTRY_ENABLED = false;
+
+/**
  * Minimum number of non-deleted transaction records before the sponsor
  * (tip) entry is revealed in the settings UI.
  */
@@ -21,6 +31,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * current user.
  *
  * The entry stays hidden unless ALL conditions hold:
+ * - the sponsor entry is globally enabled (SPONSOR_ENTRY_ENABLED),
  * - the system has been installed for more than SPONSOR_MIN_INSTALL_DAYS
  *   days (earliest household creation time as the installation proxy),
  * - the current ledger has more than SPONSOR_RECORD_THRESHOLD non-deleted
@@ -30,6 +41,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  *   profile email field (User.email).
  */
 export async function shouldShowSponsor(): Promise<boolean> {
+  if (!SPONSOR_ENTRY_ENABLED) return false;
+
   const user = await getCurrentUser();
   if (!user) return false;
 

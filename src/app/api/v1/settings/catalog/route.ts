@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { getSettingsCatalogForSurface, settingsCatalog, type SettingsSurface } from "@/lib/settings/catalog";
+import { getSettingsCatalogForSurface, getSettingsCatalogWithoutHiddenItems, type SettingsSurface } from "@/lib/settings/catalog";
 import { shouldShowSponsor } from "@/lib/server/sponsor-visibility";
 
 /**
@@ -8,7 +8,8 @@ import { shouldShowSponsor } from "@/lib/server/sponsor-visibility";
  *
  * Returns the shared settings catalog used by Web and Android.
  * The "sponsor" entry is revealed only when the server-side visibility
- * condition holds (see src/lib/server/sponsor-visibility.ts).
+ * condition holds (see src/lib/server/sponsor-visibility.ts); hidden entries
+ * are stripped on every branch, including the surface-less fallback.
  *
  * Success: { ok: true, data: SettingsCatalog }
  * Failure: { ok: false, error: string }
@@ -18,7 +19,7 @@ export async function GET(req: Request) {
   const surface = url.searchParams.get("surface");
 
   if (!surface) {
-    return NextResponse.json({ ok: true, data: settingsCatalog });
+    return NextResponse.json({ ok: true, data: getSettingsCatalogWithoutHiddenItems() });
   }
 
   if (surface !== "web" && surface !== "android") {

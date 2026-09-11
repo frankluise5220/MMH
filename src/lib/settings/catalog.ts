@@ -68,6 +68,24 @@ export function getSettingsItemsForSurface(surface: SettingsSurface, revealHidde
   return getSettingsCatalogForSurface(surface, revealHiddenIds).groups.flatMap((group) => group.items);
 }
 
+/**
+ * Strip items that are hidden and not explicitly revealed, keeping every
+ * surface. Used by API paths that return the whole catalog without a surface
+ * filter, so a hidden entry can never leak to a client through them.
+ */
+export function getSettingsCatalogWithoutHiddenItems(revealHiddenIds?: string[]): SettingsCatalog {
+  const revealed = new Set(revealHiddenIds ?? []);
+  return {
+    ...settingsCatalog,
+    groups: settingsCatalog.groups
+      .map((group) => ({
+        ...group,
+        items: group.items.filter((item) => !isItemHidden(item.id, revealed)),
+      }))
+      .filter((group) => group.items.length > 0),
+  };
+}
+
 export function findSettingsItem(id: string, surface?: SettingsSurface, revealHiddenIds?: string[]) {
   const groups = surface ? getSettingsCatalogForSurface(surface, revealHiddenIds).groups : settingsCatalog.groups;
   for (const group of groups) {
