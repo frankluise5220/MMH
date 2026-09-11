@@ -5,6 +5,7 @@ import { TransactionType } from "@prisma/client";
 
 import { InvestmentProfitReport } from "@/components/InvestmentProfitReport";
 import { InvestmentProfitFilterSelect } from "@/components/InvestmentProfitFilterSelect";
+import { InvestmentProfitPeriodPicker } from "@/components/InvestmentProfitPeriodPicker";
 import { MissingFundNavPrompt } from "@/components/MissingFundNavPrompt";
 import { MissingStockPricePrompt } from "@/components/MissingStockPricePrompt";
 import { IncomeExpenseReportClient } from "@/components/IncomeExpenseReportClient";
@@ -232,6 +233,8 @@ export default async function ReportsPage({
     typeof params.profitMonth === "string" ? params.profitMonth : undefined,
     currentMonth,
   );
+  // Yearly view only: "从哪一年起" for the investment-profit report.
+  const profitStartYear = parseYear(typeof params.profitStartYear === "string" ? params.profitStartYear : undefined);
 
 
   const commonData = await loadCommonData(ctx.hidFilter);
@@ -387,9 +390,31 @@ export default async function ReportsPage({
       period: profitPeriod,
       year: profitYear,
       month: profitMonth,
+      startYear: profitPeriod === "year" ? profitStartYear : null,
+      includeFirstDataYear: true,
       accountIds: scopedInvestmentAccountIds,
       fundValuationMode: "daily_nav_delta",
     }, language);
+    // The date picker offers the household's full investment-history years.
+    // An explicit start year only takes effect on the yearly view and is
+    // clamped to the data's first year (loader clamps too; keep select in sync).
+    const effectiveProfitStartYear = profitPeriod === "year" && profitStartYear
+      ? Math.max(profitStartYear, investmentReport.dataFirstYear)
+      : null;
+    const pickerYears = Array.from(
+      { length: currentYear - investmentReport.dataFirstYear + 1 },
+      (_, index) => investmentReport.dataFirstYear + index,
+    );
+    const pickerBaseParams: Record<string, string> = {
+      report: "investment-profit",
+      profitPeriod,
+      profitYear: String(profitYear),
+      profitMonth: String(profitMonth),
+    };
+    if (effectiveProfitStartYear) pickerBaseParams.profitStartYear = String(effectiveProfitStartYear);
+    if (selectedUserIds.length) pickerBaseParams.userIds = selectedUserIds.join(",");
+    if (selectedInstitutionIds.length) pickerBaseParams.institutionIds = selectedInstitutionIds.join(",");
+    if (selectedInvestmentAccountIds.length) pickerBaseParams.investmentAccounts = selectedInvestmentAccountIds.join(",");
     const periodHref = (period: InvestmentProfitPeriod) =>
       buildInvestmentFilterHref(period, profitYear, profitMonth, {
         userIds: selectedUserIds,
@@ -468,6 +493,14 @@ export default async function ReportsPage({
                     <ChevronRight className="h-3.5 w-3.5" />
                   </Link>
                 ) : null}
+                <InvestmentProfitPeriodPicker
+                  period={profitPeriod}
+                  year={profitYear}
+                  month={profitMonth}
+                  startYear={effectiveProfitStartYear}
+                  availableYears={pickerYears}
+                  baseParams={pickerBaseParams}
+                />
               </div>
               <InvestmentProfitFilterSelect
                 selectedUserIds={selectedUserIds}
