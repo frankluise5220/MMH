@@ -5,13 +5,15 @@ export type DetailPaginationPreference = {
   pageSize: number;
   detailPage: number;
   detailAll: boolean;
+  /** Auto-fit rows to the viewport height; manual size choice turns it off. */
+  autoFit?: boolean;
 };
 
 export function normalizeDetailPageSize(value: unknown, fallback = 20) {
   const parsed = typeof value === "number" ? value : parseInt(String(value ?? ""), 10);
-  return DETAIL_PAGE_SIZE_OPTIONS.includes(parsed as (typeof DETAIL_PAGE_SIZE_OPTIONS)[number])
-    ? parsed
-    : fallback;
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  const floored = Math.floor(parsed);
+  return floored <= DETAIL_ALL_PAGE_SIZE ? floored : fallback;
 }
 
 export function normalizeDetailPage(value: unknown, fallback = 1) {
@@ -29,6 +31,7 @@ export function encodeDetailPaginationPreference(pref: DetailPaginationPreferenc
     pageSize: normalizeDetailPageSize(pref.pageSize),
     detailPage: normalizeDetailPage(pref.detailPage),
     detailAll: pref.detailAll === true,
+    autoFit: pref.autoFit !== false,
   }));
 }
 
@@ -40,6 +43,7 @@ export function decodeDetailPaginationPreference(value: string | null | undefine
       pageSize: normalizeDetailPageSize(parsed.pageSize),
       detailPage: normalizeDetailPage(parsed.detailPage),
       detailAll: parsed.detailAll === true,
+      autoFit: parsed.autoFit !== false,
     };
   } catch {
     return null;
@@ -73,10 +77,21 @@ export function writeStoredDetailPreference(
   pageSize: number,
   detailAll: boolean,
   detailPage: number,
+  autoFit?: boolean,
 ) {
   if (typeof window === "undefined") return;
   const cookieName = detailPaginationCookieName(accountId);
-  const value = encodeDetailPaginationPreference({ pageSize, detailAll, detailPage });
+  // Panels that do not manage auto-fit themselves must not flip the flag:
+  // keep the previously stored value when the caller omits it.
+  const previous = decodeDetailPaginationPreference(
+    window.sessionStorage.getItem(cookieName) ?? readCookieValue(cookieName),
+  );
+  const value = encodeDetailPaginationPreference({
+    pageSize,
+    detailAll,
+    detailPage,
+    autoFit: autoFit ?? previous?.autoFit,
+  });
   window.sessionStorage.setItem(cookieName, value);
   document.cookie = `${cookieName}=${value}; path=/; max-age=31536000; SameSite=Lax`;
 }

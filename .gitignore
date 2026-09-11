@@ -58,6 +58,8 @@ next-env.d.ts
 .claude/
 .codex/
 .omo/
+# local agent skills (kept local only — never part of the product)
+/.skill/
 AGENTS.md
 CLAUDE.md
 DESIGN.md

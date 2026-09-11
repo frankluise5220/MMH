@@ -228,6 +228,12 @@ export type AdvancedDataTableProps<T> = {
   resetKey?: string;
   resetDisplayStateOnMount?: boolean;
   scrollToRowKey?: string | null;
+  /**
+   * Report how many body rows fit the current viewport height (fillHeight mode).
+   * Fired only when the integer count changes; parents can use it as the
+   * auto-fit page size. Requires a height-constrained viewport (fillHeight).
+   */
+  onRowsFitChange?: (rows: number) => void;
 };
 
 // Center a row inside the table viewport without scrolling ancestor containers.
@@ -411,6 +417,7 @@ export function AdvancedDataTable<T>({
   resetKey,
   resetDisplayStateOnMount = false,
   scrollToRowKey,
+  onRowsFitChange,
 }: AdvancedDataTableProps<T>) {
   const { t } = useI18n();
   const tf = (key: string, values: Record<string, string | number>) => {
@@ -643,6 +650,61 @@ export function AdvancedDataTable<T>({
     if (table) observer.observe(table);
     return () => observer.disconnect();
   }, [fillHeight, hiddenKeys, minTableWidth, selectable, tableColumns, viewportWidth, rows.length]);
+
+  const onRowsFitChangeRef = useRef(onRowsFitChange);
+  const lastReportedRowsFitRef = useRef<number | null>(null);
+  const rowsFitObserverTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    onRowsFitChangeRef.current = onRowsFitChange;
+  }, [onRowsFitChange]);
+
+  const measureRowsFit = useCallback(() => {
+    if (!fillHeight) return;
+    const report = onRowsFitChangeRef.current;
+    if (!report) return;
+    const viewport = viewportRef.current;
+    if (!viewport || viewport.clientHeight <= 0) return;
+    const bodyRow = viewport.querySelector<HTMLElement>("[data-advanced-table-body-row]");
+    if (!bodyRow) return;
+    const measuredRowHeight = bodyRow.getBoundingClientRect().height;
+    if (measuredRowHeight <= 0) return;
+    const headerRow = viewport.querySelector<HTMLElement>("[data-advanced-table-header-row]");
+    const summaryRowElement = viewport.querySelector<HTMLElement>("[data-advanced-table-summary-row]");
+    const headerHeight = headerRow ? headerRow.getBoundingClientRect().height : 0;
+    const summaryHeight = summaryRowElement ? summaryRowElement.getBoundingClientRect().height : 0;
+    const available = viewport.clientHeight - headerHeight - summaryHeight - ROW_BORDER_HEIGHT;
+    if (available <= 0) return;
+    const count = Math.max(1, Math.floor(available / measuredRowHeight));
+    if (lastReportedRowsFitRef.current === count) return;
+    lastReportedRowsFitRef.current = count;
+    report(count);
+  }, [fillHeight]);
+
+  // Re-measure after every render: covers row appearance, density changes and resets.
+  useEffect(() => {
+    measureRowsFit();
+  });
+
+  // Viewport resizes (window resize, sidebar/panel drag) without a re-render.
+  useEffect(() => {
+    if (!onRowsFitChange) return;
+    const node = viewportRef.current;
+    if (!node) return;
+    const schedule = () => {
+      if (rowsFitObserverTimerRef.current != null) window.clearTimeout(rowsFitObserverTimerRef.current);
+      rowsFitObserverTimerRef.current = window.setTimeout(() => measureRowsFit(), 150);
+    };
+    const observer = new ResizeObserver(schedule);
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+      if (rowsFitObserverTimerRef.current != null) {
+        window.clearTimeout(rowsFitObserverTimerRef.current);
+        rowsFitObserverTimerRef.current = null;
+      }
+    };
+  }, [measureRowsFit, onRowsFitChange]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -1829,7 +1891,7 @@ export function AdvancedDataTable<T>({
           </tbody>
           {summaryRow ? (
             <tfoot className="sticky bottom-0 z-[1] bg-slate-50/95 backdrop-blur-sm">
-              <tr className={summaryRow.rowClassName ?? ""}>
+              <tr className={summaryRow.rowClassName ?? ""} data-advanced-table-summary-row>
                 {(selectable || draggableRows) ? (
                   <td className={`border-t border-slate-200 text-center ${selectPaddingClass} ${summaryRow.cellClassName ?? ""}`}>
                     {summaryRow.selectCell ?? null}

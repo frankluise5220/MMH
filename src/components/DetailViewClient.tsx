@@ -551,6 +551,7 @@ export function DetailViewClient({
   reorderAccountIds,
   sortable = true,
   onDisplayRowsChange,
+  onRowsFitChange,
 }: {
   accountId: string;
   isInvestAccount: boolean;
@@ -582,6 +583,7 @@ export function DetailViewClient({
   reorderAccountIds?: string[];
   sortable?: boolean;
   onDisplayRowsChange?: (rows: DetailEntry[]) => void;
+  onRowsFitChange?: (rows: number) => void;
 }) {
   const { t } = useI18n();
   const [dateDisplayFormat, setDateDisplayFormat] = useState<DateDisplayFormat>("yyyy-mm-dd");
@@ -1583,6 +1585,7 @@ export function DetailViewClient({
       showTableStateInCustomToolbar={toolbarMode === "custom"}
       sortable={sortable}
       onDisplayRowsChange={onDisplayRowsChange}
+      onRowsFitChange={onRowsFitChange}
     />
     </div>
     <EntryAttachmentWindow

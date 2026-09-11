@@ -31,6 +31,7 @@ type BasicDetailPanelProps = {
   initialPage: number;
   initialPageSize: number;
   initialDetailAll: boolean;
+  initialAutoFit?: boolean;
   normalExportFilename: string;
   normalExportRows?: string[][];
   normalExportRowsByEntryId?: Record<string, string[]>;
@@ -248,6 +249,7 @@ export function BasicDetailPanel({
   initialPage,
   initialPageSize,
   initialDetailAll,
+  initialAutoFit = true,
   normalExportFilename,
   normalExportRows = [],
   normalExportRowsByEntryId,
@@ -279,6 +281,7 @@ export function BasicDetailPanel({
   const [localOriginalCount, setLocalOriginalCount] = useState(originalCount);
   const [pageSize, setPageSize] = useState(normalizedInitialPageSize);
   const [detailAll, setDetailAll] = useState(initialDetailAll);
+  const [autoFit, setAutoFit] = useState(initialAutoFit);
   const [isPageLoading, setIsPageLoading] = useState(false);
   const [displayedEntryIds, setDisplayedEntryIds] = useState<string[] | null>(null);
   const [guideOverlayOpen, setGuideOverlayOpen] = useState(showGuideOverlay);
@@ -430,12 +433,14 @@ export function BasicDetailPanel({
       const storedPreference = nextFocusEntryId ? null : readStoredDetailPreference(accountId);
       const nextPageSize = nextFocusEntryId ? normalizedInitialPageSize : storedPreference?.pageSize ?? normalizedInitialPageSize;
       const nextDetailAll = nextFocusEntryId ? initialDetailAll : storedPreference?.detailAll ?? initialDetailAll;
+      const nextAutoFit = nextFocusEntryId ? initialAutoFit : storedPreference?.autoFit ?? initialAutoFit;
       const nextTotalPages = Math.max(1, Math.ceil(totalCount / nextPageSize));
       setPageSize(nextPageSize);
       setDetailAll(nextDetailAll);
+      setAutoFit(nextAutoFit);
       setPage(nextDetailAll ? 1 : clampPage(storedPreference?.detailPage ?? initialPage, nextTotalPages));
     }
-  }, [accountId, accountScopeKey, entries, focusEntryId, initialDetailAll, initialPage, normalizedInitialPageSize, originalCount, totalCount]);
+  }, [accountId, accountScopeKey, entries, focusEntryId, initialAutoFit, initialDetailAll, initialPage, normalizedInitialPageSize, originalCount, totalCount]);
 
   useEffect(() => {
     const handleFinanceChange = (event: Event) => {
@@ -486,7 +491,7 @@ export function BasicDetailPanel({
       url.searchParams.delete("detailAll");
       url.searchParams.set("detailPage", String(safePage));
     }
-    writeStoredDetailPreference(accountId, pageSize, detailAll, safePage);
+    writeStoredDetailPreference(accountId, pageSize, detailAll, safePage, autoFit);
     const nextHref = `${url.pathname}${url.search}${url.hash}`;
     const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
     if (nextHref !== currentHref) {
@@ -496,7 +501,7 @@ export function BasicDetailPanel({
         router.replace(nextHref, { scroll: false });
       }
     }
-  }, [accountId, clientPaginationEnabled, detailAll, pageSize, router, safePage]);
+  }, [accountId, autoFit, clientPaginationEnabled, detailAll, pageSize, router, safePage]);
 
   useEffect(() => {
     if (!clientPaginationEnabled) return;
@@ -536,6 +541,7 @@ export function BasicDetailPanel({
 
   const setPagedSize = (nextPageSize: number) => {
     setDetailAll(false);
+    setAutoFit(false);
     setPageSize(nextPageSize);
     setPage(1);
   };
@@ -548,6 +554,55 @@ export function BasicDetailPanel({
   const goPage = (nextPage: number) => {
     if (detailAll) return;
     setPage(clampPage(nextPage, totalPages));
+  };
+
+  // Auto-fit: the table reports how many rows fit the viewport; when auto mode
+  // is on that count becomes the page size (the "自适应" option restores it).
+  const lastFitRowCountRef = useRef<number | null>(null);
+  const handleRowsFitChange = useCallback((rowCount: number) => {
+    lastFitRowCountRef.current = rowCount;
+    if (!autoFit || detailAll) return;
+    setPageSize((prev) => (prev === rowCount ? prev : rowCount));
+  }, [autoFit, detailAll]);
+
+  const enableAutoFitRows = () => {
+    // Same contract as picking a concrete size: leave show-all mode first.
+    setDetailAll(false);
+    setAutoFit(true);
+    const fitCount = lastFitRowCountRef.current;
+    if (fitCount != null && fitCount !== pageSize) setPageSize(fitCount);
+    setPage(1);
+  };
+
+  const locateDateSeqRef = useRef(0);
+  const [isLocatingDate, setIsLocatingDate] = useState(false);
+  const handleLocateDate = (dateYmd: string) => {
+    if (detailAll || !clientPaginationEnabled || !dateYmd) return;
+    const seq = ++locateDateSeqRef.current;
+    setIsLocatingDate(true);
+    const params = new URLSearchParams({
+      accountId,
+      locateDate: dateYmd,
+      pageSize: String(pageSize),
+    });
+    fetch(`/api/v1/transactions/detail?${params.toString()}`, { cache: "no-store" })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload?.ok) {
+          throw new Error(payload?.error ?? t("basicDetail.loadFailed"));
+        }
+        if (seq !== locateDateSeqRef.current) return;
+        const locatePage = Number(payload.data?.locatePage);
+        if (Number.isFinite(locatePage) && locatePage >= 1) {
+          goPage(locatePage);
+        }
+      })
+      .catch((error) => {
+        if (seq === locateDateSeqRef.current) console.error("Locate date failed:", error);
+      })
+      .finally(() => {
+        if (seq === locateDateSeqRef.current) setIsLocatingDate(false);
+      });
   };
 
   const canPrev = !detailAll && safePage > 1;
@@ -580,9 +635,13 @@ export function BasicDetailPanel({
               totalPages={totalPages}
               canPrev={canPrev}
               canNext={canNext}
+              autoFit={autoFit}
+              onAutoFit={enableAutoFitRows}
               onPageSizeChange={setPagedSize}
               onShowAll={showAll}
               onPageChange={goPage}
+              onLocateDate={clientPaginationEnabled ? handleLocateDate : undefined}
+              locateDateBusy={isLocatingDate}
             />
           ) : null}
         </div>
@@ -604,6 +663,7 @@ export function BasicDetailPanel({
           refreshOnGlobalEvent={refreshOnGlobalEvent}
           draggableRows={draggableRows}
           sortable={sortable}
+          onRowsFitChange={handleRowsFitChange}
           toolbarRightContent={
             <div className="flex items-center gap-2 text-xs">
               <span className="text-xs text-slate-600">{t("creditBillDetail.recordCount", { count: localTotalCount })}{hasDetailFilters ? t("basicDetail.filteredSuffix", { count: localOriginalCount }) : ""}{isPageLoading ? t("basicDetail.loadingSuffix") : ""}</span>
@@ -648,9 +708,13 @@ export function BasicDetailPanel({
                     totalPages={totalPages}
                     canPrev={canPrev}
                     canNext={canNext}
+                    autoFit={autoFit}
+                    onAutoFit={enableAutoFitRows}
                     onPageSizeChange={setPagedSize}
                     onShowAll={showAll}
                     onPageChange={goPage}
+                    onLocateDate={clientPaginationEnabled ? handleLocateDate : undefined}
+                    locateDateBusy={isLocatingDate}
                   />
                 </>
               ) : null}
