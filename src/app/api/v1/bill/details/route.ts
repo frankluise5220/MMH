@@ -12,8 +12,9 @@ import { AccountKind, TransactionType, type Prisma } from "@prisma/client";
 import type { DetailEntry } from "@/components/DetailViewClient";
 import { prisma } from "@/lib/db/prisma";
 import { addDaysUtc, formatDateLocal, toNumber } from "@/lib/date-utils";
-import { creditBillDateRangeWhere, cycleForStatementMonth } from "@/lib/credit/billing";
+import { creditBillDateRangeWhere, cycleForStatementMonthWithBillingDayRules } from "@/lib/credit/billing";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
+import { reconcileCreditCardBillingDayRulesFromAccounts } from "@/lib/server/credit-card-billing-day-rules";
 import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude } from "@/lib/server/entry-business-link";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 
@@ -162,6 +163,7 @@ export async function GET(req: Request) {
         kind: true,
         billingDay: true,
         repaymentDay: true,
+        repaymentOffsetDays: true,
         creditBillMode: true,
         billingDayTxPeriod: true,
       },
@@ -173,6 +175,17 @@ export async function GET(req: Request) {
     const billAccountIds = await getCreditBillAccountIds(prisma, account);
     const billAccountIdSet = new Set(billAccountIds);
     const storageAccountId = billAccountIds[0] ?? account.id;
+    await prisma.$transaction((tx) =>
+      reconcileCreditCardBillingDayRulesFromAccounts(tx, {
+        householdId,
+        accountIds: billAccountIds,
+      }),
+    );
+    const billingDayRules = await prisma.creditCardBillingDay.findMany({
+      where: { accountId: { in: billAccountIds } },
+      select: { effectiveDate: true, billingDay: true },
+      orderBy: [{ effectiveDate: "asc" }],
+    });
     const billScope: Prisma.TxRecordWhereInput = {
       OR: [
         { accountId: { in: billAccountIds } },
@@ -206,14 +219,14 @@ export async function GET(req: Request) {
               isCurrentCycle: persisted.isCurrentCycle,
             };
           }
-          if (!account.billingDay) return null;
-          const computed = cycleForStatementMonth(
-            billMonth,
-            account.billingDay,
-            account.repaymentDay ?? null,
-            new Date(),
-            account.billingDayTxPeriod,
-          );
+          const computed = cycleForStatementMonthWithBillingDayRules({
+            statementMonth: billMonth,
+            billingDayRules,
+            repaymentDay: account.repaymentDay ?? null,
+            repaymentOffsetDays: account.repaymentOffsetDays ?? null,
+            now: new Date(),
+            billingDayTxPeriod: account.billingDayTxPeriod,
+          });
           return computed
             ? {
                 statementMonth: billMonth,

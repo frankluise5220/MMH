@@ -10,6 +10,7 @@ const CREDIT_BILL_MODE_CONSOLIDATED: CreditBillMode = "consolidated";
 export type CreditCardInstitutionDefaults = {
   billingDay: number | null;
   repaymentDay: number | null;
+  repaymentOffsetDays: number | null;
   creditLimit: string | null;
   creditBillMode: CreditBillMode;
   billingDayTxPeriod: CreditBillingDayTxPeriod;
@@ -43,6 +44,7 @@ export async function getCreditCardInstitutionDefaults(
     select: {
       billingDay: true,
       repaymentDay: true,
+      repaymentOffsetDays: true,
       creditLimit: true,
       creditBillMode: true,
       billingDayTxPeriod: true,
@@ -53,12 +55,15 @@ export async function getCreditCardInstitutionDefaults(
   if (accounts.length === 0) return null;
   const template = [...accounts].sort((a, b) => {
     const completeness = (row: typeof a) =>
-      Number(row.billingDay != null) + Number(row.repaymentDay != null) + Number(row.creditLimit != null);
+      Number(row.billingDay != null) +
+      Number(row.repaymentDay != null || row.repaymentOffsetDays != null) +
+      Number(row.creditLimit != null);
     return completeness(b) - completeness(a) || b.updatedAt.getTime() - a.updatedAt.getTime();
   })[0];
   return {
     billingDay: template.billingDay,
     repaymentDay: template.repaymentDay,
+    repaymentOffsetDays: template.repaymentOffsetDays,
     creditLimit: template.creditLimit?.toString() ?? null,
     creditBillMode: template.creditBillMode,
     billingDayTxPeriod: template.billingDayTxPeriod,
@@ -70,25 +75,32 @@ export async function syncCreditCardInstitutionSettings(
   input: {
     householdId: string;
     institutionId: string | null | undefined;
-    billingDay: number | null;
+    billingDay?: number | null;
     repaymentDay: number | null;
+    repaymentOffsetDays?: number | null;
     creditBillMode: CreditBillMode;
     billingDayTxPeriod?: CreditBillingDayTxPeriod;
   },
 ) {
   if (!input.institutionId) return;
+  const data: Prisma.AccountUpdateManyMutationInput = {
+    repaymentDay: input.repaymentDay,
+    creditBillMode: input.creditBillMode,
+    ...(Object.prototype.hasOwnProperty.call(input, "billingDay")
+      ? { billingDay: input.billingDay ?? null }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(input, "repaymentOffsetDays")
+      ? { repaymentOffsetDays: input.repaymentOffsetDays ?? null }
+      : {}),
+    ...(input.billingDayTxPeriod ? { billingDayTxPeriod: input.billingDayTxPeriod } : {}),
+  };
   await writer.account.updateMany({
     where: {
       householdId: input.householdId,
       institutionId: input.institutionId,
       kind: AccountKind.bank_credit,
     },
-    data: {
-      billingDay: input.billingDay,
-      repaymentDay: input.repaymentDay,
-      creditBillMode: input.creditBillMode,
-      ...(input.billingDayTxPeriod ? { billingDayTxPeriod: input.billingDayTxPeriod } : {}),
-    },
+    data,
   });
 }
 

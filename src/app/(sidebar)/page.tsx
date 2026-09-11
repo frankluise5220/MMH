@@ -158,6 +158,7 @@ type AccountQuickEditSource = {
   loanType?: string | null;
   billingDay?: number | null;
   repaymentDay?: number | null;
+  repaymentOffsetDays?: number | null;
   creditLimit?: unknown;
   creditBillMode?: "separate" | "consolidated" | null;
   numberMasked?: string | null;
@@ -183,6 +184,7 @@ function toAccountQuickEditValue(account: AccountQuickEditSource): AccountQuickE
     loanType: account.loanType,
     billingDay: account.billingDay,
     repaymentDay: account.repaymentDay,
+    repaymentOffsetDays: account.repaymentOffsetDays,
     creditLimit: account.creditLimit == null ? null : String(account.creditLimit),
     creditBillMode: account.creditBillMode,
     numberMasked: account.numberMasked,
@@ -566,10 +568,6 @@ export default async function Home({
   const isDebtAccount = isLoanOrSettlementAccountKind(selectedAccount?.kind);
   const isInvestAccount = selectedAccount ? isPureInvestmentAccount(selectedAccount) : false;
   const isDepositView = selectedAccount ? isDepositAccount(selectedAccount) : false;
-  const missingBillingDayForBill =
-    viewParam === "bill" &&
-    selectedAccount?.kind === AccountKind.bank_credit &&
-    !selectedAccount?.billingDay;
   const isOverview = !viewParam && !accountId && !accountName;
   const isInsuranceView = selectedAccount?.kind === AccountKind.insurance;
   const view: "bill" | "detail" | "investfund" | "investmoney" | "investwealth" | "investstock" | "investproperty" | "regularinvest" | "debt" | "overview" | "deposit" | "insurance" =
@@ -1543,7 +1541,10 @@ export default async function Home({
     hasCreditBillSummaries,
     showAllCreditBillDetails,
     billingDayRules,
+    billingDay: creditBillingDay,
     billingDayTxPeriod,
+    repaymentDay,
+    repaymentOffsetDays,
   } = await loadCreditBillPageData({
     householdId,
     selectedAccount,
@@ -1562,6 +1563,10 @@ export default async function Home({
     isSettlementDebtAccountId,
     isCreditCardRepaymentForDisplay,
   });
+  const missingBillingDayForBill =
+    viewParam === "bill" &&
+    selectedAccount?.kind === AccountKind.bank_credit &&
+    !creditBillingDay;
 
   const selectedAccountRawBalanceValue = selectedAccount
     ? isPureInvestmentAccount(selectedAccount)
@@ -2905,8 +2910,10 @@ export default async function Home({
                     <CreditBillSummaryTable
                       accountId={selectedAccount?.id ?? ""}
                       accountName={selectedAccount?.name ?? ""}
-                      billingDay={selectedAccount?.billingDay ?? null}
+                      billingDay={creditBillingDay}
                       billingDayTxPeriod={billingDayTxPeriod}
+                      repaymentDay={repaymentDay}
+                      repaymentOffsetDays={repaymentOffsetDays}
                       billingDayRules={billingDayRules}
                       rows={creditBillSummaryRows}
                       initialPage={currentPage}

@@ -17,17 +17,27 @@ import { NextResponse } from "next/server";
 import { AccountKind } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { addDaysUtc, clampDay, formatDateUtc, startOfDayUtc, toNumber } from "@/lib/date-utils";
+import { addDaysUtc, formatDateUtc, startOfDayUtc, toNumber } from "@/lib/date-utils";
 import { revalidateAfterSettingsChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import {
   getCreditBillAccountIds,
   syncCreditCardInstitutionSettings,
 } from "@/lib/server/credit-card-institution-settings";
 import {
+  recordCreditCardBillingDayChange,
+  syncCreditCardBillingDaysFromRules,
+} from "@/lib/server/credit-card-billing-day-rules";
+import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
+import {
+  CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS,
   CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE,
   applyNextCyclePaidToCreditBillSummaries,
   buildCreditCardCyclePersistRows,
   computeCreditBillCascade,
+  creditCardBillingDayFromCycleEndDate,
+  creditCardCycleEndDateForStatementMonth,
+  creditCardDueDateForStatementMonth,
+  creditCardStatementDateForMonth,
   mergeCreditCardCycleLockSources,
   summarizeCreditBillSignedFlows,
   creditBillDateRangeWhere,
@@ -54,23 +64,39 @@ function statementMonthDate(statementMonth: string) {
   return { year, monthIndex };
 }
 
-function cycleEndForMonth(statementMonth: string, billingDay: number) {
+function cycleEndForMonth(
+  statementMonth: string,
+  billingDay: number,
+  billingDayTxPeriod: "current" | "next" | null | undefined,
+) {
   const parsed = statementMonthDate(statementMonth);
   if (!parsed) return null;
   // The billing cycle for statementMonth ends on this-month billingDay.
   // e.g. billingDay=10 -> cycle ends on the 10th of the statement month.
   // This must match cycleForStatementMonth in billing.ts so that mid-cycle
   // edits, persisted cycles and computed cycles all share one boundary.
-  return new Date(Date.UTC(parsed.year, parsed.monthIndex, clampDay(parsed.year, parsed.monthIndex, billingDay)));
+  return creditCardCycleEndDateForStatementMonth(
+    parsed.year,
+    parsed.monthIndex,
+    billingDay,
+    billingDayTxPeriod,
+  );
 }
 
-function dueForCycle(periodEnd: Date, billingDay: number, repaymentDay: number | null) {
-  if (!repaymentDay || repaymentDay < 1) return null;
-  const dueMonthOffset = repaymentDay <= billingDay ? 1 : 0;
-  const dueMonth = periodEnd.getUTCMonth() + dueMonthOffset;
-  const dueYear = periodEnd.getUTCFullYear() + Math.floor(dueMonth / 12);
-  const dueMonthNorm = ((dueMonth % 12) + 12) % 12;
-  return new Date(Date.UTC(dueYear, dueMonthNorm, clampDay(dueYear, dueMonthNorm, repaymentDay)));
+function dueForCycle(statementMonth: string, billingDay: number, repaymentDay: number | null, repaymentOffsetDays: number | null) {
+  const parsed = statementMonthDate(statementMonth);
+  if (!parsed) return null;
+  return creditCardDueDateForStatementMonth({
+    year: parsed.year,
+    monthIndex: parsed.monthIndex,
+    billingDay,
+    repaymentDay,
+    repaymentOffsetDays,
+  });
+}
+
+function diffUtcDays(start: Date, end: Date) {
+  return Math.round((startOfDayUtc(end).getTime() - startOfDayUtc(start).getTime()) / 86400000);
 }
 
 function mdUtcDots(date: Date) {
@@ -81,7 +107,7 @@ export async function PATCH(req: Request) {
   try {
     const { householdId } = await getHouseholdScope();
     const body = await req.json().catch(() => null) as Record<string, unknown> | null;
-    if (!body) return NextResponse.json({ ok: false, code: "INVALID_REQUEST_BODY", error: "无效的请求体" }, { status: 400 });
+    if (!body) return NextResponse.json({ ok: false, code: "INVALID_REQUEST_BODY", error: "请求内容格式不正确" }, { status: 400 });
 
     const accountId = String(body.accountId ?? "").trim();
     const statementMonth = String(body.statementMonth ?? "").trim();
@@ -90,10 +116,10 @@ export async function PATCH(req: Request) {
     const dueDate = body.dueDate ? parseDateOnly(body.dueDate) : null;
 
     if (!accountId || !statementMonth) return NextResponse.json({ ok: false, code: "MISSING_ACCOUNT_OR_MONTH", error: "缺少账户或账单月份" }, { status: 400 });
-    if (!statementMonthDate(statementMonth)) return NextResponse.json({ ok: false, code: "INVALID_STATEMENT_MONTH", error: "账单月份格式不正确" }, { status: 400 });
-    if (!periodStart || !periodEnd) return NextResponse.json({ ok: false, code: "INVALID_PERIOD_DATE", error: "账单周期日期格式不正确" }, { status: 400 });
-    if (periodStart > periodEnd) return NextResponse.json({ ok: false, code: "PERIOD_START_AFTER_END", error: "周期开始日不能晚于结束日" }, { status: 400 });
-    if (dueDate && dueDate < periodEnd) return NextResponse.json({ ok: false, code: "DUE_DATE_BEFORE_PERIOD_END", error: "还款日不能早于账单结束日" }, { status: 400 });
+    if (!statementMonthDate(statementMonth)) return NextResponse.json({ ok: false, code: "INVALID_STATEMENT_MONTH", error: "账单月份格式应为 YYYY-MM" }, { status: 400 });
+    if (!periodStart || !periodEnd) return NextResponse.json({ ok: false, code: "INVALID_PERIOD_DATE", error: "账单周期日期格式应为 YYYY-MM-DD" }, { status: 400 });
+    if (periodStart > periodEnd) return NextResponse.json({ ok: false, code: "PERIOD_START_AFTER_END", error: "周期开始日期不能晚于结束日期" }, { status: 400 });
+    if (dueDate && dueDate < periodEnd) return NextResponse.json({ ok: false, code: "DUE_DATE_BEFORE_PERIOD_END", error: "还款日不能早于周期结束日期" }, { status: 400 });
 
     const account = await prisma.account.findFirst({
       where: { id: accountId, householdId, kind: AccountKind.bank_credit },
@@ -105,28 +131,52 @@ export async function PATCH(req: Request) {
         creditBillMode: true,
         billingDay: true,
         repaymentDay: true,
+        repaymentOffsetDays: true,
+        billingDayTxPeriod: true,
       },
     });
     if (!account) return NextResponse.json({ ok: false, code: "CREDIT_ACCOUNT_NOT_FOUND", error: "信用卡账户不存在" }, { status: 404 });
     const billAccountIds = await getCreditBillAccountIds(prisma, account);
     const billAccountIdSet = new Set(billAccountIds);
     const storageAccountId = billAccountIds[0] ?? account.id;
+    const settingsAccountIds = account.institutionId
+      ? (await prisma.account.findMany({
+          where: { householdId, institutionId: account.institutionId, kind: AccountKind.bank_credit },
+          select: { id: true },
+          orderBy: { id: "asc" },
+        })).map((row) => row.id)
+      : [account.id];
+    const otherSettingsAccountIds = settingsAccountIds.filter((id) => !billAccountIdSet.has(id));
 
     const cycles = await prisma.creditCardCycle.findMany({
       where: { accountId: storageAccountId },
       orderBy: { statementMonth: "asc" },
     });
     if (!cycles.some((cycle) => cycle.statementMonth === statementMonth)) {
-      return NextResponse.json({ ok: false, code: "CYCLE_NOT_FOUND", error: "这一期账单周期不存在，请先生成账单列表" }, { status: 404 });
+      return NextResponse.json({ ok: false, code: "CYCLE_NOT_FOUND", error: "账单周期不存在，请先生成账单列表" }, { status: 404 });
     }
 
-    // The billing day is the closing date of the cycle, i.e. periodEnd.
-    // e.g. billingDay=10 means the cycle closes on the 10th of every month,
-    // and the next cycle starts on the 11th. PeriodStart stays whatever the
-    // user picked (it may have been extended backwards by a prior manual
-    // edit); we only normalize the end + all subsequent cycles from here.
-    const billingDay = periodEnd.getUTCDate();
-    const repaymentDay = dueDate ? dueDate.getUTCDate() : null;
+    // The billing day is the closing date of the cycle, i.e. periodEnd. When
+    // the user picks a month-end date, store the canonical month-end day (31)
+    // so February/April/etc. continue closing on their actual last day.
+    const billingDay = creditCardBillingDayFromCycleEndDate(periodEnd);
+    const repaymentMode = account.repaymentOffsetDays != null ? "offset" : "fixed";
+    const repaymentOffsetDays = (() => {
+      if (!dueDate || repaymentMode !== "offset") return null;
+      const parsed = statementMonthDate(statementMonth);
+      if (!parsed) return null;
+      return diffUtcDays(
+        creditCardStatementDateForMonth(parsed.year, parsed.monthIndex, billingDay),
+        dueDate,
+      );
+    })();
+    if (
+      repaymentOffsetDays != null &&
+      (repaymentOffsetDays < 0 || repaymentOffsetDays > CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS)
+    ) {
+      return NextResponse.json({ ok: false, code: "INVALID_REPAYMENT_OFFSET_DAYS", error: `还款日偏移天数应为 0-${CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS} 之间的整数` }, { status: 400 });
+    }
+    const repaymentDay = dueDate && repaymentMode === "fixed" ? dueDate.getUTCDate() : null;
     const today = startOfDayUtc(new Date());
 
     const adjustedCycles = cycles.map((cycle) => ({
@@ -155,11 +205,11 @@ export async function PATCH(req: Request) {
     for (let i = startIndex + 1; i < adjustedCycles.length; i++) {
       const previous = adjustedCycles[i - 1]!;
       const current = adjustedCycles[i]!;
-      const nextEnd = cycleEndForMonth(current.statementMonth, billingDay);
+      const nextEnd = cycleEndForMonth(current.statementMonth, billingDay, account.billingDayTxPeriod);
       if (!nextEnd) continue;
       current.periodStart = addDaysUtc(previous.periodEnd, 1);
       current.periodEnd = nextEnd;
-      current.dueDate = dueForCycle(nextEnd, billingDay, repaymentDay);
+      current.dueDate = dueForCycle(current.statementMonth, billingDay, repaymentDay, repaymentOffsetDays);
     }
 
     const changedCycles = adjustedCycles.slice(startIndex);
@@ -184,16 +234,25 @@ export async function PATCH(req: Request) {
       await syncCreditCardInstitutionSettings(tx, {
         householdId,
         institutionId: account.institutionId,
-        billingDay,
         repaymentDay,
+        repaymentOffsetDays,
         creditBillMode: account.creditBillMode,
+        billingDayTxPeriod: account.billingDayTxPeriod,
       });
       if (!account.institutionId) {
         await tx.account.update({
           where: { id: account.id },
-          data: { billingDay, repaymentDay },
+          data: { repaymentDay, repaymentOffsetDays },
         });
       }
+      await recordCreditCardBillingDayChange(tx, {
+        accountIds: settingsAccountIds,
+        billingDay,
+        effectiveDate: periodStart,
+      });
+      await syncCreditCardBillingDaysFromRules(tx, {
+        accountIds: settingsAccountIds,
+      });
 
       await tx.txRecord.updateMany({
         where: {
@@ -270,6 +329,7 @@ export async function PATCH(req: Request) {
     const cycleRows = buildCreditCardCyclePersistRows({
       billingDay,
       repaymentDay,
+      repaymentOffsetDays,
       months: creditCascade.allMonthsForCascade,
       summaryByMonth,
       effectiveBillByMonth: creditCascade.effectiveBillByMonth,
@@ -309,6 +369,7 @@ export async function PATCH(req: Request) {
         });
       }
     });
+    await invalidateCreditCardCycleCacheForAccountIds(otherSettingsAccountIds, { deleteManualCycles: false });
 
     revalidateAfterTxChange();
     revalidateAfterSettingsChange();
@@ -320,6 +381,7 @@ export async function PATCH(req: Request) {
         statementMonth,
         billingDay,
         repaymentDay,
+        repaymentOffsetDays,
         updatedCycles: changedCycles.length,
         updatedRows: cycleRows
           .filter((cycle) => changedMonthSet.has(cycle.statementMonth))

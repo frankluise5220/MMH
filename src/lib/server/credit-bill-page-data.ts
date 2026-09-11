@@ -4,7 +4,6 @@ import type { CreditBillSummaryRow } from "@/components/CreditBillSummaryTable";
 import { prisma } from "@/lib/db/prisma";
 import { addDaysUtc, formatDateLocal, toNumber } from "@/lib/date-utils";
 import {
-  CREDIT_CARD_BILLING_DAY_INITIAL_DATE,
   CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE,
   CREDIT_CARD_STATEMENT_IMPORT_CYCLE_LOCK_SOURCE,
   applyNextCyclePaidToCreditBillSummaries,
@@ -13,6 +12,7 @@ import {
   computeCreditBillCascade,
   creditBillDateRangeWhere,
   creditBillEffectiveDate,
+  billingDayAtDate,
   cycleForStatementMonthWithBillingDayRules,
   fillMissingCreditBillSummaries,
   hasCreditCardCycleLockSource,
@@ -24,9 +24,11 @@ import {
   classifyCreditBillFlowSide,
   summarizeCreditBillSignedFlows,
 } from "@/lib/credit/billing";
+import { markInitialBillingDayRules } from "@/lib/credit/billing-day-rules";
 import { normalizeCreditCardInstallmentStatementMonths, materializeDueInstallmentPayments } from "@/lib/server/credit-card-installment";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
+import { reconcileCreditCardBillingDayRulesFromAccounts } from "@/lib/server/credit-card-billing-day-rules";
 import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude } from "@/lib/server/entry-business-link";
 
 type SelectedBillAccount = {
@@ -34,10 +36,13 @@ type SelectedBillAccount = {
   kind: AccountKind;
   billingDay: number | null;
   repaymentDay: number | null;
+  repaymentOffsetDays?: number | null;
   billingDayTxPeriod?: CreditBillingDayTxPeriod | null;
 };
 
 export type CreditBillingDayRuleRow = {
+  id: string;
+  accountId: string;
   effectiveDate: string;
   billingDay: number;
   isInitial: boolean;
@@ -71,7 +76,10 @@ export type CreditBillPageData = {
   hasCreditBillSummaries: boolean;
   showAllCreditBillDetails: boolean;
   billingDayRules: CreditBillingDayRuleRow[];
+  billingDay: number | null;
   billingDayTxPeriod: CreditBillingDayTxPeriod;
+  repaymentDay: number | null;
+  repaymentOffsetDays: number | null;
 };
 
 type LoadCreditBillPageDataParams = {
@@ -181,23 +189,41 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
   const creditBillNow = new Date();
   const todayUtcStart = new Date(Date.UTC(creditBillNow.getUTCFullYear(), creditBillNow.getUTCMonth(), creditBillNow.getUTCDate()));
   const billingDayTxPeriod = normalizeBillingDayTxPeriod(selectedAccount?.billingDayTxPeriod);
-  const billingDayRules = isBillAccount && selectedAccount?.kind === AccountKind.bank_credit && billAccountIds.length > 0
+  const shouldUseCreditBillingRules = isBillAccount && selectedAccount?.kind === AccountKind.bank_credit && billAccountIds.length > 0;
+  if (shouldUseCreditBillingRules) {
+    await prisma.$transaction((tx) =>
+      reconcileCreditCardBillingDayRulesFromAccounts(tx, {
+        householdId,
+        accountIds: billAccountIds,
+        asOf: creditBillNow,
+      }),
+    );
+  }
+  const billingDayRules = shouldUseCreditBillingRules
     ? await prisma.creditCardBillingDay.findMany({
         where: { accountId: { in: billAccountIds } },
-        select: { effectiveDate: true, billingDay: true, updatedAt: true },
-        orderBy: { effectiveDate: "asc" },
+        select: { id: true, accountId: true, effectiveDate: true, billingDay: true, createdAt: true, updatedAt: true },
+        orderBy: [{ effectiveDate: "asc" }, { createdAt: "asc" }, { id: "asc" }],
       })
     : [];
-  const billingDayRuleRows: CreditBillingDayRuleRow[] = billingDayRules
-    .slice()
-    .sort((a, b) => a.effectiveDate.getTime() - b.effectiveDate.getTime())
-    .map((rule) => ({
-      effectiveDate: ymdUtc(rule.effectiveDate),
-      billingDay: rule.billingDay,
-      isInitial: rule.effectiveDate.getTime() === CREDIT_CARD_BILLING_DAY_INITIAL_DATE.getTime(),
-    }));
-  const fallbackBillingDay = selectedAccount?.billingDay ?? null;
-  const hasBillingDayRules = billingDayRules.length > 0 || !!fallbackBillingDay;
+  const billingDayRuleRows: CreditBillingDayRuleRow[] = markInitialBillingDayRules(
+    billingDayRules
+      .slice()
+      .sort((a, b) =>
+        a.effectiveDate.getTime() - b.effectiveDate.getTime() ||
+        a.createdAt.getTime() - b.createdAt.getTime() ||
+        a.id.localeCompare(b.id),
+      )
+      .map((rule) => ({
+        id: rule.id,
+        accountId: rule.accountId,
+        effectiveDate: ymdUtc(rule.effectiveDate),
+        billingDay: rule.billingDay,
+      })),
+  );
+  const currentBillingDay = billingDayAtDate(billingDayRules, creditBillNow);
+  const fallbackBillingDay = null;
+  const hasBillingDayRules = currentBillingDay != null;
   // Bump this timestamp whenever the credit-bill flow calculation logic
   // changes (e.g. classifyCreditBillFlowSide). It forces persisted cycle
   // summaries to be recomputed with the new logic instead of reusing stale
@@ -217,8 +243,10 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
       months: [currentMonth, nextMonth],
       billingDayRules,
       repaymentDay: selectedAccount.repaymentDay ?? null,
+      repaymentOffsetDays: selectedAccount.repaymentOffsetDays ?? null,
       now: creditBillNow,
       fallbackBillingDay,
+      billingDayTxPeriod,
     });
     const today = todayUtcStart.getTime();
     return Array.from(definitions.entries()).find(([, cycle]) => (
@@ -227,12 +255,12 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
   })();
 
   const normalizedCreditInstallments =
-    isBillAccount && selectedAccount?.kind === AccountKind.bank_credit && selectedAccount.billingDay && billAccountIds.length > 0
+    isBillAccount && selectedAccount?.kind === AccountKind.bank_credit && currentBillingDay && billAccountIds.length > 0
       ? await prisma.$transaction((tx) =>
           normalizeCreditCardInstallmentStatementMonths(tx, {
             householdId,
             accountIds: billAccountIds,
-            billingDay: selectedAccount.billingDay ?? 1,
+            billingDay: currentBillingDay,
             billingDayTxPeriod,
           }),
         )
@@ -357,6 +385,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
             months: Array.from(candidateMonths),
             billingDayRules,
             repaymentDay: selectedAccount.repaymentDay ?? null,
+            repaymentOffsetDays: selectedAccount.repaymentOffsetDays ?? null,
             now: creditBillNow,
             fallbackBillingDay,
             billingDayTxPeriod,
@@ -401,16 +430,20 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
                   statementMonth: selectedBillMonth,
                   billingDayRules,
                   repaymentDay: selectedAccount.repaymentDay ?? null,
+                  repaymentOffsetDays: selectedAccount.repaymentOffsetDays ?? null,
                   now: creditBillNow,
                   fallbackBillingDay,
+                  billingDayTxPeriod,
                 });
               })()
             : cycleForStatementMonthWithBillingDayRules({
                 statementMonth: currentStatementMonth,
                 billingDayRules,
                 repaymentDay: selectedAccount.repaymentDay ?? null,
+                repaymentOffsetDays: selectedAccount.repaymentOffsetDays ?? null,
                 now: creditBillNow,
                 fallbackBillingDay,
+                billingDayTxPeriod,
               });
           if (!base) return null;
 
@@ -572,6 +605,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     months: Array.from(new Set([...billMonthsForCumulative, ...billMonthsForList, currentStatementMonth, selectedBillMonth].filter(Boolean))),
     billingDayRules,
     repaymentDay: selectedAccount?.repaymentDay ?? null,
+    repaymentOffsetDays: selectedAccount?.repaymentOffsetDays ?? null,
     now: creditBillNow,
     fallbackBillingDay,
     billingDayTxPeriod,
@@ -744,10 +778,12 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
   const billSummaries = fillMissingCreditBillSummaries({
     months: billMonthsForList,
     summaryByMonth: billSummaryByMonth,
-    billingDay: selectedAccount?.billingDay ?? 1,
+    billingDay: currentBillingDay ?? 1,
     repaymentDay: selectedAccount?.repaymentDay ?? null,
+    repaymentOffsetDays: selectedAccount?.repaymentOffsetDays ?? null,
     now: creditBillNow,
     cycleByMonth: cycleDefinitionByMonth,
+    billingDayTxPeriod,
   });
 
   const cachedOverrideByMonth = new Map<string, number>(
@@ -797,8 +833,9 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     cumulativeByMonth,
   } = creditCascade;
   const creditCardCyclePersistRows = buildCreditCardCyclePersistRows({
-    billingDay: selectedAccount?.billingDay ?? 1,
+    billingDay: currentBillingDay ?? 1,
     repaymentDay: selectedAccount?.repaymentDay ?? null,
+    repaymentOffsetDays: selectedAccount?.repaymentOffsetDays ?? null,
     months: allMonthsForCascade,
     summaryByMonth: billSummaryByMonth,
     effectiveBillByMonth,
@@ -1046,7 +1083,10 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     hasCreditBillSummaries: billSummariesWithCumulative.length > 0,
     showAllCreditBillDetails,
     billingDayRules: billingDayRuleRows,
+    billingDay: currentBillingDay,
     billingDayTxPeriod,
+    repaymentDay: selectedAccount?.repaymentDay ?? null,
+    repaymentOffsetDays: selectedAccount?.repaymentOffsetDays ?? null,
   };
 }
 
@@ -1064,7 +1104,6 @@ export async function refreshCreditCardCycleCachesForAccountIds(params: {
       id: { in: accountIds },
       householdId: params.householdId,
       kind: AccountKind.bank_credit,
-      billingDay: { not: null },
     },
     select: {
       id: true,
@@ -1073,6 +1112,7 @@ export async function refreshCreditCardCycleCachesForAccountIds(params: {
       kind: true,
       billingDay: true,
       repaymentDay: true,
+      repaymentOffsetDays: true,
       creditBillMode: true,
       billingDayTxPeriod: true,
     },
