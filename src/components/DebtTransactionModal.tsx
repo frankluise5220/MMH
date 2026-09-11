@@ -1,7 +1,7 @@
 "use client";
 
-import { CheckCircle2, ChevronDown, Info, Plus, RefreshCw, Repeat } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { ArrowLeftRight, ArrowRight, CheckCircle2, ChevronDown, Info, Plus, RefreshCw, Repeat } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import { CalcInput } from "./CalcInput";
@@ -473,6 +473,10 @@ export function DebtTransactionModal({
   const [penalty, setPenalty] = useState("");
   const [prepayTotal, setPrepayTotal] = useState("");
   const [prepayTotalManual, setPrepayTotalManual] = useState(false);
+  // 往来款单界面：本金 / 利息 / 入账总金额三者互推，最后编辑的为准。
+  // 总额 = 本金 + 利息；直接改总额时反推本金（利息保持不变）。
+  const [flowTotalManual, setFlowTotalManual] = useState(false);
+  const [flowTotalDraft, setFlowTotalDraft] = useState("");
   const [prepayInterestManual, setPrepayInterestManual] = useState(false);
   const [prepayStrategy, setPrepayStrategy] = useState<PrepayStrategy>(DEFAULT_LOAN_PREPAY_STRATEGY);
   const [annualRate, setAnnualRate] = useState("");
@@ -1511,11 +1515,51 @@ export function DebtTransactionModal({
   const selectedDebtObjectIsCounterparty = debtInstitutionId.startsWith("counterparty:") || !!selectedDebtAccount?.counterpartyId;
   const selectedDebtAccountIsBankLoan = !!selectedDebtAccount?.institutionId && selectedDebtAccount.institutionType === "bank";
   const selectedDebtAccountIsConsumerLoan = selectedDebtAccount?.isConsumerLoan === true;
-  const showInterest = mode === "repay_out" || mode === "collect_in" || mode === "lend_out";
+  // 往来款单界面：利息不再按方向禁用（资金→往来款也可能是"还款"，需要付息），
+  // 因此非贷款弹窗的 borrow_in 也显示利息字段；贷款弹窗保持原样。
+  const showInterest = mode === "repay_out" || mode === "collect_in" || mode === "lend_out" || (!isLoanDialog && mode === "borrow_in");
   const showPrepayment = mode === "prepay_out";
   const isLoanRepaymentMode = isLoanDialog && (mode === "repay_out" || mode === "prepay_out");
   const canCreateDebtItem = canCreateDebtItemForMode(mode);
   const canSelectDebtObject = !isLoanRepaymentMode && (!!editingEntryId || mode !== "prepay_out");
+  // 往来款单界面：债务账户在流出侧 = 借入/收回，在流入侧 = 借出/还款。
+  // 「流出账户 / 流入账户」两个槽位复用原有的资金账户与往来款账户选择器，
+  // 方向由债务账户落在哪一侧决定，交换按钮即等价于在两槽间任意摆放。
+  const debtSideIsOut = mode === "borrow_in" || mode === "collect_in";
+  // 往来款单界面（非贷款弹窗）启用「流出/流入 + 三者互推」的新交互
+  const isFlowDebt = !isLoanDialog;
+  // 往来款口径（用户定版）：由「资金流方向 + 是否含利息」唯一确定语义 ——
+  //   资金流出 · 无息 = 借出款 lend_out / 资金流出 · 含息 = 应付还款 repay_out
+  //   资金流入 · 无息 = 借入款 borrow_in / 资金流入 · 含息 = 应收还款 collect_in
+  // 债务账户在流出侧（debtSideIsOut）时钱进资金账户 = 资金流入，反之即流出。
+  function resolveFlowMode(hasInterest: boolean): DebtMode {
+    if (debtSideIsOut) return hasInterest ? "collect_in" : "borrow_in";
+    return hasInterest ? "repay_out" : "lend_out";
+  }
+  function swapDebtDirection() {
+    setMode(resolveFlowMode(parseMoneyText(interest) > 0));
+  }
+  // 三者互推：改本金或利息 → 总额随派生值走；直接改总额 → 反推本金（利息不变）。
+  function handleFlowPrincipalChange(next: string) {
+    setPrincipal(next);
+    if (flowTotalManual) setFlowTotalManual(false);
+  }
+  function handleFlowInterestChange(next: string) {
+    setInterest(next);
+    if (flowTotalManual) setFlowTotalManual(false);
+    // 利息的有无决定语义（借出款↔应付还款 / 借入款↔应收还款），填了就同步 mode。
+    setMode(resolveFlowMode(parseMoneyText(next) > 0));
+  }
+  function handleFlowTotalChange(next: string) {
+    setFlowTotalDraft(next);
+    setFlowTotalManual(true);
+    if (!next.trim()) {
+      setPrincipal("");
+      return;
+    }
+    const diff = parseMoneyText(next) - parseMoneyText(interest);
+    setPrincipal(diff > 0 ? diff.toFixed(2) : "0");
+  }
   const isLoanBorrow = isLoanDialog && mode === "borrow_in";
   const isConsumerLoanBorrow = isLoanBorrow && activeLoanTab === "consumer";
   const isHomeLoanBorrow = isLoanBorrow && activeLoanTab === "home";
@@ -1528,13 +1572,29 @@ export function DebtTransactionModal({
   );
   const selectedRepaymentCurrentPeriodPaid = selectedRepayableLoanRow?.currentPeriodPaid === true;
   const selectedRepaymentUnpaidPeriod = selectedRepayableLoanRow?.currentUnpaidPeriod ?? null;
-  // 消费贷提前还款：服务端返回了应计利息预览时才显示「应计利息」栏。
+  // Prepayment interest appears only when the server can preview accrued interest for the selected loan.
   const showPrepayInterest = isLoanRepaymentMode && mode === "prepay_out" && selectedRepayableLoanRow?.prepayInterest != null;
-  // 消费贷提前还款：自动填入「借款日至还款日」应计利息（可手动覆盖）。
-  const prepayAutoInterest = mode === "prepay_out" ? selectedRepayableLoanRow?.prepayInterest : undefined;
+  // Keep the field blank until a prepayment principal is entered, then scale the preview by principal.
+  const prepayAutoInterest = useMemo(() => {
+    if (mode !== "prepay_out" || !principal.trim()) return "";
+    const previewInterest = selectedRepayableLoanRow?.prepayInterest;
+    const outstandingPrincipal = Math.abs(selectedRepayableLoanRow?.balance ?? 0);
+    const prepayPrincipal = parseAbsMoneyText(principal);
+    if (
+      previewInterest == null ||
+      previewInterest <= 0 ||
+      outstandingPrincipal <= 0.005 ||
+      prepayPrincipal <= 0.005
+    ) {
+      return "";
+    }
+    const cappedPrincipal = Math.min(prepayPrincipal, outstandingPrincipal);
+    const proportionalInterest = roundMoneyValue(previewInterest * cappedPrincipal / outstandingPrincipal);
+    return proportionalInterest > 0 ? String(proportionalInterest) : "";
+  }, [mode, principal, selectedRepayableLoanRow?.balance, selectedRepayableLoanRow?.prepayInterest]);
   useEffect(() => {
     if (!open || mode !== "prepay_out" || editingEntryId || prepayInterestManual) return;
-    setInterest(prepayAutoInterest != null && prepayAutoInterest > 0 ? String(Math.round(prepayAutoInterest * 100) / 100) : "");
+    setInterest(prepayAutoInterest);
   }, [open, mode, editingEntryId, prepayAutoInterest, prepayInterestManual]);
   useEffect(() => {
     setPrepayInterestManual(false);
@@ -2057,7 +2117,7 @@ export function DebtTransactionModal({
     </div>
   );
 
-  const renderDebtAccountField = () => isLoanBorrow && editingEntryId ? (
+  const renderDebtAccountField = (options?: { label?: string }) => isLoanBorrow && editingEntryId ? (
     <div className="space-y-1">
       <div className="form-label">{t("debtTx.loanName")} <span className="text-red-500">*</span></div>
       <input
@@ -2068,7 +2128,7 @@ export function DebtTransactionModal({
     </div>
   ) : canSelectDebtObject ? (
     <div className="space-y-1">
-      <div className="form-label">{isLoanDialog ? t("debtTx.loanAccount") : t("debtTx.counterpartyAccount")}</div>
+      <div className="form-label">{options?.label ?? (isLoanDialog ? t("debtTx.loanAccount") : t("debtTx.counterpartyAccount"))}</div>
       <SmartSelect
         mode="single"
         value={debtAccountId}
@@ -2349,21 +2409,7 @@ export function DebtTransactionModal({
                           </button>
                         ))}
                       </div>
-                    ) : (
-                      <div className="grid grid-cols-5 gap-2">
-                        {(Object.keys(MODE_LABELS) as DebtMode[]).map((item) => (
-                          <button
-                            key={item}
-                            type="button"
-                            onClick={() => handleModeSelect(item)}
-                            disabled={!!editingEntryId && !canSwitchDebtEditMode(mode, item)}
-                            className={`segment-button h-9 ${mode === item ? "segment-button-active" : ""}`}
-                          >
-                            {t(MODE_LABELS[item])}
-                          </button>
-                        ))}
-                      </div>
-                    )}
+                    ) : null}
 
                     {isLoanBorrow ? (
                       <>
@@ -2414,12 +2460,34 @@ export function DebtTransactionModal({
                     ) : (
                       <>
                         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                          {renderDateField()}
-                          {renderCashAccountField()}
-                        </div>
-                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                           {renderDebtObjectField()}
-                          {renderDebtAccountField()}
+                          {renderDateField()}
+                        </div>
+                        <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-3">
+                          <div>
+                            {debtSideIsOut
+                              ? renderDebtAccountField({ label: t("debtTx.flow.outAccount") })
+                              : renderCashAccountField({ label: t("debtTx.flow.outAccount") })}
+                          </div>
+                          <div className="flex flex-col items-center pb-0.5">
+                            <div className="mb-1 flex h-6 items-center justify-center text-slate-400">
+                              <ArrowRight className="h-4 w-4" />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={swapDebtDirection}
+                              disabled={!debtAccountId && !cashAccountId}
+                              title={t("debtTx.flow.swap")}
+                              className="secondary-button h-9 w-9 px-0 text-slate-700"
+                            >
+                              <ArrowLeftRight className="h-4 w-4" />
+                            </button>
+                          </div>
+                          <div>
+                            {debtSideIsOut
+                              ? renderCashAccountField({ label: t("debtTx.flow.inAccount") })
+                              : renderDebtAccountField({ label: t("debtTx.flow.inAccount") })}
+                          </div>
                         </div>
                       </>
                     )}
@@ -2461,24 +2529,34 @@ export function DebtTransactionModal({
                     {!showPrepayment && !showBorrowPlan ? (
                     <div className={`grid gap-3 ${showInterest ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-1"}`}>
                       <div className="space-y-1">
-                        <div className="form-label">{mode === "borrow_in" ? t("debtTx.totalBorrowing") : mode === "repay_out" || mode === "collect_in" || mode === "lend_out" ? t("debtShell.colPrincipal") : t("txForm.amount")}</div>
-                        <CalcInput value={principal} onChange={setPrincipal} placeholder={t("debtTx.placeholder.exampleAmount")} label={t("txForm.amount")} precision={2} />
+                        <div className="form-label">{isFlowDebt ? t("debtShell.colPrincipal") : mode === "borrow_in" ? t("debtTx.totalBorrowing") : mode === "repay_out" || mode === "collect_in" || mode === "lend_out" ? t("debtShell.colPrincipal") : t("txForm.amount")}</div>
+                        <CalcInput value={principal} onChange={isFlowDebt ? handleFlowPrincipalChange : setPrincipal} placeholder={t("debtTx.placeholder.exampleAmount")} label={t("txForm.amount")} precision={2} />
                       </div>
                       {showInterest ? (
                         <div className="space-y-1">
                           <div className="form-label">{t("debtShell.colInterest")}</div>
-                          <CalcInput value={interest} onChange={setInterest} placeholder={t("debtTx.placeholder.exampleInterest")} label={t("debtShell.colInterest")} precision={2} />
+                          <CalcInput value={interest} onChange={isFlowDebt ? handleFlowInterestChange : setInterest} placeholder={t("debtTx.placeholder.exampleInterest")} label={t("debtShell.colInterest")} precision={2} />
                         </div>
                       ) : null}
                       {showInterest && !showPrepayment ? (
                         <div className="space-y-1">
                             <div className="form-label">{mode === "lend_out" ? t("debtTx.receivableTotal") : t("debtTx.principalInterestTotal")}</div>
+                          {isFlowDebt ? (
+                            <CalcInput
+                              value={flowTotalManual ? flowTotalDraft : repaymentTotal}
+                              onChange={handleFlowTotalChange}
+                              placeholder={t("debtShell.lpr.autoCalculated")}
+                              label={t("debtTx.principalInterestTotal")}
+                              precision={2}
+                            />
+                          ) : (
                           <input
                             value={repaymentTotal}
                             readOnly
                             placeholder={t("debtShell.lpr.autoCalculated")}
                             className="form-input bg-slate-50 text-right font-mono text-slate-700"
                           />
+                          )}
                         </div>
                       ) : null}
                     </div>

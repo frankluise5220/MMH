@@ -1039,6 +1039,7 @@ model Household {
   InsuranceProduct          InsuranceProduct[]
   Institution               Institution[]
   LoanRateAdjustment        LoanRateAdjustment[]
+  DebtAgreement             DebtAgreement[]
   PreciousMetalType         PreciousMetalType[]
   PreciousMetalUnit         PreciousMetalUnit[]
   PreciousMetalHolding      PreciousMetalHolding[]
@@ -1298,6 +1299,25 @@ model LoanRateAdjustment {
   @@index([regularInvestPlanId])
 }
 
+/// 往来款「约定」：利率 / 时长 / 到期日挂在具体那笔往来记录上（1:1）。
+/// 每笔记录只记实际发生的本金与利息（TxRecord.debtPrincipalAmount / debtInterestAmount）。
+model DebtAgreement {
+  id          String        @id @default(cuid())
+  householdId String
+  entryId     String        @unique
+  annualRate  Decimal?      @db.Decimal(10, 6)
+  termValue   Int?
+  termUnit    IntervalUnit?
+  dueDate     DateTime?
+  note        String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  Entry       TxRecord      @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  Household   Household     @relation(fields: [householdId], references: [id], onDelete: Cascade)
+
+  @@index([householdId, dueDate])
+}
+
 model SystemSetting {
   key       String   @id
   value     String
@@ -1546,6 +1566,7 @@ model TxRecord {
   EntryBusinessLinkBusiness   EntryBusinessLink[]         @relation("EntryBusinessLink_businessEntry")
   FxConversionFromEntry       FxConversion?               @relation("FxConversion_fromEntry")
   FxConversionToEntry         FxConversion?               @relation("FxConversion_toEntry")
+  DebtAgreement               DebtAgreement[]
 
   @@index([accountId, date])
   @@index([accountId, date, dayOrder])

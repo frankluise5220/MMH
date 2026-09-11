@@ -608,6 +608,7 @@ const TRANSACTION_RESTORE_COLUMNS = [
   { name: "insuranceAction", select: 'x."insuranceAction"' },
   { name: "insuranceProductName", select: 'x."insuranceProductName"' },
   { name: "source", select: 'x."source"' },
+  { name: "entryOrigin", select: 'x."entryOrigin"' },
   { name: "originalCurrency", select: 'x."originalCurrency"' },
   { name: "originalAmount", select: "NULLIF(x.\"originalAmount\", '')::numeric" },
   { name: "locationId", select: 'x."locationId"' },
@@ -1549,6 +1550,7 @@ export async function buildHouseholdBackupPayload(
     regularInvestPlans,
     creditCardInstallmentPlans,
     loanRateAdjustments,
+    debtAgreements,
     fundQueryApis,
     statementRecognitionRules,
     importBatches,
@@ -1601,6 +1603,7 @@ export async function buildHouseholdBackupPayload(
     prisma.regularInvestPlan.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.creditCardInstallmentPlan.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.loanRateAdjustment.findMany({ where: { householdId }, orderBy: [{ effectiveDate: "asc" }] }),
+    prisma.debtAgreement.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.fundQueryApi.findMany({
       where: isSystemBackup
         ? { OR: [{ householdId }, { householdId: null }] }
@@ -1835,6 +1838,7 @@ export async function buildHouseholdBackupPayload(
       preciousMetalUnits,
       preciousMetalHoldings,
       loanRateAdjustments,
+      debtAgreements,
       fundQueryApis,
       statementRecognitionRules,
       regularInvestPlans,
@@ -1902,6 +1906,7 @@ export async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPaylo
     ["PreciousMetalUnits", sheetRows(payload.data.preciousMetalUnits)],
     ["PreciousMetalHoldings", sheetRows(payload.data.preciousMetalHoldings)],
     ["LoanRateAdjustments", sheetRows(payload.data.loanRateAdjustments)],
+    ["DebtAgreements", sheetRows(payload.data.debtAgreements)],
     ["FundQueryApis", sheetRows(payload.data.fundQueryApis)],
     ["StatementRecognitionRules", sheetRows(payload.data.statementRecognitionRules)],
     ["RegularInvestPlans", sheetRows(payload.data.regularInvestPlans)],
@@ -1990,6 +1995,7 @@ export async function buildHouseholdTableExportWorkbook(payload: HouseholdBackup
     ["PreciousMetalUnits", sheetRows(payload.data.preciousMetalUnits)],
     ["PreciousMetalHoldings", sheetRows(payload.data.preciousMetalHoldings)],
     ["LoanRateAdjustments", sheetRows(payload.data.loanRateAdjustments)],
+    ["DebtAgreements", sheetRows(payload.data.debtAgreements)],
     ["FundQueryApis", sheetRows(payload.data.fundQueryApis)],
     ["StatementRecognitionRules", sheetRows(payload.data.statementRecognitionRules)],
     ["RegularInvestPlans", sheetRows(tableRegularInvestPlans)],
@@ -2072,6 +2078,7 @@ export function parseBackupPayload(raw: unknown) {
       preciousMetalUnits: ensureArray(data.preciousMetalUnits ?? [], "data.preciousMetalUnits"),
       preciousMetalHoldings: ensureArray(data.preciousMetalHoldings ?? [], "data.preciousMetalHoldings"),
       loanRateAdjustments: ensureArray(data.loanRateAdjustments ?? [], "data.loanRateAdjustments"),
+      debtAgreements: ensureArray(data.debtAgreements ?? [], "data.debtAgreements"),
       fundQueryApis: ensureArray(data.fundQueryApis ?? [], "data.fundQueryApis"),
       statementRecognitionRules: ensureArray(data.statementRecognitionRules ?? [], "data.statementRecognitionRules"),
       statementCategoryRules: ensureArray(data.statementCategoryRules ?? [], "data.statementCategoryRules"),
@@ -2341,6 +2348,7 @@ export async function restoreHouseholdBackup(
     }
     await tx.creditCardInstallmentPlan.deleteMany({ where: { householdId } });
     await tx.loanRateAdjustment.deleteMany({ where: { householdId } });
+    await tx.debtAgreement.deleteMany({ where: { householdId } });
 
     if (currentAccountIds.length > 0) {
       await tx.fundSnapshot.deleteMany({ where: { accountId: { in: currentAccountIds } } });
@@ -3784,6 +3792,16 @@ export async function restoreHouseholdBackup(
             item.regularInvestPlanId && data.regularInvestPlans.some((plan) => String(plan.id) === String(item.regularInvestPlanId))
               ? String(item.regularInvestPlanId)
               : null,
+        })),
+    );
+
+    await createManyRecords(
+      tx.debtAgreement,
+      data.debtAgreements
+        .filter((item) => importedTransactions.has(String(item.entryId)))
+        .map((item) => ({
+          ...item,
+          householdId,
         })),
     );
 

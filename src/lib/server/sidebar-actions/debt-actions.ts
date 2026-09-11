@@ -376,8 +376,10 @@ export async function createDebtTransaction(formData: FormData) {
     return { ok: false as const, error: "手续费不能小于 0" };
   }
   const debtPrincipalForRecord = principalAbs;
+  // 利息收支方向按资金流方向判定：钱进资金账户（收回 / 借入）= 利息收入；
+  // 钱出资金账户（借出 / 还款 / 提前还款）= 利息支出。
   const realizedProfitForRecord = interest > 0
-    ? (mode === "collect_in" ? Math.abs(interest) : -Math.abs(interest))
+    ? (mode === "collect_in" || mode === "borrow_in" ? Math.abs(interest) : -Math.abs(interest))
     : null;
 
   const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
@@ -757,11 +759,11 @@ export async function createDebtTransaction(formData: FormData) {
             toAccountName: transferToAccount?.id === debtAccount.id ? effectiveDebtAccountName : transferToAccount?.name ?? null,
             amount: mode === "repay_out" || mode === "prepay_out"
               ? -Math.abs(principalAbs + interest + (mode === "prepay_out" ? penalty : 0))
-              : mode === "collect_in"
+              : mode === "collect_in" || mode === "borrow_in"
                 ? debtPrincipalForRecord + interest
-                : -debtPrincipalForRecord,
+                : -(debtPrincipalForRecord + interest),
             debtPrincipalAmount: debtPrincipalForRecord,
-            debtInterestAmount: ["repay_out", "prepay_out", "lend_out", "collect_in"].includes(mode) ? Math.abs(interest) : 0,
+            debtInterestAmount: Math.abs(interest),
             debtFeeAmount: mode === "prepay_out" ? Math.abs(penalty) : 0,
             realizedProfit: realizedProfitForRecord,
             date,
@@ -1068,11 +1070,11 @@ export async function createDebtTransaction(formData: FormData) {
           toAccountName: transferToAccount?.id === debtAccount.id ? effectiveDebtAccountName : transferToAccount?.name ?? null,
           amount: mode === "repay_out" || mode === "prepay_out"
             ? -Math.abs(principalAbs + interest + (mode === "prepay_out" ? penalty : 0))
-            : mode === "collect_in"
+            : mode === "collect_in" || mode === "borrow_in"
               ? debtPrincipalForRecord + interest
-              : -debtPrincipalForRecord,
+              : -(debtPrincipalForRecord + interest),
           debtPrincipalAmount: debtPrincipalForRecord,
-          debtInterestAmount: ["repay_out", "prepay_out", "lend_out", "collect_in"].includes(mode) ? Math.abs(interest) : null,
+          debtInterestAmount: Math.abs(interest),
           debtFeeAmount: mode === "prepay_out" ? Math.abs(penalty) : null,
           realizedProfit: realizedProfitForRecord,
           type: TransactionType.transfer,

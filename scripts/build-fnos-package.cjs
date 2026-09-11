@@ -1532,6 +1532,17 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    version: "20260911_add_debt_agreement",
+    description: "Create DebtAgreement table: settlement loan terms (rate / term / due date) linked 1:1 to a transaction",
+    apply(db) {
+      db.exec([
+        `CREATE TABLE IF NOT EXISTS "DebtAgreement" ("id" TEXT NOT NULL PRIMARY KEY, "householdId" TEXT NOT NULL, "entryId" TEXT NOT NULL, "annualRate" DECIMAL, "termValue" INTEGER, "termUnit" TEXT, "dueDate" DATETIME, "note" TEXT, "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "DebtAgreement_entryId_fkey" FOREIGN KEY ("entryId") REFERENCES "transactions"("id") ON DELETE CASCADE ON UPDATE CASCADE, CONSTRAINT "DebtAgreement_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE)`,
+        `CREATE UNIQUE INDEX IF NOT EXISTS "DebtAgreement_entryId_key" ON "DebtAgreement"("entryId")`,
+        `CREATE INDEX IF NOT EXISTS "DebtAgreement_householdId_dueDate_idx" ON "DebtAgreement"("householdId", "dueDate")`,
+      ].join(";"));
+    },
+  },
 ];
 
 function databasePathFromUrl(value) {
