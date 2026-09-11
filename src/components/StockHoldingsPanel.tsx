@@ -5,6 +5,7 @@ import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Pencil, Refresh
 
 import { formatCurrencyMoney, formatMoney, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
+import { showBlockingLoading } from "@/lib/client/blocking-loading";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
@@ -12,6 +13,7 @@ import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 import { StockFeeRuleSettingsButton } from "@/components/StockFeeRuleSettingsButton";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/components/BatchReplacePopoverButton";
+import { BusinessLinkActionButton } from "@/components/BusinessLinkActionButton";
 import { ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewExcelImportMenuButton";
 
 type StockPosition = {
@@ -37,6 +39,9 @@ const STOCK_POSITION_EPSILON = 0.000001;
 
 type StockTransaction = {
   id: string;
+  linkId?: string | null;
+  linkIds?: string[] | null;
+  cashEntryId?: string | null;
   stockAccountId?: string;
   stockAccountName?: string | null;
   cashAccountId?: string | null;
@@ -334,6 +339,16 @@ export function StockHoldingsPanel({
     return () => window.removeEventListener("mmh:stock:edit:success", onEditSaved);
   }, [loadTransactions, reloadHoldings, selectedPosition]);
 
+  // Default to the largest holding, matching the list's market-value order.
+  const initialStockSelectionRef = useRef(false);
+  useEffect(() => {
+    if (initialStockSelectionRef.current || selectedKey || showCleared || positions.length === 0) return;
+    const first = [...positions].sort((a, b) => b.marketValue - a.marketValue)[0];
+    if (!first) return;
+    initialStockSelectionRef.current = true;
+    void loadTransactions(first);
+  }, [loadTransactions, positions, selectedKey, showCleared]);
+
   async function refreshClosingPrices() {
     if (positions.length === 0 || refreshingPrice) return;
     setRefreshingPrice(true);
@@ -402,6 +417,7 @@ export function StockHoldingsPanel({
     if (!ok) return;
     setBatchDeleting(true);
     setDeleteMessage(t("stockPanel.deleting"));
+    const closeBlocking = showBlockingLoading(t("common.batchDeleting"));
     try {
       const res = await fetch(`/api/v1/stocks/transactions?${new URLSearchParams({ ids: ids.join(",") }).toString()}`, {
         method: "DELETE",
@@ -425,6 +441,7 @@ export function StockHoldingsPanel({
     } catch {
       setDeleteMessage(t("stockPanel.error.batchDeleteFailed"));
     } finally {
+      closeBlocking();
       setBatchDeleting(false);
     }
   }
@@ -954,8 +971,18 @@ export function StockHoldingsPanel({
 
   const transactionRowActions = useCallback((tx: StockTransaction) => {
     const deleting = deletingIds.has(tx.id);
+    const hasBusinessLink = (tx.linkIds?.length ?? 0) > 0;
+    const linkLabels = hasBusinessLink ? (tx.cashAccountName ? [tx.cashAccountName] : []) : [];
+    const linkTitle = hasBusinessLink
+      ? t("stockPanel.linkedTitle", { labels: linkLabels.join("、") || t("stockPanel.businessCashFlow") })
+      : t("stockPanel.unlinkedTitle");
     return (
       <div className="flex items-center justify-end gap-1">
+        <BusinessLinkActionButton
+          active={hasBusinessLink}
+          title={linkTitle}
+          onClick={() => undefined}
+        />
         <button
           type="button"
           onClick={() => openEditTransaction(tx)}
@@ -1222,8 +1249,8 @@ export function StockHoldingsPanel({
                   onSelectionChange={setSelectedIds}
                   onRowDoubleClick={(tx) => openEditTransaction(tx)}
                   rowActions={transactionRowActions}
-                  rowActionsWidth={88}
-                  rowActionsMinWidth={72}
+                  rowActionsWidth={116}
+                  rowActionsMinWidth={100}
                   rowClassName={(tx) => (selectedIds.has(tx.id) ? "bg-blue-50/70 hover:bg-blue-50/70" : "hover:bg-blue-50/40")}
                   fillHeight
                   toolbarMode="none"

@@ -41,6 +41,15 @@ export type InvestmentProfitMissingNav = {
   accountName: string;
 };
 
+export type InvestmentProfitMissingStockPrice = {
+  market: string;
+  stockCode: string;
+  stockName: string | null;
+  date: string;
+  accountId: string;
+  accountName: string;
+};
+
 type ProfitEvent = {
   date: Date;
   kind: InvestmentProfitKind;
