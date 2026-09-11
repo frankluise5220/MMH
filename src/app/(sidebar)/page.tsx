@@ -172,6 +172,8 @@ type AccountQuickEditSource = {
   fundUnitsDecimals?: number | null;
   tradingCalendar?: string | null;
   fixedAssetType?: string | null;
+  /** 仅当查询带出该关系时才回填约定（undefined = 没查，语义上不能当作「清空」） */
+  DebtAgreement?: { annualRate?: unknown; termValue?: unknown; dueDate?: Date | null } | null;
 };
 
 function toAccountQuickEditValue(account: AccountQuickEditSource): AccountQuickEditValue {
@@ -198,6 +200,13 @@ function toAccountQuickEditValue(account: AccountQuickEditSource): AccountQuickE
     fundUnitsDecimals: account.fundUnitsDecimals,
     tradingCalendar: account.tradingCalendar,
     fixedAssetType: account.fixedAssetType,
+    ...(account.DebtAgreement !== undefined
+      ? {
+          agreementAnnualRate: account.DebtAgreement?.annualRate == null ? "" : String(account.DebtAgreement.annualRate),
+          agreementTermValue: account.DebtAgreement?.termValue == null ? "" : String(account.DebtAgreement.termValue),
+          agreementDueDate: account.DebtAgreement?.dueDate ? formatDateUtc(account.DebtAgreement.dueDate) : "",
+        }
+      : {}),
   };
 }
 
@@ -557,7 +566,12 @@ export default async function Home({
   // Read accounts fresh so sidebar, debt view, and detail pages use one source of truth.
   const accounts = await prisma.account.findMany({
     where: { isPlaceholder: { not: true }, ...hidFilter },
-    include: { Institution: true, Counterparty: true, AccountGroup: true },
+    include: {
+      Institution: true,
+      Counterparty: true,
+      AccountGroup: true,
+      DebtAgreement: { select: { annualRate: true, termValue: true, dueDate: true } },
+    },
     orderBy: [{ isActive: "desc" }, { name: "asc" }],
   });
   // selectedAccount: per-account, deduplicated at request level.

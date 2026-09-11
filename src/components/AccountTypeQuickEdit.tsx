@@ -40,6 +40,10 @@ export type AccountQuickEditValue = {
   fundUnitsDecimals?: number | null; tradingCalendar?: string | null; fixedAssetType?: string | null;
   counterpartyId?: string | null; debtDirection?: string | null; isConsumerLoan?: boolean | null;
   loanType?: string | null;
+  /** 往来款约定（仅当数据源带出时才有值） */
+  agreementAnnualRate?: string;
+  agreementTermValue?: string;
+  agreementDueDate?: string;
 };
 
 export type LoanQuickEditValue = {
@@ -145,6 +149,15 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
       counterpartyId: nextKind === "settlement" ? account.counterpartyId ?? "" : "",
       loanType: account.loanType || (nextKind === "loan" ? (account.isConsumerLoan === true ? "consumer" : "home") : ""),
       fundUnitsDecimals: String(account.fundUnitsDecimals ?? 2), tradingCalendar: account.tradingCalendar ?? "cn_fund", fixedAssetType: account.fixedAssetType ?? "property",
+      // 只有数据源确实带出约定时才放进 form —— 否则 { ...form } 会带上空串提交，
+      // 服务端会把它当成「清空约定」（没查到 ≠ 要清空）。
+      ...(account.agreementAnnualRate !== undefined
+        ? {
+            agreementAnnualRate: account.agreementAnnualRate,
+            agreementTermValue: account.agreementTermValue ?? "",
+            agreementDueDate: account.agreementDueDate ?? "",
+          }
+        : {}),
     });
     setLoanForm(loanDetails ? {
       principal: String(Math.abs(Number(loanDetails.defaultPrincipal) || 0)),
@@ -216,7 +229,20 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
       const payload = isFixedAssetAccount
         ? { ...form, kind: "investment", investProductType: "property", institutionId: "", counterpartyId: "", fixedAssetType: form.fixedAssetType || "property", loanType: "", isConsumerLoan: "false" }
         : kind === "settlement"
-          ? { ...form, institutionId: "", loanType: "", isConsumerLoan: "false" }
+          ? {
+              ...form,
+              institutionId: "",
+              loanType: "",
+              isConsumerLoan: "false",
+              // 只有数据源带出过约定（编辑已存在的往来款账户）才提交，避免「没查到」被当成「清空」
+              ...(account.agreementAnnualRate !== undefined
+                ? {
+                    agreementAnnualRate: form.agreementAnnualRate ?? "",
+                    agreementTermValue: form.agreementTermValue ?? "",
+                    agreementDueDate: form.agreementDueDate ?? "",
+                  }
+                : {}),
+            }
           : kind === "loan"
             ? { ...form, counterpartyId: "", loanType: form.loanType || "home", isConsumerLoan: form.loanType === "consumer" ? "true" : "false" }
             : { ...form, counterpartyId: "", loanType: "", isConsumerLoan: "false" };
@@ -303,6 +329,13 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
               {isFixedAssetAccount && <Field label={t("fixedAssetEdit.assetType")}><select value={form.fixedAssetType || "property"} onChange={(event) => setField("fixedAssetType", event.target.value)} className={inputClass}>{FIXED_ASSET_TYPES.map((value) => <option key={value} value={value}>{t(`fixedAsset.type.${value}`)}</option>)}</select></Field>}
               <Field label={t("settings.accounts.owner")}><select value={form.groupId ?? ""} onChange={(event) => setField("groupId", event.target.value)} className={inputClass}><option value="">{t("settings.accounts.selectOwner")}</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></Field>
               {supportsInstitution && !isFixedAssetAccount && <Field label={t("settings.accounts.institution")}><select value={form.institutionId ?? ""} onChange={(event) => setField("institutionId", event.target.value)} className={inputClass}><option value="">{t("settings.accounts.selectInstitution")}</option>{filteredInstitutions.map((institution) => <option key={institution.id} value={institution.id}>{institution.shortName?.trim() || institution.name}</option>)}</select></Field>}
+              {kind === "settlement" && account.agreementAnnualRate !== undefined && (
+                <>
+                  <Field label={t("debtTx.agreementAnnualRate")}><input value={form.agreementAnnualRate ?? ""} onChange={(event) => setField("agreementAnnualRate", event.target.value)} inputMode="decimal" className={inputClass} /></Field>
+                  <Field label={t("debtTx.agreementTerm")}><input type="number" min={1} value={form.agreementTermValue ?? ""} onChange={(event) => setField("agreementTermValue", event.target.value)} className={inputClass} /></Field>
+                  <Field label={t("debtTx.agreementDueDate")}><input type="date" value={form.agreementDueDate ?? ""} onChange={(event) => setField("agreementDueDate", event.target.value)} className={inputClass} /></Field>
+                </>
+              )}
               {kind === "settlement" && <Field label={t("txForm.counterparty")}><select value={form.counterpartyId ?? ""} onChange={(event) => setField("counterpartyId", event.target.value)} className={inputClass}><option value="">{t("debtTx.placeholder.selectCounterparty")}</option>{counterparties.map((counterparty) => <option key={counterparty.id} value={counterparty.id}>{counterparty.shortName?.trim() || counterparty.name}</option>)}</select></Field>}
               <Field label={t("settings.accounts.currency")}>
                 <CurrencySmartSelect

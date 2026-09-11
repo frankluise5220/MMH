@@ -1796,6 +1796,7 @@ function DebtEntriesTable({
   columns,
   entries,
   loanType,
+  toolbarActions,
 }: {
   accountOptions: AccountOption[];
   categoryOptions: BasicDetailBatchCategoryOption[];
@@ -1803,6 +1804,7 @@ function DebtEntriesTable({
   columns: AdvancedDataTableColumn<DebtEntry>[];
   entries: DebtEntry[];
   loanType: LoanTypeValue;
+  toolbarActions?: React.ReactNode;
 }) {
   const { t } = useI18n();
   const { selectedIds, setSelection } = useBasicDetailSelection();
@@ -1841,7 +1843,12 @@ function DebtEntriesTable({
       emptyText={t("debtShell.emptyEntries")}
       fillHeight
       toolbarTitle={t("debtShell.tabEntries")}
-      toolbarRightContent={<span className="text-xs text-slate-500">{t("debtShell.entryCount", { count: entries.length })}</span>}
+      toolbarRightContent={(
+        <>
+          {toolbarActions}
+          <span className="text-xs text-slate-500">{t("debtShell.entryCount", { count: entries.length })}</span>
+        </>
+      )}
       selectable
       selectOnRowClick
       selectedKeys={selectedIds}

@@ -1552,9 +1552,26 @@ const MIGRATIONS = [
     description: "Create DebtAgreement table: settlement loan terms (rate / term / due date) linked 1:1 to a transaction",
     apply(db) {
       db.exec([
-        `CREATE TABLE IF NOT EXISTS "DebtAgreement" ("id" TEXT NOT NULL PRIMARY KEY, "householdId" TEXT NOT NULL, "entryId" TEXT NOT NULL, "annualRate" DECIMAL, "termValue" INTEGER, "termUnit" TEXT, "dueDate" DATETIME, "note" TEXT, "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "DebtAgreement_entryId_fkey" FOREIGN KEY ("entryId") REFERENCES "transactions"("id") ON DELETE CASCADE ON UPDATE CASCADE, CONSTRAINT "DebtAgreement_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE)`,
-        `CREATE UNIQUE INDEX IF NOT EXISTS "DebtAgreement_entryId_key" ON "DebtAgreement"("entryId")`,
-        `CREATE INDEX IF NOT EXISTS "DebtAgreement_householdId_dueDate_idx" ON "DebtAgreement"("householdId", "dueDate")`,
+        // 全新安装时 native-init.sql 已按当前 schema 建出该表（accountId 形状）。
+        // 本条是升级链的历史中间态，不能假设表不存在——先无条件丢弃再由下一条重建。
+        \`DROP TABLE IF EXISTS "DebtAgreement"\`,
+        \`CREATE TABLE IF NOT EXISTS "DebtAgreement" ("id" TEXT NOT NULL PRIMARY KEY, "householdId" TEXT NOT NULL, "entryId" TEXT NOT NULL, "annualRate" DECIMAL, "termValue" INTEGER, "termUnit" TEXT, "dueDate" DATETIME, "note" TEXT, "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "DebtAgreement_entryId_fkey" FOREIGN KEY ("entryId") REFERENCES "transactions"("id") ON DELETE CASCADE ON UPDATE CASCADE, CONSTRAINT "DebtAgreement_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE)\`,
+        \`CREATE UNIQUE INDEX IF NOT EXISTS "DebtAgreement_entryId_key" ON "DebtAgreement"("entryId")\`,
+        \`CREATE INDEX IF NOT EXISTS "DebtAgreement_householdId_dueDate_idx" ON "DebtAgreement"("householdId", "dueDate")\`,
+      ].join(";"));
+    },
+  },
+  {
+    version: "20260911_rekey_debt_agreement_to_account",
+    description: "DebtAgreement belongs to the settlement account (accountId), not a transaction",
+    apply(db) {
+      // SQLite 不支持 DROP COLUMN（旧版），且约定挂在账户上语义已变 —— 直接重建。
+      // 表在本版本才引入、升级时仍为空表，重建无数据损失。
+      db.exec([
+        \`DROP TABLE IF EXISTS "DebtAgreement"\`,
+        \`CREATE TABLE IF NOT EXISTS "DebtAgreement" ("id" TEXT NOT NULL PRIMARY KEY, "householdId" TEXT NOT NULL, "accountId" TEXT NOT NULL, "annualRate" DECIMAL, "termValue" INTEGER, "termUnit" TEXT, "dueDate" DATETIME, "note" TEXT, "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "DebtAgreement_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE, CONSTRAINT "DebtAgreement_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE)\`,
+        \`CREATE UNIQUE INDEX IF NOT EXISTS "DebtAgreement_accountId_key" ON "DebtAgreement"("accountId")\`,
+        \`CREATE INDEX IF NOT EXISTS "DebtAgreement_householdId_dueDate_idx" ON "DebtAgreement"("householdId", "dueDate")\`,
       ].join(";"));
     },
   },

@@ -85,7 +85,12 @@ export const loadSelectedAccount = cache(
     if (!accountId) return null;
     return prisma.account.findFirst({
       where: { id: accountId, isPlaceholder: { not: true }, ...hidFilter },
-      include: { Institution: true, Counterparty: true, AccountGroup: true },
+      include: {
+        Institution: true,
+        Counterparty: true,
+        AccountGroup: true,
+        DebtAgreement: { select: { annualRate: true, termValue: true, dueDate: true } },
+      },
     });
   },
 );

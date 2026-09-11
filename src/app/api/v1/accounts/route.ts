@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { AccountKind, TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { parseDebtAgreementInput, upsertDebtAgreementForAccount } from "@/lib/server/debt-agreement";
 import { toNumber } from "@/lib/date-utils";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { isAdmin } from "@/lib/server/auth";
@@ -358,6 +359,15 @@ export async function POST(req: NextRequest) {
         brokerageCashAccount = await ensureBrokerageCashAccountForStockAccount(tx, createdAccount);
       }
 
+      // 往来款「约定」：建立往来款账户时提交，挂在账户上（DebtAgreement）
+      if (createdAccount.kind === "settlement") {
+        const agreement = parseDebtAgreementInput({
+          annualRate: body.agreementAnnualRate,
+          termValue: body.agreementTermValue,
+          dueDate: body.agreementDueDate,
+        });
+        await upsertDebtAgreementForAccount(tx, { householdId, accountId: createdAccount.id, ...agreement });
+      }
       return createdAccount;
     });
     if (shouldCreateInitialBalance) {
@@ -622,7 +632,31 @@ export async function PUT(req: NextRequest) {
         (body.creditBillMode !== undefined && data.creditBillMode !== existing.creditBillMode)
       );
 
-    const updated = await prisma.account.update({ where: { id }, data });
+    const updated = await prisma.$transaction(async (tx) => {
+      const next = await tx.account.update({ where: { id }, data });
+      // 往来款「约定」：与账户同事务写入（kind 变成 settlement 才收；转成别的类型则清掉）
+      const agreementSubmitted =
+        body.agreementAnnualRate !== undefined ||
+        body.agreementTermValue !== undefined ||
+        body.agreementDueDate !== undefined;
+      if (next.kind === "settlement" && (agreementSubmitted || existing.kind === "settlement")) {
+        const agreement = agreementSubmitted
+          ? parseDebtAgreementInput({
+              annualRate: body.agreementAnnualRate,
+              termValue: body.agreementTermValue,
+              dueDate: body.agreementDueDate,
+            })
+          : null;
+        if (agreement) {
+          await upsertDebtAgreementForAccount(tx, { householdId, accountId: next.id, ...agreement });
+        } else if (existing.kind !== "settlement") {
+          await tx.debtAgreement.deleteMany({ where: { householdId, accountId: next.id } });
+        }
+      } else if (existing.kind === "settlement" && next.kind !== "settlement") {
+        await tx.debtAgreement.deleteMany({ where: { householdId, accountId: next.id } });
+      }
+      return next;
+    });
     const brokerageCashAccount =
       updated.kind === AccountKind.investment && updated.investProductType === "stock"
         ? await ensureBrokerageCashAccountForStockAccount(prisma, updated)

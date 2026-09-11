@@ -78,6 +78,7 @@ model Account {
   WealthTransaction                                          WealthTransaction[]         @relation("WealthTransaction_account")
   WealthTransactionCashAccount                               WealthTransaction[]         @relation("WealthTransaction_cashAccount")
   LoanRateAdjustment                                         LoanRateAdjustment[]
+  DebtAgreement                                              DebtAgreement?
   DepositTransaction                                         DepositTransaction[]        @relation("DepositTransaction_account")
   DepositTransactionCashAccount                              DepositTransaction[]        @relation("DepositTransaction_cashAccount")
   PreciousMetalHolding                                       PreciousMetalHolding[]
@@ -1302,10 +1303,12 @@ model LoanRateAdjustment {
 
 /// 往来款「约定」：利率 / 时长 / 到期日挂在具体那笔往来记录上（1:1）。
 /// 每笔记录只记实际发生的本金与利息（TxRecord.debtPrincipalAmount / debtInterestAmount）。
+/// 往来款「约定」：利率 / 期限 / 到期日，挂在**往来款账户**上（1:1），
+/// 不是挂在某笔交易上 —— 约定是「这个往来对象这条关系」的属性。
 model DebtAgreement {
   id          String        @id @default(cuid())
   householdId String
-  entryId     String        @unique
+  accountId   String        @unique
   annualRate  Decimal?      @db.Decimal(10, 6)
   termValue   Int?
   termUnit    IntervalUnit?
@@ -1313,7 +1316,7 @@ model DebtAgreement {
   note        String?
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
-  Entry       TxRecord      @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  Account     Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
   Household   Household     @relation(fields: [householdId], references: [id], onDelete: Cascade)
 
   @@index([householdId, dueDate])
@@ -1611,7 +1614,6 @@ model TxRecord {
   EntryBusinessLinkBusiness   EntryBusinessLink[]         @relation("EntryBusinessLink_businessEntry")
   FxConversionFromEntry       FxConversion?               @relation("FxConversion_fromEntry")
   FxConversionToEntry         FxConversion?               @relation("FxConversion_toEntry")
-  DebtAgreement               DebtAgreement[]
 
   @@index([accountId, date])
   @@index([accountId, date, dayOrder])
