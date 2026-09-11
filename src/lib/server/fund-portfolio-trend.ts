@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Fund portfolio trend data loader.
  *
  * Produces one data point per calendar month for every fund account
