@@ -4,6 +4,7 @@ import { useEffect, useState, useRef, type DragEvent } from "react";
 import { ArrowRight, ChevronRight, ChevronDown, GripVertical, Plus, Save, X } from "lucide-react";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
+import { BasicDataImportExport } from "@/components/settings/BasicDataImportExport";
 import { SettingsActionButton } from "@/components/settings/SettingsPageScaffold";
 import { fetchSettingsCategories, getCachedSettingsCategories, notifySettingsDataChanged, setSettingsCategories } from "@/lib/client/settingsCache";
 import { useI18n } from "@/lib/i18n";
@@ -78,6 +79,11 @@ export default function SettingsCategoriesClient({
       .then((next) => setCategories(next as Category[]))
       .catch(() => null);
   }, [initialCategories, initialLoaded]);
+
+  async function refreshCategories(options?: { force?: boolean }) {
+    const next = await fetchSettingsCategories(options).catch(() => null);
+    if (next) setCategories(next as Category[]);
+  }
 
   useEffect(() => {
     const category = selectedId ? categories.find(c => c.id === selectedId) : null;
@@ -652,7 +658,12 @@ export default function SettingsCategoriesClient({
   const hasPendingMoveTarget = !!selectedCategory && moveParentValue !== currentMoveParentValue;
 
   return (
-    <div className="flex" style={{ height: "calc(100vh - 8.5rem)" }}>
+    <div className="flex flex-col" style={{ height: "calc(100vh - 8.5rem)" }}>
+      {/* 工具栏：基本资料导出模板 / 导入（与账户页同一个组件，模板内含分类 sheet） */}
+      <div className="flex items-center justify-end gap-2 px-4 py-2 border-b border-slate-200 bg-white shrink-0">
+        <BasicDataImportExport onImported={() => void refreshCategories({ force: true })} />
+      </div>
+      <div className="flex flex-1 min-h-0">
       {/* Left: category tree */}
       <div className="w-64 flex flex-col shrink-0 border-r border-slate-200 bg-white">
         <div className="px-4 py-3 border-b border-slate-200 shrink-0">
@@ -944,6 +955,7 @@ export default function SettingsCategoriesClient({
             {t("settings.categories.client.selectCategoryHint")}
           </div>
         )}
+      </div>
       </div>
     </div>
   );
