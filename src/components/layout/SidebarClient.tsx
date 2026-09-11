@@ -22,6 +22,7 @@ import {
   Table2,
   LogOut,
   MessageSquare,
+  X,
 } from "lucide-react";
 import { MmhLogo } from "@/components/MmhLogo";
 import { LedgerSwitcher } from "../LedgerSwitcher";
@@ -187,6 +188,13 @@ function fixedAssetTypeLabel(type: string, t: (key: string, params?: Record<stri
   const key = `fixedAsset.type.${type}`;
   const label = t(key);
   return label && label !== key ? label : t("txForm.fixedAssetToggle");
+}
+
+function accountItemFilterHaystack(item: AccountItem) {
+  return [item.label, item.shortLabel, item.name, item.hoverTitle, item.groupName, item.institution]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
 }
 
 function normalizeSidebarItems(items: AccountItem[], t: (key: string, params?: Record<string, string | number>) => string) {
@@ -372,6 +380,14 @@ export function SidebarClient({
   const [pendingSettings, setPendingSettings] = useState(false);
   const [hideFirstUseGuide, setHideFirstUseGuide] = useState(() => initialPreferences?.sidebarHideInitialData ?? getAppPreferences().sidebarHideInitialData);
   const [items, setItems] = useState(() => normalizeSidebarItems(initialItems, t));
+  const [accountFilterOpen, setAccountFilterOpen] = useState(false);
+  const [accountFilterText, setAccountFilterText] = useState("");
+  const accountFilterQuery = accountFilterText.trim().toLowerCase();
+  const openAccountFilter = useCallback(() => setAccountFilterOpen(true), []);
+  const closeAccountFilter = useCallback(() => {
+    setAccountFilterOpen(false);
+    setAccountFilterText("");
+  }, []);
   const accountUsage = useAccountUsage();
   const ledgerSwitcherAnchorRef = useRef<HTMLButtonElement>(null);
   const userMenuAnchorRef = useRef<HTMLButtonElement>(null);
@@ -744,10 +760,15 @@ export function SidebarClient({
       if (isSidebarSettlementLoan(item)) return false;
       return passesCommonVisibility(item);
     };
+    const matchesAccountFilter = (item: AccountItem) =>
+      !accountFilterQuery || accountItemFilterHaystack(item).includes(accountFilterQuery);
+    const childMatchesAccountFilter = (child: AccountItem) =>
+      accountItemFilterHaystack(child).includes(accountFilterQuery);
     return items.flatMap((item) => {
       if (item.kind === FIXED_ASSET_SUMMARY_KIND && item.children?.length) {
         if (!showFixedAssets) return [];
-        const children = item.children.filter(passesCommonVisibility);
+        const selfMatched = matchesAccountFilter(item);
+        const children = item.children.filter((child) => passesCommonVisibility(child) && (selfMatched || childMatchesAccountFilter(child)));
         if (children.length === 0) return [];
         const convertedValues = children
           .map(displayBalanceValue)
@@ -767,9 +788,11 @@ export function SidebarClient({
         }];
       }
       if (item.kind !== "loan_summary" || !item.children?.length) {
+        if (!matchesAccountFilter(item) && !(item.children ?? []).some(childMatchesAccountFilter)) return [];
         return isVisibleLeaf(item) ? [item] : [];
       }
-      const children = item.children.filter(passesCommonVisibility);
+      const selfMatched = matchesAccountFilter(item);
+      const children = item.children.filter((child) => passesCommonVisibility(child) && (selfMatched || childMatchesAccountFilter(child)));
       if (children.length === 0) return [];
       const childrenTotal = children.reduce((sum, child) => sum + displayBalance(child), 0);
       return [{
@@ -781,7 +804,7 @@ export function SidebarClient({
         baseCurrency,
       }];
     });
-  }, [items, hideZero, selectedOwnerFilter, showFixedAssets, baseCurrency, displayBalance, displayBalanceValue, t]);
+  }, [items, hideZero, selectedOwnerFilter, showFixedAssets, baseCurrency, accountFilterQuery, displayBalance, displayBalanceValue, t]);
 
   const sections = useMemo(() => {
     const sortAccountsByUsage = (accounts: AccountItem[]) =>
@@ -1236,16 +1259,49 @@ export function SidebarClient({
         </div>
 
         <div className="mt-5 mb-3 flex shrink-0 items-center justify-between px-2">
-          <div className="min-w-0">
-            <button
-              type="button"
-              onClick={cycleOwnerFilter}
-              className="truncate text-[11px] font-medium tracking-[0.08em] text-slate-400 transition-colors hover:text-slate-600"
-              title={`${t("sidebar.ownerFilterTitle")}：${selectedOwnerFilter || t("common.all")}`}
-            >
-              {`${t("common.account")}·${selectedOwnerFilter || t("common.all")}`}
-            </button>
-          </div>
+          {accountFilterOpen ? (
+            <div className="flex h-6 min-w-0 flex-1 items-center gap-0.5 rounded-md border border-blue-200 bg-white pl-2 pr-1 focus-within:border-blue-400">
+              <input
+                type="text"
+                value={accountFilterText}
+                onChange={(event) => setAccountFilterText(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") closeAccountFilter();
+                }}
+                placeholder={t("sidebar.accountFilterPlaceholder")}
+                autoFocus
+                className="h-full min-w-0 flex-1 border-0 bg-transparent text-xs text-slate-700 outline-none placeholder:text-slate-300"
+              />
+              <button
+                type="button"
+                onClick={closeAccountFilter}
+                className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+                title={t("sidebar.accountFilterClose")}
+                aria-label={t("sidebar.accountFilterClose")}
+              >
+                <X size={12} />
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="min-w-0">
+                <button
+                  type="button"
+                  onClick={cycleOwnerFilter}
+                  className="truncate text-[11px] font-medium tracking-[0.08em] text-slate-400 transition-colors hover:text-slate-600"
+                  title={`${t("sidebar.ownerFilterTitle")}：${selectedOwnerFilter || t("common.all")}`}
+                >
+                  {`${t("common.account")}·${selectedOwnerFilter || t("common.all")}`}
+                </button>
+              </div>
+              {/* 隐形双击区：双击标题右侧空白打开账户筛选输入框 */}
+              <div
+                className="h-6 min-w-0 flex-1 cursor-text"
+                onDoubleClick={openAccountFilter}
+                aria-hidden="true"
+              />
+            </>
+          )}
           <div className="flex items-center gap-1">
             <button type="button"
               onClick={cycleSidebarGroupBy}
@@ -1264,7 +1320,7 @@ export function SidebarClient({
           <nav className="space-y-1">
             <div className="space-y-2">
               {sections.map((sec) => {
-                const collapsed = collapsedSections.has(sec.kind);
+                const collapsed = !accountFilterQuery && collapsedSections.has(sec.kind);
                 const SectionIcon = SECTION_ICON[sec.label] ?? Landmark;
                 const sidebarGroups: SidebarSubgroup[] = sec.subgroups?.length
                   ? sec.subgroups
@@ -1304,7 +1360,7 @@ export function SidebarClient({
                         {sidebarGroups.map((group) => {
                           const hasSubgroups = !!sec.subgroups?.length;
                           const isLoanTypeNode = sec.kind === LOAN_SECTION && !!group.href;
-                          const subgroupCollapsed = !isLoanTypeNode && hasSubgroups && collapsedAssetSubgroupKeys.has(group.key);
+                          const subgroupCollapsed = !accountFilterQuery && !isLoanTypeNode && hasSubgroups && collapsedAssetSubgroupKeys.has(group.key);
                           const loanTypeActive = isLoanTypeNode && pathname === "/" && selectedView === "debt" && group.key === (selectedDebtLoanType ? loanSubgroupKey(selectedDebtLoanType) : "");
                           const subgroupLabel = sec.kind === "资产" ? assetSubgroupLabel(group.label) : group.label;
                           return (
@@ -1396,6 +1452,7 @@ export function SidebarClient({
                                     onMouseEnter={() => prefetchRoute(href)}
                                     onFocus={() => prefetchRoute(href)}
                                     onTouchStart={() => prefetchRoute(href)}
+                                    onClick={accountFilterOpen ? closeAccountFilter : undefined}
                                     className={`${accountLinkCls(active)} ${group.label ? "ml-3 pl-2.5 border-l border-slate-100 rounded-l-none" : ""} ${index > 0 ? "border-t border-slate-100/90" : ""}`}
                                   >
                                     <span className="min-w-0 flex-1 pr-2">
@@ -1421,6 +1478,9 @@ export function SidebarClient({
                   </div>
                 );
               })}
+              {accountFilterQuery && sections.length === 0 ? (
+                <div className="px-3 py-6 text-center text-xs text-slate-400">{t("sidebar.accountFilterNoMatch")}</div>
+              ) : null}
             </div>
           </nav>
         </div>
