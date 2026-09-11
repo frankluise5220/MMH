@@ -3,7 +3,7 @@
     "id": "mmh",
     "_manual": {
       "name": "MMH 家庭财务工作台",
-      "version": "0.1.56",
+      "version": "0.1.58",
       "platform": "x86",
       "platforms": [
         "x86",
@@ -11,18 +11,18 @@
       ],
       "author": "frankluise5220",
       "desc": "本地部署的家庭记账与资产管理工具，支持账户流水、信用卡账单、基金持仓、统计报表和数据导入，数据保存在自己的飞牛 NAS 上。",
-      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.56",
-      "download_url": "http://fnapp.floatingice.win/apps/mmh-0.1.56.fpk",
+      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.58",
+      "download_url": "http://fnapp.floatingice.win/apps/mmh-0.1.58.fpk",
       "download_urls": {
-        "x86_64": "http://fnapp.floatingice.win/apps/mmh-0.1.56.fpk",
-        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.56/mmh-fnos-v0.1.56-arm64.fpk"
+        "x86_64": "http://fnapp.floatingice.win/apps/mmh-0.1.58.fpk",
+        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.58/mmh-fnos-v0.1.58-arm64.fpk"
       },
       "screenshots": [],
       "tags": [
         "财务",
         "记账"
       ],
-      "changelog": "## 本次更新\n\n> 0.1.56 是 0.1.55 后的 Docker / 数据库升级恢复版，重点修复旧公开镜像遇到已升级数据库 schema 后无法启动的问题，并补严 Docker 发布与更新链路。\n\n### Bug 修复\n\n- Docker 启动：补齐 `Account.billingDayTxPeriod` 的 PostgreSQL schema、Prisma migration 和 Docker 镜像 schema，避免已升级数据库在启动旧镜像时触发 `prisma db push` 的数据丢失保护后退出。\n- Docker 发布：GitHub Actions 现在监听 `v*` release tag；只有 release tag 才能发布 `latest` 和 `0.1.x` 镜像，`main` 分支只保留 `main` / `sha-*` 快照，避免普通 main 构建覆盖用户更新入口。\n- Docker 更新：发布前校验新增 Docker 入口脚本、镜像标签归属和更新页版本来源，防止更新页或 updater 再次把旧分支、旧 compose、旧镜像当成正式升级目标。\n- fnOS / Synology 迁移：同步增加 SQLite 运行时迁移和校验断言，确保同一字段不会只在 Docker 或 Prisma migration 中存在。\n\n### 打包与部署\n\n- Docker / GHCR：正式发布后同步更新 `latest` 和 `0.1.56` 镜像标签；Docker 用户应升级到本版本后再继续使用网页内更新。\n- fnOS：保留 x86_64 / arm64 FPK 同版本构建与迁移校验；如果发布 FPK，请继续使用覆盖升级，不要卸载重装。\n- 群晖 DSM：保留 x86_64 / arm64 SPK 同版本构建与迁移校验；SPK 发布仍以实机安装启动测试为准。\n- Android：本次没有 Android 代码、资源、清单或发布文档改动，不发布 APK。\n\n## 手机端使用建议\n\n- 手机用户可以直接用浏览器访问 MMH 服务地址；Web 版适合日常查看、快速记账、概览、基金和股票持仓。\n- Android 本次未更新，不需要更新 APK；如只使用手机浏览器访问 Web 版，也无需安装 APK。\n\n## 安装 / 更新说明\n\n- Docker 版：查看 [NAS Docker 安装说明](https://github.com/frankluise5220/MMH/blob/main/deploy/nas-install-manual.md) 后按文档安装或更新；如果当前容器因 schema 数据丢失保护无法启动，请直接拉取本版本镜像并重建 app / updater。\n- fnOS（官方 FPK）：如本版本提供 FPK，请下载对应架构的 x86_64 / arm64 FPK 后覆盖升级。\n- fnOS（FN 软仓客户端安装）：先下载 [FN 软仓客户端](https://gitee.com/hhxs2025/fn-appstores-client/releases/download/2.5.2/fn-appstores-client-2.5.2-x86.fpk)，在客户端里添加 [MMH 个人专用源](http://fnapp.floatingice.win:5660)，即可查询安装/覆盖升级 MMH。\n- 群晖 DSM（官方 SPK）：如本版本提供 SPK，请下载对应架构的 x86_64 / arm64 SPK 后在套件中心手动覆盖升级；本人没有完整群晖验证环境，请继续反馈不同 DSM 环境的安装、启动和页面访问结果。\n- Android：本次未更新，不发布 APK。",
+      "changelog": "## 本次更新\n\n> 0.1.58 是 0.1.57 fnOS 实机安装失败后的恢复测试包。0.1.57 已在 192.168.5.149 上触发 SQLite 运行期错误，本版本修复该问题，并继续保留 0.1.57 已纳入的主线功能与 Docker / 数据库升级恢复链路。\n\n### Bug 修复\n\n- fnOS 启动：修复基金画像字段探测在 SQLite 包里误查询 PostgreSQL 专用的 information_schema.columns，导致页面请求 500、日志出现 no such table: information_schema.columns 的问题。\n- fnOS 校验：新增基金画像列探测的 SQLite 分支检查，防止 PostgreSQL 元数据查询再次混入 fnOS SQLite 运行包。\n- Docker / 数据库升级：继续保留 0.1.56 的 schema-safe 启动恢复和 Docker 发布链路校验，避免已升级数据库在旧镜像重建时触发数据丢失保护。\n\n### 功能恢复与改进\n\n- 记账胶囊菜单：二级菜单恢复为悬停侧边弹出的独立浮层，避免被主菜单滚动区域裁剪，贷款等分组选项可以正常展开选择。\n- 贷款还款：还款窗口自动对齐当前期次预定还款日；当本期已还清时，引导用户走提前还款流程，减少重复还款误操作。\n- 提前还款利息：提前还款应计利息放开到全部贷款类型，按利随本清逻辑从计息起点预览到还款日，并允许用户手动覆盖。\n- 提前还款金额：应计利息会随输入的提前还本金按未还本金比例缩放，未输入本金前保持为空，避免误把全额结清利息带入部分提前还款。\n\n### 打包与部署\n\n- 本轮先生成 fnOS x86_64 恢复测试 FPK 给 192.168.5.149 覆盖升级验证；确认可安装、可启动、功能正常后，再推进正式 tag、Docker/GHCR 和公开发布。\n- Android：本次没有 Android 代码、资源、清单或发布文档改动，不发布 APK。\n\n## 手机端使用建议\n\n- 手机用户可以直接用浏览器访问 MMH 服务地址；Web 版适合日常查看、快速记账、概览、基金和股票持仓。\n- Android 本次未更新，不需要更新 APK；如只使用手机浏览器访问 Web 版，也无需安装 APK。\n\n## 安装 / 更新说明\n\n- fnOS（测试 FPK）：如果已经装过 0.1.57，请直接用 0.1.58 FPK 覆盖升级，不要卸载重装。\n- Docker 版：0.1.58 测试包确认后再发布 Docker/GHCR；Docker 用户不要使用 0.1.57 作为正式升级目标。\n- fnOS（FN 软仓客户端安装）：正式发布后再同步个人源；测试阶段先使用本地 FPK。\n- 群晖 DSM：SPK 仍以实机安装启动测试为准，未确认前不公开发布。\n- Android：本次未更新，不发布 APK。",
       "updated_at": "2026-09-02"
     }
   }

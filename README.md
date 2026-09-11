@@ -66,7 +66,7 @@ MMH 面向自托管环境，但远程访问时仍需要明确的安全边界：
 - Prisma Studio 不作为正式功能暴露，因为它绕过应用权限和账簿隔离。
 - 业务 API 应通过当前 session 解析账簿、用户和角色上下文，避免跨账簿访问。
 
-更多说明见 [Security Hardening](docs/security-hardening.md)。
+上方列出当前安全边界；部署细节见 [NAS / 飞牛 fnOS / 群晖 DSM 安装与更新](deploy/nas-install-manual.md)。
 
 ### 部署与更新
 
@@ -132,7 +132,7 @@ MMH is built for self-hosted environments, but remote access still needs clear s
 - Prisma Studio is not exposed as a production feature because it bypasses application permissions and ledger isolation.
 - Business APIs should resolve ledger, user, and role context from the current session to avoid cross-ledger access.
 
-See [Security Hardening](docs/security-hardening.md) for details.
+The current security boundaries are summarized above; deployment details are in [NAS / fnOS / Synology DSM Install And Update](deploy/nas-install-manual.md).
 
 ### Deployment And Updates
 
@@ -198,7 +198,7 @@ MMH は自ホスト環境向けですが、リモートアクセスには明確�
 - Prisma Studio はアプリ権限と帳簿分離を迂回するため、本番機能として公開しません。
 - 業務 API は現在の session から帳簿、ユーザー、ロールの文脈を解決し、帳簿をまたぐアクセスを防ぐべきです。
 
-詳細は [Security Hardening](docs/security-hardening.md) を参照してください。
+現在のセキュリティ境界は上記にまとめています。デプロイの詳細は [NAS / fnOS / Synology DSM インストールと更新](deploy/nas-install-manual.md) を参照してください。
 
 ### デプロイと更新
 
@@ -208,9 +208,4 @@ MMH の NAS 版は、事前ビルド済み Docker イメージを使う方針で
 
 ## Developer Docs
 
-- [Development Docs](docs/development-docs.md)
-- [Client API](docs/client-api.md)
-- [Agent API](docs/agent-api.md)
-- [Android Release](docs/android-release.md)
-- [Edit Window Checklist](docs/edit-window-checklist.md)
-- [Investment Data Check](docs/check-investment-data.md)
+Local developer guidance under `AGENTS.md`, `.skill/`, and `docs/` is intentionally ignored by Git in this workspace. Public documentation linked from this README should point only to tracked files, such as [NAS / fnOS / Synology DSM Install And Update](deploy/nas-install-manual.md).
