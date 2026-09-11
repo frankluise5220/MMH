@@ -32,10 +32,12 @@ type PropertyPosition = {
   fundCode: string;
   accountId?: string | null;
   propertyAssetId?: string | null;
+  mortgageLoanAccountId?: string | null;
   assetType?: string | null;
   propertyType?: string | null;
   address?: string | null;
   attributes?: Record<string, unknown> | null;
+  status?: string | null;
   purchasePrice?: number | null;
   note?: string | null;
   name: string;
@@ -115,6 +117,13 @@ function transactionCategoryLabel(t: (key: string) => string, categoryName: stri
 function assetTypeLabel(t: (key: string) => string, assetType: string | null | undefined) {
   const type = assetType || "property";
   return t(`fixedAsset.type.${type}`);
+}
+
+function propertyStatusText(t: (key: string) => string, status: string | null | undefined) {
+  if (status === "mortgaged") return t("fixedAssetEdit.status.mortgaged");
+  if (status === "sold") return t("fixedAssetEdit.status.sold");
+  if (status === "disposed") return t("fixedAssetEdit.status.disposed");
+  return t("fixedAssetEdit.status.normal");
 }
 
 function assetDetailText(position: PropertyPosition) {
@@ -372,7 +381,11 @@ export function PropertyShell({
   const floatingPnL = totalMarketValue - totalCost;
   const floatingRate = totalCost > 0 ? floatingPnL / totalCost : 0;
   const pnlCls = useCallback((value: number) => pnlClassFromRedUp(value, isRedUp), [isRedUp]);
-  const [selectedAssetId, setSelectedAssetId] = useState("");
+  // Default to the first asset (server-sorted by market value) so details show on open.
+  const [selectedAssetId, setSelectedAssetId] = useState(() => {
+    const first = positions[0];
+    return first ? (first.propertyAssetId ?? first.fundCode) : "";
+  });
   const [editValue, setEditValue] = useState<FixedAssetEditValue | null>(null);
   const [editMeta, setEditMeta] = useState<FixedAssetEditMeta | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
@@ -465,6 +478,7 @@ export function PropertyShell({
       purchaseDate: position.holdingDate || "",
       purchasePrice: position.purchasePrice != null ? String(position.purchasePrice) : "",
       note: position.note ?? "",
+      status: position.status ?? "active",
     });
     setEditMeta({
       accountName: position.name,
@@ -489,6 +503,7 @@ export function PropertyShell({
           purchaseDate: next.purchaseDate.trim() || undefined,
           purchasePrice: next.purchasePrice.trim() || undefined,
           note: next.note.trim() || undefined,
+          status: next.status || "active",
         }),
       });
       const data = (await response.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
@@ -530,6 +545,24 @@ export function PropertyShell({
             </div>
           </div>
         );
+      },
+    },
+    {
+      key: "status",
+      label: t("propertyShell.column.status"),
+      width: 92,
+      minWidth: 72,
+      sortValue: (position) => propertyStatusText(t, position.status),
+      filterText: (position) => propertyStatusText(t, position.status),
+      render: (position) => {
+        const text = propertyStatusText(t, position.status);
+        if (position.status === "mortgaged") {
+          return <span className="inline-flex items-center rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-700">{text}</span>;
+        }
+        if (position.status === "sold" || position.status === "disposed") {
+          return <span className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">{text}</span>;
+        }
+        return <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">{text}</span>;
       },
     },
     ...(assetType
@@ -631,8 +664,8 @@ export function PropertyShell({
     {
       key: "actions",
       label: t("detail.column.actions"),
-      width: 112,
-      minWidth: 96,
+      width: 76,
+      minWidth: 64,
       align: "right",
       render: (position) => {
         const assetId = position.propertyAssetId ?? position.fundCode;
@@ -663,10 +696,11 @@ export function PropertyShell({
                   },
                 }));
               }}
-              className="secondary-button h-7 gap-1 px-2 text-xs"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-colors hover:bg-slate-50 hover:text-blue-600"
+              title={t("propertyShell.updateValuation")}
+              aria-label={t("propertyShell.updateValuation")}
             >
               <RefreshCcw className="h-3.5 w-3.5" />
-              {t("propertyShell.updateValuation")}
             </button>
           </div>
         );
@@ -893,7 +927,7 @@ export function PropertyShell({
               rows={positions}
               rowKey={(position, index) => position.propertyAssetId ?? position.fundCode ?? String(index)}
               emptyText={t("propertyShell.emptyTitle")}
-              minTableWidth={1240}
+              minTableWidth={1332}
               rowClassName={(position) => {
                 const assetId = position.propertyAssetId ?? position.fundCode;
                 const selected = assetId === selectedAssetId;

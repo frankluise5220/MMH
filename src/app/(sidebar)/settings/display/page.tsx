@@ -11,6 +11,7 @@ import {
 } from "@/lib/account-display";
 import {
   getAccountLabelFieldsPreference,
+  getAccountDropdownRestrictTypePreference,
   getDetailDateBackgroundPreference,
   getDateDisplayFormatPreference,
   getDisplayLanguagePreference,
@@ -25,6 +26,7 @@ import {
   getRowHeightModePreference,
   normalizeRowHeightMode,
   setAccountLabelFieldsPreference,
+  setAccountDropdownRestrictTypePreference,
   setRowHeightModePreference,
   setDetailDateBackgroundPreference,
   setDateDisplayFormatPreference,
@@ -41,7 +43,7 @@ import {
   type TimeZoneMode,
 } from "@/lib/client/appPreferences";
 import { kindLabel } from "@/lib/account-kinds";
-import { CURRENCY_OPTIONS } from "@/lib/currency";
+import { CurrencySmartSelect } from "@/components/CurrencySmartSelect";
 import { useI18n } from "@/lib/i18n";
 import { GripVertical, X } from "lucide-react";
 
@@ -159,6 +161,7 @@ export default function DisplaySettingsPage() {
   const [sidebarHideInitialData, setSidebarHideInitialData] = useState(false);
   const [sidebarShowFixedAssets, setSidebarShowFixedAssets] = useState(true);
   const [detailDateBackground, setDetailDateBackground] = useState(false);
+  const [accountDropdownRestrictType, setAccountDropdownRestrictType] = useState(true);
   const [rowHeightMode, setRowHeightMode] = useState<RowHeightMode>(DEFAULT_ROW_HEIGHT_MODE);
   const [savingScheme, setSavingScheme] = useState(false);
   const [savingBaseCurrency, setSavingBaseCurrency] = useState(false);
@@ -177,6 +180,7 @@ export default function DisplaySettingsPage() {
     setSidebarHideInitialData(getSidebarHideInitialDataPreference());
     setSidebarShowFixedAssets(getSidebarShowFixedAssetsPreference());
     setDetailDateBackground(getDetailDateBackgroundPreference());
+    setAccountDropdownRestrictType(getAccountDropdownRestrictTypePreference());
     setRowHeightMode(getRowHeightModePreference());
     setDisplayLanguage(getDisplayLanguagePreference());
     setDateDisplayFormat(getDateDisplayFormatPreference());
@@ -469,6 +473,27 @@ export default function DisplaySettingsPage() {
     }
   }
 
+  async function updateAccountDropdownRestrictType(next: boolean) {
+    const prev = accountDropdownRestrictType;
+    setAccountDropdownRestrictType(next);
+    setAccountDropdownRestrictTypePreference(next);
+    try {
+      const res = await fetch("/api/v1/settings/app-preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountDropdownRestrictType: next }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setAccountDropdownRestrictType(prev);
+        setAccountDropdownRestrictTypePreference(prev);
+      }
+    } catch {
+      setAccountDropdownRestrictType(prev);
+      setAccountDropdownRestrictTypePreference(prev);
+    }
+  }
+
   async function updateRowHeightMode(next: RowHeightMode) {
     const prev = rowHeightMode;
     setRowHeightMode(next);
@@ -575,6 +600,14 @@ export default function DisplaySettingsPage() {
               className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
             />
           </SettingRow>
+          <SettingRow title={t("settings.display.accountDropdownRestrictType")} desc={t("settings.display.accountDropdownRestrictTypeDesc")} hideDesc={hideSettingDescriptions}>
+            <input
+              type="checkbox"
+              checked={accountDropdownRestrictType}
+              onChange={(e) => void updateAccountDropdownRestrictType(e.target.checked)}
+              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
+            />
+          </SettingRow>
           <SettingRow
             title={t("settings.display.hideInitialData")}
             desc={t("settings.display.hideInitialDataDesc")}
@@ -653,18 +686,17 @@ export default function DisplaySettingsPage() {
       <section className="panel-surface overflow-hidden">
         <div>
           <SettingRow title={t("settings.display.baseCurrency")} desc={t("settings.display.baseCurrencyDesc")} hideDesc={hideSettingDescriptions}>
-            <select
-              value={baseCurrency}
-              onChange={(e) => void saveBaseCurrency(e.target.value)}
-              disabled={savingBaseCurrency}
-              className="form-input"
-            >
-              {CURRENCY_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {t(`entityForm.currency.${option.value.toLowerCase()}`)}
-                </option>
-              ))}
-            </select>
+            <div className="w-full sm:max-w-xs">
+              <CurrencySmartSelect
+                value={baseCurrency}
+                onChange={(code) => void saveBaseCurrency(code)}
+                labelSystem={(code) => t(`entityForm.currency.${code.toLowerCase()}`, { defaultValue: code })}
+                placeholder={t("settings.display.baseCurrencyPlaceholder")}
+              />
+              {savingBaseCurrency ? (
+                <p className="mt-1 text-[11px] text-slate-400">{t("common.loading")}</p>
+              ) : null}
+            </div>
           </SettingRow>
           <SettingRow title={t("settings.display.language")} desc={t("settings.display.languageDesc")} hideDesc={hideSettingDescriptions}>
             <select

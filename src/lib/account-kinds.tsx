@@ -39,6 +39,34 @@ export function kindLabel(k: string, t?: I18nT): string {
   return KIND_LABEL_FALLBACK[k] || k;
 }
 
+// Catalog keys for investment-product-category labels; keep in sync with the
+// investment.product.* entries in i18n-core.ts.
+const INVEST_PRODUCT_TYPE_LABEL_KEYS: Record<string, string> = {
+  fund: "investment.product.fund",
+  money: "investment.product.money",
+  wealth: "investment.product.wealth",
+  metal: "investment.product.metal",
+  stock: "investment.product.stock",
+  property: "investment.product.property",
+};
+
+// Legacy investment-product-category labels as fallback data for callers
+// without a `t` function (server pages and shared libs).
+const INVEST_PRODUCT_TYPE_LABEL_FALLBACK: Record<string, string> = {
+  fund: "开放式基金",
+  money: "货币基金",
+  wealth: "银行理财",
+  metal: "贵金属",
+  stock: "股票",
+  property: "固定资产",
+};
+
+export function investProductTypeLabel(p: string | null, t?: I18nT): string {
+  const key = INVEST_PRODUCT_TYPE_LABEL_KEYS[p ?? ""];
+  if (t && key) return t(key);
+  return INVEST_PRODUCT_TYPE_LABEL_FALLBACK[p ?? ""] ?? t?.("account.kind.investment") ?? "投资";
+}
+
 export function kindColor(k: string): string {
   if (k === "bank_credit") return "bg-amber-50 text-amber-700 border-amber-200";
   if (k === "bank_debit") return "bg-slate-50 text-slate-700 border-slate-200";

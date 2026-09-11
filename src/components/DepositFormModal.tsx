@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { parseNumber } from "@/lib/investment-config";
 import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
+import { EntryTagsField } from "./EntryTagsField";
 import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
@@ -33,9 +34,9 @@ type Entry = {
   depositAnnualRate?: number | null;
   depositInterest?: number | null;
   depositSourceEntryId?: string | null;
-  depositMaturityAction?: string | null;
-  depositInterestPayoutFrequency?: string | null;
   fundArrivalDate?: string | null;
+  tags?: Array<{ id?: string; tagId?: string }> | null;
+  tagIds?: string[] | null;
 };
 
 type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
@@ -73,22 +74,15 @@ type EditingRedeemSource = {
   restoredRemainingAmount: number;
   annualRate?: number | null;
 };
-type DepositTermUnit = "day" | "week" | "month" | "year";
-const TERM_UNIT_DAYS: Record<DepositTermUnit, number> = { day: 1, week: 7, month: 30, year: 365 };
-const DEFAULT_DEPOSIT_TERM_DAYS = 365;
-
-/**
- * Decompose a day count into unit + count for the unit-first term picker.
- * Whole years win over months, months over weeks, so 365 -> 1 year,
- * 90 -> 3 months, 14 -> 2 weeks, and anything else stays in days.
- */
-function splitTermDays(days: number): { unit: DepositTermUnit; count: number } {
-  const d = Math.max(0, Math.trunc(days));
-  if (d > 0 && d % 365 === 0) return { unit: "year", count: d / 365 };
-  if (d > 0 && d % 30 === 0) return { unit: "month", count: d / 30 };
-  if (d > 0 && d % 7 === 0) return { unit: "week", count: d / 7 };
-  return { unit: "day", count: d };
-}
+const TERM_PRESETS = [
+  { labelKey: "wealthForm.term.3months", days: 90 },
+  { labelKey: "wealthForm.term.halfYear", days: 180 },
+  { labelKey: "wealthForm.term.1year", days: 365 },
+  { labelKey: "wealthForm.term.2years", days: 730 },
+  { labelKey: "wealthForm.term.3years", days: 1095 },
+  { labelKey: "wealthForm.term.5years", days: 1825 },
+] as const;
+const DEFAULT_DEPOSIT_TERM_DAYS = "365";
 
 function compareRedeemLots(a: RedeemLotOption, b: RedeemLotOption) {
   const dateA = a.startDate ?? "9999-12-31";
@@ -193,16 +187,8 @@ export function DepositFormModal({
   const [annualRate, setAnnualRate] = useState("");
   const [exchangeRate, setExchangeRate] = useState("");
   const [cashAmount, setCashAmount] = useState("");
-  const [termUnit, setTermUnit] = useState<DepositTermUnit>(
-    mode === "edit"
-      ? (initTermDays ? splitTermDays(Number(initTermDays)).unit : "year")
-      : splitTermDays(DEFAULT_DEPOSIT_TERM_DAYS).unit,
-  );
-  const [termCount, setTermCount] = useState<string>(
-    mode === "edit"
-      ? (initTermDays ? String(splitTermDays(Number(initTermDays)).count) : "")
-      : String(splitTermDays(DEFAULT_DEPOSIT_TERM_DAYS).count),
-  );
+  const [termDays, setTermDays] = useState(initTermDays);
+  const [yearsMultiplier, setYearsMultiplier] = useState("");
   const [interestAmount, setInterestAmount] = useState("");
   const [arrivalAmount, setArrivalAmount] = useState(mode === "edit" && entry && entry.amount > 0 ? String(Math.abs(entry.amount)) : "");
   const [interestEdited, setInterestEdited] = useState(false);
@@ -211,26 +197,17 @@ export function DepositFormModal({
   const [depositAccountId, setDepositAccountId] = useState(initDepositAccountId);
   const [selectedRedeemLotId, setSelectedRedeemLotId] = useState("");
   const [memo, setMemo] = useState(initMemo);
+  const [selectedTagIds, setSelectedTagIds] = useState<string[]>(() =>
+    mode === "edit" && entry
+      ? (entry.tags as Array<{ id: string }> | undefined)?.map((tag) => tag.id) ?? (entry.tagIds as string[] | undefined) ?? []
+      : [],
+  );
   const [submitting, setSubmitting] = useState(false);
   const [requestId, setRequestId] = useState<string | null>(null);
   const [editEntryId, setEditEntryId] = useState<string | null>(null);
   const [editingRedeemSource, setEditingRedeemSource] = useState<EditingRedeemSource | null>(null);
   const [lockedSubtype, setLockedSubtype] = useState<"buy" | "redeem" | null>(
     mode === "edit" && entry ? (initIsRedeem ? "redeem" : "buy") : null,
-  );
-  const [maturityAction, setMaturityAction] = useState<"redeem" | "renew_principal" | "renew_principal_interest">(
-    mode === "edit" && entry?.depositMaturityAction === "renew_principal"
-      ? "renew_principal"
-      : mode === "edit" && entry?.depositMaturityAction === "renew_principal_interest"
-        ? "renew_principal_interest"
-        : "redeem",
-  );
-  const [interestPayout, setInterestPayout] = useState<"maturity" | "monthly" | "yearly">(
-    mode === "edit" && entry?.depositInterestPayoutFrequency === "monthly"
-      ? "monthly"
-      : mode === "edit" && entry?.depositInterestPayoutFrequency === "yearly"
-        ? "yearly"
-        : "maturity",
   );
 
   const [cashAccountList, setCashAccountList] = useState(cashAccounts);
@@ -443,8 +420,8 @@ export function DepositFormModal({
     setDepositAccountId(resolveDefaultBuyDepositAccount(detail?.defaultDepositAccountId));
     setCashAccountId(resolveDefaultBuyCashAccount(detail?.defaultCashAccountId));
     setSelectedRedeemLotId("");
-    setTermUnit(splitTermDays(DEFAULT_DEPOSIT_TERM_DAYS).unit);
-    setTermCount(String(splitTermDays(DEFAULT_DEPOSIT_TERM_DAYS).count));
+    setTermDays(DEFAULT_DEPOSIT_TERM_DAYS);
+    setYearsMultiplier("1");
     setInterestAmount("");
     setArrivalAmount("");
     setInterestEdited(false);
@@ -469,14 +446,7 @@ export function DepositFormModal({
 
   const amountNumber = parseNumber(amount);
   const annualRateNumber = parseNumber(annualRate);
-  // Term lives as unit + count; everything downstream still speaks in days
-  // (maturity date roll, redeem interest preview, submitted fundArrivalDate).
-  const termDays = useMemo(() => {
-    const count = Math.trunc(parseNumber(termCount));
-    if (!Number.isFinite(count) || count <= 0) return "";
-    return String(count * TERM_UNIT_DAYS[termUnit]);
-  }, [termCount, termUnit]);
-  const yearsMultiplierNumber = termDays ? Number(termDays) / 365 : 0;
+  const yearsMultiplierNumber = parseNumber(yearsMultiplier);
   const hasStoredAnnualRate = !!(
     selectedRedeemLot &&
     selectedRedeemLot.annualRate != null &&
@@ -503,8 +473,8 @@ export function DepositFormModal({
     setAnnualRate("");
     setExchangeRate("");
     setCashAmount("");
-    setTermUnit(splitTermDays(DEFAULT_DEPOSIT_TERM_DAYS).unit);
-    setTermCount(String(splitTermDays(DEFAULT_DEPOSIT_TERM_DAYS).count));
+    setTermDays(DEFAULT_DEPOSIT_TERM_DAYS);
+    setYearsMultiplier("1");
     setInterestAmount("");
     setArrivalAmount("");
     setInterestEdited(false);
@@ -513,12 +483,11 @@ export function DepositFormModal({
     setDepositAccountId("");
     setSelectedRedeemLotId("");
     setMemo("");
+    setSelectedTagIds([]);
     setRequestId(null);
     setEditEntryId(null);
     setEditingRedeemSource(null);
     setLockedSubtype(null);
-    setMaturityAction("redeem");
-    setInterestPayout("maturity");
   }
 
   function applyRedeemComputedAmounts(forceInterest = false) {
@@ -562,10 +531,10 @@ export function DepositFormModal({
         depositAnnualRate?: number | null;
         depositInterest?: number | null;
         depositSourceEntryId?: string | null;
-        depositMaturityAction?: string | null;
-        depositInterestPayoutFrequency?: string | null;
         fundSubtype?: string;
         fundArrivalDate?: string | null;
+        tags?: Array<{ id?: string; tagId?: string }> | null;
+        tagIds?: string[] | null;
       }>).detail;
       if (!detail?.requestId || !detail.entryId) return;
       setRequestId(detail.requestId);
@@ -589,12 +558,20 @@ export function DepositFormModal({
       const detailAnnualRate = detail.depositAnnualRate ?? detail.fundNav ?? null;
       setAnnualRate(detailAnnualRate != null ? String(detailAnnualRate) : "");
       setMemo(detail.note ?? "");
+      setSelectedTagIds(
+        Array.isArray(detail.tags)
+          ? detail.tags.map((tag: { id?: string; tagId?: string }) => tag.id ?? tag.tagId ?? "").filter(Boolean)
+          : Array.isArray(detail.tagIds)
+            ? detail.tagIds.filter((id: string) => !!id)
+            : [],
+      );
       setArrivalAmount(detail.amount ? String(Math.abs(detail.amount)) : "");
       setInterestAmount(
         detail.depositInterest != null && Number.isFinite(detail.depositInterest)
           ? String(detail.depositInterest)
           : "",
       );
+      setYearsMultiplier("");
       setInterestEdited(
         detail.depositInterest != null && Number.isFinite(detail.depositInterest),
       );
@@ -607,11 +584,9 @@ export function DepositFormModal({
               new Date(`${detail.date.slice(0, 10)}T00:00:00.000Z`).getTime()) / 86400000,
           ),
         );
-        const termSplit = splitTermDays(diffDays);
-        setTermUnit(termSplit.unit);
-        setTermCount(diffDays > 0 ? String(termSplit.count) : "");
+        setTermDays(diffDays > 0 ? String(diffDays) : "");
       } else {
-        setTermCount("");
+        setTermDays("");
       }
       setCashAccountId(
         detail.cashAccountId ?? (isRedeem ? (detail.toAccountId ?? "") : (detail.accountId ?? "")),
@@ -654,20 +629,6 @@ export function DepositFormModal({
         setEditingRedeemSource(null);
         setSelectedRedeemLotId("");
       }
-      setMaturityAction(
-        detail.depositMaturityAction === "renew_principal"
-          ? "renew_principal"
-          : detail.depositMaturityAction === "renew_principal_interest"
-            ? "renew_principal_interest"
-            : "redeem",
-      );
-      setInterestPayout(
-        detail.depositInterestPayoutFrequency === "monthly"
-          ? "monthly"
-          : detail.depositInterestPayoutFrequency === "yearly"
-            ? "yearly"
-            : "maturity",
-      );
       setOpen(true);
     }
     window.addEventListener("mmh:deposit:edit", onEdit as EventListener);
@@ -771,11 +732,16 @@ export function DepositFormModal({
       const start = new Date(`${selectedRedeemLot.startDate}T00:00:00.000Z`);
       const end = new Date(`${selectedRedeemLot.maturityDate}T00:00:00.000Z`);
       const diffDays = Math.max(0, Math.round((end.getTime() - start.getTime()) / 86400000));
-      const termSplit = splitTermDays(diffDays);
-      setTermUnit(termSplit.unit);
-      setTermCount(diffDays > 0 ? String(termSplit.count) : "");
+      if (diffDays > 0) {
+        setTermDays(String(diffDays));
+        setYearsMultiplier((diffDays / 365).toFixed(4).replace(/0+$/, "").replace(/\.$/, ""));
+      } else {
+        setTermDays("");
+        setYearsMultiplier("");
+      }
     } else {
-      setTermCount("");
+      setTermDays("");
+      setYearsMultiplier("");
     }
   }, [cashAccountList, depositAccountList, isRedeem, mode, selectedRedeemLot]);
 
@@ -819,6 +785,17 @@ export function DepositFormModal({
   }, [amount, isRedeem, selectedRedeemLot]);
 
   useEffect(() => {
+    if (!termDays) {
+      setYearsMultiplier("");
+      return;
+    }
+    const days = Number(termDays);
+    if (Number.isFinite(days) && days > 0) {
+      setYearsMultiplier((days / 365).toFixed(4).replace(/0+$/, "").replace(/\.$/, ""));
+    }
+  }, [termDays]);
+
+  useEffect(() => {
     if (!showCurrencyConversion) {
       setCashAmount("");
       return;
@@ -851,6 +828,7 @@ export function DepositFormModal({
     setInterestEdited(false);
     setArrivalEdited(false);
     setMemo("");
+    setSelectedTagIds([]);
     if (isRedeem) {
       setSelectedRedeemLotId("");
     }
@@ -898,6 +876,7 @@ export function DepositFormModal({
       fd.set("amount", String(isRedeem ? redeemAmount : cashAmt));
       fd.set("fundName", fundName.trim());
       fd.set("note", memo);
+      fd.set("tagIds", JSON.stringify(selectedTagIds));
       if (depositAccountId) fd.set("accountId", depositAccountId);
       fd.set("cashAccountId", cashAccountId);
       fd.set("fundProductType", "deposit");
@@ -929,8 +908,6 @@ export function DepositFormModal({
       if (isRedeem) {
         fd.set("fundArrivalDate", arrivalDate || date);
       } else {
-        fd.set("depositMaturityAction", maturityAction);
-        fd.set("depositInterestPayoutFrequency", interestPayout);
         const parsedTermDays = Number(termDays);
         if (Number.isFinite(parsedTermDays) && parsedTermDays > 0) {
           const maturityDate = new Date(`${date}T00:00:00.000Z`);
@@ -1230,7 +1207,7 @@ export function DepositFormModal({
                   </div>
                 </>
               ) : (
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
                     <div className="form-label">{t("depositForm.annualRatePercent")}</div>
                     <CalcInput
@@ -1242,119 +1219,44 @@ export function DepositFormModal({
                     />
                   </div>
                   <div className="space-y-1">
-                    <div className="form-label">{t("depositForm.termLabel")}</div>
+                    <div className="form-label">{t("wealthForm.termDays")}</div>
                     <select
-                      value={termUnit}
-                      onChange={(e) => {
-                        const nextUnit = e.target.value as DepositTermUnit;
-                        setTermUnit(nextUnit);
-                        // Switching units keeps a usable count: fall back to 1
-                        // when the field is empty or beyond the unit's range.
-                        const current = Math.trunc(parseNumber(termCount));
-                        const maxCount = nextUnit === "day" ? 36500 : nextUnit === "week" ? 520 : nextUnit === "month" ? 120 : 30;
-                        if (!Number.isFinite(current) || current <= 0 || current > maxCount) {
-                          setTermCount("1");
-                        }
-                      }}
-                      className="form-input w-full"
+                      value={TERM_PRESETS.some((preset) => String(preset.days) === termDays) ? termDays : ""}
+                      onChange={(e) => setTermDays(e.target.value)}
+                      className="form-input"
                     >
-                      <option value="day">{t("depositForm.termUnit.day")}</option>
-                      <option value="week">{t("depositForm.termUnit.week")}</option>
-                      <option value="month">{t("depositForm.termUnit.month")}</option>
-                      <option value="year">{t("depositForm.termUnit.year")}</option>
+                      <option value="">{t("wealthForm.termPresetPlaceholder")}</option>
+                      {TERM_PRESETS.map((preset) => (
+                        <option key={preset.days} value={String(preset.days)}>
+                          {t(preset.labelKey)}
+                        </option>
+                      ))}
                     </select>
-                  </div>
-                  <div className="space-y-1">
-                    <div className="form-label">{t("depositForm.termCountLabel")}</div>
-                    <input
-                      type="number"
-                      min={1}
-                      value={termCount}
-                      onChange={(e) => setTermCount(e.target.value)}
-                      placeholder={t("depositForm.termCountPlaceholder")}
-                      className="form-input w-full"
-                    />
                   </div>
                 </div>
               )}
 
               {!isRedeem ? (
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1">
-                    <div className="form-label">{t("deposit.maturityAction.label")}</div>
-                    <select
-                      value={maturityAction}
-                      onChange={(e) => {
-                        const next = e.target.value as typeof maturityAction;
-                        setMaturityAction(next);
-                        // Periodic payout leaves no interest to roll in at maturity.
-                        if (next === "renew_principal_interest" && interestPayout !== "maturity") {
-                          setInterestPayout("maturity");
-                        }
-                      }}
-                      className="form-input"
-                    >
-                      <option value="redeem">{t("deposit.maturityAction.redeem")}</option>
-                      <option value="renew_principal">{t("deposit.maturityAction.renewPrincipal")}</option>
-                      <option value="renew_principal_interest" disabled={interestPayout !== "maturity"}>{t("deposit.maturityAction.renewPrincipalInterest")}</option>
-                    </select>
-                    <div className="text-[11px] text-slate-400">{t("deposit.maturityAction.hint")}</div>
-                  </div>
-                  <div className="space-y-1">
-                    <div className="form-label">{t("deposit.payoutFrequency.label")}</div>
-                    <select
-                      value={interestPayout}
-                      onChange={(e) => {
-                        const next = e.target.value as typeof interestPayout;
-                        setInterestPayout(next);
-                        if (next !== "maturity" && maturityAction === "renew_principal_interest") {
-                          setMaturityAction("renew_principal");
-                        }
-                      }}
-                      className="form-input"
-                    >
-                      <option value="maturity">{t("deposit.payoutFrequency.maturity")}</option>
-                      <option value="monthly">{t("deposit.payoutFrequency.monthly")}</option>
-                      <option value="yearly">{t("deposit.payoutFrequency.yearly")}</option>
-                    </select>
-                    <div className="text-[11px] text-slate-400">{t("deposit.payoutFrequency.hint")}</div>
-                  </div>
-                </div>
-              ) : null}
-
-              {!isRedeem ? (
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1">
-                    <div className="form-label">{t("wealthForm.sourceAccount")}</div>
-                    <SmartSelect
-                      mode="single"
-                      value={cashAccountId}
-                      onChange={setCashAccountId}
-                      options={visibleCashOptions}
-                      placeholder={t("depositForm.selectCashAccount")}
-                      behavior={{
-                        hierarchy: "auto",
-                        search: "auto",
-                        clearable: false,
-                        headerExtra: cashOwnerCycleButton,
-                        create: {
-                          type: "button",
-                          onClick: () => setNestedEntityType("cash-account"),
-                          label: t("settings.accounts.add"),
-                        },
-                      }}
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <div className="form-label">{depositCurrency ? t("depositForm.depositAmountWithCurrency", { currency: depositCurrency }) : t("depositForm.depositAmount")}</div>
-                    <CalcInput
-                      value={amount}
-                      onChange={setAmount}
-                      placeholder="0.00"
-                      label={t("depositForm.depositAmount")}
-                      precision={2}
-                    />
-                  </div>
+                <div className="space-y-1">
+                  <div className="form-label">{t("wealthForm.sourceAccount")}</div>
+                  <SmartSelect
+                    mode="single"
+                    value={cashAccountId}
+                    onChange={setCashAccountId}
+                    options={visibleCashOptions}
+                    placeholder={t("depositForm.selectCashAccount")}
+                    behavior={{
+                      hierarchy: "auto",
+                      search: "auto",
+                      clearable: false,
+                      headerExtra: cashOwnerCycleButton,
+                      create: {
+                        type: "button",
+                        onClick: () => setNestedEntityType("cash-account"),
+                        label: t("settings.accounts.add"),
+                      },
+                    }}
+                  />
                 </div>
               ) : null}
 
@@ -1389,6 +1291,19 @@ export function DepositFormModal({
                 </div>
               ) : null}
 
+              {!isRedeem ? (
+                <div className="space-y-1">
+                  <div className="form-label">{depositCurrency ? t("depositForm.depositAmountWithCurrency", { currency: depositCurrency }) : t("depositForm.depositAmount")}</div>
+                  <CalcInput
+                    value={amount}
+                    onChange={setAmount}
+                    placeholder="0.00"
+                    label={t("depositForm.depositAmount")}
+                    precision={2}
+                  />
+                </div>
+              ) : null}
+
               <div className="space-y-1">
                 <div className="form-label">{t("detail.column.remark")}</div>
                 <input
@@ -1398,6 +1313,8 @@ export function DepositFormModal({
                   className="form-input"
                 />
               </div>
+
+              <EntryTagsField value={selectedTagIds} onChange={setSelectedTagIds} />
 
               <div className="flex justify-end gap-2 pt-1">
                 {mode === "create" ? (

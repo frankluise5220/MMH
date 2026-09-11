@@ -4,6 +4,7 @@ import { ChevronDown } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "@/lib/i18n";
+import { investProductTypeLabel } from "@/lib/account-kinds";
 import {
   FUND_COMPANY_INSTITUTION_PREFIX,
   fundCompanyInstitutionId,
@@ -14,6 +15,7 @@ export type StatisticsAccountItem = {
   id: string;
   name: string;
   kind?: string | null;
+  investProductType?: string | null;
   label?: string;
   isPlaceholder?: boolean | null;
   groupId?: string;
@@ -247,8 +249,20 @@ export function AccountScopeFilter({
       : [...new Set([...current, ...ids])]);
   }
 
+  /** Grouping key for the account menu: investment accounts group by product
+   *  category (fund/wealth/stock/property/...), everything else by account kind. */
+  function accountGroupKey(account: StatisticsAccountItem) {
+    if (account.kind === "investment" && account.investProductType) return `__ipt__${account.investProductType}`;
+    return account.kind ?? "other";
+  }
+
+  function accountGroupLabel(type: string) {
+    if (type.startsWith("__ipt__")) return investProductTypeLabel(type.slice("__ipt__".length), t);
+    return t(`account.kind.${type}`);
+  }
+
   function toggleAccountType(type: string) {
-    const ids = accountOptions.filter((account) => account.kind === type).map((account) => account.id);
+    const ids = accountOptions.filter((account) => accountGroupKey(account) === type).map((account) => account.id);
     setDraftAccountIds((current) => ids.every((id) => current.includes(id)) ? current.filter((id) => !ids.includes(id)) : [...new Set([...current, ...ids])]);
   }
 
@@ -292,8 +306,16 @@ export function AccountScopeFilter({
       return;
     }
     menuAnchorRef.current = button;
+    // 在挂载弹层前先同步计算好位置，避免弹层以初始 {left:0, top:0} 闪现一帧
+    // 再被 setMenuPosition 跳到正确位置。
+    const rect = button.getBoundingClientRect();
+    const menuWidth = kind === "users" ? 224 : 620;
+    const left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - menuWidth - 8));
+    const menuHeight = Math.min(window.innerHeight * 0.7, 520);
+    const openUpward = rect.bottom + 4 + menuHeight > window.innerHeight - 8 && rect.top - 4 - menuHeight > 8;
+    const top = openUpward ? rect.top - menuHeight - 4 : rect.bottom + 4;
+    setMenuPosition({ left, top });
     setOpenMenu(kind);
-    window.requestAnimationFrame(() => positionMenu(kind));
   }
 
   function selectionLabel(kind: "users" | "institutions" | "accounts", selected: string[]) {
@@ -383,7 +405,7 @@ export function AccountScopeFilter({
             <div className="mb-1 px-2 text-[11px] font-medium text-slate-500">{isUsers ? t("statistics.allPeople") : isInstitutions ? t("statistics.allInstitutions") : t("reports.allAccounts")}</div>
             <button type="button" className="absolute right-2 top-2 text-[11px] text-blue-600 hover:text-blue-800" onClick={() => clearSelection(kind)}>{t("statistics.clearSelection")}</button>
             {items.length === 0 && <div className="px-2 py-2 text-xs text-slate-400">{t("table.empty")}</div>}
-            {isInstitutions ? Array.from(new Set(institutionOptions.map((institution) => institutionGroupKey(institution.type)))).map((type) => { const groupedItems = institutionOptions.filter((institution) => institutionGroupKey(institution.type) === type); return <div key={type} className="grid grid-cols-[96px_1fr] items-start gap-2 border-b border-slate-200 py-2 last:border-b-0"><label className="flex min-h-7 items-center gap-1.5 px-2 text-xs font-medium text-slate-600"><input type="checkbox" checked={groupedItems.every((institution) => draftInstitutionIds.includes(institution.id))} onChange={() => toggleInstitutionType(type)} />{institutionGroupLabel(type)}</label><div className="grid grid-cols-3 items-start gap-x-2 gap-y-1">{groupedItems.map((item) => <div key={item.id} className="flex min-h-7 min-w-0 items-center gap-1.5 rounded px-1 py-1 text-xs hover:bg-slate-50"><input type="checkbox" className="shrink-0" checked={draftInstitutionIds.includes(item.id)} onChange={() => toggleDraft("institutions", item.id)} /><button type="button" className="min-w-0 flex-1 truncate text-left" title={item.name} onClick={() => selectSingle("institutions", item.id)}>{item.name}</button></div>)}</div></div>; }) : !isUsers ? Array.from(new Set(accountOptions.map((account) => account.kind ?? "other"))).map((type) => { const groupedItems = accountOptions.filter((account) => (account.kind ?? "other") === type); return <div key={type} className="grid grid-cols-[96px_1fr] items-start gap-2 border-b border-slate-200 py-2 last:border-b-0"><label className="flex min-h-7 items-center gap-1.5 px-2 text-xs font-medium text-slate-600"><input type="checkbox" checked={groupedItems.every((account) => draftAccountIds.includes(account.id))} onChange={() => toggleAccountType(type)} />{t(`account.kind.${type}`)}</label><div className="grid grid-cols-3 items-start gap-x-2 gap-y-1">{groupedItems.map((item) => <div key={item.id} className="flex min-h-7 min-w-0 items-center gap-1.5 rounded px-1 py-1 text-xs hover:bg-slate-50"><input type="checkbox" className="shrink-0" checked={draftAccountIds.includes(item.id)} onChange={() => toggleDraft("accounts", item.id)} /><button type="button" className="min-w-0 flex-1 truncate text-left" title={accountLabel(item)} onClick={() => selectSingle("accounts", item.id)}>{accountLabel(item)}</button></div>)}</div></div>; }) : items.map((item) => <div key={item.id} className="flex items-center gap-2 rounded px-2 py-1 text-xs hover:bg-slate-50">
+            {isInstitutions ? Array.from(new Set(institutionOptions.map((institution) => institutionGroupKey(institution.type)))).map((type) => { const groupedItems = institutionOptions.filter((institution) => institutionGroupKey(institution.type) === type); return <div key={type} className="grid grid-cols-[96px_1fr] items-start gap-2 border-b border-slate-200 py-2 last:border-b-0"><label className="flex min-h-7 items-center gap-1.5 px-2 text-xs font-medium text-slate-600"><input type="checkbox" checked={groupedItems.every((institution) => draftInstitutionIds.includes(institution.id))} onChange={() => toggleInstitutionType(type)} />{institutionGroupLabel(type)}</label><div className="grid grid-cols-3 items-start gap-x-2 gap-y-1">{groupedItems.map((item) => <div key={item.id} className="flex min-h-7 min-w-0 items-center gap-1.5 rounded px-1 py-1 text-xs hover:bg-slate-50"><input type="checkbox" className="shrink-0" checked={draftInstitutionIds.includes(item.id)} onChange={() => toggleDraft("institutions", item.id)} /><button type="button" className="min-w-0 flex-1 truncate text-left" title={item.name} onClick={() => selectSingle("institutions", item.id)}>{item.name}</button></div>)}</div></div>; }) : !isUsers ? Array.from(new Set(accountOptions.map((account) => accountGroupKey(account)))).map((type) => { const groupedItems = accountOptions.filter((account) => accountGroupKey(account) === type); return <div key={type} className="grid grid-cols-[96px_1fr] items-start gap-2 border-b border-slate-200 py-2 last:border-b-0"><label className="flex min-h-7 items-center gap-1.5 px-2 text-xs font-medium text-slate-600"><input type="checkbox" checked={groupedItems.every((account) => draftAccountIds.includes(account.id))} onChange={() => toggleAccountType(type)} />{accountGroupLabel(type)}</label><div className="grid grid-cols-3 items-start gap-x-2 gap-y-1">{groupedItems.map((item) => <div key={item.id} className="flex min-h-7 min-w-0 items-center gap-1.5 rounded px-1 py-1 text-xs hover:bg-slate-50"><input type="checkbox" className="shrink-0" checked={draftAccountIds.includes(item.id)} onChange={() => toggleDraft("accounts", item.id)} /><button type="button" className="min-w-0 flex-1 truncate text-left" title={accountLabel(item)} onClick={() => selectSingle("accounts", item.id)}>{accountLabel(item)}</button></div>)}</div></div>; }) : items.map((item) => <div key={item.id} className="flex items-center gap-2 rounded px-2 py-1 text-xs hover:bg-slate-50">
               <input type="checkbox" checked={draft.includes(item.id)} onChange={() => toggleDraft(kind, item.id)} />
               <button type="button" className="min-w-0 flex-1 truncate text-left" onClick={() => selectSingle(kind, item.id)}>{isUsers ? (allUsers.find((user) => user.id === item.id)?.name ?? item.id) : isInstitutions ? (institutionOptions.find((institution) => institution.id === item.id)?.name ?? item.id) : accountLabel(accountOptions.find((account) => account.id === item.id))}</button>
             </div>)}

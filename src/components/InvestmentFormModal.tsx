@@ -5,6 +5,7 @@ import { CalcInput } from "./CalcInput";
 import { DateStepper } from "./DateStepper";
 import { NestedAddModal } from "./EntityCreateForm";
 import { HoldingPicker } from "./HoldingPicker";
+import { EntryTagsField } from "./EntryTagsField";
 import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
@@ -101,6 +102,8 @@ export type InvestmentEntry = {
   refundAmount?: number | null;
   realizedProfit?: number | null;
   feeRate?: string | number | null;
+  tags?: Array<{ id?: string; tagId?: string }> | null;
+  tagIds?: string[] | null;
 };
 
 // Default values for create mode.
@@ -187,6 +190,8 @@ type InvestmentEditDetail = {
   refundAmount?: number | null;
   linkedCandidateEntries?: LinkedCandidateEntry[];
   feeRate?: string | number | null;
+  tags?: Array<{ id?: string; tagId?: string }> | null;
+  tagIds?: string[] | null;
 };
 
 function inferNonNegativeDays(startDate?: string | null, endDate?: string | null) {
@@ -391,6 +396,11 @@ export function InvestmentFormModal({
     navEditedRef.current = true;
   }
   const [memo, setMemo] = useState(initMemo);
+  const [selectedTagIds, setSelectedTagIds] = useState<string[]>(() =>
+    mode === "edit" && entry
+      ? (entry.tags as Array<{ id: string }> | undefined)?.map((tag) => tag.id) ?? (entry.tagIds as string[] | undefined) ?? []
+      : [],
+  );
   const unitsEditedRef = useRef(false);
   const amountEditedRef = useRef(false);
   const navEditedRef = useRef(false);
@@ -883,6 +893,13 @@ export function InvestmentFormModal({
     setConfirmDays(nextConfirmDays);
     setConfirmDaysEdited(false);
     setMemo(editEntry.memo ?? editEntry.note ?? "");
+    setSelectedTagIds(
+      Array.isArray(editEntry.tags)
+        ? editEntry.tags.map((tag: { id?: string; tagId?: string }) => tag.id ?? tag.tagId ?? "").filter(Boolean)
+        : Array.isArray(editEntry.tagIds)
+          ? editEntry.tagIds.filter((id: string) => !!id)
+          : [],
+    );
     setArrivalDate(nextArrivalDate);
     setArrivalAmount(nextArrivalAmount);
     unitsEditedRef.current = false;
@@ -1138,6 +1155,13 @@ export function InvestmentFormModal({
       const numericAmount = Number(detail.amount);
       setAmount(Number.isFinite(numericAmount) && numericAmount !== 0 ? String(Math.abs(numericAmount)) : "");
       setMemo(detail.note ?? "");
+      setSelectedTagIds(
+        Array.isArray(detail.tags)
+          ? detail.tags.map((tag: { id?: string; tagId?: string }) => tag.id ?? tag.tagId ?? "").filter(Boolean)
+          : Array.isArray(detail.tagIds)
+            ? detail.tagIds.filter((id: string) => !!id)
+            : [],
+      );
       const isRedeemEntry =
         detail.fundSubtype === "redeem" ||
         detail.fundSubtype === "switch_out";
@@ -2389,6 +2413,7 @@ export function InvestmentFormModal({
       formData.set("redeemCostDays", String(redeemCostDays));
       formData.set('arrivalDays', String(arrivalDays));
     }
+    formData.set("tagIds", JSON.stringify(selectedTagIds));
     setSubmitting(true);
     try {
       const res = mode === "edit" && editAction ? await editAction(formData) : await createAction(formData);
@@ -2666,26 +2691,32 @@ export function InvestmentFormModal({
                   ) : null}
 
                   {subtype === "dividend_cash" && (
-                    <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">{t("investForm.dividendCashAmount")}</div>
-                      <input ref={dividendAmountRef} inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)}
-                        className="form-input" />
+                    <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-2">
+                      <EntryTagsField value={selectedTagIds} onChange={setSelectedTagIds} />
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-slate-600">{t("investForm.dividendCashAmount")}</div>
+                        <input ref={dividendAmountRef} inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)}
+                          className="form-input" />
+                      </div>
                     </div>
                   )}
 
                   {subtype === "dividend_reinvest" && (
-                    <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">{t("investForm.dividendReinvestUnits")}</div>
-                      <CalcInput
-                        value={units}
-                        onChange={(v) => {
-                          unitsEditedRef.current = true;
-                          setUnits(v);
-                        }}
-                        placeholder="0.00"
-                        label={t("investForm.units")}
-                        precision={fundUnitsDecimals}
-                      />
+                    <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-2">
+                      <EntryTagsField value={selectedTagIds} onChange={setSelectedTagIds} />
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-slate-600">{t("investForm.dividendReinvestUnits")}</div>
+                        <CalcInput
+                          value={units}
+                          onChange={(v) => {
+                            unitsEditedRef.current = true;
+                            setUnits(v);
+                          }}
+                          placeholder="0.00"
+                          label={t("investForm.units")}
+                          precision={fundUnitsDecimals}
+                        />
+                      </div>
                     </div>
                   )}
 
@@ -2698,6 +2729,8 @@ export function InvestmentFormModal({
                       className="form-input"
                     />
                   </div>
+
+                  <EntryTagsField value={selectedTagIds} onChange={setSelectedTagIds} />
 
                   <div className="sticky bottom-0 z-10 -mx-4 -mb-4 flex justify-end gap-2 border-t border-slate-100 bg-white/95 px-4 py-3 backdrop-blur">
                     {mode === "create" && (
@@ -3150,7 +3183,7 @@ export function InvestmentFormModal({
               </div>
 
               {showFee && (
-                <div className="grid grid-cols-1 gap-2 items-end sm:grid-cols-2">
+                <div className="grid grid-cols-1 gap-2 items-end sm:grid-cols-3">
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">{t("investForm.feeRatePercent")}</div>
                     <input inputMode="decimal" value={feeRate}
@@ -3175,6 +3208,7 @@ export function InvestmentFormModal({
                       placeholder={computedFee || "0.00"}
                       className="form-input" />
                   </div>
+                  <EntryTagsField value={selectedTagIds} onChange={setSelectedTagIds} />
                 </div>
               )}
 

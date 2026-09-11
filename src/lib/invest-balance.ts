@@ -37,6 +37,7 @@ export type PositionDisplayRow = {
   attributes?: unknown | null;
   propertyType?: string | null;
   address?: string | null;
+  status?: string | null;
   purchasePrice?: number | null;
   note?: string | null;
   name: string;
@@ -97,6 +98,7 @@ export type PositionDisplayResult = {
 type PropertyAssetDisplayRow = {
   id: string;
   accountId: string;
+  mortgageLoanAccountId?: string | null;
   name: string;
   status: string | null;
   assetType?: string | null;
@@ -210,6 +212,10 @@ async function loadPropertyAssetsForInvestSummary(accountIds: string[]) {
     "propertyAsset",
     {
       where: { accountId: { in: accountIds }, deletedAt: null },
+      // The sidebar/overview summary only needs value fields. Keep this
+      // query narrow so a newly added optional column cannot hide all fixed
+      // assets while an older database is catching up.
+      select: { accountId: true, status: true, cost: true, marketValue: true },
     },
     { tableNames: ["property_assets"] },
   );
@@ -224,6 +230,26 @@ async function loadPropertyAssetsForPositionDisplay(accountIds: string[], househ
     {
       where: { accountId: { in: ids }, ...(householdId ? { householdId } : {}), deletedAt: null },
       orderBy: [{ status: "asc" }, { latestValuationDate: "desc" }, { createdAt: "asc" }],
+      // The fixed-asset table does not need every PropertyAsset column. Keep
+      // this query narrow so a newly added optional column cannot hide all
+      // positions while an older local database is catching up.
+      select: {
+        id: true,
+        accountId: true,
+        name: true,
+        status: true,
+        assetType: true,
+        propertyType: true,
+        address: true,
+        attributes: true,
+        purchaseDate: true,
+        purchasePrice: true,
+        cost: true,
+        marketValue: true,
+        latestValuationDate: true,
+        note: true,
+        createdAt: true,
+      },
     },
     { tableNames: ["property_assets"] },
   );
@@ -231,7 +257,7 @@ async function loadPropertyAssetsForPositionDisplay(accountIds: string[], househ
 
 function buildPropertyPositionDisplay(propertyAssets: PropertyAssetDisplayRow[]): PositionDisplayResult {
   const positions: PositionDisplayRow[] = propertyAssets
-    .filter((asset) => asset.status !== "sold")
+    .filter((asset) => asset.status !== "sold" && asset.status !== "disposed")
     .map((asset) => {
       const cost = toNumber(asset.cost);
       const marketValue = toNumber(asset.marketValue);
@@ -240,10 +266,12 @@ function buildPropertyPositionDisplay(propertyAssets: PropertyAssetDisplayRow[])
         fundCode: asset.id,
         accountId: asset.accountId,
         propertyAssetId: asset.id,
+        mortgageLoanAccountId: asset.mortgageLoanAccountId ?? null,
         assetType: asset.assetType ?? null,
         propertyType: asset.propertyType ?? null,
         address: asset.address ?? null,
         attributes: asset.attributes ?? null,
+        status: asset.status ?? "active",
         purchasePrice: asset.purchasePrice == null ? null : toNumber(asset.purchasePrice),
         note: asset.note ?? null,
         name: asset.name,
@@ -263,7 +291,7 @@ function buildPropertyPositionDisplay(propertyAssets: PropertyAssetDisplayRow[])
     })
     .sort((a, b) => b.marketValue - a.marketValue || a.name.localeCompare(b.name));
   const clearedPositions: ClearedPositionRow[] = propertyAssets
-    .filter((asset) => asset.status === "sold")
+    .filter((asset) => asset.status === "sold" || asset.status === "disposed")
     .map((asset) => ({
       fundCode: asset.id,
       propertyAssetId: asset.id,
@@ -527,7 +555,7 @@ export const computeInvestBalances = cache(
   }
 
   for (const acctId of propertyAccountIds) {
-    const assets = allPropertyAssets.filter((asset) => asset.accountId === acctId && asset.status !== "sold");
+    const assets = allPropertyAssets.filter((asset) => asset.accountId === acctId && asset.status !== "sold" && asset.status !== "disposed");
     const marketValue = assets.reduce((sum, asset) => sum + toNumber(asset.marketValue), 0);
     const totalCost = assets.reduce((sum, asset) => sum + toNumber(asset.cost), 0);
     result.set(acctId, { marketValue, totalCost, floatingPnL: marketValue - totalCost });
