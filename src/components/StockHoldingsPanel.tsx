@@ -14,6 +14,7 @@ import { StockFeeRuleSettingsButton } from "@/components/StockFeeRuleSettingsBut
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/components/BatchReplacePopoverButton";
 import { BusinessLinkActionButton } from "@/components/BusinessLinkActionButton";
+import { StockHoldingRowActions } from "@/components/StockHoldingRowActions";
 import { ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewExcelImportMenuButton";
 
 type StockPosition = {
@@ -554,6 +555,12 @@ export function StockHoldingsPanel({
     window.history.replaceState(null, "", url.toString());
   }
 
+  const handleHoldingRowUpdated = useCallback(() => {
+    dispatchFinanceDataChanged({ reason: "stock-holding-row-update", accountIds: [accountId] });
+    void reloadHoldings().catch(() => undefined);
+    if (selectedPosition) void loadTransactions(selectedPosition, true);
+  }, [accountId, loadTransactions, reloadHoldings, selectedPosition]);
+
   const positionColumns = useMemo<AdvancedDataTableColumn<StockPosition>[]>(() => [
     {
       key: "stock",
@@ -681,7 +688,28 @@ export function StockHoldingsPanel({
         </span>
       ),
     },
-  ], [currency, isRedUp, selectedKey, t]);
+    {
+      key: "actions",
+      label: "",
+      width: 76,
+      minWidth: 64,
+      align: "right",
+      render: (p) => (
+        <StockHoldingRowActions
+          accountId={accountId}
+          position={{
+            securityId: p.securityId ?? null,
+            market: p.market ?? null,
+            stockCode: p.stockCode,
+            name: p.name,
+            nav: p.nav,
+            navDate: p.navDate ?? null,
+          }}
+          onUpdated={handleHoldingRowUpdated}
+        />
+      ),
+    },
+  ], [accountId, currency, handleHoldingRowUpdated, isRedUp, selectedKey, t]);
 
   const positionSummaryRow = useMemo(() => {
     if (displayPositions.length === 0) return undefined;
@@ -1098,7 +1126,7 @@ export function StockHoldingsPanel({
             rows={displayPositions}
             rowKey={(p) => positionKey(p)}
             emptyText={showCleared ? t("stockPanel.noCleared") : t("stockHoldingReport.empty")}
-            minTableWidth={900}
+            minTableWidth={976}
             rowClassName={(p) => {
               const active = positionKey(p) === selectedKey;
               return `cursor-pointer ${active ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-blue-50/40"}`;

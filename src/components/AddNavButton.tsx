@@ -15,7 +15,7 @@ type HoldingItem = {
   wealthProductId?: string;
 };
 
-function ManualGrabMark() {
+export function ManualGrabMark() {
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true" className="h-2.5 w-2.5">
       <path
