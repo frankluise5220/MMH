@@ -6,6 +6,7 @@ import { TransactionType } from "@prisma/client";
 import { InvestmentProfitReport } from "@/components/InvestmentProfitReport";
 import { InvestmentProfitFilterSelect } from "@/components/InvestmentProfitFilterSelect";
 import { MissingFundNavPrompt } from "@/components/MissingFundNavPrompt";
+import { MissingStockPricePrompt } from "@/components/MissingStockPricePrompt";
 import { IncomeExpenseReportClient } from "@/components/IncomeExpenseReportClient";
 import { buildCategorySmartSelectOptions } from "@/components/categorySmartSelect";
 import { ReportTransactionEditHost } from "@/components/ReportTransactionEditHost";
@@ -478,6 +479,7 @@ export default async function ReportsPage({
                 baseParams={{ report: "investment-profit", profitPeriod, profitYear: String(profitYear), profitMonth: String(profitMonth) }}
               />
               <MissingFundNavPrompt items={investmentReport.missingNavs} className="ml-auto" />
+              <MissingStockPricePrompt items={investmentReport.missingStockPrices} className={investmentReport.missingNavs.length > 0 ? "" : "ml-auto"} />
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto pr-1">
               <InvestmentProfitReport
