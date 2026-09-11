@@ -268,7 +268,9 @@ function buildPropertyPositionDisplay(propertyAssets: PropertyAssetDisplayRow[])
         propertyAssetId: asset.id,
         mortgageLoanAccountId: asset.mortgageLoanAccountId ?? null,
         assetType: asset.assetType ?? null,
-        propertyType: asset.propertyType ?? null,
+        // "fixed_asset" was an internal marker historically written into the
+        // free-text propertyType field; it is not user-facing content.
+        propertyType: asset.propertyType === "fixed_asset" ? null : (asset.propertyType ?? null),
         address: asset.address ?? null,
         attributes: asset.attributes ?? null,
         status: asset.status ?? "active",
