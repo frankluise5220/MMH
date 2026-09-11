@@ -1456,6 +1456,21 @@ const MIGRATIONS = [
     },
   },
   {
+    version: "20260910_add_reimbursement_tables",
+    description: "Create reimbursement tables: reimbursement forms generated from advance records",
+    apply(db) {
+      db.exec([
+        \`CREATE TABLE IF NOT EXISTS "reimbursements" ("id" TEXT NOT NULL PRIMARY KEY, "householdId" TEXT NOT NULL, "title" TEXT NOT NULL, "counterpartyId" TEXT NOT NULL, "counterpartyName" TEXT NOT NULL, "status" TEXT NOT NULL DEFAULT 'pending', "totalAmount" DECIMAL NOT NULL, "reimbursedDate" DATETIME, "cashAccountId" TEXT, "cashAccountName" TEXT, "note" TEXT, "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "deletedAt" DATETIME, CONSTRAINT "reimbursements_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE)\`,
+        \`CREATE INDEX IF NOT EXISTS "reimbursements_householdId_status_idx" ON "reimbursements"("householdId", "status")\`,
+        \`CREATE INDEX IF NOT EXISTS "reimbursements_householdId_counterpartyId_status_idx" ON "reimbursements"("householdId", "counterpartyId", "status")\`,
+        \`CREATE TABLE IF NOT EXISTS "reimbursement_items" ("id" TEXT NOT NULL PRIMARY KEY, "reimbursementId" TEXT NOT NULL, "txRecordId" TEXT NOT NULL, "advanceAccountId" TEXT NOT NULL, "amount" DECIMAL NOT NULL, "entryDate" DATETIME NOT NULL, "categoryName" TEXT, "note" TEXT, "invoiceCode" TEXT, "invoiceNumber" TEXT, "invoiceAmount" DECIMAL, "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "reimbursement_items_reimbursementId_fkey" FOREIGN KEY ("reimbursementId") REFERENCES "reimbursements"("id") ON DELETE CASCADE ON UPDATE CASCADE)\`,
+        \`CREATE UNIQUE INDEX IF NOT EXISTS "reimbursement_items_txRecordId_key" ON "reimbursement_items"("txRecordId")\`,
+        \`CREATE INDEX IF NOT EXISTS "reimbursement_items_reimbursementId_idx" ON "reimbursement_items"("reimbursementId")\`,
+        \`CREATE INDEX IF NOT EXISTS "reimbursement_items_advanceAccountId_idx" ON "reimbursement_items"("advanceAccountId")\`,
+      ].join(";"));
+    },
+  },
+  {
     version: "20260903_add_fund_profile_trading_calendar",
     description: "Add fund-level NAV trading calendar to fund profiles",
     apply(db) {

@@ -1045,6 +1045,7 @@ model Household {
   PreciousMetalHolding      PreciousMetalHolding[]
   StockHolding              StockHolding[]
   StatementRecognitionRule  StatementRecognitionRule[]
+  Reimbursement             Reimbursement[]
   RegularInvestPlan         RegularInvestPlan[]
   CreditCardInstallmentPlan CreditCardInstallmentPlan[]
   FxConversion              FxConversion[]
@@ -1477,6 +1478,50 @@ model InsuranceProduct {
   @@index([insuredPersonId])
 }
 
+model Reimbursement {
+  id               String              @id @default(cuid())
+  householdId      String
+  title            String
+  counterpartyId   String
+  counterpartyName String
+  status           ReimbursementStatus @default(pending)
+  totalAmount      Decimal             @db.Decimal(18, 2)
+  reimbursedDate   DateTime?
+  cashAccountId    String?
+  cashAccountName  String?
+  note             String?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @default(now()) @updatedAt
+  deletedAt        DateTime?
+  items            ReimbursementItem[]
+  Household        Household           @relation(fields: [householdId], references: [id], onDelete: Cascade)
+
+  @@index([householdId, status])
+  @@index([householdId, counterpartyId, status])
+  @@map("reimbursements")
+}
+
+model ReimbursementItem {
+  id               String        @id @default(cuid())
+  reimbursementId  String
+  txRecordId       String        @unique
+  advanceAccountId String
+  amount           Decimal       @db.Decimal(18, 2)
+  entryDate        DateTime
+  categoryName     String?
+  note             String?
+  invoiceCode      String?
+  invoiceNumber    String?
+  invoiceAmount    Decimal?      @db.Decimal(18, 2)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @default(now()) @updatedAt
+  Reimbursement    Reimbursement @relation(fields: [reimbursementId], references: [id], onDelete: Cascade)
+
+  @@index([advanceAccountId])
+  @@index([reimbursementId])
+  @@map("reimbursement_items")
+}
+
 model TxRecord {
   id                          String                      @id @default(cuid())
   date                        DateTime
@@ -1770,6 +1815,11 @@ enum PropertyTransactionAction {
   improvement
   sale
   disposal
+}
+
+enum ReimbursementStatus {
+  pending
+  reimbursed
 }
 
 enum StockTransactionAction {

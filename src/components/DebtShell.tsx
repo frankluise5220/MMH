@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, ChevronDown, ChevronRight, HandCoins, Pencil, Percent, RefreshCw, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, HandCoins, Pencil, Percent, ReceiptText, RefreshCw, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -19,6 +19,7 @@ import {
   usePruneBasicDetailSelection,
   type BasicDetailBatchCategoryOption,
 } from "./BasicDetailSelection";
+import { ReimbursementModal, type ReimbursementActions, type ReimbursementCashAccountOption } from "./ReimbursementModal";
 import { formatMoney } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
@@ -441,6 +442,8 @@ export function DebtShell({
   accountEditData = EMPTY_ACCOUNT_EDIT_DATA,
   selectedLoanType = null,
   loanEditAction,
+  reimbursementActions,
+  reimbursementCashAccountOptions = [],
 }: {
   rows: DebtRow[];
   selectedKey: string;
@@ -458,6 +461,8 @@ export function DebtShell({
     | { ok: true; warning?: string; recalculateAfterSave?: { accountId: string; startDate: string } | null }
     | { ok: false; error: string }
   >;
+  reimbursementActions?: ReimbursementActions;
+  reimbursementCashAccountOptions?: ReimbursementCashAccountOption[];
 }) {
   const router = useRouter();
   const { t, language } = useI18n();
@@ -479,6 +484,7 @@ export function DebtShell({
   const [editingLoanDetails, setEditingLoanDetails] = useState<LoanQuickEditValue | null>(null);
   const [accountEditOpenSignal, setAccountEditOpenSignal] = useState(0);
   const [pendingLoanEditAccountId, setPendingLoanEditAccountId] = useState<string | null>(null);
+  const [reimbursementOpen, setReimbursementOpen] = useState(false);
   const rowClickTimerRef = useRef<number | null>(null);
   const baseRows = useMemo(
     () => showSettledRows ? rows : rows.filter((row) => !isSettledDebtRow(row)),
@@ -1543,6 +1549,17 @@ export function DebtShell({
                 columns={entryColumns}
                 entries={entries}
                 loanType={accountLoanType(accountEditDataById.get(selectedRow.accountId))}
+                toolbarActions={!selectedRow.isGroup && !selectedRow.isLoan && selectedRow.counterpartyId && reimbursementActions ? (
+                  <button
+                    type="button"
+                    onClick={() => setReimbursementOpen(true)}
+                    className="inline-flex h-7 items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2.5 text-xs font-medium text-blue-700 transition hover:bg-blue-100"
+                    title={t("reimburse.modalTitle")}
+                  >
+                    <ReceiptText className="h-3.5 w-3.5" />
+                    {t("reimburse.entry")}
+                  </button>
+                ) : null}
               />
             </BasicDetailSelectionProvider>
           ) : (
@@ -1756,6 +1773,17 @@ export function DebtShell({
               </div>
             </div>
           </div>
+        ) : null}
+
+        {reimbursementOpen && selectedRow && !selectedRow.isGroup && !selectedRow.isLoan && selectedRow.counterpartyId && reimbursementActions ? (
+          <ReimbursementModal
+            objectId={selectedRow.counterpartyId}
+            objectType="counterparty"
+            objectName={selectedRow.objectName || selectedRow.name}
+            cashAccountOptions={reimbursementCashAccountOptions}
+            actions={reimbursementActions}
+            onClose={() => setReimbursementOpen(false)}
+          />
         ) : null}
       </div>
   );

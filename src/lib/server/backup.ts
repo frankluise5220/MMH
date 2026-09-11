@@ -1551,6 +1551,8 @@ export async function buildHouseholdBackupPayload(
     creditCardInstallmentPlans,
     loanRateAdjustments,
     debtAgreements,
+    reimbursements,
+    reimbursementItems,
     fundQueryApis,
     statementRecognitionRules,
     importBatches,
@@ -1604,6 +1606,8 @@ export async function buildHouseholdBackupPayload(
     prisma.creditCardInstallmentPlan.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.loanRateAdjustment.findMany({ where: { householdId }, orderBy: [{ effectiveDate: "asc" }] }),
     prisma.debtAgreement.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.reimbursement.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.reimbursementItem.findMany({ where: { Reimbursement: { householdId } }, orderBy: [{ createdAt: "asc" }] }),
     prisma.fundQueryApi.findMany({
       where: isSystemBackup
         ? { OR: [{ householdId }, { householdId: null }] }
@@ -1839,6 +1843,8 @@ export async function buildHouseholdBackupPayload(
       preciousMetalHoldings,
       loanRateAdjustments,
       debtAgreements,
+      reimbursements,
+      reimbursementItems,
       fundQueryApis,
       statementRecognitionRules,
       regularInvestPlans,
@@ -1907,6 +1913,8 @@ export async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPaylo
     ["PreciousMetalHoldings", sheetRows(payload.data.preciousMetalHoldings)],
     ["LoanRateAdjustments", sheetRows(payload.data.loanRateAdjustments)],
     ["DebtAgreements", sheetRows(payload.data.debtAgreements)],
+    ["Reimbursements", sheetRows(payload.data.reimbursements)],
+    ["ReimbursementItems", sheetRows(payload.data.reimbursementItems)],
     ["FundQueryApis", sheetRows(payload.data.fundQueryApis)],
     ["StatementRecognitionRules", sheetRows(payload.data.statementRecognitionRules)],
     ["RegularInvestPlans", sheetRows(payload.data.regularInvestPlans)],
@@ -1996,6 +2004,8 @@ export async function buildHouseholdTableExportWorkbook(payload: HouseholdBackup
     ["PreciousMetalHoldings", sheetRows(payload.data.preciousMetalHoldings)],
     ["LoanRateAdjustments", sheetRows(payload.data.loanRateAdjustments)],
     ["DebtAgreements", sheetRows(payload.data.debtAgreements)],
+    ["Reimbursements", sheetRows(payload.data.reimbursements)],
+    ["ReimbursementItems", sheetRows(payload.data.reimbursementItems)],
     ["FundQueryApis", sheetRows(payload.data.fundQueryApis)],
     ["StatementRecognitionRules", sheetRows(payload.data.statementRecognitionRules)],
     ["RegularInvestPlans", sheetRows(tableRegularInvestPlans)],
@@ -2079,6 +2089,8 @@ export function parseBackupPayload(raw: unknown) {
       preciousMetalHoldings: ensureArray(data.preciousMetalHoldings ?? [], "data.preciousMetalHoldings"),
       loanRateAdjustments: ensureArray(data.loanRateAdjustments ?? [], "data.loanRateAdjustments"),
       debtAgreements: ensureArray(data.debtAgreements ?? [], "data.debtAgreements"),
+      reimbursements: ensureArray(data.reimbursements ?? [], "data.reimbursements"),
+      reimbursementItems: ensureArray(data.reimbursementItems ?? [], "data.reimbursementItems"),
       fundQueryApis: ensureArray(data.fundQueryApis ?? [], "data.fundQueryApis"),
       statementRecognitionRules: ensureArray(data.statementRecognitionRules ?? [], "data.statementRecognitionRules"),
       statementCategoryRules: ensureArray(data.statementCategoryRules ?? [], "data.statementCategoryRules"),
@@ -2165,6 +2177,7 @@ export async function restoreHouseholdBackup(
   const importedCreditCardInstallmentPlans = new Set(data.creditCardInstallmentPlans.map((item) => String(item.id)));
   const importedPreciousMetalTypes = new Set(data.preciousMetalTypes.map((item) => String(item.id)));
   const importedPreciousMetalUnits = new Set(data.preciousMetalUnits.map((item) => String(item.id)));
+  const importedReimbursements = new Set(data.reimbursements.map((item) => String(item.id)));
   const importedFundTransactions = new Set(data.fundTransactions.map((item) => String(item.id)));
   const importedStockSecurities = new Set(data.stockSecurities.map((item) => String(item.id)));
   const importedStockTransactions = new Set(
@@ -2349,6 +2362,8 @@ export async function restoreHouseholdBackup(
     await tx.creditCardInstallmentPlan.deleteMany({ where: { householdId } });
     await tx.loanRateAdjustment.deleteMany({ where: { householdId } });
     await tx.debtAgreement.deleteMany({ where: { householdId } });
+    await tx.reimbursementItem.deleteMany({ where: { Reimbursement: { householdId } } });
+    await tx.reimbursement.deleteMany({ where: { householdId } });
 
     if (currentAccountIds.length > 0) {
       await tx.fundSnapshot.deleteMany({ where: { accountId: { in: currentAccountIds } } });
@@ -3803,6 +3818,25 @@ export async function restoreHouseholdBackup(
           ...item,
           householdId,
         })),
+    );
+
+    await createManyRecords(
+      tx.reimbursement,
+      data.reimbursements.map((item) => ({
+        ...item,
+        householdId,
+      })),
+    );
+
+    await createManyRecords(
+      tx.reimbursementItem,
+      data.reimbursementItems
+        .filter(
+          (item) =>
+            importedReimbursements.has(String(item.reimbursementId)) &&
+            importedTransactions.has(String(item.txRecordId)),
+        )
+        .map((item) => ({ ...item })),
     );
 
     if (data.emailAccounts.length > 0) {

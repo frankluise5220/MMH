@@ -87,6 +87,13 @@ import { createCreditCardInstallmentPlan } from "@/lib/server/credit-card-instal
 import { regularInvestFormAction } from "@/lib/server/sidebar-actions/regular-invest-actions";
 import { fillFundNavFromCache } from "@/lib/server/sidebar-actions/fund-actions";
 import { createDebtTransaction } from "@/lib/server/sidebar-actions/debt-actions";
+import {
+  createReimbursement,
+  deleteReimbursement,
+  getReimbursementOverview,
+  reimburseReimbursement,
+  updateReimbursementItemInvoice,
+} from "@/lib/server/sidebar-actions/reimbursement-actions";
 import { createTransaction, editInvestment, updateTransactionFromDialog, renewDeposit, payDepositInterest } from "@/lib/server/sidebar-actions/transaction-actions";
 import {
   listLoanRateAdjustmentsByAccountIds,
@@ -3023,6 +3030,14 @@ export default async function Home({
               categoryOptions={categoryBatchReplaceOptions}
               accountEditData={debtAccountEditData}
               loanEditAction={createDebtTransaction}
+              reimbursementActions={{
+                getData: getReimbursementOverview,
+                create: createReimbursement,
+                reimburse: reimburseReimbursement,
+                delete: deleteReimbursement,
+                updateInvoice: updateReimbursementItemInvoice,
+              }}
+              reimbursementCashAccountOptions={cashAccountSSOptions}
             />
           ) : view === "deposit" && selectedAccount ? (
             <DepositShell
