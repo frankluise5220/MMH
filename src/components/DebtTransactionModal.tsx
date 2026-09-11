@@ -526,7 +526,7 @@ export function DebtTransactionModal({
     const counterpartyOptions = isLoanDialog ? [] : (localNestedFieldData?.counterpartyId ?? []).map((item) => ({
       id: `counterparty:${item.id}`,
       label: item.name,
-      subLabel: item.type === "person" ? t("debtTx.objectType.person") : t("debtTx.objectType.organization"),
+      subLabel: institutionTypeLabel(item.type, t),
     }));
     const institutionOptions = isLoanDialog
       ? (localNestedFieldData?.institutionId ?? [])
@@ -870,7 +870,7 @@ export function DebtTransactionModal({
       const counterpartyOptions = nextNested.counterpartyId.map((item) => ({
         id: debtObjectOptionId(item.id, item.type),
         label: item.name,
-        subLabel: item.type === "person" ? t("debtTx.objectType.person") : t("debtTx.objectType.organization"),
+        subLabel: institutionTypeLabel(item.type, t),
       }));
       const institutionOptions = nextNested.institutionId
         .filter((item) => item.type === "bank" || item.type === "debt")
@@ -1686,8 +1686,18 @@ export function DebtTransactionModal({
     if (debtSideIsOut) return hasInterest ? "collect_in" : "borrow_in";
     return hasInterest ? "repay_out" : "lend_out";
   }
+  /**
+   * 交换「流出/流入」：把债务账户从当前一侧换到另一侧（只改方向，不改利息）。
+   * 注意不能用 resolveFlowMode —— 那是按【当前】方向算语义的，
+   * 拿它来"交换"会算出原来那个 mode，等于什么都没做（曾因此按钮点了没反应）。
+   */
   function swapDebtDirection() {
-    setMode(resolveFlowMode(parseMoneyText(interest) > 0));
+    const hasInterest = parseMoneyText(interest) > 0;
+    setMode(
+      debtSideIsOut
+        ? (hasInterest ? "repay_out" : "lend_out")     // 债务在流出侧 → 换到流入侧
+        : (hasInterest ? "collect_in" : "borrow_in"),  // 债务在流入侧 → 换到流出侧
+    );
   }
   // 三者互推：改本金或利息 → 总额随派生值走；直接改总额 → 反推本金（利息不变）。
   function handleFlowPrincipalChange(next: string) {
