@@ -253,7 +253,9 @@ export function normalizeCaizhiWorkbookRows(
   if (includedSheetCount === 0) return undefined;
 
   return {
-    rows: resultRows,
+    // 与京东/支付宝/微信模板保持一致：标准表头 + 数据行。
+    // 少了表头这一行，下游 parseStatementTemplateRows 会把首行数据当成表头，解析结果为 0 条。
+    rows: [NORMALIZED_HEADERS, ...resultRows],
     sourceDataRowCount: totalDataRows,
     includedSheetCount,
     profile: "caizhi",

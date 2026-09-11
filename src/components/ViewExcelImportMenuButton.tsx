@@ -1252,22 +1252,19 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
       }
 
       {
-        // 财智8检测：文件名含 "财智" → 走财智专用通道
-        const isCaizhiFile = /财智/.test(file.name);
+        // 财智8检测：文件名含 "财智"，或命中财智导出命名「XXX的YYY_明细_YYYY-MM-DD」。
+        // 注意：财智8 自己导出的文件名里没有"财智"两个字，只认"财智"会让专用通道永不生效。
+        const isCaizhiFile = /财智|_明细_\d{4}-\d{2}-\d{2}/.test(file.name);
 
         if (isCaizhiFile) {
-          const { rows, caizhiRows } = await readStatementWorkbookRowsAndText(file, STATEMENT_IMPORT_FIELD_HEADERS);
+          // caizhiRows 已带 MMH 标准表头（与京东/支付宝/微信模板同一形态），可直接解析。
+          const { caizhiRows } = await readStatementWorkbookRowsAndText(file, STATEMENT_IMPORT_FIELD_HEADERS);
           if (!caizhiRows || caizhiRows.length === 0) {
             throw new Error(t("viewImport.noRows"));
           }
-          const MMH_STANDARD_HEADERS = [
-            "日期", "入账日期", "收支大类", "流出", "流入", "账户", "对向账户",
-            "分类", "收支机构", "标签", "备注",
-          ];
-          const headerPrefixedRows = [MMH_STANDARD_HEADERS, ...caizhiRows];
           const localItems = normalizeStatementExcelParsedItems(
             parseStatementTemplateRows(
-              headerPrefixedRows,
+              caizhiRows,
               statementDefaultAccountName(props),
               STATEMENT_IMPORT_FIELD_HEADERS,
               t("settings.accounts.import.sheetGuideTitle"),

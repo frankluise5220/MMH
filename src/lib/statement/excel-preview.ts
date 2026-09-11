@@ -387,19 +387,23 @@ export function parseStatementTemplateRows(
 export type ReadStatementWorkbookResult = {
   rows: string[][];
   text: string;
-  /** 如果检测为财智8格式，则为标准化后的行；否则 undefined */
+  /** 检测为财智8格式时为标准化后的行（含 MMH 标准表头，可直接交 parseStatementTemplateRows）；否则 undefined */
   caizhiRows?: string[][];
 };
 
 /**
  * 尝试从文件名中提取财智8导出的账户名。
- * 格式：「XXX的YYY_明细_YYYY-MM-DD.xls」
+ * 财智8 导出名形如「XXX的YYY_明细_YYYY-MM-DD.xls」；账户名本身不含「的」时形如
+ * 「计划帐户(姜)_明细_2026-09-02.xls」；人工改名后也可能长成「XXX的YYY_财智_2026-09-03.xls」。
  */
 function guessCaizhiAccountNameFromFilename(filename: string): string {
-  const match = filename.match(/^(.+?)的(.+?)_明细_/);
-  if (match) return `${match[1]}的${match[2]}`;
-  const noExt = filename.replace(/\.(xls|xlsx)$/i, "");
-  return noExt || "财智账户";
+  const base = String(filename ?? "").replace(/\.(xls|xlsx)$/i, "");
+  const withOwner = base.match(/^(.+?的.+?)_明细_/);
+  if (withOwner) return withOwner[1];
+  // 去掉「_明细_ / _财智_ + 日期」尾巴，避免整串文件名被当成账户名。
+  const trimmed = base.replace(/_(?:明细|财智)?_?\d{4}-\d{2}-\d{2}.*$/, "");
+  if (trimmed && trimmed !== base) return trimmed;
+  return base || "财智账户";
 }
 
 export async function readStatementWorkbookRowsAndText(
