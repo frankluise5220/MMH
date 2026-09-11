@@ -1,12 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { ArrowDownLeft, ArrowUpRight, Landmark, Trash2 } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Coins, Landmark, Repeat, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTableSummaryRow } from "./AdvancedDataTable";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "./BatchReplacePopoverButton";
 import { BusinessLinkActionButton } from "./BusinessLinkActionButton";
+import { DepositPayInterestModal, type PayInterestLotInfo } from "./DepositPayInterestModal";
+import { DepositRenewModal, type RenewLotInfo } from "./DepositRenewModal";
 import { EntryRowActions } from "./EntryRowActions";
 import { ResizableVerticalSplit } from "./ResizableVerticalSplit";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
@@ -53,6 +55,8 @@ type DepositLot = {
   subLabel?: string;
   startDate?: string | null;
   maturityDate?: string | null;
+  maturityAction?: string | null;
+  interestPayoutFrequency?: string | null;
   originalAmount: number;
   remainingAmount: number;
   annualRate?: number | null;
@@ -73,15 +77,21 @@ export function DepositShell({
   entries,
   lots,
   cashAccounts = [],
+  renewAction,
+  payInterestAction,
 }: {
   accountLabel: string;
   institutionName?: string;
   entries: DepositEntry[];
   lots: DepositLot[];
   cashAccounts?: Array<{ id: string; label: string }>;
+  renewAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
+  payInterestAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
   const [selectedLotId, setSelectedLotId] = useState<string | null>(null);
   const [lotTab, setLotTab] = useState<LotTab>("held");
+  const [renewLot, setRenewLot] = useState<RenewLotInfo | null>(null);
+  const [payInterestLot, setPayInterestLot] = useState<PayInterestLotInfo | null>(null);
   const [selectedEntryIds, setSelectedEntryIds] = useState<Set<string>>(new Set());
   const [linkingIds, setLinkingIds] = useState<Set<string>>(new Set());
   const [entryPage, setEntryPage] = useState(1);
@@ -102,6 +112,57 @@ export function DepositShell({
   const selectedLot = useMemo(
     () => lots.find((lot) => lot.id === selectedLotId) ?? null,
     [lots, selectedLotId],
+  );
+
+  const maturityActionLabel = useCallback(
+    (action: string | null | undefined) => {
+      if (action === "renew_principal") return t("deposit.maturityAction.renewPrincipal");
+      if (action === "renew_principal_interest") return t("deposit.maturityAction.renewPrincipalInterest");
+      return t("deposit.maturityAction.redeem");
+    },
+    [t],
+  );
+
+  const payoutFrequencyLabel = useCallback(
+    (frequency: string | null | undefined) => {
+      if (frequency === "monthly") return t("deposit.payoutFrequency.monthly");
+      if (frequency === "yearly") return t("deposit.payoutFrequency.yearly");
+      return t("deposit.payoutFrequency.maturity");
+    },
+    [t],
+  );
+
+  const openRenewModal = useCallback(
+    (lot: DepositLot) => {
+      if (!renewAction) return;
+      setRenewLot({
+        id: lot.id,
+        fundName: lot.fundName,
+        principal: lot.remainingAmount > 0 ? lot.remainingAmount : lot.originalAmount,
+        annualRate: lot.annualRate ?? null,
+        startDate: lot.startDate ?? null,
+        maturityDate: lot.maturityDate ?? null,
+        maturityAction: lot.maturityAction ?? null,
+        interestPayoutFrequency: lot.interestPayoutFrequency ?? null,
+        depositAccountLabel: lot.depositAccountLabel ?? "",
+      });
+    },
+    [renewAction],
+  );
+
+  const openPayInterestModal = useCallback(
+    (lot: DepositLot) => {
+      if (!payInterestAction) return;
+      setPayInterestLot({
+        id: lot.id,
+        fundName: lot.fundName,
+        principal: lot.remainingAmount > 0 ? lot.remainingAmount : lot.originalAmount,
+        annualRate: lot.annualRate ?? null,
+        maturityDate: lot.maturityDate ?? null,
+        interestPayoutFrequency: lot.interestPayoutFrequency ?? null,
+      });
+    },
+    [payInterestAction],
   );
 
   const heldLots = useMemo(() => lots.filter((lot) => lot.status === "open"), [lots]);
@@ -247,10 +308,12 @@ export function DepositShell({
     },
     { key: "startDate", label: t("depositShell.colStartDate"), width: 110, minWidth: 84, hideable: true, filterKind: "dateRange", filterText: (lot) => lot.startDate ?? "", sortValue: (lot) => lot.startDate ?? "", render: (lot) => <span className="tabular-nums text-slate-600">{lot.startDate || "-"}</span> },
     { key: "maturityDate", label: t("depositShell.colMaturityDate"), width: 110, minWidth: 84, hideable: true, filterKind: "dateRange", filterText: (lot) => lot.maturityDate ?? "", sortValue: (lot) => lot.maturityDate ?? "", render: (lot) => <span className="tabular-nums text-slate-600">{lot.maturityDate || "-"}</span> },
+    { key: "maturityAction", label: t("depositShell.colMaturityAction"), width: 130, minWidth: 96, hideable: true, filterText: (lot) => maturityActionLabel(lot.maturityAction), sortValue: (lot) => lot.maturityAction ?? "", render: (lot) => <span className="text-slate-600">{maturityActionLabel(lot.maturityAction)}</span> },
+    { key: "interestPayoutFrequency", label: t("depositShell.colPayoutFrequency"), width: 110, minWidth: 88, hideable: true, filterText: (lot) => payoutFrequencyLabel(lot.interestPayoutFrequency), sortValue: (lot) => lot.interestPayoutFrequency ?? "", render: (lot) => <span className="text-slate-600">{payoutFrequencyLabel(lot.interestPayoutFrequency)}</span> },
     { key: "originalAmount", label: t("depositShell.colOriginalAmount"), width: 120, minWidth: 86, align: "right", hideable: true, filterKind: "numberRange", filterText: (lot) => String(lot.originalAmount), filterNumber: (lot) => lot.originalAmount, sortValue: (lot) => lot.originalAmount, render: (lot) => <span className="font-semibold tabular-nums text-slate-700">{formatMoney(lot.originalAmount)}</span> },
     { key: "expectedInterest", label: t("depositShell.colExpectedInterest"), width: 110, minWidth: 80, align: "right", hideable: true, filterKind: "numberRange", filterText: (lot) => lot.expectedInterest != null ? String(lot.expectedInterest) : null, filterNumber: (lot) => lot.expectedInterest ?? null, sortValue: (lot) => lot.expectedInterest ?? 0, render: (lot) => lot.expectedInterest != null ? <span className="font-semibold tabular-nums text-emerald-700">{formatMoney(lot.expectedInterest)}</span> : <span className="tabular-nums text-slate-400">-</span> },
     { key: "annualRate", label: t("depositShell.colAnnualRate"), width: 100, minWidth: 72, align: "right", hideable: true, filterKind: "numberRange", filterText: (lot) => lot.annualRate != null ? String(lot.annualRate) : null, filterNumber: (lot) => lot.annualRate ?? null, sortValue: (lot) => lot.annualRate ?? 0, render: (lot) => <span className="tabular-nums text-slate-600">{lot.annualRate != null ? `${lot.annualRate}%` : "-"}</span> },
-  ], [t]);
+  ], [maturityActionLabel, payoutFrequencyLabel, t]);
 
   const expiredLotColumns = useMemo<AdvancedDataTableColumn<DepositLot>[]>(() => [
     {
@@ -370,6 +433,41 @@ export function DepositShell({
             summaryRow={lotsSummaryRow}
             onRowClick={(lot) => setSelectedLotId((current) => current === lot.id ? null : lot.id)}
             rowClassName={(lot) => `cursor-pointer ${selectedLotId === lot.id ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-slate-50"}`}
+            rowActions={lotTab === "held" && (renewAction || payInterestAction) ? (lot) => (
+              <div className="flex items-center gap-1">
+                {payInterestAction && lot.interestPayoutFrequency && lot.interestPayoutFrequency !== "maturity" ? (
+                  <button
+                    type="button"
+                    disabled={lot.status !== "open"}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openPayInterestModal(lot);
+                    }}
+                    className="flex h-6 w-6 items-center justify-center rounded border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40"
+                    title={t("deposit.payInterest.title")}
+                    aria-label={t("deposit.payInterest.title")}
+                  >
+                    <Coins className="h-3.5 w-3.5" />
+                  </button>
+                ) : null}
+                {renewAction ? (
+                  <button
+                    type="button"
+                    disabled={lot.status !== "open"}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openRenewModal(lot);
+                    }}
+                    className="flex h-6 w-6 items-center justify-center rounded border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
+                    title={t("deposit.renew.title")}
+                    aria-label={t("deposit.renew.title")}
+                  >
+                    <Repeat className="h-3.5 w-3.5" />
+                  </button>
+                ) : null}
+              </div>
+            ) : undefined}
+            rowActionsWidth={96}
           />
         </section>
 
@@ -456,6 +554,22 @@ export function DepositShell({
           />
         </section>
       </ResizableVerticalSplit>
+
+      <DepositRenewModal
+        open={!!renewLot}
+        onClose={() => setRenewLot(null)}
+        lot={renewLot}
+        cashAccounts={cashAccounts}
+        renewAction={renewAction ?? (async () => ({ ok: false as const, error: t("txForm.alert.saveFailed") }))}
+      />
+
+      <DepositPayInterestModal
+        open={!!payInterestLot}
+        onClose={() => setPayInterestLot(null)}
+        lot={payInterestLot}
+        cashAccounts={cashAccounts}
+        payInterestAction={payInterestAction ?? (async () => ({ ok: false as const, error: t("txForm.alert.saveFailed") }))}
+      />
     </div>
   );
 }

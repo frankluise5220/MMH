@@ -64,7 +64,11 @@ export async function computeAccountDisplayBalances(
     const remainingByLotId = new Map<string, { depositAccountId: string; amount: number }>();
     for (const entry of depositEntries) {
       if (!isOnOrBeforeToday(entry.tradeDate)) continue;
+      // Interest payout / reinvest rows are cash flows, not principal lots:
+      // they must neither open a lot nor close the source one.
       const isRedeem = entry.action === "redeem" || entry.action === "switch_out";
+      const isDividend = entry.action === "dividend_cash" || entry.action === "dividend_reinvest";
+      if (isDividend) continue;
       const depositAccountId = entry.accountId;
       if (!depositAccountId || !depositAccountIdSet.has(depositAccountId)) continue;
 

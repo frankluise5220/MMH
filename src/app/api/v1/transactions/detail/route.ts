@@ -379,6 +379,19 @@ function parseNonNegativeMoney(value: unknown) {
   return Number.isFinite(amount) && amount >= 0 ? amount : 0;
 }
 
+/**
+ * Foreign-currency card expense (fxPostingV2): the posted local amount may be
+ * unknown until the credit-card bill arrives, so the client sends amount = 0
+ * plus the original foreign currency/amount fact. Accept the zero and let the
+ * user fill in the real posted amount later.
+ */
+function allowsZeroPostedAmountFx(body: Record<string, unknown>, type: unknown) {
+  if (String(type ?? "") !== "expense") return false;
+  if (!String(body.originalCurrency ?? "").trim()) return false;
+  const originalAmount = parseMoney(body.originalAmount);
+  return originalAmount !== 0;
+}
+
 async function resolveWealthProductInTx(
   tx: any,
   params: {
@@ -1845,7 +1858,7 @@ export async function POST(req: Request) {
       type === "investment" &&
       earlyFundSubtypeForCreate === FundSubtype.dividend_reinvest &&
       earlyFundUnitsForCreate > 0;
-    if (!amountAbs && !allowsZeroAmountInvestment) {
+    if (!amountAbs && !allowsZeroAmountInvestment && !allowsZeroPostedAmountFx(body, type)) {
       return NextResponse.json({ ok: false, code: "INVALID_AMOUNT", error: "金额不正确" }, { status: 400 });
     }
 
@@ -2978,7 +2991,7 @@ export async function PUT(req: Request) {
       type === "investment" &&
       earlyFundSubtypeForEdit === FundSubtype.dividend_reinvest &&
       earlyFundUnitsForEdit > 0;
-    if (!amountAbs && !allowsZeroAmountInvestmentEdit) {
+    if (!amountAbs && !allowsZeroAmountInvestmentEdit && !allowsZeroPostedAmountFx(body, type)) {
       return NextResponse.json({ ok: false, code: "INVALID_AMOUNT", error: "金额不正确" }, { status: 400 });
     }
 

@@ -1508,6 +1508,30 @@ const MIGRATIONS = [
       createCreditCardBillingDayTable(db);
     },
   },
+  {
+    version: "20260910_add_deposit_maturity_action",
+    description: "Add deposit maturity action fields for renewal tracking",
+    apply(db) {
+      if (tableExists(db, "transactions")) {
+        addColumnIfMissing(db, "transactions", "depositMaturityAction", "TEXT");
+      }
+      if (tableExists(db, "deposit_transactions")) {
+        addColumnIfMissing(db, "deposit_transactions", "maturityAction", "TEXT");
+      }
+    },
+  },
+  {
+    version: "20260911_add_deposit_interest_payout",
+    description: "Add deposit interest payout frequency fields",
+    apply(db) {
+      if (tableExists(db, "transactions")) {
+        addColumnIfMissing(db, "transactions", "depositInterestPayoutFrequency", "TEXT");
+      }
+      if (tableExists(db, "deposit_transactions")) {
+        addColumnIfMissing(db, "deposit_transactions", "interestPayoutFrequency", "TEXT");
+      }
+    },
+  },
 ];
 
 function databasePathFromUrl(value) {

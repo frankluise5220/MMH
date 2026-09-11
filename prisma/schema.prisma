@@ -460,6 +460,24 @@ model FundSnapshot {
   @@index([snapshotDate])
 }
 
+/// Cache for external benchmark NAV series (e.g. 沪深300 = "000300").
+/// Used by the statistics page to overlay market baseline against portfolio performance.
+model BenchmarkCache {
+  id        String   @id @default(cuid())
+  code      String
+  navDate   DateTime
+  nav       Decimal  @db.Decimal(20, 6)
+  cumNav    Decimal? @db.Decimal(20, 6)
+  name      String?
+  source    String?  @default("eastmoney")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@unique([code, navDate])
+  @@index([code])
+  @@index([navDate])
+}
+
 model FundTransaction {
   id                  String                    @id @default(cuid())
   householdId         String
@@ -610,6 +628,8 @@ model DepositTransaction {
   fee                        Decimal?             @db.Decimal(18, 2)
   annualRate                 Decimal?             @db.Decimal(10, 6)
   realizedProfit             Decimal?             @db.Decimal(18, 2)
+  maturityAction             String?
+  interestPayoutFrequency    String?
   note                       String?
   deletedAt                  DateTime?
   createdAt                  DateTime             @default(now())
@@ -1479,6 +1499,8 @@ model TxRecord {
   depositAnnualRate           Decimal?                    @db.Decimal(10, 6)
   depositInterest             Decimal?                    @db.Decimal(18, 2)
   depositSourceEntryId        String?
+  depositMaturityAction       String?
+  depositInterestPayoutFrequency String?
   fundSourceEntryId           String?
   debtPrincipalAmount         Decimal?                    @db.Decimal(18, 2)
   debtInterestAmount          Decimal?                    @db.Decimal(18, 2)
@@ -1726,6 +1748,7 @@ enum PropertyTransactionAction {
   purchase
   improvement
   sale
+  disposal
 }
 
 enum StockTransactionAction {

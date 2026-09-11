@@ -285,6 +285,8 @@ const TRANSACTION_EXPORT_LABELS: Record<string, string> = {
   depositAnnualRate: "年化利率",
   depositInterest: "利息",
   depositSourceEntryId: "关联存单ID",
+  depositMaturityAction: "到期处理",
+  depositInterestPayoutFrequency: "取息周期",
   insuranceProductId: "保险产品ID",
   householdId: "账簿ID",
   deletedAt: "删除时间",
@@ -581,6 +583,8 @@ const TRANSACTION_RESTORE_COLUMNS = [
   { name: "depositAnnualRate", select: "NULLIF(x.\"depositAnnualRate\", '')::numeric" },
   { name: "depositInterest", select: "NULLIF(x.\"depositInterest\", '')::numeric" },
   { name: "depositSourceEntryId", select: 'x."depositSourceEntryId"' },
+  { name: "depositMaturityAction", select: 'x."depositMaturityAction"' },
+  { name: "depositInterestPayoutFrequency", select: 'x."depositInterestPayoutFrequency"' },
   { name: "fundSourceEntryId", select: 'x."fundSourceEntryId"' },
   { name: "debtPrincipalAmount", select: "NULLIF(x.\"debtPrincipalAmount\", '')::numeric" },
   { name: "debtInterestAmount", select: "NULLIF(x.\"debtInterestAmount\", '')::numeric" },
@@ -3237,6 +3241,10 @@ export async function restoreHouseholdBackup(
                 item.depositSourceEntryId && importedTransactions.has(String(item.depositSourceEntryId))
                   ? String(item.depositSourceEntryId)
                   : null,
+              depositMaturityAction:
+                item.depositMaturityAction == null ? null : String(item.depositMaturityAction),
+              depositInterestPayoutFrequency:
+                item.depositInterestPayoutFrequency == null ? null : String(item.depositInterestPayoutFrequency),
               fundSourceEntryId:
                 item.fundSourceEntryId && importedTransactions.has(String(item.fundSourceEntryId))
                   ? String(item.fundSourceEntryId)

@@ -91,6 +91,7 @@ model Account {
   StockTransaction                                           StockTransaction[]          @relation("StockTransaction_stockAccount")
   StockTransactionCashAccount                                StockTransaction[]          @relation("StockTransaction_cashAccount")
   PropertyAsset                                              PropertyAsset[]
+  MortgagedPropertyAssets                                    PropertyAsset[]             @relation("MortgageLoanAccountToPropertyAsset")
   PropertyTransaction                                        PropertyTransaction[]       @relation("PropertyTransaction_propertyAccount")
   PropertyTransactionCashAccount                             PropertyTransaction[]       @relation("PropertyTransaction_cashAccount")
   RegularInvestPlan_RegularInvestPlan_accountIdToAccount     RegularInvestPlan[]         @relation("RegularInvestPlan_accountIdToAccount")
@@ -462,6 +463,24 @@ model FundSnapshot {
   @@index([snapshotDate])
 }
 
+/// Cache for external benchmark NAV series (e.g. 沪深300 = "000300").
+/// Used by the statistics page to overlay market baseline against portfolio performance.
+model BenchmarkCache {
+  id        String   @id @default(cuid())
+  code      String
+  navDate   DateTime
+  nav       Decimal
+  cumNav    Decimal?
+  name      String?
+  source    String?  @default("eastmoney")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@unique([code, navDate])
+  @@index([code])
+  @@index([navDate])
+}
+
 model FundTransaction {
   id                  String                    @id @default(cuid())
   householdId         String
@@ -612,6 +631,8 @@ model DepositTransaction {
   fee                        Decimal?
   annualRate                 Decimal?
   realizedProfit             Decimal?
+  maturityAction             String?
+  interestPayoutFrequency    String?
   note                       String?
   deletedAt                  DateTime?
   createdAt                  DateTime             @default(now())
@@ -882,6 +903,7 @@ model PropertyAsset {
   updatedAt           DateTime              @default(now()) @updatedAt
   Household           Household             @relation(fields: [householdId], references: [id], onDelete: Cascade)
   Account             Account               @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  MortgageLoanAccount Account?              @relation("MortgageLoanAccountToPropertyAsset", fields: [mortgageLoanAccountId], references: [id], onDelete: SetNull)
   Valuations          PropertyValuation[]
   Transactions        PropertyTransaction[]
 
@@ -1480,6 +1502,8 @@ model TxRecord {
   depositAnnualRate           Decimal?
   depositInterest             Decimal?
   depositSourceEntryId        String?
+  depositMaturityAction       String?
+  depositInterestPayoutFrequency String?
   fundSourceEntryId           String?
   debtPrincipalAmount         Decimal?
   debtInterestAmount          Decimal?
@@ -1727,6 +1751,7 @@ enum PropertyTransactionAction {
   purchase
   improvement
   sale
+  disposal
 }
 
 enum StockTransactionAction {

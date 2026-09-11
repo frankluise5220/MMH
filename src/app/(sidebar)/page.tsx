@@ -83,12 +83,11 @@ import { normalizeLoanType, resolveLoanTypeValue } from "@/lib/loan-type";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
 import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
-import { resolveOrCreateAdvanceAccount } from "@/lib/server/advance-account";
 import { createCreditCardInstallmentPlan } from "@/lib/server/credit-card-installment";
 import { regularInvestFormAction } from "@/lib/server/sidebar-actions/regular-invest-actions";
 import { fillFundNavFromCache } from "@/lib/server/sidebar-actions/fund-actions";
 import { createDebtTransaction } from "@/lib/server/sidebar-actions/debt-actions";
-import { createTransaction, editInvestment, updateTransactionFromDialog } from "@/lib/server/sidebar-actions/transaction-actions";
+import { createTransaction, editInvestment, updateTransactionFromDialog, renewDeposit, payDepositInterest } from "@/lib/server/sidebar-actions/transaction-actions";
 import {
   listLoanRateAdjustmentsByAccountIds,
 } from "@/lib/server/loan-rate-adjustments";
@@ -103,7 +102,6 @@ import { linkExpenseToFixedAsset, syncLinkedFixedAssetTransactionFromCashEntry }
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
 import { shouldPreferLoanAutoDebitPlan, shouldPreferLoanScheduledPlan } from "@/lib/scheduled-task";
 import { convertCurrencyAmounts, getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
-import { resolveAdvanceTransfer } from "@/lib/advance-transfer";
 import { findRecentManualTransactionDuplicate } from "@/lib/server/transaction-dedupe";
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 import {
@@ -1152,6 +1150,7 @@ export default async function Home({
         groupName: display.groupName,
         institutionId: a.institutionId ?? "",
         institutionType: a.Institution?.type ?? "",
+        counterpartyId: a.counterpartyId ?? "",
         investProductType: a.investProductType,
         debtDirection: a.debtDirection ?? null,
         billingDay: a.billingDay ?? null,
@@ -1318,7 +1317,8 @@ export default async function Home({
   const nestedFieldData = {
     groupId: groups.filter(g => g.name !== "未指定").map(g => ({ id: g.id, name: g.name })),
     institutionId: institutions.map(it => ({ id: it.id, name: it.name, type: it.type ?? "" })),
-    counterpartyId: counterparties.map(it => ({ id: it.id, name: it.shortName?.trim() || it.name, type: it.type ?? "organization" })),
+    counterpartyId: counterparties.filter((it) => (it.type ?? "organization") !== "merchant").map((it) => ({ id: it.id, name: it.shortName?.trim() || it.name, type: it.type ?? "organization" })),
+    merchantId: counterparties.filter((it) => it.type === "merchant").map((it) => ({ id: it.id, name: it.shortName?.trim() || it.name })),
   };
 
   const debtAccounts = accounts.filter((account) => isLoanOrSettlementAccountKind(account.kind) && account.isActive);
@@ -1827,7 +1827,8 @@ export default async function Home({
           ...(currentDepositTransactionEntries || []).map((entry) => {
             const depositSubtype = String(entry.fundSubtype ?? "");
             const isRedeemEntry = depositSubtype === "redeem" || depositSubtype === "switch_out";
-            const cashAccountLabel = isRedeemEntry
+            const isDividendEntry = depositSubtype === "dividend_cash" || depositSubtype === "dividend_reinvest";
+            const cashAccountLabel = isRedeemEntry || isDividendEntry
               ? (entry.toAccountId ? (accountLabelById.get(entry.toAccountId) ?? entry.toAccountName ?? "") : (entry.toAccountName ?? ""))
               : (entry.accountId ? (accountLabelById.get(entry.accountId) ?? entry.accountName ?? "") : (entry.accountName ?? ""));
             const entryDate = toYmdOrNull(entry.date) ?? "";
@@ -1835,7 +1836,11 @@ export default async function Home({
             return {
               id: entry.id,
               date: entryDate,
-              typeLabel: entry.fundSubtype === "redeem" ? t("deposit.subtype.redeem") : t("deposit.subtype.buy"),
+              typeLabel: depositSubtype === "redeem"
+                ? t("deposit.subtype.redeem")
+                : isDividendEntry
+                  ? t("deposit.subtype.dividend")
+                  : t("deposit.subtype.buy"),
               fundName: entry.fundName ?? entry.fundCode ?? "",
               maturityDate: arrivalDate,
               cashAccountLabel,
@@ -1861,6 +1866,8 @@ export default async function Home({
                     ? toNumber(entry.depositInterest)
                     : undefined,
                 depositSourceEntryId: entry.depositSourceEntryId ?? undefined,
+                depositMaturityAction: entry.depositMaturityAction ?? undefined,
+                depositInterestPayoutFrequency: entry.depositInterestPayoutFrequency ?? undefined,
                 fundArrivalDate: arrivalDate ?? undefined,
                 fundProductType: "deposit",
                 fundSubtype: entry.fundSubtype ?? "buy",
@@ -2196,6 +2203,8 @@ export default async function Home({
         id: string;
         fundName: string;
         maturityDate: string | null;
+        maturityAction: string | null;
+        interestPayoutFrequency: string | null;
         remainingAmount: number;
         depositAccountId: string;
         depositAccountName: string;
@@ -2207,6 +2216,8 @@ export default async function Home({
       id: string;
       fundName: string;
       maturityDate: string | null;
+      maturityAction: string | null;
+      interestPayoutFrequency: string | null;
       remainingAmount: number;
       depositAccountId: string;
       depositAccountName: string;
@@ -2217,6 +2228,8 @@ export default async function Home({
       const fundName = (entry.fundName ?? entry.fundCode ?? "").trim() || t("sidebar.deposit.unnamed");
       const maturityDate = toYmdOrNull(entry.fundArrivalDate);
       const isRedeemEntry = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";
+      const isDividendEntry = entry.fundSubtype === "dividend_cash" || entry.fundSubtype === "dividend_reinvest";
+      if (isDividendEntry) continue;
       const amountValue = isRedeemEntry
         ? Math.max(
             0,
@@ -2234,6 +2247,8 @@ export default async function Home({
           id: entry.id,
           fundName,
           maturityDate,
+          maturityAction: entry.depositMaturityAction ?? null,
+          interestPayoutFrequency: entry.depositInterestPayoutFrequency ?? null,
           remainingAmount: amountValue,
           depositAccountId,
           depositAccountName,
@@ -2267,12 +2282,15 @@ export default async function Home({
           return sourceEntry?.fundNav != null ? toNumber(sourceEntry.fundNav) : null;
         })();
         const startDate = toYmdOrNull(sourceEntry?.date);
+        // Renewed lots: interest accrues from the latest renewal (effective) date,
+        // stored on the buy record's otherwise-unused fundConfirmDate slot.
+        const interestStartDate = toYmdOrNull(sourceEntry?.fundConfirmDate) ?? startDate;
         const expectedInterest =
           lot.remainingAmount > 0.0001
             ? calcDepositExpectedInterest({
                 principal: originalAmount,
                 annualRate,
-                startDate,
+                startDate: interestStartDate,
                 maturityDate: lot.maturityDate,
                 today: formatDateUtc(new Date()),
               })
@@ -2291,6 +2309,8 @@ export default async function Home({
           fundName: lot.fundName,
           startDate,
           maturityDate: lot.maturityDate,
+          maturityAction: lot.maturityAction,
+          interestPayoutFrequency: lot.interestPayoutFrequency,
           remainingAmount: Number(lot.remainingAmount.toFixed(2)),
           status: lot.remainingAmount > 0.0001 ? "open" as const : "closed" as const,
           annualRate,
@@ -3011,6 +3031,8 @@ export default async function Home({
               entries={depositEntries}
               lots={depositLots}
               cashAccounts={cashAccountList}
+              renewAction={renewDeposit}
+              payInterestAction={payDepositInterest}
             />
           ) : view === "insurance" && selectedAccount ? (
             <InsuranceShell

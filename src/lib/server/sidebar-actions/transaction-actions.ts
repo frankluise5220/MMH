@@ -220,6 +220,20 @@ function locationCounterpartyDisplayName(
   return counterparty?.shortName?.trim() || counterparty?.name?.trim() || null;
 }
 
+/**
+ * Foreign-currency card expense (fxPostingV2): the amount the bank posts in the
+ * card's own currency is often unknown when the entry is created — it only
+ * shows up when the credit-card bill arrives. The form then sends amount = 0
+ * together with the original foreign currency/amount as a settlement fact, so a
+ * zero posted amount has to be accepted and filled in later.
+ */
+function allowsZeroPostedAmountFx(formData: FormData, type: string) {
+  if (type !== "expense") return false;
+  if (!String(formData.get("originalCurrency") ?? "").trim()) return false;
+  const originalAmount = Number(formData.get("originalAmount"));
+  return Number.isFinite(originalAmount) && originalAmount !== 0;
+}
+
 async function createSplitWealthTransaction(
   t: (key: string, params?: Record<string, string | number>) => string,
   formData: FormData,
@@ -429,7 +443,7 @@ export async function createTransaction(formData: FormData) {
     Number.isFinite(earlyFundUnitsRaw) &&
     earlyFundUnitsRaw > 0;
 
-  if (!amountAbs && !allowsZeroAmountInvestment) {
+  if (!amountAbs && !allowsZeroAmountInvestment && !allowsZeroPostedAmountFx(formData, type)) {
     return { ok: false as const, error: t("txForm.alert.invalidAmount") };
   }
 
@@ -760,6 +774,12 @@ export async function createTransaction(formData: FormData) {
       const depositPrincipalAmountRaw = parseFloat(String(formData.get("depositPrincipalAmount") ?? ""));
       const recordCurrency = String(formData.get("currency") ?? "").trim().toUpperCase() || null;
       const depositSourceEntryId = String(formData.get("depositSourceEntryId") ?? "").trim() || null;
+      const depositMaturityActionRaw = String(formData.get("depositMaturityAction") ?? "").trim();
+      const DEPOSIT_MATURITY_ACTIONS = ["redeem", "renew_principal", "renew_principal_interest"];
+      const depositMaturityAction = DEPOSIT_MATURITY_ACTIONS.includes(depositMaturityActionRaw) ? depositMaturityActionRaw : null;
+      const depositInterestPayoutRaw = String(formData.get("depositInterestPayoutFrequency") ?? "").trim();
+      const DEPOSIT_INTEREST_PAYOUTS = ["maturity", "monthly", "yearly"];
+      const depositInterestPayoutFrequency = DEPOSIT_INTEREST_PAYOUTS.includes(depositInterestPayoutRaw) ? depositInterestPayoutRaw : null;
       const cashAccountIdInput = String(formData.get("cashAccountId") ?? "").trim() || null;
       const fundConfirmDate = fundConfirmDateStr ? new Date(fundConfirmDateStr) : null;
       const fundArrivalDate = fundArrivalDateStr ? new Date(fundArrivalDateStr) : null;
@@ -1063,6 +1083,8 @@ export async function createTransaction(formData: FormData) {
               depositAnnualRate: depositAnnualRate ?? undefined,
               depositInterest: depositInterest ?? undefined,
               depositSourceEntryId: depositSourceEntryId ?? undefined,
+              depositMaturityAction: redeemLike || isDividendCash || isDividendReinvest ? null : depositMaturityAction ?? undefined,
+              depositInterestPayoutFrequency: redeemLike || isDividendCash || isDividendReinvest ? null : depositInterestPayoutFrequency ?? undefined,
               fundFee: isMetalProduct ? undefined : fundFee ?? undefined,
               fundConfirmDate: isMetalProduct ? undefined : computedConfirmDate ?? undefined,
               fundArrivalDate: isMetalProduct ? undefined : computedArrivalDate ?? undefined,
@@ -1444,6 +1466,8 @@ export async function editInvestment(formData: FormData) {
   const hasFundArrivalDate = formData.has("fundArrivalDate");
   const hasFundArrivalAmount = formData.has("fundArrivalAmount");
   const hasDepositSourceEntryId = formData.has("depositSourceEntryId");
+  const hasDepositMaturityAction = formData.has("depositMaturityAction");
+  const hasDepositInterestPayout = formData.has("depositInterestPayoutFrequency");
   const hasConfirmDays = formData.has("confirmDays");
   const feeRateWasEdited = String(formData.get("feeRateEdited") ?? "").trim() === "1";
   const hasFeeRate = feeRateWasEdited && formData.has("feeRate");
@@ -1462,6 +1486,8 @@ export async function editInvestment(formData: FormData) {
   const fundArrivalDateStr = String(formData.get("fundArrivalDate") ?? "").trim();
   const fundArrivalAmountStr = String(formData.get("fundArrivalAmount") ?? "").trim();
   const depositSourceEntryIdStr = String(formData.get("depositSourceEntryId") ?? "").trim();
+  const depositMaturityActionStr = String(formData.get("depositMaturityAction") ?? "").trim();
+  const depositInterestPayoutStr = String(formData.get("depositInterestPayoutFrequency") ?? "").trim();
   const confirmDaysStr = String(formData.get("confirmDays") ?? "").trim();
   const arrivalDaysStr = String(formData.get("arrivalDays") ?? "").trim();
   const feeRateStr = String(formData.get("feeRate") ?? "").trim();
@@ -1515,6 +1541,12 @@ export async function editInvestment(formData: FormData) {
     : undefined;
   const depositSourceEntryId: string | null | undefined = hasDepositSourceEntryId
     ? (depositSourceEntryIdStr || null)
+    : undefined;
+  const depositMaturityAction: string | null | undefined = hasDepositMaturityAction
+    ? (["redeem", "renew_principal", "renew_principal_interest"].includes(depositMaturityActionStr) ? depositMaturityActionStr : null)
+    : undefined;
+  const depositInterestPayout: string | null | undefined = hasDepositInterestPayout
+    ? (["maturity", "monthly", "yearly"].includes(depositInterestPayoutStr) ? depositInterestPayoutStr : null)
     : undefined;
   const confirmDays: number | null | undefined = hasConfirmDays
     ? (Number.isFinite(confirmDaysRaw) && confirmDaysRaw >= 0 ? confirmDaysRaw : null)
@@ -1739,8 +1771,22 @@ export async function editInvestment(formData: FormData) {
         depositAnnualRate: depositAnnualRate ?? null,
         depositInterest: depositInterest ?? null,
         depositSourceEntryId: depositSourceEntryId ?? null,
+        // Deposit maturity / payout options are only sent by the deposit form.
+        // Other edit entry points (fund / metal / wealth modals) must leave the
+        // stored values untouched instead of clearing them to null.
+        ...(fundProductType === "deposit" && depositMaturityAction !== undefined
+          ? { depositMaturityAction }
+          : {}),
+        ...(fundProductType === "deposit" && depositInterestPayout !== undefined
+          ? { depositInterestPayoutFrequency: depositInterestPayout }
+          : {}),
         fundFee: isMetalProduct ? null : fundFee ?? null,
-        fundConfirmDate: isMetalProduct ? null : fundConfirmDate ?? null,
+        // Deposit buy records reuse fundConfirmDate as the interest segment
+        // start (renewal / last payout date); the deposit form never sends it,
+        // so preserve the stored value instead of clearing it on every edit.
+        fundConfirmDate: isMetalProduct
+          ? null
+          : fundConfirmDate ?? (fundProductType === "deposit" && !redeemLike ? txRecord.fundConfirmDate : null),
         fundArrivalDate: isMetalProduct ? null : fundArrivalDate ?? null,
         fundArrivalAmount: fundArrivalAmount ?? null,
         note: memo || null,
@@ -2004,6 +2050,9 @@ export async function editInvestment(formData: FormData) {
         console.error("editInvestment sync independent business transaction:", e);
       });
     }
+    if (fundProductType === "deposit" && depositMaturityAction !== undefined) {
+      await recalcAndSaveAccountBalance(oldInvestmentAccId).catch(() => {});
+    }
 
     // Recalculate positions: if the fund account changed, recalculate both the old and new accounts.
     const finalInvestmentAccId = newToAccountId ?? oldInvestmentAccId;
@@ -2069,6 +2118,294 @@ export async function editInvestment(formData: FormData) {
     return { ok: false as const, error: e instanceof Error ? e.message : t("investForm.alert.saveFailed") };
   }
 }
+/**
+ * Renew a held deposit lot (bank-style auto-renewal applied at maturity).
+ * - Interest accrues from the lot's original start date (or the latest renewal
+ *   date stored on the buy record's fundConfirmDate slot) to its maturity date,
+ *   following the same principal x annualRate x days / 365 convention as the
+ *   deposit form preview.
+ * - Mode "renew_principal_interest": interest is folded into the principal and
+ *   the same lot rolls into the new term (no cash flow).
+ * - Mode "renew_principal": interest is paid out to a cash account as a
+ *   deposit dividend_cash entry; the principal continues for the new term.
+ * Both modes update the lot's maturity date (default: rolled by the original
+ * term) and annual rate (default: unchanged), and store the renewal effective
+ * date on fundConfirmDate so future previews accrue only the new segment.
+ */
+export async function renewDeposit(formData: FormData) {
+  "use server";
+  const t = await getServerT();
+  const { householdId } = await getHouseholdScope();
+  const entryId = String(formData.get("entryId") ?? "").trim();
+  if (!entryId) return { ok: false as const, error: t("sidebar.action.missingParams") };
+  let mode = String(formData.get("renewMode") ?? "renew_principal_interest").trim();
+  if (mode !== "renew_principal_interest" && mode !== "renew_principal") {
+    return { ok: false as const, error: t("deposit.renew.invalidMode") };
+  }
+  const newRateRaw = parseFloat(String(formData.get("newAnnualRate") ?? ""));
+  const interestRaw = parseFloat(String(formData.get("interest") ?? ""));
+  const newMaturityDate = dateFromYmd(String(formData.get("newMaturityDate") ?? "").trim());
+  const cashAccountId = String(formData.get("cashAccountId") ?? "").trim();
+  if (mode === "renew_principal" && !cashAccountId) {
+    return { ok: false as const, error: t("deposit.renew.selectCashAccount") };
+  }
+
+  try {
+    const buy = await prisma.txRecord.findFirst({
+      where: {
+        id: entryId,
+        householdId,
+        type: TransactionType.investment,
+        fundProductType: "deposit",
+        fundSubtype: FundSubtype.buy,
+        deletedAt: null,
+      },
+    });
+    if (!buy) return { ok: false as const, error: t("deposit.renew.notFound") };
+    const redeemedLink = await prisma.txRecord.findFirst({
+      where: {
+        householdId,
+        deletedAt: null,
+        depositSourceEntryId: buy.id,
+        fundSubtype: { in: [FundSubtype.redeem, FundSubtype.switch_out] },
+      },
+      select: { id: true },
+    });
+    if (redeemedLink) return { ok: false as const, error: t("deposit.renew.lotClosed") };
+
+    // Deposits that pay out interest periodically cannot roll interest into the
+    // principal (it has already been paid out), so clamp to principal renewal.
+    const payoutFrequency = buy.depositInterestPayoutFrequency;
+    if (payoutFrequency && payoutFrequency !== "maturity" && mode === "renew_principal_interest") {
+      mode = "renew_principal";
+    }
+
+    const principal = Math.abs(toNumber(buy.fundArrivalAmount ?? buy.amount));
+    const annualRate = toNumber(buy.depositAnnualRate);
+    const effectiveNewRate = Number.isFinite(newRateRaw) && newRateRaw > 0 ? newRateRaw : (annualRate > 0 ? annualRate : null);
+    if (!(principal > 0)) return { ok: false as const, error: t("deposit.renew.missingPrincipal") };
+    if (effectiveNewRate == null || effectiveNewRate <= 0) return { ok: false as const, error: t("deposit.renew.missingRate") };
+    const maturityDate = buy.fundArrivalDate;
+    if (!maturityDate) return { ok: false as const, error: t("deposit.renew.missingMaturity") };
+    const segmentStart = buy.fundConfirmDate ?? buy.date;
+    const segmentDays = Math.max(0, Math.round((maturityDate.getTime() - segmentStart.getTime()) / 86400000));
+    const accruedInterest = interestRaw != null && Number.isFinite(interestRaw)
+      ? Math.max(0, interestRaw)
+      : Number(((principal * (effectiveNewRate / 100) * segmentDays) / 365).toFixed(2));
+
+    const originalTermDays = Math.max(1, Math.round((maturityDate.getTime() - buy.date.getTime()) / 86400000));
+    let newMaturity = newMaturityDate;
+    if (!newMaturity) {
+      const rolled = new Date(maturityDate.getTime());
+      newMaturity = new Date(Date.UTC(rolled.getUTCFullYear(), rolled.getUTCMonth(), rolled.getUTCDate()));
+      newMaturity.setUTCDate(newMaturity.getUTCDate() + originalTermDays);
+    }
+    if (newMaturity.getTime() <= maturityDate.getTime()) {
+      return { ok: false as const, error: t("deposit.renew.maturityMustMove") };
+    }
+
+    const depositAccount = await prisma.account.findUnique({
+      where: { id: buy.toAccountId ?? "" },
+      select: { id: true, name: true, currency: true },
+    });
+    if (!depositAccount) return { ok: false as const, error: t("sidebar.action.accountNotFound") };
+    let cashAccount: { id: string; name: string; currency: string | null } | null = null;
+    if (mode === "renew_principal") {
+      cashAccount = await prisma.account.findUnique({
+        where: { id: cashAccountId },
+        select: { id: true, name: true, currency: true },
+      });
+      if (!cashAccount) return { ok: false as const, error: t("sidebar.action.accountNotFound") };
+    }
+
+    let payoutEntryId: string | null = null;
+    await prisma.$transaction(async (tx) => {
+      await tx.txRecord.update({
+        where: { id: buy.id },
+        data: {
+          fundArrivalDate: newMaturity,
+          depositAnnualRate: effectiveNewRate,
+          // Renewal effective date: interest for the next term accrues from here.
+          fundConfirmDate: maturityDate,
+          ...(mode === "renew_principal_interest"
+            ? { fundArrivalAmount: Number((principal + accruedInterest).toFixed(2)) }
+            : {}),
+        },
+      });
+      if (mode === "renew_principal" && cashAccount && accruedInterest > 0) {
+        const createdPayout = await tx.txRecord.create({
+          data: {
+            date: maturityDate,
+            type: TransactionType.investment,
+            accountId: depositAccount.id,
+            accountName: depositAccount.name,
+            toAccountId: cashAccount.id,
+            toAccountName: cashAccount.name,
+            amount: accruedInterest,
+            currency: buy.currency ?? depositAccount.currency ?? "CNY",
+            fundName: buy.fundName,
+            fundProductType: "deposit",
+            fundSubtype: FundSubtype.dividend_cash,
+            source: "deposit",
+            entryOrigin: ENTRY_ORIGIN_MANUAL,
+            depositInterest: accruedInterest,
+            fundArrivalDate: maturityDate,
+            note: `${t("deposit.renew.payoutNote", { name: buy.fundName ?? "" })}`,
+            ...{ householdId },
+          },
+        });
+        payoutEntryId = createdPayout.id;
+      }
+    });
+
+    await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: buy.id }).catch((e) => {
+      console.error("renewDeposit sync buy business transaction:", e);
+    });
+    if (payoutEntryId) {
+      await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: payoutEntryId }).catch((e) => {
+        console.error("renewDeposit sync payout business transaction:", e);
+      });
+    }
+    if (mode === "renew_principal" && cashAccount) {
+      await recalcAndSaveAccountBalance(cashAccount.id).catch(() => {});
+    }
+    await recalcAndSaveAccountBalance(depositAccount.id).catch(() => {});
+    await invalidateCreditCardCycleCacheForAccountIds([depositAccount.id]).catch(() => {});
+    revalidateAfterInvestChange();
+    return { ok: true as const };
+  } catch (e) {
+    console.error("renewDeposit failed:", e);
+    return { ok: false as const, error: e instanceof Error ? e.message : t("txForm.alert.saveFailed") };
+  }
+}
+
+/**
+ * Record one periodic interest payout for a deposit that pays interest during
+ * the term (monthly / yearly payout frequency; bank-style monthly-interest
+ * certificates). Accrued interest defaults to principal x annual rate x days
+ * / 365 from the current interest segment start (the buy record's
+ * fundConfirmDate slot: last payout date, renewal date, or the deposit date)
+ * to the payout date, capped at the maturity date. The payout is recorded as
+ * a deposit dividend_cash entry (cash flow only, principal untouched) and the
+ * segment start moves to the payout date so later accruals never double count.
+ */
+export async function payDepositInterest(formData: FormData) {
+  "use server";
+  const t = await getServerT();
+  const { householdId } = await getHouseholdScope();
+  const entryId = String(formData.get("entryId") ?? "").trim();
+  if (!entryId) return { ok: false as const, error: t("sidebar.action.missingParams") };
+  const amountRaw = parseFloat(String(formData.get("amount") ?? ""));
+  const amountOverride = Number.isFinite(amountRaw) && amountRaw >= 0 ? amountRaw : null;
+  const payoutDate = dateFromYmd(String(formData.get("date") ?? "").trim()) ?? new Date();
+  const cashAccountId = String(formData.get("cashAccountId") ?? "").trim();
+  if (!cashAccountId) return { ok: false as const, error: t("deposit.payInterest.selectCashAccount") };
+
+  try {
+    const buy = await prisma.txRecord.findFirst({
+      where: {
+        id: entryId,
+        householdId,
+        type: TransactionType.investment,
+        fundProductType: "deposit",
+        fundSubtype: FundSubtype.buy,
+        deletedAt: null,
+      },
+    });
+    if (!buy) return { ok: false as const, error: t("deposit.renew.notFound") };
+    const redeemedLink = await prisma.txRecord.findFirst({
+      where: {
+        householdId,
+        deletedAt: null,
+        depositSourceEntryId: buy.id,
+        fundSubtype: { in: [FundSubtype.redeem, FundSubtype.switch_out] },
+      },
+      select: { id: true },
+    });
+    if (redeemedLink) return { ok: false as const, error: t("deposit.renew.lotClosed") };
+    const payoutFrequency = buy.depositInterestPayoutFrequency;
+    if (!payoutFrequency || payoutFrequency === "maturity") {
+      return { ok: false as const, error: t("deposit.payInterest.notPeriodic") };
+    }
+
+    const principal = Math.abs(toNumber(buy.fundArrivalAmount ?? buy.amount));
+    const annualRate = toNumber(buy.depositAnnualRate);
+    if (!(principal > 0)) return { ok: false as const, error: t("deposit.renew.missingPrincipal") };
+    if (!(annualRate > 0)) return { ok: false as const, error: t("deposit.renew.missingRate") };
+    const maturityDate = buy.fundArrivalDate;
+    if (!maturityDate) return { ok: false as const, error: t("deposit.renew.missingMaturity") };
+
+    const effectivePayoutDate = payoutDate.getTime() > maturityDate.getTime() ? maturityDate : payoutDate;
+    const segmentStart = buy.fundConfirmDate ?? buy.date;
+    if (effectivePayoutDate.getTime() < segmentStart.getTime()) {
+      return { ok: false as const, error: t("deposit.payInterest.dateBeforeSegment") };
+    }
+    const segmentDays = Math.max(0, Math.round((effectivePayoutDate.getTime() - segmentStart.getTime()) / 86400000));
+    if (segmentDays <= 0) return { ok: false as const, error: t("deposit.payInterest.noAccrual") };
+    const accruedInterest = amountOverride != null
+      ? amountOverride
+      : Number(((principal * (annualRate / 100) * segmentDays) / 365).toFixed(2));
+    if (!(accruedInterest > 0)) return { ok: false as const, error: t("deposit.payInterest.noAccrual") };
+
+    const depositAccount = await prisma.account.findUnique({
+      where: { id: buy.toAccountId ?? "" },
+      select: { id: true, name: true, currency: true },
+    });
+    if (!depositAccount) return { ok: false as const, error: t("sidebar.action.accountNotFound") };
+    const cashAccount = await prisma.account.findUnique({
+      where: { id: cashAccountId },
+      select: { id: true, name: true, currency: true },
+    });
+    if (!cashAccount) return { ok: false as const, error: t("sidebar.action.accountNotFound") };
+
+    let payoutEntryId: string | null = null;
+    await prisma.$transaction(async (tx) => {
+      const created = await tx.txRecord.create({
+        data: {
+          date: effectivePayoutDate,
+          type: TransactionType.investment,
+          accountId: depositAccount.id,
+          accountName: depositAccount.name,
+          toAccountId: cashAccount.id,
+          toAccountName: cashAccount.name,
+          amount: accruedInterest,
+          currency: buy.currency ?? depositAccount.currency ?? "CNY",
+          fundName: buy.fundName,
+          fundProductType: "deposit",
+          fundSubtype: FundSubtype.dividend_cash,
+          source: "deposit",
+          entryOrigin: ENTRY_ORIGIN_MANUAL,
+          depositInterest: accruedInterest,
+          fundArrivalDate: effectivePayoutDate,
+          note: `${t("deposit.renew.payoutNote", { name: buy.fundName ?? "" })}`,
+          ...{ householdId },
+        },
+      });
+      payoutEntryId = created.id;
+      // Next interest segment starts on the payout date.
+      await tx.txRecord.update({
+        where: { id: buy.id },
+        data: { fundConfirmDate: effectivePayoutDate },
+      });
+    });
+
+    await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: buy.id }).catch((e) => {
+      console.error("payDepositInterest sync buy business transaction:", e);
+    });
+    if (payoutEntryId) {
+      await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: payoutEntryId }).catch((e) => {
+        console.error("payDepositInterest sync payout business transaction:", e);
+      });
+    }
+    await recalcAndSaveAccountBalance(depositAccount.id).catch(() => {});
+    await recalcAndSaveAccountBalance(cashAccount.id).catch(() => {});
+    revalidateAfterInvestChange();
+    return { ok: true as const };
+  } catch (e) {
+    console.error("payDepositInterest failed:", e);
+    return { ok: false as const, error: e instanceof Error ? e.message : t("txForm.alert.saveFailed") };
+  }
+}
 export async function updateTransactionFromDialog(formData: FormData) {
   "use server";
   const t = await getServerT();
@@ -2098,7 +2435,9 @@ export async function updateTransactionFromDialog(formData: FormData) {
     earlyEditFundSubtype === FundSubtype.dividend_reinvest &&
     Number.isFinite(earlyEditFundUnitsRaw) &&
     earlyEditFundUnitsRaw > 0;
-  if (!amountAbs && !allowsZeroAmountInvestmentEdit) return { ok: false as const, error: t("txForm.alert.invalidAmount") };
+  if (!amountAbs && !allowsZeroAmountInvestmentEdit && !allowsZeroPostedAmountFx(formData, type)) {
+    return { ok: false as const, error: t("txForm.alert.invalidAmount") };
+  }
 
   try {
     const ctx = await getHouseholdScope();
