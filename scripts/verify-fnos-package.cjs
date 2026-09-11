@@ -257,6 +257,7 @@ const systemUpdatePage = read(path.join(root, "src", "app", "(sidebar)", "settin
 const authVerifyRoute = read(path.join(root, "src", "app", "api", "v1", "auth", "verify", "route.ts"));
 const backupSource = read(path.join(root, "src", "lib", "server", "backup.ts"));
 const scheduledTaskLock = read(path.join(root, "src", "lib", "server", "scheduled-task-lock.ts"));
+const fundProfileSource = read(path.join(root, "src", "lib", "fund", "fundProfile.ts"));
 const repositoryExample = read(path.join(root, "deploy", "fnos", "repository", "apps.example.json"));
 const repositoryApiApps = read(path.join(root, "deploy", "fnos", "repository", "api", "apps"));
 const fnosReadme = read(path.join(root, "deploy", "fnos", "README.md"));
@@ -316,6 +317,7 @@ expect(/indexColumnsExist/.test(buildScript) && /SQLite schema index skipped fro
 expect(/busy_timeout = 10000/.test(buildScript), "fnOS SQLite init must wait briefly for database locks during package upgrades.");
 expect(fnosInitSqliteIndex !== -1 && fnosPidCheckIndex !== -1 && fnosInitSqliteIndex < fnosPidCheckIndex, "fnOS start must run SQLite init before returning for an already-running process.");
 expect(/startsWith\("file:"\)/.test(scheduledTaskLock) && /if \(isSqliteDatabaseUrl\(\)\) return;/.test(scheduledTaskLock) && /pg_advisory_xact_lock/.test(scheduledTaskLock) && /catch \(error\)/.test(scheduledTaskLock), "Scheduled-task locks must skip PostgreSQL advisory-lock SQL on fnOS SQLite with defense-in-depth try-catch.");
+expect(/function isSqliteDatabaseUrl\(\)/.test(fundProfileSource) && /PRAGMA table_info\("FundProfile"\)/.test(fundProfileSource) && /information_schema\.columns/.test(fundProfileSource), "Fund profile column detection must use PRAGMA on fnOS SQLite before falling back to PostgreSQL information_schema.");
 expect(/20260812_account_note/.test(buildScript) && /addColumnIfMissing\(db, "Account", "note", "TEXT"\)/.test(buildScript), "fnOS SQLite migrations must add Account.note to existing databases without rebuilding tables.");
 expect(/20260812_user_session_days/.test(buildScript) && /addColumnIfMissing\(db, "UserSettings", "sessionDays", "INTEGER NOT NULL DEFAULT 30"\)/.test(buildScript), "fnOS SQLite migrations must add UserSettings.sessionDays to existing databases before restore writes user settings.");
 expect(/20260811_stock_domain/.test(buildScript) && /createStockDomainTables\(db\)/.test(buildScript), "fnOS SQLite migrations must create stock core tables for existing databases.");
@@ -420,6 +422,10 @@ expect(/install_callback/.test(buildScript) && /write_env_file/.test(buildScript
 expect(!/"run-as": "package"/.test(buildScript), "fnOS lifecycle scripts must not default to the package user; install_init can fail before app data permissions exist.");
 expect(/restart_start_as_package_user/.test(buildScript) && /runuser -u mmh/.test(buildScript), "fnOS start script must drop from app-center/root lifecycle execution to the mmh package user before running Node.");
 expect(/makeFnosPackageEntriesReadable/.test(buildScript), "fnOS package build must normalize entry permissions before packaging.");
+expect(/MMH_SESSION_SECRET/.test(buildScript) && /mmh-session-secret\.txt/.test(buildScript), "fnOS start script must persist a strong session secret for signed login cookies.");
+expect(/resolve_session_secret/.test(buildScript) && /generate_session_secret/.test(buildScript), "fnOS lifecycle settings must generate and reuse a strong signed-session secret.");
+expect(/MMH_SESSION_SECRET=\\?\$\{session_secret\}/.test(buildScript), "fnOS lifecycle settings must write MMH_SESSION_SECRET into mmh.env for production login cookies.");
+expect(/@appcenter\/"\$appname"/.test(buildScript), "fnOS start script must be able to rediscover the appcenter install directory when TRIM_APPDEST is unavailable.");
 expect(/verifySensitiveOperationPassword/.test(authVerifyRoute) && /getCurrentUser/.test(authVerifyRoute) && /isAdmin/.test(authVerifyRoute), "Sensitive operation verification must require the current admin user and check that user's own password.");
 expect(!/process\.env\.(POSTGRES_PASSWORD|MMH_SYSTEM_PASSWORD)/.test(authVerifyRoute), "Sensitive operation verification must not rely on deployment database passwords.");
 expect(/FNOS_MANUAL_FPK/.test(buildScript), "fnOS package build should keep an explicit manual test FPK mode.");
@@ -470,11 +476,15 @@ if (fs.existsSync(stageDir)) {
   const stageManifest = read(path.join(stageDir, "manifest"));
   const stagePrivilege = read(path.join(stageDir, "config", "privilege"));
   const stageMainScript = read(path.join(stageDir, "cmd", "main"));
+  const stageApplySettingsScript = read(path.join(stageDir, "cmd", "apply-settings"));
   expect(new RegExp(`arch\\s*=\\s*${verifyTarget.manifestArch}`).test(stageManifest), `fnOS ${verifyTarget.id} stage manifest must declare arch=${verifyTarget.manifestArch}.`);
   expect(new RegExp(`platform\\s*=\\s*${verifyTarget.manifestPlatform}`).test(stageManifest), `fnOS ${verifyTarget.id} stage manifest must declare platform=${verifyTarget.manifestPlatform}.`);
   expect(!/"run-as"\s*:\s*"package"/.test(stagePrivilege), `fnOS ${verifyTarget.id} stage privilege must not run lifecycle scripts as the package user.`);
   expect(/"username"\s*:\s*"mmh"/.test(stagePrivilege) && /"groupname"\s*:\s*"mmh"/.test(stagePrivilege), `fnOS ${verifyTarget.id} stage privilege must still declare the mmh package user and group.`);
   expect(/restart_start_as_package_user/.test(stageMainScript) && /runuser -u mmh/.test(stageMainScript), `fnOS ${verifyTarget.id} stage cmd/main must drop root-started service execution to the mmh user.`);
+  expect(/@appcenter\/"\$appname"/.test(stageMainScript), `fnOS ${verifyTarget.id} stage cmd/main must rediscover the appcenter install directory without TRIM_APPDEST.`);
+  expect(/MMH_SESSION_SECRET/.test(stageMainScript) && /mmh-session-secret\.txt/.test(stageMainScript), `fnOS ${verifyTarget.id} stage cmd/main must export and persist MMH_SESSION_SECRET.`);
+  expect(/resolve_session_secret/.test(stageApplySettingsScript) && /MMH_SESSION_SECRET=\$\{session_secret\}/.test(stageApplySettingsScript), `fnOS ${verifyTarget.id} stage cmd/apply-settings must persist MMH_SESSION_SECRET into mmh.env.`);
   expect(!fs.existsSync(path.join(stageDir, "wizard", "install")), `fnOS ${verifyTarget.id} stage must not include wizard/install; the FN soft-store client parses it and would block silent updates on user input.`);
   expect(fs.existsSync(path.join(stageDir, "wizard", "config")), `fnOS ${verifyTarget.id} stage must include wizard/config so the service port stays editable after a silent install.`);
   for (const envFile of [".env", ".env.local", ".env.production", ".env.development"]) {
@@ -495,6 +505,7 @@ if (process.env.FNOS_VERIFY_BUILT_FPK === "1") {
   expect(fs.existsSync(builtFpk), `Built fnOS ${verifyTarget.id} .fpk must exist before upload.`);
   const manifest = readTarEntry(builtFpk, "manifest");
   const mainScript = readTarEntry(builtFpk, "cmd/main");
+  const applySettingsScript = readTarEntry(builtFpk, "cmd/apply-settings");
   expect(/version\s*=/.test(manifest), "Built fnOS .fpk manifest must include a version.");
   expect(new RegExp(`arch\\s*=\\s*${verifyTarget.manifestArch}`).test(manifest), `Built fnOS .fpk manifest must declare arch=${verifyTarget.manifestArch}.`);
   expect(new RegExp(`platform\\s*=\\s*${verifyTarget.manifestPlatform}`).test(manifest), `Built fnOS .fpk manifest must declare platform=${verifyTarget.manifestPlatform}.`);
@@ -528,12 +539,17 @@ if (process.env.FNOS_VERIFY_BUILT_FPK === "1") {
   const uninstallInitScript = readTarEntry(builtFpk, "cmd/uninstall_init");
   expect(/upgrade-backups/.test(upgradeInitScript) && /data\/mmh\.db/.test(upgradeInitScript), "Built fnOS upgrade_init must back up persistent app data when SQLite data exists.");
   expect(/upgrade-backups/.test(uninstallInitScript) && /data\/mmh\.db/.test(uninstallInitScript), "Built fnOS uninstall_init must back up persistent app data when SQLite data exists.");
+  expect(/mmh-session-secret\.txt/.test(upgradeInitScript), "Built fnOS upgrade_init must preserve the signed-session secret when backing up app data.");
+  expect(/mmh-session-secret\.txt/.test(uninstallInitScript), "Built fnOS uninstall_init must preserve the signed-session secret when backing up app data.");
   expect(/resolve_data_dest/.test(mainScript), "Built fnOS .fpk cmd/main must resolve the persistent fnOS data directory.");
   expect(/TRIM_PKGVAR\/data/.test(mainScript), "Built fnOS .fpk cmd/main must prefer TRIM_PKGVAR/data.");
   expect(!/TRIM_DATADEST:-\$APP_DEST\/data/.test(mainScript), "Built fnOS .fpk cmd/main must not fall back to the app install directory for SQLite data.");
   expect(/DATABASE_URL="file:\$DATA_DEST\/mmh\.db"/.test(mainScript), "Built fnOS .fpk cmd/main must store SQLite data under DATA_DEST.");
   expect(/MMH_SYSTEM_PASSWORD/.test(mainScript), "Built fnOS .fpk cmd/main must export MMH_SYSTEM_PASSWORD.");
   expect(/mmh-system-password\.txt/.test(mainScript), "Built fnOS .fpk cmd/main must persist generated system passwords.");
+  expect(/MMH_SESSION_SECRET/.test(mainScript) && /mmh-session-secret\.txt/.test(mainScript), "Built fnOS .fpk cmd/main must persist the signed-session secret.");
+  expect(/@appcenter\/"\$appname"/.test(mainScript), "Built fnOS .fpk cmd/main must rediscover the appcenter install directory when TRIM_APPDEST is unavailable.");
+  expect(/resolve_session_secret/.test(applySettingsScript) && /MMH_SESSION_SECRET=\$\{session_secret\}/.test(applySettingsScript), "Built fnOS .fpk cmd/apply-settings must persist MMH_SESSION_SECRET into mmh.env.");
   const appEntries = listFpkAppEntries(builtFpk);
   const publicFiles = appEntries
     .filter((entry) => entry.startsWith("server/public/") && !entry.endsWith("/"))

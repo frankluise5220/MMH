@@ -200,8 +200,19 @@ export async function syncFundCompanyInstitution(
 
 let fundProfileTradingCalendarColumn: Promise<boolean> | null = null;
 
+function isSqliteDatabaseUrl() {
+  const url = String(process.env.DATABASE_URL ?? "");
+  return url === ":memory:" || url.startsWith("file:");
+}
+
 async function hasFundProfileTradingCalendarColumn() {
   fundProfileTradingCalendarColumn ??= getPrismaClient().then(async (prisma) => {
+    if (isSqliteDatabaseUrl()) {
+      const rows = await prisma.$queryRaw<Array<{ name: string }>>(Prisma.sql`
+        PRAGMA table_info("FundProfile")
+      `);
+      return rows.some((row) => row.name === "tradingCalendar");
+    }
     const rows = await prisma.$queryRaw<Array<{ exists: boolean }>>(Prisma.sql`
       SELECT EXISTS (
         SELECT 1
