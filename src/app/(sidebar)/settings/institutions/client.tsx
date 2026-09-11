@@ -7,7 +7,6 @@ import { InstitutionEditButton } from "@/components/InstitutionEditButton";
 import { SettingsDeleteButton } from "@/components/SettingsDeleteButton";
 import {
   SettingsEmptyRow,
-  SettingsPageHeader,
   SettingsPrimaryAddButton,
   SettingsRowActions,
   SettingsSection,
@@ -53,13 +52,6 @@ export function SettingsInstitutionsClient({
   const allowedTypes =
     mode === "institution" ? INSTITUTION_TYPES : mode === "family" ? FAMILY_MEMBER_TYPES : COUNTERPARTY_TYPES;
   const typeLabel = (type: string | null | undefined) => t(`institution.type.${type ?? "other"}`);
-  const pageTitle = mode === "institution" ? t("settings.institutions") : mode === "family" ? t("settings.familyMembers") : t("settings.counterparties");
-  const pageDescription =
-    mode === "institution"
-      ? t("settings.institutions.description")
-      : mode === "family"
-        ? t("settings.familyMembers.description")
-        : t("settings.counterparties.description");
   const listTitle = mode === "institution" ? t("settings.institutions.listTitle") : mode === "family" ? t("settings.familyMembers.listTitle") : t("settings.counterparties.listTitle");
   const emptyText = mode === "institution" ? t("settings.institutions.empty") : mode === "family" ? t("settings.familyMembers.empty") : t("settings.counterparties.empty");
   const deleteLabel = mode === "institution" ? t("settings.institutions") : mode === "family" ? t("settings.familyMembers") : t("settings.counterparties");
@@ -151,12 +143,6 @@ export function SettingsInstitutionsClient({
   return (
     <div className="space-y-4">
       <BasicDataSubmenuHeader onImported={() => void refreshList({ force: true })} />
-
-      <SettingsPageHeader
-        title={pageTitle}
-        description={pageDescription}
-        count={visibleInstitutions.length}
-      />
 
       <EntityCreateForm
         mode="full"

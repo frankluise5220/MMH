@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, ChevronDown, ChevronRight, X } from "lucide-react";
+import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, ChevronDown, ChevronRight, X, ArrowUpDown } from "lucide-react";
 import type { AccountKind } from "@prisma/client";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
 import { kindIconName, kindColor, kindOrder } from "@/lib/account-kinds";
@@ -71,6 +71,8 @@ type Account = {
   fixedAssetType?: string | null;
   isConsumerLoan?: boolean | null;
   debtDirection?: string | null;
+  recordCount?: number;
+  deletedRecordCount?: number;
 };
 
 const investmentProductTypeOptions = PRODUCT_TYPES
@@ -131,6 +133,28 @@ export default function SettingsAccountsPage() {
   const investmentLabel = (value: string | null | undefined) => t(`investment.product.${value || "fund"}`);
   const fixedAssetTypeLabel = (value: string | null | undefined) => t(`fixedAsset.type.${value || "property"}`);
   const tradingCalendarLabel = (value: string | null | undefined) => value ? t(`tradingCalendar.${value}`) : t("settings.accounts.tradingCalendarDefault");
+  type AccountSortBy = "name" | "institution" | "owner" | "lastFour";
+  const SORT_OPTIONS: Record<AccountSortBy, string> = {
+    name: t("settings.accounts.sortBy.name"),
+    institution: t("settings.accounts.sortBy.institution"),
+    owner: t("settings.accounts.sortBy.owner"),
+    lastFour: t("settings.accounts.sortBy.lastFour"),
+  };
+  const accountSortByLabel = (key: AccountSortBy) => SORT_OPTIONS[key];
+  function sortAccounts(list: Account[], by: AccountSortBy, dir: "asc" | "desc") {
+    const sign = dir === "asc" ? 1 : -1;
+    const get = (a: Account): string => {
+      if (by === "name") return a.name;
+      if (by === "institution") return a.Institution?.name || a.Institution?.shortName || "";
+      if (by === "owner") return a.AccountGroup?.name || "";
+      return a.numberMasked || "";
+    };
+    return [...list].sort((a, b) => {
+      const va = get(a);
+      const vb = get(b);
+      return va.localeCompare(vb, "zh-Hans-CN") * sign;
+    });
+  }
   const [groups, setGroups] = useState<Group[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [institutions, setInstitutions] = useState<Institution[]>([]);
@@ -145,6 +169,10 @@ export default function SettingsAccountsPage() {
   const [editError, setEditError] = useState("");
   const [collapsedKinds, setCollapsedKinds] = useState<Set<string>>(new Set());
   const [showCreateAccount, setShowCreateAccount] = useState(false);
+  const [accountSortBy, setAccountSortBy] = useState<AccountSortBy>("name");
+  const [accountSortDir, setAccountSortDir] = useState<"asc" | "desc">("asc");
+  const [accountSortMenuOpen, setAccountSortMenuOpen] = useState(false);
+  const accountSortMenuRef = useRef<HTMLDivElement>(null);
   const guideAccountSetup = searchParams.get("guide") === "accounts";
 
   // Delete account with password verification
@@ -161,6 +189,18 @@ export default function SettingsAccountsPage() {
 
   // Nested creation from SmartSelect in inline edit
   const [nestedEntityType, setNestedEntityType] = useState<"institution" | "group" | null>(null);
+
+  // Close sort menu on outside click
+  useEffect(() => {
+    if (!accountSortMenuOpen) return;
+    const handler = (event: MouseEvent) => {
+      if (accountSortMenuRef.current && !accountSortMenuRef.current.contains(event.target as Node)) {
+        setAccountSortMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [accountSortMenuOpen]);
 
   useEffect(() => {
     const cached = getCachedSettingsAccountData();
@@ -558,6 +598,41 @@ export default function SettingsAccountsPage() {
             />
             <span>{t("settings.accounts.hideInactiveAccounts")}</span>
           </label>
+          <div ref={accountSortMenuRef} className="relative">
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setAccountSortMenuOpen(o => !o); }}
+              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-600 shadow-sm hover:bg-slate-50"
+            >
+              <ArrowUpDown className="h-3.5 w-3.5 shrink-0" />
+              <span>{accountSortByLabel(accountSortBy)}</span>
+            </button>
+            {accountSortMenuOpen && (
+              <div className="absolute right-0 top-full mt-1 z-30 min-w-[140px] rounded-md border border-slate-200 bg-white shadow-md">
+                {(Object.keys(SORT_OPTIONS) as AccountSortBy[]).map((key) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => {
+                      if (accountSortBy === key) {
+                        setAccountSortDir(d => d === "asc" ? "desc" : "asc");
+                      } else {
+                        setAccountSortBy(key);
+                        setAccountSortDir("asc");
+                      }
+                      setAccountSortMenuOpen(false);
+                    }}
+                    className={`w-full px-3 py-2 text-left text-xs hover:bg-slate-50 ${accountSortBy === key ? "font-medium text-blue-600" : "text-slate-700"}`}
+                  >
+                    {accountSortByLabel(key)}
+                    {accountSortBy === key && (
+                      <span className="ml-1">{accountSortDir === "asc" ? "↑" : "↓"}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <div className="ml-auto flex items-center gap-2">
             <AccountBatchImportButton
               groups={statisticsUsers}
@@ -592,23 +667,11 @@ export default function SettingsAccountsPage() {
             </button>
             {!collapsed && (
             <div className="divide-y divide-slate-100">
-              {list.map(a => (
-                  /* ---- View mode ---- */
+              {sortAccounts(list, accountSortBy, accountSortDir).map(a => (
+                  /* ---- View mode: only the account name navigates, not the whole row ---- */
                   <div
                     key={a.id}
-                    role={a.isPlaceholder ? undefined : "link"}
-                    tabIndex={a.isPlaceholder ? undefined : 0}
-                    onClick={() => {
-                      if (a.isPlaceholder) return;
-                      void router.push(getAccountDetailHref(a));
-                    }}
-                    onKeyDown={(event) => {
-                      if (a.isPlaceholder) return;
-                      if (event.key !== "Enter" && event.key !== " ") return;
-                      event.preventDefault();
-                      void router.push(getAccountDetailHref(a));
-                    }}
-                    className={`px-4 py-2.5 flex items-center justify-between ${a.isPlaceholder ? "opacity-40 bg-slate-50" : !a.isActive ? "opacity-60" : ""} ${!a.isPlaceholder ? "cursor-pointer hover:bg-slate-50 focus-visible:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-200" : ""} transition-colors`}
+                    className={`px-4 py-2.5 flex items-center justify-between transition-colors ${a.isPlaceholder ? "opacity-40 bg-slate-50" : !a.isActive ? "opacity-60" : ""}`}
                   >
                     <label
                       className="flex shrink-0 cursor-pointer items-center self-center pr-2"
@@ -625,7 +688,20 @@ export default function SettingsAccountsPage() {
                       />
                     </label>
                     <div className="flex-1 min-w-0 flex items-center gap-2">
-                      <span className="text-sm font-medium text-slate-800 truncate">{accountDisplayName(a)}</span>
+                      {a.isPlaceholder ? (
+                        <span className="text-sm font-medium text-slate-800 truncate">{accountDisplayName(a)}</span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void router.push(getAccountDetailHref(a));
+                          }}
+                          className="min-w-0 max-w-full truncate rounded text-left text-sm font-medium text-slate-800 hover:text-blue-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-200"
+                        >
+                          {accountDisplayName(a)}
+                        </button>
+                      )}
                       {a.isPlaceholder && (
                         <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-slate-300 bg-slate-100 text-slate-400">{t("settings.accounts.placeholder")}</span>
                       )}
@@ -665,6 +741,16 @@ export default function SettingsAccountsPage() {
                       {a.note && (
                         <span className="max-w-[260px] truncate text-xs text-slate-400" title={a.note}>{t("settings.accounts.notePrefix")}{a.note}</span>
                       )}
+                      <span
+                        className="text-[10px] text-slate-400 shrink-0"
+                        title={tf("settings.accounts.recordCountTitle", {
+                          count: a.recordCount ?? 0,
+                          deleted: a.deletedRecordCount ?? 0,
+                        })}
+                      >
+                        {t("settings.accounts.recordCountShort", { count: a.recordCount ?? 0 })}
+                        {a.deletedRecordCount ? ` · ${t("settings.accounts.deletedRecordCountShort", { count: a.deletedRecordCount })}` : ""}
+                      </span>
                     </div>
                     <div className="flex items-center gap-1 shrink-0 ml-3">
                       {!a.isPlaceholder && (

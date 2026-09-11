@@ -12,6 +12,13 @@ import { buildAccountDisplayOption, type AccountLabelField } from "@/lib/account
 import { getServerAccountLabelFields } from "@/lib/server/account-label-fields";
 import { convertCurrencyAmounts, getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { normalizeCurrency } from "@/lib/currency";
+import {
+  countAccountsByCounterparty,
+  countAccountsByInstitution,
+  INSURANCE_PRODUCT_LINK_SELECT,
+  withAccountCounts,
+} from "@/lib/server/entity-account-counts";
+import { loadAccountRecordCounts } from "@/lib/server/account-record-counts";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -64,7 +71,7 @@ export async function GET(request: Request) {
     const { householdId, hidFilter } = ctx;
     const baseCurrency = await getHouseholdBaseCurrency(householdId);
 
-    const [accounts, groups, institutions, counterparties, users] = await Promise.all([
+    const [accounts, groups, institutions, counterparties, users, insuranceProductLinks] = await Promise.all([
       prisma.account.findMany({
         where: { ...hidFilter },
         include: { Institution: true, Counterparty: true, AccountGroup: true, AccountAlias: true },
@@ -82,10 +89,27 @@ export async function GET(request: Request) {
         // Return display fields only; never leak passwordHash
         select: { id: true, name: true, email: true, role: true, isSystem: true, householdId: true, createdAt: true },
       }),
+      // Insurance product → account links, needed for the family member / insurer account counts.
+      prisma.insuranceProduct.findMany({ where: hidFilter, select: INSURANCE_PRODUCT_LINK_SELECT }),
     ]);
 
+    // Related-account counts shown next to institution / family member / counterparty names.
+    const institutionsWithCounts = withAccountCounts(institutions, countAccountsByInstitution(accounts, insuranceProductLinks, institutions));
+    const counterpartiesWithCounts = withAccountCounts(counterparties, countAccountsByCounterparty(accounts, counterparties));
+
+    // Per-account record counts (active + soft-deleted) shown in the settings list.
+    const recordCounts = await loadAccountRecordCounts(accounts.map((account) => account.id));
+    const withRecordCounts = <T extends { id: string }>(account: T) => {
+      const counts = recordCounts.get(account.id);
+      return {
+        ...account,
+        recordCount: counts?.recordCount ?? 0,
+        deletedRecordCount: counts?.deletedRecordCount ?? 0,
+      };
+    };
+
     if (!includeBalances) {
-      return NextResponse.json({ ok: true, baseCurrency, accounts: accounts.map((account) => withAccountDisplayFields(account, accountLabelFields)), groups, institutions, counterparties, users });
+      return NextResponse.json({ ok: true, baseCurrency, accounts: accounts.map((account) => withRecordCounts(withAccountDisplayFields(account, accountLabelFields))), groups, institutions: institutionsWithCounts, counterparties: counterpartiesWithCounts, users });
     }
 
     // For investment accounts, use market value instead of raw balance
@@ -178,10 +202,10 @@ export async function GET(request: Request) {
       totalConvertedBalance: conversion.total,
       missingFxCurrencies: conversion.missingCurrencies,
       rates: conversion.rates,
-      accounts: convertedAccounts.map((account) => withAccountDisplayFields(account, accountLabelFields)),
+      accounts: convertedAccounts.map((account) => withRecordCounts(withAccountDisplayFields(account, accountLabelFields))),
       groups,
-      institutions,
-      counterparties,
+      institutions: institutionsWithCounts,
+      counterparties: counterpartiesWithCounts,
       users,
     });
   } catch (e) {

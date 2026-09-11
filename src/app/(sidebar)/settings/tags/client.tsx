@@ -6,7 +6,6 @@ import { useRouter } from "next/navigation";
 import {
   SettingsActionButton,
   SettingsEmptyRow,
-  SettingsPageHeader,
   SettingsPrimaryAddButton,
   SettingsRowActions,
   SettingsSection,
@@ -15,6 +14,7 @@ import {
   SettingsTh,
 } from "@/components/settings/SettingsPageScaffold";
 import { fetchSettingsTags, getCachedSettingsTags, notifySettingsDataChanged, setSettingsTags } from "@/lib/client/settingsCache";
+import { BasicDataSubmenuHeader } from "@/components/settings/BasicDataImportExport";
 import { useI18n } from "@/lib/i18n";
 import { TAG_COLORS } from "@/lib/tag-colors";
 
@@ -90,11 +90,7 @@ export default function SettingsTagsClient({
 
   return (
     <div className="space-y-4">
-      <SettingsPageHeader
-        title={t("settings.tags.title")}
-        description={t("settings.tags.description")}
-        count={tags.length}
-      />
+      <BasicDataSubmenuHeader onImported={() => void fetchTags()} />
 
       <SettingsSection
         title={t("settings.tags.listTitle")}
