@@ -6,6 +6,7 @@ import { X } from "lucide-react";
 
 import { EntryAttachmentButton, uploadEntryAttachmentFiles } from "./EntryAttachmentPanel";
 import { CalcInput } from "./CalcInput";
+import { ClearableNoteField } from "./ClearableNoteField";
 import { DateStepper } from "./DateStepper";
 import { EntityCreateForm } from "./EntityCreateForm";
 import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
@@ -1652,7 +1653,7 @@ export function StockTransactionFormModal({
                 <div className="space-y-1">
                   <div className="form-label">{t("detail.column.remark")}</div>
                   <div className="flex items-start gap-2">
-                    <input value={note} onChange={(event) => setNote(event.target.value)} className="form-input flex-1" placeholder={t("stockFee.optional")} />
+                    <ClearableNoteField wrapperClassName="flex-1" value={note} onValueChange={setNote} className="form-input" placeholder={t("stockFee.optional")} />
                     <EntryAttachmentButton
                       entryId={attachmentEntryId}
                       pendingFiles={pendingAttachmentFiles}

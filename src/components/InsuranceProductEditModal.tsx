@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
+import { ClearableNoteField } from "@/components/ClearableNoteField";
 
 type InsuranceProductEditValue = {
   id: string;
@@ -220,10 +221,11 @@ export function InsuranceProductEditModal({
 
             <div className="space-y-1">
               <div className="form-label">{t("detail.column.remark")}</div>
-              <textarea
+              <ClearableNoteField
+                multiline
                 value={draft.note}
-                onChange={(event) => {
-                  const next = { ...draft, note: event.target.value };
+                onValueChange={(value) => {
+                  const next = { ...draft, note: value };
                   setDraft(next);
                   onChange(next);
                 }}

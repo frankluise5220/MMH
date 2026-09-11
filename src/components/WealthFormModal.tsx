@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { parseNumber } from "@/lib/investment-config";
 import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
+import { ClearableNoteField } from "./ClearableNoteField";
 import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
@@ -1409,7 +1410,7 @@ export function WealthFormModal({
               <div className="space-y-1">
                 <div className="form-label">{t("detail.column.remark")}</div>
                 <div className="flex items-start gap-2">
-                  <input value={memo} onChange={(e) => setMemo(e.target.value)} placeholder={t("stockFee.optional")} className="form-input flex-1" />
+                  <ClearableNoteField wrapperClassName="flex-1" value={memo} onValueChange={setMemo} placeholder={t("stockFee.optional")} className="form-input" />
                   <EntryAttachmentButton entryId={editEntryId} pendingFiles={pendingAttachmentFiles} onPendingFilesChange={setPendingAttachmentFiles} />
                 </div>
               </div>
@@ -1569,9 +1570,9 @@ export function WealthFormModal({
               </div>
               <div className="space-y-1">
                 <div className="form-label">{t("detail.column.remark")}</div>
-                <input
+                <ClearableNoteField
                   value={productDraft.note}
-                  onChange={(e) => setProductDraft((prev) => ({ ...prev, note: e.target.value }))}
+                  onValueChange={(value) => setProductDraft((prev) => ({ ...prev, note: value }))}
                   placeholder={t("stockFee.optional")}
                   className="form-input"
                 />

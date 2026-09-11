@@ -7,6 +7,7 @@ import type { AccountKind } from "@prisma/client";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
 import { kindIconName, kindColor, kindOrder } from "@/lib/account-kinds";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
+import { ClearableNoteField } from "@/components/ClearableNoteField";
 import { FundConfirmDaysPanel } from "@/components/FundConfirmDaysModal";
 import { MultiSelectFilterDropdown } from "@/components/MultiSelectFilterDropdown";
 import { SmartSelect } from "@/components/SmartSelect";
@@ -1247,9 +1248,10 @@ export default function SettingsAccountsPage() {
 
               <div className="mt-3">
                 <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.note")}</label>
-                <textarea
+                <ClearableNoteField
+                  multiline
                   value={editForm.note || ""}
-                  onChange={e => setEditForm(f => ({ ...f, note: e.target.value }))}
+                  onValueChange={value => setEditForm(f => ({ ...f, note: value }))}
                   className="min-h-[96px] w-full resize-y rounded-md border border-slate-200 px-2 py-2 text-sm leading-5 outline-none focus:border-blue-400"
                   placeholder={t("settings.accounts.notePlaceholder")}
                   rows={4}

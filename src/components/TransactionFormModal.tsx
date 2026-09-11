@@ -4,6 +4,7 @@ import { ArrowLeftRight, ArrowRight, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { CalcInput } from "./CalcInput";
+import { ClearableNoteField } from "./ClearableNoteField";
 import { CurrencySmartSelect } from "./CurrencySmartSelect";
 import { DateStepper } from "./DateStepper";
 import { EntityCreateForm, NestedAddModal } from "./EntityCreateForm";
@@ -2575,12 +2576,13 @@ export function TransactionFormModal({
                   <div className="space-y-1">
                     <div className="form-label">{t("detail.column.remark")}</div>
                     <div className="flex items-start gap-2">
-                      <input
+                      <ClearableNoteField
+                        wrapperClassName="flex-1"
                         name="note"
                         placeholder={t("stockFee.optional")}
                         value={note}
-                        onChange={(e) => setNote(e.target.value)}
-                        className="form-input flex-1"
+                        onValueChange={setNote}
+                        className="form-input"
                       />
                       <EntryAttachmentButton
                         entryId={editEntryId}
@@ -2715,12 +2717,13 @@ export function TransactionFormModal({
                   <div className="space-y-1">
                     <div className="form-label">{t("detail.column.remark")}</div>
                     <div className="flex items-start gap-2">
-                      <input
+                      <ClearableNoteField
+                        wrapperClassName="flex-1"
                         name="note"
                         placeholder={fxDirection === "sell" ? t("txForm.fxSellNotePlaceholder") : t("txForm.fxNotePlaceholder")}
                         value={note}
-                        onChange={(e) => setNote(e.target.value)}
-                        className="form-input flex-1"
+                        onValueChange={setNote}
+                        className="form-input"
                       />
                       <EntryAttachmentButton
                         entryId={editEntryId}
@@ -2850,12 +2853,13 @@ export function TransactionFormModal({
                   <div className="space-y-1">
                     <div className="form-label">{t("detail.column.remark")}</div>
                     <div className="flex items-start gap-2">
-                      <input
+                      <ClearableNoteField
+                        wrapperClassName="flex-1"
                         name="note"
                         placeholder={t("stockFee.optional")}
                         value={note}
-                        onChange={(e) => setNote(e.target.value)}
-                        className="form-input flex-1"
+                        onValueChange={setNote}
+                        className="form-input"
                       />
                       <EntryAttachmentButton
                         entryId={editEntryId}

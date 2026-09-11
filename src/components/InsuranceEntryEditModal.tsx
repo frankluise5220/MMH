@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 
 import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
+import { ClearableNoteField } from "./ClearableNoteField";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { NestedAddModal } from "./EntityCreateForm";
@@ -314,9 +315,10 @@ export function InsuranceEntryEditModal({
 
             <div className="space-y-1">
               <div className="form-label">{t("detail.column.remark")}</div>
-              <textarea
+              <ClearableNoteField
+                multiline
                 value={draft.note}
-                onChange={(event) => setDraft({ ...draft, note: event.target.value })}
+                onValueChange={(value) => setDraft({ ...draft, note: value })}
                 className="form-input min-h-[72px] resize-none py-2"
                 placeholder={t("insuranceEntryEdit.notePlaceholder")}
               />

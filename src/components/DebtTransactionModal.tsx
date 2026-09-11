@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type
 import { createPortal } from "react-dom";
 
 import { CalcInput } from "./CalcInput";
+import { ClearableNoteField } from "./ClearableNoteField";
 import { DateStepper } from "./DateStepper";
 import { EntryTagsField } from "./EntryTagsField";
 import { EntityCreateForm } from "./EntityCreateForm";
@@ -2874,11 +2875,11 @@ export function DebtTransactionModal({
                       <>
                         <div className="space-y-1">
                           <div className="form-label">{t("detail.column.remark")}</div>
-                          <input
+                          <ClearableNoteField
                             name="note"
                             placeholder={t("stockFee.optional")}
                             value={note}
-                            onChange={(e) => setNote(e.target.value)}
+                            onValueChange={setNote}
                             className="form-input"
                           />
                         </div>

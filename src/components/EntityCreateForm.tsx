@@ -7,6 +7,7 @@ import { kindOrder } from "@/lib/account-kinds";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
 import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
 import { DateStepper } from "@/components/DateStepper";
+import { ClearableNoteField } from "@/components/ClearableNoteField";
 import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "@/components/ModalLayer";
 import { notifySmartSelectOptionCreated, SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 import { CurrencySmartSelect } from "@/components/CurrencySmartSelect";
@@ -851,11 +852,13 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
 
     if (field.multiline) {
       return (
-        <textarea
+        <ClearableNoteField
           key={field.key}
+          multiline
           value={value}
-          onChange={(event) => onChange(event.target.value)}
+          onValueChange={onChange}
           placeholder={placeholder}
+          wrapperClassName={options?.className}
           className={textFieldClassName(field, options?.className, readOnly)}
           rows={field.rows ?? 4}
           readOnly={readOnly}

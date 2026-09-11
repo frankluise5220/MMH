@@ -2,6 +2,7 @@
 
 import { DatabaseZap, Pencil, Plus, Repeat, Trash2 } from "lucide-react";
 import { CalcInput } from "./CalcInput";
+import { ClearableNoteField } from "./ClearableNoteField";
 import { DateStepper } from "./DateStepper";
 import { NestedAddModal } from "./EntityCreateForm";
 import { HoldingPicker } from "./HoldingPicker";
@@ -2722,9 +2723,9 @@ export function InvestmentFormModal({
 
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">{t("detail.column.remark")}</div>
-                    <input
+                    <ClearableNoteField
                       value={memo}
-                      onChange={(e) => setMemo(e.target.value)}
+                      onValueChange={setMemo}
                       placeholder={t("stockFee.optional")}
                       className="form-input"
                     />
@@ -3230,7 +3231,7 @@ export function InvestmentFormModal({
 
               <div className="space-y-1">
                 <div className="text-xs font-medium text-slate-600">{t("detail.column.remark")}</div>
-                <input value={memo} onChange={(e) => setMemo(e.target.value)} placeholder={t("stockFee.optional")} className="form-input" />
+                <ClearableNoteField value={memo} onValueChange={setMemo} placeholder={t("stockFee.optional")} className="form-input" />
               </div>
 
               <div className="sticky bottom-0 z-10 -mx-4 -mb-4 flex justify-end gap-2 border-t border-slate-100 bg-white/95 px-4 py-3 backdrop-blur">

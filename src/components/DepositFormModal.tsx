@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { parseNumber } from "@/lib/investment-config";
 import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
+import { ClearableNoteField } from "./ClearableNoteField";
 import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
@@ -1391,9 +1392,9 @@ export function DepositFormModal({
 
               <div className="space-y-1">
                 <div className="form-label">{t("detail.column.remark")}</div>
-                <input
+                <ClearableNoteField
                   value={memo}
-                  onChange={(e) => setMemo(e.target.value)}
+                  onValueChange={setMemo}
                   placeholder={t("firstUseGuide.optional")}
                   className="form-input"
                 />

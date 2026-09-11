@@ -4,6 +4,7 @@ import { ArrowLeftRight, ArrowRight, CalendarPlus, ChevronDown, ChevronUp } from
 import { useState, useEffect, useRef, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { CalcInput } from "./CalcInput";
+import { ClearableNoteField } from "./ClearableNoteField";
 import { DateStepper } from "./DateStepper";
 import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption, type SmartSelectProps } from "./SmartSelect";
@@ -2020,9 +2021,10 @@ export function RegularInvestForm({
               {isOrdinaryTask && (
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">{t("regularInvest.noteOptional")}</div>
-                  <textarea
+                  <ClearableNoteField
+                    multiline
                     value={formData.note}
-                    onChange={(e) => setFormData(d => ({ ...d, note: e.target.value }))}
+                    onValueChange={(value) => setFormData(d => ({ ...d, note: value }))}
                     placeholder={t("regularInvest.placeholder.note")}
                     rows={2}
                     className="w-full resize-none rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none"

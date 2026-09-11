@@ -7,6 +7,7 @@ import { Settings2, X } from "lucide-react";
 import { formatMoneyWithCurrencyCode as formatMoney } from "@/lib/format";
 import { todayDateLocalYmd as todayDateInputValue } from "@/lib/date-utils";
 import { useI18n } from "@/lib/i18n";
+import { ClearableNoteField } from "@/components/ClearableNoteField";
 
 type FeeRule = {
   id: string;
@@ -234,7 +235,7 @@ export function StockFeeRuleSettingsButton({
                   </div>
                   <div className="space-y-1">
                     <div className="form-label">{t("stockFee.noteLabel")}</div>
-                    <input value={note} onChange={(event) => setNote(event.target.value)} className="form-input" placeholder={t("stockFee.optional")} />
+                    <ClearableNoteField value={note} onValueChange={setNote} className="form-input" placeholder={t("stockFee.optional")} />
                   </div>
                 </div>
                 {error ? <div className="mt-2 text-xs text-rose-600">{error}</div> : null}

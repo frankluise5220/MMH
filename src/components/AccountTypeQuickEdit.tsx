@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useI18n } from "@/lib/i18n";
+import { ClearableNoteField } from "@/components/ClearableNoteField";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
 import { fetchSettingsAccountData, notifySettingsDataChanged } from "@/lib/client/settingsCache";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -324,7 +325,7 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
               {isCredit && <Field label={t("settings.accounts.billMode")}><select value={form.creditBillMode || "separate"} onChange={(event) => setField("creditBillMode", event.target.value)} className={inputClass}><option value="separate">{t("settings.accounts.separateBill")}</option><option value="consolidated">{t("settings.accounts.consolidatedBill")}</option></select></Field>}
               {isLoan && <Field label={t("settings.accounts.loanType")}><select value={form.loanType || "home"} onChange={(event) => { setField("loanType", event.target.value); setField("isConsumerLoan", event.target.value === "consumer" ? "true" : "false"); }} className={inputClass}>{LOAN_TYPES.map((value) => <option key={value} value={value}>{t(`loan.type.${value}`)}</option>)}</select></Field>}
             </div>
-            <Field label={t("settings.accounts.note")}><textarea value={form.note ?? ""} onChange={(event) => setField("note", event.target.value)} className="min-h-20 w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-100 disabled:bg-slate-100 disabled:text-slate-400" /></Field>
+            <Field label={t("settings.accounts.note")}><ClearableNoteField multiline value={form.note ?? ""} onValueChange={(value) => setField("note", value)} className="min-h-20 w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-100 disabled:bg-slate-100 disabled:text-slate-400" /></Field>
             {loanDetails ? (
               <section className="mt-4 border-t border-slate-200 pt-4">
                 <h3 className="mb-3 text-sm font-semibold text-slate-800">{t("accountTypeQuickEdit.loanDetails")}</h3>

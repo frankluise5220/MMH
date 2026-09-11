@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 
 import { CalcInput } from "@/components/CalcInput";
+import { ClearableNoteField } from "@/components/ClearableNoteField";
 import { DateStepper } from "@/components/DateStepper";
 import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -399,7 +400,7 @@ export function PropertyFormModal({
 
             <div className="space-y-1">
               <div className="form-label">{t("detail.column.remark")}</div>
-              <textarea value={note} onChange={(event) => setNote(event.target.value)} className="form-input min-h-[72px] resize-none py-2" placeholder={t("stockFee.optional")} />
+              <ClearableNoteField multiline value={note} onValueChange={setNote} className="form-input min-h-[72px] resize-none py-2" placeholder={t("stockFee.optional")} />
             </div>
           </div>
 

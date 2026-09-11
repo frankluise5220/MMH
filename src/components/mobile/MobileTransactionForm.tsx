@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeftRight, X } from "lucide-react";
 import { buildGroupedAccountOptions, buildAccountDisplayOption, type AccountDisplaySource } from "@/lib/account-display";
 import { SmartSelect } from "@/components/SmartSelect";
+import { ClearableNoteField } from "@/components/ClearableNoteField";
 import { buildCategoryTreeOptions } from "@/components/categorySmartSelect";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
@@ -289,7 +290,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
 
         <label className="mt-3 block">
           <span className="text-xs text-slate-500">{t("mobileTxForm.note")}</span>
-          <input className="form-input mt-1" value={draft.note} onChange={(event) => update("note", event.target.value)} placeholder={t("mobileTxForm.optional")} />
+          <ClearableNoteField wrapperClassName="mt-1" className="form-input" value={draft.note} onValueChange={(value) => update("note", value)} placeholder={t("mobileTxForm.optional")} />
         </label>
         {error ? <p className="mt-2 text-sm text-red-600">{error}</p> : null}
         <button type="button" disabled={saving} onClick={save} className="primary-button mt-4 h-11 w-full disabled:opacity-60">

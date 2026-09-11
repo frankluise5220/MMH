@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { DateStepper } from "./DateStepper";
+import { ClearableNoteField } from "./ClearableNoteField";
 import { useI18n } from "@/lib/i18n";
 import { FIXED_ASSET_TYPES, type FixedAssetType } from "@/lib/fixed-asset";
 
@@ -224,10 +225,10 @@ export function FixedAssetEditModal({
               </div>
               <div className="space-y-1">
                 <div className="form-label">{t("fixedAssetEdit.note")}</div>
-                <input
+                <ClearableNoteField
                   value={draft.note}
-                  onChange={(event) => {
-                    const next = { ...draft, note: event.target.value };
+                  onValueChange={(value) => {
+                    const next = { ...draft, note: value };
                     setDraft(next);
                     onChange?.(next);
                   }}

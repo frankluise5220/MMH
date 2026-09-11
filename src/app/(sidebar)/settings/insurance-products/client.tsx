@@ -2,6 +2,7 @@
 
 import { useMemo, useState, type FormEvent } from "react";
 import { Search, X } from "lucide-react";
+import { ClearableNoteField } from "@/components/ClearableNoteField";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import {
   SettingsActionButton,
@@ -449,9 +450,10 @@ export function SettingsInsuranceProductsClient({
                   </Field>
                 </div>
                 <Field label={t("insurance.col.note")}>
-                  <textarea
+                  <ClearableNoteField
+                    multiline
                     value={editing.note}
-                    onChange={(event) => setEditing({ ...editing, note: event.target.value })}
+                    onValueChange={(value) => setEditing({ ...editing, note: value })}
                     className="form-input min-h-24 resize-y"
                   />
                 </Field>

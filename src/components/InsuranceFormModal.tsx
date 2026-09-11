@@ -6,6 +6,7 @@ import { createPortal } from "react-dom";
 import { Repeat } from "lucide-react";
 import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
+import { ClearableNoteField } from "./ClearableNoteField";
 import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
@@ -1013,9 +1014,9 @@ export function InsuranceFormModal({
 
                   <div className="space-y-1">
                     <div className="form-label">{t("detail.column.remark")}</div>
-                    <input
+                    <ClearableNoteField
                       value={memo}
-                      onChange={(event) => setMemo(event.target.value)}
+                      onValueChange={setMemo}
                       placeholder={t("stockFee.optional")}
                       className="form-input"
                     />
@@ -1235,9 +1236,9 @@ export function InsuranceFormModal({
                   {/* 9. Note */}
                   <div className="space-y-1">
                     <div className="form-label">{t("detail.column.remark")}</div>
-                    <input
+                    <ClearableNoteField
                       value={memo}
-                      onChange={(event) => setMemo(event.target.value)}
+                      onValueChange={setMemo}
                       placeholder={t("stockFee.optional")}
                       className="form-input"
                     />
