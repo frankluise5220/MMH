@@ -4,6 +4,7 @@ import { connection } from "next/server";
 import { cookies } from "next/headers";
 import { AccountKind, CreditCardInstallmentSourceType, FundCashFlowKind, TransactionType, FundSubtype, RegularInvestStatus } from "@prisma/client";
 import { institutionTypeLabel, isSettlementCounterpartyType, kindLabel } from "@/lib/account-kinds";
+import { getServerAccountDropdownRestrictType } from "@/lib/server/account-dropdown-restrict";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { InvestmentFormModal } from "@/components/InvestmentFormModal";
 import { StockTransactionFormModal } from "@/components/StockTransactionFormModal";
@@ -478,6 +479,9 @@ export default async function Home({
   // Read the cookie preference. The pagination cookie preserves the detail-table
   // context after an edit refresh.
   const cookieStore = await cookies();
+  // 「账户下拉按类型筛选」设置（默认开）。关掉时所有账户下拉都应显示全部账户 —— 用户定版「要关就关全面」。
+  // 注意：只放宽【类型类】条件；占位符 / 停用 / 同所有人 这类条件仍须保留。
+  const restrictAccountTypes = await getServerAccountDropdownRestrictType();
   const accountLabelFields = accountLabelFieldsFromCookieValue(cookieStore.get(ACCOUNT_LABEL_FIELDS_COOKIE)?.value);
   const detailPaginationPref = decodeDetailPaginationPreference(
     cookieStore.get(detailPaginationCookieName(accountId))?.value,
@@ -1091,7 +1095,7 @@ export default async function Home({
     return result.join(" · ");
   };
   function buildAccountSSOptions(filter?: (a: typeof accountOptions[number]) => boolean): SSOpt[] {
-    const filtered = filter ? accountOptions.filter(filter) : accountOptions;
+    const filtered = filter && restrictAccountTypes ? accountOptions.filter(filter) : accountOptions;
     const grouped = filtered.filter(a => a.groupId);
     const ungrouped = filtered.filter(a => !a.groupId);
 
@@ -1246,7 +1250,7 @@ export default async function Home({
   // In the stock view, transfers only allow cash accounts (bank_debit/ewallet) of the same owner.
   const transferOwnerGroupId = (selectedAccount?.groupId ?? "").trim();
   const isStockTransferEligibleAccount = (a: (typeof accountOptions)[number]) =>
-    (a.kind === "bank_debit" || a.kind === "ewallet")
+    (!restrictAccountTypes || a.kind === "bank_debit" || a.kind === "ewallet")
     && (!transferOwnerGroupId || a.groupId === transferOwnerGroupId);
   const transferAccountSSOptions = view === "investstock"
     ? buildAccountSSOptions(isStockTransferEligibleAccount)
@@ -1281,7 +1285,9 @@ export default async function Home({
       ]
     : [];
   const spendingAccountSSOptions = buildAccountSSOptions(a => a.kind !== "investment" || a.investProductType === "deposit");
-  const investmentAccountSSOptions = buildFlatAccountOptions(accountOptions.filter(a => isPureInvestmentAccount(a) || isDepositAccount(a)));
+  const investmentAccountSSOptions = buildFlatAccountOptions(
+    restrictAccountTypes ? accountOptions.filter(a => isPureInvestmentAccount(a) || isDepositAccount(a)) : accountOptions,
+  );
   // Flat lists for components that don't use SS hierarchy (backward compat)
   const cashAccountList = accountOptions
     .filter(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet")

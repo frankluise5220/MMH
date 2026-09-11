@@ -14,6 +14,7 @@ import { kindLabel } from "@/lib/account-kinds";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
 import { useI18n } from "@/lib/i18n";
 import { isWealthAccountAllowedForCashAccount } from "@/lib/wealth-account-rules";
 import { EntryAttachmentButton, uploadEntryAttachmentFiles } from "./EntryAttachmentPanel";
@@ -297,8 +298,9 @@ export function WealthFormModal({
     () => cashAccountList.find((account) => account.id === cashAccountId) ?? null,
     [cashAccountId, cashAccountList],
   );
+  // 受「账户下拉按类型筛选」控制（用户定版：要关就关全面）
   const wealthAccountList = useMemo(
-    () => investmentAccountList.filter((account) => account.investProductType === "wealth"),
+    () => restrictAccountsByType(investmentAccountList, (account) => account.investProductType === "wealth"),
     [investmentAccountList],
   );
   const wealthAccountIds = useMemo(() => new Set(wealthAccountList.map((account) => account.id)), [wealthAccountList]);

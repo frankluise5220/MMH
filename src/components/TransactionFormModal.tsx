@@ -14,6 +14,8 @@ import { SmartSelect, SmartSelectOption } from "./SmartSelect";
 import { UnifiedEntryLauncher } from "./UnifiedEntryLauncher";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { isSettlementCounterpartyType, kindLabel } from "@/lib/account-kinds";
+import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
+import { getAccountDropdownRestrictTypePreference } from "@/lib/client/appPreferences";
 import { getCashTargetOperation } from "@/lib/account-kind-utils";
 import { buildAccountDisplayOption, buildGroupedAccountOptions } from "@/lib/account-display";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
@@ -642,7 +644,7 @@ export function TransactionFormModal({
           .map((account) => account.kind)
           .filter((kind): kind is string => Boolean(kind)),
       );
-      const nextAccountOptions = allOptions.filter((option) => !allowedKinds.size || allowedKinds.has(option.kind ?? ""));
+      const nextAccountOptions = restrictAccountsByType(allOptions, (option) => !allowedKinds.size || allowedKinds.has(option.kind ?? ""));
       const nextFixedAssetAccountOptions = allOptions.filter(isFixedAssetAccountLike);
       const selectedIds = new Set([accountId, fromAccountId, toAccountId].filter(Boolean));
       setAccountList((prev) => {
@@ -779,17 +781,20 @@ export function TransactionFormModal({
   // Advance (代付) account pickers: funding side excludes loan/settlement rows,
   // the settlement side lists only the counterparty's loan/settlement accounts.
   const isDebtAccountKind = (kind?: string | null) => kind === "loan" || kind === "settlement";
+  // 「账户下拉按类型筛选」关掉时也只放宽【类型】条件；表头/分组、往来对象匹配等条件仍保留
+  // （用户定版：要关就关全面，但别把不该出现的行混进来）。
   const advanceCashAccountOptions = useMemo(
-    () => displayAccountOptions.filter((option) => option.isHeader || option.isGroup || !isDebtAccountKind(option.kind)),
+    () => restrictAccountsByType(displayAccountOptions, (option) => option.isHeader || option.isGroup || !isDebtAccountKind(option.kind)),
     [displayAccountOptions],
   );
   const advanceAccountOptions = useMemo(() => {
     if (txType !== "advance" || !counterpartyInstitutionId) return [];
     const seen = new Set<string>();
     const options: AccountOption[] = [];
+    const restrictAccountTypes = getAccountDropdownRestrictTypePreference();
     for (const option of [...displayAccountOptions, ...accountList]) {
       if (option.isHeader || option.isGroup) continue;
-      if (!isDebtAccountKind(option.kind)) continue;
+      if (restrictAccountTypes && !isDebtAccountKind(option.kind)) continue;
       // SS hierarchy options are plain SmartSelectOption rows without counterpartyId.
       const counterpartyId = (option as Partial<AccountOption>).counterpartyId ?? "";
       if (counterpartyId !== counterpartyInstitutionId) continue;
