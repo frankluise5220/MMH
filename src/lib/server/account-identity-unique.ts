@@ -111,7 +111,10 @@ export async function assertAccountIdentityUnique(
   const candidates = await store.account.findMany({
     where: {
       householdId: input.householdId,
-      groupId: input.groupId,
+      // 挂了往来对象的账户（往来款）没有「所有人」语义，判重不能按分组：
+      // 同一往来对象 + 同名 = 重复，无论它被挂在哪个分组下。
+      // 其余账户类型维持原口径（同一所有人名下才算同名）。
+      ...(input.counterpartyId ? {} : { groupId: input.groupId }),
       institutionId: input.institutionId,
       ...(input.counterpartyId !== undefined ? { counterpartyId: input.counterpartyId } : {}),
       kind: kind as AccountKind,
