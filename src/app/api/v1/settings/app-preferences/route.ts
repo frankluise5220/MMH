@@ -11,13 +11,22 @@ import {
 } from "@/lib/account-display";
 import { normalizeDateDisplayFormat } from "@/lib/date-utils";
 import { normalizeRowHeightMode } from "@/lib/row-height";
+import {
+  HOUSEHOLD_COOKIE as HOUSEHOLD_KEY,
+  SESSION_DAYS_COOKIE as SESSION_DAYS_KEY,
+  USER_ID_COOKIE as USER_ID_KEY,
+  USERNAME_COOKIE as USERNAME_KEY,
+  VERIFIED_COOKIE as VERIFIED_KEY,
+  createVerifiedSessionValue,
+  sessionCookieOptions,
+  verifyVerifiedSessionValue,
+} from "@/lib/server/session-cookies";
 
 /**
  * GET /api/v1/settings/app-preferences returns browser-scoped display preferences.
  * PUT /api/v1/settings/app-preferences accepts any subset of the returned fields and
  * persists them as cookies without changing ledger data or financial calculations.
  */
-const SESSION_DAYS_KEY = "mmh_session_days";
 const FUND_UNITS_DECIMALS_KEY = "mmh_fund_units_decimals";
 const AI_PANEL_ENABLED_KEY = "mmh_ai_panel_enabled";
 const TIME_ZONE_MODE_KEY = "mmh_time_zone_mode";
@@ -35,10 +44,7 @@ const SIDEBAR_SHOW_FIXED_ASSETS_KEY = "sidebar_show_fixed_assets";
 const DETAIL_DATE_BACKGROUND_KEY = "detail_date_background";
 const ROW_HEIGHT_MODE_KEY = "advanced_data_table_row_height_mode";
 const ACCOUNT_LABEL_FIELDS_KEY = "mmh_account_label_fields";
-const VERIFIED_KEY = "mmh_access_password_verified";
-const USER_ID_KEY = "mmh_user_id";
-const USERNAME_KEY = "mmh_username";
-const HOUSEHOLD_KEY = "householdId";
+const ACCOUNT_DROPDOWN_RESTRICT_TYPE_KEY = "mmh_account_dropdown_restrict_type";
 
 function normalizeSessionDays(input: unknown) {
   const n = Number(input);
@@ -130,6 +136,7 @@ export async function GET(req: NextRequest) {
   const detailDateBackground = normalizeBoolean(req.cookies.get(DETAIL_DATE_BACKGROUND_KEY)?.value, false);
   const rowHeightMode = normalizeRowHeightMode(req.cookies.get(ROW_HEIGHT_MODE_KEY)?.value);
   const accountLabelFields = accountLabelFieldsFromPreferenceCookie(req.cookies.get(ACCOUNT_LABEL_FIELDS_KEY)?.value);
+  const accountDropdownRestrictType = normalizeBoolean(req.cookies.get(ACCOUNT_DROPDOWN_RESTRICT_TYPE_KEY)?.value, true);
   return NextResponse.json({
     ok: true,
     sessionDays,
@@ -150,6 +157,7 @@ export async function GET(req: NextRequest) {
     detailDateBackground,
     rowHeightMode,
     accountLabelFields,
+    accountDropdownRestrictType,
   });
 }
 
@@ -174,6 +182,7 @@ export async function PUT(req: NextRequest) {
     detailDateBackground?: unknown;
     rowHeightMode?: unknown;
     accountLabelFields?: unknown;
+    accountDropdownRestrictType?: unknown;
   } : {};
   const hasSessionDays = Object.prototype.hasOwnProperty.call(prefs, "sessionDays");
   const hasFundUnitsDecimals = Object.prototype.hasOwnProperty.call(prefs, "fundUnitsDecimals");
@@ -193,6 +202,7 @@ export async function PUT(req: NextRequest) {
   const hasDetailDateBackground = Object.prototype.hasOwnProperty.call(prefs, "detailDateBackground");
   const hasRowHeightMode = Object.prototype.hasOwnProperty.call(prefs, "rowHeightMode");
   const hasAccountLabelFields = Object.prototype.hasOwnProperty.call(prefs, "accountLabelFields");
+  const hasAccountDropdownRestrictType = Object.prototype.hasOwnProperty.call(prefs, "accountDropdownRestrictType");
   const sessionDays = normalizeSessionDays(hasSessionDays ? prefs.sessionDays : req.cookies.get(SESSION_DAYS_KEY)?.value ?? 30);
   const fundUnitsDecimals = normalizeFundUnitsDecimals(hasFundUnitsDecimals ? prefs.fundUnitsDecimals : req.cookies.get(FUND_UNITS_DECIMALS_KEY)?.value ?? 2);
   const aiPanelEnabled = normalizeBoolean(hasAiPanelEnabled ? prefs.aiPanelEnabled : req.cookies.get(AI_PANEL_ENABLED_KEY)?.value, true);
@@ -245,6 +255,12 @@ export async function PUT(req: NextRequest) {
   const accountLabelFields = hasAccountLabelFields
     ? normalizeAccountLabelFieldsPreference(prefs.accountLabelFields)
     : accountLabelFieldsFromPreferenceCookie(req.cookies.get(ACCOUNT_LABEL_FIELDS_KEY)?.value);
+  const accountDropdownRestrictType = normalizeBoolean(
+    hasAccountDropdownRestrictType
+      ? prefs.accountDropdownRestrictType
+      : req.cookies.get(ACCOUNT_DROPDOWN_RESTRICT_TYPE_KEY)?.value,
+    true,
+  );
   const maxAge = sessionDays * 24 * 60 * 60;
 
   const response = NextResponse.json({
@@ -267,6 +283,7 @@ export async function PUT(req: NextRequest) {
     detailDateBackground,
     rowHeightMode,
     accountLabelFields,
+    accountDropdownRestrictType,
   });
   response.cookies.set(SESSION_DAYS_KEY, String(sessionDays), {
     path: "/",
@@ -376,42 +393,30 @@ export async function PUT(req: NextRequest) {
     httpOnly: false,
     sameSite: "lax",
   });
+  response.cookies.set(ACCOUNT_DROPDOWN_RESTRICT_TYPE_KEY, accountDropdownRestrictType ? "1" : "0", {
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365,
+    httpOnly: false,
+    sameSite: "lax",
+  });
 
   const verified = req.cookies.get(VERIFIED_KEY)?.value;
   const userId = req.cookies.get(USER_ID_KEY)?.value;
   const username = req.cookies.get(USERNAME_KEY)?.value;
   const householdId = req.cookies.get(HOUSEHOLD_KEY)?.value;
-  if (verified === "ok") {
-    response.cookies.set(VERIFIED_KEY, verified, {
-      path: "/",
-      maxAge,
-      httpOnly: true,
-      sameSite: "lax",
-    });
+  const verifiedSession = verifyVerifiedSessionValue(verified, userId);
+  const authCookieOptions = sessionCookieOptions(maxAge, req);
+  if (verifiedSession.ok) {
+    response.cookies.set(VERIFIED_KEY, createVerifiedSessionValue(verifiedSession.userId, maxAge), authCookieOptions);
   }
   if (userId) {
-    response.cookies.set(USER_ID_KEY, userId, {
-      path: "/",
-      maxAge,
-      httpOnly: true,
-      sameSite: "lax",
-    });
+    response.cookies.set(USER_ID_KEY, userId, authCookieOptions);
   }
   if (username) {
-    response.cookies.set(USERNAME_KEY, username, {
-      path: "/",
-      maxAge,
-      httpOnly: false,
-      sameSite: "lax",
-    });
+    response.cookies.set(USERNAME_KEY, username, authCookieOptions);
   }
   if (householdId) {
-    response.cookies.set(HOUSEHOLD_KEY, householdId, {
-      path: "/",
-      maxAge,
-      httpOnly: false,
-      sameSite: "lax",
-    });
+    response.cookies.set(HOUSEHOLD_KEY, householdId, authCookieOptions);
   }
 
   return response;
