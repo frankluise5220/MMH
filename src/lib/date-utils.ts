@@ -42,13 +42,17 @@ export function addMonthsUtc(date: Date, months: number) {
  * (e.g. 2026-08-31 + 1 month rolled into October instead of September).
  */
 export function toStatementMonth(date: Date, billingDay: number, txPeriod?: string | null) {
-  const effectiveBillingDay = txPeriod === "next" ? billingDay - 1 : billingDay;
-  const day = date.getUTCDate();
-  const monthOffset = day <= effectiveBillingDay ? 0 : 1;
-  const absoluteMonth = date.getUTCFullYear() * 12 + date.getUTCMonth() + monthOffset;
-  const year = Math.floor(absoluteMonth / 12);
-  const monthIndex = absoluteMonth % 12;
-  return `${year}-${String(monthIndex + 1).padStart(2, "0")}`;
+  const normalizedDate = startOfDayUtc(date);
+  const year = normalizedDate.getUTCFullYear();
+  const month = normalizedDate.getUTCMonth();
+  const statementDay = clampDay(year, month, Math.trunc(billingDay));
+  const statementDate = new Date(Date.UTC(year, month, statementDay));
+  const cycleEnd = txPeriod === "next" ? addDaysUtc(statementDate, -1) : statementDate;
+  const monthOffset = normalizedDate.getTime() <= cycleEnd.getTime() ? 0 : 1;
+  const absoluteMonth = year * 12 + month + monthOffset;
+  const statementYear = Math.floor(absoluteMonth / 12);
+  const statementMonthIndex = absoluteMonth % 12;
+  return `${statementYear}-${String(statementMonthIndex + 1).padStart(2, "0")}`;
 }
 
 export function lastDayOfMonthUtc(y: number, m: number) {
@@ -166,6 +170,53 @@ export function parseDateInputToUtc(value: string): Date | null {
   if (!match) return null;
   const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
   return Number.isFinite(date.getTime()) ? date : null;
+}
+
+const FLEXIBLE_DATE_ISO_RE = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[T\s].*)?$/;
+const FLEXIBLE_DATE_CN_RE = /^(\d{4})\s*\u5e74\s*(\d{1,2})\s*\u6708\s*(\d{1,2})\s*\u65e5?(?:[T\s].*)?$/;
+const FLEXIBLE_DATE_COMPACT_RE = /^(\d{4})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:[T\s].*)?$/;
+const FLEXIBLE_DATE_MDY_RE = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})(?:[T\s].*)?$/;
+
+function ymdFromCalendarParts(year: number, month: number, day: number): string | null {
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (!Number.isFinite(date.getTime())) return null;
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+  return formatDateUtc(date);
+}
+
+export function parseFlexibleDateToYmd(value: unknown): string | null {
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? formatDateUtc(value) : null;
+  }
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+
+  let match = FLEXIBLE_DATE_ISO_RE.exec(raw);
+  if (match) return ymdFromCalendarParts(Number(match[1]), Number(match[2]), Number(match[3]));
+
+  match = FLEXIBLE_DATE_CN_RE.exec(raw);
+  if (match) return ymdFromCalendarParts(Number(match[1]), Number(match[2]), Number(match[3]));
+
+  match = FLEXIBLE_DATE_COMPACT_RE.exec(raw);
+  if (match) return ymdFromCalendarParts(Number(match[1]), Number(match[2]), Number(match[3]));
+
+  match = FLEXIBLE_DATE_MDY_RE.exec(raw);
+  if (match) {
+    const first = Number(match[1]);
+    const second = Number(match[2]);
+    const year = Number(match[3]);
+    return first > 12 && second <= 12
+      ? ymdFromCalendarParts(year, second, first)
+      : ymdFromCalendarParts(year, first, second);
+  }
+
+  if (raw.length >= 8 && /\d{4}/.test(raw)) {
+    const date = new Date(raw);
+    if (!Number.isFinite(date.getTime())) return null;
+    return formatDateLocal(date);
+  }
+  return null;
 }
 
 const CN_FUND_HOLIDAYS = new Set<string>([

@@ -100,3 +100,38 @@ export function compareDetailEntriesDesc(a: DetailEntryLike, b: DetailEntryLike,
 export function compareDetailEntriesAsc(a: DetailEntryLike, b: DetailEntryLike, accountId?: string | null) {
   return compareDetailEntriesDesc(b, a, accountId);
 }
+
+/**
+ * Locate the 1-based page (of `pageSize`) that contains the first entry whose
+ * display day (YYYY-MM-DD) is on or before `dateYmd`, given entries sorted desc
+ * (the same order used by compareDetailEntriesDesc). Returns the zero-based
+ * index of that entry too, plus totalPages for clamping.
+ */
+export function locateDetailEntryPageDesc(
+  entries: readonly DetailEntryLike[],
+  dateYmd: string,
+  pageSize: number,
+  accountId?: string | null,
+) {
+  const safePageSize = Math.max(1, Math.floor(pageSize) || 1);
+  const total = entries.length;
+  const totalPages = Math.max(1, Math.ceil(total / safePageSize));
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateYmd)) {
+    return { page: 1, index: 0, totalPages };
+  }
+  let index = -1;
+  for (let i = 0; i < total; i += 1) {
+    const entry = entries[i];
+    if (!entry) continue;
+    const dayKey = localDateKey(getDetailEntryDisplayDate(entry, accountId));
+    if (dayKey <= dateYmd) {
+      index = i;
+      break;
+    }
+  }
+  // No entry on or before the target date: land on the oldest page.
+  if (index < 0) {
+    return { page: totalPages, index: Math.max(0, total - 1), totalPages };
+  }
+  return { page: Math.floor(index / safePageSize) + 1, index, totalPages };
+}

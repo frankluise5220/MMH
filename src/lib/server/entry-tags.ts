@@ -1,10 +1,69 @@
 import { prisma } from "@/lib/db/prisma";
 import { readableTagWhere } from "@/lib/server/tag-scope";
+import type { Prisma } from "@prisma/client";
 
 type EntryTagTx = {
   tag: Pick<typeof prisma.tag, "findMany">;
   entryTag: Pick<typeof prisma.entryTag, "deleteMany" | "createMany">;
 };
+
+export function parseTagNamesInput(value: unknown) {
+  const parts = Array.isArray(value)
+    ? value.map((item) => String(item))
+    : String(value ?? "").split(/[\uFF0C,\u3001\uFF1B;]+/);
+  return Array.from(new Set(
+    parts
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .slice(0, 20),
+  ));
+}
+
+export async function resolveOrCreateTagIdsByNames(
+  tx: Prisma.TransactionClient,
+  householdId: string | null | undefined,
+  names: readonly string[],
+) {
+  const ids: string[] = [];
+  for (const name of names) {
+    const trimmed = String(name ?? "").trim();
+    if (!trimmed) continue;
+    const existing = await tx.tag.findFirst({
+      where: { name: trimmed, ...readableTagWhere(householdId) },
+      select: { id: true },
+    });
+    if (existing) {
+      ids.push(existing.id);
+      continue;
+    }
+    const created = await tx.tag.create({
+      data: { name: trimmed, householdId: householdId ?? null },
+    });
+    ids.push(created.id);
+  }
+  return Array.from(new Set(ids));
+}
+
+export async function attachEntryTagsByNames(input: {
+  tx: Prisma.TransactionClient;
+  entryId: string;
+  householdId?: string | null;
+  names: readonly string[];
+}) {
+  if (!input.entryId) return;
+  const tagIds = await resolveOrCreateTagIdsByNames(input.tx, input.householdId ?? null, input.names);
+  if (tagIds.length === 0) return;
+  const existing = await input.tx.entryTag.findMany({
+    where: { entryId: input.entryId, tagId: { in: tagIds } },
+    select: { tagId: true },
+  });
+  const existingTagIds = new Set(existing.map((row) => row.tagId));
+  const freshTagIds = tagIds.filter((tagId) => !existingTagIds.has(tagId));
+  if (freshTagIds.length === 0) return;
+  await input.tx.entryTag.createMany({
+    data: freshTagIds.map((tagId) => ({ entryId: input.entryId, tagId })),
+  });
+}
 
 export function normalizeTagIds(tagIds: readonly string[]) {
   return Array.from(new Set(
