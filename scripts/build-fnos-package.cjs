@@ -1446,6 +1446,16 @@ const MIGRATIONS = [
     },
   },
   {
+    version: "20260910_add_tx_original_currency_location",
+    description: "Add transactions.originalCurrency/originalAmount (settlement facts) and locationId/locationName (tx place)",
+    apply(db) {
+      addColumnIfMissing(db, "transactions", "originalCurrency", "TEXT");
+      addColumnIfMissing(db, "transactions", "originalAmount", "DECIMAL");
+      addColumnIfMissing(db, "transactions", "locationId", "TEXT");
+      addColumnIfMissing(db, "transactions", "locationName", "TEXT");
+    },
+  },
+  {
     version: "20260903_add_fund_profile_trading_calendar",
     description: "Add fund-level NAV trading calendar to fund profiles",
     apply(db) {

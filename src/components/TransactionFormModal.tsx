@@ -511,6 +511,12 @@ export function TransactionFormModal({
                 name: counterparty.shortName?.trim() || counterparty.name,
                 type: counterparty.type ?? "other",
               })),
+            merchantId: (data.counterparties ?? [])
+              .filter((counterparty: { type?: string | null }) => counterparty.type === "merchant")
+              .map((counterparty: { id: string; name: string; shortName?: string | null }) => ({
+                id: counterparty.id,
+                name: counterparty.shortName?.trim() || counterparty.name,
+              })),
           });
         }
       }
@@ -590,6 +596,10 @@ export function TransactionFormModal({
   const [fxFromCurrencyDraft, setFxFromCurrencyDraft] = useState("CNY");
   const [fxToCurrencyDraft, setFxToCurrencyDraft] = useState("USD");
   const [fetchingFxRate, setFetchingFxRate] = useState(false);
+  // Foreign-expense posting model: store the bank-posted local amount as `amount`
+  // and keep the original settlement currency/amount as provenance fields.
+  const [localAmount, setLocalAmount] = useState("");
+  const [fxPostingV2, setFxPostingV2] = useState(true);
   const [createInstallment, setCreateInstallment] = useState(false);
   const [installmentAmount, setInstallmentAmount] = useState("");
   const [installmentAmountEdited, setInstallmentAmountEdited] = useState(false);
@@ -606,9 +616,10 @@ export function TransactionFormModal({
   const [fixedAssetLinkLocked, setFixedAssetLinkLocked] = useState(false);
   const [fixedAssetAccountNestedOpen, setFixedAssetAccountNestedOpen] = useState(false);
   const [fixedAssetAccountAutoOpen, setFixedAssetAccountAutoOpen] = useState(false);
-  const [foreignCurrencyEnabled, setForeignCurrencyEnabled] = useState(false);
   const [txCurrency, setTxCurrency] = useState("");
+  const [convertingPostedAmount, setConvertingPostedAmount] = useState(false);
   const [counterpartyInstitutionId, setCounterpartyInstitutionId] = useState("");
+  const [locationId, setLocationId] = useState("");
   const [note, setNote] = useState("");
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [pendingAttachmentFiles, setPendingAttachmentFiles] = useState<File[]>([]);
@@ -882,8 +893,52 @@ export function TransactionFormModal({
     const toValue = parseMoneyDraft(value);
     if (fromValue > 0 && toValue > 0) setFxRate(formatFxRate(toValue / fromValue));
   }
-  async function fetchFxRateForForm() {
-    if (fetchingFxRate) return;
+  // 记账账户币种就是支出弹窗里的"本币"：交易货币留空表示跟随账户币种，
+  // 只有用户显式选了别的币种才算外币支出。
+  const txAccountCurrency = normalizeCurrencyLabel(accountMetaById.get(accountId)?.currency) || "CNY";
+  const effectiveTxCurrency = txCurrency ? normalizeCurrencyLabel(txCurrency) : txAccountCurrency;
+  const txPostingIsForeign = txType === "expense" && effectiveTxCurrency !== txAccountCurrency;
+  // 旧模型记录（currency 即外币、没有 originalCurrency）编辑时保持原语义，
+  // 不强行升级成"本币入账 + 原币事实"。
+  const showPostedAmount = txPostingIsForeign && fxPostingV2;
+
+  async function loadTxFxRate(refresh: boolean): Promise<number | null> {
+    try {
+      const params = new URLSearchParams({ from: effectiveTxCurrency, to: txAccountCurrency });
+      if (refresh) params.set("refresh", "1");
+      const res = await fetch(`/api/v1/fx-rates?${params.toString()}`, { cache: "no-store" });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok || !Array.isArray(data.rates)) return null;
+      const rateRow = data.rates.find((rate: { fromCurrency?: string; toCurrency?: string }) =>
+        normalizeCurrencyLabel(rate.fromCurrency) === effectiveTxCurrency
+        && normalizeCurrencyLabel(rate.toCurrency) === txAccountCurrency);
+      const rate = Number(rateRow?.rate);
+      return Number.isFinite(rate) && rate > 0 ? rate : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // 「换算」：先取缓存汇率，取不到再强制刷新一次，然后按最新汇率折算入账金额。
+  // 折算结果仍可手工改，也允许填 0。
+  async function convertPostedAmount() {
+    if (convertingPostedAmount || !txPostingIsForeign) return;
+    setConvertingPostedAmount(true);
+    try {
+      const rate = (await loadTxFxRate(false)) ?? (await loadTxFxRate(true));
+      if (!rate) {
+        window.alert(t("txForm.alert.fxRateUnavailable"));
+        return;
+      }
+      const originalValue = parseMoneyDraft(amount);
+      const converted = formatFxAmount(Math.abs(originalValue) * rate);
+      setLocalAmount(originalValue < 0 && converted ? `-${converted}` : converted);
+    } finally {
+      setConvertingPostedAmount(false);
+    }
+  }
+
+  async function fetchFxRateForForm() {    if (fetchingFxRate) return;
     if (!fxFromCurrency || !fxToCurrency || fxFromCurrency === fxToCurrency) {
       window.alert(t("txForm.alert.selectDifferentCurrencies"));
       return;
@@ -1115,9 +1170,11 @@ export function TransactionFormModal({
     setFixedAssetLinkLocked(false);
     setFixedAssetAccountNestedOpen(false);
     setFixedAssetAccountAutoOpen(false);
-    setForeignCurrencyEnabled(false);
     setTxCurrency("");
     setCounterpartyInstitutionId("");
+    setLocationId("");
+    setLocalAmount("");
+    setFxPostingV2(true);
     setNote("");
     setSelectedTagIds([]);
     setPendingAttachmentFiles([]);
@@ -1148,8 +1205,10 @@ export function TransactionFormModal({
     setFixedAssetLinkLocked(false);
     setFixedAssetAccountNestedOpen(false);
     setFixedAssetAccountAutoOpen(false);
-    setForeignCurrencyEnabled(false);
     setTxCurrency("");
+    setLocationId("");
+    setLocalAmount("");
+    setFxPostingV2(true);
     setPendingAttachmentFiles([]);
     setRequestId(null);
     setEditEntryId(null);
@@ -1264,7 +1323,6 @@ export function TransactionFormModal({
       setFixedAssetLinkLocked(effectiveType === "expense" && detail.lockFixedAsset === true);
       setFixedAssetAccountNestedOpen(false);
       setFixedAssetAccountAutoOpen(fixedAssetRequired && !forcedFixedAssetAccountId);
-      setForeignCurrencyEnabled(false);
       setTxCurrency("");
       setTxType(effectiveType);
       setFxDirection(effectiveFxDirection);
@@ -1400,6 +1458,10 @@ export function TransactionFormModal({
         fixedAssetAssetId?: string;
         fixedAssetLinked?: boolean;
         currency?: string | null;
+        locationId?: string;
+        locationName?: string;
+        originalCurrency?: string | null;
+        originalAmount?: number | null;
       }>).detail;
       if (!detail?.requestId || !detail.entryId) return;
       setRequestId(detail.requestId);
@@ -1421,26 +1483,43 @@ export function TransactionFormModal({
       setFixedAssetLinkLocked(false);
       setFixedAssetAccountNestedOpen(false);
       setFixedAssetAccountAutoOpen(false);
-      // Foreign-currency expense: the switch turns on when the record currency
-      // differs from the posting account's own currency (e.g. JPY spend on a CNY credit card).
+      // Foreign-currency expense: the transaction currency differs from the
+      // posting account's own currency (e.g. JPY spend on a CNY credit card),
+      // or the row carries settlement facts (originalCurrency) under the
+      // local-posting model.
       const editRecordCurrency = normalizeCurrencyLabel(detail.currency);
       const editAccountId = detail.type === "transfer" ? "" : (detail.accountId ?? defaultAccountId ?? "");
       const editAccountCurrency = normalizeCurrencyLabel(accountMetaById.get(editAccountId)?.currency);
-      const editForeignTxn = detail.type === "expense" && Boolean(detail.currency) && editRecordCurrency !== editAccountCurrency;
-      setForeignCurrencyEnabled(editForeignTxn);
-      setTxCurrency(editForeignTxn ? editRecordCurrency : "");
+      const editOriginalCurrency = normalizeCurrencyLabel(detail.originalCurrency);
+      const editForeignTxn = detail.type === "expense" && (
+        (Boolean(editOriginalCurrency) && editOriginalCurrency !== editAccountCurrency)
+        || (Boolean(detail.currency) && editRecordCurrency !== editAccountCurrency)
+      );
+      setTxCurrency(editForeignTxn ? (editOriginalCurrency || editRecordCurrency) : "");
+      setFxPostingV2(editForeignTxn && Boolean(editOriginalCurrency));
+      setLocationId(detail.locationId?.trim() ?? "");
       setOpen(true);
       setTxType(detail.type);
       setDate(detail.date || today);
       setPostedAt(toDateInputValue(detail.postedAt || detail.date || today));
       setPostedAtEdited(Boolean(detail.postedAt));
       const numericAmount = Number(detail.amount);
+      const originalNumeric = Number(detail.originalAmount);
       const dialogAmount = Number.isFinite(numericAmount) ? storedAmountToDialogAmount(detail.type, numericAmount) : 0;
-      setAmount(
-        dialogAmount !== 0
-          ? String(dialogAmount)
-          : "",
-      );
+      if (editForeignTxn && editOriginalCurrency) {
+        // New-model row: dialog shows the original settlement amount; the posted
+        // local amount goes into the dedicated local-amount field.
+        const originalNumericAbs = Number.isFinite(originalNumeric) && originalNumeric !== 0 ? Math.abs(originalNumeric) : 0;
+        setAmount(originalNumericAbs !== 0 ? String(originalNumericAbs) : "");
+        setLocalAmount(numericAmount !== 0 ? String(Math.abs(numericAmount)) : "");
+      } else {
+        setAmount(
+          dialogAmount !== 0
+            ? String(dialogAmount)
+            : "",
+        );
+        setLocalAmount("");
+      }
       setNote(detail.note ?? "");
       setCounterpartyInstitutionId(detail.counterpartyInstitutionId ?? "");
       setEditCategoryFallback(detail.categoryId && detail.categoryName
@@ -1810,13 +1889,26 @@ export function TransactionFormModal({
         } else {
           formData.set("accountId", accountId);
           formData.set("categoryId", categoryId);
-          if (foreignCurrencyEnabled) {
-            if (!txCurrency) {
-              window.alert(t("txForm.alert.selectTxCurrency"));
-              return;
+          const normalizedTxCurrency = normalizeOptionalCurrency(effectiveTxCurrency);
+          if (txPostingIsForeign && normalizedTxCurrency) {
+            if (fxPostingV2) {
+              // New posting model: amount = bank-posted local amount; the
+              // original settlement currency/amount ride along as facts. A zero
+              // posted amount is allowed (bank has not posted / manual entry).
+              const localValue = parseMoneyDraft(localAmount);
+              const originalValue = parseMoneyDraft(amount);
+              if (!(originalValue > 0)) {
+                window.alert(t("txForm.alert.amountsPositive"));
+                return;
+              }
+              formData.set("amount", String(-localValue));
+              formData.set("currency", "");
+              formData.set("originalCurrency", normalizedTxCurrency);
+              formData.set("originalAmount", String(-originalValue));
+            } else {
+              // Legacy model (unmigrated rows): amount stays in the chosen currency.
+              formData.set("currency", normalizedTxCurrency);
             }
-            const normalizedTxCurrency = normalizeOptionalCurrency(txCurrency);
-            if (normalizedTxCurrency) formData.set("currency", normalizedTxCurrency);
           } else {
             // Explicitly reset to the posting account's currency on edit;
             // the server treats an empty value as "use account currency".
@@ -1826,6 +1918,7 @@ export function TransactionFormModal({
             formData.set("fixedAssetAccountId", fixedAssetAccountId);
             if (fixedAssetAssetId) formData.set("fixedAssetAssetId", fixedAssetAssetId);
           }
+          formData.set("locationId", locationId);
       }
       formData.set("tagIds", JSON.stringify(selectedTagIds));
       if (txType === "expense" && createInstallment && !editEntryId) {
@@ -2196,7 +2289,7 @@ export function TransactionFormModal({
                     </>
                   )}
 
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className={(txType === "expense" ? "grid grid-cols-3" : "grid grid-cols-2") + " gap-3"}>
                     <div className="space-y-1">
                       <div className="form-label">{t("detail.column.category")}</div>
                       <SmartSelect mode="single" value={categoryId} onChange={handleCategoryChange}
@@ -2237,12 +2330,26 @@ export function TransactionFormModal({
                         }}
                       />
                     </div>
+                    {txType === "expense" ? (
+                      <div className="space-y-1">
+                        <div className="form-label">{t("txForm.location")}</div>
+                        <SmartSelect
+                          mode="single"
+                          value={locationId}
+                          onChange={setLocationId}
+                          options={((localNestedFieldData ?? nestedFieldData)?.merchantId ?? [])
+                            .map((item) => ({ id: item.id, label: item.name }))}
+                          placeholder={t("stockFee.optional")}
+                          searchable
+                        />
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className={txType === "expense"
-                    ? foreignCurrencyEnabled
-                      ? "grid grid-cols-[4.5rem_4.5rem_8rem_minmax(0,1fr)] items-end gap-3"
-                      : "grid grid-cols-[4.5rem_4.5rem_minmax(0,1fr)] items-end gap-3"
+                    ? showPostedAmount
+                      ? "grid grid-cols-[4.5rem_5.33rem_minmax(0,1fr)_minmax(0,1fr)_auto] items-end gap-3"
+                      : "grid grid-cols-[4.5rem_5.33rem_minmax(0,1fr)] items-end gap-3"
                     : "space-y-1"}>
                     {txType === "expense" ? (
                       <div className="space-y-1">
@@ -2291,54 +2398,12 @@ export function TransactionFormModal({
                       </div>
                     ) : null}
                     {txType === "expense" ? (
-                      <div className="space-y-1">
-                        <div className="form-label">{t("txForm.foreignCurrencyToggle")}</div>
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={foreignCurrencyEnabled}
-                          aria-label={t("txForm.foreignCurrencyToggle")}
-                          onClick={() => {
-                            if (foreignCurrencyEnabled) {
-                              setForeignCurrencyEnabled(false);
-                              setTxCurrency("");
-                            } else {
-                              setForeignCurrencyEnabled(true);
-                              // Preselect the posting account's own currency (CNY ledger → CNY)
-                              // so the selector is never empty right after toggling on.
-                              setTxCurrency(normalizeCurrencyLabel(accountMetaById.get(accountId)?.currency));
-                            }
-                          }}
-                          className={[
-                            "flex h-9 w-12 items-center justify-center rounded-[10px] border px-2 text-xs font-medium transition",
-                            foreignCurrencyEnabled
-                              ? "border-blue-300 bg-blue-50 text-blue-700"
-                              : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50",
-                          ].join(" ")}
-                        >
-                          <span
-                            className={[
-                              "relative h-4 w-7 shrink-0 rounded-full transition",
-                              foreignCurrencyEnabled ? "bg-blue-600" : "bg-slate-300",
-                            ].join(" ")}
-                          >
-                            <span
-                              className={[
-                                "absolute top-0.5 h-3 w-3 rounded-full bg-white shadow-sm transition",
-                                foreignCurrencyEnabled ? "left-3.5" : "left-0.5",
-                              ].join(" ")}
-                            />
-                          </span>
-                        </button>
-                      </div>
-                    ) : null}
-                    {txType === "expense" && foreignCurrencyEnabled ? (
                       <div className="min-w-0 space-y-1">
                         <div className="form-label">{t("txForm.txnCurrency")}</div>
                         <CurrencySmartSelect
-                          value={txCurrency}
-                          onChange={setTxCurrency}
-                          onSubmitted={setTxCurrency}
+                          value={effectiveTxCurrency}
+                          onChange={(code) => { setTxCurrency(code); setFxPostingV2(true); }}
+                          onSubmitted={(code) => { setTxCurrency(code); setFxPostingV2(true); }}
                           labelSystem={(code) => t(`entityForm.currency.${code.toLowerCase()}`, { defaultValue: code })}
                           placeholder={t("txForm.txnCurrency")}
                           density="regular"
@@ -2355,6 +2420,32 @@ export function TransactionFormModal({
                         }
                       }} placeholder={txType === "expense" ? t("txForm.amountPlaceholderExpense") : t("txForm.amountPlaceholderIncome")} label={t("txForm.amount")} precision={2} />
                     </div>
+                    {showPostedAmount ? (
+                      <>
+                        <div className="min-w-0 space-y-1">
+                          <div className="form-label">{t("txForm.localAmount")}</div>
+                          <CalcInput
+                            value={localAmount}
+                            onChange={setLocalAmount}
+                            placeholder={t("txForm.localAmountPlaceholder")}
+                            label={t("txForm.localAmount")}
+                            precision={2}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <button
+                            type="button"
+                            onClick={() => { void convertPostedAmount(); }}
+                            disabled={convertingPostedAmount}
+                            title={t("txForm.convertAmount")}
+                            aria-label={t("txForm.convertAmount")}
+                            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-slate-200 bg-white text-slate-500 transition-colors hover:bg-slate-50 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <RefreshCw className={`h-3.5 w-3.5 ${convertingPostedAmount ? "animate-spin" : ""}`} />
+                          </button>
+                        </div>
+                      </>
+                    ) : null}
                   </div>
 
                   {txType === "expense" && fixedAssetLinked ? (

@@ -213,6 +213,13 @@ function parseOptionalDateTimeInput(value: FormDataEntryValue | null) {
   const d = new Date(raw);
   return Number.isNaN(d.getTime()) ? null : d;
 }
+
+function locationCounterpartyDisplayName(
+  counterparty: { name: string; shortName: string | null } | null | undefined,
+) {
+  return counterparty?.shortName?.trim() || counterparty?.name?.trim() || null;
+}
+
 async function createSplitWealthTransaction(
   t: (key: string, params?: Record<string, string | number>) => string,
   formData: FormData,
@@ -517,6 +524,10 @@ export async function createTransaction(formData: FormData) {
       const fixedAssetAccountId = String(formData.get("fixedAssetAccountId") ?? "").trim();
       const fixedAssetAssetId = String(formData.get("fixedAssetAssetId") ?? "").trim();
       const recordCurrency = String(formData.get("currency") ?? "").trim().toUpperCase() || null;
+      const locationIdInput = String(formData.get("locationId") ?? "").trim() || null;
+      const originalCurrencyInput = String(formData.get("originalCurrency") ?? "").trim().toUpperCase() || null;
+      const originalAmountInputRaw = Number(formData.get("originalAmount"));
+      const originalAmountInput = Number.isFinite(originalAmountInputRaw) && originalAmountInputRaw !== 0 ? originalAmountInputRaw : null;
 
       await prisma.$transaction(async (tx) => {
         const [acc, cat] = await Promise.all([
@@ -550,6 +561,14 @@ export async function createTransaction(formData: FormData) {
             });
         if (duplicate) return;
 
+        const locationCounterparty = locationIdInput
+          ? await tx.counterparty.findFirst({ where: { id: locationIdInput, householdId }, select: { name: true, shortName: true } })
+          : null;
+        // ID stays the source of truth even if the merchant was deleted in the
+        // meantime; the name snapshot falls back to null when it is gone.
+        const locationNameInput = locationIdInput
+          ? (locationCounterpartyDisplayName(locationCounterparty) ?? null)
+          : null;
         const created = await tx.txRecord.create({
           data: {accountId: acc.id,
             accountName: acc.name,
@@ -562,6 +581,10 @@ export async function createTransaction(formData: FormData) {
             postedAt,
             note: note || null,
             statementMonth,
+            originalCurrency: originalCurrencyInput && originalCurrencyInput !== recordCurrency ? originalCurrencyInput : null,
+            originalAmount: originalCurrencyInput && originalCurrencyInput !== recordCurrency ? originalAmountInput : null,
+            locationId: locationIdInput,
+            locationName: locationNameInput,
             ...{ householdId },
           },
         });
@@ -2485,6 +2508,30 @@ export async function updateTransactionFromDialog(formData: FormData) {
       if (type === "expense" && formCurrencyRaw != null) {
         const formCurrency = String(formCurrencyRaw).trim().toUpperCase();
         expenseOrIncomeData.currency = formCurrency || normalizeCurrency(acc.currency);
+      }
+      // Settlement facts (originalCurrency/originalAmount) and the tx location.
+      // The form sends empty values to clear them on edit.
+      if (type === "expense") {
+        const formOriginalCurrency = String(formData.get("originalCurrency") ?? "").trim().toUpperCase() || null;
+        const formOriginalAmountRaw = Number(formData.get("originalAmount"));
+        const formOriginalAmount = Number.isFinite(formOriginalAmountRaw) && formOriginalAmountRaw !== 0 ? formOriginalAmountRaw : null;
+        const effectiveCurrency = typeof expenseOrIncomeData.currency === "string"
+          ? expenseOrIncomeData.currency
+          : normalizeCurrency(acc.currency);
+        expenseOrIncomeData.originalCurrency = formOriginalCurrency && formOriginalCurrency !== effectiveCurrency ? formOriginalCurrency : null;
+        expenseOrIncomeData.originalAmount = formOriginalCurrency && formOriginalCurrency !== effectiveCurrency ? formOriginalAmount : null;
+        const formLocationId = String(formData.get("locationId") ?? "").trim() || null;
+        if (formLocationId && entry.householdId) {
+          const locationCounterparty = await tx.counterparty.findFirst({
+            where: { id: formLocationId, householdId: entry.householdId },
+            select: { name: true, shortName: true },
+          });
+          expenseOrIncomeData.locationId = formLocationId;
+          expenseOrIncomeData.locationName = locationCounterpartyDisplayName(locationCounterparty);
+        } else if (!formLocationId) {
+          expenseOrIncomeData.locationId = null;
+          expenseOrIncomeData.locationName = null;
+        }
       }
       if (isFundTransaction && !keepFundDetail) {
         expenseOrIncomeData.fundSubtype = null;

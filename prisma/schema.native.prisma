@@ -1504,6 +1504,10 @@ model TxRecord {
   insuranceProductName        String?
   source                      String?                     @default("manual")
   entryOrigin                 String?                     @default("manual")
+  originalCurrency            String?
+  originalAmount              Decimal?
+  locationId                  String?
+  locationName                String?
   Attachment                  Attachment[]
   EntryTag                    EntryTag[]
   account                     Account                     @relation("transactions_accountIdToAccount", fields: [accountId], references: [id])

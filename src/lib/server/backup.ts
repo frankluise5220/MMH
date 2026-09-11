@@ -604,6 +604,10 @@ const TRANSACTION_RESTORE_COLUMNS = [
   { name: "insuranceAction", select: 'x."insuranceAction"' },
   { name: "insuranceProductName", select: 'x."insuranceProductName"' },
   { name: "source", select: 'x."source"' },
+  { name: "originalCurrency", select: 'x."originalCurrency"' },
+  { name: "originalAmount", select: "NULLIF(x.\"originalAmount\", '')::numeric" },
+  { name: "locationId", select: 'x."locationId"' },
+  { name: "locationName", select: 'x."locationName"' },
 ] as const;
 
 const TRANSACTION_RESTORE_INSERT_SQL = `INSERT INTO "transactions" (${TRANSACTION_RESTORE_COLUMNS
@@ -3269,6 +3273,10 @@ export async function restoreHouseholdBackup(
               insuranceProductName: item.insuranceProductName == null ? null : String(item.insuranceProductName),
               source: item.source == null ? null : String(item.source),
               entryOrigin: item.entryOrigin == null ? "manual" : String(item.entryOrigin),
+              originalCurrency: item.originalCurrency == null ? null : String(item.originalCurrency),
+              originalAmount: item.originalAmount == null ? null : String(item.originalAmount),
+              locationId: item.locationId == null ? null : String(item.locationId),
+              locationName: item.locationName == null ? null : String(item.locationName),
             };
           },
         {
