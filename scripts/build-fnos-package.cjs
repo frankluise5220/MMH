@@ -1648,31 +1648,63 @@ const MIGRATIONS = [
     version: "20260911_add_debt_agreement",
     description: "Create DebtAgreement table: settlement loan terms (rate / term / due date) linked 1:1 to a transaction",
     apply(db) {
-      db.exec([
-        // 全新安装时 native-init.sql 已按当前 schema 建出该表（accountId 形状）。
-        // 本条是升级链的历史中间态，不能假设表不存在——先无条件丢弃再由下一条重建。
-        \`DROP TABLE IF EXISTS "DebtAgreement"\`,
-        \`CREATE TABLE IF NOT EXISTS "DebtAgreement" ("id" TEXT NOT NULL PRIMARY KEY, "householdId" TEXT NOT NULL, "entryId" TEXT NOT NULL, "annualRate" DECIMAL, "termValue" INTEGER, "termUnit" TEXT, "dueDate" DATETIME, "note" TEXT, "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "DebtAgreement_entryId_fkey" FOREIGN KEY ("entryId") REFERENCES "transactions"("id") ON DELETE CASCADE ON UPDATE CASCADE, CONSTRAINT "DebtAgreement_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE)\`,
-        \`CREATE UNIQUE INDEX IF NOT EXISTS "DebtAgreement_entryId_key" ON "DebtAgreement"("entryId")\`,
-        \`CREATE INDEX IF NOT EXISTS "DebtAgreement_householdId_dueDate_idx" ON "DebtAgreement"("householdId", "dueDate")\`,
-      ].join(";"));
+      // 全新安装时 native-init.sql 已按当前 schema 建出 accountId 形状，此时无需动作。
+      // 仅当旧库从未建过该表时，才建立历史中间态；下一条迁移会无损重键为 accountId。
+      if (!tableExists(db, "DebtAgreement")) {
+        db.exec([
+          \`CREATE TABLE IF NOT EXISTS "DebtAgreement" ("id" TEXT NOT NULL PRIMARY KEY, "householdId" TEXT NOT NULL, "entryId" TEXT NOT NULL, "annualRate" DECIMAL, "termValue" INTEGER, "termUnit" TEXT, "dueDate" DATETIME, "note" TEXT, "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "DebtAgreement_entryId_fkey" FOREIGN KEY ("entryId") REFERENCES "transactions"("id") ON DELETE CASCADE ON UPDATE CASCADE, CONSTRAINT "DebtAgreement_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE)\`,
+          \`CREATE UNIQUE INDEX IF NOT EXISTS "DebtAgreement_entryId_key" ON "DebtAgreement"("entryId")\`,
+          \`CREATE INDEX IF NOT EXISTS "DebtAgreement_householdId_dueDate_idx" ON "DebtAgreement"("householdId", "dueDate")\`,
+        ].join(";"));
+      }
     },
   },
   {
     version: "20260911_rekey_debt_agreement_to_account",
     description: "DebtAgreement belongs to the settlement account (accountId), not a transaction",
     apply(db) {
-      // SQLite 不支持 DROP COLUMN（旧版），且约定挂在账户上语义已变 —— 直接重建。
-      // 表在本版本才引入、升级时仍为空表，重建无数据损失。
-      db.exec([
-        \`DROP TABLE IF EXISTS "DebtAgreement"\`,
-        \`CREATE TABLE IF NOT EXISTS "DebtAgreement" ("id" TEXT NOT NULL PRIMARY KEY, "householdId" TEXT NOT NULL, "accountId" TEXT NOT NULL, "annualRate" DECIMAL, "termValue" INTEGER, "termUnit" TEXT, "dueDate" DATETIME, "note" TEXT, "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "DebtAgreement_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE, CONSTRAINT "DebtAgreement_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE)\`,
-        \`CREATE UNIQUE INDEX IF NOT EXISTS "DebtAgreement_accountId_key" ON "DebtAgreement"("accountId")\`,
-        \`CREATE INDEX IF NOT EXISTS "DebtAgreement_householdId_dueDate_idx" ON "DebtAgreement"("householdId", "dueDate")\`,
-      ].join(";"));
+      rebuildDebtAgreementToAccount(db);
     },
   },
 ];
+
+function rebuildDebtAgreementToAccount(db) {
+  if (!tableExists(db, "DebtAgreement")) return;
+  if (columnExists(db, "DebtAgreement", "accountId") && !columnExists(db, "DebtAgreement", "entryId")) return;
+
+  const columns = db.prepare("PRAGMA table_info(" + quoteIdent("DebtAgreement") + ")").all().map((column) => column.name);
+  if (!columns.length) return;
+
+  db.exec("DROP TABLE IF EXISTS " + quoteIdent("DebtAgreement__account_fix"));
+  db.exec("ALTER TABLE " + quoteIdent("DebtAgreement") + " RENAME TO " + quoteIdent("DebtAgreement__account_fix"));
+  db.exec("CREATE TABLE " + quoteIdent("DebtAgreement") + " (" +
+    '"id" TEXT NOT NULL PRIMARY KEY, ' +
+    '"householdId" TEXT NOT NULL, ' +
+    '"accountId" TEXT NOT NULL, ' +
+    '"annualRate" DECIMAL, ' +
+    '"termValue" INTEGER, ' +
+    '"termUnit" TEXT, ' +
+    '"dueDate" DATETIME, ' +
+    '"note" TEXT, ' +
+    '"createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, ' +
+    '"updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, ' +
+    'CONSTRAINT "DebtAgreement_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE, ' +
+    'CONSTRAINT "DebtAgreement_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE' +
+  ')');
+
+  const sourceColumns = columns.filter((column) => column !== "entryId" && column !== "accountId");
+  const targetColumns = sourceColumns.concat("accountId");
+  const selectParts = sourceColumns.map((column) => "d." + quoteIdent(column));
+  selectParts.push("COALESCE(t." + quoteIdent("accountId") + ", '')");
+  db.exec(
+    "INSERT INTO " + quoteIdent("DebtAgreement") + " (" + targetColumns.map((column) => quoteIdent(column)).join(", ") + ") " +
+    "SELECT " + selectParts.join(", ") + " FROM " + quoteIdent("DebtAgreement__account_fix") + " d " +
+    "LEFT JOIN " + quoteIdent("transactions") + " t ON t." + quoteIdent("id") + " = d." + quoteIdent("entryId") +
+  "");
+  db.exec("DROP TABLE " + quoteIdent("DebtAgreement__account_fix"));
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS " + quoteIdent("DebtAgreement_accountId_key") + " ON " + quoteIdent("DebtAgreement") + "(" + quoteIdent("accountId") + ")");
+  db.exec("CREATE INDEX IF NOT EXISTS " + quoteIdent("DebtAgreement_householdId_dueDate_idx") + " ON " + quoteIdent("DebtAgreement") + "(" + quoteIdent("householdId") + ", " + quoteIdent("dueDate") + ")");
+}
 
 function databasePathFromUrl(value) {
   if (!value || !value.startsWith("file:")) {
@@ -2189,11 +2221,15 @@ function applyRuntimeMigrations(db) {
   ensureMigrationTable(db);
   for (const migration of MIGRATIONS) {
     if (migrationApplied(db, migration.version)) continue;
-    db.transaction(() => {
-      migration.apply(db);
-      markMigrationApplied(db, migration.version);
-    })();
-    console.log("SQLite migration applied: " + migration.version + " - " + migration.description);
+    try {
+      db.transaction(() => {
+        migration.apply(db);
+        markMigrationApplied(db, migration.version);
+      })();
+      console.log("SQLite migration applied: " + migration.version + " - " + migration.description);
+    } catch (error) {
+      console.warn("SQLite migration skipped (transaction rolled back, data preserved): " + migration.version + " - " + (error && error.message ? error.message : String(error)));
+    }
   }
 }
 

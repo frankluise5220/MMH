@@ -35,6 +35,27 @@ expect(
   "Docker settlement-account cleanup must normalize every legacy counterparty loan account and clear institution links.",
 );
 
+expect(
+  /migrate_debt_agreement_rekey/.test(entrypoint) &&
+    /ADD COLUMN IF NOT EXISTS "accountId"/.test(entrypoint) &&
+    /DROP COLUMN IF EXISTS "entryId"/.test(entrypoint),
+  "Docker entrypoint must rekey legacy DebtAgreement.entryId to accountId before db push so schema sync never refuses on the rekey.",
+);
+
+expect(
+  /fallback_debt_agreement_records/.test(entrypoint) &&
+    /records retained, conflicting constraints removed/.test(entrypoint) &&
+    /DROP INDEX IF EXISTS "DebtAgreement_accountId_key"/.test(entrypoint),
+  "Docker entrypoint must preserve DebtAgreement records and strip conflicting constraints when the rekey fails.",
+);
+
+expect(
+  /PUSH_ATTEMPTS=5/.test(entrypoint) &&
+    /retrying in 3s/.test(entrypoint) &&
+    /starting anyway so MMH stays available/.test(entrypoint),
+  "Docker entrypoint must retry prisma db push and still start the app when schema sync fails instead of hard-exiting.",
+);
+
 expect(/npm run check:docker/.test(workflow), "Docker image workflow must run check:docker before publishing images.");
 expect(/tags:\s*\n\s*-\s*"v\*"/.test(workflow), "Docker image workflow must run on v* tag pushes.");
 expect(/type=raw,value=latest,enable=\$\{\{\s*startsWith\(github\.ref,\s*'refs\/tags\/v'\)\s*\}\}/.test(workflow), "Docker workflow must publish latest only from v* release tags.");
