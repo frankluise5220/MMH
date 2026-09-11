@@ -209,3 +209,10 @@ regular-invest-*.png
 
 # temporary plans
 plans/
+
+# local AI workspace state (memory, temp snapshots) — never committed
+.workbuddy-ai/
+_tmp_*
+_*.mts
+preview-*.png
+s1.yaml

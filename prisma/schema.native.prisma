@@ -1306,7 +1306,8 @@ model LoanRateAdjustment {
 
 /// 往来款「约定」：利率 / 时长 / 到期日挂在具体那笔往来记录上（1:1）。
 /// 每笔记录只记实际发生的本金与利息（TxRecord.debtPrincipalAmount / debtInterestAmount）。
-/// 往来款「约定」：利率 / 期限 / 到期日，挂在**往来款账户**上（1:1）。
+/// 往来款「约定」：利率 / 期限 / 到期日，挂在**往来款账户**上（1:1），
+/// 不是挂在某笔交易上 —— 约定是「这个往来对象这条关系」的属性。
 model DebtAgreement {
   id          String        @id @default(cuid())
   householdId String
