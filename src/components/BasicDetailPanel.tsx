@@ -558,12 +558,15 @@ export function BasicDetailPanel({
 
   // Auto-fit: the table reports how many rows fit the viewport; when auto mode
   // is on that count becomes the page size (the "自适应" option restores it).
+  // 触发时机用这个回调的 identity 表达：accountScopeKey 变化（打开/切账户）或
+  // autoFit/detailAll 变化（重新选自适应）时会换一个新函数 → 表格据此重算一次；
+  // 之后本视图内冻结 —— 翻页、筛选输入、视口 resize 都不再重算。
   const lastFitRowCountRef = useRef<number | null>(null);
   const handleRowsFitChange = useCallback((rowCount: number) => {
     lastFitRowCountRef.current = rowCount;
     if (!autoFit || detailAll) return;
     setPageSize((prev) => (prev === rowCount ? prev : rowCount));
-  }, [autoFit, detailAll]);
+  }, [accountScopeKey, autoFit, detailAll]);
 
   const enableAutoFitRows = () => {
     // Same contract as picking a concrete size: leave show-all mode first.
@@ -663,7 +666,7 @@ export function BasicDetailPanel({
           refreshOnGlobalEvent={refreshOnGlobalEvent}
           draggableRows={draggableRows}
           sortable={sortable}
-          onRowsFitChange={handleRowsFitChange}
+          onRowsFitChange={autoFit && !detailAll ? handleRowsFitChange : undefined}
           toolbarRightContent={
             <div className="flex items-center gap-2 text-xs">
               <span className="text-xs text-slate-600">{t("creditBillDetail.recordCount", { count: localTotalCount })}{hasDetailFilters ? t("basicDetail.filteredSuffix", { count: localOriginalCount }) : ""}{isPageLoading ? t("basicDetail.loadingSuffix") : ""}</span>

@@ -681,17 +681,22 @@ export function AdvancedDataTable<T>({
     report(count);
   }, [fillHeight]);
 
-  // Re-measure after every render: covers row appearance, density changes and resets.
+  // 自适应页数只在「挂载 / report 回调 identity 变化」时算一次：调用方用换一个新
+  // 的 report 函数来表达"视图重开或重新选自适应"（换账户、切回自适应都会换新）。
+  // 刻意不跟随每次渲染、也不跟随视口 resize —— 本视图内页大小冻结，直到重开。
   useEffect(() => {
+    lastReportedRowsFitRef.current = null;
     measureRowsFit();
-  });
+  }, [measureRowsFit, onRowsFitChange]);
 
-  // Viewport resizes (window resize, sidebar/panel drag) without a re-render.
+  // 兜底：首次测量若因容器还没有尺寸而失败，等容器出现尺寸后再补测一次；
+  // 一旦成功上报过就不再跟随 resize（保持"打开时算一次"的语义）。
   useEffect(() => {
     if (!onRowsFitChange) return;
     const node = viewportRef.current;
     if (!node) return;
     const schedule = () => {
+      if (lastReportedRowsFitRef.current != null) return;
       if (rowsFitObserverTimerRef.current != null) window.clearTimeout(rowsFitObserverTimerRef.current);
       rowsFitObserverTimerRef.current = window.setTimeout(() => measureRowsFit(), 150);
     };
