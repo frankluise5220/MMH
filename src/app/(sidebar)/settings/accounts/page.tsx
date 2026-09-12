@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, ChevronDown, ChevronRight, X, ArrowUpDown } from "lucide-react";
 import type { AccountKind } from "@prisma/client";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
-import { institutionTypeLabel, kindIconName, kindColor, kindOrder } from "@/lib/account-kinds";
+import { institutionTypeLabel, isSettlementCounterpartyType, kindIconName, kindColor, kindOrder } from "@/lib/account-kinds";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
 import { FundConfirmDaysPanel } from "@/components/FundConfirmDaysModal";
@@ -894,7 +894,14 @@ export default function SettingsAccountsPage() {
         entityType="account"
         open={showCreateAccount}
         onClose={() => setShowCreateAccount(false)}
-        fieldData={{ groupId: groups, institutionId: institutions }}
+        fieldData={{
+          groupId: groups,
+          institutionId: institutions,
+          // 往来款账户的「往来对象」下拉：只允许 person/organization（merchant 是常用商户，不当往来款对象）
+          counterpartyId: counterparties
+            .filter((counterparty) => isSettlementCounterpartyType(counterparty.type))
+            .map((counterparty) => ({ id: counterparty.id, name: counterparty.shortName?.trim() || counterparty.name, type: counterparty.type ?? undefined })),
+        }}
         includeInitialBalanceFields={guideAccountSetup}
         defaultCurrency={baseCurrency}
         onCreated={() => {

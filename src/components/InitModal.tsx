@@ -7,7 +7,7 @@ import { DateStepper } from "./DateStepper";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { NestedAddModal } from "./EntityCreateForm";
 import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
-import { kindLabel } from "@/lib/account-kinds";
+import { isSettlementCounterpartyType, kindLabel } from "@/lib/account-kinds";
 import { buildAccountDisplayOption } from "@/lib/account-display";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
@@ -81,6 +81,7 @@ export function InitModal({
   const [allAccounts, setAllAccounts] = useState<AccountOption[]>([]);
   const [accountGroups, setAccountGroups] = useState<EntityOption[]>([]);
   const [institutions, setInstitutions] = useState<EntityOption[]>([]);
+  const [counterparties, setCounterparties] = useState<EntityOption[]>([]);
   const [cashAccountList, setCashAccountList] = useState<CashAccountOption[]>([]);
   const [investmentAccountList, setInvestmentAccountList] = useState<AccountOption[]>([]);
   const [investSSOptions, setInvestSSOptions] = useState<SmartSelectOption[]>([]);
@@ -116,6 +117,9 @@ export function InitModal({
         setAllAccounts(accounts);
         setAccountGroups((data.groups ?? []).map((g: any) => ({ id: g.id, name: g.name })));
         setInstitutions((data.institutions ?? []).map((it: any) => ({ id: it.id, name: it.name, type: it.type ?? undefined })));
+        setCounterparties((data.counterparties ?? [])
+          .filter((it: any) => isSettlementCounterpartyType(it.type))
+          .map((it: any) => ({ id: it.id, name: it.shortName?.trim() || it.name, type: it.type ?? undefined })));
         setCashAccountList(cashAccounts.map((a) => ({ id: a.id, label: a.label })));
         setInvestmentAccountList(investAccounts);
         rebuildSSOptions(accounts, investAccounts);
@@ -374,7 +378,10 @@ export function InitModal({
     institutionId: institutions
       .filter((institution) => institution.id && institution.name)
       .map((institution) => ({ id: institution.id, name: institution.name, type: institution.type })),
-  }), [accountGroups, institutions]);
+    counterpartyId: counterparties
+      .filter((counterparty) => counterparty.id && counterparty.name)
+      .map((counterparty) => ({ id: counterparty.id, name: counterparty.name, type: counterparty.type })),
+  }), [accountGroups, institutions, counterparties]);
   // Local copy of nested option data so newly created institutions/groups persist
   // across account-dialog instances within this modal.
   const [localNestedFieldData, setLocalNestedFieldData] = useState<NestedFieldData | undefined>(accountNestedFieldData);
