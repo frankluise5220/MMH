@@ -2083,7 +2083,15 @@ export function DebtTransactionModal({
         return !account.debtDirection || account.debtDirection === expectedDirection;
       })
       .map((account) => {
-        const directionLabel = account.debtDirection === "payable" ? t(MODE_LABELS.borrow_in) : account.debtDirection === "receivable" ? t(MODE_LABELS.lend_out) : t("debtTx.direction.unspecified");
+        // 往来款账户不显示借入/借出属性：方向是每笔往来的语义（四类流转），不是账户属性。
+        // 只有机构贷款账户才用方向区分「贷款 / 出借给机构」。
+        const directionLabel = account.isInstitutionLoan
+          ? account.debtDirection === "payable"
+            ? t(MODE_LABELS.borrow_in)
+            : account.debtDirection === "receivable"
+              ? t(MODE_LABELS.lend_out)
+              : t("debtTx.direction.unspecified")
+          : "";
         return {
           id: account.id,
           label: account.label,
