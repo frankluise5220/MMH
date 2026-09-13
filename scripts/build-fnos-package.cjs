@@ -604,6 +604,37 @@ write(path.join(stageDir, "wizard", "config"), JSON.stringify([
     ],
   },
 ], null, 2));
+
+// Uninstall wizard: shown by the fnOS App Center only when the user manually
+// uninstalls the app from the App Center UI. The wizard field value is
+// injected as a lowercase environment variable (wizard_delete_data=true|false)
+// into cmd/uninstall_callback, which decides whether to wipe the data
+// directory. The FN soft-store client never parses wizard/uninstall (it only
+// reads wizard/install), and the CLI-driven uninstalls in its uninstall+
+// reinstall update flow never pass wizard parameters, so an unset variable
+// lands in the keep-data branch and silent updates stay untouched. This is the
+// same mechanism used by qBittorrent / tailscale / techfunway-bill packages.
+write(path.join(stageDir, "wizard", "uninstall"), JSON.stringify([
+  {
+    stepTitle: "卸载 MMH",
+    items: [
+      {
+        type: "tips",
+        helpText: "应用即将卸载。账簿数据（数据库与配置）默认保留在数据目录中，重新安装后可继续使用；如需彻底清除，请选择删除。",
+      },
+      {
+        type: "radio",
+        field: "wizard_delete_data",
+        label: "是否删除用户数据",
+        initValue: "false",
+        options: [
+          { label: "保留用户数据（推荐）", value: "false" },
+          { label: "删除用户数据（账簿数据库、配置文件；删除前会自动备份到数据目录外）", value: "true" },
+        ],
+      },
+    ],
+  },
+], null, 2));
 write(path.join(stageDir, "app", "ui", "config"), JSON.stringify({
   ".url": {
     "mmh.Application": {
@@ -1329,9 +1360,90 @@ echo "MMH app data backed up to $target"
 exit 0
 `;
 
+// cmd/uninstall_callback consumes the uninstall wizard choice. The system App
+// Center injects wizard fields as lowercase env vars; CLI uninstalls (the FN
+// soft-store client's uninstall+reinstall update flow) never pass them, so the
+// default branch keeps data and silent updates are unaffected. Deletion only
+// happens on an explicit wizard_delete_data=true, and even then a fresh backup
+// is written OUTSIDE the data directory first - the execution order between
+// uninstall_init (backup) and uninstall_callback is not guaranteed, so this
+// script never relies on uninstall_init having run already.
+const uninstallCallbackLifecycle = `#!/bin/bash
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$SCRIPT_DIR/app-layout" ]; then
+    . "$SCRIPT_DIR/app-layout"
+fi
+
+if [ -z "\${TRIM_APPNAME:-}" ]; then
+    TRIM_APPNAME=mmh
+fi
+
+if [ "\${wizard_delete_data:-false}" != "true" ]; then
+    echo "wizard_delete_data not true; keeping MMH user data"
+    exit 0
+fi
+
+resolve_data_root() {
+    if [ -n "\${TRIM_PKGVAR:-}" ]; then
+        echo "\${TRIM_PKGVAR}"
+        return 0
+    fi
+    if [ -n "\${TRIM_DATADEST:-}" ]; then
+        dirname "\${TRIM_DATADEST}"
+        return 0
+    fi
+    if command -v resolve_pkgvar >/dev/null 2>&1; then
+        resolve_pkgvar
+        return 0
+    fi
+
+    local d
+    for d in /vol*/@appdata/"\$TRIM_APPNAME" /usr/local/apps/@appdata/"\$TRIM_APPNAME"; do
+        [ -d "$d" ] && echo "$d" && return 0
+    done
+    return 1
+}
+
+data_root="$(resolve_data_root 2>/dev/null || true)"
+[ -n "$data_root" ] || exit 0
+[ -d "$data_root" ] || exit 0
+
+# The pre-delete backup must live OUTSIDE data_root because the whole
+# directory is about to be wiped. If no writable sibling location exists,
+# keep the data instead of deleting without a safety net.
+parent_dir="$(dirname "$data_root")"
+backup_root="$parent_dir/\$TRIM_APPNAME-upgrade-backups"
+if ! mkdir -p "$backup_root" 2>/dev/null || [ ! -w "$backup_root" ]; then
+    echo "MMH delete-data aborted: no writable backup directory outside $data_root" >&2
+    exit 0
+fi
+stamp="$(date +%Y%m%d-%H%M%S)"
+target="$backup_root/pre-delete-\$stamp"
+
+mkdir -p "$target/appdata"
+chmod 700 "$backup_root" "$target" "$target/appdata" 2>/dev/null || true
+cp -a "$data_root/data" "$target/appdata/data"
+for file in "$data_root/mmh.env" "$data_root/.port" "$data_root/mmh-system-password.txt" "$data_root/mmh-session-secret.txt"; do
+    if [ -f "$file" ]; then
+        cp -a "$file" "$target/appdata/"
+    fi
+done
+chmod -R go-rwx "$target/appdata" 2>/dev/null || true
+if command -v sha256sum >/dev/null 2>&1 && [ -f "$data_root/data/mmh.db" ]; then
+    sha256sum "$data_root/data/mmh.db" > "$target/mmh.db.sha256"
+    chmod 600 "$target/mmh.db.sha256" 2>/dev/null || true
+fi
+echo "MMH user data backed up to $target"
+
+find "$data_root" -mindepth 1 -exec rm -rf {} + 2>/dev/null || true
+echo "MMH user data deleted from $data_root"
+exit 0
+`;
+
 for (const name of [
   "install_init",
-  "uninstall_callback",
   "config_init",
 ]) {
   write(path.join(stageDir, "cmd", name), noopLifecycle, 0o755);
@@ -1345,6 +1457,7 @@ for (const name of [
 write(path.join(stageDir, "cmd", "config_callback"), configCallbackLifecycle, 0o755);
 write(path.join(stageDir, "cmd", "upgrade_init"), backupLifecycle("upgrade"), 0o755);
 write(path.join(stageDir, "cmd", "uninstall_init"), backupLifecycle("uninstall"), 0o755);
+write(path.join(stageDir, "cmd", "uninstall_callback"), uninstallCallbackLifecycle, 0o755);
 
 const standaloneDir = path.join(root, ".next", "standalone");
 const staticDir = path.join(root, ".next", "static");

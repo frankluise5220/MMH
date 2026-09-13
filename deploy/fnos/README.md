@@ -114,12 +114,13 @@ mmh-fnos-v0.1.x-arm64.fpk
 - 正常更新必须是同一 `appname=mmh` 的覆盖升级：安装更高版本、同架构的 `.fpk` 时，飞牛应走 `cmd/upgrade_init` / `cmd/upgrade_callback`，不得把常规更新实现为先卸载再安装。
 - 手动安装的 `.fpk` 在飞牛应用中心里可能标记为 `manualInstall`。这会影响官方应用中心是否主动提示更新，但不应改变包自身的覆盖升级目标。
 - 覆盖升级后必须验证 `/var/apps/mmh/manifest`、`/vol1/@appcenter/mmh/server/package.json` 和关键 API，确认实际运行代码与 manifest 版本都已更新。
-- 包内不得包含安装类向导，`wizard/install`、`wizard/upgrade`、`wizard/uninstall` 都不允许。FN 软仓客户端（`fn-appstores-client`）只解析 `wizard/install`：只要该文件存在，更新时就会渲染向导、等待用户输入，并把输入写入 `wizard.env` 后传给 `appcenter-cli install-fpk --env`；没有该文件时客户端直接安装，更新才是静默的。端口必须先读取已安装 MMH 的 `.port` / `mmh.env`，只有两者都不存在时才从 `TRIM_SERVICE_PORT` / 默认 `7777` 开始用 `/dev/tcp` 探测空闲端口。
+- 包内不得包含安装类向导：`wizard/install`、`wizard/upgrade` 都不允许。FN 软仓客户端（`fn-appstores-client`）只解析 `wizard/install`：只要该文件存在，更新时就会渲染向导、等待用户输入，并把输入写入 `wizard.env` 后传给 `appcenter-cli install-fpk --env`；没有该文件时客户端直接安装，更新才是静默的。`wizard/uninstall` 例外（见下条）。端口必须先读取已安装 MMH 的 `.port` / `mmh.env`，只有两者都不存在时才从 `TRIM_SERVICE_PORT` / 默认 `7777` 开始用 `/dev/tcp` 探测空闲端口。
+- 包内包含 `wizard/uninstall`（卸载向导）：只在用户从飞牛**系统应用中心 UI 手动卸载**时弹出，提供「保留用户数据（推荐）/ 删除用户数据」选择。软仓客户端不解析该文件；其“卸载+重装”更新路径走 CLI，不会传向导参数，`cmd/uninstall_callback` 里 `wizard_delete_data` 缺省视为保留，因此静默更新完全不受影响。字段值以同名小写环境变量注入生命周期脚本。`uninstall_callback` 只在显式 `wizard_delete_data=true` 时删除数据目录，且删除前必须先在数据目录**外**（`mmh-upgrade-backups/pre-delete-*`）完成一次备份；找不到可写的目录外备份位置时放弃删除、保留数据。实测参照：qBittorrent / tailscale / techfunway-bill（账单）均为同一机制。
 - 改端口只能走 `wizard/config`（应用中心 MMH 设置页），不能改回安装向导。软仓客户端不解析 `wizard/config`，只有用户主动打开设置页时才显示；`cmd/config_callback` 校验端口后停服、把新端口写入 `.port` 与 `mmh.env` 再启动。因为 `resolve_port()` 优先读已持久化的 `.port`，`config_callback` 必须把向导值显式传给 `write_env_file`，否则新端口会被旧值覆盖。
 - `cmd/main` 启动服务时读的是 `mmh.env` 里的 `PORT`（`export PORT="${PORT:-${env_port:-7777}}"`），不读 `.port`。所以改端口必须同时更新这两个文件，只改 `.port` 不会生效。
 - 实测记录：FN 软仓客户端的“更新”实际执行的是**先卸载再重装**（客户端日志依次为 `卸载: mmh`、`向导安装命令: ... install-fpk ... --env .../wizard.env`、`安装完成: mmh 带向导安装`），并不调用 `cmd/upgrade_init` / `cmd/upgrade_callback`。因此端口与数据的沿用完全依赖卸载时保留的应用数据目录，`uninstall_init` 的备份兜底不能移除。
 - 数据库结构变化必须通过包内 SQLite 运行时迁移处理。新增字段应使用幂等 `ALTER TABLE ADD COLUMN`；字段重命名、拆分或表结构重组必须写显式迁移和数据回填，不能靠重建数据库或清空表来“适配”新版。
-- `uninstall_init` 只作为用户主动卸载或异常恢复时的数据兜底；正常升级验收不能依赖卸载重装。生命周期在检测到 `data/mmh.db` 时，会先把应用数据目录复制到同级的 `mmh-upgrade-backups` 目录。用户仍应优先在 MMH 里导出 `.mmh-backup` 后再做高风险操作。
+- `uninstall_init` 只作为用户主动卸载或异常恢复时的数据兜底；正常升级验收不能依赖卸载重装。生命周期在检测到 `data/mmh.db` 时，会先把应用数据目录复制到同级的 `mmh-upgrade-backups` 目录。`uninstall_callback` 在卸载向导选择「删除用户数据」时，先完成一次目录外 `pre-delete-*` 备份再清空数据目录；选择「保留」（或未经过向导的 CLI 卸载）则不动数据。用户仍应优先在 MMH 里导出 `.mmh-backup` 后再做高风险操作。
 - 生命周期脚本不能默认以 `mmh` 包用户运行。`install_init` / `upgrade_init` / `uninstall_init` 需要由应用中心/root 完成安装前权限准备和同级备份；`cmd/main start` 再把数据目录归属修正为 `mmh:mmh`，并降权到 `mmh` 用户运行 Node 服务。
 - 面向普通用户的正式升级必须走飞牛官方应用中心上架/审核后的版本发布链路。只有官方应用中心记录了同一个 `appname` 的新版本，后续用户才应在飞牛自身应用中心里看到并执行升级。
 

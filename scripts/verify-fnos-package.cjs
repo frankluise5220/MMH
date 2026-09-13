@@ -292,7 +292,9 @@ expect(/changelog=\$\{manifestChangelog\}/.test(buildScript), "fnOS manifest mus
 expect(/mmhReleaseNotes/.test(buildScript), "fnOS package build must copy release notes into the runtime package.json.");
 expect(!/path\.join\(stageDir,\s*"wizard",\s*"install"\)/.test(buildScript), "fnOS package must not ship wizard/install; the FN soft-store client only parses that file, and shipping it makes every update wait for the service port again.");
 expect(!/path\.join\(stageDir,\s*"wizard",\s*"upgrade"\)/.test(buildScript), "fnOS package must not ship wizard/upgrade; updates must not ask for the service port.");
-expect(!/path\.join\(stageDir,\s*"wizard",\s*"uninstall"\)/.test(buildScript), "fnOS package must not ship wizard/uninstall; uninstall must stay non-interactive.");
+expect(/path\.join\(stageDir,\s*"wizard",\s*"uninstall"\)/.test(buildScript), "fnOS package must ship wizard/uninstall so manual uninstalls from the App Center offer a keep/delete-data choice; the FN soft-store client never parses it and CLI-driven update uninstalls pass no wizard parameters, so silent updates stay unaffected.");
+expect(/"wizard_delete_data"/.test(buildScript), "fnOS uninstall wizard must expose the wizard_delete_data field; the App Center injects its value as an env var into cmd/uninstall_callback.");
+expect(/initValue:\s*"false"/.test(buildScript), "fnOS uninstall wizard must default wizard_delete_data to false so accidental uninstalls keep user data.");
 expect(/path\.join\(stageDir,\s*"wizard",\s*"config"\)/.test(buildScript), "fnOS package must ship wizard/config so the service port stays editable from App Center settings without an install wizard.");
 expect(/\$\{wizard_port:-\}/.test(buildScript), "fnOS settings wizard must expose wizard_port so config_callback can apply a changed port.");
 expect(/write_env_file "\$NEW_PORT"/.test(buildScript), "fnOS config_callback must apply the wizard port explicitly, because resolve_port prefers the persisted .port.");
@@ -301,6 +303,9 @@ expect(persistedPortFileIndex !== -1 && persistedEnvPortIndex !== -1, "fnOS port
 expect(persistedPortFileIndex < persistedEnvPortIndex, "fnOS port resolver must reuse the installed port before falling back to package defaults.");
 expect(/backupLifecycle\("upgrade"\)/.test(buildScript), "fnOS package must create cmd/upgrade_init to back up app data before upgrades.");
 expect(/backupLifecycle\("uninstall"\)/.test(buildScript), "fnOS package must create cmd/uninstall_init to back up app data before uninstall/reinstall flows.");
+expect(/write\(path\.join\(stageDir,\s*"cmd",\s*"uninstall_callback"\),\s*uninstallCallbackLifecycle/.test(buildScript), "fnOS package must wire cmd/uninstall_callback to honor the uninstall wizard's delete-data choice.");
+expect(/wizard_delete_data:-false/.test(buildScript), "fnOS uninstall_callback must treat an unset wizard_delete_data as keep, because CLI-driven update uninstalls never pass wizard parameters.");
+expect(/pre-delete-/.test(buildScript) && /no writable backup directory outside/.test(buildScript), "fnOS uninstall_callback must back up data outside the data directory before deleting, and skip deletion when no out-of-tree backup location exists.");
 expect(/upgrade-backups/.test(buildScript) && /sha256sum/.test(buildScript), "fnOS backup lifecycle must copy appdata to an upgrade backup directory and record the SQLite checksum when available.");
 expect(/"\$data_root\/\.port"/.test(buildScript), "fnOS backup lifecycle must preserve the persisted service port file.");
 expect(/data_root\/upgrade-backups/.test(buildScript), "fnOS backup lifecycle must fall back to an app-owned upgrade backup directory when sibling appdata backups are not writable.");
@@ -487,6 +492,13 @@ if (fs.existsSync(stageDir)) {
   expect(/resolve_session_secret/.test(stageApplySettingsScript) && /MMH_SESSION_SECRET=\$\{session_secret\}/.test(stageApplySettingsScript), `fnOS ${verifyTarget.id} stage cmd/apply-settings must persist MMH_SESSION_SECRET into mmh.env.`);
   expect(!fs.existsSync(path.join(stageDir, "wizard", "install")), `fnOS ${verifyTarget.id} stage must not include wizard/install; the FN soft-store client parses it and would block silent updates on user input.`);
   expect(fs.existsSync(path.join(stageDir, "wizard", "config")), `fnOS ${verifyTarget.id} stage must include wizard/config so the service port stays editable after a silent install.`);
+  const stageUninstallWizardPath = path.join(stageDir, "wizard", "uninstall");
+  expect(fs.existsSync(stageUninstallWizardPath), `fnOS ${verifyTarget.id} stage must include wizard/uninstall so manual uninstalls offer a keep/delete-data choice.`);
+  if (fs.existsSync(stageUninstallWizardPath)) {
+    const stageUninstallWizard = JSON.parse(fs.readFileSync(stageUninstallWizardPath, "utf8"));
+    expect(JSON.stringify(stageUninstallWizard).includes("wizard_delete_data") && JSON.stringify(stageUninstallWizard).includes('"initValue":"false"'), `fnOS ${verifyTarget.id} stage wizard/uninstall must define wizard_delete_data defaulting to false (keep user data).`);
+    expect(JSON.stringify(stageUninstallWizard).includes("保留用户数据") && JSON.stringify(stageUninstallWizard).includes("删除用户数据"), `fnOS ${verifyTarget.id} stage wizard/uninstall must offer both keep and delete user-data options.`);
+  }
   for (const envFile of [".env", ".env.local", ".env.production", ".env.development"]) {
     expect(!fs.existsSync(path.join(stageDir, "app", "server", envFile)), `fnOS stage must not include ${envFile}.`);
   }
@@ -511,7 +523,9 @@ if (process.env.FNOS_VERIFY_BUILT_FPK === "1") {
   expect(new RegExp(`platform\\s*=\\s*${verifyTarget.manifestPlatform}`).test(manifest), `Built fnOS .fpk manifest must declare platform=${verifyTarget.manifestPlatform}.`);
   expect(!tarHasEntryOrChild(builtFpk, "wizard/install"), "Built fnOS .fpk must not include wizard/install; the FN soft-store client parses it and would block silent updates on user input.");
   expect(!tarHasEntryOrChild(builtFpk, "wizard/upgrade"), "Built fnOS .fpk must not include wizard/upgrade; updates must not ask for the service port.");
-  expect(!tarHasEntryOrChild(builtFpk, "wizard/uninstall"), "Built fnOS .fpk must not include wizard/uninstall; uninstall must stay non-interactive.");
+  expect(tarHasEntry(builtFpk, "wizard/uninstall"), "Built fnOS .fpk must include wizard/uninstall so manual uninstalls offer a keep/delete-data choice; the FN soft-store client never parses it.");
+  const uninstallWizard = JSON.parse(readTarEntry(builtFpk, "wizard/uninstall"));
+  expect(JSON.stringify(uninstallWizard).includes("wizard_delete_data"), "Built fnOS wizard/uninstall must define the wizard_delete_data field consumed by cmd/uninstall_callback.");
   expect(tarHasEntry(builtFpk, "wizard/config"), "Built fnOS .fpk must include wizard/config so the service port stays editable from App Center settings.");
   expect(tarHasEntry(builtFpk, "cmd/config_callback"), "Built fnOS .fpk must include cmd/config_callback to apply a changed service port.");
   expect(tarHasEntry(builtFpk, "cmd/upgrade_init"), "Built fnOS .fpk must include cmd/upgrade_init to back up app data before upgrades.");
@@ -537,10 +551,12 @@ if (process.env.FNOS_VERIFY_BUILT_FPK === "1") {
   expectTarEntryModeAtLeast(builtFpk, "manifest", 0o644, "Built fnOS .fpk");
   const upgradeInitScript = readTarEntry(builtFpk, "cmd/upgrade_init");
   const uninstallInitScript = readTarEntry(builtFpk, "cmd/uninstall_init");
+  const uninstallCallbackScript = readTarEntry(builtFpk, "cmd/uninstall_callback");
   expect(/upgrade-backups/.test(upgradeInitScript) && /data\/mmh\.db/.test(upgradeInitScript), "Built fnOS upgrade_init must back up persistent app data when SQLite data exists.");
   expect(/upgrade-backups/.test(uninstallInitScript) && /data\/mmh\.db/.test(uninstallInitScript), "Built fnOS uninstall_init must back up persistent app data when SQLite data exists.");
   expect(/mmh-session-secret\.txt/.test(upgradeInitScript), "Built fnOS upgrade_init must preserve the signed-session secret when backing up app data.");
   expect(/mmh-session-secret\.txt/.test(uninstallInitScript), "Built fnOS uninstall_init must preserve the signed-session secret when backing up app data.");
+  expect(/wizard_delete_data:-false/.test(uninstallCallbackScript) && /upgrade-backups/.test(uninstallCallbackScript), "Built fnOS uninstall_callback must keep data unless the wizard explicitly chose delete, and must back up outside the data directory before honoring wizard_delete_data=true.");
   expect(/resolve_data_dest/.test(mainScript), "Built fnOS .fpk cmd/main must resolve the persistent fnOS data directory.");
   expect(/TRIM_PKGVAR\/data/.test(mainScript), "Built fnOS .fpk cmd/main must prefer TRIM_PKGVAR/data.");
   expect(!/TRIM_DATADEST:-\$APP_DEST\/data/.test(mainScript), "Built fnOS .fpk cmd/main must not fall back to the app install directory for SQLite data.");
