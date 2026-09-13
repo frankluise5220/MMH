@@ -284,16 +284,19 @@ export function parseImportOwnedMoneyAccountCandidate(
   const last4 = extractImportAccountLast4(accountPart);
   const hasBankHint = bankNames.length > 0;
   const investProductType = inferOwnedInvestmentProductType(accountPart);
+  // "光大卡"这类表述：剥掉机构名后只剩"卡"字——银行名+卡的借记卡说法（无尾号、无类型词）
+  const withoutInstitutionProbe = stripLeadingInstitutionName(accountPart, bankNames);
+  const bareCardSuffix = withoutInstitutionProbe === "\u5361";
   const kind = inferredKind === "cash" || inferredKind === "ewallet" || inferredKind === "bank_debit"
     ? inferredKind
     : inferredKind === "investment" && investProductType
       ? "investment"
-      : hasBankHint && last4
+      : hasBankHint && (last4 || bareCardSuffix)
         ? "bank_debit"
         : null;
   if (kind !== "bank_debit" && kind !== "cash" && kind !== "ewallet" && kind !== "investment") return null;
 
-  const withoutInstitution = stripLeadingInstitutionName(accountPart, bankNames);
+  const withoutInstitution = withoutInstitutionProbe;
   const fallbackName = kind === "bank_debit"
     ? "\u501f\u8bb0\u5361"
     : kind === "ewallet"
@@ -305,7 +308,9 @@ export function parseImportOwnedMoneyAccountCandidate(
             ? "\u8d27\u5e01\u57fa\u91d1"
             : "\u57fa\u91d1"
         : "\u73b0\u91d1";
-  const accountName = withoutInstitution || fallbackName;
+  // "光大卡"这类银行+卡原名整体保留为账户名（与建账保留财智原名的口径一致），
+  // 下次导入同文本才能精确复用已建账户；剥离后只剩"卡"不能当账户名。
+  const accountName = bareCardSuffix ? accountPart : (withoutInstitution || fallbackName);
   return {
     originalName: raw,
     accountName,
