@@ -354,6 +354,12 @@ function findPreviewAccount(
     const matched = lookup.resolveAccount(candidate);
     if (matched) return matched;
   }
+  // 财智变体（XX的普通应付款/普通应收款）→ 复用既有「XX的往来款」账户，避免误判缺失
+  const debtCounterparty = parseDebtAccountName(raw);
+  if (debtCounterparty) {
+    const matched = lookup.resolveAccount(`${debtCounterparty}的往来款`);
+    if (matched) return matched;
+  }
   return null;
 }
 

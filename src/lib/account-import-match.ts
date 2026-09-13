@@ -49,12 +49,20 @@ export function encodeImportAccountId(accountId: string) {
 }
 
 
-const DEBT_ACCOUNT_NAME_RE = /^(.+?)的往来款$/;
+// 财智导出的往来命名变体（XX的普通应付款/XX的普通应收款）与标准命名（XX的往来款）
+// 都解析出同一往来对象，导入时统一落到「XX的往来款」账户。
+const DEBT_ACCOUNT_NAME_RE = /^(.+?)的(?:往来款|普通应付款|普通应收款)$/;
 
-/** Extract counterparty name from "XX的往来款". Returns null on no match. */
+/** Extract counterparty name from "XX的往来款"（含财智变体「XX的普通应付款/普通应收款」）. Returns null on no match. */
 export function parseDebtAccountName(v: string): string | null {
   const m = v.trim().match(DEBT_ACCOUNT_NAME_RE);
   return m?.[1]?.trim() ?? null;
+}
+
+/** 财智「XX的普通应付款/普通应收款」等变体归一为标准往来款账户名「XX的往来款」。 */
+export function normalizeDebtAccountDisplayName(v: string): string {
+  const counterparty = parseDebtAccountName(v);
+  return counterparty ? `${counterparty}的往来款` : v.trim();
 }
 export function parseImportAccountId(value?: string) {
   const text = String(value ?? "").trim();

@@ -1,5 +1,5 @@
 import { AccountKind, type Prisma } from "@prisma/client";
-import { parseDebtAccountName } from "@/lib/account-import-match";
+import { normalizeDebtAccountDisplayName, parseDebtAccountName } from "@/lib/account-import-match";
 import { assertCounterpartyDisplayNamesUnique } from "@/lib/server/counterparty-name-unique";
 import { ensureInstitutionForCounterparty } from "@/lib/server/counterparty-sync";
 
@@ -43,6 +43,8 @@ export async function resolveDebtAccountByCounterpartyName(
   } = {},
 ): Promise<string | null> {
   const cacheKey = accountName;
+  // 财智变体（XX的普通应付款/普通应收款）统一落到「XX的往来款」账户名，两个方向共享一个账户。
+  const normalizedAccountName = normalizeDebtAccountDisplayName(accountName);
   const cached = options.createCounterparty || options.createAccount
     ? undefined
     : debtResolveCacheGet(householdId, cacheKey);
@@ -109,7 +111,7 @@ export async function resolveDebtAccountByCounterpartyName(
   if (!group) { debtResolveCacheSet(householdId, cacheKey, { accountId: null, created: false }); return null; }
   const created = await tx.account.create({
     data: {
-      name: accountName,
+      name: normalizedAccountName,
       kind: AccountKind.settlement,
       debtDirection: "receivable",
       currency: "CNY",
