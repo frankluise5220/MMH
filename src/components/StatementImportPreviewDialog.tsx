@@ -133,6 +133,8 @@ type ImportPreviewRow = {
 };
 
 type StatementImportPreviewDialogProps = {
+  /** 财智余额调整行：确认导入时作为余额校准（指定日期校正账户余额为目标值） */
+  balanceAdjustments?: Array<{ date?: string; balance: number }>;
   open: boolean;
   title: string;
   description?: string;
@@ -530,6 +532,7 @@ export function StatementImportPreviewDialog({
   title,
   description,
   items,
+  balanceAdjustments = [],
   defaultAccountName,
   busy = false,
   onClose,
@@ -1680,6 +1683,14 @@ export function StatementImportPreviewDialog({
           <div className="flex min-w-0 items-center gap-3 text-xs">
             <span className="shrink-0 text-slate-500">{t("statementImportPreview.willImport", { count: fallbackSelectedKeys.size })}</span>
             {categorySyncMessage ? <span className="truncate text-blue-600" title={categorySyncMessage}>{categorySyncMessage}</span> : null}
+            {balanceAdjustments.length > 0 ? (
+              <span className="truncate text-violet-700" title={balanceAdjustments.map((row) => `${row.date ?? ""} -> ${row.balance}`).join("; ")}>
+                {t("statementImportPreview.balanceAdjustNotice", {
+                  count: balanceAdjustments.length,
+                  value: balanceAdjustments.map((row) => `${row.date ?? ""} ${row.balance}`).join(", "),
+                })}
+              </span>
+            ) : null}
           </div>
           <div className="flex items-center justify-end">
             <button

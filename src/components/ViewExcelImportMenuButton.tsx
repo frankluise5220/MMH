@@ -1154,6 +1154,8 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewItems, setPreviewItems] = useState<StatementImportPreviewItem[]>([]);
   const [fundPreviewFile, setFundPreviewFile] = useState<File | null>(null);
+  // 财智余额调整行（余额校准）：随导入确认一起提交
+  const [balanceAdjustments, setBalanceAdjustments] = useState<Array<{ date?: string; balance: number }>>([]);
   const [fundPreviewContext, setFundPreviewContext] = useState<FundImportDialogContext | null>(null);
   const [stockPreviewOpen, setStockPreviewOpen] = useState(false);
   const [stockPreviewItems, setStockPreviewItems] = useState<StockImportUploadItem[]>([]);
@@ -1268,7 +1270,12 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
             return;
           }
           // caizhiRows 已带 MMH 标准表头（与京东/支付宝/微信模板同一形态），可直接解析。
-          const { caizhiRows } = await readStatementWorkbookRowsAndText(file, STATEMENT_IMPORT_FIELD_HEADERS);
+          const { caizhiRows, caizhiBalanceAdjustRows } = await readStatementWorkbookRowsAndText(file, STATEMENT_IMPORT_FIELD_HEADERS);
+          setBalanceAdjustments(
+            (caizhiBalanceAdjustRows ?? [])
+              .filter((row) => row.targetBalance != null && row.date)
+              .map((row) => ({ date: row.date, balance: Number(row.targetBalance) })),
+          );
           if (caizhiRows && caizhiRows.length > 0) {
             const localItems = normalizeStatementExcelParsedItems(
               parseStatementTemplateRows(
@@ -1360,6 +1367,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
           autoCreateAccounts: false,
           createDebtAccounts: options?.createDebtAccounts === true,
           forceCreateOwnedMoneyAccounts: options?.forceCreateOwnedMoneyAccounts === true,
+          ...(balanceAdjustments.length > 0 ? { balanceAdjustments } : {}),
         }),
       });
       const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; createdCount?: number; skippedCount?: number; errors?: Array<{ error?: string }> } | null;
@@ -1367,6 +1375,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
       const createdCount = data.createdCount ?? 0;
       const skippedCount = data.skippedCount ?? 0;
       setStatus(t("creditBill.importExcelSuccess", { created: createdCount, skipped: skippedCount }));
+      setBalanceAdjustments([]);
       setPreviewOpen(false);
       setPreviewItems([]);
       dispatchFinanceDataChanged({ reason: "statement-excel-import", accountIds: [props.accountId] });
@@ -1548,6 +1557,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
         title={t("viewImport.previewTitle")}
         description={t("viewImport.previewDescription")}
         items={previewItems}
+        balanceAdjustments={balanceAdjustments}
         defaultAccountName={statementDefaultAccountName(props)}
         busy={busy}
         onClose={() => setPreviewOpen(false)}

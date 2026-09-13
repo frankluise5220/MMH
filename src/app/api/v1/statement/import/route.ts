@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { AccountKind } from "@prisma/client";
+import { TransactionType, AccountKind } from "@prisma/client";
 import { createHash } from "node:crypto";
 import { prisma } from "@/lib/db/prisma";
 import { addDaysUtc, parseFlexibleDateToYmd, toStatementMonth } from "@/lib/date-utils";
@@ -21,6 +21,8 @@ import { assertInstitutionDisplayNamesUnique } from "@/lib/server/institution-na
 import { assertAccountIdentityUnique } from "@/lib/server/account-identity-unique";
 import { resolveDebtAccountByCounterpartyName, resolveDebtAccountByLoosePersonName } from "@/lib/server/import-debt-account";
 import { importCounterKindFromCategory, type ImportCounterAccountKind } from "@/lib/account-import-match";
+import { BALANCE_RECONCILE_SOURCE, encodeBalanceReconcileTarget } from "@/lib/balance-reconcile";
+import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { refreshCreditCardCycleCachesForAccountIds } from "@/lib/server/credit-bill-page-data";
@@ -1492,6 +1494,24 @@ export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: corsHeaders() });
 }
 
+/** 余额校准支持的账户类型（与 /api/v1/accounts/balance-reconcile 一致）。 */
+const BALANCE_RECONCILABLE_ACCOUNT_KINDS = [
+  AccountKind.cash,
+  AccountKind.bank_debit,
+  AccountKind.ewallet,
+  AccountKind.settlement,
+  AccountKind.loan,
+];
+
+/** 余额校准锚点日期：当天 23:59:59（与余额校准接口一致，锚点位于当天末尾）。 */
+function parseBalanceReconcileDate(value?: string): Date {
+  const raw = String(value ?? "").trim();
+  const match = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (match) return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 23, 59, 59);
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+}
+
 /**
  * POST /api/v1/statement/import
  * Import parsed transaction items from bill recognition, quick add, or credit-card mail.
@@ -1538,6 +1558,7 @@ export async function POST(req: Request) {
     createDebtAccounts?: unknown;
     forceCreateOwnedMoneyAccounts?: unknown;
     mailSource?: unknown;
+    balanceAdjustments?: unknown;
   };
 
   const parse = z
@@ -1549,6 +1570,15 @@ export async function POST(req: Request) {
       forceCreateOwnedMoneyAccounts: z.boolean().optional().default(false),
       mailSource: MailSourceSchema.optional(),
       manualRecordConflictPolicy: z.enum(["overwrite", "keep"]).optional(),
+      balanceAdjustments: z
+        .array(
+          z.object({
+            date: z.string().optional(),
+            balance: z.number().finite(),
+          }),
+        )
+        .optional()
+        .default([]),
     })
     .safeParse(body);
   if (!parse.success) {
@@ -1660,6 +1690,70 @@ export async function POST(req: Request) {
     }
   }
 
+  // 财智「余额调整」→ 余额校准：把指定日期的账户余额校正为目标值。
+  // 只对可校准账户（现金/借记卡/电子零钱/往来款/贷款）生效；同账户同日期已存在校准锚点时跳过（幂等）。
+  const appliedBalanceAdjustments: Array<{ accountId: string; date: string; balance: number; entryId: string }> = [];
+  if (parse.data.balanceAdjustments.length > 0) {
+    const targetAccountName = defaultAccountName ?? "";
+    const targetAccountId = targetAccountName
+      ? await ensureAccountId(prisma, householdId, targetAccountName, undefined, {
+          ...options,
+          autoCreateAccounts: false,
+          createDebtAccounts: false,
+          forceCreateOwnedMoneyAccounts: false,
+        })
+      : null;
+    const targetAccount = targetAccountId
+      ? await prisma.account.findFirst({
+          where: { id: targetAccountId, householdId, kind: { in: BALANCE_RECONCILABLE_ACCOUNT_KINDS }, isPlaceholder: { not: true } },
+          select: { id: true, name: true },
+        })
+      : null;
+    if (targetAccount) {
+      for (const adjust of parse.data.balanceAdjustments) {
+        const balance = Number(adjust.balance);
+        if (!Number.isFinite(balance)) continue;
+        const adjustDate = parseBalanceReconcileDate(adjust.date);
+        const existing = await prisma.txRecord.findFirst({
+          where: {
+            householdId,
+            accountId: targetAccount.id,
+            source: BALANCE_RECONCILE_SOURCE,
+            date: adjustDate,
+            deletedAt: null,
+          },
+          select: { id: true },
+        });
+        if (existing) {
+          appliedBalanceAdjustments.push({ accountId: targetAccount.id, date: adjustDate.toISOString().slice(0, 10), balance, entryId: existing.id });
+          continue;
+        }
+        const anchor = await prisma.txRecord.create({
+          data: {
+            householdId,
+            type: TransactionType.income,
+            date: adjustDate,
+            amount: 0,
+            accountId: targetAccount.id,
+            accountName: targetAccount.name,
+            categoryName: "\u4f59\u989d\u6821\u51c6",
+            source: BALANCE_RECONCILE_SOURCE,
+            toNote: encodeBalanceReconcileTarget(balance),
+            importBatchId,
+          },
+          select: { id: true },
+        });
+        appliedBalanceAdjustments.push({ accountId: targetAccount.id, date: adjustDate.toISOString().slice(0, 10), balance, entryId: anchor.id });
+        touchedAccountIds.add(targetAccount.id);
+      }
+      if (appliedBalanceAdjustments.length > 0) {
+        await recalcAndSaveAccountBalance(targetAccount.id).catch((error) => {
+          console.error("Failed to recalculate balance after statement import adjustments:", error);
+        });
+      }
+    }
+  }
+
   const lockedStatementBills = statementBillLocks.length > 0
     ? await lockImportedStatementBills(prisma, statementBillLocks)
     : [];
@@ -1695,6 +1789,7 @@ export async function POST(req: Request) {
       dueDate: formatDateUtc(lock.dueDate),
     })),
     createdAccounts: options.createdAccounts ?? [],
+    balanceAdjustments: appliedBalanceAdjustments,
     errors,
   }, { headers: corsHeaders() });
 }

@@ -25,6 +25,7 @@ import {
   guessCaizhiAccountNameFromFilename,
   normalizeCaizhiWorkbookRows,
   detectCaizhiHeaders,
+  type CaizhiBalanceAdjustRow,
   type CaizhiWorkbookSheetRows,
 } from "@/lib/statement/caizhi-template";
 import { normalizeJdWorkbookRows } from "@/lib/statement/jd-template";
@@ -395,6 +396,8 @@ export type ReadStatementWorkbookResult = {
   text: string;
   /** 检测为财智8格式时为标准化后的行（含 MMH 标准表头，可直接交 parseStatementTemplateRows）；否则 undefined */
   caizhiRows?: string[][];
+  /** 财智余额调整行（余额校准用：指定日期把账户余额校正为目标值） */
+  caizhiBalanceAdjustRows?: CaizhiBalanceAdjustRow[];
 };
 
 export { guessCaizhiAccountNameFromFilename } from "@/lib/statement/caizhi-template";
@@ -440,6 +443,7 @@ export async function readStatementWorkbookRowsAndText(
     rows,
     text,
     caizhiRows: caizhiRows?.rows,
+    caizhiBalanceAdjustRows: caizhiRows?.balanceAdjustRows?.filter((row) => row.targetBalance != null),
   };
 }
 

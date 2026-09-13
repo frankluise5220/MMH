@@ -17,13 +17,26 @@ export type CaizhiWorkbookSheetRows = {
   rows: string[][];
 };
 
+/**
+ * 财智余额调整行：把「指定日期的账户余额校正为指定数字」。
+ * 财智的「余额」列即校正后的目标余额（流入/流出列只是差额，不作为校正值）。
+ */
+export type CaizhiBalanceAdjustRow = {
+  date: string;
+  /** 财智「余额」列：该日校正后的账户余额；缺失时为 null（无法作为校准值） */
+  targetBalance: number | null;
+  /** 原活动类型（余额调整/余额初始化/期初余额/结息） */
+  activityType: string;
+  remark: string;
+};
+
 export type NormalizedCaizhiWorkbookRows = {
   rows: string[][];
   sourceDataRowCount: number;
   includedSheetCount: number;
   profile: "caizhi";
   /** Balance-adjustment rows removed from import, used for user-facing summary. */
-  balanceAdjustRows: string[][];
+  balanceAdjustRows: CaizhiBalanceAdjustRow[];
 };
 
 // MMH standard headers, kept aligned with generic/Alipay/WeChat templates.
@@ -57,6 +70,8 @@ const CAIZHI_HEADER_ALIASES: Record<string, CaizhiColumnKey | "skip"> = {
   "\u6d41\u51fa\u91d1\u989d": "outflow",
   "\u7c7b\u578b": "activityType",
   "\u4ea4\u6613\u7c7b\u578b": "activityType",
+  "\u4f59\u989d": "balance",
+  "\u7ed3\u4f59": "balance",
 };
 
 type CaizhiColumnIndex = {
@@ -65,6 +80,8 @@ type CaizhiColumnIndex = {
   outflow: number;
   activityType: number;
   remark: number;
+  /** 财智「余额」列：余额调整行的目标余额（校正后账户余额） */
+  balance: number;
 };
 
 type CaizhiColumnKey = keyof CaizhiColumnIndex;
@@ -75,6 +92,7 @@ const CAIZHI_COLUMN_INDEX: CaizhiColumnIndex = {
   outflow: -1,
   activityType: -1,
   remark: -1,
+  balance: -1,
 };
 
 const BALANCE_ADJUST_KEYWORDS = [
@@ -142,7 +160,7 @@ function buildCaizhiHeaderIndex(headerRow: string[]): CaizhiColumnIndex | null {
   // 已带「对向账户」列的是结构化表格（MMH 化/工具转换产物），不是财智原始导出——
   // 交给通用模板链路解析才能保住转账对向账户；财智原始导出绝无此列。
   if (headerRow.some((h) => normalizeHeader(h) === "\u5bf9\u5411\u8d26\u6237")) return null;
-  const result = { date: -1, inflow: -1, outflow: -1, activityType: -1, remark: -1 };
+  const result = { date: -1, inflow: -1, outflow: -1, activityType: -1, remark: -1, balance: -1 };
   let foundCount = 0;
 
   for (let i = 0; i < headerRow.length; i++) {
@@ -219,7 +237,7 @@ export function normalizeCaizhiWorkbookRows(
   accountName: string,
 ): NormalizedCaizhiWorkbookRows | undefined {
   const resultRows: string[][] = [];
-  const balanceAdjustRows: string[][] = [];
+  const balanceAdjustRows: CaizhiBalanceAdjustRow[] = [];
   let includedSheetCount = 0;
   let totalDataRows = 0;
 
@@ -244,12 +262,14 @@ export function normalizeCaizhiWorkbookRows(
       if (!activityType) continue;
 
       if (isBalanceAdjust(activityType)) {
-        balanceAdjustRows.push([
-          normalizeDate(row[headerIdx.date]),
+        const balanceRaw = headerIdx.balance >= 0 ? cleanText(row[headerIdx.balance]) : "";
+        const targetBalance = parseAmount(balanceRaw);
+        balanceAdjustRows.push({
+          date: normalizeDate(row[headerIdx.date]),
+          targetBalance,
           activityType,
-          cleanText(row[headerIdx.inflow] ?? row[headerIdx.outflow] ?? ""),
-          cleanText(row[headerIdx.remark]),
-        ]);
+          remark: cleanText(row[headerIdx.remark]),
+        });
         continue;
       }
 
