@@ -48,6 +48,7 @@ type AccountLookupRow = {
   id: string;
   name: string;
   kind: AccountKind;
+  institutionId?: string | null;
   investProductType: string | null;
   tradingCalendar: string | null;
   billingDay: number | null;
@@ -123,6 +124,8 @@ type FundImportEnrichedItem = {
   cashAccountId: string | null;
   fundAccountId: string | null;
   fundProductType: string | null;
+  /** 勾选「创建基金账户的同机构资金账户」时：需要新建的同机构资金账户（导入阶段创建） */
+  pendingInstitutionCashAccount?: { name: string; institutionId: string } | null;
   calculatedFields: FundImportCalculatedField[];
   issues: ImportIssue[];
 };
@@ -156,6 +159,10 @@ type ImportContext = {
   navLookupCache: Map<string, Promise<Awaited<ReturnType<typeof getFundNav>>>>;
   fundNameLookupCache: Map<string, Promise<string | null>>;
   inferredCashAccountByFundAccountId: Map<string, Promise<AccountLookupRow | null>>;
+  /** 勾选「创建基金账户的同机构资金账户」：缺资金账户时复用/创建同机构电子钱包 */
+  createFundInstitutionCashAccount: boolean;
+  /** 同机构电子钱包缓存：institutionId -> 账户（null 表示该机构下暂无） */
+  institutionCashAccountByInstitutionId: Map<string, AccountLookupRow | null>;
   requestContext: ResolvedFundImportRequestContext | null;
 };
 
@@ -342,6 +349,7 @@ async function buildImportContext(): Promise<ImportContext> {
       id: true,
       name: true,
       kind: true,
+      institutionId: true,
       investProductType: true,
       tradingCalendar: true,
       billingDay: true,
@@ -362,6 +370,8 @@ async function buildImportContext(): Promise<ImportContext> {
     navLookupCache: new Map(),
     fundNameLookupCache: new Map(),
     inferredCashAccountByFundAccountId: new Map(),
+    createFundInstitutionCashAccount: false,
+    institutionCashAccountByInstitutionId: new Map(),
     requestContext: null,
   };
 }
@@ -427,6 +437,36 @@ async function resolveAccountInput(
   accountName: string,
 ) {
   return findAccountById(ctx, accountId) ?? (await resolveAccount(ctx, accountName));
+}
+
+/** 同机构资金账户名：机构名·资金账户（用户口径：基金账户同机构的电子钱包）。 */
+function institutionCashAccountName(fundAccount: AccountLookupRow) {
+  const institutionName = String(fundAccount.Institution?.shortName ?? "").trim()
+    || String(fundAccount.Institution?.name ?? "").trim();
+  return institutionName ? `${institutionName}·资金账户` : "同机构资金账户";
+}
+
+/**
+ * 解析基金账户「同机构的资金账户（电子钱包）」：
+ * - 同机构下已有电子钱包账户 → 直接复用；
+ * - 没有 → 返回计划创建的账户（预览不阻断，导入阶段真正创建）。
+ * 仅当勾选「创建基金账户的同机构资金账户」时启用。
+ */
+async function resolveInstitutionCashAccount(
+  ctx: ImportContext,
+  fundAccount: AccountLookupRow,
+): Promise<{ existing: AccountLookupRow | null; pending: { name: string; institutionId: string } | null }> {
+  const institutionId = String(fundAccount.institutionId ?? "").trim();
+  if (!institutionId) return { existing: null, pending: null };
+  if (ctx.institutionCashAccountByInstitutionId.has(institutionId)) {
+    const cached = ctx.institutionCashAccountByInstitutionId.get(institutionId) ?? null;
+    return { existing: cached, pending: cached ? null : { name: institutionCashAccountName(fundAccount), institutionId } };
+  }
+  const candidate = ctx.accountLookupRows.find(
+    (account) => account.kind === AccountKind.ewallet && String(account.institutionId ?? "") === institutionId,
+  ) ?? null;
+  ctx.institutionCashAccountByInstitutionId.set(institutionId, candidate);
+  return { existing: candidate, pending: candidate ? null : { name: institutionCashAccountName(fundAccount), institutionId } };
 }
 
 async function resolveFundImportRequestContext(
@@ -605,6 +645,25 @@ async function enrichImportItem(
     cashAccount = inputCashAccountId;
   }
 
+  // 勾选「创建基金账户的同机构资金账户」：仍缺资金账户时，复用基金账户同机构的电子钱包，
+  // 没有则在导入阶段创建（预览不阻断，仅提示将创建）。
+  let pendingInstitutionCashAccount: { name: string; institutionId: string } | null = null;
+  if (needsCashAccount && !cashAccountMeta && ctx.createFundInstitutionCashAccount && fundAccountMeta) {
+    const resolvedCash = await resolveInstitutionCashAccount(ctx, fundAccountMeta);
+    if (resolvedCash.existing) {
+      cashAccountMeta = resolvedCash.existing;
+      cashAccount = resolvedCash.existing.name;
+    } else if (resolvedCash.pending) {
+      pendingInstitutionCashAccount = resolvedCash.pending;
+      cashAccount = resolvedCash.pending.name;
+      issues.push({
+        level: "warning",
+        code: "WILL_CREATE_INSTITUTION_CASH_ACCOUNT",
+        message: `WILL_CREATE_INSTITUTION_CASH_ACCOUNT:${resolvedCash.pending.name}`,
+      });
+    }
+  }
+
   if (!date) issues.push({ level: "error", message: "缺少日期" });
   if (!subtype) issues.push({ level: "error", message: "基金动作无效，仅支持买入、赎回、现金分红、红利再投" });
   if (!fundAccount) issues.push({ level: "error", message: "缺少基金账户" });
@@ -614,8 +673,8 @@ async function enrichImportItem(
   if (needsCashAccount && !cashAccount) {
     issues.push({ level: "error", code: "MISSING_CASH_ACCOUNT", message: "MISSING_CASH_ACCOUNT" });
   } else if (cashAccount) {
-    if (!cashAccountMeta) issues.push({ level: "error", message: `资金账户“${cashAccount}”未匹配，无法建立资金流水关联` });
-    else if (isPureInvestmentAccount(cashAccountMeta)) issues.push({ level: "error", message: `资金账户“${cashAccount}”不是资金侧账户` });
+    if (!cashAccountMeta && !pendingInstitutionCashAccount) issues.push({ level: "error", message: `资金账户“${cashAccount}”未匹配，无法建立资金流水关联` });
+    else if (cashAccountMeta && isPureInvestmentAccount(cashAccountMeta)) issues.push({ level: "error", message: `资金账户“${cashAccount}”不是资金侧账户` });
   }
   if (!fundCode) issues.push({ level: "error", message: "缺少基金代码" });
   else if (!supportedFundCode) issues.push({ level: "error", code: "INVALID_FUND_CODE", message: "INVALID_FUND_CODE" });
@@ -737,6 +796,7 @@ async function enrichImportItem(
     cashAccountId: isDividendReinvest ? null : cashAccountMeta?.id ?? null,
     fundAccountId: fundAccountMeta?.id ?? null,
     fundProductType: fundAccountMeta?.investProductType ?? "fund",
+    pendingInstitutionCashAccount,
     calculatedFields: sortedCalculatedFields(calculatedFields),
     issues,
   };
@@ -843,8 +903,10 @@ export async function POST(req: Request) {
       items?: FundImportInput[] | FundImportEnrichedItem[];
       overrides?: FundImportRuleOverride[];
       context?: FundImportRequestContext | null;
+      createFundInstitutionCashAccount?: boolean;
     };
     const mode = body?.mode === "import" ? "import" : "preview";
+    const createFundInstitutionCashAccount = body?.createFundInstitutionCashAccount === true;
     if (mode === "import" && isReadOnly(await getCurrentUser())) {
       return NextResponse.json(
         { ok: false, code: "READ_ONLY", error: "Read-only users cannot import data." },
@@ -859,6 +921,7 @@ export async function POST(req: Request) {
 
     const ctx = await buildImportContext();
     ctx.requestContext = await resolveFundImportRequestContext(ctx, body?.context);
+    ctx.createFundInstitutionCashAccount = createFundInstitutionCashAccount;
     const enrichedItems = await mapWithConcurrency(
       items as FundImportInput[],
       ENRICH_CONCURRENCY,
@@ -880,10 +943,54 @@ export async function POST(req: Request) {
     }
 
     const { householdId } = await getHouseholdScope();
+    const createdInstitutionCashAccounts: Array<{ id: string; name: string; kind: string }> = [];
+    const institutionCashAccountIdByName = new Map<string, string>();
     const created = await prisma.$transaction(async (tx) => {
       const rows: Array<Awaited<ReturnType<typeof createFundTransaction>>> = [];
       const persistedRuleKeys = new Set<string>();
       for (const item of enrichedItems) {
+        // 勾选「创建基金账户的同机构资金账户」时，先落地同机构电子钱包账户
+        if (item.pendingInstitutionCashAccount && !item.cashAccountId) {
+          const pending = item.pendingInstitutionCashAccount;
+          const nameKey = `${pending.institutionId}::${pending.name}`;
+          let accountId = institutionCashAccountIdByName.get(nameKey) ?? null;
+          if (!accountId) {
+            const existing = await tx.account.findFirst({
+              where: { householdId, name: pending.name, kind: AccountKind.ewallet, institutionId: pending.institutionId, isPlaceholder: { not: true } },
+              select: { id: true },
+            });
+            if (existing) {
+              accountId = existing.id;
+            } else {
+              const group = await tx.accountGroup.findFirst({
+                where: { householdId },
+                orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+                select: { id: true },
+              });
+              if (group) {
+                const createdAccount = await tx.account.create({
+                  data: {
+                    name: pending.name,
+                    kind: AccountKind.ewallet,
+                    institutionId: pending.institutionId,
+                    currency: "CNY",
+                    groupId: group.id,
+                    householdId,
+                    isActive: true,
+                  },
+                  select: { id: true, name: true, kind: true },
+                });
+                accountId = createdAccount.id;
+                createdInstitutionCashAccounts.push({ id: createdAccount.id, name: createdAccount.name, kind: createdAccount.kind });
+              }
+            }
+            if (accountId) institutionCashAccountIdByName.set(nameKey, accountId);
+          }
+          if (accountId) {
+            item.cashAccountId = accountId;
+            item.cashAccount = pending.name;
+          }
+        }
         if (item.fundAccountId && item.fundCode) {
           const ruleKey = `${item.fundAccountId}::${item.fundCode}`;
           const override = overrideMap.get(ruleKey);
@@ -932,7 +1039,7 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json(
-      { ok: true, createdCount: created.length, ids: created.map((item) => item.id), items: enrichedItems },
+      { ok: true, createdCount: created.length, ids: created.map((item) => item.id), items: enrichedItems, createdCashAccounts: createdInstitutionCashAccounts },
       { headers: corsHeaders() },
     );
   } catch (error) {

@@ -248,6 +248,10 @@ function fundIssueMessage(issue: FundImportPreviewIssue, t: TranslateFn) {
   if (issue.code === "INVALID_FUND_CODE" || issue.message === "INVALID_FUND_CODE") {
     return t("batchImport.fundPreview.invalidFundCode");
   }
+  if (issue.code === "WILL_CREATE_INSTITUTION_CASH_ACCOUNT") {
+    const accountName = String(issue.message ?? "").split(":").slice(1).join(":").trim();
+    return `${t("batchImport.fundPreview.createInstitutionCashAccount")}：${accountName}`;
+  }
   return issue.message;
 }
 
@@ -745,6 +749,8 @@ function buildPreviewAccountDisplayOption(account: FundPreviewAccount): AccountD
 export function FundImportPreviewDialog({ open, file, context, onClose, onImported }: Props) {
   const { t } = useI18n();
   const requestContext = useMemo(() => normalizeFundImportContext(context), [context]);
+  // 创建基金账户的同机构资金账户：缺资金账户的行复用/创建基金账户同机构的电子钱包
+  const [createInstitutionCashAccount, setCreateInstitutionCashAccount] = useState(false);
   const [uploadItems, setUploadItems] = useState<FundImportUploadItem[]>([]);
   const [previewItems, setPreviewItems] = useState<FundImportPreviewItem[]>([]);
   const [bookAccounts, setBookAccounts] = useState<FundPreviewAccount[]>([]);
@@ -955,6 +961,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
           items: sourceItems,
           overrides,
           ...(requestContext ? { context: requestContext } : {}),
+          ...(createInstitutionCashAccount ? { createFundInstitutionCashAccount: true } : {}),
         }),
       });
       const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; items?: FundImportPreviewItem[] } | null;
@@ -981,7 +988,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
     } finally {
       setUploading(false);
     }
-  }, [requestContext, t]);
+  }, [createInstitutionCashAccount, requestContext, t]);
 
   const applyPreviewReplace = useCallback((field: FundPreviewBatchEditField, value: string) => {
     const selectedIndexes = new Set(Array.from(selected).filter((idx) => previewItems[idx]));
@@ -1502,6 +1509,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
             items: batchItems,
             overrides,
             ...(requestContext ? { context: requestContext } : {}),
+            ...(createInstitutionCashAccount ? { createFundInstitutionCashAccount: true } : {}),
           }),
         });
         const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; createdCount?: number; accountIds?: string[] } | null;
@@ -1757,6 +1765,20 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
             toolbarTitle={t("batchImport.previewFundTitle")}
             toolbarRightContent={(
               <div className="flex items-center gap-3 text-xs text-slate-500">
+                <label className="inline-flex shrink-0 items-center gap-1.5 text-slate-600">
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600"
+                    checked={createInstitutionCashAccount}
+                    disabled={uploading || importing}
+                    onChange={(event) => {
+                      const next = event.target.checked;
+                      setCreateInstitutionCashAccount(next);
+                      if (uploadItems.length > 0) void requestPreview(uploadItems, ruleRows, true);
+                    }}
+                  />
+                  <span>{t("batchImport.fundPreview.createInstitutionCashAccount")}</span>
+                </label>
                 <span>{formatText(t, "batchImport.selectedSummary", { selected: selected.size, total: previewItems.length })}</span>
                 <span className="italic">{t("viewImport.calculatedValueHint")}</span>
                 {errorIssues.length > 0 ? <span className="font-medium text-red-600">{formatText(t, "batchImport.errorCount", { count: errorIssues.length })}</span> : null}
