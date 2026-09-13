@@ -20,6 +20,7 @@ import { INCOME_EXPENSE_INSTITUTION_TYPES } from "@/lib/institution-rules";
 import { assertInstitutionDisplayNamesUnique } from "@/lib/server/institution-name-unique";
 import { assertAccountIdentityUnique } from "@/lib/server/account-identity-unique";
 import { resolveDebtAccountByCounterpartyName, resolveDebtAccountByLoosePersonName } from "@/lib/server/import-debt-account";
+import { importCounterKindFromCategory, type ImportCounterAccountKind } from "@/lib/account-import-match";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { refreshCreditCardCycleCachesForAccountIds } from "@/lib/server/credit-bill-page-data";
@@ -1091,24 +1092,38 @@ async function updateCreditAccountMeta(tx: Db, householdId: string, accountId: s
   }
 }
 
-async function ensureAccountId(tx: Db, householdId: string, accountName?: string, _meta?: ParsedItemMeta, options: ImportOptions = { autoCreateAccounts: true }) {
+async function ensureAccountId(
+  tx: Db,
+  householdId: string,
+  accountName?: string,
+  _meta?: ParsedItemMeta,
+  options: ImportOptions = { autoCreateAccounts: true },
+  counterKindHint?: ImportCounterAccountKind,
+) {
   const name = normalizeAccountCell(accountName);
   if (!name) return null;
   const cache = options.lookupCache;
   if (cache) {
     // Meta fields influence account matching (card last-4, bank, owner), so
     // different metas resolve independently instead of sharing one cached id.
-    const memoKey = `${name}|${_meta ? JSON.stringify(_meta) : ""}`;
+    const memoKey = `${name}|${_meta ? JSON.stringify(_meta) : ""}|${counterKindHint ?? ""}`;
     const cached = cache.resolvedAccountIdByName.get(memoKey);
     if (cached != null) return cached;
-    const resolved = await ensureAccountIdUncached(tx, householdId, name, _meta, options);
+    const resolved = await ensureAccountIdUncached(tx, householdId, name, _meta, options, counterKindHint);
     if (resolved) cache.resolvedAccountIdByName.set(memoKey, resolved);
     return resolved;
   }
-  return ensureAccountIdUncached(tx, householdId, name, _meta, options);
+  return ensureAccountIdUncached(tx, householdId, name, _meta, options, counterKindHint);
 }
 
-async function ensureAccountIdUncached(tx: Db, householdId: string, accountName?: string, _meta?: ParsedItemMeta, options: ImportOptions = { autoCreateAccounts: true }) {
+async function ensureAccountIdUncached(
+  tx: Db,
+  householdId: string,
+  accountName?: string,
+  _meta?: ParsedItemMeta,
+  options: ImportOptions = { autoCreateAccounts: true },
+  counterKindHint?: ImportCounterAccountKind,
+) {
   const name = normalizeAccountCell(accountName);
   if (!name) return null;
   const cache = options.lookupCache;
@@ -1134,8 +1149,9 @@ async function ensureAccountIdUncached(tx: Db, householdId: string, accountName?
     createdAccounts: options.createdAccounts,
   });
   if (debtAccountId) return debtAccountId;
+  // 活动类型提示的账户类型（信用卡还款→信用卡、网贷收回→贷款）：强制走对应匹配/建账，跳过人名归属。
+  const isCreditCard = !!(counterKindHint === "credit" || _meta?.cardNumberMasked || isCreditAccountText(name));
   const inferredLast4 = inferCardLast4(name, _meta);
-  const isCreditCard = !!(_meta?.cardNumberMasked || isCreditAccountText(name));
   const existingCredit = isCreditCard ? await findCreditAccount(tx, householdId, name, _meta, cache) : null;
   if (existingCredit?.id) {
     await updateCreditAccountMeta(tx, householdId, existingCredit.id, _meta, cache);
@@ -1159,7 +1175,8 @@ async function ensureAccountIdUncached(tx: Db, householdId: string, accountName?
 
   // 非所有人「XX的YYY」（如财智导出的「付斌的招行3833」）：勾选"创建往来款账户"时，
   // 在既有账户匹配全部失败后归属为往来对象 XX 的往来款账户（原名保留）。
-  if (options.createDebtAccounts === true) {
+  // 活动类型提示（信用卡还款/网贷收回）优先——对向侧按提示建信用卡/贷款账户，不走人名归属。
+  if (options.createDebtAccounts === true && !counterKindHint) {
     const loosePersonAccountId = await resolveDebtAccountByLoosePersonName(tx, householdId, name, {
       createCounterparty: true,
       createAccount: true,
@@ -1168,7 +1185,11 @@ async function ensureAccountIdUncached(tx: Db, householdId: string, accountName?
     if (loosePersonAccountId) return loosePersonAccountId;
   }
 
-  if (!options.autoCreateAccounts) {
+  // 活动类型提示的对向账户（信用卡还款→信用卡、网贷收回→贷款）即使转账默认不自动建账，
+  // 勾选"创建往来款账户"时也按提示类型创建。
+  const allowHintedCreate =
+    (counterKindHint === "credit" || counterKindHint === "loan") && options.createDebtAccounts === true;
+  if (!options.autoCreateAccounts && !allowHintedCreate) {
     throw new Error(`账户不存在：${name}`);
   }
 
@@ -1188,6 +1209,11 @@ async function ensureAccountIdUncached(tx: Db, householdId: string, accountName?
     accountData.creditLimit = _meta?.creditLimit != null ? String(_meta.creditLimit) : null;
     accountData.billingDay = parsedBillingDay ?? null;
     accountData.repaymentDay = _meta?.repaymentDay ?? null;
+  } else if (counterKindHint === "loan") {
+    // 网贷收回|X → 对向侧建贷款类型账户；机构、所有人暂不填（用户口径）。
+    accountData.kind = AccountKind.loan;
+    accountData.debtDirection = "payable";
+    accountData.currency = "CNY";
   }
 
   try {
@@ -1290,10 +1316,17 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
     const transferAccountOptions = item.type === "transfer"
       ? { ...options, autoCreateAccounts: false }
       : options;
+    // 财智活动类型前缀（信用卡还款|X → 信用卡、网贷收回|X → 贷款）决定对向侧账户类型；
+    // transferDirection=in 时对向在 from 侧，=out 时对向在 to 侧。
+    const counterKindHint = item.type === "transfer"
+      ? importCounterKindFromCategory(item.category)
+      : null;
+    const fromKindHint = item.transferDirection === "in" ? counterKindHint ?? undefined : undefined;
+    const toKindHint = item.transferDirection === "out" ? counterKindHint ?? undefined : undefined;
 
     const [fromAccountId, toAccountId] = await Promise.all([
-      ensureAccountId(tx, householdId, fromAccountName, undefined, transferAccountOptions),
-      ensureAccountId(tx, householdId, toAccountName, undefined, transferAccountOptions),
+      ensureAccountId(tx, householdId, fromAccountName, undefined, transferAccountOptions, fromKindHint),
+      ensureAccountId(tx, householdId, toAccountName, undefined, transferAccountOptions, toKindHint),
     ]);
     if (item.type === "transfer" && (!fromAccountId || !toAccountId)) {
       throw new Error("转账账户未匹配，不能导入");

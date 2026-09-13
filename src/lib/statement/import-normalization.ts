@@ -334,8 +334,10 @@ export function enrichKnownStatementMerchantForImport<T extends StatementImportI
   const merchant = inferKnownStatementMerchant(item);
   const matchedInstitution = cleanOptionalText(merchant.institution);
   const matchedCounterparty = cleanOptionalText(merchant.counterparty);
-  const shouldCarryCategory = item.type === "income" || item.type === "expense";
-  const matchedCategory = shouldCarryCategory ? cleanOptionalText(merchant.category) : undefined;
+  // 转账行的分类是财智活动类型提示（信用卡还款/网贷收回→对向账户类型），原样透传，不走商户分类归一。
+  const isTransferItem = item.type === "transfer";
+  const shouldCarryCategory = isTransferItem || item.type === "income" || item.type === "expense";
+  const matchedCategory = shouldCarryCategory && !isTransferItem ? cleanOptionalText(merchant.category) : undefined;
   const existingCategory = shouldCarryCategory ? cleanOptionalText(item.category) : undefined;
   const preferMerchantRule = Boolean(
     matchedInstitution &&
@@ -343,11 +345,13 @@ export function enrichKnownStatementMerchantForImport<T extends StatementImportI
   );
   return {
     ...item,
-    category: shouldCarryCategory
-      ? preferMerchantRule
-        ? existingCategory ?? matchedCategory ?? item.category
-        : existingCategory || matchedCategory || item.category
-      : undefined,
+    category: isTransferItem
+      ? existingCategory
+      : shouldCarryCategory
+        ? preferMerchantRule
+          ? existingCategory ?? matchedCategory ?? item.category
+          : existingCategory || matchedCategory || item.category
+        : undefined,
     institution: preferMerchantRule ? matchedInstitution ?? item.institution : cleanOptionalText(item.institution) || matchedInstitution || matchedCounterparty || item.institution,
     counterparty: preferMerchantRule ? matchedCounterparty ?? item.counterparty : cleanOptionalText(item.counterparty) || matchedCounterparty || item.counterparty,
     remark: cleanOptionalText(item.remark) ?? item.remark,

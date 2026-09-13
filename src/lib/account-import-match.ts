@@ -75,6 +75,21 @@ export type ImportPersonAttributedCandidate = {
   restName: string;
 };
 
+export type ImportCounterAccountKind = "credit" | "loan";
+
+/**
+ * 财智转账活动类型前缀 → 对向账户类型提示：
+ * 「信用卡还款|X」→ X 是信用卡账户；「网贷收回|X」→ X 是贷款账户。
+ * 其余前缀（转入/转出/借入/借出/收回/返还）不在此列——右侧按既有归属规则处理。
+ */
+export function importCounterKindFromCategory(category: string | undefined | null): ImportCounterAccountKind | null {
+  const text = String(category ?? "").trim();
+  if (!text) return null;
+  if (text.includes("\u4fe1\u7528\u5361\u8fd8\u6b3e") || text.includes("\u8fd8\u4fe1\u7528\u5361")) return "credit";
+  if (text.includes("\u7f51\u8d37\u6536\u56de")) return "loan";
+  return null;
+}
+
 /**
  * 「XX的YYY」形态且 XX 不是所有人（不在账户分组名单内）→ 可归属为往来对象 XX 的往来款账户。
  * 债务命名变体（XX的往来款/普通应付款/普通应收款）走 parseDebtAccountName，不在此重复。

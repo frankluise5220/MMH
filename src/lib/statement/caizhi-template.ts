@@ -188,12 +188,17 @@ function normalizeCaizhiRow(
   if (!hasInflow && !hasOutflow) return null;
 
   if (activityType.includes("|")) {
-    // Transfer: right side of "|" is the counter account, category stays blank.
+    // Transfer: right side of "|" is the counter account.
+    // 网贷收回→贷款账户、信用卡还款→信用卡账户：活动类型前缀写入分类列，供导入按类型建账户。
+    const [typePrefixRaw] = activityType.split("|");
+    const typePrefix = typePrefixRaw?.trim() ?? "";
     const [, counterAccountRaw] = activityType.split("|");
     const counterAccount = counterAccountRaw?.trim() ?? "";
     const outflow = hasOutflow ? String(outflowRaw) : "";
     const inflow = hasInflow ? String(inflowRaw) : "";
-    return [date, "", "\u8f6c\u8d26", outflow, inflow, accountName, counterAccount, "", "", "", remark];
+    const category =
+      typePrefix === "\u7f51\u8d37\u6536\u56de" || typePrefix === "\u4fe1\u7528\u5361\u8fd8\u6b3e" ? typePrefix : "";
+    return [date, "", "\u8f6c\u8d26", outflow, inflow, accountName, counterAccount, category, "", "", remark];
   }
 
   if (hasInflow) {

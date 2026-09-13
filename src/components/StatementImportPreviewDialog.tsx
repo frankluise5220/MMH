@@ -19,11 +19,13 @@ import {
 import {
   createImportAccountMatcher,
   encodeImportAccountId,
+  importCounterKindFromCategory,
   normalizeImportAccountMatchKey,
   parseDebtAccountName,
   parseImportAccountId,
   parseImportOwnedMoneyAccountCandidate,
   parseImportPersonAttributedCandidate,
+  type ImportCounterAccountKind,
 } from "@/lib/account-import-match";
 import {
   getColorSchemeFromCookie,
@@ -384,11 +386,14 @@ function isPreviewAccountResolvable(
   lookup: PreviewAccountLookup | null,
   options: PreviewCreationOptions,
   meta?: StatementImportPreviewItem["_meta"],
+  counterKindHint?: ImportCounterAccountKind | null,
 ) {
   return Boolean(
     findPreviewAccount(value, lookup, meta) ||
     isCreatableDebtAccount(value, lookup, options) ||
-    isCreatableOwnedMoneyAccount(value, lookup, options)
+    isCreatableOwnedMoneyAccount(value, lookup, options) ||
+    // 财智活动类型提示的对向账户（信用卡还款→信用卡、网贷收回→贷款）：勾选"创建往来款账户"后由程序按类型创建
+    (counterKindHint && options.createDebtAccounts && lookup)
   );
 }
 
@@ -438,7 +443,8 @@ export function statementImportMissingFields(
     const primaryAccount = primaryAccountValue(item, defaultAccountName);
     const counterAccount = counterAccountValue(item);
     if (!primaryAccount || (lookup && !isPreviewAccountResolvable(primaryAccount, lookup, creationOptions, item._meta))) missing.push("account");
-    if (!counterAccount || (lookup && !isPreviewAccountResolvable(counterAccount, lookup, creationOptions))) missing.push("counterAccount");
+    const counterKindHint = importCounterKindFromCategory(item.category);
+    if (!counterAccount || (lookup && !isPreviewAccountResolvable(counterAccount, lookup, creationOptions, undefined, counterKindHint))) missing.push("counterAccount");
   } else {
     const primaryAccount = cleanText(item.account) || cleanText(defaultAccountName) || cleanText(item._meta?.institutionName);
     if (!primaryAccount || (lookup && !isPreviewAccountResolvable(primaryAccount, lookup, creationOptions, item._meta))) {
@@ -832,6 +838,18 @@ export function StatementImportPreviewDialog({
     return Array.from(new Set(names));
   }
 
+  function counterKindCreationLabels(row: ImportPreviewRow) {
+    if (!createDebtAccounts || !accountLookup) return null;
+    const hint = importCounterKindFromCategory(row.item.category);
+    if (!hint) return null;
+    const value = counterAccountValue(row.item);
+    if (!cleanText(value) || findPreviewAccount(value, accountLookup, row.item._meta)) return null;
+    const key = hint === "credit"
+      ? "statementImportPreview.willCreateCreditAccount"
+      : "statementImportPreview.willCreateLoanAccount";
+    return { kind: hint, text: t(key, { value: cleanText(value) }) };
+  }
+
   function previewCreationStatus(row: ImportPreviewRow) {
     const debtLabels = debtAccountCreationLabels(row);
     if (debtLabels.length > 0) {
@@ -840,6 +858,8 @@ export function StatementImportPreviewDialog({
         text: t("statementImportPreview.willCreateDebtAccounts", { value: debtLabels.join(" / ") }),
       };
     }
+    const counterKindStatus = counterKindCreationLabels(row);
+    if (counterKindStatus) return counterKindStatus;
     const ownedLabels = forcedOwnedAccountCreationLabels(row);
     if (ownedLabels.length > 0) {
       return {
@@ -1516,9 +1536,9 @@ export function StatementImportPreviewDialog({
         const statusText = previewStatusText(row);
         const creationStatus = row.ready ? previewCreationStatus(row) : null;
         if (creationStatus) {
-          const className = creationStatus.kind === "debt"
-            ? "rounded-full bg-violet-50 px-2 py-0.5 text-[11px] text-violet-700"
-            : "rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700";
+          const className = creationStatus.kind === "owned"
+            ? "rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700"
+            : "rounded-full bg-violet-50 px-2 py-0.5 text-[11px] text-violet-700";
           return <span className={className} title={statusText}>{statusText}</span>;
         }
         return row.ready ? (
@@ -1645,8 +1665,8 @@ export function StatementImportPreviewDialog({
               )}
               rowClassName={(row) => {
                 const creationStatus = previewCreationStatus(row);
-                if (creationStatus?.kind === "debt") return "bg-violet-50/70";
                 if (creationStatus?.kind === "owned") return "bg-emerald-50/70";
+                if (creationStatus) return "bg-violet-50/70";
                 return fallbackSelectedKeys.has(row.key) ? "bg-blue-50/40" : row.ready ? "bg-white" : "bg-amber-50/40";
               }}
               fillHeight

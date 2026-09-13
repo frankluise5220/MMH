@@ -340,6 +340,7 @@ export function parseStatementTemplateRows(
         fromAccount,
         toAccount,
         transferDirection: transferIsInflow ? "in" as const : "out" as const,
+        category,
         institution,
         remark,
         postedDate,
