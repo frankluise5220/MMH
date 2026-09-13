@@ -215,6 +215,13 @@ export async function DELETE(req: NextRequest) {
   const existing = await prisma.fundQueryApi.findUnique({ where: { id } });
   if (!existing) return NextResponse.json({ ok: false, code: "API_NOT_FOUND", error: "API 不存在" }, { status: 404 });
 
+  // Built-in APIs are global seeded defaults (householdId === null). They are
+  // re-seeded on the next GET anyway, and the query pipeline depends on them,
+  // so they can never be deleted.
+  if (existing.householdId === null) {
+    return NextResponse.json({ ok: false, code: "BUILTIN_API_NOT_DELETABLE", error: "系统内置 API 不可删除" }, { status: 403 });
+  }
+
   // Authorization check: the API does not belong to the current household
   if (existing.householdId !== householdId && existing.householdId !== null) {
     return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "越权操作" }, { status: 403 });

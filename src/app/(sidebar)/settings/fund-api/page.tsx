@@ -2,6 +2,7 @@
 
 import { useState, useEffect, type DragEvent } from "react";
 import { Power, PowerOff } from "lucide-react";
+import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import {
   SettingsActionButton,
   SettingsEmptyRow,
@@ -25,6 +26,7 @@ type FundQueryApiRecord = {
   apiKey: string | null;
   priority: number;
   isActive: boolean;
+  householdId: string | null;
 };
 
 type EditForm = Omit<Partial<FundQueryApiRecord>, "baseUrl"> & {
@@ -301,6 +303,32 @@ export default function FundQueryApiPage() {
     }
   }
 
+  async function handleDelete(api: FundQueryApiRecord) {
+    if (api.householdId == null || saving) return;
+    const confirmed = await showConfirmDialog({
+      title: t("settings.fundApi.deleteApi"),
+      message: t("settings.fundApi.deleteConfirm", { name: api.name }),
+      tone: "danger",
+    });
+    if (!confirmed) return;
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/v1/settings/fund-query-api?id=${encodeURIComponent(api.id)}`, { method: "DELETE" });
+      const data = await res.json();
+      if (data.ok) {
+        const next = apis.filter(a => a.id !== api.id);
+        setApis(next);
+        await saveOrder(next);
+      } else {
+        alert(data.error || t("settings.fundApi.deleteFailed"));
+      }
+    } catch {
+      alert(t("settings.fundApi.deleteFailed"));
+    } finally {
+      setSaving(false);
+    }
+  }
+
   if (loading) {
     return <div className="text-sm text-slate-400">{t("common.loading")}</div>;
   }
@@ -370,6 +398,9 @@ export default function FundQueryApiPage() {
               <SettingsTd className="text-sm font-medium text-slate-800">
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="truncate">{api.name}</span>
+                  {api.householdId == null ? (
+                    <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-normal text-slate-600">{t("settings.fundApi.builtIn")}</span>
+                  ) : null}
                   {api.code === "alipay" ? (
                     <span className="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-normal text-blue-700">{t("settings.fundApi.alipayPriority")}</span>
                   ) : null}
@@ -391,6 +422,14 @@ export default function FundQueryApiPage() {
                     disabled={saving}
                   />
                   <SettingsActionButton label={t("settings.fundApi.editApi")} variant="edit" onClick={() => openEdit(api)} />
+                  {api.householdId != null ? (
+                    <SettingsActionButton
+                      label={t("settings.fundApi.deleteApi")}
+                      variant="delete"
+                      onClick={() => handleDelete(api)}
+                      disabled={saving}
+                    />
+                  ) : null}
                 </SettingsRowActions>
               </SettingsTd>
             </tr>
