@@ -405,11 +405,14 @@ async function resolveAccount(
     }
     return ctx.accountLookupRows.find((item) => item.id === resolvedId) ?? null;
   }
+  // 兜底子串匹配：账户侧候选至少要 3 个字，否则「基金」这类两字短名会吞掉
+  // 长输入（如账户「基金」错配导入文件里的「张四的开放式基金」）。与共享匹配器
+  // createImportAccountMatcher 的 key.length >= 3 守卫保持一致。
   for (const account of ctx.accountLookupRows) {
     for (const candidate of buildImportAccountCandidates(account)) {
       const key = normalizeImportAccountMatchKey(candidate);
-      if (!key) continue;
-      if ((key.length >= 3 || normalizedTarget.length >= 3) && (normalizedTarget.includes(key) || key.includes(normalizedTarget))) {
+      if (key.length < 3) continue;
+      if (normalizedTarget.includes(key) || key.includes(normalizedTarget)) {
         ctx.accountIdByMatchKey.set(normalizedTarget, account.id);
         return account;
       }
@@ -581,7 +584,9 @@ async function enrichImportItem(
     ? await resolveAccountInput(ctx, inputFundAccountId, fundAccount)
     : null;
 
-  if (!hasFundAccountInput && ctx.requestContext?.fundAccountMeta) {
+  if (ctx.requestContext?.fundAccountMeta && (!hasFundAccountInput || !fundAccountMeta)) {
+    // 无基金账户输入、或行内账户名在账本中解析不到时，回落到当前基金账户页面上下文
+    // （用户在某个基金账户页面导入 = 导入到该账户）。
     fundAccountMeta = ctx.requestContext.fundAccountMeta;
     fundAccount = ctx.requestContext.fundAccount || fundAccountMeta.name;
   } else if (fundAccountMeta) {

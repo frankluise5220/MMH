@@ -1264,7 +1264,8 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
           // 路由到基金预览导入窗口。资金转账行（转入|/转出|）与余额调整行剔除，由资金账户明细文件处理。
           const caizhiFund = await convertCaizhiFundImportFile(file);
           if (caizhiFund) {
-            setFundPreviewContext(null);
+            // 在基金账户页面导入时带上页面上下文：行内基金账户解析不到则落到当前基金账户
+            setFundPreviewContext(fundImportContextFromProps(props));
             setFundPreviewFile(caizhiFund.file);
             setStatus(t("viewImport.recognizedCount", { count: caizhiFund.rowCount }));
             return;

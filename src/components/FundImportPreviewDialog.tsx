@@ -100,7 +100,7 @@ type FundRuleEditorRow = {
 };
 
 type FundPreviewTableRow = FundImportPreviewItem & { idx: number };
-type FundPreviewBatchEditField = "fee" | "confirmDate" | "arrivalDate";
+type FundPreviewBatchEditField = "fee" | "confirmDate" | "arrivalDate" | "fundAccount" | "cashAccount";
 type FundPreviewEditField =
   | "date"
   | "fundSubtype"
@@ -833,6 +833,38 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
       : main;
   }, [previewItems, t]);
 
+  // 阻断原因汇总：把错误按文案归类计数，直接说明「为什么不能导入」
+  const errorSummary = useMemo(() => {
+    const grouped = new Map<string, { message: string; count: number; rows: number[] }>();
+    previewItems.forEach((item, idx) => {
+      item.issues
+        .filter((issue) => issue.level === "error")
+        .forEach((issue) => {
+          const messageText = fundIssueMessage(issue, t);
+          const current = grouped.get(messageText);
+          if (current) {
+            current.count += 1;
+            current.rows.push(idx + 1);
+          } else {
+            grouped.set(messageText, { message: messageText, count: 1, rows: [idx + 1] });
+          }
+        });
+    });
+    const groups = Array.from(grouped.values()).sort((a, b) => b.count - a.count || a.rows[0] - b.rows[0]);
+    if (groups.length === 0) return "";
+    const main = groups
+      .slice(0, 3)
+      .map((group) => formatText(t, "batchImport.fundPreview.warningCompactItem", {
+        message: group.message,
+        count: group.count,
+      }))
+      .join("；");
+    const moreCount = groups.length - 3;
+    return moreCount > 0
+      ? `${main}；${formatText(t, "batchImport.fundPreview.warningCompactMore", { count: moreCount })}`
+      : main;
+  }, [previewItems, t]);
+
   const previewAccountLabel = useCallback((accountId: string | null | undefined, fallback: string) => {
     const display = accountId ? accountDisplayById.get(accountId) : undefined;
     return display ? formatAccountTableLabel(display, fallback, getAccountLabelFieldsPreference()) : fallback.trim() || "-";
@@ -845,6 +877,36 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
 
   const previewReplaceFields = useMemo<BatchReplaceFieldConfig<FundPreviewBatchEditField>[]>(
     () => [
+      {
+        value: "fundAccount",
+        label: t("batchImport.template.fund.label.fundAccount"),
+        kind: "smartSelect" as const,
+        options: fundAccountOptions.map((option) => ({
+          value: option.id,
+          label: option.label,
+          subLabel: option.subLabel,
+          title: option.title,
+          isHeader: option.isHeader,
+          isGroup: option.isGroup,
+          parentId: option.parentId,
+        })),
+        allowEmpty: true,
+      },
+      {
+        value: "cashAccount",
+        label: t("batchImport.template.fund.label.cashAccount"),
+        kind: "smartSelect" as const,
+        options: cashAccountOptions.map((option) => ({
+          value: option.id,
+          label: option.label,
+          subLabel: option.subLabel,
+          title: option.title,
+          isHeader: option.isHeader,
+          isGroup: option.isGroup,
+          parentId: option.parentId,
+        })),
+        allowEmpty: true,
+      },
       {
         value: "fee",
         label: t("batchImport.template.fund.label.fee"),
@@ -864,60 +926,9 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
         placeholder: t("batchImport.fundPreview.dateOffsetPlaceholder"),
       },
     ],
-    [t],
+    [cashAccountOptions, fundAccountOptions, t],
   );
 
-  const applyPreviewReplace = useCallback((field: FundPreviewBatchEditField, value: string) => {
-    const selectedIndexes = new Set(Array.from(selected).filter((idx) => previewItems[idx]));
-    if (selectedIndexes.size === 0) throw new Error(t("batchImport.fundPreview.selectRowsFirst"));
-    let changed = 0;
-    let invalid = 0;
-    const nextPreviewItems = previewItems.map((item, index) => {
-      if (!selectedIndexes.has(index)) return item;
-      const fundAccount = item.fundAccountId ? accountById.get(item.fundAccountId) : undefined;
-      if (field === "fee") {
-        const nextFee = evaluateCalcInputExpression(value, item.fee ?? 0);
-        if (nextFee == null || nextFee < 0) {
-          invalid += 1;
-          return item;
-        }
-        const fee = Number(nextFee.toFixed(2));
-        const units = recalculatePreviewUnitsAfterFee(item, fee, fundAccount);
-        changed += 1;
-        return {
-          ...item,
-          fee,
-          feeRate: 0,
-          feeRateInput: null,
-          units,
-        };
-      }
-
-      const nextDate = applyFundDateOffset(item, value, fundAccount?.tradingCalendar);
-      if (nextDate === undefined) {
-        invalid += 1;
-        return item;
-      }
-      changed += 1;
-      return {
-        ...item,
-        [field]: nextDate,
-      };
-    });
-    setPreviewItems(nextPreviewItems);
-    const invalidSuffix = invalid > 0
-      ? t(field === "fee" ? "batchImport.fundPreview.invalidNumberSkipped" : "batchImport.fundPreview.invalidDateSkipped", { count: invalid })
-      : "";
-    return t("batchImport.fundPreview.batchReplaceResult", {
-      count: changed,
-      field: field === "confirmDate"
-        ? t("batchImport.fundPreview.confirmDateOffset")
-        : field === "arrivalDate"
-          ? t("batchImport.fundPreview.arrivalDateOffset")
-          : t("batchImport.template.fund.label.fee"),
-      invalidSuffix,
-    });
-  }, [accountById, previewItems, selected, t]);
 
   const requestPreview = useCallback(async (
     sourceItems: FundImportUploadItem[],
@@ -971,6 +982,82 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
       setUploading(false);
     }
   }, [requestContext, t]);
+
+  const applyPreviewReplace = useCallback((field: FundPreviewBatchEditField, value: string) => {
+    const selectedIndexes = new Set(Array.from(selected).filter((idx) => previewItems[idx]));
+    if (selectedIndexes.size === 0) throw new Error(t("batchImport.fundPreview.selectRowsFirst"));
+
+    // 账户字段（基金账户/资金账户）：批量设定后必须重新走服务端预览（账户变了，阻断项/确认到账日都会变）
+    if (field === "fundAccount" || field === "cashAccount") {
+      const accountId = value.trim();
+      const displayById = field === "fundAccount" ? fundAccountDisplayById : cashAccountDisplayById;
+      const account = accountId ? displayById.get(accountId) : undefined;
+      if (accountId && !account) throw new Error(t("batchImport.fundPreview.batchAccountNotFound"));
+      const nextUploadItems = uploadItems.map((item, index) => {
+        if (!selectedIndexes.has(index)) return item;
+        return field === "fundAccount"
+          ? { ...item, fundAccount: account?.name ?? "", fundAccountId: account?.id ?? null }
+          : { ...item, cashAccount: account?.name ?? "", cashAccountId: account?.id ?? null };
+      });
+      setUploadItems(nextUploadItems);
+      void requestPreview(nextUploadItems, ruleRows, true);
+      return t("batchImport.fundPreview.batchReplaceResult", {
+        count: selectedIndexes.size,
+        field: field === "fundAccount"
+          ? t("batchImport.template.fund.label.fundAccount")
+          : t("batchImport.template.fund.label.cashAccount"),
+        invalidSuffix: "",
+      });
+    }
+
+    let changed = 0;
+    let invalid = 0;
+    const nextPreviewItems = previewItems.map((item, index) => {
+      if (!selectedIndexes.has(index)) return item;
+      const fundAccount = item.fundAccountId ? accountById.get(item.fundAccountId) : undefined;
+      if (field === "fee") {
+        const nextFee = evaluateCalcInputExpression(value, item.fee ?? 0);
+        if (nextFee == null || nextFee < 0) {
+          invalid += 1;
+          return item;
+        }
+        const fee = Number(nextFee.toFixed(2));
+        const units = recalculatePreviewUnitsAfterFee(item, fee, fundAccount);
+        changed += 1;
+        return {
+          ...item,
+          fee,
+          feeRate: 0,
+          feeRateInput: null,
+          units,
+        };
+      }
+
+      const nextDate = applyFundDateOffset(item, value, fundAccount?.tradingCalendar);
+      if (nextDate === undefined) {
+        invalid += 1;
+        return item;
+      }
+      changed += 1;
+      return {
+        ...item,
+        [field]: nextDate,
+      };
+    });
+    setPreviewItems(nextPreviewItems);
+    const invalidSuffix = invalid > 0
+      ? t(field === "fee" ? "batchImport.fundPreview.invalidNumberSkipped" : "batchImport.fundPreview.invalidDateSkipped", { count: invalid })
+      : "";
+    return t("batchImport.fundPreview.batchReplaceResult", {
+      count: changed,
+      field: field === "confirmDate"
+        ? t("batchImport.fundPreview.confirmDateOffset")
+        : field === "arrivalDate"
+          ? t("batchImport.fundPreview.arrivalDateOffset")
+          : t("batchImport.template.fund.label.fee"),
+      invalidSuffix,
+    });
+  }, [accountById, cashAccountDisplayById, fundAccountDisplayById, previewItems, requestPreview, ruleRows, selected, t, uploadItems]);
 
   useEffect(() => {
     if (!open || !file) {
@@ -1621,6 +1708,12 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
                   ))}
                 </div>
               </div>
+            </div>
+          ) : null}
+          {errorSummary ? (
+            <div className="mt-2 text-xs text-red-700">
+              <span className="font-medium text-red-800">{t("batchImport.fundPreview.blockingSummaryTitle")}</span>
+              <span className="ml-1">{errorSummary}</span>
             </div>
           ) : null}
           {warningSummary ? (
