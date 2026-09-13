@@ -19,6 +19,13 @@ expect(/gosu/.test(dockerfile), "Dockerfile must install gosu so the runtime can
 expect(/COPY --chown=node:node --from=build/.test(dockerfile), "Dockerfile must copy app files as node-owned files.");
 expect(/ensure_session_secret/.test(entrypoint), "Docker entrypoint must generate and persist MMH_SESSION_SECRET when it is not configured.");
 
+expect(/_mmh_schema_meta/.test(entrypoint) && /refuse_if_schema_newer/.test(entrypoint), "Docker entrypoint must run the schema downgrade protection check before touching the database schema.");
+expect(/REFUSING TO START/.test(entrypoint) && /exit 78/.test(entrypoint), "Docker entrypoint must refuse to start when the database schema is newer than the image.");
+expect(/record_schema_version "\$build_version"/.test(entrypoint), "Docker entrypoint must record the image schema version after a successful schema sync.");
+const schemaGuardIndex = entrypoint.indexOf("refuse_if_schema_newer\nrun_compat_migrations");
+const dbPushIndex = entrypoint.indexOf("prisma db push >");
+expect(schemaGuardIndex >= 0 && dbPushIndex >= 0 && schemaGuardIndex < dbPushIndex, "Docker entrypoint must check for a newer database schema before any schema sync runs.");
+
 expect(
   /'consumer'::\\"LoanType\\"/.test(entrypoint) && /'home'::\\"LoanType\\"/.test(entrypoint),
   "Docker Account.loanType backfill must cast CASE branches to the PostgreSQL LoanType enum.",

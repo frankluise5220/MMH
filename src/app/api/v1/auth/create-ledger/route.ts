@@ -151,7 +151,7 @@ export async function POST(req: NextRequest) {
   });
   const maxAge = resolveSessionMaxAge(req);
   const cookieOptions = sessionCookieOptions(maxAge, req);
-  response.cookies.set(VERIFIED_COOKIE, createVerifiedSessionValue(created.adminUser.id, maxAge), cookieOptions);
+  response.cookies.set(VERIFIED_COOKIE, createVerifiedSessionValue(created.adminUser.id, maxAge, created.adminUser.authVersion), cookieOptions);
   response.cookies.set(USER_ID_COOKIE, created.adminUser.id, cookieOptions);
   response.cookies.set(USERNAME_COOKIE, created.adminUser.name, cookieOptions);
   response.cookies.set(HOUSEHOLD_COOKIE, created.household.id, cookieOptions);

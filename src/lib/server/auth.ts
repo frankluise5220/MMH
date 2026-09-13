@@ -15,6 +15,7 @@ export type CurrentUser = {
   role: string;
   isSystem: boolean;
   householdId: string | null;
+  authVersion: number;
 };
 
 export const USER_ROLE_ADMIN = "admin";
@@ -27,9 +28,23 @@ const currentUserSelect = {
   role: true,
   isSystem: true,
   householdId: true,
+  authVersion: true,
 } as const;
 
 const USER_LOOKUP_TIMEOUT_MS = 8000;
+
+/**
+ * A session is only valid while the user's authVersion matches the version
+ * stamped into the cookie at issuance. Password set/clear/reset and admin
+ * resets bump authVersion, which immediately invalidates every previously
+ * issued session for that user.
+ */
+function sessionMatchesAuthVersion(
+  user: CurrentUser,
+  verified: { ok: true; userId: string; expiresAt: Date; authVersion: number } | { ok: false },
+): boolean {
+  return verified.ok ? verified.authVersion === user.authVersion : false;
+}
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T | null> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -79,7 +94,7 @@ export const getCurrentUser = cache(async function getCurrentUser(): Promise<Cur
       where: { id: userId },
       select: currentUserSelect,
     }));
-    if (user) return user;
+    if (user) return sessionMatchesAuthVersion(user, verified) ? user : null;
   }
 
   if (username && householdId) {

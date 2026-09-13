@@ -326,13 +326,13 @@ export async function POST(req: NextRequest) {
     const hashed = await hashPassword(newPassword);
     await prisma.user.update({
       where: { id: user.id },
-      data: { passwordHash: hashed },
+      data: { passwordHash: hashed, authVersion: { increment: 1 } },
     });
   } else {
     // Clear the password (not recommended but allowed)
     await prisma.user.update({
       where: { id: user.id },
-      data: { passwordHash: null },
+      data: { passwordHash: null, authVersion: { increment: 1 } },
     });
   }
 

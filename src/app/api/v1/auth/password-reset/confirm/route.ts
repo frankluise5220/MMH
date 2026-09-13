@@ -161,7 +161,7 @@ export async function POST(req: NextRequest) {
   await prisma.$transaction(async (tx) => {
     await tx.user.update({
       where: { id: user.id },
-      data: { passwordHash },
+      data: { passwordHash, authVersion: { increment: 1 } },
     });
     await tx.passwordResetToken.update({
       where: { id: tokenId },

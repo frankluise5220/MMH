@@ -1503,6 +1503,13 @@ const Database = require("better-sqlite3");
 
 const MIGRATIONS = [
   {
+    version: "20260913_user_auth_version",
+    description: "Add User.authVersion for global session invalidation on credential changes",
+    apply(db) {
+      addColumnIfMissing(db, "User", "authVersion", "INTEGER NOT NULL DEFAULT 1");
+    },
+  },
+  {
     version: "20260812_account_note",
     description: "Add Account.note freeform remark",
     apply(db) {
@@ -2330,8 +2337,21 @@ function markMigrationApplied(db, version) {
   db.prepare("INSERT OR IGNORE INTO _mmh_native_schema (version) VALUES (?)").run(version);
 }
 
-function applyRuntimeMigrations(db) {
+function assertSchemaNotNewerThanBinary(db) {
   ensureMigrationTable(db);
+  const known = new Set(MIGRATIONS.map((migration) => migration.version));
+  known.add("0.1.0");
+  const recorded = db.prepare("SELECT version FROM _mmh_native_schema").all().map((row) => String(row.version));
+  const unknown = recorded.filter((version) => !known.has(version));
+  if (unknown.length > 0) {
+    console.error("MMH refused to start: the SQLite database was migrated by a newer MMH package and contains schema changes this binary does not know (" + unknown.join(", ") + ").");
+    console.error("Refusing to start prevents a downgrade from misreading or overwriting newer data. Install a package of version >= the one that wrote these changes, or restore the database from a backup.");
+    process.exit(78);
+  }
+}
+
+function applyRuntimeMigrations(db) {
+  assertSchemaNotNewerThanBinary(db);
   for (const migration of MIGRATIONS) {
     if (migrationApplied(db, migration.version)) continue;
     try {
@@ -2362,6 +2382,7 @@ try {
     applyMissingSchemaObjectsFromInitSql(db, sqlPath);
     console.log(\`SQLite database initialized at \${dbPath}\`);
   } else {
+    assertSchemaNotNewerThanBinary(db);
     applyRuntimeMigrations(db);
     applyMissingSchemaObjectsFromInitSql(db, sqlPath);
     console.log(\`SQLite database already initialized and migrated at \${dbPath}\`);

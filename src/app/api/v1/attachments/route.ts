@@ -71,14 +71,16 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, data }, { headers: corsHeaders() });
   } catch (error) {
     const code = error instanceof Error ? error.message : "ATTACHMENT_UPLOAD_FAILED";
-    const status = code === "FILE_TOO_LARGE" ? 413 : code === "ENTRY_NOT_FOUND" ? 404 : code === "EMPTY_FILE" ? 400 : 500;
+    const status = code === "FILE_TOO_LARGE" ? 413 : code === "FILE_TYPE_NOT_ALLOWED" ? 415 : code === "ENTRY_NOT_FOUND" ? 404 : code === "EMPTY_FILE" ? 400 : 500;
     const message = code === "FILE_TOO_LARGE"
       ? "Each attachment must be 5 MB or smaller."
-      : code === "ENTRY_NOT_FOUND"
-        ? "Transaction entry was not found."
-        : code === "EMPTY_FILE"
-          ? "Attachment file is empty."
-          : "Attachment upload failed.";
+      : code === "FILE_TYPE_NOT_ALLOWED"
+        ? "This file type (HTML/SVG/script) cannot be attached for security reasons."
+        : code === "ENTRY_NOT_FOUND"
+          ? "Transaction entry was not found."
+          : code === "EMPTY_FILE"
+            ? "Attachment file is empty."
+            : "Attachment upload failed.";
     return NextResponse.json({ ok: false, code, error: message }, { status, headers: corsHeaders() });
   }
 }

@@ -23,6 +23,9 @@ type VerifiedSessionPayload = {
   uid: string;
   exp: number;
   nonce: string;
+  // authVersion at issuance time. A credential change bumps the user's
+  // authVersion, which invalidates every session carrying an older value.
+  av?: number;
 };
 
 const VERIFIED_SESSION_VERSION = "v1";
@@ -60,16 +63,20 @@ function timingSafeEqualText(a: string, b: string) {
   return timingSafeEqual(left, right);
 }
 
-export function createVerifiedSessionValue(userId: string, maxAgeSeconds: number, now = new Date()) {
+export function createVerifiedSessionValue(userId: string, maxAgeSeconds: number, authVersion = 1, now = new Date()) {
   const normalizedUserId = userId.trim();
   if (!normalizedUserId) {
     throw new Error("User id is required to create a verified session.");
+  }
+  if (!Number.isInteger(authVersion) || authVersion < 1) {
+    throw new Error("User authVersion must be a positive integer to create a verified session.");
   }
   const expiresAt = now.getTime() + Math.max(1, Math.floor(maxAgeSeconds)) * 1000;
   const payload: VerifiedSessionPayload = {
     uid: normalizedUserId,
     exp: expiresAt,
     nonce: randomBytes(16).toString("base64url"),
+    av: authVersion,
   };
   const encodedPayload = base64UrlEncode(JSON.stringify(payload));
   return `${VERIFIED_SESSION_VERSION}.${encodedPayload}.${signSessionPayload(encodedPayload)}`;
@@ -79,7 +86,7 @@ export function verifyVerifiedSessionValue(
   value: string | null | undefined,
   expectedUserId?: string | null,
   now = new Date(),
-): { ok: true; userId: string; expiresAt: Date } | { ok: false } {
+): { ok: true; userId: string; expiresAt: Date; authVersion: number } | { ok: false } {
   const raw = value?.trim();
   if (!raw) return { ok: false };
   const [version, encodedPayload, signature, ...extra] = raw.split(".");
@@ -94,10 +101,13 @@ export function verifyVerifiedSessionValue(
     const payload = JSON.parse(base64UrlDecode(encodedPayload)) as Partial<VerifiedSessionPayload>;
     const userId = typeof payload.uid === "string" ? payload.uid.trim() : "";
     const expiresAt = typeof payload.exp === "number" ? payload.exp : 0;
+    // Sessions minted before authVersion existed carry no av claim; treat them
+    // as version 1, which matches the column default on every existing user.
+    const authVersion = typeof payload.av === "number" && payload.av >= 1 ? Math.floor(payload.av) : 1;
     const expected = expectedUserId?.trim();
     if (!userId || !expiresAt || expiresAt <= now.getTime()) return { ok: false };
     if (expected && expected !== userId) return { ok: false };
-    return { ok: true, userId, expiresAt: new Date(expiresAt) };
+    return { ok: true, userId, expiresAt: new Date(expiresAt), authVersion };
   } catch {
     return { ok: false };
   }

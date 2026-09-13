@@ -11,6 +11,7 @@ import {
 } from "@/lib/account-display";
 import { normalizeDateDisplayFormat } from "@/lib/date-utils";
 import { normalizeRowHeightMode } from "@/lib/row-height";
+import { prisma } from "@/lib/db/prisma";
 import {
   HOUSEHOLD_COOKIE as HOUSEHOLD_KEY,
   SESSION_DAYS_COOKIE as SESSION_DAYS_KEY,
@@ -407,7 +408,11 @@ export async function PUT(req: NextRequest) {
   const verifiedSession = verifyVerifiedSessionValue(verified, userId);
   const authCookieOptions = sessionCookieOptions(maxAge, req);
   if (verifiedSession.ok) {
-    response.cookies.set(VERIFIED_KEY, createVerifiedSessionValue(verifiedSession.userId, maxAge), authCookieOptions);
+    const sessionUser = await prisma.user.findUnique({
+      where: { id: verifiedSession.userId },
+      select: { authVersion: true },
+    });
+    response.cookies.set(VERIFIED_KEY, createVerifiedSessionValue(verifiedSession.userId, maxAge, sessionUser?.authVersion ?? verifiedSession.authVersion), authCookieOptions);
   }
   if (userId) {
     response.cookies.set(USER_ID_KEY, userId, authCookieOptions);

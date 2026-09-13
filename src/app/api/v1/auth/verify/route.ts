@@ -73,6 +73,7 @@ const userSelect = {
   role: true,
   isSystem: true,
   passwordHash: true,
+  authVersion: true,
   householdId: true,
   Household: { select: { id: true, name: true } },
 } as const;
@@ -83,6 +84,7 @@ type LoginUser = {
   role: string;
   isSystem: boolean;
   passwordHash: string | null;
+  authVersion: number;
   householdId: string | null;
   Household: { id: string; name: string } | null;
 };
@@ -269,7 +271,7 @@ export async function POST(req: NextRequest) {
   const sessionDays = await getUserSessionDays(user.id);
   const maxAge = sessionDaysToMaxAge(sessionDays);
   const cookieOptions = sessionCookieOptions(maxAge, req);
-  response.cookies.set(VERIFIED_COOKIE, createVerifiedSessionValue(user.id, maxAge), cookieOptions);
+  response.cookies.set(VERIFIED_COOKIE, createVerifiedSessionValue(user.id, maxAge, user.authVersion), cookieOptions);
   response.cookies.set(USER_ID_COOKIE, user.id, cookieOptions);
   response.cookies.set(USERNAME_COOKIE, user.name, cookieOptions);
   response.cookies.set(SESSION_DAYS_COOKIE, String(sessionDays), {

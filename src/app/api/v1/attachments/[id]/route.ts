@@ -55,6 +55,10 @@ export async function GET(req: Request, context: RouteContext) {
         ...corsHeaders(),
         "Content-Type": result.attachment.mimeType || "application/octet-stream",
         "Content-Disposition": contentDisposition(result.attachment.name || "attachment"),
+        // Stored bytes are served as-is: keep browsers from MIME-sniffing them
+        // into active content, and sandbox any document that does render.
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "sandbox; default-src 'none'",
       },
     });
   } catch (error) {

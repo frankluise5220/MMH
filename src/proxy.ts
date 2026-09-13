@@ -21,6 +21,7 @@ const LOOKUP_TIMEOUT_MS = 1_200;
 
 const PUBLIC_PATHS = [
   "/login",
+  "/api/health",
   "/api/v1/auth",
   "/api/v1/settings/catalog",
   "/api/v1/settings/system",

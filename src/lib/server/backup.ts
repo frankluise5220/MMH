@@ -2609,6 +2609,8 @@ export async function restoreHouseholdBackup(
           role: String(item.role ?? "user"),
           isSystem: Boolean(item.isSystem),
           passwordHash: item.passwordHash == null ? null : String(item.passwordHash),
+          // Backups made before authVersion existed restore at version 1.
+          authVersion: item.authVersion == null ? 1 : Number(item.authVersion) || 1,
           householdId,
           createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
           updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),

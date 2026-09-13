@@ -222,12 +222,14 @@ export async function PUT(req: NextRequest) {
     }
   }
 
-  const data: { name?: string; email?: string | null; role?: string; passwordHash?: string | null } = {};
+  const data: { name?: string; email?: string | null; role?: string; passwordHash?: string | null; authVersion?: { increment: number } } = {};
   if (name) data.name = name;
   if (email != null) data.email = email.trim() ? email.trim() : null;
   if (role) data.role = role;
   if (password && password.trim()) {
     data.passwordHash = await hashPassword(password.trim());
+    // A new password kills every previously issued session for this user.
+    data.authVersion = { increment: 1 };
   }
 
   const hasSessionDays = sessionDays !== undefined;

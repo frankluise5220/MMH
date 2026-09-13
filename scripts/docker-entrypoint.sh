@@ -161,6 +161,50 @@ done
 mmh_log "postgres ready, checking database schema..."
 
 ensure_session_secret
+
+# Downgrade protection: refuse to start when the database was last written by
+# a newer MMH image. Running an older binary against a newer schema makes
+# "prisma db push" drop the newer columns and lose data.
+ensure_schema_meta_table() {
+  if ! psql_mmh -v ON_ERROR_STOP=1 -c 'CREATE TABLE IF NOT EXISTS "_mmh_schema_meta" ("key" TEXT PRIMARY KEY, "value" TEXT NOT NULL);' >/dev/null 2>&1; then
+    mmh_log "WARNING: could not ensure _mmh_schema_meta table; skipping schema downgrade protection check."
+    return 1
+  fi
+  return 0
+}
+
+refuse_if_schema_newer() {
+  build_version="$(node -p "require('./package.json').version" 2>/dev/null || true)"
+  if [ -z "$build_version" ]; then
+    mmh_log "WARNING: could not determine image version; skipping schema downgrade protection check."
+    return 0
+  fi
+  if ! ensure_schema_meta_table; then
+    return 0
+  fi
+  stored_version="$(psql_mmh -tAc "SELECT value FROM \"_mmh_schema_meta\" WHERE key = 'schema_version'" | tr -d '[:space:]')"
+  if [ -z "$stored_version" ]; then
+    mmh_log "no schema version marker found (fresh or pre-guard database); will record $build_version after schema sync."
+    return 0
+  fi
+  newest="$(printf '%s\n%s\n' "$stored_version" "$build_version" | sort -V | tail -n 1)"
+  if [ "$newest" = "$stored_version" ] && [ "$stored_version" != "$build_version" ]; then
+    mmh_log "REFUSING TO START: the database was last written by MMH $stored_version, which is newer than this image ($build_version)."
+    mmh_log "Running an older image against a newer schema can drop columns and lose data. Deploy an image >= $stored_version or restore a database backup."
+    exit 78
+  fi
+}
+
+record_schema_version() {
+  recorded_version="$1"
+  if psql_mmh -v ON_ERROR_STOP=1 -c "INSERT INTO \"_mmh_schema_meta\" (\"key\", \"value\") VALUES ('schema_version', '$recorded_version') ON CONFLICT (\"key\") DO UPDATE SET \"value\" = EXCLUDED.\"value\";" >/dev/null 2>&1; then
+    mmh_log "recorded schema version $recorded_version"
+  else
+    mmh_log "WARNING: could not record schema version; downgrade protection cannot trigger for this database."
+  fi
+}
+
+refuse_if_schema_newer
 run_compat_migrations
 
 PUSH_OUTPUT="$(mktemp)"
@@ -189,6 +233,7 @@ if [ "$PUSH_OK" = "1" ]; then
     mmh_log "WARNING: settlement account backfill failed; continuing so MMH stays available."
   fi
   mmh_log "account-kind compatibility backfill complete."
+  record_schema_version "$build_version"
 else
   if grep -Eq "accept-data-loss|data loss|dropped_variants|will be dropped|invalid input value for enum" "$PUSH_OUTPUT"; then
     mmh_log "WARNING: database schema sync would modify existing data; starting anyway so MMH stays available. New schema features may be unavailable until resolved."

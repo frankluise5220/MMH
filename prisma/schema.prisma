@@ -1370,6 +1370,7 @@ model User {
   role               String               @default("admin")
   isSystem           Boolean              @default(false)
   passwordHash       String?
+  authVersion        Int                  @default(1)
   householdId        String?
   createdAt          DateTime             @default(now())
   updatedAt          DateTime             @default(now()) @updatedAt
