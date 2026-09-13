@@ -371,6 +371,13 @@ export function buildImportAccountInputCandidates(value?: string) {
 }
 
 export function buildImportAccountCandidates(account: ImportAccountMatchSource) {
+  // Kind words ("信用卡"/"储蓄卡") must NOT become account-side match keys.
+  // They are not part of the account's real name: generating composite keys
+  // like `${institution}${kindName}` made a generic input such as
+  // "招商银行信用卡" exactly match every credit card at that bank (and a bare
+  // "信用卡" match every credit card in the book), producing huge ambiguous
+  // lists. Kind + institution disambiguation is handled separately by the
+  // byBankAndKind stage in createImportAccountMatcher.
   const candidates = new Set<string>();
   const institutionNames = [
     account.Institution?.name?.trim() ?? "",
@@ -378,9 +385,8 @@ export function buildImportAccountCandidates(account: ImportAccountMatchSource) 
     ...inferBankNames(account.name),
   ].filter(Boolean);
   const ownerNames = accountOwnerNames(account);
-  const accountNames = [account.name.trim(), ...accountKindNames(account.kind)];
+  const accountNames = [account.name.trim()];
   const last4 = accountLast4(account);
-  const kindNames = accountKindNames(account.kind);
 
   for (const name of accountNames) {
     candidates.add(name);
@@ -400,18 +406,10 @@ export function buildImportAccountCandidates(account: ImportAccountMatchSource) 
     for (const institutionName of institutionNames) {
       candidates.add(`${institutionName}${name}`);
       candidates.add(`${institutionName}·${name}`);
-      for (const kindName of kindNames) {
-        candidates.add(`${institutionName}${name}${kindName}`);
-        candidates.add(`${institutionName}·${name}·${kindName}`);
-      }
       if (last4) {
         candidates.add(`${institutionName}${name}${last4}`);
         candidates.add(`${institutionName}${name}(${last4})`);
         candidates.add(`${institutionName}·${name}·${last4}`);
-        for (const kindName of kindNames) {
-          candidates.add(`${institutionName}${name}${last4}${kindName}`);
-          candidates.add(`${institutionName}·${name}·${last4}·${kindName}`);
-        }
       }
       for (const expandedInstitution of expandBankName(institutionName)) {
         candidates.add(`${expandedInstitution}${name}`);
@@ -426,22 +424,12 @@ export function buildImportAccountCandidates(account: ImportAccountMatchSource) 
         candidates.add(`${ownerName}·${institutionName}·${name}`);
         candidates.add(`${ownerName}${institutionName}·${name}`);
         candidates.add(`${ownerName}·${institutionName}${name}`);
-        for (const kindName of kindNames) {
-          candidates.add(`${ownerName}${institutionName}${name}${kindName}`);
-          candidates.add(`${ownerName}·${institutionName}·${name}·${kindName}`);
-          candidates.add(`${ownerName}${institutionName}·${name}·${kindName}`);
-          candidates.add(`${ownerName}·${institutionName}${name}${kindName}`);
-        }
         if (last4) {
           candidates.add(`${ownerName}${institutionName}${name}${last4}`);
           candidates.add(`${ownerName}${institutionName}${name}(${last4})`);
           candidates.add(`${ownerName}·${institutionName}·${name}·${last4}`);
           candidates.add(`${institutionName}${name}(${ownerName})${last4}`);
           candidates.add(`${institutionName}·${name}(${ownerName})·${last4}`);
-          for (const kindName of kindNames) {
-            candidates.add(`${ownerName}${institutionName}${name}${last4}${kindName}`);
-            candidates.add(`${ownerName}·${institutionName}·${name}·${last4}·${kindName}`);
-          }
         }
         for (const expandedInstitution of expandBankName(institutionName)) {
           candidates.add(`${ownerName}${expandedInstitution}${name}`);
@@ -689,7 +677,12 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
         if (narrowed) return result(narrowed, [], { targetKind, targetBankNames });
         if (
           compatibleExactMatches.length === 1 &&
-          (!targetKind || !compatibleExactMatches[0].account.kind || compatibleExactMatches[0].account.kind === targetKind)
+          (!targetKind || !compatibleExactMatches[0].account.kind || compatibleExactMatches[0].account.kind === targetKind) &&
+          // The single exact hit must still respect an explicit owner prefix:
+          // "张四的招商银行信用卡" expands to a bare "招商银行信用卡" key which can
+          // exact-match a differently-owned "信用卡" account; that hit must fall
+          // through to owner-aware stages instead of returning here.
+          ownerKeyMatches(compatibleExactMatches[0], targetOwnerKeys)
         ) {
           return result(compatibleExactMatches[0].account, [], { targetKind, targetBankNames });
         }
@@ -803,16 +796,6 @@ export function resolveImportAccountFromList<T extends ImportAccountMatchSource>
   accounts: T[],
 ): T | null {
   return createImportAccountResolver(accounts)(accountName);
-}
-
-function accountKindNames(kind?: ImportAccountKind | null) {
-  if (kind === "bank_credit") return ["信用卡"];
-  if (kind === "bank_debit") return ["储蓄卡", "借记卡"];
-  if (kind === "ewallet") return ["电子钱包", "钱包"];
-  if (kind === "cash") return ["现金"];
-  if (kind === "investment") return ["投资账户", "投资"];
-  if (kind === "loan" || kind === "settlement") return [];
-  return [];
 }
 
 function inferAccountKind(value: string): ImportAccountKind | null {

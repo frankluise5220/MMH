@@ -45,6 +45,7 @@ type BookAccount = {
   id: string;
   name: string;
   kind: string;
+  isActive?: boolean;
   numberMasked?: string | null;
   groupId?: string | null;
   investProductType?: string | null;
@@ -532,11 +533,17 @@ export function StatementImportPreviewDialog({
     [],
   );
 
+  // 匹配与选择只针对启用账户：停用账户不该进入导入候选（与 batch-import 页口径一致），
+  // 否则会虚增"账户中有N个"的 ambiguous 数量。
+  const activeBookAccounts = useMemo(
+    () => bookAccounts.filter((account) => account.isActive !== false),
+    [bookAccounts],
+  );
   const accountDisplayOptions = useMemo(
-    () => bookAccounts
+    () => activeBookAccounts
       .map((account) => buildBookAccountDisplayOption(account, accountLabelFields))
       .sort((a, b) => a.selectorLabel.localeCompare(b.selectorLabel, "zh-Hans-CN")),
-    [accountLabelFields, bookAccounts],
+    [accountLabelFields, activeBookAccounts],
   );
   const accountDisplayById = useMemo(
     () => new Map(accountDisplayOptions.map((account) => [account.id, account])),
@@ -545,9 +552,9 @@ export function StatementImportPreviewDialog({
   const accountLookup = useMemo<PreviewAccountLookup | null>(
     () => {
       if (!settingsBootstrapLoaded) return null;
-      const matchAccount = createImportAccountMatcher(bookAccounts);
+      const matchAccount = createImportAccountMatcher(activeBookAccounts);
       return {
-        accountById: new Map(bookAccounts.map((account) => [account.id, account])),
+        accountById: new Map(activeBookAccounts.map((account) => [account.id, account])),
         resolveAccount: (accountName) => matchAccount(accountName).account,
         matchAccount,
         ownerNames: bookAccountGroups.map((group) => group.name).filter(Boolean),
@@ -561,7 +568,7 @@ export function StatementImportPreviewDialog({
         },
       };
     },
-    [bookAccountGroups, bookAccounts, bookCounterparties, settingsBootstrapLoaded],
+    [bookAccountGroups, activeBookAccounts, bookCounterparties, settingsBootstrapLoaded],
   );
   const accountResolveCacheRef = useRef(new Map<string, string>());
   useEffect(() => {
@@ -824,6 +831,16 @@ export function StatementImportPreviewDialog({
       .map((value) => {
         const match = accountLookup.matchAccount(value);
         if (match.account || match.ambiguousAccounts.length < 2) return "";
+        // 文本带"所有人·机构·类型"语义（如"付斌的招行基金"）时，给出维度化的说明
+        // 和"勾选创建所有人账户"的出路；纯类型词（如"信用卡"）解析不出所有人，保持原文案。
+        const ownedCandidate = parseImportOwnedMoneyAccountCandidate(value, accountLookup.ownerNames);
+        if (ownedCandidate) {
+          const dimension = ownedAccountDisplayName(value) || cleanText(value);
+          return t("statementImportPreview.ambiguousAccountMatchesOwned", {
+            count: language === "zh-CN" && match.ambiguousAccounts.length === 2 ? t("statementImportPreview.ambiguousAccountCount.two") : String(match.ambiguousAccounts.length),
+            name: dimension,
+          });
+        }
         return t("statementImportPreview.ambiguousAccountMatches", {
           count: language === "zh-CN" && match.ambiguousAccounts.length === 2 ? t("statementImportPreview.ambiguousAccountCount.two") : String(match.ambiguousAccounts.length),
           name: cleanText(value),
