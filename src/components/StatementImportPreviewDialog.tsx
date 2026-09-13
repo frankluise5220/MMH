@@ -1596,6 +1596,7 @@ export function StatementImportPreviewDialog({
               selectable
               selectAllScope="renderedRows"
               rowSelectable={(row) => row.ready}
+              selectAllPreferred={(row) => row.ready}
               selectedKeys={fallbackSelectedKeys}
               onSelectionChange={(keys) => {
                 if (busy || !previewReady) return;

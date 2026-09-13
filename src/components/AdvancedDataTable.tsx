@@ -198,6 +198,12 @@ export type AdvancedDataTableProps<T> = {
   selectOnRowClick?: boolean;
   selectAllScope?: "allRows" | "renderedRows";
   rowSelectable?: (row: T, index: number) => boolean;
+  /**
+   * 全选的优先选取范围：显示行中存在满足该谓词的行时，全选只选中这些行；
+   * 一行都不满足时全选退化为全选所有可勾选行。单行勾选不受影响。
+   * （如导入预览：有可导入行时全选只选可导入行，全是未匹配行时允许全选便于批量修改。）
+   */
+  selectAllPreferred?: (row: T, index: number) => boolean;
   selectedKeys?: Set<string>;
   onSelectionChange?: (keys: Set<string>) => void;
   batchActions?: AdvancedDataTableBatchAction[];
@@ -395,6 +401,7 @@ export function AdvancedDataTable<T>({
   selectOnRowClick = false,
   selectAllScope = "allRows",
   rowSelectable,
+  selectAllPreferred,
   selectedKeys,
   onSelectionChange,
   batchActions = [],
@@ -919,6 +926,21 @@ export function AdvancedDataTable<T>({
       : rowSelectable ? rowItems.filter(({ row, index }) => rowSelectable(row, index)).map(({ key }) => key) : allRowKeys,
     [allRowKeys, displayRowItems, rowItems, rowSelectable, selectAllScope],
   );
+  // 全选优先集：selectAllPreferred 命中的行；一行都不命中时全选退化为全部可勾选行
+  const preferredSelectableKeys = useMemo(
+    () => {
+      if (!selectAllPreferred) return selectableRowKeys;
+      const rowByKey = new Map((selectAllScope === "renderedRows" ? displayRowItems : rowItems)
+        .map((item) => [item.key, item] as const));
+      const preferred = selectableRowKeys.filter((key) => {
+        const entry = rowByKey.get(key);
+        return entry ? selectAllPreferred(entry.row, entry.index) : false;
+      });
+      return preferred.length > 0 ? preferred : selectableRowKeys;
+    },
+    [displayRowItems, rowItems, selectAllPreferred, selectableRowKeys, selectAllScope],
+  );
+  const preferredSelectableKeySet = useMemo(() => new Set(preferredSelectableKeys), [preferredSelectableKeys]);
   const selectableRowKeySet = useMemo(() => new Set(selectableRowKeys), [selectableRowKeys]);
   const selectedSelectableKeys = useMemo(() => {
     if (!selectable || effectiveSelectedKeys.size === 0) return new Set<string>();
@@ -1149,7 +1171,8 @@ export function AdvancedDataTable<T>({
   }
 
   function toggleAllRows(checked: boolean) {
-    setSelection(checked ? new Set(selectableRowKeys) : new Set());
+    // 有全选优先集时，全选只选优先集（如"可导入行"）；优先集为空则全选所有可勾选行
+    setSelection(checked ? new Set(preferredSelectableKeys) : new Set());
   }
 
   function toggleRow(key: string, checked: boolean) {
@@ -1452,8 +1475,20 @@ export function AdvancedDataTable<T>({
 
   const selectedCount = selectedSelectableKeys.size;
   const selectedSelectableCount = selectedSelectableKeys.size;
-  const allSelected = selectableRowKeys.length > 0 && selectedSelectableCount === selectableRowKeys.length;
-  const partiallySelected = selectedSelectableCount > 0 && selectedSelectableCount < selectableRowKeys.length;
+  // 表头全选框以"全选优先集"为准：优先集全部选中=全选；部分优先集选中、或选中了优先集之外的行=半选
+  const preferredSelectedCount = useMemo(
+    () => {
+      if (!selectAllPreferred) return selectedSelectableCount;
+      let count = 0;
+      for (const key of preferredSelectableKeySet) {
+        if (effectiveSelectedKeys.has(key)) count += 1;
+      }
+      return count;
+    },
+    [effectiveSelectedKeys, preferredSelectableKeySet, selectAllPreferred, selectedSelectableCount],
+  );
+  const allSelected = preferredSelectableKeys.length > 0 && preferredSelectedCount === preferredSelectableKeys.length;
+  const partiallySelected = !allSelected && (preferredSelectedCount > 0 || (preferredSelectableKeys.length > 0 && effectiveSelectedKeys.size > preferredSelectedCount));
   const hasAnyFilters = showFilters && Object.values(filters).some((values) => (values?.length ?? 0) > 0);
   const clearFilters = () => {
     setFilters({});
