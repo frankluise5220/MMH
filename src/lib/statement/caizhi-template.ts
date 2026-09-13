@@ -52,7 +52,7 @@ const CAIZHI_HEADER_ALIASES: Record<string, CaizhiColumnKey | "skip"> = {
   // Supported aliases.
   "\u5165\u8d26\u65e5\u671f": "skip",
   "\u6536\u652f\u5927\u7c7b": "skip",
-  "\u6d41\u51fa": "skip",
+  "\u6d41\u51fa": "outflow",
   "\u6d41\u5165\u91d1\u989d": "inflow",
   "\u6d41\u51fa\u91d1\u989d": "outflow",
   "\u7c7b\u578b": "activityType",
