@@ -21,7 +21,12 @@ import {
   type StatementImportField,
 } from "@/lib/statement/header-catalog";
 import { normalizeAlipayWorkbookRows } from "@/lib/statement/alipay-template";
-import { normalizeCaizhiWorkbookRows, detectCaizhiHeaders, type CaizhiWorkbookSheetRows } from "@/lib/statement/caizhi-template";
+import {
+  guessCaizhiAccountNameFromFilename,
+  normalizeCaizhiWorkbookRows,
+  detectCaizhiHeaders,
+  type CaizhiWorkbookSheetRows,
+} from "@/lib/statement/caizhi-template";
 import { normalizeJdWorkbookRows } from "@/lib/statement/jd-template";
 import { normalizeWechatWorkbookRows } from "@/lib/statement/wechat-template";
 import {
@@ -392,20 +397,7 @@ export type ReadStatementWorkbookResult = {
   caizhiRows?: string[][];
 };
 
-/**
- * 尝试从文件名中提取财智8导出的账户名。
- * 财智8 导出名形如「XXX的YYY_明细_YYYY-MM-DD.xls」；账户名本身不含「的」时形如
- * 「计划帐户(姜)_明细_2026-09-02.xls」；人工改名后也可能长成「XXX的YYY_财智_2026-09-03.xls」。
- */
-function guessCaizhiAccountNameFromFilename(filename: string): string {
-  const base = String(filename ?? "").replace(/\.(xls|xlsx)$/i, "");
-  const withOwner = base.match(/^(.+?的.+?)_明细_/);
-  if (withOwner) return withOwner[1];
-  // 去掉「_明细_ / _财智_ + 日期」尾巴，避免整串文件名被当成账户名。
-  const trimmed = base.replace(/_(?:明细|财智)?_?\d{4}-\d{2}-\d{2}.*$/, "");
-  if (trimmed && trimmed !== base) return trimmed;
-  return base || "财智账户";
-}
+export { guessCaizhiAccountNameFromFilename } from "@/lib/statement/caizhi-template";
 
 export async function readStatementWorkbookRowsAndText(
   file: File,

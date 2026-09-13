@@ -291,3 +291,221 @@ export function detectCaizhiHeaders(headerRow: string[]): boolean {
   // Need date + activity type + either inflow or outflow.
   return hasDate && hasActivityType && (hasInflow || hasOutflow);
 }
+
+/**
+ * 财智基金账户明细模板（第二个财智模板）：
+ * 表头形如 [日期, 活动类型, 基金名称, 价格, 数量, 费率, 交易金额, 余额, 标签, 备注]，
+ * 活动类型含 开放式基金申购/开放式基金赎回/基金分红/基金再投资/持仓调整/转入|/转出|。
+ * 导入时转换为 MMH 基金导入格式并路由到基金预览导入窗口。
+ *
+ * 映射（用户口径）：
+ * - 开放式基金申购[|X] → 买入，资金账户 = X || 本账户（文件名账户）
+ * - 开放式基金赎回[|X] → 赎回，资金账户 = X || 本账户
+ * - 基金分红[|X] → 现金分红，资金账户 = X || 本账户
+ * - 基金再投资 → 红利再投（无需资金账户）
+ * - 持仓调整 → 买入（数量+金额，净值留空由确认金额重算），资金账户 = 本账户
+ * - 转入|X / 转出|X = 资金转账（不建基金交易，由资金账户明细文件以转账入库）
+ * - 余额调整 → 剔除计数（余额校准转换另行实现）
+ *
+ * 基金名称列：左侧 6 位为基金代码；账户名取文件名（「XXX的YYY_明细_日期」→ XXX的YYY）。
+ * 账户名保留财智原名；往来/基金语义由账户类型与归属体现。
+ */
+
+const CAIZHI_FUND_IMPORT_HEADERS = [
+  "\u65e5\u671f",
+  "\u57fa\u91d1\u52a8\u4f5c",
+  "\u8d44\u91d1\u8d26\u6237",
+  "\u57fa\u91d1\u8d26\u6237",
+  "\u57fa\u91d1\u4ee3\u7801",
+  "\u91d1\u989d",
+  "\u51c0\u503c",
+  "\u4efd\u989d",
+  "\u8d39\u7387",
+  "\u5907\u6ce8",
+];
+
+export type CaizhiFundImportConversion = {
+  /** 转换后的 MMH 基金导入行（含表头），可直接写入 xlsx 交给基金预览导入窗口 */
+  rows: string[][];
+  /** 参与转换的数据行数（不含余额调整剔除行） */
+  rowCount: number;
+  /** 余额调整剔除行数（余额校准转换另行处理） */
+  excludedBalanceAdjustCount: number;
+  /** 基金账户名（取自文件名） */
+  accountName: string;
+};
+
+/** 判断表头是否为财智基金账户明细：同时有「活动类型」与「基金名称」列。 */
+export function detectCaizhiFundDetailHeaders(headerRow: string[]): boolean {
+  const normalized = headerRow.map(normalizeHeader);
+  const hasActivityType = normalized.some((h) => h === "\u6d3b\u52a8\u7c7b\u578b" || h === "\u7c7b\u578b" || h === "\u4ea4\u6613\u7c7b\u578b");
+  const hasFundName = normalized.includes("\u57fa\u91d1\u540d\u79f0");
+  return hasActivityType && hasFundName;
+}
+
+/**
+ * 尝试从文件名中提取财智8导出的账户名。
+ * 财智8 导出名形如「XXX的YYY_明细_YYYY-MM-DD.xls」；账户名本身不含「的」时形如
+ * 「计划帐户(姜)_明细_2026-09-02.xls」；人工改名后也可能长成「XXX的YYY_财智_2026-09-03.xls」。
+ */
+export function guessCaizhiAccountNameFromFilename(filename: string): string {
+  const base = String(filename ?? "").replace(/\.(xls|xlsx)$/i, "");
+  const withOwner = base.match(/^(.+?的.+?)_明细_/);
+  if (withOwner) return withOwner[1];
+  // 去掉「_明细_ / _财智_ + 日期」尾巴，避免整串文件名被当成账户名。
+  const trimmed = base.replace(/_(?:明细|财智)?_?\d{4}-\d{2}-\d{2}.*$/, "");
+  if (trimmed && trimmed !== base) return trimmed;
+  return base || "财智账户";
+}
+
+function caizhiFundSplitFundName(value: string): { fundCode: string; fundName: string } {
+  const text = cleanText(value);
+  const match = text.match(/^(\d{6})\s*(.*)$/);
+  if (match) return { fundCode: match[1], fundName: match[2].trim() };
+  return { fundCode: "", fundName: text };
+}
+
+type CaizhiFundAction = "buy" | "redeem" | "dividend_cash" | "dividend_reinvest";
+
+function caizhiFundActionFor(activityType: string): { action: CaizhiFundAction; cashAccount: string | null } | null {
+  const [prefixRaw, counterRaw] = activityType.split("|");
+  const prefix = prefixRaw?.trim() ?? "";
+  const counterAccount = counterRaw?.trim() ?? "";
+  const fundAccountSelf = "";
+  switch (prefix) {
+    case "\u5f00\u653e\u5f0f\u57fa\u91d1\u7533\u8d2d": // 开放式基金申购
+    case "\u57fa\u91d1\u7533\u8d2d":
+      return { action: "buy", cashAccount: counterAccount || fundAccountSelf };
+    case "\u5f00\u653e\u5f0f\u57fa\u91d1\u8d4e\u56de": // 开放式基金赎回
+    case "\u57fa\u91d1\u8d4e\u56de":
+      return { action: "redeem", cashAccount: counterAccount || fundAccountSelf };
+    case "\u57fa\u91d1\u5206\u7ea2": // 基金分红
+      return { action: "dividend_cash", cashAccount: counterAccount || fundAccountSelf };
+    case "\u57fa\u91d1\u518d\u6295\u8d44": // 基金再投资
+      return { action: "dividend_reinvest", cashAccount: "" };
+    case "\u6301\u4ed3\u8c03\u6574": // 持仓调整 → 买入（初始持仓）
+      return { action: "buy", cashAccount: "" };
+    default:
+      // 转入|X / 转出|X = 资金（现金）转账：从 X（资金账户）转入/转出本基金账户的资金，
+      // 不产生基金份额变动，不由基金模板建账——由对应资金账户明细文件以转账形式入库。
+      return null;
+  }
+}
+
+/**
+ * 将财智基金明细 sheets 转换为 MMH 基金导入行（含 CAIZHI_FUND_IMPORT_HEADERS 表头）。
+ * 未识别的活动类型行跳过并计数；余额调整行剔除计数。
+ */
+export function normalizeCaizhiFundImportRows(
+  sheets: CaizhiWorkbookSheetRows[],
+  accountName: string,
+): { rows: string[][]; rowCount: number; excludedBalanceAdjustCount: number; skippedUnknownCount: number } | undefined {
+  const selfAccount = cleanText(accountName) || "\u8d22\u667a\u57fa\u91d1\u8d26\u6237";
+  const outputRows: string[][] = [];
+  let excludedBalanceAdjustCount = 0; // 含余额调整与转入|/转出|资金转账行
+  let skippedUnknownCount = 0;
+  let includedSheetCount = 0;
+
+  for (const sheet of sheets) {
+    const dataRows = sheet.rows;
+    if (dataRows.length === 0) continue;
+    const headerRow = dataRows[0] ?? [];
+    if (!detectCaizhiFundDetailHeaders(headerRow)) continue;
+
+    includedSheetCount++;
+    const idx = (name: string) => headerRow.findIndex((h) => normalizeHeader(h) === normalizeHeader(name));
+    const dateIdx = idx("\u65e5\u671f");
+    const actIdx = idx("\u6d3b\u52a8\u7c7b\u578b");
+    const fundNameIdx = idx("\u57fa\u91d1\u540d\u79f0");
+    const priceIdx = idx("\u4ef7\u683c");
+    const unitsIdx = idx("\u6570\u91cf");
+    const feeRateIdx = idx("\u8d39\u7387");
+    const amountIdx = idx("\u4ea4\u6613\u91d1\u989d");
+
+    for (let r = 1; r < dataRows.length; r++) {
+      const row = dataRows[r];
+      if (!row.some((cell) => cleanText(cell))) continue;
+      const activityType = cleanText(row[actIdx]);
+      if (!activityType) continue;
+      if (activityType.includes("\u4f59\u989d\u8c03\u6574") || activityType.includes("\u4f59\u989d\u521d\u59cb\u5316")) {
+        excludedBalanceAdjustCount++;
+        continue;
+      }
+      // 转入|X / 转出|X = 资金（现金）转账：从 X（资金账户）转入/转出本基金账户的资金，
+      // 不产生基金份额变动，不由基金模板建账——由对应资金账户明细文件以转账形式入库。
+      if (activityType.startsWith("\u8f6c\u5165|") || activityType.startsWith("\u8f6c\u51fa|")) {
+        excludedBalanceAdjustCount++;
+        continue;
+      }
+      const mapped = caizhiFundActionFor(activityType);
+      if (!mapped) { skippedUnknownCount++; continue; }
+
+      const fund = caizhiFundSplitFundName(row[fundNameIdx]);
+      const amount = cleanText(row[amountIdx]);
+      const price = cleanText(row[priceIdx]);
+      const units = cleanText(row[unitsIdx]);
+      const feeRate = cleanText(row[feeRateIdx]);
+      const remark = cleanText(row[idx("\u5907\u6ce8")]);
+      const cashAccount = mapped.cashAccount || selfAccount;
+
+      outputRows.push([
+        normalizeDate(row[dateIdx]),
+        mapped.action,
+        cashAccount,
+        selfAccount,
+        fund.fundCode,
+        amount,
+        price === "0.00" ? "" : price,
+        units === "0.00" ? "" : units,
+        feeRate,
+        remark,
+      ]);
+    }
+  }
+
+  if (includedSheetCount === 0) return undefined;
+  return {
+    rows: [CAIZHI_FUND_IMPORT_HEADERS, ...outputRows],
+    rowCount: outputRows.length,
+    excludedBalanceAdjustCount,
+    skippedUnknownCount,
+  };
+}
+
+/**
+ * 尝试将财智基金明细文件转换为 MMH 基金导入文件（xlsx）。
+ * 非财智基金明细（表头无「活动类型+基金名称」）返回 null。
+ * 返回的 File 可直接交给基金预览导入窗口（FundImportPreviewDialog）。
+ */
+export async function convertCaizhiFundImportFile(
+  file: File,
+): Promise<{ file: File; rowCount: number; excludedBalanceAdjustCount: number; accountName: string } | null> {
+  const XLSX = await import("xlsx");
+  const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
+  const sheets: CaizhiWorkbookSheetRows[] = workbook.SheetNames.map((sheetName) => ({
+    sheetName,
+    rows: XLSX.utils.sheet_to_json<Array<string | number | boolean | Date | null>>(workbook.Sheets[sheetName], {
+      header: 1,
+      defval: "",
+      raw: false,
+      dateNF: "yyyy-mm-dd",
+    }).map((row) => row.map((cell) => String(cell ?? "").trim())),
+  }));
+  const hasFundSheet = sheets.some((sheet) => sheet.rows.length > 0 && detectCaizhiFundDetailHeaders(sheet.rows[0] ?? []));
+  if (!hasFundSheet) return null;
+  const accountName = guessCaizhiAccountNameFromFilename(file.name);
+  const converted = normalizeCaizhiFundImportRows(sheets, accountName);
+  if (!converted || converted.rowCount === 0) return null;
+  const outWorkbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(outWorkbook, XLSX.utils.aoa_to_sheet(converted.rows), "\u8d22\u667a\u57fa\u91d1\u5bfc\u5165");
+  const buffer = XLSX.write(outWorkbook, { type: "array", bookType: "xlsx" });
+  const view = buffer instanceof ArrayBuffer ? buffer : buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+  return {
+    file: new File([view as ArrayBuffer], `${accountName}\u002d\u8d22\u667a\u57fa\u91d1\u5bfc\u5165.xlsx`, {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }),
+    rowCount: converted.rowCount,
+    excludedBalanceAdjustCount: converted.excludedBalanceAdjustCount,
+    accountName,
+  };
+}

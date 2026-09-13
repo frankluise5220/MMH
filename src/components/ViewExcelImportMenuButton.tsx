@@ -32,6 +32,7 @@ import {
   parseStatementTemplateRows,
   readStatementWorkbookRowsAndText,
 } from "@/lib/statement/excel-preview";
+import { convertCaizhiFundImportFile } from "@/lib/statement/caizhi-template";
 
 type ViewExcelImportExportItem = {
   label: string;
@@ -1257,6 +1258,15 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
         const isCaizhiFile = /财智|_明细_\d{4}-\d{2}-\d{2}/.test(file.name);
 
         if (isCaizhiFile) {
+          // 财智基金账户明细模板（第二个财智模板）：活动类型+基金名称表头 → 转换为基金导入格式，
+          // 路由到基金预览导入窗口。资金转账行（转入|/转出|）与余额调整行剔除，由资金账户明细文件处理。
+          const caizhiFund = await convertCaizhiFundImportFile(file);
+          if (caizhiFund) {
+            setFundPreviewContext(null);
+            setFundPreviewFile(caizhiFund.file);
+            setStatus(t("viewImport.recognizedCount", { count: caizhiFund.rowCount }));
+            return;
+          }
           // caizhiRows 已带 MMH 标准表头（与京东/支付宝/微信模板同一形态），可直接解析。
           const { caizhiRows } = await readStatementWorkbookRowsAndText(file, STATEMENT_IMPORT_FIELD_HEADERS);
           if (caizhiRows && caizhiRows.length > 0) {
