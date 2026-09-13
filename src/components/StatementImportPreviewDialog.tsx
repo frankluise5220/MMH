@@ -23,6 +23,7 @@ import {
   parseDebtAccountName,
   parseImportAccountId,
   parseImportOwnedMoneyAccountCandidate,
+  parseImportPersonAttributedCandidate,
 } from "@/lib/account-import-match";
 import {
   getColorSchemeFromCookie,
@@ -306,8 +307,11 @@ function debtCounterpartyNameFromAccount(value?: string | null) {
 }
 
 function isCreatableDebtAccount(value: string | undefined | null, lookup: PreviewAccountLookup | null, options: PreviewCreationOptions) {
+  if (!options.createDebtAccounts || !lookup) return false;
   const counterpartyName = debtCounterpartyNameFromAccount(value);
-  return Boolean(options.createDebtAccounts && counterpartyName && lookup);
+  if (counterpartyName) return true;
+  // 非所有人「XX的YYY」（如财智的「付斌的招行3833」）→ 归属为往来对象 XX 的往来款账户
+  return Boolean(parseImportPersonAttributedCandidate(value, lookup.ownerNames));
 }
 
 function isCreatableOwnedMoneyAccount(value: string | undefined | null, lookup: PreviewAccountLookup | null, options: PreviewCreationOptions) {
@@ -497,9 +501,20 @@ function missingAccountCandidateValuesForRow(row: ImportPreviewRow, defaultAccou
   return Array.from(new Set(candidates.map(cleanText).filter(Boolean)));
 }
 
-function missingDebtAccountNamesForRow(row: ImportPreviewRow, defaultAccountName: string) {
+function missingDebtAccountNamesForRow(
+  row: ImportPreviewRow,
+  defaultAccountName: string,
+  ownerNames: readonly string[] = [],
+) {
+  // 往来归属候选（含非所有人「XX的YYY」）：返回将创建的账户原名。
   const names = missingAccountCandidateValuesForRow(row, defaultAccountName)
-    .map(debtCounterpartyNameFromAccount)
+    .map((value) => {
+      const text = cleanText(value);
+      if (!text) return "";
+      if (parseDebtAccountName(text)) return text;
+      if (parseImportPersonAttributedCandidate(text, ownerNames)) return text;
+      return "";
+    })
     .filter(Boolean);
   return Array.from(new Set(names));
 }
@@ -616,7 +631,7 @@ export function StatementImportPreviewDialog({
       return;
     }
     const nextRows = buildPreviewRows(items, defaultAccountName, accountLookup, creationOptions);
-    if (!autoCheckedDebtAccountsRef.current && !createDebtAccounts && nextRows.some((row) => missingDebtAccountNamesForRow(row, defaultAccountName).length > 0)) {
+    if (!autoCheckedDebtAccountsRef.current && !createDebtAccounts && nextRows.some((row) => missingDebtAccountNamesForRow(row, defaultAccountName, accountLookup.ownerNames).length > 0)) {
       autoCheckedDebtAccountsRef.current = true;
       setCreateDebtAccounts(true);
       return;
@@ -741,7 +756,16 @@ export function StatementImportPreviewDialog({
   }
 
   function missingDebtAccountNames(row: ImportPreviewRow) {
-    return missingDebtAccountNamesForRow(row, defaultAccountName);
+    // 往来归属候选（含非所有人「XX的YYY」）：返回将创建的账户原名，用于自动勾选与提示。
+    return missingAccountCandidateValues(row)
+      .map((value) => {
+        const text = cleanText(value);
+        if (!text) return "";
+        if (parseDebtAccountName(text)) return text;
+        if (accountLookup && parseImportPersonAttributedCandidate(text, accountLookup.ownerNames)) return text;
+        return "";
+      })
+      .filter(Boolean);
   }
 
   function missingOwnedMoneyAccountNames(row: ImportPreviewRow) {
@@ -799,11 +823,13 @@ export function StatementImportPreviewDialog({
           { value: counterAccountValue(row.item), meta: undefined },
         ]
       : [{ value: primaryAccountValue(row.item, defaultAccountName), meta: row.item._meta }];
+    // 保留原名口径：标签直接展示将创建的账户原名（类型=往来款）。
     const names = accountValues
       .filter(({ value, meta }) => cleanText(value) && !findPreviewAccount(value, accountLookup, meta))
-      .map(({ value }) => debtCounterpartyNameFromAccount(value))
+      .filter(({ value }) => isCreatableDebtAccount(value, accountLookup, { createDebtAccounts: true, forceCreateOwnedMoneyAccounts: false }))
+      .map(({ value }) => cleanText(value))
       .filter(Boolean);
-    return Array.from(new Set(names.map((name) => t("statementImportPreview.debtAccountName", { name }))));
+    return Array.from(new Set(names));
   }
 
   function previewCreationStatus(row: ImportPreviewRow) {

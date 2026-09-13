@@ -19,7 +19,7 @@ import {
 import { INCOME_EXPENSE_INSTITUTION_TYPES } from "@/lib/institution-rules";
 import { assertInstitutionDisplayNamesUnique } from "@/lib/server/institution-name-unique";
 import { assertAccountIdentityUnique } from "@/lib/server/account-identity-unique";
-import { resolveDebtAccountByCounterpartyName } from "@/lib/server/import-debt-account";
+import { resolveDebtAccountByCounterpartyName, resolveDebtAccountByLoosePersonName } from "@/lib/server/import-debt-account";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { refreshCreditCardCycleCachesForAccountIds } from "@/lib/server/credit-bill-page-data";
@@ -1156,6 +1156,17 @@ async function ensureAccountIdUncached(tx: Db, householdId: string, accountName?
 
   const forcedOwnedMoneyAccountId = await createOwnedMoneyAccountFromImportName(tx, householdId, name, options);
   if (forcedOwnedMoneyAccountId) return forcedOwnedMoneyAccountId;
+
+  // 非所有人「XX的YYY」（如财智导出的「付斌的招行3833」）：勾选"创建往来款账户"时，
+  // 在既有账户匹配全部失败后归属为往来对象 XX 的往来款账户（原名保留）。
+  if (options.createDebtAccounts === true) {
+    const loosePersonAccountId = await resolveDebtAccountByLoosePersonName(tx, householdId, name, {
+      createCounterparty: true,
+      createAccount: true,
+      createdAccounts: options.createdAccounts,
+    });
+    if (loosePersonAccountId) return loosePersonAccountId;
+  }
 
   if (!options.autoCreateAccounts) {
     throw new Error(`账户不存在：${name}`);

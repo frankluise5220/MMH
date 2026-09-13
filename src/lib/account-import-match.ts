@@ -50,7 +50,7 @@ export function encodeImportAccountId(accountId: string) {
 
 
 // 财智导出的往来命名变体（XX的普通应付款/XX的普通应收款）与标准命名（XX的往来款）
-// 都解析出同一往来对象，导入时统一落到「XX的往来款」账户。
+// 都解析出同一往来对象。账户名保留财智原名（原来是什么就是什么），往来款属性由账户类型（kind=settlement）+往来对象体现。
 const DEBT_ACCOUNT_NAME_RE = /^(.+?)的(?:往来款|普通应付款|普通应收款)$/;
 
 /** Extract counterparty name from "XX的往来款"（含财智变体「XX的普通应付款/普通应收款」）. Returns null on no match. */
@@ -59,10 +59,45 @@ export function parseDebtAccountName(v: string): string | null {
   return m?.[1]?.trim() ?? null;
 }
 
-/** 财智「XX的普通应付款/普通应收款」等变体归一为标准往来款账户名「XX的往来款」。 */
-export function normalizeDebtAccountDisplayName(v: string): string {
-  const counterparty = parseDebtAccountName(v);
-  return counterparty ? `${counterparty}的往来款` : v.trim();
+/** 判断名字是否银行/机构名（如「招商银行」「京东」）——这类前缀不能当往来对象人名。 */
+export function isImportBankLikeName(value: string): boolean {
+  const key = normalizeImportAccountMatchKey(value);
+  if (!key) return false;
+  return BANK_ALIASES.some((item) =>
+    [item.canonical, ...item.aliases].some(
+      (variant) => normalizeImportAccountMatchKey(variant) === key,
+    ),
+  );
+}
+
+export type ImportPersonAttributedCandidate = {
+  personName: string;
+  restName: string;
+};
+
+/**
+ * 「XX的YYY」形态且 XX 不是所有人（不在账户分组名单内）→ 可归属为往来对象 XX 的往来款账户。
+ * 债务命名变体（XX的往来款/普通应付款/普通应收款）走 parseDebtAccountName，不在此重复。
+ */
+export function parseImportPersonAttributedCandidate(
+  value: string | undefined | null,
+  ownerNames: readonly string[],
+): ImportPersonAttributedCandidate | null {
+  const raw = stripImportAccountScheduleSuffix(String(value ?? "").trim());
+  const match = raw.match(/^(.{2,}?)的(.{1,})$/);
+  if (!match) return null;
+  const personName = match[1].trim();
+  const restName = match[2].trim();
+  if (!personName || !restName) return null;
+  if (parseDebtAccountName(raw)) return null;
+  if (isImportBankLikeName(personName)) return null;
+  const personKey = normalizeImportAccountMatchKey(personName);
+  if (!personKey) return null;
+  const isOwner = ownerNames.some(
+    (name) => normalizeImportAccountMatchKey(String(name ?? "").trim()) === personKey,
+  );
+  if (isOwner) return null;
+  return { personName, restName };
 }
 export function parseImportAccountId(value?: string) {
   const text = String(value ?? "").trim();
