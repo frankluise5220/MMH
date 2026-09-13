@@ -6,7 +6,9 @@ export type ScheduledTaskType =
   | "transfer"
   | "insurance_premium"
   | "income"
-  | "expense";
+  | "expense"
+  | "deposit_maturity"
+  | "deposit_interest_payout";
 
 export type LoanScheduledPlanRole = "bill" | "auto_debit";
 
@@ -26,6 +28,17 @@ export type ScheduledTaskPayload = {
   originalTotalRuns?: number | null;
   firstBillDate?: string | null;
   firstRepaymentDate?: string | null;
+  /**
+   * Deposit plans (deposit_maturity / deposit_interest_payout) point at the
+   * owning buy lot via its TxRecord id, so the executor can re-load the lot
+   * and honour its current maturity action / payout frequency.
+   */
+  depositSourceEntryId?: string | null;
+  /**
+   * 存款取息计划：是否同时生成「转账」记录。
+   * true（默认）= 利息收入 + 转账；false = 只生成利息收入。
+   */
+  payoutTransfer?: boolean | null;
   /**
    * Loan scheduled plans can be split into two roles:
    * - bill: generate the installment/bill on the loan account.
@@ -55,6 +68,8 @@ export const SCHEDULED_TASK_TYPE_LABEL: Record<ScheduledTaskType, string> = {
   insurance_premium: "保费缴费",
   income: "Income",
   expense: "Expense",
+  deposit_maturity: "存款到期",
+  deposit_interest_payout: "存款取息",
 };
 
 export function normalizeScheduledTaskType(value: unknown): ScheduledTaskType {
@@ -64,7 +79,9 @@ export function normalizeScheduledTaskType(value: unknown): ScheduledTaskType {
     value === "transfer" ||
     value === "insurance_premium" ||
     value === "income" ||
-    value === "expense"
+    value === "expense" ||
+    value === "deposit_maturity" ||
+    value === "deposit_interest_payout"
   ) {
     return value;
   }

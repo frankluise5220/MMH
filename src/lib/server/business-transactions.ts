@@ -1,6 +1,7 @@
 import { FundSubtype, Prisma, TransactionType } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
+import { logger } from "@/lib/logger";
 import { toNumber } from "@/lib/date-utils";
 import { calculateWealthCashDividendProfit } from "@/lib/wealth-position";
 import {
@@ -246,6 +247,27 @@ export async function syncIndependentBusinessTransactionFromTxRecord(
       },
     });
     targetId = row.id;
+    // System-plan wiring (理财产品/贷款-style): every deposit buy lot gets its
+    // 存款到期 + 存款取息 RegularInvestPlan rows; the executors follow the
+    // lot's stored maturity action / payout frequency and loop until the next
+    // run date is in the future.
+    if (subtype === FundSubtype.buy && !entry.deletedAt) {
+      const { ensureDepositPlansForLot } = await import("@/lib/server/deposit-plan-tasks");
+      await ensureDepositPlansForLot({ householdId: entry.householdId, lotId: entry.id }).catch((e) => {
+        logger.catchLog("ensureDepositPlansForLot failed", "business-transactions")(e);
+      });
+    }
+    // 存单取回 → 同时结束该存单的系统计划任务（到期 + 取息两条）。
+    const isRedeemLike = subtype === FundSubtype.redeem || subtype === FundSubtype.switch_out;
+    if (isRedeemLike && entry.depositSourceEntryId && !entry.deletedAt) {
+      const { completeDepositPlansForLot } = await import("@/lib/server/deposit-plan-tasks");
+      await completeDepositPlansForLot({
+        householdId: entry.householdId,
+        lotId: entry.depositSourceEntryId,
+      }).catch((e) => {
+        logger.catchLog("completeDepositPlansForLot failed", "business-transactions")(e);
+      });
+    }
   } else if (businessType === "metal") {
     if (!entry.metalTypeId || !entry.metalUnitId || !entry.metalTypeName || !entry.metalUnitName) return null;
     const row = await client.preciousMetalTransaction.upsert({

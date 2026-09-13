@@ -378,9 +378,17 @@ html {
   }
 }
 
+.advanced-table-viewport {
+  /* 常显的经典（非浮动）滚动条：Chromium 只要 scrollbar-color 不是 auto，就会用
+     标准滚动条渲染器（关闭 Windows Fluent 浮动/自动隐藏滚动条），轨道与滑块固定
+     可见。之前的 scrollbar-color: transparent 轨道 + thin 会让它在不滚动时“消失”。 */
+  scrollbar-width: auto;
+  scrollbar-color: #94a3b8 #e8edf3;
+}
+
 .advanced-table-viewport::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
 }
 
 .advanced-table-viewport::-webkit-scrollbar-track {

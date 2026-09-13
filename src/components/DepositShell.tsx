@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { ArrowDownLeft, ArrowUpRight, Coins, Landmark, Repeat, Trash2 } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Coins, Landmark, Repeat, SlidersHorizontal, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTableSummaryRow } from "./AdvancedDataTable";
@@ -14,6 +14,10 @@ import { ResizableVerticalSplit } from "./ResizableVerticalSplit";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 import { amountToneClass as amountClass } from "@/lib/client/colors";
+import {
+  isPeriodicDepositInterestPayout,
+  parseDepositInterestPayout,
+} from "@/lib/deposit-interest-payout";
 import { formatMoney } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 
@@ -26,6 +30,8 @@ type DepositEntry = {
   cashAccountLabel: string;
   note: string;
   amount: number;
+  balance?: number | null;
+  depositSourceEntryId?: string | null;
   businessTransactionId?: string | null;
   businessLinkCount?: number;
   businessLinkLabels?: string[];
@@ -70,6 +76,8 @@ type DepositLot = {
 type DepositBatchField = "cashAccountId" | "amount" | "fundArrivalDate" | "remark";
 
 type LotTab = "held" | "expired";
+
+const DEPOSIT_ENTRY_COLUMN_SETTINGS_EVENT = "mmh:deposit-entries:column-settings";
 
 export function DepositShell({
   accountLabel,
@@ -125,9 +133,25 @@ export function DepositShell({
 
   const payoutFrequencyLabel = useCallback(
     (frequency: string | null | undefined) => {
-      if (frequency === "monthly") return t("deposit.payoutFrequency.monthly");
-      if (frequency === "yearly") return t("deposit.payoutFrequency.yearly");
-      return t("deposit.payoutFrequency.maturity");
+      const parsed = parseDepositInterestPayout(frequency);
+      if (parsed.kind !== "periodic") return t("deposit.payoutFrequency.maturity");
+      const unitKey =
+        parsed.unit === "week"
+          ? "depositForm.termUnit.week"
+          : parsed.unit === "year"
+            ? "depositForm.termUnit.year"
+            : "depositForm.termUnit.month";
+      if (parsed.interval <= 1) {
+        return parsed.unit === "week"
+          ? t("deposit.payoutFrequency.weekly")
+          : parsed.unit === "year"
+            ? t("deposit.payoutFrequency.yearly")
+            : t("deposit.payoutFrequency.monthly");
+      }
+      return t("deposit.payoutFrequency.everyN", {
+        interval: String(parsed.interval),
+        unit: t(unitKey),
+      });
     },
     [t],
   );
@@ -206,9 +230,11 @@ export function DepositShell({
     return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
   }, [router]);
 
-  const totalPages = Math.max(1, Math.ceil(entryRowCount / entryPageSize));
+  // Pagination state is owned here for the header controls; the actual slicing
+  // happens INSIDE AdvancedDataTable (rows must be the FULL set, exactly like
+  // StockHoldingsPanel — slicing here too would collapse ADT's pageCount to 1).
+  const totalPages = Math.max(1, Math.ceil(entryRowCount / (entryPageSize > 0 ? entryPageSize : Math.max(1, entryRowCount))));
   const safePage = Math.min(entryPage, totalPages);
-  const pagedEntries = visibleEntries.slice((safePage - 1) * entryPageSize, safePage * entryPageSize);
 
   const batchFields = useMemo<BatchReplaceFieldConfig<DepositBatchField>[]>(() => [
     {
@@ -379,6 +405,23 @@ export function DepositShell({
         </span>
       ),
     },
+    {
+      key: "balance",
+      label: t("detail.column.balance"),
+      width: 120,
+      minWidth: 90,
+      hideable: true,
+      align: "right",
+      filterKind: "numberRange",
+      filterText: (entry) => (entry.balance != null ? String(entry.balance) : ""),
+      filterNumber: (entry) => (entry.balance != null ? Math.abs(entry.balance) : undefined),
+      sortValue: (entry) => entry.balance ?? 0,
+      render: (entry) => (
+        <span className="tabular-nums text-slate-700">
+          {entry.balance != null ? formatMoney(entry.balance) : "-"}
+        </span>
+      ),
+    },
   ], [t]);
 
   return (
@@ -390,7 +433,7 @@ export function DepositShell({
         separatorLabel={t("depositShell.resizeLabel")}
         separatorTitle={t("depositShell.resizeTitle")}
       >
-        <section className="panel-surface flex min-h-0 flex-col overflow-hidden">
+        <section className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
           <div className="panel-header">
             <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
               <Landmark className="h-4 w-4 text-cyan-600" />
@@ -419,59 +462,61 @@ export function DepositShell({
                   : formatText("depositShell.allExpiredHint", { scope: institutionName || accountLabel })}
             </div>
           </div>
-          <AdvancedDataTable
-            storageKey="mmh_deposit_lots_table_v1"
-            columns={lotColumns}
-            rows={visibleLots}
-            rowKey={(lot) => lot.id}
-            minTableWidth={820}
-            emptyText={lotTab === "held" ? t("depositShell.emptyHoldings") : t("depositShell.emptyExpired")}
-            showFilters
-            fillHeight
-            toolbarMode="none"
-            defaultSort={{ key: "originalAmount", direction: "desc" }}
-            summaryRow={lotsSummaryRow}
-            onRowClick={(lot) => setSelectedLotId((current) => current === lot.id ? null : lot.id)}
-            rowClassName={(lot) => `cursor-pointer ${selectedLotId === lot.id ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-slate-50"}`}
-            rowActions={lotTab === "held" && (renewAction || payInterestAction) ? (lot) => (
-              <div className="flex items-center gap-1">
-                {payInterestAction && lot.interestPayoutFrequency && lot.interestPayoutFrequency !== "maturity" ? (
-                  <button
-                    type="button"
-                    disabled={lot.status !== "open"}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      openPayInterestModal(lot);
-                    }}
-                    className="flex h-6 w-6 items-center justify-center rounded border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40"
-                    title={t("deposit.payInterest.title")}
-                    aria-label={t("deposit.payInterest.title")}
-                  >
-                    <Coins className="h-3.5 w-3.5" />
-                  </button>
-                ) : null}
-                {renewAction ? (
-                  <button
-                    type="button"
-                    disabled={lot.status !== "open"}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      openRenewModal(lot);
-                    }}
-                    className="flex h-6 w-6 items-center justify-center rounded border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
-                    title={t("deposit.renew.title")}
-                    aria-label={t("deposit.renew.title")}
-                  >
-                    <Repeat className="h-3.5 w-3.5" />
-                  </button>
-                ) : null}
-              </div>
-            ) : undefined}
-            rowActionsWidth={96}
-          />
+          <div className="min-h-0 flex-1">
+            <AdvancedDataTable
+              storageKey="mmh_deposit_lots_table_v1"
+              columns={lotColumns}
+              rows={visibleLots}
+              rowKey={(lot) => lot.id}
+              minTableWidth={820}
+              emptyText={lotTab === "held" ? t("depositShell.emptyHoldings") : t("depositShell.emptyExpired")}
+              showFilters
+              fillHeight
+              toolbarMode="none"
+              defaultSort={{ key: "originalAmount", direction: "desc" }}
+              summaryRow={lotsSummaryRow}
+              onRowClick={(lot) => setSelectedLotId((current) => current === lot.id ? null : lot.id)}
+              rowClassName={(lot) => `cursor-pointer ${selectedLotId === lot.id ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-slate-50"}`}
+              rowActions={lotTab === "held" && (renewAction || payInterestAction) ? (lot) => (
+                <div className="flex items-center gap-1">
+                  {payInterestAction && isPeriodicDepositInterestPayout(lot.interestPayoutFrequency) ? (
+                    <button
+                      type="button"
+                      disabled={lot.status !== "open"}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openPayInterestModal(lot);
+                      }}
+                      className="flex h-6 w-6 items-center justify-center rounded border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40"
+                      title={t("deposit.payInterest.title")}
+                      aria-label={t("deposit.payInterest.title")}
+                    >
+                      <Coins className="h-3.5 w-3.5" />
+                    </button>
+                  ) : null}
+                  {renewAction ? (
+                    <button
+                      type="button"
+                      disabled={lot.status !== "open"}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openRenewModal(lot);
+                      }}
+                      className="flex h-6 w-6 items-center justify-center rounded border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
+                      title={t("deposit.renew.title")}
+                      aria-label={t("deposit.renew.title")}
+                    >
+                      <Repeat className="h-3.5 w-3.5" />
+                    </button>
+                  ) : null}
+                </div>
+              ) : undefined}
+              rowActionsWidth={96}
+            />
+          </div>
         </section>
 
-        <section className="panel-surface flex min-h-0 flex-col overflow-hidden">
+        <section className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
           <div className="panel-header">
             <div className="flex min-w-0 items-center gap-1 text-left text-sm font-semibold text-slate-800">
               {selectedEntryIds.size > 0 ? (
@@ -504,54 +549,136 @@ export function DepositShell({
                 </div>
               ) : null}
               <span className="flex h-6 shrink-0 items-center">{t("depositShell.entriesTitle")}</span>
+              <span className="ml-2 shrink-0 text-xs font-normal text-slate-400">{selectedLot ? formatText("depositShell.entryCountHint", { count: visibleEntries.length }) : formatText("depositShell.allEntryCountHint", { count: visibleEntries.length })}</span>
             </div>
-            <div className="text-xs text-slate-400">
-              {selectedLot ? formatText("depositShell.entryCountHint", { count: visibleEntries.length }) : formatText("depositShell.allEntryCountHint", { count: visibleEntries.length })}
+            <div className="flex shrink-0 items-center gap-1 text-xs text-slate-400">
+              <span className="mx-1 h-4 w-px bg-slate-200" />
+              {[10, 20, 40].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => { setEntryPageSize(n); setEntryPage(1); }}
+                  className={`h-6 shrink-0 px-1.5 rounded border ${entryPageSize === n ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}
+                >
+                  {n}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => { setEntryPageSize(0); setEntryPage(1); }}
+                className={`h-6 shrink-0 px-1.5 rounded border ${entryPageSize === 0 ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}
+              >
+                {t("stockPanel.all")}
+              </button>
+              <span className="text-slate-300">|</span>
+              {safePage > 1 ? (<>
+                <button
+                  type="button"
+                  onClick={() => setEntryPage(1)}
+                  className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50"
+                >
+                  <ChevronsLeft className="h-3 w-3" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEntryPage(safePage - 1)}
+                  className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50"
+                >
+                  <ChevronLeft className="h-3 w-3" />
+                </button>
+              </>) : (<>
+                <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronsLeft className="h-3 w-3" /></span>
+                <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronLeft className="h-3 w-3" /></span>
+              </>)}
+              <span className="text-slate-500 px-0.5 tabular-nums">{safePage}/{totalPages}</span>
+              {safePage < totalPages ? (<>
+                <button
+                  type="button"
+                  onClick={() => setEntryPage(safePage + 1)}
+                  className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50"
+                >
+                  <ChevronRight className="h-3 w-3" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEntryPage(totalPages)}
+                  className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50"
+                >
+                  <ChevronsRight className="h-3 w-3" />
+                </button>
+              </>) : (<>
+                <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronRight className="h-3 w-3" /></span>
+                <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronsRight className="h-3 w-3" /></span>
+              </>)}
+              <span className="text-slate-300">|</span>
+              <button
+                type="button"
+                data-advanced-table-column-settings
+                onClick={(event) => {
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  window.dispatchEvent(new CustomEvent(DEPOSIT_ENTRY_COLUMN_SETTINGS_EVENT, {
+                    detail: { anchorRect: { right: rect.right, bottom: rect.bottom } },
+                  }));
+                }}
+                className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
+                title={t("basicDetail.guide.columnSettings.title")}
+                aria-label={t("basicDetail.guide.columnSettings.title")}
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+              </button>
             </div>
           </div>
-          <AdvancedDataTable
-            storageKey="mmh_deposit_entries_table_v1"
-            columns={entryColumns}
-            rows={pagedEntries}
-            rowKey={(entry) => entry.id}
-            minTableWidth={1020}
-            emptyText={selectedLot ? t("depositShell.emptyRelatedEntries") : t("depositShell.emptyAllEntries")}
-            fillHeight
-            toolbarMode="none"
-            showColumnVisibilityButton={false}
-            showFilters
-            selectable
-            selectOnRowClick
-            selectAllScope="renderedRows"
-            selectedKeys={selectedEntryIds}
-            onSelectionChange={setSelectedEntryIds}
-            rowActions={(entry) => {
-              const hasBusinessLink = (entry.businessLinkCount ?? 0) > 0;
-              const labels = entry.businessLinkLabels ?? [];
-              const title = hasBusinessLink
-                ? formatText("depositShell.linkedTitle", { labels: labels.join("、") || t("depositShell.businessRecord") })
-                : t("depositShell.unlinkedTitle");
-              return (
-                <>
-                  <BusinessLinkActionButton
-                    active={hasBusinessLink}
-                    title={title}
-                    busy={linkingIds.has(entry.id)}
-                    onClick={() => linkDepositCashFlow(entry)}
-                  />
-                  <EntryRowActions entryId={entry.id} edit={entry.edit} />
-                </>
-              );
-            }}
-            rowActionsWidth={112}
-            rowActionsMinWidth={92}
-            pagination={{
-              page: safePage,
-              pageSize: entryPageSize,
-              onPageChange: setEntryPage,
-              onRowCountChange: setEntryRowCount,
-            }}
-          />
+          <div className="min-h-0 flex-1">
+            <AdvancedDataTable
+              storageKey="mmh_deposit_entries_table_v2"
+              columns={entryColumns}
+              rows={visibleEntries}
+              rowKey={(entry) => entry.id}
+              minTableWidth={1020}
+              emptyText={selectedLot ? t("depositShell.emptyRelatedEntries") : t("depositShell.emptyAllEntries")}
+              fillHeight
+              toolbarMode="none"
+              columnVisibilityTriggerId={DEPOSIT_ENTRY_COLUMN_SETTINGS_EVENT}
+              showColumnVisibilityButton={false}
+              showFilters
+              selectable
+              selectOnRowClick
+              selectAllScope="renderedRows"
+              selectedKeys={selectedEntryIds}
+              onSelectionChange={setSelectedEntryIds}
+              rowActions={(entry) => {
+                // 利息的收入/转账条目是普通分录，没有存款业务流可关联 —— 不显示关联图标。
+                const isDepositBusinessEntry = !!entry.businessTransactionId;
+                const hasBusinessLink = (entry.businessLinkCount ?? 0) > 0;
+                const labels = entry.businessLinkLabels ?? [];
+                const title = hasBusinessLink
+                  ? formatText("depositShell.linkedTitle", { labels: labels.join("、") || t("depositShell.businessRecord") })
+                  : t("depositShell.unlinkedTitle");
+                return (
+                  <>
+                    {isDepositBusinessEntry ? (
+                      <BusinessLinkActionButton
+                        active={hasBusinessLink}
+                        title={title}
+                        busy={linkingIds.has(entry.id)}
+                        onClick={() => linkDepositCashFlow(entry)}
+                      />
+                    ) : null}
+                    <EntryRowActions entryId={entry.id} edit={entry.edit} />
+                  </>
+                );
+              }}
+              rowActionsWidth={112}
+              rowActionsMinWidth={92}
+              pagination={{
+                page: safePage,
+                pageSize: entryPageSize,
+                all: entryPageSize === 0,
+                onPageChange: setEntryPage,
+                onRowCountChange: setEntryRowCount,
+              }}
+            />
+          </div>
         </section>
       </ResizableVerticalSplit>
 

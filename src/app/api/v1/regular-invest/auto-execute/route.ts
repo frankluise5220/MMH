@@ -23,6 +23,7 @@ import { decodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { calcInitialScheduledRunDate as calcInitialRunDate, calcNextScheduledRunDate as calcNextRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { executeNonFundScheduledTaskPlan, isNonFundScheduledTask } from "@/lib/server/scheduled-task-executor";
+import { ensureDepositPlansForHeldLots, executeDepositPlan } from "@/lib/server/deposit-plan-tasks";
 import { resolveCategorySnapshot } from "@/lib/default-categories";
 import { ENTRY_ORIGIN_SCHEDULED_TASK } from "@/lib/transaction-semantics";
 import { acquireScheduledTaskPlanLock } from "@/lib/server/scheduled-task-lock";
@@ -113,6 +114,18 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
     for (const plan of generalPlans) {
       const task = decodeScheduledTaskMemo(plan.memo);
       try {
+        if (task.type === "deposit_maturity" || task.type === "deposit_interest_payout") {
+          const result = await executeDepositPlan({ householdId, plan, task, now });
+          if (result.pairs > 0 || result.executed) {
+            generalExecuted.push(plan.id);
+            generalGeneratedCount += result.pairs;
+            generalDetails.push({ planId: plan.id, fundCode: plan.fundCode, action: "executed", reason: result.message });
+          } else {
+            generalSkipped.push(plan.id);
+            generalDetails.push({ planId: plan.id, fundCode: plan.fundCode, action: "skipped", reason: result.message });
+          }
+          continue;
+        }
         const result = await executeNonFundScheduledTaskPlan({
           householdId,
           plan,
@@ -635,6 +648,9 @@ export async function POST() {
     const { householdId } = await getHouseholdScope();
     const now = new Date();
     const maxRounds = Math.max(1, Number(process.env.MMH_AUTO_EXECUTE_MAX_ROUNDS ?? 12) || 12);
+
+    // 存款的系统计划行自愈：老存单可能还没有计划行，先补齐再跑计划轮次。
+    await ensureDepositPlansForHeldLots({ householdId }).catch(() => {});
 
     const aggregated = {
       executedCount: 0,

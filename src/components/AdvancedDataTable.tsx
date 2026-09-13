@@ -231,7 +231,7 @@ export type AdvancedDataTableProps<T> = {
     rows: T[],
     sortState: AdvancedDataTableSortState | null,
     columns: AdvancedDataTableColumn<T>[],
-  ) => T[];
+  ) => T[] | null | undefined;
   pagination?: AdvancedDataTablePagination;
   columnVisibilityTriggerId?: string;
   summaryRow?: AdvancedDataTableSummaryRow;
@@ -830,7 +830,12 @@ export function AdvancedDataTable<T>({
 
   const orderedRows = useMemo(() => {
     if (!sortable || !sortState) return filteredRows;
-    if (sortRows) return sortRows(filteredRows, sortState, tableColumns);
+    if (sortRows) {
+      // Returning null/undefined lets this column fall through to the default
+      // single-column sort below (custom sorts only need to own their columns).
+      const customRows = sortRows(filteredRows, sortState, tableColumns);
+      if (customRows) return customRows;
+    }
     const column = tableColumns.find((item) => item.key === sortState.key);
     const readValue = column?.sortValue ?? column?.filterText;
     if (!readValue) return filteredRows;
@@ -1647,8 +1652,8 @@ export function AdvancedDataTable<T>({
         ref={viewportRef}
         className={
           fillHeight
-            ? `advanced-table-viewport custom-scrollbar ${hasHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} min-h-0 flex-1 overflow-y-scroll [scrollbar-gutter:stable]`
-            : `advanced-table-viewport custom-scrollbar ${hasHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} overflow-y-scroll [scrollbar-gutter:stable]`
+            ? `advanced-table-viewport ${hasHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} min-h-0 flex-1 overflow-y-scroll [scrollbar-gutter:stable]`
+            : `advanced-table-viewport ${hasHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} overflow-y-scroll [scrollbar-gutter:stable]`
         }
       >
         <table className="table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100 [&_th]:border-r [&_th]:border-slate-200" style={{ width: layout.tableWidth }}>

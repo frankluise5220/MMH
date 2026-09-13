@@ -26,7 +26,7 @@ import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
 import { resolveOrCreateAdvanceAccount } from "@/lib/server/advance-account";
 import { createCreditCardInstallmentPlan } from "@/lib/server/credit-card-installment";
 import { ENTRY_ORIGIN_MANUAL, isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/transaction-semantics";
-import { ensureSettlementTransferCategory, resolveCategorySnapshot, resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
+import { ensureSettlementTransferCategory, resolveCategorySnapshot, resolveCreditCardRepaymentCategory, SYSTEM_DEPOSIT_INTEREST_CATEGORY } from "@/lib/default-categories";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
 import { getCashFlowDate } from "@/lib/cash-flow-date";
 import { buildWealthCashFlowNote } from "@/lib/wealth-cash-note";
@@ -38,6 +38,12 @@ import { getServerT } from "@/lib/server/i18n";
 import { touchAccountUsage } from "@/lib/server/account-usage";
 import { creditBillEffectiveDate } from "@/lib/credit/billing";
 import { toStatementMonth, toNumber, addWorkdaysUtc } from "@/lib/date-utils";
+import { decodeScheduledTaskMemo } from "@/lib/scheduled-task";
+import {
+  isPeriodicDepositInterestPayout,
+  normalizeDepositInterestPayoutInput,
+  parseDepositInterestPayout,
+} from "@/lib/deposit-interest-payout";
 import type { CreditCardInstallmentRateType } from "@/lib/credit/installment";
 
 function dateFromYmd(value: string | null | undefined): Date | null {
@@ -780,8 +786,7 @@ export async function createTransaction(formData: FormData) {
       const DEPOSIT_MATURITY_ACTIONS = ["redeem", "renew_principal", "renew_principal_interest"];
       const depositMaturityAction = DEPOSIT_MATURITY_ACTIONS.includes(depositMaturityActionRaw) ? depositMaturityActionRaw : null;
       const depositInterestPayoutRaw = String(formData.get("depositInterestPayoutFrequency") ?? "").trim();
-      const DEPOSIT_INTEREST_PAYOUTS = ["maturity", "monthly", "yearly"];
-      const depositInterestPayoutFrequency = DEPOSIT_INTEREST_PAYOUTS.includes(depositInterestPayoutRaw) ? depositInterestPayoutRaw : null;
+      const depositInterestPayoutFrequency = normalizeDepositInterestPayoutInput(depositInterestPayoutRaw);
       const cashAccountIdInput = String(formData.get("cashAccountId") ?? "").trim() || null;
       const fundConfirmDate = fundConfirmDateStr ? new Date(fundConfirmDateStr) : null;
       const fundArrivalDate = fundArrivalDateStr ? new Date(fundArrivalDateStr) : null;
@@ -1548,7 +1553,7 @@ export async function editInvestment(formData: FormData) {
     ? (["redeem", "renew_principal", "renew_principal_interest"].includes(depositMaturityActionStr) ? depositMaturityActionStr : null)
     : undefined;
   const depositInterestPayout: string | null | undefined = hasDepositInterestPayout
-    ? (["maturity", "monthly", "yearly"].includes(depositInterestPayoutStr) ? depositInterestPayoutStr : null)
+    ? normalizeDepositInterestPayoutInput(depositInterestPayoutStr)
     : undefined;
   const confirmDays: number | null | undefined = hasConfirmDays
     ? (Number.isFinite(confirmDaysRaw) && confirmDaysRaw >= 0 ? confirmDaysRaw : null)
@@ -2178,7 +2183,7 @@ export async function renewDeposit(formData: FormData) {
     // Deposits that pay out interest periodically cannot roll interest into the
     // principal (it has already been paid out), so clamp to principal renewal.
     const payoutFrequency = buy.depositInterestPayoutFrequency;
-    if (payoutFrequency && payoutFrequency !== "maturity" && mode === "renew_principal_interest") {
+    if (isPeriodicDepositInterestPayout(payoutFrequency) && mode === "renew_principal_interest") {
       mode = "renew_principal";
     }
 
@@ -2220,7 +2225,6 @@ export async function renewDeposit(formData: FormData) {
       if (!cashAccount) return { ok: false as const, error: t("sidebar.action.accountNotFound") };
     }
 
-    let payoutEntryId: string | null = null;
     await prisma.$transaction(async (tx) => {
       await tx.txRecord.update({
         where: { id: buy.id },
@@ -2234,40 +2238,52 @@ export async function renewDeposit(formData: FormData) {
             : {}),
         },
       });
+      // Two-record model for the term interest: income on the deposit
+      // account, then a transfer to the funding source account (same
+      // convention as payDepositInterest).
       if (mode === "renew_principal" && cashAccount && accruedInterest > 0) {
-        const createdPayout = await tx.txRecord.create({
+        const interestCategory = await resolveCategorySnapshot(tx, householdId, {
+          categoryName: SYSTEM_DEPOSIT_INTEREST_CATEGORY,
+          type: "income",
+        });
+        await tx.txRecord.create({
           data: {
             date: maturityDate,
-            type: TransactionType.investment,
+            type: TransactionType.income,
             accountId: depositAccount.id,
             accountName: depositAccount.name,
-            toAccountId: cashAccount.id,
-            toAccountName: cashAccount.name,
             amount: accruedInterest,
             currency: buy.currency ?? depositAccount.currency ?? "CNY",
-            fundName: buy.fundName,
-            fundProductType: "deposit",
-            fundSubtype: FundSubtype.dividend_cash,
+            categoryId: interestCategory?.id ?? null,
+            categoryName: interestCategory?.name ?? SYSTEM_DEPOSIT_INTEREST_CATEGORY,
             source: "deposit",
             entryOrigin: ENTRY_ORIGIN_MANUAL,
-            depositInterest: accruedInterest,
-            fundArrivalDate: maturityDate,
             note: `${t("deposit.renew.payoutNote", { name: buy.fundName ?? "" })}`,
             ...{ householdId },
           },
         });
-        payoutEntryId = createdPayout.id;
+        await tx.txRecord.create({
+          data: {
+            date: maturityDate,
+            type: TransactionType.transfer,
+            accountId: depositAccount.id,
+            accountName: depositAccount.name,
+            toAccountId: cashAccount.id,
+            toAccountName: cashAccount.name,
+            amount: -accruedInterest,
+            currency: buy.currency ?? depositAccount.currency ?? "CNY",
+            source: "deposit",
+            entryOrigin: ENTRY_ORIGIN_MANUAL,
+            note: `${t("deposit.renew.payoutTransferNote", { name: buy.fundName ?? "" })}`,
+            ...{ householdId },
+          },
+        });
       }
     });
 
     await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: buy.id }).catch((e) => {
       console.error("renewDeposit sync buy business transaction:", e);
     });
-    if (payoutEntryId) {
-      await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: payoutEntryId }).catch((e) => {
-        console.error("renewDeposit sync payout business transaction:", e);
-      });
-    }
     if (mode === "renew_principal" && cashAccount) {
       await recalcAndSaveAccountBalance(cashAccount.id).catch(() => {});
     }
@@ -2326,7 +2342,7 @@ export async function payDepositInterest(formData: FormData) {
     });
     if (redeemedLink) return { ok: false as const, error: t("deposit.renew.lotClosed") };
     const payoutFrequency = buy.depositInterestPayoutFrequency;
-    if (!payoutFrequency || payoutFrequency === "maturity") {
+    if (!isPeriodicDepositInterestPayout(payoutFrequency)) {
       return { ok: false as const, error: t("deposit.payInterest.notPeriodic") };
     }
 
@@ -2360,30 +2376,49 @@ export async function payDepositInterest(formData: FormData) {
     });
     if (!cashAccount) return { ok: false as const, error: t("sidebar.action.accountNotFound") };
 
-    let payoutEntryId: string | null = null;
+    // Two-record model (user's bookkeeping convention): the deposit account
+    // produces the interest as income, then transfers it to the funding
+    // source account. Net effect on the deposit balance is zero; the card
+    // receives the cash; the income lands in 收支统计 under 存款利息.
+    const interestCategory = await resolveCategorySnapshot(prisma, householdId, {
+      categoryName: SYSTEM_DEPOSIT_INTEREST_CATEGORY,
+      type: "income",
+    });
     await prisma.$transaction(async (tx) => {
-      const created = await tx.txRecord.create({
+      await tx.txRecord.create({
         data: {
           date: effectivePayoutDate,
-          type: TransactionType.investment,
+          type: TransactionType.income,
           accountId: depositAccount.id,
           accountName: depositAccount.name,
-          toAccountId: cashAccount.id,
-          toAccountName: cashAccount.name,
           amount: accruedInterest,
           currency: buy.currency ?? depositAccount.currency ?? "CNY",
-          fundName: buy.fundName,
-          fundProductType: "deposit",
-          fundSubtype: FundSubtype.dividend_cash,
+          categoryId: interestCategory?.id ?? null,
+          categoryName: interestCategory?.name ?? SYSTEM_DEPOSIT_INTEREST_CATEGORY,
           source: "deposit",
           entryOrigin: ENTRY_ORIGIN_MANUAL,
-          depositInterest: accruedInterest,
-          fundArrivalDate: effectivePayoutDate,
+          regularInvestPlanId: `depi_${buy.id}`,
           note: `${t("deposit.renew.payoutNote", { name: buy.fundName ?? "" })}`,
           ...{ householdId },
         },
       });
-      payoutEntryId = created.id;
+      await tx.txRecord.create({
+        data: {
+          date: effectivePayoutDate,
+          type: TransactionType.transfer,
+          accountId: depositAccount.id,
+          accountName: depositAccount.name,
+          toAccountId: cashAccount.id,
+          toAccountName: cashAccount.name,
+          amount: -accruedInterest,
+          currency: buy.currency ?? depositAccount.currency ?? "CNY",
+          source: "deposit",
+          entryOrigin: ENTRY_ORIGIN_MANUAL,
+          regularInvestPlanId: `depi_${buy.id}`,
+          note: `${t("deposit.renew.payoutTransferNote", { name: buy.fundName ?? "" })}`,
+          ...{ householdId },
+        },
+      });
       // Next interest segment starts on the payout date.
       await tx.txRecord.update({
         where: { id: buy.id },
@@ -2394,11 +2429,6 @@ export async function payDepositInterest(formData: FormData) {
     await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: buy.id }).catch((e) => {
       console.error("payDepositInterest sync buy business transaction:", e);
     });
-    if (payoutEntryId) {
-      await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: payoutEntryId }).catch((e) => {
-        console.error("payDepositInterest sync payout business transaction:", e);
-      });
-    }
     await recalcAndSaveAccountBalance(depositAccount.id).catch(() => {});
     await recalcAndSaveAccountBalance(cashAccount.id).catch(() => {});
     revalidateAfterInvestChange();
@@ -2408,6 +2438,15 @@ export async function payDepositInterest(formData: FormData) {
     return { ok: false as const, error: e instanceof Error ? e.message : t("txForm.alert.saveFailed") };
   }
 }
+
+/**
+ * Rebuild the full interest schedule for a periodic-payout deposit: every
+ * payout date from the deposit start through today (plus dates proven by
+ * soft-deleted interest records, so a mistaken bulk delete can be undone),
+ * generating a 利息收入 + 转账 pair for each missing date. Existing (live)
+ * interest entries are never duplicated; fundConfirmDate advances to the
+ * last scheduled payout.
+ */
 export async function updateTransactionFromDialog(formData: FormData) {
   "use server";
   const t = await getServerT();

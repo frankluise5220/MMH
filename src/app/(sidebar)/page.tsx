@@ -752,7 +752,14 @@ export default async function Home({
     if (column === "type") {
       if (e.source === "insurance") return getInsuranceDetailCategoryName(e);
       if (e.source === "advance") return t("txForm.advance");
-      if (e.type === "investment" && e.fundProductType === "deposit") return t("detailView.deposit");
+      if (e.type === "investment" && e.fundProductType === "deposit") {
+        // Deposits read as transfers + interest income, never as 投资.
+        const subtype = String(e.fundSubtype ?? "");
+        if (subtype === "dividend_cash" || subtype === "dividend_reinvest") return t("deposit.subtype.dividend");
+        if (subtype === "redeem" || subtype === "switch_out") return t("detailView.depositWithdraw");
+        if (subtype === "buy") return t("txForm.depositIn");
+        return t("detailView.deposit");
+      }
       return e.type === "investment" && e.fundSubtype ? (fundSubtypeInfo(t, e.fundSubtype, e.source, amount, e.fundProductType)?.label ?? formatType(t, e.type)) : formatType(t, e.type);
     }
     if (column === "category") {
@@ -1794,6 +1801,7 @@ export default async function Home({
     realizedProfit: e.realizedProfit != null ? toNumber(e.realizedProfit) : null,
     depositAnnualRate: linkedWealth?.annualRate != null ? toNumber(linkedWealth.annualRate) : e.depositAnnualRate != null ? toNumber(e.depositAnnualRate) : null,
     depositInterest: linkedWealth?.interest != null ? toNumber(linkedWealth.interest) : e.depositInterest != null ? toNumber(e.depositInterest) : null,
+    depositSourceEntryId: e.depositSourceEntryId ?? null,
     fundProductType: linkedWealth ? "wealth" : linkedFund?.fundProductType ?? e.fundProductType,
     metalTypeId: e.metalTypeId ?? null,
     metalTypeName: e.metalTypeName ?? null,
@@ -1878,6 +1886,8 @@ export default async function Home({
               cashAccountLabel,
               note: entry.note ?? "",
               amount: entry.toAccountId === accountId ? Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount)) : toNumber(entry.amount),
+              balance: null as number | null,
+              businessTransactionId: entry.businessTransactionId ?? null,
               businessLinkCount: entry.businessLinkCount ?? 0,
               businessLinkLabels: entry.businessLinkLabels ?? [],
               edit: {
@@ -1942,6 +1952,8 @@ export default async function Home({
                   : (entry.toAccountId ? (accountLabelById.get(entry.toAccountId) ?? entry.toAccountName ?? "") : (entry.toAccountName ?? "")),
                 note: entry.note ?? "",
                 amount: effectiveAmount,
+                balance: null as number | null,
+                depositSourceEntryId: entry.depositSourceEntryId ?? undefined,
                 businessLinkCount: 0,
                 businessLinkLabels: [],
                 edit: {
@@ -1960,6 +1972,72 @@ export default async function Home({
             }),
         ]
       : [];
+  // Oldest-first would bury the actionable rows; keep the deposit ledger
+  // strictly newest-first so the 2026-01-15 存入 sits at the bottom. Within a
+  // same-day interest pair the transfer happens after the income, so in a
+  // newest-first table the transfer lands above the income — reading the
+  // ledger bottom-up follows real time: 存入 → 利息收入 → 转出.
+  depositEntries.sort((a, b) => {
+    const aDate = String(a.date ?? "");
+    const bDate = String(b.date ?? "");
+    if (aDate !== bDate) return bDate.localeCompare(aDate);
+    const rank = (type: string | undefined) => (type === "transfer" ? 0 : type === "income" ? 1 : 2);
+    const byType = (rank(a.edit?.type) - rank(b.edit?.type));
+    if (byType !== 0) return byType;
+    return (b.note ?? "").localeCompare(a.note ?? "");
+  });
+
+  // 余额 = 【存单自身】的余额（不是账户余额）：把每个存单自己的流水按时间正序走一遍，
+  // 存入 +本金 → 取息 收/转成对净额 0 → 取回 -本息 → 归零。因此每张存单的余额
+  // 独立显示「这笔存款现在值多少」，不会把同账户其他存单的钱算进来。
+  if (view === "deposit" && selectedDepositAccountIds.length === 1) {
+    const lotIdOf = (entry: (typeof depositEntries)[number]): string | null => {
+      const subtype = String((entry.edit as { fundSubtype?: unknown } | undefined)?.fundSubtype ?? "");
+      if (subtype === "buy") return entry.id;
+      const linked = (entry as { depositSourceEntryId?: string | null }).depositSourceEntryId;
+      return linked ?? null;
+    };
+    const effectOf = (entry: (typeof depositEntries)[number]) => {
+      const entryType = String(entry.edit?.type ?? "");
+      const subtype = String((entry.edit as { fundSubtype?: unknown } | undefined)?.fundSubtype ?? "");
+      const abs = Math.abs(toNumber(entry.amount));
+      if (entryType === "investment") {
+        if (subtype === "buy") return abs;          // 存入：本金转入
+        if (subtype === "redeem" || subtype === "switch_out") return -abs; // 取回：本息离场
+        return 0;                                   // legacy dividend：成对，净额 0
+      }
+      if (entryType === "income") return toNumber(entry.amount);
+      if (entryType === "transfer") return toNumber(entry.amount); // 取息转出（与收入成对）
+      if (entryType === "expense") return -abs;
+      return 0;
+    };
+    const byLot = new Map<string, (typeof depositEntries)[number][]>();
+    for (const entry of depositEntries) {
+      const lotId = lotIdOf(entry);
+      if (!lotId) continue;
+      const bucket = byLot.get(lotId);
+      if (bucket) bucket.push(entry);
+      else byLot.set(lotId, [entry]);
+    }
+    const lotBalanceByEntryId = new Map<string, number>();
+    for (const entries of byLot.values()) {
+      const chronological = [...entries].sort((a, b) => {
+        const aDate = String(a.date ?? "");
+        const bDate = String(b.date ?? "");
+        if (aDate !== bDate) return aDate.localeCompare(bDate);
+        const rank = (type: string | undefined) => (type === "income" ? 0 : type === "transfer" ? 1 : type === "investment" ? 2 : 3);
+        return rank(a.edit?.type) - rank(b.edit?.type);
+      });
+      let running = 0;
+      for (const entry of chronological) {
+        running += effectOf(entry);
+        lotBalanceByEntryId.set(entry.id, Number(running.toFixed(2)));
+      }
+    }
+    for (const entry of depositEntries) {
+      entry.balance = lotBalanceByEntryId.get(entry.id) ?? null;
+    }
+  }
 
   const insuranceEntries =
     view === "insurance"
@@ -2212,7 +2290,7 @@ export default async function Home({
 
   const wealthHoldingOptions = buildWealthHoldingOptions(allWealthEntries);
 
-  function buildDepositLots(sourceEntryPool: Array<any>, activeDepositAccountIds: Set<string>, sortAccountId?: string | null) {
+  function buildDepositLots(sourceEntryPool: Array<any>, activeDepositAccountIds: Set<string>, sortAccountId?: string | null, ordinaryInterestPool?: Array<any>) {
     if (activeDepositAccountIds.size === 0) return [];
     const sourceEntries = sourceEntryPool.filter(
       (entry) =>
@@ -2255,6 +2333,14 @@ export default async function Home({
       depositAccountName: string;
       relatedEntryIds: string[];
     }> = [];
+
+    // Interest payouts do not open or close lots, but they belong to the lot's
+    // detail story: attach each payout to the matching lot (same deposit
+    // account + product, payout date within the lot's span) so selecting the
+    // lot shows its interest history alongside the principal movements.
+    const depositDividendEntries = depositSourceEntries.filter(
+      (entry) => !entry.deletedAt && (entry.fundSubtype === "dividend_cash" || entry.fundSubtype === "dividend_reinvest"),
+    );
 
     for (const entry of depositSourceEntries) {
       const fundName = (entry.fundName ?? entry.fundCode ?? "").trim() || t("sidebar.deposit.unnamed");
@@ -2302,6 +2388,63 @@ export default async function Home({
         lot.relatedEntryIds.push(entry.id);
         lot.remainingAmount = 0;
         break;
+      }
+    }
+
+    // Attach interest records to the matching lot so selecting the lot shows
+    // the full story (存入 / 利息收入 + 转出 / 赎回). Legacy payouts are
+    // investment dividend rows; the two-record model produces income +
+    // transfer pairs with source="deposit". Display-only: nothing closes.
+    for (const dividend of depositDividendEntries) {
+      const dividendDate = toYmdOrNull(dividend.date);
+      const dividendAccountId = dividend.accountId ?? "";
+      const dividendName = (dividend.fundName ?? dividend.fundCode ?? "").trim();
+      for (const lot of allLots) {
+        if (lot.depositAccountId !== dividendAccountId) continue;
+        if (lot.fundName !== dividend.fundName && !dividend.depositSourceEntryId) continue;
+        if (dividend.depositSourceEntryId && lot.id !== dividend.depositSourceEntryId) continue;
+        if (dividendDate && lot.maturityDate && dividendDate > lot.maturityDate) continue;
+        if (!lot.relatedEntryIds.includes(dividend.id)) {
+          lot.relatedEntryIds.push(dividend.id);
+        }
+      }
+    }
+
+    // Attach interest payouts to the matching lot so the lot's detail pane
+    // shows the full story (存入 / 取息 / 赎回). Matching is display-only:
+    // payouts never change remainingAmount. Linkage first follows
+    // depositSourceEntryId (product-style exact association, like 理财产品);
+    // entries without the link fall back to account+date-window matching.
+    for (const payout of ordinaryInterestPool ?? []) {
+      if (payout.deletedAt) continue;
+      if (payout.source !== "deposit") continue;
+      if (payout.type !== "income" && payout.type !== "transfer") continue;
+      const linkId = payout.depositSourceEntryId;
+      if (!linkId) continue;
+      const targetLot = allLots.find((lot) => lot.id === linkId);
+      if (!targetLot) continue;
+      if (!targetLot.relatedEntryIds.includes(payout.id)) {
+        targetLot.relatedEntryIds.push(payout.id);
+      }
+    }
+    const lotSpanByAccountId = new Map<string, { start: string | null; maturity: string | null }>();
+    for (const lot of allLots) {
+      const lotStart = toYmdOrNull(sourceEntryById.get(lot.id)?.date);
+      lotSpanByAccountId.set(lot.depositAccountId, { start: lotStart, maturity: lot.maturityDate });
+      const payoutStart = lotStart;
+      const payoutEnd = lot.maturityDate;
+      for (const payout of ordinaryInterestPool ?? []) {
+        if (payout.deletedAt) continue;
+        if (payout.source !== "deposit") continue;
+        if (payout.type !== "income" && payout.type !== "transfer") continue;
+        if (payout.depositSourceEntryId) continue; // already attached via the exact link
+        if ((payout.accountId ?? "") !== lot.depositAccountId) continue;
+        const payoutDate = toYmdOrNull(payout.date);
+        if (payoutStart && payoutDate && payoutDate < payoutStart) continue;
+        if (payoutEnd && payoutDate && payoutDate > payoutEnd) continue;
+        if (!lot.relatedEntryIds.includes(payout.id)) {
+          lot.relatedEntryIds.push(payout.id);
+        }
       }
     }
 
@@ -2387,8 +2530,9 @@ export default async function Home({
     entries,
     activeDepositAccountIds,
     selectedAccount && isDepositAccount(selectedAccount) ? selectedAccount.id : undefined,
+    entries,
   );
-  const allDepositLots = buildDepositLots(allDepositEntries, new Set(allDepositAccountIds));
+  const allDepositLots = buildDepositLots(allDepositEntries, new Set(allDepositAccountIds), undefined, allDetailEntries);
   const scopedOpenDepositLots = depositLots.filter((lot) => lot.status === "open" && lot.remainingAmount > 0.0001);
   const globalOpenDepositLots = allDepositLots.filter((lot) => lot.status === "open" && lot.remainingAmount > 0.0001);
   const redeemLotSource = scopedOpenDepositLots.length > 0 ? scopedOpenDepositLots : globalOpenDepositLots;

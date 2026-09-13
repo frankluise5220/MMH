@@ -21,6 +21,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { decodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import { calcInitialScheduledRunDate, calcNextScheduledRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { executeNonFundScheduledTaskPlan, isNonFundScheduledTask } from "@/lib/server/scheduled-task-executor";
+import { executeDepositPlan, isDepositPlanTask } from "@/lib/server/deposit-plan-tasks";
 import { resolveCategorySnapshot } from "@/lib/default-categories";
 import { ENTRY_ORIGIN_SCHEDULED_TASK } from "@/lib/transaction-semantics";
 import { acquireScheduledTaskPlanLock } from "@/lib/server/scheduled-task-lock";
@@ -118,6 +119,15 @@ export async function POST(req: NextRequest) {
     }
 
     const scheduledTask = decodeScheduledTaskMemo(plan.memo);
+    if (isDepositPlanTask(scheduledTask.type)) {
+      const result = await executeDepositPlan({ householdId, plan, task: scheduledTask, now });
+      return NextResponse.json({
+        ok: true,
+        message: result.message,
+        executedCount: result.pairs,
+        completed: false,
+      });
+    }
     if (isNonFundScheduledTask(scheduledTask.type)) {
       const result = await executeNonFundScheduledTaskPlan({
         householdId,

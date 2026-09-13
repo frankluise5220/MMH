@@ -16,7 +16,14 @@ import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 import { Repeat } from "lucide-react";
-import { addDepositTermUtc } from "@/lib/date-utils";
+import { addCalendarYearsUtc, addDepositTermUtc, addMonthsUtc } from "@/lib/date-utils";
+import {
+  clampDepositInterestPayoutInterval,
+  encodeDepositInterestPayout,
+  maxDepositInterestPayoutInterval,
+  parseDepositInterestPayout,
+  type DepositInterestPayoutUnit,
+} from "@/lib/deposit-interest-payout";
 
 type Entry = {
   id?: string;
@@ -80,14 +87,34 @@ const DEFAULT_DEPOSIT_TERM_DAYS = 365;
 
 /**
  * Decompose a day count into unit + count for the unit-first term picker.
- * Whole years win over months, months over weeks, so 365 -> 1 year,
+ * When the deposit's start date is known, calendar units win over naive day
+ * math: a 2026-01-15 → 2031-01-15 span (1826 days across a leap year) reads
+ * as 5 年, not 1826 天. Whole years win over months, months over weeks, so
  * 90 -> 3 months, 14 -> 2 weeks, and anything else stays in days.
  */
-function splitTermDays(days: number): { unit: DepositTermUnit; count: number } {
+function splitTermDays(days: number, startDate?: string | null): { unit: DepositTermUnit; count: number } {
   const d = Math.max(0, Math.trunc(days));
-  if (d > 0 && d % 365 === 0) return { unit: "year", count: d / 365 };
-  if (d > 0 && d % 30 === 0) return { unit: "month", count: d / 30 };
-  if (d > 0 && d % 7 === 0) return { unit: "week", count: d / 7 };
+  if (d <= 0) return { unit: "day", count: 0 };
+  const start = startDate ? new Date(`${startDate.slice(0, 10)}T00:00:00.000Z`) : null;
+  if (start && Number.isFinite(start.getTime())) {
+    // Calendar years: the maturity lands exactly on the Nth anniversary.
+    for (let y = Math.floor(d / 365); y >= 1; y--) {
+      const anniversary = addCalendarYearsUtc(start, y);
+      if (Math.round((anniversary.getTime() - start.getTime()) / 86400000) === d) {
+        return { unit: "year", count: y };
+      }
+    }
+    // Calendar months: the maturity lands exactly N months after the start.
+    for (let m = Math.floor(d / 28); m >= 1; m--) {
+      const anniversary = addMonthsUtc(start, m);
+      if (Math.round((anniversary.getTime() - start.getTime()) / 86400000) === d) {
+        return { unit: "month", count: m };
+      }
+    }
+  }
+  if (d % 365 === 0) return { unit: "year", count: d / 365 };
+  if (d % 30 === 0) return { unit: "month", count: d / 30 };
+  if (d % 7 === 0) return { unit: "week", count: d / 7 };
   return { unit: "day", count: d };
 }
 
@@ -196,12 +223,12 @@ export function DepositFormModal({
   const [cashAmount, setCashAmount] = useState("");
   const [termUnit, setTermUnit] = useState<DepositTermUnit>(
     mode === "edit"
-      ? (initTermDays ? splitTermDays(Number(initTermDays)).unit : "year")
+      ? (initTermDays ? splitTermDays(Number(initTermDays), entry?.date ?? null).unit : "year")
       : splitTermDays(DEFAULT_DEPOSIT_TERM_DAYS).unit,
   );
   const [termCount, setTermCount] = useState<string>(
     mode === "edit"
-      ? (initTermDays ? String(splitTermDays(Number(initTermDays)).count) : "")
+      ? (initTermDays ? String(splitTermDays(Number(initTermDays), entry?.date ?? null).count) : "")
       : String(splitTermDays(DEFAULT_DEPOSIT_TERM_DAYS).count),
   );
   const [interestAmount, setInterestAmount] = useState("");
@@ -226,12 +253,14 @@ export function DepositFormModal({
         ? "renew_principal_interest"
         : "redeem",
   );
-  const [interestPayout, setInterestPayout] = useState<"maturity" | "monthly" | "yearly">(
-    mode === "edit" && entry?.depositInterestPayoutFrequency === "monthly"
-      ? "monthly"
-      : mode === "edit" && entry?.depositInterestPayoutFrequency === "yearly"
-        ? "yearly"
-        : "maturity",
+  const initPayout = parseDepositInterestPayout(
+    mode === "edit" ? entry?.depositInterestPayoutFrequency : null,
+  );
+  const [interestPayoutUnit, setInterestPayoutUnit] = useState<"maturity" | DepositInterestPayoutUnit>(
+    initPayout.kind === "periodic" ? initPayout.unit : "maturity",
+  );
+  const [interestPayoutInterval, setInterestPayoutInterval] = useState<string>(
+    initPayout.kind === "periodic" ? String(initPayout.interval) : "1",
   );
 
   const [cashAccountList, setCashAccountList] = useState(cashAccounts);
@@ -477,6 +506,36 @@ export function DepositFormModal({
     if (!Number.isFinite(count) || count <= 0) return "";
     return String(count * TERM_UNIT_DAYS[termUnit]);
   }, [termCount, termUnit]);
+  const termDaysNumber = useMemo(() => {
+    const n = Number(termDays);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }, [termDays]);
+  const isPeriodicInterestPayout = interestPayoutUnit !== "maturity";
+  const maxInterestPayoutInterval = useMemo(() => {
+    if (!isPeriodicInterestPayout) return 1;
+    return Math.max(1, maxDepositInterestPayoutInterval(termDaysNumber || DEFAULT_DEPOSIT_TERM_DAYS, interestPayoutUnit));
+  }, [interestPayoutUnit, isPeriodicInterestPayout, termDaysNumber]);
+  const encodedInterestPayout = useMemo(() => {
+    if (!isPeriodicInterestPayout) return "maturity";
+    const interval = clampDepositInterestPayoutInterval(
+      termDaysNumber || DEFAULT_DEPOSIT_TERM_DAYS,
+      interestPayoutUnit,
+      Math.trunc(parseNumber(interestPayoutInterval)) || 1,
+    );
+    return encodeDepositInterestPayout({ kind: "periodic", unit: interestPayoutUnit, interval });
+  }, [interestPayoutInterval, interestPayoutUnit, isPeriodicInterestPayout, termDaysNumber]);
+
+  // Keep interval within the deposit term whenever term or unit changes.
+  useEffect(() => {
+    if (!isPeriodicInterestPayout) return;
+    const current = Math.trunc(parseNumber(interestPayoutInterval)) || 1;
+    const clamped = clampDepositInterestPayoutInterval(
+      termDaysNumber || DEFAULT_DEPOSIT_TERM_DAYS,
+      interestPayoutUnit,
+      current,
+    );
+    if (clamped !== current) setInterestPayoutInterval(String(clamped));
+  }, [interestPayoutInterval, interestPayoutUnit, isPeriodicInterestPayout, termDaysNumber]);
   const yearsMultiplierNumber = termDays ? Number(termDays) / 365 : 0;
   const hasStoredAnnualRate = !!(
     selectedRedeemLot &&
@@ -519,7 +578,8 @@ export function DepositFormModal({
     setEditingRedeemSource(null);
     setLockedSubtype(null);
     setMaturityAction("redeem");
-    setInterestPayout("maturity");
+    setInterestPayoutUnit("maturity");
+    setInterestPayoutInterval("1");
   }
 
   function applyRedeemComputedAmounts(forceInterest = false) {
@@ -608,7 +668,7 @@ export function DepositFormModal({
               new Date(`${detail.date.slice(0, 10)}T00:00:00.000Z`).getTime()) / 86400000,
           ),
         );
-        const termSplit = splitTermDays(diffDays);
+        const termSplit = splitTermDays(diffDays, detail.date);
         setTermUnit(termSplit.unit);
         setTermCount(diffDays > 0 ? String(termSplit.count) : "");
       } else {
@@ -662,13 +722,16 @@ export function DepositFormModal({
             ? "renew_principal_interest"
             : "redeem",
       );
-      setInterestPayout(
-        detail.depositInterestPayoutFrequency === "monthly"
-          ? "monthly"
-          : detail.depositInterestPayoutFrequency === "yearly"
-            ? "yearly"
-            : "maturity",
-      );
+      {
+        const payout = parseDepositInterestPayout(detail.depositInterestPayoutFrequency);
+        if (payout.kind === "periodic") {
+          setInterestPayoutUnit(payout.unit);
+          setInterestPayoutInterval(String(payout.interval));
+        } else {
+          setInterestPayoutUnit("maturity");
+          setInterestPayoutInterval("1");
+        }
+      }
       setOpen(true);
     }
     window.addEventListener("mmh:deposit:edit", onEdit as EventListener);
@@ -772,7 +835,7 @@ export function DepositFormModal({
       const start = new Date(`${selectedRedeemLot.startDate}T00:00:00.000Z`);
       const end = new Date(`${selectedRedeemLot.maturityDate}T00:00:00.000Z`);
       const diffDays = Math.max(0, Math.round((end.getTime() - start.getTime()) / 86400000));
-      const termSplit = splitTermDays(diffDays);
+      const termSplit = splitTermDays(diffDays, selectedRedeemLot.startDate);
       setTermUnit(termSplit.unit);
       setTermCount(diffDays > 0 ? String(termSplit.count) : "");
     } else {
@@ -931,7 +994,7 @@ export function DepositFormModal({
         fd.set("fundArrivalDate", arrivalDate || date);
       } else {
         fd.set("depositMaturityAction", maturityAction);
-        fd.set("depositInterestPayoutFrequency", interestPayout);
+        fd.set("depositInterestPayoutFrequency", encodedInterestPayout);
         const parsedTermDays = Number(termDays);
         if (Number.isFinite(parsedTermDays) && parsedTermDays > 0) {
           const maturityDate = new Date(`${date}T00:00:00.000Z`);
@@ -1280,7 +1343,7 @@ export function DepositFormModal({
               )}
 
               {!isRedeem ? (
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div className="space-y-1">
                     <div className="form-label">{t("deposit.maturityAction.label")}</div>
                     <select
@@ -1289,36 +1352,87 @@ export function DepositFormModal({
                         const next = e.target.value as typeof maturityAction;
                         setMaturityAction(next);
                         // Periodic payout leaves no interest to roll in at maturity.
-                        if (next === "renew_principal_interest" && interestPayout !== "maturity") {
-                          setInterestPayout("maturity");
+                        if (next === "renew_principal_interest" && isPeriodicInterestPayout) {
+                          setInterestPayoutUnit("maturity");
+                          setInterestPayoutInterval("1");
                         }
                       }}
                       className="form-input"
                     >
                       <option value="redeem">{t("deposit.maturityAction.redeem")}</option>
                       <option value="renew_principal">{t("deposit.maturityAction.renewPrincipal")}</option>
-                      <option value="renew_principal_interest" disabled={interestPayout !== "maturity"}>{t("deposit.maturityAction.renewPrincipalInterest")}</option>
+                      <option value="renew_principal_interest" disabled={isPeriodicInterestPayout}>{t("deposit.maturityAction.renewPrincipalInterest")}</option>
                     </select>
                     <div className="text-[11px] text-slate-400">{t("deposit.maturityAction.hint")}</div>
                   </div>
                   <div className="space-y-1">
                     <div className="form-label">{t("deposit.payoutFrequency.label")}</div>
-                    <select
-                      value={interestPayout}
-                      onChange={(e) => {
-                        const next = e.target.value as typeof interestPayout;
-                        setInterestPayout(next);
-                        if (next !== "maturity" && maturityAction === "renew_principal_interest") {
-                          setMaturityAction("renew_principal");
-                        }
-                      }}
-                      className="form-input"
-                    >
-                      <option value="maturity">{t("deposit.payoutFrequency.maturity")}</option>
-                      <option value="monthly">{t("deposit.payoutFrequency.monthly")}</option>
-                      <option value="yearly">{t("deposit.payoutFrequency.yearly")}</option>
-                    </select>
-                    <div className="text-[11px] text-slate-400">{t("deposit.payoutFrequency.hint")}</div>
+                    <div className={`grid gap-2 ${isPeriodicInterestPayout ? "grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]" : "grid-cols-1"}`}>
+                      <select
+                        value={interestPayoutUnit}
+                        onChange={(e) => {
+                          const next = e.target.value as typeof interestPayoutUnit;
+                          setInterestPayoutUnit(next);
+                          if (next === "maturity") {
+                            setInterestPayoutInterval("1");
+                          } else {
+                            const current = Math.trunc(parseNumber(interestPayoutInterval)) || 1;
+                            const clamped = clampDepositInterestPayoutInterval(
+                              termDaysNumber || DEFAULT_DEPOSIT_TERM_DAYS,
+                              next,
+                              current,
+                            );
+                            setInterestPayoutInterval(String(clamped));
+                            if (maturityAction === "renew_principal_interest") {
+                              setMaturityAction("renew_principal");
+                            }
+                          }
+                        }}
+                        className="form-input"
+                      >
+                        <option value="maturity">{t("deposit.payoutFrequency.maturity")}</option>
+                        <option value="week">{t("deposit.payoutFrequency.weekly")}</option>
+                        <option value="month">{t("deposit.payoutFrequency.monthly")}</option>
+                        <option value="year">{t("deposit.payoutFrequency.yearly")}</option>
+                      </select>
+                      {isPeriodicInterestPayout ? (
+                        <input
+                          type="number"
+                          min={1}
+                          max={maxInterestPayoutInterval}
+                          value={interestPayoutInterval}
+                          onChange={(e) => setInterestPayoutInterval(e.target.value)}
+                          onBlur={() => {
+                            const current = Math.trunc(parseNumber(interestPayoutInterval)) || 1;
+                            const clamped = clampDepositInterestPayoutInterval(
+                              termDaysNumber || DEFAULT_DEPOSIT_TERM_DAYS,
+                              interestPayoutUnit as DepositInterestPayoutUnit,
+                              current,
+                            );
+                            setInterestPayoutInterval(String(clamped));
+                          }}
+                          placeholder="1"
+                          className="form-input w-full"
+                          title={t("deposit.payoutFrequency.intervalTitle", { max: String(maxInterestPayoutInterval) })}
+                          aria-label={t("deposit.payoutFrequency.intervalLabel")}
+                        />
+                      ) : null}
+                    </div>
+                    <div className="text-[11px] text-slate-400">
+                      {isPeriodicInterestPayout
+                        ? t("deposit.payoutFrequency.periodicHint", {
+                            interval: String(Math.trunc(parseNumber(interestPayoutInterval)) || 1),
+                            unit: t(
+                              interestPayoutUnit === "week"
+                                ? "depositForm.termUnit.week"
+                                : interestPayoutUnit === "year"
+                                  ? "depositForm.termUnit.year"
+                                  : "depositForm.termUnit.month",
+                            ),
+                            max: String(maxInterestPayoutInterval),
+                          })
+                        : t("deposit.payoutFrequency.hint")}
+                    </div>
                   </div>
                 </div>
               ) : null}

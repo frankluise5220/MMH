@@ -19,7 +19,7 @@ import { BasicDetailBatchDeleteButton,
 import type { BatchReplaceField } from "@/lib/client/batchReplaceEntries";
 import { useI18n } from "@/lib/i18n";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, applyBalanceReconcileEntry, effectiveAmountForAccount, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
-import { compareDetailEntriesAsc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
+import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import { DEFAULT_LOAN_PREPAY_STRATEGY, parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 import { isCreditCardRepaymentTransfer, isLicensedInsuranceEntry, isRegularInvestRefundEntry, TRANSACTION_SOURCE_INSURANCE } from "@/lib/transaction-semantics";
@@ -526,6 +526,19 @@ function activityLabel(type: string, fundSubtype: string | null, source: string 
   return formatType(type, t);
 }
 
+/**
+ * Deposit business entries read as money movements + interest income in
+ * account detail lists — never as "投资" (deposits are transfers; the interest
+ * is produced by the deposit account and paid out to the funding account).
+ */
+function depositActivityLabel(fundSubtype: string | null, t: (key: string) => string): string {
+  const subtype = String(fundSubtype ?? "");
+  if (subtype === "dividend_cash" || subtype === "dividend_reinvest") return t("deposit.subtype.dividend");
+  if (subtype === "redeem" || subtype === "switch_out") return t("detailView.depositWithdraw");
+  if (subtype === "buy") return t("txForm.depositIn");
+  return t("detailView.deposit");
+}
+
 function investmentCategoryLabel(
   entry: DetailEntry,
   entryFundProductType: string | null | undefined,
@@ -539,6 +552,7 @@ function investmentCategoryLabel(
   if (productType === "deposit") {
     if (subtype === "redeem") return t("detailView.depositWithdraw");
     if (subtype === "buy") return t("txForm.depositIn");
+    if (subtype === "dividend_cash" || subtype === "dividend_reinvest") return t("deposit.subtype.dividend");
   }
   if (productType === "wealth") {
     if (subtype === "redeem") return t("detailView.wealthRedeem");
@@ -1328,7 +1342,10 @@ export function DetailViewClient({
           const ordinaryType = propertyIncomeExpenseType(e);
           if (ordinaryType) return formatType(ordinaryType, t);
         }
-        if (e.type === "investment") return t("transaction.type.investment");
+        if (e.type === "investment") {
+          if (entryFundProductType === "deposit") return depositActivityLabel(e.fundSubtype, t);
+          return t("transaction.type.investment");
+        }
         const balanceTarget = getBalanceReconcileTarget(e);
         return activityLabel(e.type, e.fundSubtype, displaySource, t, balanceTarget);
       },
@@ -1347,7 +1364,9 @@ export function DetailViewClient({
           : ordinaryPropertyType
             ? formatType(ordinaryPropertyType, t)
             : e.type === "investment"
-              ? t("transaction.type.investment")
+              ? entryFundProductType === "deposit"
+                ? depositActivityLabel(e.fundSubtype, t)
+                : t("transaction.type.investment")
               : activityLabel(e.type, e.fundSubtype, displaySource, t, balanceTarget);
         return (
           <>
@@ -1646,6 +1665,19 @@ export function DetailViewClient({
       toolbarRightContent={toolbarRightContent}
       showTableStateInCustomToolbar={toolbarMode === "custom"}
       sortable={sortable}
+      sortRows={(rows, currentSort) => {
+        // The date column sorts by the canonical detail comparator so the whole
+        // list mirrors with the direction: asc = day asc AND within-day asc
+        // (dayOrder/createdAt asc, balance anchors last), desc = identical to
+        // the server's default order. Raw timestamps alone would tie inside a
+        // day and keep the desc order even in asc view.
+        if (currentSort?.key !== "date") return null;
+        return [...rows].sort((a, b) =>
+          currentSort.direction === "asc"
+            ? compareDetailEntriesAsc(a, b, accountId)
+            : compareDetailEntriesDesc(a, b, accountId),
+        );
+      }}
       onDisplayRowsChange={onDisplayRowsChange}
       onRowsFitChange={onRowsFitChange}
     />

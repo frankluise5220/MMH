@@ -23,6 +23,7 @@ import { decodeScheduledTaskMemo, scheduledTaskTypeLabel } from "@/lib/scheduled
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { calcNextScheduledRunDate as calcNextRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { executeNonFundScheduledTaskPlan, getScheduledTaskSourceFilter, isNonFundScheduledTask, type NonFundTaskType } from "@/lib/server/scheduled-task-executor";
+import { executeDepositPlan, isDepositPlanTask } from "@/lib/server/deposit-plan-tasks";
 import { resolveCategorySnapshot } from "@/lib/default-categories";
 import { acquireScheduledTaskPlanLock } from "@/lib/server/scheduled-task-lock";
 import { ENTRY_ORIGIN_SCHEDULED_TASK } from "@/lib/transaction-semantics";
@@ -89,6 +90,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, code: "PLAN_EXECUTION_COMPLETED", error: "计划已达到执行次数，自动标记为已完成" }, { status: 400 });
     }
 
+    if (isDepositPlanTask(scheduledTask.type)) {
+      const result = await executeDepositPlan({ householdId, plan, task: scheduledTask, now });
+      return NextResponse.json({
+        ok: true,
+        message: result.message,
+        executedCount: result.pairs,
+        completed: false,
+      });
+    }
     if (isNonFundTask) {
       const parsedOverrideAmount = overrideAmount ? parseFloat(overrideAmount) : null;
       const result = await executeNonFundScheduledTaskPlan({

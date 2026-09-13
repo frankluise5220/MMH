@@ -146,6 +146,18 @@ export async function loadDepositTransactionDetailLike(params: {
     orderBy: [{ tradeDate: "desc" }, { createdAt: "desc" }],
   });
 
+  // 预期利息依赖买入记录上的 fundConfirmDate（上次付息日）。DepositTransaction
+  // 投影没有这列，从对应的 TxRecord 取回来，避免此处算成「全期利息」（不减去已取利息）。
+  const fundConfirmByLotId = new Map<string, Date | null>();
+  const lotIds = rows.map((row) => row.id).filter(Boolean);
+  if (lotIds.length > 0) {
+    const lotRows = await prisma.txRecord.findMany({
+      where: { id: { in: lotIds } },
+      select: { id: true, fundConfirmDate: true },
+    });
+    for (const lot of lotRows) fundConfirmByLotId.set(lot.id, lot.fundConfirmDate);
+  }
+
   return rows.map((row) => {
     const isCashIn = isCashInAction(row.action);
     const principal = Math.abs(toNumber(row.principalAmount));
@@ -168,7 +180,7 @@ export async function loadDepositTransactionDetailLike(params: {
       fundProductType: "deposit",
       fundSubtype: row.action,
       fundNav: row.annualRate == null ? null : toNumber(row.annualRate),
-      fundConfirmDate: null,
+      fundConfirmDate: ymd(fundConfirmByLotId.get(row.id) ?? null),
       fundArrivalDate: ymd(row.arrivalDate ?? row.maturityDate),
       fundArrivalAmount: row.arrivalAmount,
       depositAnnualRate: row.annualRate,

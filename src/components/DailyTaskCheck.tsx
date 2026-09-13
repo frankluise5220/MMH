@@ -18,7 +18,8 @@ function hasUsefulChange(result: unknown) {
   const holdingNavRefreshed = Number(data.holdingNavRefreshed ?? 0);
   const stockRefreshed = Number(data.refreshed ?? 0);
   const nameFixed = Number(data.nameFixed ?? 0);
-  return executedCount > 0 || filled > 0 || navFilled > 0 || holdingNavRefreshed > 0 || nameFixed > 0 || stockRefreshed > 0;
+  const depositMatured = Number(data.processed ?? 0);
+  return executedCount > 0 || filled > 0 || navFilled > 0 || holdingNavRefreshed > 0 || nameFixed > 0 || stockRefreshed > 0 || depositMatured > 0;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -77,6 +78,9 @@ export function DailyTaskCheck() {
         });
         const stockData = await stockRes.json().catch(() => null);
         assertOkResponse(stockRes, stockData, "stock close price refresh");
+
+        // 存款到期 / 取息已改为系统计划任务（由上面的 /regular-invest/auto-execute
+        // 统一执行），这里不再单独扫一遍存款，避免出现第二条生成路径。
 
         if (hasUsefulChange(planData) || hasUsefulChange(pendingData) || hasUsefulChange(stockData)) {
           dispatchFinanceDataChanged({ reason: "startup-check", entryIds: getEntryIds(pendingData) });

@@ -7,7 +7,8 @@ import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
 import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
-import { addDepositTermUtc } from "@/lib/date-utils";
+import { isPeriodicDepositInterestPayout } from "@/lib/deposit-interest-payout";
+import { nextDepositTermMaturityUtc } from "@/lib/deposit-maturity";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 
@@ -42,7 +43,7 @@ export function DepositRenewModal({
 
   // Deposits that pay interest periodically have no interest left to roll in,
   // so the roll-in mode is disabled and payout is the only valid mode.
-  const rollInDisabled = !!lot && !!lot.interestPayoutFrequency && lot.interestPayoutFrequency !== "maturity";
+  const rollInDisabled = !!lot && isPeriodicDepositInterestPayout(lot.interestPayoutFrequency);
 
   const initialMode: "renew_principal_interest" | "renew_principal" =
     lot && (lot.maturityAction === "renew_principal" || rollInDisabled) ? "renew_principal" : "renew_principal_interest";
@@ -57,7 +58,7 @@ export function DepositRenewModal({
   // Recompute defaults whenever the target lot changes.
   useEffect(() => {
     if (!open || !lot) return;
-    const rollInDisabled = !!lot.interestPayoutFrequency && lot.interestPayoutFrequency !== "maturity";
+    const rollInDisabled = isPeriodicDepositInterestPayout(lot.interestPayoutFrequency);
     setRenewMode(
       lot.maturityAction === "renew_principal" || rollInDisabled
         ? "renew_principal"
@@ -84,7 +85,17 @@ export function DepositRenewModal({
             (new Date(`${maturity}T00:00:00.000Z`).getTime() - new Date(`${start}T00:00:00.000Z`).getTime()) / 86400000,
           ))
         : 365;
-      setNewMaturity(addDepositTermUtc(new Date(`${maturity}T00:00:00.000Z`), termDays).toISOString().slice(0, 10));
+      // Calendar-aware roll: a 5-year deposit renews to the next anniversary
+      // (leap years included) instead of drifting a day per term.
+      setNewMaturity(
+        start
+          ? nextDepositTermMaturityUtc(new Date(`${start}T00:00:00.000Z`), new Date(`${maturity}T00:00:00.000Z`)).toISOString().slice(0, 10)
+          : (() => {
+              const rolled = new Date(`${maturity}T00:00:00.000Z`);
+              rolled.setUTCDate(rolled.getUTCDate() + termDays);
+              return rolled.toISOString().slice(0, 10);
+            })(),
+      );
     } else {
       setInterest("");
       setNewMaturity("");
