@@ -139,6 +139,9 @@ function normalizeDate(value: unknown): string {
 }
 
 function buildCaizhiHeaderIndex(headerRow: string[]): CaizhiColumnIndex | null {
+  // 已带「对向账户」列的是结构化表格（MMH 化/工具转换产物），不是财智原始导出——
+  // 交给通用模板链路解析才能保住转账对向账户；财智原始导出绝无此列。
+  if (headerRow.some((h) => normalizeHeader(h) === "\u5bf9\u5411\u8d26\u6237")) return null;
   const result = { date: -1, inflow: -1, outflow: -1, activityType: -1, remark: -1 };
   let foundCount = 0;
 
@@ -267,6 +270,8 @@ export function normalizeCaizhiWorkbookRows(
  * Detect whether the given header row matches Caizhi 8 export columns.
  */
 export function detectCaizhiHeaders(headerRow: string[]): boolean {
+  // 与 buildCaizhiHeaderIndex 同判据：含「对向账户」列的结构化表格不是财智原始导出。
+  if (headerRow.map(normalizeHeader).includes("\u5bf9\u5411\u8d26\u6237")) return false;
   const normalized = headerRow.map(normalizeHeader);
   const hasDate = normalized.some((h) => h === "\u65e5\u671f" || h === "\u4ea4\u6613\u65e5\u671f");
   const hasInflow = normalized.some(

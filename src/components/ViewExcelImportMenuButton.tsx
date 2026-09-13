@@ -1259,23 +1259,23 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
         if (isCaizhiFile) {
           // caizhiRows 已带 MMH 标准表头（与京东/支付宝/微信模板同一形态），可直接解析。
           const { caizhiRows } = await readStatementWorkbookRowsAndText(file, STATEMENT_IMPORT_FIELD_HEADERS);
-          if (!caizhiRows || caizhiRows.length === 0) {
-            throw new Error(t("viewImport.noRows"));
+          if (caizhiRows && caizhiRows.length > 0) {
+            const localItems = normalizeStatementExcelParsedItems(
+              parseStatementTemplateRows(
+                caizhiRows,
+                statementDefaultAccountName(props),
+                STATEMENT_IMPORT_FIELD_HEADERS,
+                t("settings.accounts.import.sheetGuideTitle"),
+              )
+            );
+            const items = localItems.filter((item) => item.date && Number(item.amount) > 0);
+            if (items.length === 0) throw new Error(t("viewImport.noRows"));
+            setPreviewItems(items);
+            setPreviewOpen(true);
+            setStatus(t("viewImport.recognizedCount", { count: items.length }));
+            return;
           }
-          const localItems = normalizeStatementExcelParsedItems(
-            parseStatementTemplateRows(
-              caizhiRows,
-              statementDefaultAccountName(props),
-              STATEMENT_IMPORT_FIELD_HEADERS,
-              t("settings.accounts.import.sheetGuideTitle"),
-            )
-          );
-          const items = localItems.filter((item) => item.date && Number(item.amount) > 0);
-          if (items.length === 0) throw new Error(t("viewImport.noRows"));
-          setPreviewItems(items);
-          setPreviewOpen(true);
-          setStatus(t("viewImport.recognizedCount", { count: items.length }));
-          return;
+          // 文件名像财智但格式不符（如已结构化的对向账户表格）→ 落回下方通用链路解析。
         }
 
         // 普通文件：走原有京东/支付宝/微信/标准模板链路
