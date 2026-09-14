@@ -9,6 +9,7 @@ import {
   type CreditCardInstallmentRateType,
 } from "@/lib/credit/installment";
 import { formatDateUtc, toStatementMonth } from "@/lib/date-utils";
+import { ensureInstallmentFeeExpenseCategory } from "@/lib/default-categories";
 import { attachEntryTags } from "@/lib/server/entry-tags";
 
 type InstallmentWriter = Prisma.TransactionClient;
@@ -159,6 +160,7 @@ export async function createCreditCardInstallmentPlan(
   });
   const installmentDateLabel = formatDateUtc(input.adjustmentDate);
   const installmentKindLabel = input.sourceType === CreditCardInstallmentSourceType.statement ? "账单" : "消费";
+  const installmentAmountLabel = input.principal.toFixed(2);
   const plan = await tx.creditCardInstallmentPlan.create({
     data: {
       householdId: input.householdId,
@@ -200,7 +202,7 @@ export async function createCreditCardInstallmentPlan(
       installmentPrincipal: input.principal,
       installmentInterest: 0,
       installmentRole: "adjustment",
-      note: `${installmentKindLabel}分期冲抵：${input.label}（分期日期 ${installmentDateLabel}）`,
+      note: `${installmentKindLabel}分期冲抵：${input.label}（分期金额 ${installmentAmountLabel}，分期日期 ${installmentDateLabel}）`,
     },
   });
   if (input.tagIds?.length) {
@@ -246,12 +248,33 @@ function parsePlanTagIds(raw: string | null): string[] {
  * (and fee) rows whose date is on or before `asOfDate` and do not exist yet.
  * Legacy plans without stored billingDay/firstPaymentDate fall back to the
  * account billing day and the first statement month + billing day.
+ *
+ * Fee (interest/handling-fee) rows always use the system category 分期手续费
+ * (expense → 金融保险), independent of the plan's own category; existing fee
+ * rows are converged to it as well.
  */
 export async function materializeDueInstallmentPayments(
   db: InstallmentWriter,
   input: { householdId: string; accountIds?: string[]; asOfDate?: Date },
 ) {
   const asOf = input.asOfDate ?? new Date();
+  // 银行分期的利息/手续费条目统一归到「分期手续费」（支出 → 金融保险 三级分类，
+  // 系统分类不可删除）。解析失败时回退计划分类，不阻断本金行落地。
+  const feeCategory = await ensureInstallmentFeeExpenseCategory(db, input.householdId).catch(() => null);
+  if (feeCategory) {
+    // 历史回填：此前生成的利息/手续费行挂在计划分类（银行分期/表单分类）下，
+    // 统一收敛到「分期手续费」。updateMany 幂等，收敛后再次调用匹配 0 行。
+    await db.txRecord.updateMany({
+      where: {
+        householdId: input.householdId,
+        source: "credit_card_installment",
+        installmentRole: "fee",
+        deletedAt: null,
+        OR: [{ categoryId: null }, { categoryId: { not: feeCategory.id } }, { categoryName: { not: feeCategory.name } }],
+      },
+      data: { categoryId: feeCategory.id, categoryName: feeCategory.name },
+    });
+  }
   const plans = await db.creditCardInstallmentPlan.findMany({
     where: {
       householdId: input.householdId,
@@ -324,6 +347,7 @@ export async function materializeDueInstallmentPayments(
         : "消费分期";
       const installmentKindLabel = plan.sourceType === CreditCardInstallmentSourceType.statement ? "账单" : "消费";
       const installmentDateLabel = formatDateUtc(row.date);
+      const installmentAmountLabel = Number(plan.installmentPrincipal).toFixed(2);
 
       const principalEntry = await db.txRecord.create({
         data: {
@@ -344,7 +368,7 @@ export async function materializeDueInstallmentPayments(
           installmentPrincipal: row.principal,
           installmentInterest: 0,
           installmentRole: "payment",
-          note: `${label}（${installmentKindLabel}分期本金 ${row.installmentNo}/${plan.totalRuns}，分期日期 ${installmentDateLabel}）`,
+          note: `${label}（${installmentKindLabel}分期本金 ${row.installmentNo}/${plan.totalRuns}，分期金额 ${installmentAmountLabel}，分期日期 ${installmentDateLabel}）`,
         },
       });
       if (tagIds.length) {
@@ -358,8 +382,8 @@ export async function materializeDueInstallmentPayments(
             householdId: input.householdId,
             accountId: plan.accountId,
             accountName: plan.Account?.name ?? "",
-            categoryId: plan.categoryId ?? null,
-            categoryName: plan.categoryName ?? null,
+            categoryId: feeCategory?.id ?? plan.categoryId ?? null,
+            categoryName: feeCategory?.name ?? plan.categoryName ?? null,
             amount: -row.interest,
             type: TransactionType.expense,
             date: row.date,
@@ -372,7 +396,7 @@ export async function materializeDueInstallmentPayments(
             installmentPrincipal: 0,
             installmentInterest: row.interest,
             installmentRole: "fee",
-            note: `${label}（${installmentKindLabel}分期${plan.rateType === "annual_interest" ? "利息" : "手续费"} ${row.installmentNo}/${plan.totalRuns}，分期日期 ${installmentDateLabel}）`,
+            note: `${label}（${installmentKindLabel}分期${plan.rateType === "annual_interest" ? "利息" : "手续费"} ${row.installmentNo}/${plan.totalRuns}，分期金额 ${installmentAmountLabel}，分期日期 ${installmentDateLabel}）`,
           },
         });
         if (tagIds.length) {

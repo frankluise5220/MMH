@@ -243,6 +243,7 @@ const SYSTEM_CATEGORY_LABEL_KEYS: Record<string, string> = {
   "医疗健康": "systemCategory.medicalHealth",
   "意外收入": "systemCategory.windfallIncome",
   "银行分期": "systemCategory.bankInstallment",
+  "分期手续费": "systemCategory.installmentFee",
   "营业收入": "systemCategory.operatingRevenue",
   "佣金提成": "systemCategory.commissions",
   "游戏": "systemCategory.gaming",

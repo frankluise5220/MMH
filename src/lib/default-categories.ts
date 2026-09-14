@@ -3,8 +3,9 @@ import { prisma } from "@/lib/db/prisma";
 import { CREDIT_CARD_REPAYMENT_CATEGORY_NAME } from "@/lib/transaction-semantics";
 import { FIXED_ASSET_EXPENSE_CATEGORY_NAME } from "@/lib/fixed-asset";
 import {
-  SYSTEM_DEPOSIT_INVESTMENT_ACTION_CATEGORIES,
+  SYSTEM_DEPOSIT_BUY_CATEGORY,
   SYSTEM_DEPOSIT_INVESTMENT_CATEGORY,
+  SYSTEM_DEPOSIT_REDEEM_CATEGORY,
   SYSTEM_FUND_INVESTMENT_ACTION_CATEGORIES,
   SYSTEM_FUND_INVESTMENT_CATEGORY,
   SYSTEM_INVESTMENT_ACTION_CATEGORIES,
@@ -32,7 +33,7 @@ export type DefaultCategoryTemplate = {
 };
 
 type CategoryWriter = typeof prisma | Prisma.TransactionClient;
-export const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-08-21-category-order-and-remove-expense-repayment-v2";
+export const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-09-14-remove-deposit-investment-category-v3";
 const DELETED_DEFAULT_CATEGORY_KEY_PREFIX = "category_deleted_default_templates:";
 
 type DefaultCategoryTemplateChild = {
@@ -67,6 +68,7 @@ export const SYSTEM_INSURANCE_EXPENSE_CATEGORY = "保险支出";
 export const SYSTEM_SETTLEMENT_TRANSFER_CATEGORY = "借入借出";
 export const SYSTEM_MORTGAGE_FUND_CATEGORY = "资金账户";
 export const SYSTEM_BANK_INSTALLMENT_EXPENSE_CATEGORY = "银行分期";
+export const SYSTEM_INSTALLMENT_FEE_EXPENSE_CATEGORY = "分期手续费";
 
 const legacySettlementTransferActionCategoryNames = new Set(["往来款", "还款", "提前还款", "贷款还款", "借入", "借出", "出借", "收回"]);
 
@@ -94,6 +96,7 @@ const systemCategoryTemplateNames: Record<DefaultCategoryType, Set<string>> = {
     "贷款利息",
     "贷款手续费",
     SYSTEM_BANK_INSTALLMENT_EXPENSE_CATEGORY,
+    SYSTEM_INSTALLMENT_FEE_EXPENSE_CATEGORY,
     FIXED_ASSET_EXPENSE_CATEGORY_NAME,
     SYSTEM_INSURANCE_EXPENSE_CATEGORY,
     SYSTEM_INVESTMENT_LOSS_CATEGORY,
@@ -181,6 +184,17 @@ export async function ensureBankInstallmentExpenseCategory(writer: CategoryWrite
   const root = await ensureDefaultCategory(writer, householdId, "expense", "金融保险", null, false);
   const child = await ensureDefaultCategory(writer, householdId, "expense", SYSTEM_BANK_INSTALLMENT_EXPENSE_CATEGORY, root.id, true);
   return { id: child.id, name: SYSTEM_BANK_INSTALLMENT_EXPENSE_CATEGORY, type: "expense" as const };
+}
+
+/**
+ * 银行分期的利息/手续费条目统一使用的支出三级分类（支出 → 金融保险 → 分期手续费）。
+ * isSystem=true：设置页隐藏删除/改名，服务端删除路由返回 SYSTEM_CATEGORY_IMMUTABLE，
+ * 用户手建的同名分类会被自动收敛为系统分类（ensureDefaultCategory 的 isSystem 提升）。
+ */
+export async function ensureInstallmentFeeExpenseCategory(writer: CategoryWriter, householdId: string) {
+  const root = await ensureDefaultCategory(writer, householdId, "expense", "金融保险", null, false);
+  const child = await ensureDefaultCategory(writer, householdId, "expense", SYSTEM_INSTALLMENT_FEE_EXPENSE_CATEGORY, root.id, true);
+  return { id: child.id, name: SYSTEM_INSTALLMENT_FEE_EXPENSE_CATEGORY, type: "expense" as const };
 }
 
 const rootCategoryRenames = [
@@ -285,7 +299,7 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
   {
     type: "expense",
     name: "金融保险",
-    children: [SYSTEM_INSURANCE_EXPENSE_CATEGORY, SYSTEM_BANK_INSTALLMENT_EXPENSE_CATEGORY, "保险", "互助保障", "信用借还", "账户存取", "手续费", "利息支出", "信用卡费用"],
+    children: [SYSTEM_INSURANCE_EXPENSE_CATEGORY, SYSTEM_BANK_INSTALLMENT_EXPENSE_CATEGORY, SYSTEM_INSTALLMENT_FEE_EXPENSE_CATEGORY, "保险", "互助保障", "信用借还", "账户存取", "手续费", "利息支出", "信用卡费用"],
   },
   {
     type: "expense",
@@ -371,7 +385,6 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
     children: [
       { name: SYSTEM_FUND_INVESTMENT_CATEGORY, isSystem: true, children: [...SYSTEM_FUND_INVESTMENT_ACTION_CATEGORIES] },
       { name: SYSTEM_WEALTH_INVESTMENT_CATEGORY, isSystem: true, children: [...SYSTEM_WEALTH_INVESTMENT_ACTION_CATEGORIES] },
-      { name: SYSTEM_DEPOSIT_INVESTMENT_CATEGORY, isSystem: true, children: [...SYSTEM_DEPOSIT_INVESTMENT_ACTION_CATEGORIES] },
       { name: SYSTEM_METAL_INVESTMENT_CATEGORY, isSystem: true, children: [...SYSTEM_METAL_INVESTMENT_ACTION_CATEGORIES] },
       { name: SYSTEM_STOCK_INVESTMENT_CATEGORY, isSystem: true, children: [...SYSTEM_STOCK_INVESTMENT_ACTION_CATEGORIES] },
       { name: SYSTEM_PROPERTY_INVESTMENT_CATEGORY, isSystem: true, children: [...SYSTEM_PROPERTY_INVESTMENT_ACTION_CATEGORIES] },
@@ -443,6 +456,7 @@ export async function normalizeDefaultCategoryHierarchyForHousehold(writer: Cate
   await migrateCreditCardRepaymentCategoryType(writer, householdId);
   await ensureDefaultCategoryTemplatesForHousehold(writer, householdId);
   await removeLegacyExpenseRepaymentCategories(writer, householdId);
+  await removeLegacyDepositInvestmentCategories(writer, householdId);
   await normalizeCreditCardRepaymentTransferCategories(writer, householdId);
   await normalizeInvestmentTransactionCategories(writer, householdId);
 
@@ -474,6 +488,32 @@ async function removeLegacyExpenseRepaymentCategories(writer: CategoryWriter, ho
       });
       await writer.category.delete({ where: { id: category.id } });
     }
+  }
+}
+
+async function removeLegacyDepositInvestmentCategories(writer: CategoryWriter, householdId: string) {
+  const categories = await writer.category.findMany({
+    where: {
+      householdId,
+      type: "investment",
+      isSystem: true,
+      name: {
+        in: [SYSTEM_DEPOSIT_INVESTMENT_CATEGORY, SYSTEM_DEPOSIT_BUY_CATEGORY, SYSTEM_DEPOSIT_REDEEM_CATEGORY],
+      },
+    },
+    select: { id: true, name: true },
+  });
+
+  for (const category of categories) {
+    await writer.txRecord.updateMany({
+      where: { householdId, categoryId: category.id },
+      data: { categoryId: null, categoryName: category.name },
+    });
+    await writer.category.updateMany({
+      where: { householdId, parentId: category.id },
+      data: { parentId: null },
+    });
+    await writer.category.delete({ where: { id: category.id } });
   }
 }
 
