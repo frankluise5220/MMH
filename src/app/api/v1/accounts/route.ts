@@ -187,7 +187,9 @@ export async function POST(req: NextRequest) {
     if (accountRequiresInstitution(kind, investProductType) && !institution) {
       return NextResponse.json({ ok: false, code: "ACCOUNT_INSTITUTION_REQUIRED", error: ACCOUNT_INSTITUTION_REQUIRED_ERROR }, { status: 400 });
     }
-    if (isConsumerLoan && (!institution || institution.type !== "debt")) {
+    // 口径（2026-09-13）：贷款窗口借入的账户挂往来对象时没有机构——消费贷要求
+    // 「有 debt 机构或有往来对象」之一即可（机构类型校验仍走下方白名单）。
+    if (isConsumerLoan && !institution && !requestedCounterpartyId) {
       return NextResponse.json({ ok: false, code: "CONSUMER_LOAN_INSTITUTION_REQUIRED", error: "Consumer loan accounts must be linked to a lending institution" }, { status: 400 });
     }
     if (isStockInvestmentAccount(kind, investProductType) && !isStockAccountInstitutionType(institution?.type)) {
@@ -200,14 +202,13 @@ export async function POST(req: NextRequest) {
       ? await prisma.counterparty.findFirst({ where: { id: requestedCounterpartyId, householdId } })
       : null;
     if (requestedCounterpartyId && !counterparty) return NextResponse.json({ ok: false, code: "COUNTERPARTY_NOT_FOUND", error: "Counterparty not found in this household" }, { status: 400 });
-    if (isConsumerLoan && requestedCounterpartyId) {
-      return NextResponse.json({ ok: false, code: "CONSUMER_LOAN_COUNTERPARTY_FORBIDDEN", error: "Consumer loan accounts must not be linked to a counterparty" }, { status: 400 });
-    }
     if (kind === "settlement" && !counterparty) {
       return NextResponse.json({ ok: false, code: "SETTLEMENT_COUNTERPARTY_REQUIRED", error: "Settlement accounts must be linked to a counterparty" }, { status: 400 });
     }
-    if (kind === "loan" && requestedCounterpartyId) {
-      return NextResponse.json({ ok: false, code: "LOAN_COUNTERPARTY_FORBIDDEN", error: "Loan accounts must not be linked to a counterparty" }, { status: 400 });
+    // 口径（2026-09-13 用户定版）：贷款窗口建的账户一律是贷款账户，不按机构属性判定，
+    // 包括挂在往来款对象（person/organization）上的贷款账户。常用商户仍不允许。
+    if (kind === "loan" && counterparty?.type === "merchant") {
+      return NextResponse.json({ ok: false, code: "LOAN_COUNTERPARTY_MERCHANT_FORBIDDEN", error: "A merchant counterparty cannot be used as a loan account owner" }, { status: 400 });
     }
     // 用户定版：常用商户（merchant）不能作为往来款对象，即不能挂到往来款/结算账户上。
     if (kind === "settlement" && counterparty?.type === "merchant") {
@@ -278,7 +279,9 @@ export async function POST(req: NextRequest) {
       householdId,
       groupId: ensuredGroup.id,
       institutionId: kind === "settlement" ? null : institution?.id ?? null,
-      counterpartyId: kind === "settlement" ? counterparty?.id ?? null : null,
+      // 口径（2026-09-13）：挂在往来对象上的账户（往来款/贷款窗口借入的贷款账户）
+      // 判重不按分组——同一往来对象 + 同名 = 重复。
+      counterpartyId: kind === "settlement" || kind === "loan" ? counterparty?.id ?? null : null,
       kind,
       name,
       numberMasked,
@@ -305,7 +308,8 @@ export async function POST(req: NextRequest) {
           currency,
           groupId: ensuredGroup.id,
           institutionId: kind === "settlement" ? null : institution?.id ?? null,
-          counterpartyId: kind === "settlement" ? counterparty?.id ?? null : isConsumerLoan ? null : counterparty?.id ?? null,
+          // 口径（2026-09-13）：贷款账户可以挂往来对象（贷款窗口借入），只禁常用商户。
+          counterpartyId: kind === "settlement" || kind === "loan" ? counterparty?.id ?? null : null,
           userId: owner?.id ?? null,
           householdId,
           isActive: true,
@@ -468,7 +472,9 @@ export async function PUT(req: NextRequest) {
       data.loanType = null;
       data.isConsumerLoan = false;
     }
-    const nextCounterpartyId = nextKind === "settlement"
+    // 口径（2026-09-13 用户定版）：贷款账户可以挂在往来对象上（贷款窗口借入），只禁常用商户。
+    // counterpartyId 未显式提交时保留账户上已有的往来对象（settlement/loan 同一保留语义）。
+    const nextCounterpartyId = nextKind === "settlement" || nextKind === "loan"
       ? data.counterpartyId === undefined
         ? existing.counterpartyId
         : data.counterpartyId
@@ -482,16 +488,9 @@ export async function PUT(req: NextRequest) {
     if (nextKind === "settlement" && !nextCounterparty) {
       return NextResponse.json({ ok: false, code: "SETTLEMENT_COUNTERPARTY_REQUIRED", error: "Settlement accounts must be linked to a counterparty" }, { status: 400 });
     }
-    // 用户定版：常用商户（merchant）不能作为往来款对象。
-    if (nextKind === "settlement" && nextCounterparty?.type === "merchant") {
+    // 用户定版：常用商户（merchant）不能作为往来款对象，也不能挂到贷款账户上。
+    if (nextCounterparty?.type === "merchant") {
       return NextResponse.json({ ok: false, code: "SETTLEMENT_COUNTERPARTY_MERCHANT_FORBIDDEN", error: "A merchant counterparty cannot be used as a settlement (advance) account owner" }, { status: 400 });
-    }
-    // 用户定版：常用商户（merchant）不能作为往来款对象。
-    if (nextKind === "settlement" && nextCounterparty?.type === "merchant") {
-      return NextResponse.json({ ok: false, code: "SETTLEMENT_COUNTERPARTY_MERCHANT_FORBIDDEN", error: "A merchant counterparty cannot be used as a settlement (advance) account owner" }, { status: 400 });
-    }
-    if (nextKind === "loan" && body.counterpartyId !== undefined && String(body.counterpartyId ?? "").trim()) {
-      return NextResponse.json({ ok: false, code: "LOAN_COUNTERPARTY_FORBIDDEN", error: "Loan accounts must not be linked to a counterparty" }, { status: 400 });
     }
     const requestedDebtDirection = body.debtDirection !== undefined ? normalizeDebtDirection(nextKind, body.debtDirection) : null;
     let nextCreditBillingDay: number | null = null;
@@ -603,7 +602,8 @@ export async function PUT(req: NextRequest) {
     if (accountRequiresInstitution(nextKind, nextInvestProductTypeForInstitution) && !nextInstitution) {
       return NextResponse.json({ ok: false, code: "ACCOUNT_INSTITUTION_REQUIRED", error: ACCOUNT_INSTITUTION_REQUIRED_ERROR }, { status: 400 });
     }
-    if (nextIsConsumerLoan && (!nextInstitution || nextInstitution.type !== "debt")) {
+    // 口径（2026-09-13）：贷款账户挂往来对象（贷款窗口借入）时无机构也算合法消费贷。
+    if (nextIsConsumerLoan && !nextInstitution && !nextCounterparty) {
       return NextResponse.json({ ok: false, code: "CONSUMER_LOAN_INSTITUTION_REQUIRED", error: "Consumer loan accounts must be linked to a lending institution" }, { status: 400 });
     }
     if (isStockInvestmentAccount(nextKind, nextInvestProductTypeForInstitution) && !isStockAccountInstitutionType(nextInstitution?.type)) {
@@ -624,7 +624,9 @@ export async function PUT(req: NextRequest) {
       householdId,
       groupId: nextGroupId,
       institutionId: nextInstitutionId,
-      counterpartyId: nextKind === "settlement" ? nextCounterparty?.id ?? null : null,
+      // 口径（2026-09-13）：挂在往来对象上的账户（往来款/贷款窗口借入的贷款账户）
+      // 没有「所有人」语义，判重不按分组——同一往来对象 + 同名 = 重复。
+      counterpartyId: nextKind === "settlement" || nextKind === "loan" ? nextCounterparty?.id ?? null : null,
       kind: nextKind,
       name: nextName,
       numberMasked: nextNumberMasked,

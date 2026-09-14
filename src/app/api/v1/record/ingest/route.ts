@@ -1057,10 +1057,12 @@ export async function POST(req: Request) {
           try { const nc = await prisma.counterparty.create({ data: { name: cn, householdId: ctx.householdId } }); cpByName.set(cn, nc.id); } catch {}
         }
       }
-      // Find or create loan accounts
+      // Find or create settlement (往来款) accounts for counterparties.
+      // 口径（2026-09-13）：只复用往来款账户——挂往来对象的 kind=loan 账户是贷款
+      // 窗口建的贷款账户，AI 记账不得把流水记进贷款账户。
       const cpIds = [...new Set(cpByName.values())];
       const existingLoans = cpIds.length > 0 ? await prisma.account.findMany({
-        where: { householdId: ctx.householdId, counterpartyId: { in: cpIds }, kind: { in: ["settlement", "loan"] }, isPlaceholder: { not: true } },
+        where: { householdId: ctx.householdId, counterpartyId: { in: cpIds }, kind: "settlement", isPlaceholder: { not: true } },
         select: { id: true, name: true, counterpartyId: true, billingDay: true, currency: true },
       }) : [];
       const loanByCpId = new Map<string, string>();

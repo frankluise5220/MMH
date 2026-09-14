@@ -67,6 +67,7 @@ type Account = {
   Institution: { id: string; name: string; shortName?: string | null } | null;
   AccountGroup: { id: string; name: string } | null;
   Counterparty: { id: string; name: string; shortName?: string | null } | null;
+  counterpartyId?: string | null;
   billingDay: number | null; repaymentDay: number | null; repaymentOffsetDays?: number | null;
   creditBillMode?: "separate" | "consolidated";
   billingDayTxPeriod?: string | null;
@@ -338,7 +339,9 @@ export default function SettingsAccountsPage() {
     }
     const isFixedAssetKind = nextKind === "fixed_asset";
     const isConsumerLoan = editForm.isConsumerLoan === "true";
-    if (isConsumerLoan && (nextKind !== "loan" || !editForm.institutionId || nextInstitution?.type !== "debt")) {
+    // 口径（2026-09-13）：贷款账户允许挂往来对象（贷款窗口借入）——消费贷有机构
+    // 或有往来对象（编辑前账户上已挂的）其一即可。
+    if (isConsumerLoan && (nextKind !== "loan" || (!editForm.institutionId && !previousAccount?.counterpartyId))) {
       setEditError(t("settings.accounts.consumerLoanInstitutionRequired"));
       return;
     }
@@ -933,14 +936,12 @@ export default function SettingsAccountsPage() {
             nestedEntityType !== "institution" ? undefined
               : isStockInvestmentAccount(editForm.kind, editForm.investProductType || "fund") ? "brokerage"
               : editForm.kind === "investment" && (["fund", "money"].includes(editForm.investProductType || "fund")) ? "fund_company"
-              : editForm.kind === "loan" ? "debt"
               : allowedInstitutionTypesForEdit(editForm.kind, editForm.investProductType || "fund").length === 1 ? allowedInstitutionTypesForEdit(editForm.kind, editForm.investProductType || "fund")[0]
               : undefined
           }
           allowedInstitutionTypes={
             nestedEntityType !== "institution" ? undefined
               : isStockInvestmentAccount(editForm.kind, editForm.investProductType || "fund") ? ["brokerage"]
-              : editForm.kind === "loan" ? ["debt"]
               : allowedInstitutionTypesForEdit(editForm.kind, editForm.investProductType || "fund").length > 0 ? allowedInstitutionTypesForEdit(editForm.kind, editForm.investProductType || "fund")
               : undefined
           }

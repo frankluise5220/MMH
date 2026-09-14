@@ -29,15 +29,19 @@ type SettlementAccountRow = {
  * Legacy advance rows were created as `loan` accounts (the "安盾" bug). Bring
  * them in line with ordinary counterparty settlement accounts: kind=settlement,
  * name "XX的往来款", filed under the 往来款 account group.
+ *
+ * 口径（2026-09-13）：挂在往来对象上的 kind=loan 账户也可能是贷款窗口建的
+ * **贷款账户**（账户 kind 按入口窗口判定，不按对象属性）——这类账户只补激活，
+ * 绝不改型、不改名（代付流程的账户查找已排除 loan，正常不会走到这一支）。
  */
 async function ensureSettlementShape(
   tx: Db,
   account: SettlementAccountRow,
   input: { householdId: string; objectName: string },
 ): Promise<SettlementAccountRow> {
-  if (account.isActive && account.kind === AccountKind.settlement) return account;
+  if (account.isActive && (account.kind === AccountKind.settlement || account.kind === AccountKind.loan)) return account;
   const data: Prisma.AccountUncheckedUpdateInput = { isActive: true };
-  if (account.kind !== AccountKind.settlement) {
+  if (account.kind !== AccountKind.settlement && account.kind !== AccountKind.loan) {
     data.kind = AccountKind.settlement;
     data.name = `${input.objectName}${SETTLEMENT_ACCOUNT_SUFFIX}`;
     const group = await findSettlementGroup(tx, input.householdId);
@@ -127,7 +131,10 @@ export async function resolveOrCreateAdvanceAccount(tx: Db, input: ResolveAdvanc
 
   const objectId = counterparty?.id ?? institution!.id;
   const objectName = counterparty?.shortName?.trim() || counterparty?.name || institution?.shortName?.trim() || institution!.name;
-  const kindWhere = { kind: { in: [AccountKind.settlement, AccountKind.loan] }, isPlaceholder: { not: true } };
+  // 口径（2026-09-13）：代付的账户侧只能是往来款账户。挂在往来对象上的 kind=loan
+  // 账户是贷款窗口建的贷款账户（按入口窗口判定，不按对象属性），不得被代付流程
+  // 复用/改型——同对象多账户是允许的（09-11 用户定版），名下只有贷款账户时直接新建往来款账户。
+  const kindWhere = { kind: AccountKind.settlement, isPlaceholder: { not: true } };
   const accountSelect = { id: true, name: true, isActive: true, kind: true } as const;
   const ensureShape = (account: SettlementAccountRow) =>
     ensureSettlementShape(tx, account, { householdId: input.householdId, objectName });
@@ -145,30 +152,25 @@ export async function resolveOrCreateAdvanceAccount(tx: Db, input: ResolveAdvanc
     }
   }
 
-  // Prefer the counterparty settlement account; fall back to legacy loan rows.
-  const existingSettlement = await tx.account.findFirst({
-    where: { householdId: input.householdId, ...relationWhere, kind: AccountKind.settlement, isPlaceholder: { not: true } },
+  // Reuse the counterparty settlement account when one exists.
+  const existing = await tx.account.findFirst({
+    where: { householdId: input.householdId, ...relationWhere, ...kindWhere },
     orderBy: [{ isActive: "desc" }, { createdAt: "asc" }],
     select: accountSelect,
   });
-  const existing = existingSettlement ??
-    await tx.account.findFirst({
-      where: { householdId: input.householdId, ...relationWhere, kind: AccountKind.loan, isPlaceholder: { not: true } },
-      orderBy: [{ isActive: "desc" }, { createdAt: "asc" }],
-      select: accountSelect,
-    });
   if (existing) {
     const account = await ensureShape(existing);
     return { account, objectId, objectName };
   }
 
-  // 规则（09-11 用户定版）：该往来对象名下**已有账户**时，不允许自动建立——
+  // 规则（09-11 用户定版）：该往来对象名下**已有往来款账户**时，不允许自动建立——
   // 必须由用户在表单里选择（preferredAccountId），或手动新建（手动新建已有
-  // assertAccountIdentityUnique 禁同名）。上面两步查找已经覆盖 settlement/loan，
-  // 这里再做一次不按 kind 过滤的兜底：名下确实还有账户就复用最早活跃的一条，
-  // 绝不新建（防止并发或将来口径漂移后重新出现重复账户）。
+  // assertAccountIdentityUnique 禁同名）。这里做一次不限于 settlement 的兜底：
+  // 历史「安盾」类杂类账户（kind 非 settlement/loan）归一复用；**贷款账户（kind=loan）
+  // 除外**——那是贷款窗口建的贷款账户（09-13 口径），名下只有贷款账户时按上面
+  // 的规则直接新建往来款账户，绝不把贷款账户抓来当往来款用。
   const stillOwned = await tx.account.findFirst({
-    where: { householdId: input.householdId, isPlaceholder: { not: true }, ...relationWhere },
+    where: { householdId: input.householdId, isPlaceholder: { not: true }, kind: { not: AccountKind.loan }, ...relationWhere },
     orderBy: [{ isActive: "desc" }, { createdAt: "asc" }],
     select: accountSelect,
   });

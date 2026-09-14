@@ -13,7 +13,7 @@ import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { buildCategoryTreeOptions, type CategorySource } from "./categorySmartSelect";
-import { institutionTypeLabel, isSettlementCounterpartyType } from "@/lib/account-kinds";
+import { institutionTypeLabel, isSettlementCounterpartyType, isInstitutionTypeOf, LOAN_DIALOG_INSTITUTION_TYPE_VALUES } from "@/lib/account-kinds";
 import { buildAccountDisplayOption } from "@/lib/account-display";
 import { recordRecentAccount, sortByAccountUsage, sortOptionsByRecent, useAccountUsage, useRecentAccountIds } from "@/lib/client/recentAccounts";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
@@ -131,6 +131,8 @@ type FixedAssetAssetOption = {
   mortgageLoanAccountId?: string | null;
   name: string;
   status?: string | null;
+  /** 固定资产类型（property=房产）。房贷只允许关联房产型。 */
+  assetType?: string | null;
 };
 type FixedAssetLinkedTransaction = {
   accountId: string;
@@ -286,10 +288,14 @@ function settingsAccountToDebtOption(account: SettingsAccountRecord, t: (key: st
   const counterpartyName = account.Counterparty?.shortName?.trim() || account.Counterparty?.name?.trim() || "";
   const institutionType = account.Institution?.type ?? null;
   const isInstitutionLoan = Boolean(account.kind === "loan" && !account.counterpartyId);
+  // 口径（2026-09-13）：挂在往来对象上的贷款账户不再显示「往来款」。
+  const isCounterpartyLoan = account.kind === "loan" && !!account.counterpartyId;
   return {
     id: account.id,
     label: display.selectorLabel || display.label,
-    subLabel: counterpartyName ? t("debtTx.subLabel.settlement", { name: counterpartyName }) : display.subLabel,
+    subLabel: isCounterpartyLoan
+      ? (counterpartyName ? t("debtTx.subLabel.counterpartyLoan", { name: counterpartyName }) : display.subLabel)
+      : counterpartyName ? t("debtTx.subLabel.settlement", { name: counterpartyName }) : display.subLabel,
     kind: account.kind ?? null,
     institutionId: account.institutionId ?? null,
     counterpartyId: account.counterpartyId ?? null,
@@ -530,7 +536,7 @@ export function DebtTransactionModal({
     }));
     const institutionOptions = isLoanDialog
       ? (localNestedFieldData?.institutionId ?? [])
-          .filter((item) => item.type === "bank" || item.type === "debt")
+          .filter((item) => isInstitutionTypeOf(item.type, LOAN_DIALOG_INSTITUTION_TYPE_VALUES))
           .map((item) => ({
             id: `institution:${item.id}`,
             label: item.name,
@@ -805,7 +811,7 @@ export function DebtTransactionModal({
       .then((payload) => {
         if (cancelled) return;
         const assets = Array.isArray(payload?.data?.assets) ? payload.data.assets : [];
-        setFixedAssetAssets(assets.flatMap((asset: { id?: unknown; accountId?: unknown; mortgageLoanAccountId?: unknown; name?: unknown; status?: unknown }) => {
+        setFixedAssetAssets(assets.flatMap((asset: { id?: unknown; accountId?: unknown; mortgageLoanAccountId?: unknown; name?: unknown; status?: unknown; assetType?: unknown }) => {
           const id = typeof asset.id === "string" ? asset.id : "";
           const accountId = typeof asset.accountId === "string" ? asset.accountId : "";
           const name = typeof asset.name === "string" ? asset.name : "";
@@ -816,6 +822,7 @@ export function DebtTransactionModal({
             name,
             mortgageLoanAccountId: typeof asset.mortgageLoanAccountId === "string" ? asset.mortgageLoanAccountId : null,
             status: typeof asset.status === "string" ? asset.status : null,
+            assetType: typeof asset.assetType === "string" ? asset.assetType : null,
           }];
         }));
         const linked = payload?.data?.linkedTransaction;
@@ -873,7 +880,7 @@ export function DebtTransactionModal({
         subLabel: institutionTypeLabel(item.type, t),
       }));
       const institutionOptions = nextNested.institutionId
-        .filter((item) => item.type === "bank" || item.type === "debt")
+        .filter((item) => isInstitutionTypeOf(item.type, LOAN_DIALOG_INSTITUTION_TYPE_VALUES))
         .map((item) => ({
           id: debtObjectOptionId(item.id, item.type),
           label: item.name,
@@ -1361,12 +1368,14 @@ export function DebtTransactionModal({
       window.alert(t("debtTx.alert.selectLoanPurpose"));
       return;
     }
-    const requiresFixedAssetSelection = isCollateralLoanBorrow || fixedAssetLinked;
-    if (isCollateralLoanBorrow && !fixedAssetAssetId) {
+    const requiresFixedAssetSelection = isCollateralLoanBorrow || isHomeLoanBorrow || fixedAssetLinked;
+    // 只有抵押贷强制要求固定资产；房贷的资产关联改为可选（不选则不提交关联）。
+    const requiresFixedAssetLink = isCollateralLoanBorrow;
+    if (requiresFixedAssetLink && !fixedAssetAssetId) {
       window.alert(t("debtTx.alert.selectFixedAsset"));
       return;
     }
-    if (isCollateralLoanBorrow && !fixedAssetAccountId) {
+    if (requiresFixedAssetLink && !fixedAssetAccountId) {
       window.alert(t("debtTx.alert.selectFixedAsset"));
       return;
     }
@@ -1554,7 +1563,8 @@ export function DebtTransactionModal({
     if (isLoanDialog && mode === "borrow_in") {
       formData.set("loanPurposeCategoryId", loanPurposeCategoryId);
       // 显式提交固定资产开关态：编辑时关掉开关 = 服务端删除已有资产关联。
-      formData.set("fixedAssetLinked", fixedAssetLinked ? "true" : "false");
+      // 房贷无开关：选了资产才视为已关联（可选），清空下拉 = 删除关联。
+      formData.set("fixedAssetLinked", (fixedAssetLinked || (isHomeLoanBorrow && !!fixedAssetAccountId)) ? "true" : "false");
       if (requiresFixedAssetSelection && fixedAssetAccountId) {
         formData.set("fixedAssetAccountId", fixedAssetAccountId);
         if (fixedAssetAssetId) formData.set("fixedAssetAssetId", fixedAssetAssetId);
@@ -1663,6 +1673,11 @@ export function DebtTransactionModal({
 
   const selectedDebtAccount = localDebtAccounts.find((account) => account.id === debtAccountId);
   const selectedDebtObjectIsCounterparty = debtInstitutionId.startsWith("counterparty:") || !!selectedDebtAccount?.counterpartyId;
+  const selectedDebtInstitutionType = selectedDebtAccount?.institutionType
+    ?? (debtInstitutionId.startsWith("institution:")
+      ? localNestedFieldData?.institutionId?.find((item) => item.id === rawDebtObjectId(debtInstitutionId))?.type
+      : undefined)
+    ?? null;
   const selectedDebtAccountIsBankLoan = !!selectedDebtAccount?.institutionId && selectedDebtAccount.institutionType === "bank";
   const selectedDebtAccountIsConsumerLoan = selectedDebtAccount?.isConsumerLoan === true;
   // 往来款单界面：利息不再按方向禁用（资金→往来款也可能是"还款"，需要付息），
@@ -1721,13 +1736,13 @@ export function DebtTransactionModal({
     setPrincipal(diff > 0 ? diff.toFixed(2) : "0");
   }
   const isLoanBorrow = isLoanDialog && mode === "borrow_in";
-  // 「新增账户」要建哪种 kind：由**往来对象 ref** 决定（institution: → 贷款账户；counterparty: → 往来款账户）。
-  // 账户 kind 本身在分辨这件事，不需要再借 isLoanDialog 代指（新增表单两个窗口共用）。
-  const accountCreateKind: "loan" | "settlement" = debtInstitutionId.startsWith("institution:") ? "loan" : "settlement";
+  // 「新增账户」要建哪种 kind：由**入口窗口**决定，不看往来对象属性（2026-09-13 用户定版）。
+  // 贷款窗口里建的账户一律是贷款账户（哪怕对象是往来款对象）；往来款窗口建的才是往来款账户。
+  const accountCreateKind: "loan" | "settlement" = isLoanDialog ? "loan" : "settlement";
   const isConsumerLoanBorrow = isLoanBorrow && activeLoanTab === "consumer";
   const isHomeLoanBorrow = isLoanBorrow && activeLoanTab === "home";
   const isCollateralLoanBorrow = isLoanBorrow && activeLoanTab === "mortgage";
-  const showHomeLoanLprFields = isHomeLoanBorrow;
+  const showHomeLoanLprFields = isHomeLoanBorrow && selectedDebtInstitutionType !== "provident_fund";
   // Status of the selected repayable loan account's current scheduled period.
   const selectedRepayableLoanRow = useMemo(
     () => (isLoanRepaymentMode ? repayableLoanAccountRows.find((item) => item.accountId === debtAccountId) : undefined),
@@ -1906,8 +1921,11 @@ export function DebtTransactionModal({
     return map;
   }, [fixedAssetAccountList, localFixedAssetAccountSSOpts]);
   const fixedAssetAssetOptions = useMemo<SmartSelectOption[]>(() => {
+    // 房贷只能关联房产型固定资产（车辆/设备等固定资产不进下拉）；抵押贷维持全类型可选。
+    const propertyOnly = isHomeLoanBorrow;
     return fixedAssetAssets
       .filter((asset) => {
+        if (propertyOnly && asset.assetType != null && asset.assetType !== "property") return false;
         if (asset.id === fixedAssetAssetId) return true;
         if (asset.status === "sold" || asset.status === "disposed" || asset.status === "deleted") return false;
         return !asset.mortgageLoanAccountId || asset.mortgageLoanAccountId === debtAccountId;
@@ -1920,7 +1938,7 @@ export function DebtTransactionModal({
           asset.status === "mortgaged" ? t("fixedAssetEdit.status.mortgaged") : "",
         ].filter(Boolean).join(" · ") || undefined,
       }));
-  }, [debtAccountId, fixedAssetAccountLabelById, fixedAssetAssetId, fixedAssetAssets, t]);
+  }, [debtAccountId, fixedAssetAccountLabelById, fixedAssetAssetId, fixedAssetAssets, isHomeLoanBorrow, t]);
 
   useEffect(() => {
     if (!isCollateralLoanBorrow || fixedAssetAssetsLoading || !fixedAssetAssetId) return;
@@ -2419,9 +2437,16 @@ export function DebtTransactionModal({
     </div>
   ) : null;
 
-  const renderCollateralFixedAssetField = () => (
+  // 固定资产 SS：抵押贷（抵押物，必选、全类型）与房贷（购入房产，可选、仅房产型）共用，
+  // 选中资产后自动带出其固定资产账户。
+  const renderRequiredFixedAssetField = (options?: { required?: boolean; clearable?: boolean; optionalHint?: boolean }) => {
+    const isRequired = options?.required ?? true;
+    return (
     <div className="space-y-1">
-      <div className="form-label">{t("txForm.fixedAssetToggle")} <span className="text-red-500">*</span></div>
+      <div className="form-label">
+        {t("txForm.fixedAssetToggle")}
+        {isRequired ? <span className="text-red-500"> *</span> : options?.optionalHint ? <span className="text-slate-400"> {t("stockFee.optional")}</span> : null}
+      </div>
       <SmartSelect
         mode="single"
         value={fixedAssetAssetId}
@@ -2441,12 +2466,13 @@ export function DebtTransactionModal({
         behavior={{
           hierarchy: false,
           search: true,
-          clearable: false,
+          clearable: options?.clearable ?? false,
           minDropdownWidth: 360,
         }}
       />
     </div>
-  );
+    );
+  };
 
   const renderFixedAssetAccountCreateForm = () => (
     <EntityCreateForm
@@ -2701,7 +2727,7 @@ export function DebtTransactionModal({
                               {renderDebtAccountField()}
                               {renderCashAccountField({ label: t("debtTx.accountLabel.postingAccount") })}
                             </div>
-                            {renderCollateralFixedAssetField()}
+                            {renderRequiredFixedAssetField()}
                             <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-2">
                               {renderLoanTotalField()}
                               <EntryTagsField value={selectedTagIds} onChange={setSelectedTagIds} />
@@ -2944,6 +2970,12 @@ export function DebtTransactionModal({
                               </div>
                             ) : null}
                           </>
+                        ) : isHomeLoanBorrow ? (
+                          // 房贷关联固定资产为可选（仅房产型）：SS 可清空，不选则不提交关联。
+                          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            {renderRequiredFixedAssetField({ required: false, clearable: true, optionalHint: true })}
+                            {renderRepaymentMethodField()}
+                          </div>
                         ) : (
                           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                             {renderLoanFixedAssetField()}
@@ -3050,7 +3082,7 @@ export function DebtTransactionModal({
                                   <div className="mt-0.5 text-[11px] text-slate-500">
                                     {showHistoricalRates && historicalRateRows.some((row) => row.effectiveDate.trim() || row.annualRate.trim())
                                       ? t("debtTx.rateAdjustFilledHint", { count: historicalRateRows.filter((row) => row.effectiveDate.trim() || row.annualRate.trim()).length })
-                                      : isHomeLoanBorrow
+                                      : showHomeLoanLprFields
                                         ? t("debtTx.rateAdjustDefaultHint")
                                         : t("debtTx.rateAdjustSimpleHint")}
                                   </div>
@@ -3059,7 +3091,9 @@ export function DebtTransactionModal({
                                   type="button"
                                   className="secondary-button h-8 shrink-0 px-3 text-xs"
                                   onClick={() => {
-                                    if (isHomeLoanBorrow) {
+                                    // 只有挂 LPR 的商贷房贷才按 LPR 自动生成历次调整；
+                                    // 公积金贷款（机构=公积金中心）利率不跟 LPR，与消费贷一样手动录入历次行。
+                                    if (showHomeLoanLprFields) {
                                       const generated = buildCurrentMortgageLprGeneration({
                                         alertOnInvalid: true,
                                         fillDefaultDiscount: true,
@@ -3433,7 +3467,7 @@ export function DebtTransactionModal({
               nameLabel={isLoanDialog ? t("debtTx.loanInstitutionName") : t("debtTx.objectName")}
               namePlaceholder={isLoanDialog ? t("debtTx.loanInstitutionNamePlaceholder") : t("debtTx.objectNamePlaceholder")}
               defaultType={isLoanDialog ? "bank" : "person"}
-              allowedInstitutionTypes={isLoanDialog ? ["bank", "debt"] : undefined}
+              allowedInstitutionTypes={isLoanDialog ? [...LOAN_DIALOG_INSTITUTION_TYPE_VALUES] : undefined}
               onCreated={(id, name, extra) => {
                 const type = extra?.type ?? (isLoanDialog ? "bank" : "person");
                 const option = { id: debtObjectOptionId(id, type), label: name, subLabel: institutionTypeLabel(type, t) };
@@ -3527,7 +3561,11 @@ export function DebtTransactionModal({
                 const nextOption: AccountOption = {
                   id,
                   label: name,
-                  subLabel: ownerName ? t("debtTx.subLabel.settlement", { name: ownerName }) : t("debtTx.subLabel.settlementPlain"),
+                  // 口径（2026-09-13）：挂在往来对象上的贷款账户不再显示「往来款」，
+                  // 前缀「贷款 · 对象名」区分于往来款账户。
+                  subLabel: nextKind === "loan"
+                    ? (ownerName ? t("debtTx.subLabel.counterpartyLoan", { name: ownerName }) : t("account.kind.loan"))
+                    : ownerName ? t("debtTx.subLabel.settlement", { name: ownerName }) : t("debtTx.subLabel.settlementPlain"),
                   kind: nextKind,
                   counterpartyId: nextCounterpartyId,
                   institutionId: nextInstitutionId,

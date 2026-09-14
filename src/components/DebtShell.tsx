@@ -1211,15 +1211,6 @@ export function DebtShell({
           ),
         }]),
     {
-      key: "itemType",
-      label: t("debtShell.colItemType"),
-      width: 150,
-      minWidth: 110,
-      filterText: (row) => row.itemType,
-      sortValue: (row) => row.itemType,
-      render: (row) => <span className={amountClass(row.net, isRedUp)}>{row.itemType}</span>,
-    },
-    {
       key: "repaymentMethod",
       label: t("debtShell.colRepaymentMethod"),
       width: 140,

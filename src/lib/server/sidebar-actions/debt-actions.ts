@@ -73,6 +73,11 @@ async function resolveOrCreateDebtAccount(
 ) {
   const debtObject = await resolveDebtObject(tx, householdId, debtObjectId);
 
+  // 账户 kind 口径（2026-09-13 用户定版）：由**入口窗口**决定，不看往来对象属性。
+  // loanType 非空 = 贷款窗口的借入 tab（消费贷/房贷/抵押贷/其他）——此时哪怕对象是
+  // 往来款对象（person/organization），建的账户也是贷款账户（挂 counterpartyId、
+  // 不挂机构）；loanType 为空 = 往来款窗口，维持往来款账户口径。
+  const createAsLoan = debtObject.kind === "institution" || loanType != null;
   const objectName = debtObject.shortName?.trim() || debtObject.name;
   const accountName = `${objectName}${SETTLEMENT_ACCOUNT_SUFFIX}`;
   const objectWhere = debtObject.kind === "counterparty"
@@ -112,10 +117,11 @@ async function resolveOrCreateDebtAccount(
         orderBy: [{ isActive: "desc" }, { createdAt: "asc" }],
       }));
   if (existing) {
-    const shouldPatchMissingLoanType = debtObject.kind === "institution" && loanType != null && !existing.loanType;
+    const shouldPatchMissingLoanType = createAsLoan && loanType != null && !existing.loanType;
     if (
       !existing.isActive ||
-      (debtObject.kind === "counterparty" && existing.kind !== AccountKind.settlement) ||
+      (createAsLoan && existing.kind !== AccountKind.loan) ||
+      (!createAsLoan && existing.kind !== AccountKind.settlement) ||
       (debtObject.kind !== "counterparty" && existing.debtDirection !== direction) ||
       shouldPatchMissingLoanType
     ) {
@@ -123,7 +129,11 @@ async function resolveOrCreateDebtAccount(
         where: { id: existing.id },
         data: {
           isActive: true,
-          ...(debtObject.kind === "counterparty" ? { kind: AccountKind.settlement } : {}),
+          // 挂在往来对象上的历史 loan 账户：贷款窗口复用时升回 kind=loan（口径定版）；
+          // 往来款窗口仍归一为 settlement（代付/往来款记账依赖这个 kind）。
+          ...(createAsLoan
+            ? { kind: AccountKind.loan, ...(debtObject.kind === "counterparty" && existing.debtDirection !== direction ? { debtDirection: direction } : {}) }
+            : { kind: AccountKind.settlement }),
           ...(debtObject.kind !== "counterparty" ? { debtDirection: direction } : {}),
           ...(shouldPatchMissingLoanType ? { loanType, isConsumerLoan: loanType === "consumer" } : {}),
         },
@@ -138,12 +148,13 @@ async function resolveOrCreateDebtAccount(
     (await tx.accountGroup.findFirst({ where: { householdId }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }));
   if (!group) throw new Error("Missing account group; cannot create a settlement account");
 
-  const accountLoanType = debtObject.kind === "institution" ? loanType ?? "home" : null;
+  const accountLoanType = createAsLoan ? loanType ?? "home" : null;
   return tx.account.create({
     data: {
       name: accountName,
-      kind: debtObject.kind === "counterparty" ? AccountKind.settlement : AccountKind.loan,
-      debtDirection: debtObject.kind === "counterparty" ? "receivable" : direction,
+      kind: createAsLoan ? AccountKind.loan : AccountKind.settlement,
+      // 往来款窗口的账户固定 receivable（历史口径）；贷款窗口建/复用的账户按当次方向。
+      debtDirection: debtObject.kind === "counterparty" ? (createAsLoan ? direction : "receivable") : direction,
       isConsumerLoan: accountLoanType === "consumer",
       loanType: accountLoanType,
       currency: "CNY",
@@ -175,7 +186,7 @@ async function resolveDebtObject(
   }
 
   const counterparty = await tx.counterparty.findFirst({
-    where: { id: sourceId, householdId },
+    where: { id: sourceId, householdId, type: { not: "merchant" } },
     select: { id: true, name: true, shortName: true, type: true },
   });
   if (!counterparty) throw new Error("请选择往来对象");

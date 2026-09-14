@@ -92,7 +92,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
     if (url.searchParams.get("quickEntry") !== "1") return;
     openCreate();
     url.searchParams.delete("quickEntry");
-    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
   }, [openCreate]);
 
   useEffect(() => {
@@ -108,10 +108,20 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
         if (entry.type !== "expense" && entry.type !== "income" && entry.type !== "transfer") {
           throw new Error(t("mobileTxForm.editOtherPageHint"));
         }
+        const storedAmount = Number(entry.amount) || 0;
         setDraft({
           id: entry.id,
           date: String(entry.date ?? "").slice(0, 10),
-          amount: String(Math.abs(Number(entry.amount) || 0)),
+          // Dialog sign mirrors desktop storedAmountToDialogAmount: expense
+          // shows positive for outflow / negative for refund; income keeps
+          // its stored sign; transfer is direction-less so show magnitude.
+          amount: String(
+            entry.type === "expense"
+              ? -storedAmount
+              : entry.type === "income"
+                ? storedAmount
+                : Math.abs(storedAmount),
+          ),
           type: entry.type,
           accountId: entry.accountId ?? "",
           toAccountId: entry.toAccountId ?? "",
@@ -147,7 +157,10 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
 
   async function save() {
     const amount = Number(draft.amount);
-    if (!draft.date || !Number.isFinite(amount) || amount <= 0 || !draft.accountId) {
+    // 0 rejected; negative input is allowed for refunds (same dialog-level
+    // convention as the desktop expense dialog: positive = outflow,
+    // negative = inflow).
+    if (!draft.date || !Number.isFinite(amount) || amount === 0 || !draft.accountId) {
       setError(t("mobileTxForm.fillRequired"));
       return;
     }
@@ -162,7 +175,11 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
       const body = {
         ...(draft.id ? { id: draft.id } : {}),
         date: draft.date,
-        amount,
+        // Stored sign convention (backend): expense is stored negative
+        // (outflow), income positive (inflow). The dialog-level input is
+        // positive-for-outflow, so flip expense here — same as desktop
+        // dialogAmountToStoredAmount.
+        amount: draft.type === "expense" ? -amount : amount,
         type: draft.type,
         accountId: draft.accountId,
         toAccountId: draft.type === "transfer" ? draft.toAccountId : undefined,
@@ -225,7 +242,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
           </label>
           <label className="block">
             <span className="text-xs text-slate-500">{t("mobileTxForm.amount")}</span>
-            <input className="form-input mt-1 text-right tabular-nums" inputMode="decimal" type="number" min="0" step="0.01" placeholder="0.00" value={draft.amount} onChange={(event) => update("amount", event.target.value)} />
+            <input className="form-input mt-1 text-right tabular-nums" inputMode="decimal" type="number" step="0.01" placeholder="0.00" value={draft.amount} onChange={(event) => update("amount", event.target.value)} />
           </label>
         </div>
 

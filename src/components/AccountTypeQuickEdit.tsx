@@ -129,6 +129,8 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
     [institutions, isFixedAssetAccount, kind, productType, supportsInstitution],
   );
   const loanDetailsIsHomeLoan = loanDetails ? isHomeLoanType(loanDetails.loanType) : false;
+  const loanDetailsInstitutionType = institutions.find((institution) => institution.id === (form.institutionId || account.institutionId))?.type ?? null;
+  const loanDetailsUsesLpr = loanDetailsIsHomeLoan && loanDetailsInstitutionType !== "provident_fund";
   const loanDetailsIsCollateralLoan = loanDetails ? isCollateralLoanType(loanDetails.loanType) : false;
 
   const resetForm = useCallback(() => {
@@ -202,9 +204,11 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
     const selectedInstitution = institutions.find((institution) => institution.id === form.institutionId);
     if (isStockInvestmentAccount(kind, productType) && (!form.institutionId || !isStockAccountInstitutionType(selectedInstitution?.type))) { setError(t("entityForm.error.stockAccountInstitution")); return; }
     if (kind === "settlement" && !form.counterpartyId) { setError(t("debtTx.placeholder.selectCounterparty")); return; }
-    if (kind === "loan" && !form.institutionId) { setError(t("settings.accounts.import.institutionRequired")); return; }
+    // 口径（2026-09-13）：贷款账户允许挂往来对象（贷款窗口借入）——机构或往来对象至少其一。
+    if (kind === "loan" && !form.institutionId && !form.counterpartyId) { setError(t("settings.accounts.import.institutionRequired")); return; }
     if (accountRequiresInstitution(kind, productType) && !form.institutionId) { setError(t("settings.accounts.import.institutionRequired")); return; }
-    if (kind === "loan" && !isConsumerLoanInstitutionType(selectedInstitution?.type)) { setError(t("settings.accounts.import.institutionNotAllowed")); return; }
+    // 机构型贷款才校验机构类型（挂在往来对象上的贷款账户没有机构，走白名单分支即可）
+    if (kind === "loan" && form.institutionId && !isConsumerLoanInstitutionType(selectedInstitution?.type)) { setError(t("settings.accounts.import.institutionNotAllowed")); return; }
     if (form.institutionId && !accountInstitutionTypeIsAllowed(kind, productType, selectedInstitution?.type)) { setError(t("settings.accounts.import.institutionNotAllowed")); return; }
     if (loanDetails && loanEditAction) {
       const principal = Number(loanForm.principal);
@@ -244,7 +248,10 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
                 : {}),
             }
           : kind === "loan"
-            ? { ...form, counterpartyId: "", loanType: form.loanType || "home", isConsumerLoan: form.loanType === "consumer" ? "true" : "false" }
+            ? // 口径（2026-09-13）：贷款账户可挂往来对象（贷款窗口借入），快速编辑
+              // 不再解绑——counterpartyId 置 undefined（JSON.stringify 丢键），
+              // 服务端对未提交的 counterpartyId 保留原值。
+              { ...form, counterpartyId: undefined, loanType: form.loanType || "home", isConsumerLoan: form.loanType === "consumer" ? "true" : "false" }
             : { ...form, counterpartyId: "", loanType: "", isConsumerLoan: "false" };
       const response = await fetch("/api/v1/accounts", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: account.id, ...payload }) });
       const data = await response.json().catch(() => null);
@@ -266,7 +273,7 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
         loanData.set("interest", String(loanDetails.defaultInterest ?? 0));
         loanData.set("penalty", "0");
         loanData.set("annualRate", loanForm.annualRate);
-        loanData.set("mortgageLprDiscount", loanDetailsIsHomeLoan ? loanForm.mortgageLprDiscount : "");
+        loanData.set("mortgageLprDiscount", loanDetailsUsesLpr ? loanForm.mortgageLprDiscount : "");
         loanData.set("repaymentMethod", loanForm.repaymentMethod);
         loanData.set("repaymentIntervalMonths", loanForm.repaymentIntervalMonths);
         loanData.set("loanTotalRuns", loanForm.totalRuns);
@@ -369,7 +376,7 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
                   <Field label={t("debtTx.totalRuns")}><input value={loanForm.totalRuns ?? ""} onChange={(event) => setLoanField("totalRuns", event.target.value)} className={inputClass} inputMode="numeric" /></Field>
                   <Field label={t("debtShell.rateAdjust.annualRateLabel")}><input value={loanForm.annualRate ?? ""} onChange={(event) => setLoanField("annualRate", event.target.value)} className={inputClass} inputMode="decimal" /></Field>
                   <Field label={t("regularInvest.repaymentIntervalMonths")}><input value={loanForm.repaymentIntervalMonths ?? ""} onChange={(event) => setLoanField("repaymentIntervalMonths", event.target.value)} className={inputClass} inputMode="numeric" /></Field>
-                  {loanDetailsIsHomeLoan ? <Field label={t("debtTx.mortgageLprDiscount")}><input value={loanForm.mortgageLprDiscount ?? ""} onChange={(event) => setLoanField("mortgageLprDiscount", event.target.value)} className={inputClass} inputMode="decimal" /></Field> : null}
+                  {loanDetailsUsesLpr ? <Field label={t("debtTx.mortgageLprDiscount")}><input value={loanForm.mortgageLprDiscount ?? ""} onChange={(event) => setLoanField("mortgageLprDiscount", event.target.value)} className={inputClass} inputMode="decimal" /></Field> : null}
                   {loanDetailsIsCollateralLoan ? <Field label={t("debtTx.accountLabel.postingAccount")}><select value={loanForm.cashAccountId ?? ""} onChange={(event) => setLoanField("cashAccountId", event.target.value)} className={inputClass}><option value="">{t("txForm.selectPlaceholder")}</option>{cashAccounts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field> : null}
                 </div>
                 {!loanDetailsIsHomeLoan ? <label className="mt-3 flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={loanForm.autoDebit === "true"} onChange={(event) => setLoanField("autoDebit", event.target.checked ? "true" : "false")} className="h-3.5 w-3.5 accent-blue-600" />{t("debtTx.autoDebitLabel")}</label> : null}

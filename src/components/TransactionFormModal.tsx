@@ -15,7 +15,6 @@ import { UnifiedEntryLauncher } from "./UnifiedEntryLauncher";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { isSettlementCounterpartyType, kindLabel } from "@/lib/account-kinds";
 import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
-import { getAccountDropdownRestrictTypePreference } from "@/lib/client/appPreferences";
 import { getCashTargetOperation } from "@/lib/account-kind-utils";
 import { buildAccountDisplayOption, buildGroupedAccountOptions } from "@/lib/account-display";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
@@ -791,10 +790,11 @@ export function TransactionFormModal({
     if (txType !== "advance" || !counterpartyInstitutionId) return [];
     const seen = new Set<string>();
     const options: AccountOption[] = [];
-    const restrictAccountTypes = getAccountDropdownRestrictTypePreference();
     for (const option of [...displayAccountOptions, ...accountList]) {
       if (option.isHeader || option.isGroup) continue;
-      if (restrictAccountTypes && !isDebtAccountKind(option.kind)) continue;
+      // 口径（2026-09-13）：代付的账户侧只能是往来款账户——挂往来对象的 kind=loan
+      // 账户是贷款窗口建的贷款账户，不进代付账户下拉（服务端同样只认 settlement）。
+      if (option.kind !== "settlement") continue;
       // SS hierarchy options are plain SmartSelectOption rows without counterpartyId.
       const counterpartyId = (option as Partial<AccountOption>).counterpartyId ?? "";
       if (counterpartyId !== counterpartyInstitutionId) continue;
@@ -802,8 +802,7 @@ export function TransactionFormModal({
       seen.add(option.id);
       options.push(option);
     }
-    // Settlement accounts first so the auto-default picks "XX的往来款".
-    return options.sort((a, b) => Number(b.kind === "settlement") - Number(a.kind === "settlement"));
+    return options;
   }, [txType, counterpartyInstitutionId, displayAccountOptions, accountList]);
   const advanceAccountPlaceholder = useMemo(() => {
     if (!counterpartyInstitutionId || advanceAccountOptions.some((option) => option.id === advanceAccountId)) {
