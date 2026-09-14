@@ -468,7 +468,7 @@ export function normalizeCaizhiFundImportRows(
       const remark = cleanText(row[idx("\u5907\u6ce8")]);
       // 无右侧账户的行（申购/赎回/分红不带 |X）不回落「本账户」：基金账户不是资金侧账户，
       // 服务端会拒收；留空让页面上下文/历史推断补全，或由用户在预览里批量指定资金账户。
-      const cashAccount = mapped.cashAccount;
+      const cashAccount = mapped.cashAccount ?? "";
 
       outputRows.push([
         normalizeDate(row[dateIdx]),
