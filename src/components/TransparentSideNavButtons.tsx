@@ -1,10 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 
 import {
-  DEFAULT_SIDE_NAV_TOP_OFFSET_PX,
   getSideNavTopOffsetPreference,
   normalizeSideNavTopOffsetPx,
   setSideNavTopOffsetPreference,
@@ -90,7 +89,7 @@ export function TransparentSideNavButtons({
     setSideNavTopOffsetPreference(scope, next);
   }, [scope]);
 
-  const handleActivate = useCallback((event: React.MouseEvent<HTMLButtonElement>, action: () => void, disabled: boolean) => {
+  const handleActivate = useCallback((event: ReactMouseEvent<HTMLButtonElement>, action: () => void, disabled: boolean) => {
     if (disabled || suppressClickRef.current) {
       suppressClickRef.current = false;
       event.preventDefault();
@@ -146,5 +145,3 @@ export function TransparentSideNavButtons({
     </>
   );
 }
-
-export { DEFAULT_SIDE_NAV_TOP_OFFSET_PX };

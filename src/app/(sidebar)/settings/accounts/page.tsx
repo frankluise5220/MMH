@@ -1097,6 +1097,7 @@ export default function SettingsAccountsPage() {
               </div>
               {navigationAccounts.length > 1 ? (
                 <TransparentSideNavButtons
+                  scope="account"
                   onPrevious={() => navigateEditAccount(previousAccountNav)}
                   onNext={() => navigateEditAccount(nextAccountNav)}
                   previousDisabled={!previousAccountNav}

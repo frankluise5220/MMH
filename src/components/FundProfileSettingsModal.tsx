@@ -291,6 +291,7 @@ export function FundProfileSettingsModal({ open, account, fundCode, fallbackFund
         />
         {hasFundNavigation ? (
           <TransparentSideNavButtons
+            scope="fund"
             onPrevious={() => handleFundNavigate(previousFund)}
             onNext={() => handleFundNavigate(nextFund)}
             previousDisabled={!previousFund || editPlanOpen}

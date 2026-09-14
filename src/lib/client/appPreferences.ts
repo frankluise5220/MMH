@@ -415,6 +415,9 @@ function sideNavTopOffsetKey(scope: SideNavTopOffsetScope) {
 }
 
 export function normalizeSideNavTopOffsetPx(value: unknown): number {
+  // No stored preference (null/undefined/blank) must fall back to the default,
+  // not to 0 (Number(null) === 0) which would clamp to the minimum.
+  if (value == null || value === "") return DEFAULT_SIDE_NAV_TOP_OFFSET_PX;
   const n = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(n)) return DEFAULT_SIDE_NAV_TOP_OFFSET_PX;
   return Math.min(MAX_SIDE_NAV_TOP_OFFSET_PX, Math.max(MIN_SIDE_NAV_TOP_OFFSET_PX, Math.round(n)));
@@ -423,7 +426,9 @@ export function normalizeSideNavTopOffsetPx(value: unknown): number {
 export function getSideNavTopOffsetPreference(scope: SideNavTopOffsetScope): number {
   const key = sideNavTopOffsetKey(scope);
   try {
-    return normalizeSideNavTopOffsetPx(localStorage.getItem(key) ?? parseCookieValue(key));
+    const stored = localStorage.getItem(key);
+    const raw = stored == null || stored === "" ? parseCookieValue(key) : stored;
+    return normalizeSideNavTopOffsetPx(raw);
   } catch {
     return normalizeSideNavTopOffsetPx(parseCookieValue(key));
   }
