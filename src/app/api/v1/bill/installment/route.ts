@@ -16,7 +16,7 @@
 import { AccountKind, CreditCardInstallmentSourceType } from "@prisma/client";
 import { NextResponse } from "next/server";
 
-import { creditBillUnpaidAmount } from "@/lib/credit/billing";
+import { billingDayAtDate, creditBillUnpaidAmount } from "@/lib/credit/billing";
 import { type CreditCardInstallmentRateType } from "@/lib/credit/installment";
 import { prisma } from "@/lib/db/prisma";
 import { ensureBankInstallmentExpenseCategory } from "@/lib/default-categories";
@@ -110,11 +110,18 @@ export async function POST(req: Request) {
       },
     });
     if (!account) return NextResponse.json({ ok: false, code: "CREDIT_CARD_ACCOUNT_NOT_FOUND", error: "信用卡账户不存在" }, { status: 404 });
-    if (!account.billingDay) {
+    const billAccountIds = await getCreditBillAccountIds(prisma, account);
+    // 与账单视图同口径：账单日优先取账单组（合并账单的同机构卡）规则历史，
+    // 组内无规则时才回退账户本体字段。仅查账户字段会漏掉「规则挂在同机构
+    // 其它卡上、本卡 billingDay 为空」的合并账单组（2026-09-14 招行3710 案例）。
+    const billingDayRules = await prisma.creditCardBillingDay.findMany({
+      where: { accountId: { in: billAccountIds } },
+      select: { effectiveDate: true, billingDay: true },
+    });
+    const billingDay = billingDayAtDate(billingDayRules, new Date(), account.billingDay);
+    if (!billingDay) {
       return NextResponse.json({ ok: false, code: "BILLING_DAY_MISSING", error: "信用卡缺少账单日，无法创建账单分期" }, { status: 400 });
     }
-    const billingDay = account.billingDay;
-    const billAccountIds = await getCreditBillAccountIds(prisma, account);
     const storageAccountId = billAccountIds[0] ?? account.id;
     const cycle = await prisma.creditCardCycle.findFirst({
       where: {
