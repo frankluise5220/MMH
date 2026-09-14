@@ -7,7 +7,7 @@ import { normalizeNonNegativeDays, setFundConfirmDays, setFundConfirmDaysInTx, s
 import { setFundFeeRate, setFundFeeRateInTx } from "@/lib/fund/feeRate";
 import { getFundProfileNameMap, normalizeFundDisplayName, resolveFundName } from "@/lib/fund/fundProfile";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, getLoanScheduledPlanRole, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
+import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, getLoanScheduledPlanRole, isSystemManagedScheduledTask, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { calcInitialScheduledRunDate as calcInitialRunDate, calcResumedScheduledRunDate as calcResumedRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { deriveRegularInvestNextRunDate } from "@/lib/server/regular-invest-plan";
@@ -144,7 +144,7 @@ export async function GET(req: NextRequest) {
           planName: plan.planName ?? null,
           fundName: displayFundName,
           targetName: displayTargetName,
-          isSystemTask: scheduledTask.type === "loan_repayment" && getLoanScheduledPlanRole(scheduledTask) === "bill",
+          isSystemTask: isSystemManagedScheduledTask(scheduledTask),
           taskLoanPlanRole: getLoanScheduledPlanRole(scheduledTask),
           accountInstitutionName: plan.Account_RegularInvestPlan_accountIdToAccount.Institution?.name ?? "",
           cashAccountInstitutionName: plan.Account_RegularInvestPlan_cashAccountIdToAccount?.Institution?.name ?? "",
@@ -459,6 +459,14 @@ export async function PUT(req: NextRequest) {
     // stay user-editable below.
     if (existingTaskForAction.type === "loan_repayment" && getLoanScheduledPlanRole(existingTaskForAction) === "bill") {
       return NextResponse.json({ ok: false, code: "SYSTEM_MANAGED_PLAN", error: "房贷账单由系统生成（利率由人行/LPR调整），不可作为计划任务修改" }, { status: 403 });
+    }
+
+    // Deposit maturity/payout plans are system-generated from the deposit lot
+    // (same read-only treatment as mortgage bills): the dates follow the lot,
+    // pausing has no real effect (auto-maturity scans the lots directly), and
+    // deleting is undone by the startup self-heal. Edit the deposit instead.
+    if (isSystemManagedScheduledTask(existingTaskForAction)) {
+      return NextResponse.json({ ok: false, code: "SYSTEM_MANAGED_PLAN", error: "存款到期/取息计划由系统根据存单生成，不可在计划任务中修改；如需调整请编辑对应存单" }, { status: 403 });
     }
 
     // Status actions
@@ -803,9 +811,14 @@ export async function DELETE(req: NextRequest) {
     if (!plan) return NextResponse.json({ ok: false, code: "PLAN_NOT_FOUND", error: "计划不存在" }, { status: 404 });
     if (plan.householdId && plan.householdId !== householdId) return NextResponse.json({ ok: false, code: "PLAN_NOT_IN_HOUSEHOLD", error: "计划不属于当前账簿" }, { status: 403 });
 
-    // System-level plans (loan repayment) cannot be deleted manually.
-    if (decodeScheduledTaskMemo(plan.memo).type === "loan_repayment") {
+    // System-level plans (loan repayment / deposit maturity+payout) cannot be
+    // deleted manually.
+    const deleteTask = decodeScheduledTaskMemo(plan.memo);
+    if (deleteTask.type === "loan_repayment") {
       return NextResponse.json({ ok: false, code: "SYSTEM_MANAGED_PLAN", error: "贷款还款计划由系统管理，不可手动删除" }, { status: 403 });
+    }
+    if (isSystemManagedScheduledTask(deleteTask)) {
+      return NextResponse.json({ ok: false, code: "SYSTEM_MANAGED_PLAN", error: "存款到期/取息计划由系统根据存单管理，不可手动删除；取回存单后会自动结束" }, { status: 403 });
     }
 
     // Delete only transaction records, keep the plan, and reset it to the un-executed state

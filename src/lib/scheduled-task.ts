@@ -102,6 +102,20 @@ export function getLoanScheduledPlanRole(task?: Pick<ScheduledTaskPayload, "type
   return normalizeLoanScheduledPlanRole(task.loanPlanRole, task.autoDebit);
 }
 
+/**
+ * Fully system-managed plan types: read-only in the plan table (no
+ * pause/stop/edit/delete), mirroring the mortgage "bill" treatment.
+ * - loan_repayment + bill: the schedule/rate derive from the loan module.
+ * - deposit_maturity / deposit_interest_payout: dates follow the deposit lot;
+ *   pausing has no real effect because auto-maturity scans the lots directly,
+ *   deleting is undone by the startup self-heal, so the row is view-only.
+ */
+export function isSystemManagedScheduledTask(task?: ScheduledTaskPayload | null): boolean {
+  if (!task) return false;
+  if (task.type === "loan_repayment") return getLoanScheduledPlanRole(task) === "bill";
+  return task.type === "deposit_maturity" || task.type === "deposit_interest_payout";
+}
+
 function dateRank(value: unknown) {
   if (!value) return Number.POSITIVE_INFINITY;
   const time = value instanceof Date ? value.getTime() : new Date(String(value)).getTime();

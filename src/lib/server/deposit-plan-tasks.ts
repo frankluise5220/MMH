@@ -163,7 +163,12 @@ export async function ensureDepositPlansForLot(params: {
       householdId,
     },
     update: {
+      // startDate 与 nextRunDate 同步为当前到期日：存单编辑（起存日/期限）
+      // 后计划行不残留创建时刻的旧到期日快照，避免「开始日期」晚于「下次执行日」。
+      startDate: maturity,
       nextRunDate: maturity,
+      // 金额跟随存单当前本金（到期执行金额按 lot 实时计算，这里只保证列表显示一致）。
+      amount: Math.abs(Number(buy.amount ?? 0)),
       status: RegularInvestStatus.active,
       memo: maturityMemo,
     },
@@ -219,6 +224,9 @@ export async function ensureDepositPlansForLot(params: {
         householdId,
       },
       update: {
+        // 同步锚点起点：存单起存日被编辑后，取息计划的 startDate 跟随当前
+        // 起存日，避免残留创建时的旧快照。
+        startDate: start,
         nextRunDate: nextRun,
         status: RegularInvestStatus.active,
         memo: payoutMemo,
@@ -227,6 +235,14 @@ export async function ensureDepositPlansForLot(params: {
       where: { id: `depi_${buy.id}` },
     });
     payoutPlanId = payoutPlan.id;
+  } else {
+    // 取息频率为「到期取息」（含用户从周期取息改过来）→ 取息计划失去对象，
+    // 标记完成以免残留「执行中」空挂；之后改回周期时上面的 upsert update
+    // 会把它重新激活。
+    await prisma.regularInvestPlan.updateMany({
+      where: { id: `depi_${buy.id}`, householdId, status: { not: RegularInvestStatus.completed } },
+      data: { status: RegularInvestStatus.completed },
+    }).catch(() => {});
   }
 
   return { maturityPlanId: maturityPlan?.id ?? null, payoutPlanId };
@@ -276,7 +292,7 @@ export type DepositPlanExecutionResult = {
  */
 export async function executeDepositPlan(params: {
   householdId: string;
-  plan: { id: string; memo: string | null; nextRunDate: Date; accountId: string };
+  plan: { id: string; memo: string | null; startDate: Date; nextRunDate: Date; accountId: string };
   task: ScheduledTaskPayload;
   now: Date;
 }): Promise<DepositPlanExecutionResult> {
@@ -308,7 +324,8 @@ export async function executeDepositPlan(params: {
       where: { id: plan.id },
       data: closed || !fresh || fresh.deletedAt
         ? { status: RegularInvestStatus.completed }
-        : { nextRunDate: fresh.fundArrivalDate ?? plan.nextRunDate },
+        // 续存滚动后 startDate 同步新到期日，与 nextRunDate 保持一致。
+        : { startDate: fresh.fundArrivalDate ?? plan.startDate, nextRunDate: fresh.fundArrivalDate ?? plan.nextRunDate },
     }).catch(() => {});
     return {
       executed: outcome.status === "redeemed" || outcome.status === "renewed",
@@ -358,7 +375,8 @@ export async function executeDepositPlan(params: {
         where: { id: plan.id },
         data: maturityCap
           ? { nextRunDate, status: RegularInvestStatus.completed }
-          : { nextRunDate },
+          // 存单起存日被编辑后，取息计划的锚点起点（startDate）一并同步。
+          : { startDate: fresh.date ?? plan.startDate, nextRunDate },
       }).catch(() => {});
     }
   }

@@ -3,7 +3,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { buildAccountDisplayOption, buildFlatAccountOptions, buildGroupedAccountOptions } from "@/lib/account-display";
 import { buildCategorySmartSelectOptions } from "@/components/categorySmartSelect";
 import { categoryOrderBy } from "@/lib/category-order";
-import { decodeScheduledTaskMemo, getLoanScheduledPlanRole, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
+import { decodeScheduledTaskMemo, getLoanScheduledPlanRole, isSystemManagedScheduledTask, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
 import { AccountKind, TransactionType } from "@prisma/client";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { revalidateAfterTxChange } from "@/lib/server/revalidate";
@@ -255,7 +255,7 @@ export default async function RegularInvestPage() {
       taskRepaymentMethod: scheduledTask.repaymentMethod ? normalizeLoanRepaymentMethod(scheduledTask.repaymentMethod) : null,
       taskRepaymentIntervalMonths: scheduledTask.repaymentIntervalMonths ?? null,
       taskLoanPlanRole: getLoanScheduledPlanRole(scheduledTask),
-      isSystemTask: scheduledTask.type === "loan_repayment" && getLoanScheduledPlanRole(scheduledTask) === "bill",
+      isSystemTask: isSystemManagedScheduledTask(scheduledTask),
       amount: Number(plan.amount),
       feeRate: plan.feeRate ? Number(plan.feeRate) : null,
       startDate: plan.startDate && Number.isFinite(plan.startDate.getTime()) ? plan.startDate.toISOString() : null,

@@ -251,22 +251,40 @@ export async function syncIndependentBusinessTransactionFromTxRecord(
     // 存款到期 + 存款取息 RegularInvestPlan rows; the executors follow the
     // lot's stored maturity action / payout frequency and loop until the next
     // run date is in the future.
-    if (subtype === FundSubtype.buy && !entry.deletedAt) {
-      const { ensureDepositPlansForLot } = await import("@/lib/server/deposit-plan-tasks");
-      await ensureDepositPlansForLot({ householdId: entry.householdId, lotId: entry.id }).catch((e) => {
-        logger.catchLog("ensureDepositPlansForLot failed", "business-transactions")(e);
-      });
+    // The lot is the source of truth for these system plans — every create /
+    // edit / delete / restore of the lot drives the plan rows accordingly:
+    //   - live buy   → ensure (create/refresh/re-activate the plan rows)
+    //   - deleted buy → complete (the plans lose their subject; restore flows
+    //     back through ensure and re-activates them)
+    if (subtype === FundSubtype.buy) {
+      const planTasks = await import("@/lib/server/deposit-plan-tasks");
+      if (!entry.deletedAt) {
+        await planTasks.ensureDepositPlansForLot({ householdId: entry.householdId, lotId: entry.id }).catch((e) => {
+          logger.catchLog("ensureDepositPlansForLot failed", "business-transactions")(e);
+        });
+      } else {
+        await planTasks.completeDepositPlansForLot({ householdId: entry.householdId, lotId: entry.id }).catch((e) => {
+          logger.catchLog("completeDepositPlansForLot (deleted lot) failed", "business-transactions")(e);
+        });
+      }
     }
-    // 存单取回 → 同时结束该存单的系统计划任务（到期 + 取息两条）。
+    // 存单取回/转出 → 结束该存单的系统计划任务（到期 + 取息两条）；
+    // 撤销取回（删除取回记录）→ 存单重新持有 → 重新激活其系统计划。
     const isRedeemLike = subtype === FundSubtype.redeem || subtype === FundSubtype.switch_out;
-    if (isRedeemLike && entry.depositSourceEntryId && !entry.deletedAt) {
-      const { completeDepositPlansForLot } = await import("@/lib/server/deposit-plan-tasks");
-      await completeDepositPlansForLot({
-        householdId: entry.householdId,
-        lotId: entry.depositSourceEntryId,
-      }).catch((e) => {
-        logger.catchLog("completeDepositPlansForLot failed", "business-transactions")(e);
-      });
+    if (isRedeemLike && entry.depositSourceEntryId) {
+      const planTasks = await import("@/lib/server/deposit-plan-tasks");
+      if (!entry.deletedAt) {
+        await planTasks.completeDepositPlansForLot({
+          householdId: entry.householdId,
+          lotId: entry.depositSourceEntryId,
+        }).catch((e) => {
+          logger.catchLog("completeDepositPlansForLot failed", "business-transactions")(e);
+        });
+      } else {
+        await planTasks.ensureDepositPlansForLot({ householdId: entry.householdId, lotId: entry.depositSourceEntryId }).catch((e) => {
+          logger.catchLog("ensureDepositPlansForLot (redeem undone) failed", "business-transactions")(e);
+        });
+      }
     }
   } else if (businessType === "metal") {
     if (!entry.metalTypeId || !entry.metalUnitId || !entry.metalTypeName || !entry.metalUnitName) return null;

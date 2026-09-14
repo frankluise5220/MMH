@@ -7,7 +7,7 @@ import { setFundFeeRateByDateInTx } from "@/lib/fund/feeRate";
 import { normalizeFundDisplayName, resolveFundName } from "@/lib/fund/fundProfile";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { calcInitialScheduledRunDate, calcResumedScheduledRunDate, skipWeekend } from "@/lib/scheduled-task-date";
-import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, getLoanScheduledPlanRole, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
+import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, getLoanScheduledPlanRole, isSystemManagedScheduledTask, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { deriveRegularInvestNextRunDate } from "@/lib/server/regular-invest-plan";
 import { allowsZeroAnnualRateRepaymentMethod, normalizeLoanRepaymentMethod } from "@/lib/loan-repayment";
@@ -259,6 +259,11 @@ async function regularInvestAction(formData: FormData) {
   if (actionTask.type === "loan_repayment" && getLoanScheduledPlanRole(actionTask) === "bill") {
     return { ok: false as const, error: "房贷账单由系统生成（利率由人行/LPR调整），不可作为计划任务修改" };
   }
+  // Deposit maturity/payout plans are system-generated from the deposit lot
+  // (same read-only treatment as mortgage bills).
+  if (isSystemManagedScheduledTask(actionTask)) {
+    return { ok: false as const, error: "存款到期/取息计划由系统根据存单生成，不可在计划任务中修改；如需调整请编辑对应存单" };
+  }
 
   try {
     if (actionType === "pause") {
@@ -327,6 +332,11 @@ async function updateRegularInvest(formData: FormData) {
   const existingTaskForGuard = decodeScheduledTaskMemo(plan.memo);
   if (existingTaskForGuard.type === "loan_repayment" && getLoanScheduledPlanRole(existingTaskForGuard) === "bill") {
     return { ok: false as const, error: "房贷账单由系统生成（利率由人行/LPR调整），不可作为计划任务修改" };
+  }
+  // Deposit maturity/payout plans are system-generated from the deposit lot
+  // (same read-only treatment as mortgage bills).
+  if (isSystemManagedScheduledTask(existingTaskForGuard)) {
+    return { ok: false as const, error: "存款到期/取息计划由系统根据存单生成，不可在计划任务中修改；如需调整请编辑对应存单" };
   }
 
   const existingTask = decodeScheduledTaskMemo(plan.memo);

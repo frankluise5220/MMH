@@ -12,7 +12,7 @@ import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { optionalPrismaFindMany } from "@/lib/server/optional-prisma-delegate";
 import { categoryOrderBy } from "@/lib/category-order";
-import { decodeScheduledTaskMemo, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
+import { decodeScheduledTaskMemo, isSystemManagedScheduledTask, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
 
 export const runtime = "nodejs";
 
@@ -763,6 +763,7 @@ export async function GET(req: Request) {
             planName: item.planName ?? null,
             taskTitle: isFundRegularInvest ? displayFundName : item.targetName ?? task.title ?? null,
             targetName: displayTargetName,
+            isSystemTask: isSystemManagedScheduledTask(task),
             insuranceProductName: item.insuranceProductName,
             taskCategoryId: task.categoryId ?? null,
             taskCategoryName: task.categoryName ?? null,
