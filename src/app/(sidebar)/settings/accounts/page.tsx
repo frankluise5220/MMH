@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, ChevronDown, ChevronRight, X, ArrowUpDown } from "lucide-react";
+import { TransparentSideNavButtons } from "@/components/TransparentSideNavButtons";
 import type { AccountKind } from "@prisma/client";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
 import { institutionTypeLabel, isSettlementCounterpartyType, kindIconName, kindColor, kindOrder } from "@/lib/account-kinds";
@@ -179,6 +180,8 @@ export default function SettingsAccountsPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [institutions, setInstitutions] = useState<Institution[]>([]);
   const [counterparties, setCounterparties] = useState<Counterparty[]>([]);
+  // 内存缓存未命中时首屏 accounts=[]；没有 loading 会误显示「暂无账户」。
+  const [loadingAccounts, setLoadingAccounts] = useState(() => !getCachedSettingsAccountData());
   const [scope, setScope] = useState<AccountScopeValue>({ userIds: [], institutionIds: [], accountIds: [] });
   const [selectedAccountKinds, setSelectedAccountKinds] = useState<string[]>([]);
   const [hideInactiveAccounts, setHideInactiveAccounts] = useState(false);
@@ -186,6 +189,7 @@ export default function SettingsAccountsPage() {
   const [accountNameQuery, setAccountNameQuery] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
+  const [editFormBaseline, setEditFormBaseline] = useState<Record<string, string>>({});
   const [billingDayRules, setBillingDayRules] = useState<CreditBillingDayRuleView[]>([]);
   const [billingDayRulesLoading, setBillingDayRulesLoading] = useState(false);
   const [editError, setEditError] = useState("");
@@ -232,19 +236,25 @@ export default function SettingsAccountsPage() {
       setInstitutions(cached.institutions as Institution[]);
       setCounterparties((cached.counterparties ?? []) as Counterparty[]);
       setBaseCurrency(normalizeCurrency(cached.baseCurrency));
+      setLoadingAccounts(false);
       return;
     }
-    loadAll();
+    void loadAll();
   }, []);
 
   async function loadAll(options?: { force?: boolean }) {
-    const data = await fetchSettingsAccountData(options).catch(() => null);
-    if (!data) return;
-    setGroups(data.groups as Group[]);
-    setAccounts(data.accounts as Account[]);
-    setInstitutions(data.institutions as Institution[]);
-    setCounterparties((data.counterparties ?? []) as Counterparty[]);
-    setBaseCurrency(normalizeCurrency(data.baseCurrency));
+    if (!options?.force) setLoadingAccounts(true);
+    try {
+      const data = await fetchSettingsAccountData(options).catch(() => null);
+      if (!data) return;
+      setGroups(data.groups as Group[]);
+      setAccounts(data.accounts as Account[]);
+      setInstitutions(data.institutions as Institution[]);
+      setCounterparties((data.counterparties ?? []) as Counterparty[]);
+      setBaseCurrency(normalizeCurrency(data.baseCurrency));
+    } finally {
+      setLoadingAccounts(false);
+    }
   }
 
   function notifySidebarChanged() {
@@ -284,16 +294,12 @@ export default function SettingsAccountsPage() {
   }
 
   // ---- Account handlers ----
-  function openEdit(a: Account) {
+  function buildEditForm(a: Account): Record<string, string> {
     const normalizedKind = normalizedAccountKind(a);
     const editKind = normalizedKind;
     const editInvestProductType = editKind === "investment" ? (a.investProductType || "fund") : editKind === "fixed_asset" ? "property" : "";
     const supportsInstitution = editKind !== "settlement" && allowedInstitutionTypesForEdit(editKind, editInvestProductType).length > 0;
-    setEditingId(a.id);
-    setEditError("");
-    if (normalizedKind === "bank_credit") void loadBillingDayRules(a.id);
-    else setBillingDayRules([]);
-    setEditForm({
+    return {
       name: a.name,
       note: a.note || "",
       kind: editKind,
@@ -314,10 +320,36 @@ export default function SettingsAccountsPage() {
       fundUnitsDecimals: String(a.fundUnitsDecimals ?? 2),
       tradingCalendar: a.tradingCalendar || "cn_fund",
       isConsumerLoan: a.isConsumerLoan === true ? "true" : "false",
-    });
+    };
   }
 
-  async function saveEdit() {
+  function openEdit(a: Account) {
+    const normalizedKind = normalizedAccountKind(a);
+    const nextForm = buildEditForm(a);
+    setEditingId(a.id);
+    setEditError("");
+    if (normalizedKind === "bank_credit") void loadBillingDayRules(a.id);
+    else setBillingDayRules([]);
+    setEditForm(nextForm);
+    setEditFormBaseline(nextForm);
+  }
+
+  function isEditFormDirty() {
+    const keys = new Set([...Object.keys(editForm), ...Object.keys(editFormBaseline)]);
+    for (const key of keys) {
+      if (String(editForm[key] ?? "") !== String(editFormBaseline[key] ?? "")) return true;
+    }
+    return false;
+  }
+
+  function navigateEditAccount(target: Account | null | undefined) {
+    if (!target || target.id === editingId) return;
+    if (isEditFormDirty() && !window.confirm(t("settings.accounts.unsavedChanges"))) return;
+    openEdit(target);
+  }
+
+  async function saveEdit(options?: { closeAfter?: boolean }) {
+    const closeAfter = options?.closeAfter === true;
     if (!editingId) return;
     setEditError("");
     const savedId = editingId;
@@ -393,7 +425,12 @@ export default function SettingsAccountsPage() {
       setEditError(data?.error ?? t("settings.accounts.saveFailed"));
       return;
     }
-    setEditingId(null);
+    // 保存成功后以当前表单为新基线，便于继续编辑/翻页；「保存并关闭」才关窗。
+    setEditFormBaseline({ ...editForm });
+    if (closeAfter) {
+      setEditingId(null);
+      setEditFormBaseline({});
+    }
     const affectedCreditAccountIds = Array.isArray(data?.data?.affectedCreditAccountIds)
       ? data.data.affectedCreditAccountIds.filter((id): id is string => Boolean(id))
       : [];
@@ -885,11 +922,15 @@ export default function SettingsAccountsPage() {
         );
       })}
 
-      {filteredAccounts.length === 0 && (
+      {loadingAccounts ? (
+        <div className="bg-white border border-slate-200 rounded-xl py-12 text-center text-sm text-slate-400">
+          {t("common.loading")}
+        </div>
+      ) : filteredAccounts.length === 0 ? (
         <div className="bg-white border border-slate-200 rounded-xl py-12 text-center text-sm text-slate-400">
           {t("settings.accounts.empty")}
         </div>
-      )}
+      ) : null}
 
       <EntityCreateForm
         mode="full"
@@ -1025,18 +1066,46 @@ export default function SettingsAccountsPage() {
         const filteredInstitutions = institutions.filter((institution) =>
           accountInstitutionTypeMatches(editKind, editInvestProductType, institution.type),
         );
+        const navigationAccounts = kindOrder.flatMap((kind) => {
+          const list = grouped.get(kind);
+          if (!list || list.length === 0) return [];
+          return sortAccounts(list, accountSortBy, accountSortDir);
+        });
+        const currentNavIndex = navigationAccounts.findIndex((account) => account.id === editingId);
+        const previousAccountNav = currentNavIndex > 0 ? navigationAccounts[currentNavIndex - 1] : null;
+        const nextAccountNav = currentNavIndex >= 0 && currentNavIndex < navigationAccounts.length - 1 ? navigationAccounts[currentNavIndex + 1] : null;
+        const closeEditModal = () => {
+          setEditingId(null);
+          setEditError("");
+          setEditFormBaseline({});
+        };
         return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-[1px]"
-            onMouseDown={() => { setEditingId(null); setEditError(""); }}>
-            <div className="max-h-[90vh] w-[720px] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 shadow-xl"
-              onMouseDown={e => e.stopPropagation()}>
-              <div className="mb-3 flex items-center justify-between">
+          <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/30 p-4 backdrop-blur-[1px]"
+            onMouseDown={closeEditModal}>
+            <div
+              className="app-modal-panel relative mt-16 !w-[720px] max-w-[calc(100vw-2rem)] sm:mt-20"
+              role="dialog"
+              aria-modal="true"
+              onMouseDown={e => e.stopPropagation()}
+            >
+              <div className="modal-header shrink-0">
                 <div className="text-sm font-semibold text-slate-800">{t("settings.accounts.editTitle", { name: editingAccount.name })}</div>
-                <button type="button" onClick={() => { setEditingId(null); setEditError(""); }}
+                <button type="button" onClick={closeEditModal}
                   className="h-8 w-8 rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50" aria-label={t("table.close")}>
                   <X className="h-4 w-4" />
                 </button>
               </div>
+              {navigationAccounts.length > 1 ? (
+                <TransparentSideNavButtons
+                  onPrevious={() => navigateEditAccount(previousAccountNav)}
+                  onNext={() => navigateEditAccount(nextAccountNav)}
+                  previousDisabled={!previousAccountNav}
+                  nextDisabled={!nextAccountNav}
+                  previousLabel={t("settings.accounts.previousAccount")}
+                  nextLabel={t("settings.accounts.nextAccount")}
+                />
+              ) : null}
+              <div className="min-h-0 flex-1 overflow-y-auto p-4">
               <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                 <div>
                   <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.name")}</label>
@@ -1250,7 +1319,7 @@ export default function SettingsAccountsPage() {
                     onRulesChanged={setBillingDayRules}
                     billingDay={editingBillingAccount.billingDay}
                   />
-                  {billingDayRulesLoading ? <div className="mt-1 text-xs text-slate-400">{t("settings.basicDataImportExport.loading")}</div> : null}
+                  {billingDayRulesLoading ? <div className="mt-1 text-xs text-slate-400">{t("common.loading")}</div> : null}
                 </div>
               ) : null}
 
@@ -1282,12 +1351,23 @@ export default function SettingsAccountsPage() {
                 </div>
               ) : null}
 
-              <div className="mt-4 flex justify-end gap-2 border-t border-slate-100 pt-3">
-                {editError && <div className="text-xs text-red-600">{editError}</div>}
-                <button onClick={() => { setEditingId(null); setEditError(""); }}
-                  className="h-8 px-3 rounded-md border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50">{t("common.cancel")}</button>
-                <button onClick={saveEdit}
-                  className="h-8 px-4 rounded-md bg-blue-600 text-white text-xs hover:bg-blue-700">{t("common.save")}</button>
+              <div className="mt-4 flex items-center justify-end gap-2 border-t border-slate-100 pt-3">
+                {editError ? <div className="mr-auto text-xs text-red-600">{editError}</div> : null}
+                <button
+                  type="button"
+                  onClick={() => void saveEdit({ closeAfter: false })}
+                  className="h-8 rounded-md border border-blue-200 bg-blue-50 px-3 text-xs font-medium text-blue-700 hover:bg-blue-100"
+                >
+                  {t("common.save")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void saveEdit({ closeAfter: true })}
+                  className="h-8 rounded-md bg-blue-600 px-4 text-xs font-medium text-white hover:bg-blue-700"
+                >
+                  {t("settings.accounts.saveAndClose")}
+                </button>
+              </div>
               </div>
             </div>
           </div>

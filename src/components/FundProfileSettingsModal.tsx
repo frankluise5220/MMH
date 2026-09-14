@@ -12,6 +12,7 @@ import type { ConfirmDayRow } from "@/components/FundConfirmDaysModal";
 import type { FeeRateRecord } from "@/components/FundFeeRatePanel";
 import type { RelatedScheduledTask } from "@/components/FundScheduledTasksPanel";
 import type { SmartSelectOption } from "@/components/SmartSelect";
+import { TransparentSideNavButtons } from "@/components/TransparentSideNavButtons";
 import { useI18n } from "@/lib/i18n";
 
 type FundProfileSettingsModalProps = {
@@ -256,14 +257,14 @@ export function FundProfileSettingsModal({ open, account, fundCode, fallbackFund
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/40 p-2 sm:p-4"
+      className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto bg-slate-950/40 p-2 sm:p-4"
       role="presentation"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) handleClose();
       }}
     >
       <div
-        className="app-modal-panel relative max-w-xl"
+        className="app-modal-panel relative mt-2 w-full max-w-xl sm:mt-4"
         role="dialog"
         aria-modal="true"
         aria-labelledby="fund-profile-settings-title"
@@ -287,11 +288,17 @@ export function FundProfileSettingsModal({ open, account, fundCode, fallbackFund
           investmentAccountSSOptions={investmentAccountSSOptions}
           cashAccountSSOptions={cashAccountSSOptions}
           onEditPlanOpenChange={setEditPlanOpen}
-          previousFund={hasFundNavigation ? previousFund : null}
-          nextFund={hasFundNavigation ? nextFund : null}
-          onFundNavigate={hasFundNavigation ? handleFundNavigate : undefined}
-          fundNavigationDisabled={editPlanOpen}
         />
+        {hasFundNavigation ? (
+          <TransparentSideNavButtons
+            onPrevious={() => handleFundNavigate(previousFund)}
+            onNext={() => handleFundNavigate(nextFund)}
+            previousDisabled={!previousFund || editPlanOpen}
+            nextDisabled={!nextFund || editPlanOpen}
+            previousLabel={t("fundSettings.previousFund")}
+            nextLabel={t("fundSettings.nextFund")}
+          />
+        ) : null}
         {loading ? (
           <div className="pointer-events-none absolute right-14 top-3 z-10 inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white/95 px-2.5 py-1.5 text-xs text-slate-500 shadow-sm">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />

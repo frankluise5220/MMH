@@ -1773,6 +1773,16 @@ const MIGRATIONS = [
     },
   },
   {
+    version: "20260905_add_property_mortgage_loan_account",
+    description: "Link property assets to a mortgage loan account",
+    apply(db) {
+      if (tableExists(db, "property_assets")) {
+        addColumnIfMissing(db, "property_assets", "mortgageLoanAccountId", "TEXT");
+        db.exec("CREATE INDEX IF NOT EXISTS \\"property_assets_householdId_mortgageLoanAccountId_idx\\" ON \\"property_assets\\"(\\"householdId\\", \\"mortgageLoanAccountId\\")");
+      }
+    },
+  },
+  {
     version: "20260906_restore_counterparty_settlement_kind",
     description: "Restore counterparty-owned settlement accounts after loan split",
     apply(db) {
@@ -1842,6 +1852,14 @@ const MIGRATIONS = [
       if (tableExists(db, "FundProfile")) {
         addColumnIfMissing(db, "FundProfile", "fundCompanyCode", "TEXT");
       }
+    },
+  },
+  {
+    version: "20260903_z_repair_investment_business_sources",
+    description: "Recognize the Postgres-only investment business source repair migration",
+    apply(db) {
+      // This migration repairs historical rows in Postgres. SQLite-native packages
+      // build their schema from schema.native.prisma, so no SQLite rewrite is needed.
     },
   },
   {

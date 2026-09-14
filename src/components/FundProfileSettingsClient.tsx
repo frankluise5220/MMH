@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Building2, CalendarClock, CalendarDays, Check, ChevronLeft, ChevronRight, CircleDollarSign, Loader2, RefreshCw, Save, X } from "lucide-react";
+import { Building2, CalendarClock, CalendarDays, Check, CircleDollarSign, Loader2, RefreshCw, Save, X } from "lucide-react";
 import Link from "next/link";
 
 import { FundConfirmDaysPanel, type ConfirmDayRow } from "@/components/FundConfirmDaysModal";
@@ -50,10 +50,6 @@ type FundProfileSettingsClientProps = {
   investmentAccountSSOptions?: SmartSelectOption[];
   cashAccountSSOptions?: SmartSelectOption[];
   onEditPlanOpenChange?: (open: boolean) => void;
-  previousFund?: FundProfileNavigationItem | null;
-  nextFund?: FundProfileNavigationItem | null;
-  onFundNavigate?: (target: FundProfileNavigationItem | null) => void;
-  fundNavigationDisabled?: boolean;
 };
 
 type ProfileForm = Omit<FundProfileSettingsData, "navDateOffset" | "tradingCalendar"> & {
@@ -137,7 +133,7 @@ function planToEditData(plan: RelatedScheduledTask) {
   };
 }
 
-export function FundProfileSettingsClient({ account, profile, backHref, onClose, modal = false, fundCompanyOptions = [], onDirtyChange, confirmDayRows, feeRateRows, onProfileSaved, onConfirmDaysSaved, onFeeRatesSaved, preloadedPlans, investmentAccounts, cashAccounts, investmentAccountSSOptions, cashAccountSSOptions, onEditPlanOpenChange, previousFund = null, nextFund = null, onFundNavigate, fundNavigationDisabled = false }: FundProfileSettingsClientProps) {
+export function FundProfileSettingsClient({ account, profile, backHref, onClose, modal = false, fundCompanyOptions = [], onDirtyChange, confirmDayRows, feeRateRows, onProfileSaved, onConfirmDaysSaved, onFeeRatesSaved, preloadedPlans, investmentAccounts, cashAccounts, investmentAccountSSOptions, cashAccountSSOptions, onEditPlanOpenChange }: FundProfileSettingsClientProps) {
   const { t } = useI18n();
   const [form, setForm] = useState<ProfileForm>(() => toForm(profile));
   const [dirtyFields, setDirtyFields] = useState<Set<keyof ProfileForm>>(() => new Set());
@@ -282,39 +278,9 @@ export function FundProfileSettingsClient({ account, profile, backHref, onClose,
           <div className={modal ? "grid flex-1 grid-cols-[minmax(0,1fr)_auto] items-center gap-3" : "grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3"}>
             <div className="min-w-0">
               <h1 id="fund-profile-settings-title" className="text-sm font-semibold text-slate-900">{t("fundSettings.profileSection")}</h1>
-              <div className={onFundNavigate ? "mt-1 grid min-w-0 grid-cols-[1.75rem_minmax(0,1fr)_1.75rem] items-center gap-1.5 text-sm" : "mt-1 flex min-w-0 items-center gap-2 text-sm"}>
-                {onFundNavigate ? (
-                  <button
-                    type="button"
-                    onClick={() => onFundNavigate(previousFund)}
-                    disabled={!previousFund || fundNavigationDisabled}
-                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-30"
-                    title={t("fundSettings.previousFund")}
-                    aria-label={t("fundSettings.previousFund")}
-                  >
-                    <ChevronLeft className="h-4 w-4" />
-                  </button>
-                ) : null}
-                <div className="min-w-0" title={`${currentFundName} / ${form.fundCode}`}>
-                  <div className="truncate font-medium text-slate-800">
-                    {currentFundName}
-                  </div>
-                  <div className="truncate text-xs tabular-nums text-slate-500">
-                    {form.fundCode}
-                  </div>
-                </div>
-                {onFundNavigate ? (
-                  <button
-                    type="button"
-                    onClick={() => onFundNavigate(nextFund)}
-                    disabled={!nextFund || fundNavigationDisabled}
-                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-30"
-                    title={t("fundSettings.nextFund")}
-                    aria-label={t("fundSettings.nextFund")}
-                  >
-                    <ChevronRight className="h-4 w-4" />
-                  </button>
-                ) : null}
+              <div className="mt-1 flex min-w-0 items-baseline gap-2 text-sm" title={`${currentFundName} / ${form.fundCode}`}>
+                <span className="truncate font-medium text-slate-800">{currentFundName}</span>
+                <span className="shrink-0 truncate text-xs tabular-nums text-slate-500">{form.fundCode}</span>
               </div>
             </div>
             <div className="flex h-8 w-8 items-center justify-center">

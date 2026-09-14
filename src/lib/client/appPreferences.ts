@@ -53,7 +53,13 @@ export const ACCOUNT_DROPDOWN_RESTRICT_TYPE_COOKIE = "mmh_account_dropdown_restr
 export const SIDEBAR_COLLAPSED_KEY = "sidebar_collapsed";
 export const SIDEBAR_OWNER_FILTER_KEY = "sidebar_owner_filter";
 export const AI_PANEL_COLLAPSED_KEY = "mmh_ai_panel_collapsed";
+export const SIDE_NAV_TOP_OFFSET_FUND_KEY = "mmh_side_nav_top_offset_fund";
+export const SIDE_NAV_TOP_OFFSET_ACCOUNT_KEY = "mmh_side_nav_top_offset_account";
 export const APP_PREFS_EVENT = "mmh:app-preferences";
+export type SideNavTopOffsetScope = "fund" | "account";
+export const DEFAULT_SIDE_NAV_TOP_OFFSET_PX = 160;
+export const MIN_SIDE_NAV_TOP_OFFSET_PX = 72;
+export const MAX_SIDE_NAV_TOP_OFFSET_PX = 520;
 
 export type SidebarGroupMode = "kind" | "institution";
 export type TimeZoneMode = "system" | "specified";
@@ -401,6 +407,35 @@ export function setSidebarCollapsedPreference(value: boolean) {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(value));
   } catch {}
   setCookieValue(SIDEBAR_COLLAPSED_KEY, String(value));
+  emitPreferencesChanged();
+}
+
+function sideNavTopOffsetKey(scope: SideNavTopOffsetScope) {
+  return scope === "account" ? SIDE_NAV_TOP_OFFSET_ACCOUNT_KEY : SIDE_NAV_TOP_OFFSET_FUND_KEY;
+}
+
+export function normalizeSideNavTopOffsetPx(value: unknown): number {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return DEFAULT_SIDE_NAV_TOP_OFFSET_PX;
+  return Math.min(MAX_SIDE_NAV_TOP_OFFSET_PX, Math.max(MIN_SIDE_NAV_TOP_OFFSET_PX, Math.round(n)));
+}
+
+export function getSideNavTopOffsetPreference(scope: SideNavTopOffsetScope): number {
+  const key = sideNavTopOffsetKey(scope);
+  try {
+    return normalizeSideNavTopOffsetPx(localStorage.getItem(key) ?? parseCookieValue(key));
+  } catch {
+    return normalizeSideNavTopOffsetPx(parseCookieValue(key));
+  }
+}
+
+export function setSideNavTopOffsetPreference(scope: SideNavTopOffsetScope, value: number) {
+  const key = sideNavTopOffsetKey(scope);
+  const normalized = normalizeSideNavTopOffsetPx(value);
+  try {
+    localStorage.setItem(key, String(normalized));
+  } catch {}
+  setCookieValue(key, String(normalized));
   emitPreferencesChanged();
 }
 
