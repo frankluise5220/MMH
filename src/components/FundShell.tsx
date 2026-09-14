@@ -680,8 +680,8 @@ export function FundShell(props: Props) {
 
   const [fundCode, setFundCode] = useState(initialFundCode);
   const [fundChartOpen, setFundChartOpen] = useState(false);
-  // 明细列表范围：true = 显示本账户全部交易记录（不受上方选中持仓限制）
-  const [showAllRecords, setShowAllRecords] = useState(false);
+  // 明细列表范围：默认「本账户全部交易记录」，只有选中某只持仓（点行/带 fundCode 打开）才收窄为单只基金。
+  const [showAllRecords, setShowAllRecords] = useState(!initialFundCode);
   const [fundSettingsCode, setFundSettingsCode] = useState<string | null>(null);
   const [fundSettingsName, setFundSettingsName] = useState<string | null>(null);
   const [positionDisplayRows, setPositionDisplayRows] = useState<any[]>([]);
@@ -860,7 +860,7 @@ export function FundShell(props: Props) {
     });
     setFundCode(initialFundCode || "");
     setShowCleared(initialShowCleared);
-    setShowAllRecords(false);
+    setShowAllRecords(!initialFundCode);
     setFundPage(1);
     setFundChartOpen(false);
     setSelectedIds(new Set());
@@ -1222,17 +1222,29 @@ export function FundShell(props: Props) {
 
   }, [baseQuery, isWealthAccount, showCleared, view]);
 
-  // 明细表头「所有记录」按钮：在「只看选中持仓」与「本账户全部交易记录」之间切换。
+  // 明细表头「所有记录」按钮：取消选中持仓，回到「本账户全部交易记录」（幂等）。
   const toggleAllRecords = useCallback(() => {
-    setShowAllRecords((on) => !on);
+    setShowAllRecords(true);
+    setFundCode("");
+    setFundChartOpen(false);
     setFundPage(1);
     setSelectedIds(new Set());
-  }, []);
+
+    const q = new URLSearchParams(baseQuery);
+    q.set("view", view);
+    if (showCleared) q.set("showCleared", "1");
+    else q.delete("showCleared");
+    q.delete("fundCode");
+    q.delete("wealthProductId");
+    window.history.replaceState(null, "", `/?${q.toString()}`);
+  }, [baseQuery, showCleared, view]);
 
   function toggleCleared(on: boolean) {
 
     setShowCleared(on);
     setFundChartOpen(false);
+    // 切 tab（持仓 / 清仓）都回到「全部明细」默认范围
+    setShowAllRecords(true);
 
     const q = new URLSearchParams(baseQuery); q.set("view", view);
 
@@ -1641,16 +1653,7 @@ export function FundShell(props: Props) {
 
   }, [baseQuery, view, showCleared, fundCode, fundChartOpen, sortedPositions, sortedClearedPositions, isWealthAccount, positionAssetKey]);
 
-  // Default to the first holding so its transaction details are visible on open.
-  const initialFundSelectionRef = useRef(false);
-  useEffect(() => {
-    if (initialFundSelectionRef.current || fundCode || showCleared || isWealthAccount) return;
-    const first = sortedPositions[0];
-    const firstKey = first ? positionAssetKey(first) : "";
-    if (!firstKey) return;
-    initialFundSelectionRef.current = true;
-    switchFund(firstKey);
-  }, [fundCode, isWealthAccount, positionAssetKey, showCleared, sortedPositions, switchFund]);
+  // 打开视图默认展示「全部明细」，不自动选中第一只持仓（选中即收窄为单只基金）。
 
 
   const positionDisplayMetrics = useCallback((p: any) => {
@@ -2993,7 +2996,7 @@ export function FundShell(props: Props) {
     statusOf,
     t,
   ]);
-  const showDetailPane = Boolean(fundCode || showAllRecords || isWealthAccount);
+  const showDetailPane = Boolean(fundCode || isWealthAccount || (showAllRecords && (d.allEntries?.length ?? 0) > 0));
 
   return (
 
@@ -3370,7 +3373,7 @@ export function FundShell(props: Props) {
 
             <span className="flex h-6 shrink-0 items-center">{t("fundShell.entriesTitle")}</span>
 
-            {fundCode && (
+            {fundCode && !showAllRecords && (
               <span className={`ml-2 text-xs font-normal ${selectedFundCodeCls}`}>
                 {isWealthAccount ? selectedPosition?.name ?? "" : selectedFundDisplayName}
               </span>
