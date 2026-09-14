@@ -7,7 +7,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AccountTypeQuickEdit, type AccountQuickEditValue, type LoanQuickEditValue } from "./AccountTypeQuickEdit";
 import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTableSortState } from "./AdvancedDataTable";
 import { DateStepper } from "./DateStepper";
-import { DebitBalanceReconcileButton } from "./DebitBalanceReconcileButton";
 import { dispatchEntryEdit, EntryRowActions } from "./EntryRowActions";
 import { ResizableVerticalSplit } from "./ResizableVerticalSplit";
 import {
@@ -524,7 +523,6 @@ export function DebtShell({
       ? t("debtShell.remainingTotal.receivable")
       : t("debtShell.remainingTotal.both");
   const settledCount = rows.filter((row) => !row.parentKey && isSettledDebtRow(row)).length;
-  const canReconcileSelectedRow = !!selectedRow && !selectedRow.isGroup && !!selectedRow.accountId;
   const isSelectedBankLoan = !!selectedRow && !selectedRow.isGroup && selectedRow.isLoan === true;
   const canRepaySelectedRow = !!selectedRow && !selectedRow.isGroup && selectedRow.net < -SETTLED_DEBT_EPSILON;
   const selectedRowLoanType = selectedRow?.loanType ?? null;
@@ -1459,13 +1457,6 @@ export function DebtShell({
             )}
             toolbarRightContent={(
               <div className="flex items-center gap-3">
-                {canReconcileSelectedRow ? (
-                  <DebitBalanceReconcileButton
-                    accountId={selectedRow.accountId}
-                    accountLabel={selectedRow.name}
-                    currentBalance={selectedRow.net}
-                  />
-                ) : null}
                 <label className="flex cursor-pointer items-center gap-1.5 text-xs text-slate-500">
                   <input
                     type="checkbox"

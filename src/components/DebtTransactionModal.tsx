@@ -119,6 +119,8 @@ type RepayableLoanAccountRow = {
   currentPaidAmount?: number | null;
   currentUnpaidPeriod?: number | null;
   currentPeriodPaid?: boolean;
+  /** 该贷款的还款账户（自动扣款计划的资金账户），用于表单预填。 */
+  repaymentAccountId?: string | null;
   // 消费贷提前还款应计利息预览（服务端按借款日至还款日按日计息）
   prepayInterest?: number | null;
   prepayInterestFromDate?: string | null;
@@ -600,6 +602,12 @@ export function DebtTransactionModal({
   const settlePrincipalManualRef = useRef(false);
   // 还款日自动带出：用户手改日期后置 true，期次预定还款日不再覆盖。
   const scheduledDateManualRef = useRef(false);
+  // 还款表自动带出（日期/本金/利息/还款账户）：每次打开弹窗只自动带出一次，
+  // 之后以用户输入为准，避免数据刷新时覆盖用户已修改的内容。
+  const scheduledDraftAutoAppliedRef = useRef(false);
+  // 可还贷款列表是否已有一次请求落地：打开弹窗的首帧 rows 还没回来，
+  // 若此时执行"账户不在列表即清空"会把预选账户误清（清空竞态，2026-09-14 实证）。
+  const repayableFetchSettledRef = useRef(false);
   const [debtAccountNestedOpen, setDebtAccountNestedOpen] = useState(false);
   const [mode, setMode] = useState<DebtMode>("borrow_in");
   const [loanFundingMode, setLoanFundingMode] = useState<LoanFundingMode>("cash_disbursement");
@@ -731,6 +739,8 @@ export function DebtTransactionModal({
     setPrepayInterestManual(false);
     settlePrincipalManualRef.current = false;
     scheduledDateManualRef.current = false;
+    scheduledDraftAutoAppliedRef.current = false;
+    repayableFetchSettledRef.current = false;
     setPrepayStrategy(DEFAULT_LOAN_PREPAY_STRATEGY);
     setAnnualRate("");
     setAnnualRateManuallyEdited(false);
@@ -1177,17 +1187,31 @@ export function DebtTransactionModal({
     const scheduledPrincipal = row?.currentPrincipal;
     const scheduledInterest = row?.currentInterest;
     if (
-      !row?.currentPeriodPaid &&
+      row &&
+      !row.currentPeriodPaid &&
       scheduledPrincipal != null &&
       scheduledInterest != null &&
       scheduledPrincipal + scheduledInterest > 0
     ) {
       // 日期自动填到该期预定还款日（用户手动改过日期后不再覆盖）。
-      if (row?.currentDueDate && scheduledDateManualRef.current !== true) {
+      if (row.currentDueDate && scheduledDateManualRef.current !== true) {
         setDate(row.currentDueDate);
       }
+      // 还款账户带出还款表的扣款账户（自动扣款计划）；仅当该账户在支出账户
+      // 下拉里可见时才预填，避免选中一个列表里不存在的账户。
+      const repaymentAccountId = row.repaymentAccountId;
+      if (
+        repaymentAccountId &&
+        [...(cashAccountSSOptions ?? []), ...cashAccounts, ...localCashAccountList].some(
+          (option) => option.id === repaymentAccountId,
+        )
+      ) {
+        setCashAccountId(repaymentAccountId);
+      }
       setPrincipal(String(Math.round(scheduledPrincipal * 100) / 100));
-      if (repaymentMethod !== FREE_REPAYMENT_METHOD && showInterest) {
+      // 还款模式的利息来自还款表期次拆分，与借款表单的还款方式状态无关
+      //（repay 模式下 repaymentMethod 恒为 FREE，旧判据会拦掉利息带出）。
+      if (showInterest) {
         setInterest(Number.isFinite(scheduledInterest)
           ? String(Math.round(scheduledInterest * 100) / 100)
           : "");
@@ -1978,6 +2002,7 @@ export function DebtTransactionModal({
   }, [mortgageLprDiscount, showHomeLoanLprFields]);
   useEffect(() => {
     if (!open || !isLoanRepaymentMode || !isValidDateInput(date)) {
+      repayableFetchSettledRef.current = true;
       setRepayableLoanAccountRows([]);
       setRepayableLoanAccountsLoading(false);
       return;
@@ -1987,6 +2012,7 @@ export function DebtTransactionModal({
     const params = new URLSearchParams({ date });
     if (editingEntryId) params.set("excludeEntryId", editingEntryId);
     setRepayableLoanAccountsLoading(true);
+    repayableFetchSettledRef.current = false;
     fetch(`/api/v1/debt/repayable-loan-accounts?${params.toString()}`, {
       cache: "no-store",
       signal: controller.signal,
@@ -1995,13 +2021,14 @@ export function DebtTransactionModal({
       .then((payload) => {
         if (cancelled) return;
         const rows = Array.isArray(payload?.data) ? payload.data : [];
-        setRepayableLoanAccountRows(rows.flatMap((row: { accountId?: unknown; balance?: unknown; currentPlanId?: unknown; currentDueDate?: unknown; currentPrincipal?: unknown; currentInterest?: unknown; currentPayment?: unknown; currentPaidAmount?: unknown; currentUnpaidPeriod?: unknown; currentPeriodPaid?: unknown; prepayInterest?: unknown; prepayInterestFromDate?: unknown; prepayInterestDays?: unknown; prepayAnnualRate?: unknown }) => {
+        setRepayableLoanAccountRows(rows.flatMap((row: { accountId?: unknown; balance?: unknown; currentPlanId?: unknown; currentDueDate?: unknown; currentPrincipal?: unknown; currentInterest?: unknown; currentPayment?: unknown; currentPaidAmount?: unknown; currentUnpaidPeriod?: unknown; currentPeriodPaid?: unknown; repaymentAccountId?: unknown; prepayInterest?: unknown; prepayInterestFromDate?: unknown; prepayInterestDays?: unknown; prepayAnnualRate?: unknown }) => {
           const accountId = typeof row.accountId === "string" ? row.accountId : "";
           const balance = Number(row.balance);
           if (!accountId || !Number.isFinite(balance)) return [];
           const item: RepayableLoanAccountRow = { accountId, balance };
           if (typeof row.currentPlanId === "string") item.currentPlanId = row.currentPlanId;
           if (typeof row.currentDueDate === "string") item.currentDueDate = row.currentDueDate;
+          if (typeof row.repaymentAccountId === "string" && row.repaymentAccountId) item.repaymentAccountId = row.repaymentAccountId;
           const currentPrincipal = Number(row.currentPrincipal);
           const currentInterest = Number(row.currentInterest);
           if (Number.isFinite(currentPrincipal) && currentPrincipal >= 0) item.currentPrincipal = currentPrincipal;
@@ -2029,6 +2056,7 @@ export function DebtTransactionModal({
         if (!cancelled) setRepayableLoanAccountRows([]);
       })
       .finally(() => {
+        repayableFetchSettledRef.current = true;
         if (!cancelled) setRepayableLoanAccountsLoading(false);
       });
     return () => {
@@ -2036,6 +2064,19 @@ export function DebtTransactionModal({
       controller.abort();
     };
   }, [date, editingEntryId, isLoanRepaymentMode, open]);
+  // 打开还款表单（账户已预选）或切到还款模式后，按还款表最近一次未还期次
+  // 自动带出日期/本金/利息/还款账户——不依赖用户再手动点一次贷款下拉。
+  useEffect(() => {
+    if (!open || editingEntryId || !isLoanDialog || mode !== "repay_out") return;
+    if (repayableLoanAccountsLoading || scheduledDraftAutoAppliedRef.current) return;
+    if (!debtAccountId) return;
+    const row = repayableLoanAccountRows.find((item) => item.accountId === debtAccountId);
+    // 无还款计划的贷款（自由还款）没有"还款表最近一次"可带出，保持现状。
+    if (!row?.currentPlanId) return;
+    scheduledDraftAutoAppliedRef.current = true;
+    applyScheduledLoanRepaymentDraft(debtAccountId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 与下方既有 effect 同风格：applyScheduledLoanRepaymentDraft 为组件内函数
+  }, [debtAccountId, editingEntryId, isLoanDialog, mode, open, repayableLoanAccountRows, repayableLoanAccountsLoading]);
   const repaymentTotal = useMemo(() => {
     if (!principal.trim() && !interest.trim() && !penalty.trim()) return "";
     return (parseMoneyText(principal) + (showInterest ? parseMoneyText(interest) : 0) + (showPrepayment ? parseMoneyText(penalty) : 0)).toFixed(2);
@@ -2083,6 +2124,8 @@ export function DebtTransactionModal({
   );
   useEffect(() => {
     if (!isLoanRepaymentMode || editingEntryId || repayableLoanAccountsLoading || !debtAccountId) return;
+    // 首帧竞态防护：请求未落地前不判定（此时 rows 还是空的旧值，会误清预选账户）。
+    if (!repayableFetchSettledRef.current) return;
     if (!repayableLoanAccountOptions.some((option) => option.id === debtAccountId)) {
       setDebtAccountId("");
       setDebtInstitutionId("");

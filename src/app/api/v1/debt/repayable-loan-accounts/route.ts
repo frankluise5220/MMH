@@ -12,16 +12,20 @@
  * Response:
  * - { ok: true, data: [{ accountId, balance, currentPlanId, currentDueDate,
  *     currentPrincipal, currentInterest, currentPayment, currentPaidAmount,
- *     currentUnpaidPeriod, currentPeriodPaid, prepayInterest?,
+ *     currentUnpaidPeriod, currentPeriodPaid, repaymentAccountId, prepayInterest?,
  *     prepayInterestFromDate?, prepayInterestDays?, prepayAnnualRate? }] }
  *   balance uses the debt account display sign; negative means payable debt.
  *   currentPrincipal / currentInterest are the remaining amounts for the
  *   current period in the loan's system-built repayment schedule.
- *   currentUnpaidPeriod is the schedule period containing the requested date.
+ *   currentUnpaidPeriod is the schedule period containing the requested date,
+ *   advanced to the next unpaid period when that period is already fully paid
+ *   (the "most recent unpaid installment" of the repayment schedule).
  *   currentPeriodPaid is true only when transfers explicitly linked to that
  *   plan/period (or a legacy manual repayment mapped by date) cover the scheduled
  *   principal plus interest. Loan fields are null when the account has no
  *   repayment plan or nothing is left to repay.
+ *   repaymentAccountId is the cash account that repays this loan (the
+ *   auto-debit plan's cashAccountId), so the repayment form can prefill it.
  * - All loan types carry prepay interest preview fields (利随本清，允许修改)：
  *   prepayInterest（自计息起点到该日期的按日应计利息）、
  *   prepayInterestFromDate、prepayInterestDays、prepayAnnualRate。
@@ -32,10 +36,11 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { formatDateUtc, parseDateInputToUtc, toNumber } from "@/lib/date-utils";
 import { resolveLoanRepaymentCoverage, resolveLoanRepaymentPeriodForDate } from "@/lib/loan-repayment-period";
+import { calcNextScheduledRunDate } from "@/lib/scheduled-task-date";
 import { ACTIVE_DEBT_EPSILON } from "@/lib/server/debt-view-data";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { computeLoanPrincipalBalancesAsOf } from "@/lib/server/account-balance";
-import { decodeScheduledTaskMemo, getLoanScheduledPlanRole, shouldPreferLoanScheduledPlan } from "@/lib/scheduled-task";
+import { decodeScheduledTaskMemo, getLoanScheduledPlanRole, shouldPreferLoanAutoDebitPlan, shouldPreferLoanScheduledPlan } from "@/lib/scheduled-task";
 import {
   calcLoanRunPartsWithRateAdjustments,
   calcLoanScheduledAmountForPeriodStart,
@@ -51,6 +56,7 @@ export const revalidate = 0;
 type RepaymentPlanRow = {
   id: string;
   accountId: string;
+  cashAccountId: string | null;
   amount: unknown;
   intervalUnit: string;
   intervalValue: number;
@@ -116,6 +122,7 @@ export async function GET(request: Request) {
           select: {
             id: true,
             accountId: true,
+            cashAccountId: true,
             amount: true,
             intervalUnit: true,
             intervalValue: true,
@@ -135,6 +142,13 @@ export async function GET(request: Request) {
     for (const plan of plans) {
       const existing = planByAccountId.get(plan.accountId);
       if (shouldPreferLoanScheduledPlan(plan, existing)) planByAccountId.set(plan.accountId, plan);
+    }
+    // Preferred auto-debit plan per account: its cashAccountId is the account
+    // that actually repays the loan (used to prefill the repayment form).
+    const autoDebitPlanByAccountId = new Map<string, RepaymentPlanRow>();
+    for (const plan of plans) {
+      const existing = autoDebitPlanByAccountId.get(plan.accountId);
+      if (shouldPreferLoanAutoDebitPlan(plan, existing)) autoDebitPlanByAccountId.set(plan.accountId, plan);
     }
     const rateAdjustmentsByAccountId = plans.length > 0
       ? await listLoanRateAdjustmentsByAccountIds({
@@ -162,6 +176,7 @@ export async function GET(request: Request) {
       currentPaidAmount: number;
       currentUnpaidPeriod: number | null;
       currentPeriodPaid: boolean;
+      repaymentAccountId: string | null;
       prepayInterest?: number;
       prepayInterestFromDate?: string;
       prepayInterestDays?: number;
@@ -170,7 +185,7 @@ export async function GET(request: Request) {
       .map((account) => {
         const balance = balanceByAccountId.get(account.id) ?? 0;
         const plan = planByAccountId.get(account.id);
-        const currentPeriod = plan
+        let currentPeriod = plan
           ? resolveLoanRepaymentPeriodForDate({
               startDate: repaymentStartDateForPlan(plan),
               intervalUnit: plan.intervalUnit as IntervalUnit,
@@ -180,10 +195,10 @@ export async function GET(request: Request) {
               totalRuns: plan.totalRuns,
             }, asOfDate)
           : null;
-        const paid = plan && currentPeriod
+        let paid = plan && currentPeriod
           ? paidByPeriodKey.get(`${plan.id}:${currentPeriod.period}`) ?? { principal: 0, interest: 0, total: 0 }
           : { principal: 0, interest: 0, total: 0 };
-        const installment = currentPeriod
+        let installment = currentPeriod
           ? computeCurrentInstallment(
               account.id,
               balance,
@@ -195,7 +210,7 @@ export async function GET(request: Request) {
               rateAdjustmentsByAccountId,
             )
           : null;
-        const coverage = installment
+        let coverage = installment
           ? resolveLoanRepaymentCoverage({
               scheduledPrincipal: installment.principal,
               scheduledInterest: installment.interest,
@@ -204,6 +219,44 @@ export async function GET(request: Request) {
               paidTotal: paid.total,
             })
           : null;
+        // 本期已还清时顺延到下一个未还清期次，让表单带出"还款表最近一次未还款"
+        // 的日期/本金/利息（供提前还款或提前记账），而不是停在已还清的期次。
+        for (let guard = 0; guard < 120 && plan && currentPeriod && coverage?.paid && installment; guard += 1) {
+          const nextDueDate = calcNextScheduledRunDate(
+            currentPeriod.dueDate,
+            plan.intervalUnit as IntervalUnit,
+            plan.intervalValue,
+            plan.executionDay,
+            false,
+            plan.secondaryExecutionDay,
+          );
+          if (!nextDueDate || nextDueDate <= currentPeriod.dueDate) break;
+          const nextPeriod = currentPeriod.period + 1;
+          const nextPaid = paidByPeriodKey.get(`${plan.id}:${nextPeriod}`) ?? { principal: 0, interest: 0, total: 0 };
+          const nextInstallment = computeCurrentInstallment(
+            account.id,
+            balance,
+            nextPeriod,
+            currentPeriod.dueDate,
+            nextDueDate,
+            nextPaid.principal,
+            planByAccountId,
+            rateAdjustmentsByAccountId,
+          );
+          if (!nextInstallment) break;
+          const nextCoverage = resolveLoanRepaymentCoverage({
+            scheduledPrincipal: nextInstallment.principal,
+            scheduledInterest: nextInstallment.interest,
+            paidPrincipal: nextPaid.principal,
+            paidInterest: nextPaid.interest,
+            paidTotal: nextPaid.total,
+          });
+          currentPeriod = { period: nextPeriod, dueDate: nextDueDate, previousDueDate: currentPeriod.dueDate };
+          paid = nextPaid;
+          installment = nextInstallment;
+          coverage = nextCoverage;
+        }
+        const autoDebitPlan = autoDebitPlanByAccountId.get(account.id);
         return {
           accountId: account.id,
           balance,
@@ -217,6 +270,10 @@ export async function GET(request: Request) {
           currentPaidAmount: paid.total,
           currentUnpaidPeriod: installment ? currentPeriod?.period ?? null : null,
           currentPeriodPaid: coverage?.paid ?? false,
+          repaymentAccountId:
+            autoDebitPlan?.cashAccountId
+            ?? plan?.cashAccountId
+            ?? null,
         };
       })
       .filter((row) => row.balance < -ACTIVE_DEBT_EPSILON)
