@@ -1506,7 +1506,9 @@ export default async function Home({
             toAccount: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
           },
           orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-          take: 3000,
+          // 负债流水随自动扣款/账单逐月增长（默认账本已 4500+ 条），上限过低会按日期截断最老历史，
+          // 导致还款计划表早期期次「消失」（2026-09-14 实证：3000 条只覆盖到 2018-12，期次 1-19 不显示）。
+          take: 50000,
         })
       : [];
   applyDebtRowEntryMetrics({
