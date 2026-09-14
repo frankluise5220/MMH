@@ -125,6 +125,15 @@ settings-accounts*.png
 # personal docs（docs 目录只保存在本地、不进仓库；用户安装手册在 deploy/nas-install-manual.md）
 docs/*
 
+# 开发期审计/交接/分诊文档与本地发布草稿（只留本地，对用户运行程序无帮助）
+/*-triage.md
+/HANDOFF-*.md
+/*_AUDIT.md
+/*-audit-*.md
+/_spk_reupload/
+# 误建的空文件（命令重定向残留），本地保留不入库
+/0
+
 # personal data files
 cookies*.txt
 raw_debug.txt
