@@ -717,7 +717,8 @@ function hasBlockingIssue(item: FundImportPreviewItem | undefined) {
 }
 
 function selectableIndexes(items: FundImportPreviewItem[]) {
-  return new Set(items.flatMap((item, index) => hasBlockingIssue(item) ? [] : [index]));
+  // 未匹配/有 error 的行也允许勾选，便于批量改账户后再导入
+  return new Set(items.map((_, index) => index));
 }
 
 function isFundCashLikeAccount(account: FundPreviewAccount) {
@@ -796,6 +797,10 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
   const cashAccountOptions = useMemo(() => buildGroupedAccountOptions(cashAccountDisplayOptions), [cashAccountDisplayOptions]);
   const fundAccountOptions = useMemo(() => buildGroupedAccountOptions(fundAccountDisplayOptions), [fundAccountDisplayOptions]);
   const selectedKeys = useMemo(() => new Set(Array.from(selected).map((idx) => String(idx))), [selected]);
+  const importReadySelectedCount = useMemo(
+    () => Array.from(selected).filter((idx) => previewItems[idx] && !hasBlockingIssue(previewItems[idx])).length,
+    [previewItems, selected],
+  );
 
   const importIssues = useMemo(() => (
     Array.from(selected)
@@ -972,7 +977,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
       setRuleRows(buildFundRuleEditorRows(data.items));
       setRulesDirty(false);
       setSelected((prev) => preserveSelection
-        ? new Set(Array.from(prev).filter((idx) => idx < data.items!.length && !hasBlockingIssue(data.items![idx])))
+        ? new Set(Array.from(prev).filter((idx) => idx < data.items!.length))
         : selectableIndexes(data.items!));
       setDebugMessage(null);
       setMessage(null);
@@ -1449,32 +1454,17 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
   const handleImport = useCallback(async () => {
     if (importing) return;
     const selectedIndexes = Array.from(selected).sort((a, b) => a - b);
-    const selectedItems = selectedIndexes.map((idx) => previewItems[idx]).filter(Boolean);
-    if (selectedItems.length === 0) return;
-
-    if (errorIssues.length > 0) {
-      const preview = errorIssues
-        .slice(0, 5)
-        .map((issue) => formatText(t, "batchImport.issueLine", {
-          index: issue.idx + 1,
-          level: t("batchImport.levelError"),
-          message: issue.message,
-        }))
-        .join("；");
-      setMessage(formatText(t, "batchImport.importValidationFailed", {
-        count: errorIssues.length,
-        preview,
-        more: errorIssues.length > 5 ? t("batchImport.importValidationMore") : "",
-      }));
-      setDebugMessage(
-        importIssues
-          .map((issue) => formatText(t, "batchImport.issueLine", {
-            index: issue.idx + 1,
-            level: issue.level === "error" ? t("batchImport.levelError") : t("batchImport.levelWarning"),
-            message: issue.message,
-          }))
-          .join("\n"),
-      );
+    // 允许勾选未匹配行做批量修改；确认导入时只提交无 error 的勾选行
+    const selectedItems = selectedIndexes
+      .map((idx) => previewItems[idx])
+      .filter((item): item is FundImportPreviewItem => Boolean(item) && !hasBlockingIssue(item));
+    if (selectedItems.length === 0) {
+      const selectedBlocking = selectedIndexes
+        .map((idx) => previewItems[idx])
+        .filter((item): item is FundImportPreviewItem => Boolean(item) && hasBlockingIssue(item));
+      if (selectedBlocking.length > 0) {
+        setMessage(formatText(t, "batchImport.importReadyEmpty", { count: selectedBlocking.length }));
+      }
       return;
     }
 
@@ -1741,12 +1731,11 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
             minTableWidth={1760}
             selectable
             selectAllScope="renderedRows"
-            rowSelectable={(row) => !hasBlockingIssue(row)}
             selectedKeys={selectedKeys}
             onSelectionChange={(keys) => {
               setSelected(new Set(Array.from(keys)
                 .map((key) => Number(key))
-                .filter((idx) => Number.isInteger(idx) && !hasBlockingIssue(previewItems[idx]))));
+                .filter((idx) => Number.isInteger(idx) && previewItems[idx])));
             }}
             batchActionSlot={(
               <BatchReplacePopoverButton
@@ -1808,10 +1797,10 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
             <button
               type="button"
               onClick={() => void handleImport()}
-              disabled={uploading || importing || selected.size === 0 || errorIssues.length > 0}
+              disabled={uploading || importing || importReadySelectedCount === 0}
               className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {importing ? t("batchImport.importing") : formatText(t, "batchImport.confirmImport", { count: selected.size })}
+              {importing ? t("batchImport.importing") : formatText(t, "batchImport.confirmImport", { count: importReadySelectedCount })}
             </button>
           </div>
         </div>

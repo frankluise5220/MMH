@@ -444,8 +444,8 @@ export function statementImportMissingFields(
   if (item.type === "transfer") {
     const primaryAccount = primaryAccountValue(item, defaultAccountName);
     const counterAccount = counterAccountValue(item);
-    if (!primaryAccount || (lookup && !isPreviewAccountResolvable(primaryAccount, lookup, creationOptions, item._meta))) missing.push("account");
     const counterKindHint = importCounterKindFromCategory(item.category);
+    if (!primaryAccount || (lookup && !isPreviewAccountResolvable(primaryAccount, lookup, creationOptions, item._meta))) missing.push("account");
     if (!counterAccount || (lookup && !isPreviewAccountResolvable(counterAccount, lookup, creationOptions, undefined, counterKindHint))) missing.push("counterAccount");
   } else {
     const primaryAccount = cleanText(item.account) || cleanText(defaultAccountName) || cleanText(item._meta?.institutionName);
@@ -1127,8 +1127,9 @@ export function StatementImportPreviewDialog({
     if (busy || !settingsBootstrapLoaded) return;
     const sourceRows = rows;
     const effectiveSelectedKeys = selectedKeys;
-    const selectedRows = sourceRows.filter((row) => effectiveSelectedKeys.has(row.key));
-    if (selectedRows.length === 0 || selectedRows.some((row) => !row.ready)) return;
+    // 未匹配/未就绪行允许勾选与批量修改，但最终只导入已就绪的勾选行
+    const selectedRows = sourceRows.filter((row) => effectiveSelectedKeys.has(row.key) && row.ready);
+    if (selectedRows.length === 0) return;
     const selectedItems = selectedRows.map((row) => previewItemForImport(row.item));
     if (selectedItems.length === 0) return;
     await onConfirm(selectedItems, {
@@ -1575,6 +1576,10 @@ export function StatementImportPreviewDialog({
   const fallbackRows = rows;
   const fallbackSelectedKeys = selectedKeys;
   const previewReady = settingsBootstrapLoaded && rows.length > 0;
+  const importReadySelectedCount = useMemo(
+    () => fallbackRows.reduce((count, row) => count + (fallbackSelectedKeys.has(row.key) && row.ready ? 1 : 0), 0),
+    [fallbackRows, fallbackSelectedKeys],
+  );
 
   if (!open || typeof document === "undefined") return null;
 
@@ -1618,12 +1623,12 @@ export function StatementImportPreviewDialog({
               minTableWidth={1180}
               selectable
               selectAllScope="renderedRows"
-              rowSelectable={(row) => row.ready}
               selectAllPreferred={(row) => row.ready}
               selectedKeys={fallbackSelectedKeys}
               onSelectionChange={(keys) => {
                 if (busy || !previewReady) return;
-                const rowKeys = new Set(fallbackRows.filter((row) => row.ready).map((row) => row.key));
+                // 未匹配行也允许勾选，便于筛选后批量改账户/分类再导入
+                const rowKeys = new Set(fallbackRows.map((row) => row.key));
                 setSelectedKeys(new Set(Array.from(keys).filter((key) => rowKeys.has(key))));
               }}
               batchActionSlot={(
@@ -1663,7 +1668,12 @@ export function StatementImportPreviewDialog({
                   </label>
                   {statementInfoTexts.length > 0 ? <span>{t("statementImportPreview.statementInfo", { texts: statementInfoTexts.join(" / ") })}</span> : null}
                   <span>{t("batchImport.totalCount", { total: fallbackRows.length })}</span>
-                  <span>{t("statementImportPreview.willImport", { count: fallbackSelectedKeys.size })}</span>
+                  <span>{t("statementImportPreview.willImport", { count: importReadySelectedCount })}</span>
+                  {fallbackSelectedKeys.size > importReadySelectedCount ? (
+                    <span className="text-amber-700">
+                      {t("statementImportPreview.selectedNotReady", { count: fallbackSelectedKeys.size - importReadySelectedCount })}
+                    </span>
+                  ) : null}
                 </div>
               )}
               rowClassName={(row) => {
@@ -1681,25 +1691,30 @@ export function StatementImportPreviewDialog({
 
         <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3">
           <div className="flex min-w-0 items-center gap-3 text-xs">
-            <span className="shrink-0 text-slate-500">{t("statementImportPreview.willImport", { count: fallbackSelectedKeys.size })}</span>
-            {categorySyncMessage ? <span className="truncate text-blue-600" title={categorySyncMessage}>{categorySyncMessage}</span> : null}
+            <span className="shrink-0 text-slate-500">{t("statementImportPreview.willImport", { count: importReadySelectedCount })}</span>
+            {fallbackSelectedKeys.size > importReadySelectedCount ? (
+              <span className="shrink-0 text-amber-700">
+                {t("statementImportPreview.selectedNotReady", { count: fallbackSelectedKeys.size - importReadySelectedCount })}
+              </span>
+            ) : null}
             {balanceAdjustments.length > 0 ? (
-              <span className="truncate text-violet-700" title={balanceAdjustments.map((row) => `${row.date ?? ""} -> ${row.balance}`).join("; ")}>
+              <span className="truncate text-violet-700" title={balanceAdjustments.map((row) => `${row.date ?? ""} → ${row.balance}`).join("；")}>
                 {t("statementImportPreview.balanceAdjustNotice", {
                   count: balanceAdjustments.length,
-                  value: balanceAdjustments.map((row) => `${row.date ?? ""} ${row.balance}`).join(", "),
+                  value: balanceAdjustments.map((row) => `${row.date ?? ""} ¥${row.balance}`).join("、"),
                 })}
               </span>
             ) : null}
+            {categorySyncMessage ? <span className="truncate text-blue-600" title={categorySyncMessage}>{categorySyncMessage}</span> : null}
           </div>
           <div className="flex items-center justify-end">
             <button
               type="button"
               className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
               onClick={() => void confirmSelected()}
-              disabled={busy || !previewReady || fallbackSelectedKeys.size === 0 || fallbackRows.some((row) => fallbackSelectedKeys.has(row.key) && !row.ready)}
+              disabled={busy || !previewReady || importReadySelectedCount === 0}
             >
-              {busy ? t("batchImport.importing") : t("batchImport.confirmImport", { count: fallbackSelectedKeys.size })}
+              {busy ? t("batchImport.importing") : t("batchImport.confirmImport", { count: importReadySelectedCount })}
             </button>
           </div>
         </div>
