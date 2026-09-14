@@ -28,6 +28,125 @@ mmh_log() {
   echo "[mmh] $(date -u +%Y-%m-%dT%H:%M:%SZ) $*"
 }
 
+memory_limit_to_mb() {
+  value="$(printf '%s' "${1:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+  [ -n "$value" ] && [ "$value" != "max" ] || return 1
+  case "$value" in
+    *gb|*g)
+      number="${value%gb}"
+      number="${number%g}"
+      ;;
+    *mb|*m)
+      number="${value%mb}"
+      number="${number%m}"
+      ;;
+    *kb|*k)
+      number="${value%kb}"
+      number="${number%k}"
+      ;;
+    *b)
+      number="${value%b}"
+      ;;
+    *[!0-9]*)
+      return 1
+      ;;
+    *)
+      number="$value"
+      ;;
+  esac
+  case "$number" in
+    ""|*[!0-9]*) return 1 ;;
+  esac
+  case "$value" in
+    *gb|*g) echo $((number * 1024)) ;;
+    *kb|*k) echo $((number / 1024)) ;;
+    *b) echo $((number / 1048576)) ;;
+    *) echo "$number" ;;
+  esac
+}
+
+detect_runtime_memory_limit_mb() {
+  if runtime_limit="$(memory_limit_to_mb "${MMH_APP_MEMORY_LIMIT:-}")" && [ "$runtime_limit" -gt 0 ]; then
+    echo "$runtime_limit"
+    return 0
+  fi
+
+  host_total_mb=""
+  if [ -r /proc/meminfo ]; then
+    host_total_kb="$(awk '/^MemTotal:/ { print $2; exit }' /proc/meminfo 2>/dev/null || true)"
+    case "$host_total_kb" in
+      ""|*[!0-9]*) ;;
+      *) host_total_mb=$((host_total_kb / 1024)) ;;
+    esac
+  fi
+
+  for limit_file in /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory/memory.limit_in_bytes; do
+    if [ -r "$limit_file" ]; then
+      raw_limit="$(cat "$limit_file" 2>/dev/null | tr -d '[:space:]')"
+      case "$raw_limit" in
+        ""|max|*[!0-9]*) ;;
+        *)
+          cgroup_limit_mb=$((raw_limit / 1048576))
+          if [ "$cgroup_limit_mb" -gt 0 ] && { [ -z "$host_total_mb" ] || [ "$cgroup_limit_mb" -le $((host_total_mb * 2)) ]; }; then
+            echo "$cgroup_limit_mb"
+            return 0
+          fi
+          ;;
+      esac
+    fi
+  done
+
+  if [ -n "$host_total_mb" ] && [ "$host_total_mb" -gt 0 ]; then
+    echo "$host_total_mb"
+    return 0
+  fi
+
+  echo 0
+}
+
+recommended_node_old_space_mb() {
+  runtime_limit_mb="$(detect_runtime_memory_limit_mb)"
+  case "$runtime_limit_mb" in
+    ""|*[!0-9]*|0) echo 768 ;;
+    *)
+      if [ "$runtime_limit_mb" -lt 1280 ]; then
+        echo 384
+      elif [ "$runtime_limit_mb" -lt 3072 ]; then
+        echo 768
+      elif [ "$runtime_limit_mb" -lt 6144 ]; then
+        echo 1024
+      else
+        echo 1536
+      fi
+      ;;
+  esac
+}
+
+apply_node_memory_limit() {
+  MMH_NODE_MAX_OLD_SPACE_MB="${MMH_NODE_MAX_OLD_SPACE_MB:-auto}"
+  case "$MMH_NODE_MAX_OLD_SPACE_MB" in
+    auto|AUTO|Auto)
+      MMH_NODE_MAX_OLD_SPACE_MB="$(recommended_node_old_space_mb)"
+      ;;
+    ""|*[!0-9]*)
+      mmh_log "WARNING: invalid MMH_NODE_MAX_OLD_SPACE_MB; falling back to auto."
+      MMH_NODE_MAX_OLD_SPACE_MB="$(recommended_node_old_space_mb)"
+      ;;
+  esac
+
+  case "${NODE_OPTIONS:-}" in
+    *--max-old-space-size*|*--max_old_space_size*)
+      ;;
+    *)
+      NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--max-old-space-size=$MMH_NODE_MAX_OLD_SPACE_MB"
+      ;;
+  esac
+
+  export MMH_NODE_MAX_OLD_SPACE_MB NODE_OPTIONS
+}
+
+apply_node_memory_limit
+
 generate_secret() {
   if command -v node >/dev/null 2>&1; then
     node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('base64url'))"

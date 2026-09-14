@@ -8,6 +8,15 @@ const globalForPrisma = globalThis as unknown as {
   prismaPool?: Pool;
 };
 
+function defaultPgPoolMax() {
+  return process.env.NODE_ENV === "production" ? 4 : 8;
+}
+
+export function getConfiguredPgPoolMax() {
+  const configured = Number(process.env.PG_POOL_MAX);
+  return Number.isInteger(configured) && configured > 0 ? configured : defaultPgPoolMax();
+}
+
 function createClient(): PrismaClient {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) {
@@ -26,7 +35,7 @@ function createClient(): PrismaClient {
 
   const pool = globalForPrisma.prismaPool ?? new Pool({
     connectionString,
-    max: Number(process.env.PG_POOL_MAX ?? 8),
+    max: getConfiguredPgPoolMax(),
     connectionTimeoutMillis: Number(process.env.PG_CONNECT_TIMEOUT_MS ?? 5_000),
     idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS ?? 30_000),
     keepAlive: true,

@@ -553,12 +553,20 @@ export default function SystemUpdatePage() {
       ) : needsUpdate && !canStartUpdate && dockerManaged ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           {t("settings.systemUpdate.dockerUpdaterDisabled")}
-          <div className="mt-2 rounded bg-white/70 px-3 py-2 font-mono text-xs text-slate-700">
-            git pull
-            <br />
-            sudo docker compose pull app
-            <br />
-            sudo docker compose up -d
+          <div className="mt-2 space-y-2 text-xs">
+            <div>
+              <div className="text-amber-900/80">{t("settings.systemUpdate.dockerUpdaterEnableHint")}</div>
+              <pre className="mt-1 overflow-x-auto rounded bg-white/70 px-3 py-2 font-mono text-slate-700">{`cd ~/mmh
+grep -qE '^MMH_UPDATE_TOKEN=..*' .env || echo 'MMH_UPDATE_TOKEN="'$(openssl rand -hex 24)'"' >> .env
+sudo docker compose -p mmh up -d app updater`}</pre>
+            </div>
+            <div>
+              <div className="text-amber-900/80">{t("settings.systemUpdate.dockerUpdaterManualHint")}</div>
+              <pre className="mt-1 overflow-x-auto rounded bg-white/70 px-3 py-2 font-mono text-slate-700">{`cd ~/mmh
+sudo docker compose -p mmh pull app updater
+sudo docker compose -p mmh up -d app updater`}</pre>
+            </div>
+            <div className="text-amber-900/80">{t("settings.systemUpdate.dockerUpdaterImageSourceHint")}</div>
           </div>
         </div>
       ) : !canCheckUpdate ? (

@@ -6,7 +6,13 @@ const path = require("node:path");
 const root = path.resolve(__dirname, "..");
 const entrypoint = fs.readFileSync(path.join(root, "scripts", "docker-entrypoint.sh"), "utf8");
 const dockerfile = fs.readFileSync(path.join(root, "Dockerfile"), "utf8");
+const rootCompose = fs.readFileSync(path.join(root, "docker-compose.yml"), "utf8");
+const nasCompose = fs.readFileSync(path.join(root, "deploy", "nas", "docker-compose.yml"), "utf8");
+const nasEnvExample = fs.readFileSync(path.join(root, "deploy", "nas", "env.example"), "utf8");
 const workflow = fs.readFileSync(path.join(root, ".github", "workflows", "docker-build.yml"), "utf8");
+const healthRoute = fs.readFileSync(path.join(root, "src", "app", "api", "health", "route.ts"), "utf8");
+const prismaDb = fs.readFileSync(path.join(root, "src", "lib", "db", "prisma.ts"), "utf8");
+const standaloneStart = fs.readFileSync(path.join(root, "scripts", "start-standalone.cjs"), "utf8");
 const systemUpdateRoute = fs.readFileSync(path.join(root, "src", "app", "api", "v1", "settings", "system-update", "route.ts"), "utf8");
 const updaterServer = fs.readFileSync(path.join(root, "scripts", "mmh-updater-server.mjs"), "utf8");
 const failures = [];
@@ -25,6 +31,64 @@ expect(/record_schema_version "\$build_version"/.test(entrypoint), "Docker entry
 const schemaGuardIndex = entrypoint.indexOf("refuse_if_schema_newer\nrun_compat_migrations");
 const dbPushIndex = entrypoint.indexOf("prisma db push >");
 expect(schemaGuardIndex >= 0 && dbPushIndex >= 0 && schemaGuardIndex < dbPushIndex, "Docker entrypoint must check for a newer database schema before any schema sync runs.");
+
+const nodeLimitCallIndex = entrypoint.indexOf("\napply_node_memory_limit\n");
+const prismaPushIndex = entrypoint.indexOf("prisma db push");
+expect(/ENV MMH_NODE_MAX_OLD_SPACE_MB=auto/.test(dockerfile), "Dockerfile must default the Node old-space limit to auto.");
+expect(/ENV PG_POOL_MAX=4/.test(dockerfile), "Dockerfile must default the app database pool to a NAS-friendly size.");
+expect(
+  /apply_node_memory_limit/.test(entrypoint) &&
+    /MMH_NODE_MAX_OLD_SPACE_MB="\$\{MMH_NODE_MAX_OLD_SPACE_MB:-auto\}"/.test(entrypoint) &&
+    /recommended_node_old_space_mb/.test(entrypoint) &&
+    /detect_runtime_memory_limit_mb/.test(entrypoint) &&
+    /--max-old-space-size=\$MMH_NODE_MAX_OLD_SPACE_MB/.test(entrypoint) &&
+    nodeLimitCallIndex >= 0 &&
+    prismaPushIndex >= 0 &&
+    nodeLimitCallIndex < prismaPushIndex,
+  "Docker entrypoint must apply the Node old-space guardrail before Prisma schema sync and app start.",
+);
+for (const [name, compose] of [
+  ["repo docker-compose.yml", rootCompose],
+  ["NAS docker-compose.yml", nasCompose],
+]) {
+  expect(/mem_limit:\s*\$\{MMH_APP_MEMORY_LIMIT:-1536m\}/.test(compose), `${name} must cap mmh-app memory by default.`);
+  expect(/MMH_APP_MEMORY_LIMIT:\s*\$\{MMH_APP_MEMORY_LIMIT:-1536m\}/.test(compose), `${name} must pass the app memory limit into the health diagnostics.`);
+  expect(/MMH_NODE_MAX_OLD_SPACE_MB:\s*\$\{MMH_NODE_MAX_OLD_SPACE_MB:-auto\}/.test(compose), `${name} must expose the auto Node old-space limit.`);
+  expect(/PG_POOL_MAX:\s*\$\{PG_POOL_MAX:-4\}/.test(compose), `${name} must expose a NAS-friendly PostgreSQL pool size.`);
+  expect(
+    /healthcheck:/.test(compose) &&
+      /\/api\/health/.test(compose) &&
+      /start_period:\s*90s/.test(compose),
+    `${name} must define an app healthcheck against /api/health with a startup grace period.`,
+  );
+}
+expect(/MMH_APP_MEMORY_LIMIT="1536m"/.test(nasEnvExample), "NAS env.example must expose the Docker app memory limit.");
+expect(/MMH_NODE_MAX_OLD_SPACE_MB="auto"/.test(nasEnvExample), "NAS env.example must expose the auto Node old-space limit.");
+expect(/PG_POOL_MAX="4"/.test(nasEnvExample), "NAS env.example must expose the PostgreSQL pool size.");
+expect(
+  /process\.memoryUsage/.test(healthRoute) &&
+    /getHeapStatistics/.test(healthRoute) &&
+    /totalmem/.test(healthRoute) &&
+    /freemem/.test(healthRoute) &&
+    /constrainedMemory/.test(healthRoute) &&
+    /getConfiguredPgPoolMax/.test(healthRoute) &&
+    /runtime:\s*runtimeDiagnostics\(\)/.test(healthRoute) &&
+    /status:\s*db === "ok" \? 200 : 503/.test(healthRoute),
+  "/api/health must report runtime memory diagnostics without failing readiness solely on memory pressure.",
+);
+expect(
+  /const defaultNodeMaxOldSpaceMb = "auto"/.test(standaloneStart) &&
+    /recommendedNodeMaxOldSpaceMb/.test(standaloneStart) &&
+    /processConstrainedMemoryMb/.test(standaloneStart) &&
+    /os\.totalmem/.test(standaloneStart),
+  "Standalone start must derive the Node old-space limit from process or host memory when set to auto.",
+);
+expect(
+  /export function getConfiguredPgPoolMax/.test(prismaDb) &&
+    /Number\.isInteger\(configured\) && configured > 0/.test(prismaDb) &&
+    /max:\s*getConfiguredPgPoolMax\(\)/.test(prismaDb),
+  "Prisma PostgreSQL pool size must use a validated NAS-friendly default when PG_POOL_MAX is absent or invalid.",
+);
 
 expect(
   /'consumer'::\\"LoanType\\"/.test(entrypoint) && /'home'::\\"LoanType\\"/.test(entrypoint),

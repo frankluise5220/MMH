@@ -29,6 +29,36 @@ const nextConfig: NextConfig = {
     proxyClientMaxBodySize: "128mb",
   },
   allowedDevOrigins,
+  webpack(config, { dev }) {
+    if (dev) {
+      const existingIgnored = config.watchOptions?.ignored;
+      const ignored = (Array.isArray(existingIgnored)
+        ? existingIgnored
+        : existingIgnored
+          ? [existingIgnored]
+          : []
+      ).filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
+
+      config.watchOptions = {
+        ...config.watchOptions,
+        ignored: [
+          ...ignored,
+          "**/node_modules/**",
+          "**/.next/**",
+          "**/.codex-logs/**",
+          "**/.gradle-home/**",
+          "**/.workbuddy-ai/**",
+          "**/release-artifacts/**",
+          "**/android/app/build/**",
+          "**/.playwright-cli/**",
+          "**/output/**",
+          "**/tmp/**",
+        ],
+      };
+    }
+
+    return config;
+  },
   async headers() {
     const headers = [
       { key: "X-Content-Type-Options", value: "nosniff" },

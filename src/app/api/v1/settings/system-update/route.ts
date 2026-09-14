@@ -2,7 +2,8 @@
  * System update API.
  *
  * GET: returns the current version, deployment target, remote version, and whether an update is needed.
- * POST ?mode=update: runs git fetch + fast-forward merge, then installs dependencies, generates Prisma, syncs the database, and builds.
+ * POST ?mode=update: Docker deployments delegate to the host updater (pull the app/updater images and recreate the containers).
+ * Non-Docker (source) deployments run git fetch + fast-forward merge, then install dependencies, generate Prisma, sync the database, and build.
  * POST ?mode=rebuild: does not pull code; only reinstalls dependencies, generates Prisma, syncs the database, and builds.
  *
  * Response format:

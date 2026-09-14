@@ -430,6 +430,15 @@ expect(/makeFnosPackageEntriesReadable/.test(buildScript), "fnOS package build m
 expect(/MMH_SESSION_SECRET/.test(buildScript) && /mmh-session-secret\.txt/.test(buildScript), "fnOS start script must persist a strong session secret for signed login cookies.");
 expect(/resolve_session_secret/.test(buildScript) && /generate_session_secret/.test(buildScript), "fnOS lifecycle settings must generate and reuse a strong signed-session secret.");
 expect(/MMH_SESSION_SECRET=\\?\$\{session_secret\}/.test(buildScript), "fnOS lifecycle settings must write MMH_SESSION_SECRET into mmh.env for production login cookies.");
+expect(
+  /MMH_NODE_MAX_OLD_SPACE_MB/.test(buildScript) &&
+    /apply_node_memory_limit/.test(buildScript) &&
+    /recommended_node_old_space_mb/.test(buildScript) &&
+    /detect_runtime_memory_limit_mb/.test(buildScript) &&
+    /MMH_NODE_MAX_OLD_SPACE_MB="\\\$\{MMH_NODE_MAX_OLD_SPACE_MB:-auto\}"/.test(buildScript) &&
+    /--max-old-space-size=\$MMH_NODE_MAX_OLD_SPACE_MB/.test(buildScript),
+  "fnOS start script must apply the Node old-space guardrail before launching the server.",
+);
 expect(/@appcenter\/"\$appname"/.test(buildScript), "fnOS start script must be able to rediscover the appcenter install directory when TRIM_APPDEST is unavailable.");
 expect(/verifySensitiveOperationPassword/.test(authVerifyRoute) && /getCurrentUser/.test(authVerifyRoute) && /isAdmin/.test(authVerifyRoute), "Sensitive operation verification must require the current admin user and check that user's own password.");
 expect(!/process\.env\.(POSTGRES_PASSWORD|MMH_SYSTEM_PASSWORD)/.test(authVerifyRoute), "Sensitive operation verification must not rely on deployment database passwords.");
@@ -489,7 +498,16 @@ if (fs.existsSync(stageDir)) {
   expect(/restart_start_as_package_user/.test(stageMainScript) && /runuser -u mmh/.test(stageMainScript), `fnOS ${verifyTarget.id} stage cmd/main must drop root-started service execution to the mmh user.`);
   expect(/@appcenter\/"\$appname"/.test(stageMainScript), `fnOS ${verifyTarget.id} stage cmd/main must rediscover the appcenter install directory without TRIM_APPDEST.`);
   expect(/MMH_SESSION_SECRET/.test(stageMainScript) && /mmh-session-secret\.txt/.test(stageMainScript), `fnOS ${verifyTarget.id} stage cmd/main must export and persist MMH_SESSION_SECRET.`);
+  expect(
+    /MMH_NODE_MAX_OLD_SPACE_MB/.test(stageMainScript) &&
+      /apply_node_memory_limit/.test(stageMainScript) &&
+      /recommended_node_old_space_mb/.test(stageMainScript) &&
+      /detect_runtime_memory_limit_mb/.test(stageMainScript) &&
+      /MMH_NODE_MAX_OLD_SPACE_MB="\$\{MMH_NODE_MAX_OLD_SPACE_MB:-auto\}"/.test(stageMainScript),
+    `fnOS ${verifyTarget.id} stage cmd/main must apply the Node old-space guardrail.`,
+  );
   expect(/resolve_session_secret/.test(stageApplySettingsScript) && /MMH_SESSION_SECRET=\$\{session_secret\}/.test(stageApplySettingsScript), `fnOS ${verifyTarget.id} stage cmd/apply-settings must persist MMH_SESSION_SECRET into mmh.env.`);
+  expect(/MMH_NODE_MAX_OLD_SPACE_MB=\$\{node_max_old_space\}/.test(stageApplySettingsScript), `fnOS ${verifyTarget.id} stage cmd/apply-settings must persist the Node old-space guardrail.`);
   expect(!fs.existsSync(path.join(stageDir, "wizard", "install")), `fnOS ${verifyTarget.id} stage must not include wizard/install; the FN soft-store client parses it and would block silent updates on user input.`);
   expect(fs.existsSync(path.join(stageDir, "wizard", "config")), `fnOS ${verifyTarget.id} stage must include wizard/config so the service port stays editable after a silent install.`);
   const stageUninstallWizardPath = path.join(stageDir, "wizard", "uninstall");
@@ -564,8 +582,17 @@ if (process.env.FNOS_VERIFY_BUILT_FPK === "1") {
   expect(/MMH_SYSTEM_PASSWORD/.test(mainScript), "Built fnOS .fpk cmd/main must export MMH_SYSTEM_PASSWORD.");
   expect(/mmh-system-password\.txt/.test(mainScript), "Built fnOS .fpk cmd/main must persist generated system passwords.");
   expect(/MMH_SESSION_SECRET/.test(mainScript) && /mmh-session-secret\.txt/.test(mainScript), "Built fnOS .fpk cmd/main must persist the signed-session secret.");
+  expect(
+    /MMH_NODE_MAX_OLD_SPACE_MB/.test(mainScript) &&
+      /apply_node_memory_limit/.test(mainScript) &&
+      /recommended_node_old_space_mb/.test(mainScript) &&
+      /detect_runtime_memory_limit_mb/.test(mainScript) &&
+      /MMH_NODE_MAX_OLD_SPACE_MB="\$\{MMH_NODE_MAX_OLD_SPACE_MB:-auto\}"/.test(mainScript),
+    "Built fnOS .fpk cmd/main must apply the Node old-space guardrail.",
+  );
   expect(/@appcenter\/"\$appname"/.test(mainScript), "Built fnOS .fpk cmd/main must rediscover the appcenter install directory when TRIM_APPDEST is unavailable.");
   expect(/resolve_session_secret/.test(applySettingsScript) && /MMH_SESSION_SECRET=\$\{session_secret\}/.test(applySettingsScript), "Built fnOS .fpk cmd/apply-settings must persist MMH_SESSION_SECRET into mmh.env.");
+  expect(/MMH_NODE_MAX_OLD_SPACE_MB=\$\{node_max_old_space\}/.test(applySettingsScript), "Built fnOS .fpk cmd/apply-settings must persist the Node old-space guardrail.");
   const appEntries = listFpkAppEntries(builtFpk);
   const publicFiles = appEntries
     .filter((entry) => entry.startsWith("server/public/") && !entry.endsWith("/"))

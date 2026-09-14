@@ -71,6 +71,8 @@ http://飞牛IP:7777/
 ```
 首次启动会在飞牛应用数据目录创建并初始化 SQLite 数据库 `mmh.db`。系统初始化、删除账簿等敏感操作验证当前登录用户自己的密码，操作仅管理员可见。
 
+飞牛原生包默认给 MMH 的 Node 服务设置 `MMH_NODE_MAX_OLD_SPACE_MB=auto`，启动时会按宿主机内存自动分档：低内存机器保守运行，内存更大的机器给 Node 留出更多 old-space；如果正常导入或识别任务频繁触顶，可在应用数据目录的 `mmh.env` 中写成明确数字后重启应用。`/api/health` 会返回宿主内存、运行限制和内存压力，方便判断是数据库不可用、应用未启动，还是内存接近阈值。
+
 ## 群晖 DSM 原生
 
 群晖版是原生 `.spk` 套件包，不依赖 Docker 和 PostgreSQL，套件元数据尽量保持 DSM 7.0 及更新版本可安装，当前优先面向 DSM 7.2 及更新版本做实际测试。安装后使用 SQLite 数据库，数据保存在群晖套件数据目录里。
@@ -120,6 +122,8 @@ http://群晖IP:7777/
 
 群晖版没有 PostgreSQL 连接密码。首次启动会在群晖套件数据目录创建并初始化 SQLite 数据库 `mmh.db`。系统初始化、删除账簿等敏感操作验证当前登录用户自己的密码，操作仅管理员可见。
 
+群晖原生包默认给 MMH 的 Node 服务设置 `MMH_NODE_MAX_OLD_SPACE_MB=auto`，启动时会按宿主机内存自动分档：低内存机器保守运行，内存更大的机器给 Node 留出更多 old-space；如果正常导入或识别任务频繁触顶，可在套件数据目录的 `mmh.env` 中写成明确数字后重启套件。`/api/health` 会返回宿主内存、运行限制和内存压力，方便判断是数据库不可用、应用未启动，还是内存接近阈值。
+
 ## Docker 图形界面
 
 普通 NAS 用户优先使用 Docker、Container Manager、容器管理器、Compose、项目、应用栈或 Stack 的图形界面安装。
@@ -160,6 +164,16 @@ MMH_UPDATE_TOKEN="REPLACE_WITH_YOUR_OWN_LONG_RANDOM_TOKEN"
 
 令牌是应用与更新器容器之间的共享口令，网页里的“系统更新”（刷新远端版本、一键更新）依赖它。用 24 位以上随机字符串，生成示例：`openssl rand -hex 24`。不设置（且 compose 不再自动派生）时，更新页会提示“未配置宿主机更新执行器”，或报“获取远端版本失败：spawnSync /bin/sh ETIMEDOUT”（GitHub 直连超时），且“更新”按钮不可用。
 
+默认 `.env` 已包含 NAS 资源保护参数：
+
+```env
+MMH_APP_MEMORY_LIMIT="1536m"
+MMH_NODE_MAX_OLD_SPACE_MB="auto"
+PG_POOL_MAX="4"
+```
+
+这些值会把 `mmh-app` 容器限制在约 1.5GB 内，并让 Node 的 V8 old-space 按容器/宿主可用内存自动分档；默认 1.5GB app 容器下通常会得到 768MB old-space。应用到 PostgreSQL 的连接池默认降到 4，给数据库和系统缓存保留余量。这个限制的目的不是让正常请求触顶退出，而是把异常增长限制在应用容器内，避免拖慢数据库和整台 NAS。Docker 版还会通过 `/api/health` 做应用健康检查并返回宿主内存、运行限制和内存压力，但健康接口只在数据库探测失败时返回 503，避免单纯因为内存接近阈值造成重启风暴。2GB 内存设备如需更保守可下调 `MMH_APP_MEMORY_LIMIT`；4GB 及以上设备如有大文件导入或 AI 识别任务，可以按需调大 `MMH_APP_MEMORY_LIMIT`，或把 `MMH_NODE_MAX_OLD_SPACE_MB` 从 `auto` 改成明确数字。
+
 7. 在 NAS 的 Docker 图形界面里创建项目：
    - 项目名称填写 `mmh`。
    - 项目目录选择刚才放部署文件的目录。
@@ -179,6 +193,8 @@ MMH_UPDATE_TOKEN="REPLACE_WITH_YOUR_OWN_LONG_RANDOM_TOKEN"
 网页更新会自动拉取新的应用镜像并重启服务。正常更新不需要重新安装，也不需要在 NAS 上重新构建源码。
 
 如果使用 NAS 的 Docker 图形界面更新，只需要更新 MMH 的应用镜像，然后重启 `mmh-app` 和 `mmh-updater`。数据库容器 `mmh-db` 不需要删除，也不要选择“源码重新构建”。
+
+> Docker 安装不需要、也不要用 `git pull` 更新：宿主机部署目录里只有 `docker-compose.yml`、`.env` 等部署文件，不是源码仓库，执行 `git pull` 会直接报错。Docker 更新只有两件事——拉取新镜像、重启 `mmh-app` 和 `mmh-updater`。
 
 ### 3. 使用
 
@@ -233,6 +249,9 @@ else
   echo "MMH_UPDATE_TOKEN=\"$MMH_UPDATE_TOKEN\"" >> .env
 fi
 echo "网页更新令牌: $MMH_UPDATE_TOKEN"
+
+# 默认资源保护：1.5GB app 容器、auto Node old-space、4 个 PostgreSQL 连接。
+# auto 会按容器/宿主内存分档；高内存设备可在 .env 中按需调大。
 
 sudo docker compose -p mmh up -d
 
@@ -364,6 +383,31 @@ cd ~/mmh
 sudo docker compose -p mmh pull app updater
 sudo docker compose -p mmh up -d app updater
 ```
+
+`docker compose pull` 拉不到镜像、报 404 或 `manifest unknown`：
+
+镜像加速源可能临时不可用，先在宿主机确认网络和该源是否可用，再换一个源重试。下面的命令把 `.env` 里的镜像源替换成南大镜像站（`ghcr.nju.edu.cn`），也可以换成 `ghcr.io` 直连或你本地已配置的其他加速源：
+
+```bash
+cd ~/mmh
+sed -i '/^MMH_APP_IMAGE=/d; /^MMH_UPDATER_IMAGE=/d; /^MMH_IMAGE_SOURCE=/d' .env
+cat >> .env <<'EOF'
+MMH_IMAGE_SOURCE="nju"
+MMH_APP_IMAGE="ghcr.nju.edu.cn/frankluise5220/mmh:latest"
+MMH_UPDATER_IMAGE="ghcr.nju.edu.cn/frankluise5220/mmh-updater:latest"
+EOF
+sudo docker compose -p mmh pull app updater
+sudo docker compose -p mmh up -d app updater
+```
+
+该命令幂等：先删除旧的镜像源行再追加新行，重复执行无副作用。换源前建议先在宿主机验证目标源确实提供这些镜像：
+
+```bash
+docker manifest inspect ghcr.nju.edu.cn/frankluise5220/mmh:latest
+docker manifest inspect ghcr.nju.edu.cn/frankluise5220/mmh-updater:latest
+```
+
+也可以把 `MMH_IMAGE_SOURCE` 设为 `auto`，由更新器自动测速选源；若 Docker Hub 拉取 `postgres:15-alpine` 也失败，请为该镜像配置 NAS 本地的 registry 镜像加速。
 
 更新页面提示“更新失败 / Failed to fetch”，但系统实际已更新：
 

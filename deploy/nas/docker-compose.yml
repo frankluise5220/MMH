@@ -24,6 +24,7 @@ services:
     image: ${MMH_APP_IMAGE:-ghcr.dockerproxy.net/frankluise5220/mmh:latest}
     container_name: mmh-app
     restart: unless-stopped
+    mem_limit: ${MMH_APP_MEMORY_LIMIT:-1536m}
     ports:
       - "7777:7777"
     env_file:
@@ -37,6 +38,9 @@ services:
       MMH_UPDATER_URL: ${MMH_UPDATER_URL:-http://updater:7788}
       MMH_UPDATE_TOKEN: ${MMH_UPDATE_TOKEN:-${POSTGRES_PASSWORD:-CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD}}
       NODE_ENV: production
+      MMH_APP_MEMORY_LIMIT: ${MMH_APP_MEMORY_LIMIT:-1536m}
+      MMH_NODE_MAX_OLD_SPACE_MB: ${MMH_NODE_MAX_OLD_SPACE_MB:-auto}
+      PG_POOL_MAX: ${PG_POOL_MAX:-4}
       POSTGRES_DB: ${POSTGRES_DB:-mmh}
       POSTGRES_USER: ${POSTGRES_USER:-mmh-fs}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD}
@@ -50,6 +54,18 @@ services:
       # resolves relative paths against /workspace, which does not exist on the
       # host, so a bind mount like ./data:/app/data breaks Web updates.
       - appdata:/app/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:7777/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
 
   updater:
     image: ${MMH_UPDATER_IMAGE:-ghcr.dockerproxy.net/frankluise5220/mmh-updater:latest}

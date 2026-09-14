@@ -188,6 +188,15 @@ function verifySourceFiles() {
   expect(/MMH_DEPLOY_TARGET:\s*"synology"/.test(appBuildScript), "Synology app build must mark the deployment target.");
   expect(/MMH_DEPLOY_TARGET=synology/.test(packageScript), "Synology start script must mark runtime deployment as synology.");
   expect(/DATABASE_URL="file:\$DATA_DIR\/mmh\.db"/.test(packageScript), "Synology start script must store SQLite data under the package data directory.");
+  expect(
+    /MMH_NODE_MAX_OLD_SPACE_MB/.test(packageScript) &&
+      /apply_node_memory_limit/.test(packageScript) &&
+      /recommended_node_old_space_mb/.test(packageScript) &&
+      /detect_runtime_memory_limit_mb/.test(packageScript) &&
+      /MMH_NODE_MAX_OLD_SPACE_MB="\\\$\{MMH_NODE_MAX_OLD_SPACE_MB:-auto\}"/.test(packageScript) &&
+      /--max-old-space-size=\$MMH_NODE_MAX_OLD_SPACE_MB/.test(packageScript),
+    "Synology start script must apply the Node old-space guardrail before launching the server.",
+  );
   expect(/VAR_DIR="\\\$\{SYNOPKG_PKGVAR:-\/var\/packages\/\$PACKAGE\/var\}"/.test(packageScript), "Synology runtime data must use SYNOPKG_PKGVAR, not the package target directory.");
   expect(!/^VAR_DIR="\$APP_DIR\/var"/m.test(packageScript), "Synology runtime data must not be written under SYNOPKG_PKGDEST/target.");
   expect(/package="\$\{appName\}"/.test(packageScript) && /const appName = "mmh"/.test(packageScript), "Synology INFO must keep the stable package id mmh.");
@@ -216,6 +225,14 @@ function verifyStagedSource() {
   expect(new RegExp(`os_min_ver="${expectedDsmMinVersion}"`).test(info), "Staged INFO must keep the DSM compatibility floor at 7.0-40000.");
   verifyPrivilegeConfig(privilege, "Staged");
   expect(/MMH_DEPLOY_TARGET=synology/.test(startScript), "Staged start-stop-status must mark runtime deployment as synology.");
+  expect(
+    /MMH_NODE_MAX_OLD_SPACE_MB/.test(startScript) &&
+      /apply_node_memory_limit/.test(startScript) &&
+      /recommended_node_old_space_mb/.test(startScript) &&
+      /detect_runtime_memory_limit_mb/.test(startScript) &&
+      /MMH_NODE_MAX_OLD_SPACE_MB="\$\{MMH_NODE_MAX_OLD_SPACE_MB:-auto\}"/.test(startScript),
+    "Staged start-stop-status must apply the Node old-space guardrail.",
+  );
   expect(fs.existsSync(path.join(stageDir, "package", "app", "server", "server.js")), "Staged package must contain the Next standalone server.");
   expect(fs.existsSync(path.join(stageDir, "package", "app", "bin", "node")), `Staged package must contain a Linux ${verifyTarget.nodeArch} Node runtime.`);
 }
@@ -270,6 +287,14 @@ function verifyBuiltSpk() {
     const startScript = run("tar", ["-xf", spkPath, "-O", "scripts/start-stop-status"]);
     expect(startScript.status === 0, "Unable to read scripts/start-stop-status from built SPK.");
     expect(/SYNOPKG_PKGVAR/.test(startScript.stdout || ""), "Built start-stop-status must use SYNOPKG_PKGVAR for writable runtime data.");
+    expect(
+      /MMH_NODE_MAX_OLD_SPACE_MB/.test(startScript.stdout || "") &&
+        /apply_node_memory_limit/.test(startScript.stdout || "") &&
+        /recommended_node_old_space_mb/.test(startScript.stdout || "") &&
+        /detect_runtime_memory_limit_mb/.test(startScript.stdout || "") &&
+        /MMH_NODE_MAX_OLD_SPACE_MB="\$\{MMH_NODE_MAX_OLD_SPACE_MB:-auto\}"/.test(startScript.stdout || ""),
+      "Built start-stop-status must apply the Node old-space guardrail.",
+    );
     expect(!/^VAR_DIR="\$APP_DIR\/var"/m.test(startScript.stdout || ""), "Built start-stop-status must not write runtime data under SYNOPKG_PKGDEST/target.");
     const packageEntries = tarList(packageTgzPath, { gzip: true });
     for (const required of [

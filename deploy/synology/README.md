@@ -77,4 +77,5 @@ SYNOLOGY_VERIFY_BUILT_SPK=1 npm run check:synology
 - Release workflow 必须重新构建 `.spk`，不能把 `*-spk-source.tgz` 当成用户安装包。
 - 包版本直接使用 `package.json` 的 `0.1.x`，与 GitHub Release tag、GHCR 镜像 tag、飞牛 `.fpk` 和 Android 版本保持同号。
 - 群晖版运行时设置 `MMH_DEPLOY_TARGET=synology`，系统更新页只展示套件版本；更新由 DSM 套件中心或手动安装新版 `.spk` 管理。
+- 长期运行的 Node 服务默认使用 `MMH_NODE_MAX_OLD_SPACE_MB=auto`，启动时按宿主机内存自动分档；如果正常导入或识别任务频繁触顶，可在套件数据目录中的 `mmh.env` 中写成明确数字后重启套件。`/api/health` 会返回宿主内存、运行限制和内存压力，便于区分数据库不可用、应用未启动和内存接近阈值。
 - `.spk` 不得包含本机 `.env`、私有 token、SSH 信息、邮箱授权码、AI key 或数据库备份。
