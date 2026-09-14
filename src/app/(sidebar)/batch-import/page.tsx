@@ -1210,7 +1210,8 @@ function hasFundBlockingIssue(item: FundImportPreviewItem | undefined) {
 }
 
 function selectableFundIndexes(items: FundImportPreviewItem[]) {
-  return new Set(items.flatMap((item, index) => hasFundBlockingIssue(item) ? [] : [index]));
+  // 未匹配/有 error 的行也允许勾选，便于批量改账户后再导入
+  return new Set(items.map((_, index) => index));
 }
 
 function serializeFundRuleOverrides(rows: FundRuleEditorRow[], t: (key: string) => string) {
@@ -2068,7 +2069,7 @@ export default function BatchImportPage() {
       setFundRuleRows(buildFundRuleEditorRows(data.items));
       setFundRulesDirty(false);
       if (preserveSelection) {
-        setFundSelected((prev) => new Set(Array.from(prev).filter((idx) => idx < data.items!.length && !hasFundBlockingIssue(data.items![idx]))));
+        setFundSelected((prev) => new Set(Array.from(prev).filter((idx) => idx < data.items!.length)));
       } else {
         setFundSelected(selectableFundIndexes(data.items));
       }
@@ -2676,6 +2677,10 @@ export default function BatchImportPage() {
     () => new Set(Array.from(fundSelected).map((idx) => String(idx))),
     [fundSelected],
   );
+  const fundImportReadySelectedCount = useMemo(
+    () => Array.from(fundSelected).filter((idx) => fundPreviewItems[idx] && !hasFundBlockingIssue(fundPreviewItems[idx])).length,
+    [fundPreviewItems, fundSelected],
+  );
   const previewErrorPreviewText = useMemo(() => {
     const groups: Map<string, number[]> = new Map();
     for (const row of previewErrorRows) {
@@ -3090,32 +3095,17 @@ export default function BatchImportPage() {
   const handleFundImport = useCallback(async () => {
     if (importing) return;
     const selectedIndexes = Array.from(fundSelected).sort((a, b) => a - b);
-    const selectedItems = selectedIndexes.map((idx) => fundPreviewItems[idx]).filter(Boolean);
-    if (selectedItems.length === 0) return;
-
-    if (fundImportErrorIssues.length > 0) {
-      const preview = fundImportErrorIssues
-        .slice(0, 5)
-        .map((issue) => formatText("batchImport.issueLine", {
-          index: issue.idx + 1,
-          level: t("batchImport.levelError"),
-          message: issue.message,
-        }))
-        .join("；");
-      setMessage(formatText("batchImport.importValidationFailed", {
-        count: fundImportErrorIssues.length,
-        preview,
-        more: fundImportErrorIssues.length > 5 ? t("batchImport.importValidationMore") : "",
-      }));
-      setUploadDebug(
-        fundImportIssues
-          .map((issue) => formatText("batchImport.issueLine", {
-            index: issue.idx + 1,
-            level: issue.level === "error" ? t("batchImport.levelError") : t("batchImport.levelWarning"),
-            message: issue.message,
-          }))
-          .join("\n"),
-      );
+    // 允许勾选未匹配行做批量修改；确认导入时只提交无 error 的勾选行
+    const selectedItems = selectedIndexes
+      .map((idx) => fundPreviewItems[idx])
+      .filter((item): item is FundImportPreviewItem => Boolean(item) && !hasFundBlockingIssue(item));
+    if (selectedItems.length === 0) {
+      const selectedBlocking = selectedIndexes
+        .map((idx) => fundPreviewItems[idx])
+        .filter((item): item is FundImportPreviewItem => Boolean(item) && hasFundBlockingIssue(item));
+      if (selectedBlocking.length > 0) {
+        setMessage(formatText("batchImport.importReadyEmpty", { count: selectedBlocking.length }));
+      }
       return;
     }
 
@@ -4391,10 +4381,10 @@ export default function BatchImportPage() {
                 <button
                   type="button"
                   onClick={handleFundImport}
-                  disabled={Boolean(importCompletion) || uploading || importing || fundSelected.size === 0 || fundImportErrorIssues.length > 0}
+                  disabled={Boolean(importCompletion) || uploading || importing || fundImportReadySelectedCount === 0}
                   className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {importing ? t("batchImport.importing") : formatText("batchImport.confirmImport", { count: fundSelected.size })}
+                  {importing ? t("batchImport.importing") : formatText("batchImport.confirmImport", { count: fundImportReadySelectedCount })}
                 </button>
               </div>
             </div>

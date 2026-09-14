@@ -166,7 +166,7 @@ function typedDetailColumnsFor(assetType: string | null | undefined): TypedDetai
     case "property":
       return [
         { key: "address", labelKey: "propertyForm.address", text: (p) => p.address && String(p.address).trim() ? String(p.address) : "-" },
-        { key: "propertyType", labelKey: "propertyForm.propertyType", text: (p) => p.propertyType && String(p.propertyType).trim() ? String(p.propertyType) : "-" },
+        { key: "propertyType", labelKey: "fixedAssetEdit.attr.propertyType", text: (p) => p.propertyType && String(p.propertyType).trim() ? String(p.propertyType) : "-" },
       ];
     case "vehicle":
       return [

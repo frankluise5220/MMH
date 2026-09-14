@@ -2337,12 +2337,13 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
                 selectable
                 selectedKeys={importPreview.selectedKeys}
                 onSelectionChange={(keys) => {
-                  const readyKeys = new Set(importPreview.items.filter((row) => row.ready).map((row) => row.key));
-                  const selectedKeys = new Set(Array.from(keys).filter((key) => readyKeys.has(key)));
+                  // 未匹配行也允许勾选，便于筛选后批量改账户/分类再导入
+                  const rowKeys = new Set(importPreview.items.map((row) => row.key));
+                  const selectedKeys = new Set(Array.from(keys).filter((key) => rowKeys.has(key)));
                   setImportPreview({
                     ...importPreview,
                     selectedKeys,
-                    selectAll: importPreview.items.length > 0 && importPreview.items.filter((row) => row.ready).every((row) => selectedKeys.has(row.key)),
+                    selectAll: importPreview.items.length > 0 && importPreview.items.every((row) => selectedKeys.has(row.key)),
                   });
                 }}
                 batchActionSlot={(
@@ -2371,7 +2372,7 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
                       </span>
                     )}
                     <span>{t("settings.email.totalItems", { count: importPreview.items.length })}</span>
-                    <span>{t("statementImportPreview.willImport", { count: importPreview.selectedKeys.size })}</span>
+                    <span>{t("statementImportPreview.willImport", { count: importPreview.items.filter((row) => importPreview.selectedKeys.has(row.key) && row.ready).length })}</span>
                   </div>
                 )}
                 rowClassName={(row) => importPreview.selectedKeys.has(row.key) ? "bg-blue-50/40" : row.ready ? "bg-white" : "bg-amber-50/40"}
@@ -2401,7 +2402,7 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
                       </span>
                     </span>
                   ) : t("settings.email.importDoneConfirm")
-                ) : t("statementImportPreview.willImport", { count: importPreview.selectedKeys.size })}
+                ) : t("statementImportPreview.willImport", { count: importPreview.items.filter((row) => importPreview.selectedKeys.has(row.key) && row.ready).length })}
               </div>
               <div className="flex items-center justify-end">
                 {importComplete ? (
@@ -2409,8 +2410,8 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
                     {importComplete.accountId ? t("settings.email.confirmOpenAccount") : t("settings.email.confirmBackHome")}
                   </button>
                 ) : (
-                  <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed" onClick={() => void importItems()} disabled={importing || importPreview.selectedKeys.size === 0 || importPreview.items.some((row) => importPreview.selectedKeys.has(row.key) && !row.ready)}>
-                    {importing ? t("settings.email.importing") : t("creditBill.confirmImport", { count: importPreview.selectedKeys.size })}
+                  <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed" onClick={() => void importItems()} disabled={importing || importPreview.items.every((row) => !(importPreview.selectedKeys.has(row.key) && row.ready))}>
+                    {importing ? t("settings.email.importing") : t("creditBill.confirmImport", { count: importPreview.items.filter((row) => importPreview.selectedKeys.has(row.key) && row.ready).length })}
                   </button>
                 )}
               </div>

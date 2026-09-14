@@ -132,7 +132,7 @@ export function FixedAssetEditModal({
               {draft.assetType === "property" ? (
                 <>
                   <div className="space-y-1">
-                    <div className="form-label">{t("propertyForm.propertyType")}</div>
+                    <div className="form-label">{t("fixedAssetEdit.attr.propertyType")}</div>
                     <input
                       value={draft.propertyType}
                       onChange={(event) => {
@@ -141,7 +141,7 @@ export function FixedAssetEditModal({
                         onChange?.(next);
                       }}
                       className="form-input"
-                      placeholder={t("propertyForm.typePlaceholder")}
+                      placeholder={t("fixedAssetEdit.attr.propertyTypePlaceholder")}
                     />
                   </div>
                   <div className="space-y-1">
@@ -223,16 +223,19 @@ export function FixedAssetEditModal({
                   placeholder={t("fixedAssetEdit.purchasePricePlaceholder")}
                 />
               </div>
-              <div className="space-y-1">
+              <div className="col-span-2 space-y-1">
                 <div className="form-label">{t("fixedAssetEdit.note")}</div>
                 <ClearableNoteField
+                  multiline
+                  rows={3}
                   value={draft.note}
                   onValueChange={(value) => {
                     const next = { ...draft, note: value };
                     setDraft(next);
                     onChange?.(next);
                   }}
-                  className="form-input"
+                  className="form-input resize-none py-2"
+                  placeholder={t("stockFee.optional")}
                 />
               </div>
             </div>

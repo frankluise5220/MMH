@@ -185,7 +185,12 @@ function stockImportMarketDisplayValue(market: string | undefined, exchange: str
   return market || "CN";
 }
 
+function hasBlockingIssue(item: StockImportPreviewItem | undefined) {
+  return !!item?.issues.some((issue) => issue.level === "error");
+}
+
 function selectableIndexes(items: StockImportPreviewItem[]) {
+  // 未匹配/有 error 的行也允许勾选，便于批量改账户后再导入
   return new Set(items.map((_, index) => index));
 }
 
@@ -291,6 +296,10 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
     [previewItems],
   );
   const selectedKeys = useMemo(() => new Set(Array.from(selected).map((idx) => String(idx))), [selected]);
+  const importReadySelectedCount = useMemo(
+    () => Array.from(selected).filter((idx) => previewItems[idx] && !hasBlockingIssue(previewItems[idx])).length,
+    [previewItems, selected],
+  );
   const importIssues = useMemo(() => (
     Array.from(selected)
       .flatMap((idx) => (previewItems[idx]?.issues ?? []).map((issue) => ({
@@ -617,22 +626,17 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
   const handleImport = useCallback(async () => {
     if (importing) return;
     const selectedIndexes = Array.from(selected).sort((a, b) => a - b);
-    const selectedItems = selectedIndexes.map((idx) => previewItems[idx]).filter(Boolean);
-    if (selectedItems.length === 0) return;
-    if (errorIssues.length > 0) {
-      const preview = errorIssues
-        .slice(0, 5)
-        .map((rowIssue) => formatText(t, "batchImport.issueLine", {
-          index: rowIssue.idx + 1,
-          level: t("batchImport.levelError"),
-          message: rowIssue.message,
-        }))
-        .join("; ");
-      setMessage(formatText(t, "batchImport.importValidationFailed", {
-        count: errorIssues.length,
-        preview,
-        more: errorIssues.length > 5 ? t("batchImport.importValidationMore") : "",
-      }));
+    // 允许勾选未匹配行做批量修改；确认导入时只提交无 error 的勾选行
+    const selectedItems = selectedIndexes
+      .map((idx) => previewItems[idx])
+      .filter((item): item is StockImportPreviewItem => Boolean(item) && !hasBlockingIssue(item));
+    if (selectedItems.length === 0) {
+      const selectedBlocking = selectedIndexes
+        .map((idx) => previewItems[idx])
+        .filter((item): item is StockImportPreviewItem => Boolean(item) && hasBlockingIssue(item));
+      if (selectedBlocking.length > 0) {
+        setMessage(formatText(t, "batchImport.importReadyEmpty", { count: selectedBlocking.length }));
+      }
       return;
     }
 
@@ -1261,10 +1265,10 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
             <button
               type="button"
               onClick={() => void handleImport()}
-              disabled={uploading || importing || selected.size === 0 || errorIssues.length > 0}
+              disabled={uploading || importing || importReadySelectedCount === 0}
               className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {importing ? t("batchImport.importing") : formatText(t, "batchImport.confirmImport", { count: selected.size })}
+              {importing ? t("batchImport.importing") : formatText(t, "batchImport.confirmImport", { count: importReadySelectedCount })}
             </button>
           </div>
         </div>
