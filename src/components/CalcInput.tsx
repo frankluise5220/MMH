@@ -19,6 +19,15 @@ export function evaluateCalcInputExpression(expression: string, currentValue = 0
   return typeof computed === "number" && Number.isFinite(computed) ? computed : null;
 }
 
+// A plain (optionally signed) number such as "-100" or "+12.5" is a value,
+// not an expression. Only strings with a real operator beyond the leading
+// sign should be evaluated in place; plain numbers must pass through so
+// Enter submits the surrounding form (e.g. negative refund amounts in the
+// expense dialog) and blur keeps/normalizes the sign.
+function isPlainSignedNumber(raw: string) {
+  return /^[+-]?\d+(\.\d+)?$/.test(raw);
+}
+
 export type CalcInputProps = {
   value: string;
   onChange: (v: string) => void;
@@ -140,7 +149,9 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
   function handleInputKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key !== "Enter") return;
     const raw = sanitizeCalcInputValue(value).trim();
-    if (!/[+\-*/()]/.test(raw)) return;
+    // Plain signed numbers (including negatives) are values, not expressions:
+    // let Enter submit the form instead of swallowing it and mutating the value.
+    if (!raw || isPlainSignedNumber(raw)) return;
     e.preventDefault();
     e.stopPropagation();
     doEval(raw);
@@ -148,7 +159,7 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
 
   function handleInputBlur() {
     const raw = sanitizeCalcInputValue(value).trim();
-    if (raw && !/[+\-*/()]/.test(raw)) {
+    if (isPlainSignedNumber(raw)) {
       const parsed = Number(raw);
       if (Number.isFinite(parsed)) {
         onChange(formatValue(parsed));
