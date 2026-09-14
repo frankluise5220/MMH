@@ -9,8 +9,10 @@ import type { ReportItem } from "@/components/ReportSelector";
 import StatisticsCharts from "@/components/StatisticsCharts";
 import { StatisticsFilterPanel } from "@/components/StatisticsFilterPanel";
 import FundPortfolioTrendChart from "@/components/FundPortfolioTrendChart";
+import AssetFlowStatisticsTable from "@/components/AssetFlowStatisticsTable";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { loadFundPortfolioTrendData } from "@/lib/server/fund-portfolio-trend";
+import { loadAssetMonthEndLevels } from "@/lib/server/asset-flow-trend";
 import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
 import { buildStatisticsCurrencyConverter } from "@/lib/server/statistics-currency";
 import { buildStatisticsFundDisplayResolver } from "@/lib/server/statistics-fund-display";
@@ -424,6 +426,33 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
     includeBenchmark: true,
   });
 
+  // ── 资金统计表: month-end NET assets (cost / market-value basis) for the
+  // selected range, merged with the monthly income/expense aggregation above
+  // so both share the same basis. Asset levels are whole-household numbers and
+  // deliberately ignore the account/tag filters (transfers between a filtered
+  // subset would distort balances).
+  const rangeMonths = level === "month"
+    ? [`${year}-${String(month).padStart(2, "0")}`]
+    : Array.from({ length: 12 }, (_, i) => `${year}-${String(i + 1).padStart(2, "0")}`);
+  const assetLevels = await loadAssetMonthEndLevels(ctx, {
+    months: rangeMonths,
+    fundPoints: fundTrendData.points,
+  });
+  const monthIncomeExpense = new Map(monthData.map((row) => [row.month, row]));
+  const assetFlowPoints = rangeMonths
+    .filter((fullMonth) => assetLevels.has(fullMonth))
+    .map((fullMonth) => {
+      const levels = assetLevels.get(fullMonth)!;
+      const row = monthIncomeExpense.get(fullMonth.slice(5));
+      return {
+        month: fullMonth,
+        netAssetCost: levels.netAssetCost,
+        netAssetMarketValue: levels.netAssetMarketValue,
+        income: row?.income ?? 0,
+        expense: row?.expense ?? 0,
+      };
+    });
+
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       <header className="page-header flex items-center justify-between gap-3 px-6 py-3">
@@ -447,6 +476,9 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
         </div>
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto p-6">
+        <div className="mb-4">
+          <AssetFlowStatisticsTable points={assetFlowPoints} isRedUp={isRedUp} />
+        </div>
         <div className="mb-4">
           <FundPortfolioTrendChart initialData={{ ok: true, ...fundTrendData }} />
         </div>

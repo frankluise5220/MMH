@@ -253,7 +253,9 @@ export function getInvestmentStatisticItems(entry: InvestmentStatisticEntryLike)
     if (amount > 0) {
       const category = kind === "wealth"
         ? profitCategory("wealth", amount)
-        : { name: SYSTEM_FUND_PROFIT_CATEGORY, candidates: [SYSTEM_FUND_PROFIT_CATEGORY, "投资收益", "投资收入", SYSTEM_INVESTMENT_DIVIDEND_CATEGORY, "股息分红"] };
+        : kind === "deposit"
+          ? profitCategory("deposit", amount)
+          : { name: SYSTEM_FUND_PROFIT_CATEGORY, candidates: [SYSTEM_FUND_PROFIT_CATEGORY, "投资收益", "投资收入", SYSTEM_INVESTMENT_DIVIDEND_CATEGORY, "股息分红"] };
       items.push({
         idSuffix: "dividend",
         type: "income",
@@ -261,7 +263,7 @@ export function getInvestmentStatisticItems(entry: InvestmentStatisticEntryLike)
         amount,
         categoryName: category.name,
         categoryCandidates: category.candidates,
-        label: kind === "wealth" ? "理财分红" : "基金收益",
+        label: kind === "wealth" ? "理财分红" : kind === "deposit" ? "存款利息" : "基金收益",
       });
     }
   }
