@@ -5,7 +5,7 @@ import Link from "next/link";
 
 import { LiabilitiesGuideClient } from "@/components/LiabilitiesGuideClient";
 import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
-import { institutionTypeLabel, isSettlementCounterpartyType } from "@/lib/account-kinds";
+import { DEBT_SOURCE_INSTITUTION_TYPE_VALUES, institutionTypeLabel, isInstitutionTypeOf, isSettlementCounterpartyType } from "@/lib/account-kinds";
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { formatMoney } from "@/lib/format";
@@ -224,14 +224,10 @@ export default async function LiabilitiesPage({
           })),
         ]
       : []),
-    ...(institutions.some((institution) =>
-        institution.type === "bank" || institution.type === "debt" || institution.type === "organization" || institution.type === "other",
-      )
+    ...(institutions.some((institution) => isInstitutionTypeOf(institution.type, DEBT_SOURCE_INSTITUTION_TYPE_VALUES))
       ? [
           { id: "debt-institution-source-header", label: t("liabilities.fromInstitution"), isHeader: true },
-          ...institutions.filter((institution) =>
-            institution.type === "bank" || institution.type === "debt" || institution.type === "organization" || institution.type === "other",
-          ).map((institution) => ({
+          ...institutions.filter((institution) => isInstitutionTypeOf(institution.type, DEBT_SOURCE_INSTITUTION_TYPE_VALUES)).map((institution) => ({
             id: `institution:${institution.id}`,
             label: institution.shortName?.trim() || institution.name,
             subLabel: institutionTypeLabel(institution.type, t),

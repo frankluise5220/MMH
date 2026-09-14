@@ -1,3 +1,5 @@
+import { isInstitutionTypeOf, LOAN_ACCOUNT_INSTITUTION_TYPE_VALUES, LOAN_DIALOG_INSTITUTION_TYPE_VALUES } from "@/lib/account-kinds";
+
 export const STOCK_ACCOUNT_INSTITUTION_ERROR = "Stock accounts must use a brokerage institution";
 export const ACCOUNT_INSTITUTION_REQUIRED_ERROR = "This account type requires an institution";
 export const ACCOUNT_INSTITUTION_TYPE_ERROR = "Institution type does not match the account type";
@@ -11,8 +13,9 @@ export function isStockAccountInstitutionType(type: string | null | undefined) {
 }
 
 // Consumer loans use financial institutions; counterparty debt units are settlement owners.
+// 贷款机构类型子集统一引用 account-kinds（bank/公积金中心/往来款），不要在这里手抄。
 export function isConsumerLoanInstitutionType(type: string | null | undefined) {
-  return !!type && ["bank", "debt"].includes(type);
+  return isInstitutionTypeOf(type, LOAN_DIALOG_INSTITUTION_TYPE_VALUES);
 }
 
 export function allowedInstitutionTypesForAccount(
@@ -28,7 +31,8 @@ export function allowedInstitutionTypesForAccount(
   if (accountKind === "ewallet") return ["payment"];
   if (accountKind === "insurance") return ["insurance"];
   if (accountKind === "loan") {
-    return options?.includeLegacyDebtInstitution ? ["bank", "payment", "other", "debt"] : ["bank", "payment", "other"];
+    const base = LOAN_ACCOUNT_INSTITUTION_TYPE_VALUES;
+    return options?.includeLegacyDebtInstitution ? [...base, "debt"] : [...base];
   }
   if (accountKind === "settlement") {
     return options?.includeLegacyDebtInstitution ? ["person", "organization"] : [];

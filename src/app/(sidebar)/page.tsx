@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { connection } from "next/server";
 import { cookies } from "next/headers";
 import { AccountKind, CreditCardInstallmentSourceType, FundCashFlowKind, TransactionType, FundSubtype, RegularInvestStatus } from "@prisma/client";
-import { institutionTypeLabel, isSettlementCounterpartyType, kindLabel } from "@/lib/account-kinds";
+import { institutionTypeLabel, isSettlementCounterpartyType, isInstitutionTypeOf, LOAN_DIALOG_INSTITUTION_TYPE_VALUES, kindLabel } from "@/lib/account-kinds";
 import { getServerAccountDropdownRestrictType } from "@/lib/server/account-dropdown-restrict";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { InvestmentFormModal } from "@/components/InvestmentFormModal";
@@ -1270,7 +1270,7 @@ export default async function Home({
   const debtTransferAccountSSOptions = buildAccountSSOptions(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet" || a.kind === "bank_credit");
   // 不是所有往来对象都能当「往来款对象」—— 常用商户（merchant）排除
   const debtCounterpartyOptions = counterparties.filter((counterparty) => isSettlementCounterpartyType(counterparty.type));
-  const loanSourceInstitutions = institutions.filter((institution) => institution.type === "bank" || institution.type === "debt");
+  const loanSourceInstitutions = institutions.filter((institution) => isInstitutionTypeOf(institution.type, LOAN_DIALOG_INSTITUTION_TYPE_VALUES));
   const debtObjectOptions: SSOpt[] = debtCounterpartyOptions.length > 0
     ? [
         { id: "debt-counterparty-header", label: t("txForm.counterparty"), isHeader: true },

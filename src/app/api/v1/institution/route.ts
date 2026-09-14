@@ -8,8 +8,10 @@ import {
 } from "@/lib/server/institution-name-unique";
 import { ensureCounterpartyForInstitution } from "@/lib/server/counterparty-sync";
 import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
+import { INSTITUTION_TYPE_VALUES } from "@/lib/account-kinds";
 
-const VALID_INSTITUTION_TYPES = ["family_member", "person", "organization", "bank", "insurance", "brokerage", "fund_company", "payment", "debt", "other"] as const;
+// 可创建的机构类型 = 全量类型表去掉 merchant（常用商户走独立通道），随 INSTITUTION_TYPE_VALUES 自动更新。
+const VALID_INSTITUTION_TYPES = (INSTITUTION_TYPE_VALUES as readonly string[]).filter((type) => type !== "merchant");
 
 /**
  * GET /api/v1/institution?type=fund_company
@@ -19,7 +21,7 @@ export async function GET(req: NextRequest) {
   try {
     const { householdId } = await getHouseholdScope();
     const requestedType = new URL(req.url).searchParams.get("type")?.trim() || "";
-    const type = (VALID_INSTITUTION_TYPES as readonly string[]).includes(requestedType) ? requestedType : null;
+    const type = VALID_INSTITUTION_TYPES.includes(requestedType) ? requestedType : null;
     const institutions = await prisma.institution.findMany({
       where: { householdId, ...(type ? { type } : {}) },
       select: { id: true, name: true, shortName: true, type: true },
@@ -53,7 +55,7 @@ export async function POST(req: NextRequest) {
 
   const { householdId } = await getHouseholdScope();
 
-  const safeType = VALID_INSTITUTION_TYPES.includes(type as typeof VALID_INSTITUTION_TYPES[number]) ? type : "organization";
+  const safeType = (VALID_INSTITUTION_TYPES as readonly string[]).includes(type) ? type : "organization";
 
   try {
     const created = await prisma.$transaction(async (tx) => {

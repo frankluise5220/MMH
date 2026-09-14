@@ -14,7 +14,7 @@ import {
   SettingsTd,
   SettingsTh,
 } from "@/components/settings/SettingsPageScaffold";
-import { COUNTERPARTY_TYPE_VALUES, institutionTypeLabel } from "@/lib/account-kinds";
+import { COUNTERPARTY_TYPE_VALUES, FINANCIAL_INSTITUTION_TYPE_VALUES, institutionTypeLabel } from "@/lib/account-kinds";
 import { fetchSettingsAccountData, notifySettingsDataChanged } from "@/lib/client/settingsCache";
 import { showBlockingLoading } from "@/lib/client/blocking-loading";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
@@ -32,7 +32,8 @@ type Institution = {
 
 type InstitutionSettingMode = "institution" | "counterparty" | "family";
 
-const INSTITUTION_TYPES = ["bank", "insurance", "brokerage", "fund_company", "payment", "other"] as const;
+// 机构类型子集统一引用 account-kinds（单一来源，新增类型自动出现），不要在这里手抄。
+const INSTITUTION_TYPES = FINANCIAL_INSTITUTION_TYPE_VALUES;
 const COUNTERPARTY_TYPES = COUNTERPARTY_TYPE_VALUES;
 const FAMILY_MEMBER_TYPES = ["family_member"] as const;
 

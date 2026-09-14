@@ -6,7 +6,8 @@ import { notifySettingsDataChanged } from "@/lib/client/settingsCache";
 import { INSTITUTION_TYPE_VALUES, institutionTypeLabel, type I18nT } from "@/lib/account-kinds";
 import { useI18n } from "@/lib/i18n";
 
-type InstitutionType = "family_member" | "person" | "organization" | "merchant" | "bank" | "insurance" | "brokerage" | "fund_company" | "payment" | "debt" | "other";
+// 机构类型统一从 account-kinds 全量表派生（新增类型自动出现在编辑下拉），不要手抄 union。
+type InstitutionType = (typeof INSTITUTION_TYPE_VALUES)[number];
 
 
 export function InstitutionEditButton({

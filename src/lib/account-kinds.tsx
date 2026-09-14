@@ -119,6 +119,7 @@ export const INSTITUTION_TYPE_VALUES = [
   "brokerage",
   "fund_company",
   "payment",
+  "provident_fund",
   "debt",
   "other",
 ] as const;
@@ -133,6 +134,7 @@ export const INSTITUTION_TYPE_LABEL_KEYS: Record<string, string> = {
   brokerage: "institution.type.brokerage",
   fund_company: "institution.type.fund_company",
   payment: "institution.type.payment",
+  provident_fund: "institution.type.provident_fund",
   debt: "institution.type.debt",
   other: "institution.type.other",
 };
@@ -147,6 +149,7 @@ const INSTITUTION_TYPE_LABEL_FALLBACK: Record<string, string> = {
   brokerage: "证券",
   fund_company: "Fund Company",
   payment: "第三方支付",
+  provident_fund: "公积金中心",
   merchant: "常用商户",
   debt: "债权债务",
   other: "其他",
@@ -157,6 +160,31 @@ export function institutionTypeOptions(values?: readonly string[]): Array<{ valu
   const list = values ?? INSTITUTION_TYPE_VALUES;
   return list.map((value) => ({ value, labelKey: INSTITUTION_TYPE_LABEL_KEYS[value] ?? INSTITUTION_TYPE_LABEL_KEYS.other }));
 }
+
+/** 类型是否属于给定子集（子集一律引用本文件的常量，禁止各处再手抄）。 */
+export function isInstitutionTypeOf(type: string | null | undefined, values: readonly string[]): boolean {
+  return (values as readonly string[]).includes(type ?? "");
+}
+
+/** 通用「机构」表单可选的类型（设置→机构、EntityCreateForm 默认机构类型下拉）：金融/支付/公积金/其他，不含往来人员等非机构类型。 */
+export const FINANCIAL_INSTITUTION_TYPE_VALUES = [
+  "bank",
+  "provident_fund",
+  "insurance",
+  "brokerage",
+  "fund_company",
+  "payment",
+  "other",
+] as const;
+
+/** 贷款弹窗的「贷款机构」子集：银行 + 公积金中心 + 往来款（legacy）。不含基金公司/证券等投资类机构。 */
+export const LOAN_DIALOG_INSTITUTION_TYPE_VALUES = ["bank", "provident_fund", "debt"] as const;
+
+/** 贷款账户（kind=loan）允许挂的机构类型（账户层规则，比贷款弹窗多 payment/other）。 */
+export const LOAN_ACCOUNT_INSTITUTION_TYPE_VALUES = ["bank", "provident_fund", "payment", "other"] as const;
+
+/** 负债页「来自机构」来源子集：贷款机构 + 可挂往来款的组织类。 */
+export const DEBT_SOURCE_INSTITUTION_TYPE_VALUES = ["bank", "provident_fund", "debt", "organization", "other"] as const;
 
 /** 往来对象类型的子集（同一张表派生，别再手抄）。 */
 export const COUNTERPARTY_TYPE_VALUES = ["person", "organization", "merchant"] as const;
@@ -189,6 +217,7 @@ export function institutionTypeIconName(t: string | null): string {
   if (t === "brokerage") return "building-2";
   if (t === "fund_company") return "building-2";
   if (t === "payment") return "credit-card";
+  if (t === "provident_fund") return "landmark";
   if (t === "debt") return "hand-coins";
   return "building-2";
 }

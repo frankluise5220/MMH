@@ -3,7 +3,7 @@
 import { createPortal } from "react-dom";
 import { useEffect, useMemo, useRef, useState, useCallback, type FormEvent, type ReactNode } from "react";
 import { Plus } from "lucide-react";
-import { COUNTERPARTY_TYPE_OPTIONS, institutionTypeLabel, institutionTypeOptions, kindOrder } from "@/lib/account-kinds";
+import { COUNTERPARTY_TYPE_OPTIONS, FINANCIAL_INSTITUTION_TYPE_VALUES, institutionTypeLabel, institutionTypeOptions, kindOrder } from "@/lib/account-kinds";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
 import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
 import { DateStepper } from "@/components/DateStepper";
@@ -182,7 +182,7 @@ export type EntityCreateFormProps = CompactModeProps | FullModeProps;
 
 const ALL_INSTITUTION_TYPES = institutionTypeOptions();
 
-const INSTITUTION_TYPES = institutionTypeOptions(["bank", "insurance", "brokerage", "fund_company", "payment", "other"]);
+const INSTITUTION_TYPES = institutionTypeOptions(FINANCIAL_INSTITUTION_TYPE_VALUES);
 
 /* ---- Category type options ---- */
 
@@ -476,11 +476,19 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   /** 类型下拉白名单：机构用 allowedInstitutionTypes、往来对象用 allowedCounterpartyTypes。 */
   const allowedTypeValues = allowedInstitutionTypes?.length ? allowedInstitutionTypes : allowedCounterpartyTypes;
 
-  const accountKindOptions = useMemo(
-    () => (entityType === "account" && allowedAccountKinds?.length
-      ? config.types.filter((option) => allowedAccountKinds.includes(option.value))
-      : config.types),
-    [entityType, allowedAccountKinds, config.types],
+  /** 类型下拉选项（compact 顶部 + full 字段共用）：account 按 allowedAccountKinds，
+   *  institution/counterparty 按 allowedTypeValues 白名单过滤——白名单必须生效，
+   *  否则贷款弹窗新增机构会看到基金公司这类无关类型（历史教训：白名单只挂在
+   *  selectOptionsForField 上，compact 顶部下拉漏了）。 */
+  const typeSelectOptions = useMemo(
+    () => (
+      entityType === "account" && allowedAccountKinds?.length
+        ? config.types.filter((option) => allowedAccountKinds.includes(option.value))
+        : allowedTypeValues?.length
+          ? config.types.filter((option) => allowedTypeValues.includes(option.value))
+          : config.types
+    ),
+    [entityType, allowedAccountKinds, allowedTypeValues, config.types],
   );
 
   // Compact mode: open/onClose
@@ -760,7 +768,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     const accountKind = form.kind || form.type || extraFields?.kind || defaultType;
     const investProductType = form.investProductType || extraFields?.investProductType || "fund";
     if (isStockInvestmentAccount(accountKind, investProductType)) return ["brokerage"];
-    if (accountKind === "loan") return ["bank", "payment", "other"];
+    // 贷款账户的机构类型子集统一走 allowedInstitutionTypesForAccount（含公积金中心），
+    // 不要在这里手抄一份（历史教训：手抄列表会漏新类型）。
     const allowedTypes = allowedInstitutionTypesForAccount(accountKind, investProductType);
     return allowedTypes.length > 0 ? allowedTypes : undefined;
   }
@@ -916,7 +925,9 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
         setError(t("debtTx.placeholder.selectCounterparty"));
         return;
       }
-      if (accountKind === "loan" && !form.institutionId) {
+      // 口径（2026-09-13）：贷款窗口建的账户一律是贷款账户，不按机构属性判定——
+      // 贷款账户允许挂往来对象（贷款弹窗借入会带 counterpartyId），机构/往来对象至少其一。
+      if (accountKind === "loan" && !form.institutionId && !form.counterpartyId) {
         setError(t("settings.accounts.import.institutionRequired"));
         return;
       }
@@ -964,7 +975,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
         body.isConsumerLoan = "false";
       }
       if (entityType === "account" && body.kind === "loan") {
-        body.counterpartyId = "";
+        // 口径（2026-09-13）：不再清空 counterpartyId——贷款弹窗借入会显式携带
+        // 往来对象（贷款账户挂往来款对象）；其余入口不会为 loan 传 counterpartyId。
         body.loanType = body.loanType || "home";
         body.isConsumerLoan = body.loanType === "consumer" ? "true" : "false";
       }
@@ -1096,7 +1108,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                 />
                 {dupWarning && <div className="text-xs text-amber-600">{dupWarning}</div>}
               </div>
-              {!shouldHideType && config.typeLabelKey && accountKindOptions.length > 0 && (
+              {!shouldHideType && config.typeLabelKey && typeSelectOptions.length > 0 && (
                 <div className="space-y-1">
                   <div className="form-label">{t(config.typeLabelKey)}</div>
                   <select
@@ -1104,7 +1116,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                     onChange={(e) => setForm(prev => ({ ...prev, ...(typeKey ? { [typeKey]: e.target.value } : {}), institutionId: "" }))}
                     className="form-input"
                   >
-                    {accountKindOptions.map((typeOption) => (
+                    {typeSelectOptions.map((typeOption) => (
                       <option key={typeOption.value} value={typeOption.value}>{optionLabel(t, typeOption)}</option>
                     ))}
                   </select>

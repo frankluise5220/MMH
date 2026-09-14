@@ -276,6 +276,7 @@ export function AccountScopeFilter({
     if (type === "cash") return "cash";
     if (type === "bank") return "bank";
     if (type === "payment") return "payment";
+    if (type === "provident_fund") return "provident_fund";
     if (type === "brokerage" || type === "fund_company" || type === "investment") return "investment";
     return "other";
   }
@@ -284,6 +285,7 @@ export function AccountScopeFilter({
     if (type === "cash") return t("statistics.cashInstitution");
     if (type === "bank") return t("institution.type.bank");
     if (type === "payment") return t("institution.type.payment");
+    if (type === "provident_fund") return t("institution.type.provident_fund");
     if (type === "investment") return t("statistics.investmentInstitutions");
     return t("institution.type.other");
   }
