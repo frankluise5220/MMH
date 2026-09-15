@@ -686,10 +686,8 @@ export function DebtTransactionModal({
 
   async function openDebtObjectCreate() {
     setDebtObjectNestedOpen(true);
-    const res = await fetch("/api/v1/accounts/internal?balances=false", { cache: "no-store" }).catch(() => null);
-    if (!res?.ok) return;
-    const data = await res.json().catch(() => null);
-    if (!data?.ok) return;
+    const data = await fetchSettingsAccountData({ force: true }).catch(() => null);
+    if (!data) return;
     setLocalNestedFieldData({
       groupId: (data.groups ?? [])
         .filter((group: { name: string }) => group.name !== "未指定")

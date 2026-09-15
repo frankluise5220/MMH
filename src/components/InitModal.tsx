@@ -10,6 +10,7 @@ import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from
 import { isSettlementCounterpartyType, kindLabel } from "@/lib/account-kinds";
 import { buildAccountDisplayOption } from "@/lib/account-display";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { fetchSettingsAccountData } from "@/lib/client/settingsCache";
 import { useI18n } from "@/lib/i18n";
 import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
 
@@ -105,9 +106,8 @@ export function InitModal({
   async function fetchAccounts() {
     setLoadingAccounts(true);
     try {
-      const res = await fetch("/api/v1/accounts/internal?balances=false");
-      const data = await res.json();
-      if (data.ok && data.accounts) {
+      const data = await fetchSettingsAccountData();
+      if (data.accounts) {
         const accounts: AccountOption[] = data.accounts.map((a: any) => {
           const display = buildAccountDisplayOption(a, undefined, { fields: getAccountLabelFieldsPreference() });
           return { id: a.id, label: display.selectorLabel || display.label, kind: a.kind };

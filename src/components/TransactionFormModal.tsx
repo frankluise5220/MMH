@@ -496,11 +496,9 @@ export function TransactionFormModal({
     setAccountCreateTarget(target);
     setAccountNestedOpen(true);
     void (async () => {
-      const res = await fetch("/api/v1/accounts/internal?balances=false", { cache: "no-store" }).catch(() => null);
-      if (res?.ok) {
-        const data = await res.json().catch(() => null);
-        if (data?.ok) {
-          setLocalNestedFieldData({
+      const data = await fetchSettingsAccountData({ force: true }).catch(() => null);
+      if (!data) return;
+      setLocalNestedFieldData({
             groupId: (data.groups ?? []).filter((group: { name: string }) => group.name !== "未指定").map((group: { id: string; name: string }) => ({ id: group.id, name: group.name })),
             institutionId: (data.institutions ?? []).map((institution: { id: string; name: string; shortName?: string | null; type?: string | null }) => ({
               id: institution.id,
@@ -521,8 +519,6 @@ export function TransactionFormModal({
                 name: counterparty.shortName?.trim() || counterparty.name,
               })),
           });
-        }
-      }
     })();
   }
 

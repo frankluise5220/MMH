@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, Loader2 } from "lucide-react";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { fetchSettingsAccountData } from "@/lib/client/settingsCache";
 import { useI18n } from "@/lib/i18n";
 
 type T = (key: string, params?: Record<string, string | number>) => string;
@@ -28,14 +29,6 @@ type Account = {
   kind: string;
   institutionId: string | null;
   Institution?: { id: string; name: string } | null;
-};
-
-type LoadResult = {
-  ok: boolean;
-  accounts?: Account[];
-  groups?: Group[];
-  institutions?: Institution[];
-  error?: string;
 };
 
 // Preset bank names are institution data, not UI copy; they are stored and
@@ -95,22 +88,16 @@ export default function QuickAddAccountsPage() {
   async function loadAll() {
     setLoading(true);
     setError("");
-    const res = await fetch("/api/v1/accounts/internal?balances=false").catch(() => null);
-    if (!res) {
+    const data = await fetchSettingsAccountData().catch(() => null);
+    if (!data) {
       setError(t("accountsQuickAdd.error.loadFailed"));
       setLoading(false);
       return;
     }
-    const data = (await res.json().catch(() => ({ ok: false, error: t("accountsQuickAdd.error.invalidResponse") }))) as LoadResult;
-    if (!data.ok) {
-      setError(data.error || t("accountsQuickAdd.error.loadAccountsFailed"));
-      setLoading(false);
-      return;
-    }
     const nextGroups = data.groups ?? [];
-    setInstitutions(data.institutions ?? []);
+    setInstitutions((data.institutions ?? []) as Institution[]);
     setGroups(nextGroups);
-    setAccounts(data.accounts ?? []);
+    setAccounts((data.accounts ?? []) as Account[]);
     setGroupId((current) => current || nextGroups[0]?.id || "");
     setLoading(false);
   }

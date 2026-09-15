@@ -15,6 +15,7 @@ import { kindLabel } from "@/lib/account-kinds";
 import { buildAccountDisplayOption } from "@/lib/account-display";
 import { formatMoneyLoose as formatMoney } from "@/lib/format";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { fetchSettingsAccountData } from "@/lib/client/settingsCache";
 import { useI18n } from "@/lib/i18n";
 import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
 
@@ -652,18 +653,11 @@ export function InsuranceFormModal({
 
     async function loadInsuranceOptions() {
       try {
-        const response = await fetch("/api/v1/accounts/internal?balances=false", { cache: "no-store" });
-        const accountsData = (await response.json().catch(() => null)) as
-          | {
-              ok?: boolean;
-              accounts?: InternalAccountRow[];
-              institutions?: Array<{ id: string; name: string; type?: string | null; shortName?: string | null }>;
-            }
-          | null;
-        if (cancelled || !response.ok || !accountsData?.ok) return;
+        const accountsData = await fetchSettingsAccountData().catch(() => null);
+        if (cancelled || !accountsData) return;
 
         const institutions = Array.isArray(accountsData.institutions) ? accountsData.institutions : [];
-        const accounts = Array.isArray(accountsData.accounts) ? accountsData.accounts : [];
+        const accounts = (Array.isArray(accountsData.accounts) ? accountsData.accounts : []) as InternalAccountRow[];
         const nextFamilyMembers = institutions
           .filter((item) => item.type === "family_member")
           .map((item) => ({

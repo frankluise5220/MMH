@@ -36,6 +36,9 @@ const BOOTSTRAP_KEY = "settings-bootstrap";
 const CATEGORIES_KEY = "categories";
 const TAGS_KEY = "tags";
 const TTL_MS = 60_000;
+const HOUSEHOLD_COOKIE = "householdId";
+const PERSIST_PREFIX = "mmh:settings:accounts-basic:";
+const PERSIST_VERSION = 1;
 export const SETTINGS_DATA_CHANGED_EVENT = "mmh:settings:data-changed";
 
 type CacheEntry<T> = {
@@ -44,24 +47,104 @@ type CacheEntry<T> = {
   updatedAt: number;
 };
 
+type PersistedAccountEnvelope = {
+  v: number;
+  householdId: string;
+  updatedAt: number;
+  value: SettingsAccountData;
+};
+
 const cache = new Map<string, CacheEntry<unknown>>();
+let hydratedHouseholdId: string | null = null;
 
 function isFresh(entry: CacheEntry<unknown> | undefined) {
   return Boolean(entry?.value) && Date.now() - entry!.updatedAt < TTL_MS;
 }
 
+function readHouseholdId() {
+  if (typeof document === "undefined") return "";
+  const match = document.cookie.match(new RegExp(`(?:^|; )${HOUSEHOLD_COOKIE}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : "";
+}
+
+function persistStorageKey(householdId: string) {
+  return `${PERSIST_PREFIX}${householdId}`;
+}
+
+function readPersistedAccountData(householdId: string): { value: SettingsAccountData; updatedAt: number } | null {
+  if (typeof window === "undefined" || !householdId) return null;
+  try {
+    const raw = window.localStorage.getItem(persistStorageKey(householdId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PersistedAccountEnvelope;
+    if (parsed?.v !== PERSIST_VERSION) return null;
+    if (parsed.householdId !== householdId) return null;
+    if (!parsed.value || !Array.isArray(parsed.value.accounts) || !Array.isArray(parsed.value.groups)) return null;
+    return { value: parsed.value, updatedAt: Number(parsed.updatedAt) || 0 };
+  } catch {
+    return null;
+  }
+}
+
+function writePersistedAccountData(value: SettingsAccountData, updatedAt = Date.now()) {
+  if (typeof window === "undefined") return;
+  const householdId = readHouseholdId();
+  if (!householdId) return;
+  try {
+    const envelope: PersistedAccountEnvelope = { v: PERSIST_VERSION, householdId, updatedAt, value };
+    window.localStorage.setItem(persistStorageKey(householdId), JSON.stringify(envelope));
+  } catch {
+    // Quota / private mode: memory cache still works.
+  }
+}
+
+function clearPersistedAccountData() {
+  if (typeof window === "undefined") return;
+  const householdId = readHouseholdId();
+  if (!householdId) return;
+  try {
+    window.localStorage.removeItem(persistStorageKey(householdId));
+  } catch {
+    // ignore
+  }
+}
+
+function hydrateAccountCacheFromPersist() {
+  if (typeof window === "undefined") return;
+  const householdId = readHouseholdId();
+  if (hydratedHouseholdId === householdId) return;
+  if (hydratedHouseholdId && hydratedHouseholdId !== householdId) {
+    cache.delete(ACCOUNT_DATA_KEY);
+    cache.delete(BOOTSTRAP_KEY);
+    cache.delete(CATEGORIES_KEY);
+    cache.delete(TAGS_KEY);
+  }
+  hydratedHouseholdId = householdId;
+  const existing = cache.get(ACCOUNT_DATA_KEY) as CacheEntry<SettingsAccountData> | undefined;
+  if (existing?.value) return;
+  const persisted = readPersistedAccountData(householdId);
+  if (!persisted) return;
+  cache.set(ACCOUNT_DATA_KEY, { value: persisted.value, updatedAt: persisted.updatedAt });
+}
+
 export function getCachedSettingsAccountData() {
+  hydrateAccountCacheFromPersist();
   const entry = cache.get(ACCOUNT_DATA_KEY) as CacheEntry<SettingsAccountData> | undefined;
-  return isFresh(entry) ? entry?.value ?? null : entry?.value ?? null;
+  return entry?.value ?? null;
 }
 
 function setCacheValue<T>(key: string, value: T) {
   cache.set(key, { value, updatedAt: Date.now() });
 }
 
+function setAccountDataCache(value: SettingsAccountData, updatedAt = Date.now()) {
+  cache.set(ACCOUNT_DATA_KEY, { value, updatedAt });
+  writePersistedAccountData(value, updatedAt);
+}
+
 function seedBootstrapCaches(value: SettingsBootstrapData) {
   setCacheValue(BOOTSTRAP_KEY, value);
-  setCacheValue(ACCOUNT_DATA_KEY, {
+  setAccountDataCache({
     baseCurrency: value.baseCurrency,
     accounts: value.accounts,
     groups: value.groups,
@@ -131,7 +214,10 @@ function scopeTouchesTags(scope: SettingsDataScope) {
 }
 
 export function invalidateSettingsData(scope: SettingsDataScope = "all") {
-  if (scopeTouchesAccounts(scope)) cache.delete(ACCOUNT_DATA_KEY);
+  if (scopeTouchesAccounts(scope)) {
+    cache.delete(ACCOUNT_DATA_KEY);
+    clearPersistedAccountData();
+  }
   if (scopeTouchesCategories(scope)) cache.delete(CATEGORIES_KEY);
   if (scopeTouchesTags(scope)) cache.delete(TAGS_KEY);
   cache.delete(BOOTSTRAP_KEY);
@@ -157,22 +243,7 @@ export async function notifySettingsDataChanged(options?: SettingsDataChangeOpti
   if (options?.prefetch) await prefetchSettingsData(scope);
 }
 
-export async function fetchSettingsAccountData(options?: { force?: boolean }) {
-  const bootstrap = await getSharedSettingsBootstrap(options);
-  if (bootstrap) {
-    return {
-      accounts: bootstrap.accounts,
-      baseCurrency: bootstrap.baseCurrency,
-      groups: bootstrap.groups,
-      institutions: bootstrap.institutions,
-      counterparties: bootstrap.counterparties,
-      users: bootstrap.users,
-    };
-  }
-  const entry = cache.get(ACCOUNT_DATA_KEY) as CacheEntry<SettingsAccountData> | undefined;
-  if (!options?.force && isFresh(entry) && entry?.value) return entry.value;
-  if (!options?.force && entry?.promise) return entry.promise;
-
+function startAccountDataFetch(entry?: CacheEntry<SettingsAccountData>) {
   const promise = fetch("/api/v1/accounts/internal?balances=false", { cache: "no-store" })
     .then((res) => res.json())
     .then((data) => {
@@ -185,18 +256,44 @@ export async function fetchSettingsAccountData(options?: { force?: boolean }) {
         counterparties: data.counterparties || [],
         users: data.users || [],
       };
-      cache.set(ACCOUNT_DATA_KEY, { value, updatedAt: Date.now() });
+      setAccountDataCache(value);
       return value;
     })
     .catch((error) => {
       const prev = cache.get(ACCOUNT_DATA_KEY) as CacheEntry<SettingsAccountData> | undefined;
-      if (prev?.value) cache.set(ACCOUNT_DATA_KEY, { value: prev.value, updatedAt: prev.updatedAt });
+      if (prev?.value) cache.set(ACCOUNT_DATA_KEY, { value: prev.value, updatedAt: prev.updatedAt, promise: undefined });
       else cache.delete(ACCOUNT_DATA_KEY);
       throw error;
     });
 
   cache.set(ACCOUNT_DATA_KEY, { value: entry?.value, promise, updatedAt: entry?.updatedAt ?? 0 });
   return promise;
+}
+
+export async function fetchSettingsAccountData(options?: { force?: boolean }) {
+  hydrateAccountCacheFromPersist();
+  const bootstrap = await getSharedSettingsBootstrap(options);
+  if (bootstrap) {
+    return {
+      accounts: bootstrap.accounts,
+      baseCurrency: bootstrap.baseCurrency,
+      groups: bootstrap.groups,
+      institutions: bootstrap.institutions,
+      counterparties: bootstrap.counterparties,
+      users: bootstrap.users,
+    };
+  }
+  const entry = cache.get(ACCOUNT_DATA_KEY) as CacheEntry<SettingsAccountData> | undefined;
+  if (!options?.force) {
+    if (isFresh(entry) && entry?.value) return entry.value;
+    if (entry?.promise) return entry.value ?? entry.promise;
+    if (entry?.value) {
+      void startAccountDataFetch(entry).catch(() => null);
+      return entry.value;
+    }
+  }
+
+  return startAccountDataFetch(entry);
 }
 
 export function getCachedSettingsCategories() {

@@ -20,7 +20,7 @@ import {
   parseImportAccountId,
 } from "@/lib/account-import-match";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
-import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
+import { fetchSettingsAccountData, fetchSettingsBootstrap } from "@/lib/client/settingsCache";
 import { parseFlexibleDateToYmd } from "@/lib/date-utils";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { useI18n } from "@/lib/i18n";
@@ -1718,14 +1718,14 @@ export default function BatchImportPage() {
     let cancelled = false;
     const startedAt = performance.now();
     postImportDebugLog(importTraceIdRef.current, "accounts_request_started");
-    fetch("/api/v1/accounts/internal?balances=false")
-      .then((res) => res.json())
+    fetchSettingsAccountData()
       .then((data) => {
-        if (cancelled || !data?.ok || !Array.isArray(data.accounts)) return;
-        const activeAccounts = data.accounts.filter((account: AccountOption) => account.isActive !== false);
+        if (cancelled || !Array.isArray(data.accounts)) return;
+        const accounts = data.accounts as AccountOption[];
+        const activeAccounts = accounts.filter((account) => account.isActive !== false);
         accountMatcherRef.current = createImportAccountMatcher(activeAccounts);
         accountIdentityConflictRef.current = createImportAccountIdentityConflictChecker(activeAccounts);
-        setAccountOptions(data.accounts);
+        setAccountOptions(accounts);
         postImportDebugLog(importTraceIdRef.current, "accounts_request_succeeded", {
           accountCount: data.accounts.length,
           durationMs: Math.round(performance.now() - startedAt),

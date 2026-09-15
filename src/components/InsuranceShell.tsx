@@ -13,6 +13,7 @@ import {
   type InsuranceAction,
 } from "@/lib/insurance/transaction";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
+import { fetchSettingsAccountData } from "@/lib/client/settingsCache";
 import { amountToneClass as amountClass } from "@/lib/client/colors";
 import {
   AdvancedDataTable,
@@ -512,18 +513,17 @@ export function InsuranceShell({
   const refreshInsuranceData = useCallback(async () => {
     const seq = ++refreshSeq.current;
     try {
-      const [detailRes, productsRes, accountsRes] = await Promise.all([
+      const [detailRes, productsRes, accountsData] = await Promise.all([
         fetch(
           `/api/v1/business-transactions/insurance?accountId=${encodeURIComponent(accountId)}`,
           { cache: "no-store" },
         ),
         fetch("/api/v1/insurance-products", { cache: "no-store" }),
-        fetch("/api/v1/accounts/internal?balances=false", { cache: "no-store" }),
+        fetchSettingsAccountData().catch(() => null),
       ]);
-      const [detailData, productsData, accountsData] = await Promise.all([
+      const [detailData, productsData] = await Promise.all([
         detailRes.json().catch(() => null),
         productsRes.json().catch(() => null),
-        accountsRes.json().catch(() => null),
       ]);
       if (seq !== refreshSeq.current) return;
       if (!detailRes.ok || !detailData?.ok || !Array.isArray(detailData?.data?.entries)) {
@@ -686,10 +686,9 @@ export function InsuranceShell({
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/v1/accounts/internal?balances=false", { cache: "no-store" })
-      .then((res) => res.json())
+    fetchSettingsAccountData()
       .then((data) => {
-        if (cancelled || !data?.ok || !Array.isArray(data?.institutions)) return;
+        if (cancelled || !data || !Array.isArray(data.institutions)) return;
         const nextOptions = data.institutions
           .filter((item: { type?: string | null }) => item?.type === "family_member")
           .map((item: { id: string; name: string }) => ({

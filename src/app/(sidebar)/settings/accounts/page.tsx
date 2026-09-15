@@ -237,6 +237,7 @@ export default function SettingsAccountsPage() {
       setCounterparties((cached.counterparties ?? []) as Counterparty[]);
       setBaseCurrency(normalizeCurrency(cached.baseCurrency));
       setLoadingAccounts(false);
+      void loadAll({ force: true });
       return;
     }
     void loadAll();
