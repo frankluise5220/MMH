@@ -781,8 +781,10 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     (form.kind || form.type || defaultType) !== "fixed_asset";
   function renderInitialBalanceFields() {
     if (!shouldShowInitialBalanceFields) return null;
+    // 独占一整行（col-span-full）：日期+金额成对出现，不与币种/卡号/备注混排。
+    // 内部两列，md 下与外层 4 列网格对齐（各占半行）。
     return (
-      <>
+      <div className="col-span-2 grid grid-cols-2 gap-3 md:col-span-4">
         <div>
           <label className="form-label mb-1 block">{t("entityForm.initialBalanceDateLabel")}</label>
           <DateStepper
@@ -800,7 +802,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
             inputMode="decimal"
           />
         </div>
-      </>
+      </div>
     );
   }
 
@@ -1417,7 +1419,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
             <form className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" onSubmit={onSubmit}>
               {error && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{error}</div>}
               <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                {visibleFields.map(field => {
+                {/* 账户表单：初始余额行紧跟第 4 格之后（第二行 = 日期+金额整行），其余字段顺延。 */}
+                {visibleFields.slice(0, 4).map(field => {
                   if (field.type === "text" || field.type === "date") {
                     return (
                       <div key={field.key} className={textFieldWrapperClassName(field)}>
@@ -1499,6 +1502,89 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                   );
                 })}
                 {renderInitialBalanceFields()}
+                {visibleFields.slice(4).map(field => {
+                  if (field.type === "text" || field.type === "date") {
+                    return (
+                      <div key={field.key} className={textFieldWrapperClassName(field)}>
+                        <label className="form-label mb-1 block">{t(field.labelKey)}</label>
+                        {renderTextControl(field, { required: field.key === "name" })}
+                      </div>
+                    );
+                  }
+
+                  const opts = selectOptionsForField(field);
+                  if (opts.length === 0 && !field.optionsFromData) return null;
+
+                  if (field.optionsFromData && field.nestedCreate) {
+                    const dataKey = field.optionsFromData;
+                    const dataList = field.key === "institutionId"
+                      ? filterInstitutionDataForAccount(nestedFieldData[dataKey] ?? [])
+                      : nestedFieldData[dataKey] ?? [];
+                    const ssOptions: SmartSelectOption[] = field.key === "institutionId"
+                      ? dataList.map(d => ({
+                          id: d.id,
+                          label: d.name,
+                          subLabel: institutionTypeLabel((d as { type?: string }).type, t),
+                        }))
+                      : dataList.map(d => ({
+                          id: d.id,
+                          label: d.name,
+                        }));
+                    const selectPlaceholder = smartSelectPlaceholder(t, field.key);
+
+                    return (
+                      <div key={field.key}>
+                        <label className="form-label mb-1 block">{t(field.labelKey)}</label>
+                        <SmartSelect
+                          mode="single"
+                          value={form[field.key] ?? defaultValueForField(field)}
+                          onChange={id => setForm(prev => ({ ...prev, [field.key]: id }))}
+                          options={ssOptions}
+                          placeholder={selectPlaceholder}
+                          searchable={field.key === "institutionId"}
+                          onCreateClick={() => { setNestedEntityType(field.nestedCreate!); setNestedOpen(true); }}
+                          createLabel={getSmartSelectCreateLabel(t, field.nestedCreate)}
+                        />
+                      </div>
+                    );
+                  }
+
+                  // Currency uses SmartSelect with system + user-added currencies.
+                  if (field.key === "currency" && field.type === "select") {
+                    const current = form[field.key] ?? defaultValueForField(field);
+                    return (
+                      <div key={field.key}>
+                        <label className="form-label mb-1 block">{t(field.labelKey)}</label>
+                        <CurrencySmartSelect
+                          value={current}
+                          onChange={(id) => setForm((prev) => ({
+                            ...prev,
+                            ...selectFieldPatch(field, id, prev),
+                          }))}
+                          labelSystem={(code) => t(`entityForm.currency.${code.toLowerCase()}`, { defaultValue: code })}
+                        />
+                      </div>
+                    );
+                  }
+                  const isReadOnlySelect = readOnlyFields.includes(field.key);
+                  return (
+                    <div key={field.key}>
+                      <label className="form-label mb-1 block">{t(field.labelKey)}</label>
+                      <select
+                        value={form[field.key] ?? defaultValueForField(field)}
+                        onChange={e => setForm(prev => ({ ...prev, ...selectFieldPatch(field, e.target.value, prev) }))}
+                        disabled={isReadOnlySelect}
+                        aria-readonly={isReadOnlySelect || undefined}
+                        className={isReadOnlySelect ? "form-input opacity-70 cursor-not-allowed" : "form-input"}
+                      >
+                        {(field.key === "type" && allowedTypeValues?.length
+                          ? opts.filter((option) => allowedTypeValues.includes(option.value))
+                          : opts
+                        ).map(o => <option key={o.value} value={o.value}>{optionLabel(t, o)}</option>)}
+                      </select>
+                    </div>
+                  );
+                })}
               </div>
 
               <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
@@ -1557,7 +1643,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
           </div>
           <form className="p-4 space-y-3" onSubmit={onSubmit}>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              {visibleFields.map(field => {
+              {/* 与 modal 布局同口径：初始余额行紧跟第 4 格之后（第二行 = 日期+金额整行）。 */}
+              {visibleFields.slice(0, 4).map(field => {
                 if (field.type === "text" || field.type === "date") {
                   return (
                     <div key={field.key} className={textFieldWrapperClassName(field)}>
@@ -1651,6 +1738,99 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                 );
               })}
               {renderInitialBalanceFields()}
+              {visibleFields.slice(4).map(field => {
+                if (field.type === "text" || field.type === "date") {
+                  return (
+                    <div key={field.key} className={textFieldWrapperClassName(field)}>
+                      <label className="form-label mb-1 block">{t(field.labelKey)}</label>
+                      {renderTextControl(field, { required: field.key === "name" })}
+                    </div>
+                  );
+                }
+
+                // Select field - use SmartSelect for dynamic fields with nestedCreate, plain <select> for static
+                const opts = selectOptionsForField(field);
+                if (opts.length === 0 && !field.optionsFromData) return null;
+
+                // Build SmartSelect options for dynamic fields (institutionId / groupId)
+                if (field.optionsFromData && field.nestedCreate) {
+                  const dataKey = field.optionsFromData;
+                  const dataList = field.key === "institutionId"
+                    ? filterInstitutionDataForAccount(nestedFieldData[dataKey] ?? [])
+                    : nestedFieldData[dataKey] ?? [];
+                  let ssOptions: SmartSelectOption[];
+
+                  if (field.key === "institutionId") {
+                    ssOptions = dataList.map(d => ({
+                      id: d.id,
+                      label: d.name,
+                      subLabel: institutionTypeLabel((d as { type?: string }).type, t),
+                    }));
+                  } else {
+                    ssOptions = dataList.map(d => ({
+                      id: d.id,
+                      label: d.name,
+                    }));
+                  }
+
+                  // Placeholder text for the SmartSelect (no empty option in the list)
+                  const selectPlaceholder = smartSelectPlaceholder(t, field.key);
+
+                  return (
+                    <div key={field.key}>
+                      <label className="form-label mb-1 block">{t(field.labelKey)}</label>
+                      <SmartSelect
+                        mode="single"
+                        value={form[field.key] ?? defaultValueForField(field)}
+                        onChange={id => setForm(prev => ({ ...prev, [field.key]: id }))}
+                        options={ssOptions}
+                        placeholder={selectPlaceholder}
+                        searchable={field.key === "institutionId"}
+                        onCreateClick={() => { setNestedEntityType(field.nestedCreate!); setNestedOpen(true); }}
+                        createLabel={getSmartSelectCreateLabel(t, field.nestedCreate)}
+                      />
+                    </div>
+                  );
+                }
+
+                // Currency uses SmartSelect with system + user-added currencies.
+                if (field.key === "currency" && field.type === "select") {
+                  const current = form[field.key] ?? defaultValueForField(field);
+                  return (
+                    <div key={field.key}>
+                      <label className="form-label mb-1 block">{t(field.labelKey)}</label>
+                      <CurrencySmartSelect
+                        value={current}
+                        onChange={(id) => setForm((prev) => ({
+                          ...prev,
+                          ...selectFieldPatch(field, id, prev),
+                        }))}
+                        labelSystem={(code) => t(`entityForm.currency.${code.toLowerCase()}`, { defaultValue: code })}
+                      />
+                    </div>
+                  );
+                }
+
+                // Static select (kind, type, costBasisMethod, etc.)
+                return (
+                  <div key={field.key}>
+                    <label className="form-label mb-1 block">{t(field.labelKey)}</label>
+                    <select
+                      value={form[field.key] ?? defaultValueForField(field)}
+                      onChange={e => setForm(prev => ({
+                        ...prev,
+                        ...selectFieldPatch(field, e.target.value, prev),
+                      }))}
+                      className="form-input"
+                    >
+                      {(field.key === "type" && allowedTypeValues?.length
+                        ? opts.filter((option) => allowedTypeValues.includes(option.value))
+                        : opts
+                      ).map(o => <option key={o.value} value={o.value}>{optionLabel(t, o)}</option>)}
+                    </select>
+                  </div>
+                );
+              })}
             </div>
 
             <div className="flex justify-end gap-2">
