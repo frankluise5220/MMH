@@ -285,11 +285,17 @@ ensure_session_secret
 # a newer MMH image. Running an older binary against a newer schema makes
 # "prisma db push" drop the newer columns and lose data.
 ensure_schema_meta_table() {
-  if ! psql_mmh -v ON_ERROR_STOP=1 -c 'CREATE TABLE IF NOT EXISTS "_mmh_schema_meta" ("key" TEXT PRIMARY KEY, "value" TEXT NOT NULL);' >/dev/null 2>&1; then
-    mmh_log "WARNING: could not ensure _mmh_schema_meta table; skipping schema downgrade protection check."
-    return 1
-  fi
-  return 0
+  attempt=1
+  while [ "$attempt" -le 3 ]; do
+    if psql_mmh -v ON_ERROR_STOP=1 -c 'CREATE TABLE IF NOT EXISTS "_mmh_schema_meta" ("key" TEXT PRIMARY KEY, "value" TEXT NOT NULL);' >/dev/null 2>&1; then
+      return 0
+    fi
+    mmh_log "WARNING: schema meta table ensure attempt $attempt failed; retrying in 2s..."
+    sleep 2
+    attempt=$((attempt + 1))
+  done
+  mmh_log "WARNING: could not ensure _mmh_schema_meta table after retries; skipping schema downgrade protection check."
+  return 1
 }
 
 refuse_if_schema_newer() {
@@ -316,11 +322,19 @@ refuse_if_schema_newer() {
 
 record_schema_version() {
   recorded_version="$1"
-  if psql_mmh -v ON_ERROR_STOP=1 -c "INSERT INTO \"_mmh_schema_meta\" (\"key\", \"value\") VALUES ('schema_version', '$recorded_version') ON CONFLICT (\"key\") DO UPDATE SET \"value\" = EXCLUDED.\"value\";" >/dev/null 2>&1; then
-    mmh_log "recorded schema version $recorded_version"
-  else
-    mmh_log "WARNING: could not record schema version; downgrade protection cannot trigger for this database."
-  fi
+  attempt=1
+  while [ "$attempt" -le 3 ]; do
+    if psql_mmh -v ON_ERROR_STOP=1 -c "INSERT INTO \"_mmh_schema_meta\" (\"key\", \"value\") VALUES ('schema_version', '$recorded_version') ON CONFLICT (\"key\") DO UPDATE SET \"value\" = EXCLUDED.\"value\";" >/dev/null 2>&1; then
+      mmh_log "recorded schema version $recorded_version"
+      return 0
+    fi
+    mmh_log "WARNING: schema version record attempt $attempt failed; retrying in 2s..."
+    sleep 2
+    attempt=$((attempt + 1))
+  done
+  mmh_log "WARNING: could not record schema version after retries; downgrade protection cannot trigger for this database."
+  mmh_log "WARNING: without the marker a DOWN-graded image cannot be detected. Re-run this image or record it manually:"
+  mmh_log "  INSERT INTO \"_mmh_schema_meta\" (\"key\", \"value\") VALUES ('schema_version', '$recorded_version');"
 }
 
 refuse_if_schema_newer

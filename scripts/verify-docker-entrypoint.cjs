@@ -28,6 +28,10 @@ expect(/ensure_session_secret/.test(entrypoint), "Docker entrypoint must generat
 expect(/_mmh_schema_meta/.test(entrypoint) && /refuse_if_schema_newer/.test(entrypoint), "Docker entrypoint must run the schema downgrade protection check before touching the database schema.");
 expect(/REFUSING TO START/.test(entrypoint) && /exit 78/.test(entrypoint), "Docker entrypoint must refuse to start when the database schema is newer than the image.");
 expect(/record_schema_version "\$build_version"/.test(entrypoint), "Docker entrypoint must record the image schema version after a successful schema sync.");
+expect(
+  /attempt=1/.test(entrypoint) && /while \[ "\$attempt" -le 3 \]/.test(entrypoint) && entrypoint.includes("record_schema_version"),
+  "Docker entrypoint must retry the schema meta table ensure and version record (a transient DB timeout on 2026-09-14 silently disabled downgrade protection on a production deployment).",
+);
 const schemaGuardIndex = entrypoint.indexOf("refuse_if_schema_newer\nrun_compat_migrations");
 const dbPushIndex = entrypoint.indexOf("prisma db push >");
 expect(schemaGuardIndex >= 0 && dbPushIndex >= 0 && schemaGuardIndex < dbPushIndex, "Docker entrypoint must check for a newer database schema before any schema sync runs.");
