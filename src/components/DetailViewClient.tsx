@@ -20,7 +20,8 @@ import type { BatchReplaceField } from "@/lib/client/batchReplaceEntries";
 import { useI18n } from "@/lib/i18n";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, applyBalanceReconcileEntry, effectiveAmountForAccount, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
-import { DEFAULT_LOAN_PREPAY_STRATEGY, parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
+import { buildDebtActivityEditEvent, inferDebtMode, isDebtActivityEntry, type DebtMode } from "@/lib/debt-entry-edit";
+import { parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 import { isCreditCardRepaymentTransfer, isLicensedInsuranceEntry, isRegularInvestRefundEntry, TRANSACTION_SOURCE_INSURANCE } from "@/lib/transaction-semantics";
 import { normalizeSettlementTransferCategoryName } from "@/lib/default-categories";
@@ -268,7 +269,6 @@ function removeEntriesAndUpdateRunningBalances(entries: DetailEntry[], deletedSe
   });
 }
 
-type DebtMode = "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
 type DetailAccountOption = {
   id: string;
   label: string;
@@ -339,78 +339,6 @@ function isCreditCardRepaymentDisplayEntry(entry: DetailEntry) {
   if (entry.accountIsSettlementDebt || entry.toAccountIsSettlementDebt) return false;
   if (entry.accountKind === "loan" || entry.toAccountKind === "loan") return false;
   return isCreditCardRepaymentTransfer(entry);
-}
-
-function debtModeFromSource(source: string, note?: string | null): DebtMode | null {
-  if (source === "debt_borrow_in") return "borrow_in";
-  if (source === "debt_financed_purchase") return "borrow_in";
-  if (source === "debt_lend_out") return "lend_out";
-  if (source === "debt_repay_out") return "repay_out";
-  if (source === "debt_prepay_out") return "prepay_out";
-  if (source === "debt_collect_in") return "collect_in";
-  if (source === "scheduled_task" && String(note ?? "").includes("还贷款")) return "repay_out";
-  return null;
-}
-
-/** 账户现状是否仍是债务账户（往来款 settlement / 贷款 loan）。 */
-function isDebtAccountSide(kind?: string | null, isSettlementDebt?: boolean | null) {
-  return isSettlementDebt === true || kind === "settlement" || kind === "loan";
-}
-
-function inferDebtMode(
-  entry: {
-    type: string;
-    source: string | null;
-    note?: string | null;
-    accountId?: string | null;
-    accountKind?: string | null;
-    accountDebtDirection?: string | null;
-    accountIsSettlementDebt?: boolean | null;
-    toAccountId?: string | null;
-    toAccountKind?: string | null;
-    toAccountDebtDirection?: string | null;
-    toAccountIsSettlementDebt?: boolean | null;
-  },
-  accountById?: Map<string, DetailAccountOption>,
-): DebtMode | null {
-  if (entry.type !== "transfer") return null;
-  if (entry.source === "advance") return null;
-  const sourceAccount = accountById?.get(entry.accountId ?? "");
-  const targetAccount = accountById?.get(entry.toAccountId ?? "");
-  const sourceKind = entry.accountKind ?? sourceAccount?.kind ?? null;
-  const targetKind = entry.toAccountKind ?? targetAccount?.kind ?? null;
-  const sourceMode = debtModeFromSource(String(entry.source ?? ""), entry.note);
-  if (sourceMode) {
-    // `source` 只记录写入时的业务语义；账户被改成普通资金账户后，历史 source 不应再让该行
-    // 按债务口径展示/编辑（分类列、类型列、编辑入口都走这里）。账户信息缺失时维持原行为。
-    const hasAccountInfo = Boolean(
-      sourceKind || targetKind || entry.accountIsSettlementDebt != null || entry.toAccountIsSettlementDebt != null,
-    );
-    if (!hasAccountInfo) return sourceMode;
-    const involvesDebtAccount = isDebtAccountSide(sourceKind, entry.accountIsSettlementDebt)
-      || isDebtAccountSide(targetKind, entry.toAccountIsSettlementDebt);
-    if (involvesDebtAccount) return sourceMode;
-  }
-  const sourceDirection = entry.accountDebtDirection ?? sourceAccount?.debtDirection ?? null;
-  const targetDirection = entry.toAccountDebtDirection ?? targetAccount?.debtDirection ?? null;
-  if (sourceKind === "loan") return sourceDirection === "receivable" ? "collect_in" : "borrow_in";
-  if (targetKind === "loan") return targetDirection === "receivable" ? "lend_out" : "repay_out";
-  return null;
-}
-
-function isDebtActivityEntry(entry: {
-  type: string;
-  source: string | null;
-  note: string | null;
-  accountKind?: string | null;
-  accountDebtDirection?: string | null;
-  accountIsSettlementDebt?: boolean | null;
-  toAccountKind?: string | null;
-  toAccountDebtDirection?: string | null;
-  toAccountIsSettlementDebt?: boolean | null;
-}, accountById?: Map<string, DetailAccountOption>) {
-  if (entry.type !== "transfer") return false;
-  return inferDebtMode(entry, accountById) != null;
 }
 
 function bankDebtTransferLabel(entry: DetailEntry, mode: DebtMode | null, t: (key: string) => string) {
@@ -992,43 +920,11 @@ export function DetailViewClient({
         source: e.source,
       },
     };
-    const debtMode = inferDebtMode(e, accountOptionById);
-    const isDebtActivity = isDebtActivityEntry(e, accountOptionById);
-    const debtPrincipalAmount = e.debtPrincipalAmount == null ? Math.abs(toNumber(e.amount)) : toNumber(e.debtPrincipalAmount);
-    const debtInterestAmount = Math.abs(toNumber(e.realizedProfit ?? e.debtInterestAmount ?? 0));
-    const debtFeeAmount = Math.abs(toNumber(e.debtFeeAmount ?? 0));
-    const isDebtAccountFromSide = debtMode === "borrow_in" || debtMode === "collect_in";
-    const debtAccountIdForEdit = isDebtAccountFromSide ? (e.accountId ?? "") : (e.toAccountId ?? "");
-    const cashAccountIdForEdit = isDebtAccountFromSide ? (e.toAccountId ?? "") : (e.accountId ?? "");
-    const debtEditDialogType =
-      (e.accountKind === "loan" && !e.accountIsSettlementDebt) ||
-      (e.toAccountKind === "loan" && !e.toAccountIsSettlementDebt)
-        ? "loan"
-        : "debt";
-    const debtEditEvent =
-      !balanceReconcileEditEvent && isDebtActivity && debtMode
-        ? {
-            name: debtEditDialogType === "loan" ? "mmh:loan:create" : "mmh:debt:create",
-            detail: {
-              editEntryId: e.id,
-              mode: debtMode,
-              dialogType: debtEditDialogType,
-              defaultDebtAccountId: debtAccountIdForEdit,
-              defaultCashAccountId: cashAccountIdForEdit,
-              defaultLoanFundingMode: e.source === "debt_financed_purchase" ? "financed_purchase" : "cash_disbursement",
-              defaultDate: dateStr,
-              defaultPrincipal: debtPrincipalAmount,
-              defaultInterest: debtInterestAmount,
-              defaultPenalty: debtFeeAmount,
-              defaultNote: e.note ?? "",
-              defaultPrepayStrategy: e.source === "debt_prepay_out"
-                ? parseLoanPrepayStrategy(e.toNote) ?? DEFAULT_LOAN_PREPAY_STRATEGY
-                : undefined,
-            },
-          }
-        : undefined;
+    const debtEditEvent = balanceReconcileEditEvent
+      ? null
+      : buildDebtActivityEditEvent({ ...e, date: dateStr }, accountOptionById);
 
-    if (balanceReconcileEditEvent || debtEditEvent) return { customEditEvent: balanceReconcileEditEvent ?? debtEditEvent };
+    if (balanceReconcileEditEvent || debtEditEvent) return { customEditEvent: balanceReconcileEditEvent ?? debtEditEvent ?? undefined };
     return { edit: e.type === "investment" ? investmentEditPayload : buildBasicEntryEditPayload(e, accountId) };
   }, [accountId, accountOptionById, allowInvestmentEdit, investmentProductTypeByAccountId, linkedInvestmentCandidateEntries]);
   const colorScheme =

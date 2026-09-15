@@ -24,6 +24,7 @@ import { formatCurrencyMoney, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { useI18n } from "@/lib/i18n";
 import { normalizeFixedAssetType } from "@/lib/fixed-asset";
+import { buildDebtActivityEditEvent } from "@/lib/debt-entry-edit";
 import { formatAccountTableLabel, formatAccountTableTitle, type AccountTableDisplaySource } from "@/lib/account-display";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
@@ -79,6 +80,15 @@ type FixedAssetTransaction = {
   realizedProfit?: number | null;
   note?: string | null;
   attachments?: Array<{ id: string; name: string; mimeType?: string | null; url?: string | null }>;
+  /** Underlying TxRecord facts (null when the row has no linked cash entry). */
+  cashEntryType?: string | null;
+  cashEntrySource?: string | null;
+  cashEntryAccountId?: string | null;
+  cashEntryToAccountId?: string | null;
+  cashEntryAmount?: number | null;
+  debtPrincipalAmount?: number | null;
+  debtInterestAmount?: number | null;
+  debtFeeAmount?: number | null;
 };
 
 type Props = {
@@ -91,7 +101,12 @@ type Props = {
   totalCost: number;
   isRedUp: boolean;
   assetType?: string | null;
-  accountOptions?: Array<AccountTableDisplaySource & { id: string }>;
+  accountOptions?: Array<AccountTableDisplaySource & {
+    id: string;
+    kind?: string | null;
+    debtDirection?: string | null;
+    isSettlementDebt?: boolean | null;
+  }>;
   categoryOptions?: BasicDetailBatchCategoryOption[];
   tagOptions?: BasicDetailBatchCategoryOption[];
 };
@@ -432,6 +447,26 @@ export function PropertyShell({
   }
 
   function buildPropertyEditEvent(entry: FixedAssetTransaction) {
+    // Loan/debt-funded purchases (贷款买房等关联的贷款借入记录) must not open the
+    // generic expense form: route them to the debt/loan dialog, same as the
+    // debt view and the account detail view edit the same TxRecord.
+    if (entry.cashEntryId) {
+      const debtEditEvent = buildDebtActivityEditEvent({
+        id: entry.id,
+        type: entry.cashEntryType ?? "",
+        source: entry.cashEntrySource ?? null,
+        accountId: entry.cashEntryAccountId ?? null,
+        toAccountId: entry.cashEntryToAccountId ?? null,
+        date: entry.date?.slice(0, 10) ?? "",
+        amount: Number(entry.cashEntryAmount ?? entry.amount ?? 0),
+        categoryId: entry.categoryId ?? null,
+        debtPrincipalAmount: entry.debtPrincipalAmount,
+        debtInterestAmount: entry.debtInterestAmount,
+        debtFeeAmount: entry.debtFeeAmount,
+        note: entry.note ?? "",
+      }, accountOptionById);
+      if (debtEditEvent) return debtEditEvent;
+    }
     const amount = Number(entry.amount ?? 0);
     const isCashIn = entry.type ? entry.type === "income" : amount >= 0;
     const accountId = entry.accountId ?? "";

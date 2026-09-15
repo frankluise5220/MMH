@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useI18n } from "@/lib/i18n";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
+import { DateStepper } from "@/components/DateStepper";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
 import { fetchSettingsAccountData, notifySettingsDataChanged } from "@/lib/client/settingsCache";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -132,6 +133,8 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
   const loanDetailsInstitutionType = institutions.find((institution) => institution.id === (form.institutionId || account.institutionId))?.type ?? null;
   const loanDetailsUsesLpr = loanDetailsIsHomeLoan && loanDetailsInstitutionType !== "provident_fund";
   const loanDetailsIsCollateralLoan = loanDetails ? isCollateralLoanType(loanDetails.loanType) : false;
+  // 负债侧编辑贷款账户：只允许改还款资金账户，其余账户属性与贷款计划只读。
+  const loanAccountEditLocked = Boolean(loanDetails);
 
   const resetForm = useCallback(() => {
     const nextKind = normalizedKind(account);
@@ -211,25 +214,27 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
     if (kind === "loan" && form.institutionId && !isConsumerLoanInstitutionType(selectedInstitution?.type)) { setError(t("settings.accounts.import.institutionNotAllowed")); return; }
     if (form.institutionId && !accountInstitutionTypeIsAllowed(kind, productType, selectedInstitution?.type)) { setError(t("settings.accounts.import.institutionNotAllowed")); return; }
     if (loanDetails && loanEditAction) {
-      const principal = Number(loanForm.principal);
-      const totalRuns = Number(loanForm.totalRuns);
-      const annualRate = Number(loanForm.annualRate);
-      const intervalMonths = Number(loanForm.repaymentIntervalMonths);
-      const autoDebit = loanDetailsIsHomeLoan || loanForm.autoDebit === "true";
+      // 锁定编辑态：计划参数一律沿用打开时回填值，只校验还款资金账户。
+      const autoDebit = loanDetailsIsHomeLoan || loanDetails.defaultAutoDebit === true || loanForm.autoDebit === "true";
       const debitAccountId = loanDetailsIsCollateralLoan ? loanForm.autoDebitCashAccountId : loanForm.cashAccountId;
-      if (!Number.isFinite(principal) || principal <= 0) { setError(t("txForm.alert.invalidAmount")); return; }
-      if (!Number.isInteger(totalRuns) || totalRuns <= 0) { setError(t("debtTx.alert.totalRunsRequired")); return; }
-      if (!Number.isFinite(annualRate) || annualRate < 0) { setError(t("debtTx.alert.annualRateRequired")); return; }
-      if (!Number.isInteger(intervalMonths) || intervalMonths <= 0) { setError(t("regularInvest.alert.invalidRepaymentInterval")); return; }
-      if (loanDetailsIsCollateralLoan && !loanForm.cashAccountId) { setError(t("debtTx.alert.selectLoanDisbursementAccount")); return; }
       if (autoDebit && !debitAccountId) { setError(t("debtTx.alert.autoDebitAccountRequired")); return; }
-      if (autoDebit && !loanForm.autoDebitFirstDate) { setError(t("debtTx.alert.autoDebitDateRequired")); return; }
-      if (!autoDebit && !loanForm.firstBillDate) { setError(t("debtTx.alert.firstBillDateRequired")); return; }
-      if (!autoDebit && !loanForm.firstRepaymentDate) { setError(t("debtTx.alert.firstRepaymentDateRequired")); return; }
     }
     setSaving(true);
     setError("");
     try {
+      // 贷款账户锁定编辑：账户属性按打开时的原值提交，避免只读控件被意外改写。
+      const lockedLoanAccountForm = loanAccountEditLocked
+        ? {
+            name: account.name,
+            kind: "loan",
+            note: account.note ?? "",
+            currency: normalizeCurrency(account.currency ?? "CNY"),
+            groupId: account.groupId ?? "",
+            institutionId: account.institutionId ?? "",
+            loanType: account.loanType || (account.isConsumerLoan === true ? "consumer" : "home"),
+            isConsumerLoan: (account.loanType || (account.isConsumerLoan === true ? "consumer" : "home")) === "consumer" ? "true" : "false",
+          }
+        : null;
       const payload = isFixedAssetAccount
         ? { ...form, kind: "investment", investProductType: "property", institutionId: "", counterpartyId: "", fixedAssetType: form.fixedAssetType || "property", loanType: "", isConsumerLoan: "false" }
         : kind === "settlement"
@@ -251,13 +256,18 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
             ? // 口径（2026-09-13）：贷款账户可挂往来对象（贷款窗口借入），快速编辑
               // 不再解绑——counterpartyId 置 undefined（JSON.stringify 丢键），
               // 服务端对未提交的 counterpartyId 保留原值。
-              { ...form, counterpartyId: undefined, loanType: form.loanType || "home", isConsumerLoan: form.loanType === "consumer" ? "true" : "false" }
+              {
+                ...(lockedLoanAccountForm ?? form),
+                counterpartyId: undefined,
+                loanType: (lockedLoanAccountForm ?? form).loanType || "home",
+                isConsumerLoan: (lockedLoanAccountForm ?? form).loanType === "consumer" ? "true" : "false",
+              }
             : { ...form, counterpartyId: "", loanType: "", isConsumerLoan: "false" };
       const response = await fetch("/api/v1/accounts", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: account.id, ...payload }) });
       const data = await response.json().catch(() => null);
       if (!response.ok || !data?.ok) throw new Error(data?.error || t("settings.accounts.saveFailed"));
       if (loanDetails && loanEditAction) {
-        const autoDebit = loanDetailsIsHomeLoan || loanForm.autoDebit === "true";
+        const autoDebit = loanDetailsIsHomeLoan || loanDetails.defaultAutoDebit === true || loanForm.autoDebit === "true";
         const debitAccountId = loanDetailsIsCollateralLoan ? loanForm.autoDebitCashAccountId : loanForm.cashAccountId;
         const loanData = new FormData();
         loanData.set("editEntryId", loanDetails.editEntryId);
@@ -265,23 +275,37 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
         loanData.set("loanFundingMode", loanDetails.defaultLoanFundingMode ?? (loanDetailsIsCollateralLoan ? "cash_disbursement" : "financed_purchase"));
         loanData.set("date", loanDetails.defaultDate);
         loanData.set("debtAccountId", loanDetails.defaultDebtAccountId);
-        loanData.set("debtItemName", form.name.trim());
+        // 不回写贷款账户名称：名称属于账户本身，编辑记录不重命名。
+        loanData.set("debtItemName", "");
         loanData.set("loanType", loanDetails.loanType);
-        loanData.set("cashAccountId", loanDetailsIsCollateralLoan ? loanForm.cashAccountId : autoDebit ? loanForm.cashAccountId : "");
-        loanData.set("autoDebitCashAccountId", autoDebit ? debitAccountId : "");
-        loanData.set("principal", loanForm.principal);
+        // 只有还款资金账户取当前表单；其余计划参数沿用打开时回填值。
+        loanData.set(
+          "cashAccountId",
+          loanDetailsIsCollateralLoan
+            ? (loanDetails.defaultCashAccountId ?? "")
+            : autoDebit
+              ? (loanForm.cashAccountId || loanDetails.defaultCashAccountId || "")
+              : "",
+        );
+        loanData.set("autoDebitCashAccountId", autoDebit ? (debitAccountId || "") : "");
+        loanData.set("principal", String(Math.abs(Number(loanDetails.defaultPrincipal) || 0)));
         loanData.set("interest", String(loanDetails.defaultInterest ?? 0));
         loanData.set("penalty", "0");
-        loanData.set("annualRate", loanForm.annualRate);
-        loanData.set("mortgageLprDiscount", loanDetailsUsesLpr ? loanForm.mortgageLprDiscount : "");
-        loanData.set("repaymentMethod", loanForm.repaymentMethod);
-        loanData.set("repaymentIntervalMonths", loanForm.repaymentIntervalMonths);
-        loanData.set("loanTotalRuns", loanForm.totalRuns);
-        loanData.set("firstBillDate", loanDetailsIsHomeLoan ? "" : loanForm.firstBillDate);
-        loanData.set("firstRepaymentDate", autoDebit ? loanForm.autoDebitFirstDate : loanForm.firstRepaymentDate);
+        loanData.set("annualRate", loanDetails.defaultAnnualRate == null ? "0" : String(loanDetails.defaultAnnualRate));
+        loanData.set("mortgageLprDiscount", loanDetailsUsesLpr && loanDetails.defaultMortgageLprDiscount != null ? String(loanDetails.defaultMortgageLprDiscount) : "");
+        loanData.set("repaymentMethod", loanDetails.defaultRepaymentMethod || EQUAL_PAYMENT_REPAYMENT_METHOD);
+        loanData.set("repaymentIntervalMonths", String(loanDetails.defaultRepaymentIntervalMonths ?? 1));
+        loanData.set("loanTotalRuns", String(loanDetails.defaultLoanTotalRuns ?? 1));
+        loanData.set("firstBillDate", loanDetailsIsHomeLoan ? "" : (loanDetails.defaultFirstBillDate ?? ""));
+        loanData.set(
+          "firstRepaymentDate",
+          autoDebit
+            ? (loanDetails.defaultAutoDebitFirstDate ?? loanDetails.defaultFirstRepaymentDate ?? "")
+            : (loanDetails.defaultFirstRepaymentDate ?? ""),
+        );
         loanData.set("createRepaymentPlan", "true");
         loanData.set("autoDebit", autoDebit ? "true" : "false");
-        loanData.set("autoDebitFirstDate", autoDebit ? loanForm.autoDebitFirstDate : "");
+        loanData.set("autoDebitFirstDate", autoDebit ? (loanDetails.defaultAutoDebitFirstDate ?? loanDetails.defaultFirstRepaymentDate ?? "") : "");
         if (loanDetails.defaultFixedAssetAccountId) loanData.set("fixedAssetAccountId", loanDetails.defaultFixedAssetAccountId);
         if (loanDetails.defaultFixedAssetAssetId) loanData.set("fixedAssetAssetId", loanDetails.defaultFixedAssetAssetId);
         loanData.set("createHistoricalRepaymentRecords", "false");
@@ -317,8 +341,8 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
           <div className="max-h-[calc(100dvh-2rem)] w-[720px] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 shadow-xl" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
             <div className="mb-3 flex items-center justify-between"><h2 className="text-sm font-semibold text-slate-800">{t("settings.accounts.editTitle", { name: account.name })}</h2><button type="button" className="h-8 rounded border border-slate-200 px-2 text-sm text-slate-600" onClick={() => setOpen(false)}>{t("table.close")}</button></div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3">
-              <Field label={t("settings.accounts.name")}><input value={form.name ?? ""} onChange={(event) => setField("name", event.target.value)} className={inputClass} /></Field>
-              <Field label={t("settings.accounts.type")}>{isFixedAssetAccount ? <input value={t("txForm.fixedAssetToggle")} readOnly className={`${inputClass} bg-slate-50 text-slate-500`} /> : <select value={kind} onChange={(event) => {
+              <Field label={t("settings.accounts.name")}><input value={form.name ?? ""} disabled={loanAccountEditLocked} onChange={(event) => setField("name", event.target.value)} className={inputClass} /></Field>
+              <Field label={t("settings.accounts.type")}>{isFixedAssetAccount || loanAccountEditLocked ? <input value={isFixedAssetAccount ? t("txForm.fixedAssetToggle") : t(`account.kind.${kind}`)} readOnly className={`${inputClass} bg-slate-50 text-slate-500`} /> : <select value={kind} onChange={(event) => {
                 const nextKind = event.target.value;
                 setForm((current) => {
                   const nextLoanType = nextKind === "loan" ? (current.loanType || "home") : "";
@@ -333,23 +357,27 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
                   };
                 });
               }} className={inputClass}>{selectableAccountKinds.map((value) => <option key={value} value={value}>{t(`account.kind.${value}`)}</option>)}</select>}</Field>
-              {isFixedAssetAccount && <Field label={t("fixedAssetEdit.assetType")}><select value={form.fixedAssetType || "property"} onChange={(event) => setField("fixedAssetType", event.target.value)} className={inputClass}>{FIXED_ASSET_TYPES.map((value) => <option key={value} value={value}>{t(`fixedAsset.type.${value}`)}</option>)}</select></Field>}
-              <Field label={t("settings.accounts.owner")}><select value={form.groupId ?? ""} onChange={(event) => setField("groupId", event.target.value)} className={inputClass}><option value="">{t("settings.accounts.selectOwner")}</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></Field>
-              {supportsInstitution && !isFixedAssetAccount && <Field label={t("settings.accounts.institution")}><select value={form.institutionId ?? ""} onChange={(event) => setField("institutionId", event.target.value)} className={inputClass}><option value="">{t("settings.accounts.selectInstitution")}</option>{filteredInstitutions.map((institution) => <option key={institution.id} value={institution.id}>{institution.shortName?.trim() || institution.name}</option>)}</select></Field>}
+              {isFixedAssetAccount && <Field label={t("fixedAssetEdit.assetType")}><select value={form.fixedAssetType || "property"} disabled={loanAccountEditLocked} onChange={(event) => setField("fixedAssetType", event.target.value)} className={inputClass}>{FIXED_ASSET_TYPES.map((value) => <option key={value} value={value}>{t(`fixedAsset.type.${value}`)}</option>)}</select></Field>}
+              <Field label={t("settings.accounts.owner")}><select value={form.groupId ?? ""} disabled={loanAccountEditLocked} onChange={(event) => setField("groupId", event.target.value)} className={inputClass}><option value="">{t("settings.accounts.selectOwner")}</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></Field>
+              {supportsInstitution && !isFixedAssetAccount && <Field label={t("settings.accounts.institution")}><select value={form.institutionId ?? ""} disabled={loanAccountEditLocked} onChange={(event) => setField("institutionId", event.target.value)} className={inputClass}><option value="">{t("settings.accounts.selectInstitution")}</option>{filteredInstitutions.map((institution) => <option key={institution.id} value={institution.id}>{institution.shortName?.trim() || institution.name}</option>)}</select></Field>}
               {kind === "settlement" && account.agreementAnnualRate !== undefined && (
                 <>
                   <Field label={t("debtTx.agreementAnnualRate")}><input value={form.agreementAnnualRate ?? ""} onChange={(event) => setField("agreementAnnualRate", event.target.value)} inputMode="decimal" className={inputClass} /></Field>
                   <Field label={t("debtTx.agreementTerm")}><input type="number" min={1} value={form.agreementTermValue ?? ""} onChange={(event) => setField("agreementTermValue", event.target.value)} className={inputClass} /></Field>
-                  <Field label={t("debtTx.agreementDueDate")}><input type="date" value={form.agreementDueDate ?? ""} onChange={(event) => setField("agreementDueDate", event.target.value)} className={inputClass} /></Field>
+                  <Field label={t("debtTx.agreementDueDate")}><DateStepper value={form.agreementDueDate ?? ""} onChange={(value) => setField("agreementDueDate", value)} className={`!h-8 ${inputClass}`} /></Field>
                 </>
               )}
               {kind === "settlement" && <Field label={t("txForm.counterparty")}><select value={form.counterpartyId ?? ""} onChange={(event) => setField("counterpartyId", event.target.value)} className={inputClass}><option value="">{t("debtTx.placeholder.selectCounterparty")}</option>{counterparties.map((counterparty) => <option key={counterparty.id} value={counterparty.id}>{counterparty.shortName?.trim() || counterparty.name}</option>)}</select></Field>}
               <Field label={t("settings.accounts.currency")}>
-                <CurrencySmartSelect
-                  value={currentCurrency}
-                  onChange={(val) => setField("currency", val)}
-                  labelSystem={(code) => t(`entityForm.currency.${code.toLowerCase()}`, { defaultValue: code })}
-                />
+                {loanAccountEditLocked ? (
+                  <input value={currentCurrency} readOnly className={`${inputClass} bg-slate-50 text-slate-500`} />
+                ) : (
+                  <CurrencySmartSelect
+                    value={currentCurrency}
+                    onChange={(val) => setField("currency", val)}
+                    labelSystem={(code) => t(`entityForm.currency.${code.toLowerCase()}`, { defaultValue: code })}
+                  />
+                )}
               </Field>
               {isInvestment && !isFixedAssetAccount && <Field label={t("settings.accounts.investmentAccountType")}><select value={productType} onChange={(event) => setField("investProductType", event.target.value)} className={inputClass}>{PRODUCT_TYPES.map((value) => <option key={value} value={value}>{t(`investment.product.${value}`)}</option>)}</select></Field>}
               {showCostBasis && <Field label={t("settings.accounts.costBasisMethod")}><select value={form.costBasisMethod || "moving_avg"} onChange={(event) => setField("costBasisMethod", event.target.value)} className={inputClass}><option value="moving_avg">{t("settings.accounts.movingAverage")}</option><option value="fifo">{t("settings.accounts.fifo")}</option><option value="lifo">{t("settings.accounts.lifo")}</option></select></Field>}
@@ -363,33 +391,33 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
               {isCredit && <Field label={t("settings.accounts.creditLimitLabel")}><input value={form.creditLimit ?? ""} onChange={(event) => setField("creditLimit", event.target.value)} className={inputClass} /></Field>}
               {supportsLastFour && <Field label={t("settings.accounts.lastFourLabel")}><input value={form.numberMasked ?? ""} onChange={(event) => setField("numberMasked", event.target.value)} className={inputClass} /></Field>}
               {isCredit && <Field label={t("settings.accounts.billMode")}><select value={form.creditBillMode || "separate"} onChange={(event) => setField("creditBillMode", event.target.value)} className={inputClass}><option value="separate">{t("settings.accounts.separateBill")}</option><option value="consolidated">{t("settings.accounts.consolidatedBill")}</option></select></Field>}
-              {isLoan && <Field label={t("settings.accounts.loanType")}><select value={form.loanType || "home"} onChange={(event) => { setField("loanType", event.target.value); setField("isConsumerLoan", event.target.value === "consumer" ? "true" : "false"); }} className={inputClass}>{LOAN_TYPES.map((value) => <option key={value} value={value}>{t(`loan.type.${value}`)}</option>)}</select></Field>}
+              {isLoan && <Field label={t("settings.accounts.loanType")}><select value={form.loanType || "home"} disabled={loanAccountEditLocked} onChange={(event) => { setField("loanType", event.target.value); setField("isConsumerLoan", event.target.value === "consumer" ? "true" : "false"); }} className={inputClass}>{LOAN_TYPES.map((value) => <option key={value} value={value}>{t(`loan.type.${value}`)}</option>)}</select></Field>}
             </div>
-            <Field label={t("settings.accounts.note")}><ClearableNoteField multiline value={form.note ?? ""} onValueChange={(value) => setField("note", value)} className="min-h-20 w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-100 disabled:bg-slate-100 disabled:text-slate-400" /></Field>
+            <Field label={t("settings.accounts.note")}><ClearableNoteField multiline value={form.note ?? ""} disabled={loanAccountEditLocked} readOnly={loanAccountEditLocked} onValueChange={(value) => setField("note", value)} className="min-h-20 w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-100 disabled:bg-slate-100 disabled:text-slate-400" /></Field>
             {loanDetails ? (
               <section className="mt-4 border-t border-slate-200 pt-4">
                 <h3 className="mb-3 text-sm font-semibold text-slate-800">{t("accountTypeQuickEdit.loanDetails")}</h3>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3">
-                  <Field label={t("txForm.date")}><input type="date" value={loanDetails.defaultDate} readOnly className={`${inputClass} bg-slate-50 text-slate-500`} /></Field>
-                  <Field label={t("debtTx.totalBorrowing")}><input value={loanForm.principal ?? ""} onChange={(event) => setLoanField("principal", event.target.value)} className={inputClass} inputMode="decimal" /></Field>
-                  <Field label={t("debtTx.repaymentMethod")}><select value={loanForm.repaymentMethod ?? ""} onChange={(event) => setLoanField("repaymentMethod", event.target.value)} className={inputClass}><option value={EQUAL_PAYMENT_REPAYMENT_METHOD}>{t("debtTx.method.equalInstallment")}</option><option value={EQUAL_PRINCIPAL_REPAYMENT_METHOD}>{t("debtTx.method.equalPrincipal")}</option><option value={INSTALLMENT_REPAYMENT_METHOD}>{t("debtTx.method.interestFreeInstallment")}</option><option value={INTEREST_FIRST_REPAYMENT_METHOD}>{t("debtTx.method.interestFirstThenPrincipal")}</option></select></Field>
-                  <Field label={t("debtTx.totalRuns")}><input value={loanForm.totalRuns ?? ""} onChange={(event) => setLoanField("totalRuns", event.target.value)} className={inputClass} inputMode="numeric" /></Field>
-                  <Field label={t("debtShell.rateAdjust.annualRateLabel")}><input value={loanForm.annualRate ?? ""} onChange={(event) => setLoanField("annualRate", event.target.value)} className={inputClass} inputMode="decimal" /></Field>
-                  <Field label={t("regularInvest.repaymentIntervalMonths")}><input value={loanForm.repaymentIntervalMonths ?? ""} onChange={(event) => setLoanField("repaymentIntervalMonths", event.target.value)} className={inputClass} inputMode="numeric" /></Field>
-                  {loanDetailsUsesLpr ? <Field label={t("debtTx.mortgageLprDiscount")}><input value={loanForm.mortgageLprDiscount ?? ""} onChange={(event) => setLoanField("mortgageLprDiscount", event.target.value)} className={inputClass} inputMode="decimal" /></Field> : null}
-                  {loanDetailsIsCollateralLoan ? <Field label={t("debtTx.accountLabel.postingAccount")}><select value={loanForm.cashAccountId ?? ""} onChange={(event) => setLoanField("cashAccountId", event.target.value)} className={inputClass}><option value="">{t("txForm.selectPlaceholder")}</option>{cashAccounts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field> : null}
+                  <Field label={t("txForm.date")}><DateStepper value={loanDetails.defaultDate} disabled onChange={() => {}} className={`!h-8 !bg-slate-50 !text-slate-500 ${inputClass}`} /></Field>
+                  <Field label={t("debtTx.totalBorrowing")}><input value={loanForm.principal ?? ""} disabled={loanAccountEditLocked} onChange={(event) => setLoanField("principal", event.target.value)} className={inputClass} inputMode="decimal" /></Field>
+                  <Field label={t("debtTx.repaymentMethod")}><select value={loanForm.repaymentMethod ?? ""} disabled={loanAccountEditLocked} onChange={(event) => setLoanField("repaymentMethod", event.target.value)} className={inputClass}><option value={EQUAL_PAYMENT_REPAYMENT_METHOD}>{t("debtTx.method.equalInstallment")}</option><option value={EQUAL_PRINCIPAL_REPAYMENT_METHOD}>{t("debtTx.method.equalPrincipal")}</option><option value={INSTALLMENT_REPAYMENT_METHOD}>{t("debtTx.method.interestFreeInstallment")}</option><option value={INTEREST_FIRST_REPAYMENT_METHOD}>{t("debtTx.method.interestFirstThenPrincipal")}</option></select></Field>
+                  <Field label={t("debtTx.totalRuns")}><input value={loanForm.totalRuns ?? ""} disabled={loanAccountEditLocked} onChange={(event) => setLoanField("totalRuns", event.target.value)} className={inputClass} inputMode="numeric" /></Field>
+                  <Field label={t("debtShell.rateAdjust.annualRateLabel")}><input value={loanForm.annualRate ?? ""} disabled={loanAccountEditLocked} onChange={(event) => setLoanField("annualRate", event.target.value)} className={inputClass} inputMode="decimal" /></Field>
+                  <Field label={t("regularInvest.repaymentIntervalMonths")}><input value={loanForm.repaymentIntervalMonths ?? ""} disabled={loanAccountEditLocked} onChange={(event) => setLoanField("repaymentIntervalMonths", event.target.value)} className={inputClass} inputMode="numeric" /></Field>
+                  {loanDetailsUsesLpr ? <Field label={t("debtTx.mortgageLprDiscount")}><input value={loanForm.mortgageLprDiscount ?? ""} disabled={loanAccountEditLocked} onChange={(event) => setLoanField("mortgageLprDiscount", event.target.value)} className={inputClass} inputMode="decimal" /></Field> : null}
+                  {loanDetailsIsCollateralLoan ? <Field label={t("debtTx.accountLabel.postingAccount")}><select value={loanForm.cashAccountId ?? ""} disabled={loanAccountEditLocked} onChange={(event) => setLoanField("cashAccountId", event.target.value)} className={inputClass}><option value="">{t("txForm.selectPlaceholder")}</option>{cashAccounts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field> : null}
                 </div>
-                {!loanDetailsIsHomeLoan ? <label className="mt-3 flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={loanForm.autoDebit === "true"} onChange={(event) => setLoanField("autoDebit", event.target.checked ? "true" : "false")} className="h-3.5 w-3.5 accent-blue-600" />{t("debtTx.autoDebitLabel")}</label> : null}
+                {!loanDetailsIsHomeLoan ? <label className={`mt-3 flex items-center gap-2 text-xs text-slate-600 ${loanAccountEditLocked ? "cursor-not-allowed opacity-70" : ""}`}><input type="checkbox" checked={loanForm.autoDebit === "true"} disabled={loanAccountEditLocked} onChange={(event) => setLoanField("autoDebit", event.target.checked ? "true" : "false")} className="h-3.5 w-3.5 accent-blue-600" />{t("debtTx.autoDebitLabel")}</label> : null}
                 {loanDetailsIsHomeLoan || loanForm.autoDebit === "true" ? (
                   <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    {loanDetailsIsHomeLoan ? null : <Field label={t("debtTx.firstBillDate")}><input type="date" value={loanForm.firstBillDate ?? ""} onChange={(event) => setLoanField("firstBillDate", event.target.value)} className={inputClass} /></Field>}
-                    <Field label={t("debtTx.autoDebitDate")}><input type="date" value={loanForm.autoDebitFirstDate ?? ""} onChange={(event) => setLoanField("autoDebitFirstDate", event.target.value)} className={inputClass} /></Field>
+                    {loanDetailsIsHomeLoan ? null : <Field label={t("debtTx.firstBillDate")}><DateStepper value={loanForm.firstBillDate ?? ""} disabled={loanAccountEditLocked} onChange={(value) => setLoanField("firstBillDate", value)} className={`!h-8 ${inputClass}`} /></Field>}
+                    <Field label={t("debtTx.autoDebitDate")}><DateStepper value={loanForm.autoDebitFirstDate ?? ""} disabled={loanAccountEditLocked} onChange={(value) => setLoanField("autoDebitFirstDate", value)} className={`!h-8 ${inputClass}`} /></Field>
                     <Field label={t("debtTx.autoDebitAccount")}><select value={loanDetailsIsCollateralLoan ? loanForm.autoDebitCashAccountId ?? "" : loanForm.cashAccountId ?? ""} onChange={(event) => setLoanField(loanDetailsIsCollateralLoan ? "autoDebitCashAccountId" : "cashAccountId", event.target.value)} className={inputClass}><option value="">{t("txForm.selectPlaceholder")}</option>{cashAccounts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
                   </div>
                 ) : (
                   <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <Field label={t("debtTx.firstBillDate")}><input type="date" value={loanForm.firstBillDate ?? ""} onChange={(event) => setLoanField("firstBillDate", event.target.value)} className={inputClass} /></Field>
-                    <Field label={t("debtTx.firstRepaymentDate")}><input type="date" value={loanForm.firstRepaymentDate ?? ""} onChange={(event) => setLoanField("firstRepaymentDate", event.target.value)} className={inputClass} /></Field>
+                    <Field label={t("debtTx.firstBillDate")}><DateStepper value={loanForm.firstBillDate ?? ""} disabled={loanAccountEditLocked} onChange={(value) => setLoanField("firstBillDate", value)} className={`!h-8 ${inputClass}`} /></Field>
+                    <Field label={t("debtTx.firstRepaymentDate")}><DateStepper value={loanForm.firstRepaymentDate ?? ""} disabled={loanAccountEditLocked} onChange={(value) => setLoanField("firstRepaymentDate", value)} className={`!h-8 ${inputClass}`} /></Field>
                   </div>
                 )}
               </section>

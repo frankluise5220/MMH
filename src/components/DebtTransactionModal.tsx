@@ -14,7 +14,7 @@ import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { buildCategoryTreeOptions, type CategorySource } from "./categorySmartSelect";
 import { institutionTypeLabel, isSettlementCounterpartyType, isInstitutionTypeOf, LOAN_DIALOG_INSTITUTION_TYPE_VALUES } from "@/lib/account-kinds";
-import { buildAccountDisplayOption } from "@/lib/account-display";
+import { buildAccountDisplayOption, formatAccountHoverTitle } from "@/lib/account-display";
 import { recordRecentAccount, sortByAccountUsage, sortOptionsByRecent, useAccountUsage, useRecentAccountIds } from "@/lib/client/recentAccounts";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -431,13 +431,13 @@ function FixedAssetCreateDialog({
               </div>
               <div className="space-y-1">
                 <div className="form-label">
-                  {t("txForm.fixedAssetName")} <span className="text-red-500">*</span>
+                  {t("txForm.fixedAssetName")} <span className="text-slate-400">{t("stockFee.optional")}</span>
                 </div>
                 <input
                   type="text"
                   value={name}
                   onChange={(event) => onNameChange(event.target.value)}
-                  placeholder={t("txForm.fixedAssetName")}
+                  placeholder={t("stockFee.optional")}
                   className="form-input rounded-[8px] px-2 text-xs"
                   style={{ height: 32, minHeight: 32 }}
                 />
@@ -449,7 +449,7 @@ function FixedAssetCreateDialog({
                 </div>
                 <div className="space-y-1">
                   <div className="form-label">
-                    {t("txForm.fixedAssetPurchaseAmount")} <span className="text-red-500">*</span>
+                    {t("txForm.fixedAssetPurchaseAmount")} <span className="text-slate-400">{t("stockFee.optional")}</span>
                   </div>
                   <CalcInput
                     value={amount}
@@ -1411,10 +1411,7 @@ export function DebtTransactionModal({
       window.alert(t("debtTx.alert.selectLoanDisbursementAccount"));
       return;
     }
-    if (isLoanBorrow && editingEntryId && !debtItemName.trim()) {
-      window.alert(t("debtTx.alert.loanNameRequired"));
-      return;
-    }
+    // 编辑借入记录不再校验/提交贷款账户名称：名称属于账户，编辑记录不重命名账户。
     const submittedLoanFundingMode =
       isLoanDialog && mode === "borrow_in"
         ? (isCollateralLoanBorrow ? "cash_disbursement" : "financed_purchase")
@@ -1555,7 +1552,8 @@ export function DebtTransactionModal({
     }
     formData.set("debtObjectId", shouldUseDebtObject ? debtInstitutionId : "");
     formData.set("debtInstitutionId", shouldUseDebtObject ? rawDebtObjectId(debtInstitutionId) : "");
-    formData.set("debtItemName", isLoanDialog ? debtItemName : "");
+    // 编辑贷款借入记录不回写账户名；新建时 debtItemName 也空（账户名由新建账户链路决定）。
+    formData.set("debtItemName", isLoanDialog && !editingEntryId ? debtItemName : "");
     formData.set("loanType", isLoanDialog && activeLoanTab !== "repay_out" ? activeLoanTab : "");
     formData.set("cashAccountId", submittedCashAccountId);
     formData.set("autoDebitCashAccountId", submittedAutoDebit ? submittedAutoDebitCashAccountId : "");
@@ -1766,6 +1764,8 @@ export function DebtTransactionModal({
   const isConsumerLoanBorrow = isLoanBorrow && activeLoanTab === "consumer";
   const isHomeLoanBorrow = isLoanBorrow && activeLoanTab === "home";
   const isCollateralLoanBorrow = isLoanBorrow && activeLoanTab === "mortgage";
+  // 编辑贷款借入记录：只允许改还款资金账户，其它字段只读回填。
+  const isLoanBorrowEditLocked = isLoanBorrow && !!editingEntryId;
   const showHomeLoanLprFields = isHomeLoanBorrow && selectedDebtInstitutionType !== "provident_fund";
   // Status of the selected repayable loan account's current scheduled period.
   const selectedRepayableLoanRow = useMemo(
@@ -2277,30 +2277,42 @@ export function DebtTransactionModal({
   const renderDateField = () => (
     <div className="space-y-1">
       <div className="form-label">{isLoanRepaymentMode ? t("debtTx.date.repayment") : mode === "borrow_in" ? (isLoanBorrow ? t("debtTx.date.occurred") : t("detail.column.postedAt")) : t("detail.column.date")}</div>
-      <DateStepper name="date" value={date} onChange={(value) => { scheduledDateManualRef.current = isLoanRepaymentMode; setDate(value); }} />
+      <DateStepper
+        name="date"
+        value={date}
+        disabled={isLoanBorrowEditLocked}
+        onChange={(value) => {
+          if (isLoanBorrowEditLocked) return;
+          scheduledDateManualRef.current = isLoanRepaymentMode;
+          setDate(value);
+        }}
+      />
     </div>
   );
 
-  const renderCashAccountField = (options?: { label?: string; value?: string; onChange?: (id: string) => void }) => (
-    <div className="space-y-1">
+  const renderCashAccountField = (options?: { label?: string; value?: string; onChange?: (id: string) => void; locked?: boolean }) => {
+    const locked = options?.locked === true;
+    return (
+    <div className={`space-y-1 ${locked ? "pointer-events-none opacity-70" : ""}`}>
       <div className="form-label">{options?.label ?? cashAccountLabel}</div>
       <SmartSelect
         mode="single"
         value={options?.value ?? cashAccountId}
-        onChange={options?.onChange ?? setCashAccountId}
+        onChange={locked ? () => {} : (options?.onChange ?? setCashAccountId)}
         options={visibleCashOptions}
         placeholder={t("txForm.selectPlaceholder")}
-        onCreateClick={() => setCashAccountNestedOpen(true)}
+        onCreateClick={locked ? undefined : () => setCashAccountNestedOpen(true)}
         createLabel={t("settings.accounts.add")}
         behavior={{
           hierarchy: "auto",
           search: "auto",
           clearable: false,
-          headerExtra: cashOwnerCycleButton,
+          headerExtra: locked ? undefined : cashOwnerCycleButton,
         }}
       />
     </div>
-  );
+    );
+  };
 
   function handleFirstRepaymentDateChange(value: string) {
     setFirstRepaymentDate(value);
@@ -2351,16 +2363,24 @@ export function DebtTransactionModal({
     </div>
   );
 
-  const renderDebtAccountField = (options?: { label?: string }) => isLoanBorrow && editingEntryId ? (
-    <div className="space-y-1">
-      <div className="form-label">{t("debtTx.loanName")} <span className="text-red-500">*</span></div>
-      <input
-        value={debtItemName}
-        onChange={(event) => setDebtItemName(event.target.value)}
-        className="form-input"
-      />
-    </div>
-  ) : canSelectDebtObject ? (
+  const renderDebtAccountField = (options?: { label?: string }) => isLoanBorrow && editingEntryId ? (() => {
+    // 编辑借入记录时贷款账户已存在，名称属于账户本身：只读展示、不允许修改，
+    // 提交时不再回写账户名（debtItemName 留空 → 服务端沿用账户现名）。
+    const editLoanAccountName = (debtAccountId ? localDebtAccounts.find((account) => account.id === debtAccountId)?.label : "")
+      || debtItemName
+      || t("debtTx.loanAccountNameMissing");
+    return (
+      <div className="space-y-1">
+        <div className="form-label">{t("debtTx.loanName")}</div>
+        <input
+          value={editLoanAccountName}
+          readOnly
+          disabled
+          className="form-input cursor-not-allowed bg-slate-50 text-slate-700"
+        />
+      </div>
+    );
+  })() : canSelectDebtObject ? (
     <div className="space-y-1">
       <div className="form-label">{options?.label ?? (isLoanDialog ? t("debtTx.loanAccount") : t("debtTx.counterpartyAccount"))}</div>
       <SmartSelect
@@ -2418,30 +2438,39 @@ export function DebtTransactionModal({
   const renderLoanTotalField = () => (
     <div className="space-y-1">
       <div className="form-label">{t("debtTx.totalBorrowing")}</div>
-      <CalcInput value={principal} onChange={setPrincipal} placeholder={t("debtTx.placeholder.exampleAmount")} label={t("debtTx.totalBorrowing")} precision={2} />
+      <CalcInput
+        value={principal}
+        onChange={isLoanBorrowEditLocked ? () => {} : setPrincipal}
+        disabled={isLoanBorrowEditLocked}
+        placeholder={t("debtTx.placeholder.exampleAmount")}
+        label={t("debtTx.totalBorrowing")}
+        precision={2}
+      />
     </div>
   );
 
   const renderFixedAssetAccountSelect = () => (
-    <SmartSelect
-      mode="single"
-      value={fixedAssetAccountId}
-      onChange={(id: string) => {
-        setFixedAssetAccountId(id);
-        setFixedAssetAssetId("");
-        recordRecentAccount(id);
-      }}
-      options={fixedAssetAccountOptions}
-      placeholder={t("txForm.selectFixedAssetAccount")}
-      onCreateClick={() => setFixedAssetAccountNestedOpen(true)}
-      createLabel={t("txForm.createFixedAssetAccount")}
-      behavior={{
-        hierarchy: "auto",
-        search: "auto",
-        clearable: false,
-        minDropdownWidth: 360,
-      }}
-    />
+    <div className={isLoanBorrowEditLocked ? "pointer-events-none opacity-70" : undefined}>
+      <SmartSelect
+        mode="single"
+        value={fixedAssetAccountId}
+        onChange={isLoanBorrowEditLocked ? () => {} : (id: string) => {
+          setFixedAssetAccountId(id);
+          setFixedAssetAssetId("");
+          recordRecentAccount(id);
+        }}
+        options={fixedAssetAccountOptions}
+        placeholder={t("txForm.selectFixedAssetAccount")}
+        onCreateClick={isLoanBorrowEditLocked ? undefined : () => setFixedAssetAccountNestedOpen(true)}
+        createLabel={t("txForm.createFixedAssetAccount")}
+        behavior={{
+          hierarchy: "auto",
+          search: "auto",
+          clearable: false,
+          minDropdownWidth: 360,
+        }}
+      />
+    </div>
   );
 
   const renderLoanFixedAssetField = (options?: { accountSelect?: "inline" | "separate" }) => showLoanFixedAssetFields ? (
@@ -2537,14 +2566,27 @@ export function DebtTransactionModal({
         "costBasisMethod",
       ]}
       extraFields={{ kind: "investment", investProductType: "property" }}
-      onCreated={(id, name) => {
+      onCreated={(id, name, extra) => {
+        // 显示口径与既有账户下拉一致：所有人 · 投资（不再单独显示「固定资产账户」），
+        // 并归入对应所有人分组，选中态标题用统一的 hover 口径。
+        const groupId = extra?.groupId?.trim() ?? "";
+        const groupName = extra?.groupName?.trim() ?? "";
+        const kindText = t("account.kind.investment");
         const option: SmartSelectOption = {
           id,
           label: name,
-          subLabel: t("txForm.fixedAssetAccount"),
+          subLabel: [groupName, kindText].filter(Boolean).join(" · "),
+          title: formatAccountHoverTitle({ groupName, label: name, subLabel: kindText }),
+          parentId: groupId ? `group:${groupId}` : undefined,
         };
         setFixedAssetAccountList((prev) => (prev.some((item) => item.id === id) ? prev : [...prev, option]));
-        setLocalFixedAssetAccountSSOpts((prev) => mergeSmartSelectOptions(prev, [option]));
+        setLocalFixedAssetAccountSSOpts((prev) => {
+          const next = mergeSmartSelectOptions(prev, [option]);
+          if (groupId && groupName && !next.some((item) => item.id === `group:${groupId}`)) {
+            next.push({ id: `group:${groupId}`, label: groupName, isHeader: true });
+          }
+          return next;
+        });
         setFixedAssetLinked(true);
         setFixedAssetAccountId(id);
         setFixedAssetCreateAccountId(id);
@@ -2558,19 +2600,14 @@ export function DebtTransactionModal({
     if (fixedAssetCreateSubmitting) return;
     const accountId = fixedAssetCreateAccountId.trim();
     const name = fixedAssetCreateName.trim();
-    const amount = parseAbsMoneyText(fixedAssetCreateAmount);
     if (!accountId) {
       window.alert(t("txForm.alert.selectFixedAssetAccount"));
       return;
     }
-    if (!name) {
-      window.alert(t("txForm.alert.enterFixedAssetName"));
-      return;
-    }
-    if (amount <= 0) {
-      window.alert(t("txForm.alert.enterFixedAssetAmount"));
-      return;
-    }
+    // 资产名称可选：留空时沿用账户名称（与支出链路 linkExpenseToFixedAsset 的
+    // 「propertyName || propertyAccount.name」口径一致）；购入金额可选：留空按 0 记
+    // （仅登记资产、不生成现金流）。
+    const assetName = name || fixedAssetAccountLabelById.get(accountId) || "";
     const tradeDate = fixedAssetCreateDate.trim() || today;
     setFixedAssetCreateSubmitting(true);
     try {
@@ -2579,7 +2616,7 @@ export function DebtTransactionModal({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           accountId,
-          name,
+          name: assetName,
           tradeDate,
           amount: fixedAssetCreateAmount,
           action: "purchase",
@@ -2596,7 +2633,7 @@ export function DebtTransactionModal({
         const option: FixedAssetAssetOption = {
           id: created.propertyAssetId,
           accountId: created.accountId ?? accountId,
-          name: created.propertyName ?? name,
+          name: created.propertyName ?? assetName,
           mortgageLoanAccountId: null,
           status: "active",
         };
@@ -2615,16 +2652,20 @@ export function DebtTransactionModal({
   const renderRepaymentMethodField = () => (
     <div className="space-y-1">
       <div className="form-label">{t("debtTx.repaymentMethod")}</div>
-      <select value={repaymentMethod} onChange={(event) => {
-        const method = event.target.value;
-        setRepaymentMethod(method);
-        if (isInstallmentRepaymentMethod(method) && parseNonNegativeNumberText(annualRate) == null) {
-          setAnnualRate("0");
-          setAnnualRateManuallyEdited(false);
-        }
-      }}
-      className={isConsumerLoanBorrow ? "form-input rounded-[8px] px-2 text-xs" : "form-input"}
-      style={isConsumerLoanBorrow ? { height: 32, minHeight: 32 } : undefined}
+      <select
+        value={repaymentMethod}
+        disabled={isLoanBorrowEditLocked}
+        onChange={(event) => {
+          if (isLoanBorrowEditLocked) return;
+          const method = event.target.value;
+          setRepaymentMethod(method);
+          if (isInstallmentRepaymentMethod(method) && parseNonNegativeNumberText(annualRate) == null) {
+            setAnnualRate("0");
+            setAnnualRateManuallyEdited(false);
+          }
+        }}
+        className={isConsumerLoanBorrow ? "form-input rounded-[8px] px-2 text-xs disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500" : "form-input disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"}
+        style={isConsumerLoanBorrow ? { height: 32, minHeight: 32 } : undefined}
       >
         <option value={EQUAL_PAYMENT_REPAYMENT_METHOD}>{t("debtTx.method.equalInstallment")}</option>
         <option value={EQUAL_PRINCIPAL_REPAYMENT_METHOD}>{t("debtTx.method.equalPrincipal")}</option>
@@ -2638,21 +2679,21 @@ export function DebtTransactionModal({
   const renderFirstRepaymentDateField = () => (
     <div className="space-y-1">
       <div className="form-label">{t("debtTx.firstRepaymentDate")} <span className="text-red-500">*</span></div>
-      <DateStepper value={firstRepaymentDate} onChange={handleFirstRepaymentDateChange} />
+      <DateStepper value={firstRepaymentDate} disabled={isLoanBorrowEditLocked} onChange={isLoanBorrowEditLocked ? () => {} : handleFirstRepaymentDateChange} />
     </div>
   );
 
   const renderFirstBillDateField = () => (
     <div className="space-y-1">
       <div className="form-label">{t("debtTx.firstBillDate")} <span className="text-red-500">*</span></div>
-      <DateStepper value={firstBillDate} onChange={setFirstBillDate} />
+      <DateStepper value={firstBillDate} disabled={isLoanBorrowEditLocked} onChange={isLoanBorrowEditLocked ? () => {} : setFirstBillDate} />
     </div>
   );
 
   const renderAutoDebitDateField = () => (
     <div className="space-y-1">
       <div className="form-label">{t("debtTx.autoDebitDate")} <span className="text-red-500">*</span></div>
-      <DateStepper value={autoDebitFirstDate} onChange={setAutoDebitFirstDate} />
+      <DateStepper value={autoDebitFirstDate} disabled={isLoanBorrowEditLocked} onChange={isLoanBorrowEditLocked ? () => {} : setAutoDebitFirstDate} />
     </div>
   );
 
@@ -2670,8 +2711,12 @@ export function DebtTransactionModal({
         min={1}
         max={600}
         value={loanTotalRuns}
-        onChange={(event) => setLoanTotalRuns(event.target.value)}
-        className="form-input"
+        disabled={isLoanBorrowEditLocked}
+        onChange={(event) => {
+          if (isLoanBorrowEditLocked) return;
+          setLoanTotalRuns(event.target.value);
+        }}
+        className="form-input disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
       />
     </div>
   );
@@ -2768,12 +2813,14 @@ export function DebtTransactionModal({
                           <>
                             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                               {renderDebtAccountField()}
-                              {renderCashAccountField({ label: t("debtTx.accountLabel.postingAccount") })}
+                              {renderCashAccountField({ label: t("debtTx.accountLabel.postingAccount"), locked: isLoanBorrowEditLocked })}
                             </div>
                             {renderRequiredFixedAssetField()}
                             <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-2">
                               {renderLoanTotalField()}
-                              <EntryTagsField value={selectedTagIds} onChange={setSelectedTagIds} />
+                              <div className={isLoanBorrowEditLocked ? "pointer-events-none opacity-70" : undefined}>
+                                <EntryTagsField value={selectedTagIds} onChange={isLoanBorrowEditLocked ? () => {} : setSelectedTagIds} />
+                              </div>
                             </div>
                           </>
                         ) : (
@@ -2980,12 +3027,12 @@ export function DebtTransactionModal({
                           <>
                             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                               {showLoanPurpose ? (
-                                <div className="space-y-1">
+                                <div className={`space-y-1 ${isLoanBorrowEditLocked ? "pointer-events-none opacity-70" : ""}`}>
                                   <div className="form-label">{t("debtTx.loanPurpose")} <span className="text-red-500">*</span></div>
                                   <SmartSelect
                                     mode="single"
                                     value={loanPurposeCategoryId}
-                                    onChange={handleLoanPurposeChange}
+                                    onChange={isLoanBorrowEditLocked ? () => {} : handleLoanPurposeChange}
                                     options={loanPurposeOptions}
                                     placeholder={t("debtTx.loanPurposePlaceholder")}
                                     behavior={{
@@ -3051,8 +3098,9 @@ export function DebtTransactionModal({
                                     <div className="flex items-end">
                                       <button
                                         type="button"
-                                        className="secondary-button h-9 shrink-0 gap-1.5 whitespace-nowrap px-3"
-                                        onClick={() => { void applyMortgageLprDiscount(); }}
+                                        className="secondary-button h-9 shrink-0 gap-1.5 whitespace-nowrap px-3 disabled:cursor-not-allowed disabled:opacity-50"
+                                        disabled={isLoanBorrowEditLocked}
+                                        onClick={() => { if (!isLoanBorrowEditLocked) void applyMortgageLprDiscount(); }}
                                         title={t("debtTx.fetchLprRate")}
                                         aria-label={t("debtTx.fetchLprRate")}
                                       >
@@ -3066,11 +3114,15 @@ export function DebtTransactionModal({
                                       <div className="form-label">{t("debtShell.lpr.discountLabel")} <span className="text-slate-400">{t("stockFee.optional")}</span></div>
                                       <input
                                         value={mortgageLprDiscount}
-                                        onChange={(event) => setMortgageLprDiscount(event.target.value)}
-                                        onBlur={handleMortgageLprDiscountBlur}
+                                        disabled={isLoanBorrowEditLocked}
+                                        onChange={(event) => {
+                                          if (isLoanBorrowEditLocked) return;
+                                          setMortgageLprDiscount(event.target.value);
+                                        }}
+                                        onBlur={isLoanBorrowEditLocked ? undefined : handleMortgageLprDiscountBlur}
                                         placeholder={t("debtShell.lpr.discountPlaceholder")}
                                         inputMode="decimal"
-                                        className="form-input"
+                                        className="form-input disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
                                       />
                                     </div>
                                   ) : null}
@@ -3087,11 +3139,13 @@ export function DebtTransactionModal({
                               </div>
                             ) : (
                               <div className="space-y-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-                                <label className="flex cursor-pointer select-none items-start gap-2 text-xs text-slate-600">
+                                <label className={`flex select-none items-start gap-2 text-xs text-slate-600 ${isLoanBorrowEditLocked ? "cursor-not-allowed opacity-70" : "cursor-pointer"}`}>
                                   <input
                                     type="checkbox"
                                     checked={autoDebit}
+                                    disabled={isLoanBorrowEditLocked}
                                     onChange={(event) => {
+                                      if (isLoanBorrowEditLocked) return;
                                       const checked = event.target.checked;
                                       setAutoDebit(checked);
                                       if (checked) {
@@ -3132,8 +3186,10 @@ export function DebtTransactionModal({
                                 </div>
                                 <button
                                   type="button"
-                                  className="secondary-button h-8 shrink-0 px-3 text-xs"
+                                  className="secondary-button h-8 shrink-0 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                                  disabled={isLoanBorrowEditLocked}
                                   onClick={() => {
+                                    if (isLoanBorrowEditLocked) return;
                                     // 只有挂 LPR 的商贷房贷才按 LPR 自动生成历次调整；
                                     // 公积金贷款（机构=公积金中心）利率不跟 LPR，与消费贷一样手动录入历次行。
                                     if (showHomeLoanLprFields) {
@@ -3233,7 +3289,9 @@ export function DebtTransactionModal({
                             name="note"
                             placeholder={t("stockFee.optional")}
                             value={note}
-                            onValueChange={setNote}
+                            disabled={isLoanBorrowEditLocked}
+                            readOnly={isLoanBorrowEditLocked}
+                            onValueChange={isLoanBorrowEditLocked ? () => {} : setNote}
                             className="form-input"
                           />
                         </div>

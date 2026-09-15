@@ -478,6 +478,13 @@ export async function loadPropertyTransactionEntryLike(params: {
         select: {
           id: true,
           type: true,
+          source: true,
+          amount: true,
+          accountId: true,
+          toAccountId: true,
+          debtPrincipalAmount: true,
+          debtInterestAmount: true,
+          debtFeeAmount: true,
           categoryId: true,
           categoryName: true,
           postedAt: true,
@@ -544,6 +551,17 @@ export async function loadPropertyTransactionEntryLike(params: {
       fundName: row.PropertyAsset?.name ?? "",
       fundProductType: "property",
       fundSubtype: row.action,
+      // Keep the underlying TxRecord's own shape so the client can tell a
+      // loan/debt-funded purchase (transfer + debt_* source) apart from a
+      // plain expense and route the edit action to the debt/loan dialog.
+      cashEntryType: cashEntry?.type ?? null,
+      cashEntrySource: cashEntry?.source ?? null,
+      cashEntryAccountId: cashEntry?.accountId ?? null,
+      cashEntryToAccountId: cashEntry?.toAccountId ?? null,
+      cashEntryAmount: cashEntry?.amount == null ? null : toNumber(cashEntry.amount),
+      debtPrincipalAmount: cashEntry?.debtPrincipalAmount == null ? null : toNumber(cashEntry.debtPrincipalAmount),
+      debtInterestAmount: cashEntry?.debtInterestAmount == null ? null : toNumber(cashEntry.debtInterestAmount),
+      debtFeeAmount: cashEntry?.debtFeeAmount == null ? null : toNumber(cashEntry.debtFeeAmount),
       fundFee: fee,
       realizedProfit: row.realizedProfit == null ? null : toNumber(row.realizedProfit),
       propertyAssetId: row.propertyAssetId,
