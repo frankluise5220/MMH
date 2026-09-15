@@ -8,6 +8,7 @@ import {
 } from "recharts";
 import { formatMoney } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
+import { BENCHMARK_OPTIONS, DEFAULT_BENCHMARK_CODE } from "@/lib/benchmark-options";
 
 type FundTrendPoint = {
   month: string;
@@ -33,6 +34,8 @@ type ApiResponse = {
   points: FundTrendPoint[];
   emptyMonths: string[];
   benchmark: BenchmarkPoint[];
+  /** Which benchmark index the benchmark series represents */
+  benchmarkCode?: string;
   rangeStart: string;
   rangeEnd: string;
   error?: string;
@@ -77,6 +80,28 @@ function flowColor(kind: FundTrendPoint["flowKind"]): string {
   return COLORS.netFlowBuy;
 }
 
+/** Display window presets for the chart; default = trailing 12 months. */
+type RangeKey = "12m" | "ytd" | "3y" | "all";
+
+const RANGE_KEYS: RangeKey[] = ["12m", "ytd", "3y", "all"];
+const RANGE_LABEL_KEYS: Record<RangeKey, string> = {
+  "12m": "stats.range12m",
+  ytd: "stats.rangeYtd",
+  "3y": "stats.range3y",
+  all: "stats.rangeAll",
+};
+
+function rangeStartMonth(range: RangeKey): string {
+  const now = new Date();
+  const y = now.getUTCFullYear();
+  const m = now.getUTCMonth();
+  const fmt = (d: Date) => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+  if (range === "12m") return fmt(new Date(Date.UTC(y, m - 11, 1)));
+  if (range === "ytd") return `${y}-01`;
+  if (range === "3y") return fmt(new Date(Date.UTC(y, m - 35, 1)));
+  return "";
+}
+
 function buildChartData(
   points: FundTrendPoint[],
   benchmark: BenchmarkPoint[],
@@ -92,20 +117,16 @@ function buildChartData(
   }));
 }
 
-function buildQuery(startMonth: string, endMonth: string, withBenchmark: boolean) {
-  const params = new URLSearchParams();
-  if (startMonth) params.set("start", startMonth);
-  if (endMonth) params.set("end", endMonth);
-  if (withBenchmark) params.set("benchmark", "1");
-  return params.toString();
-}
-
 export default function FundPortfolioTrendChart({ initialData, refreshKey, collapsible }: Props) {
   const { t } = useI18n();
   const [data, setData] = useState<ApiResponse | null>(initialData ?? null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [collapsed, setCollapsed] = useState(false);
+  const [range, setRange] = useState<RangeKey>("12m");
+  const [benchmarkCode, setBenchmarkCode] = useState<string>(
+    initialData?.benchmarkCode ?? DEFAULT_BENCHMARK_CODE,
+  );
   // Per-series toggles (benchmark defaults on: RSC prefetch already carries it)
   const [showBenchmark, setShowBenchmark] = useState(true);
   const [showPortfolioReturn, setShowPortfolioReturn] = useState(true);
@@ -121,10 +142,13 @@ export default function FundPortfolioTrendChart({ initialData, refreshKey, colla
     return String(Math.round(v));
   };
 
-  // Sync to initialData when prop changes (RSC re-render)
+  // Sync to initialData when prop changes (RSC re-render). Server state is
+  // the default window, so a refresh also resets the user's range/benchmark.
   useEffect(() => {
     if (initialData) {
       setData(initialData);
+      setRange("12m");
+      setBenchmarkCode(initialData.benchmarkCode ?? DEFAULT_BENCHMARK_CODE);
     }
   }, [initialData, refreshKey]);
 
@@ -135,13 +159,15 @@ export default function FundPortfolioTrendChart({ initialData, refreshKey, colla
     }
   }, [initialData, refreshKey, data]);
 
-  const fetchData = async (withBench: boolean) => {
+  const fetchData = async (nextRange: RangeKey, nextBenchCode: string | null) => {
     setLoading(true);
     setError("");
     try {
-      const startMonth = data?.rangeStart || "";
-      const endMonth = data?.rangeEnd || "";
-      const url = `/api/v1/statistics/fund-trend?${buildQuery(startMonth, endMonth, withBench)}`;
+      const params = new URLSearchParams();
+      const start = rangeStartMonth(nextRange);
+      if (start) params.set("start", start);
+      if (nextBenchCode) params.set("benchmark", nextBenchCode);
+      const url = `/api/v1/statistics/fund-trend?${params.toString()}`;
       const res = await fetch(url, { cache: "no-store" });
       const json = await res.json();
       if (!json.ok) {
@@ -149,6 +175,7 @@ export default function FundPortfolioTrendChart({ initialData, refreshKey, colla
         return;
       }
       setData(json);
+      if (nextBenchCode) setBenchmarkCode(nextBenchCode);
     } catch (e) {
       setError(e instanceof Error ? e.message : t("stats.loadFailed"));
     } finally {
@@ -164,7 +191,7 @@ export default function FundPortfolioTrendChart({ initialData, refreshKey, colla
     if (!data || data.points.length === 0) return;
     if (data.benchmark && data.benchmark.length > 0) return;
     autoFetchedRef.current = true;
-    fetchData(true);
+    fetchData(range, benchmarkCode);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
 
@@ -173,16 +200,28 @@ export default function FundPortfolioTrendChart({ initialData, refreshKey, colla
     setShowBenchmark(next);
     // Fetch fresh data with benchmark flag when enabling and no benchmark yet
     if (next && (!data?.benchmark || data.benchmark.length === 0)) {
-      fetchData(true);
+      fetchData(range, benchmarkCode);
     }
   };
+
+  const onChangeRange = (next: RangeKey) => {
+    setRange(next);
+    fetchData(next, showBenchmark ? benchmarkCode : null);
+  };
+
+  const onChangeBenchmark = (next: string) => {
+    if (next === benchmarkCode) return;
+    fetchData(range, next);
+  };
+
+  const activeBenchmark = BENCHMARK_OPTIONS.find((o) => o.code === benchmarkCode) ?? BENCHMARK_OPTIONS[0]!;
 
   const SERIES_CHIPS: { key: string; label: string; color: string; active: boolean; onToggle: () => void }[] = [
     { key: "marketValue", label: t("stats.totalMarketValue"), color: COLORS.marketValue, active: showMarketValue, onToggle: () => setShowMarketValue(v => !v) },
     { key: "cost", label: t("stats.totalCost"), color: COLORS.cost, active: showCost, onToggle: () => setShowCost(v => !v) },
     { key: "cumInvested", label: t("stats.cumNetInvested"), color: COLORS.cumInvested, active: showCumInvested, onToggle: () => setShowCumInvested(v => !v) },
     { key: "portfolioReturn", label: t("stats.portfolioReturn"), color: COLORS.portfolioReturn, active: showPortfolioReturn, onToggle: () => setShowPortfolioReturn(v => !v) },
-    { key: "benchmark", label: t("stats.csi300Benchmark"), color: COLORS.benchmark, active: showBenchmark, onToggle: toggleBenchmark },
+    { key: "benchmark", label: t(activeBenchmark.labelKey), color: COLORS.benchmark, active: showBenchmark, onToggle: toggleBenchmark },
     { key: "flow", label: t("stats.monthlyNetFlow"), color: COLORS.netFlowBuy, active: showFlow, onToggle: () => setShowFlow(v => !v) },
   ];
 
@@ -218,25 +257,40 @@ export default function FundPortfolioTrendChart({ initialData, refreshKey, colla
   return (
     <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
       <div className="px-4 py-3 border-b border-slate-200 bg-slate-50">
-        {collapsible ? (
-          <button
-            type="button"
-            className="flex items-center gap-1 text-sm font-semibold text-slate-800"
-            title={t(collapsed ? "common.expand" : "common.collapse")}
-            aria-label={t(collapsed ? "common.expand" : "common.collapse")}
-            aria-expanded={!collapsed}
-            onClick={() => setCollapsed(v => !v)}
-          >
-            {collapsed
-              ? <ChevronRight className="h-3.5 w-3.5 text-slate-400" />
-              : <ChevronDown className="h-3.5 w-3.5 text-slate-400" />}
-            {t("stats.fundPortfolioTrend")}
-          </button>
-        ) : (
-          <div className="text-sm font-semibold text-slate-800">
-            {t("stats.fundPortfolioTrend")}
-          </div>
-        )}
+        <div className="flex items-center justify-between gap-2">
+          {collapsible ? (
+            <button
+              type="button"
+              className="flex items-center gap-1 text-sm font-semibold text-slate-800"
+              title={t(collapsed ? "common.expand" : "common.collapse")}
+              aria-label={t(collapsed ? "common.expand" : "common.collapse")}
+              aria-expanded={!collapsed}
+              onClick={() => setCollapsed(v => !v)}
+            >
+              {collapsed
+                ? <ChevronRight className="h-3.5 w-3.5 text-slate-400" />
+                : <ChevronDown className="h-3.5 w-3.5 text-slate-400" />}
+              {t("stats.fundPortfolioTrend")}
+            </button>
+          ) : (
+            <div className="text-sm font-semibold text-slate-800">
+              {t("stats.fundPortfolioTrend")}
+            </div>
+          )}
+          {!collapsed && (
+            <select
+              value={range}
+              onChange={(e) => onChangeRange(e.target.value as RangeKey)}
+              className="h-6 shrink-0 rounded border border-slate-300 bg-white px-1 text-[11px] text-slate-700"
+              aria-label={t("stats.timeRange")}
+              title={t("stats.timeRange")}
+            >
+              {RANGE_KEYS.map((key) => (
+                <option key={key} value={key}>{t(RANGE_LABEL_KEYS[key])}</option>
+              ))}
+            </select>
+          )}
+        </div>
         {!collapsed && (
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
             {SERIES_CHIPS.map((chip) => (
@@ -257,6 +311,19 @@ export default function FundPortfolioTrendChart({ initialData, refreshKey, colla
                 {chip.label}
               </button>
             ))}
+            {showBenchmark && (
+              <select
+                value={benchmarkCode}
+                onChange={(e) => onChangeBenchmark(e.target.value)}
+                className="h-6 rounded border border-slate-300 bg-white px-1 text-[11px] text-slate-700"
+                aria-label={t(activeBenchmark.labelKey)}
+                title={t(activeBenchmark.labelKey)}
+              >
+                {BENCHMARK_OPTIONS.map((option) => (
+                  <option key={option.code} value={option.code}>{t(option.labelKey)}</option>
+                ))}
+              </select>
+            )}
           </div>
         )}
       </div>
@@ -447,7 +514,7 @@ export default function FundPortfolioTrendChart({ initialData, refreshKey, colla
                     yAxisId="pct"
                     type="monotone"
                     dataKey="benchmarkPct"
-                    name={t("stats.csi300Benchmark")}
+                    name={t(activeBenchmark.labelKey)}
                     stroke={COLORS.benchmark}
                     strokeWidth={1.5}
                     strokeDasharray="5 3"

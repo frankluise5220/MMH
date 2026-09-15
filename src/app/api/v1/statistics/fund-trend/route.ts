@@ -3,8 +3,9 @@ import { getCurrentUser } from "@/lib/server/auth";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import {
   loadFundPortfolioTrendData,
-  refreshBenchmarkCache,
+  ensureBenchmarkCache,
 } from "@/lib/server/fund-portfolio-trend";
+import { resolveBenchmarkCode } from "@/lib/benchmark-options";
 
 export const dynamic = "force-dynamic";
 
@@ -13,19 +14,21 @@ export const dynamic = "force-dynamic";
  *
  * Aggregates monthly fund portfolio data across all investment accounts in the
  * household: cost basis, market value, floating P/L, and net invested flow per month.
- * Optionally overlays CSI 300 normalised NAV as a benchmark.
+ * Optionally overlays a benchmark index (normalized NAV) on top.
  *
  * Query params:
  *   start: YYYY-MM (optional, default = earliest transaction)
  *   end:   YYYY-MM (optional, default = current month)
  *   accountIds: comma-separated account IDs (optional, default = all investment accounts)
- *   benchmark:  "1" to include CSI 300 baseline (default off; auto-fetches if cache is empty)
+ *   benchmark:  "1" = default index (CSI 300); or a benchmark code from
+ *               BENCHMARK_OPTIONS (e.g. 513100 = Nasdaq 100, 513500 = S&P 500);
+ *               "0"/absent = no benchmark. Cache is backfilled best-effort.
  */
 export async function GET(req: NextRequest) {
   const currentUser = await getCurrentUser();
   if (!currentUser) {
     return NextResponse.json(
-      { ok: false, code: "UNAUTHORIZED", error: "Sign in first." },
+      { ok: false, code: "UNAUTHORIZED", error: "请先登录。" },
       { status: 401 },
     );
   }
@@ -36,20 +39,30 @@ export async function GET(req: NextRequest) {
   const endMonth = (searchParams.get("end") ?? "").trim() || undefined;
   const accountIdsRaw = (searchParams.get("accountIds") ?? "").trim();
   const accountIds = accountIdsRaw ? accountIdsRaw.split(",").filter(Boolean) : undefined;
-  const includeBenchmark = searchParams.get("benchmark") === "1";
+  const benchmarkParam = (searchParams.get("benchmark") ?? "").trim();
+  const includeBenchmark = benchmarkParam !== "" && benchmarkParam !== "0";
+  const benchmarkCode = includeBenchmark
+    ? resolveBenchmarkCode(benchmarkParam === "1" ? undefined : benchmarkParam)
+    : null;
 
   try {
-    // If benchmark requested but cache is empty, try a refresh (best-effort).
-    if (includeBenchmark && startMonth && endMonth) {
-      const [sy, sm] = startMonth.split("-").map(Number);
-      const [ey, em] = endMonth.split("-").map(Number);
-      const startDate = new Date(Date.UTC(sy, sm - 1, 1));
-      const endDate = new Date(Date.UTC(ey, em, 0));
-      const formattedStart = startDate.toISOString().slice(0, 10);
-      const formattedEnd = endDate.toISOString().slice(0, 10);
-      // Only refresh if we don't already have data covering the requested range
-      // (the loader will skip on empty cache; safe to call repeatedly).
-      await refreshBenchmarkCache(formattedStart, formattedEnd);
+    // If benchmark requested, make sure the cache covers the window (best-effort).
+    if (benchmarkCode) {
+      const now = new Date();
+      const endMonthStr = endMonth
+        ?? `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+      const [ey, em] = endMonthStr.split("-").map(Number);
+      const endDate = new Date(Date.UTC(ey, em, 0)).toISOString().slice(0, 10);
+      let startMonthStr = startMonth;
+      if (!startMonthStr) {
+        // "All history": bound the backfill at ~5 years back (the walk itself
+        // caps at ~2.4 years of pages; best-effort either way).
+        const startObj = new Date(Date.UTC(ey, em - 1 - 60, 1));
+        startMonthStr = startObj.toISOString().slice(0, 10);
+      }
+      const [sy, sm] = startMonthStr.split("-").map(Number);
+      const startDate = new Date(Date.UTC(sy, sm - 1, 1)).toISOString().slice(0, 10);
+      await ensureBenchmarkCache(startDate, endDate, benchmarkCode);
     }
 
     const data = await loadFundPortfolioTrendData(ctx, {
@@ -57,6 +70,7 @@ export async function GET(req: NextRequest) {
       endMonth,
       accountIds,
       includeBenchmark,
+      benchmarkCode: benchmarkCode ?? undefined,
     });
 
     return NextResponse.json({
@@ -64,6 +78,7 @@ export async function GET(req: NextRequest) {
       points: data.points,
       emptyMonths: data.emptyMonths,
       benchmark: data.benchmark,
+      benchmarkCode: data.benchmarkCode,
       rangeStart: data.rangeStart,
       rangeEnd: data.rangeEnd,
     });
@@ -72,7 +87,7 @@ export async function GET(req: NextRequest) {
       {
         ok: false,
         code: "LOAD_FAILED",
-        error: e instanceof Error ? e.message : "Failed to load fund trend data.",
+        error: e instanceof Error ? e.message : "加载基金趋势数据失败。",
       },
       { status: 500 },
     );

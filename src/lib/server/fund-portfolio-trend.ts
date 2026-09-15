@@ -21,6 +21,7 @@ import { prisma } from "@/lib/db/prisma";
 import { AccountKind } from "@prisma/client";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision-core";
+import { BENCHMARK_OPTIONS, DEFAULT_BENCHMARK_CODE, resolveBenchmarkCode } from "@/lib/benchmark-options";
 
 export type FundTrendPoint = {
   /** YYYY-MM */
@@ -54,6 +55,8 @@ export type FundPortfolioTrendData = {
   /** Months where no transaction happened at all (cost/marketValue repeat) */
   emptyMonths: string[];
   benchmark: BenchmarkPoint[];
+  /** Which benchmark index the benchmark series represents (BenchmarkCache code) */
+  benchmarkCode: string;
   /** First and last month that have real transactions */
   rangeStart: string;
   rangeEnd: string;
@@ -88,8 +91,6 @@ function monthRange(startMonth: string, endMonth: string): string[] {
 
 // ── Benchmark cache ──────────────────────────────────────────────────────────
 
-const BENCHMARK_CODE = "000300"; // CSI 300.
-
 interface BenchmarkCacheRow {
   navDate: Date;
   nav: Prisma.Decimal | number;
@@ -105,6 +106,14 @@ type BenchmarkCacheDelegate = {
     orderBy: { navDate: "asc" };
     select: { navDate: true; nav: true; cumNav: true };
   }): Promise<BenchmarkCacheRow[]>;
+  findFirst(args: {
+    where: {
+      code: string;
+      navDate?: { lte: Date };
+    };
+    orderBy?: { navDate: "desc" };
+    select: { navDate: true };
+  }): Promise<{ navDate: Date } | null>;
   upsert(args: {
     where: { code_navDate: { code: string; navDate: Date } };
     create: {
@@ -117,6 +126,10 @@ type BenchmarkCacheDelegate = {
       nav: number;
       cumNav: number | null;
     };
+  }): Promise<unknown>;
+  createMany?(args: {
+    data: Array<{ code: string; navDate: Date; nav: number; cumNav: number | null }>;
+    skipDuplicates: boolean;
   }): Promise<unknown>;
 };
 
@@ -132,22 +145,30 @@ function parseYmd(s: string): Date | null {
 }
 
 /**
- * Fetch CSI 300 NAV data and cache it in the BenchmarkCache table.
+ * Fetch benchmark NAV data and cache it in the BenchmarkCache table.
  *
- * Implementation: pulls history from the Eastmoney fund API using
- * 510300 as a mirror ETF, since the API exposes
- * ETF NAVs.  Returns the count successfully written; failures are
- * silently dropped so the API can serve cached data as a fallback.
+ * Implementation: pulls history from the Eastmoney fund API using a
+ * domestically listed mirror ETF (e.g. 510300 for CSI 300), since the
+ * API exposes ETF NAVs.  The endpoint caps pageSize at 20 and returns
+ * history newest-first, so a single page only covered the latest month
+ * of the requested window — page 1 reveals TotalCount and the remaining
+ * pages are fetched in parallel (hard-capped ≈ 3.2 years of rows).
+ * Failures are silently dropped so callers can serve cached data.
  */
 export async function refreshBenchmarkCache(
   startDate: string,
   endDate: string,
+  mirrorCode = "510300",
+  cacheCode = "000300",
 ): Promise<{ fetched: number }> {
   const benchmarkCache = getBenchmarkCacheDelegate();
   if (!benchmarkCache) return { fetched: 0 };
 
-  try {
-    const url = `http://api.fund.eastmoney.com/f10/lsjz?fundCode=510300&pageIndex=1&pageSize=20&startDate=${startDate}&endDate=${endDate}`;
+  const PAGE_SIZE = 20; // eastmoney clamps pageSize to 20
+  const MAX_PAGES = 40;
+
+  const fetchPage = async (pageIndex: number) => {
+    const url = `http://api.fund.eastmoney.com/f10/lsjz?fundCode=${mirrorCode}&pageIndex=${pageIndex}&pageSize=${PAGE_SIZE}&startDate=${startDate}&endDate=${endDate}`;
     const res = await fetch(url, {
       headers: {
         "User-Agent": "Mozilla/5.0",
@@ -156,37 +177,101 @@ export async function refreshBenchmarkCache(
       cache: "no-store",
       signal: AbortSignal.timeout(8000),
     });
-    if (!res.ok) return { fetched: 0 };
+    if (!res.ok) return null;
     const json = await res.json();
     const list: { FSRQ: string; DWJZ: string; LJJZ: string }[] =
       json?.Data?.LSJZList ?? [];
-    let fetched = 0;
-    for (const item of list) {
-      const date = parseYmd(item.FSRQ);
-      if (!date) continue;
-      const nav = parseFloat(item.DWJZ);
-      const cumNav = parseFloat(item.LJJZ);
-      if (!isFinite(nav) || nav <= 0) continue;
-      await benchmarkCache.upsert({
-        where: { code_navDate: { code: BENCHMARK_CODE, navDate: date } },
-        create: { code: BENCHMARK_CODE, navDate: date, nav, cumNav: isFinite(cumNav) ? cumNav : null },
-        update: { nav, cumNav: isFinite(cumNav) ? cumNav : null },
-      });
-      fetched++;
+    return { list, totalCount: Number(json?.TotalCount) || 0 };
+  };
+
+  try {
+    const first = await fetchPage(1);
+    if (!first || first.list.length === 0) return { fetched: 0 };
+    const totalPages = Math.min(Math.ceil(first.totalCount / PAGE_SIZE) || 1, MAX_PAGES);
+    const rest = totalPages > 1
+      ? await Promise.all(
+          Array.from({ length: totalPages - 1 }, (_, i) => fetchPage(i + 2)),
+        )
+      : [];
+    const rangeStart = parseYmd(startDate);
+    const rangeEnd = parseYmd(endDate);
+    const rows: Array<{ code: string; navDate: Date; nav: number; cumNav: number | null }> = [];
+    for (const page of [first, ...rest]) {
+      if (!page) continue;
+      for (const item of page.list) {
+        const date = parseYmd(item.FSRQ);
+        if (!date) continue;
+        if (rangeStart && date < rangeStart) continue;
+        if (rangeEnd && date > rangeEnd) continue;
+        const nav = parseFloat(item.DWJZ);
+        const cumNav = parseFloat(item.LJJZ);
+        if (!isFinite(nav) || nav <= 0) continue;
+        rows.push({ code: cacheCode, navDate: date, nav, cumNav: isFinite(cumNav) ? cumNav : null });
+      }
     }
-    return { fetched };
+    if (rows.length === 0) return { fetched: 0 };
+    // NAV rows are immutable once published; skip already-cached dates.
+    if (benchmarkCache.createMany) {
+      await benchmarkCache.createMany({ data: rows, skipDuplicates: true });
+    } else {
+      for (const row of rows) {
+        await benchmarkCache.upsert({
+          where: { code_navDate: { code: row.code, navDate: row.navDate } },
+          create: row,
+          update: { nav: row.nav, cumNav: row.cumNav },
+        });
+      }
+    }
+    return { fetched: rows.length };
   } catch {
     return { fetched: 0 };
   }
 }
 
 /**
- * Load CSI 300 monthly-end NAV data from BenchmarkCache.
+ * Make sure the benchmark cache covers [startDate, endDate] (best-effort):
+ * skip the network walk when the latest cached NAV already falls inside the
+ * end month AND some row exists at/before the window start.
+ */
+export async function ensureBenchmarkCache(
+  startDate: string,
+  endDate: string,
+  code = DEFAULT_BENCHMARK_CODE,
+): Promise<void> {
+  const benchmarkCache = getBenchmarkCacheDelegate();
+  if (!benchmarkCache) return;
+  const option = BENCHMARK_OPTIONS.find((o) => o.code === code) ?? BENCHMARK_OPTIONS[0]!;
+  try {
+    const [sy, sm] = startDate.split("-").map(Number);
+    const [ey, em] = endDate.split("-").map(Number);
+    if (![sy, sm, ey, em].every(Number.isFinite)) return;
+    const endMonthStart = new Date(Date.UTC(ey, em - 1, 1));
+    const latest = await benchmarkCache.findFirst({
+      where: { code: option.code },
+      orderBy: { navDate: "desc" },
+      select: { navDate: true },
+    }).catch(() => null);
+    if (latest && latest.navDate >= endMonthStart) {
+      const early = await benchmarkCache.findFirst({
+        where: { code: option.code, navDate: { lte: new Date(Date.UTC(sy, sm - 1, 1)) } },
+        select: { navDate: true },
+      }).catch(() => null);
+      if (early) return; // cache already covers the window
+    }
+    await refreshBenchmarkCache(startDate, endDate, option.mirrorCode, option.code);
+  } catch {
+    // best-effort; callers serve whatever the cache holds
+  }
+}
+
+/**
+ * Load monthly-end NAV data for a benchmark index from BenchmarkCache.
  * Returns normalized nav so first month = 1.0.
  */
 export async function loadBenchmarkMonthly(
   startMonth: string,
   endMonth: string,
+  code = DEFAULT_BENCHMARK_CODE,
 ): Promise<BenchmarkPoint[]> {
   const [sy, sm] = startMonth.split("-").map(Number);
   const [ey, em] = endMonth.split("-").map(Number);
@@ -198,7 +283,7 @@ export async function loadBenchmarkMonthly(
 
   const rows = await benchmarkCache.findMany({
     where: {
-      code: BENCHMARK_CODE,
+      code,
       navDate: { gte: startDate, lte: endDate },
     },
     orderBy: { navDate: "asc" },
@@ -267,9 +352,12 @@ export async function loadFundPortfolioTrendData(
     accountIds?: string[];
     /** Include benchmark data */
     includeBenchmark?: boolean;
+    /** Which benchmark index to overlay (defaults to CSI 300) */
+    benchmarkCode?: string;
   } = {},
 ): Promise<FundPortfolioTrendData> {
   const { startMonth: optStart, endMonth: optEnd, accountIds, includeBenchmark } = options;
+  const resolvedBenchmarkCode = resolveBenchmarkCode(options.benchmarkCode);
 
   // ── 1. Find all investment accounts ─────────────────────────────────────
   const accountFilter = accountIds && accountIds.length > 0
@@ -290,8 +378,8 @@ export async function loadFundPortfolioTrendData(
     const now = new Date();
     const s = optStart ?? `${now.getUTCFullYear() - 1}-01`;
     const e = optEnd ?? `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
-    const bench = includeBenchmark ? await loadBenchmarkMonthly(s, e) : [];
-    return { points: [], emptyMonths: [], benchmark: bench, rangeStart: s, rangeEnd: e };
+    const bench = includeBenchmark ? await loadBenchmarkMonthly(s, e, resolvedBenchmarkCode) : [];
+    return { points: [], emptyMonths: [], benchmark: bench, benchmarkCode: resolvedBenchmarkCode, rangeStart: s, rangeEnd: e };
   }
   const accountIds2 = accounts.map(a => a.id);
 
@@ -336,8 +424,8 @@ export async function loadFundPortfolioTrendData(
     const now = new Date();
     const s = optStart ?? `${now.getUTCFullYear() - 1}-01`;
     const e = optEnd ?? `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
-    const bench = includeBenchmark ? await loadBenchmarkMonthly(s, e) : [];
-    return { points: [], emptyMonths: [], benchmark: bench, rangeStart: s, rangeEnd: e };
+    const bench = includeBenchmark ? await loadBenchmarkMonthly(s, e, resolvedBenchmarkCode) : [];
+    return { points: [], emptyMonths: [], benchmark: bench, benchmarkCode: resolvedBenchmarkCode, rangeStart: s, rangeEnd: e };
   }
 
   // ── 3. Determine date range ─────────────────────────────────────────────
@@ -580,12 +668,13 @@ export async function loadFundPortfolioTrendData(
   // Benchmarks are normalized to the FIRST DISPLAYED month so the chart's
   // pct axis matches the visible window (not the simulation origin).
   const displayStart = displayMonths[0] ?? startMonth;
-  const bench = includeBenchmark ? await loadBenchmarkMonthly(displayStart, endMonth) : [];
+  const bench = includeBenchmark ? await loadBenchmarkMonthly(displayStart, endMonth, resolvedBenchmarkCode) : [];
 
   return {
     points,
     emptyMonths,
     benchmark: bench,
+    benchmarkCode: resolvedBenchmarkCode,
     rangeStart: displayStart,
     rangeEnd: endMonth,
   };

@@ -771,8 +771,13 @@ export default async function ReportsPage({
     ]);
 
     // Portfolio trend chart (moved from the cash-statistics page): whole-household
-    // fund/money trend, same basis as before — independent of the row filters above.
+    // fund/money trend, independent of the row filters above. Prefetched with the
+    // chart's default window (trailing 12 months); the chart can refetch other
+    // ranges / benchmark indices client-side via the fund-trend API.
+    const now = new Date();
+    const trendStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 11, 1));
     const fundTrendData = await loadFundPortfolioTrendData(ctx, {
+      startMonth: `${trendStart.getUTCFullYear()}-${String(trendStart.getUTCMonth() + 1).padStart(2, "0")}`,
       includeBenchmark: true,
     });
 
