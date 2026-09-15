@@ -946,7 +946,9 @@ export default function SettingsAccountsPage() {
             .filter((counterparty) => isSettlementCounterpartyType(counterparty.type))
             .map((counterparty) => ({ id: counterparty.id, name: counterparty.shortName?.trim() || counterparty.name, type: counterparty.type ?? undefined })),
         }}
-        includeInitialBalanceFields={guideAccountSetup}
+        // 资金账户新建始终带初始余额（日期+金额，生成期初余额锚点）；投资/固定资产由 EntityCreateForm 内部排除。
+        // 曾只在首次使用引导（?guide=accounts）显示，导致普通入口建账户无法录期初余额（2026-09-15 用户反馈）。
+        includeInitialBalanceFields
         defaultCurrency={baseCurrency}
         onCreated={() => {
           setShowCreateAccount(false);
