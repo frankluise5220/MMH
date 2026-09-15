@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import {
   ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   Area, Cell,
@@ -62,6 +63,8 @@ type Props = {
   initialData?: ApiResponse | null;
   /** Force the API to be called on mount even if initialData is present */
   refreshKey?: number;
+  /** Collapsible header (fund-holdings report page: fold to give the tables their space back) */
+  collapsible?: boolean;
 };
 
 function formatPct(v: number) {
@@ -97,11 +100,12 @@ function buildQuery(startMonth: string, endMonth: string, withBenchmark: boolean
   return params.toString();
 }
 
-export default function FundPortfolioTrendChart({ initialData, refreshKey }: Props) {
+export default function FundPortfolioTrendChart({ initialData, refreshKey, collapsible }: Props) {
   const { t } = useI18n();
   const [data, setData] = useState<ApiResponse | null>(initialData ?? null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [collapsed, setCollapsed] = useState(false);
   // Per-series toggles (benchmark defaults on: RSC prefetch already carries it)
   const [showBenchmark, setShowBenchmark] = useState(true);
   const [showPortfolioReturn, setShowPortfolioReturn] = useState(true);
@@ -214,32 +218,51 @@ export default function FundPortfolioTrendChart({ initialData, refreshKey }: Pro
   return (
     <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
       <div className="px-4 py-3 border-b border-slate-200 bg-slate-50">
-        <div className="text-sm font-semibold text-slate-800">
-          {t("stats.fundPortfolioTrend")}
-        </div>
-        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-          {SERIES_CHIPS.map((chip) => (
-            <button
-              key={chip.key}
-              type="button"
-              onClick={chip.onToggle}
-              className={`h-6 px-2 rounded text-[11px] border flex items-center gap-1.5 ${
-                chip.active
-                  ? "bg-white border-slate-300 text-slate-700"
-                  : "bg-slate-100 border-slate-200 text-slate-400"
-              }`}
-            >
-              <span
-                className="w-2 h-2 rounded-full shrink-0"
-                style={{ background: chip.active ? chip.color : "#cbd5e1" }}
-              />
-              {chip.label}
-            </button>
-          ))}
-        </div>
+        {collapsible ? (
+          <button
+            type="button"
+            className="flex items-center gap-1 text-sm font-semibold text-slate-800"
+            title={t(collapsed ? "common.expand" : "common.collapse")}
+            aria-label={t(collapsed ? "common.expand" : "common.collapse")}
+            aria-expanded={!collapsed}
+            onClick={() => setCollapsed(v => !v)}
+          >
+            {collapsed
+              ? <ChevronRight className="h-3.5 w-3.5 text-slate-400" />
+              : <ChevronDown className="h-3.5 w-3.5 text-slate-400" />}
+            {t("stats.fundPortfolioTrend")}
+          </button>
+        ) : (
+          <div className="text-sm font-semibold text-slate-800">
+            {t("stats.fundPortfolioTrend")}
+          </div>
+        )}
+        {!collapsed && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            {SERIES_CHIPS.map((chip) => (
+              <button
+                key={chip.key}
+                type="button"
+                onClick={chip.onToggle}
+                className={`h-6 px-2 rounded text-[11px] border flex items-center gap-1.5 ${
+                  chip.active
+                    ? "bg-white border-slate-300 text-slate-700"
+                    : "bg-slate-100 border-slate-200 text-slate-400"
+                }`}
+              >
+                <span
+                  className="w-2 h-2 rounded-full shrink-0"
+                  style={{ background: chip.active ? chip.color : "#cbd5e1" }}
+                />
+                {chip.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
-      <div className="p-3">
+      {!collapsed && (
+        <div className="p-3">
         {!hasData ? (
           <div className="h-72 flex items-center justify-center text-xs text-slate-400">
             {loading ? t("common.loading") : t("stats.noFundTrendData")}
@@ -441,7 +464,8 @@ export default function FundPortfolioTrendChart({ initialData, refreshKey }: Pro
             </div>
           </>
         )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -19,6 +19,8 @@ import type { ReportItem } from "@/components/ReportSelector";
 import { StockHoldingReport } from "@/components/StockHoldingReport";
 import { FundHoldingReport, type FundGroupMode } from "@/components/FundHoldingReport";
 import { FundGroupModeFilter } from "@/components/FundGroupModeFilter";
+import FundPortfolioTrendChart from "@/components/FundPortfolioTrendChart";
+import { loadFundPortfolioTrendData } from "@/lib/server/fund-portfolio-trend";
 import { buildAccountDisplayOption, buildGroupedAccountOptions, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "@/lib/server/account-label-fields";
 import { kindLabel } from "@/lib/account-kinds";
@@ -768,6 +770,12 @@ export default async function ReportsPage({
       ]),
     ]);
 
+    // Portfolio trend chart (moved from the cash-statistics page): whole-household
+    // fund/money trend, same basis as before — independent of the row filters above.
+    const fundTrendData = await loadFundPortfolioTrendData(ctx, {
+      includeBenchmark: true,
+    });
+
     return (
       <div className="flex min-h-0 flex-1 flex-col">
         <header className="page-header">
@@ -809,6 +817,9 @@ export default async function ReportsPage({
                 <Download className="h-3.5 w-3.5" />
                 {t("reports.export")}
               </a>
+            </div>
+            <div className="shrink-0">
+              <FundPortfolioTrendChart initialData={{ ok: true, ...fundTrendData }} collapsible />
             </div>
             <FundHoldingReport
               rows={fundReport.rows}

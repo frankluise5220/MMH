@@ -8,10 +8,8 @@ import { ReportSelector } from "@/components/ReportSelector";
 import type { ReportItem } from "@/components/ReportSelector";
 import StatisticsCharts from "@/components/StatisticsCharts";
 import { StatisticsFilterPanel } from "@/components/StatisticsFilterPanel";
-import FundPortfolioTrendChart from "@/components/FundPortfolioTrendChart";
 import AssetFlowStatisticsTable from "@/components/AssetFlowStatisticsTable";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { loadFundPortfolioTrendData } from "@/lib/server/fund-portfolio-trend";
 import { loadAssetMonthEndLevels } from "@/lib/server/asset-flow-trend";
 import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
 import { buildStatisticsCurrencyConverter } from "@/lib/server/statistics-currency";
@@ -418,25 +416,18 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
   // ── P&L list sorted by date descending ──
   pnlItems.sort((a, b) => b.date.localeCompare(a.date));
 
-  // Fund portfolio trend (cost/market value, monthly net flow, CSI 300
-  // benchmark) — prefetched in RSC to avoid a blank first screen. The
-  // simulation always walks from the earliest transaction so cost basis
-  // inside the window is correct; startMonth/endMonth only clip the window.
-  const fundTrendData = await loadFundPortfolioTrendData(ctx, {
-    includeBenchmark: true,
-  });
-
   // ── 资金统计表: month-end NET assets (cost / market-value basis) for the
   // selected range, merged with the monthly income/expense aggregation above
   // so both share the same basis. Asset levels are whole-household numbers and
   // deliberately ignore the account/tag filters (transfers between a filtered
-  // subset would distort balances).
+  // subset would distort balances). Fund/money accounts are covered inside the
+  // loader via the fund portfolio trend simulation (the chart itself now lives
+  // on the fund-holdings report page).
   const rangeMonths = level === "month"
     ? [`${year}-${String(month).padStart(2, "0")}`]
     : Array.from({ length: 12 }, (_, i) => `${year}-${String(i + 1).padStart(2, "0")}`);
   const assetLevels = await loadAssetMonthEndLevels(ctx, {
     months: rangeMonths,
-    fundPoints: fundTrendData.points,
   });
   const monthIncomeExpense = new Map(monthData.map((row) => [row.month, row]));
   const assetFlowPoints = rangeMonths
@@ -478,9 +469,6 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
       <div className="flex-1 min-h-0 overflow-y-auto p-6">
         <div className="mb-4">
           <AssetFlowStatisticsTable points={assetFlowPoints} isRedUp={isRedUp} />
-        </div>
-        <div className="mb-4">
-          <FundPortfolioTrendChart initialData={{ ok: true, ...fundTrendData }} />
         </div>
         <StatisticsCharts
           monthData={monthData}
