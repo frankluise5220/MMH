@@ -622,15 +622,11 @@ export function AdvancedDataTable<T>({
     if (resetKey == null) return;
     if (lastResetKeyRef.current === resetKey) return;
     lastResetKeyRef.current = resetKey;
-    skipNextFiltersWriteRef.current = false;
-    skipNextSortWriteRef.current = false;
-    setFilters({});
-    setSortState(null);
+    // resetKey 只清瞬时 UI（打开的筛选弹层 / 待处理表头点击）。
+    // 排序和筛选跟 storageKey 走，翻页或切数据集时不得写空 localStorage。
     setActiveFilterColumn(null);
     clearPendingHeaderSortClick();
-    writeJson(filtersStorageKey, {});
-    writeJson(sortStorageKey, null);
-  }, [clearPendingHeaderSortClick, filtersStorageKey, resetKey, sortStorageKey]);
+  }, [clearPendingHeaderSortClick, resetKey]);
 
   useEffect(() => {
     const node = viewportRef.current;

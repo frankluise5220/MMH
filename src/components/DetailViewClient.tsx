@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState, useEffect, useMemo, useRef, type ReactNode, type MouseEvent } from "react";
+import { useCallback, useState, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode, type MouseEvent } from "react";
 import { Paperclip } from "lucide-react";
 import { formatDateDisplay, formatDateLocal as localDateKey, toNumber } from "@/lib/date-utils";
 import { formatCurrencyMoney } from "@/lib/format";
@@ -37,6 +37,31 @@ import { parseImportAccountId } from "@/lib/account-import-match";
 import { formatAccountTableLabel, formatAccountTableTitle } from "@/lib/account-display";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { APP_PREFS_EVENT, getAccountLabelFieldsPreference, getDateDisplayFormatPreference, getDetailDateBackgroundPreference, type DateDisplayFormat } from "@/lib/client/appPreferences";
+
+const LEGACY_BASIC_DETAIL_STORAGE_KEY = "mmh_basic_detail_table_v1";
+
+function basicDetailTableStorageKey(accountId: string) {
+  return `${LEGACY_BASIC_DETAIL_STORAGE_KEY}:${accountId || "none"}`;
+}
+
+/** Copy shared column widths/hidden columns onto the per-account key once. Sort/filters stay per-account. */
+function migrateLegacyBasicDetailLayout(storageKey: string) {
+  if (typeof window === "undefined") return;
+  if (!storageKey.startsWith(`${LEGACY_BASIC_DETAIL_STORAGE_KEY}:`)) return;
+  const marker = `${storageKey}:layout-migrated`;
+  try {
+    if (window.localStorage.getItem(marker) === "1") return;
+    for (const suffix of [":widths", ":hidden:v2", ":hidden"] as const) {
+      const dest = `${storageKey}${suffix}`;
+      if (window.localStorage.getItem(dest) != null) continue;
+      const src = window.localStorage.getItem(`${LEGACY_BASIC_DETAIL_STORAGE_KEY}${suffix}`);
+      if (src != null) window.localStorage.setItem(dest, src);
+    }
+    window.localStorage.setItem(marker, "1");
+  } catch {
+    // localStorage may be unavailable; table still works with defaults.
+  }
+}
 
 /* Types */
 
@@ -516,7 +541,7 @@ export function DetailViewClient({
   tagOptions = [],
   investmentProductTypeByAccountId,
   compactRows = false,
-  storageKey = "mmh_basic_detail_table_v1",
+  storageKey: storageKeyProp,
   refreshOnGlobalEvent = true,
   toolbarMode = "default",
   toolbarTitle,
@@ -535,6 +560,7 @@ export function DetailViewClient({
   runningBalanceDefaultHidden = false,
   enableAccountNavigation = false,
   focusEntryId,
+  scrollToRowKey,
   reorderAccountIds,
   sortable = true,
   onDisplayRowsChange,
@@ -567,12 +593,18 @@ export function DetailViewClient({
   runningBalanceDefaultHidden?: boolean;
   enableAccountNavigation?: boolean;
   focusEntryId?: string;
+  scrollToRowKey?: string | null;
   reorderAccountIds?: string[];
   sortable?: boolean;
   onDisplayRowsChange?: (rows: DetailEntry[]) => void;
   onRowsFitChange?: (rows: number) => void;
 }) {
   const { t } = useI18n();
+  const storageKey = storageKeyProp ?? basicDetailTableStorageKey(accountId);
+  // 必须在子表 useEffect 读 localStorage 之前跑完：parent useLayoutEffect 早于 child useEffect。
+  useLayoutEffect(() => {
+    migrateLegacyBasicDetailLayout(storageKey);
+  }, [storageKey]);
   const [dateDisplayFormat, setDateDisplayFormat] = useState<DateDisplayFormat>("yyyy-mm-dd");
   const [detailDateBackground, setDetailDateBackground] = useState(false);
 
@@ -1130,7 +1162,11 @@ export function DetailViewClient({
       filterKind: "dateRange",
       filterText: (e) => localDateKey(getDetailEntryDisplayDate(e, accountId)),
       sortValue: (e) => getDetailEntryDisplayDate(e, accountId).getTime(),
-      render: (e) => <span className="tabular-nums text-slate-600">{formatDateDisplay(getDetailEntryDisplayDate(e, accountId), dateDisplayFormat)}</span>,
+      // The date column shows the raw transaction date; the posting date has
+      // its own column. Row order comes from the server and follows the
+      // effective date (postedAt ?? date) — do not display that here, or the
+      // transaction date becomes invisible for rows posted on a later day.
+      render: (e) => <span className="tabular-nums text-slate-600">{formatDateDisplay(e.date, dateDisplayFormat)}</span>,
     },
     ...(showAccountColumn ? [{
       key: "account",
@@ -1598,6 +1634,7 @@ export function DetailViewClient({
       }}
       onDisplayRowsChange={onDisplayRowsChange}
       onRowsFitChange={onRowsFitChange}
+      scrollToRowKey={scrollToRowKey}
     />
     </div>
     <EntryAttachmentWindow

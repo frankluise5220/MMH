@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 
 import { BasicDetailBatchDeleteMessage, BasicDetailSelectionProvider, type BasicDetailBatchCategoryOption } from "@/components/BasicDetailSelection";
@@ -26,6 +26,7 @@ type CreditBillDetailPanelProps = {
   initialPage: number;
   initialPageSize: number;
   initialDetailAll: boolean;
+  initialAutoFit?: boolean;
   resetKey: string;
   selectedBillMonth: string;
   title: ReactNode;
@@ -74,6 +75,7 @@ export function CreditBillDetailPanel({
   initialPage,
   initialPageSize,
   initialDetailAll,
+  initialAutoFit = true,
   resetKey,
   selectedBillMonth,
   title,
@@ -88,6 +90,7 @@ export function CreditBillDetailPanel({
   const [localEntries, setLocalEntries] = useState(entries);
   const [pageSize, setPageSize] = useState(normalizedInitialPageSize);
   const [detailAll, setDetailAll] = useState(initialDetailAll);
+  const [autoFit, setAutoFit] = useState(initialAutoFit);
   const [isSwitchLoading, setIsSwitchLoading] = useState(false);
   const [clientTitle, setClientTitle] = useState(title);
   const [clientScopeKey, setClientScopeKey] = useState(resetKey || `${accountId}:credit-bill-detail`);
@@ -114,9 +117,10 @@ export function CreditBillDetailPanel({
       const nextTotalPages = Math.max(1, Math.ceil(entries.length / nextPageSize));
       setPageSize(nextPageSize);
       setDetailAll(nextDetailAll);
+      setAutoFit(storedPreference?.autoFit ?? initialAutoFit);
       setPage(nextDetailAll ? 1 : clampPage(storedPreference?.detailPage ?? initialPage, nextTotalPages));
     }
-  }, [accountId, entries, initialDetailAll, initialPage, normalizedInitialPageSize, propScopeKey, selectedBillMonth, title]);
+  }, [accountId, entries, initialAutoFit, initialDetailAll, initialPage, normalizedInitialPageSize, propScopeKey, selectedBillMonth, title]);
 
   useEffect(() => {
     const handleSelection = (event: Event) => {
@@ -145,6 +149,7 @@ export function CreditBillDetailPanel({
           setLocalEntries(nextEntries);
           setPageSize(nextPageSize);
           setDetailAll(nextDetailAll);
+          setAutoFit(storedPreference?.autoFit ?? autoFit);
           setPage(nextDetailAll ? 1 : clampPage(storedPreference?.detailPage ?? 1, nextTotalPages));
           setClientScopeKey(`${accountId}:${billMonth}:credit-bill-detail`);
           if (payload.data?.showAllDetails) {
@@ -165,7 +170,7 @@ export function CreditBillDetailPanel({
     };
     window.addEventListener(CREDIT_BILL_DETAIL_SELECTION_EVENT, handleSelection as EventListener);
     return () => window.removeEventListener(CREDIT_BILL_DETAIL_SELECTION_EVENT, handleSelection as EventListener);
-  }, [accountId, detailAll, pageSize, router, t]);
+  }, [accountId, autoFit, detailAll, pageSize, router, t]);
 
   useEffect(() => {
     const handleFinanceChange = (event: Event) => {
@@ -201,11 +206,11 @@ export function CreditBillDetailPanel({
       url.searchParams.delete("detailAll");
       url.searchParams.set("detailPage", String(safePage));
     }
-    writeStoredDetailPreference(accountId, pageSize, detailAll, safePage);
+    writeStoredDetailPreference(accountId, pageSize, detailAll, safePage, autoFit);
     const nextHref = `${url.pathname}${url.search}${url.hash}`;
     const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
     if (nextHref !== currentHref) window.history.replaceState(window.history.state, "", nextHref);
-  }, [accountId, detailAll, pageSize, safePage]);
+  }, [accountId, autoFit, detailAll, pageSize, safePage]);
 
   const pageEntries = useMemo(
     () => detailAll ? localEntries : localEntries.slice((safePage - 1) * pageSize, safePage * pageSize),
@@ -214,12 +219,33 @@ export function CreditBillDetailPanel({
 
   const setPagedSize = (nextPageSize: number) => {
     setDetailAll(false);
+    setAutoFit(false);
     setPageSize(nextPageSize);
     setPage(1);
   };
 
   const showAll = () => {
     setDetailAll(true);
+    setPage(1);
+  };
+
+  // Auto-fit: the table reports how many rows fit the viewport; when auto mode
+  // is on that count becomes the page size (the "自适应" option restores it).
+  // Callback identity changes with the scope / autoFit / detailAll so the table
+  // re-measures once per view reopen, then stays frozen (same contract as
+  // BasicDetailPanel).
+  const lastFitRowCountRef = useRef<number | null>(null);
+  const handleRowsFitChange = useCallback((rowCount: number) => {
+    lastFitRowCountRef.current = rowCount;
+    if (!autoFit || detailAll) return;
+    setPageSize((prev) => (prev === rowCount ? prev : rowCount));
+  }, [propScopeKey, autoFit, detailAll]);
+
+  const enableAutoFitRows = () => {
+    setDetailAll(false);
+    setAutoFit(true);
+    const fitCount = lastFitRowCountRef.current;
+    if (fitCount != null && fitCount !== pageSize) setPageSize(fitCount);
     setPage(1);
   };
 
@@ -238,7 +264,7 @@ export function CreditBillDetailPanel({
 
   const canPrev = !detailAll && safePage > 1;
   const canNext = !detailAll && safePage < totalPages;
-  const tableResetKey = `${scopeKey}:${detailAll ? "all" : safePage}:${pageSize}`;
+  const tableResetKey = scopeKey;
 
   return (
     <BasicDetailSelectionProvider resetKey={scopeKey}>
@@ -264,6 +290,7 @@ export function CreditBillDetailPanel({
           refreshOnGlobalEvent={false}
           toolbarMode="custom"
           batchReplaceFields={CREDIT_BILL_BATCH_REPLACE_FIELDS}
+          onRowsFitChange={autoFit && !detailAll ? handleRowsFitChange : undefined}
           toolbarTitle={clientTitle}
           toolbarRightContent={
             <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 text-xs text-slate-500 tabular-nums">
@@ -291,6 +318,8 @@ export function CreditBillDetailPanel({
                 totalPages={totalPages}
                 canPrev={canPrev}
                 canNext={canNext}
+                autoFit={autoFit}
+                onAutoFit={enableAutoFitRows}
                 onPageSizeChange={setPagedSize}
                 onShowAll={showAll}
                 onPageChange={goPage}

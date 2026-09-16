@@ -11,6 +11,8 @@ import { DetailTablePaginationControls } from "@/components/DetailTablePaginatio
 import { DetailViewClient, type DetailEntry } from "@/components/DetailViewClient";
 import { ViewExcelImportMenuButton } from "@/components/ViewExcelImportMenuButton";
 import { FINANCE_DATA_CHANGED_EVENT, type FinanceDataChangedDetail } from "@/lib/client/refresh";
+import { formatDateLocal } from "@/lib/date-utils";
+import { getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import {
   DETAIL_ALL_PAGE_SIZE,
   DETAIL_PAGE_SIZE_OPTIONS,
@@ -520,7 +522,9 @@ export function BasicDetailPanel({
   }, [accountId, clientPaginationEnabled, detailAll, pageSize, reloadDetailPage, safePage]);
 
   const pageEntries = useMemo(() => localEntries, [localEntries]);
+  const displayRowsRef = useRef<DetailEntry[]>([]);
   const handleDisplayRowsChange = useCallback((rows: DetailEntry[]) => {
+    displayRowsRef.current = rows;
     const nextIds = rows.map((entry) => entry.id);
     setDisplayedEntryIds((current) => {
       if (!current) return nextIds;
@@ -579,8 +583,31 @@ export function BasicDetailPanel({
 
   const locateDateSeqRef = useRef(0);
   const [isLocatingDate, setIsLocatingDate] = useState(false);
+  const [locateScrollKey, setLocateScrollKey] = useState<string | null>(null);
   const handleLocateDate = (dateYmd: string) => {
-    if (detailAll || !clientPaginationEnabled || !dateYmd) return;
+    if (!clientPaginationEnabled || !dateYmd) return;
+    if (detailAll) {
+      // Show-all mode: the loaded list is fully rendered (virtualized beyond
+      // ROW_VIRTUALIZATION_THRESHOLD rows), so locating is a client-side
+      // viewport scroll — center the first entry of the requested date, or the
+      // nearest day in list order when that date has no entries.
+      const rows = displayRowsRef.current;
+      if (!rows || rows.length === 0) return;
+      const dayKeys = rows.map((entry) => formatDateLocal(getDetailEntryDisplayDate(entry, accountId)));
+      let index = dayKeys.findIndex((key) => key === dateYmd);
+      if (index < 0) {
+        const descending = dayKeys.length < 2 || dayKeys[0] >= dayKeys[dayKeys.length - 1];
+        index = dayKeys.findIndex((key) => (descending ? key <= dateYmd : key >= dateYmd));
+        if (index < 0) index = dayKeys.length - 1;
+      }
+      const target = rows[index];
+      if (!target) return;
+      // Reset first so re-locating the same date scrolls again (the table
+      // centers each row key at most once).
+      setLocateScrollKey(null);
+      window.setTimeout(() => setLocateScrollKey(target.id), 0);
+      return;
+    }
     const seq = ++locateDateSeqRef.current;
     setIsLocatingDate(true);
     const params = new URLSearchParams({
@@ -611,7 +638,7 @@ export function BasicDetailPanel({
   const canPrev = !detailAll && safePage > 1;
   const canNext = !detailAll && safePage < totalPages;
   const selectionResetKey = accountScopeKey;
-  const tableResetKey = `${selectionResetKey}:${detailAll ? "all" : safePage}:${pageSize}`;
+  const tableResetKey = selectionResetKey;
   const closeGuideOverlay = () => {
     setGuideOverlayOpen(false);
     if (typeof window === "undefined") return;
@@ -659,6 +686,7 @@ export function BasicDetailPanel({
           compactRows={compactRows}
           resetKey={tableResetKey}
           focusEntryId={focusEntryId}
+          scrollToRowKey={locateScrollKey}
           showAccountColumn={showAccountColumn}
           toolbarMode="custom"
           toolbarTitle={t("basicDetail.entriesTitle")}
