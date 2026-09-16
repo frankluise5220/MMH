@@ -8,7 +8,6 @@ import { ReportSelector } from "@/components/ReportSelector";
 import type { ReportItem } from "@/components/ReportSelector";
 import StatisticsCharts from "@/components/StatisticsCharts";
 import { StatisticsFilterPanel } from "@/components/StatisticsFilterPanel";
-import AssetFlowStatisticsTable from "@/components/AssetFlowStatisticsTable";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { loadAssetMonthEndLevels } from "@/lib/server/asset-flow-trend";
 import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
@@ -436,8 +435,14 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
         month: fullMonth,
         netAssetCost: levels.netAssetCost,
         netAssetMarketValue: levels.netAssetMarketValue,
+        insurance: levels.insurance,
+        propertyCost: levels.propertyCost,
+        propertyMarket: levels.propertyMarket,
+        settlement: levels.settlement,
         income: row?.income ?? 0,
         expense: row?.expense ?? 0,
+        investPnL: row?.investPnL ?? 0,
+        netTotal: row?.netTotal ?? 0,
       };
     });
 
@@ -464,9 +469,6 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
         </div>
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto p-6">
-        <div className="mb-4">
-          <AssetFlowStatisticsTable points={assetFlowPoints} isRedUp={isRedUp} />
-        </div>
         <StatisticsCharts
           monthData={monthData}
           incomeCats={incomeCats}
@@ -479,6 +481,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
           expenseLocations={expenseLocations}
           pnlList={pnlItems}
           isRedUp={isRedUp}
+          assetFlowPoints={assetFlowPoints}
         />
         {totalFloatingPnL !== 0 && (
           <div className="mt-3 text-xs text-slate-500 text-right">

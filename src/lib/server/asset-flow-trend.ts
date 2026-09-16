@@ -49,7 +49,20 @@ import { loadFundPortfolioTrendData, type FundTrendPoint } from "@/lib/server/fu
 import { convertCurrencyAmounts, getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { normalizeCurrency } from "@/lib/currency";
 
-export type AssetFlowMonthEndLevels = Map<string, { netAssetCost: number; netAssetMarketValue: number }>;
+export type AssetFlowMonthEndLevel = {
+  netAssetCost: number;
+  netAssetMarketValue: number;
+  /** Insurance cash value included in both net totals. */
+  insurance: number;
+  /** Fixed-asset cost included in netAssetCost. */
+  propertyCost: number;
+  /** Fixed-asset market value included in netAssetMarketValue. */
+  propertyMarket: number;
+  /** 往来款 (settlement) net: receivables positive, payables negative. Loans are not included. */
+  settlement: number;
+};
+
+export type AssetFlowMonthEndLevels = Map<string, AssetFlowMonthEndLevel>;
 
 function localDateKey(date: Date) {
   const y = date.getFullYear();
@@ -851,11 +864,17 @@ export async function loadAssetMonthEndLevels(
       const lots = depositLotSnapshots.get(account.id)?.[index] ?? 0;
       netBase += convert(account.id, layer + lots);
     }
+    let settlement = 0;
     for (const account of debtishAccounts) {
-      netBase += convert(account.id, txSnapshots.get(account.id)?.[index] ?? 0);
+      const value = convert(account.id, txSnapshots.get(account.id)?.[index] ?? 0);
+      netBase += value;
+      if (account.kind === AccountKind.settlement) settlement += value;
     }
+    let insurance = 0;
     for (const account of insuranceAccounts) {
-      netBase += convert(account.id, insuranceSnapshots.get(account.id)?.[index] ?? 0);
+      const value = convert(account.id, insuranceSnapshots.get(account.id)?.[index] ?? 0);
+      insurance += value;
+      netBase += value;
     }
     let stockCash = 0;
     for (const account of stockAccounts) {
@@ -907,6 +926,10 @@ export async function loadAssetMonthEndLevels(
         + fundCost + wealthCost + metalCost + stockCost + stockCash + propertyCost),
       netAssetMarketValue: round2(netBase
         + fundMarket + wealthMarket + metalMarket + stockMarket + stockCash + propertyMarket),
+      insurance: round2(insurance),
+      propertyCost: round2(propertyCost),
+      propertyMarket: round2(propertyMarket),
+      settlement: round2(settlement),
     });
   }
 

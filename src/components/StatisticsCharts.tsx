@@ -9,6 +9,7 @@ import {
 import { formatMoney } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { useI18n } from "@/lib/i18n";
+import AssetFlowStatisticsTable, { type AssetFlowPoint } from "@/components/AssetFlowStatisticsTable";
 
 const COLORS = {
   investPnL: "#8b5cf6",
@@ -70,6 +71,8 @@ type Props = {
   expenseLocations?: NamedSliceData[];
   pnlList: PnLItem[];
   isRedUp: boolean;
+  /** /statistics: merged 资金 bars + 资产 curve, sharing the page time range. */
+  assetFlowPoints?: AssetFlowPoint[];
 };
 
 function CustomTooltip({ active, payload, label }: any) {
@@ -148,6 +151,7 @@ export default function StatisticsCharts({
   expenseLocations = [],
   pnlList,
   isRedUp,
+  assetFlowPoints,
 }: Props) {
   const { t } = useI18n();
   const compactTick = (v: number) => (v >= 10000 ? `${(v / 10000).toFixed(1)}${t("common.compactUnit")}` : String(v));
@@ -186,7 +190,10 @@ export default function StatisticsCharts({
         ))}
       </div>
 
-      {/* ===== Monthly income/expense bar chart ===== */}
+      {/* ===== Monthly income/expense (invest) or merged 资金/资产 (/statistics) ===== */}
+      {assetFlowPoints && assetFlowPoints.length > 0 ? (
+        <AssetFlowStatisticsTable points={assetFlowPoints} isRedUp={isRedUp} />
+      ) : (
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
         <div className="px-4 py-3 border-b border-slate-200 bg-slate-50">
           <div className="text-sm font-semibold text-slate-800">{t("stats.monthlyIncomeExpense")}</div>
@@ -210,6 +217,7 @@ export default function StatisticsCharts({
           )}
         </div>
       </div>
+      )}
 
       {/* ===== Pie chart row: income sources + expense categories ===== */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
