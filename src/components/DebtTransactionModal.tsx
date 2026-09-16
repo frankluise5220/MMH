@@ -15,7 +15,7 @@ import { useAccountSSFilter } from "./accountSSFilter";
 import { buildCategoryTreeOptions, type CategorySource } from "./categorySmartSelect";
 import { institutionTypeLabel, isSettlementCounterpartyType, isInstitutionTypeOf, LOAN_DIALOG_INSTITUTION_TYPE_VALUES } from "@/lib/account-kinds";
 import { buildAccountDisplayOption, formatAccountHoverTitle } from "@/lib/account-display";
-import { recordRecentAccount, sortByAccountUsage, sortOptionsByRecent, useAccountUsage, useRecentAccountIds } from "@/lib/client/recentAccounts";
+import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
@@ -574,10 +574,10 @@ export function DebtTransactionModal({
     cycleOwnerFilter: cycleCashOwnerFilter,
     filteredOptions: cashAccountSSFiltered,
   } = useAccountSSFilter(cashAccountSSOptions);
-  const recentAccountIds = useRecentAccountIds();
-  const visibleCashOptions = sortOptionsByRecent(
+  const accountUsage = useAccountUsage();
+  const visibleCashOptions = sortByAccountUsage(
     [...(cashAccountSSFiltered ?? cashAccountSSOptions ?? cashOptions), ...localCashAccountList],
-    recentAccountIds,
+    accountUsage,
   );
   const cashOwnerCycleButton = cashAccountSSOptions?.some((option) => option.isHeader) ? (
     <button
@@ -1921,7 +1921,6 @@ export function DebtTransactionModal({
     isLoanBorrow,
     open,
   ]);
-  const accountUsage = useAccountUsage();
   const {
     filteredOptions: fixedAssetFiltered,
     visibleOptionIds: fixedAssetVisibleOptionIds,

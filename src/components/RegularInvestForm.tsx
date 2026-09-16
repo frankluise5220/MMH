@@ -13,7 +13,7 @@ import { CATEGORY_SMART_SELECT_BEHAVIOR, type CategorySmartSelectOption } from "
 import { NestedAddModal } from "./EntityCreateForm";
 import { useI18n } from "@/lib/i18n";
 import { scheduledTaskTypeLabel, type LoanScheduledPlanRole, type ScheduledTaskType } from "@/lib/scheduled-task";
-import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
+import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { formatDateUtc, lastDayOfMonthUtc } from "@/lib/date-utils";
 import { decodeYearlyExecutionDay, encodeYearlyExecutionDay, isYearlyExecutionDay } from "@/lib/scheduled-task-date";
@@ -1095,17 +1095,17 @@ export function RegularInvestForm({
   }
 
   const title = mode === "edit" ? t("regularInvest.title.edit") : t("regularInvest.title.create");
-  const recentAccountIds = useRecentAccountIds();
+  const accountUsage = useAccountUsage();
 
   // Account display label in edit mode
   const displayAccountLabel = stripDefaultGroupLabel(mode === "edit" ? (editAccountLabel ?? accountLabel) : accountLabel);
   const investmentOptions = investFiltered
-    ? sortOptionsByRecent(stripDefaultGroupOptions(investFiltered), recentAccountIds)
-    : sortOptionsByRecent(investmentAccountList.map(a => ({ id: a.id, label: stripDefaultGroupLabel(a.label), subLabel: (a as { subLabel?: string }).subLabel })), recentAccountIds);
-  const cashOptions = sortOptionsByRecent(cashFiltered ?? cashAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel })), recentAccountIds);
+    ? sortByAccountUsage(stripDefaultGroupOptions(investFiltered), accountUsage)
+    : sortByAccountUsage(investmentAccountList.map(a => ({ id: a.id, label: stripDefaultGroupLabel(a.label), subLabel: (a as { subLabel?: string }).subLabel })), accountUsage);
+  const cashOptions = sortByAccountUsage(cashFiltered ?? cashAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel })), accountUsage);
   const loanOptions = loanAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel }));
-  const transferTargetOptions = sortOptionsByRecent(transferTargetFiltered ?? transferTargetAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel })), recentAccountIds);
-  const ordinaryOptions = sortOptionsByRecent(ordinaryFiltered ?? ordinaryAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel })), recentAccountIds);
+  const transferTargetOptions = sortByAccountUsage(transferTargetFiltered ?? transferTargetAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel })), accountUsage);
+  const ordinaryOptions = sortByAccountUsage(ordinaryFiltered ?? ordinaryAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel })), accountUsage);
   const insuranceOptions = (insuranceProductOptions ?? []).map(item => ({ id: item.id, label: item.label, subLabel: item.subLabel ?? item.accountLabel ?? undefined }));
   const ordinaryCategoryOptions = formData.taskType === "income" ? incomeCategoryOptions ?? [] : expenseCategoryOptions ?? [];
   const selectedInsuranceProduct = (insuranceProductOptions ?? []).find((item) => item.id === formData.insuranceProductId) ?? null;
@@ -1344,7 +1344,7 @@ export function RegularInvestForm({
                     ) : (
                       <div className={REQUIRED_FIELD_CLASS}>
                         <SmartSelect mode="single" value={formData.cashAccountId}
-                          onChange={(id) => setFormData(d => ({ ...d, cashAccountId: id }))}
+                          onChange={(id) => { recordRecentAccount(id); setFormData(d => ({ ...d, cashAccountId: id })); }}
                           options={cashOptions}
                           placeholder={t("regularInvest.placeholder.transferFrom")}
                           onCreateClick={() => setNestedEntityType("cash-account")}
@@ -1385,11 +1385,11 @@ export function RegularInvestForm({
                     <div className="text-xs font-medium text-slate-600">{t("txForm.transferTo")}</div>
                     <div className={REQUIRED_FIELD_CLASS}>
                       <SmartSelect mode="single" value={formData.accountId}
-                        onChange={(id) => setFormData(d => ({
+                        onChange={(id) => { recordRecentAccount(id); setFormData(d => ({
                           ...d,
                           ...derivedNamePatch(d, transferTargetOptions.find((item) => item.id === id)?.label ?? t("transaction.type.transfer")),
                           accountId: id,
-                        }))}
+                        })); }}
                         options={transferTargetOptions}
                         placeholder={t("regularInvest.placeholder.transferTo")} />
                     </div>
@@ -1443,7 +1443,7 @@ export function RegularInvestForm({
                       <div className="space-y-1">
                         <div className="text-xs font-medium text-slate-600">{t("txForm.cashAccount")}</div>
                         <SmartSelect mode="single" value={formData.cashAccountId}
-                          onChange={(id) => setFormData(d => ({ ...d, cashAccountId: id }))}
+                          onChange={(id) => { recordRecentAccount(id); setFormData(d => ({ ...d, cashAccountId: id })); }}
                           options={cashOptions}
                           placeholder={t("regularInvest.placeholder.account")}
                           onCreateClick={() => setNestedEntityType("cash-account")}
@@ -1460,7 +1460,7 @@ export function RegularInvestForm({
                       <div className="text-xs font-medium text-slate-600">{t("regularInvest.account.cashFundAccount")}</div>
                       <div className={REQUIRED_FIELD_CLASS}>
                         <SmartSelect mode="single" value={formData.accountId}
-                          onChange={(id) => setFormData(d => ({ ...d, accountId: id }))}
+                          onChange={(id) => { recordRecentAccount(id); setFormData(d => ({ ...d, accountId: id })); }}
                           options={ordinaryOptions}
                           placeholder={t("regularInvest.placeholder.cashFundAccount")}
                           onCreateClick={() => setNestedEntityType("cash-account")}
@@ -1495,7 +1495,7 @@ export function RegularInvestForm({
                       <div className="text-xs font-medium text-slate-600">{t("txForm.cashAccount")}</div>
                       <div className={REQUIRED_FIELD_CLASS}>
                         <SmartSelect mode="single" value={formData.cashAccountId}
-                          onChange={(id) => setFormData(d => ({ ...d, cashAccountId: id }))}
+                          onChange={(id) => { recordRecentAccount(id); setFormData(d => ({ ...d, cashAccountId: id })); }}
                           options={cashOptions}
                           placeholder={t("regularInvest.placeholder.account")}
                           onCreateClick={() => setNestedEntityType("cash-account")}
@@ -1515,7 +1515,7 @@ export function RegularInvestForm({
                       investmentAccountList.length > 0 ? (
                         <div className={REQUIRED_FIELD_CLASS}>
                           <SmartSelect mode="single" value={formData.accountId}
-                            onChange={(id) => setFormData(d => ({ ...d, accountId: id }))}
+                            onChange={(id) => { recordRecentAccount(id); setFormData(d => ({ ...d, accountId: id })); }}
                             options={investmentOptions}
                             placeholder={t("regularInvest.placeholder.fundAccount")}
                             onCreateClick={() => setNestedEntityType("invest-account")}
@@ -1534,11 +1534,11 @@ export function RegularInvestForm({
                         </div>
                       ) : (
                         <SmartSelect mode="single" value={formData.accountId}
-                          onChange={(id) => setFormData(d => ({
+                          onChange={(id) => { recordRecentAccount(id); setFormData(d => ({
                             ...d,
                             ...derivedNamePatch(d, loanOptions.find((item) => item.id === id)?.label ?? scheduledTaskTypeLabel("loan_repayment")),
                             accountId: id,
-                          }))}
+                          })); }}
                           options={loanOptions}
                           placeholder={t("regularInvest.placeholder.loanAccount")} />
                       )
@@ -1568,7 +1568,7 @@ export function RegularInvestForm({
                       <div className="text-xs font-medium text-slate-600">{t("txForm.cashAccount")}</div>
                       <div className={REQUIRED_FIELD_CLASS}>
                         <SmartSelect mode="single" value={formData.cashAccountId}
-                          onChange={(id) => setFormData(d => ({ ...d, cashAccountId: id }))}
+                          onChange={(id) => { recordRecentAccount(id); setFormData(d => ({ ...d, cashAccountId: id })); }}
                           options={cashOptions}
                           placeholder={t("regularInvest.placeholder.account")}
                           onCreateClick={() => setNestedEntityType("cash-account")}

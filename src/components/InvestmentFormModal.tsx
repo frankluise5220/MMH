@@ -14,9 +14,9 @@ import { useI18n } from "@/lib/i18n";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
-import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
+import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { getColorSchemeFromCookie, pnlClassFromRedUp } from "@/lib/client/colors";
-import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { compactFinanceAccountIds, dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { addTradingDaysUtc, countTradingDaysUtc } from "@/lib/date-utils";
 import { findLinkedEntries, type RefundLinkableEntry } from "@/lib/fund/refund-link";
@@ -604,9 +604,9 @@ export function InvestmentFormModal({
     cycleOwnerFilter: cycleInvestmentOwnerFilter,
     filteredOptions: investmentAccountSSFiltered,
   } = useAccountSSFilter(productInvestmentSSOptions);
-  const recentAccountIds = useRecentAccountIds();
-  const visibleCashAccountOptions = sortOptionsByRecent(localCashSSOptions ? (cashAccountSSFiltered ?? localCashSSOptions) : flatCashAccountOptions, recentAccountIds);
-  const visibleInvestmentAccountOptions = sortOptionsByRecent(productInvestmentSSOptions.length > 0 ? (investmentAccountSSFiltered ?? productInvestmentSSOptions) : flatProductInvestmentAccountOptions, recentAccountIds);
+  const accountUsage = useAccountUsage();
+  const visibleCashAccountOptions = sortByAccountUsage(localCashSSOptions ? (cashAccountSSFiltered ?? localCashSSOptions) : flatCashAccountOptions, accountUsage);
+  const visibleInvestmentAccountOptions = sortByAccountUsage(productInvestmentSSOptions.length > 0 ? (investmentAccountSSFiltered ?? productInvestmentSSOptions) : flatProductInvestmentAccountOptions, accountUsage);
   const cashCycleAction = localCashSSOptions?.some((option) => option.isHeader)
     ? {
         onClick: cycleCashOwnerFilter,
@@ -680,6 +680,7 @@ export function InvestmentFormModal({
     cashAccountTouchedRef.current = true;
     cashAccountAutoRef.current = false;
     setCashAccountId(id);
+    recordRecentAccount(id);
   }
 
   function renderCashAccountSelect(placeholder = t("investForm.selectCashAccount")) {
@@ -710,6 +711,7 @@ export function InvestmentFormModal({
         onChange={(id) => {
           investmentAccountTouchedRef.current = true;
           setToAccountId(id);
+          recordRecentAccount(id);
         }}
         options={visibleInvestmentAccountOptions}
         placeholder={placeholder}
@@ -2487,13 +2489,19 @@ export function InvestmentFormModal({
           }
         }
         requestAnimationFrame(() => {
-          dispatchFinanceDataChanged({ reason: "investment-save" });
+          dispatchFinanceDataChanged({
+            reason: "investment-save",
+            accountIds: compactFinanceAccountIds([toAccountId, cashAccountId]),
+          });
         });
       } else {
         setOpen(false);
         if (mode === "create") resetForCreate();
         requestAnimationFrame(() => {
-          dispatchFinanceDataChanged({ reason: "investment-save" });
+          dispatchFinanceDataChanged({
+            reason: "investment-save",
+            accountIds: compactFinanceAccountIds([toAccountId, cashAccountId]),
+          });
         });
       }
     } catch (err) { window.alert(err instanceof Error ? err.message : (mode === "edit" ? t("investForm.alert.saveFailed") : t("txForm.alert.saveFailed"))); }

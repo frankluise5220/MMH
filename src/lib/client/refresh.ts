@@ -25,6 +25,10 @@ export type FinanceDataChangedDetail = {
  * (The legacy `mmh:fund:refresh` event and its dual-listening pattern were
  * removed so one save does not trigger every view's refresh twice.)
  */
+export function compactFinanceAccountIds(ids: Array<string | null | undefined>) {
+  return Array.from(new Set(ids.map((id) => String(id ?? "").trim()).filter(Boolean)));
+}
+
 export function dispatchFinanceDataChanged(detail: FinanceDataChangedDetail = {}) {
   window.dispatchEvent(new CustomEvent(FINANCE_DATA_CHANGED_EVENT, { detail }));
 }

@@ -11,7 +11,7 @@ import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
-import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
+import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
@@ -1036,7 +1036,7 @@ export function DepositFormModal({
     await saveDepositTransaction(false);
   }
 
-  const recentAccountIds = useRecentAccountIds();
+  const accountUsage = useAccountUsage();
   const cashFallbackSSOptions: SmartSelectOption[] = (localCashSSOpts ?? cashAccountList.map((option) => ({
     id: option.id,
     label: option.label,
@@ -1046,7 +1046,7 @@ export function DepositFormModal({
     institutionId: option.institutionId,
     currency: option.currency,
   })));
-  const visibleCashOptions = sortOptionsByRecent(cashFiltered ?? cashFallbackSSOptions, recentAccountIds);
+  const visibleCashOptions = sortByAccountUsage(cashFiltered ?? cashFallbackSSOptions, accountUsage);
 
   useCloseOnNavigation(open, () => {
     setOpen(false);
@@ -1170,7 +1170,7 @@ export function DepositFormModal({
                       <SmartSelect
                         mode="single"
                         value={cashAccountId}
-                        onChange={setCashAccountId}
+                        onChange={(id) => { setCashAccountId(id); recordRecentAccount(id); }}
                         options={redeemCashOptions}
                         placeholder={redeemCashOptions.length > 0 ? t("depositForm.selectArrivalDebit") : t("wealthForm.noDebitInInstitution")}
                         behavior={{ hierarchy: false, search: "auto", clearable: false }}
@@ -1444,7 +1444,7 @@ export function DepositFormModal({
                     <SmartSelect
                       mode="single"
                       value={cashAccountId}
-                      onChange={setCashAccountId}
+                      onChange={(id) => { setCashAccountId(id); recordRecentAccount(id); }}
                       options={visibleCashOptions}
                       placeholder={t("depositForm.selectCashAccount")}
                       behavior={{

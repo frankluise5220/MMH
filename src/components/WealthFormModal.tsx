@@ -12,8 +12,8 @@ import { useAccountSSFilter } from "./accountSSFilter";
 import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
-import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
-import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
+import { compactFinanceAccountIds, dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
 import { useI18n } from "@/lib/i18n";
 import { isWealthAccountAllowedForCashAccount } from "@/lib/wealth-account-rules";
@@ -462,7 +462,7 @@ export function WealthFormModal({
   useEffect(() => { setInvestmentAccountList(investmentAccounts); }, [investmentAccounts]);
   useEffect(() => { setLocalCashSSOpts(cashAccountSSOptions); }, [cashAccountSSOptions]);
   useEffect(() => { setLocalInvestSSOpts(investmentAccountSSOptions); }, [investmentAccountSSOptions]);
-  const recentAccountIds = useRecentAccountIds();
+  const accountUsage = useAccountUsage();
   const shouldListenForEditEvents = listenForEditEvents ?? (mode === "edit" && !entry);
 
   useEffect(() => {
@@ -1051,7 +1051,10 @@ export function WealthFormModal({
         if (mode === "create") reset();
       }
       requestAnimationFrame(() => {
-        dispatchFinanceDataChanged({ reason: "wealth-save" });
+        dispatchFinanceDataChanged({
+          reason: "wealth-save",
+          accountIds: compactFinanceAccountIds([toAccountId, cashAccountId]),
+        });
       });
     } catch (err) {
       window.alert(err instanceof Error ? err.message : t("wealthForm.alert.saveFailed"));
@@ -1179,8 +1182,8 @@ export function WealthFormModal({
                       <SmartSelect
                         mode="single"
                         value={toAccountId}
-                        onChange={setToAccountId}
-                        options={sortOptionsByRecent(wealthSelectOptions, recentAccountIds)}
+                        onChange={(id) => { setToAccountId(id); recordRecentAccount(id); }}
+                        options={sortByAccountUsage(wealthSelectOptions, accountUsage)}
                         placeholder={t("wealthForm.selectWealthAccount")}
                         onCycleOwnerFilter={cycleWealthOwner}
                         ownerFilterLabel={wealthOwnerLabel}
@@ -1271,8 +1274,8 @@ export function WealthFormModal({
                       <SmartSelect
                         mode="single"
                         value={cashAccountId}
-                        onChange={setCashAccountId}
-                        options={sortOptionsByRecent(redeemCashOptions, recentAccountIds)}
+                        onChange={(id) => { setCashAccountId(id); recordRecentAccount(id); }}
+                        options={sortByAccountUsage(redeemCashOptions, accountUsage)}
                         placeholder={
                           redeemCashOptions.length > 0
                             ? isRedeem ? t("wealthForm.selectArrivalBankDebitOrEwallet") : t("wealthForm.selectSameInstitutionDebit")
@@ -1319,8 +1322,8 @@ export function WealthFormModal({
                       <SmartSelect
                         mode="single"
                         value={cashAccountId}
-                        onChange={setCashAccountId}
-                        options={sortOptionsByRecent(cashSelectOptions, recentAccountIds)}
+                        onChange={(id) => { setCashAccountId(id); recordRecentAccount(id); }}
+                        options={sortByAccountUsage(cashSelectOptions, accountUsage)}
                         placeholder={t("wealthForm.selectAccount")}
                         onCreateClick={() => setNestedEntityType("cash-account")}
                         createLabel={t("settings.accounts.add")}
@@ -1336,8 +1339,8 @@ export function WealthFormModal({
                       <SmartSelect
                         mode="single"
                         value={toAccountId}
-                        onChange={setToAccountId}
-                        options={sortOptionsByRecent(wealthSelectOptions, recentAccountIds)}
+                        onChange={(id) => { setToAccountId(id); recordRecentAccount(id); }}
+                        options={sortByAccountUsage(wealthSelectOptions, accountUsage)}
                         placeholder={wealthSelectOptions.length > 0 ? t("wealthForm.selectSameInstitutionOrPayment") : t("wealthForm.autoCreateAfterAddProduct")}
                         onCreateClick={openWealthAccountModal}
                         createLabel={t("wealthForm.addWealthAccount")}

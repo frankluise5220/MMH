@@ -14,7 +14,7 @@ import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
-import { sortOptionsByRecent, useRecentAccountIds } from "@/lib/client/recentAccounts";
+import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { formatMoneyWithCurrencyCode as formatMoney } from "@/lib/format";
 import { todayDateLocalYmd as todayDateInputValue } from "@/lib/date-utils";
 import { useI18n } from "@/lib/i18n";
@@ -436,7 +436,7 @@ export function StockTransactionFormModal({
   cashAccountSSOptions?: SmartSelectOption[];
 }) {
   const today = useMemo(() => todayDateInputValue(), []);
-  const recentAccountIds = useRecentAccountIds();
+  const accountUsage = useAccountUsage();
   const { t, language } = useI18n();
   const parentModalZIndex = useModalLayerZIndex();
   const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
@@ -1423,7 +1423,7 @@ export function StockTransactionFormModal({
                         setQuantity("");
                       }
                     }}
-                    options={sortOptionsByRecent(filteredOptions ?? stockAccountOptions, recentAccountIds)}
+                    options={sortByAccountUsage(filteredOptions ?? stockAccountOptions, accountUsage)}
                     placeholder={autoCreatingAccount ? t("stockTx.autoCreatingStockAccount") : t("stockTx.selectStockAccount")}
                     onCreateClick={() => setNestedAccountOpen(true)}
                     createLabel={t("stockTx.addStockAccount")}
@@ -1441,8 +1441,9 @@ export function StockTransactionFormModal({
                     onChange={(value) => {
                       cashAccountTouchedRef.current = true;
                       setCashAccountId(value);
+                      recordRecentAccount(value);
                     }}
-                    options={sortOptionsByRecent(eligibleCashAccountOptions, recentAccountIds)}
+                    options={sortByAccountUsage(eligibleCashAccountOptions, accountUsage)}
                     placeholder={eligibleCashAccountOptions.length > 0 ? t("stockTx.selectCashAccount") : t("stockTx.addCashAccount")}
                     onCreateClick={openNestedCashAccountCreate}
                     createLabel={t("stockTx.addCashAccount")}
