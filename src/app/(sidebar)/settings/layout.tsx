@@ -87,7 +87,9 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
 
       {/* Right content */}
       <div className="flex-1 min-w-0 overflow-auto bg-slate-50">
-        <div className="p-3 md:p-4">
+        {/* h-full：让账户管理等 fillHeight 表格页拿到确定视口高度（内部滚动+虚拟化）；
+            其余页面内容自然撑高时 overflow-auto 兜底滚动。 */}
+        <div className="flex h-full min-h-0 flex-col p-3 md:p-4">
           {children}
         </div>
       </div>
