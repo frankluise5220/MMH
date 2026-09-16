@@ -40,6 +40,13 @@ type TagGroupData = {
   pct: number;
 };
 
+type NamedSliceData = {
+  id?: string | null;
+  name: string;
+  value: number;
+  pct: number;
+};
+
 type PnLItem = {
   id: string;
   date: string;
@@ -57,6 +64,10 @@ type Props = {
   expenseCats: CategoryData[];
   incomeTagGroups: TagGroupData[];
   expenseTagGroups: TagGroupData[];
+  incomeInstitutions?: NamedSliceData[];
+  expenseInstitutions?: NamedSliceData[];
+  incomeLocations?: NamedSliceData[];
+  expenseLocations?: NamedSliceData[];
   pnlList: PnLItem[];
   isRedUp: boolean;
 };
@@ -82,7 +93,62 @@ function renderPieLabel({ name, percent }: { name?: string; percent?: number }) 
   return `${name} ${(percent * 100).toFixed(1)}%`;
 }
 
-export default function StatisticsCharts({ monthData, incomeCats, expenseCats, incomeTagGroups, expenseTagGroups, pnlList, isRedUp }: Props) {
+function NamedSlicePie({
+  title,
+  emptyText,
+  items,
+}: {
+  title: string;
+  emptyText: string;
+  items: NamedSliceData[];
+}) {
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+      <div className="px-4 py-3 border-b border-slate-200 bg-slate-50">
+        <div className="text-sm font-semibold text-slate-800">{title}</div>
+      </div>
+      <div className="p-3">
+        {items.length === 0 ? (
+          <div className="h-64 flex items-center justify-center text-xs text-slate-400">{emptyText}</div>
+        ) : (
+          <div className="flex items-center">
+            <ResponsiveContainer width="55%" height={240}>
+              <PieChart>
+                <Pie data={items} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={80} paddingAngle={2} label={renderPieLabel} labelLine={false}>
+                  {items.map((item, i) => <Cell key={item.id ?? `${item.name}-${i}`} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+                </Pie>
+                <Tooltip content={<CustomTooltip />} />
+              </PieChart>
+            </ResponsiveContainer>
+            <div className="flex-1 space-y-1.5">
+              {items.slice(0, 8).map((item, i) => (
+                <div key={item.id ?? `${item.name}-${i}`} className="flex items-center gap-1.5 text-xs">
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
+                  <span className="text-slate-600 truncate flex-1">{item.name}</span>
+                  <span className="tabular-nums text-slate-400">{item.pct.toFixed(1)}%</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default function StatisticsCharts({
+  monthData,
+  incomeCats,
+  expenseCats,
+  incomeTagGroups,
+  expenseTagGroups,
+  incomeInstitutions = [],
+  expenseInstitutions = [],
+  incomeLocations = [],
+  expenseLocations = [],
+  pnlList,
+  isRedUp,
+}: Props) {
   const { t } = useI18n();
   const compactTick = (v: number) => (v >= 10000 ? `${(v / 10000).toFixed(1)}${t("common.compactUnit")}` : String(v));
   const pnlCls = (n: number) => pnlClassFromRedUp(n, isRedUp);
@@ -211,6 +277,36 @@ export default function StatisticsCharts({ monthData, incomeCats, expenseCats, i
           </div>
         </div>
       </div>
+
+      {(incomeInstitutions.length > 0 || expenseInstitutions.length > 0) && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <NamedSlicePie
+            title={t("stats.incomeInstitutionDistribution")}
+            emptyText={t("stats.noIncomeInstitutionData")}
+            items={incomeInstitutions}
+          />
+          <NamedSlicePie
+            title={t("stats.expenseInstitutionDistribution")}
+            emptyText={t("stats.noExpenseInstitutionData")}
+            items={expenseInstitutions}
+          />
+        </div>
+      )}
+
+      {(incomeLocations.length > 0 || expenseLocations.length > 0) && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <NamedSlicePie
+            title={t("stats.incomeLocationDistribution")}
+            emptyText={t("stats.noIncomeLocationData")}
+            items={incomeLocations}
+          />
+          <NamedSlicePie
+            title={t("stats.expenseLocationDistribution")}
+            emptyText={t("stats.noExpenseLocationData")}
+            items={expenseLocations}
+          />
+        </div>
+      )}
 
       {/* ===== Tag-grouped pie charts (shown only when tag data exists) ===== */}
       {(incomeTagGroups.length > 0 || expenseTagGroups.length > 0) && (

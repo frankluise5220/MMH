@@ -20,7 +20,7 @@ import {
   SYSTEM_INSURANCE_EXPENSE_CATEGORY,
   SYSTEM_INSURANCE_RETURN_CATEGORY,
 } from "@/lib/default-categories";
-import { addStatisticCategoryBucket, buildStatisticCategoryItemsFromBuckets, createStatisticCategoryResolver, getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
+import { addStatisticCategoryBucket, buildStatisticCategoryItemsFromBuckets, createStatisticCategoryResolver, createStatisticDistributionCollector, getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
 import { isCreditCardRepaymentTransfer, isDebtPrincipalCashFlow } from "@/lib/transaction-semantics";
 import { getServerT } from "@/lib/server/i18n";
 import { categoryOrderBy } from "@/lib/category-order";
@@ -118,7 +118,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
     // 排除了 counterpartyId != null 的往来款，不能拿来建 kind 表。
     prisma.account.findMany({
       where: hidFilter,
-      select: { id: true, kind: true },
+      select: { id: true, kind: true, institutionId: true, Institution: { select: { id: true, name: true } } },
     }),
     prisma.category.findMany({
       where: { ...hidFilter, type: { in: ["income", "expense"] } },
@@ -131,6 +131,12 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
 
   const nonInvestAccountIds = allAccounts.filter((a) => !isPureInvestmentAccount(a)).map(a => a.id);
   const accountKindById = new Map(accountKindRows.map((account) => [account.id, account.kind]));
+  const institutionByAccountId = new Map(
+    accountKindRows.map((account) => [
+      account.id,
+      { id: account.Institution?.id ?? account.institutionId ?? null, name: account.Institution?.name ?? "" },
+    ]),
+  );
 
   const institutionAccountIds = selectedInstitutionIds
     ? allAccounts.filter((account) => selectedInstitutionIds.includes(account.Institution?.id ?? "")).map((account) => account.id)
@@ -180,6 +186,8 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
       categoryName: true,
       accountId: true,
       toAccountId: true,
+      locationId: true,
+      locationName: true,
       EntryTag: { select: { tagId: true, Tag: { select: { id: true, name: true, color: true } } } },
     },
     orderBy: { date: "asc" },
@@ -222,6 +230,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
   const incomeByTag = new Map<string, { id: string; name: string; color: string; value: number }>();
   const expenseByTag = new Map<string, { id: string; name: string; color: string; value: number }>();
   const pnlItems: PnLItem[] = [];
+  const dist = createStatisticDistributionCollector(institutionByAccountId);
 
   const resolveCategory = createStatisticCategoryResolver(categories);
 
@@ -247,6 +256,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
       const effectiveAmount = getIncomeExpenseStatisticAmount(e.type, amount);
       row.income += effectiveAmount;
       addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", categoryId: e.categoryId, categoryName: e.categoryName }), effectiveAmount);
+      dist.add("income", e, effectiveAmount);
       // Tag aggregation
       for (const et of e.EntryTag) {
         const existing = incomeByTag.get(et.tagId);
@@ -256,6 +266,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
       const effectiveAmount = getIncomeExpenseStatisticAmount(e.type, amount);
       row.expense += effectiveAmount;
       addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", categoryId: e.categoryId, categoryName: e.categoryName }), effectiveAmount);
+      dist.add("expense", e, effectiveAmount);
       // Tag aggregation
       for (const et of e.EntryTag) {
         const existing = expenseByTag.get(et.tagId);
@@ -276,6 +287,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
         if (!isDebtPrincipal) {
           row.income += Math.abs(amount);
           addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", categoryId: e.categoryId, categoryName: e.categoryName }), Math.abs(amount));
+          dist.add("income", e, Math.abs(amount));
           for (const et of e.EntryTag) {
             const existing = incomeByTag.get(et.tagId);
             incomeByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + Math.abs(amount) });
@@ -285,6 +297,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
         if (!isDebtPrincipal) {
           row.expense += Math.abs(amount);
           addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", categoryId: e.categoryId, categoryName: e.categoryName }), Math.abs(amount));
+          dist.add("expense", e, Math.abs(amount));
           for (const et of e.EntryTag) {
             const existing = expenseByTag.get(et.tagId);
             expenseByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + Math.abs(amount) });
@@ -295,6 +308,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
           if (item.type === "income") {
             row.income += item.amount;
             addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+            dist.add("income", e, item.amount);
             for (const et of e.EntryTag) {
               const existing = incomeByTag.get(et.tagId);
               incomeByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + item.amount });
@@ -302,6 +316,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
           } else {
             row.expense += item.amount;
             addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+            dist.add("expense", e, item.amount);
             for (const et of e.EntryTag) {
               const existing = expenseByTag.get(et.tagId);
               expenseByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + item.amount });
@@ -315,6 +330,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
         if (isRefund) {
           row.income += effectiveAmount;
           addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", fallbackName: SYSTEM_INSURANCE_RETURN_CATEGORY }), effectiveAmount);
+          dist.add("income", e, effectiveAmount);
           for (const et of e.EntryTag) {
             const existing = incomeByTag.get(et.tagId);
             incomeByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + effectiveAmount });
@@ -322,6 +338,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
         } else {
           row.expense += effectiveAmount;
           addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", fallbackName: SYSTEM_INSURANCE_EXPENSE_CATEGORY }), effectiveAmount);
+          dist.add("expense", e, effectiveAmount);
           for (const et of e.EntryTag) {
             const existing = expenseByTag.get(et.tagId);
             expenseByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + effectiveAmount });
@@ -333,8 +350,10 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
         const signedProfit = item.type === "income" ? item.amount : -item.amount;
         if (item.type === "income") {
           addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+          dist.add("income", e, item.amount);
         } else {
           addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+          dist.add("expense", e, item.amount);
         }
         if (item.productKind === "deposit") continue;
         row.investPnL += signedProfit;
@@ -360,8 +379,10 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
       const signedProfit = item.type === "income" ? item.amount : -item.amount;
       if (item.type === "income") {
         addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+        dist.add("income", e, item.amount);
       } else {
         addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+        dist.add("expense", e, item.amount);
       }
       if (item.productKind === "deposit") continue;
       row.investPnL += signedProfit;
@@ -407,6 +428,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
     .sort((a, b) => b.value - a.value)
     .slice(0, 8)
     .map(t => ({ ...t, pct: totalExpense > 0 ? (t.value / totalExpense) * 100 : 0 }));
+  const { incomeInstitutions, expenseInstitutions, incomeLocations, expenseLocations } = dist.build();
 
   // ── Investment floating P&L ──
   const investAccountIds = allAccounts.filter(isPureInvestmentAccount).map(a => a.id);
@@ -482,6 +504,10 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
           expenseCats={expenseCats}
           incomeTagGroups={incomeTagGroups}
           expenseTagGroups={expenseTagGroups}
+          incomeInstitutions={incomeInstitutions}
+          expenseInstitutions={expenseInstitutions}
+          incomeLocations={incomeLocations}
+          expenseLocations={expenseLocations}
           pnlList={pnlItems}
           isRedUp={isRedUp}
         />

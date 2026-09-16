@@ -11,7 +11,7 @@ import {
   SYSTEM_INSURANCE_EXPENSE_CATEGORY,
   SYSTEM_INSURANCE_RETURN_CATEGORY,
 } from "@/lib/default-categories";
-import { addStatisticCategoryBucket, buildStatisticCategoryItemsFromBuckets, createStatisticCategoryResolver, getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
+import { addStatisticCategoryBucket, buildStatisticCategoryItemsFromBuckets, createStatisticCategoryResolver, createStatisticDistributionCollector, getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
 import { isCreditCardRepaymentTransfer, isDebtPrincipalCashFlow } from "@/lib/transaction-semantics";
 
 export const dynamic = "force-dynamic";
@@ -44,6 +44,10 @@ export const dynamic = "force-dynamic";
  *     expenseCategories: [{ id, name, value, pct }],
  *     incomeTagGroups: [{ id, name, color, value, pct }],
  *     expenseTagGroups: [{ id, name, color, value, pct }],
+ *     incomeInstitutions: [{ id, name, value, pct }],
+ *     expenseInstitutions: [{ id, name, value, pct }],
+ *     incomeLocations: [{ id, name, value, pct }],
+ *     expenseLocations: [{ id, name, value, pct }],
  *     pnlList: [{ id, date, fundCode, fundName, subtype, amount, profit, profitRate }]
  *   }
  * }
@@ -80,7 +84,7 @@ export async function GET(req: NextRequest) {
       }),
       prisma.account.findMany({
         where: hidFilter,
-        select: { id: true, kind: true },
+        select: { id: true, kind: true, institutionId: true, Institution: { select: { id: true, name: true } } },
       }),
       prisma.category.findMany({
         where: { ...hidFilter, type: { in: ["income", "expense"] } },
@@ -90,6 +94,12 @@ export async function GET(req: NextRequest) {
 
     const nonInvestAccountIds = allAccounts.filter((a) => !isPureInvestmentAccount(a)).map(a => a.id);
     const accountKindById = new Map(accountKindRows.map((account) => [account.id, account.kind]));
+    const institutionByAccountId = new Map(
+      accountKindRows.map((account) => [
+        account.id,
+        { id: account.Institution?.id ?? account.institutionId ?? null, name: account.Institution?.name ?? "" },
+      ]),
+    );
 
     const accountFilter = selectedAccountIds
       ? { OR: [{ accountId: { in: selectedAccountIds } }, { toAccountId: { in: selectedAccountIds } }] }
@@ -124,6 +134,8 @@ export async function GET(req: NextRequest) {
         categoryName: true,
         accountId: true,
         toAccountId: true,
+        locationId: true,
+        locationName: true,
         EntryTag: { select: { tagId: true, Tag: { select: { id: true, name: true, color: true } } } },
       },
       orderBy: { date: "asc" },
@@ -153,6 +165,7 @@ export async function GET(req: NextRequest) {
     const incomeByTag = new Map<string, { id: string; name: string; color: string; value: number }>();
     const expenseByTag = new Map<string, { id: string; name: string; color: string; value: number }>();
     const pnlItems: { id: string; date: string; fundCode: string; fundName: string; subtype: string; amount: number; profit: number; profitRate: number }[] = [];
+    const dist = createStatisticDistributionCollector(institutionByAccountId);
 
     const scopeAccountIds = selectedAccountIds ?? nonInvestAccountIds;
     const resolveCategory = createStatisticCategoryResolver(categories);
@@ -178,6 +191,7 @@ export async function GET(req: NextRequest) {
         const effectiveAmount = getIncomeExpenseStatisticAmount(e.type, amount);
         row.income += effectiveAmount;
         addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", categoryId: e.categoryId, categoryName: e.categoryName }), effectiveAmount);
+        dist.add("income", e, effectiveAmount);
         for (const et of e.EntryTag) {
           const existing = incomeByTag.get(et.tagId);
           incomeByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + effectiveAmount });
@@ -186,6 +200,7 @@ export async function GET(req: NextRequest) {
         const effectiveAmount = getIncomeExpenseStatisticAmount(e.type, amount);
         row.expense += effectiveAmount;
         addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", categoryId: e.categoryId, categoryName: e.categoryName }), effectiveAmount);
+        dist.add("expense", e, effectiveAmount);
         for (const et of e.EntryTag) {
           const existing = expenseByTag.get(et.tagId);
           expenseByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + effectiveAmount });
@@ -205,6 +220,7 @@ export async function GET(req: NextRequest) {
           if (!isDebtPrincipal) {
             row.income += Math.abs(amount);
             addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", categoryId: e.categoryId, categoryName: e.categoryName }), Math.abs(amount));
+            dist.add("income", e, Math.abs(amount));
             for (const et of e.EntryTag) {
               const existing = incomeByTag.get(et.tagId);
               incomeByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + Math.abs(amount) });
@@ -214,6 +230,7 @@ export async function GET(req: NextRequest) {
           if (!isDebtPrincipal) {
             row.expense += Math.abs(amount);
             addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", categoryId: e.categoryId, categoryName: e.categoryName }), Math.abs(amount));
+            dist.add("expense", e, Math.abs(amount));
             for (const et of e.EntryTag) {
               const existing = expenseByTag.get(et.tagId);
               expenseByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + Math.abs(amount) });
@@ -224,6 +241,7 @@ export async function GET(req: NextRequest) {
           if (item.type === "income") {
             row.income += item.amount;
             addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+            dist.add("income", e, item.amount);
             for (const et of e.EntryTag) {
               const existing = incomeByTag.get(et.tagId);
               incomeByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + item.amount });
@@ -231,6 +249,7 @@ export async function GET(req: NextRequest) {
           } else {
             row.expense += item.amount;
             addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+            dist.add("expense", e, item.amount);
             for (const et of e.EntryTag) {
               const existing = expenseByTag.get(et.tagId);
               expenseByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + item.amount });
@@ -244,6 +263,7 @@ export async function GET(req: NextRequest) {
           if (isRefund) {
             row.income += effectiveAmount;
             addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", fallbackName: SYSTEM_INSURANCE_RETURN_CATEGORY }), effectiveAmount);
+            dist.add("income", e, effectiveAmount);
             for (const et of e.EntryTag) {
               const existing = incomeByTag.get(et.tagId);
               incomeByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + effectiveAmount });
@@ -251,6 +271,7 @@ export async function GET(req: NextRequest) {
           } else {
             row.expense += effectiveAmount;
             addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", fallbackName: SYSTEM_INSURANCE_EXPENSE_CATEGORY }), effectiveAmount);
+            dist.add("expense", e, effectiveAmount);
             for (const et of e.EntryTag) {
               const existing = expenseByTag.get(et.tagId);
               expenseByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + effectiveAmount });
@@ -262,8 +283,10 @@ export async function GET(req: NextRequest) {
           const signedProfit = item.type === "income" ? item.amount : -item.amount;
           if (item.type === "income") {
             addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+            dist.add("income", e, item.amount);
           } else {
             addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+            dist.add("expense", e, item.amount);
           }
           if (item.productKind === "deposit") continue;
           row.investPnL += signedProfit;
@@ -288,8 +311,10 @@ export async function GET(req: NextRequest) {
         const signedProfit = item.type === "income" ? item.amount : -item.amount;
         if (item.type === "income") {
           addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+          dist.add("income", e, item.amount);
         } else {
           addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+          dist.add("expense", e, item.amount);
         }
         if (item.productKind === "deposit") continue;
         row.investPnL += signedProfit;
@@ -340,6 +365,7 @@ export async function GET(req: NextRequest) {
       .sort((a, b) => b.value - a.value)
       .slice(0, 8)
       .map(t => ({ ...t, pct: totalExpense > 0 ? (t.value / totalExpense) * 100 : 0 }));
+    const { incomeInstitutions, expenseInstitutions, incomeLocations, expenseLocations } = dist.build();
 
     // PnL list sorted by date descending
     pnlItems.sort((a, b) => b.date.localeCompare(a.date));
@@ -357,6 +383,10 @@ export async function GET(req: NextRequest) {
         expenseCategories,
         incomeTagGroups,
         expenseTagGroups,
+        incomeInstitutions,
+        expenseInstitutions,
+        incomeLocations,
+        expenseLocations,
         pnlList: pnlItems,
       },
     });

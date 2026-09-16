@@ -176,6 +176,106 @@ export function addStatisticCategoryBucket(
   }
 }
 
+export type NamedStatisticBucket = {
+  id: string | null;
+  name: string;
+  value: number;
+};
+
+export function addNamedStatisticBucket(
+  bucketMap: Map<string, NamedStatisticBucket>,
+  item: { id: string | null; name: string },
+  amount: number,
+) {
+  if (amount === 0) return;
+  const key = item.id ?? `name:${item.name}`;
+  const current = bucketMap.get(key);
+  if (current) {
+    current.value += amount;
+  } else {
+    bucketMap.set(key, { id: item.id, name: item.name, value: amount });
+  }
+}
+
+export function buildNamedStatisticItemsFromBuckets(
+  bucketMap: Map<string, NamedStatisticBucket>,
+  limit = 8,
+) {
+  const sorted = Array.from(bucketMap.values()).sort((a, b) => b.value - a.value);
+  const total = sorted.reduce((sum, bucket) => sum + bucket.value, 0);
+  return sorted.slice(0, limit).map((bucket) => ({
+    id: bucket.id,
+    name: bucket.name,
+    value: bucket.value,
+    pct: total > 0 ? (bucket.value / total) * 100 : 0,
+  }));
+}
+
+export type StatisticDistributionEntryLike = {
+  accountId?: string | null;
+  toAccountId?: string | null;
+  locationId?: string | null;
+  locationName?: string | null;
+};
+
+const UNSPECIFIED_INSTITUTION_NAME = "未指定机构";
+
+/**
+ * Collects institution / location slices for the same amounts that already
+ * entered income/expense category pies. Income uses the receiving account
+ * (toAccountId ?? accountId); expense uses the outflow account (accountId).
+ * Location buckets only include rows that actually have a location snapshot.
+ */
+export function createStatisticDistributionCollector(
+  institutionByAccountId: Map<string, { id: string | null; name: string }>,
+) {
+  const incomeByInst = new Map<string, NamedStatisticBucket>();
+  const expenseByInst = new Map<string, NamedStatisticBucket>();
+  const incomeByLoc = new Map<string, NamedStatisticBucket>();
+  const expenseByLoc = new Map<string, NamedStatisticBucket>();
+
+  function institutionItem(accountId: string | null | undefined) {
+    const inst = accountId ? institutionByAccountId.get(accountId) : undefined;
+    const name = inst?.name?.trim() ?? "";
+    if (inst?.id || name) {
+      return { id: inst?.id ?? null, name: name || UNSPECIFIED_INSTITUTION_NAME };
+    }
+    return { id: null as string | null, name: UNSPECIFIED_INSTITUTION_NAME };
+  }
+
+  function locationItem(entry: StatisticDistributionEntryLike) {
+    const name = entry.locationName?.trim() ?? "";
+    if (!entry.locationId && !name) return null;
+    return { id: entry.locationId ?? null, name: name || "未填地点" };
+  }
+
+  function sliceAccountId(entry: StatisticDistributionEntryLike, side: "income" | "expense") {
+    return side === "income" ? (entry.toAccountId || entry.accountId || null) : (entry.accountId || null);
+  }
+
+  return {
+    add(side: "income" | "expense", entry: StatisticDistributionEntryLike, amount: number) {
+      addNamedStatisticBucket(
+        side === "income" ? incomeByInst : expenseByInst,
+        institutionItem(sliceAccountId(entry, side)),
+        amount,
+      );
+      const loc = locationItem(entry);
+      if (loc) {
+        addNamedStatisticBucket(side === "income" ? incomeByLoc : expenseByLoc, loc, amount);
+      }
+    },
+    build(limit = 8) {
+      return {
+        incomeInstitutions: buildNamedStatisticItemsFromBuckets(incomeByInst, limit),
+        expenseInstitutions: buildNamedStatisticItemsFromBuckets(expenseByInst, limit),
+        incomeLocations: buildNamedStatisticItemsFromBuckets(incomeByLoc, limit),
+        expenseLocations: buildNamedStatisticItemsFromBuckets(expenseByLoc, limit),
+      };
+    },
+  };
+}
+
 export function buildStatisticCategoryItemsFromBuckets(
   bucketMap: Map<string, StatisticCategoryBucket>,
   total: number,
