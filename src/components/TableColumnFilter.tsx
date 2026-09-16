@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { useI18n } from "@/lib/i18n";
 import { useOutsideClose } from "@/lib/client/useOutsideClose";
+import { DateStepper } from "@/components/DateStepper";
 
 type TableColumnFilterProps = {
   label: string;
@@ -349,20 +350,18 @@ export function DateRangeColumnFilter({
           <div className="space-y-2">
             <label className="grid grid-cols-[52px_minmax(0,1fr)] items-center gap-2">
               <span className="text-right text-[11px] font-medium text-slate-500">{t("table.from")}</span>
-              <input
-                type="date"
+              <DateStepper
                 value={draftFrom}
-                onChange={(event) => setDraftFrom(event.target.value)}
-                className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-right text-xs outline-none focus:border-blue-400"
+                onChange={setDraftFrom}
+                className="!h-8 !text-right !text-xs"
               />
             </label>
             <label className="grid grid-cols-[52px_minmax(0,1fr)] items-center gap-2">
               <span className="text-right text-[11px] font-medium text-slate-500">{t("table.to")}</span>
-              <input
-                type="date"
+              <DateStepper
                 value={draftTo}
-                onChange={(event) => setDraftTo(event.target.value)}
-                className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-right text-xs outline-none focus:border-blue-400"
+                onChange={setDraftTo}
+                className="!h-8 !text-right !text-xs"
               />
             </label>
           </div>

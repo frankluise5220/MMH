@@ -206,31 +206,8 @@ function isPureInvestmentAccount(account: Pick<AccountLookupRow, "kind" | "inves
   return !!account && account.kind === AccountKind.investment && account.investProductType !== "deposit";
 }
 
-const FUND_NAV_CUTOFF_SECONDS = 15 * 60 * 60;
-
 function normalizeImportDatePart(value: string | null | undefined) {
   return parseFlexibleDateToYmd(value);
-}
-
-function importDateTimeSeconds(value: string | null | undefined) {
-  const raw = String(value ?? "").trim();
-  const match = raw.match(/(?:^|\s|T)(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s|$)/);
-  if (!match) return null;
-  const hour = Number(match[1]);
-  const minute = Number(match[2]);
-  const second = Number(match[3] ?? 0);
-  if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) return null;
-  return hour * 60 * 60 + minute * 60 + second;
-}
-
-function deriveBuyNavDate(applyDate: string, confirmDays: number, tradingCalendar?: string | null) {
-  const applyDatePart = normalizeImportDatePart(applyDate);
-  if (!applyDatePart) return null;
-  const applySeconds = importDateTimeSeconds(applyDate);
-  const offsetDays = applySeconds == null
-    ? confirmDays
-    : applySeconds >= FUND_NAV_CUTOFF_SECONDS ? 1 : 0;
-  return addTradingDaysUtc(applyDatePart, offsetDays, tradingCalendar);
 }
 
 function addImportTradingDays(dateStr: string, days: number, tradingCalendar?: string | null) {
@@ -708,33 +685,13 @@ async function enrichImportItem(
     });
     confirmDays = override?.confirmDays ?? confirmRule.days;
     arrivalDays = override?.arrivalDays ?? confirmRule.arrivalDays;
-    if (!confirmDate && (subtype === "buy" || (subtype === "buy_failed" && source === "regular_invest_refund"))) {
-      confirmDate = deriveBuyNavDate(date, confirmDays, fundAccountMeta.tradingCalendar);
-    } else if (!confirmDate && subtype === "dividend_reinvest") {
-      confirmDate = normalizeImportDatePart(date);
-    } else if (!confirmDate) {
+    // 确认/净值日期留空按 T+0 处理（=交易日期当天）
+    if (!confirmDate) {
       confirmDate = normalizeImportDatePart(date);
     }
-    if (!arrivalDate && (subtype === "buy" || (subtype === "buy_failed" && source === "regular_invest_refund")) && date && arrivalDays != null) {
-      arrivalDate = addImportTradingDays(date, arrivalDays, fundAccountMeta.tradingCalendar);
-    } else if (!arrivalDate && subtype === "dividend_cash" && date && arrivalDays != null) {
-      arrivalDate = addImportTradingDays(date, arrivalDays, fundAccountMeta.tradingCalendar);
-    }
-
-    if (nav == null && confirmDate && (subtype === "buy" || subtype === "redeem" || subtype === "dividend_reinvest")) {
-      const navDate = toUtcDate(confirmDate);
-      const navKey = `${fundAccountMeta.id}:${fundCode}:${confirmDate}`;
-      let navLookup = ctx.navLookupCache.get(navKey);
-      if (!navLookup) {
-        navLookup = getFundNav(fundCode, navDate, fundAccountMeta.id).catch(() => null);
-        ctx.navLookupCache.set(navKey, navLookup);
-      }
-      const navData = await navLookup;
-      if (navData?.dateMatch && navData.nav > 0) {
-        nav = navData.nav;
-        calculatedFields.add("nav");
-        fundName = fundName ?? normalizeUsableFundName(navData.name, fundCode);
-      }
+    // 到账日留空用系统值（账户到账规则推算），规则缺失兜底 T+2
+    if (!arrivalDate && date && (subtype === "buy" || (subtype === "buy_failed" && source === "regular_invest_refund") || subtype === "dividend_cash")) {
+      arrivalDate = addImportTradingDays(date, arrivalDays ?? 2, fundAccountMeta.tradingCalendar);
     }
 
     if (fee == null && feeRateInput != null) {
@@ -755,6 +712,32 @@ async function enrichImportItem(
       }
     } else {
       feeRate = 0;
+    }
+
+    // 净值留空时优先用行内数据反推（份额+金额→净值，与确认份额公式同源：份额=(金额-手续费)/净值），
+    // 避免大批量缺净值时逐行查缓存/回源外部接口拖慢预览；反推不出再按确认日查净值缓存。
+    if (nav == null && units != null && units > 0 && amount > 0 && (subtype === "buy" || subtype === "dividend_reinvest")) {
+      const derivedNav = (Math.abs(amount) - (fee ?? 0)) / units;
+      if (Number.isFinite(derivedNav) && derivedNav > 0) {
+        nav = Number(derivedNav.toFixed(4));
+        calculatedFields.add("nav");
+      }
+    }
+
+    if (nav == null && confirmDate && (subtype === "buy" || subtype === "redeem" || subtype === "dividend_reinvest")) {
+      const navDate = toUtcDate(confirmDate);
+      const navKey = `${fundAccountMeta.id}:${fundCode}:${confirmDate}`;
+      let navLookup = ctx.navLookupCache.get(navKey);
+      if (!navLookup) {
+        navLookup = getFundNav(fundCode, navDate, fundAccountMeta.id).catch(() => null);
+        ctx.navLookupCache.set(navKey, navLookup);
+      }
+      const navData = await navLookup;
+      if (navData?.dateMatch && navData.nav > 0) {
+        nav = navData.nav;
+        calculatedFields.add("nav");
+        fundName = fundName ?? normalizeUsableFundName(navData.name, fundCode);
+      }
     }
 
     if ((subtype === "buy" || subtype === "dividend_reinvest") && units == null && nav != null) {
@@ -825,8 +808,8 @@ async function createFundTransaction(tx: Prisma.TransactionClient, householdId: 
 
   const confirmDate = item.confirmDate ? toUtcDate(item.confirmDate) : null;
   const arrivalDate = item.arrivalDate ? toUtcDate(item.arrivalDate) : (
-    (subtype === "buy" || isBuyFailedRefund) && item.date && item.arrivalDays != null
-      ? toUtcDate(addTradingDaysUtc(item.date, item.arrivalDays, fundAccount.tradingCalendar))
+    (subtype === "buy" || isBuyFailedRefund) && item.date
+      ? toUtcDate(addTradingDaysUtc(item.date, item.arrivalDays ?? 2, fundAccount.tradingCalendar))
       : null
   );
   const recordDate = toUtcDate(item.date);

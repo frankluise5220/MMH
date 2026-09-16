@@ -2178,23 +2178,25 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
                 <div className="mt-2 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_92px] items-center gap-2">
                   <label className="flex h-8 min-w-0 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-600">
                     <span className="shrink-0 text-slate-500">{t("settings.email.dateStart")}</span>
-                    <input
-                      aria-label={t("settings.email.startDateInputLabel")}
-                      className="min-w-0 flex-1 bg-transparent text-xs text-slate-700 outline-none"
-                      type="date"
-                      value={mailStartDate}
-                      onChange={(e) => setMailStartDate(e.target.value)}
-                    />
+                    <div className="min-w-0 flex-1">
+                      <DateStepper
+                        compact
+                        value={mailStartDate}
+                        onChange={setMailStartDate}
+                        className="!h-7 !min-h-0 !rounded-md !border-0 !bg-transparent !pl-0 !pr-7 !text-xs"
+                      />
+                    </div>
                   </label>
                   <label className="flex h-8 min-w-0 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-600">
                     <span className="shrink-0 text-slate-500">{t("settings.email.dateEnd")}</span>
-                    <input
-                      aria-label={t("settings.email.endDateInputLabel")}
-                      className="min-w-0 flex-1 bg-transparent text-xs text-slate-700 outline-none"
-                      type="date"
-                      value={mailEndDate}
-                      onChange={(e) => setMailEndDate(e.target.value)}
-                    />
+                    <div className="min-w-0 flex-1">
+                      <DateStepper
+                        compact
+                        value={mailEndDate}
+                        onChange={setMailEndDate}
+                        className="!h-7 !min-h-0 !rounded-md !border-0 !bg-transparent !pl-0 !pr-7 !text-xs"
+                      />
+                    </div>
                   </label>
                   <button className="h-8 rounded-md bg-blue-600 text-xs text-white hover:bg-blue-700 disabled:opacity-50" onClick={() => listMails()} disabled={!selectedAccount || loadingMails}>
                     {loadingMails ? t("settings.email.readingMails") : t("settings.email.fetchMails")}

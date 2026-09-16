@@ -10,7 +10,7 @@ import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { fetchHistoricalNavList, preloadNavListToCache } from "@/lib/fund/navCache";
+import { fetchHistoricalNavList, getFundNavFromCacheOnly, preloadNavListToCache } from "@/lib/fund/navCache";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import {
@@ -27,6 +27,7 @@ import { ensureDepositPlansForHeldLots, executeDepositPlan } from "@/lib/server/
 import { resolveCategorySnapshot } from "@/lib/default-categories";
 import { ENTRY_ORIGIN_SCHEDULED_TASK } from "@/lib/transaction-semantics";
 import { acquireScheduledTaskPlanLock } from "@/lib/server/scheduled-task-lock";
+import { buildLatestNavDateMap, isConfirmedNavGap } from "@/lib/server/regular-invest-plan";
 
 const AUTO_EXECUTE_TRANSACTION_OPTIONS = {
   maxWait: 10_000,
@@ -315,6 +316,41 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
       e.arrivalDate = new Date(Date.UTC(parseInt(adStr.slice(0, 4)), parseInt(adStr.slice(5, 7)) - 1, parseInt(adStr.slice(8, 10))));
     }
 
+    // 判定「确认日是否真的没有净值」之前，先把本地缓存里缺失的确认日**回源补齐**：
+    // 「本地缓存没有」不等于「该日没有净值」（预加载范围可能没覆盖这些日期），
+    // 否则正常交易日的定投会被当成无净值日而顺着游标永久跳过。
+    const missingNavKeys = new Map<string, { fundCode: string; confirmDateStr: string }>();
+    for (const e of execs) {
+      if (e.confirmDateStr >= todayStr) continue;
+      if (await getFundNavFromCacheOnly(e.plan.fundCode, e.confirmDate)) continue;
+      missingNavKeys.set(`${e.plan.fundCode}|${e.confirmDateStr}`, { fundCode: e.plan.fundCode, confirmDateStr: e.confirmDateStr });
+    }
+    const navCoverageFailedFunds = new Set<string>();
+    if (missingNavKeys.size > 0) {
+      const byFund = new Map<string, string[]>();
+      for (const value of missingNavKeys.values()) {
+        byFund.set(value.fundCode, [...(byFund.get(value.fundCode) ?? []), value.confirmDateStr]);
+      }
+      for (const [code, dateStrs] of byFund) {
+        const sorted = [...dateStrs].sort();
+        try {
+          const navList = await fetchHistoricalNavList(code, sorted[0]!, sorted[sorted.length - 1]!);
+          if (navList.length > 0) await preloadNavListToCache(code, navList);
+        } catch (error) {
+          navCoverageFailedFunds.add(code);
+          logger.warn(`[nav-coverage] 回源净值失败 ${code} ${sorted[0]}~${sorted[sorted.length - 1]}: ${error instanceof Error ? error.message : String(error)}`, "auto-execute");
+        }
+      }
+    }
+
+    // 各基金已公布到的最新净值日：区分「净值还没公布」与「该日确实没有净值」（见 isConfirmedNavGap）
+    const latestNavDateRows = await prisma.fundNavCache.groupBy({
+      by: ["fundCode"],
+      where: { fundCode: { in: [...fundCodeSet] } },
+      _max: { navDate: true },
+    });
+    const latestNavDateByFund = buildLatestNavDateMap(latestNavDateRows);
+
     const feeRateKeys = [...new Set(execs.map(e => `${e.plan.accountId}:${e.plan.fundCode}`))];
     const feeRateMap = new Map<string, number>();
     for (const key of feeRateKeys) {
@@ -378,10 +414,17 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
             continue;
           }
           // Confirm date has no NAV and it is not a purchase suspension:
-          // - Confirm date already passed (historical) → market closed (holiday etc.), skip
-          // - Confirm date is today or later → NAV not yet published is normal, keep (nav=null backfilled later)
+          // - Only skip when the NAV coverage was verified (missing confirm dates were re-fetched
+          //   from the API above) AND the fund's published NAV series already moved past this date
+          //   → that day truly has no NAV (market holiday etc.), skip and advance the cursor.
+          // - Otherwise (today/future, or NAV just not published yet — US-market QDII discloses
+          //   one trading day later) → NAV-not-yet-published is normal, keep so the record is
+          //   created and NAV/units get backfilled by /api/v1/fund/refresh-pending.
           const noNav = !navCheck || ((navCheck.nav == null || Number(navCheck.nav) <= 0) && sgzt !== "暂停申购");
-          if (noNav && e.confirmDateStr < todayStr) {
+          if (noNav && e.confirmDateStr < todayStr && !navCoverageFailedFunds.has(e.plan.fundCode) && isConfirmedNavGap({
+            confirmDateStr: e.confirmDateStr,
+            latestNavDateStr: latestNavDateByFund.get(e.plan.fundCode) ?? null,
+          })) {
             skippedGap++;
             skipped.push(e.plan.id);
             details.push({ planId: e.plan.id, fundCode: e.plan.fundCode, action: "skipped", reason: "无净值数据（确认日已过）" });

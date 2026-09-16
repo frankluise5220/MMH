@@ -24,6 +24,9 @@ export function evaluateCalcInputExpression(expression: string, currentValue = 0
 // sign should be evaluated in place; plain numbers must pass through so
 // Enter submits the surrounding form (e.g. negative refund amounts in the
 // expense dialog) and blur keeps/normalizes the sign.
+// Note: operator-led shorthand like "+.01" (leading-dot decimal) is
+// deliberately NOT a plain number here — it is treated as an expression
+// evaluated against the current value (i.e. current + 0.01).
 function isPlainSignedNumber(raw: string) {
   return /^[+-]?\d+(\.\d+)?$/.test(raw);
 }

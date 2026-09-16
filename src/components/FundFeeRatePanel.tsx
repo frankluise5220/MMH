@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Check, Loader2, Percent, Trash2 } from "lucide-react";
 
 import { useI18n } from "@/lib/i18n";
+import { DateStepper } from "@/components/DateStepper";
 
 export type FeeRateRecord = {
   fundCode: string;
@@ -299,18 +300,18 @@ export function FundFeeRatePanel({
                       </div>
                     </td>
                     <td className="border-b border-slate-100 px-2 py-1 text-right">
-                      <input
-                        type="date"
+                      <DateStepper
+                        compact
                         value={row.effectiveDate ?? ""}
-                        onChange={(e) => {
-                          const effectiveDate = e.target.value || null;
+                        onChange={(value) => {
+                          const effectiveDate = value || null;
                           updateRow(index, {
                             effectiveDate,
                             buyEffectiveDate: row.buyRate != null ? effectiveDate : null,
                             redeemEffectiveDate: row.redeemRate != null ? effectiveDate : null,
                           });
                         }}
-                        className="h-6 rounded border border-slate-200 px-1.5 text-xs tabular-nums outline-none focus:border-blue-400"
+                        className="!min-h-0 !h-6 !w-32 !rounded !border-slate-200 !px-1.5 !text-xs tabular-nums"
                       />
                     </td>
                     <td className="border-b border-slate-100 px-2 py-1 text-right">
@@ -380,11 +381,11 @@ export function FundFeeRatePanel({
                   </div>
                 </td>
                 <td className="border-b border-slate-100 px-2 py-1 text-right">
-                  <input
-                    type="date"
+                  <DateStepper
+                    compact
                     value={draftEffectiveDate}
-                    onChange={(e) => setDraftEffectiveDate(e.target.value)}
-                    className="h-6 rounded border border-slate-200 bg-white px-1.5 text-xs tabular-nums outline-none focus:border-blue-400"
+                    onChange={setDraftEffectiveDate}
+                    className="!min-h-0 !h-6 !w-32 !rounded !border-slate-200 !px-1.5 !text-xs tabular-nums"
                   />
                 </td>
                 <td className="border-b border-slate-100 px-2 py-1 text-right">

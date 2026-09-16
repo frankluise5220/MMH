@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { CalendarDays, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
+import { DateStepper } from "@/components/DateStepper";
 
 type DetailTablePaginationControlsProps = {
   pageSize: number;
@@ -33,7 +34,7 @@ function pageButtonClass(enabled: boolean, tone: "muted" | "normal" = "normal") 
 
 export function DetailTablePaginationControls({
   pageSize,
-  pageSizeOptions = [10, 20, 40],
+  pageSizeOptions = [40, 80],
   detailAll,
   safePage,
   totalPages,
@@ -64,7 +65,7 @@ export function DetailTablePaginationControls({
 
   const handleLocateDateChange = (nextValue: string) => {
     setLocateDate(nextValue);
-    if (nextValue && !detailAll) onLocateDate?.(nextValue);
+    if (nextValue) onLocateDate?.(nextValue);
   };
 
   return (
@@ -138,20 +139,19 @@ export function DetailTablePaginationControls({
           <span className="mx-0.5 text-slate-300">|</span>
           <label
             className={`inline-flex h-7 items-center gap-1 rounded border px-1.5 focus-within:border-blue-300 ${
-              detailAll || locateDateBusy
+              locateDateBusy
                 ? "cursor-not-allowed border-slate-100 bg-slate-50"
                 : "border-slate-200 bg-white"
             }`}
             title={t("pagination.locateDateTitle")}
           >
-            <CalendarDays className={`h-3.5 w-3.5 ${detailAll || locateDateBusy ? "text-slate-300" : "text-slate-400"}`} />
-            <input
-              type="date"
+            <CalendarDays className={`h-3.5 w-3.5 ${locateDateBusy ? "text-slate-300" : "text-slate-400"}`} />
+            <DateStepper
+              compact
               value={locateDate}
-              disabled={detailAll || locateDateBusy}
-              onChange={(event) => handleLocateDateChange(event.target.value)}
-              aria-label={t("pagination.locateDateTitle")}
-              className="w-[6.5rem] bg-transparent text-xs text-slate-700 outline-none disabled:cursor-not-allowed disabled:text-slate-300"
+              disabled={locateDateBusy}
+              onChange={handleLocateDateChange}
+              className="!h-7 !min-h-0 !w-28 !border-0 !bg-transparent !pl-0 !pr-8 !text-xs"
             />
           </label>
         </>

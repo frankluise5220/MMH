@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { ArrowDownLeft, ArrowUpRight, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Coins, Landmark, Repeat, SlidersHorizontal, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ArrowDownLeft, ArrowUpRight, Coins, Landmark, Repeat, SlidersHorizontal, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTableSummaryRow } from "./AdvancedDataTable";
@@ -9,6 +9,7 @@ import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "./Batch
 import { BusinessLinkActionButton } from "./BusinessLinkActionButton";
 import { DepositPayInterestModal, type PayInterestLotInfo } from "./DepositPayInterestModal";
 import { DepositRenewModal, type RenewLotInfo } from "./DepositRenewModal";
+import { DetailTablePaginationControls } from "./DetailTablePaginationControls";
 import { EntryRowActions } from "./EntryRowActions";
 import { ResizableVerticalSplit } from "./ResizableVerticalSplit";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
@@ -103,8 +104,9 @@ export function DepositShell({
   const [selectedEntryIds, setSelectedEntryIds] = useState<Set<string>>(new Set());
   const [linkingIds, setLinkingIds] = useState<Set<string>>(new Set());
   const [entryPage, setEntryPage] = useState(1);
-  const [entryPageSize, setEntryPageSize] = useState(20);
+  const [entryPageSize, setEntryPageSize] = useState(40);
   const [entryRowCount, setEntryRowCount] = useState(0);
+  const [entryAutoFit, setEntryAutoFit] = useState(true);
 
   const { t } = useI18n();
   const router = useRouter();
@@ -233,8 +235,29 @@ export function DepositShell({
   // Pagination state is owned here for the header controls; the actual slicing
   // happens INSIDE AdvancedDataTable (rows must be the FULL set, exactly like
   // StockHoldingsPanel — slicing here too would collapse ADT's pageCount to 1).
+  const entryAll = entryPageSize === 0;
   const totalPages = Math.max(1, Math.ceil(entryRowCount / (entryPageSize > 0 ? entryPageSize : Math.max(1, entryRowCount))));
   const safePage = Math.min(entryPage, totalPages);
+
+  // Auto-fit: the table reports how many rows fit the viewport; when auto mode
+  // is on that count becomes the page size (the "自适应" option restores it).
+  // Callback identity changes with autoFit / show-all so the table re-measures
+  // once per mode switch, then stays frozen (same contract as BasicDetailPanel).
+  const lastFitRowCountRef = useRef<number | null>(null);
+  const handleRowsFitChange = useCallback((rowCount: number) => {
+    lastFitRowCountRef.current = rowCount;
+    if (!entryAutoFit || entryAll) return;
+    setEntryPageSize((prev) => (prev === rowCount ? prev : rowCount));
+  }, [entryAutoFit, entryAll]);
+
+  const enableAutoFitEntryRows = useCallback(() => {
+    setEntryAutoFit(true);
+    if (!entryAll) {
+      const fitCount = lastFitRowCountRef.current;
+      if (fitCount != null && fitCount !== entryPageSize) setEntryPageSize(fitCount);
+    }
+    setEntryPage(1);
+  }, [entryAll, entryPageSize]);
 
   const batchFields = useMemo<BatchReplaceFieldConfig<DepositBatchField>[]>(() => [
     {
@@ -553,63 +576,19 @@ export function DepositShell({
             </div>
             <div className="flex shrink-0 items-center gap-1 text-xs text-slate-400">
               <span className="mx-1 h-4 w-px bg-slate-200" />
-              {[10, 20, 40].map((n) => (
-                <button
-                  key={n}
-                  type="button"
-                  onClick={() => { setEntryPageSize(n); setEntryPage(1); }}
-                  className={`h-6 shrink-0 px-1.5 rounded border ${entryPageSize === n ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}
-                >
-                  {n}
-                </button>
-              ))}
-              <button
-                type="button"
-                onClick={() => { setEntryPageSize(0); setEntryPage(1); }}
-                className={`h-6 shrink-0 px-1.5 rounded border ${entryPageSize === 0 ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}
-              >
-                {t("stockPanel.all")}
-              </button>
-              <span className="text-slate-300">|</span>
-              {safePage > 1 ? (<>
-                <button
-                  type="button"
-                  onClick={() => setEntryPage(1)}
-                  className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50"
-                >
-                  <ChevronsLeft className="h-3 w-3" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setEntryPage(safePage - 1)}
-                  className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50"
-                >
-                  <ChevronLeft className="h-3 w-3" />
-                </button>
-              </>) : (<>
-                <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronsLeft className="h-3 w-3" /></span>
-                <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronLeft className="h-3 w-3" /></span>
-              </>)}
-              <span className="text-slate-500 px-0.5 tabular-nums">{safePage}/{totalPages}</span>
-              {safePage < totalPages ? (<>
-                <button
-                  type="button"
-                  onClick={() => setEntryPage(safePage + 1)}
-                  className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50"
-                >
-                  <ChevronRight className="h-3 w-3" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setEntryPage(totalPages)}
-                  className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50"
-                >
-                  <ChevronsRight className="h-3 w-3" />
-                </button>
-              </>) : (<>
-                <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronRight className="h-3 w-3" /></span>
-                <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronsRight className="h-3 w-3" /></span>
-              </>)}
+              <DetailTablePaginationControls
+                pageSize={entryPageSize}
+                detailAll={entryAll}
+                safePage={safePage}
+                totalPages={totalPages}
+                canPrev={!entryAll && safePage > 1}
+                canNext={!entryAll && safePage < totalPages}
+                autoFit={entryAutoFit}
+                onAutoFit={enableAutoFitEntryRows}
+                onPageSizeChange={(nextPageSize) => { setEntryPageSize(nextPageSize); setEntryPage(1); }}
+                onShowAll={() => { setEntryPageSize(0); setEntryPage(1); }}
+                onPageChange={setEntryPage}
+              />
               <span className="text-slate-300">|</span>
               <button
                 type="button"
@@ -677,6 +656,7 @@ export function DepositShell({
                 onPageChange: setEntryPage,
                 onRowCountChange: setEntryRowCount,
               }}
+              onRowsFitChange={entryAutoFit && !entryAll ? handleRowsFitChange : undefined}
             />
           </div>
         </section>

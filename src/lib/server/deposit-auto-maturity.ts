@@ -440,6 +440,7 @@ async function autoAccruePeriodicInterest(
       const income = await tx.txRecord.create({
         data: {
           date: payoutDate,
+          postedAt: payoutDate,
           type: TransactionType.income,
           accountId: depositAccount.id,
           accountName: depositAccount.name,

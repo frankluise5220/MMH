@@ -8,6 +8,7 @@ import { formatMoneyWithCurrencyCode as formatMoney } from "@/lib/format";
 import { todayDateLocalYmd as todayDateInputValue } from "@/lib/date-utils";
 import { useI18n } from "@/lib/i18n";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
+import { DateStepper } from "@/components/DateStepper";
 
 type FeeRule = {
   id: string;
@@ -217,7 +218,7 @@ export function StockFeeRuleSettingsButton({
                   </div>
                   <div className="space-y-1">
                     <div className="form-label">{t("stockFee.effectiveDateLabel")}</div>
-                    <input type="date" value={effectiveDate} onChange={(event) => setEffectiveDate(event.target.value)} className="form-input" />
+                    <DateStepper value={effectiveDate} onChange={setEffectiveDate} />
                   </div>
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">

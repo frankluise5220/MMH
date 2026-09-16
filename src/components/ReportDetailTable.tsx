@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { BasicDetailBatchDeleteMessage, BasicDetailSelectionProvider } from "@/components/BasicDetailSelection";
 import type { BasicDetailBatchCategoryOption } from "@/components/BasicDetailSelection";
@@ -20,7 +20,7 @@ type AccountOption = {
   debtDirection?: string | null;
 };
 
-const PAGE_SIZE_OPTIONS = [10, 20, 40] as const;
+const PAGE_SIZE_OPTIONS = [40, 80] as const;
 const REPORT_BATCH_REPLACE_FIELDS: BatchReplaceField[] = [
   "date",
   "postedAt",
@@ -71,7 +71,8 @@ export function ReportDetailTable({
   const colorScheme = typeof document === "undefined"
     ? "red_up_green_down"
     : getColorSchemeFromCookie(document.cookie ?? null);
-  const [pageSize, setPageSize] = useState(20);
+  const [pageSize, setPageSize] = useState(40);
+  const [autoFit, setAutoFit] = useState(true);
   const [page, setPage] = useState(1);
   const [showAll, setShowAll] = useState(false);
   const [displayEntries, setDisplayEntries] = useState(entries);
@@ -82,6 +83,26 @@ export function ReportDetailTable({
     () => showAll ? displayEntries : displayEntries.slice((safePage - 1) * pageSize, safePage * pageSize),
     [displayEntries, pageSize, safePage, showAll],
   );
+
+  // Auto-fit: the table reports how many rows fit the viewport; when auto mode
+  // is on that count becomes the page size (the "自适应" option restores it).
+  // Callback identity changes with resetKey / autoFit / showAll so the table
+  // re-measures once per view reopen, then stays frozen (same contract as
+  // BasicDetailPanel).
+  const lastFitRowCountRef = useRef<number | null>(null);
+  const handleRowsFitChange = useCallback((rowCount: number) => {
+    lastFitRowCountRef.current = rowCount;
+    if (!autoFit || showAll) return;
+    setPageSize((prev) => (prev === rowCount ? prev : rowCount));
+  }, [resetKey, autoFit, showAll]);
+
+  const enableAutoFitRows = () => {
+    setShowAll(false);
+    setAutoFit(true);
+    const fitCount = lastFitRowCountRef.current;
+    if (fitCount != null && fitCount !== pageSize) setPageSize(fitCount);
+    setPage(1);
+  };
 
   useEffect(() => {
     setDisplayEntries(entries);
@@ -145,6 +166,7 @@ export function ReportDetailTable({
           refreshOnGlobalEvent={false}
           toolbarMode="custom"
           batchReplaceFields={REPORT_BATCH_REPLACE_FIELDS}
+          onRowsFitChange={autoFit && !showAll ? handleRowsFitChange : undefined}
           toolbarTitle={(
             <span className="flex min-w-0 items-center">
               <span className="truncate text-xs font-normal text-slate-600" title={title}>{title}</span>
@@ -167,7 +189,10 @@ export function ReportDetailTable({
                 totalPages={totalPages}
                 canPrev={!showAll && safePage > 1}
                 canNext={!showAll && safePage < totalPages}
+                autoFit={autoFit}
+                onAutoFit={enableAutoFitRows}
                 onPageSizeChange={(nextPageSize) => {
+                  setAutoFit(false);
                   setPageSize(nextPageSize);
                   setPage(1);
                   setShowAll(false);

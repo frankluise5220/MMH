@@ -221,14 +221,16 @@ export function PropertyFormModal({
       window.alert(t("propertyForm.alert.selectProperty"));
       return;
     }
-    if (action === "purchase" && !name.trim()) {
-      window.alert(t("propertyForm.alert.enterPropertyName"));
-      return;
-    }
-    if (parseAmount(amount) <= 0) {
+    // 购入：资产名称 / 购入金额均可选（名称空→服务端回落账户名；金额空→按 0 登记）。
+    // 装修投入 / 出售仍要求金额 > 0。
+    if (action !== "purchase" && parseAmount(amount) <= 0) {
       window.alert(t("propertyForm.alert.enterTradeAmount"));
       return;
     }
+    const accountLabel = propertyAccounts.find((account) => account.id === propertyAccountId)?.label
+      || propertyAccounts.find((account) => account.id === propertyAccountId)?.name
+      || "";
+    const purchaseName = name.trim() || (action === "purchase" ? accountLabel.trim() : "");
     setSubmitting(true);
     try {
       const res = await fetch("/api/v1/properties", {
@@ -239,7 +241,7 @@ export function PropertyFormModal({
           cashAccountId: cashAccountId || undefined,
           propertyAssetId: propertyAssetId || undefined,
           action,
-          name: name.trim() || undefined,
+          name: purchaseName || undefined,
           propertyType: propertyType.trim() || undefined,
           address: address.trim() || undefined,
           tradeDate,
@@ -333,8 +335,8 @@ export function PropertyFormModal({
             {action === "purchase" && mode === "transaction" ? (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="space-y-1">
-                  <div className="form-label">{t("propertyForm.propertyName")}</div>
-                  <input value={name} onChange={(event) => setName(event.target.value)} className="form-input" placeholder={t("propertyForm.namePlaceholder")} />
+                  <div className="form-label">{t("propertyForm.propertyName")} <span className="text-slate-400">{t("stockFee.optional")}</span></div>
+                  <input value={name} onChange={(event) => setName(event.target.value)} className="form-input" placeholder={t("stockFee.optional")} />
                 </div>
                 <div className="space-y-1">
                   <div className="form-label">{t("propertyForm.propertyType")}</div>
@@ -379,8 +381,11 @@ export function PropertyFormModal({
             {mode === "transaction" ? (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <div className="space-y-1">
-                  <div className="form-label">{action === "sale" ? t("propertyForm.amountSale") : action === "improvement" ? t("propertyForm.amountImprovement") : t("propertyForm.amountPurchase")}</div>
-                  <CalcInput value={amount} onChange={setAmount} placeholder={t("txForm.amount")} label={t("txForm.amount")} precision={2} />
+                  <div className="form-label">
+                    {action === "sale" ? t("propertyForm.amountSale") : action === "improvement" ? t("propertyForm.amountImprovement") : t("propertyForm.amountPurchase")}
+                    {action === "purchase" ? <span className="text-slate-400"> {t("stockFee.optional")}</span> : null}
+                  </div>
+                  <CalcInput value={amount} onChange={setAmount} placeholder={action === "purchase" ? t("stockFee.optional") : t("txForm.amount")} label={t("txForm.amount")} precision={2} />
                 </div>
                 <div className="space-y-1">
                   <div className="form-label">{t("txForm.fee")}</div>

@@ -833,6 +833,15 @@ export function InsuranceShell({
     const paymentTermYears = parseOptionalNumber(next.paymentTermYears);
     const coverageAmount = parseOptionalNumber(next.coverageAmount);
 
+    // 口径（2026-09-15）：保费计划任务是用户自管的普通计划任务，保单元数据
+    // （生效日/缴费期）变更不会自动同步保费计划——保存后提示用户自行核对。
+    // 比较用弹窗回填的口径（effectiveDate 截到日期，缴费期转字符串），避免
+    // ISO 时间戳与日期串误判为已变更。
+    const originalEffectiveDate = (holding.effectiveDate ?? holding.startDate ?? "").slice(0, 10);
+    const scheduleAffectingChanged =
+      originalEffectiveDate !== (effectiveDate ?? "")
+      || (holding.paymentTermYears == null ? null : Number(holding.paymentTermYears)) !== (paymentTermYears == null ? null : Number(paymentTermYears));
+
     setSavingPolicy(true);
     try {
       const response = await fetch("/api/v1/insurance-products", {
@@ -864,6 +873,9 @@ export function InsuranceShell({
       setPolicyEditValue(null);
       setPolicyEditMeta(null);
       dispatchFinanceDataChanged({ reason: "insurance-policy-save", accountIds: [accountId] });
+      if (scheduleAffectingChanged) {
+        window.alert(t("insuranceShell.policyScheduleChangedHint"));
+      }
     } catch (error) {
       window.alert(error instanceof Error ? error.message : t("insuranceShell.savePolicyFailed"));
     } finally {

@@ -759,6 +759,8 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
   const [rulesDirty, setRulesDirty] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [uploading, setUploading] = useState(false);
+  // 局部行重算进行中：不整表刷新，仅禁用编辑，保持表格渲染不动
+  const [rowPatching, setRowPatching] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState<{ imported: number; total: number } | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -995,24 +997,78 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
     }
   }, [createInstitutionCashAccount, requestContext, t]);
 
+  // 局部预览：只把改动的行发给服务端重算（账户匹配/净值/份额/确认到账日都是逐行无状态计算），
+  // 响应按行号写回，避免大数据量时每次单元格编辑都全表重发导致界面卡顿。
+  const requestPreviewForRows = useCallback(async (patches: Array<{ index: number; item: FundImportUploadItem }>) => {
+    const usable = patches.filter((entry) => entry.item);
+    if (usable.length === 0) return false;
+    const { overrides, invalidLabels } = serializeFundRuleOverrides(ruleRows, t);
+    if (invalidLabels.length > 0) {
+      setMessage(formatText(t, "batchImport.fundPreview.invalidRules", {
+        items: invalidLabels.slice(0, 3).join("、"),
+        more: invalidLabels.length > 3 ? t("batchImport.importValidationMore") : "",
+      }));
+      return false;
+    }
+    setRowPatching(true);
+    try {
+      const res = await fetch("/api/v1/fund/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "preview",
+          items: usable.map((entry) => entry.item),
+          overrides,
+          ...(requestContext ? { context: requestContext } : {}),
+          ...(createInstitutionCashAccount ? { createFundInstitutionCashAccount: true } : {}),
+        }),
+      });
+      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; items?: FundImportPreviewItem[] } | null;
+      if (!res.ok || !data?.ok || !Array.isArray(data.items)) {
+        throw new Error(data?.error || res.statusText || `HTTP ${res.status}`);
+      }
+      const enriched = data.items;
+      setPreviewItems((prev) => {
+        const next = [...prev];
+        usable.forEach((entry, k) => {
+          if (enriched[k]) next[entry.index] = enriched[k];
+        });
+        return next;
+      });
+      setDebugMessage(null);
+      setMessage(null);
+      return true;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      setMessage(formatText(t, "batchImport.readFailedMessage", { reason: reason || t("batchImport.unknownError") }));
+      return false;
+    } finally {
+      setRowPatching(false);
+    }
+  }, [createInstitutionCashAccount, requestContext, ruleRows, t]);
+
   const applyPreviewReplace = useCallback((field: FundPreviewBatchEditField, value: string) => {
     const selectedIndexes = new Set(Array.from(selected).filter((idx) => previewItems[idx]));
     if (selectedIndexes.size === 0) throw new Error(t("batchImport.fundPreview.selectRowsFirst"));
 
-    // 账户字段（基金账户/资金账户）：批量设定后必须重新走服务端预览（账户变了，阻断项/确认到账日都会变）
+    // 账户字段（基金账户/资金账户）：批量设定后重新走服务端预览（账户变了，阻断项/确认到账日都会变）。
+    // 只重发被改的行，避免大数据量时整表重算导致界面卡顿。
     if (field === "fundAccount" || field === "cashAccount") {
       const accountId = value.trim();
       const displayById = field === "fundAccount" ? fundAccountDisplayById : cashAccountDisplayById;
       const account = accountId ? displayById.get(accountId) : undefined;
       if (accountId && !account) throw new Error(t("batchImport.fundPreview.batchAccountNotFound"));
+      const patches: Array<{ index: number; item: FundImportUploadItem }> = [];
       const nextUploadItems = uploadItems.map((item, index) => {
         if (!selectedIndexes.has(index)) return item;
-        return field === "fundAccount"
+        const nextItem = field === "fundAccount"
           ? { ...item, fundAccount: account?.name ?? "", fundAccountId: account?.id ?? null }
           : { ...item, cashAccount: account?.name ?? "", cashAccountId: account?.id ?? null };
+        patches.push({ index, item: nextItem });
+        return nextItem;
       });
       setUploadItems(nextUploadItems);
-      void requestPreview(nextUploadItems, ruleRows, true);
+      void requestPreviewForRows(patches);
       return t("batchImport.fundPreview.batchReplaceResult", {
         count: selectedIndexes.size,
         field: field === "fundAccount"
@@ -1069,7 +1125,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
           : t("batchImport.template.fund.label.fee"),
       invalidSuffix,
     });
-  }, [accountById, cashAccountDisplayById, fundAccountDisplayById, previewItems, requestPreview, ruleRows, selected, t, uploadItems]);
+  }, [accountById, cashAccountDisplayById, fundAccountDisplayById, previewItems, requestPreviewForRows, selected, t, uploadItems]);
 
   useEffect(() => {
     if (!open || !file) {
@@ -1159,13 +1215,15 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
   }, [importing, requestPreview, ruleRows, uploadItems]);
 
   const patchUploadItem = useCallback(async (idx: number, patch: Partial<FundImportUploadItem>) => {
-    const nextUploadItems = uploadItems.map((item, index) => index === idx ? { ...item, ...patch } : item);
-    setUploadItems(nextUploadItems);
+    const currentItem = uploadItems[idx];
+    if (!currentItem) return;
+    const nextItem = { ...currentItem, ...patch };
+    setUploadItems((prev) => prev.map((item, index) => index === idx ? nextItem : item));
     setEditingCell(null);
     setDraftValue("");
     setDraftOriginalValue("");
-    await requestPreview(nextUploadItems, ruleRows, true);
-  }, [requestPreview, ruleRows, uploadItems]);
+    await requestPreviewForRows([{ index: idx, item: nextItem }]);
+  }, [requestPreviewForRows, uploadItems]);
 
   const editFieldLabel = useCallback((field: FundPreviewEditField) => t(FUND_PREVIEW_FIELD_LABEL_KEYS[field]), [t]);
 
@@ -1198,13 +1256,13 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
   }
 
   const beginCellEdit = useCallback((row: FundPreviewTableRow, field: FundPreviewEditField) => {
-    if (uploading || importing) return;
+    if (uploading || importing || rowPatching) return;
     skipNextEditCommitRef.current = false;
     const nextDraftValue = draftValueFromRow(row, field);
     setEditingCell({ idx: row.idx, field });
     setDraftValue(nextDraftValue);
     setDraftOriginalValue(nextDraftValue);
-  }, [importing, uploading]);
+  }, [importing, rowPatching, uploading]);
 
   const commitDraftEdit = useCallback(async () => {
     if (skipNextEditCommitRef.current) {
@@ -1532,7 +1590,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
       setImporting(false);
       setImportProgress(null);
     }
-  }, [errorIssues, importIssues, importing, onClose, onImported, previewItems, requestContext, ruleRows, setImportProgress, selected, t]);
+  }, [createInstitutionCashAccount, errorIssues, importIssues, importing, onClose, onImported, previewItems, requestContext, ruleRows, setImportProgress, selected, t]);
 
   const columns = useMemo<AdvancedDataTableColumn<FundPreviewTableRow>[]>(() => [
     {
@@ -1783,6 +1841,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
             compactRows
             showFilters
             sortable
+            selectAllPreferred={(row) => !hasBlockingIssue(row)}
             showColumnVisibilityButton={false}
             resetDisplayStateOnMount
           />
@@ -1797,7 +1856,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
             <button
               type="button"
               onClick={() => void handleImport()}
-              disabled={uploading || importing || importReadySelectedCount === 0}
+              disabled={uploading || importing || rowPatching || importReadySelectedCount === 0}
               className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {importing ? t("batchImport.importing") : formatText(t, "batchImport.confirmImport", { count: importReadySelectedCount })}

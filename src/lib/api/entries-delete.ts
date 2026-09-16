@@ -35,8 +35,9 @@ export type EntriesDeleteResponse =
       accountIds?: string[];
       needConfirm?: boolean;
       impacts?: EntryBusinessDeleteImpact[];
+      depositGeneratedRecordCount?: number;
     }
-  | { ok: false; error: string; code?: string; needConfirm?: boolean; impacts?: EntryBusinessDeleteImpact[] };
+  | { ok: false; error: string; code?: string; needConfirm?: boolean; impacts?: EntryBusinessDeleteImpact[]; depositGeneratedRecordCount?: number };
 
 export type I18nT = (key: string, params?: Record<string, string | number>) => string;
 
@@ -104,6 +105,12 @@ export async function deleteEntriesWithLinkedPrompt({
     const unlinkedSelectedCount = Math.max(0, entryIds.length - linkedSelectedCount);
     const mixedSelection = linkedSelectedCount > 0 && unlinkedSelectedCount > 0;
     const allBusinessSide = impacts.length > 0 && impacts.every((impact) => impact.selectedSide === "business");
+    // 存单口径（2026-09-15）：删除存单（buy）时，其已生成的到期/取息记录不会连带
+    // 删除——在范围选择弹窗中附加提示，让用户带着这个口径做选择。
+    const depositGeneratedRecordCount = precheck.depositGeneratedRecordCount ?? 0;
+    const depositGeneratedWarning = depositGeneratedRecordCount > 0
+      ? `\n\n${t("entriesDelete.depositGeneratedWarning", { count: depositGeneratedRecordCount })}`
+      : "";
     const businessRecordLabel = t("entriesDelete.businessRecord");
     const selectedLabel = allBusinessSide
       ? (Array.from(new Set(impacts.map((impact) => impact.businessLabel || businessRecordLabel))).join(", ") || businessRecordLabel)
@@ -119,7 +126,7 @@ export async function deleteEntriesWithLinkedPrompt({
         counterpartLabel,
         linkedCount: linkedSelectedCount,
         unlinkedCount: unlinkedSelectedCount,
-      }),
+      }) + depositGeneratedWarning,
       choices: [
         {
           value: "keepBusiness",

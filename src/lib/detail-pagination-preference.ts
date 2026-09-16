@@ -1,4 +1,4 @@
-export const DETAIL_PAGE_SIZE_OPTIONS = [10, 20, 40] as const;
+export const DETAIL_PAGE_SIZE_OPTIONS = [40, 80] as const;
 export const DETAIL_ALL_PAGE_SIZE = 50000;
 
 export type DetailPaginationPreference = {
@@ -9,7 +9,7 @@ export type DetailPaginationPreference = {
   autoFit?: boolean;
 };
 
-export function normalizeDetailPageSize(value: unknown, fallback = 20) {
+export function normalizeDetailPageSize(value: unknown, fallback = 40) {
   const parsed = typeof value === "number" ? value : parseInt(String(value ?? ""), 10);
   if (!Number.isFinite(parsed) || parsed < 1) return fallback;
   const floored = Math.floor(parsed);

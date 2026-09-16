@@ -6,7 +6,7 @@ import { getFundConfirmDays, getFundArrivalDays, normalizeNonNegativeDays } from
 import { getFundFeeRate, getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { normalizeFundDisplayName, resolveFundName } from "@/lib/fund/fundProfile";
 import { createFundTransactionWithCashFlows } from "@/lib/fund/transactions";
-import { getFundNavFromCacheOnly } from "@/lib/fund/navCache";
+import { getFundNavFromCacheOnly, fetchHistoricalNavList, preloadNavListToCache } from "@/lib/fund/navCache";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import {
@@ -21,6 +21,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { decodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import { calcInitialScheduledRunDate, calcNextScheduledRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { executeNonFundScheduledTaskPlan, isNonFundScheduledTask } from "@/lib/server/scheduled-task-executor";
+import { isConfirmedNavGap } from "@/lib/server/regular-invest-plan";
 import { executeDepositPlan, isDepositPlanTask } from "@/lib/server/deposit-plan-tasks";
 import { resolveCategorySnapshot } from "@/lib/default-categories";
 import { ENTRY_ORIGIN_SCHEDULED_TASK } from "@/lib/transaction-semantics";
@@ -240,14 +241,50 @@ export async function POST(req: NextRequest) {
     const confirmDays = normalizeNonNegativeDays(plan.confirmDays ?? await getFundConfirmDays(plan.accountId, plan.fundCode), 0);
     const arrivalDays = normalizeNonNegativeDays(plan.arrivalDays ?? await getFundArrivalDays(plan.accountId, plan.fundCode), 2);
     const todayStr = formatDateUtc(now);
+    const confirmDateStrFor = (runDateStr: string) => {
+      const confirmDateStr = addWorkdaysUtc(runDateStr, confirmDays);
+      if (confirmDateStr < runDateStr) {
+        logger.warn(`[pre-calc] confirmDate ${confirmDateStr} < runDate ${runDateStr}, confirmDays=${confirmDays}`, "batch-execute");
+        return runDateStr;
+      }
+      return confirmDateStr;
+    };
+
+    // 判定「确认日是否真的没有净值」之前，先把本地缓存里缺失的确认日**回源补齐**：
+    // 「本地缓存没有」不等于「该日没有净值」（客户端的预加载范围可能没覆盖这些日期），
+    // 否则正常交易日的定投会被当成无净值日永久漏掉。
+    const unverifiedConfirmDates: string[] = [];
+    for (const d of datesToProcess) {
+      const confirmDateStr = confirmDateStrFor(formatDateUtc(d));
+      if (confirmDateStr >= todayStr) continue;
+      if (await getFundNavFromCacheOnly(plan.fundCode, utcDate(confirmDateStr))) continue;
+      unverifiedConfirmDates.push(confirmDateStr);
+    }
+    let navCoverageVerified = true;
+    if (unverifiedConfirmDates.length > 0) {
+      try {
+        const from = unverifiedConfirmDates[0]!;
+        const to = unverifiedConfirmDates[unverifiedConfirmDates.length - 1]!;
+        const navList = await fetchHistoricalNavList(plan.fundCode, from, to);
+        if (navList.length > 0) await preloadNavListToCache(plan.fundCode, navList);
+      } catch (error) {
+        // 回源失败 → 无法证明该日没有净值，保守保留（照常生成记录）
+        navCoverageVerified = false;
+        logger.warn(`[nav-coverage] 回源净值失败 ${plan.fundCode} ${unverifiedConfirmDates[0]}~${unverifiedConfirmDates[unverifiedConfirmDates.length - 1]}: ${error instanceof Error ? error.message : String(error)}`, "batch-execute");
+      }
+    }
+
+    // 该基金已公布到的最新净值日：区分「净值还没公布」与「该日确实没有净值」（见 isConfirmedNavGap）
+    const latestNavDateRow = await prisma.fundNavCache.findFirst({
+      where: { fundCode: plan.fundCode },
+      orderBy: { navDate: "desc" },
+      select: { navDate: true },
+    });
+    const latestNavDateStr = latestNavDateRow ? formatDateUtc(latestNavDateRow.navDate) : null;
     const navResultMap = new Map<string, { hasNav: boolean; sgzt: string; confirmDateStr: string }>();
     for (const d of datesToProcess) {
       const ds = formatDateUtc(d);
-      let confirmDateStr = addWorkdaysUtc(ds, confirmDays);
-      if (confirmDateStr < ds) {
-        logger.warn(`[pre-calc] confirmDate ${confirmDateStr} < runDate ${ds}, confirmDays=${confirmDays}`, "batch-execute");
-        confirmDateStr = ds;
-      }
+      const confirmDateStr = confirmDateStrFor(ds);
       const foundNav = await getFundNavFromCacheOnly(plan.fundCode, utcDate(confirmDateStr));
       navResultMap.set(ds, {
         hasNav: foundNav != null && foundNav.nav != null && foundNav.nav > 0,
@@ -272,11 +309,15 @@ export async function POST(req: NextRequest) {
           continue;
         }
 
-        // No NAV on confirm date: if the confirm date has passed with no NAV → market holiday, skip
-        // If the confirm date has not arrived or is today → NAV not yet published is normal, keep (nav=null filled later)
+        // No NAV on confirm date: only skip when the NAV coverage was verified (the missing
+        // confirm dates were re-fetched from the API above) AND the fund's published NAV series
+        // has already moved past that date (= that day truly has no NAV, e.g. market holiday).
+        // If the series has not reached it yet the NAV simply is not published yet (US-market
+        // QDII discloses one trading day later) → keep the date and create the record so the
+        // NAV/units can be backfilled by /api/v1/fund/refresh-pending.
         const noNav = !cur || (!cur.hasNav && cur.sgzt !== "暂停申购");
         const confirmDateStr = cur?.confirmDateStr ?? addWorkdaysUtc(ds, confirmDays);
-        if (noNav && confirmDateStr < todayStr) {
+        if (noNav && confirmDateStr < todayStr && navCoverageVerified && isConfirmedNavGap({ confirmDateStr, latestNavDateStr })) {
           skippedGap++;
           continue;
         }

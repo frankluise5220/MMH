@@ -141,6 +141,8 @@ type StatementImportPreviewDialogProps = {
   items: StatementImportPreviewItem[];
   defaultAccountName: string;
   busy?: boolean;
+  /** 分批导入进度：宿主分批提交时传入，弹窗底部显示进度条 */
+  importProgress?: { imported: number; total: number } | null;
   onClose: () => void;
   onConfirm: (
     items: StatementImportPreviewItem[],
@@ -535,6 +537,7 @@ export function StatementImportPreviewDialog({
   balanceAdjustments = [],
   defaultAccountName,
   busy = false,
+  importProgress = null,
   onClose,
   onConfirm,
 }: StatementImportPreviewDialogProps) {
@@ -1192,7 +1195,6 @@ export function StatementImportPreviewDialog({
       { value: "outflow", label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.outflow), kind: "number", placeholder: t("statementImportPreview.amountExpressionPlaceholder") },
       { value: "inflow", label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.inflow), kind: "number", placeholder: t("statementImportPreview.amountExpressionPlaceholder") },
       { value: "amount", label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.amount), kind: "number", placeholder: t("statementImportPreview.amountExpressionPlaceholder") },
-      { value: "remark", label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.remark), kind: "text", placeholder: t("statementImportPreview.remarkPlaceholder") },
     ],
     [previewAccountReplaceOptions, previewCategoryReplaceOptions, t],
   );
@@ -1688,6 +1690,20 @@ export function StatementImportPreviewDialog({
             />
           )}
         </div>
+
+        {importProgress && importProgress.total > 0 ? (
+          <div className="shrink-0 border-b border-blue-100 bg-blue-50 px-4 py-2">
+            <div className="flex h-2 overflow-hidden rounded-full bg-blue-100">
+              <div
+                className="h-full bg-blue-600 transition-all duration-200"
+                style={{ width: `${Math.max(2, Math.round((importProgress.imported / importProgress.total) * 100))}%` }}
+              />
+            </div>
+            <div className="mt-1 text-xs text-blue-700">
+              {t("batchImport.statementImportingProgress", { imported: importProgress.imported, total: importProgress.total })}
+            </div>
+          </div>
+        ) : null}
 
         <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3">
           <div className="flex min-w-0 items-center gap-3 text-xs">

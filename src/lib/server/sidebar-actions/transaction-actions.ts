@@ -18,7 +18,7 @@ import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/bus
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
 import { upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
-import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
+import { revalidateAfterFundShellChange, revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { isAdvanceFundingAccount, isDepositAccount, isIncomeExpensePostingAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
@@ -45,6 +45,16 @@ import {
   parseDepositInterestPayout,
 } from "@/lib/deposit-interest-payout";
 import type { CreditCardInstallmentRateType } from "@/lib/credit/installment";
+
+/**
+ * Fund-shell product types (fund / money / metal / wealth) are rendered by
+ * FundShell, which refetches its own data client-side. Their saves must not
+ * trigger the full RSC re-render (see revalidateAfterFundShellChange).
+ */
+function isFundShellProductType(formData: FormData) {
+  const fundProductType = String(formData.get("fundProductType") ?? "").trim();
+  return fundProductType === "fund" || fundProductType === "money" || fundProductType === "metal" || fundProductType === "wealth";
+}
 
 function dateFromYmd(value: string | null | undefined): Date | null {
   const text = String(value ?? "").trim();
@@ -411,7 +421,7 @@ async function createSplitWealthTransaction(
     await recalcAndSaveAccountBalance(id).catch(() => {});
   }
   await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(() => {});
-  revalidateAfterInvestChange();
+  revalidateAfterFundShellChange();
 }
 export async function createTransaction(formData: FormData) {
   "use server";
@@ -1177,7 +1187,8 @@ export async function createTransaction(formData: FormData) {
           : [String(formData.get("accountId") ?? "").trim(), ...fixedAssetAccountIdsToRefresh];
     await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(() => {});
     await touchAccountUsage(touchedAccountIds);
-    if (type === "investment" || touchedFixedAsset) revalidateAfterInvestChange();
+    if (type === "investment" && isFundShellProductType(formData)) revalidateAfterFundShellChange();
+    else if (type === "investment" || touchedFixedAsset) revalidateAfterInvestChange();
     else revalidateAfterTxChange();
     return { ok: true as const, data: createdEntryId ? { id: createdEntryId } : undefined };
   } catch (e) {
@@ -1433,7 +1444,7 @@ async function editSplitWealthTransaction(
     await recalcAndSaveAccountBalance(id).catch(() => {});
   }
   await invalidateCreditCardCycleCacheForAccountIds(Array.from(touchedAccountIds)).catch(() => {});
-  revalidateAfterInvestChange();
+  revalidateAfterFundShellChange();
 }
 export async function editInvestment(formData: FormData) {
   "use server";
@@ -1650,7 +1661,7 @@ export async function editInvestment(formData: FormData) {
       await recalcFundPositions(sourceBuy.toAccountId, sourceBuy.fundCode ? [sourceBuy.fundCode] : undefined).catch((e) => { console.error("editInvestment recalc linked refund fund positions:", e); });
       await recalcAndSaveAccountBalance(sourceBuy.toAccountId).catch((e) => { console.error("editInvestment recalc linked refund invest balance:", e); });
       await recalcAndSaveAccountBalance(sourceBuy.accountId).catch((e) => { console.error("editInvestment recalc linked refund cash balance:", e); });
-      revalidateAfterInvestChange();
+      revalidateAfterFundShellChange();
       return { ok: true as const };
     }
 
@@ -2123,7 +2134,8 @@ export async function editInvestment(formData: FormData) {
       oldCashAccId,
       cashAccountId,
     ]).catch(() => {});
-    revalidateAfterInvestChange();
+    if (isFundShellProductType(formData)) revalidateAfterFundShellChange();
+    else revalidateAfterInvestChange();
     return { ok: true as const };
   } catch (e) {
     return { ok: false as const, error: e instanceof Error ? e.message : t("investForm.alert.saveFailed") };
@@ -2253,6 +2265,7 @@ export async function renewDeposit(formData: FormData) {
         await tx.txRecord.create({
           data: {
             date: maturityDate,
+            postedAt: maturityDate,
             type: TransactionType.income,
             accountId: depositAccount.id,
             accountName: depositAccount.name,
@@ -2392,6 +2405,7 @@ export async function payDepositInterest(formData: FormData) {
       await tx.txRecord.create({
         data: {
           date: effectivePayoutDate,
+          postedAt: effectivePayoutDate,
           type: TransactionType.income,
           accountId: depositAccount.id,
           accountName: depositAccount.name,
@@ -2972,7 +2986,8 @@ export async function updateTransactionFromDialog(formData: FormData) {
       await recalcAndSaveAccountBalance(accountId).catch(() => {});
     }
     await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(() => {});
-    if (type === "investment" || touchedFixedAsset) revalidateAfterInvestChange();
+    if (type === "investment" && isFundShellProductType(formData)) revalidateAfterFundShellChange();
+    else if (type === "investment" || touchedFixedAsset) revalidateAfterInvestChange();
     else revalidateAfterTxChange();
     await saveEntryUndo(prisma, ctx, undo, "edit", t("sidebar.undo.editEntry"));
     return { ok: true as const };

@@ -446,6 +446,35 @@ export async function PUT(req: NextRequest) {
       const currencyInput = String(body.currency ?? "").trim();
       data.currency = normalizeCurrency(currencyInput || await getHouseholdBaseCurrency(householdId));
     }
+    // 编辑范围护栏（2026-09-15）：账户一旦存在有效流水，账户类型/币种/投资产品类型
+    // 不可再改——历史流水的统计口径、外币结算（originalCurrency/originalAmount）与
+    // 派生数据（债务约定、信用卡周期、贷款还款计划）都建立在创建时的口径上。
+    // 值未变化（表单原样回传）不拦；只有软删除残留记录的账户视为干净、放行。
+    const requestedKind = body.kind !== undefined ? String(body.kind).trim() : null;
+    const kindChanging = requestedKind != null && requestedKind !== existing.kind;
+    let currencyChanging = false;
+    if (body.currency !== undefined) {
+      const currencyInput = String(body.currency ?? "").trim();
+      const requestedCurrency = normalizeCurrency(currencyInput || await getHouseholdBaseCurrency(householdId));
+      currencyChanging = requestedCurrency !== existing.currency;
+    }
+    const investTypeChanging = existing.kind === "investment"
+      && body.investProductType !== undefined
+      && existing.investProductType != null
+      && normalizeFundProductType(body.investProductType) !== existing.investProductType;
+    if (kindChanging || currencyChanging || investTypeChanging) {
+      const activeRecordCount = await prisma.txRecord.count({
+        where: { OR: [{ accountId: id }, { toAccountId: id }], deletedAt: null },
+      });
+      if (activeRecordCount > 0) {
+        const [errorCode, error] = kindChanging
+          ? ["ACCOUNT_KIND_LOCKED", "该账户已有流水记录，账户类型不能修改；如需调整请删除全部流水后重试，或新建账户。"]
+          : currencyChanging
+            ? ["ACCOUNT_CURRENCY_LOCKED", "该账户已有流水记录，币种不能修改。"]
+            : ["ACCOUNT_INVEST_TYPE_LOCKED", "该账户已有流水记录，投资产品类型不能修改。"];
+        return NextResponse.json({ ok: false, code: errorCode, error }, { status: 409 });
+      }
+    }
     if (body.groupId !== undefined) data.groupId = String(body.groupId).trim() || null;
     if (body.institutionId !== undefined) data.institutionId = String(body.institutionId).trim() || null;
     if (body.counterpartyId !== undefined) data.counterpartyId = String(body.counterpartyId).trim() || null;
@@ -847,10 +876,27 @@ export async function DELETE(req: NextRequest) {
 
     // Only active records require password confirmation. Soft-deleted history
     // is already removed from normal views and must not block account cleanup.
-    const [recordCount, toRecordCount] = await Promise.all([
+    const [recordCount, toRecordCount, plans] = await Promise.all([
       prisma.txRecord.count({ where: { accountId: id, deletedAt: null } }),
       prisma.txRecord.count({ where: { toAccountId: id, deletedAt: null } }),
+      prisma.regularInvestPlan.findMany({ where: { accountId: id }, select: { id: true } }),
     ]);
+    // 计划任务及其已生成的记录（还款/定投/存款到期等）会随账户一并删除，
+    // 删除确认弹窗需要把这个级联范围展示给用户（2026-09-15）。
+    const planGeneratedRecordCount = plans.length > 0
+      ? await prisma.txRecord.count({
+          where: { regularInvestPlanId: { in: plans.map((plan) => plan.id) }, deletedAt: null },
+        })
+      : 0;
+    const planCount = plans.length;
+
+    // preview=1：只返回删除影响范围，不执行删除。供删除确认弹窗展示级联范围。
+    if (req.nextUrl.searchParams.get("preview") === "1") {
+      return NextResponse.json({
+        ok: true,
+        data: { recordCount, toRecordCount, planCount, planGeneratedRecordCount },
+      });
+    }
 
     let body: { password?: string } | null = null;
     try { body = await req.json(); } catch { /* no body */ }
@@ -870,6 +916,8 @@ export async function DELETE(req: NextRequest) {
         needPassword: true,
         recordCount,
         toRecordCount,
+        planCount,
+        planGeneratedRecordCount,
       }, { status: 409 });
     }
 

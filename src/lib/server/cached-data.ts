@@ -30,6 +30,7 @@ import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 import { loadReadableTagsByRecentUse } from "@/lib/server/tag-scope";
 import { categoryOrderBy } from "@/lib/category-order";
 import { DETAIL_ALL_PAGE_SIZE } from "@/lib/detail-pagination-preference";
+import { compareDetailEntriesDesc } from "@/lib/detail-entry-order";
 
 // ── Types ──
 
@@ -140,6 +141,111 @@ async function _loadEntriesForAccount(
  * This only uses React.cache request-level deduplication to avoid unstable_cache write failures for large accounts.
  */
 export const loadEntriesForAccount = cache(_loadEntriesForAccount);
+
+async function _loadEntriesPageForAccount(
+  accountId: string,
+  hidFilterStr: string,
+  pageValue: number,
+  pageSizeValue: number,
+) {
+  const hidFilter = JSON.parse(hidFilterStr) as { householdId: string };
+  const hid = { householdId: hidFilter.householdId };
+  const where = {
+    ...txRecordAccountScopeWhere(accountId),
+    deletedAt: null,
+    ...hid,
+  };
+  const pageSize = Math.max(1, Math.min(Math.floor(pageSizeValue) || 20, DETAIL_ALL_PAGE_SIZE));
+
+  const [totalCount, orderingEntries] = await Promise.all([
+    prisma.txRecord.count({ where }),
+    prisma.txRecord.findMany({
+      where,
+      select: {
+        id: true,
+        date: true,
+        postedAt: true,
+        createdAt: true,
+        dayOrder: true,
+        type: true,
+        categoryId: true,
+        categoryName: true,
+        amount: true,
+        currency: true,
+        accountId: true,
+        toAccountId: true,
+        note: true,
+        toNote: true,
+        source: true,
+        debtPrincipalAmount: true,
+        fundProductType: true,
+        fundSubtype: true,
+        fundConfirmDate: true,
+        fundArrivalDate: true,
+        fundArrivalAmount: true,
+        fundName: true,
+        insuranceProductId: true,
+        insuranceAction: true,
+        insuranceProductName: true,
+        counterpartyInstitutionName: true,
+        EntryTag: { include: { Tag: true } },
+      },
+      orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+    }),
+  ]);
+
+  const orderedEntries = [...orderingEntries].sort((a, b) => compareDetailEntriesDesc(a, b, accountId));
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const page = Math.min(Math.max(1, Math.floor(pageValue) || 1), totalPages);
+  const pagedEntryIds = orderedEntries
+    .slice((page - 1) * pageSize, page * pageSize)
+    .map((entry) => entry.id);
+  const pageRows = pagedEntryIds.length > 0
+    ? await prisma.txRecord.findMany({
+        where: {
+          id: { in: pagedEntryIds },
+          deletedAt: null,
+          ...hid,
+        },
+        include: {
+          EntryTag: { include: { Tag: true } },
+          Attachment: { select: { id: true, name: true, mimeType: true, url: true } },
+          ...entryBusinessLinkSummaryInclude,
+          account: {
+            include: {
+              Institution: { select: { name: true, shortName: true } },
+              AccountGroup: { select: { name: true } },
+              Counterparty: { select: { name: true, shortName: true } },
+            },
+          },
+          toAccount: {
+            include: {
+              Institution: { select: { name: true, shortName: true } },
+              AccountGroup: { select: { name: true } },
+              Counterparty: { select: { name: true, shortName: true } },
+            },
+          },
+        },
+      })
+    : [];
+  const pageRowById = new Map(pageRows.map((entry) => [entry.id, entry]));
+
+  return {
+    entries: pagedEntryIds
+      .map((id) => pageRowById.get(id))
+      .filter((entry): entry is (typeof pageRows)[number] => !!entry),
+    exportEntries: orderingEntries,
+    orderingEntries,
+    totalCount,
+    page,
+  };
+}
+
+/**
+ * Loads only the requested detail page while keeping a lightweight full
+ * ordering set for totals, running balances, and Excel export rows.
+ */
+export const loadEntriesPageForAccount = cache(_loadEntriesPageForAccount);
 
 async function _loadInvestBalances(_hidFilterStr: string) {
   const hidFilter = JSON.parse(_hidFilterStr) as { householdId: string };

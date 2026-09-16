@@ -1,7 +1,8 @@
 /**
  * Safe arithmetic expression evaluator (no eval, no Function constructor).
  *
- * Supports `+ - * / ( )` with plain decimal numbers; returns null on any
+ * Supports `+ - * / ( )` with plain decimal numbers; leading-dot decimals
+ * such as `.01` are accepted and treated as `0.01`. Returns null on any
  * invalid input (unbalanced parentheses, unknown characters, division by zero,
  * non-finite results). Shared by the client calculator (CalcInput) and the
  * server-side batch-update amount expression parsing.
@@ -12,7 +13,8 @@ export function evaluateArithmeticExpression(expression: string): number | null 
   let pos = 0;
 
   function parseNumber(): number | null {
-    const m = /^\d+(?:\.\d+)?/.exec(s.slice(pos));
+    // `100`, `100.01`, `.01` (leading-dot shorthand) are all accepted.
+    const m = /^(?:\d+(?:\.\d+)?|\.\d+)/.exec(s.slice(pos));
     if (!m) return null;
     pos += m[0].length;
     return parseFloat(m[0]);

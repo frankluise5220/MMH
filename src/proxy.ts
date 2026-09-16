@@ -218,8 +218,22 @@ export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   if (!(await isBrowserApiOriginAllowed(req))) {
+    const deniedOrigin = req.headers.get("origin");
+    const deniedOriginHost = deniedOrigin ? normalizeAccessHostname(deniedOrigin) : "";
+    console.error(
+      "[proxy] Cross-origin API request denied - origin:",
+      deniedOrigin,
+      "hostnames:",
+      extractRequestHostnames(req),
+    );
     return NextResponse.json(
-      { ok: false, code: "CROSS_ORIGIN_DENIED", error: "Cross-origin browser API requests are not allowed." },
+      {
+        ok: false,
+        code: "CROSS_ORIGIN_DENIED",
+        error: deniedOriginHost
+          ? `跨域请求被拒绝：来源 ${deniedOriginHost} 不在允许列表中。若经网关、反向代理或远程中继访问，请在 系统设置 → 数据库 → 访问白名单 中添加 ${deniedOriginHost}，或改用局域网地址直接访问。`
+          : "跨域浏览器 API 请求不被允许：请求缺少有效的来源（Origin）信息。",
+      },
       { status: 403 },
     );
   }
@@ -250,7 +264,11 @@ export async function proxy(req: NextRequest) {
     if (hasDisallowedHost) {
       console.error("[proxy] Access denied - hostnames:", hostnames, "allowed:", allowed);
       return NextResponse.json(
-        { ok: false, code: "ACCESS_HOST_DENIED", error: "Access host is not on the allowlist." },
+        {
+          ok: false,
+          code: "ACCESS_HOST_DENIED",
+          error: `访问地址未在白名单中：${hostnames.join("、") || "未知来源"}。请在 系统设置 → 数据库 → 访问白名单 中添加该地址。`,
+        },
         { status: 403 },
       );
     }

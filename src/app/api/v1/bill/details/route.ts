@@ -13,6 +13,7 @@ import type { DetailEntry } from "@/components/DetailViewClient";
 import { prisma } from "@/lib/db/prisma";
 import { addDaysUtc, formatDateLocal, toNumber } from "@/lib/date-utils";
 import { creditBillDateRangeWhere, cycleForStatementMonthWithBillingDayRules } from "@/lib/credit/billing";
+import { compareDetailEntriesDesc } from "@/lib/detail-entry-order";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
 import { reconcileCreditCardBillingDayRulesFromAccounts } from "@/lib/server/credit-card-billing-day-rules";
 import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude } from "@/lib/server/entry-business-link";
@@ -252,21 +253,56 @@ export async function GET(req: Request) {
       AND: [billScope, ...dateScope],
     };
 
-    const [totalCount, rows] = await Promise.all([
-      prisma.txRecord.count({ where }),
+    const totalCount = await prisma.txRecord.count({ where });
+    // Rows must be ordered by the effective (display) date: the posting date
+    // for expense/income with a transaction-date fallback — the same key
+    // compareDetailEntriesDesc (shared with the client detail table) uses.
+    // Prisma cannot order by a per-type COALESCE, so rows are fetched in the
+    // same three branches as creditBillDateRangeWhere and merged in memory.
+    const range = cycle ? { gte: cycle.start, lt: addDaysUtc(cycle.end, 1) } : null;
+    const detailInclude = {
+      EntryTag: { include: { Tag: true } },
+      Attachment: { select: { id: true, name: true, mimeType: true, url: true } },
+      ...entryBusinessLinkSummaryInclude,
+      account: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
+      toAccount: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
+    };
+    const scopeAnd = (extra: Prisma.TxRecordWhereInput[]): Prisma.TxRecordWhereInput => ({
+      AND: [billScope, { householdId }, { deletedAt: null }, ...extra],
+    });
+    const [postedRows, legacyRows, otherRows] = await Promise.all([
       prisma.txRecord.findMany({
-        where,
-        include: {
-          EntryTag: { include: { Tag: true } },
-          Attachment: { select: { id: true, name: true, mimeType: true, url: true } },
-          ...entryBusinessLinkSummaryInclude,
-          account: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
-          toAccount: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
-        },
+        where: scopeAnd([
+          { type: { in: [TransactionType.expense, TransactionType.income] } },
+          ...(range ? [{ postedAt: range }] : []),
+        ]),
+        include: detailInclude,
+        orderBy: [{ postedAt: "desc" }, { createdAt: "desc" }],
+        take: CREDIT_BILL_DETAIL_TAKE,
+      }),
+      prisma.txRecord.findMany({
+        where: scopeAnd([
+          { type: { in: [TransactionType.expense, TransactionType.income] } },
+          { postedAt: null },
+          ...(range ? [{ date: range }] : []),
+        ]),
+        include: detailInclude,
+        orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+        take: CREDIT_BILL_DETAIL_TAKE,
+      }),
+      prisma.txRecord.findMany({
+        where: scopeAnd([
+          { type: { in: [TransactionType.transfer, TransactionType.investment] } },
+          ...(range ? [{ date: range }] : []),
+        ]),
+        include: detailInclude,
         orderBy: [{ date: "desc" }, { createdAt: "desc" }],
         take: CREDIT_BILL_DETAIL_TAKE,
       }),
     ]);
+    const rows = [...postedRows, ...legacyRows, ...otherRows]
+      .sort((a, b) => compareDetailEntriesDesc(a, b, accountId))
+      .slice(0, CREDIT_BILL_DETAIL_TAKE);
 
     const details = rows.map((row) => mapDetailEntry(row, billAccountIdSet));
 

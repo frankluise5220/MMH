@@ -12,6 +12,7 @@ import { prisma } from "@/lib/db/prisma";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import {
+  BROKERAGE_CASH_ACCOUNT_NAME,
   ensureBrokerageCashAccountForStockAccount,
   isCashLikeBrokerageFundingKind,
 } from "@/lib/server/brokerage-cash-account";
@@ -225,6 +226,8 @@ type ImportContextBase = {
 type ImportContext = ImportContextBase & {
   stockAccount: StockAccountRow;
   brokerageCashAccount: AccountLookupRow | null | undefined;
+  // 勾选「创建证券账户的同机构资金账户」：填写的资金账户匹配不到时改用/预告创建同机构资金账户
+  createStockInstitutionCashAccount: boolean;
 };
 
 // Enrichment runs per-row DB and external-API lookups; cap the concurrency so
@@ -448,11 +451,12 @@ function toStockAccountRow(account: AccountLookupRow): StockAccountRow {
   };
 }
 
-function buildImportContext(base: ImportContextBase, stockAccount: AccountLookupRow): ImportContext {
+function buildImportContext(base: ImportContextBase, stockAccount: AccountLookupRow, createStockInstitutionCashAccount: boolean): ImportContext {
   return {
     ...base,
     stockAccount: toStockAccountRow(stockAccount),
     brokerageCashAccount: undefined,
+    createStockInstitutionCashAccount,
   };
 }
 
@@ -636,6 +640,14 @@ function enrichImportItemWithoutStockAccount(
   };
 }
 
+/** 勾选创建同机构资金账户时，预告将创建的账户名（与 ensureBrokerageCashAccountForStockAccount 同规则）。 */
+function pendingBrokerageCashAccountName(ctx: ImportContext) {
+  const stockRow = ctx.accountLookupRows.find((row) => row.id === ctx.stockAccount.id);
+  const institutionName = String(stockRow?.Institution?.shortName ?? "").trim()
+    || String(stockRow?.Institution?.name ?? "").trim();
+  return institutionName ? `${institutionName}的资金账户` : BROKERAGE_CASH_ACCOUNT_NAME;
+}
+
 async function findExistingBrokerageCashAccount(ctx: ImportContext) {
   if (ctx.brokerageCashAccount !== undefined) return ctx.brokerageCashAccount;
   if (!ctx.stockAccount.institutionId) {
@@ -738,19 +750,40 @@ async function enrichImportItem(ctx: ImportContext, input: StockImportInput): Pr
     const explicitCashAccount = rawBankAccount || rawBankAccountId
       ? await resolveAccountInput(ctx, rawBankAccountId, rawBankAccount)
       : null;
-    const brokerageCashAccount = explicitCashAccount ?? await findExistingBrokerageCashAccount(ctx);
+    const explicitUsable = !!explicitCashAccount && (isCashLikeAccount(explicitCashAccount) || explicitCashAccount.id === ctx.stockAccount.id);
+    let brokerageCashAccount: AccountLookupRow | null = null;
     if (rawBankAccount || rawBankAccountId) {
-      if (!explicitCashAccount) {
-        issues.push(issue("error", "BANK_ACCOUNT_NOT_FOUND"));
-      } else if (!isCashLikeAccount(explicitCashAccount) && explicitCashAccount.id !== ctx.stockAccount.id) {
-        issues.push(issue("error", "INVALID_BANK_ACCOUNT_KIND"));
+      if (explicitUsable) {
+        brokerageCashAccount = explicitCashAccount;
+      } else if (ctx.createStockInstitutionCashAccount) {
+        // 勾选「创建证券账户的同机构资金账户」：填写的资金账户匹配不到时，
+        // 改用（或预告创建）证券账户同机构资金账户，预览不阻断；导入阶段 ensure 兜底创建。
+        brokerageCashAccount = await findExistingBrokerageCashAccount(ctx);
+        if (brokerageCashAccount) {
+          cashAccountId = brokerageCashAccount.id;
+          bankAccountName = brokerageCashAccount.name;
+          bankAccountId = brokerageCashAccount.id;
+        } else if (ctx.stockAccount.institutionId) {
+          issues.push({
+            level: "warning",
+            code: "WILL_CREATE_INSTITUTION_CASH_ACCOUNT",
+            message: `WILL_CREATE_INSTITUTION_CASH_ACCOUNT:${pendingBrokerageCashAccountName(ctx)}`,
+          });
+        } else {
+          issues.push(issue("error", explicitCashAccount ? "INVALID_BANK_ACCOUNT_KIND" : "BANK_ACCOUNT_NOT_FOUND"));
+        }
+      } else {
+        issues.push(issue("error", explicitCashAccount ? "INVALID_BANK_ACCOUNT_KIND" : "BANK_ACCOUNT_NOT_FOUND"));
       }
-    } else if (!brokerageCashAccount && !ctx.stockAccount.institutionId) {
-      issues.push(issue("error", "CASH_ACCOUNT_UNDETERMINED"));
-    } else if (!brokerageCashAccount) {
-      issues.push(issue("warning", "BROKERAGE_CASH_ACCOUNT_WILL_BE_CREATED"));
+    } else {
+      brokerageCashAccount = await findExistingBrokerageCashAccount(ctx);
+      if (!brokerageCashAccount && !ctx.stockAccount.institutionId) {
+        issues.push(issue("error", "CASH_ACCOUNT_UNDETERMINED"));
+      } else if (!brokerageCashAccount) {
+        issues.push(issue("warning", "BROKERAGE_CASH_ACCOUNT_WILL_BE_CREATED"));
+      }
     }
-    if (brokerageCashAccount) {
+    if (brokerageCashAccount && !cashAccountId) {
       cashAccountId = brokerageCashAccount.id;
     }
   }
@@ -1161,8 +1194,10 @@ export async function POST(req: NextRequest) {
       accountId?: string | null;
       stockAccountId?: string | null;
       items?: StockImportInput[] | StockImportEnrichedItem[];
+      createStockInstitutionCashAccount?: boolean;
     };
     const mode = body?.mode === "import" ? "import" : "preview";
+    const createStockInstitutionCashAccount = body?.createStockInstitutionCashAccount === true;
     if (mode === "import" && isReadOnly(await getCurrentUser())) {
       return NextResponse.json(
         { ok: false, code: "READ_ONLY", error: "Read-only users cannot import data." },
@@ -1204,7 +1239,7 @@ export async function POST(req: NextRequest) {
     const getItemContext = (stockAccount: AccountLookupRow) => {
       const existing = contextByStockAccountId.get(stockAccount.id);
       if (existing) return existing;
-      const ctx = buildImportContext(base, stockAccount);
+      const ctx = buildImportContext(base, stockAccount, createStockInstitutionCashAccount);
       contextByStockAccountId.set(stockAccount.id, ctx);
       return ctx;
     };
@@ -1218,7 +1253,7 @@ export async function POST(req: NextRequest) {
 
     for (const { resolved } of resolvedRows) {
       if (resolved.account && !contextByStockAccountId.has(resolved.account.id)) {
-        contextByStockAccountId.set(resolved.account.id, buildImportContext(base, resolved.account));
+        contextByStockAccountId.set(resolved.account.id, buildImportContext(base, resolved.account, createStockInstitutionCashAccount));
       }
     }
     // Pre-warm the memoized brokerage cash account lookup so concurrent

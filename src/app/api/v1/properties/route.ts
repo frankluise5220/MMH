@@ -280,7 +280,11 @@ export async function POST(req: NextRequest) {
     const tax = parseOptionalNonNegativeNumber(body.tax);
     const marketValueInput = parseOptionalNonNegativeNumber(body.marketValue);
     const isDisposal = action === PropertyTransactionAction.disposal;
-    if (amount <= 0 && !isDisposal) return NextResponse.json({ ok: false, code: "INVALID_AMOUNT", error: "交易金额必须大于 0" }, { status: 400, headers: corsHeaders() });
+    const isPurchase = action === PropertyTransactionAction.purchase;
+    // 购入允许金额为 0（仅登记资产、不生成现金流）；装修投入 / 出售仍要求金额 > 0。
+    if (amount <= 0 && !isDisposal && !isPurchase) {
+      return NextResponse.json({ ok: false, code: "INVALID_AMOUNT", error: "交易金额必须大于 0" }, { status: 400, headers: corsHeaders() });
+    }
 
     const touchedAccountIds = new Set<string>([accountId]);
     if (cashAccountId) touchedAccountIds.add(cashAccountId);
@@ -298,8 +302,10 @@ export async function POST(req: NextRequest) {
       );
 
       if (action === PropertyTransactionAction.purchase) {
-        const assetName = String(body.name ?? "").trim();
-        if (!assetName) throw new Error("购入房产需要填写房产名称");
+        // 资产名称可选：留空时沿用固定资产账户名称（与支出链路
+        // linkExpenseToFixedAsset 的「propertyName || propertyAccount.name」口径一致）。
+        const assetName = String(body.name ?? "").trim() || propertyAccount.name.trim();
+        if (!assetName) throw new Error("购入固定资产需要填写资产名称或账户名称");
         const initialMarketValue = marketValueInput ?? totalCostDelta;
         existingAsset = await tx.propertyAsset.create({
           data: {

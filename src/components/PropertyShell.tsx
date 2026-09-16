@@ -1,7 +1,7 @@
 "use client";
 
 import { Boxes, Paperclip, Pencil, RefreshCcw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { FixedAssetEditModal, type FixedAssetEditMeta, type FixedAssetEditValue } from "@/components/FixedAssetEditModal";
@@ -216,12 +216,17 @@ type FixedAssetTransactionTableProps = {
   transactionPage: number;
   transactionPageSize: number;
   transactionPageAll: boolean;
+  transactionAutoFit: boolean;
   transactionSafePage: number;
   transactionTotalPages: number;
   setTransactionPage: (page: number) => void;
   setTransactionPageSize: (pageSize: number) => void;
   setTransactionPageAll: (all: boolean) => void;
+  setTransactionAutoFit: (autoFit: boolean) => void;
   setTransactionRowCount: (count: number) => void;
+  /** Auto-fit: the table reports how many rows fit the viewport. */
+  onRowsFitChange?: (rowCount: number) => void;
+  enableAutoFitRows: () => void;
   onAttachmentView: (entryId: string) => void;
   buildPropertyEditEvent: (entry: FixedAssetTransaction) => { name: string; detail: Record<string, unknown> };
 };
@@ -238,12 +243,16 @@ function FixedAssetTransactionTable({
   transactionPage,
   transactionPageSize,
   transactionPageAll,
+  transactionAutoFit,
   transactionSafePage,
   transactionTotalPages,
   setTransactionPage,
   setTransactionPageSize,
   setTransactionPageAll,
+  setTransactionAutoFit,
   setTransactionRowCount,
+  onRowsFitChange,
+  enableAutoFitRows,
   onAttachmentView,
   buildPropertyEditEvent,
 }: FixedAssetTransactionTableProps) {
@@ -309,9 +318,12 @@ function FixedAssetTransactionTable({
           totalPages={transactionTotalPages}
           canPrev={!transactionPageAll && transactionSafePage > 1}
           canNext={!transactionPageAll && transactionSafePage < transactionTotalPages}
+          autoFit={transactionAutoFit}
+          onAutoFit={enableAutoFitRows}
           onPageSizeChange={(pageSize) => {
             setTransactionPageSize(pageSize);
             setTransactionPageAll(false);
+            setTransactionAutoFit(false);
             setTransactionPage(1);
           }}
           onShowAll={() => {
@@ -320,6 +332,7 @@ function FixedAssetTransactionTable({
           }}
           onPageChange={(page) => {
             setTransactionPageAll(false);
+            setTransactionAutoFit(false);
             setTransactionPage(page);
           }}
         />
@@ -371,6 +384,7 @@ function FixedAssetTransactionTable({
         onPageChange: setTransactionPage,
         onRowCountChange: setTransactionRowCount,
       }}
+      onRowsFitChange={onRowsFitChange}
       sortable
       defaultSort={{ key: "date", direction: "desc" }}
     />
@@ -406,8 +420,9 @@ export function PropertyShell({
   const [savingEdit, setSavingEdit] = useState(false);
   const [attachmentViewEntryId, setAttachmentViewEntryId] = useState<string | null>(null);
   const [transactionPage, setTransactionPage] = useState(1);
-  const [transactionPageSize, setTransactionPageSize] = useState(20);
+  const [transactionPageSize, setTransactionPageSize] = useState(40);
   const [transactionPageAll, setTransactionPageAll] = useState(false);
+  const [transactionAutoFit, setTransactionAutoFit] = useState(true);
   const [transactionRowCount, setTransactionRowCount] = useState(entries.length);
   const accountOptionById = useMemo(
     () => new Map((accountOptions ?? []).map((account) => [account.id, account])),
@@ -435,6 +450,26 @@ export function PropertyShell({
     setTransactionPageAll(false);
     setTransactionRowCount(selectedEntries.length);
   }, [selectedAssetId, selectedEntries.length]);
+
+  // Auto-fit: the table reports how many rows fit the viewport; when auto mode
+  // is on that count becomes the page size (the "自适应" option restores it).
+  // Callback identity changes with the selected asset / autoFit / show-all so
+  // the table re-measures once per view reopen, then stays frozen (same
+  // contract as BasicDetailPanel).
+  const lastFitRowCountRef = useRef<number | null>(null);
+  const handleRowsFitChange = useCallback((rowCount: number) => {
+    lastFitRowCountRef.current = rowCount;
+    if (!transactionAutoFit || transactionPageAll) return;
+    setTransactionPageSize((prev) => (prev === rowCount ? prev : rowCount));
+  }, [selectedAssetId, transactionAutoFit, transactionPageAll]);
+
+  const enableAutoFitRows = () => {
+    setTransactionPageAll(false);
+    setTransactionAutoFit(true);
+    const fitCount = lastFitRowCountRef.current;
+    if (fitCount != null && fitCount !== transactionPageSize) setTransactionPageSize(fitCount);
+    setTransactionPage(1);
+  };
 
   const transactionTotalPages = Math.max(1, Math.ceil(transactionRowCount / transactionPageSize));
   const transactionSafePage = transactionPageAll
@@ -998,12 +1033,16 @@ export function PropertyShell({
                   transactionPage={transactionPage}
                   transactionPageSize={transactionPageSize}
                   transactionPageAll={transactionPageAll}
+                  transactionAutoFit={transactionAutoFit}
                   transactionSafePage={transactionSafePage}
                   transactionTotalPages={transactionTotalPages}
                   setTransactionPage={setTransactionPage}
                   setTransactionPageSize={setTransactionPageSize}
                   setTransactionPageAll={setTransactionPageAll}
+                  setTransactionAutoFit={setTransactionAutoFit}
                   setTransactionRowCount={setTransactionRowCount}
+                  onRowsFitChange={transactionAutoFit && !transactionPageAll ? handleRowsFitChange : undefined}
+                  enableAutoFitRows={enableAutoFitRows}
                   onAttachmentView={setAttachmentViewEntryId}
                   buildPropertyEditEvent={buildPropertyEditEvent}
                 />

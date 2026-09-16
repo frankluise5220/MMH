@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { ChevronDown, Download, FileSpreadsheet, MailSearch, Upload } from "lucide-react";
 import { CreditBillMailImportDialog } from "@/components/CreditBillMailImportButton";
+import { DateStepper } from "@/components/DateStepper";
 import { FundImportPreviewDialog, type FundImportDialogContext } from "@/components/FundImportPreviewDialog";
 import { StatementImportPreviewDialog, type StatementImportPreviewItem } from "@/components/StatementImportPreviewDialog";
 import { StockImportPreviewDialog, type StockImportDialogContext, type StockImportUploadItem } from "@/components/StockImportPreviewDialog";
@@ -1153,6 +1154,8 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
   const [status, setStatus] = useState("");
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewItems, setPreviewItems] = useState<StatementImportPreviewItem[]>([]);
+  // 分批导入进度（数据量大时拆成多批顺序提交，避免单请求超时/卡死）
+  const [importProgress, setImportProgress] = useState<{ imported: number; total: number } | null>(null);
   const [fundPreviewFile, setFundPreviewFile] = useState<File | null>(null);
   // 财智余额调整行（余额校准）：随导入确认一起提交
   const [balanceAdjustments, setBalanceAdjustments] = useState<Array<{ date?: string; balance: number }>>([]);
@@ -1358,32 +1361,60 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
     if (items.length === 0) return;
     setBusy(true);
     setStatus(t("viewImport.importingBills"));
+    setImportProgress({ imported: 0, total: items.length });
+    let createdCount = 0;
+    let skippedCount = 0;
+    let importedRows = 0;
     try {
-      const res = await fetch("/api/v1/statement/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          items,
-          defaultAccountName: statementDefaultAccountName(props),
-          autoCreateAccounts: false,
-          createDebtAccounts: options?.createDebtAccounts === true,
-          forceCreateOwnedMoneyAccounts: options?.forceCreateOwnedMoneyAccounts === true,
-          ...(balanceAdjustments.length > 0 ? { balanceAdjustments } : {}),
-        }),
+      const requestBody = (batchItems: StatementImportPreviewItem[], withBalanceAdjustments: boolean) => JSON.stringify({
+        items: batchItems,
+        defaultAccountName: statementDefaultAccountName(props),
+        autoCreateAccounts: false,
+        createDebtAccounts: options?.createDebtAccounts === true,
+        forceCreateOwnedMoneyAccounts: options?.forceCreateOwnedMoneyAccounts === true,
+        // 余额校准行放最后一批：所有交易记录落库后再校准余额
+        ...(withBalanceAdjustments && balanceAdjustments.length > 0 ? { balanceAdjustments } : {}),
       });
-      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; createdCount?: number; skippedCount?: number; errors?: Array<{ error?: string }> } | null;
-      if (!res.ok || !data?.ok) throw new Error(data?.error || data?.errors?.[0]?.error || t("creditBill.importFailed"));
-      const createdCount = data.createdCount ?? 0;
-      const skippedCount = data.skippedCount ?? 0;
+
+      // 与基金/股票导入一致：拆成 10 批顺序提交，单批事务小、避免 NAS 反代超时
+      const IMPORT_BATCH_SIZE = Math.max(1, Math.ceil(items.length / 10));
+      for (let start = 0; start < items.length; start += IMPORT_BATCH_SIZE) {
+        const batchItems = items.slice(start, start + IMPORT_BATCH_SIZE);
+        const isLastBatch = start + IMPORT_BATCH_SIZE >= items.length;
+        setImportProgress({ imported: importedRows, total: items.length });
+        const res = await fetch("/api/v1/statement/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: requestBody(batchItems, isLastBatch),
+        });
+        const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; createdCount?: number; skippedCount?: number; errors?: Array<{ error?: string }> } | null;
+        if (!res.ok || !data?.ok) {
+          throw new Error(data?.error || data?.errors?.[0]?.error || t("creditBill.importFailed"));
+        }
+        createdCount += data.createdCount ?? 0;
+        skippedCount += data.skippedCount ?? 0;
+        importedRows += batchItems.length;
+        setImportProgress({ imported: importedRows, total: items.length });
+      }
       setStatus(t("creditBill.importExcelSuccess", { created: createdCount, skipped: skippedCount }));
       setBalanceAdjustments([]);
       setPreviewOpen(false);
       setPreviewItems([]);
       dispatchFinanceDataChanged({ reason: "statement-excel-import", accountIds: [props.accountId] });
     } catch (error) {
-      setStatus(t("viewImport.failed", { reason: error instanceof Error ? error.message : String(error) }));
+      const reason = error instanceof Error ? error.message : String(error);
+      if (importedRows > 0 && items.length > importedRows) {
+        setStatus(t("viewImport.statementImportPartialFailed", {
+          imported: importedRows,
+          remaining: items.length - importedRows,
+          reason,
+        }));
+      } else {
+        setStatus(t("viewImport.failed", { reason }));
+      }
     } finally {
       setBusy(false);
+      setImportProgress(null);
     }
   }
 
@@ -1561,6 +1592,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
         balanceAdjustments={balanceAdjustments}
         defaultAccountName={statementDefaultAccountName(props)}
         busy={busy}
+        importProgress={importProgress}
         onClose={() => setPreviewOpen(false)}
         onConfirm={confirmImport}
       />
@@ -1601,21 +1633,11 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
             <div className="space-y-3 px-4 py-4">
               <label className="block">
                 <span className="mb-1 block text-xs font-medium text-slate-600">{t("viewImport.exportStartDate")}</span>
-                <input
-                  type="date"
-                  value={excelExportStart}
-                  onChange={(event) => setExcelExportStart(event.target.value)}
-                  className="form-input"
-                />
+                <DateStepper value={excelExportStart} onChange={setExcelExportStart} />
               </label>
               <label className="block">
                 <span className="mb-1 block text-xs font-medium text-slate-600">{t("viewImport.exportEndDate")}</span>
-                <input
-                  type="date"
-                  value={excelExportEnd}
-                  onChange={(event) => setExcelExportEnd(event.target.value)}
-                  className="form-input"
-                />
+                <DateStepper value={excelExportEnd} onChange={setExcelExportEnd} />
               </label>
               {excelExportError ? <div className="rounded bg-red-50 px-3 py-2 text-xs text-red-700">{excelExportError}</div> : null}
             </div>

@@ -23,7 +23,6 @@ import {
   setCreditBillShowRecentCyclesPreference,
 } from "@/lib/client/appPreferences";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
-import { dispatchCreditBillDetailSelection } from "@/lib/client/creditBillDetailSelection";
 import { notifySettingsDataChanged } from "@/lib/client/settingsCache";
 import { useI18n } from "@/lib/i18n";
 
@@ -82,6 +81,9 @@ function statementMonthFromDateText(dateText: string, rows: CreditBillSummaryRow
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateText)) return "";
   return rows.find((row) => row.periodStart <= dateText && dateText <= row.periodEnd)?.month ?? "";
 }
+
+// 分期预览表固定占位 6 行（不足补空行），避免输入金额/改期数时表格频繁出现、消失导致布局跳动。
+const INSTALLMENT_PREVIEW_ROW_TARGET = 6;
 
 function installmentAvailableAmount(row: CreditBillSummaryRow | null | undefined) {
   return row ? creditBillUnpaidAmount(row) : 0;
@@ -345,6 +347,8 @@ export function CreditBillSummaryTable({
       return null;
     }
   }, [effectiveBillingDay, installmentForm, installmentOpen, installmentSourceMonth]);
+  const installmentPreviewRows = installmentPreview?.rows ?? [];
+  const installmentPlaceholderRowCount = Math.max(0, INSTALLMENT_PREVIEW_ROW_TARGET - installmentPreviewRows.length);
 
   async function saveStatementInstallment() {
     if (!installmentOpen || installmentSaving) return;
@@ -457,8 +461,7 @@ export function CreditBillSummaryTable({
       q.set("billPage", String(safePage));
     });
     setLocalSelectedBillMonth(month);
-    window.history.replaceState(window.history.state, "", href);
-    dispatchCreditBillDetailSelection({ accountId, billMonth: month, href });
+    router.replace(href, { scroll: false });
   }
 
   function openExportDialog() {
@@ -987,32 +990,39 @@ export function CreditBillSummaryTable({
                   {t("creditBillSummary.alert.billNotSettled")}
                 </div>
               ) : null}
-              {installmentPreview ? (
-                <div className="max-h-56 overflow-auto rounded-md border border-slate-200">
-                  <table className="min-w-full text-xs tabular-nums">
-                    <thead className="sticky top-0 bg-slate-50 text-slate-500">
-                      <tr>
-                        <th className="px-2 py-1 text-left font-medium">{t("txForm.periods")}</th>
-                        <th className="px-2 py-1 text-left font-medium">{t("detail.column.date")}</th>
-                        <th className="px-2 py-1 text-right font-medium">{t("txForm.principal")}</th>
-                        <th className="px-2 py-1 text-right font-medium">{installmentForm.rateType === "annual_interest" ? t("txForm.interest") : t("txForm.fee")}</th>
-                        <th className="px-2 py-1 text-right font-medium">{t("txForm.dueAmount")}</th>
+              <div className="max-h-44 overflow-auto rounded-md border border-slate-200">
+                <table className="min-w-full text-xs tabular-nums">
+                  <thead className="sticky top-0 bg-slate-50 text-slate-500">
+                    <tr>
+                      <th className="px-2 py-1 text-left font-medium">{t("txForm.periods")}</th>
+                      <th className="px-2 py-1 text-left font-medium">{t("detail.column.date")}</th>
+                      <th className="px-2 py-1 text-right font-medium">{t("txForm.principal")}</th>
+                      <th className="px-2 py-1 text-right font-medium">{installmentForm.rateType === "annual_interest" ? t("txForm.interest") : t("txForm.fee")}</th>
+                      <th className="px-2 py-1 text-right font-medium">{t("txForm.dueAmount")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {installmentPreviewRows.map((row) => (
+                      <tr key={row.installmentNo} className="border-t border-slate-100">
+                        <td className="px-2 py-1 text-slate-600">{row.installmentNo}/{installmentForm.totalRuns}</td>
+                        <td className="px-2 py-1 text-slate-600">{row.date.toISOString().slice(0, 10)}</td>
+                        <td className="px-2 py-1 text-right text-slate-700">{formatMoney(row.principal)}</td>
+                        <td className="px-2 py-1 text-right text-slate-700">{formatMoney(row.interest)}</td>
+                        <td className="px-2 py-1 text-right font-medium text-slate-800">{formatMoney(row.payment)}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {installmentPreview.rows.map((row) => (
-                        <tr key={row.installmentNo} className="border-t border-slate-100">
-                          <td className="px-2 py-1 text-slate-600">{row.installmentNo}/{installmentForm.totalRuns}</td>
-                          <td className="px-2 py-1 text-slate-600">{row.date.toISOString().slice(0, 10)}</td>
-                          <td className="px-2 py-1 text-right text-slate-700">{formatMoney(row.principal)}</td>
-                          <td className="px-2 py-1 text-right text-slate-700">{formatMoney(row.interest)}</td>
-                          <td className="px-2 py-1 text-right font-medium text-slate-800">{formatMoney(row.payment)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : null}
+                    ))}
+                    {Array.from({ length: installmentPlaceholderRowCount }, (_, index) => (
+                      <tr key={`installment-preview-placeholder-${index}`} className="border-t border-slate-100" aria-hidden="true">
+                        <td className="px-2 py-1">&nbsp;</td>
+                        <td className="px-2 py-1">&nbsp;</td>
+                        <td className="px-2 py-1">&nbsp;</td>
+                        <td className="px-2 py-1">&nbsp;</td>
+                        <td className="px-2 py-1">&nbsp;</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
               {installmentError ? <div className="rounded bg-red-50 px-3 py-2 text-xs text-red-700">{installmentError}</div> : null}
             </div>
             <div className="flex justify-end gap-2 border-t border-slate-100 px-4 py-3">

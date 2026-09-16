@@ -38,8 +38,9 @@ const investProductTypeLabel = (type: string | null, t: (key: string) => string)
   const tab = typeof params?.tab === "string" ? params.tab : "overview";
   const filter = typeof params?.filter === "string" ? params.filter : "all"; // holding | cleared | all
   const pageParam = typeof params?.page === "string" ? parseInt(params.page, 10) : 1;
-  const pageSizeParam = typeof params?.pageSize === "string" ? parseInt(params.pageSize, 10) : 10;
-  const pageSize = [10, 20, 40].includes(pageSizeParam) ? pageSizeParam : 10;
+  const isShowAll = params?.pageSize === "all";
+  const pageSizeParam = typeof params?.pageSize === "string" ? parseInt(params.pageSize, 10) : 40;
+  const pageSize = isShowAll ? 0 : [40, 80].includes(pageSizeParam) ? pageSizeParam : 40;
   const cookieStore = await cookies();
   const accountLabelFields = accountLabelFieldsFromCookieValue(cookieStore.get(ACCOUNT_LABEL_FIELDS_COOKIE)?.value);
   const colorScheme = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") as "red_up_green_down" | "green_up_red_down";
@@ -234,9 +235,9 @@ const investProductTypeLabel = (type: string | null, t: (key: string) => string)
     if (filter === "cleared") return r.marketValue <= 0.01 && r.txCount > 0;
     return true;
   });
-  const totalPageCount = Math.max(1, Math.ceil(filteredRows.length / pageSize));
+  const totalPageCount = Math.max(1, Math.ceil(filteredRows.length / (pageSize > 0 ? pageSize : Math.max(1, filteredRows.length))));
   const page = Math.min(pageParam, totalPageCount);
-  const pagedRows = filteredRows.slice((page - 1) * pageSize, page * pageSize);
+  const pagedRows = pageSize > 0 ? filteredRows.slice((page - 1) * pageSize, page * pageSize) : filteredRows;
 
   const totalMarketValue = accountRows.reduce((s, r) => s + r.marketValue, 0);
   const totalCostAll = accountRows.reduce((s, r) => s + r.totalCost, 0);
@@ -328,33 +329,36 @@ const investProductTypeLabel = (type: string | null, t: (key: string) => string)
             }}
             isRedUp={isRedUp}
           />
-          {/* Pagination */}
-          {totalPageCount > 1 && (
-            <div className="px-4 py-2 border-t border-slate-200 bg-slate-50 flex items-center justify-end gap-1 text-xs shrink-0">
-              {[10, 20, 40].map((n) => {
-                const q = new URLSearchParams();
-                q.set("tab", "overview");
-                if (filter !== "all") q.set("filter", filter);
-                q.set("pageSize", String(n));
-                q.set("page", "1");
-                return <Link key={n} href={`/invest?${q.toString()}`} className={`h-6 px-1.5 rounded border flex items-center ${pageSize === n ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}>{n}</Link>;
-              })}
-              <span className="text-slate-300">|</span>
-              {page > 1 && (
-                <>
-                  <Link href={(() => { const q = new URLSearchParams(); q.set("tab", "overview"); if (filter !== "all") q.set("filter", filter); q.set("pageSize", String(pageSize)); q.set("page", "1"); return `/invest?${q.toString()}`; })()} className="h-6 w-6 rounded border border-slate-200 bg-white text-slate-400 hover:bg-slate-50 flex items-center justify-center">&laquo;</Link>
-                  <Link href={(() => { const q = new URLSearchParams(); q.set("tab", "overview"); if (filter !== "all") q.set("filter", filter); q.set("pageSize", String(pageSize)); q.set("page", String(page - 1)); return `/invest?${q.toString()}`; })()} className="h-6 w-6 rounded border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 flex items-center justify-center">&lsaquo;</Link>
-                </>
-              )}
-              <span className="text-slate-500">{page}/{totalPageCount}</span>
-              {page < totalPageCount && (
-                <>
-                  <Link href={(() => { const q = new URLSearchParams(); q.set("tab", "overview"); if (filter !== "all") q.set("filter", filter); q.set("pageSize", String(pageSize)); q.set("page", String(page + 1)); return `/invest?${q.toString()}`; })()} className="h-6 w-6 rounded border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 flex items-center justify-center">&rsaquo;</Link>
-                  <Link href={(() => { const q = new URLSearchParams(); q.set("tab", "overview"); if (filter !== "all") q.set("filter", filter); q.set("pageSize", String(pageSize)); q.set("page", String(totalPageCount)); return `/invest?${q.toString()}`; })()} className="h-6 w-6 rounded border border-slate-200 bg-white text-slate-400 hover:bg-slate-50 flex items-center justify-center">&raquo;</Link>
-                </>
-              )}
-            </div>
-          )}
+          {/* Pagination: page-size picker stays visible so the user can leave
+              show-all mode; prev/next only matter when actually paginating. */}
+          <div className="px-4 py-2 border-t border-slate-200 bg-slate-50 flex items-center justify-end gap-1 text-xs shrink-0">
+            {[40, 80, "all"].map((n) => {
+              const q = new URLSearchParams();
+              q.set("tab", "overview");
+              if (filter !== "all") q.set("filter", filter);
+              q.set("pageSize", String(n));
+              q.set("page", "1");
+              return <Link key={n} href={`/invest?${q.toString()}`} className={`h-6 px-1.5 rounded border flex items-center ${pageSize === (n === "all" ? 0 : n) ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}>{n === "all" ? t("common.all") : n}</Link>;
+            })}
+            {totalPageCount > 1 && (
+              <>
+                <span className="text-slate-300">|</span>
+                {page > 1 && (
+                  <>
+                    <Link href={(() => { const q = new URLSearchParams(); q.set("tab", "overview"); if (filter !== "all") q.set("filter", filter); q.set("pageSize", isShowAll ? "all" : String(pageSize)); q.set("page", "1"); return `/invest?${q.toString()}`; })()} className="h-6 w-6 rounded border border-slate-200 bg-white text-slate-400 hover:bg-slate-50 flex items-center justify-center">&laquo;</Link>
+                    <Link href={(() => { const q = new URLSearchParams(); q.set("tab", "overview"); if (filter !== "all") q.set("filter", filter); q.set("pageSize", isShowAll ? "all" : String(pageSize)); q.set("page", String(page - 1)); return `/invest?${q.toString()}`; })()} className="h-6 w-6 rounded border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 flex items-center justify-center">&lsaquo;</Link>
+                  </>
+                )}
+                <span className="text-slate-500">{page}/{totalPageCount}</span>
+                {page < totalPageCount && (
+                  <>
+                    <Link href={(() => { const q = new URLSearchParams(); q.set("tab", "overview"); if (filter !== "all") q.set("filter", filter); q.set("pageSize", isShowAll ? "all" : String(pageSize)); q.set("page", String(page + 1)); return `/invest?${q.toString()}`; })()} className="h-6 w-6 rounded border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 flex items-center justify-center">&rsaquo;</Link>
+                    <Link href={(() => { const q = new URLSearchParams(); q.set("tab", "overview"); if (filter !== "all") q.set("filter", filter); q.set("pageSize", isShowAll ? "all" : String(pageSize)); q.set("page", String(totalPageCount)); return `/invest?${q.toString()}`; })()} className="h-6 w-6 rounded border border-slate-200 bg-white text-slate-400 hover:bg-slate-50 flex items-center justify-center">&raquo;</Link>
+                  </>
+                )}
+              </>
+            )}
+          </div>
         </div>
       </div>
       )}

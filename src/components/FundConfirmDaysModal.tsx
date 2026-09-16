@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { CalendarDays, Check, Loader2, Percent, Trash2, X } from "lucide-react";
 
 import { FundFeeRatePanel } from "@/components/FundFeeRatePanel";
+import { DateStepper } from "@/components/DateStepper";
 import { useI18n } from "@/lib/i18n";
 
 export type ConfirmDayRow = {
@@ -364,11 +365,11 @@ export function FundConfirmDaysPanel({
                       />
                     </td>
                     <td className="border-b border-slate-100 px-2 py-1 text-right">
-                      <input
-                        type="date"
+                      <DateStepper
+                        compact
                         value={row.effectiveDate ?? ""}
-                        onChange={(e) => updateRow(index, { effectiveDate: e.target.value || null })}
-                        className="h-6 rounded border border-slate-200 px-1.5 text-xs tabular-nums outline-none focus:border-blue-400"
+                        onChange={(value) => updateRow(index, { effectiveDate: value || null })}
+                        className="!min-h-0 !h-6 !w-32 !rounded !border-slate-200 !px-1.5 !text-xs tabular-nums"
                       />
                     </td>
                     <td className="border-b border-slate-100 px-2 py-1 text-right">
@@ -437,11 +438,11 @@ export function FundConfirmDaysPanel({
                   />
                 </td>
                 <td className="border-b border-slate-100 px-2 py-1 text-right">
-                  <input
-                    type="date"
+                  <DateStepper
+                    compact
                     value={draftEffectiveDate}
-                    onChange={(e) => setDraftEffectiveDate(e.target.value)}
-                    className="h-6 rounded border border-slate-200 bg-white px-1.5 text-xs tabular-nums outline-none focus:border-blue-400"
+                    onChange={setDraftEffectiveDate}
+                    className="!min-h-0 !h-6 !w-32 !rounded !border-slate-200 !px-1.5 !text-xs tabular-nums"
                   />
                 </td>
                 <td className="border-b border-slate-100 px-2 py-1 text-right">

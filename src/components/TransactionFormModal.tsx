@@ -16,7 +16,7 @@ import { useAccountSSFilter } from "./accountSSFilter";
 import { isSettlementCounterpartyType, kindLabel } from "@/lib/account-kinds";
 import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
 import { getCashTargetOperation, isAdvanceFundingAccount, isIncomeExpensePostingAccount, isOrdinaryTransferAccount } from "@/lib/account-kind-utils";
-import { buildAccountDisplayOption, buildGroupedAccountOptions } from "@/lib/account-display";
+import { buildAccountDisplayOption, buildGroupedAccountOptions, formatAccountHoverTitle } from "@/lib/account-display";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import {
@@ -3051,10 +3051,13 @@ export function TransactionFormModal({
           const kind = "investment";
           const groupId = extra?.groupId?.trim();
           const groupName = extra?.groupName?.trim();
+          // 显示口径与既有账户下拉一致：所有人 · 投资（不再单独显示「固定资产账户」）。
+          const kindText = t("account.kind.investment");
           const option = {
             id,
             label: name,
-            subLabel: t("txForm.fixedAssetAccount"),
+            subLabel: [groupName, kindText].filter(Boolean).join(" · "),
+            title: formatAccountHoverTitle({ groupName: groupName ?? "", label: name, subLabel: kindText }),
             kind,
             investProductType: "property",
             currency: extra?.currency,

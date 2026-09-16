@@ -374,9 +374,14 @@ export function resetWealthHoldingBucket(bucket: { principal?: number; units?: n
  * recalculation.
  */
 export const computeInvestBalances = cache(
-  async (ctx: HouseholdContext): Promise<Map<string, InvestBalanceDetail>> => {
+  async (ctx: HouseholdContext, accountIds?: readonly string[]): Promise<Map<string, InvestBalanceDetail>> => {
+  const scopedIds = Array.from(new Set((accountIds ?? []).map((id) => String(id ?? "").trim()).filter(Boolean)));
   const accounts = await prisma.account.findMany({
-    where: { kind: AccountKind.investment, ...ctx.hidFilter },
+    where: {
+      kind: AccountKind.investment,
+      ...ctx.hidFilter,
+      ...(scopedIds.length > 0 ? { id: { in: scopedIds } } : {}),
+    },
     select: { id: true, kind: true, investProductType: true },
   });
   const investIds = accounts.filter(isPureInvestmentAccount).map(a => a.id);

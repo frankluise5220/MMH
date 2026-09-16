@@ -155,6 +155,10 @@ function formatOptionalNumber(value: number | null | undefined, digits = 2) {
 }
 
 function stockIssueMessage(issue: StockImportPreviewIssue, t: TranslateFn) {
+  if (issue.code === "WILL_CREATE_INSTITUTION_CASH_ACCOUNT") {
+    const accountName = String(issue.message ?? "").split(":").slice(1).join(":").trim();
+    return `${t("viewImport.stockPreview.willCreateInstitutionCashAccount")}：${accountName}`;
+  }
   const key = issue.code ? `viewImport.stockPreview.issue.${issue.code}` : "";
   if (key) {
     const translated = t(key);
@@ -277,6 +281,8 @@ const STOCK_PREVIEW_FIELD_LABEL_KEYS: Record<StockPreviewEditField, string> = {
 
 export function StockImportPreviewDialog({ open, items, context, onClose, onImported }: Props) {
   const { t } = useI18n();
+  // 创建证券账户的同机构资金账户：资金账户匹配不到的行改用/创建证券账户同机构资金账户
+  const [createInstitutionCashAccount, setCreateInstitutionCashAccount] = useState(false);
   const [uploadItems, setUploadItems] = useState<StockImportUploadItem[]>([]);
   const [previewItems, setPreviewItems] = useState<StockImportPreviewItem[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -443,6 +449,7 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
           mode: "preview",
           context: context ?? null,
           items: sourceItems,
+          ...(createInstitutionCashAccount ? { createStockInstitutionCashAccount: true } : {}),
         }),
       });
       const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; items?: StockImportPreviewItem[] } | null;
@@ -466,7 +473,7 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
     } finally {
       setUploading(false);
     }
-  }, [context, t]);
+  }, [context, createInstitutionCashAccount, t]);
 
   useEffect(() => {
     if (!open) {
@@ -660,6 +667,7 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
             mode: "import",
             context: context ?? null,
             items: batchItems,
+            ...(createInstitutionCashAccount ? { createStockInstitutionCashAccount: true } : {}),
           }),
         });
         const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; createdCount?: number; skippedCount?: number; accountIds?: string[] } | null;
@@ -692,7 +700,7 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
       setImporting(false);
       setImportProgress(null);
     }
-  }, [context, errorIssues, importing, onClose, onImported, previewItems, selected, t, setImportProgress]);
+  }, [context, createInstitutionCashAccount, errorIssues, importing, onClose, onImported, previewItems, selected, t, setImportProgress]);
 
   const patchUploadItem = useCallback(async (idx: number, patch: Partial<StockImportUploadItem>) => {
     const nextUploadItems = uploadItems.map((item, index) => index === idx ? { ...item, ...patch } : item);
@@ -1236,6 +1244,20 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
             toolbarTitle={t("viewImport.stockPreview.title")}
             toolbarRightContent={(
               <div className="flex items-center gap-3 text-xs text-slate-500">
+                <label className="inline-flex shrink-0 items-center gap-1.5 text-slate-600">
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600"
+                    checked={createInstitutionCashAccount}
+                    disabled={uploading || importing}
+                    onChange={(event) => {
+                      const next = event.target.checked;
+                      setCreateInstitutionCashAccount(next);
+                      if (uploadItems.length > 0) void requestPreview(uploadItems, true);
+                    }}
+                  />
+                  <span>{t("viewImport.stockPreview.createInstitutionCashAccount")}</span>
+                </label>
                 <span>{formatText(t, "batchImport.selectedSummary", { selected: selected.size, total: previewItems.length })}</span>
                 <span className="italic">{t("viewImport.calculatedValueHint")}</span>
                 {allErrorIssues.length > 0 ? <span className="font-medium text-red-600">{formatText(t, "batchImport.errorCount", { count: allErrorIssues.length })}</span> : null}
@@ -1251,6 +1273,7 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
             compactRows
             showFilters
             sortable
+            selectAllPreferred={(row) => !hasBlockingIssue(row)}
             showColumnVisibilityButton={false}
             resetDisplayStateOnMount
           />

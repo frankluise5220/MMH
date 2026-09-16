@@ -25,6 +25,7 @@ import {
   summarizeCreditBillSignedFlows,
 } from "@/lib/credit/billing";
 import { markInitialBillingDayRules } from "@/lib/credit/billing-day-rules";
+import { compareDetailEntriesDesc } from "@/lib/detail-entry-order";
 import { normalizeCreditCardInstallmentStatementMonths, materializeDueInstallmentPayments } from "@/lib/server/credit-card-installment";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
@@ -339,6 +340,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     (
       forceCycleRefresh ||
       persistedCyclesInitial.length === 0 ||
+      (!!currentStatementMonth && !persistedCycleByMonth.has(currentStatementMonth)) ||
       (
         activeBillTxCount === 0 &&
         persistedCyclesInitial.some((cycle) =>
@@ -975,25 +977,65 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     view === "bill" && !showAllCreditBillDetails && creditCardBill && isBillAccount
       ? await (async () => {
           const { start, end } = creditCardBill;
-          const cycleMatch = {
-            type: { in: [TransactionType.expense, TransactionType.income, TransactionType.transfer, TransactionType.investment] },
-            deletedAt: null,
-            ...creditBillDateRangeWhere(start, addDaysUtc(end, 1)),
+          // Detail rows must be ordered by the effective (display) date: the
+          // posting date for expense/income with a transaction-date fallback —
+          // the same key compareDetailEntriesDesc (shared with the client
+          // detail table) uses. Prisma cannot order by a per-type COALESCE, so
+          // rows are fetched in the same three branches as
+          // creditBillDateRangeWhere and merged in memory.
+          const range = { gte: start, lt: addDaysUtc(end, 1) };
+          const detailInclude = {
+            EntryTag: { include: { Tag: true } },
+            Attachment: { select: { id: true, name: true, mimeType: true, url: true } },
+            ...entryBusinessLinkSummaryInclude,
+            account: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
+            toAccount: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
           };
-          const cycleEntries = await prisma.txRecord.findMany({
-            where: {
-              AND: [cycleMatch, ...(billScope ? [billScope] : [])],
-            },
-            include: {
-              EntryTag: { include: { Tag: true } },
-              Attachment: { select: { id: true, name: true, mimeType: true, url: true } },
-              ...entryBusinessLinkSummaryInclude,
-              account: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
-              toAccount: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
-            },
-            orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-            take: 500,
-          });
+          const [postedRows, legacyRows, otherRows] = await Promise.all([
+            prisma.txRecord.findMany({
+              where: {
+                AND: [
+                  ...(billScope ? [billScope] : []),
+                  { deletedAt: null },
+                  { type: { in: [TransactionType.expense, TransactionType.income] } },
+                  { postedAt: range },
+                ],
+              },
+              include: detailInclude,
+              orderBy: [{ postedAt: "desc" }, { createdAt: "desc" }],
+              take: 500,
+            }),
+            prisma.txRecord.findMany({
+              where: {
+                AND: [
+                  ...(billScope ? [billScope] : []),
+                  { deletedAt: null },
+                  { type: { in: [TransactionType.expense, TransactionType.income] } },
+                  { postedAt: null },
+                  { date: range },
+                ],
+              },
+              include: detailInclude,
+              orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+              take: 500,
+            }),
+            prisma.txRecord.findMany({
+              where: {
+                AND: [
+                  ...(billScope ? [billScope] : []),
+                  { deletedAt: null },
+                  { type: { in: [TransactionType.transfer, TransactionType.investment] } },
+                  { date: range },
+                ],
+              },
+              include: detailInclude,
+              orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+              take: 500,
+            }),
+          ]);
+          const cycleEntries = [...postedRows, ...legacyRows, ...otherRows]
+            .sort((a, b) => compareDetailEntriesDesc(a, b, selectedAccount?.id ?? null))
+            .slice(0, 500);
           const details: DetailEntry[] = cycleEntries.map((e) => ({
             id: e.id,
             date: toYmdOrNull(e.date) ?? "",

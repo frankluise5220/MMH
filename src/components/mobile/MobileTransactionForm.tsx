@@ -6,6 +6,7 @@ import { buildGroupedAccountOptions, buildAccountDisplayOption, type AccountDisp
 import { isIncomeExpensePostingAccount, isOrdinaryTransferAccount } from "@/lib/account-kind-utils";
 import { SmartSelect } from "@/components/SmartSelect";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
+import { DateStepper } from "@/components/DateStepper";
 import { buildCategoryTreeOptions } from "@/components/categorySmartSelect";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
@@ -244,7 +245,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
         <div className="mt-3 grid grid-cols-2 gap-3">
           <label className="block">
             <span className="text-xs text-slate-500">{t("mobileTxForm.date")}</span>
-            <input className="form-input mt-1" type="date" value={draft.date} onChange={(event) => update("date", event.target.value)} />
+            <DateStepper className="mt-1" value={draft.date} onChange={(value) => update("date", value)} />
           </label>
           <label className="block">
             <span className="text-xs text-slate-500">{t("mobileTxForm.amount")}</span>

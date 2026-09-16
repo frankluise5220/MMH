@@ -701,8 +701,9 @@ export function FundShell(props: Props) {
 
   const [fundPage, setFundPage] = useState(1);
 
-  const [fundPageSize, setFundPageSize] = useState(20);
+  const [fundPageSize, setFundPageSize] = useState(40);
   const [fundDetailAll, setFundDetailAll] = useState(false);
+  const [fundAutoFit, setFundAutoFit] = useState(true);
   const [detailTableRowCount, setDetailTableRowCount] = useState(0);
 
   const [showExportMenu, setShowExportMenu] = useState(false);
@@ -1369,9 +1370,12 @@ export function FundShell(props: Props) {
       refreshBusy.current = true;
       try {
         const fc = fundCodeRef.current;
-        if (!fc && !isWealthAccountRef.current) return;
-        const sc = showClearedRef.current ? "1" : "0";
         const aid = accountIdRef.current;
+        if (!aid) return;
+        // All-records mode (no fund selected) must also refetch: the shell
+        // payload with entryScope=account covers the whole account, so the
+        // client refresh works without an RSC re-render.
+        const sc = showClearedRef.current ? "1" : "0";
         const seq = ++shellDataRequestSeq.current;
         const selectedParam = fc
           ? isWealthAccountRef.current
@@ -1417,9 +1421,14 @@ export function FundShell(props: Props) {
 
   useEffect(() => {
     const onFundChanged = (event: Event) => {
-      const detail = (event as CustomEvent<{ balanceChanged?: boolean }>).detail;
+      const detail = (event as CustomEvent<{ balanceChanged?: boolean; accountIds?: string[] }>).detail;
       // Remark-only edits do not change holdings: skip the shell refresh.
       if (detail?.balanceChanged === false) return;
+      // Scoped saves refresh only the affected accounts. When the event names
+      // its accounts and this fund account is not one of them, the 1.7MB
+      // shell-data refetch cannot change anything here — skip it.
+      const scopedIds = Array.from(new Set((detail?.accountIds ?? []).map((id) => String(id ?? "").trim()).filter(Boolean)));
+      if (scopedIds.length > 0 && accountIdRef.current && !scopedIds.includes(accountIdRef.current)) return;
       shellRefreshHandler();
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, onFundChanged);
@@ -2124,9 +2133,30 @@ export function FundShell(props: Props) {
 
   const setPagedFundPageSize = useCallback((nextPageSize: number) => {
     setFundDetailAll(false);
+    setFundAutoFit(false);
     setFundPageSize(nextPageSize);
     setFundPage(1);
   }, []);
+
+  // Auto-fit: the table reports how many rows fit the viewport; when auto mode
+  // is on that count becomes the page size (the "自适应" option restores it).
+  // Callback identity changes with the detail scope / autoFit / show-all so the
+  // table re-measures once per view reopen, then stays frozen (same contract
+  // as BasicDetailPanel).
+  const lastFitRowCountRef = useRef<number | null>(null);
+  const handleRowsFitChange = useCallback((rowCount: number) => {
+    lastFitRowCountRef.current = rowCount;
+    if (!fundAutoFit || fundDetailAll) return;
+    setFundPageSize((prev) => (prev === rowCount ? prev : rowCount));
+  }, [accountId, fundCode, showAllRecords, showCleared, fundAutoFit, fundDetailAll]);
+
+  const enableAutoFitFundRows = useCallback(() => {
+    setFundDetailAll(false);
+    setFundAutoFit(true);
+    const fitCount = lastFitRowCountRef.current;
+    if (fitCount != null && fitCount !== fundPageSize) setFundPageSize(fitCount);
+    setFundPage(1);
+  }, [fundPageSize]);
 
   const showAllFundDetailRows = useCallback(() => {
     setFundDetailAll(true);
@@ -3530,13 +3560,14 @@ export function FundShell(props: Props) {
                 totalPages={totalPages}
                 canPrev={canPrevFundPage}
                 canNext={canNextFundPage}
+                autoFit={fundAutoFit}
+                onAutoFit={enableAutoFitFundRows}
                 onPageSizeChange={setPagedFundPageSize}
                 onShowAll={showAllFundDetailRows}
                 onPageChange={goFundPage}
               />
 
             </div>
-
           </div>
 
         </div>
@@ -3742,6 +3773,7 @@ export function FundShell(props: Props) {
               onPageChange: goFundPage,
               onRowCountChange: setDetailTableRowCount,
             }}
+            onRowsFitChange={fundAutoFit && !fundDetailAll ? handleRowsFitChange : undefined}
           />
 
         </div>

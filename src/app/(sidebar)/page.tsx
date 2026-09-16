@@ -68,7 +68,7 @@ import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { compareCategoryOrder, sortCategorySources } from "@/components/categorySmartSelect";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { insuranceCashValueDelta } from "@/lib/insurance/transaction";
-import { loadCommonData, loadSelectedAccount, loadEntriesForAccount, loadInvestAccountData, loadInvestBalances, loadFixedAssetPositionDisplay, loadFixedAssetTransactionEntries } from "@/lib/server/cached-data";
+import { loadCommonData, loadSelectedAccount, loadEntriesForAccount, loadEntriesPageForAccount, loadInvestAccountData, loadInvestBalances, loadFixedAssetPositionDisplay, loadFixedAssetTransactionEntries } from "@/lib/server/cached-data";
 import { computePositionDisplay } from "@/lib/invest-balance";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
@@ -379,6 +379,25 @@ function exportAccountLabel(account: ExportAccountLike, fallbackName?: string | 
   return [owner, institution, tailOrName, accountType].filter(Boolean).join("·");
 }
 
+type DetailExportEntryLike = {
+  readonly type?: string | null;
+  readonly accountId?: string | null;
+  readonly toAccountId?: string | null;
+  readonly categoryId?: string | null;
+  readonly categoryName?: string | null;
+  readonly fundProductType?: string | null;
+  readonly fundSubtype?: string | null;
+  readonly fundName?: string | null;
+  readonly insuranceProductId?: string | null;
+  readonly insuranceAction?: string | null;
+  readonly insuranceProductName?: string | null;
+  readonly source?: string | null;
+  readonly note?: string | null;
+  readonly toNote?: string | null;
+  readonly account?: { readonly kind?: string | null } | null;
+  readonly toAccount?: { readonly kind?: string | null } | null;
+};
+
 function stripExportCategoryRootLabel(value?: string | null) {
   const text = value?.trim() ?? "";
   return ["支出", "收入", "转账", "代付", "投资"].includes(text) ? "" : text;
@@ -488,7 +507,7 @@ export default async function Home({
   );
   const pageSizeParam = typeof params?.pageSize === "string"
     ? parseInt(params.pageSize, 10)
-    : detailPaginationPref?.pageSize ?? 20;
+    : detailPaginationPref?.pageSize ?? 40;
   const pageSize = normalizeDetailPageSize(pageSizeParam);
   const detailPageParam = typeof params?.detailPage === "string"
     ? parseInt(params.detailPage, 10)
@@ -651,7 +670,20 @@ export default async function Home({
       : [];
   const insuranceProductIdsForAccount = insuranceProductsForAccount.map((product) => product.id);
 
-  const rawEntries = needsDetailEntries
+  const usePagedDetailEntries =
+    needsDetailEntries &&
+    view === "detail" &&
+    !!accountId &&
+    !hasDetailFilters &&
+    !focusEntryId &&
+    !detailAll;
+  const pagedDetailData = usePagedDetailEntries
+    ? await loadEntriesPageForAccount(accountId, JSON.stringify(hidFilter), detailPage, pageSize)
+    : null;
+
+  const rawEntries = pagedDetailData
+    ? pagedDetailData.entries
+    : needsDetailEntries
     ? accountId
       ? view === "insurance" && selectedAccount
         ? await prisma.txRecord.findMany({
@@ -709,8 +741,9 @@ export default async function Home({
           take: DETAIL_ALL_PAGE_SIZE,
         })
     : [];
-  const entryDisplayDate = (e: (typeof rawEntries)[number]) => getDetailEntryDisplayDate(e, accountId);
+  const entryDisplayDate = (e: Parameters<typeof getDetailEntryDisplayDate>[0]) => getDetailEntryDisplayDate(e, accountId);
   const entries = [...rawEntries].sort((a, b) => compareDetailEntriesDesc(a, b, accountId));
+  const detailOrderingEntries = pagedDetailData?.orderingEntries ?? rawEntries;
   const accountMetaById = new Map(accounts.map((account) => [account.id, account]));
   const isSettlementDebtAccountId = (id?: string | null) => {
     if (!id) return false;
@@ -718,7 +751,7 @@ export default async function Home({
     if (!account) return false;
     return account.kind === AccountKind.settlement || (account.kind === AccountKind.loan && !!account.counterpartyId);
   };
-  const isCreditCardRepaymentForDisplay = (e: (typeof entries)[number]) => {
+  const isCreditCardRepaymentForDisplay = (e: DetailExportEntryLike) => {
     if (isSettlementDebtAccountId(e.accountId) || isSettlementDebtAccountId(e.toAccountId)) return false;
     return isCreditCardRepaymentTransfer({
       type: e.type,
@@ -726,7 +759,7 @@ export default async function Home({
       toAccountKind: e.toAccount?.kind ?? accountMetaById.get(e.toAccountId ?? "")?.kind ?? null,
     });
   };
-  const getEntryDisplayNote = (e: (typeof entries)[number]) => {
+  const getEntryDisplayNote = (e: DetailExportEntryLike) => {
     const fromNote = (e.note ?? "").trim();
     const receiverNote = (e.toNote ?? "").trim();
     const displayNote = !accountId
@@ -830,17 +863,21 @@ export default async function Home({
     }
     return true;
   });
-  const detailTotalPages = Math.max(1, Math.ceil(filteredEntries2.length / pageSize));
+  const detailFilteredCount = pagedDetailData?.totalCount ?? filteredEntries2.length;
+  const detailOriginalCount = pagedDetailData?.totalCount ?? entries.length;
+  const detailTotalPages = Math.max(1, Math.ceil(detailFilteredCount / pageSize));
   const focusEntryIndex = focusEntryId
     ? filteredEntries2.findIndex((entry) => entry.id === focusEntryId)
     : -1;
   const focusDetailPage = focusEntryIndex >= 0
     ? Math.floor(focusEntryIndex / pageSize) + 1
     : null;
-  const safeDetailPage = detailAll ? 1 : Math.min(focusDetailPage ?? detailPage, detailTotalPages);
+  const safeDetailPage = detailAll
+    ? 1
+    : Math.min(focusDetailPage ?? pagedDetailData?.page ?? detailPage, detailTotalPages);
   const categoryLabels = buildCategoryPathLabels(categories);
   const exportCategoryLabels = buildCategoryExportLabels(t, categories);
-  const getExportCategoryName = (e: (typeof filteredEntries2)[number]) => {
+  const getExportCategoryName = (e: DetailExportEntryLike) => {
     if (isCreditCardRepaymentForDisplay(e)) return t("transaction.category.creditCardRepayment");
     if (e.categoryId) return exportCategoryLabels.get(e.categoryId) ?? systemCategoryLabel(stripExportCategoryRootLabel(e.categoryName), t);
     if (e.type === TransactionType.investment) {
@@ -861,18 +898,21 @@ export default async function Home({
     t("detail.column.tags"),
     t("detail.column.remark"),
   ];
-  const normalExportEntryRows = filteredEntries2.map((e) => {
+  const normalExportSourceEntries = pagedDetailData?.exportEntries ?? filteredEntries2;
+  const normalExportEntryRows = normalExportSourceEntries.map((e) => {
     const effectiveAmount = effectiveAmountForAccount(e, accountId);
     const outflow = effectiveAmount < 0 ? String(-effectiveAmount) : "";
     const inflow = effectiveAmount > 0 ? String(effectiveAmount) : "";
     const isToSide = accountId && e.toAccountId === accountId;
+    const fromAccount = accountMetaById.get(e.accountId ?? "");
+    const toAccount = accountMetaById.get(e.toAccountId ?? "");
     const accountLabel = isToSide
-      ? exportAccountLabel(e.toAccount, e.toAccountName)
-      : exportAccountLabel(e.account, e.accountName);
+      ? exportAccountLabel(toAccount)
+      : exportAccountLabel(fromAccount);
     const counterAccountLabel = e.type === TransactionType.transfer || e.type === TransactionType.investment
       ? isToSide
-        ? exportAccountLabel(e.account, e.accountName)
-        : exportAccountLabel(e.toAccount, e.toAccountName)
+        ? exportAccountLabel(fromAccount)
+        : exportAccountLabel(toAccount)
       : "";
     const tagsText = (e.EntryTag || [])
       .map((entryTag) => entryTag.Tag?.name?.trim() || "")
@@ -1035,7 +1075,7 @@ export default async function Home({
 
   const balanceByEntryId = new Map<string, number>();
   if (where) {
-    const asc = [...rawEntries].sort((a, b) => compareDetailEntriesAsc(a, b, accountId));
+    const asc = [...detailOrderingEntries].sort((a, b) => compareDetailEntriesAsc(a, b, accountId));
     let running = 0;
     for (const e of asc) {
       running = applyBalanceReconcileEntry(running, e, accountId);
@@ -1837,9 +1877,11 @@ export default async function Home({
     })),
   });
   });
-  const pagedDetailEntries: DetailEntry[] = detailAll
+  const pagedDetailEntries: DetailEntry[] = pagedDetailData
     ? allDetailEntries
-    : allDetailEntries.slice((safeDetailPage - 1) * pageSize, safeDetailPage * pageSize);
+    : detailAll
+      ? allDetailEntries
+      : allDetailEntries.slice((safeDetailPage - 1) * pageSize, safeDetailPage * pageSize);
   const creditBillDetailEntries = showAllCreditBillDetails
     ? allDetailEntries
     : (creditCardBillDetails?.details ?? []);
@@ -3143,6 +3185,7 @@ export default async function Home({
                     initialPage={detailPage}
                     initialPageSize={pageSize}
                     initialDetailAll={detailAll}
+                    initialAutoFit={detailPaginationPref?.autoFit !== false}
                     resetKey={`${selectedAccount?.id ?? ""}:${selectedCreditBillMonth || "all"}:credit-bill-detail`}
                     selectedBillMonth={selectedCreditBillMonth}
                     title={creditBillDetailTitle}
@@ -3385,8 +3428,8 @@ export default async function Home({
                   accountId={accountId}
                   isInvestAccount={isInvestAccount}
                   entries={pagedDetailEntries}
-                  totalCount={filteredEntries2.length}
-                  originalCount={entries.length}
+                  totalCount={detailFilteredCount}
+                  originalCount={detailOriginalCount}
                   hasDetailFilters={hasDetailFilters}
                   initialPage={safeDetailPage}
                   initialPageSize={pageSize}

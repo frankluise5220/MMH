@@ -32,8 +32,13 @@ import { LanguageSwitcher } from "../LanguageSwitcher";
 import { formatCurrencyMoney, isDisplayZeroMoney, roundDisplayNumber } from "@/lib/format";
 import { resolveAccountCurrencyDisplayValue } from "@/lib/account-currency-display";
 import { buildAccountDisplayOption, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
-import { FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
-import { fetchInternalAccountBalances } from "@/lib/client/account-balances-fetch";
+import { FINANCE_DATA_CHANGED_EVENT, type FinanceDataChangedDetail } from "@/lib/client/refresh";
+import {
+  fetchInternalAccountBalances,
+  fetchScopedAccountBalances,
+  seedConvertedBalances,
+  type ScopedAccountBalance,
+} from "@/lib/client/account-balances-fetch";
 import {
   APP_PREFS_EVENT,
   getAppPreferences,
@@ -260,6 +265,31 @@ function normalizeSidebarItems(items: AccountItem[], t: (key: string, params?: R
   return [...normalizedWithoutSettlementChildren, settlementSummary];
 }
 
+function patchSidebarAccountBalances(items: AccountItem[], updates: ScopedAccountBalance[]): { next: AccountItem[]; changed: boolean } {
+  if (updates.length === 0) return { next: items, changed: false };
+  const byId = new Map(updates.map((row) => [row.id, row]));
+  let changed = false;
+  const apply = (item: AccountItem): AccountItem => {
+    const children = item.children?.map(apply);
+    const childrenChanged = Boolean(children && children.some((child, index) => child !== item.children![index]));
+    const update = item.id ? byId.get(item.id) : undefined;
+    if (!update && !childrenChanged) return item;
+    changed = true;
+    if (!update) return { ...item, children };
+    const convertedBalance = update.convertedBalance == null ? null : Number(update.convertedBalance);
+    return {
+      ...item,
+      children,
+      balance: Number(update.balance ?? item.balance),
+      convertedBalance: convertedBalance != null && Number.isFinite(convertedBalance) ? convertedBalance : null,
+      currency: update.currency ?? item.currency,
+      baseCurrency: update.baseCurrency ?? item.baseCurrency,
+      fxRateMissing: !!update.fxRateMissing,
+    };
+  };
+  return { next: items.map(apply), changed };
+}
+
 function getSidebarItemSignature(item: AccountItem): string {
   const childSignature = item.children?.map(getSidebarItemSignature).join("\u0002") ?? "";
   return [
@@ -379,7 +409,11 @@ export function SidebarClient({
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [pendingSettings, setPendingSettings] = useState(false);
   const [hideFirstUseGuide, setHideFirstUseGuide] = useState(() => initialPreferences?.sidebarHideInitialData ?? getAppPreferences().sidebarHideInitialData);
-  const [items, setItems] = useState(() => normalizeSidebarItems(initialItems, t));
+  const [items, setItems] = useState(() => {
+    const normalized = normalizeSidebarItems(initialItems, t);
+    seedConvertedBalances(normalized);
+    return normalized;
+  });
   const [accountFilterOpen, setAccountFilterOpen] = useState(false);
   const [accountFilterText, setAccountFilterText] = useState("");
   const accountFilterQuery = accountFilterText.trim().toLowerCase();
@@ -480,10 +514,15 @@ export function SidebarClient({
   const sidebarRefreshTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const sidebarRefreshBusy = useRef(false);
   const sidebarRefreshPending = useRef(false);
+  const pendingScopedAccountIds = useRef<string[] | "full" | null>(null);
 
   useEffect(() => {
     startTransition(() => {
-      setItems(normalizeSidebarItems(initialItems, t));
+      const normalized = normalizeSidebarItems(initialItems, t);
+      // Only seed per-account converted balances. The header net-worth total
+      // is owned by LiveAccountBalance; the sidebar subset must not overwrite it.
+      seedConvertedBalances(normalized);
+      setItems(normalized);
     });
   }, [initialItems, t]);
 
@@ -502,8 +541,25 @@ export function SidebarClient({
           sidebarRefreshPending.current = true;
           return;
         }
+        const pendingIds = pendingScopedAccountIds.current;
+        pendingScopedAccountIds.current = null;
         sidebarRefreshBusy.current = true;
         try {
+          if (Array.isArray(pendingIds) && pendingIds.length > 0) {
+            const scoped = await fetchScopedAccountBalances(pendingIds);
+            if (scoped?.ok) {
+              startTransition(() => {
+                setItems((prev) => {
+                  const patched = patchSidebarAccountBalances(prev, scoped.data);
+                  if (!patched.changed) return prev;
+                  const next = normalizeSidebarItems(patched.next, t);
+                  seedConvertedBalances(next);
+                  return next;
+                });
+              });
+              return;
+            }
+          }
           const data = await fetchInternalAccountBalances();
           const freshAccounts = data?.ok && Array.isArray(data.accounts) ? data.accounts : null;
           if (freshAccounts) {
@@ -531,8 +587,10 @@ export function SidebarClient({
                   }
                 }
                 if (next.length !== fresh.length) {
+                  seedConvertedBalances(fresh);
                   return fresh;
                 }
+                if (changed) seedConvertedBalances(next);
                 return changed ? next : prev;
               });
             });
@@ -548,9 +606,18 @@ export function SidebarClient({
       }, 100);
     };
     const onFinanceChanged = (event: Event) => {
-      const detail = (event as CustomEvent<{ balanceChanged?: boolean }>).detail;
+      const detail = (event as CustomEvent<FinanceDataChangedDetail>).detail;
       // Remark-only edits do not change balances: skip the sidebar refresh.
       if (detail?.balanceChanged === false) return;
+      const scopedIds = Array.from(new Set((detail?.accountIds ?? []).map((id) => String(id ?? "").trim()).filter(Boolean)));
+      if (scopedIds.length > 0) {
+        if (pendingScopedAccountIds.current !== "full") {
+          const current = pendingScopedAccountIds.current;
+          pendingScopedAccountIds.current = Array.from(new Set([...(Array.isArray(current) ? current : []), ...scopedIds]));
+        }
+      } else {
+        pendingScopedAccountIds.current = "full";
+      }
       debouncedRefresh();
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, onFinanceChanged);

@@ -509,6 +509,10 @@ async function removeLegacyDepositInvestmentCategories(writer: CategoryWriter, h
       where: { householdId, categoryId: category.id },
       data: { categoryId: null, categoryName: category.name },
     });
+    await writer.creditCardInstallmentPlan.updateMany({
+      where: { householdId, categoryId: category.id },
+      data: { categoryId: null, categoryName: category.name },
+    });
     await writer.category.updateMany({
       where: { householdId, parentId: category.id },
       data: { parentId: null },

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Pencil, RefreshCcw, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Pencil, RefreshCcw, SlidersHorizontal, Trash2 } from "lucide-react";
 
 import { formatCurrencyMoney, formatMoney, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
@@ -14,6 +14,7 @@ import { StockFeeRuleSettingsButton } from "@/components/StockFeeRuleSettingsBut
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/components/BatchReplacePopoverButton";
 import { BusinessLinkActionButton } from "@/components/BusinessLinkActionButton";
+import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
 import { StockHoldingRowActions } from "@/components/StockHoldingRowActions";
 import { ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewExcelImportMenuButton";
 
@@ -245,8 +246,9 @@ export function StockHoldingsPanel({
   const [batchDeleting, setBatchDeleting] = useState(false);
   const [deleteMessage, setDeleteMessage] = useState("");
   const [detailPage, setDetailPage] = useState(1);
-  const [detailPageSize, setDetailPageSize] = useState(20);
+  const [detailPageSize, setDetailPageSize] = useState(40);
   const [detailTableRowCount, setDetailTableRowCount] = useState(0);
+  const [detailAutoFit, setDetailAutoFit] = useState(true);
   const transactionCacheRef = useRef(new Map<string, StockTransaction[]>());
 
   useEffect(() => {
@@ -541,6 +543,28 @@ export function StockHoldingsPanel({
   const detailTotalPages = Math.max(1, Math.ceil(detailTableRowCount / detailPageSize));
   const detailSafePage = Math.min(detailPage, detailTotalPages);
   const allDetailPageSize = Math.max(1, detailTableRowCount);
+  const detailAll = detailPageSize >= allDetailPageSize && detailTableRowCount > 0;
+
+  // Auto-fit: the table reports how many rows fit the viewport; when auto mode
+  // is on that count becomes the page size (the "自适应" option restores it).
+  // Callback identity changes with the selected stock / autoFit / show-all so
+  // the table re-measures once per view reopen, then stays frozen (same
+  // contract as BasicDetailPanel).
+  const lastFitRowCountRef = useRef<number | null>(null);
+  const handleRowsFitChange = useCallback((rowCount: number) => {
+    lastFitRowCountRef.current = rowCount;
+    if (!detailAutoFit || detailAll) return;
+    setDetailPageSize((prev) => (prev === rowCount ? prev : rowCount));
+  }, [selectedPosition?.stockCode, detailAutoFit, detailAll]);
+
+  const enableAutoFitDetailRows = useCallback(() => {
+    setDetailAutoFit(true);
+    if (!detailAll) {
+      const fitCount = lastFitRowCountRef.current;
+      if (fitCount != null && fitCount !== detailPageSize) setDetailPageSize(fitCount);
+    }
+    setDetailPage(1);
+  }, [detailAll, detailPageSize]);
 
   function switchPositionTab(nextShowCleared: boolean) {
     setShowCleared(nextShowCleared);
@@ -1180,63 +1204,19 @@ export function StockHoldingsPanel({
                 {deleteMessage ? <span className="text-[11px] text-slate-500">{deleteMessage}</span> : null}
                 <div className="flex items-center gap-1">
                   <span className="text-slate-300">|</span>
-                  {[10, 20, 40].map((n) => (
-                    <button
-                      key={n}
-                      type="button"
-                      onClick={() => { setDetailPageSize(n); setDetailPage(1); }}
-                      className={`h-6 px-1.5 rounded border ${detailPageSize === n ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}
-                    >
-                      {n}
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    onClick={() => { setDetailPageSize(allDetailPageSize); setDetailPage(1); }}
-                    className={`h-6 px-1.5 rounded border ${detailPageSize === allDetailPageSize ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}
-                  >
-                    {t("stockPanel.all")}
-                  </button>
-                  <span className="text-slate-300">|</span>
-                  {detailSafePage > 1 ? (<>
-                    <button
-                      type="button"
-                      onClick={() => setDetailPage(1)}
-                      className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50"
-                    >
-                      <ChevronsLeft className="h-3 w-3" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDetailPage(detailSafePage - 1)}
-                      className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50"
-                    >
-                      <ChevronLeft className="h-3 w-3" />
-                    </button>
-                  </>) : (<>
-                    <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronsLeft className="h-3 w-3" /></span>
-                    <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronLeft className="h-3 w-3" /></span>
-                  </>)}
-                  <span className="text-slate-500 px-0.5">{detailSafePage}/{detailTotalPages}</span>
-                  {detailSafePage < detailTotalPages ? (<>
-                    <button
-                      type="button"
-                      onClick={() => setDetailPage(detailSafePage + 1)}
-                      className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-500 hover:bg-slate-50"
-                    >
-                      <ChevronRight className="h-3 w-3" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDetailPage(detailTotalPages)}
-                      className="h-6 w-6 rounded border border-slate-200 bg-white inline-flex items-center justify-center text-slate-400 hover:bg-slate-50"
-                    >
-                      <ChevronsRight className="h-3 w-3" />
-                    </button>
-                  </>) : (<>
-                    <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronRight className="h-3 w-3" /></span>
-                    <span className="h-6 w-6 rounded border border-slate-100 bg-slate-50 inline-flex items-center justify-center text-slate-300"><ChevronsRight className="h-3 w-3" /></span>
-                  </>)}
+                  <DetailTablePaginationControls
+                    pageSize={detailPageSize}
+                    detailAll={detailAll}
+                    safePage={detailSafePage}
+                    totalPages={detailTotalPages}
+                    canPrev={!detailAll && detailSafePage > 1}
+                    canNext={!detailAll && detailSafePage < detailTotalPages}
+                    autoFit={detailAutoFit}
+                    onAutoFit={enableAutoFitDetailRows}
+                    onPageSizeChange={(nextPageSize) => { setDetailPageSize(nextPageSize); setDetailPage(1); }}
+                    onShowAll={() => { setDetailPageSize(allDetailPageSize); setDetailPage(1); }}
+                    onPageChange={setDetailPage}
+                  />
                   <span className="text-slate-300">|</span>
                   <button
                     type="button"
@@ -1293,6 +1273,7 @@ export function StockHoldingsPanel({
                     onPageChange: setDetailPage,
                     onRowCountChange: setDetailTableRowCount,
                   }}
+                  onRowsFitChange={detailAutoFit && !detailAll ? handleRowsFitChange : undefined}
                 />
               )}
             </div>
