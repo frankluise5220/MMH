@@ -5,18 +5,30 @@
  * - { accountId: string; entryId: string; direction: "up" | "down" }
  * - { accountId: string; entryId: string; targetEntryId: string; targetPosition?: "before" | "after" }
  * - { accountId: string; accountIds: string[]; entryId: string; targetEntryId: string; targetPosition?: "before" | "after" }
- * Response: { ok: true, changed: boolean, orderedEntryIds: string[], runningBalances?: Record<string, number> } | { ok: false, code, error }
+ * Response: { ok: true, changed: boolean, orderedEntryIds: string[] } | { ok: false, code, error }
  *
  * Reorders ordinary TxRecord rows within the same displayed local date for one
  * account detail view. It never moves balance anchors; those remain end-of-day
- * records for running balance calculation.
+ * records for running balance calculation. Only the target day's rows are
+ * loaded (padded date window + same-day wealth arrival links). Running
+ * balances are rebased on the already-loaded client list.
  */
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, applyBalanceReconcileEntry, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
-import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
+import { compareDetailEntriesDesc } from "@/lib/detail-entry-order";
+import {
+  buildReorderDateWindowWhere,
+  entryReorderDayKey,
+  isReorderBalanceAnchor,
+  normalizeSameDayOrders,
+  reorderRowsWithinDay,
+  rowWithLinkedWealthDisplayDate,
+  sameDayUtcWindow,
+  type LinkedWealthForReorder,
+} from "@/lib/entry-reorder";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { revalidateAfterEntryOrderChange } from "@/lib/server/revalidate";
+import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 
 export const runtime = "nodejs";
 
@@ -40,41 +52,6 @@ type ReorderRow = {
   fundArrivalDate: Date | null;
   fundArrivalAmount: unknown;
 };
-
-type LinkedWealthForReorder = {
-  id: string;
-  action: string;
-  arrivalDate: Date | null;
-  cashAccountId: string | null;
-  deletedAt: Date | null;
-};
-
-function isWealthCashReceiptAction(action?: string | null) {
-  return action === "redeem" || action === "dividend_cash";
-}
-
-function rowWithLinkedWealthDisplayDate(row: ReorderRow, wealthRow?: LinkedWealthForReorder | null): ReorderRow {
-  if (!wealthRow || wealthRow.deletedAt || !isWealthCashReceiptAction(wealthRow.action)) return row;
-  return {
-    ...row,
-    fundSubtype: wealthRow.action,
-    fundArrivalDate: wealthRow.arrivalDate ?? row.fundArrivalDate,
-    toAccountId: wealthRow.cashAccountId ?? row.toAccountId,
-  };
-}
-
-function localDateKey(date: Date) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
-
-function isBalanceAnchor(entry: { source?: string | null; toNote?: string | null }) {
-  const source = String(entry.source ?? "");
-  if (source !== BALANCE_RECONCILE_SOURCE && source !== BALANCE_INITIALIZATION_SOURCE) return false;
-  return getBalanceReconcileTarget(entry) != null;
-}
 
 export async function POST(req: Request) {
   try {
@@ -120,15 +97,13 @@ export async function POST(req: Request) {
       fundArrivalDate: true,
       fundArrivalAmount: true,
     } as const;
+    const scopeWhere = txRecordAccountScopeWhere(scopeAccountIds);
     const targetRows = await prisma.txRecord.findMany({
       where: {
         id: entryId,
         deletedAt: null,
         householdId,
-        OR: [
-          { accountId: { in: scopeAccountIds } },
-          { toAccountId: { in: scopeAccountIds } },
-        ],
+        ...scopeWhere,
       },
       select: reorderRowSelect,
       take: 1,
@@ -137,22 +112,72 @@ export async function POST(req: Request) {
     if (!target) {
       return NextResponse.json({ ok: false, code: "ENTRY_NOT_FOUND", error: "记录不存在" }, { status: 404 });
     }
-    if (isBalanceAnchor(target)) {
+    if (isReorderBalanceAnchor(target)) {
       return NextResponse.json({ ok: false, code: "BALANCE_ANCHOR_NOT_MOVABLE", error: "余额校准记录固定在当天末尾，不能手动移动" }, { status: 400 });
     }
 
-    const rows = await prisma.txRecord.findMany({
+    const targetWealthLinks = await prisma.entryBusinessLink.findMany({
       where: {
-        deletedAt: null,
         householdId,
+        deletedAt: null,
+        wealthTransactionId: { not: null },
         OR: [
-          { accountId: { in: scopeAccountIds } },
-          { toAccountId: { in: scopeAccountIds } },
+          { cashEntryId: entryId },
+          { businessEntryId: entryId },
         ],
       },
-      select: reorderRowSelect,
+      include: { WealthTransaction: true },
     });
-
+    const linkedWealthByEntryId = new Map<string, LinkedWealthForReorder>();
+    for (const link of targetWealthLinks) {
+      const wealthRow = link.WealthTransaction;
+      if (!wealthRow) continue;
+      if (link.cashEntryId) linkedWealthByEntryId.set(link.cashEntryId, wealthRow);
+      if (link.businessEntryId) linkedWealthByEntryId.set(link.businessEntryId, wealthRow);
+    }
+    const targetDay = entryReorderDayKey(
+      rowWithLinkedWealthDisplayDate(target, linkedWealthByEntryId.get(target.id) ?? null),
+      accountId,
+    );
+    const { start: wealthStart, endExclusive: wealthEnd } = sameDayUtcWindow(targetDay);
+    const [windowRows, wealthArrivalLinks] = await Promise.all([
+      prisma.txRecord.findMany({
+        where: {
+          deletedAt: null,
+          householdId,
+          AND: [scopeWhere, buildReorderDateWindowWhere(targetDay)],
+        },
+        select: reorderRowSelect,
+      }),
+      prisma.entryBusinessLink.findMany({
+        where: {
+          householdId,
+          deletedAt: null,
+          wealthTransactionId: { not: null },
+          WealthTransaction: {
+            deletedAt: null,
+            action: { in: ["redeem", "dividend_cash"] },
+            arrivalDate: { gte: wealthStart, lt: wealthEnd },
+          },
+        },
+        include: { WealthTransaction: true },
+      }),
+    ]);
+    const extraIds = Array.from(new Set(
+      wealthArrivalLinks.flatMap((link) => [link.cashEntryId, link.businessEntryId].filter((id): id is string => !!id)),
+    )).filter((id) => id !== target.id && !windowRows.some((row) => row.id === id));
+    const extraRows = extraIds.length > 0
+      ? await prisma.txRecord.findMany({
+          where: {
+            id: { in: extraIds },
+            deletedAt: null,
+            householdId,
+            ...scopeWhere,
+          },
+          select: reorderRowSelect,
+        })
+      : [];
+    const rows = [target, ...windowRows.filter((row) => row.id !== target.id), ...extraRows.filter((row) => row.id !== target.id)];
     const rowIds = rows.map((row) => row.id);
     const wealthLinks = rowIds.length > 0
       ? await prisma.entryBusinessLink.findMany({
@@ -168,72 +193,38 @@ export async function POST(req: Request) {
           include: { WealthTransaction: true },
         })
       : [];
-    const linkedWealthByEntryId = new Map<string, LinkedWealthForReorder>();
-    for (const link of wealthLinks) {
+    for (const link of [...wealthArrivalLinks, ...wealthLinks]) {
       const wealthRow = link.WealthTransaction;
       if (!wealthRow) continue;
       if (link.cashEntryId) linkedWealthByEntryId.set(link.cashEntryId, wealthRow);
       if (link.businessEntryId) linkedWealthByEntryId.set(link.businessEntryId, wealthRow);
     }
     const displayRowOf = (row: ReorderRow) => rowWithLinkedWealthDisplayDate(row, linkedWealthByEntryId.get(row.id) ?? null);
-
-    const targetDay = localDateKey(getDetailEntryDisplayDate(displayRowOf(target), accountId));
     const sameDayRows = rows
-      .filter((row) => localDateKey(getDetailEntryDisplayDate(displayRowOf(row), accountId)) === targetDay)
-      .filter((row) => !isBalanceAnchor(row))
+      .filter((row) => entryReorderDayKey(displayRowOf(row), accountId) === targetDay)
+      .filter((row) => !isReorderBalanceAnchor(row))
       .sort((a, b) => compareDetailEntriesDesc(displayRowOf(a), displayRowOf(b), accountId));
 
-    const currentIndex = sameDayRows.findIndex((row) => row.id === entryId);
-    if (currentIndex < 0) {
-      return NextResponse.json({ ok: false, code: "ENTRY_NOT_IN_DAY_LIST", error: "记录不在当前账户的同日列表中" }, { status: 400 });
+    const reordered = reorderRowsWithinDay(
+      sameDayRows,
+      entryId,
+      targetEntryId ? { targetEntryId, targetPosition } : undefined,
+      direction,
+    );
+    if ("error" in reordered) {
+      const message = reordered.error === "REORDER_WITHIN_DAY_ONLY"
+        ? "只能在同一天记录内调整顺序"
+        : reordered.error === "TARGET_ENTRY_NOT_FOUND"
+          ? "目标记录不存在"
+          : "记录不在当前账户的同日列表中";
+      return NextResponse.json({ ok: false, code: reordered.error, error: message }, { status: 400 });
+    }
+    if (!reordered.changed) {
+      return NextResponse.json({ ok: true, changed: false, orderedEntryIds: sameDayRows.map((row) => row.id) });
     }
 
-    let reorderedRows = [...sameDayRows];
-    if (targetEntryId) {
-      const targetIndex = sameDayRows.findIndex((row) => row.id === targetEntryId);
-      if (targetIndex < 0) {
-        return NextResponse.json({ ok: false, code: "REORDER_WITHIN_DAY_ONLY", error: "只能在同一天记录内调整顺序" }, { status: 400 });
-      }
-      if (targetIndex === currentIndex) {
-        return NextResponse.json({ ok: true, changed: false, orderedEntryIds: sameDayRows.map((row) => row.id) });
-      }
-      const position = targetPosition || (currentIndex < targetIndex ? "after" : "before");
-      const [moving] = reorderedRows.splice(currentIndex, 1);
-      const targetIndexAfterRemoval = reorderedRows.findIndex((row) => row.id === targetEntryId);
-      if (targetIndexAfterRemoval < 0) {
-        return NextResponse.json({ ok: false, code: "TARGET_ENTRY_NOT_FOUND", error: "目标记录不存在" }, { status: 400 });
-      }
-      reorderedRows.splice(position === "after" ? targetIndexAfterRemoval + 1 : targetIndexAfterRemoval, 0, moving);
-    } else {
-      const nextIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
-      const neighbor = sameDayRows[nextIndex];
-      if (!neighbor) {
-        return NextResponse.json({ ok: true, changed: false, orderedEntryIds: sameDayRows.map((row) => row.id) });
-      }
-      [reorderedRows[currentIndex], reorderedRows[nextIndex]] = [reorderedRows[nextIndex], reorderedRows[currentIndex]];
-    }
-
-    const normalizedOrders = new Map<string, number>();
-    const step = 1000;
-    for (let index = 0; index < reorderedRows.length; index += 1) {
-      normalizedOrders.set(reorderedRows[index].id, (reorderedRows.length - index) * step);
-    }
-
-    const rowWithNormalizedOrder = (row: ReorderRow): ReorderRow => ({
-      ...row,
-      dayOrder: normalizedOrders.get(row.id) ?? row.dayOrder ?? 0,
-    });
-    const orderedRowsAfterChange = rows
-      .map((row) => rowWithNormalizedOrder(displayRowOf(row)))
-      .sort((a, b) => compareDetailEntriesDesc(a, b, accountId));
-    const ascRowsAfterChange = [...orderedRowsAfterChange].sort((a, b) => compareDetailEntriesAsc(a, b, accountId));
-    const affectedDayIdSet = new Set(sameDayRows.map((row) => row.id));
-    const runningBalances: Record<string, number> = {};
-    let runningBalance = 0;
-    for (const row of ascRowsAfterChange) {
-      runningBalance = applyBalanceReconcileEntry(runningBalance, row, accountId);
-      if (affectedDayIdSet.has(row.id)) runningBalances[row.id] = runningBalance;
-    }
+    const reorderedRows = reordered.rows;
+    const normalizedOrders = normalizeSameDayOrders(reorderedRows);
 
     await prisma.$transaction(async (tx) => {
       for (const row of sameDayRows) {
@@ -246,7 +237,7 @@ export async function POST(req: Request) {
 
     revalidateAfterEntryOrderChange();
 
-    return NextResponse.json({ ok: true, changed: true, orderedEntryIds: reorderedRows.map((row) => row.id), runningBalances });
+    return NextResponse.json({ ok: true, changed: true, orderedEntryIds: reorderedRows.map((row) => row.id) });
   } catch (error) {
     console.error("POST /api/v1/transactions/reorder error:", error);
     const message = error instanceof Error ? error.message : "调整顺序失败";

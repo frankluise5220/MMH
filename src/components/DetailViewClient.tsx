@@ -20,6 +20,7 @@ import type { BatchReplaceField } from "@/lib/client/batchReplaceEntries";
 import { useI18n } from "@/lib/i18n";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, applyBalanceReconcileEntry, effectiveAmountForAccount, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
+import { rebaseRunningBalancesAfterSameDayReorder, startOfDayRunningBalanceSeed } from "@/lib/entry-reorder";
 import { buildDebtActivityEditEvent, inferDebtMode, isDebtActivityEntry, type DebtMode } from "@/lib/debt-entry-edit";
 import { parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
@@ -968,6 +969,13 @@ export function DetailViewClient({
   usePruneBasicDetailSelection(currentEntryIds);
   const detailRefreshSeqRef = useRef(0);
   const lastResetKeyRef = useRef<string | undefined>(resetKey);
+  const entriesRef = useRef(entries);
+  const reorderPersistChainRef = useRef(Promise.resolve());
+  const reorderGenRef = useRef(0);
+  const reorderAbortPersistRef = useRef(false);
+  useEffect(() => {
+    entriesRef.current = entries;
+  }, [entries]);
 
   const persistEntryReorder = useCallback(async (payload: { entryId: string; targetEntryId: string; targetPosition: AdvancedDataTableDropPosition }) => {
     const res = await fetch("/api/v1/transactions/reorder", {
@@ -1004,7 +1012,7 @@ export function DetailViewClient({
     return { row: orderedRows[targetIndex], index: targetIndex };
   }, [accountId, canDropDetailEntry]);
 
-  const reorderEntryByDrag = useCallback(async (source: DetailEntry, target: DetailEntry, position: AdvancedDataTableDropPosition) => {
+  const reorderEntryByDrag = useCallback((source: DetailEntry, target: DetailEntry, position: AdvancedDataTableDropPosition) => {
     if (source.id === target.id) return;
     if (!canManuallyReorderDetailEntry(source) || !canManuallyReorderDetailEntry(target)) return;
     if (detailEntryDayKey(source, accountId) !== detailEntryDayKey(target, accountId)) {
@@ -1012,30 +1020,44 @@ export function DetailViewClient({
       return;
     }
     if (!canDropDetailEntry(source, target, position)) return;
-    const previousEntries = entries;
-    const nextEntries = reorderEntriesToTarget(entries, source.id, target.id, position);
-    if (nextEntries === entries) return;
+    const previousEntries = entriesRef.current;
+    const nextEntries = reorderEntriesToTarget(previousEntries, source.id, target.id, position);
+    if (nextEntries === previousEntries) return;
+    const dayKey = detailEntryDayKey(source, accountId);
+    const seed = startOfDayRunningBalanceSeed(previousEntries, accountId, dayKey);
+    const nextWithBalances = showRunningBalance
+      ? rebaseRunningBalancesAfterSameDayReorder(nextEntries, accountId, dayKey, seed)
+      : nextEntries;
+    const gen = ++reorderGenRef.current;
+    reorderAbortPersistRef.current = false;
     detailRefreshSeqRef.current += 1;
-    setRefreshedEntries({ accountId, entries: nextEntries });
-    try {
-      const data = await persistEntryReorder({ entryId: source.id, targetEntryId: target.id, targetPosition: position });
-      if (data.orderedEntryIds?.length || data.runningBalances) {
-        setRefreshedEntries((current) => {
-          const currentEntries = current?.accountId === accountId ? current.entries : nextEntries;
-          const orderedEntries = applyServerEntryOrder(currentEntries, data.orderedEntryIds ?? []);
-          return {
-            accountId,
-            entries: showRunningBalance
-              ? applyServerRunningBalances(orderedEntries, data.runningBalances)
-              : orderedEntries,
-          };
-        });
-      }
-    } catch (error) {
-      setRefreshedEntries({ accountId, entries: previousEntries });
-      window.alert(error instanceof Error ? error.message : t("detailView.alert.reorderFailed"));
-    }
-  }, [accountId, canDropDetailEntry, entries, persistEntryReorder, showRunningBalance, t]);
+    entriesRef.current = nextWithBalances;
+    setRefreshedEntries({ accountId, entries: nextWithBalances });
+    reorderPersistChainRef.current = reorderPersistChainRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (reorderAbortPersistRef.current) return;
+        const data = await persistEntryReorder({ entryId: source.id, targetEntryId: target.id, targetPosition: position });
+        if (reorderAbortPersistRef.current) return;
+        if (!data.orderedEntryIds?.length && !data.runningBalances) return;
+        const currentEntries = entriesRef.current;
+        const orderedEntries = applyServerEntryOrder(currentEntries, data.orderedEntryIds ?? []);
+        const confirmed = showRunningBalance
+          ? (data.runningBalances
+            ? applyServerRunningBalances(orderedEntries, data.runningBalances)
+            : rebaseRunningBalancesAfterSameDayReorder(orderedEntries, accountId, dayKey, seed))
+          : orderedEntries;
+        if (gen !== reorderGenRef.current) return;
+        entriesRef.current = confirmed;
+        setRefreshedEntries({ accountId, entries: confirmed });
+      })
+      .catch((error) => {
+        reorderAbortPersistRef.current = true;
+        entriesRef.current = previousEntries;
+        setRefreshedEntries({ accountId, entries: previousEntries });
+        window.alert(error instanceof Error ? error.message : t("detailView.alert.reorderFailed"));
+      });
+  }, [accountId, canDropDetailEntry, persistEntryReorder, showRunningBalance, t]);
 
   useEffect(() => {
     setRefreshedEntries((current) => (current?.accountId === accountId ? current : null));
