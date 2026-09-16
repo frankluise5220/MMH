@@ -92,6 +92,17 @@ export function isIncomeExpensePostingAccount(account: AccountKindLike | null | 
   return true;
 }
 
+/**
+ * 资金类账户（含信用卡）：现金、借记卡、电子钱包，以及信用卡。
+ * 不含贷款、往来款、存款、保险、基金/股票资金和持仓。
+ */
+export function isCashLedgerAccount(account: AccountKindLike | null | undefined) {
+  if (!account) return false;
+  if (account.kind === "bank_credit") return true;
+  if (account.kind !== "cash" && account.kind !== "bank_debit" && account.kind !== "ewallet") return false;
+  return !isInvestmentFundingAccount(account);
+}
+
 /** 代付资金侧：普通资金账户。贷款、往来款、存款、基金/股票资金、持仓都不算。 */
 export function isAdvanceFundingAccount(account: AccountKindLike | null | undefined) {
   if (!isIncomeExpensePostingAccount(account)) return false;

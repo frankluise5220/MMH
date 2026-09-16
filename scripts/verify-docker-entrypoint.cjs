@@ -154,6 +154,18 @@ expect(
   "Docker updater must prefer release-bundled deploy files before falling back to git pull.",
 );
 
+expect(
+  /\.mmh-used-images\.json/.test(updaterServer) &&
+    /recordRunningMmhImages/.test(updaterServer) &&
+    /recordPulledImages/.test(updaterServer) &&
+    /imageIdsToRemove/.test(updaterServer) &&
+    /docker rmi/.test(updaterServer) &&
+    !/docker image prune/.test(updaterServer) &&
+    !/docker rmi -f/.test(updaterServer) &&
+    /未能确认新镜像 ID，跳过历史镜像清理/.test(updaterServer),
+  "Docker updater must record MMH image IDs and delete only those historical IDs after a successful update, never prune all unused host images.",
+);
+
 if (failures.length > 0) {
   console.error("Docker entrypoint check failed:");
   for (const failure of failures) console.error(`- ${failure}`);

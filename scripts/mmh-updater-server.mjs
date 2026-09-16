@@ -8,6 +8,7 @@ const workdir = process.env.MMH_WORKDIR || "/workspace";
 const composeProject = process.env.MMH_COMPOSE_PROJECT || "mmh";
 const composeFile = process.env.MMH_COMPOSE_FILE || `${workdir}/docker-compose.yml`;
 const taskStateFile = `${workdir}/.mmh-update-task.json`;
+const usedImagesFile = `${workdir}/.mmh-used-images.json`;
 const ghcrImage = "ghcr.io/frankluise5220/mmh:latest";
 const daocloudImage = "ghcr.m.daocloud.io/frankluise5220/mmh:latest";
 const dockerproxyImage = "ghcr.dockerproxy.net/frankluise5220/mmh:latest";
@@ -295,6 +296,111 @@ function shortDigest(digest) {
   return String(digest || "").replace(/^sha256:/, "").slice(0, 12);
 }
 
+function isSafeImageId(id) {
+  return /^(sha256:)?[0-9a-f]{12,64}$/i.test(String(id || "").trim());
+}
+
+function uniqueStrings(values) {
+  return [...new Set((values || []).map((value) => String(value || "").trim()).filter(Boolean))];
+}
+
+async function readUsedImages() {
+  try {
+    const saved = JSON.parse(await readFile(usedImagesFile, "utf8"));
+    return Array.isArray(saved?.images) ? saved.images : [];
+  } catch {
+    return [];
+  }
+}
+
+async function rememberUsedImages(entries) {
+  const byId = new Map();
+  for (const item of await readUsedImages()) {
+    if (!isSafeImageId(item?.id)) continue;
+    byId.set(item.id, {
+      id: item.id,
+      refs: uniqueStrings(item.refs),
+      recordedAt: item.recordedAt || now(),
+    });
+  }
+  for (const item of entries || []) {
+    if (!isSafeImageId(item?.id)) continue;
+    const prev = byId.get(item.id) || { id: item.id, refs: [], recordedAt: now() };
+    byId.set(item.id, {
+      id: item.id,
+      refs: uniqueStrings([...(prev.refs || []), ...(item.refs || [])]),
+      recordedAt: prev.recordedAt || now(),
+    });
+  }
+  const images = [...byId.values()].slice(-40);
+  await writeFile(usedImagesFile, JSON.stringify({ images }, null, 2), "utf8");
+  return images;
+}
+
+async function inspectImageRecord(refOrId) {
+  const target = String(refOrId || "").trim();
+  if (!target) return null;
+  try {
+    const inspectText = await captureDocker([
+      "image",
+      "inspect",
+      target,
+      "--format",
+      "{{.Id}}|{{json .RepoTags}}|{{json .RepoDigests}}",
+    ]);
+    const [id, tagsJson, digestsJson] = inspectText.split("|");
+    if (!isSafeImageId(id)) return null;
+    return {
+      id,
+      refs: uniqueStrings([target, ...(JSON.parse(tagsJson || "[]")), ...(JSON.parse(digestsJson || "[]"))]),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function inspectContainerImageRecord(name) {
+  try {
+    const imageId = await captureDocker(["inspect", name, "--format", "{{.Image}}"]);
+    const record = await inspectImageRecord(imageId);
+    if (record) return record;
+    return isSafeImageId(imageId) ? { id: imageId, refs: [] } : null;
+  } catch {
+    return null;
+  }
+}
+
+async function recordRunningMmhImages() {
+  const entries = [];
+  for (const name of ["mmh-app", "mmh-updater"]) {
+    const record = await inspectContainerImageRecord(name);
+    if (record) entries.push(record);
+  }
+  if (entries.length) await rememberUsedImages(entries);
+  return entries;
+}
+
+async function recordPulledImages(selectedImages) {
+  const entries = [];
+  for (const ref of [selectedImages?.appImage, selectedImages?.updaterImage]) {
+    const record = await inspectImageRecord(ref);
+    if (record) entries.push(record);
+  }
+  if (entries.length) await rememberUsedImages(entries);
+  return entries;
+}
+
+function imageIdsToRemove(history, keepIds) {
+  const keep = new Set([...keepIds].filter((id) => isSafeImageId(id)));
+  return uniqueStrings((history || []).map((item) => item?.id)).filter((id) => isSafeImageId(id) && !keep.has(id));
+}
+
+function removeRecordedImagesCommand(imageIds) {
+  const ids = (imageIds || []).filter((id) => isSafeImageId(id));
+  if (!ids.length) return "";
+  return ids.map((id) => `docker rmi ${JSON.stringify(id)} >/dev/null 2>&1 || true`).join("; ");
+}
+
 function captureDocker(args, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
     let stdout = "";
@@ -529,7 +635,7 @@ function inspectImageSource(source, timeoutMs = 8000) {
   });
 }
 
-async function scheduleUpdaterRecreate(updaterImage) {
+async function scheduleUpdaterRecreate(updaterImage, staleImageIds = []) {
   const workspaceSource = await captureDocker([
     "inspect",
     "mmh-updater",
@@ -561,13 +667,13 @@ async function scheduleUpdaterRecreate(updaterImage) {
       return;
     }
     const helperName = `mmh-updater-reloader-${Date.now()}`;
-    const recreateCommand = [
-      "sleep 3;",
-      `docker compose -p ${composeProject}`,
-      `-f ${JSON.stringify(hostComposeFile)}`,
-      "up -d --no-deps --force-recreate updater",
-      "docker image prune -af >/dev/null 2>&1 || true",
-    ].join(" ");
+    const commands = [
+      "sleep 3",
+      `docker compose -p ${composeProject} -f ${JSON.stringify(hostComposeFile)} up -d --no-deps --force-recreate updater`,
+    ];
+    const removeCmd = removeRecordedImagesCommand(staleImageIds);
+    if (removeCmd) commands.push(removeCmd);
+    const recreateCommand = commands.join("; ");
     const child = spawn("docker", [
       "run",
       "--rm",
@@ -635,9 +741,11 @@ async function startUpdate() {
   void (async () => {
     try {
       await resolveHostWorkdir();
+      await recordRunningMmhImages().catch(() => []);
       await run(syncDeployFilesCommand(), "同步部署文件", { allowFailure: true });
       const selectedImages = await chooseImageSource();
       await run(composeCommand("pull updater app"), "拉取应用镜像");
+      const pulledImages = await recordPulledImages(selectedImages).catch(() => []);
       task.status = "restarting";
       task.currentStep = "重启服务";
       pushLog("即将重启服务");
@@ -651,8 +759,17 @@ async function startUpdate() {
             task.running = false;
             task.currentStep = "完成";
             pushLog("更新完成");
+            const keepIds = uniqueStrings(pulledImages.map((item) => item.id));
+            const staleImageIds = keepIds.length
+              ? imageIdsToRemove(await readUsedImages(), keepIds)
+              : [];
+            if (!keepIds.length) {
+              pushLog("未能确认新镜像 ID，跳过历史镜像清理");
+            } else if (staleImageIds.length) {
+              pushLog(`将清理 ${staleImageIds.length} 个历史 MMH 镜像`);
+            }
             await persistTask();
-            await scheduleUpdaterRecreate(selectedImages.updaterImage);
+            await scheduleUpdaterRecreate(selectedImages.updaterImage, staleImageIds);
             pushLog("更新执行器将切换到所选镜像源");
           } catch (error) {
             task.status = "failed";

@@ -19,6 +19,7 @@ import {
   getSidebarHideInitialDataPreference,
   getSidebarHideZeroPreference,
   getSidebarShowFixedAssetsPreference,
+  getSidebarShowAllCashEntriesPreference,
   getTimeZoneModePreference,
   getTimeZonePreference,
   DEFAULT_ROW_HEIGHT_MODE,
@@ -35,6 +36,7 @@ import {
   setSidebarHideInitialDataPreference,
   setSidebarHideZeroPreference,
   setSidebarShowFixedAssetsPreference,
+  setSidebarShowAllCashEntriesPreference,
   setTimeZonePreference,
   type DisplayLanguage,
   type DateDisplayFormat,
@@ -160,6 +162,7 @@ export default function DisplaySettingsPage() {
   const [sidebarHideZero, setSidebarHideZero] = useState(false);
   const [sidebarHideInitialData, setSidebarHideInitialData] = useState(false);
   const [sidebarShowFixedAssets, setSidebarShowFixedAssets] = useState(true);
+  const [sidebarShowAllCashEntries, setSidebarShowAllCashEntries] = useState(true);
   const [detailDateBackground, setDetailDateBackground] = useState(false);
   const [accountDropdownRestrictType, setAccountDropdownRestrictType] = useState(true);
   const [rowHeightMode, setRowHeightMode] = useState<RowHeightMode>(DEFAULT_ROW_HEIGHT_MODE);
@@ -179,6 +182,7 @@ export default function DisplaySettingsPage() {
     setSidebarHideZero(getSidebarHideZeroPreference());
     setSidebarHideInitialData(getSidebarHideInitialDataPreference());
     setSidebarShowFixedAssets(getSidebarShowFixedAssetsPreference());
+    setSidebarShowAllCashEntries(getSidebarShowAllCashEntriesPreference());
     setDetailDateBackground(getDetailDateBackgroundPreference());
     setAccountDropdownRestrictType(getAccountDropdownRestrictTypePreference());
     setRowHeightMode(getRowHeightModePreference());
@@ -452,6 +456,27 @@ export default function DisplaySettingsPage() {
     }
   }
 
+  async function updateSidebarShowAllCashEntries(next: boolean) {
+    const prev = sidebarShowAllCashEntries;
+    setSidebarShowAllCashEntries(next);
+    setSidebarShowAllCashEntriesPreference(next);
+    try {
+      const res = await fetch("/api/v1/settings/app-preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sidebarShowAllCashEntries: next }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setSidebarShowAllCashEntries(prev);
+        setSidebarShowAllCashEntriesPreference(prev);
+      }
+    } catch {
+      setSidebarShowAllCashEntries(prev);
+      setSidebarShowAllCashEntriesPreference(prev);
+    }
+  }
+
   async function updateDetailDateBackground(next: boolean) {
     const prev = detailDateBackground;
     setDetailDateBackground(next);
@@ -597,6 +622,14 @@ export default function DisplaySettingsPage() {
               type="checkbox"
               checked={sidebarShowFixedAssets}
               onChange={(e) => void updateSidebarShowFixedAssets(e.target.checked)}
+              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
+            />
+          </SettingRow>
+          <SettingRow title={t("settings.display.showAllCashEntries")} desc={t("settings.display.showAllCashEntriesDesc")} hideDesc={hideSettingDescriptions}>
+            <input
+              type="checkbox"
+              checked={sidebarShowAllCashEntries}
+              onChange={(e) => void updateSidebarShowAllCashEntries(e.target.checked)}
               className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
             />
           </SettingRow>

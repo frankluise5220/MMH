@@ -143,13 +143,14 @@ async function _loadEntriesForAccount(
 export const loadEntriesForAccount = cache(_loadEntriesForAccount);
 
 async function _loadEntriesPageForAccount(
-  accountId: string,
+  accountId: string | string[],
   hidFilterStr: string,
   pageValue: number,
   pageSizeValue: number,
 ) {
   const hidFilter = JSON.parse(hidFilterStr) as { householdId: string };
   const hid = { householdId: hidFilter.householdId };
+  const sortAccountId = Array.isArray(accountId) ? undefined : accountId;
   const where = {
     ...txRecordAccountScopeWhere(accountId),
     deletedAt: null,
@@ -194,7 +195,7 @@ async function _loadEntriesPageForAccount(
     }),
   ]);
 
-  const orderedEntries = [...orderingEntries].sort((a, b) => compareDetailEntriesDesc(a, b, accountId));
+  const orderedEntries = [...orderingEntries].sort((a, b) => compareDetailEntriesDesc(a, b, sortAccountId));
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   const page = Math.min(Math.max(1, Math.floor(pageValue) || 1), totalPages);
   const pagedEntryIds = orderedEntries

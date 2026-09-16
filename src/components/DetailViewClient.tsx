@@ -37,6 +37,7 @@ import { parseImportAccountId } from "@/lib/account-import-match";
 import { formatAccountTableLabel, formatAccountTableTitle } from "@/lib/account-display";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { APP_PREFS_EVENT, getAccountLabelFieldsPreference, getDateDisplayFormatPreference, getDetailDateBackgroundPreference, type DateDisplayFormat } from "@/lib/client/appPreferences";
+import { cashLedgerFlowAccountId, isAllCashDetailScope } from "@/lib/all-cash-entries";
 
 const LEGACY_BASIC_DETAIL_STORAGE_KEY = "mmh_basic_detail_table_v1";
 
@@ -642,9 +643,15 @@ export function DetailViewClient({
     return { label: raw, title: raw };
   }, [accountOptionById]);
   const accountColumnScopeIds = useMemo(
-    () => new Set((reorderAccountIds?.length ? reorderAccountIds : [accountId]).filter(Boolean)),
+    () => new Set((reorderAccountIds?.length ? reorderAccountIds : (isAllCashDetailScope(accountId) ? [] : [accountId])).filter(Boolean)),
     [accountId, reorderAccountIds],
   );
+  const flowAccountIdOf = useCallback((entry: { accountId?: string | null; toAccountId?: string | null }) => {
+    if (isAllCashDetailScope(accountId) && accountColumnScopeIds.size > 0) {
+      return cashLedgerFlowAccountId(entry, accountColumnScopeIds);
+    }
+    return accountId;
+  }, [accountId, accountColumnScopeIds]);
   const accountColumnScopeIdList = useMemo(
     () => Array.from(accountColumnScopeIds),
     [accountColumnScopeIds],
@@ -958,8 +965,8 @@ export function DetailViewClient({
       : buildDebtActivityEditEvent({ ...e, date: dateStr }, accountOptionById);
 
     if (balanceReconcileEditEvent || debtEditEvent) return { customEditEvent: balanceReconcileEditEvent ?? debtEditEvent ?? undefined };
-    return { edit: e.type === "investment" ? investmentEditPayload : buildBasicEntryEditPayload(e, accountId) };
-  }, [accountId, accountOptionById, allowInvestmentEdit, investmentProductTypeByAccountId, linkedInvestmentCandidateEntries]);
+    return { edit: e.type === "investment" ? investmentEditPayload : buildBasicEntryEditPayload(e, flowAccountIdOf(e)) };
+  }, [accountId, accountOptionById, allowInvestmentEdit, flowAccountIdOf, investmentProductTypeByAccountId, linkedInvestmentCandidateEntries]);
   const colorScheme =
     typeof document === "undefined"
       ? "red_up_green_down"
@@ -974,7 +981,7 @@ export function DetailViewClient({
     const outflowByCurrency = new Map<string, number>();
     for (const entry of entries) {
       if (!selectedIds.has(entry.id)) continue;
-      const amount = effectiveAmountForAccount(entry, accountId);
+      const amount = effectiveAmountForAccount(entry, flowAccountIdOf(entry));
       const currency = entryCurrency(entry);
       if (!inflowByCurrency.has(currency)) inflowByCurrency.set(currency, 0);
       if (!outflowByCurrency.has(currency)) outflowByCurrency.set(currency, 0);
@@ -988,7 +995,7 @@ export function DetailViewClient({
       inflow: formatSelectedAmountsByCurrency(inflowByCurrency),
       outflow: formatSelectedAmountsByCurrency(outflowByCurrency),
     };
-  }, [accountId, entries, selectedIds]);
+  }, [accountId, entries, flowAccountIdOf, selectedIds]);
   const selectedCategoryTypes = useMemo(() => {
     const types = new Set<string>();
     for (const entry of entries) {
@@ -1027,27 +1034,27 @@ export function DetailViewClient({
     return (
     canManuallyReorderDetailEntry(source) &&
     canManuallyReorderDetailEntry(target) &&
-    detailEntryDayKey(source, accountId) === detailEntryDayKey(target, accountId)
+    detailEntryDayKey(source, flowAccountIdOf(source)) === detailEntryDayKey(target, flowAccountIdOf(target))
     );
-  }, [accountId]);
+  }, [accountId, flowAccountIdOf]);
 
   const rowDropTargetAtEnd = useCallback((source: DetailEntry, sourceIndex: number, orderedRows: DetailEntry[]) => {
-    const sourceDayKey = detailEntryDayKey(source, accountId);
+    const sourceDayKey = detailEntryDayKey(source, flowAccountIdOf(source));
     let targetIndex = -1;
     for (let index = 0; index < orderedRows.length; index += 1) {
       const candidate = orderedRows[index];
-      if (detailEntryDayKey(candidate, accountId) !== sourceDayKey) continue;
+      if (detailEntryDayKey(candidate, flowAccountIdOf(candidate)) !== sourceDayKey) continue;
       if (!canDropDetailEntry(source, candidate, "after")) continue;
       targetIndex = index;
     }
     if (targetIndex < 0 || targetIndex === sourceIndex) return null;
     return { row: orderedRows[targetIndex], index: targetIndex };
-  }, [accountId, canDropDetailEntry]);
+  }, [accountId, canDropDetailEntry, flowAccountIdOf]);
 
   const reorderEntryByDrag = useCallback((source: DetailEntry, target: DetailEntry, position: AdvancedDataTableDropPosition) => {
     if (source.id === target.id) return;
     if (!canManuallyReorderDetailEntry(source) || !canManuallyReorderDetailEntry(target)) return;
-    if (detailEntryDayKey(source, accountId) !== detailEntryDayKey(target, accountId)) {
+    if (detailEntryDayKey(source, flowAccountIdOf(source)) !== detailEntryDayKey(target, flowAccountIdOf(target))) {
       window.alert(t("detailView.alert.reorderSameDayOnly"));
       return;
     }
@@ -1055,7 +1062,7 @@ export function DetailViewClient({
     const previousEntries = entriesRef.current;
     const nextEntries = reorderEntriesToTarget(previousEntries, source.id, target.id, position);
     if (nextEntries === previousEntries) return;
-    const dayKey = detailEntryDayKey(source, accountId);
+    const dayKey = detailEntryDayKey(source, flowAccountIdOf(source));
     const seed = startOfDayRunningBalanceSeed(previousEntries, accountId, dayKey);
     const nextWithBalances = showRunningBalance
       ? rebaseRunningBalancesAfterSameDayReorder(nextEntries, accountId, dayKey, seed)
@@ -1089,7 +1096,7 @@ export function DetailViewClient({
         setRefreshedEntries({ accountId, entries: previousEntries });
         window.alert(error instanceof Error ? error.message : t("detailView.alert.reorderFailed"));
       });
-  }, [accountId, canDropDetailEntry, persistEntryReorder, showRunningBalance, t]);
+  }, [accountId, canDropDetailEntry, flowAccountIdOf, persistEntryReorder, showRunningBalance, t]);
 
   useEffect(() => {
     setRefreshedEntries((current) => (current?.accountId === accountId ? current : null));
@@ -1109,7 +1116,11 @@ export function DetailViewClient({
     const handler = (event: Event) => {
       const detail = (event as CustomEvent<{ accountIds?: string[]; deletedEntryIds?: string[] }>).detail ?? {};
       const eventAccountIds = detail.accountIds ?? [];
-      if (eventAccountIds.length > 0 && !eventAccountIds.includes(accountId)) return;
+      if (
+        eventAccountIds.length > 0
+        && !eventAccountIds.includes(accountId)
+        && !eventAccountIds.some((id) => accountColumnScopeIds.has(id))
+      ) return;
       const deletedEntryIds = detail.deletedEntryIds ?? [];
       if (deletedEntryIds.length > 0) {
         const deletedSet = new Set(deletedEntryIds);
@@ -1151,7 +1162,7 @@ export function DetailViewClient({
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
     return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
-  }, [accountId, entries, refreshOnGlobalEvent, setSelection]);
+  }, [accountColumnScopeIds, accountId, entries, refreshOnGlobalEvent, setSelection]);
 
   const columns = useMemo<AdvancedDataTableColumn<DetailEntry>[]>(() => [
     {
@@ -1160,8 +1171,8 @@ export function DetailViewClient({
       width: 96,
       minWidth: 78,
       filterKind: "dateRange",
-      filterText: (e) => localDateKey(getDetailEntryDisplayDate(e, accountId)),
-      sortValue: (e) => getDetailEntryDisplayDate(e, accountId).getTime(),
+      filterText: (e) => localDateKey(getDetailEntryDisplayDate(e, flowAccountIdOf(e))),
+      sortValue: (e) => getDetailEntryDisplayDate(e, flowAccountIdOf(e)).getTime(),
       // The date column shows the raw transaction date; the posting date has
       // its own column. Row order comes from the server and follows the
       // effective date (postedAt ?? date) — do not display that here, or the
@@ -1210,19 +1221,19 @@ export function DetailViewClient({
       align: "right",
       filterKind: "numberRange",
       filterText: (e) => {
-        const amount = effectiveAmountForAccount(e, accountId);
+        const amount = effectiveAmountForAccount(e, flowAccountIdOf(e));
         return amount > 0 ? String(amount) : "";
       },
       filterNumber: (e) => {
-        const amount = effectiveAmountForAccount(e, accountId);
+        const amount = effectiveAmountForAccount(e, flowAccountIdOf(e));
         return amount > 0 ? amount : null;
       },
       sortValue: (e) => {
-        const amount = effectiveAmountForAccount(e, accountId);
+        const amount = effectiveAmountForAccount(e, flowAccountIdOf(e));
         return amount > 0 ? amount : null;
       },
       render: (e) => {
-        const effectiveAmount = effectiveAmountForAccount(e, accountId);
+        const effectiveAmount = effectiveAmountForAccount(e, flowAccountIdOf(e));
         const inflow = effectiveAmount > 0 ? effectiveAmount : null;
         return (
           <span className={`whitespace-nowrap tabular-nums ${inflow !== null ? inflowCls : "text-slate-700"}`}>
@@ -1244,19 +1255,19 @@ export function DetailViewClient({
       align: "right",
       filterKind: "numberRange",
       filterText: (e) => {
-        const amount = effectiveAmountForAccount(e, accountId);
+        const amount = effectiveAmountForAccount(e, flowAccountIdOf(e));
         return amount < 0 ? String(-amount) : "";
       },
       filterNumber: (e) => {
-        const amount = effectiveAmountForAccount(e, accountId);
+        const amount = effectiveAmountForAccount(e, flowAccountIdOf(e));
         return amount < 0 ? -amount : null;
       },
       sortValue: (e) => {
-        const amount = effectiveAmountForAccount(e, accountId);
+        const amount = effectiveAmountForAccount(e, flowAccountIdOf(e));
         return amount < 0 ? -amount : null;
       },
       render: (e) => {
-        const effectiveAmount = effectiveAmountForAccount(e, accountId);
+        const effectiveAmount = effectiveAmountForAccount(e, flowAccountIdOf(e));
         const outflow = effectiveAmount < 0 ? -effectiveAmount : null;
         return (
           <span className={`whitespace-nowrap tabular-nums ${outflow !== null ? outflowCls : "text-slate-700"}`}>
@@ -1445,13 +1456,13 @@ export function DetailViewClient({
       width: 220,
       minWidth: 120,
       hideable: true,
-      filterText: (e) => displayDetailRemark(e, accountId),
+      filterText: (e) => displayDetailRemark(e, flowAccountIdOf(e)),
       render: (e) => {
-        const text = displayDetailRemark(e, accountId);
+        const text = displayDetailRemark(e, flowAccountIdOf(e));
         return <span className="block truncate text-slate-500" title={text}>{text}</span>;
       },
     },
-  ], [accountColumnDefaultHidden, accountColumnDisplayFallback, resolvedAccountColumnLabel, accountColumnMode, accountDisplayFallback, accountId, accountOptionById, dateDisplayFormat, detailCategoryLabel, inflowCls, investmentProductTypeByAccountId, outflowCls, relatedAccountDefaultHidden, relatedAccountTarget, renderNavigableAccountLabel, runningBalanceDefaultHidden, showAccountColumn, showRunningBalance, t]);
+  ], [accountColumnDefaultHidden, accountColumnDisplayFallback, resolvedAccountColumnLabel, accountColumnMode, accountDisplayFallback, accountId, accountOptionById, dateDisplayFormat, detailCategoryLabel, flowAccountIdOf, inflowCls, investmentProductTypeByAccountId, outflowCls, relatedAccountDefaultHidden, relatedAccountTarget, renderNavigableAccountLabel, runningBalanceDefaultHidden, showAccountColumn, showRunningBalance, t]);
 
   const customToolbarLeft = toolbarMode === "custom" ? (
     <div className="flex min-w-0 items-center gap-2">
@@ -1467,13 +1478,13 @@ export function DetailViewClient({
   const mobileGroups = useMemo(() => {
     const groups: Array<{ date: string; entries: DetailEntry[] }> = [];
     for (const entry of entries) {
-      const date = detailEntryDayKey(entry, accountId) || t("detailView.noDate");
+      const date = detailEntryDayKey(entry, flowAccountIdOf(entry)) || t("detailView.noDate");
       const current = groups[groups.length - 1];
       if (current?.date === date) current.entries.push(entry);
       else groups.push({ date, entries: [entry] });
     }
     return groups;
-  }, [accountId, entries, t]);
+  }, [accountId, entries, flowAccountIdOf, t]);
 
   return (
     <>
@@ -1487,7 +1498,7 @@ export function DetailViewClient({
               </div>
               <div className="divide-y divide-slate-100 bg-white">
                 {group.entries.map((entry, entryIndex) => {
-                  const effectiveAmount = effectiveAmountForAccount(entry, accountId);
+                  const effectiveAmount = effectiveAmountForAccount(entry, flowAccountIdOf(entry));
                   const entryFundProductType =
                     entry.fundProductType ??
                     (entry.toAccountId ? investmentProductTypeByAccountId[entry.toAccountId] : undefined) ??
@@ -1498,7 +1509,7 @@ export function DetailViewClient({
                       ? investmentCategoryLabel(entry, entryFundProductType, t)
                       : getInsuranceDetailCategoryName(entry))
                   ) || t("txForm.uncategorized");
-                  const note = displayDetailRemark(entry, accountId);
+                  const note = displayDetailRemark(entry, flowAccountIdOf(entry));
                   const related = relatedAccountTarget(entry);
                   const relatedDisplay = accountDisplayFallback(related.id, related.name);
                   const counterpart = entry.type === "transfer"
@@ -1611,7 +1622,7 @@ export function DetailViewClient({
         ? "bg-amber-50 ring-1 ring-inset ring-amber-300 hover:bg-amber-50"
         : "hover:bg-blue-50/40"}
       rowBackgroundEnabled={detailDateBackground}
-      rowBackgroundGroupKey={(entry) => detailEntryDayKey(entry, accountId)}
+      rowBackgroundGroupKey={(entry) => detailEntryDayKey(entry, flowAccountIdOf(entry))}
       fillHeight
       compactRows={compactRows}
       toolbarMode={toolbarMode}
@@ -1628,8 +1639,8 @@ export function DetailViewClient({
         if (currentSort?.key !== "date") return null;
         return [...rows].sort((a, b) =>
           currentSort.direction === "asc"
-            ? compareDetailEntriesAsc(a, b, accountId)
-            : compareDetailEntriesDesc(a, b, accountId),
+            ? compareDetailEntriesAsc(a, b, isAllCashDetailScope(accountId) ? undefined : accountId)
+            : compareDetailEntriesDesc(a, b, isAllCashDetailScope(accountId) ? undefined : accountId),
         );
       }}
       onDisplayRowsChange={onDisplayRowsChange}

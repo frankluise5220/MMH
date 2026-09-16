@@ -725,15 +725,13 @@ export default function SettingsAccountsPage() {
       width: 260,
       minWidth: 160,
       truncate: true,
-      sortValue: (a) => accountDisplayName(a),
-      cellTitle: (a) => {
-        const display = accountDisplayName(a);
-        return a.note ? `${display} · ${t("settings.accounts.notePrefix")}${a.note}` : display;
-      },
+      // 名称列只显示账户名，排序也只按账户名；机构有独立列，不拼进名称。
+      sortValue: (a) => a.name,
+      cellTitle: (a) => (a.note ? `${a.name} · ${t("settings.accounts.notePrefix")}${a.note}` : a.name),
       render: (a) => (
         <div className="flex min-w-0 items-center gap-1.5">
           {a.isPlaceholder ? (
-            <span className="truncate text-sm font-medium text-slate-800">{accountDisplayName(a)}</span>
+            <span className="truncate text-sm font-medium text-slate-800">{a.name}</span>
           ) : (
             <button
               type="button"
@@ -743,7 +741,7 @@ export default function SettingsAccountsPage() {
               }}
               className="min-w-0 max-w-full truncate rounded text-left text-sm font-medium text-slate-800 hover:text-blue-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-200"
             >
-              {accountDisplayName(a)}
+              {a.name}
             </button>
           )}
           {a.isPlaceholder && (
@@ -754,6 +752,17 @@ export default function SettingsAccountsPage() {
           )}
         </div>
       ),
+    },
+    {
+      key: "lastFour",
+      label: t("settings.accounts.colLastFour"),
+      width: 88,
+      minWidth: 72,
+      sortValue: (a) => a.numberMasked || "",
+      filterText: (a) => a.numberMasked || null,
+      render: (a) => (a.numberMasked
+        ? <span className="tabular-nums text-slate-700">{a.numberMasked}</span>
+        : <span className="text-slate-300">-</span>),
     },
     {
       key: "kind",
@@ -973,7 +982,7 @@ export default function SettingsAccountsPage() {
           columns={accountTableColumns}
           rows={filteredAccounts}
           rowKey={(a) => a.id}
-          minTableWidth={1180}
+          minTableWidth={1260}
           fillHeight
           showFilters={false}
           sortable

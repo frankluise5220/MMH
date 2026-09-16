@@ -46,6 +46,7 @@ export const SIDEBAR_GROUP_BY_KEY = "sidebar_group_by";
 export const SIDEBAR_HIDE_ZERO_KEY = "sidebar_hide_zero";
 export const SIDEBAR_HIDE_INITIAL_DATA_KEY = "sidebar_hide_initial_data";
 export const SIDEBAR_SHOW_FIXED_ASSETS_KEY = "sidebar_show_fixed_assets";
+export const SIDEBAR_SHOW_ALL_CASH_ENTRIES_KEY = "sidebar_show_all_cash_entries";
 export const DETAIL_DATE_BACKGROUND_KEY = "detail_date_background";
 export const ROW_HEIGHT_MODE_KEY = "advanced_data_table_row_height_mode";
 export const ACCOUNT_LABEL_FIELDS_COOKIE = "mmh_account_label_fields";
@@ -85,6 +86,7 @@ export type AppPreferencesSnapshot = {
   sidebarHideZero: boolean;
   sidebarHideInitialData: boolean;
   sidebarShowFixedAssets: boolean;
+  sidebarShowAllCashEntries: boolean;
   detailDateBackground: boolean;
   rowHeightMode: RowHeightMode;
   sidebarCollapsed: boolean;
@@ -356,6 +358,26 @@ export function setSidebarShowFixedAssetsPreference(value: boolean) {
   emitPreferencesChanged();
 }
 
+export function getSidebarShowAllCashEntriesPreference(): boolean {
+  try {
+    const value = localStorage.getItem(SIDEBAR_SHOW_ALL_CASH_ENTRIES_KEY) ?? parseCookieValue(SIDEBAR_SHOW_ALL_CASH_ENTRIES_KEY);
+    if (value == null) return true;
+    return value === "true" || value === "1";
+  } catch {
+    const value = parseCookieValue(SIDEBAR_SHOW_ALL_CASH_ENTRIES_KEY);
+    if (value == null) return true;
+    return value === "true" || value === "1";
+  }
+}
+
+export function setSidebarShowAllCashEntriesPreference(value: boolean) {
+  try {
+    localStorage.setItem(SIDEBAR_SHOW_ALL_CASH_ENTRIES_KEY, String(value));
+  } catch {}
+  setCookieValue(SIDEBAR_SHOW_ALL_CASH_ENTRIES_KEY, String(value));
+  emitPreferencesChanged();
+}
+
 export function getDetailDateBackgroundPreference(): boolean {
   try {
     const value = localStorage.getItem(DETAIL_DATE_BACKGROUND_KEY) ?? parseCookieValue(DETAIL_DATE_BACKGROUND_KEY);
@@ -493,6 +515,7 @@ export function getAppPreferences(): AppPreferencesSnapshot {
     sidebarHideZero: getSidebarHideZeroPreference(),
     sidebarHideInitialData: getSidebarHideInitialDataPreference(),
     sidebarShowFixedAssets: getSidebarShowFixedAssetsPreference(),
+    sidebarShowAllCashEntries: getSidebarShowAllCashEntriesPreference(),
     detailDateBackground: getDetailDateBackgroundPreference(),
     rowHeightMode: getRowHeightModePreference(),
     sidebarCollapsed: getSidebarCollapsedPreference(),

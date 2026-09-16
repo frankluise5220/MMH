@@ -215,6 +215,7 @@ regular-invest-*.png
 .tmp*.cjs
 .tmp*.tsx
 .mmh-update-task.json
+.mmh-used-images.json
 
 # temporary plans
 plans/

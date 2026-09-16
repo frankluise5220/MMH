@@ -80,6 +80,7 @@ import {
   normalizeCreditCardLabelTemplate,
 } from "@/lib/account-display";
 import { getInvestmentAccountView, isDepositAccount, isIncomeExpensePostingAccount, isLoanOrSettlementAccountKind, isOrdinaryTransferAccount, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
+import { ALL_CASH_DETAIL_SCOPE_ID, cashLedgerAccountIdsOf, cashLedgerFlowAccountId } from "@/lib/all-cash-entries";
 import { normalizeLoanType, resolveLoanTypeValue } from "@/lib/loan-type";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
@@ -463,7 +464,7 @@ export default async function Home({
   const tagIdParam = typeof params?.tagId === "string" ? params.tagId.trim() : "";
   const fixedAssetTypeParam = typeof params?.fixedAssetType === "string" ? params.fixedAssetType.trim() : "";
   // If no account is selected, default to the overview page.
-  if (!accountId && !accountName && !tagIdParam && params?.view !== "debt" && params?.view !== "investproperty") {
+  if (!accountId && !accountName && !tagIdParam && params?.view !== "debt" && params?.view !== "investproperty" && params?.view !== "allcash") {
     redirect("/overview");
   }
   const viewParam = tagIdParam
@@ -472,6 +473,8 @@ export default async function Home({
       ? "bill"
       : params?.view === "detail"
         ? "detail"
+        : params?.view === "allcash"
+          ? "allcash"
         : params?.view === "investfund"
           ? "investfund"
         : params?.view === "investmoney"
@@ -502,8 +505,9 @@ export default async function Home({
   // 注意：只放宽【类型类】条件；占位符 / 停用 / 同所有人 这类条件仍须保留。
   const restrictAccountTypes = await getServerAccountDropdownRestrictType();
   const accountLabelFields = accountLabelFieldsFromCookieValue(cookieStore.get(ACCOUNT_LABEL_FIELDS_COOKIE)?.value);
+  const isAllCashViewParam = params?.view === "allcash";
   const detailPaginationPref = decodeDetailPaginationPreference(
-    cookieStore.get(detailPaginationCookieName(accountId))?.value,
+    cookieStore.get(detailPaginationCookieName(isAllCashViewParam ? ALL_CASH_DETAIL_SCOPE_ID : accountId))?.value,
   );
   const pageSizeParam = typeof params?.pageSize === "string"
     ? parseInt(params.pageSize, 10)
@@ -612,7 +616,7 @@ export default async function Home({
   const isDepositView = selectedAccount ? isDepositAccount(selectedAccount) : false;
   const isOverview = !viewParam && !accountId && !accountName;
   const isInsuranceView = selectedAccount?.kind === AccountKind.insurance;
-  const view: "bill" | "detail" | "investfund" | "investmoney" | "investwealth" | "investstock" | "investproperty" | "regularinvest" | "debt" | "overview" | "deposit" | "insurance" =
+  const view: "bill" | "detail" | "allcash" | "investfund" | "investmoney" | "investwealth" | "investstock" | "investproperty" | "regularinvest" | "debt" | "overview" | "deposit" | "insurance" =
     isDebtAccount
       ? "debt"
       : viewParam
@@ -632,10 +636,22 @@ export default async function Home({
     ? (wealthProductIdParam || rawFundCodeParam)
     : "";
   const fundCodeParam = view === "investwealth" ? "" : rawFundCodeParam;
-  const needsDetailEntries = view === "detail" || view === "deposit" || view === "insurance" || (view === "bill" && isBillAccount);
+  const isAllCashView = view === "allcash";
+  const cashLedgerAccountIds = isAllCashView ? cashLedgerAccountIdsOf(accounts) : [];
+  const cashLedgerIdSet = new Set(cashLedgerAccountIds);
+  const detailScopeAccountId = isAllCashView ? ALL_CASH_DETAIL_SCOPE_ID : accountId;
+  const needsDetailEntries = view === "detail" || view === "allcash" || view === "deposit" || view === "insurance" || (view === "bill" && isBillAccount);
 
   const hid = { householdId };
-  const where = accountId
+  const where = isAllCashView
+    ? cashLedgerAccountIds.length > 0
+      ? {
+          ...txRecordAccountScopeWhere(cashLedgerAccountIds),
+          deletedAt: null,
+          ...hid,
+        }
+      : { id: { in: [] as string[] } }
+    : accountId
     ? {
         ...txRecordAccountScopeWhere(accountId),
         deletedAt: null,
@@ -672,13 +688,17 @@ export default async function Home({
 
   const usePagedDetailEntries =
     needsDetailEntries &&
-    view === "detail" &&
-    !!accountId &&
+    ((view === "detail" && !!accountId) || (isAllCashView && cashLedgerAccountIds.length > 0)) &&
     !hasDetailFilters &&
     !focusEntryId &&
     !detailAll;
   const pagedDetailData = usePagedDetailEntries
-    ? await loadEntriesPageForAccount(accountId, JSON.stringify(hidFilter), detailPage, pageSize)
+    ? await loadEntriesPageForAccount(
+        isAllCashView ? cashLedgerAccountIds : accountId,
+        JSON.stringify(hidFilter),
+        detailPage,
+        pageSize,
+      )
     : null;
 
   const rawEntries = pagedDetailData
@@ -741,8 +761,10 @@ export default async function Home({
           take: DETAIL_ALL_PAGE_SIZE,
         })
     : [];
-  const entryDisplayDate = (e: Parameters<typeof getDetailEntryDisplayDate>[0]) => getDetailEntryDisplayDate(e, accountId);
-  const entries = [...rawEntries].sort((a, b) => compareDetailEntriesDesc(a, b, accountId));
+  const flowAccountIdOf = (e: { accountId?: string | null; toAccountId?: string | null }) =>
+    isAllCashView ? cashLedgerFlowAccountId(e, cashLedgerIdSet) : accountId;
+  const entryDisplayDate = (e: Parameters<typeof getDetailEntryDisplayDate>[0]) => getDetailEntryDisplayDate(e, flowAccountIdOf(e));
+  const entries = [...rawEntries].sort((a, b) => compareDetailEntriesDesc(a, b, isAllCashView ? undefined : accountId));
   const detailOrderingEntries = pagedDetailData?.orderingEntries ?? rawEntries;
   const accountMetaById = new Map(accounts.map((account) => [account.id, account]));
   const isSettlementDebtAccountId = (id?: string | null) => {
@@ -762,9 +784,9 @@ export default async function Home({
   const getEntryDisplayNote = (e: DetailExportEntryLike) => {
     const fromNote = (e.note ?? "").trim();
     const receiverNote = (e.toNote ?? "").trim();
-    const displayNote = !accountId
+    const displayNote = !flowAccountIdOf(e)
       ? fromNote
-      : e.toAccountId === accountId ? (receiverNote || fromNote) : fromNote;
+      : e.toAccountId === flowAccountIdOf(e) ? (receiverNote || fromNote) : fromNote;
     return getInsuranceDetailNote({
       source: e.source,
       fundName: e.fundName,
@@ -774,7 +796,7 @@ export default async function Home({
   };
   const getDetailFilterColumnValue = (e: (typeof entries)[number], column: DetailFilterColumn) => {
     const amount = toNumber(e.amount);
-    const effectiveAmount = effectiveAmountForAccount(e, accountId);
+    const effectiveAmount = effectiveAmountForAccount(e, flowAccountIdOf(e));
     const balanceTarget = getBalanceReconcileTarget(e);
     if (column === "date") return entryDisplayDate(e).toISOString().slice(0, 10);
     if (column === "flow" && balanceTarget != null && e.source === BALANCE_INITIALIZATION_SOURCE) return t("detailView.initialBalance");
@@ -804,7 +826,8 @@ export default async function Home({
       return getInsuranceDetailCategoryName(e) || t("detail.emptyValue");
     }
     if (column === "related") {
-      const related = accountId && e.toAccountId === accountId ? (e.accountName ?? "") : (e.toAccountName ?? "");
+      const flowId = flowAccountIdOf(e);
+      const related = flowId && e.toAccountId === flowId ? (e.accountName ?? "") : (e.toAccountName ?? "");
       return related.trim() || t("detail.emptyValue");
     }
     return getEntryDisplayNote(e) || t("detail.emptyValue");
@@ -850,7 +873,7 @@ export default async function Home({
     return true;
   }));
   const filteredEntries2 = filteredEntries.filter((e) => {
-    const effectiveAmount = effectiveAmountForAccount(e, accountId);
+    const effectiveAmount = effectiveAmountForAccount(e, flowAccountIdOf(e));
     const inflow = effectiveAmount > 0 ? effectiveAmount : null;
     const outflow = effectiveAmount < 0 ? -effectiveAmount : null;
     if ((detailInFromN != null || detailInToN != null)) {
@@ -900,10 +923,10 @@ export default async function Home({
   ];
   const normalExportSourceEntries = pagedDetailData?.exportEntries ?? filteredEntries2;
   const normalExportEntryRows = normalExportSourceEntries.map((e) => {
-    const effectiveAmount = effectiveAmountForAccount(e, accountId);
+    const effectiveAmount = effectiveAmountForAccount(e, flowAccountIdOf(e));
     const outflow = effectiveAmount < 0 ? String(-effectiveAmount) : "";
     const inflow = effectiveAmount > 0 ? String(effectiveAmount) : "";
-    const isToSide = accountId && e.toAccountId === accountId;
+    const isToSide = Boolean(flowAccountIdOf(e) && e.toAccountId === flowAccountIdOf(e));
     const fromAccount = accountMetaById.get(e.accountId ?? "");
     const toAccount = accountMetaById.get(e.toAccountId ?? "");
     const accountLabel = isToSide
@@ -937,7 +960,7 @@ export default async function Home({
   const normalExportRows = [normalExportHeader, ...normalExportEntryRows.map((item) => item.row)];
   const normalExportRowsByEntryId = Object.fromEntries(normalExportEntryRows.map((item) => [item.id, item.row]));
   const normalExportFilename = t("sidebar.export.filename", {
-    name: selectedAccount?.name || accountName || t("statistics.allAccounts"),
+    name: isAllCashView ? t("nav.allCashEntries") : selectedAccount?.name || accountName || t("statistics.allAccounts"),
   });
 
   const expenseCategories = categories
@@ -1505,6 +1528,7 @@ export default async function Home({
   // 不再把整个负债视图硬编码成"贷款"。
   const selectedAccountLabel = (() => {
     if (tagIdParam) return tags.find((tag) => tag.id === tagIdParam)?.name || t("statistics.allAccounts");
+    if (isAllCashView) return t("nav.allCashEntries");
     if (view === "debt") return isDebtLoanLauncherContext ? t("account.kind.loan") : t("sidebar.section.liabilities");
     if (view === "investproperty") return t("txForm.fixedAssetToggle");
     if (selectedAccount) {
@@ -3425,7 +3449,7 @@ export default async function Home({
             <div className="flex-1 min-h-0 flex flex-col bg-transparent p-4 md:p-5">
               <div className="panel-surface flex min-h-0 flex-1 flex-col overflow-hidden">
                 <BasicDetailPanel
-                  accountId={accountId}
+                  accountId={detailScopeAccountId}
                   isInvestAccount={isInvestAccount}
                   entries={pagedDetailEntries}
                   totalCount={detailFilteredCount}
@@ -3443,19 +3467,20 @@ export default async function Home({
                   tagOptions={tagBatchReplaceOptions}
                   investmentProductTypeByAccountId={investmentProductTypeByAccountIdObj}
                   showBalanceReconcile={
-                    !tagIdParam && (
+                    !tagIdParam && !isAllCashView && (
                       selectedAccount?.kind === AccountKind.cash ||
                       selectedAccount?.kind === AccountKind.bank_debit ||
                       selectedAccount?.kind === AccountKind.ewallet
                     )
                   }
-                  showAccountColumn={!!tagIdParam}
-                  showRunningBalance={!tagIdParam && !isInvestAccount}
+                  showAccountColumn={!!tagIdParam || isAllCashView}
+                  showRunningBalance={!tagIdParam && !isAllCashView && !isInvestAccount}
                   refreshOnGlobalEvent={!tagIdParam}
-                  draggableRows={!tagIdParam}
+                  draggableRows={!tagIdParam && !isAllCashView}
                   sortable={!tagIdParam}
                   showPagination={!tagIdParam}
-                  showImportExport={!tagIdParam}
+                  showImportExport={!tagIdParam && !isAllCashView}
+                  scopeAccountIds={cashLedgerAccountIds}
                   accountKind={selectedAccount?.kind ?? null}
                   accountName={selectedAccount?.name ?? ""}
                   accountLabel={selectedAccountLabel}

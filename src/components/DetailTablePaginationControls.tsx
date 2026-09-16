@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CalendarDays, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { DateStepper } from "@/components/DateStepper";
 
@@ -137,23 +137,15 @@ export function DetailTablePaginationControls({
       {onLocateDate ? (
         <>
           <span className="mx-0.5 text-slate-300">|</span>
-          <label
-            className={`inline-flex h-7 items-center gap-1 rounded border px-1.5 focus-within:border-blue-300 ${
-              locateDateBusy
-                ? "cursor-not-allowed border-slate-100 bg-slate-50"
-                : "border-slate-200 bg-white"
-            }`}
-            title={t("pagination.locateDateTitle")}
-          >
-            <CalendarDays className={`h-3.5 w-3.5 ${locateDateBusy ? "text-slate-300" : "text-slate-400"}`} />
+          <div className="w-32" title={t("pagination.locateDateTitle")}>
             <DateStepper
               compact
               value={locateDate}
               disabled={locateDateBusy}
               onChange={handleLocateDateChange}
-              className="!h-7 !min-h-0 !w-28 !border-0 !bg-transparent !pl-0 !pr-8 !text-xs"
+              className="!h-7 !min-h-0 !rounded !px-2 !pr-8 !text-xs"
             />
-          </label>
+          </div>
         </>
       ) : null}
     </div>

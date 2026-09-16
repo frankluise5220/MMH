@@ -160,6 +160,7 @@ export async function Sidebar() {
     sidebarHideZero: cookieStore.get("sidebar_hide_zero")?.value === "true",
     sidebarHideInitialData: cookieStore.get("sidebar_hide_initial_data")?.value === "true",
     sidebarShowFixedAssets: cookieStore.get("sidebar_show_fixed_assets")?.value !== "false",
+    sidebarShowAllCashEntries: cookieStore.get("sidebar_show_all_cash_entries")?.value !== "false",
     sidebarCollapsed: cookieStore.get("sidebar_collapsed")?.value === "true",
     sidebarGroupBy: (cookieStore.get("sidebar_group_by")?.value === "institution" ? "institution" : "kind") as SidebarGroupMode,
   };

@@ -22,6 +22,7 @@ import {
   writeStoredDetailPreference,
 } from "@/lib/detail-pagination-preference";
 import { useI18n } from "@/lib/i18n";
+import { isAllCashDetailScope } from "@/lib/all-cash-entries";
 
 type BasicDetailPanelProps = {
   accountId: string;
@@ -50,6 +51,7 @@ type BasicDetailPanelProps = {
   draggableRows?: boolean;
   sortable?: boolean;
   showPagination?: boolean;
+  scopeAccountIds?: string[];
   accountKind?: string | null;
   accountName?: string;
   accountLabel?: string;
@@ -268,6 +270,7 @@ export function BasicDetailPanel({
   draggableRows = true,
   sortable = true,
   showPagination = true,
+  scopeAccountIds,
   accountKind = null,
   accountName = "",
   accountLabel = "",
@@ -448,7 +451,9 @@ export function BasicDetailPanel({
     const handleFinanceChange = (event: Event) => {
       const detail = (event as CustomEvent<FinanceDataChangedDetail>).detail ?? {};
       const eventAccountIds = detail.accountIds ?? [];
-      const isCurrentAccountEvent = eventAccountIds.length === 0 || eventAccountIds.includes(accountId);
+      const isCurrentAccountEvent = eventAccountIds.length === 0
+        || eventAccountIds.includes(accountId)
+        || (isAllCashDetailScope(accountId) && (scopeAccountIds?.some((id) => eventAccountIds.includes(id)) ?? true));
       if (
         event.type === FINANCE_DATA_CHANGED_EVENT &&
         detail.reason === "view-normal-excel-import" &&
@@ -475,7 +480,7 @@ export function BasicDetailPanel({
     return () => {
       window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
     };
-  }, [accountId, reloadDetailPage]);
+  }, [accountId, reloadDetailPage, scopeAccountIds]);
 
   useEffect(() => {
     if (detailAll || page === safePage) return;
@@ -688,6 +693,7 @@ export function BasicDetailPanel({
           focusEntryId={focusEntryId}
           scrollToRowKey={locateScrollKey}
           showAccountColumn={showAccountColumn}
+          reorderAccountIds={scopeAccountIds}
           toolbarMode="custom"
           toolbarTitle={t("basicDetail.entriesTitle")}
           showRunningBalance={showRunningBalance ?? !isInvestAccount}

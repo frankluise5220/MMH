@@ -42,6 +42,7 @@ const DISPLAY_LANGUAGE_KEY = "mmh_display_language";
 const DATE_DISPLAY_FORMAT_KEY = "mmh_date_display_format";
 const SIDEBAR_HIDE_INITIAL_DATA_KEY = "sidebar_hide_initial_data";
 const SIDEBAR_SHOW_FIXED_ASSETS_KEY = "sidebar_show_fixed_assets";
+const SIDEBAR_SHOW_ALL_CASH_ENTRIES_KEY = "sidebar_show_all_cash_entries";
 const DETAIL_DATE_BACKGROUND_KEY = "detail_date_background";
 const ROW_HEIGHT_MODE_KEY = "advanced_data_table_row_height_mode";
 const ACCOUNT_LABEL_FIELDS_KEY = "mmh_account_label_fields";
@@ -134,6 +135,7 @@ export async function GET(req: NextRequest) {
   const dateDisplayFormat = normalizeDateDisplayFormat(req.cookies.get(DATE_DISPLAY_FORMAT_KEY)?.value);
   const sidebarHideInitialData = normalizeBoolean(req.cookies.get(SIDEBAR_HIDE_INITIAL_DATA_KEY)?.value, false);
   const sidebarShowFixedAssets = normalizeBoolean(req.cookies.get(SIDEBAR_SHOW_FIXED_ASSETS_KEY)?.value, true);
+  const sidebarShowAllCashEntries = normalizeBoolean(req.cookies.get(SIDEBAR_SHOW_ALL_CASH_ENTRIES_KEY)?.value, true);
   const detailDateBackground = normalizeBoolean(req.cookies.get(DETAIL_DATE_BACKGROUND_KEY)?.value, false);
   const rowHeightMode = normalizeRowHeightMode(req.cookies.get(ROW_HEIGHT_MODE_KEY)?.value);
   const accountLabelFields = accountLabelFieldsFromPreferenceCookie(req.cookies.get(ACCOUNT_LABEL_FIELDS_KEY)?.value);
@@ -155,6 +157,7 @@ export async function GET(req: NextRequest) {
     dateDisplayFormat,
     sidebarHideInitialData,
     sidebarShowFixedAssets,
+    sidebarShowAllCashEntries,
     detailDateBackground,
     rowHeightMode,
     accountLabelFields,
@@ -180,6 +183,7 @@ export async function PUT(req: NextRequest) {
     dateDisplayFormat?: unknown;
     sidebarHideInitialData?: unknown;
     sidebarShowFixedAssets?: unknown;
+    sidebarShowAllCashEntries?: unknown;
     detailDateBackground?: unknown;
     rowHeightMode?: unknown;
     accountLabelFields?: unknown;
@@ -200,6 +204,7 @@ export async function PUT(req: NextRequest) {
   const hasDateDisplayFormat = Object.prototype.hasOwnProperty.call(prefs, "dateDisplayFormat");
   const hasSidebarHideInitialData = Object.prototype.hasOwnProperty.call(prefs, "sidebarHideInitialData");
   const hasSidebarShowFixedAssets = Object.prototype.hasOwnProperty.call(prefs, "sidebarShowFixedAssets");
+  const hasSidebarShowAllCashEntries = Object.prototype.hasOwnProperty.call(prefs, "sidebarShowAllCashEntries");
   const hasDetailDateBackground = Object.prototype.hasOwnProperty.call(prefs, "detailDateBackground");
   const hasRowHeightMode = Object.prototype.hasOwnProperty.call(prefs, "rowHeightMode");
   const hasAccountLabelFields = Object.prototype.hasOwnProperty.call(prefs, "accountLabelFields");
@@ -246,6 +251,10 @@ export async function PUT(req: NextRequest) {
     hasSidebarShowFixedAssets ? prefs.sidebarShowFixedAssets : req.cookies.get(SIDEBAR_SHOW_FIXED_ASSETS_KEY)?.value,
     true,
   );
+  const sidebarShowAllCashEntries = normalizeBoolean(
+    hasSidebarShowAllCashEntries ? prefs.sidebarShowAllCashEntries : req.cookies.get(SIDEBAR_SHOW_ALL_CASH_ENTRIES_KEY)?.value,
+    true,
+  );
   const detailDateBackground = normalizeBoolean(
     hasDetailDateBackground ? prefs.detailDateBackground : req.cookies.get(DETAIL_DATE_BACKGROUND_KEY)?.value,
     false,
@@ -281,6 +290,7 @@ export async function PUT(req: NextRequest) {
     dateDisplayFormat,
     sidebarHideInitialData,
     sidebarShowFixedAssets,
+    sidebarShowAllCashEntries,
     detailDateBackground,
     rowHeightMode,
     accountLabelFields,
@@ -371,6 +381,12 @@ export async function PUT(req: NextRequest) {
     sameSite: "lax",
   });
   response.cookies.set(SIDEBAR_SHOW_FIXED_ASSETS_KEY, String(sidebarShowFixedAssets), {
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365,
+    httpOnly: false,
+    sameSite: "lax",
+  });
+  response.cookies.set(SIDEBAR_SHOW_ALL_CASH_ENTRIES_KEY, String(sidebarShowAllCashEntries), {
     path: "/",
     maxAge: 60 * 60 * 24 * 365,
     httpOnly: false,

@@ -64,6 +64,7 @@ import { toNumber, addWorkdaysUtc, toStatementMonth, startOfDayUtc, formatDateLo
 import { logger } from "@/lib/logger";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, locateDetailEntryPageDesc } from "@/lib/detail-entry-order";
 import { isAdvanceFundingAccount, isDepositAccount, isIncomeExpensePostingAccount, isInsuranceAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
+import { ALL_CASH_DETAIL_SCOPE_ID, cashLedgerAccountIdsOf, isAllCashDetailScope } from "@/lib/all-cash-entries";
 import { getOrCreateInsuranceAccount } from "@/lib/insurance/autoAccount";
 import { normalizeInsuranceAction } from "@/lib/insurance/transaction";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
@@ -1537,26 +1538,50 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, code: "MISSING_ACCOUNT_ID", error: "缺少 accountId" }, { status: 400 });
     }
 
+    const allCashScope = isAllCashDetailScope(accountId);
+    let listAccountIds: string | string[] = accountId;
+    let account: Awaited<ReturnType<typeof prisma.account.findUnique>> = null;
+    if (allCashScope) {
+      const cashAccounts = await prisma.account.findMany({
+        where: { isPlaceholder: { not: true }, ...hidFilter },
+        select: { id: true, kind: true, investProductType: true, Institution: { select: { type: true } } },
+      });
+      listAccountIds = cashLedgerAccountIdsOf(cashAccounts);
+      if (listAccountIds.length === 0) {
+        return NextResponse.json({
+          ok: true,
+          data: {
+            accountId: ALL_CASH_DETAIL_SCOPE_ID,
+            accountBalance: 0,
+            totalCount: 0,
+            page,
+            pageSize,
+            entries: [],
+          },
+        });
+      }
+    } else {
+      account = await prisma.account.findUnique({ where: { id: accountId } });
+      if (!account) {
+        return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "账户不存在" }, { status: 404 });
+      }
+      // Lazy materialization: create installment payment rows that became due
+      // since the last daily job, so the detail list is correct even if the job
+      // has not run yet. Non-fatal on failure.
+      if (account.kind === AccountKind.bank_credit) {
+        await materializeDueInstallmentPayments(prisma, {
+          householdId: hidFilter.householdId ?? "",
+          accountIds: [accountId],
+        }).catch(logger.catchLog("分期到期落地失败", "transactions/detail"));
+      }
+    }
+
     const listWhere = {
-      ...txRecordAccountScopeWhere(accountId),
+      ...txRecordAccountScopeWhere(listAccountIds),
       deletedAt: null,
       ...hidFilter,
     };
-
-    const account = await prisma.account.findUnique({ where: { id: accountId } });
-    if (!account) {
-      return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "账户不存在" }, { status: 404 });
-    }
-
-    // Lazy materialization: create installment payment rows that became due
-    // since the last daily job, so the detail list is correct even if the job
-    // has not run yet. Non-fatal on failure.
-    if (account.kind === AccountKind.bank_credit) {
-      await materializeDueInstallmentPayments(prisma, {
-        householdId: hidFilter.householdId ?? "",
-        accountIds: [accountId],
-      }).catch(logger.catchLog("分期到期落地失败", "transactions/detail"));
-    }
+    const sortAccountId = allCashScope ? undefined : accountId;
 
     const [totalCount, orderingEntries] = await Promise.all([
       prisma.txRecord.count({ where: listWhere }),
@@ -1610,8 +1635,10 @@ export async function GET(req: Request) {
       return entryWithLinkedWealthDisplayDateFields(entry, linkedWealthId ? orderingLinkedWealthById.get(linkedWealthId) ?? null : null);
     };
 
-    const accountDisplayBalancePromise = resolveAccountDisplayBalance(account, hidFilter);
-    const orderedEntries = [...orderingEntries].sort((a, b) => compareDetailEntriesDesc(displayDateEntryOf(a), displayDateEntryOf(b), accountId));
+    const accountDisplayBalancePromise = account
+      ? resolveAccountDisplayBalance(account, hidFilter)
+      : Promise.resolve(0);
+    const orderedEntries = [...orderingEntries].sort((a, b) => compareDetailEntriesDesc(displayDateEntryOf(a), displayDateEntryOf(b), sortAccountId));
 
     // Date locate mode: jump straight to the page containing the first entry
     // on or before the requested date. Ordering fields are already fully
@@ -1622,12 +1649,12 @@ export async function GET(req: Request) {
         orderedEntries.map(displayDateEntryOf),
         locateDateParam,
         pageSize,
-        accountId,
+        sortAccountId,
       );
       return NextResponse.json({
         ok: true,
         data: {
-          accountId: account.id,
+          accountId: allCashScope ? ALL_CASH_DETAIL_SCOPE_ID : account!.id,
           locateDate: locateDateParam,
           locatePage: located.page,
           locateIndex: located.index,
@@ -1638,12 +1665,14 @@ export async function GET(req: Request) {
       });
     }
 
-    const ascEntries = [...orderedEntries].sort((a, b) => compareDetailEntriesAsc(displayDateEntryOf(a), displayDateEntryOf(b), accountId));
     const runningBalanceById = new Map<string, number>();
-    let runningBalance = 0;
-    for (const entry of ascEntries) {
-      runningBalance = applyBalanceReconcileEntry(runningBalance, entry, accountId);
-      runningBalanceById.set(entry.id, runningBalance);
+    if (!allCashScope) {
+      const ascEntries = [...orderedEntries].sort((a, b) => compareDetailEntriesAsc(displayDateEntryOf(a), displayDateEntryOf(b), sortAccountId));
+      let runningBalance = 0;
+      for (const entry of ascEntries) {
+        runningBalance = applyBalanceReconcileEntry(runningBalance, entry, sortAccountId);
+        runningBalanceById.set(entry.id, runningBalance);
+      }
     }
 
     const pagedEntryIds = orderedEntries.slice((page - 1) * pageSize, page * pageSize).map((entry) => entry.id);
@@ -1770,7 +1799,7 @@ export async function GET(req: Request) {
     return NextResponse.json({
       ok: true,
       data: {
-        accountId: account.id,
+        accountId: allCashScope ? ALL_CASH_DETAIL_SCOPE_ID : account!.id,
         accountBalance: accountDisplayBalance,
         totalCount,
         page,

@@ -20,6 +20,7 @@ import {
   PanelLeftOpen,
   UserRound,
   Table2,
+  List,
   LogOut,
   MessageSquare,
   X,
@@ -47,6 +48,7 @@ import {
   getSidebarHideZeroPreference,
   getSidebarOwnerFilterPreference,
   getSidebarShowFixedAssetsPreference,
+  getSidebarShowAllCashEntriesPreference,
   setSidebarCollapsedPreference,
   setSidebarGroupPreference,
   setSidebarHideZeroPreference,
@@ -370,6 +372,7 @@ export function SidebarClient({
     sidebarHideZero: boolean;
     sidebarHideInitialData: boolean;
     sidebarShowFixedAssets: boolean;
+    sidebarShowAllCashEntries: boolean;
     sidebarCollapsed: boolean;
     sidebarGroupBy: "kind" | "institution";
   };
@@ -402,6 +405,7 @@ export function SidebarClient({
   const [selectedOwnerFilter, setSelectedOwnerFilter] = useState(() => initialPreferences?.sidebarOwnerFilter ?? getSidebarOwnerFilterPreference());
   const [hideZero, setHideZero] = useState(() => initialPreferences?.sidebarHideZero ?? getSidebarHideZeroPreference());
   const [showFixedAssets, setShowFixedAssets] = useState(() => initialPreferences?.sidebarShowFixedAssets ?? getSidebarShowFixedAssetsPreference());
+  const [showAllCashEntries, setShowAllCashEntries] = useState(() => initialPreferences?.sidebarShowAllCashEntries ?? getSidebarShowAllCashEntriesPreference());
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => initialPreferences?.sidebarCollapsed ?? getSidebarCollapsedPreference());
   const [sidebarGroupBy, setSidebarGroupBy] = useState<"kind" | "institution">(() => initialPreferences?.sidebarGroupBy ?? getSidebarGroupPreference());
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
@@ -634,6 +638,7 @@ export function SidebarClient({
       setSelectedOwnerFilter(prefs.sidebarOwnerFilter);
       setHideZero(prefs.sidebarHideZero);
       setShowFixedAssets(prefs.sidebarShowFixedAssets);
+      setShowAllCashEntries(prefs.sidebarShowAllCashEntries);
       setHideFirstUseGuide(prefs.sidebarHideInitialData);
       setSidebarCollapsed(prefs.sidebarCollapsed);
       setSidebarGroupBy(getSidebarGroupPreference());
@@ -1190,6 +1195,11 @@ export function SidebarClient({
           <Link href="/overview" className={collapsedNavCls(pathname.startsWith("/overview"))} title={t("nav.overview")}>
             <LayoutDashboard size={18} />
           </Link>
+          {showAllCashEntries ? (
+            <Link href="/?view=allcash" className={collapsedNavCls(pathname === "/" && selectedView === "allcash")} title={t("nav.allCashEntries")}>
+              <List size={18} />
+            </Link>
+          ) : null}
           <Link href="/regular-invest" className={collapsedNavCls(pathname.startsWith("/regular-invest"))} title={t("nav.scheduledTasks")}>
             <CalendarClock size={18} />
           </Link>
@@ -1206,7 +1216,7 @@ export function SidebarClient({
               <Compass size={18} />
             </button>
           ) : null}
-          <Link href="/accounts" className={collapsedNavCls(pathname.startsWith("/accounts") || (pathname === "/" && !isRootInvestmentView))} title={t("nav.accounts")}>
+          <Link href="/accounts" className={collapsedNavCls(pathname.startsWith("/accounts") || (pathname === "/" && selectedView !== "allcash" && !isRootInvestmentView))} title={t("nav.accounts")}>
             <Landmark size={18} />
           </Link>
           <Link
@@ -1304,6 +1314,12 @@ export function SidebarClient({
               <LayoutDashboard size={18} />
               <span className="font-medium">{t("nav.overview")}</span>
             </Link>
+            {showAllCashEntries ? (
+              <Link href="/?view=allcash" className={navItemCls("/?view=allcash", pathname === "/" && selectedView === "allcash")}>
+                <List size={18} />
+                <span className="font-medium">{t("nav.allCashEntries")}</span>
+              </Link>
+            ) : null}
             <Link href="/regular-invest" className={navItemCls("/regular-invest")}>
               <CalendarClock size={18} />
               <span className="font-medium">{t("nav.scheduledTasks")}</span>
