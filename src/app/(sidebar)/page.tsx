@@ -79,7 +79,7 @@ import {
   counterpartyQualifiedAccountName,
   normalizeCreditCardLabelTemplate,
 } from "@/lib/account-display";
-import { getInvestmentAccountView, isDepositAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
+import { getInvestmentAccountView, isDepositAccount, isIncomeExpensePostingAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
 import { normalizeLoanType, resolveLoanTypeValue } from "@/lib/loan-type";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
@@ -1157,7 +1157,7 @@ export default async function Home({
   }
 
   const spendingAccountOptions = accounts
-    .filter((a) => a.name !== "未指定账户" && !isPureInvestmentAccount(a))
+    .filter((a) => a.name !== "未指定账户" && isIncomeExpensePostingAccount(a))
     .map((a) => {
       const display = buildAccountDisplayOption({
         id: a.id,
@@ -1291,7 +1291,12 @@ export default async function Home({
         })),
       ]
     : [];
-  const spendingAccountSSOptions = buildAccountSSOptions(a => a.kind !== "investment" || a.investProductType === "deposit");
+  const spendingAccountSSOptions = (() => {
+    const allowedIds = new Set(accountOptions.filter((a) => isIncomeExpensePostingAccount(a)).map((a) => a.id));
+    const options = buildAccountSSOptions().filter((option) => option.isHeader || allowedIds.has(option.id));
+    const usedParents = new Set(options.map((option) => option.parentId).filter(Boolean));
+    return options.filter((option) => !option.isHeader || usedParents.has(option.id));
+  })();
   const investmentAccountSSOptions = buildFlatAccountOptions(
     restrictAccountTypes ? accountOptions.filter(a => isPureInvestmentAccount(a) || isDepositAccount(a)) : accountOptions,
   );
@@ -3141,7 +3146,7 @@ export default async function Home({
                     resetKey={`${selectedAccount?.id ?? ""}:${selectedCreditBillMonth || "all"}:credit-bill-detail`}
                     selectedBillMonth={selectedCreditBillMonth}
                     title={creditBillDetailTitle}
-                    accountOptions={accountOptions}
+                    accountOptions={accountOptions.filter((a) => isIncomeExpensePostingAccount(a))}
                     categoryOptions={categoryBatchReplaceOptions}
                     tagOptions={tagBatchReplaceOptions}
                     investmentProductTypeByAccountId={investmentProductTypeByAccountIdObj}
@@ -3390,7 +3395,7 @@ export default async function Home({
                   normalExportFilename={normalExportFilename}
                   normalExportRows={normalExportRows}
                   normalExportRowsByEntryId={normalExportRowsByEntryId}
-                  accountOptions={accountOptions.map((a) => ({ id: a.id, label: a.label, listLabel: a.listLabel, fullLabel: a.fullLabel, title: a.hoverTitle }))}
+                  accountOptions={accountOptions.filter((a) => isIncomeExpensePostingAccount(a)).map((a) => ({ id: a.id, label: a.label, listLabel: a.listLabel, fullLabel: a.fullLabel, title: a.hoverTitle }))}
                   categoryOptions={categoryBatchReplaceOptions}
                   tagOptions={tagBatchReplaceOptions}
                   investmentProductTypeByAccountId={investmentProductTypeByAccountIdObj}

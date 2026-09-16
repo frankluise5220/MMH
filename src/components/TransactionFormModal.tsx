@@ -15,7 +15,7 @@ import { UnifiedEntryLauncher } from "./UnifiedEntryLauncher";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { isSettlementCounterpartyType, kindLabel } from "@/lib/account-kinds";
 import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
-import { getCashTargetOperation } from "@/lib/account-kind-utils";
+import { getCashTargetOperation, isIncomeExpensePostingAccount } from "@/lib/account-kind-utils";
 import { buildAccountDisplayOption, buildGroupedAccountOptions } from "@/lib/account-display";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -289,6 +289,7 @@ function settingsAccountToOption(account: SettingsAccountRecord): AccountOption 
     investProductType: account.investProductType ?? null,
     debtDirection: account.debtDirection ?? null,
     institutionId: account.institutionId ?? null,
+    institutionType: account.Institution?.type ?? null,
     currency: account.currency ?? null,
     billingDay: account.billingDay ?? null,
   };
@@ -334,7 +335,7 @@ type SettingsAccountRecord = {
   debtDirection?: string | null;
   currency?: string | null;
   billingDay?: number | null;
-  Institution?: { name: string | null; shortName?: string | null } | null;
+  Institution?: { name: string | null; shortName?: string | null; type?: string | null } | null;
   AccountGroup?: { id: string; name: string | null } | null;
 };
 
@@ -639,7 +640,8 @@ export function TransactionFormModal({
           .map((account) => account.kind)
           .filter((kind): kind is string => Boolean(kind)),
       );
-      const nextAccountOptions = restrictAccountsByType(allOptions, (option) => !allowedKinds.size || allowedKinds.has(option.kind ?? ""));
+      const postingOptions = allOptions.filter((option) => isIncomeExpensePostingAccount(option));
+      const nextAccountOptions = restrictAccountsByType(postingOptions, (option) => !allowedKinds.size || allowedKinds.has(option.kind ?? ""));
       const nextFixedAssetAccountOptions = allOptions.filter(isFixedAssetAccountLike);
       const selectedIds = new Set([accountId, fromAccountId, toAccountId].filter(Boolean));
       setAccountList((prev) => {
@@ -656,7 +658,9 @@ export function TransactionFormModal({
       });
       const groupedAll = buildGroupedOptionsFromSettingsAccounts(rawAccounts);
       const groupedAccount = buildGroupedOptionsFromSettingsAccounts(
-        rawAccounts.filter((account) => !allowedKinds.size || allowedKinds.has(account.kind ?? "")),
+        rawAccounts.filter((account) =>
+          isIncomeExpensePostingAccount(account) && (!allowedKinds.size || allowedKinds.has(account.kind ?? "")),
+        ),
       );
       const groupedFixedAsset = buildGroupedOptionsFromSettingsAccounts(
         rawAccounts.filter(isFixedAssetAccountLike),
@@ -771,6 +775,8 @@ export function TransactionFormModal({
     if (accountVisibleOptionIds) {
       base = base.filter((option) => accountVisibleOptionIds.has(option.id));
     }
+    // 定期存款 / 基金资金 / 股票资金 / 基金持仓是硬排除，不受「账户下拉限制类型」开关影响。
+    base = base.filter((option) => option.isHeader || option.isGroup || isIncomeExpensePostingAccount(option));
     return sortByAccountUsage(base, accountUsage);
   }, [accountSSOptionsFiltered, accountList, accountUsage, accountVisibleOptionIds]);
   // Advance (代付) account pickers: funding side excludes loan/settlement rows,

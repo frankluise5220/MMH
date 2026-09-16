@@ -9,6 +9,8 @@ export type AccountKindLike = {
   debtDirection?: string | null;
   isConsumerLoan?: boolean | null;
   loanType?: string | null;
+  institutionType?: string | null;
+  Institution?: { type?: string | null; name?: string | null; shortName?: string | null } | null;
 };
 
 export type CashTargetOperation = "transfer" | "investment" | "wealth" | "deposit" | "debt";
@@ -63,6 +65,30 @@ export function isSpendableAccount(account: AccountKindLike | null | undefined) 
     account?.kind === "ewallet" ||
     account?.kind === "bank_credit" ||
     isConsumerLoanAccount(account);
+}
+
+const INVESTMENT_FUNDING_INSTITUTION_TYPES = new Set(["brokerage", "fund_company"]);
+
+export function accountInstitutionType(account: AccountKindLike | null | undefined) {
+  return account?.institutionType ?? account?.Institution?.type ?? null;
+}
+
+/**
+ * 基金资金 / 股票资金：挂在证券或基金公司名下的现金、借记卡、电子钱包。
+ * 这类账户只走银证转账/申赎资金，不参与普通收支记账。
+ */
+export function isInvestmentFundingAccount(account: AccountKindLike | null | undefined) {
+  if (!account) return false;
+  const kind = account.kind;
+  if (kind !== "cash" && kind !== "bank_debit" && kind !== "ewallet") return false;
+  return INVESTMENT_FUNDING_INSTITUTION_TYPES.has(String(accountInstitutionType(account) ?? "").trim());
+}
+
+/** 普通收入/支出（含明细改账户）允许落到的账户。定期存款、基金/股票资金、基金持仓账户都不算。 */
+export function isIncomeExpensePostingAccount(account: AccountKindLike | null | undefined) {
+  if (!account) return false;
+  if (isDepositAccount(account) || isPureInvestmentAccount(account) || isInvestmentFundingAccount(account)) return false;
+  return true;
 }
 
 export function isBillLikeAccount(account: Pick<AccountKindLike, "kind"> & { billingDay?: number | null }) {

@@ -9,7 +9,7 @@ export type AccountDisplaySource = {
   numberMasked?: string | null;
   groupId?: string | null;
   investProductType?: string | null;
-  Institution?: { name: string | null; shortName?: string | null } | null;
+  Institution?: { name: string | null; shortName?: string | null; type?: string | null } | null;
   AccountGroup?: { id: string; name: string | null } | null;
   /**
    * Linked counterparty of a loan/settlement account. Used to qualify

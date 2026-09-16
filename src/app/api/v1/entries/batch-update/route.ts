@@ -19,6 +19,7 @@ import { upsertStatementCategoryRuleFromSavedRecord } from "@/lib/statement/cate
 import { replaceEntryTags, resolveWritableTagIds } from "@/lib/server/entry-tags";
 import { creditBillEffectiveDate } from "@/lib/credit/billing";
 import { addTradingDaysUtc, toStatementMonth } from "@/lib/date-utils";
+import { isIncomeExpensePostingAccount } from "@/lib/account-kind-utils";
 
 /**
  * Batch-updates transaction records.
@@ -139,10 +140,10 @@ export async function POST(req: NextRequest) {
         source: true,
         accountId: true,
         accountName: true,
-        account: { select: { id: true, name: true, kind: true, investProductType: true, billingDay: true, billingDayTxPeriod: true, tradingCalendar: true } },
+        account: { select: { id: true, name: true, kind: true, investProductType: true, billingDay: true, billingDayTxPeriod: true, tradingCalendar: true, Institution: { select: { type: true } } } },
         toAccountId: true,
         toAccountName: true,
-        toAccount: { select: { id: true, name: true, kind: true, investProductType: true, billingDay: true, billingDayTxPeriod: true, tradingCalendar: true } },
+        toAccount: { select: { id: true, name: true, kind: true, investProductType: true, billingDay: true, billingDayTxPeriod: true, tradingCalendar: true, Institution: { select: { type: true } } } },
         categoryId: true,
         categoryName: true,
         note: true,
@@ -175,8 +176,8 @@ export async function POST(req: NextRequest) {
       ? await prisma.fundTransaction.findMany({
           where: { id: { in: directFundUpdateIds }, deletedAt: null, householdId: ctx.householdId },
           include: {
-            Account: { select: { id: true, name: true, kind: true, investProductType: true, billingDay: true, billingDayTxPeriod: true, tradingCalendar: true } },
-            CashAccount: { select: { id: true, name: true, kind: true, investProductType: true, billingDay: true, billingDayTxPeriod: true, tradingCalendar: true } },
+            Account: { select: { id: true, name: true, kind: true, investProductType: true, billingDay: true, billingDayTxPeriod: true, tradingCalendar: true, Institution: { select: { type: true } } } },
+            CashAccount: { select: { id: true, name: true, kind: true, investProductType: true, billingDay: true, billingDayTxPeriod: true, tradingCalendar: true, Institution: { select: { type: true } } } },
           },
         })
       : [];
@@ -223,7 +224,7 @@ export async function POST(req: NextRequest) {
 
     const accountIds = Array.from(new Set(updates.flatMap((item) => [item.account, item.viewAccount, item.toAccount, item.cashAccountId, item.fundAccountId].map((id) => String(id ?? "").trim()).filter(Boolean))));
     const accounts = accountIds.length > 0
-      ? await prisma.account.findMany({ where: { id: { in: accountIds }, isActive: true, ...hidFilter }, select: { id: true, name: true, kind: true, investProductType: true, billingDay: true, billingDayTxPeriod: true, tradingCalendar: true } })
+      ? await prisma.account.findMany({ where: { id: { in: accountIds }, ...hidFilter }, select: { id: true, name: true, kind: true, investProductType: true, billingDay: true, billingDayTxPeriod: true, tradingCalendar: true, Institution: { select: { type: true } } } })
       : [];
     const accountById = new Map(accounts.map((account) => [account.id, account]));
     const existingAccountById = new Map(
@@ -329,8 +330,11 @@ export async function POST(req: NextRequest) {
         changed.push({ id, date: ymd(existing.date), oldValue: existing.accountName ?? "-", newValue: account.name, field: "account" });
       } else if (item.accountName) {
         const accountName = String(item.accountName).trim();
-        const account = await prisma.account.findFirst({ where: { name: accountName, isActive: true, ...hidFilter }, select: { id: true, name: true } });
-        if (account) data.accountId = account.id;
+        const account = await prisma.account.findFirst({ where: { name: accountName, ...hidFilter }, select: { id: true, name: true, kind: true, investProductType: true, billingDay: true, billingDayTxPeriod: true, tradingCalendar: true, Institution: { select: { type: true } } } });
+        if (account) {
+          data.accountId = account.id;
+          accountById.set(account.id, account);
+        }
         data.accountName = account?.name ?? accountName;
         if (account?.id) balanceAccountIds.add(account.id);
         changed.push({ id, date: ymd(existing.date), oldValue: existing.accountName ?? "-", newValue: account?.name ?? accountName, field: "account" });
@@ -594,6 +598,20 @@ export async function POST(req: NextRequest) {
       const finalToAccountId = typeof data.toAccountId === "string" ? data.toAccountId : existing.toAccountId;
       const finalAccount = resolveAccountMeta(finalAccountId);
       const finalToAccount = resolveAccountMeta(finalToAccountId);
+      const postingAccountChanged = item.account !== undefined || item.viewAccount !== undefined || Boolean(item.accountName);
+      const typeChangedToIncomeExpense = item.type !== undefined && (finalType === TransactionType.expense || finalType === TransactionType.income);
+      if (
+        (finalType === TransactionType.expense || finalType === TransactionType.income)
+        && (postingAccountChanged || typeChangedToIncomeExpense)
+        && finalAccount
+        && !isIncomeExpensePostingAccount(finalAccount)
+      ) {
+        return NextResponse.json({
+          ok: false,
+          code: "ACCOUNT_TYPE_NOT_ALLOWED",
+          error: "定期存款、基金资金、股票资金和基金/理财账户不参与收支记账",
+        }, { status: 400 });
+      }
       const needsFundSync = item.fundConfirmDate !== undefined
         || item.fundArrivalDate !== undefined
         || item.fundFee !== undefined

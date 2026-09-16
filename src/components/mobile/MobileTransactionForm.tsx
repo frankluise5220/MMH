@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeftRight, X } from "lucide-react";
 import { buildGroupedAccountOptions, buildAccountDisplayOption, type AccountDisplaySource } from "@/lib/account-display";
+import { isIncomeExpensePostingAccount } from "@/lib/account-kind-utils";
 import { SmartSelect } from "@/components/SmartSelect";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
 import { buildCategoryTreeOptions } from "@/components/categorySmartSelect";
@@ -52,8 +53,13 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
     [categories, draft.type],
   );
   const accountOptions = useMemo(
-    () => buildGroupedAccountOptions(accounts.map((account) => buildAccountDisplayOption(account, undefined, { fields: getAccountLabelFieldsPreference() }))),
-    [accounts],
+    () => {
+      const source = draft.type === "transfer"
+        ? accounts
+        : accounts.filter((account) => isIncomeExpensePostingAccount(account));
+      return buildGroupedAccountOptions(source.map((account) => buildAccountDisplayOption(account, undefined, { fields: getAccountLabelFieldsPreference() })));
+    },
+    [accounts, draft.type],
   );
   const transferAccountOptions = useMemo(
     () => accountOptions.filter((option) => option.isHeader || option.id !== draft.accountId),

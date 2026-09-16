@@ -19,7 +19,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
 import { upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
-import { isDepositAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
+import { isDepositAccount, isIncomeExpensePostingAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
 import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
@@ -555,7 +555,7 @@ export async function createTransaction(formData: FormData) {
           categoryId ? tx.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
         ]);
         if (!acc) throw new Error(t("sidebar.action.accountNotFound"));
-        if (isPureInvestmentAccount(acc)) throw new Error(t("sidebar.action.investmentNoIncomeExpense"));
+        if (!isIncomeExpensePostingAccount(acc)) throw new Error(t("sidebar.action.investmentNoIncomeExpense"));
         if (createInstallment && acc.kind !== AccountKind.bank_credit) throw new Error(t("sidebar.action.installmentCreditCardOnly"));
         if (createInstallment && (installmentAmount <= 0 || installmentAmount > amountAbs)) {
           throw new Error(t("sidebar.action.installmentAmountInvalid"));
@@ -719,6 +719,7 @@ export async function createTransaction(formData: FormData) {
           acc && (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
             ? toStatementMonth(creditBillEffectiveDate({ type, date, postedAt }) ?? date, acc.billingDay, acc.billingDayTxPeriod)
             : null;
+        if (acc && !isIncomeExpensePostingAccount(acc)) throw new Error(t("sidebar.action.investmentNoIncomeExpense"));
         if (acc) {
           const duplicate = await findRecentManualTransactionDuplicate(tx, {
             householdId,
@@ -2852,12 +2853,12 @@ export async function updateTransactionFromDialog(formData: FormData) {
       const keepFundDetail = formData.get("keepFundDetail") === "true";
 
       const [acc, cat] = await Promise.all([
-        accountId ? tx.account.findUnique({ where: { id: accountId } }) : Promise.resolve(null),
+        accountId ? tx.account.findUnique({ where: { id: accountId }, include: { Institution: true } }) : Promise.resolve(null),
         categoryId ? tx.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
       ]);
       if (!acc) throw new Error(t("investForm.selectAccount"));
       touchedAccountIds.add(acc.id);
-      if (isPureInvestmentAccount(acc)) throw new Error(t("sidebar.action.investmentNoIncomeExpense"));
+      if (!isIncomeExpensePostingAccount(acc)) throw new Error(t("sidebar.action.investmentNoIncomeExpense"));
 
       // Check whether this is a fund transaction (via toAccountId + fundProductType).
       const isFundTransaction = entry.toAccountId && entry.fundProductType;

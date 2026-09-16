@@ -63,7 +63,7 @@ import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { toNumber, addWorkdaysUtc, toStatementMonth, startOfDayUtc, formatDateLocal } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, locateDetailEntryPageDesc } from "@/lib/detail-entry-order";
-import { isDepositAccount, isInsuranceAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
+import { isDepositAccount, isIncomeExpensePostingAccount, isInsuranceAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
 import { getOrCreateInsuranceAccount } from "@/lib/insurance/autoAccount";
 import { normalizeInsuranceAction } from "@/lib/insurance/transaction";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
@@ -2021,7 +2021,7 @@ export async function POST(req: Request) {
           resolveCategorySnapshot(tx, householdId, { categoryId, type: "expense" }),
         ]);
         if (!acc) throw new Error("账户不存在");
-        if (isPureInvestmentAccount(acc)) throw new Error("基金/理财账户不参与收支记账");
+        if (!isIncomeExpensePostingAccount(acc)) throw new Error("定期存款、基金资金、股票资金和基金/理财账户不参与收支记账");
 
         const statementMonth =
           (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
@@ -2096,6 +2096,7 @@ export async function POST(req: Request) {
           acc && (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
             ? toStatementMonth(creditBillEffectiveDate({ type, date, postedAt }) ?? date, acc.billingDay, acc.billingDayTxPeriod)
             : null;
+        if (acc && !isIncomeExpensePostingAccount(acc)) throw new Error("定期存款、基金资金、股票资金和基金/理财账户不参与收支记账");
         if (acc) {
           const duplicate = await findRecentManualTransactionDuplicate(tx, {
             householdId,
@@ -3667,7 +3668,7 @@ return;
       const keepFundDetail = body.keepFundDetail === true;
 
       const [acc, cat] = await Promise.all([
-        accountId ? tx.account.findUnique({ where: { id: accountId } }) : Promise.resolve(null),
+        accountId ? tx.account.findUnique({ where: { id: accountId }, include: { Institution: true } }) : Promise.resolve(null),
         resolveCategorySnapshot(tx, householdId, {
           categoryId,
           categoryName,
@@ -3675,7 +3676,7 @@ return;
         }),
       ]);
       if (!acc) throw new Error("请选择账户");
-      if (isPureInvestmentAccount(acc)) throw new Error("基金/理财账户不参与收支记账");
+      if (!isIncomeExpensePostingAccount(acc)) throw new Error("定期存款、基金资金、股票资金和基金/理财账户不参与收支记账");
 
       const isFundTransaction = entry.toAccountId && entry.fundProductType;
 

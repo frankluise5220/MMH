@@ -42,7 +42,7 @@ export default async function TransactionsPage() {
         numberMasked: true,
         groupId: true,
         investProductType: true,
-        Institution: { select: { name: true, shortName: true } },
+        Institution: { select: { name: true, shortName: true, type: true } },
         AccountGroup: { select: { id: true, name: true } },
         Counterparty: { select: { name: true, shortName: true } },
       },
