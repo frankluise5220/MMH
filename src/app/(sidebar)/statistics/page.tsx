@@ -21,7 +21,7 @@ import {
   SYSTEM_INSURANCE_RETURN_CATEGORY,
 } from "@/lib/default-categories";
 import { addStatisticCategoryBucket, buildStatisticCategoryItemsFromBuckets, createStatisticCategoryResolver, getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
-import { isCreditCardRepaymentTransfer, isDebtPrincipalTransfer } from "@/lib/transaction-semantics";
+import { isCreditCardRepaymentTransfer, isDebtPrincipalCashFlow } from "@/lib/transaction-semantics";
 import { getServerT } from "@/lib/server/i18n";
 import { categoryOrderBy } from "@/lib/category-order";
 
@@ -108,11 +108,17 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
 
   await normalizeDefaultCategoryHierarchyForHousehold(prisma, ctx.householdId);
 
-  const [allAccounts, categories, allInstitutions, allUsers] = await Promise.all([
+  const [allAccounts, accountKindRows, categories, allInstitutions, allUsers] = await Promise.all([
     prisma.account.findMany({
       where: { ...hidFilter, isActive: true, counterpartyId: null, kind: { not: "insurance" } },
       select: { id: true, name: true, kind: true, userId: true, groupId: true, counterpartyId: true, numberMasked: true, Institution: { select: { id: true, name: true, type: true } } },
       orderBy: { name: "asc" },
+    }),
+    // 债务本金判定必须覆盖挂往来对象/已停用账户。筛选下拉那份 allAccounts
+    // 排除了 counterpartyId != null 的往来款，不能拿来建 kind 表。
+    prisma.account.findMany({
+      where: hidFilter,
+      select: { id: true, kind: true },
     }),
     prisma.category.findMany({
       where: { ...hidFilter, type: { in: ["income", "expense"] } },
@@ -124,7 +130,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
   ]);
 
   const nonInvestAccountIds = allAccounts.filter((a) => !isPureInvestmentAccount(a)).map(a => a.id);
-  const accountKindById = new Map(allAccounts.map((account) => [account.id, account.kind]));
+  const accountKindById = new Map(accountKindRows.map((account) => [account.id, account.kind]));
 
   const institutionAccountIds = selectedInstitutionIds
     ? allAccounts.filter((account) => selectedInstitutionIds.includes(account.Institution?.id ?? "")).map((account) => account.id)
@@ -265,7 +271,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
       // itself is a balance-sheet move, not income/expense.  Skip the principal
       // here; the interest portion is still reported via
       // getBusinessResultStatisticItems below.
-      const isDebtPrincipal = isDebtPrincipalTransfer(debtKindEntry);
+      const isDebtPrincipal = isDebtPrincipalCashFlow(debtKindEntry);
       if (isToSelf && !isFromSelf) {
         if (!isDebtPrincipal) {
           row.income += Math.abs(amount);

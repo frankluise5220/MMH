@@ -170,6 +170,27 @@ export function isDebtPrincipalTransfer(entry: {
   return isDebtActivityByAccount(entry) ?? true;
 }
 
+/**
+ * 资金统计收入/支出（含收入来源、支出来源饼图）应排除的债务本金现金流。
+ *
+ * 比 {@link isDebtPrincipalTransfer} 更严：只要账户一端当前是 loan/settlement，
+ * 即便 source 不是 debt_*（手工/代付导入），本金也不进收入/支出。
+ * 利息仍走 getBusinessResultStatisticItems，不在这里排除。
+ *
+ * ⚠️ 调用方必须用**全账本**账户 kind 表（含挂往来对象、已停用账户）。
+ * 统计页筛选下拉会排除 `counterpartyId != null` 的往来款账户；若用那份列表
+ * 建 kind 表，一端是资金账户、一端是往来款时 `isDebtActivityByAccount`
+ * 会得到 false，本金被当成跨范围转账打进饼图。
+ */
+export function isDebtPrincipalCashFlow(entry: {
+  source?: string | null;
+  accountKind?: string | null;
+  toAccountKind?: string | null;
+} | null | undefined) {
+  if (isDebtActivityByAccount(entry) === true) return true;
+  return isDebtPrincipalTransfer(entry);
+}
+
 export function statementMonthForTransfer(
   date: Date,
   fromAccount: StatementAccountLike | null | undefined,

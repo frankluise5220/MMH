@@ -12,7 +12,7 @@ import {
   SYSTEM_INSURANCE_RETURN_CATEGORY,
 } from "@/lib/default-categories";
 import { addStatisticCategoryBucket, buildStatisticCategoryItemsFromBuckets, createStatisticCategoryResolver, getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
-import { isCreditCardRepaymentTransfer, isDebtPrincipalTransfer } from "@/lib/transaction-semantics";
+import { isCreditCardRepaymentTransfer, isDebtPrincipalCashFlow } from "@/lib/transaction-semantics";
 
 export const dynamic = "force-dynamic";
 
@@ -72,11 +72,15 @@ export async function GET(req: NextRequest) {
 
     await normalizeDefaultCategoryHierarchyForHousehold(prisma, householdId);
 
-    const [allAccounts, categories] = await Promise.all([
+    const [allAccounts, accountKindRows, categories] = await Promise.all([
       prisma.account.findMany({
         where: { ...hidFilter, isActive: true },
         select: { id: true, name: true, kind: true },
         orderBy: { name: "asc" },
+      }),
+      prisma.account.findMany({
+        where: hidFilter,
+        select: { id: true, kind: true },
       }),
       prisma.category.findMany({
         where: { ...hidFilter, type: { in: ["income", "expense"] } },
@@ -85,7 +89,7 @@ export async function GET(req: NextRequest) {
     ]);
 
     const nonInvestAccountIds = allAccounts.filter((a) => !isPureInvestmentAccount(a)).map(a => a.id);
-    const accountKindById = new Map(allAccounts.map((account) => [account.id, account.kind]));
+    const accountKindById = new Map(accountKindRows.map((account) => [account.id, account.kind]));
 
     const accountFilter = selectedAccountIds
       ? { OR: [{ accountId: { in: selectedAccountIds } }, { toAccountId: { in: selectedAccountIds } }] }
@@ -196,7 +200,7 @@ export async function GET(req: NextRequest) {
         // itself is a balance-sheet move, not income/expense.  Skip the principal
         // here; the interest portion is still reported via
         // getBusinessResultStatisticItems below.
-        const isDebtPrincipal = isDebtPrincipalTransfer(debtKindEntry);
+        const isDebtPrincipal = isDebtPrincipalCashFlow(debtKindEntry);
         if (isToSelf && !isFromSelf) {
           if (!isDebtPrincipal) {
             row.income += Math.abs(amount);
