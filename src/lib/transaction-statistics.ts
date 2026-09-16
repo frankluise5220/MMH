@@ -211,6 +211,81 @@ export function buildNamedStatisticItemsFromBuckets(
   }));
 }
 
+export const UNTAGGED_STATISTIC_TAG_ID = "__untagged__";
+export const UNTAGGED_STATISTIC_TAG_COLOR = "#94A3B8";
+
+export type StatisticTagBucket = {
+  id: string;
+  name: string;
+  color: string;
+  value: number;
+};
+
+export type StatisticTagLike = {
+  tagId: string;
+  Tag: { id: string; name: string; color: string | null };
+};
+
+/**
+ * Puts an income/expense amount into tag pie buckets. Tagged rows keep the
+ * existing multi-tag full-amount behaviour; rows with no EntryTag go into a
+ * synthetic 「无标签」 slice so the ring is complete instead of a silent gap.
+ */
+export function addStatisticTagBucket(
+  bucketMap: Map<string, StatisticTagBucket>,
+  tags: StatisticTagLike[] | null | undefined,
+  amount: number,
+  untaggedLabel = "无标签",
+) {
+  if (amount === 0) return;
+  if (!tags || tags.length === 0) {
+    const current = bucketMap.get(UNTAGGED_STATISTIC_TAG_ID);
+    if (current) {
+      current.value += amount;
+    } else {
+      bucketMap.set(UNTAGGED_STATISTIC_TAG_ID, {
+        id: UNTAGGED_STATISTIC_TAG_ID,
+        name: untaggedLabel,
+        color: UNTAGGED_STATISTIC_TAG_COLOR,
+        value: amount,
+      });
+    }
+    return;
+  }
+  for (const et of tags) {
+    const id = et.Tag?.id ?? et.tagId;
+    if (!id) continue;
+    const current = bucketMap.get(id);
+    if (current) {
+      current.value += amount;
+    } else {
+      bucketMap.set(id, {
+        id,
+        name: et.Tag?.name ?? id,
+        color: et.Tag?.color ?? "#3B82F6",
+        value: amount,
+      });
+    }
+  }
+}
+
+export function buildStatisticTagItemsFromBuckets(
+  bucketMap: Map<string, StatisticTagBucket>,
+  limit = 8,
+) {
+  const sorted = Array.from(bucketMap.values()).sort((a, b) => b.value - a.value);
+  const total = sorted.reduce((sum, bucket) => sum + bucket.value, 0);
+  const picked = sorted.slice(0, limit);
+  const untagged = bucketMap.get(UNTAGGED_STATISTIC_TAG_ID);
+  if (untagged && !picked.some((bucket) => bucket.id === UNTAGGED_STATISTIC_TAG_ID)) {
+    picked.push(untagged);
+  }
+  return picked.map((bucket) => ({
+    ...bucket,
+    pct: total > 0 ? (bucket.value / total) * 100 : 0,
+  }));
+}
+
 export type StatisticDistributionEntryLike = {
   accountId?: string | null;
   toAccountId?: string | null;

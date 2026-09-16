@@ -20,7 +20,7 @@ import {
   SYSTEM_INSURANCE_EXPENSE_CATEGORY,
   SYSTEM_INSURANCE_RETURN_CATEGORY,
 } from "@/lib/default-categories";
-import { addStatisticCategoryBucket, buildStatisticCategoryItemsFromBuckets, createStatisticCategoryResolver, createStatisticDistributionCollector, getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
+import { addStatisticCategoryBucket, addStatisticTagBucket, buildStatisticCategoryItemsFromBuckets, buildStatisticTagItemsFromBuckets, createStatisticCategoryResolver, createStatisticDistributionCollector, getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
 import { isCreditCardRepaymentTransfer, isDebtPrincipalCashFlow } from "@/lib/transaction-semantics";
 import { getServerT } from "@/lib/server/i18n";
 import { categoryOrderBy } from "@/lib/category-order";
@@ -227,6 +227,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
   const monthMap = new Map<string, { income: number; expense: number; investPnL: number; investCost: number }>();
   const incomeByCat = new Map<string, { id: string | null; name: string; type: "income"; value: number }>();
   const expenseByCat = new Map<string, { id: string | null; name: string; type: "expense"; value: number }>();
+  const untaggedLabel = t("stats.untagged");
   const incomeByTag = new Map<string, { id: string; name: string; color: string; value: number }>();
   const expenseByTag = new Map<string, { id: string; name: string; color: string; value: number }>();
   const pnlItems: PnLItem[] = [];
@@ -257,21 +258,13 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
       row.income += effectiveAmount;
       addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", categoryId: e.categoryId, categoryName: e.categoryName }), effectiveAmount);
       dist.add("income", e, effectiveAmount);
-      // Tag aggregation
-      for (const et of e.EntryTag) {
-        const existing = incomeByTag.get(et.tagId);
-        incomeByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + effectiveAmount });
-      }
+      addStatisticTagBucket(incomeByTag, e.EntryTag, effectiveAmount, untaggedLabel);
     } else if (e.type === TransactionType.expense) {
       const effectiveAmount = getIncomeExpenseStatisticAmount(e.type, amount);
       row.expense += effectiveAmount;
       addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", categoryId: e.categoryId, categoryName: e.categoryName }), effectiveAmount);
       dist.add("expense", e, effectiveAmount);
-      // Tag aggregation
-      for (const et of e.EntryTag) {
-        const existing = expenseByTag.get(et.tagId);
-        expenseByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + effectiveAmount });
-      }
+      addStatisticTagBucket(expenseByTag, e.EntryTag, effectiveAmount, untaggedLabel);
       } else if (e.type === TransactionType.transfer) {
         if (isCreditCardRepaymentTransfer({
           type: e.type,
@@ -288,20 +281,14 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
           row.income += Math.abs(amount);
           addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", categoryId: e.categoryId, categoryName: e.categoryName }), Math.abs(amount));
           dist.add("income", e, Math.abs(amount));
-          for (const et of e.EntryTag) {
-            const existing = incomeByTag.get(et.tagId);
-            incomeByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + Math.abs(amount) });
-          }
+          addStatisticTagBucket(incomeByTag, e.EntryTag, Math.abs(amount), untaggedLabel);
         }
       } else if (isFromSelf && !isToSelf) {
         if (!isDebtPrincipal) {
           row.expense += Math.abs(amount);
           addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", categoryId: e.categoryId, categoryName: e.categoryName }), Math.abs(amount));
           dist.add("expense", e, Math.abs(amount));
-          for (const et of e.EntryTag) {
-            const existing = expenseByTag.get(et.tagId);
-            expenseByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + Math.abs(amount) });
-          }
+          addStatisticTagBucket(expenseByTag, e.EntryTag, Math.abs(amount), untaggedLabel);
         }
       }
         for (const item of getBusinessResultStatisticItems(debtKindEntry)) {
@@ -309,18 +296,12 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
             row.income += item.amount;
             addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
             dist.add("income", e, item.amount);
-            for (const et of e.EntryTag) {
-              const existing = incomeByTag.get(et.tagId);
-              incomeByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + item.amount });
-            }
+            addStatisticTagBucket(incomeByTag, e.EntryTag, item.amount, untaggedLabel);
           } else {
             row.expense += item.amount;
             addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
             dist.add("expense", e, item.amount);
-            for (const et of e.EntryTag) {
-              const existing = expenseByTag.get(et.tagId);
-              expenseByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + item.amount });
-            }
+            addStatisticTagBucket(expenseByTag, e.EntryTag, item.amount, untaggedLabel);
           }
         }
       } else if (e.type === TransactionType.investment) {
@@ -331,18 +312,12 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
           row.income += effectiveAmount;
           addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", fallbackName: SYSTEM_INSURANCE_RETURN_CATEGORY }), effectiveAmount);
           dist.add("income", e, effectiveAmount);
-          for (const et of e.EntryTag) {
-            const existing = incomeByTag.get(et.tagId);
-            incomeByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + effectiveAmount });
-          }
+          addStatisticTagBucket(incomeByTag, e.EntryTag, effectiveAmount, untaggedLabel);
         } else {
           row.expense += effectiveAmount;
           addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", fallbackName: SYSTEM_INSURANCE_EXPENSE_CATEGORY }), effectiveAmount);
           dist.add("expense", e, effectiveAmount);
-          for (const et of e.EntryTag) {
-            const existing = expenseByTag.get(et.tagId);
-            expenseByTag.set(et.tagId, { id: et.Tag.id, name: et.Tag.name, color: et.Tag.color ?? "#3B82F6", value: (existing?.value ?? 0) + effectiveAmount });
-          }
+          addStatisticTagBucket(expenseByTag, e.EntryTag, effectiveAmount, untaggedLabel);
         }
         continue;
       }
@@ -420,14 +395,8 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
   const expenseCats: CategoryItem[] = buildStatisticCategoryItemsFromBuckets(expenseByCat, totalExpense);
 
   // ── Tag group data ──
-  const incomeTagGroups: TagGroupData[] = Array.from(incomeByTag.values())
-    .sort((a, b) => b.value - a.value)
-    .slice(0, 8)
-    .map(t => ({ ...t, pct: totalIncome > 0 ? (t.value / totalIncome) * 100 : 0 }));
-  const expenseTagGroups: TagGroupData[] = Array.from(expenseByTag.values())
-    .sort((a, b) => b.value - a.value)
-    .slice(0, 8)
-    .map(t => ({ ...t, pct: totalExpense > 0 ? (t.value / totalExpense) * 100 : 0 }));
+  const incomeTagGroups: TagGroupData[] = buildStatisticTagItemsFromBuckets(incomeByTag);
+  const expenseTagGroups: TagGroupData[] = buildStatisticTagItemsFromBuckets(expenseByTag);
   const { incomeInstitutions, expenseInstitutions, incomeLocations, expenseLocations } = dist.build();
 
   // ── Investment floating P&L ──
