@@ -19,7 +19,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
 import { upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
-import { isDepositAccount, isIncomeExpensePostingAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
+import { isAdvanceFundingAccount, isDepositAccount, isIncomeExpensePostingAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
 import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
@@ -471,6 +471,9 @@ export async function createTransaction(formData: FormData) {
         const counterpartyInstitution = counterpartyInstitutionId
           ? await tx.institution.findUnique({ where: { id: counterpartyInstitutionId } })
           : null;
+        if (fromAcc.kind === "loan" || toAcc.kind === "loan") {
+          throw new Error(t("sidebar.action.specialTargetTransferNotAllowed"));
+        }
         const isDebtTransfer = isLoanOrSettlementAccountKind(fromAcc.kind) || isLoanOrSettlementAccountKind(toAcc.kind);
         if (isLoanOrSettlementAccountKind(fromAcc.kind) && isLoanOrSettlementAccountKind(toAcc.kind)) {
           throw new Error(t("sidebar.action.settlementTransferNotAllowed"));
@@ -666,7 +669,7 @@ export async function createTransaction(formData: FormData) {
           categoryId ? tx.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
         ]);
         if (!acc) throw new Error(t("sidebar.action.accountNotFound"));
-        if (isPureInvestmentAccount(acc)) throw new Error(t("sidebar.action.advanceNoIncomeExpense"));
+        if (!isAdvanceFundingAccount(acc)) throw new Error(t("sidebar.action.advanceNoIncomeExpense"));
         const resolvedAdvance = await resolveOrCreateAdvanceAccount(tx, {
           householdId,
           cashAccountId: acc.id,
@@ -2521,6 +2524,9 @@ export async function updateTransactionFromDialog(formData: FormData) {
           : null;
         touchedAccountIds.add(fromAcc.id);
         touchedAccountIds.add(toAcc.id);
+        if (fromAcc.kind === "loan" || toAcc.kind === "loan") {
+          throw new Error(t("sidebar.action.specialTargetTransferNotAllowed"));
+        }
         const isDebtTransfer = isLoanOrSettlementAccountKind(fromAcc.kind) || isLoanOrSettlementAccountKind(toAcc.kind);
         if (isLoanOrSettlementAccountKind(fromAcc.kind) && isLoanOrSettlementAccountKind(toAcc.kind)) {
           throw new Error(t("sidebar.action.settlementTransferNotAllowed"));
@@ -2809,7 +2815,7 @@ export async function updateTransactionFromDialog(formData: FormData) {
           categoryId ? tx.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
         ]);
         if (!acc) throw new Error(t("sidebar.action.accountNotFound"));
-        if (isPureInvestmentAccount(acc)) throw new Error(t("sidebar.action.advanceNoIncomeExpense"));
+        if (!isAdvanceFundingAccount(acc)) throw new Error(t("sidebar.action.advanceNoIncomeExpense"));
         const resolvedAdvance = await resolveOrCreateAdvanceAccount(tx, {
           householdId: ctx.householdId,
           cashAccountId: acc.id,

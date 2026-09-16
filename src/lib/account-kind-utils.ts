@@ -84,10 +84,25 @@ export function isInvestmentFundingAccount(account: AccountKindLike | null | und
   return INVESTMENT_FUNDING_INSTITUTION_TYPES.has(String(accountInstitutionType(account) ?? "").trim());
 }
 
-/** 普通收入/支出（含明细改账户）允许落到的账户。定期存款、基金/股票资金、基金持仓账户都不算。 */
+/** 普通收入/支出（含明细改账户）允许落到的账户。贷款、定期存款、基金/股票资金、基金持仓账户都不算。 */
 export function isIncomeExpensePostingAccount(account: AccountKindLike | null | undefined) {
   if (!account) return false;
+  if (account.kind === "loan") return false;
   if (isDepositAccount(account) || isPureInvestmentAccount(account) || isInvestmentFundingAccount(account)) return false;
+  return true;
+}
+
+/** 代付资金侧：普通资金账户。贷款、往来款、存款、基金/股票资金、持仓都不算。 */
+export function isAdvanceFundingAccount(account: AccountKindLike | null | undefined) {
+  if (!isIncomeExpensePostingAccount(account)) return false;
+  return !isLoanOrSettlementAccountKind(account?.kind);
+}
+
+/** 普通转账下拉：贷款走专用窗口，基金持仓也不进转账。存款/往来款仍可出现并跳到对应专用窗。 */
+export function isOrdinaryTransferAccount(account: AccountKindLike | null | undefined) {
+  if (!account) return false;
+  if (account.kind === "loan") return false;
+  if (isPureInvestmentAccount(account)) return false;
   return true;
 }
 

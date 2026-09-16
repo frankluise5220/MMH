@@ -79,7 +79,7 @@ import {
   counterpartyQualifiedAccountName,
   normalizeCreditCardLabelTemplate,
 } from "@/lib/account-display";
-import { getInvestmentAccountView, isDepositAccount, isIncomeExpensePostingAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
+import { getInvestmentAccountView, isDepositAccount, isIncomeExpensePostingAccount, isLoanOrSettlementAccountKind, isOrdinaryTransferAccount, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
 import { normalizeLoanType, resolveLoanTypeValue } from "@/lib/loan-type";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
@@ -1261,10 +1261,10 @@ export default async function Home({
     && (!transferOwnerGroupId || a.groupId === transferOwnerGroupId);
   const transferAccountSSOptions = view === "investstock"
     ? buildAccountSSOptions(isStockTransferEligibleAccount)
-    : buildAccountSSOptions(a => !isPureInvestmentAccount(a));
+    : buildAccountSSOptions((a) => isOrdinaryTransferAccount(a));
   const transferAccountOptions = view === "investstock"
     ? accountOptions.filter(isStockTransferEligibleAccount)
-    : accountOptions.filter(a => !isPureInvestmentAccount(a));
+    : accountOptions.filter((a) => isOrdinaryTransferAccount(a));
   const stockAccountSSOptions = buildAccountSSOptions(a => a.kind === "investment" && a.investProductType === "stock");
   const propertyAccountSSOptions = buildAccountSSOptions(a => a.kind === "investment" && a.investProductType === "property");
   const debtTransferAccountSSOptions = buildAccountSSOptions(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet" || a.kind === "bank_credit");

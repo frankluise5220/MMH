@@ -609,7 +609,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({
           ok: false,
           code: "ACCOUNT_TYPE_NOT_ALLOWED",
-          error: "定期存款、基金资金、股票资金和基金/理财账户不参与收支记账",
+          error: "贷款、定期存款、基金资金、股票资金和基金/理财账户不参与收支记账",
         }, { status: 400 });
       }
       const needsFundSync = item.fundConfirmDate !== undefined

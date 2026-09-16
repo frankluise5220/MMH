@@ -15,7 +15,7 @@ import { UnifiedEntryLauncher } from "./UnifiedEntryLauncher";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { isSettlementCounterpartyType, kindLabel } from "@/lib/account-kinds";
 import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
-import { getCashTargetOperation, isIncomeExpensePostingAccount } from "@/lib/account-kind-utils";
+import { getCashTargetOperation, isAdvanceFundingAccount, isIncomeExpensePostingAccount, isOrdinaryTransferAccount } from "@/lib/account-kind-utils";
 import { buildAccountDisplayOption, buildGroupedAccountOptions } from "@/lib/account-display";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -648,15 +648,16 @@ export function TransactionFormModal({
         const selectedOnly = prev.filter((option) => selectedIds.has(option.id) && !nextAccountOptions.some((next) => next.id === option.id));
         return mergeSmartSelectOptions(nextAccountOptions, selectedOnly);
       });
+      const transferOptions = allOptions.filter((option) => isOrdinaryTransferAccount(option));
       setTransferAccountList((prev) => {
-        const selectedOnly = prev.filter((option) => selectedIds.has(option.id) && !allOptions.some((next) => next.id === option.id));
-        return mergeSmartSelectOptions(allOptions, selectedOnly);
+        const selectedOnly = prev.filter((option) => selectedIds.has(option.id) && !transferOptions.some((next) => next.id === option.id));
+        return mergeSmartSelectOptions(transferOptions, selectedOnly);
       });
       setFixedAssetAccountList((prev) => {
         const selectedOnly = prev.filter((option) => fixedAssetAccountId === option.id && !nextFixedAssetAccountOptions.some((next) => next.id === option.id));
         return mergeSmartSelectOptions(nextFixedAssetAccountOptions, selectedOnly);
       });
-      const groupedAll = buildGroupedOptionsFromSettingsAccounts(rawAccounts);
+      const groupedAll = buildGroupedOptionsFromSettingsAccounts(rawAccounts.filter((account) => isOrdinaryTransferAccount(account)));
       const groupedAccount = buildGroupedOptionsFromSettingsAccounts(
         rawAccounts.filter((account) =>
           isIncomeExpensePostingAccount(account) && (!allowedKinds.size || allowedKinds.has(account.kind ?? "")),
@@ -775,17 +776,13 @@ export function TransactionFormModal({
     if (accountVisibleOptionIds) {
       base = base.filter((option) => accountVisibleOptionIds.has(option.id));
     }
-    // 定期存款 / 基金资金 / 股票资金 / 基金持仓是硬排除，不受「账户下拉限制类型」开关影响。
+    // 贷款 / 定期存款 / 基金资金 / 股票资金 / 基金持仓是硬排除，不受「账户下拉限制类型」开关影响。
     base = base.filter((option) => option.isHeader || option.isGroup || isIncomeExpensePostingAccount(option));
     return sortByAccountUsage(base, accountUsage);
   }, [accountSSOptionsFiltered, accountList, accountUsage, accountVisibleOptionIds]);
-  // Advance (代付) account pickers: funding side excludes loan/settlement rows,
-  // the settlement side lists only the counterparty's loan/settlement accounts.
-  const isDebtAccountKind = (kind?: string | null) => kind === "loan" || kind === "settlement";
-  // 「账户下拉按类型筛选」关掉时也只放宽【类型】条件；表头/分组、往来对象匹配等条件仍保留
-  // （用户定版：要关就关全面，但别把不该出现的行混进来）。
+  // 代付资金侧硬排除贷款/往来款，不受「账户下拉限制类型」开关影响。
   const advanceCashAccountOptions = useMemo(
-    () => restrictAccountsByType(displayAccountOptions, (option) => option.isHeader || option.isGroup || !isDebtAccountKind(option.kind)),
+    () => displayAccountOptions.filter((option) => option.isHeader || option.isGroup || isAdvanceFundingAccount(option)),
     [displayAccountOptions],
   );
   const advanceAccountOptions = useMemo(() => {
