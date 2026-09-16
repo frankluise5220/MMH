@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, ChevronDown, ChevronRight, X, ArrowUpDown } from "lucide-react";
+import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, X } from "lucide-react";
 import { TransparentSideNavButtons } from "@/components/TransparentSideNavButtons";
 import type { AccountKind } from "@prisma/client";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
 import { institutionTypeLabel, isSettlementCounterpartyType, kindIconName, kindColor, kindOrder } from "@/lib/account-kinds";
+import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
 import { FundConfirmDaysPanel } from "@/components/FundConfirmDaysModal";
@@ -115,6 +116,9 @@ function billingDayDisplayValue(day: number, t: (key: string, params?: Record<st
 
 const SETTINGS_ACCOUNT_KIND_OPTIONS = kindOrder.filter((kind) => kind !== "loan" && kind !== "settlement");
 
+// 模块级常量：内联对象每次渲染都是新引用，会让 ADT 的显示状态 hydrate effect 每渲染重跑并 setState 新对象 → 无限循环。
+const ACCOUNT_TABLE_DEFAULT_SORT = { key: "name", direction: "asc" } as const;
+
 function getAccountDetailHref(account: Account) {
   const query = new URLSearchParams();
   if (account.kind === "loan" || account.kind === "settlement") {
@@ -142,40 +146,17 @@ export default function SettingsAccountsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { t } = useI18n();
-  const tf = (key: string, values: Record<string, string | number>) => {
+  const tf = useCallback((key: string, values: Record<string, string | number>) => {
     let text: string = t(key);
     for (const [name, value] of Object.entries(values)) {
       text = text.replaceAll(`{${name}}`, String(value));
     }
     return text;
-  };
-  const accountKindLabel = (kind: string) => t(`account.kind.${kind}`);
+  }, [t]);
+  const accountKindLabel = useCallback((kind: string) => t(`account.kind.${kind}`), [t]);
   const institutionKindLabel = (type: string | null | undefined) => institutionTypeLabel(type, t);
-  const investmentLabel = (value: string | null | undefined) => t(`investment.product.${value || "fund"}`);
-  const fixedAssetTypeLabel = (value: string | null | undefined) => t(`fixedAsset.type.${value || "property"}`);
-  const tradingCalendarLabel = (value: string | null | undefined) => value ? t(`tradingCalendar.${value}`) : t("settings.accounts.tradingCalendarDefault");
-  type AccountSortBy = "name" | "institution" | "owner" | "lastFour";
-  const SORT_OPTIONS: Record<AccountSortBy, string> = {
-    name: t("settings.accounts.sortBy.name"),
-    institution: t("settings.accounts.sortBy.institution"),
-    owner: t("settings.accounts.sortBy.owner"),
-    lastFour: t("settings.accounts.sortBy.lastFour"),
-  };
-  const accountSortByLabel = (key: AccountSortBy) => SORT_OPTIONS[key];
-  function sortAccounts(list: Account[], by: AccountSortBy, dir: "asc" | "desc") {
-    const sign = dir === "asc" ? 1 : -1;
-    const get = (a: Account): string => {
-      if (by === "name") return a.name;
-      if (by === "institution") return a.Institution?.name || a.Institution?.shortName || "";
-      if (by === "owner") return a.AccountGroup?.name || "";
-      return a.numberMasked || "";
-    };
-    return [...list].sort((a, b) => {
-      const va = get(a);
-      const vb = get(b);
-      return va.localeCompare(vb, "zh-Hans-CN") * sign;
-    });
-  }
+  const investmentLabel = useCallback((value: string | null | undefined) => t(`investment.product.${value || "fund"}`), [t]);
+  const fixedAssetTypeLabel = useCallback((value: string | null | undefined) => t(`fixedAsset.type.${value || "property"}`), [t]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [institutions, setInstitutions] = useState<Institution[]>([]);
@@ -193,16 +174,13 @@ export default function SettingsAccountsPage() {
   const [billingDayRules, setBillingDayRules] = useState<CreditBillingDayRuleView[]>([]);
   const [billingDayRulesLoading, setBillingDayRulesLoading] = useState(false);
   const [editError, setEditError] = useState("");
-  const [collapsedKinds, setCollapsedKinds] = useState<Set<string>>(new Set());
   const [showCreateAccount, setShowCreateAccount] = useState(false);
-  const [accountSortBy, setAccountSortBy] = useState<AccountSortBy>("name");
-  const [accountSortDir, setAccountSortDir] = useState<"asc" | "desc">("asc");
-  const [accountSortMenuOpen, setAccountSortMenuOpen] = useState(false);
-  const accountSortMenuRef = useRef<HTMLDivElement>(null);
+  // ADT 表格当前视图（筛选+列排序后的全量行）：编辑弹窗的上一/下一导航沿此顺序。
+  const [displayRows, setDisplayRows] = useState<Account[]>([]);
   const guideAccountSetup = searchParams.get("guide") === "accounts";
 
   // Delete account with password verification
-  const [deleteTarget, setDeleteTarget] = useState<{ account: Account; recordCount: number; toRecordCount: number } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ account: Account; recordCount: number; toRecordCount: number; planCount: number; planGeneratedRecordCount: number } | null>(null);
   const [deletePassword, setDeletePassword] = useState("");
   const [deleteError, setDeleteError] = useState("");
 
@@ -215,18 +193,6 @@ export default function SettingsAccountsPage() {
 
   // Nested creation from SmartSelect in inline edit
   const [nestedEntityType, setNestedEntityType] = useState<"institution" | "group" | null>(null);
-
-  // Close sort menu on outside click
-  useEffect(() => {
-    if (!accountSortMenuOpen) return;
-    const handler = (event: MouseEvent) => {
-      if (accountSortMenuRef.current && !accountSortMenuRef.current.contains(event.target as Node)) {
-        setAccountSortMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [accountSortMenuOpen]);
 
   useEffect(() => {
     const cached = getCachedSettingsAccountData();
@@ -241,9 +207,11 @@ export default function SettingsAccountsPage() {
       return;
     }
     void loadAll();
+    // 仅挂载时加载一次；loadAll 引用稳定（useCallback []），刻意不列入依赖。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function loadAll(options?: { force?: boolean }) {
+  const loadAll = useCallback(async (options?: { force?: boolean }) => {
     if (!options?.force) setLoadingAccounts(true);
     try {
       const data = await fetchSettingsAccountData(options).catch(() => null);
@@ -256,17 +224,13 @@ export default function SettingsAccountsPage() {
     } finally {
       setLoadingAccounts(false);
     }
-  }
+  }, []);
 
-  function notifySidebarChanged() {
-    dispatchFinanceDataChanged({ reason: "settings-accounts-change" });
-  }
-
-  async function refreshSettingsAccounts(reason: string) {
+  const refreshSettingsAccounts = useCallback(async (reason: string) => {
     void notifySettingsDataChanged({ scope: "accounts", reason, prefetch: true });
     await loadAll({ force: true });
-    notifySidebarChanged();
-  }
+    dispatchFinanceDataChanged({ reason: "settings-accounts-change" });
+  }, [loadAll]);
 
   // 正在编辑的信用卡账户：账单日设置走「账单日设置」弹窗（按生效日期的规则表），
   // 这里只读展示当前生效值：账单日 · 还款日（固定日 / 账单日后 N 天）· 交易归属期。
@@ -280,7 +244,7 @@ export default function SettingsAccountsPage() {
     return effectiveDay ? billingDayDisplayValue(effectiveDay, t) : "";
   }, [billingDayRules, editingBillingAccount, t]);
 
-  async function loadBillingDayRules(accountId: string) {
+  const loadBillingDayRules = useCallback(async (accountId: string) => {
     setBillingDayRulesLoading(true);
     try {
       const response = await fetch(
@@ -292,7 +256,7 @@ export default function SettingsAccountsPage() {
     } finally {
       setBillingDayRulesLoading(false);
     }
-  }
+  }, []);
 
   // ---- Account handlers ----
   function buildEditForm(a: Account): Record<string, string> {
@@ -324,16 +288,20 @@ export default function SettingsAccountsPage() {
     };
   }
 
-  function openEdit(a: Account) {
+  // buildEditForm 每渲染重建（读 baseCurrency 等渲染期值）；openEdit 的稳定引用经 ref 间接调用。
+  const buildEditFormRef = useRef(buildEditForm);
+  buildEditFormRef.current = buildEditForm;
+
+  const openEdit = useCallback((a: Account) => {
     const normalizedKind = normalizedAccountKind(a);
-    const nextForm = buildEditForm(a);
+    const nextForm = buildEditFormRef.current(a);
     setEditingId(a.id);
     setEditError("");
     if (normalizedKind === "bank_credit") void loadBillingDayRules(a.id);
     else setBillingDayRules([]);
     setEditForm(nextForm);
     setEditFormBaseline(nextForm);
-  }
+  }, [loadBillingDayRules]);
 
   function isEditFormDirty() {
     const keys = new Set([...Object.keys(editForm), ...Object.keys(editFormBaseline)]);
@@ -512,14 +480,14 @@ export default function SettingsAccountsPage() {
     }));
   }
 
-  async function toggleActive(id: string) {
+  const toggleActive = useCallback(async (id: string) => {
     await fetch("/api/v1/accounts", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id }),
     });
     void refreshSettingsAccounts("account:toggle-active");
-  }
+  }, [refreshSettingsAccounts]);
 
   const accountDisplayName = (account: Account) => {
     return buildAccountDisplayOption(
@@ -586,9 +554,9 @@ export default function SettingsAccountsPage() {
   // ---- Account merge: allow merging exactly 2 accounts with the same type,
   // same owner, and same institution (currency and, for investment/loan
   // accounts, product type / debt direction must also match). ----
-  const toggleMergeSelected = (id: string) => {
+  const toggleMergeSelected = useCallback((id: string) => {
     setMergeSelectedIds((prev) => prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id].slice(-2));
-  };
+  }, []);
 
   const mergeCheck = useMemo(() => {
     if (mergeSelectedIds.length < 2) return { ok: false, reason: t("settings.accounts.merge.needTwo") };
@@ -647,7 +615,8 @@ export default function SettingsAccountsPage() {
     }
   }
 
-  const filteredAccounts = accounts.filter(a => {
+  // useMemo：rows 引用不稳定会让 ADT 的 onDisplayRowsChange effect 每渲染回写 setDisplayRows(新数组) → 无限循环。
+  const filteredAccounts = useMemo(() => accounts.filter(a => {
     if (scope.userIds.length > 0 && !scope.userIds.includes(a.groupId ?? "")) return false;
     if (scope.institutionIds.length > 0) {
       const institutionKey = a.Institution?.id ?? a.institutionId ?? CASH_INSTITUTION_ID;
@@ -658,21 +627,285 @@ export default function SettingsAccountsPage() {
     if (hideInactiveAccounts && !a.isActive) return false;
     if (!accountMatchesNameQuery(a, accountNameQuery)) return false;
     return true;
-  });
+    // accountMatchesNameQuery 每渲染重建（依赖 accountDisplayName/preferences 读取），其输入
+    // accountNameQuery 已在 deps 中；刻意不列入依赖以保持 rows 引用稳定（ADT 回写循环防护）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [accounts, scope, selectedAccountKinds, hideInactiveAccounts, accountNameQuery]);
 
-  // Group accounts by kind for display
-  const grouped = new Map<string, Account[]>();
-  for (const a of filteredAccounts) {
-    const normalizedKind = normalizedAccountKind(a);
-    const list = grouped.get(normalizedKind) || [];
-    list.push(a);
-    grouped.set(normalizedKind, list);
-  }
+  // ---- ADT 表格 ----
+  const navigationAccountsState = displayRows.length > 0 ? displayRows : filteredAccounts;
+
+  const handleDeleteClick = useCallback(async (event: React.MouseEvent, a: Account) => {
+    event.stopPropagation();
+    // 删除影响预检（preview=1 不删除）：展示级联范围——
+    // 计划任务（还款/定投等）及其已生成的记录会一并删除。
+    let impact: { recordCount: number; toRecordCount: number; planCount: number; planGeneratedRecordCount: number } | null = null;
+    try {
+      const previewRes = await fetch(`/api/v1/accounts?id=${a.id}&preview=1`, { method: "DELETE" });
+      const previewJson = await previewRes.json().catch(() => null);
+      if (previewJson?.ok && previewJson?.data) impact = previewJson.data;
+    } catch { /* 预检失败回落通用确认 */ }
+    const isLoan = a.kind === "loan";
+    const planCount = impact?.planCount ?? 0;
+    if (isLoan) {
+      const confirmed = await showConfirmDialog({
+        title: t("settings.accounts.deleteLoanTitle"),
+        message: planCount > 0 && impact
+          ? tf("settings.accounts.deleteLoanCascadeMessage", {
+              name: a.name,
+              planCount,
+              planGeneratedRecordCount: impact.planGeneratedRecordCount,
+            })
+          : tf("settings.accounts.deleteLoanMessage", { name: a.name }),
+        tone: "danger",
+      });
+      if (!confirmed) return;
+    } else if (planCount > 0 && impact) {
+      const confirmed = await showConfirmDialog({
+        title: t("settings.accounts.deleteCascadeTitle"),
+        message: tf("settings.accounts.deleteCascadeMessage", {
+          name: a.name,
+          planCount,
+          planGeneratedRecordCount: impact.planGeneratedRecordCount,
+        }),
+        tone: "danger",
+      });
+      if (!confirmed) return;
+    } else {
+      if (!confirm(tf("settings.accounts.deleteConfirm", { name: a.name }))) return;
+    }
+    const res = await fetch(`/api/v1/accounts?id=${a.id}`, { method: "DELETE" });
+    const data = await res.json();
+    if (data.ok) {
+      void refreshSettingsAccounts("account:delete");
+      return;
+    }
+    if (data.needPassword) {
+      setDeleteTarget({
+        account: a,
+        recordCount: Number(data.recordCount ?? 0),
+        toRecordCount: Number(data.toRecordCount ?? 0),
+        planCount: Number(data.planCount ?? 0),
+        planGeneratedRecordCount: Number(data.planGeneratedRecordCount ?? 0),
+      });
+      setDeletePassword("");
+      setDeleteError("");
+      return;
+    }
+    window.alert(data.error);
+  }, [t, tf, refreshSettingsAccounts]);
+
+  const accountTableColumns = useMemo<AdvancedDataTableColumn<Account>[]>(() => [
+    {
+      key: "merge",
+      label: "",
+      width: 44,
+      minWidth: 40,
+      align: "center",
+      render: (a) => (
+        <label
+          className="flex cursor-pointer items-center justify-center"
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") event.stopPropagation(); }}
+        >
+          <input
+            type="checkbox"
+            checked={mergeSelectedIds.includes(a.id)}
+            onChange={(event) => { event.stopPropagation(); toggleMergeSelected(a.id); }}
+            onClick={(event) => event.stopPropagation()}
+            className="h-3.5 w-3.5 accent-blue-600"
+            aria-label={t("settings.accounts.merge.action")}
+          />
+        </label>
+      ),
+    },
+    {
+      key: "name",
+      label: t("settings.accounts.name"),
+      width: 260,
+      minWidth: 160,
+      truncate: true,
+      sortValue: (a) => accountDisplayName(a),
+      cellTitle: (a) => {
+        const display = accountDisplayName(a);
+        return a.note ? `${display} · ${t("settings.accounts.notePrefix")}${a.note}` : display;
+      },
+      render: (a) => (
+        <div className="flex min-w-0 items-center gap-1.5">
+          {a.isPlaceholder ? (
+            <span className="truncate text-sm font-medium text-slate-800">{accountDisplayName(a)}</span>
+          ) : (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                void router.push(getAccountDetailHref(a));
+              }}
+              className="min-w-0 max-w-full truncate rounded text-left text-sm font-medium text-slate-800 hover:text-blue-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-200"
+            >
+              {accountDisplayName(a)}
+            </button>
+          )}
+          {a.isPlaceholder && (
+            <span className="shrink-0 rounded-full border border-slate-300 bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-400">{t("settings.accounts.placeholder")}</span>
+          )}
+          {a.isConsumerLoan && (
+            <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">{t("account.kind.consumer_loan")}</span>
+          )}
+        </div>
+      ),
+    },
+    {
+      key: "kind",
+      label: t("settings.accounts.type"),
+      width: 190,
+      minWidth: 150,
+      sortValue: (a) => {
+        const index = kindOrder.indexOf(normalizedAccountKind(a));
+        return String(index < 0 ? 99 : index).padStart(2, "0");
+      },
+      filterText: (a) => {
+        const normalizedKind = normalizedAccountKind(a);
+        if (normalizedKind === "investment") return `${accountKindLabel(normalizedKind)} ${investmentLabel(a.investProductType)}`;
+        if (normalizedKind === "fixed_asset") return `${accountKindLabel(normalizedKind)} ${fixedAssetTypeLabel(a.fixedAssetType)}`;
+        return accountKindLabel(normalizedKind);
+      },
+      render: (a) => {
+        const normalizedKind = normalizedAccountKind(a);
+        return (
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={`inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-semibold ${kindColor(normalizedKind)}`}>
+              <span className="shrink-0">{kindIcon(normalizedKind)}</span>
+              <span className="truncate">{accountKindLabel(normalizedKind)}</span>
+            </span>
+            {normalizedKind === "investment" && (
+              <span className="truncate text-[11px] text-purple-700" title={investmentLabel(a.investProductType)}>
+                {investmentLabel(a.investProductType)}
+              </span>
+            )}
+            {normalizedKind === "fixed_asset" && (
+              <span className="truncate text-[11px] text-orange-700" title={fixedAssetTypeLabel(a.fixedAssetType)}>
+                {fixedAssetTypeLabel(a.fixedAssetType)}
+              </span>
+            )}
+          </div>
+        );
+      },
+    },
+    {
+      key: "owner",
+      label: t("settings.accounts.owner"),
+      width: 110,
+      minWidth: 90,
+      truncate: true,
+      sortValue: (a) => a.AccountGroup?.name || "",
+      filterText: (a) => a.AccountGroup?.name || null,
+      render: (a) => (a.AccountGroup
+        ? <span className="text-slate-700">{a.AccountGroup.name}</span>
+        : <span className="text-slate-300">-</span>),
+    },
+    {
+      key: "institution",
+      label: t("settings.accounts.institution"),
+      width: 170,
+      minWidth: 120,
+      truncate: true,
+      sortValue: (a) => a.Institution?.shortName?.trim() || a.Institution?.name || a.Counterparty?.shortName?.trim() || a.Counterparty?.name || "",
+      filterText: (a) => (normalizedAccountKind(a) === "settlement"
+        ? a.Counterparty?.shortName?.trim() || a.Counterparty?.name || null
+        : a.Institution?.shortName?.trim() || a.Institution?.name || null),
+      render: (a) => {
+        if (normalizedAccountKind(a) === "settlement") {
+          const label = a.Counterparty?.shortName?.trim() || a.Counterparty?.name || "";
+          return label ? <span className="text-slate-700">{label}</span> : <span className="text-slate-300">-</span>;
+        }
+        const label = a.Institution?.shortName?.trim() || a.Institution?.name || "";
+        return label ? <span className="text-slate-700">{label}</span> : <span className="text-slate-300">-</span>;
+      },
+    },
+    {
+      key: "currency",
+      label: t("settings.accounts.currency"),
+      width: 76,
+      minWidth: 64,
+      sortValue: (a) => a.currency,
+      filterText: (a) => a.currency,
+      render: (a) => <span className="tabular-nums text-slate-600">{a.currency}</span>,
+    },
+    {
+      key: "records",
+      label: t("settings.accounts.colRecords"),
+      width: 96,
+      minWidth: 76,
+      align: "right",
+      sortValue: (a) => a.recordCount ?? 0,
+      cellTitle: (a) => tf("settings.accounts.recordCountTitle", {
+        count: a.recordCount ?? 0,
+        deleted: a.deletedRecordCount ?? 0,
+      }),
+      render: (a) => (
+        <span className="tabular-nums text-slate-500">
+          {tf("settings.accounts.recordCountShort", { count: a.recordCount ?? 0 })}
+          {a.deletedRecordCount ? <span className="ml-1 text-slate-400">{tf("settings.accounts.deletedRecordCountShort", { count: a.deletedRecordCount })}</span> : null}
+        </span>
+      ),
+    },
+    {
+      key: "status",
+      label: t("depositShell.colStatus"),
+      width: 84,
+      minWidth: 72,
+      sortValue: (a) => (a.isActive ? 0 : 1),
+      filterText: (a) => (a.isActive ? t("common.enabled") : t("common.disabled")),
+      render: (a) => (
+        <span className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium ${a.isActive ? "bg-emerald-50 text-emerald-600" : "bg-slate-100 text-slate-400"}`}>
+          {a.isActive ? t("common.enabled") : t("common.disabled")}
+        </span>
+      ),
+    },
+    {
+      key: "note",
+      label: t("settings.accounts.note"),
+      width: 220,
+      minWidth: 140,
+      truncate: true,
+      hideable: true,
+      sortValue: (a) => a.note || "",
+      filterText: (a) => a.note || null,
+      render: (a) => (a.note
+        ? <span className="text-slate-500">{a.note}</span>
+        : <span className="text-slate-300">-</span>),
+    },
+  ], [t, tf, router, accountKindLabel, investmentLabel, fixedAssetTypeLabel, mergeSelectedIds, toggleMergeSelected]);
+
+  const renderRowActions = useCallback((a: Account) => (
+    <>
+      {!a.isPlaceholder && (
+        <SettingsActionButton
+          label={a.isActive ? t("common.disabled") : t("common.enabled")}
+          icon={a.isActive ? <PowerOff className="w-3.5 h-3.5" /> : <Power className="w-3.5 h-3.5" />}
+          onClick={(event) => { event.stopPropagation(); void toggleActive(a.id); }}
+        />
+      )}
+      {!a.isPlaceholder && (
+        <SettingsActionButton
+          label={t("common.edit")}
+          variant="edit"
+          onClick={(event) => { event.stopPropagation(); openEdit(a); }}
+        />
+      )}
+      <SettingsActionButton
+        label={t("common.delete")}
+        variant="delete"
+        onClick={(event) => void handleDeleteClick(event, a)}
+      />
+    </>
+  ), [t, toggleActive, openEdit, handleDeleteClick]);
 
   return (
-    <div className="space-y-4">
+    <div className="flex h-full w-full min-w-0 flex-col overflow-hidden">
+      <div className="shrink-0">
       <SettingsPageHeader
-        sticky
         title={t("settings.accounts.title")}
         description={guideAccountSetup ? t("settings.accounts.guideDescription") : t("settings.accounts.description")}
         count={filteredAccounts.length}
@@ -718,41 +951,6 @@ export default function SettingsAccountsPage() {
             />
             <span>{t("settings.accounts.hideInactiveAccounts")}</span>
           </label>
-          <div ref={accountSortMenuRef} className="relative">
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); setAccountSortMenuOpen(o => !o); }}
-              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-600 shadow-sm hover:bg-slate-50"
-            >
-              <ArrowUpDown className="h-3.5 w-3.5 shrink-0" />
-              <span>{accountSortByLabel(accountSortBy)}</span>
-            </button>
-            {accountSortMenuOpen && (
-              <div className="absolute right-0 top-full mt-1 z-30 min-w-[140px] rounded-md border border-slate-200 bg-white shadow-md">
-                {(Object.keys(SORT_OPTIONS) as AccountSortBy[]).map((key) => (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => {
-                      if (accountSortBy === key) {
-                        setAccountSortDir(d => d === "asc" ? "desc" : "asc");
-                      } else {
-                        setAccountSortBy(key);
-                        setAccountSortDir("asc");
-                      }
-                      setAccountSortMenuOpen(false);
-                    }}
-                    className={`w-full px-3 py-2 text-left text-xs hover:bg-slate-50 ${accountSortBy === key ? "font-medium text-blue-600" : "text-slate-700"}`}
-                  >
-                    {accountSortByLabel(key)}
-                    {accountSortBy === key && (
-                      <span className="ml-1">{accountSortDir === "asc" ? "↑" : "↓"}</span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
           <div className="ml-auto flex items-center gap-2">
             <AccountBatchImportButton
               groups={statisticsUsers}
@@ -766,172 +964,30 @@ export default function SettingsAccountsPage() {
           </>
         }
       />
+      </div>
 
-      {/* ===== Account list (grouped by kind, collapsible) ===== */}
-      {kindOrder.map(kind => {
-        const list = grouped.get(kind);
-        if (!list || list.length === 0) return null;
-        const collapsed = collapsedKinds.has(kind);
-        return (
-          <div key={kind} className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-            <button onClick={() => setCollapsedKinds(prev => { const s = new Set(prev); if (s.has(kind)) s.delete(kind); else s.add(kind); return s; })}
-              className="w-full px-4 py-3 border-b border-slate-100 flex items-center justify-between cursor-pointer hover:bg-slate-50/50 transition-colors">
-              <div className="flex items-center gap-2">
-                <span className={`inline-flex items-center gap-1.5 rounded border px-2 py-0.5 text-xs font-semibold ${kindColor(kind)}`}>
-                  <span className="shrink-0">{kindIcon(kind)}</span>
-                  <span>{accountKindLabel(kind)}</span>
-                </span>
-                <span className="text-xs text-slate-500">{tf("settings.accounts.kindCount", { count: list.length })}</span>
-              </div>
-              {collapsed ? <ChevronRight className="w-3.5 h-3.5 text-slate-400" /> : <ChevronDown className="w-3.5 h-3.5 text-slate-400" />}
-            </button>
-            {!collapsed && (
-            <div className="divide-y divide-slate-100">
-              {sortAccounts(list, accountSortBy, accountSortDir).map(a => (
-                  /* ---- View mode: only the account name navigates, not the whole row ---- */
-                  <div
-                    key={a.id}
-                    className={`px-4 py-2.5 flex items-center justify-between transition-colors ${a.isPlaceholder ? "opacity-40 bg-slate-50" : !a.isActive ? "opacity-60" : ""}`}
-                  >
-                    <label
-                      className="flex shrink-0 cursor-pointer items-center self-center pr-2"
-                      onClick={(event) => event.stopPropagation()}
-                      onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") event.stopPropagation(); }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={mergeSelectedIds.includes(a.id)}
-                        onChange={(event) => { event.stopPropagation(); toggleMergeSelected(a.id); }}
-                        onClick={(event) => event.stopPropagation()}
-                        className="h-3.5 w-3.5 accent-blue-600"
-                        aria-label={t("settings.accounts.merge.action")}
-                      />
-                    </label>
-                    <div className="flex-1 min-w-0 flex items-center gap-2">
-                      {a.isPlaceholder ? (
-                        <span className="text-sm font-medium text-slate-800 truncate">{accountDisplayName(a)}</span>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void router.push(getAccountDetailHref(a));
-                          }}
-                          className="min-w-0 max-w-full truncate rounded text-left text-sm font-medium text-slate-800 hover:text-blue-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-200"
-                        >
-                          {accountDisplayName(a)}
-                        </button>
-                      )}
-                      {a.isPlaceholder && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-slate-300 bg-slate-100 text-slate-400">{t("settings.accounts.placeholder")}</span>
-                      )}
-                      {a.isConsumerLoan && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-amber-200 bg-amber-50 text-amber-700">{t("account.kind.consumer_loan")}</span>
-                      )}
-                      {a.AccountGroup && (
-                        <span className="text-xs px-1.5 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600">{a.AccountGroup.name}</span>
-                      )}
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${a.isActive ? "bg-emerald-50 text-emerald-600 border-emerald-200" : "bg-slate-100 text-slate-400 border-slate-200"}`}>
-                        {a.isActive ? t("common.enabled") : t("common.disabled")}
-                      </span>
-                      {normalizedAccountKind(a) === "investment" && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-purple-200 bg-purple-50 text-purple-700">
-                          {investmentLabel(a.investProductType)}
-                        </span>
-                      )}
-                      {normalizedAccountKind(a) === "investment" && (a.investProductType ?? "fund") === "fund" && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600">
-                          {tf("settings.accounts.unitsDecimals", { count: a.fundUnitsDecimals ?? 2 })}
-                        </span>
-                      )}
-                      {supportsTradingCalendarForAccount(normalizedAccountKind(a), a.investProductType) && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600">
-                          {tradingCalendarLabel(a.tradingCalendar ?? "cn_fund")}
-                        </span>
-                      )}
-                      {(normalizedAccountKind(a) === "bank_credit" || normalizedAccountKind(a) === "bank_debit") && (
-                        <>
-                          {normalizedAccountKind(a) === "bank_credit" && a.billingDay && <span className="text-[10px] text-slate-400">{t("settings.accounts.billingDay", { day: billingDayDisplayValue(a.billingDay, t) })}</span>}
-                          {normalizedAccountKind(a) === "bank_credit" && a.repaymentOffsetDays != null && <span className="text-[10px] text-slate-400">{tf("settings.accounts.repaymentOffsetDays", { days: a.repaymentOffsetDays })}</span>}
-                          {normalizedAccountKind(a) === "bank_credit" && a.repaymentOffsetDays == null && a.repaymentDay && <span className="text-[10px] text-slate-400">{tf("settings.accounts.repaymentDay", { day: a.repaymentDay })}</span>}
-                          {normalizedAccountKind(a) === "bank_credit" && a.creditLimit && <span className="text-[10px] text-slate-400">{tf("settings.accounts.creditLimit", { amount: a.creditLimit })}</span>}
-                          {a.numberMasked && <span className="text-[10px] text-slate-400">{tf("settings.accounts.lastFour", { value: a.numberMasked })}</span>}
-                          {normalizedAccountKind(a) === "bank_credit" && <span className="text-[10px] text-slate-400">{a.creditBillMode === "consolidated" ? t("settings.accounts.consolidatedBill") : t("settings.accounts.separateBill")}</span>}
-                          {normalizedAccountKind(a) === "bank_credit" && a.billingDay && <span className="text-[10px] text-slate-400">{t("settings.accounts.billingDayTxPeriod." + (a.billingDayTxPeriod === "next" ? "next" : "current"))}</span>}
-                        </>
-                      )}
-                      {a.note && (
-                        <span className="max-w-[260px] truncate text-xs text-slate-400" title={a.note}>{t("settings.accounts.notePrefix")}{a.note}</span>
-                      )}
-                      <span
-                        className="text-[10px] text-slate-400 shrink-0"
-                        title={tf("settings.accounts.recordCountTitle", {
-                          count: a.recordCount ?? 0,
-                          deleted: a.deletedRecordCount ?? 0,
-                        })}
-                      >
-                        {t("settings.accounts.recordCountShort", { count: a.recordCount ?? 0 })}
-                        {a.deletedRecordCount ? ` · ${t("settings.accounts.deletedRecordCountShort", { count: a.deletedRecordCount })}` : ""}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1 shrink-0 ml-3">
-                      {!a.isPlaceholder && (
-                      <SettingsActionButton
-                        label={a.isActive ? t("common.disabled") : t("common.enabled")}
-                        icon={a.isActive ? <PowerOff className="w-3.5 h-3.5" /> : <Power className="w-3.5 h-3.5" />}
-                        onClick={(event) => { event.stopPropagation(); toggleActive(a.id); }}
-                      />
-                      )}
-                      {!a.isPlaceholder && (
-                      <SettingsActionButton
-                        label={t("common.edit")}
-                        variant="edit"
-                        onClick={(event) => { event.stopPropagation(); openEdit(a); }}
-                      />
-                      )}
-                      <SettingsActionButton
-                        label={t("common.delete")}
-                        variant="delete"
-                        onClick={async (event) => {
-                          event.stopPropagation();
-                          if (!confirm(tf("settings.accounts.deleteConfirm", { name: a.name }))) return;
-                          const res = await fetch(`/api/v1/accounts?id=${a.id}`, { method: "DELETE" });
-                          const data = await res.json();
-                          if (data.ok) {
-                            void refreshSettingsAccounts("account:delete");
-                            return;
-                          }
-                          if (data.needPassword) {
-                            setDeleteTarget({
-                              account: a,
-                              recordCount: Number(data.recordCount ?? 0),
-                              toRecordCount: Number(data.toRecordCount ?? 0),
-                            });
-                            setDeletePassword("");
-                            setDeleteError("");
-                            return;
-                          }
-                          window.alert(data.error);
-                        }}
-                      />
-                    </div>
-                  </div>
-              ))}
-            </div>
-            )}
-          </div>
-        );
-      })}
-
-      {loadingAccounts ? (
-        <div className="bg-white border border-slate-200 rounded-xl py-12 text-center text-sm text-slate-400">
-          {t("common.loading")}
-        </div>
-      ) : filteredAccounts.length === 0 ? (
-        <div className="bg-white border border-slate-200 rounded-xl py-12 text-center text-sm text-slate-400">
-          {t("settings.accounts.empty")}
-        </div>
-      ) : null}
+      {/* ===== Account list (ADT table: 类型为独立列，专属参数走编辑弹窗) ===== */}
+      <div className="mt-3 min-h-0 flex-1">
+        <AdvancedDataTable
+          storageKey="mmh_settings_accounts_table_v1"
+          columns={accountTableColumns}
+          rows={filteredAccounts}
+          rowKey={(a) => a.id}
+          minTableWidth={1180}
+          fillHeight
+          showFilters={false}
+          sortable
+          defaultSort={ACCOUNT_TABLE_DEFAULT_SORT}
+          emptyText={loadingAccounts ? t("common.loading") : t("settings.accounts.empty")}
+          rowClassName={(a) => (a.isPlaceholder ? "opacity-40 bg-slate-50" : !a.isActive ? "opacity-60" : "")}
+          onRowDoubleClick={(a) => { if (!a.isPlaceholder) openEdit(a); }}
+          onDisplayRowsChange={setDisplayRows}
+          rowActions={renderRowActions}
+          rowActionsWidth={116}
+          rowActionsMinWidth={104}
+          toolbarMode="default"
+        />
+      </div>
 
       <EntityCreateForm
         mode="full"
@@ -1005,6 +1061,14 @@ export default function SettingsAccountsPage() {
                 recordCount: deleteTarget.recordCount,
                 linkedCount: deleteTarget.toRecordCount,
               })}
+              {deleteTarget.planCount > 0 ? (
+                <div className="mt-1 text-rose-600">
+                  {tf("settings.accounts.passwordDescPlans", {
+                    planCount: deleteTarget.planCount,
+                    planGeneratedRecordCount: deleteTarget.planGeneratedRecordCount,
+                  })}
+                </div>
+              ) : null}
             </div>
             <input
               type="password"
@@ -1057,6 +1121,10 @@ export default function SettingsAccountsPage() {
         const editingAccount = accounts.find((account) => account.id === editingId);
         if (!editingAccount) return null;
         const normalizedKind = normalizedAccountKind(editingAccount);
+        // 口径（2026-09-15）：贷款账户建立后基本信息不可修改（与负债侧 4c0a7a7 一致）——
+        // 设置侧只读展示，还款资金账户在负债明细中调整；如需变更参数请删除贷款后重建。
+        const loanEditLocked = normalizedKind === "loan";
+        const loanLockedWrapperCls = loanEditLocked ? "pointer-events-none opacity-60" : "";
         const editKind = (editForm.kind || normalizedKind) as AccountKind | "fixed_asset";
         const isFixedAssetKind = editKind === "fixed_asset";
         const isInvestmentKind = editKind === "investment" || isFixedAssetKind;
@@ -1069,11 +1137,8 @@ export default function SettingsAccountsPage() {
         const filteredInstitutions = institutions.filter((institution) =>
           accountInstitutionTypeMatches(editKind, editInvestProductType, institution.type),
         );
-        const navigationAccounts = kindOrder.flatMap((kind) => {
-          const list = grouped.get(kind);
-          if (!list || list.length === 0) return [];
-          return sortAccounts(list, accountSortBy, accountSortDir);
-        });
+        // 导航顺序 = 表格当前视图顺序（顶部筛选 + 列排序后的行序）。
+        const navigationAccounts = navigationAccountsState;
         const currentNavIndex = navigationAccounts.findIndex((account) => account.id === editingId);
         const previousAccountNav = currentNavIndex > 0 ? navigationAccounts[currentNavIndex - 1] : null;
         const nextAccountNav = currentNavIndex >= 0 && currentNavIndex < navigationAccounts.length - 1 ? navigationAccounts[currentNavIndex + 1] : null;
@@ -1110,18 +1175,25 @@ export default function SettingsAccountsPage() {
                 />
               ) : null}
               <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              {loanEditLocked ? (
+                <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-700">
+                  {t("settings.accounts.loanEditLockedHint")}
+                </div>
+              ) : null}
               <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                 <div>
                   <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.name")}</label>
                   <input value={editForm.name || ""} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))}
-                    className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none focus:border-blue-400" />
+                    disabled={loanEditLocked}
+                    className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none focus:border-blue-400 disabled:bg-slate-50 disabled:text-slate-500" />
                 </div>
                 <div>
                   <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.type")}</label>
                   <select
                     value={editKind}
                     onChange={e => void changeEditKind(e.target.value)}
-                    className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
+                    disabled={loanEditLocked}
+                    className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none disabled:bg-slate-50 disabled:text-slate-500"
                   >
                     {editKindOptions.map((value) => (
                       <option key={value} value={value}>{t(`account.kind.${value}`)}</option>
@@ -1130,24 +1202,28 @@ export default function SettingsAccountsPage() {
                 </div>
                 <div>
                   <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.owner")}</label>
-                  <SmartSelect mode="single" value={editForm.groupId || ""}
-                    onChange={id => setEditForm(f => ({ ...f, groupId: id }))}
-                    options={groups.map(g => ({ id: g.id, label: g.name }))}
-                    placeholder={t("settings.accounts.selectOwner")}
-                    onCreateClick={() => setNestedEntityType("group")} createLabel={t("settings.accounts.addOwner")} />
+                  <div className={loanLockedWrapperCls}>
+                    <SmartSelect mode="single" value={editForm.groupId || ""}
+                      onChange={id => setEditForm(f => ({ ...f, groupId: id }))}
+                      options={groups.map(g => ({ id: g.id, label: g.name }))}
+                      placeholder={t("settings.accounts.selectOwner")}
+                      onCreateClick={() => setNestedEntityType("group")} createLabel={t("settings.accounts.addOwner")} />
+                  </div>
                 </div>
                 {supportsInstitution && (
                   <div>
                     <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.institution")}</label>
-                    <SmartSelect mode="single" value={editForm.institutionId || ""}
-                      onChange={changeEditInstitution}
-                      options={filteredInstitutions.map(i => ({
-                        id: i.id,
-                        label: i.shortName?.trim() || i.name,
-                        subLabel: [i.shortName?.trim() ? i.name : "", institutionKindLabel(i.type)].filter(Boolean).join(" · "),
-                      }))}
-                      placeholder={t("settings.accounts.selectInstitution")}
-                      onCreateClick={() => setNestedEntityType("institution")} createLabel={t("settings.accounts.addInstitution")} />
+                    <div className={loanLockedWrapperCls}>
+                      <SmartSelect mode="single" value={editForm.institutionId || ""}
+                        onChange={changeEditInstitution}
+                        options={filteredInstitutions.map(i => ({
+                          id: i.id,
+                          label: i.shortName?.trim() || i.name,
+                          subLabel: [i.shortName?.trim() ? i.name : "", institutionKindLabel(i.type)].filter(Boolean).join(" · "),
+                        }))}
+                        placeholder={t("settings.accounts.selectInstitution")}
+                        onCreateClick={() => setNestedEntityType("institution")} createLabel={t("settings.accounts.addInstitution")} />
+                    </div>
                   </div>
                 )}
                 <div>
@@ -1155,7 +1231,8 @@ export default function SettingsAccountsPage() {
                   <select
                     value={normalizeCurrency(editForm.currency || baseCurrency)}
                     onChange={e => setEditForm(f => ({ ...f, currency: e.target.value }))}
-                    className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none"
+                    disabled={loanEditLocked}
+                    className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none disabled:bg-slate-50 disabled:text-slate-500"
                   >
                     {CURRENCY_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>{t(`entityForm.currency.${option.value.toLowerCase()}`)}</option>
@@ -1331,6 +1408,7 @@ export default function SettingsAccountsPage() {
                 <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.note")}</label>
                 <ClearableNoteField
                   multiline
+                  disabled={loanEditLocked}
                   value={editForm.note || ""}
                   onValueChange={value => setEditForm(f => ({ ...f, note: value }))}
                   className="min-h-[96px] w-full resize-y rounded-md border border-slate-200 px-2 py-2 text-sm leading-5 outline-none focus:border-blue-400"
@@ -1357,20 +1435,24 @@ export default function SettingsAccountsPage() {
 
               <div className="mt-4 flex items-center justify-end gap-2 border-t border-slate-100 pt-3">
                 {editError ? <div className="mr-auto text-xs text-red-600">{editError}</div> : null}
-                <button
-                  type="button"
-                  onClick={() => void saveEdit({ closeAfter: false })}
-                  className="h-8 rounded-md border border-blue-200 bg-blue-50 px-3 text-xs font-medium text-blue-700 hover:bg-blue-100"
-                >
-                  {t("common.save")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void saveEdit({ closeAfter: true })}
-                  className="h-8 rounded-md bg-blue-600 px-4 text-xs font-medium text-white hover:bg-blue-700"
-                >
-                  {t("settings.accounts.saveAndClose")}
-                </button>
+                {!loanEditLocked && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => void saveEdit({ closeAfter: false })}
+                      className="h-8 rounded-md border border-blue-200 bg-blue-50 px-3 text-xs font-medium text-blue-700 hover:bg-blue-100"
+                    >
+                      {t("common.save")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void saveEdit({ closeAfter: true })}
+                      className="h-8 rounded-md bg-blue-600 px-4 text-xs font-medium text-white hover:bg-blue-700"
+                    >
+                      {t("settings.accounts.saveAndClose")}
+                    </button>
+                  </>
+                )}
               </div>
               </div>
             </div>

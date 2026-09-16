@@ -544,11 +544,24 @@ export function AdvancedDataTable<T>({
   const sortStorageKey = `${storageKey}:sort:v1`;
 
   useEffect(() => {
-    setColumnWidths(readJson<Record<string, number>>(`${storageKey}:widths`, {}));
+    const storedWidths = readJson<Record<string, number>>(`${storageKey}:widths`, {});
+    // 同值短路：调用方传入不稳定的 columns/rowActions 引用（如内联箭头）会让本 effect 每渲染重跑，
+    // 直接 setState 新对象/新 Set 会造成"新引用 → 重渲染 → effect 再跑"的无限循环
+    // （Maximum update depth exceeded，2026-09-16 设置→账户表格化实测）。同内容时保持旧引用。
+    setColumnWidths((prev) => {
+      const prevKeys = Object.keys(prev);
+      const nextKeys = Object.keys(storedWidths);
+      if (prevKeys.length === nextKeys.length && prevKeys.every((key) => prev[key] === storedWidths[key])) return prev;
+      return storedWidths;
+    });
     const savedHiddenKeys = readJson<string[] | null>(hiddenStorageKey, null);
     const legacyHiddenKeys = savedHiddenKeys == null ? readJson<string[]>(`${storageKey}:hidden`, []) : [];
     const rawHiddenKeys = savedHiddenKeys ?? [...defaultHiddenKeys, ...legacyHiddenKeys];
-    setHiddenKeys(new Set(rawHiddenKeys.filter((key) => hideableColumnKeys.has(key))));
+    const nextHiddenKeys = new Set(rawHiddenKeys.filter((key) => hideableColumnKeys.has(key)));
+    setHiddenKeys((prev) => {
+      if (prev.size === nextHiddenKeys.size && Array.from(nextHiddenKeys).every((key) => prev.has(key))) return prev;
+      return nextHiddenKeys;
+    });
   }, [defaultHiddenKeys, hiddenStorageKey, hideableColumnKeys, storageKey]);
 
   useEffect(() => {
@@ -561,18 +574,31 @@ export function AdvancedDataTable<T>({
       writeJson(sortStorageKey, null);
       writeJson(filtersStorageKey, {});
     } else {
-      setFilters(normalizeStoredFilters(
+      const nextFilters = normalizeStoredFilters(
         readJson<Partial<Record<string, string[]>>>(filtersStorageKey, {}),
         filterableColumnKeys,
-      ));
+      );
+      setFilters((prev) => {
+        const prevKeys = Object.keys(prev);
+        const nextKeys = Object.keys(nextFilters);
+        if (prevKeys.length === nextKeys.length
+          && nextKeys.every((key) => prev[key]?.length === nextFilters[key]?.length
+            && (nextFilters[key] ?? []).every((value, index) => prev[key]?.[index] === value))) return prev;
+        return nextFilters;
+      });
       if (!sortable) {
         setSortState(null);
         writeJson(sortStorageKey, null);
       } else {
         const storedSort = readJson<AdvancedDataTableSortState | null | undefined>(sortStorageKey, undefined);
-        setSortState(normalizeStoredSortState(
+        const nextSort = normalizeStoredSortState(
           storedSort === undefined ? defaultSort : storedSort,
           sortableColumnKeys,
+        );
+        // 同值短路：调用方 defaultSort 传内联对象时，本 effect 每渲染重跑；
+        // setState 新对象会造成"新引用 → 重渲染 → effect 再跑"的无限循环（Maximum update depth）。
+        setSortState((prev) => (
+          prev?.key === nextSort?.key && prev?.direction === nextSort?.direction ? prev : nextSort
         ));
       }
     }
@@ -853,7 +879,11 @@ export function AdvancedDataTable<T>({
       })
       .map((item) => item.row);
   }, [filteredRows, sortRows, sortState, sortable, tableColumns]);
+  const orderedRowsRef = useRef(orderedRows);
   useEffect(() => {
+    const changed = orderedRowsRef.current !== orderedRows;
+    orderedRowsRef.current = orderedRows;
+    if (!changed) return;
     onDisplayRowsChange?.(orderedRows);
   }, [onDisplayRowsChange, orderedRows]);
   const hasPagination = paginationPage != null && !!paginationOnPageChange;
