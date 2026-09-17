@@ -1099,7 +1099,7 @@ export function DepositFormModal({
     <ModalLayerProvider value={modalZIndex}>
       {createPortal(
         <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
-          <div className="app-modal-panel max-w-2xl">
+          <div className="app-modal-panel max-w-xl">
             <div className="modal-header">
               <div className="text-sm font-semibold text-slate-800">
                 {mode === "edit" ? t("depositForm.title.edit") : t("depositForm.title.create")}
@@ -1372,9 +1372,12 @@ export function DepositFormModal({
                     <div
                       className={`grid gap-2 ${
                         isPeriodicInterestPayout
-                          ? interestPayoutUnit === "month"
-                            ? "grid-cols-[minmax(0,1fr)_minmax(0,0.55fr)_minmax(0,1.1fr)]"
-                            : "grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]"
+                          ? // 按月取息：周期 + 间隔同一行；计息方式是独立的一行（见下方）。
+                            // 按周/按年取息：不显示计息方式，周期独占一行、间隔另起一行占满宽度，
+                            // 避免与周期挤在一起时留出空白格。
+                            interestPayoutUnit === "month"
+                            ? "grid-cols-[minmax(0,1fr)_minmax(0,0.55fr)]"
+                            : "grid-cols-[minmax(0,1fr)]"
                           : "grid-cols-1"
                       }`}
                     >
@@ -1427,19 +1430,20 @@ export function DepositFormModal({
                           aria-label={t("deposit.payoutFrequency.intervalLabel")}
                         />
                       ) : null}
-                      {isPeriodicInterestPayout && interestPayoutUnit === "month" ? (
-                        <select
-                          value={interestCalcBasis}
-                          onChange={(e) => setInterestCalcBasis(e.target.value === "monthly" ? "monthly" : "daily")}
-                          className="form-input w-full"
-                          aria-label={t("deposit.calcBasis.label")}
-                          title={t("deposit.calcBasis.label")}
-                        >
-                          <option value="daily">{t("deposit.calcBasis.daily")}</option>
-                          <option value="monthly">{t("deposit.calcBasis.monthly")}</option>
-                        </select>
-                      ) : null}
                     </div>
+                    {/* 计息方式独立成行（按月取息时才有意义：月均/日均的分母差异只在月频率下体现）。 */}
+                    {isPeriodicInterestPayout && interestPayoutUnit === "month" ? (
+                      <select
+                        value={interestCalcBasis}
+                        onChange={(e) => setInterestCalcBasis(e.target.value === "monthly" ? "monthly" : "daily")}
+                        className="form-input w-full"
+                        aria-label={t("deposit.calcBasis.label")}
+                        title={t("deposit.calcBasis.label")}
+                      >
+                        <option value="daily">{t("deposit.calcBasis.daily")}</option>
+                        <option value="monthly">{t("deposit.calcBasis.monthly")}</option>
+                      </select>
+                    ) : null}
                     <div className="text-[11px] text-slate-400">
                       {!showGuideHints
                         ? ""
