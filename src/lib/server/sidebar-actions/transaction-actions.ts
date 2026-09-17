@@ -2896,7 +2896,12 @@ export async function updateTransactionFromDialog(formData: FormData) {
       ]);
       if (!acc) throw new Error(t("investForm.selectAccount"));
       touchedAccountIds.add(acc.id);
-      if (!isIncomeExpensePostingAccount(acc)) throw new Error(t("sidebar.action.investmentNoIncomeExpense"));
+      // 账户没变时放行：系统生成的存款利息收入等历史记录本来就落在定期存款账户上，
+      // 用户编辑它们只是为了改金额/备注/分类/日期，不应该因为「原账户不是普通记账账户」而被拦住。
+      // 一旦把账户改到别的账户，仍然按普通规则硬校验（不能主动把收支改挂到存款/投资账户）。
+      if (!isIncomeExpensePostingAccount(acc) && acc.id !== entry.accountId) {
+        throw new Error(t("sidebar.action.investmentNoIncomeExpense"));
+      }
 
       // Check whether this is a fund transaction (via toAccountId + fundProductType).
       const isFundTransaction = entry.toAccountId && entry.fundProductType;

@@ -777,9 +777,16 @@ export function TransactionFormModal({
       base = base.filter((option) => accountVisibleOptionIds.has(option.id));
     }
     // 贷款 / 定期存款 / 基金资金 / 股票资金 / 基金持仓是硬排除，不受「账户下拉限制类型」开关影响。
-    base = base.filter((option) => option.isHeader || option.isGroup || isIncomeExpensePostingAccount(option));
-    return sortByAccountUsage(base, accountUsage);
-  }, [accountSSOptionsFiltered, accountList, accountUsage, accountVisibleOptionIds]);
+    const filtered = base.filter((option) => option.isHeader || option.isGroup || isIncomeExpensePostingAccount(option));
+    // 但「当前编辑记录的落账账户」必须保留：存款利息收入等历史记录的落账账户就是
+    // 定期存款账户，本身不在普通收支候选里；若被过滤掉，编辑弹窗的账户框会显示为空。
+    // 只对编辑态放行，新建时仍硬排除（避免新建就能选到存款账户）。
+    if (editEntryId && accountId && !filtered.some((option) => option.id === accountId)) {
+      const selected = base.find((option) => option.id === accountId);
+      if (selected) return sortByAccountUsage([...filtered, selected], accountUsage);
+    }
+    return sortByAccountUsage(filtered, accountUsage);
+  }, [accountSSOptionsFiltered, accountList, accountUsage, accountVisibleOptionIds, editEntryId, accountId]);
   // 代付资金侧硬排除贷款/往来款，不受「账户下拉限制类型」开关影响。
   const advanceCashAccountOptions = useMemo(
     () => displayAccountOptions.filter((option) => option.isHeader || option.isGroup || isAdvanceFundingAccount(option)),
@@ -1620,13 +1627,18 @@ export function TransactionFormModal({
         setFromAccountIdEdited(true);
       } else {
         const nextAccountId = detail.accountId ?? (defaultAccountId ?? "");
+        // 存款利息收入等「收入/支出落账账户不在下拉候选内」的记录（如定期存款账户），
+        // 必须靠载荷里的账户名兜底补一个选项，否则编辑弹窗会带不出账户、显示为空。
+        // 两个字段都要看：明细面板发 accountName，其它入口可能发 accountLabel。
+        // 注意用 || 而不是 ??：明细面板会给 accountLabel 传空串 ""，?? 不会跳过空串。
+        const accountLabelFallback = (detail.accountLabel || detail.accountName || "").trim();
         setLocalAccountSSOpts((prev) => {
           const extra = accountList.find((opt) => opt.id === nextAccountId);
           if (extra) {
             return mergeSmartSelectOptions(prev ?? accountSSOptions, [extra]);
           }
-          if (nextAccountId && detail.accountLabel) {
-            return mergeSmartSelectOptions(prev ?? accountSSOptions, [{ id: nextAccountId, label: detail.accountLabel }]);
+          if (nextAccountId && accountLabelFallback) {
+            return mergeSmartSelectOptions(prev ?? accountSSOptions, [{ id: nextAccountId, label: accountLabelFallback }]);
           }
           return prev ?? accountSSOptions;
         });

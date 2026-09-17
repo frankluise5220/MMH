@@ -1345,7 +1345,12 @@ export function DepositFormModal({
               )}
 
               {!isRedeem ? (
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                // 到期行为 + 取息相关控件统一铺满整宽、共用同一列宽（两列等宽），
+                // 每一行都填满、不留空白格：
+                //   到期一次付 → [到期行为][取息周期]
+                //   按周/按年 → [到期行为][取息周期] / [取息间隔（跨两列）]
+                //   按月     → [到期行为][取息周期] / [取息间隔][计息方式]
+                <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2">
                   <div className="space-y-1">
                     <div className="form-label">{t("deposit.maturityAction.label")}</div>
                     <select
@@ -1359,7 +1364,7 @@ export function DepositFormModal({
                           setInterestPayoutInterval("1");
                         }
                       }}
-                      className="form-input"
+                      className="form-input w-full"
                     >
                       <option value="redeem">{t("deposit.maturityAction.redeem")}</option>
                       <option value="renew_principal">{t("deposit.maturityAction.renewPrincipal")}</option>
@@ -1369,70 +1374,85 @@ export function DepositFormModal({
                   </div>
                   <div className="space-y-1">
                     <div className="form-label">{t("deposit.payoutFrequency.label")}</div>
+                    <select
+                      value={interestPayoutUnit}
+                      onChange={(e) => {
+                        const next = e.target.value as typeof interestPayoutUnit;
+                        setInterestPayoutUnit(next);
+                        if (next === "maturity") {
+                          setInterestPayoutInterval("1");
+                        } else {
+                          const current = Math.trunc(parseNumber(interestPayoutInterval)) || 1;
+                          const clamped = clampDepositInterestPayoutInterval(
+                            termDaysNumber || DEFAULT_DEPOSIT_TERM_DAYS,
+                            next,
+                            current,
+                          );
+                          setInterestPayoutInterval(String(clamped));
+                          if (maturityAction === "renew_principal_interest") {
+                            setMaturityAction("renew_principal");
+                          }
+                        }
+                      }}
+                      className="form-input w-full"
+                    >
+                      <option value="maturity">{t("deposit.payoutFrequency.maturity")}</option>
+                      <option value="week">{t("deposit.payoutFrequency.weekly")}</option>
+                      <option value="month">{t("deposit.payoutFrequency.monthly")}</option>
+                      <option value="year">{t("deposit.payoutFrequency.yearly")}</option>
+                    </select>
+                  </div>
+                  {isPeriodicInterestPayout ? (
                     <div
-                      className={`grid gap-2 ${
-                        isPeriodicInterestPayout
-                          ? // 按月取息：周期 + 间隔同一行；计息方式是独立的一行（见下方）。
-                            // 按周/按年取息：不显示计息方式，周期独占一行、间隔另起一行占满宽度，
-                            // 避免与周期挤在一起时留出空白格。
-                            interestPayoutUnit === "month"
-                            ? "grid-cols-[minmax(0,1fr)_minmax(0,0.55fr)]"
-                            : "grid-cols-[minmax(0,1fr)]"
-                          : "grid-cols-1"
+                      className={`space-y-1 ${
+                        // 按周/按年取息没有「计息方式」，间隔独占这一行、跨满两列；
+                        // 按月取息时间隔与计息方式各占一列，凑满同一行。
+                        interestPayoutUnit === "month" ? "" : "sm:col-span-2"
                       }`}
                     >
-                      <select
-                        value={interestPayoutUnit}
-                        onChange={(e) => {
-                          const next = e.target.value as typeof interestPayoutUnit;
-                          setInterestPayoutUnit(next);
-                          if (next === "maturity") {
-                            setInterestPayoutInterval("1");
-                          } else {
-                            const current = Math.trunc(parseNumber(interestPayoutInterval)) || 1;
-                            const clamped = clampDepositInterestPayoutInterval(
-                              termDaysNumber || DEFAULT_DEPOSIT_TERM_DAYS,
-                              next,
-                              current,
-                            );
-                            setInterestPayoutInterval(String(clamped));
-                            if (maturityAction === "renew_principal_interest") {
-                              setMaturityAction("renew_principal");
-                            }
-                          }
+                      <div className="form-label">{t("deposit.payoutFrequency.intervalLabel")}</div>
+                      <input
+                        type="number"
+                        min={1}
+                        max={maxInterestPayoutInterval}
+                        value={interestPayoutInterval}
+                        onChange={(e) => setInterestPayoutInterval(e.target.value)}
+                        onBlur={() => {
+                          const current = Math.trunc(parseNumber(interestPayoutInterval)) || 1;
+                          const clamped = clampDepositInterestPayoutInterval(
+                            termDaysNumber || DEFAULT_DEPOSIT_TERM_DAYS,
+                            interestPayoutUnit as DepositInterestPayoutUnit,
+                            current,
+                          );
+                          setInterestPayoutInterval(String(clamped));
                         }}
-                        className="form-input"
-                      >
-                        <option value="maturity">{t("deposit.payoutFrequency.maturity")}</option>
-                        <option value="week">{t("deposit.payoutFrequency.weekly")}</option>
-                        <option value="month">{t("deposit.payoutFrequency.monthly")}</option>
-                        <option value="year">{t("deposit.payoutFrequency.yearly")}</option>
-                      </select>
-                      {isPeriodicInterestPayout ? (
-                        <input
-                          type="number"
-                          min={1}
-                          max={maxInterestPayoutInterval}
-                          value={interestPayoutInterval}
-                          onChange={(e) => setInterestPayoutInterval(e.target.value)}
-                          onBlur={() => {
-                            const current = Math.trunc(parseNumber(interestPayoutInterval)) || 1;
-                            const clamped = clampDepositInterestPayoutInterval(
-                              termDaysNumber || DEFAULT_DEPOSIT_TERM_DAYS,
-                              interestPayoutUnit as DepositInterestPayoutUnit,
-                              current,
-                            );
-                            setInterestPayoutInterval(String(clamped));
-                          }}
-                          placeholder="1"
-                          className="form-input w-full"
-                          title={t("deposit.payoutFrequency.intervalTitle", { max: String(maxInterestPayoutInterval) })}
-                          aria-label={t("deposit.payoutFrequency.intervalLabel")}
-                        />
-                      ) : null}
+                        placeholder="1"
+                        className="form-input w-full"
+                        title={t("deposit.payoutFrequency.intervalTitle", { max: String(maxInterestPayoutInterval) })}
+                        aria-label={t("deposit.payoutFrequency.intervalLabel")}
+                      />
+                      {/* 按周/按年取息时，取息说明跟在间隔下方（这一行只有它，说明放这里最贴近）。 */}
+                      {interestPayoutUnit === "month" ? null : (
+                        <div className="text-[11px] text-slate-400">
+                          {!showGuideHints
+                            ? ""
+                            : t("deposit.payoutFrequency.periodicHint", {
+                                interval: String(Math.trunc(parseNumber(interestPayoutInterval)) || 1),
+                                unit: t(
+                                  interestPayoutUnit === "week"
+                                    ? "depositForm.termUnit.week"
+                                    : "depositForm.termUnit.year",
+                                ),
+                                max: String(maxInterestPayoutInterval),
+                              })}
+                        </div>
+                      )}
                     </div>
-                    {/* 计息方式独立成行（按月取息时才有意义：月均/日均的分母差异只在月频率下体现）。 */}
-                    {isPeriodicInterestPayout && interestPayoutUnit === "month" ? (
+                  ) : null}
+                  {/* 计息方式仅按月取息时出现：月均/日均的分母差异只在月频率下体现。 */}
+                  {isPeriodicInterestPayout && interestPayoutUnit === "month" ? (
+                    <div className="space-y-1">
+                      <div className="form-label">{t("deposit.calcBasis.label")}</div>
                       <select
                         value={interestCalcBasis}
                         onChange={(e) => setInterestCalcBasis(e.target.value === "monthly" ? "monthly" : "daily")}
@@ -1443,27 +1463,25 @@ export function DepositFormModal({
                         <option value="daily">{t("deposit.calcBasis.daily")}</option>
                         <option value="monthly">{t("deposit.calcBasis.monthly")}</option>
                       </select>
-                    ) : null}
-                    <div className="text-[11px] text-slate-400">
-                      {!showGuideHints
-                        ? ""
-                        : isPeriodicInterestPayout
-                        ? interestCalcBasis === "monthly" && interestPayoutUnit === "month"
-                          ? t("deposit.calcBasis.monthlyHint")
-                          : t("deposit.payoutFrequency.periodicHint", {
-                            interval: String(Math.trunc(parseNumber(interestPayoutInterval)) || 1),
-                            unit: t(
-                              interestPayoutUnit === "week"
-                                ? "depositForm.termUnit.week"
-                                : interestPayoutUnit === "year"
-                                  ? "depositForm.termUnit.year"
-                                  : "depositForm.termUnit.month",
-                            ),
-                            max: String(maxInterestPayoutInterval),
-                          })
-                        : t("deposit.payoutFrequency.hint")}
+                      <div className="text-[11px] text-slate-400">
+                        {!showGuideHints
+                          ? ""
+                          : interestCalcBasis === "monthly"
+                            ? t("deposit.calcBasis.monthlyHint")
+                            : t("deposit.payoutFrequency.periodicHint", {
+                                interval: String(Math.trunc(parseNumber(interestPayoutInterval)) || 1),
+                                unit: t("depositForm.termUnit.month"),
+                                max: String(maxInterestPayoutInterval),
+                              })}
+                      </div>
                     </div>
-                  </div>
+                  ) : null}
+                  {/* 到期一次付：取息说明跟在取息周期下方（此时没有间隔/计息方式）。 */}
+                  {!isPeriodicInterestPayout ? (
+                    <div className="text-[11px] text-slate-400 sm:col-span-2">
+                      {showGuideHints ? t("deposit.payoutFrequency.hint") : ""}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
 
