@@ -1698,6 +1698,19 @@ const Database = require("better-sqlite3");
 
 const MIGRATIONS = [
   {
+    version: "20260917_wealth_bond_fields",
+    description: "Wealth bond (chengtou) terms: productType, maturityDate, payoutFrequency, firstPayoutDate",
+    apply(db) {
+      if (tableExists(db, "WealthProduct")) {
+        addColumnIfMissing(db, "WealthProduct", "productType", "TEXT NOT NULL DEFAULT 'standard'");
+        addColumnIfMissing(db, "WealthProduct", "maturityDate", "DATETIME");
+        addColumnIfMissing(db, "WealthProduct", "payoutFrequency", "TEXT");
+        addColumnIfMissing(db, "WealthProduct", "firstPayoutDate", "DATETIME");
+      }
+    },
+  },
+
+  {
     version: "20260913_user_auth_version",
     description: "Add User.authVersion for global session invalidation on credential changes",
     apply(db) {

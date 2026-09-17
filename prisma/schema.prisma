@@ -1150,6 +1150,12 @@ model WealthProduct {
   currency          String              @default("CNY")
   annualRate        Decimal?            @db.Decimal(10, 6)
   termDays          Int?
+  // 理财产品类型：standard=普通理财，bond=城投债（约定票息、可能坏账）
+  productType       WealthProductType   @default(standard)
+  // 城投债条款：到期日、付息方式（编码同存款：maturity | yearly(:N) | monthly(:N)）、首次付息日锚点
+  maturityDate      DateTime?
+  payoutFrequency   String?
+  firstPayoutDate   DateTime?
   note              String?
   isActive          Boolean             @default(true)
   manualNav         Decimal?            @db.Decimal(20, 6)
@@ -1763,6 +1769,11 @@ enum FundProductType {
   property
 }
 
+enum WealthProductType {
+  standard
+  bond
+}
+
 enum TradingCalendar {
   cn_fund
   hk_fund
@@ -1780,6 +1791,7 @@ enum FundSubtype {
   switch_in
   switch_out
   buy_failed
+  write_off
 }
 
 enum FundCashFlowKind {

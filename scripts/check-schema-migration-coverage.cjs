@@ -93,6 +93,7 @@ const releaseCriticalColumns = [
   ["User", "authVersion", "20260913_add_user_auth_version", "20260913_user_auth_version"],
   ["transactions", "depositInterestPayoutFrequency", "20260911_add_deposit_interest_payout", "20260911_add_deposit_interest_payout"],
   ["deposit_transactions", "interestPayoutFrequency", "20260911_add_deposit_interest_payout", "20260911_add_deposit_interest_payout"],
+  ["WealthProduct", "productType", "20260917_add_wealth_bond_fields", "20260917_wealth_bond_fields"],
 ];
 for (const [table, column, migrationDir, migrationVersion] of releaseCriticalColumns) {
   const schemaHasIt = schema.includes(` ${column} `) || schema.includes(`${column} `);

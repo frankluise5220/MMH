@@ -24,6 +24,7 @@ import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/serv
 import { calcInitialScheduledRunDate as calcInitialRunDate, calcNextScheduledRunDate as calcNextRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { executeNonFundScheduledTaskPlan, isNonFundScheduledTask } from "@/lib/server/scheduled-task-executor";
 import { ensureDepositPlansForHeldLots, executeDepositPlan } from "@/lib/server/deposit-plan-tasks";
+import { ensureWealthBondPlansForHousehold, WEALTH_BOND_MATURITY_PLAN_FUND_CODE, WEALTH_BOND_PAYOUT_PLAN_FUND_CODE } from "@/lib/server/bond-plan-tasks";
 import { resolveCategorySnapshot } from "@/lib/default-categories";
 import { ENTRY_ORIGIN_SCHEDULED_TASK } from "@/lib/transaction-semantics";
 import { acquireScheduledTaskPlanLock } from "@/lib/server/scheduled-task-lock";
@@ -54,6 +55,8 @@ async function hasMoreDuePlans(householdId: string, now: Date) {
     householdId,
     status: RegularInvestStatus.active,
     nextRunDate: { lte: now },
+    // 城投债提醒行永不过期执行（never auto-executed），不计入"还有待执行"。
+    NOT: { fundCode: { in: [WEALTH_BOND_MATURITY_PLAN_FUND_CODE, WEALTH_BOND_PAYOUT_PLAN_FUND_CODE] } },
   };
   const count = await prisma.regularInvestPlan.count({ where });
   return count > 0;
@@ -77,6 +80,9 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
 
     for (const p of allPlans) {
       const task = decodeScheduledTaskMemo(p.memo);
+      // 城投债的到期/付息计划行是"提醒"而非"任务"：利息到账时间/金额不确定，
+      // 必须手工确认，绝不能自动落账 —— 直接从执行集里剔除（保持 active 供展示）。
+      if (task.type === "wealth_bond_maturity" || task.type === "wealth_bond_interest_payout") continue;
       const isNonFundTask = isNonFundScheduledTask(task.type);
       const hasReachedRunLimit = !!(p.totalRuns && p.executedRuns >= p.totalRuns);
       const hasPassedEndDate = !!(p.endDate && p.endDate < now);
@@ -694,6 +700,9 @@ export async function POST() {
 
     // 存款的系统计划行自愈：老存单可能还没有计划行，先补齐再跑计划轮次。
     await ensureDepositPlansForHeldLots({ householdId }).catch(() => {});
+
+    // 城投债计划行自愈：bond 债单的到期/付息提醒行随债单条款刷新（只补齐/刷新，不执行）。
+    await ensureWealthBondPlansForHousehold({ householdId }).catch(() => {});
 
     const aggregated = {
       executedCount: 0,

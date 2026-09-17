@@ -69,6 +69,7 @@ import { getOrCreateInsuranceAccount } from "@/lib/insurance/autoAccount";
 import { normalizeInsuranceAction } from "@/lib/insurance/transaction";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
 import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
+import { ensureWealthBondPlansAfterTx } from "@/lib/server/bond-plan-tasks";
 import { resolveOrCreateAdvanceAccount } from "@/lib/server/advance-account";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { materializeDueInstallmentPayments } from "@/lib/server/credit-card-installment";
@@ -491,6 +492,7 @@ async function assertWealthUnitsWhenRequiredInTx(
 async function createSplitWealthTransactionFromBody(body: Record<string, unknown>, householdId: string, tagIds: string[]) {
   const date = toDateOrNull(body.date) ?? new Date();
   const subtype = normalizeFundSubtype(body.fundSubtype ?? body.subtype);
+  const isWriteOff = subtype === FundSubtype.write_off;
   const isCashIn = isWealthCashInSubtype(subtype);
   const isDividend = subtype === FundSubtype.dividend_cash;
   const amountAbs = Math.abs(parseMoney(body.amount));
@@ -501,43 +503,50 @@ async function createSplitWealthTransactionFromBody(body: Record<string, unknown
   const productNameInput = String(body.fundName ?? "").trim();
   const wealthProductIdInput = String(body.wealthProductId ?? "").trim();
   const note = String(body.note ?? body.memo ?? "").trim();
-  const units = positiveNumber(body.fundUnits);
-  const nav = positiveNumber(body.fundNav);
+  const units = isWriteOff ? null : positiveNumber(body.fundUnits);
+  const nav = isWriteOff ? null : positiveNumber(body.fundNav);
   const annualRate = positiveNumber(body.depositAnnualRate);
   const feeRaw = parseNonNegativeMoney(body.fundFee);
-  const fee = Object.prototype.hasOwnProperty.call(body, "fundFee") ? feeRaw : null;
+  const fee = isWriteOff ? null : Object.prototype.hasOwnProperty.call(body, "fundFee") ? feeRaw : null;
   const interestRaw = parseMoney(body.depositInterest);
-  const interest = Object.prototype.hasOwnProperty.call(body, "depositInterest")
-    ? interestRaw
-    : isDividend
-      ? amountAbs
-      : null;
+  const interest = isWriteOff
+    ? null
+    : Object.prototype.hasOwnProperty.call(body, "depositInterest")
+      ? interestRaw
+      : isDividend
+        ? amountAbs
+        : null;
   const arrivalDate = toDateOrNull(body.fundArrivalDate) ?? (isCashIn ? date : null);
   const arrivalAmountRaw = parseNonNegativeMoney(body.fundArrivalAmount);
   const principalAmount = isCashIn && !isDividend && units && nav ? Number((units * nav).toFixed(2)) : amountAbs;
   const grossAmount = isCashIn && !isDividend ? principalAmount : amountAbs;
-  const arrivalAmount = isDividend
-    ? (arrivalAmountRaw > 0 ? Math.abs(arrivalAmountRaw) : amountAbs)
-    : isCashIn
-      ? (arrivalAmountRaw > 0 ? Math.abs(arrivalAmountRaw) : Number(Math.max(0, principalAmount + (interest ?? 0) - Math.max(0, fee ?? 0)).toFixed(2)))
-      : null;
+  const arrivalAmount = isWriteOff
+    ? null
+    : isDividend
+      ? (arrivalAmountRaw > 0 ? Math.abs(arrivalAmountRaw) : amountAbs)
+      : isCashIn
+        ? (arrivalAmountRaw > 0 ? Math.abs(arrivalAmountRaw) : Number(Math.max(0, principalAmount + (interest ?? 0) - Math.max(0, fee ?? 0)).toFixed(2)))
+        : null;
 
   const touchedAccountIds = new Set<string>();
   const result = await prisma.$transaction(async (tx) => {
-    const cashAcc = await tx.account.findUnique({
-      where: { id: cashAccountId },
-      select: { id: true, name: true, currency: true },
-    });
-    if (!cashAcc) throw new Error(isCashIn ? "请选择到账账户" : "请选择资金来源账户");
+    // 核销无现金流动：不需要资金账户，理财账户必须显式给出。
+    const cashAcc = isWriteOff
+      ? null
+      : await tx.account.findUnique({
+          where: { id: cashAccountId },
+          select: { id: true, name: true, currency: true },
+        });
+    if (!cashAcc && !isWriteOff) throw new Error(isCashIn ? "请选择到账账户" : "请选择资金来源账户");
 
-    const wealthAcc = isCashIn
+    const wealthAcc = isWriteOff || isCashIn
       ? await tx.account.findUnique({
           where: { id: requestedWealthAccountId },
           select: { id: true, name: true, institutionId: true, currency: true },
         })
       : await resolveOrCreateWealthAccount(tx, {
           householdId,
-          cashAccountId: cashAcc.id,
+          cashAccountId: cashAcc!.id,
           requestedAccountId: requestedWealthAccountId || null,
         });
     if (!wealthAcc) throw new Error("请选择理财账户");
@@ -545,14 +554,14 @@ async function createSplitWealthTransactionFromBody(body: Record<string, unknown
     const wealthProduct = await resolveWealthProductInTx(tx, {
       householdId,
       institutionId: wealthAcc.institutionId,
-      currency: wealthAcc.currency ?? cashAcc.currency ?? "CNY",
+      currency: wealthAcc.currency ?? cashAcc?.currency ?? "CNY",
       productId: wealthProductIdInput,
       productName: productNameInput,
       annualRate,
     });
     if (!wealthProduct) throw new Error("请选择或新增理财产品");
-    assertSameWealthCurrency(cashAcc, wealthAcc, wealthProduct);
-    if (!isCashIn && !isDividend) {
+    if (cashAcc) assertSameWealthCurrency(cashAcc, wealthAcc, wealthProduct);
+    if (!isCashIn && !isDividend && !isWriteOff) {
       await assertWealthUnitsWhenRequiredInTx(tx, {
         householdId,
         accountId: wealthAcc.id,
@@ -562,30 +571,37 @@ async function createSplitWealthTransactionFromBody(body: Record<string, unknown
       });
     }
 
-    const investmentCategoryName = getInvestmentCategoryName({ fundProductType: "wealth", fundSubtype: subtype });
+    const isBondProduct = wealthProduct.productType === "bond";
+    const investmentCategoryName = getInvestmentCategoryName({
+      fundProductType: "wealth",
+      fundSubtype: subtype,
+      wealthProductType: wealthProduct.productType,
+    });
     const investmentCategory = investmentCategoryName
       ? await resolveCategorySnapshot(tx, householdId, { categoryName: investmentCategoryName, type: "investment" })
       : null;
-    const signedCashAmount = isCashIn ? Math.abs(arrivalAmount ?? amountAbs) : -amountAbs;
+    // 核销：单边记录（无对向账户），理财账户余额直接扣减核销额。
+    const signedCashAmount = isWriteOff ? -amountAbs : isCashIn ? Math.abs(arrivalAmount ?? amountAbs) : -amountAbs;
     const cashNote = buildWealthCashFlowNote({
       action: subtype,
       productName: wealthProduct.name,
       units,
       userNote: note,
+      isBond: isBondProduct,
     });
     const cashEntry = await tx.txRecord.create({
       data: {
         householdId,
         date: isCashIn ? (arrivalDate ?? date) : date,
         type: TransactionType.investment,
-        accountId: isCashIn ? wealthAcc.id : cashAcc.id,
-        accountName: isCashIn ? wealthAcc.name : cashAcc.name,
-        toAccountId: isCashIn ? cashAcc.id : wealthAcc.id,
-        toAccountName: isCashIn ? cashAcc.name : wealthAcc.name,
+        accountId: isCashIn || isWriteOff ? wealthAcc.id : cashAcc!.id,
+        accountName: isCashIn || isWriteOff ? wealthAcc.name : cashAcc!.name,
+        toAccountId: isCashIn ? cashAcc!.id : isWriteOff ? null : wealthAcc.id,
+        toAccountName: isCashIn ? cashAcc!.name : isWriteOff ? null : wealthAcc.name,
         amount: signedCashAmount,
         categoryId: investmentCategory?.id ?? null,
         categoryName: investmentCategory?.name ?? investmentCategoryName ?? null,
-        currency: cashAcc.currency ?? wealthAcc.currency ?? "CNY",
+        currency: cashAcc?.currency ?? wealthAcc.currency ?? "CNY",
         source: "manual",
         note: cashNote,
       },
@@ -595,7 +611,7 @@ async function createSplitWealthTransactionFromBody(body: Record<string, unknown
       data: {
         householdId,
         accountId: wealthAcc.id,
-        cashAccountId: cashAcc.id,
+        cashAccountId: cashAcc?.id ?? null,
         cashEntryId: cashEntry.id,
         wealthProductId: wealthProduct.id,
         productName: wealthProduct.name,
@@ -611,11 +627,13 @@ async function createSplitWealthTransactionFromBody(body: Record<string, unknown
         interest,
         fee,
         annualRate,
-        realizedProfit: subtype === FundSubtype.dividend_cash
-          ? calculateWealthCashDividendProfit({ arrivalAmount, grossAmount })
-          : isCashIn
-            ? (interest ?? 0) - Math.max(0, fee ?? 0)
-            : null,
+        realizedProfit: isWriteOff
+          ? -amountAbs
+          : subtype === FundSubtype.dividend_cash
+            ? calculateWealthCashDividendProfit({ arrivalAmount, grossAmount })
+            : isCashIn
+              ? (interest ?? 0) - Math.max(0, fee ?? 0)
+              : null,
         note: note || null,
       },
     });
@@ -633,7 +651,7 @@ async function createSplitWealthTransactionFromBody(body: Record<string, unknown
       metadata: { splitRecord: true, independentBusinessTransaction: true },
     });
 
-    touchedAccountIds.add(cashAcc.id);
+    if (cashAcc) touchedAccountIds.add(cashAcc.id);
     touchedAccountIds.add(wealthAcc.id);
     return { cashEntryId: cashEntry.id, wealthTransactionId: wealthTransaction.id };
   });
@@ -645,6 +663,8 @@ async function createSplitWealthTransactionFromBody(body: Record<string, unknown
     await recalcAndSaveAccountBalance(id).catch(logger.catchLog("操作失败", "route.ts"));
   }
   await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(logger.catchLog("信用卡账单缓存失效失败", "route.ts"));
+  // 城投债债单驱动：持仓/到账/核销后刷新该产品的系统计划行（预期付息日/金额）。
+  await ensureWealthBondPlansAfterTx(householdId, wealthProductIdInput).catch(logger.catchLog("城投债计划行刷新失败", "route.ts"));
   revalidateAfterInvestChange();
   return result;
 }
@@ -655,6 +675,7 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
   if (!entryId && !businessTransactionId) throw new Error("缺少 id");
   const date = toDateOrNull(body.date) ?? new Date();
   const subtype = normalizeFundSubtype(body.fundSubtype ?? body.subtype);
+  const isWriteOff = subtype === FundSubtype.write_off;
   const isCashIn = isWealthCashInSubtype(subtype);
   const isDividend = subtype === FundSubtype.dividend_cash;
   const amountAbs = Math.abs(parseMoney(body.amount));
@@ -665,26 +686,30 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
   const productNameInput = String(body.fundName ?? "").trim();
   const wealthProductIdInput = String(body.wealthProductId ?? "").trim();
   const note = String(body.note ?? body.memo ?? "").trim();
-  const units = positiveNumber(body.fundUnits);
-  const nav = positiveNumber(body.fundNav);
+  const units = isWriteOff ? null : positiveNumber(body.fundUnits);
+  const nav = isWriteOff ? null : positiveNumber(body.fundNav);
   const annualRate = positiveNumber(body.depositAnnualRate);
   const feeRaw = parseNonNegativeMoney(body.fundFee);
-  const fee = Object.prototype.hasOwnProperty.call(body, "fundFee") ? feeRaw : null;
+  const fee = isWriteOff ? null : Object.prototype.hasOwnProperty.call(body, "fundFee") ? feeRaw : null;
   const interestRaw = parseMoney(body.depositInterest);
-  const interest = Object.prototype.hasOwnProperty.call(body, "depositInterest")
-    ? interestRaw
-    : isDividend
-      ? amountAbs
-      : null;
+  const interest = isWriteOff
+    ? null
+    : Object.prototype.hasOwnProperty.call(body, "depositInterest")
+      ? interestRaw
+      : isDividend
+        ? amountAbs
+        : null;
   const arrivalDate = toDateOrNull(body.fundArrivalDate) ?? (isCashIn ? date : null);
   const arrivalAmountRaw = parseNonNegativeMoney(body.fundArrivalAmount);
   const principalAmount = isCashIn && !isDividend && units && nav ? Number((units * nav).toFixed(2)) : amountAbs;
   const grossAmount = isCashIn && !isDividend ? principalAmount : amountAbs;
-  const arrivalAmount = isDividend
-    ? (arrivalAmountRaw > 0 ? Math.abs(arrivalAmountRaw) : amountAbs)
-    : isCashIn
-      ? (arrivalAmountRaw > 0 ? Math.abs(arrivalAmountRaw) : Number(Math.max(0, principalAmount + (interest ?? 0) - Math.max(0, fee ?? 0)).toFixed(2)))
-      : null;
+  const arrivalAmount = isWriteOff
+    ? null
+    : isDividend
+      ? (arrivalAmountRaw > 0 ? Math.abs(arrivalAmountRaw) : amountAbs)
+      : isCashIn
+        ? (arrivalAmountRaw > 0 ? Math.abs(arrivalAmountRaw) : Number(Math.max(0, principalAmount + (interest ?? 0) - Math.max(0, fee ?? 0)).toFixed(2)))
+        : null;
 
   const touchedAccountIds = new Set<string>();
   const result = await prisma.$transaction(async (tx) => {
@@ -731,20 +756,22 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
     if (wealthRow.cashAccountId) touchedAccountIds.add(wealthRow.cashAccountId);
 
     const fallbackCashAccountId = cashAccountIdInput || wealthRow.cashAccountId || (isCashIn ? oldCashEntry?.toAccountId : oldCashEntry?.accountId) || "";
-    const cashAcc = await tx.account.findUnique({
-      where: { id: fallbackCashAccountId },
-      select: { id: true, name: true, currency: true },
-    });
-    if (!cashAcc) throw new Error(isCashIn ? "请选择到账账户" : "请选择资金来源账户");
+    const cashAcc = isWriteOff
+      ? null
+      : await tx.account.findUnique({
+          where: { id: fallbackCashAccountId },
+          select: { id: true, name: true, currency: true },
+        });
+    if (!cashAcc && !isWriteOff) throw new Error(isCashIn ? "请选择到账账户" : "请选择资金来源账户");
 
-    const wealthAcc = isCashIn
+    const wealthAcc = isWriteOff || isCashIn
       ? await tx.account.findUnique({
           where: { id: requestedWealthAccountId || wealthRow.accountId },
           select: { id: true, name: true, institutionId: true, currency: true },
         })
       : await resolveOrCreateWealthAccount(tx, {
           householdId,
-          cashAccountId: cashAcc.id,
+          cashAccountId: cashAcc!.id,
           requestedAccountId: requestedWealthAccountId || wealthRow.accountId,
         });
     if (!wealthAcc) throw new Error("请选择理财账户");
@@ -752,14 +779,14 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
     const wealthProduct = await resolveWealthProductInTx(tx, {
       householdId,
       institutionId: wealthAcc.institutionId,
-      currency: wealthAcc.currency ?? cashAcc.currency ?? "CNY",
+      currency: wealthAcc.currency ?? cashAcc?.currency ?? "CNY",
       productId: wealthProductIdInput || wealthRow.wealthProductId,
       productName: productNameInput || wealthRow.productName,
       annualRate,
     });
     if (!wealthProduct) throw new Error("请选择或新增理财产品");
-    assertSameWealthCurrency(cashAcc, wealthAcc, wealthProduct);
-    if (!isCashIn && !isDividend) {
+    if (cashAcc) assertSameWealthCurrency(cashAcc, wealthAcc, wealthProduct);
+    if (!isCashIn && !isDividend && !isWriteOff) {
       await assertWealthUnitsWhenRequiredInTx(tx, {
         householdId,
         accountId: wealthAcc.id,
@@ -769,8 +796,13 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
       });
     }
 
-    const signedCashAmount = isCashIn ? Math.abs(arrivalAmount ?? amountAbs) : -amountAbs;
-    const investmentCategoryName = getInvestmentCategoryName({ fundProductType: "wealth", fundSubtype: subtype });
+    const isBondProduct = wealthProduct.productType === "bond";
+    const signedCashAmount = isWriteOff ? -amountAbs : isCashIn ? Math.abs(arrivalAmount ?? amountAbs) : -amountAbs;
+    const investmentCategoryName = getInvestmentCategoryName({
+      fundProductType: "wealth",
+      fundSubtype: subtype,
+      wealthProductType: wealthProduct.productType,
+    });
     const investmentCategory = investmentCategoryName
       ? await resolveCategorySnapshot(tx, householdId, { categoryName: investmentCategoryName, type: "investment" })
       : null;
@@ -779,19 +811,20 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
       productName: wealthProduct.name,
       units,
       userNote: note,
+      isBond: isBondProduct,
     });
     const cashEntryData = {
       householdId,
       date: isCashIn ? (arrivalDate ?? date) : date,
       type: TransactionType.investment,
-      accountId: isCashIn ? wealthAcc.id : cashAcc.id,
-      accountName: isCashIn ? wealthAcc.name : cashAcc.name,
-      toAccountId: isCashIn ? cashAcc.id : wealthAcc.id,
-      toAccountName: isCashIn ? cashAcc.name : wealthAcc.name,
+      accountId: isCashIn || isWriteOff ? wealthAcc.id : cashAcc!.id,
+      accountName: isCashIn || isWriteOff ? wealthAcc.name : cashAcc!.name,
+      toAccountId: isCashIn ? cashAcc!.id : isWriteOff ? null : wealthAcc.id,
+      toAccountName: isCashIn ? cashAcc!.name : isWriteOff ? null : wealthAcc.name,
       amount: signedCashAmount,
       categoryId: investmentCategory?.id ?? null,
       categoryName: investmentCategory?.name ?? investmentCategoryName ?? null,
-      currency: cashAcc.currency ?? wealthAcc.currency ?? "CNY",
+      currency: cashAcc?.currency ?? wealthAcc.currency ?? "CNY",
       source: "manual",
       note: cashNote,
       fundCode: null,
@@ -818,7 +851,7 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
       where: { id: wealthRow.id },
       data: {
         accountId: wealthAcc.id,
-        cashAccountId: cashAcc.id,
+        cashAccountId: cashAcc?.id ?? null,
         cashEntryId: cashEntry.id,
         wealthProductId: wealthProduct.id,
         productName: wealthProduct.name,
@@ -834,11 +867,13 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
         interest,
         fee,
         annualRate,
-        realizedProfit: subtype === FundSubtype.dividend_cash
-          ? calculateWealthCashDividendProfit({ arrivalAmount, grossAmount })
-          : isCashIn
-            ? (interest ?? 0) - Math.max(0, fee ?? 0)
-            : null,
+        realizedProfit: isWriteOff
+          ? -amountAbs
+          : subtype === FundSubtype.dividend_cash
+            ? calculateWealthCashDividendProfit({ arrivalAmount, grossAmount })
+            : isCashIn
+              ? (interest ?? 0) - Math.max(0, fee ?? 0)
+              : null,
         note: note || null,
         deletedAt: null,
       },
@@ -866,9 +901,10 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
       metadata: { splitRecord: true, independentBusinessTransaction: true },
     });
 
-    touchedAccountIds.add(cashAcc.id);
+    if (cashAcc) touchedAccountIds.add(cashAcc.id);
     touchedAccountIds.add(wealthAcc.id);
-    return { cashEntryId: cashEntry.id, wealthTransactionId: wealthRow.id };
+    const resolvedProductId = wealthProduct.id;
+    return { cashEntryId: cashEntry.id, wealthTransactionId: wealthRow.id, productId: resolvedProductId };
   }, TX_EDIT_TRANSACTION_OPTIONS);
 
   for (const id of touchedAccountIds) {
@@ -878,6 +914,8 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
     await recalcAndSaveAccountBalance(id).catch(logger.catchLog("操作失败", "route.ts"));
   }
   await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(logger.catchLog("信用卡账单缓存失效失败", "route.ts"));
+  // 城投债债单驱动：持仓/到账/核销编辑后刷新该产品的系统计划行。
+  await ensureWealthBondPlansAfterTx(householdId, wealthProductIdInput || result.productId).catch(logger.catchLog("城投债计划行刷新失败", "route.ts"));
   revalidateAfterInvestChange();
   return result;
 }

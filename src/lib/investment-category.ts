@@ -14,6 +14,11 @@ export const SYSTEM_INVESTMENT_BUY_FAILED_CATEGORY = "买入失败";
 export const SYSTEM_WEALTH_BUY_CATEGORY = "理财买入";
 export const SYSTEM_WEALTH_REDEEM_CATEGORY = "理财赎回";
 export const SYSTEM_WEALTH_DIVIDEND_CATEGORY = "理财分红";
+export const SYSTEM_WEALTH_WRITE_OFF_CATEGORY = "理财核销";
+export const SYSTEM_WEALTH_BOND_BUY_CATEGORY = "城投债买入";
+export const SYSTEM_WEALTH_BOND_REDEEM_CATEGORY = "城投债赎回";
+export const SYSTEM_WEALTH_BOND_INTEREST_CATEGORY = "城投债利息";
+export const SYSTEM_WEALTH_BOND_WRITE_OFF_CATEGORY = "城投债核销";
 export const SYSTEM_DEPOSIT_BUY_CATEGORY = "存款存入";
 export const SYSTEM_DEPOSIT_REDEEM_CATEGORY = "存款取出";
 export const SYSTEM_METAL_BUY_CATEGORY = "贵金属买入";
@@ -50,6 +55,11 @@ export const SYSTEM_WEALTH_INVESTMENT_ACTION_CATEGORIES = [
   SYSTEM_WEALTH_BUY_CATEGORY,
   SYSTEM_WEALTH_REDEEM_CATEGORY,
   SYSTEM_WEALTH_DIVIDEND_CATEGORY,
+  SYSTEM_WEALTH_WRITE_OFF_CATEGORY,
+  SYSTEM_WEALTH_BOND_BUY_CATEGORY,
+  SYSTEM_WEALTH_BOND_REDEEM_CATEGORY,
+  SYSTEM_WEALTH_BOND_INTEREST_CATEGORY,
+  SYSTEM_WEALTH_BOND_WRITE_OFF_CATEGORY,
 ] as const;
 
 export const SYSTEM_DEPOSIT_INVESTMENT_ACTION_CATEGORIES = [
@@ -101,6 +111,7 @@ export function getInvestmentCategoryName(entry: {
   fundSubtype?: string | null;
   source?: string | null;
   insuranceProductId?: string | null;
+  wealthProductType?: string | null;
 }) {
   if (entry.source === "insurance" || entry.insuranceProductId) return null;
   const productType = entry.fundProductType ?? null;
@@ -111,9 +122,12 @@ export function getInvestmentCategoryName(entry: {
   if (subtype === "buy_failed") return SYSTEM_INVESTMENT_BUY_FAILED_CATEGORY;
 
   if (productType === "wealth") {
-    if (subtype === "redeem" || subtype === "switch_out") return SYSTEM_WEALTH_REDEEM_CATEGORY;
-    if (subtype === "dividend_cash") return SYSTEM_WEALTH_DIVIDEND_CATEGORY;
-    return SYSTEM_WEALTH_BUY_CATEGORY;
+    // 城投债 = 理财下的 bond 产品类型，分类文案独立成组（利息/核销口径对债更准确）
+    const isBond = entry.wealthProductType === "bond";
+    if (subtype === "write_off") return isBond ? SYSTEM_WEALTH_BOND_WRITE_OFF_CATEGORY : SYSTEM_WEALTH_WRITE_OFF_CATEGORY;
+    if (subtype === "redeem" || subtype === "switch_out") return isBond ? SYSTEM_WEALTH_BOND_REDEEM_CATEGORY : SYSTEM_WEALTH_REDEEM_CATEGORY;
+    if (subtype === "dividend_cash") return isBond ? SYSTEM_WEALTH_BOND_INTEREST_CATEGORY : SYSTEM_WEALTH_DIVIDEND_CATEGORY;
+    return isBond ? SYSTEM_WEALTH_BOND_BUY_CATEGORY : SYSTEM_WEALTH_BUY_CATEGORY;
   }
 
   if (productType === "deposit") {

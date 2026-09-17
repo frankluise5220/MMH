@@ -58,6 +58,11 @@ function isCashInAction(action: FundSubtype | string | null | undefined) {
   return action === FundSubtype.redeem || action === FundSubtype.switch_out || action === FundSubtype.dividend_cash;
 }
 
+/** 坏账核销：本金直接损失，无现金流动（城投债收不回的部分）。 */
+function isWriteOffAction(action: FundSubtype | string | null | undefined) {
+  return action === FundSubtype.write_off;
+}
+
 function isDividendAction(action: FundSubtype | string | null | undefined) {
   return action === FundSubtype.dividend_cash;
 }
@@ -128,6 +133,21 @@ export function calculateWealthPositionsFromEntries(
       const profit = calculateWealthCashDividendProfit(entry);
       bucket.historicalProfit += profit;
       realizedProfitByTransactionId.set(entry.id, profit);
+      holdings.set(productKey, bucket);
+      continue;
+    }
+
+    if (isWriteOffAction(action)) {
+      const loss = gross;
+      bucket.cost = Math.max(0, roundMoney(bucket.cost - loss));
+      // 核销 = 已实现损失：计入历史收益的负项，持仓余额同步扣减。
+      bucket.historicalProfit = roundMoney(bucket.historicalProfit - loss);
+      realizedProfitByTransactionId.set(entry.id, roundMoney(-loss));
+      if (bucket.cycleHasUnits && (bucket.units <= UNITS_EPS || bucket.cost <= MONEY_EPS)) {
+        bucket.cost = 0;
+        bucket.units = 0;
+        bucket.cycleHasUnits = false;
+      }
       holdings.set(productKey, bucket);
       continue;
     }
@@ -226,7 +246,8 @@ export async function recalcWealthPositions(accountId: string) {
 
   for (const row of rows) {
     const action = row.action;
-    if (!isCashInAction(action)) continue;
+    // write_off 的已实现损失（=-核销额）也要回写，与 redeem/dividend 同等地位。
+    if (!isCashInAction(action) && !isWriteOffAction(action)) continue;
     const realizedProfit = calc.realizedProfitByTransactionId.get(row.id) ?? null;
     await prisma.wealthTransaction.update({
       where: { id: row.id },

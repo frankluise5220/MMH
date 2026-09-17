@@ -3,12 +3,24 @@ import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
 import { normalizeCurrency, normalizeOptionalCurrency } from "@/lib/currency";
+import { normalizeDepositInterestPayoutInput } from "@/lib/deposit-interest-payout";
 
 export const runtime = "nodejs";
 
 function parsePositiveNumber(raw: unknown) {
   const value = Number(String(raw ?? "").trim());
   return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function parseIsoDateOnly(raw: unknown): Date | null {
+  const text = String(raw ?? "").trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
+  const date = new Date(`${text}T00:00:00.000Z`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function normalizeWealthProductType(raw: unknown): "standard" | "bond" {
+  return String(raw ?? "").trim() === "bond" ? "bond" : "standard";
 }
 
 /**
@@ -46,6 +58,10 @@ export async function GET(req: NextRequest) {
         currency: item.currency,
         annualRate: item.annualRate == null ? null : Number(item.annualRate),
         termDays: item.termDays,
+        productType: item.productType,
+        maturityDate: item.maturityDate ? item.maturityDate.toISOString().slice(0, 10) : null,
+        payoutFrequency: item.payoutFrequency,
+        firstPayoutDate: item.firstPayoutDate ? item.firstPayoutDate.toISOString().slice(0, 10) : null,
         note: item.note,
       })),
     });
@@ -83,9 +99,22 @@ export async function POST(req: NextRequest) {
     const annualRate = parsePositiveNumber(body.annualRate);
     const termDays = parsePositiveNumber(body.termDays);
     const note = String(body.note ?? "").trim() || null;
+    // 城投债条款（理财 bond 类型）
+    const productType = normalizeWealthProductType(body.productType);
+    const maturityDate = parseIsoDateOnly(body.maturityDate);
+    const payoutFrequency = productType === "bond"
+      ? normalizeDepositInterestPayoutInput(body.payoutFrequency) ?? "maturity"
+      : null;
+    const firstPayoutDate = productType === "bond" ? parseIsoDateOnly(body.firstPayoutDate) : null;
 
     if (!name) return NextResponse.json({ ok: false, code: "PRODUCT_NAME_REQUIRED", error: "产品名称必填" }, { status: 400 });
     if (!cashAccountId) return NextResponse.json({ ok: false, code: "CASH_ACCOUNT_REQUIRED", error: "请选择资金来源账户" }, { status: 400 });
+    if (productType === "bond" && !maturityDate) {
+      return NextResponse.json({ ok: false, code: "BOND_MATURITY_REQUIRED", error: "城投债必须填写到期日" }, { status: 400 });
+    }
+    if (productType === "bond" && !annualRate) {
+      return NextResponse.json({ ok: false, code: "BOND_RATE_REQUIRED", error: "城投债必须填写票面利率" }, { status: 400 });
+    }
 
     const { product, wealthAccount } = await prisma.$transaction(async (tx) => {
       const resolvedAccount = await resolveOrCreateWealthAccount(tx, {
@@ -110,12 +139,22 @@ export async function POST(req: NextRequest) {
           currency: targetCurrency,
           annualRate,
           termDays: termDays == null ? null : Math.round(termDays),
+          productType,
+          maturityDate,
+          payoutFrequency,
+          firstPayoutDate,
           note,
         },
         include: { Institution: { select: { id: true, name: true, shortName: true } } },
       });
       return { product: resolvedProduct, wealthAccount: resolvedAccount };
     });
+
+    // 城投债：产品创建即生成/刷新只读计划行（到期/付息提醒，债单=唯一真源）。
+    if (product.productType === "bond") {
+      const { ensureWealthBondPlansForProduct } = await import("@/lib/server/bond-plan-tasks");
+      await ensureWealthBondPlansForProduct({ householdId, productId: product.id }).catch(() => {});
+    }
 
     return NextResponse.json({
       ok: true,
@@ -128,6 +167,10 @@ export async function POST(req: NextRequest) {
         currency: product.currency,
         annualRate: product.annualRate == null ? null : Number(product.annualRate),
         termDays: product.termDays,
+        productType: product.productType,
+        maturityDate: product.maturityDate ? product.maturityDate.toISOString().slice(0, 10) : null,
+        payoutFrequency: product.payoutFrequency,
+        firstPayoutDate: product.firstPayoutDate ? product.firstPayoutDate.toISOString().slice(0, 10) : null,
         note: product.note,
       },
       wealthAccount: {
