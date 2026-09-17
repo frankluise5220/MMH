@@ -812,10 +812,15 @@ export async function DELETE(req: NextRequest) {
     if (!plan) return NextResponse.json({ ok: false, code: "PLAN_NOT_FOUND", error: "计划不存在" }, { status: 404 });
     if (plan.householdId && plan.householdId !== householdId) return NextResponse.json({ ok: false, code: "PLAN_NOT_IN_HOUSEHOLD", error: "计划不属于当前账簿" }, { status: 403 });
 
-    // System-level plans (deposit maturity+payout) cannot be deleted manually.
     const deleteTask = decodeScheduledTaskMemo(plan.memo);
+
+    // System-managed plans are deletable too (2026-09-17, second revision):
+    // deposit maturity/payout, chengtou-bond maturity/payout and mortgage
+    // "bill" loan plans all delegate to the real source of truth, because the
+    // plan rows are rebuilt by the startup self-heal whenever the source is
+    // still alive — deleting only the row would silently come back.
     if (isSystemManagedScheduledTask(deleteTask)) {
-      return NextResponse.json({ ok: false, code: "SYSTEM_MANAGED_PLAN", error: "存款到期/取息计划由系统根据存单管理，不可手动删除；取回存单后会自动结束" }, { status: 403 });
+      return handleSystemPlanDelete(req, plan, householdId, deleteTask);
     }
 
     // Loan repayment plans are now deletable as a cleanup entry (2026-09-17).
@@ -955,6 +960,190 @@ export async function DELETE(req: NextRequest) {
   } catch (e) {
     return NextResponse.json({ ok: false, code: "DELETE_FAILED", error: e instanceof Error ? e.message : "删除失败" }, { status: 500 });
   }
+}
+
+/**
+ * DELETE /api/v1/regular-invest for system-managed plans.
+ *
+ * Agreed semantics (2026-09-17): system plans are deletable, and because their
+ * rows are re-created by the startup self-heal from the real source of truth,
+ * deleting the row always goes through the source:
+ * - deposit_maturity / deposit_interest_payout: source = the buy lot TxRecord
+ *   (depositSourceEntryId, or the depm_/depi_ prefix). Deleting takes the
+ *   deposit lot (and its 存款侧 records) with it — the same path used by the
+ *   records page. `cascadeSource=1` is required once the user confirms.
+ * - wealth_bond_maturity / wealth_bond_interest_payout: source = the bond
+ *   WealthProduct. Deleting takes the bond (and its wealth transactions).
+ * - loan_repayment + bill: handled by handleLoanRepaymentPlanDelete.
+ *
+ * When the source is already gone, the only cleanup left is the stale row —
+ * so that path needs no confirmation and returns deletedSource:false.
+ */
+async function handleSystemPlanDelete(
+  req: NextRequest,
+  plan: { id: string; accountId: string; householdId: string | null; memo: string | null },
+  householdId: string,
+  task: ReturnType<typeof decodeScheduledTaskMemo>,
+) {
+  if (task.type === "loan_repayment") {
+    return handleLoanRepaymentPlanDelete(req, plan, householdId);
+  }
+  if (task.type === "deposit_maturity" || task.type === "deposit_interest_payout") {
+    return handleDepositPlanDelete(req, plan, householdId, task);
+  }
+  if (task.type === "wealth_bond_maturity" || task.type === "wealth_bond_interest_payout") {
+    return handleWealthBondPlanDelete(req, plan, householdId);
+  }
+  return NextResponse.json({ ok: false, code: "SYSTEM_MANAGED_PLAN", error: "该计划由系统管理，暂不支持删除" }, { status: 403 });
+}
+
+/** 存款计划的关联存单 id：优先 memo，其次 depm_/depi_ 前缀。 */
+function resolveDepositLotId(planId: string, task: { depositSourceEntryId?: string | null }): string {
+  const fromMemo = String(task.depositSourceEntryId ?? "").trim();
+  if (fromMemo) return fromMemo;
+  return planId.startsWith("depm_") || planId.startsWith("depi_") ? planId.slice(5) : "";
+}
+
+/**
+ * 存款到期/取息计划删除。
+ * 存单仍在（未软删、未取回）→ 与明细页删除存单同路径：软删存单及其存款侧流水
+ *   （buy/redeem/switch_out 等），计划行由 business-transactions 侧
+ *   completeDepositPlansForLot 结束，随后本处把计划行物理删除以免残留。
+ * 存单已失效（已软删/已被取回）→ 无关联明细，只删计划行。
+ */
+async function handleDepositPlanDelete(
+  req: NextRequest,
+  plan: { id: string; accountId: string; householdId: string | null; memo: string | null },
+  householdId: string,
+  task: ReturnType<typeof decodeScheduledTaskMemo>,
+) {
+  const cascadeSource = req.nextUrl.searchParams.get("cascadeSource") === "1";
+  const lotId = resolveDepositLotId(plan.id, task);
+  const planIds = lotId ? [`depm_${lotId}`, `depi_${lotId}`] : [plan.id];
+
+  const lot = lotId
+    ? await prisma.txRecord.findUnique({
+        where: { id: lotId },
+        select: { id: true, fundName: true, deletedAt: true, householdId: true },
+      })
+    : null;
+  // 已取回（存在 redeem/switch_out 记录）也算失效：计划已无后续可执行对象。
+  const lotRedeemed = lot && !lot.deletedAt
+    ? !!(await prisma.txRecord.findFirst({
+        where: { householdId, depositSourceEntryId: lot.id, deletedAt: null, fundSubtype: { in: ["redeem", "switch_out"] } },
+        select: { id: true },
+      }))
+    : false;
+  const lotLinked = !!lot && !lot.deletedAt && !lotRedeemed;
+
+  if (lotLinked && lot!.householdId && lot!.householdId !== householdId) {
+    return NextResponse.json({ ok: false, code: "LOT_NOT_IN_HOUSEHOLD", error: "关联的存单不属于当前账簿" }, { status: 403 });
+  }
+
+  if (lotLinked && !cascadeSource) {
+    return NextResponse.json({
+      ok: false,
+      code: "DEPOSIT_STILL_EXISTS",
+      needSourceCascade: true,
+      sourceKind: "deposit",
+      sourceName: lot!.fundName ?? "存款",
+      error: "该计划任务仍关联着一笔存单，删除会同时删除这笔存单及其存款明细（已生成的记录不会删）",
+    }, { status: 409 });
+  }
+
+  if (lotLinked && lot) {
+    // 与明细页删除存单同路径：软删存单及其存款侧流水（含关联业务）。
+    const { softDeleteEntriesByIds } = await import("@/lib/server/entry-delete");
+    const ctx = await getHouseholdScope();
+    const targets = [lot.id, ...(await prisma.txRecord.findMany({
+      where: { householdId, depositSourceEntryId: lot.id, deletedAt: null },
+      select: { id: true },
+    })).map((row) => row.id)];
+    await softDeleteEntriesByIds(ctx, targets, "删除存款计划任务", { linkedAction: "deleteBusiness" });
+  }
+
+  // 计划行物理删除（自愈只对"仍持有"的存单重建，存单已软删不会再复活）。
+  await prisma.regularInvestPlan.deleteMany({ where: { id: { in: planIds }, householdId } });
+  revalidateAfterTxChange();
+  revalidateAfterInvestChange();
+  return NextResponse.json({
+    ok: true,
+    deletedSource: lotLinked,
+    deletedSourceKind: lotLinked ? "deposit" : null,
+    affectedPlanIds: planIds,
+  });
+}
+
+/**
+ * 城投债到期/付息计划删除。
+ * 债单仍在（持仓本金 > 0.005）→ 删除债单及其理财流水，再删计划行。
+ * 债单已了结/不存在 → 无关联明细，只删计划行。
+ */
+async function handleWealthBondPlanDelete(
+  req: NextRequest,
+  plan: { id: string; householdId: string | null },
+  householdId: string,
+) {
+  const cascadeSource = req.nextUrl.searchParams.get("cascadeSource") === "1";
+  const productId = plan.id.startsWith("bondm_") || plan.id.startsWith("bondi_") ? plan.id.slice(6) : "";
+  const planIds = productId ? [`bondm_${productId}`, `bondi_${productId}`] : [plan.id];
+
+  const product = productId
+    ? await prisma.wealthProduct.findFirst({ where: { id: productId, householdId }, select: { id: true, name: true } })
+    : null;
+  const bondHeld = product
+    ? (await prisma.wealthTransaction.groupBy({
+        by: ["action"],
+        where: { householdId, wealthProductId: product.id, deletedAt: null },
+        _sum: { grossAmount: true },
+      })).reduce((acc, row) => {
+        const amount = Math.abs(Number(row._sum.grossAmount ?? 0));
+        if (row.action === "buy") return acc + amount;
+        if (row.action === "redeem" || row.action === "switch_out" || row.action === "write_off") return acc - amount;
+        return acc;
+      }, 0) > ACTIVE_DEBT_EPSILON
+    : false;
+
+  if (bondHeld && !cascadeSource) {
+    return NextResponse.json({
+      ok: false,
+      code: "BOND_STILL_EXISTS",
+      needSourceCascade: true,
+      sourceKind: "wealth_bond",
+      sourceName: product!.name,
+      error: "该计划任务仍关联着这笔城投债，删除会同时删除债单及其理财明细（已生成的记录不会删）",
+    }, { status: 409 });
+  }
+
+  if (bondHeld && product) {
+    // 城投债的资金侧明细通过 transactions.wealthTransactionId 关联（SET NULL），
+    // TxRecord 视图未暴露该列，需走原生查询；先软删资金记录，再物理删债单。
+    const cashSideRows = await prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT t.id FROM transactions t
+      JOIN wealth_transactions w ON w.id = t."wealthTransactionId"
+      WHERE w."wealthProductId" = ${product.id} AND t."deletedAt" IS NULL
+    `.catch(() => [] as Array<{ id: string }>);
+    const cashSideIds = cashSideRows.map((row) => row.id);
+    if (cashSideIds.length > 0) {
+      const { softDeleteEntriesByIds } = await import("@/lib/server/entry-delete");
+      const ctx = await getHouseholdScope();
+      await softDeleteEntriesByIds(ctx, cashSideIds, "删除城投债计划任务", { linkedAction: "deleteBusiness" });
+    }
+    await prisma.$transaction(async (tx) => {
+      await tx.wealthTransaction.deleteMany({ where: { householdId, wealthProductId: product.id } });
+      await tx.wealthProduct.delete({ where: { id: product.id } });
+    });
+  }
+
+  await prisma.regularInvestPlan.deleteMany({ where: { id: { in: planIds }, householdId } });
+  revalidateAfterTxChange();
+  revalidateAfterInvestChange();
+  return NextResponse.json({
+    ok: true,
+    deletedSource: bondHeld,
+    deletedSourceKind: bondHeld ? "wealth_bond" : null,
+    affectedPlanIds: planIds,
+  });
 }
 
 /**

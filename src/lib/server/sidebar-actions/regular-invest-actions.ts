@@ -638,11 +638,15 @@ async function deleteRegularInvest(formData: FormData) {
   if (!plan) return { ok: false as const, error: "计划不存在" };
   if (householdId && plan.householdId && plan.householdId !== householdId) return { ok: false as const, error: "越权操作" };
 
-  // Loan repayment plans (bills and auto-debit transfers alike) are derived
-  // from the loan and cannot be deleted manually here.
+  // Loan repayment plans and every other system-managed plan (mortgage bills,
+  // deposit maturity/payout, chengtou-bond plans) are deleted through the
+  // regular-invest API instead: their removal must go through the real source
+  // of truth (the loan / the deposit lot / the bond), and the row is
+  // re-created by the startup self-heal when the source is still alive. The
+  // client routes these to `/api/v1/regular-invest?id=...&cascadeSource=1`.
   const deleteTask = decodeScheduledTaskMemo(plan.memo);
-  if (deleteTask.type === "loan_repayment") {
-    return { ok: false as const, error: "贷款还款计划由系统管理，不可手动删除" };
+  if (deleteTask.type === "loan_repayment" || isSystemManagedScheduledTask(deleteTask)) {
+    return { ok: false as const, error: "该计划由系统管理，请通过计划任务的删除按钮处理" };
   }
 
   const deleteRecords = formData.get("deleteRecords") === "1";

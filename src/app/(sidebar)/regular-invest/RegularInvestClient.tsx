@@ -95,6 +95,12 @@ type RegularInvestPlanView = {
   taskLoanPlanRole?: LoanScheduledPlanRole | null;
   /** Loan plans only: whether a live (non-settled) loan is still linked. Null for non-loan plans. */
   taskLoanLinked?: boolean | null;
+  /**
+   * 系统计划（存款到期/取息、城投债到期/付息）的关联真源快照。linked=true 表示
+   * 真源仍在（存单/债单），删除会一并删除它；linked=false 表示真源已失效，
+   * 删除只是清理残留的计划行。
+   */
+  taskSystemSource?: { kind: "deposit" | "wealth_bond"; name: string; linked: boolean } | null;
   /** System-level plans (e.g. loan repayment) are shown but read-only. */
   isSystemTask?: boolean;
   targetName?: string | null;
@@ -1098,6 +1104,36 @@ export function RegularInvestClient({
     window.alert(data.error || t("settingsDelete.deleteFailed"));
   }
 
+  /**
+   * 删除系统计划行（存款到期/取息、城投债到期/付息）。这些计划行会被开机自愈
+   * 从真源重建，"只删行"会复活，所以删除始终委托给真源：cascadeSource=1 时
+   * 服务端一并删除存单/债单；真源已失效时只清残留行。
+   */
+  async function requestSystemPlanDelete(planId: string, cascadeSource: boolean) {
+    const res = await fetch(`/api/v1/regular-invest?id=${planId}&cascadeSource=${cascadeSource ? "1" : "0"}`, { method: "DELETE" });
+    const data = await res.json();
+    if (data.ok) {
+      removePlansFromState(Array.isArray(data.affectedPlanIds) && data.affectedPlanIds.length > 0 ? data.affectedPlanIds : [planId]);
+      return;
+    }
+    // 页面快照说真源已失效，但服务端发现它还在 → 补一次级联确认。
+    if (res.status === 409 && data.needSourceCascade) {
+      const message = data.sourceKind === "wealth_bond"
+        ? t("regularInvest.client.systemDelete.confirmBond", { name: data.sourceName || t("regularInvest.client.systemDelete.sourceNameFallback") })
+        : t("regularInvest.client.systemDelete.confirmDeposit", { name: data.sourceName || t("regularInvest.client.systemDelete.sourceNameFallback") });
+      const confirmed = await showConfirmDialog({
+        title: t("regularInvest.client.deleteDialog.title"),
+        message,
+        tone: "danger",
+      });
+      if (confirmed) {
+        await requestSystemPlanDelete(planId, true);
+        return;
+      }
+    }
+    window.alert(data.error || t("settingsDelete.deleteFailed"));
+  }
+
   function removePlansFromApi(data: { affectedPlanIds?: string[] }) {
     const ids = Array.isArray(data.affectedPlanIds) && data.affectedPlanIds.length > 0
       ? data.affectedPlanIds
@@ -1125,10 +1161,33 @@ export function RegularInvestClient({
     await requestLoanPlanDelete(plan.id, loanLinked);
   }
 
+  async function handleSystemPlanDelete(plan: RegularInvestPlanView) {
+    // 与贷款同口径：先判断是否真有关联明细，再给对应提示。
+    const source = plan.taskSystemSource ?? null;
+    const sourceLinked = source?.linked === true;
+    const message = sourceLinked
+      ? source!.kind === "wealth_bond"
+        ? t("regularInvest.client.systemDelete.confirmBond", { name: source!.name })
+        : t("regularInvest.client.systemDelete.confirmDeposit", { name: source!.name })
+      : t("regularInvest.client.systemDelete.confirmOrphan", { name: getPlanDisplayName(plan) });
+    const confirmed = await showConfirmDialog({
+      title: t("regularInvest.client.deleteDialog.title"),
+      message,
+      tone: "danger",
+    });
+    if (!confirmed) return;
+    await requestSystemPlanDelete(plan.id, sourceLinked);
+  }
+
   function handleDelete(planId: string) {
     const plan = plans.find((item) => item.id === planId);
     if (plan && getPlanTaskType(plan) === "loan_repayment") {
       void handleLoanPlanDelete(plan);
+      return;
+    }
+    // 其余系统计划（存款到期/取息、城投债到期/付息）同样走真源级联删除。
+    if (plan && plan.isSystemTask) {
+      void handleSystemPlanDelete(plan);
       return;
     }
     setDeleteConfirm({ planId, planName: plan ? getPlanDisplayName(plan) : t("nav.scheduledTasks") });
@@ -1375,22 +1434,20 @@ export function RegularInvestClient({
   }, [t]);
 
   function renderPlanActions(plan: RegularInvestPlanView) {
-    // System-level plans (mortgage "bill" loan plans) are read-only in the
-    // plan table: the schedule is derived from the loan, so no
-    // pause/stop/edit/delete. Exception: when the linked loan account is
-    // already gone (stale plan), offer a delete so the row can be cleaned up.
+    // System-level plans (mortgage "bill" loan plans, deposit maturity/payout,
+    // chengtou-bond plans) stay read-only for editing: the schedule is derived
+    // from the loan / deposit lot / bond. Deletion is allowed (2026-09-17) and
+    // always goes through the real source, because the row is rebuilt by the
+    // startup self-heal whenever that source is still alive.
     if (plan.isSystemTask) {
-      const staleLoanPlan = getPlanTaskType(plan) === "loan_repayment" && plan.taskLoanLinked === false;
       return (
         <>
           <span className="inline-flex h-6 items-center rounded border border-slate-200 bg-slate-50 px-1.5 text-[10px] text-slate-400" title={t("regularInvest.client.systemTask.title")}>
             {t("regularInvest.client.systemTask.short")}
           </span>
-          {staleLoanPlan && (
-            <button onClick={() => handleDelete(plan.id)} title={t("common.delete")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
-              <Trash2 className="h-3 w-3 text-red-500" />
-            </button>
-          )}
+          <button onClick={() => handleDelete(plan.id)} title={t("common.delete")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
+            <Trash2 className="h-3 w-3 text-red-500" />
+          </button>
         </>
       );
     }

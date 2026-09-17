@@ -226,6 +226,94 @@ export default async function RegularInvestPage() {
     const balance = accountBalanceById.get(accountId);
     return balance != null && Math.abs(balance) > ACTIVE_DEBT_EPSILON;
   };
+  // 系统计划（存款到期/取息、城投债到期/付息）的关联真源：存单 = 计划 memo 的
+  // depositSourceEntryId（或 depm_/depi_ 前缀），债单 = bondm_/bondi_ 的 productId。
+  // 真源仍在 → 删除会一并删它；已失效 → 提示可放心删除。两侧口径一致。
+  const systemPlanSourceByPlanId = new Map<string, { kind: "deposit" | "wealth_bond"; name: string; linked: boolean }>();
+  const depositPlanLots = plans
+    .filter((plan) => {
+      const task = scheduledTaskByPlanId.get(plan.id);
+      return task?.type === "deposit_maturity" || task?.type === "deposit_interest_payout";
+    })
+    .map((plan) => {
+      const task = scheduledTaskByPlanId.get(plan.id)!;
+      const lotId = task.depositSourceEntryId
+        || (plan.id.startsWith("depm_") || plan.id.startsWith("depi_") ? plan.id.slice(5) : "");
+      return { planId: plan.id, lotId };
+    })
+    .filter((item) => !!item.lotId);
+  const bondPlanProducts = plans
+    .filter((plan) => {
+      const task = scheduledTaskByPlanId.get(plan.id);
+      return task?.type === "wealth_bond_maturity" || task?.type === "wealth_bond_interest_payout";
+    })
+    .map((plan) => ({
+      planId: plan.id,
+      productId: plan.id.startsWith("bondm_") || plan.id.startsWith("bondi_") ? plan.id.slice(6) : "",
+    }))
+    .filter((item) => !!item.productId);
+  if (depositPlanLots.length > 0 || bondPlanProducts.length > 0) {
+    const [lots, lotsRedeemed, bondProducts, bondTxs] = await Promise.all([
+      depositPlanLots.length > 0
+        ? prisma.txRecord.findMany({
+            where: { id: { in: depositPlanLots.map((item) => item.lotId) }, deletedAt: null },
+            select: { id: true, fundName: true },
+          })
+        : Promise.resolve([] as Array<{ id: string; fundName: string | null }>),
+      depositPlanLots.length > 0
+        ? prisma.txRecord.findMany({
+            where: {
+              depositSourceEntryId: { in: depositPlanLots.map((item) => item.lotId) },
+              deletedAt: null,
+              fundSubtype: { in: ["redeem", "switch_out"] },
+            },
+            select: { depositSourceEntryId: true },
+          })
+        : Promise.resolve([] as Array<{ depositSourceEntryId: string | null }>),
+      bondPlanProducts.length > 0
+        ? prisma.wealthProduct.findMany({
+            where: { id: { in: bondPlanProducts.map((item) => item.productId) }, ...hidFilter },
+            select: { id: true, name: true },
+          })
+        : Promise.resolve([] as Array<{ id: string; name: string }>),
+      bondPlanProducts.length > 0
+        ? prisma.wealthTransaction.groupBy({
+            by: ["wealthProductId", "action"],
+            where: { wealthProductId: { in: bondPlanProducts.map((item) => item.productId) }, deletedAt: null },
+            _sum: { grossAmount: true },
+          })
+        : Promise.resolve([] as Array<{ wealthProductId: string; action: string; _sum: { grossAmount: unknown } }>),
+    ]);
+    const redeemedLotIds = new Set(lotsRedeemed.map((row) => row.depositSourceEntryId).filter(Boolean) as string[]);
+    const lotById = new Map(lots.map((lot) => [lot.id, lot]));
+    for (const item of depositPlanLots) {
+      const lot = lotById.get(item.lotId);
+      systemPlanSourceByPlanId.set(item.planId, {
+        kind: "deposit",
+        name: lot?.fundName ?? "存款",
+        linked: !!lot && !redeemedLotIds.has(item.lotId),
+      });
+    }
+    const bondHeldById = new Map<string, number>();
+    for (const row of bondTxs) {
+      if (!row.wealthProductId) continue;
+      const amount = Math.abs(Number(row._sum.grossAmount ?? 0));
+      const current = bondHeldById.get(row.wealthProductId) ?? 0;
+      if (row.action === "buy") bondHeldById.set(row.wealthProductId, current + amount);
+      else if (row.action === "redeem" || row.action === "switch_out" || row.action === "write_off") {
+        bondHeldById.set(row.wealthProductId, current - amount);
+      }
+    }
+    const bondById = new Map(bondProducts.map((product) => [product.id, product]));
+    for (const item of bondPlanProducts) {
+      const product = bondById.get(item.productId);
+      systemPlanSourceByPlanId.set(item.planId, {
+        kind: "wealth_bond",
+        name: product?.name ?? "城投债",
+        linked: !!product && (bondHeldById.get(item.productId) ?? 0) > ACTIVE_DEBT_EPSILON,
+      });
+    }
+  }
   const profileFundNames = await getFundProfileNameMap(
     plans
       .filter((plan) => normalizeScheduledTaskType(plan.taskType ?? scheduledTaskByPlanId.get(plan.id)?.type) === "fund_regular_invest")
@@ -265,6 +353,7 @@ export default async function RegularInvestPage() {
       taskLoanPlanRole: getLoanScheduledPlanRole(scheduledTask),
       isSystemTask: isSystemManagedScheduledTask(scheduledTask),
       taskLoanLinked: taskType === "loan_repayment" ? isLoanLinked(plan.accountId) : null,
+      taskSystemSource: systemPlanSourceByPlanId.get(plan.id) ?? null,
       amount: Number(plan.amount),
       feeRate: plan.feeRate ? Number(plan.feeRate) : null,
       startDate: plan.startDate && Number.isFinite(plan.startDate.getTime()) ? plan.startDate.toISOString() : null,
