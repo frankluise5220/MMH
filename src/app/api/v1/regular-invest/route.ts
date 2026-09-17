@@ -979,6 +979,12 @@ export async function DELETE(req: NextRequest) {
  * When the source is already gone, the only cleanup left is the stale row —
  * so that path needs no confirmation and returns deletedSource:false.
  *
+ * 用户可选两种删除方式（2026-09-17 五版）：
+ * - `keepSource=1`「仅删除计划任务，保留业务记录」：只删计划行，不碰真源。
+ *   真源仍在时自愈会重建计划行 —— 用户明确接受（"存单还未结束，应该会再次
+ *   生成计划任务"）。此路径不做任何检测、不需要确认。
+ * - 默认「一并删除」：真源仍在时需 `cascadeSource=1` 确认后级联。
+ *
  * 判据只看"真源是否还在"，不看计划自身 status（详见 handleDepositPlanDelete
  * 的说明：status=completed 的计划在真源仍在时会被自愈救回，删掉也会复活）。
  */
@@ -1014,18 +1020,21 @@ function resolveDepositLotId(planId: string, task: { depositSourceEntryId?: stri
  * 与计划自身 status、与存单是否已取回都无关。理由（已实测）：
  * 计划行由开机自愈 `ensureDepositPlansForHeldLots` 按"仍持有的存单"重建，
  * 只要存单 buy 行还在，删掉计划行就会被重建（取息计划还会被重新置回
- * active）——所以「有关联」的真正含义是"存单还在"，此时**必须级联删存单**，
- * 否则用户看到的就是"计划删了、存单还在"（本 bug 的现象）。
- * 反过来，存单已软删/不存在时计划才真的无事可做，只删计划行即可。
+ * active）——所以「有关联」的真正含义是"存单还在"。
  *
  * 注意 `status=completed` 不能当作"无关联"：存单取回后
  * `completeDepositPlansForLot` 会把计划置 completed，但只要存单 buy 行还在，
  * 自愈仍会把它救回 active（`depi_` 周期性取息尤其明显）。
  *
- * 存单仍在 → 与明细页删除存单同路径：软删存单及其存款侧流水
- *   （buy/redeem/switch_out 等，走 softDeleteEntriesByIds + deleteBusiness），
- *   随后把该存单的两条计划行物理删除。
- * 存单不存在/已软删 → 计划确实无关联明细，只删计划行。
+ * 两种删除方式（用户 2026-09-17 五版选择）：
+ * - `keepSource=1`「仅删除计划任务，保留业务记录」：只删计划行，**完全不碰存单**
+ *   （不做任何检测、不需要确认）。因为自愈只按"仍持有的存单"重建，存单还在时
+ *   计划行下次开机自愈会**再次生成** —— 这是用户明确接受的行为（"存单还未结束，
+ *   应该会再次生成计划任务"）。
+ * - 默认「计划任务与业务记录一并删除」：存单仍在时需 `cascadeSource=1` 确认，
+ *   走与明细页删除存单同路径：软删存单及其存款侧流水（buy/redeem/switch_out 等，
+ *   softDeleteEntriesByIds + deleteBusiness），随后把该存单的两条计划行物理删除。
+ *   存单不存在/已软删 → 无关联明细，只删计划行。
  */
 async function handleDepositPlanDelete(
   req: NextRequest,
@@ -1033,6 +1042,7 @@ async function handleDepositPlanDelete(
   householdId: string,
   task: ReturnType<typeof decodeScheduledTaskMemo>,
 ) {
+  const keepSource = req.nextUrl.searchParams.get("keepSource") === "1";
   const cascadeSource = req.nextUrl.searchParams.get("cascadeSource") === "1";
   const lotId = resolveDepositLotId(plan.id, task);
   const planIds = lotId ? [`depm_${lotId}`, `depi_${lotId}`] : [plan.id];
@@ -1050,50 +1060,60 @@ async function handleDepositPlanDelete(
     return NextResponse.json({ ok: false, code: "LOT_NOT_IN_HOUSEHOLD", error: "关联的存单不属于当前账簿" }, { status: 403 });
   }
 
-  if (lotLinked && !cascadeSource) {
-    return NextResponse.json({
-      ok: false,
-      code: "DEPOSIT_STILL_EXISTS",
-      needSourceCascade: true,
-      sourceKind: "deposit",
-      sourceName: lot!.fundName ?? "存款",
-      error: "该计划任务仍关联着一笔存单，删除会同时删除这笔存单及其存款明细（已生成的记录不会删）",
-    }, { status: 409 });
+  // 「仅删除计划任务」：不检测、不动业务记录，直接删行（自愈会重建，用户已知悉）。
+  if (!keepSource) {
+    if (lotLinked && !cascadeSource) {
+      return NextResponse.json({
+        ok: false,
+        code: "DEPOSIT_STILL_EXISTS",
+        needSourceCascade: true,
+        sourceKind: "deposit",
+        sourceName: lot!.fundName ?? "存款",
+        error: "该计划任务仍关联着一笔存单，删除会同时删除这笔存单及其存款明细（已生成的记录不会删）",
+      }, { status: 409 });
+    }
+
+    if (lotLinked && lot) {
+      // 与明细页删除存单同路径：软删存单及其存款侧流水（含关联业务）。
+      const { softDeleteEntriesByIds } = await import("@/lib/server/entry-delete");
+      const ctx = await getHouseholdScope();
+      const targets = [lot.id, ...(await prisma.txRecord.findMany({
+        where: { householdId, depositSourceEntryId: lot.id, deletedAt: null },
+        select: { id: true },
+      })).map((row) => row.id)];
+      await softDeleteEntriesByIds(ctx, targets, "删除存款计划任务", { linkedAction: "deleteBusiness" });
+    }
   }
 
-  if (lotLinked && lot) {
-    // 与明细页删除存单同路径：软删存单及其存款侧流水（含关联业务）。
-    const { softDeleteEntriesByIds } = await import("@/lib/server/entry-delete");
-    const ctx = await getHouseholdScope();
-    const targets = [lot.id, ...(await prisma.txRecord.findMany({
-      where: { householdId, depositSourceEntryId: lot.id, deletedAt: null },
-      select: { id: true },
-    })).map((row) => row.id)];
-    await softDeleteEntriesByIds(ctx, targets, "删除存款计划任务", { linkedAction: "deleteBusiness" });
-  }
-
-  // 计划行物理删除（自愈只对"仍持有"的存单重建，存单已软删不会再复活）。
+  // 计划行物理删除（保留业务记录时存单仍在 → 下次自愈会重建，属预期）。
   await prisma.regularInvestPlan.deleteMany({ where: { id: { in: planIds }, householdId } });
   revalidateAfterTxChange();
   revalidateAfterInvestChange();
   return NextResponse.json({
     ok: true,
-    deletedSource: lotLinked,
-    deletedSourceKind: lotLinked ? "deposit" : null,
+    keepSource,
+    deletedSource: !keepSource && lotLinked,
+    deletedSourceKind: !keepSource && lotLinked ? "deposit" : null,
     affectedPlanIds: planIds,
   });
 }
 
 /**
  * 城投债到期/付息计划删除。
- * 债单仍在（持仓本金 > 0.005）→ 删除债单及其理财流水，再删计划行。
- * 债单已了结/不存在 → 无关联明细，只删计划行。
+ *
+ * 两种删除方式（用户 2026-09-17 五版选择）：
+ * - `keepSource=1`「仅删除计划任务，保留业务记录」：只删计划行，完全不碰债单。
+ *   债单仍持有（本金 > 0.005）时自愈 `ensureWealthBondPlansForHousehold` 会
+ *   再次 upsert 出这两行 —— 这是用户明确接受的行为。
+ * - 默认「一并删除」：债单仍在（持仓本金 > 0.005）→ 需 `cascadeSource=1` 确认，
+ *   删除债单及其理财流水，再删计划行。债单已了结/不存在 → 无关联明细，只删计划行。
  */
 async function handleWealthBondPlanDelete(
   req: NextRequest,
   plan: { id: string; householdId: string | null },
   householdId: string,
 ) {
+  const keepSource = req.nextUrl.searchParams.get("keepSource") === "1";
   const cascadeSource = req.nextUrl.searchParams.get("cascadeSource") === "1";
   const productId = plan.id.startsWith("bondm_") || plan.id.startsWith("bondi_") ? plan.id.slice(6) : "";
   const planIds = productId ? [`bondm_${productId}`, `bondi_${productId}`] : [plan.id];
@@ -1114,35 +1134,38 @@ async function handleWealthBondPlanDelete(
       }, 0) > ACTIVE_DEBT_EPSILON
     : false;
 
-  if (bondHeld && !cascadeSource) {
-    return NextResponse.json({
-      ok: false,
-      code: "BOND_STILL_EXISTS",
-      needSourceCascade: true,
-      sourceKind: "wealth_bond",
-      sourceName: product!.name,
-      error: "该计划任务仍关联着这笔城投债，删除会同时删除债单及其理财明细（已生成的记录不会删）",
-    }, { status: 409 });
-  }
-
-  if (bondHeld && product) {
-    // 城投债的资金侧明细通过 transactions.wealthTransactionId 关联（SET NULL），
-    // TxRecord 视图未暴露该列，需走原生查询；先软删资金记录，再物理删债单。
-    const cashSideRows = await prisma.$queryRaw<Array<{ id: string }>>`
-      SELECT t.id FROM transactions t
-      JOIN wealth_transactions w ON w.id = t."wealthTransactionId"
-      WHERE w."wealthProductId" = ${product.id} AND t."deletedAt" IS NULL
-    `.catch(() => [] as Array<{ id: string }>);
-    const cashSideIds = cashSideRows.map((row) => row.id);
-    if (cashSideIds.length > 0) {
-      const { softDeleteEntriesByIds } = await import("@/lib/server/entry-delete");
-      const ctx = await getHouseholdScope();
-      await softDeleteEntriesByIds(ctx, cashSideIds, "删除城投债计划任务", { linkedAction: "deleteBusiness" });
+  // 「仅删除计划任务」：不检测、不动债单，直接删行（债单仍在 → 自愈会重建，用户已知悉）。
+  if (!keepSource) {
+    if (bondHeld && !cascadeSource) {
+      return NextResponse.json({
+        ok: false,
+        code: "BOND_STILL_EXISTS",
+        needSourceCascade: true,
+        sourceKind: "wealth_bond",
+        sourceName: product!.name,
+        error: "该计划任务仍关联着这笔城投债，删除会同时删除债单及其理财明细（已生成的记录不会删）",
+      }, { status: 409 });
     }
-    await prisma.$transaction(async (tx) => {
-      await tx.wealthTransaction.deleteMany({ where: { householdId, wealthProductId: product.id } });
-      await tx.wealthProduct.delete({ where: { id: product.id } });
-    });
+
+    if (bondHeld && product) {
+      // 城投债的资金侧明细通过 transactions.wealthTransactionId 关联（SET NULL），
+      // TxRecord 视图未暴露该列，需走原生查询；先软删资金记录，再物理删债单。
+      const cashSideRows = await prisma.$queryRaw<Array<{ id: string }>>`
+        SELECT t.id FROM transactions t
+        JOIN wealth_transactions w ON w.id = t."wealthTransactionId"
+        WHERE w."wealthProductId" = ${product.id} AND t."deletedAt" IS NULL
+      `.catch(() => [] as Array<{ id: string }>);
+      const cashSideIds = cashSideRows.map((row) => row.id);
+      if (cashSideIds.length > 0) {
+        const { softDeleteEntriesByIds } = await import("@/lib/server/entry-delete");
+        const ctx = await getHouseholdScope();
+        await softDeleteEntriesByIds(ctx, cashSideIds, "删除城投债计划任务", { linkedAction: "deleteBusiness" });
+      }
+      await prisma.$transaction(async (tx) => {
+        await tx.wealthTransaction.deleteMany({ where: { householdId, wealthProductId: product.id } });
+        await tx.wealthProduct.delete({ where: { id: product.id } });
+      });
+    }
   }
 
   await prisma.regularInvestPlan.deleteMany({ where: { id: { in: planIds }, householdId } });
@@ -1150,8 +1173,9 @@ async function handleWealthBondPlanDelete(
   revalidateAfterInvestChange();
   return NextResponse.json({
     ok: true,
-    deletedSource: bondHeld,
-    deletedSourceKind: bondHeld ? "wealth_bond" : null,
+    keepSource,
+    deletedSource: !keepSource && bondHeld,
+    deletedSourceKind: !keepSource && bondHeld ? "wealth_bond" : null,
     affectedPlanIds: planIds,
   });
 }
@@ -1172,12 +1196,17 @@ async function handleWealthBondPlanDelete(
  * - Not linked (account gone, or settled/emptied shell): the plan has no
  *   associated loan details — delete only the plan row(s), keep the account
  *   and every record.
+ *
+ * 用户可选「仅删除计划任务，保留业务记录」（`keepSource=1`，2026-09-17 五版）：
+ * 只删该贷款名下的计划行并清记录的 regularInvestPlanId 链接，**账户与全部记录
+ * 原样保留**（与"无关联"分支同路径）。贷款仍在时贷款模块会重建还款计划。
  */
 async function handleLoanRepaymentPlanDelete(
   req: NextRequest,
   plan: { id: string; accountId: string; householdId: string | null },
   householdId: string,
 ) {
+  const keepSource = req.nextUrl.searchParams.get("keepSource") === "1";
   const cascadeLoan = req.nextUrl.searchParams.get("cascadeLoan") === "1";
   const loanAccountId = plan.accountId;
 
@@ -1187,7 +1216,8 @@ async function handleLoanRepaymentPlanDelete(
 
   // No linked loan: account missing, or balance settled/zeroed (shell). Only
   // the stale plan rows are removed; the account and all records stay put.
-  const loanLinked = !!loanAccount && Math.abs(Number(loanAccount.balance ?? 0)) > ACTIVE_DEBT_EPSILON;
+  // 「仅删除计划任务」走同一分支：不判在贷、不动账户与记录。
+  const loanLinked = !keepSource && !!loanAccount && Math.abs(Number(loanAccount.balance ?? 0)) > ACTIVE_DEBT_EPSILON;
   if (!loanLinked) {
     const siblingPlans = await prisma.regularInvestPlan.findMany({
       where: { accountId: loanAccountId, fundCode: "loan_repayment" },
@@ -1202,7 +1232,7 @@ async function handleLoanRepaymentPlanDelete(
       await tx.regularInvestPlan.deleteMany({ where: { id: { in: stalePlanIds } } });
     });
     revalidateAfterTxChange();
-    return NextResponse.json({ ok: true, deletedLoan: false, affectedPlanIds: stalePlanIds });
+    return NextResponse.json({ ok: true, keepSource, deletedLoan: false, affectedPlanIds: stalePlanIds });
   }
 
   if (loanAccount!.householdId && loanAccount!.householdId !== householdId) {

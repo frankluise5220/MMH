@@ -21,7 +21,7 @@ import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
 import type { AccountDisplayOption } from "@/lib/account-display";
 import { scheduledTaskTypeLabel, type LoanScheduledPlanRole, type ScheduledTaskType } from "@/lib/scheduled-task";
 import { showBlockingLoading } from "@/lib/client/blocking-loading";
-import { showConfirmDialog } from "@/lib/client/confirm-dialog";
+import { showChoiceDialog, showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { clearBackgroundTaskProgress, dispatchBackgroundTaskProgress } from "@/lib/client/background-tasks";
 import { useI18n } from "@/lib/i18n";
@@ -1083,8 +1083,9 @@ export function RegularInvestClient({
     dispatchFinanceDataChanged({ reason: "regular-invest-plan-delete" });
   }
 
-  async function requestLoanPlanDelete(planId: string, cascadeLoan: boolean) {
-    const res = await fetch(`/api/v1/regular-invest?id=${planId}&cascadeLoan=${cascadeLoan ? "1" : "0"}`, { method: "DELETE" });
+  async function requestLoanPlanDelete(planId: string, cascadeLoan: boolean, keepSource = false) {
+    const query = keepSource ? "&keepSource=1" : `&cascadeLoan=${cascadeLoan ? "1" : "0"}`;
+    const res = await fetch(`/api/v1/regular-invest?id=${planId}${query}`, { method: "DELETE" });
     const data = await res.json();
     if (data.ok) {
       removePlansFromApi(data);
@@ -1108,11 +1109,15 @@ export function RegularInvestClient({
 
   /**
    * 删除系统计划行（存款到期/取息、城投债到期/付息）。这些计划行会被开机自愈
-   * 从真源重建，"只删行"会复活，所以删除始终委托给真源：cascadeSource=1 时
-   * 服务端一并删除存单/债单；真源已失效时只清残留行。
+   * 从真源重建，所以有两种删除方式（用户 2026-09-17 五版选择）：
+   * - keepSource=true「仅删除计划任务，保留业务记录」：只删计划行、不动真源。
+   *   真源仍在时下次自愈会重建该计划任务 —— 用户已明确接受。
+   * - keepSource=false「一并删除」：cascadeSource=1 时服务端连存单/债单一起删；
+   *   真源已失效时只清残留行。
    */
-  async function requestSystemPlanDelete(planId: string, cascadeSource: boolean) {
-    const res = await fetch(`/api/v1/regular-invest?id=${planId}&cascadeSource=${cascadeSource ? "1" : "0"}`, { method: "DELETE" });
+  async function requestSystemPlanDelete(planId: string, cascadeSource: boolean, keepSource = false) {
+    const query = keepSource ? "&keepSource=1" : `&cascadeSource=${cascadeSource ? "1" : "0"}`;
+    const res = await fetch(`/api/v1/regular-invest?id=${planId}${query}`, { method: "DELETE" });
     const data = await res.json();
     if (data.ok) {
       removePlansFromState(Array.isArray(data.affectedPlanIds) && data.affectedPlanIds.length > 0 ? data.affectedPlanIds : [planId]);
@@ -1149,36 +1154,112 @@ export function RegularInvestClient({
 
   async function handleLoanPlanDelete(plan: RegularInvestPlanView) {
     // 只有"仍在贷"（余额超过已结清阈值）才算有关联贷款；空壳/已结清视为
-    // 无关联，提示可放心删除。判断未知（客户端数据过期）时按无关联走，
-    // 服务端若发现贷款仍在会返回 409，再补级联确认。
+    // 无关联，此时没有"保留/删除"的选择余地，直接走只删计划行。
     const loanLinked = plan.taskLoanLinked === true;
+    const loanLabel = planAccountLabel(plan);
+
+    if (!loanLinked) {
+      const confirmed = await showConfirmDialog({
+        title: t("regularInvest.client.deleteDialog.title"),
+        message: t("regularInvest.client.loanDelete.confirmNoLoan", { name: getPlanDisplayName(plan) }),
+        tone: "danger",
+      });
+      if (!confirmed) return;
+      await requestLoanPlanDelete(plan.id, false);
+      return;
+    }
+
+    // 有关联贷款 → 让用户选「仅删计划任务」还是「两边都删」。
+    const choice = await showChoiceDialog<"keep" | "cascade">({
+      title: t("regularInvest.client.systemDelete.chooseTitle"),
+      message: t("regularInvest.client.systemDelete.chooseMessage"),
+      cancelLabel: t("regularInvest.client.systemDelete.chooseCancel"),
+      tone: "danger",
+      choices: [
+        { value: "keep", label: t("regularInvest.client.systemDelete.chooseKeepSource") },
+        { value: "cascade", label: t("regularInvest.client.systemDelete.chooseCascadeLoan"), tone: "danger" },
+      ],
+    });
+    if (!choice) return;
+
+    if (choice === "keep") {
+      const confirmed = await showConfirmDialog({
+        title: t("regularInvest.client.deleteDialog.title"),
+        message: t("regularInvest.client.systemDelete.keepSourceLoan", { loan: loanLabel }),
+        tone: "danger",
+      });
+      if (!confirmed) return;
+      await requestLoanPlanDelete(plan.id, false, true);
+      return;
+    }
+
     const confirmed = await showConfirmDialog({
       title: t("regularInvest.client.deleteDialog.title"),
-      message: loanLinked
-        ? t("regularInvest.client.loanDelete.confirmCascade", { loan: planAccountLabel(plan) })
-        : t("regularInvest.client.loanDelete.confirmNoLoan", { name: getPlanDisplayName(plan) }),
+      message: t("regularInvest.client.loanDelete.confirmCascade", { loan: loanLabel }),
       tone: "danger",
     });
     if (!confirmed) return;
-    await requestLoanPlanDelete(plan.id, loanLinked);
+    await requestLoanPlanDelete(plan.id, true);
   }
 
   async function handleSystemPlanDelete(plan: RegularInvestPlanView) {
-    // 与贷款同口径：先判断是否真有关联明细，再给对应提示。
     const source = plan.taskSystemSource ?? null;
     const sourceLinked = source?.linked === true;
-    const message = sourceLinked
-      ? source!.kind === "wealth_bond"
-        ? t("regularInvest.client.systemDelete.confirmBond", { name: source!.name })
-        : t("regularInvest.client.systemDelete.confirmDeposit", { name: source!.name })
-      : t("regularInvest.client.systemDelete.confirmOrphan", { name: getPlanDisplayName(plan) });
+    const isBond = source?.kind === "wealth_bond";
+    const sourceName = source?.name || t("regularInvest.client.systemDelete.sourceNameFallback");
+
+    if (!sourceLinked) {
+      const confirmed = await showConfirmDialog({
+        title: t("regularInvest.client.deleteDialog.title"),
+        message: t("regularInvest.client.systemDelete.confirmOrphan", { name: getPlanDisplayName(plan) }),
+        tone: "danger",
+      });
+      if (!confirmed) return;
+      await requestSystemPlanDelete(plan.id, false);
+      return;
+    }
+
+    // 有关联真源 → 让用户选「仅删计划任务」还是「两边都删」。
+    const choice = await showChoiceDialog<"keep" | "cascade">({
+      title: t("regularInvest.client.systemDelete.chooseTitle"),
+      message: t("regularInvest.client.systemDelete.chooseMessage"),
+      cancelLabel: t("regularInvest.client.systemDelete.chooseCancel"),
+      tone: "danger",
+      choices: [
+        { value: "keep", label: t("regularInvest.client.systemDelete.chooseKeepSource") },
+        {
+          value: "cascade",
+          label: isBond
+            ? t("regularInvest.client.systemDelete.chooseCascadeBond")
+            : t("regularInvest.client.systemDelete.chooseCascadeDeposit"),
+          tone: "danger",
+        },
+      ],
+    });
+    if (!choice) return;
+
+    if (choice === "keep") {
+      const confirmed = await showConfirmDialog({
+        title: t("regularInvest.client.deleteDialog.title"),
+        message: isBond
+          ? t("regularInvest.client.systemDelete.keepSourceBond", { name: sourceName })
+          : t("regularInvest.client.systemDelete.keepSourceDeposit", { name: sourceName }),
+        tone: "danger",
+      });
+      if (!confirmed) return;
+      await requestSystemPlanDelete(plan.id, false, true);
+      return;
+    }
+
     const confirmed = await showConfirmDialog({
       title: t("regularInvest.client.deleteDialog.title"),
-      message,
+      message: isBond
+        ? t("regularInvest.client.systemDelete.confirmBond", { name: sourceName })
+        : t("regularInvest.client.systemDelete.confirmDeposit", { name: sourceName }),
       tone: "danger",
     });
     if (!confirmed) return;
-    await requestSystemPlanDelete(plan.id, sourceLinked);
+    await requestSystemPlanDelete(plan.id, true);
   }
 
   function handleDelete(planId: string) {
@@ -1187,7 +1268,7 @@ export function RegularInvestClient({
       void handleLoanPlanDelete(plan);
       return;
     }
-    // 其余系统计划（存款到期/取息、城投债到期/付息）同样走真源级联删除。
+    // 其余系统计划（存款到期/取息、城投债到期/付息）同样支持两种删除方式。
     if (plan && plan.isSystemTask) {
       void handleSystemPlanDelete(plan);
       return;
