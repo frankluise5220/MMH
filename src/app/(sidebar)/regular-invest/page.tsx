@@ -4,6 +4,7 @@ import { buildAccountDisplayOption, buildFlatAccountOptions, buildGroupedAccount
 import { buildCategorySmartSelectOptions } from "@/components/categorySmartSelect";
 import { categoryOrderBy } from "@/lib/category-order";
 import { decodeScheduledTaskMemo, getLoanScheduledPlanRole, isSystemManagedScheduledTask, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
+import { ACTIVE_DEBT_EPSILON } from "@/lib/server/debt-view-data";
 import { AccountKind, TransactionType } from "@prisma/client";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { revalidateAfterTxChange } from "@/lib/server/revalidate";
@@ -218,6 +219,13 @@ export default async function RegularInvestPage() {
 
   const accountOptions = accounts.map((account) => buildAccountDisplayOption(account, undefined, { fields: accountLabelFields }));
   const accountById = new Map(accountOptions.map((account) => [account.id, account]));
+  // 贷款是否"仍关联着"与负债视图同口径：|余额| > ACTIVE_DEBT_EPSILON 才算在贷，
+  // 已结清/空壳账户按"无关联贷款"处理（提示可放心删除）。
+  const accountBalanceById = new Map(accounts.map((account) => [account.id, Number(account.balance ?? 0)]));
+  const isLoanLinked = (accountId: string) => {
+    const balance = accountBalanceById.get(accountId);
+    return balance != null && Math.abs(balance) > ACTIVE_DEBT_EPSILON;
+  };
   const profileFundNames = await getFundProfileNameMap(
     plans
       .filter((plan) => normalizeScheduledTaskType(plan.taskType ?? scheduledTaskByPlanId.get(plan.id)?.type) === "fund_regular_invest")
@@ -256,6 +264,7 @@ export default async function RegularInvestPage() {
       taskRepaymentIntervalMonths: scheduledTask.repaymentIntervalMonths ?? null,
       taskLoanPlanRole: getLoanScheduledPlanRole(scheduledTask),
       isSystemTask: isSystemManagedScheduledTask(scheduledTask),
+      taskLoanLinked: taskType === "loan_repayment" ? isLoanLinked(plan.accountId) : null,
       amount: Number(plan.amount),
       feeRate: plan.feeRate ? Number(plan.feeRate) : null,
       startDate: plan.startDate && Number.isFinite(plan.startDate.getTime()) ? plan.startDate.toISOString() : null,

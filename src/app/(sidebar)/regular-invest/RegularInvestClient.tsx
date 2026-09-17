@@ -93,6 +93,8 @@ type RegularInvestPlanView = {
   taskRepaymentMethod?: string | null;
   taskRepaymentIntervalMonths?: number | null;
   taskLoanPlanRole?: LoanScheduledPlanRole | null;
+  /** Loan plans only: whether a live (non-settled) loan is still linked. Null for non-loan plans. */
+  taskLoanLinked?: boolean | null;
   /** System-level plans (e.g. loan repayment) are shown but read-only. */
   isSystemTask?: boolean;
   targetName?: string | null;
@@ -1062,8 +1064,73 @@ export function RegularInvestClient({
     }
   }
 
+  function removePlansFromState(affectedPlanIds: string[]) {
+    const ids = new Set(affectedPlanIds);
+    if (selectedPlan && ids.has(selectedPlan.id)) {
+      setSelectedPlan(null);
+      setPlanRecords([]);
+      setSelectedRecordIds(new Set());
+    }
+    setPlans((prev) => prev.filter((plan) => !ids.has(plan.id)));
+    dispatchFinanceDataChanged({ reason: "regular-invest-plan-delete" });
+  }
+
+  async function requestLoanPlanDelete(planId: string, cascadeLoan: boolean) {
+    const res = await fetch(`/api/v1/regular-invest?id=${planId}&cascadeLoan=${cascadeLoan ? "1" : "0"}`, { method: "DELETE" });
+    const data = await res.json();
+    if (data.ok) {
+      removePlansFromApi(data);
+      return;
+    }
+    // Safety net: the page snapshot said the loan was gone but the server
+    // found it alive — surface the cascade warning and retry on confirm.
+    if (res.status === 409 && data.needLoanCascade) {
+      const confirmed = await showConfirmDialog({
+        title: t("regularInvest.client.deleteDialog.title"),
+        message: t("regularInvest.client.loanDelete.confirmCascade", { loan: data.loanName || "-" }),
+        tone: "danger",
+      });
+      if (confirmed) {
+        await requestLoanPlanDelete(planId, true);
+        return;
+      }
+    }
+    window.alert(data.error || t("settingsDelete.deleteFailed"));
+  }
+
+  function removePlansFromApi(data: { affectedPlanIds?: string[] }) {
+    const ids = Array.isArray(data.affectedPlanIds) && data.affectedPlanIds.length > 0
+      ? data.affectedPlanIds
+      : [];
+    if (ids.length > 0) {
+      removePlansFromState(ids);
+    } else if (selectedPlan) {
+      removePlansFromState([selectedPlan.id]);
+    }
+  }
+
+  async function handleLoanPlanDelete(plan: RegularInvestPlanView) {
+    // 只有"仍在贷"（余额超过已结清阈值）才算有关联贷款；空壳/已结清视为
+    // 无关联，提示可放心删除。判断未知（客户端数据过期）时按无关联走，
+    // 服务端若发现贷款仍在会返回 409，再补级联确认。
+    const loanLinked = plan.taskLoanLinked === true;
+    const confirmed = await showConfirmDialog({
+      title: t("regularInvest.client.deleteDialog.title"),
+      message: loanLinked
+        ? t("regularInvest.client.loanDelete.confirmCascade", { loan: planAccountLabel(plan) })
+        : t("regularInvest.client.loanDelete.confirmNoLoan", { name: getPlanDisplayName(plan) }),
+      tone: "danger",
+    });
+    if (!confirmed) return;
+    await requestLoanPlanDelete(plan.id, loanLinked);
+  }
+
   function handleDelete(planId: string) {
     const plan = plans.find((item) => item.id === planId);
+    if (plan && getPlanTaskType(plan) === "loan_repayment") {
+      void handleLoanPlanDelete(plan);
+      return;
+    }
     setDeleteConfirm({ planId, planName: plan ? getPlanDisplayName(plan) : t("nav.scheduledTasks") });
   }
 
@@ -1310,17 +1377,27 @@ export function RegularInvestClient({
   function renderPlanActions(plan: RegularInvestPlanView) {
     // System-level plans (mortgage "bill" loan plans) are read-only in the
     // plan table: the schedule is derived from the loan, so no
-    // pause/stop/edit/delete.
+    // pause/stop/edit/delete. Exception: when the linked loan account is
+    // already gone (stale plan), offer a delete so the row can be cleaned up.
     if (plan.isSystemTask) {
+      const staleLoanPlan = getPlanTaskType(plan) === "loan_repayment" && plan.taskLoanLinked === false;
       return (
-        <span className="inline-flex h-6 items-center rounded border border-slate-200 bg-slate-50 px-1.5 text-[10px] text-slate-400" title={t("regularInvest.client.systemTask.title")}>
-          {t("regularInvest.client.systemTask.short")}
-        </span>
+        <>
+          <span className="inline-flex h-6 items-center rounded border border-slate-200 bg-slate-50 px-1.5 text-[10px] text-slate-400" title={t("regularInvest.client.systemTask.title")}>
+            {t("regularInvest.client.systemTask.short")}
+          </span>
+          {staleLoanPlan && (
+            <button onClick={() => handleDelete(plan.id)} title={t("common.delete")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
+              <Trash2 className="h-3 w-3 text-red-500" />
+            </button>
+          )}
+        </>
       );
     }
-    // Auto-debit loan transfer plans are editable but system-owned: they
-    // cannot be deleted manually, only paused/stopped/edited.
-    const isLoanPlan = getPlanTaskType(plan) === "loan_repayment";
+    // Auto-debit loan transfer plans are editable but system-owned: they can
+    // now be deleted as a cleanup entry — the delete flow checks whether the
+    // loan still exists and warns that the loan and its repayment schedule go
+    // away with the plan (repayment records are kept).
     return (
       <>
         {plan.status === "active" && (
@@ -1349,11 +1426,9 @@ export function RegularInvestClient({
         <button onClick={() => { setEditPlan(plan); setEditOpen(true); }} title={t("regularInvest.client.action.edit")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-blue-200 hover:bg-blue-50">
           <Pencil className="h-3 w-3 text-blue-600" />
         </button>
-        {!isLoanPlan && (
-          <button onClick={() => handleDelete(plan.id)} title={t("common.delete")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
-            <Trash2 className="h-3 w-3 text-red-500" />
-          </button>
-        )}
+        <button onClick={() => handleDelete(plan.id)} title={t("common.delete")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
+          <Trash2 className="h-3 w-3 text-red-500" />
+        </button>
       </>
     );
   }

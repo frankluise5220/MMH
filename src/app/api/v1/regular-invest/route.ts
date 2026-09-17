@@ -8,7 +8,8 @@ import { setFundFeeRate, setFundFeeRateInTx } from "@/lib/fund/feeRate";
 import { getFundProfileNameMap, normalizeFundDisplayName, resolveFundName } from "@/lib/fund/fundProfile";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, getLoanScheduledPlanRole, isSystemManagedScheduledTask, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
-import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
+import { revalidateAfterInvestChange, revalidateAfterSettingsChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
+import { ACTIVE_DEBT_EPSILON } from "@/lib/server/debt-view-data";
 import { calcInitialScheduledRunDate as calcInitialRunDate, calcResumedScheduledRunDate as calcResumedRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { deriveRegularInvestNextRunDate } from "@/lib/server/regular-invest-plan";
 import { allowsZeroAnnualRateRepaymentMethod, normalizeLoanRepaymentMethod } from "@/lib/loan-repayment";
@@ -811,14 +812,28 @@ export async function DELETE(req: NextRequest) {
     if (!plan) return NextResponse.json({ ok: false, code: "PLAN_NOT_FOUND", error: "计划不存在" }, { status: 404 });
     if (plan.householdId && plan.householdId !== householdId) return NextResponse.json({ ok: false, code: "PLAN_NOT_IN_HOUSEHOLD", error: "计划不属于当前账簿" }, { status: 403 });
 
-    // System-level plans (loan repayment / deposit maturity+payout) cannot be
-    // deleted manually.
+    // System-level plans (deposit maturity+payout) cannot be deleted manually.
     const deleteTask = decodeScheduledTaskMemo(plan.memo);
-    if (deleteTask.type === "loan_repayment") {
-      return NextResponse.json({ ok: false, code: "SYSTEM_MANAGED_PLAN", error: "贷款还款计划由系统管理，不可手动删除" }, { status: 403 });
-    }
     if (isSystemManagedScheduledTask(deleteTask)) {
       return NextResponse.json({ ok: false, code: "SYSTEM_MANAGED_PLAN", error: "存款到期/取息计划由系统根据存单管理，不可手动删除；取回存单后会自动结束" }, { status: 403 });
+    }
+
+    // Loan repayment plans are now deletable as a cleanup entry (2026-09-17).
+    // At delete time the loan account is re-checked server-side:
+    // - Loan account missing (stale plan, e.g. records were deleted and the
+    //   loan removed elsewhere): delete the plan row(s) only; generated
+    //   repayment records are kept (their regularInvestPlanId link is cleared).
+    // - Loan account still present: deleting the plan takes the loan with it
+    //   — the loan account, its loan-side records (bills/borrow, i.e. the
+    //   repayment schedule artifacts) and all its repayment plans are removed;
+    //   repayment transfers (cash-side records) are KEPT (toAccountId cleared,
+    //   name snapshot preserved). Requires cascadeLoan=1 which the client only
+    //   sends after the user confirms the cascade.
+    if (deleteTask.type === "loan_repayment") {
+      if (deleteRecordsOnly) {
+        return NextResponse.json({ ok: false, code: "SYSTEM_MANAGED_PLAN", error: "贷款还款记录请在明细页中删除" }, { status: 403 });
+      }
+      return handleLoanRepaymentPlanDelete(req, plan, householdId);
     }
 
     // Delete only transaction records, keep the plan, and reset it to the un-executed state
@@ -940,4 +955,137 @@ export async function DELETE(req: NextRequest) {
   } catch (e) {
     return NextResponse.json({ ok: false, code: "DELETE_FAILED", error: e instanceof Error ? e.message : "删除失败" }, { status: 500 });
   }
+}
+
+/**
+ * DELETE /api/v1/regular-invest for loan_repayment plans.
+ * Semantics agreed in 2026-09-17: first judge whether a loan is actually
+ * linked. A loan counts as linked only when the account exists AND its
+ * outstanding balance is non-zero (|balance| > ACTIVE_DEBT_EPSILON — the same
+ * "settled" threshold the debt view uses, so an emptied/settled shell is
+ * treated as "no linked loan").
+ * - Linked (active loan): deleting the plan takes the loan with it — the
+ *   account, its loan-side schedule records (bills/borrow) and all of the
+ *   loan's repayment plans are removed; repayment transfers (cash-side
+ *   records) are KEPT (toAccountId cleared, name snapshot preserved).
+ *   Requires cascadeLoan=1 which the client only sends after the user
+ *   confirms the cascade; otherwise 409 LOAN_STILL_EXISTS.
+ * - Not linked (account gone, or settled/emptied shell): the plan has no
+ *   associated loan details — delete only the plan row(s), keep the account
+ *   and every record.
+ */
+async function handleLoanRepaymentPlanDelete(
+  req: NextRequest,
+  plan: { id: string; accountId: string; householdId: string | null },
+  householdId: string,
+) {
+  const cascadeLoan = req.nextUrl.searchParams.get("cascadeLoan") === "1";
+  const loanAccountId = plan.accountId;
+
+  const loanAccount = loanAccountId
+    ? await prisma.account.findUnique({ where: { id: loanAccountId }, select: { id: true, name: true, kind: true, householdId: true, balance: true } })
+    : null;
+
+  // No linked loan: account missing, or balance settled/zeroed (shell). Only
+  // the stale plan rows are removed; the account and all records stay put.
+  const loanLinked = !!loanAccount && Math.abs(Number(loanAccount.balance ?? 0)) > ACTIVE_DEBT_EPSILON;
+  if (!loanLinked) {
+    const siblingPlans = await prisma.regularInvestPlan.findMany({
+      where: { accountId: loanAccountId, fundCode: "loan_repayment" },
+      select: { id: true },
+    });
+    const stalePlanIds = Array.from(new Set([plan.id, ...siblingPlans.map((item) => item.id)]));
+    await prisma.$transaction(async (tx) => {
+      await tx.txRecord.updateMany({
+        where: { regularInvestPlanId: { in: stalePlanIds } },
+        data: { regularInvestPlanId: null },
+      });
+      await tx.regularInvestPlan.deleteMany({ where: { id: { in: stalePlanIds } } });
+    });
+    revalidateAfterTxChange();
+    return NextResponse.json({ ok: true, deletedLoan: false, affectedPlanIds: stalePlanIds });
+  }
+
+  if (loanAccount!.householdId && loanAccount!.householdId !== householdId) {
+    return NextResponse.json({ ok: false, code: "LOAN_NOT_IN_HOUSEHOLD", error: "关联的贷款不属于当前账簿" }, { status: 403 });
+  }
+  if (!cascadeLoan) {
+    // Safety net for callers that did not pass the confirmed cascade flag.
+    return NextResponse.json({
+      ok: false,
+      code: "LOAN_STILL_EXISTS",
+      needLoanCascade: true,
+      loanName: loanAccount!.name,
+      error: "该计划任务仍关联着贷款，删除会同时删除贷款和还款表（还款记录不会删）",
+    }, { status: 409 });
+  }
+
+  // Collect the loan's repayment plans and referencing records before the
+  // cascade so kept records can be detached and peers recalculated.
+  const loanPlans = await prisma.regularInvestPlan.findMany({
+    where: { accountId: loanAccountId, fundCode: "loan_repayment" },
+    select: { id: true },
+  });
+  const loanPlanIds = loanPlans.map((item) => item.id);
+  const referencingRecords = await prisma.txRecord.findMany({
+    where: { OR: [{ accountId: loanAccountId }, { toAccountId: loanAccountId }] },
+    select: { accountId: true, toAccountId: true },
+  });
+  // Peer accounts whose balance can change: the cash side of the loan's own
+  // records (borrow disbursement etc.) that get hard-deleted below.
+  const peerAccountIds = new Set<string>();
+  for (const row of referencingRecords) {
+    if (row.accountId === loanAccountId && row.toAccountId) peerAccountIds.add(row.toAccountId);
+  }
+
+  await prisma.$transaction(async (tx) => {
+    // 1. Detach kept repayment records from the loan's plans (soft reference,
+    //    cleared the same way as the ordinary plan-delete flow).
+    if (loanPlanIds.length > 0) {
+      await tx.txRecord.updateMany({
+        where: { regularInvestPlanId: { in: loanPlanIds } },
+        data: { regularInvestPlanId: null },
+      });
+    }
+    // 2. Repayment transfers survive: clear their toAccountId reference (the
+    //    FK is NO ACTION, so the column must be nulled before the account
+    //    goes away). toAccountName keeps the display snapshot.
+    await tx.txRecord.updateMany({
+      where: { toAccountId: loanAccountId },
+      data: { toAccountId: null },
+    });
+    // 3. Delete the loan-side records (borrow/bills/interest = the loan and
+    //    its repayment schedule artifacts). Records already soft-deleted by
+    //    the user are removed too, matching the settings account deletion.
+    await tx.txRecord.deleteMany({ where: { accountId: loanAccountId } });
+    // 4. Detach references that have no cascade rule before deleting the account.
+    await tx.regularInvestPlan.updateMany({
+      where: { cashAccountId: loanAccountId },
+      data: { cashAccountId: null },
+    });
+    await tx.propertyAsset.updateMany({
+      where: { mortgageLoanAccountId: loanAccountId },
+      data: { mortgageLoanAccountId: null },
+    });
+    // 5. Derived data that is no longer meaningful (same set as the settings
+    //    account deletion).
+    await tx.accountAlias.deleteMany({ where: { accountId: loanAccountId } });
+    await tx.creditCardCycle.deleteMany({ where: { accountId: loanAccountId } });
+    await tx.fundHolding.deleteMany({ where: { accountId: loanAccountId } });
+    await tx.preciousMetalHolding.deleteMany({ where: { accountId: loanAccountId } });
+    // 6. Delete the loan account; its repayment plans (bill + auto-debit) and
+    //    LoanRateAdjustments cascade with it.
+    await tx.account.delete({ where: { id: loanAccountId } });
+  });
+
+  for (const peerId of peerAccountIds) {
+    await recalcAndSaveAccountBalance(peerId).catch(() => {});
+  }
+  revalidateAfterTxChange();
+  revalidateAfterSettingsChange();
+  return NextResponse.json({
+    ok: true,
+    deletedLoan: true,
+    affectedPlanIds: Array.from(new Set([plan.id, ...loanPlanIds])),
+  });
 }
