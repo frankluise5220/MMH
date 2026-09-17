@@ -978,6 +978,9 @@ export async function DELETE(req: NextRequest) {
  *
  * When the source is already gone, the only cleanup left is the stale row —
  * so that path needs no confirmation and returns deletedSource:false.
+ *
+ * 判据只看"真源是否还在"，不看计划自身 status（详见 handleDepositPlanDelete
+ * 的说明：status=completed 的计划在真源仍在时会被自愈救回，删掉也会复活）。
  */
 async function handleSystemPlanDelete(
   req: NextRequest,
@@ -1006,10 +1009,23 @@ function resolveDepositLotId(planId: string, task: { depositSourceEntryId?: stri
 
 /**
  * 存款到期/取息计划删除。
- * 存单仍在（未软删、未取回）→ 与明细页删除存单同路径：软删存单及其存款侧流水
- *   （buy/redeem/switch_out 等），计划行由 business-transactions 侧
- *   completeDepositPlansForLot 结束，随后本处把计划行物理删除以免残留。
- * 存单已失效（已软删/已被取回）→ 无关联明细，只删计划行。
+ *
+ * 关联判据（2026-09-17 四版定稿）：只看**存单 buy 行是否存在且未软删**，
+ * 与计划自身 status、与存单是否已取回都无关。理由（已实测）：
+ * 计划行由开机自愈 `ensureDepositPlansForHeldLots` 按"仍持有的存单"重建，
+ * 只要存单 buy 行还在，删掉计划行就会被重建（取息计划还会被重新置回
+ * active）——所以「有关联」的真正含义是"存单还在"，此时**必须级联删存单**，
+ * 否则用户看到的就是"计划删了、存单还在"（本 bug 的现象）。
+ * 反过来，存单已软删/不存在时计划才真的无事可做，只删计划行即可。
+ *
+ * 注意 `status=completed` 不能当作"无关联"：存单取回后
+ * `completeDepositPlansForLot` 会把计划置 completed，但只要存单 buy 行还在，
+ * 自愈仍会把它救回 active（`depi_` 周期性取息尤其明显）。
+ *
+ * 存单仍在 → 与明细页删除存单同路径：软删存单及其存款侧流水
+ *   （buy/redeem/switch_out 等，走 softDeleteEntriesByIds + deleteBusiness），
+ *   随后把该存单的两条计划行物理删除。
+ * 存单不存在/已软删 → 计划确实无关联明细，只删计划行。
  */
 async function handleDepositPlanDelete(
   req: NextRequest,
@@ -1027,14 +1043,8 @@ async function handleDepositPlanDelete(
         select: { id: true, fundName: true, deletedAt: true, householdId: true },
       })
     : null;
-  // 已取回（存在 redeem/switch_out 记录）也算失效：计划已无后续可执行对象。
-  const lotRedeemed = lot && !lot.deletedAt
-    ? !!(await prisma.txRecord.findFirst({
-        where: { householdId, depositSourceEntryId: lot.id, deletedAt: null, fundSubtype: { in: ["redeem", "switch_out"] } },
-        select: { id: true },
-      }))
-    : false;
-  const lotLinked = !!lot && !lot.deletedAt && !lotRedeemed;
+  // 关联记录 = 存单 buy 行仍在（未软删）。已取回不影响：存单本身还在账户里。
+  const lotLinked = !!lot && !lot.deletedAt;
 
   if (lotLinked && lot!.householdId && lot!.householdId !== householdId) {
     return NextResponse.json({ ok: false, code: "LOT_NOT_IN_HOUSEHOLD", error: "关联的存单不属于当前账簿" }, { status: 403 });

@@ -228,7 +228,8 @@ export default async function RegularInvestPage() {
   };
   // 系统计划（存款到期/取息、城投债到期/付息）的关联真源：存单 = 计划 memo 的
   // depositSourceEntryId（或 depm_/depi_ 前缀），债单 = bondm_/bondi_ 的 productId。
-  // 真源仍在 → 删除会一并删它；已失效 → 提示可放心删除。两侧口径一致。
+  // 真源仍在 → 删除会一并删它；真源不存在/已软删 → 提示可放心删除。两侧口径一致。
+  // 注意：存单「已取回」不算失效 —— buy 行仍在账户里就是有关联记录（09-17 修正）。
   const systemPlanSourceByPlanId = new Map<string, { kind: "deposit" | "wealth_bond"; name: string; linked: boolean }>();
   const depositPlanLots = plans
     .filter((plan) => {
@@ -253,23 +254,13 @@ export default async function RegularInvestPage() {
     }))
     .filter((item) => !!item.productId);
   if (depositPlanLots.length > 0 || bondPlanProducts.length > 0) {
-    const [lots, lotsRedeemed, bondProducts, bondTxs] = await Promise.all([
+    const [lots, bondProducts, bondTxs] = await Promise.all([
       depositPlanLots.length > 0
         ? prisma.txRecord.findMany({
             where: { id: { in: depositPlanLots.map((item) => item.lotId) }, deletedAt: null },
             select: { id: true, fundName: true },
           })
         : Promise.resolve([] as Array<{ id: string; fundName: string | null }>),
-      depositPlanLots.length > 0
-        ? prisma.txRecord.findMany({
-            where: {
-              depositSourceEntryId: { in: depositPlanLots.map((item) => item.lotId) },
-              deletedAt: null,
-              fundSubtype: { in: ["redeem", "switch_out"] },
-            },
-            select: { depositSourceEntryId: true },
-          })
-        : Promise.resolve([] as Array<{ depositSourceEntryId: string | null }>),
       bondPlanProducts.length > 0
         ? prisma.wealthProduct.findMany({
             where: { id: { in: bondPlanProducts.map((item) => item.productId) }, ...hidFilter },
@@ -284,14 +275,14 @@ export default async function RegularInvestPage() {
           })
         : Promise.resolve([] as Array<{ wealthProductId: string; action: string; _sum: { grossAmount: unknown } }>),
     ]);
-    const redeemedLotIds = new Set(lotsRedeemed.map((row) => row.depositSourceEntryId).filter(Boolean) as string[]);
-    const lotById = new Map(lots.map((lot) => [lot.id, lot]));
+    const liveLotById = new Map(lots.map((lot) => [lot.id, lot]));
     for (const item of depositPlanLots) {
-      const lot = lotById.get(item.lotId);
+      const lot = liveLotById.get(item.lotId);
       systemPlanSourceByPlanId.set(item.planId, {
         kind: "deposit",
         name: lot?.fundName ?? "存款",
-        linked: !!lot && !redeemedLotIds.has(item.lotId),
+        // 存单 buy 行仍在（未软删）= 有关联记录；已取回不影响判定。
+        linked: !!lot,
       });
     }
     const bondHeldById = new Map<string, number>();
