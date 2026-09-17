@@ -305,7 +305,11 @@ expect(/backupLifecycle\("upgrade"\)/.test(buildScript), "fnOS package must crea
 expect(/backupLifecycle\("uninstall"\)/.test(buildScript), "fnOS package must create cmd/uninstall_init to back up app data before uninstall/reinstall flows.");
 expect(/write\(path\.join\(stageDir,\s*"cmd",\s*"uninstall_callback"\),\s*uninstallCallbackLifecycle/.test(buildScript), "fnOS package must wire cmd/uninstall_callback to honor the uninstall wizard's delete-data choice.");
 expect(/wizard_delete_data:-false/.test(buildScript), "fnOS uninstall_callback must treat an unset wizard_delete_data as keep, because CLI-driven update uninstalls never pass wizard parameters.");
-expect(/pre-delete-/.test(buildScript) && /no writable backup directory outside/.test(buildScript), "fnOS uninstall_callback must back up data outside the data directory before deleting, and skip deletion when no out-of-tree backup location exists.");
+expect(/ensure_out_of_tree_backup_root/.test(buildScript), "fnOS package must create the sibling upgrade-backups directory with mmh ownership so uninstall delete-data can write outside the data directory.");
+expect(/pre-delete-/.test(buildScript) && /no writable backup directory outside/.test(buildScript), "fnOS uninstall_callback must back up data outside the data directory before deleting, and fail uninstall when no out-of-tree backup location can be made writable.");
+expect(/MMH delete-data aborted: no writable backup directory outside/.test(buildScript) && /exit 1/.test(buildScript), "fnOS uninstall_callback must fail uninstall when wizard_delete_data=true but the out-of-tree backup directory is not writable.");
+expect(/MMH delete-data failed: user data still present/.test(buildScript), "fnOS uninstall_callback must fail if mmh.db is still present after the delete-data wipe.");
+expect(/chown mmh:mmh/.test(buildScript) && /ensure_out_of_tree_backup_root/.test(buildScript), "fnOS install/upgrade/start paths must chown the sibling upgrade-backups directory to mmh so later uninstalls running as the package user can write the pre-delete backup.");
 expect(/upgrade-backups/.test(buildScript) && /sha256sum/.test(buildScript), "fnOS backup lifecycle must copy appdata to an upgrade backup directory and record the SQLite checksum when available.");
 expect(/"\$data_root\/\.port"/.test(buildScript), "fnOS backup lifecycle must preserve the persisted service port file.");
 expect(/data_root\/upgrade-backups/.test(buildScript), "fnOS backup lifecycle must fall back to an app-owned upgrade backup directory when sibling appdata backups are not writable.");
@@ -578,6 +582,8 @@ if (process.env.FNOS_VERIFY_BUILT_FPK === "1") {
   expect(/mmh-session-secret\.txt/.test(upgradeInitScript), "Built fnOS upgrade_init must preserve the signed-session secret when backing up app data.");
   expect(/mmh-session-secret\.txt/.test(uninstallInitScript), "Built fnOS uninstall_init must preserve the signed-session secret when backing up app data.");
   expect(/wizard_delete_data:-false/.test(uninstallCallbackScript) && /upgrade-backups/.test(uninstallCallbackScript), "Built fnOS uninstall_callback must keep data unless the wizard explicitly chose delete, and must back up outside the data directory before honoring wizard_delete_data=true.");
+  expect(/ensure_out_of_tree_backup_root/.test(uninstallCallbackScript) || /chown mmh:mmh/.test(uninstallCallbackScript), "Built fnOS uninstall_callback must create or chown the sibling upgrade-backups directory before honoring wizard_delete_data=true.");
+  expect(/MMH delete-data aborted: no writable backup directory outside/.test(uninstallCallbackScript) && /exit 1/.test(uninstallCallbackScript), "Built fnOS uninstall_callback must fail uninstall when wizard_delete_data=true but no out-of-tree backup directory is writable.");
   expect(/resolve_data_dest/.test(mainScript), "Built fnOS .fpk cmd/main must resolve the persistent fnOS data directory.");
   expect(/TRIM_PKGVAR\/data/.test(mainScript), "Built fnOS .fpk cmd/main must prefer TRIM_PKGVAR/data.");
   expect(!/TRIM_DATADEST:-\$APP_DEST\/data/.test(mainScript), "Built fnOS .fpk cmd/main must not fall back to the app install directory for SQLite data.");

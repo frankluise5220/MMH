@@ -779,6 +779,34 @@ app_ui_config() {
     done
     echo "\${dest}/ui/config"
 }
+
+# Sibling backup directory used by upgrade/uninstall. It must live outside the
+# app data root so wizard_delete_data can wipe the tree without deleting the
+# safety copy. Install/upgrade/start create it as mmh:mmh 700; uninstall then
+# fails closed if it still cannot write there.
+ensure_out_of_tree_backup_root() {
+    local data_root parent_dir backup_root
+    data_root="\${1:-}"
+    if [ -z "$data_root" ]; then
+        if command -v resolve_pkgvar >/dev/null 2>&1; then
+            data_root="$(resolve_pkgvar 2>/dev/null || true)"
+        fi
+    fi
+    [ -n "$data_root" ] || return 1
+    parent_dir="$(dirname "$data_root")"
+    [ -n "$parent_dir" ] && [ "$parent_dir" != "/" ] && [ "$parent_dir" != "." ] || return 1
+    backup_root="$parent_dir/\${TRIM_APPNAME:-mmh}-upgrade-backups"
+    mkdir -p "$backup_root" 2>/dev/null || true
+    if [ "$(id -u)" = "0" ] && id mmh >/dev/null 2>&1; then
+        chown mmh:mmh "$backup_root" 2>/dev/null || true
+    fi
+    chmod 700 "$backup_root" 2>/dev/null || true
+    if [ -d "$backup_root" ] && [ -w "$backup_root" ]; then
+        printf '%s\\n' "$backup_root"
+        return 0
+    fi
+    return 1
+}
 `, 0o755);
 
 write(path.join(stageDir, "cmd", "apply-settings"), `#!/bin/bash
@@ -972,6 +1000,9 @@ EOF
     fi
     chmod 770 "$pkgvar" 2>/dev/null || true
     chmod 700 "\${pkgvar}/data" 2>/dev/null || true
+    if command -v ensure_out_of_tree_backup_root >/dev/null 2>&1; then
+        ensure_out_of_tree_backup_root "$pkgvar" >/dev/null 2>&1 || true
+    fi
 
     printf '%s' "$port"
 }
@@ -1258,6 +1289,12 @@ ensure_runtime_owner () {
   fi
   chmod 770 "$DATA_ROOT" 2>/dev/null || true
   chmod 700 "$DATA_DEST" 2>/dev/null || true
+  sibling_backup="$(dirname "$DATA_ROOT")/\${TRIM_APPNAME:-mmh}-upgrade-backups"
+  mkdir -p "$sibling_backup" 2>/dev/null || true
+  if id mmh >/dev/null 2>&1; then
+    chown mmh:mmh "$sibling_backup" 2>/dev/null || true
+  fi
+  chmod 700 "$sibling_backup" 2>/dev/null || true
 }
 
 restart_start_as_package_user () {
@@ -1468,12 +1505,17 @@ data_root="$(resolve_data_root 2>/dev/null || true)"
 
 parent_dir="$(dirname "$data_root")"
 backup_root=""
-for candidate in "$parent_dir/$TRIM_APPNAME-upgrade-backups" "$data_root/upgrade-backups"; do
-    if mkdir -p "$candidate" 2>/dev/null && [ -w "$candidate" ]; then
-        backup_root="$candidate"
-        break
-    fi
-done
+if command -v ensure_out_of_tree_backup_root >/dev/null 2>&1; then
+    backup_root="$(ensure_out_of_tree_backup_root "$data_root" 2>/dev/null || true)"
+fi
+if [ -z "$backup_root" ]; then
+    for candidate in "$parent_dir/$TRIM_APPNAME-upgrade-backups" "$data_root/upgrade-backups"; do
+        if mkdir -p "$candidate" 2>/dev/null && [ -w "$candidate" ]; then
+            backup_root="$candidate"
+            break
+        fi
+    done
+fi
 [ -n "$backup_root" ] || exit 0
 stamp="$(date +%Y%m%d-%H%M%S)"
 target="$backup_root/${reason}-$stamp"
@@ -1544,13 +1586,29 @@ data_root="$(resolve_data_root 2>/dev/null || true)"
 [ -d "$data_root" ] || exit 0
 
 # The pre-delete backup must live OUTSIDE data_root because the whole
-# directory is about to be wiped. If no writable sibling location exists,
-# keep the data instead of deleting without a safety net.
-parent_dir="$(dirname "$data_root")"
-backup_root="$parent_dir/\$TRIM_APPNAME-upgrade-backups"
-if ! mkdir -p "$backup_root" 2>/dev/null || [ ! -w "$backup_root" ]; then
+# directory is about to be wiped. Create the sibling backup directory and,
+# when running as root, give it to the mmh package user. If it is still not
+# writable, fail uninstall instead of deleting without a backup or silently
+# keeping data after the user asked to delete it.
+backup_root=""
+if command -v ensure_out_of_tree_backup_root >/dev/null 2>&1; then
+    backup_root="$(ensure_out_of_tree_backup_root "$data_root" 2>/dev/null || true)"
+fi
+if [ -z "$backup_root" ]; then
+    parent_dir="$(dirname "$data_root")"
+    candidate="$parent_dir/\${TRIM_APPNAME:-mmh}-upgrade-backups"
+    mkdir -p "$candidate" 2>/dev/null || true
+    if [ "$(id -u)" = "0" ] && id mmh >/dev/null 2>&1; then
+        chown mmh:mmh "$candidate" 2>/dev/null || true
+    fi
+    chmod 700 "$candidate" 2>/dev/null || true
+    if [ -d "$candidate" ] && [ -w "$candidate" ]; then
+        backup_root="$candidate"
+    fi
+fi
+if [ -z "$backup_root" ]; then
     echo "MMH delete-data aborted: no writable backup directory outside $data_root" >&2
-    exit 0
+    exit 1
 fi
 stamp="$(date +%Y%m%d-%H%M%S)"
 target="$backup_root/pre-delete-\$stamp"
@@ -1570,7 +1628,11 @@ if command -v sha256sum >/dev/null 2>&1 && [ -f "$data_root/data/mmh.db" ]; then
 fi
 echo "MMH user data backed up to $target"
 
-find "$data_root" -mindepth 1 -exec rm -rf {} + 2>/dev/null || true
+find "$data_root" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+if [ -e "$data_root/data/mmh.db" ]; then
+    echo "MMH delete-data failed: user data still present under $data_root" >&2
+    exit 1
+fi
 echo "MMH user data deleted from $data_root"
 exit 0
 `;
