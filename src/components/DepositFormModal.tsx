@@ -468,18 +468,26 @@ export function DepositFormModal({
   const applyRedeemDefaults = useCallback((detail?: {
     defaultCashAccountId?: string;
     defaultDepositAccountId?: string;
+    defaultRedeemLotId?: string;
   }) => {
     const nextDepositAccountId = resolveDefaultRedeemDepositAccount(detail?.defaultDepositAccountId);
-    const nextRedeemLotId = resolveDefaultRedeemLot(nextDepositAccountId);
+    // explicit lot id wins (the lot-row "redeem" button goes this way); otherwise pick one by deposit account.
+    const explicitLotId = detail?.defaultRedeemLotId;
+    const requestedLot = explicitLotId ? redeemLotOptions.find((lot) => lot.id === explicitLotId) : undefined;
+    const nextRedeemLotId = requestedLot
+      ? requestedLot.id
+      : resolveDefaultRedeemLot(nextDepositAccountId);
+    // When a lot is explicitly given, trust its own deposit account to avoid a mismatch.
+    const effectiveDepositAccountId = requestedLot?.depositAccountId || nextDepositAccountId;
     setSubtype("redeem");
     setArrivalDate(date || today);
     arrivalDateTouchedRef.current = false;
-    setDepositAccountId(nextDepositAccountId);
-    setCashAccountId(resolveDefaultRedeemCashAccount(nextDepositAccountId, detail?.defaultCashAccountId));
+    setDepositAccountId(effectiveDepositAccountId);
+    setCashAccountId(resolveDefaultRedeemCashAccount(effectiveDepositAccountId, detail?.defaultCashAccountId));
     setSelectedRedeemLotId(nextRedeemLotId);
     setInterestEdited(false);
     setArrivalEdited(false);
-  }, [date, resolveDefaultRedeemCashAccount, resolveDefaultRedeemDepositAccount, resolveDefaultRedeemLot, today]);
+  }, [date, redeemLotOptions, resolveDefaultRedeemCashAccount, resolveDefaultRedeemDepositAccount, resolveDefaultRedeemLot, today]);
 
   const amountNumber = parseNumber(amount);
   const annualRateNumber = parseNumber(annualRate);
@@ -747,6 +755,7 @@ export function DepositFormModal({
         defaultCashAccountId?: string;
         defaultDepositAccountId?: string;
         defaultSubtype?: "buy" | "redeem";
+        defaultRedeemLotId?: string;
         defaultDate?: string;
         defaultAmount?: number;
       }>).detail;

@@ -61,6 +61,7 @@ type Props = {
     defaultWealthAccountId?: string;
     defaultDepositAccountId?: string;
     defaultDepositSubtype?: "buy" | "redeem";
+    defaultRedeemLotId?: string;
     defaultInsuranceAccountId?: string;
     defaultDebtAccountId?: string;
     defaultDebtInstitutionId?: string;
@@ -310,6 +311,7 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"], loanTy
             defaultSubtype: "redeem",
             defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
             defaultDepositAccountId: context?.defaultDepositAccountId ?? context?.defaultAccountId ?? "",
+            defaultRedeemLotId: context?.defaultRedeemLotId ?? "",
           },
         }),
       );

@@ -191,6 +191,26 @@ export function DepositShell({
     [payInterestAction],
   );
 
+  /**
+   * 存单行「取回」：直接打开存款弹窗的取出模式，并预选这张存单。
+   *
+   * 走的是与右上角入口相同的 `mmh:deposit:create` 事件链路（弹窗由记账页 /
+   * DepositEntryHost 挂在同一页），只是多带一个 defaultRedeemLotId；
+   * 弹窗收到后会把账户、金额（剩余本金）一并预填。
+   */
+  const openRedeemModal = useCallback((lot: DepositLot) => {
+    window.dispatchEvent(
+      new CustomEvent("mmh:deposit:create", {
+        detail: {
+          requestId: `deposit-redeem-${lot.id}-${Date.now()}`,
+          defaultSubtype: "redeem",
+          defaultRedeemLotId: lot.id,
+          defaultDepositAccountId: lot.depositAccountId ?? "",
+        },
+      }),
+    );
+  }, []);
+
   const heldLots = useMemo(() => lots.filter((lot) => lot.status === "open"), [lots]);
   const expiredLots = useMemo(() => lots.filter((lot) => lot.status === "closed"), [lots]);
   const visibleLots = lotTab === "held" ? heldLots : expiredLots;
@@ -500,7 +520,7 @@ export function DepositShell({
               summaryRow={lotsSummaryRow}
               onRowClick={(lot) => setSelectedLotId((current) => current === lot.id ? null : lot.id)}
               rowClassName={(lot) => `cursor-pointer ${selectedLotId === lot.id ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-slate-50"}`}
-              rowActions={lotTab === "held" && (renewAction || payInterestAction) ? (lot) => (
+              rowActions={lotTab === "held" ? (lot) => (
                 <div className="flex items-center gap-1">
                   {payInterestAction && isPeriodicDepositInterestPayout(lot.interestPayoutFrequency) ? (
                     <button
@@ -532,9 +552,22 @@ export function DepositShell({
                       <Repeat className="h-3.5 w-3.5" />
                     </button>
                   ) : null}
+                  <button
+                    type="button"
+                    disabled={lot.status !== "open" || lot.remainingAmount <= 0.0001}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openRedeemModal(lot);
+                    }}
+                    className="flex h-6 w-6 items-center justify-center rounded border border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-40"
+                    title={t("deposit.redeem.title")}
+                    aria-label={t("deposit.redeem.title")}
+                  >
+                    <ArrowDownLeft className="h-3.5 w-3.5" />
+                  </button>
                 </div>
               ) : undefined}
-              rowActionsWidth={96}
+              rowActionsWidth={116}
             />
           </div>
         </section>

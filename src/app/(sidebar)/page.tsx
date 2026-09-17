@@ -2805,7 +2805,11 @@ export default async function Home({
                   defaultMetalAccountId: defaultMetalInvestmentAccountId,
                   defaultWealthAccountId: defaultWealthAccountForSelectedInstitution,
                   defaultDepositAccountId: isDepositView ? defaultDepositAccountForSelectedInstitution : "",
-                  defaultDepositSubtype: isDepositView && globalOpenDepositLots.length > 0 ? "redeem" : "buy",
+                  // 「存款」入口一律默认新建存入（buy）。曾按「存款视图 + 存在未到期存单」
+                  // 自动切成 redeem，导致存款视图里点右上角「存款」打开的是「取出」界面，
+                  // 与按钮文案相反；而该视图的下拉菜单也没有别的取出入口，用户无处可回。
+                  // 取出请走明细里存单行的「取回」操作。
+                  defaultDepositSubtype: "buy",
                   defaultInsuranceAccountId: isInsuranceView ? (selectedAccount?.id ?? "") : "",
                   defaultDebtAccountId: selectedDebtRow?.accountIds?.[0] ?? "",
                   defaultDebtInstitutionId: selectedDebtObjectValue,
