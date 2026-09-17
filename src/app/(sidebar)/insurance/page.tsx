@@ -13,6 +13,8 @@ import { getInsuranceAction, insuranceCashValueDelta, isInsuranceRefund } from "
 import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "@/lib/server/account-label-fields";
 import { getServerT } from "@/lib/server/i18n";
 import { TopEntryLauncher } from "@/components/TopEntryLauncher";
+import { DepositEntryHost } from "@/components/DepositEntryHost";
+import { createTransaction, editInvestment } from "@/lib/server/sidebar-actions/transaction-actions";
 
 export const dynamic = "force-dynamic";
 
@@ -227,6 +229,7 @@ export default async function InsurancePage() {
             <div className="text-xs text-slate-500">{t("insurance.page.subtitle")}</div>
           </div>
           <TopEntryLauncher defaultAction="insurance" />
+          <DepositEntryHost createAction={createTransaction} editAction={editInvestment} />
         </div>
       </header>
 

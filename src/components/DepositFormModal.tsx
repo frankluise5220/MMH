@@ -15,8 +15,16 @@ import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
+import { APP_PREFS_EVENT, getSidebarHideInitialDataPreference } from "@/lib/client/appPreferences";
 import { Repeat } from "lucide-react";
-import { addCalendarYearsUtc, addDepositTermUtc, addMonthsUtc } from "@/lib/date-utils";
+import { depositTermMaturityUtc } from "@/lib/deposit-term";
+import { depositInterestDaysUtc } from "@/lib/deposit-maturity";
+import {
+  DEFAULT_DEPOSIT_TERM_DAYS,
+  splitTermDays,
+  TERM_UNIT_DAYS,
+  type DepositTermUnit,
+} from "@/lib/deposit-term";
 import {
   clampDepositInterestPayoutInterval,
   encodeDepositInterestPayout,
@@ -43,6 +51,7 @@ type Entry = {
   depositSourceEntryId?: string | null;
   depositMaturityAction?: string | null;
   depositInterestPayoutFrequency?: string | null;
+  depositInterestCalcBasis?: string | null;
   fundArrivalDate?: string | null;
 };
 
@@ -81,42 +90,6 @@ type EditingRedeemSource = {
   restoredRemainingAmount: number;
   annualRate?: number | null;
 };
-type DepositTermUnit = "day" | "week" | "month" | "year";
-const TERM_UNIT_DAYS: Record<DepositTermUnit, number> = { day: 1, week: 7, month: 30, year: 365 };
-const DEFAULT_DEPOSIT_TERM_DAYS = 365;
-
-/**
- * Decompose a day count into unit + count for the unit-first term picker.
- * When the deposit's start date is known, calendar units win over naive day
- * math: a 2026-01-15 → 2031-01-15 span (1826 days across a leap year) reads
- * as 5 年, not 1826 天. Whole years win over months, months over weeks, so
- * 90 -> 3 months, 14 -> 2 weeks, and anything else stays in days.
- */
-function splitTermDays(days: number, startDate?: string | null): { unit: DepositTermUnit; count: number } {
-  const d = Math.max(0, Math.trunc(days));
-  if (d <= 0) return { unit: "day", count: 0 };
-  const start = startDate ? new Date(`${startDate.slice(0, 10)}T00:00:00.000Z`) : null;
-  if (start && Number.isFinite(start.getTime())) {
-    // Calendar years: the maturity lands exactly on the Nth anniversary.
-    for (let y = Math.floor(d / 365); y >= 1; y--) {
-      const anniversary = addCalendarYearsUtc(start, y);
-      if (Math.round((anniversary.getTime() - start.getTime()) / 86400000) === d) {
-        return { unit: "year", count: y };
-      }
-    }
-    // Calendar months: the maturity lands exactly N months after the start.
-    for (let m = Math.floor(d / 28); m >= 1; m--) {
-      const anniversary = addMonthsUtc(start, m);
-      if (Math.round((anniversary.getTime() - start.getTime()) / 86400000) === d) {
-        return { unit: "month", count: m };
-      }
-    }
-  }
-  if (d % 365 === 0) return { unit: "year", count: d / 365 };
-  if (d % 30 === 0) return { unit: "month", count: d / 30 };
-  if (d % 7 === 0) return { unit: "week", count: d / 7 };
-  return { unit: "day", count: d };
-}
 
 function compareRedeemLots(a: RedeemLotOption, b: RedeemLotOption) {
   const dateA = a.startDate ?? "9999-12-31";
@@ -262,6 +235,17 @@ export function DepositFormModal({
   const [interestPayoutInterval, setInterestPayoutInterval] = useState<string>(
     initPayout.kind === "periodic" ? String(initPayout.interval) : "1",
   );
+  const [interestCalcBasis, setInterestCalcBasis] = useState<"daily" | "monthly">(
+    mode === "edit" && entry?.depositInterestCalcBasis === "daily" ? "daily" : "monthly",
+  );
+  // 新手期（系统设置里「使用向导」未被隐藏）= 显示说明性提示文案；老用户界面保持干净。
+  const [showGuideHints, setShowGuideHints] = useState(false);
+  useEffect(() => {
+    const sync = () => setShowGuideHints(!getSidebarHideInitialDataPreference());
+    sync();
+    window.addEventListener(APP_PREFS_EVENT, sync);
+    return () => window.removeEventListener(APP_PREFS_EVENT, sync);
+  }, []);
 
   const [cashAccountList, setCashAccountList] = useState(cashAccounts);
   const [depositAccountList, setDepositAccountList] = useState(() =>
@@ -536,17 +520,29 @@ export function DepositFormModal({
     );
     if (clamped !== current) setInterestPayoutInterval(String(clamped));
   }, [interestPayoutInterval, interestPayoutUnit, isPeriodicInterestPayout, termDaysNumber]);
-  const yearsMultiplierNumber = termDays ? Number(termDays) / 365 : 0;
   const hasStoredAnnualRate = !!(
     selectedRedeemLot &&
     selectedRedeemLot.annualRate != null &&
     Number.isFinite(selectedRedeemLot.annualRate) &&
     selectedRedeemLot.annualRate > 0
   );
+  // Redeem interest preview must match what auto-redeem actually pays:
+  // 存入日计息 day count over the lot's real span (365 non-leap year, 366
+  // across Feb 29; legacy same-day spans keep the raw difference), not the
+  // 365-per-year normalized picker value.
+  const redeemInterestDays = useMemo(() => {
+    if (!selectedRedeemLot?.startDate || !selectedRedeemLot?.maturityDate) return null;
+    const start = new Date(`${selectedRedeemLot.startDate.slice(0, 10)}T00:00:00.000Z`);
+    const end = new Date(`${selectedRedeemLot.maturityDate.slice(0, 10)}T00:00:00.000Z`);
+    if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) return null;
+    return depositInterestDaysUtc(start, end);
+  }, [selectedRedeemLot]);
   const interestPreview = useMemo(() => {
-    if (amountNumber <= 0 || annualRateNumber <= 0 || yearsMultiplierNumber <= 0) return 0;
-    return Number((amountNumber * (annualRateNumber / 100) * yearsMultiplierNumber).toFixed(2));
-  }, [amountNumber, annualRateNumber, yearsMultiplierNumber]);
+    if (amountNumber <= 0 || annualRateNumber <= 0) return 0;
+    const days = redeemInterestDays ?? termDaysNumber;
+    if (days <= 0) return 0;
+    return Number(((amountNumber * (annualRateNumber / 100) * days) / 365).toFixed(2));
+  }, [amountNumber, annualRateNumber, redeemInterestDays, termDaysNumber]);
   const arrivalPreview = useMemo(() => {
     if (!isRedeem) return amountNumber;
     const effectiveInterest = parseNumber(interestAmount) > 0 ? parseNumber(interestAmount) : interestPreview;
@@ -580,6 +576,8 @@ export function DepositFormModal({
     setMaturityAction("redeem");
     setInterestPayoutUnit("maturity");
     setInterestPayoutInterval("1");
+    // 新建默认「月均计息」：取息周期为月时按 本金×年利率÷12×期数 固定金额。
+    setInterestCalcBasis("monthly");
   }
 
   function applyRedeemComputedAmounts(forceInterest = false) {
@@ -625,6 +623,7 @@ export function DepositFormModal({
         depositSourceEntryId?: string | null;
         depositMaturityAction?: string | null;
         depositInterestPayoutFrequency?: string | null;
+        depositInterestCalcBasis?: string | null;
         fundSubtype?: string;
         fundArrivalDate?: string | null;
       }>).detail;
@@ -731,6 +730,7 @@ export function DepositFormModal({
           setInterestPayoutUnit("maturity");
           setInterestPayoutInterval("1");
         }
+        setInterestCalcBasis(detail.depositInterestCalcBasis === "daily" ? "daily" : "monthly");
       }
       setOpen(true);
     }
@@ -995,10 +995,12 @@ export function DepositFormModal({
       } else {
         fd.set("depositMaturityAction", maturityAction);
         fd.set("depositInterestPayoutFrequency", encodedInterestPayout);
-        const parsedTermDays = Number(termDays);
-        if (Number.isFinite(parsedTermDays) && parsedTermDays > 0) {
+        fd.set("depositInterestCalcBasis", isPeriodicInterestPayout ? interestCalcBasis : "daily");
+        const termCountNumber = Math.trunc(parseNumber(termCount));
+        if (Number.isFinite(termCountNumber) && termCountNumber > 0) {
+          // 月/年周期按日历月/对年对日滚动（−1 天口径），不能用 30/365 天块近似。
           const maturityDate = new Date(`${date}T00:00:00.000Z`);
-          const normalizedMaturityDate = addDepositTermUtc(maturityDate, parsedTermDays);
+          const normalizedMaturityDate = depositTermMaturityUtc(maturityDate, termUnit, termCountNumber);
           fd.set("fundArrivalDate", normalizedMaturityDate.toISOString().slice(0, 10));
         } else {
           fd.set("fundArrivalDate", "");
@@ -1097,7 +1099,7 @@ export function DepositFormModal({
     <ModalLayerProvider value={modalZIndex}>
       {createPortal(
         <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
-          <div className="app-modal-panel max-w-[min(42rem,calc(100vw-1rem))]">
+          <div className="app-modal-panel max-w-2xl">
             <div className="modal-header">
               <div className="text-sm font-semibold text-slate-800">
                 {mode === "edit" ? t("depositForm.title.edit") : t("depositForm.title.create")}
@@ -1141,7 +1143,7 @@ export function DepositFormModal({
                   {t("deposit.subtype.redeem")}
                 </button>
               </div>
-              {lockedSubtype ? (
+              {lockedSubtype && showGuideHints ? (
                 <div className="text-[11px] text-slate-400">
                   {t("depositForm.lockedSubtypeHint")}
                 </div>
@@ -1363,11 +1365,19 @@ export function DepositFormModal({
                       <option value="renew_principal">{t("deposit.maturityAction.renewPrincipal")}</option>
                       <option value="renew_principal_interest" disabled={isPeriodicInterestPayout}>{t("deposit.maturityAction.renewPrincipalInterest")}</option>
                     </select>
-                    <div className="text-[11px] text-slate-400">{t("deposit.maturityAction.hint")}</div>
+                    <div className="text-[11px] text-slate-400">{showGuideHints ? t("deposit.maturityAction.hint") : ""}</div>
                   </div>
                   <div className="space-y-1">
                     <div className="form-label">{t("deposit.payoutFrequency.label")}</div>
-                    <div className={`grid gap-2 ${isPeriodicInterestPayout ? "grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]" : "grid-cols-1"}`}>
+                    <div
+                      className={`grid gap-2 ${
+                        isPeriodicInterestPayout
+                          ? interestPayoutUnit === "month"
+                            ? "grid-cols-[minmax(0,1fr)_minmax(0,0.55fr)_minmax(0,1.1fr)]"
+                            : "grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]"
+                          : "grid-cols-1"
+                      }`}
+                    >
                       <select
                         value={interestPayoutUnit}
                         onChange={(e) => {
@@ -1417,10 +1427,26 @@ export function DepositFormModal({
                           aria-label={t("deposit.payoutFrequency.intervalLabel")}
                         />
                       ) : null}
+                      {isPeriodicInterestPayout && interestPayoutUnit === "month" ? (
+                        <select
+                          value={interestCalcBasis}
+                          onChange={(e) => setInterestCalcBasis(e.target.value === "monthly" ? "monthly" : "daily")}
+                          className="form-input w-full"
+                          aria-label={t("deposit.calcBasis.label")}
+                          title={t("deposit.calcBasis.label")}
+                        >
+                          <option value="daily">{t("deposit.calcBasis.daily")}</option>
+                          <option value="monthly">{t("deposit.calcBasis.monthly")}</option>
+                        </select>
+                      ) : null}
                     </div>
                     <div className="text-[11px] text-slate-400">
-                      {isPeriodicInterestPayout
-                        ? t("deposit.payoutFrequency.periodicHint", {
+                      {!showGuideHints
+                        ? ""
+                        : isPeriodicInterestPayout
+                        ? interestCalcBasis === "monthly" && interestPayoutUnit === "month"
+                          ? t("deposit.calcBasis.monthlyHint")
+                          : t("deposit.payoutFrequency.periodicHint", {
                             interval: String(Math.trunc(parseNumber(interestPayoutInterval)) || 1),
                             unit: t(
                               interestPayoutUnit === "week"

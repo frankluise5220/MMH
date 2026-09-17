@@ -28,6 +28,7 @@ import { createCreditCardInstallmentPlan } from "@/lib/server/credit-card-instal
 import { ENTRY_ORIGIN_MANUAL, isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/transaction-semantics";
 import { ensureSettlementTransferCategory, resolveCategorySnapshot, resolveCreditCardRepaymentCategory, SYSTEM_DEPOSIT_INTEREST_CATEGORY } from "@/lib/default-categories";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
+import { depositInterestDaysUtc } from "@/lib/deposit-maturity";
 import { getCashFlowDate } from "@/lib/cash-flow-date";
 import { buildWealthCashFlowNote } from "@/lib/wealth-cash-note";
 import { linkExpenseToFixedAsset, syncLinkedFixedAssetTransactionFromCashEntry } from "@/lib/property/transactions";
@@ -801,6 +802,8 @@ export async function createTransaction(formData: FormData) {
       const depositMaturityAction = DEPOSIT_MATURITY_ACTIONS.includes(depositMaturityActionRaw) ? depositMaturityActionRaw : null;
       const depositInterestPayoutRaw = String(formData.get("depositInterestPayoutFrequency") ?? "").trim();
       const depositInterestPayoutFrequency = normalizeDepositInterestPayoutInput(depositInterestPayoutRaw);
+      const depositInterestCalcBasisRaw = String(formData.get("depositInterestCalcBasis") ?? "").trim();
+      const depositInterestCalcBasis = depositInterestCalcBasisRaw === "monthly" ? "monthly" : depositInterestCalcBasisRaw === "daily" ? "daily" : null;
       const cashAccountIdInput = String(formData.get("cashAccountId") ?? "").trim() || null;
       const fundConfirmDate = fundConfirmDateStr ? new Date(fundConfirmDateStr) : null;
       const fundArrivalDate = fundArrivalDateStr ? new Date(fundArrivalDateStr) : null;
@@ -1106,6 +1109,7 @@ export async function createTransaction(formData: FormData) {
               depositSourceEntryId: depositSourceEntryId ?? undefined,
               depositMaturityAction: redeemLike || isDividendCash || isDividendReinvest ? null : depositMaturityAction ?? undefined,
               depositInterestPayoutFrequency: redeemLike || isDividendCash || isDividendReinvest ? null : depositInterestPayoutFrequency ?? undefined,
+              depositInterestCalcBasis: redeemLike || isDividendCash || isDividendReinvest ? null : depositInterestCalcBasis ?? undefined,
               fundFee: isMetalProduct ? undefined : fundFee ?? undefined,
               fundConfirmDate: isMetalProduct ? undefined : computedConfirmDate ?? undefined,
               fundArrivalDate: isMetalProduct ? undefined : computedArrivalDate ?? undefined,
@@ -1570,6 +1574,11 @@ export async function editInvestment(formData: FormData) {
   const depositInterestPayout: string | null | undefined = hasDepositInterestPayout
     ? normalizeDepositInterestPayoutInput(depositInterestPayoutStr)
     : undefined;
+  const hasDepositInterestCalcBasis = formData.has("depositInterestCalcBasis");
+  const depositInterestCalcBasisStr = String(formData.get("depositInterestCalcBasis") ?? "").trim();
+  const depositInterestCalcBasis: string | null | undefined = hasDepositInterestCalcBasis
+    ? (["daily", "monthly"].includes(depositInterestCalcBasisStr) ? depositInterestCalcBasisStr : null)
+    : undefined;
   const confirmDays: number | null | undefined = hasConfirmDays
     ? (Number.isFinite(confirmDaysRaw) && confirmDaysRaw >= 0 ? confirmDaysRaw : null)
     : undefined;
@@ -1801,6 +1810,9 @@ export async function editInvestment(formData: FormData) {
           : {}),
         ...(fundProductType === "deposit" && depositInterestPayout !== undefined
           ? { depositInterestPayoutFrequency: depositInterestPayout }
+          : {}),
+        ...(fundProductType === "deposit" && depositInterestCalcBasis !== undefined
+          ? { depositInterestCalcBasis }
           : {}),
         fundFee: isMetalProduct ? null : fundFee ?? null,
         // Deposit buy records reuse fundConfirmDate as the interest segment
@@ -2211,7 +2223,9 @@ export async function renewDeposit(formData: FormData) {
     const maturityDate = buy.fundArrivalDate;
     if (!maturityDate) return { ok: false as const, error: t("deposit.renew.missingMaturity") };
     const segmentStart = buy.fundConfirmDate ?? buy.date;
-    const segmentDays = Math.max(0, Math.round((maturityDate.getTime() - segmentStart.getTime()) / 86400000));
+    // 存入日计息: whole-year spans that end one day before the anniversary
+    // count inclusively (365/366 days); other spans keep the raw difference.
+    const segmentDays = depositInterestDaysUtc(segmentStart, maturityDate);
     const accruedInterest = interestRaw != null && Number.isFinite(interestRaw)
       ? Math.max(0, interestRaw)
       : Number(((principal * (effectiveNewRate / 100) * segmentDays) / 365).toFixed(2));
@@ -2377,9 +2391,13 @@ export async function payDepositInterest(formData: FormData) {
     }
     const segmentDays = Math.max(0, Math.round((effectivePayoutDate.getTime() - segmentStart.getTime()) / 86400000));
     if (segmentDays <= 0) return { ok: false as const, error: t("deposit.payInterest.noAccrual") };
+    // 按月均分（monthly 基准 + 月频率）：每满一个取息周期固定 本金×年利率÷12×期数；其余按 日数/365。
+    const frequency = parseDepositInterestPayout(buy.depositInterestPayoutFrequency);
     const accruedInterest = amountOverride != null
       ? amountOverride
-      : Number(((principal * (annualRate / 100) * segmentDays) / 365).toFixed(2));
+      : buy.depositInterestCalcBasis === "monthly" && frequency.kind === "periodic" && frequency.unit === "month"
+        ? Number(((principal * (annualRate / 100) * frequency.interval) / 12).toFixed(2))
+        : Number(((principal * (annualRate / 100) * segmentDays) / 365).toFixed(2));
     if (!(accruedInterest > 0)) return { ok: false as const, error: t("deposit.payInterest.noAccrual") };
 
     const depositAccount = await prisma.account.findUnique({

@@ -188,6 +188,7 @@ export async function loadDepositTransactionDetailLike(params: {
       depositSourceEntryId: row.sourceDepositTransactionId,
       depositMaturityAction: row.maturityAction,
       depositInterestPayoutFrequency: row.interestPayoutFrequency,
+      depositInterestCalcBasis: row.interestCalcBasis,
       source: row.source,
       note: row.note,
       cashAccountLabel: accountLabel(row.CashAccount),

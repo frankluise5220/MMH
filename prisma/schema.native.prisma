@@ -634,6 +634,7 @@ model DepositTransaction {
   realizedProfit             Decimal?
   maturityAction             String?
   interestPayoutFrequency    String?
+  interestCalcBasis          String?
   note                       String?
   deletedAt                  DateTime?
   createdAt                  DateTime             @default(now())
@@ -1577,6 +1578,7 @@ model TxRecord {
   depositSourceEntryId        String?
   depositMaturityAction       String?
   depositInterestPayoutFrequency String?
+  depositInterestCalcBasis    String?
   fundSourceEntryId           String?
   debtPrincipalAmount         Decimal?
   debtInterestAmount          Decimal?

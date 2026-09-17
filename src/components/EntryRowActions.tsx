@@ -54,6 +54,9 @@ export type EditPayload = {
   depositAnnualRate?: number;
   depositInterest?: number;
   depositSourceEntryId?: string | null;
+  depositMaturityAction?: string | null;
+  depositInterestPayoutFrequency?: string | null;
+  depositInterestCalcBasis?: string | null;
   fundFee?: number;
   fundConfirmDate?: string;
   fundArrivalDate?: string | null;

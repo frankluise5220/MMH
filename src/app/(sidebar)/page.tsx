@@ -129,6 +129,7 @@ import { AccountTypeQuickEdit, type AccountQuickEditValue } from "@/components/A
 export const dynamic = "force-dynamic";
 
 import { formatDateLocal, formatDateUtc, toNumber, parseDateInputToUtc } from "@/lib/date-utils";
+import { depositInterestDaysUtc } from "@/lib/deposit-maturity";
 
 
 
@@ -278,17 +279,6 @@ function toYmdOrNull(value: unknown) {
 }
 
 /**
- * Day count between two YYYY-MM-DD dates (both parsed as UTC midnight to avoid
- * timezone drift). Returns a non-negative integer; 0 when either side is invalid.
- */
-function diffYmdDays(start: string, end: string): number {
-  const s = parseDateInputToUtc(start);
-  const e = parseDateInputToUtc(end);
-  if (!s || !e) return 0;
-  return Math.max(0, Math.round((e.getTime() - s.getTime()) / 86400000));
-}
-
-/**
  * Expected interest for a held deposit certificate, following the same simple
  * interest convention used by the deposit form: principal x annual rate (%) x
  * term days / 365. Falls back to days up to today when the maturity date is
@@ -303,7 +293,13 @@ function calcDepositExpectedInterest(params: {
 }): number | null {
   const { principal, annualRate, startDate, maturityDate, today } = params;
   if (!(principal > 0) || annualRate == null || annualRate <= 0 || !startDate) return null;
-  const days = diffYmdDays(startDate, maturityDate ?? today);
+  // 存入日计息: whole-year spans ending one day before the anniversary count
+  // inclusively (365/366 days), matching what auto-redeem actually pays;
+  // other spans (incl. the days-up-to-today fallback) keep the raw difference.
+  const endDate = maturityDate ?? today;
+  const startUtc = parseDateInputToUtc(startDate);
+  const endUtc = parseDateInputToUtc(endDate);
+  const days = startUtc && endUtc ? depositInterestDaysUtc(startUtc, endUtc) : 0;
   if (days <= 0) return null;
   return Number(((principal * (annualRate / 100) * days) / 365).toFixed(2));
 }
@@ -1873,6 +1869,7 @@ export default async function Home({
     depositAnnualRate: linkedWealth?.annualRate != null ? toNumber(linkedWealth.annualRate) : e.depositAnnualRate != null ? toNumber(e.depositAnnualRate) : null,
     depositInterest: linkedWealth?.interest != null ? toNumber(linkedWealth.interest) : e.depositInterest != null ? toNumber(e.depositInterest) : null,
     depositSourceEntryId: e.depositSourceEntryId ?? null,
+    depositInterestCalcBasis: (e as { depositInterestCalcBasis?: string | null }).depositInterestCalcBasis ?? null,
     fundProductType: linkedWealth ? "wealth" : linkedFund?.fundProductType ?? e.fundProductType,
     metalTypeId: e.metalTypeId ?? null,
     metalTypeName: e.metalTypeName ?? null,
@@ -1983,6 +1980,7 @@ export default async function Home({
                 depositSourceEntryId: entry.depositSourceEntryId ?? undefined,
                 depositMaturityAction: entry.depositMaturityAction ?? undefined,
                 depositInterestPayoutFrequency: entry.depositInterestPayoutFrequency ?? undefined,
+                depositInterestCalcBasis: entry.depositInterestCalcBasis ?? undefined,
                 fundArrivalDate: arrivalDate ?? undefined,
                 fundProductType: "deposit",
                 fundSubtype: entry.fundSubtype ?? "buy",
@@ -2034,6 +2032,12 @@ export default async function Home({
                   date: entryDate,
                   amount: Math.abs(toNumber(entry.amount)),
                   note: entry.note ?? "",
+                  // 存款利息收入的落账账户是定期存款账户，不在普通收支部的下拉里；
+                  // 带上显示名，编辑时才能把存款账户回填到账户框（否则显示为空）。
+                  accountName: entry.accountName ?? undefined,
+                  accountLabel: isDepositReceivingSide
+                    ? (entry.accountId ? (accountLabelById.get(entry.accountId) ?? entry.accountName ?? "") : (entry.accountName ?? ""))
+                    : (entry.toAccountId ? (accountLabelById.get(entry.toAccountId) ?? entry.toAccountName ?? "") : (entry.toAccountName ?? "")),
                   accountId: entry.accountId ?? "",
                   toAccountId: entry.toAccountId ?? undefined,
                   toAccountName: entry.toAccountName ?? undefined,
@@ -2388,6 +2392,7 @@ export default async function Home({
         maturityDate: string | null;
         maturityAction: string | null;
         interestPayoutFrequency: string | null;
+        interestCalcBasis?: string | null;
         remainingAmount: number;
         depositAccountId: string;
         depositAccountName: string;
@@ -2401,6 +2406,7 @@ export default async function Home({
       maturityDate: string | null;
       maturityAction: string | null;
       interestPayoutFrequency: string | null;
+      interestCalcBasis?: string | null;
       remainingAmount: number;
       depositAccountId: string;
       depositAccountName: string;
@@ -2440,6 +2446,7 @@ export default async function Home({
           maturityDate,
           maturityAction: entry.depositMaturityAction ?? null,
           interestPayoutFrequency: entry.depositInterestPayoutFrequency ?? null,
+          interestCalcBasis: entry.depositInterestCalcBasis ?? null,
           remainingAmount: amountValue,
           depositAccountId,
           depositAccountName,
@@ -2559,6 +2566,7 @@ export default async function Home({
           maturityDate: lot.maturityDate,
           maturityAction: lot.maturityAction,
           interestPayoutFrequency: lot.interestPayoutFrequency,
+          interestCalcBasis: lot.interestCalcBasis ?? null,
           remainingAmount: Number(lot.remainingAmount.toFixed(2)),
           status: lot.remainingAmount > 0.0001 ? "open" as const : "closed" as const,
           annualRate,

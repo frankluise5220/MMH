@@ -433,7 +433,10 @@ async function autoAccruePeriodicInterest(
       segmentStart = payoutDate;
       continue;
     }
-    const accrued = round2((principal * (annualRate / 100) * segmentDays) / 365);
+    // 按月均分：月频率下每期固定 本金×年利率÷12×期数；按日均分（默认）：本金×年利率×天数/365。
+    const accrued = buy.depositInterestCalcBasis === "monthly" && frequency.unit === "month"
+      ? round2((principal * (annualRate / 100) * frequency.interval) / 12)
+      : round2((principal * (annualRate / 100) * segmentDays) / 365);
     segmentStart = payoutDate;
     if (!(accrued > 0)) continue;
     await prisma.$transaction(async (tx) => {
@@ -636,8 +639,9 @@ async function autoRenewDeposit(
     fd.set("entryId", fresh.id);
     fd.set("renewMode", mode);
     // Calendar-aware roll: anniversary-aligned terms (e.g. 5 年) renew to the
-    // next anniversary; day-based terms roll by their original day count.
-    fd.set("newMaturityDate", nextDepositTermMaturityUtc(first.date, maturity).toISOString().slice(0, 10));
+    // next anniversary; 存入日计息 terms (maturity = start + N 年 − 1 天) roll
+    // the same rule per term; day-based terms roll by their original day count.
+    fd.set("newMaturityDate", nextDepositTermMaturityUtc(first.date, maturity, originalTermDays).toISOString().slice(0, 10));
     if (mode === "renew_principal") {
       fd.set("cashAccountId", fresh.accountId ?? "");
     }

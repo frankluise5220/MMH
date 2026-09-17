@@ -12,7 +12,7 @@
  *                                 interest compounds into the principal
  */
 
-import { addDaysUtc, addMonthsUtc, formatDateUtc } from "@/lib/date-utils";
+import { addCalendarYearsUtc, addDaysUtc, addMonthsUtc, formatDateUtc } from "@/lib/date-utils";
 
 import { type DepositInterestPayoutUnit } from "@/lib/deposit-interest-payout";
 
@@ -37,19 +37,72 @@ export function dayDiffDays(later: Date, earlier: Date): number {
 }
 
 /**
- * Roll a deposit's maturity forward by one term, calendar-aware:
- * when the original span (start → current maturity) is exactly N calendar
- * months, the next maturity keeps the anniversary (2031-01-15 + 60 months →
- * 2036-01-15, leap years included). Non-calendar spans roll by raw days.
+ * Interest day count for one deposit segment under the 存入日计息 convention:
+ * the deposit day itself counts, and the count follows real calendar days
+ * (a year spanning Feb 29 accrues 366 days, otherwise 365).
+ *
+ * Spans whose maturity sits one day before the Nth calendar anniversary encode
+ * that convention (maturity = 起存日 + N 年 − 1 天, e.g. 2025-01-20 → 2026-01-19
+ * = 365 days; 2019-03-20 → 2020-03-19 = 366 days), so they count inclusively
+ * (raw difference + 1). Legacy same-day-anniversary spans already contain the
+ * full span in the raw difference and stay unchanged, as do day/month/week
+ * based terms.
  */
-export function nextDepositTermMaturityUtc(startDate: Date, currentMaturity: Date): Date {
+export function depositInterestDaysUtc(start: Date, maturity: Date): number {
+  const days = Math.max(0, dayDiffDays(maturity, start));
+  if (days < 364) return days;
+  const maxYears = Math.floor(days / 365) + 1;
+  for (let years = maxYears; years >= 1; years--) {
+    const anniversaryDays = dayDiffDays(addCalendarYearsUtc(start, years), start);
+    if (anniversaryDays === days) return days;
+    if (anniversaryDays - 1 === days) return days + 1;
+  }
+  return days;
+}
+
+/**
+ * Roll a deposit's maturity forward by one term, calendar-aware. Three span
+ * shapes are recognized between start → current maturity:
+ *   - exact N calendar months (legacy same-day anniversary): roll keeps the
+ *     anniversary (2031-01-15 + 60 months → 2036-01-15, leap years included);
+ *   - N whole years minus one day (存入日计息 convention, maturity =
+ *     起存日 + N 年 − 1 天): re-apply the same rule to the renewed term, whose
+ *     start is the previous maturity day;
+ *   - anything else rolls by raw days — using `originalTermDays` (the lot's
+ *     original term length) when provided so multi-round catch-ups advance one
+ *     term per round instead of the accumulated span.
+ */
+export function nextDepositTermMaturityUtc(
+  startDate: Date,
+  currentMaturity: Date,
+  originalTermDays?: number,
+): Date {
   const months =
     (currentMaturity.getUTCFullYear() - startDate.getUTCFullYear()) * 12 +
     (currentMaturity.getUTCMonth() - startDate.getUTCMonth());
-  if (months > 0 && formatDateUtc(addMonthsUtc(startDate, months)) === formatDateUtc(currentMaturity)) {
-    return addMonthsUtc(currentMaturity, months);
+  if (months > 0) {
+    const anniversary = addMonthsUtc(startDate, months);
+    const anniversaryStr = formatDateUtc(anniversary);
+    const maturityStr = formatDateUtc(currentMaturity);
+    if (anniversaryStr === maturityStr) {
+      if (originalTermDays != null && Math.trunc(originalTermDays) % 365 === 0 && originalTermDays > 0) {
+        return addMonthsUtc(currentMaturity, 12 * (Math.trunc(originalTermDays) / 365));
+      }
+      return addMonthsUtc(currentMaturity, months);
+    }
+    if (
+      formatDateUtc(addDaysUtc(anniversary, -1)) === maturityStr
+    ) {
+      // 存入日计息 convention: maturity = calendar anniversary − 1 day. Re-apply
+      // the same rule to the renewed term, whose start is the previous maturity
+      // day (works for whole-year and month calendar spans alike).
+      return addDaysUtc(addMonthsUtc(currentMaturity, months), -1);
+    }
   }
-  const termDays = Math.max(1, dayDiffDays(currentMaturity, startDate));
+  const termDays =
+    originalTermDays != null
+      ? Math.max(1, Math.trunc(originalTermDays))
+      : Math.max(1, dayDiffDays(currentMaturity, startDate));
   return addDaysUtc(currentMaturity, termDays);
 }
 
@@ -71,7 +124,7 @@ export function computeDepositMaturityInterest(params: {
   if (annualRatePercent == null || !(annualRatePercent > 0)) return 0;
   const segmentStart = params.segmentStart ?? null;
   if (!segmentStart) return 0;
-  const segmentDays = Math.max(0, dayDiffDays(maturityDate, segmentStart));
+  const segmentDays = depositInterestDaysUtc(segmentStart, maturityDate);
   if (segmentDays <= 0) return 0;
   return round2((principal * (annualRatePercent / 100) * segmentDays) / 365);
 }

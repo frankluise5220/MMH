@@ -13,6 +13,8 @@ import { MultiSelectFilterDropdown } from "@/components/MultiSelectFilterDropdow
 import { RegularInvestForm } from "@/components/RegularInvestForm";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { UnifiedEntryLauncher } from "@/components/UnifiedEntryLauncher";
+import { DepositEntryHost } from "@/components/DepositEntryHost";
+import { createTransaction, editInvestment } from "@/lib/server/sidebar-actions/transaction-actions";
 import type { SmartSelectOption } from "@/components/SmartSelect";
 import type { CategorySmartSelectOption } from "@/components/categorySmartSelect";
 import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
@@ -1556,6 +1558,7 @@ export function RegularInvestClient({
                   { key: "debt", label: t("entry.kind.debt"), disabled: cashAccounts.length === 0 },
                 ]}
               />
+              <DepositEntryHost createAction={createTransaction} editAction={editInvestment} />
             </div>
           </header>
 

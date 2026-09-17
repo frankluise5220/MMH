@@ -287,6 +287,7 @@ const TRANSACTION_EXPORT_LABELS: Record<string, string> = {
   depositSourceEntryId: "关联存单ID",
   depositMaturityAction: "到期处理",
   depositInterestPayoutFrequency: "取息周期",
+  depositInterestCalcBasis: "计息方式",
   insuranceProductId: "保险产品ID",
   householdId: "账簿ID",
   deletedAt: "删除时间",
@@ -585,6 +586,7 @@ const TRANSACTION_RESTORE_COLUMNS = [
   { name: "depositSourceEntryId", select: 'x."depositSourceEntryId"' },
   { name: "depositMaturityAction", select: 'x."depositMaturityAction"' },
   { name: "depositInterestPayoutFrequency", select: 'x."depositInterestPayoutFrequency"' },
+  { name: "depositInterestCalcBasis", select: 'x."depositInterestCalcBasis"' },
   { name: "fundSourceEntryId", select: 'x."fundSourceEntryId"' },
   { name: "debtPrincipalAmount", select: "NULLIF(x.\"debtPrincipalAmount\", '')::numeric" },
   { name: "debtInterestAmount", select: "NULLIF(x.\"debtInterestAmount\", '')::numeric" },
@@ -3270,6 +3272,8 @@ export async function restoreHouseholdBackup(
                 item.depositMaturityAction == null ? null : String(item.depositMaturityAction),
               depositInterestPayoutFrequency:
                 item.depositInterestPayoutFrequency == null ? null : String(item.depositInterestPayoutFrequency),
+              depositInterestCalcBasis:
+                item.depositInterestCalcBasis == null ? null : String(item.depositInterestCalcBasis),
               fundSourceEntryId:
                 item.fundSourceEntryId && importedTransactions.has(String(item.fundSourceEntryId))
                   ? String(item.fundSourceEntryId)

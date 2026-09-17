@@ -16,12 +16,14 @@ export function addCalendarYearsUtc(date: Date, years: number) {
 
 /**
  * Calculate a term-deposit maturity date. Short terms remain day-based, while
- * two-year and longer standard terms follow the bank anniversary convention.
+ * whole-year terms follow the 存入日计息 convention: the withdrawal day lands
+ * one day before the Nth calendar anniversary (2025-01-20 + 1 年 → 2026-01-19),
+ * so a non-leap-year term spans exactly 365 interest days (366 across Feb 29).
  */
 export function addDepositTermUtc(date: Date, termDays: number) {
   const normalizedDays = Math.trunc(termDays);
-  if (normalizedDays >= 730 && normalizedDays % 365 === 0) {
-    return addCalendarYearsUtc(date, normalizedDays / 365);
+  if (normalizedDays >= 365 && normalizedDays % 365 === 0) {
+    return addDaysUtc(addCalendarYearsUtc(date, normalizedDays / 365), -1);
   }
   return addDaysUtc(date, normalizedDays);
 }
