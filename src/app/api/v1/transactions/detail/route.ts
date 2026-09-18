@@ -2752,10 +2752,10 @@ export async function POST(req: Request) {
             data: {
               date,
               type: TransactionType.investment,
-              accountId: investAcc.id,
-              accountName: investAcc.name,
-              toAccountId: null,
-              toAccountName: null,
+              accountId: isInsurance && cashAcc ? cashAcc.id : investAcc.id,
+              accountName: isInsurance && cashAcc ? cashAcc.name : investAcc.name,
+              toAccountId: isInsurance && cashAcc ? investAcc.id : null,
+              toAccountName: isInsurance && cashAcc ? investAcc.name : null,
               amount: signedAmount,
               fundName: entryFundName,
               wealthProductId: wealthProduct?.id ?? undefined,
@@ -2790,7 +2790,7 @@ export async function POST(req: Request) {
           createdId = created.id;
 
           await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
-          const shouldCreateCashEntry = !!cashAcc && cashAcc.id !== investAcc.id && cashFlowAmount !== 0;
+          const shouldCreateCashEntry = !!cashAcc && !isInsurance && cashAcc.id !== investAcc.id && cashFlowAmount !== 0;
           if (shouldCreateCashEntry && cashAcc) {
             const cashEntry = await tx.txRecord.create({
               data: {
