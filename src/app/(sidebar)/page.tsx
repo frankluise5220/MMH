@@ -79,7 +79,7 @@ import {
   counterpartyQualifiedAccountName,
   normalizeCreditCardLabelTemplate,
 } from "@/lib/account-display";
-import { getInvestmentAccountView, isDepositAccount, isIncomeExpensePostingAccount, isLoanOrSettlementAccountKind, isOrdinaryTransferAccount, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
+import { getInvestmentAccountView, isDepositAccount, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isLoanOrSettlementAccountKind, isOrdinaryTransferAccount, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
 import { ALL_CASH_DETAIL_SCOPE_ID, cashLedgerAccountIdsOf, cashLedgerFlowAccountId } from "@/lib/all-cash-entries";
 import { normalizeLoanType, resolveLoanTypeValue } from "@/lib/loan-type";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
@@ -1216,7 +1216,7 @@ export default async function Home({
   }
 
   const spendingAccountOptions = accounts
-    .filter((a) => a.name !== "未指定账户" && isIncomeExpensePostingAccount(a))
+    .filter((a) => a.name !== "未指定账户" && isIncomeExpensePostingOrDepositAccount(a))
     .map((a) => {
       const display = buildAccountDisplayOption({
         id: a.id,
@@ -1351,7 +1351,8 @@ export default async function Home({
       ]
     : [];
   const spendingAccountSSOptions = (() => {
-    const allowedIds = new Set(accountOptions.filter((a) => isIncomeExpensePostingAccount(a)).map((a) => a.id));
+    // 存款账户也进收支落账候选（2026-09-18 用户口径）：分类在提交时校验白名单。
+    const allowedIds = new Set(accountOptions.filter((a) => isIncomeExpensePostingOrDepositAccount(a)).map((a) => a.id));
     const options = buildAccountSSOptions().filter((option) => option.isHeader || allowedIds.has(option.id));
     const usedParents = new Set(options.map((option) => option.parentId).filter(Boolean));
     return options.filter((option) => !option.isHeader || usedParents.has(option.id));

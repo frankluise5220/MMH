@@ -107,3 +107,33 @@ export function normalizeDepositInterestPayoutInput(
   }
   return encodeDepositInterestPayout(parsed);
 }
+
+/**
+ * Month arithmetic clamped to the target month's last day: Jan 31 + 1 month →
+ * Feb 28 (not Mar 3, which plain setUTCMonth rolls into).
+ */
+function addMonthsClampedUtc(date: Date, months: number): Date {
+  const total = date.getUTCMonth() + months;
+  const year = date.getUTCFullYear() + Math.floor(total / 12);
+  const month = ((total % 12) + 12) % 12;
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(year, month, Math.min(date.getUTCDate(), lastDay)));
+}
+
+/**
+ * 存入日计息的付息锚点：起存日 + N 周期 − 1 天。18 号存、按月取息 → 每月
+ * 17 号生息（满一个月的利息在次月同日前一天完整，与存期到期「起存日 +
+ * N 年 − 1 天」同口径）。月末起存（如 1-31）的周年日钳制到目标月末再减一天
+ * （1-31 → 2-27）。排程（计划任务 nextRunDate）与执行器（生成记录日期）必须
+ * 共用本函数，两处日期永远一致。
+ */
+export function depositPayoutAnchorUtc(
+  startDate: Date,
+  frequency: { unit: "week" | "month" | "year"; interval: number },
+  periods: number,
+): Date {
+  const base = frequency.unit === "month"
+    ? addMonthsClampedUtc(startDate, periods * frequency.interval)
+    : new Date(startDate.getTime() + (frequency.unit === "week" ? 7 : 365) * frequency.interval * periods * 86400000);
+  return new Date(base.getTime() - 86400000);
+}

@@ -22,7 +22,8 @@ export function isLegacyDepositAccount(account: AccountKindLike) {
   return account.kind === "investment" && account.investProductType === "deposit";
 }
 
-export function isDepositAccount(account: AccountKindLike) {
+export function isDepositAccount(account: AccountKindLike | null | undefined) {
+  if (!account) return false;
   return account.kind === "deposit" || isLegacyDepositAccount(account);
 }
 
@@ -90,6 +91,29 @@ export function isIncomeExpensePostingAccount(account: AccountKindLike | null | 
   if (account.kind === "loan") return false;
   if (isDepositAccount(account) || isPureInvestmentAccount(account) || isInvestmentFundingAccount(account)) return false;
   return true;
+}
+
+/**
+ * 存款账户参与收支记账时的分类白名单（2026-09-18 用户口径）：
+ * 收入侧只能「存款利息」（利息收入）；支出侧「存款手续费」「利息支出」。
+ * 转账不受此限制——资金侧来回转账走 isOrdinaryTransferAccount 已放行。
+ */
+export const DEPOSIT_POSTING_INCOME_CATEGORY_NAMES = ["存款利息", "利息"];
+export const DEPOSIT_POSTING_EXPENSE_CATEGORY_NAMES = ["存款手续费", "利息支出", "手续费"];
+
+/** 收入/支出弹窗的落账账户候选：普通账户全放行，存款账户也放行（分类在提交时校验白名单）。 */
+export function isIncomeExpensePostingOrDepositAccount(account: AccountKindLike | null | undefined) {
+  if (!account) return false;
+  if (isIncomeExpensePostingAccount(account)) return true;
+  return isDepositAccount(account);
+}
+
+/** 已选分类是否满足存款账户的收支白名单（用于提交校验与下拉过滤）。 */
+export function isDepositPostingCategoryAllowed(categoryName: string | null | undefined, type: "income" | "expense") {
+  const name = String(categoryName ?? "").trim();
+  if (!name) return false;
+  const whitelist = type === "income" ? DEPOSIT_POSTING_INCOME_CATEGORY_NAMES : DEPOSIT_POSTING_EXPENSE_CATEGORY_NAMES;
+  return whitelist.some((allowed) => name === allowed || name.endsWith(`.${allowed}`) || name.includes(allowed));
 }
 
 /**

@@ -1,8 +1,7 @@
 import { IntervalUnit, RegularInvestStatus } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
-import { addMonthsUtc } from "@/lib/date-utils";
-import { isPeriodicDepositInterestPayout, parseDepositInterestPayout } from "@/lib/deposit-interest-payout";
+import { isPeriodicDepositInterestPayout, parseDepositInterestPayout, depositPayoutAnchorUtc } from "@/lib/deposit-interest-payout";
 import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, type ScheduledTaskPayload } from "@/lib/scheduled-task";
 
 /**
@@ -180,9 +179,6 @@ export async function ensureDepositPlansForLot(params: {
   let payoutPlanId: string | null = null;
   if (frequency.kind === "periodic") {
     const anchor = startDateAnchorUtc(start);
-    const firstPayout = frequency.unit === "month"
-      ? addMonthsUtc(start, frequency.interval)
-      : new Date(start.getTime() + anchorStepDays(frequency) * 86400000);
     const intervalUnit = frequency.unit === "month" ? IntervalUnit.month : IntervalUnit.week;
     const intervalValue = frequency.unit === "month"
       ? frequency.interval
@@ -252,28 +248,24 @@ function startDateAnchorUtc(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
 }
 
-function anchorStepDays(frequency: { unit: "week" | "month" | "year"; interval: number }): number {
-  if (frequency.unit === "week") return 7 * frequency.interval;
-  return 365 * frequency.interval;
-}
-/** First anchor date strictly after `after` (exclusive), matching the bank anchor day. */
+/** First anchor date strictly after `after` (exclusive), one day before the bank anchor day. */
 function nextPayoutDateUtc(
   startDate: Date,
   frequency: { unit: "week" | "month" | "year"; interval: number },
   after: Date,
 ): Date {
   if (frequency.unit === "month") {
-    let k = frequency.interval;
-    for (; k < 12 * 80; k += frequency.interval) {
-      const date = addMonthsUtc(startDate, k);
+    for (let k = frequency.interval; k < 12 * 80; k += frequency.interval) {
+      const date = depositPayoutAnchorUtc(startDate, frequency, k);
       if (date.getTime() > after.getTime()) return date;
     }
-    return addMonthsUtc(after, frequency.interval);
+    // 极端兜底（超 80 年未命中）：从 after 起按月推进再提前一天。
+    return depositPayoutAnchorUtc(after, frequency, frequency.interval);
   }
   const stepDays = frequency.unit === "week" ? 7 * frequency.interval : 365 * frequency.interval;
   const elapsed = Math.floor((after.getTime() - startDate.getTime()) / 86400000);
   const steps = Math.max(frequency.interval, Math.ceil((elapsed + 1) / stepDays) * frequency.interval);
-  return new Date(startDate.getTime() + steps * stepDays * 86400000);
+  return depositPayoutAnchorUtc(startDate, frequency, steps);
 }
 
 export type DepositPlanExecutionResult = {

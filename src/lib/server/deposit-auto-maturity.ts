@@ -1,7 +1,7 @@
 import { FundSubtype, TransactionType } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
-import { isPeriodicDepositInterestPayout, parseDepositInterestPayout } from "@/lib/deposit-interest-payout";
+import { isPeriodicDepositInterestPayout, parseDepositInterestPayout, depositPayoutAnchorUtc } from "@/lib/deposit-interest-payout";
 import {
   computeDepositMaturityInterest,
   dayDiffDays,
@@ -17,7 +17,7 @@ import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { renewDeposit } from "@/lib/server/sidebar-actions/transaction-actions";
 import { resolveCategorySnapshot, SYSTEM_DEPOSIT_INTEREST_CATEGORY } from "@/lib/default-categories";
 import { ENTRY_ORIGIN_SCHEDULED_TASK } from "@/lib/transaction-semantics";
-import { addMonthsUtc, toNumber } from "@/lib/date-utils";
+import { toNumber } from "@/lib/date-utils";
 
 const MAX_LOTS_PER_RUN = 200;
 const MAX_RENEW_ROUNDS_PER_LOT = 24;
@@ -268,10 +268,13 @@ export async function processDepositMaturityForLot(params: {
       fundProductType: "deposit",
       fundSubtype: FundSubtype.buy,
     },
-    select: { id: true, depositMaturityAction: true },
+    select: { id: true, fundArrivalDate: true, depositMaturityAction: true },
   });
   if (!buy) return { status: "skipped", reason: "lot missing" };
   if (!buy.depositMaturityAction) return { status: "skipped", reason: "no maturity action" };
+  if (!buy.fundArrivalDate || buy.fundArrivalDate > params.now) {
+    return { status: "skipped", reason: "not matured" };
+  }
   if (await lotAlreadyRedeemed(buy.id, params.householdId)) {
     return { status: "skipped", reason: "already redeemed" };
   }
@@ -345,15 +348,18 @@ async function autoAccruePeriodicInterest(
     const key = localDayKey(date);
     if (key > localDayKey(startDate) && key <= upperKey) payoutByKey.set(key, date);
   };
+  // 存入日计息：付息锚点 = 起存日 + N 周期 − 1 天（18 号存 → 每月 17 号生息；
+  // 月末起存钳制到月末再减一天）。与计划排程共用 depositPayoutAnchorUtc，
+  // 两处日期永远一致。
   if (frequency.unit === "month") {
     for (let k = frequency.interval; k < 12 * 80; k += frequency.interval) {
-      const date = addMonthsUtc(startDate, k);
+      const date = depositPayoutAnchorUtc(startDate, frequency, k);
       if (localDayKey(date) > upperKey) break;
       addPayout(date);
     }
   } else {
     const stepDays = frequency.unit === "week" ? 7 * frequency.interval : 1;
-    for (let ms = startDate.getTime() + stepDays * 86400000; localDayKey(new Date(ms)) <= upperKey; ms += stepDays * 86400000) {
+    for (let ms = startDate.getTime() + (stepDays - 1) * 86400000; localDayKey(new Date(ms)) <= upperKey; ms += stepDays * 86400000) {
       addPayout(new Date(ms));
     }
   }
@@ -430,6 +436,13 @@ async function autoAccruePeriodicInterest(
     const segmentDays = Math.max(0, Math.round((payoutDate.getTime() - segmentStart.getTime()) / 86400000));
     if (segmentDays <= 0) continue;
     if (coveredDays.has(payoutDateKey)) {
+      segmentStart = payoutDate;
+      continue;
+    }
+    // 锚点提前一天（2026-09-18 口径）的兼容：旧记录落在「锚点+1 天」（如 18 号
+    // 存、历史按 18 号生息），当该日已有本存单记录时同样视为已覆盖，避免补生成。
+    const nextDayKey = localDayKey(new Date(payoutDate.getTime() + 86400000));
+    if (coveredDays.has(nextDayKey)) {
       segmentStart = payoutDate;
       continue;
     }
@@ -535,6 +548,9 @@ async function autoRedeemDeposit(buyId: string, householdId: string): Promise<Lo
 
   const maturityDate = buy.fundArrivalDate;
   if (!maturityDate) return { status: "skipped", reason: "missing maturity", retryable: false };
+  if (maturityDate > new Date()) {
+    return { status: "skipped", reason: "not matured", retryable: false };
+  }
 
   const principal = Math.abs(toNumber(buy.fundArrivalAmount ?? buy.amount));
   if (!(principal > 0)) return { status: "skipped", reason: "missing principal", retryable: false };

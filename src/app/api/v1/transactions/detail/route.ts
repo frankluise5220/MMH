@@ -63,7 +63,7 @@ import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { toNumber, addWorkdaysUtc, toStatementMonth, startOfDayUtc, formatDateLocal } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, locateDetailEntryPageDesc } from "@/lib/detail-entry-order";
-import { isAdvanceFundingAccount, isDepositAccount, isIncomeExpensePostingAccount, isInsuranceAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
+import { isAdvanceFundingAccount, isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingAccount, isInsuranceAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
 import { ALL_CASH_DETAIL_SCOPE_ID, cashLedgerAccountIdsOf, isAllCashDetailScope } from "@/lib/all-cash-entries";
 import { getOrCreateInsuranceAccount } from "@/lib/insurance/autoAccount";
 import { normalizeInsuranceAction } from "@/lib/insurance/transaction";
@@ -2091,7 +2091,12 @@ export async function POST(req: Request) {
           resolveCategorySnapshot(tx, householdId, { categoryId, type: "expense" }),
         ]);
         if (!acc) throw new Error("账户不存在");
-        if (!isIncomeExpensePostingAccount(acc)) throw new Error("贷款、定期存款、基金资金、股票资金和基金/理财账户不参与收支记账");
+        if (!isIncomeExpensePostingAccount(acc)) {
+          // 存款账户参与收支（2026-09-18）：分类白名单内放行（支出=存款手续费/利息支出）。
+          if (!isDepositAccount(acc) || !isDepositPostingCategoryAllowed(cat?.name ?? null, "expense")) {
+            throw new Error("贷款、定期存款、基金资金、股票资金和基金/理财账户不参与收支记账");
+          }
+        }
 
         const statementMonth =
           (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
@@ -2166,7 +2171,12 @@ export async function POST(req: Request) {
           acc && (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
             ? toStatementMonth(creditBillEffectiveDate({ type, date, postedAt }) ?? date, acc.billingDay, acc.billingDayTxPeriod)
             : null;
-        if (acc && !isIncomeExpensePostingAccount(acc)) throw new Error("贷款、定期存款、基金资金、股票资金和基金/理财账户不参与收支记账");
+        if (acc && !isIncomeExpensePostingAccount(acc)) {
+          // 存款账户参与收支（2026-09-18）：分类白名单内放行（收入=存款利息）。
+          if (!isDepositAccount(acc) || !isDepositPostingCategoryAllowed(cat?.name ?? null, "income")) {
+            throw new Error("贷款、定期存款、基金资金、股票资金和基金/理财账户不参与收支记账");
+          }
+        }
         if (acc) {
           const duplicate = await findRecentManualTransactionDuplicate(tx, {
             householdId,
@@ -3749,7 +3759,15 @@ return;
         }),
       ]);
       if (!acc) throw new Error("请选择账户");
-      if (!isIncomeExpensePostingAccount(acc)) throw new Error("贷款、定期存款、基金资金、股票资金和基金/理财账户不参与收支记账");
+      if (!isIncomeExpensePostingAccount(acc)) {
+        // 存款账户参与收支（2026-09-18）：白名单分类放行；账户没变（编辑利息收入本身）也放行
+        // ——与既有 09-17 口径一致（存款利息收入本来就落在存款账户上，用户只改金额/备注等）。
+        const catName = cat?.name ?? categoryName ?? null;
+        const sameAccount = accountId === entry.accountId;
+        if (!isDepositAccount(acc) || (!isDepositPostingCategoryAllowed(catName, type === "income" ? "income" : "expense") && !sameAccount)) {
+          throw new Error("贷款、定期存款、基金资金、股票资金和基金/理财账户不参与收支记账");
+        }
+      }
 
       const isFundTransaction = entry.toAccountId && entry.fundProductType;
 

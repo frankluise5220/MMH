@@ -15,7 +15,7 @@ import { UnifiedEntryLauncher } from "./UnifiedEntryLauncher";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { isSettlementCounterpartyType, kindLabel } from "@/lib/account-kinds";
 import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
-import { getCashTargetOperation, isAdvanceFundingAccount, isIncomeExpensePostingAccount, isOrdinaryTransferAccount } from "@/lib/account-kind-utils";
+import { getCashTargetOperation, isAdvanceFundingAccount, isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isOrdinaryTransferAccount } from "@/lib/account-kind-utils";
 import { buildAccountDisplayOption, buildGroupedAccountOptions, formatAccountHoverTitle } from "@/lib/account-display";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -569,7 +569,6 @@ export function TransactionFormModal({
    * All real categories are selectable. Categories with children are collapsible
    * groups, and their caret toggles expansion without taking away selection.
    */
-  const categorySSOptions = useMemo(() => buildCategoryTreeOptions(categoryList, t), [categoryList, t]);
 
   useEffect(() => {
     const nextCategoryList = txType === "income" ? incomeCategories : txType === "advance" ? (advanceCategories ?? []) : expenseCategories;
@@ -607,6 +606,33 @@ export function TransactionFormModal({
   const [installmentRateType, setInstallmentRateType] = useState<CreditCardInstallmentRateType>("period_fee");
   const [installmentRate, setInstallmentRate] = useState("0");
   const [accountId, setAccountId] = useState(defaultAccountId ?? "");
+  // 选中账户的存款判定：分类下拉的存款白名单过滤依赖它（须在 accountId 声明之后）。
+  const selectedAccountOption = useMemo(
+    () => accountList.find((option) => option.id === accountId),
+    [accountList, accountId],
+  );
+  const selectedAccountIsDeposit = isDepositAccount(selectedAccountOption ?? null);
+
+  /** Build hierarchical SmartSelect options for category dropdown.
+   * All real categories are selectable. Categories with children are collapsible
+   * groups, and their caret toggles expansion without taking away selection.
+   * 存款账户落账时只显示白名单分类（利息收入/存款手续费等，2026-09-18）。
+   */
+  const categorySSOptions = useMemo(() => {
+    const options = buildCategoryTreeOptions(categoryList, t);
+    if ((txType !== "income" && txType !== "expense") || !selectedAccountIsDeposit) return options;
+    const allowed = options.filter((option) => {
+      if (option.isGroup) return true;
+      return isDepositPostingCategoryAllowed(option.sourceName ?? option.label, txType);
+    });
+    // 组头保留当且仅当组内有命中白名单的子项；没有命中子项的组整组隐藏。
+    const groupIdsWithChildren = new Set(allowed.filter((option) => !option.isGroup && option.parentId).map((option) => option.parentId as string));
+    const filtered = allowed.filter((option) => {
+      if (!option.isGroup) return true;
+      return groupIdsWithChildren.has(option.id);
+    });
+    return filtered.length > 0 ? filtered : options;
+  }, [categoryList, t, txType, selectedAccountIsDeposit]);
   const [fromAccountId, setFromAccountId] = useState(isCreditCardAccount ? (lastRepayFromAccountId ?? defaultAccountId ?? "") : "");
   const [toAccountId, setToAccountId] = useState(isCreditCardAccount ? (defaultAccountId ?? "") : "");
   const [categoryId, setCategoryId] = useState("");
@@ -640,7 +666,8 @@ export function TransactionFormModal({
           .map((account) => account.kind)
           .filter((kind): kind is string => Boolean(kind)),
       );
-      const postingOptions = allOptions.filter((option) => isIncomeExpensePostingAccount(option));
+      // 存款账户也进收支落账候选（2026-09-18）：分类在选中存款账户时收窄白名单。
+      const postingOptions = allOptions.filter((option) => isIncomeExpensePostingOrDepositAccount(option));
       const nextAccountOptions = restrictAccountsByType(postingOptions, (option) => !allowedKinds.size || allowedKinds.has(option.kind ?? ""));
       const nextFixedAssetAccountOptions = allOptions.filter(isFixedAssetAccountLike);
       const selectedIds = new Set([accountId, fromAccountId, toAccountId].filter(Boolean));
@@ -660,7 +687,7 @@ export function TransactionFormModal({
       const groupedAll = buildGroupedOptionsFromSettingsAccounts(rawAccounts.filter((account) => isOrdinaryTransferAccount(account)));
       const groupedAccount = buildGroupedOptionsFromSettingsAccounts(
         rawAccounts.filter((account) =>
-          isIncomeExpensePostingAccount(account) && (!allowedKinds.size || allowedKinds.has(account.kind ?? "")),
+          isIncomeExpensePostingOrDepositAccount(account) && (!allowedKinds.size || allowedKinds.has(account.kind ?? "")),
         ),
       );
       const groupedFixedAsset = buildGroupedOptionsFromSettingsAccounts(
@@ -777,7 +804,7 @@ export function TransactionFormModal({
       base = base.filter((option) => accountVisibleOptionIds.has(option.id));
     }
     // 贷款 / 定期存款 / 基金资金 / 股票资金 / 基金持仓是硬排除，不受「账户下拉限制类型」开关影响。
-    const filtered = base.filter((option) => option.isHeader || option.isGroup || isIncomeExpensePostingAccount(option));
+    const filtered = base.filter((option) => option.isHeader || option.isGroup || isIncomeExpensePostingOrDepositAccount(option));
     // 但「当前编辑记录的落账账户」必须保留：存款利息收入等历史记录的落账账户就是
     // 定期存款账户，本身不在普通收支候选里；若被过滤掉，编辑弹窗的账户框会显示为空。
     // 只对编辑态放行，新建时仍硬排除（避免新建就能选到存款账户）。
@@ -1817,6 +1844,18 @@ export function TransactionFormModal({
     } else if ((txType === "income" || txType === "expense" || txType === "advance") && !accountId) {
       window.alert(t("txForm.alert.selectAccount"));
       return;
+    }
+
+    // 存款账户落账的分类白名单（2026-09-18）：收入只允许利息收入类，
+    // 支出只允许利息支出/手续费类。其余分类请挂在普通资金账户上。
+    if ((txType === "income" || txType === "expense") && accountId) {
+      const selected = accountList.find((option) => option.id === accountId);
+      const selectedCategory = categoryList.find((category) => category.id === categoryId);
+      const selectedCategoryName = getCategoryLeafName(selectedCategory?.label ?? "");
+      if (isDepositAccount(selected ?? null) && !isDepositPostingCategoryAllowed(selectedCategoryName, txType)) {
+        window.alert(t("txForm.alert.depositCategoryRestricted"));
+        return;
+      }
     }
 
     if (txType === "fx") {

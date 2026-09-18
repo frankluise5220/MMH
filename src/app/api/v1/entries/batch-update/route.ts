@@ -19,7 +19,7 @@ import { upsertStatementCategoryRuleFromSavedRecord } from "@/lib/statement/cate
 import { replaceEntryTags, resolveWritableTagIds } from "@/lib/server/entry-tags";
 import { creditBillEffectiveDate } from "@/lib/credit/billing";
 import { addTradingDaysUtc, toStatementMonth } from "@/lib/date-utils";
-import { isIncomeExpensePostingAccount } from "@/lib/account-kind-utils";
+import { isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingAccount } from "@/lib/account-kind-utils";
 
 /**
  * Batch-updates transaction records.
@@ -606,11 +606,19 @@ export async function POST(req: NextRequest) {
         && finalAccount
         && !isIncomeExpensePostingAccount(finalAccount)
       ) {
-        return NextResponse.json({
-          ok: false,
-          code: "ACCOUNT_TYPE_NOT_ALLOWED",
-          error: "贷款、定期存款、基金资金、股票资金和基金/理财账户不参与收支记账",
-        }, { status: 400 });
+        // 存款账户参与收支（2026-09-18）：分类白名单内放行（含批量改挂）。
+        const depositOk = isDepositAccount(finalAccount)
+          && !isDepositPostingCategoryAllowed(
+            typeof data.categoryName === "string" ? data.categoryName : existing.categoryName,
+            finalType === TransactionType.income ? "income" : "expense",
+          );
+        if (!depositOk) {
+          return NextResponse.json({
+            ok: false,
+            code: "ACCOUNT_TYPE_NOT_ALLOWED",
+            error: "贷款、定期存款、基金资金、股票资金和基金/理财账户不参与收支记账",
+          }, { status: 400 });
+        }
       }
       const needsFundSync = item.fundConfirmDate !== undefined
         || item.fundArrivalDate !== undefined

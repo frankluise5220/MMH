@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeftRight, X } from "lucide-react";
 import { buildGroupedAccountOptions, buildAccountDisplayOption, type AccountDisplaySource } from "@/lib/account-display";
-import { isIncomeExpensePostingAccount, isOrdinaryTransferAccount } from "@/lib/account-kind-utils";
+import { isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isOrdinaryTransferAccount } from "@/lib/account-kind-utils";
 import { SmartSelect } from "@/components/SmartSelect";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
 import { DateStepper } from "@/components/DateStepper";
@@ -57,7 +57,8 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
     () => {
       const source = draft.type === "transfer"
         ? accounts.filter((account) => isOrdinaryTransferAccount(account))
-        : accounts.filter((account) => isIncomeExpensePostingAccount(account));
+        // 存款账户也进收支落账候选（2026-09-18）：分类提交时校验白名单。
+        : accounts.filter((account) => isIncomeExpensePostingOrDepositAccount(account));
       return buildGroupedAccountOptions(source.map((account) => buildAccountDisplayOption(account, undefined, { fields: getAccountLabelFieldsPreference() })));
     },
     [accounts, draft.type],
@@ -174,6 +175,16 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
     if (draft.type === "transfer" && !draft.toAccountId) {
       setError(t("mobileTxForm.selectToAccount"));
       return;
+    }
+
+    // 存款账户落账的分类白名单（2026-09-18）。
+    if ((draft.type === "income" || draft.type === "expense") && draft.accountId) {
+      const selected = accounts.find((account) => account.id === draft.accountId);
+      const categoryName = availableCategories.find((category) => category.id === draft.categoryId)?.name ?? "";
+      if (isDepositAccount(selected ?? null) && !isDepositPostingCategoryAllowed(categoryName, draft.type)) {
+        setError(t("txForm.alert.depositCategoryRestricted"));
+        return;
+      }
     }
 
     setSaving(true);

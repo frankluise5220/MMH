@@ -19,7 +19,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
 import { upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
 import { revalidateAfterFundShellChange, revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
-import { isAdvanceFundingAccount, isDepositAccount, isIncomeExpensePostingAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
+import { isAdvanceFundingAccount, isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
 import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
@@ -569,7 +569,12 @@ export async function createTransaction(formData: FormData) {
           categoryId ? tx.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
         ]);
         if (!acc) throw new Error(t("sidebar.action.accountNotFound"));
-        if (!isIncomeExpensePostingAccount(acc)) throw new Error(t("sidebar.action.investmentNoIncomeExpense"));
+        if (!isIncomeExpensePostingAccount(acc)) {
+          // 存款账户参与收支（2026-09-18）：分类白名单内放行（支出=存款手续费/利息支出），其余分类仍拒。
+          if (!isDepositAccount(acc) || !isDepositPostingCategoryAllowed(cat?.name ?? null, "expense")) {
+            throw new Error(t("sidebar.action.investmentNoIncomeExpense"));
+          }
+        }
         if (createInstallment && acc.kind !== AccountKind.bank_credit) throw new Error(t("sidebar.action.installmentCreditCardOnly"));
         if (createInstallment && (installmentAmount <= 0 || installmentAmount > amountAbs)) {
           throw new Error(t("sidebar.action.installmentAmountInvalid"));
@@ -733,7 +738,12 @@ export async function createTransaction(formData: FormData) {
           acc && (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
             ? toStatementMonth(creditBillEffectiveDate({ type, date, postedAt }) ?? date, acc.billingDay, acc.billingDayTxPeriod)
             : null;
-        if (acc && !isIncomeExpensePostingAccount(acc)) throw new Error(t("sidebar.action.investmentNoIncomeExpense"));
+        if (acc && !isIncomeExpensePostingAccount(acc)) {
+          // 存款账户参与收支（2026-09-18）：分类白名单内放行（收入=存款利息）。
+          if (!isDepositAccount(acc) || !isDepositPostingCategoryAllowed(cat?.name ?? null, "income")) {
+            throw new Error(t("sidebar.action.investmentNoIncomeExpense"));
+          }
+        }
         if (acc) {
           const duplicate = await findRecentManualTransactionDuplicate(tx, {
             householdId,
