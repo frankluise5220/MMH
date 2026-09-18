@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, X } from "lucide-react";
+import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, Trash2, X } from "lucide-react";
 import { TransparentSideNavButtons } from "@/components/TransparentSideNavButtons";
 import type { AccountKind } from "@prisma/client";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
@@ -36,6 +36,8 @@ import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund
 import { useI18n } from "@/lib/i18n";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { CURRENCY_OPTIONS, normalizeCurrency } from "@/lib/currency";
+import { formatCurrencyMoney } from "@/lib/format";
+import { formatDateDisplay } from "@/lib/date-utils";
 import {
   accountInstitutionTypeIsAllowed,
   accountRequiresInstitution,
@@ -82,6 +84,29 @@ type Account = {
   debtDirection?: string | null;
   recordCount?: number;
   deletedRecordCount?: number;
+};
+
+/** 软删除记录预览行（GET /api/v1/entries/deleted 的 data.records 元素）。 */
+type DeletedRecord = {
+  id: string;
+  date: string;
+  postedAt: string | null;
+  type: string;
+  amount: string;
+  currency: string;
+  note: string | null;
+  categoryName: string | null;
+  accountId: string;
+  accountName: string;
+  toAccountId: string | null;
+  toAccountName: string | null;
+  deletedAt: string | null;
+  source: string | null;
+  fundCode: string | null;
+  fundName: string | null;
+  fundSubtype: string | null;
+  metalTypeName: string | null;
+  insuranceProductName: string | null;
 };
 
 const investmentProductTypeOptions = PRODUCT_TYPES
@@ -193,6 +218,15 @@ export default function SettingsAccountsPage() {
 
   // Nested creation from SmartSelect in inline edit
   const [nestedEntityType, setNestedEntityType] = useState<"institution" | "group" | null>(null);
+
+  // 软删除记录预览弹窗（「待删」列点击打开）：预览 + 全选/逐条彻底删除。
+  const [trashAccount, setTrashAccount] = useState<Account | null>(null);
+  const [trashRecords, setTrashRecords] = useState<DeletedRecord[]>([]);
+  const [trashTruncated, setTrashTruncated] = useState(false);
+  const [trashLoading, setTrashLoading] = useState(false);
+  const [trashError, setTrashError] = useState("");
+  const [trashSelectedIds, setTrashSelectedIds] = useState<string[]>([]);
+  const [trashBusy, setTrashBusy] = useState(false);
 
   useEffect(() => {
     const cached = getCachedSettingsAccountData();
@@ -695,6 +729,71 @@ export default function SettingsAccountsPage() {
     window.alert(data.error);
   }, [t, tf, refreshSettingsAccounts]);
 
+  // ---- 软删除记录预览与彻底删除（「待删」列入口） ----
+  const openTrash = useCallback((a: Account) => {
+    setTrashAccount(a);
+    setTrashRecords([]);
+    setTrashTruncated(false);
+    setTrashSelectedIds([]);
+    setTrashError("");
+    setTrashLoading(true);
+    void (async () => {
+      try {
+        const res = await fetch(`/api/v1/entries/deleted?accountId=${encodeURIComponent(a.id)}`, { cache: "no-store" });
+        const data = await res.json().catch(() => null) as {
+          ok?: boolean;
+          data?: { records?: DeletedRecord[]; total?: number; truncated?: boolean };
+        } | null;
+        if (!res.ok || !data?.ok || !data.data) {
+          setTrashError(t("settings.accounts.trash.loadFailed"));
+          return;
+        }
+        setTrashRecords(data.data.records ?? []);
+        setTrashTruncated(Boolean(data.data.truncated));
+      } catch {
+        setTrashError(t("settings.accounts.trash.loadFailed"));
+      } finally {
+        setTrashLoading(false);
+      }
+    })();
+  }, [t]);
+
+  const purgeTrashRecords = useCallback(async (ids: string[]) => {
+    if (ids.length === 0 || !trashAccount) return;
+    const confirmed = await showConfirmDialog({
+      title: t("settings.accounts.trash.confirmTitle"),
+      message: tf("settings.accounts.trash.confirmMessage", { count: ids.length }),
+      tone: "danger",
+    });
+    if (!confirmed) return;
+    setTrashBusy(true);
+    setTrashError("");
+    try {
+      const res = await fetch("/api/v1/entries/purge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      const data = await res.json().catch(() => null) as {
+        ok?: boolean;
+        permanentlyDeleted?: number;
+        error?: string;
+      } | null;
+      if (!res.ok || !data?.ok) {
+        setTrashError(data?.error || t("settings.accounts.trash.deleteFailed"));
+        return;
+      }
+      const removed = new Set(ids);
+      setTrashRecords((prev) => prev.filter((record) => !removed.has(record.id)));
+      setTrashSelectedIds((prev) => prev.filter((id) => !removed.has(id)));
+      void refreshSettingsAccounts("entries:purge");
+    } catch {
+      setTrashError(t("settings.accounts.trash.deleteFailed"));
+    } finally {
+      setTrashBusy(false);
+    }
+  }, [trashAccount, t, tf, refreshSettingsAccounts]);
+
   const accountTableColumns = useMemo<AdvancedDataTableColumn<Account>[]>(() => [
     {
       key: "merge",
@@ -855,9 +954,28 @@ export default function SettingsAccountsPage() {
       render: (a) => (
         <span className="tabular-nums text-slate-500">
           {tf("settings.accounts.recordCountShort", { count: a.recordCount ?? 0 })}
-          {a.deletedRecordCount ? <span className="ml-1 text-slate-400">{tf("settings.accounts.deletedRecordCountShort", { count: a.deletedRecordCount })}</span> : null}
         </span>
       ),
+    },
+    {
+      // 「待删」独立列：软删除记录数，点击打开预览弹窗（预览 + 全选/逐条彻底删除）。
+      key: "deletedRecords",
+      label: t("settings.accounts.colDeletedCount"),
+      width: 84,
+      minWidth: 64,
+      align: "right",
+      sortValue: (a) => a.deletedRecordCount ?? 0,
+      cellTitle: (a) => (a.deletedRecordCount ? tf("settings.accounts.deletedCountTitle", { count: a.deletedRecordCount }) : ""),
+      render: (a) => (a.deletedRecordCount ? (
+        <button
+          type="button"
+          onClick={(event) => { event.stopPropagation(); openTrash(a); }}
+          className="rounded px-1 tabular-nums text-rose-500 underline decoration-dotted underline-offset-2 transition hover:bg-rose-50 hover:text-rose-600 hover:decoration-solid"
+          title={tf("settings.accounts.deletedCountTitle", { count: a.deletedRecordCount })}
+        >
+          {tf("settings.accounts.deletedRecordCountShort", { count: a.deletedRecordCount })}
+        </button>
+      ) : <span className="text-slate-300">-</span>),
     },
     {
       key: "status",
@@ -885,7 +1003,7 @@ export default function SettingsAccountsPage() {
         ? <span className="text-slate-500">{a.note}</span>
         : <span className="text-slate-300">-</span>),
     },
-  ], [t, tf, router, accountKindLabel, investmentLabel, fixedAssetTypeLabel, mergeSelectedIds, toggleMergeSelected]);
+  ], [t, tf, router, accountKindLabel, investmentLabel, fixedAssetTypeLabel, mergeSelectedIds, toggleMergeSelected, openTrash]);
 
   const renderRowActions = useCallback((a: Account) => (
     <>
@@ -982,7 +1100,7 @@ export default function SettingsAccountsPage() {
           columns={accountTableColumns}
           rows={filteredAccounts}
           rowKey={(a) => a.id}
-          minTableWidth={1260}
+          minTableWidth={1340}
           fillHeight
           showFilters={false}
           sortable
@@ -1545,6 +1663,147 @@ export default function SettingsAccountsPage() {
                   className="h-8 px-3 rounded-md bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60">
                   {mergeBusy ? "..." : t("settings.accounts.merge.confirm")}
                 </button>
+              </div>
+            </div>
+          </div>
+        );
+      {/* ===== 软删除记录预览弹窗（待删列入口：预览 + 全选/逐条彻底删除） ===== */}
+      {trashAccount && (() => {
+        const allSelected = trashRecords.length > 0 && trashSelectedIds.length === trashRecords.length;
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-[1px]"
+            onMouseDown={() => { if (!trashBusy) setTrashAccount(null); }}
+          >
+            <div
+              className="app-modal-panel relative flex max-h-[85vh] w-[860px] max-w-[calc(100vw-2rem)] flex-col"
+              role="dialog"
+              aria-modal="true"
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              <div className="modal-header shrink-0">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold text-slate-800">
+                    {tf("settings.accounts.trash.title", { name: trashAccount.name })}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-slate-400">{t("settings.accounts.trash.hint")}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { if (!trashBusy) setTrashAccount(null); }}
+                  className="h-8 w-8 rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                  aria-label={t("table.close")}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="max-h-[55vh] min-h-0 flex-1 overflow-y-auto">
+                {trashLoading ? (
+                  <div className="p-8 text-center text-xs text-slate-400">{t("common.loading")}</div>
+                ) : trashRecords.length === 0 ? (
+                  <div className="p-8 text-center text-xs text-slate-400">
+                    {trashError || t("settings.accounts.trash.empty")}
+                  </div>
+                ) : (
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0 z-10 bg-slate-50 text-slate-500">
+                      <tr>
+                        <th className="w-10 px-2 py-2">
+                          <input
+                            type="checkbox"
+                            checked={allSelected}
+                            onChange={(event) =>
+                              setTrashSelectedIds(event.target.checked ? trashRecords.map((record) => record.id) : [])}
+                            className="h-3.5 w-3.5 accent-blue-600"
+                            aria-label={t("table.selectAll")}
+                          />
+                        </th>
+                        <th className="px-2 py-2 text-left font-medium">{t("detail.column.date")}</th>
+                        <th className="px-2 py-2 text-left font-medium">{t("transaction.type.expense")}</th>
+                        <th className="px-2 py-2 text-left font-medium">{t("detail.column.category")}</th>
+                        <th className="px-2 py-2 text-right font-medium">{t("detail.column.inflow")}/{t("detail.column.outflow")}</th>
+                        <th className="px-2 py-2 text-left font-medium">{t("detail.column.remark")}</th>
+                        <th className="px-2 py-2 text-left font-medium">{t("settings.accounts.trash.colDeletedAt")}</th>
+                        <th className="w-12 px-2 py-2" aria-label={t("detail.column.actions")}></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {trashRecords.map((record) => {
+                        // 金额口径：amount 按发生账户侧存 raw；预览统一换算成「当前弹窗账户」方向（正=流入）。
+                        const fromSelf = record.accountId === trashAccount.id;
+                        const value = (Number(record.amount) || 0) * (fromSelf ? 1 : -1);
+                        const selected = trashSelectedIds.includes(record.id);
+                        return (
+                          <tr key={record.id} className={`border-t border-slate-100 ${selected ? "bg-blue-50/40" : ""}`}>
+                            <td className="px-2 py-1.5 text-center">
+                              <input
+                                type="checkbox"
+                                checked={trashSelectedIds.includes(record.id)}
+                                onChange={(event) =>
+                                  setTrashSelectedIds((prev) =>
+                                    event.target.checked ? [...prev, record.id] : prev.filter((id) => id !== record.id))}
+                                className="h-3.5 w-3.5 accent-blue-600"
+                                aria-label={t("table.selectRow")}
+                              />
+                            </td>
+                            <td className="whitespace-nowrap px-2 py-1.5 tabular-nums text-slate-600">{formatDateDisplay(record.date)}</td>
+                            <td className="px-2 py-1.5">
+                              <span className={`whitespace-nowrap rounded border px-1.5 py-0.5 text-[10px] font-medium ${
+                                record.type === "income" ? "border-emerald-100 bg-emerald-50 text-emerald-600"
+                                  : record.type === "transfer" ? "border-blue-100 bg-blue-50 text-blue-600"
+                                    : record.type === "investment" ? "border-purple-100 bg-purple-50 text-purple-600"
+                                      : "border-rose-100 bg-rose-50 text-rose-600"
+                              }`}>
+                                {t(`transaction.type.${record.type}`)}
+                              </span>
+                            </td>
+                            <td className="max-w-[160px] truncate px-2 py-1.5 text-slate-600" title={record.categoryName ?? undefined}>
+                              {record.categoryName || record.fundName || record.metalTypeName || record.insuranceProductName || "-"}
+                            </td>
+                            <td className={`whitespace-nowrap px-2 py-1.5 text-right tabular-nums ${value < 0 ? "text-rose-600" : value > 0 ? "text-emerald-600" : "text-slate-400"}`}>
+                              {formatCurrencyMoney(value, record.currency)}
+                            </td>
+                            <td className="max-w-[220px] truncate px-2 py-1.5 text-slate-500" title={record.note ?? undefined}>
+                              {record.note || "-"}
+                            </td>
+                            <td className="whitespace-nowrap px-2 py-1.5 tabular-nums text-slate-400">
+                              {record.deletedAt ? formatDateDisplay(record.deletedAt) : "-"}
+                            </td>
+                            <td className="px-2 py-1.5 text-right">
+                              <button
+                                type="button"
+                                disabled={trashBusy}
+                                onClick={() => void purgeTrashRecords([record.id])}
+                                className="h-6 w-6 rounded-md border border-slate-200 bg-white text-slate-400 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
+                                title={t("settings.accounts.trash.deleteOne")}
+                                aria-label={t("settings.accounts.trash.deleteOne")}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center justify-between gap-2 border-t border-slate-100 px-4 py-3">
+                <div className="min-w-0 text-[11px] text-slate-400">
+                  {trashTruncated ? tf("settings.accounts.trash.truncated", { count: trashRecords.length }) : ""}
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  {trashError && trashRecords.length > 0 ? <div className="text-xs text-red-600">{trashError}</div> : null}
+                  <span className="text-xs text-slate-500">{tf("table.selectedCount", { count: trashSelectedIds.length })}</span>
+                  <button
+                    type="button"
+                    disabled={trashBusy || trashSelectedIds.length === 0}
+                    onClick={() => void purgeTrashRecords(trashSelectedIds)}
+                    className="h-8 rounded-md bg-red-600 px-3 text-xs font-medium text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+                  >
+                    {tf("settings.accounts.trash.deleteSelected", { count: trashSelectedIds.length })}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
