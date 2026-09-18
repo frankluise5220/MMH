@@ -194,6 +194,9 @@ ensure_session_secret() {
   export MMH_SESSION_SECRET
 }
 
+# Legacy SQL-file compat migrations were inlined into run_compat_migrations on
+# 2026-09-18 when pre-0.1.52 prisma/migrations were pruned. Kept for images
+# built before that date and for any future file-based compat migration:
 run_sql_file() {
   file="$1"
   if [ ! -f "$file" ]; then
@@ -263,10 +266,195 @@ run_compat_migrations() {
 
   if [ "$legacy_statement_category_rules" = "1" ]; then
     mmh_log "migrating legacy statement category rules..."
-    run_sql_file "prisma/migrations/20260813_add_statement_recognition_rules/migration.sql"
-    run_sql_file "prisma/migrations/20260813_z_cleanup_statement_category_rule_institutions/migration.sql"
-    run_sql_file "prisma/migrations/20260813_zz_unify_statement_learning_rules/migration.sql"
+    # Inlined from prisma/migrations/20260813_{add_statement_recognition_rules,
+    # z_cleanup_statement_category_rule_institutions,zz_unify_statement_learning_rules},
+    # which were removed when the migration floor moved to 0.1.52 (2026-09-18).
+    # Docker images built before 2026-09-18 rely on the prisma/migrations copies.
+    if ! psql_mmh -v ON_ERROR_STOP=1 <<'SQL'; then
+CREATE TABLE IF NOT EXISTS "statement_recognition_rules" (
+  "id" TEXT NOT NULL,
+  "householdId" TEXT NOT NULL,
+  "targetType" TEXT NOT NULL,
+  "transactionType" TEXT NOT NULL DEFAULT 'any',
+  "keyword" TEXT NOT NULL,
+  "normalizedKeyword" TEXT NOT NULL,
+  "categoryId" TEXT,
+  "categoryName" TEXT,
+  "institutionId" TEXT,
+  "institutionName" TEXT,
+  "fieldName" TEXT,
+  "source" TEXT NOT NULL DEFAULT 'system_default',
+  "priority" INTEGER NOT NULL DEFAULT 100,
+  "isActive" BOOLEAN NOT NULL DEFAULT true,
+  "hitCount" INTEGER NOT NULL DEFAULT 0,
+  "lastSeenAt" TIMESTAMP(3),
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  CONSTRAINT "statement_recognition_rules_pkey" PRIMARY KEY ("id"),
+  CONSTRAINT "statement_recognition_rules_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT "statement_recognition_rules_categoryId_fkey" FOREIGN KEY ("categoryId") REFERENCES "Category"("id") ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT "statement_recognition_rules_institutionId_fkey" FOREIGN KEY ("institutionId") REFERENCES "Institution"("id") ON DELETE SET NULL ON UPDATE CASCADE
+);
+
+ALTER TABLE "statement_recognition_rules"
+  ADD COLUMN IF NOT EXISTS "fieldName" TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS "statement_recognition_rules_householdId_targetType_transactionType_normalizedKeyword_key"
+  ON "statement_recognition_rules"("householdId", "targetType", "transactionType", "normalizedKeyword");
+
+CREATE INDEX IF NOT EXISTS "statement_recognition_rules_householdId_targetType_idx"
+  ON "statement_recognition_rules"("householdId", "targetType");
+
+CREATE INDEX IF NOT EXISTS "statement_recognition_rules_categoryId_idx"
+  ON "statement_recognition_rules"("categoryId");
+
+CREATE INDEX IF NOT EXISTS "statement_recognition_rules_institutionId_idx"
+  ON "statement_recognition_rules"("institutionId");
+
+CREATE INDEX IF NOT EXISTS "statement_recognition_rules_isActive_idx"
+  ON "statement_recognition_rules"("isActive");
+
+UPDATE "statement_category_rules"
+SET
+  "counterpartyInstitutionName" = NULL,
+  "paymentChannelName" = NULL,
+  "updatedAt" = CURRENT_TIMESTAMP
+WHERE "source" = 'system_default'
+  AND ("counterpartyInstitutionName" IS NOT NULL OR "paymentChannelName" IS NOT NULL);
+
+WITH legacy_category_rules AS (
+  SELECT
+    'recog_legacy_' || "id" AS "id",
+    "householdId",
+    "type",
+    TRIM(
+      CASE
+        WHEN POSITION('有限责任公司' IN "matchText") > 0 THEN SUBSTRING("matchText" FROM 1 FOR POSITION('有限责任公司' IN "matchText") - 1)
+        WHEN POSITION('股份有限公司' IN "matchText") > 0 THEN SUBSTRING("matchText" FROM 1 FOR POSITION('股份有限公司' IN "matchText") - 1)
+        WHEN POSITION('集团有限公司' IN "matchText") > 0 THEN SUBSTRING("matchText" FROM 1 FOR POSITION('集团有限公司' IN "matchText") - 1)
+        WHEN POSITION('有限公司' IN "matchText") > 0 THEN SUBSTRING("matchText" FROM 1 FOR POSITION('有限公司' IN "matchText") - 1)
+        ELSE "matchText"
+      END
+    ) AS "keyword",
+    TRIM(
+      CASE
+        WHEN POSITION('有限责任公司' IN "normalizedText") > 0 THEN SUBSTRING("normalizedText" FROM 1 FOR POSITION('有限责任公司' IN "normalizedText") - 1)
+        WHEN POSITION('股份有限公司' IN "normalizedText") > 0 THEN SUBSTRING("normalizedText" FROM 1 FOR POSITION('股份有限公司' IN "normalizedText") - 1)
+        WHEN POSITION('集团有限公司' IN "normalizedText") > 0 THEN SUBSTRING("normalizedText" FROM 1 FOR POSITION('集团有限公司' IN "normalizedText") - 1)
+        WHEN POSITION('有限公司' IN "normalizedText") > 0 THEN SUBSTRING("normalizedText" FROM 1 FOR POSITION('有限公司' IN "normalizedText") - 1)
+        ELSE "normalizedText"
+      END
+    ) AS "normalizedKeyword",
+    "categoryId",
+    "categoryName",
+    "source",
+    CASE WHEN "source" = 'system_default' THEN 100 ELSE 230 END AS "priority",
+    "hitCount",
+    "lastSeenAt",
+    "createdAt",
+    "updatedAt"
+  FROM "statement_category_rules"
+  WHERE "type" IN ('income', 'expense')
+    AND "categoryName" IS NOT NULL
+    AND "matchText" IS NOT NULL
+    AND "normalizedText" IS NOT NULL
+)
+INSERT INTO "statement_recognition_rules" (
+  "id", "householdId", "targetType", "transactionType", "keyword", "normalizedKeyword",
+  "categoryId", "categoryName", "institutionId", "institutionName", "fieldName", "source", "priority",
+  "isActive", "hitCount", "lastSeenAt", "createdAt", "updatedAt"
+)
+SELECT
+  "id", "householdId", 'category', "type", "keyword", "normalizedKeyword",
+  "categoryId", "categoryName", NULL, NULL, NULL, "source", "priority",
+  true, "hitCount", "lastSeenAt", "createdAt", "updatedAt"
+FROM legacy_category_rules
+WHERE "keyword" <> ''
+  AND "normalizedKeyword" <> ''
+ON CONFLICT ("householdId", "targetType", "transactionType", "normalizedKeyword")
+DO UPDATE SET
+  "categoryId" = EXCLUDED."categoryId",
+  "categoryName" = EXCLUDED."categoryName",
+  "source" = EXCLUDED."source",
+  "priority" = GREATEST("statement_recognition_rules"."priority", EXCLUDED."priority"),
+  "isActive" = true,
+  "hitCount" = "statement_recognition_rules"."hitCount" + EXCLUDED."hitCount",
+  "lastSeenAt" = GREATEST(COALESCE("statement_recognition_rules"."lastSeenAt", EXCLUDED."lastSeenAt"), COALESCE(EXCLUDED."lastSeenAt", "statement_recognition_rules"."lastSeenAt")),
+  "updatedAt" = CURRENT_TIMESTAMP,
+  "keyword" = EXCLUDED."keyword";
+
+CREATE TEMP TABLE "_mmh_statement_keyword_cleanup" AS
+SELECT
+  "id",
+  "householdId",
+  "targetType",
+  "transactionType",
+  TRIM(
+    CASE
+      WHEN POSITION('有限责任公司' IN "keyword") > 0 THEN SUBSTRING("keyword" FROM 1 FOR POSITION('有限责任公司' IN "keyword") - 1)
+      WHEN POSITION('股份有限公司' IN "keyword") > 0 THEN SUBSTRING("keyword" FROM 1 FOR POSITION('股份有限公司' IN "keyword") - 1)
+      WHEN POSITION('集团有限公司' IN "keyword") > 0 THEN SUBSTRING("keyword" FROM 1 FOR POSITION('集团有限公司' IN "keyword") - 1)
+      WHEN POSITION('有限公司' IN "keyword") > 0 THEN SUBSTRING("keyword" FROM 1 FOR POSITION('有限公司' IN "keyword") - 1)
+      ELSE "keyword"
+    END
+  ) AS "keyword",
+  TRIM(
+    CASE
+      WHEN POSITION('有限责任公司' IN "normalizedKeyword") > 0 THEN SUBSTRING("normalizedKeyword" FROM 1 FOR POSITION('有限责任公司' IN "normalizedKeyword") - 1)
+      WHEN POSITION('股份有限公司' IN "normalizedKeyword") > 0 THEN SUBSTRING("normalizedKeyword" FROM 1 FOR POSITION('股份有限公司' IN "normalizedKeyword") - 1)
+      WHEN POSITION('集团有限公司' IN "normalizedKeyword") > 0 THEN SUBSTRING("normalizedKeyword" FROM 1 FOR POSITION('集团有限公司' IN "normalizedKeyword") - 1)
+      WHEN POSITION('有限公司' IN "normalizedKeyword") > 0 THEN SUBSTRING("normalizedKeyword" FROM 1 FOR POSITION('有限公司' IN "normalizedKeyword") - 1)
+      ELSE "normalizedKeyword"
+    END
+  ) AS "normalizedKeyword",
+  "hitCount"
+FROM "statement_recognition_rules"
+WHERE "keyword" LIKE '%有限公司%'
+   OR "normalizedKeyword" LIKE '%有限公司%';
+
+UPDATE "statement_recognition_rules" AS target
+SET
+  "hitCount" = target."hitCount" + source."hitCount",
+  "updatedAt" = CURRENT_TIMESTAMP
+FROM "_mmh_statement_keyword_cleanup" AS source
+WHERE target."householdId" = source."householdId"
+  AND target."targetType" = source."targetType"
+  AND target."transactionType" = source."transactionType"
+  AND target."normalizedKeyword" = source."normalizedKeyword"
+  AND target."id" <> source."id";
+
+DELETE FROM "statement_recognition_rules" AS original
+USING "_mmh_statement_keyword_cleanup" AS source
+WHERE original."id" = source."id"
+  AND EXISTS (
+    SELECT 1
+    FROM "statement_recognition_rules" AS target
+    WHERE target."householdId" = source."householdId"
+      AND target."targetType" = source."targetType"
+      AND target."transactionType" = source."transactionType"
+      AND target."normalizedKeyword" = source."normalizedKeyword"
+      AND target."id" <> source."id"
+  );
+
+UPDATE "statement_recognition_rules" AS target
+SET
+  "keyword" = source."keyword",
+  "normalizedKeyword" = source."normalizedKeyword",
+  "updatedAt" = CURRENT_TIMESTAMP
+FROM "_mmh_statement_keyword_cleanup" AS source
+WHERE target."id" = source."id"
+  AND source."keyword" <> ''
+  AND source."normalizedKeyword" <> '';
+
+DROP TABLE "_mmh_statement_keyword_cleanup";
+
+DROP TABLE IF EXISTS "statement_category_rules";
+SQL
     mmh_log "legacy statement category rules migrated."
+    else
+      mmh_log "WARNING: legacy statement category rules migration failed; continuing so MMH stays available."
+    fi
   fi
 
   migrate_debt_agreement_rekey

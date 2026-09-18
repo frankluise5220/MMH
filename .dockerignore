@@ -31,3 +31,10 @@ tmp
 tmp-*
 coverage
 dist
+
+# prisma migrations before the 0.1.52 upgrade floor are not shipped in images
+# (Docker syncs schema with db push; never runs migration files)
+prisma/migrations/202606*
+prisma/migrations/202607*
+prisma/migrations/202608*
+prisma/migrations/2026090[0-4]_*

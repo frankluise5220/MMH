@@ -313,6 +313,21 @@ function copyDir(src, dest) {
   return true;
 }
 
+// Prisma migrations before the 0.1.52 upgrade floor (v0.1.52 = 2026-09-04) are
+// untracked in git and must not ship in packages: no user can upgrade from a
+// pre-0.1.52 install, and fnOS/Synology runtimes never execute migration files
+// (init-sqlite.cjs + native-init.sql cover everything). Kept in sync with the
+// ignore rules in .gitignore / .dockerignore.
+const PRISMA_MIGRATION_FLOOR_DATE = "20260904"; // post-floor dirs start at 20260905
+function prunePreFloorMigrations(stageMigrationsDir) {
+  if (!fs.existsSync(stageMigrationsDir)) return;
+  for (const entry of fs.readdirSync(stageMigrationsDir)) {
+    if (/^\d{8}_/.test(entry) && entry.slice(0, 8) <= PRISMA_MIGRATION_FLOOR_DATE) {
+      fs.rmSync(path.join(stageMigrationsDir, entry), { recursive: true, force: true });
+    }
+  }
+}
+
 function copyFnosPublicAssets(src, dest) {
   fs.rmSync(dest, { recursive: true, force: true });
   for (const file of [
@@ -1675,6 +1690,7 @@ if (fs.existsSync(standaloneDir)) {
   copyFnosPublicAssets(publicDir, path.join(stageDir, "app", "server", "public"));
   copyDir(path.join(root, "prisma"), path.join(stageDir, "app", "server", "prisma"));
   copyFile(path.join(root, "prisma.config.ts"), path.join(stageDir, "app", "server", "prisma.config.ts"));
+  prunePreFloorMigrations(path.join(stageDir, "app", "server", "prisma", "migrations"));
   pruneStagedServer(path.join(stageDir, "app", "server"));
   const initSql = path.join(stageDir, "app", "server", "prisma", "native-init.sql");
   const diff = run(process.execPath, [

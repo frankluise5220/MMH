@@ -1,1 +1,0 @@
-ALTER TABLE "Account" ADD COLUMN "note" TEXT;

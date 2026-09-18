@@ -54,10 +54,17 @@ for (const entry of fs.readdirSync(migrationsDir)) {
 //    MIGRATIONS versions are feature slugs (e.g. 20260812_account_note) while prisma migration
 //    dirs use add_* naming (e.g. 20260812_add_account_note); match on the date prefix plus a
 //    keyword overlap, and treat an existing dir as the source of truth for the SQL file.
+//    Migration floor: 0.1.52 (tagged 2026-09-04) is the oldest version any user can upgrade
+//    from, so on 2026-09-18 every prisma/migrations directory that already existed at v0.1.52
+//    was removed. MIGRATIONS entries dated on/before 20260904 intentionally have no matching
+//    directory anymore (the 0.1.52 SQLite upgrade path and the schema-downgrade guard still
+//    require them in the fnOS MIGRATIONS list). Post-0.1.52 entries must still match one.
 const registeredVersions = [...fnosBuild.matchAll(/version:\s*"(\d{8}_[a-z0-9_]+)"/g)].map((m) => m[1]);
 if (registeredVersions.length === 0) {
   failures.push("Migration coverage audit: no MIGRATIONS versions found in build-fnos-package.cjs.");
 }
+const migrationFloorDate = "20260904"; // v0.1.52 was tagged 2026-09-04; post-floor dirs start at 20260905.
+const isPreFloorVersion = (version) => version.slice(0, 8) <= migrationFloorDate;
 const migrationDirs = fs.readdirSync(migrationsDir);
 // Some MIGRATIONS entries are fnOS-only programmatic repairs with no prisma/migrations
 // counterpart (e.g. rebuilding a SQLite FK constraint). They are self-contained in the build
@@ -79,6 +86,7 @@ for (const version of registeredVersions) {
     return keywords.some((keyword) => lower.includes(keyword));
   });
   if (!match) {
+    if (isPreFloorVersion(version)) continue;
     if (fnosOnlyMigrationVersions.has(version)) continue;
     failures.push(`Migration coverage audit: MIGRATIONS registers "${version}" but no prisma/migrations directory matches it (date prefix ${datePrefix}).`);
     continue;

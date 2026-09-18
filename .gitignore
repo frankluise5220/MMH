@@ -54,6 +54,16 @@ next-env.d.ts
 # generated prisma client
 /src/generated/prisma
 
+# prisma migrations before the 0.1.52 upgrade floor (v0.1.52 = 2026-09-04).
+# Untracked on 2026-09-18: no users exist on versions older than 0.1.52, and
+# neither Docker (db push) nor fnOS/Synology (embedded MIGRATIONS + native-init.sql)
+# consumes these files. Local copies are kept only so the shared dev database's
+# migrate deploy sees a fully-applied history. Never package or re-add them.
+prisma/migrations/202606*
+prisma/migrations/202607*
+prisma/migrations/202608*
+prisma/migrations/2026090[0-4]_*
+
 # Claude Code session (may contain sensitive context)
 .claude/
 .codex/
