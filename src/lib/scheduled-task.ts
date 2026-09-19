@@ -9,8 +9,8 @@ export type ScheduledTaskType =
   | "expense"
   | "deposit_maturity"
   | "deposit_interest_payout"
-  | "wealth_bond_maturity"
-  | "wealth_bond_interest_payout";
+  | "bond_maturity"
+  | "bond_interest_payout";
 
 export type LoanScheduledPlanRole = "bill" | "auto_debit";
 
@@ -72,8 +72,8 @@ export const SCHEDULED_TASK_TYPE_LABEL: Record<ScheduledTaskType, string> = {
   expense: "Expense",
   deposit_maturity: "存款到期",
   deposit_interest_payout: "存款取息",
-  wealth_bond_maturity: "城投债到期",
-  wealth_bond_interest_payout: "城投债付息",
+  bond_maturity: "城投债到期",
+  bond_interest_payout: "城投债付息",
 };
 
 export function normalizeScheduledTaskType(value: unknown): ScheduledTaskType {
@@ -86,8 +86,8 @@ export function normalizeScheduledTaskType(value: unknown): ScheduledTaskType {
     value === "expense" ||
     value === "deposit_maturity" ||
     value === "deposit_interest_payout" ||
-    value === "wealth_bond_maturity" ||
-    value === "wealth_bond_interest_payout"
+    value === "bond_maturity" ||
+    value === "bond_interest_payout"
   ) {
     return value;
   }
@@ -115,14 +115,16 @@ export function getLoanScheduledPlanRole(task?: Pick<ScheduledTaskPayload, "type
  * - deposit_maturity / deposit_interest_payout: dates follow the deposit lot;
  *   pausing has no real effect because auto-maturity scans the lots directly,
  *   deleting is undone by the startup self-heal, so the row is view-only.
- * - wealth_bond_maturity / wealth_bond_interest_payout: dates/amounts follow
- *   the 债单 (WealthProduct bond terms); the interest timing is uncertain, so
- *   these rows are reminder-only and never auto-executed.
+ * - bond_maturity / bond_interest_payout: dates/amounts follow the bond lot
+ *   snapshot (falling back to the 债单主数据); the row stays view-only in the
+ *   table. 注意（2026-09-19 定版）：**付息行会照存款口径自动落账**
+ *   （每期生成「生息 + 取息」一对，source="bond"），到期行仍只提醒、
+ *   由用户手工确认赎回。
  */
 export function isSystemManagedScheduledTask(task?: ScheduledTaskPayload | null): boolean {
   if (!task) return false;
   if (task.type === "loan_repayment") return getLoanScheduledPlanRole(task) === "bill";
-  if (task.type === "wealth_bond_maturity" || task.type === "wealth_bond_interest_payout") return true;
+  if (task.type === "bond_maturity" || task.type === "bond_interest_payout") return true;
   return task.type === "deposit_maturity" || task.type === "deposit_interest_payout";
 }
 

@@ -1,144 +1,188 @@
-import { IntervalUnit, RegularInvestStatus } from "@prisma/client";
+import { FundSubtype, IntervalUnit, RegularInvestStatus } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
-import { bondPlanInterval, bondPayoutExpectation, bondDateKey } from "@/lib/wealth-bond";
+import { bondDateKey, bondPlanInterval, bondPayoutExpectation, clampBondFirstPayoutToStart } from "@/lib/bond";
+import { toNumber } from "@/lib/date-utils";
 import { parseDepositInterestPayout } from "@/lib/deposit-interest-payout";
 import { encodeScheduledTaskMemo } from "@/lib/scheduled-task";
-import { toNumber } from "@/lib/date-utils";
 
-export const WEALTH_BOND_MATURITY_PLAN_FUND_CODE = "wealth_bond_maturity";
-export const WEALTH_BOND_PAYOUT_PLAN_FUND_CODE = "wealth_bond_interest_payout";
+export const BOND_MATURITY_PLAN_FUND_CODE = "bond_maturity";
+export const BOND_PAYOUT_PLAN_FUND_CODE = "bond_interest_payout";
 
-/** 城投债的两类计划行 fundCode —— 执行器只读跳过、不自动落账。 */
-export function isWealthBondPlanFundCode(code: string | null | undefined): boolean {
-  return code === WEALTH_BOND_MATURITY_PLAN_FUND_CODE || code === WEALTH_BOND_PAYOUT_PLAN_FUND_CODE;
+/** 债券的两类计划行 fundCode —— 执行器只读跳过、不自动落账。 */
+export function isBondPlanFundCode(code: string | null | undefined): boolean {
+  return code === BOND_MATURITY_PLAN_FUND_CODE || code === BOND_PAYOUT_PLAN_FUND_CODE;
 }
 
 function payoutMemoText(name: string) {
   return encodeScheduledTaskMemo({
-    type: "wealth_bond_interest_payout",
-    title: `城投债付息：${name}`,
+    type: "bond_interest_payout",
+    title: `债券付息：${name}`,
   });
 }
 
-/** 城投债债单的计划行：债单（WealthProduct）= 唯一真源，行随条款/到账刷新。 */
-export type BondPlanSource = {
-  id: string;
+const OPEN_PRINCIPAL_EPSILON = 0.005;
+const CLEAR_ACTIONS = new Set<string>([FundSubtype.redeem, FundSubtype.switch_out, FundSubtype.write_off]);
+
+/**
+ * 债券计划行按**存单**生成（对齐存款的 depm_/depi_ 口径）。
+ *
+ * 存单 = 一笔买入行（bond_transactions.action='buy'）。同一债单可以有多张存单，
+ * 每张存单有自己的起息日与条款，付息必须按存单各自产生，所以计划行 id 是
+ *   bondm_<存单id> / bondi_<存单id>
+ * 而不是产品级。
+ */
+export type BondLotPlanSource = {
+  lotId: string;
   householdId: string;
+  accountId: string;
+  /** 买入时的资金来源账户（付息转入目标）。 */
+  cashAccountId: string | null;
   name: string;
   annualRate: number | null;
   termDays: number | null;
   maturityDate: Date | null;
   payoutFrequency: string | null;
   firstPayoutDate: Date | null;
-  productType: string;
+  /** 计息方式：monthly = 月均计息；其他/缺省 = 按日。 */
+  interestCalcBasis: string | null;
+  startDate: Date;
+  principal: number;
+  lastPayoutAnchor: Date | null;
 };
 
-async function loadBondPlanSource(householdId: string, productId: string): Promise<BondPlanSource | null> {
-  const product = await prisma.wealthProduct.findFirst({
-    where: { id: productId, householdId },
-  });
-  if (!product || product.productType !== "bond") return null;
-  return {
-    id: product.id,
-    householdId: product.householdId,
-    name: product.name,
-    annualRate: product.annualRate == null ? null : Number(product.annualRate),
-    termDays: product.termDays,
-    maturityDate: product.maturityDate,
-    payoutFrequency: product.payoutFrequency,
-    firstPayoutDate: product.firstPayoutDate,
-    productType: product.productType,
-  };
+function addDaysUtc(date: Date, days: number): Date {
+  return new Date(date.getTime() + days * 86400000);
 }
 
-/** 债单当前持仓本金（城投债无份额）：Σ买入 − Σ赎回 − Σ核销。 */
-async function bondPrincipalCost(householdId: string, productId: string): Promise<number> {
-  const rows = await prisma.wealthTransaction.groupBy({
-    by: ["action"],
-    where: { householdId, wealthProductId: productId, deletedAt: null },
-    _sum: { grossAmount: true },
-  });
-  let cost = 0;
-  for (const row of rows) {
-    const amount = Math.abs(toNumber(row._sum.grossAmount));
-    if (row.action === "buy") cost += amount;
-    else if (row.action === "redeem" || row.action === "switch_out" || row.action === "write_off") cost -= amount;
-  }
-  return Math.max(0, Number(cost.toFixed(2)));
-}
-
-/**
- * 债单=计划行唯一真源（对齐存款口径）：每张 bond 债单 upsert 两行只读计划行——
- *   1. bondm_<productId> 城投债到期：nextRunDate=maturityDate，amount=当前持仓本金；
- *   2. bondi_<productId> 城投债付息：nextRunDate=下一预期付息日（严格晚于最近到账日），
- *      amount=该期估算利息（本金×票面×周期天数/365）。
- * 计划行永不自动执行（到账时间/金额不确定，必须手工确认）；债单编辑、利息到账、
- * 核销、赎回后由落账路径调用本函数刷新。持仓清零 → 两行一并完成。
- */
-export async function ensureWealthBondPlansForProduct(params: {
+/** 载入存单及其条款（存单快照优先，缺失回退债单主数据）。 */
+export async function loadBondLotPlanSource(params: {
   householdId: string;
-  productId: string;
-}): Promise<void> {
-  const source = await loadBondPlanSource(params.householdId, params.productId);
-  if (!source) return;
+  lotId: string;
+}): Promise<BondLotPlanSource | null> {
+  const lot = await prisma.bondTransaction.findFirst({
+    where: {
+      id: params.lotId,
+      householdId: params.householdId,
+      action: FundSubtype.buy,
+      deletedAt: null,
+    },
+    include: { BondProduct: true },
+  });
+  if (!lot) return null;
 
-  const planIds = [`bondm_${source.id}`, `bondi_${source.id}`];
-  const cost = await bondPrincipalCost(params.householdId, source.id);
-
-  // 债单已了结（全部收回/核销，且不再有买入）：计划行完成，避免空挂。
-  if (cost <= 0.005) {
-    await prisma.regularInvestPlan.updateMany({
-      where: { householdId: params.householdId, id: { in: planIds }, status: { not: RegularInvestStatus.completed } },
-      data: { status: RegularInvestStatus.completed },
-    }).catch(() => {});
-    return;
+  // 该存单的持仓本金 = 买入额 − 子行赎回/核销额。
+  const childRows = await prisma.bondTransaction.findMany({
+    where: { householdId: params.householdId, sourceBondTransactionId: lot.id, deletedAt: null },
+    select: { action: true, grossAmount: true },
+  });
+  let principal = Math.abs(toNumber(lot.grossAmount));
+  for (const row of childRows) {
+    if (CLEAR_ACTIONS.has(row.action)) principal -= Math.abs(toNumber(row.grossAmount));
   }
 
-  const maturity = source.maturityDate ?? null;
-  const frequency = parseDepositInterestPayout(source.payoutFrequency);
-  // 下一预期付息日锚点：严格晚于最近一次利息到账（无到账记录 → 首次付息日）。
-  const lastInterest = await prisma.wealthTransaction.findFirst({
-    where: { householdId: params.householdId, wealthProductId: source.id, deletedAt: null, action: "dividend_cash" },
+  // 最近一次付息到账锚点（该存单自己的付息记录）。
+  const lastInterest = await prisma.bondTransaction.findFirst({
+    where: {
+      householdId: params.householdId,
+      sourceBondTransactionId: lot.id,
+      deletedAt: null,
+      action: FundSubtype.dividend_cash,
+    },
     orderBy: [{ tradeDate: "desc" }, { createdAt: "desc" }],
     select: { tradeDate: true, confirmDate: true },
   });
-  const lastPayoutAnchor = lastInterest
-    ? (lastInterest.confirmDate ?? lastInterest.tradeDate)
-    : null;
-  const expectation = bondPayoutExpectation({
-    term: source,
-    start: source.firstPayoutDate ?? lastPayoutAnchor ?? undefined,
-    after: lastPayoutAnchor,
-    principal: cost,
+
+  const product = lot.BondProduct;
+  const termDays = lot.termDays ?? product?.termDays ?? null;
+  const explicitMaturity = lot.maturityDate ?? product?.maturityDate ?? null;
+  const maturityDate = explicitMaturity ?? (termDays && termDays > 0 ? addDaysUtc(lot.tradeDate, termDays) : null);
+  const payoutFrequency = lot.payoutFrequency ?? product?.payoutFrequency ?? null;
+  // 老存单没有条款快照时回退债单主数据，债单的首次付息日可能早于本存单起息日
+  // （同一债单里后买的存单尤其明显）→ 顺延到第一个晚于起息日的付息日。
+  const firstPayoutDate = clampBondFirstPayoutToStart({
+    firstPayoutDate: lot.firstPayoutDate ?? product?.firstPayoutDate ?? null,
+    startDate: lot.tradeDate,
+    payoutFrequency,
   });
 
-  const maturityLabel = `城投债到期：${source.name}`;
+  return {
+    lotId: lot.id,
+    householdId: lot.householdId,
+    accountId: lot.accountId,
+    cashAccountId: lot.cashAccountId ?? null,
+    name: product?.name ?? lot.productName ?? "债券",
+    annualRate: lot.annualRate != null
+      ? Number(lot.annualRate)
+      : product?.annualRate == null ? null : Number(product.annualRate),
+    termDays,
+    maturityDate,
+    payoutFrequency,
+    firstPayoutDate,
+    interestCalcBasis: lot.interestCalcBasis ?? product?.interestCalcBasis ?? null,
+    startDate: lot.tradeDate,
+    principal: Math.max(0, Number(principal.toFixed(2))),
+    lastPayoutAnchor: lastInterest ? (lastInterest.confirmDate ?? lastInterest.tradeDate) : null,
+  };
+}
+
+/**
+ * 存单 = 计划行唯一真源：每张存单 upsert 两行只读计划行——
+ *   1. bondm_<存单id> 债券到期：nextRunDate=到期日，amount=该存单持仓本金；
+ *   2. bondi_<存单id> 债券付息：nextRunDate=该存单下一预期付息日，amount=该期估算利息。
+ * 计划行永不自动执行（到账时间/金额不确定，必须手工确认）；买入、付息、赎回、
+ * 核销后由落账路径调用本函数刷新。存单本金清零 → 两行一并完成。
+ */
+export async function ensureBondPlansForLot(params: {
+  householdId: string;
+  lotId: string;
+}): Promise<{ maturityPlanId: string | null; payoutPlanId: string | null }> {
+  const source = await loadBondLotPlanSource(params);
+  if (!source) {
+    await completeBondPlansForLot(params);
+    return { maturityPlanId: null, payoutPlanId: null };
+  }
+
+  // 存单已了结（本金收回/核销完）→ 计划行完成，避免空挂。
+  if (source.principal <= OPEN_PRINCIPAL_EPSILON) {
+    await completeBondPlansForLot(params);
+    return { maturityPlanId: null, payoutPlanId: null };
+  }
+
+  const maturity = source.maturityDate;
+  const frequency = parseDepositInterestPayout(source.payoutFrequency);
+  const expectation = bondPayoutExpectation({
+    term: {
+      annualRate: source.annualRate,
+      termDays: source.termDays,
+      maturityDate: source.maturityDate,
+      payoutFrequency: source.payoutFrequency,
+      firstPayoutDate: source.firstPayoutDate,
+      interestCalcBasis: source.interestCalcBasis,
+    },
+    start: source.firstPayoutDate ?? source.lastPayoutAnchor ?? source.startDate,
+    after: source.lastPayoutAnchor,
+    principal: source.principal,
+  });
+
+  let maturityPlanId: string | null = null;
   if (maturity) {
     const maturityMemo = encodeScheduledTaskMemo({
-      type: "wealth_bond_maturity",
-      title: maturityLabel,
+      type: "bond_maturity",
+      title: `债券到期：${source.name}`,
     });
-    // 城投债计划行挂在 wealth 账户上（bond 产品的买入理财账户），供计划页展示归属。
-    const ownerAccount = await prisma.wealthTransaction.findFirst({
-      where: { householdId: params.householdId, wealthProductId: source.id, deletedAt: null },
-      orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }],
-      select: { accountId: true },
-    });
-    const ownerAccountId = ownerAccount?.accountId ?? "";
-    if (!ownerAccountId) return;
     await prisma.regularInvestPlan.upsert({
-      where: { id: `bondm_${source.id}` },
+      where: { id: `bondm_${source.lotId}` },
       create: {
-        id: `bondm_${source.id}`,
-        accountId: ownerAccountId,
+        id: `bondm_${source.lotId}`,
+        accountId: source.accountId,
         accountName: source.name,
         cashAccountId: null,
         cashAccountName: null,
-        fundCode: WEALTH_BOND_MATURITY_PLAN_FUND_CODE,
+        fundCode: BOND_MATURITY_PLAN_FUND_CODE,
         fundName: source.name,
-        fundProductType: "wealth",
-        amount: cost,
+        fundProductType: "bond",
+        amount: source.principal,
         intervalUnit: IntervalUnit.month,
         intervalValue: 1,
         executionDay: maturity.getUTCDate(),
@@ -152,51 +196,48 @@ export async function ensureWealthBondPlansForProduct(params: {
         arrivalDays: 0,
         memo: maturityMemo,
         skipPendingPreceding: false,
-        householdId: params.householdId,
+        householdId: source.householdId,
       },
       update: {
+        accountId: source.accountId,
+        accountName: source.name,
         startDate: maturity,
         nextRunDate: maturity,
-        amount: cost,
+        amount: source.principal,
         status: RegularInvestStatus.active,
         memo: maturityMemo,
       },
     }).catch(() => {});
+    maturityPlanId = `bondm_${source.lotId}`;
   } else {
     await prisma.regularInvestPlan.updateMany({
-      where: { id: `bondm_${source.id}`, householdId: params.householdId, status: { not: RegularInvestStatus.completed } },
+      where: { id: `bondm_${source.lotId}`, householdId: source.householdId, status: { not: RegularInvestStatus.completed } },
       data: { status: RegularInvestStatus.completed },
     }).catch(() => {});
   }
 
+  let payoutPlanId: string | null = null;
   if (frequency.kind === "periodic" && expectation.nextPayoutDate) {
     const payoutMemo = payoutMemoText(source.name);
     const interval = bondPlanInterval(frequency);
     const nextRun = new Date(`${expectation.nextPayoutDate}T00:00:00.000Z`);
-    // 城投债计划行挂在 wealth 账户上（bond 产品的买入理财账户），供计划页展示归属。
-    const ownerAccount = await prisma.wealthTransaction.findFirst({
-      where: { householdId: params.householdId, wealthProductId: source.id, deletedAt: null },
-      orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }],
-      select: { accountId: true },
-    });
-    const ownerAccountId = ownerAccount?.accountId ?? "";
-    if (!ownerAccountId) return;
+    const firstKey = bondDateKey(source.firstPayoutDate);
     await prisma.regularInvestPlan.upsert({
-      where: { id: `bondi_${source.id}` },
+      where: { id: `bondi_${source.lotId}` },
       create: {
-        id: `bondi_${source.id}`,
-        accountId: ownerAccountId,
+        id: `bondi_${source.lotId}`,
+        accountId: source.accountId,
         accountName: source.name,
         cashAccountId: null,
         cashAccountName: null,
-        fundCode: WEALTH_BOND_PAYOUT_PLAN_FUND_CODE,
+        fundCode: BOND_PAYOUT_PLAN_FUND_CODE,
         fundName: source.name,
-        fundProductType: "wealth",
+        fundProductType: "bond",
         amount: expectation.nextExpectedInterest ?? 0,
         intervalUnit: interval.unit === "week" ? IntervalUnit.week : IntervalUnit.month,
         intervalValue: Math.max(1, interval.value),
         executionDay: new Date(expectation.nextPayoutDate).getUTCDate(),
-        startDate: bondDateKey(source.firstPayoutDate) ? new Date(`${bondDateKey(source.firstPayoutDate)}T00:00:00.000Z`) : (lastPayoutAnchor ?? new Date()),
+        startDate: firstKey ? new Date(`${firstKey}T00:00:00.000Z`) : (source.lastPayoutAnchor ?? source.startDate),
         nextRunDate: nextRun,
         endDate: null,
         totalRuns: null,
@@ -206,58 +247,111 @@ export async function ensureWealthBondPlansForProduct(params: {
         arrivalDays: 0,
         memo: payoutMemo,
         skipPendingPreceding: false,
-        householdId: params.householdId,
+        householdId: source.householdId,
       },
       update: {
+        accountId: source.accountId,
+        accountName: source.name,
         nextRunDate: nextRun,
         amount: expectation.nextExpectedInterest ?? 0,
         status: RegularInvestStatus.active,
-        fundCode: WEALTH_BOND_PAYOUT_PLAN_FUND_CODE,
+        fundCode: BOND_PAYOUT_PLAN_FUND_CODE,
         fundName: source.name,
-        accountName: source.name,
         memo: payoutMemo,
       },
     }).catch(() => {});
+    payoutPlanId = `bondi_${source.lotId}`;
   } else {
     // 到期付息（或无法推算）→ 付息计划行失去对象，完成以免空挂。
     await prisma.regularInvestPlan.updateMany({
-      where: { id: `bondi_${source.id}`, householdId: params.householdId, status: { not: RegularInvestStatus.completed } },
+      where: { id: `bondi_${source.lotId}`, householdId: source.householdId, status: { not: RegularInvestStatus.completed } },
       data: { status: RegularInvestStatus.completed },
     }).catch(() => {});
   }
+
+  return { maturityPlanId, payoutPlanId };
 }
 
-/** 落账后刷新债单计划行（仅 bond 产品；productId 缺省时忽略）。 */
-export async function ensureWealthBondPlansAfterTx(householdId: string, productId?: string | null): Promise<void> {
-  const id = String(productId ?? "").trim();
-  if (!id) return;
-  await ensureWealthBondPlansForProduct({ householdId, productId: id });
-}
-
-/** 债单了结（本息全部收回/核销）：结束该债单的系统计划行。 */
-export async function completeWealthBondPlansForProduct(params: { householdId: string; productId: string }): Promise<void> {
+/** 存单了结 / 被删除：结束该存单的系统计划行。 */
+export async function completeBondPlansForLot(params: {
+  householdId: string;
+  lotId: string;
+}): Promise<void> {
   await prisma.regularInvestPlan.updateMany({
     where: {
       householdId: params.householdId,
-      id: { in: [`bondm_${params.productId}`, `bondi_${params.productId}`] },
+      id: { in: [`bondm_${params.lotId}`, `bondi_${params.lotId}`] },
       status: { not: RegularInvestStatus.completed },
     },
     data: { status: RegularInvestStatus.completed },
   }).catch(() => {});
 }
 
+/** 刷新某债单下全部存单的计划行（债单条款卡编辑后调用）。 */
+export async function ensureBondPlansForProduct(params: {
+  householdId: string;
+  productId: string;
+}): Promise<number> {
+  const lots = await prisma.bondTransaction.findMany({
+    where: {
+      householdId: params.householdId,
+      bondProductId: params.productId,
+      action: FundSubtype.buy,
+      deletedAt: null,
+    },
+    select: { id: true },
+  });
+  for (const lot of lots) {
+    await ensureBondPlansForLot({ householdId: params.householdId, lotId: lot.id }).catch(() => {});
+  }
+  return lots.length;
+}
+
 /**
- * 开机自愈：为所有持有中的城投债补齐/刷新计划行（老数据可能没有）。
- * 每次开机全量 ensure bond 产品（数量少、upsert 幂等）。
+ * 清理旧的产品级计划行（bondm_/bondi_<productId>）。
+ *
+ * 存单化之前计划行挂在债单（BondProduct）上；现在必须挂存单（bond_transactions.id）。
+ * 残留的产品级行会变成孤儿（后缀不是任何存单 id），在计划任务页表现为「关联不上」，
+ * 所以开机自愈时一并清掉。只删后缀不是存单 id 的行，绝不碰存单级行。
  */
-export async function ensureWealthBondPlansForHousehold(params: { householdId: string }): Promise<number> {
-  const products = await prisma.wealthProduct.findMany({
-    where: { householdId: params.householdId, productType: "bond", isActive: true },
+async function purgeLegacyProductLevelBondPlans(householdId: string): Promise<number> {
+  const rows = await prisma.regularInvestPlan.findMany({
+    where: {
+      householdId,
+      OR: [{ id: { startsWith: "bondm_" } }, { id: { startsWith: "bondi_" } }],
+    },
+    select: { id: true },
+  });
+  if (rows.length === 0) return 0;
+  const suffixes = [...new Set(rows.map((row) => row.id.slice(6)))];
+  const lots = await prisma.bondTransaction.findMany({
+    where: { id: { in: suffixes } },
+    select: { id: true },
+  });
+  const lotIds = new Set(lots.map((lot) => lot.id));
+  const orphanIds = rows.filter((row) => !lotIds.has(row.id.slice(6))).map((row) => row.id);
+  if (orphanIds.length === 0) return 0;
+  await prisma.regularInvestPlan.deleteMany({ where: { id: { in: orphanIds } } }).catch(() => {});
+  return orphanIds.length;
+}
+
+/**
+ * 开机自愈：为所有持有中的存单补齐/刷新计划行（老数据可能没有）。
+ * 逐存单 upsert，幂等；同时清掉旧的产品级计划行残留。
+ */
+export async function ensureBondPlansForHousehold(params: { householdId: string }): Promise<number> {
+  await purgeLegacyProductLevelBondPlans(params.householdId).catch(() => {});
+  const lots = await prisma.bondTransaction.findMany({
+    where: {
+      householdId: params.householdId,
+      action: FundSubtype.buy,
+      deletedAt: null,
+    },
     select: { id: true },
   });
   let touched = 0;
-  for (const product of products) {
-    await ensureWealthBondPlansForProduct({ householdId: params.householdId, productId: product.id }).catch(() => {});
+  for (const lot of lots) {
+    await ensureBondPlansForLot({ householdId: params.householdId, lotId: lot.id }).catch(() => {});
     touched += 1;
   }
   return touched;

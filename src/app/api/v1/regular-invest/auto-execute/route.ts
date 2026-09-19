@@ -24,7 +24,8 @@ import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/serv
 import { calcInitialScheduledRunDate as calcInitialRunDate, calcNextScheduledRunDate as calcNextRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { executeNonFundScheduledTaskPlan, isNonFundScheduledTask } from "@/lib/server/scheduled-task-executor";
 import { ensureDepositPlansForHeldLots, executeDepositPlan } from "@/lib/server/deposit-plan-tasks";
-import { ensureWealthBondPlansForHousehold, WEALTH_BOND_MATURITY_PLAN_FUND_CODE, WEALTH_BOND_PAYOUT_PLAN_FUND_CODE } from "@/lib/server/bond-plan-tasks";
+import { ensureBondPlansForHousehold, BOND_MATURITY_PLAN_FUND_CODE, BOND_PAYOUT_PLAN_FUND_CODE } from "@/lib/server/bond-plan-tasks";
+import { autoAccrueBondPeriodicInterestForLot } from "@/lib/server/bond-auto-interest";
 import { resolveCategorySnapshot } from "@/lib/default-categories";
 import { ENTRY_ORIGIN_SCHEDULED_TASK } from "@/lib/transaction-semantics";
 import { acquireScheduledTaskPlanLock } from "@/lib/server/scheduled-task-lock";
@@ -56,7 +57,7 @@ async function hasMoreDuePlans(householdId: string, now: Date) {
     status: RegularInvestStatus.active,
     nextRunDate: { lte: now },
     // 城投债提醒行永不过期执行（never auto-executed），不计入"还有待执行"。
-    NOT: { fundCode: { in: [WEALTH_BOND_MATURITY_PLAN_FUND_CODE, WEALTH_BOND_PAYOUT_PLAN_FUND_CODE] } },
+    NOT: { fundCode: { in: [BOND_MATURITY_PLAN_FUND_CODE, BOND_PAYOUT_PLAN_FUND_CODE] } },
   };
   const count = await prisma.regularInvestPlan.count({ where });
   return count > 0;
@@ -80,9 +81,11 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
 
     for (const p of allPlans) {
       const task = decodeScheduledTaskMemo(p.memo);
-      // 城投债的到期/付息计划行是"提醒"而非"任务"：利息到账时间/金额不确定，
+      // 城投债「到期」计划行仍是"提醒"而非"任务"：本金到账时间/金额不确定、且可能有核销，
       // 必须手工确认，绝不能自动落账 —— 直接从执行集里剔除（保持 active 供展示）。
-      if (task.type === "wealth_bond_maturity" || task.type === "wealth_bond_interest_payout") continue;
+      // 「付息」计划行则**照存款口径自动落账**（每个应付息日生成 生息+取息 一对记录），
+      // 所以不能在这里 continue，交给下面 generalPlans 轮次里的 bond_interest_payout 分支。
+      if (task.type === "bond_maturity") continue;
       const isNonFundTask = isNonFundScheduledTask(task.type);
       const hasReachedRunLimit = !!(p.totalRuns && p.executedRuns >= p.totalRuns);
       const hasPassedEndDate = !!(p.endDate && p.endDate < now);
@@ -121,6 +124,32 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
     for (const plan of generalPlans) {
       const task = decodeScheduledTaskMemo(plan.memo);
       try {
+        if (plan.nextRunDate > now) {
+          generalSkipped.push(plan.id);
+          generalDetails.push({ planId: plan.id, fundCode: plan.fundCode, action: "skipped", reason: "not due" });
+          continue;
+        }
+        if (task.type === "bond_interest_payout") {
+          // 计划行 id 形如 bondi_<存单id>，存单 id 直接从后缀取。
+          const lotId = plan.id.startsWith("bondi_") ? plan.id.slice("bondi_".length) : "";
+          const result = lotId
+            ? await autoAccrueBondPeriodicInterestForLot({ householdId, lotId, today: now, planId: plan.id })
+            : { status: "skipped" as const, reason: "计划行 id 不是存单级" };
+          if (result.status === "accrued") {
+            generalExecuted.push(plan.id);
+            generalGeneratedCount += (result.pairs ?? 0) * 2;
+            generalDetails.push({
+              planId: plan.id,
+              fundCode: plan.fundCode,
+              action: "executed",
+              reason: `生成 ${result.pairs ?? 0} 期付息（生息+取息），合计 ${result.totalInterest ?? 0}`,
+            });
+          } else {
+            generalSkipped.push(plan.id);
+            generalDetails.push({ planId: plan.id, fundCode: plan.fundCode, action: "skipped", reason: result.reason ?? "无应付息" });
+          }
+          continue;
+        }
         if (task.type === "deposit_maturity" || task.type === "deposit_interest_payout") {
           const result = await executeDepositPlan({ householdId, plan, task, now });
           if (result.pairs > 0 || result.executed) {
@@ -702,7 +731,7 @@ export async function POST() {
     await ensureDepositPlansForHeldLots({ householdId }).catch(() => {});
 
     // 城投债计划行自愈：bond 债单的到期/付息提醒行随债单条款刷新（只补齐/刷新，不执行）。
-    await ensureWealthBondPlansForHousehold({ householdId }).catch(() => {});
+    await ensureBondPlansForHousehold({ householdId }).catch(() => {});
 
     const aggregated = {
       executedCount: 0,
