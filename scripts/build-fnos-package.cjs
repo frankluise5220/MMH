@@ -11,8 +11,13 @@ const rawVersion = process.env.FNOS_PACKAGE_VERSION || pkg.version || "0.1.0";
 const version = normalizeFnosVersion(rawVersion);
 const osMinVersion = process.env.FNOS_OS_MIN_VERSION || "0.9.0";
 const packageReleaseNotes = typeof pkg.mmhReleaseNotes === "string" ? pkg.mmhReleaseNotes.trim() : "";
+const packageManifestNotes = typeof pkg.mmhFnosManifestChangelog === "string" ? pkg.mmhFnosManifestChangelog.trim() : "";
 const changelog = process.env.FNOS_PACKAGE_CHANGELOG || packageReleaseNotes || "更新 MMH 飞牛 SQLite 原生包，优化本地安装、启动和更新验证流程。";
-const manifestChangelog = toSingleLineText(changelog);
+// The manifest `changelog` is a single-line INI field rendered as-is by the
+// fnOS App Center "版本说明" panel, so it must be a short plain-text summary
+// (no Markdown markers). The full multi-line release notes stay in
+// mmhReleaseNotes and are copied into the runtime package.json instead.
+const manifestChangelog = toSingleLineText(packageManifestNotes || changelog);
 const appName = "mmh";
 const target = normalizeFnosTarget(process.env.FNOS_TARGET_ARCH || process.env.FNOS_TARGET || "x86");
 const outDir = path.join(root, "release-artifacts", "fnos");

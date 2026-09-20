@@ -82,6 +82,10 @@ function updatePackageJson(version) {
   const file = path.join(root, "package.json");
   const pkg = readJson(file);
   pkg.version = version;
+  // Force every release to write a fresh short App Center changelog. An empty
+  // value makes the built-fpk verify fail instead of silently shipping the
+  // previous release's one-line manifest summary.
+  pkg.mmhFnosManifestChangelog = "";
   writeJson(file, pkg);
 }
 

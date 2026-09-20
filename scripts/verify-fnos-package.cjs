@@ -287,7 +287,7 @@ expect(/normalizeFnosVersion/.test(buildScript), "fnOS package build must normal
 expect(buildScript.includes("^0\\.1\\.\\d+$"), "fnOS package build must enforce the unified 0.1.x version format.");
 expect(/os_min_version=\$\{osMinVersion\}/.test(buildScript), "fnOS manifest must include os_min_version for official submission.");
 expect(/function toSingleLineText\(value\)/.test(buildScript), "fnOS package build must normalize release notes into single-line manifest text.");
-expect(/const manifestChangelog = toSingleLineText\(changelog\);/.test(buildScript), "fnOS package build must derive a single-line manifest changelog.");
+expect(/const manifestChangelog = toSingleLineText\(packageManifestNotes \|\| changelog\);/.test(buildScript), "fnOS package build must prefer the short plain-text mmhFnosManifestChangelog for the single-line App Center changelog.");
 expect(/changelog=\$\{manifestChangelog\}/.test(buildScript), "fnOS manifest must include a changelog for official submission.");
 expect(/mmhReleaseNotes/.test(buildScript), "fnOS package build must copy release notes into the runtime package.json.");
 expect(!/path\.join\(stageDir,\s*"wizard",\s*"install"\)/.test(buildScript), "fnOS package must not ship wizard/install; the FN soft-store client only parses that file, and shipping it makes every update wait for the service port again.");
@@ -501,6 +501,17 @@ expect(/"platforms"\s*:\s*\[\s*"x86"\s*,\s*"arm"\s*\]/.test(repositoryApiApps), 
 expect(/"download_urls"/.test(repositoryApiApps) && /"x86_64"/.test(repositoryApiApps) && /"arm64"/.test(repositoryApiApps), "fnOS repository api/apps must include exactly the x86_64 and arm64 download_urls.");
 expect(!/"x86"\s*:/.test(repositoryApiApps), "fnOS repository api/apps must not include a third x86 alias download URL.");
 
+function assertManifestChangelogReadable(manifestText, label) {
+  const match = String(manifestText || "").match(/^changelog=(.*)$/m);
+  expect(!!match, `${label} manifest must include a changelog for the App Center version notes.`);
+  const value = match ? match[1].trim() : "";
+  expect(
+    !value.includes("##") && !value.includes("**") && !value.includes("- "),
+    `${label} manifest changelog must be short plain text without Markdown markers; the fnOS App Center renders it as one line.`
+  );
+  expect(value.length <= 600, `${label} manifest changelog must stay short (<= 600 chars); full notes belong in the GitHub Release.`);
+}
+
 if (fs.existsSync(stageDir)) {
   const stageManifest = read(path.join(stageDir, "manifest"));
   const stagePrivilege = read(path.join(stageDir, "config", "privilege"));
@@ -508,6 +519,7 @@ if (fs.existsSync(stageDir)) {
   const stageApplySettingsScript = read(path.join(stageDir, "cmd", "apply-settings"));
   expect(new RegExp(`arch\\s*=\\s*${verifyTarget.manifestArch}`).test(stageManifest), `fnOS ${verifyTarget.id} stage manifest must declare arch=${verifyTarget.manifestArch}.`);
   expect(new RegExp(`platform\\s*=\\s*${verifyTarget.manifestPlatform}`).test(stageManifest), `fnOS ${verifyTarget.id} stage manifest must declare platform=${verifyTarget.manifestPlatform}.`);
+  assertManifestChangelogReadable(stageManifest, `fnOS ${verifyTarget.id} stage`);
   expect(!/"run-as"\s*:\s*"package"/.test(stagePrivilege), `fnOS ${verifyTarget.id} stage privilege must not run lifecycle scripts as the package user.`);
   expect(/"username"\s*:\s*"mmh"/.test(stagePrivilege) && /"groupname"\s*:\s*"mmh"/.test(stagePrivilege), `fnOS ${verifyTarget.id} stage privilege must still declare the mmh package user and group.`);
   expect(/restart_start_as_package_user/.test(stageMainScript) && /runuser -u mmh/.test(stageMainScript), `fnOS ${verifyTarget.id} stage cmd/main must drop root-started service execution to the mmh user.`);
@@ -554,6 +566,7 @@ if (process.env.FNOS_VERIFY_BUILT_FPK === "1") {
   expect(/version\s*=/.test(manifest), "Built fnOS .fpk manifest must include a version.");
   expect(new RegExp(`arch\\s*=\\s*${verifyTarget.manifestArch}`).test(manifest), `Built fnOS .fpk manifest must declare arch=${verifyTarget.manifestArch}.`);
   expect(new RegExp(`platform\\s*=\\s*${verifyTarget.manifestPlatform}`).test(manifest), `Built fnOS .fpk manifest must declare platform=${verifyTarget.manifestPlatform}.`);
+  assertManifestChangelogReadable(manifest, "Built fnOS .fpk");
   expect(!tarHasEntryOrChild(builtFpk, "wizard/install"), "Built fnOS .fpk must not include wizard/install; the FN soft-store client parses it and would block silent updates on user input.");
   expect(!tarHasEntryOrChild(builtFpk, "wizard/upgrade"), "Built fnOS .fpk must not include wizard/upgrade; updates must not ask for the service port.");
   expect(tarHasEntry(builtFpk, "wizard/uninstall"), "Built fnOS .fpk must include wizard/uninstall so manual uninstalls offer a keep/delete-data choice; the FN soft-store client never parses it.");
