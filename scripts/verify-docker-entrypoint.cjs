@@ -140,8 +140,11 @@ expect(
 expect(
   /PUSH_ATTEMPTS=5/.test(entrypoint) &&
     /retrying in 3s/.test(entrypoint) &&
-    /starting anyway so MMH stays available/.test(entrypoint),
-  "Docker entrypoint must retry prisma db push and still start the app when schema sync fails instead of hard-exiting.",
+    /ERROR: prisma db push failed after retries; refusing to start/.test(entrypoint) &&
+    /ERROR: database schema sync would modify existing data; refusing to start/.test(entrypoint) &&
+    /exit 78/.test(entrypoint) &&
+    !/starting anyway so MMH stays available/.test(entrypoint),
+  "Docker entrypoint must retry prisma db push and then fail loudly when schema sync fails, so the app never runs against a stale schema.",
 );
 
 expect(
@@ -154,9 +157,10 @@ expect(
 expect(
   /leaving nonempty Prisma leftover table/.test(entrypoint) &&
     /refusing to drop it/.test(entrypoint) &&
-    /nonempty Prisma leftover copy tables exist; skipping prisma db push/.test(entrypoint) &&
+    /nonempty Prisma leftover copy tables exist; refusing to run schema sync/.test(entrypoint) &&
+    /MMH will not start until those leftover tables are reviewed/.test(entrypoint) &&
     !/DROP TABLE IF EXISTS \$\{table\};[\s\S]*row_count/.test(entrypoint.replace(/if \[ "\$row_count" = "0" \]; then[\s\S]*DROP TABLE IF EXISTS \$\{table\};/, "")),
-  "Docker entrypoint must never drop nonempty Prisma leftover copy tables, and must skip db push while they remain.",
+  "Docker entrypoint must never drop nonempty Prisma leftover copy tables, and must refuse to start while they remain.",
 );
 
 expect(

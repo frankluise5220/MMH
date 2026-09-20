@@ -108,7 +108,7 @@ cleanup_case() { # $1 app $2 pg $3 net $4 vol [$5 extra disposable container]
 wait_pg_ready() { # $1 pg container
   local i=0
   while [ "$i" -lt "$PG_WAIT_S" ]; do
-    docker exec "$1" pg_isready -U mmh -d mmh >/dev/null 2>&1 && return 0
+    docker exec "$1" psql -U mmh -d mmh -tAc "SELECT 1" >/dev/null 2>&1 && return 0
     sleep 2
     i=$((i + 2))
   done

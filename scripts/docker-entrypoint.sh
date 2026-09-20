@@ -539,6 +539,7 @@ record_schema_version() {
   mmh_log "WARNING: could not record schema version after retries; downgrade protection cannot trigger for this database."
   mmh_log "WARNING: without the marker a DOWN-graded image cannot be detected. Re-run this image or record it manually:"
   mmh_log "  INSERT INTO \"_mmh_schema_meta\" (\"key\", \"value\") VALUES ('schema_version', '$recorded_version');"
+  return 1
 }
 
 read_schema_version() {
@@ -611,9 +612,9 @@ should_skip_schema_push() {
     return 0
   fi
   if has_nonempty_prisma_copy_tables; then
-    mmh_log "WARNING: nonempty Prisma leftover copy tables exist; skipping prisma db push to avoid dropping user data or running out of memory."
-    mmh_log "WARNING: new schema features may be unavailable until those leftover tables are reviewed. Existing data was not dropped."
-    return 0
+    mmh_log "ERROR: nonempty Prisma leftover copy tables exist; refusing to run schema sync to avoid dropping user data or running out of memory."
+    mmh_log "ERROR: MMH will not start until those leftover tables are reviewed. Existing data was not dropped."
+    exit 78
   fi
   return 1
 }
@@ -659,13 +660,19 @@ else
       mmh_log "WARNING: settlement account backfill failed; continuing so MMH stays available."
     fi
     mmh_log "account-kind compatibility backfill complete."
-    record_schema_version "$(get_build_version)"
+    if ! record_schema_version "$(get_build_version)"; then
+      mmh_log "ERROR: database schema synced but schema version marker could not be recorded. Refusing to start so future upgrades cannot be misreported."
+      rm -f "$PUSH_OUTPUT"
+      exit 78
+    fi
   else
     if push_would_change_existing_data "$PUSH_OUTPUT"; then
-      mmh_log "WARNING: database schema sync would modify existing data; starting anyway so MMH stays available. New schema features may be unavailable until resolved."
+      mmh_log "ERROR: database schema sync would modify existing data; refusing to start. Deploy the matching newer image or restore a database backup."
     else
-      mmh_log "WARNING: prisma db push failed after retries; starting anyway so MMH stays available."
+      mmh_log "ERROR: prisma db push failed after retries; refusing to start so MMH does not run against a stale schema."
     fi
+    rm -f "$PUSH_OUTPUT"
+    exit 78
   fi
 fi
 
