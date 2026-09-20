@@ -54,7 +54,7 @@ jobs:
             image_tag="${image_tag#v}"
             echo "target_tag=${image_tag}" >> "$GITHUB_OUTPUT"
             bases="0.1.52"
-            prev="$(git describe --tags --abbrev=0 "${image_tag}~1" 2>/dev/null || true)"
+            prev="$(git describe --tags --abbrev=0 "${tag}~1" 2>/dev/null || true)"
             prev="${prev#refs/tags/}"
             prev="${prev#v}"
             if [ -n "$prev" ] && [ "$prev" != "0.1.52" ]; then
