@@ -268,9 +268,9 @@ run_compat_migrations() {
     mmh_log "migrating legacy statement category rules..."
     # Inlined from prisma/migrations/20260813_{add_statement_recognition_rules,
     # z_cleanup_statement_category_rule_institutions,zz_unify_statement_learning_rules},
-    # which were removed when the migration floor moved to 0.1.52 (2026-09-18).
-    # Docker images built before 2026-09-18 rely on the prisma/migrations copies.
-    if ! psql_mmh -v ON_ERROR_STOP=1 <<'SQL'; then
+  # which were removed when the migration floor moved to 0.1.52 (2026-09-18).
+  # Docker images built before 2026-09-18 rely on the prisma/migrations copies.
+  if psql_mmh -v ON_ERROR_STOP=1 <<'SQL'; then
 CREATE TABLE IF NOT EXISTS "statement_recognition_rules" (
   "id" TEXT NOT NULL,
   "householdId" TEXT NOT NULL,
@@ -477,15 +477,23 @@ get_build_version() {
 # a newer MMH image. Running an older binary against a newer schema makes
 # "prisma db push" drop the newer columns and lose data.
 ensure_schema_meta_table() {
+  # The _mmh_schema_meta table MUST stay declared in prisma/schema.prisma
+  # (model MmhSchemaMeta). "prisma db push" silently drops tables it does not
+  # own; in 0.1.60-0.1.63 the DDL-only table was dropped on every boot, which
+  # disabled downgrade protection for every Docker database.
+  local err_file
+  err_file="$(mktemp "${TMPDIR:-/tmp}/mmh-schema-meta-err.XXXXXX")"
   attempt=1
   while [ "$attempt" -le 3 ]; do
-    if psql_mmh -v ON_ERROR_STOP=1 -c 'CREATE TABLE IF NOT EXISTS "_mmh_schema_meta" ("key" TEXT PRIMARY KEY, "value" TEXT NOT NULL);' >/dev/null 2>&1; then
+    if psql_mmh -v ON_ERROR_STOP=1 -c 'CREATE TABLE IF NOT EXISTS "_mmh_schema_meta" ("key" TEXT PRIMARY KEY, "value" TEXT NOT NULL);' >"$err_file" 2>&1; then
+      rm -f "$err_file"
       return 0
     fi
-    mmh_log "WARNING: schema meta table ensure attempt $attempt failed; retrying in 2s..."
+    mmh_log "WARNING: schema meta table ensure attempt $attempt failed; retrying in 2s... (psql: $(head -n 1 "$err_file" | tr -d '\n'))"
     sleep 2
     attempt=$((attempt + 1))
   done
+  rm -f "$err_file"
   mmh_log "WARNING: could not ensure _mmh_schema_meta table after retries; skipping schema downgrade protection check."
   return 1
 }
@@ -514,16 +522,20 @@ refuse_if_schema_newer() {
 
 record_schema_version() {
   recorded_version="$1"
+  local err_file
+  err_file="$(mktemp "${TMPDIR:-/tmp}/mmh-schema-version-err.XXXXXX")"
   attempt=1
   while [ "$attempt" -le 3 ]; do
-    if psql_mmh -v ON_ERROR_STOP=1 -c "INSERT INTO \"_mmh_schema_meta\" (\"key\", \"value\") VALUES ('schema_version', '$recorded_version') ON CONFLICT (\"key\") DO UPDATE SET \"value\" = EXCLUDED.\"value\";" >/dev/null 2>&1; then
+    if psql_mmh -v ON_ERROR_STOP=1 -c "INSERT INTO \"_mmh_schema_meta\" (\"key\", \"value\") VALUES ('schema_version', '$recorded_version') ON CONFLICT (\"key\") DO UPDATE SET \"value\" = EXCLUDED.\"value\";" >"$err_file" 2>&1; then
+      rm -f "$err_file"
       mmh_log "recorded schema version $recorded_version"
       return 0
     fi
-    mmh_log "WARNING: schema version record attempt $attempt failed; retrying in 2s..."
+    mmh_log "WARNING: schema version record attempt $attempt failed; retrying in 2s... (psql: $(head -n 1 "$err_file" | tr -d '\n'))"
     sleep 2
     attempt=$((attempt + 1))
   done
+  rm -f "$err_file"
   mmh_log "WARNING: could not record schema version after retries; downgrade protection cannot trigger for this database."
   mmh_log "WARNING: without the marker a DOWN-graded image cannot be detected. Re-run this image or record it manually:"
   mmh_log "  INSERT INTO \"_mmh_schema_meta\" (\"key\", \"value\") VALUES ('schema_version', '$recorded_version');"
@@ -537,6 +549,14 @@ read_schema_version() {
 }
 
 ensure_auth_version_column() {
+  # Fresh databases have no "User" table yet; prisma db push below creates
+  # it with the column already defined. Pre-check so a missing table is a
+  # silent no-op instead of a misleading warning.
+  local user_table
+  user_table="$(psql_mmh -tAc "SELECT to_regclass('public.\"User\"') IS NOT NULL;" 2>/dev/null | tr -d '[:space:]')"
+  if [ "$user_table" != "t" ]; then
+    return 0
+  fi
   if psql_mmh -v ON_ERROR_STOP=1 -c 'ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "authVersion" INTEGER NOT NULL DEFAULT 1;' >/dev/null 2>&1; then
     mmh_log "ensured User.authVersion column"
     return 0
@@ -600,7 +620,11 @@ should_skip_schema_push() {
 
 refuse_if_schema_newer
 run_compat_migrations
-ensure_auth_version_column
+# Best effort by design: if the function still fails (e.g. a transient DB
+# error), swallow the status. Under `set -e` a top-level failing call would
+# kill the entrypoint before the schema sync ever runs (the fresh-install
+# crash loop shipped in 0.1.63).
+ensure_auth_version_column || true
 
 PUSH_OUTPUT="$(mktemp)"
 PUSH_OK=0

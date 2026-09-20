@@ -1,0 +1,81 @@
+name: Docker Upgrade Simulation
+
+# Release gate (migration-failure-ledger section 23): after every tagged
+# Docker image build, simulate the real upgrade path on scratch Postgres
+# containers - previous tag's schema -> target image, 0.1.52 baseline ->
+# target image, plus a fresh install. The shared dev database is always
+# already at the latest schema, so it cannot validate upgrades.
+#
+# A failure here blocks publishing the draft release for the target tag:
+# the draft must stay unpublished until this run is green (playbook section 8).
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_tag:
+        description: "Target image tag without leading v, e.g. 0.1.63"
+        required: true
+      base_tags:
+        description: "Space-separated base image tags, e.g. '0.1.62 0.1.52'"
+        required: false
+        default: "0.1.52"
+  workflow_run:
+    workflows: ["Build and Push Docker Image"]
+    types: [completed]
+
+jobs:
+  upgrade-sim:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Resolve target and base image tags
+        id: resolve
+        shell: bash
+        run: |
+          : > /tmp/mmh-upgrade-sim.log
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "target_tag=${{ github.event.inputs.target_tag }}" >> "$GITHUB_OUTPUT"
+            echo "base_tags=${{ github.event.inputs.base_tags }}" >> "$GITHUB_OUTPUT"
+          else
+            head_sha="${{ github.event.workflow_run.head_sha }}"
+            line="$(git ls-remote --tags origin | grep -F "${head_sha}" | head -n1 || true)"
+            tag="$(printf '%s\n' "$line" | awk '{print $2}' | sed 's/\^{}$//')"
+            if [ -z "$tag" ]; then
+              echo "No tag points at commit ${head_sha} (main push or dispatch); nothing to gate."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            image_tag="${tag#refs/tags/}"
+            image_tag="${image_tag#v}"
+            echo "target_tag=${image_tag}" >> "$GITHUB_OUTPUT"
+            bases="0.1.52"
+            prev="$(git describe --tags --abbrev=0 "${image_tag}~1" 2>/dev/null || true)"
+            prev="${prev#refs/tags/}"
+            prev="${prev#v}"
+            if [ -n "$prev" ] && [ "$prev" != "0.1.52" ]; then
+              bases="${prev} ${bases}"
+            fi
+            echo "base_tags=${bases}" >> "$GITHUB_OUTPUT"
+            echo "Build ref ${tag} -> target ${image_tag}, bases: ${bases}"
+          fi
+
+      - name: Run docker upgrade simulation
+        if: steps.resolve.outputs.skip != 'true'
+        shell: bash
+        run: |
+          TARGET_TAG="${{ steps.resolve.outputs.target_tag }}" \
+          BASE_TAGS="${{ steps.resolve.outputs.base_tags }}" \
+            bash scripts/docker-upgrade-sim.sh 2>&1 | tee /tmp/mmh-upgrade-sim.log
+
+      - name: Upload simulation log
+        if: always() && steps.resolve.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-upgrade-sim-${{ steps.resolve.outputs.target_tag || 'manual' }}
+          path: /tmp/mmh-upgrade-sim.log
+          if-no-files-found: ignore

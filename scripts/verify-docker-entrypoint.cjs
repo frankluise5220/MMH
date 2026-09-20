@@ -12,6 +12,7 @@ const nasEnvExample = fs.readFileSync(path.join(root, "deploy", "nas", "env.exam
 const workflow = fs.readFileSync(path.join(root, ".github", "workflows", "docker-build.yml"), "utf8");
 const healthRoute = fs.readFileSync(path.join(root, "src", "app", "api", "health", "route.ts"), "utf8");
 const prismaDb = fs.readFileSync(path.join(root, "src", "lib", "db", "prisma.ts"), "utf8");
+const prismaSchema = fs.readFileSync(path.join(root, "prisma", "schema.prisma"), "utf8");
 const standaloneStart = fs.readFileSync(path.join(root, "scripts", "start-standalone.cjs"), "utf8");
 const systemUpdateRoute = fs.readFileSync(path.join(root, "src", "app", "api", "v1", "settings", "system-update", "route.ts"), "utf8");
 const updaterServer = fs.readFileSync(path.join(root, "scripts", "mmh-updater-server.mjs"), "utf8");
@@ -27,6 +28,10 @@ expect(/ensure_session_secret/.test(entrypoint), "Docker entrypoint must generat
 
 expect(/_mmh_schema_meta/.test(entrypoint) && /refuse_if_schema_newer/.test(entrypoint), "Docker entrypoint must run the schema downgrade protection check before touching the database schema.");
 expect(/REFUSING TO START/.test(entrypoint) && /exit 78/.test(entrypoint), "Docker entrypoint must refuse to start when the database schema is newer than the image.");
+expect(
+  /model MmhSchemaMeta/.test(prismaSchema) && /@@map\("_mmh_schema_meta"\)/.test(prismaSchema),
+  "prisma/schema.prisma must declare the _mmh_schema_meta table; 'prisma db push' silently drops tables it does not own, which broke the downgrade-protection marker in 0.1.60-0.1.63.",
+);
 expect(/record_schema_version "\$\(get_build_version\)"/.test(entrypoint), "Docker entrypoint must record the image schema version after a successful schema sync.");
 expect(
   /attempt=1/.test(entrypoint) && /while \[ "\$attempt" -le 3 \]/.test(entrypoint) && entrypoint.includes("record_schema_version"),

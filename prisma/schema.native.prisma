@@ -2122,3 +2122,15 @@ enum CustomCurrencyRequestStatus {
   approved
   rejected
 }
+
+// Schema version marker for the Docker entrypoint downgrade protection.
+// Declared here (not only via entrypoint DDL) because "prisma db push"
+// silently drops tables it does not own; in 0.1.60-0.1.63 the DDL-only
+// table was dropped on every boot, disabling downgrade protection for
+// every Docker database.
+model MmhSchemaMeta {
+  key   String @id
+  value String
+
+  @@map("_mmh_schema_meta")
+}
