@@ -502,9 +502,10 @@ expect(/"download_urls"/.test(repositoryApiApps) && /"x86_64"/.test(repositoryAp
 expect(!/"x86"\s*:/.test(repositoryApiApps), "fnOS repository api/apps must not include a third x86 alias download URL.");
 
 function assertManifestChangelogReadable(manifestText, label) {
-  const match = String(manifestText || "").match(/^changelog=(.*)$/m);
+  const match = String(manifestText || "").match(/^changelog\s*=\s*(.*)$/m);
   expect(!!match, `${label} manifest must include a changelog for the App Center version notes.`);
   const value = match ? match[1].trim() : "";
+  expect(value.length > 0, `${label} manifest changelog must not be empty.`);
   expect(
     !value.includes("##") && !value.includes("**") && !value.includes("- "),
     `${label} manifest changelog must be short plain text without Markdown markers; the fnOS App Center renders it as one line.`
