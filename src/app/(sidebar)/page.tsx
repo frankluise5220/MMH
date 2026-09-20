@@ -2945,6 +2945,8 @@ export default async function Home({
                 defaultAction={
                   isDepositView
                     ? "deposit"
+                    : view === "investbond"
+                      ? "bond"
                     : view === "investstock"
                       ? "stock"
                     : view === "investproperty"
