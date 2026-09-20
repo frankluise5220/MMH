@@ -287,7 +287,9 @@ expect(/normalizeFnosVersion/.test(buildScript), "fnOS package build must normal
 expect(buildScript.includes("^0\\.1\\.\\d+$"), "fnOS package build must enforce the unified 0.1.x version format.");
 expect(/os_min_version=\$\{osMinVersion\}/.test(buildScript), "fnOS manifest must include os_min_version for official submission.");
 expect(/function toSingleLineText\(value\)/.test(buildScript), "fnOS package build must normalize release notes into single-line manifest text.");
-expect(/const manifestChangelog = toSingleLineText\(packageManifestNotes \|\| changelog\);/.test(buildScript), "fnOS package build must prefer the short plain-text mmhFnosManifestChangelog for the single-line App Center changelog.");
+expect(/const manifestChangelog = toSingleLineText\(packageManifestNotes\);/.test(buildScript), "fnOS package build must use only the short plain-text mmhFnosManifestChangelog for the single-line App Center changelog.");
+expect(/assertManifestChangelog\(manifestChangelog\);/.test(buildScript), "fnOS package build must fail when the App Center changelog is missing, Markdown, or too long.");
+expect(!/packageManifestNotes \|\|/.test(buildScript), "fnOS package build must not fall back to full release notes for the App Center changelog.");
 expect(/changelog=\$\{manifestChangelog\}/.test(buildScript), "fnOS manifest must include a changelog for official submission.");
 expect(/mmhReleaseNotes/.test(buildScript), "fnOS package build must copy release notes into the runtime package.json.");
 expect(!/path\.join\(stageDir,\s*"wizard",\s*"install"\)/.test(buildScript), "fnOS package must not ship wizard/install; the FN soft-store client only parses that file, and shipping it makes every update wait for the service port again.");
@@ -311,6 +313,7 @@ expect(!/MMH user data backed up to/.test(buildScript), "fnOS uninstall_callback
 expect(/MMH delete-data failed: user data still present/.test(buildScript), "fnOS uninstall_callback must fail if mmh.db is still present after the delete-data wipe.");
 expect(/MMH user data deleted from/.test(buildScript), "fnOS uninstall_callback must report when wizard_delete_data=true actually wiped the data directory.");
 expect(/chown mmh:mmh/.test(buildScript) && /ensure_out_of_tree_backup_root/.test(buildScript), "fnOS install/upgrade/start paths must chown the sibling upgrade-backups directory to mmh so upgrade/uninstall_init copies remain writable.");
+expect(/\.next\/cache/.test(buildScript) && /chown -R mmh:mmh "\$SERVER_DIR\/\.next\/cache"/.test(buildScript), "fnOS start path must make the Next cache directory writable by the mmh runtime user before dropping privileges.");
 expect(/upgrade-backups/.test(buildScript) && /sha256sum/.test(buildScript), "fnOS backup lifecycle must copy appdata to an upgrade backup directory and record the SQLite checksum when available.");
 expect(/"\$data_root\/\.port"/.test(buildScript), "fnOS backup lifecycle must preserve the persisted service port file.");
 expect(/data_root\/upgrade-backups/.test(buildScript), "fnOS backup lifecycle must fall back to an app-owned upgrade backup directory when sibling appdata backups are not writable.");
@@ -439,6 +442,7 @@ expect(!/wizard_system_password/.test(buildScript), "fnOS package must not ask f
 expect(/MMH_SYSTEM_PASSWORD/.test(buildScript), "fnOS start script must export MMH_SYSTEM_PASSWORD.");
 expect(/mmh-system-password\.txt/.test(buildScript), "fnOS start script must persist generated system passwords in app data.");
 expect(/install_callback/.test(buildScript) && /write_env_file/.test(buildScript), "fnOS lifecycle callbacks must persist package runtime settings.");
+expect(/"run-as": "root"/.test(buildScript), "fnOS lifecycle scripts must explicitly default to root; the App Center source cache can be 750 root:root before install_init runs.");
 expect(!/"run-as": "package"/.test(buildScript), "fnOS lifecycle scripts must not default to the package user; install_init can fail before app data permissions exist.");
 expect(/restart_start_as_package_user/.test(buildScript) && /runuser -u mmh/.test(buildScript), "fnOS start script must drop from app-center/root lifecycle execution to the mmh package user before running Node.");
 expect(/makeFnosPackageEntriesReadable/.test(buildScript), "fnOS package build must normalize entry permissions before packaging.");
@@ -460,10 +464,12 @@ expect(!/process\.env\.(POSTGRES_PASSWORD|MMH_SYSTEM_PASSWORD)/.test(authVerifyR
 expect(/FNOS_MANUAL_FPK/.test(buildScript), "fnOS package build should keep an explicit manual test FPK mode.");
 expect(/schema\.native\.prisma/.test(appBuildScript), "fnOS app build must generate and build against the SQLite schema.");
 expect(/MMH_DEPLOY_TARGET/.test(systemUpdateRoute), "System update API must detect fnOS by MMH_DEPLOY_TARGET.");
+expect(/!existsSync\(join\(projectRoot, "\.git"\)\)/.test(systemUpdateRoute), "System update API must not run git commands in package-managed runtimes without a .git directory.");
 expect(/isFnos/.test(systemUpdateRoute), "System update API must return an explicit isFnos flag.");
 expect(/remoteVersion/.test(systemUpdateRoute), "System update API must return the remote app version for update display.");
 expect(/飞牛版请通过飞牛应用中心更新 MMH 应用包/.test(systemUpdateRoute), "System update API must reject in-app updates for fnOS.");
 expect(/packageManaged \? t\("settings\.systemUpdate\.versionInfo"\)/.test(systemUpdatePage), "System update page must label package-managed details as version information.");
+expect(/function ReleaseNotesText/.test(systemUpdatePage) && /<ReleaseNotesText value=\{localReleaseNotes\}/.test(systemUpdatePage), "System update page must render package release notes as structured multi-line text instead of collapsing them into one paragraph.");
 expect(/githubProjectUrl/.test(systemUpdatePage) && /systemUpdate\.githubHome/.test(systemUpdatePage), "System update page must expose the GitHub project link for fnOS users.");
 expect(/availableVersionText/.test(systemUpdatePage) && /systemUpdate\.availableVersion/.test(systemUpdatePage), "System update page must show the available app version beside the update commit.");
 expect(/systemUpdate\.fnosManagedInfo/.test(systemUpdatePage) && /systemUpdate\.managedByFnos/.test(systemUpdatePage), "System update page must guide fnOS users to update with the architecture-matched FPK.");
@@ -521,6 +527,7 @@ if (fs.existsSync(stageDir)) {
   expect(new RegExp(`arch\\s*=\\s*${verifyTarget.manifestArch}`).test(stageManifest), `fnOS ${verifyTarget.id} stage manifest must declare arch=${verifyTarget.manifestArch}.`);
   expect(new RegExp(`platform\\s*=\\s*${verifyTarget.manifestPlatform}`).test(stageManifest), `fnOS ${verifyTarget.id} stage manifest must declare platform=${verifyTarget.manifestPlatform}.`);
   assertManifestChangelogReadable(stageManifest, `fnOS ${verifyTarget.id} stage`);
+  expect(/"defaults"/.test(stagePrivilege) && /"run-as"\s*:\s*"root"/.test(stagePrivilege), `fnOS ${verifyTarget.id} stage privilege must run lifecycle scripts as root so App Center can execute cmd/install_init from its source cache.`);
   expect(!/"run-as"\s*:\s*"package"/.test(stagePrivilege), `fnOS ${verifyTarget.id} stage privilege must not run lifecycle scripts as the package user.`);
   expect(/"username"\s*:\s*"mmh"/.test(stagePrivilege) && /"groupname"\s*:\s*"mmh"/.test(stagePrivilege), `fnOS ${verifyTarget.id} stage privilege must still declare the mmh package user and group.`);
   expect(/restart_start_as_package_user/.test(stageMainScript) && /runuser -u mmh/.test(stageMainScript), `fnOS ${verifyTarget.id} stage cmd/main must drop root-started service execution to the mmh user.`);
@@ -562,12 +569,15 @@ const builtFpk = path.join(root, "release-artifacts", "fnos", verifyTarget.built
 if (process.env.FNOS_VERIFY_BUILT_FPK === "1") {
   expect(fs.existsSync(builtFpk), `Built fnOS ${verifyTarget.id} .fpk must exist before upload.`);
   const manifest = readTarEntry(builtFpk, "manifest");
+  const privilege = readTarEntry(builtFpk, "config/privilege");
   const mainScript = readTarEntry(builtFpk, "cmd/main");
   const applySettingsScript = readTarEntry(builtFpk, "cmd/apply-settings");
   expect(/version\s*=/.test(manifest), "Built fnOS .fpk manifest must include a version.");
   expect(new RegExp(`arch\\s*=\\s*${verifyTarget.manifestArch}`).test(manifest), `Built fnOS .fpk manifest must declare arch=${verifyTarget.manifestArch}.`);
   expect(new RegExp(`platform\\s*=\\s*${verifyTarget.manifestPlatform}`).test(manifest), `Built fnOS .fpk manifest must declare platform=${verifyTarget.manifestPlatform}.`);
   assertManifestChangelogReadable(manifest, "Built fnOS .fpk");
+  expect(/"defaults"/.test(privilege) && /"run-as"\s*:\s*"root"/.test(privilege), "Built fnOS .fpk config/privilege must run lifecycle scripts as root so cmd/install_init can execute from App Center's 750 root-owned source cache.");
+  expect(!/"run-as"\s*:\s*"package"/.test(privilege), "Built fnOS .fpk config/privilege must not run lifecycle scripts as the package user.");
   expect(!tarHasEntryOrChild(builtFpk, "wizard/install"), "Built fnOS .fpk must not include wizard/install; the FN soft-store client parses it and would block silent updates on user input.");
   expect(!tarHasEntryOrChild(builtFpk, "wizard/upgrade"), "Built fnOS .fpk must not include wizard/upgrade; updates must not ask for the service port.");
   expect(tarHasEntry(builtFpk, "wizard/uninstall"), "Built fnOS .fpk must include wizard/uninstall so manual uninstalls offer a keep/delete-data choice; the FN soft-store client never parses it.");

@@ -12,12 +12,13 @@ const version = normalizeFnosVersion(rawVersion);
 const osMinVersion = process.env.FNOS_OS_MIN_VERSION || "0.9.0";
 const packageReleaseNotes = typeof pkg.mmhReleaseNotes === "string" ? pkg.mmhReleaseNotes.trim() : "";
 const packageManifestNotes = typeof pkg.mmhFnosManifestChangelog === "string" ? pkg.mmhFnosManifestChangelog.trim() : "";
-const changelog = process.env.FNOS_PACKAGE_CHANGELOG || packageReleaseNotes || "更新 MMH 飞牛 SQLite 原生包，优化本地安装、启动和更新验证流程。";
+const runtimeReleaseNotes = process.env.FNOS_PACKAGE_CHANGELOG || packageReleaseNotes || "更新 MMH 飞牛 SQLite 原生包，优化本地安装、启动和更新验证流程。";
 // The manifest `changelog` is a single-line INI field rendered as-is by the
 // fnOS App Center "版本说明" panel, so it must be a short plain-text summary
 // (no Markdown markers). The full multi-line release notes stay in
 // mmhReleaseNotes and are copied into the runtime package.json instead.
-const manifestChangelog = toSingleLineText(packageManifestNotes || changelog);
+const manifestChangelog = toSingleLineText(packageManifestNotes);
+assertManifestChangelog(manifestChangelog);
 const appName = "mmh";
 const target = normalizeFnosTarget(process.env.FNOS_TARGET_ARCH || process.env.FNOS_TARGET || "x86");
 const outDir = path.join(root, "release-artifacts", "fnos");
@@ -45,6 +46,18 @@ function toSingleLineText(value) {
     .map((line) => line.trim())
     .filter(Boolean)
     .join(" ");
+}
+
+function assertManifestChangelog(value) {
+  if (!value) {
+    throw new Error("package.json mmhFnosManifestChangelog is required for the fnOS App Center manifest changelog.");
+  }
+  if (value.includes("##") || value.includes("**") || value.includes("- ")) {
+    throw new Error("package.json mmhFnosManifestChangelog must be short plain text without Markdown markers.");
+  }
+  if (value.length > 600) {
+    throw new Error("package.json mmhFnosManifestChangelog must stay at or below 600 characters; put full notes in mmhReleaseNotes.");
+  }
 }
 
 function makeFnosPackageEntriesReadable(dir) {
@@ -577,6 +590,9 @@ changelog=${manifestChangelog}
 `);
 
 write(path.join(stageDir, "config", "privilege"), JSON.stringify({
+  defaults: {
+    "run-as": "root",
+  },
   username: "mmh",
   groupname: "mmh",
 }, null, 2));
@@ -1384,6 +1400,11 @@ ensure_runtime_owner () {
   mkdir -p "$DATA_DEST" "$DATA_ROOT"
   if id mmh >/dev/null 2>&1; then
     chown -R mmh:mmh "$DATA_ROOT" 2>/dev/null || true
+    if [ -d "\${SERVER_DIR:-}/.next" ]; then
+      mkdir -p "$SERVER_DIR/.next/cache" 2>/dev/null || true
+      chown -R mmh:mmh "$SERVER_DIR/.next/cache" 2>/dev/null || true
+      chmod 700 "$SERVER_DIR/.next/cache" 2>/dev/null || true
+    fi
   fi
   chmod 770 "$DATA_ROOT" 2>/dev/null || true
   chmod 700 "$DATA_DEST" 2>/dev/null || true
@@ -1804,7 +1825,7 @@ if (fs.existsSync(standaloneDir)) {
   if (fs.existsSync(runtimePackageJson)) {
     const runtimePkg = JSON.parse(fs.readFileSync(runtimePackageJson, "utf8"));
     runtimePkg.version = version;
-    runtimePkg.mmhReleaseNotes = changelog;
+    runtimePkg.mmhReleaseNotes = runtimeReleaseNotes;
     write(runtimePackageJson, JSON.stringify(runtimePkg, null, 2));
   }
   for (const envFile of [".env", ".env.local", ".env.production", ".env.development"]) {

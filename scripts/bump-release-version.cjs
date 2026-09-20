@@ -31,10 +31,6 @@ function nextVersion(current) {
   return `0.1.${patch + 1}`;
 }
 
-function getReleaseNotes(pkg) {
-  return String(pkg.mmhReleaseNotes || "").trim();
-}
-
 function todayDate() {
   const now = new Date();
   const y = now.getFullYear();
@@ -97,7 +93,7 @@ function updatePackageLock(version) {
   writeJson(file, lock);
 }
 
-function updateFnosRepositoryJson(version, file, rootKey, releaseNotes) {
+function updateFnosRepositoryJson(version, file, rootKey, manifestChangelog) {
   const fullPath = path.join(root, file);
   const payload = readJson(fullPath);
   const apps = Array.isArray(rootKey ? payload[rootKey] : payload.data)
@@ -113,9 +109,7 @@ function updateFnosRepositoryJson(version, file, rootKey, releaseNotes) {
     if (typeof app.icon === "string") {
       app.icon = app.icon.replace(/([?&]v=)[^&]+/, `$1${version}`);
     }
-    if (releaseNotes) {
-      app.changelog = releaseNotes;
-    }
+    app.changelog = manifestChangelog;
     app.type = "原生";
     app.updated_at = todayDate();
     if (!Array.isArray(app.screenshots) || app.screenshots.length === 0) {
@@ -128,7 +122,7 @@ function updateFnosRepositoryJson(version, file, rootKey, releaseNotes) {
   writeJson(fullPath, payload);
 }
 
-function updateFndepotFnpackJson(version, releaseNotes) {
+function updateFndepotFnpackJson(version, manifestChangelog) {
   const file = path.join(root, "deploy", "fnos", "repository", "fnpack.json");
   const payload = readJson(file);
   const app = payload.apps?.mmh;
@@ -141,7 +135,7 @@ function updateFndepotFnpackJson(version, releaseNotes) {
   const current = releases[version] && typeof releases[version] === "object" ? releases[version] : {};
   releases[version] = {
     ...current,
-    changelog: releaseNotes || current.changelog || "",
+    changelog: manifestChangelog,
     os_min_version: current.os_min_version || "0.9.0",
     packages: fnosFndepotPackages(version),
   };
@@ -149,7 +143,7 @@ function updateFndepotFnpackJson(version, releaseNotes) {
   writeJson(file, payload);
 }
 
-function updateLegacyFnosAppstore(version, releaseNotes) {
+function updateLegacyFnosAppstore(version, manifestChangelog) {
   const file = path.join(root, "fn-appstores.json");
   const payload = readJson(file);
   for (const app of Array.isArray(payload) ? payload : []) {
@@ -162,22 +156,20 @@ function updateLegacyFnosAppstore(version, releaseNotes) {
     if (typeof app._manual.icon === "string") {
       app._manual.icon = app._manual.icon.replace(/([?&]v=)[^&]+/, `$1${version}`);
     }
-    if (releaseNotes) {
-      app._manual.changelog = releaseNotes;
-    }
+    app._manual.changelog = manifestChangelog;
   }
   writeJson(file, payload);
 }
 
 const pkg = readJson(path.join(root, "package.json"));
 const version = nextVersion(pkg.version);
-const releaseNotes = getReleaseNotes(pkg);
+const manifestChangelog = "";
 
 updatePackageJson(version);
 updatePackageLock(version);
-updateFnosRepositoryJson(version, path.join("deploy", "fnos", "repository", "apps.example.json"), "apps", releaseNotes);
-updateFnosRepositoryJson(version, path.join("deploy", "fnos", "repository", "api", "apps"), undefined, releaseNotes);
-updateFndepotFnpackJson(version, releaseNotes);
-updateLegacyFnosAppstore(version, releaseNotes);
+updateFnosRepositoryJson(version, path.join("deploy", "fnos", "repository", "apps.example.json"), "apps", manifestChangelog);
+updateFnosRepositoryJson(version, path.join("deploy", "fnos", "repository", "api", "apps"), undefined, manifestChangelog);
+updateFndepotFnpackJson(version, manifestChangelog);
+updateLegacyFnosAppstore(version, manifestChangelog);
 
 console.log(`MMH release version bumped to ${version}.`);

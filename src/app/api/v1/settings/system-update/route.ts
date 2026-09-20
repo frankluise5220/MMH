@@ -171,6 +171,9 @@ function getLocalGitInfo(projectRoot: string) {
       versionSource: "env" as const,
     };
   }
+  if (!existsSync(join(projectRoot, ".git"))) {
+    return { localCommit: "unknown", localCommitFull: "unknown", localCommitMsg: "", localCommitDate: "", versionSource: "env" as const };
+  }
   try {
     return {
       localCommit: execSync("git rev-parse --short HEAD", { cwd: projectRoot, encoding: "utf-8" }).trim(),

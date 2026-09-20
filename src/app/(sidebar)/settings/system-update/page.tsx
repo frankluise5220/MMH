@@ -166,6 +166,59 @@ function imageSourceOptionLabel(option: { value: string; label: string }, t: (ke
   return option.value === "auto" ? t("settings.systemUpdate.autoSelect") : option.label;
 }
 
+function stripMarkdownEmphasis(value: string) {
+  return value.replace(/^\*\*(.+)\*\*$/, "$1").trim();
+}
+
+function ReleaseNotesText({ value }: { value: string }) {
+  const blocks = value
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd());
+
+  return (
+    <div className="min-w-0 space-y-2 text-slate-700">
+      {blocks.map((line, index) => {
+        const key = `${index}-${line}`;
+        const trimmed = line.trim();
+        if (!trimmed) return <div key={key} className="h-1" aria-hidden="true" />;
+
+        const heading = trimmed.match(/^(#{2,4})\s+(.+)$/);
+        if (heading) {
+          const level = heading[1].length;
+          return (
+            <div
+              key={key}
+              className={`${level === 2 ? "pt-1 text-sm" : "text-xs"} font-semibold text-slate-900`}
+            >
+              {stripMarkdownEmphasis(heading[2])}
+            </div>
+          );
+        }
+
+        if (trimmed.startsWith(">")) {
+          return (
+            <div key={key} className="border-l-2 border-blue-200 pl-3 text-xs leading-5 text-slate-600">
+              {stripMarkdownEmphasis(trimmed.replace(/^>\s*/, ""))}
+            </div>
+          );
+        }
+
+        const bullet = trimmed.match(/^-\s+(.+)$/);
+        if (bullet) {
+          return (
+            <div key={key} className="flex min-w-0 gap-2 text-xs leading-5 text-slate-700">
+              <span className="mt-2 h-1 w-1 shrink-0 rounded-full bg-slate-400" />
+              <span className="min-w-0 break-words">{stripMarkdownEmphasis(bullet[1])}</span>
+            </div>
+          );
+        }
+
+        return <div key={key} className="break-words text-xs leading-5 text-slate-700">{stripMarkdownEmphasis(trimmed)}</div>;
+      })}
+    </div>
+  );
+}
+
 // The updater image lives in the same registry as the app image with the repo
 // name `mmh-updater`, so the custom source only needs the app image address.
 function deriveUpdaterImage(appImage: string) {
@@ -621,7 +674,7 @@ sudo docker compose -p mmh up -d app updater`}</pre>
               {packageManaged && localReleaseNotes ? (
                 <>
                   <div className="text-slate-500">{t("settings.systemUpdate.releaseNotes")}</div>
-                  <div className="min-w-0 text-slate-700">{localReleaseNotes}</div>
+                  <ReleaseNotesText value={localReleaseNotes} />
                 </>
               ) : null}
 

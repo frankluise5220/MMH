@@ -59,10 +59,15 @@ function getFndepotRelease(payload, version) {
 const pkg = readJson("package.json");
 const version = String(pkg.version || "").trim();
 const releaseNotes = String(pkg.mmhReleaseNotes || "").trim();
+const manifestChangelog = String(pkg.mmhFnosManifestChangelog || "").trim();
 const downloadUrls = fnosDownloadUrls(version);
 
 expect(/^0\.1\.\d+$/.test(version), `package.json version must use 0.1.x format, got ${version || "(empty)"}.`);
 expect(releaseNotes.length > 0, "package.json must include non-empty mmhReleaseNotes for release/version display.");
+expect(manifestChangelog.length > 0, "package.json must include non-empty mmhFnosManifestChangelog for fnOS App Center version notes.");
+expect(manifestChangelog.length <= 600, "package.json mmhFnosManifestChangelog must stay short (<= 600 chars); full notes belong in mmhReleaseNotes.");
+expect(!/##|\*\*|-\s/.test(manifestChangelog), "package.json mmhFnosManifestChangelog must be plain text without Markdown markers.");
+expect(new RegExp(`完整说明见 GitHub Release v${version.replace(/\./g, "\\.")}$`).test(manifestChangelog), "package.json mmhFnosManifestChangelog must end with the matching GitHub Release reference.");
 
 expect(!/fn-appstores-client-2\.5\.2-x86\.fpk/.test(releaseNotes), "mmhReleaseNotes must not revive the retired FN 软仓客户端 2.5.2 x86 link.");
 expect(!/名称自定义/.test(releaseNotes), "mmhReleaseNotes must not revive the retired 名称自定义 dedicated-source phrasing.");
@@ -90,7 +95,7 @@ for (const [file, key] of [
   expect(!("x86" in (app.download_urls || {})), `${file} download_urls must not publish a third x86 alias URL.`);
   expect(app.download_urls?.x86_64 === downloadUrls.x86_64, `${file} download_urls.x86_64 must use the unified v${version} Release tag.`);
   expect(app.download_urls?.arm64 === downloadUrls.arm64, `${file} download_urls.arm64 must use the unified v${version} Release tag.`);
-  expect(app.changelog === releaseNotes, `${file} changelog must match package.json mmhReleaseNotes.`);
+  expect(app.changelog === manifestChangelog, `${file} changelog must match package.json mmhFnosManifestChangelog.`);
   expect(app.type === "原生", `${file} type must be 原生 for the FN soft-store native filter.`);
   expect(/^\d{4}-\d{2}-\d{2}$/.test(app.updated_at || ""), `${file} updated_at must use YYYY-MM-DD for the FN soft-store new-apps sort.`);
   expect(Array.isArray(app.screenshots) && app.screenshots.length > 0, `${file} screenshots must list at least one preview image.`);
@@ -108,7 +113,7 @@ if (fndepotApp) {
   const fndepotRelease = fndepotApp.releases?.[version];
   expect(fndepotRelease, `deploy/fnos/repository/fnpack.json must contain a release entry for v${version}.`);
   if (fndepotRelease) {
-    expect(fndepotRelease.changelog === releaseNotes, "deploy/fnos/repository/fnpack.json releases changelog must match package.json mmhReleaseNotes.");
+    expect(fndepotRelease.changelog === manifestChangelog, "deploy/fnos/repository/fnpack.json releases changelog must match package.json mmhFnosManifestChangelog.");
     expect(fndepotRelease.packages?.x86?.download_url === downloadUrls.x86_64, "deploy/fnos/repository/fnpack.json releases x86 download_url must point to the x86_64 FPK for v${version}.");
     expect(fndepotRelease.packages?.arm?.download_url === downloadUrls.arm64, "deploy/fnos/repository/fnpack.json releases arm download_url must point to the arm64 FPK for v${version}.");
   }
@@ -127,7 +132,7 @@ if (legacyApp) {
   expect(!("x86" in (legacyApp.download_urls || {})), "fn-appstores.json _manual download_urls must not publish a third x86 alias URL.");
   expect(legacyApp.download_urls?.x86_64 === downloadUrls.x86_64, "fn-appstores.json _manual download_urls.x86_64 must use the unified Release tag.");
   expect(legacyApp.download_urls?.arm64 === downloadUrls.arm64, "fn-appstores.json _manual download_urls.arm64 must use the unified Release tag.");
-  expect(legacyApp.changelog === releaseNotes, "fn-appstores.json _manual changelog must match package.json mmhReleaseNotes.");
+  expect(legacyApp.changelog === manifestChangelog, "fn-appstores.json _manual changelog must match package.json mmhFnosManifestChangelog.");
 }
 
 const dockerWorkflow = read(".github/workflows/docker-build.yml");
