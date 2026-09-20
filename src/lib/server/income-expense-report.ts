@@ -4,12 +4,13 @@ import { prisma } from "@/lib/db/prisma";
 import { addDaysUtc, formatDateUtc, startOfDayUtc, toNumber } from "@/lib/date-utils";
 import {
   normalizeDefaultCategoryHierarchyForHousehold,
+  SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY,
   SYSTEM_INSURANCE_EXPENSE_CATEGORY,
   SYSTEM_INSURANCE_RETURN_CATEGORY,
 } from "@/lib/default-categories";
 import { loadFundStatisticSourceEntries, loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
 import type { HouseholdContext } from "@/lib/server/household-scope";
-import { getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
+import { getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems, isBondInterestIncomeEntry } from "@/lib/transaction-statistics";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE } from "@/lib/balance-reconcile";
 import { buildStatisticsCurrencyConverter } from "@/lib/server/statistics-currency";
 import { getServerT } from "@/lib/server/i18n";
@@ -477,6 +478,7 @@ export async function getIncomeExpenseReport(
     const type: ReportCategoryType = isInsurance
       ? insuranceType
       : record.type === TransactionType.income ? "income" : "expense";
+    const isBondInterest = isBondInterestIncomeEntry(record);
     return [{
       id: record.id,
       entryId: record.id,
@@ -484,10 +486,12 @@ export async function getIncomeExpenseReport(
       date: record.date,
       type,
       amount: isInsurance ? Math.abs(toNumber(record.amount)) : getIncomeExpenseStatisticAmount(record.type, record.amount),
-      categoryId: isInsurance ? null : record.categoryId,
+      categoryId: isInsurance || isBondInterest ? null : record.categoryId,
       categoryName: isInsurance
         ? (type === "income" ? SYSTEM_INSURANCE_RETURN_CATEGORY : SYSTEM_INSURANCE_EXPENSE_CATEGORY)
-        : record.categoryName?.trim() || null,
+        : isBondInterest
+          ? SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY
+          : record.categoryName?.trim() || null,
       accountId: record.accountId,
       accountName: accountDisplayName(record.account, record.accountName),
       counterpartyName: record.counterpartyInstitutionName,

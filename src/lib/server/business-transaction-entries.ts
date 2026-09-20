@@ -395,7 +395,7 @@ export async function loadBondTransactionEntryLike(params: {
         },
       },
     },
-    orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }],
+    orderBy: [{ tradeDate: "desc" }, { createdAt: "desc" }],
   });
 
   const profitByTransactionId = new Map<string, number>();
@@ -496,9 +496,9 @@ export async function loadBondTransactionEntryLike(params: {
       };
     })
     .sort((a, b) => {
-      const dateDiff = new Date(a.date as any).getTime() - new Date(b.date as any).getTime();
+      const dateDiff = new Date(b.date as any).getTime() - new Date(a.date as any).getTime();
       if (dateDiff !== 0) return dateDiff;
-      return new Date(a.createdAt as any).getTime() - new Date(b.createdAt as any).getTime();
+      return new Date(b.createdAt as any).getTime() - new Date(a.createdAt as any).getTime();
     });
 }
 

@@ -5,6 +5,7 @@ import { toNumber } from "@/lib/date-utils";
 import {
   SYSTEM_DEPOSIT_FEE_CATEGORY,
   SYSTEM_DEPOSIT_INTEREST_CATEGORY,
+  SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY,
   SYSTEM_FUND_LOSS_CATEGORY,
   SYSTEM_FUND_PROFIT_CATEGORY,
   SYSTEM_INVESTMENT_DIVIDEND_CATEGORY,
@@ -12,7 +13,7 @@ import {
   SYSTEM_WEALTH_LOSS_CATEGORY,
   SYSTEM_WEALTH_PROFIT_CATEGORY,
 } from "@/lib/default-categories";
-import { isDebtPrincipalTransfer } from "@/lib/transaction-semantics";
+import { isDebtPrincipalTransfer, TRANSACTION_SOURCE_BOND } from "@/lib/transaction-semantics";
 
 /**
  * Converts stored cash-flow amounts into category-statistics amounts.
@@ -98,6 +99,29 @@ export const INVESTMENT_STATISTIC_CATEGORY_NAMES = [
   SYSTEM_INVESTMENT_DIVIDEND_CATEGORY,
   SYSTEM_INVESTMENT_LOSS_CATEGORY,
 ];
+
+export const BOND_INTEREST_INCOME_CATEGORY_CANDIDATES = [
+  SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY,
+  "投资收入",
+];
+
+/**
+ * Auto-posted bond interest income rows (source "bond", fundSubtype
+ * "dividend_cash") carry an investment-type category snapshot that is not
+ * part of the income/expense tree, so statistics must classify them through
+ * the reserved finance/investment income root instead.
+ */
+export function isBondInterestIncomeEntry(entry: {
+  type?: TransactionType | string | null;
+  source?: string | null;
+  fundSubtype?: string | null;
+}): boolean {
+  return (
+    entry.type === TransactionType.income &&
+    entry.source === TRANSACTION_SOURCE_BOND &&
+    entry.fundSubtype === "dividend_cash"
+  );
+}
 
 export function buildStatisticCategoryItems(
   categoryMap: Map<string, number>,
@@ -396,7 +420,7 @@ function hasUnitBasedResultEvidence(entry: InvestmentStatisticEntryLike) {
 function profitCategory(kind: InvestmentProductKind, value: number) {
   if (kind === "wealth") {
     return value >= 0
-      ? { name: SYSTEM_WEALTH_PROFIT_CATEGORY, candidates: [SYSTEM_WEALTH_PROFIT_CATEGORY, "投资收益", "投资收入"] }
+      ? { name: SYSTEM_WEALTH_PROFIT_CATEGORY, candidates: [SYSTEM_WEALTH_PROFIT_CATEGORY, "投资收益", SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY, "投资收入"] }
       : { name: SYSTEM_WEALTH_LOSS_CATEGORY, candidates: [SYSTEM_INVESTMENT_LOSS_CATEGORY, SYSTEM_WEALTH_LOSS_CATEGORY] };
   }
   if (kind === "deposit") {
@@ -405,7 +429,7 @@ function profitCategory(kind: InvestmentProductKind, value: number) {
       : { name: SYSTEM_DEPOSIT_FEE_CATEGORY, candidates: [SYSTEM_INVESTMENT_LOSS_CATEGORY, SYSTEM_DEPOSIT_FEE_CATEGORY] };
   }
   return value >= 0
-    ? { name: SYSTEM_FUND_PROFIT_CATEGORY, candidates: [SYSTEM_FUND_PROFIT_CATEGORY, "投资收益", "投资收入"] }
+    ? { name: SYSTEM_FUND_PROFIT_CATEGORY, candidates: [SYSTEM_FUND_PROFIT_CATEGORY, "投资收益", SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY, "投资收入"] }
     : { name: SYSTEM_FUND_LOSS_CATEGORY, candidates: [SYSTEM_INVESTMENT_LOSS_CATEGORY, SYSTEM_FUND_LOSS_CATEGORY] };
 }
 
@@ -430,7 +454,7 @@ export function getInvestmentStatisticItems(entry: InvestmentStatisticEntryLike)
         ? profitCategory("wealth", amount)
         : kind === "deposit"
           ? profitCategory("deposit", amount)
-          : { name: SYSTEM_FUND_PROFIT_CATEGORY, candidates: [SYSTEM_FUND_PROFIT_CATEGORY, "投资收益", "投资收入", SYSTEM_INVESTMENT_DIVIDEND_CATEGORY, "股息分红"] };
+          : { name: SYSTEM_FUND_PROFIT_CATEGORY, candidates: [SYSTEM_FUND_PROFIT_CATEGORY, "投资收益", SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY, "投资收入", SYSTEM_INVESTMENT_DIVIDEND_CATEGORY, "股息分红"] };
       items.push({
         idSuffix: "dividend",
         type: "income",
@@ -526,7 +550,7 @@ export function getBusinessResultStatisticItems(entry: InvestmentStatisticEntryL
     amount: Math.abs(profit),
     categoryName: positive ? "利息" : "贷款利息",
     categoryCandidates: positive
-      ? ["利息", "投资收益", "投资收入"]
+      ? ["利息", "投资收益", SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY, "投资收入"]
       : ["贷款利息", "利息支出"],
     label: positive ? "利息收入" : "利息支出",
   }];

@@ -16,11 +16,12 @@ import { buildStatisticsFundDisplayResolver } from "@/lib/server/statistics-fund
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import {
   normalizeDefaultCategoryHierarchyForHousehold,
+  SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY,
   SYSTEM_INSURANCE_EXPENSE_CATEGORY,
   SYSTEM_INSURANCE_RETURN_CATEGORY,
 } from "@/lib/default-categories";
-import { addStatisticCategoryBucket, addStatisticTagBucket, buildStatisticCategoryItemsFromBuckets, buildStatisticTagItemsFromBuckets, createStatisticCategoryResolver, createStatisticDistributionCollector, getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems } from "@/lib/transaction-statistics";
-import { isCreditCardRepaymentTransfer, isDebtPrincipalCashFlow } from "@/lib/transaction-semantics";
+import { addStatisticCategoryBucket, addStatisticTagBucket, buildStatisticCategoryItemsFromBuckets, buildStatisticTagItemsFromBuckets, createStatisticCategoryResolver, createStatisticDistributionCollector, getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems, isBondInterestIncomeEntry, BOND_INTEREST_INCOME_CATEGORY_CANDIDATES } from "@/lib/transaction-statistics";
+import { isCreditCardRepaymentTransfer, isDebtPrincipalCashFlow, TRANSACTION_SOURCE_BOND } from "@/lib/transaction-semantics";
 import { getServerT } from "@/lib/server/i18n";
 import { categoryOrderBy } from "@/lib/category-order";
 
@@ -255,7 +256,10 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
     if (e.type === TransactionType.income) {
       const effectiveAmount = getIncomeExpenseStatisticAmount(e.type, amount);
       row.income += effectiveAmount;
-      addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", categoryId: e.categoryId, categoryName: e.categoryName }), effectiveAmount);
+      const incomeCategory = isBondInterestIncomeEntry(e)
+        ? resolveCategory({ type: "income", candidates: BOND_INTEREST_INCOME_CATEGORY_CANDIDATES, fallbackName: SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY })
+        : resolveCategory({ type: "income", categoryId: e.categoryId, categoryName: e.categoryName });
+      addStatisticCategoryBucket(incomeByCat, incomeCategory, effectiveAmount);
       dist.add("income", e, effectiveAmount);
       addStatisticTagBucket(incomeByTag, e.EntryTag, effectiveAmount, untaggedLabel);
     } else if (e.type === TransactionType.expense) {
@@ -270,6 +274,9 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
           accountKind: accountKindById.get(e.accountId),
           toAccountKind: accountKindById.get(e.toAccountId ?? ""),
       })) continue;
+      // Bond interest transfers pair with an auto-posted income row already
+      // counted above; skip them to avoid double counting (deposit model parity).
+      if (e.source === TRANSACTION_SOURCE_BOND) continue;
       // Borrow / lend / repay / collect / scheduled repayments: the principal
       // itself is a balance-sheet move, not income/expense.  Skip the principal
       // here; the interest portion is still reported via

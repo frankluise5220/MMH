@@ -209,6 +209,7 @@ const SYSTEM_CATEGORY_LABEL_KEYS: Record<string, string> = {
   "投资分红": "systemCategory.investmentDividend",
   "投资记录": "systemCategory.investmentRecords",
   "投资亏损": "systemCategory.investmentLoss",
+  "金融及投资收入": "systemCategory.investmentIncome",
   "投资收入": "systemCategory.investmentIncome",
   "投资收益": "systemCategory.investmentProfit",
   "退款": "systemCategory.refunds",

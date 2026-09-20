@@ -1,10 +1,6 @@
 # MoneyMoneyHome（MMH）
 
 <p align="center">
-  ![MMH logo](public/branding/mmh-logo-pageflip-192.png)
-</p>
-
-<p align="center">
   <a href="#中文">中文</a>
   ·
   <a href="#english">English</a>
@@ -21,14 +17,6 @@
 MMH（MoneyMoneyHome）是一套面向家庭和个人的本地优先智能财务工作台。它把日常记账、信用卡账单、基金、股票、债券、存款、理财、房产、保险、贷款和往来款放进同一套账，让家庭的资产和负债有同一个长期稳定的视图。
 
 它不是把家庭账本交给外部平台的 SaaS。它部署在自己的 NAS、家庭服务器或本机，敏感财务数据留在自己掌握的地方。
-
-### 界面预览
-
-| ![登录界面](screenshots/login.png) | ![基金持仓与 AI 记账助手](screenshots/fund-holdings.png) |
-| :---: | :---: |
-| 登录与选账 | 基金持仓、交易明细与 AI 记账助手 |
-| ![债券：存单管理与付息自动落账](screenshots/bond-lots.png) | ![理财持仓](screenshots/wealth.png) |
-| 债券：按存单管理持仓，付息自动落账 | 理财持仓与交易明细 |
 
 ### 快速开始
 

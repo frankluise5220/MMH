@@ -33,7 +33,7 @@ export type DefaultCategoryTemplate = {
 };
 
 type CategoryWriter = typeof prisma | Prisma.TransactionClient;
-export const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-09-17-deposit-product-master-v1";
+export const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-09-20-finance-investment-income-rename-v1";
 const DELETED_DEFAULT_CATEGORY_KEY_PREFIX = "category_deleted_default_templates:";
 
 type DefaultCategoryTemplateChild = {
@@ -69,6 +69,7 @@ export const SYSTEM_SETTLEMENT_TRANSFER_CATEGORY = "借入借出";
 export const SYSTEM_MORTGAGE_FUND_CATEGORY = "资金账户";
 export const SYSTEM_BANK_INSTALLMENT_EXPENSE_CATEGORY = "银行分期";
 export const SYSTEM_INSTALLMENT_FEE_EXPENSE_CATEGORY = "分期手续费";
+export const SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY = "金融及投资收入";
 
 const legacySettlementTransferActionCategoryNames = new Set(["往来款", "还款", "提前还款", "贷款还款", "借入", "借出", "出借", "收回"]);
 
@@ -80,6 +81,7 @@ export function normalizeSettlementTransferCategoryName(categoryName?: string | 
 
 const systemCategoryTemplateNames: Record<DefaultCategoryType, Set<string>> = {
   income: new Set([
+    SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY,
     "投资收入",
     "投资收益",
     SYSTEM_FUND_PROFIT_CATEGORY,
@@ -198,6 +200,7 @@ export async function ensureInstallmentFeeExpenseCategory(writer: CategoryWriter
 }
 
 const rootCategoryRenames = [
+  { type: "income", from: "投资收入", to: SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY },
   { type: "expense", from: "餐饮饮食", to: "餐饮费" },
   { type: "expense", from: "生活日用", to: "生活费" },
   { type: "expense", from: "交通出行", to: "交通费" },
@@ -338,7 +341,7 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
   },
   {
     type: "income",
-    name: "投资收入",
+    name: SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY,
     children: ["投资收益", "利息", "股息分红", SYSTEM_FUND_PROFIT_CATEGORY, "股票收益", SYSTEM_WEALTH_PROFIT_CATEGORY, SYSTEM_DEPOSIT_INTEREST_CATEGORY, SYSTEM_INVESTMENT_DIVIDEND_CATEGORY, "租金收入"],
   },
   {
