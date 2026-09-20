@@ -1,5 +1,6 @@
 import { isLoanOrSettlementAccountKind } from "@/lib/debt";
 import { resolveLoanTypeValue, type LoanTypeValue } from "@/lib/loan-type";
+import { isFixedAssetAccountLike } from "@/lib/fixed-asset";
 
 export { isDebtAccountKind, isLoanOrSettlementAccountKind } from "@/lib/debt";
 
@@ -15,7 +16,97 @@ export type AccountKindLike = {
 
 export type CashTargetOperation = "transfer" | "investment" | "wealth" | "deposit" | "debt";
 
-export type InvestmentAccountView = "investfund" | "investmoney" | "investwealth" | "investstock" | "investproperty";
+export type InvestmentAccountView = "investfund" | "investmoney" | "investwealth" | "investbond" | "investstock" | "investproperty" | "detail";
+
+/**
+ * Fund/cash family kinds that may still change among themselves after an
+ * account already has active records. Cross-family changes stay locked.
+ */
+export const FUND_CASH_ACCOUNT_KINDS = [
+  "bank_debit",
+  "cash",
+  "ewallet",
+  "settlement",
+  "bank_credit",
+  "other",
+] as const;
+
+export type FundCashAccountKind = (typeof FUND_CASH_ACCOUNT_KINDS)[number];
+
+export function isFundCashAccountKind(kind: string | null | undefined): kind is FundCashAccountKind {
+  return FUND_CASH_ACCOUNT_KINDS.includes(String(kind ?? "") as FundCashAccountKind);
+}
+
+export function canChangeAccountKindWithRecords(
+  fromKind: string | null | undefined,
+  toKind: string | null | undefined,
+) {
+  const from = normalizeUserFacingAccountKind(fromKind);
+  const to = normalizeUserFacingAccountKind(toKind);
+  if (!from || !to || from === to) return true;
+  return isFundCashAccountKind(from) && isFundCashAccountKind(to);
+}
+
+/**
+ * Map stored or requested account identity to the kind the UI shows.
+ * Legacy deposit (`investment` + `deposit`) and fixed assets
+ * (`investment` + `property`, or `fixed_asset`) compare as `deposit` /
+ * `fixed_asset` so unchanged saves do not look like a type change.
+ */
+export function normalizeUserFacingAccountKind(
+  account: Pick<AccountKindLike, "kind" | "investProductType"> | string | null | undefined,
+): string {
+  if (account == null) return "";
+  if (typeof account === "string") {
+    const kind = account.trim();
+    if (kind === "fixed_asset") return "fixed_asset";
+    if (kind === "deposit") return "deposit";
+    return kind;
+  }
+  if (isFixedAssetAccountLike(account)) return "fixed_asset";
+  if (isDepositAccount(account)) return "deposit";
+  return String(account.kind ?? "").trim();
+}
+
+export function resolveRequestedUserFacingAccountKind(params: {
+  existing: Pick<AccountKindLike, "kind" | "investProductType">;
+  requestedKind?: string | null;
+  requestedInvestProductType?: string | null;
+}): string {
+  const requestedKind = params.requestedKind == null ? "" : String(params.requestedKind).trim();
+  if (!requestedKind) return normalizeUserFacingAccountKind(params.existing);
+  const requestedInvestProductType = params.requestedInvestProductType == null
+    ? params.existing.investProductType
+    : String(params.requestedInvestProductType).trim() || null;
+  return normalizeUserFacingAccountKind({
+    kind: requestedKind,
+    investProductType: requestedInvestProductType,
+  });
+}
+
+export function accountKindOptionsForEdit(params: {
+  currentKind: string | null | undefined;
+  hasRecords: boolean;
+  emptyAccountKinds: readonly string[];
+}): { options: string[]; kindSelectDisabled: boolean } {
+  const current = normalizeUserFacingAccountKind(params.currentKind);
+  if (!params.hasRecords) {
+    const options = [...params.emptyAccountKinds];
+    if (current && !options.includes(current)) options.push(current);
+    return { options, kindSelectDisabled: false };
+  }
+  if (isFundCashAccountKind(current)) {
+    return { options: [...FUND_CASH_ACCOUNT_KINDS], kindSelectDisabled: false };
+  }
+  return { options: current ? [current] : [], kindSelectDisabled: true };
+}
+
+export function accountRecordLockErrorKey(code: string | null | undefined): string | null {
+  if (code === "ACCOUNT_KIND_LOCKED") return "settings.accounts.kindLocked";
+  if (code === "ACCOUNT_CURRENCY_LOCKED") return "settings.accounts.currencyLocked";
+  if (code === "ACCOUNT_INVEST_TYPE_LOCKED") return "settings.accounts.investTypeLocked";
+  return null;
+}
 
 
 export function isLegacyDepositAccount(account: AccountKindLike) {
@@ -37,6 +128,9 @@ export function isFundLikeInvestmentAccount(account: AccountKindLike) {
 
 export function getInvestmentAccountView(account: Pick<AccountKindLike, "investProductType"> | null | undefined): InvestmentAccountView {
   if (account?.investProductType === "money") return "investmoney";
+  // 债券有自己的视图（BondShell）：债券是「债单 + 票面利率 + 到期日 + 付息」模型，
+  // 与基金的份额/净值模型不同，不复用 investwealth。
+  if (account?.investProductType === "bond") return "investbond";
   if (account?.investProductType === "wealth") return "investwealth";
   if (account?.investProductType === "stock") return "investstock";
   if (account?.investProductType === "property") return "investproperty";
@@ -150,7 +244,8 @@ export function getCashTargetOperation(account: AccountKindLike | null | undefin
   if (isDepositAccount(account)) return "deposit";
   if (isPureInvestmentAccount(account)) {
     // Investment accounts (including stock) do not participate in normal transfers; they only use their dedicated entry windows
-    if (account.investProductType === "wealth") return "wealth";
+    // 债券账户与理财账户同样打开理财录入窗口（交易链路共用），表单内部再按债券模式分流。
+    if (account.investProductType === "wealth" || account.investProductType === "bond") return "wealth";
     return "investment";
   }
   if (isLoanOrSettlementAccountKind(account.kind)) return "debt";

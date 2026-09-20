@@ -128,6 +128,7 @@ export async function loadDepositTransactionDetailLike(params: {
       deletedAt: null,
     },
     include: {
+      DepositProduct: { select: { id: true, name: true, shortName: true } },
       Account: {
         include: { Institution: { select: { name: true, shortName: true } } },
       },
@@ -176,7 +177,8 @@ export async function loadDepositTransactionDetailLike(params: {
       toAccountName: isCashIn ? row.CashAccount?.name ?? "" : row.Account.name,
       amount: isCashIn ? arrivalAmount ?? principal : -principal,
       fundCode: null,
-      fundName: row.productName ?? "",
+      fundName: row.DepositProduct?.name ?? row.productName ?? "",
+      depositProductId: row.depositProductId ?? row.DepositProduct?.id ?? null,
       fundProductType: "deposit",
       fundSubtype: row.action,
       fundNav: row.annualRate == null ? null : toNumber(row.annualRate),
@@ -357,6 +359,147 @@ export async function loadWealthTransactionEntryLike(params: {
     if (dateDiff !== 0) return dateDiff;
     return new Date(a.createdAt as any).getTime() - new Date(b.createdAt as any).getTime();
   });
+}
+
+/**
+ * 债券明细（bond_transactions）。
+ *
+ * 债券不复用理财/基金链路：债券没有份额与净值，grossAmount 直接是本金现金流，
+ * interest 是本期票息，所以这里不产出 fundUnits / fundNav / wealthRemainingUnits，
+ * 也不参与份额桶清算。仅复用「本金桶 → 已实现收益」这一条共享计算（units 恒为 null），
+ * 与 recalcWealthPositions / invest-balance 保持同一口径。
+ */
+export async function loadBondTransactionEntryLike(params: {
+  householdId: string;
+  accountIds: string[];
+}) {
+  const accountIds = Array.from(new Set(params.accountIds.filter(Boolean)));
+  if (accountIds.length === 0) return [];
+
+  const rows = await prisma.bondTransaction.findMany({
+    where: {
+      householdId: params.householdId,
+      accountId: { in: accountIds },
+      deletedAt: null,
+    },
+    include: {
+      Account: true,
+      CashAccount: true,
+      BondProduct: true,
+      EntryBusinessLink: {
+        where: { deletedAt: null },
+        select: {
+          businessType: true,
+          cashEntryId: true,
+          CashEntry: { select: { id: true, deletedAt: true } },
+        },
+      },
+    },
+    orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }],
+  });
+
+  const profitByTransactionId = new Map<string, number>();
+  const rowsByAccountId = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const list = rowsByAccountId.get(row.accountId) ?? [];
+    list.push(row);
+    rowsByAccountId.set(row.accountId, list);
+  }
+  for (const accountRows of rowsByAccountId.values()) {
+    const fundUnitsDecimals = normalizeFundUnitsDecimals(accountRows[0]?.Account?.fundUnitsDecimals, 2);
+    const calc = calculateWealthPositionsFromEntries(
+      accountRows.map((row) => ({
+        id: row.id,
+        cashEntryId: row.cashEntryId,
+        productKey: `${row.accountId}:${row.bondProductId ?? row.productName ?? `bond:${row.id}`}`,
+        action: row.action,
+        tradeDate: row.tradeDate,
+        createdAt: row.createdAt,
+        grossAmount: row.grossAmount,
+        arrivalAmount: row.arrivalAmount,
+        units: null,
+        nav: null,
+        interest: row.interest,
+        fee: row.fee,
+      })),
+      fundUnitsDecimals,
+    );
+    for (const [entryId, profit] of calc.realizedProfitByTransactionId) {
+      profitByTransactionId.set(entryId, profit);
+    }
+  }
+
+  const cashEntryIds = Array.from(
+    new Set(rows.map((row) => row.cashEntryId).filter((id): id is string => Boolean(id))),
+  );
+  const linkedCashEntries = cashEntryIds.length === 0
+    ? []
+    : await prisma.txRecord.findMany({
+        where: { id: { in: cashEntryIds }, deletedAt: null },
+        select: { id: true, date: true },
+      });
+  const cashDateById = new Map(linkedCashEntries.map((entry) => [entry.id, entry.date]));
+
+  return rows
+    .map((row) => {
+      const isCashIn = isCashInAction(row.action);
+      const isDividend = row.action === FundSubtype.dividend_cash;
+      const grossAmount = Math.abs(toNumber(row.grossAmount));
+      const arrivalAmount = row.arrivalAmount == null ? null : Math.abs(toNumber(row.arrivalAmount));
+      const profit = profitByTransactionId.get(row.id)
+        ?? (isDividend
+          ? calculateWealthCashDividendProfit({ arrivalAmount, grossAmount })
+          : row.realizedProfit == null
+            ? (toNumber(row.interest) - toNumber(row.fee))
+            : toNumber(row.realizedProfit));
+      return {
+        id: row.cashEntryId ?? row.id,
+        cashEntryId: row.cashEntryId,
+        businessTransactionId: row.id,
+        date: row.tradeDate,
+        createdAt: row.createdAt,
+        deletedAt: row.deletedAt,
+        accountId: isCashIn ? row.accountId : row.cashAccountId,
+        accountName: isCashIn ? row.Account.name : row.CashAccount?.name ?? "",
+        toAccountId: isCashIn ? row.cashAccountId : row.accountId,
+        toAccountName: isCashIn ? row.CashAccount?.name ?? "" : row.Account.name,
+        amount: isCashIn ? arrivalAmount ?? grossAmount : -grossAmount,
+        bondPrincipalAmount: grossAmount,
+        bondName: row.BondProduct?.name ?? row.productName ?? "",
+        bondProductId: row.bondProductId,
+        // 存单归属：子行（付息/赎回/核销）指回所属存单；买入行本身即存单（为 null）。
+        // 编辑子行时要据此预选存单下拉。
+        sourceBondTransactionId: row.sourceBondTransactionId,
+        // 债单条款投影：录入弹窗的持仓下拉需要「名称/利率/期限」，债券这里给自己的
+        // 债单对象（不借用 WealthProduct 字段名去承载债券语义）。
+        BondProduct: row.BondProduct
+          ? {
+              name: row.BondProduct.name,
+              shortName: row.BondProduct.shortName,
+              annualRate: row.BondProduct.annualRate,
+              termDays: row.BondProduct.termDays,
+            }
+          : null,
+        fundProductType: "bond",
+        fundSubtype: row.action,
+        bondInterest: row.interest,
+        bondArrivalAmount: row.arrivalAmount,
+        bondArrivalDate: ymd(
+          row.arrivalDate ?? (row.cashEntryId ? cashDateById.get(row.cashEntryId) : null),
+        ),
+        bondAnnualRate: row.annualRate ?? row.BondProduct?.annualRate ?? null,
+        bondFee: row.fee,
+        realizedProfit: isCashIn ? profit : null,
+        source: row.source,
+        note: row.note,
+        ...linkSummary(row.EntryBusinessLink),
+      };
+    })
+    .sort((a, b) => {
+      const dateDiff = new Date(a.date as any).getTime() - new Date(b.date as any).getTime();
+      if (dateDiff !== 0) return dateDiff;
+      return new Date(a.createdAt as any).getTime() - new Date(b.createdAt as any).getTime();
+    });
 }
 
 export async function loadPreciousMetalTransactionEntryLike(params: {

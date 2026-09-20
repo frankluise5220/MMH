@@ -3,6 +3,8 @@ import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
 import { normalizeCurrency, normalizeOptionalCurrency } from "@/lib/currency";
+import { normalizeDepositInterestPayoutInput } from "@/lib/deposit-interest-payout";
+import { ensureBondPlansForProduct } from "@/lib/server/bond-plan-tasks";
 
 export const runtime = "nodejs";
 
@@ -11,21 +13,30 @@ function parsePositiveNumber(raw: unknown) {
   return Number.isFinite(value) && value > 0 ? value : null;
 }
 
+function parseIsoDateOnly(raw: unknown): Date | null {
+  const text = String(raw ?? "").trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
+  const date = new Date(`${text}T00:00:00.000Z`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function isoDateOnly(value: Date | null | undefined): string | null {
+  return value ? value.toISOString().slice(0, 10) : null;
+}
+
 /**
- * GET /api/v1/wealth-products
- * Returns the bank wealth product master data for the current household.
+ * GET /api/v1/bond-products
+ * 债券产品主数据（BondProduct）。债券独立于普通理财（WealthProduct），
+ * 本接口是债券产品的唯一入口。
  *
  * Query:
- * - institutionId?: string filter by institution
- *
- * Response:
- * - { ok: true, products: [{ id, name, shortName, institutionId, institutionName, currency, annualRate, termDays, note }] }
+ * - institutionId?: string 按机构过滤
  */
 export async function GET(req: NextRequest) {
   try {
     const { householdId } = await getHouseholdScope();
     const institutionId = req.nextUrl.searchParams.get("institutionId")?.trim() || "";
-    const rows = await prisma.wealthProduct.findMany({
+    const rows = await prisma.bondProduct.findMany({
       where: {
         householdId,
         isActive: true,
@@ -46,6 +57,10 @@ export async function GET(req: NextRequest) {
         currency: item.currency,
         annualRate: item.annualRate == null ? null : Number(item.annualRate),
         termDays: item.termDays,
+        maturityDate: isoDateOnly(item.maturityDate),
+        payoutFrequency: item.payoutFrequency,
+        interestCalcBasis: item.interestCalcBasis,
+        firstPayoutDate: isoDateOnly(item.firstPayoutDate),
         note: item.note,
       })),
     });
@@ -55,21 +70,22 @@ export async function GET(req: NextRequest) {
 }
 
 /**
- * POST /api/v1/wealth-products
- * Creates or returns the bank wealth product master data with the same name.
+ * POST /api/v1/bond-products
+ * 创建（或复用同名）债券产品，并解析/自动创建债券账户。
  *
  * Body:
  * - name: string
  * - shortName?: string
  * - cashAccountId: string
- * - wealthAccountId?: string
+ * - bondAccountId?: string
  * - currency?: string
- * - annualRate?: number
+ * - annualRate?: number            票面利率
  * - termDays?: number
+ * - maturityDate?: string          到期日
+ * - payoutFrequency?: string       付息方式（编码同存款：maturity | yearly(:N) | monthly(:N)）
+ * - interestCalcBasis?: string     daily | monthly
+ * - firstPayoutDate?: string       首次付息日
  * - note?: string
- *
- * Response:
- * - { ok: true, product, wealthAccount }
  */
 export async function POST(req: NextRequest) {
   try {
@@ -78,33 +94,35 @@ export async function POST(req: NextRequest) {
     const name = String(body.name ?? "").trim();
     const shortName = String(body.shortName ?? "").trim() || null;
     const cashAccountId = String(body.cashAccountId ?? "").trim();
-    const requestedWealthAccountId = String(body.wealthAccountId ?? "").trim() || null;
+    const requestedBondAccountId = String(body.bondAccountId ?? "").trim() || null;
     const requestedCurrency = normalizeOptionalCurrency(body.currency);
     const annualRate = parsePositiveNumber(body.annualRate);
     const termDays = parsePositiveNumber(body.termDays);
     const note = String(body.note ?? "").trim() || null;
+    const maturityDate = parseIsoDateOnly(body.maturityDate);
+    const payoutFrequency = normalizeDepositInterestPayoutInput(body.payoutFrequency) ?? "maturity";
+    const interestCalcBasis = String(body.interestCalcBasis ?? "").trim() === "monthly" ? "monthly" : "daily";
+    const firstPayoutDate = parseIsoDateOnly(body.firstPayoutDate);
 
-    if (!name) return NextResponse.json({ ok: false, code: "PRODUCT_NAME_REQUIRED", error: "产品名称必填" }, { status: 400 });
+    if (!name) return NextResponse.json({ ok: false, code: "PRODUCT_NAME_REQUIRED", error: "债券名称必填" }, { status: 400 });
     if (!cashAccountId) return NextResponse.json({ ok: false, code: "CASH_ACCOUNT_REQUIRED", error: "请选择资金来源账户" }, { status: 400 });
-    // 新建产品只登记名称/类型；到期日、票面利率等条款在购买界面按次填写后回填
-    // （PUT /wealth-products/[id] 是债单条款真源），不再强制创建即填齐。
 
-    const { product, wealthAccount } = await prisma.$transaction(async (tx) => {
+    const { product, bondAccount } = await prisma.$transaction(async (tx) => {
       const resolvedAccount = await resolveOrCreateWealthAccount(tx, {
         householdId,
         cashAccountId,
-        requestedAccountId: requestedWealthAccountId,
-        accountProductType: "wealth",
+        requestedAccountId: requestedBondAccountId,
+        accountProductType: "bond",
       });
-      const existing = await tx.wealthProduct.findFirst({
+      const existing = await tx.bondProduct.findFirst({
         where: { householdId, institutionId: resolvedAccount.institutionId, name },
         include: { Institution: { select: { id: true, name: true, shortName: true } } },
       });
       const targetCurrency = requestedCurrency ? normalizeCurrency(requestedCurrency) : normalizeCurrency(resolvedAccount.currency);
       if (existing && normalizeCurrency(existing.currency) !== targetCurrency) {
-        throw new Error(`同名理财产品已存在，但币种是 ${normalizeCurrency(existing.currency)}，当前理财账户币种是 ${targetCurrency}`);
+        throw new Error(`同名债券已存在，但币种是 ${normalizeCurrency(existing.currency)}，当前债券账户币种是 ${targetCurrency}`);
       }
-      const resolvedProduct = existing ?? await tx.wealthProduct.create({
+      const resolvedProduct = existing ?? await tx.bondProduct.create({
         data: {
           householdId,
           name,
@@ -113,12 +131,19 @@ export async function POST(req: NextRequest) {
           currency: targetCurrency,
           annualRate,
           termDays: termDays == null ? null : Math.round(termDays),
+          maturityDate,
+          payoutFrequency,
+          interestCalcBasis,
+          firstPayoutDate,
           note,
         },
         include: { Institution: { select: { id: true, name: true, shortName: true } } },
       });
-      return { product: resolvedProduct, wealthAccount: resolvedAccount };
+      return { product: resolvedProduct, bondAccount: resolvedAccount };
     });
+
+    // 债单创建即生成/刷新只读计划行（到期 / 付息提醒，债单=唯一真源）。
+    await ensureBondPlansForProduct({ householdId, productId: product.id }).catch(() => {});
 
     return NextResponse.json({
       ok: true,
@@ -131,20 +156,24 @@ export async function POST(req: NextRequest) {
         currency: product.currency,
         annualRate: product.annualRate == null ? null : Number(product.annualRate),
         termDays: product.termDays,
+        maturityDate: isoDateOnly(product.maturityDate),
+        payoutFrequency: product.payoutFrequency,
+        interestCalcBasis: product.interestCalcBasis,
+        firstPayoutDate: isoDateOnly(product.firstPayoutDate),
         note: product.note,
       },
-      wealthAccount: {
-        id: wealthAccount.id,
-        name: wealthAccount.name,
-        kind: wealthAccount.kind,
-        investProductType: wealthAccount.investProductType,
-        groupId: wealthAccount.groupId,
-        groupName: wealthAccount.AccountGroup?.name ?? "",
-        institutionId: wealthAccount.institutionId,
-        institutionName: wealthAccount.Institution?.name ?? "",
-        institutionShortName: wealthAccount.Institution?.shortName ?? "",
-        institutionType: wealthAccount.Institution?.type ?? "",
-        currency: wealthAccount.currency,
+      bondAccount: {
+        id: bondAccount.id,
+        name: bondAccount.name,
+        kind: bondAccount.kind,
+        investProductType: bondAccount.investProductType,
+        groupId: bondAccount.groupId,
+        groupName: bondAccount.AccountGroup?.name ?? "",
+        institutionId: bondAccount.institutionId,
+        institutionName: bondAccount.Institution?.name ?? "",
+        institutionShortName: bondAccount.Institution?.shortName ?? "",
+        institutionType: bondAccount.Institution?.type ?? "",
+        currency: bondAccount.currency,
       },
     });
   } catch (error) {

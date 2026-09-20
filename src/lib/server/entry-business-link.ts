@@ -26,7 +26,7 @@ function inputJsonObjectOf(value: Record<string, unknown> | null | undefined, fa
   return JSON.parse(JSON.stringify(source)) as EntryBusinessLinkMetadata;
 }
 
-export type EntryBusinessType = "fund" | "stock" | "wealth" | "deposit" | "insurance" | "metal" | "property" | "other_investment";
+export type EntryBusinessType = "fund" | "stock" | "wealth" | "bond" | "deposit" | "insurance" | "metal" | "property" | "other_investment";
 export type EntryCashFlowDirection = "outflow" | "inflow" | "internal" | "none";
 export type EntryBusinessDeleteImpact = {
   linkId: string;
@@ -49,6 +49,7 @@ type EntryBusinessLinkSummaryRow = {
   fundTransactionId?: string | null;
   insuranceTransactionId?: string | null;
   wealthTransactionId?: string | null;
+  bondTransactionId?: string | null;
   depositTransactionId?: string | null;
   preciousMetalTransactionId?: string | null;
   stockTransactionId?: string | null;
@@ -66,6 +67,7 @@ type EntryBusinessLinkSummaryRow = {
   } | null;
   InsuranceTransaction?: { id: string; deletedAt?: Date | null } | null;
   WealthTransaction?: { id: string; deletedAt?: Date | null } | null;
+  BondTransaction?: { id: string; deletedAt?: Date | null } | null;
   DepositTransaction?: { id: string; deletedAt?: Date | null } | null;
   PreciousMetalTransaction?: { id: string; deletedAt?: Date | null } | null;
   StockTransaction?: {
@@ -122,6 +124,7 @@ export const entryBusinessLinkSummaryInclude = {
       fundTransactionId: true,
       insuranceTransactionId: true,
       wealthTransactionId: true,
+      bondTransactionId: true,
       depositTransactionId: true,
       preciousMetalTransactionId: true,
       stockTransactionId: true,
@@ -141,6 +144,7 @@ export const entryBusinessLinkSummaryInclude = {
       },
       InsuranceTransaction: { select: { id: true, deletedAt: true } },
       WealthTransaction: { select: { id: true, deletedAt: true } },
+      BondTransaction: { select: { id: true, deletedAt: true } },
       DepositTransaction: { select: { id: true, deletedAt: true } },
       PreciousMetalTransaction: { select: { id: true, deletedAt: true } },
       StockTransaction: { select: STOCK_TRANSACTION_SUMMARY_SELECT },
@@ -156,6 +160,7 @@ export const entryBusinessLinkSummaryInclude = {
       fundTransactionId: true,
       insuranceTransactionId: true,
       wealthTransactionId: true,
+      bondTransactionId: true,
       depositTransactionId: true,
       preciousMetalTransactionId: true,
       stockTransactionId: true,
@@ -175,6 +180,7 @@ export const entryBusinessLinkSummaryInclude = {
       },
       InsuranceTransaction: { select: { id: true, deletedAt: true } },
       WealthTransaction: { select: { id: true, deletedAt: true } },
+      BondTransaction: { select: { id: true, deletedAt: true } },
       DepositTransaction: { select: { id: true, deletedAt: true } },
       PreciousMetalTransaction: { select: { id: true, deletedAt: true } },
       StockTransaction: { select: STOCK_TRANSACTION_SUMMARY_SELECT },
@@ -193,6 +199,7 @@ type BusinessEntryLike = {
   fundSubtype?: string | null;
   source?: string | null;
   wealthProductId?: string | null;
+  bondProductId?: string | null;
   insuranceProductId?: string | null;
   metalTypeId?: string | null;
   depositSourceEntryId?: string | null;
@@ -208,6 +215,7 @@ export function classifyEntryBusinessType(entry: BusinessEntryLike): EntryBusine
     entry.fundProductType ||
       entry.fundCode ||
       entry.wealthProductId ||
+      entry.bondProductId ||
       entry.insuranceProductId ||
       isLicensedInsuranceEntry(entry) ||
       entry.metalTypeId ||
@@ -218,6 +226,8 @@ export function classifyEntryBusinessType(entry: BusinessEntryLike): EntryBusine
   if (!isInvestmentEntry || !hasBusinessFields) return null;
 
   if (isLicensedInsuranceEntry(entry)) return "insurance";
+  // 债券走独立业务行（bond_transactions），不再冒充理财。
+  if (entry.fundProductType === "bond" || entry.bondProductId) return "bond";
   if (entry.fundProductType === "wealth" || entry.wealthProductId) return "wealth";
   if (entry.fundProductType === "deposit" || entry.depositSourceEntryId) return "deposit";
   if (entry.fundProductType === "metal" || entry.metalTypeId) return "metal";
@@ -321,6 +331,7 @@ export async function upsertEntryBusinessCashFlowLink(
     fundTransactionId?: string | null;
     insuranceTransactionId?: string | null;
     wealthTransactionId?: string | null;
+    bondTransactionId?: string | null;
     depositTransactionId?: string | null;
     preciousMetalTransactionId?: string | null;
     stockTransactionId?: string | null;
@@ -336,6 +347,7 @@ export async function upsertEntryBusinessCashFlowLink(
     params.fundTransactionId ? `fund_${params.fundTransactionId}`
       : params.insuranceTransactionId ? `insurance_${params.insuranceTransactionId}`
         : params.wealthTransactionId ? `wealth_${params.wealthTransactionId}`
+        : params.bondTransactionId ? `bond_${params.bondTransactionId}`
           : params.depositTransactionId ? `deposit_${params.depositTransactionId}`
             : params.preciousMetalTransactionId ? `metal_${params.preciousMetalTransactionId}`
               : params.stockTransactionId ? `stock_${params.stockTransactionId}`
@@ -358,6 +370,7 @@ export async function upsertEntryBusinessCashFlowLink(
       fundTransactionId: params.fundTransactionId ?? null,
       insuranceTransactionId: params.insuranceTransactionId ?? null,
       wealthTransactionId: params.wealthTransactionId ?? null,
+      bondTransactionId: params.bondTransactionId ?? null,
       depositTransactionId: params.depositTransactionId ?? null,
       preciousMetalTransactionId: params.preciousMetalTransactionId ?? null,
       stockTransactionId: params.stockTransactionId ?? null,
@@ -375,6 +388,7 @@ export async function upsertEntryBusinessCashFlowLink(
       fundTransactionId: params.fundTransactionId ?? null,
       insuranceTransactionId: params.insuranceTransactionId ?? null,
       wealthTransactionId: params.wealthTransactionId ?? null,
+      bondTransactionId: params.bondTransactionId ?? null,
       depositTransactionId: params.depositTransactionId ?? null,
       preciousMetalTransactionId: params.preciousMetalTransactionId ?? null,
       stockTransactionId: params.stockTransactionId ?? null,
@@ -393,6 +407,7 @@ export async function upsertEntryBusinessCashFlowLink(
 export function entryBusinessTypeLabel(type: EntryBusinessType | string) {
   if (type === "insurance") return "保险交易";
   if (type === "wealth") return "理财交易";
+  if (type === "bond") return "债券交易";
   if (type === "deposit") return "存款交易";
   if (type === "metal") return "贵金属交易";
   if (type === "stock") return "股票交易";
@@ -412,6 +427,7 @@ export function buildEntryBusinessLinkSummary(entry: {
     if (row.fundTransactionId && (!row.FundTransaction || row.FundTransaction.deletedAt)) continue;
     if (row.insuranceTransactionId && (!row.InsuranceTransaction || row.InsuranceTransaction.deletedAt)) continue;
     if (row.wealthTransactionId && (!row.WealthTransaction || row.WealthTransaction.deletedAt)) continue;
+    if (row.bondTransactionId && (!row.BondTransaction || row.BondTransaction.deletedAt)) continue;
     if (row.depositTransactionId && (!row.DepositTransaction || row.DepositTransaction.deletedAt)) continue;
     if (row.preciousMetalTransactionId && (!row.PreciousMetalTransaction || row.PreciousMetalTransaction.deletedAt)) continue;
     if (row.stockTransactionId && (!row.StockTransaction || row.StockTransaction.deletedAt)) continue;
@@ -420,6 +436,7 @@ export function buildEntryBusinessLinkSummary(entry: {
       row.fundTransactionId ??
       row.insuranceTransactionId ??
       row.wealthTransactionId ??
+      row.bondTransactionId ??
       row.depositTransactionId ??
       row.preciousMetalTransactionId ??
       row.stockTransactionId ??
@@ -456,6 +473,7 @@ export async function listEntryBusinessDeleteImpacts(
     fundTransactionId?: string | null;
     insuranceTransactionId?: string | null;
     wealthTransactionId?: string | null;
+    bondTransactionId?: string | null;
     depositTransactionId?: string | null;
     preciousMetalTransactionId?: string | null;
     stockTransactionId?: string | null;
@@ -465,14 +483,15 @@ export async function listEntryBusinessDeleteImpacts(
     row.fundTransactionId ??
     row.insuranceTransactionId ??
     row.wealthTransactionId ??
+    row.bondTransactionId ??
     row.depositTransactionId ??
     row.preciousMetalTransactionId ??
     row.stockTransactionId ??
     row.propertyTransactionId ??
     null;
 
-  // This query's OR contains 9 `{ in: ids }` clauses. A large batch (for
-  // example 195 rows) would accumulate about 9 x 195 = 1755 bound parameters,
+  // This query's OR contains 10 `{ in: ids }` clauses. A large batch (for
+  // example 195 rows) would accumulate about 10 x 195 = 1950 bound parameters,
   // exceeding SQLite's 999 limit. Query in id chunks and merge with dedupe.
   const linkSelect = {
     id: true,
@@ -481,6 +500,7 @@ export async function listEntryBusinessDeleteImpacts(
     fundTransactionId: true,
     insuranceTransactionId: true,
     wealthTransactionId: true,
+    bondTransactionId: true,
     depositTransactionId: true,
     preciousMetalTransactionId: true,
     stockTransactionId: true,
@@ -492,6 +512,7 @@ export async function listEntryBusinessDeleteImpacts(
     FundTransaction: { select: { id: true, deletedAt: true, source: true } },
     InsuranceTransaction: { select: { id: true, deletedAt: true } },
     WealthTransaction: { select: { id: true, deletedAt: true } },
+    BondTransaction: { select: { id: true, deletedAt: true } },
     DepositTransaction: { select: { id: true, deletedAt: true } },
     PreciousMetalTransaction: { select: { id: true, deletedAt: true } },
     StockTransaction: { select: { id: true, deletedAt: true } },
@@ -509,6 +530,7 @@ export async function listEntryBusinessDeleteImpacts(
           { fundTransactionId: { in: part } },
           { insuranceTransactionId: { in: part } },
           { wealthTransactionId: { in: part } },
+          { bondTransactionId: { in: part } },
           { depositTransactionId: { in: part } },
           { preciousMetalTransactionId: { in: part } },
           { stockTransactionId: { in: part } },
@@ -538,6 +560,7 @@ export async function listEntryBusinessDeleteImpacts(
     if (row.FundTransaction && isFundUnitsReconcileEntry(row.FundTransaction)) continue;
     if (row.insuranceTransactionId && (!row.InsuranceTransaction || row.InsuranceTransaction.deletedAt)) continue;
     if (row.wealthTransactionId && (!row.WealthTransaction || row.WealthTransaction.deletedAt)) continue;
+    if (row.bondTransactionId && (!row.BondTransaction || row.BondTransaction.deletedAt)) continue;
     if (row.depositTransactionId && (!row.DepositTransaction || row.DepositTransaction.deletedAt)) continue;
     if (row.preciousMetalTransactionId && (!row.PreciousMetalTransaction || row.PreciousMetalTransaction.deletedAt)) continue;
     if (row.stockTransactionId && (!row.StockTransaction || row.StockTransaction.deletedAt)) continue;
@@ -550,7 +573,8 @@ export async function listEntryBusinessDeleteImpacts(
           : hasId(row.fundTransactionId) ? row.fundTransactionId
             : hasId(row.insuranceTransactionId) ? row.insuranceTransactionId
               : hasId(row.wealthTransactionId) ? row.wealthTransactionId
-                : hasId(row.depositTransactionId) ? row.depositTransactionId
+                : hasId(row.bondTransactionId) ? row.bondTransactionId
+                  : hasId(row.depositTransactionId) ? row.depositTransactionId
                     : hasId(row.preciousMetalTransactionId) ? row.preciousMetalTransactionId
                       : hasId(row.stockTransactionId) ? row.stockTransactionId
                         : hasId(row.propertyTransactionId) ? row.propertyTransactionId
@@ -562,6 +586,7 @@ export async function listEntryBusinessDeleteImpacts(
       hasId(row.fundTransactionId) ||
       hasId(row.insuranceTransactionId) ||
       hasId(row.wealthTransactionId) ||
+      hasId(row.bondTransactionId) ||
       hasId(row.depositTransactionId) ||
       hasId(row.preciousMetalTransactionId) ||
       hasId(row.stockTransactionId) ||

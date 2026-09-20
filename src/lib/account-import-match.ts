@@ -22,7 +22,7 @@ export type ImportOwnedMoneyAccountCandidate = {
   accountName: string;
   ownerName: string;
   kind: "bank_debit" | "cash" | "ewallet" | "investment";
-  investProductType?: "fund" | "money" | "wealth";
+  investProductType?: "fund" | "money" | "wealth" | "bond";
   institutionName?: string;
   institutionDisplayName?: string;
   numberMasked?: string;
@@ -269,6 +269,7 @@ function inferBankDisplayName(value: string, canonicalName?: string) {
 function inferOwnedInvestmentProductType(value: string): ImportOwnedMoneyAccountCandidate["investProductType"] | null {
   if (/\u8d27\u5e01\u57fa\u91d1/.test(value)) return "money";
   if (/\u7406\u8d22/.test(value)) return "wealth";
+  if (/\u57ce\u6295\u503a|\u503a\u5238/.test(value)) return "bond";
   if (/\u57fa\u91d1/.test(value)) return "fund";
   return null;
 }
@@ -319,9 +320,11 @@ export function parseImportOwnedMoneyAccountCandidate(
       : kind === "investment"
         ? investProductType === "wealth"
           ? "\u7406\u8d22"
-          : investProductType === "money"
-            ? "\u8d27\u5e01\u57fa\u91d1"
-            : "\u57fa\u91d1"
+          : investProductType === "bond"
+            ? "\u503a\u5238"
+            : investProductType === "money"
+              ? "\u8d27\u5e01\u57fa\u91d1"
+              : "\u57fa\u91d1"
         : "\u73b0\u91d1";
   // "光大卡"这类银行+卡原名整体保留为账户名（与建账保留财智原名的口径一致），
   // 下次导入同文本才能精确复用已建账户；剥离后只剩"卡"不能当账户名。

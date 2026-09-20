@@ -7,6 +7,7 @@ import Link from "next/link";
 import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { TopEntryLauncher } from "@/components/TopEntryLauncher";
 import { DepositEntryHost } from "@/components/DepositEntryHost";
+import { BondEntryHost } from "@/components/BondEntryHost";
 import { createTransaction, editInvestment } from "@/lib/server/sidebar-actions/transaction-actions";
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
@@ -266,6 +267,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
             <TopEntryLauncher defaultAction="transaction" />
             <DepositEntryHost createAction={createTransaction} editAction={editInvestment} />
+            <BondEntryHost createAction={createTransaction} editAction={editInvestment} />
           </div>
         </div>
       </header>

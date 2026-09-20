@@ -226,11 +226,13 @@ export default async function RegularInvestPage() {
     const balance = accountBalanceById.get(accountId);
     return balance != null && Math.abs(balance) > ACTIVE_DEBT_EPSILON;
   };
-  // 系统计划（存款到期/取息、城投债到期/付息）的关联真源：存单 = 计划 memo 的
-  // depositSourceEntryId（或 depm_/depi_ 前缀），债单 = bondm_/bondi_ 的 productId。
+  // 系统计划（存款到期/取息、债券到期/付息）的关联真源：存单 = 计划 memo 的
+  // depositSourceEntryId（或 depm_/depi_ 前缀），债券存单 = bondm_/bondi_ 的存单 id
+  // （债券与存款同为存单粒度：一笔买入 = 一张存单 = 一个持仓）。
   // 真源仍在 → 删除会一并删它；真源不存在/已软删 → 提示可放心删除。两侧口径一致。
-  // 注意：存单「已取回」不算失效 —— buy 行仍在账户里就是有关联记录（09-17 修正）。
-  const systemPlanSourceByPlanId = new Map<string, { kind: "deposit" | "wealth_bond"; name: string; linked: boolean }>();
+  // 注意：存款存单「已取回」不算失效 —— buy 行仍在账户里就是有关联记录（09-17 修正）；
+  // 债券存单按本金判据（本金归零 = 已了结，视为失效）。
+  const systemPlanSourceByPlanId = new Map<string, { kind: "deposit" | "bond"; name: string; linked: boolean }>();
   const depositPlanLots = plans
     .filter((plan) => {
       const task = scheduledTaskByPlanId.get(plan.id);
@@ -243,37 +245,51 @@ export default async function RegularInvestPage() {
       return { planId: plan.id, lotId };
     })
     .filter((item) => !!item.lotId);
-  const bondPlanProducts = plans
+  const bondPlanLots = plans
     .filter((plan) => {
       const task = scheduledTaskByPlanId.get(plan.id);
-      return task?.type === "wealth_bond_maturity" || task?.type === "wealth_bond_interest_payout";
+      return task?.type === "bond_maturity" || task?.type === "bond_interest_payout";
     })
     .map((plan) => ({
       planId: plan.id,
-      productId: plan.id.startsWith("bondm_") || plan.id.startsWith("bondi_") ? plan.id.slice(6) : "",
+      lotId: plan.id.startsWith("bondm_") || plan.id.startsWith("bondi_") ? plan.id.slice(6) : "",
     }))
-    .filter((item) => !!item.productId);
-  if (depositPlanLots.length > 0 || bondPlanProducts.length > 0) {
-    const [lots, bondProducts, bondTxs] = await Promise.all([
+    .filter((item) => !!item.lotId);
+  if (depositPlanLots.length > 0 || bondPlanLots.length > 0) {
+    const [lots, bondLots, bondChildRows] = await Promise.all([
       depositPlanLots.length > 0
         ? prisma.txRecord.findMany({
             where: { id: { in: depositPlanLots.map((item) => item.lotId) }, deletedAt: null },
             select: { id: true, fundName: true },
           })
         : Promise.resolve([] as Array<{ id: string; fundName: string | null }>),
-      bondPlanProducts.length > 0
-        ? prisma.wealthProduct.findMany({
-            where: { id: { in: bondPlanProducts.map((item) => item.productId) }, ...hidFilter },
-            select: { id: true, name: true },
+      bondPlanLots.length > 0
+        ? prisma.bondTransaction.findMany({
+            where: { id: { in: bondPlanLots.map((item) => item.lotId) }, deletedAt: null, ...hidFilter },
+            select: { id: true, productName: true, grossAmount: true, BondProduct: { select: { name: true } } },
           })
-        : Promise.resolve([] as Array<{ id: string; name: string }>),
-      bondPlanProducts.length > 0
-        ? prisma.wealthTransaction.groupBy({
-            by: ["wealthProductId", "action"],
-            where: { wealthProductId: { in: bondPlanProducts.map((item) => item.productId) }, deletedAt: null },
+        : Promise.resolve([] as Array<{
+            id: string;
+            productName: string | null;
+            grossAmount: unknown;
+            BondProduct: { name: string } | null;
+          }>),
+      // 债券存单的失效判据 = 本金是否归零：只统计指回该存单的赎回/核销子行。
+      bondPlanLots.length > 0
+        ? prisma.bondTransaction.groupBy({
+            by: ["sourceBondTransactionId", "action"],
+            where: {
+              sourceBondTransactionId: { in: bondPlanLots.map((item) => item.lotId) },
+              deletedAt: null,
+              ...hidFilter,
+            },
             _sum: { grossAmount: true },
           })
-        : Promise.resolve([] as Array<{ wealthProductId: string; action: string; _sum: { grossAmount: unknown } }>),
+        : Promise.resolve([] as Array<{
+            sourceBondTransactionId: string | null;
+            action: string;
+            _sum: { grossAmount: unknown };
+          }>),
     ]);
     const liveLotById = new Map(lots.map((lot) => [lot.id, lot]));
     for (const item of depositPlanLots) {
@@ -285,23 +301,23 @@ export default async function RegularInvestPage() {
         linked: !!lot,
       });
     }
-    const bondHeldById = new Map<string, number>();
-    for (const row of bondTxs) {
-      if (!row.wealthProductId) continue;
+    const clearedByLotId = new Map<string, number>();
+    for (const row of bondChildRows) {
+      if (!row.sourceBondTransactionId) continue;
+      if (row.action !== "redeem" && row.action !== "switch_out" && row.action !== "write_off") continue;
       const amount = Math.abs(Number(row._sum.grossAmount ?? 0));
-      const current = bondHeldById.get(row.wealthProductId) ?? 0;
-      if (row.action === "buy") bondHeldById.set(row.wealthProductId, current + amount);
-      else if (row.action === "redeem" || row.action === "switch_out" || row.action === "write_off") {
-        bondHeldById.set(row.wealthProductId, current - amount);
-      }
+      clearedByLotId.set(row.sourceBondTransactionId, (clearedByLotId.get(row.sourceBondTransactionId) ?? 0) + amount);
     }
-    const bondById = new Map(bondProducts.map((product) => [product.id, product]));
-    for (const item of bondPlanProducts) {
-      const product = bondById.get(item.productId);
+    const bondLotById = new Map(bondLots.map((lot) => [lot.id, lot]));
+    for (const item of bondPlanLots) {
+      const lot = bondLotById.get(item.lotId);
+      const principal = lot
+        ? Math.abs(Number(lot.grossAmount ?? 0)) - (clearedByLotId.get(item.lotId) ?? 0)
+        : 0;
       systemPlanSourceByPlanId.set(item.planId, {
-        kind: "wealth_bond",
-        name: product?.name ?? "城投债",
-        linked: !!product && (bondHeldById.get(item.productId) ?? 0) > ACTIVE_DEBT_EPSILON,
+        kind: "bond",
+        name: lot?.BondProduct?.name ?? lot?.productName ?? "债券",
+        linked: !!lot && principal > ACTIVE_DEBT_EPSILON,
       });
     }
   }

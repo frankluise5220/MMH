@@ -206,16 +206,9 @@ export function clampBondFirstPayoutToStart(params: {
   return cursor;
 }
 
-export function bondPlanInterval(frequency: DepositInterestPayoutFrequency): { unit: "week" | "month"; value: number } {  if (frequency.kind !== "periodic") return { unit: "month", value: 1 };
+export function bondPlanInterval(frequency: DepositInterestPayoutFrequency): { unit: "week" | "month"; value: number } {
+  if (frequency.kind !== "periodic") return { unit: "month", value: 1 };
   if (frequency.unit === "week") return { unit: "week", value: frequency.interval };
   if (frequency.unit === "month") return { unit: "month", value: frequency.interval };
   return { unit: "month", value: Math.max(1, 12 * frequency.interval) };
-}
-
-export function parseBondPayoutLabel(raw: string | null | undefined): string {
-  const frequency = parseDepositInterestPayout(raw);
-  if (frequency.kind === "maturity") return "maturity";
-  if (frequency.unit === "week") return frequency.interval === 1 ? "weekly" : `weekly:${frequency.interval}`;
-  if (frequency.unit === "month") return frequency.interval === 1 ? "monthly" : `monthly:${frequency.interval}`;
-  return frequency.interval === 1 ? "yearly" : `yearly:${frequency.interval}`;
 }

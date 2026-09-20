@@ -393,13 +393,16 @@ export const computeInvestBalances = cache(
   const wealthAccountIds = accounts
     .filter((account) => isPureInvestmentAccount(account) && account.investProductType === "wealth")
     .map((account) => account.id);
+  const bondAccountIds = accounts
+    .filter((account) => isPureInvestmentAccount(account) && account.investProductType === "bond")
+    .map((account) => account.id);
   const stockAccountIds = accounts
     .filter((account) => isPureInvestmentAccount(account) && account.investProductType === "stock")
     .map((account) => account.id);
   const propertyAccountIds = accounts
     .filter((account) => isPureInvestmentAccount(account) && account.investProductType === "property")
     .map((account) => account.id);
-  const nonFundAccountIds = new Set([...metalAccountIds, ...wealthAccountIds, ...stockAccountIds, ...propertyAccountIds]);
+  const nonFundAccountIds = new Set([...metalAccountIds, ...wealthAccountIds, ...bondAccountIds, ...stockAccountIds, ...propertyAccountIds]);
   const fundAccountIds = investIds.filter((id) => !nonFundAccountIds.has(id));
 
   const allHoldings = await prisma.fundHolding.findMany({
@@ -411,6 +414,10 @@ export const computeInvestBalances = cache(
   const allWealthTransactions = await prisma.wealthTransaction.findMany({
     where: { accountId: { in: wealthAccountIds }, deletedAt: null },
     include: { WealthProduct: true },
+  });
+  const allBondTransactions = await prisma.bondTransaction.findMany({
+    where: { accountId: { in: bondAccountIds }, deletedAt: null },
+    include: { BondProduct: true },
   });
   const allStockHoldings = await loadStockHoldingsForInvestSummary(stockAccountIds);
   const allPropertyAssets = await loadPropertyAssetsForInvestSummary(propertyAccountIds);
@@ -475,7 +482,12 @@ export const computeInvestBalances = cache(
     result.set(acctId, { marketValue, totalCost, floatingPnL: marketValue - totalCost });
   }
 
-  for (const acctId of wealthAccountIds) {
+  for (const acctId of [...wealthAccountIds, ...bondAccountIds]) {
+    // 债券与理财各有独立交易表：债券读 bond_transactions，理财读 wealth_transactions。
+    // 债券无份额/净值，映射成理财交易形状后复用同一套本金累计逻辑。
+    const acctTransactions = bondAccountIds.includes(acctId)
+      ? allBondTransactions.map((row) => ({ ...row, wealthProductId: row.bondProductId, units: null, nav: null }))
+      : allWealthTransactions;
     const buckets = new Map<string, { principal: number; units: number; cycleHasUnits: boolean }>();
     const events: Array<{
       key: string;
@@ -498,7 +510,7 @@ export const computeInvestBalances = cache(
       if (!wealthManualNavByKey.has(key)) wealthManualNavByKey.set(key, nav);
     }
 
-    for (const row of allWealthTransactions) {
+    for (const row of acctTransactions) {
       if (row.accountId !== acctId) continue;
       const gross = Math.abs(toNumber(row.grossAmount));
       const productKey = row.wealthProductId ?? row.productName ?? `wealth:${row.id}`;
@@ -797,12 +809,22 @@ export const computePositionDisplay = cache(
     return { positions, clearedPositions: [], totalMarketValue, totalCost, positionHistoricalProfit, clearedHistoricalProfit, totalHistoricalProfit };
   }
 
-  if (account.investProductType === "wealth") {
-    const rows = await prisma.wealthTransaction.findMany({
-      where: { accountId, deletedAt: null },
-      include: { WealthProduct: true },
-      orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }],
-    });
+  if (account.investProductType === "wealth" || account.investProductType === "bond") {
+    // 债券读 bond_transactions（无份额/净值），理财读 wealth_transactions。
+    const isBondAccount = account.investProductType === "bond";
+    const rows = isBondAccount
+      ? (
+          await prisma.bondTransaction.findMany({
+            where: { accountId, deletedAt: null },
+            include: { BondProduct: true },
+            orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }],
+          })
+        ).map((row) => ({ ...row, wealthProductId: row.bondProductId, units: null, nav: null, WealthProduct: null }))
+      : await prisma.wealthTransaction.findMany({
+          where: { accountId, deletedAt: null },
+          include: { WealthProduct: true },
+          orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }],
+        });
     // Manual NAV (unit value) entered by the user per wealth product. It drives
     // the displayed NAV, market value and floating P&L of wealth holdings.
     const manualNavByKey = new Map<string, { nav: number; date: string }>();

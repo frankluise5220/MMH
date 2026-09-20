@@ -50,6 +50,7 @@ export function MobileNavigation() {
     rootView === "investfund" ||
     rootView === "investmoney" ||
     rootView === "investwealth" ||
+    rootView === "investbond" ||
     rootView === "investstock" ||
     rootView === "investproperty" ||
     rootView === "regularinvest";

@@ -14,6 +14,7 @@ import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "
 import { getServerT } from "@/lib/server/i18n";
 import { TopEntryLauncher } from "@/components/TopEntryLauncher";
 import { DepositEntryHost } from "@/components/DepositEntryHost";
+import { BondEntryHost } from "@/components/BondEntryHost";
 import { createTransaction, editInvestment } from "@/lib/server/sidebar-actions/transaction-actions";
 
 export const dynamic = "force-dynamic";
@@ -230,6 +231,7 @@ export default async function InsurancePage() {
           </div>
           <TopEntryLauncher defaultAction="insurance" />
           <DepositEntryHost createAction={createTransaction} editAction={editInvestment} />
+          <BondEntryHost createAction={createTransaction} editAction={editInvestment} />
         </div>
       </header>
 

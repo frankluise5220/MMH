@@ -52,6 +52,12 @@ function collectInvestmentRecalcTargets(
     targets.wealthAccountsToRecalc.add(investmentAccId);
     return;
   }
+  if (txRecord.fundProductType === "bond" && investmentAccId) {
+    // 债券与理财共用同一个持仓重算入口（recalcWealthPositions 内部按账户类型分流到
+    // bond_transactions / wealth_transactions）。
+    targets.wealthAccountsToRecalc.add(investmentAccId);
+    return;
+  }
   if (txRecord.fundProductType === "stock" && investmentAccId) {
     targets.stockAccountsToRecalc.add(investmentAccId);
     return;
@@ -217,6 +223,50 @@ async function softDeleteIndependentBusinessRecordsByIds(
     pushRemovedIds(row.id, row.cashEntryId);
     addOptionalAccountId(targets, row.accountId);
     addOptionalAccountId(targets, row.cashAccountId);
+  }
+
+  const bondRows = await prisma.bondTransaction.findMany({
+    where: {
+      householdId: ctx.householdId,
+      deletedAt: null,
+      OR: [{ id: { in: ids } }, { cashEntryId: { in: ids } }],
+    },
+    select: {
+      id: true,
+      cashEntryId: true,
+      accountId: true,
+      cashAccountId: true,
+      action: true,
+      sourceBondTransactionId: true,
+    },
+  });
+  // 受影响的存单：删买入行＝该存单本身；删付息/赎回/核销子行＝所属存单。
+  // 计划行（bondm_/bondi_<存单id>）以存单为真源，删除后必须重算，否则
+  // 撤销赎回时计划行金额不会回补、删存单时计划行会空挂。
+  const affectedBondLotIds = new Set<string>();
+  for (const row of bondRows) {
+    const updated = await prisma.bondTransaction.updateMany({
+      where: { id: row.id, householdId: ctx.householdId, deletedAt: null },
+      data: { deletedAt },
+    });
+    if (updated.count === 0) continue;
+    result.deletedCount += updated.count;
+    result.touchedInvestment = true;
+    pushRemovedIds(row.id, row.cashEntryId);
+    addOptionalAccountId(targets, row.accountId);
+    addOptionalAccountId(targets, row.cashAccountId);
+    targets.wealthAccountsToRecalc.add(row.accountId);
+    if (row.action === "buy") affectedBondLotIds.add(row.id);
+    else if (row.sourceBondTransactionId) affectedBondLotIds.add(row.sourceBondTransactionId);
+  }
+  if (affectedBondLotIds.size > 0) {
+    // ensureBondPlansForLot 自己判：存单还在→按剩余本金刷新；存单已删/已了结→标完成。
+    const { ensureBondPlansForLot } = await import("@/lib/server/bond-plan-tasks");
+    for (const lotId of affectedBondLotIds) {
+      await ensureBondPlansForLot({ householdId: ctx.householdId, lotId }).catch(
+        logger.catchLog("刷新债券计划行失败", "entry-delete.ts"),
+      );
+    }
   }
 
   const depositRows = await prisma.depositTransaction.findMany({
@@ -408,6 +458,7 @@ async function detachBusinessSideBusinessLinks(txRecord: TxRecord) {
         fundTransactionId: null,
         insuranceTransactionId: null,
         wealthTransactionId: null,
+        bondTransactionId: null,
         depositTransactionId: null,
         preciousMetalTransactionId: null,
         stockTransactionId: null,

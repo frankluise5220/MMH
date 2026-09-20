@@ -9,6 +9,8 @@ type ResolveWealthAccountInput = {
   householdId: string;
   cashAccountId: string;
   requestedAccountId?: string | null;
+  /** 目标账户类型：wealth=理财账户（默认），bond=债券账户。两类账户互不混用。 */
+  accountProductType?: "wealth" | "bond";
 };
 
 const wealthAccountInclude = {
@@ -22,6 +24,8 @@ const wealthAccountInclude = {
  * also allowed. Missing same-institution accounts are created automatically.
  */
 export async function resolveOrCreateWealthAccount(tx: Db, input: ResolveWealthAccountInput) {
+  const accountProductType = input.accountProductType === "bond" ? "bond" : "wealth";
+  const accountTypeLabel = accountProductType === "bond" ? "债券账户" : "理财账户";
   const cashAccount = await tx.account.findFirst({
     where: { id: input.cashAccountId, householdId: input.householdId, isActive: true },
     include: wealthAccountInclude,
@@ -35,11 +39,11 @@ export async function resolveOrCreateWealthAccount(tx: Db, input: ResolveWealthA
       where: { id: requestedAccountId, householdId: input.householdId, isActive: true },
       include: wealthAccountInclude,
     });
-    if (!requested || requested.kind !== "investment" || requested.investProductType !== "wealth") {
-      throw new Error("理财账户不存在或类型不正确");
+    if (!requested || requested.kind !== "investment" || requested.investProductType !== accountProductType) {
+      throw new Error(`${accountTypeLabel}不存在或类型不正确`);
     }
     if (normalizeCurrency(requested.currency) !== cashCurrency) {
-      throw new Error(`理财账户币种必须与资金来源账户一致。资金来源是 ${cashCurrency}，理财账户是 ${normalizeCurrency(requested.currency)}`);
+      throw new Error(`${accountTypeLabel}币种必须与资金来源账户一致。资金来源是 ${cashCurrency}，${accountTypeLabel}是 ${normalizeCurrency(requested.currency)}`);
     }
     if (!isWealthAccountAllowedForCashAccount({
       cashGroupId: cashAccount.groupId,
@@ -48,7 +52,7 @@ export async function resolveOrCreateWealthAccount(tx: Db, input: ResolveWealthA
       wealthInstitutionId: requested.institutionId,
       wealthInstitutionType: requested.Institution?.type,
     })) {
-      throw new Error("理财账户只能选择资金来源同机构或第三方支付机构的账户");
+      throw new Error(`${accountTypeLabel}只能选择资金来源同机构或第三方支付机构的账户`);
     }
     return requested;
   }
@@ -63,7 +67,7 @@ export async function resolveOrCreateWealthAccount(tx: Db, input: ResolveWealthA
       groupId: cashAccount.groupId,
       institutionId: cashAccount.institutionId,
       kind: "investment",
-      investProductType: "wealth",
+      investProductType: accountProductType,
       currency: cashCurrency,
     },
     include: wealthAccountInclude,
@@ -80,16 +84,16 @@ export async function resolveOrCreateWealthAccount(tx: Db, input: ResolveWealthA
 
   return tx.account.create({
     data: {
-      name: "理财",
+      name: accountProductType === "bond" ? "债券" : "理财",
       kind: "investment",
-      investProductType: "wealth",
+      investProductType: accountProductType,
       currency: cashCurrency,
       householdId: input.householdId,
       groupId: cashAccount.groupId,
       institutionId: cashAccount.institutionId,
       userId: cashAccount.userId,
       isActive: true,
-      tradingCalendar: resolveTradingCalendarForAccount("investment", "wealth", null),
+      tradingCalendar: resolveTradingCalendarForAccount("investment", accountProductType, null),
     },
     include: wealthAccountInclude,
   });

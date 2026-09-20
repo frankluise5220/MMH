@@ -48,7 +48,12 @@ export async function PUT(req: NextRequest) {
     }
 
     const account = await prisma.account.findFirst({
-      where: { id: accountId, householdId, kind: AccountKind.investment, investProductType: "wealth" },
+      where: {
+        id: accountId,
+        householdId,
+        kind: AccountKind.investment,
+        investProductType: { in: ["wealth", "bond"] },
+      },
       select: { id: true, institutionId: true },
     });
     if (!account) {

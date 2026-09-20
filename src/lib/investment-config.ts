@@ -12,12 +12,21 @@ import { TRANSACTION_SOURCE_FUND_UNITS_RECONCILE } from "@/lib/transaction-seman
 export type FundSubtype = "buy" | "redeem" | "dividend_cash" | "dividend_reinvest" | "buy_failed";
 
 // Product types (labels come from the i18n catalog via `investment.product.*`)
-export type ProductType = "fund" | "money" | "wealth" | "deposit" | "metal" | "stock" | "property";
+export type ProductType =
+  | "fund"
+  | "money"
+  | "wealth"
+  | "bond"
+  | "deposit"
+  | "metal"
+  | "stock"
+  | "property";
 
 export const PRODUCT_TYPES: readonly ProductType[] = [
   "fund",
   "money",
   "wealth",
+  "bond",
   "deposit",
   "metal",
   "stock",
@@ -33,6 +42,7 @@ export const PRODUCT_SUBTYPES: Record<ProductType, FundSubtype[][]> = {
   fund: [["buy", "redeem", "dividend_cash", "dividend_reinvest"]],
   money: [["buy", "redeem", "dividend_cash", "dividend_reinvest"]],
   wealth: [["buy", "redeem"]],
+  bond: [["buy", "redeem"]],
   deposit: [["buy", "redeem"]],
   metal: [["buy", "redeem"]],
   stock: [],

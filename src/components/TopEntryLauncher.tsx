@@ -15,6 +15,7 @@ export function TopEntryLauncher({
     | "stock"
     | "stock-transfer"
     | "wealth"
+    | "bond"
     | "deposit-buy"
     | "deposit-redeem"
     | "insurance"
@@ -40,6 +41,7 @@ export function TopEntryLauncher({
         { key: "stock", label: t("investment.product.stock") },
         { key: "stock-transfer", label: t("stockPanel.transfer") },
         { key: "wealth", label: t("investment.product.wealth") },
+        { key: "bond", label: t("entry.kind.bond") },
         { key: "deposit-buy", label: t("txForm.depositIn") },
         { key: "deposit-redeem", label: t("detailView.depositWithdraw") },
         { key: "insurance", label: t("sidebar.section.insurance") },

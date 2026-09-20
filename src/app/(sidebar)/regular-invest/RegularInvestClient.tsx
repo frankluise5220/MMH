@@ -14,6 +14,7 @@ import { RegularInvestForm } from "@/components/RegularInvestForm";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { UnifiedEntryLauncher } from "@/components/UnifiedEntryLauncher";
 import { DepositEntryHost } from "@/components/DepositEntryHost";
+import { BondEntryHost } from "@/components/BondEntryHost";
 import { createTransaction, editInvestment } from "@/lib/server/sidebar-actions/transaction-actions";
 import type { SmartSelectOption } from "@/components/SmartSelect";
 import type { CategorySmartSelectOption } from "@/components/categorySmartSelect";
@@ -102,7 +103,7 @@ type RegularInvestPlanView = {
    * 真源仍在（存单/债单），删除会一并删除它；linked=false 表示真源已失效，
    * 删除只是清理残留的计划行。
    */
-  taskSystemSource?: { kind: "deposit" | "wealth_bond"; name: string; linked: boolean } | null;
+  taskSystemSource?: { kind: "deposit" | "bond"; name: string; linked: boolean } | null;
   /** System-level plans (e.g. loan repayment) are shown but read-only. */
   isSystemTask?: boolean;
   targetName?: string | null;
@@ -606,6 +607,9 @@ export function RegularInvestClient({
   const [editingRecord, setEditingRecord] = useState<any>(null);
   const [showEnded, setShowEnded] = useState(false);
   const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
+  // 计划任务来源切换：all=全部 / user=用户计划任务 / system=系统计划任务。
+  // 系统计划 = 存款到期/取息、城投债到期/付息、房贷账单（判定唯一来源 scheduled-task.ts）。
+  const [planSourceFilter, setPlanSourceFilter] = useState<"all" | "user" | "system">("all");
   const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
   const [executionProgress, setExecutionProgress] = useState<ExecutionProgressState | null>(null);
   const [runningExecution, setRunningExecution] = useState<{ mode: "single" | "all"; planId?: string } | null>(null);
@@ -1115,9 +1119,13 @@ export function RegularInvestClient({
    * - keepSource=false「一并删除」：cascadeSource=1 时服务端连存单/债单一起删；
    *   真源已失效时只清残留行。
    */
-  async function requestSystemPlanDelete(planId: string, cascadeSource: boolean, keepSource = false) {
-    const query = keepSource ? "&keepSource=1" : `&cascadeSource=${cascadeSource ? "1" : "0"}`;
-    const res = await fetch(`/api/v1/regular-invest?id=${planId}${query}`, { method: "DELETE" });
+  async function requestSystemPlanDelete(planId: string, cascadeSource: boolean, keepSource = false, deleteGenerated = false) {
+    const params = keepSource
+      ? "&keepSource=1"
+      : deleteGenerated
+        ? "&deleteGenerated=1"
+        : `&cascadeSource=${cascadeSource ? "1" : "0"}`;
+    const res = await fetch(`/api/v1/regular-invest?id=${planId}${params}`, { method: "DELETE" });
     const data = await res.json();
     if (data.ok) {
       removePlansFromState(Array.isArray(data.affectedPlanIds) && data.affectedPlanIds.length > 0 ? data.affectedPlanIds : [planId]);
@@ -1125,7 +1133,7 @@ export function RegularInvestClient({
     }
     // 页面快照说真源已失效，但服务端发现它还在 → 补一次级联确认。
     if (res.status === 409 && data.needSourceCascade) {
-      const message = data.sourceKind === "wealth_bond"
+      const message = data.sourceKind === "bond"
         ? t("regularInvest.client.systemDelete.confirmBond", { name: data.sourceName || t("regularInvest.client.systemDelete.sourceNameFallback") })
         : t("regularInvest.client.systemDelete.confirmDeposit", { name: data.sourceName || t("regularInvest.client.systemDelete.sourceNameFallback") });
       const confirmed = await showConfirmDialog({
@@ -1205,8 +1213,9 @@ export function RegularInvestClient({
   async function handleSystemPlanDelete(plan: RegularInvestPlanView) {
     const source = plan.taskSystemSource ?? null;
     const sourceLinked = source?.linked === true;
-    const isBond = source?.kind === "wealth_bond";
+    const isBond = source?.kind === "bond";
     const sourceName = source?.name || t("regularInvest.client.systemDelete.sourceNameFallback");
+    const generatedCount = Number(plan.executedCount ?? 0);
 
     if (!sourceLinked) {
       const confirmed = await showConfirmDialog({
@@ -1219,31 +1228,59 @@ export function RegularInvestClient({
       return;
     }
 
-    // 有关联真源 → 让用户选「仅删计划任务」还是「两边都删」。
-    const choice = await showChoiceDialog<"keep" | "cascade">({
+    // 有关联真源 → 按计划类型出选项（2026-09-18 七版口径）：
+    // - 取息计划（depi_）：与存单无关，二选——仅删计划任务 / 删除计划任务和关联取息记录。
+    // - 到期/取回计划（depm_）：涉及存单及存入、生息、取息记录，二选——仅删计划任务 /
+    //   与存单一起删除。
+    // - 债单计划：理财流水是手记业务本体、计划行只是提醒，二选（与存单一起删 / 仅删）。
+    const isPayout = getPlanTaskType(plan) === "deposit_interest_payout";
+    const choices: Array<{ value: "generated" | "keep" | "cascade"; label: string; tone?: "danger" }> = [
+      { value: "keep", label: t("regularInvest.client.systemDelete.chooseKeepSource") },
+    ];
+    if (isPayout) {
+      choices.push({
+        value: "generated",
+        label: t("regularInvest.client.systemDelete.chooseDeleteGenerated"),
+        tone: "danger",
+      });
+    } else {
+      choices.push({
+        value: "cascade",
+        label: isBond
+          ? t("regularInvest.client.systemDelete.chooseCascadeBond")
+          : t("regularInvest.client.systemDelete.chooseCascadeDeposit"),
+        tone: "danger",
+      });
+    }
+    const choice = await showChoiceDialog<"generated" | "keep" | "cascade">({
       title: t("regularInvest.client.systemDelete.chooseTitle"),
-      message: t("regularInvest.client.systemDelete.chooseMessage"),
+      message: isPayout && generatedCount > 0
+        ? t("regularInvest.client.systemDelete.chooseMessageWithCount", { count: generatedCount })
+        : t("regularInvest.client.systemDelete.chooseMessage"),
       cancelLabel: t("regularInvest.client.systemDelete.chooseCancel"),
       tone: "danger",
-      choices: [
-        { value: "keep", label: t("regularInvest.client.systemDelete.chooseKeepSource") },
-        {
-          value: "cascade",
-          label: isBond
-            ? t("regularInvest.client.systemDelete.chooseCascadeBond")
-            : t("regularInvest.client.systemDelete.chooseCascadeDeposit"),
-          tone: "danger",
-        },
-      ],
+      choices,
     });
     if (!choice) return;
+
+    if (choice === "generated") {
+      // 「删除计划任务和关联取息记录」：存单不受影响。
+      const confirmed = await showConfirmDialog({
+        title: t("regularInvest.client.deleteDialog.title"),
+        message: t("regularInvest.client.systemDelete.confirmDeleteGenerated", { count: generatedCount }),
+        tone: "danger",
+      });
+      if (!confirmed) return;
+      await requestSystemPlanDelete(plan.id, false, false, true);
+      return;
+    }
 
     if (choice === "keep") {
       const confirmed = await showConfirmDialog({
         title: t("regularInvest.client.deleteDialog.title"),
         message: isBond
           ? t("regularInvest.client.systemDelete.keepSourceBond", { name: sourceName })
-          : t("regularInvest.client.systemDelete.keepSourceDeposit", { name: sourceName }),
+          : t("regularInvest.client.systemDelete.keepSourceDeposit"),
         tone: "danger",
       });
       if (!confirmed) return;
@@ -1411,6 +1448,18 @@ export function RegularInvestClient({
     if (selectedAccountIds.length > 0
       && !(plan.accountId && selectedAccountIds.includes(plan.accountId))
       && !(plan.cashAccountId && selectedAccountIds.includes(plan.cashAccountId))) return false;
+    if (planSourceFilter !== "all") {
+      // 与 scheduled-task.ts 的 isSystemManagedScheduledTask 同口径：
+      // 系统计划 = 存款到期/取息、城投债到期/付息、房贷账单（bill 角色）。
+      const taskType = getPlanTaskType(plan);
+      const isSystem = taskType === "deposit_maturity"
+        || taskType === "deposit_interest_payout"
+        || taskType === "bond_maturity"
+        || taskType === "bond_interest_payout"
+        || (taskType === "loan_repayment" && plan.taskLoanPlanRole === "bill");
+      if (planSourceFilter === "system" && !isSystem) return false;
+      if (planSourceFilter === "user" && isSystem) return false;
+    }
     return true;
   });
   const todayStart = new Date();
@@ -1634,12 +1683,14 @@ export function RegularInvestClient({
                   { key: "property", label: t("entry.kind.property") },
                   { key: "metal", label: t("entry.kind.metal") },
                   { key: "wealth", label: t("entry.kind.wealth") },
+                  { key: "bond", label: t("entry.kind.bond") },
                   { key: "deposit", label: t("entry.kind.deposit") },
                   { key: "insurance", label: t("entry.kind.insurance") },
                   { key: "debt", label: t("entry.kind.debt"), disabled: cashAccounts.length === 0 },
                 ]}
               />
               <DepositEntryHost createAction={createTransaction} editAction={editInvestment} />
+              <BondEntryHost createAction={createTransaction} editAction={editInvestment} />
             </div>
           </header>
 
@@ -1704,6 +1755,27 @@ export function RegularInvestClient({
                 )}
                 toolbarRightContent={(
                   <>
+                    <div className="flex h-7 items-center overflow-hidden rounded-md border border-slate-200 text-xs" role="tablist">
+                      {([
+                        { value: "all", labelKey: "regularInvest.client.sourceFilter.all" },
+                        { value: "user", labelKey: "regularInvest.client.sourceFilter.user" },
+                        { value: "system", labelKey: "regularInvest.client.sourceFilter.system" },
+                      ] as const).map((option) => (
+                        <button
+                          key={option.value}
+                          role="tab"
+                          aria-selected={planSourceFilter === option.value}
+                          onClick={() => setPlanSourceFilter(option.value)}
+                          className={`h-full px-2.5 whitespace-nowrap transition-colors ${
+                            planSourceFilter === option.value
+                              ? "bg-blue-600 text-white"
+                              : "bg-white text-slate-600 hover:bg-slate-50"
+                          }`}
+                        >
+                          {t(option.labelKey)}
+                        </button>
+                      ))}
+                    </div>
                     <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-slate-500">
                       <input type="checkbox" checked={!showEnded} onChange={(e) => setShowEnded(!e.target.checked)} className="h-3.5 w-3.5 accent-blue-600" />
                       {t("regularInvest.client.hideEnded")}

@@ -41,6 +41,7 @@ export function allowedInstitutionTypesForAccount(
     if (productType === "stock") return ["brokerage"];
     if (productType === "fund" || productType === "money") return ["bank", "brokerage", "fund_company", "payment"];
     if (productType === "wealth" || productType === "deposit") return ["bank"];
+    if (productType === "bond") return ["bank", "brokerage", "other"];
     if (productType === "metal") return ["bank", "brokerage", "other"];
     return ["other"];
   }

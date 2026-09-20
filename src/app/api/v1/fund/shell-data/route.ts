@@ -5,6 +5,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { loadFixedAssetPositionDisplay, loadFixedAssetTransactionEntries } from "@/lib/server/cached-data";
 import { loadFundTransactionEntryLike } from "@/lib/fund/transactions";
 import {
+  loadBondTransactionEntryLike,
   loadPreciousMetalTransactionEntryLike,
   loadWealthTransactionEntryLike,
 } from "@/lib/server/business-transaction-entries";
@@ -38,7 +39,7 @@ export async function GET(req: Request) {
       : await computePositionDisplay(ctx, accountId);
 
     const selectedFundCode =
-      account.investProductType === "wealth"
+      account.investProductType === "wealth" || account.investProductType === "bond"
         ? (wealthProductIdParam || fundCodeParam || "")
         : fundCodeParam || (positionDisplay.positions.length > 0
           ? [...positionDisplay.positions].sort((a, b) => b.marketValue - a.marketValue)[0]?.fundCode
@@ -48,12 +49,19 @@ export async function GET(req: Request) {
 
     // Do not limit here: the client paginates details locally.
     // entryScope=account is used when the client needs a complete local cache for fast fund switching.
+    const isBondLike = account.investProductType === "bond";
+    const isWealthLike = account.investProductType === "wealth" || isBondLike;
     const allIndependentEntries =
-      account.investProductType === "wealth"
-        ? await loadWealthTransactionEntryLike({
-            accountIds: [accountId],
-            householdId: ctx.householdId,
-          })
+      isWealthLike
+        ? isBondLike
+          ? await loadBondTransactionEntryLike({
+              accountIds: [accountId],
+              householdId: ctx.householdId,
+            })
+          : await loadWealthTransactionEntryLike({
+              accountIds: [accountId],
+              householdId: ctx.householdId,
+            })
         : account.investProductType === "metal"
           ? await loadPreciousMetalTransactionEntryLike({
               accountIds: [accountId],
@@ -70,12 +78,14 @@ export async function GET(req: Request) {
               fundCode: selectedFundCode || undefined,
               entryScope,
             });
-    const fundEntries = entryScope === "account" || (account.investProductType === "wealth" && !selectedFundCode)
+    const fundEntries = entryScope === "account" || (isWealthLike && !selectedFundCode)
       ? allIndependentEntries
       : allIndependentEntries.filter((entry: any) =>
-          account.investProductType === "wealth"
-            ? entry.wealthProductId === selectedFundCode
-            : entry.fundCode === selectedFundCode
+          isBondLike
+            ? entry.bondProductId === selectedFundCode
+            : isWealthLike
+              ? entry.wealthProductId === selectedFundCode
+              : entry.fundCode === selectedFundCode
         );
 
     // Fee rates
@@ -122,7 +132,7 @@ export async function GET(req: Request) {
       allEntries: fundEntries,
       entryScope,
       selectedFundCode,
-      selectedWealthProductId: account.investProductType === "wealth" ? selectedFundCode : "",
+      selectedWealthProductId: isWealthLike ? selectedFundCode : "",
       totalMarketValue,
       totalCost,
       positionHistoricalProfit,

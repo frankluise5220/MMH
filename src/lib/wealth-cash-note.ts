@@ -6,17 +6,16 @@ function formatUnits(value: number | null | undefined) {
 }
 
 /**
- * 理财动作文案。城投债（WealthProduct.productType="bond"）走独立文案组，
- * 调用方有产品上下文时传 isBond；没有时回退理财通用文案。
+ * 理财动作文案。
+ *
+ * 债券有自己的文案组（`buildBondCashFlowNote`，在 bond-transactions.ts），
+ * 不再借用这里的 isBond 分支——债券已经不走理财链路。
  */
-export function wealthActionLabel(
-  action: FundSubtype | string | null | undefined,
-  isBond?: boolean,
-) {
-  if (action === FundSubtype.redeem || action === FundSubtype.switch_out) return isBond ? "城投债赎回" : "理财赎回";
-  if (action === FundSubtype.dividend_cash) return isBond ? "城投债利息" : "理财分红";
-  if (action === FundSubtype.write_off) return isBond ? "城投债核销" : "理财核销";
-  return isBond ? "城投债买入" : "理财买入";
+export function wealthActionLabel(action: FundSubtype | string | null | undefined) {
+  if (action === FundSubtype.redeem || action === FundSubtype.switch_out) return "理财赎回";
+  if (action === FundSubtype.dividend_cash) return "理财分红";
+  if (action === FundSubtype.write_off) return "理财核销";
+  return "理财买入";
 }
 
 export function buildWealthCashFlowNote(input: {
@@ -24,9 +23,8 @@ export function buildWealthCashFlowNote(input: {
   productName?: string | null;
   units?: number | null;
   userNote?: string | null;
-  isBond?: boolean;
 }) {
-  const parts = [wealthActionLabel(input.action, input.isBond)];
+  const parts = [wealthActionLabel(input.action)];
   const productName = input.productName?.trim();
   const unitsText = formatUnits(input.units);
   if (productName) parts.push(productName);

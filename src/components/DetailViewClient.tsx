@@ -124,6 +124,7 @@ export type DetailEntry = {
   fundCode: string | null;
   fundName: string | null;
   wealthProductId?: string | null;
+  depositProductId?: string | null;
   source: string | null;
   fundProductType: string | null;
   metalTypeId?: string | null;
@@ -515,6 +516,11 @@ function investmentCategoryLabel(
     if (subtype === "buy_failed") return t("detailView.buyFailed");
     if (subtype === "buy") return t("detailView.wealthBuy");
   }
+  if (productType === "bond") {
+    if (subtype === "redeem") return t("bondForm.redeem");
+    if (subtype === "dividend_cash") return t("bondForm.interestReceipt");
+    if (subtype === "buy") return t("detailView.wealthBuy");
+  }
   if (productType === "metal") {
     if (subtype === "redeem") return t("detailView.metalSell");
     if (subtype === "buy") return t("detailView.metalBuy");
@@ -724,7 +730,7 @@ export function DetailViewClient({
     if (!id || linkingIds.has(id)) return;
     const businessTransactionId = String(entry.businessTransactionId ?? "").trim();
     const businessType =
-      entry.fundProductType === "wealth"
+      entry.fundProductType === "wealth" || entry.fundProductType === "bond"
         ? "wealth"
         : entry.fundProductType === "deposit"
           ? "deposit"
@@ -919,6 +925,7 @@ export function DetailViewClient({
             fundCode: e.fundCode ?? undefined,
             fundName: e.fundName ?? undefined,
             wealthProductId: e.wealthProductId ?? null,
+            depositProductId: e.depositProductId ?? null,
             insuranceProductId: e.insuranceProductId ?? null,
             insuranceAction: e.insuranceAction === "premium" || e.insuranceAction === "additional_premium" || e.insuranceAction === "refund" ? e.insuranceAction : undefined,
             insuranceProductName: e.insuranceProductName ?? undefined,
@@ -1101,6 +1108,20 @@ export function DetailViewClient({
   useEffect(() => {
     setRefreshedEntries((current) => (current?.accountId === accountId ? current : null));
   }, [accountId]);
+  // refreshedEntries 是「事件 refetch 的本地快照」：一旦写入就遮蔽 initialEntries，
+  // 直到换账户/resetKey。但父级（BasicDetailPanel）翻页/定位日期后会把新页数据经
+  // initialEntries 传下来——引用更新（pageEntries 是 useMemo(localEntries)，只在
+  // localEntries 变化时换引用）即父级数据已换，此时必须让位，否则新页数据被旧
+  // 快照永久遮蔽（表现为「页码跳了、列表不更新」，2026-09-17 定位日期实测）。
+  const lastInitialEntriesRef = useRef(initialEntries);
+  useEffect(() => {
+    if (lastInitialEntriesRef.current === initialEntries) return;
+    lastInitialEntriesRef.current = initialEntries;
+    // 作废进行中的事件 refetch，否则开机 finance:changed 晚到的第 1 页
+    // 会在父级新页落地之后又写回 refreshedEntries，列表看起来没跳。
+    detailRefreshSeqRef.current += 1;
+    setRefreshedEntries(null);
+  }, [initialEntries]);
 
   useEffect(() => {
     if (resetKey == null) return;

@@ -68,8 +68,9 @@ import { ALL_CASH_DETAIL_SCOPE_ID, cashLedgerAccountIdsOf, isAllCashDetailScope 
 import { getOrCreateInsuranceAccount } from "@/lib/insurance/autoAccount";
 import { normalizeInsuranceAction } from "@/lib/insurance/transaction";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
+import { resolveOrCreateDepositProduct } from "@/lib/server/deposit-product";
 import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
-import { ensureWealthBondPlansAfterTx } from "@/lib/server/bond-plan-tasks";
+import { createBondEntry, editBondEntry, bondEntryInputFromFormData } from "@/lib/server/bond-transactions";
 import { resolveOrCreateAdvanceAccount } from "@/lib/server/advance-account";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { materializeDueInstallmentPayments } from "@/lib/server/credit-card-installment";
@@ -489,6 +490,19 @@ async function assertWealthUnitsWhenRequiredInTx(
   }
 }
 
+/**
+ * 报表明细编辑（ReportTransactionEditHost）会把弹窗 FormData 整体 JSON 化后 PUT 过来，
+ * 这里还原成 FormData，交给债券的唯一解析真源 bondEntryInputFromFormData。
+ */
+function formDataFromJsonBody(body: Record<string, unknown>): FormData {
+  const formData = new FormData();
+  for (const [key, value] of Object.entries(body)) {
+    if (value == null) continue;
+    formData.set(key, typeof value === "string" ? value : JSON.stringify(value));
+  }
+  return formData;
+}
+
 async function createSplitWealthTransactionFromBody(body: Record<string, unknown>, householdId: string, tagIds: string[]) {
   const date = toDateOrNull(body.date) ?? new Date();
   const subtype = normalizeFundSubtype(body.fundSubtype ?? body.subtype);
@@ -500,6 +514,7 @@ async function createSplitWealthTransactionFromBody(body: Record<string, unknown
 
   const requestedWealthAccountId = String(body.accountId ?? body.toAccountId ?? "").trim();
   const cashAccountId = String(body.cashAccountId ?? "").trim();
+  // 只服务理财：债券在 POST 分发处已早退到 createBondEntry，不会走到这里。
   const productNameInput = String(body.fundName ?? "").trim();
   const wealthProductIdInput = String(body.wealthProductId ?? "").trim();
   const note = String(body.note ?? body.memo ?? "").trim();
@@ -548,6 +563,7 @@ async function createSplitWealthTransactionFromBody(body: Record<string, unknown
           householdId,
           cashAccountId: cashAcc!.id,
           requestedAccountId: requestedWealthAccountId || null,
+          accountProductType: "wealth",
         });
     if (!wealthAcc) throw new Error("请选择理财账户");
 
@@ -571,11 +587,9 @@ async function createSplitWealthTransactionFromBody(body: Record<string, unknown
       });
     }
 
-    const isBondProduct = wealthProduct.productType === "bond";
     const investmentCategoryName = getInvestmentCategoryName({
       fundProductType: "wealth",
       fundSubtype: subtype,
-      wealthProductType: wealthProduct.productType,
     });
     const investmentCategory = investmentCategoryName
       ? await resolveCategorySnapshot(tx, householdId, { categoryName: investmentCategoryName, type: "investment" })
@@ -587,7 +601,6 @@ async function createSplitWealthTransactionFromBody(body: Record<string, unknown
       productName: wealthProduct.name,
       units,
       userNote: note,
-      isBond: isBondProduct,
     });
     const cashEntry = await tx.txRecord.create({
       data: {
@@ -663,8 +676,8 @@ async function createSplitWealthTransactionFromBody(body: Record<string, unknown
     await recalcAndSaveAccountBalance(id).catch(logger.catchLog("操作失败", "route.ts"));
   }
   await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(logger.catchLog("信用卡账单缓存失效失败", "route.ts"));
-  // 城投债债单驱动：持仓/到账/核销后刷新该产品的系统计划行（预期付息日/金额）。
-  await ensureWealthBondPlansAfterTx(householdId, wealthProductIdInput).catch(logger.catchLog("城投债计划行刷新失败", "route.ts"));
+  // 债券计划行由 createBondEntry / editBondEntry 按存单刷新（ensureBondPlansForLot），
+  // 理财路径不再代管债券计划行。
   revalidateAfterInvestChange();
   return result;
 }
@@ -683,6 +696,7 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
 
   const requestedWealthAccountId = String(body.toAccountId ?? body.accountId ?? "").trim();
   const cashAccountIdInput = String(body.cashAccountId ?? "").trim();
+  // 只服务理财：债券在 PUT 分发处已早退到 editBondEntry，不会走到这里。
   const productNameInput = String(body.fundName ?? "").trim();
   const wealthProductIdInput = String(body.wealthProductId ?? "").trim();
   const note = String(body.note ?? body.memo ?? "").trim();
@@ -773,6 +787,7 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
           householdId,
           cashAccountId: cashAcc!.id,
           requestedAccountId: requestedWealthAccountId || wealthRow.accountId,
+          accountProductType: "wealth",
         });
     if (!wealthAcc) throw new Error("请选择理财账户");
 
@@ -796,12 +811,10 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
       });
     }
 
-    const isBondProduct = wealthProduct.productType === "bond";
     const signedCashAmount = isWriteOff ? -amountAbs : isCashIn ? Math.abs(arrivalAmount ?? amountAbs) : -amountAbs;
     const investmentCategoryName = getInvestmentCategoryName({
       fundProductType: "wealth",
       fundSubtype: subtype,
-      wealthProductType: wealthProduct.productType,
     });
     const investmentCategory = investmentCategoryName
       ? await resolveCategorySnapshot(tx, householdId, { categoryName: investmentCategoryName, type: "investment" })
@@ -811,7 +824,6 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
       productName: wealthProduct.name,
       units,
       userNote: note,
-      isBond: isBondProduct,
     });
     const cashEntryData = {
       householdId,
@@ -914,8 +926,8 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
     await recalcAndSaveAccountBalance(id).catch(logger.catchLog("操作失败", "route.ts"));
   }
   await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(logger.catchLog("信用卡账单缓存失效失败", "route.ts"));
-  // 城投债债单驱动：持仓/到账/核销编辑后刷新该产品的系统计划行。
-  await ensureWealthBondPlansAfterTx(householdId, wealthProductIdInput || result.productId).catch(logger.catchLog("城投债计划行刷新失败", "route.ts"));
+  // 债券计划行由 createBondEntry / editBondEntry 按存单刷新（ensureBondPlansForLot），
+  // 理财路径不再代管债券计划行。
   revalidateAfterInvestChange();
   return result;
 }
@@ -977,6 +989,7 @@ async function loadApiDetailRecord(entryId: string) {
     fundCode: entry.fundCode,
     fundName: entry.fundName,
     wealthProductId: entry.wealthProductId ?? null,
+    depositProductId: entry.depositProductId ?? null,
     insuranceProductId: entry.insuranceProductId ?? null,
     fundProductType: entry.fundProductType,
     metalTypeId: entry.metalTypeId ?? null,
@@ -1496,6 +1509,7 @@ export async function GET(req: Request) {
         fundCode: record.fundCode,
         fundName: record.fundName,
         wealthProductId: record.wealthProductId ?? null,
+        depositProductId: record.depositProductId ?? null,
         insuranceProductId: record.insuranceProductId ?? null,
         insuranceAction: record.insuranceAction ?? null,
         insuranceProductName: record.insuranceProductName ?? record.fundName ?? null,
@@ -1791,6 +1805,7 @@ export async function GET(req: Request) {
       fundCode: e.fundCode,
       fundName: e.fundName,
       wealthProductId: e.wealthProductId ?? null,
+      depositProductId: e.depositProductId ?? null,
       insuranceProductId: e.insuranceProductId ?? null,
       insuranceAction: e.insuranceAction ?? null,
       insuranceProductName: e.insuranceProductName ?? e.fundName ?? null,
@@ -1873,6 +1888,7 @@ export async function GET(req: Request) {
  *   fundCode?: string
  *   fundName?: string
  *   wealthProductId?: string
+ *   depositProductId?: string
  *   fundProductType?: "fund" | "money" | "wealth" | "deposit" | "metal"
  *   fundSubtype?: "buy" | "redeem" | "dividend_reinvest" | "dividend_cash" | "regular_invest" | "switch_in" | "switch_out" | "buy_failed"
  *   fundNav?: number
@@ -2273,6 +2289,15 @@ export async function POST(req: Request) {
       const inputFundDisplayName = fundCode ? normalizeFundDisplayName(fundCode, fundNameInput) : fundNameInput || null;
       const effectiveFundDisplayName = profileFundDisplayName ?? inputFundDisplayName;
       const wealthProductIdInput = String(body.wealthProductId ?? "").trim();
+      const depositProductIdInput = String(body.depositProductId ?? "").trim();
+      // 债券走债券专用落库路径（BondProduct + bond_transactions，买入行即存单），
+      // 不复用理财拆账。
+      if (fundProductType === "bond") {
+        const created = await createBondEntry(bondEntryInputFromFormData(formDataFromJsonBody(body), householdId));
+        const data = await loadApiDetailRecord(created.cashEntryId);
+        await touchAccountUsage(usageAccountIds);
+        return NextResponse.json({ ok: true, data: data ?? { id: created.cashEntryId } });
+      }
       if (fundProductType === "wealth") {
         const created = await createSplitWealthTransactionFromBody(body, householdId, tagIds);
         const data = await loadApiDetailRecord(created.cashEntryId);
@@ -2344,6 +2369,7 @@ export async function POST(req: Request) {
                   householdId,
                   cashAccountId: cashAccountIdInput ?? "",
                   requestedAccountId: accountId || null,
+                  accountProductType: "wealth",
                 })
               : accountId
                 ? await tx.account.findUnique({ where: { id: accountId } })
@@ -2487,11 +2513,12 @@ export async function POST(req: Request) {
           : null;
         if (fundProductType === "metal" && !metalType) throw new Error("请选择贵金属品种");
         if (fundProductType === "metal" && !metalUnit) throw new Error("请选择贵金属单位");
+        // 债券走自己的 BondProduct 主数据（在 createBondEntry 内处理），这里只认理财。
         const wealthProduct = fundProductType === "wealth"
           ? (wealthProductIdInput
               ? await tx.wealthProduct.findFirst({ where: { id: wealthProductIdInput, householdId, institutionId: investAcc.institutionId, isActive: true } })
               : fundNameInput
-                ? await tx.wealthProduct.findFirst({
+                ? (await tx.wealthProduct.findFirst({
                     where: { householdId, institutionId: investAcc.institutionId ?? null, name: fundNameInput, isActive: true },
                   }) ?? await tx.wealthProduct.create({
                     data: {
@@ -2500,7 +2527,7 @@ export async function POST(req: Request) {
                       name: fundNameInput,
                       currency: investAcc.currency ?? "CNY",
                     },
-                  })
+                  }))
                 : null)
           : null;
         if (fundProductType === "wealth" && !wealthProduct) throw new Error("请选择或新增理财产品");
@@ -2508,10 +2535,21 @@ export async function POST(req: Request) {
           if (!cashAcc) throw new Error("请选择理财资金账户");
           assertSameWealthCurrency(cashAcc, investAcc, wealthProduct);
         }
+        const depositProduct = fundProductType === "deposit"
+          ? await resolveOrCreateDepositProduct(tx, {
+              householdId,
+              productId: depositProductIdInput,
+              name: fundNameInput,
+              institutionId: investAcc.institutionId ?? null,
+              currency: investAcc.currency ?? "CNY",
+              annualRate: depositAnnualRate,
+            })
+          : null;
+        if (fundProductType === "deposit" && !depositProduct) throw new Error("Please select or add a deposit product");
 
         const isMetalProduct = fundProductType === "metal";
         const entryFundCode = isMetalProduct ? null : fundCode || null;
-        const entryFundName = isMetalProduct ? null : resolvedInsuranceProductName || wealthProduct?.name || effectiveFundDisplayName || fundCode || null;
+        const entryFundName = isMetalProduct ? null : resolvedInsuranceProductName || wealthProduct?.name || depositProduct?.name || effectiveFundDisplayName || fundCode || null;
         const isInsurancePremiumBuy = isInsurance && insuranceActionForEntry === "premium" && finalFundSubtype === FundSubtype.buy && !redeemLike;
         const premiumFrequencyMonths = insuranceProductForPlan
           ? Number(insuranceProductForPlan.premiumFrequencyMonths ?? 0)
@@ -2759,6 +2797,7 @@ export async function POST(req: Request) {
               amount: signedAmount,
               fundName: entryFundName,
               wealthProductId: wealthProduct?.id ?? undefined,
+              depositProductId: depositProduct?.id ?? undefined,
               metalTypeId: metalType?.id ?? undefined,
               metalTypeName: metalType?.name ?? undefined,
               metalUnitId: metalUnit?.id ?? undefined,
@@ -2975,6 +3014,7 @@ export async function POST(req: Request) {
             fundCode: created.fundCode,
             fundName: created.fundName,
             wealthProductId: created.wealthProductId ?? null,
+            depositProductId: created.depositProductId ?? null,
             insuranceProductId: created.insuranceProductId ?? null,
             fundProductType: created.fundProductType,
             fundNav: created.fundNav ? toNumber(created.fundNav) : null,
@@ -3025,6 +3065,7 @@ export async function POST(req: Request) {
  *   fundCode?: string
  *   fundName?: string
  *   wealthProductId?: string
+ *   depositProductId?: string
  *   insuranceProductId?: string
  *   fundProductType?: string
  *   fundSubtype?: string
@@ -3051,7 +3092,7 @@ export async function PUT(req: Request) {
     const entryId = String(body.id ?? body.entryId ?? "").trim();
     const productType = String(body.fundProductType ?? body.productType ?? "").trim();
     const businessTransactionId = String(body.businessTransactionId ?? "").trim();
-    if (!entryId && !(type === "investment" && productType === "wealth" && businessTransactionId)) {
+    if (!entryId && !(type === "investment" && (productType === "wealth" || productType === "bond") && businessTransactionId)) {
       return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
     }
 
@@ -3100,7 +3141,21 @@ export async function PUT(req: Request) {
       source: string;
     } | null = null;
 
-    if (type === "investment" && String(body.fundProductType ?? body.productType ?? "").trim() === "wealth") {
+    // 债券走债券专用编辑路径（editBondEntry）：按存单归属更新，条款快照与计划行同步刷新。
+    if (type === "investment" && productType === "bond") {
+      const updated = await editBondEntry(bondEntryInputFromFormData(formDataFromJsonBody(body), householdId, {
+        entryId: entryId || null,
+        businessTransactionId: businessTransactionId || null,
+      }));
+      await saveEntryUndo(prisma, ctx, undo, "edit", "编辑明细");
+      const data = await loadApiDetailRecord(updated.cashEntryId);
+      if (!data) {
+        return NextResponse.json({ ok: false, code: "UPDATED_ENTRY_NOT_FOUND", error: "更新后记录不存在" }, { status: 404 });
+      }
+      return NextResponse.json({ ok: true, data });
+    }
+
+    if (type === "investment" && productType === "wealth") {
       const updated = await editSplitWealthTransactionFromBody(body, householdId, tagIds);
       await saveEntryUndo(prisma, ctx, undo, "edit", "编辑明细");
       const data = await loadApiDetailRecord(updated.cashEntryId);
@@ -3230,6 +3285,7 @@ export async function PUT(req: Request) {
     const cashAccountIdFormData = String(body.cashAccountId ?? "").trim();
     const fundCode = String(body.fundCode ?? "").trim() || null;
     const wealthProductIdInput = String(body.wealthProductId ?? "").trim();
+    const depositProductIdInput = String(body.depositProductId ?? "").trim();
     const metalTypeIdInput = String(body.metalTypeId ?? "").trim();
     const metalUnitIdInput = String(body.metalUnitId ?? "").trim();
     const insuranceProductId = String(body.insuranceProductId ?? "").trim() || entry.insuranceProductId || null;
@@ -3300,6 +3356,7 @@ export async function PUT(req: Request) {
         householdId,
         cashAccountId: requestedCashAccountId,
         requestedAccountId: investAcc?.id ?? (accountIdFormData || null),
+        accountProductType: "wealth",
       });
     }
 
@@ -3352,6 +3409,16 @@ export async function PUT(req: Request) {
             : null)
       : null;
     if (productType === "wealth" && !wealthProduct) throw new Error("请选择或新增理财产品");
+    const depositProduct = productType === "deposit"
+      ? await resolveOrCreateDepositProduct(tx, {
+          householdId,
+          productId: depositProductIdInput || entry.depositProductId,
+          name: fundNameInput,
+          institutionId: investAcc.institutionId ?? null,
+          currency: investAcc.currency ?? entry.currency ?? "CNY",
+        })
+      : null;
+    if (productType === "deposit" && !depositProduct) throw new Error("Please select or add a deposit product");
 
         let cashAccId: string | null = null;
         let cashAccName: string | null = null;
@@ -3553,8 +3620,9 @@ export async function PUT(req: Request) {
             toAccountId: recordToAccountId,
             toAccountName: recordToAccountName,
             fundCode: null,
-            fundName: isFundLikeIndependentEdit || isMetalProduct ? null : (resolvedInsuranceProductName || wealthProduct?.name || effectiveEditFundDisplayName || normalizeFundDisplayName(fundCode ?? "", entry.fundName) || entry.fundName),
+            fundName: isFundLikeIndependentEdit || isMetalProduct ? null : (resolvedInsuranceProductName || wealthProduct?.name || depositProduct?.name || effectiveEditFundDisplayName || normalizeFundDisplayName(fundCode ?? "", entry.fundName) || entry.fundName),
             wealthProductId: wealthProduct?.id ?? null,
+            depositProductId: depositProduct?.id ?? (productType === "deposit" ? null : entry.depositProductId),
             metalTypeId: metalType?.id ?? null,
             metalTypeName: metalType?.name ?? null,
             metalUnitId: metalUnit?.id ?? null,
@@ -3760,8 +3828,8 @@ return;
       ]);
       if (!acc) throw new Error("请选择账户");
       if (!isIncomeExpensePostingAccount(acc)) {
-        // 存款账户参与收支（2026-09-18）：白名单分类放行；账户没变（编辑利息收入本身）也放行
-        // ——与既有 09-17 口径一致（存款利息收入本来就落在存款账户上，用户只改金额/备注等）。
+        // 存款账户参与收支（2026-09-18）：编辑/改挂到存款账户时按分类白名单放行；
+        // 账户没变（编辑利息收入本身）也放行——与既有 09-17 口径一致。
         const catName = cat?.name ?? categoryName ?? null;
         const sameAccount = accountId === entry.accountId;
         if (!isDepositAccount(acc) || (!isDepositPostingCategoryAllowed(catName, type === "income" ? "income" : "expense") && !sameAccount)) {
@@ -3984,6 +4052,7 @@ return;
         fundCode: updated.fundCode,
         fundName: updated.fundName,
         wealthProductId: updated.wealthProductId ?? null,
+        depositProductId: updated.depositProductId ?? null,
         insuranceProductId: updated.insuranceProductId ?? null,
         fundProductType: updated.fundProductType,
         metalTypeId: updated.metalTypeId ?? null,

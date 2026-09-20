@@ -5,6 +5,7 @@ import { DepositFormModal } from "@/components/DepositFormModal";
 import { InvestmentFormModal } from "@/components/InvestmentFormModal";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { WealthFormModal } from "@/components/WealthFormModal";
+import { BondFormModal } from "@/components/BondFormModal";
 import { useI18n } from "@/lib/i18n";
 
 type AccountOption = {
@@ -169,6 +170,17 @@ export function ReportTransactionEditHost({
         editAction={updateInvestment}
       />
       <WealthFormModal
+        mode="edit"
+        accountId={investmentAccounts[0]?.id ?? ""}
+        cashAccounts={cashAccounts}
+        investmentAccounts={investmentAccounts}
+        cashAccountSSOptions={cashAccountSSOptions}
+        investmentAccountSSOptions={investmentAccountSSOptions}
+        nestedFieldData={nestedFieldData}
+        createAction={updateInvestment}
+        editAction={updateInvestment}
+      />
+      <BondFormModal
         mode="edit"
         accountId={investmentAccounts[0]?.id ?? ""}
         cashAccounts={cashAccounts}

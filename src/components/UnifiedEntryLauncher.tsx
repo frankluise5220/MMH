@@ -22,6 +22,7 @@ type EntryKind =
   | "property"
   | "metal"
   | "wealth"
+  | "bond"
   | "deposit"
   | "deposit-buy"
   | "deposit-redeem"
@@ -59,6 +60,7 @@ type Props = {
     defaultPropertyAccountId?: string;
     defaultMetalAccountId?: string;
     defaultWealthAccountId?: string;
+    defaultBondAccountId?: string;
     defaultDepositAccountId?: string;
     defaultDepositSubtype?: "buy" | "redeem";
     defaultRedeemLotId?: string;
@@ -275,6 +277,18 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"], loanTy
             requestId,
             defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
             defaultWealthAccountId: context?.defaultWealthAccountId ?? "",
+          },
+        }),
+      );
+      return;
+    case "bond":
+      // 债券有独立表单 BondFormModal（债券账户/债券产品/债单条款），不再走理财表单。
+      window.dispatchEvent(
+        new CustomEvent("mmh:bond:create", {
+          detail: {
+            requestId,
+            defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
+            defaultWealthAccountId: context?.defaultBondAccountId ?? "",
           },
         }),
       );

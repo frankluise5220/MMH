@@ -138,6 +138,7 @@ export function ReportDetailTable({
       "mmh:transaction:edit:success",
       "mmh:investment:edit:success",
       "mmh:wealth:edit:success",
+      "mmh:bond:edit:success",
       "mmh:deposit:edit:success",
       "mmh:insurance:edit:success",
     ];

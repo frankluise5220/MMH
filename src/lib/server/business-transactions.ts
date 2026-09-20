@@ -34,6 +34,7 @@ async function softDeleteIndependentBusinessProjection(client: TxClient, entryId
   await Promise.all([
     client.insuranceTransaction.updateMany({ where: { id: entryId, deletedAt: null }, data: { deletedAt } }),
     client.wealthTransaction.updateMany({ where: { id: entryId, deletedAt: null }, data: { deletedAt } }),
+    client.bondTransaction.updateMany({ where: { id: entryId, deletedAt: null }, data: { deletedAt } }),
     client.depositTransaction.updateMany({ where: { id: entryId, deletedAt: null }, data: { deletedAt } }),
     client.preciousMetalTransaction.updateMany({ where: { id: entryId, deletedAt: null }, data: { deletedAt } }),
     client.stockTransaction.updateMany({ where: { id: entryId, deletedAt: null }, data: { deletedAt } }),
@@ -45,6 +46,7 @@ async function softDeleteIndependentBusinessProjection(client: TxClient, entryId
           { businessEntryId: entryId },
           { insuranceTransactionId: entryId },
           { wealthTransactionId: entryId },
+          { bondTransactionId: entryId },
           { depositTransactionId: entryId },
           { preciousMetalTransactionId: entryId },
           { stockTransactionId: entryId },
@@ -204,6 +206,7 @@ export async function syncIndependentBusinessTransactionFromTxRecord(
         cashAccountId,
         cashEntryId,
         sourceDepositTransactionId: entry.depositSourceEntryId,
+        depositProductId: entry.depositProductId,
         productName: entry.fundName ?? entry.fundCode,
         action: subtype,
         source: entry.source,
@@ -228,6 +231,7 @@ export async function syncIndependentBusinessTransactionFromTxRecord(
         cashAccountId,
         cashEntryId,
         sourceDepositTransactionId: entry.depositSourceEntryId,
+        depositProductId: entry.depositProductId,
         productName: entry.fundName ?? entry.fundCode,
         action: subtype,
         source: entry.source,
@@ -283,8 +287,99 @@ export async function syncIndependentBusinessTransactionFromTxRecord(
           logger.catchLog("completeDepositPlansForLot failed", "business-transactions")(e);
         });
       } else {
-        await planTasks.ensureDepositPlansForLot({ householdId: entry.householdId, lotId: entry.depositSourceEntryId }).catch((e) => {
-          logger.catchLog("ensureDepositPlansForLot (redeem undone) failed", "business-transactions")(e);
+        const lotStillHeld = await client.txRecord.findFirst({
+          where: {
+            id: entry.depositSourceEntryId,
+            householdId: entry.householdId,
+            deletedAt: null,
+            type: TransactionType.investment,
+            fundProductType: "deposit",
+            fundSubtype: FundSubtype.buy,
+          },
+          select: { id: true },
+        });
+        if (lotStillHeld) {
+          await planTasks.ensureDepositPlansForLot({ householdId: entry.householdId, lotId: entry.depositSourceEntryId }).catch((e) => {
+            logger.catchLog("ensureDepositPlansForLot (redeem undone) failed", "business-transactions")(e);
+          });
+        }
+      }
+    }
+  } else if (businessType === "bond") {
+    // 债券走独立交易表（bond_transactions）：无份额/净值。买入行即存单，
+    // 条款快照与 sourceBondTransactionId 由债券录入路径写入；这里只同步共享字段，
+    // update 不触碰条款列，避免通用编辑抹掉存单快照。
+    const row = await client.bondTransaction.upsert({
+      where: { id: entry.id },
+      create: {
+        id: entry.id,
+        householdId: entry.householdId,
+        accountId: businessAccountId,
+        cashAccountId,
+        cashEntryId,
+        bondProductId: entry.bondProductId,
+        productName: entry.bondName ?? entry.fundName,
+        action: subtype,
+        source: entry.source,
+        entryOrigin: entry.entryOrigin,
+        tradeDate: entry.date,
+        confirmDate: entry.bondConfirmDate,
+        arrivalDate: entry.bondArrivalDate,
+        grossAmount: absAmount,
+        arrivalAmount,
+        interest: entry.bondInterest,
+        fee: entry.bondFee,
+        annualRate: entry.bondAnnualRate,
+        realizedProfit: entry.realizedProfit,
+        note: entry.note,
+        deletedAt: entry.deletedAt,
+      },
+      update: {
+        accountId: businessAccountId,
+        cashAccountId,
+        cashEntryId,
+        bondProductId: entry.bondProductId,
+        productName: entry.bondName ?? entry.fundName,
+        action: subtype,
+        source: entry.source,
+        entryOrigin: entry.entryOrigin,
+        tradeDate: entry.date,
+        confirmDate: entry.bondConfirmDate,
+        arrivalDate: entry.bondArrivalDate,
+        grossAmount: absAmount,
+        arrivalAmount,
+        interest: entry.bondInterest,
+        fee: entry.bondFee,
+        annualRate: entry.bondAnnualRate,
+        realizedProfit: entry.realizedProfit,
+        note: entry.note,
+        deletedAt: entry.deletedAt,
+      },
+    });
+    targetId = row.id;
+    // 存单 = 计划行真源：买入/删除买入驱动该存单的到期 + 付息两条计划行。
+    if (subtype === FundSubtype.buy) {
+      const planTasks = await import("@/lib/server/bond-plan-tasks");
+      if (!entry.deletedAt) {
+        await planTasks.ensureBondPlansForLot({ householdId: entry.householdId, lotId: entry.id }).catch((e) => {
+          logger.catchLog("ensureBondPlansForLot failed", "business-transactions")(e);
+        });
+      } else {
+        await planTasks.completeBondPlansForLot({ householdId: entry.householdId, lotId: entry.id }).catch((e) => {
+          logger.catchLog("completeBondPlansForLot failed", "business-transactions")(e);
+        });
+      }
+    } else {
+      // 付息/赎回/核销后刷新所属存单的计划行（本金、下次付息日随存单变化）。
+      const planTasks = await import("@/lib/server/bond-plan-tasks");
+      const child = await client.bondTransaction.findUnique({
+        where: { id: entry.id },
+        select: { sourceBondTransactionId: true },
+      });
+      const lotId = child?.sourceBondTransactionId ?? "";
+      if (lotId) {
+        await planTasks.ensureBondPlansForLot({ householdId: entry.householdId, lotId }).catch((e) => {
+          logger.catchLog("ensureBondPlansForLot (child row) failed", "business-transactions")(e);
         });
       }
     }
@@ -347,6 +442,7 @@ export async function syncIndependentBusinessTransactionFromTxRecord(
     fundTransactionId: targetType === "fund" ? targetId : null,
     insuranceTransactionId: targetType === "insurance" ? targetId : null,
     wealthTransactionId: targetType === "wealth" ? targetId : null,
+    bondTransactionId: targetType === "bond" ? targetId : null,
     depositTransactionId: targetType === "deposit" ? targetId : null,
     preciousMetalTransactionId: targetType === "metal" ? targetId : null,
     stockTransactionId: targetType === "stock" ? targetId : null,

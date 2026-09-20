@@ -203,34 +203,46 @@ export async function recalcWealthPositions(accountId: string) {
     where: { id: accountId },
     select: { id: true, kind: true, investProductType: true, fundUnitsDecimals: true },
   });
-  if (!account || account.kind !== "investment" || account.investProductType !== "wealth") return;
+  if (!account || account.kind !== "investment") return;
+  const isBond = account.investProductType === "bond";
+  if (!isBond && account.investProductType !== "wealth") return;
 
   const fundUnitsDecimals = normalizeFundUnitsDecimals(account.fundUnitsDecimals, 2);
-  const rows = await prisma.wealthTransaction.findMany({
-    where: { accountId, deletedAt: null },
-    orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }],
-    select: {
-      id: true,
-      cashEntryId: true,
-      wealthProductId: true,
-      productName: true,
-      action: true,
-      tradeDate: true,
-      createdAt: true,
-      grossAmount: true,
-      arrivalAmount: true,
-      units: true,
-      nav: true,
-      interest: true,
-      fee: true,
-    },
-  });
+  const commonSelect = {
+    id: true,
+    cashEntryId: true,
+    productName: true,
+    action: true,
+    tradeDate: true,
+    createdAt: true,
+    grossAmount: true,
+    arrivalAmount: true,
+    interest: true,
+    fee: true,
+  } as const;
+
+  // 债券与理财各有独立交易表：债券走 bond_transactions（无份额/净值），理财走 wealth_transactions。
+  const rows = isBond
+    ? (
+        await prisma.bondTransaction.findMany({
+          where: { accountId, deletedAt: null },
+          orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }],
+          select: { ...commonSelect, bondProductId: true },
+        })
+      ).map((row) => ({ ...row, productKey: row.bondProductId ?? null, units: null, nav: null }))
+    : (
+        await prisma.wealthTransaction.findMany({
+          where: { accountId, deletedAt: null },
+          orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }],
+          select: { ...commonSelect, wealthProductId: true, units: true, nav: true },
+        })
+      ).map((row) => ({ ...row, productKey: row.wealthProductId ?? null }));
 
   const calc = calculateWealthPositionsFromEntries(
     rows.map((row) => ({
       id: row.id,
       cashEntryId: row.cashEntryId,
-      productKey: row.wealthProductId ?? row.productName ?? null,
+      productKey: row.productKey ?? row.productName ?? null,
       action: row.action,
       tradeDate: row.tradeDate,
       createdAt: row.createdAt,
@@ -249,10 +261,17 @@ export async function recalcWealthPositions(accountId: string) {
     // write_off 的已实现损失（=-核销额）也要回写，与 redeem/dividend 同等地位。
     if (!isCashInAction(action) && !isWriteOffAction(action)) continue;
     const realizedProfit = calc.realizedProfitByTransactionId.get(row.id) ?? null;
-    await prisma.wealthTransaction.update({
-      where: { id: row.id },
-      data: { realizedProfit },
-    });
+    if (isBond) {
+      await prisma.bondTransaction.update({
+        where: { id: row.id },
+        data: { realizedProfit },
+      });
+    } else {
+      await prisma.wealthTransaction.update({
+        where: { id: row.id },
+        data: { realizedProfit },
+      });
+    }
     if (row.cashEntryId) {
       await prisma.txRecord.updateMany({
         where: { id: row.cashEntryId },

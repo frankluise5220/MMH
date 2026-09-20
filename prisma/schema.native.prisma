@@ -80,6 +80,8 @@ model Account {
   InsuranceTransactionCashAccount                            InsuranceTransaction[]      @relation("InsuranceTransaction_cashAccount")
   WealthTransaction                                          WealthTransaction[]         @relation("WealthTransaction_account")
   WealthTransactionCashAccount                               WealthTransaction[]         @relation("WealthTransaction_cashAccount")
+  BondTransaction                                            BondTransaction[]           @relation("BondTransaction_account")
+  BondTransactionCashAccount                                 BondTransaction[]           @relation("BondTransaction_cashAccount")
   LoanRateAdjustment                                         LoanRateAdjustment[]
   DebtAgreement                                              DebtAgreement?
   DepositTransaction                                         DepositTransaction[]        @relation("DepositTransaction_account")
@@ -612,6 +614,91 @@ model WealthTransaction {
   @@map("wealth_transactions")
 }
 
+/// 债券（城投债 / 国债）产品主数据。债券不是基金，也不是普通理财：
+/// 有自己的条款字段（票面利率、到期日、付息方式、计息基础、首次付息日），
+/// 不复用 WealthProduct / fund* 字段。
+model BondProduct {
+  id                String            @id @default(cuid())
+  name              String
+  shortName         String?
+  currency          String            @default("CNY")
+  annualRate        Decimal?
+  termDays          Int?
+  // 债券条款：到期日、付息方式（编码同存款：maturity | yearly(:N) | monthly(:N)）、计息基础、首次付息日锚点
+  maturityDate      DateTime?
+  payoutFrequency   String?
+  interestCalcBasis String?
+  firstPayoutDate   DateTime?
+  note              String?
+  isActive          Boolean           @default(true)
+  householdId       String
+  institutionId     String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @default(now()) @updatedAt
+  Household         Household         @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  Institution       Institution?      @relation(fields: [institutionId], references: [id], onDelete: SetNull)
+  TxRecord          TxRecord[]
+  BondTransaction   BondTransaction[]
+
+  @@unique([householdId, institutionId, name])
+  @@index([householdId, isActive, name])
+  @@index([institutionId])
+}
+
+/// 债券交易（买入 / 赎回 / 利息到账 / 核销）。对齐 DepositTransaction，
+/// 不含基金专属的 units / nav。
+///
+/// 存单粒度：买入行本身就是一张「存单」（一个持仓），同一债单可以有多张存单；
+/// 付息/赎回/核销等子行用 sourceBondTransactionId 指回所属存单。条款（到期日/
+/// 期限/付息方式/首次付息日/计息基础）落在存单上，付息因此按存单各自产生。
+model BondTransaction {
+  id                String              @id @default(cuid())
+  householdId       String
+  accountId         String
+  cashAccountId     String?
+  cashEntryId       String?             @unique
+  bondProductId     String?
+  productName       String?
+  /// 所属存单（= 该债单买入行的 id）；买入行为 null，子行必填。
+  sourceBondTransactionId String?
+  action            FundSubtype         @default(buy)
+  source            String?             @default("manual")
+  entryOrigin       String?             @default("manual")
+  tradeDate         DateTime
+  confirmDate       DateTime?
+  arrivalDate       DateTime?
+  /// 存单条款快照：缺省时回退债单主数据（BondProduct）的同名字段。
+  termDays          Int?
+  maturityDate      DateTime?
+  payoutFrequency   String?
+  firstPayoutDate   DateTime?
+  interestCalcBasis String?
+  grossAmount       Decimal
+  arrivalAmount     Decimal?
+  interest          Decimal?
+  fee               Decimal?
+  annualRate        Decimal?
+  realizedProfit    Decimal?
+  note              String?
+  deletedAt         DateTime?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @default(now()) @updatedAt
+  Account           Account             @relation("BondTransaction_account", fields: [accountId], references: [id], onDelete: Cascade)
+  CashAccount       Account?            @relation("BondTransaction_cashAccount", fields: [cashAccountId], references: [id], onDelete: SetNull)
+  Household         Household           @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  BondProduct       BondProduct?        @relation(fields: [bondProductId], references: [id], onDelete: SetNull)
+  SourceBondTransaction BondTransaction?  @relation("BondTransaction_source", fields: [sourceBondTransactionId], references: [id], onDelete: SetNull)
+  ChildTransactions     BondTransaction[] @relation("BondTransaction_source")
+  EntryBusinessLink EntryBusinessLink[]
+
+  @@index([householdId, accountId, tradeDate])
+  @@index([cashAccountId, tradeDate])
+  @@index([bondProductId, tradeDate])
+  @@index([sourceBondTransactionId])
+  @@index([deletedAt])
+  @@map("bond_transactions")
+}
+
 model DepositTransaction {
   id                         String               @id @default(cuid())
   householdId                String
@@ -621,6 +708,7 @@ model DepositTransaction {
   sourceDepositTransactionId String?
   entryOrigin                String?              @default("manual")
   productName                String?
+  depositProductId           String?
   action                     FundSubtype          @default(buy)
   source                     String?              @default("manual")
   tradeDate                  DateTime
@@ -642,6 +730,7 @@ model DepositTransaction {
   Account                    Account              @relation("DepositTransaction_account", fields: [accountId], references: [id], onDelete: Cascade)
   CashAccount                Account?             @relation("DepositTransaction_cashAccount", fields: [cashAccountId], references: [id], onDelete: SetNull)
   Household                  Household            @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  DepositProduct             DepositProduct?      @relation(fields: [depositProductId], references: [id], onDelete: SetNull)
   SourceDepositTransaction   DepositTransaction?  @relation("DepositTransaction_source", fields: [sourceDepositTransactionId], references: [id], onDelete: SetNull)
   RedeemTransactions         DepositTransaction[] @relation("DepositTransaction_source")
   EntryBusinessLink          EntryBusinessLink[]
@@ -976,6 +1065,7 @@ model EntryBusinessLink {
   fundTransactionId          String?
   insuranceTransactionId     String?
   wealthTransactionId        String?
+  bondTransactionId          String?
   depositTransactionId       String?
   preciousMetalTransactionId String?
   stockTransactionId         String?
@@ -995,6 +1085,7 @@ model EntryBusinessLink {
   FundTransaction            FundTransaction?          @relation(fields: [fundTransactionId], references: [id], onDelete: SetNull)
   InsuranceTransaction       InsuranceTransaction?     @relation(fields: [insuranceTransactionId], references: [id], onDelete: SetNull)
   WealthTransaction          WealthTransaction?        @relation(fields: [wealthTransactionId], references: [id], onDelete: SetNull)
+  BondTransaction            BondTransaction?          @relation(fields: [bondTransactionId], references: [id], onDelete: SetNull)
   DepositTransaction         DepositTransaction?       @relation(fields: [depositTransactionId], references: [id], onDelete: SetNull)
   PreciousMetalTransaction   PreciousMetalTransaction? @relation(fields: [preciousMetalTransactionId], references: [id], onDelete: SetNull)
   StockTransaction           StockTransaction?         @relation(fields: [stockTransactionId], references: [id], onDelete: SetNull)
@@ -1007,6 +1098,7 @@ model EntryBusinessLink {
   @@index([fundTransactionId])
   @@index([insuranceTransactionId])
   @@index([wealthTransactionId])
+  @@index([bondTransactionId])
   @@index([depositTransactionId])
   @@index([preciousMetalTransactionId])
   @@index([stockTransactionId])
@@ -1030,7 +1122,10 @@ model Household {
   FundTransaction           FundTransaction[]
   InsuranceTransaction      InsuranceTransaction[]
   WealthTransaction         WealthTransaction[]
+  BondTransaction           BondTransaction[]
   DepositTransaction        DepositTransaction[]
+  DepositProduct            DepositProduct[]
+  BondProduct               BondProduct[]
   PreciousMetalTransaction  PreciousMetalTransaction[]
   StockSecurity             StockSecurity[]
   StockTransaction          StockTransaction[]
@@ -1120,6 +1215,8 @@ model Institution {
   InsuranceProductAsInsured      InsuranceProduct[]         @relation("InsuranceProductInsured")
   CounterpartyAsSource           Counterparty[]
   WealthProduct                  WealthProduct[]
+  BondProduct                    BondProduct[]
+  DepositProduct                 DepositProduct[]
   StatementRecognitionRule       StatementRecognitionRule[]
   Household                      Household?                 @relation(fields: [householdId], references: [id])
 
@@ -1147,6 +1244,29 @@ model InsuranceProductMaster {
   @@index([institutionId])
 }
 
+model DepositProduct {
+  id                 String       @id @default(cuid())
+  name               String
+  shortName          String?
+  currency           String       @default("CNY")
+  annualRate         Decimal?
+  termDays           Int?
+  note               String?
+  isActive           Boolean      @default(true)
+  householdId        String
+  institutionId      String?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @default(now()) @updatedAt
+  Household          Household    @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  Institution        Institution? @relation(fields: [institutionId], references: [id], onDelete: SetNull)
+  TxRecord           TxRecord[]
+  DepositTransaction DepositTransaction[]
+
+  @@unique([householdId, institutionId, name])
+  @@index([householdId, isActive, name])
+  @@index([institutionId])
+}
+
 model WealthProduct {
   id                String              @id @default(cuid())
   name              String
@@ -1154,10 +1274,6 @@ model WealthProduct {
   currency          String              @default("CNY")
   annualRate        Decimal?
   termDays          Int?
-  productType       WealthProductType   @default(standard)
-  maturityDate      DateTime?
-  payoutFrequency   String?
-  firstPayoutDate   DateTime?
   note              String?
   isActive          Boolean             @default(true)
   manualNav         Decimal?
@@ -1585,6 +1701,15 @@ model TxRecord {
   debtFeeAmount               Decimal?
   fundConfirmDate             DateTime?
   fundFee                     Decimal?
+  // 债券专用字段：债券不再复用 fund* / deposit* 字段承载语义
+  bondProductId               String?
+  bondSubtype                 FundSubtype?
+  bondName                    String?
+  bondAnnualRate              Decimal?
+  bondInterest                Decimal?
+  bondArrivalDate             DateTime?
+  bondConfirmDate             DateTime?
+  bondFee                     Decimal?
   fundNav                     Decimal?
   fundSubtype                 FundSubtype?
   fundUnits                   Decimal?
@@ -1598,6 +1723,7 @@ model TxRecord {
   installmentRole             String?
   fundName                    String?
   wealthProductId             String?
+  depositProductId            String?
   insuranceProductId          String?
   insuranceAction             String?
   insuranceProductName        String?
@@ -1615,6 +1741,8 @@ model TxRecord {
   ImportBatch                 ImportBatch?                @relation(fields: [importBatchId], references: [id])
   InsuranceProduct            InsuranceProduct?           @relation(fields: [insuranceProductId], references: [id], onDelete: SetNull)
   WealthProduct               WealthProduct?              @relation(fields: [wealthProductId], references: [id], onDelete: SetNull)
+  BondProduct                 BondProduct?                @relation(fields: [bondProductId], references: [id], onDelete: SetNull)
+  DepositProduct              DepositProduct?             @relation(fields: [depositProductId], references: [id], onDelete: SetNull)
   PreciousMetalType           PreciousMetalType?          @relation(fields: [metalTypeId], references: [id], onDelete: SetNull)
   PreciousMetalUnit           PreciousMetalUnit?          @relation(fields: [metalUnitId], references: [id], onDelete: SetNull)
   toAccount                   Account?                    @relation("transactions_toAccountIdToAccount", fields: [toAccountId], references: [id])
@@ -1635,6 +1763,8 @@ model TxRecord {
   @@index([fundSourceEntryId])
   @@index([insuranceProductId])
   @@index([wealthProductId])
+  @@index([bondProductId])
+  @@index([depositProductId])
   @@index([metalTypeId])
   @@index([metalUnitId])
   @@index([regularInvestPlanId])
@@ -1766,15 +1896,11 @@ enum FundProductType {
   fund
   money
   wealth
+  bond
   deposit
   metal
   stock
   property
-}
-
-enum WealthProductType {
-  standard
-  bond
 }
 
 enum TradingCalendar {
@@ -1812,6 +1938,7 @@ enum EntryBusinessType {
   fund
   stock
   wealth
+  bond
   deposit
   insurance
   metal

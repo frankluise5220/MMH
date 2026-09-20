@@ -22,6 +22,7 @@ import { listPreciousMetalDictionaries } from "@/lib/server/precious-metals";
 import { entryBusinessLinkSummaryInclude } from "@/lib/server/entry-business-link";
 import { loadFundTransactionEntryLike } from "@/lib/fund/transactions";
 import {
+  loadBondTransactionEntryLike,
   loadPreciousMetalTransactionEntryLike,
   loadPropertyTransactionEntryLike,
   loadWealthTransactionEntryLike,
@@ -30,7 +31,8 @@ import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 import { loadReadableTagsByRecentUse } from "@/lib/server/tag-scope";
 import { categoryOrderBy } from "@/lib/category-order";
 import { DETAIL_ALL_PAGE_SIZE } from "@/lib/detail-pagination-preference";
-import { compareDetailEntriesDesc } from "@/lib/detail-entry-order";
+import { compareDetailEntriesAsc, compareDetailEntriesDesc } from "@/lib/detail-entry-order";
+import { applyBalanceReconcileEntry } from "@/lib/balance-reconcile";
 
 // ── Types ──
 
@@ -142,6 +144,57 @@ async function _loadEntriesForAccount(
  */
 export const loadEntriesForAccount = cache(_loadEntriesForAccount);
 
+const detailOrderingSelect = {
+  id: true,
+  date: true,
+  postedAt: true,
+  createdAt: true,
+  dayOrder: true,
+  type: true,
+  amount: true,
+  accountId: true,
+  toAccountId: true,
+  toNote: true,
+  source: true,
+  debtPrincipalAmount: true,
+  fundSubtype: true,
+  fundConfirmDate: true,
+  fundArrivalDate: true,
+  fundArrivalAmount: true,
+} as const;
+
+function runningBalanceByIdForPage(
+  orderedEntries: Array<{
+    id: string;
+    date: Date | string;
+    type: string;
+    postedAt?: Date | string | null;
+    createdAt?: Date | string | null;
+    dayOrder?: number | null;
+    fundSubtype?: string | null;
+    fundConfirmDate?: Date | string | null;
+    amount: unknown;
+    toAccountId?: string | null;
+    toNote?: string | null;
+    source?: string | null;
+    debtPrincipalAmount?: unknown;
+    fundArrivalAmount?: unknown;
+  }>,
+  pageIds: string[],
+  sortAccountId?: string,
+) {
+  const runningBalanceById: Record<string, number> = {};
+  if (!sortAccountId || pageIds.length === 0) return runningBalanceById;
+  const wanted = new Set(pageIds);
+  const ascEntries = [...orderedEntries].sort((a, b) => compareDetailEntriesAsc(a, b, sortAccountId));
+  let runningBalance = 0;
+  for (const entry of ascEntries) {
+    runningBalance = applyBalanceReconcileEntry(runningBalance, entry, sortAccountId);
+    if (wanted.has(entry.id)) runningBalanceById[entry.id] = runningBalance;
+  }
+  return runningBalanceById;
+}
+
 async function _loadEntriesPageForAccount(
   accountId: string | string[],
   hidFilterStr: string,
@@ -162,35 +215,7 @@ async function _loadEntriesPageForAccount(
     prisma.txRecord.count({ where }),
     prisma.txRecord.findMany({
       where,
-      select: {
-        id: true,
-        date: true,
-        postedAt: true,
-        createdAt: true,
-        dayOrder: true,
-        type: true,
-        categoryId: true,
-        categoryName: true,
-        amount: true,
-        currency: true,
-        accountId: true,
-        toAccountId: true,
-        note: true,
-        toNote: true,
-        source: true,
-        debtPrincipalAmount: true,
-        fundProductType: true,
-        fundSubtype: true,
-        fundConfirmDate: true,
-        fundArrivalDate: true,
-        fundArrivalAmount: true,
-        fundName: true,
-        insuranceProductId: true,
-        insuranceAction: true,
-        insuranceProductName: true,
-        counterpartyInstitutionName: true,
-        EntryTag: { include: { Tag: true } },
-      },
+      select: detailOrderingSelect,
       orderBy: [{ date: "desc" }, { createdAt: "desc" }],
     }),
   ]);
@@ -235,16 +260,15 @@ async function _loadEntriesPageForAccount(
     entries: pagedEntryIds
       .map((id) => pageRowById.get(id))
       .filter((entry): entry is (typeof pageRows)[number] => !!entry),
-    exportEntries: orderingEntries,
-    orderingEntries,
+    runningBalanceById: runningBalanceByIdForPage(orderedEntries, pagedEntryIds, sortAccountId),
     totalCount,
     page,
   };
 }
 
 /**
- * Loads only the requested detail page while keeping a lightweight full
- * ordering set for totals, running balances, and Excel export rows.
+ * Loads only the requested detail page. Ordering/running-balance uses a
+ * scalar-only ledger so large accounts do not serialize attachments or tags.
  */
 export const loadEntriesPageForAccount = cache(_loadEntriesPageForAccount);
 
@@ -409,17 +433,22 @@ async function _loadInvestAccountData(
   positionDisplay.clearedPositions = [...positionDisplay.clearedPositions].sort(clearedSortFn);
 
   const selectedFundCode =
-    account.investProductType === "wealth"
+    account.investProductType === "wealth" || account.investProductType === "bond"
       ? (params.wealthProductIdParam || "")
       : (params.fundCodeParam || "");
 
   const fundEntries =
-    account.investProductType === "wealth"
-      ? await loadWealthTransactionEntryLike({
+    account.investProductType === "bond"
+      ? await loadBondTransactionEntryLike({
           householdId: hidFilter.householdId,
           accountIds: [accountId],
         })
-      : account.investProductType === "metal"
+      : account.investProductType === "wealth"
+        ? await loadWealthTransactionEntryLike({
+            householdId: hidFilter.householdId,
+            accountIds: [accountId],
+          })
+        : account.investProductType === "metal"
         ? await loadPreciousMetalTransactionEntryLike({
             householdId: hidFilter.householdId,
             accountIds: [accountId],
@@ -455,11 +484,13 @@ async function _loadInvestAccountData(
 
   const filtered = selectedFundCode
     ? fundEntries.filter((e: any) =>
-        account.investProductType === "wealth"
-          ? e.wealthProductId === selectedFundCode
-          : account.investProductType === "metal"
-            ? e.metalTypeId === selectedFundCode
-            : e.fundCode === selectedFundCode
+        account.investProductType === "bond"
+          ? e.bondProductId === selectedFundCode
+          : account.investProductType === "wealth"
+            ? e.wealthProductId === selectedFundCode
+            : account.investProductType === "metal"
+              ? e.metalTypeId === selectedFundCode
+              : e.fundCode === selectedFundCode
       )
     : [];
   const totalEntries = filtered.length;
@@ -478,7 +509,7 @@ async function _loadInvestAccountData(
     totalPages,
     safePage,
     selectedFundCode,
-    selectedWealthProductId: account.investProductType === "wealth" ? selectedFundCode : "",
+    selectedWealthProductId: account.investProductType === "wealth" || account.investProductType === "bond" ? selectedFundCode : "",
     pendingByCode: Object.fromEntries(pendingByCode),
     feeRateMap: Object.fromEntries(feeRateMap),
     confirmDaysMap: Object.fromEntries(confirmDaysMap),

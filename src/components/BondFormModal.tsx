@@ -17,6 +17,14 @@ import { compactFinanceAccountIds, dispatchFinanceDataChanged } from "@/lib/clie
 import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
 import { useI18n } from "@/lib/i18n";
 import { isWealthAccountAllowedForCashAccount } from "@/lib/wealth-account-rules";
+import { depositTermMaturityUtc, type DepositTermUnit } from "@/lib/deposit-term";
+import {
+  type DepositInterestPayoutUnit,
+  clampDepositInterestPayoutInterval,
+  encodeDepositInterestPayout,
+  maxDepositInterestPayoutInterval,
+  parseDepositInterestPayout,
+} from "@/lib/deposit-interest-payout";
 import { EntryAttachmentButton, uploadEntryAttachmentFiles } from "./EntryAttachmentPanel";
 
 type Entry = {
@@ -24,6 +32,8 @@ type Entry = {
   transactionId?: string;
   cashEntryId?: string | null;
   businessTransactionId?: string | null;
+  /** 债券存单归属：子行指回所属存单；买入行自己就是存单（为 null）。 */
+  sourceBondTransactionId?: string | null;
   date: string;
   amount: number;
   note?: string | null;
@@ -104,14 +114,21 @@ type EditingWealthRedeemSource = {
   unitMovements?: Array<{ date: string; delta: number }>;
 };
 type WealthSubtype = "buy" | "redeem" | "dividend_cash" | "write_off";
-const TERM_PRESETS = [
-  { labelKey: "wealthForm.term.3months", days: 90 },
-  { labelKey: "wealthForm.term.halfYear", days: 180 },
-  { labelKey: "wealthForm.term.1year", days: 365 },
-  { labelKey: "wealthForm.term.2years", days: 730 },
-  { labelKey: "wealthForm.term.3years", days: 1095 },
-  { labelKey: "wealthForm.term.5years", days: 1825 },
-] as const;
+/**
+ * 债券存单（持仓）：一笔买入 = 一张存单 = 一个持仓。同一债单可以有多张存单，
+ * 各自带起息日与条款，因此付息/赎回/核销必须指明所属存单（bondSourceLotId）。
+ */
+type BondLotOption = {
+  id: string;
+  name: string;
+  accountId: string;
+  certificateIndex: number;
+  startDate: string | null;
+  maturityDate: string | null;
+  annualRate: number | null;
+  principal: number;
+  status: "open" | "closed";
+};
 
 function inferWealthRedeemPrincipalAmount(input: {
   amount?: number | null;
@@ -178,7 +195,7 @@ function parseSignedNumber(value: string) {
   return Number.isFinite(n) ? n : 0;
 }
 
-export function WealthFormModal({
+export function BondFormModal({
   mode = "create",
   accountId: defaultAccountId,
   entry,
@@ -188,7 +205,7 @@ export function WealthFormModal({
   investmentAccounts = [],
   cashAccountSSOptions,
   investmentAccountSSOptions,
-  wealthHoldingOptions = [],
+  bondLotOptions = [],
   nestedFieldData,
   createAction,
   editAction,
@@ -204,7 +221,8 @@ export function WealthFormModal({
   cashAccountSSOptions?: SmartSelectOption[];
   /** Hierarchical SmartSelect options for investment account dropdown (grouped by AccountGroup) */
   investmentAccountSSOptions?: SmartSelectOption[];
-  wealthHoldingOptions?: WealthHoldingOption[];
+  /** 债券存单下拉：付息/赎回/核销按存单选（债券是存单粒度，不是产品聚合持仓）。 */
+  bondLotOptions?: BondLotOption[];
   /** Groups & institutions data for NestedAddModal compact account creation */
   nestedFieldData?: NestedFieldData;
   createAction: (formData: FormData) => Promise<{ ok: true; data?: { id?: string; cashEntryId?: string } } | { ok: false; error: string }>;
@@ -252,6 +270,16 @@ export function WealthFormModal({
   const [fundName, setFundName] = useState(initName);
   const [annualRate, setAnnualRate] = useState("");
   const [termDays, setTermDays] = useState("");
+  const [bondTermUnit, setBondTermUnit] = useState<DepositTermUnit>("year");
+  const [bondTermCount, setBondTermCount] = useState("1");
+  const [bondMaturityDate, setBondMaturityDate] = useState("");
+  const bondMaturityDateTouchedRef = useRef(false);
+  const [bondPayoutUnit, setBondPayoutUnit] = useState<"maturity" | DepositInterestPayoutUnit>("maturity");
+  const [bondPayoutInterval, setBondPayoutInterval] = useState("1");
+  const [bondFirstPayoutDate, setBondFirstPayoutDate] = useState("");
+  const bondFirstPayoutDateTouchedRef = useRef(false);
+  const bondProductRestoredRef = useRef(false);
+  const [bondCalcBasis, setBondCalcBasis] = useState<"daily" | "monthly">("daily");
   const [interestAmount, setInterestAmount] = useState(mode === "edit" && initIsRedeem && entry?.depositInterest != null ? String(entry.depositInterest) : "");
   const [arrivalAmount, setArrivalAmount] = useState(mode === "edit" && entry && entry.amount > 0 ? String(Math.abs(entry.amount)) : "");
   const [interestEdited, setInterestEdited] = useState(false);
@@ -289,7 +317,7 @@ export function WealthFormModal({
   // Mutable SS options — onCreated appends new account to these too
   const [localCashSSOpts, setLocalCashSSOpts] = useState(cashAccountSSOptions);
   const [localInvestSSOpts, setLocalInvestSSOpts] = useState(investmentAccountSSOptions);
-  const [nestedEntityType, setNestedEntityType] = useState<"cash-account" | "wealth-account" | null>(null);
+  const [nestedEntityType, setNestedEntityType] = useState<"cash-account" | "bond-account" | null>(null);
   const [wealthProducts, setWealthProducts] = useState<WealthProductOption[]>([]);
   // Local copy of nested option data so newly created institutions/groups persist
   // across account-dialog instances within this modal.
@@ -310,11 +338,11 @@ export function WealthFormModal({
     [cashAccountId, cashAccountList],
   );
   // 受「账户下拉按类型筛选」控制（用户定版：要关就关全面）
-  // 理财模式只列理财账户（investProductType=wealth）；债券账户由 BondFormModal 负责。
+  // 只列债券账户（investProductType=bond）。
   const wealthAccountList = useMemo(
     () => restrictAccountsByType(
       investmentAccountList,
-      (account) => account.investProductType === "wealth",
+      (account) => account.investProductType === "bond",
     ),
     [investmentAccountList],
   );
@@ -364,12 +392,35 @@ export function WealthFormModal({
       ),
     [cashAccountList, isRedeem, selectedWealthInstitutionId],
   );
+  // 债券持仓 = 存单。同一债单多张存单用「名称 #序号」区分；无份额/净值概念。
+  const typedHoldingOptions = useMemo<WealthHoldingOption[]>(() => {
+    const accountLabelById = new Map(
+      investmentAccountList.map((account) => [account.id, account.label || ""]),
+    );
+    return bondLotOptions.map((lot) => ({
+      id: lot.id,
+      label: lot.certificateIndex > 1 ? `${lot.name} #${lot.certificateIndex}` : lot.name,
+      subLabel: [
+        accountLabelById.get(lot.accountId) ?? "",
+        lot.annualRate != null ? t("wealthForm.annualRateShort", { rate: lot.annualRate }) : "",
+        lot.maturityDate ? t("bondForm.maturityShort", { date: lot.maturityDate }) : "",
+        t("bondForm.lotPrincipal", { amount: lot.principal.toFixed(2) }),
+      ].filter(Boolean).join(" · "),
+      fundName: lot.name,
+      wealthProductId: null,
+      wealthAccountId: lot.accountId,
+      wealthAccountLabel: accountLabelById.get(lot.accountId) ?? null,
+      remainingAmount: lot.principal,
+      remainingUnits: null,
+      hasUnits: false,
+      annualRate: lot.annualRate,
+      termDays: null,
+      // 存单本金只有一个锚点（起息日买入），供按日期取本金用。
+      movements: lot.startDate ? [{ date: lot.startDate, delta: lot.principal }] : [],
+      unitMovements: [],
+    }));
+  }, [bondLotOptions, investmentAccountList, t]);
   const effectiveHoldingOptions = useMemo(() => {
-    // 债券/理财账户是两类独立账户，持仓按类型隔离：债券直达模式只看债券账户的持仓。
-    const typedHoldingOptions = wealthHoldingOptions.filter((holding) => {
-      const holdingAccount = investmentAccountList.find((account) => account.id === holding.wealthAccountId);
-      return holdingAccount?.investProductType === "wealth";
-    });
     if (!editingRedeemSource || !isRedeem) return typedHoldingOptions;
     const restored: WealthHoldingOption = {
       id: editingRedeemSource.id,
@@ -398,15 +449,15 @@ export function WealthFormModal({
         ...(editingRedeemSource.restoredUnits != null ? [{ date: holdingFilterDate, delta: editingRedeemSource.restoredUnits }] : []),
       ],
     };
-    if (wealthHoldingOptions.some((holding) => holding.id === editingRedeemSource.id)) {
-      return wealthHoldingOptions.map((holding) =>
+    if (typedHoldingOptions.some((holding) => holding.id === editingRedeemSource.id)) {
+      return typedHoldingOptions.map((holding) =>
         holding.id === editingRedeemSource.id
           ? { ...holding, ...restored }
           : holding,
       );
     }
     return [restored, ...typedHoldingOptions];
-  }, [editingRedeemSource, holdingFilterDate, isRedeem, wealthHoldingOptions, investmentAccountList]);
+  }, [editingRedeemSource, holdingFilterDate, isRedeem, typedHoldingOptions]);
   const filteredHoldingOptions = useMemo(
     () =>
       effectiveHoldingOptions.filter((holding) => {
@@ -444,19 +495,12 @@ export function WealthFormModal({
     () => selectedHolding ? wealthHoldingUnitsAt(selectedHolding, holdingFilterDate) : 0,
     [holdingFilterDate, selectedHolding],
   );
-  const selectedBuyProductRequiresUnits = useMemo(() => {
-    if (isHoldingAction || !toAccountId) return false;
-    const productName = wealthProducts.find((product) => product.id === wealthProductId)?.name ?? fundName.trim();
-    return wealthHoldingOptions.some((holding) => {
-      if (!holding.hasUnits || holding.wealthAccountId !== toAccountId) return false;
-      if (wealthProductId && holding.wealthProductId === wealthProductId) return true;
-      return !!productName && holding.fundName === productName;
-    });
-  }, [fundName, isHoldingAction, toAccountId, wealthHoldingOptions, wealthProductId, wealthProducts, investmentAccountList]);
+  // 债券没有份额/净值概念，买入永远按金额（不要求填份额）。
+  const selectedBuyProductRequiresUnits = false;
   const wealthProductOptions: SmartSelectOption[] = useMemo(
     () => wealthProducts
       // 产品按模式过滤：债券直达模式只列城投债产品；普通理财模式不列债券产品（两类互不混排）。
-      .filter((product) => product.productType !== "bond")
+      .filter((product) => product.productType === "bond")
       .map((product) => ({
         id: product.id,
         label: product.shortName?.trim() || product.name,
@@ -497,6 +541,16 @@ export function WealthFormModal({
     setEditEntryId(entry.cashEntryId ?? entry.id ?? entry.transactionId ?? null);
     setEditBusinessTransactionId(entry.businessTransactionId ?? null);
     setSubtype(nextSubtype);
+    bondProductRestoredRef.current = false;
+    setBondTermUnit("year");
+    setBondTermCount("1");
+    setBondMaturityDate("");
+    bondMaturityDateTouchedRef.current = false;
+    setBondPayoutUnit("maturity");
+    setBondPayoutInterval("1");
+    setBondFirstPayoutDate("");
+    bondFirstPayoutDateTouchedRef.current = false;
+    setBondCalcBasis("daily");
     setDate(entry.date?.slice(0, 10) || today);
     setHoldingFilterDate(entry.date?.slice(0, 10) || today);
     setArrivalDate(entry.fundArrivalDate?.slice(0, 10) || entry.date?.slice(0, 10) || today);
@@ -516,18 +570,22 @@ export function WealthFormModal({
     setCashAccountId(nextSubtype === "write_off" ? "" : outgoingFromWealth ? (entry.toAccountId ?? "") : (entry.accountId ?? ""));
     const nextWealthAccountId = outgoingFromWealth ? (entry.accountId ?? defaultAccountId) : (entry.toAccountId ?? defaultAccountId);
     setToAccountId(nextWealthAccountId);
-    const matchedHolding = wealthHoldingOptions.find((holding) => {
-      if (holding.wealthAccountId !== nextWealthAccountId) return false;
-      if (entry.wealthProductId && holding.wealthProductId === entry.wealthProductId) return true;
-      return !!entry.fundName && holding.fundName === entry.fundName;
-    });
+    // 存单归属优先：子行带 sourceBondTransactionId，买入行自己就是存单（businessTransactionId）。
+    const lotIdOfEntry = entry.sourceBondTransactionId
+      ?? (nextSubtype === "buy" ? (entry.businessTransactionId ?? null) : null);
+    const matchedHolding =
+      typedHoldingOptions.find((holding) => holding.id === lotIdOfEntry)
+      ?? typedHoldingOptions.find(
+        (holding) => holding.wealthAccountId === nextWealthAccountId && !!entry.fundName && holding.fundName === entry.fundName,
+      );
     setSelectedHoldingId(matchedHolding?.id ?? "");
     if (nextSubtype === "redeem") {
       const restoredPrincipalAmount = inferWealthRedeemPrincipalAmount(entry);
       const restoredUnits = entry.fundUnits != null ? Math.abs(entry.fundUnits) : null;
       const restoredHoldingId =
-        matchedHolding?.id ??
-        `${nextWealthAccountId}\u001f${entry.wealthProductId ? `product:${entry.wealthProductId}` : `name:${entry.fundName ?? t("wealthForm.unnamedProduct")}`}`;
+        matchedHolding?.id
+        ?? lotIdOfEntry
+        ?? `${nextWealthAccountId}\u001fname:${entry.fundName ?? t("wealthForm.unnamedProduct")}`;
       setEditingRedeemSource({
         id: restoredHoldingId,
         label: matchedHolding?.label ?? entry.fundName ?? t("wealthForm.unnamedProduct"),
@@ -555,15 +613,49 @@ export function WealthFormModal({
       setEditingRedeemSource(null);
     }
     setOpen(true);
-  }, [defaultAccountId, entry, initIsRedeem, mode, openSignal, today, wealthAccountList, wealthHoldingOptions]);
+  }, [defaultAccountId, entry, initIsRedeem, mode, openSignal, today, wealthAccountList, typedHoldingOptions]);
 
   useEffect(() => {
     setHoldingFilterDate(date);
   }, [date, isHoldingAction]);
 
+  useEffect(() => {
+    if (subtype !== "buy" || bondMaturityDateTouchedRef.current) return;
+    setBondMaturityDate(bondTermMaturityFromTerm(bondTermUnit, parseNumber(bondTermCount) || 0));
+  }, [bondTermCount, bondTermUnit, date, subtype]);
+
+  useEffect(() => {
+    if (subtype !== "buy" || bondFirstPayoutDateTouchedRef.current) return;
+    if (bondPayoutUnit === "maturity") { setBondFirstPayoutDate(bondMaturityDate); return; }
+    setBondFirstPayoutDate(bondFirstPayoutDateFromFrequency(bondPayoutUnit, parseNumber(bondPayoutInterval) || 1));
+  }, [bondPayoutInterval, bondPayoutUnit, bondMaturityDate, date, subtype]);
+
+  // In edit mode the product master owns the bond terms (maturity date, payout
+  // cycle, calc basis, first payout date, coupon rate). Once the product list
+  // has loaded, apply the saved terms so the form reopens with the values
+  // saved on the product instead of the defaults restored above.
+  useEffect(() => {
+    if (mode !== "edit" || !open || !wealthProductId || bondProductRestoredRef.current) return;
+    const product = wealthProducts.find((item) => item.id === wealthProductId);
+    if (!product) return;
+    bondProductRestoredRef.current = true;
+    applyBondProductToDraft(product);
+    if (product.annualRate != null) setAnnualRate(String(product.annualRate));
+    if (product.termDays != null) setTermDays(String(product.termDays));
+  }, [mode, open, wealthProductId, wealthProducts]);
 
   function reset() {
     setSubtype("buy");
+    bondProductRestoredRef.current = false;
+    setBondTermUnit("year");
+    setBondTermCount("1");
+    setBondMaturityDate("");
+    bondMaturityDateTouchedRef.current = false;
+    setBondPayoutUnit("maturity");
+    setBondPayoutInterval("1");
+    setBondFirstPayoutDate("");
+    bondFirstPayoutDateTouchedRef.current = false;
+    setBondCalcBasis("daily");
     setDate(today);
     setHoldingFilterDate(today);
     setArrivalDate(today);
@@ -605,6 +697,7 @@ export function WealthFormModal({
         fundName?: string; wealthProductId?: string | null; fundSubtype?: string; fundArrivalDate?: string | null;
         fundUnits?: number | null; fundNav?: number | null; depositInterest?: number | null; fundArrivalAmount?: number | null;
         fundProductType?: string;
+        sourceBondTransactionId?: string | null;
       }>).detail;
       if (!detail?.requestId || !detail.entryId) return;
       setRequestId(detail.requestId);
@@ -636,21 +729,35 @@ export function WealthFormModal({
       setMemo(detail.note ?? "");
       const outgoingFromWealth = nextSubtype === "redeem" || nextSubtype === "dividend_cash" || nextSubtype === "write_off";
       setSubtype(nextSubtype);
+      bondProductRestoredRef.current = false;
+      setBondTermUnit("year");
+      setBondTermCount("1");
+      setBondMaturityDate("");
+      bondMaturityDateTouchedRef.current = false;
+      setBondPayoutUnit("maturity");
+      setBondPayoutInterval("1");
+      setBondFirstPayoutDate("");
+      bondFirstPayoutDateTouchedRef.current = false;
+      setBondCalcBasis("daily");
       setCashAccountId(nextSubtype === "write_off" ? "" : outgoingFromWealth ? (detail.toAccountId ?? "") : (detail.accountId ?? ""));
       const nextWealthAccountId = outgoingFromWealth ? (detail.accountId ?? defaultAccountId) : (detail.toAccountId ?? defaultAccountId);
       setToAccountId(wealthAccountIds.has(nextWealthAccountId) ? nextWealthAccountId : (wealthAccountList[0]?.id ?? ""));
-      const matchedHolding = wealthHoldingOptions.find((holding) => {
-        if (holding.wealthAccountId !== nextWealthAccountId) return false;
-        if (detail.wealthProductId && holding.wealthProductId === detail.wealthProductId) return true;
-        return !!detail.fundName && holding.fundName === detail.fundName;
-      });
+      // 存单归属优先：子行带 sourceBondTransactionId，买入行自己就是存单。
+      const lotIdOfDetail = detail.sourceBondTransactionId
+        ?? (nextSubtype === "buy" ? (detail.businessTransactionId ?? null) : null);
+      const matchedHolding =
+        typedHoldingOptions.find((holding) => holding.id === lotIdOfDetail)
+        ?? typedHoldingOptions.find(
+          (holding) => holding.wealthAccountId === nextWealthAccountId && !!detail.fundName && holding.fundName === detail.fundName,
+        );
       setSelectedHoldingId(matchedHolding?.id ?? "");
       if (nextSubtype === "redeem") {
         const restoredPrincipalAmount = inferWealthRedeemPrincipalAmount(detail);
         const restoredUnits = detail.fundUnits != null ? Math.abs(detail.fundUnits) : null;
         const restoredHoldingId =
-          matchedHolding?.id ??
-          `${nextWealthAccountId}\u001f${detail.wealthProductId ? `product:${detail.wealthProductId}` : `name:${detail.fundName ?? t("wealthForm.unnamedProduct")}`}`;
+          matchedHolding?.id
+          ?? lotIdOfDetail
+          ?? `${nextWealthAccountId}\u001fname:${detail.fundName ?? t("wealthForm.unnamedProduct")}`;
         setEditingRedeemSource({
           id: restoredHoldingId,
           label: matchedHolding?.label ?? detail.fundName ?? t("wealthForm.unnamedProduct"),
@@ -679,9 +786,10 @@ export function WealthFormModal({
       }
       setOpen(true);
     }
-    window.addEventListener("mmh:wealth:edit", onEdit as EventListener);
-    return () => window.removeEventListener("mmh:wealth:edit", onEdit as EventListener);
-  }, [defaultAccountId, mode, shouldListenForEditEvents, today, wealthAccountIds, wealthAccountList, wealthHoldingOptions]);
+    // 债券专用编辑事件（EntryRowActions 按 fundProductType=bond 派发 mmh:bond:edit）。
+    window.addEventListener("mmh:bond:edit", onEdit as EventListener);
+    return () => window.removeEventListener("mmh:bond:edit", onEdit as EventListener);
+  }, [defaultAccountId, mode, shouldListenForEditEvents, today, wealthAccountIds, wealthAccountList, typedHoldingOptions]);
 
   // Listen for create event
   useEffect(() => {
@@ -707,14 +815,27 @@ export function WealthFormModal({
       arrivalDateTouchedRef.current = false;
       if (typeof detail?.defaultAmount === "number" && detail.defaultAmount > 0) setAmount(String(detail.defaultAmount));
       setToAccountId(resolveWealthAccountForCashAccount(nextCashAccountId, detail?.defaultWealthAccountId));
+      setBondTermUnit("year");
+      setBondTermCount("1");
+      setBondMaturityDate("");
+      bondMaturityDateTouchedRef.current = false;
+      setBondPayoutUnit("maturity");
+      setBondPayoutInterval("1");
+      setBondFirstPayoutDate("");
+      bondFirstPayoutDateTouchedRef.current = false;
+      setBondCalcBasis("daily");
       setOpen(true);
     }
-    window.addEventListener("mmh:wealth:create", onCreate as EventListener);
-    return () => window.removeEventListener("mmh:wealth:create", onCreate as EventListener);
+    window.addEventListener("mmh:bond:create", onCreate as EventListener);
+    return () => window.removeEventListener("mmh:bond:create", onCreate as EventListener);
   }, [mode, resolveWealthAccountForCashAccount, today]);
 
   function changeTradeDate(nextDate: string) {
     setDate(nextDate);
+    if (!isHoldingAction) {
+      bondMaturityDateTouchedRef.current = false;
+      bondFirstPayoutDateTouchedRef.current = false;
+    }
     if (isHoldingAction) {
       setHoldingFilterDate(nextDate);
       autoFilledUnitsForRef.current = null;
@@ -765,17 +886,6 @@ export function WealthFormModal({
 
   function changeRedeemPrincipal(value: string) {
     setAmount(value);
-    if (isRedeem) setArrivalEdited(false);
-  }
-
-  function changeRedeemUnits(value: string) {
-    unitsEditedRef.current = true;
-    setUnits(value);
-    if (isRedeem) setArrivalEdited(false);
-  }
-
-  function changeRedeemNav(value: string) {
-    setNav(value);
     if (isRedeem) setArrivalEdited(false);
   }
 
@@ -855,8 +965,8 @@ export function WealthFormModal({
     if (!open) return;
     let cancelled = false;
     const institutionId = productInstitutionId ?? "";
-    // 读理财产品主数据（/api/v1/wealth-products）。
-    const basePath = "/api/v1/wealth-products";
+    // 读债券产品主数据（/api/v1/bond-products）。
+    const basePath = "/api/v1/bond-products";
     const url = institutionId
       ? `${basePath}?institutionId=${encodeURIComponent(institutionId)}`
       : basePath;
@@ -864,7 +974,8 @@ export function WealthFormModal({
       .then((res) => res.json())
       .then((data) => {
         if (cancelled || !data?.ok) return;
-        const products = (data.products ?? []) as WealthProductOption[];
+        const products = ((data.products ?? []) as WealthProductOption[])
+          .map((product) => ({ ...product, productType: "bond" }));
         if (wealthProductId && institutionId && !products.some((product) => product.id === wealthProductId)) {
           setWealthProductId("");
           setFundName("");
@@ -896,7 +1007,7 @@ export function WealthFormModal({
       termDays,
       note: "",
       // 债券直达模式下新建产品默认城投债类型，免去再手动切换。
-      productType: "standard",
+      productType: "bond",
       maturityDate: "",
       payoutFrequency: "maturity",
       firstPayoutDate: "",
@@ -914,16 +1025,120 @@ export function WealthFormModal({
       window.alert(t("wealthForm.alert.sourceAccountMissingOwnerOrInstitution"));
       return;
     }
-    setNestedEntityType("wealth-account");
+    setNestedEntityType("bond-account");
   }
 
   function productAccountHint() {
     if (selectedWealthAccount) return t("wealthForm.productHintWillAssignTo", { account: selectedWealthAccount.label });
     if (selectedCashAccount) {
       // 债券/理财是两类账户：自动建账提示按当前模式显示对应账户类型。
-      return t("wealthForm.productHintAutoCreate", { account: selectedCashAccount.label });
+      return t("bondForm.productHintAutoCreate", { account: selectedCashAccount.label });
     }
     return t("wealthForm.productHintSelectSourceFirst");
+  }
+
+  function splitBondTermDays(days: number | null | undefined): { unit: DepositTermUnit; count: number } {
+    const total = Math.max(0, Math.trunc(Number(days ?? 0)));
+    const startDate = new Date(`${date.slice(0, 10)}T00:00:00.000Z`);
+    if (Number.isFinite(startDate.getTime()) && total > 0) {
+      for (let years = Math.floor(total / 365) + 1; years >= 1; years--) {
+        const anniversary = depositTermMaturityUtc(startDate, "year", years);
+        const days = Math.round((anniversary.getTime() - startDate.getTime()) / 86400000);
+        if (days === total || days + 1 === total) return { unit: "year", count: years };
+      }
+      for (let months = Math.floor(total / 28) + 1; months >= 1; months--) {
+        const anniversary = depositTermMaturityUtc(startDate, "month", months);
+        const days = Math.round((anniversary.getTime() - startDate.getTime()) / 86400000);
+        if (days === total || days + 1 === total) return { unit: "month", count: months };
+      }
+    }
+    if (total % 365 === 0 && total > 0) return { unit: "year", count: total / 365 };
+    if (total % 30 === 0 && total > 0) return { unit: "month", count: total / 30 };
+    return { unit: "day", count: total };
+  }
+
+  function bondTermMaturityFromTerm(unit: DepositTermUnit, count: number): string {
+    if (!date) return "";
+    const start = new Date(`${date.slice(0, 10)}T00:00:00.000Z`);
+    if (!Number.isFinite(start.getTime())) return "";
+    const quantity = Math.max(0, Math.trunc(Number(count) || 0));
+    if (quantity <= 0) return "";
+    return depositTermMaturityUtc(start, unit, quantity).toISOString().slice(0, 10);
+  }
+
+  function bondTermDaysFromMaturity(maturityDate: string): number {
+    if (!date || !maturityDate) return 0;
+    const start = new Date(`${date.slice(0, 10)}T00:00:00.000Z`);
+    const end = new Date(`${maturityDate.slice(0, 10)}T00:00:00.000Z`);
+    if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end.getTime() <= start.getTime()) return 0;
+    return Math.max(1, Math.round((end.getTime() - start.getTime()) / 86400000));
+  }
+
+  function changeBondMaturityDate(nextMaturityDate: string) {
+    bondMaturityDateTouchedRef.current = true;
+    setBondMaturityDate(nextMaturityDate);
+  }
+
+  function changeBondPayoutFrequency(unit: "maturity" | DepositInterestPayoutUnit, interval: number) {
+    setBondPayoutUnit(unit);
+    setBondPayoutInterval(String(Math.max(1, Math.trunc(interval || 1))));
+  }
+
+  function changeBondFirstPayoutDate(value: string) {
+    bondFirstPayoutDateTouchedRef.current = true;
+    setBondFirstPayoutDate(value);
+  }
+
+  function bondTermDaysForProduct() {
+    const quantity = Math.max(0, Math.trunc(parseNumber(bondTermCount) || 0));
+    const derivedMaturity = bondTermMaturityFromTerm(bondTermUnit, quantity);
+    return bondMaturityDate
+      ? bondTermDaysFromMaturity(bondMaturityDate)
+      : (derivedMaturity ? Math.max(1, Math.round((new Date(`${derivedMaturity}T00:00:00.000Z`).getTime() - new Date(`${date}T00:00:00.000Z`).getTime()) / 86400000)) : 0);
+  }
+
+  function applyBondProductToDraft(product: WealthProductOption | undefined) {
+    if (!product || product.productType !== "bond") return;
+    const term = splitBondTermDays(product.termDays);
+    setBondTermUnit(term.unit);
+    setBondTermCount(String(term.count));
+    setBondMaturityDate(product.maturityDate ?? "");
+    bondMaturityDateTouchedRef.current = Boolean(product.maturityDate);
+    const payout = parseDepositInterestPayout(product.payoutFrequency);
+    setBondPayoutUnit(payout.kind === "periodic" ? payout.unit : "maturity");
+    setBondPayoutInterval(payout.kind === "periodic" ? String(payout.interval) : "1");
+    setBondFirstPayoutDate(product.firstPayoutDate ?? "");
+    bondFirstPayoutDateTouchedRef.current = Boolean(product.firstPayoutDate);
+    setBondCalcBasis(product.interestCalcBasis === "monthly" ? "monthly" : "daily");
+  }
+
+  function encodedBondPayoutFrequency() {
+    return bondPayoutUnit === "maturity"
+      ? "maturity"
+      : encodeDepositInterestPayout({
+          kind: "periodic",
+          unit: bondPayoutUnit,
+          interval: clampDepositInterestPayoutInterval(bondTermDaysForProduct(), bondPayoutUnit, parseNumber(bondPayoutInterval) || 1),
+        });
+  }
+
+  function bondFirstPayoutDateFromFrequency(unit: "maturity" | DepositInterestPayoutUnit, interval: number): string {
+    if (!date || unit === "maturity") return "";
+    const quantity = Math.max(1, Math.trunc(interval || 1));
+    const start = new Date(`${date.slice(0, 10)}T00:00:00.000Z`);
+    if (!Number.isFinite(start.getTime())) return "";
+    if (unit === "week") {
+      const next = new Date(start.getTime() + quantity * 7 * 86400000);
+      return Number.isFinite(next.getTime()) ? next.toISOString().slice(0, 10) : "";
+    }
+    const next = depositTermMaturityUtc(start, unit, quantity);
+    return Number.isFinite(next.getTime()) ? next.toISOString().slice(0, 10) : "";
+  }
+
+  function effectiveBondFirstPayoutDate() {
+    if (bondFirstPayoutDateTouchedRef.current && bondFirstPayoutDate) return bondFirstPayoutDate;
+    if (bondPayoutUnit === "maturity") return bondMaturityDate || bondFirstPayoutDate;
+    return bondFirstPayoutDateFromFrequency(bondPayoutUnit, parseNumber(bondPayoutInterval) || 1) || bondFirstPayoutDate;
   }
 
   async function saveWealthProduct() {
@@ -941,25 +1156,30 @@ export function WealthFormModal({
     try {
       // 新建产品只登记名称（利率/到期日/付息条款在购买界面按次填写，之后可在
       // 债单条款卡里编辑），避免一进弹窗就要求填齐条款。
-      const res = await fetch("/api/v1/wealth-products", {
+      // 债券产品写独立主数据（/api/v1/bond-products），不写进理财产品表。
+      const res = await fetch("/api/v1/bond-products", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name,
           note: productDraft.note.trim() || undefined,
           cashAccountId: selectedCashAccount.id,
-          wealthAccountId: selectedWealthAccount?.id ?? undefined,
+          bondAccountId: selectedWealthAccount?.id ?? undefined,
           currency: selectedWealthAccount?.currency ?? selectedCashAccount.currency ?? "CNY",
-          productType: productDraft.productType,
           annualRate: parseNumber(annualRate) > 0 ? String(parseNumber(annualRate)) : undefined,
+          termDays: bondTermDaysForProduct() > 0 ? String(bondTermDaysForProduct()) : undefined,
+          maturityDate: bondMaturityDate ? bondMaturityDate : undefined,
+          payoutFrequency: encodedBondPayoutFrequency(),
+          interestCalcBasis: bondCalcBasis,
+          firstPayoutDate: effectiveBondFirstPayoutDate() ? effectiveBondFirstPayoutDate() : undefined,
         }),
       });
       const data = await res.json().catch(() => null);
-      const accountPayload = data?.wealthAccount;
+      const accountPayload = data?.bondAccount ?? data?.wealthAccount;
       if (!data?.ok || !data.product || !accountPayload) {
         throw new Error(data?.error ?? t("wealthForm.alert.createProductFailed"));
       }
-      const product = ((data.product as WealthProductOption));
+      const product = ({ ...(data.product as WealthProductOption), productType: "bond" });
       const account = accountPayload as {
         id: string;
         name: string;
@@ -1000,8 +1220,21 @@ export function WealthFormModal({
       setWealthProducts((prev) => prev.some((item) => item.id === product.id) ? prev : [...prev, product]);
       setWealthProductId(product.id);
       setFundName(product.name);
-            if (product.annualRate != null) setAnnualRate(String(product.annualRate));
+      applyBondProductToDraft(product);
+      if (product.annualRate != null) setAnnualRate(String(product.annualRate));
       if (product.termDays != null) setTermDays(String(product.termDays));
+      if (product.productType === "bond") {
+        const term = splitBondTermDays(product.termDays);
+        setBondTermUnit(term.unit);
+        setBondTermCount(String(term.count));
+        setBondMaturityDate(product.maturityDate ?? "");
+        const payout = parseDepositInterestPayout(product.payoutFrequency);
+        setBondPayoutUnit(payout.kind === "periodic" ? payout.unit : "maturity");
+        setBondPayoutInterval(payout.kind === "periodic" ? String(payout.interval) : "1");
+        setBondFirstPayoutDate(product.firstPayoutDate ?? "");
+        bondFirstPayoutDateTouchedRef.current = Boolean(product.firstPayoutDate);
+        setBondCalcBasis(product.interestCalcBasis === "monthly" ? "monthly" : "daily");
+      }
       setProductModalOpen(false);
     } catch (err) {
       setProductError(err instanceof Error ? err.message : t("wealthForm.alert.createProductFailed"));
@@ -1017,6 +1250,10 @@ export function WealthFormModal({
     const selectedProduct = wealthProducts.find((product) => product.id === wealthProductId);
     const resolvedFundName = selectedHolding?.fundName || selectedProduct?.name || fundName.trim();
     if (!resolvedFundName) { window.alert(t("wealthForm.alert.selectOrCreateProductName")); return; }
+    if (!isHoldingAction) {
+      if (parseNumber(annualRate) <= 0) { window.alert(t("bondForm.alert.annualRateRequired")); return; }
+      if (!bondMaturityDate) { window.alert(t("bondForm.alert.maturityDateRequired")); return; }
+    }
     if (!isWriteOff && !cashAccountId) { window.alert(isHoldingAction ? t("wealthForm.alert.selectArrivalAccount") : t("txForm.alert.selectCashSourceAccount")); return; }
     if (toAccountId && !wealthAccountIds.has(toAccountId)) { window.alert(t("wealthForm.alert.selectWealthAccount")); return; }
     if (!isHoldingAction && toAccountId && !selectableWealthAccountIds.has(toAccountId)) {
@@ -1036,8 +1273,8 @@ export function WealthFormModal({
       const fd = new FormData();
       fd.set("type", "investment");
       fd.set("subtype", subtype);
-      // 提交 fundProductType=wealth：服务端据此解析/校验理财账户。
-      fd.set("productType", "wealth");
+      // 提交 fundProductType=bond：服务端据此解析/校验债券账户（与理财账户互斥）。
+      fd.set("productType", "bond");
       fd.set("date", date);
       fd.set("amount", String(amt));
       fd.set("fundName", resolvedFundName);
@@ -1051,14 +1288,21 @@ export function WealthFormModal({
       }
       if (!isWriteOff) fd.set("cashAccountId", cashAccountId);
       if ((isRedeem || isDividend) && !isWriteOff) fd.set("fundArrivalDate", arrivalDate || date);
-      if (unitsValue > 0) fd.set("fundUnits", String(unitsValue));
-      const enteredNavValue = parseNumber(nav);
-      const navValue = enteredNavValue > 0
-        ? enteredNavValue
-        : (!isHoldingAction && unitsValue > 0 ? amt / unitsValue : 0);
-      if (navValue > 0) fd.set("fundNav", String(navValue));
       const rateValue = parseNumber(annualRate);
       if (rateValue > 0 && !isWriteOff) fd.set("depositAnnualRate", String(rateValue));
+      // 债券条款：存单（买入行）自己落一份快照，付息/赎回/核销沿用该存单的条款。
+      // 字段名是债券自己的（服务端 bondEntryInputFromFormData 只认这几个）。
+      if (!isHoldingAction) {
+        const termDaysValue = bondTermDaysForProduct();
+        if (termDaysValue > 0) fd.set("bondTermDays", String(termDaysValue));
+        if (bondMaturityDate) fd.set("bondMaturityDate", bondMaturityDate);
+        fd.set("bondPayoutFrequency", encodedBondPayoutFrequency());
+        const firstPayoutValue = effectiveBondFirstPayoutDate();
+        if (firstPayoutValue) fd.set("bondFirstPayoutDate", firstPayoutValue);
+        fd.set("bondInterestCalcBasis", bondCalcBasis);
+      }
+      // 付息/赎回/核销必须指明所属存单（同一债单可能有多张存单）。
+      if (isHoldingAction && selectedHoldingId) fd.set("bondSourceLotId", selectedHoldingId);
       if (isRedeem) {
         const arrivalValue = arrivalEdited ? parseNumber(arrivalAmount) : arrivalPreview;
         if (arrivalValue <= 0) throw new Error(t("wealthForm.alert.arrivalAmountInvalid"));
@@ -1070,16 +1314,16 @@ export function WealthFormModal({
       if (mode === "edit" && (cashEntryIdForEdit || businessTransactionIdForEdit)) {
         if (cashEntryIdForEdit) fd.set("entryId", cashEntryIdForEdit);
         if (businessTransactionIdForEdit) fd.set("businessTransactionId", businessTransactionIdForEdit);
-        fd.set("fundProductType", "wealth");
+        fd.set("fundProductType", "bond");
         const res = editAction ? await editAction(fd) : { ok: false as const, error: t("wealthForm.alert.missingEditAction") };
         if (!res.ok) throw new Error(res.error ?? t("wealthForm.alert.saveFailed"));
         if (cashEntryIdForEdit && pendingAttachmentFiles.length > 0) {
           await uploadEntryAttachmentFiles(cashEntryIdForEdit, pendingAttachmentFiles);
           setPendingAttachmentFiles([]);
         }
-        window.dispatchEvent(new CustomEvent("mmh:wealth:edit:success", { detail: { requestId } }));
+        window.dispatchEvent(new CustomEvent("mmh:bond:edit:success", { detail: { requestId } }));
       } else {
-        fd.set("fundProductType", "wealth");
+        fd.set("fundProductType", "bond");
         const res = await createAction(fd);
         if (!res.ok) throw new Error(res.error ?? t("txForm.alert.saveFailed"));
         const createdEntryId = res.data?.id ?? res.data?.cashEntryId ?? null;
@@ -1087,6 +1331,25 @@ export function WealthFormModal({
           await uploadEntryAttachmentFiles(createdEntryId, pendingAttachmentFiles);
           setPendingAttachmentFiles([]);
         }
+      }
+      if (!isHoldingAction && selectedProduct?.productType === "bond") {
+        // 债券条款写债券主数据（/api/v1/bond-products/[id]），不再写理财产品表。
+        await fetch(`/api/v1/bond-products/${selectedProduct.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            annualRate: String(parseNumber(annualRate)),
+            termDays: bondTermDaysForProduct() > 0 ? String(bondTermDaysForProduct()) : null,
+            maturityDate: bondMaturityDate || null,
+            payoutFrequency: encodedBondPayoutFrequency(),
+            interestCalcBasis: bondCalcBasis,
+            firstPayoutDate: effectiveBondFirstPayoutDate() || null,
+          }),
+        }).then(async (res) => {
+          const data = await res.json().catch(() => null);
+          if (!data?.ok || !data.product) throw new Error(data?.error ?? t("wealthForm.alert.saveFailed"));
+          setWealthProducts((prev) => prev.map((item) => (item.id === data.product.id ? { ...item, ...data.product } : item)));
+        });
       }
       if (keepAdding && mode === "create") {
         resetAfterKeepAdding();
@@ -1132,8 +1395,8 @@ export function WealthFormModal({
     });
   }
 
-  const accountLabelText = t("wealthForm.accountLabel");
-  const accountPlaceholderText = t("wealthForm.selectWealthAccount");
+  const accountLabelText = t("bondForm.accountLabel");
+  const accountPlaceholderText = t("bondForm.selectAccount");
   if (!open) return null;
 
   return createPortal(
@@ -1143,8 +1406,8 @@ export function WealthFormModal({
           <div className="modal-header">
             <div className="text-sm font-semibold text-slate-800">
               {mode === "edit"
-                ? (t("wealthForm.title.edit"))
-                : (t("wealthForm.title.create"))}
+                ? (t("bondForm.title.edit"))
+                : (t("bondForm.title.create"))}
             </div>
             <button
               type="button"
@@ -1194,7 +1457,7 @@ export function WealthFormModal({
                   }}
                   className={`segment-button h-8 flex-1 text-xs ${subtype === "redeem" ? "segment-button-active font-medium" : ""}`}
                 >
-                  {t("fund.subtype.redeem")}
+                  {t("bondForm.redeem")}
                 </button>
                 <button
                   type="button"
@@ -1213,7 +1476,7 @@ export function WealthFormModal({
                   }}
                   className={`segment-button h-8 flex-1 text-xs ${subtype === "dividend_cash" ? "segment-button-active font-medium" : ""}`}
                 >
-                  {t("stockPanel.action.dividend")}
+                  {t("bondForm.interestReceipt")}
                 </button>
                 <button
                   type="button"
@@ -1256,7 +1519,7 @@ export function WealthFormModal({
                     </div>
                   </div>
                   <div className="space-y-1">
-                    <div className="form-label">{t("wealthForm.holdingProductLabel")}</div>
+                    <div className="form-label">{t("bondForm.lotLabel")}</div>
                     <SmartSelect
                       mode="single"
                       value={selectedHoldingId}
@@ -1266,13 +1529,13 @@ export function WealthFormModal({
                         setSelectedHoldingId(id);
                       }}
                       options={holdingSelectOptions}
-                      placeholder={holdingSelectOptions.length > 0 ? t("wealthForm.selectRedeemableProduct") : t("wealthForm.noAvailableHolding")}
+                      placeholder={holdingSelectOptions.length > 0 ? t("bondForm.selectLot") : t("bondForm.noAvailableLot")}
                       searchable
                     />
                     <div className="text-[11px] text-slate-400">
                       {selectedHolding
-                        ? t("wealthForm.dayPrincipal", { amount: selectedHoldingAmountAtDate.toFixed(2) })
-                        : t("wealthForm.holdingHint")}
+                        ? t("bondForm.lotPrincipal", { amount: selectedHoldingAmountAtDate.toFixed(2) })
+                        : t("bondForm.lotHint")}
                     </div>
                   </div>
                   <div className="space-y-1">
@@ -1302,7 +1565,7 @@ export function WealthFormModal({
                     </div>
                   </div>
                   <div className="space-y-1">
-                    <div className="form-label">{isDividend ? (t("wealthForm.dividendProductLabel")) : t("wealthForm.holdingProductLabel")}</div>
+                    <div className="form-label">{t("bondForm.lotLabel")}</div>
                     <SmartSelect
                       mode="single"
                       value={selectedHoldingId}
@@ -1312,21 +1575,20 @@ export function WealthFormModal({
                         setSelectedHoldingId(id);
                       }}
                       options={holdingSelectOptions}
-                      placeholder={holdingSelectOptions.length > 0 ? (isDividend ? t("wealthForm.selectDividendHolding") : t("wealthForm.selectRedeemableProduct")) : t("wealthForm.noAvailableHolding")}
+                      placeholder={holdingSelectOptions.length > 0 ? t("bondForm.selectLot") : t("bondForm.noAvailableLot")}
                       searchable
                     />
                     <div className="text-[11px] text-slate-400">
                       {selectedHolding
                         ? [
-                            t("wealthForm.dayPrincipal", { amount: selectedHoldingAmountAtDate.toFixed(2) }),
-                    selectedHolding.hasUnits ? t("wealthForm.dayUnits", { units: selectedHoldingUnitsAtDate.toFixed(6) }) : "",
+                            t("bondForm.lotPrincipal", { amount: selectedHoldingAmountAtDate.toFixed(2) }),
                             selectedHolding.wealthAccountLabel ?? "",
                           ].filter(Boolean).join(" · ")
-                        : t("wealthForm.holdingHint")}
+                        : t("bondForm.lotHint")}
                     </div>
                   </div>
                   {isRedeem ? (
-                    <div className={`grid grid-cols-2 gap-3 ${""}`}>
+                    <div className={`grid grid-cols-2 gap-3 ${"sm:grid-cols-3"}`}>
                       <div className="space-y-1">
                         <div className="form-label">{t("wealthForm.redeemPrincipal")}</div>
                         <CalcInput
@@ -1337,30 +1599,7 @@ export function WealthFormModal({
                           precision={2}
                         />
                       </div>
-                      {(
-                        <>
-                          <div className="space-y-1">
-                            <div className="form-label">{t("wealthForm.redeemUnits")}</div>
-                            <CalcInput
-                              value={units}
-                              onChange={changeRedeemUnits}
-                              placeholder={t("stockFee.optional")}
-                              label={t("wealthForm.redeemUnits")}
-                              precision={6}
-                            />
-                          </div>
-                          <div className="space-y-1">
-                            <div className="form-label">{t("viewImport.nav")}</div>
-                            <CalcInput
-                              value={nav}
-                              onChange={changeRedeemNav}
-                              placeholder={t("stockFee.optional")}
-                              label={t("viewImport.nav")}
-                              precision={6}
-                            />
-                          </div>
-                        </>
-                      )}
+                      {null}
                       <div className="space-y-1">
                         <div className="form-label">{t("wealthForm.annualRatePercent")}</div>
                         <CalcInput
@@ -1407,7 +1646,7 @@ export function WealthFormModal({
                       <DateStepper value={arrivalDate} onChange={changeArrivalDate} />
                     </div>
                     <div className="space-y-1 sm:col-span-2">
-                      <div className="form-label">{isDividend ? (t("wealthForm.dividendAmount")) : t("wealthForm.arrivalAmount")}</div>
+                      <div className="form-label">{isDividend ? (t("bondForm.interestAmount")) : t("wealthForm.arrivalAmount")}</div>
                       <CalcInput
                         value={isDividend ? amount : arrivalAmount}
                         onChange={(value) => {
@@ -1419,7 +1658,7 @@ export function WealthFormModal({
                           }
                         }}
                         placeholder="0.00"
-                        label={isDividend ? (t("wealthForm.dividendAmount")) : t("wealthForm.arrivalAmount")}
+                        label={isDividend ? (t("bondForm.interestAmount")) : t("wealthForm.arrivalAmount")}
                         precision={2}
                       />
                     </div>
@@ -1458,7 +1697,7 @@ export function WealthFormModal({
                         options={sortByAccountUsage(wealthSelectOptions, accountUsage)}
                         placeholder={wealthSelectOptions.length > 0 ? t("wealthForm.selectSameInstitutionOrPayment") : t("wealthForm.autoCreateAfterAddProduct")}
                         onCreateClick={openWealthAccountModal}
-                        createLabel={t("wealthForm.addWealthAccount")}
+                        createLabel={t("bondForm.addAccount")}
                         onCycleOwnerFilter={cycleWealthOwner}
                         ownerFilterLabel={wealthOwnerLabel}
                       />
@@ -1472,65 +1711,142 @@ export function WealthFormModal({
                           setWealthProductId(id);
                           const product = wealthProducts.find((item) => item.id === id);
                           setFundName(product?.name ?? "");
-                                                    if (product?.annualRate != null) setAnnualRate(String(product.annualRate));
+                          applyBondProductToDraft(product);
+                          if (product?.annualRate != null) setAnnualRate(String(product.annualRate));
                           if (product?.termDays != null) setTermDays(String(product.termDays));
                         }}
                         options={wealthProductOptions}
                         placeholder={wealthProductOptions.length > 0
-                          ? (t("wealthForm.selectProduct"))
-                          : (t("wealthForm.noProductClickAdd"))}
+                          ? (t("bondForm.selectProduct"))
+                          : (t("bondForm.noProductClickAdd"))}
                         searchable
                         onCreateClick={() => openWealthProductModal()}
-                        createLabel={t("wealthForm.addProduct")}
+                        createLabel={t("bondForm.addProduct")}
                       />
                     </div>
                   </div>
 
-                  
+                  {(() => {
+                    const termDays = bondTermDaysForProduct();
+                    const isMaturityPayout = bondPayoutUnit === "maturity";
+                    const bondPayoutMaxInterval = isMaturityPayout
+                      ? 1
+                      : maxDepositInterestPayoutInterval(termDays, bondPayoutUnit as DepositInterestPayoutUnit);
+                    const payoutColumnCount = isMaturityPayout ? 2 : bondPayoutUnit === "month" ? 4 : 3;
+                    return (
+                      <div className="space-y-2">
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                          <div className="space-y-1">
+                            <div className="form-label">{t("bondForm.termUnit")}</div>
+                            <select
+                              value={bondTermUnit}
+                              onChange={(e) => setBondTermUnit(e.target.value as DepositTermUnit)}
+                              className="form-input"
+                            >
+                              <option value="year">{t("depositForm.termUnit.year")}</option>
+                              <option value="month">{t("depositForm.termUnit.month")}</option>
+                              <option value="day">{t("depositForm.termUnit.day")}</option>
+                            </select>
+                          </div>
+                          <div className="space-y-1">
+                            <div className="form-label">{t("bondForm.termQuantity")}</div>
+                            <input
+                              type="number"
+                              min={0}
+                              value={bondTermCount}
+                              onChange={(e) => setBondTermCount(e.target.value)}
+                              className="form-input"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <div className="form-label">{t("wealthForm.maturityDate")}</div>
+                            <input
+                              type="date"
+                              value={bondMaturityDate}
+                              onChange={(e) => changeBondMaturityDate(e.target.value)}
+                              className="form-input"
+                            />
+                          </div>
+                        </div>
+                        <div className={`grid grid-cols-1 gap-3 ${payoutColumnCount === 2 ? "sm:grid-cols-2" : payoutColumnCount === 3 ? "sm:grid-cols-3" : "sm:grid-cols-4"}`}>
+                          <div className="space-y-1">
+                            <div className="form-label">{t("wealthForm.payoutFrequency")}</div>
+                            <select
+                              value={bondPayoutUnit}
+                              onChange={(e) => changeBondPayoutFrequency(e.target.value as "maturity" | DepositInterestPayoutUnit, 1)}
+                              className="form-input"
+                            >
+                              <option value="maturity">{t("wealthForm.payout.maturity")}</option>
+                              <option value="year">{t("wealthForm.payout.yearly")}</option>
+                              <option value="month">{t("wealthForm.payout.monthly")}</option>
+                              <option value="week">{t("wealthForm.payout.weekly")}</option>
+                            </select>
+                          </div>
+                          {bondPayoutUnit === "month" ? (
+                            <div className="space-y-1">
+                              <div className="form-label">{t("deposit.calcBasis.label")}</div>
+                              <select
+                                value={bondCalcBasis}
+                                onChange={(e) => setBondCalcBasis(e.target.value === "monthly" ? "monthly" : "daily")}
+                                title={bondCalcBasis === "monthly" ? t("deposit.calcBasis.monthlyHint") : undefined}
+                                className="form-input"
+                              >
+                                <option value="daily">{t("deposit.calcBasis.daily")}</option>
+                                <option value="monthly">{t("deposit.calcBasis.monthly")}</option>
+                              </select>
+                            </div>
+                          ) : null}
+                          {!isMaturityPayout ? (
+                            <div className="space-y-1">
+                              <div className="form-label">{t("bondForm.payoutQuantity")}</div>
+                              <input
+                                type="number"
+                                min={1}
+                                max={bondPayoutMaxInterval}
+                                value={bondPayoutInterval}
+                                onChange={(e) => {
+                                  const quantity = clampDepositInterestPayoutInterval(
+                                    termDays,
+                                    bondPayoutUnit as DepositInterestPayoutUnit,
+                                    Math.max(1, Math.trunc(Number(e.target.value) || 1)),
+                                  );
+                                  setBondPayoutInterval(String(quantity));
+                                }}
+                                title={t("deposit.payoutFrequency.intervalTitle", { max: String(bondPayoutMaxInterval) })}
+                                className="form-input"
+                              />
+                            </div>
+                          ) : null}
+                          <div className="space-y-1">
+                            <div className="form-label">{t("wealthForm.firstPayoutDate")}</div>
+                            <input
+                              type="date"
+                              value={effectiveBondFirstPayoutDate()}
+                              onChange={(e) => changeBondFirstPayoutDate(e.target.value)}
+                              disabled={isMaturityPayout}
+                              title={isMaturityPayout ? t("wealthForm.firstPayoutMaturityHint") : undefined}
+                              className="form-input disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
 
-                  <div className={"grid grid-cols-1 gap-3 sm:grid-cols-3"}>
+                  <div className={"grid grid-cols-2 gap-3"}>
                     {(
-                      <>
-                        <div className="space-y-1">
-                          <div className="form-label">{t("viewImport.units")}{selectedBuyProductRequiresUnits ? t("wealthForm.unitsRequiredSuffix") : ""}</div>
-                          <CalcInput value={units} onChange={(value) => { unitsEditedRef.current = true; setUnits(value); }} placeholder={selectedBuyProductRequiresUnits ? t("batchImport.required") : t("stockFee.optional")} label={t("viewImport.units")} precision={6} />
-                        </div>
-                        <div className="space-y-1">
-                          <div className="form-label">{t("wealthForm.avgPrice")}</div>
-                          <div className="form-input flex items-center justify-end text-xs tabular-nums text-slate-500">{parseNumber(units) > 0 && parseNumber(amount) > 0 ? (parseNumber(amount) / parseNumber(units)).toFixed(4) : "-"}</div>
-                        </div>
-                        <div className="space-y-1">
-                          <div className="form-label">{t("wealthForm.annualRatePercent")}</div>
-                          <input inputMode="decimal" value={annualRate} onChange={(e) => setAnnualRate(e.target.value)} placeholder={t("wealthForm.rateExample")} className="form-input" />
-                        </div>
-                      </>
+                      <div className="space-y-1">
+                        <div className="form-label">{t("wealthForm.annualRatePercent")}</div>
+                        <input inputMode="decimal" value={annualRate} onChange={(e) => setAnnualRate(e.target.value)} placeholder={t("wealthForm.rateExample")} className="form-input" />
+                      </div>
                     )}
-                    <div className={"sm:col-span-2"}>
+                    <div className={""}>
                       <div className="form-label">{t("wealthForm.buyAmount")}</div>
                       <CalcInput value={amount} onChange={setAmount} placeholder="0.00" label={t("fund.subtype.buy")} precision={2} />
                     </div>
                     {/* 债券的期限由起息日与到期日决定（到期日−购买日），与到期日重复，
                         故债券模式不显示期限天数；银行理财才用「180天期」这类期限表达。 */}
-                    {(
-                      <div className="space-y-1">
-                        <div className="form-label">{t("wealthForm.termDays")}</div>
-                        <select
-                          value={termDays}
-                          onChange={(e) => setTermDays(e.target.value)}
-                          className="form-input"
-                        >
-                          <option value="">{t("wealthForm.termPresetPlaceholder")}</option>
-                          {TERM_PRESETS.map((preset) => (
-                            <option key={preset.days} value={String(preset.days)}>
-                              {t(preset.labelKey)}
-                            </option>
-                          ))}
-                          {termDays && !TERM_PRESETS.some((preset) => String(preset.days) === termDays) ? (
-                            <option value={termDays}>{t("wealthForm.daysSuffix", { days: termDays })}</option>
-                          ) : null}
-                        </select>
-                      </div>
-                    )}
+                    {null}
                   </div>
                 </>
               )}
@@ -1582,7 +1898,7 @@ export function WealthFormModal({
               label,
               subLabel: [
                 extra?.groupName,
-                nestedEntityType === "wealth-account" ? accountLabelText : kindLabel(kind),
+                nestedEntityType === "bond-account" ? accountLabelText : kindLabel(kind),
               ].filter(Boolean).join(" · "),
               parentId: extra?.groupId ? `group:${extra.groupId}` : undefined,
               kind,
@@ -1590,9 +1906,9 @@ export function WealthFormModal({
               institutionId: extra?.institutionId ?? null,
               institutionType: nestedFieldData?.institutionId?.find((item) => item.id === extra?.institutionId)?.type ?? null,
               currency: extra?.currency ?? "CNY",
-              investProductType: nestedEntityType === "wealth-account" ? ("wealth") : null,
+              investProductType: nestedEntityType === "bond-account" ? ("bond") : null,
             };
-            if (nestedEntityType === "wealth-account") {
+            if (nestedEntityType === "bond-account") {
               setInvestmentAccountList((prev) => [
                 ...prev.filter((item) => item.id !== id),
                 option,
@@ -1606,24 +1922,24 @@ export function WealthFormModal({
             }
             setNestedEntityType(null);
           }}
-          title={nestedEntityType === "wealth-account" ? (t("wealthForm.addWealthAccount")) : undefined}
-          nameLabel={nestedEntityType === "wealth-account" ? (t("wealthForm.wealthAccountName")) : undefined}
-          namePlaceholder={nestedEntityType === "wealth-account" ? t("wealthForm.wealthAccountNamePlaceholder") : undefined}
-          defaultType={nestedEntityType === "wealth-account" ? "investment" : "bank_debit"}
+          title={nestedEntityType === "bond-account" ? (t("bondForm.addAccount")) : undefined}
+          nameLabel={nestedEntityType === "bond-account" ? (t("bondForm.accountName")) : undefined}
+          namePlaceholder={nestedEntityType === "bond-account" ? t("wealthForm.wealthAccountNamePlaceholder") : undefined}
+          defaultType={nestedEntityType === "bond-account" ? "investment" : "bank_debit"}
           extraFields={
-            nestedEntityType === "wealth-account" && selectedCashAccount
+            nestedEntityType === "bond-account" && selectedCashAccount
               ? {
                   kind: "investment",
-                  investProductType: "wealth",
+                  investProductType: "bond",
                   ...(selectedCashAccount.groupId ? { groupId: selectedCashAccount.groupId } : {}),
                   ...(selectedCashAccount.institutionId ? { institutionId: selectedCashAccount.institutionId } : {}),
                   currency: selectedCashAccount.currency ?? "CNY",
                 }
               : undefined
           }
-          hiddenFields={nestedEntityType === "wealth-account" ? ["kind", "investProductType"] : undefined}
-          readOnlyFields={nestedEntityType === "wealth-account" ? ["groupId", "institutionId", "currency"] : undefined}
-          allowedAccountKinds={nestedEntityType === "wealth-account" ? undefined : ["bank_debit", "ewallet"]}
+          hiddenFields={nestedEntityType === "bond-account" ? ["kind", "investProductType"] : undefined}
+          readOnlyFields={nestedEntityType === "bond-account" ? ["groupId", "institutionId", "currency"] : undefined}
+          allowedAccountKinds={nestedEntityType === "bond-account" ? undefined : ["bank_debit", "ewallet"]}
           nestedFieldData={localNestedFieldData ?? nestedFieldData}
           onNestedCreated={handleNestedOptionCreated}
         />
@@ -1634,7 +1950,7 @@ export function WealthFormModal({
             <div className="modal-header">
               <div>
                 <div className="text-sm font-semibold text-slate-800">
-                  {t("wealthForm.addProduct")}
+                  {t("bondForm.addProduct")}
                 </div>
                 <div className="mt-0.5 text-xs text-slate-500">
                   {selectedWealthAccount?.label || selectedCashAccount?.label || t("txForm.alert.selectCashSourceAccount")}

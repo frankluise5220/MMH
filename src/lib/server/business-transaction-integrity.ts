@@ -28,7 +28,7 @@ type ExpectedBusinessEntry = {
   cannotRepairDetail?: string;
 };
 
-const BUSINESS_TYPES: BusinessIntegrityType[] = ["fund", "stock", "insurance", "wealth", "deposit", "metal", "property"];
+const BUSINESS_TYPES: BusinessIntegrityType[] = ["fund", "stock", "insurance", "wealth", "bond", "deposit", "metal", "property"];
 
 function isRegularInvestRefund(entry: { fundSubtype?: string | null; source?: string | null }) {
   return isRegularInvestRefundEntry(entry);
@@ -52,6 +52,7 @@ async function getExpectedBusinessEntries(householdId: string): Promise<Expected
       fundSubtype: true,
       source: true,
       wealthProductId: true,
+      bondProductId: true,
       insuranceProductId: true,
       metalTypeId: true,
       metalTypeName: true,
@@ -144,11 +145,12 @@ async function getExpectedBusinessEntries(householdId: string): Promise<Expected
 }
 
 async function existingBusinessIdsByType(householdId: string) {
-  const [fund, stock, insurance, wealth, deposit, metal, property] = await Promise.all([
+  const [fund, stock, insurance, wealth, bond, deposit, metal, property] = await Promise.all([
     prisma.fundTransaction.findMany({ where: { householdId, deletedAt: null }, select: { id: true } }),
     prisma.stockTransaction.findMany({ where: { householdId, deletedAt: null }, select: { id: true } }),
     prisma.insuranceTransaction.findMany({ where: { householdId, deletedAt: null }, select: { id: true } }),
     prisma.wealthTransaction.findMany({ where: { householdId, deletedAt: null }, select: { id: true } }),
+    prisma.bondTransaction.findMany({ where: { householdId, deletedAt: null }, select: { id: true } }),
     prisma.depositTransaction.findMany({ where: { householdId, deletedAt: null }, select: { id: true } }),
     prisma.preciousMetalTransaction.findMany({ where: { householdId, deletedAt: null }, select: { id: true } }),
     prisma.propertyTransaction.findMany({ where: { householdId, deletedAt: null }, select: { id: true } }),
@@ -158,6 +160,7 @@ async function existingBusinessIdsByType(householdId: string) {
     stock: new Set(stock.map((row) => row.id)),
     insurance: new Set(insurance.map((row) => row.id)),
     wealth: new Set(wealth.map((row) => row.id)),
+    bond: new Set(bond.map((row) => row.id)),
     deposit: new Set(deposit.map((row) => row.id)),
     metal: new Set(metal.map((row) => row.id)),
     property: new Set(property.map((row) => row.id)),
@@ -173,6 +176,7 @@ async function linkedBusinessIdsByType(householdId: string) {
       fundTransactionId: true,
       insuranceTransactionId: true,
       wealthTransactionId: true,
+      bondTransactionId: true,
       depositTransactionId: true,
       preciousMetalTransactionId: true,
       stockTransactionId: true,
@@ -185,6 +189,7 @@ async function linkedBusinessIdsByType(householdId: string) {
     stock: new Set(),
     insurance: new Set(),
     wealth: new Set(),
+    bond: new Set(),
     deposit: new Set(),
     metal: new Set(),
     property: new Set(),
@@ -196,6 +201,7 @@ async function linkedBusinessIdsByType(householdId: string) {
       row.fundTransactionId ??
       row.insuranceTransactionId ??
       row.wealthTransactionId ??
+      row.bondTransactionId ??
       row.depositTransactionId ??
       row.preciousMetalTransactionId ??
       row.stockTransactionId ??
@@ -275,6 +281,7 @@ export async function repairBusinessTransactionIntegrity(householdId: string, li
     stock: new Set(),
     insurance: new Set(),
     wealth: new Set(),
+    bond: new Set(),
     deposit: new Set(),
     metal: new Set(),
     property: new Set(),
@@ -363,7 +370,7 @@ export async function repairBusinessTransactionIntegrity(householdId: string, li
     }
     attempted += 1;
   }
-  for (const type of ["insurance", "wealth", "deposit", "metal"] satisfies BusinessIntegrityType[]) {
+  for (const type of ["insurance", "wealth", "bond", "deposit", "metal"] satisfies BusinessIntegrityType[]) {
     for (const id of repairableIdsByType[type]) {
       await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: id });
       attempted += 1;

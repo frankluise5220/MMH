@@ -972,7 +972,7 @@ export async function DELETE(req: NextRequest) {
  *   (depositSourceEntryId, or the depm_/depi_ prefix). Deleting takes the
  *   deposit lot (and its 存款侧 records) with it — the same path used by the
  *   records page. `cascadeSource=1` is required once the user confirms.
- * - wealth_bond_maturity / wealth_bond_interest_payout: source = the bond
+ * - bond_maturity / bond_interest_payout: source = the bond
  *   WealthProduct. Deleting takes the bond (and its wealth transactions).
  * - loan_repayment + bill: handled by handleLoanRepaymentPlanDelete.
  *
@@ -1000,8 +1000,8 @@ async function handleSystemPlanDelete(
   if (task.type === "deposit_maturity" || task.type === "deposit_interest_payout") {
     return handleDepositPlanDelete(req, plan, householdId, task);
   }
-  if (task.type === "wealth_bond_maturity" || task.type === "wealth_bond_interest_payout") {
-    return handleWealthBondPlanDelete(req, plan, householdId);
+  if (task.type === "bond_maturity" || task.type === "bond_interest_payout") {
+    return handleBondPlanDelete(req, plan, householdId);
   }
   return NextResponse.json({ ok: false, code: "SYSTEM_MANAGED_PLAN", error: "该计划由系统管理，暂不支持删除" }, { status: 403 });
 }
@@ -1026,14 +1026,14 @@ function resolveDepositLotId(planId: string, task: { depositSourceEntryId?: stri
  * `completeDepositPlansForLot` 会把计划置 completed，但只要存单 buy 行还在，
  * 自愈仍会把它救回 active（`depi_` 周期性取息尤其明显）。
  *
- * 两种删除方式（用户 2026-09-17 五版选择）：
- * - `keepSource=1`「仅删除计划任务，保留业务记录」：只删计划行，**完全不碰存单**
- *   （不做任何检测、不需要确认）。因为自愈只按"仍持有的存单"重建，存单还在时
- *   计划行下次开机自愈会**再次生成** —— 这是用户明确接受的行为（"存单还未结束，
- *   应该会再次生成计划任务"）。
- * - 默认「计划任务与业务记录一并删除」：存单仍在时需 `cascadeSource=1` 确认，
- *   走与明细页删除存单同路径：软删存单及其存款侧流水（buy/redeem/switch_out 等，
- *   softDeleteEntriesByIds + deleteBusiness），随后把该存单的两条计划行物理删除。
+ * 两种删除方式（用户 2026-09-18 七版口径）：
+ * - `keepSource=1`「仅删除计划任务」：只删计划行，不动任何记录与存单。
+ * - 取息计划（depi_/deposit_interest_payout）：与存单无关。`deleteGenerated=1`
+ *   「删除计划任务和关联取息记录」：软删 regularInvestPlanId=本计划的生息/取息
+ *   记录，存单（buy 行）永不触碰，无需存单级联确认。
+ * - 到期/取回计划（depm_/deposit_maturity）：存单仍在时需 `cascadeSource=1`
+ *   确认，走与明细页删除存单同路径：软删存单及存入、生息、取息等全部关联记录
+ *   （softDeleteEntriesByIds + deleteBusiness），两行计划一起删。
  *   存单不存在/已软删 → 无关联明细，只删计划行。
  */
 async function handleDepositPlanDelete(
@@ -1044,8 +1044,9 @@ async function handleDepositPlanDelete(
 ) {
   const keepSource = req.nextUrl.searchParams.get("keepSource") === "1";
   const cascadeSource = req.nextUrl.searchParams.get("cascadeSource") === "1";
+  // deleteGenerated=1「删除所有生成记录」：软删该计划生成的利息/取回记录后保留存单。
+  const deleteGenerated = req.nextUrl.searchParams.get("deleteGenerated") === "1";
   const lotId = resolveDepositLotId(plan.id, task);
-  const planIds = lotId ? [`depm_${lotId}`, `depi_${lotId}`] : [plan.id];
 
   const lot = lotId
     ? await prisma.txRecord.findUnique({
@@ -1060,21 +1061,36 @@ async function handleDepositPlanDelete(
     return NextResponse.json({ ok: false, code: "LOT_NOT_IN_HOUSEHOLD", error: "关联的存单不属于当前账簿" }, { status: 403 });
   }
 
-  // 「仅删除计划任务」：不检测、不动业务记录，直接删行（自愈会重建，用户已知悉）。
+  // 取息计划（depi_/deposit_interest_payout）与存单无关（2026-09-18 七版口径）：
+  // 删除只涉及计划行本身与它生成的生息/取息记录（regularInvestPlanId=本计划），
+  // 存单（buy 行）永不触碰，也不需要存单级联确认。
+  const isPayout = task.type === "deposit_interest_payout" || plan.id.startsWith("depi_");
+
   if (!keepSource) {
-    if (lotLinked && !cascadeSource) {
+    if (isPayout) {
+      // 「删除计划任务和关联取息记录」：只软删本计划生成的记录，存单不受影响。
+      if (deleteGenerated) {
+        const { softDeleteEntriesByIds } = await import("@/lib/server/entry-delete");
+        const ctx = await getHouseholdScope();
+        const generated = await prisma.txRecord.findMany({
+          where: { householdId, regularInvestPlanId: plan.id, deletedAt: null },
+          select: { id: true },
+        });
+        if (generated.length > 0) {
+          await softDeleteEntriesByIds(ctx, generated.map((row) => row.id), "删除取息计划生成的记录", { linkedAction: "deleteBusiness" });
+        }
+      }
+    } else if (lotLinked && !cascadeSource) {
       return NextResponse.json({
         ok: false,
         code: "DEPOSIT_STILL_EXISTS",
         needSourceCascade: true,
         sourceKind: "deposit",
         sourceName: lot!.fundName ?? "存款",
-        error: "该计划任务仍关联着一笔存单，删除会同时删除这笔存单及其存款明细（已生成的记录不会删）",
+        error: "该计划任务仍关联着一笔存单，删除会同时删除这笔存单及其全部关联记录（存入、生息、取息）",
       }, { status: 409 });
-    }
-
-    if (lotLinked && lot) {
-      // 与明细页删除存单同路径：软删存单及其存款侧流水（含关联业务）。
+    } else if (lotLinked && lot) {
+      // 与明细页删除存单同路径：软删存单及存入、生息、取息等全部关联记录。
       const { softDeleteEntriesByIds } = await import("@/lib/server/entry-delete");
       const ctx = await getHouseholdScope();
       const targets = [lot.id, ...(await prisma.txRecord.findMany({
@@ -1085,15 +1101,20 @@ async function handleDepositPlanDelete(
     }
   }
 
-  // 计划行物理删除（保留业务记录时存单仍在 → 下次自愈会重建，属预期）。
+  // 计划行物理删除。两个计划（到期/取息）彼此独立：keepSource 只删自己的行；
+  // 到期计划级联删存单时，取息计划随存单一起失去意义，两行同删。
+  const planIds = !isPayout && !keepSource && lotLinked && lotId
+    ? [`depm_${lotId}`, `depi_${lotId}`]
+    : [plan.id];
   await prisma.regularInvestPlan.deleteMany({ where: { id: { in: planIds }, householdId } });
   revalidateAfterTxChange();
   revalidateAfterInvestChange();
   return NextResponse.json({
     ok: true,
     keepSource,
-    deletedSource: !keepSource && lotLinked,
-    deletedSourceKind: !keepSource && lotLinked ? "deposit" : null,
+    deletedGenerated: !keepSource && isPayout && deleteGenerated,
+    deletedSource: !keepSource && !isPayout && lotLinked,
+    deletedSourceKind: !keepSource && !isPayout && lotLinked ? "deposit" : null,
     affectedPlanIds: planIds,
   });
 }
@@ -1103,12 +1124,12 @@ async function handleDepositPlanDelete(
  *
  * 两种删除方式（用户 2026-09-17 五版选择）：
  * - `keepSource=1`「仅删除计划任务，保留业务记录」：只删计划行，完全不碰债单。
- *   债单仍持有（本金 > 0.005）时自愈 `ensureWealthBondPlansForHousehold` 会
+ *   债单仍持有（本金 > 0.005）时自愈 `ensureBondPlansForHousehold` 会
  *   再次 upsert 出这两行 —— 这是用户明确接受的行为。
  * - 默认「一并删除」：债单仍在（持仓本金 > 0.005）→ 需 `cascadeSource=1` 确认，
  *   删除债单及其理财流水，再删计划行。债单已了结/不存在 → 无关联明细，只删计划行。
  */
-async function handleWealthBondPlanDelete(
+async function handleBondPlanDelete(
   req: NextRequest,
   plan: { id: string; householdId: string | null },
   householdId: string,
@@ -1141,7 +1162,7 @@ async function handleWealthBondPlanDelete(
         ok: false,
         code: "BOND_STILL_EXISTS",
         needSourceCascade: true,
-        sourceKind: "wealth_bond",
+        sourceKind: "bond",
         sourceName: product!.name,
         error: "该计划任务仍关联着这笔城投债，删除会同时删除债单及其理财明细（已生成的记录不会删）",
       }, { status: 409 });
@@ -1175,7 +1196,7 @@ async function handleWealthBondPlanDelete(
     ok: true,
     keepSource,
     deletedSource: !keepSource && bondHeld,
-    deletedSourceKind: !keepSource && bondHeld ? "wealth_bond" : null,
+    deletedSourceKind: !keepSource && bondHeld ? "bond" : null,
     affectedPlanIds: planIds,
   });
 }

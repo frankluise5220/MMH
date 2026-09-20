@@ -50,23 +50,23 @@ import { TRANSACTION_SOURCE_FUND_UNITS_RECONCILE, isFundUnitsReconcileEntry } fr
 import { useI18n } from "@/lib/i18n";
  
 
-function fundSubtypeLabel(t: (key: string) => string, subtype: string | null | undefined, source: string | null | undefined) {
+function fundSubtypeLabel(t: (key: string) => string, subtype: string | null | undefined, source: string | null | undefined, productType?: string | null) {
   if (source === TRANSACTION_SOURCE_FUND_UNITS_RECONCILE) return t("fundShell.subtype.unitsReconcile");
   if (subtype === "buy" && source === "regular_invest") return t("fundShell.subtype.buyRegularInvest");
   if (subtype === "buy" && source === "dividend") return t("fund.subtype.dividend");
   if (subtype === "buy_failed" && source === "regular_invest_refund") return t("fundShell.subtype.buyRefund");
   if (subtype === "buy_failed") return t("fundShell.subtype.buyFailed");
   if (subtype === "buy") return t("fund.subtype.buy");
-  if (subtype === "redeem") return t("fund.subtype.redeem");
+  if (subtype === "redeem") return productType === "bond" ? t("bondForm.redeem") : t("fund.subtype.redeem");
   if (subtype === "dividend_reinvest") return t("fundShell.subtype.dividendReinvest");
-  if (subtype === "dividend_cash") return t("fundShell.subtype.dividendCash");
+  if (subtype === "dividend_cash") return productType === "bond" ? t("bondForm.interestReceipt") : t("fundShell.subtype.dividendCash");
   return t("fundShell.subtype.unknown");
 }
 
-function fl(t: (key: string) => string, subtype: string | null | undefined, source: string | null | undefined) {
+function fl(t: (key: string) => string, subtype: string | null | undefined, source: string | null | undefined, productType?: string | null) {
 
   const info = subtypeDisplay(subtype, source);
-  return { label: fundSubtypeLabel(t, subtype, source), cls: info.cls, textCls: info.textCls };
+  return { label: fundSubtypeLabel(t, subtype, source, productType), cls: info.cls, textCls: info.textCls };
 
 }
 
@@ -432,14 +432,17 @@ function buildFundProfitChartPoints(history: FundNavHistoryPoint[], entries: Fun
 function compactFundSubtypeLabel(t: (key: string) => string, entry: any, fallback: string) {
   const subtype = String(entry?.fundSubtype ?? "");
   const source = String(entry?.source ?? "");
+  const isBond = subtype === "dividend_cash" || subtype === "redeem"
+    ? String(entry?.fundProductType ?? "") === "bond"
+    : false;
   if (source === TRANSACTION_SOURCE_FUND_UNITS_RECONCILE) return t("fundShell.subtypeCompact.unitsReconcile");
   if (subtype === "buy_failed" && source === "regular_invest_refund") return t("fundShell.subtypeCompact.refund");
   if (subtype === "buy_failed") return t("fundShell.subtypeCompact.failed");
   if (subtype === "buy" && source === "regular_invest") return t("fund.subtype.regular_invest");
   if (subtype === "buy" && source === "dividend") return t("fund.subtype.dividend_reinvest");
   if (subtype === "buy") return t("fundShell.subtypeCompact.buy");
-  if (subtype === "redeem") return t("fund.subtype.redeem");
-  if (subtype === "dividend_cash") return t("fundShell.subtype.dividendCash");
+  if (subtype === "redeem") return isBond ? t("bondForm.redeem") : t("fund.subtype.redeem");
+  if (subtype === "dividend_cash") return isBond ? t("bondForm.interestReceipt") : t("fundShell.subtype.dividendCash");
   if (subtype === "dividend_reinvest" || source === "dividend") return t("fund.subtype.dividend_reinvest");
   if (subtype === "switch_in") return t("fund.subtype.switch");
   if (subtype === "switch_out") return t("fund.subtype.switch_out");
@@ -1079,7 +1082,7 @@ export function FundShell(props: Props) {
 
       const profit = e.realizedProfit != null ? e.realizedProfit : "";
 
-      const subtype = fl(t, e.fundSubtype, e.source).label;
+      const subtype = fl(t, e.fundSubtype, e.source, e.fundProductType).label;
 
       // redeem/dividend_cash: the cash receiver is toAccountId
 
@@ -2463,7 +2466,7 @@ export function FundShell(props: Props) {
     const navValueOf = (entry: any) => entry.fundNav != null ? toNumber(entry.fundNav) : null;
     const remainingUnitsValueOf = (entry: any) => entry.wealthRemainingUnits != null ? toNumber(entry.wealthRemainingUnits) : null;
     const detailSubtypeLabelOf = (entry: any) => {
-      const info = fl(t, entry.fundSubtype, entry.source);
+      const info = fl(t, entry.fundSubtype, entry.source, entry.fundProductType);
       return isSingleNormalFundScope ? compactFundSubtypeLabel(t, entry, info.label) : info.label;
     };
     const fundLabelOf = (entry: any) => displayFundName(entry);
@@ -2620,7 +2623,7 @@ export function FundShell(props: Props) {
           filterText: detailSubtypeLabelOf,
           sortValue: detailSubtypeLabelOf,
           render: (e: any) => {
-            const info = fl(t, e.fundSubtype, e.source);
+            const info = fl(t, e.fundSubtype, e.source, e.fundProductType);
             const detailSubtypeLabel = detailSubtypeLabelOf(e);
             return (
               <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${e.source === "dividend" || e.fundSubtype === "dividend_cash" ? `bg-emerald-50 ${upCls}` : info.cls}`}>
@@ -2825,7 +2828,7 @@ export function FundShell(props: Props) {
       <div className="flex items-center justify-end gap-1">
         {!isUnitsReconcile && !isWealthAccount && e.fundCode && e.fundSubtype === "buy" && statusOf(e) !== "buy_failed" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? <FillNavButton entryId={e.id} fundCode={e.fundCode} action={fillNavAction} onFilled={(data) => handleEntryNavFilled(e, data)} /> : null}
         {!isUnitsReconcile ? (
-          e.fundProductType === "wealth" ? (
+          e.fundProductType === "wealth" || e.fundProductType === "bond" ? (
             <WealthFormModal
             mode="edit"
             accountId={selectedAccount?.id ?? ""}
@@ -2871,6 +2874,7 @@ export function FundShell(props: Props) {
               amount: toNumber(e.amount),
               note: e.note ?? null,
               fundName: displayFundName(e) === "-" ? null : displayFundName(e),
+              depositProductId: e.depositProductId ?? null,
               fundProductType: e.fundProductType ?? null,
               fundSubtype: e.fundSubtype ?? null,
               accountId: e.accountId ?? null,
@@ -3579,7 +3583,7 @@ export function FundShell(props: Props) {
                 const units = displayUnitsOf(e);
                 const nav = e.fundNav != null ? toNumber(e.fundNav) : null;
                 const amount = detailAmountOf(e);
-                const info = fl(t, e.fundSubtype, e.source);
+                const info = fl(t, e.fundSubtype, e.source, e.fundProductType);
                 const detailSubtypeLabel = isSingleNormalFundScope ? (info as { shortLabel?: string }).shortLabel ?? info.label : info.label;
                 const cashInfo = cashAccountInfoOf(e);
                 const status = statusOf(e);

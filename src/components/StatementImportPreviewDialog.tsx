@@ -790,6 +790,7 @@ export function StatementImportPreviewDialog({
   function ownedAccountTypeLabel(kind: string, investProductType?: string) {
     if (kind === "investment") {
       if (investProductType === "wealth") return t("statementImportPreview.accountType.wealth");
+      if (investProductType === "bond") return t("entry.kind.bond");
       if (investProductType === "money") return t("statementImportPreview.accountType.moneyFund");
       return t("statementImportPreview.accountType.fund");
     }

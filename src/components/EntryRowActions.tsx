@@ -38,6 +38,7 @@ export type EditPayload = {
   fundCode?: string;
   fundName?: string;
   wealthProductId?: string | null;
+  depositProductId?: string | null;
   metalTypeId?: string | null;
   metalTypeName?: string | null;
   metalUnitId?: string | null;
@@ -63,6 +64,8 @@ export type EditPayload = {
   fundSourceEntryId?: string | null;
   fundArrivalAmount?: number | null;
   fundProductType?: string;
+  /** 债券存单归属：子行（付息/赎回/核销）指回所属存单，编辑时据此预选存单。 */
+  sourceBondTransactionId?: string | null;
   source?: string | null;
   linkedCandidateEntries?: Array<{
     id?: string;
@@ -116,6 +119,8 @@ export function dispatchEntryEdit({
   const pt = edit.fundProductType;
   if (edit.type === "investment" && (edit.source === "insurance" || edit.insuranceProductId)) {
     window.dispatchEvent(new CustomEvent("mmh:insurance:edit", { detail }));
+  } else if (edit.type === "investment" && pt === "bond") {
+    window.dispatchEvent(new CustomEvent("mmh:bond:edit", { detail }));
   } else if (edit.type === "investment" && pt === "wealth") {
     window.dispatchEvent(new CustomEvent("mmh:wealth:edit", { detail }));
   } else if (edit.type === "investment" && pt === "deposit") {

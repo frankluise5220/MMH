@@ -12,12 +12,14 @@ import { StockHoldingsPanel } from "@/components/StockHoldingsPanel";
 import { PropertyFormModal } from "@/components/PropertyFormModal";
 import { PropertyShell } from "@/components/PropertyShell";
 import { WealthFormModal } from "@/components/WealthFormModal";
+import { BondFormModal } from "@/components/BondFormModal";
 import { DepositFormModal } from "@/components/DepositFormModal";
 import { InsuranceFormModal } from "@/components/InsuranceFormModal";
 import { InsuranceEntryEditBridge } from "@/components/InsuranceEntryEditBridge";
 import { DebtShell } from "@/components/DebtShell";
 import { DebtTransactionModal } from "@/components/DebtTransactionModal";
 import { FundShell } from "@/components/FundShell";
+import { BondShell, type BondShellEntry } from "@/components/BondShell";
 import { DepositShell } from "@/components/DepositShell";
 import { InsuranceShell } from "@/components/InsuranceShell";
 import { RegularInvestForm } from "@/components/RegularInvestForm";
@@ -59,6 +61,7 @@ import { getCachedHouseholdScope, getHouseholdScope } from "@/lib/server/househo
 import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
 import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude, upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
 import {
+  loadBondTransactionEntryLike,
   loadDepositTransactionDetailLike,
   loadInsuranceTransactionDetailLike,
   loadWealthTransactionEntryLike,
@@ -69,6 +72,7 @@ import { compareCategoryOrder, sortCategorySources } from "@/components/category
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { insuranceCashValueDelta } from "@/lib/insurance/transaction";
 import { loadCommonData, loadSelectedAccount, loadEntriesForAccount, loadEntriesPageForAccount, loadInvestAccountData, loadInvestBalances, loadFixedAssetPositionDisplay, loadFixedAssetTransactionEntries } from "@/lib/server/cached-data";
+import { loadBondShellData, loadBondLotOptions, bondSubtypeLabelKey } from "@/lib/server/bond-shell-data";
 import { computePositionDisplay } from "@/lib/invest-balance";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
@@ -129,7 +133,21 @@ import { AccountTypeQuickEdit, type AccountQuickEditValue } from "@/components/A
 export const dynamic = "force-dynamic";
 
 import { formatDateLocal, formatDateUtc, toNumber, parseDateInputToUtc } from "@/lib/date-utils";
+import { parseDepositInterestPayout } from "@/lib/deposit-interest-payout";
 import { depositInterestDaysUtc } from "@/lib/deposit-maturity";
+
+/**
+ * 投资族视图（由账户的 investProductType 决定的那几个）。
+ * URL 里这几个值如果与账户自身类型不符，一律以账户为准，见下方 normalizedViewParam。
+ */
+const INVEST_FAMILY_VIEWS = new Set<string>([
+  "investfund",
+  "investmoney",
+  "investwealth",
+  "investbond",
+  "investstock",
+  "investproperty",
+]);
 
 
 
@@ -302,6 +320,40 @@ function calcDepositExpectedInterest(params: {
   const days = startUtc && endUtc ? depositInterestDaysUtc(startUtc, endUtc) : 0;
   if (days <= 0) return null;
   return Number(((principal * (annualRate / 100) * days) / 365).toFixed(2));
+}
+
+/**
+ * Total interest over the whole term, from the ORIGINAL deposit start date to
+ * maturity, matching the accrual formulas the executor actually uses:
+ *   - monthly basis + month frequency → fixed instalment × instalment count
+ *     (principal × rate ÷ 12 per month, same as autoAccruePeriodicInterest);
+ *   - otherwise day-count: principal × rate × days / 365.
+ * 已取利息从同一总额里扣减（七版口径：预计利息=总利息−已取）。
+ */
+function calcDepositTotalInterest(params: {
+  principal: number;
+  annualRate: number | null | undefined;
+  startDate: string | null | undefined;
+  maturityDate: string | null | undefined;
+  today: string;
+  interestCalcBasis: string | null | undefined;
+  payoutFrequency: string | null | undefined;
+}): number | null {
+  const { principal, annualRate, startDate, maturityDate, today, interestCalcBasis, payoutFrequency } = params;
+  if (!(principal > 0) || annualRate == null || annualRate <= 0 || !startDate) return null;
+  const frequency = parseDepositInterestPayout(payoutFrequency);
+  // 按月均分：每期固定 本金×年利率÷12，期数=全期覆盖的付息周期数（与执行器同式）。
+  if (interestCalcBasis === "monthly" && frequency.kind === "periodic" && frequency.unit === "month") {
+    const startUtc = parseDateInputToUtc(startDate);
+    const endUtc = parseDateInputToUtc(maturityDate ?? today);
+    if (!startUtc || !endUtc || endUtc <= startUtc) return null;
+    const months = (endUtc.getUTCFullYear() - startUtc.getUTCFullYear()) * 12 + (endUtc.getUTCMonth() - startUtc.getUTCMonth());
+    const periods = Math.max(1, Math.floor(months / frequency.interval));
+    return Number(((principal * (annualRate / 100) * frequency.interval * periods) / 12).toFixed(2));
+  }
+  // 其余按日计息：沿用存入日计息天数（整年段含头含尾）。
+  const base = calcDepositExpectedInterest({ principal, annualRate, startDate, maturityDate, today });
+  return base;
 }
 
 function buildCategoryPathLabels(categories: Array<{ id: string; name: string; type: string; parentId: string | null }>) {
@@ -477,6 +529,8 @@ export default async function Home({
           ? "investmoney"
           : params?.view === "investwealth"
             ? "investwealth"
+            : params?.view === "investbond"
+              ? "investbond"
             : params?.view === "investstock"
               ? "investstock"
               : params?.view === "investproperty"
@@ -612,11 +666,20 @@ export default async function Home({
   const isDepositView = selectedAccount ? isDepositAccount(selectedAccount) : false;
   const isOverview = !viewParam && !accountId && !accountName;
   const isInsuranceView = selectedAccount?.kind === AccountKind.insurance;
-  const view: "bill" | "detail" | "allcash" | "investfund" | "investmoney" | "investwealth" | "investstock" | "investproperty" | "regularinvest" | "debt" | "overview" | "deposit" | "insurance" =
+  // 投资族视图只能由账户自身的 investProductType 决定，URL 里的陈旧值不得覆盖：
+  // 旧版本（债券还没有 investbond 视图时）会给债券账户生成 view=investfund，
+  // 用户留在标签页/收藏里的旧 URL 一刷新就会把债券账户渲染成基金视图。
+  // 只有账户类型明确（investProductType 非空）时才纠正，避免影响历史脏数据。
+  const accountInvestProductType = selectedAccount?.investProductType ?? "";
+  const normalizedViewParam =
+    viewParam && INVEST_FAMILY_VIEWS.has(viewParam) && isInvestAccount && accountInvestProductType
+      ? getInvestmentAccountView(selectedAccount)
+      : viewParam;
+  const view: "bill" | "detail" | "allcash" | "investfund" | "investmoney" | "investwealth" | "investbond" | "investstock" | "investproperty" | "regularinvest" | "debt" | "overview" | "deposit" | "insurance" =
     isDebtAccount
       ? "debt"
-      : viewParam
-        ? viewParam
+      : normalizedViewParam
+        ? normalizedViewParam
         : isBillAccount
           ? "bill"
           : isDepositView
@@ -761,7 +824,6 @@ export default async function Home({
     isAllCashView ? cashLedgerFlowAccountId(e, cashLedgerIdSet) : accountId;
   const entryDisplayDate = (e: Parameters<typeof getDetailEntryDisplayDate>[0]) => getDetailEntryDisplayDate(e, flowAccountIdOf(e));
   const entries = [...rawEntries].sort((a, b) => compareDetailEntriesDesc(a, b, isAllCashView ? undefined : accountId));
-  const detailOrderingEntries = pagedDetailData?.orderingEntries ?? rawEntries;
   const accountMetaById = new Map(accounts.map((account) => [account.id, account]));
   const isSettlementDebtAccountId = (id?: string | null) => {
     if (!id) return false;
@@ -917,7 +979,7 @@ export default async function Home({
     t("detail.column.tags"),
     t("detail.column.remark"),
   ];
-  const normalExportSourceEntries = pagedDetailData?.exportEntries ?? filteredEntries2;
+  const normalExportSourceEntries = filteredEntries2;
   const normalExportEntryRows = normalExportSourceEntries.map((e) => {
     const effectiveAmount = effectiveAmountForAccount(e, flowAccountIdOf(e));
     const outflow = effectiveAmount < 0 ? String(-effectiveAmount) : "";
@@ -1093,8 +1155,12 @@ export default async function Home({
   const monthGrowthValue = 0; // TODO: Real calculation
 
   const balanceByEntryId = new Map<string, number>();
-  if (where) {
-    const asc = [...detailOrderingEntries].sort((a, b) => compareDetailEntriesAsc(a, b, accountId));
+  if (pagedDetailData?.runningBalanceById) {
+    for (const [id, value] of Object.entries(pagedDetailData.runningBalanceById)) {
+      balanceByEntryId.set(id, value);
+    }
+  } else if (where) {
+    const asc = [...rawEntries].sort((a, b) => compareDetailEntriesAsc(a, b, accountId));
     let running = 0;
     for (const e of asc) {
       running = applyBalanceReconcileEntry(running, e, accountId);
@@ -1564,12 +1630,30 @@ export default async function Home({
               ...(loanRepaymentPlanIds.length > 0 ? [{ regularInvestPlanId: { in: loanRepaymentPlanIds } }] : []),
             ],
           },
-          include: {
-            EntryTag: { include: { Tag: true } },
-            Attachment: { select: { id: true, name: true, mimeType: true, url: true } },
-            ...entryBusinessLinkSummaryInclude,
-            account: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
-            toAccount: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
+          select: {
+            id: true,
+            date: true,
+            createdAt: true,
+            dayOrder: true,
+            type: true,
+            amount: true,
+            accountId: true,
+            toAccountId: true,
+            source: true,
+            categoryId: true,
+            categoryName: true,
+            counterpartyInstitutionId: true,
+            note: true,
+            toNote: true,
+            debtPrincipalAmount: true,
+            debtInterestAmount: true,
+            debtFeeAmount: true,
+            regularInvestPlanId: true,
+            installmentNo: true,
+            fundSubtype: true,
+            fundConfirmDate: true,
+            fundArrivalDate: true,
+            EntryTag: { select: { tagId: true } },
           },
           orderBy: [{ date: "desc" }, { createdAt: "desc" }],
           // 负债流水随自动扣款/账单逐月增长（默认账本已 4500+ 条），上限过低会按日期截断最老历史，
@@ -1699,6 +1783,53 @@ export default async function Home({
   const investwealthData = view === "investwealth" && accountId
     ? await loadInvestAccountData(investDataHidFilter, accountId, investDataParams)
     : null;
+  // 债券走自己的装载器（债单 + 票面利率 + 到期日 + 付息），不复用基金的份额/净值口径。
+  const investbondData = view === "investbond" && accountId
+    ? await loadBondShellData({ householdId, accountId })
+    : null;
+  const bondShellEntries: BondShellEntry[] = investbondData
+    ? investbondData.entries.map((entry) => {
+        const isCashIn = toNumber(entry.amount) >= 0;
+        const subtype = String(entry.fundSubtype ?? "");
+        const entryDate = toYmdOrNull(entry.date) ?? "";
+        const arrivalDate = toYmdOrNull(entry.bondArrivalDate);
+        const cashSideId = isCashIn ? entry.toAccountId : entry.accountId;
+        const cashSideName = isCashIn ? entry.toAccountName : entry.accountName;
+        const cashAccountLabel = (cashSideId ? accountLabelById.get(cashSideId) : "") || cashSideName || "";
+        return {
+          id: entry.id,
+          date: entryDate,
+          typeLabel: t(bondSubtypeLabelKey(subtype)),
+          bondName: entry.bondName ?? "",
+          arrivalDate,
+          cashAccountLabel,
+          note: entry.note ?? "",
+          amount: toNumber(entry.amount),
+          businessTransactionId: entry.businessTransactionId ?? null,
+          businessLinkCount: entry.businessLinkCount ?? 0,
+          businessLinkLabels: entry.businessLinkLabels ?? [],
+          edit: {
+            type: "investment" as const,
+            date: entryDate,
+            amount: toNumber(entry.bondPrincipalAmount),
+            note: entry.note ?? "",
+            // accountId / toAccountId 沿用交易表的现金流方向（买入：accountId=现金侧，
+            // 付息/赎回：accountId=债券账户），录入弹窗按 subtype 自行取用。
+            accountId: entry.accountId ?? "",
+            toAccountId: entry.toAccountId ?? "",
+            cashAccountId: isCashIn ? (entry.toAccountId ?? "") : (entry.accountId ?? ""),
+            fundName: entry.bondName ?? undefined,
+            wealthProductId: entry.bondProductId ?? null,
+            fundSubtype: subtype || "buy",
+            fundArrivalDate: arrivalDate ?? undefined,
+            fundArrivalAmount: entry.bondArrivalAmount != null ? toNumber(entry.bondArrivalAmount) : null,
+            depositInterest: entry.bondInterest != null ? toNumber(entry.bondInterest) : undefined,
+            fundProductType: "bond",
+            sourceBondTransactionId: entry.sourceBondTransactionId ?? null,
+          },
+        };
+      })
+    : [];
   const investstockData = view === "investstock" && accountId
     ? await computePositionDisplay(ctx, accountId)
     : null;
@@ -1861,6 +1992,7 @@ export default async function Home({
     fundCode: linkedWealth ? null : linkedFund?.fundCode ?? e.fundCode,
     fundName: linkedWealth?.WealthProduct?.name ?? linkedWealth?.productName ?? linkedFund?.fundName ?? e.fundName,
     wealthProductId: linkedWealth?.wealthProductId ?? e.wealthProductId ?? null,
+    depositProductId: e.depositProductId ?? null,
     source: linkedFund?.source ?? e.source,
     insuranceProductId: e.insuranceProductId ?? null,
     debtPrincipalAmount: e.debtPrincipalAmount != null ? toNumber(e.debtPrincipalAmount) : null,
@@ -2033,13 +2165,13 @@ export default async function Home({
                   date: entryDate,
                   amount: Math.abs(toNumber(entry.amount)),
                   note: entry.note ?? "",
+                  accountId: entry.accountId ?? "",
                   // 存款利息收入的落账账户是定期存款账户，不在普通收支部的下拉里；
                   // 带上显示名，编辑时才能把存款账户回填到账户框（否则显示为空）。
                   accountName: entry.accountName ?? undefined,
                   accountLabel: isDepositReceivingSide
                     ? (entry.accountId ? (accountLabelById.get(entry.accountId) ?? entry.accountName ?? "") : (entry.accountName ?? ""))
                     : (entry.toAccountId ? (accountLabelById.get(entry.toAccountId) ?? entry.toAccountName ?? "") : (entry.toAccountName ?? "")),
-                  accountId: entry.accountId ?? "",
                   toAccountId: entry.toAccountId ?? undefined,
                   toAccountName: entry.toAccountName ?? undefined,
                   categoryId: entry.categoryId ?? undefined,
@@ -2239,14 +2371,23 @@ export default async function Home({
         })
       : [];
 
-  const allWealthAccounts = investmentAccountOptions.filter((account) => account.investProductType === "wealth");
+  const allWealthAccounts = investmentAccountOptions.filter((account) => account.investProductType === "wealth" || account.investProductType === "bond");
   const allWealthAccountIds = allWealthAccounts.map((account) => account.id);
+  const allWealthOnlyAccountIds = allWealthAccounts.filter((account) => account.investProductType === "wealth").map((account) => account.id);
+  const allBondOnlyAccountIds = allWealthAccounts.filter((account) => account.investProductType === "bond").map((account) => account.id);
+  // 债券与理财各有独立交易表：持仓下拉两类都带上，弹窗内部再按账户类型隔离。
   const allWealthEntries =
     allWealthAccountIds.length > 0
-      ? await loadWealthTransactionEntryLike({
-          householdId,
-          accountIds: allWealthAccountIds,
-        })
+      ? [
+          ...(await loadWealthTransactionEntryLike({
+            householdId,
+            accountIds: allWealthOnlyAccountIds,
+          })),
+          ...(await loadBondTransactionEntryLike({
+            householdId,
+            accountIds: allBondOnlyAccountIds,
+          })),
+        ]
       : [];
 
   function buildWealthHoldingOptions(sourceEntryPool: Array<any>) {
@@ -2270,7 +2411,7 @@ export default async function Home({
     }>();
 
     for (const entry of sourceEntryPool) {
-      if (entry.fundProductType !== "wealth" || entry.deletedAt) continue;
+      if ((entry.fundProductType !== "wealth" && entry.fundProductType !== "bond") || entry.deletedAt) continue;
       const amountValue = toNumber(entry.amount);
       const principalAmountValue = entry.wealthPrincipalAmount != null ? toNumber(entry.wealthPrincipalAmount) : amountValue;
       const isRedeemEntry =
@@ -2281,16 +2422,18 @@ export default async function Home({
       const wealthAccountId = (isRedeemEntry ? entry.accountId : entry.toAccountId) ?? "";
       if (!wealthAccountId || !allWealthAccountIds.includes(wealthAccountId)) continue;
 
-      const productName = entry.WealthProduct?.name ?? entry.fundName ?? t("sidebar.wealthHolding.unnamed");
-      const productLabel = entry.WealthProduct?.shortName?.trim() || productName;
+      // 产品条款：理财读 WealthProduct，债券读自己的 BondProduct（两类独立主数据）。
+      const productInfo = entry.WealthProduct ?? entry.BondProduct ?? null;
+      const productName = productInfo?.name ?? entry.fundName ?? t("sidebar.wealthHolding.unnamed");
+      const productLabel = productInfo?.shortName?.trim() || productName;
       const productKey = entry.wealthProductId ? `product:${entry.wealthProductId}` : `name:${productName}`;
       const key = `${wealthAccountId}\u001f${productKey}`;
       const existing = buckets.get(key);
       const annualRate =
         entry.depositAnnualRate != null
           ? toNumber(entry.depositAnnualRate)
-          : entry.WealthProduct?.annualRate != null
-            ? toNumber(entry.WealthProduct.annualRate)
+          : productInfo?.annualRate != null
+            ? toNumber(productInfo.annualRate)
             : null;
       const principalDelta = isRedeemEntry
         ? -Math.abs(principalAmountValue)
@@ -2314,7 +2457,7 @@ export default async function Home({
           existing.unitMovements.push({ date: movementDate, delta: Number(unitsDelta.toFixed(6)) });
         }
         if (existing.annualRate == null && annualRate != null) existing.annualRate = annualRate;
-        if (existing.termDays == null && entry.WealthProduct?.termDays != null) existing.termDays = entry.WealthProduct.termDays;
+        if (existing.termDays == null && productInfo?.termDays != null) existing.termDays = productInfo.termDays;
       } else {
         buckets.set(key, {
           id: key,
@@ -2327,7 +2470,7 @@ export default async function Home({
           remainingUnits: unitsDelta,
           hasUnits: unitsValue != null,
           annualRate,
-          termDays: entry.WealthProduct?.termDays ?? null,
+          termDays: productInfo?.termDays ?? null,
           firstDate: movementDate,
           movements: principalDelta !== 0 && movementDate ? [{ date: movementDate, delta: Number(principalDelta.toFixed(2)) }] : [],
           unitMovements: unitsValue != null && unitsDelta !== 0 && movementDate ? [{ date: movementDate, delta: Number(unitsDelta.toFixed(6)) }] : [],
@@ -2367,6 +2510,11 @@ export default async function Home({
   }
 
   const wealthHoldingOptions = buildWealthHoldingOptions(allWealthEntries);
+  // 债券弹窗的「存单」下拉：债券是存单粒度（一笔买入 = 一张存单 = 一个持仓），
+  // 付息/赎回/核销必须指明所属存单，所以不能用理财那套按产品聚合的持仓。
+  const bondLotOptions = allBondOnlyAccountIds.length > 0
+    ? await loadBondLotOptions({ householdId, accountIds: allBondOnlyAccountIds })
+    : [];
 
   function buildDepositLots(sourceEntryPool: Array<any>, activeDepositAccountIds: Set<string>, sortAccountId?: string | null, ordinaryInterestPool?: Array<any>) {
     if (activeDepositAccountIds.size === 0) return [];
@@ -2390,6 +2538,7 @@ export default async function Home({
       Array<{
         id: string;
         fundName: string;
+        depositProductId?: string | null;
         maturityDate: string | null;
         maturityAction: string | null;
         interestPayoutFrequency: string | null;
@@ -2404,6 +2553,7 @@ export default async function Home({
     const allLots: Array<{
       id: string;
       fundName: string;
+      depositProductId?: string | null;
       maturityDate: string | null;
       maturityAction: string | null;
       interestPayoutFrequency: string | null;
@@ -2444,6 +2594,7 @@ export default async function Home({
         const lot = {
           id: entry.id,
           fundName,
+          depositProductId: entry.depositProductId ?? null,
           maturityDate,
           maturityAction: entry.depositMaturityAction ?? null,
           interestPayoutFrequency: entry.depositInterestPayoutFrequency ?? null,
@@ -2538,18 +2689,34 @@ export default async function Home({
           return sourceEntry?.fundNav != null ? toNumber(sourceEntry.fundNav) : null;
         })();
         const startDate = toYmdOrNull(sourceEntry?.date);
-        // Renewed lots: interest accrues from the latest renewal (effective) date,
-        // stored on the buy record's otherwise-unused fundConfirmDate slot.
-        const interestStartDate = toYmdOrNull(sourceEntry?.fundConfirmDate) ?? startDate;
+        // 已取利息 = 关联到本存单的利息收入记录合计（income 侧；transfer 侧是同一笔
+        // 利息的资金搬家，不算入取息金额）。七版口径：预计利息=总利息−已取。
+        const payoutEntryById = new Map((ordinaryInterestPool ?? []).map((e) => [e.id, e] as const));
+        let takenInterest = 0;
+        for (const id of lot.relatedEntryIds) {
+          const e = payoutEntryById.get(id);
+          if (!e || e.deletedAt) continue;
+          if (e.type !== "income" || e.source !== "deposit") continue;
+          takenInterest += Math.abs(toNumber(e.amount));
+        }
+        takenInterest = Number(takenInterest.toFixed(2));
         const expectedInterest =
           lot.remainingAmount > 0.0001
-            ? calcDepositExpectedInterest({
-                principal: originalAmount,
-                annualRate,
-                startDate: interestStartDate,
-                maturityDate: lot.maturityDate,
-                today: formatDateUtc(new Date()),
-              })
+            ? (() => {
+                // 总利息从「原起存日」算到到期日（续存不重置口径——续存前已取的
+                // 利息也在同一总额里），按计息方式选公式；预计 = 总利息 − 已取。
+                const total = calcDepositTotalInterest({
+                  principal: originalAmount,
+                  annualRate,
+                  startDate,
+                  maturityDate: lot.maturityDate,
+                  today: formatDateUtc(new Date()),
+                  interestCalcBasis: lot.interestCalcBasis ?? null,
+                  payoutFrequency: lot.interestPayoutFrequency ?? null,
+                });
+                if (total == null) return null;
+                return Number(Math.max(total - takenInterest, 0).toFixed(2));
+              })()
             : null;
         return {
           id: lot.id,
@@ -2563,6 +2730,7 @@ export default async function Home({
             .filter(Boolean)
             .join(" · "),
           fundName: lot.fundName,
+          depositProductId: lot.depositProductId ?? sourceEntry?.depositProductId ?? null,
           startDate,
           maturityDate: lot.maturityDate,
           maturityAction: lot.maturityAction,
@@ -2572,6 +2740,7 @@ export default async function Home({
           status: lot.remainingAmount > 0.0001 ? "open" as const : "closed" as const,
           annualRate,
           expectedInterest,
+          takenInterest,
           depositAccountId: lot.depositAccountId,
           depositAccountLabel: lot.depositAccountName,
           relatedEntryIds: lot.relatedEntryIds,
@@ -2624,6 +2793,7 @@ export default async function Home({
       label: lot.label,
       subLabel: lot.subLabel,
       fundName: lot.fundName,
+      depositProductId: lot.depositProductId ?? null,
       startDate: lot.startDate,
       maturityDate: lot.maturityDate,
       remainingAmount: lot.remainingAmount,
@@ -2641,6 +2811,7 @@ export default async function Home({
       : selectedAccountDisplayValue;
   const showDerivedViewHeaderAmount =
     !!currentInvestData ||
+    (view === "investbond" && !!investbondData) ||
     (view === "investstock" && !!investstockData) ||
     (view === "investproperty" && !!investpropertyFilteredData) ||
     (view === "insurance" && !!selectedAccount) ||
@@ -2696,6 +2867,15 @@ export default async function Home({
           ?? investmentAccountOptions.find((account) => account.investProductType === "wealth")?.id
           ?? ""
         : investmentAccountOptions.find((account) => account.investProductType === "wealth")?.id ?? "";
+  // 债券入口的默认账户：优先当前选中账户本身（bond 类型），其次同机构的债券账户，再次任意债券账户。
+  const defaultBondAccountForSelectedInstitution =
+    selectedAccount && isPureInvestmentAccount(selectedAccount) && selectedAccount.investProductType === "bond"
+      ? selectedAccount.id
+      : selectedAccount?.institutionId
+        ? investmentAccountOptions.find((account) => account.investProductType === "bond" && account.institutionId === selectedAccount.institutionId)?.id
+          ?? investmentAccountOptions.find((account) => account.investProductType === "bond")?.id
+          ?? ""
+        : investmentAccountOptions.find((account) => account.investProductType === "bond")?.id ?? "";
   // Keep the server/client boundary plain: Prisma Decimal/Date fields and
   // relation objects are not serializable as client component props.
   const selectedAccountEditData = selectedAccount
@@ -2775,7 +2955,9 @@ export default async function Home({
                             ? "metal"
                             : selectedAccount?.investProductType === "wealth"
                               ? "wealth"
-                              : "investment"
+                              : selectedAccount?.investProductType === "bond"
+                                ? "bond"
+                                : "investment"
                         )
                       : view === "regularinvest"
                         ? "regular-task"
@@ -2805,6 +2987,7 @@ export default async function Home({
                   defaultPropertyAccountId: defaultPropertyInvestmentAccountId,
                   defaultMetalAccountId: defaultMetalInvestmentAccountId,
                   defaultWealthAccountId: defaultWealthAccountForSelectedInstitution,
+                  defaultBondAccountId: defaultBondAccountForSelectedInstitution,
                   defaultDepositAccountId: isDepositView ? defaultDepositAccountForSelectedInstitution : "",
                   // 「存款」入口一律默认新建存入（buy）。曾按「存款视图 + 存在未到期存单」
                   // 自动切成 redeem，导致存款视图里点右上角「存款」打开的是「取出」界面，
@@ -2856,6 +3039,7 @@ export default async function Home({
                   { key: "property", label: t("entry.kind.property") },
                   { key: "metal", label: t("entry.kind.metal") },
                   { key: "wealth", label: t("entry.kind.wealth") },
+                  { key: "bond", label: t("entry.kind.bond") },
                   { key: "deposit", label: t("entry.kind.deposit") },
                   { key: "insurance", label: t("entry.kind.insurance") },
                   { key: "debt", label: t("entry.kind.debt"), disabled: cashAccountList.length === 0 },
@@ -3036,6 +3220,30 @@ export default async function Home({
                 createAction={createTransaction}
                 editAction={editInvestment}
               />
+              <BondFormModal
+                mode="create"
+                accountId={selectedAccount?.id ?? investmentAccountOptions[0]?.id ?? ""}
+                cashAccounts={cashAccountList}
+                investmentAccounts={investmentAccountOptions}
+                cashAccountSSOptions={cashAccountSSOptions}
+                investmentAccountSSOptions={investmentAccountSSOptions}
+                bondLotOptions={bondLotOptions}
+                nestedFieldData={nestedFieldData}
+                createAction={createTransaction}
+                editAction={editInvestment}
+              />
+              <BondFormModal
+                mode="edit"
+                accountId={selectedAccount?.id ?? investmentAccountOptions[0]?.id ?? ""}
+                cashAccounts={cashAccountList}
+                investmentAccounts={investmentAccountOptions}
+                cashAccountSSOptions={cashAccountSSOptions}
+                investmentAccountSSOptions={investmentAccountSSOptions}
+                bondLotOptions={bondLotOptions}
+                nestedFieldData={nestedFieldData}
+                createAction={createTransaction}
+                editAction={editInvestment}
+              />
               <DepositFormModal
                 mode="create"
                 accountId={selectedAccount?.id ?? investmentAccountOptions[0]?.id ?? ""}
@@ -3116,17 +3324,23 @@ export default async function Home({
               />
               <DebtTransactionModal
                 dialogType="loan"
-                debtAccounts={debtAccounts.filter((account) => !!account.institutionId && !account.counterpartyId).map((account) => ({
+                debtAccounts={debtAccounts.filter((account) =>
+                  // 其他贷款（2026-09-19）：可挂机构或往来对象，都可能需要还款入口；
+                  // 机构贷款仍要求有机构且不挂往来对象。
+                  account.loanType === "other" ||
+                  (!!account.institutionId && !account.counterpartyId)
+                ).map((account) => ({
                   id: account.id,
                   kind: account.kind,
                   label: debtAccountLabelById.get(account.id) ?? account.name,
                   subLabel: account.Institution?.name ? t("liabilities.institutionDeal") : t("account.kind.loan"),
                   institutionId: account.institutionId ?? null,
-                  counterpartyId: null,
-                  institutionType: account.Institution?.type ?? null,
+                  counterpartyId: account.counterpartyId ?? null,
+                  institutionType: account.Institution?.type ?? account.Counterparty?.type ?? null,
                   // Keep filtering aligned with /api/v1/debt/repayable-loan-accounts:
                   // institution-backed loans have an institution and no counterparty,
                   // and both bank and debt institutions can be repaid.
+                  // 其他贷款挂往来对象时 isInstitutionLoan=false，还款列表靠 kind=loan 放行。
                   isInstitutionLoan: !!account.institutionId && !account.counterpartyId,
                   isConsumerLoan: account.isConsumerLoan === true,
                   debtDirection: account.debtDirection ?? null,
@@ -3356,6 +3570,19 @@ export default async function Home({
               lastUsedCashAccount={lastUsedCashAccount}
               isRedUp={isRedUp}
               fundUnitsDecimals={fundUnitsDecimals}
+            />
+          ) : view === "investbond" && investbondData ? (
+            <BondShell
+              key={`investbond-${accountId}`}
+              accountId={accountId}
+              accountLabel={selectedAccountLabel}
+              institutionName={selectedAccount?.Institution?.name ?? ""}
+              lots={investbondData.lots}
+              entries={bondShellEntries}
+              totalPrincipal={investbondData.totalPrincipal}
+              totalPaidInterest={investbondData.totalPaidInterest}
+              totalExpectedInterest={investbondData.totalExpectedInterest}
+              defaultCashAccountId={defaultCashAccountForSelectedInstitution}
             />
           ) : view === "investwealth" && investwealthData ? (
             <FundShell

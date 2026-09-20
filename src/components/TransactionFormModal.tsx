@@ -565,11 +565,6 @@ export function TransactionFormModal({
     [categoryList, currentCategoryType, t],
   );
 
-  /** Build hierarchical SmartSelect options for category dropdown.
-   * All real categories are selectable. Categories with children are collapsible
-   * groups, and their caret toggles expansion without taking away selection.
-   */
-
   useEffect(() => {
     const nextCategoryList = txType === "income" ? incomeCategories : txType === "advance" ? (advanceCategories ?? []) : expenseCategories;
     const fallback = editCategoryFallback && editCategoryFallback.type === currentCategoryType
@@ -803,17 +798,12 @@ export function TransactionFormModal({
     if (accountVisibleOptionIds) {
       base = base.filter((option) => accountVisibleOptionIds.has(option.id));
     }
-    // 贷款 / 定期存款 / 基金资金 / 股票资金 / 基金持仓是硬排除，不受「账户下拉限制类型」开关影响。
+    // 贷款 / 基金资金 / 股票资金 / 基金持仓是硬排除，不受「账户下拉限制类型」开关影响。
+    // 存款账户（2026-09-18 用户口径）：也放行——分类在提交时校验白名单（利息收入/
+    // 利息支出、手续费）。
     const filtered = base.filter((option) => option.isHeader || option.isGroup || isIncomeExpensePostingOrDepositAccount(option));
-    // 但「当前编辑记录的落账账户」必须保留：存款利息收入等历史记录的落账账户就是
-    // 定期存款账户，本身不在普通收支候选里；若被过滤掉，编辑弹窗的账户框会显示为空。
-    // 只对编辑态放行，新建时仍硬排除（避免新建就能选到存款账户）。
-    if (editEntryId && accountId && !filtered.some((option) => option.id === accountId)) {
-      const selected = base.find((option) => option.id === accountId);
-      if (selected) return sortByAccountUsage([...filtered, selected], accountUsage);
-    }
     return sortByAccountUsage(filtered, accountUsage);
-  }, [accountSSOptionsFiltered, accountList, accountUsage, accountVisibleOptionIds, editEntryId, accountId]);
+  }, [accountSSOptionsFiltered, accountList, accountUsage, accountVisibleOptionIds, accountId]);
   // 代付资金侧硬排除贷款/往来款，不受「账户下拉限制类型」开关影响。
   const advanceCashAccountOptions = useMemo(
     () => displayAccountOptions.filter((option) => option.isHeader || option.isGroup || isAdvanceFundingAccount(option)),
@@ -1163,11 +1153,10 @@ export function TransactionFormModal({
     };
 
     if (operation === "investment") {
-      const productType = targetAccount?.investProductType === "metal"
-        ? "metal"
-        : targetAccount?.investProductType === "money"
-          ? "money"
-          : "fund";
+      const targetProductType = targetAccount?.investProductType;
+      const productType = targetProductType === "metal" || targetProductType === "money"
+        ? targetProductType
+        : "fund";
       window.dispatchEvent(new CustomEvent("mmh:investment:create", {
         detail: {
           ...baseDetail,
@@ -1692,7 +1681,7 @@ export function TransactionFormModal({
   ]);
 
   useEffect(() => {
-    if (!open || (txType !== "expense" && txType !== "income") || postedAtEdited) return;
+    if (!open || (txType !== "expense" && txType !== "income" && txType !== "transfer") || postedAtEdited) return;
     setPostedAt(toDateInputValue(date || today));
   }, [date, open, postedAtEdited, today, txType]);
 
@@ -1798,7 +1787,7 @@ export function TransactionFormModal({
         const formData = new FormData(e.currentTarget);
         formData.set("type", txType);
         formData.set("date", date);
-        if (txType === "expense" || txType === "income") formData.set("postedAt", postedAt);
+        if (txType === "expense" || txType === "income" || txType === "transfer") formData.set("postedAt", postedAt);
         formData.set("amount", String(dialogAmountToStoredAmount(txType, amount)));
         formData.set("note", note);
         formData.set("toNote", txType === "transfer" ? note : "");
@@ -1976,7 +1965,7 @@ export function TransactionFormModal({
       formData = new FormData();
       formData.set("type", txType);
       formData.set("date", date);
-      if (txType === "expense" || txType === "income") formData.set("postedAt", postedAt);
+      if (txType === "expense" || txType === "income" || txType === "transfer") formData.set("postedAt", postedAt);
       formData.set("amount", String(dialogAmountToStoredAmount(txType, amount)));
       formData.set("note", note);
       formData.set("toNote", txType === "transfer" ? note : "");
@@ -2095,6 +2084,7 @@ export function TransactionFormModal({
             },
             { key: "investment", label: t("txForm.fundMetal"), disabled: !showInvestment },
             { key: "wealth", label: t("investment.product.wealth") },
+            { key: "bond", label: t("entry.kind.bond") },
             { key: "deposit-buy", label: t("txForm.depositIn") },
             { key: "insurance", label: t("account.kind.insurance") },
           ]}
@@ -2965,10 +2955,23 @@ export function TransactionFormModal({
                     </div>
                   )}
 
-                  {/* Row 3: amount */}
-                  <div className="space-y-1">
-                    <div className="form-label">{t("txForm.amount")}</div>
-                    <CalcInput ref={amountInputRef} value={amount} onChange={setAmount} placeholder={t("txForm.amountExample")} label={t("txForm.amount")} precision={2} />
+                  {/* Row 3: posted date | amount */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="form-label">{t("detail.column.postedAt")}</div>
+                      <DateStepper
+                        value={postedAt}
+                        onChange={(value) => {
+                          setPostedAt(toDateInputValue(value));
+                          setPostedAtEdited(true);
+                        }}
+                        className="form-input"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">{t("txForm.amount")}</div>
+                      <CalcInput ref={amountInputRef} value={amount} onChange={setAmount} placeholder={t("txForm.amountExample")} label={t("txForm.amount")} precision={2} />
+                    </div>
                   </div>
 
                   {/* Row 4: note + attachment */}
