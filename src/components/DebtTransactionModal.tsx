@@ -48,6 +48,7 @@ import {
 import { formatLoanRecalculateSuccessMessage } from "@/lib/loan-repayment-recalculate-result";
 import { DEFAULT_LOAN_PREPAY_STRATEGY, type LoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
 import { isHomeLoanType, LOAN_TYPES, resolveLoanTypeValue, type LoanTypeValue } from "@/lib/loan-type";
+import { allowsDebtInterest, swapDebtFlowDirection } from "@/lib/debt";
 import {
   decodeScheduledTaskMemo,
   getLoanScheduledPlanRole,
@@ -987,10 +988,11 @@ export function DebtTransactionModal({
           setAutoDebit(false);
           setAutoDebitFirstDate(addMonthsInput(today, 1));
         } else {
-          setLoanFundingMode("financed_purchase");
+          // 其他贷款：默认现金放款（入账资金账户），借款资金进用户选的资金账户。
+          setLoanFundingMode("cash_disbursement");
           setRepaymentMethod(EQUAL_PAYMENT_REPAYMENT_METHOD);
           setLoanTotalRuns("300");
-          setAutoDebit(effectiveLoanType === "home");
+          setAutoDebit(false);
           setAutoDebitFirstDate(addMonthsInput(today, 1));
         }
       } else if (detail?.mode === "repay_out" || detail?.mode === "prepay_out") {
@@ -1247,6 +1249,7 @@ export function DebtTransactionModal({
   function handleModeSelect(nextMode: DebtMode) {
     if (editingEntryId && !canSwitchDebtEditMode(mode, nextMode)) return;
     setMode(nextMode);
+    if (!allowsDebtInterest(nextMode)) setInterest("");
     if (principal.trim()) setPrincipal(String(parseAbsMoneyText(principal)));
     if (isLoanDialog && (nextMode === "repay_out" || nextMode === "prepay_out")) {
       setActiveLoanTab("repay_out");
@@ -1409,10 +1412,24 @@ export function DebtTransactionModal({
       window.alert(t("debtTx.alert.selectLoanDisbursementAccount"));
       return;
     }
+    // 其他贷款放宽（2026-09-19）：利率可 0；总期数 0 = 无固定还款计划，
+    // 不生成计划任务，期数/首次还款日/扣款字段全部可空。
+    const isOtherLoanBorrow = isLoanDialog && activeLoanTab === "other";
+    const otherLoanRuns = isOtherLoanBorrow ? Number.parseInt(loanTotalRuns || "0", 10) : Number.NaN;
+    const isPlanlessOtherLoanBorrow = isOtherLoanBorrow && otherLoanRuns === 0;
+    // 其他贷款现金放款：必须选择入账资金账户（贷款资金要进资金账户）。
+    if (isOtherLoanBorrow && !cashAccountId) {
+      window.alert(t("debtTx.alert.selectLoanDisbursementAccount"));
+      return;
+    }
     // 编辑借入记录不再校验/提交贷款账户名称：名称属于账户，编辑记录不重命名账户。
+    // 其他贷款（2026-09-19 定版）：现金放款，借款资金进入账资金账户（与表单字段一致）；
+    // 消费贷为代购/融资购买（资金侧不过账）；抵押贷现金放款；房贷保持现金放款口径。
     const submittedLoanFundingMode =
       isLoanDialog && mode === "borrow_in"
-        ? (isCollateralLoanBorrow ? "cash_disbursement" : "financed_purchase")
+        ? isOtherLoanBorrow || isCollateralLoanBorrow || isHomeLoanBorrow
+          ? "cash_disbursement"
+          : "financed_purchase"
         : editingEntryId && loanFundingMode === "financed_purchase"
           ? "financed_purchase"
           : "cash_disbursement";
@@ -1420,7 +1437,7 @@ export function DebtTransactionModal({
     if (requiresLoanScheduleFields) {
       const usesAutoDebit = isHomeLoanBorrow || autoDebit;
       const selectedAutoDebitCashAccountId = isCollateralLoanBorrow ? autoDebitCashAccountId : cashAccountId;
-      const allowZeroAnnualRate = allowsZeroAnnualRateRepaymentMethod(repaymentMethod);
+      const allowZeroAnnualRate = allowsZeroAnnualRateRepaymentMethod(repaymentMethod) || isOtherLoanBorrow;
       const parsedAnnualRate = annualRate.trim()
         ? allowZeroAnnualRate
           ? parseNonNegativeNumberText(annualRate)
@@ -1432,19 +1449,19 @@ export function DebtTransactionModal({
         window.alert(t("debtTx.alert.annualRateRequired"));
         return;
       }
-      if (!parsePositiveNumberText(loanTotalRuns)) {
+      if (!isPlanlessOtherLoanBorrow && !parsePositiveNumberText(loanTotalRuns)) {
         window.alert(t("debtTx.alert.totalRunsRequired"));
         return;
       }
-      if (!usesAutoDebit && (!firstBillDate || !isValidDateInput(firstBillDate))) {
+      if (isPlanlessOtherLoanBorrow) {
+        // 期数 0：跳过计划字段校验，直接走保存（服务端同样按无计划处理）。
+      } else if (!usesAutoDebit && (!firstBillDate || !isValidDateInput(firstBillDate))) {
         window.alert(t("debtTx.alert.firstBillDateRequired"));
         return;
-      }
-      if (!usesAutoDebit && (!firstRepaymentDate || !isValidDateInput(firstRepaymentDate))) {
+      } else if (!usesAutoDebit && (!firstRepaymentDate || !isValidDateInput(firstRepaymentDate))) {
         window.alert(t("debtTx.alert.firstRepaymentDateRequired"));
         return;
-      }
-      if (usesAutoDebit) {
+      } else if (usesAutoDebit) {
         if (!selectedAutoDebitCashAccountId) {
           window.alert(t("debtTx.alert.autoDebitAccountRequired"));
           return;
@@ -1458,6 +1475,7 @@ export function DebtTransactionModal({
     if (
       !options?.skipHistoryPrompt &&
       showBorrowPlan &&
+      !isPlanlessOtherLoanBorrow &&
       submittedLoanFundingMode !== "financed_purchase" &&
       shouldPromptHistoricalRepayments({
         mode,
@@ -1567,7 +1585,7 @@ export function DebtTransactionModal({
     formData.set("loanTotalRuns", loanTotalRuns);
     formData.set("firstBillDate", isHomeLoanBorrow ? "" : firstBillDate);
     formData.set("firstRepaymentDate", submittedFirstRepaymentDate);
-    formData.set("createRepaymentPlan", showBorrowPlan && isFixedRepaymentMethod ? "true" : "false");
+    formData.set("createRepaymentPlan", showBorrowPlan && isFixedRepaymentMethod && !isPlanlessOtherLoanBorrow ? "true" : "false");
     formData.set("autoDebit", submittedAutoDebit ? "true" : "false");
     formData.set("autoDebitFirstDate", submittedAutoDebit ? autoDebitFirstDate : "");
     formData.set(
@@ -1700,9 +1718,8 @@ export function DebtTransactionModal({
     ?? null;
   const selectedDebtAccountIsBankLoan = !!selectedDebtAccount?.institutionId && selectedDebtAccount.institutionType === "bank";
   const selectedDebtAccountIsConsumerLoan = selectedDebtAccount?.isConsumerLoan === true;
-  // 往来款单界面：利息不再按方向禁用（资金→往来款也可能是"还款"，需要付息），
-  // 因此非贷款弹窗的 borrow_in 也显示利息字段；贷款弹窗保持原样。
-  const showInterest = mode === "repay_out" || mode === "collect_in" || mode === "lend_out" || (!isLoanDialog && mode === "borrow_in");
+  // 还回/还出才显示利息；借入/借出没有利息（提交时强制 0）。
+  const showInterest = allowsDebtInterest(mode) && mode !== "prepay_out";
   const showPrepayment = mode === "prepay_out";
   const isLoanRepaymentMode = isLoanDialog && (mode === "repay_out" || mode === "prepay_out");
   const canCreateDebtItem = canCreateDebtItemForMode(mode);
@@ -1713,26 +1730,17 @@ export function DebtTransactionModal({
   const debtSideIsOut = mode === "borrow_in" || mode === "collect_in";
   // 往来款单界面（非贷款弹窗）启用「流出/流入 + 三者互推」的新交互
   const isFlowDebt = !isLoanDialog;
-  // 往来款口径（用户定版）：由「资金流方向 + 是否含利息」唯一确定语义 ——
-  //   资金流出 · 无息 = 借出款 lend_out / 资金流出 · 含息 = 应付还款 repay_out
-  //   资金流入 · 无息 = 借入款 borrow_in / 资金流入 · 含息 = 应收还款 collect_in
-  // 债务账户在流出侧（debtSideIsOut）时钱进资金账户 = 资金流入，反之即流出。
   function resolveFlowMode(hasInterest: boolean): DebtMode {
     if (debtSideIsOut) return hasInterest ? "collect_in" : "borrow_in";
     return hasInterest ? "repay_out" : "lend_out";
   }
+  const flowTab = mode === "repay_out" || mode === "collect_in" ? "repay" : "borrow";
   /**
-   * 交换「流出/流入」：把债务账户从当前一侧换到另一侧（只改方向，不改利息）。
-   * 注意不能用 resolveFlowMode —— 那是按【当前】方向算语义的，
-   * 拿它来"交换"会算出原来那个 mode，等于什么都没做（曾因此按钮点了没反应）。
+   * 交换「流出/流入」：只翻资金流方向，保留本金往来 vs 还本付息。
+   * 借入↔借出、还回↔还出；不能靠利息有无改语义。
    */
   function swapDebtDirection() {
-    const hasInterest = parseMoneyText(interest) > 0;
-    setMode(
-      debtSideIsOut
-        ? (hasInterest ? "repay_out" : "lend_out")     // 债务在流出侧 → 换到流入侧
-        : (hasInterest ? "collect_in" : "borrow_in"),  // 债务在流入侧 → 换到流出侧
-    );
+    setMode(swapDebtFlowDirection(mode));
   }
   // 三者互推：改本金或利息 → 总额随派生值走；直接改总额 → 反推本金（利息不变）。
   function handleFlowPrincipalChange(next: string) {
@@ -1742,8 +1750,6 @@ export function DebtTransactionModal({
   function handleFlowInterestChange(next: string) {
     setInterest(next);
     if (flowTotalManual) setFlowTotalManual(false);
-    // 利息的有无决定语义（借出款↔应付还款 / 借入款↔应收还款），填了就同步 mode。
-    setMode(resolveFlowMode(parseMoneyText(next) > 0));
   }
   function handleFlowTotalChange(next: string) {
     setFlowTotalDraft(next);
@@ -1982,7 +1988,8 @@ export function DebtTransactionModal({
   }, [mode, selectedDebtObjectIsCounterparty]);
   useEffect(() => {
     if (isLoanBorrow) {
-      const expectedFundingMode = activeLoanTab === "mortgage" ? "cash_disbursement" : "financed_purchase";
+      // 其他贷款默认现金放款（入账资金账户）；房贷/抵押贷为现金放款；消费贷为代购。
+      const expectedFundingMode = activeLoanTab === "consumer" ? "financed_purchase" : "cash_disbursement";
       if (loanFundingMode !== expectedFundingMode) setLoanFundingMode(expectedFundingMode);
       return;
     }
@@ -2106,7 +2113,9 @@ export function DebtTransactionModal({
       const account = localDebtAccounts.find((item) => item.id === row.accountId);
       // The API already restricts rows to loan accounts. Some callers build
       // AccountOption without kind, so checking it here would silently empty the list.
-      if (!account || account.isInstitutionLoan !== true) return [];
+      // 其他贷款（2026-09-19）：可能挂往来对象而非机构（此时 loanType 未透出），
+      // API 行本身即"该日期仍有欠款的贷款账户"，kind=loan 即可放行。
+      if (!account || account.kind !== "loan") return [];
       const balance = Math.abs(row.balance);
         return {
           id: account.id,
@@ -2166,7 +2175,7 @@ export function DebtTransactionModal({
     const principalAmount = parseAbsMoneyText(principal);
     const totalRuns = Number.parseInt(loanTotalRuns || "0", 10);
     const intervalMonths = Number.parseInt(repaymentIntervalMonths || "1", 10);
-    const allowZeroAnnualRate = allowsZeroAnnualRateRepaymentMethod(repaymentMethod);
+    const allowZeroAnnualRate = allowsZeroAnnualRateRepaymentMethod(repaymentMethod) || activeLoanTab === "other";
     const baseAnnualRate = annualRate.trim() ? Number(annualRate) : allowZeroAnnualRate ? 0 : NaN;
     if (
       !firstRunDate ||
@@ -2206,6 +2215,7 @@ export function DebtTransactionModal({
       hasRateAdjustments: adjustments.length > 0,
     };
   }, [
+    activeLoanTab,
     annualRate,
     autoDebit,
     autoDebitFirstDate,
@@ -2273,7 +2283,7 @@ export function DebtTransactionModal({
 
   const renderDateField = () => (
     <div className="space-y-1">
-      <div className="form-label">{isLoanRepaymentMode ? t("debtTx.date.repayment") : mode === "borrow_in" ? (isLoanBorrow ? t("debtTx.date.occurred") : t("detail.column.postedAt")) : t("detail.column.date")}</div>
+      <div className="form-label">{isLoanRepaymentMode ? t("debtTx.date.repayment") : isLoanBorrow ? t("debtTx.date.occurred") : t("detail.column.date")}</div>
       <DateStepper
         name="date"
         value={date}
@@ -2702,10 +2712,15 @@ export function DebtTransactionModal({
 
   const renderLoanTotalRunsField = () => (
     <div className="space-y-1">
-      <div className="form-label">{t("debtTx.totalRuns")} <span className="text-red-500">*</span></div>
+      <div className="form-label">
+        {t("debtTx.totalRuns")}
+        {isLoanBorrow && activeLoanTab === "other"
+          ? <span className="text-slate-400"> {t("debtTx.totalRuns.optionalZeroHint")}</span>
+          : <span className="text-red-500"> *</span>}
+      </div>
       <input
         type="number"
-        min={1}
+        min={isLoanBorrow && activeLoanTab === "other" ? 0 : 1}
         max={600}
         value={loanTotalRuns}
         disabled={isLoanBorrowEditLocked}
@@ -2722,7 +2737,7 @@ export function DebtTransactionModal({
     <div className="space-y-1">
       <div className="form-label">
         {t("debtShell.rateAdjust.annualRateLabel")}
-        {allowsZeroAnnualRateRepaymentMethod(repaymentMethod) ? (
+        {allowsZeroAnnualRateRepaymentMethod(repaymentMethod) || (isLoanBorrow && activeLoanTab === "other") ? (
           <span className="text-slate-400"> {t("stockFee.optional")}</span>
         ) : (
           <span className="text-red-500"> *</span>
@@ -2734,7 +2749,7 @@ export function DebtTransactionModal({
           setAnnualRateManuallyEdited(true);
           setAnnualRate(event.target.value);
         }}
-        placeholder={allowsZeroAnnualRateRepaymentMethod(repaymentMethod) ? "0" : t("debtTx.placeholder.exampleAnnualRate")}
+        placeholder={allowsZeroAnnualRateRepaymentMethod(repaymentMethod) || (isLoanBorrow && activeLoanTab === "other") ? "0" : t("debtTx.placeholder.exampleAnnualRate")}
         inputMode="decimal"
         className="form-input"
       />
@@ -2850,6 +2865,24 @@ export function DebtTransactionModal({
                       </>
                     ) : (
                       <>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleModeSelect(resolveFlowMode(false))}
+                            disabled={!!editingEntryId && !canSwitchDebtEditMode(mode, resolveFlowMode(false))}
+                            className={`segment-button h-9 ${flowTab === "borrow" ? "segment-button-active" : ""}`}
+                          >
+                            {t("debtTx.flow.borrow")}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleModeSelect(resolveFlowMode(true))}
+                            disabled={!!editingEntryId && !canSwitchDebtEditMode(mode, resolveFlowMode(true))}
+                            className={`segment-button h-9 ${flowTab === "repay" ? "segment-button-active" : ""}`}
+                          >
+                            {t("debtTx.flow.repay")}
+                          </button>
+                        </div>
                         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                           {renderDebtObjectField()}
                           {renderDateField()}
@@ -2931,7 +2964,7 @@ export function DebtTransactionModal({
                       ) : null}
                       {showInterest && !showPrepayment ? (
                         <div className="space-y-1">
-                            <div className="form-label">{mode === "lend_out" ? t("debtTx.receivableTotal") : t("debtTx.principalInterestTotal")}</div>
+                            <div className="form-label">{t("debtTx.principalInterestTotal")}</div>
                           {isFlowDebt ? (
                             <CalcInput
                               value={flowTotalManual ? flowTotalDraft : repaymentTotal}
@@ -3064,8 +3097,10 @@ export function DebtTransactionModal({
                             {renderRepaymentMethodField()}
                           </div>
                         ) : (
+                          // 其他贷款：固定资产开关独占一行；入账资金账户 + 还款方式同行（资金账户在前）。
                           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                            {renderLoanFixedAssetField()}
+                            <div className="sm:col-span-2">{renderLoanFixedAssetField()}</div>
+                            {renderCashAccountField({ label: t("debtTx.otherLoan.disbursementAccount") })}
                             {renderRepaymentMethodField()}
                           </div>
                         )}
@@ -3274,6 +3309,19 @@ export function DebtTransactionModal({
                             {t("debtTx.freeRepaymentHint")}
                           </div>
                         )}
+
+                        <div className="space-y-1">
+                          <div className="form-label">{t("detail.column.remark")}</div>
+                          <ClearableNoteField
+                            name="note"
+                            placeholder={t("stockFee.optional")}
+                            value={note}
+                            disabled={isLoanBorrowEditLocked}
+                            readOnly={isLoanBorrowEditLocked}
+                            onValueChange={isLoanBorrowEditLocked ? () => {} : setNote}
+                            className="form-input"
+                          />
+                        </div>
 
                       </>
                     ) : null}

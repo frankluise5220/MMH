@@ -37,8 +37,8 @@ import { releaseMortgagedAssetsForSettledLoanAccounts } from "@/lib/server/colla
 import { ACTIVE_DEBT_EPSILON } from "@/lib/server/debt-view-data";
 import { assertAccountIdentityUnique } from "@/lib/server/account-identity-unique";
 import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
-import { isLoanOrSettlementAccountKind } from "@/lib/debt";
-import { isCollateralLoanType, isHomeLoanType, normalizeLoanType, type LoanTypeValue } from "@/lib/loan-type";
+import { debtInterestAmountForRecord, debtRealizedProfitForRecord, isLoanOrSettlementAccountKind } from "@/lib/debt";
+import { isCollateralLoanType, isHomeLoanType, isOtherLoanType, normalizeLoanType, type LoanTypeValue } from "@/lib/loan-type";
 
 const SETTLEMENT_ACCOUNT_SUFFIX = "\u7684\u5f80\u6765\u6b3e";
 const SETTLEMENT_GROUP_NAME = "\u5f80\u6765\u6b3e";
@@ -325,6 +325,8 @@ export async function createDebtTransaction(formData: FormData) {
   const submittedAutoDebit = String(formData.get("autoDebit") ?? "true") !== "false";
   const isHomeLoanTypeValue = loanType != null && isHomeLoanType(loanType);
   const isCollateralLoanTypeValue = loanType != null && isCollateralLoanType(loanType);
+  // 其他贷款放宽：利率可 0、期数可 0（期数 0 = 无固定还款计划，不建计划任务）。
+  const isOtherLoanTypeValue = loanType != null && isOtherLoanType(loanType);
   const autoDebit = isHomeLoanTypeValue ? true : submittedAutoDebit;
   const repaymentCashAccountId = autoDebit
     ? isCollateralLoanTypeValue ? autoDebitCashAccountId : cashAccountId
@@ -352,7 +354,16 @@ export async function createDebtTransaction(formData: FormData) {
   let recalculateAfterSave: { accountId: string; startDate: string } | null = null;
   const isFinancedPurchase = mode === "borrow_in" && loanFundingMode === "financed_purchase";
   const allowsMissingCashAccount = isFinancedPurchase && autoDebit === false;
-  const allowsZeroAnnualRate = allowsZeroAnnualRateRepaymentMethod(repaymentMethod);
+  const allowsZeroAnnualRate = allowsZeroAnnualRateRepaymentMethod(repaymentMethod) || isOtherLoanTypeValue;
+  // 其他贷款期数 0 = 不生成计划任务；其余类型期数仍必须大于 0。
+  const loanTotalRuns =
+    Number.isFinite(loanTotalRunsRaw) && loanTotalRunsRaw >= (isOtherLoanTypeValue ? 0 : 1)
+      ? loanTotalRunsRaw
+      : Number.isFinite(loanYearsRaw) && loanYearsRaw > 0
+        ? loanYearsRaw * 12
+        : isOtherLoanTypeValue
+          ? 0
+          : NaN;
 
   if (!["borrow_in", "repay_out", "prepay_out", "lend_out", "collect_in"].includes(mode)) {
     return { ok: false as const, error: "操作类型不正确" };
@@ -375,23 +386,24 @@ export async function createDebtTransaction(formData: FormData) {
   if (repaymentCashAccountId && debtAccountId && debtAccountId === repaymentCashAccountId) {
     return { ok: false as const, error: "Loan account and debit account cannot be the same" };
   }
-  if (principalAbs <= 0) {
-    return { ok: false as const, error: "请输入正确的金额" };
-  }
-  // 提前还款允许携带应计利息（借款日至提前还款日，前端按消费贷自动算出，可修改）。
-  const interest = rawInterest;
+  // 还回利息=收入，还出/提前还款利息=支出；借入/借出强制无利息（提交了也清零）。
+  const interest = debtInterestAmountForRecord(mode, rawInterest);
   if (interest < 0) {
     return { ok: false as const, error: "利息不能小于 0" };
   }
   if (penalty < 0) {
     return { ok: false as const, error: "手续费不能小于 0" };
   }
+  // 「先返息、最终付本金」：返还（repay_out）/ 收回（collect_in）允许本金为 0、
+  // 只还/只收利息（或手续费），但总额必须大于 0。借入/借出/提前还款本身是
+  // 本金事件，本金仍必须大于 0；全部为 0 的空记录也在此拒绝。
+  // 落账口径不变：资金侧走本息合计，债务账户余额只累计本金
+  // （debtPrincipalAmount=0 不动余额），利息单独进 realizedProfit 收支。
+  if (principalAbs <= 0 && !((mode === "repay_out" || mode === "collect_in") && interest + penalty > 0)) {
+    return { ok: false as const, error: "请输入正确的金额" };
+  }
   const debtPrincipalForRecord = principalAbs;
-  // 利息收支方向按资金流方向判定：钱进资金账户（收回 / 借入）= 利息收入；
-  // 钱出资金账户（借出 / 还款 / 提前还款）= 利息支出。
-  const realizedProfitForRecord = interest > 0
-    ? (mode === "collect_in" || mode === "borrow_in" ? Math.abs(interest) : -Math.abs(interest))
-    : null;
+  const realizedProfitForRecord = debtRealizedProfitForRecord(mode, interest);
 
   const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
   const mortgageLprDiscount = isHomeLoanTypeValue && mortgageLprDiscountRaw
@@ -438,12 +450,6 @@ export async function createDebtTransaction(formData: FormData) {
   if (autoDebitFirstDateStr && !autoDebitFirstDate) return { ok: false as const, error: "Invalid auto-debit date" };
   const repaymentIntervalMonths =
     Number.isFinite(repaymentIntervalMonthsRaw) && repaymentIntervalMonthsRaw > 0 ? repaymentIntervalMonthsRaw : 1;
-  const loanTotalRuns =
-    Number.isFinite(loanTotalRunsRaw) && loanTotalRunsRaw > 0
-      ? loanTotalRunsRaw
-      : Number.isFinite(loanYearsRaw) && loanYearsRaw > 0
-        ? loanYearsRaw * 12
-        : NaN;
   const isFixedRepaymentMethod = FIXED_LOAN_REPAYMENT_METHODS.has(repaymentMethod);
   const calculatedPlanAmount = calculateLoanPlanAmount({
     principal: principalAbs,
@@ -461,23 +467,27 @@ export async function createDebtTransaction(formData: FormData) {
     if (!Number.isFinite(repaymentIntervalMonths) || repaymentIntervalMonths <= 0) {
       return { ok: false as const, error: "固定还款方式需要填写还款周期" };
     }
-    if (!Number.isFinite(loanTotalRuns) || loanTotalRuns <= 0) {
+    // 其他贷款期数 0 = 无固定还款计划（不生成计划任务），跳过计划相关校验。
+    const isPlanlessOtherLoan = isOtherLoanTypeValue && loanTotalRuns === 0;
+    if (!isPlanlessOtherLoan && (!Number.isFinite(loanTotalRuns) || loanTotalRuns <= 0)) {
       return { ok: false as const, error: "固定还款方式需要填写总期数" };
     }
-    if (!firstRepaymentDate) {
-      return { ok: false as const, error: "固定还款方式需要填写首次还款日" };
-    }
-    if (!autoDebit && !firstBillDate) {
-      return { ok: false as const, error: "A manual-payment loan requires a first bill date" };
-    }
-    if (autoDebit && !repaymentCashAccountId) {
-      return { ok: false as const, error: "Auto-debit requires a debit account" };
-    }
-    if (autoDebit && !autoDebitFirstDate) {
-      return { ok: false as const, error: "Auto-debit requires a debit date" };
-    }
-    if (!repaymentPlanAmount || repaymentPlanAmount <= 0) {
-      return { ok: false as const, error: "无法计算计划还款金额，请检查借款总额、利率和期数" };
+    if (!isPlanlessOtherLoan) {
+      if (!firstRepaymentDate) {
+        return { ok: false as const, error: "固定还款方式需要填写首次还款日" };
+      }
+      if (!autoDebit && !firstBillDate) {
+        return { ok: false as const, error: "A manual-payment loan requires a first bill date" };
+      }
+      if (autoDebit && !repaymentCashAccountId) {
+        return { ok: false as const, error: "Auto-debit requires a debit account" };
+      }
+      if (autoDebit && !autoDebitFirstDate) {
+        return { ok: false as const, error: "Auto-debit requires a debit date" };
+      }
+      if (!repaymentPlanAmount || repaymentPlanAmount <= 0) {
+        return { ok: false as const, error: "无法计算计划还款金额，请检查借款总额、利率和期数" };
+      }
     }
   }
   if ((mode === "repay_out" || mode === "prepay_out") && debtAccountId) {
@@ -623,27 +633,36 @@ export async function createDebtTransaction(formData: FormData) {
           orderBy: [{ status: "asc" }, { nextRunDate: "asc" }],
         });
         const repaymentPlan = selectLoanSchedulePlan(repaymentPlans);
-        if (!repaymentPlan) throw new Error("LOAN_REPAYMENT_PLAN_NOT_FOUND");
-        const repaymentPlanMemo = decodeScheduledTaskMemo(repaymentPlan.memo);
-        const repaymentStartDate = repaymentPlanMemo.firstRepaymentDate
-          ? parseDateOnlyUtc(repaymentPlanMemo.firstRepaymentDate) ?? repaymentPlan.startDate
-          : repaymentPlan.startDate;
-        const repaymentPeriod = resolveLoanRepaymentPeriodForDate({
-          startDate: repaymentStartDate,
-          intervalUnit: repaymentPlan.intervalUnit,
-          intervalValue: repaymentPlan.intervalValue,
-          executionDay: repaymentPlan.executionDay,
-          secondaryExecutionDay: repaymentPlan.secondaryExecutionDay,
-          totalRuns: repaymentPlan.totalRuns,
-        }, date);
-        if (!repaymentPeriod) throw new Error("LOAN_REPAYMENT_PERIOD_NOT_FOUND");
-        if (submittedLoanRepaymentPlanId && submittedLoanRepaymentPlanId !== repaymentPlan.id) {
-          throw new Error("LOAN_REPAYMENT_PLAN_CHANGED");
+        if (!repaymentPlan) {
+          // 无还款计划的贷款（其他贷款期数 0 = 不生成计划任务）允许直接还本，
+          // 不做期数定位、不挂 planId；有计划的贷款仍按计划定位期数。
+          if (isOtherLoanType(debtAccount.loanType)) {
+            loanRepaymentLink = null;
+          } else {
+            throw new Error("LOAN_REPAYMENT_PLAN_NOT_FOUND");
+          }
+        } else {
+          const repaymentPlanMemo = decodeScheduledTaskMemo(repaymentPlan.memo);
+          const repaymentStartDate = repaymentPlanMemo.firstRepaymentDate
+            ? parseDateOnlyUtc(repaymentPlanMemo.firstRepaymentDate) ?? repaymentPlan.startDate
+            : repaymentPlan.startDate;
+          const repaymentPeriod = resolveLoanRepaymentPeriodForDate({
+            startDate: repaymentStartDate,
+            intervalUnit: repaymentPlan.intervalUnit,
+            intervalValue: repaymentPlan.intervalValue,
+            executionDay: repaymentPlan.executionDay,
+            secondaryExecutionDay: repaymentPlan.secondaryExecutionDay,
+            totalRuns: repaymentPlan.totalRuns,
+          }, date);
+          if (!repaymentPeriod) throw new Error("LOAN_REPAYMENT_PERIOD_NOT_FOUND");
+          if (submittedLoanRepaymentPlanId && submittedLoanRepaymentPlanId !== repaymentPlan.id) {
+            throw new Error("LOAN_REPAYMENT_PLAN_CHANGED");
+          }
+          if (Number.isFinite(submittedLoanRepaymentPeriod) && submittedLoanRepaymentPeriod !== repaymentPeriod.period) {
+            throw new Error("LOAN_REPAYMENT_PERIOD_CHANGED");
+          }
+          loanRepaymentLink = { planId: repaymentPlan.id, period: repaymentPeriod.period };
         }
-        if (Number.isFinite(submittedLoanRepaymentPeriod) && submittedLoanRepaymentPeriod !== repaymentPeriod.period) {
-          throw new Error("LOAN_REPAYMENT_PERIOD_CHANGED");
-        }
-        loanRepaymentLink = { planId: repaymentPlan.id, period: repaymentPeriod.period };
       }
       const settlementTransferCategory = await ensureSettlementTransferCategory(tx, householdId);
       const isMortgageBorrow = mode === "borrow_in" && isHomeLoanTypeValue;

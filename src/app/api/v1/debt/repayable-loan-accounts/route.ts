@@ -92,8 +92,13 @@ export async function GET(request: Request) {
         kind: AccountKind.loan,
         isActive: true,
         isPlaceholder: { not: true },
-        counterpartyId: null,
-        institutionId: { not: null },
+        // 其他贷款（loanType=other，2026-09-19）：允许挂往来对象或无机构，
+        // 不能因 institutionId / counterpartyId 过滤而永远无法还款。
+        OR: [
+          { institutionId: { not: null } },
+          { counterpartyId: { not: null } },
+          { loanType: "other" },
+        ],
       },
       select: {
         id: true,

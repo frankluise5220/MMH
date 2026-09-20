@@ -37,6 +37,40 @@ export function debtActionLabel(params: {
   return params.isDebtAccountFromSide ? "借入" : "还款";
 }
 
+export type DebtActivityMode = "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
+
+/** 还回/还出/提前还款才允许利息；借入/借出没有利息。 */
+export function allowsDebtInterest(mode: string | null | undefined) {
+  return mode === "repay_out" || mode === "prepay_out" || mode === "collect_in";
+}
+
+export function debtInterestAmountForRecord(mode: string | null | undefined, rawInterest: number) {
+  const interest = Math.abs(Number.isFinite(rawInterest) ? rawInterest : 0);
+  if (!allowsDebtInterest(mode) || interest <= 0) return 0;
+  return interest;
+}
+
+/**
+ * 还回利息 = 收入（正）；还出 / 提前还款利息 = 支出（负）。
+ * 借入 / 借出强制无利息。
+ */
+export function debtRealizedProfitForRecord(mode: string | null | undefined, rawInterest: number) {
+  const interest = debtInterestAmountForRecord(mode, rawInterest);
+  if (interest <= 0) return null;
+  if (mode === "collect_in") return interest;
+  if (mode === "repay_out" || mode === "prepay_out") return -interest;
+  return null;
+}
+
+/** 交换流出/流入时保留「本金往来 vs 还本付息」，不靠利息有无改语义。 */
+export function swapDebtFlowDirection(mode: DebtActivityMode): DebtActivityMode {
+  if (mode === "borrow_in") return "lend_out";
+  if (mode === "lend_out") return "borrow_in";
+  if (mode === "collect_in") return "repay_out";
+  if (mode === "repay_out") return "collect_in";
+  return mode;
+}
+
 export type DebtPrincipalEntryLike = {
   amount: unknown;
   debtPrincipalAmount?: unknown;
