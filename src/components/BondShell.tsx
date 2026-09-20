@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { ArrowDownLeft, ArrowUpRight, Landmark, Plus, SlidersHorizontal } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Landmark, SlidersHorizontal } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTableSummaryRow } from "./AdvancedDataTable";
@@ -69,7 +69,6 @@ export function BondShell({
   totalPrincipal,
   totalPaidInterest,
   totalExpectedInterest,
-  defaultCashAccountId = "",
 }: {
   accountId: string;
   accountLabel: string;
@@ -79,7 +78,6 @@ export function BondShell({
   totalPrincipal: number;
   totalPaidInterest: number;
   totalExpectedInterest: number;
-  defaultCashAccountId?: string;
 }) {
   const [selectedLotId, setSelectedLotId] = useState<string | null>(null);
   const [lotTab, setLotTab] = useState<LotTab>("held");
@@ -164,19 +162,6 @@ export function BondShell({
     setEntryAutoFit(true);
     setEntryPage(1);
   }, []);
-
-  /** 债券行「记一笔」：派发债券专用事件，由 BondFormModal 消费，只预选账户。 */
-  const openBondEntryModal = useCallback(() => {
-    window.dispatchEvent(
-      new CustomEvent("mmh:bond:create", {
-        detail: {
-          requestId: `bond-create-${accountId}-${Date.now()}`,
-          defaultCashAccountId,
-          defaultWealthAccountId: accountId,
-        },
-      }),
-    );
-  }, [accountId, defaultCashAccountId]);
 
   const moneyCell = useCallback((value: number | null, tone?: string) => (
     value == null
@@ -331,15 +316,6 @@ export function BondShell({
                       })
                     : formatText("bondShell.clearedHint", { count: clearedLots.length })}
               </span>
-              <button
-                type="button"
-                onClick={openBondEntryModal}
-                className="flex h-6 items-center gap-1 rounded border border-amber-200 bg-amber-50 px-2 text-xs font-medium text-amber-700 hover:bg-amber-100"
-                title={t("bondShell.newEntry")}
-              >
-                <Plus className="h-3.5 w-3.5" />
-                {t("bondShell.newEntry")}
-              </button>
             </div>
           </div>
           <div className="min-h-0 flex-1">

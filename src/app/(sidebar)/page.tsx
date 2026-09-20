@@ -3584,7 +3584,6 @@ export default async function Home({
               totalPrincipal={investbondData.totalPrincipal}
               totalPaidInterest={investbondData.totalPaidInterest}
               totalExpectedInterest={investbondData.totalExpectedInterest}
-              defaultCashAccountId={defaultCashAccountForSelectedInstitution}
             />
           ) : view === "investwealth" && investwealthData ? (
             <FundShell
