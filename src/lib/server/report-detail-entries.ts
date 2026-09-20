@@ -64,6 +64,7 @@ export async function loadReportDetailEntries(
     fundCode: record.fundCode,
     fundName: record.fundName,
     wealthProductId: record.wealthProductId,
+    depositProductId: record.depositProductId,
     insuranceProductId: record.insuranceProductId,
     insuranceAction: record.insuranceAction,
     insuranceProductName: record.insuranceProductName,

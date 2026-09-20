@@ -11,7 +11,12 @@ import { fetchSettingsAccountData, notifySettingsDataChanged } from "@/lib/clien
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { normalizeCurrency } from "@/lib/currency";
 import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
-import { isDepositAccount } from "@/lib/account-kind-utils";
+import { isSettlementCounterpartyType } from "@/lib/account-kinds";
+import {
+  accountKindOptionsForEdit,
+  accountRecordLockErrorKey,
+  isDepositAccount,
+} from "@/lib/account-kind-utils";
 import {
   accountInstitutionTypeIsAllowed,
   accountRequiresInstitution,
@@ -45,6 +50,7 @@ export type AccountQuickEditValue = {
   agreementAnnualRate?: string;
   agreementTermValue?: string;
   agreementDueDate?: string;
+  recordCount?: number;
 };
 
 export type LoanQuickEditValue = {
@@ -114,10 +120,18 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
   const [cashAccounts, setCashAccounts] = useState<Array<{ id: string; name: string }>>([]);
   const [form, setForm] = useState<Record<string, string>>({});
   const [loanForm, setLoanForm] = useState<Record<string, string>>({});
+  const [recordCount, setRecordCount] = useState(account.recordCount ?? 0);
 
   const kind = (form.kind || normalizedKind(account)) as AccountKindValue;
   const productType = form.investProductType || "fund";
-  const selectableAccountKinds = SELECTABLE_ACCOUNT_KINDS;
+  const hasRecords = recordCount > 0;
+  const kindEdit = accountKindOptionsForEdit({
+    currentKind: normalizedKind(account),
+    hasRecords,
+    emptyAccountKinds: SELECTABLE_ACCOUNT_KINDS,
+  });
+  const selectableAccountKinds = kindEdit.options;
+  const kindSelectDisabled = kindEdit.kindSelectDisabled;
   const isFixedAssetAccount = kind === "fixed_asset" || isFixedAssetAccountLike({ kind, investProductType: productType });
   const isInvestment = kind === "investment";
   const isCredit = kind === "bank_credit";
@@ -125,6 +139,10 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
   const supportsInstitution = kind !== "settlement" && allowedInstitutionTypesForAccount(kind, productType).length > 0;
   const supportsLastFour = isCredit || kind === "bank_debit";
   const showCostBasis = isInvestment && supportsCostBasisMethod(productType);
+  const settlementCounterparties = useMemo(
+    () => counterparties.filter((counterparty) => isSettlementCounterpartyType(counterparty.type)),
+    [counterparties],
+  );
   const filteredInstitutions = useMemo(
     () => !supportsInstitution || isFixedAssetAccount ? [] : institutions.filter((institution) => institutionMatches(kind, productType, institution)),
     [institutions, isFixedAssetAccount, kind, productType, supportsInstitution],
@@ -179,6 +197,7 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
       autoDebitCashAccountId: loanDetails.defaultAutoDebitCashAccountId ?? (loanDetailsIsCollateralLoan ? "" : loanDetails.defaultCashAccountId ?? ""),
     } : {});
     setError("");
+    setRecordCount(account.recordCount ?? 0);
   }, [account, loanDetails, loanDetailsIsCollateralLoan, loanDetailsIsHomeLoan]);
 
   const openEditor = useCallback(async () => {
@@ -189,11 +208,14 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
       setGroups(data.groups as Group[]);
       setInstitutions(data.institutions as Institution[]);
       setCounterparties((data.counterparties ?? []) as Counterparty[]);
-      setCashAccounts((data.accounts as Array<{ id: string; name: string; kind?: string; isActive?: boolean; isPlaceholder?: boolean }>)
+      const cachedAccounts = data.accounts as Array<{ id: string; name: string; kind?: string; isActive?: boolean; isPlaceholder?: boolean; recordCount?: number }>;
+      const cachedAccount = cachedAccounts.find((item) => item.id === account.id);
+      if (typeof cachedAccount?.recordCount === "number") setRecordCount(cachedAccount.recordCount);
+      setCashAccounts(cachedAccounts
         .filter((item) => item.isActive !== false && item.isPlaceholder !== true && !["loan", "settlement", "investment", "fixed_asset"].includes(item.kind ?? ""))
         .map((item) => ({ id: item.id, name: item.name })));
     }
-  }, [resetForm]);
+  }, [account.id, resetForm]);
 
   useEffect(() => {
     if (openSignal <= 0) return;
@@ -265,7 +287,10 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
             : { ...form, counterpartyId: "", loanType: "", isConsumerLoan: "false" };
       const response = await fetch("/api/v1/accounts", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: account.id, ...payload }) });
       const data = await response.json().catch(() => null);
-      if (!response.ok || !data?.ok) throw new Error(data?.error || t("settings.accounts.saveFailed"));
+      if (!response.ok || !data?.ok) {
+        const lockKey = accountRecordLockErrorKey(data?.code);
+        throw new Error(lockKey ? t(lockKey) : (data?.error || t("settings.accounts.saveFailed")));
+      }
       if (loanDetails && loanEditAction) {
         const autoDebit = loanDetailsIsHomeLoan || loanDetails.defaultAutoDebit === true || loanForm.autoDebit === "true";
         const debitAccountId = loanDetailsIsCollateralLoan ? loanForm.autoDebitCashAccountId : loanForm.cashAccountId;
@@ -350,13 +375,14 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
                     ...current,
                     kind: nextKind,
                     institutionId: "",
-                    counterpartyId: "",
+                    counterpartyId: nextKind === "settlement" ? (current.counterpartyId || account.counterpartyId || "") : "",
                     loanType: nextLoanType,
                     isConsumerLoan: nextKind === "loan" && nextLoanType === "consumer" ? "true" : "false",
                     investProductType: nextKind === "investment" ? current.investProductType || "fund" : nextKind === "fixed_asset" ? "property" : "",
                   };
                 });
-              }} className={inputClass}>{selectableAccountKinds.map((value) => <option key={value} value={value}>{t(`account.kind.${value}`)}</option>)}</select>}</Field>
+              }} disabled={kindSelectDisabled} className={inputClass}>{selectableAccountKinds.map((value) => <option key={value} value={value}>{t(`account.kind.${value}`)}</option>)}</select>}
+              </Field>
               {isFixedAssetAccount && <Field label={t("fixedAssetEdit.assetType")}><select value={form.fixedAssetType || "property"} disabled={loanAccountEditLocked} onChange={(event) => setField("fixedAssetType", event.target.value)} className={inputClass}>{FIXED_ASSET_TYPES.map((value) => <option key={value} value={value}>{t(`fixedAsset.type.${value}`)}</option>)}</select></Field>}
               <Field label={t("settings.accounts.owner")}><select value={form.groupId ?? ""} disabled={loanAccountEditLocked} onChange={(event) => setField("groupId", event.target.value)} className={inputClass}><option value="">{t("settings.accounts.selectOwner")}</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></Field>
               {supportsInstitution && !isFixedAssetAccount && <Field label={t("settings.accounts.institution")}><select value={form.institutionId ?? ""} disabled={loanAccountEditLocked} onChange={(event) => setField("institutionId", event.target.value)} className={inputClass}><option value="">{t("settings.accounts.selectInstitution")}</option>{filteredInstitutions.map((institution) => <option key={institution.id} value={institution.id}>{institution.shortName?.trim() || institution.name}</option>)}</select></Field>}
@@ -367,9 +393,9 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
                   <Field label={t("debtTx.agreementDueDate")}><DateStepper value={form.agreementDueDate ?? ""} onChange={(value) => setField("agreementDueDate", value)} className={`!h-8 ${inputClass}`} /></Field>
                 </>
               )}
-              {kind === "settlement" && <Field label={t("txForm.counterparty")}><select value={form.counterpartyId ?? ""} onChange={(event) => setField("counterpartyId", event.target.value)} className={inputClass}><option value="">{t("debtTx.placeholder.selectCounterparty")}</option>{counterparties.map((counterparty) => <option key={counterparty.id} value={counterparty.id}>{counterparty.shortName?.trim() || counterparty.name}</option>)}</select></Field>}
+              {kind === "settlement" && <Field label={t("txForm.counterparty")}><select value={form.counterpartyId ?? ""} onChange={(event) => setField("counterpartyId", event.target.value)} className={inputClass}><option value="">{t("debtTx.placeholder.selectCounterparty")}</option>{settlementCounterparties.map((counterparty) => <option key={counterparty.id} value={counterparty.id}>{counterparty.shortName?.trim() || counterparty.name}</option>)}</select></Field>}
               <Field label={t("settings.accounts.currency")}>
-                {loanAccountEditLocked ? (
+                {loanAccountEditLocked || hasRecords ? (
                   <input value={currentCurrency} readOnly className={`${inputClass} bg-slate-50 text-slate-500`} />
                 ) : (
                   <CurrencySmartSelect
@@ -379,7 +405,7 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
                   />
                 )}
               </Field>
-              {isInvestment && !isFixedAssetAccount && <Field label={t("settings.accounts.investmentAccountType")}><select value={productType} onChange={(event) => setField("investProductType", event.target.value)} className={inputClass}>{PRODUCT_TYPES.map((value) => <option key={value} value={value}>{t(`investment.product.${value}`)}</option>)}</select></Field>}
+              {isInvestment && !isFixedAssetAccount && <Field label={t("settings.accounts.investmentAccountType")}><select value={productType} disabled={hasRecords} onChange={(event) => setField("investProductType", event.target.value)} className={inputClass}>{PRODUCT_TYPES.map((value) => <option key={value} value={value}>{t(`investment.product.${value}`)}</option>)}</select></Field>}
               {showCostBasis && <Field label={t("settings.accounts.costBasisMethod")}><select value={form.costBasisMethod || "moving_avg"} onChange={(event) => setField("costBasisMethod", event.target.value)} className={inputClass}><option value="moving_avg">{t("settings.accounts.movingAverage")}</option><option value="fifo">{t("settings.accounts.fifo")}</option><option value="lifo">{t("settings.accounts.lifo")}</option></select></Field>}
               {isInvestment && productType === "fund" && <Field label={t("settings.accounts.fundUnitsDecimals")}><input value={form.fundUnitsDecimals ?? "2"} onChange={(event) => setField("fundUnitsDecimals", event.target.value)} className={inputClass} inputMode="numeric" /></Field>}
               {isInvestment && supportsTradingCalendarForAccount(kind, productType) && <Field label={t("settings.accounts.tradingCalendar")}><select value={form.tradingCalendar || "cn_fund"} onChange={(event) => setField("tradingCalendar", event.target.value)} className={inputClass}>{TRADING_CALENDARS.map((value) => <option key={value} value={value}>{t(`tradingCalendar.${value}`)}</option>)}</select></Field>}

@@ -1268,11 +1268,21 @@ async function resolveOwnerGroupFromPersonInTx(input: {
   };
   householdId: string;
   ownerGroupId: string | null;
-  policyholderPerson: { name: string } | null;
+  policyholderPerson: { id: string; name: string } | null;
 }) {
   if (input.ownerGroupId) return input.ownerGroupId;
-  const name = input.policyholderPerson?.name.trim();
+  const person = input.policyholderPerson;
+  if (!person) return null;
+  const name = person.name.trim();
   if (!name) return null;
+  // FK-first: the owner group paired with this member wins; legacy
+  // unlinked groups still resolve by name.
+  const byLink = person.id
+    ? await input.tx.accountGroup.findFirst({
+        where: { householdId: input.householdId, institutionId: person.id },
+      })
+    : null;
+  if (byLink) return byLink.id;
   const existing = await input.tx.accountGroup.findFirst({
     where: { householdId: input.householdId, name },
   });
@@ -1286,6 +1296,7 @@ async function resolveOwnerGroupFromPersonInTx(input: {
       householdId: input.householdId,
       name,
       sortOrder: (lastGroup?.sortOrder ?? 0) + 1,
+      institutionId: person.id || undefined,
     },
   });
   return created.id;

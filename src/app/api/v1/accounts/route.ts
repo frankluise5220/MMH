@@ -18,7 +18,12 @@ import {
   syncCreditCardInstitutionSettings,
 } from "@/lib/server/credit-card-institution-settings";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
-import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
+import {
+  canChangeAccountKindWithRecords,
+  isPureInvestmentAccount,
+  normalizeUserFacingAccountKind,
+  resolveRequestedUserFacingAccountKind,
+} from "@/lib/account-kind-utils";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { computeAccountDisplayBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
@@ -446,32 +451,45 @@ export async function PUT(req: NextRequest) {
       const currencyInput = String(body.currency ?? "").trim();
       data.currency = normalizeCurrency(currencyInput || await getHouseholdBaseCurrency(householdId));
     }
-    // 编辑范围护栏（2026-09-15）：账户一旦存在有效流水，账户类型/币种/投资产品类型
-    // 不可再改——历史流水的统计口径、外币结算（originalCurrency/originalAmount）与
-    // 派生数据（债务约定、信用卡周期、贷款还款计划）都建立在创建时的口径上。
-    // 值未变化（表单原样回传）不拦；只有软删除残留记录的账户视为干净、放行。
+    // Edit guard: once an account has active records, currency and investment
+    // product type stay locked. Kind may still change among fund/cash family
+    // kinds (debit/cash/ewallet/settlement/credit/other); cross-family changes
+    // remain blocked. Soft-deleted leftover rows do not count.
     const requestedKind = body.kind !== undefined ? String(body.kind).trim() : null;
-    const kindChanging = requestedKind != null && requestedKind !== existing.kind;
+    const requestedInvestProductType = body.investProductType !== undefined
+      ? String(body.investProductType ?? "").trim() || null
+      : null;
+    const existingUserFacingKind = normalizeUserFacingAccountKind(existing);
+    const requestedUserFacingKind = requestedKind == null
+      ? existingUserFacingKind
+      : resolveRequestedUserFacingAccountKind({
+        existing,
+        requestedKind,
+        requestedInvestProductType,
+      });
+    const kindChanging = requestedKind != null && requestedUserFacingKind !== existingUserFacingKind;
+    const kindChangeAllowed = !kindChanging || canChangeAccountKindWithRecords(existingUserFacingKind, requestedUserFacingKind);
     let currencyChanging = false;
     if (body.currency !== undefined) {
       const currencyInput = String(body.currency ?? "").trim();
       const requestedCurrency = normalizeCurrency(currencyInput || await getHouseholdBaseCurrency(householdId));
       currencyChanging = requestedCurrency !== existing.currency;
     }
-    const investTypeChanging = existing.kind === "investment"
+    const investTypeChanging = existingUserFacingKind === "investment"
+      && requestedUserFacingKind === "investment"
       && body.investProductType !== undefined
       && existing.investProductType != null
       && normalizeFundProductType(body.investProductType) !== existing.investProductType;
-    if (kindChanging || currencyChanging || investTypeChanging) {
+    if ((kindChanging && !kindChangeAllowed) || currencyChanging || investTypeChanging) {
       const activeRecordCount = await prisma.txRecord.count({
         where: { OR: [{ accountId: id }, { toAccountId: id }], deletedAt: null },
       });
       if (activeRecordCount > 0) {
-        const [errorCode, error] = kindChanging
-          ? ["ACCOUNT_KIND_LOCKED", "该账户已有流水记录，账户类型不能修改；如需调整请删除全部流水后重试，或新建账户。"]
+        const [errorCode, error] = kindChanging && !kindChangeAllowed
+          ? ["ACCOUNT_KIND_LOCKED", "This account already has records, so its type cannot change outside the cash/fund family."]
           : currencyChanging
-            ? ["ACCOUNT_CURRENCY_LOCKED", "该账户已有流水记录，币种不能修改。"]
-            : ["ACCOUNT_INVEST_TYPE_LOCKED", "该账户已有流水记录，投资产品类型不能修改。"];
+            ? ["ACCOUNT_CURRENCY_LOCKED", "This account already has records, so its currency cannot change."]
+            : ["ACCOUNT_INVEST_TYPE_LOCKED", "This account already has records, so its investment product type cannot change."];
         return NextResponse.json({ ok: false, code: errorCode, error }, { status: 409 });
       }
     }

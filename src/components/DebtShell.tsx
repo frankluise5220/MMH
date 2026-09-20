@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AccountTypeQuickEdit, type AccountQuickEditValue, type LoanQuickEditValue } from "./AccountTypeQuickEdit";
 import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTableSortState } from "./AdvancedDataTable";
 import { DateStepper } from "./DateStepper";
+import { DebitBalanceReconcileButton } from "./DebitBalanceReconcileButton";
 import { dispatchEntryEdit, EntryRowActions } from "./EntryRowActions";
 import { ResizableVerticalSplit } from "./ResizableVerticalSplit";
 import {
@@ -1543,17 +1544,28 @@ export function DebtShell({
                 columns={entryColumns}
                 entries={entries}
                 loanType={accountLoanType(accountEditDataById.get(selectedRow.accountId))}
-                toolbarActions={!selectedRow.isGroup && !selectedRow.isLoan && selectedRow.counterpartyId && reimbursementActions ? (
-                  <button
-                    type="button"
-                    onClick={() => setReimbursementOpen(true)}
-                    className="inline-flex h-7 items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2.5 text-xs font-medium text-blue-700 transition hover:bg-blue-100"
-                    title={t("reimburse.modalTitle")}
-                  >
-                    <ReceiptText className="h-3.5 w-3.5" />
-                    {t("reimburse.entry")}
-                  </button>
-                ) : null}
+                toolbarActions={(
+                  <>
+                    {!selectedRow.isGroup && !selectedRow.isLoan && selectedRow.counterpartyId && reimbursementActions ? (
+                      <button
+                        type="button"
+                        onClick={() => setReimbursementOpen(true)}
+                        className="inline-flex h-7 items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2.5 text-xs font-medium text-blue-700 transition hover:bg-blue-100"
+                        title={t("reimburse.modalTitle")}
+                      >
+                        <ReceiptText className="h-3.5 w-3.5" />
+                        {t("reimburse.entry")}
+                      </button>
+                    ) : null}
+                    {!selectedRow.isGroup && !selectedRow.isLoan && selectedRow.accountId ? (
+                      <DebitBalanceReconcileButton
+                        accountId={selectedRow.accountId}
+                        accountLabel={selectedRow.name}
+                        currentBalance={selectedRow.net}
+                      />
+                    ) : null}
+                  </>
+                )}
               />
             </BasicDetailSelectionProvider>
           ) : (

@@ -4,6 +4,9 @@ const path = require("node:path");
 const root = path.resolve(__dirname, "..");
 const backupSource = fs.readFileSync(path.join(root, "src", "lib", "server", "backup.ts"), "utf8");
 const schemaSource = fs.readFileSync(path.join(root, "prisma", "schema.prisma"), "utf8");
+const restoreRouteSource = fs.readFileSync(path.join(root, "src", "app", "api", "v1", "settings", "backup", "route.ts"), "utf8");
+const nextConfigSource = fs.readFileSync(path.join(root, "next.config.ts"), "utf8");
+const uploadLimitSource = fs.readFileSync(path.join(root, "src", "lib", "backup-upload-limit.ts"), "utf8");
 
 function expect(condition, message) {
   if (!condition) {
@@ -73,6 +76,44 @@ expect(
   backupSource.includes("OR: [{ householdId }, { householdId: null }]") &&
   backupSource.includes("householdId: isSystemRestore && item.householdId == null ? null : householdId"),
   "System backup must preserve global fund query APIs separately from household-scoped APIs.",
+);
+
+expect(
+  backupSource.includes("export function serializeEncryptedBackupPackage"),
+  "Encrypted backup packages must be serialized through serializeEncryptedBackupPackage.",
+);
+expect(
+  backupSource.includes("function importBatchesForBackup") &&
+  backupSource.includes("importBatchesForBackup(importBatches)") &&
+  restoreRouteSource.includes("omitImportBatchRawText: false"),
+  "Household backup export must omit ImportBatch.rawText through importBatchesForBackup.",
+);
+expect(
+  backupSource.includes("function transactionsForBackup") &&
+  backupSource.includes("TRANSACTION_BACKUP_DISPLAY_NAME_FIELDS") &&
+  backupSource.includes("omitTransactionDisplayNames") &&
+  restoreRouteSource.includes("omitTransactionDisplayNames: false"),
+  "Household backup export must omit transaction display names while table export keeps them.",
+);
+expect(
+  uploadLimitSource.includes("RESTORE_UPLOAD_LIMIT_MB = 512") &&
+  uploadLimitSource.includes("RESTORE_UPLOAD_LIMIT_BYTES") &&
+  uploadLimitSource.includes("RESTORE_UPLOAD_LIMIT_CONFIG") &&
+  uploadLimitSource.includes("RESTORE_UPLOAD_LIMIT_LABEL"),
+  "Restore upload limit must be the shared 512MB constant.",
+);
+expect(
+  nextConfigSource.includes("RESTORE_UPLOAD_LIMIT_CONFIG") &&
+  nextConfigSource.includes("proxyClientMaxBodySize: RESTORE_UPLOAD_LIMIT_CONFIG"),
+  "Next.js proxy body size must use the shared restore upload limit.",
+);
+expect(
+  restoreRouteSource.includes("RESTORE_UPLOAD_LIMIT_BYTES") &&
+  restoreRouteSource.includes("serializeEncryptedBackupPackage") &&
+  restoreRouteSource.includes("file.size > RESTORE_UPLOAD_LIMIT_BYTES") &&
+  restoreRouteSource.includes("writeRestoreUploadToTemp") &&
+  !restoreRouteSource.includes("128 * 1024 * 1024"),
+  "Restore route must use the shared 512MB limit, compact export JSON, file.size check, and disk-backed upload.",
 );
 
 console.log("Backup completeness checks passed.");

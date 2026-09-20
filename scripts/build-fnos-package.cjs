@@ -644,7 +644,7 @@ write(path.join(stageDir, "wizard", "uninstall"), JSON.stringify([
         initValue: "false",
         options: [
           { label: "保留用户数据（推荐）", value: "false" },
-          { label: "删除用户数据（账簿数据库、配置文件；删除前会自动备份到数据目录外）", value: "true" },
+          { label: "删除用户数据（账簿数据库、配置文件）", value: "true" },
         ],
       },
     ],
@@ -720,7 +720,8 @@ resolve_runtime_paths() {
 
 resolve_app_dest() {
     local d
-    if [ -n "\${TRIM_APPDEST:-}" ] && [ -d "\${TRIM_APPDEST}" ]; then
+    if [ -n "\${TRIM_APPDEST:-}" ]; then
+        mkdir -p "\${TRIM_APPDEST}" 2>/dev/null || true
         echo "\${TRIM_APPDEST}"
         return 0
     fi
@@ -740,46 +741,100 @@ EOF
     echo "/var/apps/$TRIM_APPNAME"
 }
 
+app_payload_is_ready() {
+    local dest="$1"
+    if [ -x "\${dest}/bin/node" ] && [ -f "\${dest}/server/server.js" ]; then
+        APP_ROOT="\${dest}"
+        APP_BIN="\${dest}/bin/node"
+        APP_SERVER="\${dest}/server/server.js"
+        return 0
+    fi
+    if [ -x "\${dest}/app/bin/node" ] && [ -f "\${dest}/app/server/server.js" ]; then
+        APP_ROOT="\${dest}/app"
+        APP_BIN="\${dest}/app/bin/node"
+        APP_SERVER="\${dest}/app/server/server.js"
+        return 0
+    fi
+    return 1
+}
+
+find_download_app_tgz() {
+    local candidate newest="" newest_mtime=0 mtime
+    for candidate in /vol*/appcenter-downloads/"\${TRIM_APPNAME:-mmh}"-*-tpk/app.tgz /usr/local/apps/appcenter-downloads/"\${TRIM_APPNAME:-mmh}"-*-tpk/app.tgz; do
+        [ -f "$candidate" ] || continue
+        mtime="$(stat -c %Y "$candidate" 2>/dev/null || echo 0)"
+        case "$mtime" in
+            *[!0-9]*) mtime=0 ;;
+        esac
+        if [ "$mtime" -ge "$newest_mtime" ]; then
+            newest="$candidate"
+            newest_mtime="$mtime"
+        fi
+    done
+    if [ -n "$newest" ]; then
+        printf '%s\\n' "$newest"
+        return 0
+    fi
+    return 1
+}
+
+ensure_cmd_scripts() {
+    local overlay script dest
+    dest="$(resolve_app_dest)"
+    for overlay in "$dest/cmd" "/var/apps/\${TRIM_APPNAME:-mmh}/cmd"; do
+        [ -d "$overlay" ] || continue
+        for script in "$overlay"/*; do
+            [ -f "$script" ] || continue
+            chmod 755 "$script" 2>/dev/null || true
+        done
+    done
+    if [ -f "\${dest}/bin/node" ]; then
+        chmod 755 "\${dest}/bin/node" 2>/dev/null || true
+    fi
+    if [ -f "\${dest}/app/bin/node" ]; then
+        chmod 755 "\${dest}/app/bin/node" 2>/dev/null || true
+    fi
+}
+
 ensure_app_ready() {
     local dest tgz
     dest="$(resolve_app_dest)"
     tgz="\${dest}/app.tgz"
 
-    if [ -x "\${dest}/bin/node" ] && [ -f "\${dest}/server/server.js" ]; then
-        APP_ROOT="\${dest}"
-        APP_BIN="\${dest}/bin/node"
-        APP_SERVER="\${dest}/server/server.js"
-        return 0
-    fi
-
-    if [ -x "\${dest}/app/bin/node" ] && [ -f "\${dest}/app/server/server.js" ]; then
-        APP_ROOT="\${dest}/app"
-        APP_BIN="\${dest}/app/bin/node"
-        APP_SERVER="\${dest}/app/server/server.js"
+    mkdir -p "$dest" 2>/dev/null || true
+    if app_payload_is_ready "$dest"; then
+        ensure_cmd_scripts
         return 0
     fi
 
     if [ ! -f "$tgz" ]; then
+        tgz="$(find_download_app_tgz 2>/dev/null || true)"
+    fi
+    if [ ! -f "$tgz" ]; then
+        echo "MMH payload is missing: no extracted app and no app.tgz under $dest or appcenter-downloads" >&2
         return 1
     fi
 
     mkdir -p "\${dest}/app"
-    tar -xzf "$tgz" -C "\${dest}/app"
-    if [ -x "\${dest}/app/bin/node" ] && [ -f "\${dest}/app/server/server.js" ]; then
-        APP_ROOT="\${dest}/app"
-        APP_BIN="\${dest}/app/bin/node"
-        APP_SERVER="\${dest}/app/server/server.js"
+    if ! tar -xzf "$tgz" -C "\${dest}/app"; then
+        echo "MMH payload extract failed: $tgz -> \${dest}/app" >&2
+        return 1
+    fi
+    if app_payload_is_ready "$dest"; then
+        ensure_cmd_scripts
         return 0
     fi
 
-    tar -xzf "$tgz" -C "$dest"
-    if [ -x "\${dest}/bin/node" ] && [ -f "\${dest}/server/server.js" ]; then
-        APP_ROOT="\${dest}"
-        APP_BIN="\${dest}/bin/node"
-        APP_SERVER="\${dest}/server/server.js"
+    if ! tar -xzf "$tgz" -C "$dest"; then
+        echo "MMH payload extract failed: $tgz -> $dest" >&2
+        return 1
+    fi
+    if app_payload_is_ready "$dest"; then
+        ensure_cmd_scripts
         return 0
     fi
 
+    echo "MMH payload extract did not produce a runnable app in $dest" >&2
     return 1
 }
 
@@ -796,9 +851,9 @@ app_ui_config() {
 }
 
 # Sibling backup directory used by upgrade/uninstall. It must live outside the
-# app data root so wizard_delete_data can wipe the tree without deleting the
-# safety copy. Install/upgrade/start create it as mmh:mmh 700; uninstall then
-# fails closed if it still cannot write there.
+# app data root so upgrade_init / uninstall_init copies survive a later data-dir
+# wipe. Install/upgrade/start create it as mmh:mmh 700. Delete-data uninstall
+# does not write here.
 ensure_out_of_tree_backup_root() {
     local data_root parent_dir backup_root
     data_root="\${1:-}"
@@ -1025,6 +1080,15 @@ EOF
 
 write(path.join(stageDir, "cmd", "main"), `#!/bin/bash
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -z "\${TRIM_APPNAME:-}" ]; then
+  TRIM_APPNAME=mmh
+fi
+if [ -f "$SCRIPT_DIR/app-layout" ]; then
+  . "$SCRIPT_DIR/app-layout"
+fi
+
+if ! command -v resolve_app_dest >/dev/null 2>&1; then
 resolve_app_dest () {
   if [ -n "\${TRIM_APPDEST:-}" ] && [ -d "\${TRIM_APPDEST}" ]; then
     echo "\${TRIM_APPDEST}"
@@ -1046,8 +1110,22 @@ resolve_app_dest () {
 
   cd "$(dirname "$0")/.." && pwd
 }
+fi
 
-APP_DEST="$(resolve_app_dest)"
+refresh_app_paths () {
+  if [ -n "\${APP_ROOT:-}" ]; then
+    APP_DEST="$APP_ROOT"
+  else
+    APP_DEST="$(resolve_app_dest)"
+    if [ -f "$APP_DEST/app/server/server.js" ] && [ ! -f "$APP_DEST/server/server.js" ]; then
+      APP_DEST="$APP_DEST/app"
+    fi
+  fi
+  SERVER_DIR="$APP_DEST/server"
+  NODE_BIN="$APP_DEST/bin/node"
+}
+
+refresh_app_paths
 
 resolve_data_dest () {
   if [ -n "\${TRIM_DATADEST:-}" ]; then
@@ -1342,6 +1420,13 @@ restart_start_as_package_user () {
 
 start_app () {
   mkdir -p "$DATA_DEST"
+  if command -v ensure_app_ready >/dev/null 2>&1; then
+    if ! ensure_app_ready; then
+      echo "MMH payload is not ready; overlay extract failed" >&2
+      exit 1
+    fi
+    refresh_app_paths
+  fi
   restart_start_as_package_user
   ensure_runtime_settings
   apply_node_memory_limit
@@ -1359,11 +1444,79 @@ start_app () {
   export DATABASE_URL="file:$DATA_DEST/mmh.db"
   export PRISMA_SCHEMA_PATH="$SERVER_DIR/prisma/schema.native.prisma"
   (cd "$SERVER_DIR" && "$NODE_BIN" "$SERVER_DIR/scripts/init-sqlite.cjs") >>"$LOG_FILE" 2>&1 || exit 1
-  if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" >/dev/null 2>&1; then
-    exit 0
+  existing_pid=""
+  existing_cwd=""
+  if [ -f "$PID_FILE" ]; then
+    existing_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+    if [ -n "$existing_pid" ] && kill -0 "$existing_pid" >/dev/null 2>&1; then
+      existing_cwd="$(readlink "/proc/$existing_pid/cwd" 2>/dev/null || true)"
+      case "$existing_cwd" in
+        "$SERVER_DIR"|"$APP_DEST"|"$APP_DEST/server")
+          exit 0
+          ;;
+      esac
+    fi
   fi
+  stop_leftover_mmh_server
+  wait_listen_port_free || true
   nohup "$NODE_BIN" "$SERVER_DIR/server.js" >>"$LOG_FILE" 2>&1 &
   echo "$!" > "$PID_FILE"
+}
+
+stop_leftover_mmh_server () {
+  local pid cwd cmd dest appname
+  dest="\${APP_DEST:-}"
+  appname="\${TRIM_APPNAME:-mmh}"
+  if [ -z "$dest" ] && command -v resolve_app_dest >/dev/null 2>&1; then
+    dest="$(resolve_app_dest 2>/dev/null || true)"
+  fi
+  [ -n "$dest" ] || dest="/vol1/@appcenter/$appname"
+  for pid in /proc/[0-9]*; do
+    [ -d "$pid" ] || continue
+    pid="\${pid#/proc/}"
+    cmd="$(tr '\\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+    [ -n "$cmd" ] || continue
+    case "$cmd" in
+      *next-server*|*server/server.js*)
+        ;;
+      *)
+        continue
+        ;;
+    esac
+    cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+    case "$cmd $cwd" in
+      *"deleted"*|*"$dest"*|*@appcenter/"$appname"*|*/var/apps/"$appname"*)
+        kill "$pid" >/dev/null 2>&1 || true
+        ;;
+    esac
+  done
+}
+
+wait_listen_port_free () {
+  local port i
+  port="\${PORT:-}"
+  if [ -z "$port" ]; then
+    port="$(read_env_value PORT 2>/dev/null || true)"
+  fi
+  port="\${port:-7777}"
+  i=0
+  while [ "$i" -lt 20 ]; do
+    if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -E ":\${port}([[:space:]]|$)" >/dev/null; then
+      sleep 0.5
+      i=$((i + 1))
+      continue
+    fi
+    if ! command -v ss >/dev/null 2>&1; then
+      if grep -Eq ":$(printf '%04X' "$port") .* 0A " /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
+        sleep 0.5
+        i=$((i + 1))
+        continue
+      fi
+    fi
+    return 0
+  done
+  echo "MMH stop timed out waiting for port $port" >&2
+  return 1
 }
 
 stop_app () {
@@ -1371,6 +1524,8 @@ stop_app () {
     kill "$(cat "$PID_FILE")" >/dev/null 2>&1 || true
     rm -f "$PID_FILE"
   fi
+  stop_leftover_mmh_server
+  wait_listen_port_free || true
 }
 
 status_app () {
@@ -1422,7 +1577,10 @@ if [ -z "\${TRIM_APPNAME:-}" ]; then
 fi
 if [ -f "$SCRIPT_DIR/app-layout" ]; then
     . "$SCRIPT_DIR/app-layout"
-    ensure_app_ready >/dev/null 2>&1 || true
+    if ! ensure_app_ready; then
+        echo "MMH payload extract failed during install/upgrade" >&2
+        exit 1
+    fi
 fi
 if [ -f "$SCRIPT_DIR/apply-settings" ]; then
     . "$SCRIPT_DIR/apply-settings"
@@ -1444,7 +1602,10 @@ if [ -z "\${TRIM_APPNAME:-}" ]; then
 fi
 if [ -f "$SCRIPT_DIR/app-layout" ]; then
     . "$SCRIPT_DIR/app-layout"
-    ensure_app_ready >/dev/null 2>&1 || true
+    if ! ensure_app_ready; then
+        echo "MMH payload extract failed during config change" >&2
+        exit 1
+    fi
     # cmd/main locates the bundled Node runtime through TRIM_APPDEST. App Center
     # normally exports it, but resolve it ourselves: otherwise a config change
     # would stop the service and then fail to start it again.
@@ -1554,10 +1715,10 @@ exit 0
 // Center injects wizard fields as lowercase env vars; CLI uninstalls (the FN
 // soft-store client's uninstall+reinstall update flow) never pass them, so the
 // default branch keeps data and silent updates are unaffected. Deletion only
-// happens on an explicit wizard_delete_data=true, and even then a fresh backup
-// is written OUTSIDE the data directory first - the execution order between
-// uninstall_init (backup) and uninstall_callback is not guaranteed, so this
-// script never relies on uninstall_init having run already.
+// happens on an explicit wizard_delete_data=true. That path wipes immediately
+// and does not require a pre-delete backup; fail closed if mmh.db is still
+// present after the wipe. uninstall_init may still copy a safety backup for
+// keep-data / CLI uninstalls, but this callback does not depend on it.
 const uninstallCallbackLifecycle = `#!/bin/bash
 set -e
 
@@ -1600,49 +1761,7 @@ data_root="$(resolve_data_root 2>/dev/null || true)"
 [ -n "$data_root" ] || exit 0
 [ -d "$data_root" ] || exit 0
 
-# The pre-delete backup must live OUTSIDE data_root because the whole
-# directory is about to be wiped. Create the sibling backup directory and,
-# when running as root, give it to the mmh package user. If it is still not
-# writable, fail uninstall instead of deleting without a backup or silently
-# keeping data after the user asked to delete it.
-backup_root=""
-if command -v ensure_out_of_tree_backup_root >/dev/null 2>&1; then
-    backup_root="$(ensure_out_of_tree_backup_root "$data_root" 2>/dev/null || true)"
-fi
-if [ -z "$backup_root" ]; then
-    parent_dir="$(dirname "$data_root")"
-    candidate="$parent_dir/\${TRIM_APPNAME:-mmh}-upgrade-backups"
-    mkdir -p "$candidate" 2>/dev/null || true
-    if [ "$(id -u)" = "0" ] && id mmh >/dev/null 2>&1; then
-        chown mmh:mmh "$candidate" 2>/dev/null || true
-    fi
-    chmod 700 "$candidate" 2>/dev/null || true
-    if [ -d "$candidate" ] && [ -w "$candidate" ]; then
-        backup_root="$candidate"
-    fi
-fi
-if [ -z "$backup_root" ]; then
-    echo "MMH delete-data aborted: no writable backup directory outside $data_root" >&2
-    exit 1
-fi
-stamp="$(date +%Y%m%d-%H%M%S)"
-target="$backup_root/pre-delete-\$stamp"
-
-mkdir -p "$target/appdata"
-chmod 700 "$backup_root" "$target" "$target/appdata" 2>/dev/null || true
-cp -a "$data_root/data" "$target/appdata/data"
-for file in "$data_root/mmh.env" "$data_root/.port" "$data_root/mmh-system-password.txt" "$data_root/mmh-session-secret.txt"; do
-    if [ -f "$file" ]; then
-        cp -a "$file" "$target/appdata/"
-    fi
-done
-chmod -R go-rwx "$target/appdata" 2>/dev/null || true
-if command -v sha256sum >/dev/null 2>&1 && [ -f "$data_root/data/mmh.db" ]; then
-    sha256sum "$data_root/data/mmh.db" > "$target/mmh.db.sha256"
-    chmod 600 "$target/mmh.db.sha256" 2>/dev/null || true
-fi
-echo "MMH user data backed up to $target"
-
+chmod -R u+w "$data_root" 2>/dev/null || true
 find "$data_root" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
 if [ -e "$data_root/data/mmh.db" ]; then
     echo "MMH delete-data failed: user data still present under $data_root" >&2
@@ -1714,6 +1833,26 @@ const Database = require("better-sqlite3");
 
 const MIGRATIONS = [
   {
+    // Owner group <-> family member data-layer link: AccountGroup.institutionId.
+    // SQLite 的 FK 约束由 Prisma 侧负责（与 bond 存单列一致，这里只补列与索引）；
+    // 配对数据（组↔成员互建互链）由应用层 system-task 自愈完成，不在此处造数据。
+    version: "20260920_add_account_group_member_link",
+    description: "Link account owner groups to family members via AccountGroup.institutionId",
+    apply(db) {
+      if (tableExists(db, "AccountGroup")) {
+        addColumnIfMissing(db, "AccountGroup", "institutionId", "TEXT");
+        db.exec('CREATE INDEX IF NOT EXISTS "AccountGroup_institutionId_idx" ON "AccountGroup"("institutionId")');
+      }
+    },
+  },
+  {
+    version: "20260917_add_deposit_product_master",
+    description: "Add deposit product master data and link deposits to reusable products",
+    apply(db) {
+      createDepositProductTables(db);
+    },
+  },
+  {
     version: "20260917_wealth_bond_fields",
     description: "Wealth bond (chengtou) terms: productType, maturityDate, payoutFrequency, firstPayoutDate",
     apply(db) {
@@ -1725,7 +1864,40 @@ const MIGRATIONS = [
       }
     },
   },
-
+  {
+    // Bond becomes a standalone investment account type (Account.investProductType='bond').
+    // SQLite stores investProductType as TEXT, so no schema change is needed here;
+    // the version is registered to keep PG/SQLite migration history aligned.
+    version: "20260918_add_bond_invest_account_type",
+    description: "Bond as a standalone investment account type (enum value only; TEXT column needs no change)",
+    apply() {},
+  },
+  {
+    // 债券成为独立的业务行类型（EntryBusinessLink.businessType='bond'）。
+    // SQLite 的 businessType 是 TEXT，无需改表结构，登记版本对齐 PG/SQLite 迁移历史。
+    version: "20260919_bond_business_type",
+    description: "Bond as a standalone EntryBusinessType (enum value only; TEXT column needs no change)",
+    apply() {},
+  },
+  {
+    // 债券存单粒度：买入行即一张存单，子行（付息/赎回/核销）用 sourceBondTransactionId
+    // 指回存单；条款快照落在存单行上，付息按存单产生。
+    // SQLite 无法用 ALTER TABLE 追加自引用外键，这里只补列与索引（与 WealthProduct.productType
+    // 的处理一致），外键约束由 Postgres 迁移负责。
+    version: "20260919_bond_certificate_lots",
+    description: "Bond certificate (lot) granularity: sourceBondTransactionId + per-lot term snapshot",
+    apply(db) {
+      if (tableExists(db, "bond_transactions")) {
+        addColumnIfMissing(db, "bond_transactions", "sourceBondTransactionId", "TEXT");
+        addColumnIfMissing(db, "bond_transactions", "termDays", "INTEGER");
+        addColumnIfMissing(db, "bond_transactions", "maturityDate", "DATETIME");
+        addColumnIfMissing(db, "bond_transactions", "payoutFrequency", "TEXT");
+        addColumnIfMissing(db, "bond_transactions", "firstPayoutDate", "DATETIME");
+        addColumnIfMissing(db, "bond_transactions", "interestCalcBasis", "TEXT");
+        db.exec("CREATE INDEX IF NOT EXISTS \\"bond_transactions_sourceBondTransactionId_idx\\" ON \\"bond_transactions\\"(\\"sourceBondTransactionId\\")");
+      }
+    },
+  },
   {
     version: "20260913_user_auth_version",
     description: "Add User.authVersion for global session invalidation on credential changes",
@@ -2433,6 +2605,74 @@ function createStockReferenceTables(db) {
     "CREATE INDEX IF NOT EXISTS \\"stock_brokerage_catalog_registryCode_idx\\" ON \\"stock_brokerage_catalog\\"(\\"registryCode\\")",
     "CREATE INDEX IF NOT EXISTS \\"stock_brokerage_catalog_isActive_idx\\" ON \\"stock_brokerage_catalog\\"(\\"isActive\\")",
   ].join(";"));
+}
+
+function createDepositProductTables(db) {
+  db.exec([
+    "CREATE TABLE IF NOT EXISTS \\"DepositProduct\\" (\\"id\\" TEXT NOT NULL PRIMARY KEY, \\"name\\" TEXT NOT NULL, \\"shortName\\" TEXT, \\"currency\\" TEXT NOT NULL DEFAULT 'CNY', \\"annualRate\\" DECIMAL, \\"termDays\\" INTEGER, \\"note\\" TEXT, \\"isActive\\" BOOLEAN NOT NULL DEFAULT true, \\"householdId\\" TEXT NOT NULL, \\"institutionId\\" TEXT, \\"createdAt\\" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, \\"updatedAt\\" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT \\"DepositProduct_householdId_fkey\\" FOREIGN KEY (\\"householdId\\") REFERENCES \\"Household\\"(\\"id\\") ON DELETE CASCADE ON UPDATE CASCADE, CONSTRAINT \\"DepositProduct_institutionId_fkey\\" FOREIGN KEY (\\"institutionId\\") REFERENCES \\"Institution\\"(\\"id\\") ON DELETE SET NULL ON UPDATE CASCADE)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS \\"DepositProduct_householdId_institutionId_name_key\\" ON \\"DepositProduct\\"(\\"householdId\\", \\"institutionId\\", \\"name\\")",
+    "CREATE INDEX IF NOT EXISTS \\"DepositProduct_householdId_isActive_name_idx\\" ON \\"DepositProduct\\"(\\"householdId\\", \\"isActive\\", \\"name\\")",
+    "CREATE INDEX IF NOT EXISTS \\"DepositProduct_institutionId_idx\\" ON \\"DepositProduct\\"(\\"institutionId\\")",
+  ].join(";"));
+  if (tableExists(db, "DepositProduct") && !columnExists(db, "DepositProduct", "institutionId")) {
+    addColumnIfMissing(db, "DepositProduct", "institutionId", "TEXT");
+  }
+  db.exec("DROP INDEX IF EXISTS \\"DepositProduct_householdId_name_key\\"");
+  if (tableExists(db, "transactions")) {
+    addColumnIfMissing(db, "transactions", "depositProductId", "TEXT");
+    db.exec("CREATE INDEX IF NOT EXISTS \\"transactions_depositProductId_idx\\" ON \\"transactions\\"(\\"depositProductId\\")");
+  }
+  if (tableExists(db, "deposit_transactions")) {
+    addColumnIfMissing(db, "deposit_transactions", "depositProductId", "TEXT");
+    db.exec("CREATE INDEX IF NOT EXISTS \\"deposit_transactions_depositProductId_idx\\" ON \\"deposit_transactions\\"(\\"depositProductId\\")");
+  }
+  backfillDepositProducts(db);
+}
+
+function backfillDepositProducts(db) {
+  if (!tableExists(db, "DepositProduct") || !tableExists(db, "Account")) return;
+  const crypto = require("node:crypto");
+  if (!columnExists(db, "DepositProduct", "institutionId")) {
+    addColumnIfMissing(db, "DepositProduct", "institutionId", "TEXT");
+  }
+  const sources = [
+    {
+      table: "deposit_transactions",
+      extraWhere: "",
+      accountIdSql: 't.\\"accountId\\"',
+      nameSql: 't.\\"productName\\"',
+    },
+    {
+      table: "transactions",
+      extraWhere: " AND t.\\"fundProductType\\" = 'deposit'",
+      accountIdSql: "CASE WHEN t.\\"fundSubtype\\" IN ('redeem', 'switch_out') THEN t.\\"accountId\\" ELSE COALESCE(t.\\"toAccountId\\", t.\\"accountId\\") END",
+      nameSql: 't.\\"fundName\\"',
+    },
+  ];
+  for (const source of sources) {
+    if (!tableExists(db, source.table)) continue;
+    const rows = db.prepare(
+      "SELECT DISTINCT t.\\"householdId\\" AS householdId, acc.\\"institutionId\\" AS institutionId, " + source.nameSql + " AS productName FROM \\"" + source.table + "\\" t JOIN \\"Account\\" acc ON acc.\\"id\\" = " + source.accountIdSql + " WHERE t.\\"deletedAt\\" IS NULL AND t.\\"householdId\\" IS NOT NULL AND COALESCE(" + source.nameSql + ", '') <> ''" + source.extraWhere
+    ).all();
+    for (const row of rows) {
+      const name = String(row.productName || "").trim();
+      if (!name) continue;
+      const institutionId = row.institutionId || null;
+      let product = institutionId
+        ? db.prepare("SELECT \\"id\\" FROM \\"DepositProduct\\" WHERE \\"householdId\\" = ? AND \\"institutionId\\" = ? AND \\"name\\" = ?").get(row.householdId, institutionId, name)
+        : db.prepare("SELECT \\"id\\" FROM \\"DepositProduct\\" WHERE \\"householdId\\" = ? AND \\"institutionId\\" IS NULL AND \\"name\\" = ?").get(row.householdId, name);
+      if (!product) {
+        const id = "dprod_" + crypto.createHash("md5").update(String(row.householdId) + "\u001f" + String(institutionId || "") + "\u001f" + name).digest("hex");
+        db.prepare("INSERT INTO \\"DepositProduct\\" (\\"id\\", \\"name\\", \\"currency\\", \\"isActive\\", \\"householdId\\", \\"institutionId\\", \\"createdAt\\", \\"updatedAt\\") VALUES (?, ?, 'CNY', 1, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)").run(id, name, row.householdId, institutionId);
+        product = { id };
+      }
+      const updateSql = institutionId
+        ? "UPDATE \\"" + source.table + "\\" SET \\"depositProductId\\" = ? WHERE \\"id\\" IN (SELECT t.\\"id\\" FROM \\"" + source.table + "\\" t JOIN \\"Account\\" acc ON acc.\\"id\\" = " + source.accountIdSql + " WHERE t.\\"householdId\\" = ? AND " + source.nameSql + " = ? AND acc.\\"institutionId\\" = ?" + source.extraWhere + ")"
+        : "UPDATE \\"" + source.table + "\\" SET \\"depositProductId\\" = ? WHERE \\"id\\" IN (SELECT t.\\"id\\" FROM \\"" + source.table + "\\" t JOIN \\"Account\\" acc ON acc.\\"id\\" = " + source.accountIdSql + " WHERE t.\\"householdId\\" = ? AND " + source.nameSql + " = ? AND acc.\\"institutionId\\" IS NULL" + source.extraWhere + ")";
+      if (institutionId) db.prepare(updateSql).run(product.id, row.householdId, name, institutionId);
+      else db.prepare(updateSql).run(product.id, row.householdId, name);
+    }
+  }
 }
 
 function createStatementRecognitionRulesTable(db) {

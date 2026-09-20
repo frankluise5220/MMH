@@ -30,7 +30,12 @@ import { buildAccountDisplayOption } from "@/lib/account-display";
 import { getAccountLabelFieldsPreference, getCreditCardLabelTemplatePreference } from "@/lib/client/appPreferences";
 import { fetchSettingsAccountData, getCachedSettingsAccountData, notifySettingsDataChanged } from "@/lib/client/settingsCache";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
-import { getInvestmentAccountView, isDepositAccount } from "@/lib/account-kind-utils";
+import {
+  accountKindOptionsForEdit,
+  accountRecordLockErrorKey,
+  getInvestmentAccountView,
+  isDepositAccount,
+} from "@/lib/account-kind-utils";
 import { FIXED_ASSET_TYPES, isFixedAssetAccountLike } from "@/lib/fixed-asset";
 import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
 import { useI18n } from "@/lib/i18n";
@@ -305,6 +310,7 @@ export default function SettingsAccountsPage() {
       currency: normalizeCurrency(a.currency || baseCurrency),
       groupId: a.groupId || "",
       institutionId: supportsInstitution ? a.institutionId || "" : "",
+      counterpartyId: editKind === "settlement" ? a.counterpartyId || "" : "",
       billingDay: a.billingDay?.toString() || "",
       repaymentDay: a.repaymentDay?.toString() || "",
       repaymentOffsetDays: a.repaymentOffsetDays == null ? "" : String(a.repaymentOffsetDays),
@@ -372,6 +378,10 @@ export default function SettingsAccountsPage() {
       setEditError(t("settings.accounts.import.institutionNotAllowed"));
       return;
     }
+    if (nextKind === "settlement" && !String(editForm.counterpartyId ?? "").trim()) {
+      setEditError(t("debtTx.placeholder.selectCounterparty"));
+      return;
+    }
     const isFixedAssetKind = nextKind === "fixed_asset";
     const isConsumerLoan = editForm.isConsumerLoan === "true";
     // 口径（2026-09-13）：贷款账户允许挂往来对象（贷款窗口借入）——消费贷有机构
@@ -404,8 +414,10 @@ export default function SettingsAccountsPage() {
       if (!confirmed) return;
     }
     const payload: Record<string, string> = isFixedAssetKind
-      ? { ...editForm, kind: "investment", investProductType: "property", institutionId: "", fixedAssetType: editForm.fixedAssetType || "property", isConsumerLoan: "false" }
-      : { ...editForm };
+      ? { ...editForm, kind: "investment", investProductType: "property", institutionId: "", counterpartyId: "", fixedAssetType: editForm.fixedAssetType || "property", isConsumerLoan: "false" }
+      : nextKind === "settlement"
+        ? { ...editForm, institutionId: "", isConsumerLoan: "false" }
+        : { ...editForm, counterpartyId: nextKind === "loan" ? (editForm.counterpartyId || previousAccount?.counterpartyId || "") : "" };
     // 账单日由下方「账单日历史」表按生效日期保存，不随本表单提交 —— 否则表单里的旧值
     // 会把刚加的规则覆盖回去。还款日 / 交易归属期 仍走本表单。
     if (previousAccount?.kind === "bank_credit" && nextKind === "bank_credit") {
@@ -419,13 +431,15 @@ export default function SettingsAccountsPage() {
     const data = await res.json().catch(() => null) as {
       ok?: boolean;
       error?: string;
+      code?: string;
       data?: {
         affectedCreditAccountIds?: string[];
         creditCycleRuleChanged?: boolean;
       };
     } | null;
     if (!res.ok || data?.ok === false) {
-      setEditError(data?.error ?? t("settings.accounts.saveFailed"));
+      const lockKey = accountRecordLockErrorKey(data?.code);
+      setEditError(lockKey ? t(lockKey) : (data?.error ?? t("settings.accounts.saveFailed")));
       return;
     }
     // 保存成功后以当前表单为新基线，便于继续编辑/翻页；「保存并关闭」才关窗。
@@ -485,10 +499,12 @@ export default function SettingsAccountsPage() {
     const selectedInstitution = institutions.find((institution) => institution.id === editForm.institutionId);
     const keepInstitution = Boolean(selectedInstitution && accountInstitutionTypeMatches(nextKind, nextInvestProductType, selectedInstitution.type));
     const nextInstitutionId = keepInstitution ? (editForm.institutionId || "") : "";
+    const existingCounterpartyId = accounts.find((account) => account.id === editingId)?.counterpartyId || "";
     setEditForm((f) => ({
       ...f,
       kind: nextKind,
       institutionId: nextInstitutionId,
+      counterpartyId: nextKind === "settlement" ? (f.counterpartyId || existingCounterpartyId) : "",
       investProductType: nextInvestProductType,
       fixedAssetType: nextKind === "fixed_asset" ? (f.fixedAssetType || "property") : "",
     }));
@@ -1100,7 +1116,7 @@ export default function SettingsAccountsPage() {
           columns={accountTableColumns}
           rows={filteredAccounts}
           rowKey={(a) => a.id}
-          minTableWidth={1340}
+          minTableWidth={1260}
           fillHeight
           showFilters={false}
           sortable
@@ -1259,7 +1275,15 @@ export default function SettingsAccountsPage() {
         const showCostBasisMethod = isInvestmentKind && supportsCostBasisMethod(editInvestProductType);
         const isBillLikeKind = editKind === "bank_credit";
         const supportsLastFour = editKind === "bank_credit" || editKind === "bank_debit";
-        const editKindOptions = normalizedKind === "loan" || normalizedKind === "settlement" ? [...SETTINGS_ACCOUNT_KIND_OPTIONS, normalizedKind] : SETTINGS_ACCOUNT_KIND_OPTIONS;
+        const hasRecords = (editingAccount.recordCount ?? 0) > 0;
+        const kindEdit = accountKindOptionsForEdit({
+          currentKind: normalizedKind,
+          hasRecords,
+          emptyAccountKinds: SETTINGS_ACCOUNT_KIND_OPTIONS,
+        });
+        const editKindOptions = kindEdit.options;
+        const kindSelectDisabled = loanEditLocked || kindEdit.kindSelectDisabled;
+        const settlementCounterparties = counterparties.filter((counterparty) => isSettlementCounterpartyType(counterparty.type));
         const supportsInstitution = editKind !== "settlement" && allowedInstitutionTypesForEdit(editKind, editInvestProductType).length > 0;
         const filteredInstitutions = institutions.filter((institution) =>
           accountInstitutionTypeMatches(editKind, editInvestProductType, institution.type),
@@ -1319,7 +1343,7 @@ export default function SettingsAccountsPage() {
                   <select
                     value={editKind}
                     onChange={e => void changeEditKind(e.target.value)}
-                    disabled={loanEditLocked}
+                    disabled={kindSelectDisabled}
                     className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none disabled:bg-slate-50 disabled:text-slate-500"
                   >
                     {editKindOptions.map((value) => (
@@ -1353,12 +1377,28 @@ export default function SettingsAccountsPage() {
                     </div>
                   </div>
                 )}
+                {editKind === "settlement" && (
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">{t("txForm.counterparty")}</label>
+                    <select
+                      value={editForm.counterpartyId || ""}
+                      onChange={(e) => setEditForm((f) => ({ ...f, counterpartyId: e.target.value }))}
+                      disabled={loanEditLocked}
+                      className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none disabled:bg-slate-50 disabled:text-slate-500"
+                    >
+                      <option value="">{t("debtTx.placeholder.selectCounterparty")}</option>
+                      {settlementCounterparties.map((counterparty) => (
+                        <option key={counterparty.id} value={counterparty.id}>{counterparty.shortName?.trim() || counterparty.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <div>
                   <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.currency")}</label>
                   <select
                     value={normalizeCurrency(editForm.currency || baseCurrency)}
                     onChange={e => setEditForm(f => ({ ...f, currency: e.target.value }))}
-                    disabled={loanEditLocked}
+                    disabled={loanEditLocked || hasRecords}
                     className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none disabled:bg-slate-50 disabled:text-slate-500"
                   >
                     {CURRENCY_OPTIONS.map((option) => (
@@ -1392,7 +1432,8 @@ export default function SettingsAccountsPage() {
                           ...(isStockInvestmentAccount(editKind, nextInvestProductType) && selectedInstitution && !isStockAccountInstitutionType(selectedInstitution.type) ? { institutionId: "" } : {}),
                         };
                       })}
-                        className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none">
+                        disabled={hasRecords}
+                        className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none disabled:bg-slate-50 disabled:text-slate-500">
                         {investmentProductTypeOptions.map((item) => <option key={item.value} value={item.value}>{investmentLabel(item.value)}</option>)}
                       </select>
                     </div>
@@ -1667,6 +1708,8 @@ export default function SettingsAccountsPage() {
             </div>
           </div>
         );
+      })()}
+
       {/* ===== 软删除记录预览弹窗（待删列入口：预览 + 全选/逐条彻底删除） ===== */}
       {trashAccount && (() => {
         const allSelected = trashRecords.length > 0 && trashSelectedIds.length === trashRecords.length;
@@ -1728,7 +1771,7 @@ export default function SettingsAccountsPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {trashRecords.map((record) => {
+                            {trashRecords.map((record) => {
                         // 金额口径：amount 按发生账户侧存 raw；预览统一换算成「当前弹窗账户」方向（正=流入）。
                         const fromSelf = record.accountId === trashAccount.id;
                         const value = (Number(record.amount) || 0) * (fromSelf ? 1 : -1);

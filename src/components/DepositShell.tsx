@@ -68,6 +68,7 @@ type DepositLot = {
   remainingAmount: number;
   annualRate?: number | null;
   expectedInterest?: number | null;
+  takenInterest?: number | null;
   status: "open" | "closed";
   depositAccountId?: string;
   depositAccountLabel?: string;
@@ -381,6 +382,7 @@ export function DepositShell({
     { key: "interestPayoutFrequency", label: t("depositShell.colPayoutFrequency"), width: 110, minWidth: 88, hideable: true, filterText: (lot) => payoutFrequencyLabel(lot.interestPayoutFrequency), sortValue: (lot) => lot.interestPayoutFrequency ?? "", render: (lot) => <span className="text-slate-600">{payoutFrequencyLabel(lot.interestPayoutFrequency)}</span> },
     { key: "originalAmount", label: t("depositShell.colOriginalAmount"), width: 120, minWidth: 86, align: "right", hideable: true, filterKind: "numberRange", filterText: (lot) => String(lot.originalAmount), filterNumber: (lot) => lot.originalAmount, sortValue: (lot) => lot.originalAmount, render: (lot) => <span className="font-semibold tabular-nums text-slate-700">{formatMoney(lot.originalAmount)}</span> },
     { key: "expectedInterest", label: t("depositShell.colExpectedInterest"), width: 110, minWidth: 80, align: "right", hideable: true, filterKind: "numberRange", filterText: (lot) => lot.expectedInterest != null ? String(lot.expectedInterest) : null, filterNumber: (lot) => lot.expectedInterest ?? null, sortValue: (lot) => lot.expectedInterest ?? 0, render: (lot) => lot.expectedInterest != null ? <span className="font-semibold tabular-nums text-emerald-700">{formatMoney(lot.expectedInterest)}</span> : <span className="tabular-nums text-slate-400">-</span> },
+    { key: "takenInterest", label: t("depositShell.colTakenInterest"), width: 110, minWidth: 80, align: "right", hideable: true, filterKind: "numberRange", filterText: (lot) => lot.takenInterest != null && lot.takenInterest > 0 ? String(lot.takenInterest) : null, filterNumber: (lot) => lot.takenInterest ?? null, sortValue: (lot) => lot.takenInterest ?? 0, render: (lot) => lot.takenInterest != null && lot.takenInterest > 0 ? <span className="tabular-nums text-emerald-600">{formatMoney(lot.takenInterest)}</span> : <span className="tabular-nums text-slate-400">-</span> },
     { key: "annualRate", label: t("depositShell.colAnnualRate"), width: 100, minWidth: 72, align: "right", hideable: true, filterKind: "numberRange", filterText: (lot) => lot.annualRate != null ? String(lot.annualRate) : null, filterNumber: (lot) => lot.annualRate ?? null, sortValue: (lot) => lot.annualRate ?? 0, render: (lot) => <span className="tabular-nums text-slate-600">{lot.annualRate != null ? `${lot.annualRate}%` : "-"}</span> },
   ], [maturityActionLabel, payoutFrequencyLabel, t]);
 
@@ -419,6 +421,10 @@ export function DepositShell({
       const totalExpectedInterest = visibleLots.reduce((sum, lot) => sum + (lot.expectedInterest ?? 0), 0);
       if (totalExpectedInterest > 0) {
         cells.expectedInterest = <span className="font-semibold tabular-nums text-emerald-700">{formatMoney(totalExpectedInterest)}</span>;
+      }
+      const totalTakenInterest = visibleLots.reduce((sum, lot) => sum + (lot.takenInterest ?? 0), 0);
+      if (totalTakenInterest > 0) {
+        cells.takenInterest = <span className="font-semibold tabular-nums text-emerald-600">{formatMoney(totalTakenInterest)}</span>;
       }
     }
     return { cells, rowClassName: "bg-slate-50/80" };

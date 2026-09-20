@@ -33,7 +33,7 @@ export type DefaultCategoryTemplate = {
 };
 
 type CategoryWriter = typeof prisma | Prisma.TransactionClient;
-export const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-09-14-remove-deposit-investment-category-v3";
+export const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-09-17-deposit-product-master-v1";
 const DELETED_DEFAULT_CATEGORY_KEY_PREFIX = "category_deleted_default_templates:";
 
 type DefaultCategoryTemplateChild = {

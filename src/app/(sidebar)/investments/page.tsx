@@ -5,6 +5,7 @@ import Link from "next/link";
 
 import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { getInvestmentAccountView } from "@/lib/account-kind-utils";
+import { investProductTypeLabel } from "@/lib/account-kinds";
 import { prisma } from "@/lib/db/prisma";
 import { formatDateUtc } from "@/lib/date-utils";
 import { signedFundAmount } from "@/lib/fund/transactions";
@@ -29,16 +30,6 @@ const GROUP_MODES = [
 ] as const;
 
 type GroupMode = typeof GROUP_MODES[number]["key"];
-
-function investProductTypeLabel(type: string | null, t: (key: string) => string) {
-  if (type === "fund") return t("investment.product.fund");
-  if (type === "money") return t("investment.product.money");
-  if (type === "wealth") return t("investment.product.wealth");
-  if (type === "metal") return t("investment.product.metal");
-  if (type === "stock") return t("investment.product.stock");
-  if (type === "property") return t("investment.product.property");
-  return t("invest.productTypeDefault");
-}
 
 function toNumber(value: unknown) {
   const n = Number(value ?? 0);

@@ -40,6 +40,7 @@ type Entry = {
   amount: number;
   note?: string | null;
   fundName?: string | null;
+  depositProductId?: string | null;
   fundProductType?: string | null;
   fundSubtype?: string | null;
   accountId?: string | null;
@@ -56,6 +57,16 @@ type Entry = {
 };
 
 type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
+type DepositProductOption = {
+  id: string;
+  name: string;
+  shortName?: string | null;
+  currency?: string | null;
+  institutionId?: string | null;
+  annualRate?: number | null;
+  termDays?: number | null;
+  note?: string | null;
+};
 type AccountOption = {
   id: string;
   name?: string;
@@ -72,6 +83,7 @@ type RedeemLotOption = {
   label: string;
   subLabel?: string;
   fundName: string;
+  depositProductId?: string | null;
   startDate?: string | null;
   maturityDate?: string | null;
   remainingAmount: number;
@@ -83,6 +95,7 @@ type RedeemLotOption = {
 type EditingRedeemSource = {
   id: string;
   fundName: string;
+  depositProductId?: string | null;
   startDate?: string | null;
   maturityDate?: string | null;
   depositAccountId?: string;
@@ -161,6 +174,7 @@ export function DepositFormModal({
   const initAmount = mode === "edit" && entry ? String(Math.abs(entry.amount)) : "";
   const initDate = mode === "edit" && entry?.date ? entry.date.slice(0, 10) : today;
   const initName = mode === "edit" && entry?.fundName ? entry.fundName : "";
+  const initDepositProductId = mode === "edit" && entry?.depositProductId ? entry.depositProductId : "";
   const initMemo = mode === "edit" && entry?.note ? entry.note : "";
   const initTermDays =
     mode === "edit" && entry?.date && entry?.fundArrivalDate
@@ -191,6 +205,18 @@ export function DepositFormModal({
   const arrivalDateTouchedRef = useRef(mode === "edit");
   const [amount, setAmount] = useState(initAmount);
   const [fundName, setFundName] = useState(initName);
+  const [depositProductId, setDepositProductId] = useState(initDepositProductId);
+  const [depositProducts, setDepositProducts] = useState<DepositProductOption[]>([]);
+  const [productModalOpen, setProductModalOpen] = useState(false);
+  const [productSaving, setProductSaving] = useState(false);
+  const [productError, setProductError] = useState("");
+  const [productDraft, setProductDraft] = useState({
+    name: "",
+    shortName: "",
+    annualRate: "",
+    termDays: "",
+    note: "",
+  });
   const [annualRate, setAnnualRate] = useState("");
   const [exchangeRate, setExchangeRate] = useState("");
   const [cashAmount, setCashAmount] = useState("");
@@ -290,6 +316,79 @@ export function DepositFormModal({
     if (mode === "edit" && entry && openSignal) setOpen(true);
   }, [entry, mode, openSignal]);
 
+  const depositProductOptions: SmartSelectOption[] = useMemo(
+    () => depositProducts.map((product) => ({
+      id: product.id,
+      label: product.shortName?.trim() || product.name,
+      subLabel: product.shortName?.trim() ? product.name : undefined,
+    })),
+    [depositProducts],
+  );
+
+  function openDepositProductModal() {
+    const count = Math.trunc(parseNumber(termCount));
+    const draftTermDays = Number.isFinite(count) && count > 0 ? String(count * TERM_UNIT_DAYS[termUnit]) : "";
+    setProductDraft({
+      name: fundName.trim(),
+      shortName: "",
+      annualRate,
+      termDays: draftTermDays,
+      note: "",
+    });
+    setProductError("");
+    setProductModalOpen(true);
+  }
+
+  async function saveDepositProduct() {
+    const name = productDraft.name.trim();
+    if (!productInstitutionId) {
+      setProductError(t("txForm.alert.selectCashSourceAccount"));
+      return;
+    }
+    if (!name) {
+      setProductError(t("wealthForm.alert.enterProductName"));
+      return;
+    }
+    setProductSaving(true);
+    setProductError("");
+    try {
+      const res = await fetch("/api/v1/deposit-products", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          shortName: productDraft.shortName.trim() || undefined,
+          institutionId: productInstitutionId || undefined,
+          currency: selectedDepositAccount?.currency ?? selectedCashAccount?.currency ?? "CNY",
+          annualRate: productDraft.annualRate || undefined,
+          termDays: productDraft.termDays || undefined,
+          note: productDraft.note.trim() || undefined,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!data?.ok || !data.product) throw new Error(data?.error ?? t("depositForm.alert.createProductFailed"));
+      const product = data.product as DepositProductOption;
+      setDepositProducts((prev) => {
+        const next = prev.filter((item) => item.id !== product.id);
+        next.push(product);
+        return next.sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+      });
+      setDepositProductId(product.id);
+      setFundName(product.name);
+      if (product.annualRate != null && !annualRate.trim()) setAnnualRate(String(product.annualRate));
+      if (product.termDays != null && !termCount.trim()) {
+        const termSplit = splitTermDays(Number(product.termDays));
+        setTermUnit(termSplit.unit);
+        setTermCount(String(termSplit.count));
+      }
+      setProductModalOpen(false);
+    } catch (err) {
+      setProductError(err instanceof Error ? err.message : t("depositForm.alert.createProductFailed"));
+    } finally {
+      setProductSaving(false);
+    }
+  }
+
   const redeemDepositOptions = useMemo(
     () => depositAccountList.filter((option) => isDepositLikeOption(option)),
     [depositAccountList],
@@ -308,6 +407,7 @@ export function DepositFormModal({
         .filter(Boolean)
         .join(" · "),
       fundName: editingRedeemSource.fundName,
+      depositProductId: editingRedeemSource.depositProductId ?? null,
       startDate: editingRedeemSource.startDate,
       maturityDate: editingRedeemSource.maturityDate,
       remainingAmount: editingRedeemSource.restoredRemainingAmount,
@@ -385,9 +485,61 @@ export function DepositFormModal({
     () => depositAccountList.find((option) => option.id === depositAccountId) ?? null,
     [depositAccountId, depositAccountList],
   );
+  const productInstitutionId = selectedDepositAccount?.institutionId
+    ?? selectedCashAccount?.institutionId
+    ?? contextInstitutionId
+    ?? null;
   const cashCurrency = (selectedCashAccount?.currency || "CNY").toUpperCase();
   const depositCurrency = (selectedDepositAccount?.currency || "CNY").toUpperCase();
   const showCurrencyConversion = !isRedeem && !!cashAccountId && !!depositAccountId && cashCurrency !== depositCurrency;
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    const institutionId = productInstitutionId ?? "";
+    if (!institutionId) {
+      setDepositProducts([]);
+      if (depositProductId) {
+        setDepositProductId("");
+        setFundName("");
+      }
+      return () => { cancelled = true; };
+    }
+    const url = "/api/v1/deposit-products?institutionId=" + encodeURIComponent(institutionId);
+    void fetch(url, { cache: "no-store" })
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled || !data?.ok) return;
+        const products = (data.products ?? []) as DepositProductOption[];
+        if (depositProductId && !products.some((product) => product.id === depositProductId)) {
+          setDepositProductId("");
+          setFundName("");
+        }
+        setDepositProducts((prev) => {
+          const selectedLocal = prev.filter((product) =>
+            product.institutionId === institutionId && (
+              product.id === depositProductId ||
+              (!!fundName && (product.name === fundName || product.shortName === fundName))
+            ),
+          );
+          const merged = [...products];
+          const seen = new Set(merged.map((item) => item.id));
+          for (const item of selectedLocal) {
+            if (!seen.has(item.id)) {
+              merged.push(item);
+              seen.add(item.id);
+            }
+          }
+          return merged;
+        });
+        if (!depositProductId && fundName) {
+          const matched = products.find((product) => product.name === fundName || product.shortName === fundName);
+          if (matched) setDepositProductId(matched.id);
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [depositProductId, fundName, open, productInstitutionId]);
   const redeemInstitutionId = useMemo(
     () => depositAccountList.find((option) => option.id === depositAccountId)?.institutionId ?? null,
     [depositAccountId, depositAccountList],
@@ -471,13 +623,13 @@ export function DepositFormModal({
     defaultRedeemLotId?: string;
   }) => {
     const nextDepositAccountId = resolveDefaultRedeemDepositAccount(detail?.defaultDepositAccountId);
-    // explicit lot id wins (the lot-row "redeem" button goes this way); otherwise pick one by deposit account.
+    // 显式指定存单优先（存单行「取回」按钮走这条）；否则按存款账户挑一张默认。
     const explicitLotId = detail?.defaultRedeemLotId;
     const requestedLot = explicitLotId ? redeemLotOptions.find((lot) => lot.id === explicitLotId) : undefined;
     const nextRedeemLotId = requestedLot
       ? requestedLot.id
       : resolveDefaultRedeemLot(nextDepositAccountId);
-    // When a lot is explicitly given, trust its own deposit account to avoid a mismatch.
+    // 指定存单时以它自己的存款账户为准，避免账户与存单不匹配。
     const effectiveDepositAccountId = requestedLot?.depositAccountId || nextDepositAccountId;
     setSubtype("redeem");
     setArrivalDate(date || today);
@@ -564,6 +716,7 @@ export function DepositFormModal({
     arrivalDateTouchedRef.current = false;
     setAmount("");
     setFundName("");
+    setDepositProductId("");
     setAnnualRate("");
     setExchangeRate("");
     setCashAmount("");
@@ -625,6 +778,7 @@ export function DepositFormModal({
         cashAccountId?: string;
         toAccountId?: string;
         fundName?: string;
+        depositProductId?: string | null;
         fundNav?: number | null;
         depositAnnualRate?: number | null;
         depositInterest?: number | null;
@@ -654,6 +808,7 @@ export function DepositFormModal({
           : Math.abs(detail.amount ?? 0);
       setAmount(redeemPrincipalAmount > 0 ? String(redeemPrincipalAmount) : "");
       setFundName(detail.fundName ?? "");
+      setDepositProductId(detail.depositProductId ?? "");
       const detailAnnualRate = detail.depositAnnualRate ?? detail.fundNav ?? null;
       setAnnualRate(detailAnnualRate != null ? String(detailAnnualRate) : "");
       setMemo(detail.note ?? "");
@@ -703,6 +858,7 @@ export function DepositFormModal({
             ? {
                 id: restoredLotId,
                 fundName: detail.fundName ?? matchedLot?.fundName ?? t("depositForm.unnamedDeposit"),
+                depositProductId: detail.depositProductId ?? matchedLot?.depositProductId ?? null,
                 startDate: matchedLot?.startDate ?? null,
                 maturityDate: matchedLot?.maturityDate ?? null,
                 depositAccountId: detail.accountId ?? matchedLot?.depositAccountId ?? defaultAccountId,
@@ -814,6 +970,7 @@ export function DepositFormModal({
   useEffect(() => {
     if (!isRedeem || !selectedRedeemLot) return;
     setFundName(selectedRedeemLot.fundName);
+    setDepositProductId(selectedRedeemLot.depositProductId ?? "");
     setInterestEdited(false);
     setArrivalEdited(false);
     setAnnualRate(
@@ -917,7 +1074,6 @@ export function DepositFormModal({
 
   function resetAfterKeepAdding() {
     setAmount("");
-    setFundName("");
     setCashAmount("");
     setInterestAmount("");
     setArrivalAmount("");
@@ -936,8 +1092,8 @@ export function DepositFormModal({
       window.alert(t("wealthForm.alert.enterAmount"));
       return;
     }
-    if (!fundName.trim()) {
-      window.alert(t("wealthForm.alert.enterProductName"));
+    if (!isRedeem && !depositProductId && !fundName.trim()) {
+      window.alert(t("depositForm.alert.selectOrCreateProductName"));
       return;
     }
     if (isRedeem && !selectedRedeemLotId) {
@@ -970,6 +1126,7 @@ export function DepositFormModal({
       }
       fd.set("amount", String(isRedeem ? redeemAmount : cashAmt));
       fd.set("fundName", fundName.trim());
+      if (depositProductId) fd.set("depositProductId", depositProductId);
       fd.set("note", memo);
       if (depositAccountId) fd.set("accountId", depositAccountId);
       fd.set("cashAccountId", cashAccountId);
@@ -1235,11 +1392,25 @@ export function DepositFormModal({
               ) : (
                 <div className="space-y-1">
                   <div className="form-label">{t("wealthForm.productName")}</div>
-                  <input
-                    value={fundName}
-                    onChange={(e) => setFundName(e.target.value)}
-                    placeholder={t("depositForm.productNamePlaceholder")}
-                    className="form-input"
+                  <SmartSelect
+                    mode="single"
+                    value={depositProductId}
+                    onChange={(id) => {
+                      setDepositProductId(id);
+                      const product = depositProducts.find((item) => item.id === id);
+                      setFundName(product?.name ?? "");
+                      if (product?.annualRate != null && !annualRate.trim()) setAnnualRate(String(product.annualRate));
+                      if (product?.termDays != null && !termCount.trim()) {
+                        const termSplit = splitTermDays(Number(product.termDays));
+                        setTermUnit(termSplit.unit);
+                        setTermCount(String(termSplit.count));
+                      }
+                    }}
+                    options={depositProductOptions}
+                    placeholder={depositProductOptions.length > 0 ? t("depositForm.selectProduct") : t("depositForm.noProductClickAdd")}
+                    searchable
+                    onCreateClick={() => openDepositProductModal()}
+                    createLabel={t("depositForm.addProduct")}
                   />
                 </div>
               )}
@@ -1358,7 +1529,7 @@ export function DepositFormModal({
                 // 每一行都填满、不留空白格：
                 //   到期一次付 → [到期行为][取息周期]
                 //   按周/按年 → [到期行为][取息周期] / [取息间隔（跨两列）]
-                //   按月     → [到期行为][取息周期] / [取息间隔][计息方式]
+                //   按月     → [到期行为][取息周期] / [计息方式][取息间隔]
                 <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2">
                   <div className="space-y-1">
                     <div className="form-label">{t("deposit.maturityAction.label")}</div>
@@ -1411,11 +1582,38 @@ export function DepositFormModal({
                       <option value="year">{t("deposit.payoutFrequency.yearly")}</option>
                     </select>
                   </div>
+                  {/* 计息方式仅按月取息时出现：月均/日均的分母差异只在月频率下体现。 */}
+                  {isPeriodicInterestPayout && interestPayoutUnit === "month" ? (
+                    <div className="space-y-1">
+                      <div className="form-label">{t("deposit.calcBasis.label")}</div>
+                      <select
+                        value={interestCalcBasis}
+                        onChange={(e) => setInterestCalcBasis(e.target.value === "monthly" ? "monthly" : "daily")}
+                        className="form-input w-full"
+                        aria-label={t("deposit.calcBasis.label")}
+                        title={t("deposit.calcBasis.label")}
+                      >
+                        <option value="daily">{t("deposit.calcBasis.daily")}</option>
+                        <option value="monthly">{t("deposit.calcBasis.monthly")}</option>
+                      </select>
+                      <div className="text-[11px] text-slate-400">
+                        {!showGuideHints
+                          ? ""
+                          : interestCalcBasis === "monthly"
+                            ? t("deposit.calcBasis.monthlyHint")
+                            : t("deposit.payoutFrequency.periodicHint", {
+                                interval: String(Math.trunc(parseNumber(interestPayoutInterval)) || 1),
+                                unit: t("depositForm.termUnit.month"),
+                                max: String(maxInterestPayoutInterval),
+                              })}
+                      </div>
+                    </div>
+                  ) : null}
                   {isPeriodicInterestPayout ? (
                     <div
                       className={`space-y-1 ${
                         // 按周/按年取息没有「计息方式」，间隔独占这一行、跨满两列；
-                        // 按月取息时间隔与计息方式各占一列，凑满同一行。
+                        // 按月取息时计息方式与间隔各占一列，凑满同一行。
                         interestPayoutUnit === "month" ? "" : "sm:col-span-2"
                       }`}
                     >
@@ -1456,33 +1654,6 @@ export function DepositFormModal({
                               })}
                         </div>
                       )}
-                    </div>
-                  ) : null}
-                  {/* 计息方式仅按月取息时出现：月均/日均的分母差异只在月频率下体现。 */}
-                  {isPeriodicInterestPayout && interestPayoutUnit === "month" ? (
-                    <div className="space-y-1">
-                      <div className="form-label">{t("deposit.calcBasis.label")}</div>
-                      <select
-                        value={interestCalcBasis}
-                        onChange={(e) => setInterestCalcBasis(e.target.value === "monthly" ? "monthly" : "daily")}
-                        className="form-input w-full"
-                        aria-label={t("deposit.calcBasis.label")}
-                        title={t("deposit.calcBasis.label")}
-                      >
-                        <option value="daily">{t("deposit.calcBasis.daily")}</option>
-                        <option value="monthly">{t("deposit.calcBasis.monthly")}</option>
-                      </select>
-                      <div className="text-[11px] text-slate-400">
-                        {!showGuideHints
-                          ? ""
-                          : interestCalcBasis === "monthly"
-                            ? t("deposit.calcBasis.monthlyHint")
-                            : t("deposit.payoutFrequency.periodicHint", {
-                                interval: String(Math.trunc(parseNumber(interestPayoutInterval)) || 1),
-                                unit: t("depositForm.termUnit.month"),
-                                max: String(maxInterestPayoutInterval),
-                              })}
-                      </div>
                     </div>
                   ) : null}
                   {/* 到期一次付：取息说明跟在取息周期下方（此时没有间隔/计息方式）。 */}
@@ -1612,18 +1783,19 @@ export function DepositFormModal({
                 const optionSubLabel = kindLabel(createdKind);
                 const groupId = extra?.groupId;
                 const groupName = extra?.groupName;
-                const extraWithCurrency = extra as typeof extra & { currency?: unknown };
+                const extraWithCurrency = extra as typeof extra & { currency?: unknown; institutionId?: unknown };
                 const currency = extraWithCurrency?.currency ? String(extraWithCurrency.currency) : "CNY";
+                const institutionId = extraWithCurrency?.institutionId ? String(extraWithCurrency.institutionId) : null;
 
                 if (nestedEntityType === "cash-account") {
-                  const flat = { id, label: optionLabel, subLabel: optionSubLabel, currency };
+                  const flat = { id, label: optionLabel, subLabel: optionSubLabel, currency, institutionId };
                   setCashAccountList((prev) => appendFlatOption(prev, flat));
                   setLocalCashSSOpts((prev) =>
                     appendSmartSelectOption(prev, { id, label: optionLabel, subLabel: optionSubLabel }, groupId, groupName),
                   );
                   setCashAccountId(id);
                 } else {
-                  const flat = { id, label: optionLabel, subLabel: optionSubLabel, currency };
+                  const flat = { id, label: optionLabel, subLabel: optionSubLabel, currency, institutionId };
                   setDepositAccountList((prev) => appendFlatOption(prev, flat));
                   setLocalDepositSSOpts((prev) =>
                     appendSmartSelectOption(prev, { id, label: optionLabel, subLabel: optionSubLabel }, groupId, groupName),
@@ -1645,6 +1817,100 @@ export function DepositFormModal({
             document.body,
           )
         : null}
+      {productModalOpen ? createPortal(
+        <div className="app-modal-backdrop" style={{ zIndex: getNextModalLayerZIndex(modalZIndex) }}>
+          <div className="app-modal-panel max-w-[min(30rem,calc(100vw-1rem))]">
+            <div className="modal-header">
+              <div>
+                <div className="text-sm font-semibold text-slate-800">{t("depositForm.addProduct")}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setProductModalOpen(false)}
+                className="secondary-button h-8 px-2"
+              >
+                {t("table.close")}
+              </button>
+            </div>
+            <div className="space-y-3 p-3 sm:p-4">
+              <div className="space-y-1">
+                <div className="form-label">{t("wealthForm.productName")}</div>
+                <input
+                  value={productDraft.name}
+                  onChange={(e) => setProductDraft((prev) => ({ ...prev, name: e.target.value }))}
+                  placeholder={t("depositForm.productNamePlaceholder")}
+                  className="form-input"
+                  autoFocus
+                />
+              </div>
+              {productError ? (
+                <div className="rounded-[10px] border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                  {productError}
+                </div>
+              ) : null}
+              <div className="space-y-1">
+                <div className="form-label">{t("wealthForm.shortName")}</div>
+                <input
+                  value={productDraft.shortName}
+                  onChange={(e) => setProductDraft((prev) => ({ ...prev, shortName: e.target.value }))}
+                  placeholder={t("wealthForm.shortNamePlaceholder")}
+                  className="form-input"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <div className="form-label">{t("depositForm.annualRatePercent")}</div>
+                  <input
+                    inputMode="decimal"
+                    value={productDraft.annualRate}
+                    onChange={(e) => setProductDraft((prev) => ({ ...prev, annualRate: e.target.value }))}
+                    placeholder={t("depositForm.rateExample")}
+                    className="form-input"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <div className="form-label">{t("wealthForm.termDays")}</div>
+                  <input
+                    inputMode="numeric"
+                    value={productDraft.termDays}
+                    onChange={(e) => setProductDraft((prev) => ({ ...prev, termDays: e.target.value }))}
+                    placeholder={t("stockFee.optional")}
+                    className="form-input"
+                  />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <div className="form-label">{t("detail.column.remark")}</div>
+                <ClearableNoteField
+                  value={productDraft.note}
+                  onValueChange={(value) => setProductDraft((prev) => ({ ...prev, note: value }))}
+                  placeholder={t("stockFee.optional")}
+                  className="form-input"
+                />
+              </div>
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setProductModalOpen(false)}
+                  className="secondary-button h-9 px-4 text-sm"
+                  disabled={productSaving}
+                >
+                  {t("common.cancel")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { void saveDepositProduct(); }}
+                  disabled={productSaving}
+                  className="primary-button h-9 px-4 text-sm disabled:opacity-50"
+                >
+                  {productSaving ? t("txForm.saving") : t("wealthForm.saveAndSelect")}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      ) : null}
     </ModalLayerProvider>
   );
 }

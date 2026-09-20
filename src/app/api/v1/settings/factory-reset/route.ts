@@ -71,6 +71,7 @@ export async function POST(req: NextRequest) {
     await tx.insuranceProduct.deleteMany();
     await tx.insuranceProductMaster.deleteMany();
     await tx.wealthProduct.deleteMany();
+    await tx.depositProduct.deleteMany();
 
     await tx.fundHolding.deleteMany();
     await tx.fundSnapshot.deleteMany();

@@ -25,6 +25,7 @@ import {
   parseAllowedAccessList,
 } from "@/lib/access-whitelist";
 import { useI18n } from "@/lib/i18n";
+import { RESTORE_UPLOAD_LIMIT_BYTES, RESTORE_UPLOAD_LIMIT_LABEL } from "@/lib/backup-upload-limit";
 
 type I18nT = (key: string, params?: Record<string, string | number>) => string;
 
@@ -88,6 +89,7 @@ type SettingsValuesResult = {
 
 type RestoreResponse = {
   ok?: boolean;
+  code?: string;
   error?: string;
   message?: string;
   restoreId?: string;
@@ -444,7 +446,10 @@ function restoreDataBackup(
     xhr.onload = async () => {
       const data = parseRestoreResponseText(xhr.responseText);
       if (xhr.status < 200 || xhr.status >= 300 || !data?.ok) {
-        reject(new Error(data?.error || t("settings.database.restoreFailedHttp", { status: xhr.status })));
+        const errorMessage = data?.code === "FILE_TOO_LARGE"
+          ? t("settings.database.restoreFileTooLarge", { size: RESTORE_UPLOAD_LIMIT_LABEL })
+          : (data?.error || t("settings.database.restoreFailedHttp", { status: xhr.status }));
+        reject(new Error(errorMessage));
         return;
       }
       const restoreId = data.restoreId || data.task?.id;
@@ -1103,6 +1108,10 @@ export default function DatabaseSettingsPage() {
     }
     if (restoreBackupScope === "system" && !restoreConfirmSystemOverwrite) {
       setRestoreError(t("settings.database.systemBackupConfirm"));
+      return;
+    }
+    if (restoreFile.size > RESTORE_UPLOAD_LIMIT_BYTES) {
+      setRestoreError(t("settings.database.restoreFileTooLarge", { size: RESTORE_UPLOAD_LIMIT_LABEL }));
       return;
     }
 

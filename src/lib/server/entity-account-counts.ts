@@ -11,9 +11,10 @@ import { prisma } from "@/lib/db/prisma";
  *   product references it (`InsuranceProduct.institutionId` for the insurer,
  *   `InsurancePolicy` isn't a thing here — the actual pass uses
  *   `InsuranceProduct.institutionId` / `policyholderPersonId` / `insuredPersonId`).
- *   Family members own their account links through the owner group
- *   (`AccountGroup.name` matched by name), not through `institutionId` — so their
- *   count is the number of accounts they own (a single account has exactly one owner).
+ *   Family members own their account links through the owner group, not through
+ *   `institutionId`: primarily the `AccountGroup.institutionId` FK, falling back to
+ *   owner-group name matching for legacy unlinked groups — so their count is the
+ *   number of accounts they own (a single account has exactly one owner).
  * - Counterparty: accounts whose `counterpartyId` points at it, PLUS accounts linked
  *   through the mirrored institution (`Counterparty.sourceInstitutionId`). Historical
  *   settlement (wanglai) accounts were created before `Counterparty` existed and only
@@ -32,7 +33,7 @@ export type AccountLinkRow = {
   counterpartyId?: string | null;
   isPlaceholder?: boolean;
   groupId?: string | null;
-  AccountGroup?: { name?: string | null } | null;
+  AccountGroup?: { name?: string | null; institutionId?: string | null } | null;
 };
 
 export type InstitutionLinkRow = {
@@ -82,7 +83,7 @@ const ACCOUNT_LINK_SELECT_WITH_OWNER = {
   institutionId: true,
   counterpartyId: true,
   isPlaceholder: true,
-  AccountGroup: { select: { name: true } },
+  AccountGroup: { select: { name: true, institutionId: true } },
 } as const;
 
 function isCountableAccount(account: { isPlaceholder?: boolean }) {
@@ -111,7 +112,8 @@ function institutionTypeById(id: string, institutions: readonly InstitutionLinkR
  * reference a non-family institution.
  *
  * Family members (`type === "family_member"`) are counted by ownership: the distinct
- * accounts whose `AccountGroup.name` (after trimming) equals the member's name.
+ * accounts whose owner group is linked to them via `AccountGroup.institutionId`,
+ * falling back to owner-group name matching for legacy unlinked groups.
  * Insurance policy membership does NOT add extra counts for a family member — an
  * account has exactly one owner, and the sums across all family members equal the
  * total owned (non-placeholder) accounts.
@@ -141,11 +143,17 @@ export function countAccountsByInstitution(
     ensureSet(accountIdsByInstitutionId, account.institutionId).add(account.id);
   }
 
-  // Pass 2: family ownership. Count each owned account toward every family member
-  // whose name matches the account's owner group name.
+  // Pass 2: family ownership, FK-first. An owner group linked to a family member
+  // (AccountGroup.institutionId) attributes the account to that member directly;
+  // legacy groups without the link fall back to the owner-group name matching.
   for (const account of accounts) {
     if (!isCountableAccount(account)) continue;
-    const ownerName = account.AccountGroup?.name?.trim();
+    const owner = account.AccountGroup;
+    if (owner?.institutionId && institutionTypeById(owner.institutionId, institutions) === "family_member") {
+      ensureSet(accountIdsByInstitutionId, owner.institutionId).add(account.id);
+      continue;
+    }
+    const ownerName = owner?.name?.trim();
     if (!ownerName) continue;
     const memberIds = familyByName.get(ownerName);
     if (memberIds) {

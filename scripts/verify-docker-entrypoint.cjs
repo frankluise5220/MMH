@@ -27,7 +27,7 @@ expect(/ensure_session_secret/.test(entrypoint), "Docker entrypoint must generat
 
 expect(/_mmh_schema_meta/.test(entrypoint) && /refuse_if_schema_newer/.test(entrypoint), "Docker entrypoint must run the schema downgrade protection check before touching the database schema.");
 expect(/REFUSING TO START/.test(entrypoint) && /exit 78/.test(entrypoint), "Docker entrypoint must refuse to start when the database schema is newer than the image.");
-expect(/record_schema_version "\$build_version"/.test(entrypoint), "Docker entrypoint must record the image schema version after a successful schema sync.");
+expect(/record_schema_version "\$\(get_build_version\)"/.test(entrypoint), "Docker entrypoint must record the image schema version after a successful schema sync.");
 expect(
   /attempt=1/.test(entrypoint) && /while \[ "\$attempt" -le 3 \]/.test(entrypoint) && entrypoint.includes("record_schema_version"),
   "Docker entrypoint must retry the schema meta table ensure and version record (a transient DB timeout on 2026-09-14 silently disabled downgrade protection on a production deployment).",
@@ -66,6 +66,14 @@ for (const [name, compose] of [
     `${name} must define an app healthcheck against /api/health with a startup grace period.`,
   );
 }
+for (const [name, compose] of [
+  ["repo docker-compose.yml", rootCompose],
+  ["NAS docker-compose.yml", nasCompose],
+]) {
+  expect(/^name:\s*mmh\s*$/m.test(compose), `${name} must pin the Compose project name to mmh.`);
+}
+expect(/COMPOSE_PROJECT_NAME="mmh"/.test(nasEnvExample), "NAS env.example must pin COMPOSE_PROJECT_NAME to mmh.");
+expect(/MMH_COMPOSE_PROJECT="mmh"/.test(nasEnvExample), "NAS env.example must pin MMH_COMPOSE_PROJECT to mmh.");
 expect(/MMH_APP_MEMORY_LIMIT="1536m"/.test(nasEnvExample), "NAS env.example must expose the Docker app memory limit.");
 expect(/MMH_NODE_MAX_OLD_SPACE_MB="auto"/.test(nasEnvExample), "NAS env.example must expose the auto Node old-space limit.");
 expect(/PG_POOL_MAX="4"/.test(nasEnvExample), "NAS env.example must expose the PostgreSQL pool size.");
@@ -129,6 +137,36 @@ expect(
     /retrying in 3s/.test(entrypoint) &&
     /starting anyway so MMH stays available/.test(entrypoint),
   "Docker entrypoint must retry prisma db push and still start the app when schema sync fails instead of hard-exiting.",
+);
+
+expect(
+  /schema already at \$build_version; skipping prisma db push/.test(entrypoint) &&
+    /drop_empty_prisma_copy_tables/.test(entrypoint) &&
+    entrypoint.indexOf("drop_empty_prisma_copy_tables") < entrypoint.indexOf("schema already at $build_version; skipping prisma db push."),
+  "Docker entrypoint must drop empty Prisma leftover copy tables even when the schema version already matches.",
+);
+
+expect(
+  /leaving nonempty Prisma leftover table/.test(entrypoint) &&
+    /refusing to drop it/.test(entrypoint) &&
+    /nonempty Prisma leftover copy tables exist; skipping prisma db push/.test(entrypoint) &&
+    !/DROP TABLE IF EXISTS \$\{table\};[\s\S]*row_count/.test(entrypoint.replace(/if \[ "\$row_count" = "0" \]; then[\s\S]*DROP TABLE IF EXISTS \$\{table\};/, "")),
+  "Docker entrypoint must never drop nonempty Prisma leftover copy tables, and must skip db push while they remain.",
+);
+
+expect(
+  /ensure_auth_version_column/.test(entrypoint) &&
+    /ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "authVersion"/.test(entrypoint) &&
+    entrypoint.indexOf("ensure_auth_version_column") > entrypoint.indexOf("run_compat_migrations") &&
+    entrypoint.indexOf("ensure_auth_version_column") < entrypoint.indexOf("prisma db push >"),
+  "Docker entrypoint must ensure User.authVersion after compatibility migrations and before schema sync.",
+);
+
+expect(
+  /push_would_change_existing_data/.test(entrypoint) &&
+    /not retrying/.test(entrypoint) &&
+    /would change existing data; not retrying/.test(entrypoint),
+  "Docker entrypoint must not retry prisma db push when the plan would change or drop existing data.",
 );
 
 expect(/npm run check:docker/.test(workflow), "Docker image workflow must run check:docker before publishing images.");

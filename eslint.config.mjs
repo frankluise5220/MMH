@@ -33,6 +33,7 @@ const eslintConfig = defineConfig([
     // Local scratch / IDE
     ".obsidian/**",
     ".kombai/**",
+    ".workbuddy-ai/**",
     "AI_CONTEXT.md",
     "page-backup.tsx",
     "patch*.txt",

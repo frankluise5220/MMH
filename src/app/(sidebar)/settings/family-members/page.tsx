@@ -5,6 +5,7 @@ import {
   assertInstitutionDisplayNamesUnique,
   isInstitutionNameUniqueError,
 } from "@/lib/server/institution-name-unique";
+import { pairGroupForMember } from "@/lib/server/account-group-member-pairing";
 import { SettingsInstitutionsClient } from "../institutions/client";
 import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 import { loadInstitutionAccountCounts, withAccountCounts } from "@/lib/server/entity-account-counts";
@@ -33,6 +34,18 @@ async function updateFamilyMemberRow(formData: FormData) {
         data: { name, shortName: shortName || null, type: "family_member" },
       });
       if (updated.count === 0) throw new Error("Family member not found");
+      // Rename the paired owner group in lockstep (FK-based), so the member
+      // keeps its identity on the account-owner side.
+      await tx.accountGroup.updateMany({
+        where: { institutionId, householdId },
+        data: { name },
+      });
+      // A member without any paired group gets one so it stays selectable as
+      // an account owner (adopts a same-named unlinked group if present).
+      const linkedGroups = await tx.accountGroup.count({ where: { institutionId, householdId } });
+      if (linkedGroups === 0) {
+        await pairGroupForMember(tx, householdId, { id: institutionId, name });
+      }
     });
   } catch (error) {
     if (isInstitutionNameUniqueError(error)) return { ok: false, error: error.message };

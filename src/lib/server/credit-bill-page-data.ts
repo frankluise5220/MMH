@@ -1077,6 +1077,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
             fundCode: e.fundCode,
             fundName: e.fundName,
             wealthProductId: e.wealthProductId ?? null,
+            depositProductId: e.depositProductId ?? null,
             source: e.source,
             insuranceProductId: e.insuranceProductId ?? null,
             debtPrincipalAmount: e.debtPrincipalAmount != null ? toNumber(e.debtPrincipalAmount) : null,

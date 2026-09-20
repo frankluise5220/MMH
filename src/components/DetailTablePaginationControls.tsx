@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { DateStepper } from "@/components/DateStepper";
@@ -63,9 +63,27 @@ export function DetailTablePaginationControls({
     if (!detailAll && clamped !== safePage) onPageChange(clamped);
   };
 
+  // 键盘分段修改已选日期时，每敲一位都是一次「完整日期」变更（如把 2026 改成
+  // 2027 会先经历 0002→0020→0202→2027）。逐次发起定位会让页面随中间值跳页、
+  // 并在输入过程中反复禁用输入框（表现为「第二次就打不了字」）。收敛为停顿后
+  // 用最终值定位一次；日历点选本就是最终值，仅多等 300ms，无感。
+  const locateTimerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (locateTimerRef.current != null) window.clearTimeout(locateTimerRef.current);
+  }, []);
+
   const handleLocateDateChange = (nextValue: string) => {
+    if (nextValue === locateDate) return;
     setLocateDate(nextValue);
-    if (nextValue) onLocateDate?.(nextValue);
+    if (locateTimerRef.current != null) {
+      window.clearTimeout(locateTimerRef.current);
+      locateTimerRef.current = null;
+    }
+    if (!nextValue) return;
+    locateTimerRef.current = window.setTimeout(() => {
+      locateTimerRef.current = null;
+      onLocateDate?.(nextValue);
+    }, 300);
   };
 
   return (
@@ -137,13 +155,12 @@ export function DetailTablePaginationControls({
       {onLocateDate ? (
         <>
           <span className="mx-0.5 text-slate-300">|</span>
-          <div className="w-32" title={t("pagination.locateDateTitle")}>
+          <div className="w-fit" title={t("pagination.locateDateTitle")}>
             <DateStepper
               compact
               value={locateDate}
-              disabled={locateDateBusy}
               onChange={handleLocateDateChange}
-              className="!h-7 !min-h-0 !rounded !px-2 !pr-8 !text-xs"
+              className={`!h-7 !min-h-0 !w-[7.5rem] !rounded !pl-1 !pr-6 !text-xs ${locateDateBusy ? "!bg-slate-50" : ""}`}
             />
           </div>
         </>

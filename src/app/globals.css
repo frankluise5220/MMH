@@ -235,6 +235,27 @@ html {
   .date-stepper-input::-webkit-calendar-picker-indicator {
     opacity: 0;
     pointer-events: none;
+    /* 回收原生图标的布局占位（自定义日历按钮已覆盖该区域）：窄容器（如
+       明细「定位到日期」）里这段占位会把日期文本挤出可视范围。 */
+    width: 0;
+    padding: 0;
+    margin-left: 0;
+  }
+
+  .date-stepper-input::-webkit-datetime-edit,
+  .date-stepper-input::-webkit-datetime-edit-fields-wrapper,
+  .date-stepper-input::-webkit-datetime-edit-text,
+  .date-stepper-input::-webkit-datetime-edit-year-field,
+  .date-stepper-input::-webkit-datetime-edit-month-field,
+  .date-stepper-input::-webkit-datetime-edit-day-field {
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  .date-stepper-input::-webkit-datetime-edit,
+  .date-stepper-input::-webkit-datetime-edit-fields-wrapper {
+    width: auto;
+    display: inline-flex;
   }
 
   .form-textarea {

@@ -17,6 +17,25 @@ type AccountFlowEntryLike = BalanceReconcileEntryLike & {
   toAccountId?: string | null;
 };
 
+/** 债务账户是转入方：还款/提前还款/借出。资金账户是转入方的收回/借入不能走本金。 */
+const DEBT_ACCOUNT_RECEIVING_SOURCES = new Set([
+  "debt_repay_out",
+  "debt_prepay_out",
+  "debt_lend_out",
+  "scheduled_task",
+]);
+
+function isDebtAccountReceivingSide(entry: AccountFlowEntryLike, accountId?: string | null) {
+  if (!accountId || entry.toAccountId !== accountId || entry.debtPrincipalAmount == null) return false;
+  const source = String(entry.source ?? "");
+  // 收回/借入：toAccount 是资金账户，资金侧必须走本息合计（amount），不能用本金覆盖。
+  if (source === "debt_collect_in" || source === "debt_borrow_in" || source === "debt_financed_purchase") {
+    return false;
+  }
+  // 有明确债务 source 时，只有债务账户转入才用本金；无 source 的历史行沿用「转入方=本金」旧启发式。
+  return !source || DEBT_ACCOUNT_RECEIVING_SOURCES.has(source);
+}
+
 export function encodeBalanceReconcileTarget(balance: number) {
   return `${TARGET_PREFIX}${Number(balance).toFixed(2)}`;
 }
@@ -32,8 +51,7 @@ export function effectiveAmountForAccount(entry: AccountFlowEntryLike, accountId
   const target = getBalanceReconcileTarget(entry);
   if (target != null) return 0;
   const amount = toNumber(entry.amount);
-  const isDebtReceivingSide = accountId && entry.toAccountId === accountId && entry.debtPrincipalAmount != null;
-  if (isDebtReceivingSide) return toNumber(entry.debtPrincipalAmount);
+  if (isDebtAccountReceivingSide(entry, accountId)) return toNumber(entry.debtPrincipalAmount);
   return accountId && entry.toAccountId === accountId
     ? Math.abs(toNumber(entry.fundArrivalAmount ?? amount))
     : amount;

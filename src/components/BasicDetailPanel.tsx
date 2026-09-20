@@ -64,6 +64,20 @@ function detailPaginationFetchKey(accountId: string, pageSize: number, detailAll
   return `${accountId}:${pageSize}:${detailAll ? "all" : detailPage}`;
 }
 
+function detailEntryDayKey(entry: DetailEntry, accountId: string) {
+  return formatDateLocal(getDetailEntryDisplayDate(entry, accountId));
+}
+
+function findEntryIndexForDate(rows: DetailEntry[], dateYmd: string, accountId: string) {
+  const dayKeys = rows.map((entry) => detailEntryDayKey(entry, accountId));
+  let index = dayKeys.findIndex((key) => key === dateYmd);
+  if (index >= 0) return index;
+  if (dayKeys.length === 0) return -1;
+  const descending = dayKeys.length < 2 || dayKeys[0] >= dayKeys[dayKeys.length - 1];
+  index = dayKeys.findIndex((key) => (descending ? key <= dateYmd : key >= dateYmd));
+  return index >= 0 ? index : dayKeys.length - 1;
+}
+
 type GuideRect = {
   left: number;
   top: number;
@@ -296,7 +310,9 @@ export function BasicDetailPanel({
 
   const totalPages = Math.max(1, Math.ceil(localTotalCount / pageSize));
   const [page, setPage] = useState(() => initialDetailAll ? 1 : clampPage(initialPage, totalPages));
-  const safePage = detailAll ? 1 : clampPage(page, totalPages);
+  const locatingDateRef = useRef(false);
+  // 定位途中不要用旧 totalPages 把目标页钳回 1，否则分页 effect 仍去拉第 1 页。
+  const safePage = detailAll ? 1 : locatingDateRef.current ? Math.max(1, page) : clampPage(page, totalPages);
   const accountScopeKey = `${accountId}:${isInvestAccount ? "invest" : "detail"}`;
   const lastAccountScopeKeyRef = useRef(accountScopeKey);
   const lastFocusEntryIdRef = useRef(focusEntryId ?? "");
@@ -336,7 +352,10 @@ export function BasicDetailPanel({
         console.error("Load transaction detail page failed:", error);
       })
       .finally(() => {
-        if (seq === paginationFetchSeqRef.current) setIsPageLoading(false);
+        if (seq === paginationFetchSeqRef.current) {
+          locatingDateRef.current = false;
+          setIsPageLoading(false);
+        }
       });
   }, [accountId, clientPaginationEnabled, detailAll, pageSize, safePage]);
 
@@ -426,12 +445,17 @@ export function BasicDetailPanel({
   }, [detailAll, guideOverlayOpen, guidePortalHost, localEntries.length, pageSize, safePage]);
 
   useEffect(() => {
-    setLocalEntries(entries);
-    setLocalTotalCount(totalCount);
-    setLocalOriginalCount(originalCount);
     const nextFocusEntryId = focusEntryId ?? "";
     const accountScopeChanged = lastAccountScopeKeyRef.current !== accountScopeKey;
     const focusEntryChanged = lastFocusEntryIdRef.current !== nextFocusEntryId;
+    // Client pagination owns localEntries after the first load. Copying RSC
+    // `entries` on every parent refresh would overwrite a just-located page
+    // with page 1 (page number jumps, list stays put).
+    if (!clientPaginationEnabled || accountScopeChanged || focusEntryChanged) {
+      setLocalEntries(entries);
+      setLocalTotalCount(totalCount);
+      setLocalOriginalCount(originalCount);
+    }
     if (accountScopeChanged || focusEntryChanged) {
       lastAccountScopeKeyRef.current = accountScopeKey;
       lastFocusEntryIdRef.current = nextFocusEntryId;
@@ -445,7 +469,7 @@ export function BasicDetailPanel({
       setAutoFit(nextAutoFit);
       setPage(nextDetailAll ? 1 : clampPage(storedPreference?.detailPage ?? initialPage, nextTotalPages));
     }
-  }, [accountId, accountScopeKey, entries, focusEntryId, initialAutoFit, initialDetailAll, initialPage, normalizedInitialPageSize, originalCount, totalCount]);
+  }, [accountId, accountScopeKey, clientPaginationEnabled, entries, focusEntryId, initialAutoFit, initialDetailAll, initialPage, normalizedInitialPageSize, originalCount, totalCount]);
 
   useEffect(() => {
     const handleFinanceChange = (event: Event) => {
@@ -483,7 +507,7 @@ export function BasicDetailPanel({
   }, [accountId, reloadDetailPage, scopeAccountIds]);
 
   useEffect(() => {
-    if (detailAll || page === safePage) return;
+    if (detailAll || page === safePage || locatingDateRef.current) return;
     setPage(safePage);
   }, [detailAll, page, safePage]);
 
@@ -503,7 +527,11 @@ export function BasicDetailPanel({
     const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
     if (nextHref !== currentHref) {
       if (clientPaginationEnabled) {
-        window.history.replaceState(window.history.state, "", nextHref);
+        // Next 16: must pass null, not window.history.state — reusing the
+        // router's internal state object breaks canonicalUrl sync, so later
+        // router.refresh() calls re-render from the OLD URL (dropping
+        // detailAll=1) and overwrite the client-fetched full list.
+        window.history.replaceState(null, "", nextHref);
       } else {
         router.replace(nextHref, { scroll: false });
       }
@@ -528,6 +556,50 @@ export function BasicDetailPanel({
 
   const pageEntries = useMemo(() => localEntries, [localEntries]);
   const displayRowsRef = useRef<DetailEntry[]>([]);
+  const locateDateSeqRef = useRef(0);
+  const pendingCenterDateRef = useRef<string | null>(null);
+  const [isLocatingDate, setIsLocatingDate] = useState(false);
+  const [locateScrollKey, setLocateScrollKey] = useState<string | null>(null);
+
+  const readCenteredDetailDate = () => {
+    const rows = displayRowsRef.current;
+    if (rows.length === 0) return null;
+    const viewport = panelRef.current?.querySelector(".advanced-table-viewport");
+    let target: DetailEntry | undefined;
+    if (viewport instanceof HTMLElement) {
+      const viewportBox = viewport.getBoundingClientRect();
+      if (viewportBox.height > 0) {
+        const centerY = viewportBox.top + viewportBox.height / 2;
+        let bestKey: string | null = null;
+        let bestDist = Infinity;
+        for (const el of Array.from(viewport.querySelectorAll<HTMLElement>("[data-advanced-row-key]"))) {
+          const box = el.getBoundingClientRect();
+          if (box.bottom < viewportBox.top || box.top > viewportBox.bottom) continue;
+          const dist = Math.abs(box.top + box.height / 2 - centerY);
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestKey = el.getAttribute("data-advanced-row-key");
+          }
+        }
+        if (bestKey) target = rows.find((entry) => entry.id === bestKey);
+      }
+    }
+    if (!target) target = rows[Math.floor(rows.length / 2)];
+    return target ? detailEntryDayKey(target, accountId) : null;
+  };
+
+  useEffect(() => {
+    const dateYmd = pendingCenterDateRef.current;
+    if (!dateYmd || localEntries.length === 0) return;
+    const index = findEntryIndexForDate(localEntries, dateYmd, accountId);
+    if (index < 0) return;
+    pendingCenterDateRef.current = null;
+    const target = localEntries[index];
+    if (!target) return;
+    setLocateScrollKey(null);
+    window.setTimeout(() => setLocateScrollKey(target.id), 0);
+  }, [accountId, localEntries]);
+
   const handleDisplayRowsChange = useCallback((rows: DetailEntry[]) => {
     displayRowsRef.current = rows;
     const nextIds = rows.map((entry) => entry.id);
@@ -548,14 +620,59 @@ export function BasicDetailPanel({
     return [header, ...rows];
   }, [displayedEntryIds, normalExportRows, normalExportRowsByEntryId, pageEntries.length]);
 
+  const applyPageSizeKeepingCenter = (nextPageSize: number) => {
+    const centerDate = readCenteredDetailDate();
+    if (!clientPaginationEnabled || !centerDate) {
+      setPageSize(nextPageSize);
+      setPage(1);
+      return;
+    }
+    pendingCenterDateRef.current = centerDate;
+    const seq = ++locateDateSeqRef.current;
+    setIsLocatingDate(true);
+    const params = new URLSearchParams({
+      accountId,
+      locateDate: centerDate,
+      pageSize: String(nextPageSize),
+    });
+    fetch(`/api/v1/transactions/detail?${params.toString()}`, { cache: "no-store" })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload?.ok) {
+          throw new Error(payload?.error ?? t("basicDetail.loadFailed"));
+        }
+        if (seq !== locateDateSeqRef.current) return;
+        const locatePage = Number(payload.data?.locatePage);
+        const nextTotalCount = Number(payload.data?.totalCount);
+        if (Number.isFinite(nextTotalCount)) {
+          setLocalTotalCount(nextTotalCount);
+          setLocalOriginalCount(nextTotalCount);
+        }
+        const pages = Math.max(1, Math.ceil((Number.isFinite(nextTotalCount) ? nextTotalCount : localTotalCount) / nextPageSize));
+        setPageSize(nextPageSize);
+        setPage(Number.isFinite(locatePage) && locatePage >= 1 ? clampPage(locatePage, pages) : 1);
+      })
+      .catch((error) => {
+        if (seq !== locateDateSeqRef.current) return;
+        console.error("Keep centered date after page-size change failed:", error);
+        pendingCenterDateRef.current = null;
+        setPageSize(nextPageSize);
+        setPage(1);
+      })
+      .finally(() => {
+        if (seq === locateDateSeqRef.current) setIsLocatingDate(false);
+      });
+  };
+
   const setPagedSize = (nextPageSize: number) => {
     setDetailAll(false);
     setAutoFit(false);
-    setPageSize(nextPageSize);
-    setPage(1);
+    applyPageSizeKeepingCenter(nextPageSize);
   };
 
   const showAll = () => {
+    const centerDate = readCenteredDetailDate();
+    if (centerDate) pendingCenterDateRef.current = centerDate;
     setDetailAll(true);
     setPage(1);
   };
@@ -573,7 +690,7 @@ export function BasicDetailPanel({
   const lastFitRowCountRef = useRef<number | null>(null);
   const handleRowsFitChange = useCallback((rowCount: number) => {
     lastFitRowCountRef.current = rowCount;
-    if (!autoFit || detailAll) return;
+    if (!autoFit || detailAll || locatingDateRef.current) return;
     setPageSize((prev) => (prev === rowCount ? prev : rowCount));
   }, [accountScopeKey, autoFit, detailAll]);
 
@@ -582,13 +699,9 @@ export function BasicDetailPanel({
     setDetailAll(false);
     setAutoFit(true);
     const fitCount = lastFitRowCountRef.current;
-    if (fitCount != null && fitCount !== pageSize) setPageSize(fitCount);
-    setPage(1);
+    applyPageSizeKeepingCenter(fitCount ?? pageSize);
   };
 
-  const locateDateSeqRef = useRef(0);
-  const [isLocatingDate, setIsLocatingDate] = useState(false);
-  const [locateScrollKey, setLocateScrollKey] = useState<string | null>(null);
   const handleLocateDate = (dateYmd: string) => {
     if (!clientPaginationEnabled || !dateYmd) return;
     if (detailAll) {
@@ -598,14 +711,8 @@ export function BasicDetailPanel({
       // nearest day in list order when that date has no entries.
       const rows = displayRowsRef.current;
       if (!rows || rows.length === 0) return;
-      const dayKeys = rows.map((entry) => formatDateLocal(getDetailEntryDisplayDate(entry, accountId)));
-      let index = dayKeys.findIndex((key) => key === dateYmd);
-      if (index < 0) {
-        const descending = dayKeys.length < 2 || dayKeys[0] >= dayKeys[dayKeys.length - 1];
-        index = dayKeys.findIndex((key) => (descending ? key <= dateYmd : key >= dateYmd));
-        if (index < 0) index = dayKeys.length - 1;
-      }
-      const target = rows[index];
+      const index = findEntryIndexForDate(rows, dateYmd, accountId);
+      const target = index >= 0 ? rows[index] : undefined;
       if (!target) return;
       // Reset first so re-locating the same date scrolls again (the table
       // centers each row key at most once).
@@ -614,11 +721,13 @@ export function BasicDetailPanel({
       return;
     }
     const seq = ++locateDateSeqRef.current;
+    const locatePageSize = pageSize;
+    locatingDateRef.current = true;
     setIsLocatingDate(true);
     const params = new URLSearchParams({
       accountId,
       locateDate: dateYmd,
-      pageSize: String(pageSize),
+      pageSize: String(locatePageSize),
     });
     fetch(`/api/v1/transactions/detail?${params.toString()}`, { cache: "no-store" })
       .then(async (response) => {
@@ -628,12 +737,42 @@ export function BasicDetailPanel({
         }
         if (seq !== locateDateSeqRef.current) return;
         const locatePage = Number(payload.data?.locatePage);
-        if (Number.isFinite(locatePage) && locatePage >= 1) {
-          goPage(locatePage);
+        const nextTotalCount = Number(payload.data?.totalCount);
+        const nextCount = Number.isFinite(nextTotalCount) ? nextTotalCount : localTotalCount;
+        setLocalTotalCount(nextCount);
+        setLocalOriginalCount(nextCount);
+        const pages = Math.max(1, Math.ceil(nextCount / locatePageSize));
+        if (!Number.isFinite(locatePage) || locatePage < 1) {
+          locatingDateRef.current = false;
+          return;
         }
+        // 不能走 goPage：它按当前 totalPages 钳页。定位前若 localTotalCount
+        // 还是首页条数，totalPages=1，75 会被打回 1。用接口 totalCount 先算
+        // pages，再 setPage；跨页交给分页 effect 拉数，不要预写 fetch key
+        // 再自己打一枪——预写后一旦这枪失败，页码和列表都会停在原地。
+        const nextPage = clampPage(locatePage, pages);
+        const locateIndex = Number(payload.data?.locateIndex);
+        if (nextPage === page) {
+          locatingDateRef.current = false;
+          if (Number.isFinite(locateIndex)) {
+            const inPageIndex = locateIndex - (nextPage - 1) * locatePageSize;
+            const rows = displayRowsRef.current;
+            const target = rows && inPageIndex >= 0 && inPageIndex < rows.length ? rows[inPageIndex] : null;
+            if (target) {
+              setLocateScrollKey(null);
+              window.setTimeout(() => setLocateScrollKey(target.id), 0);
+            }
+          }
+          return;
+        }
+        pendingCenterDateRef.current = dateYmd;
+        setPage(nextPage);
       })
       .catch((error) => {
-        if (seq === locateDateSeqRef.current) console.error("Locate date failed:", error);
+        if (seq === locateDateSeqRef.current) {
+          locatingDateRef.current = false;
+          console.error("Locate date failed:", error);
+        }
       })
       .finally(() => {
         if (seq === locateDateSeqRef.current) setIsLocatingDate(false);
@@ -663,6 +802,7 @@ export function BasicDetailPanel({
           <span className="text-xs text-slate-500">{t("creditBillDetail.recordCount", { count: localTotalCount })}</span>
           {showPagination ? (
             <DetailTablePaginationControls
+              key={accountScopeKey}
               pageSize={pageSize}
               pageSizeOptions={DETAIL_PAGE_SIZE_OPTIONS}
               detailAll={detailAll}
@@ -738,6 +878,7 @@ export function BasicDetailPanel({
                 <>
                   <span className="text-slate-400">|</span>
                   <DetailTablePaginationControls
+                    key={accountScopeKey}
                     pageSize={pageSize}
                     pageSizeOptions={DETAIL_PAGE_SIZE_OPTIONS}
                     detailAll={detailAll}

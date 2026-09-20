@@ -19,6 +19,7 @@ import {
   withAccountCounts,
 } from "@/lib/server/entity-account-counts";
 import { loadAccountRecordCounts } from "@/lib/server/account-record-counts";
+import { selfHealOwnerMemberPairing } from "@/lib/server/account-group-member-pairing";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -70,6 +71,11 @@ export async function GET(request: Request) {
     const ctx = await getHouseholdScope();
     const { householdId, hidFilter } = ctx;
     const baseCurrency = await getHouseholdBaseCurrency(householdId);
+
+    // Self-heal owner group <-> family member pairing so upgraded ledgers
+    // expose every existing owner as a family member the moment the account
+    // settings data is loaded (idempotent; failures never break the read).
+    await selfHealOwnerMemberPairing(householdId);
 
     const [accounts, groups, institutions, counterparties, users, insuranceProductLinks] = await Promise.all([
       prisma.account.findMany({

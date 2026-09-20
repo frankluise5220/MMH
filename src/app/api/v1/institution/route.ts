@@ -7,6 +7,7 @@ import {
   isInstitutionNameUniqueError,
 } from "@/lib/server/institution-name-unique";
 import { ensureCounterpartyForInstitution } from "@/lib/server/counterparty-sync";
+import { pairGroupForMember } from "@/lib/server/account-group-member-pairing";
 import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 import { INSTITUTION_TYPE_VALUES } from "@/lib/account-kinds";
 
@@ -71,6 +72,12 @@ export async function POST(req: NextRequest) {
         ? await tx.institution.update({ where: { id: reusable.institution.id }, data })
         : await tx.institution.create({ data });
       await ensureCounterpartyForInstitution(tx, institution);
+      // A family member is selectable as an account owner only through its
+      // paired owner group; create (or adopt) it here so the new member is
+      // usable immediately.
+      if (safeType === "family_member") {
+        await pairGroupForMember(tx, householdId, { id: institution.id, name: institution.name });
+      }
       return institution;
     });
 

@@ -469,6 +469,10 @@ mmh_log "postgres ready, checking database schema..."
 
 ensure_session_secret
 
+get_build_version() {
+  node -p "require('./package.json').version" 2>/dev/null || true
+}
+
 # Downgrade protection: refuse to start when the database was last written by
 # a newer MMH image. Running an older binary against a newer schema makes
 # "prisma db push" drop the newer columns and lose data.
@@ -487,7 +491,7 @@ ensure_schema_meta_table() {
 }
 
 refuse_if_schema_newer() {
-  build_version="$(node -p "require('./package.json').version" 2>/dev/null || true)"
+  build_version="$(get_build_version)"
   if [ -z "$build_version" ]; then
     mmh_log "WARNING: could not determine image version; skipping schema downgrade protection check."
     return 0
@@ -525,41 +529,119 @@ record_schema_version() {
   mmh_log "  INSERT INTO \"_mmh_schema_meta\" (\"key\", \"value\") VALUES ('schema_version', '$recorded_version');"
 }
 
+read_schema_version() {
+  if ! ensure_schema_meta_table; then
+    return 0
+  fi
+  psql_mmh -tAc "SELECT value FROM \"_mmh_schema_meta\" WHERE key = 'schema_version'" | tr -d '[:space:]'
+}
+
+ensure_auth_version_column() {
+  if psql_mmh -v ON_ERROR_STOP=1 -c 'ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "authVersion" INTEGER NOT NULL DEFAULT 1;' >/dev/null 2>&1; then
+    mmh_log "ensured User.authVersion column"
+    return 0
+  fi
+  mmh_log "WARNING: could not ensure User.authVersion column; login may return 503 until schema sync succeeds."
+  return 1
+}
+
+list_prisma_copy_tables() {
+  psql_mmh -tAc "SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname ~* '_copy';"
+}
+
+drop_empty_prisma_copy_tables() {
+  tables="$(list_prisma_copy_tables || true)"
+  [ -n "$tables" ] || return 0
+  for table in $tables; do
+    row_count="$(psql_mmh -tAc "SELECT COUNT(*) FROM ${table}" | tr -d '[:space:]')"
+    if [ "$row_count" = "0" ]; then
+      mmh_log "dropping empty Prisma leftover table ${table}"
+      if ! psql_mmh -v ON_ERROR_STOP=1 -c "DROP TABLE IF EXISTS ${table};" >/dev/null 2>&1; then
+        mmh_log "WARNING: could not drop empty leftover table ${table}"
+      fi
+    else
+      mmh_log "WARNING: leaving nonempty Prisma leftover table ${table} (${row_count:-unknown} rows); refusing to drop it."
+    fi
+  done
+}
+
+has_nonempty_prisma_copy_tables() {
+  tables="$(list_prisma_copy_tables || true)"
+  [ -n "$tables" ] || return 1
+  for table in $tables; do
+    row_count="$(psql_mmh -tAc "SELECT COUNT(*) FROM ${table}" | tr -d '[:space:]')"
+    case "$row_count" in
+      ""|0) ;;
+      *) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+push_would_change_existing_data() {
+  grep -Eq "accept-data-loss|data loss|dropped_variants|will be dropped|invalid input value for enum" "$1"
+}
+
+should_skip_schema_push() {
+  build_version="$(get_build_version)"
+  stored_version="$(read_schema_version || true)"
+  drop_empty_prisma_copy_tables
+  if [ -n "$build_version" ] && [ -n "$stored_version" ] && [ "$stored_version" = "$build_version" ]; then
+    mmh_log "schema already at $build_version; skipping prisma db push."
+    return 0
+  fi
+  if has_nonempty_prisma_copy_tables; then
+    mmh_log "WARNING: nonempty Prisma leftover copy tables exist; skipping prisma db push to avoid dropping user data or running out of memory."
+    mmh_log "WARNING: new schema features may be unavailable until those leftover tables are reviewed. Existing data was not dropped."
+    return 0
+  fi
+  return 1
+}
+
 refuse_if_schema_newer
 run_compat_migrations
+ensure_auth_version_column
 
 PUSH_OUTPUT="$(mktemp)"
 PUSH_OK=0
 PUSH_ATTEMPTS=5
 attempt=1
-while [ "$attempt" -le "$PUSH_ATTEMPTS" ]; do
-  if ./node_modules/.bin/prisma db push >"$PUSH_OUTPUT" 2>&1; then
-    PUSH_OK=1
-    break
-  fi
-  if [ "$attempt" -lt "$PUSH_ATTEMPTS" ]; then
-    mmh_log "prisma db push attempt $attempt failed; retrying in 3s..."
-    sleep 3
-  fi
-  attempt=$((attempt + 1))
-done
-
-cat "$PUSH_OUTPUT" 2>/dev/null || true
-
-if [ "$PUSH_OK" = "1" ]; then
-  if ! psql_mmh -v ON_ERROR_STOP=1 -c "UPDATE \"Account\" SET \"loanType\" = CASE WHEN \"isConsumerLoan\" = TRUE THEN 'consumer'::\"LoanType\" ELSE 'home'::\"LoanType\" END WHERE \"kind\" = 'loan'::\"AccountKind\" AND \"loanType\" IS NULL;"; then
-    mmh_log "WARNING: account loanType backfill failed; continuing so MMH stays available."
-  fi
-  if ! psql_mmh -v ON_ERROR_STOP=1 -c "UPDATE \"Account\" SET \"kind\" = 'settlement'::\"AccountKind\", \"institutionId\" = NULL, \"loanType\" = NULL, \"isConsumerLoan\" = FALSE WHERE \"kind\" = 'loan'::\"AccountKind\" AND \"counterpartyId\" IS NOT NULL; UPDATE \"Account\" SET \"institutionId\" = NULL, \"loanType\" = NULL, \"isConsumerLoan\" = FALSE WHERE \"kind\" = 'settlement'::\"AccountKind\";"; then
-    mmh_log "WARNING: settlement account backfill failed; continuing so MMH stays available."
-  fi
-  mmh_log "account-kind compatibility backfill complete."
-  record_schema_version "$build_version"
+if should_skip_schema_push; then
+  : >"$PUSH_OUTPUT"
 else
-  if grep -Eq "accept-data-loss|data loss|dropped_variants|will be dropped|invalid input value for enum" "$PUSH_OUTPUT"; then
-    mmh_log "WARNING: database schema sync would modify existing data; starting anyway so MMH stays available. New schema features may be unavailable until resolved."
+  while [ "$attempt" -le "$PUSH_ATTEMPTS" ]; do
+    if ./node_modules/.bin/prisma db push >"$PUSH_OUTPUT" 2>&1; then
+      PUSH_OK=1
+      break
+    fi
+    if push_would_change_existing_data "$PUSH_OUTPUT"; then
+      mmh_log "prisma db push refused because it would change existing data; not retrying."
+      break
+    fi
+    if [ "$attempt" -lt "$PUSH_ATTEMPTS" ]; then
+      mmh_log "prisma db push attempt $attempt failed; retrying in 3s..."
+      sleep 3
+    fi
+    attempt=$((attempt + 1))
+  done
+
+  cat "$PUSH_OUTPUT" 2>/dev/null || true
+
+  if [ "$PUSH_OK" = "1" ]; then
+    if ! psql_mmh -v ON_ERROR_STOP=1 -c "UPDATE \"Account\" SET \"loanType\" = CASE WHEN \"isConsumerLoan\" = TRUE THEN 'consumer'::\"LoanType\" ELSE 'home'::\"LoanType\" END WHERE \"kind\" = 'loan'::\"AccountKind\" AND \"loanType\" IS NULL;"; then
+      mmh_log "WARNING: account loanType backfill failed; continuing so MMH stays available."
+    fi
+    if ! psql_mmh -v ON_ERROR_STOP=1 -c "UPDATE \"Account\" SET \"kind\" = 'settlement'::\"AccountKind\", \"institutionId\" = NULL, \"loanType\" = NULL, \"isConsumerLoan\" = FALSE WHERE \"kind\" = 'loan'::\"AccountKind\" AND \"counterpartyId\" IS NOT NULL; UPDATE \"Account\" SET \"institutionId\" = NULL, \"loanType\" = NULL, \"isConsumerLoan\" = FALSE WHERE \"kind\" = 'settlement'::\"AccountKind\";"; then
+      mmh_log "WARNING: settlement account backfill failed; continuing so MMH stays available."
+    fi
+    mmh_log "account-kind compatibility backfill complete."
+    record_schema_version "$(get_build_version)"
   else
-    mmh_log "WARNING: prisma db push failed after retries; starting anyway so MMH stays available."
+    if push_would_change_existing_data "$PUSH_OUTPUT"; then
+      mmh_log "WARNING: database schema sync would modify existing data; starting anyway so MMH stays available. New schema features may be unavailable until resolved."
+    else
+      mmh_log "WARNING: prisma db push failed after retries; starting anyway so MMH stays available."
+    fi
   fi
 fi
 

@@ -124,6 +124,50 @@ function omitRecordFields<T extends Record<string, unknown>>(records: T[], field
   );
 }
 
+const TRANSACTION_BACKUP_DISPLAY_NAME_FIELDS = new Set([
+  "accountName",
+  "toAccountName",
+  "categoryName",
+  "fundName",
+  "metalTypeName",
+  "metalUnitName",
+  "counterpartyInstitutionName",
+  "locationName",
+  "insuranceProductName",
+]);
+
+function transactionsForBackup<T extends Record<string, unknown>>(transactions: T[], omitDisplayNames: boolean) {
+  return omitDisplayNames
+    ? (omitRecordFields(transactions, TRANSACTION_BACKUP_DISPLAY_NAME_FIELDS) as T[])
+    : transactions;
+}
+
+function restoredLookupName(
+  id: string | null | undefined,
+  names: Map<string, string>,
+  fallback: unknown,
+  emptyValue: string | null = null,
+) {
+  if (id && names.has(id)) {
+    return names.get(id) ?? emptyValue;
+  }
+  if (fallback == null) return emptyValue;
+  return String(fallback);
+}
+
+function restoredDisplayNameById(
+  records: Array<Record<string, unknown>>,
+  preferShortName = false,
+) {
+  return new Map(
+    records.map((item) => {
+      const shortName = preferShortName ? String(item.shortName ?? "").trim() : "";
+      const name = String(item.name ?? "").trim();
+      return [String(item.id), shortName || name];
+    }),
+  );
+}
+
 function buildAccountNameById(payload: HouseholdBackupPayload) {
   return new Map(payload.data.accounts.map((account) => [String(account.id), String(account.name ?? "")]));
 }
@@ -606,6 +650,7 @@ const TRANSACTION_RESTORE_COLUMNS = [
   { name: "installmentRole", select: 'x."installmentRole"' },
   { name: "fundName", select: 'x."fundName"' },
   { name: "wealthProductId", select: 'x."wealthProductId"' },
+  { name: "depositProductId", select: 'x."depositProductId"' },
   { name: "insuranceProductId", select: 'x."insuranceProductId"' },
   { name: "insuranceAction", select: 'x."insuranceAction"' },
   { name: "insuranceProductName", select: 'x."insuranceProductName"' },
@@ -1216,6 +1261,16 @@ export async function ensureSqliteRestoreCompatibilitySchema() {
   await ensureSqliteColumn("entry_business_links", "stockTransactionId", "TEXT");
   await ensureSqliteColumn("entry_business_links", "propertyTransactionId", "TEXT");
   await prisma.$executeRawUnsafe(
+    'CREATE TABLE IF NOT EXISTS "DepositProduct" ("id" TEXT NOT NULL PRIMARY KEY, "name" TEXT NOT NULL, "shortName" TEXT, "currency" TEXT NOT NULL DEFAULT \'CNY\', "annualRate" DECIMAL, "termDays" INTEGER, "note" TEXT, "isActive" BOOLEAN NOT NULL DEFAULT true, "householdId" TEXT NOT NULL, "institutionId" TEXT, "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)',
+  );
+  await ensureSqliteColumn("DepositProduct", "institutionId", "TEXT");
+  await prisma.$executeRawUnsafe('DROP INDEX IF EXISTS "DepositProduct_householdId_name_key"');
+  await prisma.$executeRawUnsafe('CREATE UNIQUE INDEX IF NOT EXISTS "DepositProduct_householdId_institutionId_name_key" ON "DepositProduct"("householdId", "institutionId", "name")');
+  await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS "DepositProduct_householdId_isActive_name_idx" ON "DepositProduct"("householdId", "isActive", "name")');
+  await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS "DepositProduct_institutionId_idx" ON "DepositProduct"("institutionId")');
+  await ensureSqliteColumn("transactions", "depositProductId", "TEXT");
+  await ensureSqliteColumn("deposit_transactions", "depositProductId", "TEXT");
+  await prisma.$executeRawUnsafe(
     `CREATE INDEX IF NOT EXISTS "entry_business_links_stockTransactionId_idx" ON "entry_business_links"("stockTransactionId")`,
   );
   await prisma.$executeRawUnsafe(
@@ -1517,6 +1572,17 @@ export function buildBackupFileName(householdName: string, exportedAt: Date, for
   return `${safeFilePart(householdName)}-backup-${exportedAt.toISOString().replace(/[:.]/g, "-")}.${suffix}`;
 }
 
+export function serializeEncryptedBackupPackage(payload: unknown) {
+  return JSON.stringify(payload);
+}
+
+function importBatchesForBackup<T extends { rawText?: string | null }>(importBatches: T[]) {
+  return importBatches.map((item) => ({
+    ...item,
+    rawText: null,
+  }));
+}
+
 export function buildTableExportFileName(householdName: string, exportedAt: Date) {
   return `${safeFilePart(householdName)}-table-export-${exportedAt.toISOString().replace(/[:.]/g, "-")}.xlsx`;
 }
@@ -1524,7 +1590,12 @@ export function buildTableExportFileName(householdName: string, exportedAt: Date
 export async function buildHouseholdBackupPayload(
   householdId: string,
   exportedBy: ExportedBy,
-  options: { ensureBackupPackageKey?: boolean; backupScope?: BackupScope } = {},
+  options: {
+    ensureBackupPackageKey?: boolean;
+    backupScope?: BackupScope;
+    omitImportBatchRawText?: boolean;
+    omitTransactionDisplayNames?: boolean;
+  } = {},
 ) {
   const backupScope: BackupScope = options.backupScope === "system" ? "system" : "household";
   const isSystemBackup = backupScope === "system";
@@ -1548,6 +1619,7 @@ export async function buildHouseholdBackupPayload(
     tags,
     insuranceProductMasters,
     wealthProducts,
+    depositProducts,
     accounts,
     regularInvestPlans,
     creditCardInstallmentPlans,
@@ -1603,6 +1675,7 @@ export async function buildHouseholdBackupPayload(
     prisma.tag.findMany({ where: { householdId }, orderBy: [{ name: "asc" }] }),
     prisma.insuranceProductMaster.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.wealthProduct.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.depositProduct.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.account.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.regularInvestPlan.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.creditCardInstallmentPlan.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
@@ -1832,6 +1905,7 @@ export async function buildHouseholdBackupPayload(
       tags,
       insuranceProductMasters,
       wealthProducts,
+      depositProducts,
       accounts,
       accountAliases,
       billOverrides,
@@ -1850,8 +1924,10 @@ export async function buildHouseholdBackupPayload(
       fundQueryApis,
       statementRecognitionRules,
       regularInvestPlans,
-      importBatches,
-      transactions,
+      importBatches: options.omitImportBatchRawText === false ? importBatches : importBatchesForBackup(importBatches),
+      transactions: options.omitTransactionDisplayNames === false
+        ? transactions
+        : transactionsForBackup(transactions, true),
       fxRates,
       fxConversions,
       insuranceProducts,
@@ -1902,6 +1978,7 @@ export async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPaylo
     ["Tags", sheetRows(payload.data.tags)],
     ["InsuranceProductMasters", sheetRows(payload.data.insuranceProductMasters)],
     ["WealthProducts", sheetRows(payload.data.wealthProducts)],
+    ["DepositProducts", sheetRows(payload.data.depositProducts)],
     ["Accounts", sheetRows(payload.data.accounts)],
     ["AccountAliases", sheetRows(payload.data.accountAliases)],
     ["BillOverrides", sheetRows(payload.data.billOverrides)],
@@ -1993,6 +2070,7 @@ export async function buildHouseholdTableExportWorkbook(payload: HouseholdBackup
     ["Tags", sheetRows(payload.data.tags)],
     ["InsuranceProductMasters", sheetRows(payload.data.insuranceProductMasters)],
     ["WealthProducts", sheetRows(payload.data.wealthProducts)],
+    ["DepositProducts", sheetRows(payload.data.depositProducts)],
     ["Accounts", sheetRows(payload.data.accounts)],
     ["AccountAliases", sheetRows(payload.data.accountAliases)],
     ["BillOverrides", sheetRows(payload.data.billOverrides)],
@@ -2078,6 +2156,7 @@ export function parseBackupPayload(raw: unknown) {
       tags: ensureArray(data.tags ?? [], "data.tags"),
       insuranceProductMasters: ensureArray(data.insuranceProductMasters ?? [], "data.insuranceProductMasters"),
       wealthProducts: ensureArray(data.wealthProducts ?? [], "data.wealthProducts"),
+      depositProducts: ensureArray(data.depositProducts ?? [], "data.depositProducts"),
       accounts: ensureArray(data.accounts ?? [], "data.accounts"),
       accountAliases: ensureArray(data.accountAliases ?? [], "data.accountAliases"),
       billOverrides: ensureArray(data.billOverrides ?? [], "data.billOverrides"),
@@ -2176,9 +2255,16 @@ export async function restoreHouseholdBackup(
   const importedInsuranceProductMasters = new Set(data.insuranceProductMasters.map((item) => String(item.id)));
   const importedInsuranceProducts = new Set(data.insuranceProducts.map((item) => String(item.id)));
   const importedWealthProducts = new Set(data.wealthProducts.map((item) => String(item.id)));
+  const importedDepositProducts = new Set((data.depositProducts ?? []).map((item) => String(item.id)));
   const importedCreditCardInstallmentPlans = new Set(data.creditCardInstallmentPlans.map((item) => String(item.id)));
   const importedPreciousMetalTypes = new Set(data.preciousMetalTypes.map((item) => String(item.id)));
   const importedPreciousMetalUnits = new Set(data.preciousMetalUnits.map((item) => String(item.id)));
+  const restoredAccountNameById = restoredDisplayNameById(data.accounts);
+  const restoredInstitutionNameById = restoredDisplayNameById(data.institutions);
+  const restoredCounterpartyNameById = restoredDisplayNameById(data.counterparties, true);
+  const restoredMetalTypeNameById = restoredDisplayNameById(data.preciousMetalTypes);
+  const restoredMetalUnitNameById = restoredDisplayNameById(data.preciousMetalUnits);
+  const restoredInsuranceProductNameById = restoredDisplayNameById(data.insuranceProducts);
   const importedReimbursements = new Set(data.reimbursements.map((item) => String(item.id)));
   const importedFundTransactions = new Set(data.fundTransactions.map((item) => String(item.id)));
   const importedStockSecurities = new Set(data.stockSecurities.map((item) => String(item.id)));
@@ -2401,6 +2487,7 @@ export async function restoreHouseholdBackup(
     await tx.insuranceProduct.deleteMany({ where: { householdId } });
     await tx.insuranceProductMaster.deleteMany({ where: { householdId } });
     await tx.wealthProduct.deleteMany({ where: { householdId } });
+    await tx.depositProduct.deleteMany({ where: { householdId } });
     await tx.importBatch.deleteMany({ where: { householdId } });
     if (isSystemRestore) {
       await tx.fundQueryApi.deleteMany({ where: { OR: [{ householdId }, { householdId: null }] } });
@@ -2737,6 +2824,20 @@ export async function restoreHouseholdBackup(
       await createManyRecords(
         tx.wealthProduct,
         data.wealthProducts.map((item) => ({
+          ...item,
+          householdId,
+          institutionId:
+            item.institutionId && importedInstitutions.has(String(item.institutionId))
+              ? String(item.institutionId)
+              : null,
+        })),
+      );
+    }
+
+    if ((data.depositProducts ?? []).length > 0) {
+      await createManyRecords(
+        tx.depositProduct,
+        data.depositProducts.map((item) => ({
           ...item,
           householdId,
           institutionId:
@@ -3217,25 +3318,39 @@ export async function restoreHouseholdBackup(
               type: String(item.type ?? "expense") as never,
               amount: item.amount == null ? "0" : String(item.amount),
               accountId: String(item.accountId),
-              accountName: String(item.accountName ?? ""),
+              accountName: restoredLookupName(String(item.accountId), restoredAccountNameById, item.accountName, "") ?? "",
               toAccountId: item.toAccountId && importedAccounts.has(String(item.toAccountId)) ? String(item.toAccountId) : null,
-              toAccountName: item.toAccountName == null ? null : String(item.toAccountName),
+              toAccountName: restoredLookupName(
+                item.toAccountId && importedAccounts.has(String(item.toAccountId)) ? String(item.toAccountId) : null,
+                restoredAccountNameById,
+                item.toAccountName,
+              ),
               categoryId,
-              categoryName: categoryId
-                ? restoredCategoryNameById.get(categoryId) ?? (item.categoryName == null ? null : String(item.categoryName))
-                : item.categoryName == null ? null : String(item.categoryName),
+              categoryName: restoredLookupName(categoryId, restoredCategoryNameById, item.categoryName),
               fundCode: null,
               fundProductType: isSplitFundProjection(item) || item.fundProductType == null ? null : (String(item.fundProductType) as never),
               metalTypeId:
                 item.metalTypeId && importedPreciousMetalTypes.has(String(item.metalTypeId))
                   ? String(item.metalTypeId)
                   : null,
-              metalTypeName: item.metalTypeName == null ? null : String(item.metalTypeName),
+              metalTypeName: restoredLookupName(
+                item.metalTypeId && importedPreciousMetalTypes.has(String(item.metalTypeId))
+                  ? String(item.metalTypeId)
+                  : null,
+                restoredMetalTypeNameById,
+                item.metalTypeName,
+              ),
               metalUnitId:
                 item.metalUnitId && importedPreciousMetalUnits.has(String(item.metalUnitId))
                   ? String(item.metalUnitId)
                   : null,
-              metalUnitName: item.metalUnitName == null ? null : String(item.metalUnitName),
+              metalUnitName: restoredLookupName(
+                item.metalUnitId && importedPreciousMetalUnits.has(String(item.metalUnitId))
+                  ? String(item.metalUnitId)
+                  : null,
+                restoredMetalUnitNameById,
+                item.metalUnitName,
+              ),
               metalQuantity: item.metalQuantity == null ? null : String(item.metalQuantity),
               metalUnitPrice: item.metalUnitPrice == null ? null : String(item.metalUnitPrice),
               metalFee: item.metalFee == null ? null : String(item.metalFee),
@@ -3257,8 +3372,13 @@ export async function restoreHouseholdBackup(
                 item.counterpartyInstitutionId && importedInstitutions.has(String(item.counterpartyInstitutionId))
                   ? String(item.counterpartyInstitutionId)
                   : null,
-              counterpartyInstitutionName:
-                item.counterpartyInstitutionName == null ? null : String(item.counterpartyInstitutionName),
+              counterpartyInstitutionName: restoredLookupName(
+                item.counterpartyInstitutionId && importedInstitutions.has(String(item.counterpartyInstitutionId))
+                  ? String(item.counterpartyInstitutionId)
+                  : null,
+                restoredInstitutionNameById,
+                item.counterpartyInstitutionName,
+              ),
               status: String(item.status ?? "posted") as never,
               fundArrivalAmount: isSplitFundProjection(item) || item.fundArrivalAmount == null ? null : String(item.fundArrivalAmount),
               fundArrivalDate: isSplitFundProjection(item) || item.fundArrivalDate == null ? null : new Date(String(item.fundArrivalDate)),
@@ -3302,18 +3422,32 @@ export async function restoreHouseholdBackup(
                 item.wealthProductId && importedWealthProducts.has(String(item.wealthProductId))
                   ? String(item.wealthProductId)
                   : null,
+              depositProductId:
+                item.depositProductId && importedDepositProducts.has(String(item.depositProductId))
+                  ? String(item.depositProductId)
+                  : null,
               insuranceProductId:
                 item.insuranceProductId && importedInsuranceProducts.has(String(item.insuranceProductId))
                   ? String(item.insuranceProductId)
                   : null,
               insuranceAction: item.insuranceAction == null ? null : String(item.insuranceAction),
-              insuranceProductName: item.insuranceProductName == null ? null : String(item.insuranceProductName),
+              insuranceProductName: restoredLookupName(
+                item.insuranceProductId && importedInsuranceProducts.has(String(item.insuranceProductId))
+                  ? String(item.insuranceProductId)
+                  : null,
+                restoredInsuranceProductNameById,
+                item.insuranceProductName,
+              ),
               source: item.source == null ? null : String(item.source),
               entryOrigin: item.entryOrigin == null ? "manual" : String(item.entryOrigin),
               originalCurrency: item.originalCurrency == null ? null : String(item.originalCurrency),
               originalAmount: item.originalAmount == null ? null : String(item.originalAmount),
               locationId: item.locationId == null ? null : String(item.locationId),
-              locationName: item.locationName == null ? null : String(item.locationName),
+              locationName: restoredLookupName(
+                item.locationId == null ? null : String(item.locationId),
+                restoredCounterpartyNameById,
+                item.locationName,
+              ),
             };
           },
         {
@@ -3553,6 +3687,10 @@ export async function restoreHouseholdBackup(
             item.sourceDepositTransactionId && importedDepositTransactions.has(String(item.sourceDepositTransactionId))
               ? String(item.sourceDepositTransactionId)
               : null,
+          depositProductId:
+            item.depositProductId && importedDepositProducts.has(String(item.depositProductId))
+              ? String(item.depositProductId)
+              : null,
         })),
       new Set(["maturityDate", "arrivalDate", "deletedAt"]),
     );
@@ -3781,8 +3919,12 @@ export async function restoreHouseholdBackup(
             arrivalDays: item.arrivalDays == null ? 2 : Number(item.arrivalDays),
             createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
             updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
-            accountName: String(item.accountName ?? ""),
-            cashAccountName: item.cashAccountName == null ? null : String(item.cashAccountName),
+            accountName: restoredLookupName(String(item.accountId), restoredAccountNameById, item.accountName, "") ?? "",
+            cashAccountName: restoredLookupName(
+              item.cashAccountId && importedAccounts.has(String(item.cashAccountId)) ? String(item.cashAccountId) : null,
+              restoredAccountNameById,
+              item.cashAccountName,
+            ),
             endDate: item.endDate == null ? null : new Date(String(item.endDate)),
             executedRuns: Number(item.executedRuns ?? 0),
             fundProductType: item.fundProductType == null ? null : (String(item.fundProductType) as never),

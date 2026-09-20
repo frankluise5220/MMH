@@ -149,6 +149,10 @@ async function isBrowserApiOriginAllowed(req: NextRequest): Promise<boolean> {
   if (!req.nextUrl.pathname.startsWith("/api/")) return true;
   const origin = req.headers.get("origin");
   if (!origin) return true;
+  // A gateway may rewrite Host while the browser still considers the page and
+  // API request to be same-origin. Trust the explicit Fetch Metadata signal.
+  const fetchSite = req.headers.get("sec-fetch-site")?.toLowerCase();
+  if (fetchSite && fetchSite !== "cross-site") return true;
   const originHostname = normalizeAccessHostname(origin);
   if (!originHostname) return false;
   if (extractRequestHostnames(req).includes(originHostname)) return true;

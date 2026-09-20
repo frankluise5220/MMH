@@ -7,6 +7,7 @@ import { toNumber } from "@/lib/date-utils";
 import { formatMoneyYuan, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { getInvestmentAccountView } from "@/lib/account-kind-utils";
+import { investProductTypeLabel } from "@/lib/account-kinds";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "@/lib/server/account-label-fields";
 import { getServerT } from "@/lib/server/i18n";
@@ -23,16 +24,7 @@ const fmt = formatMoneyYuan;
 
 const fmtRate = (n: number) => formatPercent(n);
 
-const investProductTypeLabel = (type: string | null, t: (key: string) => string) => {
-  if (type === "fund") return t("investment.product.fund");
-  if (type === "money") return t("investment.product.money");
-  if (type === "wealth") return t("investment.product.wealth");
-  if (type === "metal") return t("investment.product.metal");
-  if (type === "stock") return t("investment.product.stock");
-  return t("invest.productTypeDefault");
-};
-
-  export default async function InvestPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+export default async function InvestPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const params = await searchParams;
   const t = await getServerT();
   const tab = typeof params?.tab === "string" ? params.tab : "overview";

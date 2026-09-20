@@ -8,7 +8,7 @@ import { CalcInput } from "./CalcInput";
 import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { isPeriodicDepositInterestPayout } from "@/lib/deposit-interest-payout";
-import { nextDepositTermMaturityUtc } from "@/lib/deposit-maturity";
+import { depositInterestDaysUtc, nextDepositTermMaturityUtc } from "@/lib/deposit-maturity";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 
@@ -71,10 +71,13 @@ export function DepositRenewModal({
     if (maturity) {
       const principal = lot.principal > 0 ? lot.principal : 0;
       const effectiveRate = rate ?? 0;
+      // 存入日计息: whole-year spans ending one day before the anniversary
+      // count inclusively (365/366 days); other spans keep the raw difference.
       const segmentDays = start
-        ? Math.max(0, Math.round(
-            (new Date(`${maturity}T00:00:00.000Z`).getTime() - new Date(`${start}T00:00:00.000Z`).getTime()) / 86400000,
-          ))
+        ? depositInterestDaysUtc(
+            new Date(`${start}T00:00:00.000Z`),
+            new Date(`${maturity}T00:00:00.000Z`),
+          )
         : 0;
       const accrued = principal > 0 && effectiveRate > 0 && segmentDays > 0
         ? Number(((principal * (effectiveRate / 100) * segmentDays) / 365).toFixed(2))
@@ -86,10 +89,15 @@ export function DepositRenewModal({
           ))
         : 365;
       // Calendar-aware roll: a 5-year deposit renews to the next anniversary
-      // (leap years included) instead of drifting a day per term.
+      // (leap years included) instead of drifting a day per term; 存入日计息
+      // terms re-apply 起存日 + N 年 − 1 天 per renewed term.
       setNewMaturity(
         start
-          ? nextDepositTermMaturityUtc(new Date(`${start}T00:00:00.000Z`), new Date(`${maturity}T00:00:00.000Z`)).toISOString().slice(0, 10)
+          ? nextDepositTermMaturityUtc(
+              new Date(`${start}T00:00:00.000Z`),
+              new Date(`${maturity}T00:00:00.000Z`),
+              termDays,
+            ).toISOString().slice(0, 10)
           : (() => {
               const rolled = new Date(`${maturity}T00:00:00.000Z`);
               rolled.setUTCDate(rolled.getUTCDate() + termDays);

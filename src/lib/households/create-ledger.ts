@@ -38,18 +38,29 @@ export async function createLedgerWithDefaults(
     },
     select: { id: true },
   });
-  if (!existingFamilyMember) {
+  let familyMemberId = existingFamilyMember?.id ?? null;
+  if (!familyMemberId) {
     await assertInstitutionDisplayNamesUnique(writer, {
       householdId: household.id,
       name: input.adminName,
     });
-    await writer.institution.create({
+    const createdMember = await writer.institution.create({
       data: {
         householdId: household.id,
         type: "family_member",
         name: input.adminName,
         shortName: null,
       },
+      select: { id: true },
+    });
+    familyMemberId = createdMember.id;
+  }
+  // Pair the default owner group with the member from the start so the
+  // owner/member link never depends on the self-heal tick.
+  if (familyMemberId) {
+    await writer.accountGroup.update({
+      where: { id: defaultOwner.id },
+      data: { institutionId: familyMemberId },
     });
   }
 

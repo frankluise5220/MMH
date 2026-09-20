@@ -1,5 +1,6 @@
 import type { NextConfig } from "next";
 import { networkInterfaces } from "node:os";
+import { RESTORE_UPLOAD_LIMIT_CONFIG } from "./src/lib/backup-upload-limit";
 
 function getLocalDevHostnames() {
   const hostnames = new Set<string>();
@@ -26,7 +27,7 @@ const allowedDevOrigins = [
 const nextConfig: NextConfig = {
   output: "standalone",
   experimental: {
-    proxyClientMaxBodySize: "128mb",
+    proxyClientMaxBodySize: RESTORE_UPLOAD_LIMIT_CONFIG,
   },
   allowedDevOrigins,
   webpack(config, { dev }) {

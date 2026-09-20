@@ -57,8 +57,36 @@ export async function POST(req: Request) {
     if (!isAdmin(user) && inst.householdId && inst.householdId !== householdId) return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "越权操作" }, { status: 403 });
     const used = await prisma.account.count({ where: { institutionId: id } });
     if (used > 0) return NextResponse.json({ ok: false, code: "INSTITUTION_IN_USE", error: "已有账户使用该机构，无法删除" }, { status: 409 });
+
+    // Family members own their accounts through the paired owner group
+    // (AccountGroup.institutionId), not institutionId. Legacy groups that
+    // pre-date the link are still attributed by name (same rule as the
+    // account-count display), so the guard checks both links. Block deletion
+    // while any owning group has accounts; otherwise delete the groups
+    // together so the pairing self-heal cannot resurrect the member.
+    const memberName = inst.type === "family_member" ? inst.name.trim() : "";
+    const owningGroups = memberName && inst.householdId
+      ? await prisma.accountGroup.findMany({
+          where: {
+            householdId: inst.householdId,
+            OR: [{ institutionId: id }, { institutionId: null, name: memberName }],
+          },
+          select: { id: true },
+        })
+      : await prisma.accountGroup.findMany({ where: { institutionId: id }, select: { id: true } });
+    if (owningGroups.length > 0) {
+      const ownedAccounts = await prisma.account.count({
+        where: { groupId: { in: owningGroups.map((group) => group.id) } },
+      });
+      if (ownedAccounts > 0) {
+        return NextResponse.json({ ok: false, code: "FAMILY_MEMBER_HAS_ACCOUNTS", error: "This family member still owns accounts and cannot be deleted." }, { status: 409 });
+      }
+    }
     await prisma.$transaction(async (tx) => {
       await deleteUnusedSyncedCounterpartiesForInstitution(tx, inst);
+      if (owningGroups.length > 0) {
+        await tx.accountGroup.deleteMany({ where: { id: { in: owningGroups.map((group) => group.id) } } });
+      }
       await tx.institution.delete({ where: { id } });
     });
     revalidateAfterSettingsChange();

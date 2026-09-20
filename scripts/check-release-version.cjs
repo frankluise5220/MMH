@@ -64,6 +64,12 @@ const downloadUrls = fnosDownloadUrls(version);
 expect(/^0\.1\.\d+$/.test(version), `package.json version must use 0.1.x format, got ${version || "(empty)"}.`);
 expect(releaseNotes.length > 0, "package.json must include non-empty mmhReleaseNotes for release/version display.");
 
+expect(!/fn-appstores-client-2\.5\.2-x86\.fpk/.test(releaseNotes), "mmhReleaseNotes must not revive the retired FN 软仓客户端 2.5.2 x86 link.");
+expect(!/名称自定义/.test(releaseNotes), "mmhReleaseNotes must not revive the retired 名称自定义 dedicated-source phrasing.");
+expect(/fn-appstores-client-2\.8\.2-all\.fpk/.test(releaseNotes), "mmhReleaseNotes must keep the FN 软仓客户端 2.8.2 all.fpk link.");
+expect(/fnapp\.floatingice\.win:5660\//.test(releaseNotes), "mmhReleaseNotes dedicated source URL must keep the trailing slash.");
+
+
 const lock = readJson("package-lock.json");
 expect(lock.version === version, "package-lock.json top-level version must match package.json.");
 expect(lock.packages?.[""]?.version === version, "package-lock.json root package version must match package.json.");

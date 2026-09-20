@@ -30,10 +30,6 @@ const HEADER_SORT_CLICK_DELAY_MS = 220;
 const COMPACT_ROW_HEIGHT = 30;
 const COMPACT_ROW_CONTENT_HEIGHT = 20;
 const ROW_BORDER_HEIGHT = 1;
-/** 量行高时最多采样开头几行取最大值：只量首行时，若首行比其它行矮（其它行备注
- *  换行被撑高），行高会被低估 → 自适应页数算多 → 逼出表格内部滚动条。
- *  取最大值可杜绝这类溢出；代价只是页数偏保守（底部可能留一点空）。 */
-const ROW_HEIGHT_SAMPLE_SIZE = 3;
 const ROW_ACTIONS_COMPACT_CLASS =
   " [&_button]:h-5 [&_button]:w-5 [&_button]:min-h-0 [&_svg]:h-3 [&_svg]:w-3";
 const ROW_ACTIONS_SIZE_CLASS: Record<RowHeightMode, string> = {
@@ -700,19 +696,39 @@ export function AdvancedDataTable<T>({
     if (!viewport || viewport.clientHeight <= 0) return;
     const bodyRows = viewport.querySelectorAll<HTMLElement>("[data-advanced-table-body-row]");
     if (bodyRows.length === 0) return;
-    let measuredRowHeight = 0;
-    for (let i = 0; i < Math.min(bodyRows.length, ROW_HEIGHT_SAMPLE_SIZE); i += 1) {
-      const height = bodyRows[i].getBoundingClientRect().height;
-      if (height > measuredRowHeight) measuredRowHeight = height;
+    const rowHeights: number[] = [];
+    let maxRowHeight = 0;
+    for (const row of bodyRows) {
+      const height = row.getBoundingClientRect().height;
+      if (height <= 0) continue;
+      rowHeights.push(height);
+      maxRowHeight = Math.max(maxRowHeight, height);
     }
-    if (measuredRowHeight <= 0) return;
+    if (rowHeights.length === 0) return;
     const headerRow = viewport.querySelector<HTMLElement>("[data-advanced-table-header-row]");
     const summaryRowElement = viewport.querySelector<HTMLElement>("[data-advanced-table-summary-row]");
     const headerHeight = headerRow ? headerRow.getBoundingClientRect().height : 0;
     const summaryHeight = summaryRowElement ? summaryRowElement.getBoundingClientRect().height : 0;
     const available = viewport.clientHeight - headerHeight - summaryHeight - ROW_BORDER_HEIGHT;
     if (available <= 0) return;
-    const count = Math.max(1, Math.floor(available / measuredRowHeight));
+    // Prefer the exact number of loaded rows that fit when heights are mixed.
+    // If every loaded row fits, extrapolate from their average height so one
+    // unusually tall row does not leave a large block of empty space.
+    let usedHeight = 0;
+    let count = 0;
+    for (const height of rowHeights) {
+      if (usedHeight + height + ROW_BORDER_HEIGHT > available + 0.5) break;
+      usedHeight += height + ROW_BORDER_HEIGHT;
+      count += 1;
+    }
+    if (count === rowHeights.length) {
+      const averageRowHeight = usedHeight / rowHeights.length;
+      count = Math.max(
+        count,
+        Math.floor((available + 0.5) / (averageRowHeight + ROW_BORDER_HEIGHT + 2)),
+      );
+    }
+    count = Math.max(1, count);
     if (lastReportedRowsFitRef.current === count) return;
     lastReportedRowsFitRef.current = count;
     report(count);
@@ -725,6 +741,13 @@ export function AdvancedDataTable<T>({
     lastReportedRowsFitRef.current = null;
     measureRowsFit();
   }, [measureRowsFit, onRowsFitChange]);
+
+  // Async pages can arrive after the first fit measurement. Retry only until
+  // the first successful report so normal row changes do not churn page size.
+  useEffect(() => {
+    if (lastReportedRowsFitRef.current != null) return;
+    measureRowsFit();
+  }, [measureRowsFit, rows.length]);
 
   // 兜底：首次测量若因容器还没有尺寸而失败，等容器出现尺寸后再补测一次；
   // 一旦成功上报过就不再跟随 resize（保持"打开时算一次"的语义）。
@@ -1710,7 +1733,7 @@ export function AdvancedDataTable<T>({
                   <div className="flex min-w-0 items-center justify-center gap-1">
                     {(column.sortValue || column.filterText) && sortable ? (
                       <span
-                        className={`block min-w-0 truncate cursor-pointer select-none text-xs font-semibold transition-transform duration-200 ${sortState?.key === column.key || (filters[column.key]?.length ?? 0) > 0 ? "text-blue-600" : "text-slate-600"} ${sortState?.key === column.key && sortState.direction === "desc" ? "rotate-180" : ""}`}
+                        className={`block min-w-0 truncate cursor-pointer select-none text-xs font-semibold transition-transform duration-200 ${sortState?.key === column.key ? "text-purple-600" : (filters[column.key]?.length ?? 0) > 0 ? "text-blue-600" : "text-slate-600"} ${sortState?.key === column.key && sortState.direction === "desc" ? "rotate-180" : ""}`}
                         onClick={(event) => handleHeaderSortClick(event, column.key, showFilters && !!column.filterText)}
                         onDoubleClick={(event) => handleHeaderLabelDoubleClick(event, column.key, showFilters && !!column.filterText)}
                         title={showFilters && column.filterText ? (sortState?.key === column.key ? (sortState.direction === "asc" ? t("advancedTable.sortAscDesc") : t("advancedTable.sortDescCancel")) : t("advancedTable.sortClickFilter")) : (sortState?.key === column.key ? (sortState.direction === "asc" ? t("advancedTable.sortAsc") : t("advancedTable.sortDesc")) : t("advancedTable.sortClick"))}

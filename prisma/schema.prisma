@@ -127,9 +127,13 @@ model AccountGroup {
   householdId      String
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @default(now()) @updatedAt
+  institutionId    String?
   Account          Account[]
   InsuranceProduct InsuranceProduct[]
   Household        Household          @relation(fields: [householdId], references: [id])
+  Institution      Institution?       @relation(fields: [institutionId], references: [id], onDelete: SetNull)
+
+  @@index([institutionId])
 }
 
 model AiChannel {
@@ -736,6 +740,7 @@ model DepositTransaction {
   @@index([cashAccountId, tradeDate])
   @@index([sourceDepositTransactionId])
   @@index([deletedAt])
+  @@index([depositProductId])
   @@map("deposit_transactions")
 }
 
@@ -1206,6 +1211,7 @@ model Institution {
   type                           String?
   householdId                    String?
   Account                        Account[]
+  AccountGroup                   AccountGroup[]
   InsuranceProductMaster         InsuranceProductMaster[]
   InsuranceProductAsInsurer      InsuranceProduct[]         @relation("InsuranceProductInsurer")
   InsuranceProductAsPolicyholder InsuranceProduct[]         @relation("InsuranceProductPolicyholder")
