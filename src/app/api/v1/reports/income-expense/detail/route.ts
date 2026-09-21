@@ -6,7 +6,7 @@ import {
   type IncomeExpenseReportDetailType,
 } from "@/lib/server/income-expense-report";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { loadReportDetailEntries } from "@/lib/server/report-detail-entries";
+import { buildReportDetailEntryOverrides, loadReportDetailEntries } from "@/lib/server/report-detail-entries";
 
 export const runtime = "nodejs";
 
@@ -68,7 +68,11 @@ export async function GET(req: Request) {
     const detailEntryIds = report.details
       ? [...new Set(report.details.rows.map((row) => row.entryId))]
       : [];
-    const entries = await loadReportDetailEntries(ctx, detailEntryIds);
+    const entries = await loadReportDetailEntries(
+      ctx,
+      detailEntryIds,
+      report.details ? buildReportDetailEntryOverrides(report.details.rows) : undefined,
+    );
 
     return NextResponse.json({
       ok: true,
