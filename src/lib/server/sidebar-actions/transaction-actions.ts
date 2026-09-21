@@ -2625,6 +2625,10 @@ export async function updateTransactionFromDialog(formData: FormData) {
           : null;
         touchedAccountIds.add(fromAcc.id);
         touchedAccountIds.add(toAcc.id);
+        // 账户对没变时放行：计划任务（存款/债券取息）生成的利息转账涉及存款、
+        // 债券等专用账户，就地编辑只是修正金额/日期/备注，与收入/支出编辑的
+        // 「账户没变放行」同规则；一旦改动账户对，仍按普通规则硬校验。
+        const transferAccountsUnchanged = entry.accountId === fromAccountId && entry.toAccountId === toAccountId;
         if (fromAcc.kind === "loan" || toAcc.kind === "loan") {
           throw new Error(t("sidebar.action.specialTargetTransferNotAllowed"));
         }
@@ -2632,7 +2636,7 @@ export async function updateTransactionFromDialog(formData: FormData) {
         if (isLoanOrSettlementAccountKind(fromAcc.kind) && isLoanOrSettlementAccountKind(toAcc.kind)) {
           throw new Error(t("sidebar.action.settlementTransferNotAllowed"));
         }
-        if (!isDebtTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc))) {
+        if (!isDebtTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc)) && !transferAccountsUnchanged) {
           throw new Error(t("sidebar.action.specialTargetTransferNotAllowed"));
         }
         const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
@@ -2680,7 +2684,7 @@ export async function updateTransactionFromDialog(formData: FormData) {
             note: note || null,
             toNote: (toNote || note) || null,
             currency: transferCurrency,
-            source: debtMode ? `debt_${debtMode}` : "manual",
+            source: debtMode ? `debt_${debtMode}` : transferAccountsUnchanged && entry.source ? entry.source : "manual",
             debtPrincipalAmount: debtMode ? amountAbs : null,
             debtInterestAmount: debtMode ? 0 : null,
             debtFeeAmount: debtMode ? 0 : null,

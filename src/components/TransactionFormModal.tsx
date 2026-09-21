@@ -1095,6 +1095,17 @@ export function TransactionFormModal({
     if (operation === "debt" && !debtMode) return false;
 
     if (editEntryId) {
+      // 账户对没变时直接放行：计划任务（存款/债券取息）生成的利息转账涉及专用账户，
+      // 就地修正金额/日期/备注即可（服务端同步放行）；专用窗口规则只拦截
+      // 「改动账户对」或新建的保存。借贷账户对仍走专用借贷窗口。
+      if (
+        !debtMode &&
+        editOriginalTransferAccounts &&
+        fromAccountId === editOriginalTransferAccounts.fromAccountId &&
+        toAccountId === editOriginalTransferAccounts.toAccountId
+      ) {
+        return false;
+      }
       if (operation === "debt" && debtMode && editEntryOriginalType !== "transfer") {
         return false;
       }
