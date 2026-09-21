@@ -352,13 +352,16 @@ async function autoAccruePeriodicInterest(
   // 月末起存钳制到月末再减一天）。与计划排程共用 depositPayoutAnchorUtc，
   // 两处日期永远一致。
   if (frequency.unit === "month") {
-    for (let k = frequency.interval; k < 12 * 80; k += frequency.interval) {
-      const date = depositPayoutAnchorUtc(startDate, frequency, k);
+    // periods 是期数（1, 2, 3…）：depositPayoutAnchorUtc 内部会再乘 interval。
+    // 这里若传单位数（interval, 2×interval…）会把步长平方 —— interval=3 时
+    // 变成每 9 个月计息一次，而不是每 3 个月。
+    for (let periods = 1; periods * frequency.interval < 12 * 80; periods++) {
+      const date = depositPayoutAnchorUtc(startDate, frequency, periods);
       if (localDayKey(date) > upperKey) break;
       addPayout(date);
     }
   } else {
-    const stepDays = frequency.unit === "week" ? 7 * frequency.interval : 1;
+    const stepDays = frequency.unit === "week" ? 7 * frequency.interval : 365 * frequency.interval;
     for (let ms = startDate.getTime() + (stepDays - 1) * 86400000; localDayKey(new Date(ms)) <= upperKey; ms += stepDays * 86400000) {
       addPayout(new Date(ms));
     }

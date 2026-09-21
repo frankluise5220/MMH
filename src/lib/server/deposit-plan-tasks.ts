@@ -255,17 +255,25 @@ function nextPayoutDateUtc(
   after: Date,
 ): Date {
   if (frequency.unit === "month") {
-    for (let k = frequency.interval; k < 12 * 80; k += frequency.interval) {
-      const date = depositPayoutAnchorUtc(startDate, frequency, k);
+    // periods 是期数：depositPayoutAnchorUtc 内部会再乘 interval。
+    for (let periods = 1; periods * frequency.interval < 12 * 80; periods++) {
+      const date = depositPayoutAnchorUtc(startDate, frequency, periods);
       if (date.getTime() > after.getTime()) return date;
     }
-    // 极端兜底（超 80 年未命中）：从 after 起按月推进再提前一天。
-    return depositPayoutAnchorUtc(after, frequency, frequency.interval);
+    // 极端兜底（超 80 年未命中）：从 after 起走一个完整周期再提前一天。
+    return depositPayoutAnchorUtc(after, frequency, 1);
   }
   const stepDays = frequency.unit === "week" ? 7 * frequency.interval : 365 * frequency.interval;
   const elapsed = Math.floor((after.getTime() - startDate.getTime()) / 86400000);
-  const steps = Math.max(frequency.interval, Math.ceil((elapsed + 1) / stepDays) * frequency.interval);
-  return depositPayoutAnchorUtc(startDate, frequency, steps);
+  // 期数（不是单位数）：depositPayoutAnchorUtc 内部会再乘 interval。
+  let periods = Math.max(1, Math.ceil((elapsed + 1) / stepDays));
+  let date = depositPayoutAnchorUtc(startDate, frequency, periods);
+  // 与月分支口径一致：锚点必须严格晚于 after；after 恰好落在锚点上时再进一期。
+  while (date.getTime() <= after.getTime()) {
+    periods += 1;
+    date = depositPayoutAnchorUtc(startDate, frequency, periods);
+  }
+  return date;
 }
 
 export type DepositPlanExecutionResult = {
