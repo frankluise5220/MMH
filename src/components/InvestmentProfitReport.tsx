@@ -29,6 +29,7 @@ type Props = {
     wealthProfit: number;
     fixedAssetProfit: number;
     totalProfit: number;
+    dividendIncome: number;
     count: number;
   };
   isRedUp: boolean;
@@ -105,6 +106,7 @@ export function InvestmentProfitReport({ period, year, month, rows, totals, isRe
           { key: "fund", label: t("investmentProfitReport.summary.fundProfit"), value: totals.fundProfit },
           { key: "stock", label: t("investmentProfitReport.summary.stockProfit"), value: totals.stockProfit },
           { key: "wealth", label: t("investmentProfitReport.summary.wealthProfit"), value: totals.wealthProfit },
+          { key: "dividend", label: t("investmentProfitReport.summary.dividendIncome"), value: totals.dividendIncome },
           { key: "fixedAsset", label: t("investmentProfitReport.summary.fixedAssetProfit"), value: totals.fixedAssetProfit },
         ].map((item) => (
           <div key={item.key} className="rounded-lg border border-slate-200 bg-white p-3">
@@ -170,6 +172,7 @@ export function InvestmentProfitReport({ period, year, month, rows, totals, isRe
                         {row.stockProfit !== 0 ? <div>{t("investmentProfitReport.daily.stock")} {signedMoney(row.stockProfit)}</div> : null}
                         {row.wealthProfit !== 0 ? <div>{t("investmentProfitReport.daily.wealth")} {signedMoney(row.wealthProfit)}</div> : null}
                         {row.fixedAssetProfit !== 0 ? <div>{t("investmentProfitReport.daily.fixedAsset")} {signedMoney(row.fixedAssetProfit)}</div> : null}
+                        {row.dividendIncome !== 0 ? <div>{t("investmentProfitReport.daily.dividend")} {signedMoney(row.dividendIncome)}</div> : null}
                       </div>
                     ) : null}
                   </div>
@@ -222,6 +225,12 @@ export function InvestmentProfitReport({ period, year, month, rows, totals, isRe
                           <span className="truncate">{t("investmentProfitReport.summary.fixedAssetProfit")}</span>
                           <ProfitNumber value={row.fixedAssetProfit} isRedUp={isRedUp} />
                         </div>
+                        {row.dividendIncome !== 0 ? (
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="truncate">{t("investmentProfitReport.summary.dividendIncome")}</span>
+                            <ProfitNumber value={row.dividendIncome} isRedUp={isRedUp} />
+                          </div>
+                        ) : null}
                       </div>
                     ) : null}
                   </div>
