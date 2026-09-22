@@ -13,7 +13,7 @@ import { translate } from "@/lib/i18n-core";
 import { loadInvestmentProfitReport } from "@/lib/server/investment-profit-report";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
-import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
+import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { computeDebtDisplaySummary } from "@/lib/server/debt-display-summary";
 import { getConversionRate, getHouseholdBaseCurrency, type ConversionRate } from "@/lib/server/fx-rates";
 import type { HouseholdContext } from "@/lib/server/household-scope";
@@ -324,7 +324,7 @@ export async function computeOverviewSummary(
   ];
   const dailyAccountIds = dailyAccounts.map((account) => account.id);
   const dailyCurrencyByAccountId = new Map(dailyAccounts.map((account) => [account.id, currencyOf(account)]));
-  const dailyAndDebtDisplayBalanceByAccountId = await computeAccountDisplayBalances(
+  const dailyAndDebtDisplayBalanceByAccountId = await getMaintainedAccountBalances(
     [...dailyAccounts, ...debtAccounts].map((account) => ({
       id: account.id,
       kind: account.kind,

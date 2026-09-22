@@ -56,13 +56,17 @@ import { calculateWealthCashDividendProfit, recalcWealthPositions } from "@/lib/
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
-import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import {
+  applyEntryChangesToAccountBalances,
+  BALANCE_ENTRY_SELECT,
+  recalcAndSaveAccountBalance,
+  type EntryBalanceChange,
+} from "@/lib/server/account-balance";
 import { creditBillEffectiveDate, creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { getFundConfirmDays, getFundArrivalDays } from "@/lib/fund/confirmDays";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { toNumber, addWorkdaysUtc, toStatementMonth, startOfDayUtc, formatDateLocal } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
-import { compareDetailEntriesAsc, compareDetailEntriesDesc, locateDetailEntryPageDesc } from "@/lib/detail-entry-order";
 import { isAdvanceFundingAccount, isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingAccount, isInsuranceAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
 import { ALL_CASH_DETAIL_SCOPE_ID, cashLedgerAccountIdsOf, isAllCashDetailScope } from "@/lib/all-cash-entries";
 import { getOrCreateInsuranceAccount } from "@/lib/insurance/autoAccount";
@@ -79,7 +83,6 @@ import { encodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { touchAccountUsage } from "@/lib/server/account-usage";
 import { executeNonFundScheduledTaskPlan } from "@/lib/server/scheduled-task-executor";
-import { applyBalanceReconcileEntry } from "@/lib/balance-reconcile";
 import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
 import { softDeleteEntriesByIds } from "@/lib/server/entry-delete";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
@@ -115,6 +118,7 @@ import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 import { upsertStatementCategoryRuleFromSavedRecord } from "@/lib/statement/category-rules";
 import { upsertStatementInstitutionRuleFromUserEdit } from "@/lib/statement/recognition-rules";
 import { DETAIL_ALL_PAGE_SIZE } from "@/lib/detail-pagination-preference";
+import { locateDetailPage, queryDetailPage } from "@/lib/server/detail-page-query";
 
 export const runtime = "nodejs";
 
@@ -357,15 +361,24 @@ async function upsertFundBuyRefundRecord(
   };
 
   const existing = directMatch ?? fallbackMatch ?? dateFallbackMatch;
-  return existing
-    ? tx.txRecord.update({ where: { id: existing.id }, data: refundRecordData })
-    : tx.txRecord.create({
-        data: {
-          ...refundRecordData,
-          type: TransactionType.investment,
-          householdId: params.householdId,
-        },
-      });
+  if (existing) {
+    return {
+      record: await tx.txRecord.update({ where: { id: existing.id }, data: refundRecordData }),
+      created: false,
+      previous: existing,
+    };
+  }
+  return {
+    record: await tx.txRecord.create({
+      data: {
+        ...refundRecordData,
+        type: TransactionType.investment,
+        householdId: params.householdId,
+      },
+    }),
+    created: true,
+    previous: null,
+  };
 }
 
 function normalizeFundSubtype(value: unknown): FundSubtype {
@@ -672,9 +685,9 @@ async function createSplitWealthTransactionFromBody(body: Record<string, unknown
   for (const id of touchedAccountIds) {
     await recalcWealthPositions(id).catch(logger.catchLog("理财持仓收益重算失败", "route.ts"));
   }
-  for (const id of touchedAccountIds) {
-    await recalcAndSaveAccountBalance(id).catch(logger.catchLog("操作失败", "route.ts"));
-  }
+  await applyEntryChangesToAccountBalances([{ entryId: result.cashEntryId }]).catch(
+    logger.catchLog("操作失败", "route.ts"),
+  );
   await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(logger.catchLog("信用卡账单缓存失效失败", "route.ts"));
   // 债券计划行由 createBondEntry / editBondEntry 按存单刷新（ensureBondPlansForLot），
   // 理财路径不再代管债券计划行。
@@ -726,6 +739,7 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
         : null;
 
   const touchedAccountIds = new Set<string>();
+  let previousCashEntry: EntryBalanceChange["previous"] = null;
   const result = await prisma.$transaction(async (tx) => {
     const link = await tx.entryBusinessLink.findFirst({
       where: {
@@ -761,7 +775,13 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
     }
     if (!wealthRow) throw new Error("理财记录不存在");
 
-    const oldCashEntry = wealthRow.cashEntryId ? await tx.txRecord.findUnique({ where: { id: wealthRow.cashEntryId } }) : null;
+    const oldCashEntry = wealthRow.cashEntryId
+      ? await tx.txRecord.findUnique({
+          where: { id: wealthRow.cashEntryId },
+          select: BALANCE_ENTRY_SELECT,
+        })
+      : null;
+    previousCashEntry = oldCashEntry;
     if (oldCashEntry) {
       touchedAccountIds.add(oldCashEntry.accountId);
       if (oldCashEntry.toAccountId) touchedAccountIds.add(oldCashEntry.toAccountId);
@@ -922,9 +942,9 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
   for (const id of touchedAccountIds) {
     await recalcWealthPositions(id).catch(logger.catchLog("理财持仓收益重算失败", "route.ts"));
   }
-  for (const id of touchedAccountIds) {
-    await recalcAndSaveAccountBalance(id).catch(logger.catchLog("操作失败", "route.ts"));
-  }
+  await applyEntryChangesToAccountBalances([
+    { entryId: result.cashEntryId, previous: previousCashEntry },
+  ]).catch(logger.catchLog("操作失败", "route.ts"));
   await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(logger.catchLog("信用卡账单缓存失效失败", "route.ts"));
   // 债券计划行由 createBondEntry / editBondEntry 按存单刷新（ensureBondPlansForLot），
   // 理财路径不再代管债券计划行。
@@ -1204,18 +1224,6 @@ function linkedWealthDetailFields(record: any, wealthRow: any) {
       userNote: wealthRow.note,
     }),
     businessNote: wealthRow.note ?? null,
-  };
-}
-
-function entryWithLinkedWealthDisplayDateFields(record: any, wealthRow: any | null) {
-  if (!wealthRow) return record;
-  const action = normalizeFundSubtype(wealthRow.action);
-  if (!isWealthCashInSubtype(action)) return record;
-  return {
-    ...record,
-    fundSubtype: action,
-    fundArrivalDate: wealthRow.arrivalDate ?? record.fundArrivalDate,
-    toAccountId: wealthRow.cashAccountId ?? record.toAccountId,
   };
 }
 
@@ -1639,81 +1647,24 @@ export async function GET(req: Request) {
       }
     }
 
-    const listWhere = {
-      ...txRecordAccountScopeWhere(listAccountIds),
-      deletedAt: null,
-      ...hidFilter,
-    };
     const sortAccountId = allCashScope ? undefined : accountId;
-
-    const [totalCount, orderingEntries] = await Promise.all([
-      prisma.txRecord.count({ where: listWhere }),
-      prisma.txRecord.findMany({
-        where: listWhere,
-        select: {
-          id: true,
-          date: true,
-          postedAt: true,
-          createdAt: true,
-          dayOrder: true,
-          type: true,
-          amount: true,
-          toAccountId: true,
-          toNote: true,
-          source: true,
-          debtPrincipalAmount: true,
-          fundSubtype: true,
-          fundArrivalDate: true,
-          fundArrivalAmount: true,
-          EntryBusinessLinkCash: {
-            where: { deletedAt: null },
-            select: { wealthTransactionId: true },
-          },
-          EntryBusinessLinkBusiness: {
-            where: { deletedAt: null },
-            select: { wealthTransactionId: true },
-          },
-        },
-        orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-      }),
-    ]);
-
-    const orderingLinkedWealthIds = Array.from(new Set(orderingEntries
-      .map((entry) => linkedWealthTransactionIdOf(entry))
-      .filter((id): id is string => !!id)));
-    const orderingLinkedWealthRows = orderingLinkedWealthIds.length > 0
-      ? await prisma.wealthTransaction.findMany({
-          where: { id: { in: orderingLinkedWealthIds }, householdId: hidFilter.householdId, deletedAt: null },
-          select: {
-            id: true,
-            action: true,
-            arrivalDate: true,
-            cashAccountId: true,
-          },
-        })
-      : [];
-    const orderingLinkedWealthById = new Map(orderingLinkedWealthRows.map((row) => [row.id, row]));
-    const displayDateEntryOf = (entry: typeof orderingEntries[number]) => {
-      const linkedWealthId = linkedWealthTransactionIdOf(entry);
-      return entryWithLinkedWealthDisplayDateFields(entry, linkedWealthId ? orderingLinkedWealthById.get(linkedWealthId) ?? null : null);
-    };
+    const normalizedListAccountIds = Array.isArray(listAccountIds) ? listAccountIds : [listAccountIds];
 
     const accountDisplayBalancePromise = account
       ? resolveAccountDisplayBalance(account, hidFilter)
       : Promise.resolve(0);
-    const orderedEntries = [...orderingEntries].sort((a, b) => compareDetailEntriesDesc(displayDateEntryOf(a), displayDateEntryOf(b), sortAccountId));
 
     // Date locate mode: jump straight to the page containing the first entry
-    // on or before the requested date. Ordering fields are already fully
-    // loaded above, so the page index is computed in memory for free.
+    // on or before the requested date.
     const locateDateParam = (url.searchParams.get("locateDate") ?? "").trim();
     if (locateDateParam) {
-      const located = locateDetailEntryPageDesc(
-        orderedEntries.map(displayDateEntryOf),
-        locateDateParam,
+      const located = await locateDetailPage({
+        accountIds: normalizedListAccountIds,
+        householdId: hidFilter.householdId ?? "",
+        dateYmd: locateDateParam,
         pageSize,
         sortAccountId,
-      );
+      });
       return NextResponse.json({
         ok: true,
         data: {
@@ -1721,28 +1672,25 @@ export async function GET(req: Request) {
           locateDate: locateDateParam,
           locatePage: located.page,
           locateIndex: located.index,
-          totalCount,
+          totalCount: located.totalCount,
           page,
           pageSize,
         },
       });
     }
 
-    const runningBalanceById = new Map<string, number>();
-    if (!allCashScope) {
-      const ascEntries = [...orderedEntries].sort((a, b) => compareDetailEntriesAsc(displayDateEntryOf(a), displayDateEntryOf(b), sortAccountId));
-      let runningBalance = 0;
-      for (const entry of ascEntries) {
-        runningBalance = applyBalanceReconcileEntry(runningBalance, entry, sortAccountId);
-        runningBalanceById.set(entry.id, runningBalance);
-      }
-    }
-
-    const pagedEntryIds = orderedEntries.slice((page - 1) * pageSize, page * pageSize).map((entry) => entry.id);
-    const pageRows = pagedEntryIds.length > 0
+    const pageData = await queryDetailPage({
+      accountIds: normalizedListAccountIds,
+      householdId: hidFilter.householdId ?? "",
+      page,
+      pageSize,
+      sortAccountId,
+      includeRunningBalances: !allCashScope,
+    });
+    const pageRows = pageData.pageIds.length > 0
       ? await prisma.txRecord.findMany({
           where: {
-            id: { in: pagedEntryIds },
+            id: { in: pageData.pageIds },
             deletedAt: null,
             ...hidFilter,
           },
@@ -1757,7 +1705,7 @@ export async function GET(req: Request) {
         })
       : [];
     const pageRowById = new Map(pageRows.map((row) => [row.id, row]));
-    const pagedEntries = pagedEntryIds
+    const pagedEntries = pageData.pageIds
       .map((id) => pageRowById.get(id))
       .filter((entry): entry is (typeof pageRows)[number] => !!entry);
 
@@ -1788,7 +1736,7 @@ export async function GET(req: Request) {
       dayOrder: e.dayOrder,
       amount: toNumber(e.amount),
       currency: e.currency ?? "CNY",
-      runningBalance: runningBalanceById.get(e.id) ?? null,
+      runningBalance: pageData.runningBalanceById[e.id] ?? null,
       type: e.type,
       categoryId: e.categoryId,
       categoryName: e.categoryName,
@@ -1865,8 +1813,8 @@ export async function GET(req: Request) {
       data: {
         accountId: allCashScope ? ALL_CASH_DETAIL_SCOPE_ID : account!.id,
         accountBalance: accountDisplayBalance,
-        totalCount,
-        page,
+        totalCount: pageData.totalCount,
+        page: pageData.page,
         pageSize,
         entries,
       },
@@ -1961,6 +1909,8 @@ export async function POST(req: Request) {
     let createdFundTransactionId: string | undefined;
     let createdPlanId: string | undefined;
     let changedInvestment = false;
+    const createdBalanceEntryIds: string[] = [];
+    const balanceChanges: EntryBalanceChange[] = [];
 
     if (type === "advance") {
       const accountId = String(body.accountId ?? "").trim();
@@ -2007,10 +1957,9 @@ export async function POST(req: Request) {
           },
         });
         createdId = created.id;
+        createdBalanceEntryIds.push(created.id);
         await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
       });
-      await recalcAndSaveAccountBalance(accountId).catch(logger.catchLog("操作失败", "route.ts"));
-      if (advanceAccountId) await recalcAndSaveAccountBalance(advanceAccountId).catch(logger.catchLog("操作失败", "route.ts"));
     } else if (type === "transfer") {
       const fromAccountId = String(body.fromAccountId ?? body.accountId ?? "").trim();
       const toAccountId = String(body.toAccountId ?? "").trim();
@@ -2094,12 +2043,11 @@ export async function POST(req: Request) {
           },
         });
         createdId = created.id;
+        createdBalanceEntryIds.push(created.id);
 
         await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
       });
 
-      await recalcAndSaveAccountBalance(fromAccountId).catch(logger.catchLog("操作失败", "route.ts"));
-      await recalcAndSaveAccountBalance(toAccountId).catch(logger.catchLog("操作失败", "route.ts"));
     } else if (type === "expense") {
       const accountId = String(body.accountId ?? "").trim();
       const categoryId = String(body.categoryId ?? "").trim();
@@ -2161,6 +2109,7 @@ export async function POST(req: Request) {
           },
         });
         createdId = created.id;
+        createdBalanceEntryIds.push(created.id);
 
         if (counterpartyInstitution && note) {
           await upsertStatementInstitutionRuleFromUserEdit(tx, {
@@ -2175,7 +2124,6 @@ export async function POST(req: Request) {
         await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
       });
 
-      await recalcAndSaveAccountBalance(accountId).catch(logger.catchLog("操作失败", "route.ts"));
     } else if (type === "income") {
       const accountId = String(body.accountId ?? "").trim();
       const categoryId = String(body.categoryId ?? "").trim();
@@ -2237,6 +2185,7 @@ export async function POST(req: Request) {
           } as any,
         });
         createdId = created.id;
+        createdBalanceEntryIds.push(created.id);
 
         if (counterpartyInstitution && note) {
           await upsertStatementInstitutionRuleFromUserEdit(tx, {
@@ -2251,7 +2200,6 @@ export async function POST(req: Request) {
         await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
       });
 
-      if (accountId) await recalcAndSaveAccountBalance(accountId).catch(logger.catchLog("操作失败", "route.ts"));
     } else if (type === "investment") {
       changedInvestment = true;
       const accountId = String(body.accountId ?? "").trim();
@@ -2793,6 +2741,7 @@ export async function POST(req: Request) {
           createdFundTransactionId = createdFund.fundTransaction.id;
           createdCashEntryId = createdFund.cashEntry?.id ?? undefined;
           createdId = createdCashEntryId ?? createdFund.fundTransaction.id;
+          createdBalanceEntryIds.push(...createdFund.cashEntries.map((entry) => entry.id));
           if (createdCashEntryId) {
             await attachEntryTags({ tx, entryId: createdCashEntryId, householdId, tagIds });
           }
@@ -2838,6 +2787,7 @@ export async function POST(req: Request) {
             },
           });
           createdId = created.id;
+          createdBalanceEntryIds.push(created.id);
 
           await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
           const shouldCreateCashEntry = !!cashAcc && !isInsurance && cashAcc.id !== investAcc.id && cashFlowAmount !== 0;
@@ -2858,6 +2808,7 @@ export async function POST(req: Request) {
               },
             });
             createdCashEntryId = cashEntry.id;
+            createdBalanceEntryIds.push(cashEntry.id);
             const businessType: EntryBusinessType = isInsurance
               ? "insurance"
               : fundProductType === "wealth"
@@ -2898,7 +2849,7 @@ export async function POST(req: Request) {
             entryFundCode
           ) {
             const effectiveRefundDate = refundDate ?? computedArrivalDate ?? computedConfirmDate ?? date;
-            await upsertFundBuyRefundRecord(tx, {
+            const refundResult = await upsertFundBuyRefundRecord(tx, {
               householdId,
               buyEntryId: created.id,
               buyDate: date,
@@ -2924,6 +2875,14 @@ export async function POST(req: Request) {
                 note,
               ),
             });
+            if (refundResult?.created) {
+              createdBalanceEntryIds.push(refundResult.record.id);
+            } else if (refundResult?.previous) {
+              balanceChanges.push({
+                entryId: refundResult.record.id,
+                previous: refundResult.previous,
+              });
+            }
           }
         }
       });
@@ -2946,15 +2905,20 @@ export async function POST(req: Request) {
       } else if (!isInsurance && fundProductType !== "deposit" && finalInvestmentAccId) {
         await recalcFundPositions(finalInvestmentAccId, fundCode ? [fundCode] : undefined).catch(logger.catchLog("操作失败", "route.ts"));
       }
-      if (finalInvestmentAccId) {
-        await recalcAndSaveAccountBalance(finalInvestmentAccId).catch(logger.catchLog("操作失败", "route.ts"));
-      }
-      if (!isDividendReinvest && cashAccountIdInput && cashAccountIdInput !== finalInvestmentAccId) {
-        await recalcAndSaveAccountBalance(cashAccountIdInput).catch(logger.catchLog("操作失败", "route.ts"));
-      }
     } else {
       return NextResponse.json({ ok: false, code: "INVALID_TYPE", error: "类型不正确" }, { status: 400 });
     }
+
+    const balanceChangesToApply = new Map<string, EntryBalanceChange>();
+    for (const entryId of createdBalanceEntryIds) {
+      balanceChangesToApply.set(entryId, { entryId });
+    }
+    for (const change of balanceChanges) {
+      balanceChangesToApply.set(change.entryId, change);
+    }
+    await applyEntryChangesToAccountBalances(Array.from(balanceChangesToApply.values())).catch(
+      logger.catchLog("操作失败", "route.ts"),
+    );
 
     if (changedInvestment && createdId && !createdFundTransactionId) {
       await syncFundTransactionsFromTxRecords([createdId]).catch(logger.catchLog("sync fund transaction", "route.ts"));
@@ -3137,6 +3101,18 @@ export async function PUT(req: Request) {
     const profileEditFundDisplayName = requestFundCode ? await resolveFundName(requestFundCode, { householdId }) : null;
     const inputEditFundDisplayName = requestFundCode ? normalizeFundDisplayName(requestFundCode, requestFundName) : requestFundName;
     const effectiveEditFundDisplayName = profileEditFundDisplayName ?? inputEditFundDisplayName;
+    const previousBalanceEntry = entryId
+      ? await prisma.txRecord.findFirst({
+          where: { id: entryId, householdId },
+          select: BALANCE_ENTRY_SELECT,
+        })
+      : null;
+    const balanceChangesToApply = new Map<string, EntryBalanceChange>();
+    if (entryId) {
+      balanceChangesToApply.set(entryId, previousBalanceEntry
+        ? { entryId, previous: previousBalanceEntry }
+        : { entryId });
+    }
 
     let oldAccountId: string | undefined;
     let oldToAccountId: string | undefined;
@@ -3686,7 +3662,7 @@ export async function PUT(req: Request) {
             toDateOrNull(body.fundArrivalDate) ??
             toDateOrNull(body.fundConfirmDate) ??
             date;
-          await upsertFundBuyRefundRecord(tx, {
+          const refundResult = await upsertFundBuyRefundRecord(tx, {
             householdId,
             linkedRefundEntryId,
             buyEntryId: entry.id,
@@ -3713,16 +3689,39 @@ export async function PUT(req: Request) {
               note,
             ),
           });
+          if (refundResult) {
+            balanceChangesToApply.set(refundResult.record.id, refundResult.created
+              ? { entryId: refundResult.record.id }
+              : { entryId: refundResult.record.id, previous: refundResult.previous });
+          }
         } else if (finalFundSubtype === FundSubtype.buy && !isDividendReinvest && linkedRefundEntryId) {
-          await tx.txRecord.updateMany({
+          const linkedRefundEntry = await tx.txRecord.findFirst({
             where: {
               id: linkedRefundEntryId,
               householdId,
               fundSubtype: FundSubtype.buy_failed,
               source: "regular_invest_refund",
             },
-            data: { deletedAt: new Date() },
+            select: BALANCE_ENTRY_SELECT,
           });
+          if (linkedRefundEntry) {
+            const deleted = await tx.txRecord.updateMany({
+              where: {
+                id: linkedRefundEntry.id,
+                householdId,
+                fundSubtype: FundSubtype.buy_failed,
+                source: "regular_invest_refund",
+                deletedAt: null,
+              },
+              data: { deletedAt: new Date() },
+            });
+            if (deleted.count > 0) {
+              balanceChangesToApply.set(linkedRefundEntry.id, {
+                entryId: linkedRefundEntry.id,
+                previous: linkedRefundEntry,
+              });
+            }
+          }
         }
         if (
           independentFundTransaction &&
@@ -3738,7 +3737,7 @@ export async function PUT(req: Request) {
             toDateOrNull(body.fundArrivalDate) ??
             toDateOrNull(body.fundConfirmDate) ??
             date;
-          await upsertFundTransactionRefundCashFlow(tx, {
+          const refundCashFlow = await upsertFundTransactionRefundCashFlow(tx, {
             householdId,
             fundTransactionId: independentFundTransaction.id,
             linkedRefundEntryId,
@@ -3757,15 +3756,17 @@ export async function PUT(req: Request) {
               note,
             ),
           });
+          if (refundCashFlow) {
+            balanceChangesToApply.set(refundCashFlow.record.id, refundCashFlow.created
+              ? { entryId: refundCashFlow.record.id }
+              : { entryId: refundCashFlow.record.id, previous: refundCashFlow.previous });
+          }
         }
 
 if (!isInsuranceEdit && isMetalProduct) {
   await recalcPreciousMetalPositions(investAcc.id).catch(logger.catchLog("操作失败", "route.ts"));
 } else if (!isInsuranceEdit) {
   await recalcFundPositions(investAcc.id, fundCode ? [fundCode] : undefined).catch(logger.catchLog("操作失败", "route.ts"));
-}
-if (!isInsuranceEdit || isInsuranceAccount(investAcc)) {
-  await recalcAndSaveAccountBalance(investAcc.id).catch(logger.catchLog("操作失败", "route.ts"));
 }
 return;
       }
@@ -3986,7 +3987,13 @@ return;
       );
     }
 
-    // Recalculate balances: all involved old/new accounts
+    // Refresh only the affected accounts. The entry-diff path advances stored
+    // balances without folding the account's full history in the request.
+    await applyEntryChangesToAccountBalances(Array.from(balanceChangesToApply.values())).catch(
+      logger.catchLog("操作失败", "route.ts"),
+    );
+
+    // Invalidate credit-card cycle caches for all involved old/new accounts.
     const accountsToRecalc = new Set<string>();
     if (oldAccountId) accountsToRecalc.add(oldAccountId);
     if (oldToAccountId) accountsToRecalc.add(oldToAccountId);
@@ -4010,9 +4017,6 @@ return;
       if (accountId) accountsToRecalc.add(accountId);
     }
 
-    for (const acctId of accountsToRecalc) {
-      await recalcAndSaveAccountBalance(acctId).catch(logger.catchLog("操作失败", "route.ts"));
-    }
     await invalidateCreditCardCycleCacheForAccountIds(accountsToRecalc).catch(
       logger.catchLog("信用卡账单缓存失效失败", "route.ts"),
     );

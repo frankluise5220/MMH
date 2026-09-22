@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db/prisma";
 import { materializeDueInstallmentPayments } from "@/lib/server/credit-card-installment";
 import { ensureAccountGroupMemberPairing } from "@/lib/server/account-group-member-pairing";
+import { bootstrapPendingAccountBalances } from "@/lib/server/account-balance";
 import { logger } from "@/lib/logger";
 
 /**
@@ -12,7 +13,10 @@ import { logger } from "@/lib/logger";
  * periodically from `src/instrumentation-node.ts` so both stay correct
  * independent of any login.
  */
-export async function runDueSystemTasks(): Promise<{ materializedInstallments: number }> {
+export async function runDueSystemTasks(): Promise<{
+  materializedInstallments: number;
+  bootstrappedAccountBalances: number;
+}> {
   const households = await prisma.household.findMany({ select: { id: true } });
   let materializedInstallments = 0;
   for (const household of households) {
@@ -31,5 +35,12 @@ export async function runDueSystemTasks(): Promise<{ materializedInstallments: n
   if (materializedInstallments > 0) {
     logger.info(`system task materialized ${materializedInstallments} installment rows`, "system-task");
   }
-  return { materializedInstallments };
+  const bootstrappedAccountBalances = await bootstrapPendingAccountBalances(1).catch((error) => {
+    logger.error("account balance bootstrap failed", "system-task", { error });
+    return 0;
+  });
+  if (bootstrappedAccountBalances > 0) {
+    logger.info(`system task bootstrapped ${bootstrappedAccountBalances} account balances`, "system-task");
+  }
+  return { materializedInstallments, bootstrappedAccountBalances };
 }

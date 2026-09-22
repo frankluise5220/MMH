@@ -6,7 +6,11 @@ import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
 import { calculateWealthCashDividendProfit, recalcWealthPositions } from "@/lib/wealth-position";
-import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import {
+  applyEntryChangesToAccountBalances,
+  BALANCE_ENTRY_SELECT,
+  type EntryBalanceChange,
+} from "@/lib/server/account-balance";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 import { getFundArrivalDays, getFundConfirmDays, setFundConfirmDays, setFundArrivalDays } from "@/lib/fund/confirmDays";
@@ -304,6 +308,7 @@ async function createSplitWealthTransaction(
       : null;
 
   let touchedAccountIds: string[] = [];
+  let createdCashEntryId: string | null = null;
   await prisma.$transaction(async (tx) => {
     const cashAcc = await tx.account.findUnique({
       where: { id: cashAccountId },
@@ -380,6 +385,7 @@ async function createSplitWealthTransaction(
         note: cashNote,
       },
     });
+    createdCashEntryId = cashEntry.id;
 
     const wealthTransaction = await tx.wealthTransaction.create({
       data: {
@@ -427,8 +433,8 @@ async function createSplitWealthTransaction(
   for (const id of touchedAccountIds) {
     await recalcWealthPositions(id).catch(() => {});
   }
-  for (const id of touchedAccountIds) {
-    await recalcAndSaveAccountBalance(id).catch(() => {});
+  if (createdCashEntryId) {
+    await applyEntryChangesToAccountBalances([{ entryId: createdCashEntryId }]).catch(() => {});
   }
   await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(() => {});
   revalidateAfterFundShellChange();
@@ -560,8 +566,9 @@ export async function createTransaction(formData: FormData) {
         await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
       });
 
-      await recalcAndSaveAccountBalance(fromAccountId).catch(() => {});
-      await recalcAndSaveAccountBalance(toAccountId).catch(() => {});
+      if (createdEntryId) {
+        await applyEntryChangesToAccountBalances([{ entryId: createdEntryId }]).catch(() => {});
+      }
     } else if (type === "expense") {
       const accountId = String(formData.get("accountId") ?? "").trim();
       const categoryId = String(formData.get("categoryId") ?? "").trim();
@@ -677,9 +684,8 @@ export async function createTransaction(formData: FormData) {
         }
       });
 
-      await recalcAndSaveAccountBalance(accountId).catch(() => {});
-      for (const fixedAssetAccountId of fixedAssetAccountIdsToRefresh) {
-        await recalcAndSaveAccountBalance(fixedAssetAccountId).catch(() => {});
+      if (createdEntryId) {
+        await applyEntryChangesToAccountBalances([{ entryId: createdEntryId }]).catch(() => {});
       }
     } else if (type === "advance") {
       const accountId = String(formData.get("accountId") ?? "").trim();
@@ -733,8 +739,9 @@ export async function createTransaction(formData: FormData) {
         await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
       });
 
-      await recalcAndSaveAccountBalance(accountId).catch(() => {});
-      if (advanceAccountId) await recalcAndSaveAccountBalance(advanceAccountId).catch(() => {});
+      if (createdEntryId) {
+        await applyEntryChangesToAccountBalances([{ entryId: createdEntryId }]).catch(() => {});
+      }
     } else if (type === "income") {
       const accountId = String(formData.get("accountId") ?? "").trim();
       const categoryId = String(formData.get("categoryId") ?? "").trim();
@@ -786,7 +793,9 @@ export async function createTransaction(formData: FormData) {
         await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
       });
 
-      if (accountId) await recalcAndSaveAccountBalance(accountId).catch(() => {});
+      if (createdEntryId) {
+        await applyEntryChangesToAccountBalances([{ entryId: createdEntryId }]).catch(() => {});
+      }
     } else if (type === "investment") {
       const entryProductType = String(formData.get("fundProductType") ?? "").trim();
       // 债券走债券专用落库路径（BondProduct + bond_transactions，买入行即存单），
@@ -801,6 +810,7 @@ export async function createTransaction(formData: FormData) {
       }
       let createdInvestmentEntryId: string | null = null;
       let createdFundTransactionId: string | null = null;
+      const createdInvestmentEntryIds: string[] = [];
       const accountId = String(formData.get("accountId") ?? "").trim();
       const subtype =
         String(formData.get("fundSubtype") ?? formData.get("subtype") ?? "").trim() ||
@@ -1119,6 +1129,7 @@ export async function createTransaction(formData: FormData) {
           createdFundTransactionId = createdFund.fundTransaction.id;
           createdInvestmentEntryId = createdFund.cashEntry?.id ?? createdFund.fundTransaction.id;
           createdEntryId = createdFund.cashEntry?.id ?? createdInvestmentEntryId;
+          createdInvestmentEntryIds.push(...createdFund.cashEntries.map((entry) => entry.id));
         } else {
           const created = await tx.txRecord.create({
             data: {
@@ -1163,6 +1174,7 @@ export async function createTransaction(formData: FormData) {
           });
           createdInvestmentEntryId = created.id;
           createdEntryId = created.id;
+          createdInvestmentEntryIds.push(created.id);
           if (
             finalFundSubtype === FundSubtype.buy &&
             sourceValue !== "insurance" &&
@@ -1174,7 +1186,7 @@ export async function createTransaction(formData: FormData) {
             cashAcc &&
             entryFundCode
           ) {
-            await upsertFundBuyRefundRecord(tx, {
+            const refundEntry = await upsertFundBuyRefundRecord(tx, {
               householdId,
               buyEntryId: created.id,
               buyDate: date,
@@ -1193,6 +1205,7 @@ export async function createTransaction(formData: FormData) {
               regularInvestPlanId: created.regularInvestPlanId ?? null,
               note: note || `${t("detailView.buyRefund")} ${entryFundName || entryFundCode}`,
             });
+            if (refundEntry?.id) createdInvestmentEntryIds.push(refundEntry.id);
           }
         }
       });
@@ -1212,12 +1225,10 @@ export async function createTransaction(formData: FormData) {
       } else if (sourceValue !== "insurance" && fundProductType !== "deposit" && fundProductType !== "wealth" && finalInvestmentAccId) {
         await recalcFundPositions(finalInvestmentAccId, fundCode ? [fundCode] : undefined).catch(() => {});
       }
-      const balanceAccountId = finalInvestmentAccId;
-      if (balanceAccountId) {
-        await recalcAndSaveAccountBalance(balanceAccountId).catch(() => {});
-      }
-      if (!isDividendReinvest && cashAccountIdInput && cashAccountIdInput !== balanceAccountId) {
-        await recalcAndSaveAccountBalance(cashAccountIdInput).catch(() => {});
+      if (createdInvestmentEntryIds.length > 0) {
+        await applyEntryChangesToAccountBalances(
+          Array.from(new Set(createdInvestmentEntryIds)).map((entryId) => ({ entryId })),
+        ).catch(() => {});
       }
     } else {
       return { ok: false as const, error: t("sidebar.action.invalidType") };
@@ -1292,7 +1303,7 @@ async function editSplitWealthTransaction(
       : null;
 
   const touchedAccountIds = new Set<string>();
-  await prisma.$transaction(async (tx) => {
+  const balanceChange = await prisma.$transaction(async (tx) => {
     const link = await tx.entryBusinessLink.findFirst({
       where: {
         householdId,
@@ -1330,7 +1341,10 @@ async function editSplitWealthTransaction(
     if (!wealthRow) throw new Error(t("sidebar.action.wealthRecordNotFound"));
 
     const oldCashEntry = wealthRow.cashEntryId
-      ? await tx.txRecord.findUnique({ where: { id: wealthRow.cashEntryId } })
+      ? await tx.txRecord.findUnique({
+          where: { id: wealthRow.cashEntryId },
+          select: BALANCE_ENTRY_SELECT,
+        })
       : null;
     if (oldCashEntry) {
       touchedAccountIds.add(oldCashEntry.accountId);
@@ -1482,14 +1496,13 @@ async function editSplitWealthTransaction(
     });
     touchedAccountIds.add(cashAcc.id);
     touchedAccountIds.add(wealthAcc.id);
+    return { entryId: cashEntry.id, previous: oldCashEntry };
   });
 
   for (const id of touchedAccountIds) {
     await recalcWealthPositions(id).catch(() => {});
   }
-  for (const id of touchedAccountIds) {
-    await recalcAndSaveAccountBalance(id).catch(() => {});
-  }
+  await applyEntryChangesToAccountBalances([balanceChange]).catch(() => {});
   await invalidateCreditCardCycleCacheForAccountIds(Array.from(touchedAccountIds)).catch(() => {});
   revalidateAfterFundShellChange();
 }
@@ -1668,6 +1681,9 @@ export async function editInvestment(formData: FormData) {
     });
 
     if (!txRecord) return { ok: false as const, error: t("sidebar.action.fundRecordNotFound") };
+    const balanceChangesToApply = new Map<string, EntryBalanceChange>([
+      [txRecord.id, { entryId: txRecord.id, previous: txRecord }],
+    ]);
     if (txRecord.fundSubtype === FundSubtype.buy_failed && txRecord.source === "regular_invest_refund") {
       const sourceBuy = txRecord.fundSourceEntryId
         ? await prisma.txRecord.findFirst({
@@ -1691,7 +1707,7 @@ export async function editInvestment(formData: FormData) {
       const nextRefundAmount = refundAmount ?? amountAbs;
       const nextRefundDate = refundDate ?? fundArrivalDate ?? date;
       await prisma.$transaction(async (tx) => {
-        await upsertFundBuyRefundRecord(tx, {
+        const refundResult = await upsertFundBuyRefundRecord(tx, {
           householdId,
           linkedRefundEntryId: txRecord.id,
           buyEntryId: sourceBuy.id,
@@ -1718,13 +1734,19 @@ export async function editInvestment(formData: FormData) {
             memo || txRecord.note,
           ),
         });
+        if (refundResult) {
+          balanceChangesToApply.set(refundResult.record.id, refundResult.created
+            ? { entryId: refundResult.record.id }
+            : { entryId: refundResult.record.id, previous: refundResult.previous });
+        }
       });
       await syncFundTransactionsFromTxRecords([sourceBuy.id]).catch((e) => {
         console.error("editInvestment sync linked refund fund transaction:", e);
       });
       await recalcFundPositions(sourceBuy.toAccountId, sourceBuy.fundCode ? [sourceBuy.fundCode] : undefined).catch((e) => { console.error("editInvestment recalc linked refund fund positions:", e); });
-      await recalcAndSaveAccountBalance(sourceBuy.toAccountId).catch((e) => { console.error("editInvestment recalc linked refund invest balance:", e); });
-      await recalcAndSaveAccountBalance(sourceBuy.accountId).catch((e) => { console.error("editInvestment recalc linked refund cash balance:", e); });
+      await applyEntryChangesToAccountBalances(Array.from(balanceChangesToApply.values())).catch((e) => {
+        console.error("editInvestment update linked refund balances:", e);
+      });
       revalidateAfterFundShellChange();
       return { ok: true as const };
     }
@@ -2080,7 +2102,7 @@ export async function editInvestment(formData: FormData) {
         finalCashAccountId
       ) {
         const effectiveRefundDate = refundDate ?? fundArrivalDate ?? fundConfirmDate ?? date;
-        await upsertFundBuyRefundRecord(tx, {
+        const refundResult = await upsertFundBuyRefundRecord(tx, {
           householdId,
           linkedRefundEntryId,
           buyEntryId: entryId,
@@ -2107,16 +2129,39 @@ export async function editInvestment(formData: FormData) {
             memo,
           ),
         });
+        if (refundResult) {
+          balanceChangesToApply.set(refundResult.record.id, refundResult.created
+            ? { entryId: refundResult.record.id }
+            : { entryId: refundResult.record.id, previous: refundResult.previous });
+        }
       } else if (finalFundSubtype === FundSubtype.buy && linkedRefundEntryId) {
-        await tx.txRecord.updateMany({
+        const linkedRefundEntry = await tx.txRecord.findFirst({
           where: {
             id: linkedRefundEntryId,
             householdId,
             fundSubtype: FundSubtype.buy_failed,
             source: "regular_invest_refund",
           },
-          data: { deletedAt: new Date() },
+          select: BALANCE_ENTRY_SELECT,
         });
+        if (linkedRefundEntry) {
+          const deleted = await tx.txRecord.updateMany({
+            where: {
+              id: linkedRefundEntry.id,
+              householdId,
+              fundSubtype: FundSubtype.buy_failed,
+              source: "regular_invest_refund",
+              deletedAt: null,
+            },
+            data: { deletedAt: new Date() },
+          });
+          if (deleted.count > 0) {
+            balanceChangesToApply.set(linkedRefundEntry.id, {
+              entryId: linkedRefundEntry.id,
+              previous: linkedRefundEntry,
+            });
+          }
+        }
       }
       if (
         independentFundTransaction &&
@@ -2127,7 +2172,7 @@ export async function editInvestment(formData: FormData) {
         finalCashAccountId
       ) {
         const effectiveRefundDate = refundDate ?? fundArrivalDate ?? fundConfirmDate ?? date;
-        await upsertFundTransactionRefundCashFlow(tx, {
+        const refundCashFlow = await upsertFundTransactionRefundCashFlow(tx, {
           householdId,
           fundTransactionId: independentFundTransaction.id,
           linkedRefundEntryId,
@@ -2146,6 +2191,11 @@ export async function editInvestment(formData: FormData) {
             memo,
           ),
         });
+        if (refundCashFlow) {
+          balanceChangesToApply.set(refundCashFlow.record.id, refundCashFlow.created
+            ? { entryId: refundCashFlow.record.id }
+            : { entryId: refundCashFlow.record.id, previous: refundCashFlow.previous });
+        }
       }
     }, { maxWait: 10_000, timeout: 20_000 });
     if (!usedIndependentFundTransaction) {
@@ -2153,9 +2203,9 @@ export async function editInvestment(formData: FormData) {
         console.error("editInvestment sync independent business transaction:", e);
       });
     }
-    if (fundProductType === "deposit" && depositMaturityAction !== undefined) {
-      await recalcAndSaveAccountBalance(oldInvestmentAccId).catch(() => {});
-    }
+    await applyEntryChangesToAccountBalances(Array.from(balanceChangesToApply.values())).catch((e) => {
+      console.error("editInvestment update account balances:", e);
+    });
 
     // Recalculate positions: if the fund account changed, recalculate both the old and new accounts.
     const finalInvestmentAccId = newToAccountId ?? oldInvestmentAccId;
@@ -2178,20 +2228,6 @@ export async function editInvestment(formData: FormData) {
         // Fund account unchanged: recalculate only that account.
         await recalcFundPositions(finalInvestmentAccId, recalcCodes.length > 0 ? recalcCodes : undefined).catch((e) => { console.error("editInvestment recalc fund positions:", e); });
       }
-    }
-
-    // Recalculate the investment account balance.
-    await recalcAndSaveAccountBalance(finalInvestmentAccId).catch((e) => { console.error("editInvestment recalc invest balance:", e); });
-    if (oldInvestmentAccId && oldInvestmentAccId !== finalInvestmentAccId) {
-      await recalcAndSaveAccountBalance(oldInvestmentAccId).catch((e) => { console.error("editInvestment recalc old invest balance:", e); });
-    }
-
-    // Recalculate the cash account balance (if the cash account changed).
-    if (oldCashAccId && oldCashAccId !== finalInvestmentAccId) {
-      await recalcAndSaveAccountBalance(oldCashAccId).catch((e) => { console.error("editInvestment recalc old cash balance:", e); });
-    }
-    if (cashAccountId && cashAccountId !== oldCashAccId && cashAccountId !== finalInvestmentAccId) {
-      await recalcAndSaveAccountBalance(cashAccountId).catch((e) => { console.error("editInvestment recalc new cash balance:", e); });
     }
 
     // Update the T+N confirm days in the unified confirm-days store.
@@ -2324,6 +2360,8 @@ export async function renewDeposit(formData: FormData) {
       if (!cashAccount) return { ok: false as const, error: t("sidebar.action.accountNotFound") };
     }
 
+    let interestEntryId: string | null = null;
+    let transferEntryId: string | null = null;
     await prisma.$transaction(async (tx) => {
       await tx.txRecord.update({
         where: { id: buy.id },
@@ -2345,7 +2383,7 @@ export async function renewDeposit(formData: FormData) {
           categoryName: SYSTEM_DEPOSIT_INTEREST_CATEGORY,
           type: "income",
         });
-        await tx.txRecord.create({
+        const interestEntry = await tx.txRecord.create({
           data: {
             date: maturityDate,
             postedAt: maturityDate,
@@ -2362,7 +2400,8 @@ export async function renewDeposit(formData: FormData) {
             ...{ householdId },
           },
         });
-        await tx.txRecord.create({
+        interestEntryId = interestEntry.id;
+        const transferEntry = await tx.txRecord.create({
           data: {
             date: maturityDate,
             type: TransactionType.transfer,
@@ -2378,16 +2417,18 @@ export async function renewDeposit(formData: FormData) {
             ...{ householdId },
           },
         });
+        transferEntryId = transferEntry.id;
       }
     });
 
     await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: buy.id }).catch((e) => {
       console.error("renewDeposit sync buy business transaction:", e);
     });
-    if (mode === "renew_principal" && cashAccount) {
-      await recalcAndSaveAccountBalance(cashAccount.id).catch(() => {});
-    }
-    await recalcAndSaveAccountBalance(depositAccount.id).catch(() => {});
+    await applyEntryChangesToAccountBalances([
+      { entryId: buy.id, previous: buy },
+      ...(interestEntryId ? [{ entryId: interestEntryId }] : []),
+      ...(transferEntryId ? [{ entryId: transferEntryId }] : []),
+    ]).catch(() => {});
     await invalidateCreditCardCycleCacheForAccountIds([depositAccount.id]).catch(() => {});
     revalidateAfterInvestChange();
     return { ok: true as const };
@@ -2490,8 +2531,10 @@ export async function payDepositInterest(formData: FormData) {
       categoryName: SYSTEM_DEPOSIT_INTEREST_CATEGORY,
       type: "income",
     });
+    let interestEntryId: string | null = null;
+    let transferEntryId: string | null = null;
     await prisma.$transaction(async (tx) => {
-      await tx.txRecord.create({
+      const interestEntry = await tx.txRecord.create({
         data: {
           date: effectivePayoutDate,
           postedAt: effectivePayoutDate,
@@ -2509,7 +2552,8 @@ export async function payDepositInterest(formData: FormData) {
           ...{ householdId },
         },
       });
-      await tx.txRecord.create({
+      interestEntryId = interestEntry.id;
+      const transferEntry = await tx.txRecord.create({
         data: {
           date: effectivePayoutDate,
           type: TransactionType.transfer,
@@ -2526,6 +2570,7 @@ export async function payDepositInterest(formData: FormData) {
           ...{ householdId },
         },
       });
+      transferEntryId = transferEntry.id;
       // Next interest segment starts on the payout date.
       await tx.txRecord.update({
         where: { id: buy.id },
@@ -2536,8 +2581,11 @@ export async function payDepositInterest(formData: FormData) {
     await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: buy.id }).catch((e) => {
       console.error("payDepositInterest sync buy business transaction:", e);
     });
-    await recalcAndSaveAccountBalance(depositAccount.id).catch(() => {});
-    await recalcAndSaveAccountBalance(cashAccount.id).catch(() => {});
+    await applyEntryChangesToAccountBalances([
+      { entryId: buy.id, previous: buy },
+      ...(interestEntryId ? [{ entryId: interestEntryId }] : []),
+      ...(transferEntryId ? [{ entryId: transferEntryId }] : []),
+    ]).catch(() => {});
     revalidateAfterInvestChange();
     return { ok: true as const };
   } catch (e) {
@@ -2590,11 +2638,16 @@ export async function updateTransactionFromDialog(formData: FormData) {
   try {
     const ctx = await getHouseholdScope();
     const undo = await prepareEntryUndo(prisma, ctx.householdId, [entryId]);
+    const previousBalanceEntry = await prisma.txRecord.findUnique({
+      where: { id: entryId },
+      select: BALANCE_ENTRY_SELECT,
+    });
     let investRecalcAccountId: string | null = null;
     let investRecalcFundCode: string | null = null;
     const fixedAssetAccountId = String(formData.get("fixedAssetAccountId") ?? "").trim();
     const fixedAssetAssetId = String(formData.get("fixedAssetAssetId") ?? "").trim();
     let touchedFixedAsset = false;
+    const fixedAssetAccountIdsToRecalc = new Set<string>();
     let independentFundCategoryId: string | null = null;
     let independentFundCategoryName: string | null = null;
     const touchedAccountIds = new Set<string>();
@@ -3068,6 +3121,7 @@ export async function updateTransactionFromDialog(formData: FormData) {
           propertyName: undefined,
         });
         touchedAccountIds.add(fixedAssetAccountId);
+        fixedAssetAccountIdsToRecalc.add(fixedAssetAccountId);
         touchedFixedAsset = true;
       } else {
         const syncResult = await syncLinkedFixedAssetTransactionFromCashEntry(prisma, {
@@ -3076,13 +3130,14 @@ export async function updateTransactionFromDialog(formData: FormData) {
         });
         if (syncResult.touched) {
           touchedFixedAsset = true;
-          for (const accountId of syncResult.accountIds) touchedAccountIds.add(accountId);
+          for (const accountId of syncResult.accountIds) {
+            touchedAccountIds.add(accountId);
+            fixedAssetAccountIdsToRecalc.add(accountId);
+          }
         }
       }
     }
-    for (const accountId of touchedAccountIds) {
-      await recalcAndSaveAccountBalance(accountId).catch(() => {});
-    }
+    await applyEntryChangesToAccountBalances([{ entryId, previous: previousBalanceEntry }]).catch(() => {});
     await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(() => {});
     if (type === "investment" && isFundShellProductType(formData)) revalidateAfterFundShellChange();
     else if (type === "investment" || touchedFixedAsset) revalidateAfterInvestChange();

@@ -10,7 +10,11 @@ import { recalcPropertyAssetsFromTransactions } from "@/lib/property/transaction
 import { recalcStockPositions } from "@/lib/stock/recalcPosition";
 import { recalcWealthPositions } from "@/lib/wealth-position";
 import { isAdmin } from "@/lib/server/auth";
-import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import {
+  applyEntryChangesToAccountBalances,
+  BALANCE_ENTRY_SELECT,
+  type EntryBalanceChange,
+} from "@/lib/server/account-balance";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
@@ -496,6 +500,7 @@ export async function softDeleteEntriesByIds(
   const wealthAccountsToRecalc = new Set<string>();
   const propertyAssetIdsToRecalc = new Set<string>();
   const accountsToRecalcBalance = new Set<string>();
+  const balanceChangesByEntryId = new Map<string, EntryBalanceChange>();
   const changedFundEntryIds: string[] = [];
   const processedInstallmentPlanIds = new Set<string>();
   let touchedInvestment = false;
@@ -505,6 +510,7 @@ export async function softDeleteEntriesByIds(
     if (!txRecord) continue;
     if (txRecord.deletedAt) continue;
     if (!isAdmin(ctx.user) && txRecord.householdId && txRecord.householdId !== ctx.householdId) continue;
+    balanceChangesByEntryId.set(txRecord.id, { entryId: txRecord.id, previous: txRecord });
     await upsertLegacyCombinedEntryBusinessLink(prisma, txRecord).catch(
       logger.catchLog("同步交易业务关联失败", "entry-delete.ts"),
     );
@@ -558,8 +564,11 @@ export async function softDeleteEntriesByIds(
           creditCardInstallmentPlanId: installmentPlan.id,
           deletedAt: null,
         },
-        select: { id: true },
+        select: BALANCE_ENTRY_SELECT,
       });
+      for (const record of relatedRecords) {
+        balanceChangesByEntryId.set(record.id, { entryId: record.id, previous: record });
+      }
       const related = await prisma.txRecord.updateMany({
         where: {
           householdId: ctx.householdId,
@@ -655,9 +664,9 @@ export async function softDeleteEntriesByIds(
     householdId: ctx.householdId,
     propertyAssetIds: Array.from(propertyAssetIdsToRecalc),
   }).catch(logger.catchLog("房产资产重算失败", "entry-delete.ts"));
-  for (const accountId of accountsToRecalcBalance) {
-    await recalcAndSaveAccountBalance(accountId).catch(logger.catchLog("操作失败", "entry-delete.ts"));
-  }
+  await applyEntryChangesToAccountBalances(Array.from(balanceChangesByEntryId.values())).catch(
+    logger.catchLog("更新账户余额失败", "entry-delete.ts"),
+  );
   await invalidateCreditCardCycleCacheForAccountIds(accountsToRecalcBalance).catch(
     logger.catchLog("信用卡账单缓存失效失败", "entry-delete.ts"),
   );

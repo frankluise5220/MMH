@@ -3,7 +3,7 @@ import { toNumber } from "@/lib/date-utils";
 export const BALANCE_RECONCILE_SOURCE = "balance_reconcile";
 export const BALANCE_INITIALIZATION_SOURCE = "initialization";
 
-const TARGET_PREFIX = "balance_reconcile_target:";
+export const BALANCE_RECONCILE_TARGET_PREFIX = "balance_reconcile_target:";
 
 type BalanceReconcileEntryLike = {
   source?: string | null;
@@ -37,13 +37,13 @@ function isDebtAccountReceivingSide(entry: AccountFlowEntryLike, accountId?: str
 }
 
 export function encodeBalanceReconcileTarget(balance: number) {
-  return `${TARGET_PREFIX}${Number(balance).toFixed(2)}`;
+  return `${BALANCE_RECONCILE_TARGET_PREFIX}${Number(balance).toFixed(2)}`;
 }
 
 export function getBalanceReconcileTarget(entry: BalanceReconcileEntryLike) {
   const raw = String(entry.toNote ?? "").trim();
-  if (!raw.startsWith(TARGET_PREFIX)) return null;
-  const value = Number(raw.slice(TARGET_PREFIX.length));
+  if (!raw.startsWith(BALANCE_RECONCILE_TARGET_PREFIX)) return null;
+  const value = Number(raw.slice(BALANCE_RECONCILE_TARGET_PREFIX.length));
   return Number.isFinite(value) ? value : null;
 }
 

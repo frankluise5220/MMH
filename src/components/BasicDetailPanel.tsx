@@ -333,7 +333,7 @@ export function BasicDetailPanel({
   const lastFocusEntryIdRef = useRef(focusEntryId ?? "");
   const paginationFetchSeqRef = useRef(0);
   const lastClientPaginationKeyRef = useRef("");
-  const clientPaginationEnabled = !hasDetailFilters && !focusEntryId;
+  const clientPaginationEnabled = !hasDetailFilters;
 
   const reloadDetailPage = useCallback((signal?: AbortSignal) => {
     if (!clientPaginationEnabled) return;

@@ -21,6 +21,10 @@ model Account {
   id                                                         String                      @id @default(cuid())
   name                                                       String
   balance                                                    Decimal                     @default(0) @db.Decimal(18, 2)
+  // As-of day for which `balance` has been maintained. Null means the cached
+  // value predates incremental balance maintenance and will be adopted as the
+  // baseline on the next background maintenance pass.
+  balanceRecomputedAt                                        DateTime?
   kind                                                       AccountKind                 @default(other)
   debtDirection                                              DebtDirection?
   currency                                                   String                      @default("CNY")
@@ -1148,6 +1152,7 @@ model Household {
   StockHolding              StockHolding[]
   StatementRecognitionRule  StatementRecognitionRule[]
   Reimbursement             Reimbursement[]
+  SponsorTipIntent          SponsorTipIntent[]
   RegularInvestPlan         RegularInvestPlan[]
   CreditCardInstallmentPlan CreditCardInstallmentPlan[]
   FxConversion              FxConversion[]
@@ -1506,9 +1511,28 @@ model User {
   Account            Account[]
   Household          Household?           @relation(fields: [householdId], references: [id])
   InsuranceProduct   InsuranceProduct[]   @relation("InsuranceProduct_insuredUserIdToUser")
+  SponsorTipIntent   SponsorTipIntent[]
   UserSettings       UserSettings?
   PasswordResetToken PasswordResetToken[]
 
+  @@index([email])
+}
+
+model SponsorTipIntent {
+  id          String    @id @default(cuid())
+  userId      String
+  householdId String?
+  email       String
+  amount      Decimal   @db.Decimal(10, 2)
+  status      String    @default("pending")
+  claimedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @default(now()) @updatedAt
+  User        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  Household   Household? @relation(fields: [householdId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([householdId, createdAt])
   @@index([email])
 }
 

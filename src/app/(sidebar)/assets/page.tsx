@@ -2,7 +2,7 @@ import { prisma } from "@/lib/db/prisma";
 import { AccountKind } from "@prisma/client";
 import { formatMoney } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
-import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
+import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getServerT } from "@/lib/server/i18n";
 import { cookies } from "next/headers";
@@ -27,7 +27,7 @@ export default async function AssetsPage() {
     orderBy: [{ name: "asc" }],
   });
 
-  const displayBalanceByAccountId = await computeAccountDisplayBalances(
+  const displayBalanceByAccountId = await getMaintainedAccountBalances(
     accounts.map((account) => ({
       id: account.id,
       kind: account.kind,

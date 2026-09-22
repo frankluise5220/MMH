@@ -15,7 +15,7 @@ import type { HouseholdContext } from "@/lib/server/household-scope";
 import { getEffectiveLatestFundNavMap } from "@/lib/fund/navCache";
 import { getFundProfileNameMap, normalizeFundDisplayName } from "@/lib/fund/fundProfile";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
-import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
+import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { optionalPrismaFindMany } from "@/lib/server/optional-prisma-delegate";
 
 export type InvestBalanceDetail = {
@@ -422,7 +422,7 @@ export const computeInvestBalances = cache(
   const allStockHoldings = await loadStockHoldingsForInvestSummary(stockAccountIds);
   const allPropertyAssets = await loadPropertyAssetsForInvestSummary(propertyAccountIds);
   const stockCashBalanceByAccountId = stockAccountIds.length > 0
-    ? await computeAccountDisplayBalances(
+    ? await getMaintainedAccountBalances(
         stockAccountIds.map((id) => ({ id, kind: AccountKind.investment, investProductType: "stock" })),
         ctx.hidFilter,
       )
@@ -748,7 +748,7 @@ export const computePositionDisplay = cache(
         })
       : null;
     const cashAccountId = brokerageCashAccount?.id ?? accountId;
-    const stockCashBalanceMap = await computeAccountDisplayBalances(
+    const stockCashBalanceMap = await getMaintainedAccountBalances(
       [{
         id: cashAccountId,
         kind: brokerageCashAccount?.kind ?? AccountKind.investment,

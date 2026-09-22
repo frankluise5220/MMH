@@ -178,6 +178,7 @@ function verifySourceFiles() {
   const packageJson = read(path.join(root, "package.json"));
   const appBuildScript = read(path.join(root, "scripts", "build-synology-app.cjs"));
   const packageScript = read(path.join(root, "scripts", "build-synology-package.cjs"));
+  const fnosBuildScript = read(path.join(root, "scripts", "build-fnos-package.cjs"));
   const releaseWorkflow = read(path.join(root, ".github", "workflows", "synology-release.yml"));
   const sqliteInitIndex = packageScript.indexOf('"$NODE_BIN" "$SERVER_DIR/scripts/init-sqlite.cjs"');
   const pidCheckIndex = packageScript.indexOf('if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")"');
@@ -187,6 +188,12 @@ function verifySourceFiles() {
   expect(/check:synology/.test(packageJson), "package.json must expose check:synology.");
   expect(/MMH_DEPLOY_TARGET:\s*"synology"/.test(appBuildScript), "Synology app build must mark the deployment target.");
   expect(/MMH_DEPLOY_TARGET=synology/.test(packageScript), "Synology start script must mark runtime deployment as synology.");
+  expect(
+    /build-fnos-package\.cjs/.test(packageScript) &&
+      /20260922_add_account_balance_recomputed_at/.test(fnosBuildScript) &&
+      /addColumnIfMissing\(db, "Account", "balanceRecomputedAt", "DATETIME"\)/.test(fnosBuildScript),
+    "Synology packages must reuse the fnOS SQLite migration that adds Account.balanceRecomputedAt for existing databases.",
+  );
   expect(/DATABASE_URL="file:\$DATA_DIR\/mmh\.db"/.test(packageScript), "Synology start script must store SQLite data under the package data directory.");
   expect(
     /MMH_NODE_MAX_OLD_SPACE_MB/.test(packageScript) &&

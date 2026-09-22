@@ -566,6 +566,23 @@ ensure_auth_version_column() {
   return 1
 }
 
+ensure_account_balance_recomputed_at_column() {
+  # The balance maintenance code reads Account.balanceRecomputedAt on every
+  # account read. Fresh databases get the column from prisma db push below;
+  # pre-check so a missing Account table is a silent no-op.
+  local account_table
+  account_table="$(psql_mmh -tAc "SELECT to_regclass('public.\"Account\"') IS NOT NULL;" 2>/dev/null | tr -d '[:space:]')"
+  if [ "$account_table" != "t" ]; then
+    return 0
+  fi
+  if psql_mmh -v ON_ERROR_STOP=1 -c 'ALTER TABLE "Account" ADD COLUMN IF NOT EXISTS "balanceRecomputedAt" TIMESTAMP(3);' >/dev/null 2>&1; then
+    mmh_log "ensured Account.balanceRecomputedAt column"
+    return 0
+  fi
+  mmh_log "WARNING: could not ensure Account.balanceRecomputedAt column; account balances may fall back to the cached value until schema sync succeeds."
+  return 1
+}
+
 list_prisma_copy_tables() {
   psql_mmh -tAc "SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname ~* '_copy';"
 }
@@ -626,6 +643,7 @@ run_compat_migrations
 # kill the entrypoint before the schema sync ever runs (the fresh-install
 # crash loop shipped in 0.1.63).
 ensure_auth_version_column || true
+ensure_account_balance_recomputed_at_column || true
 
 PUSH_OUTPUT="$(mktemp)"
 PUSH_OK=0

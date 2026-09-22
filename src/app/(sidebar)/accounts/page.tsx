@@ -15,7 +15,7 @@ import { formatMoney, formatMoneyYuan } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { isCreditCardMonthEndBillingDay } from "@/lib/credit/rules";
-import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
+import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "@/lib/server/account-label-fields";
 import { getServerT } from "@/lib/server/i18n";
@@ -142,7 +142,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         })
       : Promise.resolve([]);
   const [displayBalanceByAccountId, currentCycles] = await Promise.all([
-    computeAccountDisplayBalances(
+    getMaintainedAccountBalances(
       accounts
         .filter((account) => account.kind !== AccountKind.bank_credit)
         .map((account) => ({

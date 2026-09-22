@@ -36,7 +36,7 @@ import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
 import { calculateWealthCashDividendProfit, recalcWealthPositions } from "@/lib/wealth-position";
-import { computeAccountDisplayBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import { getMaintainedAccountBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { computeDebtDisplaySummary } from "@/lib/server/debt-display-summary";
 import {
   applyDebtRowEntryMetrics,
@@ -72,6 +72,7 @@ import { compareCategoryOrder, sortCategorySources } from "@/components/category
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { insuranceCashValueDelta } from "@/lib/insurance/transaction";
 import { loadCommonData, loadSelectedAccount, loadEntriesForAccount, loadEntriesPageForAccount, loadInvestAccountData, loadInvestBalances, loadFixedAssetPositionDisplay, loadFixedAssetTransactionEntries } from "@/lib/server/cached-data";
+import { locateDetailEntryPage } from "@/lib/server/detail-page-query";
 import { loadBondShellData, loadBondLotOptions, bondSubtypeLabelKey } from "@/lib/server/bond-shell-data";
 import { computePositionDisplay } from "@/lib/invest-balance";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
@@ -749,13 +750,24 @@ export default async function Home({
     needsDetailEntries &&
     ((view === "detail" && !!accountId) || (isAllCashView && cashLedgerAccountIds.length > 0)) &&
     !hasDetailFilters &&
-    !focusEntryId &&
     !detailAll;
+  const focusedDetailLocation = usePagedDetailEntries && focusEntryId
+    ? await locateDetailEntryPage({
+        accountIds: isAllCashView ? cashLedgerAccountIds : [accountId],
+        householdId,
+        entryId: focusEntryId,
+        pageSize,
+        sortAccountId: isAllCashView ? undefined : accountId,
+      })
+    : null;
+  const pagedDetailPage = focusedDetailLocation && focusedDetailLocation.index >= 0
+    ? focusedDetailLocation.page
+    : detailPage;
   const pagedDetailData = usePagedDetailEntries
     ? await loadEntriesPageForAccount(
         isAllCashView ? cashLedgerAccountIds : accountId,
         JSON.stringify(hidFilter),
-        detailPage,
+        pagedDetailPage,
         pageSize,
       )
     : null;
@@ -1099,7 +1111,7 @@ export default async function Home({
   }));
 
   const [cashDisplayBalanceByAccountId, insuranceDisplayBalanceByAccountId, debtDisplaySummary, investBalances] = await Promise.all([
-    computeAccountDisplayBalances(
+    getMaintainedAccountBalances(
       accounts
         .filter((account) => !isPureInvestmentAccount(account) && account.kind !== AccountKind.insurance)
         .map((account) => ({

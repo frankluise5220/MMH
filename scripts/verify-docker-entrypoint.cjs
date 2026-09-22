@@ -172,6 +172,14 @@ expect(
 );
 
 expect(
+  /ensure_account_balance_recomputed_at_column/.test(entrypoint) &&
+    /ALTER TABLE "Account" ADD COLUMN IF NOT EXISTS "balanceRecomputedAt"/.test(entrypoint) &&
+    entrypoint.indexOf("ensure_account_balance_recomputed_at_column") > entrypoint.indexOf("run_compat_migrations") &&
+    entrypoint.indexOf("ensure_account_balance_recomputed_at_column") < entrypoint.indexOf("prisma db push >"),
+  "Docker entrypoint must ensure Account.balanceRecomputedAt after compatibility migrations and before schema sync.",
+);
+
+expect(
   /push_would_change_existing_data/.test(entrypoint) &&
     /not retrying/.test(entrypoint) &&
     /would change existing data; not retrying/.test(entrypoint),

@@ -26,7 +26,7 @@ import {
 } from "@/lib/account-kind-utils";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
-import { computeAccountDisplayBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import { getMaintainedAccountBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import {
   CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS,
   CREDIT_CARD_MONTH_END_BILLING_DAY,
@@ -1017,7 +1017,7 @@ export async function GET(req: Request) {
   });
   const [investBalByAccountId, displayBalanceByAccountId, currentCreditCycles, insuranceDisplayBalanceByAccountId] = await Promise.all([
     computeInvestBalances(scope),
-    computeAccountDisplayBalances(
+    getMaintainedAccountBalances(
       rows
         .filter((account) => !isPureInvestmentAccount(account))
         .map((account) => ({

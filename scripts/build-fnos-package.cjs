@@ -2265,6 +2265,15 @@ const MIGRATIONS = [
       rebuildDebtAgreementToAccount(db);
     },
   },
+  {
+    version: "20260922_add_account_balance_recomputed_at",
+    description: "Track the as-of day of the incrementally maintained Account.balance cache",
+    apply(db) {
+      if (tableExists(db, "Account")) {
+        addColumnIfMissing(db, "Account", "balanceRecomputedAt", "DATETIME");
+      }
+    },
+  },
 ];
 
 function rebuildDebtAgreementToAccount(db) {

@@ -31,8 +31,7 @@ import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 import { loadReadableTagsByRecentUse } from "@/lib/server/tag-scope";
 import { categoryOrderBy } from "@/lib/category-order";
 import { DETAIL_ALL_PAGE_SIZE } from "@/lib/detail-pagination-preference";
-import { compareDetailEntriesAsc, compareDetailEntriesDesc } from "@/lib/detail-entry-order";
-import { applyBalanceReconcileEntry } from "@/lib/balance-reconcile";
+import { queryDetailPage } from "@/lib/server/detail-page-query";
 
 // ── Types ──
 
@@ -152,57 +151,6 @@ async function _loadEntriesForAccount(
  */
 export const loadEntriesForAccount = cache(_loadEntriesForAccount);
 
-const detailOrderingSelect = {
-  id: true,
-  date: true,
-  postedAt: true,
-  createdAt: true,
-  dayOrder: true,
-  type: true,
-  amount: true,
-  accountId: true,
-  toAccountId: true,
-  toNote: true,
-  source: true,
-  debtPrincipalAmount: true,
-  fundSubtype: true,
-  fundConfirmDate: true,
-  fundArrivalDate: true,
-  fundArrivalAmount: true,
-} as const;
-
-function runningBalanceByIdForPage(
-  orderedEntries: Array<{
-    id: string;
-    date: Date | string;
-    type: string;
-    postedAt?: Date | string | null;
-    createdAt?: Date | string | null;
-    dayOrder?: number | null;
-    fundSubtype?: string | null;
-    fundConfirmDate?: Date | string | null;
-    amount: unknown;
-    toAccountId?: string | null;
-    toNote?: string | null;
-    source?: string | null;
-    debtPrincipalAmount?: unknown;
-    fundArrivalAmount?: unknown;
-  }>,
-  pageIds: string[],
-  sortAccountId?: string,
-) {
-  const runningBalanceById: Record<string, number> = {};
-  if (!sortAccountId || pageIds.length === 0) return runningBalanceById;
-  const wanted = new Set(pageIds);
-  const ascEntries = [...orderedEntries].sort((a, b) => compareDetailEntriesAsc(a, b, sortAccountId));
-  let runningBalance = 0;
-  for (const entry of ascEntries) {
-    runningBalance = applyBalanceReconcileEntry(runningBalance, entry, sortAccountId);
-    if (wanted.has(entry.id)) runningBalanceById[entry.id] = runningBalance;
-  }
-  return runningBalanceById;
-}
-
 async function _loadEntriesPageForAccount(
   accountId: string | string[],
   hidFilterStr: string,
@@ -211,33 +159,22 @@ async function _loadEntriesPageForAccount(
 ) {
   const hidFilter = JSON.parse(hidFilterStr) as { householdId: string };
   const hid = { householdId: hidFilter.householdId };
+  const accountIds = Array.isArray(accountId) ? accountId : [accountId];
   const sortAccountId = Array.isArray(accountId) ? undefined : accountId;
-  const where = {
-    ...txRecordAccountScopeWhere(accountId),
-    deletedAt: null,
-    ...hid,
-  };
   const pageSize = Math.max(1, Math.min(Math.floor(pageSizeValue) || 20, DETAIL_ALL_PAGE_SIZE));
 
-  const [totalCount, orderingEntries] = await Promise.all([
-    prisma.txRecord.count({ where }),
-    prisma.txRecord.findMany({
-      where,
-      select: detailOrderingSelect,
-      orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-    }),
-  ]);
-
-  const orderedEntries = [...orderingEntries].sort((a, b) => compareDetailEntriesDesc(a, b, sortAccountId));
-  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
-  const page = Math.min(Math.max(1, Math.floor(pageValue) || 1), totalPages);
-  const pagedEntryIds = orderedEntries
-    .slice((page - 1) * pageSize, page * pageSize)
-    .map((entry) => entry.id);
-  const pageRows = pagedEntryIds.length > 0
+  const pageData = await queryDetailPage({
+    accountIds,
+    householdId: hidFilter.householdId,
+    page: pageValue,
+    pageSize,
+    sortAccountId,
+    includeRunningBalances: !!sortAccountId,
+  });
+  const pageRows = pageData.pageIds.length > 0
     ? await prisma.txRecord.findMany({
         where: {
-          id: { in: pagedEntryIds },
+          id: { in: pageData.pageIds },
           deletedAt: null,
           ...hid,
         },
@@ -265,12 +202,12 @@ async function _loadEntriesPageForAccount(
   const pageRowById = new Map(pageRows.map((entry) => [entry.id, entry]));
 
   return {
-    entries: pagedEntryIds
+    entries: pageData.pageIds
       .map((id) => pageRowById.get(id))
       .filter((entry): entry is (typeof pageRows)[number] => !!entry),
-    runningBalanceById: runningBalanceByIdForPage(orderedEntries, pagedEntryIds, sortAccountId),
-    totalCount,
-    page,
+    runningBalanceById: pageData.runningBalanceById,
+    totalCount: pageData.totalCount,
+    page: pageData.page,
   };
 }
 
