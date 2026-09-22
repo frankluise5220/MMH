@@ -20,7 +20,7 @@
       "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.65",
       "repo": "https://github.com/frankluise5220/MMH",
       "tags": "财务,记账",
-      "changelog": "本次补齐报销/差旅工作流（仍在开发中，尚未完工）：往来对象可报销开关、报销类型、差旅日期事由、费用项目、行程字段、附件张数和手工明细；同步优化概览/统计/报表收益口径，修复大账本余额维护与明细分页可能导致的卡死/崩溃，并修复跨设备/重装备份恢复，支持可选口令加密备份。相关需求请通过 GitHub issue 或反馈邮件提出。完整说明见 GitHub Release v0.1.65",
+      "changelog": "本次补齐报销/差旅工作流（仍在开发中，尚未完工）：往来对象可报销开关、报销类型、差旅日期事由、费用项目、行程字段、附件张数和手工明细；同步优化概览/统计/报表收益口径，修复大账本余额维护与明细分页可能导致的卡死/崩溃，修复跨设备/重装备份恢复并支持可选口令加密备份；反馈邮件支持图片附件并增加中继回退，赞助页支持支付宝收款码自助登记打赏。相关需求请通过 GitHub issue 或反馈邮件提出。完整说明见 GitHub Release v0.1.65",
       "type": "原生",
       "updated_at": "2026-09-22",
       "downloads": 0,
