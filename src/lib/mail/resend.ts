@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db/prisma";
+import type { MailAttachment } from "@/lib/mail/types";
 
 /** Fixed sender address */
 export const RESEND_FROM = "mmh@floatingice.win";
@@ -6,6 +7,15 @@ export const RESEND_FROM = "mmh@floatingice.win";
 type ResendConfig = {
   apiKey: string;
   from: string;
+};
+
+type ResendSendParams = {
+  to: string | string[];
+  subject: string;
+  text: string;
+  html?: string;
+  replyTo?: string;
+  attachments?: MailAttachment[];
 };
 
 function normalizeResendError(input: { message?: string; name?: string; error?: string } | null, status: number) {
@@ -32,6 +42,17 @@ export function getEnvResendConfig(): ResendConfig | null {
   if (!apiKey) return null;
   // env can override from, but defaults to the fixed value
   const from = (process.env.RESEND_FROM ?? "").trim() || RESEND_FROM;
+  return { apiKey, from };
+}
+
+/**
+ * Project-owned feedback key. This is deliberately separate from the general
+ * RESEND_API_KEY so feedback is the only route that can use it.
+ */
+function getFeedbackResendConfig(): ResendConfig | null {
+  const apiKey = (process.env.MMH_FEEDBACK_RESEND_API_KEY ?? "").trim();
+  if (!apiKey) return null;
+  const from = (process.env.MMH_FEEDBACK_RESEND_FROM ?? "").trim() || RESEND_FROM;
   return { apiKey, from };
 }
 
@@ -72,13 +93,7 @@ export async function hasAnyResendConfig(): Promise<boolean> {
   return (await resolveResendConfig()) !== null;
 }
 
-export async function sendEmailByResend(params: {
-  to: string;
-  subject: string;
-  text: string;
-  html?: string;
-}) {
-  const cfg = await resolveResendConfig();
+async function sendWithResendConfig(cfg: ResendConfig | null, params: ResendSendParams) {
   if (!cfg) {
     return { ok: false as const, error: "未配置 Resend 邮件服务" };
   }
@@ -95,6 +110,12 @@ export async function sendEmailByResend(params: {
       subject: params.subject,
       text: params.text,
       html: params.html,
+      reply_to: params.replyTo,
+      attachments: params.attachments?.map((attachment) => ({
+        filename: attachment.filename,
+        content: attachment.content.toString("base64"),
+        content_type: attachment.contentType,
+      })),
     }),
   });
 
@@ -104,6 +125,15 @@ export async function sendEmailByResend(params: {
   }
 
   return { ok: true as const };
+}
+
+export async function sendEmailByResend(params: ResendSendParams) {
+  return sendWithResendConfig(await resolveResendConfig(), params);
+}
+
+/** Sends through the feedback-only project key; callers must not use it for user mail. */
+export async function sendFeedbackEmailByResend(params: ResendSendParams) {
+  return sendWithResendConfig(getFeedbackResendConfig(), params);
 }
 
 export function formatResendSendError(input: { message?: string; name?: string; error?: string } | null, status: number) {

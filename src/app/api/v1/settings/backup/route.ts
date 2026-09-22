@@ -5,9 +5,9 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { prisma } from "@/lib/db/prisma";
-import { verifyPassword } from "@/lib/auth/password";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { getCurrentUser, isAdmin, type CurrentUser } from "@/lib/server/auth";
+import { getCurrentUser, isAdmin } from "@/lib/server/auth";
+import { verifySensitiveOperationPassword } from "@/lib/server/sensitive-operation-auth";
 import {
   buildBackupFileName,
   buildHouseholdBackupPayload,
@@ -34,7 +34,6 @@ import {
 
 export const runtime = "nodejs";
 const RESTORE_TASK_TTL_MS = 60 * 60 * 1000;
-const LEGACY_PASSWORD_KEY = "access_password";
 
 type RestoreTaskState = "queued" | "running" | "success" | "error";
 type RestoreFallbackAdmin = {
@@ -105,7 +104,7 @@ function publicRestoreTask(task: RestoreTask) {
 
 async function runRestoreTask(
   task: RestoreTask,
-  encryptedFilePath: string,
+  uploadedFilePath: string,
   passphrase: string,
   fallbackAdmin: RestoreFallbackAdmin,
 ) {
@@ -120,28 +119,28 @@ async function runRestoreTask(
       progress: restoreProgress({
         stage: "preparing",
         percent: 36,
-        label: "解析备份",
-        detail: "备份文件已上传，正在读取加密包",
+        label: "Reading backup",
+        detail: "The backup file is uploaded; reading the package",
       }),
     });
 
-    rawText = await fs.promises.readFile(encryptedFilePath, "utf8");
+    rawText = await fs.promises.readFile(uploadedFilePath, "utf8");
     rawPayload = JSON.parse(rawText);
     rawText = null;
 
     const rawObject = rawPayload as Record<string, unknown> | null;
     const packageType = String(rawObject?.packageType ?? "");
     const scopeName = String(
-      (rawObject?.scope as Record<string, unknown> | undefined)?.householdName ?? "当前账簿",
+      (rawObject?.scope as Record<string, unknown> | undefined)?.householdName ?? "current book",
     );
 
-    if (packageType === "encrypted-sqlite-backup") {
+    if (packageType === "encrypted-sqlite-backup" || packageType === "sqlite-backup") {
       updateRestoreTask(task, {
         progress: restoreProgress({
           stage: "preparing",
           percent: 44,
-          label: "解密整库备份",
-          detail: "正在验证口令并解密数据库文件",
+          label: "Preparing database backup",
+          detail: "Validating and unpacking the database snapshot",
         }),
       });
 
@@ -168,8 +167,8 @@ async function runRestoreTask(
         progress: restoreProgress({
           stage: "done",
           percent: 100,
-          label: "恢复完成",
-          detail: "数据已恢复到备份时点，页面即将刷新",
+          label: "Restore complete",
+          detail: "Data has been restored to the backup point; the page will refresh",
         }),
       });
       return;
@@ -179,8 +178,8 @@ async function runRestoreTask(
       progress: restoreProgress({
         stage: "preparing",
         percent: 42,
-        label: "解密备份",
-        detail: "正在验证口令并解密备份内容",
+        label: "Preparing backup",
+        detail: "Validating and unpacking the backup content",
       }),
     });
 
@@ -203,8 +202,8 @@ async function runRestoreTask(
       progress: restoreProgress({
         stage: "done",
         percent: 100,
-        label: "恢复完成",
-        detail: "数据已恢复，页面即将刷新",
+        label: "Restore complete",
+        detail: "Data has been restored; the page will refresh",
       }),
     });
   } catch (error) {
@@ -215,7 +214,7 @@ async function runRestoreTask(
       progress: restoreProgress({
         stage: "done",
         percent: task.progress.percent,
-        label: "恢复失败",
+        label: "Restore failed",
         detail: restoreFailureMessage(error),
       }),
     });
@@ -224,21 +223,21 @@ async function runRestoreTask(
     rawPayload = null;
     payload = null;
     packagePassphrase = "";
-    await fs.promises.unlink(encryptedFilePath).catch(() => undefined);
+    await fs.promises.unlink(uploadedFilePath).catch(() => undefined);
     activeRestoreHouseholds.delete(task.householdId);
   }
 }
 
 function requireAdmin(user: Awaited<ReturnType<typeof getCurrentUser>>) {
   if (!user || !isAdmin(user)) {
-    return NextResponse.json({ ok: false, code: "ADMIN_REQUIRED", error: "仅管理员可执行备份或恢复" }, { status: 403 });
+    return NextResponse.json({ ok: false, code: "ADMIN_REQUIRED", error: "Only administrators can back up or restore." }, { status: 403 });
   }
   return null;
 }
 
 function requireSignedIn(user: Awaited<ReturnType<typeof getCurrentUser>>) {
   if (!user) {
-    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "请先登录" }, { status: 401 });
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "Sign in required." }, { status: 401 });
   }
   return null;
 }
@@ -265,46 +264,13 @@ function attachmentDisposition(fileName: string) {
   return `attachment; filename="${asciiHeaderFileName(fileName)}"; filename*=UTF-8''${encodeRfc5987Value(fileName)}`;
 }
 
-async function verifySensitiveOperationPassword(currentUser: CurrentUser, userPassword: string) {
-  const password = userPassword.trim();
-  if (!password) {
-    return NextResponse.json({ ok: false, code: "MISSING_PASSWORD", error: "请输入用户密码" }, { status: 400 });
-  }
-
-  const dbUser = await prisma.user.findUnique({
-    where: { id: currentUser.id },
-    select: { passwordHash: true },
-  });
-  if (!dbUser) {
-    return NextResponse.json({ ok: false, code: "USER_NOT_FOUND", error: "当前用户不存在，请重新登录" }, { status: 401 });
-  }
-
-  if (dbUser.passwordHash) {
-    const matched = await verifyPassword(password, dbUser.passwordHash);
-    if (!matched) {
-      return NextResponse.json({ ok: false, code: "INVALID_PASSWORD", error: "用户密码错误" }, { status: 401 });
-    }
-    return null;
-  }
-
-  const legacySetting = await prisma.systemSetting.findUnique({ where: { key: LEGACY_PASSWORD_KEY } });
-  if (!legacySetting?.value) {
-    return NextResponse.json({ ok: false, code: "PASSWORD_NOT_SET", error: "请先设置用户密码" }, { status: 400 });
-  }
-  if (!constantTimeEqual(password, legacySetting.value)) {
-    return NextResponse.json({ ok: false, code: "INVALID_PASSWORD", error: "用户密码错误" }, { status: 401 });
-  }
-  return null;
-}
-
 function getCredentialsFromJson(value: unknown): {
-  userPassword: string;
   backupScope: "system" | "household";
   backupPassphrase: string;
+  userPassword: string;
 } {
   const body = value && typeof value === "object" ? value as Record<string, unknown> : {};
   return {
-    userPassword: String(body.userPassword ?? body.password ?? ""),
     backupScope: String(body.backupScope ?? body.scope ?? "household") === "system" ? "system" : "household",
     backupPassphrase: String(
       body.backupPassphrase ??
@@ -313,21 +279,15 @@ function getCredentialsFromJson(value: unknown): {
       body.encryptionInfo ??
       "",
     ),
+    userPassword: String(body.userPassword ?? body.password ?? ""),
   };
 }
 
 function restoreFailureMessage(error: unknown) {
   if (error instanceof SyntaxError) {
-    return "备份文件不是有效的 MMH 加密备份，请重新选择 .mmh-backup 文件";
+    return "The selected file is not a valid MMH backup. Choose a .mmh-backup or .mmhbackup file.";
   }
-  return error instanceof Error ? error.message : "恢复失败";
-}
-
-/** Constant-time string comparison (hashing both sides equalizes length timing). */
-function constantTimeEqual(a: string, b: string): boolean {
-  const ah = crypto.createHash("sha256").update(String(a ?? "")).digest();
-  const bh = crypto.createHash("sha256").update(String(b ?? "")).digest();
-  return crypto.timingSafeEqual(ah, bh);
+  return error instanceof Error ? error.message : "Restore failed.";
 }
 
 /**
@@ -337,13 +297,14 @@ function constantTimeEqual(a: string, b: string): boolean {
  * - `?mode=restore-status&id=<restoreId>` returns `{ ok: true, task }`
  * - `{ ok: false, code, error }`
  *
- * Use `POST ?mode=export` to export an encrypted restore package.
+ * Use `POST ?mode=export` to export a restore package (encrypted when a
+ * backup passphrase is supplied, plain otherwise).
  * Use `POST ?mode=table-export` to export a non-restorable Excel workbook.
  */
 export async function GET(req: NextRequest) {
   const currentUser = await getCurrentUser();
   if (!currentUser) {
-    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "请先登录" }, { status: 401 });
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "Sign in required." }, { status: 401 });
   }
   cleanupRestoreTasks();
   const mode = req.nextUrl.searchParams.get("mode");
@@ -351,11 +312,11 @@ export async function GET(req: NextRequest) {
     const id = String(req.nextUrl.searchParams.get("id") ?? "");
     const task = restoreTasks.get(id);
     if (!task) {
-      return NextResponse.json({ ok: false, code: "RESTORE_TASK_NOT_FOUND", error: "恢复任务不存在或已过期" }, { status: 404 });
+      return NextResponse.json({ ok: false, code: "RESTORE_TASK_NOT_FOUND", error: "The restore task does not exist or has expired." }, { status: 404 });
     }
     return NextResponse.json({ ok: true, task: publicRestoreTask(task) });
   }
-  return NextResponse.json({ ok: false, code: "METHOD_NOT_ALLOWED", error: "请使用 POST 导出备份、导出表格或恢复备份" }, { status: 405 });
+  return NextResponse.json({ ok: false, code: "METHOD_NOT_ALLOWED", error: "Use POST to export a backup, export tables, or restore a backup." }, { status: 405 });
 }
 
 async function exportBackupPackage(req: NextRequest) {
@@ -364,18 +325,28 @@ async function exportBackupPackage(req: NextRequest) {
     const denied = requireSignedIn(currentUser);
     if (denied) return denied;
     if (!currentUser) {
-      return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "请先登录" }, { status: 401 });
+      return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "Sign in required." }, { status: 401 });
     }
 
     const credentials = getCredentialsFromJson(await req.json().catch(() => null));
-    const credentialDenied = await verifySensitiveOperationPassword(currentUser, credentials.userPassword);
-    if (credentialDenied) return credentialDenied;
+    const credentialDenied = await verifySensitiveOperationPassword(credentials.userPassword);
+    if (!credentialDenied.ok) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: credentialDenied.code ?? "AUTH_VERIFICATION_FAILED",
+          error: credentialDenied.error ?? "Password verification failed.",
+        },
+        { status: credentialDenied.status ?? 401 },
+      );
+    }
 
     const { householdId, user } = await getHouseholdScope();
     const household = await prisma.household.findUnique({ where: { id: householdId } });
-    const householdName = household?.name ?? "默认";
+    const householdName = household?.name ?? "default";
     const exportedAt = new Date();
-    const passphrase = credentials.backupPassphrase.trim() || credentials.userPassword;
+    // An empty passphrase exports a plain package; a non-empty one encrypts it.
+    const passphrase = credentials.backupPassphrase.trim();
     const backupScope = credentials.backupScope;
     if (backupScope === "system" && !isAdmin(currentUser)) {
       return NextResponse.json(
@@ -420,7 +391,7 @@ async function exportBackupPackage(req: NextRequest) {
     });
   } catch (error) {
     console.error("Backup export failed", error);
-    const message = error instanceof Error ? error.message : "备份失败";
+    const message = error instanceof Error ? error.message : "Backup failed.";
     return NextResponse.json({ ok: false, code: "EXPORT_FAILED", error: message }, { status: 500 });
   }
 }
@@ -455,7 +426,7 @@ async function exportTableWorkbook() {
     });
   } catch (error) {
     console.error("Table export failed", error);
-    const message = error instanceof Error ? error.message : "导出表格失败";
+    const message = error instanceof Error ? error.message : "Table export failed.";
     return NextResponse.json({ ok: false, code: "EXPORT_FAILED", error: message }, { status: 500 });
   }
 }
@@ -500,10 +471,11 @@ async function writeRestoreUploadToTemp(file: File) {
  * Export:
  * - `POST /api/v1/settings/backup?mode=export`
  * - JSON body: `{ userPassword, backupPassphrase?, backupScope?: "system" | "household" }`
- * - `userPassword` verifies the current logged-in user before exporting
+ * - `userPassword` verifies the current logged-in administrator's own password
  * - `backupScope: "system"` requires an administrator; other authenticated users are limited to `"household"`
- * - `backupPassphrase` optionally encrypts the backup package; when omitted, `userPassword` is used
- * - returns an encrypted `.mmh-backup` package.
+ * - `backupPassphrase` optionally encrypts the backup package; when omitted, the
+ *   package is exported in plain form and can be restored without a passphrase
+ * - returns a `.mmh-backup` package.
  *
  * Table export:
  * - `POST /api/v1/settings/backup?mode=table-export`
@@ -513,9 +485,9 @@ async function writeRestoreUploadToTemp(file: File) {
  * Restore:
  * - `POST /api/v1/settings/backup`
  * - multipart/form-data
- *   - `file`: the `.mmh-backup` encrypted package exported by this endpoint (web restore upload limit is 512MB)
- *   - `userPassword`: current user's password, verified before destructive restore
- *   - `backupPassphrase`: optional backup package encryption passphrase; when omitted, `userPassword` is used
+ *   - `file`: the `.mmh-backup` / `.mmhbackup` package exported by this endpoint (web restore upload limit is 512MB)
+ *   - `userPassword`: current administrator's password, verified before restore
+ *   - `backupPassphrase`: required only when the package is encrypted
  * - starts a background restore task and returns `{ ok: true, restoreId, task }`
  * - poll `GET /api/v1/settings/backup?mode=restore-status&id=<restoreId>` until `task.status` is `success` or `error`
  *
@@ -537,7 +509,7 @@ export async function POST(req: NextRequest) {
   const denied = requireAdmin(currentUser);
   if (denied) return denied;
   if (!currentUser) {
-    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "请先登录" }, { status: 401 });
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "Sign in required." }, { status: 401 });
   }
 
   const { householdId, user } = await getHouseholdScope();
@@ -550,12 +522,11 @@ export async function POST(req: NextRequest) {
   const form = await req.formData().catch(() => null);
   if (!form) {
     return NextResponse.json(
-      { ok: false, code: "INVALID_UPLOAD", error: "备份文件上传不完整或超过恢复上传限制，请重新选择备份文件后再恢复" },
+      { ok: false, code: "INVALID_UPLOAD", error: "The backup upload was incomplete or exceeded the restore upload limit. Choose the backup file again and retry." },
       { status: 400 },
     );
   }
   const file = form.get("file");
-  const userPassword = String(form.get("userPassword") ?? form.get("password") ?? "");
   const backupPassphrase = String(
     form.get("backupPassphrase") ??
     form.get("backupPassword") ??
@@ -563,27 +534,37 @@ export async function POST(req: NextRequest) {
     form.get("encryptionInfo") ??
     "",
   );
+  const userPassword = String(form.get("userPassword") ?? form.get("password") ?? "");
   if (!(file instanceof File)) {
-    return NextResponse.json({ ok: false, code: "MISSING_FILE", error: "请选择备份文件" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_FILE", error: "Choose a backup file." }, { status: 400 });
   }
-  const credentialDenied = await verifySensitiveOperationPassword(currentUser, userPassword);
-  if (credentialDenied) return credentialDenied;
+  const credentialDenied = await verifySensitiveOperationPassword(userPassword);
+  if (!credentialDenied.ok) {
+    return NextResponse.json(
+      {
+        ok: false,
+        code: credentialDenied.code ?? "AUTH_VERIFICATION_FAILED",
+        error: credentialDenied.error ?? "Password verification failed.",
+      },
+      { status: credentialDenied.status ?? 401 },
+    );
+  }
 
   const lowerFileName = file.name.toLowerCase();
-  if (!lowerFileName.endsWith(".mmh-backup")) {
-    return NextResponse.json({ ok: false, code: "INVALID_FILE_TYPE", error: "恢复仅支持 MMH 加密备份（.mmh-backup）" }, { status: 400 });
+  if (!lowerFileName.endsWith(".mmh-backup") && !lowerFileName.endsWith(".mmhbackup")) {
+    return NextResponse.json({ ok: false, code: "INVALID_FILE_TYPE", error: "Restore supports MMH backup files only (.mmh-backup or .mmhbackup)." }, { status: 400 });
   }
   if (file.size > RESTORE_UPLOAD_LIMIT_BYTES) {
     return restoreUploadTooLargeResponse();
   }
 
   if (activeRestoreHouseholds.has(householdId)) {
-    return NextResponse.json({ ok: false, code: "RESTORE_ALREADY_RUNNING", error: "当前账簿已有恢复任务在执行，请等待完成后再重试" }, { status: 409 });
+    return NextResponse.json({ ok: false, code: "RESTORE_ALREADY_RUNNING", error: "A restore task is already running for this book. Wait for it to finish and retry." }, { status: 409 });
   }
 
-  let encryptedFilePath: string;
+  let uploadedFilePath: string;
   try {
-    encryptedFilePath = await writeRestoreUploadToTemp(file);
+    uploadedFilePath = await writeRestoreUploadToTemp(file);
   } catch (error) {
     return NextResponse.json(
       { ok: false, code: "INVALID_BACKUP_FILE", error: restoreFailureMessage(error) },
@@ -613,27 +594,27 @@ export async function POST(req: NextRequest) {
       progress: restoreProgress({
         stage: "preparing",
         percent: 35,
-        label: "等待恢复",
-        detail: "备份文件已上传，正在排队启动恢复任务",
+        label: "Waiting to restore",
+        detail: "The backup file is uploaded; the restore task is queued",
       }),
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
     restoreTasks.set(task.id, task);
     activeRestoreHouseholds.add(householdId);
-    void runRestoreTask(task, encryptedFilePath, backupPassphrase.trim() || userPassword, dbUser);
+    void runRestoreTask(task, uploadedFilePath, backupPassphrase.trim(), dbUser);
 
     return NextResponse.json(
       {
         ok: true,
         restoreId: task.id,
         task: publicRestoreTask(task),
-        message: "恢复任务已开始",
+        message: "Restore task started.",
       },
       { status: 202 },
     );
   } catch (error) {
-    await fs.promises.unlink(encryptedFilePath).catch(() => undefined);
+    await fs.promises.unlink(uploadedFilePath).catch(() => undefined);
     console.error("Backup restore failed", error);
     return NextResponse.json(
       { ok: false, code: "RESTORE_FAILED", error: restoreFailureMessage(error) },

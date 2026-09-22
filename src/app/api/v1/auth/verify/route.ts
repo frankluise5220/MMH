@@ -4,6 +4,7 @@ import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { logger } from "@/lib/logger";
 import { getHouseholdDisplayName } from "@/lib/household-display";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
+import { verifySensitiveOperationPassword } from "@/lib/server/sensitive-operation-auth";
 import {
   HOUSEHOLD_COOKIE,
   SESSION_DAYS_COOKIE,
@@ -17,40 +18,6 @@ import { normalizeSessionDays, sessionDaysToMaxAge } from "@/lib/session-days";
 
 const LEGACY_PASSWORD_KEY = "access_password";
 const AUTH_LOOKUP_TIMEOUT_MS = 1500;
-
-/**
- * Password verification for sensitive operations (system initialization,
- * ledger deletion, etc.).
- *
- * Requires the current signed-in user to be an admin and verifies that
- * user's own password; deployment-level database/system passwords
- * (MMH_SYSTEM_PASSWORD, POSTGRES_PASSWORD, etc.) are no longer accepted.
- */
-async function verifySensitiveOperationPassword(
-  password: string,
-): Promise<{ ok: boolean; code?: string; error?: string; status?: number }> {
-  const currentUser = await getCurrentUser();
-  if (!currentUser) {
-    return { ok: false, code: "UNAUTHORIZED", error: "请先登录", status: 401 };
-  }
-  if (!isAdmin(currentUser)) {
-    return { ok: false, code: "FORBIDDEN", error: "仅管理员可执行此操作", status: 403 };
-  }
-
-  const dbUser = await prisma.user.findUnique({
-    where: { id: currentUser.id },
-    select: { passwordHash: true },
-  });
-  if (dbUser?.passwordHash) {
-    const matched = await verifyPassword(password, dbUser.passwordHash);
-    if (matched) return { ok: true };
-    return { ok: false, code: "INVALID_PASSWORD", error: "当前用户密码错误", status: 401 };
-  }
-
-  // The legacy global password remains a login migration bridge only. It must
-  // never authorize a sensitive operation after the user session is established.
-  return { ok: false, code: "PASSWORD_NOT_SET", error: "当前用户尚未设置密码", status: 400 };
-}
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T | null> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;

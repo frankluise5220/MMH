@@ -1,0 +1,20 @@
+name = "mmh-feedback-relay"
+main = "src/index.ts"
+compatibility_date = "2026-09-22"
+workers_dev = true
+
+routes = [
+  { pattern = "feedback.floatingice.win", custom_domain = true }
+]
+
+[vars]
+FEEDBACK_FROM = "mmh@floatingice.win"
+FEEDBACK_TO = "mmh@floatingice.win"
+
+[[durable_objects.bindings]]
+name = "FEEDBACK_RATE_LIMITER"
+class_name = "FeedbackRateLimiter"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["FeedbackRateLimiter"]

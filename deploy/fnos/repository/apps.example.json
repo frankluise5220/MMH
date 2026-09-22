@@ -17,7 +17,7 @@
         "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.65/mmh-fnos-v0.1.65-arm64.fpk"
       },
       "homepage": "https://github.com/frankluise5220/MMH",
-      "changelog": "本次补齐报销/差旅工作流（仍在开发中，尚未完工）：往来对象可报销开关、报销类型、差旅日期事由、费用项目、行程字段、附件张数和手工明细；同步优化概览/统计/报表收益口径，修复成本摊薄重算、计划任务利息转账编辑、存款取息周期、债券批量删除和代付编辑等问题。相关需求请通过 GitHub issue 或反馈邮件提出。完整说明见 GitHub Release v0.1.65",
+      "changelog": "本次补齐报销/差旅工作流（仍在开发中，尚未完工）：往来对象可报销开关、报销类型、差旅日期事由、费用项目、行程字段、附件张数和手工明细；同步优化概览/统计/报表收益口径，修复大账本余额维护与明细分页可能导致的卡死/崩溃，并修复跨设备/重装备份恢复，支持可选口令加密备份。相关需求请通过 GitHub issue 或反馈邮件提出。完整说明见 GitHub Release v0.1.65",
       "tags": [
         "finance",
         "bookkeeping"

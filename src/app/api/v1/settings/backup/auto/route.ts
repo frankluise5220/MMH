@@ -22,8 +22,11 @@ import {
  *
  * POST /api/v1/settings/backup/auto
  *
- * Saves the configuration (body: `{ config }`). When the config is enabled the
- * next-run time is recomputed from now, keeping the existing last-run history.
+ * Saves the configuration (body: `{ config }`). `config.passphrase` is optional:
+ * an empty value keeps the deployment system-key behavior, while a non-empty
+ * value encrypts generated backups with that passphrase. When the config is
+ * enabled the next-run time is recomputed from now, keeping the existing
+ * last-run history.
  *
  * POST /api/v1/settings/backup/auto?action=run-now
  *

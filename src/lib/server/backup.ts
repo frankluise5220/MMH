@@ -28,6 +28,12 @@ type ExportedBy = Pick<CurrentUser, "id" | "name" | "role"> | null;
 export type BackupScope = "system" | "household";
 type BackupPackageEncryptionOptions = {
   passphrase?: string | null;
+  /**
+   * Automatic backups historically encrypted with the deployment system key
+   * when no user passphrase was configured. Manual exports leave this unset so
+   * an empty passphrase produces a plain package.
+   */
+  useSystemKeyWhenNoPassphrase?: boolean;
 };
 
 export type HouseholdBackupPayload = Awaited<ReturnType<typeof buildHouseholdBackupPayload>>;
@@ -1381,11 +1387,11 @@ async function getBackupDecryptionKey(
   const keySource = String(encryption.keySource ?? "");
   if (keySource === BACKUP_PASSPHRASE_KEY_SOURCE) {
     if (String(encryption.kdf ?? "") !== BACKUP_PASSPHRASE_KDF) {
-      restoreError("不支持的备份加密口令格式");
+      restoreError("Unsupported backup passphrase encryption format");
     }
     const passphrase = normalizeBackupPassphrase(options.passphrase);
     if (!passphrase) {
-      restoreError("请输入备份加密口令，或输入创建备份时使用的用户密码");
+      restoreError("Enter the backup passphrase used to create this encrypted backup");
     }
     return deriveBackupPassphraseKey(
       passphrase,
@@ -1399,19 +1405,30 @@ async function getBackupDecryptionKey(
       return await getBackupPackageKey();
     } catch (error) {
       if (error instanceof Error && error.message.includes("缺少备份解密密钥")) {
-        restoreError("这是旧版系统密钥加密备份，当前系统缺少原备份解密密钥；请在创建该备份的系统重新导出新版口令备份，或恢复包含该密钥的旧环境。");
+        restoreError("This backup was encrypted with a legacy system key that this deployment no longer holds. Re-export it from the original system, or restore it on the system that still has the key.");
       }
       throw error;
     }
   }
 
-  restoreError("不支持的备份加密密钥来源");
+  restoreError("Unsupported backup encryption key source");
 }
 
+/**
+ * Builds the household backup package. With a passphrase the payload is
+ * AES-256-GCM encrypted. Without one the payload is plain unless the caller
+ * explicitly requests legacy system-key encryption.
+ */
 export async function encryptBackupPayload(
   payload: HouseholdBackupPayload,
   options: BackupPackageEncryptionOptions = {},
 ) {
+  if (!normalizeBackupPassphrase(options.passphrase) && !options.useSystemKeyWhenNoPassphrase) {
+    return {
+      ...payload,
+      encrypted: false,
+    };
+  }
   const iv = crypto.randomBytes(12);
   const { key, metadata } = await getBackupEncryptionKey(options);
   const cipher = crypto.createCipheriv(ENCRYPTED_BACKUP_ALGORITHM, key, iv);
@@ -1442,14 +1459,15 @@ export async function decryptBackupPackage(
   options: BackupPackageEncryptionOptions = {},
 ) {
   const packageObject = ensureObject(raw, "payload");
+  // Plain packages carry the payload directly, so nothing to decrypt.
   if (packageObject.encrypted !== true) return raw;
   if (packageObject.app !== "MMH" || packageObject.packageType !== "encrypted-backup") {
-    restoreError("这不是 MMH 加密备份文件");
+    restoreError("This is not an MMH encrypted backup file");
   }
 
   const encryption = ensureObject(packageObject.encryption, "encryption");
   if (encryption.algorithm !== ENCRYPTED_BACKUP_ALGORITHM) {
-    restoreError("不支持的备份加密格式");
+    restoreError("Unsupported backup encryption format");
   }
 
   const key = await getBackupDecryptionKey(encryption, options);
@@ -1463,18 +1481,35 @@ export async function decryptBackupPackage(
     return JSON.parse(plaintext) as unknown;
   } catch {
     if (String(encryption.keySource ?? "") === BACKUP_PASSPHRASE_KEY_SOURCE) {
-      restoreError("备份加密口令不匹配。请检查创建备份时填写的加密口令；如果备份来自其他系统或其他用户，请输入该加密口令。若备份时未单独设置，则使用创建备份时的用户密码。");
+      restoreError("Backup passphrase does not match. Check the passphrase set when the backup was created; legacy backups without one used the user password.");
     }
-    restoreError("备份文件无法解密或已损坏");
+    restoreError("The backup file cannot be decrypted or is corrupted");
   }
 }
 
+/**
+ * Builds the whole-database (SQLite snapshot) backup package. With a
+ * passphrase the snapshot bytes are AES-256-GCM encrypted. Without one the
+ * snapshot is plain unless the caller explicitly requests legacy system-key
+ * encryption.
+ */
 export async function encryptBackupBytes(
   bytes: Buffer,
   scope: HouseholdBackupPayload["scope"],
   exportedAt: Date,
   options: BackupPackageEncryptionOptions = {},
 ) {
+  if (!normalizeBackupPassphrase(options.passphrase) && !options.useSystemKeyWhenNoPassphrase) {
+    return {
+      app: "MMH" as const,
+      packageType: "sqlite-backup" as const,
+      packageVersion: ENCRYPTED_BACKUP_PACKAGE_VERSION,
+      encrypted: false,
+      exportedAt,
+      scope,
+      sqlite: bytes.toString("base64"),
+    };
+  }
   const iv = crypto.randomBytes(12);
   const { key, metadata } = await getBackupEncryptionKey(options);
   const cipher = crypto.createCipheriv(ENCRYPTED_BACKUP_ALGORITHM, key, iv);
@@ -1503,15 +1538,22 @@ export async function decryptBackupBytes(
 ): Promise<Buffer> {
   const packageObject = ensureObject(raw, "payload");
   if (packageObject.encrypted !== true) {
-    restoreError("这不是 MMH 加密备份文件");
+    if (packageObject.app !== "MMH" || packageObject.packageType !== "sqlite-backup") {
+      restoreError("This is not an MMH database backup file");
+    }
+    const bytes = Buffer.from(String(packageObject.sqlite ?? ""), "base64");
+    if (bytes.length === 0) {
+      restoreError("The database backup file is missing its snapshot content");
+    }
+    return bytes;
   }
   if (packageObject.app !== "MMH" || packageObject.packageType !== "encrypted-sqlite-backup") {
-    restoreError("这不是 MMH 数据库备份文件");
+    restoreError("This is not an MMH database backup file");
   }
 
   const encryption = ensureObject(packageObject.encryption, "encryption");
   if (encryption.algorithm !== ENCRYPTED_BACKUP_ALGORITHM) {
-    restoreError("不支持的备份加密格式");
+    restoreError("Unsupported backup encryption format");
   }
 
   const key = await getBackupDecryptionKey(encryption, options);
@@ -1524,9 +1566,9 @@ export async function decryptBackupBytes(
     return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   } catch {
     if (String(encryption.keySource ?? "") === BACKUP_PASSPHRASE_KEY_SOURCE) {
-      restoreError("备份加密口令不匹配。请检查创建备份时填写的加密口令；如果备份来自其他系统或其他用户，请输入该加密口令。若备份时未单独设置，则使用创建备份时的用户密码。");
+      restoreError("Backup passphrase does not match. Check the passphrase set when the backup was created; legacy backups without one used the user password.");
     }
-    restoreError("备份文件无法解密或已损坏");
+    restoreError("The backup file cannot be decrypted or is corrupted");
   }
 }
 

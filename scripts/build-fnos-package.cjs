@@ -2274,6 +2274,30 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    version: "20260922_add_sponsor_tip_intents",
+    description: "Record sponsor tip intents with user identity and contact email",
+    apply(db) {
+      db.exec([
+        \`CREATE TABLE IF NOT EXISTS "SponsorTipIntent" (
+          "id" TEXT NOT NULL PRIMARY KEY,
+          "userId" TEXT NOT NULL,
+          "householdId" TEXT,
+          "email" TEXT NOT NULL,
+          "amount" DECIMAL NOT NULL,
+          "status" TEXT NOT NULL DEFAULT 'pending',
+          "claimedAt" DATETIME,
+          "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT "SponsorTipIntent_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+          CONSTRAINT "SponsorTipIntent_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE SET NULL ON UPDATE CASCADE
+        )\`,
+        \`CREATE INDEX IF NOT EXISTS "SponsorTipIntent_userId_createdAt_idx" ON "SponsorTipIntent"("userId", "createdAt")\`,
+        \`CREATE INDEX IF NOT EXISTS "SponsorTipIntent_householdId_createdAt_idx" ON "SponsorTipIntent"("householdId", "createdAt")\`,
+        \`CREATE INDEX IF NOT EXISTS "SponsorTipIntent_email_idx" ON "SponsorTipIntent"("email")\`,
+      ].join(";"));
+    },
+  },
 ];
 
 function rebuildDebtAgreementToAccount(db) {

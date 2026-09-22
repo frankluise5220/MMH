@@ -1,6 +1,7 @@
 import nodemailer from "nodemailer";
 import { prisma } from "@/lib/db/prisma";
 import { extractAddress } from "@/lib/mail/address";
+import type { MailAttachment } from "@/lib/mail/types";
 
 type SmtpConfig = {
   host: string;
@@ -186,6 +187,8 @@ export async function sendEmail(params: {
   subject: string;
   text: string;
   html?: string;
+  replyTo?: string;
+  attachments?: MailAttachment[];
   householdId?: string | null;
 }) {
   const configs = await resolveSmtpConfigs(params.householdId);
@@ -217,6 +220,8 @@ export async function sendEmail(params: {
         subject: params.subject,
         text: params.text,
         html: params.html,
+        replyTo: params.replyTo,
+        attachments: params.attachments,
       });
 
       return { ok: true as const };
