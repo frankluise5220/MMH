@@ -94,6 +94,10 @@ export function ReportTransactionEditHost({
         fromAccountId: formValue(formData, "fromAccountId"),
         toAccountId: formValue(formData, "toAccountId"),
         categoryId: formValue(formData, "categoryId"),
+        // Advance rows must keep the record's own settlement account; without
+        // it the server falls back to the counterparty's first settlement
+        // account and the row silently moves on save.
+        advanceAccountId: formValue(formData, "advanceAccountId"),
         counterpartyInstitutionId: formValue(formData, "counterpartyInstitutionId"),
         note: formValue(formData, "note"),
         toNote: formValue(formData, "toNote"),
