@@ -1,7 +1,7 @@
 "use client";
 
 import { Paperclip, Plus, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "@/lib/i18n";
 
@@ -53,7 +53,6 @@ export function EntryAttachmentWindow({
   onPendingFilesChange?: (files: File[]) => void;
 }) {
   const { t } = useI18n();
-  const inputRef = useRef<HTMLInputElement>(null);
   const [attachments, setAttachments] = useState<EntryAttachmentItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -87,10 +86,6 @@ export function EntryAttachmentWindow({
       cancelled = true;
     };
   }, [entryId, open, t]);
-
-  function openPicker() {
-    inputRef.current?.click();
-  }
 
   async function addFiles(fileList: FileList | null) {
     const files = Array.from(fileList ?? []);
@@ -196,24 +191,34 @@ export function EntryAttachmentWindow({
           {error ? <div className="text-sm text-red-600">{error}</div> : null}
         </div>
         <div className="flex items-center justify-end gap-2 border-t border-slate-200 p-3">
-          <button type="button" className="secondary-button h-8 px-3" onClick={openPicker} disabled={busy || (!entryId && !onPendingFilesChange)}>
-            <Plus className="mr-1 inline h-3.5 w-3.5" />
-            {t("attachments.add")}
-          </button>
+          {!entryId && !onPendingFilesChange ? (
+            <button type="button" className="secondary-button h-8 px-3" disabled>
+              <Plus className="mr-1 inline h-3.5 w-3.5" />
+              {t("attachments.add")}
+            </button>
+          ) : (
+            <label
+              className={`secondary-button relative h-8 cursor-pointer px-3 focus-within:ring-2 focus-within:ring-blue-500/40 ${busy ? "cursor-not-allowed opacity-50" : ""}`}
+            >
+              <Plus className="mr-1 inline h-3.5 w-3.5" />
+              {t("attachments.add")}
+              <input
+                type="file"
+                multiple
+                disabled={busy}
+                aria-label={t("attachments.add")}
+                className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0 disabled:cursor-not-allowed"
+                onChange={(event) => {
+                  void addFiles(event.currentTarget.files);
+                  event.currentTarget.value = "";
+                }}
+              />
+            </label>
+          )}
           <button type="button" className="secondary-button h-8 px-3" onClick={onClose}>
             {t("table.close")}
           </button>
         </div>
-        <input
-          ref={inputRef}
-          type="file"
-          multiple
-          className="hidden"
-          onChange={(event) => {
-            void addFiles(event.currentTarget.files);
-            event.currentTarget.value = "";
-          }}
-        />
       </div>
     </div>,
     document.body,

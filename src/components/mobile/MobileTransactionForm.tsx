@@ -3,10 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeftRight, X } from "lucide-react";
 import { buildGroupedAccountOptions, buildAccountDisplayOption, type AccountDisplaySource } from "@/lib/account-display";
-import { isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isOrdinaryTransferAccount } from "@/lib/account-kind-utils";
+import { isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingOrDepositAccount, isOrdinaryTransferAccount } from "@/lib/account-kind-utils";
 import { SmartSelect } from "@/components/SmartSelect";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
 import { DateStepper } from "@/components/DateStepper";
+import { EntryAttachmentButton, uploadEntryAttachmentFiles } from "@/components/EntryAttachmentPanel";
 import { buildCategoryTreeOptions } from "@/components/categorySmartSelect";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
@@ -46,6 +47,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
   const [draft, setDraft] = useState<TransactionDraft>(EMPTY_DRAFT);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [pendingAttachmentFiles, setPendingAttachmentFiles] = useState<File[]>([]);
   const scrollYRef = useRef(0);
   const { t } = useI18n();
 
@@ -57,7 +59,8 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
     () => {
       const source = draft.type === "transfer"
         ? accounts.filter((account) => isOrdinaryTransferAccount(account))
-        // 存款账户也进收支落账候选（2026-09-18）：分类提交时校验白名单。
+        // Deposit accounts are also valid posting accounts (2026-09-18);
+        // category submission validates against the allowlist.
         : accounts.filter((account) => isIncomeExpensePostingOrDepositAccount(account));
       return buildGroupedAccountOptions(source.map((account) => buildAccountDisplayOption(account, undefined, { fields: getAccountLabelFieldsPreference() })));
     },
@@ -91,6 +94,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
 
   const openCreate = useCallback(() => {
     setDraft({ ...EMPTY_DRAFT, accountId: defaultAccountId || accounts[0]?.id || "" });
+    setPendingAttachmentFiles([]);
     setError("");
     setOpen(true);
   }, [accounts, defaultAccountId]);
@@ -107,6 +111,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
     const openEdit = async (event: Event) => {
       const entryId = (event as CustomEvent<{ entryId?: string }>).detail?.entryId?.trim();
       if (!entryId) return;
+      setPendingAttachmentFiles([]);
       setError("");
       try {
         const response = await fetch(`/api/v1/transactions/detail?id=${encodeURIComponent(entryId)}`);
@@ -177,7 +182,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
       return;
     }
 
-    // 存款账户落账的分类白名单（2026-09-18）。
+    // Category allowlist for deposit-account postings (2026-09-18).
     if ((draft.type === "income" || draft.type === "expense") && draft.accountId) {
       const selected = accounts.find((account) => account.id === draft.accountId);
       const categoryName = availableCategories.find((category) => category.id === draft.categoryId)?.name ?? "";
@@ -211,11 +216,22 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
       });
       const result = await response.json().catch(() => null);
       if (!response.ok || !result?.ok) throw new Error(result?.error ?? t("mobileTxForm.saveFailed"));
+      const savedEntryId = String(result.data?.id ?? draft.id ?? "");
+      if (savedEntryId && pendingAttachmentFiles.length > 0) {
+        try {
+          await uploadEntryAttachmentFiles(savedEntryId, pendingAttachmentFiles);
+          setPendingAttachmentFiles([]);
+        } catch (attachmentError) {
+          window.alert(t("attachments.saveAfterCreateFailed", {
+            reason: attachmentError instanceof Error ? attachmentError.message : t("attachments.uploadFailed"),
+          }));
+        }
+      }
       setOpen(false);
       dispatchFinanceDataChanged({
         reason: "mobile-transaction-save",
         accountIds: [draft.accountId, draft.toAccountId].filter((id): id is string => Boolean(id)),
-        entryIds: draft.id ? [draft.id] : undefined,
+        entryIds: savedEntryId ? [savedEntryId] : undefined,
       });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("mobileTxForm.saveFailed"));
@@ -323,10 +339,17 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
           </label>
         )}
 
-        <label className="mt-3 block">
-          <span className="text-xs text-slate-500">{t("mobileTxForm.note")}</span>
-          <ClearableNoteField wrapperClassName="mt-1" className="form-input" value={draft.note} onValueChange={(value) => update("note", value)} placeholder={t("mobileTxForm.optional")} />
-        </label>
+        <div className="mt-3">
+          <div className="text-xs text-slate-500">{t("mobileTxForm.note")}</div>
+          <div className="mt-1 flex items-start gap-2">
+            <ClearableNoteField wrapperClassName="flex-1" className="form-input" value={draft.note} onValueChange={(value) => update("note", value)} placeholder={t("mobileTxForm.optional")} />
+            <EntryAttachmentButton
+              entryId={draft.id}
+              pendingFiles={pendingAttachmentFiles}
+              onPendingFilesChange={setPendingAttachmentFiles}
+            />
+          </div>
+        </div>
         {error ? <p className="mt-2 text-sm text-red-600">{error}</p> : null}
         <button type="button" disabled={saving} onClick={save} className="primary-button mt-4 h-11 w-full disabled:opacity-60">
           {saving ? t("mobileTxForm.saving") : t("mobileTxForm.save")}

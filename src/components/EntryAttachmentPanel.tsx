@@ -1,7 +1,7 @@
 "use client";
 
 import { Paperclip } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n";
 import { EntryAttachmentWindow, uploadEntryAttachmentFiles, type EntryAttachmentItem } from "./EntryAttachmentWindow";
 
@@ -25,7 +25,6 @@ export function EntryAttachmentButton({
   onPendingFilesChange?: (files: File[]) => void;
 }) {
   const { t } = useI18n();
-  const inputRef = useRef<HTMLInputElement>(null);
   const [attachments, setAttachments] = useState<EntryAttachmentItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -59,10 +58,6 @@ export function EntryAttachmentButton({
     };
   }, [entryId, t]);
 
-  function openPicker() {
-    inputRef.current?.click();
-  }
-
   async function addFiles(fileList: FileList | null) {
     const files = Array.from(fileList ?? []);
     if (files.length === 0) return;
@@ -91,45 +86,48 @@ export function EntryAttachmentButton({
     }
   }
 
-  function onButtonClick() {
-    if (loading) return;
-    if (error) {
-      setModalOpen(true);
-      return;
-    }
-    if (attachments.length === 0 && effectivePendingFiles.length === 0) {
-      openPicker();
-      return;
-    }
-    setModalOpen(true);
-  }
-
   const totalCount = attachments.length + effectivePendingFiles.length;
+  const canPickDirectly = !loading && !busy && !error && totalCount === 0;
+  const buttonClassName = "relative flex h-9 w-9 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-slate-500 transition-colors hover:bg-slate-50 hover:text-slate-700 disabled:opacity-50";
+  const buttonContent = (
+    <>
+      <Paperclip className="h-4 w-4" />
+      {totalCount > 0 ? (
+        <span className="ml-0.5 text-[10px] font-medium text-slate-600">{totalCount}</span>
+      ) : null}
+    </>
+  );
 
   return (
     <>
-      <button
-        type="button"
-        onClick={onButtonClick}
-        disabled={busy || loading}
-        title={t("attachments.title")}
-        className="flex h-9 w-9 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-slate-500 transition-colors hover:bg-slate-50 hover:text-slate-700 disabled:opacity-50"
-      >
-        <Paperclip className="h-4 w-4" />
-        {totalCount > 0 ? (
-          <span className="ml-0.5 text-[10px] font-medium text-slate-600">{totalCount}</span>
-        ) : null}
-      </button>
-      <input
-        ref={inputRef}
-        type="file"
-        multiple
-        className="hidden"
-        onChange={(event) => {
-          void addFiles(event.currentTarget.files);
-          event.currentTarget.value = "";
-        }}
-      />
+      {canPickDirectly ? (
+        <label
+          title={t("attachments.title")}
+          className={`${buttonClassName} cursor-pointer focus-within:ring-2 focus-within:ring-blue-500/40`}
+        >
+          {buttonContent}
+          <input
+            type="file"
+            multiple
+            aria-label={t("attachments.title")}
+            className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0"
+            onChange={(event) => {
+              void addFiles(event.currentTarget.files);
+              event.currentTarget.value = "";
+            }}
+          />
+        </label>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setModalOpen(true)}
+          disabled={busy || loading}
+          title={t("attachments.title")}
+          className={buttonClassName}
+        >
+          {buttonContent}
+        </button>
+      )}
       <EntryAttachmentWindow
         open={modalOpen}
         entryId={entryId}
