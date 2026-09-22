@@ -4,7 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
-import { BasicDetailBatchDeleteMessage, BasicDetailSelectionProvider } from "@/components/BasicDetailSelection";
+import { BasicDetailBatchDeleteMessage, BasicDetailReimbursementButton, BasicDetailSelectionProvider } from "@/components/BasicDetailSelection";
+import type { ReimbursementObjectOption } from "@/components/ReimbursementFormModal";
+import type { ReimbursementActions, ReimbursementCashAccountOption } from "@/components/ReimbursementModal";
 import type { BasicDetailBatchCategoryOption } from "@/components/BasicDetailSelection";
 import { DebitBalanceReconcileButton } from "@/components/DebitBalanceReconcileButton";
 import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
@@ -58,6 +60,14 @@ type BasicDetailPanelProps = {
   currentBalance?: number;
   focusEntryId?: string;
   showGuideOverlay?: boolean;
+  /** Batch action that turns the selected rows into a reimbursement form. */
+  reimbursementObjectOptions?: ReimbursementObjectOption[];
+  /** Full reimbursement hub actions (overview / reimburse / delete / invoices) for the status view. */
+  reimbursementHubActions?: ReimbursementActions;
+  /** Cash accounts offered by the settlement dialog inside the reimbursement hub. */
+  reimbursementCashAccountOptions?: ReimbursementCashAccountOption[];
+  /** Advance accounts whose counterparty is flagged as reimbursable (gates the toolbar entry). */
+  reimbursementAllowedAdvanceAccountIds?: string[];
 };
 
 function detailPaginationFetchKey(accountId: string, pageSize: number, detailAll: boolean, detailPage: number) {
@@ -291,6 +301,10 @@ export function BasicDetailPanel({
   currentBalance = 0,
   focusEntryId,
   showGuideOverlay = false,
+  reimbursementHubActions,
+  reimbursementCashAccountOptions,
+  reimbursementObjectOptions,
+  reimbursementAllowedAdvanceAccountIds,
 }: BasicDetailPanelProps) {
   const router = useRouter();
   const { t } = useI18n();
@@ -311,7 +325,8 @@ export function BasicDetailPanel({
   const totalPages = Math.max(1, Math.ceil(localTotalCount / pageSize));
   const [page, setPage] = useState(() => initialDetailAll ? 1 : clampPage(initialPage, totalPages));
   const locatingDateRef = useRef(false);
-  // 定位途中不要用旧 totalPages 把目标页钳回 1，否则分页 effect 仍去拉第 1 页。
+  // Do not clamp the target page to 1 using stale totalPages while locating a date;
+  // otherwise the pagination effect will fetch page 1 again.
   const safePage = detailAll ? 1 : locatingDateRef.current ? Math.max(1, page) : clampPage(page, totalPages);
   const accountScopeKey = `${accountId}:${isInvestAccount ? "invest" : "detail"}`;
   const lastAccountScopeKeyRef = useRef(accountScopeKey);
@@ -830,6 +845,26 @@ export function BasicDetailPanel({
           investmentProductTypeByAccountId={investmentProductTypeByAccountId}
           compactRows={compactRows}
           resetKey={tableResetKey}
+          batchExtraActions={
+            reimbursementHubActions && reimbursementCashAccountOptions && reimbursementObjectOptions && reimbursementObjectOptions.length > 0
+              ? (renderedEntries) => (
+                  <BasicDetailReimbursementButton
+                    entries={renderedEntries.map((entry) => ({
+                      id: entry.id,
+                      date: entry.date,
+                      amount: Math.abs(entry.amount),
+                      categoryName: entry.categoryName,
+                      note: entry.note,
+                      advanceAccountId: entry.toAccountId,
+                    }))}
+                    objectOptions={reimbursementObjectOptions}
+                    hubActions={reimbursementHubActions}
+                    cashAccountOptions={reimbursementCashAccountOptions}
+                    allowedAdvanceAccountIds={reimbursementAllowedAdvanceAccountIds}
+                  />
+                )
+              : undefined
+          }
           focusEntryId={focusEntryId}
           scrollToRowKey={locateScrollKey}
           showAccountColumn={showAccountColumn}

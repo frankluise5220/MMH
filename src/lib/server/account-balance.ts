@@ -43,45 +43,53 @@ export async function computeAccountDisplayBalances(
   };
 
   if (depositAccountIds.length > 0) {
-    const depositEntries = await prisma.depositTransaction.findMany({
+    // TxRecord is the source of truth for deposit principal. The
+    // DepositTransaction table is a projection and does not participate here.
+    const depositEntries = await prisma.txRecord.findMany({
       where: {
-        deletedAt: null,
-        ...(hidFilter ?? {}),
-        accountId: { in: depositAccountIds },
+        ...txWhere,
+        type: TransactionType.investment,
+        fundProductType: "deposit",
+        OR: [
+          { accountId: { in: depositAccountIds } },
+          { toAccountId: { in: depositAccountIds } },
+        ],
       },
       select: {
         id: true,
+        date: true,
+        createdAt: true,
         accountId: true,
-        tradeDate: true,
-        principalAmount: true,
-        arrivalAmount: true,
-        action: true,
-        sourceDepositTransactionId: true,
+        toAccountId: true,
+        amount: true,
+        fundArrivalAmount: true,
+        fundSubtype: true,
+        depositSourceEntryId: true,
       },
-      orderBy: [{ tradeDate: "asc" }, { id: "asc" }],
+      orderBy: [{ date: "asc" }, { createdAt: "asc" }, { id: "asc" }],
     });
 
     const remainingByLotId = new Map<string, { depositAccountId: string; amount: number }>();
     for (const entry of depositEntries) {
-      if (!isOnOrBeforeToday(entry.tradeDate)) continue;
+      if (!isOnOrBeforeToday(entry.date)) continue;
       // Interest payout / reinvest rows are cash flows, not principal lots:
       // they must neither open a lot nor close the source one.
-      const isRedeem = entry.action === "redeem" || entry.action === "switch_out";
-      const isDividend = entry.action === "dividend_cash" || entry.action === "dividend_reinvest";
+      const isRedeem = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";
+      const isDividend = entry.fundSubtype === "dividend_cash" || entry.fundSubtype === "dividend_reinvest";
       if (isDividend) continue;
-      const depositAccountId = entry.accountId;
+      const depositAccountId = isRedeem ? entry.accountId : entry.toAccountId;
       if (!depositAccountId || !depositAccountIdSet.has(depositAccountId)) continue;
 
       if (!isRedeem) {
         remainingByLotId.set(entry.id, {
           depositAccountId,
-          amount: Math.abs(toNumber(entry.arrivalAmount ?? entry.principalAmount)),
+          amount: Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount)),
         });
         continue;
       }
 
-      if (entry.sourceDepositTransactionId) {
-        const lot = remainingByLotId.get(entry.sourceDepositTransactionId);
+      if (entry.depositSourceEntryId) {
+        const lot = remainingByLotId.get(entry.depositSourceEntryId);
         if (lot) lot.amount = 0;
       }
     }
@@ -92,8 +100,7 @@ export async function computeAccountDisplayBalances(
     }
 
     // Deposit accounts may also carry ordinary income/expense and transfers.
-    // Deposit business entries (type=investment with fundProductType=deposit) are
-    // already counted via DepositTransaction as unredeemed arrival amounts; only
+    // Deposit principal was handled above from TxRecord lots, so only
     // non-deposit TxRecords are layered on top here to avoid double counting.
     const depositTxRows = await prisma.txRecord.findMany({
       where: {

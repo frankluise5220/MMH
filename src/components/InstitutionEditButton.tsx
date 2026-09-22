@@ -6,7 +6,8 @@ import { notifySettingsDataChanged } from "@/lib/client/settingsCache";
 import { INSTITUTION_TYPE_VALUES, institutionTypeLabel, type I18nT } from "@/lib/account-kinds";
 import { useI18n } from "@/lib/i18n";
 
-// 机构类型统一从 account-kinds 全量表派生（新增类型自动出现在编辑下拉），不要手抄 union。
+// Derive institution types from the complete account-kinds table so new types
+// appear in the edit dropdown automatically; do not duplicate the union here.
 type InstitutionType = (typeof INSTITUTION_TYPE_VALUES)[number];
 
 
@@ -16,13 +17,16 @@ export function InstitutionEditButton({
   title,
   nameLabel,
   allowedTypes,
+  showReimbursementToggle = false,
   onSaved,
 }: {
-  institution: { id: string; name: string; shortName?: string | null; type: string | null };
+  institution: { id: string; name: string; shortName?: string | null; type: string | null; isReimbursable?: boolean | null };
   action: (formData: FormData) => void | { ok?: boolean; error?: string } | Promise<void | { ok?: boolean; error?: string }>;
   title?: string;
   nameLabel?: string;
   allowedTypes?: string[];
+  /** Counterparty-only: render the reimbursable switch that gates reimbursement entry points. */
+  showReimbursementToggle?: boolean;
   onSaved?: () => void;
 }) {
   const { t } = useI18n();
@@ -30,6 +34,7 @@ export function InstitutionEditButton({
   const [name, setName] = useState(institution.name);
   const [shortName, setShortName] = useState(institution.shortName ?? "");
   const [type, setType] = useState<InstitutionType>((institution.type as InstitutionType) ?? "other");
+  const [reimbursable, setReimbursable] = useState<boolean>(institution.isReimbursable === true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -42,6 +47,7 @@ export function InstitutionEditButton({
     fd.set("name", name.trim());
     fd.set("shortName", shortName.trim());
     fd.set("type", type);
+    if (showReimbursementToggle) fd.set("isReimbursable", reimbursable ? "1" : "0");
     try {
       setError("");
       const result = await action(fd);
@@ -69,6 +75,7 @@ export function InstitutionEditButton({
           setShortName(institution.shortName ?? "");
           const initialType = (institution.type as InstitutionType) ?? "other";
           setType((allowedTypes?.includes(initialType) ? initialType : allowedTypes?.[0] ?? "other") as InstitutionType);
+          setReimbursable(institution.isReimbursable === true);
           setError("");
           setOpen(true);
         }}
@@ -115,6 +122,20 @@ export function InstitutionEditButton({
                   ))}
                 </select>
               </div>
+              {showReimbursementToggle ? (
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-slate-600">{t("institutionEdit.reimbursable")}</div>
+                  <select
+                    value={reimbursable ? "1" : "0"}
+                    onChange={(e) => setReimbursable(e.target.value === "1")}
+                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                  >
+                    <option value="1">{t("settings.counterparties.reimbursableYes")}</option>
+                    <option value="0">{t("settings.counterparties.reimbursableNo")}</option>
+                  </select>
+                  <div className="text-xs text-slate-500">{t("institutionEdit.reimbursableHint")}</div>
+                </div>
+              ) : null}
               {error && <div className="text-xs text-red-600">{error}</div>}
               <div className="flex justify-end">
                 <button type="submit" disabled={saving}

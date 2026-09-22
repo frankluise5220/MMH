@@ -39,7 +39,7 @@ import { loadCommonData, loadCachedStockHoldingReport, loadCachedFundHoldingRepo
 import { stockMarketLabel } from "@/lib/stock/market";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { loadReportDetailEntries } from "@/lib/server/report-detail-entries";
+import { buildReportDetailEntryOverrides, loadReportDetailEntries } from "@/lib/server/report-detail-entries";
 import { getServerDisplayLanguage, getServerT } from "@/lib/server/i18n";
 
 export const dynamic = "force-dynamic";
@@ -266,8 +266,28 @@ export default async function ReportsPage({
   const accounts = accountRecords.map((account) => ({
     id: account.id,
     label: accountDisplayById.get(account.id)?.label ?? account.name,
+    listLabel: accountDisplayById.get(account.id)?.listLabel,
+    selectorLabel: accountDisplayById.get(account.id)?.selectorLabel,
+    fullLabel: accountDisplayById.get(account.id)?.fullLabel,
     title: accountDisplayById.get(account.id)?.hoverTitle,
+    hoverTitle: accountDisplayById.get(account.id)?.hoverTitle,
+    tableHoverTitle: accountDisplayById.get(account.id)?.tableHoverTitle,
     subLabel: kindLabel(account.kind),
+    kind: account.kind,
+    investProductType: account.investProductType,
+    debtDirection: account.debtDirection,
+    institutionId: account.institutionId,
+    currency: account.currency,
+  }));
+  const detailAccountOptions = allAccountRecords.map((account) => ({
+    id: account.id,
+    label: allAccountDisplayById.get(account.id)?.label ?? account.name,
+    listLabel: allAccountDisplayById.get(account.id)?.listLabel,
+    selectorLabel: allAccountDisplayById.get(account.id)?.selectorLabel,
+    fullLabel: allAccountDisplayById.get(account.id)?.fullLabel,
+    title: allAccountDisplayById.get(account.id)?.hoverTitle,
+    hoverTitle: allAccountDisplayById.get(account.id)?.hoverTitle,
+    tableHoverTitle: allAccountDisplayById.get(account.id)?.tableHoverTitle,
     kind: account.kind,
     investProductType: account.investProductType,
     debtDirection: account.debtDirection,
@@ -319,7 +339,12 @@ export default async function ReportsPage({
   const investmentAccounts = investmentAccountRecords.map((account) => ({
     id: account.id,
     label: allAccountDisplayById.get(account.id)?.label ?? account.name,
+    listLabel: allAccountDisplayById.get(account.id)?.listLabel,
+    selectorLabel: allAccountDisplayById.get(account.id)?.selectorLabel,
+    fullLabel: allAccountDisplayById.get(account.id)?.fullLabel,
     title: allAccountDisplayById.get(account.id)?.hoverTitle,
+    hoverTitle: allAccountDisplayById.get(account.id)?.hoverTitle,
+    tableHoverTitle: allAccountDisplayById.get(account.id)?.tableHoverTitle,
     subLabel: kindLabel(account.kind),
     kind: account.kind,
     investProductType: account.investProductType,
@@ -924,7 +949,11 @@ export default async function ReportsPage({
   const detailEntryIds = report.details
     ? [...new Set(report.details.rows.map((row) => row.entryId))]
     : [];
-  const detailEntries = await loadReportDetailEntries(ctx, detailEntryIds);
+  const detailEntries = await loadReportDetailEntries(
+    ctx,
+    detailEntryIds,
+    report.details ? buildReportDetailEntryOverrides(report.details.rows) : undefined,
+  );
   const investmentProductTypeByAccountId = Object.fromEntries(
     allAccountRecords.map((account) => [account.id, account.investProductType]),
   );
@@ -997,7 +1026,7 @@ export default async function ReportsPage({
             currentReportQuery={currentReportQuery}
             colorScheme={colorScheme}
             accountId={scopedIncomeAccountIds?.join(",") ?? ""}
-            accountOptions={accounts}
+            accountOptions={detailAccountOptions}
             categoryOptions={buildCategorySmartSelectOptions({
               categories: editCategories,
               types: ["expense", "income"],

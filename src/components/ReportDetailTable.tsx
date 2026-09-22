@@ -16,6 +16,12 @@ import { useI18n } from "@/lib/i18n";
 type AccountOption = {
   id: string;
   label: string;
+  listLabel?: string | null;
+  selectorLabel?: string | null;
+  fullLabel?: string | null;
+  title?: string | null;
+  hoverTitle?: string | null;
+  tableHoverTitle?: string | null;
   kind?: string | null;
   debtDirection?: string | null;
 };

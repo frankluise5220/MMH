@@ -236,3 +236,9 @@ _tmp_*
 _*.mts
 preview-*.png
 s1.yaml
+
+# local scratch dirs/files (dev DB sim, python deps, stray backups) — never committed
+_pylibs/
+dev/
+*.bak
+backup-stray-wiseme-*.patch

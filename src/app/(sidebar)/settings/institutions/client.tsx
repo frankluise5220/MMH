@@ -26,6 +26,8 @@ type Institution = {
   name: string;
   shortName?: string | null;
   type: string | null;
+  /** Whether this counterparty exposes the reimbursement entry points (counterparty mode only). */
+  isReimbursable?: boolean | null;
   /** Number of accounts linked to this institution / family member / counterparty. */
   accountCount?: number;
 };
@@ -191,7 +193,7 @@ export function SettingsInstitutionsClient({
           <SettingsPrimaryAddButton onClick={() => setShowCreate(true)}>{createTitle}</SettingsPrimaryAddButton>
         </div>}
       >
-        <SettingsTable minWidth={780}>
+        <SettingsTable minWidth={mode === "counterparty" ? 900 : 780}>
             <thead className="sticky top-0 z-10">
               <tr>
                 <SettingsTh>
@@ -212,6 +214,7 @@ export function SettingsInstitutionsClient({
                 <SettingsTh>{t("settings.institutions.name")}</SettingsTh>
                 <SettingsTh>{t("settings.institutions.shortName")}</SettingsTh>
                 <SettingsTh>{t("settings.institutions.type")}</SettingsTh>
+                {mode === "counterparty" ? <SettingsTh>{t("settings.counterparties.reimbursable")}</SettingsTh> : null}
                 <SettingsTh align="right">{t("settings.institutions.accountCountColumn")}</SettingsTh>
                 <SettingsTh align="right">{t("settings.institutions.actions")}</SettingsTh>
               </tr>
@@ -235,6 +238,13 @@ export function SettingsInstitutionsClient({
                   <SettingsTd className="text-sm font-medium text-slate-800">{item.name}</SettingsTd>
                   <SettingsTd>{item.shortName?.trim() || "-"}</SettingsTd>
                   <SettingsTd>{typeLabel(item.type)}</SettingsTd>
+                  {mode === "counterparty" ? (
+                    <SettingsTd>
+                      <span className={item.isReimbursable ? "text-slate-700" : "text-slate-400"}>
+                        {item.isReimbursable ? t("settings.counterparties.reimbursableYes") : t("settings.counterparties.reimbursableNo")}
+                      </span>
+                    </SettingsTd>
+                  ) : null}
                   <SettingsTd align="right">
                     <span
                       className={`tabular-nums ${(item.accountCount ?? 0) > 0 ? "text-slate-700" : "text-slate-400"}`}
@@ -251,6 +261,7 @@ export function SettingsInstitutionsClient({
                         title={editTitle}
                         nameLabel={createNameLabel}
                         allowedTypes={[...allowedTypes]}
+                        showReimbursementToggle={mode === "counterparty"}
                         onSaved={() => {
                           void notifySettingsDataChanged({ scope: "accounts", reason: `${mode}:update`, prefetch: true });
                           void refreshList({ force: true });
@@ -273,7 +284,7 @@ export function SettingsInstitutionsClient({
                   </SettingsTd>
                 </tr>
               )) : (
-                <SettingsEmptyRow colSpan={6}>{emptyText}</SettingsEmptyRow>
+                <SettingsEmptyRow colSpan={mode === "counterparty" ? 7 : 6}>{emptyText}</SettingsEmptyRow>
               )}
             </tbody>
         </SettingsTable>

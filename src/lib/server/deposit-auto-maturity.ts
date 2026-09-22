@@ -352,13 +352,16 @@ async function autoAccruePeriodicInterest(
   // 月末起存钳制到月末再减一天）。与计划排程共用 depositPayoutAnchorUtc，
   // 两处日期永远一致。
   if (frequency.unit === "month") {
-    for (let k = frequency.interval; k < 12 * 80; k += frequency.interval) {
-      const date = depositPayoutAnchorUtc(startDate, frequency, k);
+    // periods is a count (1, 2, 3...); depositPayoutAnchorUtc multiplies it
+    // by interval internally. Passing interval, 2*interval, ... would square
+    // the step, making interval=3 accrue every 9 months instead of every 3.
+    for (let periods = 1; periods * frequency.interval < 12 * 80; periods++) {
+      const date = depositPayoutAnchorUtc(startDate, frequency, periods);
       if (localDayKey(date) > upperKey) break;
       addPayout(date);
     }
   } else {
-    const stepDays = frequency.unit === "week" ? 7 * frequency.interval : 1;
+    const stepDays = frequency.unit === "week" ? 7 * frequency.interval : 365 * frequency.interval;
     for (let ms = startDate.getTime() + (stepDays - 1) * 86400000; localDayKey(new Date(ms)) <= upperKey; ms += stepDays * 86400000) {
       addPayout(new Date(ms));
     }
@@ -565,15 +568,6 @@ async function autoRedeemDeposit(buyId: string, householdId: string): Promise<Lo
   });
   const arrival = round2(principal + interest);
   const redeemDate = maturityDate;
-
-  // The redeem's DepositTransaction projection references the lot's own
-  // projection via FK; legacy lots may lack it, so (re)build it first.
-  const lotProjection = await prisma.depositTransaction.findUnique({ where: { id: buy.id }, select: { id: true } });
-  if (!lotProjection) {
-    await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: buy.id }).catch((e) => {
-      console.error("autoRedeemDeposit self-heal lot projection:", e);
-    });
-  }
 
   const created = await prisma.txRecord.create({
     data: {

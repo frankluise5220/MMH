@@ -38,6 +38,9 @@ import {
   isAccountIdentityUniqueError,
 } from "@/lib/server/account-identity-unique";
 import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
+import { recalcStockPositions } from "@/lib/stock/recalcPosition";
+import { recalcFundPositions } from "@/lib/fund/recalcPosition";
+import { logger } from "@/lib/logger";
 import { BALANCE_INITIALIZATION_SOURCE, encodeBalanceReconcileTarget } from "@/lib/balance-reconcile";
 import { ensureBrokerageCashAccountForStockAccount } from "@/lib/server/brokerage-cash-account";
 import {
@@ -496,6 +499,10 @@ export async function PUT(req: NextRequest) {
     if (body.groupId !== undefined) data.groupId = String(body.groupId).trim() || null;
     if (body.institutionId !== undefined) data.institutionId = String(body.institutionId).trim() || null;
     if (body.counterpartyId !== undefined) data.counterpartyId = String(body.counterpartyId).trim() || null;
+    // Reimbursable is an object-level field. Persist it with settlement-account
+    // edits only when an explicit boolean is supplied, so other account paths
+    // cannot change the object accidentally.
+    const counterpartyReimbursableSubmitted = body.counterpartyReimbursable !== undefined;
     if (body.isConsumerLoan !== undefined) {
       data.isConsumerLoan = body.isConsumerLoan === true || String(body.isConsumerLoan ?? "").trim().toLowerCase() === "true";
     }
@@ -534,6 +541,14 @@ export async function PUT(req: NextRequest) {
     if (nextCounterpartyId && !nextCounterparty) return NextResponse.json({ ok: false, code: "COUNTERPARTY_NOT_FOUND", error: "Counterparty not found in this household" }, { status: 400 });
     if (nextKind === "settlement" && !nextCounterparty) {
       return NextResponse.json({ ok: false, code: "SETTLEMENT_COUNTERPARTY_REQUIRED", error: "Settlement accounts must be linked to a counterparty" }, { status: 400 });
+    }
+    // Ignore the switch when no valid object exists, such as after changing away
+    // from a settlement account.
+    if (counterpartyReimbursableSubmitted && nextCounterparty) {
+      await prisma.counterparty.update({
+        where: { id: nextCounterparty.id },
+        data: { isReimbursable: body.counterpartyReimbursable === true || String(body.counterpartyReimbursable ?? "").trim().toLowerCase() === "true" },
+      });
     }
     // 用户定版：常用商户（merchant）不能作为往来款对象，也不能挂到贷款账户上。
     if (nextCounterparty?.type === "merchant") {
@@ -718,6 +733,21 @@ export async function PUT(req: NextRequest) {
       }
       return next;
     });
+    // When costBasisMethod changes (MMH-20260921123017-5KVC), recalculate existing
+    // positions. Identical PUT values do not recalculate; failures are logged
+    // without blocking the account save.
+    const costBasisMethodChanged = nextKind === "investment"
+      && supportsCostBasisMethod(nextInvestProductTypeForInstitution ?? "")
+      && data.costBasisMethod !== undefined
+      && data.costBasisMethod !== null
+      && String(data.costBasisMethod) !== String(existing.costBasisMethod ?? "");
+    if (costBasisMethodChanged) {
+      if (updated.investProductType === "stock") {
+        await recalcStockPositions(updated.id).catch(logger.catchLog("cost basis method change recalc failed", "accounts/route.ts"));
+      } else if (updated.investProductType === "fund" || updated.investProductType === "money") {
+        await recalcFundPositions(updated.id).catch(logger.catchLog("cost basis method change recalc failed", "accounts/route.ts"));
+      }
+    }
     const brokerageCashAccount =
       updated.kind === AccountKind.investment && updated.investProductType === "stock"
         ? await ensureBrokerageCashAccountForStockAccount(prisma, updated)

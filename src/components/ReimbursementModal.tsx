@@ -3,10 +3,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Check, ChevronDown, ChevronRight, Plus, ReceiptText, Trash2 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
-import { ClearableNoteField } from "@/components/ClearableNoteField";
 import { formatMoney, formatMoneyYuan } from "@/lib/format";
 import { todayDateLocalYmd } from "@/lib/date-utils";
 import { DateStepper } from "./DateStepper";
+import { reimbursementErrorMessage } from "@/lib/reimbursement-error";
+import { ReimbursementFormModal, type ReimbursementFormEntry } from "@/components/ReimbursementFormModal";
 import type {
   ReimbursementActionResult,
   ReimbursementData,
@@ -25,30 +26,11 @@ export type ReimbursementActions = {
 
 type InvoiceDraft = { code: string; number: string; amount: string };
 
-const ERROR_KEY_BY_CODE: Record<string, string> = {
-  REIMBURSEMENT_TITLE_REQUIRED: "reimburse.alert.titleRequired",
-  REIMBURSEMENT_OBJECT_REQUIRED: "reimburse.alert.objectRequired",
-  REIMBURSEMENT_ITEMS_REQUIRED: "reimburse.alert.itemsRequired",
-  REIMBURSEMENT_ITEM_INVALID: "reimburse.alert.itemInvalid",
-  REIMBURSEMENT_NOT_FOUND: "reimburse.alert.notFound",
-  REIMBURSEMENT_ALREADY_REIMBURSED: "reimburse.alert.alreadyReimbursed",
-  REIMBURSEMENT_CASH_ACCOUNT_REQUIRED: "reimburse.alert.cashAccountRequired",
-  REIMBURSEMENT_CASH_ACCOUNT_INVALID: "reimburse.alert.cashAccountInvalid",
-  REIMBURSEMENT_DATE_INVALID: "reimburse.alert.dateInvalid",
-  REIMBURSEMENT_ADVANCE_ACCOUNT_MISSING: "reimburse.alert.advanceAccountMissing",
-  REIMBURSEMENT_BALANCE_INSUFFICIENT: "reimburse.alert.balanceInsufficient",
-  REIMBURSEMENT_ITEM_NOT_FOUND: "reimburse.alert.itemNotFound",
-  REIMBURSEMENT_INVOICE_AMOUNT_INVALID: "reimburse.alert.invoiceAmountInvalid",
-  REIMBURSEMENT_NOT_PENDING: "reimburse.alert.notPending",
-  REIMBURSEMENT_UNKNOWN: "reimburse.alert.unknown",
-  REIMBURSEMENT_CREATE_FAILED: "reimburse.alert.createFailed",
-  REIMBURSEMENT_REIMBURSE_FAILED: "reimburse.alert.reimburseFailed",
-  REIMBURSEMENT_DELETE_FAILED: "reimburse.alert.deleteFailed",
-};
-
-function errorMessage(code: string, t: (key: string) => string) {
-  const key = ERROR_KEY_BY_CODE[code];
-  return key ? t(key) : code;
+/** Trip leg of a travel item, for example Beijing to Shanghai by train. */
+function tripLegLabel(item: ReimbursementData["items"][number]) {
+  const leg = item.fromPlace || item.toPlace ? `${item.fromPlace ?? "-"} → ${item.toPlace ?? "-"}` : "";
+  if (!item.vehicle) return leg || "-";
+  return leg ? `${leg}（${item.vehicle}）` : item.vehicle;
 }
 
 export function ReimbursementModal({
@@ -58,6 +40,8 @@ export function ReimbursementModal({
   cashAccountOptions,
   actions,
   onClose,
+  initialShowCreate = false,
+  initialCreateEntries,
 }: {
   objectId: string;
   objectType: "counterparty" | "institution";
@@ -65,15 +49,15 @@ export function ReimbursementModal({
   cashAccountOptions: ReimbursementCashAccountOption[];
   actions: ReimbursementActions;
   onClose: () => void;
+  /** Detail-selection entry point: pop the create-form modal on mount, seeded with the picked rows. */
+  initialShowCreate?: boolean;
+  initialCreateEntries?: ReimbursementFormEntry[];
 }) {
   const { t } = useI18n();
   const [data, setData] = useState<ReimbursementOverviewData | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [showCreate, setShowCreate] = useState(false);
-  const [createTitle, setCreateTitle] = useState("");
-  const [createNote, setCreateNote] = useState("");
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [showCreate, setShowCreate] = useState(initialShowCreate);
   const [reimburseTarget, setReimburseTarget] = useState<ReimbursementData | null>(null);
   const [reimburseDate, setReimburseDate] = useState(todayDateLocalYmd());
   const [reimburseCashAccountId, setReimburseCashAccountId] = useState(cashAccountOptions[0]?.id ?? "");
@@ -123,50 +107,29 @@ export function ReimbursementModal({
   );
   const pendingTotal = pendingList.reduce((sum, reimbursement) => sum + reimbursement.totalAmount, 0);
   const reimbursedTotal = reimbursedList.reduce((sum, reimbursement) => sum + reimbursement.totalAmount, 0);
+  // A travel form carries a trip-leg column, so it needs the wider panel.
+  const hasTravel = (data?.reimbursements ?? []).some((reimbursement) => reimbursement.kind === "travel");
+
+  // The detail-selection entry seeds the form with picked rows; once the user closes
+  // that form (or saves it), fall back to the full candidate list.
+  const [seedsConsumed, setSeedsConsumed] = useState(!initialShowCreate);
+  const createSeedEntries = seedsConsumed ? [] : (initialCreateEntries ?? []);
+  // Candidates from the overview; used by the plain create-reimbursement button.
+  const candidateEntries = useMemo<ReimbursementFormEntry[]>(
+    () =>
+      (data?.candidates ?? []).map((candidate) => ({
+        id: candidate.id,
+        date: candidate.date,
+        amount: candidate.amount,
+        categoryName: candidate.categoryName,
+        note: candidate.note,
+        advanceAccountId: candidate.advanceAccountId,
+      })),
+    [data],
+  );
 
   const openCreate = () => {
-    setCreateTitle(t("reimburse.titleDefault", { name: objectName }));
-    setCreateNote("");
-    setSelectedIds(new Set((data?.candidates ?? []).map((candidate) => candidate.id)));
     setShowCreate(true);
-  };
-
-  const toggleSelect = (id: string) => {
-    setSelectedIds((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const selectedTotal = useMemo(() => {
-    return (data?.candidates ?? [])
-      .filter((candidate) => selectedIds.has(candidate.id))
-      .reduce((sum, candidate) => sum + candidate.amount, 0);
-  }, [data, selectedIds]);
-
-  const submitCreate = async () => {
-    if (busy) return;
-    const formData = new FormData();
-    formData.set("title", createTitle);
-    formData.set("note", createNote);
-    formData.set("counterpartyId", objectId);
-    formData.set("counterpartyName", objectName);
-    formData.set("objectType", objectType);
-    formData.set("itemIds", Array.from(selectedIds).join(","));
-    setBusy(true);
-    try {
-      const res = await actions.create(formData);
-      if (!res.ok) {
-        window.alert(errorMessage(res.error, t));
-        return;
-      }
-      setShowCreate(false);
-      await load();
-    } finally {
-      setBusy(false);
-    }
   };
 
   const openReimburse = (reimbursement: ReimbursementData) => {
@@ -185,7 +148,7 @@ export function ReimbursementModal({
     try {
       const res = await actions.reimburse(formData);
       if (!res.ok) {
-        window.alert(errorMessage(res.error, t));
+        window.alert(reimbursementErrorMessage(res.error, t));
         return;
       }
       setReimburseTarget(null);
@@ -203,7 +166,7 @@ export function ReimbursementModal({
     try {
       const res = await actions.delete(formData);
       if (!res.ok) {
-        window.alert(errorMessage(res.error, t));
+        window.alert(reimbursementErrorMessage(res.error, t));
         return;
       }
       if (expandedId === reimbursement.id) setExpandedId(null);
@@ -249,7 +212,7 @@ export function ReimbursementModal({
     try {
       const res = await actions.updateInvoice(formData);
       if (!res.ok) {
-        window.alert(errorMessage(res.error, t));
+        window.alert(reimbursementErrorMessage(res.error, t));
         return;
       }
       setSavedInvoiceId(itemId);
@@ -269,7 +232,14 @@ export function ReimbursementModal({
         <thead>
           <tr className="border-b border-slate-200 text-left text-slate-500">
             <th className="py-1 pr-2 font-medium">{t("reimburse.colDate")}</th>
-            <th className="py-1 pr-2 font-medium">{t("reimburse.colCategory")}</th>
+            <th className="py-1 pr-2 font-medium">
+              {reimbursement.kind === "travel" ? t("reimburse.form.colExpenseItem") : t("reimburse.colCategory")}
+            </th>
+            {reimbursement.kind === "travel" ? (
+              <th className="py-1 pr-2 font-medium">
+                {t("reimburse.form.colTripFrom")} → {t("reimburse.form.colTripTo")}
+              </th>
+            ) : null}
             <th className="py-1 pr-2 text-right font-medium">{t("reimburse.colAmount")}</th>
             <th className="py-1 pr-2 font-medium">{t("reimburse.colInvoiceCode")}</th>
             <th className="py-1 pr-2 font-medium">{t("reimburse.colInvoiceNumber")}</th>
@@ -283,9 +253,24 @@ export function ReimbursementModal({
             return (
               <tr key={item.id} className="border-b border-slate-100 align-top">
                 <td className="whitespace-nowrap py-1.5 pr-2 text-slate-600">{item.entryDate}</td>
-                <td className="max-w-[9rem] truncate py-1.5 pr-2 text-slate-600" title={item.categoryName ?? undefined}>
-                  {item.categoryName ?? "-"}
+                <td
+                  className="max-w-[9rem] truncate py-1.5 pr-2 text-slate-600"
+                  title={item.categoryName ?? undefined}
+                >
+                  {reimbursement.kind === "travel"
+                    ? item.expenseItem
+                      ? t(`reimburse.expenseItem.${item.expenseItem}`)
+                      : "-"
+                    : item.categoryName ?? "-"}
                 </td>
+                {reimbursement.kind === "travel" ? (
+                  <td
+                    className="max-w-[14rem] truncate py-1.5 pr-2 text-slate-600"
+                    title={tripLegLabel(item)}
+                  >
+                    {tripLegLabel(item)}
+                  </td>
+                ) : null}
                 <td className="whitespace-nowrap py-1.5 pr-2 text-right tabular-nums text-slate-800">
                   {formatMoneyYuan(item.amount)}
                 </td>
@@ -367,6 +352,9 @@ export function ReimbursementModal({
           >
             {expanded ? <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" /> : <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" />}
             <span className="truncate text-sm font-medium text-slate-800">{reimbursement.title}</span>
+            <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] leading-4 ${reimbursement.kind === "travel" ? "bg-blue-50 text-blue-700" : "bg-slate-100 text-slate-600"}`}>
+              {reimbursement.kind === "travel" ? t("reimburse.form.kindTravel") : t("reimburse.form.kindAdvance")}
+            </span>
             <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] leading-4 ${pending ? "bg-amber-50 text-amber-700" : "bg-emerald-50 text-emerald-700"}`}>
               {pending ? t("reimburse.statusPending") : t("reimburse.statusReimbursed")}
             </span>
@@ -407,7 +395,30 @@ export function ReimbursementModal({
           )}
         </div>
         {expanded ? (
-          <div className="border-t border-slate-100 bg-slate-50/60 px-3 py-2">{renderItemsTable(reimbursement)}</div>
+          <div className="border-t border-slate-100 bg-slate-50/60 px-3 py-2">
+            {reimbursement.kind === "travel" &&
+            (reimbursement.travelStartDate || reimbursement.travelEndDate || reimbursement.travelReason) ? (
+              <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+                {reimbursement.travelStartDate || reimbursement.travelEndDate ? (
+                  <span>
+                    {t("reimburse.form.travelStart")} {reimbursement.travelStartDate ?? "-"} ~{" "}
+                    {reimbursement.travelEndDate ?? "-"}
+                  </span>
+                ) : null}
+                {reimbursement.travelReason ? (
+                  <span>
+                    {t("reimburse.form.travelReason")}: {reimbursement.travelReason}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+            {reimbursement.attachmentCount ? (
+              <div className="mb-2 text-xs text-slate-500">
+                {t("reimburse.attachments", { count: reimbursement.attachmentCount })}
+              </div>
+            ) : null}
+            {renderItemsTable(reimbursement)}
+          </div>
         ) : null}
       </div>
     );
@@ -415,7 +426,7 @@ export function ReimbursementModal({
 
   return (
     <div className="app-modal-backdrop z-50">
-      <div className="app-modal-panel max-w-3xl">
+      <div className={`app-modal-panel ${hasTravel ? "max-w-4xl" : "max-w-3xl"}`}>
         <div className="modal-header shrink-0">
           <div>
             <div className="text-sm font-semibold text-slate-800">{t("reimburse.modalTitle")}</div>
@@ -465,7 +476,7 @@ export function ReimbursementModal({
               ) : null}
 
               <div className="flex justify-end border-t border-slate-100 pt-3">
-                <button type="button" onClick={openCreate} className="primary-button h-9 px-3" disabled={busy || (data?.candidates.length ?? 0) === 0}>
+                <button type="button" onClick={openCreate} className="primary-button h-9 px-3" disabled={busy || candidateEntries.length === 0}>
                   <Plus className="mr-1 h-4 w-4" />
                   {t("reimburse.create")}
                 </button>
@@ -476,85 +487,21 @@ export function ReimbursementModal({
       </div>
 
       {showCreate ? (
-        <div className="app-modal-backdrop z-[70]">
-          <div className="app-modal-panel max-w-2xl">
-            <div className="modal-header shrink-0">
-              <div className="text-sm font-semibold text-slate-800">{t("reimburse.create")}</div>
-              <button type="button" onClick={() => setShowCreate(false)} className="secondary-button h-8 px-2" disabled={busy}>
-                {t("table.close")}
-              </button>
-            </div>
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
-              <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">{t("reimburse.titleLabel")}</label>
-                <input
-                  type="text"
-                  value={createTitle}
-                  onChange={(event) => setCreateTitle(event.target.value)}
-                  placeholder={t("reimburse.titlePlaceholder")}
-                  className="form-input h-9 w-full"
-                  autoFocus
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">{t("reimburse.noteLabel")}</label>
-                <ClearableNoteField
-                  value={createNote}
-                  onValueChange={setCreateNote}
-                  className="form-input h-9 w-full"
-                />
-              </div>
-              <div>
-                <div className="mb-1 flex items-center justify-between">
-                  <label className="text-xs font-medium text-slate-600">{t("reimburse.selectItems")}</label>
-                  <span className="text-xs text-slate-500">{t("reimburse.selectedCount", { count: selectedIds.size })}</span>
-                </div>
-                {data && data.candidates.length > 0 ? (
-                  <div className="max-h-64 space-y-1 overflow-y-auto rounded-lg border border-slate-200 p-2">
-                    {data.candidates.map((candidate) => (
-                      <label
-                        key={candidate.id}
-                        className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-slate-50"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={selectedIds.has(candidate.id)}
-                          onChange={() => toggleSelect(candidate.id)}
-                          className="h-3.5 w-3.5"
-                        />
-                        <span className="w-[6.5rem] shrink-0 text-xs text-slate-600">{candidate.date}</span>
-                        <span className="min-w-0 flex-1 truncate text-xs text-slate-600" title={candidate.categoryName ?? undefined}>
-                          {candidate.categoryName ?? "-"}
-                        </span>
-                        <span className="shrink-0 text-xs font-medium tabular-nums text-slate-800">
-                          {formatMoneyYuan(candidate.amount)}
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="rounded-lg border border-dashed border-slate-200 px-3 py-5 text-center text-xs text-slate-400">
-                    {t("reimburse.noCandidates")}
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="flex shrink-0 items-center justify-between gap-2 border-t border-slate-100 p-3">
-              <div className="text-sm text-slate-600">
-                <span className="text-xs text-slate-500">{t("reimburse.totalLabel")}: </span>
-                <span className="font-semibold tabular-nums text-slate-800">{formatMoneyYuan(selectedTotal)}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <button type="button" onClick={() => setShowCreate(false)} className="secondary-button h-9 px-3" disabled={busy}>
-                  {t("common.cancel")}
-                </button>
-                <button type="button" onClick={() => { void submitCreate(); }} className="primary-button h-9 px-3" disabled={busy || selectedIds.size === 0}>
-                  {busy ? t("debtShell.saving") : t("reimburse.createConfirm")}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <ReimbursementFormModal
+          objectId={objectId}
+          objectName={objectName}
+          objectType={objectType}
+          entries={createSeedEntries}
+          actions={actions}
+          onClose={() => {
+            setSeedsConsumed(true);
+            setShowCreate(false);
+          }}
+          onCreated={() => {
+            setSeedsConsumed(true);
+            void load();
+          }}
+        />
       ) : null}
 
       {reimburseTarget ? (

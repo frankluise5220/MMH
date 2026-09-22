@@ -1,4 +1,4 @@
-import { FundSubtype } from "@prisma/client";
+import { FundSubtype, TransactionType } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
@@ -121,21 +121,26 @@ export async function loadDepositTransactionDetailLike(params: {
   const accountIds = Array.from(new Set(params.accountIds.filter(Boolean)));
   if (accountIds.length === 0) return [];
 
-  const rows = await prisma.depositTransaction.findMany({
+  const rows = await prisma.txRecord.findMany({
     where: {
       householdId: params.householdId,
-      accountId: { in: accountIds },
       deletedAt: null,
+      type: TransactionType.investment,
+      fundProductType: "deposit",
+      OR: [
+        { accountId: { in: accountIds } },
+        { toAccountId: { in: accountIds } },
+      ],
     },
     include: {
       DepositProduct: { select: { id: true, name: true, shortName: true } },
-      Account: {
+      account: {
         include: { Institution: { select: { name: true, shortName: true } } },
       },
-      CashAccount: {
+      toAccount: {
         include: { Institution: { select: { name: true, shortName: true } } },
       },
-      EntryBusinessLink: {
+      EntryBusinessLinkBusiness: {
         where: { deletedAt: null },
         select: {
           businessType: true,
@@ -144,57 +149,53 @@ export async function loadDepositTransactionDetailLike(params: {
         },
       },
     },
-    orderBy: [{ tradeDate: "desc" }, { createdAt: "desc" }],
+    orderBy: [{ date: "desc" }, { createdAt: "desc" }],
   });
 
-  // 预期利息依赖买入记录上的 fundConfirmDate（上次付息日）。DepositTransaction
-  // 投影没有这列，从对应的 TxRecord 取回来，避免此处算成「全期利息」（不减去已取利息）。
-  const fundConfirmByLotId = new Map<string, Date | null>();
-  const lotIds = rows.map((row) => row.id).filter(Boolean);
-  if (lotIds.length > 0) {
-    const lotRows = await prisma.txRecord.findMany({
-      where: { id: { in: lotIds } },
-      select: { id: true, fundConfirmDate: true },
-    });
-    for (const lot of lotRows) fundConfirmByLotId.set(lot.id, lot.fundConfirmDate);
-  }
-
   return rows.map((row) => {
-    const isCashIn = isCashInAction(row.action);
-    const principal = Math.abs(toNumber(row.principalAmount));
-    const arrivalAmount = row.arrivalAmount == null ? null : Math.abs(toNumber(row.arrivalAmount));
+    const subtype = row.fundSubtype ?? FundSubtype.buy;
+    const isCashIn = isCashInAction(subtype);
+    const principal = Math.abs(toNumber(row.amount));
+    const arrivalAmount = row.fundArrivalAmount == null ? null : Math.abs(toNumber(row.fundArrivalAmount));
+    const principalAmount =
+      isCashIn && subtype !== FundSubtype.dividend_cash
+        ? Math.max(0, (arrivalAmount ?? principal) - toNumber(row.depositInterest) + toNumber(row.fundFee))
+        : principal;
+    const businessAccount = isCashIn ? row.account : row.toAccount ?? row.account;
+    const cashAccount = isCashIn ? row.toAccount : row.account;
+
     return {
-      id: row.cashEntryId ?? row.id,
-      cashEntryId: row.cashEntryId,
+      id: row.id,
+      cashEntryId: row.id,
       businessTransactionId: row.id,
-      date: ymd(row.tradeDate),
+      date: ymd(row.date),
       createdAt: iso(row.createdAt),
       deletedAt: iso(row.deletedAt),
       type: "investment",
-      accountId: isCashIn ? row.accountId : row.cashAccountId,
-      accountName: isCashIn ? row.Account.name : row.CashAccount?.name ?? "",
-      toAccountId: isCashIn ? row.cashAccountId : row.accountId,
-      toAccountName: isCashIn ? row.CashAccount?.name ?? "" : row.Account.name,
-      amount: isCashIn ? arrivalAmount ?? principal : -principal,
+      accountId: isCashIn ? businessAccount.id : cashAccount?.id ?? null,
+      accountName: isCashIn ? businessAccount.name : cashAccount?.name ?? "",
+      toAccountId: isCashIn ? cashAccount?.id ?? null : businessAccount.id,
+      toAccountName: isCashIn ? cashAccount?.name ?? "" : businessAccount.name,
+      amount: isCashIn ? arrivalAmount ?? principalAmount : -principalAmount,
       fundCode: null,
-      fundName: row.DepositProduct?.name ?? row.productName ?? "",
+      fundName: row.DepositProduct?.name ?? row.fundName ?? row.fundCode ?? "",
       depositProductId: row.depositProductId ?? row.DepositProduct?.id ?? null,
       fundProductType: "deposit",
-      fundSubtype: row.action,
-      fundNav: row.annualRate == null ? null : toNumber(row.annualRate),
-      fundConfirmDate: ymd(fundConfirmByLotId.get(row.id) ?? null),
-      fundArrivalDate: ymd(row.arrivalDate ?? row.maturityDate),
-      fundArrivalAmount: row.arrivalAmount,
-      depositAnnualRate: row.annualRate,
-      depositInterest: row.interest,
-      depositSourceEntryId: row.sourceDepositTransactionId,
-      depositMaturityAction: row.maturityAction,
-      depositInterestPayoutFrequency: row.interestPayoutFrequency,
-      depositInterestCalcBasis: row.interestCalcBasis,
+      fundSubtype: subtype,
+      fundNav: row.depositAnnualRate == null ? null : toNumber(row.depositAnnualRate),
+      fundConfirmDate: ymd(row.fundConfirmDate),
+      fundArrivalDate: ymd(row.fundArrivalDate),
+      fundArrivalAmount: row.fundArrivalAmount,
+      depositAnnualRate: row.depositAnnualRate,
+      depositInterest: row.depositInterest,
+      depositSourceEntryId: row.depositSourceEntryId,
+      depositMaturityAction: row.depositMaturityAction,
+      depositInterestPayoutFrequency: row.depositInterestPayoutFrequency,
+      depositInterestCalcBasis: row.depositInterestCalcBasis,
       source: row.source,
       note: row.note,
-      cashAccountLabel: accountLabel(row.CashAccount),
-      ...linkSummary(row.EntryBusinessLink),
+      cashAccountLabel: accountLabel(cashAccount),
+      ...linkSummary(row.EntryBusinessLinkBusiness),
     };
   });
 }

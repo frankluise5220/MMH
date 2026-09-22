@@ -1140,6 +1140,18 @@ export function TransactionFormModal({
     if (operation === "debt" && !debtMode) return false;
 
     if (editEntryId) {
+      // Allow edits in place when the account pair is unchanged: scheduled
+      // deposit/bond interest transfers use dedicated accounts, but their
+      // amount/date/note can be corrected. Dedicated-window rules still block
+      // account-pair changes and new records; debt pairs keep their own window.
+      if (
+        !debtMode &&
+        editOriginalTransferAccounts &&
+        fromAccountId === editOriginalTransferAccounts.fromAccountId &&
+        toAccountId === editOriginalTransferAccounts.toAccountId
+      ) {
+        return false;
+      }
       if (operation === "debt" && debtMode && editEntryOriginalType !== "transfer") {
         return false;
       }

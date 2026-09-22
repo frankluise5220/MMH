@@ -3200,6 +3200,10 @@ export async function PUT(req: Request) {
           tx.account.findUnique({ where: { id: toAccountId } }),
         ]);
         if (!fromAcc || !toAcc) throw new Error("账户不存在");
+        // Allow in-place edits when the account pair is unchanged. Scheduled
+        // deposit/bond interest transfers only adjust amount, date, or note;
+        // changing the pair still uses the regular strict validation.
+        const transferAccountsUnchanged = entry.accountId === fromAccountId && entry.toAccountId === toAccountId;
         if (fromAcc.kind === "loan" || toAcc.kind === "loan") {
           throw new Error("基金、存款、贷款和往来款账户不能保存为普通转账，请使用对应的专用记账窗口");
         }
@@ -3207,7 +3211,7 @@ export async function PUT(req: Request) {
         if (isLoanOrSettlementAccountKind(fromAcc.kind) && isLoanOrSettlementAccountKind(toAcc.kind)) {
           throw new Error("往来款账户之间不能保存为普通转账");
         }
-        if (!isDebtTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc))) {
+        if (!isDebtTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc)) && !transferAccountsUnchanged) {
           throw new Error("基金、存款、贷款和往来款账户不能保存为普通转账，请使用对应的专用记账窗口");
         }
         const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
@@ -3255,7 +3259,7 @@ export async function PUT(req: Request) {
             note: note || null,
             toNote: (toNote || note) || null,
             currency: transferCurrency,
-            source: debtMode ? `debt_${debtMode}` : "manual",
+            source: debtMode ? `debt_${debtMode}` : transferAccountsUnchanged && entry.source ? entry.source : "manual",
             fundCode: null,
             fundName: null,
             fundProductType: null,
@@ -3270,7 +3274,7 @@ export async function PUT(req: Request) {
             wealthProductId: null,
             depositAnnualRate: null,
             depositInterest: null,
-            depositSourceEntryId: null,
+            depositSourceEntryId: transferAccountsUnchanged ? entry.depositSourceEntryId : null,
             metalTypeId: null,
             metalTypeName: null,
             metalUnitId: null,

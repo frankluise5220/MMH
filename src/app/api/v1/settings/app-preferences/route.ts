@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   DEFAULT_ACCOUNT_LABEL_FIELDS,
-  EMPTY_ACCOUNT_LABEL_FIELDS_VALUE,
   SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE,
   normalizeAccountLabelFields,
   normalizeCreditCardLabelTemplate,
@@ -94,17 +93,15 @@ function normalizeDisplayLanguage(input: unknown) {
 
 function normalizeAccountLabelFieldsPreference(input: unknown): AccountLabelField[] {
   if (Array.isArray(input)) {
-    // An explicitly provided value wins even when it is empty: the user may
-    // want to strip the label down to the raw account name.
-    return normalizeAccountLabelFields(input, []);
+    const normalized = normalizeAccountLabelFields(input, []);
+    return normalized.length > 0 ? normalized : [...DEFAULT_ACCOUNT_LABEL_FIELDS];
   }
   if (typeof input === "string") {
     const value = input.trim();
-    if (!value) return [];
-    if (value === EMPTY_ACCOUNT_LABEL_FIELDS_VALUE) return [];
+    if (!value) return [...DEFAULT_ACCOUNT_LABEL_FIELDS];
     return parseAccountLabelFields(value);
   }
-  if (input === null) return [];
+  if (input === null) return [...DEFAULT_ACCOUNT_LABEL_FIELDS];
   return [...DEFAULT_ACCOUNT_LABEL_FIELDS];
 }
 

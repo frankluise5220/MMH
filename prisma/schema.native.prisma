@@ -1184,6 +1184,8 @@ model Counterparty {
   name                String
   shortName           String?
   type                String       @default("organization")
+  /// Whether this counterparty may generate reimbursement forms. When false, its accounts hide the reimbursement entry points.
+  isReimbursable      Boolean      @default(false)
   householdId         String
   sourceInstitutionId String?
   createdAt           DateTime     @default(now())
@@ -1619,7 +1621,12 @@ model Reimbursement {
   counterpartyId   String
   counterpartyName String
   status           ReimbursementStatus @default(pending)
+  kind             ReimbursementKind   @default(advance)
   totalAmount      Decimal
+  travelStartDate  DateTime?
+  travelEndDate    DateTime?
+  travelReason     String?
+  attachmentCount  Int?
   reimbursedDate   DateTime?
   cashAccountId    String?
   cashAccountName  String?
@@ -1638,11 +1645,15 @@ model Reimbursement {
 model ReimbursementItem {
   id               String        @id @default(cuid())
   reimbursementId  String
-  txRecordId       String        @unique
-  advanceAccountId String
+  txRecordId       String?       @unique
+  advanceAccountId String?
   amount           Decimal
   entryDate        DateTime
   categoryName     String?
+  expenseItem      ReimbursementExpenseItem?
+  fromPlace        String?
+  toPlace          String?
+  vehicle          String?
   note             String?
   invoiceCode      String?
   invoiceNumber    String?
@@ -1971,6 +1982,27 @@ enum PropertyTransactionAction {
 enum ReimbursementStatus {
   pending
   reimbursed
+}
+
+enum ReimbursementKind {
+  advance
+  travel
+}
+
+enum ReimbursementExpenseItem {
+  transport
+  lodging
+  meal
+  cityTransport
+  subsidy
+  other
+  conference
+  ticketing
+  refundFee
+  insurance
+  parking
+  toll
+  phone
 }
 
 enum StockTransactionAction {

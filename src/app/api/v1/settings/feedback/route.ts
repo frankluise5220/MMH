@@ -7,8 +7,8 @@ import { getCurrentUser } from "@/lib/server/auth";
 
 export const runtime = "nodejs";
 
-/** Fixed recipient for user feedback. */
-const FEEDBACK_TO = "frankluise5220@gmail.com";
+/** Fixed recipients for user feedback: primary owner + agent mailbox copy. */
+const FEEDBACK_TO = ["frankluise5220@gmail.com", "mmh@floatingice.win"];
 
 /** Max characters of client logs accepted in one feedback submission. */
 const MAX_LOGS_LENGTH = 8000;
@@ -89,7 +89,7 @@ export async function POST(req: NextRequest) {
 
   if (await hasAnySmtpConfig(currentUser.householdId)) {
     const result = await sendEmail({
-      to: FEEDBACK_TO,
+      to: FEEDBACK_TO.join(", "),
       subject: `${subjectPrefix} ${subject}`,
       text,
       html,
@@ -100,7 +100,7 @@ export async function POST(req: NextRequest) {
   }
 
   const result = await sendEmailByResend({
-    to: FEEDBACK_TO,
+    to: FEEDBACK_TO.join(", "),
     subject: `${subjectPrefix} ${subject}`,
     text,
     html,

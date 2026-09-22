@@ -1,9 +1,11 @@
 "use client";
 
-import { Trash2 } from "lucide-react";
+import { ReceiptText, Trash2 } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
 import { CATEGORY_SMART_SELECT_BEHAVIOR } from "@/components/categorySmartSelect";
+import type { ReimbursementFormEntry, ReimbursementObjectOption } from "@/components/ReimbursementFormModal";
+import { ReimbursementModal, type ReimbursementActions, type ReimbursementCashAccountOption } from "@/components/ReimbursementModal";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { batchReplaceEntries, type BatchReplaceField } from "@/lib/client/batchReplaceEntries";
@@ -335,5 +337,94 @@ export function BasicDetailBatchDeleteMessage() {
     <div className="px-4 py-2 bg-rose-50 border-b border-rose-100 text-xs text-rose-600">
       {deleteMessage}
     </div>
+  );
+}
+
+/**
+ * Detail-selection reimbursement entry point.
+ *
+ * - With rows selected: opens the object's reimbursement hub with the picked rows
+ *   pre-seeded into the create form (the rows share one reimbursement purpose).
+ * - Without any selection: opens the same hub showing the account's reimbursement
+ *   status (pending / reimbursed) with no create form popped.
+ */
+export function BasicDetailReimbursementButton({
+  entries,
+  objectOptions,
+  hubActions,
+  cashAccountOptions,
+  allowedAdvanceAccountIds,
+}: {
+  entries: ReimbursementFormEntry[];
+  objectOptions: ReimbursementObjectOption[];
+  /** full hub actions (overview / create / reimburse / delete / invoices) — the create form reuses actions.create. */
+  hubActions: ReimbursementActions;
+  cashAccountOptions: ReimbursementCashAccountOption[];
+  /**
+   * Advance accounts whose counterparty is flagged as reimbursable. When provided, rows settling
+   * against an unflagged object are not reimbursable, and the button is not rendered at
+   * all unless the visible rows contain at least one reimbursable row.
+   */
+  allowedAdvanceAccountIds?: string[];
+}) {
+  const { t } = useI18n();
+  const { selectedIds, clear } = useBasicDetailSelection();
+  const [open, setOpen] = useState(false);
+  const selectedCount = selectedIds.size;
+  const selectedEntries = useMemo(
+    () => entries.filter((entry) => selectedIds.has(entry.id)),
+    [entries, selectedIds],
+  );
+  const allowedSet = useMemo(
+    () => (allowedAdvanceAccountIds ? new Set(allowedAdvanceAccountIds) : null),
+    [allowedAdvanceAccountIds],
+  );
+  const isEntryAllowed = (entry: ReimbursementFormEntry) =>
+    !allowedSet || (!!entry.advanceAccountId && allowedSet.has(entry.advanceAccountId));
+  // Render the reimbursement button only when a visible row belongs to a reimbursable
+  // counterparty; hide it when no visible advance row is eligible.
+  if (!entries.some(isEntryAllowed)) return null;
+  const blockedSelection = selectedEntries.some((entry) => !isEntryAllowed(entry));
+  // The hub needs the object scope; derive it from the selection first, else from any
+  // visible reimbursable row (same object in practice — an account has one counterparty).
+  const scopeEntry = selectedEntries.find(isEntryAllowed) ?? entries.find(isEntryAllowed);
+  const scopeAdvanceAccountId = scopeEntry?.advanceAccountId ?? null;
+  const scopeObject = objectOptions.find(
+    (option) => option.advanceAccountIds?.includes(scopeAdvanceAccountId ?? ""),
+  );
+  const defaultObjectId = scopeObject?.id ?? objectOptions[0]?.id ?? "";
+  const defaultObjectName = scopeObject?.name ?? objectOptions[0]?.name ?? "";
+  // Selection semantics: with rows picked the create form pops pre-seeded; without, the
+  // hub only shows the account's reimbursement status.
+  const showCreateOnMount = selectedCount > 0 && !blockedSelection && selectedEntries.length > 0;
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        disabled={blockedSelection}
+        className="flex h-6 w-6 items-center justify-center rounded border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"
+        title={blockedSelection ? t("reimburse.entryNotAllowed") : t("reimburse.entry")}
+        aria-label={t("reimburse.entry")}
+      >
+        <ReceiptText className="h-3.5 w-3.5" />
+      </button>
+      {open ? (
+        <ReimbursementModal
+          objectId={defaultObjectId}
+          objectType="counterparty"
+          objectName={defaultObjectName}
+          cashAccountOptions={cashAccountOptions}
+          actions={hubActions}
+          onClose={() => {
+            setOpen(false);
+            clear();
+          }}
+          initialShowCreate={showCreateOnMount}
+          initialCreateEntries={selectedEntries}
+        />
+      ) : null}
+    </>
   );
 }

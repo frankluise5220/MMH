@@ -76,6 +76,7 @@ export type DebtViewAccount = {
     name?: string | null;
     shortName?: string | null;
     type?: string | null;
+    isReimbursable?: boolean | null;
   } | null;
 };
 
@@ -112,6 +113,8 @@ export type DebtViewRow = {
   accountId: string;
   institutionId: string;
   counterpartyId: string;
+  /** Whether this row's counterparty allows reimbursements; gates the row toolbar entry. */
+  counterpartyReimbursementEnabled: boolean;
   isConsumerLoan?: boolean | null;
   loanType?: LoanTypeValue | null;
   itemType: string;
@@ -1157,6 +1160,7 @@ export function buildDebtRowsViewData({
       accountId: account.id,
       institutionId: account.institutionId ?? "",
       counterpartyId: account.counterpartyId ?? "",
+      counterpartyReimbursementEnabled: account.Counterparty?.isReimbursable === true,
       itemType: balance >= 0 ? "【债权】应收款" : "【债务】应付款",
       repaymentMethod: "",
       repaymentCycle: "",
@@ -1242,6 +1246,7 @@ export function buildDebtRowsViewData({
       accountId: "",
       institutionId: institutionIds[0] ?? "",
       counterpartyId: counterpartyIds[0] ?? "",
+      counterpartyReimbursementEnabled: childRows.some((row) => row.counterpartyReimbursementEnabled),
       itemType: net >= 0 ? RECEIVABLE_ITEM_TYPE : PAYABLE_ITEM_TYPE,
       repaymentMethod: "",
       repaymentCycle: "",

@@ -10,6 +10,7 @@ import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { isFixedAssetAccountLike } from "@/lib/fixed-asset";
 import { translate } from "@/lib/i18n-core";
+import { loadInvestmentProfitReport } from "@/lib/server/investment-profit-report";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
@@ -159,6 +160,10 @@ export type OverviewSummary = {
   investmentCost: number;
   investmentFloatingPnL: number;
   investmentFloatingPnLRate: number;
+  /** All-time floating plus realized returns, including closed positions, matching the invest page. */
+  investmentTotalReturn: number;
+  /** Current-year investment returns, matching the investment-profit-report year mode. */
+  investmentThisYearProfit: number;
   fixedAssetAccountList: FixedAssetRow[];
   fixedAssetCount: number;
   fixedAssetMarketValue: number;
@@ -618,6 +623,61 @@ export async function computeOverviewSummary(
   const investmentFloatingPnL = investmentAccountList.reduce((sum, row) => sum + (row.convertedFloatingPnL ?? 0), 0);
   const investmentFloatingPnLRate = investmentCost > 0 ? investmentFloatingPnL / investmentCost : 0;
 
+  // Total return = floating PnL plus all-time realized PnL, including closed positions.
+  // Recompute realized PnL with the invest-page formula for each account:
+  // net sales + dividends - (net purchases - current holding cost), converted to base currency.
+  const investEntryAccountIdPairs = await prisma.txRecord.findMany({
+    where: {
+      OR: [
+        { accountId: { in: investmentOnlyAccounts.map((account) => account.id) } },
+        { toAccountId: { in: investmentOnlyAccounts.map((account) => account.id) } },
+      ],
+      deletedAt: null,
+      type: TransactionType.investment,
+    },
+    select: { accountId: true, toAccountId: true, amount: true, fundFee: true, fundSubtype: true, source: true },
+  });
+  const investAggByAccountId = new Map<string, { buy: number; sell: number; dividend: number; fee: number }>();
+  const investIdSet = new Set(investmentOnlyAccounts.map((account) => account.id));
+  for (const entry of investEntryAccountIdPairs) {
+    const amt = toNumber(entry.amount);
+    const fee = toNumber(entry.fundFee);
+    // Match the invest page: count each side of a record when both accountId
+    // and toAccountId are investment accounts, without flipping the amount sign.
+    const sides = [entry.accountId, entry.toAccountId].filter((id): id is string => !!id && investIdSet.has(id));
+    for (const accountId of new Set(sides)) {
+      const agg = investAggByAccountId.get(accountId) ?? { buy: 0, sell: 0, dividend: 0, fee: 0 };
+      agg.fee += fee;
+      if (amt < 0) {
+        agg.buy += Math.abs(amt) - fee;
+      } else if (entry.source === "dividend" || entry.fundSubtype === "dividend_cash") {
+        agg.dividend += amt;
+      } else if (amt > 0) {
+        agg.sell += amt - fee;
+      }
+      investAggByAccountId.set(accountId, agg);
+    }
+  }
+  const investmentRealizedPnL = investmentOnlyAccounts.reduce((sum, account) => {
+    // Match the per-account invest formula: without cash flow, realized =
+    // -(0 - cost) = +cost. Include missing aggregates as zero to keep totals aligned.
+    const agg = investAggByAccountId.get(account.id) ?? { buy: 0, sell: 0, dividend: 0, fee: 0 };
+    const cost = investBalByAccountId.get(account.id)?.totalCost ?? 0;
+    return sum + fx.convertForTotal(agg.sell + agg.dividend - (agg.buy - cost), currencyOf(account));
+  }, 0);
+  const investmentTotalReturn = investmentFloatingPnL + investmentRealizedPnL;
+
+  // Reuse the investment report engine to aggregate the current calendar year,
+  // matching the daily-pnl year mode.
+  const thisYear = now.getUTCFullYear();
+  const yearReport = await loadInvestmentProfitReport(ctx, {
+    period: "month",
+    year: thisYear,
+    month: 1,
+    fundValuationMode: "daily_nav_delta",
+  }, language);
+  const investmentThisYearProfit = yearReport.totals.totalProfit;
+
   const fixedAssetAccountList: FixedAssetRow[] = fixedAssetAccounts
     .map((account) => {
       const detail = investBalByAccountId.get(account.id);
@@ -728,6 +788,8 @@ export async function computeOverviewSummary(
     investmentCost,
     investmentFloatingPnL,
     investmentFloatingPnLRate,
+    investmentTotalReturn,
+    investmentThisYearProfit,
     fixedAssetAccountList,
     fixedAssetCount: fixedAssetAccounts.length,
     fixedAssetMarketValue,

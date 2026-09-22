@@ -46,6 +46,8 @@ type DebtRow = {
   accountId: string;
   institutionId: string;
   counterpartyId: string;
+  /** Counterparty flag: only flagged objects expose the reimbursement entry. */
+  counterpartyReimbursementEnabled: boolean;
   itemType: string;
   repaymentMethod: string;
   repaymentCycle: string;
@@ -1546,7 +1548,7 @@ export function DebtShell({
                 loanType={accountLoanType(accountEditDataById.get(selectedRow.accountId))}
                 toolbarActions={(
                   <>
-                    {!selectedRow.isGroup && !selectedRow.isLoan && selectedRow.counterpartyId && reimbursementActions ? (
+                    {!selectedRow.isGroup && !selectedRow.isLoan && selectedRow.counterpartyId && selectedRow.counterpartyReimbursementEnabled && reimbursementActions ? (
                       <button
                         type="button"
                         onClick={() => setReimbursementOpen(true)}
@@ -1781,7 +1783,7 @@ export function DebtShell({
           </div>
         ) : null}
 
-        {reimbursementOpen && selectedRow && !selectedRow.isGroup && !selectedRow.isLoan && selectedRow.counterpartyId && reimbursementActions ? (
+        {reimbursementOpen && selectedRow && !selectedRow.isGroup && !selectedRow.isLoan && selectedRow.counterpartyId && selectedRow.counterpartyReimbursementEnabled && reimbursementActions ? (
           <ReimbursementModal
             objectId={selectedRow.counterpartyId}
             objectType="counterparty"

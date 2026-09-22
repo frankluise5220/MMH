@@ -2479,6 +2479,8 @@ export async function payDepositInterest(formData: FormData) {
       select: { id: true, name: true, currency: true },
     });
     if (!cashAccount) return { ok: false as const, error: t("sidebar.action.accountNotFound") };
+    const { ensureDepositPlansForLot } = await import("@/lib/server/deposit-plan-tasks");
+    const { payoutPlanId } = await ensureDepositPlansForLot({ householdId, lotId: buy.id });
 
     // Two-record model (user's bookkeeping convention): the deposit account
     // produces the interest as income, then transfers it to the funding
@@ -2502,7 +2504,7 @@ export async function payDepositInterest(formData: FormData) {
           categoryName: interestCategory?.name ?? SYSTEM_DEPOSIT_INTEREST_CATEGORY,
           source: "deposit",
           entryOrigin: ENTRY_ORIGIN_MANUAL,
-          regularInvestPlanId: `depi_${buy.id}`,
+          regularInvestPlanId: payoutPlanId ?? null,
           note: `${t("deposit.renew.payoutNote", { name: buy.fundName ?? "" })}`,
           ...{ householdId },
         },
@@ -2519,7 +2521,7 @@ export async function payDepositInterest(formData: FormData) {
           currency: buy.currency ?? depositAccount.currency ?? "CNY",
           source: "deposit",
           entryOrigin: ENTRY_ORIGIN_MANUAL,
-          regularInvestPlanId: `depi_${buy.id}`,
+          regularInvestPlanId: payoutPlanId ?? null,
           note: `${t("deposit.renew.payoutTransferNote", { name: buy.fundName ?? "" })}`,
           ...{ householdId },
         },
@@ -2625,6 +2627,10 @@ export async function updateTransactionFromDialog(formData: FormData) {
           : null;
         touchedAccountIds.add(fromAcc.id);
         touchedAccountIds.add(toAcc.id);
+        // Allow unchanged account pairs for scheduled deposit/bond interest
+        // transfers. Editing amount/date/note is safe; changing the pair still
+        // uses the normal validation rules.
+        const transferAccountsUnchanged = entry.accountId === fromAccountId && entry.toAccountId === toAccountId;
         if (fromAcc.kind === "loan" || toAcc.kind === "loan") {
           throw new Error(t("sidebar.action.specialTargetTransferNotAllowed"));
         }
@@ -2632,7 +2638,7 @@ export async function updateTransactionFromDialog(formData: FormData) {
         if (isLoanOrSettlementAccountKind(fromAcc.kind) && isLoanOrSettlementAccountKind(toAcc.kind)) {
           throw new Error(t("sidebar.action.settlementTransferNotAllowed"));
         }
-        if (!isDebtTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc))) {
+        if (!isDebtTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc)) && !transferAccountsUnchanged) {
           throw new Error(t("sidebar.action.specialTargetTransferNotAllowed"));
         }
         const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
@@ -2680,7 +2686,7 @@ export async function updateTransactionFromDialog(formData: FormData) {
             note: note || null,
             toNote: (toNote || note) || null,
             currency: transferCurrency,
-            source: debtMode ? `debt_${debtMode}` : "manual",
+            source: debtMode ? `debt_${debtMode}` : transferAccountsUnchanged && entry.source ? entry.source : "manual",
             debtPrincipalAmount: debtMode ? amountAbs : null,
             debtInterestAmount: debtMode ? 0 : null,
             debtFeeAmount: debtMode ? 0 : null,

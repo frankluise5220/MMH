@@ -179,6 +179,8 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
       realizedProfit: true,
       debtInterestAmount: true,
       depositInterest: true,
+      bondInterest: true,
+      bondFee: true,
       fundFee: true,
       fundUnits: true,
       fundNav: true,
