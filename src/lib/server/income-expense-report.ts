@@ -4,15 +4,9 @@ import { prisma } from "@/lib/db/prisma";
 import { addDaysUtc, formatDateUtc, startOfDayUtc, toNumber } from "@/lib/date-utils";
 import {
   normalizeDefaultCategoryHierarchyForHousehold,
-  SYSTEM_BOND_PROFIT_CATEGORY,
-  SYSTEM_DEPOSIT_INTEREST_CATEGORY,
   SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY,
-  SYSTEM_FUND_DIVIDEND_CATEGORY,
-  SYSTEM_FUND_PROFIT_CATEGORY,
   SYSTEM_INSURANCE_EXPENSE_CATEGORY,
   SYSTEM_INSURANCE_RETURN_CATEGORY,
-  SYSTEM_INVESTMENT_DIVIDEND_CATEGORY,
-  SYSTEM_WEALTH_PROFIT_CATEGORY,
 } from "@/lib/default-categories";
 import { loadFundStatisticSourceEntries, loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
 import type { HouseholdContext } from "@/lib/server/household-scope";
@@ -62,7 +56,6 @@ export type IncomeExpenseReportDetailRow = {
   counterpartyName: string;
   note: string;
   amount: number;
-  realizedProfit: number | null;
 };
 
 export type IncomeExpenseReportDetails = {
@@ -117,7 +110,6 @@ type ReportStatisticRecord = {
   accountName: string;
   counterpartyName: string | null;
   note: string | null;
-  economicResult: boolean;
   createdAt: Date;
 };
 
@@ -322,8 +314,6 @@ export async function getIncomeExpenseReport(
             OR: [
               { realizedProfit: { not: null } },
               { depositInterest: { not: null } },
-              { bondInterest: { not: null } },
-              { bondFee: { not: null } },
               { fundFee: { not: null } },
               { fundSubtype: "dividend_cash" },
             ],
@@ -338,8 +328,6 @@ export async function getIncomeExpenseReport(
         fundProductType: true,
         realizedProfit: true,
         depositInterest: true,
-        bondInterest: true,
-        bondFee: true,
         fundFee: true,
         fundUnits: true,
         fundNav: true,
@@ -475,93 +463,6 @@ export async function getIncomeExpenseReport(
     return record.categoryName ? findCategoryByName(record.type, [record.categoryName]) : null;
   }
 
-  /**
-   * Legacy income snapshots often have no category id/name (or a stale name
-   * that no longer exists in the category tree). Their notes still identify
-   * them as deposit interest, money-market wealth income, or fund dividends,
-   * so the report resolves them to the same economic-result categories that
-   * newer auto-posted entries use.
-   */
-  function inferEconomicIncomeCategoryName(record: {
-    type: TransactionType;
-    source?: string | null;
-    note?: string | null;
-    categoryName?: string | null;
-  }): string | null {
-    if (record.type !== TransactionType.income) return null;
-    if (isBondInterestIncomeEntry(record)) return SYSTEM_BOND_PROFIT_CATEGORY;
-    if (record.source === "deposit") return SYSTEM_DEPOSIT_INTEREST_CATEGORY;
-
-    const categoryName = record.categoryName?.trim() ?? "";
-    const note = (record.note ?? "").replace(/\s+/g, "");
-    if (categoryName === "分红" && !findCategoryByName("income", [categoryName])) {
-      return SYSTEM_INVESTMENT_DIVIDEND_CATEGORY;
-    }
-    if (
-      (categoryName === "银行利息" || categoryName === "利息收入" || categoryName === "利息") &&
-      !findCategoryByName("income", [categoryName])
-    ) {
-      return SYSTEM_DEPOSIT_INTEREST_CATEGORY;
-    }
-    if (/京东小金库收益/.test(note)) return SYSTEM_WEALTH_PROFIT_CATEGORY;
-    if (/基金分红/.test(note)) return SYSTEM_FUND_DIVIDEND_CATEGORY;
-    if (/结息|应付利息|活期存款利息/.test(note) || (/利息/.test(note) && !categoryName)) {
-      return SYSTEM_DEPOSIT_INTEREST_CATEGORY;
-    }
-    return null;
-  }
-
-  const ECONOMIC_RESULT_INCOME_CATEGORY_NAMES = new Set([
-    "投资收益",
-    "利息",
-    "利息收入",
-    "银行利息",
-    "股息分红",
-    SYSTEM_FUND_PROFIT_CATEGORY,
-    SYSTEM_FUND_DIVIDEND_CATEGORY,
-    "股票收益",
-    SYSTEM_WEALTH_PROFIT_CATEGORY,
-    SYSTEM_BOND_PROFIT_CATEGORY,
-    SYSTEM_DEPOSIT_INTEREST_CATEGORY,
-    SYSTEM_INVESTMENT_DIVIDEND_CATEGORY,
-    "分红",
-  ]);
-
-  function isFinanceInvestmentNode(node: ReportCategoryNode | null) {
-    let cursor = node;
-    while (cursor) {
-      if (cursor.name === SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY) return true;
-      cursor = cursor.parentId ? nodesById.get(cursor.parentId) ?? null : null;
-    }
-    return false;
-  }
-
-  function isEconomicResultIncomeRecord(record: {
-    type: TransactionType;
-    source?: string | null;
-    fundSubtype?: string | null;
-    categoryId?: string | null;
-    categoryName?: string | null;
-  }): boolean {
-    if (record.type !== TransactionType.income) return false;
-    if (isBondInterestIncomeEntry(record)) return true;
-    if (record.source === "deposit") return true;
-    if (inferEconomicIncomeCategoryName(record)) return true;
-
-    const categoryName = record.categoryName?.trim() ?? "";
-    if (categoryName && ECONOMIC_RESULT_INCOME_CATEGORY_NAMES.has(categoryName)) return true;
-
-    const node = record.categoryId ? nodesById.get(record.categoryId) ?? null : null;
-    const resolvedNode = node?.type === "income"
-      ? node
-      : categoryName
-        ? findCategoryByName("income", [categoryName])
-        : null;
-    return resolvedNode != null &&
-      ECONOMIC_RESULT_INCOME_CATEGORY_NAMES.has(resolvedNode.name) &&
-      isFinanceInvestmentNode(resolvedNode);
-  }
-
   let statisticRecords: ReportStatisticRecord[] = records.flatMap((record) => {
     const isInsurance = record.source === "insurance";
     if (
@@ -578,9 +479,6 @@ export async function getIncomeExpenseReport(
       ? insuranceType
       : record.type === TransactionType.income ? "income" : "expense";
     const isBondInterest = isBondInterestIncomeEntry(record);
-    const inferredIncomeCategory = isBondInterest
-      ? SYSTEM_BOND_PROFIT_CATEGORY
-      : inferEconomicIncomeCategoryName(record);
     return [{
       id: record.id,
       entryId: record.id,
@@ -591,12 +489,13 @@ export async function getIncomeExpenseReport(
       categoryId: isInsurance || isBondInterest ? null : record.categoryId,
       categoryName: isInsurance
         ? (type === "income" ? SYSTEM_INSURANCE_RETURN_CATEGORY : SYSTEM_INSURANCE_EXPENSE_CATEGORY)
-        : (inferredIncomeCategory ?? (record.categoryName?.trim() || null)),
+        : isBondInterest
+          ? SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY
+          : record.categoryName?.trim() || null,
       accountId: record.accountId,
       accountName: accountDisplayName(record.account, record.accountName),
       counterpartyName: record.counterpartyInstitutionName,
       note: record.note,
-      economicResult: isEconomicResultIncomeRecord(record),
       createdAt: record.createdAt,
     }];
   });
@@ -632,7 +531,6 @@ export async function getIncomeExpenseReport(
         accountName: accountDisplayName(record.account, record.accountName),
         counterpartyName: investmentName || item.label,
         note: record.note,
-        economicResult: true,
         createdAt: record.createdAt,
       });
     }
@@ -655,7 +553,6 @@ export async function getIncomeExpenseReport(
         accountName: record.accountName,
         counterpartyName: investmentName || item.label,
         note: record.note,
-        economicResult: true,
         createdAt: record.createdAt,
       });
     }
@@ -679,7 +576,6 @@ export async function getIncomeExpenseReport(
           : accountDisplayName(record.account, record.accountName),
         counterpartyName: item.label,
         note: record.note,
-        economicResult: true,
         createdAt: record.createdAt,
       });
     }
@@ -703,7 +599,6 @@ export async function getIncomeExpenseReport(
         accountName: record.accountName,
         counterpartyName: investmentName || item.label,
         note: record.note,
-        economicResult: true,
         createdAt: record.createdAt,
       });
     }
@@ -813,9 +708,6 @@ export async function getIncomeExpenseReport(
           counterpartyName: record.counterpartyName?.trim() ?? "",
           note: record.note?.trim() ?? "",
           amount: displayAmount,
-          realizedProfit: record.economicResult
-            ? (recordType === "income" ? record.amount : -record.amount)
-            : null,
         }];
       });
 

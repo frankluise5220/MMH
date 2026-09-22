@@ -66,8 +66,6 @@ export default async function OverviewPage() {
       investmentCost={summary.investmentCost}
       investmentFloatingPnL={summary.investmentFloatingPnL}
       investmentFloatingPnLRate={summary.investmentFloatingPnLRate}
-      investmentTotalReturn={summary.investmentTotalReturn}
-      investmentThisYearProfit={summary.investmentThisYearProfit}
       fixedAssetAccountList={summary.fixedAssetAccountList}
       fixedAssetCount={summary.fixedAssetCount}
       fixedAssetMarketValue={summary.fixedAssetMarketValue}

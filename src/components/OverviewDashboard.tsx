@@ -123,8 +123,6 @@ export type OverviewDashboardProps = {
   investmentCost?: number;
   investmentFloatingPnL?: number;
   investmentFloatingPnLRate?: number;
-  investmentTotalReturn?: number;
-  investmentThisYearProfit?: number;
   fixedAssetAccountList?: FixedAssetItem[];
   fixedAssetCount?: number;
   fixedAssetMarketValue?: number;
@@ -200,8 +198,6 @@ export function OverviewDashboard({
   investmentCost,
   investmentFloatingPnL,
   investmentFloatingPnLRate,
-  investmentTotalReturn,
-  investmentThisYearProfit,
   fixedAssetAccountList = [],
   fixedAssetCount,
   fixedAssetMarketValue,
@@ -362,8 +358,6 @@ export function OverviewDashboard({
                   <MetricCard label={t("overview.holdingCost")} value={formatMoneyYuan(investCost)} />
                   <MetricCard label={t("overview.floatingPnL")} value={formatMoneyYuan(investFloatingPnL)} valueClass={directionalClass(investFloatingPnL, isRedUp)} />
                   <MetricCard label={t("overview.floatingRate")} value={formatRate(investFloatingRate)} valueClass={directionalClass(investFloatingRate, isRedUp)} />
-                  <MetricCard label={t("overview.investTotalReturn")} value={formatMoneyYuan(investmentTotalReturn ?? 0)} valueClass={directionalClass(investmentTotalReturn ?? 0, isRedUp)} />
-                  <MetricCard label={t("overview.investThisYearProfit")} value={formatMoneyYuan(investmentThisYearProfit ?? 0)} valueClass={directionalClass(investmentThisYearProfit ?? 0, isRedUp)} />
                 </div>
               </div>
               <div className="divide-y divide-slate-100 border-t border-slate-100">

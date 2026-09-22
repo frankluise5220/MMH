@@ -62,8 +62,6 @@ export function MobileOverviewDashboard({
   investmentCost,
   investmentFloatingPnL,
   investmentFloatingPnLRate,
-  investmentTotalReturn,
-  investmentThisYearProfit,
   fixedAssetAccountList = [],
   fixedAssetCount,
   fixedAssetMarketValue,
@@ -176,8 +174,6 @@ export function MobileOverviewDashboard({
                 <TinyPanel label={t("overview.floatingPnL")} value={amount(investFloatingPnL)} valueClass={valueClass(investFloatingPnL)} align="right" />
                 <TinyPanel label={t("overview.holdingCost")} value={amount(investCost)} />
                 <TinyPanel label={t("overview.floatingRate")} value={percent(investFloatingRate)} valueClass={valueClass(investFloatingRate)} align="right" />
-                <TinyPanel label={t("overview.investTotalReturn")} value={amount(investmentTotalReturn ?? 0)} valueClass={valueClass(investmentTotalReturn ?? 0)} />
-                <TinyPanel label={t("overview.investThisYearProfit")} value={amount(investmentThisYearProfit ?? 0)} valueClass={valueClass(investmentThisYearProfit ?? 0)} align="right" />
               </div>
 
             </div>

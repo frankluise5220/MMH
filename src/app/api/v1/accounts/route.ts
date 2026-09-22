@@ -38,9 +38,6 @@ import {
   isAccountIdentityUniqueError,
 } from "@/lib/server/account-identity-unique";
 import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
-import { recalcStockPositions } from "@/lib/stock/recalcPosition";
-import { recalcFundPositions } from "@/lib/fund/recalcPosition";
-import { logger } from "@/lib/logger";
 import { BALANCE_INITIALIZATION_SOURCE, encodeBalanceReconcileTarget } from "@/lib/balance-reconcile";
 import { ensureBrokerageCashAccountForStockAccount } from "@/lib/server/brokerage-cash-account";
 import {
@@ -721,21 +718,6 @@ export async function PUT(req: NextRequest) {
       }
       return next;
     });
-    // 成本摊薄方式切换后立即重算既有持仓（MMH-20260921123017-5KVC）：
-    // 仅在 costBasisMethod 实际变化时触发，同类型 PUT（值未变）不重算。
-    // 重算失败不阻塞保存，记录日志便于排查。
-    const costBasisMethodChanged = nextKind === "investment"
-      && supportsCostBasisMethod(nextInvestProductTypeForInstitution ?? "")
-      && data.costBasisMethod !== undefined
-      && data.costBasisMethod !== null
-      && String(data.costBasisMethod) !== String(existing.costBasisMethod ?? "");
-    if (costBasisMethodChanged) {
-      if (updated.investProductType === "stock") {
-        await recalcStockPositions(updated.id).catch(logger.catchLog("成本摊薄方式切换重算失败", "accounts/route.ts"));
-      } else if (updated.investProductType === "fund" || updated.investProductType === "money") {
-        await recalcFundPositions(updated.id).catch(logger.catchLog("成本摊薄方式切换重算失败", "accounts/route.ts"));
-      }
-    }
     const brokerageCashAccount =
       updated.kind === AccountKind.investment && updated.investProductType === "stock"
         ? await ensureBrokerageCashAccountForStockAccount(prisma, updated)

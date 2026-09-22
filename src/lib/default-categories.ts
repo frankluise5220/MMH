@@ -33,7 +33,7 @@ export type DefaultCategoryTemplate = {
 };
 
 type CategoryWriter = typeof prisma | Prisma.TransactionClient;
-export const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-09-21-fund-dividend-category-v1";
+export const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-09-20-finance-investment-income-rename-v1";
 const DELETED_DEFAULT_CATEGORY_KEY_PREFIX = "category_deleted_default_templates:";
 
 type DefaultCategoryTemplateChild = {
@@ -55,15 +55,11 @@ export type ResolveCategorySnapshotInput = {
 };
 
 export const SYSTEM_FUND_PROFIT_CATEGORY = "基金收益";
-export const SYSTEM_FUND_DIVIDEND_CATEGORY = "基金分红";
 export const SYSTEM_FUND_LOSS_CATEGORY = "基金亏损";
 export const SYSTEM_WEALTH_PROFIT_CATEGORY = "理财收益";
 export const SYSTEM_WEALTH_LOSS_CATEGORY = "理财亏损";
-export const SYSTEM_BOND_PROFIT_CATEGORY = "债券收益";
-export const SYSTEM_BOND_LOSS_CATEGORY = "债券亏损";
 export const SYSTEM_DEPOSIT_INTEREST_CATEGORY = "存款利息";
 export const SYSTEM_DEPOSIT_FEE_CATEGORY = "存款手续费";
-export const SYSTEM_BAD_DEBT_EXPENSE_CATEGORY = "坏账";
 export const SYSTEM_INVESTMENT_DIVIDEND_CATEGORY = "投资分红";
 export const SYSTEM_INVESTMENT_PROFIT_CATEGORY = SYSTEM_FUND_PROFIT_CATEGORY;
 export const SYSTEM_INVESTMENT_LOSS_CATEGORY = "投资亏损";
@@ -89,10 +85,8 @@ const systemCategoryTemplateNames: Record<DefaultCategoryType, Set<string>> = {
     "投资收入",
     "投资收益",
     SYSTEM_FUND_PROFIT_CATEGORY,
-    SYSTEM_FUND_DIVIDEND_CATEGORY,
     "股票收益",
     SYSTEM_WEALTH_PROFIT_CATEGORY,
-    SYSTEM_BOND_PROFIT_CATEGORY,
     SYSTEM_DEPOSIT_INTEREST_CATEGORY,
     SYSTEM_INSURANCE_RETURN_CATEGORY,
     "股息分红",
@@ -110,10 +104,8 @@ const systemCategoryTemplateNames: Record<DefaultCategoryType, Set<string>> = {
     SYSTEM_INVESTMENT_LOSS_CATEGORY,
     SYSTEM_FUND_LOSS_CATEGORY,
     SYSTEM_WEALTH_LOSS_CATEGORY,
-    SYSTEM_BOND_LOSS_CATEGORY,
     SYSTEM_DEPOSIT_FEE_CATEGORY,
     "股票亏损",
-    SYSTEM_BAD_DEBT_EXPENSE_CATEGORY,
   ]),
   advance: new Set(),
   transfer: new Set(["转账", CREDIT_CARD_REPAYMENT_CATEGORY_NAME, SYSTEM_SETTLEMENT_TRANSFER_CATEGORY]),
@@ -310,7 +302,7 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
   {
     type: "expense",
     name: "金融保险",
-    children: [SYSTEM_INSURANCE_EXPENSE_CATEGORY, SYSTEM_BANK_INSTALLMENT_EXPENSE_CATEGORY, SYSTEM_INSTALLMENT_FEE_EXPENSE_CATEGORY, SYSTEM_BAD_DEBT_EXPENSE_CATEGORY, "保险", "互助保障", "信用借还", "账户存取", "手续费", "利息支出", "信用卡费用"],
+    children: [SYSTEM_INSURANCE_EXPENSE_CATEGORY, SYSTEM_BANK_INSTALLMENT_EXPENSE_CATEGORY, SYSTEM_INSTALLMENT_FEE_EXPENSE_CATEGORY, "保险", "互助保障", "信用借还", "账户存取", "手续费", "利息支出", "信用卡费用"],
   },
   {
     type: "expense",
@@ -320,7 +312,7 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
   {
     type: "expense",
     name: SYSTEM_INVESTMENT_LOSS_CATEGORY,
-    children: [SYSTEM_FUND_LOSS_CATEGORY, SYSTEM_WEALTH_LOSS_CATEGORY, SYSTEM_BOND_LOSS_CATEGORY, SYSTEM_DEPOSIT_FEE_CATEGORY, "股票亏损"],
+    children: [SYSTEM_FUND_LOSS_CATEGORY, SYSTEM_WEALTH_LOSS_CATEGORY, SYSTEM_DEPOSIT_FEE_CATEGORY, "股票亏损"],
   },
   {
     type: "expense",
@@ -350,7 +342,7 @@ export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
   {
     type: "income",
     name: SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY,
-    children: ["投资收益", "利息", "股息分红", SYSTEM_FUND_PROFIT_CATEGORY, SYSTEM_FUND_DIVIDEND_CATEGORY, "股票收益", SYSTEM_WEALTH_PROFIT_CATEGORY, SYSTEM_BOND_PROFIT_CATEGORY, SYSTEM_DEPOSIT_INTEREST_CATEGORY, SYSTEM_INVESTMENT_DIVIDEND_CATEGORY, "租金收入"],
+    children: ["投资收益", "利息", "股息分红", SYSTEM_FUND_PROFIT_CATEGORY, "股票收益", SYSTEM_WEALTH_PROFIT_CATEGORY, SYSTEM_DEPOSIT_INTEREST_CATEGORY, SYSTEM_INVESTMENT_DIVIDEND_CATEGORY, "租金收入"],
   },
   {
     type: "income",

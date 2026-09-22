@@ -3200,10 +3200,6 @@ export async function PUT(req: Request) {
           tx.account.findUnique({ where: { id: toAccountId } }),
         ]);
         if (!fromAcc || !toAcc) throw new Error("账户不存在");
-        // 账户对没变时放行：计划任务（存款/债券取息）生成的利息转账涉及存款、
-        // 债券等专用账户，就地编辑只是修正金额/日期/备注，与收入/支出编辑的
-        // 「账户没变放行」同规则；一旦改动账户对，仍按普通规则硬校验。
-        const transferAccountsUnchanged = entry.accountId === fromAccountId && entry.toAccountId === toAccountId;
         if (fromAcc.kind === "loan" || toAcc.kind === "loan") {
           throw new Error("基金、存款、贷款和往来款账户不能保存为普通转账，请使用对应的专用记账窗口");
         }
@@ -3211,7 +3207,7 @@ export async function PUT(req: Request) {
         if (isLoanOrSettlementAccountKind(fromAcc.kind) && isLoanOrSettlementAccountKind(toAcc.kind)) {
           throw new Error("往来款账户之间不能保存为普通转账");
         }
-        if (!isDebtTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc)) && !transferAccountsUnchanged) {
+        if (!isDebtTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc))) {
           throw new Error("基金、存款、贷款和往来款账户不能保存为普通转账，请使用对应的专用记账窗口");
         }
         const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
@@ -3259,7 +3255,7 @@ export async function PUT(req: Request) {
             note: note || null,
             toNote: (toNote || note) || null,
             currency: transferCurrency,
-            source: debtMode ? `debt_${debtMode}` : transferAccountsUnchanged && entry.source ? entry.source : "manual",
+            source: debtMode ? `debt_${debtMode}` : "manual",
             fundCode: null,
             fundName: null,
             fundProductType: null,
@@ -3274,7 +3270,7 @@ export async function PUT(req: Request) {
             wealthProductId: null,
             depositAnnualRate: null,
             depositInterest: null,
-            depositSourceEntryId: transferAccountsUnchanged ? entry.depositSourceEntryId : null,
+            depositSourceEntryId: null,
             metalTypeId: null,
             metalTypeName: null,
             metalUnitId: null,

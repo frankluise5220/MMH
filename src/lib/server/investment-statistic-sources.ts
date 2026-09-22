@@ -121,8 +121,6 @@ export async function loadFundStatisticSourceEntries(
     const mainTagMatches = tagIds.length === 0 || mainTags.some((tag) => tagIds.includes(tag.tagId));
 
     if (mainTagMatches && mainDate.getTime() >= startMs && mainDate.getTime() < endMs) {
-      // 经济收益（分红/赎回收益）归属到投资账户侧，与债券利息口径一致；
-      // 现金落账账户仍由现金流水 TxRecord 承载，不影响余额。
       entries.push({
         id: mainEntryId,
         entryId: mainEntryId,
@@ -137,8 +135,8 @@ export async function loadFundStatisticSourceEntries(
         fundFee: row.fee,
         fundCode: row.fundCode,
         fundName: row.fundName,
-        accountId: row.fundAccountId,
-        accountName: row.Account.name,
+        accountId: primaryCashEntry?.accountId ?? row.cashAccountId ?? row.fundAccountId,
+        accountName: primaryCashEntry?.account?.name ?? primaryCashEntry?.accountName ?? row.CashAccount?.name ?? row.Account.name,
         counterpartyName: row.fundName,
         note: row.note ?? primaryCashEntry?.note ?? null,
         createdAt: primaryCashEntry?.createdAt ?? row.createdAt,
@@ -294,9 +292,8 @@ export async function loadWealthStatisticSourceEntries(
         ? arrivalAmount ?? grossAmount
         : -grossAmount;
     const productName = row.WealthProduct?.name ?? row.productName ?? "";
-    // 收益统计归属到理财投资账户侧，与基金/债券口径一致。
-    const accountId = row.accountId;
-    const accountName = row.Account.name;
+    const accountId = cashEntry?.accountId ?? row.cashAccountId ?? row.accountId;
+    const accountName = cashEntry?.account?.name ?? cashEntry?.accountName ?? row.CashAccount?.name ?? row.Account.name;
 
     return [{
       id: `wealth:${row.id}`,

@@ -39,7 +39,7 @@ import { loadCommonData, loadCachedStockHoldingReport, loadCachedFundHoldingRepo
 import { stockMarketLabel } from "@/lib/stock/market";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { buildReportDetailEntryOverrides, loadReportDetailEntries } from "@/lib/server/report-detail-entries";
+import { loadReportDetailEntries } from "@/lib/server/report-detail-entries";
 import { getServerDisplayLanguage, getServerT } from "@/lib/server/i18n";
 
 export const dynamic = "force-dynamic";
@@ -924,11 +924,7 @@ export default async function ReportsPage({
   const detailEntryIds = report.details
     ? [...new Set(report.details.rows.map((row) => row.entryId))]
     : [];
-  const detailEntries = await loadReportDetailEntries(
-    ctx,
-    detailEntryIds,
-    report.details ? buildReportDetailEntryOverrides(report.details.rows) : undefined,
-  );
+  const detailEntries = await loadReportDetailEntries(ctx, detailEntryIds);
   const investmentProductTypeByAccountId = Object.fromEntries(
     allAccountRecords.map((account) => [account.id, account.investProductType]),
   );

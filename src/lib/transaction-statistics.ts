@@ -3,12 +3,9 @@ import { TransactionType } from "@prisma/client";
 
 import { toNumber } from "@/lib/date-utils";
 import {
-  SYSTEM_BOND_LOSS_CATEGORY,
-  SYSTEM_BOND_PROFIT_CATEGORY,
   SYSTEM_DEPOSIT_FEE_CATEGORY,
   SYSTEM_DEPOSIT_INTEREST_CATEGORY,
   SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY,
-  SYSTEM_FUND_DIVIDEND_CATEGORY,
   SYSTEM_FUND_LOSS_CATEGORY,
   SYSTEM_FUND_PROFIT_CATEGORY,
   SYSTEM_INVESTMENT_DIVIDEND_CATEGORY,
@@ -40,7 +37,7 @@ export function getIncomeExpenseStatisticAmount(
 
 export type InvestmentStatisticType = "income" | "expense";
 
-type InvestmentProductKind = "fund" | "wealth" | "deposit" | "bond" | "debt";
+type InvestmentProductKind = "fund" | "wealth" | "deposit" | "debt";
 
 const MONEY_EPSILON = 0.005;
 
@@ -57,8 +54,6 @@ export type InvestmentStatisticEntryLike = {
   realizedProfit?: unknown | null;
   debtInterestAmount?: unknown | null;
   depositInterest?: unknown | null;
-  bondInterest?: unknown | null;
-  bondFee?: unknown | null;
   fundFee?: unknown | null;
   fundUnits?: unknown | null;
   fundNav?: unknown | null;
@@ -96,12 +91,9 @@ export type StatisticCategoryBucket = StatisticCategoryRef & {
 
 export const INVESTMENT_STATISTIC_CATEGORY_NAMES = [
   SYSTEM_FUND_PROFIT_CATEGORY,
-  SYSTEM_FUND_DIVIDEND_CATEGORY,
   SYSTEM_FUND_LOSS_CATEGORY,
   SYSTEM_WEALTH_PROFIT_CATEGORY,
   SYSTEM_WEALTH_LOSS_CATEGORY,
-  SYSTEM_BOND_PROFIT_CATEGORY,
-  SYSTEM_BOND_LOSS_CATEGORY,
   SYSTEM_DEPOSIT_INTEREST_CATEGORY,
   SYSTEM_DEPOSIT_FEE_CATEGORY,
   SYSTEM_INVESTMENT_DIVIDEND_CATEGORY,
@@ -109,7 +101,6 @@ export const INVESTMENT_STATISTIC_CATEGORY_NAMES = [
 ];
 
 export const BOND_INTEREST_INCOME_CATEGORY_CANDIDATES = [
-  SYSTEM_BOND_PROFIT_CATEGORY,
   SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY,
   "投资收入",
 ];
@@ -117,8 +108,8 @@ export const BOND_INTEREST_INCOME_CATEGORY_CANDIDATES = [
 /**
  * Auto-posted bond interest income rows (source "bond", fundSubtype
  * "dividend_cash") carry an investment-type category snapshot that is not
- * part of the income/expense tree, so statistics classify them through the
- * reserved bond-profit category instead.
+ * part of the income/expense tree, so statistics must classify them through
+ * the reserved finance/investment income root instead.
  */
 export function isBondInterestIncomeEntry(entry: {
   type?: TransactionType | string | null;
@@ -412,7 +403,6 @@ export function buildStatisticCategoryItemsFromBuckets(
 }
 
 function classifyInvestmentProduct(entry: InvestmentStatisticEntryLike): InvestmentProductKind {
-  if (entry.fundProductType === "bond") return "bond";
   if (entry.fundProductType === "wealth") return "wealth";
   if (entry.fundProductType === "deposit") return "deposit";
   return "fund";
@@ -437,11 +427,6 @@ function profitCategory(kind: InvestmentProductKind, value: number) {
     return value >= 0
       ? { name: SYSTEM_DEPOSIT_INTEREST_CATEGORY, candidates: [SYSTEM_DEPOSIT_INTEREST_CATEGORY, "利息", "投资收益"] }
       : { name: SYSTEM_DEPOSIT_FEE_CATEGORY, candidates: [SYSTEM_INVESTMENT_LOSS_CATEGORY, SYSTEM_DEPOSIT_FEE_CATEGORY] };
-  }
-  if (kind === "bond") {
-    return value >= 0
-      ? { name: SYSTEM_BOND_PROFIT_CATEGORY, candidates: [SYSTEM_BOND_PROFIT_CATEGORY, "利息", "投资收益", SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY, "投资收入"] }
-      : { name: SYSTEM_BOND_LOSS_CATEGORY, candidates: [SYSTEM_INVESTMENT_LOSS_CATEGORY, SYSTEM_BOND_LOSS_CATEGORY] };
   }
   return value >= 0
     ? { name: SYSTEM_FUND_PROFIT_CATEGORY, candidates: [SYSTEM_FUND_PROFIT_CATEGORY, "投资收益", SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY, "投资收入"] }
@@ -469,9 +454,7 @@ export function getInvestmentStatisticItems(entry: InvestmentStatisticEntryLike)
         ? profitCategory("wealth", amount)
         : kind === "deposit"
           ? profitCategory("deposit", amount)
-          : kind === "bond"
-            ? profitCategory("bond", amount)
-            : { name: SYSTEM_FUND_DIVIDEND_CATEGORY, candidates: [SYSTEM_FUND_DIVIDEND_CATEGORY, "投资收益", SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY, "投资收入", SYSTEM_INVESTMENT_DIVIDEND_CATEGORY, "股息分红"] };
+          : { name: SYSTEM_FUND_PROFIT_CATEGORY, candidates: [SYSTEM_FUND_PROFIT_CATEGORY, "投资收益", SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY, "投资收入", SYSTEM_INVESTMENT_DIVIDEND_CATEGORY, "股息分红"] };
       items.push({
         idSuffix: "dividend",
         type: "income",
@@ -479,7 +462,7 @@ export function getInvestmentStatisticItems(entry: InvestmentStatisticEntryLike)
         amount,
         categoryName: category.name,
         categoryCandidates: category.candidates,
-        label: kind === "wealth" ? "理财分红" : kind === "deposit" ? "存款利息" : kind === "bond" ? "债券收益" : "基金分红",
+        label: kind === "wealth" ? "理财分红" : kind === "deposit" ? "存款利息" : "基金收益",
       });
     }
   }
@@ -500,24 +483,16 @@ export function getInvestmentStatisticItems(entry: InvestmentStatisticEntryLike)
     }
   }
 
-  if ((kind === "wealth" || kind === "deposit" || kind === "bond") && (subtype === "redeem" || subtype === "switch_out")) {
+  if ((kind === "wealth" || kind === "deposit") && (subtype === "redeem" || subtype === "switch_out")) {
     const hasRealizedProfit = entry.realizedProfit !== null && entry.realizedProfit !== undefined;
     const hasInterest = entry.depositInterest !== null && entry.depositInterest !== undefined;
-    const hasBondInterest = entry.bondInterest !== null && entry.bondInterest !== undefined;
     const hasFee = entry.fundFee !== null && entry.fundFee !== undefined;
-    const hasBondFee = entry.bondFee !== null && entry.bondFee !== undefined;
     const hasUnitBasis = hasUnitBasedResultEvidence(entry);
-    if (hasRealizedProfit || hasInterest || hasBondInterest || hasFee || hasBondFee) {
+    if (hasRealizedProfit || hasInterest || hasFee) {
       const storedProfit = hasRealizedProfit ? toNumber(entry.realizedProfit) : null;
-      const interestAmount = kind === "bond"
-        ? toNumber(entry.bondInterest)
-        : toNumber(entry.depositInterest);
-      const feeAmount = kind === "bond"
-        ? toNumber(entry.bondFee)
-        : toNumber(entry.fundFee);
       const netProfit = storedProfit != null
-        ? (!hasInterest && !hasBondInterest && !hasFee && !hasBondFee && !hasUnitBasis && storedResultLooksLikeCashReceiptTotal(entry, storedProfit) ? 0 : storedProfit)
-        : interestAmount - feeAmount;
+        ? (!hasInterest && !hasFee && !hasUnitBasis && storedResultLooksLikeCashReceiptTotal(entry, storedProfit) ? 0 : storedProfit)
+        : toNumber(entry.depositInterest) - toNumber(entry.fundFee);
       if (netProfit !== 0) {
         const category = profitCategory(kind, netProfit);
         items.push({
@@ -529,9 +504,7 @@ export function getInvestmentStatisticItems(entry: InvestmentStatisticEntryLike)
           categoryCandidates: category.candidates,
           label: kind === "wealth"
             ? (netProfit > 0 ? "理财收益" : "理财亏损")
-            : kind === "deposit"
-              ? (netProfit > 0 ? "存款利息" : "存款手续费")
-              : (netProfit > 0 ? "债券收益" : "债券亏损"),
+            : (netProfit > 0 ? "存款利息" : "存款手续费"),
         });
       }
     }
