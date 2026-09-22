@@ -10,6 +10,7 @@ import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { isFixedAssetAccountLike } from "@/lib/fixed-asset";
 import { translate } from "@/lib/i18n-core";
+import { loadInvestmentProfitReport } from "@/lib/server/investment-profit-report";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
@@ -159,6 +160,10 @@ export type OverviewSummary = {
   investmentCost: number;
   investmentFloatingPnL: number;
   investmentFloatingPnLRate: number;
+  /** 全部历史浮动盈亏 + 全部历史已实现盈亏（含清仓仓位），口径与 invest 页「总收益」一致。 */
+  investmentTotalReturn: number;
+  /** 当前自然年投资收益，口径对齐 daily-pnl year 模式（investment-profit-report 按年汇总）。 */
+  investmentThisYearProfit: number;
   fixedAssetAccountList: FixedAssetRow[];
   fixedAssetCount: number;
   fixedAssetMarketValue: number;
@@ -618,6 +623,60 @@ export async function computeOverviewSummary(
   const investmentFloatingPnL = investmentAccountList.reduce((sum, row) => sum + (row.convertedFloatingPnL ?? 0), 0);
   const investmentFloatingPnLRate = investmentCost > 0 ? investmentFloatingPnL / investmentCost : 0;
 
+  // 当前总收益 = 浮动盈亏 + 全部历史已实现盈亏（含已清仓仓位）。
+  // 已实现部分按 invest 页「历史收益」同一口径复算：对每个账户
+  // realized = 卖出净额 + 分红 − (买入净额 − 当前持仓成本)，随汇率折算为本位币。
+  const investEntryAccountIdPairs = await prisma.txRecord.findMany({
+    where: {
+      OR: [
+        { accountId: { in: investmentOnlyAccounts.map((account) => account.id) } },
+        { toAccountId: { in: investmentOnlyAccounts.map((account) => account.id) } },
+      ],
+      deletedAt: null,
+      type: TransactionType.investment,
+    },
+    select: { accountId: true, toAccountId: true, amount: true, fundFee: true, fundSubtype: true, source: true },
+  });
+  const investAggByAccountId = new Map<string, { buy: number; sell: number; dividend: number; fee: number }>();
+  const investIdSet = new Set(investmentOnlyAccounts.map((account) => account.id));
+  for (const entry of investEntryAccountIdPairs) {
+    const amt = toNumber(entry.amount);
+    const fee = toNumber(entry.fundFee);
+    // invest 页口径：一笔记录对其 accountId 与 toAccountId 两侧（若都是投资账户）
+    // 各计入一次，金额不做符号翻转。这里逐侧复刻，保证两页总收益差值为 0。
+    const sides = [entry.accountId, entry.toAccountId].filter((id): id is string => !!id && investIdSet.has(id));
+    for (const accountId of new Set(sides)) {
+      const agg = investAggByAccountId.get(accountId) ?? { buy: 0, sell: 0, dividend: 0, fee: 0 };
+      agg.fee += fee;
+      if (amt < 0) {
+        agg.buy += Math.abs(amt) - fee;
+      } else if (entry.source === "dividend" || entry.fundSubtype === "dividend_cash") {
+        agg.dividend += amt;
+      } else if (amt > 0) {
+        agg.sell += amt - fee;
+      }
+      investAggByAccountId.set(accountId, agg);
+    }
+  }
+  const investmentRealizedPnL = investmentOnlyAccounts.reduce((sum, account) => {
+    // invest 页逐账户公式恒等：无现金流的账户 realized = -(0 - cost) = +cost。
+    // 缺省必须按零聚合参与计算（不能跳过），否则与 invest 页总收益出现差值。
+    const agg = investAggByAccountId.get(account.id) ?? { buy: 0, sell: 0, dividend: 0, fee: 0 };
+    const cost = investBalByAccountId.get(account.id)?.totalCost ?? 0;
+    return sum + fx.convertForTotal(agg.sell + agg.dividend - (agg.buy - cost), currencyOf(account));
+  }, 0);
+  const investmentTotalReturn = investmentFloatingPnL + investmentRealizedPnL;
+
+  // 今年收益：复用收益报表引擎按自然年汇总（与 daily-pnl year 模式同一计算）。
+  const thisYear = now.getUTCFullYear();
+  const yearReport = await loadInvestmentProfitReport(ctx, {
+    period: "month",
+    year: thisYear,
+    month: 1,
+    fundValuationMode: "daily_nav_delta",
+  }, language);
+  const investmentThisYearProfit = yearReport.totals.totalProfit;
+
   const fixedAssetAccountList: FixedAssetRow[] = fixedAssetAccounts
     .map((account) => {
       const detail = investBalByAccountId.get(account.id);
@@ -728,6 +787,8 @@ export async function computeOverviewSummary(
     investmentCost,
     investmentFloatingPnL,
     investmentFloatingPnLRate,
+    investmentTotalReturn,
+    investmentThisYearProfit,
     fixedAssetAccountList,
     fixedAssetCount: fixedAssetAccounts.length,
     fixedAssetMarketValue,
