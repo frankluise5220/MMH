@@ -1,0 +1,96 @@
+name: Sync FnDepot source
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      package_version:
+        description: "Optional package version. Leave blank to use package.json version."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  sync-fndepot:
+    name: Backfill FnDepot V2 source metadata (sha256/size/updated_at)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Resolve release version and tag
+        id: meta
+        env:
+          DISPATCH_VERSION: ${{ github.event.inputs.package_version }}
+        run: |
+          set -euo pipefail
+          if [ -n "${DISPATCH_VERSION}" ]; then
+            version="${DISPATCH_VERSION#v}"
+          else
+            version="$(node -p "require('./package.json').version")"
+          fi
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid package version: ${version}"
+            exit 1
+          fi
+          tag="v${version}"
+          if [ "$(git tag -l "$tag")" != "$tag" ]; then
+            echo "::error::Tag ${tag} not found in this repository."
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for release FPK assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          # fnos-release builds both arch FPKs for ~10-20 minutes after the
+          # release is published; give the assets up to 30 minutes to appear.
+          for attempt in $(seq 1 60); do
+            count="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/v${VERSION}" \
+              --jq '[.assets[] | select(.name | endswith(".fpk"))] | length')"
+            if [ "$count" -ge 2 ]; then
+              echo "Found ${count} FPK assets for v${VERSION}."
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              echo "::error::FPK assets for v${VERSION} incomplete after 30 minutes (found ${count})."
+              exit 1
+            fi
+            echo "Attempt ${attempt}/60: ${count}/2 FPK assets present, waiting..."
+            sleep 30
+          done
+
+      - name: Backfill sha256/size/updated_at into fnpack.json
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: node scripts/sync-fndepot-source.cjs --input deploy/fnos/repository/fnpack.json
+
+      - name: Verify release metadata consistency
+        run: npm run check:release-version
+
+      - name: Commit backfilled source index
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add deploy/fnos/repository/fnpack.json
+          if git diff --staged --quiet; then
+            echo "fnpack.json unchanged; nothing to commit."
+            exit 0
+          fi
+          git commit -m "chore(fnos): backfill FnDepot source metadata for ${{ steps.meta.outputs.tag }}"
+          git push origin HEAD:main
