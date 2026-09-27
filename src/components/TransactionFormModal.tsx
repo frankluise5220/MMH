@@ -177,7 +177,6 @@ function formatFxQuoteAmount(value: number, locale: string) {
   });
 }
 
-const COMMON_CURRENCY_OPTIONS = ["CNY", "USD", "JPY", "HKD", "EUR", "GBP"];
 const BASE_CASH_CURRENCY = "CNY";
 
 function isForeignCurrency(value: string | null | undefined) {
@@ -911,16 +910,6 @@ export function TransactionFormModal({
     const toValue = parseMoneyDraft(fxToAmount);
     return fromValue > 0 && toValue > 0 ? toValue / fromValue : null;
   }, [amount, fxToAmount]);
-  const fxCurrencyOptions = useMemo(() => {
-    const currencies = new Set(COMMON_CURRENCY_OPTIONS);
-    for (const option of displayTransferOptions) {
-      const currency = normalizeCurrencyLabel((option as AccountOption).currency);
-      if (currency) currencies.add(currency);
-    }
-    return Array.from(currencies)
-      .filter(isForeignCurrency)
-      .sort((a, b) => COMMON_CURRENCY_OPTIONS.indexOf(a) - COMMON_CURRENCY_OPTIONS.indexOf(b));
-  }, [displayTransferOptions]);
   const fxFromAccountOptions = useMemo(
     () => displayTransferOptions.filter((option) => {
       const account = option as AccountOption;
@@ -2755,15 +2744,14 @@ export function TransactionFormModal({
                           {fromAccountId ? fxFromCurrency : t("txForm.fxCurrencyAuto")}
                         </div>
                       ) : (
-                        <select
+                        <CurrencySmartSelect
                           value={fxFromCurrencyDraft}
-                          onChange={(event) => setFxFromCurrencyDraft(event.target.value)}
-                          className="form-input"
-                        >
-                          {fxCurrencyOptions.map((currency) => (
-                            <option key={`from-${currency}`} value={currency}>{currency}</option>
-                          ))}
-                        </select>
+                          onChange={setFxFromCurrencyDraft}
+                          labelSystem={(code) => t(`entityForm.currency.${code.toLowerCase()}`, { defaultValue: code })}
+                          excludeCodes={[BASE_CASH_CURRENCY]}
+                          showRequestButton={false}
+                          density="compact"
+                        />
                       )}
                     </div>
                     <div className="space-y-1">
@@ -2773,15 +2761,14 @@ export function TransactionFormModal({
                           {fxToCurrency}
                         </div>
                       ) : (
-                        <select
+                        <CurrencySmartSelect
                           value={fxToCurrencyDraft}
-                          onChange={(event) => setFxToCurrencyDraft(event.target.value)}
-                          className="form-input"
-                        >
-                          {fxCurrencyOptions.map((currency) => (
-                            <option key={`to-${currency}`} value={currency}>{currency}</option>
-                          ))}
-                        </select>
+                          onChange={setFxToCurrencyDraft}
+                          labelSystem={(code) => t(`entityForm.currency.${code.toLowerCase()}`, { defaultValue: code })}
+                          excludeCodes={[BASE_CASH_CURRENCY]}
+                          showRequestButton={false}
+                          density="compact"
+                        />
                       )}
                     </div>
                   </div>
