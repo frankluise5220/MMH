@@ -2,7 +2,7 @@ import { AccountKind, RegularInvestStatus } from "@prisma/client";
 
 import { formatDateUtc, toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
-import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
+import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import {
   applyDebtRowEntryMetrics,
   buildDebtRowsViewData,
@@ -75,7 +75,7 @@ export async function computeDebtDisplaySummary(
   };
 
   const debtAccountIds = debtAccounts.map((account) => account.id);
-  const cashDisplayBalanceByAccountId = await computeAccountDisplayBalances(
+  const cashDisplayBalanceByAccountId = await getMaintainedAccountBalances(
     debtAccounts.map((account) => ({
       id: account.id,
       kind: account.kind,

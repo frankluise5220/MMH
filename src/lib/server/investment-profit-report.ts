@@ -31,6 +31,10 @@ export type InvestmentProfitReportRow = {
   depositProfit: number;
   fixedAssetProfit: number;
   totalProfit: number;
+  // Dividend cash income is a cross-kind standalone view: dividends are already
+  // inside the kind profits and totalProfit above, so this counter never feeds
+  // them again.
+  dividendIncome: number;
   count: number;
 };
 
@@ -271,6 +275,7 @@ function createRow(bucket: Pick<Bucket, "key" | "label" | "subLabel">): Investme
     depositProfit: 0,
     fixedAssetProfit: 0,
     totalProfit: 0,
+    dividendIncome: 0,
     count: 0,
   };
 }
@@ -284,6 +289,15 @@ function addProfit(row: InvestmentProfitReportRow, kind: InvestmentProfitKind, p
   else row.fundProfit += profit;
   row.totalProfit += profit;
   row.count += count;
+}
+
+// Dividend cash income counter. Runs beside addProfit without touching kind
+// profits or totalProfit: fund dividend_cash income items and stock dividend
+// cash inflows are already counted in their respective valuation profits, this
+// only re-labels the cash-dividend slice for the standalone summary card.
+function addDividendIncome(row: InvestmentProfitReportRow, amount: number) {
+  if (amount === 0) return;
+  row.dividendIncome += amount;
 }
 
 function eventBucketKey(date: Date, period: InvestmentProfitPeriod) {
@@ -1770,6 +1784,29 @@ export async function loadInvestmentProfitReport(
     if (row) addProfit(row, event.kind, event.profit);
   }
 
+  // Dividend income events — a standalone cross-kind cash view, additive to
+  // the rows above and never feeding kind profits or totalProfit.
+  // 1) Fund dividend cash: statistic entries with subtype dividend_cash, the
+  //    same dividend branch of isFundCashReceiptSubtype the cash-receipt path
+  //    uses (redeem/switch_out stay excluded). Wealth dividend actions are not
+  //    part of this metric's stated scope (fund + stock only).
+  // 2) Stock dividend cash: StockTransactionAction.dividend rows, valued with
+  //    the shared stockCashAmount (net of fees) exactly like stockCashFlows.
+  for (const entry of fundStatisticEntries) {
+    if (entry.fundSubtype !== FundSubtype.dividend_cash) continue;
+    const amount = Math.abs(toNumber(entry.amount));
+    if (amount <= 0.005) continue;
+    const row = rows.get(eventBucketKey(entry.date, params.period));
+    if (row) addDividendIncome(row, amount);
+  }
+  for (const txRow of stockTxRows) {
+    if (txRow.action !== StockTransactionAction.dividend) continue;
+    const amount = stockCashAmount(txRow);
+    if (amount <= 0.005) continue;
+    const row = rows.get(eventBucketKey(txRow.tradeDate, params.period));
+    if (row) addDividendIncome(row, amount);
+  }
+
   const orderedRows = buckets.map((bucket) => rows.get(bucket.key)!).map((row) => ({
     ...row,
     fundProfit: roundMoney(row.fundProfit),
@@ -1778,6 +1815,7 @@ export async function loadInvestmentProfitReport(
     depositProfit: roundMoney(row.depositProfit),
     fixedAssetProfit: roundMoney(row.fixedAssetProfit),
     totalProfit: roundMoney(row.totalProfit),
+    dividendIncome: roundMoney(row.dividendIncome),
   }));
   const totals = orderedRows.reduce(
     (sum, row) => ({
@@ -1787,9 +1825,10 @@ export async function loadInvestmentProfitReport(
       depositProfit: roundMoney(sum.depositProfit + row.depositProfit),
       fixedAssetProfit: roundMoney(sum.fixedAssetProfit + row.fixedAssetProfit),
       totalProfit: roundMoney(sum.totalProfit + row.totalProfit),
+      dividendIncome: roundMoney(sum.dividendIncome + row.dividendIncome),
       count: sum.count + row.count,
     }),
-    { fundProfit: 0, stockProfit: 0, wealthProfit: 0, depositProfit: 0, fixedAssetProfit: 0, totalProfit: 0, count: 0 },
+    { fundProfit: 0, stockProfit: 0, wealthProfit: 0, depositProfit: 0, fixedAssetProfit: 0, totalProfit: 0, dividendIncome: 0, count: 0 },
   );
 
   return {

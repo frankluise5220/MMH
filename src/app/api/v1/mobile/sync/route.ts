@@ -8,7 +8,7 @@ import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
-import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
+import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { optionalPrismaFindMany } from "@/lib/server/optional-prisma-delegate";
 import { categoryOrderBy } from "@/lib/category-order";
@@ -520,7 +520,7 @@ export async function GET(req: Request) {
       fundNav.length > limit;
     const [investBalByAccountId, displayBalanceByAccountId, currentCreditCycles, insuranceDisplayBalanceByAccountId] = await Promise.all([
       computeInvestBalances(scope),
-      computeAccountDisplayBalances(
+      getMaintainedAccountBalances(
         accountBatch
           .filter((account) => !isPureInvestmentAccount(account))
           .map((account) => ({

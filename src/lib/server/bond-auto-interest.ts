@@ -16,6 +16,8 @@ import { ENTRY_ORIGIN_SCHEDULED_TASK, TRANSACTION_SOURCE_BOND } from "@/lib/tran
  * 每个应付息日生成**一对**记录（与存款的 autoAccruePeriodicInterest 同构）：
  *   1. 生息：type=income，记在债券账户（+利息）—— 利息在债券账户里生出来；
  *   2. 取息：type=transfer，债券账户 → 买入时的资金账户（−利息 / 资金账户 +利息）。
+ *      The payout transfer is an ordinary ledger entry: it does not write bond
+ *      business fields or a bond_transactions row, matching deposits.
  * 净效果：债券账户本金不变、资金账户收到利息；债券视图「累计已付利息」按
  * bond_transactions 的 dividend_cash 子行统计，所以生息那一侧同时落一条业务行。
  *
@@ -174,6 +176,8 @@ export async function autoAccrueBondPeriodicInterestForLot(params: {
         },
       });
       // ② 取息：把利息从债券账户转到资金账户（债券账户 −利息 / 资金账户 +利息）。
+      // This transfer is an ordinary ledger entry. Keep the plan linkage, but
+      // do not attach bond business fields, matching deposit interest payouts.
       const transfer = await tx.txRecord.create({
         data: {
           householdId: params.householdId,
@@ -188,7 +192,6 @@ export async function autoAccrueBondPeriodicInterestForLot(params: {
           source: INTEREST_SOURCE,
           entryOrigin: ENTRY_ORIGIN_SCHEDULED_TASK,
           note: transferNote,
-          fundProductType: "bond",
           regularInvestPlanId: params.planId ?? null,
         },
       });

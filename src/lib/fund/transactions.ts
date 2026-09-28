@@ -486,7 +486,11 @@ export async function upsertFundTransactionRefundCashFlow(
     },
   });
 
-  return cashEntry;
+  return {
+    record: cashEntry,
+    created: !existingCashEntry,
+    previous: existingCashEntry,
+  };
 }
 
 export function fundCashFlowDirectionForKind(kind: FundCashFlowKind): "outflow" | "inflow" | "internal" | "none" {

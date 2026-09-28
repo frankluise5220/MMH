@@ -11,7 +11,7 @@ import { prisma } from "@/lib/db/prisma";
 import { formatMoney } from "@/lib/format";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { isCreditCardMonthEndBillingDay } from "@/lib/credit/rules";
-import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
+import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { createDebtTransaction } from "@/lib/server/sidebar-actions/debt-actions";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "@/lib/server/account-label-fields";
@@ -188,7 +188,7 @@ export default async function LiabilitiesPage({
     return [...groupHeaders, ...groupedItems, ...ungroupedItems];
   }
 
-  const loanDisplayBalanceByAccountId = await computeAccountDisplayBalances(
+  const loanDisplayBalanceByAccountId = await getMaintainedAccountBalances(
     accounts
       .filter((account) => account.kind === AccountKind.loan || account.kind === AccountKind.settlement)
       .map((account) => ({

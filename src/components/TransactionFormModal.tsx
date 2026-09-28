@@ -409,6 +409,10 @@ export function TransactionFormModal({
     fromAccountId?: string;
     toAccountId?: string;
   } | null>(null);
+  // True while the advance settlement account came from the record being
+  // edited (or was picked explicitly by the user). The auto-default effect
+  // must not substitute the counterparty's first settlement account for it.
+  const advanceAccountPinnedRef = useRef(false);
   const [fromAccountIdEdited, setFromAccountIdEdited] = useState(false);
   const [categoryList, setCategoryList] = useState(expenseCategories);
   const [editCategoryFallback, setEditCategoryFallback] = useState<CategoryOption | null>(null);
@@ -537,6 +541,18 @@ export function TransactionFormModal({
       setLocalTransferAccountSSOpts((prev) => mergeSmartSelectOptions(transferAccountSSOptions, prev));
     }
   }, [transferAccountSSOptions]);
+
+  // Keep the flat account lists in step with fresh prop data (e.g. after an
+  // account rename on another view) so labels and counterparty bindings never
+  // go stale while the dialog stays mounted. Locally created accounts reappear
+  // in the next accounts fetch, so nothing is lost by the full resync.
+  useEffect(() => {
+    setAccountList(accounts);
+  }, [accounts]);
+
+  useEffect(() => {
+    setTransferAccountList(transferAccounts);
+  }, [transferAccounts]);
 
   useEffect(() => {
     setFixedAssetAccountList(fixedAssetAccounts ?? []);
@@ -834,16 +850,45 @@ export function TransactionFormModal({
       ?.find((item) => item.id === counterpartyInstitutionId)?.name ?? "";
     return objectName ? t("txForm.advanceAccountAutoCreate", { name: objectName }) : t("debtTx.placeholder.autoReuseOrCreate");
   }, [advanceAccountId, advanceAccountOptions, counterpartyInstitutionId, localNestedFieldData, nestedFieldData, t]);
-  // Auto-default to the counterparty's existing settlement account ("安盾的往来款");
-  // empty selection means "resolve or create on save". Keeps a picked account
-  // that still belongs to the selected counterparty (e.g. edit prefill).
+  // Auto-default to the counterparty's first existing settlement account;
+  // empty selection means "resolve or create on save". A pinned account (edit
+  // prefill or explicit user pick) is authoritative and is kept even while the
+  // options are still loading, so the record's own account is never silently
+  // swapped for the counterparty's first one.
   useEffect(() => {
     if (!open || txType !== "advance") return;
     setAdvanceAccountId((current) => {
+      if (current && advanceAccountPinnedRef.current) return current;
       if (current && advanceAccountOptions.some((option) => option.id === current)) return current;
       return advanceAccountOptions[0]?.id ?? "";
     });
   }, [open, txType, advanceAccountOptions]);
+  // Advance-edit self-heal: some legacy advance rows store a dangling
+  // counterparty ref from old/external data (e.g. `counterparty_<32hex>`) that
+  // no longer matches any Counterparty row. The counterparty dropdown only
+  // lists current Counterparty rows, so such a ref leaves both the counterparty
+  // and settlement account fields empty when editing. The settlement account's
+  // own counterpartyId binding is the source of truth for which counterparty
+  // the row belongs to, so re-derive from it (also normalizes legacy prefixed
+  // refs when the bare id still exists); saving then writes the canonical id
+  // back server-side and the row self-heals.
+  useEffect(() => {
+    if (!open || txType !== "advance" || !counterpartyInstitutionId) return;
+    const counterpartyOptions = (localNestedFieldData ?? nestedFieldData)?.counterpartyId ?? [];
+    const bareId = counterpartyInstitutionId.replace(/^(?:counterparty|institution)[_:]/, "");
+    const match = counterpartyOptions.find(
+      (item) => isSettlementCounterpartyType(item.type) && (item.id === counterpartyInstitutionId || item.id === bareId),
+    );
+    if (match) {
+      if (match.id !== counterpartyInstitutionId) setCounterpartyInstitutionId(match.id);
+      return;
+    }
+    const settlementOption = accountList.find(
+      (option) => option.id === advanceAccountId && !option.isHeader && !option.isGroup,
+    );
+    const derivedId = (settlementOption?.counterpartyId ?? "").trim();
+    if (derivedId) setCounterpartyInstitutionId(derivedId);
+  }, [open, txType, counterpartyInstitutionId, advanceAccountId, accountList, localNestedFieldData, nestedFieldData]);
   const displayFixedAssetAccountOptions = useMemo(() => {
     let base = mergeSmartSelectOptions(fixedAssetFiltered, fixedAssetAccountList);
     const selected = fixedAssetAccountList.find((option) => option.id === fixedAssetAccountId);
@@ -1084,6 +1129,18 @@ export function TransactionFormModal({
     if (operation === "debt" && !debtMode) return false;
 
     if (editEntryId) {
+      // Allow edits in place when the account pair is unchanged: scheduled
+      // deposit/bond interest transfers use dedicated accounts, but their
+      // amount/date/note can be corrected. Dedicated-window rules still block
+      // account-pair changes and new records; debt pairs keep their own window.
+      if (
+        !debtMode &&
+        editOriginalTransferAccounts &&
+        fromAccountId === editOriginalTransferAccounts.fromAccountId &&
+        toAccountId === editOriginalTransferAccounts.toAccountId
+      ) {
+        return false;
+      }
       if (operation === "debt" && debtMode && editEntryOriginalType !== "transfer") {
         return false;
       }
@@ -1233,6 +1290,7 @@ export function TransactionFormModal({
     setTxCurrency("");
     setCounterpartyInstitutionId("");
     setAdvanceAccountId("");
+    advanceAccountPinnedRef.current = false;
     setLocationId("");
     setLocalAmount("");
     setFxPostingV2(true);
@@ -1590,6 +1648,7 @@ export function TransactionFormModal({
       setNote(detail.note ?? "");
       setCounterpartyInstitutionId(detail.counterpartyInstitutionId ?? "");
       setAdvanceAccountId(detail.advanceAccountId ?? "");
+      advanceAccountPinnedRef.current = Boolean(detail.advanceAccountId);
       setEditCategoryFallback(detail.categoryId && detail.categoryName
         ? { id: detail.categoryId, label: detail.categoryName, parentId: null, type: detail.type === "income" ? "income" : "expense" }
         : null);
@@ -2302,7 +2361,7 @@ export function TransactionFormModal({
                           <SmartSelect
                             mode="single"
                             value={counterpartyInstitutionId}
-                            onChange={(id: string) => { setCounterpartyInstitutionId(id); setAdvanceAccountId(""); }}
+                            onChange={(id: string) => { advanceAccountPinnedRef.current = false; setCounterpartyInstitutionId(id); setAdvanceAccountId(""); }}
                             options={((localNestedFieldData ?? nestedFieldData)?.counterpartyId ?? [])
                               .filter((item) => isSettlementCounterpartyType(item.type))
                               .map((item) => ({ id: item.id, label: item.name }))}
@@ -2330,7 +2389,7 @@ export function TransactionFormModal({
                         <SmartSelect
                           mode="single"
                           value={advanceAccountId}
-                          onChange={(id: string) => setAdvanceAccountId(id)}
+                          onChange={(id: string) => { advanceAccountPinnedRef.current = Boolean(id); setAdvanceAccountId(id); }}
                           options={advanceAccountOptions.map((option) => ({ id: option.id, label: option.label, subLabel: option.subLabel }))}
                           placeholder={advanceAccountPlaceholder}
                           onCreateClick={() => { void openAccountCreate("advance"); }}
@@ -3152,6 +3211,8 @@ export function TransactionFormModal({
             ...(prev ?? nestedFieldData ?? {}),
             counterpartyId: [...((prev ?? nestedFieldData)?.counterpartyId ?? []), next],
           }));
+          advanceAccountPinnedRef.current = false;
+          setAdvanceAccountId("");
           setCounterpartyInstitutionId(id);
           setCounterpartyNestedOpen(false);
         }}

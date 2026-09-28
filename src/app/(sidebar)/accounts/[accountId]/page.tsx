@@ -7,7 +7,7 @@ import { prisma } from "@/lib/db/prisma";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { formatDateLocal, toNumber } from "@/lib/date-utils";
 import { buildAccountDisplayOption, formatAccountTableLabel } from "@/lib/account-display";
-import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
+import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getServerAccountLabelFields } from "@/lib/server/account-label-fields";
 import { getServerT } from "@/lib/server/i18n";
@@ -81,7 +81,7 @@ export default async function MobileAccountDetailPage({ params }: { params: Prom
         note: true,
       },
     }),
-    computeAccountDisplayBalances([account], hidFilter),
+    getMaintainedAccountBalances([account], hidFilter),
     account.kind === AccountKind.bank_credit
       ? prisma.creditCardCycle.findFirst({
           where: { accountId: account.id, isCurrentCycle: true },

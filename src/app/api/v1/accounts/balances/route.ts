@@ -15,7 +15,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { toNumber } from "@/lib/date-utils";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
-import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
+import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { computeDebtDisplaySummary } from "@/lib/server/debt-display-summary";
 import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
@@ -82,7 +82,7 @@ export async function GET(req: Request) {
         ? computeInvestBalances(ctx, investAccounts.map((account) => account.id))
         : Promise.resolve(new Map<string, { marketValue: number }>()),
       cashLikeAccounts.length > 0
-        ? computeAccountDisplayBalances(cashLikeAccounts, hidFilter)
+        ? getMaintainedAccountBalances(cashLikeAccounts, hidFilter)
         : Promise.resolve(new Map<string, number>()),
       creditIds.length > 0
         ? prisma.creditCardCycle.findMany({

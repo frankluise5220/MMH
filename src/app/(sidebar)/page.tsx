@@ -36,7 +36,7 @@ import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
 import { calculateWealthCashDividendProfit, recalcWealthPositions } from "@/lib/wealth-position";
-import { computeAccountDisplayBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import { getMaintainedAccountBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { computeDebtDisplaySummary } from "@/lib/server/debt-display-summary";
 import {
   applyDebtRowEntryMetrics,
@@ -72,6 +72,7 @@ import { compareCategoryOrder, sortCategorySources } from "@/components/category
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { insuranceCashValueDelta } from "@/lib/insurance/transaction";
 import { loadCommonData, loadSelectedAccount, loadEntriesForAccount, loadEntriesPageForAccount, loadInvestAccountData, loadInvestBalances, loadFixedAssetPositionDisplay, loadFixedAssetTransactionEntries } from "@/lib/server/cached-data";
+import { locateDetailEntryPage } from "@/lib/server/detail-page-query";
 import { loadBondShellData, loadBondLotOptions, bondSubtypeLabelKey } from "@/lib/server/bond-shell-data";
 import { computePositionDisplay } from "@/lib/invest-balance";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
@@ -749,13 +750,24 @@ export default async function Home({
     needsDetailEntries &&
     ((view === "detail" && !!accountId) || (isAllCashView && cashLedgerAccountIds.length > 0)) &&
     !hasDetailFilters &&
-    !focusEntryId &&
     !detailAll;
+  const focusedDetailLocation = usePagedDetailEntries && focusEntryId
+    ? await locateDetailEntryPage({
+        accountIds: isAllCashView ? cashLedgerAccountIds : [accountId],
+        householdId,
+        entryId: focusEntryId,
+        pageSize,
+        sortAccountId: isAllCashView ? undefined : accountId,
+      })
+    : null;
+  const pagedDetailPage = focusedDetailLocation && focusedDetailLocation.index >= 0
+    ? focusedDetailLocation.page
+    : detailPage;
   const pagedDetailData = usePagedDetailEntries
     ? await loadEntriesPageForAccount(
         isAllCashView ? cashLedgerAccountIds : accountId,
         JSON.stringify(hidFilter),
-        detailPage,
+        pagedDetailPage,
         pageSize,
       )
     : null;
@@ -1099,7 +1111,7 @@ export default async function Home({
   }));
 
   const [cashDisplayBalanceByAccountId, insuranceDisplayBalanceByAccountId, debtDisplaySummary, investBalances] = await Promise.all([
-    computeAccountDisplayBalances(
+    getMaintainedAccountBalances(
       accounts
         .filter((account) => !isPureInvestmentAccount(account) && account.kind !== AccountKind.insurance)
         .map((account) => ({
@@ -1395,6 +1407,35 @@ export default async function Home({
   const debtTransferAccountSSOptions = buildAccountSSOptions(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet" || a.kind === "bank_credit");
   // 不是所有往来对象都能当「往来款对象」—— 常用商户（merchant）排除
   const debtCounterpartyOptions = counterparties.filter((counterparty) => isSettlementCounterpartyType(counterparty.type));
+  // Reimbursement objects mirror the debt counterparties (settlement side), but only
+  // objects explicitly flagged as reimbursable expose the entry points.
+  const reimbursableCounterpartyOptions = debtCounterpartyOptions.filter((counterparty) => counterparty.isReimbursable === true);
+  const reimbursableCounterpartyIdSet = new Set(reimbursableCounterpartyOptions.map((counterparty) => counterparty.id));
+  // Advance accounts grouped by their counterparty, so the detail-entry button can
+  // resolve which reimbursement object a picked row belongs to.
+  const advanceAccountIdsByCounterparty = new Map<string, string[]>();
+  for (const account of accounts) {
+    if (!account.counterpartyId || !reimbursableCounterpartyIdSet.has(account.counterpartyId)) continue;
+    const bucket = advanceAccountIdsByCounterparty.get(account.counterpartyId);
+    if (bucket) bucket.push(account.id);
+    else advanceAccountIdsByCounterparty.set(account.counterpartyId, [account.id]);
+  }
+  const reimbursementObjectOptions = reimbursableCounterpartyOptions.map((counterparty) => ({
+    id: counterparty.id,
+    name: counterparty.shortName?.trim() || counterparty.name,
+    advanceAccountIds: advanceAccountIdsByCounterparty.get(counterparty.id) ?? [],
+  }));
+  // The detail-list action is gated by the selected rows' advance-account objects.
+  const reimbursementAllowedAdvanceAccountIds = accounts
+    .filter((account) => !!account.counterpartyId && reimbursableCounterpartyIdSet.has(account.counterpartyId))
+    .map((account) => account.id);
+  const reimbursementHubActions = {
+    getData: getReimbursementOverview,
+    create: createReimbursement,
+    reimburse: reimburseReimbursement,
+    delete: deleteReimbursement,
+    updateInvoice: updateReimbursementItemInvoice,
+  };
   const loanSourceInstitutions = institutions.filter((institution) => isInstitutionTypeOf(institution.type, LOAN_DIALOG_INSTITUTION_TYPE_VALUES));
   const debtObjectOptions: SSOpt[] = debtCounterpartyOptions.length > 0
     ? [
@@ -3461,6 +3502,7 @@ export default async function Home({
                 accountId: row.accountId,
                 institutionId: row.institutionId,
                 counterpartyId: row.counterpartyId,
+                counterpartyReimbursementEnabled: row.counterpartyReimbursementEnabled,
                 isConsumerLoan: row.isConsumerLoan,
                 loanType: row.loanType,
                 itemType: row.itemType,
@@ -3728,6 +3770,10 @@ export default async function Home({
                   currentBalance={selectedAccountRawBalanceValue}
                   focusEntryId={focusEntryId}
                   showGuideOverlay={guideParam === "daily-table"}
+                  reimbursementHubActions={reimbursementHubActions}
+                  reimbursementCashAccountOptions={cashAccountSSOptions.map((option) => ({ id: option.id, label: option.label }))}
+                  reimbursementObjectOptions={reimbursementObjectOptions}
+                  reimbursementAllowedAdvanceAccountIds={reimbursementAllowedAdvanceAccountIds}
                 />
               </div>
             </div>

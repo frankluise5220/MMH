@@ -128,6 +128,8 @@ export async function GET(req: NextRequest) {
         realizedProfit: true,
         debtInterestAmount: true,
         depositInterest: true,
+        bondInterest: true,
+        bondFee: true,
         fundFee: true,
         fundUnits: true,
         fundNav: true,

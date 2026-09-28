@@ -47,7 +47,7 @@ const RESTORE_FILE_PICKER_TYPES = (t: I18nT) => [
   {
     description: t("settings.database.backupFilePickerDesc"),
     accept: {
-      "application/json": [".mmhbackup"],
+      "application/json": [".mmh-backup", ".mmhbackup"],
     },
   },
 ];
@@ -75,7 +75,7 @@ type BackupSaveResult = {
   pickedLocation: boolean;
 };
 
-type SensitiveOperationCredentials = {
+type BackupOptions = {
   userPassword: string;
   backupPassphrase?: string;
   backupScope?: "system" | "household";
@@ -116,6 +116,7 @@ type AutoBackupConfig = {
   everyHours: number;
   scope: "system" | "household";
   path: string;
+  passphrase: string;
   keepCount: number;
 };
 
@@ -236,14 +237,14 @@ function formatInviteDateTime(value?: string) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-async function saveDataBackup(credentials: SensitiveOperationCredentials, t: I18nT): Promise<BackupSaveResult | null> {
+async function saveDataBackup(options: BackupOptions, t: I18nT): Promise<BackupSaveResult | null> {
   const res = await fetch("/api/v1/settings/backup?mode=export", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      userPassword: credentials.userPassword,
-      backupPassphrase: credentials.backupPassphrase ?? "",
-      backupScope: credentials.backupScope ?? "household",
+      userPassword: options.userPassword,
+      backupPassphrase: options.backupPassphrase ?? "",
+      backupScope: options.backupScope ?? "household",
     }),
   });
   if (!res.ok) {
@@ -253,13 +254,13 @@ async function saveDataBackup(credentials: SensitiveOperationCredentials, t: I18
   const blob = await res.blob();
   const fileName =
     filenameFromDisposition(res.headers.get("content-disposition")) ||
-    `mmh-backup-${Date.now()}.mmhbackup`;
+    `mmh-backup-${Date.now()}.mmh-backup`;
   const savePicker = (window as WindowWithFilePickers).showSaveFilePicker;
   if (savePicker) {
     try {
       const handle = await savePicker({
         suggestedName: fileName,
-        types: [{ description: t("settings.database.backupFileDesc"), accept: { "application/json": [".mmhbackup"] } }],
+        types: [{ description: t("settings.database.backupFileDesc"), accept: { "application/json": [".mmh-backup"] } }],
       });
       const writable = await handle.createWritable();
       await writable.write(blob);
@@ -568,17 +569,18 @@ export default function DatabaseSettingsPage() {
   const [backupError, setBackupError] = useState("");
   const [backupUserPassword, setBackupUserPassword] = useState("");
   const [backupPassphrase, setBackupPassphrase] = useState("");
-  const [backupCrossEnvironment, setBackupCrossEnvironment] = useState(false);
+  const [backupEncrypt, setBackupEncrypt] = useState(false);
   const [backupScope, setBackupScope] = useState<"system" | "household">("household");
   const [canBackupSystem, setCanBackupSystem] = useState(false);
-  const [backupPasswordDialogOpen, setBackupPasswordDialogOpen] = useState(false);
+  const [backupOptionsDialogOpen, setBackupOptionsDialogOpen] = useState(false);
 
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
   const [restoreUserPassword, setRestoreUserPassword] = useState("");
   const [restorePassphrase, setRestorePassphrase] = useState("");
   const [restoreBackupScope, setRestoreBackupScope] = useState<"system" | "household" | null>(null);
+  const [restoreBackupEncryption, setRestoreBackupEncryption] = useState<"passphrase" | "system" | "plain" | null>(null);
   const [restoreConfirmSystemOverwrite, setRestoreConfirmSystemOverwrite] = useState(false);
-  const [restorePasswordDialogOpen, setRestorePasswordDialogOpen] = useState(false);
+  const [restoreOptionsDialogOpen, setRestoreOptionsDialogOpen] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [restoreMessage, setRestoreMessage] = useState("");
   const [restoreError, setRestoreError] = useState("");
@@ -651,6 +653,7 @@ export default function DatabaseSettingsPage() {
           everyHours: config.everyHours,
           scope: systemSupported ? config.scope : "household",
           path: config.path,
+          passphrase: config.passphrase ?? "",
           keepCount: config.keepCount,
         });
       } else {
@@ -662,6 +665,7 @@ export default function DatabaseSettingsPage() {
           everyHours: 24,
           scope: systemSupported ? "system" : "household",
           path: "",
+          passphrase: "",
           keepCount: 7,
         });
       }
@@ -973,13 +977,13 @@ export default function DatabaseSettingsPage() {
     setOriginMessage(t("settings.database.whitelistUpdated"));
   }
 
-  function openBackupPasswordDialog() {
+  function openBackupOptionsDialog() {
     setBackupUserPassword("");
     setBackupPassphrase("");
-    setBackupCrossEnvironment(false);
+    setBackupEncrypt(false);
     setBackupScope("household");
     setBackupError("");
-    setBackupPasswordDialogOpen(true);
+    setBackupOptionsDialogOpen(true);
   }
 
   async function handleBackup() {
@@ -990,8 +994,8 @@ export default function DatabaseSettingsPage() {
     }
 
     const passphrase = backupPassphrase.trim();
-    if (backupCrossEnvironment && !passphrase) {
-      setBackupError(t("settings.database.passphraseRequired"));
+    if (backupEncrypt && !passphrase) {
+      setBackupError(t("settings.database.encryptionPassphraseRequired"));
       return;
     }
 
@@ -1001,14 +1005,14 @@ export default function DatabaseSettingsPage() {
     try {
       const result = await saveDataBackup({
         userPassword: password,
-        backupPassphrase: passphrase,
+        backupPassphrase: backupEncrypt ? passphrase : "",
         backupScope: canBackupSystem ? backupScope : "household",
       }, t);
       if (!result) return;
-      setBackupPasswordDialogOpen(false);
+      setBackupOptionsDialogOpen(false);
       setBackupUserPassword("");
       setBackupPassphrase("");
-      setBackupCrossEnvironment(false);
+      setBackupEncrypt(false);
       setBackupScope("household");
       setBackupMessage(
         result.pickedLocation
@@ -1041,13 +1045,25 @@ export default function DatabaseSettingsPage() {
     }
   }
 
-  async function inspectBackupScope(file: File): Promise<"system" | "household"> {
+  async function inspectBackupFile(file: File): Promise<{
+    scope: "system" | "household";
+    encryption: "passphrase" | "system" | "plain" | null;
+  }> {
     try {
       const text = await file.text();
-      const parsed = JSON.parse(text) as { scope?: { backupScope?: unknown } };
-      return parsed?.scope?.backupScope === "household" ? "household" : "system";
+      const parsed = JSON.parse(text) as {
+        scope?: { backupScope?: unknown };
+        encrypted?: unknown;
+        encryption?: { keySource?: unknown };
+      };
+      const encrypted = parsed?.encrypted === true;
+      const keySource = typeof parsed?.encryption?.keySource === "string" ? parsed.encryption.keySource : "";
+      return {
+        scope: parsed?.scope?.backupScope === "household" ? "household" : "system",
+        encryption: !encrypted ? "plain" : keySource === "passphrase" ? "passphrase" : "system",
+      };
     } catch {
-      return "system";
+      return { scope: "system", encryption: null };
     }
   }
 
@@ -1055,9 +1071,11 @@ export default function DatabaseSettingsPage() {
     setRestoreFile(nextFile);
     setRestoreUserPassword("");
     setRestorePassphrase("");
-    setRestoreBackupScope(nextFile ? await inspectBackupScope(nextFile) : null);
+    const inspection = nextFile ? await inspectBackupFile(nextFile) : null;
+    setRestoreBackupScope(inspection?.scope ?? null);
+    setRestoreBackupEncryption(inspection?.encryption ?? null);
     setRestoreConfirmSystemOverwrite(false);
-    setRestorePasswordDialogOpen(false);
+    setRestoreOptionsDialogOpen(false);
     setRestoreError("");
     setRestoreMessage("");
     setRestoreProgress(RESTORE_PROGRESS_IDLE);
@@ -1083,7 +1101,7 @@ export default function DatabaseSettingsPage() {
     }
   }
 
-  function openRestorePasswordDialog() {
+  function openRestoreOptionsDialog() {
     if (!restoreFile) {
       setRestoreError(t("settings.database.selectBackupFile"));
       return;
@@ -1093,7 +1111,7 @@ export default function DatabaseSettingsPage() {
     setRestoreConfirmSystemOverwrite(false);
     setRestoreError("");
     setRestoreProgress(RESTORE_PROGRESS_IDLE);
-    setRestorePasswordDialogOpen(true);
+    setRestoreOptionsDialogOpen(true);
   }
 
   async function handleRestore() {
@@ -1104,6 +1122,11 @@ export default function DatabaseSettingsPage() {
     const password = restoreUserPassword.trim();
     if (!password) {
       setRestoreError(t("settings.database.enterCurrentPassword"));
+      return;
+    }
+    const passphrase = restorePassphrase.trim();
+    if (restoreBackupEncryption === "passphrase" && !passphrase) {
+      setRestoreError(t("settings.database.encryptionPassphraseRequired"));
       return;
     }
     if (restoreBackupScope === "system" && !restoreConfirmSystemOverwrite) {
@@ -1123,14 +1146,16 @@ export default function DatabaseSettingsPage() {
       const form = new FormData();
       form.append("file", restoreFile);
       form.append("userPassword", password);
-      form.append("backupPassphrase", restorePassphrase.trim());
+      if (restoreBackupEncryption === "passphrase") {
+        form.append("backupPassphrase", passphrase);
+      }
       const data = await restoreDataBackup(form, setRestoreProgress, t);
       const counts = data.summary?.counts;
       const summaryText = counts
         ? t("settings.database.restoreSummary", { accounts: counts.accounts ?? 0, transactions: counts.transactions ?? 0, categories: counts.categories ?? 0, institutions: counts.institutions ?? 0 })
         : t("settings.database.restoreDone");
       setRestoreMessage(`${summaryText} ${t("settings.database.pageWillRefresh")}`);
-      setRestorePasswordDialogOpen(false);
+      setRestoreOptionsDialogOpen(false);
       setRestoreUserPassword("");
       setRestorePassphrase("");
       setTimeout(() => window.location.reload(), 1200);
@@ -1226,7 +1251,7 @@ export default function DatabaseSettingsPage() {
           <div className="grid shrink-0 grid-cols-2 gap-2">
             <button
               type="button"
-              onClick={openBackupPasswordDialog}
+              onClick={openBackupOptionsDialog}
               disabled={!canBackup}
               className="inline-flex h-9 w-32 items-center justify-center gap-2 rounded-md border border-blue-200 bg-white px-3 text-sm text-blue-600 hover:bg-blue-50 disabled:opacity-50"
             >
@@ -1254,7 +1279,7 @@ export default function DatabaseSettingsPage() {
             <input
               ref={restoreFileInputRef}
               type="file"
-              accept=".mmhbackup"
+              accept=".mmh-backup,.mmhbackup"
               className="hidden"
               onChange={(event) => {
                 void applyRestoreFile(event.target.files?.[0] ?? null);
@@ -1262,7 +1287,7 @@ export default function DatabaseSettingsPage() {
             />
             <button
               type="button"
-              onClick={openRestorePasswordDialog}
+              onClick={openRestoreOptionsDialog}
               disabled={!canRestore}
               className="inline-flex h-9 w-32 items-center justify-center gap-2 rounded-md bg-red-600 px-3 text-sm text-white hover:bg-red-700 disabled:opacity-50"
             >
@@ -1404,6 +1429,22 @@ export default function DatabaseSettingsPage() {
               ) : null}
             </div>
 
+            <div className="sm:col-span-2">
+              <div className="text-xs font-medium text-slate-600">{t("settings.autoBackup.passphrase")}</div>
+              <input
+                type="password"
+                value={autoBackup.passphrase}
+                onChange={(event) => {
+                  setAutoBackup((prev) => (prev ? { ...prev, passphrase: event.target.value } : prev));
+                  setAutoBackupError("");
+                }}
+                placeholder={t("settings.autoBackup.passphrasePlaceholder")}
+                autoComplete="off"
+                className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+              />
+              <div className="mt-1 text-[11px] text-slate-400">{t("settings.autoBackup.passphraseHint")}</div>
+            </div>
+
             <div>
               <div className="text-xs font-medium text-slate-600">{t("settings.autoBackup.path")}</div>
               <input
@@ -1494,12 +1535,12 @@ export default function DatabaseSettingsPage() {
         </div>
       </section>
 
-      {backupPasswordDialogOpen ? (
+      {backupOptionsDialogOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 px-4">
           <div className="w-full max-w-sm rounded-lg border border-slate-200 bg-white p-4 shadow-xl">
-            <div className="text-sm font-semibold text-slate-800">{t("settings.database.verifyUser")}</div>
+            <div className="text-sm font-semibold text-slate-800">{t("settings.database.backupOptionsTitle")}</div>
             <div className="mt-1 text-xs text-slate-500">
-              {t("settings.database.verifyUserDesc")}
+              {t("settings.database.backupOptionsDesc")}
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2">
               <button
@@ -1542,6 +1583,42 @@ export default function DatabaseSettingsPage() {
                 {t("settings.database.householdBackupNote")}
               </div>
             )}
+            <label className="mt-3 flex items-center gap-2 text-xs text-slate-600">
+              <input
+                type="checkbox"
+                checked={backupEncrypt}
+                onChange={(event) => {
+                  setBackupEncrypt(event.target.checked);
+                  if (!event.target.checked) setBackupPassphrase("");
+                  setBackupError("");
+                }}
+                className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-400"
+              />
+              {t("settings.database.backupEncrypt")}
+            </label>
+            {backupEncrypt ? (
+              <>
+                <input
+                  type="password"
+                  value={backupPassphrase}
+                  onChange={(event) => {
+                    setBackupPassphrase(event.target.value);
+                    setBackupError("");
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void handleBackup();
+                  }}
+                  placeholder={t("settings.database.backupPassphrasePlaceholder")}
+                  autoComplete="new-password"
+                  autoFocus
+                  className="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-700 outline-none focus:border-blue-400"
+                />
+                <div className="mt-1 text-[11px] text-slate-400">
+                  {t("settings.database.backupEncryptHint")}
+                </div>
+              </>
+            ) : null}
+            {backupError ? <div className="mt-2 text-xs text-red-600">{backupError}</div> : null}
             <input
               type="password"
               value={backupUserPassword}
@@ -1554,48 +1631,17 @@ export default function DatabaseSettingsPage() {
               }}
               placeholder={t("settings.database.currentPasswordPlaceholder")}
               autoComplete="current-password"
-              autoFocus
               className="mt-3 h-10 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-700 outline-none focus:border-blue-400"
             />
-            <label className="mt-3 flex items-center gap-2 text-xs text-slate-600">
-              <input
-                type="checkbox"
-                checked={backupCrossEnvironment}
-                onChange={(event) => {
-                  setBackupCrossEnvironment(event.target.checked);
-                  setBackupError("");
-                }}
-                className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-400"
-              />
-              {t("settings.database.crossEnvironment")}
-            </label>
-            <input
-              type="text"
-              value={backupPassphrase}
-              onChange={(event) => {
-                setBackupPassphrase(event.target.value);
-                setBackupError("");
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void handleBackup();
-              }}
-              placeholder={backupCrossEnvironment ? t("settings.database.passphraseRequiredPlaceholder") : t("settings.database.passphraseOptionalPlaceholder")}
-              autoComplete="off"
-              className="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-700 outline-none focus:border-blue-400"
-            />
-            <div className="mt-1 text-[11px] text-slate-400">
-              {t("settings.database.passphraseHint")}
-            </div>
-            {backupError ? <div className="mt-2 text-xs text-red-600">{backupError}</div> : null}
             <div className="mt-4 flex justify-end gap-2">
               <button
                 type="button"
                 onClick={() => {
                   if (backuping) return;
-                  setBackupPasswordDialogOpen(false);
+                  setBackupOptionsDialogOpen(false);
                   setBackupUserPassword("");
                   setBackupPassphrase("");
-                  setBackupCrossEnvironment(false);
+                  setBackupEncrypt(false);
                   setBackupScope("household");
                   setBackupError("");
                 }}
@@ -1607,7 +1653,7 @@ export default function DatabaseSettingsPage() {
               <button
                 type="button"
                 onClick={() => void handleBackup()}
-                disabled={backuping || backupUserPassword.trim().length === 0}
+                disabled={backuping || (backupEncrypt && backupPassphrase.trim().length === 0)}
                 className="h-9 rounded-md bg-blue-600 px-3 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
               >
                 {backuping ? t("settings.database.backuping") : t("settings.database.confirmBackup")}
@@ -1617,10 +1663,10 @@ export default function DatabaseSettingsPage() {
         </div>
       ) : null}
 
-      {restorePasswordDialogOpen ? (
+      {restoreOptionsDialogOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 px-4">
           <div className="w-full max-w-sm rounded-lg border border-slate-200 bg-white p-4 shadow-xl">
-            <div className="text-sm font-semibold text-slate-800">{t("settings.database.verifyUser")}</div>
+            <div className="text-sm font-semibold text-slate-800">{t("settings.database.restoreTitle")}</div>
             <div className="mt-1 text-xs text-slate-500">
               {t("settings.database.restoreDesc")}
             </div>
@@ -1629,6 +1675,19 @@ export default function DatabaseSettingsPage() {
                 ? t("settings.database.systemBackupDetected")
                 : t("settings.database.householdBackupDetected")}
             </div>
+            {restoreBackupEncryption === "passphrase" ? (
+              <div className="mt-2 rounded-md bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+                {t("settings.database.backupEncryptedDetected")}
+              </div>
+            ) : restoreBackupEncryption === "system" ? (
+              <div className="mt-2 rounded-md bg-emerald-50 px-2 py-1 text-[11px] text-emerald-700">
+                {t("settings.database.backupSystemKeyDetected")}
+              </div>
+            ) : restoreBackupEncryption === "plain" ? (
+              <div className="mt-2 rounded-md bg-emerald-50 px-2 py-1 text-[11px] text-emerald-700">
+                {t("settings.database.backupPlaintextDetected")}
+              </div>
+            ) : null}
             {restoreBackupScope === "system" ? (
               <label className="mt-2 flex items-center gap-2 text-xs text-red-700">
                 <input
@@ -1643,6 +1702,28 @@ export default function DatabaseSettingsPage() {
                 {t("settings.database.confirmSystemOverwrite")}
               </label>
             ) : null}
+            {restoreBackupEncryption === "passphrase" ? (
+              <>
+                <input
+                  type="password"
+                  value={restorePassphrase}
+                  onChange={(event) => {
+                    setRestorePassphrase(event.target.value);
+                    setRestoreError("");
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void handleRestore();
+                  }}
+                  placeholder={t("settings.database.passphrasePlaceholder")}
+                  autoComplete="off"
+                  autoFocus
+                  className="mt-3 h-10 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-700 outline-none focus:border-blue-400"
+                />
+                <div className="mt-1 text-[11px] text-slate-400">{t("settings.database.restorePassphraseHint")}</div>
+              </>
+            ) : null}
+            <RestoreProgressView progress={restoreProgress} />
+            {restoreError ? <div className="mt-2 text-xs text-red-600">{restoreError}</div> : null}
             <input
               type="password"
               value={restoreUserPassword}
@@ -1655,32 +1736,14 @@ export default function DatabaseSettingsPage() {
               }}
               placeholder={t("settings.database.currentPasswordPlaceholder")}
               autoComplete="current-password"
-              autoFocus
               className="mt-3 h-10 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-700 outline-none focus:border-blue-400"
             />
-            <input
-              type="password"
-              value={restorePassphrase}
-              onChange={(event) => {
-                setRestorePassphrase(event.target.value);
-                setRestoreError("");
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void handleRestore();
-              }}
-              placeholder={t("settings.database.passphrasePlaceholder")}
-              autoComplete="off"
-              className="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm text-slate-700 outline-none focus:border-blue-400"
-            />
-            <div className="mt-1 text-[11px] text-slate-400">{t("settings.database.restorePassphraseHint")}</div>
-            <RestoreProgressView progress={restoreProgress} />
-            {restoreError ? <div className="mt-2 text-xs text-red-600">{restoreError}</div> : null}
             <div className="mt-4 flex justify-end gap-2">
               <button
                 type="button"
                 onClick={() => {
                   if (restoring) return;
-                  setRestorePasswordDialogOpen(false);
+                  setRestoreOptionsDialogOpen(false);
                   setRestoreUserPassword("");
                   setRestorePassphrase("");
                   setRestoreConfirmSystemOverwrite(false);
@@ -1696,7 +1759,7 @@ export default function DatabaseSettingsPage() {
                 onClick={() => void handleRestore()}
                 disabled={
                   restoring ||
-                  restoreUserPassword.trim().length === 0 ||
+                  (restoreBackupEncryption === "passphrase" && restorePassphrase.trim().length === 0) ||
                   (restoreBackupScope === "system" && !restoreConfirmSystemOverwrite)
                 }
                 className="h-9 rounded-md bg-red-600 px-3 text-sm text-white hover:bg-red-700 disabled:opacity-50"

@@ -1,13 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { ArrowDownLeft, ArrowUpRight, Landmark, SlidersHorizontal } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Landmark, SlidersHorizontal, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTableSummaryRow } from "./AdvancedDataTable";
 import { DetailTablePaginationControls } from "./DetailTablePaginationControls";
 import { EntryRowActions, type EditPayload } from "./EntryRowActions";
 import { ResizableVerticalSplit } from "./ResizableVerticalSplit";
+import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { amountToneClass as amountClass } from "@/lib/client/colors";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 import { parseDepositInterestPayout } from "@/lib/deposit-interest-payout";
@@ -85,6 +86,7 @@ export function BondShell({
   const [entryPageSize, setEntryPageSize] = useState(40);
   const [entryRowCount, setEntryRowCount] = useState(0);
   const [entryAutoFit, setEntryAutoFit] = useState(true);
+  const [selectedEntryIds, setSelectedEntryIds] = useState<Set<string>>(new Set());
 
   const { t } = useI18n();
   const router = useRouter();
@@ -132,10 +134,27 @@ export function BondShell({
     const relatedIds = new Set(selectedLot.relatedEntryIds);
     return entries.filter((entry) => relatedIds.has(entry.id));
   }, [entries, selectedLot]);
+  const visibleEntryIds = useMemo(() => visibleEntries.map((entry) => entry.id), [visibleEntries]);
 
   useEffect(() => {
     setEntryPage(1);
   }, [selectedLotId]);
+
+  useEffect(() => {
+    setSelectedEntryIds(new Set());
+  }, [accountId]);
+
+  useEffect(() => {
+    setSelectedEntryIds((prev) => {
+      if (prev.size === 0) return prev;
+      const validIds = new Set(visibleEntryIds);
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (validIds.has(id)) next.add(id);
+      }
+      return next.size === prev.size ? prev : next;
+    });
+  }, [visibleEntryIds]);
 
   // 债券视图走服务端渲染 + router.refresh()，与存款视图同一刷新契约。
   useEffect(() => {
@@ -162,6 +181,24 @@ export function BondShell({
     setEntryAutoFit(true);
     setEntryPage(1);
   }, []);
+
+  async function batchDeleteEntries() {
+    if (selectedEntryIds.size === 0) return;
+    const entryIds = Array.from(selectedEntryIds);
+    const data = await deleteEntriesWithLinkedPrompt({
+      entryIds,
+      confirmMessage: t("basicDetailSelection.deleteConfirm", { count: entryIds.length, label: t("bondShell.entriesTitle") }),
+      t,
+    });
+    if (!data.ok) {
+      if (data.code === "DELETE_CANCELLED" || data.error === "已取消删除") return;
+      window.alert(data.error || t("stockPanel.error.batchDeleteFailed"));
+      return;
+    }
+    setSelectedEntryIds(new Set());
+    const refreshEntryIds = getDeleteRefreshEntryIds(data, entryIds);
+    dispatchFinanceDataChanged({ reason: "entry-batch-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
+  }
 
   const moneyCell = useCallback((value: number | null, tone?: string) => (
     value == null
@@ -340,6 +377,26 @@ export function BondShell({
         <section className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
           <div className="panel-header">
             <div className="flex min-w-0 items-center gap-1 text-left text-sm font-semibold text-slate-800">
+              {selectedEntryIds.size > 0 ? (
+                <div className="flex shrink-0 items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={batchDeleteEntries}
+                    className="flex h-6 w-6 items-center justify-center rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
+                    title={t("common.delete")}
+                    aria-label={t("common.delete")}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                  <span
+                    className="h-6 rounded border border-blue-200 bg-blue-50 px-2 text-xs font-medium leading-6 tabular-nums text-blue-700"
+                    title={t("fundShell.selectedTitle", { count: selectedEntryIds.size })}
+                  >
+                    {t("table.selectedCount", { count: selectedEntryIds.size })}
+                  </span>
+                  <span className="mx-1 h-4 w-px bg-slate-200" />
+                </div>
+              ) : null}
               <span className="flex h-6 shrink-0 items-center">{t("bondShell.entriesTitle")}</span>
               <span className="ml-2 shrink-0 text-xs font-normal text-slate-400">
                 {selectedLot
@@ -393,9 +450,15 @@ export function BondShell({
               columnVisibilityTriggerId={BOND_ENTRY_COLUMN_SETTINGS_EVENT}
               showColumnVisibilityButton={false}
               showFilters
+              selectable
+              selectOnRowClick
+              selectAllScope="renderedRows"
+              selectedKeys={selectedEntryIds}
+              onSelectionChange={setSelectedEntryIds}
               rowActions={(entry) => <EntryRowActions entryId={entry.id} edit={entry.edit} />}
               rowActionsWidth={84}
               rowActionsMinWidth={76}
+              rowClassName={(entry) => (selectedEntryIds.has(entry.id) ? "bg-blue-50/70 hover:bg-blue-50/70" : "hover:bg-blue-50/40")}
               pagination={{
                 page: safePage,
                 pageSize: entryPageSize,

@@ -304,6 +304,8 @@ type DetailAccountOption = {
   selectorLabel?: string | null;
   fullLabel?: string | null;
   title?: string | null;
+  hoverTitle?: string | null;
+  tableHoverTitle?: string | null;
   kind?: string | null;
   debtDirection?: string | null;
   numberMasked?: string | null;
@@ -314,8 +316,9 @@ type DetailAccountOption = {
 
 function shouldShowBusinessLinkStatus(entry: DetailEntry) {
   const hasBusinessLink = (entry.businessLinkCount ?? 0) > 0;
-  const hasInvestmentSide = entry.accountKind === "investment" || entry.toAccountKind === "investment";
-  return hasBusinessLink || entry.type === "investment" || (entry.type === "transfer" && hasInvestmentSide);
+  // Transfers are ordinary money movements (including deposit/bond interest payouts);
+  // touching an investment account does not make them linkable business entries.
+  return hasBusinessLink || entry.type === "investment";
 }
 
 function formatType(type: string, t: (key: string) => string) {
@@ -572,6 +575,7 @@ export function DetailViewClient({
   sortable = true,
   onDisplayRowsChange,
   onRowsFitChange,
+  batchExtraActions,
 }: {
   accountId: string;
   isInvestAccount: boolean;
@@ -605,10 +609,15 @@ export function DetailViewClient({
   sortable?: boolean;
   onDisplayRowsChange?: (rows: DetailEntry[]) => void;
   onRowsFitChange?: (rows: number) => void;
+  /** Extra batch actions rendered next to the built-in replace/delete buttons.
+   * Receives the exact rows the table is rendering, so selection keys always
+   * resolve against the same array the user sees. */
+  batchExtraActions?: (renderedEntries: DetailEntry[]) => ReactNode;
 }) {
   const { t } = useI18n();
   const storageKey = storageKeyProp ?? basicDetailTableStorageKey(accountId);
-  // 必须在子表 useEffect 读 localStorage 之前跑完：parent useLayoutEffect 早于 child useEffect。
+  // Run before the child table's useEffect reads localStorage: the parent
+  // useLayoutEffect runs before the child useEffect.
   useLayoutEffect(() => {
     migrateLegacyBasicDetailLayout(storageKey);
   }, [storageKey]);
@@ -730,7 +739,7 @@ export function DetailViewClient({
     if (!id || linkingIds.has(id)) return;
     const businessTransactionId = String(entry.businessTransactionId ?? "").trim();
     const businessType =
-      entry.fundProductType === "wealth" || entry.fundProductType === "bond"
+      entry.fundProductType === "wealth"
         ? "wealth"
         : entry.fundProductType === "deposit"
           ? "deposit"
@@ -1108,17 +1117,17 @@ export function DetailViewClient({
   useEffect(() => {
     setRefreshedEntries((current) => (current?.accountId === accountId ? current : null));
   }, [accountId]);
-  // refreshedEntries 是「事件 refetch 的本地快照」：一旦写入就遮蔽 initialEntries，
-  // 直到换账户/resetKey。但父级（BasicDetailPanel）翻页/定位日期后会把新页数据经
-  // initialEntries 传下来——引用更新（pageEntries 是 useMemo(localEntries)，只在
-  // localEntries 变化时换引用）即父级数据已换，此时必须让位，否则新页数据被旧
-  // 快照永久遮蔽（表现为「页码跳了、列表不更新」，2026-09-17 定位日期实测）。
+  // refreshedEntries is a local snapshot from an event-triggered refetch. Once set,
+  // it masks initialEntries until the account or resetKey changes. When the parent
+  // (BasicDetailPanel) changes page or locates a date, it passes new data through
+  // initialEntries. A changed pageEntries reference means the parent data changed,
+  // so the snapshot must yield; otherwise it permanently masks the new page.
   const lastInitialEntriesRef = useRef(initialEntries);
   useEffect(() => {
     if (lastInitialEntriesRef.current === initialEntries) return;
     lastInitialEntriesRef.current = initialEntries;
-    // 作废进行中的事件 refetch，否则开机 finance:changed 晚到的第 1 页
-    // 会在父级新页落地之后又写回 refreshedEntries，列表看起来没跳。
+    // Invalidate an in-flight event refetch; otherwise a late first-page
+    // finance:changed response can overwrite the parent's newly loaded page.
     detailRefreshSeqRef.current += 1;
     setRefreshedEntries(null);
   }, [initialEntries]);
@@ -1489,6 +1498,9 @@ export function DetailViewClient({
     <div className="flex min-w-0 items-center gap-2">
       {selectedCount > 0 ? <BasicDetailBatchReplaceButton fields={batchReplaceFields} accountOptions={accountOptions} categoryOptions={categoryOptions} tagOptions={tagOptions} categoryTypes={selectedCategoryTypes} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} /> : null}
       {selectedCount > 0 ? <BasicDetailBatchDeleteButton /> : null}
+      {/* The reimbursement entry works both ways: with rows picked it pre-seeds the
+          create form; without, it opens the account's reimbursement status hub. */}
+      {batchExtraActions?.(entries)}
       {selectedCount > 0 ? <span className="text-xs font-medium text-slate-600">{tf("detail.selectedCount", { count: selectedCount })}</span> : null}
       {selectedCount > 0 ? <span className={`text-xs font-medium ${inflowCls}`}>{t("detail.column.inflow")} {selectedFlowSummary.inflow}</span> : null}
       {selectedCount > 0 ? <span className={`text-xs font-medium ${outflowCls}`}>{t("detail.column.outflow")} {selectedFlowSummary.outflow}</span> : null}
@@ -1637,6 +1649,7 @@ export function DetailViewClient({
         <>
           <BasicDetailBatchReplaceButton fields={batchReplaceFields} accountOptions={accountOptions} categoryOptions={categoryOptions} tagOptions={tagOptions} categoryTypes={selectedCategoryTypes} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} />
           <BasicDetailBatchDeleteButton />
+          {batchExtraActions?.(entries)}
         </>
       ) : undefined}
       rowClassName={(entry) => entry.id === focusEntryId

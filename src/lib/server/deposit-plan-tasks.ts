@@ -255,17 +255,26 @@ function nextPayoutDateUtc(
   after: Date,
 ): Date {
   if (frequency.unit === "month") {
-    for (let k = frequency.interval; k < 12 * 80; k += frequency.interval) {
-      const date = depositPayoutAnchorUtc(startDate, frequency, k);
+    // periods is a count; depositPayoutAnchorUtc multiplies it by interval internally.
+    for (let periods = 1; periods * frequency.interval < 12 * 80; periods++) {
+      const date = depositPayoutAnchorUtc(startDate, frequency, periods);
       if (date.getTime() > after.getTime()) return date;
     }
-    // 极端兜底（超 80 年未命中）：从 after 起按月推进再提前一天。
-    return depositPayoutAnchorUtc(after, frequency, frequency.interval);
+    // Extreme fallback after 80 years without a match: advance one full period from after.
+    return depositPayoutAnchorUtc(after, frequency, 1);
   }
   const stepDays = frequency.unit === "week" ? 7 * frequency.interval : 365 * frequency.interval;
   const elapsed = Math.floor((after.getTime() - startDate.getTime()) / 86400000);
-  const steps = Math.max(frequency.interval, Math.ceil((elapsed + 1) / stepDays) * frequency.interval);
-  return depositPayoutAnchorUtc(startDate, frequency, steps);
+  // periods is a count, not a unit count; depositPayoutAnchorUtc multiplies it by interval.
+  let periods = Math.max(1, Math.ceil((elapsed + 1) / stepDays));
+  let date = depositPayoutAnchorUtc(startDate, frequency, periods);
+  // Match the monthly branch: the anchor must be strictly after `after`; an exact
+  // match advances to the next period.
+  while (date.getTime() <= after.getTime()) {
+    periods += 1;
+    date = depositPayoutAnchorUtc(startDate, frequency, periods);
+  }
+  return date;
 }
 
 export type DepositPlanExecutionResult = {

@@ -8,7 +8,7 @@ import { buildAccountDisplayOption, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE, normaliz
 import { prisma } from "@/lib/db/prisma";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
-import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
+import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { computeDebtDisplaySummary } from "@/lib/server/debt-display-summary";
 import { getCachedHouseholdScope } from "@/lib/server/household-scope";
 import { isDepositAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount } from "@/lib/account-kind-utils";
@@ -64,7 +64,7 @@ async function getSidebarData() {
   const insuranceAccountIds = accounts
     .filter((account) => account.kind === AccountKind.insurance)
     .map((account) => account.id);
-  const cashDisplayBalancePromise = computeAccountDisplayBalances(cashBalanceAccounts, hidFilter);
+  const cashDisplayBalancePromise = getMaintainedAccountBalances(cashBalanceAccounts, hidFilter);
   const currentCreditCyclesPromise: Promise<CurrentCreditCycle[]> = creditIds.length > 0
     ? prisma.creditCardCycle.findMany({
         where: { accountId: { in: creditIds }, isCurrentCycle: true },

@@ -99,6 +99,7 @@ for (const version of registeredVersions) {
 //    Each entry: [table, column, migrationDirName, migrationVersion]
 const releaseCriticalColumns = [
   ["User", "authVersion", "20260913_add_user_auth_version", "20260913_user_auth_version"],
+  ["Account", "balanceRecomputedAt", "20260922_add_account_balance_recomputed_at", "20260922_add_account_balance_recomputed_at"],
   ["transactions", "depositInterestPayoutFrequency", "20260911_add_deposit_interest_payout", "20260911_add_deposit_interest_payout"],
   ["deposit_transactions", "interestPayoutFrequency", "20260911_add_deposit_interest_payout", "20260911_add_deposit_interest_payout"],
   ["WealthProduct", "productType", "20260917_add_wealth_bond_fields", "20260917_wealth_bond_fields"],

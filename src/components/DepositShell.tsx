@@ -75,7 +75,7 @@ type DepositLot = {
   relatedEntryIds?: string[];
 };
 
-type DepositBatchField = "cashAccountId" | "amount" | "fundArrivalDate" | "remark";
+type DepositBatchField = "date" | "cashAccountId" | "amount" | "remark";
 
 type LotTab = "held" | "expired";
 
@@ -281,6 +281,7 @@ export function DepositShell({
   }, [entryAll, entryPageSize]);
 
   const batchFields = useMemo<BatchReplaceFieldConfig<DepositBatchField>[]>(() => [
+    { value: "date", label: t("detail.column.date"), kind: "date" },
     {
       value: "cashAccountId",
       label: t("txForm.cashAccount"),
@@ -288,18 +289,23 @@ export function DepositShell({
       options: [{ value: "", label: t("fundShell.selectAccount") }, ...cashAccounts.map((account) => ({ value: account.id, label: account.label }))],
     },
     { value: "amount", label: t("txForm.amount"), kind: "number", placeholder: t("fundShell.batch.amountPlaceholder") },
-    { value: "fundArrivalDate", label: t("fundShell.col.arrivalDate"), kind: "date", allowEmpty: true },
     { value: "remark", label: t("detail.column.remark"), kind: "text", placeholder: t("stockPanel.batchNotePlaceholder"), allowEmpty: true },
   ], [cashAccounts, t]);
 
   async function applyBatch(field: DepositBatchField, value: string) {
     const ids = Array.from(selectedEntryIds);
     if (ids.length === 0) throw new Error(t("stockPanel.error.selectRowsFirst"));
+    const entryById = new Map(visibleEntries.map((entry) => [entry.id, entry]));
     const updates = ids.map((id) => {
       if (field === "remark") return { id, remark: value };
-      if (field === "fundArrivalDate") return { id, fundArrivalDate: value };
       if (field === "cashAccountId") return { id, cashAccountId: value };
-      return { id, amount: value };
+      if (field === "amount") return { id, amount: value };
+      // date: the detail table renders income/expense rows as postedAt ?? date,
+      // so sync postedAt as well or the visible date would not change.
+      const rowType = entryById.get(id)?.edit?.type;
+      return rowType === "income" || rowType === "expense" || rowType === "transfer"
+        ? { id, date: value, postedAt: value }
+        : { id, date: value };
     });
     const res = await fetch("/api/v1/entries/batch-update", {
       method: "POST",

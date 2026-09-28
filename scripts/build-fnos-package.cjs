@@ -2120,6 +2120,45 @@ const MIGRATIONS = [
     },
   },
   {
+    version: "20260921_add_counterparty_reimbursable",
+    description: "Add Counterparty.isReimbursable for reimbursement entry points",
+    apply(db) {
+      if (tableExists(db, "Counterparty")) {
+        addColumnIfMissing(db, "Counterparty", "isReimbursable", "BOOLEAN NOT NULL DEFAULT 0");
+      }
+    },
+  },
+  {
+    version: "20260921_add_reimbursement_attachments_and_trip_legs",
+    description: "Add reimbursement attachments and travel-leg fields",
+    apply(db) {
+      if (tableExists(db, "reimbursements")) {
+        addColumnIfMissing(db, "reimbursements", "attachmentCount", "INTEGER");
+      }
+      if (tableExists(db, "reimbursement_items")) {
+        addColumnIfMissing(db, "reimbursement_items", "fromPlace", "TEXT");
+        addColumnIfMissing(db, "reimbursement_items", "toPlace", "TEXT");
+        addColumnIfMissing(db, "reimbursement_items", "vehicle", "TEXT");
+      }
+    },
+  },
+  {
+    version: "20260921_add_reimbursement_kind_and_travel",
+    description: "Add reimbursement kind, travel fields, expense items, and nullable source links",
+    apply(db) {
+      if (tableExists(db, "reimbursements")) {
+        addColumnIfMissing(db, "reimbursements", "kind", "TEXT NOT NULL DEFAULT 'advance'");
+        addColumnIfMissing(db, "reimbursements", "travelStartDate", "DATETIME");
+        addColumnIfMissing(db, "reimbursements", "travelEndDate", "DATETIME");
+        addColumnIfMissing(db, "reimbursements", "travelReason", "TEXT");
+      }
+      if (tableExists(db, "reimbursement_items")) {
+        addColumnIfMissing(db, "reimbursement_items", "expenseItem", "TEXT");
+        rebuildReimbursementItemsNullableSources(db);
+      }
+    },
+  },
+  {
     version: "20260903_add_fund_profile_trading_calendar",
     description: "Add fund-level NAV trading calendar to fund profiles",
     apply(db) {
@@ -2226,6 +2265,39 @@ const MIGRATIONS = [
       rebuildDebtAgreementToAccount(db);
     },
   },
+  {
+    version: "20260922_add_account_balance_recomputed_at",
+    description: "Track the as-of day of the incrementally maintained Account.balance cache",
+    apply(db) {
+      if (tableExists(db, "Account")) {
+        addColumnIfMissing(db, "Account", "balanceRecomputedAt", "DATETIME");
+      }
+    },
+  },
+  {
+    version: "20260922_add_sponsor_tip_intents",
+    description: "Record sponsor tip intents with user identity and contact email",
+    apply(db) {
+      db.exec([
+        \`CREATE TABLE IF NOT EXISTS "SponsorTipIntent" (
+          "id" TEXT NOT NULL PRIMARY KEY,
+          "userId" TEXT NOT NULL,
+          "householdId" TEXT,
+          "email" TEXT NOT NULL,
+          "amount" DECIMAL NOT NULL,
+          "status" TEXT NOT NULL DEFAULT 'pending',
+          "claimedAt" DATETIME,
+          "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT "SponsorTipIntent_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+          CONSTRAINT "SponsorTipIntent_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE SET NULL ON UPDATE CASCADE
+        )\`,
+        \`CREATE INDEX IF NOT EXISTS "SponsorTipIntent_userId_createdAt_idx" ON "SponsorTipIntent"("userId", "createdAt")\`,
+        \`CREATE INDEX IF NOT EXISTS "SponsorTipIntent_householdId_createdAt_idx" ON "SponsorTipIntent"("householdId", "createdAt")\`,
+        \`CREATE INDEX IF NOT EXISTS "SponsorTipIntent_email_idx" ON "SponsorTipIntent"("email")\`,
+      ].join(";"));
+    },
+  },
 ];
 
 function rebuildDebtAgreementToAccount(db) {
@@ -2264,6 +2336,77 @@ function rebuildDebtAgreementToAccount(db) {
   db.exec("DROP TABLE " + quoteIdent("DebtAgreement__account_fix"));
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS " + quoteIdent("DebtAgreement_accountId_key") + " ON " + quoteIdent("DebtAgreement") + "(" + quoteIdent("accountId") + ")");
   db.exec("CREATE INDEX IF NOT EXISTS " + quoteIdent("DebtAgreement_householdId_dueDate_idx") + " ON " + quoteIdent("DebtAgreement") + "(" + quoteIdent("householdId") + ", " + quoteIdent("dueDate") + ")");
+}
+
+function rebuildReimbursementItemsNullableSources(db) {
+  if (!tableExists(db, "reimbursement_items")) return;
+  const columns = db.prepare("PRAGMA table_info(" + quoteIdent("reimbursement_items") + ")").all();
+  const txRecordColumn = columns.find((column) => column.name === "txRecordId");
+  const advanceAccountColumn = columns.find((column) => column.name === "advanceAccountId");
+  if (!txRecordColumn || !advanceAccountColumn) return;
+  if (!txRecordColumn.notnull && !advanceAccountColumn.notnull) return;
+
+  const columnNames = columns.map((column) => column.name);
+  for (const indexName of [
+    "reimbursement_items_txRecordId_key",
+    "reimbursement_items_reimbursementId_idx",
+    "reimbursement_items_advanceAccountId_idx",
+  ]) {
+    db.exec("DROP INDEX IF EXISTS " + quoteIdent(indexName));
+  }
+  db.exec("DROP TABLE IF EXISTS " + quoteIdent("reimbursement_items__nullable_fix"));
+  db.exec("ALTER TABLE " + quoteIdent("reimbursement_items") + " RENAME TO " + quoteIdent("reimbursement_items__nullable_fix"));
+  db.exec(
+    "CREATE TABLE " + quoteIdent("reimbursement_items") + " (" +
+      '"id" TEXT NOT NULL PRIMARY KEY, ' +
+      '"reimbursementId" TEXT NOT NULL, ' +
+      '"txRecordId" TEXT, ' +
+      '"advanceAccountId" TEXT, ' +
+      '"amount" DECIMAL NOT NULL, ' +
+      '"entryDate" DATETIME NOT NULL, ' +
+      '"categoryName" TEXT, ' +
+      '"expenseItem" TEXT, ' +
+      '"fromPlace" TEXT, ' +
+      '"toPlace" TEXT, ' +
+      '"vehicle" TEXT, ' +
+      '"note" TEXT, ' +
+      '"invoiceCode" TEXT, ' +
+      '"invoiceNumber" TEXT, ' +
+      '"invoiceAmount" DECIMAL, ' +
+      '"createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, ' +
+      '"updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, ' +
+      'CONSTRAINT "reimbursement_items_reimbursementId_fkey" FOREIGN KEY ("reimbursementId") REFERENCES "reimbursements"("id") ON DELETE CASCADE ON UPDATE CASCADE' +
+    ")",
+  );
+
+  const targetColumns = [
+    "id",
+    "reimbursementId",
+    "txRecordId",
+    "advanceAccountId",
+    "amount",
+    "entryDate",
+    "categoryName",
+    "expenseItem",
+    "fromPlace",
+    "toPlace",
+    "vehicle",
+    "note",
+    "invoiceCode",
+    "invoiceNumber",
+    "invoiceAmount",
+    "createdAt",
+    "updatedAt",
+  ].filter((column) => columnNames.includes(column));
+  const quotedColumns = targetColumns.map((column) => quoteIdent(column)).join(", ");
+  db.exec(
+    "INSERT INTO " + quoteIdent("reimbursement_items") + " (" + quotedColumns + ") " +
+      "SELECT " + quotedColumns + " FROM " + quoteIdent("reimbursement_items__nullable_fix"),
+  );
+  db.exec("DROP TABLE " + quoteIdent("reimbursement_items__nullable_fix"));
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS " + quoteIdent("reimbursement_items_txRecordId_key") + " ON " + quoteIdent("reimbursement_items") + "(" + quoteIdent("txRecordId") + ")");
+  db.exec("CREATE INDEX IF NOT EXISTS " + quoteIdent("reimbursement_items_reimbursementId_idx") + " ON " + quoteIdent("reimbursement_items") + "(" + quoteIdent("reimbursementId") + ")");
+  db.exec("CREATE INDEX IF NOT EXISTS " + quoteIdent("reimbursement_items_advanceAccountId_idx") + " ON " + quoteIdent("reimbursement_items") + "(" + quoteIdent("advanceAccountId") + ")");
 }
 
 function databasePathFromUrl(value) {

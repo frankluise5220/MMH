@@ -4,7 +4,7 @@ import { AccountKind } from "@prisma/client";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
-import { computeAccountDisplayBalances } from "@/lib/server/account-balance";
+import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { computeDebtDisplaySummary } from "@/lib/server/debt-display-summary";
 import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
@@ -120,7 +120,7 @@ export async function GET(request: Request) {
 
     // For investment accounts, use market value instead of raw balance
     const investBalByAccountId = await computeInvestBalances({ hidFilter, householdId: hidFilter.householdId ?? "", user: null });
-    const cashDisplayBalanceByAccountId = await computeAccountDisplayBalances(
+    const cashDisplayBalanceByAccountId = await getMaintainedAccountBalances(
       accounts
         .filter((account) => !isPureInvestmentAccount(account))
         .map((account) => ({

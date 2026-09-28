@@ -67,7 +67,7 @@ function kindIcon(k: string) {
 
 type Group = { id: string; name: string; sortOrder: number };
 type Institution = { id: string; name: string; shortName?: string | null; type?: string };
-type Counterparty = { id: string; name: string; shortName?: string | null; type?: string | null };
+type Counterparty = { id: string; name: string; shortName?: string | null; type?: string | null; isReimbursable?: boolean | null };
 type Account = {
   id: string; name: string; kind: AccountKind; currency: string; isActive: boolean;
   note: string | null;
@@ -75,7 +75,7 @@ type Account = {
   institutionId: string | null; groupId: string | null;
   Institution: { id: string; name: string; shortName?: string | null } | null;
   AccountGroup: { id: string; name: string } | null;
-  Counterparty: { id: string; name: string; shortName?: string | null } | null;
+  Counterparty: { id: string; name: string; shortName?: string | null; isReimbursable?: boolean | null } | null;
   counterpartyId?: string | null;
   billingDay: number | null; repaymentDay: number | null; repaymentOffsetDays?: number | null;
   creditBillMode?: "separate" | "consolidated";
@@ -311,6 +311,7 @@ export default function SettingsAccountsPage() {
       groupId: a.groupId || "",
       institutionId: supportsInstitution ? a.institutionId || "" : "",
       counterpartyId: editKind === "settlement" ? a.counterpartyId || "" : "",
+      counterpartyReimbursable: (a.Counterparty?.isReimbursable === true).toString(),
       billingDay: a.billingDay?.toString() || "",
       repaymentDay: a.repaymentDay?.toString() || "",
       repaymentOffsetDays: a.repaymentOffsetDays == null ? "" : String(a.repaymentOffsetDays),
@@ -418,6 +419,13 @@ export default function SettingsAccountsPage() {
       : nextKind === "settlement"
         ? { ...editForm, institutionId: "", isConsumerLoan: "false" }
         : { ...editForm, counterpartyId: nextKind === "loan" ? (editForm.counterpartyId || previousAccount?.counterpartyId || "") : "" };
+    // Convert the reimbursable switch to a JSON boolean; only settlement-account
+    // edits submit it because the field belongs to the counterparty object.
+    if (nextKind === "settlement") {
+      payload.counterpartyReimbursable = editForm.counterpartyReimbursable === "true" ? "true" : "false";
+    } else {
+      delete payload.counterpartyReimbursable;
+    }
     // 账单日由下方「账单日历史」表按生效日期保存，不随本表单提交 —— 否则表单里的旧值
     // 会把刚加的规则覆盖回去。还款日 / 交易归属期 仍走本表单。
     if (previousAccount?.kind === "bank_credit" && nextKind === "bank_credit") {
@@ -426,7 +434,7 @@ export default function SettingsAccountsPage() {
     const res = await fetch("/api/v1/accounts", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: savedId, ...payload }),
+      body: JSON.stringify({ id: savedId, ...payload, counterpartyReimbursable: payload.counterpartyReimbursable === "true" ? true : payload.counterpartyReimbursable === "false" ? false : undefined }),
     });
     const data = await res.json().catch(() => null) as {
       ok?: boolean;
@@ -948,6 +956,27 @@ export default function SettingsAccountsPage() {
       },
     },
     {
+      // The reimbursable column is an object-level projection and is shown only
+      // for settlement accounts whose counterparty is included in the account data.
+      key: "reimbursable",
+      label: t("settings.counterparties.reimbursable"),
+      width: 84,
+      minWidth: 64,
+      sortValue: (a) => (normalizedAccountKind(a) === "settlement" ? (a.Counterparty?.isReimbursable === true ? 0 : 1) : 2),
+      filterText: (a) => (normalizedAccountKind(a) === "settlement"
+        ? (a.Counterparty?.isReimbursable === true ? t("settings.counterparties.reimbursableYes") : t("settings.counterparties.reimbursableNo"))
+        : null),
+      render: (a) => {
+        if (normalizedAccountKind(a) !== "settlement") return <span className="text-slate-300">-</span>;
+        const yes = a.Counterparty?.isReimbursable === true;
+        return (
+          <span className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium ${yes ? "bg-emerald-50 text-emerald-600" : "bg-slate-100 text-slate-400"}`}>
+            {yes ? t("settings.counterparties.reimbursableYes") : t("settings.counterparties.reimbursableNo")}
+          </span>
+        );
+      },
+    },
+    {
       key: "currency",
       label: t("settings.accounts.currency"),
       width: 76,
@@ -1284,6 +1313,11 @@ export default function SettingsAccountsPage() {
         const editKindOptions = kindEdit.options;
         const kindSelectDisabled = loanEditLocked || kindEdit.kindSelectDisabled;
         const settlementCounterparties = counterparties.filter((counterparty) => isSettlementCounterpartyType(counterparty.type));
+        // Resolve the current account's object even when it is outside the
+        // settlement-counterparty filter, such as a merchant fallback.
+        const editingCounterparty = settlementCounterparties.find((counterparty) => counterparty.id === (editForm.counterpartyId || editingAccount.counterpartyId))
+          ?? counterparties.find((counterparty) => counterparty.id === (editForm.counterpartyId || editingAccount.counterpartyId))
+          ?? null;
         const supportsInstitution = editKind !== "settlement" && allowedInstitutionTypesForEdit(editKind, editInvestProductType).length > 0;
         const filteredInstitutions = institutions.filter((institution) =>
           accountInstitutionTypeMatches(editKind, editInvestProductType, institution.type),
@@ -1382,7 +1416,12 @@ export default function SettingsAccountsPage() {
                     <label className="block text-xs text-slate-500 mb-1">{t("txForm.counterparty")}</label>
                     <select
                       value={editForm.counterpartyId || ""}
-                      onChange={(e) => setEditForm((f) => ({ ...f, counterpartyId: e.target.value }))}
+                      onChange={(e) => setEditForm((f) => {
+                        // When switching objects, follow the new object's value;
+                        // never carry the previous object's object-level value over.
+                        const nextCp = counterparties.find((counterparty) => counterparty.id === e.target.value);
+                        return { ...f, counterpartyId: e.target.value, counterpartyReimbursable: (nextCp?.isReimbursable === true).toString() };
+                      })}
                       disabled={loanEditLocked}
                       className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none disabled:bg-slate-50 disabled:text-slate-500"
                     >
@@ -1391,6 +1430,25 @@ export default function SettingsAccountsPage() {
                         <option key={counterparty.id} value={counterparty.id}>{counterparty.shortName?.trim() || counterparty.name}</option>
                       ))}
                     </select>
+                  </div>
+                )}
+                {editKind === "settlement" && (
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">{t("institutionEdit.reimbursable")}</label>
+                    <select
+                      value={editForm.counterpartyReimbursable || "false"}
+                      onChange={(e) => setEditForm((f) => ({ ...f, counterpartyReimbursable: e.target.value }))}
+                      disabled={loanEditLocked || !editingCounterparty}
+                      className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none disabled:bg-slate-50 disabled:text-slate-500"
+                    >
+                      <option value="true">{t("settings.counterparties.reimbursableYes")}</option>
+                      <option value="false">{t("settings.counterparties.reimbursableNo")}</option>
+                    </select>
+                    {editingCounterparty ? (
+                      <p className="mt-1 text-[11px] leading-4 text-slate-400">
+                        {tf("settings.accounts.reimbursableObjectHint", { name: editingCounterparty.shortName?.trim() || editingCounterparty.name })} {t("institutionEdit.reimbursableHint")}
+                      </p>
+                    ) : null}
                   </div>
                 )}
                 <div>

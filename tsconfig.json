@@ -33,6 +33,7 @@
   ],
   "exclude": [
     "node_modules",
+    "relay",
     "scripts",
     "mmh-doc-edit",
     "check-*.ts",

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { sendEmailByResend } from "@/lib/mail/resend";
+import { sendEmailByResend, hasAnyResendConfig } from "@/lib/mail/resend";
 import { sendEmail, hasAnySmtpConfig } from "@/lib/mail/smtp";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 
@@ -27,6 +27,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "MISSING_RECIPIENT_EMAIL", error: "缺少收件邮箱" }, { status: 400 });
   }
 
+  const sendErrors: string[] = [];
+
   if (await hasAnySmtpConfig()) {
     const result = await sendEmail({
       to,
@@ -34,15 +36,23 @@ export async function POST(req: NextRequest) {
       text: "如果你收到这封邮件，说明 SMTP 发件配置正确。",
       html: "<div><h2>MMH 邮件测试</h2><p>如果你收到这封邮件，说明 SMTP 发件配置正确。</p></div>",
     });
-    return NextResponse.json(result);
+    if (result.ok) return NextResponse.json(result);
+    sendErrors.push(result.error);
   }
 
-  // Try Resend
-  const result = await sendEmailByResend({
-    to,
-    subject: "MMH 邮件测试",
-    text: "如果你收到这封邮件，说明 Resend 发件配置正确。",
-    html: "<div><h2>MMH 邮件测试</h2><p>如果你收到这封邮件，说明 Resend 发件配置正确。</p></div>",
+  if (await hasAnyResendConfig()) {
+    const result = await sendEmailByResend({
+      to,
+      subject: "MMH 邮件测试",
+      text: "如果你收到这封邮件，说明 Resend 发件配置正确。",
+      html: "<div><h2>MMH 邮件测试</h2><p>如果你收到这封邮件，说明 Resend 发件配置正确。</p></div>",
+    });
+    if (result.ok) return NextResponse.json(result);
+    sendErrors.push(result.error);
+  }
+
+  return NextResponse.json({
+    ok: false,
+    error: sendErrors.join("; ") || "未配置可用的邮件发送服务。",
   });
-  return NextResponse.json(result);
 }

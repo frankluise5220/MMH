@@ -93,6 +93,7 @@ const SYSTEM_CATEGORY_LABEL_KEYS: Record<string, string> = {
   "婚丧嫁娶": "systemCategory.weddingsFunerals",
   "火车高铁": "systemCategory.trainsHighSpeedRail",
   "机票": "systemCategory.flights",
+  "基金分红": "systemCategory.fundDividend",
   "基金定投": "systemCategory.fundRegularInvest",
   "基金亏损": "systemCategory.fundLoss",
   "基金买入": "systemCategory.fundBuy",

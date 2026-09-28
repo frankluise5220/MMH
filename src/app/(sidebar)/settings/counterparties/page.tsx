@@ -21,6 +21,9 @@ async function updateCounterpartyRow(formData: FormData) {
   const name = String(formData.get("name") ?? "").trim();
   const shortName = String(formData.get("shortName") ?? "").trim();
   const type = String(formData.get("type") ?? "").trim();
+  // The switch is true only for form values "1" or "true". If absent, leave
+  // the object unchanged because institutions and family members share this action.
+  const reimbursableRaw = formData.get("isReimbursable");
   if (!counterpartyId || !name) return { ok: false, error: "Missing required fields" };
 
   const safeType = ["person", "organization", "merchant"].includes(type) ? type : "person";
@@ -37,7 +40,14 @@ async function updateCounterpartyRow(formData: FormData) {
       });
       const updated = await tx.counterparty.update({
         where: { id: counterpartyId },
-        data: { name, shortName: shortName || null, type: safeType },
+        data: {
+          name,
+          shortName: shortName || null,
+          type: safeType,
+          ...(reimbursableRaw === null
+            ? {}
+            : { isReimbursable: reimbursableRaw === "1" || reimbursableRaw === "true" }),
+        },
       });
       await ensureInstitutionForCounterparty(tx, updated);
     });
@@ -64,7 +74,7 @@ export default async function SettingsCounterpartiesPage() {
 
   return (
     <SettingsInstitutionsClient
-      institutions={withAccountCounts(counterparties, accountCounts).map(i => ({ id: i.id, name: i.name, shortName: i.shortName, type: i.type, accountCount: i.accountCount }))}
+      institutions={withAccountCounts(counterparties, accountCounts).map(i => ({ id: i.id, name: i.name, shortName: i.shortName, type: i.type, isReimbursable: i.isReimbursable, accountCount: i.accountCount }))}
       updateAction={updateCounterpartyRow}
       mode="counterparty"
     />

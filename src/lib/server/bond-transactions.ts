@@ -6,7 +6,11 @@ import { toNumber } from "@/lib/date-utils";
 import { resolveCategorySnapshot } from "@/lib/default-categories";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
 import { recalcWealthPositions } from "@/lib/wealth-position";
-import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import {
+  applyEntryChangesToAccountBalances,
+  BALANCE_ENTRY_SELECT,
+  type EntryBalanceChange,
+} from "@/lib/server/account-balance";
 import { ensureBondPlansForLot } from "@/lib/server/bond-plan-tasks";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { attachEntryTags } from "@/lib/server/entry-tags";
@@ -411,9 +415,7 @@ export async function createBondEntry(input: BondEntryInput): Promise<{
   for (const id of touchedAccountIds) {
     await recalcWealthPositions(id).catch(() => {});
   }
-  for (const id of touchedAccountIds) {
-    await recalcAndSaveAccountBalance(id).catch(() => {});
-  }
+  await applyEntryChangesToAccountBalances([{ entryId: result.cashEntryId }]).catch(() => {});
   await invalidateCreditCardCycleCacheForAccountIds(Array.from(touchedAccountIds)).catch(() => {});
   // 存单 = 计划行真源：买入/付息/赎回/核销后刷新该存单的到期 + 付息两条计划行。
   // 赎回/核销一律走 ensure：部分赎回后本金仍 > 0，计划行必须留在 active 且金额
@@ -449,6 +451,7 @@ export async function editBondEntry(input: BondEntryInput): Promise<{
   if (!entryId && !businessId) throw new Error("缺少 id");
 
   const touchedAccountIds = new Set<string>();
+  let previousCashEntry: EntryBalanceChange["previous"] = null;
   const result = await prisma.$transaction(async (tx) => {
     const existing = businessId
       ? await tx.bondTransaction.findFirst({ where: { id: businessId, householdId: input.householdId } })
@@ -501,6 +504,10 @@ export async function editBondEntry(input: BondEntryInput): Promise<{
 
     const cashEntryId = existing.cashEntryId;
     if (cashEntryId) {
+      previousCashEntry = await tx.txRecord.findUnique({
+        where: { id: cashEntryId },
+        select: BALANCE_ENTRY_SELECT,
+      });
       await tx.txRecord.update({
         where: { id: cashEntryId },
         data: {
@@ -593,9 +600,9 @@ export async function editBondEntry(input: BondEntryInput): Promise<{
   for (const id of touchedAccountIds) {
     await recalcWealthPositions(id).catch(() => {});
   }
-  for (const id of touchedAccountIds) {
-    await recalcAndSaveAccountBalance(id).catch(() => {});
-  }
+  await applyEntryChangesToAccountBalances([
+    { entryId: result.cashEntryId, previous: previousCashEntry },
+  ]).catch(() => {});
   await invalidateCreditCardCycleCacheForAccountIds(Array.from(touchedAccountIds)).catch(() => {});
   if (result.lotId) {
     await ensureBondPlansForLot({ householdId: input.householdId, lotId: result.lotId }).catch(() => {});

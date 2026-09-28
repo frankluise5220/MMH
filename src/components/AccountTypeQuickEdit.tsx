@@ -359,7 +359,7 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
   return (
     <>
       {showTrigger ? (
-        <span className="page-title cursor-pointer" onDoubleClick={() => { void openEditor(); }} title={t("accountTypeQuickEdit.doubleClickTitle")}>{accountLabel || account.name}</span>
+        <span className="page-title cursor-pointer" onDoubleClick={() => { void openEditor(); }} title={accountLabel || account.name}>{accountLabel || account.name}</span>
       ) : null}
       {open && typeof document !== "undefined" ? createPortal(
         <div className="fixed inset-0 z-[1000] flex items-center justify-center overflow-y-auto bg-slate-950/30 p-4" onMouseDown={() => !saving && setOpen(false)}>

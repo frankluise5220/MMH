@@ -31,42 +31,38 @@ function buildPasswordResetContent(params: PasswordResetEmailParams) {
 
 /** Checks whether any email sending service is available (auto-enable condition for password recovery) */
 export async function hasEmailService(householdId?: string | null): Promise<boolean> {
-  // Resend is the preferred channel
-  if (await hasAnyResendConfig()) return true;
-
-  // SMTP (env + EmailAccount + UserSettings) is the fallback
-  if (await hasAnySmtpConfig(householdId)) return true;
-
-  return false;
+  const [hasResend, hasSmtp] = await Promise.all([
+    hasAnyResendConfig(),
+    hasAnySmtpConfig(householdId),
+  ]);
+  return hasResend || hasSmtp;
 }
 
 export async function sendPasswordResetEmail(params: PasswordResetEmailParams): Promise<SendEmailResult> {
-  // Check whether any email service is available
-  if (!await hasEmailService(params.householdId)) {
+  const [hasResend, hasSmtp] = await Promise.all([
+    hasAnyResendConfig(),
+    hasAnySmtpConfig(params.householdId),
+  ]);
+  if (!hasResend && !hasSmtp) {
     return { ok: false, error: "未配置邮件服务，无法发送密码找回邮件。请在设置中配置 SMTP 或 Resend。" };
   }
 
   const content = buildPasswordResetContent(params);
 
-  // Prefer Resend
-  if (await hasAnyResendConfig()) {
-    const resendResult = await sendEmailByResend({ to: params.to, ...content });
-    if (resendResult.ok) {
-      return resendResult;
+  // Prefer the user's SMTP account, then fall back to Resend.
+  if (hasSmtp) {
+    const smtpResult = await sendEmail({ to: params.to, householdId: params.householdId, ...content });
+    if (smtpResult.ok) return smtpResult;
+    if (hasResend) {
+      const resendResult = await sendEmailByResend({ to: params.to, ...content });
+      if (resendResult.ok) return resendResult;
+      return { ok: false, error: `${smtpResult.error ?? "SMTP 发信失败"}；Resend 备用通道也发送失败：${resendResult.error ?? "未知错误"}` };
     }
-    if (await hasAnySmtpConfig(params.householdId)) {
-      const smtpResult = await sendEmail({ to: params.to, householdId: params.householdId, ...content });
-      if (smtpResult.ok) {
-        return smtpResult;
-      }
-      return { ok: false, error: `${resendResult.error ?? "Resend 发信失败"}；SMTP 备用通道也发送失败：${smtpResult.error ?? "未知错误"}` };
-    }
-    return resendResult;
+    return smtpResult;
   }
 
-  // SMTP fallback
-  if (await hasAnySmtpConfig(params.householdId)) {
-    return sendEmail({ to: params.to, householdId: params.householdId, ...content });
+  if (hasResend) {
+    return sendEmailByResend({ to: params.to, ...content });
   }
 
   return { ok: false, error: "未配置邮件服务，无法发送密码找回邮件。请在设置中配置 Resend 或 SMTP。" };

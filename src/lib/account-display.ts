@@ -37,6 +37,11 @@ export const ACCOUNT_LABEL_FIELD_KEYS = [
 export type AccountLabelField = (typeof ACCOUNT_LABEL_FIELD_KEYS)[number];
 
 export const ACCOUNT_LABEL_SEPARATOR = "·";
+/**
+ * Legacy cookie value emitted before empty selections were migrated to the
+ * default fields. It is kept only so older browsers get the default format
+ * instead of a name-only label.
+ */
 export const EMPTY_ACCOUNT_LABEL_FIELDS_VALUE = "__empty";
 
 /**
@@ -93,14 +98,20 @@ export function normalizeAccountLabelFields(
 }
 
 export function serializeAccountLabelFields(fields: AccountLabelField[]) {
-  const normalized = normalizeAccountLabelFields(fields, []);
-  return normalized.length === 0 ? EMPTY_ACCOUNT_LABEL_FIELDS_VALUE : normalized.join(",");
+  const normalized = normalizeAccountLabelFields(fields);
+  // An empty selection means "not configured", not "hide every field".
+  // Name-only labels are represented explicitly by the `name` field.
+  return normalized.length === 0
+    ? DEFAULT_ACCOUNT_LABEL_FIELDS.join(",")
+    : normalized.join(",");
 }
 
 export function parseAccountLabelFields(value: unknown): AccountLabelField[] {
   if (typeof value !== "string" || !value.trim()) return [...DEFAULT_ACCOUNT_LABEL_FIELDS];
-  if (value.trim() === EMPTY_ACCOUNT_LABEL_FIELDS_VALUE) return [];
-  return normalizeAccountLabelFields(value);
+  const raw = value.trim();
+  if (raw === EMPTY_ACCOUNT_LABEL_FIELDS_VALUE) return [...DEFAULT_ACCOUNT_LABEL_FIELDS];
+  const parsed = normalizeAccountLabelFields(raw, []);
+  return parsed.length > 0 ? parsed : [...DEFAULT_ACCOUNT_LABEL_FIELDS];
 }
 
 export type AccountLabelRenderInput = {

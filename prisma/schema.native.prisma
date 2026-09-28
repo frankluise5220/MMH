@@ -24,6 +24,10 @@ model Account {
   id                                                         String                      @id @default(cuid())
   name                                                       String
   balance                                                    Decimal                     @default(0)
+  // As-of day for which `balance` has been maintained. Null means the cached
+  // value predates incremental balance maintenance and will be adopted as the
+  // baseline on the next background maintenance pass.
+  balanceRecomputedAt                                        DateTime?
   kind                                                       AccountKind                 @default(other)
   debtDirection                                              DebtDirection?
   currency                                                   String                      @default("CNY")
@@ -1151,6 +1155,7 @@ model Household {
   StockHolding              StockHolding[]
   StatementRecognitionRule  StatementRecognitionRule[]
   Reimbursement             Reimbursement[]
+  SponsorTipIntent          SponsorTipIntent[]
   RegularInvestPlan         RegularInvestPlan[]
   CreditCardInstallmentPlan CreditCardInstallmentPlan[]
   FxConversion              FxConversion[]
@@ -1184,6 +1189,8 @@ model Counterparty {
   name                String
   shortName           String?
   type                String       @default("organization")
+  /// Whether this counterparty may generate reimbursement forms. When false, its accounts hide the reimbursement entry points.
+  isReimbursable      Boolean      @default(false)
   householdId         String
   sourceInstitutionId String?
   createdAt           DateTime     @default(now())
@@ -1507,9 +1514,28 @@ model User {
   Account            Account[]
   Household          Household?           @relation(fields: [householdId], references: [id])
   InsuranceProduct   InsuranceProduct[]   @relation("InsuranceProduct_insuredUserIdToUser")
+  SponsorTipIntent   SponsorTipIntent[]
   UserSettings       UserSettings?
   PasswordResetToken PasswordResetToken[]
 
+  @@index([email])
+}
+
+model SponsorTipIntent {
+  id          String    @id @default(cuid())
+  userId      String
+  householdId String?
+  email       String
+  amount      Decimal
+  status      String    @default("pending")
+  claimedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @default(now()) @updatedAt
+  User        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  Household   Household? @relation(fields: [householdId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([householdId, createdAt])
   @@index([email])
 }
 
@@ -1619,7 +1645,12 @@ model Reimbursement {
   counterpartyId   String
   counterpartyName String
   status           ReimbursementStatus @default(pending)
+  kind             ReimbursementKind   @default(advance)
   totalAmount      Decimal
+  travelStartDate  DateTime?
+  travelEndDate    DateTime?
+  travelReason     String?
+  attachmentCount  Int?
   reimbursedDate   DateTime?
   cashAccountId    String?
   cashAccountName  String?
@@ -1638,11 +1669,15 @@ model Reimbursement {
 model ReimbursementItem {
   id               String        @id @default(cuid())
   reimbursementId  String
-  txRecordId       String        @unique
-  advanceAccountId String
+  txRecordId       String?       @unique
+  advanceAccountId String?
   amount           Decimal
   entryDate        DateTime
   categoryName     String?
+  expenseItem      ReimbursementExpenseItem?
+  fromPlace        String?
+  toPlace          String?
+  vehicle          String?
   note             String?
   invoiceCode      String?
   invoiceNumber    String?
@@ -1971,6 +2006,27 @@ enum PropertyTransactionAction {
 enum ReimbursementStatus {
   pending
   reimbursed
+}
+
+enum ReimbursementKind {
+  advance
+  travel
+}
+
+enum ReimbursementExpenseItem {
+  transport
+  lodging
+  meal
+  cityTransport
+  subsidy
+  other
+  conference
+  ticketing
+  refundFee
+  insurance
+  parking
+  toll
+  phone
 }
 
 enum StockTransactionAction {

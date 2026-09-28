@@ -20,9 +20,10 @@ import { createSqliteSnapshotBuffer, isSqliteFileDatabase } from "@/lib/server/s
  * schema migration is required. The scheduler lives in `instrumentation-node.ts`
  * and checks `runAutoBackupTick()` on the system-task interval.
  *
- * Encrypted packages are written without a passphrase, so encryption uses the
- * system-level `backup_package_encryption_key` and restore works without user
- * input on the same deployment.
+ * Packages use the configured passphrase when one is set. When it is empty,
+ * automatic backups keep the legacy behavior of using the deployment-level
+ * `backup_package_encryption_key`, so they can be restored without a passphrase
+ * on the same deployment.
  */
 export const AUTO_BACKUP_CONFIG_KEY = "auto_backup_config";
 export const AUTO_BACKUP_STATUS_KEY = "auto_backup_status";
@@ -43,6 +44,8 @@ export type AutoBackupConfig = {
   scope: "system" | "household";
   /** target directory on the server; empty string resolves to defaultAutoBackupDir() */
   path: string;
+  /** optional passphrase for portable encrypted backups; empty uses the system key */
+  passphrase: string;
   /** how many most recent backup files to keep (1..100) */
   keepCount: number;
 };
@@ -67,6 +70,7 @@ const DEFAULT_CONFIG: AutoBackupConfig = {
   everyHours: 24,
   scope: "system",
   path: "",
+  passphrase: "",
   keepCount: 7,
 };
 const WINDOWS_STARTUP_BACKUP_STALE_MS = 24 * 3600_000;
@@ -102,6 +106,7 @@ export function normalizeAutoBackupConfig(raw: unknown): AutoBackupConfig {
     everyHours,
     scope: obj.scope === "system" ? "system" : "household",
     path: String(obj.path ?? "").trim(),
+    passphrase: String(obj.passphrase ?? "").trim(),
     keepCount,
   };
 }
@@ -270,7 +275,7 @@ export function cleanupOldBackups(targetDir: string, keepCount: number): void {
     return;
   }
   const backups = entries
-    .filter((entry) => entry.isFile() && /^.+\.mmhbackup$/.test(entry.name))
+    .filter((entry) => entry.isFile() && /\.(?:mmh-backup|mmhbackup)$/i.test(entry.name))
     .map((entry) => {
       let mtime = 0;
       try {
@@ -302,7 +307,7 @@ export function getLatestAutoBackupFileMtime(targetDir: string): Date | null {
 
   let latest = 0;
   for (const entry of entries) {
-    if (!entry.isFile() || !/^.+\.mmhbackup$/.test(entry.name)) continue;
+    if (!entry.isFile() || !/\.(?:mmh-backup|mmhbackup)$/i.test(entry.name)) continue;
     try {
       const mtime = fs.statSync(path.join(targetDir, entry.name)).mtimeMs;
       if (Number.isFinite(mtime) && mtime > latest) latest = mtime;
@@ -355,7 +360,7 @@ export async function runAutoBackupNow(
         backupScope: "system",
       },
       exportedAt,
-      {},
+      { passphrase: resolved.passphrase, useSystemKeyWhenNoPassphrase: true },
     );
     const fileName = backupFileName("system", exportedAt);
     fs.writeFileSync(path.join(targetDir, fileName), serializeEncryptedBackupPackage(packageObject), { mode: 0o600 });
@@ -367,7 +372,10 @@ export async function runAutoBackupNow(
     }
     for (const household of households) {
       const payload = await buildHouseholdBackupPayload(household.id, null, { backupScope: "household" });
-      const packageObject = await encryptBackupPayload(payload, {});
+      const packageObject = await encryptBackupPayload(payload, {
+        passphrase: resolved.passphrase,
+        useSystemKeyWhenNoPassphrase: true,
+      });
       const fileName = backupFileName(household.name, exportedAt);
       fs.writeFileSync(path.join(targetDir, fileName), serializeEncryptedBackupPackage(packageObject), { mode: 0o600 });
       files.push(fileName);

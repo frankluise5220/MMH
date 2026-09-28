@@ -121,6 +121,9 @@ export async function loadFundStatisticSourceEntries(
     const mainTagMatches = tagIds.length === 0 || mainTags.some((tag) => tagIds.includes(tag.tagId));
 
     if (mainTagMatches && mainDate.getTime() >= startMs && mainDate.getTime() < endMs) {
+      // Economic returns (dividends and redemption gains) belong to the
+      // investment account, matching bond interest. The cash account remains
+      // represented by the cash-flow TxRecord and does not affect the balance.
       entries.push({
         id: mainEntryId,
         entryId: mainEntryId,
@@ -135,8 +138,8 @@ export async function loadFundStatisticSourceEntries(
         fundFee: row.fee,
         fundCode: row.fundCode,
         fundName: row.fundName,
-        accountId: primaryCashEntry?.accountId ?? row.cashAccountId ?? row.fundAccountId,
-        accountName: primaryCashEntry?.account?.name ?? primaryCashEntry?.accountName ?? row.CashAccount?.name ?? row.Account.name,
+        accountId: row.fundAccountId,
+        accountName: row.Account.name,
         counterpartyName: row.fundName,
         note: row.note ?? primaryCashEntry?.note ?? null,
         createdAt: primaryCashEntry?.createdAt ?? row.createdAt,
@@ -292,8 +295,10 @@ export async function loadWealthStatisticSourceEntries(
         ? arrivalAmount ?? grossAmount
         : -grossAmount;
     const productName = row.WealthProduct?.name ?? row.productName ?? "";
-    const accountId = cashEntry?.accountId ?? row.cashAccountId ?? row.accountId;
-    const accountName = cashEntry?.account?.name ?? cashEntry?.accountName ?? row.CashAccount?.name ?? row.Account.name;
+    // Attribute wealth returns to the wealth investment account, matching the
+    // fund and bond conventions.
+    const accountId = row.accountId;
+    const accountName = row.Account.name;
 
     return [{
       id: `wealth:${row.id}`,

@@ -27,7 +27,7 @@
       "categories": [
         "生活服务"
       ],
-      "icon_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.64",
+      "icon_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.65",
       "readme_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/README.md",
       "bug_report_url": "https://github.com/frankluise5220/MMH/issues",
       "maintainer": "frankluise5220",
@@ -114,6 +114,23 @@
             }
           },
           "updated_at": "2026-09-20T22:33:33+08:00"
+        },
+        "0.1.65": {
+          "changelog": "本次补齐报销/差旅工作流（仍在开发中，尚未完工）：往来对象可报销开关、报销类型、差旅日期事由、费用项目、行程字段、附件张数和手工明细；同步优化概览/统计/报表收益口径，修复大账本余额维护与明细分页可能导致的卡死/崩溃，修复跨设备/重装备份恢复并支持可选口令加密备份；反馈邮件支持图片附件并增加中继回退，赞助页支持支付宝收款码自助登记打赏。相关需求请通过 GitHub issue 或反馈邮件提出。完整说明见 GitHub Release v0.1.65",
+          "os_min_version": "0.9.0",
+          "packages": {
+            "x86": {
+              "download_url": "http://fnapp.floatingice.win/apps/mmh-0.1.65.fpk",
+              "size": 93178010,
+              "sha256": "efb54961b08fabd7d972353b6ad7d6cfe54df1c14aac18481a45360940e91996"
+            },
+            "arm": {
+              "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.65/mmh-fnos-v0.1.65-arm64.fpk",
+              "size": 93112482,
+              "sha256": "e13c4e14d7bd5bb629473e0131769bff3baf391518ff2cd67816c65739a891c2"
+            }
+          },
+          "updated_at": "2026-09-22T23:51:51+08:00"
         }
       },
       "preview_urls": [
