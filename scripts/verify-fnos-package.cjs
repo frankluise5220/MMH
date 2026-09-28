@@ -579,7 +579,19 @@ if (fs.existsSync(stageDir)) {
   if (verifyExternalNode) {
     expect(/resolve_node_bin/.test(stageMainScript) && /better-sqlite3/.test(stageMainScript) && /Node\.js 22/.test(stageMainScript), `fnOS ${verifyTarget.id} external-node stage must resolve Node.js 22 and verify the SQLite native module.`);
     expect(/nodejs_v22/.test(stageMainScript), `fnOS ${verifyTarget.id} external-node stage must search the FN Depot Node.js v22 package paths.`);
-    expect(/MMH_NODE_BIN/.test(stageMainScript) && /wizard_node_bin/.test(stageApplySettingsScript), `fnOS ${verifyTarget.id} external-node stage must persist a configurable Node.js executable.`);
+    // `cmd/apply-settings` is a sourced function library, not a lifecycle hook: it
+    // defines write_env_file and therefore owns MMH_NODE_BIN. The App Center
+    // settings field `wizard_node_bin` is consumed by the hooks that source it and
+    // then call write_env_file — install/upgrade_callback and config_callback —
+    // so it must never be asserted against apply-settings itself.
+    const stageConfigCallbackScript = read(path.join(stageDir, "cmd", "config_callback"));
+    const stageWizardConfig = read(path.join(stageDir, "wizard", "config"));
+    expect(
+      /MMH_NODE_BIN/.test(stageApplySettingsScript) &&
+        /wizard_node_bin/.test(stageConfigCallbackScript) &&
+        /wizard_node_bin/.test(stageWizardConfig),
+      `fnOS ${verifyTarget.id} external-node stage must expose wizard_node_bin in wizard/config and persist it from cmd/config_callback into mmh.env (MMH_NODE_BIN).`
+    );
   }
   expect(!/mmh-unix-server\.cjs/.test(stageMainScript) && !/MMH_GATEWAY_SOCKET_PATH/.test(stageMainScript) && !/MMH_GATEWAY_PREFIX/.test(stageMainScript) && !/gatewaySocket/.test(stageMainScript) && !/gatewayPrefix/.test(stageMainScript), `fnOS ${verifyTarget.id} stage cmd/main must not include unified-gateway or Unix-socket startup paths.`);
   const stageUiConfigPath = path.join(stageDir, "app", "ui", "config");
