@@ -40,6 +40,9 @@ export type CalcInputProps = {
   label?: string;
   precision?: number;
   disabled?: boolean;
+  hideCalculator?: boolean;
+  inputClassName?: string;
+  ariaLabel?: string;
 };
 
 export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function CalcInput(
@@ -52,6 +55,9 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
   label,
   precision = 2,
   disabled = false,
+  hideCalculator = false,
+  inputClassName,
+  ariaLabel,
   },
   ref,
 ) {
@@ -195,11 +201,12 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
         onKeyDown={handleInputKeyDown}
         onBlur={handleInputBlur}
         placeholder={placeholder}
+        aria-label={ariaLabel}
         style={{ caretColor: "var(--foreground)" }}
-        className={`form-input pr-10 font-mono placeholder:text-slate-300 caret-slate-800 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500`}
+        className={`form-input ${hideCalculator ? "" : "pr-10"} font-mono placeholder:text-slate-300 caret-slate-800 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500 ${inputClassName ?? ""}`}
       />
 
-      <div className="absolute right-0 top-0">
+      {!hideCalculator && <div className="absolute right-0 top-0">
         <button
           ref={triggerRef}
           type="button"
@@ -210,7 +217,7 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
         >
           <Calculator className="h-4 w-4" />
         </button>
-      </div>
+      </div>}
 
       {open && dialogPos ? createPortal(
         <div className="fixed inset-0 z-[9999] flex items-start justify-start" style={{ pointerEvents: "none" }}>

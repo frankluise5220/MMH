@@ -11,7 +11,7 @@ const rawVersion = process.env.FNOS_PACKAGE_VERSION || pkg.version || "0.1.0";
 const version = normalizeFnosVersion(rawVersion);
 const osMinVersion = process.env.FNOS_OS_MIN_VERSION || "0.9.0";
 const packageReleaseNotes = typeof pkg.mmhReleaseNotes === "string" ? pkg.mmhReleaseNotes.trim() : "";
-const packageManifestNotes = typeof pkg.mmhFnosManifestChangelog === "string" ? pkg.mmhFnosManifestChangelog.trim() : "";
+const packageManifestNotes = String(process.env.FNOS_PACKAGE_MANIFEST_CHANGELOG || pkg.mmhFnosManifestChangelog || "").trim();
 const runtimeReleaseNotes = process.env.FNOS_PACKAGE_CHANGELOG || packageReleaseNotes || "更新 MMH 飞牛 SQLite 原生包，优化本地安装、启动和更新验证流程。";
 // The manifest `changelog` is a single-line INI field rendered as-is by the
 // fnOS App Center "版本说明" panel, so it must be a short plain-text summary
@@ -22,9 +22,22 @@ assertManifestChangelog(manifestChangelog);
 const appName = "mmh";
 const target = normalizeFnosTarget(process.env.FNOS_TARGET_ARCH || process.env.FNOS_TARGET || "x86");
 const outDir = path.join(root, "release-artifacts", "fnos");
-const stageDir = path.join(outDir, target.stageDirName);
 const stageOnly = process.argv.includes("--stage-only");
+const externalNode = process.env.FNOS_EXTERNAL_NODE === "1";
+const externalNodeStartup = externalNode ? [
+  "  NODE_MAJOR=\"$($NODE_BIN -p 'process.versions.node.split(\\\".\\\")[0]' 2>/dev/null || true)\"",
+  "  if [ \"$NODE_MAJOR\" != \"22\" ]; then",
+  "    echo \"MMH requires Node.js 22.x for the external-node package; detected ${NODE_MAJOR:-unknown}.\" >&2",
+  "    exit 1",
+  "  fi",
+  "  if ! (cd \"$SERVER_DIR\" && \"$NODE_BIN\" -e 'const Database=require(\"better-sqlite3\"); const db=new Database(\":memory:\"); if (db.prepare(\"select 1 as ok\").get().ok !== 1) process.exit(1); db.close();') >/dev/null 2>&1; then",
+  "    echo \"MMH external Node.js cannot load better-sqlite3. Install the matching Node.js v22 runtime.\" >&2",
+  "    exit 1",
+  "  fi",
+].join("\n") : "";
+const stageDir = path.join(outDir, `${target.stageDirName}${externalNode ? "-external-node" : ""}`);
 const nodeTarball = process.env.FNOS_NODE_TARBALL || "";
+const nodeHeadersTarball = process.env.FNOS_NODE_HEADERS_TARBALL || "";
 const isLinux = process.platform === "linux";
 const manualFpk = process.env.FNOS_MANUAL_FPK === "1";
 const prismaCli = path.join(root, "node_modules", "prisma", "build", "index.js");
@@ -337,10 +350,18 @@ function copyDir(src, dest) {
 // (init-sqlite.cjs + native-init.sql cover everything). Kept in sync with the
 // ignore rules in .gitignore / .dockerignore.
 const PRISMA_MIGRATION_FLOOR_DATE = "20260904"; // post-floor dirs start at 20260905
+const EXCLUDED_FNOS_MIGRATIONS = new Set([
+  // The root/HTTP fnOS package does not include the unified gateway identity
+  // migration. That migration belongs to the gateway-enabled deployment shape.
+  "20260927_add_user_gateway_identity",
+]);
 function prunePreFloorMigrations(stageMigrationsDir) {
   if (!fs.existsSync(stageMigrationsDir)) return;
   for (const entry of fs.readdirSync(stageMigrationsDir)) {
     if (/^\d{8}_/.test(entry) && entry.slice(0, 8) <= PRISMA_MIGRATION_FLOOR_DATE) {
+      fs.rmSync(path.join(stageMigrationsDir, entry), { recursive: true, force: true });
+    }
+    if (EXCLUDED_FNOS_MIGRATIONS.has(entry)) {
       fs.rmSync(path.join(stageMigrationsDir, entry), { recursive: true, force: true });
     }
   }
@@ -362,6 +383,14 @@ function copyFnosPublicAssets(src, dest) {
     "mmh-logo-pageflip-512.png",
   ]) {
     copyFile(path.join(src, "branding", file), path.join(dest, "branding", file));
+  }
+
+  for (const file of [
+    "alipay-custom.jpg",
+    "alipay-19.90.jpg",
+    "alipay-29.90.jpg",
+  ]) {
+    copyFile(path.join(src, "reward", file), path.join(dest, "reward", file));
   }
 }
 
@@ -422,7 +451,13 @@ function copyFileIfDifferent(src, dest) {
 }
 
 function fpkAssetName() {
-  return `${appName}-fnos-v${version}-${target.assetSuffix}.fpk`;
+  const variant = externalNode ? "-external-node" : "";
+  return `${appName}-fnos-v${version}-${target.assetSuffix}${variant}.fpk`;
+}
+
+function fpkSourceArchiveName() {
+  const variant = externalNode ? "-external-node" : "";
+  return `${appName}-fnos-v${version}-${target.assetSuffix}${variant}-fpk-source.tgz`;
 }
 
 function materializeFpkOutputs(source) {
@@ -439,6 +474,21 @@ function findNodeHeadersDir() {
     "/usr",
   ];
   return candidates.find((candidate) => fs.existsSync(path.join(candidate, "include", "node", "node.h"))) || "";
+}
+
+function findExtractedNodeHeadersDir(rootDir) {
+  const queue = [rootDir];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || !fs.existsSync(current)) continue;
+    if (fs.existsSync(path.join(current, "include", "node", "node.h"))) {
+      return current;
+    }
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      if (entry.isDirectory()) queue.push(path.join(current, entry.name));
+    }
+  }
+  return "";
 }
 
 function assertCompatibleGlibc() {
@@ -571,8 +621,8 @@ if (generatedSchema.status !== 0) process.exit(generatedSchema.status || 1);
 write(path.join(stageDir, "manifest"), `
 appname=${appName}
 version=${version}
-desc=一套本地部署、致力于化繁为简的家庭账务管理系统。
-display_name=MMH
+desc=${externalNode ? "一套本地部署、依赖外部 Node.js 运行时的家庭账务管理系统。" : "一套本地部署、致力于化繁为简的家庭账务管理系统。"}
+display_name=${externalNode ? "MMH（外部 Node.js）" : "MMH"}
 arch=${target.manifestArch}
 platform=${target.manifestPlatform}
 source=thirdparty
@@ -591,7 +641,7 @@ changelog=${manifestChangelog}
 
 write(path.join(stageDir, "config", "privilege"), JSON.stringify({
   defaults: {
-    "run-as": "root",
+    "run-as": "package",
   },
   username: "mmh",
   groupname: "mmh",
@@ -637,6 +687,13 @@ write(path.join(stageDir, "wizard", "config"), JSON.stringify([
         ],
         helpText: "保存后会重启 MMH 服务。端口会写入应用数据目录，后续更新会继续沿用，不会被包内默认值覆盖。默认值固定为 7777，不一定是当前在用的端口。",
       },
+      ...(externalNode ? [{
+        type: "text",
+        field: "wizard_node_bin",
+        label: "Node.js 可执行文件",
+        initValue: "node",
+        helpText: "需要 Node.js 22.x。可填写 node、绝对路径，或 FN Depot Node.js v22 的实际路径。保存后会重启 MMH 服务。",
+      }] : []),
     ],
   },
 ], null, 2));
@@ -1043,7 +1100,8 @@ resolve_port() {
 
 write_env_file() {
     local requested_port="$1"
-    local port pkgvar system_password session_secret node_max_old_space password_file session_secret_file port_file
+    local requested_node_bin="\${2:-}"
+    local port pkgvar system_password session_secret node_max_old_space node_bin password_file session_secret_file port_file
     if [ -n "$requested_port" ]; then
         port="$(printf '%s' "$requested_port" | tr -d '[:space:]')"
     else
@@ -1054,6 +1112,8 @@ write_env_file() {
     session_secret="$(resolve_session_secret)"
     node_max_old_space="$(read_env_value MMH_NODE_MAX_OLD_SPACE_MB 2>/dev/null || true)"
     node_max_old_space="\${MMH_NODE_MAX_OLD_SPACE_MB:-\${node_max_old_space:-auto}}"
+    node_bin="$(read_env_value MMH_NODE_BIN 2>/dev/null || true)"
+    node_bin="\${requested_node_bin:-\${MMH_NODE_BIN:-$node_bin}}"
     case "$node_max_old_space" in
         ""|*[!0-9]*) node_max_old_space=auto ;;
     esac
@@ -1069,6 +1129,7 @@ TZ=Asia/Shanghai
 MMH_SYSTEM_PASSWORD=\${system_password}
 MMH_SESSION_SECRET=\${session_secret}
 MMH_NODE_MAX_OLD_SPACE_MB=\${node_max_old_space}
+MMH_NODE_BIN=\${node_bin}
 EOF
     chmod 600 "\${pkgvar}/mmh.env" 2>/dev/null || true
     printf '%s\\n' "$port" > "$port_file"
@@ -1179,8 +1240,8 @@ fi
 ENV_FILE="$DATA_ROOT/mmh.env"
 SYSTEM_PASSWORD_FILE="$DATA_ROOT/mmh-system-password.txt"
 SESSION_SECRET_FILE="$DATA_ROOT/mmh-session-secret.txt"
-SERVER_DIR="$APP_DEST/server"
-NODE_BIN="$APP_DEST/bin/node"
+  SERVER_DIR="$APP_DEST/server"
+  NODE_BIN="$APP_DEST/bin/node"
 PID_FILE="$DATA_DEST/mmh.pid"
 LOG_FILE="$DATA_DEST/mmh.log"
 
@@ -1199,6 +1260,37 @@ read_env_value () {
         ;;
     esac
   done < "$ENV_FILE"
+}
+
+resolve_node_bin () {
+  local configured candidate
+  configured="$(read_env_value MMH_NODE_BIN 2>/dev/null || true)"
+  configured="\${MMH_NODE_BIN:-$configured}"
+  if [ -n "$configured" ]; then
+    case "$configured" in
+      */*)
+        [ -x "$configured" ] && { printf '%s' "$configured"; return 0; }
+        ;;
+      *)
+        candidate="$(command -v "$configured" 2>/dev/null || true)"
+        [ -n "$candidate" ] && [ -x "$candidate" ] && { printf '%s' "$candidate"; return 0; }
+        ;;
+    esac
+  fi
+  for candidate in \
+    /var/apps/nodejs_v22/bin/node \
+    /var/apps/nodejs_v22/app/bin/node \
+    /usr/local/bin/node \
+    /vol*/@appcenter/nodejs_v22/bin/node \
+    /vol*/@appcenter/nodejs_v22/app/bin/node \
+    /vol*/@appcenter/nodejs_v22/*/bin/node \
+    /vol*/@appcenter/nodejs_v22/*/app/bin/node \
+    /vol*/@appcenter/nodejs_v22/*/node; do
+    [ -x "$candidate" ] && { printf '%s' "$candidate"; return 0; }
+  done
+  candidate="$(command -v node 2>/dev/null || true)"
+  [ -n "$candidate" ] && [ -x "$candidate" ] && { printf '%s' "$candidate"; return 0; }
+  return 1
 }
 
 generate_system_password () {
@@ -1231,7 +1323,7 @@ generate_session_secret () {
 }
 
 ensure_runtime_settings () {
-  local env_port env_password system_password env_session_secret session_secret env_node_max_old_space node_max_old_space
+  local env_port env_password system_password env_session_secret session_secret env_node_max_old_space node_max_old_space env_node_bin node_bin
   mkdir -p "$DATA_DEST" "$DATA_ROOT"
 
   env_port="$(read_env_value PORT 2>/dev/null || true)"
@@ -1263,6 +1355,8 @@ ensure_runtime_settings () {
 
   env_node_max_old_space="$(read_env_value MMH_NODE_MAX_OLD_SPACE_MB 2>/dev/null || true)"
   node_max_old_space="\${MMH_NODE_MAX_OLD_SPACE_MB:-\${env_node_max_old_space:-auto}}"
+  env_node_bin="$(read_env_value MMH_NODE_BIN 2>/dev/null || true)"
+  node_bin="\${MMH_NODE_BIN:-$env_node_bin}"
   case "$node_max_old_space" in
     ""|*[!0-9]*) node_max_old_space=auto ;;
   esac
@@ -1274,6 +1368,7 @@ TZ=Asia/Shanghai
 MMH_SYSTEM_PASSWORD=\${MMH_SYSTEM_PASSWORD}
 MMH_SESSION_SECRET=\${MMH_SESSION_SECRET}
 MMH_NODE_MAX_OLD_SPACE_MB=\${MMH_NODE_MAX_OLD_SPACE_MB}
+MMH_NODE_BIN=\${node_bin}
 EOF
   chmod 600 "$ENV_FILE" 2>/dev/null || true
   printf '%s\\n' "$MMH_SYSTEM_PASSWORD" > "$SYSTEM_PASSWORD_FILE"
@@ -1416,34 +1511,6 @@ ensure_runtime_owner () {
   chmod 700 "$sibling_backup" 2>/dev/null || true
 }
 
-restart_start_as_package_user () {
-  if [ "$(id -u)" = "0" ] && id mmh >/dev/null 2>&1; then
-    ensure_runtime_owner
-    if command -v runuser >/dev/null 2>&1; then
-      exec env \
-        TRIM_APPDEST="\${TRIM_APPDEST:-}" \
-        TRIM_DATADEST="\${TRIM_DATADEST:-}" \
-        TRIM_PKGVAR="\${TRIM_PKGVAR:-}" \
-        TRIM_APPNAME="\${TRIM_APPNAME:-mmh}" \
-        MMH_NODE_MAX_OLD_SPACE_MB="\${MMH_NODE_MAX_OLD_SPACE_MB:-}" \
-        NODE_OPTIONS="\${NODE_OPTIONS:-}" \
-        PORT="\${PORT:-}" \
-        runuser -u mmh -- "$0" start
-    fi
-    if command -v su >/dev/null 2>&1; then
-      exec env \
-        TRIM_APPDEST="\${TRIM_APPDEST:-}" \
-        TRIM_DATADEST="\${TRIM_DATADEST:-}" \
-        TRIM_PKGVAR="\${TRIM_PKGVAR:-}" \
-        TRIM_APPNAME="\${TRIM_APPNAME:-mmh}" \
-        MMH_NODE_MAX_OLD_SPACE_MB="\${MMH_NODE_MAX_OLD_SPACE_MB:-}" \
-        NODE_OPTIONS="\${NODE_OPTIONS:-}" \
-        PORT="\${PORT:-}" \
-        su mmh -s /bin/bash -c "'$0' start"
-    fi
-  fi
-}
-
 start_app () {
   mkdir -p "$DATA_DEST"
   if command -v ensure_app_ready >/dev/null 2>&1; then
@@ -1453,13 +1520,14 @@ start_app () {
     fi
     refresh_app_paths
   fi
-  restart_start_as_package_user
+${externalNode ? '  NODE_BIN="$(resolve_node_bin 2>/dev/null || true)"' : ''}
   ensure_runtime_settings
   apply_node_memory_limit
   if [ ! -x "$NODE_BIN" ]; then
-    echo "Bundled Linux Node runtime is missing: $NODE_BIN" >&2
+    echo "MMH requires external Node.js 22. Install Node.js v22, then set MMH_NODE_BIN in the MMH application settings." >&2
     exit 1
   fi
+${externalNodeStartup}
   if [ ! -f "$SERVER_DIR/server.js" ]; then
     echo "Next standalone server is missing: $SERVER_DIR/server.js" >&2
     exit 1
@@ -1547,7 +1615,17 @@ wait_listen_port_free () {
 
 stop_app () {
   if [ -f "$PID_FILE" ]; then
-    kill "$(cat "$PID_FILE")" >/dev/null 2>&1 || true
+    local pid i
+    pid="$(cat "$PID_FILE")"
+    kill "$pid" >/dev/null 2>&1 || true
+    i=0
+    while kill -0 "$pid" >/dev/null 2>&1 && [ "$i" -lt 20 ]; do
+      sleep 0.25
+      i=$((i + 1))
+    done
+    if kill -0 "$pid" >/dev/null 2>&1; then
+      kill -9 "$pid" >/dev/null 2>&1 || true
+    fi
     rm -f "$PID_FILE"
   fi
   stop_leftover_mmh_server
@@ -1610,15 +1688,12 @@ if [ -f "$SCRIPT_DIR/app-layout" ]; then
 fi
 if [ -f "$SCRIPT_DIR/apply-settings" ]; then
     . "$SCRIPT_DIR/apply-settings"
-    write_env_file >/dev/null
+    write_env_file "" "\${wizard_node_bin:-}" >/dev/null
 fi
 
 exit 0
 `;
 
-// Changing the port goes through the settings wizard, not an install wizard.
-// resolve_port() prefers the persisted .port, so the new value must be applied
-// explicitly here, then the service is restarted to pick it up.
 const configCallbackLifecycle = `#!/bin/bash
 set -e
 
@@ -1629,12 +1704,9 @@ fi
 if [ -f "$SCRIPT_DIR/app-layout" ]; then
     . "$SCRIPT_DIR/app-layout"
     if ! ensure_app_ready; then
-        echo "MMH payload extract failed during config change" >&2
+        echo "MMH payload extract failed during config change" > "\${TRIM_TEMP_LOGFILE:-/dev/null}" 2>/dev/null || true
         exit 1
     fi
-    # cmd/main locates the bundled Node runtime through TRIM_APPDEST. App Center
-    # normally exports it, but resolve it ourselves: otherwise a config change
-    # would stop the service and then fail to start it again.
     if [ -z "\${TRIM_APPDEST:-}" ] || [ ! -d "\${TRIM_APPDEST}" ]; then
         TRIM_APPDEST="$(resolve_app_dest)"
         export TRIM_APPDEST
@@ -1647,21 +1719,22 @@ fi
 
 LOG_TARGET="\${TRIM_TEMP_LOGFILE:-/dev/null}"
 NEW_PORT="$(printf '%s' "\${wizard_port:-}" | tr -d '[:space:]')"
-[ -n "$NEW_PORT" ] || exit 0
+NEW_NODE_BIN="$(printf '%s' "\${wizard_node_bin:-}" | tr -d '[:space:]')"
+${externalNode ? '[ -n "$NEW_PORT" ] || NEW_PORT="$(read_env_value PORT 2>/dev/null || true)"' : '[ -n "$NEW_PORT" ] || exit 0'}
 
 case "$NEW_PORT" in
     *[!0-9]*)
-        echo "服务端口必须是数字：$NEW_PORT" > "$LOG_TARGET" 2>/dev/null || true
+        echo "Service port must be numeric: $NEW_PORT" > "$LOG_TARGET" 2>/dev/null || true
         exit 1
         ;;
 esac
 if [ "$NEW_PORT" -lt 1000 ] || [ "$NEW_PORT" -gt 65535 ]; then
-    echo "服务端口必须在 1000-65535 之间：$NEW_PORT" > "$LOG_TARGET" 2>/dev/null || true
+    echo "Service port must be between 1000 and 65535: $NEW_PORT" > "$LOG_TARGET" 2>/dev/null || true
     exit 1
 fi
 
 "$SCRIPT_DIR/main" stop >/dev/null 2>&1 || true
-write_env_file "$NEW_PORT" >/dev/null
+write_env_file "$NEW_PORT" "${externalNode ? '$NEW_NODE_BIN' : ''}" >/dev/null
 "$SCRIPT_DIR/main" start
 
 exit 0
@@ -1821,6 +1894,12 @@ const publicDir = path.join(root, "public");
 if (fs.existsSync(standaloneDir)) {
   standaloneAppDir = findStandaloneAppDir(standaloneDir);
   copyDir(standaloneAppDir, path.join(stageDir, "app", "server"));
+  // Next standalone tracing omits this directory even though the production
+  // server resolves its webpack aliases while loading the runtime config.
+  copyDir(
+    path.join(root, "node_modules", "next", "dist", "compiled", "webpack"),
+    path.join(stageDir, "app", "server", "node_modules", "next", "dist", "compiled", "webpack"),
+  );
   const runtimePackageJson = path.join(stageDir, "app", "server", "package.json");
   if (fs.existsSync(runtimePackageJson)) {
     const runtimePkg = JSON.parse(fs.readFileSync(runtimePackageJson, "utf8"));
@@ -2156,6 +2235,164 @@ const MIGRATIONS = [
         addColumnIfMissing(db, "reimbursement_items", "expenseItem", "TEXT");
         rebuildReimbursementItemsNullableSources(db);
       }
+    },
+  },
+  {
+    version: "20260925_add_reimbursement_advance_account",
+    description: "Add reimbursement advance account and safely backfill single-account documents",
+    apply(db) {
+      if (!tableExists(db, "reimbursements")) return;
+      addColumnIfMissing(db, "reimbursements", "advanceAccountId", "TEXT");
+      db.exec("CREATE INDEX IF NOT EXISTS reimbursements_householdId_advanceAccountId_status_idx ON reimbursements(householdId, advanceAccountId, status)");
+      if (!tableExists(db, "reimbursement_items")) return;
+      db.exec(
+        "UPDATE reimbursements AS r SET advanceAccountId = (" +
+          "SELECT MIN(ri.advanceAccountId) FROM reimbursement_items AS ri WHERE ri.reimbursementId = r.id" +
+          ") WHERE r.advanceAccountId IS NULL AND EXISTS (" +
+          "SELECT 1 FROM reimbursement_items AS ri WHERE ri.reimbursementId = r.id" +
+          " GROUP BY ri.reimbursementId" +
+          " HAVING COUNT(*) = COUNT(ri.advanceAccountId) AND COUNT(DISTINCT ri.advanceAccountId) = 1" +
+          ")",
+      );
+    },
+  },
+  {
+    version: "20260926_add_reimbursement_approved_amount",
+    description: "Add optional approved amount to reimbursement documents",
+    apply(db) {
+      if (tableExists(db, "reimbursements")) {
+        addColumnIfMissing(db, "reimbursements", "approvedAmount", "DECIMAL");
+      }
+    },
+  },
+  {
+    version: "20260926_reimbursement_travel_amount_columns",
+    description: "Add editable travel amount columns to reimbursement rows",
+    apply(db) {
+      if (!tableExists(db, "reimbursement_items")) return;
+      addColumnIfMissing(db, "reimbursement_items", "outsideTransportAmount", "DECIMAL");
+      addColumnIfMissing(db, "reimbursement_items", "cityTransportAmount", "DECIMAL");
+      addColumnIfMissing(db, "reimbursement_items", "subsidyAmount", "DECIMAL");
+      addColumnIfMissing(db, "reimbursement_items", "lodgingAmount", "DECIMAL");
+      db.exec("UPDATE reimbursement_items SET outsideTransportAmount = amount WHERE expenseItem IN ('transport', 'ticketing', 'toll', 'refundFee', 'insurance') AND outsideTransportAmount IS NULL");
+      db.exec("UPDATE reimbursement_items SET cityTransportAmount = amount WHERE expenseItem IN ('cityTransport', 'parking') AND cityTransportAmount IS NULL");
+      db.exec("UPDATE reimbursement_items SET subsidyAmount = amount WHERE expenseItem IN ('subsidy', 'meal') AND subsidyAmount IS NULL");
+      db.exec("UPDATE reimbursement_items SET lodgingAmount = amount WHERE expenseItem = 'lodging' AND lodgingAmount IS NULL");
+    },
+  },
+  {
+    version: "20260926_reimbursement_batches_settlements",
+    description: "Create reimbursement batches, transaction links, and settlement records",
+    apply(db) {
+      if (!tableExists(db, "reimbursements")) return;
+      db.exec([
+        "CREATE TABLE IF NOT EXISTS reimbursement_batches (id TEXT NOT NULL PRIMARY KEY, householdId TEXT NOT NULL, advanceAccountId TEXT NOT NULL, title TEXT NOT NULL, createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (householdId) REFERENCES Household(id) ON DELETE CASCADE ON UPDATE CASCADE)",
+        "CREATE INDEX IF NOT EXISTS reimbursement_batches_householdId_advanceAccountId_createdAt_idx ON reimbursement_batches(householdId, advanceAccountId, createdAt)",
+        "CREATE TABLE IF NOT EXISTS reimbursement_transactions (id TEXT NOT NULL PRIMARY KEY, reimbursementId TEXT NOT NULL, txRecordId TEXT NOT NULL, createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (reimbursementId) REFERENCES reimbursements(id) ON DELETE CASCADE ON UPDATE CASCADE)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS reimbursement_transactions_txRecordId_key ON reimbursement_transactions(txRecordId)",
+        "CREATE INDEX IF NOT EXISTS reimbursement_transactions_reimbursementId_idx ON reimbursement_transactions(reimbursementId)",
+        "CREATE TABLE IF NOT EXISTS reimbursement_settlements (id TEXT NOT NULL PRIMARY KEY, reimbursementId TEXT NOT NULL, amount DECIMAL NOT NULL, feeAmount DECIMAL NOT NULL DEFAULT 0, writeOffAmount DECIMAL NOT NULL DEFAULT 0, date DATETIME NOT NULL, cashAccountId TEXT NOT NULL, cashAccountName TEXT NOT NULL, note TEXT, createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (reimbursementId) REFERENCES reimbursements(id) ON DELETE CASCADE ON UPDATE CASCADE)",
+        "CREATE INDEX IF NOT EXISTS reimbursement_settlements_reimbursementId_date_idx ON reimbursement_settlements(reimbursementId, date)",
+      ].join(";"));
+      addColumnIfMissing(db, "reimbursements", "batchId", "TEXT");
+      db.exec(
+        "INSERT INTO reimbursement_batches (id, householdId, advanceAccountId, title, createdAt, updatedAt) " +
+          "SELECT CAST(X'72625f' AS TEXT) || r.id, r.householdId, COALESCE(r.advanceAccountId, CAST(X'' AS TEXT)), r.title, r.createdAt, r.updatedAt " +
+          "FROM reimbursements r WHERE r.batchId IS NULL ON CONFLICT (id) DO NOTHING",
+      );
+      db.exec("UPDATE reimbursements SET batchId = CAST(X'72625f' AS TEXT) || id WHERE batchId IS NULL");
+      db.exec("CREATE INDEX IF NOT EXISTS reimbursements_batchId_idx ON reimbursements(batchId)");
+      addColumnIfMissing(db, "reimbursement_settlements", "note", "TEXT");
+      if (tableExists(db, "reimbursement_items")) {
+        db.exec(
+          "INSERT INTO reimbursement_transactions (id, reimbursementId, txRecordId) " +
+            "SELECT CAST(X'72745f' AS TEXT) || ri.id, ri.reimbursementId, ri.txRecordId FROM reimbursement_items ri " +
+            "WHERE ri.txRecordId IS NOT NULL ON CONFLICT (txRecordId) DO NOTHING",
+        );
+      }
+    },
+  },
+  {
+    version: "20260926_reimbursement_item_days",
+    description: "Add optional day count to reimbursement items",
+    apply(db) {
+      if (tableExists(db, "reimbursement_items")) {
+        addColumnIfMissing(db, "reimbursement_items", "days", "INTEGER");
+      }
+    },
+  },
+  {
+    version: "20260926_reimbursement_settlement_note",
+    description: "Add optional note to reimbursement settlements",
+    apply(db) {
+      if (tableExists(db, "reimbursement_settlements")) {
+        addColumnIfMissing(db, "reimbursement_settlements", "note", "TEXT");
+      }
+    },
+  },
+  {
+    version: "20260927_reimbursement_approval_details",
+    description: "Add reimbursement approval date and note",
+    apply(db) {
+      if (!tableExists(db, "reimbursements")) return;
+      addColumnIfMissing(db, "reimbursements", "approvalDate", "DATETIME");
+      addColumnIfMissing(db, "reimbursements", "approvalNote", "TEXT");
+    },
+  },
+  {
+    version: "20260927_add_reimbursement_settlement_fee",
+    description: "Add settlement fee amount to reimbursement settlements",
+    apply(db) {
+      if (tableExists(db, "reimbursement_settlements")) {
+        addColumnIfMissing(db, "reimbursement_settlements", "feeAmount", "DECIMAL NOT NULL DEFAULT 0");
+      }
+    },
+  },
+  {
+    version: "20260927_reimbursement_settlement_transactions",
+    description: "Track generated reimbursement settlement transactions and balance difference mode",
+    apply(db) {
+      if (!tableExists(db, "reimbursement_settlements")) return;
+      if (tableExists(db, "reimbursements")) {
+        addColumnIfMissing(db, "reimbursements", "paymentTxRecordId", "TEXT");
+      }
+      addColumnIfMissing(db, "reimbursement_settlements", "feeAmount", "DECIMAL NOT NULL DEFAULT 0");
+      addColumnIfMissing(db, "reimbursement_settlements", "balanceDiffMode", "TEXT NOT NULL DEFAULT 'loss'");
+      db.exec("UPDATE reimbursement_settlements SET balanceDiffMode = CASE WHEN writeOffAmount > 0 THEN 'loss' ELSE 'remain' END");
+      db.exec([
+        "CREATE TABLE IF NOT EXISTS reimbursement_settlement_transactions (id TEXT NOT NULL PRIMARY KEY, settlementId TEXT NOT NULL, txRecordId TEXT NOT NULL, createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (settlementId) REFERENCES reimbursement_settlements(id) ON DELETE CASCADE ON UPDATE CASCADE, FOREIGN KEY (txRecordId) REFERENCES transactions(id) ON DELETE CASCADE ON UPDATE CASCADE)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS reimbursement_settlement_transactions_txRecordId_key ON reimbursement_settlement_transactions(txRecordId)",
+        "CREATE INDEX IF NOT EXISTS reimbursement_settlement_transactions_settlementId_idx ON reimbursement_settlement_transactions(settlementId)",
+      ].join(";"));
+      db.exec(
+        "UPDATE reimbursements SET paymentTxRecordId = (" +
+          "SELECT rst.txRecordId FROM reimbursement_settlements rs " +
+          "JOIN reimbursement_settlement_transactions rst ON rst.settlementId = rs.id " +
+          "JOIN transactions tx ON tx.id = rst.txRecordId AND tx.deletedAt IS NULL " +
+          "WHERE rs.reimbursementId = reimbursements.id " +
+          "ORDER BY rs.date DESC, rs.createdAt DESC LIMIT 1" +
+        ") WHERE paymentTxRecordId IS NULL",
+      );
+    },
+  },
+  {
+    version: "20260927_reimbursement_payment_transaction",
+    description: "Track the current payment transaction on each reimbursement",
+    apply(db) {
+      if (tableExists(db, "reimbursements")) {
+        addColumnIfMissing(db, "reimbursements", "paymentTxRecordId", "TEXT");
+        db.exec("CREATE UNIQUE INDEX IF NOT EXISTS reimbursements_paymentTxRecordId_key ON reimbursements(paymentTxRecordId)");
+      }
+    },
+  },
+  {
+    version: "20260928_reimbursement_batch_fields",
+    description: "Add editable reimbursement batch note and date range",
+    apply(db) {
+      if (!tableExists(db, "reimbursement_batches")) return;
+      addColumnIfMissing(db, "reimbursement_batches", "note", "TEXT");
+      addColumnIfMissing(db, "reimbursement_batches", "startDate", "DATETIME");
+      addColumnIfMissing(db, "reimbursement_batches", "endDate", "DATETIME");
     },
   },
   {
@@ -3063,6 +3300,9 @@ try {
   }
 }
 
+let stagedNodeBinDir = "";
+let stagedNodeHeadersDir = "";
+
 if (nodeTarball) {
   requirePath(nodeTarball, `FNOS_NODE_TARBALL does not exist: ${nodeTarball}`);
   if (!path.basename(nodeTarball).includes(`linux-${target.nodeArch}`)) {
@@ -3073,10 +3313,14 @@ if (nodeTarball) {
     console.error(extract.stderr || extract.stdout || "Failed to extract FNOS_NODE_TARBALL.");
     process.exit(extract.status || 1);
   }
+  stagedNodeBinDir = path.join(stageDir, "app", "bin", "bin");
 }
 
 const hasNode = fs.existsSync(path.join(stageDir, "app", "bin", "bin", "node"));
-if (hasNode) {
+const stagedNodeRuntime = hasNode
+  ? path.join(stageDir, "app", "bin", "bin", "node")
+  : path.join(stageDir, "app", "bin", "node");
+if (hasNode && stageOnly) {
   fs.renameSync(path.join(stageDir, "app", "bin", "bin", "node"), path.join(stageDir, "app", "bin", "node"));
   for (const entry of fs.readdirSync(path.join(stageDir, "app", "bin"))) {
     if (entry === "node") continue;
@@ -3089,7 +3333,10 @@ makeFnosPackageEntriesReadable(stageDir);
 console.log(`FNOS SQLite FPK source staged: ${path.relative(root, stageDir)}`);
 
 if (stageOnly) {
-  const archive = path.join(outDir, `${appName}-fnos-v${version}-${target.assetSuffix}-fpk-source.tgz`);
+  if (externalNode) {
+    fs.rmSync(path.join(stageDir, "app", "bin"), { recursive: true, force: true });
+  }
+  const archive = path.join(outDir, fpkSourceArchiveName());
   const tar = run("tar", ["-czf", archive, "-C", stageDir, "."]);
   if (tar.status !== 0) {
     console.error(tar.stderr || tar.stdout || "tar failed");
@@ -3110,18 +3357,15 @@ try {
     assertCompatibleGlibc();
   }
   requirePath(path.join(stageDir, "app", "server", "server.js"), "Run the fnOS standalone build before packaging: npm run build:fnos:app");
-  requirePath(path.join(stageDir, "app", "bin", "node"), `Provide a Linux ${target.nodeArch} Node runtime tarball via FNOS_NODE_TARBALL before building ${fpkAssetName()}.`);
+  requirePath(stagedNodeRuntime, `Provide a Linux ${target.nodeArch} Node runtime tarball via FNOS_NODE_TARBALL before building ${fpkAssetName()}.`);
 } catch (error) {
   console.error(error.message);
   process.exit(1);
 }
 
-const rebuildEnv = {};
-const nodeHeadersDir = findNodeHeadersDir();
-if (nodeHeadersDir) rebuildEnv.npm_config_nodedir = nodeHeadersDir;
 const stagedServerDir = path.join(stageDir, "app", "server");
 if (process.env.FNOS_SKIP_NATIVE_REBUILD === "1") {
-  const verifyNative = run(process.execPath, [
+  const verifyNative = run(stagedNodeRuntime, [
     "-e",
     "const Database=require('better-sqlite3'); const db=new Database(':memory:'); if (db.prepare('select 1 as ok').get().ok !== 1) process.exit(1); db.close();",
   ], {
@@ -3133,12 +3377,60 @@ if (process.env.FNOS_SKIP_NATIVE_REBUILD === "1") {
     process.exit(verifyNative.status || 1);
   }
 } else {
-  const nativeRebuild = run(commandName("npm"), ["rebuild", "better-sqlite3", "--build-from-source"], {
+  if (!stagedNodeBinDir || !fs.existsSync(path.join(stagedNodeBinDir, "node")) || !fs.existsSync(path.join(stagedNodeBinDir, "npm"))) {
+    throw new Error("A Node runtime tarball containing both node and npm is required to rebuild fnOS native modules.");
+  }
+  if (!nodeHeadersTarball) {
+    throw new Error("FNOS_NODE_HEADERS_TARBALL is required so better-sqlite3 is compiled against the bundled Node ABI.");
+  }
+  requirePath(nodeHeadersTarball, `FNOS_NODE_HEADERS_TARBALL does not exist: ${nodeHeadersTarball}`);
+  const headersExtractRoot = path.join(stageDir, "app", ".fnos-node-headers");
+  fs.rmSync(headersExtractRoot, { recursive: true, force: true });
+  mkdirp(headersExtractRoot);
+  const headersExtract = run("tar", ["-xzf", nodeHeadersTarball, "-C", headersExtractRoot]);
+  if (headersExtract.status !== 0) {
+    console.error(headersExtract.stderr || headersExtract.stdout || "Failed to extract FNOS_NODE_HEADERS_TARBALL.");
+    process.exit(headersExtract.status || 1);
+  }
+  stagedNodeHeadersDir = findExtractedNodeHeadersDir(headersExtractRoot);
+  if (!stagedNodeHeadersDir) {
+    throw new Error("FNOS_NODE_HEADERS_TARBALL does not contain include/node/node.h.");
+  }
+  const rebuildEnv = {
+    npm_config_nodedir: stagedNodeHeadersDir,
+    npm_config_runtime: "node",
+    npm_config_build_from_source: "true",
+  };
+  const nodeTool = path.join(stagedNodeBinDir, "node");
+  const npmTool = path.join(stagedNodeBinDir, "npm");
+  const nativeRebuild = run(nodeTool, [npmTool, "rebuild", "better-sqlite3", "--build-from-source"], {
     cwd: stagedServerDir,
     stdio: "inherit",
     env: rebuildEnv,
   });
   if (nativeRebuild.status !== 0) process.exit(nativeRebuild.status || 1);
+  const verifyNative = run(nodeTool, [
+    "-e",
+    "const Database=require('better-sqlite3'); const db=new Database(':memory:'); if (db.prepare('select 1 as ok').get().ok !== 1) process.exit(1); db.close();",
+  ], {
+    cwd: stagedServerDir,
+    stdio: "inherit",
+  });
+  if (verifyNative.status !== 0) {
+    console.error("Node20 better-sqlite3 verification failed after native rebuild.");
+    process.exit(verifyNative.status || 1);
+  }
+}
+
+if (hasNode && externalNode) {
+  fs.rmSync(path.join(stageDir, "app", "bin"), { recursive: true, force: true });
+} else if (!stageOnly && hasNode) {
+  fs.rmSync(path.join(stageDir, "app", ".fnos-node-headers"), { recursive: true, force: true });
+  fs.renameSync(path.join(stageDir, "app", "bin", "bin", "node"), path.join(stageDir, "app", "bin", "node"));
+  for (const entry of fs.readdirSync(path.join(stageDir, "app", "bin"))) {
+    if (entry === "node") continue;
+    fs.rmSync(path.join(stageDir, "app", "bin", entry), { recursive: true, force: true });
+  }
 }
 
 if (manualFpk) {

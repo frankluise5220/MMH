@@ -12,6 +12,8 @@ import {
   type EntryBalanceChange,
 } from "@/lib/server/account-balance";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
+import { depositLotBelongsToAccount } from "@/lib/server/deposit-lot-options";
+import { isDepositRedemptionDateAllowed, loadDepositLotBalance, loadLatestDepositInterestDate } from "@/lib/server/deposit-lot-balance";
 import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 import { getFundArrivalDays, getFundConfirmDays, setFundConfirmDays, setFundArrivalDays } from "@/lib/fund/confirmDays";
 import { setFundFeeRateByDate } from "@/lib/fund/feeRate";
@@ -34,7 +36,7 @@ import { createCreditCardInstallmentPlan } from "@/lib/server/credit-card-instal
 import { ENTRY_ORIGIN_MANUAL, isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/transaction-semantics";
 import { ensureSettlementTransferCategory, resolveCategorySnapshot, resolveCreditCardRepaymentCategory, SYSTEM_DEPOSIT_INTEREST_CATEGORY } from "@/lib/default-categories";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
-import { depositInterestDaysUtc } from "@/lib/deposit-maturity";
+import { calculateDepositAccruedInterest, depositInterestDaysUtc } from "@/lib/deposit-maturity";
 import { getCashFlowDate } from "@/lib/cash-flow-date";
 import { buildWealthCashFlowNote } from "@/lib/wealth-cash-note";
 import { linkExpenseToFixedAsset, syncLinkedFixedAssetTransactionFromCashEntry } from "@/lib/property/transactions";
@@ -745,6 +747,10 @@ export async function createTransaction(formData: FormData) {
     } else if (type === "income") {
       const accountId = String(formData.get("accountId") ?? "").trim();
       const categoryId = String(formData.get("categoryId") ?? "").trim();
+      const depositLotId = String(formData.get("depositSourceEntryId") ?? "").trim();
+      if (depositLotId && (!accountId || !(await depositLotBelongsToAccount({ householdId, accountId, lotId: depositLotId })))) {
+        throw new Error("DEPOSIT_LOT_NOT_FOUND");
+      }
 
       await prisma.$transaction(async (tx) => {
         const [acc, cat] = await Promise.all([
@@ -761,6 +767,9 @@ export async function createTransaction(formData: FormData) {
           if (!isDepositAccount(acc) || !isDepositPostingCategoryAllowed(cat?.name ?? null, "income")) {
             throw new Error(t("sidebar.action.investmentNoIncomeExpense"));
           }
+        }
+        if (acc && isDepositAccount(acc) && !depositLotId) {
+          throw new Error("DEPOSIT_LOT_REQUIRED");
         }
         if (acc) {
           const duplicate = await findRecentManualTransactionDuplicate(tx, {
@@ -786,6 +795,7 @@ export async function createTransaction(formData: FormData) {
             postedAt,
             note: note || undefined,
             statementMonth: statementMonth ?? undefined,
+            depositSourceEntryId: depositLotId || undefined,
             ...{ householdId },
           } as any,
         });
@@ -822,10 +832,10 @@ export async function createTransaction(formData: FormData) {
       const metalUnitPriceRaw = parseFloat(String(formData.get("metalUnitPrice") ?? formData.get("fundNav") ?? ""));
       const metalFeeRaw = parseFloat(String(formData.get("metalFee") ?? formData.get("fundFee") ?? ""));
       const fundUnitsRaw = parseFloat(String(formData.get("fundUnits") ?? ""));
-  const fundNavRaw = parseFloat(String(formData.get("fundNav") ?? ""));
-  const depositAnnualRateRaw = parseFloat(String(formData.get("depositAnnualRate") ?? ""));
-  const depositInterestRaw = parseFloat(String(formData.get("depositInterest") ?? ""));
-  const fundFeeRaw = parseFloat(String(formData.get("fundFee") ?? ""));
+      const fundNavRaw = parseFloat(String(formData.get("fundNav") ?? ""));
+      const depositAnnualRateRaw = parseFloat(String(formData.get("depositAnnualRate") ?? ""));
+      const depositInterestRaw = parseFloat(String(formData.get("depositInterest") ?? ""));
+      const fundFeeRaw = parseFloat(String(formData.get("fundFee") ?? ""));
       const fundConfirmDateStr = String(formData.get("fundConfirmDate") ?? "").trim();
       const fundArrivalDateStr = String(formData.get("fundArrivalDate") ?? "").trim();
       const fundArrivalAmountRaw = parseFloat(String(formData.get("fundArrivalAmount") ?? ""));
@@ -888,6 +898,9 @@ export async function createTransaction(formData: FormData) {
       const finalFundSubtype: FundSubtype = isDividendReinvest ? FundSubtype.buy : fundSubtypeValue;
 
       let finalInvestmentAccId = "";
+      let calculatedDepositRedemptionInterest: number | null = null;
+      let calculatedDepositRedemptionArrival: number | null = null;
+      let calculatedDepositRedemptionAnnualRate: number | null = null;
       await prisma.$transaction(async (tx) => {
         // accountId is unified as the investment (fund) account.
         const investAcc =
@@ -909,6 +922,73 @@ export async function createTransaction(formData: FormData) {
               : await tx.account.findUnique({ where: { id: accountId } });
         if (!investAcc) throw new Error(t("sidebar.action.accountNotFound"));
         if (!isPureInvestmentAccount(investAcc) && !isDepositAccount(investAcc)) throw new Error(t("sidebar.action.selectInvestmentDepositAccount"));
+        if (fundProductType === "deposit" && redeemLike) {
+          if (!depositSourceEntryId) throw new Error(t("depositForm.alert.selectRedeemLot"));
+          const sourceLot = await tx.txRecord.findFirst({
+            where: {
+              id: depositSourceEntryId,
+              householdId,
+              deletedAt: null,
+              type: TransactionType.investment,
+              fundProductType: "deposit",
+              fundSubtype: FundSubtype.buy,
+              toAccountId: investAcc.id,
+            },
+            select: {
+              id: true,
+              date: true,
+              fundConfirmDate: true,
+              fundArrivalDate: true,
+              depositAnnualRate: true,
+              DepositProduct: { select: { annualRate: true } },
+            },
+          });
+          if (!sourceLot) throw new Error(t("depositForm.alert.selectRedeemLot"));
+          const latestInterestDate = await loadLatestDepositInterestDate({
+            householdId,
+            lotId: sourceLot.id,
+            client: tx,
+          });
+          if (!isDepositRedemptionDateAllowed(date, latestInterestDate)) {
+            throw new Error(t("depositForm.alert.redeemBeforeInterest"));
+          }
+          const lotBalance = await loadDepositLotBalance({
+            householdId,
+            lotId: sourceLot.id,
+            client: tx,
+          });
+          const redemptionPrincipal = depositPrincipalAmount ?? amountAbs;
+          if (!lotBalance || redemptionPrincipal <= 0 || redemptionPrincipal > lotBalance.remainingPrincipal + 0.0001) {
+            throw new Error(t("depositForm.alert.principalExceedsRemaining"));
+          }
+          const startDate = sourceLot.fundConfirmDate ?? sourceLot.date;
+          const cappedEndDate = sourceLot.fundArrivalDate && date > sourceLot.fundArrivalDate
+            ? sourceLot.fundArrivalDate
+            : date;
+          const annualRate = sourceLot.depositAnnualRate != null
+            ? toNumber(sourceLot.depositAnnualRate)
+            : sourceLot.DepositProduct?.annualRate != null
+              ? toNumber(sourceLot.DepositProduct.annualRate)
+              : depositAnnualRate ?? 0;
+          calculatedDepositRedemptionAnnualRate = annualRate > 0 ? annualRate : null;
+          const hasCalculationInputs = annualRate > 0 && !!startDate;
+          const calculatedInterest = hasCalculationInputs
+            ? calculateDepositAccruedInterest({
+                principal: redemptionPrincipal,
+                annualRatePercent: annualRate,
+                startDate,
+                endDate: cappedEndDate,
+              })
+            : 0;
+          calculatedDepositRedemptionInterest = hasCalculationInputs ? calculatedInterest : null;
+          calculatedDepositRedemptionArrival = hasCalculationInputs
+            ? Number((redemptionPrincipal + calculatedInterest).toFixed(2))
+            : null;
+          const redemptionArrival = calculatedDepositRedemptionArrival ?? fundArrivalAmount ?? amountAbs;
+          if (!(redemptionArrival > 0) || redemptionArrival + 0.0001 < redemptionPrincipal) {
+            throw new Error(t("txForm.alert.invalidAmount"));
+          }
+        }
         finalInvestmentAccId = investAcc.id;
         const fundUnitsPrecisionAccount = await tx.account.findUnique({
           where: { id: investAcc.id },
@@ -1005,7 +1085,7 @@ export async function createTransaction(formData: FormData) {
           recordAccountName = investAcc.name;
           recordToAccountId = cashAcc?.id ?? investAcc.id;
           recordToAccountName = cashAcc?.name ?? investAcc.name;
-          signedAmount = fundArrivalAmount ?? Math.max(0, amountAbs + (depositInterest ?? 0) - (fundFee ?? 0));
+          signedAmount = calculatedDepositRedemptionArrival ?? fundArrivalAmount ?? Math.max(0, amountAbs + (depositInterest ?? 0) - (fundFee ?? 0));
         } else if (isDividendReinvest) {
           recordAccountId = investAcc.id;
           recordAccountName = investAcc.name;
@@ -1029,7 +1109,12 @@ export async function createTransaction(formData: FormData) {
         const entryArrivalAmount =
           fundProductType === "deposit" && !redeemLike && !isDividendCash && !isDividendReinvest
             ? (depositPrincipalAmount ?? amountAbs)
-            : fundArrivalAmount;
+            : calculatedDepositRedemptionArrival ?? fundArrivalAmount;
+        const effectiveDepositInterest = fundProductType === "deposit" && redeemLike && calculatedDepositRedemptionInterest != null
+          ? calculatedDepositRedemptionInterest
+          : fundProductType === "deposit" && redeemLike && entryArrivalAmount != null
+          ? Math.max(0, Number((Math.abs(entryArrivalAmount) - (depositPrincipalAmount ?? amountAbs)).toFixed(2)))
+          : depositInterest;
 
         const applyDateStr = date.toISOString().slice(0, 10);
         const shouldComputeArrival = finalFundSubtype === FundSubtype.buy && !redeemLike && !isDividendCash && !isDividendReinvest;
@@ -1158,8 +1243,11 @@ export async function createTransaction(formData: FormData) {
               source: sourceValue,
               fundUnits: isMetalProduct ? undefined : roundedFundUnits ?? undefined,
               fundNav: isMetalProduct || fundProductType === "deposit" ? undefined : fundNav ?? undefined,
-              depositAnnualRate: depositAnnualRate ?? undefined,
-              depositInterest: depositInterest ?? undefined,
+              depositAnnualRate:
+                fundProductType === "deposit" && redeemLike
+                  ? calculatedDepositRedemptionAnnualRate ?? depositAnnualRate ?? undefined
+                  : depositAnnualRate ?? undefined,
+              depositInterest: effectiveDepositInterest ?? undefined,
               depositSourceEntryId: depositSourceEntryId ?? undefined,
               depositMaturityAction: redeemLike || isDividendCash || isDividendReinvest ? null : depositMaturityAction ?? undefined,
               depositInterestPayoutFrequency: redeemLike || isDividendCash || isDividendReinvest ? null : depositInterestPayoutFrequency ?? undefined,
@@ -1580,6 +1668,7 @@ export async function editInvestment(formData: FormData) {
   const fundArrivalDateStr = String(formData.get("fundArrivalDate") ?? "").trim();
   const fundArrivalAmountStr = String(formData.get("fundArrivalAmount") ?? "").trim();
   const depositSourceEntryIdStr = String(formData.get("depositSourceEntryId") ?? "").trim();
+  const depositPrincipalAmountRaw = parseFloat(String(formData.get("depositPrincipalAmount") ?? ""));
   const depositMaturityActionStr = String(formData.get("depositMaturityAction") ?? "").trim();
   const depositInterestPayoutStr = String(formData.get("depositInterestPayoutFrequency") ?? "").trim();
   const confirmDaysStr = String(formData.get("confirmDays") ?? "").trim();
@@ -1632,9 +1721,6 @@ export async function editInvestment(formData: FormData) {
     : undefined;
   const fundArrivalAmount: number | null | undefined = hasFundArrivalAmount
     ? (Number.isFinite(fundArrivalAmountRaw) && fundArrivalAmountRaw > 0 ? fundArrivalAmountRaw : null)
-    : undefined;
-  const depositSourceEntryId: string | null | undefined = hasDepositSourceEntryId
-    ? (depositSourceEntryIdStr || null)
     : undefined;
   const depositMaturityAction: string | null | undefined = hasDepositMaturityAction
     ? (["redeem", "renew_principal", "renew_principal_interest"].includes(depositMaturityActionStr) ? depositMaturityActionStr : null)
@@ -1763,6 +1849,8 @@ export async function editInvestment(formData: FormData) {
     const oldInvestmentAccId = existingFundTransactionForRecalc?.fundAccountId ?? ((isOldRedeemOrRefund ? txRecord.accountId : txRecord.toAccountId) ?? "");
     const oldCashAccId = existingFundTransactionForRecalc?.cashAccountId ?? ((isOldRedeemOrRefund ? txRecord.toAccountId : txRecord.accountId) ?? "");
     const oldFundCode = existingFundTransactionForRecalc?.fundCode ?? null;
+    const oldDepositSourceEntryId = txRecord.depositSourceEntryId;
+    let newDepositSourceEntryId: string | null = null;
 
     // Detect whether a new fund account was passed (via the toAccountId field).
     const hasNewToAccountId = formData.has("toAccountId");
@@ -1855,6 +1943,86 @@ export async function editInvestment(formData: FormData) {
         : null;
       if (fundProductType === "deposit" && !depositProduct) throw new Error(t("sidebar.action.selectOrCreateDepositProduct"));
 
+      const effectiveDepositSourceEntryId = fundProductType === "deposit"
+        ? (hasDepositSourceEntryId ? depositSourceEntryIdStr || null : txRecord.depositSourceEntryId)
+        : null;
+      newDepositSourceEntryId = effectiveDepositSourceEntryId;
+      let effectiveDepositInterest = depositInterest;
+      let effectiveFundArrivalAmount = fundArrivalAmount;
+      let effectiveDepositAnnualRate = depositAnnualRate;
+      if (fundProductType === "deposit" && redeemLike) {
+        if (!effectiveDepositSourceEntryId) throw new Error(t("depositForm.alert.selectRedeemLot"));
+        const sourceLot = await tx.txRecord.findFirst({
+          where: {
+            id: effectiveDepositSourceEntryId,
+            householdId,
+            deletedAt: null,
+            type: TransactionType.investment,
+            fundProductType: "deposit",
+            fundSubtype: FundSubtype.buy,
+            toAccountId: finalFundAccountId,
+          },
+          select: {
+            id: true,
+            date: true,
+            fundConfirmDate: true,
+            fundArrivalDate: true,
+            depositAnnualRate: true,
+            DepositProduct: { select: { annualRate: true } },
+          },
+        });
+        if (!sourceLot) throw new Error(t("depositForm.alert.selectRedeemLot"));
+        const latestInterestDate = await loadLatestDepositInterestDate({
+          householdId,
+          lotId: sourceLot.id,
+          client: tx,
+        });
+        if (!isDepositRedemptionDateAllowed(date, latestInterestDate)) {
+          throw new Error(t("depositForm.alert.redeemBeforeInterest"));
+        }
+        const lotBalance = await loadDepositLotBalance({
+          householdId,
+          lotId: sourceLot.id,
+          excludeEntryId: entryId,
+          client: tx,
+        });
+        const redemptionPrincipal = Number.isFinite(depositPrincipalAmountRaw) && depositPrincipalAmountRaw > 0
+          ? Math.abs(depositPrincipalAmountRaw)
+          : amountAbs;
+        if (!lotBalance || redemptionPrincipal <= 0 || redemptionPrincipal > lotBalance.remainingPrincipal + 0.0001) {
+          throw new Error(t("depositForm.alert.principalExceedsRemaining"));
+        }
+        const startDate = sourceLot.fundConfirmDate ?? sourceLot.date;
+        const cappedEndDate = sourceLot.fundArrivalDate && date > sourceLot.fundArrivalDate
+          ? sourceLot.fundArrivalDate
+          : date;
+        const annualRate = sourceLot.depositAnnualRate != null
+          ? toNumber(sourceLot.depositAnnualRate)
+          : sourceLot.DepositProduct?.annualRate != null
+            ? toNumber(sourceLot.DepositProduct.annualRate)
+            : depositAnnualRate ?? toNumber(txRecord.depositAnnualRate);
+        effectiveDepositAnnualRate = annualRate > 0 ? annualRate : depositAnnualRate;
+        const hasCalculationInputs = annualRate > 0 && !!startDate;
+        const calculatedInterest = hasCalculationInputs
+          ? calculateDepositAccruedInterest({
+              principal: redemptionPrincipal,
+              annualRatePercent: annualRate,
+              startDate,
+              endDate: cappedEndDate,
+            })
+          : 0;
+        const arrival = hasCalculationInputs
+          ? Number((redemptionPrincipal + calculatedInterest).toFixed(2))
+          : fundArrivalAmount ?? Math.abs(Number(txRecord.fundArrivalAmount ?? txRecord.amount ?? 0));
+        if (!(arrival > 0) || arrival + 0.0001 < redemptionPrincipal) {
+          throw new Error(t("txForm.alert.invalidAmount"));
+        }
+        effectiveFundArrivalAmount = arrival;
+        effectiveDepositInterest = hasCalculationInputs
+          ? calculatedInterest
+          : Number((arrival - redemptionPrincipal).toFixed(2));
+      }
+
       // Build the TxRecord update data.
       const sourceValue = fundProductType === "deposit"
         ? "deposit"
@@ -1868,7 +2036,7 @@ export async function editInvestment(formData: FormData) {
       const signedAmount = isDividendReinvest
         ? 0
         : (redeemLike || isBuyFailedRefund)
-          ? (fundArrivalAmount ?? Math.max(0, amountAbs + (depositInterest ?? 0) - (fundFee ?? 0)))
+          ? (effectiveFundArrivalAmount ?? Math.max(0, amountAbs + (effectiveDepositInterest ?? 0) - (fundFee ?? 0)))
           : (isDividendCash ? amountAbs : -amountAbs);
       const isMetalProduct = fundProductType === "metal";
       const isWealthProduct = fundProductType === "wealth";
@@ -1890,9 +2058,9 @@ export async function editInvestment(formData: FormData) {
         source: sourceValue,
         fundUnits: isMetalProduct ? null : (hasFundUnits ? roundedFundUnits : txRecord.fundUnits),
         fundNav: isMetalProduct || fundProductType === "deposit" ? null : fundNav ?? null,
-        depositAnnualRate: depositAnnualRate ?? null,
-        depositInterest: depositInterest ?? null,
-        depositSourceEntryId: depositSourceEntryId ?? null,
+        depositAnnualRate: effectiveDepositAnnualRate ?? null,
+        depositInterest: effectiveDepositInterest ?? null,
+        depositSourceEntryId: effectiveDepositSourceEntryId,
         // Deposit maturity / payout options are only sent by the deposit form.
         // Other edit entry points (fund / metal / wealth modals) must leave the
         // stored values untouched instead of clearing them to null.
@@ -1913,7 +2081,7 @@ export async function editInvestment(formData: FormData) {
           ? null
           : fundConfirmDate ?? (fundProductType === "deposit" && !redeemLike ? txRecord.fundConfirmDate : null),
         fundArrivalDate: isMetalProduct ? null : fundArrivalDate ?? null,
-        fundArrivalAmount: fundArrivalAmount ?? null,
+        fundArrivalAmount: effectiveFundArrivalAmount ?? null,
         note: memo || null,
       };
       if (
@@ -2203,6 +2371,19 @@ export async function editInvestment(formData: FormData) {
         console.error("editInvestment sync independent business transaction:", e);
       });
     }
+    const depositLotIdsToRefresh = new Set<string>();
+    if (oldDepositSourceEntryId) depositLotIdsToRefresh.add(oldDepositSourceEntryId);
+    if (fundProductType === "deposit" && redeemLike && newDepositSourceEntryId) {
+      depositLotIdsToRefresh.add(newDepositSourceEntryId);
+    }
+    if (depositLotIdsToRefresh.size > 0) {
+      const planTasks = await import("@/lib/server/deposit-plan-tasks");
+      await Promise.all([...depositLotIdsToRefresh].map((lotId) =>
+        planTasks.ensureDepositPlansForLot({ householdId, lotId }).catch((e) => {
+          console.error("editInvestment refresh deposit plans:", e);
+        }),
+      ));
+    }
     await applyEntryChangesToAccountBalances(Array.from(balanceChangesToApply.values())).catch((e) => {
       console.error("editInvestment update account balances:", e);
     });
@@ -2302,16 +2483,8 @@ export async function renewDeposit(formData: FormData) {
       },
     });
     if (!buy) return { ok: false as const, error: t("deposit.renew.notFound") };
-    const redeemedLink = await prisma.txRecord.findFirst({
-      where: {
-        householdId,
-        deletedAt: null,
-        depositSourceEntryId: buy.id,
-        fundSubtype: { in: [FundSubtype.redeem, FundSubtype.switch_out] },
-      },
-      select: { id: true },
-    });
-    if (redeemedLink) return { ok: false as const, error: t("deposit.renew.lotClosed") };
+    const lotBalance = await loadDepositLotBalance({ householdId, lotId: buy.id });
+    if (!lotBalance || lotBalance.settled) return { ok: false as const, error: t("deposit.renew.lotClosed") };
 
     // Deposits that pay out interest periodically cannot roll interest into the
     // principal (it has already been paid out), so clamp to principal renewal.
@@ -2320,7 +2493,7 @@ export async function renewDeposit(formData: FormData) {
       mode = "renew_principal";
     }
 
-    const principal = Math.abs(toNumber(buy.fundArrivalAmount ?? buy.amount));
+    const principal = lotBalance.remainingPrincipal;
     const annualRate = toNumber(buy.depositAnnualRate);
     const effectiveNewRate = Number.isFinite(newRateRaw) && newRateRaw > 0 ? newRateRaw : (annualRate > 0 ? annualRate : null);
     if (!(principal > 0)) return { ok: false as const, error: t("deposit.renew.missingPrincipal") };
@@ -2371,7 +2544,7 @@ export async function renewDeposit(formData: FormData) {
           // Renewal effective date: interest for the next term accrues from here.
           fundConfirmDate: maturityDate,
           ...(mode === "renew_principal_interest"
-            ? { fundArrivalAmount: Number((principal + accruedInterest).toFixed(2)) }
+            ? { fundArrivalAmount: Number((principal + accruedInterest + lotBalance.redeemedPrincipal).toFixed(2)) }
             : {}),
         },
       });
@@ -2396,6 +2569,7 @@ export async function renewDeposit(formData: FormData) {
             categoryName: interestCategory?.name ?? SYSTEM_DEPOSIT_INTEREST_CATEGORY,
             source: "deposit",
             entryOrigin: ENTRY_ORIGIN_MANUAL,
+            depositSourceEntryId: buy.id,
             note: `${t("deposit.renew.payoutNote", { name: buy.fundName ?? "" })}`,
             ...{ householdId },
           },
@@ -2413,6 +2587,7 @@ export async function renewDeposit(formData: FormData) {
             currency: buy.currency ?? depositAccount.currency ?? "CNY",
             source: "deposit",
             entryOrigin: ENTRY_ORIGIN_MANUAL,
+            depositSourceEntryId: buy.id,
             note: `${t("deposit.renew.payoutTransferNote", { name: buy.fundName ?? "" })}`,
             ...{ householdId },
           },
@@ -2472,22 +2647,14 @@ export async function payDepositInterest(formData: FormData) {
       },
     });
     if (!buy) return { ok: false as const, error: t("deposit.renew.notFound") };
-    const redeemedLink = await prisma.txRecord.findFirst({
-      where: {
-        householdId,
-        deletedAt: null,
-        depositSourceEntryId: buy.id,
-        fundSubtype: { in: [FundSubtype.redeem, FundSubtype.switch_out] },
-      },
-      select: { id: true },
-    });
-    if (redeemedLink) return { ok: false as const, error: t("deposit.renew.lotClosed") };
+    const lotBalance = await loadDepositLotBalance({ householdId, lotId: buy.id });
+    if (!lotBalance || lotBalance.settled) return { ok: false as const, error: t("deposit.renew.lotClosed") };
     const payoutFrequency = buy.depositInterestPayoutFrequency;
     if (!isPeriodicDepositInterestPayout(payoutFrequency)) {
       return { ok: false as const, error: t("deposit.payInterest.notPeriodic") };
     }
 
-    const principal = Math.abs(toNumber(buy.fundArrivalAmount ?? buy.amount));
+    const principal = lotBalance.remainingPrincipal;
     const annualRate = toNumber(buy.depositAnnualRate);
     if (!(principal > 0)) return { ok: false as const, error: t("deposit.renew.missingPrincipal") };
     if (!(annualRate > 0)) return { ok: false as const, error: t("deposit.renew.missingRate") };
@@ -2547,6 +2714,7 @@ export async function payDepositInterest(formData: FormData) {
           categoryName: interestCategory?.name ?? SYSTEM_DEPOSIT_INTEREST_CATEGORY,
           source: "deposit",
           entryOrigin: ENTRY_ORIGIN_MANUAL,
+          depositSourceEntryId: buy.id,
           regularInvestPlanId: payoutPlanId ?? null,
           note: `${t("deposit.renew.payoutNote", { name: buy.fundName ?? "" })}`,
           ...{ householdId },
@@ -2565,6 +2733,7 @@ export async function payDepositInterest(formData: FormData) {
           currency: buy.currency ?? depositAccount.currency ?? "CNY",
           source: "deposit",
           entryOrigin: ENTRY_ORIGIN_MANUAL,
+          depositSourceEntryId: buy.id,
           regularInvestPlanId: payoutPlanId ?? null,
           note: `${t("deposit.renew.payoutTransferNote", { name: buy.fundName ?? "" })}`,
           ...{ householdId },
@@ -3017,6 +3186,8 @@ export async function updateTransactionFromDialog(formData: FormData) {
       const accountId = String(formData.get("accountId") ?? "").trim();
       const categoryId = String(formData.get("categoryId") ?? "").trim();
       const keepFundDetail = formData.get("keepFundDetail") === "true";
+      const formHasDepositLot = formData.has("depositSourceEntryId");
+      const formDepositLotId = String(formData.get("depositSourceEntryId") ?? "").trim();
 
       const [acc, cat] = await Promise.all([
         accountId ? tx.account.findUnique({ where: { id: accountId }, include: { Institution: true } }) : Promise.resolve(null),
@@ -3024,6 +3195,13 @@ export async function updateTransactionFromDialog(formData: FormData) {
       ]);
       if (!acc) throw new Error(t("investForm.selectAccount"));
       touchedAccountIds.add(acc.id);
+      if (type === "income" && formHasDepositLot && formDepositLotId
+        && !(await depositLotBelongsToAccount({ householdId: ctx.householdId, accountId: acc.id, lotId: formDepositLotId }))) {
+        throw new Error("DEPOSIT_LOT_NOT_FOUND");
+      }
+      if (type === "income" && formHasDepositLot && !formDepositLotId && isDepositAccount(acc)) {
+        throw new Error("DEPOSIT_LOT_REQUIRED");
+      }
       // 账户没变时放行：系统生成的存款利息收入等历史记录本来就落在定期存款账户上，
       // 用户编辑它们只是为了改金额/备注/分类/日期，不应该因为「原账户不是普通记账账户」而被拦住。
       // 一旦把账户改到别的账户，仍然按普通规则硬校验（不能主动把收支改挂到存款/投资账户）。
@@ -3046,6 +3224,9 @@ export async function updateTransactionFromDialog(formData: FormData) {
         categoryId: cat ? cat.id : null,
         categoryName: cat?.name ?? null,
         statementMonth,
+        ...(type === "income" && formHasDepositLot
+          ? { depositSourceEntryId: formDepositLotId || null }
+          : type === "expense" ? { depositSourceEntryId: null } : {}),
         toAccountId: null,
         toAccountName: null,
         fundCode: null,

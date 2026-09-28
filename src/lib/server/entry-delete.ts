@@ -1,4 +1,4 @@
-import { Prisma, type TxRecord } from "@prisma/client";
+import { Prisma, ReimbursementStatus, type TxRecord } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import { chunk, IN_CHUNK_SIZE } from "@/lib/server/prisma-in-chunks";
@@ -102,6 +102,155 @@ export type EntryDeleteResult = {
   removedEntryIds: string[];
   accountIds: string[];
 };
+
+type ReimbursementSettlementCleanup = {
+  settlementId: string;
+  reimbursementId: string;
+  cashAccountId: string;
+  transactionIds: string[];
+};
+
+type ReimbursementPaymentCleanup = {
+  reimbursementId: string;
+  advanceAccountId: string | null;
+  cashAccountId: string | null;
+};
+
+async function findReimbursementPaymentCleanup(
+  householdId: string,
+  entryIds: string[],
+): Promise<ReimbursementPaymentCleanup[]> {
+  return prisma.reimbursement.findMany({
+    where: {
+      householdId,
+      deletedAt: null,
+      paymentTxRecordId: { in: entryIds },
+    },
+    select: { id: true, advanceAccountId: true, cashAccountId: true },
+  }).then((rows) => rows.map((row) => ({
+    reimbursementId: row.id,
+    advanceAccountId: row.advanceAccountId,
+    cashAccountId: row.cashAccountId,
+  })));
+}
+
+async function findReimbursementSettlementCleanup(
+  householdId: string,
+  entryIds: string[],
+): Promise<ReimbursementSettlementCleanup[]> {
+  const links = await prisma.reimbursementSettlementTransaction.findMany({
+    where: {
+      txRecordId: { in: entryIds },
+      Settlement: { Reimbursement: { householdId, deletedAt: null } },
+    },
+    select: { settlementId: true },
+  });
+  const settlementIds = Array.from(new Set(links.map((link) => link.settlementId)));
+  if (settlementIds.length === 0) return [];
+
+  const settlements = await prisma.reimbursementSettlement.findMany({
+    where: {
+      id: { in: settlementIds },
+      Reimbursement: { householdId, deletedAt: null },
+    },
+    select: {
+      id: true,
+      reimbursementId: true,
+      cashAccountId: true,
+      transactions: { select: { txRecordId: true } },
+    },
+  });
+  return settlements.map((settlement) => ({
+    settlementId: settlement.id,
+    reimbursementId: settlement.reimbursementId,
+    cashAccountId: settlement.cashAccountId,
+    transactionIds: settlement.transactions.map((transaction) => transaction.txRecordId),
+  }));
+}
+
+async function clearReimbursementSettlements(
+  householdId: string,
+  settlements: ReimbursementSettlementCleanup[],
+  accountsToRecalcBalance: Set<string>,
+) {
+  for (const settlement of settlements) {
+    const reimbursement = await prisma.reimbursement.findFirst({
+      where: { id: settlement.reimbursementId, householdId, deletedAt: null },
+      select: { advanceAccountId: true },
+    });
+    if (reimbursement?.advanceAccountId) accountsToRecalcBalance.add(reimbursement.advanceAccountId);
+    accountsToRecalcBalance.add(settlement.cashAccountId);
+
+    await prisma.reimbursementSettlement.deleteMany({ where: { id: settlement.settlementId } });
+
+    const remaining = await prisma.reimbursementSettlement.findMany({
+      where: {
+        reimbursementId: settlement.reimbursementId,
+        transactions: { some: { TxRecord: { deletedAt: null } } },
+      },
+      orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+      select: {
+        date: true,
+        cashAccountId: true,
+        cashAccountName: true,
+        transactions: {
+          where: { TxRecord: { deletedAt: null } },
+          orderBy: { createdAt: "asc" },
+          take: 1,
+          select: { txRecordId: true },
+        },
+      },
+    });
+    const latest = remaining[0];
+    await prisma.reimbursement.updateMany({
+      where: { id: settlement.reimbursementId, householdId, deletedAt: null },
+      data: latest
+        ? {
+            status: ReimbursementStatus.reimbursed,
+            reimbursedDate: latest.date,
+            cashAccountId: latest.cashAccountId,
+            cashAccountName: latest.cashAccountName,
+            paymentTxRecordId: latest.transactions[0]?.txRecordId ?? null,
+          }
+        : {
+            status: ReimbursementStatus.pending,
+            reimbursedDate: null,
+            cashAccountId: null,
+            cashAccountName: null,
+            paymentTxRecordId: null,
+          },
+    });
+  }
+}
+
+async function clearReimbursementPayments(
+  householdId: string,
+  payments: ReimbursementPaymentCleanup[],
+  handledReimbursementIds: Set<string>,
+  accountsToRecalcBalance: Set<string>,
+) {
+  for (const payment of payments) {
+    if (handledReimbursementIds.has(payment.reimbursementId)) continue;
+    if (payment.advanceAccountId) accountsToRecalcBalance.add(payment.advanceAccountId);
+    if (payment.cashAccountId) accountsToRecalcBalance.add(payment.cashAccountId);
+    await prisma.reimbursementSettlement.deleteMany({
+      where: {
+        reimbursementId: payment.reimbursementId,
+        transactions: { none: { TxRecord: { deletedAt: null } } },
+      },
+    });
+    await prisma.reimbursement.updateMany({
+      where: { id: payment.reimbursementId, householdId, deletedAt: null },
+      data: {
+        status: ReimbursementStatus.pending,
+        reimbursedDate: null,
+        cashAccountId: null,
+        cashAccountName: null,
+        paymentTxRecordId: null,
+      },
+    });
+  }
+}
 
 function addOptionalAccountId(targets: InvestmentRecalcTargets, accountId: string | null | undefined) {
   if (accountId) targets.accountsToRecalcBalance.add(accountId);
@@ -484,11 +633,15 @@ export async function softDeleteEntriesByIds(
   label?: string,
   options: EntryDeleteOptions = {},
 ): Promise<EntryDeleteResult> {
-  const ids = Array.from(new Set(entryIds.filter(Boolean)));
-  if (ids.length === 0) {
+  const requestedIds = Array.from(new Set(entryIds.filter(Boolean)));
+  if (requestedIds.length === 0) {
     return { deletedCount: 0, keptBusinessCount: 0, deletedEntryIds: [], removedEntryIds: [], accountIds: [] };
   }
 
+  const reimbursementSettlements = await findReimbursementSettlementCleanup(ctx.householdId, requestedIds);
+  const reimbursementPayments = await findReimbursementPaymentCleanup(ctx.householdId, requestedIds);
+  const settlementTransactionIds = reimbursementSettlements.flatMap((settlement) => settlement.transactionIds);
+  const ids = Array.from(new Set([...requestedIds, ...settlementTransactionIds]));
   const undo = await prepareEntryUndo(prisma, ctx.householdId, ids);
   let deletedCount = 0;
   let keptBusinessCount = 0;
@@ -626,6 +779,18 @@ export async function softDeleteEntriesByIds(
     deletedEntryIds.push(...independentDelete.deletedEntryIds);
     removedEntryIds.push(...independentDelete.removedEntryIds);
     if (independentDelete.touchedInvestment) touchedInvestment = true;
+  }
+
+  if (reimbursementSettlements.length > 0 && deletedCount > 0) {
+    await clearReimbursementSettlements(ctx.householdId, reimbursementSettlements, accountsToRecalcBalance);
+  }
+  if (reimbursementPayments.length > 0 && deletedCount > 0) {
+    await clearReimbursementPayments(
+      ctx.householdId,
+      reimbursementPayments,
+      new Set(reimbursementSettlements.map((settlement) => settlement.reimbursementId)),
+      accountsToRecalcBalance,
+    );
   }
 
   if (changedFundEntryIds.length > 0) {

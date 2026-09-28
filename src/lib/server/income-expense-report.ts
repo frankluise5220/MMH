@@ -21,6 +21,8 @@ import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE } from "@/lib/b
 import { buildStatisticsCurrencyConverter } from "@/lib/server/statistics-currency";
 import { getServerT } from "@/lib/server/i18n";
 
+const REIMBURSEMENT_INCOME_CATEGORY = "\u62a5\u9500";
+
 export type IncomeExpenseGroupBy = "month" | "year";
 
 export type IncomeExpenseReportColumn = {
@@ -365,6 +367,7 @@ export async function getIncomeExpenseReport(
             OR: [
               { realizedProfit: { not: null } },
               { debtInterestAmount: { not: null } },
+              { source: "reimbursement", debtPrincipalAmount: { not: null } },
             ],
           },
         ],
@@ -377,6 +380,9 @@ export async function getIncomeExpenseReport(
         amount: true,
         realizedProfit: true,
         debtInterestAmount: true,
+        debtPrincipalAmount: true,
+        reimbursementDifferenceAmount: true,
+        reimbursementDifferenceCategoryName: true,
         accountId: true,
         accountName: true,
         account: { select: { name: true } },
@@ -489,6 +495,9 @@ export async function getIncomeExpenseReport(
     categoryName?: string | null;
   }): string | null {
     if (record.type !== TransactionType.income) return null;
+    if (record.source === "reimbursement" || record.source === "advance") {
+      return REIMBURSEMENT_INCOME_CATEGORY;
+    }
     if (isBondInterestIncomeEntry(record)) return SYSTEM_BOND_PROFIT_CATEGORY;
     if (record.source === "deposit") return SYSTEM_DEPOSIT_INTEREST_CATEGORY;
 
@@ -544,6 +553,7 @@ export async function getIncomeExpenseReport(
     categoryName?: string | null;
   }): boolean {
     if (record.type !== TransactionType.income) return false;
+    if (record.source === "reimbursement" || record.source === "advance") return false;
     if (isBondInterestIncomeEntry(record)) return true;
     if (record.source === "deposit") return true;
     if (inferEconomicIncomeCategoryName(record)) return true;
@@ -588,7 +598,7 @@ export async function getIncomeExpenseReport(
       date: record.date,
       type,
       amount: isInsurance ? Math.abs(toNumber(record.amount)) : getIncomeExpenseStatisticAmount(record.type, record.amount),
-      categoryId: isInsurance || isBondInterest ? null : record.categoryId,
+      categoryId: isInsurance || isBondInterest || inferredIncomeCategory ? null : record.categoryId,
       categoryName: isInsurance
         ? (type === "income" ? SYSTEM_INSURANCE_RETURN_CATEGORY : SYSTEM_INSURANCE_EXPENSE_CATEGORY)
         : (inferredIncomeCategory ?? (record.categoryName?.trim() || null)),
@@ -673,8 +683,10 @@ export async function getIncomeExpenseReport(
         amount: item.amount,
         categoryId: category?.id ?? null,
         categoryName: category?.name ?? item.categoryName,
-        accountId: item.type === "income" ? record.toAccountId ?? record.accountId : record.accountId,
-        accountName: item.type === "income" && record.toAccountId
+        accountId: item.type === "income" || record.source === "reimbursement"
+          ? record.toAccountId ?? record.accountId
+          : record.accountId,
+        accountName: (item.type === "income" || record.source === "reimbursement") && record.toAccountId
           ? accountDisplayName(record.toAccount, record.toAccountName)
           : accountDisplayName(record.account, record.accountName),
         counterpartyName: item.label,

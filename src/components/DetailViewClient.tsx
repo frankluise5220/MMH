@@ -480,7 +480,7 @@ function activityLabel(type: string, fundSubtype: string | null, source: string 
   if (source === TRANSACTION_SOURCE_INSURANCE) {
     return fundSubtype === "redeem" || fundSubtype === "switch_out" ? t("detailView.insuranceRefund") : t("detailView.insuranceExpense");
   }
-  if (source === "advance") return t("txForm.advance");
+  if ((source === "advance" || source === "reimbursement") && type !== "expense") return t("txForm.advance");
   if (type === "investment" && (source === "deposit" || source === "deposit_manual")) return t("detailView.deposit");
   return formatType(type, t);
 }
@@ -729,7 +729,12 @@ export function DetailViewClient({
     if (entry.type === "investment") return investmentCategoryLabel(entry, entryFundProductType, t);
     if (isCreditCardRepaymentDisplayEntry(entry)) return t("transaction.category.creditCardRepayment");
     if (isLicensedInsuranceEntry(entry)) return getInsuranceDetailCategoryName(entry);
-    return systemCategoryLabel(entry.categoryName, t);
+    const categoryLabel = systemCategoryLabel(entry.categoryName, t);
+    if (categoryLabel) return categoryLabel;
+    if (entry.type === "income" && entry.source === "advance") {
+      return t("systemCategory.reimbursement");
+    }
+    return "";
   }, [accountOptionById, investmentProductTypeByAccountId, t]);
   const [refreshedEntries, setRefreshedEntries] = useState<{ accountId: string; entries: DetailEntry[] } | null>(null);
   const [linkingIds, setLinkingIds] = useState<Set<string>>(new Set());
@@ -1537,11 +1542,7 @@ export function DetailViewClient({
                     (entry.toAccountId ? investmentProductTypeByAccountId[entry.toAccountId] : undefined) ??
                     (entry.accountId ? investmentProductTypeByAccountId[entry.accountId] : undefined) ??
                     null;
-                  const category = (
-                    debtCategoryLabel(entry, accountOptionById, t) ?? (entry.type === "investment"
-                      ? investmentCategoryLabel(entry, entryFundProductType, t)
-                      : getInsuranceDetailCategoryName(entry))
-                  ) || t("txForm.uncategorized");
+                  const category = detailCategoryLabel(entry) || t("txForm.uncategorized");
                   const note = displayDetailRemark(entry, flowAccountIdOf(entry));
                   const related = relatedAccountTarget(entry);
                   const relatedDisplay = accountDisplayFallback(related.id, related.name);
@@ -1559,8 +1560,10 @@ export function DetailViewClient({
                       }}
                       className={`flex min-h-[68px] w-full items-center gap-3 px-3 py-2.5 text-left ${detailDateBackground ? (entryIndex % 2 === 0 ? "bg-white/70" : "bg-white/40") : ""}`}
                     >
-                      <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-xs font-semibold ${effectiveAmount >= 0 ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}>
-                        {entry.type === "transfer"
+                      <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-[10px] font-semibold ${effectiveAmount >= 0 ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}>
+                        {(entry.source === "advance" || entry.source === "reimbursement") && entry.type !== "expense"
+                          ? t("txForm.advance")
+                          : entry.type === "transfer"
                           ? t("detailView.badgeTransfer")
                           : entry.type === "investment"
                             ? t("detailView.badgeInvestment")

@@ -212,7 +212,6 @@ const REGULAR_INVEST_COLUMN_MIN_WIDTHS: Record<RegularInvestColumnKey, number> =
   status: 82,
   executedCount: 120,
 };
-const REGULAR_INVEST_DEFAULT_SORT: AdvancedDataTableSortState = { key: "nextRunDate", direction: "asc" };
 const REGULAR_INVEST_MAIN_TABLE_MIN_WIDTH = REGULAR_INVEST_COLUMNS.reduce(
   (total, column) => total + REGULAR_INVEST_COLUMN_WIDTHS[column.key],
   REGULAR_INVEST_ACTION_COLUMN_WIDTH,
@@ -1705,7 +1704,6 @@ export function RegularInvestClient({
                 fillHeight
                 showFilters
                 sortable
-                defaultSort={REGULAR_INVEST_DEFAULT_SORT}
                 filterRows={filterRegularInvestDisplayRows}
                 sortRows={sortRegularInvestDisplayRows}
                 emptyText={t("regularInvest.client.empty")}

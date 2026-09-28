@@ -19,6 +19,7 @@ import { getCashTargetOperation, isAdvanceFundingAccount, isDepositAccount, isDe
 import { buildAccountDisplayOption, buildGroupedAccountOptions, formatAccountHoverTitle } from "@/lib/account-display";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import type { DepositLotOption } from "@/lib/server/deposit-lot-options";
 import {
   fetchSettingsAccountData,
   fetchSettingsCategories,
@@ -622,6 +623,41 @@ export function TransactionFormModal({
     [accountList, accountId],
   );
   const selectedAccountIsDeposit = isDepositAccount(selectedAccountOption ?? null);
+  const showDepositLotSelect = txType === "income" && selectedAccountIsDeposit;
+  const [depositLotId, setDepositLotId] = useState("");
+  const [depositLotOptions, setDepositLotOptions] = useState<DepositLotOption[]>([]);
+  const [depositLotsLoading, setDepositLotsLoading] = useState(false);
+  useEffect(() => {
+    if (!open || !showDepositLotSelect || !accountId) {
+      setDepositLotOptions([]);
+      setDepositLotsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setDepositLotsLoading(true);
+    const params = new URLSearchParams({ accountIds: accountId, includeClosed: editEntryId ? "1" : "0" });
+    fetch(`/api/v1/deposit/lots?${params.toString()}`, { cache: "no-store" })
+      .then((res) => res.json().catch(() => null))
+      .then((data) => {
+        if (!cancelled) setDepositLotOptions(data?.ok && Array.isArray(data.lots) ? data.lots : []);
+      })
+      .catch(() => {
+        if (!cancelled) setDepositLotOptions([]);
+      })
+      .finally(() => {
+        if (!cancelled) setDepositLotsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [accountId, editEntryId, open, showDepositLotSelect]);
+
+  useEffect(() => {
+    if (!open || !showDepositLotSelect || depositLotsLoading || depositLotOptions.length === 0) return;
+    setDepositLotId((current) => {
+      if (depositLotOptions.some((option) => option.id === current)) return current;
+      if (editEntryId) return current;
+      return depositLotOptions.length === 1 ? depositLotOptions[0].id : "";
+    });
+  }, [depositLotOptions, depositLotsLoading, editEntryId, open, showDepositLotSelect]);
 
   /** Build hierarchical SmartSelect options for category dropdown.
    * All real categories are selectable. Categories with children are collapsible
@@ -1292,6 +1328,8 @@ export function TransactionFormModal({
     setAdvanceAccountId("");
     advanceAccountPinnedRef.current = false;
     setLocationId("");
+    setDepositLotId("");
+    setDepositLotOptions([]);
     setLocalAmount("");
     setFxPostingV2(true);
     setNote("");
@@ -1560,6 +1598,7 @@ export function TransactionFormModal({
         accountId?: string;
         accountLabel?: string;
         categoryId?: string;
+        depositSourceEntryId?: string | null;
         counterpartyInstitutionId?: string;
         advanceAccountId?: string;
         accountName?: string;
@@ -1708,6 +1747,7 @@ export function TransactionFormModal({
         });
         setAccountId(nextAccountId);
         setCategoryId(detail.categoryId ?? "");
+        setDepositLotId(detail.depositSourceEntryId ?? "");
         setFromAccountId("");
         setToAccountId(detail.toAccountId ?? "");
         setEditOriginalTransferAccounts(null);
@@ -1893,6 +1933,10 @@ export function TransactionFormModal({
         window.alert(t("txForm.alert.depositCategoryRestricted"));
         return;
       }
+      if (txType === "income" && isDepositAccount(selected ?? null) && !depositLotId) {
+        window.alert(depositLotsLoading ? t("txForm.alert.loadingDepositLot") : t("txForm.alert.selectDepositLot"));
+        return;
+      }
     }
 
     if (txType === "fx") {
@@ -2025,6 +2069,7 @@ export function TransactionFormModal({
         } else if (txType === "income") {
           formData.set("accountId", accountId);
           formData.set("categoryId", categoryId);
+          formData.set("depositSourceEntryId", depositLotId);
           if (toAccountId) formData.set("toAccountId", toAccountId);
         } else if (txType === "advance") {
           formData.set("accountId", accountId);
@@ -2506,6 +2551,30 @@ export function TransactionFormModal({
                       </div>
                     ) : null}
                   </div>
+
+                  {showDepositLotSelect ? (
+                    <div className="space-y-1">
+                      <div className="form-label">{t("txForm.depositLot")}</div>
+                      <div className={REQUIRED_FIELD_CLASS}>
+                        <SmartSelect
+                          mode="single"
+                          value={depositLotId}
+                          onChange={setDepositLotId}
+                          options={depositLotOptions.map((lot) => ({
+                            id: lot.id,
+                            label: lot.fundName || t("sidebar.deposit.unnamed"),
+                            subLabel: [
+                              lot.startDate ?? "",
+                              lot.maturityDate ?? "",
+                              lot.remainingAmount.toLocaleString(language, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+                            ].filter(Boolean).join(" · "),
+                          }))}
+                          placeholder={depositLotsLoading ? t("common.loading") : t("txForm.selectPlaceholder")}
+                          behavior={{ ...compactAccountSelectBehavior, clearable: false }}
+                        />
+                      </div>
+                    </div>
+                  ) : null}
 
                   <div className={txType === "expense"
                     ? showPostedAmount

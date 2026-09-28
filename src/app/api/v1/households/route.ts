@@ -10,7 +10,7 @@ import { logger } from "@/lib/logger";
 export async function GET() {
   const user = await getCurrentUser();
   if (!user) {
-    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "未登录" }, { status: 401 });
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "Authentication is required." }, { status: 401 });
   }
 
   // Always return all households (for the switch list); isAdmin/isSystem still reflect the current user's permissions
@@ -52,7 +52,7 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   const user = await getCurrentUser();
   if (!user) {
-    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "未登录" }, { status: 401 });
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "Authentication is required." }, { status: 401 });
   }
   const body = await req.json().catch(() => ({}));
   const name = String(body.name ?? "").trim();
@@ -61,16 +61,13 @@ export async function POST(req: NextRequest) {
   const adminEmail = String(body.adminEmail ?? "").trim();
 
   if (!name || name.length > 50) {
-    return NextResponse.json({ ok: false, code: "INVALID_HOUSEHOLD_NAME", error: "账簿名称不合法（1-50字）" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INVALID_HOUSEHOLD_NAME", error: "Ledger name must be between 1 and 50 characters." }, { status: 400 });
   }
   if (!adminName || adminName.length > 50) {
-    return NextResponse.json({ ok: false, code: "ADMIN_NAME_REQUIRED", error: "请填写管理员用户名（1-50字）" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "ADMIN_NAME_REQUIRED", error: "Administrator username must be between 1 and 50 characters." }, { status: 400 });
   }
   if (!adminPassword || adminPassword.length < 1) {
-    return NextResponse.json({ ok: false, code: "ADMIN_PASSWORD_REQUIRED", error: "请设置管理员密码" }, { status: 400 });
-  }
-  if (!adminEmail) {
-    return NextResponse.json({ ok: false, code: "ADMIN_EMAIL_REQUIRED", error: "请输入邮箱" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "ADMIN_PASSWORD_REQUIRED", error: "Administrator password is required." }, { status: 400 });
   }
 
   const { household } = await prisma.$transaction((tx) =>
@@ -93,7 +90,7 @@ export async function POST(req: NextRequest) {
 export async function PUT(req: NextRequest) {
   const user = await getCurrentUser();
   if (!isAdmin(user)) {
-    return NextResponse.json({ ok: false, code: "ADMIN_REQUIRED", error: "仅管理员可修改账簿" }, { status: 403 });
+    return NextResponse.json({ ok: false, code: "ADMIN_REQUIRED", error: "Administrator permission is required." }, { status: 403 });
   }
 
   const body = await req.json().catch(() => ({}));
@@ -101,15 +98,15 @@ export async function PUT(req: NextRequest) {
   const name = String(body.name ?? "").trim();
 
   if (!id) {
-    return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_ID", error: "A ledger ID is required." }, { status: 400 });
   }
   if (!name || name.length > 50) {
-    return NextResponse.json({ ok: false, code: "INVALID_HOUSEHOLD_NAME", error: "账簿名称不合法（1-50字）" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INVALID_HOUSEHOLD_NAME", error: "Ledger name must be between 1 and 50 characters." }, { status: 400 });
   }
 
   const existing = await prisma.household.findUnique({ where: { id } });
   if (!existing) {
-    return NextResponse.json({ ok: false, code: "HOUSEHOLD_NOT_FOUND", error: "账簿不存在" }, { status: 404 });
+    return NextResponse.json({ ok: false, code: "HOUSEHOLD_NOT_FOUND", error: "Ledger not found." }, { status: 404 });
   }
 
   await prisma.household.update({ where: { id }, data: { name } });
@@ -129,26 +126,26 @@ export async function DELETE(req: NextRequest) {
 
   // Only system admins can delete a household
   if (!user || user.isSystem !== true) {
-    return NextResponse.json({ ok: false, code: "SYSTEM_ADMIN_REQUIRED", error: "仅系统管理员可删除账簿" }, { status: 403 });
+    return NextResponse.json({ ok: false, code: "SYSTEM_ADMIN_REQUIRED", error: "System administrator permission is required." }, { status: 403 });
   }
 
   const body = await req.json().catch(() => ({}));
   const id = String(body.id ?? "").trim();
 
   if (!id) {
-    return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_ID", error: "A ledger ID is required." }, { status: 400 });
   }
 
   // Check whether the household exists
   const existing = await prisma.household.findUnique({ where: { id } });
   if (!existing) {
-    return NextResponse.json({ ok: false, code: "HOUSEHOLD_NOT_FOUND", error: "账簿不存在" }, { status: 404 });
+    return NextResponse.json({ ok: false, code: "HOUSEHOLD_NOT_FOUND", error: "Ledger not found." }, { status: 404 });
   }
 
   // The last household cannot be deleted
   const count = await prisma.household.count();
   if (count <= 1) {
-    return NextResponse.json({ ok: false, code: "LAST_HOUSEHOLD_NOT_DELETABLE", error: "最后一个账簿不可删除，请至少保留一个账簿" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "LAST_HOUSEHOLD_NOT_DELETABLE", error: "The last ledger cannot be deleted." }, { status: 400 });
   }
 
   try {
@@ -240,8 +237,8 @@ export async function DELETE(req: NextRequest) {
       await tx.household.delete({ where: { id } });
     }, { maxWait: 10_000, timeout: 120_000 });
   } catch (error) {
-    logger.error("删除账簿失败", "api/v1/households", error);
-    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: "删除账簿失败，请查看服务日志后重试" }, { status: 500 });
+    logger.error("Failed to delete ledger", "api/v1/households", error);
+    return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: "Failed to delete ledger." }, { status: 500 });
   }
 
   return NextResponse.json({ ok: true });

@@ -96,6 +96,7 @@ export function debtPrincipalForAccountSide(
   if (source === "debt_lend_out") return principal;
   if (source === "debt_collect_in") return -principal;
   if (source === "scheduled_task") return principal;
+  if (source === "reimbursement") return -principal;
 
   const isToDebtAccount = typeof debtAccountIdOrIds === "string"
     ? entry.toAccountId === debtAccountIdOrIds

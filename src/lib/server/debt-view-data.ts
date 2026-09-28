@@ -685,6 +685,8 @@ export function buildDebtDetailEntriesViewData({
       date: entryDateKey,
       typeLabel: isBalanceReconcile
         ? (entry.source === BALANCE_INITIALIZATION_SOURCE ? "初始余额" : "余额校准")
+        : entry.type === TransactionType.income
+        ? formatDebtEntryType(entry.type)
         : entry.source === "advance"
         ? (entry.categoryName || "代付")
         : entry.type === TransactionType.transfer

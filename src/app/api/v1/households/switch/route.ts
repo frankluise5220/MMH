@@ -15,7 +15,7 @@ import { HOUSEHOLD_COOKIE, USER_ID_COOKIE } from "@/lib/server/session-cookies";
 export async function POST(req: NextRequest) {
   const user = await getCurrentUser();
   if (!user) {
-    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "未登录" }, { status: 401 });
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "Authentication is required." }, { status: 401 });
   }
 
   const body = await req.json().catch(() => ({}));
@@ -23,18 +23,18 @@ export async function POST(req: NextRequest) {
   const username = String(body.username ?? "").trim();
   const password = String(body.password ?? "");
   if (!householdId) {
-    return NextResponse.json({ ok: false, code: "MISSING_HOUSEHOLD_ID", error: "缺少 householdId" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "MISSING_HOUSEHOLD_ID", error: "A ledger ID is required." }, { status: 400 });
   }
 
   const exists = await prisma.household.findUnique({ where: { id: householdId } });
   if (!exists) {
-    return NextResponse.json({ ok: false, code: "HOUSEHOLD_NOT_FOUND", error: "账簿不存在" }, { status: 404 });
+    return NextResponse.json({ ok: false, code: "HOUSEHOLD_NOT_FOUND", error: "Ledger not found." }, { status: 404 });
   }
 
   // Permission check: the current admin can switch directly; a regular user switching to a different household must verify the target household admin credentials.
   if (!isAdmin(user) && user.householdId !== householdId) {
     if (!username || !password) {
-      return NextResponse.json({ ok: false, code: "ADMIN_CREDENTIALS_REQUIRED", error: "请先输入目标账簿管理员用户名和密码" }, { status: 403 });
+      return NextResponse.json({ ok: false, code: "ADMIN_CREDENTIALS_REQUIRED", error: "Target ledger administrator credentials are required." }, { status: 403 });
     }
     const namedTargetUser = await prisma.user.findFirst({
       where: { name: username, householdId, role: "admin" },
@@ -45,11 +45,11 @@ export async function POST(req: NextRequest) {
       select: { passwordHash: true },
     });
     if (!targetUser?.passwordHash) {
-      return NextResponse.json({ ok: false, code: "TARGET_ADMIN_NOT_FOUND", error: "目标账簿管理员不存在或未设置密码" }, { status: 401 });
+      return NextResponse.json({ ok: false, code: "TARGET_ADMIN_NOT_FOUND", error: "The target ledger administrator was not found or has no password." }, { status: 401 });
     }
     const matched = await verifyPassword(password, targetUser.passwordHash);
     if (!matched) {
-      return NextResponse.json({ ok: false, code: "INVALID_ADMIN_PASSWORD", error: "目标账簿管理员密码错误" }, { status: 401 });
+      return NextResponse.json({ ok: false, code: "INVALID_ADMIN_PASSWORD", error: "The target ledger administrator password is incorrect." }, { status: 401 });
     }
   }
 

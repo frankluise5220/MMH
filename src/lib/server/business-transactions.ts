@@ -92,6 +92,9 @@ export async function syncIndependentBusinessTransactionFromTxRecord(
   const principalAmount = isCashInSubtype(subtype) && subtype !== FundSubtype.dividend_cash
     ? Math.max(0, (arrivalAmount ?? absAmount) - toNumber(entry.depositInterest) + toNumber(entry.fundFee))
     : absAmount;
+  const depositPrincipalAmount = businessType === "deposit"
+    ? Math.max(0, (arrivalAmount ?? absAmount) - Math.max(0, toNumber(entry.depositInterest)))
+    : principalAmount;
   const wealthRealizedProfit = subtype === FundSubtype.dividend_cash
     ? calculateWealthCashDividendProfit({ arrivalAmount, grossAmount: principalAmount })
     : entry.realizedProfit;
@@ -214,7 +217,7 @@ export async function syncIndependentBusinessTransactionFromTxRecord(
         tradeDate: entry.date,
         maturityDate,
         arrivalDate: depositArrivalDate,
-        principalAmount: absAmount,
+        principalAmount: depositPrincipalAmount,
         arrivalAmount,
         interest: entry.depositInterest,
         fee: entry.fundFee,
@@ -239,7 +242,7 @@ export async function syncIndependentBusinessTransactionFromTxRecord(
         tradeDate: entry.date,
         maturityDate,
         arrivalDate: depositArrivalDate,
-        principalAmount: absAmount,
+        principalAmount: depositPrincipalAmount,
         arrivalAmount,
         interest: entry.depositInterest,
         fee: entry.fundFee,
@@ -274,35 +277,33 @@ export async function syncIndependentBusinessTransactionFromTxRecord(
         });
       }
     }
-    // 存单取回/转出 → 结束该存单的系统计划任务（到期 + 取息两条）；
-    // 撤销取回（删除取回记录）→ 存单重新持有 → 重新激活其系统计划。
+    // Deposit redemption/switch-out refreshes both system plans using the
+    // remaining principal; deleting the redemption restores the held-lot plans.
     const isRedeemLike = subtype === FundSubtype.redeem || subtype === FundSubtype.switch_out;
     if (isRedeemLike && entry.depositSourceEntryId) {
       const planTasks = await import("@/lib/server/deposit-plan-tasks");
-      if (!entry.deletedAt) {
-        await planTasks.completeDepositPlansForLot({
+      const lot = await client.txRecord.findFirst({
+        where: {
+          id: entry.depositSourceEntryId,
           householdId: entry.householdId,
-          lotId: entry.depositSourceEntryId,
-        }).catch((e) => {
-          logger.catchLog("completeDepositPlansForLot failed", "business-transactions")(e);
+          type: TransactionType.investment,
+          fundProductType: "deposit",
+          fundSubtype: FundSubtype.buy,
+        },
+        select: { id: true, deletedAt: true },
+      });
+      if (lot && !lot.deletedAt) {
+        // Recalculate both plans from the lot balance. A partial redemption
+        // keeps the plans active with the remaining principal; a full
+        // redemption marks them completed. Deleted redemptions are naturally
+        // excluded from the balance and therefore restore the plans.
+        await planTasks.ensureDepositPlansForLot({ householdId: entry.householdId, lotId: lot.id }).catch((e) => {
+          logger.catchLog("ensureDepositPlansForLot (redemption change) failed", "business-transactions")(e);
         });
-      } else {
-        const lotStillHeld = await client.txRecord.findFirst({
-          where: {
-            id: entry.depositSourceEntryId,
-            householdId: entry.householdId,
-            deletedAt: null,
-            type: TransactionType.investment,
-            fundProductType: "deposit",
-            fundSubtype: FundSubtype.buy,
-          },
-          select: { id: true },
+      } else if (lot?.deletedAt) {
+        await planTasks.completeDepositPlansForLot({ householdId: entry.householdId, lotId: lot.id }).catch((e) => {
+          logger.catchLog("completeDepositPlansForLot (deleted lot) failed", "business-transactions")(e);
         });
-        if (lotStillHeld) {
-          await planTasks.ensureDepositPlansForLot({ householdId: entry.householdId, lotId: entry.depositSourceEntryId }).catch((e) => {
-            logger.catchLog("ensureDepositPlansForLot (redeem undone) failed", "business-transactions")(e);
-          });
-        }
       }
     }
   } else if (businessType === "bond") {

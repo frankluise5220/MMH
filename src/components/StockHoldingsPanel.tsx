@@ -1266,7 +1266,6 @@ export function StockHoldingsPanel({
                   showColumnVisibilityButton={false}
                   columnVisibilityTriggerId={STOCK_DETAIL_COLUMN_SETTINGS_EVENT}
                   sortable
-                  defaultSort={{ key: "tradeDate", direction: "desc" }}
                   pagination={{
                     page: detailSafePage,
                     pageSize: detailPageSize,

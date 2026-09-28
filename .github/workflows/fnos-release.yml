@@ -28,10 +28,26 @@ jobs:
             node_arch: x64
             fnpack_arch: amd64
             runner: ubuntu-22.04
+            package_variant: bundled
+            node_major: 20
           - target_arch: arm64
             node_arch: arm64
             fnpack_arch: arm64
             runner: ubuntu-22.04-arm
+            package_variant: bundled
+            node_major: 20
+          - target_arch: x86
+            node_arch: x64
+            fnpack_arch: amd64
+            runner: ubuntu-22.04
+            package_variant: external-node
+            node_major: 22
+          - target_arch: arm64
+            node_arch: arm64
+            fnpack_arch: arm64
+            runner: ubuntu-22.04-arm
+            package_variant: external-node
+            node_major: 22
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -39,7 +55,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: ${{ matrix.node_major }}
           cache: npm
 
       - name: Install dependencies
@@ -92,11 +108,36 @@ jobs:
           FNOS_TARGET_ARCH: ${{ matrix.target_arch }}
         run: npm run build:fnos:app
 
-      - name: Build fnOS FPK
+      - name: Download matching Node headers
+        shell: bash
+        env:
+          NODE_ARCH: ${{ matrix.node_arch }}
+        run: |
+          set -euo pipefail
+          NODE_VERSION="$(node -p "process.versions.node")"
+          HEADERS_TARBALL="node-v${NODE_VERSION}-headers.tar.gz"
+          curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${HEADERS_TARBALL}" \
+            -o "release-artifacts/fnos/runtime/${HEADERS_TARBALL}"
+          echo "FNOS_NODE_HEADERS_TARBALL=${PWD}/release-artifacts/fnos/runtime/${HEADERS_TARBALL}" >> "$GITHUB_ENV"
+
+      - name: Build bundled Node.js FPK
+        if: matrix.package_variant == 'bundled'
         env:
           FNOS_PACKAGE_VERSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.package_version || github.event.release.tag_name || '' }}
           FNOS_TARGET_ARCH: ${{ matrix.target_arch }}
           FNOS_NODE_TARBALL: ${{ env.FNOS_NODE_TARBALL }}
+          FNOS_NODE_HEADERS_TARBALL: ${{ env.FNOS_NODE_HEADERS_TARBALL }}
+          FNOS_EXTERNAL_NODE: "0"
+        run: npm run build:fnos
+
+      - name: Build external Node.js FPK
+        if: matrix.package_variant == 'external-node'
+        env:
+          FNOS_PACKAGE_VERSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.package_version || github.event.release.tag_name || '' }}
+          FNOS_TARGET_ARCH: ${{ matrix.target_arch }}
+          FNOS_EXTERNAL_NODE: "1"
+          FNOS_NODE_TARBALL: ${{ env.FNOS_NODE_TARBALL }}
+          FNOS_NODE_HEADERS_TARBALL: ${{ env.FNOS_NODE_HEADERS_TARBALL }}
         run: npm run build:fnos
 
       - name: Verify built fnOS FPK
@@ -104,13 +145,14 @@ jobs:
           FNOS_VERIFY_BUILT_FPK: "1"
           FNOS_PACKAGE_VERSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.package_version || github.event.release.tag_name || '' }}
           FNOS_TARGET_ARCH: ${{ matrix.target_arch }}
+          FNOS_EXTERNAL_NODE: ${{ matrix.package_variant == 'external-node' && '1' || '0' }}
         run: npm run check:fnos
 
       - name: Upload fnOS FPK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mmh-fnos-${{ matrix.target_arch }}-fpk
-          path: release-artifacts/fnos/*.fpk
+          name: mmh-fnos-${{ matrix.target_arch }}-${{ matrix.package_variant }}-fpk
+          path: release-artifacts/fnos/mmh-fnos-v*-${{ matrix.target_arch == 'x86' && 'x86_64' || 'arm64' }}${{ matrix.package_variant == 'external-node' && '-external-node' || '' }}.fpk
           if-no-files-found: error
 
       - name: Upload fnOS FPK to GitHub Release

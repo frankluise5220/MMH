@@ -70,6 +70,8 @@ prisma/migrations/2026090[0-4]_*
 .omo/
 # local agent skills (kept local only — never part of the product)
 /.skill/
+# reusable Linux payload for local Synology SPK builds (Windows sandbox path)
+/.syno-cache/
 AGENTS.md
 CLAUDE.md
 DESIGN.md
@@ -191,6 +193,15 @@ public/branding/mmh-logo-*-directions.svg
 public/branding/mmh-logo-v*.svg
 query-fund.js
 release-artifacts/
+
+# agent scratch / release-test scratch (never part of the product)
+.codex-tmp/
+memory/
+make-release-source.cjs
+release-test-*/
+release-build-test-*.sh
+release-inspect-*.sh
+release-rebuild-test-*.sh
 mmh-doc-edit/
 .next-hotfix.tar.gz
 .ssh-mmh/

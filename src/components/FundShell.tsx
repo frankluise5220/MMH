@@ -883,7 +883,6 @@ export function FundShell(props: Props) {
 
   const pnl = useCallback((n: number) => pnlClassFromRedUp(n, isRedUp), [isRedUp]);
   const positionDefaultSort = useMemo(() => ({ key: "marketValue", direction: "desc" as const }), []);
-  const clearedDefaultSort = useMemo(() => ({ key: "clearedDate", direction: "desc" as const }), []);
 
   useEffect(() => {
     try {
@@ -3287,7 +3286,6 @@ export function FundShell(props: Props) {
               fillHeight
               toolbarMode="none"
               draggableRows={false}
-              defaultSort={clearedDefaultSort}
               summaryRow={clearedSummaryRow}
             />
 

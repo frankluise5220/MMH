@@ -1152,6 +1152,7 @@ model Household {
   StockHolding              StockHolding[]
   StatementRecognitionRule  StatementRecognitionRule[]
   Reimbursement             Reimbursement[]
+  ReimbursementBatch        ReimbursementBatch[]
   SponsorTipIntent          SponsorTipIntent[]
   RegularInvestPlan         RegularInvestPlan[]
   CreditCardInstallmentPlan CreditCardInstallmentPlan[]
@@ -1637,13 +1638,19 @@ model InsuranceProduct {
 
 model Reimbursement {
   id               String              @id @default(cuid())
+  batchId          String?
   householdId      String
+  advanceAccountId String?
+  documentNumber   String?
   title            String
   counterpartyId   String
   counterpartyName String
   status           ReimbursementStatus @default(pending)
   kind             ReimbursementKind   @default(advance)
   totalAmount      Decimal             @db.Decimal(18, 2)
+  approvedAmount   Decimal?            @db.Decimal(18, 2)
+  approvalDate     DateTime?
+  approvalNote     String?
   travelStartDate  DateTime?
   travelEndDate    DateTime?
   travelReason     String?
@@ -1651,16 +1658,82 @@ model Reimbursement {
   reimbursedDate   DateTime?
   cashAccountId    String?
   cashAccountName  String?
+  paymentTxRecordId String? @unique
   note             String?
   createdAt        DateTime            @default(now())
   updatedAt        DateTime            @default(now()) @updatedAt
   deletedAt        DateTime?
   items            ReimbursementItem[]
+  linkedTransactions ReimbursementTransaction[]
+  settlements      ReimbursementSettlement[]
+  PaymentTxRecord   TxRecord? @relation("ReimbursementPaymentTx", fields: [paymentTxRecordId], references: [id], onDelete: SetNull)
+  Batch            ReimbursementBatch? @relation(fields: [batchId], references: [id], onDelete: Cascade)
   Household        Household           @relation(fields: [householdId], references: [id], onDelete: Cascade)
 
   @@index([householdId, status])
   @@index([householdId, counterpartyId, status])
+  @@index([householdId, advanceAccountId, status])
+  @@index([batchId])
   @@map("reimbursements")
+}
+
+model ReimbursementBatch {
+  id               String          @id @default(cuid())
+  householdId      String
+  advanceAccountId String
+  title            String
+  note             String?
+  startDate        DateTime?
+  endDate          DateTime?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @default(now()) @updatedAt
+  reimbursements   Reimbursement[]
+  Household        Household       @relation(fields: [householdId], references: [id], onDelete: Cascade)
+
+  @@index([householdId, advanceAccountId, createdAt])
+  @@map("reimbursement_batches")
+}
+
+model ReimbursementTransaction {
+  id              String        @id @default(cuid())
+  reimbursementId String
+  txRecordId      String        @unique
+  createdAt       DateTime      @default(now())
+  Reimbursement   Reimbursement @relation(fields: [reimbursementId], references: [id], onDelete: Cascade)
+
+  @@index([reimbursementId])
+  @@map("reimbursement_transactions")
+}
+
+model ReimbursementSettlement {
+  id               String        @id @default(cuid())
+  reimbursementId  String
+  amount           Decimal       @db.Decimal(18, 2)
+  feeAmount        Decimal       @default(0) @db.Decimal(18, 2)
+  writeOffAmount   Decimal       @default(0) @db.Decimal(18, 2)
+  balanceDiffMode  String        @default("loss")
+  date             DateTime
+  cashAccountId    String
+  cashAccountName  String
+  note             String?
+  createdAt        DateTime      @default(now())
+  transactions     ReimbursementSettlementTransaction[]
+  Reimbursement    Reimbursement @relation(fields: [reimbursementId], references: [id], onDelete: Cascade)
+
+  @@index([reimbursementId, date])
+  @@map("reimbursement_settlements")
+}
+
+model ReimbursementSettlementTransaction {
+  id           String                  @id @default(cuid())
+  settlementId String
+  txRecordId   String                  @unique
+  createdAt    DateTime                @default(now())
+  Settlement   ReimbursementSettlement @relation(fields: [settlementId], references: [id], onDelete: Cascade)
+  TxRecord     TxRecord                @relation(fields: [txRecordId], references: [id], onDelete: Cascade)
+
+  @@index([settlementId])
+  @@map("reimbursement_settlement_transactions")
 }
 
 model ReimbursementItem {
@@ -1669,6 +1742,11 @@ model ReimbursementItem {
   txRecordId       String?       @unique
   advanceAccountId String?
   amount           Decimal       @db.Decimal(18, 2)
+  outsideTransportAmount Decimal? @db.Decimal(18, 2)
+  cityTransportAmount    Decimal? @db.Decimal(18, 2)
+  subsidyAmount          Decimal? @db.Decimal(18, 2)
+  lodgingAmount          Decimal? @db.Decimal(18, 2)
+  days             Int?
   entryDate        DateTime
   categoryName     String?
   expenseItem      ReimbursementExpenseItem?
@@ -1766,6 +1844,8 @@ model TxRecord {
   insuranceAction             String?
   insuranceProductName        String?
   source                      String?                     @default("manual")
+  reimbursementDifferenceAmount Decimal?                  @db.Decimal(18, 2)
+  reimbursementDifferenceCategoryName String?
   entryOrigin                 String?                     @default("manual")
   originalCurrency            String?
   originalAmount              Decimal?                    @db.Decimal(18, 2)
@@ -1790,6 +1870,8 @@ model TxRecord {
   EntryBusinessLinkBusiness   EntryBusinessLink[]         @relation("EntryBusinessLink_businessEntry")
   FxConversionFromEntry       FxConversion?               @relation("FxConversion_fromEntry")
   FxConversionToEntry         FxConversion?               @relation("FxConversion_toEntry")
+  ReimbursementSettlementTransactions ReimbursementSettlementTransaction[]
+  ReimbursementPayments Reimbursement[] @relation("ReimbursementPaymentTx")
 
   @@index([accountId, date])
   @@index([accountId, date, dayOrder])
@@ -2008,6 +2090,7 @@ enum ReimbursementStatus {
 enum ReimbursementKind {
   advance
   travel
+  general
 }
 
 enum ReimbursementExpenseItem {

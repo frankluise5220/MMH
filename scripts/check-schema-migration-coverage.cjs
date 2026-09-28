@@ -103,6 +103,10 @@ const releaseCriticalColumns = [
   ["transactions", "depositInterestPayoutFrequency", "20260911_add_deposit_interest_payout", "20260911_add_deposit_interest_payout"],
   ["deposit_transactions", "interestPayoutFrequency", "20260911_add_deposit_interest_payout", "20260911_add_deposit_interest_payout"],
   ["WealthProduct", "productType", "20260917_add_wealth_bond_fields", "20260917_wealth_bond_fields"],
+  ["reimbursements", "paymentTxRecordId", "20260927_reimbursement_payment_transaction", "20260927_reimbursement_payment_transaction"],
+  ["reimbursements", "approvalDate", "20260927_reimbursement_approval_details", "20260927_reimbursement_approval_details"],
+  ["reimbursements", "approvalNote", "20260927_reimbursement_approval_details", "20260927_reimbursement_approval_details"],
+  ["reimbursement_settlements", "feeAmount", "20260927_add_reimbursement_settlement_fee", "20260927_add_reimbursement_settlement_fee"],
 ];
 for (const [table, column, migrationDir, migrationVersion] of releaseCriticalColumns) {
   const schemaHasIt = schema.includes(` ${column} `) || schema.includes(`${column} `);

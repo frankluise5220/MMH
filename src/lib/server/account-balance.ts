@@ -13,6 +13,7 @@ import { isLoanOrSettlementAccountKind } from "@/lib/debt";
 import { debtPrincipalForAccountSide } from "@/lib/debt";
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 import { logger } from "@/lib/logger";
+import { depositRedemptionPrincipal } from "@/lib/server/deposit-lot-balance";
 
 const FX_CONVERSION_SOURCE = "fx_conversion";
 const BALANCE_ENTRY_PAGE_SIZE = 5000;
@@ -38,6 +39,7 @@ export const BALANCE_ENTRY_SELECT = {
   fundConfirmDate: true,
   fundArrivalDate: true,
   fundArrivalAmount: true,
+  depositInterest: true,
   depositSourceEntryId: true,
   deletedAt: true,
 } as const;
@@ -129,6 +131,7 @@ function foldBalanceEntry(
   account: AccountBalanceLike,
 ) {
   if (account.kind === AccountKind.bank_credit) return 0;
+  if (isDepositAccountLike(account) && isBalanceAnchorEntry(entry)) return runningBalance;
   // Deposit principal is maintained from deposit lots and redemptions, not
   // by folding the investment cash-flow rows a second time.
   if (isDepositAccountLike(account) && isDepositPrincipalEntry(entry)) {
@@ -161,7 +164,27 @@ async function computeDepositPrincipalBalanceAsOf(
   const asOf = endOfLocalDayKey(asOfKey);
   const rows = await prisma.$queryRaw<Array<{ principal: unknown }>>(Prisma.sql`
     SELECT COALESCE(
-      SUM(ABS(COALESCE(b."fundArrivalAmount", b."amount"))),
+      SUM(
+        GREATEST(
+          ABS(COALESCE(b."fundArrivalAmount", b."amount"))
+          - COALESCE((
+            SELECT SUM(
+              ABS(COALESCE(r."fundArrivalAmount", r."amount"))
+              - GREATEST(COALESCE(r."depositInterest", 0), 0)
+            )
+            FROM "transactions" r
+            WHERE r."deletedAt" IS NULL
+              AND r."householdId" = ${householdId}
+              AND r."type" = ${TransactionType.investment}
+              AND r."fundProductType" = 'deposit'
+              AND r."accountId" = ${accountId}
+              AND r."depositSourceEntryId" = b."id"
+              AND r."fundSubtype" IN ('redeem', 'switch_out')
+              AND r."date" <= ${asOf}
+          ), 0),
+          0
+        )
+      ),
       0
     ) AS "principal"
     FROM "transactions" b
@@ -172,20 +195,8 @@ async function computeDepositPrincipalBalanceAsOf(
       AND b."toAccountId" = ${accountId}
       AND b."fundSubtype" NOT IN ('redeem', 'switch_out', 'dividend_cash', 'dividend_reinvest')
       AND b."date" <= ${asOf}
-      AND NOT EXISTS (
-        SELECT 1
-        FROM "transactions" r
-        WHERE r."deletedAt" IS NULL
-          AND r."householdId" = ${householdId}
-          AND r."type" = ${TransactionType.investment}
-          AND r."fundProductType" = 'deposit'
-          AND r."accountId" = ${accountId}
-          AND r."depositSourceEntryId" = b."id"
-          AND r."fundSubtype" IN ('redeem', 'switch_out')
-          AND r."date" <= ${asOf}
-      )
   `);
-  return toNumber(rows[0]?.principal);
+  return Math.max(0, toNumber(rows[0]?.principal));
 }
 
 type DepositPrincipalChangeRow = {
@@ -200,11 +211,12 @@ function depositPrincipalBalanceFromRows(
   asOfKey: string,
 ) {
   const asOf = endOfLocalDayKey(asOfKey);
-  const closedLotIds = new Set<string>();
+  const redeemedByLotId = new Map<string, number>();
   for (const redemption of redemptions.values()) {
     if (!isLiveBalanceEntry(redemption) || !isDepositRedemptionEntry(redemption)) continue;
     if (!redemption.depositSourceEntryId || redemption.date > asOf) continue;
-    closedLotIds.add(redemption.depositSourceEntryId);
+    const current = redeemedByLotId.get(redemption.depositSourceEntryId) ?? 0;
+    redeemedByLotId.set(redemption.depositSourceEntryId, current + depositRedemptionPrincipal(redemption));
   }
 
   let principal = 0;
@@ -212,8 +224,11 @@ function depositPrincipalBalanceFromRows(
     if (!isLiveBalanceEntry(lot) || !isDepositPrincipalEntry(lot)) continue;
     if (isDepositRedemptionEntry(lot)) continue;
     if (lot.toAccountId !== accountId || lot.date > asOf) continue;
-    if (closedLotIds.has(lot.id)) continue;
-    principal += Math.abs(toNumber(lot.fundArrivalAmount ?? lot.amount));
+    principal += Math.max(
+      0,
+      Math.abs(toNumber(lot.fundArrivalAmount ?? lot.amount))
+        - (redeemedByLotId.get(lot.id) ?? 0),
+    );
   }
   return roundMoney(principal);
 }
@@ -358,6 +373,7 @@ export async function computeAccountDisplayBalances(
         toAccountId: true,
         amount: true,
         fundArrivalAmount: true,
+        depositInterest: true,
         fundSubtype: true,
         depositSourceEntryId: true,
       },
@@ -385,7 +401,9 @@ export async function computeAccountDisplayBalances(
 
       if (entry.depositSourceEntryId) {
         const lot = remainingByLotId.get(entry.depositSourceEntryId);
-        if (lot) lot.amount = 0;
+        if (lot) {
+          lot.amount = Math.max(0, lot.amount - depositRedemptionPrincipal(entry));
+        }
       }
     }
 
@@ -446,6 +464,7 @@ export async function computeAccountDisplayBalances(
         .sort((a, b) => compareDetailEntriesAsc(a, b, account.id));
       let runningBalance = result.get(account.id) ?? 0;
       for (const entry of orderedRows) {
+        if (isBalanceAnchorEntry(entry)) continue;
         runningBalance = applyBalanceReconcileEntry(runningBalance, entry, account.id);
       }
       result.set(account.id, runningBalance);
@@ -1047,6 +1066,11 @@ async function advanceAccountBalanceStep(accountId: string, maxWindows = 1) {
     return writeAccountBalance(accountId, 0, todayEnd, acc.balanceRecomputedAt).catch(() => false);
   }
 
+  if (isDepositAccountLike(account)) {
+    if (acc.balanceRecomputedAt && localDateKey(acc.balanceRecomputedAt) >= todayKey) return false;
+    return recalcAndSaveAccountBalance(accountId).catch(() => false);
+  }
+
   if (!acc.balanceRecomputedAt) {
     // Accounts upgraded from a release before balanceRecomputedAt already have
     // a maintained Account.balance. Adopt it as the baseline instead of
@@ -1170,37 +1194,11 @@ export async function recalcAndSaveAccountBalance(accountId: string) {
   };
   let newBalance = 0;
   if (isDepositAccountLike(account)) {
-    const principalToday = await computeDepositPrincipalBalanceAsOf(
-      accountId,
-      todayKey,
-      acc.householdId,
+    const depositBalances = await computeAccountDisplayBalances(
+      [account],
+      { householdId: acc.householdId },
     );
-    const anchor = await loadLastBalanceAnchor(accountId, todayKey, { householdId: acc.householdId });
-    if (anchor) {
-      const anchorDay = localDateKey(getDetailEntryDisplayDate(anchor, accountId));
-      const anchorTarget = getBalanceReconcileTarget(anchor) ?? 0;
-      const ordinaryAfterAnchor = await foldAccountBalanceBatched(
-        account,
-        { householdId: acc.householdId },
-        {
-          fromKeyExclusive: anchorDay,
-          startingBalance: 0,
-        },
-      );
-      const principalAtAnchor = await computeDepositPrincipalBalanceAsOf(
-        accountId,
-        anchorDay,
-        acc.householdId,
-      );
-      newBalance = anchorTarget + ordinaryAfterAnchor + principalToday - principalAtAnchor;
-    } else {
-      const ordinaryBalance = await foldAccountBalanceBatched(
-        account,
-        { householdId: acc.householdId },
-        { startingBalance: 0 },
-      );
-      newBalance = principalToday + ordinaryBalance;
-    }
+    newBalance = depositBalances.get(accountId) ?? 0;
   } else {
     const anchor = await loadLastBalanceAnchor(accountId, todayKey, { householdId: acc.householdId });
     const anchorDay = anchor ? localDateKey(getDetailEntryDisplayDate(anchor, accountId)) : null;
@@ -1262,7 +1260,15 @@ export async function applyEntryChangesToAccountBalances(changes: EntryBalanceCh
       continue;
     }
 
-    const anchor = await loadLastBalanceAnchor(account.id, todayKey, { householdId: account.householdId });
+    const isDeposit = isDepositAccountLike(accountLike);
+    if (isDeposit && !account.balanceRecomputedAt) {
+      await recalcAndSaveAccountBalance(account.id).catch(() => {});
+      continue;
+    }
+
+    const anchor = isDeposit
+      ? null
+      : await loadLastBalanceAnchor(account.id, todayKey, { householdId: account.householdId });
     let previousDelta = 0;
     let currentDelta = 0;
     let requiresFullFold = false;
@@ -1271,7 +1277,7 @@ export async function applyEntryChangesToAccountBalances(changes: EntryBalanceCh
       const previousActive = previous && !previous.deletedAt && entryAffectsBalance(previous, account.id, anchor, todayKey);
       const currentActive = current && !current.deletedAt && entryAffectsBalance(current, account.id, anchor, todayKey);
       if (previousActive) {
-        if (isDepositAccountLike(accountLike) && isDepositPrincipalEntry(previous)) {
+        if (isDeposit && isDepositPrincipalEntry(previous)) {
           continue;
         }
         const delta = balanceEntryDelta(previous, accountLike);
@@ -1279,7 +1285,7 @@ export async function applyEntryChangesToAccountBalances(changes: EntryBalanceCh
         else previousDelta += delta;
       }
       if (currentActive) {
-        if (isDepositAccountLike(accountLike) && isDepositPrincipalEntry(current)) {
+        if (isDeposit && isDepositPrincipalEntry(current)) {
           continue;
         }
         const delta = balanceEntryDelta(current, accountLike);
@@ -1295,15 +1301,10 @@ export async function applyEntryChangesToAccountBalances(changes: EntryBalanceCh
     if (!account.balanceRecomputedAt) {
       // Preserve the legacy persisted balance as the upgrade baseline. The
       // background bootstrap will replace it with a fully verified fold.
-      const depositDelta = isDepositAccountLike(accountLike)
-        ? await computeDepositPrincipalChangeDelta(currentRows, account.id, account.householdId, todayKey)
-        : 0;
       const updated = await prisma.account.updateMany({
         where: { id: account.id, balanceRecomputedAt: null },
         data: {
-          balance: roundMoney(
-            toNumber(account.balance) + currentDelta - previousDelta + depositDelta,
-          ).toFixed(2),
+          balance: roundMoney(toNumber(account.balance) + currentDelta - previousDelta).toFixed(2),
         },
       }).catch(() => ({ count: 0 }));
       if (updated.count === 0) await recalcAndSaveAccountBalance(account.id).catch(() => {});
@@ -1311,25 +1312,23 @@ export async function applyEntryChangesToAccountBalances(changes: EntryBalanceCh
     }
 
     const asOfKey = localDateKey(account.balanceRecomputedAt);
-    if (isDepositAccountLike(accountLike) && asOfKey < todayKey) {
-      // Deposit catch-up is a bounded database aggregate plus windowed fold.
-      // It runs only when the cached balance has not yet been advanced to
-      // today, not on the normal add/edit path.
+    if (isDeposit && asOfKey < todayKey) {
+      // Rebuild stale deposit balances from certificates and ordinary flows.
       await recalcAndSaveAccountBalance(account.id).catch(() => {});
       continue;
     }
     let previousIncludedDelta = 0;
-    for (const { change, current } of currentRows) {
+    for (const { change } of currentRows) {
       const previous = change.previous ?? null;
       if (!previous || previous.deletedAt) continue;
       if (!entryAffectsBalance(previous, account.id, anchor, todayKey)) continue;
-      if (isDepositAccountLike(accountLike) && isDepositPrincipalEntry(previous)) continue;
+      if (isDeposit && isDepositPrincipalEntry(previous)) continue;
       const previousDay = localDateKey(getDetailEntryDisplayDate(previous, account.id));
       if (previousDay > asOfKey) continue;
       const delta = balanceEntryDelta(previous, accountLike);
       if (delta != null) previousIncludedDelta += delta;
     }
-    const depositDelta = isDepositAccountLike(accountLike)
+    const depositDelta = isDeposit
       ? await computeDepositPrincipalChangeDelta(currentRows, account.id, account.householdId, todayKey)
       : 0;
     const delta = currentDelta - previousIncludedDelta + depositDelta;
@@ -1376,6 +1375,14 @@ export async function getMaintainedAccountBalances(
       account.id,
       row?.kind === AccountKind.bank_credit ? 0 : toNumber(row?.balance),
     );
+  }
+
+  const depositAccounts = accounts.filter((account) => isDepositAccountLike(account));
+  if (depositAccounts.length > 0) {
+    const depositBalances = await computeAccountDisplayBalances(depositAccounts, hidFilter);
+    for (const [id, balance] of depositBalances) {
+      result.set(id, balance);
+    }
   }
 
   return result;

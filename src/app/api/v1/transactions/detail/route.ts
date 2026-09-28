@@ -73,6 +73,7 @@ import { getOrCreateInsuranceAccount } from "@/lib/insurance/autoAccount";
 import { normalizeInsuranceAction } from "@/lib/insurance/transaction";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
 import { resolveOrCreateDepositProduct } from "@/lib/server/deposit-product";
+import { depositLotBelongsToAccount } from "@/lib/server/deposit-lot-options";
 import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
 import { createBondEntry, editBondEntry, bondEntryInputFromFormData } from "@/lib/server/bond-transactions";
 import { resolveOrCreateAdvanceAccount } from "@/lib/server/advance-account";
@@ -119,8 +120,56 @@ import { upsertStatementCategoryRuleFromSavedRecord } from "@/lib/statement/cate
 import { upsertStatementInstitutionRuleFromUserEdit } from "@/lib/statement/recognition-rules";
 import { DETAIL_ALL_PAGE_SIZE } from "@/lib/detail-pagination-preference";
 import { locateDetailPage, queryDetailPage } from "@/lib/server/detail-page-query";
+import { isDepositRedemptionDateAllowed, loadLatestDepositInterestDate } from "@/lib/server/deposit-lot-balance";
+import { ensureDepositPlansForLot } from "@/lib/server/deposit-plan-tasks";
 
 export const runtime = "nodejs";
+
+class DetailValidationError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly status = 400,
+  ) {
+    super(message);
+    this.name = "DetailValidationError";
+  }
+}
+
+async function assertDepositRedemptionDateAllowed(params: {
+  tx: any;
+  householdId: string;
+  lotId: string;
+  depositAccountId: string;
+  redemptionDate: Date;
+}) {
+  const lot = await params.tx.txRecord.findFirst({
+    where: {
+      id: params.lotId,
+      householdId: params.householdId,
+      deletedAt: null,
+      type: TransactionType.investment,
+      fundProductType: "deposit",
+      fundSubtype: FundSubtype.buy,
+      toAccountId: params.depositAccountId,
+    },
+    select: { id: true },
+  });
+  if (!lot) {
+    throw new DetailValidationError("DEPOSIT_LOT_NOT_FOUND", "Deposit lot does not belong to the selected account");
+  }
+  const latestInterestDate = await loadLatestDepositInterestDate({
+    householdId: params.householdId,
+    lotId: params.lotId,
+    client: params.tx,
+  });
+  if (!isDepositRedemptionDateAllowed(params.redemptionDate, latestInterestDate)) {
+    throw new DetailValidationError(
+      "DEPOSIT_REDEEM_BEFORE_INTEREST",
+      "Redemption date cannot be earlier than the latest generated interest date",
+    );
+  }
+}
 
 function isSettlementDebtAccountForDetail(account?: { kind?: string | null; counterpartyId?: string | null } | null) {
   return account?.kind === AccountKind.settlement || (account?.kind === AccountKind.loan && !!account.counterpartyId);
@@ -2127,6 +2176,22 @@ export async function POST(req: Request) {
     } else if (type === "income") {
       const accountId = String(body.accountId ?? "").trim();
       const categoryId = String(body.categoryId ?? "").trim();
+      const depositLotId = String(body.depositSourceEntryId ?? "").trim();
+      if (depositLotId && (!accountId || !(await depositLotBelongsToAccount({ householdId, accountId, lotId: depositLotId })))) {
+        return NextResponse.json(
+          { ok: false, code: "DEPOSIT_LOT_NOT_FOUND", error: "Deposit lot does not belong to the selected account" },
+          { status: 400 },
+        );
+      }
+      const postingAccount = accountId
+        ? await prisma.account.findFirst({ where: { id: accountId, householdId }, select: { kind: true, investProductType: true } })
+        : null;
+      if (postingAccount && isDepositAccount(postingAccount) && !depositLotId) {
+        return NextResponse.json(
+          { ok: false, code: "DEPOSIT_LOT_REQUIRED", error: "Deposit account income must be linked to a deposit lot" },
+          { status: 400 },
+        );
+      }
       const counterpartyInstitution = counterpartyInstitutionId
         ? await prisma.institution.findFirst({
             where: { id: counterpartyInstitutionId, householdId, type: { in: [...INCOME_EXPENSE_INSTITUTION_TYPES] } },
@@ -2181,6 +2246,7 @@ export async function POST(req: Request) {
             date,
             note: note || undefined,
             statementMonth: statementMonth ?? undefined,
+            depositSourceEntryId: depositLotId || undefined,
             householdId,
           } as any,
         });
@@ -2435,6 +2501,18 @@ export async function POST(req: Request) {
         }
 
         if (!investAcc) throw new Error("账户不存在");
+        if (fundProductType === "deposit" && redeemLike) {
+          if (!depositSourceEntryId) {
+            throw new DetailValidationError("DEPOSIT_LOT_REQUIRED", "A deposit lot is required for redemption");
+          }
+          await assertDepositRedemptionDateAllowed({
+            tx,
+            householdId,
+            lotId: depositSourceEntryId,
+            depositAccountId: investAcc.id,
+            redemptionDate: date,
+          });
+        }
         if (isInsurance) {
           if (!isInsuranceAccount(investAcc)) throw new Error("保险产品未关联保险账户");
         } else if (!isPureInvestmentAccount(investAcc) && !isDepositAccount(investAcc)) {
@@ -3012,6 +3090,9 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ ok: true, data: { id: createdId, regularInvestPlanId: createdPlanId } });
   } catch (err) {
+    if (err instanceof DetailValidationError) {
+      return NextResponse.json({ ok: false, code: err.code, error: err.message }, { status: err.status });
+    }
     const msg = err instanceof Error ? err.message : "创建失败";
     console.error("POST /api/v1/transactions/detail error:", err);
     return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: msg }, { status: 500 });
@@ -3118,6 +3199,8 @@ export async function PUT(req: Request) {
     let oldToAccountId: string | undefined;
     let investmentAccId: string | undefined;
     let advanceAccountId: string | undefined;
+    let oldDepositSourceEntryId: string | null = null;
+    let newDepositSourceEntryId: string | null = null;
     let changedInvestment = false;
     let pendingStatementInstitutionRuleInput: {
       householdId: string;
@@ -3162,6 +3245,7 @@ export async function PUT(req: Request) {
       // Save old account IDs for balance recalculation
       oldAccountId = entry.accountId ?? undefined;
       oldToAccountId = entry.toAccountId ?? undefined;
+      oldDepositSourceEntryId = entry.depositSourceEntryId;
 
       await replaceEntryTags({ tx, entryId, householdId: entry.householdId, tagIds });
 
@@ -3352,6 +3436,19 @@ export async function PUT(req: Request) {
     }
 
     if (!investAcc) throw new Error("请选择投资账户");
+    if (productType === "deposit" && redeemLike) {
+      const depositSourceEntryId = String(body.depositSourceEntryId ?? "").trim() || entry.depositSourceEntryId || null;
+      if (!depositSourceEntryId) {
+        throw new DetailValidationError("DEPOSIT_LOT_REQUIRED", "A deposit lot is required for redemption");
+      }
+      await assertDepositRedemptionDateAllowed({
+        tx,
+        householdId,
+        lotId: depositSourceEntryId,
+        depositAccountId: investAcc.id,
+        redemptionDate: date,
+      });
+    }
     investmentAccId = investAcc.id;
     const hasFundUnits = Object.prototype.hasOwnProperty.call(body, "fundUnits");
     const fundUnitsInput = hasFundUnits ? positiveNumber(body.fundUnits) : null;
@@ -3644,6 +3741,7 @@ export async function PUT(req: Request) {
             note: note || null,
           },
         });
+        newDepositSourceEntryId = depositSourceEntryId;
 
         if (
           !isFundLikeIndependentEdit &&
@@ -3824,6 +3922,8 @@ return;
       const accountId = String(body.accountId ?? "").trim();
       const categoryId = String(body.categoryId ?? "").trim();
       const categoryName = String(body.categoryName ?? "").trim();
+      const bodyHasDepositLot = Object.prototype.hasOwnProperty.call(body, "depositSourceEntryId");
+      const bodyDepositLotId = String(body.depositSourceEntryId ?? "").trim();
       const counterpartyInstitution = counterpartyInstitutionId
         ? await tx.institution.findFirst({
             where: { id: counterpartyInstitutionId, householdId, type: { in: [...INCOME_EXPENSE_INSTITUTION_TYPES] } },
@@ -3843,6 +3943,13 @@ return;
         }),
       ]);
       if (!acc) throw new Error("请选择账户");
+      if (type === "income" && bodyHasDepositLot && bodyDepositLotId
+        && !(await depositLotBelongsToAccount({ householdId, accountId: acc.id, lotId: bodyDepositLotId }))) {
+        throw new Error("Deposit lot does not belong to the selected account");
+      }
+      if (type === "income" && bodyHasDepositLot && !bodyDepositLotId && isDepositAccount(acc)) {
+        throw new Error("Deposit account income must be linked to a deposit lot");
+      }
       if (!isIncomeExpensePostingAccount(acc)) {
         // 存款账户参与收支（2026-09-18）：编辑/改挂到存款账户时按分类白名单放行；
         // 账户没变（编辑利息收入本身）也放行——与既有 09-17 口径一致。
@@ -3917,7 +4024,9 @@ return;
           wealthProductId: null,
           depositAnnualRate: null,
           depositInterest: null,
-          depositSourceEntryId: null,
+          ...(type === "income"
+            ? { depositSourceEntryId: bodyHasDepositLot ? (bodyDepositLotId || null) : (entry.depositSourceEntryId ?? null) }
+            : { depositSourceEntryId: null }),
           metalTypeId: null,
           metalTypeName: null,
           metalUnitId: null,
@@ -3984,6 +4093,14 @@ return;
       await upsertLegacyCombinedEntryBusinessLinks([entryId]).catch(logger.catchLog("sync entry business link", "route.ts"));
       await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: entryId }).catch(
         logger.catchLog("sync independent business transaction", "route.ts"),
+      );
+    }
+    const depositLotIdsToRefresh = new Set<string>();
+    if (oldDepositSourceEntryId) depositLotIdsToRefresh.add(oldDepositSourceEntryId);
+    if (newDepositSourceEntryId) depositLotIdsToRefresh.add(newDepositSourceEntryId);
+    for (const lotId of depositLotIdsToRefresh) {
+      await ensureDepositPlansForLot({ householdId, lotId }).catch(
+        logger.catchLog("refresh deposit plans after detail edit", "route.ts"),
       );
     }
 
@@ -4097,6 +4214,9 @@ return;
       },
     });
   } catch (err) {
+    if (err instanceof DetailValidationError) {
+      return NextResponse.json({ ok: false, code: err.code, error: err.message }, { status: err.status });
+    }
     const msg = err instanceof Error ? err.message : "更新失败";
     console.error("PUT /api/v1/transactions/detail error:", err);
     return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: msg }, { status: 500 });

@@ -3,23 +3,28 @@ import { IntervalUnit, RegularInvestStatus } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { isPeriodicDepositInterestPayout, parseDepositInterestPayout, depositPayoutAnchorUtc } from "@/lib/deposit-interest-payout";
 import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, type ScheduledTaskPayload } from "@/lib/scheduled-task";
+import { loadDepositLotBalance } from "@/lib/server/deposit-lot-balance";
 
 /**
- * 存单取回（redeem/switch_out）时结束该存单的系统计划任务：
- * 「存款到期」与「存款取息」两条计划一并标记完成，不再有任何下次执行日。
+ * Refresh both system plans after a deposit redemption. Partial redemption
+ * keeps both plans active with the remaining principal; full redemption
+ * completes both plans.
  */
 export async function completeDepositPlansForLot(params: {
   householdId: string;
   lotId: string;
 }): Promise<void> {
+  // This path is used only after the source lot itself has been deleted. Do
+  // not load the balance here: a transient read failure must not be treated
+  // as a settled lot and it would also make a deleted lot impossible to mark
+  // complete because its balance row is intentionally unavailable.
   await prisma.regularInvestPlan.updateMany({
     where: {
       householdId: params.householdId,
       id: { in: [`depm_${params.lotId}`, `depi_${params.lotId}`] },
-      status: { not: RegularInvestStatus.completed },
     },
     data: { status: RegularInvestStatus.completed },
-  }).catch(() => {});
+  });
 }
 
 /** 该计划类型是否由存款计划执行器处理。 */
@@ -28,8 +33,9 @@ export function isDepositPlanTask(type: string | null | undefined): boolean {
 }
 
 /**
- * 开机自愈：为所有持有中的存单补齐缺的系统计划行（老数据/历史导入可能没有）。
- * 只对缺少计划行的存单做 upsert，避免每次开机无谓写库。
+ * Startup self-healing fills and refreshes system plans for held deposit lots.
+ * Both maturity and payout plans depend on the lot's current principal, so
+ * each run synchronizes their amount and status.
  */
 export async function ensureDepositPlansForHeldLots(params: {
   householdId: string;
@@ -60,6 +66,39 @@ export async function ensureDepositPlansForHeldLots(params: {
     select: { id: true, memo: true },
   });
   const existingIds = new Set(existing.map((row) => row.id));
+  const payoutPlansByLotId = new Map(
+    existing
+      .filter((row) => row.id.startsWith("depi_"))
+      .map((row) => {
+        const task = decodeScheduledTaskMemo(row.memo);
+        const lotId = task.depositSourceEntryId || row.id.slice(5);
+        return [lotId, row.id] as const;
+      })
+      .filter((item): item is [string, string] => Boolean(item[0])),
+  );
+  if (payoutPlansByLotId.size > 0) {
+    const linkedRows = await prisma.txRecord.findMany({
+      where: {
+        householdId: params.householdId,
+        deletedAt: null,
+        source: "deposit",
+        type: { in: ["income", "transfer"] },
+        depositSourceEntryId: { in: [...payoutPlansByLotId.keys()] },
+      },
+      select: { id: true, depositSourceEntryId: true, regularInvestPlanId: true },
+    });
+    const adoptIdsByPlanId = new Map<string, string[]>();
+    for (const row of linkedRows) {
+      const planId = row.depositSourceEntryId ? payoutPlansByLotId.get(row.depositSourceEntryId) : null;
+      if (!planId || row.regularInvestPlanId === planId) continue;
+      const ids = adoptIdsByPlanId.get(planId);
+      if (ids) ids.push(row.id);
+      else adoptIdsByPlanId.set(planId, [row.id]);
+    }
+    await Promise.all([...adoptIdsByPlanId].map(([planId, ids]) =>
+      prisma.txRecord.updateMany({ where: { id: { in: ids } }, data: { regularInvestPlanId: planId } }),
+    ));
+  }
   // 老计划行可能缺少存单关联（memo 里没有 depositSourceEntryId）→ 一并刷新。
   const staleLinkedIds = new Set(
     existing
@@ -71,14 +110,17 @@ export async function ensureDepositPlansForHeldLots(params: {
   );
   let created = 0;
   for (const lot of lots) {
-    const needsMaturity = !!lot.depositMaturityAction && !!lot.fundArrivalDate
-      && (!existingIds.has(`depm_${lot.id}`) || staleLinkedIds.has(`depm_${lot.id}`));
-    const needPayout = isPeriodicDepositInterestPayout(lot.depositInterestPayoutFrequency)
-      && (!existingIds.has(`depi_${lot.id}`) || staleLinkedIds.has(`depi_${lot.id}`));
-    if (!needsMaturity && !needPayout) continue;
     if (!lot.date || !lot.fundArrivalDate) continue;
-    await ensureDepositPlansForLot({ householdId: params.householdId, lotId: lot.id }).catch(() => {});
-    created += 1;
+    const needsRefresh = !!lot.depositMaturityAction
+      || isPeriodicDepositInterestPayout(lot.depositInterestPayoutFrequency)
+      || !existingIds.has(`depm_${lot.id}`)
+      || !existingIds.has(`depi_${lot.id}`)
+      || (!lot.depositMaturityAction && existingIds.has(`depm_${lot.id}`))
+      || staleLinkedIds.has(`depm_${lot.id}`)
+      || staleLinkedIds.has(`depi_${lot.id}`);
+    if (!needsRefresh) continue;
+    const result = await ensureDepositPlansForLot({ householdId: params.householdId, lotId: lot.id }).catch(() => null);
+    if (result) created += 1;
   }
   return created;
 }
@@ -120,6 +162,9 @@ export async function ensureDepositPlansForLot(params: {
   const depositAccount = buy.toAccountId;
   const cashAccount = buy.accountId;
   if (!depositAccount || !cashAccount) throw new Error("LOT_MISSING_ACCOUNTS");
+  const lotBalance = await loadDepositLotBalance({ householdId, lotId: buy.id });
+  const remainingPrincipal = lotBalance?.remainingPrincipal ?? 0;
+  const lotSettled = !lotBalance || lotBalance.settled;
   const label = buy.fundName ?? "存款";
   const start = buy.date;
 
@@ -145,7 +190,7 @@ export async function ensureDepositPlansForLot(params: {
       fundCode: DEPOSIT_MATURITY_PLAN_FUND_CODE,
       fundName: label,
       fundProductType: "deposit",
-      amount: Math.abs(Number(buy.amount ?? 0)),
+      amount: remainingPrincipal,
       intervalUnit: IntervalUnit.month,
       intervalValue: 1,
       executionDay: maturity.getUTCDate(),
@@ -153,7 +198,7 @@ export async function ensureDepositPlansForLot(params: {
       nextRunDate: maturity,
       endDate: null,
       totalRuns: 1,
-      status: RegularInvestStatus.active,
+      status: lotSettled ? RegularInvestStatus.completed : RegularInvestStatus.active,
       feeRate: 0,
       confirmDays: 0,
       arrivalDays: 0,
@@ -167,11 +212,17 @@ export async function ensureDepositPlansForLot(params: {
       startDate: maturity,
       nextRunDate: maturity,
       // 金额跟随存单当前本金（到期执行金额按 lot 实时计算，这里只保证列表显示一致）。
-      amount: Math.abs(Number(buy.amount ?? 0)),
-      status: RegularInvestStatus.active,
+      amount: remainingPrincipal,
+      status: lotSettled ? RegularInvestStatus.completed : RegularInvestStatus.active,
       memo: maturityMemo,
     },
   }) : null;
+  if (!buy.depositMaturityAction) {
+    await prisma.regularInvestPlan.updateMany({
+      where: { id: `depm_${buy.id}`, householdId, status: { not: RegularInvestStatus.completed } },
+      data: { status: RegularInvestStatus.completed },
+    });
+  }
 
   // ── Payout plan: only for periodic-payout lots. Anchor dates follow the
   // deposit start (day-of-month), interval from the stored frequency.
@@ -203,7 +254,7 @@ export async function ensureDepositPlansForLot(params: {
         fundCode: DEPOSIT_PAYOUT_PLAN_FUND_CODE,
         fundName: label,
         fundProductType: "deposit",
-        amount: Math.abs(Number(buy.amount ?? 0)),
+        amount: remainingPrincipal,
         intervalUnit,
         intervalValue: Math.max(1, intervalValue || 1),
         executionDay: anchor.getUTCDate(),
@@ -211,7 +262,7 @@ export async function ensureDepositPlansForLot(params: {
         nextRunDate: nextRun,
         endDate: null,
         totalRuns: null,
-        status: RegularInvestStatus.active,
+        status: lotSettled ? RegularInvestStatus.completed : RegularInvestStatus.active,
         feeRate: 0,
         confirmDays: 0,
         arrivalDays: 0,
@@ -224,9 +275,9 @@ export async function ensureDepositPlansForLot(params: {
         // 起存日，避免残留创建时的旧快照。
         startDate: start,
         nextRunDate: nextRun,
-        status: RegularInvestStatus.active,
+        status: lotSettled ? RegularInvestStatus.completed : RegularInvestStatus.active,
         memo: payoutMemo,
-        amount: Math.abs(Number(buy.amount ?? 0)),
+        amount: remainingPrincipal,
       },
       where: { id: `depi_${buy.id}` },
     });
@@ -308,25 +359,22 @@ export async function executeDepositPlan(params: {
     const { processDepositMaturityForLot } = await import("@/lib/server/deposit-auto-maturity");
     const outcome = await processDepositMaturityForLot({ householdId, lotId, now });
     // 到期计划推进：取回 → 计划完成；续存 → 下次执行日滚动到新到期日。
-    const closed = await prisma.txRecord.findFirst({
-      where: {
-        householdId,
-        deletedAt: null,
-        depositSourceEntryId: lotId,
-        fundSubtype: { in: ["redeem", "switch_out"] },
-      },
-      select: { id: true },
-    });
+    const balance = await loadDepositLotBalance({ householdId, lotId });
     const fresh = await prisma.txRecord.findUnique({
       where: { id: lotId },
       select: { fundArrivalDate: true, deletedAt: true },
     });
     await prisma.regularInvestPlan.update({
       where: { id: plan.id },
-      data: closed || !fresh || fresh.deletedAt
+      data: !balance || balance.settled || !fresh || fresh.deletedAt
         ? { status: RegularInvestStatus.completed }
         // 续存滚动后 startDate 同步新到期日，与 nextRunDate 保持一致。
-        : { startDate: fresh.fundArrivalDate ?? plan.startDate, nextRunDate: fresh.fundArrivalDate ?? plan.nextRunDate },
+        : {
+            startDate: fresh.fundArrivalDate ?? plan.startDate,
+            nextRunDate: fresh.fundArrivalDate ?? plan.nextRunDate,
+            amount: balance.remainingPrincipal,
+            status: RegularInvestStatus.active,
+          },
     }).catch(() => {});
     return {
       executed: outcome.status === "redeemed" || outcome.status === "renewed",

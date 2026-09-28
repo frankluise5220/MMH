@@ -13,6 +13,7 @@ import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsAccountData } from "@/lib/client/settingsCache";
 import { useI18n } from "@/lib/i18n";
 import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
+import { isDepositAccount } from "@/lib/account-kind-utils";
 
 /* Types */
 
@@ -184,7 +185,7 @@ export function InitModal({
 
   function selectBalanceAccount(tempId: string, accountId: string) {
     if (!accountId) return;
-    const target = allAccounts.find((account) => account.id === accountId && account.kind !== "investment");
+    const target = allAccounts.find((account) => account.id === accountId && !isDepositAccount(account));
     if (!target) return;
     setBalanceRows((prev) => prev.map((row) => (
       row.tempId === tempId
@@ -201,7 +202,7 @@ export function InitModal({
     setAllAccounts(updatedAllAccounts);
     setInvestmentAccountList(updatedInvest);
     rebuildSSOptions(updatedAllAccounts, updatedInvest);
-    if (kind !== "investment") {
+    if (kind !== "investment" && !isDepositAccount({ kind })) {
       const pendingRowId = pendingBalanceCreateRowId.current;
       setBalanceRows((prev) => (
         pendingRowId
@@ -441,7 +442,7 @@ export function InitModal({
 
   const balanceAccountSSOptions = useMemo(
     () => allAccounts
-      .filter((account) => account.kind !== "investment")
+      .filter((account) => !isDepositAccount(account))
       .map((account) => ({ id: account.id, label: account.label, subLabel: kindLabel(account.kind) })),
     [allAccounts],
   );

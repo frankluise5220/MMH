@@ -99,6 +99,8 @@ import {
   deleteReimbursement,
   getReimbursementOverview,
   reimburseReimbursement,
+  updateReimbursement,
+  updateReimbursementItem,
   updateReimbursementItemInvoice,
 } from "@/lib/server/sidebar-actions/reimbursement-actions";
 import { createTransaction, editInvestment, updateTransactionFromDialog, renewDeposit, payDepositInterest } from "@/lib/server/sidebar-actions/transaction-actions";
@@ -300,8 +302,8 @@ function toYmdOrNull(value: unknown) {
 /**
  * Expected interest for a held deposit certificate, following the same simple
  * interest convention used by the deposit form: principal x annual rate (%) x
- * term days / 365. Falls back to days up to today when the maturity date is
- * missing. Returns null when any required input is unavailable.
+ * elapsed days / 365. The elapsed period ends today, capped at maturity.
+ * Returns null when any required input is unavailable.
  */
 function calcDepositExpectedInterest(params: {
   principal: number;
@@ -315,21 +317,21 @@ function calcDepositExpectedInterest(params: {
   // 存入日计息: whole-year spans ending one day before the anniversary count
   // inclusively (365/366 days), matching what auto-redeem actually pays;
   // other spans (incl. the days-up-to-today fallback) keep the raw difference.
-  const endDate = maturityDate ?? today;
   const startUtc = parseDateInputToUtc(startDate);
-  const endUtc = parseDateInputToUtc(endDate);
+  const todayUtc = parseDateInputToUtc(today);
+  const maturityUtc = maturityDate ? parseDateInputToUtc(maturityDate) : null;
+  const endUtc = todayUtc && maturityUtc && maturityUtc < todayUtc ? maturityUtc : todayUtc;
   const days = startUtc && endUtc ? depositInterestDaysUtc(startUtc, endUtc) : 0;
   if (days <= 0) return null;
   return Number(((principal * (annualRate / 100) * days) / 365).toFixed(2));
 }
 
 /**
- * Total interest over the whole term, from the ORIGINAL deposit start date to
+ * Accrued interest from the deposit start date through today, capped at
  * maturity, matching the accrual formulas the executor actually uses:
  *   - monthly basis + month frequency → fixed instalment × instalment count
  *     (principal × rate ÷ 12 per month, same as autoAccruePeriodicInterest);
  *   - otherwise day-count: principal × rate × days / 365.
- * 已取利息从同一总额里扣减（七版口径：预计利息=总利息−已取）。
  */
 function calcDepositTotalInterest(params: {
   principal: number;
@@ -346,7 +348,9 @@ function calcDepositTotalInterest(params: {
   // 按月均分：每期固定 本金×年利率÷12，期数=全期覆盖的付息周期数（与执行器同式）。
   if (interestCalcBasis === "monthly" && frequency.kind === "periodic" && frequency.unit === "month") {
     const startUtc = parseDateInputToUtc(startDate);
-    const endUtc = parseDateInputToUtc(maturityDate ?? today);
+    const todayUtc = parseDateInputToUtc(today);
+    const maturityUtc = maturityDate ? parseDateInputToUtc(maturityDate) : null;
+    const endUtc = todayUtc && maturityUtc && maturityUtc < todayUtc ? maturityUtc : todayUtc;
     if (!startUtc || !endUtc || endUtc <= startUtc) return null;
     const months = (endUtc.getUTCFullYear() - startUtc.getUTCFullYear()) * 12 + (endUtc.getUTCMonth() - startUtc.getUTCMonth());
     const periods = Math.max(1, Math.floor(months / frequency.interval));
@@ -876,7 +880,7 @@ export default async function Home({
     if (column === "type" && e.source === BALANCE_RECONCILE_SOURCE) return t("detailView.balanceReconcile");
     if (column === "type") {
       if (e.source === "insurance") return getInsuranceDetailCategoryName(e);
-      if (e.source === "advance") return t("txForm.advance");
+      if ((e.source === "advance" || e.source === "reimbursement") && e.type !== TransactionType.expense) return t("txForm.advance");
       if (e.type === "investment" && e.fundProductType === "deposit") {
         // Deposits read as transfers + interest income, never as 投资.
         const subtype = String(e.fundSubtype ?? "");
@@ -889,6 +893,11 @@ export default async function Home({
     }
     if (column === "category") {
       if (isCreditCardRepaymentForDisplay(e)) return t("transaction.category.creditCardRepayment");
+      const categoryLabel = systemCategoryLabel(e.categoryName, t);
+      if (categoryLabel) return categoryLabel;
+      if (e.type === TransactionType.income && e.source === "advance") {
+        return t("systemCategory.reimbursement");
+      }
       if (e.type === TransactionType.investment) {
         if (e.source === "insurance") return getInsuranceDetailCategoryName(e);
         return e.categoryName || getInvestmentCategoryName(e) || t("detail.emptyValue");
@@ -977,6 +986,10 @@ export default async function Home({
       if (e.source === "insurance") return getInsuranceDetailCategoryName(e);
       return systemCategoryLabel(stripExportCategoryRootLabel(e.categoryName), t) || systemCategoryLabel(getInvestmentCategoryName(e), t) || "";
     }
+    if (e.categoryName) return systemCategoryLabel(stripExportCategoryRootLabel(e.categoryName), t);
+    if (e.type === TransactionType.income && e.source === "advance") {
+      return t("systemCategory.reimbursement");
+    }
     return systemCategoryLabel(stripExportCategoryRootLabel(e.categoryName), t);
   };
   const normalExportHeader = [
@@ -1015,7 +1028,11 @@ export default async function Home({
       id: e.id,
       row: [
         entryDisplayDate(e).toISOString().slice(0, 10),
-        e.source === "insurance" ? getInsuranceDetailCategoryName(e) : formatType(t, e.type),
+        e.source === "insurance"
+          ? getInsuranceDetailCategoryName(e)
+          : (e.source === "advance" || e.source === "reimbursement") && e.type !== TransactionType.expense
+            ? t("txForm.advance")
+            : formatType(t, e.type),
         getExportCategoryName(e),
         outflow,
         inflow,
@@ -1407,35 +1424,13 @@ export default async function Home({
   const debtTransferAccountSSOptions = buildAccountSSOptions(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet" || a.kind === "bank_credit");
   // 不是所有往来对象都能当「往来款对象」—— 常用商户（merchant）排除
   const debtCounterpartyOptions = counterparties.filter((counterparty) => isSettlementCounterpartyType(counterparty.type));
-  // Reimbursement objects mirror the debt counterparties (settlement side), but only
-  // objects explicitly flagged as reimbursable expose the entry points.
+  // Only receivable accounts linked to explicitly reimbursable counterparties expose reimbursement.
   const reimbursableCounterpartyOptions = debtCounterpartyOptions.filter((counterparty) => counterparty.isReimbursable === true);
   const reimbursableCounterpartyIdSet = new Set(reimbursableCounterpartyOptions.map((counterparty) => counterparty.id));
-  // Advance accounts grouped by their counterparty, so the detail-entry button can
-  // resolve which reimbursement object a picked row belongs to.
-  const advanceAccountIdsByCounterparty = new Map<string, string[]>();
-  for (const account of accounts) {
-    if (!account.counterpartyId || !reimbursableCounterpartyIdSet.has(account.counterpartyId)) continue;
-    const bucket = advanceAccountIdsByCounterparty.get(account.counterpartyId);
-    if (bucket) bucket.push(account.id);
-    else advanceAccountIdsByCounterparty.set(account.counterpartyId, [account.id]);
-  }
-  const reimbursementObjectOptions = reimbursableCounterpartyOptions.map((counterparty) => ({
-    id: counterparty.id,
-    name: counterparty.shortName?.trim() || counterparty.name,
-    advanceAccountIds: advanceAccountIdsByCounterparty.get(counterparty.id) ?? [],
-  }));
-  // The detail-list action is gated by the selected rows' advance-account objects.
+  // The detail-list action is gated by the selected rows' reimbursement-enabled accounts.
   const reimbursementAllowedAdvanceAccountIds = accounts
     .filter((account) => !!account.counterpartyId && reimbursableCounterpartyIdSet.has(account.counterpartyId))
     .map((account) => account.id);
-  const reimbursementHubActions = {
-    getData: getReimbursementOverview,
-    create: createReimbursement,
-    reimburse: reimburseReimbursement,
-    delete: deleteReimbursement,
-    updateInvoice: updateReimbursementItemInvoice,
-  };
   const loanSourceInstitutions = institutions.filter((institution) => isInstitutionTypeOf(institution.type, LOAN_DIALOG_INSTITUTION_TYPE_VALUES));
   const debtObjectOptions: SSOpt[] = debtCounterpartyOptions.length > 0
     ? [
@@ -2131,6 +2126,7 @@ export default async function Home({
               note: entry.note ?? "",
               amount: entry.toAccountId === accountId ? Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount)) : toNumber(entry.amount),
               balance: null as number | null,
+              depositInterest: entry.depositInterest == null ? 0 : toNumber(entry.depositInterest),
               businessTransactionId: entry.businessTransactionId ?? null,
               businessLinkCount: entry.businessLinkCount ?? 0,
               businessLinkLabels: entry.businessLinkLabels ?? [],
@@ -2198,6 +2194,7 @@ export default async function Home({
                 note: entry.note ?? "",
                 amount: effectiveAmount,
                 balance: null as number | null,
+                depositInterest: 0,
                 depositSourceEntryId: entry.depositSourceEntryId ?? undefined,
                 businessLinkCount: 0,
                 businessLinkLabels: [],
@@ -2254,7 +2251,10 @@ export default async function Home({
       const abs = Math.abs(toNumber(entry.amount));
       if (entryType === "investment") {
         if (subtype === "buy") return abs;          // 存入：本金转入
-        if (subtype === "redeem" || subtype === "switch_out") return -abs; // 取回：本息离场
+        if (subtype === "redeem" || subtype === "switch_out") {
+          const interest = Math.max(0, toNumber(entry.depositInterest));
+          return -Math.max(0, Number((abs - interest).toFixed(2))); // Redemption reduces principal only.
+        }
         return 0;                                   // legacy dividend：成对，净额 0
       }
       if (entryType === "income") return toNumber(entry.amount);
@@ -2659,7 +2659,7 @@ export default async function Home({
       for (const lot of bucket) {
         if (lot.remainingAmount <= 0) continue;
         lot.relatedEntryIds.push(entry.id);
-        lot.remainingAmount = 0;
+        lot.remainingAmount = Math.max(0, Number((lot.remainingAmount - amountValue).toFixed(2)));
         break;
       }
     }
@@ -2700,24 +2700,39 @@ export default async function Home({
         targetLot.relatedEntryIds.push(payout.id);
       }
     }
-    const lotSpanByAccountId = new Map<string, { start: string | null; maturity: string | null }>();
-    for (const lot of allLots) {
-      const lotStart = toYmdOrNull(sourceEntryById.get(lot.id)?.date);
-      lotSpanByAccountId.set(lot.depositAccountId, { start: lotStart, maturity: lot.maturityDate });
-      const payoutStart = lotStart;
-      const payoutEnd = lot.maturityDate;
-      for (const payout of ordinaryInterestPool ?? []) {
-        if (payout.deletedAt) continue;
-        if (payout.source !== "deposit") continue;
-        if (payout.type !== "income" && payout.type !== "transfer") continue;
-        if (payout.depositSourceEntryId) continue; // already attached via the exact link
-        if ((payout.accountId ?? "") !== lot.depositAccountId) continue;
-        const payoutDate = toYmdOrNull(payout.date);
-        if (payoutStart && payoutDate && payoutDate < payoutStart) continue;
-        if (payoutEnd && payoutDate && payoutDate > payoutEnd) continue;
-        if (!lot.relatedEntryIds.includes(payout.id)) {
-          lot.relatedEntryIds.push(payout.id);
-        }
+    for (const payout of ordinaryInterestPool ?? []) {
+      if (payout.deletedAt) continue;
+      if (payout.source !== "deposit") continue;
+      if (payout.type !== "income" && payout.type !== "transfer") continue;
+      if (payout.depositSourceEntryId) continue; // already attached via the exact link
+      const payoutDate = toYmdOrNull(payout.date);
+      const payoutName = (payout.fundName ?? payout.fundCode ?? "").trim();
+      const candidates = allLots.filter((lot) => {
+        if ((payout.accountId ?? "") !== lot.depositAccountId) return false;
+        const lotStart = toYmdOrNull(sourceEntryById.get(lot.id)?.date);
+        if (lotStart && payoutDate && payoutDate < lotStart) return false;
+        if (lot.maturityDate && payoutDate && payoutDate > lot.maturityDate) return false;
+        return true;
+      });
+      if (candidates.length === 0) continue;
+      const exactNameCandidates = payoutName
+        ? candidates.filter((lot) => lot.fundName === payoutName)
+        : [];
+      const notedCandidates = candidates.filter((lot) => payout.note?.includes(lot.fundName));
+      const rankedCandidates = exactNameCandidates.length > 0
+        ? exactNameCandidates
+        : notedCandidates.length > 0
+          ? notedCandidates
+          : candidates;
+      const targetLot = rankedCandidates
+        .slice()
+        .sort((left, right) => {
+          const leftStart = toYmdOrNull(sourceEntryById.get(left.id)?.date) ?? "0000-00-00";
+          const rightStart = toYmdOrNull(sourceEntryById.get(right.id)?.date) ?? "0000-00-00";
+          return rightStart.localeCompare(leftStart) || left.id.localeCompare(right.id);
+        })[0];
+      if (targetLot && !targetLot.relatedEntryIds.includes(payout.id)) {
+        targetLot.relatedEntryIds.push(payout.id);
       }
     }
 
@@ -2729,25 +2744,30 @@ export default async function Home({
           if (sourceEntry?.depositAnnualRate != null) return toNumber(sourceEntry.depositAnnualRate);
           return sourceEntry?.fundNav != null ? toNumber(sourceEntry.fundNav) : null;
         })();
-        const startDate = toYmdOrNull(sourceEntry?.date);
-        // 已取利息 = 关联到本存单的利息收入记录合计（income 侧；transfer 侧是同一笔
-        // 利息的资金搬家，不算入取息金额）。七版口径：预计利息=总利息−已取。
+        const startDate = toYmdOrNull(sourceEntry?.fundConfirmDate) ?? toYmdOrNull(sourceEntry?.date);
+        // Count income-side payouts only; transfer rows move the same interest
+        // and must not count twice. Redemption interest is already in arrival.
         const payoutEntryById = new Map((ordinaryInterestPool ?? []).map((e) => [e.id, e] as const));
         let takenInterest = 0;
+        let latestInterestDate: string | null = null;
         for (const id of lot.relatedEntryIds) {
           const e = payoutEntryById.get(id);
           if (!e || e.deletedAt) continue;
           if (e.type !== "income" || e.source !== "deposit") continue;
           takenInterest += Math.abs(toNumber(e.amount));
+          const payoutDate = toYmdOrNull(e.date);
+          if (payoutDate && (!latestInterestDate || payoutDate > latestInterestDate)) {
+            latestInterestDate = payoutDate;
+          }
         }
         takenInterest = Number(takenInterest.toFixed(2));
         const expectedInterest =
           lot.remainingAmount > 0.0001
             ? (() => {
-                // 总利息从「原起存日」算到到期日（续存不重置口径——续存前已取的
-                // 利息也在同一总额里），按计息方式选公式；预计 = 总利息 − 已取。
+                // Continue accruing the remaining principal from the original
+                // start date through today, capped at maturity.
                 const total = calcDepositTotalInterest({
-                  principal: originalAmount,
+                  principal: lot.remainingAmount,
                   annualRate,
                   startDate,
                   maturityDate: lot.maturityDate,
@@ -2782,6 +2802,7 @@ export default async function Home({
           annualRate,
           expectedInterest,
           takenInterest,
+          latestInterestDate,
           depositAccountId: lot.depositAccountId,
           depositAccountLabel: lot.depositAccountName,
           relatedEntryIds: lot.relatedEntryIds,
@@ -2839,6 +2860,7 @@ export default async function Home({
       maturityDate: lot.maturityDate,
       remainingAmount: lot.remainingAmount,
       annualRate: lot.annualRate,
+      latestInterestDate: lot.latestInterestDate ?? null,
       depositAccountId: lot.depositAccountId,
       depositAccountLabel: lot.depositAccountLabel,
     }));
@@ -3544,14 +3566,6 @@ export default async function Home({
               categoryOptions={categoryBatchReplaceOptions}
               accountEditData={debtAccountEditData}
               loanEditAction={createDebtTransaction}
-              reimbursementActions={{
-                getData: getReimbursementOverview,
-                create: createReimbursement,
-                reimburse: reimburseReimbursement,
-                delete: deleteReimbursement,
-                updateInvoice: updateReimbursementItemInvoice,
-              }}
-              reimbursementCashAccountOptions={cashAccountSSOptions}
             />
           ) : view === "deposit" && selectedAccount ? (
             <DepositShell
@@ -3770,9 +3784,6 @@ export default async function Home({
                   currentBalance={selectedAccountRawBalanceValue}
                   focusEntryId={focusEntryId}
                   showGuideOverlay={guideParam === "daily-table"}
-                  reimbursementHubActions={reimbursementHubActions}
-                  reimbursementCashAccountOptions={cashAccountSSOptions.map((option) => ({ id: option.id, label: option.label }))}
-                  reimbursementObjectOptions={reimbursementObjectOptions}
                   reimbursementAllowedAdvanceAccountIds={reimbursementAllowedAdvanceAccountIds}
                 />
               </div>

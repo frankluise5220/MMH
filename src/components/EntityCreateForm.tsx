@@ -25,6 +25,7 @@ import {
 import { useI18n } from "@/lib/i18n";
 import { FIXED_ASSET_TYPES, isFixedAssetAccountLike } from "@/lib/fixed-asset";
 import { LOAN_TYPES } from "@/lib/loan-type";
+import { isDepositAccount } from "@/lib/account-kind-utils";
 
 /* ---- Types ---- */
 
@@ -778,7 +779,11 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     includeInitialBalanceFields &&
     entityType === "account" &&
     (form.kind || form.type || defaultType) !== "investment" &&
-    (form.kind || form.type || defaultType) !== "fixed_asset";
+    (form.kind || form.type || defaultType) !== "fixed_asset" &&
+    !isDepositAccount({
+      kind: form.kind || form.type || defaultType,
+      investProductType: form.investProductType || extraFields?.investProductType,
+    });
   function renderInitialBalanceFields() {
     if (!shouldShowInitialBalanceFields) return null;
     // 独占一整行（col-span-full）：日期+金额成对出现，不与币种/卡号/备注混排。

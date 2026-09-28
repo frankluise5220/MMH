@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const crypto = require("node:crypto");
 const path = require("node:path");
+const zlib = require("node:zlib");
 const { spawnSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
@@ -16,8 +17,20 @@ const stageDir = path.join(outDir, target.stageDirName);
 const packageRoot = path.join(stageDir, "package");
 const stageOnly = process.argv.includes("--stage-only");
 const nodeTarball = process.env.SYNOLOGY_NODE_TARBALL || process.env.SYNOPKG_NODE_TARBALL || process.env.FNOS_NODE_TARBALL || "";
+const reusePackageTgz = process.env.SYNOLOGY_REUSE_PACKAGE_TGZ || "";
 const packageReleaseNotes = typeof pkg.mmhReleaseNotes === "string" ? pkg.mmhReleaseNotes.trim() : "";
 const dsmMinVersion = "7.0-40000";
+const dsmAppName = "com.synocommunity.packages.mmh";
+// DSM reads the desktop-app registration from "<PKGDEST>/<dsmuidir>/config" and the
+// app icons from "<PKGDEST>/<dsmuidir>/images". Without `dsmuidir` in INFO the UI
+// directory is never mounted, so Package Center shows no "打开" button and no icon.
+const dsmUiDir = "ui";
+const dsmIconSizes = [16, 24, 32, 48, 64, 72, 256];
+const adminPort = process.env.SYNOLOGY_ADMIN_PORT || "7777";
+
+if (!/^([1-9][0-9]{0,4})$/.test(adminPort) || Number(adminPort) > 65535) {
+  throw new Error(`SYNOLOGY_ADMIN_PORT must be a TCP port between 1 and 65535, got ${adminPort}.`);
+}
 
 function normalizeVersion(value) {
   const raw = String(value || "").trim();
@@ -72,6 +85,160 @@ function copyFile(src, dest) {
   fs.copyFileSync(src, dest);
 }
 
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let index = 0; index < 8; index += 1) {
+      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const typeBuffer = Buffer.from(type, "ascii");
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(Buffer.concat([typeBuffer, data])));
+  return Buffer.concat([length, typeBuffer, data, crc]);
+}
+
+function readPngRgba(file) {
+  const input = fs.readFileSync(file);
+  if (input.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") {
+    throw new Error(`${path.relative(root, file)} is not a PNG file.`);
+  }
+
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let bitDepth = 0;
+  let colorType = 0;
+  const idatChunks = [];
+  while (offset < input.length) {
+    const length = input.readUInt32BE(offset);
+    const type = input.subarray(offset + 4, offset + 8).toString("ascii");
+    const data = input.subarray(offset + 8, offset + 8 + length);
+    offset += 12 + length;
+    if (type === "IHDR") {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      bitDepth = data[8];
+      colorType = data[9];
+    } else if (type === "IDAT") {
+      idatChunks.push(data);
+    } else if (type === "IEND") {
+      break;
+    }
+  }
+  if (bitDepth !== 8 || (colorType !== 2 && colorType !== 6)) {
+    throw new Error(`${path.relative(root, file)} must be an 8-bit RGB or RGBA PNG.`);
+  }
+
+  const sourceBpp = colorType === 6 ? 4 : 3;
+  const rowLength = width * sourceBpp;
+  const inflated = zlib.inflateSync(Buffer.concat(idatChunks));
+  const rgba = Buffer.alloc(width * height * 4);
+  let readOffset = 0;
+  let previous = Buffer.alloc(rowLength);
+  const paeth = (left, up, upLeft) => {
+    const value = left + up - upLeft;
+    const pa = Math.abs(value - left);
+    const pb = Math.abs(value - up);
+    const pc = Math.abs(value - upLeft);
+    if (pa <= pb && pa <= pc) return left;
+    return pb <= pc ? up : upLeft;
+  };
+
+  for (let y = 0; y < height; y += 1) {
+    const filter = inflated[readOffset];
+    readOffset += 1;
+    const row = Buffer.from(inflated.subarray(readOffset, readOffset + rowLength));
+    readOffset += rowLength;
+    for (let x = 0; x < rowLength; x += 1) {
+      const left = x >= sourceBpp ? row[x - sourceBpp] : 0;
+      const up = previous[x] ?? 0;
+      const upLeft = x >= sourceBpp ? previous[x - sourceBpp] : 0;
+      if (filter === 1) row[x] = (row[x] + left) & 0xff;
+      else if (filter === 2) row[x] = (row[x] + up) & 0xff;
+      else if (filter === 3) row[x] = (row[x] + Math.floor((left + up) / 2)) & 0xff;
+      else if (filter === 4) row[x] = (row[x] + paeth(left, up, upLeft)) & 0xff;
+      else if (filter !== 0) throw new Error(`${path.relative(root, file)} uses unsupported PNG filter ${filter}.`);
+    }
+    for (let x = 0; x < width; x += 1) {
+      const sourceOffset = x * sourceBpp;
+      const targetOffset = (y * width + x) * 4;
+      rgba[targetOffset] = row[sourceOffset];
+      rgba[targetOffset + 1] = row[sourceOffset + 1];
+      rgba[targetOffset + 2] = row[sourceOffset + 2];
+      rgba[targetOffset + 3] = sourceBpp === 4 ? row[sourceOffset + 3] : 0xff;
+    }
+    previous = row;
+  }
+  return { width, height, rgba };
+}
+
+function resizeRgbaNearestBox(image, size) {
+  const output = Buffer.alloc(size * size * 4);
+  for (let y = 0; y < size; y += 1) {
+    const yStart = Math.floor((y * image.height) / size);
+    const yEnd = Math.max(yStart + 1, Math.floor(((y + 1) * image.height) / size));
+    for (let x = 0; x < size; x += 1) {
+      const xStart = Math.floor((x * image.width) / size);
+      const xEnd = Math.max(xStart + 1, Math.floor(((x + 1) * image.width) / size));
+      let red = 0;
+      let green = 0;
+      let blue = 0;
+      let alpha = 0;
+      let count = 0;
+      for (let sourceY = yStart; sourceY < yEnd; sourceY += 1) {
+        for (let sourceX = xStart; sourceX < xEnd; sourceX += 1) {
+          const sourceOffset = (sourceY * image.width + sourceX) * 4;
+          red += image.rgba[sourceOffset];
+          green += image.rgba[sourceOffset + 1];
+          blue += image.rgba[sourceOffset + 2];
+          alpha += image.rgba[sourceOffset + 3];
+          count += 1;
+        }
+      }
+      const targetOffset = (y * size + x) * 4;
+      output[targetOffset] = Math.round(red / count);
+      output[targetOffset + 1] = Math.round(green / count);
+      output[targetOffset + 2] = Math.round(blue / count);
+      output[targetOffset + 3] = Math.round(alpha / count);
+    }
+  }
+  return output;
+}
+
+function writeRgbaPng(file, size, rgba) {
+  mkdirp(path.dirname(file));
+  const signature = Buffer.from("89504e470d0a1a0a", "hex");
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  const rows = [];
+  for (let y = 0; y < size; y += 1) {
+    rows.push(Buffer.from([0]));
+    rows.push(rgba.subarray(y * size * 4, (y + 1) * size * 4));
+  }
+  fs.writeFileSync(file, Buffer.concat([
+    signature,
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", zlib.deflateSync(Buffer.concat(rows))),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]));
+}
+
+function copyIcon(src, dest, size) {
+  const image = readPngRgba(src);
+  writeRgbaPng(dest, size, resizeRgbaNearestBox(image, size));
+}
+
 function copyDir(src, dest) {
   if (!fs.existsSync(src)) return false;
   fs.cpSync(src, dest, { recursive: true });
@@ -100,6 +267,33 @@ function hashFileMd5(file) {
   const hash = crypto.createHash("md5");
   hash.update(fs.readFileSync(file));
   return hash.digest("hex");
+}
+
+function setTarEntryModes(file, executableEntries, compressed) {
+  let archive = fs.readFileSync(file);
+  if (compressed) archive = zlib.gunzipSync(archive);
+  const names = new Set(executableEntries);
+  let offset = 0;
+  while (offset + 512 <= archive.length) {
+    const header = archive.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) break;
+    const name = header.subarray(0, 100).toString("utf8").replace(/\0.*$/, "").replace(/^\.\//, "");
+    const prefix = header.subarray(345, 500).toString("utf8").replace(/\0.*$/, "");
+    const entryName = (prefix ? `${prefix}/${name}` : name).replace(/^\.\//, "");
+    const sizeRaw = header.subarray(124, 136).toString("ascii").replace(/\0.*$/, "").trim();
+    const size = sizeRaw ? Number.parseInt(sizeRaw, 8) : 0;
+    if (names.has(entryName)) {
+      header.fill(0, 100, 108);
+      header.write("0000755\0", 100, "ascii");
+      header.fill(0x20, 148, 156);
+      let checksum = 0;
+      for (const byte of header) checksum += byte;
+      header.write(`${checksum.toString(8).padStart(6, "0")}\0 `, 148, "ascii");
+    }
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  if (compressed) archive = zlib.gzipSync(archive);
+  fs.writeFileSync(file, archive);
 }
 
 function directorySizeKb(dir) {
@@ -154,6 +348,10 @@ function spkAssetName() {
 }
 
 function runFnosStage() {
+  if (process.env.SYNOLOGY_SKIP_FNOS_STAGE === "1") {
+    console.log("Reusing the existing fnOS stage for Synology packaging.");
+    return;
+  }
   if (!nodeTarball) {
     throw new Error(`Provide a Linux ${target.nodeArch} Node runtime tarball with SYNOLOGY_NODE_TARBALL before building ${spkAssetName()}.`);
   }
@@ -177,20 +375,381 @@ function writeInfoFile(options = {}) {
   write(path.join(stageDir, "INFO"), `package="${appName}"
 version="${version}"
 displayname="MMH"
-description="Local-first household finance workspace with SQLite storage for Synology DSM."
+description="家庭记账与财务管理应用，使用本地 SQLite 数据库，无需 Docker 或 PostgreSQL。安装后通过浏览器访问；卸载时可选择保留或删除数据库与设置。"
 maintainer="frankluise5220"
 support_url="https://github.com/frankluise5220/MMH"
+dsmappname="${dsmAppName}"
+dsmuidir="${dsmUiDir}"
 arch="${target.infoArch}"
 os_min_ver="${dsmMinVersion}"
 ${checksumLine}${extractSizeLine}thirdparty="yes"
 startable="yes"
 ctl_stop="yes"
 silent_install="no"
-silent_upgrade="yes"
+silent_upgrade="no"
 silent_uninstall="no"
-adminport="7777"
-adminurl="/"
 `);
+}
+
+// ---------------------------------------------------------------------------
+// Port wizard (install + upgrade)
+//
+// DSM renders `WIZARD_UIFILES/<name>_uifile` (static JSON) or, when
+// `<name>_uifile.sh` exists, runs that script and reads the JSON it writes to
+// $SYNOPKG_TEMP_LOGFILE. A static file cannot tell the user that the port they
+// are about to pick is already owned by someone else - which is exactly why the
+// installer looked like it silently accepted a 7777 that the Docker build was
+// holding. Both files are shipped: the `.sh` adds the live occupancy report and
+// pre-fills the next free port, the static file keeps the wizard renderable if
+// DSM reads it instead.
+// ---------------------------------------------------------------------------
+const wizardPortRegex = "/^([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$/";
+
+function wizardJson(desc) {
+  return JSON.stringify([{
+    step_title: "MMH 网络端口",
+    invalid_next_disabled: true,
+    items: [{
+      type: "textfield",
+      subitems: [{
+        key: "wizard_port",
+        desc,
+        defaultValue: adminPort,
+        validator: {
+          allowBlank: false,
+          regex: {
+            expr: wizardPortRegex,
+            errorText: "请输入 1 到 65535 之间的端口号",
+          },
+        },
+      }],
+    }],
+  }], null, 2);
+}
+
+// The dynamic wizard scripts assemble their JSON from these fragments with
+// printf, so that no shell quoting or sed escaping can ever corrupt it. The
+// fragments are validated at build time below - a missing bracket used to ship
+// silently and leave the DSM wizard blank.
+const wizardJsonHead = '[{"step_title":"MMH 网络端口","invalid_next_disabled":true,"items":[{"type":"textfield","subitems":[{"key":"wizard_port","desc":"';
+const wizardJsonMid = '","defaultValue":"';
+const wizardJsonTail = `","validator":{"allowBlank":false,"regex":{"expr":"${wizardPortRegex}","errorText":"请输入 1 到 65535 之间的端口号"}}}]}]}]`;
+
+function assertWizardJsonFragments() {
+  const sample = `${wizardJsonHead}DESC${wizardJsonMid}${adminPort}${wizardJsonTail}`;
+  let parsed;
+  try {
+    parsed = JSON.parse(sample);
+  } catch (error) {
+    throw new Error(`Synology wizard JSON fragments do not assemble into valid JSON: ${error.message}`);
+  }
+  const subitem = parsed?.[0]?.items?.[0]?.subitems?.[0];
+  if (subitem?.key !== "wizard_port" || subitem?.defaultValue !== adminPort) {
+    throw new Error("Synology wizard JSON fragments lost the wizard_port field.");
+  }
+  const staticSample = JSON.parse(wizardJson("DESC"));
+  if (JSON.stringify(staticSample) !== JSON.stringify(parsed)) {
+    throw new Error("Synology static and dynamic wizard JSON must describe the same field.");
+  }
+}
+assertWizardJsonFragments();
+
+// Shared shell body of the dynamic wizard scripts. `resolveDefault` prints the
+// port the wizard should start from; `suffix` is appended to the description.
+function wizardScriptBody(resolveDefault, suffix) {
+  return `OUT="\${SYNOPKG_TEMP_LOGFILE:-}"
+[ -n "$OUT" ] || exit 0
+
+port="$(${resolveDefault})"
+case "$port" in
+  ''|*[!0-9]*) port="$DEFAULT_PORT" ;;
+esac
+
+if port_is_listening "$port"; then
+  owner="$(port_owner_text "$port" | sed 's/[\\\\"]//g' | cut -c1-80)"
+  if free_port="$(probe_free_port \$((port + 1)))"; then
+    desc="⚠️ 端口 $port 已被占用（$owner），已预填下一个可用端口 $free_port。${suffix}"
+    port="$free_port"
+  else
+    desc="⚠️ 端口 $port 已被占用（$owner），其后的端口也都不可用，请手动填写一个空闲端口。"
+  fi
+else
+  desc="MMH 服务端口。当前 $port 可用。${suffix}"
+fi
+desc="$(printf '%s' "$desc" | sed 's/[\\\\"]//g')"
+
+printf '%s' '${wizardJsonHead}' > "$OUT" 2>/dev/null || true
+printf '%s' "$desc" >> "$OUT" 2>/dev/null || true
+printf '%s' '${wizardJsonMid}' >> "$OUT" 2>/dev/null || true
+printf '%s' "$port" >> "$OUT" 2>/dev/null || true
+printf '%s' '${wizardJsonTail}' >> "$OUT" 2>/dev/null || true
+exit 0`;
+}
+
+const installWizardSuffix = "首次安装使用此端口；更新时会保留已安装版本的端口。";
+const upgradeWizardSuffix = "更新会沿用当前端口；如需更换端口，在此填写新端口即可。";
+
+function writeInstallWizard() {
+  write(path.join(stageDir, "WIZARD_UIFILES", "install_uifile"), wizardJson(installWizardSuffix));
+  write(path.join(stageDir, "WIZARD_UIFILES", "install_uifile.sh"), `#!/bin/sh
+# DSM runs this before rendering the install wizard and reads the wizard JSON
+# from $SYNOPKG_TEMP_LOGFILE. Probing here is the only chance to tell the user
+# that their chosen port is already taken BEFORE they press 下一步.
+# Never exits non-zero: a failing wizard script leaves the whole wizard blank.
+
+PACKAGE="mmh"
+DEFAULT_PORT=${adminPort}
+OWN_SERVER_JS="/var/packages/$PACKAGE/target/app/server/server.js"
+
+${portProbeShell}
+
+${wizardScriptBody(`printf '%s' "$DEFAULT_PORT"`, installWizardSuffix)}`, 0o755);
+}
+
+function writeUpgradeWizard() {
+  write(path.join(stageDir, "WIZARD_UIFILES", "upgrade_uifile"), wizardJson(upgradeWizardSuffix));
+  write(path.join(stageDir, "WIZARD_UIFILES", "upgrade_uifile.sh"), `#!/bin/sh
+# Upgrade counterpart of install_uifile.sh. Starting from the port that is
+# already persisted makes the wizard the supported way to change the port
+# later: stop the package, upgrade/re-install, edit the value, press 下一步.
+
+PACKAGE="mmh"
+DEFAULT_PORT=${adminPort}
+OWN_SERVER_JS="/var/packages/$PACKAGE/target/app/server/server.js"
+VAR_DIR="\${SYNOPKG_PKGVAR:-/var/packages/$PACKAGE/var}"
+ENV_FILE="$VAR_DIR/mmh.env"
+
+${portProbeShell}
+
+${wizardScriptBody(`sed -n 's/^PORT=//p' "$ENV_FILE" 2>/dev/null | head -n 1 | tr -d '[:space:]'`, upgradeWizardSuffix)}`, 0o755);
+}
+
+function writeUninstallWizard() {
+  write(path.join(stageDir, "WIZARD_UIFILES", "uninstall_uifile"), JSON.stringify([{
+    step_title: "卸载 MMH",
+    items: [{
+      type: "singleselect",
+      desc: "选择是否保留 MMH 数据。保留后重新安装可继续使用原有账簿。",
+      subitems: [{
+        key: "wizard_keep_data",
+        desc: "保留数据库和设置（推荐）",
+        defaultValue: true,
+      }, {
+        key: "wizard_delete_data",
+        desc: "删除数据库和设置（不可恢复）",
+        defaultValue: false,
+      }],
+    }],
+  }], null, 2));
+}
+
+// Shared POSIX-sh helpers for install-time port inspection. DSM ships busybox
+// sh (no /dev/tcp), so listener discovery reads the socket inode column from
+// /proc/net/tcp* and maps inodes back to PIDs through /proc/<pid>/fd. Only a
+// process running THIS package's bundled server (and not inside a container)
+// counts as "our own"; Docker port mappings, Docker-hosted MMH, other packages
+// and unrelated services all count as "someone else".
+const portProbeShell = `port_listener_inodes() {
+  port="$1"
+  port_hex="$(printf '%04X' "$port" 2>/dev/null)" || return 1
+  for table in /proc/net/tcp /proc/net/tcp6; do
+    [ -r "$table" ] || continue
+    awk -v wanted="$port_hex" '
+      NR > 1 {
+        split($2, endpoint, ":")
+        if (toupper(endpoint[2]) == wanted && $4 == "0A") print $10
+      }
+    ' "$table"
+  done
+}
+
+port_is_listening() {
+  port="$1"
+  case "$port" in
+    ""|*[!0-9]*) return 1 ;;
+  esac
+  port_listener_inodes "$port" | grep . >/dev/null 2>&1 && return 0
+  if command -v netstat >/dev/null 2>&1; then
+    netstat -ltn 2>/dev/null | awk -v port="$port" '
+      {
+        address=$4
+        sub(/^.*:/, "", address)
+        if (address == port) found=1
+      }
+      END { exit(found ? 0 : 1) }
+    '
+    return $?
+  fi
+  return 1
+}
+
+# Walk forward from $1 until a TCP port that nothing is listening on shows up.
+# Used by the install wizard (to pre-fill a usable default) and by postinst
+# (to move an occupied port out of the way) so both agree on the same rule.
+probe_free_port() {
+  candidate="$1"
+  tries=0
+  while [ "$tries" -lt 200 ]; do
+    if ! port_is_listening "$candidate"; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+    candidate=$((candidate + 1))
+    tries=$((tries + 1))
+  done
+  return 1
+}
+
+# Human readable owner of whatever holds $1, so the wizard can name the
+# conflicting program instead of just saying "something is using it".
+port_owner_text() {
+  for pid in $(port_listener_pids "$1"); do
+    printf '%s' "$(describe_port_owner "$pid")"
+    return 0
+  done
+  printf '%s' "未知进程"
+}
+
+process_is_containerized() {
+  pid="$1"
+  [ -r "/proc/$pid/cgroup" ] || return 1
+  grep -Eq "(^|[/:.])docker([/.]|$)|docker-proxy|/lxc/|containerd|/kubepods" "/proc/$pid/cgroup" 2>/dev/null
+}
+
+port_listener_pids() {
+  port="$1"
+  inodes=" $(port_listener_inodes "$port" | tr '\\n' ' ') "
+  case "$inodes" in
+    *[!0-9\\ ]*) return 0 ;;
+  esac
+  for pid_dir in /proc/[0-9]*; do
+    [ -d "$pid_dir" ] || continue
+    pid="\${pid_dir#/proc/}"
+    for fd in "$pid_dir"/fd/*; do
+      link="$(readlink "$fd" 2>/dev/null || true)"
+      case "$link" in
+        socket:\\[*\\])
+          inode="\${link#socket:[}"
+          inode="\${inode%]}"
+          case "$inodes" in
+            *" $inode "*)
+              printf '%s\\n' "$pid"
+              break
+              ;;
+          esac
+          ;;
+      esac
+    done
+  done
+}
+
+describe_port_owner() {
+  pid="$1"
+  comm="$(tr -d '\\n' < "/proc/$pid/comm" 2>/dev/null || true)"
+  if process_is_containerized "$pid"; then
+    printf "Docker/容器进程 pid=%s (%s)" "$pid" "\${comm:-unknown}"
+    return 0
+  fi
+  cmdline="$(tr '\\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  case "$cmdline" in
+    *docker-proxy*)
+      printf "Docker 端口映射 pid=%s (docker-proxy)" "$pid"
+      ;;
+    *"$OWN_SERVER_JS"*)
+      printf "MMH 套件进程 pid=%s" "$pid"
+      ;;
+    *)
+      printf "pid=%s (%s)" "$pid" "\${comm:-unknown}"
+      ;;
+  esac
+}
+
+is_own_mmh_listener() {
+  pid="$1"
+  process_is_containerized "$pid" && return 1
+  [ -r "/proc/$pid/cmdline" ] || return 1
+  cmdline="$(tr '\\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  case "$cmdline" in
+    *"$OWN_SERVER_JS"*) return 0 ;;
+  esac
+  return 1
+}
+
+read_installed_port() {
+  [ -f "$ENV_FILE" ] || return 0
+  sed -n 's/^PORT=//p' "$ENV_FILE" 2>/dev/null | head -n 1 | tr -d '[:space:]'
+}`;
+
+// `preinst` runs before the package is unpacked. A non-zero exit aborts the
+// installation cleanly (unlike `postinst`, which would leave the package in a
+// corrupted state), so this is where an externally occupied port must be
+// rejected with an actionable message.
+function writePreinstScript() {
+  write(path.join(stageDir, "scripts", "preinst"), `#!/bin/sh
+
+PACKAGE="mmh"
+APP_DIR="\${SYNOPKG_PKGDEST:-/var/packages/$PACKAGE/target}"
+VAR_DIR="\${SYNOPKG_PKGVAR:-/var/packages/$PACKAGE/var}"
+ENV_FILE="$VAR_DIR/mmh.env"
+OWN_SERVER_JS="/var/packages/$PACKAGE/target/app/server/server.js"
+DEFAULT_PORT=${adminPort}
+
+${portProbeShell}
+
+report_preinst_message() {
+  if [ -n "\${SYNOPKG_TEMP_LOGFILE:-}" ]; then
+    printf '%s\\n' "$*" >>"\$SYNOPKG_TEMP_LOGFILE" 2>/dev/null || true
+  fi
+  printf '%s\\n' "$*" >&2
+}
+
+# A wizard value wins whenever one was submitted, which is what makes the
+# upgrade wizard the supported way to change the port later. Without a wizard
+# value an upgrade/re-install keeps the port that is already persisted.
+target_port="$(printf '%s' "\${wizard_port:-}" | tr -d '[:space:]')"
+port_source="installer selection"
+case "$target_port" in
+  ""|*[!0-9]*)
+    target_port="$(read_installed_port)"
+    port_source="existing installation"
+    ;;
+esac
+case "$target_port" in
+  ""|*[!0-9]*)
+    target_port="$DEFAULT_PORT"
+    port_source="package default"
+    ;;
+esac
+if [ "$target_port" -lt 1 ] || [ "$target_port" -gt 65535 ]; then
+  report_preinst_message "MMH installation aborted: port $target_port is not a valid TCP port between 1 and 65535."
+  exit 1
+fi
+
+if ! port_is_listening "$target_port"; then
+  exit 0
+fi
+
+conflict_pid=""
+for pid in $(port_listener_pids "$target_port"); do
+  if is_own_mmh_listener "$pid"; then
+    continue
+  fi
+  conflict_pid="$pid"
+  break
+done
+
+if [ -z "$conflict_pid" ]; then
+  # Every listener belongs to this package (e.g. an upgrade whose old process
+  # has not exited yet). The start script handles that case.
+  exit 0
+fi
+
+owner="$(describe_port_owner "$conflict_pid")"
+report_preinst_message "MMH 安装提示：端口 $target_port 已被其他程序占用（$owner，$port_source），安装会继续，并在完成后自动改用后续可用的端口。"
+report_preinst_message "MMH note: TCP port $target_port is already in use by another program ($owner, $port_source); installation continues and will switch to the next free port."
+report_preinst_message "如需固定端口，请在安装向导的“MMH 网络端口”中改用其他端口后重新安装，或先停止占用该端口的程序（Docker 版 MMH、其他套件或任意服务）。"
+exit 0
+`, 0o755);
 }
 
 function writeStartStopStatus() {
@@ -209,6 +768,7 @@ SESSION_SECRET_FILE="$VAR_DIR/mmh-session-secret.txt"
 PID_FILE="$VAR_DIR/mmh.pid"
 LOG_FILE="$VAR_DIR/mmh.log"
 DSM_LOG_FILE="\${SYNOPKG_TEMP_LOGFILE:-$VAR_DIR/synopkg-start.log}"
+DSM_CONFIG_FILE="$APP_DIR/app/config"
 
 read_env_value() {
   key="$1"
@@ -259,23 +819,133 @@ append_log() {
   mkdir -p "$VAR_DIR" 2>/dev/null || true
   message="$(date '+%Y-%m-%d %H:%M:%S') $*"
   echo "$message" >>"$LOG_FILE" 2>/dev/null || true
-  if [ "$DSM_LOG_FILE" != "$LOG_FILE" ]; then
-    echo "$message" >>"$DSM_LOG_FILE" 2>/dev/null || true
-  fi
 }
 
-copy_log_tail_to_dsm() {
-  if [ -f "$LOG_FILE" ] && [ "$DSM_LOG_FILE" != "$LOG_FILE" ]; then
-    echo "---- MMH log tail ----" >>"$DSM_LOG_FILE" 2>/dev/null || true
-    tail -n 100 "$LOG_FILE" >>"$DSM_LOG_FILE" 2>/dev/null || true
-  fi
+write_dsm_error() {
+  mkdir -p "$VAR_DIR" 2>/dev/null || true
+  printf '%s\n' "MMH failed to start: $*" >>"$DSM_LOG_FILE" 2>/dev/null || true
 }
 
 fail_start() {
   append_log "ERROR: $*"
-  copy_log_tail_to_dsm
-  tail -n 100 "$LOG_FILE" >&2 2>/dev/null || true
+  write_dsm_error "$*"
+  echo "MMH failed to start. See $LOG_FILE for details." >&2
   exit 1
+}
+
+port_listener_inodes() {
+  port="$1"
+  port_hex="$(printf '%04X' "$port" 2>/dev/null)" || return 1
+  for table in /proc/net/tcp /proc/net/tcp6; do
+    [ -r "$table" ] || continue
+    awk -v wanted="$port_hex" '
+      NR > 1 {
+        split($2, endpoint, ":")
+        if (toupper(endpoint[2]) == wanted && $4 == "0A") print $10
+      }
+    ' "$table"
+  done
+}
+
+port_is_listening() {
+  port_listener_inodes "$1" | grep . >/dev/null 2>&1 && return 0
+  if command -v netstat >/dev/null 2>&1; then
+    port="$1"
+    netstat -ltn 2>/dev/null | awk -v port="$port" '
+      {
+        address=$4
+        sub(/^.*:/, "", address)
+        if (address == port) found=1
+      }
+      END { exit(found ? 0 : 1) }
+    '
+    return $?
+  fi
+  return 1
+}
+
+process_owns_port() {
+  pid="$1"
+  port="$2"
+  for inode in $(port_listener_inodes "$port"); do
+    for fd in /proc/$pid/fd/*; do
+      link="$(readlink "$fd" 2>/dev/null || true)"
+      [ "$link" = "socket:[$inode]" ] && return 0
+    done
+  done
+  return 1
+}
+
+persist_port() {
+  port="$1"
+  temp_file="$ENV_FILE.tmp.$$"
+  if sed "s/^PORT=.*/PORT=$port/" "$ENV_FILE" > "$temp_file" 2>/dev/null; then
+    mv "$temp_file" "$ENV_FILE" || return 1
+    chmod 600 "$ENV_FILE" 2>/dev/null || true
+    return 0
+  fi
+  rm -f "$temp_file" 2>/dev/null || true
+  return 1
+}
+
+update_dsm_app_config() {
+  port="$1"
+  app_dir="\${SYNOPKG_PKGDEST:-/var/packages/$PACKAGE/target}"
+  for dsm_ui_dir in ui app app/ui; do
+    dsm_config_file="$app_dir/$dsm_ui_dir/config"
+    [ -f "$dsm_config_file" ] || continue
+    temp_file="$dsm_config_file.tmp.$$"
+    if sed "s/\\"port\\": \\"[0-9][0-9]*\\"/\\"port\\": \\"$port\\"/" "$dsm_config_file" > "$temp_file" 2>/dev/null; then
+      mv "$temp_file" "$dsm_config_file" 2>/dev/null || rm -f "$temp_file" 2>/dev/null || true
+    else
+      rm -f "$temp_file" 2>/dev/null || true
+    fi
+  done
+}
+
+update_dsm_wizard_defaults() {
+  port="$1"
+  wizard_dir="/var/packages/$PACKAGE/WIZARD_UIFILES"
+  for wizard_file in "$wizard_dir/install_uifile" "$wizard_dir/upgrade_uifile"; do
+    [ -f "$wizard_file" ] || continue
+    temp_file="$wizard_file.tmp.$$"
+    if sed '/"key": "wizard_port"/,/"defaultValue":/ s/"defaultValue": "[0-9][0-9]*"/"defaultValue": "'"$port"'"/' "$wizard_file" > "$temp_file" 2>/dev/null; then
+      mv "$temp_file" "$wizard_file" 2>/dev/null || rm -f "$temp_file" 2>/dev/null || true
+    else
+      rm -f "$temp_file" 2>/dev/null || true
+    fi
+  done
+}
+
+is_own_mmh_process() {
+  [ -f "$PID_FILE" ] || return 1
+  pid="$(cat "$PID_FILE" 2>/dev/null)"
+  case "$pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  kill -0 "$pid" >/dev/null 2>&1 || return 1
+  [ -r "/proc/$pid/cmdline" ] || return 1
+  [ "$(readlink "/proc/$pid/exe" 2>/dev/null)" = "$NODE_BIN" ] || return 1
+  tr '\\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -F "$SERVER_DIR/server.js" >/dev/null 2>&1 || return 1
+  if [ -r "/proc/$pid/cgroup" ] && grep -E '/docker/|docker-' "/proc/$pid/cgroup" >/dev/null 2>&1; then
+    return 1
+  fi
+  process_owns_port "$pid" "$1"
+}
+
+ensure_port_available() {
+  requested_port="$1"
+  if ! port_is_listening "$requested_port"; then
+    return 0
+  fi
+  env_port="$(read_env_value PORT 2>/dev/null || true)"
+  if [ "$env_port" = "$requested_port" ] && is_own_mmh_process "$requested_port"; then
+    return 0
+  fi
+  message="Port $requested_port is occupied by another service. Choose a different MMH port in the installer or package settings."
+  append_log "ERROR: $message"
+  echo "MMH cannot use port $requested_port: it is occupied by another service. Choose a different port in the MMH port setting and retry." >&2
+  return 1
 }
 
 ensure_runtime_settings() {
@@ -483,6 +1153,11 @@ start_app() {
     append_log "MMH already running with pid $(cat "$PID_FILE")"
     exit 0
   fi
+  if ! ensure_port_available "$PORT"; then
+    fail_start "Port $PORT is occupied by another service. Choose a different MMH port in package settings."
+  fi
+  update_dsm_app_config "$PORT"
+  update_dsm_wizard_defaults "$PORT"
   append_log "Launching Next standalone server."
   nohup "$NODE_BIN" "$SERVER_DIR/server.js" >>"$LOG_FILE" 2>&1 &
   echo "$!" > "$PID_FILE"
@@ -529,32 +1204,385 @@ esac
 }
 
 function writeLifecycleScripts() {
-  const noop = "#!/bin/sh\n\nexit 0\n";
-  write(path.join(stageDir, "scripts", "postinst"), noop, 0o755);
-  write(path.join(stageDir, "scripts", "preuninst"), `#!/bin/sh
+  write(path.join(stageDir, "scripts", "postinst"), `#!/bin/sh
 
 PACKAGE="mmh"
 APP_DIR="\${SYNOPKG_PKGDEST:-/var/packages/$PACKAGE/target}"
+SERVER_DIR="$APP_DIR/app/server"
 VAR_DIR="\${SYNOPKG_PKGVAR:-/var/packages/$PACKAGE/var}"
-if [ -d "$VAR_DIR" ]; then
-  BACKUP_ROOT="\${SYNOPKG_PKGDEST_VOL:-/volume1}/mmh-synology-uninstall-backups"
-  STAMP="$(date +%Y%m%d-%H%M%S)"
-  mkdir -p "$BACKUP_ROOT" 2>/dev/null || exit 0
-  chmod 700 "$BACKUP_ROOT" 2>/dev/null || true
-  cp -a "$VAR_DIR" "$BACKUP_ROOT/uninstall-$STAMP" 2>/dev/null || true
-  chmod 700 "$BACKUP_ROOT/uninstall-$STAMP" 2>/dev/null || true
-  chmod -R go-rwx "$BACKUP_ROOT/uninstall-$STAMP" 2>/dev/null || true
+ENV_FILE="$VAR_DIR/mmh.env"
+PID_FILE="$VAR_DIR/mmh.pid"
+
+port_is_listening() {
+  port_listener_inodes "$1" | grep . >/dev/null 2>&1 && return 0
+  port="$1"
+  port_hex="$(printf '%04X' "$port" 2>/dev/null)" || return 1
+  for table in /proc/net/tcp /proc/net/tcp6; do
+    [ -r "$table" ] || continue
+    if awk -v wanted="$port_hex" '
+      NR > 1 {
+        split($2, endpoint, ":")
+        if (toupper(endpoint[2]) == wanted && $4 == "0A") found=1
+      }
+      END { exit(found ? 0 : 1) }
+    ' "$table"; then
+      return 0
+    fi
+  done
+  if command -v netstat >/dev/null 2>&1; then
+    netstat -ltn 2>/dev/null | awk -v port="$port" '
+      {
+        address=$4
+        sub(/^.*:/, "", address)
+        if (address == port) found=1
+      }
+      END { exit(found ? 0 : 1) }
+    '
+    return $?
+  fi
+  return 1
+}
+
+port_listener_inodes() {
+  port="$1"
+  port_hex="$(printf '%04X' "$port" 2>/dev/null)" || return 1
+  for table in /proc/net/tcp /proc/net/tcp6; do
+    [ -r "$table" ] || continue
+    awk -v wanted="$port_hex" '
+      NR > 1 {
+        split($2, endpoint, ":")
+        if (toupper(endpoint[2]) == wanted && $4 == "0A") print $10
+      }
+    ' "$table"
+  done
+}
+
+process_owns_port() {
+  pid="$1"
+  port="$2"
+  for inode in $(port_listener_inodes "$port"); do
+    for fd in /proc/$pid/fd/*; do
+      link="$(readlink "$fd" 2>/dev/null || true)"
+      [ "$link" = "socket:[$inode]" ] && return 0
+    done
+  done
+  return 1
+}
+
+is_own_mmh_process() {
+  [ -f "$PID_FILE" ] || return 1
+  pid="$(cat "$PID_FILE" 2>/dev/null)"
+  case "$pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  kill -0 "$pid" >/dev/null 2>&1 || return 1
+  [ -r "/proc/$pid/cmdline" ] || return 1
+  [ "$(readlink "/proc/$pid/exe" 2>/dev/null)" = "$APP_DIR/app/bin/node" ] || return 1
+  tr '\\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -F "$SERVER_DIR/server.js" >/dev/null 2>&1 || return 1
+  if [ -r "/proc/$pid/cgroup" ] && grep -E '/docker/|docker-' "/proc/$pid/cgroup" >/dev/null 2>&1; then
+    return 1
+  fi
+  process_owns_port "$pid" "$1"
+}
+
+ensure_port_available() {
+  requested_port="$1"
+  if ! port_is_listening "$requested_port"; then
+    return 0
+  fi
+  if [ "$(cat "$ENV_FILE" 2>/dev/null | sed -n 's/^PORT=//p' | head -n 1)" = "$requested_port" ] && is_own_mmh_process "$requested_port"; then
+    return 0
+  fi
+  return 1
+}
+
+probe_free_port() {
+  candidate="$1"
+  tries=0
+  while [ "$tries" -lt 200 ]; do
+    if ! port_is_listening "$candidate"; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+    candidate=$((candidate + 1))
+    tries=$((tries + 1))
+  done
+  return 1
+}
+
+update_dsm_app_config() {
+  port="$1"
+  app_dir="\${SYNOPKG_PKGDEST:-/var/packages/$PACKAGE/target}"
+  for dsm_ui_dir in ui app app/ui; do
+    dsm_config_file="$app_dir/$dsm_ui_dir/config"
+    [ -f "$dsm_config_file" ] || continue
+    temp_file="$dsm_config_file.tmp.$$"
+    if sed "s/\\"port\\": \\"[0-9][0-9]*\\"/\\"port\\": \\"$port\\"/" "$dsm_config_file" > "$temp_file" 2>/dev/null; then
+      mv "$temp_file" "$dsm_config_file" 2>/dev/null || rm -f "$temp_file" 2>/dev/null || true
+    else
+      rm -f "$temp_file" 2>/dev/null || true
+    fi
+  done
+}
+
+restore_upgrade_data() {
+  backup_dir="$SYNOPKG_TEMP_UPGRADE_FOLDER/mmh-preserved"
+  if [ -z "\${SYNOPKG_TEMP_UPGRADE_FOLDER:-}" ] || [ ! -d "$backup_dir" ]; then
+    return 0
+  fi
+  mkdir -p "$VAR_DIR/data" || return 1
+  for file in "$backup_dir/data/"*; do
+    [ -f "$file" ] || continue
+    cp -p "$file" "$VAR_DIR/data/" || return 1
+  done
+  port="$(cat "$backup_dir/port" 2>/dev/null | tr -d '[:space:]')"
+  case "$port" in
+    ''|*[!0-9]*) port="" ;;
+  esac
+  if [ -n "$port" ] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+    printf 'PORT=%s\\n' "$port" > "$VAR_DIR/mmh.env" || return 1
+    chown mmh:mmh "$VAR_DIR/mmh.env" 2>/dev/null || true
+    chmod 600 "$VAR_DIR/mmh.env" 2>/dev/null || true
+  fi
+  return 0
+}
+
+mkdir -p "$VAR_DIR" || exit 1
+restore_upgrade_data || exit 1
+previous_port=""
+if [ -f "$ENV_FILE" ]; then
+  previous_port="$(sed -n 's/^PORT=//p' "$ENV_FILE" | head -n 1)"
+fi
+case "$previous_port" in
+  ''|*[!0-9]*) previous_port="" ;;
+esac
+if [ -n "$previous_port" ] && [ "$previous_port" -ge 1 ] && [ "$previous_port" -le 65535 ]; then
+  port="$previous_port"
+  port_source="existing installation"
+  echo "MMH requested service port: $port (existing installation)." >&2
+else
+  port="\${wizard_port:-7777}"
+  case "$port" in
+    ''|*[!0-9]*) echo "MMH service port must be a number between 1 and 65535." >&2; exit 1 ;;
+  esac
+  if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+    echo "MMH service port must be between 1 and 65535." >&2
+    exit 1
+  fi
+  port_source="installer selection"
+  echo "MMH requested service port: $port (installer selection)." >&2
+fi
+if ! ensure_port_available "$port"; then
+  requested_port="$port"
+  if advanced_port="$(probe_free_port $((port + 1)))"; then
+    port="$advanced_port"
+    port_source="auto-advanced from $requested_port (occupied)"
+    echo "MMH port $requested_port is occupied by another service; switching to $port." >&2
+  else
+    echo "MMH could not find a free port at or after $requested_port. Choose a different port in the MMH port setting and retry." >&2
+    exit 1
+  fi
+fi
+if is_own_mmh_process "$port"; then
+  old_pid="$(cat "$PID_FILE" 2>/dev/null)"
+  kill "$old_pid" >/dev/null 2>&1 || true
+  sleep 1
+  kill -0 "$old_pid" >/dev/null 2>&1 && kill -9 "$old_pid" >/dev/null 2>&1 || true
+fi
+for entry in "$VAR_DIR"/* "$VAR_DIR"/.[!.]* "$VAR_DIR"/..?*; do
+  [ -e "$entry" ] || [ -L "$entry" ] || continue
+  if [ "$entry" = "$VAR_DIR/data" ] && [ -d "$entry" ]; then
+    for data_entry in "$entry"/* "$entry"/.[!.]* "$entry"/..?*; do
+      [ -e "$data_entry" ] || [ -L "$data_entry" ] || continue
+      case "$data_entry" in
+        "$entry/mmh.db"|"$entry/mmh.db-wal"|"$entry/mmh.db-shm") continue ;;
+      esac
+      rm -rf "$data_entry" || exit 1
+    done
+    continue
+  fi
+  rm -rf "$entry" || exit 1
+done
+mkdir -p "$VAR_DIR/data" || exit 1
+printf 'PORT=%s\\n' "$port" > "$ENV_FILE" || exit 1
+chown mmh:mmh "$ENV_FILE" 2>/dev/null || true
+chmod 600 "$ENV_FILE" 2>/dev/null || true
+update_dsm_app_config "$port"
+update_dsm_wizard_defaults "$port"
+printf '%s\\n' "$(date '+%Y-%m-%d %H:%M:%S') Installation completed using port $port ($port_source)." >>"$VAR_DIR/mmh.log" 2>/dev/null || true
+echo "MMH service port: $port ($port_source)."
+exit 0
+`, 0o755);
+  write(path.join(stageDir, "scripts", "config"), `#!/bin/sh
+
+PACKAGE="mmh"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+APP_DIR="\${SYNOPKG_PKGDEST:-/var/packages/$PACKAGE/target}"
+SERVER_DIR="$APP_DIR/app/server"
+VAR_DIR="\${SYNOPKG_PKGVAR:-/var/packages/$PACKAGE/var}"
+ENV_FILE="$VAR_DIR/mmh.env"
+LOG_FILE="$VAR_DIR/mmh.log"
+PID_FILE="$VAR_DIR/mmh.pid"
+
+port_listener_inodes() {
+  port="$1"
+  port_hex="$(printf '%04X' "$port" 2>/dev/null)" || return 1
+  for table in /proc/net/tcp /proc/net/tcp6; do
+    [ -r "$table" ] || continue
+    awk -v wanted="$port_hex" '
+      NR > 1 {
+        split($2, endpoint, ":")
+        if (toupper(endpoint[2]) == wanted && $4 == "0A") print $10
+      }
+    ' "$table"
+  done
+}
+
+port_is_listening() {
+  port_listener_inodes "$1" | grep . >/dev/null 2>&1 && return 0
+  port="$1"
+  if command -v netstat >/dev/null 2>&1; then
+    netstat -ltn 2>/dev/null | awk -v port="$port" '
+      {
+        address=$4
+        sub(/^.*:/, "", address)
+        if (address == port) found=1
+      }
+      END { exit(found ? 0 : 1) }
+    '
+    return $?
+  fi
+  return 1
+}
+
+process_owns_port() {
+  pid="$1"
+  port="$2"
+  for inode in $(port_listener_inodes "$port"); do
+    for fd in /proc/$pid/fd/*; do
+      link="$(readlink "$fd" 2>/dev/null || true)"
+      [ "$link" = "socket:[$inode]" ] && return 0
+    done
+  done
+  return 1
+}
+
+is_own_mmh_process() {
+  [ -f "$PID_FILE" ] || return 1
+  pid="$(cat "$PID_FILE" 2>/dev/null)"
+  case "$pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  kill -0 "$pid" >/dev/null 2>&1 || return 1
+  [ -r "/proc/$pid/cmdline" ] || return 1
+  [ "$(readlink "/proc/$pid/exe" 2>/dev/null)" = "$APP_DIR/app/bin/node" ] || return 1
+  tr '\\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -F "$SERVER_DIR/server.js" >/dev/null 2>&1 || return 1
+  if [ -r "/proc/$pid/cgroup" ] && grep -E '/docker/|docker-' "/proc/$pid/cgroup" >/dev/null 2>&1; then
+    return 1
+  fi
+  process_owns_port "$pid" "$1"
+}
+
+update_dsm_app_config() {
+  port="$1"
+  app_dir="\${SYNOPKG_PKGDEST:-/var/packages/$PACKAGE/target}"
+  for dsm_ui_dir in ui app app/ui; do
+    dsm_config_file="$app_dir/$dsm_ui_dir/config"
+    [ -f "$dsm_config_file" ] || continue
+    temp_file="$dsm_config_file.tmp.$$"
+    if sed "s/\\"port\\": \\"[0-9][0-9]*\\"/\\"port\\": \\"$port\\"/" "$dsm_config_file" > "$temp_file" 2>/dev/null; then
+      mv "$temp_file" "$dsm_config_file" 2>/dev/null || rm -f "$temp_file" 2>/dev/null || true
+    else
+      rm -f "$temp_file" 2>/dev/null || true
+    fi
+  done
+}
+
+update_dsm_wizard_defaults() {
+  port="$1"
+  wizard_dir="/var/packages/$PACKAGE/WIZARD_UIFILES"
+  for wizard_file in "$wizard_dir/install_uifile" "$wizard_dir/upgrade_uifile"; do
+    [ -f "$wizard_file" ] || continue
+    temp_file="$wizard_file.tmp.$$"
+    if sed '/"key": "wizard_port"/,/"defaultValue":/ s/"defaultValue": "[0-9][0-9]*"/"defaultValue": "'"$port"'"/' "$wizard_file" > "$temp_file" 2>/dev/null; then
+      mv "$temp_file" "$wizard_file" 2>/dev/null || rm -f "$temp_file" 2>/dev/null || true
+    else
+      rm -f "$temp_file" 2>/dev/null || true
+    fi
+  done
+}
+
+ensure_port_available() {
+  requested_port="$1"
+  if ! port_is_listening "$requested_port"; then
+    return 0
+  fi
+  env_port="$(sed -n 's/^PORT=//p' "$ENV_FILE" 2>/dev/null | head -n 1)"
+  if [ "$env_port" = "$requested_port" ] && is_own_mmh_process "$requested_port"; then
+    return 0
+  fi
+  echo "MMH cannot use port $requested_port: it is occupied by another service. Choose a different port in the MMH port setting and retry." >&2
+  return 1
+}
+
+new_port="$(printf '%s' "\${wizard_port:-}" | tr -d '[:space:]')"
+case "$new_port" in
+  ''|*[!0-9]*) echo "MMH service port must be a number between 1 and 65535." >&2; exit 1 ;;
+esac
+if [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; then
+  echo "MMH service port must be between 1 and 65535." >&2
+  exit 1
+fi
+
+ensure_port_available "$new_port" || {
+  echo "MMH cannot change to port $new_port because another service is using it. Choose a different port and retry." >&2
+  exit 1
+}
+"$SCRIPT_DIR/start-stop-status" stop >/dev/null 2>&1 || true
+mkdir -p "$VAR_DIR" || exit 1
+printf 'PORT=%s\\n' "$new_port" > "$ENV_FILE" || exit 1
+chown mmh:mmh "$ENV_FILE" 2>/dev/null || true
+chmod 600 "$ENV_FILE" 2>/dev/null || true
+printf '%s\\n' "$(date '+%Y-%m-%d %H:%M:%S') Service port changed to $new_port." >> "$LOG_FILE" 2>/dev/null || true
+update_dsm_app_config "$new_port"
+update_dsm_wizard_defaults "$new_port"
+"$SCRIPT_DIR/start-stop-status" start
+echo "MMH service port: $new_port."
+exit 0
+`, 0o755);
+  write(path.join(stageDir, "scripts", "preuninst"), `#!/bin/sh
+
+PACKAGE="mmh"
+VAR_DIR="\${SYNOPKG_PKGVAR:-/var/packages/$PACKAGE/var}"
+if [ "\${wizard_delete_data:-false}" = "true" ]; then
+  if [ -d "$VAR_DIR" ]; then
+    case "$VAR_DIR" in
+      /|"") echo "Refusing to delete an invalid MMH data path." >&2; exit 1 ;;
+    esac
+    for entry in "$VAR_DIR"/* "$VAR_DIR"/.[!.]* "$VAR_DIR"/..?*; do
+      [ -e "$entry" ] || [ -L "$entry" ] || continue
+      rm -rf "$entry" || exit 1
+    done
+  fi
+  echo "MMH database and settings deleted."
+else
+  echo "MMH database and settings retained."
 fi
 exit 0
 `, 0o755);
   write(path.join(stageDir, "scripts", "preupgrade"), `#!/bin/sh
 
 PACKAGE="mmh"
-APP_DIR="\${SYNOPKG_PKGDEST:-/var/packages/$PACKAGE/target}"
 VAR_DIR="\${SYNOPKG_PKGVAR:-/var/packages/$PACKAGE/var}"
 if [ -n "\${SYNOPKG_TEMP_UPGRADE_FOLDER:-}" ] && [ -d "$VAR_DIR" ]; then
-  mkdir -p "$SYNOPKG_TEMP_UPGRADE_FOLDER"
-  cp -a "$VAR_DIR" "$SYNOPKG_TEMP_UPGRADE_FOLDER/var" 2>/dev/null || true
+  backup_dir="$SYNOPKG_TEMP_UPGRADE_FOLDER/mmh-preserved"
+  mkdir -p "$backup_dir/data" || exit 1
+  for file in "$VAR_DIR/data/mmh.db" "$VAR_DIR/data/mmh.db-wal" "$VAR_DIR/data/mmh.db-shm"; do
+    [ -f "$file" ] && cp -p "$file" "$backup_dir/data/" || true
+  done
+  if [ -f "$VAR_DIR/mmh.env" ]; then
+    sed -n 's/^PORT=//p' "$VAR_DIR/mmh.env" | head -n 1 > "$backup_dir/port"
+  fi
 fi
 exit 0
 `, 0o755);
@@ -563,9 +1591,54 @@ exit 0
 PACKAGE="mmh"
 APP_DIR="\${SYNOPKG_PKGDEST:-/var/packages/$PACKAGE/target}"
 VAR_DIR="\${SYNOPKG_PKGVAR:-/var/packages/$PACKAGE/var}"
-if [ -n "\${SYNOPKG_TEMP_UPGRADE_FOLDER:-}" ] && [ -d "$SYNOPKG_TEMP_UPGRADE_FOLDER/var" ]; then
-  mkdir -p "$VAR_DIR"
-  cp -a "$SYNOPKG_TEMP_UPGRADE_FOLDER/var/." "$VAR_DIR/" 2>/dev/null || true
+DSM_CONFIG_DIRS="$APP_DIR/ui $APP_DIR/app $APP_DIR/app/ui"
+backup_dir="$SYNOPKG_TEMP_UPGRADE_FOLDER/mmh-preserved"
+update_dsm_app_config() {
+  port="$1"
+  for dsm_config_file in $DSM_CONFIG_DIRS; do
+    [ -f "$dsm_config_file" ] || continue
+    temp_file="$dsm_config_file.tmp.$$"
+    if sed "s/\\"port\\": \\"[0-9][0-9]*\\"/\\"port\\": \\"$port\\"/" "$dsm_config_file" > "$temp_file" 2>/dev/null; then
+      mv "$temp_file" "$dsm_config_file" 2>/dev/null || rm -f "$temp_file" 2>/dev/null || true
+    else
+      rm -f "$temp_file" 2>/dev/null || true
+    fi
+  done
+}
+update_dsm_wizard_defaults() {
+  port="$1"
+  wizard_dir="/var/packages/$PACKAGE/WIZARD_UIFILES"
+  for wizard_file in "$wizard_dir/install_uifile" "$wizard_dir/upgrade_uifile"; do
+    [ -f "$wizard_file" ] || continue
+    temp_file="$wizard_file.tmp.$$"
+    if sed '/"key": "wizard_port"/,/"defaultValue":/ s/"defaultValue": "[0-9][0-9]*"/"defaultValue": "'"$port"'"/' "$wizard_file" > "$temp_file" 2>/dev/null; then
+      mv "$temp_file" "$wizard_file" 2>/dev/null || rm -f "$temp_file" 2>/dev/null || true
+    else
+      rm -f "$temp_file" 2>/dev/null || true
+    fi
+  done
+}
+if [ -d "$backup_dir" ]; then
+  mkdir -p "$VAR_DIR" || exit 1
+  for entry in "$VAR_DIR"/* "$VAR_DIR"/.[!.]* "$VAR_DIR"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    rm -rf "$entry" || exit 1
+  done
+  mkdir -p "$VAR_DIR/data" || exit 1
+  for file in "$backup_dir/data/"*; do
+    [ -f "$file" ] && cp -p "$file" "$VAR_DIR/data/" || true
+  done
+  port="$(cat "$backup_dir/port" 2>/dev/null | tr -d '[:space:]')"
+  case "$port" in
+    ''|*[!0-9]*) port="" ;;
+  esac
+  if [ -n "$port" ] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+    printf 'PORT=%s\\n' "$port" > "$VAR_DIR/mmh.env" || exit 1
+    chown mmh:mmh "$VAR_DIR/mmh.env" 2>/dev/null || true
+    chmod 600 "$VAR_DIR/mmh.env" 2>/dev/null || true
+    update_dsm_app_config "$port"
+    update_dsm_wizard_defaults "$port"
+  fi
 fi
 exit 0
 `, 0o755);
@@ -581,46 +1654,108 @@ function writePrivilege() {
   }, null, 2));
 }
 
+// DSM links <PKGDEST>/<dsmuidir> to /usr/syno/synoman/webman/3rdparty/<pkg> and reads
+// the desktop-app registration from "<dsmuidir>/config" plus the icons from
+// "<dsmuidir>/images/<icon template>". An EMPTY dsmuidir creates no link at all, which
+// is why Package Center showed neither the "打开" button nor the MMH icon.
+// INFO declares dsmuidir="ui"; the legacy "app" layout is mirrored as well because DSM
+// documents no default for the UI folder name.
+//
+// "app/ui" is the fnOS payload's own app-registration folder. It ships a config that
+// declares the app id "mmh.Application" (NOT our dsmappname) and points at
+// "icon_{0}.png" files that only exist at 64/256, so it must never win: writing our
+// registration over it keeps every candidate path consistent instead of leaving a
+// wrong-app-name landmine inside the payload.
+function dsmUiDirs() {
+  return [dsmUiDir, "app", path.join("app", "ui")];
+}
+
 function copyIcons() {
   const icon192 = path.join(root, "public", "branding", "mmh-logo-pageflip-192.png");
   const icon512 = path.join(root, "public", "branding", "mmh-logo-pageflip-512.png");
-  copyFile(icon192, path.join(stageDir, "PACKAGE_ICON.PNG"));
-  copyFile(icon512, path.join(stageDir, "PACKAGE_ICON_256.PNG"));
+  copyIcon(icon192, path.join(stageDir, "PACKAGE_ICON.PNG"), 72);
+  copyIcon(icon512, path.join(stageDir, "PACKAGE_ICON_256.PNG"), 256);
+  for (const dir of dsmUiDirs()) {
+    for (const size of dsmIconSizes) {
+      copyIcon(icon512, path.join(packageRoot, dir, "images", `mmh-${size}.png`), size);
+    }
+  }
+}
+
+function writeDsmAppConfig() {
+  const config = JSON.stringify({
+    ".url": {
+      [dsmAppName]: {
+        title: "MMH",
+        desc: "家庭记账与财务管理应用",
+        icon: "images/mmh-{0}.png",
+        type: "url",
+        protocol: "http",
+        port: adminPort,
+        url: "/",
+        allUsers: true,
+        grantPrivilege: "all",
+        advanceGrantPrivilege: true,
+      },
+    },
+  }, null, 2);
+  for (const dir of dsmUiDirs()) {
+    write(path.join(packageRoot, dir, "config"), config);
+  }
 }
 
 function preparePackageRoot() {
   fs.rmSync(stageDir, { recursive: true, force: true });
   mkdirp(packageRoot);
-  runFnosStage();
-  const fnosStage = path.join(root, "release-artifacts", "fnos", target.fnosStageDirName);
-  requirePath(path.join(fnosStage, "app", "server", "server.js"), "Run the Synology standalone build before packaging: npm run build:synology:app");
-  requirePath(path.join(fnosStage, "app", "bin", "node"), `Provide a Linux ${target.nodeArch} Node runtime tarball before building ${spkAssetName()}.`);
-  copyDir(path.join(fnosStage, "app"), path.join(packageRoot, "app"));
+  if (reusePackageTgz) {
+    requirePath(reusePackageTgz, `Synology package payload archive not found: ${reusePackageTgz}`);
+    const extract = run("tar", ["-xzf", reusePackageTgz, "-C", packageRoot]);
+    if (extract.status !== 0) {
+      throw new Error(extract.stderr || extract.stdout || "Unable to extract the reusable Synology package payload.");
+    }
+  } else {
+    runFnosStage();
+    const fnosStage = path.join(root, "release-artifacts", "fnos", target.fnosStageDirName);
+    requirePath(path.join(fnosStage, "app", "server", "server.js"), "Run the Synology standalone build before packaging: npm run build:synology:app");
+    requirePath(path.join(fnosStage, "app", "bin", "node"), `Provide a Linux ${target.nodeArch} Node runtime tarball before building ${spkAssetName()}.`);
+    copyDir(path.join(fnosStage, "app"), path.join(packageRoot, "app"));
+  }
+  requirePath(path.join(packageRoot, "app", "server", "server.js"), "Synology package payload must contain the standalone server.");
+  requirePath(path.join(packageRoot, "app", "bin", "node"), `Synology package payload must contain the Linux ${target.nodeArch} Node runtime.`);
   writeInfoFile();
+  writeInstallWizard();
+  writeUpgradeWizard();
   writeStartStopStatus();
+  writePreinstScript();
   writeLifecycleScripts();
   writePrivilege();
   copyIcons();
+  writeDsmAppConfig();
+  writeUninstallWizard();
   makeReadable(stageDir);
 }
 
 function buildSpk() {
-  if (process.platform !== "linux") {
+  if (process.platform !== "linux" && process.env.SYNOLOGY_ALLOW_CROSS_PLATFORM_REPACK !== "1") {
     throw new Error("Synology SPK release packages must be built on Linux so native Node modules match DSM.");
   }
-  if (process.arch !== target.processArch && process.env.SYNOLOGY_ALLOW_CROSS_ARCH !== "1") {
+  if (process.platform === "linux" && process.arch !== target.processArch && process.env.SYNOLOGY_ALLOW_CROSS_ARCH !== "1") {
     throw new Error(`SYNOLOGY_TARGET_ARCH=${target.id} must be built on a Linux ${target.processArch} runner.`);
   }
 
   const nodeHeadersDir = findNodeHeadersDir();
   const rebuildEnv = nodeHeadersDir ? { npm_config_nodedir: nodeHeadersDir } : {};
   const stagedServerDir = path.join(packageRoot, "app", "server");
-  const nativeRebuild = run(commandName("npm"), ["rebuild", "better-sqlite3", "--build-from-source"], {
-    cwd: stagedServerDir,
-    stdio: "inherit",
-    env: rebuildEnv,
-  });
-  if (nativeRebuild.status !== 0) process.exit(nativeRebuild.status || 1);
+  if (process.env.SYNOLOGY_SKIP_NATIVE_REBUILD !== "1") {
+    const nativeRebuild = run(commandName("npm"), ["rebuild", "better-sqlite3", "--build-from-source"], {
+      cwd: stagedServerDir,
+      stdio: "inherit",
+      env: rebuildEnv,
+    });
+    if (nativeRebuild.status !== 0) process.exit(nativeRebuild.status || 1);
+  } else {
+    console.log("Reusing the native SQLite module from the Synology package payload.");
+  }
 
   const packageTgz = path.join(stageDir, "package.tgz");
   fs.rmSync(packageTgz, { force: true });
@@ -629,6 +1764,7 @@ function buildSpk() {
     console.error(packageTar.stderr || packageTar.stdout || "package.tgz packaging failed");
     process.exit(packageTar.status || 1);
   }
+  setTarEntryModes(packageTgz, ["app/bin/node"], true);
   writeInfoFile({
     checksum: hashFileMd5(packageTgz),
     extractSizeKb: directorySizeKb(packageRoot),
@@ -649,12 +1785,24 @@ function buildSpk() {
     "PACKAGE_ICON_256.PNG",
     "conf",
     "scripts",
+    "WIZARD_UIFILES",
     "package.tgz",
   ]);
   if (spkTar.status !== 0) {
     console.error(spkTar.stderr || spkTar.stdout || "SPK packaging failed");
     process.exit(spkTar.status || 1);
   }
+  setTarEntryModes(spkPath, [
+    "scripts/start-stop-status",
+    "scripts/config",
+    "scripts/preinst",
+    "scripts/postinst",
+    "scripts/preuninst",
+    "scripts/preupgrade",
+    "scripts/postupgrade",
+    "WIZARD_UIFILES/install_uifile.sh",
+    "WIZARD_UIFILES/upgrade_uifile.sh",
+  ], false);
   console.log(`Synology DSM ${target.id} SPK built: ${path.relative(root, spkPath)}`);
 }
 

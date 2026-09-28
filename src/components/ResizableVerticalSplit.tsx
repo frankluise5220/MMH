@@ -43,6 +43,7 @@ export function ResizableVerticalSplit({
   const effectiveSeparatorLabel = separatorLabel ?? t("resizableSplit.separatorLabel");
   const effectiveSeparatorTitle = separatorTitle ?? t("resizableSplit.separatorTitle");
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const activePointerIdRef = useRef<number | null>(null);
   const [upperHeight, setUpperHeight] = useState(defaultUpperHeight);
   const [minimumUpperHeight, setMinimumUpperHeight] = useState(minPaneHeight);
   const [isMobileStacked, setIsMobileStacked] = useState(false);
@@ -87,35 +88,41 @@ export function ResizableVerticalSplit({
     };
   }, [defaultUpperHeight, minPaneHeight, storageKey]);
 
-  function updateHeight(clientY: number) {
+  function getHeightAt(clientY: number) {
     const container = containerRef.current;
-    if (!container) return;
+    if (!container) return null;
     const containerTop = container.getBoundingClientRect().top;
-    setUpperHeight(clampHeight(clientY - containerTop, container.clientHeight, minPaneHeight));
+    return clampHeight(clientY - containerTop, container.clientHeight, minPaneHeight);
   }
 
   function handlePointerDown(event: PointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
     event.preventDefault();
+    activePointerIdRef.current = event.pointerId;
     event.currentTarget.setPointerCapture(event.pointerId);
     document.body.style.userSelect = "none";
+    const nextHeight = getHeightAt(event.clientY);
+    if (nextHeight !== null) setUpperHeight(nextHeight);
+  }
 
-    const handlePointerMove = (moveEvent: globalThis.PointerEvent) => updateHeight(moveEvent.clientY);
-    const finishResize = (upEvent: globalThis.PointerEvent) => {
-      updateHeight(upEvent.clientY);
-      document.body.style.userSelect = "";
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", finishResize);
-      window.removeEventListener("pointercancel", finishResize);
-      const container = containerRef.current;
-      if (!container) return;
-      const containerTop = container.getBoundingClientRect().top;
-      const nextHeight = clampHeight(upEvent.clientY - containerTop, container.clientHeight, minPaneHeight);
+  function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
+    if (activePointerIdRef.current !== event.pointerId) return;
+    const nextHeight = getHeightAt(event.clientY);
+    if (nextHeight !== null) setUpperHeight(nextHeight);
+  }
+
+  function finishResize(event: PointerEvent<HTMLDivElement>) {
+    if (activePointerIdRef.current !== event.pointerId) return;
+    const nextHeight = getHeightAt(event.clientY);
+    if (nextHeight !== null) {
+      setUpperHeight(nextHeight);
       window.localStorage.setItem(storageKey, String(nextHeight));
-    };
-
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", finishResize, { once: true });
-    window.addEventListener("pointercancel", finishResize, { once: true });
+    }
+    activePointerIdRef.current = null;
+    document.body.style.userSelect = "";
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   }
 
   function adjustByKeyboard(delta: number) {
@@ -157,6 +164,9 @@ export function ResizableVerticalSplit({
             aria-valuenow={upperHeight}
             tabIndex={0}
             onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={finishResize}
+            onPointerCancel={finishResize}
             onKeyDown={(event) => {
               if (event.key === "ArrowUp") {
                 event.preventDefault();

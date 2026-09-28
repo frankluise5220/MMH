@@ -60,6 +60,19 @@ export function depositInterestDaysUtc(start: Date, maturity: Date): number {
   return days;
 }
 
+export function calculateDepositAccruedInterest(params: {
+  principal: number;
+  annualRatePercent: number | null | undefined;
+  startDate: Date | null | undefined;
+  endDate: Date | null | undefined;
+}): number {
+  const { principal, annualRatePercent, startDate, endDate } = params;
+  if (!(principal > 0) || !(annualRatePercent && annualRatePercent > 0) || !startDate || !endDate) return 0;
+  if (endDate.getTime() <= startDate.getTime()) return 0;
+  const days = depositInterestDaysUtc(startDate, endDate);
+  return days > 0 ? round2((principal * (annualRatePercent / 100) * days) / 365) : 0;
+}
+
 /**
  * Roll a deposit's maturity forward by one term, calendar-aware. Three span
  * shapes are recognized between start → current maturity:

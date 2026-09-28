@@ -75,9 +75,11 @@ function parseAmount(value: string) {
 export function ReimbursementFormModal({
   objectId,
   objectName,
+  advanceAccountId,
   objectType = "counterparty",
   objectOptions = [],
   entries = [],
+  batchId,
   defaultKind = "travel",
   actions,
   onClose,
@@ -85,9 +87,11 @@ export function ReimbursementFormModal({
 }: {
   objectId?: string;
   objectName?: string;
+  advanceAccountId: string;
   objectType?: "counterparty" | "institution";
   objectOptions?: ReimbursementObjectOption[];
   entries?: ReimbursementFormEntry[];
+  batchId?: string;
   defaultKind?: ReimbursementKindValue;
   actions: ReimbursementFormActions;
   onClose: () => void;
@@ -194,6 +198,8 @@ export function ReimbursementFormModal({
     formData.set("kind", kind);
     formData.set("counterpartyId", resolvedObjectId);
     formData.set("counterpartyName", resolvedObjectName);
+    formData.set("advanceAccountId", advanceAccountId);
+    if (batchId) formData.set("batchId", batchId);
     formData.set("objectType", objectType);
     formData.set("travelStartDate", isTravel ? travelStartDate : "");
     formData.set("travelEndDate", isTravel ? travelEndDate : "");

@@ -174,6 +174,7 @@ function getDropPositionFromClientY(rowElement: HTMLElement, clientY: number): A
 
 export type AdvancedDataTableProps<T> = {
   storageKey: string;
+  sortStorageKey?: string;
   columns: AdvancedDataTableColumn<T>[];
   rows: T[];
   rowKey: (row: T, index: number) => string;
@@ -377,6 +378,7 @@ function rowMatchesFilters<T>(
 
 export function AdvancedDataTable<T>({
   storageKey,
+  sortStorageKey: sortStorageKeyProp,
   columns,
   rows,
   rowKey,
@@ -537,7 +539,7 @@ export function AdvancedDataTable<T>({
     [sortableColumnKeysSignature],
   );
   const filtersStorageKey = `${storageKey}:filters:v2`;
-  const sortStorageKey = `${storageKey}:sort:v1`;
+  const sortStorageKey = sortStorageKeyProp ?? `${storageKey}:sort:v1`;
 
   useEffect(() => {
     const storedWidths = readJson<Record<string, number>>(`${storageKey}:widths`, {});

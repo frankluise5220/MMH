@@ -33,6 +33,7 @@
 import { AccountKind, FundSubtype, StockTransactionAction, TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
+import { depositRedemptionPrincipal } from "@/lib/server/deposit-lot-balance";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { applyBalanceReconcileEntry, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
 import { getDetailEntryDisplayDate, compareDetailEntriesAsc } from "@/lib/detail-entry-order";
@@ -298,6 +299,7 @@ export async function loadAssetMonthEndLevels(
         tradeDate: true,
         principalAmount: true,
         arrivalAmount: true,
+        interest: true,
         action: true,
         sourceDepositTransactionId: true,
       },
@@ -330,8 +332,14 @@ export async function loadAssetMonthEndLevels(
         if (entry.sourceDepositTransactionId) {
           const lot = remainingByLotId.get(entry.sourceDepositTransactionId);
           if (lot != null) {
-            remainingByLotId.delete(entry.sourceDepositTransactionId);
-            remaining -= lot;
+            const principal = depositRedemptionPrincipal({
+              amount: entry.arrivalAmount ?? entry.principalAmount,
+              depositInterest: entry.interest,
+            });
+            const next = Math.max(0, lot - principal);
+            if (next <= 0.0001) remainingByLotId.delete(entry.sourceDepositTransactionId);
+            else remainingByLotId.set(entry.sourceDepositTransactionId, next);
+            remaining -= Math.min(lot, principal);
           }
         }
       }

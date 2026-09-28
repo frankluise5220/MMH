@@ -25,6 +25,7 @@ const PRODUCT_INTRO_HIGHLIGHT_KEYS = [
   "productIntro.highlight.accounts",
   "productIntro.highlight.creditCards",
   "productIntro.highlight.funds",
+  "productIntro.highlight.bonds",
   "productIntro.highlight.stocks",
   "productIntro.highlight.properties",
   "productIntro.highlight.insurance",

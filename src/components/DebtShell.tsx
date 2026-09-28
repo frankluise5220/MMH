@@ -19,7 +19,6 @@ import {
   usePruneBasicDetailSelection,
   type BasicDetailBatchCategoryOption,
 } from "./BasicDetailSelection";
-import { ReimbursementModal, type ReimbursementActions, type ReimbursementCashAccountOption } from "./ReimbursementModal";
 import { formatMoney } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
@@ -445,8 +444,6 @@ export function DebtShell({
   accountEditData = EMPTY_ACCOUNT_EDIT_DATA,
   selectedLoanType = null,
   loanEditAction,
-  reimbursementActions,
-  reimbursementCashAccountOptions = [],
 }: {
   rows: DebtRow[];
   selectedKey: string;
@@ -464,8 +461,6 @@ export function DebtShell({
     | { ok: true; warning?: string; recalculateAfterSave?: { accountId: string; startDate: string } | null }
     | { ok: false; error: string }
   >;
-  reimbursementActions?: ReimbursementActions;
-  reimbursementCashAccountOptions?: ReimbursementCashAccountOption[];
 }) {
   const router = useRouter();
   const { t, language } = useI18n();
@@ -487,7 +482,6 @@ export function DebtShell({
   const [editingLoanDetails, setEditingLoanDetails] = useState<LoanQuickEditValue | null>(null);
   const [accountEditOpenSignal, setAccountEditOpenSignal] = useState(0);
   const [pendingLoanEditAccountId, setPendingLoanEditAccountId] = useState<string | null>(null);
-  const [reimbursementOpen, setReimbursementOpen] = useState(false);
   const rowClickTimerRef = useRef<number | null>(null);
   const baseRows = useMemo(
     () => showSettledRows ? rows : rows.filter((row) => !isSettledDebtRow(row)),
@@ -1548,10 +1542,10 @@ export function DebtShell({
                 loanType={accountLoanType(accountEditDataById.get(selectedRow.accountId))}
                 toolbarActions={(
                   <>
-                    {!selectedRow.isGroup && !selectedRow.isLoan && selectedRow.counterpartyId && selectedRow.counterpartyReimbursementEnabled && reimbursementActions ? (
+                    {!selectedRow.isGroup && !selectedRow.isLoan && selectedRow.counterpartyId && selectedRow.counterpartyReimbursementEnabled ? (
                       <button
                         type="button"
-                        onClick={() => setReimbursementOpen(true)}
+                        onClick={() => router.push(`/reimbursements?accountId=${encodeURIComponent(selectedRow.accountId)}`)}
                         className="inline-flex h-7 items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2.5 text-xs font-medium text-blue-700 transition hover:bg-blue-100"
                         title={t("reimburse.modalTitle")}
                       >
@@ -1783,16 +1777,6 @@ export function DebtShell({
           </div>
         ) : null}
 
-        {reimbursementOpen && selectedRow && !selectedRow.isGroup && !selectedRow.isLoan && selectedRow.counterpartyId && selectedRow.counterpartyReimbursementEnabled && reimbursementActions ? (
-          <ReimbursementModal
-            objectId={selectedRow.counterpartyId}
-            objectType="counterparty"
-            objectName={selectedRow.objectName || selectedRow.name}
-            cashAccountOptions={reimbursementCashAccountOptions}
-            actions={reimbursementActions}
-            onClose={() => setReimbursementOpen(false)}
-          />
-        ) : null}
       </div>
   );
 }

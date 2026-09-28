@@ -5,8 +5,6 @@ import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
 import { BasicDetailBatchDeleteMessage, BasicDetailReimbursementButton, BasicDetailSelectionProvider } from "@/components/BasicDetailSelection";
-import type { ReimbursementObjectOption } from "@/components/ReimbursementFormModal";
-import type { ReimbursementActions, ReimbursementCashAccountOption } from "@/components/ReimbursementModal";
 import type { BasicDetailBatchCategoryOption } from "@/components/BasicDetailSelection";
 import { DebitBalanceReconcileButton } from "@/components/DebitBalanceReconcileButton";
 import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
@@ -60,12 +58,6 @@ type BasicDetailPanelProps = {
   currentBalance?: number;
   focusEntryId?: string;
   showGuideOverlay?: boolean;
-  /** Batch action that turns the selected rows into a reimbursement form. */
-  reimbursementObjectOptions?: ReimbursementObjectOption[];
-  /** Full reimbursement hub actions (overview / reimburse / delete / invoices) for the status view. */
-  reimbursementHubActions?: ReimbursementActions;
-  /** Cash accounts offered by the settlement dialog inside the reimbursement hub. */
-  reimbursementCashAccountOptions?: ReimbursementCashAccountOption[];
   /** Advance accounts whose counterparty is flagged as reimbursable (gates the toolbar entry). */
   reimbursementAllowedAdvanceAccountIds?: string[];
 };
@@ -301,9 +293,6 @@ export function BasicDetailPanel({
   currentBalance = 0,
   focusEntryId,
   showGuideOverlay = false,
-  reimbursementHubActions,
-  reimbursementCashAccountOptions,
-  reimbursementObjectOptions,
   reimbursementAllowedAdvanceAccountIds,
 }: BasicDetailPanelProps) {
   const router = useRouter();
@@ -845,26 +834,19 @@ export function BasicDetailPanel({
           investmentProductTypeByAccountId={investmentProductTypeByAccountId}
           compactRows={compactRows}
           resetKey={tableResetKey}
-          batchExtraActions={
-            reimbursementHubActions && reimbursementCashAccountOptions && reimbursementObjectOptions && reimbursementObjectOptions.length > 0
-              ? (renderedEntries) => (
-                  <BasicDetailReimbursementButton
-                    entries={renderedEntries.map((entry) => ({
-                      id: entry.id,
-                      date: entry.date,
-                      amount: Math.abs(entry.amount),
-                      categoryName: entry.categoryName,
-                      note: entry.note,
-                      advanceAccountId: entry.toAccountId,
-                    }))}
-                    objectOptions={reimbursementObjectOptions}
-                    hubActions={reimbursementHubActions}
-                    cashAccountOptions={reimbursementCashAccountOptions}
-                    allowedAdvanceAccountIds={reimbursementAllowedAdvanceAccountIds}
-                  />
-                )
-              : undefined
-          }
+          batchExtraActions={(renderedEntries) => (
+            <BasicDetailReimbursementButton
+              entries={renderedEntries.map((entry) => ({
+                id: entry.id,
+                date: entry.date,
+                amount: Math.abs(entry.amount),
+                categoryName: entry.categoryName,
+                note: entry.note,
+                advanceAccountId: entry.toAccountId,
+              }))}
+              allowedAdvanceAccountIds={reimbursementAllowedAdvanceAccountIds}
+            />
+          )}
           focusEntryId={focusEntryId}
           scrollToRowKey={locateScrollKey}
           showAccountColumn={showAccountColumn}

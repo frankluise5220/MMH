@@ -18,7 +18,7 @@ import { useI18n } from "@/lib/i18n";
 import { APP_PREFS_EVENT, getSidebarHideInitialDataPreference } from "@/lib/client/appPreferences";
 import { Repeat } from "lucide-react";
 import { depositTermMaturityUtc } from "@/lib/deposit-term";
-import { depositInterestDaysUtc } from "@/lib/deposit-maturity";
+import { calculateDepositAccruedInterest } from "@/lib/deposit-maturity";
 import {
   DEFAULT_DEPOSIT_TERM_DAYS,
   splitTermDays,
@@ -88,6 +88,7 @@ type RedeemLotOption = {
   maturityDate?: string | null;
   remainingAmount: number;
   annualRate?: number | null;
+  latestInterestDate?: string | null;
   depositAccountId?: string;
   depositAccountLabel?: string;
   status?: "open" | "closed";
@@ -102,6 +103,7 @@ type EditingRedeemSource = {
   depositAccountLabel?: string;
   restoredRemainingAmount: number;
   annualRate?: number | null;
+  latestInterestDate?: string | null;
 };
 
 function compareRedeemLots(a: RedeemLotOption, b: RedeemLotOption) {
@@ -277,6 +279,7 @@ export function DepositFormModal({
   const [depositAccountList, setDepositAccountList] = useState(() =>
     investmentAccounts.filter((option) => isDepositLikeOption(option)),
   );
+  const [fetchedRedeemLotOptions, setFetchedRedeemLotOptions] = useState<RedeemLotOption[]>([]);
   const [localCashSSOpts, setLocalCashSSOpts] = useState(cashAccountSSOptions);
   const [localDepositSSOpts, setLocalDepositSSOpts] = useState(investmentAccountSSOptions);
   const [nestedEntityType, setNestedEntityType] = useState<"cash-account" | "deposit-account" | null>(null);
@@ -394,8 +397,41 @@ export function DepositFormModal({
     [depositAccountList],
   );
   const isRedeem = subtype === "redeem";
+  const availableRedeemLotOptions = useMemo(
+    () => {
+      const byId = new Map<string, RedeemLotOption>();
+      for (const lot of redeemLotOptions) byId.set(lot.id, lot);
+      for (const lot of fetchedRedeemLotOptions) byId.set(lot.id, lot);
+      return [...byId.values()];
+    },
+    [fetchedRedeemLotOptions, redeemLotOptions],
+  );
+  useEffect(() => {
+    if (!open || !isRedeem || depositAccountList.length === 0) {
+      if (!open || !isRedeem) setFetchedRedeemLotOptions([]);
+      return;
+    }
+    let cancelled = false;
+    const params = new URLSearchParams({
+      accountIds: depositAccountList.map((option) => option.id).join(","),
+      includeClosed: mode === "edit" ? "1" : "0",
+    });
+    if (editEntryId) params.set("excludeEntryId", editEntryId);
+    void fetch(`/api/v1/deposit/lots?${params.toString()}`, { cache: "no-store" })
+      .then((response) => response.json().catch(() => null))
+      .then((data) => {
+        if (cancelled) return;
+        setFetchedRedeemLotOptions(data?.ok && Array.isArray(data.lots) ? data.lots as RedeemLotOption[] : []);
+      })
+      .catch(() => {
+        if (!cancelled) setFetchedRedeemLotOptions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [depositAccountList, editEntryId, isRedeem, mode, open]);
   const effectiveRedeemLotOptions = useMemo(() => {
-    if (!editingRedeemSource || !isRedeem) return redeemLotOptions;
+    if (!editingRedeemSource || !isRedeem) return availableRedeemLotOptions;
     const restored = {
       id: editingRedeemSource.id,
       label: editingRedeemSource.fundName,
@@ -412,18 +448,19 @@ export function DepositFormModal({
       maturityDate: editingRedeemSource.maturityDate,
       remainingAmount: editingRedeemSource.restoredRemainingAmount,
       annualRate: editingRedeemSource.annualRate ?? null,
+      latestInterestDate: editingRedeemSource.latestInterestDate ?? null,
       depositAccountId: editingRedeemSource.depositAccountId,
       depositAccountLabel: editingRedeemSource.depositAccountLabel,
     } satisfies RedeemLotOption;
-    if (redeemLotOptions.some((lot) => lot.id === editingRedeemSource.id)) {
-      return redeemLotOptions.map((lot) =>
+    if (availableRedeemLotOptions.some((lot) => lot.id === editingRedeemSource.id)) {
+      return availableRedeemLotOptions.map((lot) =>
         lot.id === editingRedeemSource.id
           ? { ...lot, ...restored }
           : lot,
       );
     }
-    return [restored, ...redeemLotOptions];
-  }, [editingRedeemSource, isRedeem, redeemLotOptions]);
+    return [restored, ...availableRedeemLotOptions];
+  }, [availableRedeemLotOptions, editingRedeemSource, isRedeem, t]);
   const filteredRedeemLotOptions = useMemo(
     () =>
       effectiveRedeemLotOptions.filter((lot) =>
@@ -561,16 +598,16 @@ export function DepositFormModal({
     if (explicitId && depositAccountList.some((option) => option.id === explicitId)) return explicitId;
     if (currentContextAccount && isDepositLikeOption(currentContextAccount)) return currentContextAccount.id;
     if (sameInstitutionDepositAccounts[0]?.id) return sameInstitutionDepositAccounts[0].id;
-    const firstOpenLot = [...redeemLotOptions].sort(compareRedeemLots)[0];
+    const firstOpenLot = [...availableRedeemLotOptions].sort(compareRedeemLots)[0];
     if (firstOpenLot?.depositAccountId) return firstOpenLot.depositAccountId;
     return depositAccountList[0]?.id ?? "";
-  }, [currentContextAccount, depositAccountList, redeemLotOptions, sameInstitutionDepositAccounts]);
+  }, [availableRedeemLotOptions, currentContextAccount, depositAccountList, sameInstitutionDepositAccounts]);
 
   const resolveDefaultRedeemLot = useCallback((depositId: string) => {
-    return [...redeemLotOptions]
+    return [...availableRedeemLotOptions]
       .filter((lot) => (depositId ? lot.depositAccountId === depositId : true))
       .sort(compareRedeemLots)[0]?.id ?? "";
-  }, [redeemLotOptions]);
+  }, [availableRedeemLotOptions]);
 
   const resolveDefaultRedeemCashAccount = useCallback((depositId: string, explicitId?: string | null) => {
     const depositAccount = depositAccountList.find((option) => option.id === depositId);
@@ -625,7 +662,7 @@ export function DepositFormModal({
     const nextDepositAccountId = resolveDefaultRedeemDepositAccount(detail?.defaultDepositAccountId);
     // 显式指定存单优先（存单行「取回」按钮走这条）；否则按存款账户挑一张默认。
     const explicitLotId = detail?.defaultRedeemLotId;
-    const requestedLot = explicitLotId ? redeemLotOptions.find((lot) => lot.id === explicitLotId) : undefined;
+    const requestedLot = explicitLotId ? availableRedeemLotOptions.find((lot) => lot.id === explicitLotId) : undefined;
     const nextRedeemLotId = requestedLot
       ? requestedLot.id
       : resolveDefaultRedeemLot(nextDepositAccountId);
@@ -639,7 +676,7 @@ export function DepositFormModal({
     setSelectedRedeemLotId(nextRedeemLotId);
     setInterestEdited(false);
     setArrivalEdited(false);
-  }, [date, redeemLotOptions, resolveDefaultRedeemCashAccount, resolveDefaultRedeemDepositAccount, resolveDefaultRedeemLot, today]);
+  }, [availableRedeemLotOptions, date, resolveDefaultRedeemCashAccount, resolveDefaultRedeemDepositAccount, resolveDefaultRedeemLot, today]);
 
   const amountNumber = parseNumber(amount);
   const annualRateNumber = parseNumber(annualRate);
@@ -680,29 +717,26 @@ export function DepositFormModal({
     );
     if (clamped !== current) setInterestPayoutInterval(String(clamped));
   }, [interestPayoutInterval, interestPayoutUnit, isPeriodicInterestPayout, termDaysNumber]);
-  const hasStoredAnnualRate = !!(
-    selectedRedeemLot &&
-    selectedRedeemLot.annualRate != null &&
-    Number.isFinite(selectedRedeemLot.annualRate) &&
-    selectedRedeemLot.annualRate > 0
-  );
-  // Redeem interest preview must match what auto-redeem actually pays:
-  // 存入日计息 day count over the lot's real span (365 non-leap year, 366
-  // across Feb 29; legacy same-day spans keep the raw difference), not the
-  // 365-per-year normalized picker value.
-  const redeemInterestDays = useMemo(() => {
-    if (!selectedRedeemLot?.startDate || !selectedRedeemLot?.maturityDate) return null;
-    const start = new Date(`${selectedRedeemLot.startDate.slice(0, 10)}T00:00:00.000Z`);
-    const end = new Date(`${selectedRedeemLot.maturityDate.slice(0, 10)}T00:00:00.000Z`);
-    if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) return null;
-    return depositInterestDaysUtc(start, end);
-  }, [selectedRedeemLot]);
   const interestPreview = useMemo(() => {
-    if (amountNumber <= 0 || annualRateNumber <= 0) return 0;
-    const days = redeemInterestDays ?? termDaysNumber;
-    if (days <= 0) return 0;
-    return Number(((amountNumber * (annualRateNumber / 100) * days) / 365).toFixed(2));
-  }, [amountNumber, annualRateNumber, redeemInterestDays, termDaysNumber]);
+    if (!isRedeem) {
+      if (amountNumber <= 0 || annualRateNumber <= 0 || termDaysNumber <= 0) return 0;
+      return Number(((amountNumber * (annualRateNumber / 100) * termDaysNumber) / 365).toFixed(2));
+    }
+    const start = selectedRedeemLot?.startDate
+      ? new Date(`${selectedRedeemLot.startDate.slice(0, 10)}T00:00:00.000Z`)
+      : null;
+    const requestedEnd = date ? new Date(`${date.slice(0, 10)}T00:00:00.000Z`) : null;
+    const maturity = selectedRedeemLot?.maturityDate
+      ? new Date(`${selectedRedeemLot.maturityDate.slice(0, 10)}T00:00:00.000Z`)
+      : null;
+    const end = requestedEnd && maturity && requestedEnd > maturity ? maturity : requestedEnd;
+    return calculateDepositAccruedInterest({
+      principal: amountNumber,
+      annualRatePercent: annualRateNumber,
+      startDate: start,
+      endDate: end,
+    });
+  }, [amountNumber, annualRateNumber, date, isRedeem, selectedRedeemLot, termDaysNumber]);
   const arrivalPreview = useMemo(() => {
     if (!isRedeem) return amountNumber;
     const effectiveInterest = parseNumber(interestAmount) > 0 ? parseNumber(interestAmount) : interestPreview;
@@ -819,9 +853,9 @@ export function DepositFormModal({
           : "",
       );
       setInterestEdited(
-        detail.depositInterest != null && Number.isFinite(detail.depositInterest),
+        !isRedeem && detail.depositInterest != null && Number.isFinite(detail.depositInterest),
       );
-      setArrivalEdited(mode === "edit");
+      setArrivalEdited(!isRedeem && mode === "edit");
       if (detail.date && detail.fundArrivalDate) {
         const diffDays = Math.max(
           0,
@@ -846,7 +880,7 @@ export function DepositFormModal({
       );
       if (isRedeem) {
         const restoredPrincipalAmount = redeemPrincipalAmount;
-        const lotSearchPool = allRedeemLotOptions ?? redeemLotOptions;
+        const lotSearchPool = [...(allRedeemLotOptions ?? []), ...availableRedeemLotOptions];
         const matchedLot = lotSearchPool.find((lot) => {
           if (detail.depositSourceEntryId && lot.id === detail.depositSourceEntryId) return true;
           if (lot.fundName !== (detail.fundName ?? "")) return false;
@@ -870,6 +904,7 @@ export function DepositFormModal({
                   ((matchedLot?.remainingAmount ?? 0) + restoredPrincipalAmount).toFixed(2),
                 ),
                 annualRate: detailAnnualRate ?? matchedLot?.annualRate ?? null,
+                latestInterestDate: matchedLot?.latestInterestDate ?? null,
               }
             : null,
         );
@@ -900,7 +935,40 @@ export function DepositFormModal({
     }
     window.addEventListener("mmh:deposit:edit", onEdit as EventListener);
     return () => window.removeEventListener("mmh:deposit:edit", onEdit as EventListener);
-  }, [allRedeemLotOptions, defaultAccountId, depositAccountList, mode, redeemLotOptions, today]);
+  }, [allRedeemLotOptions, availableRedeemLotOptions, defaultAccountId, depositAccountList, mode, t, today]);
+
+  useEffect(() => {
+    if (!isRedeem || !editEntryId || !editingRedeemSource) return;
+    const matchedLot = availableRedeemLotOptions.find((lot) => lot.id === editingRedeemSource.id);
+    if (!matchedLot) return;
+    const restoredRemainingAmount = Number((matchedLot.remainingAmount + amountNumber).toFixed(2));
+    setEditingRedeemSource((current) => {
+      if (!current || current.id !== matchedLot.id) return current;
+      if (
+        current.startDate === matchedLot.startDate &&
+        current.maturityDate === matchedLot.maturityDate &&
+        current.depositProductId === (matchedLot.depositProductId ?? null) &&
+        current.annualRate === (matchedLot.annualRate ?? null) &&
+        current.latestInterestDate === (matchedLot.latestInterestDate ?? null) &&
+        current.restoredRemainingAmount === restoredRemainingAmount &&
+        current.depositAccountId === matchedLot.depositAccountId &&
+        current.depositAccountLabel === matchedLot.depositAccountLabel
+      ) {
+        return current;
+      }
+      return {
+        ...current,
+        depositProductId: matchedLot.depositProductId ?? current.depositProductId,
+        startDate: matchedLot.startDate,
+        maturityDate: matchedLot.maturityDate,
+        annualRate: matchedLot.annualRate ?? current.annualRate ?? null,
+        latestInterestDate: matchedLot.latestInterestDate ?? null,
+        restoredRemainingAmount,
+        depositAccountId: matchedLot.depositAccountId,
+        depositAccountLabel: matchedLot.depositAccountLabel,
+      };
+    });
+  }, [amountNumber, availableRedeemLotOptions, editEntryId, editingRedeemSource, isRedeem]);
 
   useEffect(() => {
     if (mode !== "create") return;
@@ -943,6 +1011,10 @@ export function DepositFormModal({
 
   function changeDate(nextDate: string) {
     setDate(nextDate);
+    if (isRedeem) {
+      setInterestEdited(false);
+      setArrivalEdited(false);
+    }
     if (mode === "create" && isRedeem && !arrivalDateTouchedRef.current) {
       setArrivalDate(nextDate);
     }
@@ -968,7 +1040,7 @@ export function DepositFormModal({
   }, [editEntryId, filteredRedeemLotOptions, isRedeem, selectedRedeemLotId, sortedRedeemLotOptions]);
 
   useEffect(() => {
-    if (!isRedeem || !selectedRedeemLot) return;
+    if (!isRedeem || editEntryId || !selectedRedeemLot) return;
     setFundName(selectedRedeemLot.fundName);
     setDepositProductId(selectedRedeemLot.depositProductId ?? "");
     setInterestEdited(false);
@@ -1007,7 +1079,13 @@ export function DepositFormModal({
     } else {
       setTermCount("");
     }
-  }, [cashAccountList, depositAccountList, isRedeem, mode, selectedRedeemLot]);
+  }, [cashAccountList, depositAccountList, editEntryId, isRedeem, mode, selectedRedeemLot]);
+
+  useEffect(() => {
+    const minimumDate = selectedRedeemLot?.latestInterestDate ?? null;
+    if (!isRedeem || !minimumDate || date >= minimumDate) return;
+    setDate(minimumDate);
+  }, [date, isRedeem, selectedRedeemLot]);
 
   useEffect(() => {
     if (!isRedeem || editEntryId) return;
@@ -1039,14 +1117,12 @@ export function DepositFormModal({
   }, [cashAccountId, isRedeem, redeemCashDefaultId, redeemCashOptions]);
 
   useEffect(() => {
-    if (!isRedeem) return;
+    if (!isRedeem || editEntryId) return;
     if (selectedRedeemLot) {
       const nextAmount = selectedRedeemLot.remainingAmount > 0 ? selectedRedeemLot.remainingAmount.toFixed(2) : "";
-      if (amount !== nextAmount) {
-        setAmount(nextAmount);
-      }
+      setAmount((current) => current === nextAmount ? current : nextAmount);
     }
-  }, [amount, isRedeem, selectedRedeemLot]);
+  }, [editEntryId, isRedeem, selectedRedeemLot]);
 
   useEffect(() => {
     if (!showCurrencyConversion) {
@@ -1104,12 +1180,6 @@ export function DepositFormModal({
       window.alert(t("txForm.alert.selectCashSourceAccount"));
       return;
     }
-    if (isRedeem && selectedRedeemLot) {
-      const fullRedeemAmount = Number(selectedRedeemLot.remainingAmount.toFixed(2));
-      if (Math.abs(amt - fullRedeemAmount) > 0.0001) {
-        setAmount(fullRedeemAmount > 0 ? fullRedeemAmount.toFixed(2) : "");
-      }
-    }
     setSubmitting(true);
     try {
       const fd = new FormData();
@@ -1117,9 +1187,7 @@ export function DepositFormModal({
       fd.set("subtype", lockedSubtype ?? subtype);
       fd.set("productType", "deposit");
       fd.set("date", date);
-      const redeemAmount = isRedeem && selectedRedeemLot
-        ? Number(selectedRedeemLot.remainingAmount.toFixed(2))
-        : amt;
+      const redeemAmount = amt;
       const cashAmt = showCurrencyConversion ? parseNumber(cashAmount) : amt;
       if (showCurrencyConversion && cashAmt <= 0) {
         throw new Error(t("depositForm.alert.enterConvertedCashAmount"));
@@ -1318,7 +1386,11 @@ export function DepositFormModal({
               <div className={isRedeem ? "space-y-3" : "grid grid-cols-2 gap-3"}>
                 <div className="space-y-1">
                   <div className="form-label">{t("detail.column.date")}</div>
-                  <DateStepper value={date} onChange={changeDate} />
+                  <DateStepper
+                    value={date}
+                    onChange={changeDate}
+                    min={isRedeem ? selectedRedeemLot?.latestInterestDate ?? "1900-01-01" : "1900-01-01"}
+                  />
                 </div>
                 {isRedeem ? (
                   <div className="grid grid-cols-2 gap-3">
@@ -1419,20 +1491,19 @@ export function DepositFormModal({
                 <>
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <div className="form-label">{t("depositForm.annualRatePercent")}</div>
+                      <div className="form-label">{t("depositForm.withdrawPrincipal")}</div>
                       <CalcInput
-                        value={annualRate}
-                        onChange={setAnnualRate}
+                        value={amount}
+                        onChange={(value) => {
+                          setInterestEdited(false);
+                          setArrivalEdited(false);
+                          setAmount(value);
+                        }}
                         onBlur={() => applyRedeemComputedAmounts(true)}
-                        placeholder={t("depositForm.rateExample")}
-                        label={t("depositShell.colAnnualRate")}
-                        precision={4}
+                        placeholder={t("depositForm.amountPlaceholder")}
+                        label={t("depositForm.withdrawPrincipal")}
+                        precision={2}
                       />
-                      {!hasStoredAnnualRate ? (
-                        <div className="text-[11px] text-slate-400">
-                          {t("depositForm.rateMissingHint")}
-                        </div>
-                      ) : null}
                     </div>
                     <div className="space-y-1">
                       <div className="form-label">{t("txForm.interest")}</div>

@@ -29,7 +29,7 @@ function isDebtAccountReceivingSide(entry: AccountFlowEntryLike, accountId?: str
   if (!accountId || entry.toAccountId !== accountId || entry.debtPrincipalAmount == null) return false;
   const source = String(entry.source ?? "");
   // 收回/借入：toAccount 是资金账户，资金侧必须走本息合计（amount），不能用本金覆盖。
-  if (source === "debt_collect_in" || source === "debt_borrow_in" || source === "debt_financed_purchase") {
+  if (source === "debt_collect_in" || source === "debt_borrow_in" || source === "debt_financed_purchase" || source === "reimbursement") {
     return false;
   }
   // 有明确债务 source 时，只有债务账户转入才用本金；无 source 的历史行沿用「转入方=本金」旧启发式。

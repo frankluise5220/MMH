@@ -386,7 +386,6 @@ function FixedAssetTransactionTable({
       }}
       onRowsFitChange={onRowsFitChange}
       sortable
-      defaultSort={{ key: "date", direction: "desc" }}
     />
   );
 }

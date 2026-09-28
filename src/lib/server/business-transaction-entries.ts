@@ -133,7 +133,7 @@ export async function loadDepositTransactionDetailLike(params: {
       ],
     },
     include: {
-      DepositProduct: { select: { id: true, name: true, shortName: true } },
+      DepositProduct: { select: { id: true, name: true, shortName: true, annualRate: true } },
       account: {
         include: { Institution: { select: { name: true, shortName: true } } },
       },
@@ -158,9 +158,11 @@ export async function loadDepositTransactionDetailLike(params: {
     const principal = Math.abs(toNumber(row.amount));
     const arrivalAmount = row.fundArrivalAmount == null ? null : Math.abs(toNumber(row.fundArrivalAmount));
     const principalAmount =
-      isCashIn && subtype !== FundSubtype.dividend_cash
-        ? Math.max(0, (arrivalAmount ?? principal) - toNumber(row.depositInterest) + toNumber(row.fundFee))
-        : principal;
+      row.fundProductType === "deposit"
+        ? Math.max(0, (arrivalAmount ?? principal) - Math.max(0, toNumber(row.depositInterest)))
+        : isCashIn && subtype !== FundSubtype.dividend_cash
+          ? Math.max(0, (arrivalAmount ?? principal) - toNumber(row.depositInterest) + toNumber(row.fundFee))
+          : principal;
     const businessAccount = isCashIn ? row.account : row.toAccount ?? row.account;
     const cashAccount = isCashIn ? row.toAccount : row.account;
 
@@ -186,7 +188,7 @@ export async function loadDepositTransactionDetailLike(params: {
       fundConfirmDate: ymd(row.fundConfirmDate),
       fundArrivalDate: ymd(row.fundArrivalDate),
       fundArrivalAmount: row.fundArrivalAmount,
-      depositAnnualRate: row.depositAnnualRate,
+      depositAnnualRate: row.depositAnnualRate ?? row.DepositProduct?.annualRate,
       depositInterest: row.depositInterest,
       depositSourceEntryId: row.depositSourceEntryId,
       depositMaturityAction: row.depositMaturityAction,

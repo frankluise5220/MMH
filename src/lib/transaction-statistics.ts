@@ -13,6 +13,8 @@ import {
   SYSTEM_FUND_PROFIT_CATEGORY,
   SYSTEM_INVESTMENT_DIVIDEND_CATEGORY,
   SYSTEM_INVESTMENT_LOSS_CATEGORY,
+  SYSTEM_OTHER_MISC_EXPENSE_CATEGORY,
+  SYSTEM_REIMBURSEMENT_INCOME_CATEGORY,
   SYSTEM_WEALTH_LOSS_CATEGORY,
   SYSTEM_WEALTH_PROFIT_CATEGORY,
 } from "@/lib/default-categories";
@@ -49,6 +51,9 @@ export type InvestmentStatisticEntryLike = {
   amount: unknown;
   type?: TransactionType | string | null;
   source?: string | null;
+  debtPrincipalAmount?: unknown | null;
+  reimbursementDifferenceAmount?: unknown | null;
+  reimbursementDifferenceCategoryName?: string | null;
   /** 账户现状 kind，用于判断历史 source 是否仍应按债务口径统计。 */
   accountKind?: string | null;
   toAccountKind?: string | null;
@@ -541,7 +546,13 @@ export function getInvestmentStatisticItems(entry: InvestmentStatisticEntryLike)
 }
 
 function debtResultProfitFallback(entry: InvestmentStatisticEntryLike) {
+  if (entry.source === "reimbursement" && entry.reimbursementDifferenceAmount != null) {
+    return toNumber(entry.reimbursementDifferenceAmount);
+  }
   if (entry.realizedProfit !== null && entry.realizedProfit !== undefined) return toNumber(entry.realizedProfit);
+  if (entry.source === "reimbursement" && entry.debtPrincipalAmount != null) {
+    return Math.abs(toNumber(entry.amount)) - Math.abs(toNumber(entry.debtPrincipalAmount));
+  }
   if (entry.debtInterestAmount === null || entry.debtInterestAmount === undefined) return 0;
   const interest = Math.abs(toNumber(entry.debtInterestAmount));
   if (interest === 0) return 0;
@@ -570,6 +581,22 @@ export function getBusinessResultStatisticItems(entry: InvestmentStatisticEntryL
   const profit = debtResultProfitFallback(entry);
   if (profit === 0) return [];
   const positive = profit > 0;
+  if (entry.source === "reimbursement") {
+    const differenceCategory = entry.reimbursementDifferenceCategoryName?.trim();
+    return [{
+      idSuffix: "reimbursement-difference",
+      type: positive ? "income" : "expense",
+      productKind: "debt",
+      amount: Math.abs(profit),
+      categoryName: differenceCategory || (positive ? SYSTEM_REIMBURSEMENT_INCOME_CATEGORY : SYSTEM_OTHER_MISC_EXPENSE_CATEGORY),
+      categoryCandidates: differenceCategory
+        ? [differenceCategory]
+        : positive
+          ? [SYSTEM_REIMBURSEMENT_INCOME_CATEGORY, "家庭往来", "未分类收入"]
+          : [SYSTEM_OTHER_MISC_EXPENSE_CATEGORY, "未分类支出"],
+      label: positive ? "报销差额收入" : "报销差额损失",
+    }];
+  }
   return [{
     idSuffix: "realized-profit",
     type: positive ? "income" : "expense",

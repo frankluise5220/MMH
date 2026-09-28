@@ -41,7 +41,6 @@ export const viewport: Viewport = {
   themeColor: "#f4f7fb",
   colorScheme: "light",
 };
-
 export default async function RootLayout({
   children,
 }: Readonly<{

@@ -20,6 +20,7 @@ import {
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import {
   canChangeAccountKindWithRecords,
+  isDepositAccount,
   isPureInvestmentAccount,
   normalizeUserFacingAccountKind,
   resolveRequestedUserFacingAccountKind,
@@ -297,7 +298,11 @@ export async function POST(req: NextRequest) {
 
     const requestedDebtDirection = body.debtDirection !== undefined ? normalizeDebtDirection(kind, body.debtDirection) : null;
     const supportsDefaultFundQueryApi = isInvestment && (investProductType === "fund" || investProductType === "money");
-    const shouldCreateInitialBalance = !isInvestment && initialBalance != null && initialBalance !== 0;
+    const shouldCreateInitialBalance =
+      !isInvestment &&
+      !isDepositAccount({ kind, investProductType }) &&
+      initialBalance != null &&
+      initialBalance !== 0;
     let brokerageCashAccount: Awaited<ReturnType<typeof ensureBrokerageCashAccountForStockAccount>> = null;
     const account = await prisma.$transaction(async (tx) => {
       const createdAccount = await tx.account.create({

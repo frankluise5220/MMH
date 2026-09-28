@@ -520,6 +520,7 @@ export function DepositShell({
           <div className="min-h-0 flex-1">
             <AdvancedDataTable
               storageKey="mmh_deposit_lots_table_v1"
+              sortStorageKey="mmh_deposit_lots_table_v2:sort"
               columns={lotColumns}
               rows={visibleLots}
               rowKey={(lot) => lot.id}
@@ -528,7 +529,7 @@ export function DepositShell({
               showFilters
               fillHeight
               toolbarMode="none"
-              defaultSort={{ key: "originalAmount", direction: "desc" }}
+              defaultSort={null}
               summaryRow={lotsSummaryRow}
               onRowClick={(lot) => setSelectedLotId((current) => current === lot.id ? null : lot.id)}
               rowClassName={(lot) => `cursor-pointer ${selectedLotId === lot.id ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-slate-50"}`}

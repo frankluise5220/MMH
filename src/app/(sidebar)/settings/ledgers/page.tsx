@@ -35,8 +35,37 @@ type DeleteForm = {
 
 type ApiResult = {
   ok?: boolean;
+  code?: string;
   error?: string;
 };
+
+function getCreateLedgerError(code: string | undefined, t: (key: string) => string) {
+  switch (code) {
+    case "INVALID_HOUSEHOLD_NAME": return t("settings.ledgers.invalidName");
+    case "INVALID_ADMIN_NAME":
+    case "ADMIN_NAME_REQUIRED": return t("settings.ledgers.adminNameRequired");
+    case "ADMIN_PASSWORD_REQUIRED": return t("settings.ledgers.passwordRequired");
+    case "LEDGER_CREATION_REJECTED": return t("settings.ledgers.createFailed");
+    default: return t("settings.ledgers.createFailed");
+  }
+}
+
+function getHouseholdError(code: string | undefined, t: (key: string) => string, fallback: string) {
+  switch (code) {
+    case "UNAUTHORIZED": return t("settings.ledgers.authenticationRequired");
+    case "ADMIN_REQUIRED": return t("settings.ledgers.permissionRequired");
+    case "SYSTEM_ADMIN_REQUIRED": return t("settings.ledgers.systemPermissionRequired");
+    case "MISSING_ID":
+    case "MISSING_HOUSEHOLD_ID": return t("settings.ledgers.invalidRequest");
+    case "HOUSEHOLD_NOT_FOUND": return t("settings.ledgers.notFound");
+    case "LAST_HOUSEHOLD_NOT_DELETABLE": return t("settings.ledgers.lastLedgerCannotDelete");
+    case "ADMIN_CREDENTIALS_REQUIRED": return t("settings.ledgers.targetCredentialsRequired");
+    case "TARGET_ADMIN_NOT_FOUND": return t("settings.ledgers.targetAdminNotFound");
+    case "INVALID_ADMIN_PASSWORD": return t("settings.ledgers.invalidAdminPassword");
+    case "INVALID_HOUSEHOLD_NAME": return t("settings.ledgers.invalidName");
+    default: return fallback;
+  }
+}
 
 const emptyCreateForm: CreateForm = {
   name: "",
@@ -91,7 +120,7 @@ export default function LedgerSettingsPage() {
       const res = await fetch("/api/v1/households", { cache: "no-store" });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        throw new Error(data.error ?? t("settings.ledgers.loadFailed"));
+        throw new Error(getHouseholdError(data.code, t, t("settings.ledgers.loadFailed")));
       }
       setHouseholds(data.households ?? []);
       setActive(data.active ?? null);
@@ -119,7 +148,7 @@ export default function LedgerSettingsPage() {
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        throw new Error(data.error ?? t("settings.ledgers.switchFailed"));
+        throw new Error(getHouseholdError(data.code, t, t("settings.ledgers.switchFailed")));
       }
       setSwitchForm(null);
       router.push("/");
@@ -147,7 +176,7 @@ export default function LedgerSettingsPage() {
 
   async function createLedger() {
     const name = createForm.name.trim();
-    const adminName = createForm.adminName.trim() || name;
+    const adminName = createForm.adminName.trim();
     const adminEmail = createForm.adminEmail.trim();
     if (!name) {
       setError(t("settings.ledgers.nameRequired"));
@@ -185,7 +214,7 @@ export default function LedgerSettingsPage() {
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        throw new Error(data.error ?? t("settings.ledgers.createFailed"));
+        throw new Error(getCreateLedgerError(data.code, t));
       }
       setShowCreate(false);
       setCreateForm(emptyCreateForm);
@@ -214,7 +243,7 @@ export default function LedgerSettingsPage() {
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        throw new Error(data.error ?? t("settings.ledgers.renameFailed"));
+        throw new Error(getHouseholdError(data.code, t, t("settings.ledgers.renameFailed")));
       }
       setEditingId(null);
       setEditName("");
@@ -258,7 +287,7 @@ export default function LedgerSettingsPage() {
       });
       const data = await readApiResult(res, t);
       if (!res.ok || !data.ok) {
-        throw new Error(data.error ?? t("settings.ledgers.deleteFailed"));
+        throw new Error(getHouseholdError(data.code, t, t("settings.ledgers.deleteFailed")));
       }
       setDeleteForm(null);
       await loadHouseholds();
@@ -440,7 +469,7 @@ export default function LedgerSettingsPage() {
                   value={createForm.name}
                   onChange={(event) => {
                     const name = event.target.value;
-                    setCreateForm((prev) => ({ ...prev, name, adminName: prev.adminName === "" || prev.adminName === prev.name ? name : prev.adminName }));
+                    setCreateForm((prev) => ({ ...prev, name }));
                   }}
                   className="form-input"
                   autoFocus
@@ -457,37 +486,37 @@ export default function LedgerSettingsPage() {
                 <span className="text-xs text-slate-400">{t("settings.ledgers.adminNameHint")}</span>
               </label>
               <label className="grid gap-1.5 sm:col-span-2">
-                <span className="form-label">{t("settings.ledgers.email")}</span>
-                <input
-                  type="email"
-                  value={createForm.adminEmail}
-                  onChange={(event) => setCreateForm((prev) => ({ ...prev, adminEmail: event.target.value }))}
-                  className="form-input"
-                  autoComplete="email"
-                />
+                    <span className="form-label">{t("settings.ledgers.email")}</span>
+                    <input
+                      type="email"
+                      value={createForm.adminEmail}
+                      onChange={(event) => setCreateForm((prev) => ({ ...prev, adminEmail: event.target.value }))}
+                      className="form-input"
+                      autoComplete="email"
+                    />
               </label>
               <label className="grid gap-1.5">
-                <span className="form-label">{t("settings.ledgers.adminPassword")}</span>
-                <input
-                  type="password"
-                  value={createForm.adminPassword}
-                  onChange={(event) => setCreateForm((prev) => ({ ...prev, adminPassword: event.target.value }))}
-                  className="form-input"
-                  autoComplete="new-password"
-                />
+                    <span className="form-label">{t("settings.ledgers.adminPassword")}</span>
+                    <input
+                      type="password"
+                      value={createForm.adminPassword}
+                      onChange={(event) => setCreateForm((prev) => ({ ...prev, adminPassword: event.target.value }))}
+                      className="form-input"
+                      autoComplete="new-password"
+                    />
               </label>
               <label className="grid gap-1.5">
-                <span className="form-label">{t("settings.ledgers.confirmPassword")}</span>
-                <input
-                  type="password"
-                  value={createForm.adminPasswordConfirm}
-                  onChange={(event) => setCreateForm((prev) => ({ ...prev, adminPasswordConfirm: event.target.value }))}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") void createLedger();
-                  }}
-                  className="form-input"
-                  autoComplete="new-password"
-                />
+                    <span className="form-label">{t("settings.ledgers.confirmPassword")}</span>
+                    <input
+                      type="password"
+                      value={createForm.adminPasswordConfirm}
+                      onChange={(event) => setCreateForm((prev) => ({ ...prev, adminPasswordConfirm: event.target.value }))}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") void createLedger();
+                      }}
+                      className="form-input"
+                      autoComplete="new-password"
+                    />
               </label>
             </div>
             <div className="flex justify-end gap-2">

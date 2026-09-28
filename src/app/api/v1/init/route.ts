@@ -46,6 +46,7 @@ import { logger } from "@/lib/logger";
 import { setFundConfirmDaysInTx, setFundArrivalDaysInTx } from "@/lib/fund/confirmDays";
 import { setFundFeeRateByDateInTx } from "@/lib/fund/feeRate";
 import { BALANCE_INITIALIZATION_SOURCE, encodeBalanceReconcileTarget } from "@/lib/balance-reconcile";
+import { isDepositAccount } from "@/lib/account-kind-utils";
 
 export async function POST(req: NextRequest) {
   try {
@@ -75,6 +76,7 @@ export async function POST(req: NextRequest) {
             results.push(`账户 ${item.accountId} 不存在，跳过`);
             continue;
           }
+          if (isDepositAccount(acc)) continue;
 
           const balance = Number(item.balance ?? 0);
           if (!Number.isFinite(balance) || balance === 0) {

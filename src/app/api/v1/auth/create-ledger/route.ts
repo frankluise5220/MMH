@@ -61,13 +61,13 @@ export async function POST(req: NextRequest) {
   const adminEmail = String(body.adminEmail ?? "").trim();
 
   if (!name || name.length > 50) {
-    return NextResponse.json({ ok: false, code: "INVALID_LEDGER_NAME", error: "账簿名称不合法（1-50字）" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INVALID_LEDGER_NAME", error: "Ledger name must be between 1 and 50 characters." }, { status: 400 });
   }
   if (!adminName || adminName.length > 50) {
-    return NextResponse.json({ ok: false, code: "INVALID_ADMIN_NAME", error: "请填写管理员用户名（1-50字）" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "INVALID_ADMIN_NAME", error: "Administrator username must be between 1 and 50 characters." }, { status: 400 });
   }
   if (!adminPassword) {
-    return NextResponse.json({ ok: false, code: "ADMIN_PASSWORD_REQUIRED", error: "请设置管理员密码" }, { status: 400 });
+    return NextResponse.json({ ok: false, code: "ADMIN_PASSWORD_REQUIRED", error: "Administrator password is required." }, { status: 400 });
   }
 
   const [householdCount, userCount, legacy] = await prisma.$transaction([
@@ -82,24 +82,15 @@ export async function POST(req: NextRequest) {
 
   if (!isInitialLedgerSetup) {
     if (!inviteCode) {
-      return NextResponse.json({ ok: false, code: "INVITE_CODE_REQUIRED", error: "请输入邀请码" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "INVITE_CODE_REQUIRED", error: "An invite code is required." }, { status: 400 });
     }
-    if (!adminEmail) {
-      return NextResponse.json({ ok: false, code: "EMAIL_REQUIRED", error: "请输入邮箱" }, { status: 400 });
-    }
-
   }
 
   let created: Awaited<ReturnType<typeof createLedgerWithDefaults>>;
   try {
     created = await prisma.$transaction(async (tx) => {
       if (isInitialLedgerSetup) {
-        return createLedgerWithDefaults(tx, {
-          name,
-          adminName,
-          adminPassword,
-          adminEmail,
-        });
+        return createLedgerWithDefaults(tx, { name, adminName, adminPassword, adminEmail });
       }
 
       const inviteSetting = await tx.systemSetting.findUnique({
@@ -109,20 +100,15 @@ export async function POST(req: NextRequest) {
       const inviteRecord = findLedgerInviteCodeRecord(inviteRecords, inviteCode);
       if (!inviteRecord) {
         if (activeLedgerInviteCodes(inviteRecords).length === 0) {
-          throw new CreateLedgerError("当前未开放新建账簿，请联系管理员", 403);
+          throw new CreateLedgerError("Ledger creation is currently closed. Contact an administrator.", 403);
         }
-        throw new CreateLedgerError("邀请码不正确", 403);
+        throw new CreateLedgerError("The invite code is invalid.", 403);
       }
       if (inviteRecord.usedAt) {
-        throw new CreateLedgerError("邀请码已被使用", 403);
+        throw new CreateLedgerError("The invite code has already been used.", 403);
       }
 
-      const result = await createLedgerWithDefaults(tx, {
-        name,
-        adminName,
-        adminPassword,
-        adminEmail,
-      });
+      const result = await createLedgerWithDefaults(tx, { name, adminName, adminPassword, adminEmail });
       const usedInviteRecords = markLedgerInviteCodeUsed(inviteRecords, inviteCode, {
         householdId: result.household.id,
         householdName: result.household.name,

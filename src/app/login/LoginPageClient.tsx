@@ -40,7 +40,9 @@ type LoginUserChoice = {
 
 type CreateLedgerResponse = {
   ok: boolean;
+  code?: string;
   error?: string;
+  households?: HouseholdChoice[];
 };
 
 type ResetStep = "request" | "confirm";

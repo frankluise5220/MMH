@@ -8,7 +8,7 @@ import { getHouseholdDisplayName } from "@/lib/household-display";
 import { useI18n } from "@/lib/i18n";
 
 type Household = { id: string; name: string; createdAt?: string };
-type ApiResult = { ok?: boolean; error?: string };
+type ApiResult = { ok?: boolean; code?: string; error?: string };
 
 export function LedgerSwitcher({
   current,
@@ -519,40 +519,51 @@ export function LedgerSwitcher({
                   />
                   <div className="text-[10px] text-slate-400">{t("ledgerSwitch.adminNameHint")}</div>
                 </div>
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">{t("ledgerSwitch.email")}</div>
-                  <input
-                    type="email"
-                    value={createAdminEmail}
-                    onChange={(e) => setCreateAdminEmail(e.target.value)}
-                    className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
-                    placeholder={t("ledgerSwitch.emailPlaceholder")}
-                    autoComplete="email"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">{t("ledgerSwitch.adminPassword")}</div>
-                  <input
-                    type="password"
-                    value={createAdminPassword}
-                    onChange={(e) => setCreateAdminPassword(e.target.value)}
-                    className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
-                    placeholder={t("ledgerSwitch.setPasswordPlaceholder")}
-                    autoComplete="new-password"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">{t("ledgerSwitch.confirmPassword")}</div>
-                  <input
-                    type="password"
-                    value={createAdminPasswordConfirm}
-                    onChange={(e) => setCreateAdminPasswordConfirm(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") handleCreateWithAdmin(); }}
-                    className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
-                    placeholder={t("ledgerSwitch.retypePasswordPlaceholder")}
-                    autoComplete="new-password"
-                  />
-                </div>
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">{t("ledgerSwitch.adminName")}</div>
+                      <input
+                        value={createAdminName}
+                        onChange={(e) => setCreateAdminName(e.target.value)}
+                        className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
+                        placeholder={t("ledgerSwitch.adminNamePlaceholder")}
+                        autoFocus
+                      />
+                      <div className="text-[10px] text-slate-400">{t("ledgerSwitch.adminNameHint")}</div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">{t("ledgerSwitch.email")}</div>
+                      <input
+                        type="email"
+                        value={createAdminEmail}
+                        onChange={(e) => setCreateAdminEmail(e.target.value)}
+                        className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
+                        placeholder={t("ledgerSwitch.emailPlaceholder")}
+                        autoComplete="email"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">{t("ledgerSwitch.adminPassword")}</div>
+                      <input
+                        type="password"
+                        value={createAdminPassword}
+                        onChange={(e) => setCreateAdminPassword(e.target.value)}
+                        className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
+                        placeholder={t("ledgerSwitch.setPasswordPlaceholder")}
+                        autoComplete="new-password"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">{t("ledgerSwitch.confirmPassword")}</div>
+                      <input
+                        type="password"
+                        value={createAdminPasswordConfirm}
+                        onChange={(e) => setCreateAdminPasswordConfirm(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") handleCreateWithAdmin(); }}
+                        className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
+                        placeholder={t("ledgerSwitch.retypePasswordPlaceholder")}
+                        autoComplete="new-password"
+                      />
+                    </div>
 
                 {createDialogError && (
                   <div className="text-sm text-red-600">{createDialogError}</div>

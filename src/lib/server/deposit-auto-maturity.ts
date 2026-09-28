@@ -18,6 +18,7 @@ import { renewDeposit } from "@/lib/server/sidebar-actions/transaction-actions";
 import { resolveCategorySnapshot, SYSTEM_DEPOSIT_INTEREST_CATEGORY } from "@/lib/default-categories";
 import { ENTRY_ORIGIN_SCHEDULED_TASK } from "@/lib/transaction-semantics";
 import { toNumber } from "@/lib/date-utils";
+import { loadDepositLotBalance } from "@/lib/server/deposit-lot-balance";
 
 const MAX_LOTS_PER_RUN = 200;
 const MAX_RENEW_ROUNDS_PER_LOT = 24;
@@ -191,18 +192,10 @@ type LotOutcome = {
   retryable?: boolean;
 };
 
-/** True when a redemption entry already closes this lot. */
+/** True when cumulative withdrawals have exhausted this lot's principal. */
 async function lotAlreadyRedeemed(buyId: string, householdId: string): Promise<boolean> {
-  const link = await prisma.txRecord.findFirst({
-    where: {
-      householdId,
-      deletedAt: null,
-      depositSourceEntryId: buyId,
-      fundSubtype: { in: [FundSubtype.redeem, FundSubtype.switch_out] },
-    },
-    select: { id: true },
-  });
-  return !!link;
+  const balance = await loadDepositLotBalance({ householdId, lotId: buyId });
+  return !balance || balance.settled;
 }
 
 /** Local-day key (the app stores dates as local midnight). Timezone-agnostic
@@ -314,7 +307,8 @@ async function autoAccruePeriodicInterest(
   const frequency = parseDepositInterestPayout(buy.depositInterestPayoutFrequency);
   if (frequency.kind !== "periodic") return { status: "skipped", reason: "not periodic" };
 
-  const principal = Math.abs(toNumber(buy.fundArrivalAmount ?? buy.amount));
+  const balance = await loadDepositLotBalance({ householdId, lotId: buy.id });
+  const principal = balance?.remainingPrincipal ?? 0;
   const annualRate = toNumber(buy.depositAnnualRate);
   if (!(principal > 0) || !(annualRate > 0)) return { status: "skipped", reason: "missing principal/rate" };
   const depositAccountId = buy.toAccountId;
@@ -555,7 +549,8 @@ async function autoRedeemDeposit(buyId: string, householdId: string): Promise<Lo
     return { status: "skipped", reason: "not matured", retryable: false };
   }
 
-  const principal = Math.abs(toNumber(buy.fundArrivalAmount ?? buy.amount));
+  const balance = await loadDepositLotBalance({ householdId, lotId: buy.id });
+  const principal = balance?.remainingPrincipal ?? 0;
   if (!(principal > 0)) return { status: "skipped", reason: "missing principal", retryable: false };
 
   const periodic = isPeriodicDepositInterestPayout(buy.depositInterestPayoutFrequency);
