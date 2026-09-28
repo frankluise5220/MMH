@@ -121,13 +121,16 @@
           "packages": {
             "x86": {
               "download_url": "http://fnapp.floatingice.win/apps/mmh-0.1.66.fpk",
-              "size": 90260082,
-              "sha256": "4f770fb5832b66dfbd7c4a6e7f0be0cfafd065ce77146fd00b8a8aacf696ab9b6"
+              "size": 94141100,
+              "sha256": "ab8384214de2ba6e028a5f79ac09b0a42599d13528d87290564b2c5ce9d6477c"
             },
             "arm": {
-              "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.66/mmh-fnos-v0.1.66-arm64.fpk"
+              "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.66/mmh-fnos-v0.1.66-arm64.fpk",
+              "size": 94081580,
+              "sha256": "ae39c70f2775e90aaf50418bb48d1e1e0ab7cb10a851ef92e73c9c4b632f1587"
             }
-          }
+          },
+          "updated_at": "2026-09-29T00:29:41+08:00"
         }
       },
       "preview_urls": [
