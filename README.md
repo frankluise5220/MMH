@@ -24,8 +24,8 @@ MMH（MoneyMoneyHome）是一套面向家庭和个人的本地优先智能财务
 
 | 如果你是… | 这样做 |
 | --- | --- |
-| 飞牛 NAS 用户 | 打开 FN 软仓客户端搜索 MMH 安装，或从 [Releases](https://github.com/frankluise5220/MMH/releases) 下载 `.fpk` |
-| 群晖 NAS 用户 | 从 [Releases](https://github.com/frankluise5220/MMH/releases) 下载 `.spk`，在套件中心手动安装 |
+| 飞牛 NAS 用户 | 打开应用中心搜索MMH，或者通过`FN软仓`OR`Fndepot`仓库客户端搜索 MMH 安装，再或从 [Releases](https://github.com/frankluise5220/MMH/releases) 下载 `.fpk` |
+| 群晖 NAS 用户 | 在套件中心里添加源`https://synology.floatingice.win`后查找MMH,或者从 [Releases](https://github.com/frankluise5220/MMH/releases) 下载 `.spk`，在套件中心手动安装 |
 | Windows 电脑用户 | 下载 Windows 桌面版安装包，双击安装即可使用，数据保存在本机 |
 | 有 Docker 的用户 | 使用预构建镜像 `ghcr.io/frankluise5220/mmh` 部署，日常更新直接拉取新镜像 |
 
