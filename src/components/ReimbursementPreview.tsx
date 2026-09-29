@@ -1,7 +1,7 @@
 "use client";
 
 import { createPortal } from "react-dom";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { useI18n } from "@/lib/i18n";
 import { formatMoneyYuan } from "@/lib/format";
@@ -66,12 +66,11 @@ const PRINT_PORTAL_RULES = `
 `;
 
 // Interactive layout tweaks made in the preview before printing: dragged column
-// widths (px, per table) and dragged row heights (px, per detail-table row index).
-// Plain layout values, so they flow into window.print() unchanged. The batch print
-// modal shares one adjustment object across all sheets so every form prints with
-// the same grid.
+// widths (px, detail table only — the header info table is part of the fixed form
+// frame) and dragged row heights (px, per detail-table row index). Plain layout
+// values, so they flow into window.print() unchanged. The single preview keeps its
+// own adjustment object; grips never touch the table's outer left/right borders.
 export type ReimbursementPrintAdjust = {
-  infoCols?: number[] | null;
   detailCols?: number[] | null;
   rowHeights?: Record<number, number> | null;
 };
@@ -143,18 +142,17 @@ export function ReimbursementPrintArticle({
   // Column grips capture every column's on-screen px width at press time (the grip's
   // own row must map cells 1:1 to columns), then grow the grabbed column while the
   // others keep their px; table-fixed renormalizes proportions to fill the sheet width.
-  const beginColDrag = (key: "infoCols" | "detailCols", index: number) =>
+  const beginColDrag = (index: number) =>
     (event: ReactPointerEvent<HTMLElement>) => {
       if (!onAdjust) return;
       const row = event.currentTarget.closest("tr");
       if (!row) return;
-      const colCount = key === "infoCols" ? 6 : detailColumnCount;
       const base = Array.from(row.children)
-        .slice(0, colCount)
+        .slice(0, detailColumnCount)
         .map((cell) => (cell as HTMLElement).getBoundingClientRect().width);
       beginDrag(event, (dx) => {
         const next = base.map((width, i) => (i === index ? Math.max(28, Math.round(width + dx)) : width));
-        onAdjust({ ...adjustRef.current, [key]: next });
+        onAdjust({ ...adjustRef.current, detailCols: next });
       });
     };
 
@@ -172,24 +170,25 @@ export function ReimbursementPrintArticle({
     });
   };
 
-  /** Drag handle on a cell's right edge; hidden in print via the injected rules. */
-  const colGrip = (key: "infoCols" | "detailCols", index: number): ReactNode =>
+  /** Drag handle on a header cell's right edge; hidden in print via the injected rules. */
+  const colGrip = (index: number): ReactNode =>
     onAdjust ? (
       <span
         data-print-grip
-        onPointerDown={beginColDrag(key, index)}
+        onPointerDown={beginColDrag(index)}
         className="absolute inset-y-0 right-0 z-10 w-1.5 cursor-col-resize hover:bg-sky-400/50"
         title={t("reimburse.print.colResize")}
       />
     ) : null;
 
-  /** Drag handle on a row's bottom edge (first cell only). */
+  /** Compact row-height handle centered on the row's bottom edge — it never touches
+   * the table's left/right borders, only the interior of the first cell. */
   const rowGrip = (rowIndex: number): ReactNode =>
     onAdjust ? (
       <span
         data-print-grip
         onPointerDown={beginRowDrag(rowIndex)}
-        className="absolute inset-x-0 bottom-0 z-10 h-1.5 cursor-row-resize hover:bg-sky-400/50"
+        className="absolute bottom-0 left-1/2 z-10 h-1.5 w-16 -translate-x-1/2 cursor-row-resize hover:bg-sky-400/50"
         title={t("reimburse.print.rowResize")}
       />
     ) : null;
@@ -202,18 +201,18 @@ export function ReimbursementPrintArticle({
 
       <table className="print-table mt-3 w-full table-fixed border-collapse text-xs">
         <colgroup>
-          {(adjust.infoCols ?? INFO_COL_DEFAULTS).map((width, index) => (
+          {INFO_COL_DEFAULTS.map((width, index) => (
             <col key={index} style={{ width }} />
           ))}
         </colgroup>
         <tbody>
-          {/* First row maps cells 1:1 to the 6 columns, so it hosts the column grips. */}
+          {/* Header info table is the fixed form frame — no resize grips here. */}
           <tr>
-            <th className={thCell}>{t("reimburse.document.number")}{colGrip("infoCols", 0)}</th>
+            <th className={thCell}>{t("reimburse.document.number")}</th>
             <td className={tdCell}>{reimbursement.documentNumber || reimbursement.title || ""}</td>
-            <th className={thCell}>{t("reimburse.document.submittedDate")}{colGrip("infoCols", 2)}</th>
+            <th className={thCell}>{t("reimburse.document.submittedDate")}</th>
             <td className={tdCell}>{reportDate}</td>
-            <th className={thCell}>{t("reimburse.form.attachmentCount")}{colGrip("infoCols", 4)}</th>
+            <th className={thCell}>{t("reimburse.form.attachmentCount")}</th>
             <td className={tdCell}>{reimbursement.attachmentCount ?? 0}</td>
           </tr>
           {isTravel ? (
@@ -246,7 +245,7 @@ export function ReimbursementPrintArticle({
             ).map((key, index, all) => (
               <th key={key} className="relative border border-slate-500 px-1.5 py-2 text-center font-medium">
                 {t(key)}
-                {index < all.length - 1 ? colGrip("detailCols", index) : null}
+                {index < all.length - 1 ? colGrip(index) : null}
               </th>
             ))}
           </tr>
@@ -330,57 +329,63 @@ export function ReimbursementPrintArticle({
 
 function hasAdjustments(adjust: ReimbursementPrintAdjust) {
   return Boolean(
-    adjust.infoCols?.length ||
     adjust.detailCols?.length ||
     (adjust.rowHeights && Object.keys(adjust.rowHeights).length > 0),
   );
 }
 
-/** Batch print preview: stacks one printable sheet per selected document, one page break between sheets. */
-export function ReimbursementBatchPrintModal({
+/** While a print surface is mounted, the browser print dialog's default header shows
+ * document.title — swap it to the short product name so "MoneyMoneyHome" never prints. */
+function usePrintTitle() {
+  useEffect(() => {
+    const original = document.title;
+    document.title = "MMH";
+    return () => {
+      document.title = original;
+    };
+  }, []);
+}
+
+/** Batch print: mounts the sheet stack in a screen-invisible print-only portal and
+ * opens the browser's system print dialog immediately — no preview step. Unmounts
+ * itself once the dialog closes (afterprint, or print() returning synchronously). */
+export function ReimbursementBatchPrintPortal({
   reimbursements,
   counterpartyNameFallback,
-  onClose,
+  onDone,
 }: {
   reimbursements: ReimbursementData[];
   counterpartyNameFallback: string;
-  onClose: () => void;
+  onDone: () => void;
 }) {
-  const { t } = useI18n();
-  const [adjust, setAdjust] = useState<ReimbursementPrintAdjust>({});
-  return createPortal(
-    <div data-print-portal className="print-batch-root app-modal-backdrop z-[90] print:static print:block print:bg-white">
-      <div className="app-modal-panel resize max-h-[95vh] w-[95vw] max-w-6xl print:block print:max-h-none print:w-full print:max-w-none print:resize-none print:border-0 print:shadow-none">
-        <div className="modal-header shrink-0 border-b border-slate-200 print:hidden">
-          <span className="text-sm font-semibold text-slate-800">{t("reimburse.batchPrint.title", { count: reimbursements.length })}</span>
-          <div className="flex items-center gap-2">
-            {hasAdjustments(adjust) ? (
-              <button type="button" onClick={() => setAdjust({})} className="secondary-button flex h-8 items-center px-2 text-xs">
-                {t("reimburse.print.resetSize")}
-              </button>
-            ) : null}
-            <button type="button" onClick={() => window.print()} className="primary-button flex h-8 items-center gap-1.5 px-2.5" title={t("reimburse.print")}>
-              <Printer className="h-4 w-4" />{t("reimburse.print")}
-            </button>
-            <button type="button" onClick={onClose} className="secondary-button flex h-8 w-8 items-center justify-center p-0" title={t("table.close")}>
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
+  usePrintTitle();
+  const doneRef = useRef(onDone);
+  doneRef.current = onDone;
+  useEffect(() => {
+    const handlePrinted = () => doneRef.current();
+    window.addEventListener("afterprint", handlePrinted);
+    const timer = setTimeout(() => {
+      window.print();
+      // Chrome's print() blocks until the dialog closes; other engines may return
+      // early, in which case afterprint above still fires.
+      handlePrinted();
+    }, 250);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("afterprint", handlePrinted);
+    };
+  }, []);
 
-        <div className="print-scroll max-h-[calc(95vh-3.5rem)] overflow-auto bg-slate-100 p-4">
-          {reimbursements.map((reimbursement, mapIndex) => (
-            <div key={reimbursement.id} data-print-sheet className={mapIndex < reimbursements.length - 1 ? "print:break-after-page" : undefined}>
-              <ReimbursementPrintArticle
-                reimbursement={reimbursement}
-                counterpartyName={reimbursement.advanceAccountName ?? counterpartyNameFallback}
-                adjust={adjust}
-                onAdjust={setAdjust}
-              />
-            </div>
-          ))}
+  return createPortal(
+    <div data-print-portal className="hidden">
+      {reimbursements.map((reimbursement, mapIndex) => (
+        <div key={reimbursement.id} data-print-sheet className={mapIndex < reimbursements.length - 1 ? "print:break-after-page" : undefined}>
+          <ReimbursementPrintArticle
+            reimbursement={reimbursement}
+            counterpartyName={reimbursement.advanceAccountName ?? counterpartyNameFallback}
+          />
         </div>
-      </div>
+      ))}
       <style>{`@media print { ${PRINT_PORTAL_RULES} }`}</style>
     </div>,
     document.body,
@@ -398,10 +403,11 @@ export function ReimbursementPreview({
 }) {
   const { t } = useI18n();
   const [adjust, setAdjust] = useState<ReimbursementPrintAdjust>({});
+  usePrintTitle();
 
   return createPortal(
     <div data-print-portal className="app-modal-backdrop z-[90] print:static print:block print:bg-white">
-      <div className="app-modal-panel resize max-h-[95vh] w-[95vw] max-w-6xl print:block print:max-h-none print:w-full print:max-w-none print:resize-none print:border-0 print:shadow-none">
+      <div className="app-modal-panel max-h-[95vh] w-[95vw] max-w-6xl print:block print:max-h-none print:w-full print:max-w-none print:resize-none print:border-0 print:shadow-none">
         <div className="modal-header shrink-0 border-b border-slate-200 print:hidden">
           <span className="text-sm font-semibold text-slate-800">{t("reimburse.preview")}</span>
           <div className="flex items-center gap-2">

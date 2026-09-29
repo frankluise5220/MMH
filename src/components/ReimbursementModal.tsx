@@ -9,7 +9,7 @@ import { DateStepper } from "./DateStepper";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { reimbursementErrorMessage } from "@/lib/reimbursement-error";
 import { ReimbursementFormModal, type ReimbursementFormEntry, type ReimbursementObjectOption } from "@/components/ReimbursementFormModal";
-import { ReimbursementPreview, ReimbursementBatchPrintModal } from "@/components/ReimbursementPreview";
+import { ReimbursementPreview, ReimbursementBatchPrintPortal } from "@/components/ReimbursementPreview";
 import { ReimbursementEditor } from "@/components/ReimbursementEditor";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/components/BatchReplacePopoverButton";
 import { CalcInput } from "@/components/CalcInput";
@@ -1368,10 +1368,10 @@ export function ReimbursementWorkspace({
       ) : null}
 
       {batchPrintDocs ? (
-        <ReimbursementBatchPrintModal
+        <ReimbursementBatchPrintPortal
           reimbursements={batchPrintDocs}
           counterpartyNameFallback={objectName}
-          onClose={() => setBatchPrintDocs(null)}
+          onDone={() => setBatchPrintDocs(null)}
         />
       ) : null}
 
