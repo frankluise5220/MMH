@@ -1506,6 +1506,10 @@ model User {
   isSystem           Boolean              @default(false)
   passwordHash       String?
   authVersion        Int                  @default(1)
+  /// principalId issued by the external mmh-registration service (registration identifier)
+  registrationPrincipalId String?
+  /// fnOS user UID / FN ID bound to this user, unique within its ledger (one UID per ledger)
+  fnosUid           String?
   householdId        String?
   createdAt          DateTime             @default(now())
   updatedAt          DateTime             @default(now()) @updatedAt
@@ -1516,6 +1520,7 @@ model User {
   UserSettings       UserSettings?
   PasswordResetToken PasswordResetToken[]
 
+  @@unique([householdId, fnosUid])
   @@index([email])
 }
 
@@ -1580,6 +1585,21 @@ model PasswordResetToken {
 
   @@index([userId, createdAt])
   @@index([expiresAt])
+}
+
+model RegistrationCode {
+  id           String    @id @default(cuid())
+  targetUserId String
+  email        String
+  codeHash     String
+  expiresAt    DateTime
+  usedAt       DateTime?
+  createdAt    DateTime  @default(now())
+  ip           String?
+  userAgent    String?
+
+  @@index([targetUserId, email])
+  @@index([targetUserId, createdAt])
 }
 
 model InsuranceProduct {

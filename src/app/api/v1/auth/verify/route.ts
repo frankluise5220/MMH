@@ -107,16 +107,18 @@ async function resolveLoginCandidates(username: string, householdId: string, use
   }
 
   if (username && householdId) {
+    const normalized = username.trim().toLowerCase();
     const user = await prisma.user.findFirst({
-      where: { name: username, householdId },
+      where: { OR: [{ name: username }, { email: normalized }], householdId },
       select: userSelect,
     });
     return user ? [user] : [];
   }
 
   if (username) {
+    const normalized = username.trim().toLowerCase();
     return prisma.user.findMany({
-      where: { name: username },
+      where: { OR: [{ name: username }, { email: normalized }] },
       select: userSelect,
       orderBy: { createdAt: "asc" },
     });

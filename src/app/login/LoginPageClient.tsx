@@ -45,6 +45,17 @@ type CreateLedgerResponse = {
   households?: HouseholdChoice[];
 };
 
+/**
+ * fnOS unified-gateway identity, forwarded by fnOS when this app runs behind
+ * the gateway (X-Trim-* headers). Absent on Docker / Synology / direct access,
+ * which keeps the fnOS login mode hidden there.
+ */
+export type FnosGatewayUser = {
+  uid: string;
+  username: string | null;
+  isAdmin: boolean;
+};
+
 type ResetStep = "request" | "confirm";
 type LoginMode = "login" | "setup" | "create";
 
@@ -62,7 +73,7 @@ function getInitialLoginSelection(users: LoginUserChoice[]) {
   };
 }
 
-export function LoginPageClient({ householdName }: { householdName: string | null }) {
+export function LoginPageClient({ householdName, fnosGatewayUser }: { householdName: string | null; fnosGatewayUser?: FnosGatewayUser | null }) {
   const [mode, setMode] = useState<LoginMode>("login");
   // Start in the checking state so the login form only renders after the
   // password-status check resolves. Otherwise the form briefly shows without
@@ -76,6 +87,9 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
   const [selectedHouseholdId, setSelectedHouseholdId] = useState("");
   const [selectedUserId, setSelectedUserId] = useState("");
   const [password, setPassword] = useState("");
+  const [loginMode, setLoginMode] = useState<"local" | "mmh" | "fnos">("local");
+  const [fnosEmail, setFnosEmail] = useState("");
+  const [pendingFnos, setPendingFnos] = useState(false);
   const [systemUsers, setSystemUsers] = useState<LoginUserChoice[]>([]);
   const [passwordResetEnabled, setPasswordResetEnabled] = useState(false);
   const [householdChoices, setHouseholdChoices] = useState<HouseholdChoice[]>([]);
@@ -147,6 +161,33 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
     if (!user) return null;
     if (selectedHouseholdId && getLoginUserScopeId(user) !== selectedHouseholdId) return null;
     return user;
+  }
+
+  function switchLoginMode(mode: "local" | "mmh" | "fnos") {
+    setLoginMode(mode);
+    setError("");
+    setPassword("");
+    setHouseholdChoices([]);
+    setPendingLogin(null);
+    setPendingFnos(false);
+    if (mode === "mmh") {
+      setSelectedUserId("");
+      setUsername("");
+    } else if (mode === "fnos") {
+      setSelectedUserId("");
+      setUsername("");
+      if (!selectedHouseholdId && loginHouseholdChoices.length > 0) {
+        const initial = getInitialLoginSelection(systemUsers);
+        setSelectedHouseholdId(initial.scopeId);
+      }
+    } else {
+      const initial = getInitialLoginSelection(systemUsers);
+      setSelectedHouseholdId(initial.scopeId);
+      if (initial.user) {
+        setSelectedUserId(initial.user.id);
+        setUsername(initial.user.name);
+      }
+    }
   }
 
   function openPasswordReset() {
@@ -325,7 +366,44 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
   function cancelHouseholdChoice() {
     setHouseholdChoices([]);
     setPendingLogin(null);
+    setPendingFnos(false);
     setError("");
+  }
+
+  async function handleFnosLogin(householdId?: string) {
+    const scopeId = householdId ?? selectedHouseholdId;
+    if (loginHouseholdChoices.length > 0 && !scopeId) { setError(t("login.error.bookRequired")); return; }
+    setLoading(true);
+    setError("");
+    setHouseholdChoices([]);
+    setPendingFnos(false);
+    try {
+      const res = await fetch("/api/v1/auth/fnos-verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...(scopeId && scopeId !== SYSTEM_LOGIN_SCOPE_ID ? { householdId: scopeId } : {}),
+          ...(fnosEmail.trim() ? { email: fnosEmail.trim() } : {}),
+        }),
+      });
+      const contentType = res.headers.get("content-type") ?? "";
+      const data = contentType.includes("application/json")
+        ? await res.json().catch(() => null) as AuthVerifyResponse | null
+        : null;
+      if (!data) { setError(t("login.error.loginFailed")); return; }
+      if (data.ok) { window.location.href = "/"; return; }
+      if (data.code === "AMBIGUOUS_USER" && data.households?.length) {
+        setHouseholdChoices(data.households);
+        setPendingFnos(true);
+        setError(data.error ?? t("login.error.ambiguousUser"));
+        return;
+      }
+      setError(data.error ?? t("login.error.loginFailed"));
+    } catch {
+      setError(t("login.error.verifyRetry"));
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function handleSetup() {
@@ -569,7 +647,53 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                     </select>
                   </div>
                 )}
-
+                <div className="flex gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
+                  <button
+                    type="button"
+                    onClick={() => switchLoginMode("local")}
+                    className={loginMode === "local" ? "flex-1 rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-800 shadow-sm" : "flex-1 rounded-md px-3 py-1.5 text-xs font-medium text-slate-500"}
+                  >
+                    {t("login.mode.local")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => switchLoginMode("mmh")}
+                    className={loginMode === "mmh" ? "flex-1 rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-800 shadow-sm" : "flex-1 rounded-md px-3 py-1.5 text-xs font-medium text-slate-500"}
+                  >
+                    {t("login.mode.mmh")}
+                  </button>
+                  {fnosGatewayUser ? (
+                    <button
+                      type="button"
+                      onClick={() => switchLoginMode("fnos")}
+                      className={loginMode === "fnos" ? "flex-1 rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-800 shadow-sm" : "flex-1 rounded-md px-3 py-1.5 text-xs font-medium text-slate-500"}
+                    >
+                      {t("login.fnosLogin")}
+                    </button>
+                  ) : null}
+                </div>
+                {loginMode === "fnos" && fnosGatewayUser ? (
+                <div className="space-y-3">
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                    {t("login.fnosUser", { user: fnosGatewayUser.username ?? fnosGatewayUser.uid })}
+                  </div>
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">{t("login.fnosEmailOptional")}</div>
+                    <input
+                      value={fnosEmail}
+                      onChange={(event) => {
+                        setFnosEmail(event.target.value);
+                        cancelHouseholdChoice();
+                      }}
+                      type="email"
+                      autoComplete="email"
+                      className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                      placeholder={t("login.fnosEmailPlaceholder")}
+                    />
+                    <div className="text-[11px] text-slate-500">{t("login.fnosEmailHint")}</div>
+                  </div>
+                </div>
+                ) : loginMode === "local" ? (
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">{t("login.username")}</div>
                   {selectedHouseholdUsers.length > 0 ? (
@@ -602,7 +726,25 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                     />
                   )}
                 </div>
+                ) : (
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-slate-600">{t("login.mmhAccount")}</div>
+                  <input
+                    value={username}
+                    onChange={(event) => {
+                      setSelectedUserId("");
+                      setUsername(event.target.value);
+                      cancelHouseholdChoice();
+                    }}
+                    type="email"
+                    autoComplete="username"
+                    className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                    placeholder={t("login.mmhAccountPlaceholder")}
+                  />
+                </div>
+                )}
 
+                {loginMode !== "fnos" && (
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">{t("login.password")}</div>
                   <input
@@ -619,6 +761,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                     onKeyDown={(event) => { if (event.key === "Enter") void handleLogin(); }}
                   />
                 </div>
+                )}
 
                 {householdChoices.length > 0 && (
                   <div className="space-y-3 rounded-xl border border-blue-100 bg-blue-50/70 p-3">
@@ -633,7 +776,7 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                           type="button"
                           className="w-full rounded-lg border border-blue-100 bg-white px-3 py-2 text-left text-sm text-slate-700 hover:border-blue-300 hover:bg-blue-50 disabled:opacity-50"
                           disabled={loading}
-                          onClick={() => void handleHouseholdChoice(household.id)}
+                          onClick={() => { if (pendingFnos) void handleFnosLogin(household.id); else void handleHouseholdChoice(household.id); }}
                         >
                           {getHouseholdDisplayName(household)}
                         </button>
@@ -651,14 +794,25 @@ export function LoginPageClient({ householdName }: { householdName: string | nul
                 )}
 
                 {error && <div className="text-sm text-red-600">{error}</div>}
-                <button
-                  type="button"
-                  className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
-                  disabled={loading}
-                  onClick={() => void handleLogin()}
-                >
-                  {loading ? t("login.verifying") : t("login.enter")}
-                </button>
+                {loginMode === "fnos" ? (
+                  <button
+                    type="button"
+                    className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+                    disabled={loading}
+                    onClick={() => void handleFnosLogin()}
+                  >
+                    {loading ? t("login.verifying") : t("login.fnosEnter")}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+                    disabled={loading}
+                    onClick={() => void handleLogin()}
+                  >
+                    {loading ? t("login.verifying") : t("login.enter")}
+                  </button>
+                )}
               </>
             )}
 

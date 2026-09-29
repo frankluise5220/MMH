@@ -24,6 +24,7 @@ type ManagedUser = {
   isSystem?: boolean;
   hasPassword?: boolean;
   sessionDays?: number;
+  fnosUid?: string | null;
   createdAt?: string;
 };
 
@@ -153,6 +154,260 @@ function UserModal({
   );
 }
 
+function RegisterModal({
+  target,
+  onClose,
+  onRegistered,
+}: {
+  target: ManagedUser;
+  onClose: () => void;
+  onRegistered: (principalId: string) => void;
+}) {
+  const { t } = useI18n();
+  const [step, setStep] = useState<"form" | "code" | "done">("form");
+  const [email, setEmail] = useState(target.email ?? "");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [code, setCode] = useState("");
+  const [error, setError] = useState("");
+  const [sending, setSending] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [method, setMethod] = useState<"email" | "fnid">("email");
+  const [fnid, setFnid] = useState("");
+  const [done, setDone] = useState<{ kind: "email" | "fnid"; value: string } | null>(null);
+
+  function validateForm(): string | null {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return t("settings.users.register.error.emailInvalid");
+    if (!password) return t("settings.users.error.passwordRequired");
+    if (password !== confirmPassword) return t("settings.users.error.passwordMismatch");
+    return null;
+  }
+
+  async function sendCode() {
+    const err = validateForm();
+    if (err) { setError(err); return; }
+    setSending(true);
+    setError("");
+    try {
+      const res = await fetch("/api/v1/settings/users/register/send-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: target.id, email: email.trim() }),
+      });
+      const data = await res.json().catch(() => null);
+      if (data?.ok) {
+        setStep("code");
+      } else {
+        setError(data?.error || t("settings.users.register.error.sendFailed"));
+      }
+    } catch {
+      setError(t("settings.users.register.error.network"));
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function handleConfirm() {
+    if (!code.trim()) { setError(t("settings.users.register.error.invalidCode")); return; }
+    setSubmitting(true);
+    setError("");
+    try {
+      const res = await fetch("/api/v1/settings/users/register/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: target.id, email: email.trim(), password: password.trim(), code: code.trim() }),
+      });
+      const data = await res.json().catch(() => null);
+      if (data?.ok && typeof data.principalId === "string") {
+        setDone({ kind: "email", value: data.principalId });
+        setStep("done");
+        onRegistered(data.principalId);
+      } else {
+        setError(data?.error || t("settings.users.register.error.failed"));
+      }
+    } catch {
+      setError(t("settings.users.register.error.network"));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function handleCopy() {
+    if (done) navigator.clipboard?.writeText(done.value).catch(() => {});
+  }
+
+  async function bindFnosUid() {
+    if (!fnid.trim()) { setError(t("settings.users.register.error.fnidRequired")); return; }
+    setSubmitting(true);
+    setError("");
+    try {
+      const res = await fetch("/api/v1/settings/users/bind-fnid", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: target.id, fnosUid: fnid.trim() }),
+      });
+      const data = await res.json().catch(() => null);
+      if (data?.ok && typeof data.data?.fnosUid === "string") {
+        setDone({ kind: "fnid", value: data.data.fnosUid });
+        setStep("done");
+        onRegistered(data.data.fnosUid);
+      } else if (data?.code === "FNOS_UID_TAKEN") {
+        setError(t("settings.users.register.error.fnosUidTaken"));
+      } else {
+        setError(data?.error || t("settings.users.register.error.fnidBindFailed"));
+      }
+    } catch {
+      setError(t("settings.users.register.error.network"));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="app-modal-backdrop z-[1100]">
+      <div className="app-modal-panel max-w-md">
+        <div className="modal-header shrink-0">
+          <div className="text-sm font-semibold text-slate-800">{t("settings.users.register.title")}</div>
+          <button type="button" onClick={onClose} className="secondary-button h-8 px-2">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="p-5 space-y-4">
+          {step === "done" && done ? (
+            <div className="space-y-4">
+              <div className="text-xs text-slate-600">{done.kind === "email"
+                ? t("settings.users.register.success", { email })
+                : t("settings.users.register.successFnid", { fnid: done.value })}</div>
+              <div>
+                <div className="mb-1.5 block text-xs font-medium text-slate-600">{done.kind === "email"
+                  ? t("settings.users.register.registrationId")
+                  : t("settings.users.register.fnidBound")}</div>
+                <div className="flex items-center gap-2">
+                  <code className="flex-1 break-all rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{done.value}</code>
+                  <button type="button" className="secondary-button h-9 px-3" onClick={handleCopy}>{t("settings.users.register.copy")}</button>
+                </div>
+              </div>
+              <div className="flex justify-end gap-2">
+                <button type="button" className="primary-button h-9 px-4" onClick={onClose}>{t("common.close")}</button>
+              </div>
+            </div>
+          ) : step === "code" ? (
+            <div className="space-y-4">
+              {error && (
+                <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">{error}</div>
+              )}
+              <div className="text-xs text-slate-600">{t("settings.users.register.codeSentTo", { email })}</div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.code")}</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none tracking-widest"
+                  value={code}
+                  onChange={(e) => { setCode(e.target.value.replace(/\D/g, "")); setError(""); }}
+                  placeholder={t("settings.users.register.placeholder.code")}
+                  autoFocus
+                />
+              </div>
+              <div className="flex justify-end gap-2">
+                <button type="button" className="secondary-button h-9 px-4" onClick={() => setStep("form")}>{t("common.cancel")}</button>
+                <button type="button" className="secondary-button h-9 px-4" onClick={sendCode} disabled={sending}>{t("settings.users.register.resend")}</button>
+                <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
+                  onClick={handleConfirm} disabled={submitting || code.trim().length < 6}>
+                  {submitting ? t("settings.users.register.submitting") : t("settings.users.register.confirm")}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {error && (
+                <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">{error}</div>
+              )}
+              <div className="flex gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
+                <button type="button"
+                  onClick={() => { setMethod("email"); setError(""); }}
+                  className={method === "email" ? "flex-1 rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-800 shadow-sm" : "flex-1 rounded-md px-3 py-1.5 text-xs font-medium text-slate-500"}>
+                  {t("settings.users.register.methodEmail")}
+                </button>
+                <button type="button"
+                  onClick={() => { setMethod("fnid"); setError(""); }}
+                  className={method === "fnid" ? "flex-1 rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-800 shadow-sm" : "flex-1 rounded-md px-3 py-1.5 text-xs font-medium text-slate-500"}>
+                  {t("settings.users.register.methodFnid")}
+                </button>
+              </div>
+              {method === "email" ? (
+                <>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.email")}</label>
+                    <input
+                      type="email"
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                      value={email}
+                      onChange={(e) => { setEmail(e.target.value); setError(""); }}
+                      autoFocus
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.password")}</label>
+                    <input
+                      type={showPassword ? "text" : "password"}
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                      value={password}
+                      onChange={(e) => { setPassword(e.target.value); setError(""); }}
+                      placeholder={t("settings.users.register.placeholder.password")}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.confirmPassword.label")}</label>
+                    <input
+                      type={showPassword ? "text" : "password"}
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                      value={confirmPassword}
+                      onChange={(e) => { setConfirmPassword(e.target.value); setError(""); }}
+                    />
+                  </div>
+                  <div className="text-[11px] text-slate-500">{t("settings.users.register.hint")}</div>
+                  <div className="flex justify-end gap-2">
+                    <button type="button" className="secondary-button h-9 px-4" onClick={onClose}>{t("common.cancel")}</button>
+                    <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
+                      onClick={sendCode} disabled={sending || !email.trim() || !password}>
+                      {sending ? t("settings.users.register.submitting") : t("settings.users.register.sendCode")}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.fnid")}</label>
+                    <input
+                      type="text"
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                      value={fnid}
+                      onChange={(e) => { setFnid(e.target.value); setError(""); }}
+                      placeholder={t("settings.users.register.placeholder.fnid")}
+                      autoFocus
+                    />
+                  </div>
+                  <div className="text-[11px] text-slate-500">{t("settings.users.register.hintFnid")}</div>
+                  <div className="flex justify-end gap-2">
+                    <button type="button" className="secondary-button h-9 px-4" onClick={onClose}>{t("common.cancel")}</button>
+                    <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
+                      onClick={bindFnosUid} disabled={submitting || !fnid.trim()}>
+                      {submitting ? t("settings.users.register.submitting") : t("settings.users.register.bindFnid")}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function UsersPage() {
   const { t } = useI18n();
   const [users, setUsers] = useState<ManagedUser[]>([]);
@@ -165,6 +420,7 @@ export default function UsersPage() {
   const [deleteError, setDeleteError] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [savingSessionUserId, setSavingSessionUserId] = useState("");
+  const [registerTarget, setRegisterTarget] = useState<ManagedUser | null>(null);
 
   useEffect(() => {
     fetchUsers();
@@ -360,6 +616,9 @@ export default function UsersPage() {
                   ) : (
                     <span className="text-xs text-slate-400">{t("settings.users.status.normal")}</span>
                   )}
+                  {u.fnosUid ? (
+                    <span className="mt-0.5 inline-block rounded-full bg-sky-50 px-2 py-0.5 text-xs text-sky-700">{t("settings.users.status.fnidBound")}</span>
+                  ) : null}
                 </SettingsTd>
                 <SettingsTd align="right">
                   {canManageUsers ? (
@@ -369,6 +628,13 @@ export default function UsersPage() {
                         variant="edit"
                         onClick={() => { setEditingUser(u); setShowModal(true); }}
                       />
+                      {u.isSystem && (
+                        <SettingsActionButton
+                          label={t("settings.users.register")}
+                          variant="default"
+                          onClick={() => setRegisterTarget(u)}
+                        />
+                      )}
                       {!u.isSystem ? (
                         <SettingsActionButton
                           label={t("settings.users.delete")}
@@ -397,6 +663,14 @@ export default function UsersPage() {
           users={users}
           onSave={handleSave}
           onCancel={() => { setShowModal(false); setEditingUser(null); }}
+        />
+      )}
+
+      {registerTarget && (
+        <RegisterModal
+          target={registerTarget}
+          onClose={() => setRegisterTarget(null)}
+          onRegistered={() => void fetchUsers()}
         />
       )}
 
