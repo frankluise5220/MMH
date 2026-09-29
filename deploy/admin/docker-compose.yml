@@ -1,0 +1,55 @@
+# MMH 后台管理 —— 单容器，宿主网络
+#
+# 为什么是 network_mode: host（而不是像 mmh-registration 那样做端口映射）
+#   这个服务要发信，发信走本机 Postfix 的 127.0.0.1:25。
+#   Postfix 的 mynetworks 里只有 /32 主机地址
+#   （127.0.0.1/32 107.175.62.109/32 10.66.66.1/32 172.17.0.1/32 172.18.0.1/32），
+#   桥接网络里容器是 172.x.0.2，不在白名单里，smtpd_relay_restrictions 会
+#   defer_unauth_destination 直接拒收。走 host 网络，源地址就是 127.0.0.1，天然放行。
+#   代价是端口不做映射——服务本身只 bind 127.0.0.1，外部仍然进不来。
+#
+# 镜像用官方 python:3.11-slim：宿主系统 Python 是 3.6.8（AlmaLinux 8），
+# 太老；而且本服务零第三方依赖，官方 slim 镜像不需要任何 pip install。
+
+name: mmh-admin
+
+services:
+  mmh-admin:
+    image: ${ADMIN_IMAGE:-python:3.11-slim}
+    container_name: mmh-admin
+    network_mode: host
+    working_dir: /app
+    command: ["python3", "-u", "server.py"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # 时区。TZ_SPEC 是本服务自己的开关（见 app/tzutil.py），TZ 同时设上是为了
+      # 让容器里任何没走 tzutil 的东西（date、第三方库）也一致。
+      # 这个只是**默认值**：在「设置」页改过之后以 DATA_DIR/tz 文件为准，不用重启。
+      TZ_SPEC: ${TZ_SPEC:-Asia/Shanghai}
+      TZ: ${TZ_SPEC:-Asia/Shanghai}
+    volumes:
+      # 代码只读挂载，改了 app/ 里的东西重启容器即可生效
+      - ./app:/app:ro
+      # 审计日志、会话密钥
+      - ${HOST_DATA_DIR:-/opt/mmh-admin/data}:/data
+      # 下载统计（mmh-stats.db）—— 读为主；SQLite 打开 WAL 需要写权限，故 rw
+      - ${HOST_FNSTORE_DATA:-/opt/fn-appstores-server/data}:/var/lib/mmh-fnstore
+      # 注册库（要能禁用/删除记录，必须 rw）
+      - ${HOST_REGISTRATION_DATA:-/opt/mmh-registration/data}:/var/lib/mmh-registration
+      # 邮件 Maildir（要能标记已读/移入回收站，必须 rw）
+      - ${HOST_VMAIL_ROOT:-/var/vmail/floatingice.win}:/var/vmail/floatingice.win
+      # GitHub token，只读，容器内 chmod 600
+      - ${HOST_GITHUB_TOKEN_DIR:-/etc/mmh-admin}:/etc/mmh-admin:ro
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8791/api/health',timeout=5).status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

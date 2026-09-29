@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>MMH 后台管理</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- ============================ 登录 ============================ -->
+<div id="login" class="login-wrap" hidden>
+  <form class="login-card" id="loginForm" autocomplete="off">
+    <h1>MMH 后台管理</h1>
+    <p>自动用户注册 · 下载汇总 · 邮件 / Issue 盯盘</p>
+    <input type="password" id="tokenInput" placeholder="访问口令" autocomplete="current-password" required>
+    <div id="loginErr" class="err" style="min-height:20px;font-size:12.5px;margin:6px 0 4px"></div>
+    <button type="submit" class="primary" style="width:100%" id="loginBtn">登录</button>
+  </form>
+</div>
+
+<!-- ============================ 主界面 ============================ -->
+<div id="app" hidden>
+  <div class="topbar">
+    <div class="brand">MMH 后台<small id="brandRepo"></small></div>
+    <nav class="tabs" id="tabs">
+      <button data-tab="overview">概览</button>
+      <button data-tab="registrations">自动注册<span class="dot" id="dotReg" hidden>0</span></button>
+      <button data-tab="downloads">下载汇总</button>
+      <button data-tab="mail">邮件盯盘<span class="dot" id="dotMail" hidden>0</span></button>
+      <button data-tab="issues">Issue 盯盘<span class="dot" id="dotIss" hidden>0</span></button>
+      <button data-tab="audit">审计</button>
+      <button data-tab="settings">设置</button>
+    </nav>
+    <div class="spacer"></div>
+    <button class="ghost sm" id="refreshBtn" title="刷新当前页">刷新</button>
+    <button class="ghost sm" id="logoutBtn">退出</button>
+  </div>
+  <main id="view"></main>
+</div>
+
+<div id="toasts"></div>
+<div id="modalHost"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
