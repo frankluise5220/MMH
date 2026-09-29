@@ -854,46 +854,6 @@ export function ReimbursementWorkspace({
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-medium text-blue-700">{t("reimburse.table.batchTitle", { title: selectedBatch.title })}</span>
                         <div className="flex items-center gap-2">
-                          {selectedDocuments.length > 0 ? (
-                            <button
-                              type="button"
-                              onClick={() => setBatchPrintDocs(selectedDocuments)}
-                              className="secondary-button h-7 px-2 text-xs"
-                              disabled={busy}
-                            >
-                              {t("reimburse.document.batchPrint")}
-                            </button>
-                          ) : null}
-                          {selectedPendingDocuments.length > 0 ? (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => setEditingQueueIds(selectedPendingDocuments.map((reimbursement) => reimbursement.id))}
-                                className="secondary-button h-7 px-2 text-xs"
-                                disabled={busy}
-                              >
-                                {t("reimburse.document.batchEdit")}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={openBatchApprove}
-                                className="secondary-button h-7 px-2 text-xs"
-                                disabled={busy}
-                              >
-                                {t("reimburse.document.batchApprove")}
-                              </button>
-                            </>
-                          ) : null}
-                          {batchDeleteTargets.length > 0 ? (
-                            <button
-                              type="button"
-                              onClick={() => void submitBatchDeleteDocuments()}
-                              className="secondary-button h-7 px-2 text-xs text-rose-700"
-                              disabled={busy}
-                            >
-                              {t("reimburse.document.batchDelete")}
-                            </button>
-                          ) : null}
                           {selectedBatch.status === "reimbursed" ? (
                             <button type="button" onClick={openCreateBatch} className="primary-button h-7 px-2 text-xs" disabled={busy}>
                               <Plus className="mr-1 inline h-3 w-3" />{t("reimburse.batchCreate")}
@@ -915,12 +875,57 @@ export function ReimbursementWorkspace({
                         showFilters
                         fillHeight
                         compactRows
-                        toolbarMode="none"
                         selectable
                         selectOnRowClick
                         selectAllScope="renderedRows"
                         selectedKeys={selectedDocumentIds}
                         onSelectionChange={setSelectedDocumentIds}
+                        batchActionSlot={(
+                          <>
+                            {selectedDocuments.length > 0 ? (
+                              <button
+                                type="button"
+                                onClick={() => setBatchPrintDocs(selectedDocuments)}
+                                className="secondary-button h-7 px-2 text-xs"
+                                disabled={busy}
+                              >
+                                {t("reimburse.document.batchPrint")}
+                              </button>
+                            ) : null}
+                            {selectedPendingDocuments.length > 0 ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingQueueIds(selectedPendingDocuments.map((reimbursement) => reimbursement.id))}
+                                  className="secondary-button h-7 px-2 text-xs"
+                                  disabled={busy}
+                                >
+                                  {t("reimburse.document.batchEdit")}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={openBatchApprove}
+                                  className="secondary-button h-7 px-2 text-xs"
+                                  disabled={busy}
+                                >
+                                  {t("reimburse.document.batchApprove")}
+                                </button>
+                              </>
+                            ) : null}
+                            {batchDeleteTargets.length > 0 ? (
+                              <button
+                                type="button"
+                                onClick={() => void submitBatchDeleteDocuments()}
+                                className="flex h-6 w-6 items-center justify-center rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                disabled={busy}
+                                title={t("reimburse.document.batchDelete")}
+                                aria-label={t("reimburse.document.batchDelete")}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            ) : null}
+                          </>
+                        )}
                         rowActionsWidth={156}
                         rowActionsMinWidth={144}
                         rowClassName={() => "hover:bg-slate-50"}
