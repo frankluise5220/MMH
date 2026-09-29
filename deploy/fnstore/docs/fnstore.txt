@@ -1,0 +1,51 @@
+docker run -d \
+  --name fn-appstores-server \
+  --restart unless-stopped \
+  -p "[::]:5660:5660" \
+  -e TZ=Asia/Shanghai \
+  -e BASE_URL="http://你的域名或公网IP:5660" \
+  -e ADMIN_PASSWORD="你的管理密码" \
+  -e NOTICE_PASSWORD="公告员密码" \
+  -v /vol1/1000/fn-appstores-server/data:/app/data \
+  ccr.ccs.tencentyun.com/hhxs2025/fn-appstores-server:2.8.4
+这是飞牛nas做服务端的方法：
+
+
+-------------------------------
+docker run -d \
+  --name fn-appstores-server \
+  --restart unless-stopped \
+  --network host \
+  -e TZ=Asia/Shanghai \
+  -e BASE_URL="http://你的域名或公网IP:5660" \
+  -e ADMIN_PASSWORD="你的管理密码" \
+  -e NOTICE_PASSWORD="公告员密码" \
+  -v /www/fn-appstores-server/data:/app/data \
+  ccr.ccs.tencentyun.com/hhxs2025/fn-appstores-server:2.8.4
+
+这是云服务器版（宝塔或1panel）
+----------------------------------------------
+docker run -d \
+  --name fn-appstores-server \
+  --restart unless-stopped \
+  -p "[::]:5660:5660" \
+  -e TZ=Asia/Shanghai \
+  -e BASE_URL="http://你的域名或公网IP:5660" \
+  -e ADMIN_PASSWORD="你的管理密码" \
+  -e NOTICE_PASSWORD="公告员密码" \
+  -v /www/fn-appstores-server/data:/app/data \
+  ccr.ccs.tencentyun.com/hhxs2025/fn-appstores-server:2.8.4
+
+以上是云服务器（裸机，无宝塔面板的）
+-------------------------------------------
+#### 参数说明
+
+| 参数 | 说明 |
+|------|------|
+| `-p "[::]:5660:5660"` | 双栈监听（IPv4 + IPv6）；不需要 v6 可改 `-p 5660:5660` |
+| `--network host` | 容器直接用宿主机网络栈，端口就是宿主机的 5660 |
+| `-e BASE_URL` | **必填**，客户端实际访问的地址（含端口） |
+| `-e ADMIN_PASSWORD` | 管理员密码 |
+| `-e NOTICE_PASSWORD` | 公告员密码（仅公告编辑权限） |
+| `-v 宿主机目录:/app/data` | 挂载数据目录 |
+

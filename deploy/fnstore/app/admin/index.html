@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MMH 软仓源管理</title>
+<style>
+  :root {
+    --bg:#f5f6f8; --panel:#fff; --border:#e3e6ea; --text:#1c2330; --muted:#6b7482;
+    --accent:#2563eb; --ok:#16a34a; --bad:#dc2626;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:13px/1.55 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
+  header { background:var(--panel); border-bottom:1px solid var(--border);
+           padding:14px 20px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  h1 { font-size:16px; margin:0; font-weight:600; }
+  h2 { font-size:14px; margin:0 0 8px; font-weight:600; }
+  .spacer { flex:1; }
+  .dot { width:9px; height:9px; border-radius:50%; background:#c9ced6; display:inline-block; }
+  .dot.ok { background:var(--ok); } .dot.bad { background:var(--bad); }
+  .muted { color:var(--muted); }
+  button, select { font:inherit; padding:5px 12px; border:1px solid var(--border);
+                   background:var(--panel); border-radius:6px; cursor:pointer; }
+  button:hover { border-color:var(--accent); color:var(--accent); }
+  main { padding:18px 20px 40px; max-width:1280px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:18px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:12px 14px; }
+  .card .k { color:var(--muted); font-size:12px; }
+  .card .v { font-size:22px; font-weight:600; margin-top:2px; }
+  section { background:var(--panel); border:1px solid var(--border); border-radius:10px;
+            padding:14px 16px; margin-bottom:16px; overflow:auto; }
+  table { border-collapse:collapse; width:100%; font-size:12.5px; }
+  th, td { padding:6px 9px; border-bottom:1px solid var(--border); text-align:right; white-space:nowrap; }
+  th:first-child, td:first-child { text-align:left; }
+  thead th { color:var(--muted); font-weight:500; }
+  tbody tr:hover { background:#fafbfc; }
+  td.zero { color:#c9ced6; }
+  tfoot td { font-weight:600; border-top:2px solid var(--border); }
+  .tag { display:inline-block; padding:1px 7px; border-radius:99px; font-size:11.5px;
+         background:#eef2f7; color:#475467; }
+  .tag.fnstore{background:#e6f1fb;color:#185fa5} .tag.synology{background:#e1f5ee;color:#0f6e56}
+  .tag.fndepot{background:#faeeda;color:#854f0b} .tag.vps{background:#f1efe8;color:#5f5e5a}
+  .tag.github{background:#eef2f7;color:#475467} .tag.fnos{background:#fbeaf0;color:#993556}
+  .banner { background:#fef3c7; border:1px solid #fcd34d; color:#78350f;
+            padding:9px 12px; border-radius:8px; margin-bottom:14px; }
+  .banner.hidden, .hidden { display:none; }
+  .log-tbl td { text-align:left; }
+</style>
+</head>
+<body>
+<header>
+  <h1>MMH 软仓源管理</h1>
+  <span id="healthDot" class="dot" title="源健康状态"></span>
+  <span id="healthText" class="muted">检查中…</span>
+  <span class="spacer"></span>
+  <label class="muted"><input type="checkbox" id="internalChk"> 含本机/内网记录</label>
+  <select id="daysSel">
+    <option value="7">近 7 天</option>
+    <option value="14">近 14 天</option>
+    <option value="30" selected>近 30 天</option>
+    <option value="90">近 90 天</option>
+  </select>
+  <button id="refreshBtn" type="button">刷新</button>
+</header>
+
+<main>
+  <div id="errorBanner" class="banner hidden"></div>
+  <div class="muted" id="updatedAt" style="margin-bottom:6px"></div>
+  <div class="muted" style="margin-bottom:12px;font-size:12px">
+    「本机/内网」= 回环地址（127.0.0.1，来自本机 curl 验证、SNI 代理未透传 IP 的历史记录）
+    与内网地址（172.17.x，Docker 网桥）。默认排除，勾选右上角可一并查看。
+    无 IP 的历史聚合导入行（Go 版 stats.db）计入总数，不算本机。
+  </div>
+
+  <div class="cards" id="cards"></div>
+
+  <section>
+    <h2>渠道 × 客户端软件</h2>
+    <div class="muted" style="margin-bottom:8px">
+      行 = 下载渠道，列 = 发起下载的客户端软件。GitHub Release 直连下载无法识别客户端，单列在倒数第二列。
+    </div>
+    <table id="ccTbl"></table>
+  </section>
+
+  <section>
+    <h2>按日期 × 渠道</h2>
+    <table id="dateTbl"></table>
+  </section>
+
+  <section>
+    <h2>按版本 × 文件类型</h2>
+    <div class="muted" style="margin-bottom:8px">单元格悬停可看渠道明细。</div>
+    <table id="verTbl"></table>
+  </section>
+
+  <section>
+    <h2>最近下载记录</h2>
+    <table class="log-tbl" id="logTbl"></table>
+  </section>
+
+  <section>
+    <h2>本地直发文件</h2>
+    <table id="filesTbl"></table>
+  </section>
+</main>
+
+<script>
+var STATE = { days: 30, internal: false };
+
+function fmtSize(n) {
+  if (!n) return '—';
+  var u = ['B', 'KB', 'MB', 'GB'], i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return n.toFixed(i ? 1 : 0) + ' ' + u[i];
+}
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+  });
+}
+function cell(v) { return v ? '<td>' + v + '</td>' : '<td class="zero">0</td>'; }
+function labels(d) { return { ch: d.channel_labels || {}, cl: d.client_labels || {}, ft: d.file_type_labels || {} }; }
+
+function render(d) {
+  var L = labels(d), t = d.totals || {};
+  var ik = d.by_ip_kind || {};
+  var kindTip = '公网 ' + (ik.public || 0) + ' / 无IP聚合导入 ' + (ik.unknown || 0)
+    + ' / 回环 ' + (ik.loopback || 0) + ' / 内网 ' + (ik.private || 0);
+
+  document.getElementById('cards').innerHTML = [
+    ['计入下载总数', t.external, kindTip],
+    ['今日', t.today], ['近 7 日', t.last7],
+    ['覆盖版本', t.versions],
+    ['本机/内网（已排除）', t.internal, '回环 ' + (ik.loopback || 0) + ' + 内网 ' + (ik.private || 0)],
+    ['统计口径', STATE.internal ? '含本机/内网' : '排除本机/内网']
+  ].map(function (x) {
+    return '<div class="card"' + (x[2] ? ' title="' + esc(x[2]) + '"' : '')
+      + '><div class="k">' + x[0] + '</div><div class="v">' + esc(x[1]) + '</div></div>';
+  }).join('');
+
+  var ghTotal = 0;
+  ((d.github || {}).releases || []).forEach(function (r) {
+    (r.assets || []).forEach(function (a) { ghTotal += (a.download_count || 0); });
+  });
+
+  // ---- 渠道 × 客户端软件
+  var CL = d.clients || [], CH = d.channels || [], cc = d.channel_client || {};
+  var head = '<thead><tr><th>渠道</th>' + CL.map(function (c) {
+    return '<th>' + esc(L.cl[c] || c) + '</th>';
+  }).join('') + '<th>GitHub直连</th><th>合计</th></tr></thead>';
+
+  var body = '', foot = {};
+  CH.forEach(function (ch) {
+    var row = cc[ch] || {}, sum = 0;
+    var tds = CL.map(function (c) { sum += (row[c] || 0); return cell(row[c] || 0); }).join('');
+    var gh = (ch === 'github') ? ghTotal : 0;
+    sum += gh;
+    CL.forEach(function (c) { foot[c] = (foot[c] || 0) + (row[c] || 0); });
+    if (sum > 0) {
+      body += '<tr><td><span class="tag ' + ch + '">' + esc(L.ch[ch] || ch) + '</span></td>'
+        + tds + cell(gh) + '<td><b>' + sum + '</b></td></tr>';
+    }
+  });
+  var footSum = 0;
+  var footTds = CL.map(function (c) { footSum += (foot[c] || 0); return cell(foot[c] || 0); }).join('');
+  footSum += ghTotal;
+  document.getElementById('ccTbl').innerHTML = head
+    + '<tbody>' + (body || '<tr><td colspan="99" class="muted">暂无数据</td></tr>') + '</tbody>'
+    + '<tfoot><tr><td>合计</td>' + footTds + cell(ghTotal) + '<td>' + footSum + '</td></tr></tfoot>';
+
+  // ---- 日期 × 渠道
+  var dch = d.date_channel || {};
+  var dates = Object.keys(dch).sort().reverse();
+  var dh = '<thead><tr><th>日期</th>' + CH.map(function (c) {
+    return '<th>' + esc(L.ch[c] || c) + '</th>';
+  }).join('') + '<th>合计</th></tr></thead>';
+  var db = dates.map(function (dt) {
+    var row = dch[dt] || {}, sum = 0;
+    var tds = CH.map(function (c) { sum += (row[c] || 0); return cell(row[c] || 0); }).join('');
+    return '<tr><td>' + esc(dt) + '</td>' + tds + '<td><b>' + sum + '</b></td></tr>';
+  }).join('');
+  document.getElementById('dateTbl').innerHTML = dh
+    + '<tbody>' + (db || '<tr><td colspan="99" class="muted">暂无数据</td></tr>') + '</tbody>';
+
+  // ---- 版本 × 文件类型
+  var vfc = d.version_filetype_channel || {};
+  var fts = Object.keys(L.ft);
+  var vers = Object.keys(vfc).sort().reverse();
+  var vh = '<thead><tr><th>版本</th>' + fts.map(function (f) {
+    return '<th>' + esc(L.ft[f] || f) + '</th>';
+  }).join('') + '<th>合计</th></tr></thead>';
+  var vb = vers.map(function (v) {
+    var row = vfc[v] || {}, sum = 0;
+    var tds = fts.map(function (f) {
+      var chs = row[f] || {}, n = 0, detail = [];
+      Object.keys(chs).forEach(function (c) { n += chs[c]; detail.push((L.ch[c] || c) + ' ' + chs[c]); });
+      sum += n;
+      return n ? '<td title="' + esc(detail.join(' / ')) + '">' + n + '</td>' : '<td class="zero">0</td>';
+    }).join('');
+    return '<tr><td>' + esc(v) + '</td>' + tds + '<td><b>' + sum + '</b></td></tr>';
+  }).join('');
+  document.getElementById('verTbl').innerHTML = vh
+    + '<tbody>' + (vb || '<tr><td colspan="99" class="muted">暂无数据</td></tr>') + '</tbody>';
+
+  // ---- 最近记录
+  var lg = '<thead><tr><th>时间</th><th>版本</th><th>文件</th><th>渠道</th><th>客户端</th><th>IP</th><th>来源</th></tr></thead>';
+  var lb = (d.recent || []).map(function (r) {
+    var internal = (r.ip_kind === 'loopback' || r.ip_kind === 'private');
+    return '<tr><td>' + esc(r.time) + '</td><td>' + esc(r.version || '—') + '</td><td>' + esc(r.file)
+      + '</td><td><span class="tag ' + r.channel + '">' + esc(L.ch[r.channel] || r.channel)
+      + '</span></td><td>' + esc(L.cl[r.client] || r.client)
+      + '</td><td' + (internal ? ' class="muted"' : '') + '>' + esc(r.ip || '—')
+      + (internal ? ' <span class="muted">(' + esc(r.ip_kind) + ')</span>' : '')
+      + '</td><td class="muted">' + esc(r.origin) + '</td></tr>';
+  }).join('');
+  document.getElementById('logTbl').innerHTML = lg
+    + '<tbody>' + (lb || '<tr><td colspan="99" class="muted">暂无数据</td></tr>') + '</tbody>';
+
+  // ---- 本地直发文件
+  var fh = '<thead><tr><th>文件</th><th>大小</th><th>修改时间</th></tr></thead>';
+  var fb = (d.local_downloads || []).map(function (f) {
+    return '<tr><td>' + esc(f.name) + '</td><td>' + fmtSize(f.size) + '</td><td>' + esc(f.mtime) + '</td></tr>';
+  }).join('');
+  document.getElementById('filesTbl').innerHTML = fh
+    + '<tbody>' + (fb || '<tr><td colspan="99" class="muted">暂无文件</td></tr>') + '</tbody>';
+
+  document.getElementById('updatedAt').textContent =
+    '数据时间 ' + d.time + '　口径：'
+    + (d.include_internal ? '含本机/内网记录' : '排除本机/内网（回环 + 内网），保留公网与无 IP 聚合导入')
+    + '　窗口 ' + d.days + ' 天';
+}
+
+function load() {
+  var url = 'api/stats?days=' + STATE.days + (STATE.internal ? '&internal=1' : '');
+  fetch(url, { cache: 'no-store' })
+    .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function (d) {
+      if (!d.success) throw new Error(d.message || '接口返回失败');
+      document.getElementById('errorBanner').classList.add('hidden');
+      document.getElementById('healthDot').className = 'dot ok';
+      document.getElementById('healthText').textContent = '服务正常';
+      render(d);
+    })
+    .catch(function (e) {
+      var b = document.getElementById('errorBanner');
+      b.textContent = '加载失败：' + e.message;
+      b.classList.remove('hidden');
+      document.getElementById('healthDot').className = 'dot bad';
+      document.getElementById('healthText').textContent = '异常';
+    });
+}
+
+document.getElementById('refreshBtn').addEventListener('click', load);
+document.getElementById('daysSel').addEventListener('change', function (e) {
+  STATE.days = parseInt(e.target.value, 10); load();
+});
+document.getElementById('internalChk').addEventListener('change', function (e) {
+  STATE.internal = e.target.checked; load();
+});
+load();
+</script>
+</body>
+</html>

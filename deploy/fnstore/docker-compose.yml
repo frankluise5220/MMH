@@ -1,0 +1,59 @@
+# MMH fnVPS 服务端（FN 软仓源 + MMH 扩展）
+#
+# 两个容器共享同一个 data 目录，但职责严格分开：
+#
+#   fn-appstores-server  5660  官方 Go 版 2.8.4
+#                              /api/apps（应用列表）、/api/rating/*（评分）、/admin、/health、/api/notice
+#
+#   mmh-fnstore-admin    5661  Python 版 2.2.0 + 本目录 app/ 里的 MMH 补丁 app.py
+#                              /（群晖套件源协议）、/catalog.json、/downloads/*、/fnstore 管理页、
+#                              /icons/*、/api/stats、以及 /apps/*（下载统计的唯一写入方）
+#
+# 为什么不能只跑一个
+#   上游把服务端从 Python 重写成了 Go。Go 版没有实现群晖套件源协议、/downloads/、
+#   /fnstore 管理页这些 MMH 扩展；而 Python 版没有评分接口。
+#   两者并存、由 nginx 按 host + path 分流，才能同时保住评分和群晖源。
+#   详见 docs/rating-failure-2026-09-28.md 与 README.md。
+#
+# 用法
+#   cp .env.example .env && vi .env
+#   docker compose up -d
+
+name: mmh-fnstore
+
+services:
+  fnstore-go:
+    image: ${FNSTORE_GO_IMAGE}
+    container_name: fn-appstores-server
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - BASE_URL=${BASE_URL}
+    ports:
+      - "0.0.0.0:${FNSTORE_GO_PORT}:5660"
+    volumes:
+      - ${DATA_DIR}:/app/data
+
+  fnstore-py:
+    image: ${FNSTORE_PY_IMAGE}
+    container_name: mmh-fnstore-admin
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      # 群晖 catalog 里下载链接的前缀，必须是 DSM 能访问到的地址
+      - SYNOLOGY_SOURCE_BASE_URL=${SYNOLOGY_BASE_URL}
+    ports:
+      # 只监听回环：外部一律经 nginx 进入
+      - "127.0.0.1:${FNSTORE_PY_PORT}:5660"
+    volumes:
+      # 逐文件挂载而不是整目录，保留镜像自带的 /app/vendor（app.py 会 sys.path.insert 它）
+      - ./app/app.py:/app/app.py:ro
+      # 统计覆盖层：app.py 末尾 import mmh_stats_override 并从 /app 解析 stats_store
+      - ./app/mmh_stats_override.py:/app/mmh_stats_override.py:ro
+      - ./app/stats_store.py:/app/stats_store.py:ro
+      - ./app/index.html:/app/index.html:ro
+      # 注意：不要再单独挂 ./app/admin 到 /app/data/admin。
+      # 管理页由 app.py 的 ADMIN_HTML_PATH 指向 <DATA_DIR>/admin/index.html，
+      # 多挂一层会遮住 data 目录，导致"页面更新了但容器里还是旧的"。
+      # 正确做法：install.sh 把 app/admin/index.html 复制进 ${DATA_DIR}/admin/。
+      - ${DATA_DIR}:/app/data

@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MMH 软仓源管理</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --border: #e3e6ea;
+    --text: #1c2330;
+    --muted: #6b7482;
+    --accent: #2563eb;
+    --ok: #16a34a;
+    --err: #dc2626;
+    --bar: #3b82f6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.5 -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 22px; background: var(--panel); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .header-actions { display: flex; align-items: center; gap: 14px; }
+  .health-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--err); display: inline-block; }
+  .health-dot.ok { background: var(--ok); }
+  .auto { color: var(--muted); font-size: 12px; user-select: none; }
+  button {
+    font: inherit; padding: 5px 14px; border: 1px solid var(--border); border-radius: 6px;
+    background: #fff; cursor: pointer; color: var(--text);
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  main { max-width: 1080px; margin: 0 auto; padding: 18px 22px 40px; }
+  .banner {
+    background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; border-radius: 8px;
+    padding: 8px 14px; margin-bottom: 14px; font-size: 12px;
+  }
+  .hidden { display: none; }
+  .cards {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px;
+  }
+  @media (max-width: 760px) { .cards { grid-template-columns: repeat(2, 1fr); } }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
+  }
+  .card-label { color: var(--muted); font-size: 12px; }
+  .card-value { font-size: 22px; font-weight: 650; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .card-sub { color: var(--muted); font-size: 11px; margin-top: 3px; word-break: break-all; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; margin-bottom: 16px;
+  }
+  .panel h2 { font-size: 13px; margin: 0 0 10px; font-weight: 600; color: var(--text); }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  td.num, th.num { text-align: right; }
+  tr:last-child td { border-bottom: none; }
+  .muted { color: var(--muted); }
+  .tag {
+    display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px;
+    background: #eef2ff; color: #4338ca;
+  }
+  .chart { display: flex; align-items: flex-end; gap: 6px; height: 120px; padding-top: 6px; }
+  .chart .col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; height: 100%; justify-content: flex-end; }
+  .chart .bar { width: 100%; max-width: 34px; background: var(--bar); border-radius: 3px 3px 0 0; min-height: 2px; }
+  .chart .val { font-size: 10px; color: var(--muted); }
+  .chart .lbl { font-size: 10px; color: var(--muted); white-space: nowrap; }
+  .empty { color: var(--muted); font-size: 12px; padding: 6px 0; }
+  footer { max-width: 1080px; margin: 0 auto; padding: 0 22px 30px; color: var(--muted); font-size: 11px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>MMH 软仓源管理</h1>
+    <div class="sub">FN 软仓自建源 · fnapp.floatingice.win（5660） · 数据仅展示，不修改源</div>
+  </div>
+  <div class="header-actions">
+    <span id="healthDot" class="health-dot" title="源健康状态"></span>
+    <label class="auto"><input type="checkbox" id="autoRefresh" checked> 自动刷新（60s）</label>
+    <button id="refreshBtn" type="button">刷新</button>
+  </div>
+</header>
+
+<main>
+  <div id="errorBanner" class="banner hidden"></div>
+
+  <section class="cards">
+    <div class="card">
+      <div class="card-label">源状态</div>
+      <div class="card-value" id="cardHealth">—</div>
+      <div class="card-sub" id="cardHealthSub"></div>
+    </div>
+    <div class="card">
+      <div class="card-label">当前版本</div>
+      <div class="card-value" id="cardVersion">—</div>
+      <div class="card-sub" id="cardVersionSub"></div>
+    </div>
+    <div class="card">
+      <div class="card-label">VPS 下载统计</div>
+      <div class="card-value" id="cardTotal">—</div>
+      <div class="card-sub" id="cardTotalSub"></div>
+    </div>
+    <div class="card">
+      <div class="card-label">GitHub 累计下载</div>
+      <div class="card-value" id="cardGh">—</div>
+      <div class="card-sub" id="cardGhSub">最新 Release 的 FPK 资产</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>近 14 天下载（VPS 统计）</h2>
+    <div id="chart" class="chart"></div>
+  </section>
+
+  <section class="panel">
+    <h2>下载来源拆分（FnDepot 软仓商店 vs FN 软仓/专属源直连）</h2>
+    <table>
+      <thead><tr><th>来源</th><th class="num">下载次数</th><th class="num">占比</th></tr></thead>
+      <tbody id="sourceBody"></tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <h2>FPK 包明细（VPS 数据目录）</h2>
+    <table>
+      <thead><tr><th>文件</th><th class="num">大小</th><th>更新时间</th><th class="num">经源下载</th></tr></thead>
+      <tbody id="filesBody"></tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <h2>GitHub Release 对比（最近 10 个，FN 包）</h2>
+    <table>
+      <thead><tr><th>Tag</th><th>发布日</th><th class="num">x86_64</th><th class="num">arm64</th><th class="num">FPK 合计</th></tr></thead>
+      <tbody id="ghBody"></tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <h2>全平台安装包（Synology SPK / Windows EXE·ZIP / 其他，经源计数后跳转 GitHub 或本地直发）</h2>
+    <table>
+      <thead><tr><th>Tag</th><th>文件</th><th class="num">大小</th><th class="num">GitHub 下载</th><th class="num">经源下载</th></tr></thead>
+      <tbody id="otherBody"></tbody>
+    </table>
+  </section>
+
+  <section class="panel" id="localPanel">
+    <h2>VPS 本地直发（data/downloads/，不经 GitHub，直接由 VPS 发送文件）</h2>
+    <table>
+      <thead><tr><th>文件</th><th class="num">大小</th><th>放置时间</th><th class="num">经源下载</th></tr></thead>
+      <tbody id="localBody"></tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <h2>最近下载（经本源发起）</h2>
+    <table>
+      <thead><tr><th>时间</th><th>文件</th><th>来源</th></tr></thead>
+      <tbody id="logBody"></tbody>
+    </table>
+  </section>
+</main>
+
+<footer>
+  分发模式：redirect = 下载请求经本源计数后 302 跳转 GitHub Release；local = 由 VPS 直接发送文件。
+  统计数据存于 VPS <code>/opt/fn-appstores-server/data/download-stats.json</code>，删除该文件即清零。
+  全平台安装包走 <code>/downloads/&lt;GitHub 资产名&gt;</code>，本地不存文件。
+</footer>
+
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function fmtBytes(n) {
+    if (n == null) return '—';
+    var units = ['B', 'KB', 'MB', 'GB'], i = 0, v = n;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return (i === 0 || v >= 100 ? Math.round(v) : v.toFixed(1)) + ' ' + units[i];
+  }
+  function fmtNum(n) { return (n || 0).toLocaleString('en-US'); }
+
+  function fetchJson(url) {
+    return fetch(url, { cache: 'no-store' }).then(function (r) {
+      if (!r.ok) throw new Error(url + ' → HTTP ' + r.status);
+      return r.json();
+    });
+  }
+
+  function showError(msg) {
+    var el = $('errorBanner');
+    if (!msg) { el.classList.add('hidden'); return; }
+    el.textContent = msg;
+    el.classList.remove('hidden');
+  }
+
+  function renderLocal(items, byFile) {
+    var panel = $('localPanel');
+    if ((items || []).length) { window.__hadLocal = true; }
+    if (!window.__hadLocal && !(items || []).length) {
+      panel.style.display = 'none';
+      $('localBody').innerHTML = '<tr><td colspan="4" class="empty">暂无本地直发文件</td></tr>';
+      return;
+    }
+    panel.style.display = '';
+    if (!(items || []).length) {
+      $('localBody').innerHTML = '<tr><td colspan="4" class="empty">暂无本地直发文件</td></tr>';
+      return;
+    }
+    $('localBody').innerHTML = items.map(function (f) {
+      return '<tr><td><a href="/downloads/' + encodeURIComponent(f.name) + '" target="_blank" rel="noopener">' + esc(f.name) + '</a></td>' +
+        '<td class="num">' + fmtBytes(f.size) + '</td><td>' + esc(f.mtime) + '</td>' +
+        '<td class="num">' + fmtNum(byFile[f.name] || 0) + '</td></tr>';
+    }).join('');
+  }
+
+  function renderStats(data) {
+    var stats = data.stats || {};
+    lastByFile = stats.by_file || {};
+    var apps = data.apps || [];
+    var app = apps[0] || {};
+
+    $('healthDot').classList.add('ok');
+    $('cardHealth').textContent = '正常';
+    $('cardHealthSub').textContent = '响应时间 ' + (data.time || '—') + ' · 模式 ' + (data.mode === 'local' ? 'local（VPS 直发）' : 'redirect（跳转 GitHub）');
+
+    $('cardVersion').textContent = app.version ? ('mmh ' + app.version) : '—';
+    $('cardVersionSub').textContent = app.download_url ? ('download_url: ' + app.download_url) : 'download_url 未生成（本地缺 FPK？）';
+
+    var today = new Date();
+    var key = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+    var byDay = stats.by_day || {};
+    var week = 0;
+    for (var i = 0; i < 7; i++) {
+      var d = new Date(today.getTime() - i * 86400000);
+      var k = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+      week += byDay[k] || 0;
+    }
+    $('cardTotal').textContent = fmtNum(stats.total || 0);
+    $('cardTotalSub').textContent = '今日 ' + fmtNum(byDay[key] || 0) + ' · 近 7 天 ' + fmtNum(week);
+
+    // 14 天柱状图
+    var chart = $('chart');
+    var days = [];
+    for (var j = 13; j >= 0; j--) {
+      var dd = new Date(today.getTime() - j * 86400000);
+      var kk = dd.getFullYear() + '-' + String(dd.getMonth() + 1).padStart(2, '0') + '-' + String(dd.getDate()).padStart(2, '0');
+      days.push({ label: String(dd.getMonth() + 1).padStart(2, '0') + '-' + String(dd.getDate()).padStart(2, '0'), value: byDay[kk] || 0 });
+    }
+    var max = Math.max.apply(null, days.map(function (d) { return d.value; }).concat([1]));
+    chart.innerHTML = days.map(function (d) {
+      var h = Math.round(d.value / max * 88);
+      return '<div class="col" title="' + d.label + '：' + d.value + '">' +
+        '<span class="val">' + (d.value || '') + '</span>' +
+        '<div class="bar" style="height:' + h + 'px"></div>' +
+        '<span class="lbl">' + d.label + '</span></div>';
+    }).join('');
+
+    // FPK 明细
+    var byFile = stats.by_file || {};
+    var files = data.files || [];
+    if (!files.length) {
+      $('filesBody').innerHTML = '<tr><td colspan="4" class="empty">数据目录中没有 FPK 文件</td></tr>';
+    } else {
+      $('filesBody').innerHTML = files.map(function (f) {
+        return '<tr><td>' + esc(f.name) + '</td><td class="num">' + fmtBytes(f.size) + '</td><td>' + esc(f.mtime) + '</td><td class="num">' + fmtNum(byFile[f.name] || 0) + '</td></tr>';
+      }).join('');
+    }
+
+    // 来源拆分
+    renderSource(stats);
+
+    // 最近下载日志（倒序，最多 15 条）
+    var log = (stats.log || []).slice(-15).reverse();
+    if (!log.length) {
+      $('logBody').innerHTML = '<tr><td colspan="3" class="empty">暂无下载记录</td></tr>';
+    } else {
+      $('logBody').innerHTML = log.map(function (item) {
+        return '<tr><td>' + esc(item.time) + '</td><td>' + esc(item.file) + '</td><td>' + esc(item.source || '—') + '</td></tr>';
+      }).join('');
+    }
+
+    renderLocal(data.local_downloads || [], lastByFile);
+  }
+
+  var lastByFile = {};
+  var __hadLocal = false;
+  Object.defineProperty(window, '__hadLocal', {
+    get: function () { return __hadLocal; },
+    set: function (v) { __hadLocal = v; }
+  });
+
+
+  function assetCount(rel, arch) {
+    var assets = (rel && rel.assets) || [];
+    var total = 0;
+    assets.forEach(function (a) {
+      if (String(a.name || '').indexOf(arch) !== -1) total += a.download_count || 0;
+    });
+    return total;
+  }
+
+  function renderSource(stats) {
+    var bySource = stats.by_source || {};
+    var total = stats.total || 0;
+    var rows = [];
+    var labels = { fndepot: 'FnDepot 软仓商店（nginx:80 入口）', fnstore: 'FN 软仓 / 专属源直连（5660/4001 直连）' };
+    var keys = ['fndepot', 'fnstore'];
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      var cnt = bySource[k] || 0;
+      var pct = total > 0 ? ((cnt / total * 100).toFixed(1) + '%') : '—';
+      rows.push('<tr><td>' + esc(labels[k] || k) + '</td><td class="num">' + fmtNum(cnt) + '</td><td class="num">' + pct + '</td></tr>');
+    }
+    if (!rows.length) {
+      $('sourceBody').innerHTML = '<tr><td colspan="3" class="empty">暂无来源数据（需重启服务使 by_source 字段生效）</td></tr>';
+    } else {
+      $('sourceBody').innerHTML = rows.join('');
+    }
+  }
+
+  function renderGh(data) {
+    var releases = (data && data.releases) || [];
+    if (!releases.length) {
+      $('cardGh').textContent = '0';
+      $('cardGhSub').textContent = 'GitHub 上暂无 Release';
+      $('ghBody').innerHTML = '<tr><td colspan="5" class="empty">暂无 Release 数据</td></tr>';
+      return;
+    }
+    var latest = releases[0];
+    var latestSum = 0;
+    ((latest.assets) || []).forEach(function (a) { latestSum += a.download_count || 0; });
+    $('cardGh').textContent = fmtNum(latestSum);
+    $('cardGhSub').textContent = '最新 ' + latest.tag + ' 的 FPK 资产合计';
+
+    $('ghBody').innerHTML = releases.map(function (rel) {
+      var x86 = assetCount(rel, 'x86_64');
+      var arm = assetCount(rel, 'arm64');
+      var all = 0;
+      ((rel.assets) || []).forEach(function (a) { all += a.download_count || 0; });
+      return '<tr><td><span class="tag">' + esc(rel.tag) + '</span></td><td>' + esc(rel.published_at || '—') + '</td>' +
+        '<td class="num">' + fmtNum(x86) + '</td><td class="num">' + fmtNum(arm) + '</td><td class="num">' + fmtNum(all) + '</td></tr>';
+    }).join('');
+  }
+
+  function renderOther(releases, byFile) {
+    var rows = [];
+    (releases || []).forEach(function (rel) {
+      ((rel.assets) || []).forEach(function (a) {
+        var name = String(a.name || '');
+        if (!name || name.slice(-4).toLowerCase() === '.fpk') return;
+        rows.push({ tag: rel.tag, name: name, size: a.size, gh: a.download_count || 0 });
+      });
+    });
+    if (!rows.length) {
+      $('otherBody').innerHTML = '<tr><td colspan="5" class="empty">最新 10 个 Release 中暂无 SPK / EXE 等其他平台安装包</td></tr>';
+      return;
+    }
+    $('otherBody').innerHTML = rows.map(function (r) {
+      return '<tr><td><span class="tag">' + esc(r.tag) + '</span></td>' +
+        '<td><a href="/downloads/' + encodeURIComponent(r.name) + '" target="_blank" rel="noopener">' + esc(r.name) + '</a></td>' +
+        '<td class="num">' + fmtBytes(r.size) + '</td><td class="num">' + fmtNum(r.gh) + '</td>' +
+        '<td class="num">' + fmtNum(byFile[r.name] || 0) + '</td></tr>';
+    }).join('');
+  }
+
+  function refresh() {
+    showError('');
+    var p1 = fetchJson('api/stats');
+    var p2 = fetchJson('api/github-releases');
+    p1.then(function (data) {
+      renderStats(data);
+    }).catch(function (e) {
+      $('healthDot').classList.remove('ok');
+      $('cardHealth').textContent = '异常';
+      $('cardHealthSub').textContent = '源接口不可达';
+      showError('读取源统计失败：' + e.message);
+    });
+    p2.then(function (data) {
+      renderGh(data);
+      renderOther((data && data.releases) || [], lastByFile);
+    }).catch(function (e) {
+      $('cardGh').textContent = '—';
+      $('cardGhSub').textContent = 'GitHub API 不可达（VPS 侧）';
+    });
+  }
+
+  var timer = null;
+  function setupAuto() {
+    if (timer) { clearInterval(timer); timer = null; }
+    if ($('autoRefresh').checked) {
+      timer = setInterval(refresh, 60000);
+    }
+  }
+
+  $('refreshBtn').addEventListener('click', refresh);
+  $('autoRefresh').addEventListener('change', setupAuto);
+  setupAuto();
+  refresh();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MMH 软仓源管理</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --panel: #ffffff; --border: #e3e6ea;
+    --text: #1c2330; --muted: #6b7482; --accent: #2563eb;
+    --ok: #16a34a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.5 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 22px; background: var(--panel);
+    border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .header-actions { display: flex; align-items: center; gap: 14px; }
+  .health-dot { width: 10px; height: 10px; border-radius: 50%; background: #dc2626; display: inline-block; }
+  .health-dot.ok { background: var(--ok); }
+  button {
+    font: inherit; padding: 5px 14px; border: 1px solid var(--border);
+    border-radius: 6px; background: #fff; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  main { max-width: 960px; margin: 0 auto; padding: 18px 22px 40px; }
+  .banner { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca;
+    border-radius: 8px; padding: 8px 14px; margin-bottom: 14px; font-size: 12px; }
+  .hidden { display: none; }
+  .updated { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+
+  /* 每个版本的 section */
+  .ver-section {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px; margin-bottom: 14px;
+  }
+  .ver-section .ver-title {
+    font-size: 13px; font-weight: 600; margin: 0 0 10px; color: var(--text);
+  }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  td.num, th.num { text-align: right; }
+  tr:last-child td { border-bottom: none; }
+  .total-row td { font-weight: 600; background: #f8fafc; }
+  .grand-row td { font-weight: 700; background: #eff6ff; color: var(--accent); font-size: 13px; }
+  .empty { color: var(--muted); font-size: 12px; padding: 8px 0; }
+
+  /* 全局合计 */
+  #grandSection {
+    background: var(--panel); border: 1px solid #bfdbfe;
+    border-radius: 10px; padding: 14px 16px; margin-bottom: 14px;
+  }
+  #grandSection h2 { font-size: 13px; margin: 0 0 10px; font-weight: 600; color: var(--accent); }
+
+  footer { max-width: 960px; margin: 0 auto; padding: 0 22px 30px;
+    color: var(--muted); font-size: 11px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>MMH 软仓源管理</h1>
+    <div class="sub">fnapp.floatingice.win · 版本下载统计</div>
+  </div>
+  <div class="header-actions">
+    <span id="healthDot" class="health-dot" title="源健康状态"></span>
+    <button id="refreshBtn" type="button">刷新</button>
+  </div>
+</header>
+
+<main>
+  <div id="errorBanner" class="banner hidden"></div>
+  <div class="updated" id="updatedAt"></div>
+
+  <!-- 版本分区表格（由 JS 动态渲染） -->
+  <div id="versionSections"></div>
+
+  <!-- 全局合计 -->
+  <div id="grandSection" class="hidden">
+    <h2>所有版本 全局合计</h2>
+    <table>
+      <thead><tr id="grandHead"></tr></thead>
+      <tbody id="grandBody"></tbody>
+    </table>
+  </div>
+
+  <!-- Daily download summary -->
+  <div id="dailySection" class="ver-section hidden">
+    <div class="ver-title">每日下载汇总</div>
+    <table>
+      <thead><tr id="dailyHead"></tr></thead>
+      <tbody id="dailyBody"></tbody>
+    </table>
+  </div>
+
+  <!-- 最近下载记录 -->
+  <div class="ver-section">
+    <div class="ver-title">最近下载记录</div>
+    <table>
+      <thead><tr><th>时间</th><th>文件</th><th>渠道</th><th>IP</th></tr></thead>
+      <tbody id="logBody"></tbody>
+    </table>
+  </div>
+</main>
+
+<footer>
+  GitHub = GitHub API 官方累计值（不经本源）；FnDepot / FN软仓 / 专属源 = VPS 实时计数（去重后）；飞牛应用中心 = 直连 GitHub，VPS 无法统计（显示 0）。
+</footer>
+
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function fmtNum(n) { return (n || 0).toLocaleString('en-US'); }
+
+  var CH_LABELS = {
+    github: 'GitHub',
+    fndepot: 'FnDepot',
+    fnstore: 'FN软仓',
+    synology: '群晖',
+    fnos: '飞牛应用中心',
+    total: '行合计'
+  };
+
+  function renderVersionSection(ver, section, chList) {
+    var container = $('versionSections');
+    var fileTypes = section.matrix ? Object.keys(section.matrix) : [];
+    var colTotals = section.col_totals || {};
+    var rowTotals = section.row_totals || {};
+    var grand = section.grand || 0;
+
+    var rows = [];
+
+    if (!fileTypes.length) {
+      rows.push('<tr><td colspan="' + (chList.length + 2) + '" class="empty">暂无数据</td></tr>');
+    } else {
+      fileTypes.forEach(function (ft) {
+        var row = section.matrix[ft] || {};
+        var cells = chList.map(function (ch) {
+          var n = row[ch] || 0;
+          return '<td class="num">' + (n > 0 ? fmtNum(n) : '—') + '</td>';
+        });
+        var rt = rowTotals[ft] || 0;
+        cells.push('<td class="num">' + (rt > 0 ? fmtNum(rt) : '—') + '</td>');
+        rows.push('<tr><td>' + esc(ft) + '</td>' + cells.join('') + '</tr>');
+      });
+
+      // 合计行
+      var totalCells = chList.map(function (ch) {
+        var n = colTotals[ch] || 0;
+        return '<td class="num">' + (n > 0 ? fmtNum(n) : '—') + '</td>';
+      });
+      totalCells.push('<td class="num">' + (grand > 0 ? fmtNum(grand) : '—') + '</td>');
+      rows.push('<tr class="total-row"><td>列合计</td>' + totalCells.join('') + '</tr>');
+    }
+
+    var tableHtml =
+      '<div class="ver-section">' +
+        '<div class="ver-title">v' + esc(ver) + '</div>' +
+        '<table>' +
+          '<thead><tr><th>文件类型</th>' +
+            chList.map(function (ch) { return '<th class="num">' + (CH_LABELS[ch] || ch) + '</th>'; }).join('') +
+            '<th class="num">行合计</th>' +
+          '</tr></thead>' +
+          '<tbody>' + rows.join('') + '</tbody>' +
+        '</table>' +
+      '</div>';
+    container.insertAdjacentHTML('beforeend', tableHtml);
+  }
+
+  function renderGrandSection(data, chList) {
+    var grandBody = $('grandBody');
+    var grandHead = $('grandHead');
+    var grandSection = $('grandSection');
+    var sections = data.sections || {};
+    var fileTypes = data.file_types || [];
+
+    if (!fileTypes.length) { grandSection.classList.add('hidden'); return; }
+
+    // 计算每个文件类型跨所有版本的渠道合计
+    // grandFtCh[ft][ch] = 该文件类型在所有版本中的该渠道下载总计
+    var grandFtCh = {};
+    fileTypes.forEach(function (ft) { grandFtCh[ft] = {}; });
+    Object.keys(sections).forEach(function (ver) {
+      var mat = (sections[ver] || {}).matrix || {};
+      fileTypes.forEach(function (ft) {
+        var row = mat[ft] || {};
+        chList.forEach(function (ch) {
+          grandFtCh[ft][ch] = (grandFtCh[ft][ch] || 0) + (row[ch] || 0);
+        });
+      });
+    });
+
+    // 表头
+    grandHead.innerHTML = '<th>文件类型</th>' +
+      chList.map(function (ch) { return '<th class="num">' + (CH_LABELS[ch] || ch) + '</th>'; }).join('') +
+      '<th class="num">行合计</th>';
+
+    // 数据行
+    var grandFtTotal = {};
+    fileTypes.forEach(function (ft) {
+      grandFtTotal[ft] = Object.keys(grandFtCh[ft] || {}).reduce(function (s, ch) {
+        return s + (grandFtCh[ft][ch] || 0);
+      }, 0);
+    });
+
+    var parts = fileTypes.map(function (ft) {
+      var ftCh = grandFtCh[ft] || {};
+      var cells = chList.map(function (ch) {
+        var n = ftCh[ch] || 0;
+        return '<td class="num">' + (n > 0 ? fmtNum(n) : '—') + '</td>';
+      });
+      var rt = grandFtTotal[ft] || 0;
+      cells.push('<td class="num">' + (rt > 0 ? fmtNum(rt) : '—') + '</td>');
+      return '<tr><td>' + esc(ft) + '</td>' + cells.join('') + '</tr>';
+    });
+
+    // 合计行
+    var grandColTotals = data.grand_col_totals || {};
+    var totCells = chList.map(function (ch) {
+      var n = grandColTotals[ch] || 0;
+      return '<td class="num">' + (n > 0 ? fmtNum(n) : '—') + '</td>';
+    });
+    var grandTotal = data.grand_total || 0;
+    totCells.push('<td class="num">' + (grandTotal > 0 ? fmtNum(grandTotal) : '—') + '</td>');
+    parts.push('<tr class="grand-row"><td>全局合计</td>' + totCells.join('') + '</tr>');
+
+    grandBody.innerHTML = parts.join('');
+    grandSection.classList.remove('hidden');
+  }
+
+  function renderLog(data) {
+    var log = (data.stats || {}).log || [];
+    var recent = log.slice(-20).reverse();
+    if (!recent.length) {
+      $('logBody').innerHTML = '<tr><td colspan="4" class="empty">暂无下载记录</td></tr>';
+      return;
+    }
+    var srcLabels = { github: 'GitHub', fndepot: 'FnDepot', fnstore: 'FN软仓', synology: '群晖', fnos: '飞牛应用中心' };
+    $('logBody').innerHTML = recent.map(function (e) {
+      return '<tr><td>' + esc(e.time || '') + '</td>' +
+        '<td>' + esc(e.file || '') + '</td>' +
+        '<td>' + esc(srcLabels[e.source] || e.source || '—') + '</td>' +
+        '<td>' + esc(e.ip || '—') + '</td></tr>';
+    }).join('');
+  }
+
+  function renderDaily(data) {
+    var byDay = data.by_day || {};
+    var chList = data.ch_list || ['github', 'fndepot', 'fnstore', 'synology', 'fnos'];
+    var days = Object.keys(byDay).sort().reverse().slice(0, 30);
+    var section = $('dailySection');
+    if (!days.length) {
+      section.classList.add('hidden');
+      return;
+    }
+    section.classList.remove('hidden');
+    var head = '<th>日期</th>';
+    chList.forEach(function (ch) {
+      head += '<th class="num">' + esc(CH_LABELS[ch] || ch) + '</th>';
+    });
+    head += '<th class="num">合计</th>';
+    $('dailyHead').innerHTML = head;
+
+    var body = '';
+    var totals = {};
+    var grand = 0;
+    days.forEach(function (day) {
+      var row = byDay[day] || {};
+      var rowTotal = 0;
+      var cells = '<td>' + esc(day) + '</td>';
+      chList.forEach(function (ch) {
+        var n = row[ch] || 0;
+        rowTotal += n;
+        totals[ch] = (totals[ch] || 0) + n;
+        cells += '<td class="num">' + (n > 0 ? fmtNum(n) : '—') + '</td>';
+      });
+      totals.total = (totals.total || 0) + rowTotal;
+      grand += rowTotal;
+      cells += '<td class="num">' + fmtNum(rowTotal) + '</td>';
+      body += '<tr>' + cells + '</tr>';
+    });
+    var totalCells = '<td>近 ' + days.length + ' 天合计</td>';
+    chList.forEach(function (ch) {
+      totalCells += '<td class="num">' + ((totals[ch] || 0) > 0 ? fmtNum(totals[ch]) : '—') + '</td>';
+    });
+    totalCells += '<td class="num">' + fmtNum(grand) + '</td>';
+    body += '<tr class="total-row">' + totalCells + '</tr>';
+    $('dailyBody').innerHTML = body;
+  }
+
+  function render(data) {
+    $('updatedAt').textContent = '数据更新：' + (data.time || '—') + ' · 模式 ' + (data.mode === 'local' ? '本地直发' : 'Redirect');
+    var versions = data.versions || [];
+    var sections = data.sections || {};
+    var chList = data.ch_list || ['github', 'fndepot', 'fnstore', 'synology', 'fnos'];
+
+    // 清空并重新渲染版本 section
+    var container = $('versionSections');
+    container.innerHTML = '';
+    versions.forEach(function (ver) {
+      renderVersionSection(ver, sections[ver] || {}, chList);
+    });
+
+    renderGrandSection(data, chList);
+    renderDaily(data);
+    renderLog(data);
+  }
+
+  function fetchData(callback) {
+    fetch('api/stats', { cache: 'no-store' })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        $('healthDot').classList.add('ok');
+        $('errorBanner').classList.add('hidden');
+        if (callback) callback(data);
+      })
+      .catch(function (e) {
+        $('healthDot').classList.remove('ok');
+        showError('读取统计失败：' + e.message);
+      });
+  }
+
+  function showError(msg) {
+    var el = $('errorBanner');
+    if (!msg) { el.classList.add('hidden'); return; }
+    el.textContent = msg; el.classList.remove('hidden');
+  }
+
+  $('refreshBtn').addEventListener('click', function () { fetchData(render); });
+  fetchData(render);
+  setInterval(function () { fetchData(render); }, 60000);
+})();
+</script>
+</body>
+</html>
