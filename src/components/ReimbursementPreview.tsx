@@ -1,18 +1,22 @@
 "use client";
 
 import { createPortal } from "react-dom";
+import { useState } from "react";
 import { useI18n } from "@/lib/i18n";
 import { formatMoneyYuan } from "@/lib/format";
 import { Printer, X } from "lucide-react";
 import type { ReimbursementData } from "@/lib/server/sidebar-actions/reimbursement-actions";
 
+type PrintPaper = "A4" | "A5" | "Letter";
+type PrintOrientation = "landscape" | "portrait";
+
 // Print modals render into a body-level portal; when printing, every other body child
 // (the whole app shell) is display:none so the sheets paginate on their own. The injected
 // rules below override the modal chrome (fixed backdrop / panel caps) because Tailwind's
 // print: variants can lose the cascade against custom classes like app-modal-backdrop.
-// The native browser print dialog (window.print) still offers printer / paper / duplex.
-const PRINT_PORTAL_STYLE = `@media print {
-  @page { size: A4 landscape; margin: 10mm; }
+// Printer / duplex can only be picked in the native browser print dialog (web pages cannot
+// enumerate printers); paper size and orientation are selectable in-app via @page.
+const PRINT_PORTAL_RULES = `
   body > *:not([data-print-portal]) { display: none !important; }
   body { background: #fff !important; }
   [data-print-portal] {
@@ -51,7 +55,44 @@ const PRINT_PORTAL_STYLE = `@media print {
     padding: 0 !important;
     box-shadow: none !important;
   }
-}`;
+`;
+
+function printPageRule(paper: PrintPaper, orientation: PrintOrientation) {
+  return `@page { size: ${paper} ${orientation}; margin: 10mm; }`;
+}
+
+// In-preview print settings: paper size + orientation feed the dynamic @page rule;
+// the remaining options (printer, duplex, copies) live in the native print dialog.
+function PrintSettingsBar({
+  paper,
+  orientation,
+  onPaper,
+  onOrientation,
+}: {
+  paper: PrintPaper;
+  orientation: PrintOrientation;
+  onPaper: (paper: PrintPaper) => void;
+  onOrientation: (orientation: PrintOrientation) => void;
+}) {
+  const { t } = useI18n();
+  const selectClass = "form-input h-7 w-24 px-1.5 text-xs";
+  return (
+    <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-4 py-1.5 text-xs text-slate-600 print:hidden">
+      <span className="whitespace-nowrap">{t("reimburse.print.paper")}</span>
+      <select className={selectClass} value={paper} onChange={(event) => onPaper(event.target.value as PrintPaper)}>
+        <option value="A4">A4</option>
+        <option value="A5">A5</option>
+        <option value="Letter">Letter</option>
+      </select>
+      <span className="whitespace-nowrap">{t("reimburse.print.orientation")}</span>
+      <select className={selectClass} value={orientation} onChange={(event) => onOrientation(event.target.value as PrintOrientation)}>
+        <option value="landscape">{t("reimburse.print.landscape")}</option>
+        <option value="portrait">{t("reimburse.print.portrait")}</option>
+      </select>
+      <span className="whitespace-nowrap text-slate-400">{t("reimburse.print.dialogHint")}</span>
+    </div>
+  );
+}
 
 function money(value: number | null | undefined) {
   return value == null ? "-" : formatMoneyYuan(value);
@@ -196,6 +237,8 @@ export function ReimbursementBatchPrintModal({
   onClose: () => void;
 }) {
   const { t } = useI18n();
+  const [paper, setPaper] = useState<PrintPaper>("A4");
+  const [orientation, setOrientation] = useState<PrintOrientation>("landscape");
   return createPortal(
     <div data-print-portal className="print-batch-root app-modal-backdrop z-[90] print:static print:block print:bg-white">
       <div className="app-modal-panel resize max-h-[95vh] w-[95vw] max-w-6xl print:block print:max-h-none print:w-full print:max-w-none print:resize-none print:border-0 print:shadow-none">
@@ -211,7 +254,14 @@ export function ReimbursementBatchPrintModal({
           </div>
         </div>
 
-        <div className="print-scroll max-h-[calc(95vh-3.5rem)] overflow-auto bg-slate-100 p-4">
+        <PrintSettingsBar
+          paper={paper}
+          orientation={orientation}
+          onPaper={setPaper}
+          onOrientation={setOrientation}
+        />
+
+        <div className="print-scroll max-h-[calc(95vh-6.5rem)] overflow-auto bg-slate-100 p-4">
           {reimbursements.map((reimbursement, mapIndex) => (
             <div key={reimbursement.id} data-print-sheet className={mapIndex < reimbursements.length - 1 ? "print:break-after-page" : undefined}>
               <ReimbursementPrintArticle
@@ -222,7 +272,7 @@ export function ReimbursementBatchPrintModal({
           ))}
         </div>
       </div>
-      <style>{PRINT_PORTAL_STYLE}</style>
+      <style>{`@media print { ${printPageRule(paper, orientation)} ${PRINT_PORTAL_RULES} }`}</style>
     </div>,
     document.body,
   );
@@ -238,6 +288,8 @@ export function ReimbursementPreview({
   onClose: () => void;
 }) {
   const { t } = useI18n();
+  const [paper, setPaper] = useState<PrintPaper>("A4");
+  const [orientation, setOrientation] = useState<PrintOrientation>("landscape");
 
   return createPortal(
     <div data-print-portal className="app-modal-backdrop z-[90] print:static print:block print:bg-white">
@@ -254,11 +306,18 @@ export function ReimbursementPreview({
           </div>
         </div>
 
-        <div className="print-scroll max-h-[calc(95vh-3.5rem)] overflow-auto bg-slate-100 p-4">
+        <PrintSettingsBar
+          paper={paper}
+          orientation={orientation}
+          onPaper={setPaper}
+          onOrientation={setOrientation}
+        />
+
+        <div className="print-scroll max-h-[calc(95vh-6.5rem)] overflow-auto bg-slate-100 p-4">
           <ReimbursementPrintArticle reimbursement={reimbursement} counterpartyName={counterpartyName} />
         </div>
       </div>
-      <style>{PRINT_PORTAL_STYLE}</style>
+      <style>{`@media print { ${printPageRule(paper, orientation)} ${PRINT_PORTAL_RULES} }`}</style>
     </div>,
     document.body,
   );
