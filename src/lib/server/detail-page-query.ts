@@ -142,9 +142,12 @@ function buildOrderingCtesSql(args: {
         "scoped" AS (
           SELECT
             ${scopedColumns},
-            NULL AS "wealthAction",
-            NULL AS "wealthArrivalDate",
-            NULL AS "wealthCashAccountId"
+            -- 必须显式标注类型：裸 NULL 会被推断为 text，导致下方
+            -- COALESCE(s."wealthAction", s."fundSubtype") 等表达式出现
+            -- 42804（COALESCE types text and "FundSubtype" cannot be matched）。
+            NULL::"FundSubtype" AS "wealthAction",
+            NULL::TIMESTAMP(3) AS "wealthArrivalDate",
+            NULL::TEXT AS "wealthCashAccountId"
           ${scopedSource}
         )
       `;

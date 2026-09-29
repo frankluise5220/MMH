@@ -369,7 +369,12 @@ expect(/20260812_account_note/.test(buildScript) && /addColumnIfMissing\(db, "Ac
 expect(/20260812_user_session_days/.test(buildScript) && /addColumnIfMissing\(db, "UserSettings", "sessionDays", "INTEGER NOT NULL DEFAULT 30"\)/.test(buildScript), "fnOS SQLite migrations must add UserSettings.sessionDays to existing databases before restore writes user settings.");
 expect(/20260929_add_user_registration_principal/.test(buildScript) && /addColumnIfMissing\(db, "User", "registrationPrincipalId", "TEXT"\)/.test(buildScript), "fnOS SQLite migrations must add User.registrationPrincipalId for existing databases.");
 expect(/20260929_add_registration_code/.test(buildScript) && /CREATE TABLE IF NOT EXISTS "RegistrationCode"/.test(buildScript), "fnOS SQLite migrations must create RegistrationCode table for existing databases.");
-expect(/20260929_add_user_fnos_uid/.test(buildScript) && /ALTER TABLE "User" ADD COLUMN "fnosUid" TEXT/.test(buildScript), "fnOS SQLite migrations must add User.fnosUid for existing databases.");
+expect(/20260929_add_user_fnos_uid/.test(buildScript) && /addColumnIfMissing\(db, "User", "fnosUid", "TEXT"\)/.test(buildScript), "fnOS SQLite migrations must add User.fnosUid for existing databases.");
+// Guard against regressing to a raw ALTER in this migration: a fresh install already builds
+// fnosUid from native-init.sql, so `ALTER TABLE "User" ADD COLUMN "fnosUid"` throws
+// "duplicate column name", rolls the whole transaction back (index included) and is therefore
+// retried and re-warned on every boot because it never reaches _mmh_native_schema.
+expect(!/ALTER TABLE "User" ADD COLUMN "fnosUid"/.test(buildScript), "fnOS SQLite migration 20260929_add_user_fnos_uid must use addColumnIfMissing, never a raw ALTER TABLE (raw ALTER fails on fresh installs and the migration never gets recorded).");
 expect(/20260811_stock_domain/.test(buildScript) && /createStockDomainTables\(db\)/.test(buildScript), "fnOS SQLite migrations must create stock core tables for existing databases.");
 expect(/stock_transactions/.test(buildScript) && /entry_business_links_stockTransactionId_idx/.test(buildScript), "fnOS SQLite stock migration must include stock transactions and business-link stock relation.");
 expect(/20260812_stock_reference_tables/.test(buildScript) && /createStockReferenceTables\(db\)/.test(buildScript), "fnOS SQLite migrations must create stock reference tables for existing databases.");
@@ -596,7 +601,7 @@ if (fs.existsSync(stageDir)) {
       `fnOS ${verifyTarget.id} external-node stage must expose wizard_node_bin in wizard/config and persist it from cmd/config_callback into mmh.env (MMH_NODE_BIN).`
     );
   }
-  expect(/mmh-unix-server\.cjs/.test(stageMainScript) && /MMH_GATEWAY_SOCKET_PATH/.test(stageMainScript) && /gatewaySocket/.test(stageMainScript) && /gatewayPrefix/.test(stageMainScript), `fnOS ${verifyTarget.id} stage cmd/main must include the unified-gateway and Unix-socket startup path.`);
+  expect(/mmh-unix-server\.cjs/.test(stageMainScript) && /MMH_GATEWAY_SOCKET_PATH/.test(stageMainScript) && /MMH_LOCAL_TCP_PORT/.test(stageMainScript), `fnOS ${verifyTarget.id} stage cmd/main must launch the unified-gateway socket entrypoint with a local TCP port.`);
   const stageUiConfigPath = path.join(stageDir, "app", "ui", "config");
   const stageAppArchive = path.join(stageDir, "app.tgz");
   let stageUiConfigText = "";
@@ -624,7 +629,7 @@ if (fs.existsSync(stageDir)) {
   if (stageUiConfigText) {
     const stageUiConfig = JSON.parse(stageUiConfigText);
     const entry = stageUiConfig[".url"]["mmh.Application"];
-    expect(entry?.type === "url" && entry?.protocol === "http" && entry?.port === "7777" && entry?.url === "/", `fnOS ${verifyTarget.id} stage app/ui/config must register the HTTP URL on port 7777.`);
+    expect(entry?.gatewayPrefix === "/app/mmh" && entry?.gatewaySocket === "app.sock" && entry?.url === "/app/mmh", `fnOS ${verifyTarget.id} stage app/ui/config must register the unified-gateway entry /app/mmh on app.sock.`);
   }
   expect(/@appcenter\/"\$appname"/.test(stageMainScript), `fnOS ${verifyTarget.id} stage cmd/main must rediscover the appcenter install directory without TRIM_APPDEST.`);
   expect(/MMH_SESSION_SECRET/.test(stageMainScript) && /mmh-session-secret\.txt/.test(stageMainScript), `fnOS ${verifyTarget.id} stage cmd/main must export and persist MMH_SESSION_SECRET.`);
@@ -685,7 +690,7 @@ if (process.env.FNOS_VERIFY_BUILT_FPK === "1") {
   expect(tarHasEntry(builtFpk, "cmd/config_callback"), "Built fnOS .fpk must keep cmd/config_callback for package compatibility.");
   expect(uiConfig[".url"]["mmh.Application"]?.gatewayPrefix === "/app/mmh" && uiConfig[".url"]["mmh.Application"]?.gatewaySocket === "app.sock" && uiConfig[".url"]["mmh.Application"]?.url === "/app/mmh", "Built fnOS app/ui/config must register the unified-gateway entry /app/mmh on app.sock.");
   expect((/HOSTNAME=0\.0\.0\.0/.test(mainScript) && /server\.js/.test(mainScript)) || /mmh-unix-server\.cjs/.test(mainScript), "Built fnOS cmd/main must launch the Next server or the unified-gateway socket entrypoint.");
-  expect(/MMH_GATEWAY_SOCKET_PATH/.test(mainScript) && /MMH_LOCAL_TCP_PORT/.test(mainScript) && /gatewaySocket/.test(mainScript) && /gatewayPrefix/.test(mainScript) && !/runuser -u mmh/.test(mainScript) && !/su mmh/.test(mainScript), "Built fnOS cmd/main must include the unified-gateway socket startup path with a local TCP port and no root downgrade.");
+  expect(/MMH_GATEWAY_SOCKET_PATH/.test(mainScript) && /MMH_LOCAL_TCP_PORT/.test(mainScript) && /mmh-unix-server\.cjs/.test(mainScript) && !/runuser -u mmh/.test(mainScript) && !/su mmh/.test(mainScript), "Built fnOS cmd/main must launch the unified-gateway socket entrypoint with a local TCP port and no root downgrade.");
   expect(tarHasEntry(builtFpk, "cmd/upgrade_init"), "Built fnOS .fpk must include cmd/upgrade_init to back up app data before upgrades.");
   expect(tarHasEntry(builtFpk, "cmd/upgrade_callback"), "Built fnOS .fpk must include cmd/upgrade_callback for overlay upgrades.");
   expect(tarHasEntry(builtFpk, "cmd/uninstall_init"), "Built fnOS .fpk must include cmd/uninstall_init to back up app data before uninstall/reinstall flows.");

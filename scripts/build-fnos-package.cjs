@@ -2577,10 +2577,12 @@ const MIGRATIONS = [
     version: "20260929_add_user_fnos_uid",
     description: "Add fnosUid to User (fnOS UID bound per ledger, unique within a ledger)",
     apply(db) {
-      db.exec([
-        \`ALTER TABLE "User" ADD COLUMN "fnosUid" TEXT\`,
-        \`CREATE UNIQUE INDEX IF NOT EXISTS "User_householdId_fnosUid_key" ON "User"("householdId", "fnosUid")\`,
-      ].join(";"));
+      // Use the shared guard, never a raw ALTER: a fresh install already builds fnosUid from
+      // native-init.sql, so a bare ALTER throws "duplicate column name", the whole transaction
+      // rolls back (including the unique index below), and the migration is retried and
+      // re-warned on every boot because it never gets recorded in _mmh_native_schema.
+      addColumnIfMissing(db, "User", "fnosUid", "TEXT");
+      db.exec(\`CREATE UNIQUE INDEX IF NOT EXISTS "User_householdId_fnosUid_key" ON "User"("householdId", "fnosUid")\`);
     },
   },
 ];
