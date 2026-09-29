@@ -11,6 +11,7 @@ import { reimbursementErrorMessage } from "@/lib/reimbursement-error";
 import { ReimbursementFormModal, type ReimbursementFormEntry, type ReimbursementObjectOption } from "@/components/ReimbursementFormModal";
 import { ReimbursementPreview, ReimbursementBatchPrintModal } from "@/components/ReimbursementPreview";
 import { ReimbursementEditor } from "@/components/ReimbursementEditor";
+import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/components/BatchReplacePopoverButton";
 import { CalcInput } from "@/components/CalcInput";
 import type {
   ReimbursementActionResult,
@@ -29,6 +30,9 @@ export type ReimbursementCashAccountOption = {
 };
 
 const reimbursementActionButtonClass = "flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white transition-colors disabled:cursor-not-allowed disabled:opacity-50";
+
+// Fields that can be batch-replaced across selected pending documents (document header level).
+type ReimbursementBatchEditField = "kind" | "travelStartDate" | "travelEndDate" | "travelReason" | "note" | "attachmentCount";
 
 export type ReimbursementActions = {
   getData: (objectId: string, objectType: "counterparty" | "institution", advanceAccountId: string) => Promise<ReimbursementOverviewData>;
@@ -116,7 +120,6 @@ export function ReimbursementWorkspace({
   const [selectedDocumentIds, setSelectedDocumentIds] = useState<Set<string>>(new Set());
   // Batch actions over the selected documents.
   const [batchPrintDocs, setBatchPrintDocs] = useState<ReimbursementData[] | null>(null);
-  const [editingQueueIds, setEditingQueueIds] = useState<string[]>([]);
   const [batchApproveOpen, setBatchApproveOpen] = useState(false);
   const [batchApproveDate, setBatchApproveDate] = useState(todayDateLocalYmd());
   const [batchApproveNote, setBatchApproveNote] = useState("");
@@ -176,11 +179,7 @@ export function ReimbursementWorkspace({
     () => selectedDocuments.filter((reimbursement) => reimbursement.status === "pending"),
     [selectedDocuments],
   );
-  const editorQueueHead = useMemo(
-    () => (editingQueueIds.length > 0 ? (data?.reimbursements ?? []).find((reimbursement) => reimbursement.id === editingQueueIds[0]) ?? null : null),
-    [data, editingQueueIds],
-  );
-  const editorReimb = approvalTarget ?? editingReimb ?? editorQueueHead;
+  const editorReimb = approvalTarget ?? editingReimb;
   const pendingList = batchReimbursements.filter((reimbursement) => reimbursement.approvalStatus === "pending");
   const reimbursedList = batchReimbursements.filter((reimbursement) => reimbursement.status === "reimbursed");
   const pendingTotal = pendingList.reduce((sum, reimbursement) => sum + reimbursement.totalAmount, 0);
@@ -665,6 +664,53 @@ export function ReimbursementWorkspace({
     setBatchApproveOpen(true);
   };
 
+  // Field-level batch replace over the selected pending documents: each document keeps its
+  // own header values except for the one chosen field, which is overwritten with the input.
+  const batchEditFields = useMemo<BatchReplaceFieldConfig<ReimbursementBatchEditField>[]>(() => [
+    {
+      value: "kind",
+      label: t("reimburse.form.kindLabel"),
+      kind: "select",
+      options: [
+        { value: "travel", label: t("reimburse.form.kindTravel") },
+        { value: "general", label: t("reimburse.form.kindGeneral") },
+        { value: "advance", label: t("reimburse.form.kindAdvance") },
+      ],
+    },
+    { value: "travelStartDate", label: t("reimburse.form.travelStart"), kind: "date" },
+    { value: "travelEndDate", label: t("reimburse.form.travelEnd"), kind: "date" },
+    { value: "travelReason", label: t("reimburse.form.travelReason"), kind: "text" },
+    { value: "note", label: t("reimburse.noteLabel"), kind: "text" },
+    { value: "attachmentCount", label: t("reimburse.form.attachmentCount"), kind: "number", precision: 0 },
+  ], [t]);
+
+  const submitBatchEdit = async (field: ReimbursementBatchEditField, value: string): Promise<string> => {
+    const targets = selectedPendingDocuments;
+    if (targets.length === 0) throw new Error(t("reimburse.document.batchEditFailed", { count: "0" }));
+    let failed = 0;
+    for (const reimbursement of targets) {
+      const documentNumber = reimbursement.documentNumber ?? reimbursement.title;
+      const formData = new FormData();
+      formData.set("reimbursementId", reimbursement.id);
+      formData.set("kind", field === "kind" ? value : reimbursement.kind);
+      formData.set("batchId", reimbursement.batchId ?? "");
+      formData.set("documentNumber", documentNumber);
+      formData.set("title", documentNumber);
+      formData.set("travelStartDate", field === "travelStartDate" ? value : reimbursement.travelStartDate ?? "");
+      formData.set("travelEndDate", field === "travelEndDate" ? value : reimbursement.travelEndDate ?? "");
+      formData.set("travelReason", field === "travelReason" ? value : reimbursement.travelReason ?? "");
+      formData.set("note", field === "note" ? value : reimbursement.note ?? "");
+      formData.set("attachmentCount", field === "attachmentCount" ? value : reimbursement.attachmentCount != null ? String(reimbursement.attachmentCount) : "");
+      const res = await actions.update(formData);
+      if (!res.ok) failed += 1;
+    }
+    await load();
+    if (failed === targets.length) throw new Error(t("reimburse.document.batchEditFailed", { count: String(failed) }));
+    return failed > 0
+      ? t("reimburse.document.batchEditPartial", { updated: String(targets.length - failed), failed: String(failed) })
+      : t("reimburse.document.batchEditUpdated", { count: String(targets.length) });
+  };
+
   const submitBatchApprove = async () => {
     if (busy || selectedPendingDocuments.length === 0) return;
     setBusy(true);
@@ -744,20 +790,21 @@ export function ReimbursementWorkspace({
           </button>
         </div>
 
-        <div className="flex min-h-0 flex-1 overflow-hidden p-4">
-          {loading ? (
-            <div className="flex h-full items-center justify-center text-sm text-slate-400">
-              {t("debtShell.saving")}
-            </div>
-          ) : loadError ? (
-            <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
-              <div className="text-sm text-rose-600">{t("reimburse.loadFailed")}</div>
-              <div className="max-w-full break-all text-xs text-slate-500">{loadError}</div>
-              <button type="button" onClick={() => void load()} className="secondary-button h-8 px-3" disabled={loading}>
+        <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden p-4">
+          {loadError ? (
+            <div className="flex shrink-0 items-center justify-between gap-3 rounded border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs text-rose-700">
+              <span className="min-w-0 break-all">{loadError || t("reimburse.loadFailed")}</span>
+              <button type="button" onClick={() => void load()} className="secondary-button h-7 shrink-0 px-2 text-xs" disabled={loading}>
                 {t("reimburse.retryLoad")}
               </button>
             </div>
-              ) : (
+          ) : null}
+          {loading && !data ? (
+            <div className="flex h-full items-center justify-center text-sm text-slate-400">
+              {t("debtShell.saving")}
+            </div>
+          ) : data ? (
+            <div className="min-h-0 flex-1">
             <div className="grid h-full min-h-0 w-full grid-rows-[minmax(14rem,1fr)_minmax(12rem,0.8fr)] gap-3 overflow-hidden">
               {/* Upper pane: batches */}
               <section className="flex h-full min-h-0 flex-col overflow-hidden">
@@ -894,14 +941,15 @@ export function ReimbursementWorkspace({
                             ) : null}
                             {selectedPendingDocuments.length > 0 ? (
                               <>
-                                <button
-                                  type="button"
-                                  onClick={() => setEditingQueueIds(selectedPendingDocuments.map((reimbursement) => reimbursement.id))}
-                                  className="secondary-button h-7 px-2 text-xs"
-                                  disabled={busy}
-                                >
-                                  {t("reimburse.document.batchEdit")}
-                                </button>
+                                <BatchReplacePopoverButton
+                                  fields={batchEditFields}
+                                  targetCount={selectedPendingDocuments.length}
+                                  targetLabel={t("reimburse.documentTitle")}
+                                  buttonTitle={t("reimburse.document.batchEdit")}
+                                  buttonClassName="flex h-6 w-6 items-center justify-center rounded border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                  panelAlign="left"
+                                  onApply={submitBatchEdit}
+                                />
                                 <button
                                   type="button"
                                   onClick={openBatchApprove}
@@ -998,7 +1046,8 @@ export function ReimbursementWorkspace({
                 )}
               </section>
             </div>
-          )}
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -1272,7 +1321,7 @@ export function ReimbursementWorkspace({
         </div>
       ) : null}
 
-      {approvalTarget || editingReimb || editorQueueHead ? (
+      {approvalTarget || editingReimb ? (
         <div className="app-modal-backdrop z-[80]">
           <div
             className="app-modal-panel resize"
@@ -1312,10 +1361,6 @@ export function ReimbursementWorkspace({
               onClose={() => {
                 setApprovalTarget(null);
                 setEditingReimbId(null);
-                // Batch-edit queue: closing without a specific target advances to the next queued document.
-                if (editorQueueHead && !approvalTarget && !editingReimb) {
-                  setEditingQueueIds((ids) => ids.slice(1));
-                }
               }}
               onSaved={async () => { await load(); }}
             />

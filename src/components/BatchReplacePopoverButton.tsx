@@ -4,6 +4,7 @@ import { Pencil } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { CalcInput } from "@/components/CalcInput";
+import { DateStepper } from "@/components/DateStepper";
 import { SmartSelect, type SmartSelectOption, type SmartSelectProps } from "@/components/SmartSelect";
 import { useI18n } from "@/lib/i18n";
 
@@ -246,9 +247,11 @@ export function BatchReplacePopoverButton<Field extends string>({
                   />
                 ) : fieldConfig?.kind === "number" ? (
                   <CalcInput value={value} onChange={setValue} placeholder={fieldConfig?.placeholder ?? t("batchReplace.numberPlaceholder")} precision={fieldConfig?.precision ?? 2} />
+                ) : fieldConfig?.kind === "date" ? (
+                  <DateStepper value={value} onChange={setValue} className="h-8" />
                 ) : (
                   <input
-                    type={fieldConfig?.kind === "date" ? "date" : "text"}
+                    type="text"
                     value={value}
                     onChange={(event) => setValue(event.target.value)}
                     placeholder={fieldConfig?.placeholder ?? t("batchReplace.valuePlaceholder")}
