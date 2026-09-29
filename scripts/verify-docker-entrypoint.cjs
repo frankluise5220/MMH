@@ -10,6 +10,7 @@ const rootCompose = fs.readFileSync(path.join(root, "docker-compose.yml"), "utf8
 const nasCompose = fs.readFileSync(path.join(root, "deploy", "nas", "docker-compose.yml"), "utf8");
 const nasEnvExample = fs.readFileSync(path.join(root, "deploy", "nas", "env.example"), "utf8");
 const workflow = fs.readFileSync(path.join(root, ".github", "workflows", "docker-build.yml"), "utf8");
+const upgradeSim = fs.readFileSync(path.join(root, ".github", "workflows", "docker-upgrade-sim.yml"), "utf8");
 const healthRoute = fs.readFileSync(path.join(root, "src", "app", "api", "health", "route.ts"), "utf8");
 const prismaDb = fs.readFileSync(path.join(root, "src", "lib", "db", "prisma.ts"), "utf8");
 const prismaSchema = fs.readFileSync(path.join(root, "prisma", "schema.prisma"), "utf8");
@@ -180,10 +181,65 @@ expect(
 );
 
 expect(
+  /ensure_reimbursement_payment_tx_unique/.test(entrypoint) &&
+    /ADD COLUMN IF NOT EXISTS "paymentTxRecordId" TEXT/.test(entrypoint) &&
+    /CREATE UNIQUE INDEX IF NOT EXISTS "reimbursements_paymentTxRecordId_key"/.test(entrypoint) &&
+    entrypoint.indexOf("ensure_reimbursement_payment_tx_unique") > entrypoint.indexOf("run_compat_migrations") &&
+    entrypoint.indexOf("ensure_reimbursement_payment_tx_unique") < entrypoint.indexOf("prisma db push >"),
+  "Docker entrypoint must pre-create Reimbursement.paymentTxRecordId and its unique index before schema sync: a purely additive @unique makes prisma db push print the data-loss warning and exit 78, which broke the 0.1.65 -> 0.1.66 Docker upgrade (migration-failure-ledger section 23).",
+);
+
+expect(
+  /ensure_user_household_fn_uid_unique/.test(entrypoint) &&
+    /ADD COLUMN IF NOT EXISTS "fnosUid" TEXT/.test(entrypoint) &&
+    /CREATE UNIQUE INDEX IF NOT EXISTS "User_householdId_fnosUid_key"/.test(entrypoint) &&
+    /ON "User"\("householdId","fnosUid"\)/.test(entrypoint) &&
+    entrypoint.indexOf("ensure_user_household_fn_uid_unique") > entrypoint.indexOf("run_compat_migrations") &&
+    entrypoint.indexOf("ensure_user_household_fn_uid_unique") < entrypoint.indexOf("prisma db push >"),
+  "Docker entrypoint must pre-create the User.(householdId,fnosUid) unique index before schema sync: without it the 0.1.66 -> 0.1.67 push emits the same data-loss bullet and exits 78 (migration-failure-ledger section 23, second occurrence).",
+);
+
+expect(
+  /ensure_unique_index\(\)/.test(entrypoint) &&
+    /to_regclass\('public\.\\"\$\{table\}\\"'\) IS NOT NULL/.test(entrypoint) &&
+    (entrypoint.match(/ensure_unique_index "/g) || []).length >= 2,
+  "Docker entrypoint must route every additive unique-constraint pre-creation through the shared, table-existence-guarded ensure_unique_index helper so a missing table stays a silent no-op.",
+);
+
+expect(
+  /fetch-tags:\s*true/.test(upgradeSim) &&
+    /fetch-depth:\s*0/.test(upgradeSim) &&
+    !/git describe --tags/.test(upgradeSim) &&
+    /git ls-remote --tags --refs origin/.test(upgradeSim) &&
+    /No published tag below/.test(upgradeSim),
+  "Docker upgrade simulation must resolve the previous release tag from the remote tag list and fetch tags, so the base is the real previous release instead of silently degrading to the 0.1.52 floor (migration-failure-ledger section 23).",
+);
+
+expect(
   /push_would_change_existing_data/.test(entrypoint) &&
     /not retrying/.test(entrypoint) &&
     /would change existing data; not retrying/.test(entrypoint),
   "Docker entrypoint must not retry prisma db push when the plan would change or drop existing data.",
+);
+
+const guardMatch = entrypoint.match(/push_would_change_existing_data\(\) \{[\s\S]*?\n\}/);
+const guardBody = guardMatch ? guardMatch[0] : "";
+// The guard's only executed statement is its grep; strip the explanatory
+// comment lines so the assertions below test the pattern, not the prose.
+const guardPattern = guardBody
+  .split("\n")
+  .filter((line) => !/^\s*#/.test(line))
+  .join("\n");
+expect(
+  guardPattern.includes("about to drop") &&
+    guardPattern.includes("which is not empty") &&
+    guardPattern.includes("non-null values") &&
+    guardPattern.includes("grep -Eq"),
+  "Docker entrypoint data-loss guard must classify destructive plans by their bullets (about to drop / which is not empty / non-null values).",
+);
+expect(
+  !/accept-data-loss/.test(guardPattern) && !/data loss/i.test(guardPattern),
+  "Docker entrypoint data-loss guard must never match the warning header or the --accept-data-loss hint: prisma db push prints the same 'There might be data loss' header for an additive unique constraint, which is how the 0.1.65 -> 0.1.66 upgrade was refused (migration-failure-ledger section 23).",
 );
 
 expect(/npm run check:docker/.test(workflow), "Docker image workflow must run check:docker before publishing images.");

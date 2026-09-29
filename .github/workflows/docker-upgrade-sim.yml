@@ -32,6 +32,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          # The previous-release base tag is resolved from git history/tags
+          # below; the default fetch-depth: 1 + fetch-tags: false leaves the
+          # runner tag-less, which silently degraded every run to the 0.1.52
+          # floor and hid the 0.1.65 -> 0.1.66 data-loss-guard regression
+          # (migration-failure-ledger section 23).
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Resolve target and base image tags
         id: resolve
@@ -53,12 +61,29 @@ jobs:
             image_tag="${tag#refs/tags/}"
             image_tag="${image_tag#v}"
             echo "target_tag=${image_tag}" >> "$GITHUB_OUTPUT"
-            bases="0.1.52"
-            prev="$(git describe --tags --abbrev=0 "${tag}~1" 2>/dev/null || true)"
-            prev="${prev#refs/tags/}"
-            prev="${prev#v}"
-            if [ -n "$prev" ] && [ "$prev" != "0.1.52" ]; then
+            floor="0.1.52"
+            bases="${floor}"
+            # Resolve the previous published release from the remote tag list:
+            # authoritative and independent of clone depth. `git describe
+            # --tags --abbrev=0 "${tag}~1"` silently returned nothing on a
+            # tag-less/shallow runner, so every run degraded to the 0.1.52
+            # floor and the 0.1.65 -> 0.1.66 upgrade blocker was never
+            # simulated (migration-failure-ledger section 23).
+            prev="$(
+              {
+                git ls-remote --tags --refs origin 'refs/tags/v*' | sed 's#.*refs/tags/v##'
+                printf '%s\n' "${image_tag}"
+              } | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V -u | grep -B1 -x "${image_tag}" | head -n1
+            )"
+            # Only a base strictly above the floor is worth adding: GHCR has no
+            # 0.1.49-0.1.51 image, so pulling one would fail the job for nothing.
+            if [ -n "$prev" ] && [ "$prev" != "${floor}" ] \
+              && [ "$(printf '%s\n%s\n' "${floor}" "$prev" | sort -V | head -n1)" = "${floor}" ]; then
               bases="${prev} ${bases}"
+            elif [ -z "$prev" ]; then
+              echo "No published tag below ${image_tag}; only the ${floor} floor will run."
+            else
+              echo "Previous tag ${prev} is not above the ${floor} floor; running the floor only."
             fi
             echo "base_tags=${bases}" >> "$GITHUB_OUTPUT"
             echo "Build ref ${tag} -> target ${image_tag}, bases: ${bases}"

@@ -583,6 +583,67 @@ ensure_account_balance_recomputed_at_column() {
   return 1
 }
 
+ensure_unique_index() {
+  # Idempotent pre-creation of an additive unique constraint, so `prisma db
+  # push` never has to plan it. Shared by every ensure_*_unique function below
+  # because this failure mode repeats with every new @unique / @@unique.
+  #
+  # Why pre-creating matters: prisma db push prints the SAME
+  # "There might be data loss" warning for "add a unique constraint" as it
+  # does for a destructive drop, then exits 1 without --accept-data-loss.
+  # push_would_change_existing_data() reads that warning as destructive and
+  # exits 78, so the container crash-loops instead of upgrading
+  # (migration-failure-ledger section 23, 2026-09-29).
+  #
+  # $1 table, $2 column DDL (nullable, may be empty), $3 unique index DDL.
+  # A missing table is a silent no-op: on a fresh database prisma db push
+  # creates it with every constraint already in place.
+  local table="$1" column_ddl="${2:-}" index_ddl="$3"
+  local table_exists
+  table_exists="$(psql_mmh -tAc "SELECT to_regclass('public.\"${table}\"') IS NOT NULL;" 2>/dev/null | tr -d '[:space:]')"
+  if [ "$table_exists" != "t" ]; then
+    return 0
+  fi
+  if psql_mmh -v ON_ERROR_STOP=1 -c "${column_ddl}${index_ddl}" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+ensure_reimbursement_payment_tx_unique() {
+  # 0.1.66 added Reimbursement.paymentTxRecordId String? @unique. The
+  # reimbursements table already exists in every image since v0.1.60
+  # (v0.1.52 has none), so without this the 0.1.66 push planned the column and
+  # its unique constraint together and was refused. The column must stay
+  # nullable: the app writes NULL for reimbursements with no payment yet.
+  if ensure_unique_index "reimbursements" \
+    'ALTER TABLE "reimbursements" ADD COLUMN IF NOT EXISTS "paymentTxRecordId" TEXT;' \
+    'CREATE UNIQUE INDEX IF NOT EXISTS "reimbursements_paymentTxRecordId_key" ON "reimbursements"("paymentTxRecordId");'; then
+    mmh_log "ensured Reimbursement.paymentTxRecordId column and unique index"
+    return 0
+  fi
+  mmh_log "WARNING: could not ensure Reimbursement.paymentTxRecordId unique index; schema sync may refuse to start on an upgraded database."
+  return 1
+}
+
+ensure_user_household_fn_uid_unique() {
+  # 0.1.67 added User.fnosUid String? plus @@unique([householdId, fnosUid]).
+  # Measured on a 0.1.66 database, the unassisted push printed exactly one
+  # bullet - "A unique constraint covering the columns [householdId,fnosUid]
+  # on the table User will be added" - and was refused, so 0.1.66 -> 0.1.67
+  # would have failed on every existing Docker host. Existing rows all get a
+  # NULL fnosUid, and PostgreSQL treats NULLs as distinct in a unique index,
+  # so pre-creating the index cannot fail on legacy data.
+  if ensure_unique_index "User" \
+    'ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "fnosUid" TEXT;' \
+    'CREATE UNIQUE INDEX IF NOT EXISTS "User_householdId_fnosUid_key" ON "User"("householdId","fnosUid");'; then
+    mmh_log "ensured User.householdId/fnosUid unique index"
+    return 0
+  fi
+  mmh_log "WARNING: could not ensure User.householdId/fnosUid unique index; schema sync may refuse to start on an upgraded database."
+  return 1
+}
+
 list_prisma_copy_tables() {
   psql_mmh -tAc "SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname ~* '_copy';"
 }
@@ -617,7 +678,16 @@ has_nonempty_prisma_copy_tables() {
 }
 
 push_would_change_existing_data() {
-  grep -Eq "accept-data-loss|data loss|dropped_variants|will be dropped|invalid input value for enum" "$1"
+  # Classify by the destructive *bullets*, never by the warning header.
+  # prisma db push prints "There might be data loss when applying the changes:"
+  # for purely additive @unique / @@unique constraints too, and its hint line
+  # tells you to pass --accept-data-loss for both. Matching those strings (the
+  # original implementation) therefore reported a harmless "add a unique
+  # constraint" as data loss. Measured bullets:
+  #   benign     : A unique constraint covering the columns [...] will be added.
+  #   destructive: You are about to drop the `x` table, which is not empty (N rows).
+  # (migration-failure-ledger section 23, 2026-09-29.)
+  grep -Eq "about to drop|will be dropped|would be dropped|would be recreated|which is not empty|which still contains|non-null values|it is not possible to execute this step|dropped_variants|invalid input value for enum" "$1"
 }
 
 should_skip_schema_push() {
@@ -644,6 +714,13 @@ run_compat_migrations
 # crash loop shipped in 0.1.63).
 ensure_auth_version_column || true
 ensure_account_balance_recomputed_at_column || true
+# Additive-only @unique / @@unique constraints must be pre-created here:
+# prisma db push prints the same "There might be data loss" warning for
+# "add a unique constraint" as for a destructive drop, and the guard below
+# refuses to start on either (migration-failure-ledger section 23). Every new
+# unique constraint on an existing table needs its own ensure_*_unique call.
+ensure_reimbursement_payment_tx_unique || true
+ensure_user_household_fn_uid_unique || true
 
 PUSH_OUTPUT="$(mktemp)"
 PUSH_OK=0
