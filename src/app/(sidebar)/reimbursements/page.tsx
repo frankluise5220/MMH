@@ -45,7 +45,12 @@ export default async function ReimbursementsPage({
         debtDirection: "receivable",
         Counterparty: { isReimbursable: true },
       },
-      select: { id: true, name: true, counterpartyId: true, Counterparty: { select: { name: true, shortName: true } } },
+      select: {
+        id: true,
+        name: true,
+        counterpartyId: true,
+        Counterparty: { select: { name: true, shortName: true } },
+      },
       orderBy: [{ name: "asc" }],
     }),
     prisma.account.findMany({
@@ -66,7 +71,72 @@ export default async function ReimbursementsPage({
       orderBy: [{ name: "asc" }],
     }),
   ]);
-  const selected = accounts.find((item) => item.id === params.accountId) ?? (params.accountId ? null : accounts[0]);
+
+  // Group advance accounts by counterparty for the global view's object picker.
+  const objectOptions = (() => {
+    const byCounterparty = new Map<string, { id: string; name: string; advanceAccountIds: string[] }>();
+    for (const account of accounts) {
+      if (!account.counterpartyId) continue;
+      const name = account.Counterparty?.shortName?.trim() || account.Counterparty?.name || account.name;
+      const existing = byCounterparty.get(account.counterpartyId);
+      if (existing) {
+        existing.advanceAccountIds.push(account.id);
+      } else {
+        byCounterparty.set(account.counterpartyId, { id: account.counterpartyId, name, advanceAccountIds: [account.id] });
+      }
+    }
+    return Array.from(byCounterparty.values());
+  })();
+
+  const actions = {
+    getData: getReimbursementOverview,
+    createBatch: createReimbursementBatch,
+    updateBatch: updateReimbursementBatch,
+    deleteBatch: deleteReimbursementBatch,
+    create: createReimbursement,
+    reimburse: reimburseReimbursement,
+    reimburseBatch: reimburseReimbursementBatch,
+    updateSettlement: updateReimbursementSettlement,
+    deleteSettlement: deleteReimbursementSettlement,
+    approve: approveReimbursement,
+    cancelApproval: cancelReimbursementApproval,
+    delete: deleteReimbursement,
+    updateInvoice: updateReimbursementItemInvoice,
+    update: updateReimbursement,
+    updateItem: updateReimbursementItem,
+    createItem: createReimbursementItem,
+    deleteItem: deleteReimbursementItem,
+    linkTransaction: linkReimbursementTransaction,
+    linkTransactions: linkReimbursementTransactions,
+    unlinkTransaction: unlinkReimbursementTransaction,
+  };
+
+  const cashAccountOptions = cashAccounts.map((account) => ({
+    id: account.id,
+    label: account.name,
+    institutionName: account.Institution?.shortName || account.Institution?.name || null,
+    numberMasked: account.numberMasked,
+    kind: account.kind,
+    currency: account.currency,
+  }));
+
+  // Global view: no accountId → aggregate every reimbursable counterparty.
+  if (!params.accountId) {
+    return (
+      <ReimbursementView
+        objectId=""
+        objectName=""
+        accountName=""
+        advanceAccountId=""
+        cashAccountOptions={cashAccountOptions}
+        objectOptions={objectOptions}
+        initialShowCreate={params.create === "1"}
+        actions={actions}
+      />
+    );
+  }
+
+  const selected = accounts.find((item) => item.id === params.accountId);
   if (!selected) notFound();
   const objectName = selected.Counterparty?.shortName?.trim() || selected.Counterparty?.name || selected.name;
 
@@ -76,37 +146,10 @@ export default async function ReimbursementsPage({
       objectName={objectName}
       accountName={selected.name}
       advanceAccountId={selected.id}
-      cashAccountOptions={cashAccounts.map((account) => ({
-        id: account.id,
-        label: account.name,
-        institutionName: account.Institution?.shortName || account.Institution?.name || null,
-        numberMasked: account.numberMasked,
-        kind: account.kind,
-        currency: account.currency,
-      }))}
+      cashAccountOptions={cashAccountOptions}
+      objectOptions={objectOptions}
       initialShowCreate={params.create === "1" && !!selected.counterpartyId}
-      actions={{
-        getData: getReimbursementOverview,
-        createBatch: createReimbursementBatch,
-        updateBatch: updateReimbursementBatch,
-        deleteBatch: deleteReimbursementBatch,
-        create: createReimbursement,
-        reimburse: reimburseReimbursement,
-        reimburseBatch: reimburseReimbursementBatch,
-        updateSettlement: updateReimbursementSettlement,
-        deleteSettlement: deleteReimbursementSettlement,
-        approve: approveReimbursement,
-        cancelApproval: cancelReimbursementApproval,
-        delete: deleteReimbursement,
-        updateInvoice: updateReimbursementItemInvoice,
-        update: updateReimbursement,
-        updateItem: updateReimbursementItem,
-        createItem: createReimbursementItem,
-        deleteItem: deleteReimbursementItem,
-        linkTransaction: linkReimbursementTransaction,
-        linkTransactions: linkReimbursementTransactions,
-        unlinkTransaction: unlinkReimbursementTransaction,
-      }}
+      actions={actions}
     />
   );
 }

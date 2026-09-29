@@ -20,6 +20,7 @@ import {
   getSidebarHideZeroPreference,
   getSidebarShowFixedAssetsPreference,
   getSidebarShowAllCashEntriesPreference,
+  getSidebarShowReimbursementsPreference,
   getTimeZoneModePreference,
   getTimeZonePreference,
   DEFAULT_ROW_HEIGHT_MODE,
@@ -37,6 +38,7 @@ import {
   setSidebarHideZeroPreference,
   setSidebarShowFixedAssetsPreference,
   setSidebarShowAllCashEntriesPreference,
+  setSidebarShowReimbursementsPreference,
   setTimeZonePreference,
   type DisplayLanguage,
   type DateDisplayFormat,
@@ -163,6 +165,7 @@ export default function DisplaySettingsPage() {
   const [sidebarHideInitialData, setSidebarHideInitialData] = useState(false);
   const [sidebarShowFixedAssets, setSidebarShowFixedAssets] = useState(true);
   const [sidebarShowAllCashEntries, setSidebarShowAllCashEntries] = useState(true);
+  const [sidebarShowReimbursements, setSidebarShowReimbursements] = useState(true);
   const [detailDateBackground, setDetailDateBackground] = useState(false);
   const [accountDropdownRestrictType, setAccountDropdownRestrictType] = useState(true);
   const [rowHeightMode, setRowHeightMode] = useState<RowHeightMode>(DEFAULT_ROW_HEIGHT_MODE);
@@ -183,6 +186,7 @@ export default function DisplaySettingsPage() {
     setSidebarHideInitialData(getSidebarHideInitialDataPreference());
     setSidebarShowFixedAssets(getSidebarShowFixedAssetsPreference());
     setSidebarShowAllCashEntries(getSidebarShowAllCashEntriesPreference());
+    setSidebarShowReimbursements(getSidebarShowReimbursementsPreference());
     setDetailDateBackground(getDetailDateBackgroundPreference());
     setAccountDropdownRestrictType(getAccountDropdownRestrictTypePreference());
     setRowHeightMode(getRowHeightModePreference());
@@ -477,6 +481,27 @@ export default function DisplaySettingsPage() {
     }
   }
 
+  async function updateSidebarShowReimbursements(next: boolean) {
+    const prev = sidebarShowReimbursements;
+    setSidebarShowReimbursements(next);
+    setSidebarShowReimbursementsPreference(next);
+    try {
+      const res = await fetch("/api/v1/settings/app-preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sidebarShowReimbursements: next }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setSidebarShowReimbursements(prev);
+        setSidebarShowReimbursementsPreference(prev);
+      }
+    } catch {
+      setSidebarShowReimbursements(prev);
+      setSidebarShowReimbursementsPreference(prev);
+    }
+  }
+
   async function updateDetailDateBackground(next: boolean) {
     const prev = detailDateBackground;
     setDetailDateBackground(next);
@@ -633,6 +658,14 @@ export default function DisplaySettingsPage() {
               className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
             />
           </SettingRow>
+          <SettingRow title={t("settings.display.showReimbursements")} desc={t("settings.display.showReimbursementsDesc")} hideDesc={hideSettingDescriptions}>
+            <input
+              type="checkbox"
+              checked={sidebarShowReimbursements}
+              onChange={(e) => void updateSidebarShowReimbursements(e.target.checked)}
+              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
+            />
+          </SettingRow>
           <SettingRow title={t("settings.display.accountDropdownRestrictType")} desc={t("settings.display.accountDropdownRestrictTypeDesc")} hideDesc={hideSettingDescriptions}>
             <input
               type="checkbox"
@@ -648,8 +681,8 @@ export default function DisplaySettingsPage() {
           >
             <input
               type="checkbox"
-              checked={sidebarHideInitialData}
-              onChange={(e) => void updateSidebarHideInitialData(e.target.checked)}
+              checked={!sidebarHideInitialData}
+              onChange={(e) => void updateSidebarHideInitialData(!e.target.checked)}
               className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
             />
           </SettingRow>

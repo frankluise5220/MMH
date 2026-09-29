@@ -8,7 +8,7 @@ import { todayDateLocalYmd } from "@/lib/date-utils";
 import { DateStepper } from "./DateStepper";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { reimbursementErrorMessage } from "@/lib/reimbursement-error";
-import { ReimbursementFormModal, type ReimbursementFormEntry } from "@/components/ReimbursementFormModal";
+import { ReimbursementFormModal, type ReimbursementFormEntry, type ReimbursementObjectOption } from "@/components/ReimbursementFormModal";
 import { ReimbursementPreview } from "@/components/ReimbursementPreview";
 import { ReimbursementEditor } from "@/components/ReimbursementEditor";
 import { CalcInput } from "@/components/CalcInput";
@@ -60,21 +60,27 @@ export function ReimbursementWorkspace({
   accountName,
   advanceAccountId,
   cashAccountOptions,
+  objectOptions = [],
   actions,
   initialShowCreate = false,
   initialCreateEntries,
 }: {
+  /** Empty objectId switches the workspace to the global (all-objects) view. */
   objectId: string;
   objectType: "counterparty" | "institution";
   objectName: string;
   accountName: string;
+  /** Empty in global mode; the server aggregates every reimbursable account. */
   advanceAccountId: string;
   cashAccountOptions: ReimbursementCashAccountOption[];
+  /** Reimbursable objects with their advance account ids; used in global mode. */
+  objectOptions?: ReimbursementObjectOption[];
   actions: ReimbursementActions;
   /** Detail-selection entry point: pop the create-form modal on mount, seeded with the picked rows. */
   initialShowCreate?: boolean;
   initialCreateEntries?: ReimbursementFormEntry[];
 }) {
+  const globalMode = !objectId;
   const { t } = useI18n();
   const [data, setData] = useState<ReimbursementOverviewData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -82,6 +88,7 @@ export function ReimbursementWorkspace({
   const [busy, setBusy] = useState(false);
   const [showCreate, setShowCreate] = useState(initialShowCreate);
   const [showCreateBatch, setShowCreateBatch] = useState(false);
+  const [batchObjectId, setBatchObjectId] = useState("");
   const [batchTitle, setBatchTitle] = useState("");
   const [batchNote, setBatchNote] = useState("");
   const [batchStartDate, setBatchStartDate] = useState("");
@@ -105,6 +112,8 @@ export function ReimbursementWorkspace({
   const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
   // Editor state: which reimbursement is being edited
   const [editingReimbId, setEditingReimbId] = useState<string | null>(null);
+  // Document table row selection (checkbox column); drives the batch delete button.
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState<Set<string>>(new Set());
 
   const load = async () => {
     setLoading(true);
@@ -147,6 +156,10 @@ export function ReimbursementWorkspace({
   const batchReimbursements = useMemo(
     () => (data?.reimbursements ?? []).filter((reimbursement) => reimbursement.batchId === selectedBatch?.id),
     [data, selectedBatch],
+  );
+  const batchDeleteTargets = useMemo(
+    () => batchReimbursements.filter((reimbursement) => reimbursement.status === "pending" && selectedDocumentIds.has(reimbursement.id)),
+    [batchReimbursements, selectedDocumentIds],
   );
   const pendingList = batchReimbursements.filter((reimbursement) => reimbursement.approvalStatus === "pending");
   const reimbursedList = batchReimbursements.filter((reimbursement) => reimbursement.status === "reimbursed");
@@ -208,6 +221,17 @@ export function ReimbursementWorkspace({
       sortValue: (batch) => batch.title,
       render: (batch) => <span className="font-medium text-slate-800">{batch.title}</span>,
     },
+    ...(globalMode ? [{
+      key: "advanceAccountName",
+      label: t("reimburse.form.objectLabel"),
+      width: 140,
+      minWidth: 100,
+      hideable: true,
+      filterText: (batch: ReimbursementBatchData) => batch.advanceAccountName ?? "",
+      sortValue: (batch: ReimbursementBatchData) => batch.advanceAccountName ?? "",
+      truncate: true,
+      render: (batch: ReimbursementBatchData) => <span className="text-slate-500">{batch.advanceAccountName ?? "-"}</span>,
+    } satisfies AdvancedDataTableColumn<ReimbursementBatchData>] : []),
     {
       key: "note",
       label: t("reimburse.batch.note"),
@@ -280,7 +304,7 @@ export function ReimbursementWorkspace({
       sortValue: (batch) => batch.status,
       render: (batch) => <span className="text-slate-600">{t(`reimburse.document.status.${batch.status}`)}</span>,
     },
-  ], [t]);
+  ], [t, globalMode]);
 
   const documentColumns = useMemo<AdvancedDataTableColumn<ReimbursementData>[]>(() => [
     {
@@ -292,6 +316,17 @@ export function ReimbursementWorkspace({
       sortValue: (reimbursement) => reimbursement.documentNumber || reimbursement.title,
       render: (reimbursement) => <span className="font-medium text-slate-700">{reimbursement.documentNumber || reimbursement.title || "-"}</span>,
     },
+    ...(globalMode ? [{
+      key: "advanceAccountName",
+      label: t("reimburse.form.objectLabel"),
+      width: 140,
+      minWidth: 100,
+      hideable: true,
+      filterText: (reimbursement: ReimbursementData) => reimbursement.advanceAccountName ?? "",
+      sortValue: (reimbursement: ReimbursementData) => reimbursement.advanceAccountName ?? "",
+      truncate: true,
+      render: (reimbursement: ReimbursementData) => <span className="text-slate-500">{reimbursement.advanceAccountName ?? "-"}</span>,
+    } satisfies AdvancedDataTableColumn<ReimbursementData>] : []),
     {
       key: "createdAt",
       label: t("reimburse.document.submittedDate"),
@@ -358,7 +393,7 @@ export function ReimbursementWorkspace({
       sortValue: (reimbursement) => reimbursement.approvalStatus,
       render: (reimbursement) => <span className="text-slate-500">{t(`reimburse.document.status.${reimbursement.approvalStatus}`)}</span>,
     },
-  ], [t]);
+  ], [t, globalMode]);
 
   const openCreate = () => {
     setShowCreate(true);
@@ -370,14 +405,25 @@ export function ReimbursementWorkspace({
     setBatchStartDate("");
     setBatchEndDate("");
     setEditingBatchId(null);
+    setBatchObjectId(objectOptions[0]?.id ?? "");
     setShowCreateBatch(true);
+  };
+
+  const resolveBatchAdvanceAccountId = () => {
+    if (!globalMode) return advanceAccountId;
+    return objectOptions.find((option) => option.id === batchObjectId)?.advanceAccountIds?.[0] ?? "";
   };
 
   const submitCreateBatch = async () => {
     const title = batchTitle.trim();
     if (!title || busy) return;
+    const resolvedAdvanceAccountId = resolveBatchAdvanceAccountId();
+    if (!resolvedAdvanceAccountId) {
+      window.alert(t("reimburse.alert.objectRequired"));
+      return;
+    }
     const formData = new FormData();
-    formData.set("advanceAccountId", advanceAccountId);
+    formData.set("advanceAccountId", resolvedAdvanceAccountId);
     formData.set("title", title);
     formData.set("note", batchNote);
     formData.set("startDate", batchStartDate);
@@ -393,6 +439,7 @@ export function ReimbursementWorkspace({
       setBatchNote("");
       setBatchStartDate("");
       setBatchEndDate("");
+      setBatchObjectId("");
       setShowCreateBatch(false);
       await load();
       setSelectedBatchId(result.batchId);
@@ -411,9 +458,10 @@ export function ReimbursementWorkspace({
 
   const submitEditBatch = async () => {
     if (!editingBatchId || busy || !batchTitle.trim()) return;
+    const editingBatchAdvanceAccountId = (data?.batches ?? []).find((batch) => batch.id === editingBatchId)?.advanceAccountId ?? advanceAccountId;
     const formData = new FormData();
     formData.set("batchId", editingBatchId);
-    formData.set("advanceAccountId", advanceAccountId);
+    formData.set("advanceAccountId", editingBatchAdvanceAccountId);
     formData.set("title", batchTitle.trim());
     formData.set("note", batchNote);
     formData.set("startDate", batchStartDate);
@@ -445,7 +493,7 @@ export function ReimbursementWorkspace({
     if (!window.confirm(t("reimburse.batch.deleteConfirm", { title: batch.title }))) return;
     const formData = new FormData();
     formData.set("batchId", batch.id);
-    formData.set("advanceAccountId", advanceAccountId);
+    formData.set("advanceAccountId", batch.advanceAccountId || advanceAccountId);
     setBusy(true);
     try {
       const result = await actions.deleteBatch(formData);
@@ -568,6 +616,26 @@ export function ReimbursementWorkspace({
     }
   };
 
+  const submitBatchDeleteDocuments = async () => {
+    if (busy || batchDeleteTargets.length === 0) return;
+    if (!window.confirm(t("reimburse.document.batchDeleteConfirm", { count: String(batchDeleteTargets.length) }))) return;
+    setBusy(true);
+    try {
+      let failed = 0;
+      for (const reimbursement of batchDeleteTargets) {
+        const formData = new FormData();
+        formData.set("reimbursementId", reimbursement.id);
+        const res = await actions.delete(formData);
+        if (!res.ok) failed += 1;
+      }
+      if (failed > 0) window.alert(t("reimburse.document.batchDeleteFailed", { count: String(failed) }));
+      setSelectedDocumentIds(new Set());
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const linkTransactions = async (reimbursement: ReimbursementData, txRecordIds: string[]) => {
     if (busy) return;
     const formData = new FormData();
@@ -612,10 +680,12 @@ export function ReimbursementWorkspace({
         <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-4 py-3">
           <div>
             <div className="text-sm font-semibold text-slate-800">{t("reimburse.workspaceTitle")}</div>
-            <div className="mt-0.5 flex items-center gap-1 text-xs text-slate-500">
-              <ReceiptText className="h-3.5 w-3.5" />
-              {accountName}
-            </div>
+            {accountName ? (
+              <div className="mt-0.5 flex items-center gap-1 text-xs text-slate-500">
+                <ReceiptText className="h-3.5 w-3.5" />
+                {accountName}
+              </div>
+            ) : null}
           </div>
           <button type="button" onClick={() => window.history.back()} className="secondary-button h-8 px-2" disabled={busy}>
             {t("table.close")}
@@ -731,13 +801,25 @@ export function ReimbursementWorkspace({
                     <div className="shrink-0 border-b border-blue-200 bg-blue-50 px-3 py-1.5">
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-medium text-blue-700">{t("reimburse.table.batchTitle", { title: selectedBatch.title })}</span>
-                        {selectedBatch.status === "reimbursed" ? (
-                          <button type="button" onClick={openCreateBatch} className="primary-button h-7 px-2 text-xs" disabled={busy}>
-                            <Plus className="mr-1 inline h-3 w-3" />{t("reimburse.batchCreate")}
-                          </button>
-                        ) : (
-                          <button type="button" onClick={openCreate} className="primary-button h-7 px-2 text-xs" disabled={busy}>{t("reimburse.create")}</button>
-                        )}
+                        <div className="flex items-center gap-2">
+                          {batchDeleteTargets.length > 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => void submitBatchDeleteDocuments()}
+                              className="secondary-button h-7 px-2 text-xs text-rose-700"
+                              disabled={busy}
+                            >
+                              {t("reimburse.document.batchDelete")}
+                            </button>
+                          ) : null}
+                          {selectedBatch.status === "reimbursed" ? (
+                            <button type="button" onClick={openCreateBatch} className="primary-button h-7 px-2 text-xs" disabled={busy}>
+                              <Plus className="mr-1 inline h-3 w-3" />{t("reimburse.batchCreate")}
+                            </button>
+                          ) : (
+                            <button type="button" onClick={openCreate} className="primary-button h-7 px-2 text-xs" disabled={busy}>{t("reimburse.create")}</button>
+                          )}
+                        </div>
                       </div>
                     </div>
                     <div className="min-h-0 flex-1">
@@ -752,6 +834,11 @@ export function ReimbursementWorkspace({
                         fillHeight
                         compactRows
                         toolbarMode="none"
+                        selectable
+                        selectOnRowClick
+                        selectAllScope="renderedRows"
+                        selectedKeys={selectedDocumentIds}
+                        onSelectionChange={setSelectedDocumentIds}
                         rowActionsWidth={156}
                         rowActionsMinWidth={144}
                         rowClassName={() => "hover:bg-slate-50"}
@@ -830,10 +917,11 @@ export function ReimbursementWorkspace({
 
       {showCreate ? (
         <ReimbursementFormModal
-          objectId={objectId}
-          objectName={objectName}
+          objectId={objectId || undefined}
+          objectName={objectName || undefined}
           advanceAccountId={advanceAccountId}
           objectType={objectType}
+          objectOptions={objectOptions}
           entries={createSeedEntries}
           batchId={selectedBatch?.id}
           actions={actions}
@@ -856,6 +944,23 @@ export function ReimbursementWorkspace({
               <button type="button" onClick={() => { setShowCreateBatch(false); setEditingBatchId(null); setBatchTitle(""); setBatchNote(""); setBatchStartDate(""); setBatchEndDate(""); }} className="secondary-button h-8 px-2" disabled={busy}>{t("table.close")}</button>
             </div>
             <div className="space-y-3 p-4">
+              {globalMode && !editingBatchId ? (
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-600">{t("reimburse.form.objectLabel")}</label>
+                  <select
+                    value={batchObjectId}
+                    onChange={(event) => setBatchObjectId(event.target.value)}
+                    className="form-input h-9 w-full"
+                  >
+                    <option value="">{t("reimburse.form.objectPlaceholder")}</option>
+                    {objectOptions.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-600">{t("reimburse.batchTitle")}</label>
                 <input autoFocus value={batchTitle} onChange={(event) => setBatchTitle(event.target.value)} className="form-input h-9 w-full" onKeyDown={(event) => { if (event.key === "Enter") void (editingBatchId ? submitEditBatch() : submitCreateBatch()); }} />
@@ -1095,7 +1200,7 @@ export function ReimbursementWorkspace({
             <ReimbursementEditor
               reimbursement={approvalTarget ?? editingReimb!}
               batches={data?.batches ?? []}
-              accountName={accountName}
+              accountName={(approvalTarget ?? editingReimb)!.advanceAccountName ?? accountName}
               candidates={data?.candidates ?? []}
               mode={approvalTarget ? "audit" : "edit"}
               auditAmount={approvedAmount}

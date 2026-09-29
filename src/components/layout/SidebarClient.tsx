@@ -23,6 +23,7 @@ import {
   List,
   LogOut,
   MessageSquare,
+  ReceiptText,
   X,
 } from "lucide-react";
 import { MmhLogo } from "@/components/MmhLogo";
@@ -49,6 +50,7 @@ import {
   getSidebarOwnerFilterPreference,
   getSidebarShowFixedAssetsPreference,
   getSidebarShowAllCashEntriesPreference,
+  getSidebarShowReimbursementsPreference,
   setSidebarCollapsedPreference,
   setSidebarGroupPreference,
   setSidebarHideZeroPreference,
@@ -79,6 +81,7 @@ type AccountItem = {
   institutionId?: string | null;
   institutionType?: string | null;
   counterpartyId?: string | null;
+  counterpartyReimbursable?: boolean;
   isConsumerLoan?: boolean;
   loanType?: string | null;
   investProductType?: string;
@@ -128,6 +131,7 @@ const FIXED_ASSET_SUMMARY_ID = "__fixed_assets__";
 const FIXED_ASSET_SECTION = "fixed_assets";
 const LOAN_SECTION = "loans";
 const LIABILITY_SECTION = "liabilities";
+const REIMBURSEMENT_SUMMARY_KIND = "reimbursement_summary";
 const FIXED_ASSET_KINDS = [FIXED_ASSET_SUMMARY_KIND];
 const INSURANCE_KINDS = ["insurance"];
 const LOAN_KINDS = ["loan"];
@@ -165,6 +169,7 @@ const KIND_SORT_ORDER = new Map<string, number>([
   ["loan_summary", 70],
   ["settlement", 71],
   ["loan", 71],
+  [REIMBURSEMENT_SUMMARY_KIND, 72],
   ["other", 99],
 ]);
 const SIDEBAR_USAGE_SORT_MIN_GROUP_SIZE = 10;
@@ -190,7 +195,7 @@ function isLoanTypeSidebarItem(type: LoanTypeValue) {
 }
 
 function isOwnerScopedSidebarItem(item: AccountItem) {
-  return item.kind !== "loan" && item.kind !== "loan_summary" && item.kind !== FIXED_ASSET_SUMMARY_KIND && item.kind !== "investment_property" && !isSidebarSettlementLoan(item);
+  return item.kind !== "loan" && item.kind !== "loan_summary" && item.kind !== REIMBURSEMENT_SUMMARY_KIND && item.kind !== FIXED_ASSET_SUMMARY_KIND && item.kind !== "investment_property" && !isSidebarSettlementLoan(item);
 }
 
 function fixedAssetTypeLabel(type: string, t: (key: string, params?: Record<string, string | number>) => string) {
@@ -244,29 +249,44 @@ function normalizeSidebarItems(items: AccountItem[], t: (key: string, params?: R
   const settlementChildren = normalized.filter(isSidebarSettlementLoan);
   if (settlementChildren.length === 0) return normalized;
   const normalizedWithoutSettlementChildren = normalized.filter((item) => !isSidebarSettlementLoan(item));
-  const convertedValues = settlementChildren
-    .map((item) => item.convertedBalance)
-    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-  const allConverted = convertedValues.length === settlementChildren.length;
-  const convertedBalance = allConverted ? convertedValues.reduce((sum, value) => sum + value, 0) : null;
-  const baseCurrency = settlementChildren.find((item) => item.baseCurrency)?.baseCurrency ?? settlementChildren[0]?.currency ?? null;
-  const settlementSummary: AccountItem = {
-    id: "__settlement_summary__",
-    name: t("sidebar.section.liabilities"),
-    label: t("sidebar.section.liabilities"),
-    shortLabel: t("sidebar.section.liabilities"),
-    hoverTitle: t("sidebar.debt.counterpartySummary"),
-    balance: convertedBalance ?? settlementChildren.reduce((sum, item) => sum + item.balance, 0),
-    convertedBalance,
-    currency: convertedBalance == null ? settlementChildren[0]?.currency ?? baseCurrency : baseCurrency,
-    baseCurrency,
-    fxRateMissing: convertedBalance == null && settlementChildren.some((item) => item.fxRateMissing),
-    kind: "loan_summary",
-    groupName: undefined,
-    institution: t("sidebar.debt.counterpartySummary"),
-    children: settlementChildren,
+  const buildSummaryItem = (children: AccountItem[], kind: string, label: string, hoverLabel: string): AccountItem => {
+    const convertedValues = children
+      .map((item) => item.convertedBalance)
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+    const allConverted = convertedValues.length === children.length;
+    const convertedBalance = allConverted ? convertedValues.reduce((sum, value) => sum + value, 0) : null;
+    const baseCurrency = children.find((item) => item.baseCurrency)?.baseCurrency ?? children[0]?.currency ?? null;
+    return {
+      id: kind === "loan_summary" ? "__settlement_summary__" : "__reimbursement_summary__",
+      name: label,
+      label,
+      shortLabel: label,
+      hoverTitle: hoverLabel,
+      balance: convertedBalance ?? children.reduce((sum, item) => sum + item.balance, 0),
+      convertedBalance,
+      currency: convertedBalance == null ? children[0]?.currency ?? baseCurrency : baseCurrency,
+      baseCurrency,
+      fxRateMissing: convertedBalance == null && children.some((item) => item.fxRateMissing),
+      kind,
+      groupName: undefined,
+      institution: hoverLabel,
+      children,
+    };
   };
-  return [...normalizedWithoutSettlementChildren, settlementSummary];
+  // Reimbursable counterparties move out of 往来款 into the dedicated 费用报销 group.
+  const reimbursableChildren = settlementChildren.filter((item) => item.counterpartyReimbursable === true);
+  const plainSettlementChildren = settlementChildren.filter((item) => item.counterpartyReimbursable !== true);
+  const settlementSummary = plainSettlementChildren.length > 0
+    ? buildSummaryItem(plainSettlementChildren, "loan_summary", t("sidebar.section.liabilities"), t("sidebar.debt.counterpartySummary"))
+    : null;
+  const reimbursementSummary = reimbursableChildren.length > 0
+    ? buildSummaryItem(reimbursableChildren, REIMBURSEMENT_SUMMARY_KIND, t("sidebar.section.reimbursements"), t("sidebar.section.reimbursements"))
+    : null;
+  return [
+    ...normalizedWithoutSettlementChildren,
+    ...(settlementSummary ? [settlementSummary] : []),
+    ...(reimbursementSummary ? [reimbursementSummary] : []),
+  ];
 }
 
 function patchSidebarAccountBalances(items: AccountItem[], updates: ScopedAccountBalance[]): { next: AccountItem[]; changed: boolean } {
@@ -313,6 +333,7 @@ function getSidebarItemSignature(item: AccountItem): string {
     item.institutionId ?? "",
     item.institutionType ?? "",
     item.counterpartyId ?? "",
+    item.counterpartyReimbursable ? "1" : "0",
     item.isConsumerLoan ? "1" : "0",
     item.loanType ?? "",
     item.investProductType ?? "",
@@ -351,6 +372,7 @@ function toSidebarAccountItem(a: any, t: (key: string, params?: Record<string, s
     institutionId: a.institutionId ?? null,
     institutionType: a.Institution?.type ?? a.institutionType ?? null,
     counterpartyId: a.counterpartyId ?? null,
+    counterpartyReimbursable: a.Counterparty?.isReimbursable === true || a.counterpartyReimbursable === true,
     isConsumerLoan: a.isConsumerLoan === true,
     loanType: a.loanType ?? null,
     investProductType: a.investProductType || undefined,
@@ -375,6 +397,7 @@ export function SidebarClient({
     sidebarHideInitialData: boolean;
     sidebarShowFixedAssets: boolean;
     sidebarShowAllCashEntries: boolean;
+    sidebarShowReimbursements: boolean;
     sidebarCollapsed: boolean;
     sidebarGroupBy: "kind" | "institution";
   };
@@ -409,6 +432,7 @@ export function SidebarClient({
   const [hideZero, setHideZero] = useState(() => initialPreferences?.sidebarHideZero ?? getSidebarHideZeroPreference());
   const [showFixedAssets, setShowFixedAssets] = useState(() => initialPreferences?.sidebarShowFixedAssets ?? getSidebarShowFixedAssetsPreference());
   const [showAllCashEntries, setShowAllCashEntries] = useState(() => initialPreferences?.sidebarShowAllCashEntries ?? getSidebarShowAllCashEntriesPreference());
+  const [showReimbursements, setShowReimbursements] = useState(() => initialPreferences?.sidebarShowReimbursements ?? getSidebarShowReimbursementsPreference());
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => initialPreferences?.sidebarCollapsed ?? getSidebarCollapsedPreference());
   const [sidebarGroupBy, setSidebarGroupBy] = useState<"kind" | "institution">(() => initialPreferences?.sidebarGroupBy ?? getSidebarGroupPreference());
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
@@ -642,6 +666,7 @@ export function SidebarClient({
       setHideZero(prefs.sidebarHideZero);
       setShowFixedAssets(prefs.sidebarShowFixedAssets);
       setShowAllCashEntries(prefs.sidebarShowAllCashEntries);
+      setShowReimbursements(prefs.sidebarShowReimbursements);
       setHideFirstUseGuide(prefs.sidebarHideInitialData);
       setSidebarCollapsed(prefs.sidebarCollapsed);
       setSidebarGroupBy(getSidebarGroupPreference());
@@ -812,6 +837,7 @@ export function SidebarClient({
     if (kind === "insurance") return t("sidebar.kind.insurance");
     if (kind === "bank_credit") return t("sidebar.kind.creditCard");
     if (kind === "loan_summary") return t("sidebar.section.liabilities");
+    if (kind === REIMBURSEMENT_SUMMARY_KIND) return t("sidebar.section.reimbursements");
     if (kind === "settlement") return t("account.kind.settlement");
     if (kind === "loan") return t("account.kind.loan");
     return t("sidebar.kind.other");
@@ -863,7 +889,7 @@ export function SidebarClient({
           fxRateMissing: !allConverted,
         }];
       }
-      if (item.kind !== "loan_summary" || !item.children?.length) {
+      if ((item.kind !== "loan_summary" && item.kind !== REIMBURSEMENT_SUMMARY_KIND) || !item.children?.length) {
         if (!matchesAccountFilter(item) && !(item.children ?? []).some(childMatchesAccountFilter)) return [];
         return isVisibleLeaf(item) ? [item] : [];
       }
@@ -933,7 +959,7 @@ export function SidebarClient({
       return debtSections;
     };
     if (sidebarGroupBy === "institution") {
-      const debtKinds = new Set(["loan", "loan_summary"]);
+      const debtKinds = new Set(["loan", "loan_summary", REIMBURSEMENT_SUMMARY_KIND]);
       const map = new Map<string, SidebarSection>();
       for (const item of visibleItems) {
         if (debtKinds.has(item.kind)) continue;
@@ -1022,6 +1048,13 @@ export function SidebarClient({
     pathname === "/" && selectedView === "debt" && debtPersonKeyFor(item) === selectedDebtPerson;
 
   function isAccountItemActive(item: AccountItem) {
+    if (pathname === "/reimbursements") {
+      const selectedReimbursementAccountId = (searchParams.get("accountId") ?? "").trim();
+      if (item.kind === REIMBURSEMENT_SUMMARY_KIND) {
+        return !selectedReimbursementAccountId || (item.children?.some((child) => child.id === selectedReimbursementAccountId) ?? false);
+      }
+      return item.counterpartyReimbursable === true && !!item.id && selectedReimbursementAccountId === item.id;
+    }
     if (pathname !== "/") return false;
     if (item.kind === "loan_summary") {
       return selectedView === "debt" && (!selectedDebtPerson || (item.children?.some(isDebtAccountSelected) ?? false));
@@ -1210,6 +1243,11 @@ export function SidebarClient({
           <Link href="/reports" className={collapsedNavCls(pathname.startsWith("/reports"))} title={t("nav.reports")}>
             <Table2 size={18} />
           </Link>
+          {showReimbursements ? (
+            <Link href="/reimbursements" className={collapsedNavCls(pathname.startsWith("/reimbursements"))} title={t("sidebar.section.reimbursements")}>
+              <ReceiptText size={18} />
+            </Link>
+          ) : null}
           {!hideFirstUseGuide ? (
             <button
               type="button"
@@ -1332,6 +1370,12 @@ export function SidebarClient({
               <Table2 size={18} />
               <span className="font-medium">{t("nav.reports")}</span>
             </Link>
+            {showReimbursements ? (
+              <Link href="/reimbursements" className={navItemCls("/reimbursements")}>
+                <ReceiptText size={18} />
+                <span className="font-medium">{t("sidebar.section.reimbursements")}</span>
+              </Link>
+            ) : null}
             {!hideFirstUseGuide ? (
               <button
                 type="button"
@@ -1508,7 +1552,11 @@ export function SidebarClient({
                                     return `/?${q.toString()}`;
                                   }
                                   if (it.kind === "loan_summary") return "/?view=debt";
+                                  if (it.kind === REIMBURSEMENT_SUMMARY_KIND) return "/reimbursements";
                                   if (it.kind === "loan" || it.kind === "settlement") {
+                                    if (it.counterpartyReimbursable) {
+                                      return it.id ? `/reimbursements?accountId=${it.id}` : "/reimbursements";
+                                    }
                                     const q = new URLSearchParams();
                                     q.set("view", "debt");
                                     const debtPersonKey = debtPersonKeyFor(it);
@@ -1544,7 +1592,7 @@ export function SidebarClient({
                                   >
                                     <span className="min-w-0 flex-1 pr-2">
                                       <span className="text-fade-right block min-w-0" title={itemTitle}>
-                                      {sidebarGroupBy === "institution" && it.kind !== "loan_summary"
+                                      {sidebarGroupBy === "institution" && it.kind !== "loan_summary" && it.kind !== REIMBURSEMENT_SUMMARY_KIND
                                         ? it.kind === FIXED_ASSET_SUMMARY_KIND
                                           ? it.label
                                         : it.kind === "insurance"

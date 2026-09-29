@@ -84,6 +84,7 @@ export type ReimbursementData = {
   actualAmount: number | null;
   linkedTransactionTotal: number;
   note: string | null;
+  advanceAccountName: string | null;
   travelStartDate: string | null;
   travelEndDate: string | null;
   travelReason: string | null;
@@ -118,6 +119,8 @@ export type ReimbursementBatchData = {
   createdAt: string;
   documentCount: number;
   totalAmount: number;
+  advanceAccountId: string;
+  advanceAccountName: string | null;
   approvedAmount: number;
   actualAmount: number;
   linkedTransactionTotal: number;
@@ -357,17 +360,45 @@ export async function getReimbursementOverview(
 ): Promise<ReimbursementOverviewData> {
   try {
     const { householdId } = await getHouseholdScope();
-    const scope = await resolveReimbursementObjectScope(prisma, householdId, objectId, objectType);
-    if (!scope.advanceAccountIds.includes(advanceAccountId)) return { candidates: [], batches: [], reimbursements: [] };
+    // Global mode: an empty advanceAccountId aggregates every reimbursable
+    // counterparty's advance (receivable) accounts in the household.
+    const globalMode = !advanceAccountId.trim();
+    let advanceAccountIds: string[] = [];
+    const advanceAccountNames = new Map<string, string>();
+    const accountDisplayName = (account: { name: string; Counterparty: { name: string; shortName: string | null } | null }) =>
+      account.Counterparty?.shortName?.trim() || account.Counterparty?.name || account.name;
+    if (globalMode) {
+      const accounts = await prisma.account.findMany({
+        where: {
+          householdId,
+          kind: { in: [AccountKind.loan, AccountKind.settlement] },
+          debtDirection: "receivable",
+          isPlaceholder: { not: true },
+          Counterparty: { isReimbursable: true },
+        },
+        select: { id: true, name: true, Counterparty: { select: { name: true, shortName: true } } },
+      });
+      advanceAccountIds = accounts.map((account) => account.id);
+      for (const account of accounts) advanceAccountNames.set(account.id, accountDisplayName(account));
+    } else {
+      const scope = await resolveReimbursementObjectScope(prisma, householdId, objectId, objectType);
+      if (!scope.advanceAccountIds.includes(advanceAccountId)) return { candidates: [], batches: [], reimbursements: [] };
+      advanceAccountIds = [advanceAccountId];
+      const account = await prisma.account.findFirst({
+        where: { id: advanceAccountId, householdId },
+        select: { id: true, name: true, Counterparty: { select: { name: true, shortName: true } } },
+      });
+      if (account) advanceAccountNames.set(account.id, accountDisplayName(account));
+    }
     const usedIds = await collectUsedAdvanceRecordIds(prisma, householdId);
 
-    const records = scope.advanceAccountIds.length > 0
+    const records = advanceAccountIds.length > 0
       ? await prisma.txRecord.findMany({
         where: {
           deletedAt: null,
           householdId,
           source: "advance",
-          toAccountId: advanceAccountId,
+          toAccountId: { in: advanceAccountIds },
           ...(usedIds.length > 0 ? { id: { notIn: usedIds } } : {}),
         },
         orderBy: [{ date: "asc" }, { createdAt: "asc" }],
@@ -376,7 +407,7 @@ export async function getReimbursementOverview(
       : [];
 
     const reimbursements = await prisma.reimbursement.findMany({
-    where: { householdId, advanceAccountId, deletedAt: null },
+    where: { householdId, advanceAccountId: { in: advanceAccountIds }, deletedAt: null },
     include: {
       items: { orderBy: [{ entryDate: "asc" }, { createdAt: "asc" }] },
       linkedTransactions: { select: { txRecordId: true } },
@@ -430,7 +461,7 @@ export async function getReimbursementOverview(
       : [];
     const linkedRecordById = new Map(linkedRecords.map((record) => [record.id, record]));
     const batches = await prisma.reimbursementBatch.findMany({
-    where: { householdId, advanceAccountId },
+    where: { householdId, advanceAccountId: { in: advanceAccountIds } },
     include: {
       reimbursements: {
         where: { deletedAt: null },
@@ -464,6 +495,8 @@ export async function getReimbursementOverview(
       createdAt: batch.createdAt.toISOString(),
       documentCount: batch.reimbursements.length,
       totalAmount: toMoney(batch.reimbursements.reduce((sum, reimbursement) => sum + Number(reimbursement.totalAmount), 0)),
+      advanceAccountId: batch.advanceAccountId,
+      advanceAccountName: advanceAccountNames.get(batch.advanceAccountId) ?? null,
       approvedAmount: toMoney(batch.reimbursements.reduce((sum, reimbursement) => sum + Number(reimbursement.approvedAmount ?? 0), 0)),
       linkedTransactionTotal: toMoney(batch.reimbursements.reduce(
         (sum, reimbursement) => sum + reimbursement.linkedTransactions.reduce(
@@ -526,6 +559,7 @@ export async function getReimbursementOverview(
         ? toMoney(reimbursement.settlements.reduce((sum, settlement) => sum + Number(settlement.amount), 0))
         : isReimbursed(reimbursement.paymentTxRecordId) ? toMoney(Number(reimbursement.totalAmount)) : null,
       note: reimbursement.note,
+      advanceAccountName: reimbursement.advanceAccountId ? advanceAccountNames.get(reimbursement.advanceAccountId) ?? null : null,
       travelStartDate: reimbursement.travelStartDate
         ? reimbursement.travelStartDate.toISOString().slice(0, 10)
         : null,

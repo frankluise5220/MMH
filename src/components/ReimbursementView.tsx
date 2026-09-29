@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useI18n } from "@/lib/i18n";
 import { ReimbursementWorkspace, type ReimbursementActions, type ReimbursementCashAccountOption } from "@/components/ReimbursementModal";
-import type { ReimbursementFormEntry } from "@/components/ReimbursementFormModal";
+import type { ReimbursementFormEntry, ReimbursementObjectOption } from "@/components/ReimbursementFormModal";
 
 export function ReimbursementView({
   objectId,
@@ -12,6 +12,7 @@ export function ReimbursementView({
   accountName,
   advanceAccountId,
   cashAccountOptions,
+  objectOptions,
   initialShowCreate,
   actions,
 }: {
@@ -20,6 +21,7 @@ export function ReimbursementView({
   accountName: string;
   advanceAccountId: string;
   cashAccountOptions: ReimbursementCashAccountOption[];
+  objectOptions?: ReimbursementObjectOption[];
   initialShowCreate: boolean;
   actions: ReimbursementActions;
 }) {
@@ -55,6 +57,7 @@ export function ReimbursementView({
       accountName={accountName}
       advanceAccountId={advanceAccountId}
       cashAccountOptions={cashAccountOptions}
+      objectOptions={objectOptions}
       actions={actions}
       initialShowCreate={initialShowCreate || createRequested}
       initialCreateEntries={entries}

@@ -126,6 +126,7 @@ async function getSidebarData() {
       institutionId: account.institutionId ?? null,
       institutionType: account.Institution?.type ?? null,
       counterpartyId: account.counterpartyId ?? null,
+      counterpartyReimbursable: account.Counterparty?.isReimbursable === true,
       isConsumerLoan: account.isConsumerLoan === true,
       loanType: account.loanType ?? null,
       investProductType: account.investProductType || undefined,
@@ -161,6 +162,7 @@ export async function Sidebar() {
     sidebarHideInitialData: cookieStore.get("sidebar_hide_initial_data")?.value === "true",
     sidebarShowFixedAssets: cookieStore.get("sidebar_show_fixed_assets")?.value !== "false",
     sidebarShowAllCashEntries: cookieStore.get("sidebar_show_all_cash_entries")?.value !== "false",
+    sidebarShowReimbursements: cookieStore.get("sidebar_show_reimbursements")?.value !== "false",
     sidebarCollapsed: cookieStore.get("sidebar_collapsed")?.value === "true",
     sidebarGroupBy: (cookieStore.get("sidebar_group_by")?.value === "institution" ? "institution" : "kind") as SidebarGroupMode,
   };

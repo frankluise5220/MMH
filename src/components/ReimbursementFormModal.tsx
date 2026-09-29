@@ -87,6 +87,7 @@ export function ReimbursementFormModal({
 }: {
   objectId?: string;
   objectName?: string;
+  /** Empty when the workspace is global; then resolved from the picked object. */
   advanceAccountId: string;
   objectType?: "counterparty" | "institution";
   objectOptions?: ReimbursementObjectOption[];
@@ -105,7 +106,13 @@ export function ReimbursementFormModal({
   };
 
   const [kind, setKind] = useState<ReimbursementKindValue>(defaultKind);
-  const [pickedObjectId, setPickedObjectId] = useState(objectId ?? objectOptions[0]?.id ?? "");
+  const [pickedObjectId, setPickedObjectId] = useState(
+    objectId
+      // Global mode: preselect the object that owns the first seeded row (if any).
+      ?? objectOptions.find((option) => entries[0]?.advanceAccountId && option.advanceAccountIds?.includes(entries[0].advanceAccountId))?.id
+      ?? objectOptions[0]?.id
+      ?? "",
+  );
   const [title, setTitle] = useState(() =>
     objectName ? t("reimburse.titleDefault", { name: objectName }) : t("reimburse.form.titleFallback"),
   );
@@ -135,6 +142,9 @@ export function ReimbursementFormModal({
   const resolvedObjectId = objectId ?? pickedObjectId;
   const resolvedObjectName =
     objectName ?? objectOptions.find((option) => option.id === resolvedObjectId)?.name ?? "";
+  const resolvedAdvanceAccountId = advanceAccountId
+    || objectOptions.find((option) => option.id === resolvedObjectId)?.advanceAccountIds?.[0]
+    || "";
 
   const total = useMemo(
     () => rows.reduce((sum, row) => sum + Math.abs(parseAmount(row.amount)), 0),
@@ -174,6 +184,10 @@ export function ReimbursementFormModal({
       window.alert(t("reimburse.alert.objectRequired"));
       return;
     }
+    if (!resolvedAdvanceAccountId) {
+      window.alert(t("reimburse.alert.objectRequired"));
+      return;
+    }
     const payload = rows
       .map((row) => ({
         txRecordId: row.txRecordId,
@@ -198,7 +212,7 @@ export function ReimbursementFormModal({
     formData.set("kind", kind);
     formData.set("counterpartyId", resolvedObjectId);
     formData.set("counterpartyName", resolvedObjectName);
-    formData.set("advanceAccountId", advanceAccountId);
+    formData.set("advanceAccountId", resolvedAdvanceAccountId);
     if (batchId) formData.set("batchId", batchId);
     formData.set("objectType", objectType);
     formData.set("travelStartDate", isTravel ? travelStartDate : "");
