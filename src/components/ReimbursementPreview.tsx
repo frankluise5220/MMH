@@ -66,16 +66,17 @@ const PRINT_PORTAL_RULES = `
 `;
 
 // Interactive layout tweaks made in the preview before printing: dragged column
-// widths (px, detail table only — the header info table is part of the fixed form
-// frame) and dragged row heights (px, per detail-table row index). Plain layout
-// values, so they flow into window.print() unchanged. The single preview keeps its
-// own adjustment object; grips never touch the table's outer left/right borders.
+// widths (stored as PERCENTAGES of the table so they fit any container — preview
+// panel and 277mm print sheet alike) and dragged row heights (px, per detail-table
+// row index). Plain layout values, so they flow into window.print() unchanged.
+// Grips never touch the table's outer left/right borders.
 export type ReimbursementPrintAdjust = {
   detailCols?: number[] | null;
   rowHeights?: Record<number, number> | null;
 };
 
 const INFO_COL_DEFAULTS = ["12%", "21.33%", "12%", "21.33%", "12%", "21.34%"];
+const MIN_COL_PX = 28;
 const TRAVEL_COL_DEFAULTS = ["10%", "20%", "10%", "10%", "6%", "10%", "10%", "12%", "12%"];
 const SIMPLE_COL_DEFAULTS = ["14%", "28%", "20%", "38%"];
 
@@ -140,19 +141,51 @@ export function ReimbursementPrintArticle({
   };
 
   // Column grips capture every column's on-screen px width at press time (the grip's
-  // own row must map cells 1:1 to columns), then grow the grabbed column while the
-  // others keep their px; table-fixed renormalizes proportions to fill the sheet width.
+  // own row must map cells 1:1 to columns). The table's rendered width is the fixed
+  // budget: growing one column shrinks the others proportionally by the same amount,
+  // so the table's total width NEVER exceeds the sheet frame (Chromium's table-fixed
+  // does not clamp overflowing column sums on its own).
   const beginColDrag = (index: number) =>
     (event: ReactPointerEvent<HTMLElement>) => {
       if (!onAdjust) return;
       const row = event.currentTarget.closest("tr");
       if (!row) return;
+      const colCount = detailColumnCount;
+      const table = row.closest("table");
+      const totalWidth = table ? table.getBoundingClientRect().width : null;
       const base = Array.from(row.children)
-        .slice(0, detailColumnCount)
+        .slice(0, colCount)
         .map((cell) => (cell as HTMLElement).getBoundingClientRect().width);
+      const baseTotal = base.reduce((sum, width) => sum + width, 0);
+      const othersTotal = baseTotal - base[index];
+      const maxCol = totalWidth
+        ? Math.round(totalWidth - (colCount - 1) * MIN_COL_PX)
+        : Number.POSITIVE_INFINITY;
       beginDrag(event, (dx) => {
-        const next = base.map((width, i) => (i === index ? Math.max(28, Math.round(width + dx)) : width));
-        onAdjust({ ...adjustRef.current, detailCols: next });
+        const clamped = Math.min(Math.max(MIN_COL_PX, Math.round(base[index] + dx)), maxCol);
+        const delta = clamped - base[index];
+        // Others absorb the inverse of delta proportionally, keeping the sum pinned
+        // to the frame width.
+        const next = base.map((width, i) => {
+          if (i === index) return clamped;
+          return width - Math.round(othersTotal > 0 ? (width * delta) / othersTotal : 0);
+        });
+        // Absorb rounding drift on the widest other column: sum(next) === baseTotal.
+        const drift = baseTotal - next.reduce((sum, width) => sum + width, 0);
+        if (drift !== 0) {
+          let widestIndex = -1;
+          let widestWidth = -1;
+          next.forEach((width, i) => {
+            if (i !== index && width > widestWidth) { widestWidth = width; widestIndex = i; }
+          });
+          if (widestIndex >= 0) next[widestIndex] += drift;
+        }
+        onAdjust({
+          ...adjustRef.current,
+          // Store as percentages of the captured table width so the layout fits the
+          // print sheet (277mm) as well as the wider preview panel, summing to 100%.
+          detailCols: next.map((width) => (width / baseTotal) * 100),
+        });
       });
     };
 
@@ -234,7 +267,7 @@ export function ReimbursementPrintArticle({
       <table className="print-table mt-3 w-full table-fixed border-collapse text-xs">
         <colgroup>
           {(adjust.detailCols ?? detailColDefaults).map((width, index) => (
-            <col key={index} style={{ width }} />
+            <col key={index} style={{ width: typeof width === "number" ? `${width}%` : width }} />
           ))}
         </colgroup>
         <thead>
