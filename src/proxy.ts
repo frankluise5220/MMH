@@ -15,6 +15,7 @@ import {
   VERIFIED_COOKIE,
   verifyVerifiedSessionValue,
 } from "@/lib/server/session-cookies";
+import { resolveSessionUser } from "@/lib/server/session-user";
 
 const CACHE_TTL = 5_000;
 const LOOKUP_TIMEOUT_MS = 1_200;
@@ -169,35 +170,40 @@ async function isValidApiKey(key: string): Promise<boolean> {
   return Boolean(await withTimeout(verifyAccessKey(key), LOOKUP_TIMEOUT_MS));
 }
 
-async function getSessionWriteRole(req: NextRequest): Promise<"readOnly" | "writeable" | "unknown"> {
-  const userId = req.cookies.get(USER_ID_COOKIE)?.value?.trim();
-  const username = req.cookies.get(USERNAME_COOKIE)?.value?.trim();
-  const householdId = req.cookies.get(HOUSEHOLD_COOKIE)?.value?.trim();
+async function getSessionWriteRole(req: NextRequest, verifiedUserId: string): Promise<"readOnly" | "writeable" | "unknown"> {
+  // Resolve through the same helper the app uses for pages and server actions
+  // (src/lib/server/session-user.ts). Looking the user up by id alone used to
+  // deny every write as soon as the cookie's id no longer existed — while GET
+  // pages kept rendering via the name/household fallback, so the UI looked
+  // logged in and every save failed with Next's generic
+  // "An unexpected response was received from the server."
+  const resolution = await resolveSessionUser(
+    {
+      userId: verifiedUserId,
+      username: req.cookies.get(USERNAME_COOKIE)?.value,
+      householdId: req.cookies.get(HOUSEHOLD_COOKIE)?.value,
+    },
+    { totalTimeoutMs: LOOKUP_TIMEOUT_MS },
+  );
 
-  const user = userId
-    ? await withTimeout(
-        prisma.user.findUnique({
-          where: { id: userId },
-          select: { role: true, isSystem: true },
-        }),
-        LOOKUP_TIMEOUT_MS,
-      )
-    : username
-      ? await withTimeout(
-          prisma.user.findFirst({
-            where: {
-              name: username,
-              ...(householdId ? { householdId } : {}),
-            },
-            select: { role: true, isSystem: true },
-            orderBy: { createdAt: "asc" },
-          }),
-          LOOKUP_TIMEOUT_MS,
-      )
-    : null;
+  if (!resolution.user) return "unknown";
+  return resolution.user.role === "viewer" && resolution.user.isSystem !== true ? "readOnly" : "writeable";
+}
 
-  if (!user) return "unknown";
-  return user.role === "viewer" && user.isSystem !== true ? "readOnly" : "writeable";
+/**
+ * Denial payload for the write gate.
+ *
+ * Server actions POST to the page URL, and Next only surfaces the response
+ * body as the thrown error when the status is >= 400 **and** the media type is
+ * exactly `text/plain` — anything else (JSON included) collapses into
+ * "An unexpected response was received from the server." So page requests get a
+ * plain-text message the form can show, while /api/ keeps its JSON contract.
+ */
+function writeDeniedResponse(req: NextRequest, status: number, code: string, message: string) {
+  if (req.nextUrl.pathname.startsWith("/api/")) {
+    return NextResponse.json({ ok: false, code, error: message }, { status });
+  }
+  return new NextResponse(message, { status, headers: { "content-type": "text/plain" } });
 }
 
 function isAllowedReadOnlyMutation(req: NextRequest): boolean {
@@ -282,18 +288,25 @@ export async function proxy(req: NextRequest) {
   const verified = verifyVerifiedSessionValue(req.cookies.get(VERIFIED_COOKIE)?.value, cookieUserId);
   if (verified.ok) {
     if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS" && !isAllowedReadOnlyMutation(req)) {
-      const role = await getSessionWriteRole(req);
+      const role = await getSessionWriteRole(req, verified.userId);
       if (role === "unknown") {
-        return NextResponse.json(
-          { ok: false, code: "SESSION_ROLE_UNAVAILABLE", error: "Unable to verify the current user's write permission." },
-          { status: 503 },
+        console.error("[proxy] Write access denied - session user could not be resolved:", {
+          pathname,
+          method: req.method,
+          hasUserIdCookie: Boolean(cookieUserId),
+          hasUsernameCookie: Boolean(req.cookies.get(USERNAME_COOKIE)?.value),
+          hasHouseholdCookie: Boolean(req.cookies.get(HOUSEHOLD_COOKIE)?.value),
+        });
+        return writeDeniedResponse(
+          req,
+          401,
+          "SESSION_ROLE_UNAVAILABLE",
+          "登录状态已失效，无法确认当前账号的写权限。请退出登录后重新登录再试。",
         );
       }
       if (role === "readOnly") {
-        return NextResponse.json(
-          { ok: false, code: "READ_ONLY", error: "Read-only users cannot modify data." },
-          { status: 403 },
-        );
+        console.error("[proxy] Write access denied - read-only account:", { pathname, method: req.method });
+        return writeDeniedResponse(req, 403, "READ_ONLY", "当前账号为只读账号，无法修改数据。");
       }
     }
     return NextResponse.next();

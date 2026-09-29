@@ -1,6 +1,5 @@
 import { cache } from "react";
 import { cookies } from "next/headers";
-import { prisma } from "@/lib/db/prisma";
 import {
   HOUSEHOLD_COOKIE,
   USER_ID_COOKIE,
@@ -8,58 +7,15 @@ import {
   VERIFIED_COOKIE,
   verifyVerifiedSessionValue,
 } from "@/lib/server/session-cookies";
+import { resolveSessionUser, sessionMatchesAuthVersion, type SessionUserRow } from "@/lib/server/session-user";
 
-export type CurrentUser = {
-  id: string;
-  name: string;
-  role: string;
-  isSystem: boolean;
-  householdId: string | null;
-  authVersion: number;
-};
+export type CurrentUser = SessionUserRow;
 
 export const USER_ROLE_ADMIN = "admin";
 export const USER_ROLE_USER = "user";
 export const USER_ROLE_VIEWER = "viewer";
 
-const currentUserSelect = {
-  id: true,
-  name: true,
-  role: true,
-  isSystem: true,
-  householdId: true,
-  authVersion: true,
-} as const;
-
 const USER_LOOKUP_TIMEOUT_MS = 8000;
-
-/**
- * A session is only valid while the user's authVersion matches the version
- * stamped into the cookie at issuance. Password set/clear/reset and admin
- * resets bump authVersion, which immediately invalidates every previously
- * issued session for that user.
- */
-function sessionMatchesAuthVersion(
-  user: CurrentUser,
-  verified: { ok: true; userId: string; expiresAt: Date; authVersion: number } | { ok: false },
-): boolean {
-  return verified.ok ? verified.authVersion === user.authVersion : false;
-}
-
-async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T | null> {
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<null>((resolve) => {
-    timeoutId = setTimeout(() => resolve(null), timeoutMs);
-  });
-
-  try {
-    return await Promise.race([operation.catch(() => null), timeout]);
-  } finally {
-    if (timeoutId) {
-      clearTimeout(timeoutId);
-    }
-  }
-}
 
 /**
  * Read the verified login cookies and resolve the current database user.
@@ -76,99 +32,25 @@ export const getCurrentUser = cache(async function getCurrentUser(): Promise<Cur
   const cookieStore = await cookies();
   const cookieUserId = cookieStore.get(USER_ID_COOKIE)?.value?.trim();
   const verified = verifyVerifiedSessionValue(cookieStore.get(VERIFIED_COOKIE)?.value, cookieUserId);
-  const userId = verified.ok ? verified.userId : cookieUserId;
-  const username = cookieStore.get(USERNAME_COOKIE)?.value?.trim();
-  const householdId = cookieStore.get(HOUSEHOLD_COOKIE)?.value?.trim();
-
   if (!verified.ok) return null;
 
-  const deadline = Date.now() + USER_LOOKUP_TIMEOUT_MS;
-  const lookup = async <T>(operation: Promise<T>): Promise<T | null> => {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) return null;
-    return withTimeout(operation, remaining);
-  };
+  // The proxy write gate resolves the same cookies through the same helper
+  // (src/lib/server/session-user.ts) so "page renders" and "save is allowed"
+  // can never disagree.
+  const resolution = await resolveSessionUser(
+    {
+      userId: verified.userId,
+      username: cookieStore.get(USERNAME_COOKIE)?.value,
+      householdId: cookieStore.get(HOUSEHOLD_COOKIE)?.value,
+    },
+    { totalTimeoutMs: USER_LOOKUP_TIMEOUT_MS },
+  );
 
-  if (userId) {
-    const user = await lookup(prisma.user.findUnique({
-      where: { id: userId },
-      select: currentUserSelect,
-    }));
-    if (user) return sessionMatchesAuthVersion(user, verified) ? user : null;
-  }
-
-  if (username && householdId) {
-    const scopedUser = await lookup(prisma.user.findFirst({
-      where: { name: username, householdId },
-      select: currentUserSelect,
-    }));
-    if (scopedUser) return scopedUser;
-
-    const systemUser = await lookup(prisma.user.findFirst({
-      where: { name: username, isSystem: true },
-      select: currentUserSelect,
-      orderBy: { createdAt: "asc" },
-    }));
-    if (systemUser) return systemUser;
-
-    const users = await lookup(prisma.user.findMany({
-      where: { name: username },
-      select: currentUserSelect,
-      take: 2,
-      orderBy: { createdAt: "asc" },
-    }));
-    if (!users) return null;
-    return users.length === 1 ? users[0] : null;
-  }
-
-  if (!username && householdId) {
-    const householdAdmin = await lookup(prisma.user.findFirst({
-      where: { householdId, OR: [{ role: "admin" }, { isSystem: true }] },
-      select: currentUserSelect,
-      orderBy: { createdAt: "asc" },
-    }));
-    if (householdAdmin) return householdAdmin;
-
-    return await lookup(prisma.user.findFirst({
-      where: { householdId },
-      select: currentUserSelect,
-      orderBy: { createdAt: "asc" },
-    }));
-  }
-
-  if (!username) {
-    const systemUser = await lookup(prisma.user.findFirst({
-      where: { isSystem: true },
-      select: currentUserSelect,
-      orderBy: { createdAt: "asc" },
-    }));
-    if (systemUser) return systemUser;
-
-    const users = await lookup(prisma.user.findMany({
-      select: currentUserSelect,
-      take: 2,
-      orderBy: { createdAt: "asc" },
-    }));
-    if (!users) return null;
-    return users.length === 1 ? users[0] : null;
-  }
-
-  const systemUser = await lookup(prisma.user.findFirst({
-    where: { name: username, isSystem: true },
-    select: currentUserSelect,
-    orderBy: { createdAt: "asc" },
-  }));
-  if (systemUser) return systemUser;
-
-  const users = await lookup(prisma.user.findMany({
-    where: { name: username },
-    select: currentUserSelect,
-    take: 2,
-    orderBy: { createdAt: "asc" },
-  }));
-  if (!users) return null;
-
-  return users.length === 1 ? users[0] : null;
+  const user = resolution.user;
+  if (!user) return null;
+  // Only the by-id branch carries a version claim to compare against.
+  if (resolution.matchedBy === "id") return sessionMatchesAuthVersion(user, verified) ? user : null;
+  return user;
 });
 
 /**
