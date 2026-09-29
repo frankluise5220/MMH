@@ -227,7 +227,11 @@ export function ReimbursementPrintArticle({
     ) : null;
 
   return (
-    <article className="print-page mx-auto min-h-[210mm] w-full max-w-[297mm] bg-white p-8 text-slate-900 print:min-h-0 print:max-w-none print:p-0">
+    <article className="print-page relative mx-auto min-h-[210mm] w-full max-w-[297mm] bg-white p-8 text-slate-900 print:min-h-0 print:max-w-none print:p-0">
+      {/* Brand mark pinned to the sheet's top-right corner; the browser's default
+          print header only renders document.title on the LEFT, so the corner mark is
+          printed on the sheet itself. */}
+      <span className="absolute right-0 top-0 text-[10px] tracking-wide text-slate-500">MMH</span>
       <h1 className="border-b-2 border-slate-800 pb-3 text-center text-xl font-bold">
         {t(`reimburse.print.title.${reimbursement.kind}`)}
       </h1>
@@ -367,12 +371,14 @@ function hasAdjustments(adjust: ReimbursementPrintAdjust) {
   );
 }
 
-/** While a print surface is mounted, the browser print dialog's default header shows
- * document.title — swap it to the short product name so "MoneyMoneyHome" never prints. */
+/** While a print surface is mounted, blank the document title: the browser's default
+ * print header renders it on the LEFT (position is not controllable from a page), so
+ * an empty title keeps the header to just the date while the MMH brand mark prints at
+ * the sheet's own top-right corner. Restored on unmount. */
 function usePrintTitle() {
   useEffect(() => {
     const original = document.title;
-    document.title = "MMH";
+    document.title = "";
     return () => {
       document.title = original;
     };
