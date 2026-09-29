@@ -1,4 +1,4 @@
-import { Prisma, ReimbursementStatus, type TxRecord } from "@prisma/client";
+import { Prisma, ReimbursementStatus, TransactionType, type TxRecord } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import { chunk, IN_CHUNK_SIZE } from "@/lib/server/prisma-in-chunks";
@@ -25,6 +25,7 @@ import {
 } from "@/lib/server/entry-business-link";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
+import { TRANSACTION_SOURCE_BOND } from "@/lib/transaction-semantics";
 
 export type EntryDeleteLinkedAction = "deleteBusiness" | "keepBusiness";
 
@@ -545,6 +546,62 @@ async function softDeleteIndependentBusinessRecordsByIds(
   return result;
 }
 
+/**
+ * 「生息 + 取息」两条腿必须成对删除。
+ *
+ * 存款/债券的付息一次落**两条**账（见 deposit-auto-maturity.ts / bond-auto-interest.ts）：
+ *   生息 income   —— 利息在存款/债券账户里生出来，同时落一条业务行；
+ *   取息 transfer —— 同一笔钱转到买入时的资金来源账户，只是普通转账，**不落业务行**。
+ * 而存款/债券视图的「明细」都只渲染业务行，所以取息腿在视图里根本看不到。
+ * 用户在「删除所有交易」时只会选中生息那条，取息就成了孤儿：账户余额被算成
+ * −利息（余额变负），用户在视图里又找不到它去删。
+ *
+ * 这里按计划行（depi_/bondi_<存单id>）+ 同付息日把配对腿一并纳入删除范围。
+ * 没有计划行归属的记录（纯手工录入、不挂计划任务）不参与配对，行为保持原样。
+ */
+const PAYOUT_PAIR_PLAN_SOURCES = [
+  { source: "deposit", planPrefix: "depi_" },
+  { source: TRANSACTION_SOURCE_BOND, planPrefix: "bondi_" },
+] as const;
+
+async function collectPayoutPairEntryIds(householdId: string, entryIds: string[]): Promise<string[]> {
+  if (entryIds.length === 0) return [];
+  const seeds = await prisma.txRecord.findMany({
+    where: {
+      id: { in: entryIds },
+      householdId,
+      deletedAt: null,
+      type: TransactionType.income,
+      OR: PAYOUT_PAIR_PLAN_SOURCES.map(({ source, planPrefix }) => ({
+        source,
+        regularInvestPlanId: { startsWith: planPrefix },
+      })),
+    },
+    select: { source: true, regularInvestPlanId: true, date: true },
+  });
+  if (seeds.length === 0) return [];
+
+  const pairIds = new Set<string>();
+  for (const seed of seeds) {
+    if (!seed.source || !seed.regularInvestPlanId || !seed.date) continue;
+    const dayStart = new Date(seed.date);
+    dayStart.setHours(0, 0, 0, 0);
+    const pairs = await prisma.txRecord.findMany({
+      where: {
+        householdId,
+        deletedAt: null,
+        type: TransactionType.transfer,
+        source: seed.source,
+        regularInvestPlanId: seed.regularInvestPlanId,
+        date: { gte: dayStart, lt: new Date(dayStart.getTime() + 24 * 60 * 60 * 1000) },
+      },
+      select: { id: true },
+    });
+    for (const pair of pairs) pairIds.add(pair.id);
+  }
+  return Array.from(pairIds).filter((id) => !entryIds.includes(id));
+}
+
 async function detachLegacyCombinedBusinessEntry(txRecord: TxRecord) {
   const businessAccount = businessAccountSnapshotOf(txRecord);
   if (!businessAccount.id) return false;
@@ -641,7 +698,17 @@ export async function softDeleteEntriesByIds(
   const reimbursementSettlements = await findReimbursementSettlementCleanup(ctx.householdId, requestedIds);
   const reimbursementPayments = await findReimbursementPaymentCleanup(ctx.householdId, requestedIds);
   const settlementTransactionIds = reimbursementSettlements.flatMap((settlement) => settlement.transactionIds);
-  const ids = Array.from(new Set([...requestedIds, ...settlementTransactionIds]));
+  // 存款/债券付息的「生息 + 取息」两条腿成对删除（取息腿在视图里不可见，详见
+  // collectPayoutPairEntryIds 注释）。配对腿并进 ids 后走完全相同的删除路径，
+  // 因此余额增量、撤销快照、重算目标都自动覆盖它。
+  const payoutPairIds = await collectPayoutPairEntryIds(ctx.householdId, [
+    ...requestedIds,
+    ...settlementTransactionIds,
+  ]).catch((error) => {
+    logger.catchLog("收集付息配对记录失败", "entry-delete.ts")(error);
+    return [] as string[];
+  });
+  const ids = Array.from(new Set([...requestedIds, ...settlementTransactionIds, ...payoutPairIds]));
   const undo = await prepareEntryUndo(prisma, ctx.householdId, ids);
   let deletedCount = 0;
   let keptBusinessCount = 0;
