@@ -1,7 +1,12 @@
 import { IntervalUnit, RegularInvestStatus } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
-import { isPeriodicDepositInterestPayout, parseDepositInterestPayout, depositPayoutAnchorUtc } from "@/lib/deposit-interest-payout";
+import {
+  depositPayoutAnchorUtc,
+  depositPayoutMaxPeriods,
+  isPeriodicDepositInterestPayout,
+  parseDepositInterestPayout,
+} from "@/lib/deposit-interest-payout";
 import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, type ScheduledTaskPayload } from "@/lib/scheduled-task";
 import { loadDepositLotBalance } from "@/lib/server/deposit-lot-balance";
 
@@ -110,7 +115,8 @@ export async function ensureDepositPlansForHeldLots(params: {
   );
   let created = 0;
   for (const lot of lots) {
-    if (!lot.date || !lot.fundArrivalDate) continue;
+    // 不跳过「缺日期」的存单：要素不全的存单虽然建不出计划行，但**已结清**的存单
+    // 必须在这里被收尾（ensureDepositPlansForLot 内部先判结清、再校验日期）。
     const needsRefresh = !!lot.depositMaturityAction
       || isPeriodicDepositInterestPayout(lot.depositInterestPayoutFrequency)
       || !existingIds.has(`depm_${lot.id}`)
@@ -156,18 +162,28 @@ export async function ensureDepositPlansForLot(params: {
     },
   });
   if (!buy) throw new Error("LOT_NOT_FOUND");
+  // 本金已取完（提前支取/到期取回/核销）→ 两条计划行一并完成，绝不再生成利息。
+  // 这一步必须在下面的日期/账户校验**之前**：存单要素不全（缺到期日、缺资金来源
+  // 账户）时那些校验会抛错，而调用方一律 catch 掉 —— 结果就是已结清的存单计划
+  // 永远停不下来（2026-09-29 honker 报的「本金取完了还在跑取息任务」）。
+  const settled = await loadDepositLotBalance({ householdId, lotId: buy.id });
+  if (!settled || settled.settled) {
+    await completeDepositPlansForLot({ householdId, lotId: buy.id });
+    return { maturityPlanId: null, payoutPlanId: null };
+  }
   const maturity = buy.fundArrivalDate;
   if (!maturity || !buy.date) throw new Error("LOT_MISSING_DATES");
 
   const depositAccount = buy.toAccountId;
   const cashAccount = buy.accountId;
   if (!depositAccount || !cashAccount) throw new Error("LOT_MISSING_ACCOUNTS");
-  const lotBalance = await loadDepositLotBalance({ householdId, lotId: buy.id });
-  const remainingPrincipal = lotBalance?.remainingPrincipal ?? 0;
-  const lotSettled = !lotBalance || lotBalance.settled;
+  const lotBalance = settled;
+  const remainingPrincipal = lotBalance.remainingPrincipal;
   const label = buy.fundName ?? "存款";
   const start = buy.date;
 
+  // 到这里存单一定还有剩余本金（已结清的在上面提前返回），所以下面两条计划行
+  // 一律 active；本金取完时由上面的提前返回把两行置 completed。
   // ── Maturity plan: one-shot on the maturity date; renewed lots roll the
   // date forward when the maturity action executes. 没有设置到期行为的存单
   // 不建这条计划（无事可做），避免开机每轮空跑。
@@ -198,7 +214,7 @@ export async function ensureDepositPlansForLot(params: {
       nextRunDate: maturity,
       endDate: null,
       totalRuns: 1,
-      status: lotSettled ? RegularInvestStatus.completed : RegularInvestStatus.active,
+      status: RegularInvestStatus.active,
       feeRate: 0,
       confirmDays: 0,
       arrivalDays: 0,
@@ -213,7 +229,7 @@ export async function ensureDepositPlansForLot(params: {
       nextRunDate: maturity,
       // 金额跟随存单当前本金（到期执行金额按 lot 实时计算，这里只保证列表显示一致）。
       amount: remainingPrincipal,
-      status: lotSettled ? RegularInvestStatus.completed : RegularInvestStatus.active,
+      status: RegularInvestStatus.active,
       memo: maturityMemo,
     },
   }) : null;
@@ -262,7 +278,7 @@ export async function ensureDepositPlansForLot(params: {
         nextRunDate: nextRun,
         endDate: null,
         totalRuns: null,
-        status: lotSettled ? RegularInvestStatus.completed : RegularInvestStatus.active,
+        status: RegularInvestStatus.active,
         feeRate: 0,
         confirmDays: 0,
         arrivalDays: 0,
@@ -275,7 +291,7 @@ export async function ensureDepositPlansForLot(params: {
         // 起存日，避免残留创建时的旧快照。
         startDate: start,
         nextRunDate: nextRun,
-        status: lotSettled ? RegularInvestStatus.completed : RegularInvestStatus.active,
+        status: RegularInvestStatus.active,
         memo: payoutMemo,
         amount: remainingPrincipal,
       },
@@ -299,33 +315,20 @@ function startDateAnchorUtc(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
 }
 
-/** First anchor date strictly after `after` (exclusive), one day before the bank anchor day. */
+/** 严格晚于 `after` 的第一个付息锚点（对应日口径，见 depositPayoutAnchorUtc）。 */
 function nextPayoutDateUtc(
   startDate: Date,
   frequency: { unit: "week" | "month" | "year"; interval: number },
   after: Date,
 ): Date {
-  if (frequency.unit === "month") {
-    // periods is a count; depositPayoutAnchorUtc multiplies it by interval internally.
-    for (let periods = 1; periods * frequency.interval < 12 * 80; periods++) {
-      const date = depositPayoutAnchorUtc(startDate, frequency, periods);
-      if (date.getTime() > after.getTime()) return date;
-    }
-    // Extreme fallback after 80 years without a match: advance one full period from after.
-    return depositPayoutAnchorUtc(after, frequency, 1);
+  const maxPeriods = depositPayoutMaxPeriods(frequency);
+  // periods 是「期数」；depositPayoutAnchorUtc 内部再乘 interval。
+  for (let periods = 1; periods <= maxPeriods; periods++) {
+    const date = depositPayoutAnchorUtc(startDate, frequency, periods);
+    if (date.getTime() > after.getTime()) return date;
   }
-  const stepDays = frequency.unit === "week" ? 7 * frequency.interval : 365 * frequency.interval;
-  const elapsed = Math.floor((after.getTime() - startDate.getTime()) / 86400000);
-  // periods is a count, not a unit count; depositPayoutAnchorUtc multiplies it by interval.
-  let periods = Math.max(1, Math.ceil((elapsed + 1) / stepDays));
-  let date = depositPayoutAnchorUtc(startDate, frequency, periods);
-  // Match the monthly branch: the anchor must be strictly after `after`; an exact
-  // match advances to the next period.
-  while (date.getTime() <= after.getTime()) {
-    periods += 1;
-    date = depositPayoutAnchorUtc(startDate, frequency, periods);
-  }
-  return date;
+  // 兜底（超过 80 年仍未匹配）：从 after 起推进一个完整周期。
+  return depositPayoutAnchorUtc(after, frequency, 1);
 }
 
 export type DepositPlanExecutionResult = {
@@ -399,6 +402,23 @@ export async function executeDepositPlan(params: {
     // 下次执行会从最早日期重算并顺带认领（写回）无关联的旧记录。
     planId: plan.id,
   });
+  // 存单本金已取完（提前支取 / 到期取回 / 核销）→ 取息计划就此终结：绝不能继续
+  // 挂在「执行中」上每轮空跑（2026-09-29 honker 报的问题）。这里兜住所有「取回
+  // 记录没能触发计划收尾」的历史路径（存单要素不全、旧版本写入、导入数据等）。
+  const balanceAfter = await loadDepositLotBalance({ householdId, lotId });
+  if (!balanceAfter || balanceAfter.settled) {
+    await prisma.regularInvestPlan.update({
+      where: { id: plan.id },
+      data: { status: RegularInvestStatus.completed },
+    }).catch(() => {});
+    return {
+      executed: (outcome.pairs ?? 0) > 0,
+      pairs: outcome.pairs ?? 0,
+      message: (outcome.pairs ?? 0) > 0
+        ? `已生成 ${outcome.pairs} 期利息，存单本金已取完 → 取息计划已结束`
+        : "存单本金已取完 → 取息计划已结束",
+    };
+  }
   // 下一执行日 = 严格晚于最近结息日的下一个锚定日。若它仍 ≤ 今天，外层
   // 运行器会在下一轮继续执行（追补历史缺期），直到落在未来为止。
   const fresh = await prisma.txRecord.findUnique({
@@ -438,6 +458,3 @@ export async function executeDepositPlan(params: {
   };
 }
 
-function utcDayStart(date: Date): Date {
-  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-}

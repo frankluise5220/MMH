@@ -122,19 +122,44 @@ export function addMonthsClampedUtc(date: Date, months: number): Date {
 }
 
 /**
- * 存入日计息的付息锚点：起存日 + N 周期 − 1 天。18 号存、按月取息 → 每月
- * 17 号生息（满一个月的利息在次月同日前一天完整，与存期到期「起存日 +
- * N 年 − 1 天」同口径）。月末起存（如 1-31）的周年日钳制到目标月末再减一天
- * （1-31 → 2-27）。排程（计划任务 nextRunDate）与执行器（生成记录日期）必须
- * 共用本函数，两处日期永远一致。
+ * 按期付息的付息锚点：起存日 + N 周期（**对应日**，不再提前一天）。
+ *
+ * 2026-09-29 用户定版：1 月 1 日起存、7 天取息 → 1 月 8 日、1 月 15 日……；
+ * 18 号存、按月取息 → 次月 18 号；2026-03-01 存、每年取息 → 2027-03-01。
+ *
+ * 为什么不能提前一天：锚点提前一天会让**第一期少一天**（1-01 起存 7 天取息，
+ * 首期只有 1-01→1-07 共 6 天），于是首期利息与后续各期不等；按年周期用 365 天
+ * 近似还会逐期漂移（2027-02-28 → 2029-02-27）。改成对应日后每期都是完整周期。
+ *
+ * 日历日按 **UTC 日**取（与 `formatDateUtc` 的展示口径一致），并保留起存日自身
+ * 的「日内偏移」：数据库里存量日期既有 UTC 零点也有本地零点（旧客户端写入）两种
+ * 口径，保留偏移可让新锚点与存单自身日期同口径，避免同一期被判定成两天。
+ * 月/年周期走日历加法（月末钳制到目标月末，1-31 存 → 2-28），周周期按 7×N 天。
+ * 排程（计划任务 nextRunDate）与执行器（生成记录日期）必须共用本函数。
  */
 export function depositPayoutAnchorUtc(
   startDate: Date,
   frequency: { unit: "week" | "month" | "year"; interval: number },
   periods: number,
 ): Date {
-  const base = frequency.unit === "month"
-    ? addMonthsClampedUtc(startDate, periods * frequency.interval)
-    : new Date(startDate.getTime() + (frequency.unit === "week" ? 7 : 365) * frequency.interval * periods * 86400000);
-  return new Date(base.getTime() - 86400000);
+  const interval = Math.max(1, Math.trunc(frequency.interval || 1));
+  const dayOffset = startDate.getTime()
+    - Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate());
+  const base = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate()));
+  const shifted = frequency.unit === "week"
+    ? new Date(base.getTime() + 7 * interval * periods * 86400000)
+    : addMonthsClampedUtc(base, periods * interval * (frequency.unit === "year" ? 12 : 1));
+  return new Date(shifted.getTime() + dayOffset);
+}
+
+/**
+ * 付息锚点最多枚举多少期（约 80 年）—— 排程与执行器的循环上界共用，
+ * 避免按周取息被「80 期」这类按月的常量提前截断。
+ */
+export function depositPayoutMaxPeriods(
+  frequency: { unit: "week" | "month" | "year"; interval: number },
+): number {
+  const perYear = frequency.unit === "week" ? 52 : frequency.unit === "month" ? 12 : 1;
+  const interval = Math.max(1, Math.trunc(frequency.interval || 1));
+  return Math.max(1, Math.floor((80 * perYear) / interval) + 1);
 }

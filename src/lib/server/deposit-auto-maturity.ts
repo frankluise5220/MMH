@@ -1,7 +1,7 @@
-import { FundSubtype, TransactionType } from "@prisma/client";
+import { FundSubtype, RegularInvestStatus, TransactionType } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
-import { isPeriodicDepositInterestPayout, parseDepositInterestPayout, depositPayoutAnchorUtc } from "@/lib/deposit-interest-payout";
+import { isPeriodicDepositInterestPayout, parseDepositInterestPayout, depositPayoutAnchorUtc, depositPayoutMaxPeriods } from "@/lib/deposit-interest-payout";
 import {
   computeDepositMaturityInterest,
   dayDiffDays,
@@ -24,7 +24,6 @@ import { loadDepositLotBalance } from "@/lib/server/deposit-lot-balance";
 
 const MAX_LOTS_PER_RUN = 200;
 const MAX_RENEW_ROUNDS_PER_LOT = 24;
-const MAX_INTEREST_PAYOUTS_PER_LOT = 60;
 
 export type DepositAutoMaturityDetail = {
   lotId: string;
@@ -103,8 +102,33 @@ async function runAutoProcessMaturedDeposits(
     orderBy: [{ fundArrivalDate: "asc" }, { id: "asc" }],
     take: MAX_LOTS_PER_RUN,
   });
+  // 取息计划行是「这张存单还要不要继续付息」的开关。计划已完成（本金已取完 /
+  // 已到期 / 已改为到期取息 / 存单被删除）时不能再按锚点补生成 —— 否则会出现
+  // 「计划任务显示已完成，利息还在继续生成」（2026-09-29 honker 报的问题）。
+  // 本扫描是按**存单**遍历的，不看计划状态，所以必须在这里显式排除。
+  // 计划行不存在的存单仍照常补生成（老数据由开机自愈重建计划行）。
+  const payoutPlans = periodicLots.length > 0
+    ? await prisma.regularInvestPlan.findMany({
+        where: { householdId, id: { in: periodicLots.map((lot) => `depi_${lot.id}`) } },
+        select: { id: true, status: true },
+      })
+    : [];
+  const closedPayoutLots = new Set(
+    payoutPlans
+      .filter((row) => row.status === RegularInvestStatus.completed)
+      .map((row) => row.id.slice("depi_".length)),
+  );
   for (const buy of periodicLots) {
     try {
+      if (closedPayoutLots.has(buy.id)) {
+        result.details.push({
+          lotId: buy.id,
+          action: "interest_payout",
+          status: "skipped",
+          reason: "取息计划已完成",
+        });
+        continue;
+      }
       const outcome = await autoAccruePeriodicInterest(buy.id, householdId, today);
       if (outcome.status === "accrued") {
         result.interestPayoutsCount += outcome.pairs ?? 0;
@@ -344,23 +368,14 @@ async function autoAccruePeriodicInterest(
     const key = localDayKey(date);
     if (key > localDayKey(startDate) && key <= upperKey) payoutByKey.set(key, date);
   };
-  // 存入日计息：付息锚点 = 起存日 + N 周期 − 1 天（18 号存 → 每月 17 号生息；
-  // 月末起存钳制到月末再减一天）。与计划排程共用 depositPayoutAnchorUtc，
-  // 两处日期永远一致。
-  if (frequency.unit === "month") {
-    // periods is a count (1, 2, 3...); depositPayoutAnchorUtc multiplies it
-    // by interval internally. Passing interval, 2*interval, ... would square
-    // the step, making interval=3 accrue every 9 months instead of every 3.
-    for (let periods = 1; periods * frequency.interval < 12 * 80; periods++) {
-      const date = depositPayoutAnchorUtc(startDate, frequency, periods);
-      if (localDayKey(date) > upperKey) break;
-      addPayout(date);
-    }
-  } else {
-    const stepDays = frequency.unit === "week" ? 7 * frequency.interval : 365 * frequency.interval;
-    for (let ms = startDate.getTime() + (stepDays - 1) * 86400000; localDayKey(new Date(ms)) <= upperKey; ms += stepDays * 86400000) {
-      addPayout(new Date(ms));
-    }
+  // 付息锚点 = 起存日 + N 周期（对应日）：1-01 起存 7 天取息 → 1-08、1-15……；
+  // 18 号存按月 → 次月 18 号。与计划排程共用 depositPayoutAnchorUtc，两处永远一致。
+  // periods 是「期数」，interval 的乘法在 depositPayoutAnchorUtc 内部完成。
+  const maxPeriods = depositPayoutMaxPeriods(frequency);
+  for (let periods = 1; periods <= maxPeriods; periods++) {
+    const date = depositPayoutAnchorUtc(startDate, frequency, periods);
+    if (localDayKey(date) > upperKey) break;
+    addPayout(date);
   }
   // 到期日尾差：最后一个付息日之后、到期日之前的那几天，银行在到期日一次结清。
   if (buy.fundArrivalDate) addPayout(buy.fundArrivalDate);
@@ -438,11 +453,13 @@ async function autoAccruePeriodicInterest(
       segmentStart = payoutDate;
       continue;
     }
-    // 锚点提前一天（2026-09-18 口径）的兼容：旧记录落在「锚点+1 天」（如 18 号
-    // 存、历史按 18 号生息），当该日已有本存单记录时同样视为已覆盖，避免补生成。
-    const nextDayKey = localDayKey(new Date(payoutDate.getTime() + 86400000));
-    if (coveredDays.has(nextDayKey)) {
-      segmentStart = payoutDate;
+    // 旧口径兼容（2026-09-18 ~ 09-29 的「付息日提前一天」）：存量付息记录落在
+    // 「锚点 − 1 天」（如 1-01 存 7 天取息，历史按 1-07 生息）。该日已有本存单
+    // 记录时视为本期已覆盖，避免补生成重复利息；下一期计息起点用**实际付息日**
+    // （锚点 − 1 天），过渡期既不丢一天也不多算一天。
+    const prevDay = new Date(payoutDate.getTime() - 86400000);
+    if (coveredDays.has(localDayKey(prevDay))) {
+      segmentStart = prevDay;
       continue;
     }
     // 按月均分：月频率下每期固定 本金×年利率÷12×期数；其余走统一分段计息
