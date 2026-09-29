@@ -9,7 +9,7 @@ import { DateStepper } from "./DateStepper";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { reimbursementErrorMessage } from "@/lib/reimbursement-error";
 import { ReimbursementFormModal, type ReimbursementFormEntry, type ReimbursementObjectOption } from "@/components/ReimbursementFormModal";
-import { ReimbursementPreview } from "@/components/ReimbursementPreview";
+import { ReimbursementPreview, ReimbursementBatchPrintModal } from "@/components/ReimbursementPreview";
 import { ReimbursementEditor } from "@/components/ReimbursementEditor";
 import { CalcInput } from "@/components/CalcInput";
 import type {
@@ -112,8 +112,15 @@ export function ReimbursementWorkspace({
   const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
   // Editor state: which reimbursement is being edited
   const [editingReimbId, setEditingReimbId] = useState<string | null>(null);
-  // Document table row selection (checkbox column); drives the batch delete button.
+  // Document table row selection (checkbox column); drives the batch action buttons.
   const [selectedDocumentIds, setSelectedDocumentIds] = useState<Set<string>>(new Set());
+  // Batch actions over the selected documents.
+  const [batchPrintDocs, setBatchPrintDocs] = useState<ReimbursementData[] | null>(null);
+  const [editingQueueIds, setEditingQueueIds] = useState<string[]>([]);
+  const [batchApproveOpen, setBatchApproveOpen] = useState(false);
+  const [batchApproveDate, setBatchApproveDate] = useState(todayDateLocalYmd());
+  const [batchApproveNote, setBatchApproveNote] = useState("");
+  const [batchApproveAmounts, setBatchApproveAmounts] = useState<Record<string, string>>({});
 
   const load = async () => {
     setLoading(true);
@@ -161,6 +168,19 @@ export function ReimbursementWorkspace({
     () => batchReimbursements.filter((reimbursement) => reimbursement.status === "pending" && selectedDocumentIds.has(reimbursement.id)),
     [batchReimbursements, selectedDocumentIds],
   );
+  const selectedDocuments = useMemo(
+    () => batchReimbursements.filter((reimbursement) => selectedDocumentIds.has(reimbursement.id)),
+    [batchReimbursements, selectedDocumentIds],
+  );
+  const selectedPendingDocuments = useMemo(
+    () => selectedDocuments.filter((reimbursement) => reimbursement.status === "pending"),
+    [selectedDocuments],
+  );
+  const editorQueueHead = useMemo(
+    () => (editingQueueIds.length > 0 ? (data?.reimbursements ?? []).find((reimbursement) => reimbursement.id === editingQueueIds[0]) ?? null : null),
+    [data, editingQueueIds],
+  );
+  const editorReimb = approvalTarget ?? editingReimb ?? editorQueueHead;
   const pendingList = batchReimbursements.filter((reimbursement) => reimbursement.approvalStatus === "pending");
   const reimbursedList = batchReimbursements.filter((reimbursement) => reimbursement.status === "reimbursed");
   const pendingTotal = pendingList.reduce((sum, reimbursement) => sum + reimbursement.totalAmount, 0);
@@ -636,6 +656,38 @@ export function ReimbursementWorkspace({
     }
   };
 
+  const openBatchApprove = () => {
+    setBatchApproveDate(todayDateLocalYmd());
+    setBatchApproveNote("");
+    setBatchApproveAmounts(Object.fromEntries(
+      selectedPendingDocuments.map((reimbursement) => [reimbursement.id, String(reimbursement.approvedAmount ?? reimbursement.totalAmount)]),
+    ));
+    setBatchApproveOpen(true);
+  };
+
+  const submitBatchApprove = async () => {
+    if (busy || selectedPendingDocuments.length === 0) return;
+    setBusy(true);
+    try {
+      let failed = 0;
+      for (const reimbursement of selectedPendingDocuments) {
+        const formData = new FormData();
+        formData.set("reimbursementId", reimbursement.id);
+        formData.set("approvedAmount", batchApproveAmounts[reimbursement.id] ?? String(reimbursement.totalAmount));
+        formData.set("approvalDate", batchApproveDate);
+        formData.set("approvalNote", batchApproveNote);
+        const res = await actions.approve(formData);
+        if (!res.ok) failed += 1;
+      }
+      setBatchApproveOpen(false);
+      if (failed > 0) window.alert(t("reimburse.document.batchApproveFailed", { count: String(failed) }));
+      setSelectedDocumentIds(new Set());
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const linkTransactions = async (reimbursement: ReimbursementData, txRecordIds: string[]) => {
     if (busy) return;
     const formData = new FormData();
@@ -802,6 +854,36 @@ export function ReimbursementWorkspace({
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-medium text-blue-700">{t("reimburse.table.batchTitle", { title: selectedBatch.title })}</span>
                         <div className="flex items-center gap-2">
+                          {selectedDocuments.length > 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => setBatchPrintDocs(selectedDocuments)}
+                              className="secondary-button h-7 px-2 text-xs"
+                              disabled={busy}
+                            >
+                              {t("reimburse.document.batchPrint")}
+                            </button>
+                          ) : null}
+                          {selectedPendingDocuments.length > 0 ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => setEditingQueueIds(selectedPendingDocuments.map((reimbursement) => reimbursement.id))}
+                                className="secondary-button h-7 px-2 text-xs"
+                                disabled={busy}
+                              >
+                                {t("reimburse.document.batchEdit")}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={openBatchApprove}
+                                className="secondary-button h-7 px-2 text-xs"
+                                disabled={busy}
+                              >
+                                {t("reimburse.document.batchApprove")}
+                              </button>
+                            </>
+                          ) : null}
                           {batchDeleteTargets.length > 0 ? (
                             <button
                               type="button"
@@ -972,9 +1054,9 @@ export function ReimbursementWorkspace({
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-600">{t("reimburse.batch.dateRange")}</label>
                 <div className="flex items-center gap-2">
-                  <input type="date" value={batchStartDate} onChange={(event) => setBatchStartDate(event.target.value)} className="form-input h-9 min-w-0 flex-1" />
+                  <DateStepper value={batchStartDate} onChange={setBatchStartDate} className="h-9 min-w-0 flex-1" />
                   <span className="text-slate-400">~</span>
-                  <input type="date" value={batchEndDate} onChange={(event) => setBatchEndDate(event.target.value)} className="form-input h-9 min-w-0 flex-1" />
+                  <DateStepper value={batchEndDate} onChange={setBatchEndDate} className="h-9 min-w-0 flex-1" />
                 </div>
               </div>
             </div>
@@ -1185,7 +1267,7 @@ export function ReimbursementWorkspace({
         </div>
       ) : null}
 
-      {approvalTarget || editingReimb ? (
+      {approvalTarget || editingReimb || editorQueueHead ? (
         <div className="app-modal-backdrop z-[80]">
           <div
             className="app-modal-panel resize"
@@ -1198,9 +1280,9 @@ export function ReimbursementWorkspace({
             }}
           >
             <ReimbursementEditor
-              reimbursement={approvalTarget ?? editingReimb!}
+              reimbursement={editorReimb!}
               batches={data?.batches ?? []}
-              accountName={(approvalTarget ?? editingReimb)!.advanceAccountName ?? accountName}
+              accountName={editorReimb!.advanceAccountName ?? accountName}
               candidates={data?.candidates ?? []}
               mode={approvalTarget ? "audit" : "edit"}
               auditAmount={approvedAmount}
@@ -1225,9 +1307,74 @@ export function ReimbursementWorkspace({
               onClose={() => {
                 setApprovalTarget(null);
                 setEditingReimbId(null);
+                // Batch-edit queue: closing without a specific target advances to the next queued document.
+                if (editorQueueHead && !approvalTarget && !editingReimb) {
+                  setEditingQueueIds((ids) => ids.slice(1));
+                }
               }}
               onSaved={async () => { await load(); }}
             />
+          </div>
+        </div>
+      ) : null}
+
+      {batchPrintDocs ? (
+        <ReimbursementBatchPrintModal
+          reimbursements={batchPrintDocs}
+          counterpartyNameFallback={objectName}
+          onClose={() => setBatchPrintDocs(null)}
+        />
+      ) : null}
+
+      {batchApproveOpen ? (
+        <div className="app-modal-backdrop z-[70]">
+          <div className="app-modal-panel max-w-xl">
+            <div className="modal-header shrink-0">
+              <div>
+                <div className="text-sm font-semibold text-slate-800">{t("reimburse.document.batchApprove")}</div>
+                <div className="mt-0.5 text-xs text-slate-500">{t("reimburse.table.batchTitle", { title: selectedBatch?.title ?? "" })}</div>
+              </div>
+              <button type="button" onClick={() => setBatchApproveOpen(false)} className="secondary-button h-8 px-2" disabled={busy}>{t("table.close")}</button>
+            </div>
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-600">{t("reimburse.document.approvalDate")}</label>
+                  <DateStepper value={batchApproveDate} onChange={setBatchApproveDate} className="h-9 w-full" />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-600">{t("reimburse.document.approvalNote")}</label>
+                  <input value={batchApproveNote} onChange={(event) => setBatchApproveNote(event.target.value)} className="form-input h-9 w-full" />
+                </div>
+              </div>
+              <div className="overflow-hidden rounded border border-slate-200">
+                <div className="grid grid-cols-[minmax(0,1fr)_7rem_7rem] gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-medium text-slate-500">
+                  <span>{t("reimburse.document.number")}</span>
+                  <span className="text-right">{t("reimburse.document.claimedAmount")}</span>
+                  <span className="text-right">{t("reimburse.document.approvedAmount")}</span>
+                </div>
+                {selectedPendingDocuments.map((reimbursement) => (
+                  <div key={reimbursement.id} className="grid grid-cols-[minmax(0,1fr)_7rem_7rem] items-center gap-2 border-b border-slate-100 px-3 py-2 last:border-b-0">
+                    <div className="min-w-0 truncate text-xs font-medium text-slate-700" title={reimbursement.title}>{reimbursement.documentNumber || reimbursement.title || "-"}</div>
+                    <div className="text-right text-xs tabular-nums text-slate-600">{formatMoneyYuan(reimbursement.totalAmount)}</div>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={batchApproveAmounts[reimbursement.id] ?? String(reimbursement.totalAmount)}
+                      onChange={(event) => setBatchApproveAmounts((current) => ({ ...current, [reimbursement.id]: event.target.value }))}
+                      className="form-input h-8 w-full text-right text-xs"
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-slate-100 p-3">
+              <button type="button" onClick={() => setBatchApproveOpen(false)} className="secondary-button h-9 px-3" disabled={busy}>{t("common.cancel")}</button>
+              <button type="button" onClick={() => void submitBatchApprove()} className="primary-button h-9 px-3" disabled={busy || selectedPendingDocuments.length === 0}>
+                {busy ? t("debtShell.saving") : t("reimburse.document.audit")}
+              </button>
+            </div>
           </div>
         </div>
       ) : null}

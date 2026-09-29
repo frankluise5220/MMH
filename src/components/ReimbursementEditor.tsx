@@ -605,11 +605,11 @@ export function ReimbursementEditor({
                     {/* Date */}
                     <td className="border-b border-r border-slate-200 px-1 py-1">
                       {isEditable ? (
-                        <input
-                          type="date"
+                        <DateStepper
                           value={item.entryDate}
-                          onChange={(event) => patchItem(item.id, { entryDate: event.target.value })}
-                          className="form-input h-7 w-[7.5rem] px-1 text-xs"
+                          onChange={(value) => patchItem(item.id, { entryDate: value })}
+                          className="h-7 w-[7.5rem] text-xs"
+                          compact
                         />
                       ) : (
                         <span className="px-1 text-slate-600">{item.entryDate}</span>
@@ -765,11 +765,10 @@ export function ReimbursementEditor({
           <section className="mt-3 grid grid-cols-1 border-l border-t border-slate-300 text-xs sm:grid-cols-12">
             <label className="border-b border-r border-slate-300 p-2 sm:col-span-3">
               <span className="text-slate-500">{t("reimburse.document.approvalDate")}</span>
-              <input
-                type="date"
+              <DateStepper
                 value={auditDate ?? ""}
-                onChange={(event) => onAuditDateChange?.(event.target.value)}
-                className="mt-1 h-8 w-full rounded-sm border border-slate-300 px-2 text-sm font-normal text-slate-800"
+                onChange={(value) => onAuditDateChange?.(value)}
+                className="mt-1 h-8 w-full"
               />
             </label>
             <div className="border-b border-r border-slate-300 p-2 sm:col-span-2">
