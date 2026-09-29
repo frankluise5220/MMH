@@ -9,6 +9,7 @@ import { calculateWealthCashDividendProfit, recalcWealthPositions } from "@/lib/
 import {
   applyEntryChangesToAccountBalances,
   BALANCE_ENTRY_SELECT,
+  recalcAndSaveAccountBalance,
   type EntryBalanceChange,
 } from "@/lib/server/account-balance";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
@@ -33,10 +34,10 @@ import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
 import { createBondEntry, editBondEntry, bondEntryInputFromFormData } from "@/lib/server/bond-transactions";
 import { resolveOrCreateAdvanceAccount } from "@/lib/server/advance-account";
 import { createCreditCardInstallmentPlan } from "@/lib/server/credit-card-installment";
-import { ENTRY_ORIGIN_MANUAL, isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/transaction-semantics";
+import { ENTRY_ORIGIN_MANUAL, ENTRY_ORIGIN_SCHEDULED_TASK, isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/transaction-semantics";
 import { ensureSettlementTransferCategory, resolveCategorySnapshot, resolveCreditCardRepaymentCategory, SYSTEM_DEPOSIT_INTEREST_CATEGORY } from "@/lib/default-categories";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
-import { calculateDepositAccruedInterest, depositInterestDaysUtc } from "@/lib/deposit-maturity";
+import { calculateDepositAccruedInterest, depositSegmentInterest, round2 } from "@/lib/deposit-maturity";
 import { getCashFlowDate } from "@/lib/cash-flow-date";
 import { buildWealthCashFlowNote } from "@/lib/wealth-cash-note";
 import { linkExpenseToFixedAsset, syncLinkedFixedAssetTransactionFromCashEntry } from "@/lib/property/transactions";
@@ -2441,19 +2442,38 @@ export async function editInvestment(formData: FormData) {
 }
 /**
  * Renew a held deposit lot (bank-style auto-renewal applied at maturity).
- * - Interest accrues from the lot's original start date (or the latest renewal
- *   date stored on the buy record's fundConfirmDate slot) to its maturity date,
- *   following the same principal x annualRate x days / 365 convention as the
- *   deposit form preview.
- * - Mode "renew_principal_interest": interest is folded into the principal and
- *   the same lot rolls into the new term (no cash flow).
- * - Mode "renew_principal": interest is paid out to a cash account as a
- *   deposit dividend_cash entry; the principal continues for the new term.
- * Both modes update the lot's maturity date (default: rolled by the original
- * term) and annual rate (default: unchanged), and store the renewal effective
- * date on fundConfirmDate so future previews accrue only the new segment.
+ * The old certificate is RETIRED and a NEW certificate is created — the same
+ * lot is never mutated, so the closed term keeps its own history and only the
+ * successor carries the new maturity.
+ * - Interest accrues from the current segment start (the buy record's
+ *   fundConfirmDate slot, else the deposit date) to the maturity date, using
+ *   the shared segment rule (whole-month spans by N/12, otherwise days/365).
+ * - Mode "renew_principal_interest": the old lot is redeemed for principal +
+ *   interest and a new lot starts on the maturity date with that full amount as
+ *   its principal. Both legs use the original funding account, so the external
+ *   cash flow is zero and the deposit account grows by the compounded interest.
+ * - Mode "renew_principal": the principal rolls into a new lot, and the term
+ *   interest is paid out to the chosen cash account through the usual
+ *   income + transfer pair.
+ * The successor keeps the product, payout frequency, calc basis and rate
+ * (unless overridden), and its maturity defaults to the original term rolled
+ * forward from the current maturity. Plan rows follow along: the closed lot's
+ * depm_/depi_ rows complete, the new lot gets its own.
+ *
+ * Two callers share this action:
+ *   - the automatic maturity task, which passes entryId / renewMode /
+ *     newMaturityDate only, and
+ *   - the deposit create dialog opened from a certificate row's 续存 button,
+ *     which passes the whole deposit-buy payload (date / amount / fundName /
+ *     depositProductId / depositAnnualRate / fundArrivalDate /
+ *     depositMaturityAction / depositInterestPayoutFrequency /
+ *     depositInterestCalcBasis / cashAccountId / note). Each field falls back
+ *     to the old lot's value when absent. `date` is the withdrawal date and the
+ *     new certificate's start date; `amount` is its principal.
  */
-export async function renewDeposit(formData: FormData) {
+export async function renewDeposit(
+  formData: FormData,
+): Promise<{ ok: true; newLotId: string | null } | { ok: false; error: string }> {
   "use server";
   const t = await getServerT();
   const { householdId } = await getHouseholdScope();
@@ -2464,8 +2484,21 @@ export async function renewDeposit(formData: FormData) {
     return { ok: false as const, error: t("deposit.renew.invalidMode") };
   }
   const newRateRaw = parseFloat(String(formData.get("newAnnualRate") ?? ""));
+  // 创建窗口提交的是存款存入表单的标准字段名，这里同时接受两套（新的覆盖优先）。
+  const buyRateRaw = parseFloat(String(formData.get("depositAnnualRate") ?? ""));
   const interestRaw = parseFloat(String(formData.get("interest") ?? ""));
-  const newMaturityDate = dateFromYmd(String(formData.get("newMaturityDate") ?? "").trim());
+  const newMaturityDate =
+    dateFromYmd(String(formData.get("newMaturityDate") ?? "").trim()) ??
+    dateFromYmd(String(formData.get("fundArrivalDate") ?? "").trim());
+  // 取出日 = 新存单起存日；不传时取旧存单到期日。
+  const redeemDateOverride = dateFromYmd(String(formData.get("date") ?? "").trim());
+  const amountRaw = parseFloat(String(formData.get("amount") ?? ""));
+  const fundNameOverride = String(formData.get("fundName") ?? "").trim();
+  const productIdOverride = String(formData.get("depositProductId") ?? "").trim();
+  const payoutFrequencyOverride = String(formData.get("depositInterestPayoutFrequency") ?? "").trim();
+  const calcBasisOverride = String(formData.get("depositInterestCalcBasis") ?? "").trim();
+  const maturityActionOverride = String(formData.get("depositMaturityAction") ?? "").trim();
+  const noteOverride = String(formData.get("note") ?? "").trim();
   const cashAccountId = String(formData.get("cashAccountId") ?? "").trim();
   if (mode === "renew_principal" && !cashAccountId) {
     return { ok: false as const, error: t("deposit.renew.selectCashAccount") };
@@ -2495,19 +2528,29 @@ export async function renewDeposit(formData: FormData) {
 
     const principal = lotBalance.remainingPrincipal;
     const annualRate = toNumber(buy.depositAnnualRate);
-    const effectiveNewRate = Number.isFinite(newRateRaw) && newRateRaw > 0 ? newRateRaw : (annualRate > 0 ? annualRate : null);
+    const effectiveNewRate = Number.isFinite(newRateRaw) && newRateRaw > 0
+      ? newRateRaw
+      : Number.isFinite(buyRateRaw) && buyRateRaw > 0
+        ? buyRateRaw
+        : (annualRate > 0 ? annualRate : null);
     if (!(principal > 0)) return { ok: false as const, error: t("deposit.renew.missingPrincipal") };
     if (effectiveNewRate == null || effectiveNewRate <= 0) return { ok: false as const, error: t("deposit.renew.missingRate") };
     const maturityDate = buy.fundArrivalDate;
     if (!maturityDate) return { ok: false as const, error: t("deposit.renew.missingMaturity") };
     const segmentStart = buy.fundConfirmDate ?? buy.date;
-    // 存入日计息: whole-year spans that end one day before the anniversary
-    // count inclusively (365/366 days); other spans keep the raw difference.
-    const segmentDays = depositInterestDaysUtc(segmentStart, maturityDate);
+    // 整月跨度按 月数/12（6 个月 2000 元 1.3% → 13.00），其余按 天数/365。
+    // 计息区间固定取旧存单自己那一段（上次付息日/起存日 → 到期日），不随取出日移动。
     const accruedInterest = interestRaw != null && Number.isFinite(interestRaw)
       ? Math.max(0, interestRaw)
-      : Number(((principal * (effectiveNewRate / 100) * segmentDays) / 365).toFixed(2));
+      : depositSegmentInterest({
+          principal,
+          annualRatePercent: effectiveNewRate,
+          startDate: segmentStart,
+          endDate: maturityDate,
+        });
 
+    // 取出日 = 新存单起存日。默认取旧存单到期日（自动到期与旧续存弹窗都不传 date）。
+    const redeemDate = redeemDateOverride ?? maturityDate;
     const originalTermDays = Math.max(1, Math.round((maturityDate.getTime() - buy.date.getTime()) / 86400000));
     let newMaturity = newMaturityDate;
     if (!newMaturity) {
@@ -2515,7 +2558,7 @@ export async function renewDeposit(formData: FormData) {
       newMaturity = new Date(Date.UTC(rolled.getUTCFullYear(), rolled.getUTCMonth(), rolled.getUTCDate()));
       newMaturity.setUTCDate(newMaturity.getUTCDate() + originalTermDays);
     }
-    if (newMaturity.getTime() <= maturityDate.getTime()) {
+    if (newMaturity.getTime() <= redeemDate.getTime()) {
       return { ok: false as const, error: t("deposit.renew.maturityMustMove") };
     }
 
@@ -2524,71 +2567,149 @@ export async function renewDeposit(formData: FormData) {
       select: { id: true, name: true, currency: true },
     });
     if (!depositAccount) return { ok: false as const, error: t("sidebar.action.accountNotFound") };
-    let cashAccount: { id: string; name: string; currency: string | null } | null = null;
-    if (mode === "renew_principal") {
-      cashAccount = await prisma.account.findUnique({
-        where: { id: cashAccountId },
-        select: { id: true, name: true, currency: true },
-      });
-      if (!cashAccount) return { ok: false as const, error: t("sidebar.action.accountNotFound") };
+    // 续存的「取出 / 再存入」都在存款账户内部结转：这两条腿的对手方取**存款账户自身**
+    // （与 createTransaction 里「无现金账户 → 用投资账户自身」的约定一致）。
+    // 现实中本息续存钱根本没离开定期存款，借记卡上不该出现「到期取出 / 续存存入」两条腿。
+    // 只有本金续存的**利息**是真到账，才走用户选的资金账户。
+    const payoutAccount = mode === "renew_principal"
+      ? await prisma.account.findUnique({
+          where: { id: cashAccountId },
+          select: { id: true, name: true, currency: true },
+        })
+      : null;
+    if (mode === "renew_principal" && !payoutAccount) {
+      return { ok: false as const, error: t("sidebar.action.accountNotFound") };
     }
 
+    const currency = buy.currency ?? depositAccount.currency ?? "CNY";
+    const rolledAmount = round2(principal + accruedInterest);
+    // 新存单本金：创建窗口显式传 amount 时以它为准；否则本息续存滚入本息，本金续存只滚本金。
+    const newPrincipal = Number.isFinite(amountRaw) && amountRaw > 0
+      ? round2(amountRaw)
+      : (mode === "renew_principal_interest" ? rolledAmount : principal);
+    // 新存单字段：创建窗口传什么就用什么，没传沿用旧存单。
+    const newFundName = fundNameOverride || buy.fundName;
+    const newProductId = productIdOverride || buy.depositProductId;
+    const newPayoutFrequency = payoutFrequencyOverride || buy.depositInterestPayoutFrequency;
+    const newCalcBasis = calcBasisOverride || buy.depositInterestCalcBasis;
+    const newMaturityAction = maturityActionOverride === "redeem" ||
+      maturityActionOverride === "renew_principal" ||
+      maturityActionOverride === "renew_principal_interest"
+      ? maturityActionOverride
+      : mode;
+    const entryOrigin = String(formData.get("entryOrigin") ?? "").trim() === ENTRY_ORIGIN_SCHEDULED_TASK
+      ? ENTRY_ORIGIN_SCHEDULED_TASK
+      : ENTRY_ORIGIN_MANUAL;
+
+    let redeemEntryId: string | null = null;
+    let newLotId: string | null = null;
     let interestEntryId: string | null = null;
     let transferEntryId: string | null = null;
+
     await prisma.$transaction(async (tx) => {
-      await tx.txRecord.update({
-        where: { id: buy.id },
+      // ① 旧存单到期取出：写一条 redeem 扣掉本金部分，旧存单随之结清（明细
+      //    保留、不再挂到期提醒）。本息续存取出本息，本金续存只取本金。
+      const redeemArrival = mode === "renew_principal_interest" ? newPrincipal : principal;
+      const redeem = await tx.txRecord.create({
         data: {
-          fundArrivalDate: newMaturity,
+          date: redeemDate,
+          type: TransactionType.investment,
+          accountId: depositAccount.id,
+          accountName: depositAccount.name,
+          toAccountId: depositAccount.id,
+          toAccountName: depositAccount.name,
+          amount: redeemArrival,
+          currency,
+          fundName: newFundName,
+          fundCode: buy.fundCode,
+          fundProductType: "deposit",
+          fundSubtype: FundSubtype.redeem,
+          source: "deposit",
+          entryOrigin,
           depositAnnualRate: effectiveNewRate,
-          // Renewal effective date: interest for the next term accrues from here.
-          fundConfirmDate: maturityDate,
-          ...(mode === "renew_principal_interest"
-            ? { fundArrivalAmount: Number((principal + accruedInterest + lotBalance.redeemedPrincipal).toFixed(2)) }
+          ...(mode === "renew_principal_interest" && accruedInterest > 0
+            ? { depositInterest: accruedInterest }
             : {}),
+          depositSourceEntryId: buy.id,
+          fundArrivalDate: redeemDate,
+          fundArrivalAmount: redeemArrival,
+          note: `${t("deposit.renew.redeemNote", { name: newFundName ?? "" })}`,
+          householdId,
         },
       });
-      // Two-record model for the term interest: income on the deposit
-      // account, then a transfer to the funding source account (same
-      // convention as payDepositInterest).
-      if (mode === "renew_principal" && cashAccount && accruedInterest > 0) {
+      redeemEntryId = redeem.id;
+
+      // ② 新存单：取出日起息、滚入后的金额为本金，沿用产品/付息方式/计息基准，
+      //    到期行为取本次实际生效的续存方式。
+      const newLot = await tx.txRecord.create({
+        data: {
+          date: redeemDate,
+          type: TransactionType.investment,
+          accountId: depositAccount.id,
+          accountName: depositAccount.name,
+          toAccountId: depositAccount.id,
+          toAccountName: depositAccount.name,
+          amount: -newPrincipal,
+          currency,
+          fundName: newFundName,
+          fundCode: buy.fundCode,
+          fundProductType: "deposit",
+          fundSubtype: FundSubtype.buy,
+          source: "deposit",
+          entryOrigin,
+          depositProductId: newProductId,
+          depositAnnualRate: effectiveNewRate,
+          depositMaturityAction: newMaturityAction,
+          depositInterestPayoutFrequency: newPayoutFrequency,
+          depositInterestCalcBasis: newCalcBasis,
+          fundArrivalDate: newMaturity,
+          fundArrivalAmount: newPrincipal,
+          note: noteOverride || `${t("deposit.renew.newLotNote", { name: newFundName ?? "" })}`,
+          householdId,
+        },
+      });
+      newLotId = newLot.id;
+
+      // ③ 本金续存：利息照旧走「生息 + 取息」两条腿（与 payDepositInterest 同口径）。
+      //    这是本次唯一真实的对外现金流，落到用户选的资金账户。
+      if (mode === "renew_principal" && accruedInterest > 0 && payoutAccount) {
         const interestCategory = await resolveCategorySnapshot(tx, householdId, {
           categoryName: SYSTEM_DEPOSIT_INTEREST_CATEGORY,
           type: "income",
         });
         const interestEntry = await tx.txRecord.create({
           data: {
-            date: maturityDate,
-            postedAt: maturityDate,
+            date: redeemDate,
+            postedAt: redeemDate,
             type: TransactionType.income,
             accountId: depositAccount.id,
             accountName: depositAccount.name,
             amount: accruedInterest,
-            currency: buy.currency ?? depositAccount.currency ?? "CNY",
+            currency,
             categoryId: interestCategory?.id ?? null,
             categoryName: interestCategory?.name ?? SYSTEM_DEPOSIT_INTEREST_CATEGORY,
             source: "deposit",
-            entryOrigin: ENTRY_ORIGIN_MANUAL,
+            entryOrigin,
             depositSourceEntryId: buy.id,
-            note: `${t("deposit.renew.payoutNote", { name: buy.fundName ?? "" })}`,
+            note: `${t("deposit.renew.payoutNote", { name: newFundName ?? "" })}`,
             ...{ householdId },
           },
         });
         interestEntryId = interestEntry.id;
         const transferEntry = await tx.txRecord.create({
           data: {
-            date: maturityDate,
+            date: redeemDate,
             type: TransactionType.transfer,
             accountId: depositAccount.id,
             accountName: depositAccount.name,
-            toAccountId: cashAccount.id,
-            toAccountName: cashAccount.name,
+            toAccountId: payoutAccount.id,
+            toAccountName: payoutAccount.name,
             amount: -accruedInterest,
-            currency: buy.currency ?? depositAccount.currency ?? "CNY",
+            currency,
             source: "deposit",
-            entryOrigin: ENTRY_ORIGIN_MANUAL,
+            entryOrigin,
             depositSourceEntryId: buy.id,
-            note: `${t("deposit.renew.payoutTransferNote", { name: buy.fundName ?? "" })}`,
+            note: `${t("deposit.renew.payoutTransferNote", { name: newFundName ?? "" })}`,
             ...{ householdId },
           },
         });
@@ -2596,17 +2717,35 @@ export async function renewDeposit(formData: FormData) {
       }
     });
 
-    await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: buy.id }).catch((e) => {
-      console.error("renewDeposit sync buy business transaction:", e);
+    // 业务行投影：存款明细 / 存单卡片读的是这两张表。
+    for (const businessEntryId of [redeemEntryId, newLotId, interestEntryId, transferEntryId]) {
+      if (!businessEntryId) continue;
+      await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId }).catch((e) => {
+        console.error("renewDeposit sync business transaction:", e);
+      });
+    }
+
+    // 计划行：旧存单结清后其 depm_/depi_ 置完成（不再提醒），新存单生成自己的计划。
+    const { ensureDepositPlansForLot } = await import("@/lib/server/deposit-plan-tasks");
+    await ensureDepositPlansForLot({ householdId, lotId: buy.id }).catch((e) => {
+      console.error("renewDeposit refresh closed lot plans:", e);
     });
-    await applyEntryChangesToAccountBalances([
-      { entryId: buy.id, previous: buy },
-      ...(interestEntryId ? [{ entryId: interestEntryId }] : []),
-      ...(transferEntryId ? [{ entryId: transferEntryId }] : []),
-    ]).catch(() => {});
+    if (newLotId) {
+      await ensureDepositPlansForLot({ householdId, lotId: newLotId }).catch((e) => {
+        console.error("renewDeposit create successor lot plans:", e);
+      });
+    }
+
+    // 余额：续存的取出/存入在存款账户内部抵消，存款账户净增本息（2000 → 2013）；
+    // 本金续存另有「利息 → 资金账户」一条真实现金流。
+    await recalcAndSaveAccountBalance(depositAccount.id).catch(() => {});
+    if (payoutAccount && payoutAccount.id !== depositAccount.id) {
+      await recalcAndSaveAccountBalance(payoutAccount.id).catch(() => {});
+    }
     await invalidateCreditCardCycleCacheForAccountIds([depositAccount.id]).catch(() => {});
     revalidateAfterInvestChange();
-    return { ok: true as const };
+    // newLotId 让自动到期任务能沿着续存链继续补跑后续期数。
+    return { ok: true as const, newLotId };
   } catch (e) {
     console.error("renewDeposit failed:", e);
     return { ok: false as const, error: e instanceof Error ? e.message : t("txForm.alert.saveFailed") };
@@ -2668,13 +2807,19 @@ export async function payDepositInterest(formData: FormData) {
     }
     const segmentDays = Math.max(0, Math.round((effectivePayoutDate.getTime() - segmentStart.getTime()) / 86400000));
     if (segmentDays <= 0) return { ok: false as const, error: t("deposit.payInterest.noAccrual") };
-    // 按月均分（monthly 基准 + 月频率）：每满一个取息周期固定 本金×年利率÷12×期数；其余按 日数/365。
+    // 按月均分（monthly 基准 + 月频率）：每满一个取息周期固定 本金×年利率÷12×期数；
+    // 其余走统一分段计息（整月跨度按 月数/12，否则 天数/365）。
     const frequency = parseDepositInterestPayout(buy.depositInterestPayoutFrequency);
     const accruedInterest = amountOverride != null
       ? amountOverride
       : buy.depositInterestCalcBasis === "monthly" && frequency.kind === "periodic" && frequency.unit === "month"
         ? Number(((principal * (annualRate / 100) * frequency.interval) / 12).toFixed(2))
-        : Number(((principal * (annualRate / 100) * segmentDays) / 365).toFixed(2));
+        : depositSegmentInterest({
+            principal,
+            annualRatePercent: annualRate,
+            startDate: segmentStart,
+            endDate: effectivePayoutDate,
+          });
     if (!(accruedInterest > 0)) return { ok: false as const, error: t("deposit.payInterest.noAccrual") };
 
     const depositAccount = await prisma.account.findUnique({

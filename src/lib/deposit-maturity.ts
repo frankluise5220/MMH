@@ -12,9 +12,10 @@
  *                                 interest compounds into the principal
  */
 
-import { addCalendarYearsUtc, addDaysUtc, addMonthsUtc, formatDateUtc } from "@/lib/date-utils";
+import { addCalendarYearsUtc, addDaysUtc, formatDateUtc } from "@/lib/date-utils";
 
-import { type DepositInterestPayoutUnit } from "@/lib/deposit-interest-payout";
+import { addMonthsClampedUtc, type DepositInterestPayoutUnit } from "@/lib/deposit-interest-payout";
+import { splitTermDays } from "@/lib/deposit-term";
 
 const DAY_MS = 86_400_000;
 
@@ -60,7 +61,43 @@ export function depositInterestDaysUtc(start: Date, maturity: Date): number {
   return days;
 }
 
-export function calculateDepositAccruedInterest(params: {
+/**
+ * Legacy month-term maturity normalisation. The old rule stored month terms as
+ * 起存日 + N 月 − 1 天 (2026-01-15 + 6 个月 → 2026-07-14), which made the segment
+ * fall back to a day count (180/365 → 12.82) instead of the month rule
+ * (6/12 → 13.00) and pushed every renewal one day earlier. This maps such an
+ * `end` back onto its anniversary. Whole-year spans (N % 12 === 0) keep their
+ * −1 天 convention (存入日计息) and are returned untouched, as is anything that
+ * is not exactly one day before an anniversary.
+ */
+export function normalizeDepositMonthTermEndUtc(start: Date, end: Date): Date {
+  const spanMonths =
+    (end.getUTCFullYear() - start.getUTCFullYear()) * 12 + (end.getUTCMonth() - start.getUTCMonth());
+  if (spanMonths <= 0 || spanMonths % 12 === 0) return end;
+  const anniversary = addMonthsClampedUtc(start, spanMonths);
+  return formatDateUtc(addDaysUtc(anniversary, -1)) === formatDateUtc(end) ? anniversary : end;
+}
+
+/**
+ * Whole-month span detector: returns N when `end` lands exactly N calendar
+ * months after `start` (month-end starts clamp, so 2026-01-31 → 2026-02-28
+ * reads as 1 month), otherwise null.
+ */
+export function depositWholeMonthsUtc(start: Date, end: Date): number | null {
+  if (!(end.getTime() > start.getTime())) return null;
+  const months =
+    (end.getUTCFullYear() - start.getUTCFullYear()) * 12 + (end.getUTCMonth() - start.getUTCMonth());
+  if (months <= 0) return null;
+  return formatDateUtc(addMonthsClampedUtc(start, months)) === formatDateUtc(end) ? months : null;
+}
+
+/**
+ * Interest for one deposit segment. Whole-month spans are prorated by calendar
+ * months (N/12) — a 6-month term at 1.3% on 2000 pays
+ * 2000 × 1.3% × 6/12 = 13.00 — everything else keeps the day-count convention
+ * (principal × rate × days / 365).
+ */
+export function depositSegmentInterest(params: {
   principal: number;
   annualRatePercent: number | null | undefined;
   startDate: Date | null | undefined;
@@ -69,47 +106,62 @@ export function calculateDepositAccruedInterest(params: {
   const { principal, annualRatePercent, startDate, endDate } = params;
   if (!(principal > 0) || !(annualRatePercent && annualRatePercent > 0) || !startDate || !endDate) return 0;
   if (endDate.getTime() <= startDate.getTime()) return 0;
+  // 遗留的「起存日 + N 月 − 1 天」到期日先归一到周年，再按 月数/12 计息。
+  const normalizedEnd = normalizeDepositMonthTermEndUtc(startDate, endDate);
+  const months = depositWholeMonthsUtc(startDate, endDate) ?? depositWholeMonthsUtc(startDate, normalizedEnd);
+  if (months != null) return round2((principal * (annualRatePercent / 100) * months) / 12);
   const days = depositInterestDaysUtc(startDate, endDate);
   return days > 0 ? round2((principal * (annualRatePercent / 100) * days) / 365) : 0;
+}
+
+export function calculateDepositAccruedInterest(params: {
+  principal: number;
+  annualRatePercent: number | null | undefined;
+  startDate: Date | null | undefined;
+  endDate: Date | null | undefined;
+}): number {
+  return depositSegmentInterest(params);
 }
 
 /**
  * Roll a deposit's maturity forward by one term, calendar-aware. Three span
  * shapes are recognized between start → current maturity:
- *   - exact N calendar months (legacy same-day anniversary): roll keeps the
- *     anniversary (2031-01-15 + 60 months → 2036-01-15, leap years included);
+ *   - exact N calendar months (anniversary-aligned span, the month-term rule):
+ *     roll keeps the anniversary (2031-01-15 + 60 months → 2036-01-15, leap
+ *     years included);
  *   - N whole years minus one day (存入日计息 convention, maturity =
- *     起存日 + N 年 − 1 天): re-apply the same rule to the renewed term, whose
- *     start is the previous maturity day;
+ *     起存日 + N 年 − 1 天): the renewed term starts on the previous maturity
+ *     day, so its maturity is the next anniversary − 1 day, i.e. exactly
+ *     `currentMaturity + N months` (no second −1, which would drift a day
+ *     earlier per renewal);
  *   - anything else rolls by raw days — using `originalTermDays` (the lot's
  *     original term length) when provided so multi-round catch-ups advance one
  *     term per round instead of the accumulated span.
+ *
+ * The roll length always comes from the lot's ORIGINAL term, never from the
+ * accumulated start → maturity span, so the second and later renewals advance
+ * one term instead of the whole chain (a 6-month lot stays 6 months).
  */
 export function nextDepositTermMaturityUtc(
   startDate: Date,
   currentMaturity: Date,
   originalTermDays?: number,
 ): Date {
-  const months =
+  const spanMonths =
     (currentMaturity.getUTCFullYear() - startDate.getUTCFullYear()) * 12 +
     (currentMaturity.getUTCMonth() - startDate.getUTCMonth());
-  if (months > 0) {
-    const anniversary = addMonthsUtc(startDate, months);
-    const anniversaryStr = formatDateUtc(anniversary);
+  if (spanMonths > 0) {
+    const anniversary = addMonthsClampedUtc(startDate, spanMonths);
     const maturityStr = formatDateUtc(currentMaturity);
-    if (anniversaryStr === maturityStr) {
-      if (originalTermDays != null && Math.trunc(originalTermDays) % 365 === 0 && originalTermDays > 0) {
-        return addMonthsUtc(currentMaturity, 12 * (Math.trunc(originalTermDays) / 365));
-      }
-      return addMonthsUtc(currentMaturity, months);
-    }
-    if (
-      formatDateUtc(addDaysUtc(anniversary, -1)) === maturityStr
-    ) {
-      // 存入日计息 convention: maturity = calendar anniversary − 1 day. Re-apply
-      // the same rule to the renewed term, whose start is the previous maturity
-      // day (works for whole-year and month calendar spans alike).
-      return addDaysUtc(addMonthsUtc(currentMaturity, months), -1);
+    const anniversaryAligned =
+      formatDateUtc(anniversary) === maturityStr ||
+      formatDateUtc(addDaysUtc(anniversary, -1)) === maturityStr;
+    if (anniversaryAligned) {
+      const termMonths = originalTermMonthsUtc(startDate, originalTermDays) ?? spanMonths;
+      // 月周期锚在原始起存日的周年上：遗留的「−1 天」月到期日（旧规则 起存日 +
+      // N 月 − 1 天）若不回到周年，后续每期都会比周年早一天。整年（12 的倍数）
+      // 保持 存入日计息 的 −1 天语义，继续从当前到期日滚动。
+      return addMonthsClampedUtc(normalizeDepositMonthTermEndUtc(startDate, currentMaturity), termMonths);
     }
   }
   const termDays =
@@ -120,9 +172,36 @@ export function nextDepositTermMaturityUtc(
 }
 
 /**
+ * The date a renewed certificate starts on: the old certificate's maturity
+ * date, pulled back onto its anniversary when it is a legacy month term that
+ * sits one day early (2026-07-14 → 2026-07-15). Renewals therefore keep the
+ * anniversary and the successor's own segment stays a whole number of months.
+ */
+export function depositRenewalStartUtc(startDate: Date, currentMaturity: Date): Date {
+  return normalizeDepositMonthTermEndUtc(startDate, currentMaturity);
+}
+
+/**
+ * The lot's original term expressed in whole calendar months, derived from its
+ * day length (mirrors the unit-first term picker's decomposition so 181 → 6
+ * months and 364/1825 → 12/60 months). Returns null when the span is not a
+ * whole number of calendar months (day/week terms).
+ */
+function originalTermMonthsUtc(startDate: Date, originalTermDays?: number): number | null {
+  if (originalTermDays == null) return null;
+  const days = Math.trunc(originalTermDays);
+  if (!(days > 0)) return null;
+  const split = splitTermDays(days, formatDateUtc(startDate));
+  if (split.unit === "month") return split.count;
+  if (split.unit === "year") return split.count * 12;
+  return null;
+}
+
+/**
  * Interest accrued from segmentStart to maturityDate for one deposit segment.
  * Periodic-payout deposits return 0 (interest was already paid during the
  * term; at maturity only the principal returns — matches the UI hint).
+ * Whole-month segments are prorated by months (N/12), others by days/365.
  */
 export function computeDepositMaturityInterest(params: {
   principal: number;
@@ -133,13 +212,14 @@ export function computeDepositMaturityInterest(params: {
 }): number {
   const { principal, annualRatePercent, maturityDate, periodicPayout } = params;
   if (periodicPayout) return 0;
-  if (!(principal > 0)) return 0;
-  if (annualRatePercent == null || !(annualRatePercent > 0)) return 0;
   const segmentStart = params.segmentStart ?? null;
   if (!segmentStart) return 0;
-  const segmentDays = depositInterestDaysUtc(segmentStart, maturityDate);
-  if (segmentDays <= 0) return 0;
-  return round2((principal * (annualRatePercent / 100) * segmentDays) / 365);
+  return depositSegmentInterest({
+    principal,
+    annualRatePercent,
+    startDate: segmentStart,
+    endDate: maturityDate,
+  });
 }
 
 /** How many times a lot must roll one original term forward to pass `now`. */

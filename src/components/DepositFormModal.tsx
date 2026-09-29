@@ -18,7 +18,7 @@ import { useI18n } from "@/lib/i18n";
 import { APP_PREFS_EVENT, getSidebarHideInitialDataPreference } from "@/lib/client/appPreferences";
 import { Repeat } from "lucide-react";
 import { depositTermMaturityUtc } from "@/lib/deposit-term";
-import { calculateDepositAccruedInterest } from "@/lib/deposit-maturity";
+import { calculateDepositAccruedInterest, depositRenewalStartUtc } from "@/lib/deposit-maturity";
 import {
   DEFAULT_DEPOSIT_TERM_DAYS,
   splitTermDays,
@@ -106,6 +106,27 @@ type EditingRedeemSource = {
   latestInterestDate?: string | null;
 };
 
+/** 续存建新存单时，被结清的旧存单快照（来自存单行「续存」入口）。 */
+type RenewSourceInfo = {
+  lotId: string;
+  fundName: string;
+  depositProductId?: string | null;
+  /** 旧存单起存日（计息区间起点）。 */
+  startDate?: string | null;
+  /** 旧存单到期日 = 取出日 = 新存单起存日。 */
+  maturityDate?: string | null;
+  /** 旧存单剩余本金。 */
+  principal: number;
+  /** 旧存单这一段应计利息（整月按 月数/12 计）。 */
+  interest: number;
+  annualRate?: number | null;
+  maturityAction?: string | null;
+  interestPayoutFrequency?: string | null;
+  interestCalcBasis?: string | null;
+  depositAccountId?: string;
+  depositAccountLabel?: string;
+};
+
 function compareRedeemLots(a: RedeemLotOption, b: RedeemLotOption) {
   const dateA = a.startDate ?? "9999-12-31";
   const dateB = b.startDate ?? "9999-12-31";
@@ -152,6 +173,7 @@ export function DepositFormModal({
   nestedFieldData,
   createAction,
   editAction,
+  renewAction,
 }: {
   mode?: "create" | "edit";
   accountId: string;
@@ -166,6 +188,11 @@ export function DepositFormModal({
   nestedFieldData?: NestedFieldData;
   createAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
   editAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /**
+   * 存单续存：弹窗以「存款存入」表单预填新存单要素，提交时改走续存动作
+   * （旧存单在取出日结清，同时建出一张新存单）。不传则续存入口不可用。
+   */
+  renewAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const { t } = useI18n();
@@ -244,6 +271,11 @@ export function DepositFormModal({
   const [requestId, setRequestId] = useState<string | null>(null);
   const [editEntryId, setEditEntryId] = useState<string | null>(null);
   const [editingRedeemSource, setEditingRedeemSource] = useState<EditingRedeemSource | null>(null);
+  // 续存来源存单：非空时本弹窗处于「续存建新存单」模式，提交走 renewAction。
+  const [renewSource, setRenewSource] = useState<RenewSourceInfo | null>(null);
+  const [renewMode, setRenewMode] = useState<"renew_principal" | "renew_principal_interest">(
+    "renew_principal_interest",
+  );
   const [lockedSubtype, setLockedSubtype] = useState<"buy" | "redeem" | null>(
     mode === "edit" && entry ? (initIsRedeem ? "redeem" : "buy") : null,
   );
@@ -397,6 +429,12 @@ export function DepositFormModal({
     [depositAccountList],
   );
   const isRedeem = subtype === "redeem";
+  const isRenew = !!renewSource;
+  // 本息续存：本息原地滚入新存单，不经过外部资金账户，资金账户选择无意义。
+  const isRenewRollIn = isRenew && renewMode === "renew_principal_interest";
+  // 期间付息的存单利息已逐期付过，没有可滚入的利息。
+  const rollInDisabledForRenew =
+    !!renewSource && parseDepositInterestPayout(renewSource.interestPayoutFrequency ?? null).kind === "periodic";
   const availableRedeemLotOptions = useMemo(
     () => {
       const byId = new Map<string, RedeemLotOption>();
@@ -678,6 +716,110 @@ export function DepositFormModal({
     setArrivalEdited(false);
   }, [availableRedeemLotOptions, date, resolveDefaultRedeemCashAccount, resolveDefaultRedeemDepositAccount, resolveDefaultRedeemLot, today]);
 
+  /**
+   * 续存：以「存款存入」表单预填新存单全部要素 —— 取出日（= 新存单起存日）取旧
+   * 存单到期日、金额取本息（本金续存取本金）、利率/期限/到期方式/付息方式/产品
+   * 全部沿用旧存单。提交时改走 renewAction，旧存单在同一事务里结清、明细保留。
+   */
+  const applyRenewDefaults = useCallback((detail: {
+    defaultRenewLotId?: string;
+    defaultRenewFundName?: string;
+    defaultRenewProductId?: string;
+    defaultRenewStartDate?: string;
+    defaultRenewMaturityDate?: string;
+    defaultRenewPrincipal?: number;
+    defaultRenewAnnualRate?: number;
+    defaultRenewMaturityAction?: string;
+    defaultRenewPayoutFrequency?: string;
+    defaultRenewCalcBasis?: string;
+    defaultDepositAccountId?: string;
+    defaultCashAccountId?: string;
+  }) => {
+    const lotId = detail.defaultRenewLotId ?? "";
+    if (!lotId) return;
+    const start = detail.defaultRenewStartDate ?? "";
+    const maturity = detail.defaultRenewMaturityDate ?? "";
+    const principal = detail.defaultRenewPrincipal ?? 0;
+    const rate = detail.defaultRenewAnnualRate ?? 0;
+    const payout = parseDepositInterestPayout(detail.defaultRenewPayoutFrequency ?? null);
+    // 期间付息的存单利息已经逐期付过了，没有可滚入的利息，只能本金续存。
+    const rollInDisabled = payout.kind === "periodic";
+    const nextMode: "renew_principal" | "renew_principal_interest" =
+      detail.defaultRenewMaturityAction === "renew_principal" || rollInDisabled
+        ? "renew_principal"
+        : "renew_principal_interest";
+    const startUtc = start ? new Date(`${start}T00:00:00.000Z`) : null;
+    const maturityUtc = maturity ? new Date(`${maturity}T00:00:00.000Z`) : null;
+    // 遗留月周期到期日（起存日 + N 月 − 1 天）归一到周年：取出日回到 2026-07-15，
+    // 旧存单这一段利息按 6/12 算（13.00）而不是 180 天（12.82）。
+    const redeemDate = startUtc && maturityUtc
+      ? depositRenewalStartUtc(startUtc, maturityUtc)
+      : maturityUtc;
+    const interest = startUtc && maturityUtc
+      ? calculateDepositAccruedInterest({
+          principal,
+          annualRatePercent: rate > 0 ? rate : null,
+          startDate: startUtc,
+          endDate: redeemDate ?? maturityUtc,
+        })
+      : 0;
+    const nextPrincipal =
+      nextMode === "renew_principal_interest" ? Number((principal + interest).toFixed(2)) : principal;
+    const nextMaturityAction =
+      detail.defaultRenewMaturityAction === "redeem" ||
+      detail.defaultRenewMaturityAction === "renew_principal" ||
+      detail.defaultRenewMaturityAction === "renew_principal_interest"
+        ? detail.defaultRenewMaturityAction
+        : nextMode;
+    // 期限从「起存日 → 归一化取出日」反推，保证新存单默认与原期限一致（6 个月 → 6 个月）。
+    const redeemYmd = redeemDate ? redeemDate.toISOString().slice(0, 10) : "";
+    const spanDays = startUtc && redeemDate
+      ? Math.max(1, Math.round((redeemDate.getTime() - startUtc.getTime()) / 86400000))
+      : DEFAULT_DEPOSIT_TERM_DAYS;
+    const split = splitTermDays(spanDays, start || null);
+
+    setSubtype("buy");
+    setLockedSubtype("buy");
+    setRenewSource({
+      lotId,
+      fundName: detail.defaultRenewFundName ?? "",
+      depositProductId: detail.defaultRenewProductId ?? null,
+      startDate: start || null,
+      maturityDate: redeemYmd || null,
+      principal,
+      interest,
+      annualRate: rate > 0 ? rate : null,
+      maturityAction: detail.defaultRenewMaturityAction ?? null,
+      interestPayoutFrequency: detail.defaultRenewPayoutFrequency ?? null,
+      interestCalcBasis: detail.defaultRenewCalcBasis ?? null,
+      depositAccountId: detail.defaultDepositAccountId ?? "",
+    });
+    setRenewMode(nextMode);
+    setDate(redeemYmd || today);
+    setAmount(nextPrincipal > 0 ? String(nextPrincipal) : "");
+    setFundName(detail.defaultRenewFundName ?? "");
+    setDepositProductId(detail.defaultRenewProductId ?? "");
+    setAnnualRate(rate > 0 ? String(rate) : "");
+    setDepositAccountId(resolveDefaultBuyDepositAccount(detail.defaultDepositAccountId));
+    setCashAccountId(resolveDefaultBuyCashAccount(detail.defaultCashAccountId));
+    setSelectedRedeemLotId("");
+    setInterestAmount(interest > 0 ? interest.toFixed(2) : "");
+    setArrivalAmount("");
+    setInterestEdited(false);
+    setArrivalEdited(false);
+    setTermUnit(split.unit);
+    setTermCount(String(split.count));
+    setMaturityAction(nextMaturityAction);
+    setInterestPayoutUnit(payout.kind === "periodic" ? payout.unit : "maturity");
+    setInterestPayoutInterval(payout.kind === "periodic" ? String(payout.interval) : "1");
+    setInterestCalcBasis(detail.defaultRenewCalcBasis === "daily" ? "daily" : "monthly");
+    setMemo("");
+  }, [
+    resolveDefaultBuyCashAccount,
+    resolveDefaultBuyDepositAccount,
+    today,
+  ]);
+
   const amountNumber = parseNumber(amount);
   const annualRateNumber = parseNumber(annualRate);
   // Term lives as unit + count; everything downstream still speaks in days
@@ -720,7 +862,21 @@ export function DepositFormModal({
   const interestPreview = useMemo(() => {
     if (!isRedeem) {
       if (amountNumber <= 0 || annualRateNumber <= 0 || termDaysNumber <= 0) return 0;
-      return Number(((amountNumber * (annualRateNumber / 100) * termDaysNumber) / 365).toFixed(2));
+      // 与到期日同一口径：整月跨度按 月数/12（6 个月 1.3% → 本金×1.3%×6/12），
+      // 其余按 天数/365。日期走 depositTermMaturityUtc，避免预览与落库不一致。
+      const startUtc = date ? new Date(`${date.slice(0, 10)}T00:00:00.000Z`) : null;
+      const count = Math.trunc(parseNumber(termCount));
+      const endUtc = startUtc
+        ? Number.isFinite(count) && count > 0
+          ? depositTermMaturityUtc(startUtc, termUnit, count)
+          : new Date(startUtc.getTime() + termDaysNumber * 86400000)
+        : null;
+      return calculateDepositAccruedInterest({
+        principal: amountNumber,
+        annualRatePercent: annualRateNumber,
+        startDate: startUtc,
+        endDate: endUtc,
+      });
     }
     const start = selectedRedeemLot?.startDate
       ? new Date(`${selectedRedeemLot.startDate.slice(0, 10)}T00:00:00.000Z`)
@@ -736,7 +892,7 @@ export function DepositFormModal({
       startDate: start,
       endDate: end,
     });
-  }, [amountNumber, annualRateNumber, date, isRedeem, selectedRedeemLot, termDaysNumber]);
+  }, [amountNumber, annualRateNumber, date, isRedeem, selectedRedeemLot, termCount, termDaysNumber, termUnit]);
   const arrivalPreview = useMemo(() => {
     if (!isRedeem) return amountNumber;
     const effectiveInterest = parseNumber(interestAmount) > 0 ? parseNumber(interestAmount) : interestPreview;
@@ -982,8 +1138,20 @@ export function DepositFormModal({
         defaultRedeemLotId?: string;
         defaultDate?: string;
         defaultAmount?: number;
+        defaultRenewLotId?: string;
+        defaultRenewFundName?: string;
+        defaultRenewProductId?: string;
+        defaultRenewStartDate?: string;
+        defaultRenewMaturityDate?: string;
+        defaultRenewPrincipal?: number;
+        defaultRenewAnnualRate?: number;
+        defaultRenewMaturityAction?: string;
+        defaultRenewPayoutFrequency?: string;
+        defaultRenewCalcBasis?: string;
       }>).detail;
-      const nextSubtype = detail?.defaultSubtype === "redeem" ? "redeem" : "buy";
+      // 存单「续存」入口：同一张存款存入表单，但提交走续存动作。
+      const isRenew = !!detail?.defaultRenewLotId;
+      const nextSubtype = isRenew ? "buy" : detail?.defaultSubtype === "redeem" ? "redeem" : "buy";
       setRequestId(detail?.requestId ?? null);
       reset();
       setSubtype(nextSubtype);
@@ -993,7 +1161,10 @@ export function DepositFormModal({
       arrivalDateTouchedRef.current = false;
       if (typeof detail?.defaultAmount === "number" && detail.defaultAmount > 0) setAmount(String(detail.defaultAmount));
       setLockedSubtype(null);
-      if (nextSubtype === "redeem") {
+      setRenewSource(null);
+      if (isRenew) {
+        applyRenewDefaults(detail);
+      } else if (nextSubtype === "redeem") {
         applyRedeemDefaults(detail);
       } else {
         applyBuyDefaults(detail);
@@ -1007,7 +1178,7 @@ export function DepositFormModal({
     }
     window.addEventListener("mmh:deposit:create", onCreate as EventListener);
     return () => window.removeEventListener("mmh:deposit:create", onCreate as EventListener);
-  }, [applyBuyDefaults, applyRedeemDefaults, mode, today]);
+  }, [applyBuyDefaults, applyRedeemDefaults, applyRenewDefaults, mode, today]);
 
   function changeDate(nextDate: string) {
     setDate(nextDate);
@@ -1176,8 +1347,12 @@ export function DepositFormModal({
       window.alert(t("depositForm.alert.selectRedeemLot"));
       return;
     }
-    if (!isRedeem && !cashAccountId) {
+    if (!isRedeem && !isRenewRollIn && !cashAccountId) {
       window.alert(t("txForm.alert.selectCashSourceAccount"));
+      return;
+    }
+    if (isRenew && !renewAction) {
+      window.alert(t("depositForm.alert.missingRenewAction"));
       return;
     }
     setSubmitting(true);
@@ -1241,7 +1416,16 @@ export function DepositFormModal({
         }
       }
 
-      if (mode === "edit" && (entry?.id || editEntryId)) {
+      if (isRenew && renewSource && renewAction) {
+        // 续存：新存单要素已在上面按「存款存入」字段填好，这里补上旧存单标识与
+        // 续存方式；服务端在同一事务里结清旧存单（明细保留）并建出新存单。
+        fd.set("entryId", renewSource.lotId);
+        fd.set("renewSourceLotId", renewSource.lotId);
+        fd.set("renewMode", renewMode);
+        if (renewSource.interest > 0) fd.set("interest", String(renewSource.interest));
+        const res = await renewAction(fd);
+        if (!res.ok) throw new Error(res.error ?? t("txForm.alert.saveFailed"));
+      } else if (mode === "edit" && (entry?.id || editEntryId)) {
         fd.set("entryId", entry?.id || editEntryId || "");
         const res = editAction ? await editAction(fd) : { ok: false as const, error: t("wealthForm.alert.missingEditAction") };
         if (!res.ok) throw new Error(res.error ?? t("wealthForm.alert.saveFailed"));
@@ -1336,7 +1520,11 @@ export function DepositFormModal({
           <div className="app-modal-panel max-w-xl">
             <div className="modal-header">
               <div className="text-sm font-semibold text-slate-800">
-                {mode === "edit" ? t("depositForm.title.edit") : t("depositForm.title.create")}
+                {mode === "edit"
+                  ? t("depositForm.title.edit")
+                  : isRenew
+                    ? t("deposit.renew.title")
+                    : t("depositForm.title.create")}
                 <span className="ml-2 text-xs font-normal text-slate-500">{t("investment.product.deposit")}</span>
               </div>
               <button
@@ -1383,14 +1571,64 @@ export function DepositFormModal({
                 </div>
               ) : null}
 
+              {/* 续存：旧存单在取出日结清（明细保留），这里填的是新存单。 */}
+              {isRenew && renewSource ? (
+                <div className="space-y-2 rounded-[10px] border border-emerald-200 bg-emerald-50/70 p-3">
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-emerald-800">
+                    <Repeat className="h-3.5 w-3.5" />
+                    {t("deposit.renew.title")}
+                  </div>
+                  <div className="text-[11px] text-emerald-800/90">
+                    {t("deposit.renew.renewBanner", {
+                      name: renewSource.fundName || t("depositForm.unnamedDeposit"),
+                      date: renewSource.maturityDate || "-",
+                      amount: renewSource.principal.toFixed(2),
+                    })}
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      disabled={rollInDisabledForRenew}
+                      title={rollInDisabledForRenew ? t("deposit.renew.rollInDisabledHint") : undefined}
+                      onClick={() => {
+                        setRenewMode("renew_principal_interest");
+                        setAmount(String(Number((renewSource.principal + renewSource.interest).toFixed(2))));
+                      }}
+                      className={`segment-button h-8 flex-1 text-xs ${renewMode === "renew_principal_interest" ? "segment-button-active font-medium" : ""} ${rollInDisabledForRenew ? "cursor-not-allowed opacity-50" : ""}`}
+                    >
+                      {t("deposit.renew.modeRollIn")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRenewMode("renew_principal");
+                        setAmount(String(renewSource.principal));
+                      }}
+                      className={`segment-button h-8 flex-1 text-xs ${renewMode === "renew_principal" ? "segment-button-active font-medium" : ""}`}
+                    >
+                      {t("deposit.renew.modePayout")}
+                    </button>
+                  </div>
+                  <div className="flex justify-between text-[11px] text-emerald-800/90">
+                    <span>{t("deposit.renew.accruedInterest")}</span>
+                    <span className="font-medium tabular-nums">{renewSource.interest.toFixed(2)}</span>
+                  </div>
+                </div>
+              ) : null}
+
               <div className={isRedeem ? "space-y-3" : "grid grid-cols-2 gap-3"}>
                 <div className="space-y-1">
-                  <div className="form-label">{t("detail.column.date")}</div>
+                  <div className="form-label">
+                    {isRenew ? t("deposit.renew.redeemDateLabel") : t("detail.column.date")}
+                  </div>
                   <DateStepper
                     value={date}
                     onChange={changeDate}
                     min={isRedeem ? selectedRedeemLot?.latestInterestDate ?? "1900-01-01" : "1900-01-01"}
                   />
+                  {isRenew ? (
+                    <div className="text-[11px] text-slate-400">{t("deposit.renew.redeemDateHint")}</div>
+                  ) : null}
                 </div>
                 {isRedeem ? (
                   <div className="grid grid-cols-2 gap-3">
@@ -1737,7 +1975,8 @@ export function DepositFormModal({
               ) : null}
 
               {!isRedeem ? (
-                <div className="grid grid-cols-2 gap-3">
+                <div className={isRenewRollIn ? "grid grid-cols-1 gap-3" : "grid grid-cols-2 gap-3"}>
+                  {isRenewRollIn ? null : (
                   <div className="space-y-1">
                     <div className="form-label">{t("wealthForm.sourceAccount")}</div>
                     <SmartSelect
@@ -1759,6 +1998,7 @@ export function DepositFormModal({
                       }}
                     />
                   </div>
+                  )}
                   <div className="space-y-1">
                     <div className="form-label">{depositCurrency ? t("depositForm.depositAmountWithCurrency", { currency: depositCurrency }) : t("depositForm.depositAmount")}</div>
                     <CalcInput
@@ -1814,7 +2054,7 @@ export function DepositFormModal({
               </div>
 
               <div className="flex justify-end gap-2 pt-1">
-                {mode === "create" ? (
+                {mode === "create" && !isRenew ? (
                   <button
                     type="button"
                     disabled={submitting}
@@ -1831,7 +2071,15 @@ export function DepositFormModal({
                     isRedeem ? "bg-orange-600 hover:bg-orange-700" : "primary-button"
                   }`}
                 >
-                  {submitting ? t("txForm.saving") : mode === "edit" ? t("txForm.saveChanges") : isRedeem ? t("depositForm.recordRedeem") : t("depositForm.recordBuy")}
+                  {submitting
+                    ? t("txForm.saving")
+                    : isRenew
+                      ? t("deposit.renew.submit")
+                      : mode === "edit"
+                        ? t("txForm.saveChanges")
+                        : isRedeem
+                          ? t("depositForm.recordRedeem")
+                          : t("depositForm.recordBuy")}
                 </button>
               </div>
               </div>

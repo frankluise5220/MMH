@@ -110,9 +110,10 @@ export function normalizeDepositInterestPayoutInput(
 
 /**
  * Month arithmetic clamped to the target month's last day: Jan 31 + 1 month →
- * Feb 28 (not Mar 3, which plain setUTCMonth rolls into).
+ * Feb 28 (not Mar 3, which plain setUTCMonth rolls into). Shared with the
+ * deposit term picker so 到期日 and 计息天数 use one month rule.
  */
-function addMonthsClampedUtc(date: Date, months: number): Date {
+export function addMonthsClampedUtc(date: Date, months: number): Date {
   const total = date.getUTCMonth() + months;
   const year = date.getUTCFullYear() + Math.floor(total / 12);
   const month = ((total % 12) + 12) % 12;

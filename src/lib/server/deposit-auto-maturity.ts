@@ -5,7 +5,9 @@ import { isPeriodicDepositInterestPayout, parseDepositInterestPayout, depositPay
 import {
   computeDepositMaturityInterest,
   dayDiffDays,
+  depositRenewalStartUtc,
   depositRenewRoundsNeeded,
+  depositSegmentInterest,
   nextDepositTermMaturityUtc,
   round2,
   utcDayStart,
@@ -443,10 +445,16 @@ async function autoAccruePeriodicInterest(
       segmentStart = payoutDate;
       continue;
     }
-    // 按月均分：月频率下每期固定 本金×年利率÷12×期数；按日均分（默认）：本金×年利率×天数/365。
+    // 按月均分：月频率下每期固定 本金×年利率÷12×期数；其余走统一分段计息
+    // （整月跨度按 月数/12，否则 天数/365）。
     const accrued = buy.depositInterestCalcBasis === "monthly" && frequency.unit === "month"
       ? round2((principal * (annualRate / 100) * frequency.interval) / 12)
-      : round2((principal * (annualRate / 100) * segmentDays) / 365);
+      : depositSegmentInterest({
+          principal,
+          annualRatePercent: annualRate,
+          startDate: segmentStart,
+          endDate: payoutDate,
+        });
     segmentStart = payoutDate;
     if (!(accrued > 0)) continue;
     await prisma.$transaction(async (tx) => {
@@ -621,6 +629,7 @@ async function autoRenewDeposit(
   // repeated renewals keep rolling the same length (renewDeposit's internal
   // default drifts because it measures from buy.date, which never moves).
   const originalTermDays = Math.max(1, dayDiffDays(originalMaturity, first.date));
+  const chainStart = first.date;
   const roundsNeeded = depositRenewRoundsNeeded({
     maturityDate: originalMaturity,
     originalTermDays,
@@ -629,12 +638,16 @@ async function autoRenewDeposit(
   const roundsToRun = Math.min(roundsNeeded, MAX_RENEW_ROUNDS_PER_LOT);
 
   let rounds = 0;
+  // renewDeposit now closes the old lot and creates a brand-new one, so each
+  // round must walk to the successor instead of re-reading the same buy row
+  // (which stays settled and would otherwise stop the catch-up after one round).
+  let currentLotId = buyId;
   const mode = first.depositMaturityAction === "renew_principal_interest"
     ? "renew_principal_interest"
     : "renew_principal";
 
   while (rounds < roundsToRun) {
-    const fresh = await prisma.txRecord.findUnique({ where: { id: buyId } });
+    const fresh = await prisma.txRecord.findUnique({ where: { id: currentLotId } });
     if (!fresh || fresh.deletedAt) break;
     const maturity = fresh.fundArrivalDate;
     if (!maturity || maturity > now) break;
@@ -643,10 +656,16 @@ async function autoRenewDeposit(
     const fd = new FormData();
     fd.set("entryId", fresh.id);
     fd.set("renewMode", mode);
+    fd.set("entryOrigin", ENTRY_ORIGIN_SCHEDULED_TASK);
+    // 取出日 = 新存单起存日。遗留月周期到期日（起存日 + N 月 − 1 天）归一到周年，
+    // 新存单那一段才是整月（6 个月按 6/12 = 13.00，而不是 185 天）。
+    fd.set("date", depositRenewalStartUtc(chainStart, maturity).toISOString().slice(0, 10));
     // Calendar-aware roll: anniversary-aligned terms (e.g. 5 年) renew to the
     // next anniversary; 存入日计息 terms (maturity = start + N 年 − 1 天) roll
     // the same rule per term; day-based terms roll by their original day count.
-    fd.set("newMaturityDate", nextDepositTermMaturityUtc(first.date, maturity, originalTermDays).toISOString().slice(0, 10));
+    // Anchored on the chain's original start so a legacy maturity that sits one
+    // day before its anniversary cannot drift a day earlier per round.
+    fd.set("newMaturityDate", nextDepositTermMaturityUtc(chainStart, maturity, originalTermDays).toISOString().slice(0, 10));
     if (mode === "renew_principal") {
       fd.set("cashAccountId", fresh.accountId ?? "");
     }
@@ -658,6 +677,8 @@ async function autoRenewDeposit(
       break;
     }
     rounds += 1;
+    if (!res.newLotId) break;
+    currentLotId = res.newLotId;
   }
 
   if (rounds > 0) {

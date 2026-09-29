@@ -1,4 +1,5 @@
-import { addCalendarYearsUtc, addDaysUtc, addMonthsUtc } from "@/lib/date-utils";
+import { addCalendarYearsUtc, addDaysUtc } from "@/lib/date-utils";
+import { addMonthsClampedUtc } from "@/lib/deposit-interest-payout";
 
 export type DepositTermUnit = "day" | "week" | "month" | "year";
 
@@ -9,14 +10,18 @@ export const DEFAULT_DEPOSIT_TERM_DAYS = 365;
 /**
  * Maturity date for a deposit term, calendar-aware for periodic units:
  *   - year  → Nth calendar anniversary − 1 day (存入日计息: 2025-01-20 存 1 年 → 2026-01-19);
- *   - month → N calendar months later minus 1 day (2024-09-17 存 24 个月 → 2026-09-16);
+ *   - month → Nth calendar month anniversary, no −1 shift (2026-01-15 存 6 个月 → 2026-07-15).
+ *     Whole-year month spans (12/24/36…) keep the 整年 rule above so 12 个月 ≡ 1 年;
  *   - week/day → raw day math (no −1 shift).
  * Never approximate months as 30-day blocks: 24 × 30 days lands 10 days early.
  */
 export function depositTermMaturityUtc(start: Date, unit: DepositTermUnit, count: number): Date {
   const n = Math.max(0, Math.trunc(count));
   if (unit === "year") return addDaysUtc(addCalendarYearsUtc(start, n), -1);
-  if (unit === "month") return addDaysUtc(addMonthsUtc(start, n), -1);
+  if (unit === "month") {
+    if (n > 0 && n % 12 === 0) return addDaysUtc(addMonthsClampedUtc(start, n), -1);
+    return addMonthsClampedUtc(start, n);
+  }
   return addDaysUtc(start, n * TERM_UNIT_DAYS[unit]);
 }
 
@@ -44,9 +49,10 @@ export function splitTermDays(days: number, startDate?: string | null): { unit: 
       }
     }
     // Calendar months: the maturity lands exactly N calendar months after the
-    // start, or one day before it (存入日计息 month convention).
+    // start (month-end starts clamp), or one day before it (整年 存入日计息
+    // month convention). Same month rule as depositTermMaturityUtc.
     for (let m = Math.floor(d / 28) + 1; m >= 1; m--) {
-      const anniversary = addMonthsUtc(start, m);
+      const anniversary = addMonthsClampedUtc(start, m);
       const anniversaryDays = Math.round((anniversary.getTime() - start.getTime()) / 86400000);
       if (anniversaryDays === d || anniversaryDays - 1 === d) {
         return { unit: "month", count: m };

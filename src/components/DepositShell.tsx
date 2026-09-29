@@ -8,7 +8,6 @@ import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTable
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "./BatchReplacePopoverButton";
 import { BusinessLinkActionButton } from "./BusinessLinkActionButton";
 import { DepositPayInterestModal, type PayInterestLotInfo } from "./DepositPayInterestModal";
-import { DepositRenewModal, type RenewLotInfo } from "./DepositRenewModal";
 import { DetailTablePaginationControls } from "./DetailTablePaginationControls";
 import { EntryRowActions } from "./EntryRowActions";
 import { ResizableVerticalSplit } from "./ResizableVerticalSplit";
@@ -60,10 +59,12 @@ type DepositLot = {
   label: string;
   fundName: string;
   subLabel?: string;
+  depositProductId?: string | null;
   startDate?: string | null;
   maturityDate?: string | null;
   maturityAction?: string | null;
   interestPayoutFrequency?: string | null;
+  interestCalcBasis?: string | null;
   originalAmount: number;
   remainingAmount: number;
   annualRate?: number | null;
@@ -100,7 +101,6 @@ export function DepositShell({
 }) {
   const [selectedLotId, setSelectedLotId] = useState<string | null>(null);
   const [lotTab, setLotTab] = useState<LotTab>("held");
-  const [renewLot, setRenewLot] = useState<RenewLotInfo | null>(null);
   const [payInterestLot, setPayInterestLot] = useState<PayInterestLotInfo | null>(null);
   const [selectedEntryIds, setSelectedEntryIds] = useState<Set<string>>(new Set());
   const [linkingIds, setLinkingIds] = useState<Set<string>>(new Set());
@@ -159,20 +159,36 @@ export function DepositShell({
     [t],
   );
 
+  /**
+   * 存单行「续存」：打开存款弹窗（存入表单），把新存单要素全部预填好 ——
+   * 取出日取旧存单到期日、金额取本息、利率/期限/到期方式/付息方式/产品沿用旧存单。
+   * 用户点确定后，旧存单在取出日结清（明细保留），同时建出一张新存单。
+   *
+   * 与「取回」一样走 `mmh:deposit:create` 事件链路（弹窗挂在记账页 /
+   * DepositEntryHost 上），只是多带 defaultRenewLotId 一组续存字段。
+   */
   const openRenewModal = useCallback(
     (lot: DepositLot) => {
       if (!renewAction) return;
-      setRenewLot({
-        id: lot.id,
-        fundName: lot.fundName,
-        principal: lot.remainingAmount > 0 ? lot.remainingAmount : lot.originalAmount,
-        annualRate: lot.annualRate ?? null,
-        startDate: lot.startDate ?? null,
-        maturityDate: lot.maturityDate ?? null,
-        maturityAction: lot.maturityAction ?? null,
-        interestPayoutFrequency: lot.interestPayoutFrequency ?? null,
-        depositAccountLabel: lot.depositAccountLabel ?? "",
-      });
+      window.dispatchEvent(
+        new CustomEvent("mmh:deposit:create", {
+          detail: {
+            requestId: `deposit-renew-${lot.id}-${Date.now()}`,
+            defaultSubtype: "buy",
+            defaultRenewLotId: lot.id,
+            defaultRenewFundName: lot.fundName,
+            defaultRenewProductId: lot.depositProductId ?? "",
+            defaultRenewStartDate: lot.startDate ?? "",
+            defaultRenewMaturityDate: lot.maturityDate ?? "",
+            defaultRenewPrincipal: lot.remainingAmount > 0 ? lot.remainingAmount : lot.originalAmount,
+            defaultRenewAnnualRate: lot.annualRate ?? 0,
+            defaultRenewMaturityAction: lot.maturityAction ?? "",
+            defaultRenewPayoutFrequency: lot.interestPayoutFrequency ?? "",
+            defaultRenewCalcBasis: lot.interestCalcBasis ?? "",
+            defaultDepositAccountId: lot.depositAccountId ?? "",
+          },
+        }),
+      );
     },
     [renewAction],
   );
@@ -707,14 +723,6 @@ export function DepositShell({
           </div>
         </section>
       </ResizableVerticalSplit>
-
-      <DepositRenewModal
-        open={!!renewLot}
-        onClose={() => setRenewLot(null)}
-        lot={renewLot}
-        cashAccounts={cashAccounts}
-        renewAction={renewAction ?? (async () => ({ ok: false as const, error: t("txForm.alert.saveFailed") }))}
-      />
 
       <DepositPayInterestModal
         open={!!payInterestLot}

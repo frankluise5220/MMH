@@ -137,7 +137,7 @@ export const dynamic = "force-dynamic";
 
 import { formatDateLocal, formatDateUtc, toNumber, parseDateInputToUtc } from "@/lib/date-utils";
 import { parseDepositInterestPayout } from "@/lib/deposit-interest-payout";
-import { depositInterestDaysUtc } from "@/lib/deposit-maturity";
+import { depositSegmentInterest } from "@/lib/deposit-maturity";
 
 /**
  * 投资族视图（由账户的 investProductType 决定的那几个）。
@@ -300,65 +300,42 @@ function toYmdOrNull(value: unknown) {
 }
 
 /**
- * Expected interest for a held deposit certificate, following the same simple
- * interest convention used by the deposit form: principal x annual rate (%) x
- * elapsed days / 365. The elapsed period ends today, capped at maturity.
- * Returns null when any required input is unavailable.
- */
-function calcDepositExpectedInterest(params: {
-  principal: number;
-  annualRate: number | null | undefined;
-  startDate: string | null | undefined;
-  maturityDate: string | null | undefined;
-  today: string;
-}): number | null {
-  const { principal, annualRate, startDate, maturityDate, today } = params;
-  if (!(principal > 0) || annualRate == null || annualRate <= 0 || !startDate) return null;
-  // 存入日计息: whole-year spans ending one day before the anniversary count
-  // inclusively (365/366 days), matching what auto-redeem actually pays;
-  // other spans (incl. the days-up-to-today fallback) keep the raw difference.
-  const startUtc = parseDateInputToUtc(startDate);
-  const todayUtc = parseDateInputToUtc(today);
-  const maturityUtc = maturityDate ? parseDateInputToUtc(maturityDate) : null;
-  const endUtc = todayUtc && maturityUtc && maturityUtc < todayUtc ? maturityUtc : todayUtc;
-  const days = startUtc && endUtc ? depositInterestDaysUtc(startUtc, endUtc) : 0;
-  if (days <= 0) return null;
-  return Number(((principal * (annualRate / 100) * days) / 365).toFixed(2));
-}
-
-/**
- * Accrued interest from the deposit start date through today, capped at
- * maturity, matching the accrual formulas the executor actually uses:
- *   - monthly basis + month frequency → fixed instalment × instalment count
- *     (principal × rate ÷ 12 per month, same as autoAccruePeriodicInterest);
- *   - otherwise day-count: principal × rate × days / 365.
+ * 存款存单的「预计利息」= 全期利息（起存日 → 到期日），与债券视图的
+ * 「存续期预计利息总额」口径一致（见 bond-shell-data.ts）。已取走的部分看
+ * 「已取利息」列，不在此扣减。公式与执行器保持一致：
+ *   - 按月均分（monthly 计息基础 + 月付息周期）→ 本金 × 年利率 ÷ 12 × 期数，
+ *     期数 = 全期覆盖的付息周期数（同 autoAccruePeriodicInterest）；
+ *   - 其余走共享分段规则：整月跨度按 N/12，否则按存入日计息天数 / 365。
+ * 缺少到期日或必要输入时返回 null。
  */
 function calcDepositTotalInterest(params: {
   principal: number;
   annualRate: number | null | undefined;
   startDate: string | null | undefined;
   maturityDate: string | null | undefined;
-  today: string;
   interestCalcBasis: string | null | undefined;
   payoutFrequency: string | null | undefined;
 }): number | null {
-  const { principal, annualRate, startDate, maturityDate, today, interestCalcBasis, payoutFrequency } = params;
-  if (!(principal > 0) || annualRate == null || annualRate <= 0 || !startDate) return null;
+  const { principal, annualRate, startDate, maturityDate, interestCalcBasis, payoutFrequency } = params;
+  if (!(principal > 0) || annualRate == null || annualRate <= 0 || !startDate || !maturityDate) return null;
+  const startUtc = parseDateInputToUtc(startDate);
+  const maturityUtc = parseDateInputToUtc(maturityDate);
+  if (!startUtc || !maturityUtc || maturityUtc <= startUtc) return null;
   const frequency = parseDepositInterestPayout(payoutFrequency);
   // 按月均分：每期固定 本金×年利率÷12，期数=全期覆盖的付息周期数（与执行器同式）。
   if (interestCalcBasis === "monthly" && frequency.kind === "periodic" && frequency.unit === "month") {
-    const startUtc = parseDateInputToUtc(startDate);
-    const todayUtc = parseDateInputToUtc(today);
-    const maturityUtc = maturityDate ? parseDateInputToUtc(maturityDate) : null;
-    const endUtc = todayUtc && maturityUtc && maturityUtc < todayUtc ? maturityUtc : todayUtc;
-    if (!startUtc || !endUtc || endUtc <= startUtc) return null;
-    const months = (endUtc.getUTCFullYear() - startUtc.getUTCFullYear()) * 12 + (endUtc.getUTCMonth() - startUtc.getUTCMonth());
+    const months = (maturityUtc.getUTCFullYear() - startUtc.getUTCFullYear()) * 12 + (maturityUtc.getUTCMonth() - startUtc.getUTCMonth());
     const periods = Math.max(1, Math.floor(months / frequency.interval));
     return Number(((principal * (annualRate / 100) * frequency.interval * periods) / 12).toFixed(2));
   }
-  // 其余按日计息：沿用存入日计息天数（整年段含头含尾）。
-  const base = calcDepositExpectedInterest({ principal, annualRate, startDate, maturityDate, today });
-  return base;
+  // 其余按分段规则：整月跨度按 N/12，否则存入日计息天数 / 365。
+  const interest = depositSegmentInterest({
+    principal,
+    annualRatePercent: annualRate,
+    startDate: startUtc,
+    endDate: maturityUtc,
+  });
+  return interest > 0 ? interest : null;
 }
 
 function buildCategoryPathLabels(categories: Array<{ id: string; name: string; type: string; parentId: string | null }>) {
@@ -2763,21 +2740,15 @@ export default async function Home({
         takenInterest = Number(takenInterest.toFixed(2));
         const expectedInterest =
           lot.remainingAmount > 0.0001
-            ? (() => {
-                // Continue accruing the remaining principal from the original
-                // start date through today, capped at maturity.
-                const total = calcDepositTotalInterest({
-                  principal: lot.remainingAmount,
-                  annualRate,
-                  startDate,
-                  maturityDate: lot.maturityDate,
-                  today: formatDateUtc(new Date()),
-                  interestCalcBasis: lot.interestCalcBasis ?? null,
-                  payoutFrequency: lot.interestPayoutFrequency ?? null,
-                });
-                if (total == null) return null;
-                return Number(Math.max(total - takenInterest, 0).toFixed(2));
-              })()
+            ? calcDepositTotalInterest({
+                // 全期预计利息：起存日 → 到期日，不扣减已取利息（已取部分看 takenInterest）。
+                principal: lot.remainingAmount,
+                annualRate,
+                startDate,
+                maturityDate: lot.maturityDate,
+                interestCalcBasis: lot.interestCalcBasis ?? null,
+                payoutFrequency: lot.interestPayoutFrequency ?? null,
+              })
             : null;
         return {
           id: lot.id,
@@ -3321,6 +3292,7 @@ export default async function Home({
                 nestedFieldData={nestedFieldData}
                 createAction={createTransaction}
                 editAction={editInvestment}
+                renewAction={renewDeposit}
               />
               <DepositFormModal
                 mode="edit"
