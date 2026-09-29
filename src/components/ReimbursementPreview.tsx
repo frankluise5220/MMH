@@ -1,9 +1,57 @@
 "use client";
 
+import { createPortal } from "react-dom";
 import { useI18n } from "@/lib/i18n";
 import { formatMoneyYuan } from "@/lib/format";
 import { Printer, X } from "lucide-react";
 import type { ReimbursementData } from "@/lib/server/sidebar-actions/reimbursement-actions";
+
+// Print modals render into a body-level portal; when printing, every other body child
+// (the whole app shell) is display:none so the sheets paginate on their own. The injected
+// rules below override the modal chrome (fixed backdrop / panel caps) because Tailwind's
+// print: variants can lose the cascade against custom classes like app-modal-backdrop.
+// The native browser print dialog (window.print) still offers printer / paper / duplex.
+const PRINT_PORTAL_STYLE = `@media print {
+  @page { size: A4 landscape; margin: 10mm; }
+  body > *:not([data-print-portal]) { display: none !important; }
+  body { background: #fff !important; }
+  [data-print-portal] {
+    position: static !important;
+    inset: auto !important;
+    display: block !important;
+    overflow: visible !important;
+    height: auto !important;
+    background: #fff !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  [data-print-portal] .app-modal-panel {
+    position: static !important;
+    max-height: none !important;
+    width: 100% !important;
+    max-width: none !important;
+    height: auto !important;
+    overflow: visible !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    resize: none !important;
+  }
+  [data-print-portal] .modal-header { display: none !important; }
+  [data-print-portal] .print-scroll {
+    max-height: none !important;
+    overflow: visible !important;
+    background: #fff !important;
+    padding: 0 !important;
+  }
+  [data-print-portal] [data-print-sheet]:not(:last-child) { break-after: page; }
+  [data-print-portal] .print-page {
+    position: static !important;
+    min-height: 0 !important;
+    max-width: none !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+  }
+}`;
 
 function money(value: number | null | undefined) {
   return value == null ? "-" : formatMoneyYuan(value);
@@ -148,8 +196,8 @@ export function ReimbursementBatchPrintModal({
   onClose: () => void;
 }) {
   const { t } = useI18n();
-  return (
-    <div className="print-batch-root app-modal-backdrop z-[90] print:static print:block print:bg-white">
+  return createPortal(
+    <div data-print-portal className="print-batch-root app-modal-backdrop z-[90] print:static print:block print:bg-white">
       <div className="app-modal-panel resize max-h-[95vh] w-[95vw] max-w-6xl print:block print:max-h-none print:w-full print:max-w-none print:resize-none print:border-0 print:shadow-none">
         <div className="modal-header shrink-0 border-b border-slate-200 print:hidden">
           <span className="text-sm font-semibold text-slate-800">{t("reimburse.batchPrint.title", { count: reimbursements.length })}</span>
@@ -163,9 +211,9 @@ export function ReimbursementBatchPrintModal({
           </div>
         </div>
 
-        <div className="max-h-[calc(95vh-3.5rem)] overflow-auto bg-slate-100 p-4 print:max-h-none print:overflow-visible print:bg-white print:p-0">
-          {reimbursements.map((reimbursement, index) => (
-            <div key={reimbursement.id} className={index < reimbursements.length - 1 ? "print:break-after-page" : undefined}>
+        <div className="print-scroll max-h-[calc(95vh-3.5rem)] overflow-auto bg-slate-100 p-4">
+          {reimbursements.map((reimbursement, mapIndex) => (
+            <div key={reimbursement.id} data-print-sheet className={mapIndex < reimbursements.length - 1 ? "print:break-after-page" : undefined}>
               <ReimbursementPrintArticle
                 reimbursement={reimbursement}
                 counterpartyName={reimbursement.advanceAccountName ?? counterpartyNameFallback}
@@ -174,8 +222,9 @@ export function ReimbursementBatchPrintModal({
           ))}
         </div>
       </div>
-      <style>{`@media print { @page { size: A4 landscape; margin: 10mm; } body * { visibility: hidden !important; } .print-batch-root, .print-batch-root * { visibility: visible !important; } .print-batch-root { position: absolute; inset: 0; width: 100%; } .print-batch-root .print-page { position: static; min-height: 0; } }`}</style>
-    </div>
+      <style>{PRINT_PORTAL_STYLE}</style>
+    </div>,
+    document.body,
   );
 }
 
@@ -190,8 +239,8 @@ export function ReimbursementPreview({
 }) {
   const { t } = useI18n();
 
-  return (
-    <div className="app-modal-backdrop z-[90] print:static print:block print:bg-white">
+  return createPortal(
+    <div data-print-portal className="app-modal-backdrop z-[90] print:static print:block print:bg-white">
       <div className="app-modal-panel resize max-h-[95vh] w-[95vw] max-w-6xl print:block print:max-h-none print:w-full print:max-w-none print:resize-none print:border-0 print:shadow-none">
         <div className="modal-header shrink-0 border-b border-slate-200 print:hidden">
           <span className="text-sm font-semibold text-slate-800">{t("reimburse.preview")}</span>
@@ -205,11 +254,12 @@ export function ReimbursementPreview({
           </div>
         </div>
 
-        <div className="max-h-[calc(95vh-3.5rem)] overflow-auto bg-slate-100 p-4 print:max-h-none print:overflow-visible print:bg-white print:p-0">
+        <div className="print-scroll max-h-[calc(95vh-3.5rem)] overflow-auto bg-slate-100 p-4">
           <ReimbursementPrintArticle reimbursement={reimbursement} counterpartyName={counterpartyName} />
         </div>
       </div>
-      <style>{`@media print { @page { size: A4 landscape; margin: 10mm; } body * { visibility: hidden !important; } .print-page, .print-page * { visibility: visible !important; } .print-page { position: absolute; inset: 0; width: 100%; } }`}</style>
-    </div>
+      <style>{PRINT_PORTAL_STYLE}</style>
+    </div>,
+    document.body,
   );
 }

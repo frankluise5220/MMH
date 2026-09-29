@@ -32,7 +32,7 @@ export type ReimbursementCashAccountOption = {
 const reimbursementActionButtonClass = "flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white transition-colors disabled:cursor-not-allowed disabled:opacity-50";
 
 // Fields that can be batch-replaced across selected pending documents (document header level).
-type ReimbursementBatchEditField = "kind" | "travelStartDate" | "travelEndDate" | "travelReason" | "note" | "attachmentCount";
+type ReimbursementBatchEditField = "kind" | "travelStartDate" | "travelEndDate" | "travelReason" | "note";
 
 export type ReimbursementActions = {
   getData: (objectId: string, objectType: "counterparty" | "institution", advanceAccountId: string) => Promise<ReimbursementOverviewData>;
@@ -681,7 +681,6 @@ export function ReimbursementWorkspace({
     { value: "travelEndDate", label: t("reimburse.form.travelEnd"), kind: "date" },
     { value: "travelReason", label: t("reimburse.form.travelReason"), kind: "text" },
     { value: "note", label: t("reimburse.noteLabel"), kind: "text" },
-    { value: "attachmentCount", label: t("reimburse.form.attachmentCount"), kind: "number", precision: 0 },
   ], [t]);
 
   const submitBatchEdit = async (field: ReimbursementBatchEditField, value: string): Promise<string> => {
@@ -700,7 +699,7 @@ export function ReimbursementWorkspace({
       formData.set("travelEndDate", field === "travelEndDate" ? value : reimbursement.travelEndDate ?? "");
       formData.set("travelReason", field === "travelReason" ? value : reimbursement.travelReason ?? "");
       formData.set("note", field === "note" ? value : reimbursement.note ?? "");
-      formData.set("attachmentCount", field === "attachmentCount" ? value : reimbursement.attachmentCount != null ? String(reimbursement.attachmentCount) : "");
+      formData.set("attachmentCount", reimbursement.attachmentCount != null ? String(reimbursement.attachmentCount) : "");
       const res = await actions.update(formData);
       if (!res.ok) failed += 1;
     }
