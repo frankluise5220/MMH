@@ -253,3 +253,7 @@ _pylibs/
 dev/
 *.bak
 backup-stray-wiseme-*.patch
+
+# python bytecode (deploy/admin helper app)
+__pycache__/
+*.pyc

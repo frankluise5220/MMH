@@ -402,6 +402,7 @@ function pruneStagedServer(serverDir) {
     "prisma",
     "public",
     "server.js",
+    "mmh-unix-server.cjs",
     "package.json",
     "prisma.config.ts",
   ]);
@@ -734,9 +735,11 @@ write(path.join(stageDir, "app", "ui", "config"), JSON.stringify({
       title: "MMH",
       icon: "images/icon_{0}.png",
       type: "url",
-      protocol: "http",
-      port: "7777",
-      url: "/",
+      protocol: "",
+      port: "",
+      gatewayPrefix: "/app/mmh",
+      gatewaySocket: "app.sock",
+      url: "/app/mmh",
       allUsers: false,
     },
   },
@@ -1553,7 +1556,18 @@ ${externalNodeStartup}
   fi
   stop_leftover_mmh_server
   wait_listen_port_free || true
-  nohup "$NODE_BIN" "$SERVER_DIR/server.js" >>"$LOG_FILE" 2>&1 &
+  # fnOS unified-gateway deployment: serve on the gateway Unix socket plus a
+  # local TCP port (MMH_LOCAL_TCP_PORT) for direct non-gateway access. Falls
+  # back to the plain HTTP Next server when the gateway entrypoint is absent.
+  local mmh_gateway_entry="$SERVER_DIR/mmh-unix-server.cjs"
+  if [ -f "$mmh_gateway_entry" ] && { [ -n "\${MMH_GATEWAY_SOCKET_PATH:-}" ] || [ -n "\${TRIM_APPDEST:-}" ]; }; then
+    export MMH_GATEWAY_SOCKET_PATH="\${MMH_GATEWAY_SOCKET_PATH:-$TRIM_APPDEST/app.sock}"
+    export MMH_LOCAL_TCP_PORT="\${MMH_LOCAL_TCP_PORT:-7777}"
+    export MMH_LOCAL_TCP_HOST="\${MMH_LOCAL_TCP_HOST:-0.0.0.0}"
+    nohup "$NODE_BIN" "$mmh_gateway_entry" >>"$LOG_FILE" 2>&1 &
+  else
+    nohup "$NODE_BIN" "$SERVER_DIR/server.js" >>"$LOG_FILE" 2>&1 &
+  fi
   echo "$!" > "$PID_FILE"
 }
 
@@ -1916,6 +1930,12 @@ if (fs.existsSync(standaloneDir)) {
   copyFile(path.join(root, "prisma.config.ts"), path.join(stageDir, "app", "server", "prisma.config.ts"));
   prunePreFloorMigrations(path.join(stageDir, "app", "server", "prisma", "migrations"));
   pruneStagedServer(path.join(stageDir, "app", "server"));
+  // fnOS unified-gateway entrypoint: ships alongside server.js and is launched
+  // in gateway mode (Unix socket + local TCP port). Not used by Docker/Synology.
+  copyFile(
+    path.join(root, "scripts", "fnos", "mmh-unix-server.cjs"),
+    path.join(stageDir, "app", "server", "mmh-unix-server.cjs"),
+  );
   const initSql = path.join(stageDir, "app", "server", "prisma", "native-init.sql");
   const diff = run(process.execPath, [
     prismaCli,
@@ -2532,6 +2552,34 @@ const MIGRATIONS = [
         \`CREATE INDEX IF NOT EXISTS "SponsorTipIntent_userId_createdAt_idx" ON "SponsorTipIntent"("userId", "createdAt")\`,
         \`CREATE INDEX IF NOT EXISTS "SponsorTipIntent_householdId_createdAt_idx" ON "SponsorTipIntent"("householdId", "createdAt")\`,
         \`CREATE INDEX IF NOT EXISTS "SponsorTipIntent_email_idx" ON "SponsorTipIntent"("email")\`,
+      ].join(";"));
+    },
+  },
+  {
+    version: "20260929_add_user_registration_principal",
+    description: "Add User.registrationPrincipalId to store the mmh-registration principalId (registration identifier)",
+    apply(db) {
+      addColumnIfMissing(db, "User", "registrationPrincipalId", "TEXT");
+    },
+  },
+  {
+    version: "20260929_add_registration_code",
+    description: "Create RegistrationCode table for email-verification registration",
+    apply(db) {
+      db.exec([
+        \`CREATE TABLE IF NOT EXISTS "RegistrationCode" ("id" TEXT NOT NULL PRIMARY KEY, "targetUserId" TEXT NOT NULL, "email" TEXT NOT NULL, "codeHash" TEXT NOT NULL, "expiresAt" DATETIME NOT NULL, "usedAt" DATETIME, "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "ip" TEXT, "userAgent" TEXT)\`,
+        \`CREATE INDEX IF NOT EXISTS "RegistrationCode_targetUserId_email_idx" ON "RegistrationCode"("targetUserId", "email")\`,
+        \`CREATE INDEX IF NOT EXISTS "RegistrationCode_targetUserId_createdAt_idx" ON "RegistrationCode"("targetUserId", "createdAt")\`,
+      ].join(";"));
+    },
+  },
+  {
+    version: "20260929_add_user_fnos_uid",
+    description: "Add fnosUid to User (fnOS UID bound per ledger, unique within a ledger)",
+    apply(db) {
+      db.exec([
+        \`ALTER TABLE "User" ADD COLUMN "fnosUid" TEXT\`,
+        \`CREATE UNIQUE INDEX IF NOT EXISTS "User_householdId_fnosUid_key" ON "User"("householdId", "fnosUid")\`,
       ].join(";"));
     },
   },

@@ -367,6 +367,9 @@ expect(/startsWith\("file:"\)/.test(scheduledTaskLock) && /if \(isSqliteDatabase
 expect(/function isSqliteDatabaseUrl\(\)/.test(fundProfileSource) && /PRAGMA table_info\("FundProfile"\)/.test(fundProfileSource) && /information_schema\.columns/.test(fundProfileSource), "Fund profile column detection must use PRAGMA on fnOS SQLite before falling back to PostgreSQL information_schema.");
 expect(/20260812_account_note/.test(buildScript) && /addColumnIfMissing\(db, "Account", "note", "TEXT"\)/.test(buildScript), "fnOS SQLite migrations must add Account.note to existing databases without rebuilding tables.");
 expect(/20260812_user_session_days/.test(buildScript) && /addColumnIfMissing\(db, "UserSettings", "sessionDays", "INTEGER NOT NULL DEFAULT 30"\)/.test(buildScript), "fnOS SQLite migrations must add UserSettings.sessionDays to existing databases before restore writes user settings.");
+expect(/20260929_add_user_registration_principal/.test(buildScript) && /addColumnIfMissing\(db, "User", "registrationPrincipalId", "TEXT"\)/.test(buildScript), "fnOS SQLite migrations must add User.registrationPrincipalId for existing databases.");
+expect(/20260929_add_registration_code/.test(buildScript) && /CREATE TABLE IF NOT EXISTS "RegistrationCode"/.test(buildScript), "fnOS SQLite migrations must create RegistrationCode table for existing databases.");
+expect(/20260929_add_user_fnos_uid/.test(buildScript) && /ALTER TABLE "User" ADD COLUMN "fnosUid" TEXT/.test(buildScript), "fnOS SQLite migrations must add User.fnosUid for existing databases.");
 expect(/20260811_stock_domain/.test(buildScript) && /createStockDomainTables\(db\)/.test(buildScript), "fnOS SQLite migrations must create stock core tables for existing databases.");
 expect(/stock_transactions/.test(buildScript) && /entry_business_links_stockTransactionId_idx/.test(buildScript), "fnOS SQLite stock migration must include stock transactions and business-link stock relation.");
 expect(/20260812_stock_reference_tables/.test(buildScript) && /createStockReferenceTables\(db\)/.test(buildScript), "fnOS SQLite migrations must create stock reference tables for existing databases.");
@@ -482,11 +485,11 @@ expect(/install_callback/.test(buildScript) && /write_env_file/.test(buildScript
 expect(/"run-as": "package"/.test(buildScript), "fnOS lifecycle scripts must run as the mmh package user.");
 expect(/service_port=7777/.test(buildScript), "fnOS manifest must expose the legacy HTTP service port.");
 expect(/checkport=true/.test(buildScript), "fnOS manifest must enable service-port checking.");
-expect(/port:\s*"7777"/.test(buildScript) && /type:\s*"url"/.test(buildScript) && /protocol:\s*"http"/.test(buildScript), "fnOS entry must register the legacy HTTP URL on port 7777.");
-expect(/url:\s*"\/"/.test(buildScript), "fnOS entry must open the root HTTP path.");
+expect(/gatewayPrefix:\s*"\/app\/mmh"/.test(buildScript) && /gatewaySocket:\s*"app\.sock"/.test(buildScript) && /type:\s*"url"/.test(buildScript), "fnOS entry must register the unified-gateway URL /app/mmh on the app.sock socket.");
+expect(/url:\s*"\/app\/mmh"/.test(buildScript), "fnOS entry must open the unified-gateway root path /app/mmh.");
 expect(!/restart_start_as_package_user/.test(buildScript) && !/runuser -u mmh/.test(buildScript) && !/su mmh/.test(buildScript), "fnOS package start must not use a root-to-package-user downgrade path.");
-expect(/HOSTNAME=0\.0\.0\.0/.test(buildScript) && /server\.js/.test(buildScript), "fnOS package start must launch the HTTP Next server directly.");
-expect(!/mmh-unix-server\.cjs/.test(buildScript) && !/MMH_GATEWAY_SOCKET_PATH/.test(buildScript) && !/MMH_GATEWAY_PREFIX/.test(buildScript) && !/gatewaySocket/.test(buildScript) && !/gatewayPrefix/.test(buildScript), "fnOS package must not include unified-gateway or Unix-socket startup paths.");
+expect((/HOSTNAME=0\.0\.0\.0/.test(buildScript) && /server\.js/.test(buildScript)) || /mmh-unix-server\.cjs/.test(buildScript), "fnOS package start must launch the Next server (server.js) or the unified-gateway socket entrypoint (mmh-unix-server.cjs).");
+expect(/mmh-unix-server\.cjs/.test(buildScript) && /MMH_GATEWAY_SOCKET_PATH/.test(buildScript) && /MMH_LOCAL_TCP_PORT/.test(buildScript) && /gatewaySocket/.test(buildScript) && /gatewayPrefix/.test(buildScript), "fnOS package must include the unified-gateway and Unix-socket startup path with a local TCP port for direct access.");
 expect(/makeFnosPackageEntriesReadable/.test(buildScript), "fnOS package build must normalize entry permissions before packaging.");
 expect(/MMH_SESSION_SECRET/.test(buildScript) && /mmh-session-secret\.txt/.test(buildScript), "fnOS start script must persist a strong session secret for signed login cookies.");
 expect(/resolve_session_secret/.test(buildScript) && /generate_session_secret/.test(buildScript), "fnOS lifecycle settings must generate and reuse a strong signed-session secret.");
@@ -575,7 +578,7 @@ if (fs.existsSync(stageDir)) {
   expect(/"defaults"/.test(stagePrivilege) && /"run-as"\s*:\s*"package"/.test(stagePrivilege), `fnOS ${verifyTarget.id} stage privilege must run lifecycle callbacks as the package user.`);
   expect(/"username"\s*:\s*"mmh"/.test(stagePrivilege) && /"groupname"\s*:\s*"mmh"/.test(stagePrivilege), `fnOS ${verifyTarget.id} stage privilege must still declare the mmh package user and group.`);
   expect(!/restart_start_as_package_user/.test(stageMainScript) && !/runuser -u mmh/.test(stageMainScript) && !/su mmh/.test(stageMainScript), `fnOS ${verifyTarget.id} stage cmd/main must not use a root-to-package-user downgrade path.`);
-  expect(/HOSTNAME=0\.0\.0\.0/.test(stageMainScript) && /server\.js/.test(stageMainScript), `fnOS ${verifyTarget.id} stage cmd/main must launch the HTTP Next server directly.`);
+  expect((/HOSTNAME=0\.0\.0\.0/.test(stageMainScript) && /server\.js/.test(stageMainScript)) || /mmh-unix-server\.cjs/.test(stageMainScript), `fnOS ${verifyTarget.id} stage cmd/main must launch the Next server or the unified-gateway socket entrypoint.`);
   if (verifyExternalNode) {
     expect(/resolve_node_bin/.test(stageMainScript) && /better-sqlite3/.test(stageMainScript) && /Node\.js 22/.test(stageMainScript), `fnOS ${verifyTarget.id} external-node stage must resolve Node.js 22 and verify the SQLite native module.`);
     expect(/nodejs_v22/.test(stageMainScript), `fnOS ${verifyTarget.id} external-node stage must search the FN Depot Node.js v22 package paths.`);
@@ -593,7 +596,7 @@ if (fs.existsSync(stageDir)) {
       `fnOS ${verifyTarget.id} external-node stage must expose wizard_node_bin in wizard/config and persist it from cmd/config_callback into mmh.env (MMH_NODE_BIN).`
     );
   }
-  expect(!/mmh-unix-server\.cjs/.test(stageMainScript) && !/MMH_GATEWAY_SOCKET_PATH/.test(stageMainScript) && !/MMH_GATEWAY_PREFIX/.test(stageMainScript) && !/gatewaySocket/.test(stageMainScript) && !/gatewayPrefix/.test(stageMainScript), `fnOS ${verifyTarget.id} stage cmd/main must not include unified-gateway or Unix-socket startup paths.`);
+  expect(/mmh-unix-server\.cjs/.test(stageMainScript) && /MMH_GATEWAY_SOCKET_PATH/.test(stageMainScript) && /gatewaySocket/.test(stageMainScript) && /gatewayPrefix/.test(stageMainScript), `fnOS ${verifyTarget.id} stage cmd/main must include the unified-gateway and Unix-socket startup path.`);
   const stageUiConfigPath = path.join(stageDir, "app", "ui", "config");
   const stageAppArchive = path.join(stageDir, "app.tgz");
   let stageUiConfigText = "";
@@ -680,9 +683,9 @@ if (process.env.FNOS_VERIFY_BUILT_FPK === "1") {
   expect(JSON.stringify(uninstallWizard).includes("wizard_delete_data"), "Built fnOS wizard/uninstall must define the wizard_delete_data field consumed by cmd/uninstall_callback.");
   expect(tarHasEntry(builtFpk, "wizard/config"), "Built fnOS .fpk must include wizard/config so the service port remains editable.");
   expect(tarHasEntry(builtFpk, "cmd/config_callback"), "Built fnOS .fpk must keep cmd/config_callback for package compatibility.");
-  expect(uiConfig[".url"]["mmh.Application"]?.type === "url" && uiConfig[".url"]["mmh.Application"]?.protocol === "http" && uiConfig[".url"]["mmh.Application"]?.port === "7777" && uiConfig[".url"]["mmh.Application"]?.url === "/", "Built fnOS app/ui/config must register the HTTP URL on port 7777.");
-  expect(/HOSTNAME=0\.0\.0\.0/.test(mainScript) && /server\.js/.test(mainScript) && !/mmh-unix-server\.cjs/.test(mainScript), "Built fnOS cmd/main must launch the HTTP Next server.");
-  expect(!/MMH_GATEWAY_SOCKET_PATH/.test(mainScript) && !/MMH_GATEWAY_PREFIX/.test(mainScript) && !/gatewaySocket/.test(mainScript) && !/gatewayPrefix/.test(mainScript) && !/runuser -u mmh/.test(mainScript) && !/su mmh/.test(mainScript), "Built fnOS cmd/main must not include unified-gateway or root-to-package-user startup paths.");
+  expect(uiConfig[".url"]["mmh.Application"]?.gatewayPrefix === "/app/mmh" && uiConfig[".url"]["mmh.Application"]?.gatewaySocket === "app.sock" && uiConfig[".url"]["mmh.Application"]?.url === "/app/mmh", "Built fnOS app/ui/config must register the unified-gateway entry /app/mmh on app.sock.");
+  expect((/HOSTNAME=0\.0\.0\.0/.test(mainScript) && /server\.js/.test(mainScript)) || /mmh-unix-server\.cjs/.test(mainScript), "Built fnOS cmd/main must launch the Next server or the unified-gateway socket entrypoint.");
+  expect(/MMH_GATEWAY_SOCKET_PATH/.test(mainScript) && /MMH_LOCAL_TCP_PORT/.test(mainScript) && /gatewaySocket/.test(mainScript) && /gatewayPrefix/.test(mainScript) && !/runuser -u mmh/.test(mainScript) && !/su mmh/.test(mainScript), "Built fnOS cmd/main must include the unified-gateway socket startup path with a local TCP port and no root downgrade.");
   expect(tarHasEntry(builtFpk, "cmd/upgrade_init"), "Built fnOS .fpk must include cmd/upgrade_init to back up app data before upgrades.");
   expect(tarHasEntry(builtFpk, "cmd/upgrade_callback"), "Built fnOS .fpk must include cmd/upgrade_callback for overlay upgrades.");
   expect(tarHasEntry(builtFpk, "cmd/uninstall_init"), "Built fnOS .fpk must include cmd/uninstall_init to back up app data before uninstall/reinstall flows.");
