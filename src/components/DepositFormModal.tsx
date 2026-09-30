@@ -236,6 +236,12 @@ export function DepositFormModal({
   const [fundName, setFundName] = useState(initName);
   const [depositProductId, setDepositProductId] = useState(initDepositProductId);
   const [depositProducts, setDepositProducts] = useState<DepositProductOption[]>([]);
+  // 镜像一份最新产品列表给下面的机构同步 effect 用：effect 的依赖里不能加 depositProducts，
+  // 否则它自己 setDepositProducts 会再触发一轮请求。用它来判断「已选产品属于哪个机构」。
+  const depositProductsRef = useRef<DepositProductOption[]>([]);
+  useEffect(() => {
+    depositProductsRef.current = depositProducts;
+  }, [depositProducts]);
   const [productModalOpen, setProductModalOpen] = useState(false);
   const [productSaving, setProductSaving] = useState(false);
   const [productError, setProductError] = useState("");
@@ -332,6 +338,7 @@ export function DepositFormModal({
   const {
     ownerFilterLabel: depositOwnerFilterLabel,
     cycleOwnerFilter: cycleDepositOwnerFilter,
+    filteredOptions: depositFiltered,
   } = useAccountSSFilter(localDepositSSOpts);
 
   useEffect(() => {
@@ -572,12 +579,14 @@ export function DepositFormModal({
     if (!open) return;
     let cancelled = false;
     const institutionId = productInstitutionId ?? "";
+    // 已选产品只在「它属于另一家机构」时才该被清掉（用户确实换了银行）。
+    // institutionId 为空的产品（迁移遗留）任何机构下拉都查不到，不能因此清空用户已选/存单自带的产品
+    // —— 否则编辑一张老存单时产品会被清空，界面看起来像「这个产品不存在」。
+    const selectedKnown = depositProductsRef.current.find((product) => product.id === depositProductId) ?? null;
+    const selectedIsCrossInstitution = !!selectedKnown?.institutionId && selectedKnown.institutionId !== institutionId;
     if (!institutionId) {
-      setDepositProducts([]);
-      if (depositProductId) {
-        setDepositProductId("");
-        setFundName("");
-      }
+      // 机构还没定（存款账户与资金账户都未选）：只清掉按机构拉来的候选，保留已选产品。
+      setDepositProducts((prev) => prev.filter((product) => product.id === depositProductId));
       return () => { cancelled = true; };
     }
     const url = "/api/v1/deposit-products?institutionId=" + encodeURIComponent(institutionId);
@@ -586,16 +595,17 @@ export function DepositFormModal({
       .then((data) => {
         if (cancelled || !data?.ok) return;
         const products = (data.products ?? []) as DepositProductOption[];
-        if (depositProductId && !products.some((product) => product.id === depositProductId)) {
+        if (selectedIsCrossInstitution && depositProductId && !products.some((product) => product.id === depositProductId)) {
           setDepositProductId("");
           setFundName("");
         }
         setDepositProducts((prev) => {
           const selectedLocal = prev.filter((product) =>
-            product.institutionId === institutionId && (
+            (product.id === depositProductId && !selectedIsCrossInstitution) ||
+            (product.institutionId === institutionId && (
               product.id === depositProductId ||
               (!!fundName && (product.name === fundName || product.shortName === fundName))
-            ),
+            )),
           );
           const merged = [...products];
           const seen = new Set(merged.map((item) => item.id));
@@ -1466,7 +1476,20 @@ export function DepositFormModal({
     institutionId: option.institutionId,
     currency: option.currency,
   })));
+  const depositFallbackSSOptions: SmartSelectOption[] = (localDepositSSOpts ?? depositAccountList.map((option) => ({
+    id: option.id,
+    label: option.label,
+    subLabel: option.subLabel,
+    kind: option.kind,
+    investProductType: option.investProductType,
+    institutionId: option.institutionId,
+    currency: option.currency,
+  })));
   const visibleCashOptions = sortByAccountUsage(cashFiltered ?? cashFallbackSSOptions, accountUsage);
+  const visibleDepositOptions = sortByAccountUsage(
+    (depositFiltered ?? depositFallbackSSOptions).filter((option) => !option.isHeader && isDepositLikeOption(option)),
+    accountUsage,
+  );
 
   useCloseOnNavigation(open, () => {
     setOpen(false);
@@ -1638,7 +1661,7 @@ export function DepositFormModal({
                         mode="single"
                         value={depositAccountId}
                         onChange={setDepositAccountId}
-                        options={redeemDepositOptions}
+                        options={visibleDepositOptions}
                         placeholder={t("depositForm.selectDepositAccount")}
                         behavior={{ hierarchy: false, search: "auto", clearable: false, headerExtra: depositOwnerCycleButton }}
                       />
@@ -2234,7 +2257,7 @@ export function DepositFormModal({
   );
 }
 
-function isDepositLikeOption(option: AccountOption | null) {
+function isDepositLikeOption(option: { kind?: string | null; investProductType?: string | null } | null) {
   if (!option) return false;
   return option.kind === "deposit" || option.investProductType === "deposit";
 }

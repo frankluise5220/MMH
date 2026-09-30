@@ -14,6 +14,7 @@ type DetailEntryLike = {
   toAccountId?: string | null | undefined;
   fundSubtype?: string | null | undefined;
   source?: string | null | undefined;
+  fundProductType?: string | null | undefined;
   toNote?: string | null | undefined;
   fundConfirmDate?: Date | string | number | null | undefined;
   fundArrivalDate?: Date | string | number | null | undefined;
@@ -67,6 +68,18 @@ export function getDetailEntryDisplayDate(entry: DetailEntryLike, accountId?: st
       entry.fundSubtype === "dividend_cash"
     );
   if (isInvestmentCashReceipt) {
+    return toValidDate(entry.fundArrivalDate) ?? toValidDate(entry.date) ?? new Date(0);
+  }
+
+  // 存款买入行的业务生效日是到期/入账日 fundArrivalDate，而不是
+  // 创建交易时记录的 date。账户余额、未来流水过滤和明细排序必须使用同一口径。
+  const isDepositBuyIntoAccount =
+    entry.type === "investment" &&
+    accountId &&
+    entry.toAccountId === accountId &&
+    entry.fundProductType === "deposit" &&
+    entry.fundSubtype === "buy";
+  if (isDepositBuyIntoAccount) {
     return toValidDate(entry.fundArrivalDate) ?? toValidDate(entry.date) ?? new Date(0);
   }
 

@@ -20,6 +20,7 @@ import type { BatchReplaceField } from "@/lib/client/batchReplaceEntries";
 import { useI18n } from "@/lib/i18n";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, applyBalanceReconcileEntry, effectiveAmountForAccount, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
+import { debtPrincipalForAccountSide } from "@/lib/debt";
 import { rebaseRunningBalancesAfterSameDayReorder, startOfDayRunningBalanceSeed } from "@/lib/entry-reorder";
 import { buildDebtActivityEditEvent, inferDebtMode, isDebtActivityEntry, type DebtMode } from "@/lib/debt-entry-edit";
 import { parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
@@ -255,40 +256,83 @@ function buildBasicEntryEditPayload(entry: DetailEntry, currentAccountId?: strin
   };
 }
 
-function runningBalanceContribution(entry: DetailEntry, accountId: string) {
+/** 入账日在今天之后的流水尚未发生：与服务端明细 SQL 口径一致，不改变余额。 */
+function isFutureBalanceEntry(entry: DetailEntry, accountId: string) {
+  return detailEntryDayKey(entry, accountId) > localDateKey(new Date());
+}
+
+/** 贷款 / 往来款账户：只有 transfer 腿参与，本金带 source 决定的正负号（与 foldBalanceEntry 一致）。 */
+function isDebtBalanceAccountKind(accountKind?: string | null) {
+  return accountKind === "loan" || accountKind === "settlement";
+}
+
+function applyEntryToRunningBalance(
+  runningBalance: number,
+  entry: DetailEntry,
+  accountId: string,
+  accountKind?: string | null,
+) {
+  if (isFutureBalanceEntry(entry, accountId)) return runningBalance;
+  if (isDebtBalanceAccountKind(accountKind)) {
+    if (getBalanceReconcileTarget(entry) != null) return applyBalanceReconcileEntry(runningBalance, entry, accountId);
+    if (entry.type !== "transfer") return runningBalance;
+    return runningBalance + debtPrincipalForAccountSide(entry, accountId);
+  }
+  return applyBalanceReconcileEntry(runningBalance, entry, accountId);
+}
+
+function runningBalanceContribution(entry: DetailEntry, accountId: string, accountKind?: string | null) {
+  if (isFutureBalanceEntry(entry, accountId)) return 0;
+  if (isDebtBalanceAccountKind(accountKind)) {
+    if (getBalanceReconcileTarget(entry) != null) return applyBalanceReconcileEntry(0, entry, accountId);
+    return entry.type === "transfer" ? debtPrincipalForAccountSide(entry, accountId) : 0;
+  }
   return applyBalanceReconcileEntry(0, entry, accountId);
 }
 
-function canRecalculateRunningBalanceFromLoadedEntries(entries: DetailEntry[], accountId: string) {
+function canRecalculateRunningBalanceFromLoadedEntries(
+  entries: DetailEntry[],
+  accountId: string,
+  accountKind?: string | null,
+) {
   const ascEntries = [...entries].sort((a, b) => compareDetailEntriesAsc(a, b, accountId));
   const firstEntry = ascEntries[0];
   if (!firstEntry || firstEntry.runningBalance == null) return false;
-  return Math.abs(toNumber(firstEntry.runningBalance) - runningBalanceContribution(firstEntry, accountId)) < 0.005;
+  return Math.abs(toNumber(firstEntry.runningBalance) - runningBalanceContribution(firstEntry, accountId, accountKind)) < 0.005;
 }
 
-function recalculateLoadedRunningBalances(entries: DetailEntry[], accountId: string) {
+function recalculateLoadedRunningBalances(
+  entries: DetailEntry[],
+  accountId: string,
+  accountKind?: string | null,
+) {
   const runningBalanceById = new Map<string, number>();
   let runningBalance = 0;
   for (const entry of [...entries].sort((a, b) => compareDetailEntriesAsc(a, b, accountId))) {
-    runningBalance = applyBalanceReconcileEntry(runningBalance, entry, accountId);
+    runningBalance = applyEntryToRunningBalance(runningBalance, entry, accountId, accountKind);
     runningBalanceById.set(entry.id, runningBalance);
   }
   return entries.map((entry) => ({ ...entry, runningBalance: runningBalanceById.get(entry.id) ?? entry.runningBalance ?? null }));
 }
 
-function removeEntriesAndUpdateRunningBalances(entries: DetailEntry[], deletedSet: Set<string>, accountId: string) {
+function removeEntriesAndUpdateRunningBalances(
+  entries: DetailEntry[],
+  deletedSet: Set<string>,
+  accountId: string,
+  accountKind?: string | null,
+) {
   const deletedEntries = entries.filter((entry) => deletedSet.has(entry.id));
   if (deletedEntries.length === 0) return entries;
   const remainingEntries = entries.filter((entry) => !deletedSet.has(entry.id));
-  if (canRecalculateRunningBalanceFromLoadedEntries(remainingEntries, accountId)) {
-    return recalculateLoadedRunningBalances(remainingEntries, accountId);
+  if (canRecalculateRunningBalanceFromLoadedEntries(remainingEntries, accountId, accountKind)) {
+    return recalculateLoadedRunningBalances(remainingEntries, accountId, accountKind);
   }
   if (deletedEntries.some((entry) => getBalanceReconcileTarget(entry) != null)) return remainingEntries;
   return remainingEntries.map((entry) => {
     if (entry.runningBalance == null) return entry;
     const adjustment = deletedEntries.reduce((sum, deletedEntry) => (
       compareDetailEntriesAsc(deletedEntry, entry, accountId) < 0
-        ? sum + runningBalanceContribution(deletedEntry, accountId)
+        ? sum + runningBalanceContribution(deletedEntry, accountId, accountKind)
         : sum
     ), 0);
     return adjustment === 0
@@ -661,6 +705,8 @@ export function DetailViewClient({
     () => new Set((reorderAccountIds?.length ? reorderAccountIds : (isAllCashDetailScope(accountId) ? [] : [accountId])).filter(Boolean)),
     [accountId, reorderAccountIds],
   );
+  // 当前明细账户的类别：贷款 / 往来款要走本金口径（与服务端 SQL 一致）。
+  const selectedAccountKind = useMemo(() => accountOptionById.get(accountId)?.kind ?? null, [accountOptionById, accountId]);
   const flowAccountIdOf = useCallback((entry: { accountId?: string | null; toAccountId?: string | null }) => {
     if (isAllCashDetailScope(accountId) && accountColumnScopeIds.size > 0) {
       return cashLedgerFlowAccountId(entry, accountColumnScopeIds);
@@ -1162,7 +1208,7 @@ export function DetailViewClient({
         detailRefreshSeqRef.current += 1;
         setRefreshedEntries((current) => {
           const currentEntries = current?.accountId === accountId ? current.entries : entries;
-          return { accountId, entries: removeEntriesAndUpdateRunningBalances(currentEntries, deletedSet, accountId) };
+          return { accountId, entries: removeEntriesAndUpdateRunningBalances(currentEntries, deletedSet, accountId, selectedAccountKind) };
         });
         setSelection(new Set());
         return;
@@ -1197,7 +1243,7 @@ export function DetailViewClient({
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
     return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
-  }, [accountColumnScopeIds, accountId, entries, refreshOnGlobalEvent, setSelection]);
+  }, [accountColumnScopeIds, accountId, entries, refreshOnGlobalEvent, selectedAccountKind, setSelection]);
 
   const columns = useMemo<AdvancedDataTableColumn<DetailEntry>[]>(() => [
     {

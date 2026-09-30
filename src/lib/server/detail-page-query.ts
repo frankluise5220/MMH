@@ -5,8 +5,9 @@ import {
   BALANCE_RECONCILE_SOURCE,
   BALANCE_RECONCILE_TARGET_PREFIX,
 } from "@/lib/balance-reconcile";
+import { formatDateLocal } from "@/lib/date-utils";
+import { isLoanOrSettlementAccountKind } from "@/lib/debt";
 import { prisma } from "@/lib/db/prisma";
-import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 
 const FX_CONVERSION_SOURCE = "fx_conversion";
 
@@ -47,9 +48,15 @@ function buildOrderingCtesSql(args: {
   accountIds: string[];
   householdId: string;
   sortAccountId?: string | null;
+  /** 排序账户是贷款 / 往来款时，余额折叠走本金口径（见 debtPrincipalForAccountSide）。 */
+  debtAccountMode?: boolean;
 }) {
-  const { accountIds, householdId, sortAccountId } = args;
+  const { accountIds, householdId, sortAccountId, debtAccountMode = false } = args;
   const sortAccountIdValue = sortAccountId ?? null;
+  // 账户余额口径（account-balance.ts 的 isOnOrBeforeToday）以「今天」为截止，
+  // 明细「余额」列必须用同一个截止日，否则未来日期的流水会把列表顶部的余额
+  // 推到账户余额之外（例：借记卡页头 -89,161.66，列表首行却是 -49,161.66）。
+  const todayKey = formatDateLocal(new Date());
   const accountScope = accountScopeSql(accountIds);
   const scopedColumns = Prisma.sql`
     t."id",
@@ -64,6 +71,7 @@ function buildOrderingCtesSql(args: {
     t."toNote",
     t."source",
     t."debtPrincipalAmount",
+    t."fundProductType",
     t."fundSubtype",
     t."fundArrivalDate",
     t."fundArrivalAmount"
@@ -145,12 +153,68 @@ function buildOrderingCtesSql(args: {
             -- 必须显式标注类型：裸 NULL 会被推断为 text，导致下方
             -- COALESCE(s."wealthAction", s."fundSubtype") 等表达式出现
             -- 42804（COALESCE types text and "FundSubtype" cannot be matched）。
-            NULL::"FundSubtype" AS "wealthAction",
-            NULL::TIMESTAMP(3) AS "wealthArrivalDate",
-            NULL::TEXT AS "wealthCashAccountId"
+            -- 用 CAST(... AS ...) 而不是 PG 专有的双冒号写法：fnOS / 群晖 包跑的是
+            -- SQLite（DATABASE_URL=file:.../mmh.db），双冒号会让整条 SQL 直接
+            -- 语法报错（unrecognized token ":"），多账户 / 全部现金明细整页 500。
+            -- CAST 两种引擎都支持，PG 侧语义与双冒号写法完全等价。
+            CAST(NULL AS "FundSubtype") AS "wealthAction",
+            CAST(NULL AS TIMESTAMP(3)) AS "wealthArrivalDate",
+            CAST(NULL AS TEXT) AS "wealthCashAccountId"
           ${scopedSource}
         )
       `;
+
+  // 每笔流水对「余额」列的贡献。必须与 account-balance.ts 的 foldBalanceEntry 逐条对齐，
+  // 否则明细余额列会与账户余额不一致。
+  const effectiveAmountCase = debtAccountMode
+    ? Prisma.sql`
+          WHEN c."isAnchor" = 1 THEN 0
+          WHEN CAST(DATE(
+            CASE
+              WHEN c."type" = 'investment'
+                AND c."fundProductType" = 'deposit'
+                AND c."fundSubtype" = 'buy'
+                AND c."toAccountId" = CAST(${sortAccountIdValue} AS TEXT)
+                THEN COALESCE(c."fundArrivalDate", c."displayAt")
+              ELSE c."displayAt"
+            END
+          ) AS TEXT) > ${todayKey} THEN 0
+          -- 贷款 / 往来款：只有 transfer 腿参与，且本金带 source 决定的正负号。
+          -- 逐条镜像 src/lib/debt.ts 的 debtPrincipalForAccountSide。
+          WHEN c."type" <> 'transfer' THEN 0
+          WHEN c."source" IN ('debt_borrow_in', 'debt_financed_purchase') THEN -COALESCE(c."debtPrincipalAmount", ABS(c."amount"))
+          WHEN c."source" IN ('debt_repay_out', 'debt_prepay_out') THEN COALESCE(c."debtPrincipalAmount", ABS(c."amount"))
+          WHEN c."source" = 'debt_lend_out' THEN COALESCE(c."debtPrincipalAmount", ABS(c."amount"))
+          WHEN c."source" = 'debt_collect_in' THEN -COALESCE(c."debtPrincipalAmount", ABS(c."amount"))
+          WHEN c."source" = 'scheduled_task' THEN COALESCE(c."debtPrincipalAmount", ABS(c."amount"))
+          WHEN c."source" = 'reimbursement' THEN -COALESCE(c."debtPrincipalAmount", ABS(c."amount"))
+          WHEN c."toAccountId" = CAST(${sortAccountIdValue} AS TEXT) THEN COALESCE(c."debtPrincipalAmount", ABS(c."amount"))
+          ELSE c."amount"`
+    : Prisma.sql`
+          WHEN c."isAnchor" = 1 THEN 0
+          -- 入账日在今天之后的流水尚未发生：仍会列在明细里，但不改变余额。
+          -- 用与 locateDetailPage 相同的 CAST(... AS TEXT) 字符串比较，避免
+          -- CURRENT_DATE 的会话时区与 JS 本地日期不一致。
+          WHEN CAST(DATE(
+            CASE
+              WHEN c."type" = 'investment'
+                AND c."fundProductType" = 'deposit'
+                AND c."fundSubtype" = 'buy'
+                AND c."toAccountId" = CAST(${sortAccountIdValue} AS TEXT)
+                THEN COALESCE(c."fundArrivalDate", c."displayAt")
+              ELSE c."displayAt"
+            END
+          ) AS TEXT) > ${todayKey} THEN 0
+          WHEN c."toAccountId" = CAST(${sortAccountIdValue} AS TEXT)
+            AND c."debtPrincipalAmount" IS NOT NULL
+            AND (
+              COALESCE(c."source", '') = ''
+              OR c."source" IN ('debt_repay_out', 'debt_prepay_out', 'debt_lend_out', 'scheduled_task')
+            )
+            THEN c."debtPrincipalAmount"
+          WHEN c."toAccountId" = CAST(${sortAccountIdValue} AS TEXT)
+            THEN ABS(COALESCE(c."fundArrivalAmount", c."amount"))
+          ELSE c."amount"`;
 
   return Prisma.sql`
     WITH ${scopedCtes},
@@ -168,6 +232,12 @@ function buildOrderingCtesSql(args: {
               OR (s."fundSubtype" = 'buy_failed' AND s."source" = 'regular_invest_refund')
             )
             THEN COALESCE(s."wealthArrivalDate", s."fundArrivalDate", s."date")
+          WHEN CAST(${sortAccountIdValue} AS TEXT) IS NOT NULL
+            AND s."type" = 'investment'
+            AND s."fundProductType" = 'deposit'
+            AND s."fundSubtype" = 'buy'
+            AND s."toAccountId" = CAST(${sortAccountIdValue} AS TEXT)
+            THEN COALESCE(s."fundArrivalDate", s."date")
           ELSE s."date"
         END AS "displayAt",
         CASE
@@ -177,6 +247,11 @@ function buildOrderingCtesSql(args: {
           ELSE 0
         END AS "isAnchor"
       FROM "scoped" s
+    ),
+    "visible" AS (
+      SELECT c.*
+      FROM "classified" c
+      WHERE CAST(DATE(c."displayAt") AS TEXT) <= ${todayKey}
     ),
     "displayed" AS (
       SELECT
@@ -192,19 +267,9 @@ function buildOrderingCtesSql(args: {
           ELSE NULL
         END AS "anchorTarget",
         CASE
-          WHEN c."isAnchor" = 1 THEN 0
-          WHEN c."toAccountId" = CAST(${sortAccountIdValue} AS TEXT)
-            AND c."debtPrincipalAmount" IS NOT NULL
-            AND (
-              COALESCE(c."source", '') = ''
-              OR c."source" IN ('debt_repay_out', 'debt_prepay_out', 'debt_lend_out', 'scheduled_task')
-            )
-            THEN c."debtPrincipalAmount"
-          WHEN c."toAccountId" = CAST(${sortAccountIdValue} AS TEXT)
-            THEN ABS(COALESCE(c."fundArrivalAmount", c."amount"))
-          ELSE c."amount"
+          ${effectiveAmountCase}
         END AS "effectiveAmount"
-      FROM "classified" c
+      FROM "visible" c
     ),
     "ordered" AS (
       SELECT
@@ -229,14 +294,19 @@ function buildOrderingCtesSql(args: {
   `;
 }
 
-async function countEntries(accountIds: string[], householdId: string) {
-  return prisma.txRecord.count({
-    where: {
-      ...txRecordAccountScopeWhere(accountIds),
-      deletedAt: null,
-      householdId,
-    },
+async function countEntries(accountIds: string[], householdId: string, sortAccountId?: string | null) {
+  const orderingCtes = buildOrderingCtesSql({
+    accountIds,
+    householdId,
+    sortAccountId,
   });
+  const rows = await prisma.$queryRaw<Array<{ count: unknown }>>(Prisma.sql`
+    ${orderingCtes}
+    SELECT COUNT(*) AS "count"
+    FROM "ranked" r
+  `);
+  const count = Number(rows[0]?.count ?? 0);
+  return Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
 }
 
 export async function queryDetailPage(args: DetailPageQueryArgs): Promise<DetailPageQueryResult> {
@@ -250,16 +320,24 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
     };
   }
 
-  const totalCount = await countEntries(accountIds, args.householdId);
+  const totalCount = await countEntries(accountIds, args.householdId, args.sortAccountId);
   const pageSize = Math.max(1, Math.floor(args.pageSize) || 1);
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   const page = Math.min(Math.max(1, Math.floor(args.page) || 1), totalPages);
   const offset = (page - 1) * pageSize;
   const limit = offset + pageSize;
+  // 只有「单账户 + 逐笔余额」这一条路径需要知道账户类别：贷款 / 往来款的余额
+  // 按本金口径折叠，与 account-balance.ts 的 foldBalanceEntry 保持一致。
+  const debtAccountMode = args.includeRunningBalances && args.sortAccountId
+    ? isLoanOrSettlementAccountKind(
+      (await prisma.account.findUnique({ where: { id: args.sortAccountId }, select: { kind: true } }))?.kind,
+    )
+    : false;
   const orderingCtes = buildOrderingCtesSql({
     accountIds,
     householdId: args.householdId,
     sortAccountId: args.sortAccountId,
+    debtAccountMode,
   });
 
   if (!args.includeRunningBalances || !args.sortAccountId) {
@@ -339,7 +417,7 @@ export async function locateDetailPage(args: {
 }) {
   const accountIds = normalizedAccountIds(args.accountIds);
   const pageSize = Math.max(1, Math.floor(args.pageSize) || 1);
-  const totalCount = accountIds.length > 0 ? await countEntries(accountIds, args.householdId) : 0;
+  const totalCount = accountIds.length > 0 ? await countEntries(accountIds, args.householdId, args.sortAccountId) : 0;
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   if (!/^\d{4}-\d{2}-\d{2}$/.test(args.dateYmd)) {
     return { totalCount, page: 1, index: 0 };
@@ -385,7 +463,7 @@ export async function locateDetailEntryPage(args: {
 }) {
   const accountIds = normalizedAccountIds(args.accountIds);
   const pageSize = Math.max(1, Math.floor(args.pageSize) || 1);
-  const totalCount = accountIds.length > 0 ? await countEntries(accountIds, args.householdId) : 0;
+  const totalCount = accountIds.length > 0 ? await countEntries(accountIds, args.householdId, args.sortAccountId) : 0;
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   const entryId = String(args.entryId ?? "").trim();
   if (!entryId || accountIds.length === 0) {
