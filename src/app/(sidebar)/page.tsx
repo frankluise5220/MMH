@@ -1213,7 +1213,7 @@ export default async function Home({
       investProductType: a.investProductType,
       debtDirection: a.debtDirection ?? null,
       billingDay: a.billingDay ?? null,
-      subLabel: kindLabel(a.kind),
+      subLabel: display.subLabel,
       currency: a.currency ?? "CNY",
     };
   });
@@ -1317,7 +1317,7 @@ export default async function Home({
         investProductType: a.investProductType,
         debtDirection: a.debtDirection ?? null,
         billingDay: a.billingDay ?? null,
-        subLabel: kindLabel(a.kind),
+        subLabel: display.subLabel,
         currency: a.currency ?? "CNY",
       };
     });
@@ -1348,7 +1348,7 @@ export default async function Home({
         institutionId: a.institutionId ?? "",
         institutionType: a.Institution?.type ?? "",
         investProductType: a.investProductType,
-        subLabel: kindLabel(a.kind),
+        subLabel: display.subLabel,
         currency: a.currency ?? "CNY",
       };
     });
