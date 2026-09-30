@@ -1,12 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { ArrowDownLeft, ArrowUpRight, Landmark, SlidersHorizontal, Trash2 } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Landmark, Library, SlidersHorizontal, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTableSummaryRow } from "./AdvancedDataTable";
 import { DetailTablePaginationControls } from "./DetailTablePaginationControls";
 import { EntryRowActions, type EditPayload } from "./EntryRowActions";
+import { ProductLibraryModal } from "./ProductLibraryModal";
 import { ResizableVerticalSplit } from "./ResizableVerticalSplit";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { amountToneClass as amountClass } from "@/lib/client/colors";
@@ -65,6 +66,7 @@ export function BondShell({
   accountId,
   accountLabel,
   institutionName,
+  institutionId,
   lots,
   entries,
   totalPrincipal,
@@ -74,6 +76,8 @@ export function BondShell({
   accountId: string;
   accountLabel: string;
   institutionName?: string;
+  /** 当前债券账户所属机构，用作产品库新建债券时的默认机构 */
+  institutionId?: string | null;
   lots: BondShellLot[];
   entries: BondShellEntry[];
   totalPrincipal: number;
@@ -81,6 +85,7 @@ export function BondShell({
   totalExpectedInterest: number;
 }) {
   const [selectedLotId, setSelectedLotId] = useState<string | null>(null);
+  const [productLibraryOpen, setProductLibraryOpen] = useState(false);
   const [lotTab, setLotTab] = useState<LotTab>("held");
   const [entryPage, setEntryPage] = useState(1);
   const [entryPageSize, setEntryPageSize] = useState(40);
@@ -353,6 +358,15 @@ export function BondShell({
                       })
                     : formatText("bondShell.clearedHint", { count: clearedLots.length })}
               </span>
+              <button
+                type="button"
+                onClick={() => setProductLibraryOpen(true)}
+                className="secondary-button h-7 gap-1 px-2 text-xs"
+                title={t("productLibrary.title.bond")}
+              >
+                <Library className="h-3.5 w-3.5" />
+                {t("productLibrary.entryButton")}
+              </button>
             </div>
           </div>
           <div className="min-h-0 flex-1">
@@ -471,6 +485,14 @@ export function BondShell({
           </div>
         </section>
       </ResizableVerticalSplit>
+
+      <ProductLibraryModal
+        open={productLibraryOpen}
+        family="bond"
+        defaultInstitutionId={institutionId ?? null}
+        onClose={() => setProductLibraryOpen(false)}
+        onChanged={() => dispatchFinanceDataChanged({ reason: "product-library-save", accountIds: [accountId] })}
+      />
     </div>
   );
 }

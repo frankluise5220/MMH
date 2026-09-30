@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
+import {
+  isInsurerInstitution,
+  insurerInstitutionError,
+  listInsurerInstitutionIds,
+  notInsurerOwnedFilter,
+} from "@/lib/server/product-family-guard";
 import { normalizeCurrency, normalizeOptionalCurrency } from "@/lib/currency";
 
 export const runtime = "nodejs";
@@ -18,6 +24,9 @@ function parsePositiveNumber(raw: unknown) {
  * Query:
  * - institutionId?: string filter by institution
  *
+ * 家族口径：**只返回理财产品**，挂保险公司（type=insurance）名下的产品一律不返回，
+ * 与保险家族「承保机构必须是保险公司」互为反向守卫。
+ *
  * Response:
  * - { ok: true, products: [{ id, name, shortName, institutionId, institutionName, currency, annualRate, termDays, note }] }
  */
@@ -25,11 +34,17 @@ export async function GET(req: NextRequest) {
   try {
     const { householdId } = await getHouseholdScope();
     const institutionId = req.nextUrl.searchParams.get("institutionId")?.trim() || "";
+
+    // 理财家族不含保险产品：先取本户所有保险公司 id，再排除挂在其下的产品
+    // （筛选片段含 NULL 机构放行，语义见 `notInsurerOwnedFilter`）。
+    const insurerIds = await listInsurerInstitutionIds(householdId);
+
     const rows = await prisma.wealthProduct.findMany({
       where: {
         householdId,
         isActive: true,
         ...(institutionId ? { institutionId } : {}),
+        ...notInsurerOwnedFilter(insurerIds),
       },
       include: { Institution: { select: { id: true, name: true, shortName: true } } },
       orderBy: [{ institutionId: "asc" }, { name: "asc" }],
@@ -85,6 +100,45 @@ export async function POST(req: NextRequest) {
     const note = String(body.note ?? "").trim() || null;
 
     if (!name) return NextResponse.json({ ok: false, code: "PRODUCT_NAME_REQUIRED", error: "产品名称必填" }, { status: 400 });
+
+    // 产品库（mode: "master"）：只登记产品主数据，不解析/创建理财账户，也不需要资金来源账户。
+    if (String(body.mode ?? "").trim() === "master") {
+      const institutionId = String(body.institutionId ?? "").trim() || null;
+      if (institutionId) {
+        const institution = await prisma.institution.findFirst({ where: { id: institutionId, householdId } });
+        if (!institution) return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "机构不存在" }, { status: 400 });
+        if (isInsurerInstitution(institution)) return NextResponse.json(insurerInstitutionError(), { status: 400 });
+      }
+      const duplicate = await prisma.wealthProduct.findFirst({ where: { householdId, institutionId, name } });
+      if (duplicate) return NextResponse.json({ ok: false, code: "PRODUCT_EXISTS", error: "同一机构下已有同名理财产品" }, { status: 409 });
+      const created = await prisma.wealthProduct.create({
+        data: {
+          householdId,
+          institutionId,
+          name,
+          shortName,
+          currency: requestedCurrency ? normalizeCurrency(requestedCurrency) : "CNY",
+          annualRate,
+          termDays: termDays == null ? null : Math.round(termDays),
+          note,
+          isActive: true,
+        },
+      });
+      return NextResponse.json({
+        ok: true,
+        product: {
+          id: created.id,
+          name: created.name,
+          shortName: created.shortName,
+          institutionId: created.institutionId,
+          currency: created.currency,
+          annualRate: created.annualRate == null ? null : Number(created.annualRate),
+          termDays: created.termDays,
+          note: created.note,
+        },
+      });
+    }
+
     if (!cashAccountId) return NextResponse.json({ ok: false, code: "CASH_ACCOUNT_REQUIRED", error: "请选择资金来源账户" }, { status: 400 });
     // 新建产品只登记名称/类型；到期日、票面利率等条款在购买界面按次填写后回填
     // （PUT /wealth-products/[id] 是债单条款真源），不再强制创建即填齐。

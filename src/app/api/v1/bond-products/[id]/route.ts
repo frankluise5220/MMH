@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { normalizeDepositInterestPayoutInput } from "@/lib/deposit-interest-payout";
 import { ensureBondPlansForProduct } from "@/lib/server/bond-plan-tasks";
+import { deleteProductMaster } from "@/lib/server/product-master-delete";
 
 export const runtime = "nodejs";
 
@@ -35,6 +36,20 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string 
     }
     if (body.shortName !== undefined) data.shortName = String(body.shortName ?? "").trim() || null;
     if (body.note !== undefined) data.note = String(body.note ?? "").trim() || null;
+    if (body.currency !== undefined) {
+      const currency = String(body.currency ?? "").trim().toUpperCase();
+      data.currency = currency || product.currency;
+    }
+    if (body.institutionId !== undefined) {
+      const institutionId = String(body.institutionId ?? "").trim() || null;
+      if (institutionId) {
+        const institution = await prisma.institution.findFirst({ where: { id: institutionId, householdId } });
+        if (!institution) {
+          return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "机构不存在" }, { status: 400 });
+        }
+      }
+      data.institutionId = institutionId;
+    }
     if (body.termDays !== undefined) {
       const termDays = Number(String(body.termDays ?? "").trim());
       data.termDays = Number.isFinite(termDays) && termDays > 0 ? Math.round(termDays) : null;
@@ -69,6 +84,18 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string 
     if (!nextAnnualRate) return NextResponse.json({ ok: false, code: "BOND_RATE_REQUIRED", error: "债券必须填写票面利率" }, { status: 400 });
     if (data.payoutFrequency === null) data.payoutFrequency = "maturity";
 
+    // 身份口径 = (householdId, institutionId, name)，改名 / 改机构都可能撞上已有债券。
+    const nextName = (data.name as string | undefined) ?? product.name;
+    const nextInstitutionId =
+      data.institutionId !== undefined ? (data.institutionId as string | null) : product.institutionId;
+    const conflict = await prisma.bondProduct.findFirst({
+      where: { householdId, name: nextName, institutionId: nextInstitutionId, NOT: { id: product.id } },
+      select: { id: true },
+    });
+    if (conflict) {
+      return NextResponse.json({ ok: false, code: "PRODUCT_EXISTS", error: "同一机构下已有同名债券" }, { status: 409 });
+    }
+
     const updated = await prisma.bondProduct.update({ where: { id: product.id }, data });
     await ensureBondPlansForProduct({ householdId, productId: updated.id }).catch(() => {});
 
@@ -79,6 +106,7 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string 
         name: updated.name,
         shortName: updated.shortName,
         currency: updated.currency,
+        institutionId: updated.institutionId,
         annualRate: updated.annualRate == null ? null : Number(updated.annualRate),
         termDays: updated.termDays,
         maturityDate: isoDateOnly(updated.maturityDate),
@@ -92,3 +120,31 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string 
     return NextResponse.json({ ok: false, code: "UPDATE_FAILED", error: error instanceof Error ? error.message : "保存失败" }, { status: 500 });
   }
 }
+
+/**
+ * DELETE /api/v1/bond-products/[id]
+ * 删除债券产品主数据，带引用保护（语义见 `deleteProductMaster`）。
+ *
+ * Body: { cascade?: boolean, password?: string }
+ */
+export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  try {
+    const { id } = await ctx.params;
+    const productId = String(id ?? "").trim();
+    if (!productId) return NextResponse.json({ ok: false, code: "PRODUCT_ID_REQUIRED", error: "缺少债券 id" }, { status: 400 });
+
+    const body = await req.json().catch(() => null) as { cascade?: boolean; password?: string } | null;
+    const outcome = await deleteProductMaster({
+      family: "bond",
+      productId,
+      body,
+      remove: async () => {
+        await prisma.bondProduct.delete({ where: { id: productId } });
+      },
+    });
+    return NextResponse.json(outcome.payload, { status: outcome.status });
+  } catch (error) {
+    return NextResponse.json({ ok: false, code: "DELETE_FAILED", error: error instanceof Error ? error.message : "删除失败" }, { status: 500 });
+  }
+}
+

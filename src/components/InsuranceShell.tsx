@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { ArrowDownLeft, ArrowUpRight, Pencil, Plus, Shield, Trash2 } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Library, Pencil, Plus, Shield, Trash2 } from "lucide-react";
 
 import { formatMoney } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
@@ -21,6 +21,7 @@ import {
   type AdvancedDataTableSummaryRow,
 } from "./AdvancedDataTable";
 import { BusinessLinkActionButton } from "./BusinessLinkActionButton";
+import { ProductLibraryModal } from "./ProductLibraryModal";
 import {
   BasicDetailBatchDeleteButton,
   BasicDetailBatchDeleteMessage,
@@ -450,6 +451,7 @@ function InsuranceEntryRecordsTable({
 
 export function InsuranceShell({
   accountId,
+  institutionId,
   holdings,
   entries,
   familyMemberOptions = [],
@@ -459,6 +461,8 @@ export function InsuranceShell({
   accountId: string;
   accountLabel: string;
   institutionName?: string;
+  /** 当前保险账户所属机构，用作产品库新建产品时的默认承保机构 */
+  institutionId?: string | null;
   holdings: InsuranceHolding[];
   entries: InsuranceEntry[];
   familyMemberOptions?: SmartSelectOption[];
@@ -469,6 +473,8 @@ export function InsuranceShell({
   const [refreshedHoldings, setRefreshedHoldings] = useState<InsuranceHolding[] | null>(null);
   const [selectedHoldingId, setSelectedHoldingId] = useState<string | null>(null);
   const [showActiveOnly, setShowActiveOnly] = useState(false);
+  /** 保险产品库入口（产品主数据独立管理，不再只能双击保单行进入） */
+  const [productLibraryOpen, setProductLibraryOpen] = useState(false);
   const [familyMemberOptionsState, setFamilyMemberOptionsState] =
     useState<SmartSelectOption[]>(familyMemberOptions);
   const familyMemberOptionsStateRef = useRef<SmartSelectOption[]>(familyMemberOptions);
@@ -1249,18 +1255,29 @@ export function InsuranceShell({
                 </span>
               }
               toolbarRightContent={
-                <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs text-slate-500">
-                  <input
-                    type="checkbox"
-                    checked={showActiveOnly}
-                    onChange={(event) => {
-                      setShowActiveOnly(event.target.checked);
-                      setSelectedHoldingId(null);
-                    }}
-                    className="h-3.5 w-3.5 rounded border-slate-300"
-                  />
-                  {t("insuranceShell.activeOnly")}
-                </label>
+                <div className="flex items-center gap-2">
+                  <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs text-slate-500">
+                    <input
+                      type="checkbox"
+                      checked={showActiveOnly}
+                      onChange={(event) => {
+                        setShowActiveOnly(event.target.checked);
+                        setSelectedHoldingId(null);
+                      }}
+                      className="h-3.5 w-3.5 rounded border-slate-300"
+                    />
+                    {t("insuranceShell.activeOnly")}
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setProductLibraryOpen(true)}
+                    className="secondary-button h-7 gap-1 px-2 text-xs"
+                    title={t("productLibrary.title.insurance")}
+                  >
+                    <Library className="h-3.5 w-3.5" />
+                    {t("productLibrary.entryButton")}
+                  </button>
+                </div>
               }
               summaryRow={holdingSummaryRow}
               onRowClick={(holding) =>
@@ -1422,6 +1439,13 @@ export function InsuranceShell({
           await refreshInsuranceData();
           dispatchFinanceDataChanged({ reason: "insurance-entry-save", accountIds: [accountId] });
         }}
+      />
+      <ProductLibraryModal
+        open={productLibraryOpen}
+        family="insurance"
+        defaultInstitutionId={institutionId ?? null}
+        onClose={() => setProductLibraryOpen(false)}
+        onChanged={() => dispatchFinanceDataChanged({ reason: "product-library-save", accountIds: [accountId] })}
       />
     </div>
   );

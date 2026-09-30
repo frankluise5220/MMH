@@ -105,6 +105,53 @@ export async function POST(req: NextRequest) {
     const firstPayoutDate = parseIsoDateOnly(body.firstPayoutDate);
 
     if (!name) return NextResponse.json({ ok: false, code: "PRODUCT_NAME_REQUIRED", error: "债券名称必填" }, { status: 400 });
+
+    // 产品库（mode: "master"）：只登记债券主数据，不解析/创建债券账户。
+    if (String(body.mode ?? "").trim() === "master") {
+      const institutionId = String(body.institutionId ?? "").trim() || null;
+      if (institutionId) {
+        const institution = await prisma.institution.findFirst({ where: { id: institutionId, householdId } });
+        if (!institution) return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "机构不存在" }, { status: 400 });
+      }
+      const duplicate = await prisma.bondProduct.findFirst({ where: { householdId, institutionId, name } });
+      if (duplicate) return NextResponse.json({ ok: false, code: "PRODUCT_EXISTS", error: "同一机构下已有同名债券" }, { status: 409 });
+      const created = await prisma.bondProduct.create({
+        data: {
+          householdId,
+          institutionId,
+          name,
+          shortName,
+          currency: requestedCurrency ? normalizeCurrency(requestedCurrency) : "CNY",
+          annualRate,
+          termDays: termDays == null ? null : Math.round(termDays),
+          maturityDate,
+          payoutFrequency,
+          interestCalcBasis,
+          firstPayoutDate,
+          note,
+          isActive: true,
+        },
+      });
+      await ensureBondPlansForProduct({ householdId, productId: created.id }).catch(() => {});
+      return NextResponse.json({
+        ok: true,
+        product: {
+          id: created.id,
+          name: created.name,
+          shortName: created.shortName,
+          institutionId: created.institutionId,
+          currency: created.currency,
+          annualRate: created.annualRate == null ? null : Number(created.annualRate),
+          termDays: created.termDays,
+          maturityDate: isoDateOnly(created.maturityDate),
+          payoutFrequency: created.payoutFrequency,
+          interestCalcBasis: created.interestCalcBasis,
+          firstPayoutDate: isoDateOnly(created.firstPayoutDate),
+          note: created.note,
+        },
+      });
+    }
+
     if (!cashAccountId) return NextResponse.json({ ok: false, code: "CASH_ACCOUNT_REQUIRED", error: "请选择资金来源账户" }, { status: 400 });
 
     const { product, bondAccount } = await prisma.$transaction(async (tx) => {

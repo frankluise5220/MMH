@@ -16,7 +16,7 @@ import { toNumber } from "@/lib/date-utils";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 
-import { ChartLine, Download, List, Pencil, Settings2, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { ChartLine, Download, Library, List, Pencil, Settings2, SlidersHorizontal, Trash2, X } from "lucide-react";
 
 import { FundProfileSettingsModal } from "@/components/FundProfileSettingsModal";
 import type { FundProfileNavigationItem } from "@/components/FundProfileSettingsClient";
@@ -31,6 +31,8 @@ import { FillNavButton } from "@/components/FillNavButton";
 import { FundUnitsReconcileButton } from "@/components/FundUnitsReconcileButton";
 
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/components/BatchReplacePopoverButton";
+
+import { ProductLibraryModal } from "@/components/ProductLibraryModal";
 
 import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 
@@ -683,6 +685,8 @@ export function FundShell(props: Props) {
 
   const [fundCode, setFundCode] = useState(initialFundCode);
   const [fundChartOpen, setFundChartOpen] = useState(false);
+  /** 理财产品库入口（仅理财账户 view=investwealth 显示） */
+  const [productLibraryOpen, setProductLibraryOpen] = useState(false);
   // 明细列表范围：默认「本账户全部交易记录」，只有选中某只持仓（点行/带 fundCode 打开）才收窄为单只基金。
   const [showAllRecords, setShowAllRecords] = useState(!initialFundCode);
   const [fundSettingsCode, setFundSettingsCode] = useState<string | null>(null);
@@ -3099,6 +3103,18 @@ export function FundShell(props: Props) {
               />
             ) : null}
 
+            {isWealthAccount ? (
+              <button
+                type="button"
+                onClick={() => setProductLibraryOpen(true)}
+                className="secondary-button h-6 gap-1 px-2 text-xs"
+                title={t("productLibrary.title.wealth")}
+              >
+                <Library className="h-3.5 w-3.5" />
+                {t("productLibrary.entryButton")}
+              </button>
+            ) : null}
+
             {!showCleared ? (
               <div className="relative hidden md:block order-last" ref={positionColumnMenuRef}>
                 <button
@@ -3785,6 +3801,16 @@ export function FundShell(props: Props) {
       </div>
 
       </ResizableVerticalSplit>
+
+      {isWealthAccount ? (
+        <ProductLibraryModal
+          open={productLibraryOpen}
+          family="wealth"
+          defaultInstitutionId={selectedAccount?.institutionId ?? null}
+          onClose={() => setProductLibraryOpen(false)}
+          onChanged={() => dispatchFinanceDataChanged({ reason: "product-library-save", accountIds: [accountId] })}
+        />
+      ) : null}
 
     </div>
 

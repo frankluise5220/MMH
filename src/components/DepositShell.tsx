@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowDownLeft, ArrowUpRight, Coins, Landmark, Repeat, SlidersHorizontal, Trash2 } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Coins, Landmark, Library, Repeat, SlidersHorizontal, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTableSummaryRow } from "./AdvancedDataTable";
@@ -10,6 +10,7 @@ import { BusinessLinkActionButton } from "./BusinessLinkActionButton";
 import { DepositPayInterestModal, type PayInterestLotInfo } from "./DepositPayInterestModal";
 import { DetailTablePaginationControls } from "./DetailTablePaginationControls";
 import { EntryRowActions } from "./EntryRowActions";
+import { ProductLibraryModal } from "./ProductLibraryModal";
 import { ResizableVerticalSplit } from "./ResizableVerticalSplit";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
@@ -85,6 +86,7 @@ const DEPOSIT_ENTRY_COLUMN_SETTINGS_EVENT = "mmh:deposit-entries:column-settings
 export function DepositShell({
   accountLabel,
   institutionName,
+  institutionId,
   entries,
   lots,
   cashAccounts = [],
@@ -93,6 +95,8 @@ export function DepositShell({
 }: {
   accountLabel: string;
   institutionName?: string;
+  /** 当前存款账户所属机构，用作产品库新建产品时的默认机构 */
+  institutionId?: string | null;
   entries: DepositEntry[];
   lots: DepositLot[];
   cashAccounts?: Array<{ id: string; label: string }>;
@@ -100,6 +104,7 @@ export function DepositShell({
   payInterestAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
   const [selectedLotId, setSelectedLotId] = useState<string | null>(null);
+  const [productLibraryOpen, setProductLibraryOpen] = useState(false);
   const [lotTab, setLotTab] = useState<LotTab>("held");
   const [payInterestLot, setPayInterestLot] = useState<PayInterestLotInfo | null>(null);
   const [selectedEntryIds, setSelectedEntryIds] = useState<Set<string>>(new Set());
@@ -525,12 +530,23 @@ export function DepositShell({
                 </button>
               </div>
             </div>
-            <div className="text-xs text-slate-400">
-              {selectedLot
-                ? formatText("depositShell.lotSelectedHint", { name: selectedLot.fundName })
-                : lotTab === "held"
-                  ? formatText("depositShell.allHoldingsHint", { scope: institutionName || accountLabel })
-                  : formatText("depositShell.allExpiredHint", { scope: institutionName || accountLabel })}
+            <div className="flex items-center gap-2">
+              <div className="text-xs text-slate-400">
+                {selectedLot
+                  ? formatText("depositShell.lotSelectedHint", { name: selectedLot.fundName })
+                  : lotTab === "held"
+                    ? formatText("depositShell.allHoldingsHint", { scope: institutionName || accountLabel })
+                    : formatText("depositShell.allExpiredHint", { scope: institutionName || accountLabel })}
+              </div>
+              <button
+                type="button"
+                onClick={() => setProductLibraryOpen(true)}
+                className="secondary-button h-7 gap-1 px-2 text-xs"
+                title={t("productLibrary.title.deposit")}
+              >
+                <Library className="h-3.5 w-3.5" />
+                {t("productLibrary.entryButton")}
+              </button>
             </div>
           </div>
           <div className="min-h-0 flex-1">
@@ -730,6 +746,14 @@ export function DepositShell({
         lot={payInterestLot}
         cashAccounts={cashAccounts}
         payInterestAction={payInterestAction ?? (async () => ({ ok: false as const, error: t("txForm.alert.saveFailed") }))}
+      />
+
+      <ProductLibraryModal
+        open={productLibraryOpen}
+        family="deposit"
+        defaultInstitutionId={institutionId ?? null}
+        onClose={() => setProductLibraryOpen(false)}
+        onChanged={() => dispatchFinanceDataChanged({ reason: "product-library-save" })}
       />
     </div>
   );

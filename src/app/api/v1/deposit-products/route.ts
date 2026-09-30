@@ -84,6 +84,8 @@ export async function GET(req: NextRequest) {
  * - annualRate?: number
  * - termDays?: number
  * - note?: string
+ * - mode?: "master"  产品库专用：只建产品主数据，同名同机构已存在时返回 409，
+ *                    不会像单据流程那样静默复用已有产品。
  *
  * Response:
  * - { ok: true, product }
@@ -103,6 +105,34 @@ export async function POST(req: NextRequest) {
 
     if (!name) {
       return NextResponse.json({ ok: false, code: "PRODUCT_NAME_REQUIRED", error: "Product name is required" }, { status: 400 });
+    }
+
+    // 产品库（mode: "master"）：显式新建，重复即报错，避免用户以为「新增成功」实际复用了旧产品。
+    if (String(body.mode ?? "").trim() === "master") {
+      if (institutionId) {
+        const institution = await prisma.institution.findFirst({ where: { id: institutionId, householdId } });
+        if (!institution) {
+          return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "机构不存在" }, { status: 400 });
+        }
+      }
+      const duplicate = await prisma.depositProduct.findFirst({ where: { householdId, institutionId, name } });
+      if (duplicate) {
+        return NextResponse.json({ ok: false, code: "PRODUCT_EXISTS", error: "同一机构下已有同名存款产品" }, { status: 409 });
+      }
+      const created = await prisma.depositProduct.create({
+        data: {
+          householdId,
+          institutionId,
+          name,
+          shortName,
+          currency,
+          annualRate,
+          termDays: termDays == null ? null : Math.round(termDays),
+          note,
+          isActive: true,
+        },
+      });
+      return NextResponse.json({ ok: true, product: serializeDepositProduct(created) });
     }
 
     const product = await prisma.$transaction(async (tx) => {
