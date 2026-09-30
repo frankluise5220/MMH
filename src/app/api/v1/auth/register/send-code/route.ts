@@ -4,12 +4,19 @@ import crypto from "crypto";
 import { prisma } from "@/lib/db/prisma";
 import { isRegistrationConfigured } from "@/lib/server/registration-client";
 import { sendRegistrationVerificationEmail } from "@/lib/mail/registration";
+import {
+  activeLedgerInviteCodes,
+  findLedgerInviteCodeRecord,
+  parseLedgerInviteCodeRecords,
+} from "@/lib/ledger-invite-codes";
+import { LEDGER_CREATION_INVITE_CODE_KEY } from "@/lib/households/create-ledger";
 import { logger } from "@/lib/logger";
 
 export const runtime = "nodejs";
 
 const SendCodeSchema = z.object({
   email: z.string().email(),
+  inviteCode: z.string().trim().optional(),
 });
 
 const CODE_TTL_MINUTES = 15;
@@ -66,6 +73,19 @@ export async function POST(req: NextRequest) {
   }
 
   const email = parse.data.email.trim().toLowerCase();
+  const inviteCode = parse.data.inviteCode?.trim() ?? "";
+
+  if (inviteCode) {
+    const inviteSetting = await prisma.systemSetting.findUnique({ where: { key: LEDGER_CREATION_INVITE_CODE_KEY } });
+    const inviteRecords = parseLedgerInviteCodeRecords(inviteSetting?.value);
+    const inviteRecord = findLedgerInviteCodeRecord(inviteRecords, inviteCode);
+    if (!inviteRecord || inviteRecord.usedAt) {
+      return NextResponse.json({ ok: false, code: "INVITE_CODE_INVALID", error: "The invite code is invalid or has already been used." }, { status: 403, headers: cors() });
+    }
+    if (activeLedgerInviteCodes(inviteRecords).length === 0) {
+      return NextResponse.json({ ok: false, code: "INVITE_CODE_CLOSED", error: "Ledger creation is currently closed." }, { status: 403, headers: cors() });
+    }
+  }
 
   // Self-service signup only bootstraps the very first ledger on an empty
   // deployment. Once any ledger or user exists, opening a new ledger is a
@@ -74,7 +94,7 @@ export async function POST(req: NextRequest) {
     prisma.household.count(),
     prisma.user.count(),
   ]);
-  if (householdCount > 0 || userCount > 0) {
+  if (!inviteCode && (householdCount > 0 || userCount > 0)) {
     return NextResponse.json({ ok: false, code: "SIGNUP_CLOSED", error: "Registration is only available before the first ledger is created." }, { status: 403, headers: cors() });
   }
 

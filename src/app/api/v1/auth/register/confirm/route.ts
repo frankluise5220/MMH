@@ -3,7 +3,16 @@ import { z } from "zod";
 import crypto from "crypto";
 import { prisma } from "@/lib/db/prisma";
 import { isRegistrationConfigured, registerEmailPrincipal } from "@/lib/server/registration-client";
-import { createLedgerWithDefaults } from "@/lib/households/create-ledger";
+import {
+  createLedgerWithDefaults,
+  LEDGER_CREATION_INVITE_CODE_KEY,
+} from "@/lib/households/create-ledger";
+import {
+  findLedgerInviteCodeRecord,
+  markLedgerInviteCodeUsed,
+  parseLedgerInviteCodeRecords,
+  serializeLedgerInviteCodeRecords,
+} from "@/lib/ledger-invite-codes";
 import { logger } from "@/lib/logger";
 import {
   HOUSEHOLD_COOKIE,
@@ -22,6 +31,8 @@ const ConfirmSchema = z.object({
   code: z.string().min(4).max(20),
   password: z.string().min(6).max(200),
   name: z.string().trim().min(1).max(50).optional(),
+  inviteCode: z.string().trim().optional(),
+  ledgerName: z.string().trim().min(1).max(50).optional(),
 });
 
 const SIGNUP_TARGET_ID = "signup-pending";
@@ -72,6 +83,13 @@ export async function POST(req: NextRequest) {
   const email = parse.data.email.trim().toLowerCase();
   const password = parse.data.password.trim();
   const adminName = parse.data.name?.trim() || email.split("@")[0] || "admin";
+  const inviteCode = parse.data.inviteCode?.trim() ?? "";
+  const ledgerName = parse.data.ledgerName?.trim() ?? "";
+  const inviteRegistration = Boolean(inviteCode);
+
+  if (inviteRegistration && !ledgerName) {
+    return NextResponse.json({ ok: false, code: "LEDGER_NAME_REQUIRED", error: "A ledger name is required." }, { status: 400, headers: cors() });
+  }
 
   const secret = (process.env.PASSWORD_RESET_SECRET ?? "").trim();
   if (!secret) {
@@ -94,6 +112,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "INVALID_OR_EXPIRED_CODE", error: "The verification code is invalid or has expired." }, { status: 400, headers: cors() });
   }
 
+  let inviteRecords: ReturnType<typeof parseLedgerInviteCodeRecords> | null = null;
+  if (inviteRegistration) {
+    const inviteSetting = await prisma.systemSetting.findUnique({ where: { key: LEDGER_CREATION_INVITE_CODE_KEY } });
+    inviteRecords = parseLedgerInviteCodeRecords(inviteSetting?.value);
+    const inviteRecord = findLedgerInviteCodeRecord(inviteRecords, inviteCode);
+    if (!inviteRecord || inviteRecord.usedAt) {
+      return NextResponse.json({ ok: false, code: "INVITE_CODE_INVALID", error: "The invite code is invalid or has already been used." }, { status: 403, headers: cors() });
+    }
+  }
+
   // Self-service signup only bootstraps the very first ledger on an empty
   // deployment. Once any ledger or user exists, opening a new ledger is a
   // separate, invite-gated action and must not be reachable through signup.
@@ -101,7 +129,7 @@ export async function POST(req: NextRequest) {
     prisma.household.count(),
     prisma.user.count(),
   ]);
-  if (householdCount > 0 || userCount > 0) {
+  if (!inviteRegistration && (householdCount > 0 || userCount > 0)) {
     return NextResponse.json({ ok: false, code: "SIGNUP_CLOSED", error: "Registration is only available before the first ledger is created." }, { status: 403, headers: cors() });
   }
 
@@ -125,7 +153,12 @@ export async function POST(req: NextRequest) {
   let created: Awaited<ReturnType<typeof createLedgerWithDefaults>>;
   try {
     created = await prisma.$transaction(async (tx) => {
-      const result = await createLedgerWithDefaults(tx, { name: adminName, adminName, adminPassword: password, adminEmail: email });
+      const result = await createLedgerWithDefaults(tx, {
+        name: inviteRegistration ? ledgerName : adminName,
+        adminName,
+        adminPassword: password,
+        adminEmail: email,
+      });
       // Record the external registration identity on the newly created admin user.
       await tx.user.update({
         where: { id: result.adminUser.id },
@@ -135,6 +168,17 @@ export async function POST(req: NextRequest) {
         where: { id: token.id },
         data: { usedAt: new Date() },
       });
+      if (inviteRegistration && inviteRecords) {
+        const usedInviteRecords = markLedgerInviteCodeUsed(inviteRecords, inviteCode, {
+          householdId: result.household.id,
+          householdName: result.household.name,
+        });
+        await tx.systemSetting.upsert({
+          where: { key: LEDGER_CREATION_INVITE_CODE_KEY },
+          create: { key: LEDGER_CREATION_INVITE_CODE_KEY, value: serializeLedgerInviteCodeRecords(usedInviteRecords) },
+          update: { value: serializeLedgerInviteCodeRecords(usedInviteRecords) },
+        });
+      }
       return result;
     });
   } catch (error) {

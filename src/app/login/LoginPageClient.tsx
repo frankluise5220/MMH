@@ -33,6 +33,8 @@ type PasswordStatusResponse = {
 type LoginUserChoice = {
   id: string;
   name: string;
+  email?: string | null;
+  hasPassword?: boolean;
   role?: string;
   isSystem?: boolean;
   householdId?: string | null;
@@ -89,6 +91,10 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   const [selectedUserId, setSelectedUserId] = useState("");
   const [password, setPassword] = useState("");
   const [loginMode, setLoginMode] = useState<"local" | "mmh" | "fnos">("local");
+  const [loginCredentials, setLoginCredentials] = useState({
+    local: { username: "", password: "", userId: "" },
+    mmh: { username: "", password: "", userId: "" },
+  });
   const [fnosEmail, setFnosEmail] = useState("");
   const [pendingFnos, setPendingFnos] = useState(false);
   const [systemUsers, setSystemUsers] = useState<LoginUserChoice[]>([]);
@@ -100,11 +106,15 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   const [setupUsername, setSetupUsername] = useState("admin");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [createMethod, setCreateMethod] = useState<"invite" | "existing">("invite");
+  const [createAuthMode, setCreateAuthMode] = useState<"local" | "mmh" | "fnos">("local");
   const [createInviteCode, setCreateInviteCode] = useState("");
   const [createLedgerName, setCreateLedgerName] = useState("");
   const [createAdminName, setCreateAdminName] = useState("admin");
   const [createAdminEmail, setCreateAdminEmail] = useState("");
   const [createPassword, setCreatePassword] = useState("");
+  const [createExistingUserId, setCreateExistingUserId] = useState("");
+  const [createExistingPassword, setCreateExistingPassword] = useState("");
   const [createConfirmPassword, setCreateConfirmPassword] = useState("");
 
   const [showReset, setShowReset] = useState(false);
@@ -130,6 +140,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   const [registerInfo, setRegisterInfo] = useState("");
   const [registerError, setRegisterError] = useState("");
   const [registerLoading, setRegisterLoading] = useState(false);
+  const [registerInviteMode, setRegisterInviteMode] = useState(false);
   const { t } = useI18n();
   const currentHouseholdDisplayName = getHouseholdDisplayName({ name: householdName }, t("login.defaultBook"));
   const productIntro = getProductIntro(t);
@@ -137,9 +148,51 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   const selectedHouseholdUsers = selectedHouseholdId
     ? systemUsers.filter((user) => getLoginUserScopeId(user) === selectedHouseholdId)
     : [];
+  const mmhUserChoices = systemUsers.filter((user) => user.isSystem && user.email && user.hasPassword);
+
+  function maskEmail(email: string) {
+    const normalized = email.trim().toLowerCase();
+    const atIndex = normalized.indexOf("@");
+    if (atIndex <= 0 || atIndex === normalized.length - 1) return normalized;
+    const localPart = normalized.slice(0, atIndex);
+    const domain = normalized.slice(atIndex + 1);
+    const visibleLocal = localPart.length <= 2 ? localPart.slice(0, 1) : localPart.slice(0, 2);
+    return `${visibleLocal}***@${domain}`;
+  }
 
   function getLoginUserLabel(user: LoginUserChoice) {
+    if (user.email) return `${user.name}(${maskEmail(user.email)})`;
     return user.isSystem ? `${user.name} · ${t("login.systemUserBadge")}` : user.name;
+  }
+
+  function getMmhUserLabel(user: LoginUserChoice) {
+    if (!user.email) return user.name;
+    return `${maskEmail(user.email)}(${user.name})`;
+  }
+
+  function updateLoginCredentialField(field: "username" | "password", value: string) {
+    const credentialMode = loginMode === "mmh" ? "mmh" : "local";
+    setLoginCredentials((current) => ({
+      ...current,
+        [credentialMode]: {
+          ...current[credentialMode],
+          [field]: value,
+          ...(field === "username" ? { userId: "" } : {}),
+        },
+    }));
+  }
+
+  function selectMmhUser(userId: string) {
+    const user = mmhUserChoices.find((item) => item.id === userId) ?? null;
+    if (!user || !user.email) return;
+    setSelectedUserId("");
+    setUsername(user.email);
+    setPassword(loginCredentials.mmh.password);
+    setLoginCredentials((current) => ({
+      ...current,
+      mmh: { ...current.mmh, username: user.email ?? "", userId: user.id },
+    }));
+    cancelHouseholdChoice();
   }
 
   function getLoginHouseholdChoices() {
@@ -175,29 +228,53 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   }
 
   function switchLoginMode(mode: "local" | "mmh" | "fnos") {
+    if (loginMode === "local" || loginMode === "mmh") {
+      const currentCredentialMode = loginMode;
+      setLoginCredentials((current) => ({
+        ...current,
+        [currentCredentialMode]: {
+          ...current[currentCredentialMode],
+          username,
+          password,
+          ...(currentCredentialMode === "mmh" ? { userId: current.mmh.userId } : {}),
+        },
+      }));
+    }
     setLoginMode(mode);
     setError("");
-    setPassword("");
     setHouseholdChoices([]);
     setPendingLogin(null);
     setPendingFnos(false);
     if (mode === "mmh") {
+      const credentials = loginCredentials.mmh;
+      const defaultMmhUser = mmhUserChoices.find((user) => user.id === credentials.userId) ?? mmhUserChoices[0];
+      const nextUsername = credentials.username || defaultMmhUser?.email || "";
       setSelectedUserId("");
-      setUsername("");
+      setUsername(nextUsername);
+      setPassword(credentials.password);
+      if (!credentials.userId && defaultMmhUser?.email) {
+        setLoginCredentials((current) => ({
+          ...current,
+          mmh: { ...current.mmh, username: nextUsername, userId: defaultMmhUser.id },
+        }));
+      }
     } else if (mode === "fnos") {
       setSelectedUserId("");
       setUsername("");
+      setPassword("");
       if (!selectedHouseholdId && loginHouseholdChoices.length > 0) {
         const initial = getInitialLoginSelection(systemUsers);
         setSelectedHouseholdId(initial.scopeId);
       }
     } else {
+      const credentials = loginCredentials.local;
       const initial = getInitialLoginSelection(systemUsers);
       setSelectedHouseholdId(initial.scopeId);
-      if (initial.user) {
-        setSelectedUserId(initial.user.id);
-        setUsername(initial.user.name);
-      }
+      const nextUserId = credentials.userId || initial.user?.id || "";
+      const nextUser = systemUsers.find((user) => user.id === nextUserId) ?? initial.user;
+      setSelectedUserId(nextUserId);
+      setUsername(credentials.username || nextUser?.name || "");
+      setPassword(credentials.password);
     }
   }
 
@@ -244,6 +321,10 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           if (initialSelection.user) {
             setSelectedUserId(initialSelection.user.id);
             setUsername(initialSelection.user.name);
+            setLoginCredentials((current) => ({
+              ...current,
+              local: { ...current.local, username: initialSelection.user?.name ?? "", userId: initialSelection.user.id },
+            }));
           } else {
             setSelectedUserId("");
             setUsername("");
@@ -313,11 +394,11 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   }
 
   async function handleLogin() {
-    const selectedUser = getSelectedLoginUser();
-    const selectedScopeId = selectedHouseholdId && selectedHouseholdId !== SYSTEM_LOGIN_SCOPE_ID
+    const selectedUser = loginMode === "local" ? getSelectedLoginUser() : null;
+    const selectedScopeId = loginMode === "local" && selectedHouseholdId && selectedHouseholdId !== SYSTEM_LOGIN_SCOPE_ID
       ? selectedHouseholdId
       : "";
-    const trimmedUsername = (selectedUser?.name ?? username).trim();
+    const trimmedUsername = (loginMode === "mmh" ? username : selectedUser?.name ?? username).trim();
     const trimmedPassword = password.trim();
     if (loginHouseholdChoices.length > 0 && !selectedHouseholdId) { setError(t("login.error.bookRequired")); return; }
     if (!trimmedUsername) { setError(t("login.error.usernameRequired")); return; }
@@ -330,7 +411,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
 
     try {
       const data = await verifyLogin({
-        ...(selectedUser ? { userId: selectedUser.id } : {}),
+        ...(selectedUser ? { userId: selectedUser.id } : loginMode === "mmh" && loginCredentials.mmh.userId ? { userId: loginCredentials.mmh.userId } : {}),
         username: trimmedUsername,
         ...(selectedScopeId ? { householdId: selectedScopeId } : {}),
         password: trimmedPassword,
@@ -458,31 +539,98 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     const trimmedAdminEmail = createAdminEmail.trim();
     const trimmedPassword = createPassword.trim();
     const trimmedConfirmPassword = createConfirmPassword.trim();
-    if (!initialLedgerSetup && !trimmedInviteCode) { setError(t("login.error.inviteRequired")); return; }
+    if (!initialLedgerSetup && createMethod === "invite" && !trimmedInviteCode) { setError(t("login.error.inviteRequired")); return; }
     if (!trimmedLedgerName) { setError(t("login.error.ledgerNameRequired")); return; }
-    if (!trimmedAdminName) { setError(t("login.error.adminUsernameRequired")); return; }
-    if (!initialLedgerSetup && !trimmedAdminEmail) { setError(t("login.error.adminEmailRequired")); return; }
-    if (!trimmedPassword) { setError(t("login.error.passwordRequired")); return; }
-    if (trimmedPassword !== trimmedConfirmPassword) { setError(t("login.error.passwordMismatch")); return; }
+    if (createMethod === "existing") {
+      // Existing-account creation reuses the current login credentials below.
+    } else if (createAuthMode === "local") {
+      if (!trimmedAdminName) { setError(t("login.error.adminUsernameRequired")); return; }
+      if (!initialLedgerSetup && !trimmedAdminEmail) { setError(t("login.error.adminEmailRequired")); return; }
+      if (!trimmedPassword) { setError(t("login.error.passwordRequired")); return; }
+      if (trimmedPassword !== trimmedConfirmPassword) { setError(t("login.error.passwordMismatch")); return; }
+    }
 
     setLoading(true);
     setError("");
     try {
-      const createRes = await fetch("/api/v1/auth/create-ledger", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...(initialLedgerSetup ? {} : { inviteCode: trimmedInviteCode }),
-          name: trimmedLedgerName,
-          adminName: trimmedAdminName,
-          adminEmail: trimmedAdminEmail || undefined,
-          adminPassword: trimmedPassword,
-        }),
-      });
-      const createData = await createRes.json().catch(() => null) as CreateLedgerResponse | null;
-      if (!createRes.ok || !createData?.ok) {
-        setError(createData?.error ?? t("login.error.createFailed"));
-        return;
+      if (createMethod === "existing") {
+        const selectedExistingUser = createAuthMode === "mmh"
+          ? mmhUserChoices.find((user) => user.id === createExistingUserId) ?? mmhUserChoices[0]
+          : selectedHouseholdUsers.find((user) => user.id === createExistingUserId) ?? selectedHouseholdUsers[0];
+        const credentials = createAuthMode === "mmh" ? loginCredentials.mmh : loginCredentials.local;
+        const existingUsername = createAuthMode === "mmh"
+          ? selectedExistingUser?.email ?? credentials.username
+          : selectedExistingUser?.name ?? credentials.username;
+        const existingUserId = selectedExistingUser?.id ?? credentials.userId;
+        let adminName = selectedExistingUser?.name ?? existingUsername.trim();
+        let adminEmail = selectedExistingUser?.email ?? undefined;
+        let adminPassword: string | undefined;
+
+        if (createAuthMode === "fnos") {
+          if (!fnosGatewayUser?.uid) { setError(t("login.error.loginFailed")); return; }
+          const fnosRes = await fetch("/api/v1/auth/fnos-verify", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+          const fnosData = await fnosRes.json().catch(() => null) as { ok: boolean; error?: string } | null;
+          if (!fnosRes.ok || !fnosData?.ok) {
+            setError(fnosData?.error ?? t("login.error.loginFailed"));
+            return;
+          }
+          adminName = fnosGatewayUser.username ?? fnosGatewayUser.uid;
+          adminPassword = undefined;
+        } else {
+          const existingPassword = createExistingPassword.trim() || credentials.password.trim();
+          if (!existingUsername.trim()) { setError(t("login.error.usernameRequired")); return; }
+          if (!existingPassword) { setError(t("login.error.passwordRequired")); return; }
+          const verifyData = await verifyLogin({
+            ...(existingUserId ? { userId: existingUserId } : {}),
+            username: existingUsername.trim(),
+            password: existingPassword,
+          });
+          if (!verifyData.ok) {
+            setError(verifyData.error ?? t("login.error.loginFailed"));
+            return;
+          }
+          adminPassword = existingPassword;
+        }
+
+        const createRes = await fetch("/api/v1/households", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: trimmedLedgerName,
+            adminName,
+            adminEmail,
+            ...(adminPassword ? { adminPassword } : {}),
+            ...(createAuthMode === "fnos" ? { fnosUid: fnosGatewayUser?.uid } : {}),
+          }),
+        });
+        const createData = await createRes.json().catch(() => null) as CreateLedgerResponse | null;
+        if (!createRes.ok || !createData?.ok) {
+          setError(createData?.error ?? t("login.error.createFailed"));
+          return;
+        }
+      } else {
+        const createRes = await fetch("/api/v1/auth/create-ledger", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...(initialLedgerSetup ? {} : { inviteCode: trimmedInviteCode }),
+            name: trimmedLedgerName,
+            authMode: createAuthMode,
+            adminName: createAuthMode === "fnos" ? (fnosGatewayUser?.username ?? fnosGatewayUser?.uid ?? "admin") : trimmedAdminName,
+            adminEmail: createAuthMode === "mmh" ? trimmedAdminEmail : trimmedAdminEmail || undefined,
+            adminPassword: createAuthMode === "fnos" ? "" : trimmedPassword,
+            ...(createAuthMode === "fnos" && fnosGatewayUser ? { fnosUid: fnosGatewayUser.uid } : {}),
+          }),
+        });
+        const createData = await createRes.json().catch(() => null) as CreateLedgerResponse | null;
+        if (!createRes.ok || !createData?.ok) {
+          setError(createData?.error ?? t("login.error.createFailed"));
+          return;
+        }
       }
       window.location.href = withBasePath("/");
     } catch {
@@ -583,9 +731,11 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     }
   }
 
-  async function handleRegisterSendCode() {
+  async function handleRegisterSendCode(inviteMode = registerInviteMode) {
     const email = registerEmail.trim();
     if (!email) { setRegisterError(t("login.register.error.emailRequired")); return; }
+    if (inviteMode && !createInviteCode.trim()) { setRegisterError(t("login.error.inviteRequired")); return; }
+    if (inviteMode && !createLedgerName.trim()) { setRegisterError(t("login.error.ledgerNameRequired")); return; }
 
     setRegisterLoading(true);
     setRegisterError("");
@@ -594,7 +744,10 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
       const res = await fetch("/api/v1/auth/register/send-code", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({
+          email,
+          ...(inviteMode ? { inviteCode: createInviteCode.trim() } : {}),
+        }),
       });
       const data = await res.json().catch(() => null) as { ok: boolean; code?: string; error?: string } | null;
       if (!data?.ok) {
@@ -614,13 +767,15 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     }
   }
 
-  async function handleRegisterConfirm() {
+  async function handleRegisterConfirm(inviteMode = registerInviteMode) {
     const email = registerEmail.trim();
     const code = registerCode.trim();
     const password = registerPassword.trim();
     if (!email) { setRegisterError(t("login.register.error.emailRequired")); return; }
     if (!code) { setRegisterError(t("login.register.error.codeRequired")); return; }
     if (password.length < 6) { setRegisterError(t("login.register.error.passwordRequired")); return; }
+    if (inviteMode && !createInviteCode.trim()) { setRegisterError(t("login.error.inviteRequired")); return; }
+    if (inviteMode && !createLedgerName.trim()) { setRegisterError(t("login.error.ledgerNameRequired")); return; }
 
     setRegisterLoading(true);
     setRegisterError("");
@@ -634,6 +789,9 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           code,
           password,
           ...(registerName.trim() ? { name: registerName.trim() } : {}),
+          ...(inviteMode
+            ? { inviteCode: createInviteCode.trim(), ledgerName: createLedgerName.trim() }
+            : {}),
         }),
       });
       const data = await res.json().catch(() => null) as { ok: boolean; code?: string; error?: string } | null;
@@ -656,6 +814,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   }
 
   function openRegister() {
+    setRegisterInviteMode(false);
     setRegisterEmail("");
     setRegisterCode("");
     setRegisterCodeSent(false);
@@ -799,6 +958,10 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                         const user = selectedHouseholdUsers.find((item) => item.id === event.target.value);
                         setSelectedUserId(user?.id ?? "");
                         setUsername(user?.name ?? "");
+                        setLoginCredentials((current) => ({
+                          ...current,
+                          local: { ...current.local, username: user?.name ?? "", userId: user?.id ?? "" },
+                        }));
                         cancelHouseholdChoice();
                       }}
                       className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
@@ -813,6 +976,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                       onChange={(event) => {
                         setSelectedUserId("");
                         setUsername(event.target.value);
+                        updateLoginCredentialField("username", event.target.value);
                         cancelHouseholdChoice();
                       }}
                       type="text"
@@ -825,30 +989,44 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 ) : (
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">{t("login.mmhAccount")}</div>
-                  <input
-                    value={username}
-                    onChange={(event) => {
-                      setSelectedUserId("");
-                      setUsername(event.target.value);
-                      cancelHouseholdChoice();
-                    }}
-                    type="email"
-                    autoComplete="username"
-                    className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                    placeholder={t("login.mmhAccountPlaceholder")}
-                  />
+                  {mmhUserChoices.length > 0 ? (
+                    <select
+                      value={loginCredentials.mmh.userId || ""}
+                      onChange={(event) => selectMmhUser(event.target.value)}
+                      className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                    >
+                      {mmhUserChoices.map((user) => (
+                        <option key={user.id} value={user.id}>{getMmhUserLabel(user)}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      value={username}
+                      onChange={(event) => {
+                        setSelectedUserId("");
+                        setUsername(event.target.value);
+                        updateLoginCredentialField("username", event.target.value);
+                        cancelHouseholdChoice();
+                      }}
+                      type="email"
+                      autoComplete="username"
+                      className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                      placeholder={t("login.mmhAccountPlaceholder")}
+                    />
+                  )}
                 </div>
                 )}
 
                 {loginMode !== "fnos" && (
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">{t("login.password")}</div>
-                  <input
-                    value={password}
-                    onChange={(event) => {
-                      setPassword(event.target.value);
-                      cancelHouseholdChoice();
-                    }}
+                    <input
+                      value={password}
+                      onChange={(event) => {
+                        setPassword(event.target.value);
+                        updateLoginCredentialField("password", event.target.value);
+                        cancelHouseholdChoice();
+                      }}
                     type="password"
                     autoComplete="current-password"
                     className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
@@ -1196,19 +1374,238 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
         {mode === "create" && !showRegister && (
           <div className="space-y-4 p-6">
             {!initialLedgerSetup && (
-              <div className="space-y-1">
-                <div className="text-xs font-medium text-slate-600">{t("login.inviteCode")}</div>
-                <input
-                  value={createInviteCode}
-                  onChange={(event) => setCreateInviteCode(event.target.value)}
-                  type="password"
-                  autoComplete="off"
-                  className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                  placeholder={t("login.invitePlaceholder")}
-                  autoFocus
-                />
+              <div className="relative pt-10">
+                <div className="absolute inset-x-3 top-0 z-10 flex items-end gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setCreateMethod("invite")}
+                    className={createMethod === "invite"
+                      ? "relative z-30 -mb-px min-w-[7.5rem] rounded-t-[10px] border border-b-0 border-slate-300 bg-[#fbfaf7] px-4 py-2.5 text-xs font-semibold text-slate-800 shadow-[0_-3px_10px_rgba(15,23,42,0.10)]"
+                      : "relative z-10 -mb-1 min-w-[7.5rem] rounded-t-[10px] border border-slate-300 bg-slate-200 px-4 py-2 text-xs font-medium text-slate-500 shadow-[0_2px_4px_rgba(15,23,42,0.08)] hover:-translate-y-0.5 hover:bg-slate-100"}
+                  >
+                    邀请码创建
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCreateMethod("existing")}
+                    className={createMethod === "existing"
+                      ? "relative z-30 -mb-px min-w-[7.5rem] rounded-t-[10px] border border-b-0 border-slate-300 bg-[#fbfaf7] px-4 py-2.5 text-xs font-semibold text-slate-800 shadow-[0_-3px_10px_rgba(15,23,42,0.10)]"
+                      : "relative z-10 -mb-1 min-w-[7.5rem] rounded-t-[10px] border border-slate-300 bg-slate-200 px-4 py-2 text-xs font-medium text-slate-500 shadow-[0_2px_4px_rgba(15,23,42,0.08)] hover:-translate-y-0.5 hover:bg-slate-100"}
+                  >
+                    已有用户验证
+                  </button>
+                </div>
+                <div className="relative z-20 rounded-xl border border-slate-300 bg-[#fbfaf7] p-4 shadow-[0_10px_24px_rgba(15,23,42,0.10)] ring-1 ring-white">
+                {createMethod === "invite" ? (
+                  <>
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">{t("login.inviteCode")}</div>
+                      <input
+                        value={createInviteCode}
+                        onChange={(event) => setCreateInviteCode(event.target.value)}
+                        type="password"
+                        autoComplete="off"
+                        className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                        placeholder={t("login.invitePlaceholder")}
+                        autoFocus
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">{t("login.ledgerName")}</div>
+                      <input
+                        value={createLedgerName}
+                        onChange={(event) => setCreateLedgerName(event.target.value)}
+                        type="text"
+                        autoComplete="organization"
+                        className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                        placeholder={t("login.ledgerNamePlaceholder")}
+                      />
+                    </div>
+                    <div className="space-y-3 border-t border-slate-200 pt-3">
+                      <div className="text-xs font-medium text-slate-600">创建用户</div>
+                      <div className="flex gap-1 rounded-lg border border-slate-200 bg-white p-1">
+                        <button type="button" onClick={() => setCreateAuthMode("local")} className={createAuthMode === "local" ? "flex-1 rounded-md bg-slate-100 px-2 py-1.5 text-xs font-medium text-slate-800" : "flex-1 rounded-md px-2 py-1.5 text-xs text-slate-500"}>{t("login.mode.local")}</button>
+                        <button type="button" onClick={() => setCreateAuthMode("mmh")} className={createAuthMode === "mmh" ? "flex-1 rounded-md bg-slate-100 px-2 py-1.5 text-xs font-medium text-slate-800" : "flex-1 rounded-md px-2 py-1.5 text-xs text-slate-500"}>{t("login.mode.mmh")}</button>
+                        {fnosGatewayUser ? <button type="button" onClick={() => setCreateAuthMode("fnos")} className={createAuthMode === "fnos" ? "flex-1 rounded-md bg-slate-100 px-2 py-1.5 text-xs font-medium text-slate-800" : "flex-1 rounded-md px-2 py-1.5 text-xs text-slate-500"}>{t("login.authModeFnos")}</button> : null}
+                      </div>
+                      {createAuthMode === "fnos" ? (
+                        <div className="rounded-md border border-dashed border-slate-300 bg-white px-3 py-2 text-xs text-slate-500">
+                          {t("login.fnosUser", { user: fnosGatewayUser?.username ?? fnosGatewayUser?.uid ?? "" })}
+                        </div>
+                      ) : createAuthMode === "mmh" ? (
+                        <div className="space-y-3 border-t border-slate-200 pt-3">
+                          <div className="space-y-1">
+                            <div className="text-xs font-medium text-slate-600">{t("login.register.email")}</div>
+                            <input
+                              value={registerEmail}
+                              onChange={(event) => {
+                                setRegisterEmail(event.target.value);
+                                setRegisterCodeSent(false);
+                                setRegisterCode("");
+                                setRegisterError("");
+                                setRegisterInfo("");
+                              }}
+                              type="email"
+                              autoComplete="email"
+                              className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                              placeholder={t("login.register.emailPlaceholder")}
+                            />
+                          </div>
+                          {registerCodeSent && (
+                            <>
+                              <div className="space-y-1">
+                                <div className="text-xs font-medium text-slate-600">{t("login.register.code")}</div>
+                                <input value={registerCode} onChange={(event) => setRegisterCode(event.target.value)} type="text" autoComplete="one-time-code" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.register.codePlaceholder")} />
+                              </div>
+                              <div className="space-y-1">
+                                <div className="text-xs font-medium text-slate-600">{t("login.register.password")}</div>
+                                <input value={registerPassword} onChange={(event) => setRegisterPassword(event.target.value)} type="password" autoComplete="new-password" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.passwordPlaceholder")} />
+                              </div>
+                              <div className="space-y-1">
+                                <div className="text-xs font-medium text-slate-600">{t("login.register.name")}</div>
+                                <input value={registerName} onChange={(event) => setRegisterName(event.target.value)} type="text" autoComplete="username" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.register.namePlaceholder")} />
+                              </div>
+                            </>
+                          )}
+                          {registerInfo && <div className="text-xs text-slate-600">{registerInfo}</div>}
+                          {registerError && <div className="text-xs text-red-600">{registerError}</div>}
+                          {!registerCodeSent ? (
+                              <button type="button" className="h-9 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50" disabled={registerLoading} onClick={() => { setRegisterInviteMode(true); void handleRegisterSendCode(true); }}>
+                              {registerLoading ? t("login.verifying") : t("login.register.sendCode")}
+                            </button>
+                          ) : (
+                            <div className="space-y-2">
+                              <button type="button" className="h-9 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50" disabled={registerLoading} onClick={() => { setRegisterInviteMode(true); void handleRegisterConfirm(true); }}>
+                                {registerLoading ? t("login.register.submitting") : t("login.register.submit")}
+                              </button>
+                              <button type="button" className="h-9 w-full rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50" disabled={registerLoading} onClick={() => { setRegisterInviteMode(true); void handleRegisterSendCode(true); }}>
+                                {t("login.register.resend")}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="space-y-3 border-t border-slate-200 pt-3">
+                          <div className="space-y-1">
+                            <div className="text-xs font-medium text-slate-600">{t("login.adminUsername")}</div>
+                            <input value={createAdminName} onChange={(event) => setCreateAdminName(event.target.value)} type="text" autoComplete="username" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.adminUsernamePlaceholder")} />
+                          </div>
+                          <div className="space-y-1">
+                            <div className="text-xs font-medium text-slate-600">{initialLedgerSetup ? t("login.adminEmailOptional") : t("login.adminEmail")}</div>
+                            <input value={createAdminEmail} onChange={(event) => setCreateAdminEmail(event.target.value)} type="email" autoComplete="email" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.adminEmailPlaceholder")} />
+                          </div>
+                          <div className="space-y-1">
+                            <div className="text-xs font-medium text-slate-600">{t("login.password")}</div>
+                            <input value={createPassword} onChange={(event) => setCreatePassword(event.target.value)} type="password" autoComplete="new-password" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.passwordPlaceholder")} />
+                          </div>
+                          <div className="space-y-1">
+                            <div className="text-xs font-medium text-slate-600">{t("login.confirmPassword")}</div>
+                            <input value={createConfirmPassword} onChange={(event) => setCreateConfirmPassword(event.target.value)} type="password" autoComplete="new-password" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.confirmPassword")} onKeyDown={(event) => { if (event.key === "Enter") void handleCreateLedger(); }} />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">{t("login.ledgerName")}</div>
+                      <input
+                        value={createLedgerName}
+                        onChange={(event) => setCreateLedgerName(event.target.value)}
+                        type="text"
+                        autoComplete="organization"
+                        className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                        placeholder={t("login.ledgerNamePlaceholder")}
+                      />
+                    </div>
+                    <div className="space-y-3 border-t border-slate-200 pt-3">
+                      <div className="text-xs text-slate-500">使用已有账户验证创建权限。</div>
+                    <div className="flex gap-1 rounded-lg border border-slate-200 bg-white p-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const user = selectedHouseholdUsers[0];
+                          setCreateAuthMode("local");
+                          setCreateExistingUserId(user?.id ?? "");
+                        }}
+                        className={createAuthMode === "local" ? "flex-1 rounded-md bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-800" : "flex-1 rounded-md px-3 py-1.5 text-xs text-slate-500"}
+                      >
+                        {t("login.mode.local")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setCreateAuthMode("mmh"); setCreateExistingUserId(mmhUserChoices[0]?.id ?? ""); }}
+                        className={createAuthMode === "mmh" ? "flex-1 rounded-md bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-800" : "flex-1 rounded-md px-3 py-1.5 text-xs text-slate-500"}
+                      >
+                        {t("login.mode.mmh")}
+                      </button>
+                      {fnosGatewayUser ? (
+                        <button
+                          type="button"
+                          onClick={() => setCreateAuthMode("fnos")}
+                          className={createAuthMode === "fnos" ? "flex-1 rounded-md bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-800" : "flex-1 rounded-md px-3 py-1.5 text-xs text-slate-500"}
+                        >
+                          {t("login.authModeFnos")}
+                        </button>
+                      ) : null}
+                    </div>
+                    {createAuthMode === "fnos" ? (
+                      <div className="rounded-md border border-dashed border-slate-300 bg-white px-3 py-2 text-xs text-slate-500">
+                        {t("login.fnosUser", { user: fnosGatewayUser?.username ?? fnosGatewayUser?.uid ?? "" })}
+                      </div>
+                    ) : createAuthMode === "mmh" && mmhUserChoices.length > 0 ? (
+                      <select
+                        value={createExistingUserId}
+                        onChange={(event) => {
+                          const user = mmhUserChoices.find((item) => item.id === event.target.value);
+                          setCreateExistingUserId(user?.id ?? "");
+                        }}
+                        className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                      >
+                        {mmhUserChoices.map((user) => (
+                          <option key={user.id} value={user.id}>{getMmhUserLabel(user)}</option>
+                        ))}
+                      </select>
+                    ) : createAuthMode === "local" && selectedHouseholdUsers.length > 0 ? (
+                      <select
+                        value={createExistingUserId}
+                        onChange={(event) => {
+                          const user = selectedHouseholdUsers.find((item) => item.id === event.target.value);
+                          setCreateExistingUserId(user?.id ?? "");
+                        }}
+                        className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                      >
+                        {selectedHouseholdUsers.map((user) => (
+                          <option key={user.id} value={user.id}>{getLoginUserLabel(user)}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <div className="rounded-md border border-dashed border-slate-300 bg-white px-3 py-2 text-xs text-slate-500">
+                        当前登录账户
+                      </div>
+                    )}
+                    {createAuthMode !== "fnos" && (
+                      <div className="space-y-1 border-t border-slate-200 pt-3">
+                        <div className="text-xs font-medium text-slate-600">验证密码</div>
+                        <input
+                          value={createExistingPassword}
+                          onChange={(event) => setCreateExistingPassword(event.target.value)}
+                          type="password"
+                          autoComplete="current-password"
+                          className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                          placeholder={t("login.passwordPlaceholder")}
+                          onKeyDown={(event) => { if (event.key === "Enter") void handleCreateLedger(); }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                </>
+                )}
+              </div>
               </div>
             )}
+            {initialLedgerSetup && (
             <div className="space-y-1">
               <div className="text-xs font-medium text-slate-600">{t("login.ledgerName")}</div>
               <input
@@ -1221,62 +1618,42 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 autoFocus={initialLedgerSetup}
               />
             </div>
-            <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">{t("login.adminUsername")}</div>
-              <input
-                value={createAdminName}
-                onChange={(event) => setCreateAdminName(event.target.value)}
-                type="text"
-                autoComplete="username"
-                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                placeholder={t("login.adminUsernamePlaceholder")}
-              />
-            </div>
-            <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">
-                {initialLedgerSetup ? t("login.adminEmailOptional") : t("login.adminEmail")}
+            )}
+            {initialLedgerSetup ? (
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-slate-600">{t("login.adminUsername")}</div>
+                  <input value={createAdminName} onChange={(event) => setCreateAdminName(event.target.value)} type="text" autoComplete="username" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.adminUsernamePlaceholder")} />
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-slate-600">{t("login.adminEmailOptional")}</div>
+                  <input value={createAdminEmail} onChange={(event) => setCreateAdminEmail(event.target.value)} type="email" autoComplete="email" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.adminEmailPlaceholder")} />
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-slate-600">{t("login.password")}</div>
+                  <input value={createPassword} onChange={(event) => setCreatePassword(event.target.value)} type="password" autoComplete="new-password" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.passwordPlaceholder")} />
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-slate-600">{t("login.confirmPassword")}</div>
+                  <input value={createConfirmPassword} onChange={(event) => setCreateConfirmPassword(event.target.value)} type="password" autoComplete="new-password" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.confirmPassword")} onKeyDown={(event) => { if (event.key === "Enter") void handleCreateLedger(); }} />
+                </div>
               </div>
-              <input
-                value={createAdminEmail}
-                onChange={(event) => setCreateAdminEmail(event.target.value)}
-                type="email"
-                autoComplete="email"
-                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                placeholder={t("login.adminEmailPlaceholder")}
-              />
-            </div>
-            <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">{t("login.password")}</div>
-              <input
-                value={createPassword}
-                onChange={(event) => setCreatePassword(event.target.value)}
-                type="password"
-                autoComplete="new-password"
-                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                placeholder={t("login.passwordPlaceholder")}
-              />
-            </div>
-            <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">{t("login.confirmPassword")}</div>
-              <input
-                value={createConfirmPassword}
-                onChange={(event) => setCreateConfirmPassword(event.target.value)}
-                type="password"
-                autoComplete="new-password"
-                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                placeholder={t("login.confirmPassword")}
-                onKeyDown={(event) => { if (event.key === "Enter") void handleCreateLedger(); }}
-              />
-            </div>
+            ) : createMethod === "existing" ? (
+              <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                新账簿管理员将使用当前验证账户：{createAuthMode === "mmh" ? (mmhUserChoices.find((user) => user.id === createExistingUserId)?.email ?? loginCredentials.mmh.username) : createAuthMode === "fnos" ? (fnosGatewayUser?.username ?? fnosGatewayUser?.uid ?? "") : (selectedHouseholdUsers.find((user) => user.id === createExistingUserId)?.name ?? loginCredentials.local.username)}
+              </div>
+            ) : null}
             {error && <div className="text-sm text-red-600">{error}</div>}
-            <button
-              type="button"
-              className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
-              disabled={loading}
-              onClick={() => void handleCreateLedger()}
-            >
-              {loading ? t("login.creating") : t("login.createAndEnter")}
-            </button>
+            {(createMethod !== "invite" || createAuthMode !== "mmh") && (
+              <button
+                type="button"
+                className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+                disabled={loading || registerLoading}
+                onClick={() => void handleCreateLedger()}
+              >
+                {loading ? t("login.creating") : t("login.createAndEnter")}
+              </button>
+            )}
             {initialLedgerSetup && (
               <button
                 type="button"
@@ -1297,12 +1674,23 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                   setResetError("");
                   setResetInfo("");
                   setShowReset(false);
+                  setCreateMethod("invite");
+                  setCreateAuthMode("local");
                   setCreateInviteCode("");
                   setCreateLedgerName("");
                   setCreateAdminName("admin");
                   setCreateAdminEmail("");
                   setCreatePassword("");
                   setCreateConfirmPassword("");
+                  setCreateExistingUserId("");
+                  setRegisterInviteMode(false);
+                  setRegisterEmail("");
+                  setRegisterCode("");
+                  setRegisterCodeSent(false);
+                  setRegisterPassword("");
+                  setRegisterName("");
+                  setRegisterInfo("");
+                  setRegisterError("");
                   setMode("login");
                 }}
               >

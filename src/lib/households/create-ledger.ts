@@ -13,8 +13,9 @@ export const LEDGER_CREATION_INVITE_CODE_KEY = "ledger_creation_invite_code";
 export type CreateLedgerInput = {
   name: string;
   adminName: string;
-  adminPassword: string;
+  adminPassword?: string;
   adminEmail?: string;
+  fnosUid?: string;
 };
 
 export async function createLedgerWithDefaults(
@@ -94,7 +95,7 @@ export async function createLedgerWithDefaults(
   await createDefaultCategoriesForHousehold(writer, household.id);
   await createDefaultInstitutionsForHousehold(writer, household.id);
 
-  const passwordHash = await hashPassword(input.adminPassword);
+  const passwordHash = input.adminPassword?.trim() ? await hashPassword(input.adminPassword) : null;
   const adminUser = await writer.user.create({
     data: {
       name: input.adminName,
@@ -102,6 +103,7 @@ export async function createLedgerWithDefaults(
       isSystem: false,
       passwordHash,
       email: input.adminEmail?.trim() ? input.adminEmail.trim() : null,
+      fnosUid: input.fnosUid?.trim() ? input.fnosUid.trim() : null,
       householdId: household.id,
     },
   });

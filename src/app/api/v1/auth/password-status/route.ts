@@ -92,6 +92,7 @@ function selectLoginUsers(householdId?: string) {
     select: {
       id: true,
       name: true,
+      email: true,
       passwordHash: true,
       role: true,
       isSystem: true,
@@ -211,6 +212,7 @@ export async function GET() {
     users: loginUsers.map(u => ({
       id: u.id,
       name: u.name,
+      email: u.email,
       hasPassword: !!u.passwordHash,
       role: u.role,
       isSystem: u.isSystem,

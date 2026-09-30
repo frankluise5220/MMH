@@ -54,8 +54,11 @@ function resolveSessionMaxAge(req: NextRequest) {
  */
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
+  const gatewayFnosUid = req.headers.get("x-trim-userid")?.trim() ?? "";
   const inviteCode = String(body.inviteCode ?? "").trim();
   const name = String(body.name ?? "").trim();
+  const authMode = body.authMode === "fnos" ? "fnos" : body.authMode === "mmh" ? "mmh" : "local";
+  const fnosUid = String(body.fnosUid ?? "").trim();
   const adminName = String(body.adminName ?? "").trim();
   const adminPassword = String(body.adminPassword ?? "").trim();
   const adminEmail = String(body.adminEmail ?? "").trim();
@@ -66,7 +69,10 @@ export async function POST(req: NextRequest) {
   if (!adminName || adminName.length > 50) {
     return NextResponse.json({ ok: false, code: "INVALID_ADMIN_NAME", error: "Administrator username must be between 1 and 50 characters." }, { status: 400 });
   }
-  if (!adminPassword) {
+  if (authMode === "fnos" && (!fnosUid || !gatewayFnosUid || fnosUid !== gatewayFnosUid)) {
+    return NextResponse.json({ ok: false, code: "FNOS_ID_REQUIRED", error: "The fnOS account identity is required." }, { status: 400 });
+  }
+  if (authMode !== "fnos" && !adminPassword) {
     return NextResponse.json({ ok: false, code: "ADMIN_PASSWORD_REQUIRED", error: "Administrator password is required." }, { status: 400 });
   }
 
@@ -90,7 +96,7 @@ export async function POST(req: NextRequest) {
   try {
     created = await prisma.$transaction(async (tx) => {
       if (isInitialLedgerSetup) {
-        return createLedgerWithDefaults(tx, { name, adminName, adminPassword, adminEmail });
+        return createLedgerWithDefaults(tx, { name, adminName, adminPassword: authMode === "fnos" ? undefined : adminPassword, adminEmail, fnosUid: authMode === "fnos" ? fnosUid : undefined });
       }
 
       const inviteSetting = await tx.systemSetting.findUnique({
