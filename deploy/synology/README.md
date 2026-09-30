@@ -127,12 +127,13 @@ release-artifacts/synology/mmh-synology-v0.1.x-arm64-spk-source.tgz
 - `INFO` 里应写 `os_min_ver="7.0-40000"`、`checksum="<package.tgz md5>"` 和 `extractsize="<package 解压后 KB>"`；不要仅因 DSM 7.2 更常见而主动收窄 7.0/7.1 用户的安装入口，DSM 7.2 及更新版本作为优先测试面。
 - `conf/privilege` 里应写 `"run-as": "package"`，不要写成无效的 `run_as`，否则 DSM 会判定套件以 root 权限运行并拒绝安装。
 - 最终 `.spk` tar header 里的生命周期脚本必须是可执行文件，`scripts/start-stop-status`、`config`、`preinst`、`postinst`、`preuninst`、`preupgrade`、`postupgrade` 使用 `0755`，普通元数据文件使用 `0644`，并以稳定的 numeric root ownership 归档。删除用户数据时，`preuninst` 只清空 `SYNOPKG_PKGVAR` 目录内容，不删除 DSM 创建的数据目录本身，避免套件用户因无权删除父目录而导致卸载失败。
-- 端口字段用 `WIZARD_UIFILES/install_uifile`（静态 JSON）+ `install_uifile.sh`（动态）成对提供。静态文件保证向导一定能渲染；动态脚本在向导渲染前探测端口，把占用者写进 `desc`、把默认值预填成下一个空闲端口——这是**唯一**能在用户点“下一步”之前告诉他“7777 已被占用”的时机。`.sh` 必须永远 `exit 0`，且只往 `$SYNOPKG_TEMP_LOGFILE` 写合法 JSON：脚本失败或写出非法 JSON，整个安装向导就不再渲染，表现正好是“安装时不提示端口”。JSON 由 `wizardJsonHead` / `wizardJsonMid` / `wizardJsonTail` 三个片段拼装，构建时由 `assertWizardJsonFragments()` 校验（2026-09-28 的故障就是手写 JSON 漏了前导 `[`）。
+- 端口字段用 `WIZARD_UIFILES/install_uifile`（静态 JSON）+ `install_uifile.sh`（动态）成对提供。静态文件保证向导一定能渲染；动态脚本在向导渲染前探测端口：**端口空闲就照用；端口被本套件自己的进程占用（升级时旧版本还在跑）就保持原端口并在描述里说明；只有被别的程序占用才点名占用者并把默认值预填成下一个空闲端口**——这是**唯一**能在用户点“下一步”之前告诉他端口情况的时机。它还会把自己算出的默认端口写进 `<套件数据目录>/mmh-wizard-port`，作为 `preinst`/`postinst` 判断「用户是否真的改过端口」的依据（读后即删）。`.sh` 必须永远 `exit 0`，且只往 `$SYNOPKG_TEMP_LOGFILE` 写合法 JSON：脚本失败或写出非法 JSON，整个安装向导就不再渲染，表现正好是“安装时不提示端口”。JSON 由 `wizardJsonHead` / `wizardJsonMid` / `wizardJsonTail` 三个片段拼装，构建时由 `assertWizardJsonFragments()` 校验（2026-09-28 的故障就是手写 JSON 漏了前导 `[`）。
+- **向导描述必须是一句短文**。DSM 把 `textfield` 子项的 `desc` 渲染在步骤标题下方的整行区域，**会换行**，而对话框高度固定 → 超出的行被直接裁掉（用户看到句子断在半截，不是横向溢出）。2026-09-30 之前那句三句话的提示有 87 个字符（含 `⚠️` 与嵌套括号），在 DSM 7.2 上换到第二行后被裁。现在每条描述都是单句，`check:synology` 同时断言固定文案 ≤30 字符、渲染结果 ≤40 字符、且不含 `⚠️`。占用者只写短形式（`pid=1234` / `Docker 映射` / `Docker pid=1234`），完整归属（进程名 + 类型）仍由 `preinst` 写进 `/var/log/packages/mmh.log`。
 - **DSM 桌面入口（「打开」按钮 + 图标）靠 `INFO` 的 `dsmuidir` 生效，这是最容易漏掉的一环**。官方定义：`dsmuidir` 指向 `package.tgz` 里的 UI 目录，DSM 会把 `/var/packages/mmh/target/<dsmuidir>` 链接到 `/usr/syno/synoman/webman/3rdparty/<pkg>`；**`dsmuidir` 留空则完全不建立链接**，表现就是套件中心里既没有「打开」按钮、也没有 MMH 图标、主菜单里也找不到入口。本包固定写 `dsmuidir="ui"`。
 - UI 目录里必须有两样东西：`config`（应用注册 JSON）和 `images/`（图标）。`config` 的 `.url` 键**必须等于 `INFO` 的 `dsmappname`**，否则 DSM 找不到对应条目。图标模板写 `images/mmh-{0}.png`，`{0}` 会被替换成 16/24/32/48/64/72/256，**七个尺寸必须全部存在**，缺一个就可能导致图标整体不显示。为规避 `dsmuidir` 语义差异，同样的 `config` + 七张图标会镜像写到 `ui/`、`app/`、`app/ui/` 三处（`dsmUiDirs()`）；`app/ui/` 原本是 fnOS 载荷自带的注册目录，其 `config` 声明的应用 id 是 `mmh.Application`（≠ `dsmappname`）且只带 64/256 两张图标，必须被我们的版本覆盖，否则就是一颗埋在载荷里的地雷。
 - `WIZARD_UIFILES` 只有 `install_uifile` / `upgrade_uifile` / `uninstall_uifile` 三种（官方文档所列；本机 DSM 上 11 个第三方套件的 `WIZARD_UIFILES` 里零例外）。**没有 `config_uifile`**：本包曾用它做「设置」入口，但 DSM 从不读它，套件中心也不会出现「设置」。`scripts/config` 同样不是 DSM 生命周期脚本，保留它只是给 SSH 用户一条手动的改端口命令（`sudo -E wizard_port=7780 /var/packages/mmh/scripts/config`）。
 - 生命周期脚本（`preinst` / `postinst`）写进 `SYNOPKG_TEMP_LOGFILE` 的消息**只在脚本返回非零、安装失败时才会显示**，安装成功时用户看不到；而向导阶段的 `install_uifile.sh` 写进同一个变量的内容是**向导 JSON 本身**，DSM 会读取并渲染。两者共用变量名但语义完全不同，不要混用。
-- 端口占用检查分三层：**向导**（`install_uifile.sh` / `upgrade_uifile.sh`）在用户填端口之前就报告占用者并预填下一个空闲端口；`scripts/preinst` 在解包前再核一次，只做**提示**（识别占用者的 PID / 归属并写进 `SYNOPKG_TEMP_LOGFILE`，然后 `exit 0` 让安装继续）；真正决定最终端口的是 `scripts/postinst`。不要用「`preinst` 非零退出中止安装」的方案：那会在用户面前直接掐死安装，拿不到 `postinst` 里的自动顺延。
+- 端口占用检查分三层：**向导**（`install_uifile.sh` / `upgrade_uifile.sh`）在用户填端口之前就说明端口情况（本套件自己在用 → 保持；别人在用 → 点名并预填下一个空闲端口）；`scripts/preinst` 在解包前再核一次，只做**提示**（识别占用者的 PID / 归属并写进 `SYNOPKG_TEMP_LOGFILE`，然后 `exit 0` 让安装继续）；真正决定最终端口的是 `scripts/postinst`。不要用「`preinst` 非零退出中止安装」的方案：那会在用户面前直接掐死安装，拿不到 `postinst` 里的自动顺延。
 - `scripts/postinst` 在端口空闲、或占用者是当前套件自己的旧进程时继续；遇到**外部占用**（Docker 版 MMH、另一个套件、任意其他服务）时从请求端口 +1 起探测，取第一个空闲端口**自动顺延**，写入 `mmh.env` 的 `PORT`，并同步 `package/ui/config` 的「打开」入口与向导默认值。`postinst` 只在「顺延 200 次仍找不到空闲端口」时才失败——`postinst` 返回非零会让 DSM 把套件标记为 corrupted，所以不能用来表达端口冲突。
 - 如果 DSM 提示“套件文件格式不正确，请联系套件开发人员”，先确认上传的是正式 `.spk`，不是 `*-spk-source.tgz`；如果正式 `.spk` 仍报错，应重新构建并发布下一个补丁版本。
 
@@ -156,27 +157,36 @@ DSM 显示安装向导、用户提交端口之后，`scripts/preinst` 会在**�
 | 被**本套件版 MMH 自己的进程**监听（例如升级时旧进程还没退出） | 放行，交给启动脚本处理 |
 | 被任何其他程序监听 | **给出提示但不中断安装**；`postinst` 完成后自动顺延到后面第一个空闲端口 |
 
-“其他程序”是严格定义的：只有命令行指向本包安装路径下 `app/server/server.js` 且不在容器里的进程才算“本套件自己”。以下都算“别人”：
+“其他程序”是严格定义的：**按进程所属的 DSM cgroup 判定**——属于 `<pkg>.slice/pkgctl-<pkg>.service` 且不在容器里的进程才算“本套件自己”。以下都算“别人”：
 
 - Docker 版 MMH（`docker-proxy` 端口映射，或容器内运行的 MMH 进程）；
 - 另一个群晖套件（即使也叫 mmh，只要不是当前这个套件包）；
 - 任意其他服务。
+
+**不要改用「`/proc/<pid>/cmdline` 里有没有 `app/server/server.js`」来判定自己人**——2026-09-30 在 DSM 7.2（192.168.2.148）实测这条路永远匹配不上，会把正在运行的自己判成外人，正是「升级 0.1.67 时向导提示 7779 被占用、要改用 7780」的根因：
+
+- Next.js standalone 启动时会改写 `argv[0]`（`process.title = "next-server (vX.Y.Z)"`，见 `node_modules/next/dist/esm/server/lib/start-server.js`），`cmdline` 读出来只有 `next-server (v16.2.6)`，`server.js` 路径已经没了；
+- `/var/packages/mmh/target` 是指向 `/volumeX/@appstore/mmh` 的软链接，`readlink /proc/<pid>/exe` 得到 `/volume1/@appstore/mmh/app/bin/node`，和未解析的 `$APP_DIR/app/bin/node` 永远不相等。
+
+cgroup 路径不受这两者影响，所以 `process_belongs_to_package()`（cgroup）+ `process_runs_our_server()`（`*/@appstore/<pkg>/app/bin/node` 兜底）取代了原来的 cmdline / exe 比对；`process_is_containerized()` 仍然先跑，保证 Docker 版 MMH 始终算外人。
 
 检查结果同时写入 `SYNOPKG_TEMP_LOGFILE`（DSM 安装界面/日志可见）和脚本 stderr。提示会说明占用者的 PID、进程名与归属类型（Docker 端口映射 / 容器进程 / 普通进程），并说明「安装会继续，完成后自动改用后续可用端口」，同时给出两条出路：回到安装向导自己填一个端口重新安装，或先停止占用该端口的程序。
 
 ### 安装后的端口与后续改端口
 
 - **自动顺延**：`postinst` 发现请求端口被别的程序占用时，从该端口 +1 开始探测，取第一个空闲端口，写入 `mmh.env` 的 `PORT`，并同步 DSM 套件卡片的「打开」入口（`package/ui/config`，镜像 `app/config`）和向导默认值。`mmh.log` 与安装输出会记录 `auto-advanced from <请求端口> (occupied)`。
-- **用户自己填**：安装向导的“MMH 网络端口”字段始终可填（1–65535 校验）。如果默认端口已被占用，字段的描述里会直接写出占用者，并把默认值预填成下一个空闲端口，想固定端口就在那里指定。
+- **用户自己填**：安装向导的“MMH 网络端口”字段始终可填（1–65535 校验）。端口被**别的程序**占用时，描述里会写出占用者（短形式）并把默认值预填成下一个空闲端口；被本套件自己占用时描述会说明“由 MMH 自身占用，安装后会继续沿用”，默认值保持原端口。**升级时把预填值改成别的端口再提交即会生效**（见下方「端口优先级」）。
 - **后期编辑**：端口的唯一真源是 `/var/packages/mmh/var/mmh.env` 里的 `PORT=`。停用套件后改它，再启用即可——`start-stop-status` 启动时会用 `mmh.env` 的端口同步 DSM 的「打开」入口（`ui/config`、`app/config`、`app/ui/config` 三份镜像），不需要手工改 config。SSH 一条命令也可以：`sudo -E wizard_port=7780 /var/packages/mmh/scripts/config`。
-- **升级/重装时改**：`upgrade_uifile` 会把当前端口预填进“MMH 网络端口”，改完点下一步即可，填写值优先于已保存的端口。
+- **升级/重装时改**：`upgrade_uifile` 会把当前端口预填进“MMH 网络端口”。**只要真的把值改成别的端口再提交，升级就会改用新端口**；保持预填值不动（或向导脚本没跑、退回静态默认）则沿用 `mmh.env` 里保存的原端口。判定靠向导脚本写下的 `/var/packages/mmh/var/mmh-wizard-port` 记录（详见下方「端口优先级」）。当然也可以用上一条的「停用 → 改 `mmh.env` → 启用」。
 - **不要指望套件中心的「设置」入口**：DSM 没有为第三方套件提供设置向导，`config_uifile` 这个名字在官方文档和本机 DSM 上都不存在（11 个第三方套件的 `WIZARD_UIFILES` 里零例外），写了也不会出现入口。要真正提供「应用内改端口」，应把端口设置做进 MMH 自己的设置页。
 
-端口优先级：**向导填写值 > `mmh.env` 已保存的 `PORT` > 包内默认 `7777`**。只在向导没有提供值（例如静默安装）时才回退到已保存端口。
+端口优先级（`preinst` 与 `postinst` 同一口径）：**① 用户在向导里明确改成了「向导预填值以外」的端口 → 用向导值；② 否则已有安装（升级/重装）沿用 `mmh.env` 已保存的 `PORT`；③ 全新安装用向导填写值；④ 最后兜底包内默认 `7777`。**
+
+「用户是否真的改过」由向导脚本写下的记录文件判定：动态向导把自己算出的默认端口写进 `<套件数据目录>/mmh-wizard-port`，`postinst`（以及做提示的 `preinst`）只有在该记录**存在且与提交值不同**时才采用向导值，并在读完后删除该记录。记录不存在（向导脚本未执行、退回静态 `install_uifile`，或没有向导）时一律回退已保存的 `PORT` —— 这一条正是防止静态默认 `7777` 把在用的端口静默挪走。
 
 ## 用户更新
 
-下载更高版本、同架构的 `.spk`，在 DSM 套件中心对已安装的 MMH 覆盖安装。更新会清理旧的运行痕迹，只保留并恢复套件数据目录中的 SQLite 数据库和原端口；安装输出及 `mmh.log` 会记录最终端口。覆盖升级时端口优先级是：**向导填写值 > `mmh.env` 里已保存的 `PORT` > `7777`**。如果原端口在升级过程中被别的程序（含 Docker 版 MMH）占用，`upgrade_uifile` 会先把占用情况显示在向导里并预填空闲端口，`preinst` 再提示一次，`postinst` 最后自动顺延并把新端口写回 `mmh.env`，不会因为端口冲突把安装判为损坏。不要把卸载旧版再安装新版作为日常更新方式。
+下载更高版本、同架构的 `.spk`，在 DSM 套件中心对已安装的 MMH 覆盖安装。更新会清理旧的运行痕迹，只保留并恢复套件数据目录中的 SQLite 数据库和原端口；安装输出及 `mmh.log` 会记录最终端口。覆盖升级时端口优先级是：**在向导里把预填端口改成别的值 → 用向导值；没改 → 沿用 `mmh.env` 已保存的 `PORT`**（预填值本身就是原端口，所以不动字段就是「沿用原端口」）。原端口被别的程序（含 Docker 版 MMH）占用时，`upgrade_uifile` 会先显示占用情况并预填空闲端口，`preinst` 再提示一次，`postinst` 最后自动顺延并把新端口写回 `mmh.env`，不会因为端口冲突把安装判为损坏。原端口由**本套件自己的旧进程**占用（升级时的常态）属于正常情况：向导会保持原端口、不再提示“被占用”，也不会顺延到 7780。不要把卸载旧版再安装新版作为日常更新方式。
 
 ## 打包命令
 
@@ -206,6 +216,17 @@ SYNOLOGY_TARGET_ARCH=arm64 SYNOLOGY_NODE_TARBALL=/path/to/node-v20.x-linux-arm64
 npm run check:synology
 SYNOLOGY_VERIFY_BUILT_SPK=1 npm run check:synology
 ```
+
+端口行为的分支回归测试（读**生成后**的脚本，不是读生成器源码，避免测试与实现漂移）：
+
+```bash
+sh .skill/synology-spk-port-guard/scripts/port-flow-test.sh      # postinst 的端口决策
+sh .skill/synology-spk-port-guard/scripts/wiz-decision-test.sh   # 向导的 自家 / 外人 / 空闲 分支
+```
+
+两个 harness 都不要和别的 `sh` 脚本串在一条命令里跑，也不要让脚本内部执行 `rm`：沙箱的批量删除守卫会连带把整条命令 SIGTERM 掉，测试输出会全部丢失。
+
+在真机 DSM 上复验（不必安装）：`.skill/synology-spk-port-guard/scripts/wiz-test.sh`（跑生成的向导脚本 + 校验 JSON）以及「判定自己人」的两个正负样例——本套件进程必须判为 own，Docker 容器里的 `next-server` 必须判为 foreign。
 
 ## 发布规则
 

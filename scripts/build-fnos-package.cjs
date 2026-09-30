@@ -1564,6 +1564,10 @@ ${externalNodeStartup}
     export MMH_GATEWAY_SOCKET_PATH="\${MMH_GATEWAY_SOCKET_PATH:-$TRIM_APPDEST/app.sock}"
     export MMH_LOCAL_TCP_PORT="\${MMH_LOCAL_TCP_PORT:-7777}"
     export MMH_LOCAL_TCP_HOST="\${MMH_LOCAL_TCP_HOST:-0.0.0.0}"
+    # The fnOS build bakes Next's basePath to /app/mmh; the launcher reads this
+    # to inject the prefix on the local TCP compatibility port (LAN/Android
+    # clients hit "/" without it) while leaving the gateway socket untouched.
+    export MMH_BASE_PATH="\${MMH_BASE_PATH:-/app/mmh}"
     nohup "$NODE_BIN" "$mmh_gateway_entry" >>"$LOG_FILE" 2>&1 &
   else
     nohup "$NODE_BIN" "$SERVER_DIR/server.js" >>"$LOG_FILE" 2>&1 &

@@ -1,21 +1,35 @@
 const SW_VERSION = "mmh-pwa-v9";
+
+// fnOS unified gateway: the app is served under /app/mmh and this worker is
+// registered with that exact scope, so self.registration.scope is the single
+// source of truth for the prefix -- "https://host/app/mmh/" -> "/app/mmh", and
+// "https://host/" -> "" on Docker / Synology / Android. Deriving it here keeps
+// this file byte-identical across channels (public/ is not processed by Next).
+const BASE = (() => {
+  try {
+    return new URL(self.registration.scope).pathname.replace(/\/+$/, "");
+  } catch (error) {
+    return "";
+  }
+})();
+
 const SHELL_CACHE = `${SW_VERSION}-shell`;
 const SHELL_ASSETS = [
-  "/",
-  "/overview",
-  "/favicon.ico",
-  "/apple-touch-icon.png",
-  "/branding/mmh-logo-pageflip.png",
-  "/branding/mmh-logo-pageflip.square.png",
-  "/branding/mmh-logo-pageflip-192.png",
-  "/branding/mmh-logo-pageflip-512.png",
+  `${BASE}/`,
+  `${BASE}/overview`,
+  `${BASE}/favicon.ico`,
+  `${BASE}/apple-touch-icon.png`,
+  `${BASE}/branding/mmh-logo-pageflip.png`,
+  `${BASE}/branding/mmh-logo-pageflip.square.png`,
+  `${BASE}/branding/mmh-logo-pageflip-192.png`,
+  `${BASE}/branding/mmh-logo-pageflip-512.png`,
 ];
 
-const isApiRequest = (url) => url.pathname.startsWith("/api/");
-const isNextAsset = (url) => url.pathname.startsWith("/_next/");
+const isApiRequest = (url) => url.pathname.startsWith(`${BASE}/api/`);
+const isNextAsset = (url) => url.pathname.startsWith(`${BASE}/_next/`);
 const isStaticShellAsset = (url) =>
   SHELL_ASSETS.includes(url.pathname) ||
-  url.pathname.startsWith("/branding/");
+  url.pathname.startsWith(`${BASE}/branding/`);
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -77,6 +91,6 @@ async function networkFirst(request) {
     return response;
   } catch (error) {
     const cached = await caches.match(request);
-    return cached || caches.match("/overview") || Response.error();
+    return cached || caches.match(`${BASE}/overview`) || Response.error();
   }
 }

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, RotateCcw, Shield, Upload, RefreshCw } from "lucide-react";
+import { withBasePath } from "@/lib/base-path";
 import {
   SettingsActionButton,
   SettingsEmptyRow,
@@ -1201,7 +1202,7 @@ export default function DatabaseSettingsPage() {
       if (res.ok && data?.ok) {
         setResetPasswordDialogOpen(false);
         setResetDbPassword("");
-        window.location.href = "/login";
+        window.location.href = withBasePath("/login");
       } else {
         setResetError(data?.error ?? t("settings.database.operationFailed"));
       }
@@ -1223,7 +1224,7 @@ export default function DatabaseSettingsPage() {
         throw new Error(data?.error || t("settings.database.refreshFailed"));
       }
       setCacheRefreshMessage(t("settings.database.cacheRefreshed"));
-      setTimeout(() => window.location.href = "/", 800);
+      setTimeout(() => window.location.href = withBasePath("/"), 800);
     } catch (e) {
       setCacheRefreshError(e instanceof Error ? e.message : t("settings.database.refreshFailed"));
     } finally {

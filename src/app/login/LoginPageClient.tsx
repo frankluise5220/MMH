@@ -5,6 +5,7 @@ import { getHouseholdDisplayName } from "@/lib/household-display";
 import { useI18n } from "@/lib/i18n";
 import { getProductIntro } from "@/lib/product-intro";
 import { MmhLogo } from "@/components/MmhLogo";
+import { withBasePath } from "@/lib/base-path";
 
 type HouseholdChoice = {
   id: string;
@@ -119,6 +120,16 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   const [resetLoading, setResetLoading] = useState(false);
   const [resetHouseholdId, setResetHouseholdId] = useState("");
   const [resetHouseholdChoices, setResetHouseholdChoices] = useState<HouseholdChoice[]>([]);
+
+  const [showRegister, setShowRegister] = useState(false);
+  const [registerEmail, setRegisterEmail] = useState("");
+  const [registerCodeSent, setRegisterCodeSent] = useState(false);
+  const [registerCode, setRegisterCode] = useState("");
+  const [registerPassword, setRegisterPassword] = useState("");
+  const [registerName, setRegisterName] = useState("");
+  const [registerInfo, setRegisterInfo] = useState("");
+  const [registerError, setRegisterError] = useState("");
+  const [registerLoading, setRegisterLoading] = useState(false);
   const { t } = useI18n();
   const currentHouseholdDisplayName = getHouseholdDisplayName({ name: householdName }, t("login.defaultBook"));
   const productIntro = getProductIntro(t);
@@ -325,7 +336,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
         password: trimmedPassword,
       });
       if (data.ok) {
-        window.location.href = "/";
+        window.location.href = withBasePath("/");
         return;
       }
       if (data.code === "AMBIGUOUS_USER" && data.households?.length) {
@@ -352,7 +363,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     try {
       const data = await verifyLogin({ ...credentials, householdId });
       if (data.ok) {
-        window.location.href = "/";
+        window.location.href = withBasePath("/");
         return;
       }
       setError(data.error ?? t("login.error.loginFailed"));
@@ -391,7 +402,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
         ? await res.json().catch(() => null) as AuthVerifyResponse | null
         : null;
       if (!data) { setError(t("login.error.loginFailed")); return; }
-      if (data.ok) { window.location.href = "/"; return; }
+      if (data.ok) { window.location.href = withBasePath("/"); return; }
       if (data.code === "AMBIGUOUS_USER" && data.households?.length) {
         setHouseholdChoices(data.households);
         setPendingFnos(true);
@@ -429,7 +440,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
 
       const loginData = await verifyLogin({ username: trimmedUsername, password: trimmedPassword });
       if (loginData.ok) {
-        window.location.href = "/";
+        window.location.href = withBasePath("/");
         return;
       }
       setError(loginData.error ?? t("login.error.loginFailed"));
@@ -473,7 +484,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
         setError(createData?.error ?? t("login.error.createFailed"));
         return;
       }
-      window.location.href = "/";
+      window.location.href = withBasePath("/");
     } catch {
       setError(t("login.error.createRetry"));
     } finally {
@@ -572,6 +583,91 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     }
   }
 
+  async function handleRegisterSendCode() {
+    const email = registerEmail.trim();
+    if (!email) { setRegisterError(t("login.register.error.emailRequired")); return; }
+
+    setRegisterLoading(true);
+    setRegisterError("");
+    setRegisterInfo("");
+    try {
+      const res = await fetch("/api/v1/auth/register/send-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      const data = await res.json().catch(() => null) as { ok: boolean; code?: string; error?: string } | null;
+      if (!data?.ok) {
+        setRegisterError(
+          data?.code === "DUPLICATE_EMAIL"
+            ? t("login.register.error.emailTaken")
+            : data?.error ?? t("login.register.error.sendFailed"),
+        );
+        return;
+      }
+      setRegisterCodeSent(true);
+      setRegisterInfo(t("login.register.codeSent", { email }));
+    } catch {
+      setRegisterError(t("login.register.error.sendFailed"));
+    } finally {
+      setRegisterLoading(false);
+    }
+  }
+
+  async function handleRegisterConfirm() {
+    const email = registerEmail.trim();
+    const code = registerCode.trim();
+    const password = registerPassword.trim();
+    if (!email) { setRegisterError(t("login.register.error.emailRequired")); return; }
+    if (!code) { setRegisterError(t("login.register.error.codeRequired")); return; }
+    if (password.length < 6) { setRegisterError(t("login.register.error.passwordRequired")); return; }
+
+    setRegisterLoading(true);
+    setRegisterError("");
+    setRegisterInfo("");
+    try {
+      const res = await fetch("/api/v1/auth/register/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email,
+          code,
+          password,
+          ...(registerName.trim() ? { name: registerName.trim() } : {}),
+        }),
+      });
+      const data = await res.json().catch(() => null) as { ok: boolean; code?: string; error?: string } | null;
+      if (!data?.ok) {
+        setRegisterError(
+          data?.code === "INVALID_OR_EXPIRED_CODE"
+            ? t("login.register.error.invalidCode")
+            : data?.code === "DUPLICATE_EMAIL"
+              ? t("login.register.error.emailTaken")
+              : data?.error ?? t("login.register.error.failed"),
+        );
+        return;
+      }
+      window.location.href = withBasePath("/");
+    } catch {
+      setRegisterError(t("login.register.error.failed"));
+    } finally {
+      setRegisterLoading(false);
+    }
+  }
+
+  function openRegister() {
+    setRegisterEmail("");
+    setRegisterCode("");
+    setRegisterCodeSent(false);
+    setRegisterPassword("");
+    setRegisterName("");
+    setRegisterInfo("");
+    setRegisterError("");
+    setShowReset(false);
+    setShowRegister(true);
+    cancelHouseholdChoice();
+  }
+
   if (checking) {
     return (
       <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
@@ -630,7 +726,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
 
         {mode === "login" && (
           <div className="space-y-4 p-6">
-            {!showReset && (
+            {!showReset && !showRegister && (
               <>
                 {loginHouseholdChoices.length > 0 && (
                   <div className="space-y-1">
@@ -816,6 +912,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
               </>
             )}
 
+            {!showRegister && (
             <button
               type="button"
               className="w-full text-xs text-slate-500 hover:text-slate-700"
@@ -833,6 +930,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
             >
               {showReset ? t("common.collapse") : t("login.forgotPassword")}
             </button>
+            )}
 
             {showReset && (
               <div className="space-y-3 border-t border-slate-100 pt-2">
@@ -986,7 +1084,116 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           </div>
         )}
 
-        {mode === "create" && (
+        {showRegister && (
+          <div className="space-y-4 p-6">
+            <div className="space-y-1">
+              <div className="text-xs font-medium text-slate-600">{t("login.register.email")}</div>
+              <input
+                value={registerEmail}
+                onChange={(event) => {
+                  setRegisterEmail(event.target.value);
+                  setRegisterCodeSent(false);
+                  setRegisterCode("");
+                  setRegisterError("");
+                  setRegisterInfo("");
+                }}
+                type="email"
+                autoComplete="email"
+                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                placeholder={t("login.register.emailPlaceholder")}
+                autoFocus
+              />
+            </div>
+            {registerCodeSent && (
+              <>
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-slate-600">{t("login.register.code")}</div>
+                  <input
+                    value={registerCode}
+                    onChange={(event) => {
+                      setRegisterCode(event.target.value);
+                      setRegisterError("");
+                    }}
+                    type="text"
+                    autoComplete="one-time-code"
+                    className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                    placeholder={t("login.register.codePlaceholder")}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-slate-600">{t("login.register.password")}</div>
+                  <input
+                    value={registerPassword}
+                    onChange={(event) => {
+                      setRegisterPassword(event.target.value);
+                      setRegisterError("");
+                    }}
+                    type="password"
+                    autoComplete="new-password"
+                    className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                    placeholder={t("login.passwordPlaceholder")}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-slate-600">{t("login.register.name")}</div>
+                  <input
+                    value={registerName}
+                    onChange={(event) => setRegisterName(event.target.value)}
+                    type="text"
+                    autoComplete="username"
+                    className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                    placeholder={t("login.register.namePlaceholder")}
+                  />
+                </div>
+              </>
+            )}
+            {registerInfo && <div className="text-sm text-slate-600">{registerInfo}</div>}
+            {registerError && <div className="text-sm text-red-600">{registerError}</div>}
+            {!registerCodeSent ? (
+              <button
+                type="button"
+                className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+                disabled={registerLoading}
+                onClick={() => void handleRegisterSendCode()}
+              >
+                {registerLoading ? t("login.verifying") : t("login.register.sendCode")}
+              </button>
+            ) : (
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+                  disabled={registerLoading}
+                  onClick={() => void handleRegisterConfirm()}
+                >
+                  {registerLoading ? t("login.register.submitting") : t("login.register.submit")}
+                </button>
+                <button
+                  type="button"
+                  className="h-10 w-full rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  disabled={registerLoading}
+                  onClick={() => void handleRegisterSendCode()}
+                >
+                  {t("login.register.resend")}
+                </button>
+              </div>
+            )}
+            <button
+              type="button"
+              className="w-full text-xs text-slate-500 hover:text-slate-700"
+              disabled={registerLoading}
+              onClick={() => {
+                setShowRegister(false);
+                setRegisterError("");
+                setRegisterInfo("");
+              }}
+            >
+              {t("login.register.back")}
+            </button>
+          </div>
+        )}
+
+        {mode === "create" && !showRegister && (
           <div className="space-y-4 p-6">
             {!initialLedgerSetup && (
               <div className="space-y-1">
@@ -1070,6 +1277,16 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
             >
               {loading ? t("login.creating") : t("login.createAndEnter")}
             </button>
+            {initialLedgerSetup && (
+              <button
+                type="button"
+                className="w-full text-xs text-slate-500 hover:text-slate-700"
+                disabled={loading}
+                onClick={openRegister}
+              >
+                {t("login.register")}
+              </button>
+            )}
             {!initialLedgerSetup && (
               <button
                 type="button"
@@ -1145,8 +1362,8 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           </div>
         )}
 
-        {mode === "login" && !showReset && (
-          <div className="px-6 pb-6 -mt-2">
+        {mode === "login" && !showReset && !showRegister && (
+          <div className="px-6 pb-6 -mt-2 space-y-2">
             <button
               type="button"
               className="w-full text-xs text-slate-500 hover:text-slate-700"

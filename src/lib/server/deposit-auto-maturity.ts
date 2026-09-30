@@ -102,31 +102,24 @@ async function runAutoProcessMaturedDeposits(
     orderBy: [{ fundArrivalDate: "asc" }, { id: "asc" }],
     take: MAX_LOTS_PER_RUN,
   });
-  // 取息计划行是「这张存单还要不要继续付息」的开关。计划已完成（本金已取完 /
-  // 已到期 / 已改为到期取息 / 存单被删除）时不能再按锚点补生成 —— 否则会出现
-  // 「计划任务显示已完成，利息还在继续生成」（2026-09-29 honker 报的问题）。
-  // 本扫描是按**存单**遍历的，不看计划状态，所以必须在这里显式排除。
-  // 计划行不存在的存单仍照常补生成（老数据由开机自愈重建计划行）。
-  const payoutPlans = periodicLots.length > 0
-    ? await prisma.regularInvestPlan.findMany({
-        where: { householdId, id: { in: periodicLots.map((lot) => `depi_${lot.id}`) } },
-        select: { id: true, status: true },
-      })
-    : [];
-  const closedPayoutLots = new Set(
-    payoutPlans
-      .filter((row) => row.status === RegularInvestStatus.completed)
-      .map((row) => row.id.slice("depi_".length)),
+  // 取息计划行是「这张存单还要不要继续付息」的开关。2026-09-30 用户裁定：
+  // 计划行被删除后，除非存款交易被重新编辑保存，否则不能由自动扫描补回/继续生成。
+  // 因此这里**只处理存在且 active 的 depi_<lotId>**；缺计划或 completed 都跳过。
+  const activePayoutLotIds = new Set(
+    periodicLots.length > 0
+      ? (await prisma.regularInvestPlan.findMany({
+          where: {
+            householdId,
+            id: { in: periodicLots.map((lot) => `depi_${lot.id}`) },
+            status: RegularInvestStatus.active,
+          },
+          select: { id: true },
+        })).map((row) => row.id.slice("depi_".length))
+      : [],
   );
   for (const buy of periodicLots) {
     try {
-      if (closedPayoutLots.has(buy.id)) {
-        result.details.push({
-          lotId: buy.id,
-          action: "interest_payout",
-          status: "skipped",
-          reason: "取息计划已完成",
-        });
+      if (!activePayoutLotIds.has(buy.id)) {
         continue;
       }
       const outcome = await autoAccruePeriodicInterest(buy.id, householdId, today);
@@ -163,9 +156,23 @@ async function runAutoProcessMaturedDeposits(
     take: MAX_LOTS_PER_RUN,
   });
 
+  const activeMaturityLotIds = new Set(
+    candidates.length > 0
+      ? (await prisma.regularInvestPlan.findMany({
+          where: {
+            householdId,
+            id: { in: candidates.map((lot) => `depm_${lot.id}`) },
+            status: RegularInvestStatus.active,
+          },
+          select: { id: true },
+        })).map((row) => row.id.slice("depm_".length))
+      : [],
+  );
+
   for (const buy of candidates) {
     const action = buy.depositMaturityAction;
     if (!action) continue;
+    if (!activeMaturityLotIds.has(buy.id)) continue;
     try {
       if (action === "redeem") {
         const outcome = await autoRedeemDeposit(buy.id, householdId);

@@ -1851,6 +1851,11 @@ export async function editInvestment(formData: FormData) {
     const oldCashAccId = existingFundTransactionForRecalc?.cashAccountId ?? ((isOldRedeemOrRefund ? txRecord.toAccountId : txRecord.accountId) ?? "");
     const oldFundCode = existingFundTransactionForRecalc?.fundCode ?? null;
     const oldDepositSourceEntryId = txRecord.depositSourceEntryId;
+    // 存款买入记录自身被重新编辑保存时，才允许重建/刷新它的系统计划。
+    // 用户手动删除计划后，自动执行入口不会再自愈；编辑保存是明确的重新生成动作。
+    const oldDepositBuyLotId = txRecord.fundProductType === "deposit" && txRecord.fundSubtype === FundSubtype.buy
+      ? txRecord.id
+      : null;
     let newDepositSourceEntryId: string | null = null;
 
     // Detect whether a new fund account was passed (via the toAccountId field).
@@ -2373,6 +2378,9 @@ export async function editInvestment(formData: FormData) {
       });
     }
     const depositLotIdsToRefresh = new Set<string>();
+    if (oldDepositBuyLotId && fundProductType === "deposit" && fundSubtypeValue === FundSubtype.buy) {
+      depositLotIdsToRefresh.add(oldDepositBuyLotId);
+    }
     if (oldDepositSourceEntryId) depositLotIdsToRefresh.add(oldDepositSourceEntryId);
     if (fundProductType === "deposit" && redeemLike && newDepositSourceEntryId) {
       depositLotIdsToRefresh.add(newDepositSourceEntryId);

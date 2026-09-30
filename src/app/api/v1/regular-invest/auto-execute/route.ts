@@ -23,7 +23,7 @@ import { decodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { calcInitialScheduledRunDate as calcInitialRunDate, calcNextScheduledRunDate as calcNextRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { executeNonFundScheduledTaskPlan, isNonFundScheduledTask } from "@/lib/server/scheduled-task-executor";
-import { ensureDepositPlansForHeldLots, executeDepositPlan } from "@/lib/server/deposit-plan-tasks";
+import { executeDepositPlan } from "@/lib/server/deposit-plan-tasks";
 import { ensureBondPlansForHousehold, BOND_MATURITY_PLAN_FUND_CODE, BOND_PAYOUT_PLAN_FUND_CODE } from "@/lib/server/bond-plan-tasks";
 import { autoAccrueBondPeriodicInterestForLot } from "@/lib/server/bond-auto-interest";
 import { resolveCategorySnapshot } from "@/lib/default-categories";
@@ -727,8 +727,8 @@ export async function POST() {
     const now = new Date();
     const maxRounds = Math.max(1, Number(process.env.MMH_AUTO_EXECUTE_MAX_ROUNDS ?? 12) || 12);
 
-    // 存款的系统计划行自愈：老存单可能还没有计划行，先补齐再跑计划轮次。
-    await ensureDepositPlansForHeldLots({ householdId }).catch(() => {});
+    // 存款计划任务不在自动执行入口自愈：用户手动删除的计划必须保持删除状态。
+    // 只有新建/编辑存款交易、或续存生成新存单时，业务写入路径才会显式同步计划。
 
     // 城投债计划行自愈：bond 债单的到期/付息提醒行随债单条款刷新（只补齐/刷新，不执行）。
     await ensureBondPlansForHousehold({ householdId }).catch(() => {});

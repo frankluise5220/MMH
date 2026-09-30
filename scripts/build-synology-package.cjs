@@ -455,8 +455,22 @@ function assertWizardJsonFragments() {
 assertWizardJsonFragments();
 
 // Shared shell body of the dynamic wizard scripts. `resolveDefault` prints the
-// port the wizard should start from; `suffix` is appended to the description.
-function wizardScriptBody(resolveDefault, suffix) {
+// port the wizard should start from; `suffix` is appended to the description
+// when the port is free; `ownDesc` replaces the description when the port is
+// held by this package's own running instance.
+//
+// Every description is deliberately ONE short sentence. DSM renders it as a
+// full-width block under the step title, it DOES wrap, and the dialog height is
+// fixed -- so a long text is truncated mid-sentence rather than expanding the
+// window. The previous three-sentence version ("端口 7779 已被占用（pid=32095
+// (next-server (v1），已预填下一个可用端口 7780。更新会沿用当前端口；如需更换
+// 端口，在此填写新端口即可。" plus a warning emoji, 87 characters) was cut off
+// after the second line on DSM 7.2. `check:synology` asserts both a length
+// budget and the absence of that emoji.
+function wizardScriptBody(resolveDefault, suffix, ownDesc) {
+  if (!suffix || !ownDesc) {
+    throw new Error("wizardScriptBody needs both a free-port suffix and an own-instance description; a missing one ships as desc=\"undefined\" in the DSM wizard.");
+  }
   return `OUT="\${SYNOPKG_TEMP_LOGFILE:-}"
 [ -n "$OUT" ] || exit 0
 
@@ -466,17 +480,48 @@ case "$port" in
 esac
 
 if port_is_listening "$port"; then
-  owner="$(port_owner_text "$port" | sed 's/[\\\\"]//g' | cut -c1-80)"
-  if free_port="$(probe_free_port \$((port + 1)))"; then
-    desc="⚠️ 端口 $port 已被占用（$owner），已预填下一个可用端口 $free_port。${suffix}"
-    port="$free_port"
+  # Listening is NOT the same as conflicting. While DSM renders this wizard the
+  # previous MMH is still running (DSM stops it only after the wizard), so on an
+  # upgrade - and on a reinstall over a running install - the listener on the
+  # persisted port is this very package. The upgrade reuses that port, so this
+  # branch must keep it instead of advancing to the next free one.
+  owner_pids="$(port_listener_pids "$port")"
+  own_only=""
+  if [ -n "$owner_pids" ]; then
+    own_only=1
+    for pid in $owner_pids; do
+      if ! is_own_mmh_listener "$pid"; then
+        own_only=0
+        break
+      fi
+    done
+  fi
+  if [ "$own_only" = "1" ]; then
+    desc="${ownDesc}"
   else
-    desc="⚠️ 端口 $port 已被占用（$owner），其后的端口也都不可用，请手动填写一个空闲端口。"
+    owner="$(port_owner_short "$port" | sed 's/[\\\\"]//g' | cut -c1-16)"
+    if free_port="$(probe_free_port \$((port + 1)))"; then
+      desc="端口 $port 被占用（$owner），已预填 $free_port。"
+      port="$free_port"
+    else
+      desc="端口 $port 被占用（$owner），请填写其他端口。"
+    fi
   fi
 else
-  desc="MMH 服务端口。当前 $port 可用。${suffix}"
+  desc="当前端口 $port 可用。${suffix}"
 fi
 desc="$(printf '%s' "$desc" | sed 's/[\\\\"]//g')"
+
+# Record the port this wizard just pre-filled. postinst compares the submitted
+# value against it and honours the wizard ONLY when the user typed something
+# different, so a wizard that silently fell back to the static JSON default
+# (7777) can never move a live install off the port it is already using.
+# The wizard runs before the package is unpacked, so $SYNOPKG_PKGVAR is the
+# only writable channel; preinst and postinst read it, postinst removes it.
+# See docs/product-todos.md ("精确版 A" = option C).
+WIZARD_PORT_RECORD="\${SYNOPKG_PKGVAR:-/var/packages/$PACKAGE/var}/mmh-wizard-port"
+mkdir -p "\$(dirname "$WIZARD_PORT_RECORD")" 2>/dev/null || true
+printf '%s\\n' "$port" > "$WIZARD_PORT_RECORD" 2>/dev/null || true
 
 printf '%s' '${wizardJsonHead}' > "$OUT" 2>/dev/null || true
 printf '%s' "$desc" >> "$OUT" 2>/dev/null || true
@@ -486,8 +531,10 @@ printf '%s' '${wizardJsonTail}' >> "$OUT" 2>/dev/null || true
 exit 0`;
 }
 
-const installWizardSuffix = "首次安装使用此端口；更新时会保留已安装版本的端口。";
-const upgradeWizardSuffix = "更新会沿用当前端口；如需更换端口，在此填写新端口即可。";
+const installWizardSuffix = "首次安装将使用该端口。";
+const upgradeWizardSuffix = "升级会沿用当前端口。";
+const installWizardOwnDesc = "端口 $port 由 MMH 自身占用，安装后会继续沿用。";
+const upgradeWizardOwnDesc = "端口 $port 由 MMH 自身占用，升级后会继续沿用。";
 
 function writeInstallWizard() {
   write(path.join(stageDir, "WIZARD_UIFILES", "install_uifile"), wizardJson(installWizardSuffix));
@@ -501,17 +548,22 @@ PACKAGE="mmh"
 DEFAULT_PORT=${adminPort}
 OWN_SERVER_JS="/var/packages/$PACKAGE/target/app/server/server.js"
 
+${portIdentityShell}
+
 ${portProbeShell}
 
-${wizardScriptBody(`printf '%s' "$DEFAULT_PORT"`, installWizardSuffix)}`, 0o755);
+${wizardScriptBody(`printf '%s' "$DEFAULT_PORT"`, installWizardSuffix, installWizardOwnDesc)}`, 0o755);
 }
 
 function writeUpgradeWizard() {
   write(path.join(stageDir, "WIZARD_UIFILES", "upgrade_uifile"), wizardJson(upgradeWizardSuffix));
   write(path.join(stageDir, "WIZARD_UIFILES", "upgrade_uifile.sh"), `#!/bin/sh
 # Upgrade counterpart of install_uifile.sh. Starting from the port that is
-# already persisted makes the wizard the supported way to change the port
-# later: stop the package, upgrade/re-install, edit the value, press 下一步.
+# already persisted keeps an upgrade on the port the user is already using, and
+# the port the wizard pre-fills is recorded in mmh-wizard-port so postinst can
+# tell "the user typed a new port" from "this is just the default we proposed".
+# Leaving the field untouched therefore changes nothing, while editing it does
+# move the install - see docs/product-todos.md ("精确版 A" = option C).
 
 PACKAGE="mmh"
 DEFAULT_PORT=${adminPort}
@@ -519,9 +571,11 @@ OWN_SERVER_JS="/var/packages/$PACKAGE/target/app/server/server.js"
 VAR_DIR="\${SYNOPKG_PKGVAR:-/var/packages/$PACKAGE/var}"
 ENV_FILE="$VAR_DIR/mmh.env"
 
+${portIdentityShell}
+
 ${portProbeShell}
 
-${wizardScriptBody(`sed -n 's/^PORT=//p' "$ENV_FILE" 2>/dev/null | head -n 1 | tr -d '[:space:]'`, upgradeWizardSuffix)}`, 0o755);
+${wizardScriptBody(`sed -n 's/^PORT=//p' "$ENV_FILE" 2>/dev/null | head -n 1 | tr -d '[:space:]'`, upgradeWizardSuffix, upgradeWizardOwnDesc)}`, 0o755);
 }
 
 function writeUninstallWizard() {
@@ -542,6 +596,61 @@ function writeUninstallWizard() {
     }],
   }], null, 2));
 }
+
+// How "is this listener our own package?" is decided. This is shared by every
+// script that has to tell our own running MMH apart from a foreign owner
+// (preinst, postinst, start-stop-status, config and both wizard scripts).
+//
+// Do NOT go back to matching `/proc/<pid>/cmdline` against
+// ".../app/server/server.js": that never matches on a real DSM install, and
+// misclassifying our own process is what made the upgrade wizard report
+// "7779 已被占用" and pre-fill 7780 while the port was held by the very version
+// being upgraded (reported 2026-09-30 on 192.168.2.148, DSM 7.2). Two reasons,
+// both verified on that machine:
+//
+//   1. Next.js standalone rewrites argv[0] at startup
+//      (`process.title = "next-server (vX.Y.Z)"`,
+//      node_modules/next/dist/esm/server/lib/start-server.js), so cmdline reads
+//      "next-server (v16.2.6)" and the server.js path is gone.
+//   2. `/var/packages/<pkg>/target` is a symlink to `/volumeX/@appstore/<pkg>`,
+//      so `readlink /proc/<pid>/exe` yields
+//      `/volume1/@appstore/mmh/app/bin/node` and never equals the unresolved
+//      `$APP_DIR/app/bin/node`.
+//
+// What survives both rewrites is DSM's own cgroup: every process belonging to a
+// package runs under "<pkg>.slice/pkgctl-<pkg>.service" (observed:
+// "2:name=synomonitor:/mmh.slice/pkgctl-mmh.service"). It is world-readable and
+// names the owning package, so it cannot be spoofed by another package or by a
+// container. `process_is_containerized` is still evaluated first so a
+// Docker-hosted MMH (including host-network containers) stays foreign.
+const portIdentityShell = `process_is_containerized() {
+  pid="$1"
+  [ -r "/proc/$pid/cgroup" ] || return 1
+  grep -Eq "(^|[/:.])docker([/.]|$)|docker-proxy|/lxc/|containerd|/kubepods" "/proc/$pid/cgroup" 2>/dev/null
+}
+
+process_belongs_to_package() {
+  pid="$1"
+  [ -r "/proc/$pid/cgroup" ] || return 1
+  grep -Eq "(^|[/:])pkgctl-$PACKAGE(\\.service)?($|/)|(^|[/:])$PACKAGE\\.slice($|/)" "/proc/$pid/cgroup" 2>/dev/null
+}
+
+# Fallback for a DSM that renames the package cgroup: the bundled runtime lives
+# at <pkg>/target/app/bin/node, which resolves to
+# /volumeX/@appstore/<pkg>/app/bin/node, and the legacy cmdline match is kept for
+# an install whose server never rewrote its title.
+process_runs_our_server() {
+  pid="$1"
+  exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+  case "$exe" in
+    */@appstore/$PACKAGE/app/bin/node|*/$PACKAGE/target/app/bin/node) return 0 ;;
+  esac
+  cmdline="$(tr '\\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  case "$cmdline" in
+    *"$OWN_SERVER_JS"*) return 0 ;;
+  esac
+  return 1
+}`;
 
 // Shared POSIX-sh helpers for install-time port inspection. DSM ships busybox
 // sh (no /dev/tcp), so listener discovery reads the socket inode column from
@@ -610,10 +719,24 @@ port_owner_text() {
   printf '%s' "未知进程"
 }
 
-process_is_containerized() {
-  pid="$1"
-  [ -r "/proc/$pid/cgroup" ] || return 1
-  grep -Eq "(^|[/:.])docker([/.]|$)|docker-proxy|/lxc/|containerd|/kubepods" "/proc/$pid/cgroup" 2>/dev/null
+# Owner label for the DSM wizard description. DSM renders that description as a
+# full-width block under the step title, it wraps, and the dialog height is fixed
+# -- so anything long gets truncated mid-sentence (an 87-character string did).
+# Keep this short; describe_port_owner()'s long form ("Docker 端口映射 pid=1234
+# (docker-proxy)") belongs in preinst's log line instead. Hard-capped at 16 chars.
+port_owner_short() {
+  for pid in $(port_listener_pids "$1"); do
+    if process_is_containerized "$pid"; then
+      printf 'Docker pid=%s' "$pid"
+      return 0
+    fi
+    case "$(tr '\\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)" in
+      *docker-proxy*) printf 'Docker 映射' ;;
+      *) printf 'pid=%s' "$pid" ;;
+    esac
+    return 0
+  done
+  printf '未知进程'
 }
 
 port_listener_pids() {
@@ -655,11 +778,12 @@ describe_port_owner() {
     *docker-proxy*)
       printf "Docker 端口映射 pid=%s (docker-proxy)" "$pid"
       ;;
-    *"$OWN_SERVER_JS"*)
-      printf "MMH 套件进程 pid=%s" "$pid"
-      ;;
     *)
-      printf "pid=%s (%s)" "$pid" "\${comm:-unknown}"
+      if is_own_mmh_listener "$pid"; then
+        printf "MMH 套件进程 pid=%s" "$pid"
+      else
+        printf "pid=%s (%s)" "$pid" "\${comm:-unknown}"
+      fi
       ;;
   esac
 }
@@ -667,12 +791,8 @@ describe_port_owner() {
 is_own_mmh_listener() {
   pid="$1"
   process_is_containerized "$pid" && return 1
-  [ -r "/proc/$pid/cmdline" ] || return 1
-  cmdline="$(tr '\\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
-  case "$cmdline" in
-    *"$OWN_SERVER_JS"*) return 0 ;;
-  esac
-  return 1
+  process_belongs_to_package "$pid" && return 0
+  process_runs_our_server "$pid"
 }
 
 read_installed_port() {
@@ -694,6 +814,8 @@ ENV_FILE="$VAR_DIR/mmh.env"
 OWN_SERVER_JS="/var/packages/$PACKAGE/target/app/server/server.js"
 DEFAULT_PORT=${adminPort}
 
+${portIdentityShell}
+
 ${portProbeShell}
 
 report_preinst_message() {
@@ -703,17 +825,32 @@ report_preinst_message() {
   printf '%s\\n' "$*" >&2
 }
 
-# A wizard value wins whenever one was submitted, which is what makes the
-# upgrade wizard the supported way to change the port later. Without a wizard
-# value an upgrade/re-install keeps the port that is already persisted.
-target_port="$(printf '%s' "\${wizard_port:-}" | tr -d '[:space:]')"
-port_source="installer selection"
-case "$target_port" in
-  ""|*[!0-9]*)
-    target_port="$(read_installed_port)"
-    port_source="existing installation"
-    ;;
+# The wizard pre-fills the port an upgrade would otherwise keep, so a submitted
+# value only counts as a user selection when it DIFFERS from the port the
+# wizard itself proposed (recorded in mmh-wizard-port). Without that record -
+# a wizard that fell back to the static JSON default, or no wizard at all - an
+# upgrade keeps the port already persisted. Mirrors postinst; see
+# docs/product-todos.md ("精确版 A" = option C).
+wizard_port_value="$(printf '%s' "\${wizard_port:-}" | tr -d '[:space:]')"
+case "$wizard_port_value" in
+  ""|*[!0-9]*) wizard_port_value="" ;;
 esac
+wizard_recorded_port="$(cat "$VAR_DIR/mmh-wizard-port" 2>/dev/null | tr -d '[:space:]')"
+case "$wizard_recorded_port" in
+  ""|*[!0-9]*) wizard_recorded_port="" ;;
+esac
+
+target_port=""
+port_source="installer selection"
+if [ -n "$wizard_port_value" ] && [ -n "$wizard_recorded_port" ] && [ "$wizard_port_value" != "$wizard_recorded_port" ]; then
+  target_port="$wizard_port_value"
+fi
+if [ -z "$target_port" ]; then
+  target_port="$(read_installed_port)"
+  if [ -n "$target_port" ]; then
+    port_source="existing installation"
+  fi
+fi
 case "$target_port" in
   ""|*[!0-9]*)
     target_port="$DEFAULT_PORT"
@@ -769,6 +906,9 @@ PID_FILE="$VAR_DIR/mmh.pid"
 LOG_FILE="$VAR_DIR/mmh.log"
 DSM_LOG_FILE="\${SYNOPKG_TEMP_LOGFILE:-$VAR_DIR/synopkg-start.log}"
 DSM_CONFIG_FILE="$APP_DIR/app/config"
+OWN_SERVER_JS="$SERVER_DIR/server.js"
+
+${portIdentityShell}
 
 read_env_value() {
   key="$1"
@@ -906,6 +1046,11 @@ update_dsm_app_config() {
 update_dsm_wizard_defaults() {
   port="$1"
   wizard_dir="/var/packages/$PACKAGE/WIZARD_UIFILES"
+  # DSM owns this directory as root, while start-stop-status and config run as
+  # the package user, so the rewrite failed with "Permission denied" on every
+  # start (seen in /var/log/packages/mmh.log on 2026-09-29/30). postinst runs as
+  # root and performs the real sync; skip silently when it is not writable.
+  [ -w "$wizard_dir" ] || return 0
   for wizard_file in "$wizard_dir/install_uifile" "$wizard_dir/upgrade_uifile"; do
     [ -f "$wizard_file" ] || continue
     temp_file="$wizard_file.tmp.$$"
@@ -924,10 +1069,8 @@ is_own_mmh_process() {
     ''|*[!0-9]*) return 1 ;;
   esac
   kill -0 "$pid" >/dev/null 2>&1 || return 1
-  [ -r "/proc/$pid/cmdline" ] || return 1
-  [ "$(readlink "/proc/$pid/exe" 2>/dev/null)" = "$NODE_BIN" ] || return 1
-  tr '\\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -F "$SERVER_DIR/server.js" >/dev/null 2>&1 || return 1
-  if [ -r "/proc/$pid/cgroup" ] && grep -E '/docker/|docker-' "/proc/$pid/cgroup" >/dev/null 2>&1; then
+  process_is_containerized "$pid" && return 1
+  if ! process_belongs_to_package "$pid" && ! process_runs_our_server "$pid"; then
     return 1
   fi
   process_owns_port "$pid" "$1"
@@ -1212,6 +1355,9 @@ SERVER_DIR="$APP_DIR/app/server"
 VAR_DIR="\${SYNOPKG_PKGVAR:-/var/packages/$PACKAGE/var}"
 ENV_FILE="$VAR_DIR/mmh.env"
 PID_FILE="$VAR_DIR/mmh.pid"
+OWN_SERVER_JS="$SERVER_DIR/server.js"
+
+${portIdentityShell}
 
 port_is_listening() {
   port_listener_inodes "$1" | grep . >/dev/null 2>&1 && return 0
@@ -1276,10 +1422,8 @@ is_own_mmh_process() {
     ''|*[!0-9]*) return 1 ;;
   esac
   kill -0 "$pid" >/dev/null 2>&1 || return 1
-  [ -r "/proc/$pid/cmdline" ] || return 1
-  [ "$(readlink "/proc/$pid/exe" 2>/dev/null)" = "$APP_DIR/app/bin/node" ] || return 1
-  tr '\\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -F "$SERVER_DIR/server.js" >/dev/null 2>&1 || return 1
-  if [ -r "/proc/$pid/cgroup" ] && grep -E '/docker/|docker-' "/proc/$pid/cgroup" >/dev/null 2>&1; then
+  process_is_containerized "$pid" && return 1
+  if ! process_belongs_to_package "$pid" && ! process_runs_our_server "$pid"; then
     return 1
   fi
   process_owns_port "$pid" "$1"
@@ -1325,6 +1469,26 @@ update_dsm_app_config() {
   done
 }
 
+# postinst is the only lifecycle script that runs as root, so it is the only one
+# that can rewrite DSM's root-owned WIZARD_UIFILES. It called this function
+# without ever defining it, so every install logged
+# "update_dsm_wizard_defaults: command not found" and the wizard kept a stale
+# port default (seen in /var/log/packages/mmh.log on 2026-09-28/29/30).
+update_dsm_wizard_defaults() {
+  port="$1"
+  wizard_dir="/var/packages/$PACKAGE/WIZARD_UIFILES"
+  [ -w "$wizard_dir" ] || return 0
+  for wizard_file in "$wizard_dir/install_uifile" "$wizard_dir/upgrade_uifile"; do
+    [ -f "$wizard_file" ] || continue
+    temp_file="$wizard_file.tmp.$$"
+    if sed '/"key": "wizard_port"/,/"defaultValue":/ s/"defaultValue": "[0-9][0-9]*"/"defaultValue": "'"$port"'"/' "$wizard_file" > "$temp_file" 2>/dev/null; then
+      mv "$temp_file" "$wizard_file" 2>/dev/null || rm -f "$temp_file" 2>/dev/null || true
+    else
+      rm -f "$temp_file" 2>/dev/null || true
+    fi
+  done
+}
+
 restore_upgrade_data() {
   backup_dir="$SYNOPKG_TEMP_UPGRADE_FOLDER/mmh-preserved"
   if [ -z "\${SYNOPKG_TEMP_UPGRADE_FOLDER:-}" ] || [ ! -d "$backup_dir" ]; then
@@ -1356,12 +1520,35 @@ fi
 case "$previous_port" in
   ''|*[!0-9]*) previous_port="" ;;
 esac
-if [ -n "$previous_port" ] && [ "$previous_port" -ge 1 ] && [ "$previous_port" -le 65535 ]; then
+# The wizard pre-fills the port an upgrade would otherwise keep, so a submitted
+# value only counts as a user selection when it DIFFERS from the port the
+# wizard itself proposed (recorded in mmh-wizard-port by the wizard script).
+# Without that record - a wizard that fell back to the static JSON default, or
+# no wizard at all - an upgrade keeps the port already persisted; that guard is
+# what stops a 7777 default from silently moving a live install. Mirrors
+# preinst; see docs/product-todos.md ("精确版 A" = option C).
+wizard_port_value="$(printf '%s' "\${wizard_port:-}" | tr -d '[:space:]')"
+case "$wizard_port_value" in
+  ''|*[!0-9]*) wizard_port_value="" ;;
+esac
+wizard_recorded_port="$(cat "$VAR_DIR/mmh-wizard-port" 2>/dev/null | tr -d '[:space:]')"
+case "$wizard_recorded_port" in
+  ''|*[!0-9]*) wizard_recorded_port="" ;;
+esac
+rm -f "$VAR_DIR/mmh-wizard-port" 2>/dev/null || true
+
+port=""
+port_source=""
+if [ -n "$wizard_port_value" ] && [ -n "$wizard_recorded_port" ] && [ "$wizard_port_value" != "$wizard_recorded_port" ]; then
+  port="$wizard_port_value"
+  port_source="installer selection"
+fi
+if [ -z "$port" ] && [ -n "$previous_port" ] && [ "$previous_port" -ge 1 ] && [ "$previous_port" -le 65535 ]; then
   port="$previous_port"
   port_source="existing installation"
-  echo "MMH requested service port: $port (existing installation)." >&2
-else
-  port="\${wizard_port:-7777}"
+fi
+if [ -z "$port" ]; then
+  port="\${wizard_port_value:-7777}"
   case "$port" in
     ''|*[!0-9]*) echo "MMH service port must be a number between 1 and 65535." >&2; exit 1 ;;
   esac
@@ -1370,8 +1557,8 @@ else
     exit 1
   fi
   port_source="installer selection"
-  echo "MMH requested service port: $port (installer selection)." >&2
 fi
+echo "MMH requested service port: $port ($port_source)." >&2
 if ! ensure_port_available "$port"; then
   requested_port="$port"
   if advanced_port="$(probe_free_port $((port + 1)))"; then
@@ -1423,6 +1610,9 @@ VAR_DIR="\${SYNOPKG_PKGVAR:-/var/packages/$PACKAGE/var}"
 ENV_FILE="$VAR_DIR/mmh.env"
 LOG_FILE="$VAR_DIR/mmh.log"
 PID_FILE="$VAR_DIR/mmh.pid"
+OWN_SERVER_JS="$SERVER_DIR/server.js"
+
+${portIdentityShell}
 
 port_listener_inodes() {
   port="$1"
@@ -1474,10 +1664,8 @@ is_own_mmh_process() {
     ''|*[!0-9]*) return 1 ;;
   esac
   kill -0 "$pid" >/dev/null 2>&1 || return 1
-  [ -r "/proc/$pid/cmdline" ] || return 1
-  [ "$(readlink "/proc/$pid/exe" 2>/dev/null)" = "$APP_DIR/app/bin/node" ] || return 1
-  tr '\\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -F "$SERVER_DIR/server.js" >/dev/null 2>&1 || return 1
-  if [ -r "/proc/$pid/cgroup" ] && grep -E '/docker/|docker-' "/proc/$pid/cgroup" >/dev/null 2>&1; then
+  process_is_containerized "$pid" && return 1
+  if ! process_belongs_to_package "$pid" && ! process_runs_our_server "$pid"; then
     return 1
   fi
   process_owns_port "$pid" "$1"
@@ -1501,6 +1689,11 @@ update_dsm_app_config() {
 update_dsm_wizard_defaults() {
   port="$1"
   wizard_dir="/var/packages/$PACKAGE/WIZARD_UIFILES"
+  # DSM owns this directory as root, while start-stop-status and config run as
+  # the package user, so the rewrite failed with "Permission denied" on every
+  # start (seen in /var/log/packages/mmh.log on 2026-09-29/30). postinst runs as
+  # root and performs the real sync; skip silently when it is not writable.
+  [ -w "$wizard_dir" ] || return 0
   for wizard_file in "$wizard_dir/install_uifile" "$wizard_dir/upgrade_uifile"; do
     [ -f "$wizard_file" ] || continue
     temp_file="$wizard_file.tmp.$$"
@@ -1608,6 +1801,11 @@ update_dsm_app_config() {
 update_dsm_wizard_defaults() {
   port="$1"
   wizard_dir="/var/packages/$PACKAGE/WIZARD_UIFILES"
+  # DSM owns this directory as root, while start-stop-status and config run as
+  # the package user, so the rewrite failed with "Permission denied" on every
+  # start (seen in /var/log/packages/mmh.log on 2026-09-29/30). postinst runs as
+  # root and performs the real sync; skip silently when it is not writable.
+  [ -w "$wizard_dir" ] || return 0
   for wizard_file in "$wizard_dir/install_uifile" "$wizard_dir/upgrade_uifile"; do
     [ -f "$wizard_file" ] || continue
     temp_file="$wizard_file.tmp.$$"

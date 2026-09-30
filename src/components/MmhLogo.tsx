@@ -1,5 +1,6 @@
 import Image from "next/image";
 import type { CSSProperties } from "react";
+import { withBasePath } from "@/lib/base-path";
 
 type MmhLogoProps = {
   className?: string;
@@ -14,13 +15,15 @@ export function MmhLogo({
   showWordmark = false,
   style,
 }: MmhLogoProps) {
+  // next/image does not apply basePath to `src` (Next docs: you must add it
+  // yourself), so the fnOS gateway build needs it prefixed by hand.
   const mark = (
     <Image
       aria-hidden="true"
       className="shrink-0"
       width={size}
       height={size}
-      src="/branding/mmh-logo-pageflip.square.png"
+      src={withBasePath("/branding/mmh-logo-pageflip.square.png")}
       alt=""
       unoptimized
       style={{ objectFit: "contain" }}

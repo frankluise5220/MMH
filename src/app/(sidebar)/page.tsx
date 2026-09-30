@@ -3543,6 +3543,7 @@ export default async function Home({
             <DepositShell
               accountLabel={selectedAccountLabel}
               institutionName={selectedAccount.Institution?.name ?? ""}
+              institutionId={selectedAccount.institutionId ?? null}
               entries={depositEntries}
               lots={depositLots}
               cashAccounts={cashAccountList}
@@ -3554,6 +3555,7 @@ export default async function Home({
               accountId={selectedAccount.id}
               accountLabel={selectedAccountLabel}
               institutionName={selectedAccount.Institution?.name ?? ""}
+              institutionId={selectedAccount.institutionId ?? null}
               holdings={insuranceHoldings}
               entries={insuranceEntries}
               cashAccounts={cashAccountList}
@@ -3607,6 +3609,7 @@ export default async function Home({
               accountId={accountId}
               accountLabel={selectedAccountLabel}
               institutionName={selectedAccount?.Institution?.name ?? ""}
+              institutionId={selectedAccount?.institutionId ?? null}
               lots={investbondData.lots}
               entries={bondShellEntries}
               totalPrincipal={investbondData.totalPrincipal}

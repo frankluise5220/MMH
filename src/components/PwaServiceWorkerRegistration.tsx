@@ -3,6 +3,7 @@
 import { Share2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n";
+import { MMH_BASE_PATH } from "@/lib/base-path";
 
 const INSTALL_HINT_DISMISSED_KEY = "mmh_pwa_install_hint_dismissed";
 
@@ -45,8 +46,12 @@ export function PwaServiceWorkerRegistration() {
     if (!("serviceWorker" in navigator)) return;
 
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("/sw.js", {
-        scope: "/",
+      // On the fnOS gateway build the app lives under /app/mmh, so both the
+      // script URL and its scope have to stay inside that prefix; sw.js derives
+      // its own base from self.registration.scope. Empty on other channels, so
+      // this stays exactly "/sw.js" + scope "/" there.
+      navigator.serviceWorker.register(`${MMH_BASE_PATH}/sw.js`, {
+        scope: `${MMH_BASE_PATH}/`,
         updateViaCache: "none",
       }).catch((error) => {
         console.warn("MMH service worker registration failed:", error);

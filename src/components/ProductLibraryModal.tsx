@@ -49,6 +49,8 @@ type ProductRow = {
   interestCalcBasis?: string | null;
   productType?: string | null;
   accountingType?: string | null;
+  /** 该产品下未软删的真实业务记录数。软删记录不计入。 */
+  recordCount: number;
 };
 
 type InstitutionOption = { id: string; name: string; shortName: string | null; type?: string };
@@ -263,6 +265,7 @@ function normalizeRow(family: ProductLibraryFamily, raw: Record<string, unknown>
       note: str(raw.note),
       productType: str(raw.productType),
       accountingType: str(raw.accountingType),
+      recordCount: Number(raw.recordCount ?? 0) || 0,
     };
   }
   return {
@@ -279,6 +282,7 @@ function normalizeRow(family: ProductLibraryFamily, raw: Record<string, unknown>
     firstPayoutDate: str(raw.firstPayoutDate),
     payoutFrequency: str(raw.payoutFrequency),
     interestCalcBasis: str(raw.interestCalcBasis),
+    recordCount: Number(raw.recordCount ?? 0) || 0,
   };
 }
 
@@ -527,7 +531,7 @@ export function ProductLibraryModal({
 
   return (
     <div className="app-modal-backdrop z-[1300]">
-      <div className="app-modal-panel max-w-4xl h-[min(84vh,760px)]">
+      <div className="app-modal-panel h-[min(760px,84vh)] max-w-4xl min-h-0">
         <div className="modal-header">
           <div className="text-sm font-semibold text-slate-800">{t(config.titleKey)}</div>
           <button type="button" onClick={onClose} className="secondary-button h-8 px-2">
@@ -580,7 +584,7 @@ export function ProductLibraryModal({
                         active ? "bg-cyan-50 ring-1 ring-cyan-200" : "hover:bg-slate-50"
                       }`}
                     >
-                      {/* 单行：产品名占满剩余宽度并截断，机构/利率/期限靠右不换行 */}
+                      {/* 单行：产品名占满剩余宽度并截断，机构/利率/期限/记录数靠右不换行 */}
                       <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-800">{row.name}</span>
                       <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-[11px] text-slate-500">
                         {row.institutionId ? (

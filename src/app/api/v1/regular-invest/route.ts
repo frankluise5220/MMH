@@ -979,14 +979,13 @@ export async function DELETE(req: NextRequest) {
  * When the source is already gone, the only cleanup left is the stale row —
  * so that path needs no confirmation and returns deletedSource:false.
  *
- * 用户可选两种删除方式（2026-09-17 五版）：
+ * 用户可选两种删除方式：
  * - `keepSource=1`「仅删除计划任务，保留业务记录」：只删计划行，不碰真源。
- *   真源仍在时自愈会重建计划行 —— 用户明确接受（"存单还未结束，应该会再次
- *   生成计划任务"）。此路径不做任何检测、不需要确认。
+ *   存款计划按 2026-09-30 用户裁定不会被开机/自动执行自愈补回；只有重新编辑并保存
+ *   存款交易时才重新生成。债券仍按债券自愈口径处理。此路径不做任何检测、不需要确认。
  * - 默认「一并删除」：真源仍在时需 `cascadeSource=1` 确认后级联。
  *
- * 判据只看"真源是否还在"，不看计划自身 status（详见 handleDepositPlanDelete
- * 的说明：status=completed 的计划在真源仍在时会被自愈救回，删掉也会复活）。
+ * 判据只看"真源是否还在"，不看计划自身 status。
  */
 async function handleSystemPlanDelete(
   req: NextRequest,
@@ -1016,15 +1015,13 @@ function resolveDepositLotId(planId: string, task: { depositSourceEntryId?: stri
 /**
  * 存款到期/取息计划删除。
  *
- * 关联判据（2026-09-17 四版定稿）：只看**存单 buy 行是否存在且未软删**，
- * 与计划自身 status、与存单是否已取回都无关。理由（已实测）：
- * 计划行由开机自愈 `ensureDepositPlansForHeldLots` 按"仍持有的存单"重建，
- * 只要存单 buy 行还在，删掉计划行就会被重建（取息计划还会被重新置回
- * active）——所以「有关联」的真正含义是"存单还在"。
+ * 关联判据：只看**存单 buy 行是否存在且未软删**，与计划自身 status 无关。
+ * 2026-09-30 用户裁定：用户手动删除存款计划后，自动执行入口不得再按「仍持有的存单」
+ * 重建；只有新建/编辑存款交易、或续存生成新存单时，业务写入路径才显式同步计划。
+ * 因此 `keepSource=1`「仅删除计划任务」会保持删除状态，不会被开机/自动执行自愈补回。
  *
- * 注意 `status=completed` 不能当作"无关联"：存单取回后
- * `completeDepositPlansForLot` 会把计划置 completed，但只要存单 buy 行还在，
- * 自愈仍会把它救回 active（`depi_` 周期性取息尤其明显）。
+ * 注意 `status=completed` 不能当作"无关联"：它只表示这条计划当前不再执行；
+ * 存单 buy 行仍在时，执行「删除计划及关联存单」仍需走存单级联确认。
  *
  * 两种删除方式（用户 2026-09-18 七版口径）：
  * - `keepSource=1`「仅删除计划任务」：只删计划行，不动任何记录与存单。

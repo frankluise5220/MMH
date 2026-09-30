@@ -37,5 +37,9 @@ run(commandName("npm"), ["run", "build"], {
   DATABASE_URL: "file:./native-build.db",
   PRISMA_SCHEMA_PATH: nativeSchema,
   MMH_DEPLOY_TARGET: "fnos",
+  // The fnOS gateway serves the app at /app/mmh and forwards the prefix
+  // untouched, so the Next build must bake that prefix in (basePath). This is
+  // the only build that sets it; Docker / Synology / Android stay on "/".
+  MMH_BASE_PATH: "/app/mmh",
 });
 run(commandName("npx"), ["prisma", "generate", "--schema", pgSchema], {});

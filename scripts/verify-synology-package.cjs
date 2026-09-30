@@ -257,9 +257,35 @@ function verifySourceFiles() {
   );
   expect(
     /probe_free_port \\\$\(\(port \+ 1\)\)/.test(packageScript) &&
-      /已被占用/.test(packageScript) &&
-      /已预填下一个可用端口/.test(packageScript),
-    "Synology wizard must name the conflicting owner and pre-fill the next free port instead of silently accepting an occupied one.",
+      /被占用/.test(packageScript) &&
+      /已预填/.test(packageScript),
+    "Synology wizard must name a foreign conflicting owner and pre-fill the next free port instead of silently accepting an occupied one.",
+  );
+  expect(
+    /own_only/.test(packageScript) &&
+      /is_own_mmh_listener/.test(packageScript) &&
+      /由 MMH 自身占用/.test(packageScript) &&
+      /port_listener_pids "\$port"/.test(packageScript),
+    "Synology wizard must keep the persisted port when every listener belongs to this package (the previous MMH is still running while DSM renders the upgrade wizard) and only advance for a foreign owner.",
+  );
+  // DSM renders the wizard field description as a full-width block under the
+  // step title. It wraps, but the dialog height is fixed, so an over-long text
+  // gets truncated mid-sentence. The previous message was 87 characters
+  // ("端口 7779 已被占用（pid=32095 (next-server (v1），已预填下一个可用端口
+  // 7780。更新会沿用当前端口；如需更换端口，在此填写新端口即可。" plus a warning
+  // emoji) and was cut off on the second line on DSM 7.2.
+  const wizardTexts = [
+    ...(packageScript.match(/desc="[^"]*"/g) || []).map((entry) => entry.slice(6, -1)),
+    ...(packageScript.match(/const (?:install|upgrade)Wizard(?:Suffix|OwnDesc) = "[^"]*"/g) || [])
+      .map((entry) => entry.replace(/^const \w+ = "/, "").replace(/"$/, "")),
+  ].filter((entry) => !entry.startsWith("$("));
+  const longestWizardText = wizardTexts.reduce(
+    (max, entry) => Math.max(max, entry.replace(/\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*/g, "").length),
+    0,
+  );
+  expect(
+    wizardTexts.length >= 6 && longestWizardText <= 30 && !/⚠️/.test(packageScript),
+    `Synology wizard descriptions must stay within the DSM wizard's fixed-height description block (longest fixed text: ${longestWizardText} chars, budget 30); a longer message is truncated mid-sentence.`,
   );
   expect(/WIZARD_UIFILES.*install_uifile/.test(packageScript) && /WIZARD_UIFILES.*uninstall_uifile/.test(packageScript), "Synology install and uninstall wizards must use the DSM WIZARD_UIFILES paths.");
   expect(/JSON\.stringify\(\[\{\s*step_title:/.test(packageScript), "Synology wizard definitions must use DSM's top-level step array format.");
@@ -268,7 +294,7 @@ function verifySourceFiles() {
   expect(/wizard_delete_data:-false/.test(packageScript) && /MMH database and settings retained/.test(packageScript), "Synology uninstall must preserve data unless deletion is explicitly selected.");
   expect(/for entry in "\$VAR_DIR"\/\* "\$VAR_DIR"\/\.\[!\.\]\* "\$VAR_DIR"\/\.\.\?\*/.test(packageScript), "Synology uninstall must clear only the MMH package data directory contents when requested.");
   expect(
-    /wizard_port:-7777/.test(packageScript) &&
+    /wizard_port_value:-7777/.test(packageScript) &&
       /ensure_port_available/.test(packageScript) &&
       /Choose a different.*port/.test(packageScript) &&
       /port_listener_inodes/.test(packageScript) &&
@@ -306,6 +332,20 @@ function verifySourceFiles() {
     "Synology install-time port checks must treat Docker-hosted MMH, other packages and unrelated services as foreign owners.",
   );
   expect(
+    /const portIdentityShell = /.test(packageScript) &&
+      /process_belongs_to_package\(\)/.test(packageScript) &&
+      /pkgctl-\$PACKAGE/.test(packageScript) &&
+      /process_runs_our_server\(\)/.test(packageScript) &&
+      /@appstore\/\$PACKAGE\/app\/bin\/node/.test(packageScript) &&
+      /process_belongs_to_package "\$pid" && return 0/.test(packageScript),
+    "Synology own-process detection must go through the package cgroup (with the resolved @appstore node path as fallback): Next.js rewrites argv[0] to \"next-server (vX)\" and /var/packages/<pkg>/target is a symlink, so matching cmdline/exe against the unresolved target path never recognises our own listener.",
+  );
+  expect(
+    !/readlink "\/proc\/\$pid\/exe" 2>\/dev\/null\)" = "\$NODE_BIN"/.test(packageScript) &&
+      !/readlink "\/proc\/\$pid\/exe" 2>\/dev\/null\)" = "\$APP_DIR\/app\/bin\/node"/.test(packageScript),
+    "Synology lifecycle scripts must not compare /proc/<pid>/exe against the unresolved $APP_DIR node path: /var/packages/<pkg>/target is a symlink to /volumeX/@appstore/<pkg>.",
+  );
+  expect(
     /installation continues and will switch to the next free port/.test(packageScript) &&
       !/MMH install cannot continue/.test(packageScript) &&
       /probe_free_port/.test(packageScript) &&
@@ -322,7 +362,13 @@ function verifySourceFiles() {
   );
   expect(/chown mmh:mmh "\$ENV_FILE" 2>\/dev\/null \|\| true/.test(packageScript), "Synology postinst must not fail when the package user cannot change file ownership.");
   expect(/chown mmh:mmh "\$VAR_DIR\/mmh\.env" 2>\/dev\/null \|\| true/.test(packageScript), "Synology upgrade scripts must not fail when the package user cannot change file ownership.");
-  expect(/else\n  port="\\\$\{wizard_port:-7777\}"/.test(packageScript), "Synology postinst must initialize the port from the install wizard on first install.");
+  expect(
+    /mmh-wizard-port/.test(packageScript) &&
+      /wizard_port_value" != "\$wizard_recorded_port/.test(packageScript) &&
+      /port_source="installer selection"/.test(packageScript),
+    "Synology postinst must honour the wizard port only when the user changed the wizard's own default; the wizard records that default in mmh-wizard-port so an untouched upgrade never leaves the port it is on.",
+  );
+  expect(/if \[ -z "\$port" \]; then\n  port="\\\$\{wizard_port_value:-7777\}"/.test(packageScript), "Synology postinst must initialize the port from the install wizard on first install.");
   expect(/update_dsm_app_config/.test(packageScript) && /app\/config/.test(packageScript), "Synology lifecycle scripts must update the DSM app entry configuration.");
   expect(/安装向导/.test(manual) && /服务端口/.test(manual), "Synology install documentation must explain the install-time service port.");
   expect(/const dsmMinVersion = "7\.0-40000"/.test(packageScript), "Synology INFO must keep the DSM compatibility floor at 7.0-40000.");
@@ -388,7 +434,7 @@ function verifyStagedSource() {
       expect(icon.width === size && icon.height === size, `Staged package/${dsmUiDir}/images/mmh-${size}.png must be ${size}x${size}.`);
     }
   }
-  expect(/wizard_port:-7777/.test(postinst) && /ensure_port_available/.test(postinst) && /Choose a different.*port/.test(postinst) && /process_owns_port/.test(postinst), "Staged postinst must identify the owning process before reusing an occupied service port.");
+  expect(/wizard_port_value:-7777/.test(postinst) && /ensure_port_available/.test(postinst) && /Choose a different.*port/.test(postinst) && /process_owns_port/.test(postinst), "Staged postinst must identify the owning process before reusing an occupied service port.");
   expect(
     /is_own_mmh_listener/.test(preinst) &&
       /port_is_listening/.test(preinst) &&
@@ -401,21 +447,68 @@ function verifyStagedSource() {
     /probe_free_port/.test(postinst) && /auto-advanced/.test(postinst),
     "Staged postinst must advance to the next free port when the requested port is owned by another program.",
   );
+  expect(
+    /^update_dsm_wizard_defaults\(\) \{/m.test(postinst) && /update_dsm_wizard_defaults "\$port"/.test(postinst),
+    "Staged postinst must define update_dsm_wizard_defaults before calling it; DSM logged 'update_dsm_wizard_defaults: command not found' on every install because only start-stop-status and config defined it.",
+  );
   for (const [name, script] of [["install_uifile.sh", installWizardScript], ["upgrade_uifile.sh", upgradeWizardScript]]) {
     expect(
       /^#!\/bin\/sh/m.test(script) && /SYNOPKG_TEMP_LOGFILE/.test(script) && /exit 0\s*$/.test(script.trimEnd()),
       `Staged WIZARD_UIFILES/${name} must write the wizard JSON to SYNOPKG_TEMP_LOGFILE and always exit 0.`,
     );
     expect(
-      /\[ -n "\$OUT" \] \|\| exit 0/.test(script) && /已被占用/.test(script) && /已预填下一个可用端口/.test(script),
-      `Staged WIZARD_UIFILES/${name} must report an occupied port and pre-fill the next free one.`,
+      /\[ -n "\$OUT" \] \|\| exit 0/.test(script) && /被占用/.test(script) && /已预填/.test(script),
+      `Staged WIZARD_UIFILES/${name} must report a foreign occupied port and pre-fill the next free one.`,
+    );
+    expect(
+      /own_only=1/.test(script) && /is_own_mmh_listener "\$pid"/.test(script) && /由 MMH 自身占用/.test(script) && !/undefined/.test(script),
+      `Staged WIZARD_UIFILES/${name} must keep the port when every listener is this package's own running instance, so an upgrade never walks off the port the user is on.`,
+    );
+    expect(
+      /process_belongs_to_package/.test(script) && /pkgctl-\$PACKAGE/.test(script),
+      `Staged WIZARD_UIFILES/${name} must detect the package's own process through its DSM cgroup.`,
     );
     expect(
       /printf '%s' '\[\\?\{\\?"step_title"/.test(script) || /printf '%s' '\$\{wizardJsonHead\}'/.test(script),
       `Staged WIZARD_UIFILES/${name} must build the wizard JSON from the validated fragment.`,
     );
+    expect(
+      /mmh-wizard-port/.test(script) && /printf '%s\\n' "\$port" > "\$WIZARD_PORT_RECORD"/.test(script),
+      `Staged WIZARD_UIFILES/${name} must record the port it pre-filled, so postinst can tell a user edit from the default it proposed.`,
+    );
+    const longestDesc = (script.match(/desc="[^"]*"/g) || [])
+      .map((entry) => entry.slice(6, -1))
+      .filter((entry) => !entry.startsWith("$("))
+      .reduce((max, entry) => Math.max(max, entry.replace(/\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*/g, "").length), 0);
+    expect(
+      longestDesc > 0 && longestDesc <= 30 && !/⚠️/.test(script),
+      `Staged WIZARD_UIFILES/${name} description must fit the DSM wizard field (longest fixed text: ${longestDesc} chars, budget 30); 88 characters overflowed the window on DSM 7.2.`,
+    );
   }
+  for (const [name, wizard] of [["install_uifile", installWizard], ["upgrade_uifile", upgradeWizard]]) {
+    const stagedDesc = wizard[0]?.items?.[0]?.subitems?.[0]?.desc ?? "";
+    expect(
+      stagedDesc.length > 0 && stagedDesc.length <= 30,
+      `Staged WIZARD_UIFILES/${name} static description must stay within the wizard field (${stagedDesc.length} chars, budget 30).`,
+    );
+  }
+  expect(
+    /process_belongs_to_package/.test(postinst) && /process_belongs_to_package/.test(startScript) && /process_belongs_to_package/.test(preinst),
+    "Staged lifecycle scripts must all share the cgroup-based own-process detection.",
+  );
+  expect(
+    /\[ -w "\$wizard_dir" \] \|\| return 0/.test(startScript),
+    "Staged start-stop-status must skip the WIZARD_UIFILES rewrite when DSM's root-owned directory is not writable; running as the package user logged 'Permission denied' on every start.",
+  );
   expect(/previous_port=/.test(postinst) && /port_source="existing installation"/.test(postinst), "Staged postinst must preserve an existing port during upgrade.");
+  expect(
+    /mmh-wizard-port/.test(postinst) &&
+      /mmh-wizard-port/.test(preinst) &&
+      /mmh-wizard-port/.test(upgradeWizardScript) &&
+      /wizard_port_value" != "\$wizard_recorded_port/.test(postinst) &&
+      /wizard_port_value" != "\$wizard_recorded_port/.test(preinst),
+    "Staged lifecycle scripts must share the wizard-default record: the wizard writes mmh-wizard-port and preinst/postinst honour a wizard value only when the user changed it.",
+  );
   expect(/ensure_port_available/.test(startScript) && /Port .* is occupied/.test(startScript) && /Choose a different.*port/.test(startScript) && /process_owns_port/.test(startScript), "Staged start-stop-status must identify the owning process before reusing an occupied service port.");
   expect(/MMH_DEPLOY_TARGET=synology/.test(startScript), "Staged start-stop-status must mark runtime deployment as synology.");
   expect(
@@ -492,12 +585,23 @@ function verifyBuiltSpk() {
     expect(Array.isArray(builtUpgradeWizard) && builtUpgradeWizard[0]?.items?.[0]?.subitems?.[0]?.key === "wizard_port", "Built DSM upgrade wizard must expose the service port field.");
     const installWizardScriptExtract = run("tar", ["-xf", spkPath, "-O", "WIZARD_UIFILES/install_uifile.sh"]);
     expect(installWizardScriptExtract.status === 0, "Unable to read the dynamic install wizard from built SPK.");
+    const builtInstallWizardScript = installWizardScriptExtract.stdout || "";
     expect(
-      /SYNOPKG_TEMP_LOGFILE/.test(installWizardScriptExtract.stdout || "") &&
-        /已被占用/.test(installWizardScriptExtract.stdout || "") &&
-        /已预填下一个可用端口/.test(installWizardScriptExtract.stdout || "") &&
-        /exit 0\s*$/.test((installWizardScriptExtract.stdout || "").trimEnd()),
-      "Built dynamic install wizard must probe the port, report an occupied one, and always exit 0.",
+      /SYNOPKG_TEMP_LOGFILE/.test(builtInstallWizardScript) &&
+        /被占用/.test(builtInstallWizardScript) &&
+        /已预填/.test(builtInstallWizardScript) &&
+        /own_only=1/.test(builtInstallWizardScript) &&
+        /由 MMH 自身占用/.test(builtInstallWizardScript) &&
+        /pkgctl-\$PACKAGE/.test(builtInstallWizardScript) &&
+        /exit 0\s*$/.test(builtInstallWizardScript.trimEnd()),
+      "Built dynamic install wizard must probe the port, keep our own package's port, report a foreign owner, and always exit 0.",
+    );
+    const upgradeWizardScriptExtract = run("tar", ["-xf", spkPath, "-O", "WIZARD_UIFILES/upgrade_uifile.sh"]);
+    expect(upgradeWizardScriptExtract.status === 0, "Unable to read the dynamic upgrade wizard from built SPK.");
+    expect(
+      /own_only=1/.test(upgradeWizardScriptExtract.stdout || "") &&
+        /pkgctl-\$PACKAGE/.test(upgradeWizardScriptExtract.stdout || ""),
+      "Built dynamic upgrade wizard must keep the persisted port when the listener is this package's own running instance.",
     );
     const uninstallWizardExtract = run("tar", ["-xf", spkPath, "-O", "WIZARD_UIFILES/uninstall_uifile"]);
     expect(uninstallWizardExtract.status === 0, "Unable to read the uninstall wizard from built SPK.");

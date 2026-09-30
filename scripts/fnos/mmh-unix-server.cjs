@@ -43,6 +43,16 @@ const appDest = process.env.TRIM_APPDEST || "";
 const gatewaySocketPath = process.env.MMH_GATEWAY_SOCKET_PATH ||
   (appDest ? path.join(appDest, "app.sock") : "");
 
+// The fnOS build bakes Next's basePath to /app/mmh (see scripts/build-fnos-app.cjs)
+// because the gateway forwards /app/mmh/** with the prefix intact. The gateway
+// socket therefore receives prefixed URLs already. The local TCP compatibility
+// port does NOT: Android / LAN clients hit "/", "/login", "/api/**" with no
+// prefix, which would 404 against a basePath'd app. So the TCP listener injects
+// the prefix before handing the request to Next -- the mirror of what the
+// gateway does. Empty outside the fnOS package (Docker / Synology / Android
+// launch server.js directly and never reach this file).
+const basePath = (process.env.MMH_BASE_PATH || "").replace(/\/+$/, "");
+
 // `next build` writes next.config into two places: inlined as a literal inside
 // .next/standalone/server.js, and as `.config` in
 // .next/standalone/.next/required-server-files.json. server.js assigns the
@@ -190,8 +200,18 @@ async function main() {
   // sharing one Next request handler. v0.1.67 reused a single server and the
   // local TCP port therefore never opened at all (visible in the fnOS app log
   // as "Local compatibility port 7777 is unavailable").
-  const createHttpServer = () => {
+  const createHttpServer = (injectBasePath) => {
     const server = http.createServer((req, res) => {
+      // The local TCP compatibility port serves clients that do not know about
+      // the gateway prefix, so prepend it here (see `basePath` note above). The
+      // gateway Unix socket must NOT do this: fnOS already forwards the prefix.
+      if (injectBasePath && basePath && req.url) {
+        if (req.url === "/") {
+          req.url = `${basePath}/`;
+        } else if (req.url.startsWith("/") && !req.url.startsWith(`${basePath}/`)) {
+          req.url = `${basePath}${req.url}`;
+        }
+      }
       Promise.resolve(handlers.requestHandler(req, res)).catch((error) => {
         log("Request handler failed", error);
         if (!res.headersSent) {
@@ -216,14 +236,14 @@ async function main() {
   await clearStaleGatewaySocket(gatewaySocketPath);
 
   const servers = [];
-  const gatewayServer = createHttpServer();
+  const gatewayServer = createHttpServer(false);
   servers.push(gatewayServer);
   await listen(gatewayServer, { path: gatewaySocketPath }, `socket ${gatewaySocketPath}`);
 
   const localTcpPort = Number.parseInt(process.env.MMH_LOCAL_TCP_PORT || "0", 10);
   const localTcpHost = process.env.MMH_LOCAL_TCP_HOST || "0.0.0.0";
   if (Number.isInteger(localTcpPort) && localTcpPort > 0) {
-    const localServer = createHttpServer();
+    const localServer = createHttpServer(true);
     try {
       await listen(localServer, { port: localTcpPort, host: localTcpHost }, `tcp ${localTcpHost}:${localTcpPort}`);
       servers.push(localServer);

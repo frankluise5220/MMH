@@ -24,8 +24,19 @@ const allowedDevOrigins = [
     .filter(Boolean),
 ];
 
+// fnOS unified gateway: the gateway forwards /app/mmh/** to the app WITH the
+// prefix intact, so the app has to serve its own routes under it. Only the fnOS
+// package build sets MMH_BASE_PATH (see scripts/build-fnos-app.cjs); Docker,
+// Synology and Android builds leave it empty and stay on the origin root.
+// basePath is inlined at build time, so this cannot be changed at runtime.
+const basePath = (process.env.MMH_BASE_PATH || "").trim().replace(/\/+$/, "");
+
 const nextConfig: NextConfig = {
   output: "standalone",
+  ...(basePath ? { basePath } : {}),
+  // Re-exported for the hand-written URLs Next cannot rewrite (fetch,
+  // window.location, raw asset src, metadata.icons, PWA manifest body).
+  env: { NEXT_PUBLIC_MMH_BASE_PATH: basePath },
   experimental: {
     proxyClientMaxBodySize: RESTORE_UPLOAD_LIMIT_CONFIG,
   },
