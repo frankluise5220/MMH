@@ -208,14 +208,8 @@ async function main() {
       if (injectBasePath && basePath && req.url) {
         if (req.url === "/") {
           req.url = `${basePath}/`;
-        } else if (
-          req.url === basePath ||
-          (req.url.startsWith("/") && !req.url.startsWith(`${basePath}/`))
-        ) {
-          // Guard the bare-basePath edge case: "/app/mmh" (no trailing slash)
-          // must not become "/app/mmh/app/mmh". Next's own basePath handling
-          // then redirects it to the canonical "/app/mmh/login".
-          req.url = req.url === basePath ? `${basePath}/` : `${basePath}${req.url}`;
+        } else if (req.url.startsWith("/") && !req.url.startsWith(`${basePath}/`)) {
+          req.url = `${basePath}${req.url}`;
         }
       }
       Promise.resolve(handlers.requestHandler(req, res)).catch((error) => {
