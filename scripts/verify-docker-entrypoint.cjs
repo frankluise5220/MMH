@@ -76,6 +76,10 @@ for (const [name, compose] of [
       /start_period:\s*90s/.test(compose),
     `${name} must define an app healthcheck against /api/health with a startup grace period.`,
   );
+  expect(
+    /\$\{MMH_HOST_PORT:-7777\}:7777/.test(compose),
+    `${name} must expose a configurable host port while keeping the container port fixed at 7777.`,
+  );
 }
 for (const [name, compose] of [
   ["repo docker-compose.yml", rootCompose],
@@ -85,6 +89,12 @@ for (const [name, compose] of [
 }
 expect(/COMPOSE_PROJECT_NAME="mmh"/.test(nasEnvExample), "NAS env.example must pin COMPOSE_PROJECT_NAME to mmh.");
 expect(/MMH_COMPOSE_PROJECT="mmh"/.test(nasEnvExample), "NAS env.example must pin MMH_COMPOSE_PROJECT to mmh.");
+expect(/MMH_HOST_PORT="7777"/.test(nasEnvExample), "NAS env.example must expose the configurable host port.");
+expect(
+  /if \[ ! -f \$\{quotedWorkdir\}\/docker-compose\.yml \]; then cp/.test(updaterServer) &&
+    /保留用户 docker-compose\.yml/.test(updaterServer),
+  "The updater must preserve an existing user docker-compose.yml instead of overwriting host ports and local registry settings.",
+);
 expect(/MMH_APP_MEMORY_LIMIT="1536m"/.test(nasEnvExample), "NAS env.example must expose the Docker app memory limit.");
 expect(/MMH_NODE_MAX_OLD_SPACE_MB="auto"/.test(nasEnvExample), "NAS env.example must expose the auto Node old-space limit.");
 expect(/PG_POOL_MAX="4"/.test(nasEnvExample), "NAS env.example must expose the PostgreSQL pool size.");

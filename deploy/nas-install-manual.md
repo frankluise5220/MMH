@@ -162,7 +162,48 @@ POSTGRES_PASSWORD="REPLACE_WITH_YOUR_OWN_LONG_RANDOM_PASSWORD"
 
 密码建议使用 24 位以上的字母和数字。图形界面安装使用静态 `.env` 文件，Docker 不会自动生成这个密码。
 
-6. 如果你的 `docker-compose.yml` 里 `MMH_UPDATE_TOKEN` 是 `${MMH_UPDATE_TOKEN:-...}` 形式（新版部署文件），在同一份 `.env` 里设置网页更新令牌；如果该行写的是 `${POSTGRES_PASSWORD:-...}`（旧版派生），跳过这一步：
+> 文件权限：`postgres-entrypoint.sh` 必须至少对 Docker 守护进程可读，建议设为 `755`；`docker-compose.yml` 和 `.env` 至少设为 `644`。如果 NAS 文件管理器下载后显示权限为 `000` 或容器日志出现 `init.sh: Permission denied`，先在 NAS 终端执行：
+>
+> ```bash
+> cd /你的实际部署目录
+> chmod 755 postgres-entrypoint.sh
+> chmod 644 docker-compose.yml .env
+> ```
+>
+> 这一步不会删除或修改数据库卷。
+
+6. 如果 NAS 宿主机的 `7777` 已被其他服务占用，修改 `.env` 中的宿主机端口；容器内部端口始终保持 `7777`：
+>
+> ```env
+> MMH_HOST_PORT="7780"
+> ```
+>
+> 对应的端口映射是 `7780:7777`，浏览器访问 `http://NAS_IP:7780/`。Docker 图形界面中如果分别填写“主机端口”和“容器端口”，应填写 `7780` 和 `7777`，不要把容器端口改成 `7780`。发生端口冲突或修改 `MMH_HOST_PORT` 后，必须重新部署整个 Compose 项目；单纯重启旧容器不会更新端口绑定。命令行执行：
+>
+> ```bash
+> docker compose -p mmh up -d --force-recreate
+> ```
+>
+> 如果你的网络不能稳定访问默认的 Docker Proxy 或 Docker Hub，必须同时为 MMH 应用、更新器和 PostgreSQL 选择可用镜像源。比如 5.212 的实测配置是：
+>
+> ```env
+> MMH_IMAGE_SOURCE="nju"
+> MMH_APP_IMAGE="ghcr.nju.edu.cn/frankluise5220/mmh:latest"
+> MMH_UPDATER_IMAGE="ghcr.nju.edu.cn/frankluise5220/mmh-updater:latest"
+> POSTGRES_IMAGE="docker.m.daocloud.io/library/postgres:15-alpine"
+> ```
+>
+> 不要只替换 `MMH_APP_IMAGE` 和 `MMH_UPDATER_IMAGE`，否则 `postgres:15-alpine` 仍会从 Docker Hub 拉取。先在 NAS 终端验证三个镜像：
+>
+> ```bash
+> docker manifest inspect ghcr.nju.edu.cn/frankluise5220/mmh:latest
+> docker manifest inspect ghcr.nju.edu.cn/frankluise5220/mmh-updater:latest
+> docker manifest inspect docker.m.daocloud.io/library/postgres:15-alpine
+> ```
+>
+> 其中第三方镜像站的 manifest 能读取，不代表所有 blob 下载都稳定；如果拉取时出现 IPv6 连接重置，改用 NAS 的 IPv4 DNS/网络，或使用局域网内的 registry 镜像，不要删除 `pgdata` 后反复重试。
+
+7. 如果你的 `docker-compose.yml` 里 `MMH_UPDATE_TOKEN` 是 `${MMH_UPDATE_TOKEN:-...}` 形式（新版部署文件），在同一份 `.env` 里设置网页更新令牌；如果该行写的是 `${POSTGRES_PASSWORD:-...}`（旧版派生），跳过这一步：
 
 ```env
 MMH_UPDATE_TOKEN="REPLACE_WITH_YOUR_OWN_LONG_RANDOM_TOKEN"
@@ -180,13 +221,21 @@ PG_POOL_MAX="4"
 
 这些值会把 `mmh-app` 容器限制在约 1.5GB 内，并让 Node 的 V8 old-space 按容器/宿主可用内存自动分档；默认 1.5GB app 容器下通常会得到 768MB old-space。应用到 PostgreSQL 的连接池默认降到 4，给数据库和系统缓存保留余量。这个限制的目的不是让正常请求触顶退出，而是把异常增长限制在应用容器内，避免拖慢数据库和整台 NAS。Docker 版还会通过 `/api/health` 做应用健康检查并返回宿主内存、运行限制和内存压力，但健康接口只在数据库探测失败时返回 503，避免单纯因为内存接近阈值造成重启风暴。2GB 内存设备如需更保守可下调 `MMH_APP_MEMORY_LIMIT`；4GB 及以上设备如有大文件导入或 AI 识别任务，可以按需调大 `MMH_APP_MEMORY_LIMIT`，或把 `MMH_NODE_MAX_OLD_SPACE_MB` 从 `auto` 改成明确数字。
 
-7. 在 NAS 的 Docker 图形界面里创建项目：
+8. 在 NAS 的 Docker 图形界面里创建项目：
    - 项目名称填写 `mmh`。
    - 项目目录选择刚才放部署文件的目录。
    - Compose 文件选择 `docker-compose.yml`。
    - 点击部署、创建或启动。
 
-首次启动需要拉取镜像，等待时间取决于 NAS 网络和镜像下载速度。
+首次启动需要拉取镜像，等待时间取决于 NAS 网络和镜像下载速度。应用镜像还必须包含 Prisma schema engine；如果容器日志停在 `ensured ... unique index`、数据库只有 `_mmh_schema_meta`，并且日志或诊断显示正在访问 `binaries.prisma.sh`，说明使用的是旧镜像。请先拉取包含离线 schema engine 修复的新版镜像，再继续启动：
+
+```bash
+cd /你的实际部署目录
+docker compose -p mmh pull app updater
+docker compose -p mmh up -d app updater
+```
+
+图形界面部署时，NAS 宿主机端口和容器内部端口是两层配置。推荐只修改 `.env` 的 `MMH_HOST_PORT`，不要直接修改容器内的 `PORT`；例如 `MMH_HOST_PORT="7780"` 会生成 `7780:7777`，浏览器访问 `http://NAS_IP:7780/`。容器内部始终监听 `7777`。
 
 ### 2. 更新
 
@@ -196,11 +245,11 @@ PG_POOL_MAX="4"
 系统设置 -> 系统更新 -> 刷新远端版本 -> 更新
 ```
 
-网页更新会自动拉取新的应用镜像并重启服务。更新成功后，更新器只会删除自己记录过的旧 MMH 应用/更新器镜像，不会清理宿主机上其它项目的镜像。正常更新不需要重新安装，也不需要在 NAS 上重新构建源码。
+网页更新会自动拉取新的应用镜像并重启服务。更新成功后，更新器只会删除自己记录过的旧 MMH 应用/更新器镜像，不会清理宿主机上其它项目的镜像。正常更新不需要重新安装，也不需要在 NAS 上重新构建源码。更新器会保留部署目录中已有的 `docker-compose.yml`，不会覆盖用户设置的 `MMH_HOST_PORT`、端口映射、PostgreSQL 镜像源或其他本地配置；只有首次部署目录没有 Compose 文件时才会写入内置模板。
 
-如果使用 NAS 的 Docker 图形界面更新，只需要更新 MMH 的应用镜像，然后重启 `mmh-app` 和 `mmh-updater`。数据库容器 `mmh-db` 不需要删除，也不要选择“源码重新构建”。
+如果使用 NAS 的 Docker 图形界面更新，只需要更新 MMH 的应用镜像，然后重新部署整个 Compose 项目。数据库容器 `mmh-db` 不需要删除，也不要选择“源码重新构建”。如果改过 `MMH_HOST_PORT` 或发生端口冲突，必须重新部署项目，不能只点旧容器的“重启”。
 
-> Docker 安装不需要、也不要用 `git pull` 更新：宿主机部署目录里只有 `docker-compose.yml`、`.env` 等部署文件，不是源码仓库，执行 `git pull` 会直接报错。Docker 更新只有两件事——拉取新镜像、重启 `mmh-app` 和 `mmh-updater`。
+> Docker 安装不需要、也不要用 `git pull` 更新：宿主机部署目录里只有 `docker-compose.yml`、`.env` 等部署文件，不是源码仓库，执行 `git pull` 会直接报错。普通镜像更新可以拉取镜像后重新部署项目；如果修改了 `MMH_HOST_PORT` 或发生端口冲突，必须使用 `--force-recreate` 重新部署整个 Compose 项目。
 
 ### 3. 使用
 
@@ -262,7 +311,7 @@ echo "网页更新令牌: $MMH_UPDATE_TOKEN"
 sudo docker compose -p mmh up -d
 
 echo "MMH 安装完成"
-echo "访问地址: http://NAS_IP:7777/"
+echo "访问地址: http://NAS_IP:${MMH_HOST_PORT:-7777}/"
 echo "数据库密码: $POSTGRES_PASSWORD"
 echo "配置文件: ~/mmh/.env"
 ```
@@ -277,7 +326,7 @@ echo "配置文件: ~/mmh/.env"
 系统设置 -> 系统更新 -> 刷新远端版本 -> 更新
 ```
 
-也可以在 NAS 的 Docker 图形界面里更新 MMH 的应用镜像，然后重启 `mmh-app` 和 `mmh-updater`。数据库容器 `mmh-db` 不需要删除。
+也可以在 NAS 的 Docker 图形界面里更新 MMH 的应用镜像，然后重新部署整个 Compose 项目。数据库容器 `mmh-db` 不需要删除。
 
 只有在网页打不开、图形界面不方便操作或更新异常中断时，才进入安装目录执行终端更新：
 
@@ -287,7 +336,13 @@ sudo docker compose -p mmh pull app updater
 sudo docker compose -p mmh up -d app updater
 ```
 
-这个过程只更新应用和更新器，不会删除数据库。
+如果修改过 `MMH_HOST_PORT`，或遇到端口冲突，必须重新部署整个项目：
+
+```bash
+sudo docker compose -p mmh up -d --force-recreate
+```
+
+这个过程不会删除数据库卷。
 
 ### 3. 使用
 

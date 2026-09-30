@@ -36,6 +36,7 @@ RUN npm config set fetch-retries 5 \
 COPY prisma ./prisma/
 COPY next.config.ts tsconfig.json ./
 RUN npx prisma generate \
+  && npx prisma db push --help >/dev/null \
   && test -x node_modules/@prisma/engines/schema-engine-debian-openssl-3.0.x
 
 # 源码最后 copy（变更最频繁）
@@ -93,6 +94,9 @@ COPY --chown=node:node --from=build /app/public ./public
 COPY --chown=node:node --from=build /app/prisma ./prisma
 COPY --chown=node:node --from=build /app/prisma.config.ts ./prisma.config.ts
 COPY --chown=node:node --from=prisma-deps /opt/prisma-runtime/node_modules ./node_modules
+# The runtime runs `prisma db push` during startup. Keep the schema engine in
+# the image so offline/restricted NAS hosts do not need binaries.prisma.sh.
+COPY --chown=node:node --from=build /app/node_modules/@prisma/engines/schema-engine-debian-openssl-3.0.x ./node_modules/@prisma/engines/schema-engine-debian-openssl-3.0.x
 COPY scripts/docker-entrypoint.sh ./docker-entrypoint.sh
 RUN chmod +x ./docker-entrypoint.sh \
   && mkdir -p /app/data \

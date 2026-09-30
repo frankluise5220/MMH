@@ -29,7 +29,8 @@ services:
     restart: unless-stopped
     mem_limit: ${MMH_APP_MEMORY_LIMIT:-1536m}
     ports:
-      - "7777:7777"
+      # Host port is user-configurable; the app always listens on 7777 inside the container.
+      - "${MMH_HOST_PORT:-7777}:7777"
     env_file:
       - .env
     environment:

@@ -186,10 +186,12 @@ function composeCommand(args) {
 function syncDeployFilesCommand() {
   return [
     `if [ -f /updater/deploy/docker-compose.yml ]; then`,
-    `cp /updater/deploy/docker-compose.yml ${quotedWorkdir}/docker-compose.yml;`,
+    // Never overwrite a user's Compose file: it contains host ports, local
+    // registry choices and other deployment-specific settings. A fresh install
+    // gets the bundled template; later updates keep the user's file intact.
+    `if [ ! -f ${quotedWorkdir}/docker-compose.yml ]; then cp /updater/deploy/docker-compose.yml ${quotedWorkdir}/docker-compose.yml; echo "已初始化部署文件模板"; else echo "保留用户 docker-compose.yml，不覆盖端口和本地配置"; fi;`,
     `cp /updater/deploy/postgres-entrypoint.sh ${quotedWorkdir}/postgres-entrypoint.sh;`,
     `chmod +x ${quotedWorkdir}/postgres-entrypoint.sh;`,
-    `echo "已从更新器镜像同步部署文件";`,
     `elif [ -d ${quotedWorkdir}/.git ]; then`,
     `git config --global --add safe.directory ${quotedWorkdir} >/dev/null 2>&1 || true;`,
     `git -C ${quotedWorkdir} pull --ff-only;`,
