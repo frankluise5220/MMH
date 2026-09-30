@@ -257,3 +257,6 @@ backup-stray-wiseme-*.patch
 # python bytecode (deploy/admin helper app)
 __pycache__/
 *.pyc
+
+# quarantined local scratch files moved out of the repo root — never committed
+/.old/
