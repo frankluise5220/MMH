@@ -536,7 +536,9 @@ expect(/npm run build:fnos/.test(fnosReleaseWorkflow), "fnOS workflow should bui
 expect(!/existing-fpk/.test(fnosReleaseWorkflow), "fnOS workflow must rebuild release packages instead of skipping when an old .fpk asset already exists.");
 expect(/overwrite_files:\s*true/.test(fnosReleaseWorkflow), "fnOS workflow must overwrite existing Release .fpk assets with the newly built package.");
 expect(/Verify built fnOS FPK/.test(fnosReleaseWorkflow) && /npm run check:fnos/.test(fnosReleaseWorkflow), "fnOS workflow must verify the built .fpk before upload.");
-expect(/release-artifacts\/fnos\/\*\.fpk/.test(fnosReleaseWorkflow), "fnOS workflow should upload .fpk files.");
+const releaseUploadStep = (fnosReleaseWorkflow.split("Upload fnOS FPK to GitHub Release")[1] || "").split("- name:")[0];
+expect(/release-artifacts\/fnos\/mmh-fnos-v\*[^\n]*\.fpk/.test(releaseUploadStep), "fnOS workflow should upload .fpk files.");
+expect(/matrix\.package_variant == 'bundled'/.test(releaseUploadStep), "fnOS Release upload must be gated to matrix.package_variant == 'bundled', otherwise the four-leg matrix attaches the undocumented external-node FPKs to every release.");
 expect(/target_arch/.test(fnosReleaseWorkflow) && /arm64/.test(fnosReleaseWorkflow), "fnOS release workflow must build both x86 and arm64 packages.");
 expect(/linux-\$\{FNPACK_ARCH\}/.test(fnosReleaseWorkflow), "fnOS release workflow must download fnpack for the current runner architecture.");
 expect(/linux-\$\{NODE_ARCH\}/.test(fnosReleaseWorkflow), "fnOS release workflow must download the Node runtime for the package architecture.");

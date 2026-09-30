@@ -156,8 +156,16 @@ jobs:
           if-no-files-found: error
 
       - name: Upload fnOS FPK to GitHub Release
-        if: github.event_name == 'release'
+        # The documented release asset set is the two bundled FPKs. Without the
+        # variant gate every matrix leg ran this step -- and two of the four legs
+        # build the undocumented external-node variant -- so a published release
+        # would carry four fnOS assets instead of two.
+        # (`release: published` is the only event that reaches this step, which is
+        # why the never-published v0.1.67 draft still shows just two.)
+        if: github.event_name == 'release' && matrix.package_variant == 'bundled'
         uses: softprops/action-gh-release@v2
         with:
-          files: release-artifacts/fnos/*.fpk
+          # Pin the filename instead of globbing `*.fpk`, so a stray build left
+          # in the workspace can never leak onto the release.
+          files: release-artifacts/fnos/mmh-fnos-v*-${{ matrix.target_arch == 'x86' && 'x86_64' || 'arm64' }}.fpk
           overwrite_files: true

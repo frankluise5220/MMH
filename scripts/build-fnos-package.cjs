@@ -1585,7 +1585,7 @@ stop_leftover_mmh_server () {
     cmd="$(tr '\\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
     [ -n "$cmd" ] || continue
     case "$cmd" in
-      *next-server*|*server/server.js*)
+      *next-server*|*server/server.js*|*mmh-unix-server.cjs*)
         ;;
       *)
         continue
