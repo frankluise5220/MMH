@@ -17,6 +17,11 @@ const prismaSchema = fs.readFileSync(path.join(root, "prisma", "schema.prisma"),
 const standaloneStart = fs.readFileSync(path.join(root, "scripts", "start-standalone.cjs"), "utf8");
 const systemUpdateRoute = fs.readFileSync(path.join(root, "src", "app", "api", "v1", "settings", "system-update", "route.ts"), "utf8");
 const updaterServer = fs.readFileSync(path.join(root, "scripts", "mmh-updater-server.mjs"), "utf8");
+const systemUpdatePage = fs.readFileSync(
+  path.join(root, "src", "app", "(sidebar)", "settings", "system-update", "page.tsx"),
+  "utf8",
+);
+const i18nCore = fs.readFileSync(path.join(root, "src", "lib", "i18n-core.ts"), "utf8");
 const failures = [];
 
 function expect(condition, message) {
@@ -275,6 +280,60 @@ expect(
     !/docker rmi -f/.test(updaterServer) &&
     /未能确认新镜像 ID，跳过历史镜像清理/.test(updaterServer),
   "Docker updater must record MMH image IDs and delete only those historical IDs after a successful update, never prune all unused host images.",
+);
+
+// A failed update must restore the application AND the database together.
+// Rolling the image back on its own is not enough: docker-entrypoint.sh exits 78
+// when `_mmh_schema_meta.schema_version` is newer than the image, so an
+// app-only rollback crash-loops forever under `restart: unless-stopped`.
+const pipeline = updaterServer.slice(updaterServer.indexOf("async function runUpdatePipeline()"));
+const snapshotCallIndex = pipeline.indexOf("await takePreUpdateSnapshot()");
+const syncDeployCallIndex = pipeline.indexOf("syncDeployFilesCommand()");
+const pullCallIndex = pipeline.indexOf('composeCommand("pull updater app")');
+expect(
+  /async function takePreUpdateSnapshot/.test(updaterServer) &&
+    /pg_dump -Fc/.test(updaterServer) &&
+    /pg_restore/.test(updaterServer) &&
+    /rollbackImageTag/.test(updaterServer) &&
+    snapshotCallIndex >= 0 &&
+    syncDeployCallIndex >= 0 &&
+    pullCallIndex >= 0 &&
+    snapshotCallIndex < syncDeployCallIndex &&
+    snapshotCallIndex < pullCallIndex,
+  "Docker updater must snapshot the running image, the deploy files and a pg_dump before the deploy files are overwritten or any image is pulled.",
+);
+expect(
+  /dropdb --force -U/.test(updaterServer) &&
+    /dropdb --if-exists -U/.test(updaterServer) &&
+    /createdb -U/.test(updaterServer) &&
+    /ALTER DATABASE .* RENAME TO/.test(updaterServer) &&
+    /rollbackSwapSuffix/.test(updaterServer),
+  "Database rollback must restore into a staging database and swap it in only after a successful pg_restore, so a failed restore can never leave an empty live database.",
+);
+expect(
+  /failUpdate/.test(updaterServer) &&
+    /rollbackUpdate/.test(updaterServer) &&
+    /status = "rolledback"/.test(updaterServer) &&
+    /MMH_APP_IMAGE: rollbackImageTag/.test(updaterServer) &&
+    /await waitForAppReady\(3 \* 60 \* 1000\)/.test(updaterServer),
+  "Docker updater must roll back on failure, pin MMH_APP_IMAGE to the replaced image, and re-verify the app after the rollback instead of leaving the update in a failed terminal state.",
+);
+expect(
+  /appRecreateStarted/.test(updaterServer) &&
+    /本次失败发生在应用容器重建之前，应用与数据库均未被改动/.test(updaterServer),
+  "Docker updater must only roll back after the app container was recreated; before that point neither the running image nor the database changed.",
+);
+expect(
+  /MMH_UPDATE_ALLOW_NO_SNAPSHOT/.test(updaterServer) &&
+    /MMH_UPDATE_ALLOW_NO_SNAPSHOT/.test(nasEnvExample),
+  "The no-snapshot escape hatch must exist in the updater and be documented in the NAS env example.",
+);
+expect(
+  /rolledback/.test(systemUpdatePage) &&
+    /"settings.systemUpdate.rolledBack"/.test(i18nCore) &&
+    /"settings.systemUpdate.rolledBackPartial"/.test(i18nCore) &&
+    /"settings.systemUpdate.rollbackFailed"/.test(i18nCore),
+  "The settings page must render the rolledback status, and the rollback strings must exist in every locale.",
 );
 
 if (failures.length > 0) {

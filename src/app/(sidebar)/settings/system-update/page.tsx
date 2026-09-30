@@ -458,7 +458,13 @@ export default function SystemUpdatePage() {
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || t("settings.systemUpdate.statusQueryFailed"));
         statusFetchFailures = 0;
-        const task = data.task as { status?: string; currentStep?: string; logs?: string[]; error?: string };
+        const task = data.task as {
+          status?: string;
+          currentStep?: string;
+          logs?: string[];
+          error?: string;
+          rollback?: { attempted?: boolean; appRestored?: boolean; dbRestored?: boolean; error?: string } | null;
+        };
         const current = task.currentStep || "";
         lastCurrentStep = current || lastCurrentStep;
         const logs = (task.logs ?? []).slice(-8).join("\n");
@@ -487,10 +493,33 @@ export default function SystemUpdatePage() {
             )));
           }
           setTimeout(() => window.location.reload(), 2500);
-        } else if (task.status === "failed") {
+        } else if (task.status === "rolledback") {
+          // The updater restored the previous application image and the database
+          // snapshot, so the service this page is talking to is the old version
+          // again. Report it as a failed update that was rolled back rather than
+          // leaving the progress list spinning on a status it will never reach.
+          setSteps((prev) => prev.map((step) => (
+            step.status === "running" ? { ...step, status: "failed" } : step
+          )));
           setUpdateDone(true);
           setUpdateOk(false);
-          setUpdateError(task.error || t("settings.systemUpdate.updateFailed"));
+          setUpdateError(
+            task.rollback?.dbRestored === false
+              ? t("settings.systemUpdate.rolledBackPartial")
+              : t("settings.systemUpdate.rolledBack"),
+          );
+          setUpdating(false);
+          shouldContinue = false;
+          setTimeout(() => window.location.reload(), 2500);
+        } else if (task.status === "failed") {
+          const rollbackError = task.rollback?.error;
+          setUpdateDone(true);
+          setUpdateOk(false);
+          setUpdateError(
+            rollbackError
+              ? t("settings.systemUpdate.rollbackFailed", { message: rollbackError })
+              : task.error || t("settings.systemUpdate.updateFailed"),
+          );
           setUpdating(false);
           shouldContinue = false;
         } else {

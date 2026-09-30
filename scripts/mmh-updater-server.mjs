@@ -1,6 +1,6 @@
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
+import { access, readFile, writeFile } from "node:fs/promises";
 
 const port = Number(process.env.MMH_UPDATER_PORT || 7788);
 const token = String(process.env.MMH_UPDATE_TOKEN || "").trim();
@@ -21,6 +21,18 @@ const njuUpdaterImage = "ghcr.nju.edu.cn/frankluise5220/mmh-updater:latest";
 const fnvpsUpdaterImage = "fnapp.floatingice.win:5000/frankluise5220/mmh-updater:latest";
 const quotedWorkdir = JSON.stringify(workdir);
 
+// Pre-update snapshot location. Lives inside the bind-mounted workdir so the
+// host can inspect it, and it is never deleted automatically: it is the only
+// way back when a rollback fails.
+const rollbackRoot = `${workdir}/.mmh-rollback`;
+// Stable tag that always points at the app image an update replaced. Rolling
+// back by restoring .env alone is not enough - `docker compose pull` has
+// already moved the `:latest` tag in .env onto the new build.
+const rollbackImageTag = "mmh-rollback:previous";
+// Deterministic name for the staging database used by the restore swap, so a
+// leftover from a crashed rollback is cleaned up by the next attempt.
+const rollbackSwapSuffix = "_rollback_swap";
+
 const imageSources = {
   ghcr: { name: "GHCR", app: ghcrImage, updater: ghcrUpdaterImage },
   dockerproxy: { name: "dockerproxy", app: dockerproxyImage, updater: dockerproxyUpdaterImage },
@@ -37,6 +49,7 @@ let task = {
   currentStep: "",
   logs: [],
   error: "",
+  rollback: null,
   startedAt: null,
   updatedAt: null,
 };
@@ -77,7 +90,9 @@ async function readRecentPersistedTask() {
     const saved = JSON.parse(await readFile(taskStateFile, "utf8"));
     const updatedAt = Date.parse(String(saved?.updatedAt || ""));
     const isRecent = Number.isFinite(updatedAt) && Date.now() - updatedAt < 60 * 60 * 1000;
-    if (!isRecent || !["completed", "failed"].includes(saved?.status)) return null;
+    // "rolledback" must survive too: the updater container may be recreated
+    // while the page is still waiting for the outcome of a failed update.
+    if (!isRecent || !["completed", "failed", "rolledback"].includes(saved?.status)) return null;
     return { ...saved, running: false };
   } catch {
     return null;
@@ -702,7 +717,16 @@ async function scheduleUpdaterRecreate(updaterImage, staleImageIds = []) {
   });
 }
 
-async function waitForAppReady(timeoutMs = 6 * 60 * 1000) {
+// Default readiness budget. Overridable so a rollback drill (which deliberately
+// ships a broken image) does not have to sit through the full six minutes, and
+// so unusually slow hosts can raise it.
+function defaultReadyTimeoutMs() {
+  const configured = Number(process.env.MMH_UPDATE_READY_TIMEOUT_MS || "");
+  if (Number.isFinite(configured) && configured >= 5000) return Math.min(configured, 30 * 60 * 1000);
+  return 6 * 60 * 1000;
+}
+
+async function waitForAppReady(timeoutMs = defaultReadyTimeoutMs()) {
   const appUrl = "http://app:7777/";
   const startedAt = Date.now();
   let lastError = "";
@@ -726,6 +750,414 @@ async function waitForAppReady(timeoutMs = 6 * 60 * 1000) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Pre-update snapshot and rollback (app + database together)
+//
+// A failed image update used to be terminal: the app container had already been
+// recreated on the new image, and the database had already been migrated
+// forward by the `prisma db push` inside docker-entrypoint.sh. Rolling the image
+// back alone is NOT enough - refuse_if_schema_newer() exits 78 when
+// `_mmh_schema_meta.schema_version` is newer than the image version, so an
+// app-only rollback crash-loops forever under `restart: unless-stopped`. The
+// snapshot below captures the running image ID, the deploy files, and a full
+// pg_dump, so a failure can restore the application AND the database together.
+// ---------------------------------------------------------------------------
+
+async function fileExists(target) {
+  try {
+    await access(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function snapshotDirOnHost(dir) {
+  if (hostWorkdir && dir.startsWith(`${workdir}/`)) {
+    return `${hostWorkdir}/${dir.slice(workdir.length + 1)}`;
+  }
+  return dir;
+}
+
+async function resolveDbContainer() {
+  const candidates = [
+    ["compose", "-p", composeProject, "-f", composeFile, "ps", "-q", "postgres"],
+    ["ps", "--filter", "name=^/?mmh-db$", "--format", "{{.ID}}"],
+  ];
+  for (const args of candidates) {
+    try {
+      const found = (await captureDocker(args, 8000))
+        .split(/\r?\n/)
+        .map((value) => value.trim())
+        .filter(Boolean)[0];
+      if (found) return found;
+    } catch {}
+  }
+  return "";
+}
+
+function dbCredentials(env) {
+  return {
+    user: String(env?.POSTGRES_USER || "").trim() || "mmh-fs",
+    database: String(env?.POSTGRES_DB || "").trim() || "mmh",
+  };
+}
+
+function quoteIdentifier(value) {
+  return `"${String(value).replace(/"/g, '""')}"`;
+}
+
+async function readSchemaVersionMarker(container, credentials) {
+  try {
+    const value = await captureDocker([
+      "exec",
+      container,
+      "psql",
+      "-tAc",
+      "SELECT value FROM \"_mmh_schema_meta\" WHERE key = 'schema_version'",
+      "-U",
+      credentials.user,
+      "-d",
+      credentials.database,
+    ], 8000);
+    return value.trim();
+  } catch {
+    return "";
+  }
+}
+
+async function takePreUpdateSnapshot() {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const dir = `${rollbackRoot}/${stamp}`;
+  // Escape hatch for hosts where pg_dump cannot run (exotic database image).
+  // Read from .env so it works without editing the compose file.
+  const env = await readEnvValues();
+  const allowNoSnapshot = /^(1|true|yes)$/i.test(String(env.MMH_UPDATE_ALLOW_NO_SNAPSHOT || "").trim());
+  const credentials = dbCredentials(env);
+  const snapshot = {
+    stamp,
+    dir,
+    hostDir: snapshotDirOnHost(dir),
+    createdAt: now(),
+    appImageId: "",
+    schemaVersion: "",
+    database: credentials.database,
+    composeBackedUp: false,
+    envBackedUp: false,
+    dbDumped: false,
+  };
+
+  pushLog(`更新前快照目录：${snapshot.hostDir}`);
+  await run(`mkdir -p ${JSON.stringify(dir)}`, "创建回滚快照目录");
+
+  snapshot.appImageId = await captureDocker(["inspect", "mmh-app", "--format", "{{.Image}}"], 8000).catch(() => "");
+  if (snapshot.appImageId) {
+    pushLog(`上一版本应用镜像：${snapshot.appImageId}`);
+  } else {
+    pushLog("警告：未找到 mmh-app 容器，无法记录上一版本镜像；回滚时只能恢复数据库，应用镜像需要手动指定。");
+  }
+
+  await run(
+    `if [ -f ${JSON.stringify(composeFile)} ]; then cp -f ${JSON.stringify(composeFile)} ${JSON.stringify(`${dir}/docker-compose.yml`)}; fi`,
+    "备份 docker-compose.yml",
+    { allowFailure: true },
+  );
+  snapshot.composeBackedUp = await fileExists(`${dir}/docker-compose.yml`);
+
+  await run(
+    `if [ -f ${JSON.stringify(`${workdir}/.env`)} ]; then cp -f ${JSON.stringify(`${workdir}/.env`)} ${JSON.stringify(`${dir}/.env`)}; fi`,
+    "备份 .env",
+    { allowFailure: true },
+  );
+  snapshot.envBackedUp = await fileExists(`${dir}/.env`);
+
+  const container = await resolveDbContainer();
+  if (!container) {
+    if (!allowNoSnapshot) {
+      throw new Error(
+        "找不到数据库容器，无法创建更新前快照，本次更新已在拉取镜像前中止。"
+          + "请先确认 postgres 容器正在运行；如确认要在没有数据库快照的情况下继续更新，"
+          + "请在 .env 中设置 MMH_UPDATE_ALLOW_NO_SNAPSHOT=1 后重试。",
+      );
+    }
+    pushLog("警告：找不到数据库容器；按 MMH_UPDATE_ALLOW_NO_SNAPSHOT=1 继续更新，本次没有数据库快照。");
+    return snapshot;
+  }
+
+  const dumpPath = `${dir}/db.dump`;
+  pushLog(`导出数据库快照（容器 ${container}，库 ${credentials.database}）`);
+  try {
+    await run(
+      `docker exec ${JSON.stringify(container)} pg_dump -Fc -U ${JSON.stringify(credentials.user)} -d ${JSON.stringify(credentials.database)} > ${JSON.stringify(dumpPath)}`,
+      "导出数据库快照",
+    );
+    await run(
+      `if [ -s ${JSON.stringify(dumpPath)} ] && [ "$(head -c 5 ${JSON.stringify(dumpPath)})" = "PGDMP" ]; then echo "数据库快照校验通过"; else echo "数据库快照为空或格式不正确"; exit 1; fi`,
+      "校验数据库快照",
+    );
+    snapshot.dbDumped = true;
+    snapshot.schemaVersion = await readSchemaVersionMarker(container, credentials);
+    pushLog(`数据库快照已就绪（schema_version=${snapshot.schemaVersion || "未记录"}）`);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    if (!allowNoSnapshot) {
+      throw new Error(
+        `数据库快照失败，本次更新已在拉取镜像前中止：${detail}。`
+          + "请先确认数据库容器健康、宿主机磁盘空间充足；如确认要在没有数据库快照的情况下继续更新，"
+          + "请在 .env 中设置 MMH_UPDATE_ALLOW_NO_SNAPSHOT=1 后重试。",
+      );
+    }
+    pushLog(`警告：数据库快照失败；按 MMH_UPDATE_ALLOW_NO_SNAPSHOT=1 继续更新：${detail}`);
+  }
+  return snapshot;
+}
+
+async function restoreDatabaseFromSnapshot(snapshot) {
+  const container = await resolveDbContainer();
+  if (!container) throw new Error("找不到数据库容器，无法恢复数据库");
+  const credentials = dbCredentials(await readEnvValues());
+  const dumpPath = `${snapshot.dir}/db.dump`;
+  const swapDatabase = `${credentials.database}${rollbackSwapSuffix}`;
+  if (!snapshot.dbDumped) {
+    pushLog("警告：本次更新没有数据库快照，跳过数据库恢复；库与应用可能不再匹配，旧镜像可能被 schema 版本门拦下。");
+    return false;
+  }
+
+  // pg_restore -l only reads the archive directory; it proves the dump is
+  // parseable before anything on the live database is touched.
+  await run(
+    `docker exec -i ${JSON.stringify(container)} pg_restore -l < ${JSON.stringify(dumpPath)} > /dev/null`,
+    "校验数据库快照可读",
+  );
+
+  // Restore into a staging database and only swap it in after the import
+  // succeeds, so a failed pg_restore can never leave an empty live database.
+  await run(
+    `docker exec ${JSON.stringify(container)} dropdb --if-exists -U ${JSON.stringify(credentials.user)} ${quoteIdentifier(swapDatabase)}`,
+    "清理回滚临时库",
+  );
+  await run(
+    `docker exec ${JSON.stringify(container)} createdb -U ${JSON.stringify(credentials.user)} -O ${JSON.stringify(credentials.user)} ${quoteIdentifier(swapDatabase)}`,
+    "创建回滚临时库",
+  );
+  await run(
+    `docker exec ${JSON.stringify(container)} psql -v ON_ERROR_STOP=1 -U ${JSON.stringify(credentials.user)} -d ${quoteIdentifier(swapDatabase)} -c ${JSON.stringify(`CREATE SCHEMA IF NOT EXISTS public; GRANT ALL ON SCHEMA public TO ${quoteIdentifier(credentials.user)}; CREATE EXTENSION IF NOT EXISTS "uuid-ossp"; CREATE EXTENSION IF NOT EXISTS "pgcrypto";`)}`,
+    "准备回滚临时库",
+  );
+  await run(
+    `docker exec -i ${JSON.stringify(container)} pg_restore --no-owner --no-privileges -U ${JSON.stringify(credentials.user)} -d ${quoteIdentifier(swapDatabase)} < ${JSON.stringify(dumpPath)}`,
+    "导入数据库快照",
+  );
+
+  const restoredTables = await captureDocker([
+    "exec",
+    container,
+    "psql",
+    "-tAc",
+    "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'",
+    "-U",
+    credentials.user,
+    "-d",
+    swapDatabase,
+  ], 8000).catch(() => "0");
+  if (!Number(restoredTables.trim() || 0)) {
+    throw new Error(`回滚临时库 ${swapDatabase} 导入后没有任何表，快照可能不完整；线上数据库未被改动。`);
+  }
+  pushLog(`回滚临时库已导入 ${restoredTables.trim()} 张表，准备切换`);
+
+  await run(
+    `docker exec ${JSON.stringify(container)} dropdb --force -U ${JSON.stringify(credentials.user)} ${quoteIdentifier(credentials.database)}`,
+    "回滚：删除当前数据库",
+  );
+  try {
+    await run(
+      `docker exec ${JSON.stringify(container)} psql -v ON_ERROR_STOP=1 -U ${JSON.stringify(credentials.user)} -d postgres -c ${JSON.stringify(`ALTER DATABASE ${quoteIdentifier(swapDatabase)} RENAME TO ${quoteIdentifier(credentials.database)}`)}`,
+      "回滚：切换回快照数据库",
+    );
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `数据库已删除但重命名失败：${detail}。快照已导入到数据库 ${swapDatabase}，`
+        + `请在宿主机执行 docker exec ${container} psql -U ${credentials.user} -d postgres -c 'ALTER DATABASE ${quoteIdentifier(swapDatabase)} RENAME TO ${quoteIdentifier(credentials.database)}' 完成切换。`,
+    );
+  }
+  pushLog(`数据库已回滚到更新前状态（${credentials.database}）`);
+  return true;
+}
+
+async function rollbackUpdate(snapshot) {
+  const hostDir = snapshot.hostDir || snapshotDirOnHost(snapshot.dir);
+  if (!snapshot.appImageId) {
+    // Rolling the database back without a pinned application image would leave
+    // a newer image running against an older schema, which the entrypoint then
+    // migrates forward again on the next start. Refuse rather than half-roll.
+    throw new Error(
+      "没有记录到上一版本应用镜像（mmh-app 容器不存在或 docker inspect 失败），无法同时回滚应用；"
+        + `为避免库与应用版本不一致，本次未改动数据库。请按 ${hostDir} 中的快照手动恢复。`,
+    );
+  }
+  task.currentStep = "回滚：停止应用";
+  pushLog("回滚：先停止应用，释放数据库连接");
+  await run(composeCommand("stop app"), "回滚：停止应用", { allowFailure: true });
+
+  task.currentStep = "回滚：恢复数据库";
+  pushLog("回滚：恢复数据库（应用与数据库必须同时回退，否则旧镜像会被 schema 版本门拦成 exit 78）");
+  const dbRestored = await restoreDatabaseFromSnapshot(snapshot);
+
+  task.currentStep = "回滚：恢复部署文件";
+  if (snapshot.envBackedUp) {
+    await run(
+      `cp -f ${JSON.stringify(`${snapshot.dir}/.env`)} ${JSON.stringify(`${workdir}/.env`)}`,
+      "回滚：恢复 .env",
+    );
+  }
+  if (snapshot.composeBackedUp) {
+    await run(
+      `cp -f ${JSON.stringify(`${snapshot.dir}/docker-compose.yml`)} ${JSON.stringify(composeFile)}`,
+      "回滚：恢复 docker-compose.yml",
+    );
+  }
+
+  await run(
+    `docker tag ${JSON.stringify(snapshot.appImageId)} ${JSON.stringify(rollbackImageTag)}`,
+    "回滚：标记上一版本镜像",
+  );
+  // Point the compose image variable at the pinned tag: the .env backup alone
+  // would name `:latest`, which the pull step already moved onto the new build.
+  await updateEnvValues({ MMH_APP_IMAGE: rollbackImageTag });
+  pushLog(`回滚：应用镜像已钉回 ${rollbackImageTag}（${snapshot.appImageId}）`);
+
+  task.currentStep = "回滚：启动上一版本应用";
+  await run(composeCommand("up -d --no-deps --force-recreate app"), "回滚：启动上一版本应用");
+  pushLog("回滚：等待应用启动完成...");
+  await waitForAppReady(3 * 60 * 1000);
+  return { dbRestored };
+}
+
+async function failUpdate(message, snapshot, appRecreateStarted) {
+  pushLog(message);
+  task.error = message;
+
+  // Only roll back once the app container has actually been recreated. Before
+  // that point neither the running image nor the database has been modified, so
+  // stopping a healthy app to rewrite its database would be worse than the
+  // original failure.
+  if (!snapshot || !appRecreateStarted) {
+    task.status = "failed";
+    task.running = false;
+    task.currentStep = "失败";
+    if (snapshot) {
+      pushLog(`本次失败发生在应用容器重建之前，应用与数据库均未被改动；快照保留在 ${snapshot.hostDir}。`);
+      task.rollback = {
+        attempted: false,
+        reason: "应用容器尚未重建，无需回滚",
+        snapshotDir: snapshot.hostDir,
+        at: now(),
+      };
+    }
+    await persistTask().catch(() => {});
+    return;
+  }
+
+  task.status = "rollingback";
+  pushLog("更新失败，开始回滚：应用 + 数据库");
+  const rollback = {
+    attempted: true,
+    at: now(),
+    snapshotDir: snapshot.hostDir,
+    appRestored: false,
+    dbRestored: false,
+    error: "",
+  };
+  try {
+    const result = await rollbackUpdate(snapshot);
+    rollback.appRestored = Boolean(snapshot.appImageId);
+    rollback.dbRestored = result.dbRestored;
+    task.status = "rolledback";
+    task.currentStep = "已回滚";
+    pushLog("回滚完成：已恢复更新前的应用与数据库，系统回到更新前状态。");
+  } catch (error) {
+    rollback.error = error instanceof Error ? error.message : String(error);
+    task.status = "failed";
+    task.currentStep = "回滚失败";
+    pushLog(`回滚失败：${rollback.error}`);
+    pushLog(`更新前快照保留在 ${snapshot.hostDir}，可在宿主机按以下顺序手动恢复：`);
+    pushLog(`  1) docker compose -p ${composeProject} stop app`);
+    pushLog(`  2) 恢复数据库：docker exec <postgres 容器> pg_restore --no-owner --no-privileges -U <POSTGRES_USER> -d <POSTGRES_DB> < ${snapshot.hostDir}/db.dump`);
+    pushLog(`  3) 把 ${snapshot.hostDir} 下的 .env 与 docker-compose.yml 复制回安装目录`);
+    pushLog(`  4) docker compose -p ${composeProject} up -d --no-deps --force-recreate app`);
+  }
+  task.rollback = rollback;
+  task.running = false;
+  await persistTask().catch(() => {});
+}
+
+async function runUpdatePipeline() {
+  let snapshot = null;
+  let appRecreateStarted = false;
+  try {
+    await resolveHostWorkdir();
+    await recordRunningMmhImages().catch(() => []);
+    // Snapshot before the deploy files are overwritten by the release-bundled
+    // copies below, otherwise we would back up the new compose file instead of
+    // the one that is currently running.
+    snapshot = await takePreUpdateSnapshot();
+    await run(syncDeployFilesCommand(), "同步部署文件", { allowFailure: true });
+    const selectedImages = await chooseImageSource();
+    await run(composeCommand("pull updater app"), "拉取应用镜像");
+    const pulledImages = await recordPulledImages(selectedImages).catch(() => []);
+
+    task.status = "restarting";
+    task.currentStep = "重启服务";
+    pushLog("即将重启服务");
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+
+    appRecreateStarted = true;
+    await run(composeCommand("up -d --no-deps --force-recreate app"), "重启服务");
+    pushLog("等待应用启动完成...");
+    await waitForAppReady();
+
+    task.status = "completed";
+    task.running = false;
+    task.currentStep = "完成";
+    pushLog("更新完成");
+    const newImageIds = uniqueStrings(pulledImages.map((item) => item.id));
+    // Keep the replaced image as well: it is the rollback target, and the
+    // cleanup below would otherwise delete it moments after a success.
+    const keepIds = uniqueStrings([...newImageIds, snapshot?.appImageId || ""]);
+    const staleImageIds = newImageIds.length ? imageIdsToRemove(await readUsedImages(), keepIds) : [];
+    if (!newImageIds.length) {
+      pushLog("未能确认新镜像 ID，跳过历史镜像清理");
+    } else if (staleImageIds.length) {
+      pushLog(`将清理 ${staleImageIds.length} 个历史 MMH 镜像`);
+    }
+    if (snapshot?.appImageId && newImageIds.length) {
+      await run(
+        `docker tag ${JSON.stringify(snapshot.appImageId)} ${JSON.stringify(rollbackImageTag)}`,
+        "保留上一版本镜像",
+        { allowFailure: true },
+      );
+      pushLog(`上一版本镜像保留为 ${rollbackImageTag}，需要时可回滚`);
+    }
+    await persistTask();
+    await scheduleUpdaterRecreate(selectedImages.updaterImage, staleImageIds);
+    pushLog("更新执行器将切换到所选镜像源");
+  } catch (error) {
+    await failUpdate(error instanceof Error ? error.message : String(error), snapshot, appRecreateStarted).catch(
+      async (failError) => {
+        // Nothing may leave task.running stuck at true: startUpdate() refuses
+        // every later attempt while it is set, which would lock the host out of
+        // web updates until the updater container is recreated by hand.
+        pushLog(`处理更新失败时出错：${failError instanceof Error ? failError.message : String(failError)}`);
+        task.status = "failed";
+        task.running = false;
+        task.currentStep = "失败";
+        await persistTask().catch(() => {});
+      },
+    );
+  }
+}
+
 async function startUpdate() {
   if (task.running) return false;
   task = {
@@ -734,61 +1166,18 @@ async function startUpdate() {
     currentStep: "准备更新",
     logs: [],
     error: "",
+    rollback: null,
     startedAt: now(),
     updatedAt: now(),
   };
-
-  void (async () => {
-    try {
-      await resolveHostWorkdir();
-      await recordRunningMmhImages().catch(() => []);
-      await run(syncDeployFilesCommand(), "同步部署文件", { allowFailure: true });
-      const selectedImages = await chooseImageSource();
-      await run(composeCommand("pull updater app"), "拉取应用镜像");
-      const pulledImages = await recordPulledImages(selectedImages).catch(() => []);
-      task.status = "restarting";
-      task.currentStep = "重启服务";
-      pushLog("即将重启服务");
-      setTimeout(() => {
-        void (async () => {
-          try {
-            await run(composeCommand("up -d --no-deps --force-recreate app"), "重启服务");
-            pushLog("等待应用启动完成...");
-            await waitForAppReady();
-            task.status = "completed";
-            task.running = false;
-            task.currentStep = "完成";
-            pushLog("更新完成");
-            const keepIds = uniqueStrings(pulledImages.map((item) => item.id));
-            const staleImageIds = keepIds.length
-              ? imageIdsToRemove(await readUsedImages(), keepIds)
-              : [];
-            if (!keepIds.length) {
-              pushLog("未能确认新镜像 ID，跳过历史镜像清理");
-            } else if (staleImageIds.length) {
-              pushLog(`将清理 ${staleImageIds.length} 个历史 MMH 镜像`);
-            }
-            await persistTask();
-            await scheduleUpdaterRecreate(selectedImages.updaterImage, staleImageIds);
-            pushLog("更新执行器将切换到所选镜像源");
-          } catch (error) {
-            task.status = "failed";
-            task.running = false;
-            task.error = error instanceof Error ? error.message : String(error);
-            pushLog(task.error);
-            await persistTask().catch(() => {});
-          }
-        })();
-      }, 5000);
-    } catch (error) {
-      task.status = "failed";
-      task.running = false;
-      task.error = error instanceof Error ? error.message : String(error);
-      pushLog(task.error);
-      await persistTask().catch(() => {});
-    }
-  })();
-
+  // An unhandled rejection would terminate the updater process; the pipeline
+  // catches its own errors, so this is the last-resort guard.
+  void runUpdatePipeline().catch((error) => {
+    task.status = "failed";
+    task.running = false;
+    task.currentStep = "失败";
+    task.error = error instanceof Error ? error.message : String(error);
+  });
   return true;
 }
 
