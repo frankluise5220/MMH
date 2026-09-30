@@ -2101,9 +2101,14 @@ export default async function Home({
               maturityDate: arrivalDate,
               cashAccountLabel,
               note: entry.note ?? "",
-              amount: entry.toAccountId === accountId ? Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount)) : toNumber(entry.amount),
+              amount: isRedeemEntry
+                ? -Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount))
+                : entry.toAccountId === accountId
+                  ? Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount))
+                  : toNumber(entry.amount),
               balance: null as number | null,
               depositInterest: entry.depositInterest == null ? 0 : toNumber(entry.depositInterest),
+              depositSourceEntryId: entry.depositSourceEntryId ?? null,
               businessTransactionId: entry.businessTransactionId ?? null,
               businessLinkCount: entry.businessLinkCount ?? 0,
               businessLinkLabels: entry.businessLinkLabels ?? [],
@@ -2599,7 +2604,7 @@ export default async function Home({
       const amountValue = isRedeemEntry
         ? Math.max(
             0,
-            Math.abs(toNumber(entry.amount)) - Math.max(0, toNumber(entry.depositInterest)),
+            Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount)) - Math.max(0, toNumber(entry.depositInterest)),
           )
         : Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount));
       const depositAccountId = (
@@ -2728,13 +2733,24 @@ export default async function Home({
         let takenInterest = 0;
         let latestInterestDate: string | null = null;
         for (const id of lot.relatedEntryIds) {
-          const e = payoutEntryById.get(id);
-          if (!e || e.deletedAt) continue;
-          if (e.type !== "income" || e.source !== "deposit") continue;
-          takenInterest += Math.abs(toNumber(e.amount));
-          const payoutDate = toYmdOrNull(e.date);
-          if (payoutDate && (!latestInterestDate || payoutDate > latestInterestDate)) {
-            latestInterestDate = payoutDate;
+          const payout = payoutEntryById.get(id);
+          if (payout && !payout.deletedAt) {
+            if (payout.type === "income" && payout.source === "deposit") {
+              takenInterest += Math.abs(toNumber(payout.amount));
+              const payoutDate = toYmdOrNull(payout.date);
+              if (payoutDate && (!latestInterestDate || payoutDate > latestInterestDate)) {
+                latestInterestDate = payoutDate;
+              }
+            }
+            continue;
+          }
+          const movement = sourceEntryById.get(id);
+          if (!movement || movement.deletedAt) continue;
+          if (movement.fundSubtype !== "redeem" && movement.fundSubtype !== "switch_out") continue;
+          takenInterest += Math.max(0, toNumber(movement.depositInterest));
+          const redemptionDate = toYmdOrNull(movement.date);
+          if (redemptionDate && (!latestInterestDate || redemptionDate > latestInterestDate)) {
+            latestInterestDate = redemptionDate;
           }
         }
         takenInterest = Number(takenInterest.toFixed(2));
@@ -2811,10 +2827,10 @@ export default async function Home({
     }
   }
   const depositLots = buildDepositLots(
-    entries,
+    allDepositEntries,
     activeDepositAccountIds,
     selectedAccount && isDepositAccount(selectedAccount) ? selectedAccount.id : undefined,
-    entries,
+    allDetailEntries,
   );
   const allDepositLots = buildDepositLots(allDepositEntries, new Set(allDepositAccountIds), undefined, allDetailEntries);
   const scopedOpenDepositLots = depositLots.filter((lot) => lot.status === "open" && lot.remainingAmount > 0.0001);

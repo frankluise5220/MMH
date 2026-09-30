@@ -245,7 +245,9 @@ export function DepositShell({
   const visibleEntries = useMemo(() => {
     if (!selectedLot) return entries;
     const relatedIds = new Set(selectedLot.relatedEntryIds ?? [selectedLot.id]);
-    return entries.filter((entry) => relatedIds.has(entry.id));
+    return entries.filter((entry) =>
+      relatedIds.has(entry.id) || entry.depositSourceEntryId === selectedLot.id,
+    );
   }, [entries, selectedLot]);
 
   useEffect(() => {
@@ -407,7 +409,7 @@ export function DepositShell({
     { key: "maturityDate", label: t("depositShell.colMaturityDate"), width: 110, minWidth: 84, hideable: true, filterKind: "dateRange", filterText: (lot) => lot.maturityDate ?? "", sortValue: (lot) => lot.maturityDate ?? "", render: (lot) => <span className="tabular-nums text-slate-600">{lot.maturityDate || "-"}</span> },
     { key: "maturityAction", label: t("depositShell.colMaturityAction"), width: 130, minWidth: 96, hideable: true, filterText: (lot) => maturityActionLabel(lot.maturityAction), sortValue: (lot) => lot.maturityAction ?? "", render: (lot) => <span className="text-slate-600">{maturityActionLabel(lot.maturityAction)}</span> },
     { key: "interestPayoutFrequency", label: t("depositShell.colPayoutFrequency"), width: 110, minWidth: 88, hideable: true, filterText: (lot) => payoutFrequencyLabel(lot.interestPayoutFrequency), sortValue: (lot) => lot.interestPayoutFrequency ?? "", render: (lot) => <span className="text-slate-600">{payoutFrequencyLabel(lot.interestPayoutFrequency)}</span> },
-    { key: "originalAmount", label: t("depositShell.colOriginalAmount"), width: 120, minWidth: 86, align: "right", hideable: true, filterKind: "numberRange", filterText: (lot) => String(lot.originalAmount), filterNumber: (lot) => lot.originalAmount, sortValue: (lot) => lot.originalAmount, render: (lot) => <span className="font-semibold tabular-nums text-slate-700">{formatMoney(lot.originalAmount)}</span> },
+    { key: "originalAmount", label: t("depositShell.colOriginalAmount"), width: 120, minWidth: 86, align: "right", hideable: true, filterKind: "numberRange", filterText: (lot) => String(lot.remainingAmount), filterNumber: (lot) => lot.remainingAmount, sortValue: (lot) => lot.remainingAmount, render: (lot) => <span className="font-semibold tabular-nums text-slate-700">{formatMoney(lot.remainingAmount)}</span> },
     { key: "expectedInterest", label: t("depositShell.colExpectedInterest"), width: 110, minWidth: 80, align: "right", hideable: true, filterKind: "numberRange", filterText: (lot) => lot.expectedInterest != null ? String(lot.expectedInterest) : null, filterNumber: (lot) => lot.expectedInterest ?? null, sortValue: (lot) => lot.expectedInterest ?? 0, render: (lot) => lot.expectedInterest != null ? <span className="font-semibold tabular-nums text-emerald-700">{formatMoney(lot.expectedInterest)}</span> : <span className="tabular-nums text-slate-400">-</span> },
     { key: "takenInterest", label: t("depositShell.colTakenInterest"), width: 110, minWidth: 80, align: "right", hideable: true, filterKind: "numberRange", filterText: (lot) => lot.takenInterest != null && lot.takenInterest > 0 ? String(lot.takenInterest) : null, filterNumber: (lot) => lot.takenInterest ?? null, sortValue: (lot) => lot.takenInterest ?? 0, render: (lot) => lot.takenInterest != null && lot.takenInterest > 0 ? <span className="tabular-nums text-emerald-600">{formatMoney(lot.takenInterest)}</span> : <span className="tabular-nums text-slate-400">-</span> },
     { key: "annualRate", label: t("depositShell.colAnnualRate"), width: 100, minWidth: 72, align: "right", hideable: true, filterKind: "numberRange", filterText: (lot) => lot.annualRate != null ? String(lot.annualRate) : null, filterNumber: (lot) => lot.annualRate ?? null, sortValue: (lot) => lot.annualRate ?? 0, render: (lot) => <span className="tabular-nums text-slate-600">{lot.annualRate != null ? `${lot.annualRate}%` : "-"}</span> },
@@ -439,7 +441,7 @@ export function DepositShell({
 
   const lotsSummaryRow = useMemo<AdvancedDataTableSummaryRow | undefined>(() => {
     if (visibleLots.length === 0) return undefined;
-    const totalOriginalAmount = visibleLots.reduce((sum, lot) => sum + lot.originalAmount, 0);
+    const totalOriginalAmount = visibleLots.reduce((sum, lot) => sum + lot.remainingAmount, 0);
     const cells: Record<string, ReactNode> = {
       product: <span className="font-semibold text-slate-800">{t("debtShell.summaryRow")}</span>,
       originalAmount: <span className="font-semibold tabular-nums text-slate-800">{formatMoney(totalOriginalAmount)}</span>,

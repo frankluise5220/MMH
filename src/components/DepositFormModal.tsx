@@ -269,6 +269,9 @@ export function DepositFormModal({
   const [arrivalAmount, setArrivalAmount] = useState(mode === "edit" && entry && entry.amount > 0 ? String(Math.abs(entry.amount)) : "");
   const [interestEdited, setInterestEdited] = useState(false);
   const [arrivalEdited, setArrivalEdited] = useState(false);
+  // 取款本金「用户已手动编辑」标记：用户输入过金额后，不再被「选中存单时自动填剩余本金」覆盖，
+  // 否则部分取款（如取 1013）会被 selectedRedeemLot 的 effect 强制改回剩余本金全额（2026-09-30 事故）。
+  const [amountEdited, setAmountEdited] = useState(false);
   const [cashAccountId, setCashAccountId] = useState(initCashAccountId);
   const [depositAccountId, setDepositAccountId] = useState(initDepositAccountId);
   const [selectedRedeemLotId, setSelectedRedeemLotId] = useState("");
@@ -522,7 +525,8 @@ export function DepositFormModal({
     () =>
       sortedRedeemLotOptions.map((lot) => ({
         id: lot.id,
-        label: lot.label,
+        // `/api/v1/deposit/lots` 返回的存单用 fundName，父级 prop 用 label —— 统一兜底，避免 label 为 undefined。
+        label: lot.label ?? lot.fundName,
         subLabel: lot.subLabel,
       })),
     [sortedRedeemLotOptions],
@@ -926,6 +930,7 @@ export function DepositFormModal({
     setArrivalAmount("");
     setInterestEdited(false);
     setArrivalEdited(false);
+    setAmountEdited(false);
     setCashAccountId("");
     setDepositAccountId("");
     setSelectedRedeemLotId("");
@@ -1104,37 +1109,44 @@ export function DepositFormModal({
   }, [allRedeemLotOptions, availableRedeemLotOptions, defaultAccountId, depositAccountList, mode, t, today]);
 
   useEffect(() => {
-    if (!isRedeem || !editEntryId || !editingRedeemSource) return;
-    const matchedLot = availableRedeemLotOptions.find((lot) => lot.id === editingRedeemSource.id);
+    if (!isRedeem || !editEntryId || !editingRedeemSource?.id) return;
+    const sourceId = editingRedeemSource.id;
+    const fetchedMatchedLot = fetchedRedeemLotOptions.find((lot) => lot.id === sourceId);
+    const matchedLot = fetchedMatchedLot ?? availableRedeemLotOptions.find((lot) => lot.id === sourceId);
     if (!matchedLot) return;
-    const restoredRemainingAmount = Number((matchedLot.remainingAmount + amountNumber).toFixed(2));
+    // 编辑取款时接口带 excludeEntryId，返回余额已经把当前取款本金加回。
+    // 只有接口尚未返回该存单时，才需要从服务端初始列表上加回当前取款本金。
+    const restoredRemainingAmount = Number((matchedLot.remainingAmount + (fetchedMatchedLot ? 0 : amountNumber)).toFixed(2));
+    const nextDepositProductId = matchedLot.depositProductId ?? editingRedeemSource.depositProductId ?? null;
+    const nextAnnualRate = matchedLot.annualRate ?? editingRedeemSource.annualRate ?? null;
+    const nextAccountLabel = matchedLot.depositAccountLabel ?? editingRedeemSource.depositAccountLabel;
+    if (
+      editingRedeemSource.startDate === matchedLot.startDate &&
+      editingRedeemSource.maturityDate === matchedLot.maturityDate &&
+      editingRedeemSource.depositProductId === nextDepositProductId &&
+      editingRedeemSource.annualRate === nextAnnualRate &&
+      editingRedeemSource.latestInterestDate === (matchedLot.latestInterestDate ?? null) &&
+      editingRedeemSource.restoredRemainingAmount === restoredRemainingAmount &&
+      editingRedeemSource.depositAccountId === matchedLot.depositAccountId &&
+      editingRedeemSource.depositAccountLabel === nextAccountLabel
+    ) {
+      return;
+    }
     setEditingRedeemSource((current) => {
-      if (!current || current.id !== matchedLot.id) return current;
-      if (
-        current.startDate === matchedLot.startDate &&
-        current.maturityDate === matchedLot.maturityDate &&
-        current.depositProductId === (matchedLot.depositProductId ?? null) &&
-        current.annualRate === (matchedLot.annualRate ?? null) &&
-        current.latestInterestDate === (matchedLot.latestInterestDate ?? null) &&
-        current.restoredRemainingAmount === restoredRemainingAmount &&
-        current.depositAccountId === matchedLot.depositAccountId &&
-        current.depositAccountLabel === matchedLot.depositAccountLabel
-      ) {
-        return current;
-      }
+      if (!current || current.id !== sourceId) return current;
       return {
         ...current,
-        depositProductId: matchedLot.depositProductId ?? current.depositProductId,
+        depositProductId: nextDepositProductId,
         startDate: matchedLot.startDate,
         maturityDate: matchedLot.maturityDate,
-        annualRate: matchedLot.annualRate ?? current.annualRate ?? null,
+        annualRate: nextAnnualRate,
         latestInterestDate: matchedLot.latestInterestDate ?? null,
         restoredRemainingAmount,
         depositAccountId: matchedLot.depositAccountId,
-        depositAccountLabel: matchedLot.depositAccountLabel,
+        depositAccountLabel: nextAccountLabel,
       };
     });
-  }, [amountNumber, availableRedeemLotOptions, editEntryId, editingRedeemSource, isRedeem]);
+  }, [amountNumber, availableRedeemLotOptions, editEntryId, editingRedeemSource?.id, fetchedRedeemLotOptions, isRedeem]);
 
   useEffect(() => {
     if (mode !== "create") return;
@@ -1234,7 +1246,9 @@ export function DepositFormModal({
     if (selectedRedeemLot.depositAccountId) {
       setDepositAccountId(selectedRedeemLot.depositAccountId);
     }
-    setAmount(selectedRedeemLot.remainingAmount > 0 ? selectedRedeemLot.remainingAmount.toFixed(2) : "");
+    if (!amountEdited) {
+      setAmount(selectedRedeemLot.remainingAmount > 0 ? selectedRedeemLot.remainingAmount.toFixed(2) : "");
+    }
     if (selectedRedeemLot.depositAccountId) {
       const nextCashAccountId =
         cashAccountList.find((option) => {
@@ -1299,11 +1313,12 @@ export function DepositFormModal({
 
   useEffect(() => {
     if (!isRedeem || editEntryId) return;
+    if (amountEdited) return;
     if (selectedRedeemLot) {
       const nextAmount = selectedRedeemLot.remainingAmount > 0 ? selectedRedeemLot.remainingAmount.toFixed(2) : "";
       setAmount((current) => current === nextAmount ? current : nextAmount);
     }
-  }, [editEntryId, isRedeem, selectedRedeemLot]);
+  }, [amountEdited, editEntryId, isRedeem, selectedRedeemLot]);
 
   useEffect(() => {
     if (!showCurrencyConversion) {
@@ -1336,6 +1351,7 @@ export function DepositFormModal({
     setArrivalAmount("");
     setInterestEdited(false);
     setArrivalEdited(false);
+    setAmountEdited(false);
     setMemo("");
     if (isRedeem) {
       setSelectedRedeemLotId("");
@@ -1758,6 +1774,7 @@ export function DepositFormModal({
                         onChange={(value) => {
                           setInterestEdited(false);
                           setArrivalEdited(false);
+                          setAmountEdited(true);
                           setAmount(value);
                         }}
                         onBlur={() => applyRedeemComputedAmounts(true)}
@@ -1857,12 +1874,18 @@ export function DepositFormModal({
               )}
 
               {!isRedeem ? (
-                // 到期行为 + 取息相关控件统一铺满整宽、共用同一列宽（两列等宽），
+                // 到期行为 + 取息相关控件统一铺满整宽、共用同一列宽，
                 // 每一行都填满、不留空白格：
                 //   到期一次付 → [到期行为][取息周期]
-                //   按周/按年 → [到期行为][取息周期] / [取息间隔（跨两列）]
-                //   按月     → [到期行为][取息周期] / [计息方式][取息间隔]
-                <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2">
+                //   按周/按年 → [到期行为][取息周期][取息间隔]（三列同一行）
+                //   按月     → [到期行为][取息周期][计息方式][取息间隔]（四列同一行）
+                <div className={`grid grid-cols-1 items-start gap-3 ${
+                  isPeriodicInterestPayout
+                    ? interestPayoutUnit === "month"
+                      ? "sm:grid-cols-[1fr_1fr_1.4fr_0.6fr]"
+                      : "sm:grid-cols-3"
+                    : "sm:grid-cols-2"
+                }`}>
                   <div className="space-y-1">
                     <div className="form-label">{t("deposit.maturityAction.label")}</div>
                     <select
@@ -1942,13 +1965,7 @@ export function DepositFormModal({
                     </div>
                   ) : null}
                   {isPeriodicInterestPayout ? (
-                    <div
-                      className={`space-y-1 ${
-                        // 按周/按年取息没有「计息方式」，间隔独占这一行、跨满两列；
-                        // 按月取息时计息方式与间隔各占一列，凑满同一行。
-                        interestPayoutUnit === "month" ? "" : "sm:col-span-2"
-                      }`}
-                    >
+                    <div className="space-y-1">
                       <div className="form-label">{t("deposit.payoutFrequency.intervalLabel")}</div>
                       <input
                         type="number"
