@@ -1104,7 +1104,7 @@ resolve_port() {
 write_env_file() {
     local requested_port="$1"
     local requested_node_bin="\${2:-}"
-    local port pkgvar system_password session_secret node_max_old_space node_bin password_file session_secret_file port_file
+    local port pkgvar system_password session_secret node_max_old_space node_bin reg_url reg_token password_file session_secret_file port_file
     if [ -n "$requested_port" ]; then
         port="$(printf '%s' "$requested_port" | tr -d '[:space:]')"
     else
@@ -1120,6 +1120,8 @@ write_env_file() {
     case "$node_max_old_space" in
         ""|*[!0-9]*) node_max_old_space=auto ;;
     esac
+    reg_url="$(read_env_value MMH_REGISTRATION_API_URL 2>/dev/null || true)"
+    reg_token="$(read_env_value MMH_REGISTRATION_API_TOKEN 2>/dev/null || true)"
     password_file="\${pkgvar}/mmh-system-password.txt"
     session_secret_file="\${pkgvar}/mmh-session-secret.txt"
     port_file="\${pkgvar}/.port"
@@ -1133,6 +1135,8 @@ MMH_SYSTEM_PASSWORD=\${system_password}
 MMH_SESSION_SECRET=\${session_secret}
 MMH_NODE_MAX_OLD_SPACE_MB=\${node_max_old_space}
 MMH_NODE_BIN=\${node_bin}
+MMH_REGISTRATION_API_URL=\${reg_url}
+MMH_REGISTRATION_API_TOKEN=\${reg_token}
 EOF
     chmod 600 "\${pkgvar}/mmh.env" 2>/dev/null || true
     printf '%s\\n' "$port" > "$port_file"
@@ -1365,6 +1369,16 @@ ensure_runtime_settings () {
   esac
   export MMH_NODE_MAX_OLD_SPACE_MB="$node_max_old_space"
 
+  # Email-registration service credentials (mmh-registration). Both must be set
+  # for registration to be enabled; they are passed through verbatim so a user
+  # can enable/disable registration without a package reinstall.
+  env_reg_url="$(read_env_value MMH_REGISTRATION_API_URL 2>/dev/null || true)"
+  env_reg_token="$(read_env_value MMH_REGISTRATION_API_TOKEN 2>/dev/null || true)"
+  reg_url="\${MMH_REGISTRATION_API_URL:-$env_reg_url}"
+  reg_token="\${MMH_REGISTRATION_API_TOKEN:-$env_reg_token}"
+  [ -n "$reg_url" ] && export MMH_REGISTRATION_API_URL="$reg_url"
+  [ -n "$reg_token" ] && export MMH_REGISTRATION_API_TOKEN="$reg_token"
+
   cat > "$ENV_FILE" <<EOF
 PORT=\${PORT}
 TZ=Asia/Shanghai
@@ -1372,6 +1386,8 @@ MMH_SYSTEM_PASSWORD=\${MMH_SYSTEM_PASSWORD}
 MMH_SESSION_SECRET=\${MMH_SESSION_SECRET}
 MMH_NODE_MAX_OLD_SPACE_MB=\${MMH_NODE_MAX_OLD_SPACE_MB}
 MMH_NODE_BIN=\${node_bin}
+MMH_REGISTRATION_API_URL=\${reg_url}
+MMH_REGISTRATION_API_TOKEN=\${reg_token}
 EOF
   chmod 600 "$ENV_FILE" 2>/dev/null || true
   printf '%s\\n' "$MMH_SYSTEM_PASSWORD" > "$SYSTEM_PASSWORD_FILE"
