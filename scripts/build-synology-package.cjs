@@ -1127,12 +1127,24 @@ ensure_runtime_settings() {
   esac
   export MMH_NODE_MAX_OLD_SPACE_MB="$node_max_old_space"
 
+  # Email-registration service credentials (mmh-registration). Both must be set
+  # for registration to be enabled; passed through verbatim so a user can
+  # enable/disable registration without a package reinstall.
+  env_reg_url="$(read_env_value MMH_REGISTRATION_API_URL 2>/dev/null || true)"
+  env_reg_token="$(read_env_value MMH_REGISTRATION_API_TOKEN 2>/dev/null || true)"
+  reg_url="\${MMH_REGISTRATION_API_URL:-$env_reg_url}"
+  reg_token="\${MMH_REGISTRATION_API_TOKEN:-$env_reg_token}"
+  [ -n "$reg_url" ] && export MMH_REGISTRATION_API_URL="$reg_url"
+  [ -n "$reg_token" ] && export MMH_REGISTRATION_API_TOKEN="$reg_token"
+
   cat > "$ENV_FILE" <<EOF
 PORT=\${PORT}
 TZ=Asia/Shanghai
 MMH_SYSTEM_PASSWORD=\${MMH_SYSTEM_PASSWORD}
 MMH_SESSION_SECRET=\${MMH_SESSION_SECRET}
 MMH_NODE_MAX_OLD_SPACE_MB=\${MMH_NODE_MAX_OLD_SPACE_MB}
+MMH_REGISTRATION_API_URL=\${reg_url}
+MMH_REGISTRATION_API_TOKEN=\${reg_token}
 EOF
   chmod 600 "$ENV_FILE" 2>/dev/null || true
   printf '%s\\n' "$MMH_SYSTEM_PASSWORD" > "$SYSTEM_PASSWORD_FILE"
