@@ -4,8 +4,9 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export const runtime = "nodejs";
 
-/** 预览列表单次最多返回的行数（超出时响应带 truncated，总数仍以 total 为准）。 */
-const PREVIEW_TAKE = 1000;
+/** 预览列表单次最多返回的行数（超出时响应带 truncated，总数仍以 total 为准）。
+ *  与 purge 的 MAX_PURGE_IDS 保持一致（500），避免「全选」后因超过删除上限被拒。 */
+const PREVIEW_TAKE = 500;
 
 /**
  * GET /api/v1/entries/deleted?accountId=<id>
