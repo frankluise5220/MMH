@@ -309,6 +309,26 @@ function isOrdinaryTaskType(taskType: ScheduledTaskType) {
   return taskType === "income" || taskType === "expense";
 }
 
+/**
+ * 存款/债券三动作计划在「计划任务」表单里按普通模板渲染（2026-09-30 用户裁定）：
+ * - 利息生成 → income（收入模板：目标账户=存款账户，可选分类）
+ * - 利息取出 / 本金取出 → transfer（转账模板：存款账户→资金账户）
+ * 保存时仍提交原始 taskType（deposit 与 bond 系列），后端据此保留 memo.type 与存单关联，
+ * 不破坏执行器路由。展示类型只用于决定表单渲染哪些控件。
+ */
+function planFormDisplayTaskType(taskType: ScheduledTaskType): ScheduledTaskType {
+  if (taskType === "deposit_interest_accrual" || taskType === "bond_interest_accrual") return "income";
+  if (
+    taskType === "deposit_interest_payout" ||
+    taskType === "deposit_maturity" ||
+    taskType === "bond_interest_payout" ||
+    taskType === "bond_maturity"
+  ) {
+    return "transfer";
+  }
+  return taskType;
+}
+
 function cleanOptionLabel(label?: string) {
   return (label ?? "").replace(/\u3000/g, "").trim();
 }
@@ -355,6 +375,8 @@ interface EditData {
   taskCategoryId?: string | null;
   taskCategoryName?: string | null;
   taskNote?: string | null;
+  taskTitle?: string | null;
+  taskSystemSource?: { kind: "deposit" | "bond"; name: string; linked: boolean } | null;
   accountId: string;
   fundCode: string;
   fundName: string | null;
@@ -540,6 +562,18 @@ export function RegularInvestForm({
             ? t("transaction.type.expense")
             : scheduledTaskTypeLabel(editTaskType)
       );
+      // 存款/债券系统计划的「计划名称」与列表一致：优先用 taskTitle（含动作前缀，
+      // 如「存款利息取出：测试」），其次存单名，最后才是通用任务标签。
+      const isSystemPlanEdit =
+        editTaskType === "deposit_maturity" ||
+        editTaskType === "deposit_interest_accrual" ||
+        editTaskType === "deposit_interest_payout" ||
+        editTaskType === "bond_maturity" ||
+        editTaskType === "bond_interest_accrual" ||
+        editTaskType === "bond_interest_payout";
+      const planNameFallback = isSystemPlanEdit
+        ? (editData.taskTitle || editData.fundName || taskFallbackName)
+        : taskFallbackName;
       return {
         taskType: editTaskType,
         accountId: editData.accountId || "",
@@ -547,7 +581,7 @@ export function RegularInvestForm({
         // expose that task-type enum as a fund code in the form.
         fundCode: isFundEditTask ? editData.fundCode || "" : "",
         fundName: taskFallbackName,
-        planName: editData.planName || taskFallbackName,
+        planName: editData.planName || planNameFallback,
         categoryId: editData.taskCategoryId || "",
         categoryName: editData.taskCategoryName || "",
         insuranceProductId: editData.taskInsuranceProductId || "",
@@ -917,7 +951,8 @@ export function RegularInvestForm({
             mode === "edit" ? editData?.executedRuns : 0,
           );
       const effectiveEndDate = isOneTimeInterval ? "" : formData.endDate;
-      const isOrdinaryTask = isOrdinaryTaskType(formData.taskType);
+      // 展示类型口径：存款利息生成按收入模板、取息/本金取出按转账模板提交。
+      const isOrdinaryTask = isOrdinaryTaskType(planFormDisplayTaskType(formData.taskType));
       const taskTypeTitle = formData.taskType === "income" ? t("transaction.type.income") : formData.taskType === "expense" ? t("transaction.type.expense") : scheduledTaskTypeLabel(formData.taskType);
       const submitFundCode = formData.taskType === "fund_regular_invest" ? formData.fundCode.trim() : formData.taskType;
       const submitFundName = isOrdinaryTask
@@ -1114,10 +1149,26 @@ export function RegularInvestForm({
     .map((item) => ({ id: item.id, label: item.name }));
   const isFundTask = formData.taskType === "fund_regular_invest";
   const isLoanTask = formData.taskType === "loan_repayment";
-  const isTransferTask = formData.taskType === "transfer";
   const isInsuranceTask = formData.taskType === "insurance_premium";
-  const isOrdinaryTask = isOrdinaryTaskType(formData.taskType);
-  const scheduleLocked = isLoanTask || mode === "edit";
+  // 展示类型：存款/债券三动作计划映射为普通 income/transfer 模板渲染，
+  // 但保存仍提交原始 taskType（deposit_*/bond_*）以保留 memo.type 与存单关联。
+  const displayTaskType = planFormDisplayTaskType(formData.taskType);
+  const isTransferTask = displayTaskType === "transfer";
+  const isOrdinaryTask = displayTaskType === "income" || displayTaskType === "expense";
+  // 存款/债券系统计划（三动作）编辑时允许改周期/金额/下一执行日（manualOverride 纠错），
+  // 因此不受「编辑模式锁定周期」的约束；其余计划编辑仍锁定周期（需删了重建）。
+  const isDepositSystemPlan =
+    formData.taskType === "deposit_maturity" ||
+    formData.taskType === "deposit_interest_accrual" ||
+    formData.taskType === "deposit_interest_payout" ||
+    formData.taskType === "bond_maturity" ||
+    formData.taskType === "bond_interest_accrual" ||
+    formData.taskType === "bond_interest_payout";
+  // 生息动作（income 语义）：收入落在存款/债券账户上，编辑时账户只读 + 显示分类；
+  // 取息/本金（transfer 语义）：存款账户转出到资金账户，编辑时账户只读 + 资金账户可选。
+  const isDepositAccrualPlan =
+    formData.taskType === "deposit_interest_accrual" || formData.taskType === "bond_interest_accrual";
+  const scheduleLocked = (isLoanTask || mode === "edit") && !isDepositSystemPlan;
   // Loan-derived fields and the schedule-derived repayment amount are locked
   // when editing a loan plan: the repayment table is the source of truth and
   // auto-debit edits only allow funding account and next run date changes.
@@ -1313,7 +1364,7 @@ export function RegularInvestForm({
                     disabled={mode === "edit"}
                     title={t(item.labelKey)}
                     className={`min-w-0 whitespace-nowrap rounded-lg border px-1 py-2 text-center transition-colors ${
-                      formData.taskType === item.value
+                      displayTaskType === item.value
                         ? "border-blue-200 bg-blue-50 text-blue-700"
                         : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
                       } disabled:cursor-not-allowed disabled:opacity-70`}
@@ -1333,7 +1384,49 @@ export function RegularInvestForm({
                 />
               </div>
 
-              {isTransferTask ? (
+              {isDepositSystemPlan ? (
+                <div className="space-y-3 rounded-lg border border-slate-100 bg-slate-50/60 p-2">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">
+                        {isDepositAccrualPlan ? t("regularInvest.account.cashFundAccount") : t("txForm.transferFrom")}
+                      </div>
+                      <div className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 flex items-center">
+                        {displayAccountLabel}
+                      </div>
+                    </div>
+                    {isDepositAccrualPlan ? (
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-slate-600">{t("regularInvest.category")}</div>
+                        <div className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 flex items-center">
+                          {t("systemCategory.depositInterest")}
+                        </div>
+                      </div>
+                    ) : cashAccountList.length > 0 ? (
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-slate-600">{t("txForm.transferTo")}</div>
+                        <SmartSelect mode="single" value={formData.cashAccountId}
+                          onChange={(id) => { recordRecentAccount(id); setFormData(d => ({ ...d, cashAccountId: id })); }}
+                          options={cashOptions}
+                          placeholder={t("regularInvest.placeholder.transferTo")}
+                          onCreateClick={() => setNestedEntityType("cash-account")}
+                          createLabel={t("settings.accounts.add")}
+                          onCycleOwnerFilter={cfCycle} ownerFilterLabel={cfLabel} />
+                      </div>
+                    ) : null}
+                  </div>
+                  {editData?.taskSystemSource ? (
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">
+                        {editData.taskSystemSource.kind === "bond" ? t("regularInvest.client.linkedBond") : t("regularInvest.client.linkedDeposit")}
+                      </div>
+                      <div className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700 flex items-center">
+                        {editData.taskSystemSource.name}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : isTransferTask ? (
                 <div className={`grid items-end gap-3 rounded-lg border border-slate-100 bg-slate-50/60 p-2 ${mode === "edit" ? "grid-cols-2" : "grid-cols-[1fr_auto_1fr]"}`}>
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">{t("txForm.transferFrom")}</div>

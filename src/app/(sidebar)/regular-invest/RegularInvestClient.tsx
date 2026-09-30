@@ -142,6 +142,8 @@ type RegularInvestPlanView = {
   executedAmount?: number;
   confirmedCount?: number;
   confirmedAmount?: number;
+  planGroupId?: string | null;
+  planAction?: string | null;
 };
 
 type RegularInvestDisplayRow =
@@ -312,8 +314,29 @@ function getPlanTaskType(plan: RegularInvestPlanView): ScheduledTaskType {
   return plan.taskType ?? "fund_regular_invest";
 }
 
-function planTaskLabelKey(plan: RegularInvestPlanView): string | null {
+/**
+ * 存款/债券三动作计划在「计划任务」里按普通模板表达（2026-09-30 用户裁定）：
+ * - 利息生成（deposit_interest_accrual / bond_interest_accrual）→ 收入
+ * - 利息取出（deposit_interest_payout / bond_interest_payout）→ 转账
+ * - 本金取出（deposit_maturity / bond_maturity）→ 转账（存款账户→资金账户）
+ * 底层 memo.type 仍保留特殊枚举用于执行器路由与存单关联，这里只做展示层映射。
+ */
+function getPlanDisplayTaskType(plan: RegularInvestPlanView): ScheduledTaskType {
   const taskType = getPlanTaskType(plan);
+  if (taskType === "deposit_interest_accrual" || taskType === "bond_interest_accrual") return "income";
+  if (
+    taskType === "deposit_interest_payout" ||
+    taskType === "deposit_maturity" ||
+    taskType === "bond_interest_payout" ||
+    taskType === "bond_maturity"
+  ) {
+    return "transfer";
+  }
+  return taskType;
+}
+
+function planTaskLabelKey(plan: RegularInvestPlanView): string | null {
+  const taskType = getPlanDisplayTaskType(plan);
   if (taskType === "fund_regular_invest") return "detailView.fundRegularInvest";
   if (taskType === "transfer") return "transaction.type.transfer";
   if (taskType === "insurance_premium") return "regularInvest.taskType.insurancePremium";
@@ -355,7 +378,16 @@ function recordMatchesPlan(plan: RegularInvestPlanView, record: { source?: strin
   return recordMatchesRegularInvestPlan(getPlanTaskType(plan), record);
 }
 
+function planActionLabel(plan: RegularInvestPlanView): string {
+  if (plan.planAction === "principal_withdrawal") return "本金取出";
+  if (plan.planAction === "interest_accrual") return "利息生成";
+  if (plan.planAction === "interest_withdrawal") return "利息取出";
+  return plan.taskTypeLabel || plan.taskType || "计划任务";
+}
+
 function groupLabel(p: RegularInvestPlanView, mode: GroupByMode, t: (key: string, params?: Record<string, string | number>) => string): string {
+  if (p.planGroupId) return getPlanDisplayName(p);
+
   if (mode === "fundGroup") return p.accountGroupName || t("regularInvest.client.group.noTargetOwner");
   if (mode === "fundAccount") return planAccountLabel(p);
   if (mode === "cashGroup") return p.cashAccountGroupName || t("regularInvest.client.group.noCashOwner");
@@ -364,12 +396,14 @@ function groupLabel(p: RegularInvestPlanView, mode: GroupByMode, t: (key: string
 }
 
 function groupTitle(p: RegularInvestPlanView, mode: GroupByMode, t: (key: string, params?: Record<string, string | number>) => string): string {
+  if (p.planGroupId) return `${getPlanDisplayName(p)} · ${planActionLabel(p)}`;
   if (mode === "fundAccount") return p.accountHoverTitle || p.accountFullLabel || planAccountLabel(p);
   if (mode === "cashAccount") return p.cashAccountHoverTitle || p.cashAccountFullLabel || planCashAccountLabel(p);
   return groupLabel(p, mode, t);
 }
 
 function groupKey(p: RegularInvestPlanView, mode: GroupByMode, t: (key: string, params?: Record<string, string | number>) => string): string {
+  if (p.planGroupId) return `planGroup:${p.planGroupId}`;
   if (mode === "fundAccount") return `fundAccount:${p.accountId || p.accountFullLabel || planAccountLabel(p)}`;
   if (mode === "cashAccount") return `cashAccount:${p.cashAccountId || p.cashAccountFullLabel || planCashAccountLabel(p)}`;
   return `${mode}:${groupLabel(p, mode, t)}`;
@@ -1443,7 +1477,7 @@ export function RegularInvestClient({
 
   const filteredPlans = plans.filter((plan) => {
     if (!showEnded && (plan.status === "stopped" || plan.status === "completed")) return false;
-    if (selectedTypes.length > 0 && !selectedTypes.includes(getPlanTaskType(plan))) return false;
+    if (selectedTypes.length > 0 && !selectedTypes.includes(getPlanDisplayTaskType(plan))) return false;
     if (selectedAccountIds.length > 0
       && !(plan.accountId && selectedAccountIds.includes(plan.accountId))
       && !(plan.cashAccountId && selectedAccountIds.includes(plan.cashAccountId))) return false;
@@ -1452,6 +1486,7 @@ export function RegularInvestClient({
       // 系统计划 = 存款到期/取息、城投债到期/付息、房贷账单（bill 角色）。
       const taskType = getPlanTaskType(plan);
       const isSystem = taskType === "deposit_maturity"
+        || taskType === "deposit_interest_accrual"
         || taskType === "deposit_interest_payout"
         || taskType === "bond_maturity"
         || taskType === "bond_interest_payout"
@@ -1565,17 +1600,33 @@ export function RegularInvestClient({
   }, [t]);
 
   function renderPlanActions(plan: RegularInvestPlanView) {
-    // System-level plans (mortgage "bill" loan plans, deposit maturity/payout,
-    // chengtou-bond plans) stay read-only for editing: the schedule is derived
-    // from the loan / deposit lot / bond. Deletion is allowed (2026-09-17) and
-    // always goes through the real source, because the row is rebuilt by the
-    // startup self-heal whenever that source is still alive.
-    if (plan.isSystemTask) {
+    // 存款到期/取息系统计划放开编辑（周期/金额/下一执行日），编辑后 manualOverride
+    // 使手动值永久生效；债券/房贷账单仍只读。
+    const planTaskType = getPlanTaskType(plan);
+    const isDepositSystemPlan = planTaskType === "deposit_maturity" || planTaskType === "deposit_interest_accrual" || planTaskType === "deposit_interest_payout";
+    if (plan.isSystemTask && !isDepositSystemPlan) {
       return (
         <>
           <span className="inline-flex h-6 items-center rounded border border-slate-200 bg-slate-50 px-1.5 text-[10px] text-slate-400" title={t("regularInvest.client.systemTask.title")}>
             {t("regularInvest.client.systemTask.short")}
           </span>
+          <button onClick={() => handleDelete(plan.id)} title={t("common.delete")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
+            <Trash2 className="h-3 w-3 text-red-500" />
+          </button>
+        </>
+      );
+    }
+    // 存款到期/取息系统计划：可编辑（周期/金额/下一执行日）+ 删除，但不提供
+    // 暂停/停止/立即执行（存单驱动，暂停会被存单条款自愈恢复）。
+    if (plan.isSystemTask && isDepositSystemPlan) {
+      return (
+        <>
+          <span className="inline-flex h-6 items-center rounded border border-slate-200 bg-slate-50 px-1.5 text-[10px] text-slate-400" title={t("regularInvest.client.systemTask.title")}>
+            {t("regularInvest.client.systemTask.short")}
+          </span>
+          <button onClick={() => { setEditPlan(plan); setEditOpen(true); }} title={t("regularInvest.client.action.edit")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-blue-200 hover:bg-blue-50">
+            <Pencil className="h-3 w-3 text-blue-600" />
+          </button>
           <button onClick={() => handleDelete(plan.id)} title={t("common.delete")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
             <Trash2 className="h-3 w-3 text-red-500" />
           </button>
@@ -1898,6 +1949,8 @@ export function RegularInvestClient({
           fundCode: editPlan.fundCode || "",
           fundName: editPlan.fundName || null,
           planName: editPlan.planName ?? null,
+          taskTitle: editPlan.taskTitle ?? null,
+          taskSystemSource: editPlan.taskSystemSource ?? null,
           amount: editPlan.amount,
           intervalUnit: editPlan.intervalUnit || "month",
           intervalValue: editPlan.intervalValue || 1,
@@ -1920,6 +1973,7 @@ export function RegularInvestClient({
           skipPendingPreceding: editPlan.skipPendingPreceding ?? true,
         } : undefined}
         accountId={editPlan?.accountId ?? investmentAccounts[0]?.id ?? ""}
+        editAccountLabel={editPlan ? (editPlan.accountLabel || editPlan.accountName || undefined) : undefined}
         investmentAccounts={investmentAccounts}
         cashAccounts={cashAccounts}
         loanAccounts={loanAccounts}

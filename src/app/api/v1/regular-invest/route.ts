@@ -996,20 +996,20 @@ async function handleSystemPlanDelete(
   if (task.type === "loan_repayment") {
     return handleLoanRepaymentPlanDelete(req, plan, householdId);
   }
-  if (task.type === "deposit_maturity" || task.type === "deposit_interest_payout") {
+  if (task.type === "deposit_maturity" || task.type === "deposit_interest_accrual" || task.type === "deposit_interest_payout") {
     return handleDepositPlanDelete(req, plan, householdId, task);
   }
-  if (task.type === "bond_maturity" || task.type === "bond_interest_payout") {
+  if (task.type === "bond_maturity" || task.type === "bond_interest_accrual" || task.type === "bond_interest_payout") {
     return handleBondPlanDelete(req, plan, householdId);
   }
   return NextResponse.json({ ok: false, code: "SYSTEM_MANAGED_PLAN", error: "该计划由系统管理，暂不支持删除" }, { status: 403 });
 }
 
-/** 存款计划的关联存单 id：优先 memo，其次 depm_/depi_ 前缀。 */
+/** 存款计划的关联存单 id：优先 memo，其次 depm_/depa_/depi_ 前缀。 */
 function resolveDepositLotId(planId: string, task: { depositSourceEntryId?: string | null }): string {
   const fromMemo = String(task.depositSourceEntryId ?? "").trim();
   if (fromMemo) return fromMemo;
-  return planId.startsWith("depm_") || planId.startsWith("depi_") ? planId.slice(5) : "";
+  return planId.startsWith("depm_") || planId.startsWith("depa_") || planId.startsWith("depi_") ? planId.slice(5) : "";
 }
 
 /**
@@ -1062,6 +1062,7 @@ async function handleDepositPlanDelete(
   // 删除只涉及计划行本身与它生成的生息/取息记录（regularInvestPlanId=本计划），
   // 存单（buy 行）永不触碰，也不需要存单级联确认。
   const isPayout = task.type === "deposit_interest_payout" || plan.id.startsWith("depi_");
+  const isAccrual = task.type === "deposit_interest_accrual" || plan.id.startsWith("depa_");
 
   if (!keepSource) {
     if (isPayout) {
@@ -1100,8 +1101,8 @@ async function handleDepositPlanDelete(
 
   // 计划行物理删除。两个计划（到期/取息）彼此独立：keepSource 只删自己的行；
   // 到期计划级联删存单时，取息计划随存单一起失去意义，两行同删。
-  const planIds = !isPayout && !keepSource && lotLinked && lotId
-    ? [`depm_${lotId}`, `depi_${lotId}`]
+  const planIds = !isPayout && !isAccrual && !keepSource && lotLinked && lotId
+    ? [`depm_${lotId}`, `depa_${lotId}`, `depi_${lotId}`]
     : [plan.id];
   await prisma.regularInvestPlan.deleteMany({ where: { id: { in: planIds }, householdId } });
   revalidateAfterTxChange();
@@ -1133,8 +1134,8 @@ async function handleBondPlanDelete(
 ) {
   const keepSource = req.nextUrl.searchParams.get("keepSource") === "1";
   const cascadeSource = req.nextUrl.searchParams.get("cascadeSource") === "1";
-  const productId = plan.id.startsWith("bondm_") || plan.id.startsWith("bondi_") ? plan.id.slice(6) : "";
-  const planIds = productId ? [`bondm_${productId}`, `bondi_${productId}`] : [plan.id];
+  const productId = plan.id.startsWith("bondm_") || plan.id.startsWith("bonda_") || plan.id.startsWith("bondi_") ? plan.id.slice(6) : "";
+  const planIds = productId ? [`bondm_${productId}`, `bonda_${productId}`, `bondi_${productId}`] : [plan.id];
 
   const product = productId
     ? await prisma.wealthProduct.findFirst({ where: { id: productId, householdId }, select: { id: true, name: true } })

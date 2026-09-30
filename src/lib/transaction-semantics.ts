@@ -70,13 +70,13 @@ export function recordMatchesRegularInvestPlan(taskType: string | null | undefin
   if (taskType === "insurance_premium") return entry.source === TRANSACTION_SOURCE_INSURANCE;
   // 存款到期/取息的记录由存款执行器写入，source 固定为 "deposit"（本金赎回与利息收入同源），
   // 不走通用 scheduled_task 分支；贷款/转账等其它系统任务仍按 scheduled_task 匹配。
-  if (taskType === "deposit_maturity" || taskType === "deposit_interest_payout") {
+  if (taskType === "deposit_maturity" || taskType === "deposit_interest_accrual" || taskType === "deposit_interest_payout") {
     return entry.source === "deposit";
   }
   // 债券到期/付息同构：由债券执行器写入，source 固定为 "bond"（付息的生息+取息两条同源）。
   // 债券「买入/赎回」虽然也是 source="bond"，但它们不带 regularInvestPlanId，
   // 不会进入按计划分组的统计，因此不会污染「已执行次数」。
-  if (taskType === "bond_maturity" || taskType === "bond_interest_payout") {
+  if (taskType === "bond_maturity" || taskType === "bond_interest_accrual" || taskType === "bond_interest_payout") {
     return entry.source === TRANSACTION_SOURCE_BOND;
   }
   return entry.source === TRANSACTION_SOURCE_SCHEDULED_TASK;

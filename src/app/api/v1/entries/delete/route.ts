@@ -144,7 +144,7 @@ export async function POST(req: Request) {
       where: { id: { in: entryIds }, deletedAt: null, type: "investment", fundProductType: "deposit", fundSubtype: "buy" },
       select: { id: true },
     });
-    const depositLotPlanIds = depositBuyRows.flatMap((row) => [`depm_${row.id}`, `depi_${row.id}`]);
+    const depositLotPlanIds = depositBuyRows.flatMap((row) => [`depm_${row.id}`, `depa_${row.id}`, `depi_${row.id}`]);
     const depositGeneratedRecordCount = depositLotPlanIds.length > 0
       ? await prisma.txRecord.count({ where: { regularInvestPlanId: { in: depositLotPlanIds }, deletedAt: null } })
       : 0;

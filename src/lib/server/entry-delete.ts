@@ -562,6 +562,8 @@ async function softDeleteIndependentBusinessRecordsByIds(
 const PAYOUT_PAIR_PLAN_SOURCES = [
   { source: "deposit", planPrefix: "depi_" },
   { source: TRANSACTION_SOURCE_BOND, planPrefix: "bondi_" },
+  { source: "deposit", planPrefix: "depa_" },
+  { source: TRANSACTION_SOURCE_BOND, planPrefix: "bonda_" },
 ] as const;
 
 async function collectPayoutPairEntryIds(householdId: string, entryIds: string[]): Promise<string[]> {
@@ -586,13 +588,18 @@ async function collectPayoutPairEntryIds(householdId: string, entryIds: string[]
     if (!seed.source || !seed.regularInvestPlanId || !seed.date) continue;
     const dayStart = new Date(seed.date);
     dayStart.setHours(0, 0, 0, 0);
+    const payoutPlanIds = seed.regularInvestPlanId.startsWith("depa_")
+      ? [seed.regularInvestPlanId.replace(/^depa_/, "depi_")]
+      : seed.regularInvestPlanId.startsWith("bonda_")
+        ? [seed.regularInvestPlanId.replace(/^bonda_/, "bondi_")]
+        : [seed.regularInvestPlanId];
     const pairs = await prisma.txRecord.findMany({
       where: {
         householdId,
         deletedAt: null,
         type: TransactionType.transfer,
         source: seed.source,
-        regularInvestPlanId: seed.regularInvestPlanId,
+        regularInvestPlanId: { in: payoutPlanIds },
         date: { gte: dayStart, lt: new Date(dayStart.getTime() + 24 * 60 * 60 * 1000) },
       },
       select: { id: true },

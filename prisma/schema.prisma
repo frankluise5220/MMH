@@ -1405,6 +1405,13 @@ model RegularInvestPlan {
   executionDay                                     Int?
   secondaryExecutionDay                            Int?
   skipPendingPreceding                             Boolean              @default(true)
+  /// 用户手动覆盖标记：true 表示该计划行的周期/金额/下一执行日以计划行当前字段为准，
+  /// 不再由存单条款（depm_/depi_ 系统计划）派生覆盖；编辑计划行时置 true，删除存单重建计划时重置。
+  manualOverride                                   Boolean              @default(false)
+  /// 同一笔存单/债券存单的计划任务组标识。
+  planGroupId                                      String?
+  /// 计划组内动作：principal_withdrawal / interest_accrual / interest_withdrawal。
+  planAction                                       String?
   householdId                                      String?
   Account_RegularInvestPlan_accountIdToAccount     Account              @relation("RegularInvestPlan_accountIdToAccount", fields: [accountId], references: [id], onDelete: Cascade)
   Account_RegularInvestPlan_cashAccountIdToAccount Account?             @relation("RegularInvestPlan_cashAccountIdToAccount", fields: [cashAccountId], references: [id])
@@ -1416,6 +1423,8 @@ model RegularInvestPlan {
   @@index([nextRunDate])
   @@index([status])
   @@index([householdId])
+  @@index([planGroupId])
+  @@index([planAction])
 }
 
 model LoanRateAdjustment {

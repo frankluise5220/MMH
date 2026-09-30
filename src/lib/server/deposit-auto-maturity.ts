@@ -112,6 +112,7 @@ async function runAutoProcessMaturedDeposits(
             householdId,
             id: { in: periodicLots.map((lot) => `depi_${lot.id}`) },
             status: RegularInvestStatus.active,
+            planAction: null,
           },
           select: { id: true },
         })).map((row) => row.id.slice("depi_".length))
@@ -337,13 +338,43 @@ async function autoAccruePeriodicInterest(
     },
   });
   if (!buy) return { status: "skipped", reason: "lot missing" };
-  const frequency = parseDepositInterestPayout(buy.depositInterestPayoutFrequency);
+  let frequency = parseDepositInterestPayout(buy.depositInterestPayoutFrequency);
   if (frequency.kind !== "periodic") return { status: "skipped", reason: "not periodic" };
+
+  // 用户手动覆盖（depi_ 计划行 manualOverride=true）：金额=计划行 amount（每期固定），
+  // 周期=计划行 intervalUnit/intervalValue。二者独立覆盖，只覆盖用户实际改过的维度。
+  // 先读覆盖，再校验本金/利率：手动指定每期金额时无需依赖存单的本金/利率。
+  let amountOverride: number | null = null;
+  if (planId) {
+    const overridePlan = await prisma.regularInvestPlan.findUnique({
+      where: { id: planId },
+      select: { manualOverride: true, amount: true, intervalUnit: true, intervalValue: true },
+    });
+    if (overridePlan?.manualOverride) {
+      const amt = Number(overridePlan.amount);
+      if (Number.isFinite(amt) && amt > 0) amountOverride = amt;
+      if (overridePlan.intervalUnit) {
+        const unit = overridePlan.intervalUnit === "month"
+          ? "month"
+          : overridePlan.intervalUnit === "week"
+            ? "week"
+            : overridePlan.intervalUnit === "year"
+              ? "year"
+              : null;
+        if (unit) {
+          frequency = { kind: "periodic", unit, interval: Math.max(1, overridePlan.intervalValue || 1) };
+        }
+      }
+    }
+  }
 
   const balance = await loadDepositLotBalance({ householdId, lotId: buy.id });
   const principal = balance?.remainingPrincipal ?? 0;
   const annualRate = toNumber(buy.depositAnnualRate);
-  if (!(principal > 0) || !(annualRate > 0)) return { status: "skipped", reason: "missing principal/rate" };
+  // 手动指定每期金额时，跳过本金/利率校验；否则仍需存单有本金和利率。
+  if (amountOverride == null && (!(principal > 0) || !(annualRate > 0))) {
+    return { status: "skipped", reason: "missing principal/rate" };
+  }
   const depositAccountId = buy.toAccountId;
   const cashAccountId = buy.accountId;
   if (!depositAccountId || !cashAccountId) return { status: "skipped", reason: "missing accounts" };
@@ -471,14 +502,17 @@ async function autoAccruePeriodicInterest(
     }
     // 按月均分：月频率下每期固定 本金×年利率÷12×期数；其余走统一分段计息
     // （整月跨度按 月数/12，否则 天数/365）。
-    const accrued = buy.depositInterestCalcBasis === "monthly" && frequency.unit === "month"
-      ? round2((principal * (annualRate / 100) * frequency.interval) / 12)
-      : depositSegmentInterest({
-          principal,
-          annualRatePercent: annualRate,
-          startDate: segmentStart,
-          endDate: payoutDate,
-        });
+    // 手动覆盖金额（amountOverride）时，每期固定取该金额，不再按本金×利率计算。
+    const accrued = amountOverride != null
+      ? round2(amountOverride)
+      : buy.depositInterestCalcBasis === "monthly" && frequency.unit === "month"
+        ? round2((principal * (annualRate / 100) * frequency.interval) / 12)
+        : depositSegmentInterest({
+            principal,
+            annualRatePercent: annualRate,
+            startDate: segmentStart,
+            endDate: payoutDate,
+          });
     segmentStart = payoutDate;
     if (!(accrued > 0)) continue;
     await prisma.$transaction(async (tx) => {
@@ -543,6 +577,92 @@ async function autoAccruePeriodicInterest(
     return { status: "accrued", pairs, totalInterest, entryIds: createdEntryIds };
   }
   return { status: "skipped", reason: "no missing payouts" };
+}
+
+/**
+ * 独立的「利息取出」动作：只把已经生成的利息收入转到资金账户。
+ * 生成动作由 depa_ 完成；这里不重新计算利息，也不依赖计划执行顺序，
+ * 但会先用 depa_ 逻辑补齐当前到期的利息，保证 depi_ 单独执行也不会漏转。
+ */
+export async function autoWithdrawAccruedInterestForLot(params: {
+  householdId: string;
+  lotId: string;
+  now: Date;
+  planId?: string | null;
+}): Promise<{ status: "accrued" | "skipped"; pairs?: number; totalInterest?: number; reason?: string }> {
+  const accrualPlanId = `depa_${params.lotId}`;
+  await autoAccruePeriodicInterestForLot({
+    householdId: params.householdId,
+    lotId: params.lotId,
+    now: params.now,
+    createTransfer: false,
+    planId: accrualPlanId,
+  });
+
+  const buy = await prisma.txRecord.findFirst({
+    where: { id: params.lotId, householdId: params.householdId, deletedAt: null, fundProductType: "deposit", fundSubtype: FundSubtype.buy },
+    select: { id: true, accountId: true, toAccountId: true, currency: true, fundName: true, householdId: true },
+  });
+  if (!buy?.accountId || !buy.toAccountId) return { status: "skipped", reason: "missing accounts" };
+  const [depositAccount, cashAccount] = await Promise.all([
+    prisma.account.findUnique({ where: { id: buy.toAccountId }, select: { id: true, name: true, currency: true } }),
+    prisma.account.findUnique({ where: { id: buy.accountId }, select: { id: true, name: true, currency: true } }),
+  ]);
+  if (!depositAccount || !cashAccount) return { status: "skipped", reason: "account not found" };
+
+  const incomes = await prisma.txRecord.findMany({
+    where: {
+      householdId: params.householdId,
+      deletedAt: null,
+      source: "deposit",
+      depositSourceEntryId: buy.id,
+      type: TransactionType.income,
+    },
+    select: { id: true, date: true, amount: true },
+    orderBy: { date: "asc" },
+  });
+  const transfers = await prisma.txRecord.findMany({
+    where: {
+      householdId: params.householdId,
+      deletedAt: null,
+      source: "deposit",
+      depositSourceEntryId: buy.id,
+      type: TransactionType.transfer,
+    },
+    select: { date: true, amount: true },
+  });
+  const transferKeys = new Set(transfers.map((row) => `${localDayKey(new Date(row.date))}|${Number(row.amount)}`));
+  const pending = incomes.filter((row) => !transferKeys.has(`${localDayKey(new Date(row.date))}|${-Number(row.amount)}`));
+  if (pending.length === 0) return { status: "skipped", reason: "no accrued interest to withdraw" };
+
+  const t = await getServerT();
+  let totalInterest = 0;
+  for (const income of pending) {
+    const amount = round2(Number(income.amount));
+    if (!(amount > 0)) continue;
+    await prisma.txRecord.create({
+      data: {
+        date: income.date,
+        type: TransactionType.transfer,
+        accountId: depositAccount.id,
+        accountName: depositAccount.name,
+        toAccountId: cashAccount.id,
+        toAccountName: cashAccount.name,
+        amount: -amount,
+        currency: buy.currency ?? depositAccount.currency ?? cashAccount.currency ?? "CNY",
+        source: "deposit",
+        entryOrigin: ENTRY_ORIGIN_SCHEDULED_TASK,
+        depositSourceEntryId: buy.id,
+        regularInvestPlanId: params.planId ?? null,
+        note: `${t("deposit.renew.payoutTransferNote", { name: buy.fundName ?? "" })}`,
+        householdId: buy.householdId,
+      },
+    });
+    totalInterest += amount;
+  }
+  await recalcAndSaveAccountBalance(depositAccount.id).catch(() => {});
+  await recalcAndSaveAccountBalance(cashAccount.id).catch(() => {});
+  return { status: "accrued", pairs: pending.length, totalInterest: round2(totalInterest) };
 }
 
 async function autoRedeemDeposit(buyId: string, householdId: string): Promise<LotOutcome> {

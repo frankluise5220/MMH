@@ -333,11 +333,8 @@ async function updateRegularInvest(formData: FormData) {
   if (existingTaskForGuard.type === "loan_repayment" && getLoanScheduledPlanRole(existingTaskForGuard) === "bill") {
     return { ok: false as const, error: "房贷账单由系统生成（利率由人行/LPR调整），不可作为计划任务修改" };
   }
-  // Deposit maturity/payout plans are system-generated from the deposit lot
-  // (same read-only treatment as mortgage bills).
-  if (isSystemManagedScheduledTask(existingTaskForGuard)) {
-    return { ok: false as const, error: "存款到期/取息计划由系统根据存单生成，不可在计划任务中修改；如需调整请编辑对应存单" };
-  }
+  // 存款/债券三动作计划都允许手动编辑周期、金额、下一执行日；编辑后置
+  // manualOverride，使用户明确改过的值永久生效，不再被存单条款覆盖。
 
   const existingTask = decodeScheduledTaskMemo(plan.memo);
   const existingTaskType = normalizeScheduledTaskType(plan.taskType ?? existingTask.type);
@@ -399,9 +396,16 @@ async function updateRegularInvest(formData: FormData) {
 
   const updateData: any = {};
   const profileFundName = isFundTask ? await resolveFundName(fundCode, { householdId }) : null;
-  const displayName = isFundTask
-    ? profileFundName ?? normalizeFundDisplayName(fundCode, suppliedFundName) ?? normalizeFundDisplayName(fundCode, plan.fundName) ?? fundCode
-    : suppliedFundName || (isOrdinaryTask ? nextCategoryName ?? plan.targetName ?? plan.fundName ?? scheduledTaskTypeLabel(taskType) : scheduledTaskTypeLabel(taskType));
+  const isDepositSystemPlanEdit =
+    existingTaskForGuard.type === "deposit_maturity" ||
+    existingTaskForGuard.type === "deposit_interest_accrual" ||
+    existingTaskForGuard.type === "deposit_interest_payout";
+  const displayName = isDepositSystemPlanEdit
+    // 存款系统计划编辑时保留存单名，不回退成「存款取息/存款到期」的通用标签。
+    ? (suppliedFundName || plan.fundName || scheduledTaskTypeLabel(taskType))
+    : isFundTask
+      ? profileFundName ?? normalizeFundDisplayName(fundCode, suppliedFundName) ?? normalizeFundDisplayName(fundCode, plan.fundName) ?? fundCode
+      : suppliedFundName || (isOrdinaryTask ? nextCategoryName ?? plan.targetName ?? plan.fundName ?? scheduledTaskTypeLabel(taskType) : scheduledTaskTypeLabel(taskType));
   updateData.accountId = accountId;
   updateData.fundCode = fundCode;
   updateData.fundName = displayName;
@@ -409,20 +413,28 @@ async function updateRegularInvest(formData: FormData) {
   updateData.taskType = taskType;
   updateData.targetName = displayName;
   updateData.insuranceProductName = taskType === "insurance_premium" ? displayName : null;
-  updateData.memo = encodeScheduledTaskMemo({
-    type: taskType,
-    title: displayName,
-    fromAccountId: isOrdinaryTask ? null : cashAccountId || null,
-    toAccountId: accountId,
-    categoryId: isOrdinaryTask ? nextCategoryId : null,
-    categoryName: isOrdinaryTask ? nextCategoryName : null,
-    insuranceProductId,
-    note: isOrdinaryTask ? nextNote : null,
-    annualRate: taskType === "loan_repayment" ? nextAnnualRate : null,
-    repaymentMethod: taskType === "loan_repayment" ? nextRepaymentMethod : null,
-    repaymentIntervalMonths: taskType === "loan_repayment" ? nextRepaymentIntervalMonths : null,
-    loanPlanRole: taskType === "loan_repayment" ? getLoanScheduledPlanRole(existingTask) ?? "auto_debit" : null,
-  });
+  // 存款到期/取息系统计划的 memo 保留原样：它携带 depositSourceEntryId（存单关联）、
+  // type、note 等执行器必需字段，重建会丢失关联导致取息/到期无法定位存单。
+  const editedDepositSystemPlanForMemo =
+    existingTaskForGuard.type === "deposit_maturity" ||
+    existingTaskForGuard.type === "deposit_interest_accrual" ||
+    existingTaskForGuard.type === "deposit_interest_payout";
+  if (!editedDepositSystemPlanForMemo) {
+    updateData.memo = encodeScheduledTaskMemo({
+      type: taskType,
+      title: displayName,
+      fromAccountId: isOrdinaryTask ? null : cashAccountId || null,
+      toAccountId: accountId,
+      categoryId: isOrdinaryTask ? nextCategoryId : null,
+      categoryName: isOrdinaryTask ? nextCategoryName : null,
+      insuranceProductId,
+      note: isOrdinaryTask ? nextNote : null,
+      annualRate: taskType === "loan_repayment" ? nextAnnualRate : null,
+      repaymentMethod: taskType === "loan_repayment" ? nextRepaymentMethod : null,
+      repaymentIntervalMonths: taskType === "loan_repayment" ? nextRepaymentIntervalMonths : null,
+      loanPlanRole: taskType === "loan_repayment" ? getLoanScheduledPlanRole(existingTask) ?? "auto_debit" : null,
+    });
+  }
   if (accountId !== plan.accountId || formData.has("accountId")) {
     const targetAcc = await prisma.account.findUnique({ where: { id: accountId }, select: { name: true, householdId: true, investProductType: true } });
     if (!targetAcc) return { ok: false as const, error: isFundTask ? "基金账户不存在" : "目标账户不存在" };
@@ -607,9 +619,18 @@ async function updateRegularInvest(formData: FormData) {
   }
 
   try {
+    // 存款到期/取息系统计划被手动编辑时，置 manualOverride=true：之后
+    // ensureDepositPlansForLot 不再用存单条款覆盖手动改的周期/金额/下一执行日。
+    const editedSystemPlan =
+      existingTaskForGuard.type === "deposit_maturity" ||
+      existingTaskForGuard.type === "deposit_interest_accrual" ||
+      existingTaskForGuard.type === "deposit_interest_payout" ||
+      existingTaskForGuard.type === "bond_maturity" ||
+      existingTaskForGuard.type === "bond_interest_accrual" ||
+      existingTaskForGuard.type === "bond_interest_payout";
     await prisma.regularInvestPlan.update({
       where: { id: planId },
-      data: updateData,
+      data: editedSystemPlan ? { ...updateData, manualOverride: true } : updateData,
     });
 
     if (isFundTask && updateData.confirmDays != null) {

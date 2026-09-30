@@ -7,6 +7,7 @@ import {
   isPeriodicDepositInterestPayout,
   parseDepositInterestPayout,
 } from "@/lib/deposit-interest-payout";
+import { depositSegmentInterest, round2 } from "@/lib/deposit-maturity";
 import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, type ScheduledTaskPayload } from "@/lib/scheduled-task";
 import { loadDepositLotBalance } from "@/lib/server/deposit-lot-balance";
 
@@ -26,7 +27,7 @@ export async function completeDepositPlansForLot(params: {
   await prisma.regularInvestPlan.updateMany({
     where: {
       householdId: params.householdId,
-      id: { in: [`depm_${params.lotId}`, `depi_${params.lotId}`] },
+      id: { in: [`depm_${params.lotId}`, `depa_${params.lotId}`, `depi_${params.lotId}`] },
     },
     data: { status: RegularInvestStatus.completed },
   });
@@ -34,7 +35,7 @@ export async function completeDepositPlansForLot(params: {
 
 /** 该计划类型是否由存款计划执行器处理。 */
 export function isDepositPlanTask(type: string | null | undefined): boolean {
-  return type === "deposit_maturity" || type === "deposit_interest_payout";
+  return type === "deposit_maturity" || type === "deposit_interest_accrual" || type === "deposit_interest_payout";
 }
 
 /**
@@ -66,7 +67,7 @@ export async function ensureDepositPlansForHeldLots(params: {
   const existing = await prisma.regularInvestPlan.findMany({
     where: {
       householdId: params.householdId,
-      id: { in: [...ids.map((id) => `depm_${id}`), ...ids.map((id) => `depi_${id}`)] },
+      id: { in: [...ids.map((id) => `depm_${id}`), ...ids.map((id) => `depa_${id}`), ...ids.map((id) => `depi_${id}`)] },
     },
     select: { id: true, memo: true },
   });
@@ -120,9 +121,11 @@ export async function ensureDepositPlansForHeldLots(params: {
     const needsRefresh = !!lot.depositMaturityAction
       || isPeriodicDepositInterestPayout(lot.depositInterestPayoutFrequency)
       || !existingIds.has(`depm_${lot.id}`)
+      || !existingIds.has(`depa_${lot.id}`)
       || !existingIds.has(`depi_${lot.id}`)
       || (!lot.depositMaturityAction && existingIds.has(`depm_${lot.id}`))
       || staleLinkedIds.has(`depm_${lot.id}`)
+      || staleLinkedIds.has(`depa_${lot.id}`)
       || staleLinkedIds.has(`depi_${lot.id}`);
     if (!needsRefresh) continue;
     const result = await ensureDepositPlansForLot({ householdId: params.householdId, lotId: lot.id }).catch(() => null);
@@ -132,7 +135,13 @@ export async function ensureDepositPlansForHeldLots(params: {
 }
 
 export const DEPOSIT_MATURITY_PLAN_FUND_CODE = "deposit_maturity";
+export const DEPOSIT_ACCRUAL_PLAN_FUND_CODE = "deposit_interest_accrual";
 export const DEPOSIT_PAYOUT_PLAN_FUND_CODE = "deposit_interest_payout";
+
+const DEPOSIT_PLAN_GROUP_PREFIX = "deposit:";
+const DEPOSIT_ACTION_PRINCIPAL = "principal_withdrawal";
+const DEPOSIT_ACTION_ACCRUAL = "interest_accrual";
+const DEPOSIT_ACTION_PAYOUT = "interest_withdrawal";
 
 /**
  * System-plan wiring for deposits, mirroring 理财产品/贷款: every held lot gets
@@ -162,6 +171,15 @@ export async function ensureDepositPlansForLot(params: {
     },
   });
   if (!buy) throw new Error("LOT_NOT_FOUND");
+  // 用户手动覆盖标记：true 时 depm_/depi_ 的周期/金额/下一执行日以计划行当前
+  // 字段为准，下面 upsert 不再用存单条款覆盖（只保留结清收尾）。
+  const overrideRows = await prisma.regularInvestPlan.findMany({
+    where: { id: { in: [`depm_${buy.id}`, `depa_${buy.id}`, `depi_${buy.id}`] } },
+    select: { id: true, manualOverride: true, planAction: true },
+  });
+  const manualOverride = new Set(
+    overrideRows.filter((row) => row.manualOverride).map((row) => row.id),
+  );
   // 本金已取完（提前支取/到期取回/核销）→ 两条计划行一并完成，绝不再生成利息。
   // 这一步必须在下面的日期/账户校验**之前**：存单要素不全（缺到期日、缺资金来源
   // 账户）时那些校验会抛错，而调用方一律 catch 掉 —— 结果就是已结清的存单计划
@@ -199,6 +217,8 @@ export async function ensureDepositPlansForLot(params: {
     where: { id: `depm_${buy.id}` },
     create: {
       id: `depm_${buy.id}`,
+      planGroupId: `${DEPOSIT_PLAN_GROUP_PREFIX}${buy.id}`,
+      planAction: DEPOSIT_ACTION_PRINCIPAL,
       accountId: depositAccount,
       accountName: label,
       cashAccountId: cashAccount,
@@ -222,16 +242,25 @@ export async function ensureDepositPlansForLot(params: {
       skipPendingPreceding: false,
       householdId,
     },
-    update: {
-      // startDate 与 nextRunDate 同步为当前到期日：存单编辑（起存日/期限）
-      // 后计划行不残留创建时刻的旧到期日快照，避免「开始日期」晚于「下次执行日」。
-      startDate: maturity,
-      nextRunDate: maturity,
-      // 金额跟随存单当前本金（到期执行金额按 lot 实时计算，这里只保证列表显示一致）。
-      amount: remainingPrincipal,
-      status: RegularInvestStatus.active,
-      memo: maturityMemo,
-    },
+    update: manualOverride.has(`depm_${buy.id}`)
+      // 用户手动覆盖：周期/金额/下一执行日以计划行当前字段为准，不再由存单条款覆盖。
+      // 仅刷新 memo（关联信息）并保持 active；结清收尾由上面 settled 提前返回完成。
+      ? {
+          planAction: DEPOSIT_ACTION_PRINCIPAL,
+          memo: maturityMemo,
+          status: RegularInvestStatus.active,
+        }
+      : {
+          // startDate 与 nextRunDate 同步为当前到期日：存单编辑（起存日/期限）
+          // 后计划行不残留创建时刻的旧到期日快照，避免「开始日期」晚于「下次执行日」。
+          startDate: maturity,
+          nextRunDate: maturity,
+          planAction: DEPOSIT_ACTION_PRINCIPAL,
+          // 金额跟随存单当前本金（到期执行金额按 lot 实时计算，这里只保证列表显示一致）。
+          amount: remainingPrincipal,
+          status: RegularInvestStatus.active,
+          memo: maturityMemo,
+        },
   }) : null;
   if (!buy.depositMaturityAction) {
     await prisma.regularInvestPlan.updateMany({
@@ -240,29 +269,115 @@ export async function ensureDepositPlansForLot(params: {
     });
   }
 
+  // ── Interest-accrual plan: the generation action is a separate member of
+  // the same group. For one-time maturity it runs on maturity; for periodic
+  // payout it runs on the next interest anchor.
+  const frequency = parseDepositInterestPayout(buy.depositInterestPayoutFrequency);
+  const accrualDate = frequency.kind === "periodic"
+    ? nextPayoutDateUtc(start, frequency, buy.fundConfirmDate ?? new Date(start.getTime() - 86400000))
+    : maturity;
+  const interestSegmentStart = buy.fundConfirmDate && buy.fundConfirmDate > start
+    ? buy.fundConfirmDate
+    : start;
+  const defaultInterestAmount = frequency.kind === "periodic"
+    ? buy.depositInterestCalcBasis === "monthly" && frequency.unit === "month"
+      ? round2((remainingPrincipal * (Number(buy.depositAnnualRate ?? 0) / 100) * frequency.interval) / 12)
+      : accrualDate
+        ? depositSegmentInterest({
+            principal: remainingPrincipal,
+            annualRatePercent: Number(buy.depositAnnualRate ?? 0),
+            startDate: interestSegmentStart,
+            endDate: accrualDate,
+          })
+        : 0
+    : accrualDate
+      ? depositSegmentInterest({
+          principal: remainingPrincipal,
+          annualRatePercent: Number(buy.depositAnnualRate ?? 0),
+          startDate: start,
+          endDate: accrualDate,
+        })
+      : 0;
+  const accrualMemo = encodeScheduledTaskMemo({
+    type: "deposit_interest_accrual",
+    title: `存款利息生成：${label}`,
+    toAccountId: depositAccount,
+    fromAccountId: cashAccount,
+    depositSourceEntryId: buy.id,
+  });
+  if (accrualDate) {
+    await prisma.regularInvestPlan.upsert({
+      where: { id: `depa_${buy.id}` },
+      create: {
+        id: `depa_${buy.id}`,
+        planGroupId: `${DEPOSIT_PLAN_GROUP_PREFIX}${buy.id}`,
+        planAction: DEPOSIT_ACTION_ACCRUAL,
+        accountId: depositAccount,
+        accountName: label,
+        cashAccountId: cashAccount,
+        cashAccountName: null,
+        fundCode: DEPOSIT_ACCRUAL_PLAN_FUND_CODE,
+        fundName: label,
+        fundProductType: "deposit",
+        amount: defaultInterestAmount,
+        intervalUnit: frequency.kind === "periodic" && frequency.unit === "week" ? IntervalUnit.week : IntervalUnit.month,
+        intervalValue: frequency.kind === "periodic" ? Math.max(1, frequency.interval) : 1,
+        executionDay: frequency.kind === "periodic" && frequency.unit === "week"
+          ? weekdayExecutionDay(accrualDate)
+          : accrualDate.getUTCDate(),
+        startDate: frequency.kind === "periodic" ? start : accrualDate,
+        nextRunDate: accrualDate,
+        endDate: maturity,
+        totalRuns: frequency.kind === "periodic" ? null : 1,
+        status: RegularInvestStatus.active,
+        feeRate: 0,
+        confirmDays: 0,
+        arrivalDays: 0,
+        memo: accrualMemo,
+        skipPendingPreceding: false,
+        householdId,
+      },
+      update: manualOverride.has(`depa_${buy.id}`)
+        ? { planAction: DEPOSIT_ACTION_ACCRUAL, status: RegularInvestStatus.active, memo: accrualMemo }
+        : {
+            startDate: frequency.kind === "periodic" ? start : accrualDate,
+            nextRunDate: accrualDate,
+            endDate: maturity,
+            planAction: DEPOSIT_ACTION_ACCRUAL,
+            amount: defaultInterestAmount,
+            status: RegularInvestStatus.active,
+            memo: accrualMemo,
+          },
+    });
+  }
+
   // ── Payout plan: only for periodic-payout lots. Anchor dates follow the
   // deposit start (day-of-month), interval from the stored frequency.
-  const frequency = parseDepositInterestPayout(buy.depositInterestPayoutFrequency);
   let payoutPlanId: string | null = null;
-  if (frequency.kind === "periodic") {
+  if (frequency.kind === "periodic" || !!maturity) {
     const anchor = startDateAnchorUtc(start);
-    const intervalUnit = frequency.unit === "month" ? IntervalUnit.month : IntervalUnit.week;
-    const intervalValue = frequency.unit === "month"
+    const isOneTimePayout = frequency.kind !== "periodic";
+    const intervalUnit = isOneTimePayout ? IntervalUnit.month : frequency.unit === "month" ? IntervalUnit.month : IntervalUnit.week;
+    const intervalValue = isOneTimePayout ? 1 : frequency.unit === "month"
       ? frequency.interval
       : frequency.unit === "week" ? frequency.interval : 0;
     const payoutMemo = encodeScheduledTaskMemo({
-      type: "deposit_interest_payout",
-      title: `存款取息：${label}`,
+    type: "deposit_interest_payout",
+    title: `存款利息取出：${label}`,
       toAccountId: depositAccount,
       fromAccountId: cashAccount,
       depositSourceEntryId: buy.id,
     });
     // nextRunDate = the first anchor date strictly after the last payout
     // (fundConfirmDate slot), so renewals/paid dates are never re-run.
-    const nextRun = nextPayoutDateUtc(start, frequency, buy.fundConfirmDate ?? new Date(start.getTime() - 86400000));
+    const nextRun = isOneTimePayout
+      ? maturity!
+      : nextPayoutDateUtc(start, frequency, buy.fundConfirmDate ?? new Date(start.getTime() - 86400000));
     const payoutPlan = await prisma.regularInvestPlan.upsert({
       create: {
         id: `depi_${buy.id}`,
+        planGroupId: `${DEPOSIT_PLAN_GROUP_PREFIX}${buy.id}`,
+        planAction: DEPOSIT_ACTION_PAYOUT,
         accountId: depositAccount,
         accountName: label,
         cashAccountId: cashAccount,
@@ -270,14 +385,16 @@ export async function ensureDepositPlansForLot(params: {
         fundCode: DEPOSIT_PAYOUT_PLAN_FUND_CODE,
         fundName: label,
         fundProductType: "deposit",
-        amount: remainingPrincipal,
+        amount: defaultInterestAmount,
         intervalUnit,
         intervalValue: Math.max(1, intervalValue || 1),
-        executionDay: anchor.getUTCDate(),
+        executionDay: !isOneTimePayout && frequency.kind === "periodic" && frequency.unit === "week"
+          ? weekdayExecutionDay(nextRun)
+          : anchor.getUTCDate(),
         startDate: start,
         nextRunDate: nextRun,
-        endDate: null,
-        totalRuns: null,
+        endDate: maturity,
+        totalRuns: isOneTimePayout ? 1 : null,
         status: RegularInvestStatus.active,
         feeRate: 0,
         confirmDays: 0,
@@ -286,24 +403,36 @@ export async function ensureDepositPlansForLot(params: {
         skipPendingPreceding: false,
         householdId,
       },
-      update: {
-        // 同步锚点起点：存单起存日被编辑后，取息计划的 startDate 跟随当前
-        // 起存日，避免残留创建时的旧快照。
-        startDate: start,
-        nextRunDate: nextRun,
-        status: RegularInvestStatus.active,
-        memo: payoutMemo,
-        amount: remainingPrincipal,
-      },
+      update: manualOverride.has(`depi_${buy.id}`)
+        // 用户手动覆盖：周期/金额/下一执行日以计划行当前字段为准，不再由存单条款覆盖。
+        // 仅刷新 memo 并保持 active；结清收尾由上面 settled 提前返回完成。
+        ? {
+            planAction: DEPOSIT_ACTION_PAYOUT,
+            status: RegularInvestStatus.active,
+            memo: payoutMemo,
+          }
+        : {
+            // 同步锚点起点：存单起存日被编辑后，取息计划的 startDate 跟随当前
+            // 起存日，避免残留创建时的旧快照。
+            startDate: start,
+            nextRunDate: nextRun,
+            endDate: maturity,
+            planAction: DEPOSIT_ACTION_PAYOUT,
+            status: RegularInvestStatus.active,
+            memo: payoutMemo,
+            amount: defaultInterestAmount,
+          },
       where: { id: `depi_${buy.id}` },
     });
     payoutPlanId = payoutPlan.id;
   } else {
-    // 取息频率为「到期取息」（含用户从周期取息改过来）→ 取息计划失去对象，
+    // 没有到期日时才无法建立一次性利息取出动作；有到期日的一次性存款
+    // 已在上面的分支创建同日计划。
+    // 取息频率为「到期取息」且缺少到期日 → 取息计划失去对象，
     // 标记完成以免残留「执行中」空挂；之后改回周期时上面的 upsert update
     // 会把它重新激活。
     await prisma.regularInvestPlan.updateMany({
-      where: { id: `depi_${buy.id}`, householdId, status: { not: RegularInvestStatus.completed } },
+      where: { id: { in: [`depa_${buy.id}`, `depi_${buy.id}`] }, householdId, status: { not: RegularInvestStatus.completed } },
       data: { status: RegularInvestStatus.completed },
     }).catch(() => {});
   }
@@ -313,6 +442,12 @@ export async function ensureDepositPlansForLot(params: {
 
 function startDateAnchorUtc(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+/** 计划任务的周执行日使用 ISO 星期值：周一=1，周日=7。 */
+function weekdayExecutionDay(date: Date): number {
+  const day = date.getUTCDay();
+  return day === 0 ? 7 : day;
 }
 
 /** 严格晚于 `after` 的第一个付息锚点（对应日口径，见 depositPayoutAnchorUtc）。 */
@@ -347,7 +482,7 @@ export type DepositPlanExecutionResult = {
  */
 export async function executeDepositPlan(params: {
   householdId: string;
-  plan: { id: string; memo: string | null; startDate: Date; nextRunDate: Date; accountId: string };
+  plan: { id: string; memo: string | null; startDate: Date; nextRunDate: Date; accountId: string; planAction?: string | null };
   task: ScheduledTaskPayload;
   now: Date;
 }): Promise<DepositPlanExecutionResult> {
@@ -355,7 +490,7 @@ export async function executeDepositPlan(params: {
   // 存单 id 优先取 memo 里的关联；老计划行没有该字段时，从计划 id 反推
   // （depm_<lotId> / depi_<lotId>），避免历史数据被跳过。
   const lotId = task.depositSourceEntryId
-    || ((plan.id.startsWith("depm_") || plan.id.startsWith("depi_")) ? plan.id.slice(5) : "");
+    || ((plan.id.startsWith("depm_") || plan.id.startsWith("depa_") || plan.id.startsWith("depi_")) ? plan.id.slice(5) : "");
   if (!lotId) return { executed: false, pairs: 0, message: "计划缺少存单关联" };
 
   if (task.type === "deposit_maturity") {
@@ -390,18 +525,23 @@ export async function executeDepositPlan(params: {
     };
   }
 
-  // 存款取息：只处理本计划关联的存单；「是否转账」由计划决定。
-  const { autoAccruePeriodicInterestForLot } = await import("@/lib/server/deposit-auto-maturity");
-  const withTransfer = task.payoutTransfer !== false;
-  const outcome = await autoAccruePeriodicInterestForLot({
-    householdId,
-    lotId,
-    now,
-    createTransfer: withTransfer,
-    // 生成的利息记录带上本计划任务 id —— 「没有关联 id 的就是没生成过」，
-    // 下次执行会从最早日期重算并顺带认领（写回）无关联的旧记录。
-    planId: plan.id,
-  });
+  // 存款利息动作：depa_ 只生成利息，depi_ 只取出已生成利息；旧
+  // depi_ 计划没有 planAction 时保留原来的「生成+取出」兼容行为。
+  const depositActions = await import("@/lib/server/deposit-auto-maturity");
+  const isAccrual = task.type === "deposit_interest_accrual" || plan.id.startsWith("depa_");
+  const isPayout = task.type === "deposit_interest_payout" || plan.id.startsWith("depi_");
+  const hasExplicitAction = Boolean((plan as { planAction?: string | null }).planAction);
+  const outcome = isAccrual
+    ? await depositActions.autoAccruePeriodicInterestForLot({ householdId, lotId, now, createTransfer: false, planId: plan.id })
+    : isPayout && hasExplicitAction
+      ? await depositActions.autoWithdrawAccruedInterestForLot({ householdId, lotId, now, planId: plan.id })
+      : await depositActions.autoAccruePeriodicInterestForLot({
+          householdId,
+          lotId,
+          now,
+          createTransfer: task.payoutTransfer !== false,
+          planId: plan.id,
+        });
   // 存单本金已取完（提前支取 / 到期取回 / 核销）→ 取息计划就此终结：绝不能继续
   // 挂在「执行中」上每轮空跑（2026-09-29 honker 报的问题）。这里兜住所有「取回
   // 记录没能触发计划收尾」的历史路径（存单要素不全、旧版本写入、导入数据等）。
@@ -453,7 +593,7 @@ export async function executeDepositPlan(params: {
     executed: (outcome.pairs ?? 0) > 0,
     pairs: outcome.pairs ?? 0,
     message: outcome.status === "accrued"
-      ? `已生成 ${outcome.pairs} 期利息${withTransfer ? "（收入+转账）" : "（不转账）"}`
+      ? `已生成 ${outcome.pairs} 期利息${isAccrual ? "（不转账）" : "（收入+转账）"}`
       : outcome.reason ?? "无需生成",
   };
 }

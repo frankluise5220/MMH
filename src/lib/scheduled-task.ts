@@ -8,8 +8,10 @@ export type ScheduledTaskType =
   | "income"
   | "expense"
   | "deposit_maturity"
+  | "deposit_interest_accrual"
   | "deposit_interest_payout"
   | "bond_maturity"
+  | "bond_interest_accrual"
   | "bond_interest_payout";
 
 export type LoanScheduledPlanRole = "bill" | "auto_debit";
@@ -70,10 +72,12 @@ export const SCHEDULED_TASK_TYPE_LABEL: Record<ScheduledTaskType, string> = {
   insurance_premium: "保费缴费",
   income: "Income",
   expense: "Expense",
-  deposit_maturity: "存款到期",
-  deposit_interest_payout: "存款取息",
-  bond_maturity: "城投债到期",
-  bond_interest_payout: "城投债付息",
+  deposit_maturity: "存款本金取出",
+  deposit_interest_accrual: "存款利息生成",
+  deposit_interest_payout: "存款利息取出",
+  bond_maturity: "城投债本金取出",
+  bond_interest_accrual: "城投债利息生成",
+  bond_interest_payout: "城投债利息取出",
 };
 
 export function normalizeScheduledTaskType(value: unknown): ScheduledTaskType {
@@ -85,8 +89,10 @@ export function normalizeScheduledTaskType(value: unknown): ScheduledTaskType {
     value === "income" ||
     value === "expense" ||
     value === "deposit_maturity" ||
+    value === "deposit_interest_accrual" ||
     value === "deposit_interest_payout" ||
     value === "bond_maturity" ||
+    value === "bond_interest_accrual" ||
     value === "bond_interest_payout"
   ) {
     return value;
@@ -124,8 +130,8 @@ export function getLoanScheduledPlanRole(task?: Pick<ScheduledTaskPayload, "type
 export function isSystemManagedScheduledTask(task?: ScheduledTaskPayload | null): boolean {
   if (!task) return false;
   if (task.type === "loan_repayment") return getLoanScheduledPlanRole(task) === "bill";
-  if (task.type === "bond_maturity" || task.type === "bond_interest_payout") return true;
-  return task.type === "deposit_maturity" || task.type === "deposit_interest_payout";
+  if (task.type === "bond_maturity" || task.type === "bond_interest_accrual" || task.type === "bond_interest_payout") return true;
+  return task.type === "deposit_maturity" || task.type === "deposit_interest_accrual" || task.type === "deposit_interest_payout";
 }
 
 function dateRank(value: unknown) {

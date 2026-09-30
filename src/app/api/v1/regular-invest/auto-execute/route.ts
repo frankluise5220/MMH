@@ -24,7 +24,7 @@ import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/serv
 import { calcInitialScheduledRunDate as calcInitialRunDate, calcNextScheduledRunDate as calcNextRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { executeNonFundScheduledTaskPlan, isNonFundScheduledTask } from "@/lib/server/scheduled-task-executor";
 import { executeDepositPlan } from "@/lib/server/deposit-plan-tasks";
-import { ensureBondPlansForHousehold, BOND_MATURITY_PLAN_FUND_CODE, BOND_PAYOUT_PLAN_FUND_CODE } from "@/lib/server/bond-plan-tasks";
+import { ensureBondPlansForHousehold, BOND_MATURITY_PLAN_FUND_CODE, BOND_ACCRUAL_PLAN_FUND_CODE, BOND_PAYOUT_PLAN_FUND_CODE } from "@/lib/server/bond-plan-tasks";
 import { autoAccrueBondPeriodicInterestForLot } from "@/lib/server/bond-auto-interest";
 import { resolveCategorySnapshot } from "@/lib/default-categories";
 import { ENTRY_ORIGIN_SCHEDULED_TASK } from "@/lib/transaction-semantics";
@@ -57,7 +57,7 @@ async function hasMoreDuePlans(householdId: string, now: Date) {
     status: RegularInvestStatus.active,
     nextRunDate: { lte: now },
     // 城投债提醒行永不过期执行（never auto-executed），不计入"还有待执行"。
-    NOT: { fundCode: { in: [BOND_MATURITY_PLAN_FUND_CODE, BOND_PAYOUT_PLAN_FUND_CODE] } },
+    NOT: { fundCode: { in: [BOND_MATURITY_PLAN_FUND_CODE, BOND_ACCRUAL_PLAN_FUND_CODE, BOND_PAYOUT_PLAN_FUND_CODE] } },
   };
   const count = await prisma.regularInvestPlan.count({ where });
   return count > 0;
@@ -113,7 +113,17 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
       return { ok: true, executedCount: 0, skippedCount: 0, completedCount: completed.length, skippedPaused: 0, skippedGap: 0, details: [], hasMoreDue: false };
     }
 
-    const generalPlans = plansToRun.filter((plan) => isNonFundScheduledTask(decodeScheduledTaskMemo(plan.memo).type));
+    const generalPlans = plansToRun
+      .filter((plan) => isNonFundScheduledTask(decodeScheduledTaskMemo(plan.memo).type))
+      .sort((left, right) => {
+        const rank = (plan: typeof left) => {
+          if (plan.planAction === "interest_accrual") return 0;
+          if (plan.planAction === "interest_withdrawal") return 1;
+          if (plan.planAction === "principal_withdrawal") return 2;
+          return 3;
+        };
+        return rank(left) - rank(right);
+      });
     const fundPlans = plansToRun.filter((plan) => !isNonFundScheduledTask(decodeScheduledTaskMemo(plan.memo).type));
 
     const generalExecuted: string[] = [];
@@ -129,11 +139,17 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
           generalDetails.push({ planId: plan.id, fundCode: plan.fundCode, action: "skipped", reason: "not due" });
           continue;
         }
-        if (task.type === "bond_interest_payout") {
-          // 计划行 id 形如 bondi_<存单id>，存单 id 直接从后缀取。
-          const lotId = plan.id.startsWith("bondi_") ? plan.id.slice("bondi_".length) : "";
+        if (task.type === "bond_interest_accrual" || task.type === "bond_interest_payout") {
+          // 新三动作组：bonda_ 只生成收入，bondi_ 只取出收入；旧 bondi_ 无显式动作时
+          // 继续走兼容的「生息+取息」路径，避免历史计划重复或漏账。
+          const lotId = plan.id.startsWith("bonda_")
+            ? plan.id.slice("bonda_".length)
+            : plan.id.startsWith("bondi_") ? plan.id.slice("bondi_".length) : "";
+          const hasExplicitAction = Boolean(plan.planAction);
           const result = lotId
-            ? await autoAccrueBondPeriodicInterestForLot({ householdId, lotId, today: now, planId: plan.id })
+            ? task.type === "bond_interest_payout" && hasExplicitAction
+              ? await (await import("@/lib/server/bond-auto-interest")).autoWithdrawAccruedBondInterestForLot({ householdId, lotId, today: now, planId: plan.id })
+              : await autoAccrueBondPeriodicInterestForLot({ householdId, lotId, today: now, planId: plan.id, createTransfer: task.type !== "bond_interest_accrual" })
             : { status: "skipped" as const, reason: "计划行 id 不是存单级" };
           if (result.status === "accrued") {
             generalExecuted.push(plan.id);
@@ -150,7 +166,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
           }
           continue;
         }
-        if (task.type === "deposit_maturity" || task.type === "deposit_interest_payout") {
+        if (task.type === "deposit_maturity" || task.type === "deposit_interest_accrual" || task.type === "deposit_interest_payout") {
           const result = await executeDepositPlan({ householdId, plan, task, now });
           if (result.pairs > 0 || result.executed) {
             generalExecuted.push(plan.id);

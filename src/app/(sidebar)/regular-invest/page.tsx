@@ -226,8 +226,8 @@ export default async function RegularInvestPage() {
     const balance = accountBalanceById.get(accountId);
     return balance != null && Math.abs(balance) > ACTIVE_DEBT_EPSILON;
   };
-  // 系统计划（存款到期/取息、债券到期/付息）的关联真源：存单 = 计划 memo 的
-  // depositSourceEntryId（或 depm_/depi_ 前缀），债券存单 = bondm_/bondi_ 的存单 id
+  // 系统计划（存款本金/生息/取息、债券本金/生息/取息）的关联真源：存单 = 计划 memo 的
+  // depositSourceEntryId（或 depm_/depa_/depi_ 前缀），债券存单 = bondm_/bonda_/bondi_ 的存单 id
   // （债券与存款同为存单粒度：一笔买入 = 一张存单 = 一个持仓）。
   // 真源仍在 → 删除会一并删它；真源不存在/已软删 → 提示可放心删除。两侧口径一致。
   // 注意：存款存单「已取回」不算失效 —— buy 行仍在账户里就是有关联记录（09-17 修正）；
@@ -236,23 +236,23 @@ export default async function RegularInvestPage() {
   const depositPlanLots = plans
     .filter((plan) => {
       const task = scheduledTaskByPlanId.get(plan.id);
-      return task?.type === "deposit_maturity" || task?.type === "deposit_interest_payout";
+      return task?.type === "deposit_maturity" || task?.type === "deposit_interest_accrual" || task?.type === "deposit_interest_payout";
     })
     .map((plan) => {
       const task = scheduledTaskByPlanId.get(plan.id)!;
       const lotId = task.depositSourceEntryId
-        || (plan.id.startsWith("depm_") || plan.id.startsWith("depi_") ? plan.id.slice(5) : "");
+        || (plan.id.startsWith("depm_") || plan.id.startsWith("depa_") || plan.id.startsWith("depi_") ? plan.id.slice(5) : "");
       return { planId: plan.id, lotId };
     })
     .filter((item) => !!item.lotId);
   const bondPlanLots = plans
     .filter((plan) => {
       const task = scheduledTaskByPlanId.get(plan.id);
-      return task?.type === "bond_maturity" || task?.type === "bond_interest_payout";
+      return task?.type === "bond_maturity" || task?.type === "bond_interest_accrual" || task?.type === "bond_interest_payout";
     })
     .map((plan) => ({
       planId: plan.id,
-      lotId: plan.id.startsWith("bondm_") || plan.id.startsWith("bondi_") ? plan.id.slice(6) : "",
+      lotId: plan.id.startsWith("bondm_") || plan.id.startsWith("bonda_") || plan.id.startsWith("bondi_") ? plan.id.slice(6) : "",
     }))
     .filter((item) => !!item.lotId);
   if (depositPlanLots.length > 0 || bondPlanLots.length > 0) {
@@ -266,12 +266,14 @@ export default async function RegularInvestPage() {
       bondPlanLots.length > 0
         ? prisma.bondTransaction.findMany({
             where: { id: { in: bondPlanLots.map((item) => item.lotId) }, deletedAt: null, ...hidFilter },
-            select: { id: true, productName: true, grossAmount: true, BondProduct: { select: { name: true } } },
+            select: { id: true, productName: true, grossAmount: true, bondProductId: true, tradeDate: true, BondProduct: { select: { name: true } } },
           })
         : Promise.resolve([] as Array<{
             id: string;
             productName: string | null;
             grossAmount: unknown;
+            bondProductId: string | null;
+            tradeDate: Date;
             BondProduct: { name: string } | null;
           }>),
       // 债券存单的失效判据 = 本金是否归零：只统计指回该存单的赎回/核销子行。
@@ -309,14 +311,39 @@ export default async function RegularInvestPage() {
       clearedByLotId.set(row.sourceBondTransactionId, (clearedByLotId.get(row.sourceBondTransactionId) ?? 0) + amount);
     }
     const bondLotById = new Map(bondLots.map((lot) => [lot.id, lot]));
+    // 具体债单名：同一债单（bondProductId）内按起息日排序的存单序号，>1 时加「#序号」，
+    // 与 loadBondLotPlanSource / 债券视图口径一致（关联到具体债单 lot，而非债券产品）。
+    const bondProductIds = [...new Set(bondLots.map((lot) => lot.bondProductId).filter((id): id is string => !!id))];
+    const siblingBuyLots = bondProductIds.length > 0
+      ? await prisma.bondTransaction.findMany({
+          where: { bondProductId: { in: bondProductIds }, action: "buy", deletedAt: null, ...hidFilter },
+          select: { id: true, bondProductId: true, tradeDate: true },
+          orderBy: [{ tradeDate: "asc" }, { id: "asc" }],
+        })
+      : [];
+    const bondIndexByLotId = new Map<string, number>();
+    {
+      const byProduct = new Map<string, Array<{ id: string; tradeDate: Date }>>();
+      for (const row of siblingBuyLots) {
+        const arr = byProduct.get(row.bondProductId ?? "") ?? [];
+        arr.push(row);
+        byProduct.set(row.bondProductId ?? "", arr);
+      }
+      for (const arr of byProduct.values()) {
+        arr.sort((a, b) => a.tradeDate.getTime() - b.tradeDate.getTime() || a.id.localeCompare(b.id));
+        arr.forEach((row, idx) => bondIndexByLotId.set(row.id, idx + 1));
+      }
+    }
     for (const item of bondPlanLots) {
       const lot = bondLotById.get(item.lotId);
       const principal = lot
         ? Math.abs(Number(lot.grossAmount ?? 0)) - (clearedByLotId.get(item.lotId) ?? 0)
         : 0;
+      const productName = lot?.BondProduct?.name ?? lot?.productName ?? "债券";
+      const index = bondIndexByLotId.get(item.lotId) ?? 1;
       systemPlanSourceByPlanId.set(item.planId, {
         kind: "bond",
-        name: lot?.BondProduct?.name ?? lot?.productName ?? "债券",
+        name: index > 1 ? `${productName} #${index}` : productName,
         linked: !!lot && principal > ACTIVE_DEBT_EPSILON,
       });
     }

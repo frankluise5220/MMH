@@ -1,6 +1,6 @@
 import { FundSubtype, TransactionType } from "@prisma/client";
 
-import { bondDateKey, bondPayoutDatesUpTo, estimateBondPeriodInterest } from "@/lib/bond";
+import { bondDateKey, bondPayoutDatesUpTo, estimateBondInterestForDays, estimateBondPeriodInterest } from "@/lib/bond";
 import { prisma } from "@/lib/db/prisma";
 import { parseDepositInterestPayout } from "@/lib/deposit-interest-payout";
 import { resolveCategorySnapshot } from "@/lib/default-categories";
@@ -42,12 +42,14 @@ export async function autoAccrueBondPeriodicInterestForLot(params: {
   lotId: string;
   today: Date;
   planId?: string | null;
+  /** 新三动作组中，利息生成动作只创建收入，不创建转账。 */
+  createTransfer?: boolean;
 }): Promise<BondInterestAccrualResult> {
   const source = await loadBondLotPlanSource({ householdId: params.householdId, lotId: params.lotId });
   if (!source) return { status: "skipped", reason: "存单不存在" };
 
   const frequency = parseDepositInterestPayout(source.payoutFrequency);
-  if (frequency.kind !== "periodic") return { status: "skipped", reason: "非按期付息" };
+  if (frequency.kind !== "periodic" && frequency.kind !== "maturity") return { status: "skipped", reason: "无有效付息方式" };
   if (!(source.principal > 0)) return { status: "skipped", reason: "存单本金为 0" };
   const annualRate = Number(source.annualRate ?? 0);
   if (!(annualRate > 0)) return { status: "skipped", reason: "缺票面利率" };
@@ -87,12 +89,20 @@ export async function autoAccrueBondPeriodicInterestForLot(params: {
     if (key) coveredKeys.add(key);
   }
 
-  const interest = estimateBondPeriodInterest({
-    principal: source.principal,
-    annualRate,
-    frequency,
-    interestCalcBasis: source.interestCalcBasis,
-  });
+  const interest = frequency.kind === "maturity"
+    ? estimateBondInterestForDays({
+        principal: source.principal,
+        annualRate,
+        days: source.termDays ?? (source.maturityDate
+          ? Math.max(1, Math.round((source.maturityDate.getTime() - source.startDate.getTime()) / 86400000))
+          : 0),
+      })
+    : estimateBondPeriodInterest({
+        principal: source.principal,
+        annualRate,
+        frequency,
+        interestCalcBasis: source.interestCalcBasis,
+      });
   if (!(interest > 0)) return { status: "skipped", reason: "单期利息为 0" };
 
   const cashAccountId = source.cashAccountId;
@@ -175,6 +185,7 @@ export async function autoAccrueBondPeriodicInterestForLot(params: {
           annualRate,
         },
       });
+      if (!params.createTransfer) return [income.id];
       // ② 取息：把利息从债券账户转到资金账户（债券账户 −利息 / 资金账户 +利息）。
       // This transfer is an ordinary ledger entry. Keep the plan linkage, but
       // do not attach bond business fields, matching deposit interest payouts.
@@ -211,6 +222,103 @@ export async function autoAccrueBondPeriodicInterestForLot(params: {
   await ensureBondPlansForLot({ householdId: params.householdId, lotId: source.lotId }).catch(() => {});
 
   return { status: "accrued", pairs, totalInterest, entryIds: createdEntryIds };
+}
+
+/**
+ * 三动作组的债券取息动作：只把已生成但尚未转出的利息转入资金账户。
+ * 旧 bondi_ 没有 planAction 时仍由上面的兼容执行器一次完成生息+取息。
+ */
+export async function autoWithdrawAccruedBondInterestForLot(params: {
+  householdId: string;
+  lotId: string;
+  today: Date;
+  planId?: string | null;
+}): Promise<BondInterestAccrualResult> {
+  const source = await loadBondLotPlanSource({ householdId: params.householdId, lotId: params.lotId });
+  if (!source) return { status: "skipped", reason: "存单不存在" };
+  if (!(source.principal > 0)) return { status: "skipped", reason: "存单本金为 0" };
+  if (!source.cashAccountId) return { status: "skipped", reason: "缺买入资金来源账户" };
+
+  const businessRows = await prisma.bondTransaction.findMany({
+    where: {
+      householdId: params.householdId,
+      sourceBondTransactionId: source.lotId,
+      action: FundSubtype.dividend_cash,
+      deletedAt: null,
+    },
+    select: { cashEntryId: true, tradeDate: true, confirmDate: true, arrivalAmount: true },
+  });
+  const incomeIds = businessRows.map((row) => row.cashEntryId).filter((id): id is string => Boolean(id));
+  if (incomeIds.length === 0) return { status: "skipped", reason: "没有待取出的利息" };
+
+  const incomes = await prisma.txRecord.findMany({
+    where: {
+      id: { in: incomeIds },
+      householdId: params.householdId,
+      deletedAt: null,
+      type: TransactionType.income,
+    },
+    select: { id: true, date: true, amount: true, accountId: true, currency: true },
+  });
+  const [bondAccount, cashAccount] = await Promise.all([
+    prisma.account.findUnique({ where: { id: source.accountId }, select: { id: true, name: true, currency: true } }),
+    prisma.account.findUnique({ where: { id: source.cashAccountId }, select: { id: true, name: true, currency: true } }),
+  ]);
+  if (!bondAccount || !cashAccount) return { status: "skipped", reason: "账户不存在" };
+  const t = await getServerT();
+  const transferNote = t("bondInterest.payoutTransferNote", { name: source.name });
+  const currency = bondAccount.currency ?? cashAccount.currency ?? "CNY";
+  const payoutPlanIds = params.planId ? [params.planId] : undefined;
+  const existingTransfers = await prisma.txRecord.findMany({
+    where: {
+      householdId: params.householdId,
+      deletedAt: null,
+      source: INTEREST_SOURCE,
+      type: TransactionType.transfer,
+      accountId: bondAccount.id,
+      toAccountId: cashAccount.id,
+      ...(payoutPlanIds ? { regularInvestPlanId: { in: payoutPlanIds } } : {}),
+    },
+    select: { date: true, amount: true },
+  });
+  const transferKeys = new Set(existingTransfers.map((row) => `${localDayKey(row.date)}|${Math.abs(Number(row.amount))}`));
+  const pending = incomes.filter((row) => {
+    const key = `${localDayKey(row.date)}|${Math.abs(Number(row.amount))}`;
+    return !transferKeys.has(key) && row.date <= params.today;
+  });
+  if (pending.length === 0) return { status: "skipped", reason: "没有待取出的利息" };
+
+  const entryIds: string[] = [];
+  let totalInterest = 0;
+  for (const income of pending) {
+    const amount = Math.abs(Number(income.amount));
+    if (!(amount > 0)) continue;
+    const transfer = await prisma.txRecord.create({
+      data: {
+        householdId: params.householdId,
+        date: income.date,
+        type: TransactionType.transfer,
+        accountId: bondAccount.id,
+        accountName: bondAccount.name,
+        toAccountId: cashAccount.id,
+        toAccountName: cashAccount.name,
+        amount: -amount,
+        currency: income.currency ?? currency,
+        source: INTEREST_SOURCE,
+        entryOrigin: ENTRY_ORIGIN_SCHEDULED_TASK,
+        note: transferNote,
+        regularInvestPlanId: params.planId ?? null,
+      },
+    });
+    entryIds.push(transfer.id);
+    transferKeys.add(`${localDayKey(income.date)}|${amount}`);
+    totalInterest = Number((totalInterest + amount).toFixed(2));
+  }
+  if (entryIds.length === 0) return { status: "skipped", reason: "没有有效利息" };
+  await recalcAndSaveAccountBalance(bondAccount.id).catch(() => {});
+  await recalcAndSaveAccountBalance(cashAccount.id).catch(() => {});
+  await ensureBondPlansForLot({ householdId: params.householdId, lotId: source.lotId }).catch(() => {});
+  return { status: "accrued", pairs: entryIds.length, totalInterest, entryIds };
 }
 
 /** 本地日（YYYY-MM-DD）—— 与存款侧 localDayKey 同口径。 */
