@@ -194,6 +194,37 @@ ensure_session_secret() {
   export MMH_SESSION_SECRET
 }
 
+# PASSWORD_RESET_SECRET signs email verification codes (registration) and
+# password-reset tokens. It is optional: an unset value merely disables those
+# two features, so unlike MMH_SESSION_SECRET this never blocks startup. It must
+# stay stable across restarts (issued codes/tokens must keep verifying), so it
+# is persisted to a file exactly like the session secret.
+ensure_password_reset_secret() {
+  case "${PASSWORD_RESET_SECRET:-}" in
+    ""|CHANGE_ME*)
+      PASSWORD_RESET_SECRET=""
+      ;;
+  esac
+  secret_file="/app/data/mmh-password-reset-secret.txt"
+  if [ -f "$secret_file" ]; then
+    PASSWORD_RESET_SECRET="$(tr -d '[:space:]' < "$secret_file")"
+  fi
+  case "${PASSWORD_RESET_SECRET:-}" in
+    ""|CHANGE_ME*)
+      PASSWORD_RESET_SECRET=""
+      ;;
+  esac
+  if [ -z "${PASSWORD_RESET_SECRET:-}" ]; then
+    umask 077
+    PASSWORD_RESET_SECRET="$(generate_secret 2>/dev/null || true)"
+    if [ -n "$PASSWORD_RESET_SECRET" ]; then
+      printf '%s\n' "$PASSWORD_RESET_SECRET" > "$secret_file"
+    fi
+  fi
+  [ -n "$PASSWORD_RESET_SECRET" ] && chmod 600 "$secret_file" 2>/dev/null || true
+  export PASSWORD_RESET_SECRET
+}
+
 # Legacy SQL-file compat migrations were inlined into run_compat_migrations on
 # 2026-09-18 when pre-0.1.52 prisma/migrations were pruned. Kept for images
 # built before that date and for any future file-based compat migration:
@@ -468,6 +499,7 @@ done
 mmh_log "postgres ready, checking database schema..."
 
 ensure_session_secret
+ensure_password_reset_secret
 
 get_build_version() {
   node -p "require('./package.json').version" 2>/dev/null || true

@@ -1247,6 +1247,7 @@ fi
 ENV_FILE="$DATA_ROOT/mmh.env"
 SYSTEM_PASSWORD_FILE="$DATA_ROOT/mmh-system-password.txt"
 SESSION_SECRET_FILE="$DATA_ROOT/mmh-session-secret.txt"
+PASSWORD_RESET_SECRET_FILE="$DATA_ROOT/mmh-password-reset-secret.txt"
   SERVER_DIR="$APP_DEST/server"
   NODE_BIN="$APP_DEST/bin/node"
 PID_FILE="$DATA_DEST/mmh.pid"
@@ -1330,7 +1331,7 @@ generate_session_secret () {
 }
 
 ensure_runtime_settings () {
-  local env_port env_password system_password env_session_secret session_secret env_node_max_old_space node_max_old_space env_node_bin node_bin
+  local env_port env_password system_password env_session_secret session_secret env_password_reset_secret password_reset_secret env_node_max_old_space node_max_old_space env_node_bin node_bin env_reg_url env_reg_token reg_url reg_token
   mkdir -p "$DATA_DEST" "$DATA_ROOT"
 
   env_port="$(read_env_value PORT 2>/dev/null || true)"
@@ -1360,6 +1361,28 @@ ensure_runtime_settings () {
   fi
   export MMH_SESSION_SECRET="$session_secret"
 
+  # PASSWORD_RESET_SECRET signs email verification codes (registration) and
+  # password-reset tokens. Optional: empty merely disables those two features,
+  # so a generation failure is non-fatal (unlike the session secret). Persisted
+  # to a file so issued codes/tokens keep verifying across restarts.
+  env_password_reset_secret="$(read_env_value PASSWORD_RESET_SECRET 2>/dev/null || true)"
+  password_reset_secret="\${PASSWORD_RESET_SECRET:-$env_password_reset_secret}"
+  case "$password_reset_secret" in
+    ""|CHANGE_ME*) password_reset_secret="" ;;
+  esac
+  if [ -z "$password_reset_secret" ] && [ -f "$PASSWORD_RESET_SECRET_FILE" ]; then
+    password_reset_secret="$(tr -d '[:space:]' < "$PASSWORD_RESET_SECRET_FILE")"
+  fi
+  case "$password_reset_secret" in
+    ""|CHANGE_ME*) password_reset_secret="" ;;
+  esac
+  if [ -z "$password_reset_secret" ]; then
+    password_reset_secret="$(generate_session_secret 2>/dev/null || true)"
+  fi
+  if [ -n "$password_reset_secret" ]; then
+    export PASSWORD_RESET_SECRET="$password_reset_secret"
+  fi
+
   env_node_max_old_space="$(read_env_value MMH_NODE_MAX_OLD_SPACE_MB 2>/dev/null || true)"
   node_max_old_space="\${MMH_NODE_MAX_OLD_SPACE_MB:-\${env_node_max_old_space:-auto}}"
   env_node_bin="$(read_env_value MMH_NODE_BIN 2>/dev/null || true)"
@@ -1388,12 +1411,17 @@ MMH_NODE_MAX_OLD_SPACE_MB=\${MMH_NODE_MAX_OLD_SPACE_MB}
 MMH_NODE_BIN=\${node_bin}
 MMH_REGISTRATION_API_URL=\${reg_url}
 MMH_REGISTRATION_API_TOKEN=\${reg_token}
+PASSWORD_RESET_SECRET=\${password_reset_secret}
 EOF
   chmod 600 "$ENV_FILE" 2>/dev/null || true
   printf '%s\\n' "$MMH_SYSTEM_PASSWORD" > "$SYSTEM_PASSWORD_FILE"
   chmod 600 "$SYSTEM_PASSWORD_FILE" 2>/dev/null || true
   printf '%s\\n' "$MMH_SESSION_SECRET" > "$SESSION_SECRET_FILE"
   chmod 600 "$SESSION_SECRET_FILE" 2>/dev/null || true
+  if [ -n "$password_reset_secret" ]; then
+    printf '%s\\n' "$password_reset_secret" > "$PASSWORD_RESET_SECRET_FILE"
+    chmod 600 "$PASSWORD_RESET_SECRET_FILE" 2>/dev/null || true
+  fi
 }
 
 memory_limit_to_mb () {
