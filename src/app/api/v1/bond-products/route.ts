@@ -46,6 +46,22 @@ export async function GET(req: NextRequest) {
       orderBy: [{ institutionId: "asc" }, { name: "asc" }],
     });
 
+    // 每个产品下的真实记录数 = 未软删的 TxRecord 数（软删不计入）。
+    const recordCounts = await prisma.txRecord.groupBy({
+      by: ["bondProductId"],
+      where: {
+        householdId,
+        deletedAt: null,
+        bondProductId: { in: rows.map((item) => item.id) },
+      },
+      _count: { _all: true },
+    });
+    const recordCountByProductId = new Map(
+      recordCounts
+        .filter((item) => item.bondProductId)
+        .map((item) => [item.bondProductId as string, item._count._all]),
+    );
+
     return NextResponse.json({
       ok: true,
       products: rows.map((item) => ({
@@ -62,6 +78,7 @@ export async function GET(req: NextRequest) {
         interestCalcBasis: item.interestCalcBasis,
         firstPayoutDate: isoDateOnly(item.firstPayoutDate),
         note: item.note,
+        recordCount: recordCountByProductId.get(item.id) ?? 0,
       })),
     });
   } catch (error) {

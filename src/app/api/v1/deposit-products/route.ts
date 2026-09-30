@@ -60,9 +60,29 @@ export async function GET(req: NextRequest) {
       },
       orderBy: [{ name: "asc" }],
     });
+
+    // 每个产品下的真实记录数 = 未软删的 TxRecord 数（软删不计入）。
+    const recordCounts = await prisma.txRecord.groupBy({
+      by: ["depositProductId"],
+      where: {
+        householdId,
+        deletedAt: null,
+        depositProductId: { in: rows.map((item) => item.id) },
+      },
+      _count: { _all: true },
+    });
+    const recordCountByProductId = new Map(
+      recordCounts
+        .filter((item) => item.depositProductId)
+        .map((item) => [item.depositProductId as string, item._count._all]),
+    );
+
     return NextResponse.json({
       ok: true,
-      products: rows.map(serializeDepositProduct),
+      products: rows.map((item) => ({
+        ...serializeDepositProduct(item),
+        recordCount: recordCountByProductId.get(item.id) ?? 0,
+      })),
     });
   } catch (error) {
     return NextResponse.json(

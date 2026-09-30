@@ -12,7 +12,7 @@ import type { HouseholdContext } from "@/lib/server/household-scope";
  * 引用，被引用时返回 409 让用户显式确认，确认后走 `softDeleteEntriesByIds`
  * （余额安全路径）而不是 `deleteMany`。
  *
- * 计划任务（存单粒度 `depm_<lotId>` / `depi_<lotId>` / `bondm_<lotId>` / `bondi_<lotId>`）
+ * 计划任务（存单粒度 `depm_<lotId>` / `depa_<lotId>` / `depi_<lotId>` / `bondm_<lotId>` / `bonda_<lotId>` / `bondi_<lotId>`）
  * 不随明细软删自动消失，需要按存单 id 显式清理，见 `planIdsForLots`。
  */
 export type ProductFamily = "deposit" | "wealth" | "bond";
@@ -52,9 +52,9 @@ function planIdsForLots(lotIds: string[], prefixes: string[]): string[] {
 }
 
 const PLAN_PREFIXES: Record<ProductFamily, string[]> = {
-  deposit: ["depm_", "depi_"],
+  deposit: ["depm_", "depa_", "depi_"],
   wealth: [],
-  bond: ["bondm_", "bondi_"],
+  bond: ["bondm_", "bonda_", "bondi_"],
 };
 
 export async function summarizeProductRefs(

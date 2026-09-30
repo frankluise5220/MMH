@@ -602,6 +602,10 @@ export function ProductLibraryModal({
                             {t("productLibrary.termUnitDay")}
                           </span>
                         ) : null}
+                        <span className="tabular-nums text-slate-400">
+                          · {row.recordCount}
+                          {t("productLibrary.recordUnit")}
+                        </span>
                       </span>
                     </button>
                   );

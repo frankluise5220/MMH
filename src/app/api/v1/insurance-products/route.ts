@@ -407,7 +407,58 @@ export async function GET(req: NextRequest) {
       },
       orderBy: [{ Institution: { name: "asc" } }, { name: "asc" }],
     });
-    response.masters = masters.map(serializeProductMaster);
+
+    // 每个产品主数据下的真实记录数：关联保单的未软删明细 / 未软删保险交易，取较大者（软删不计入）。
+    const masterIds = masters.map((item) => item.id);
+    const [txCounts, businessTxCounts] = masterIds.length
+      ? await Promise.all([
+          prisma.txRecord.groupBy({
+            by: ["insuranceProductId"],
+            where: {
+              householdId: hidFilter.householdId ?? undefined,
+              deletedAt: null,
+              insuranceProductId: { in: masterIds },
+            },
+            _count: { _all: true },
+          }),
+          prisma.insuranceTransaction.groupBy({
+            by: ["insuranceProductId"],
+            where: {
+              householdId: hidFilter.householdId ?? undefined,
+              deletedAt: null,
+              insuranceProductId: { in: masterIds },
+            },
+            _count: { _all: true },
+          }),
+        ])
+      : [[], []];
+    const txCountList = txCounts as { insuranceProductId: string | null; _count: { _all: number } }[];
+    const businessTxCountList = businessTxCounts as { insuranceProductId: string | null; _count: { _all: number } }[];
+
+    const entryCountByPolicyId = new Map(
+      txCountList.filter((item) => item.insuranceProductId).map((item) => [item.insuranceProductId as string, item._count._all]),
+    );
+    const businessCountByPolicyId = new Map(
+      businessTxCountList.filter((item) => item.insuranceProductId).map((item) => [item.insuranceProductId as string, item._count._all]),
+    );
+
+    // master → 关联保单集合
+    const policyIdsByMasterId = new Map<string, string[]>();
+    for (const item of refreshedProducts) {
+      if (!item.productMasterId) continue;
+      const list = policyIdsByMasterId.get(item.productMasterId) ?? [];
+      list.push(item.id);
+      policyIdsByMasterId.set(item.productMasterId, list);
+    }
+
+    response.masters = masters.map((item) => {
+      const policyIds = policyIdsByMasterId.get(item.id) ?? [];
+      const recordCount = policyIds.reduce(
+        (sum, policyId) => sum + Math.max(entryCountByPolicyId.get(policyId) ?? 0, businessCountByPolicyId.get(policyId) ?? 0),
+        0,
+      );
+      return { ...serializeProductMaster(item), recordCount };
+    });
   }
 
   return NextResponse.json(response);
