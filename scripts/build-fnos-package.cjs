@@ -2633,6 +2633,27 @@ const MIGRATIONS = [
       db.exec(\`CREATE UNIQUE INDEX IF NOT EXISTS "User_householdId_fnosUid_key" ON "User"("householdId", "fnosUid")\`);
     },
   },
+  {
+    version: "20260930_add_plan_group_actions",
+    description: "Add plan-group and action metadata to RegularInvestPlan for deposit/bond lifecycle plans",
+    apply(db) {
+      if (tableExists(db, "RegularInvestPlan")) {
+        addColumnIfMissing(db, "RegularInvestPlan", "planGroupId", "TEXT");
+        addColumnIfMissing(db, "RegularInvestPlan", "planAction", "TEXT");
+        db.exec(\`CREATE INDEX IF NOT EXISTS "RegularInvestPlan_planGroupId_idx" ON "RegularInvestPlan"("planGroupId")\`);
+        db.exec(\`CREATE INDEX IF NOT EXISTS "RegularInvestPlan_planAction_idx" ON "RegularInvestPlan"("planAction")\`);
+      }
+    },
+  },
+  {
+    version: "20260930_add_plan_manual_override",
+    description: "Add RegularInvestPlan.manualOverride: user override for deposit system plans (depm_/depi_)",
+    apply(db) {
+      if (tableExists(db, "RegularInvestPlan")) {
+        addColumnIfMissing(db, "RegularInvestPlan", "manualOverride", "BOOLEAN NOT NULL DEFAULT false");
+      }
+    },
+  },
 ];
 
 function rebuildDebtAgreementToAccount(db) {
