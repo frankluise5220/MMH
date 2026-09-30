@@ -21,6 +21,14 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
+// When this script is driven through the sandbox's spawnSync shim (sync-shim.cjs),
+// argv paths are marshalled through `sh -c`, where MSYS/Git Bash mangles a
+// Windows backslash path like E:\fs\wiseme\... (\f, \w, \p become escape
+// sequences) so `prisma generate --schema <path>` silently falls back to the
+// default postgres schema. Forward slashes survive the round-trip untouched and
+// are accepted by both Node and Prisma on Windows, so normalise every path we
+// hand to a subprocess argument here.
+const toArgvPath = (p) => p.replace(/\\/g, "/");
 const artifacts = path.join(root, "release-artifacts", "win");
 const stageDir = path.join(artifacts, "stage");
 const stageAppDir = path.join(stageDir, "app");
@@ -31,9 +39,9 @@ const portableNodeRoot = path.join(artifacts, "node22", "node-v22.23.2-win-x64")
 // Update feed URL must match the `publish.url` in electron-builder.yml.
 const UPDATE_FEED_URL = "http://fnapp.floatingice.win:5660/mmh/";
 
-const nativeSchema = path.join(root, "prisma", "schema.native.prisma");
-const pgSchema = path.join(root, "prisma", "schema.prisma");
-const prismaCli = path.join(root, "node_modules", "prisma", "build", "index.js");
+const nativeSchema = toArgvPath(path.join(root, "prisma", "schema.native.prisma"));
+const pgSchema = toArgvPath(path.join(root, "prisma", "schema.prisma"));
+const prismaCli = toArgvPath(path.join(root, "node_modules", "prisma", "build", "index.js"));
 
 const args = process.argv.slice(2);
 const skipBuild = args.includes("--skip-build");
@@ -75,7 +83,7 @@ function step(message) {
 // ---------------------------------------------------------------- build app
 if (!skipBuild) {
   step("1/4 generate native SQLite schema");
-  run(process.execPath, [path.join(root, "scripts", "generate-native-sqlite-schema.cjs")], {});
+  run(process.execPath, [toArgvPath(path.join(root, "scripts", "generate-native-sqlite-schema.cjs"))], {});
 
   step("2/4 prisma generate (native sqlite)");
   run(process.execPath, [prismaCli, "generate", "--schema", nativeSchema], {
@@ -127,7 +135,7 @@ step("generate native-init.sql (full SQLite structure)");
 const initSql = path.join(stageAppDir, "prisma", "native-init.sql");
 const diff = spawnSync(
   process.execPath,
-  [prismaCli, "migrate", "diff", "--from-empty", "--to-schema", nativeSchema, "--script", "--output", initSql],
+  [prismaCli, "migrate", "diff", "--from-empty", "--to-schema", nativeSchema, "--script", "--output", toArgvPath(initSql)],
   { cwd: root, stdio: "inherit" },
 );
 if (diff.status !== 0) process.exit(diff.status || 1);
@@ -195,9 +203,9 @@ step("copy portable Node runtime");
 copyDir(portableNodeRoot, stageNodeDir);
 
 // ------------------------------------------------- better-sqlite3 ABI rebuild
-step("rebuild better-sqlite3 with bundled Node " + require("node:child_process").execFileSync(path.join(stageNodeDir, "node.exe"), ["--version"]).toString().trim());
-const portableNode = path.join(stageNodeDir, "node.exe");
-const portableNpmCli = path.join(stageNodeDir, "node_modules", "npm", "bin", "npm-cli.js");
+step("rebuild better-sqlite3 with bundled Node " + require("node:child_process").execFileSync(toArgvPath(path.join(stageNodeDir, "node.exe")), ["--version"]).toString().trim());
+const portableNode = toArgvPath(path.join(stageNodeDir, "node.exe"));
+const portableNpmCli = toArgvPath(path.join(stageNodeDir, "node_modules", "npm", "bin", "npm-cli.js"));
 const rebuild = spawnSync(portableNode, [portableNpmCli, "rebuild", "better-sqlite3"], {
   cwd: stageAppDir,
   stdio: "inherit",
@@ -229,7 +237,7 @@ console.log("better-sqlite3 OK under Node " + process.version);
 `,
   "utf8",
 );
-const check = spawnSync(portableNode, [checkScript], {
+const check = spawnSync(portableNode, [toArgvPath(checkScript)], {
   cwd: stageAppDir,
   stdio: "inherit",
 });
@@ -274,7 +282,7 @@ fs.writeFileSync(
 );
 
 step("electron-builder nsis (prepackaged)");
-run("npx", ["electron-builder", "--win", "nsis", "--x64", "--prepackaged", unpackedDir], {
+run("npx", ["electron-builder", "--win", "nsis", "--x64", "--prepackaged", toArgvPath(unpackedDir)], {
   CSC_IDENTITY_AUTO_DISCOVERY: "false",
   ELECTRON_BUILDER_BINARIES_MIRROR: "https://npmmirror.com/mirrors/electron-builder-binaries/",
 });
