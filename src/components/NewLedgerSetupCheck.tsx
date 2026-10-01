@@ -24,9 +24,11 @@ export function NewLedgerSetupCheck() {
     const run = () => {
       checkedRef.current = true;
       fetch("/api/v1/auth/household-password-status")
-        .then(r => r.json() as Promise<{ ok: boolean; hasPassword: boolean; adminUser: { id: string; name: string } | null }>)
+        .then(r => r.json() as Promise<{ ok: boolean; hasPassword: boolean; fnosBound?: boolean; adminUser: { id: string; name: string } | null }>)
         .then(data => {
-          if (data.ok && !data.hasPassword && data.adminUser) {
+          // fnOS gateway authentication is already the user's credential. Do
+          // not force a second MMH password for a bound fnOS account.
+          if (data.ok && !data.hasPassword && !data.fnosBound && data.adminUser) {
             setAdminName(data.adminUser.name);
             setShow(true);
           }

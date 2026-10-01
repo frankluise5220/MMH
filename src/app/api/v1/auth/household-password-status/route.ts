@@ -10,6 +10,7 @@ import { getCurrentUser } from "@/lib/server/auth";
  * Returns { ok, hasPassword, adminUser }
  * - hasPassword: at least one admin of the current household has set a password
  * - adminUser: the first admin user of the current household (used to guide password setup)
+ * - fnosBound: whether the current session user is authenticated by a bound fnOS identity
  *
  * Note: if the user is not logged in (no mmh_username cookie),
  * the user is on the login page, so household-level password guidance is not triggered
@@ -23,6 +24,10 @@ export async function GET() {
   }
 
   const { householdId } = await getHouseholdScope();
+  // A gateway-authenticated fnOS user already has an external credential.
+  // Do not prompt this user to create a second MMH password just because the
+  // ledger admin row intentionally has no password hash.
+  const fnosBound = Boolean(currentUser.fnosUid);
 
   const adminUsers = await prisma.user.findMany({
     where: {
@@ -45,5 +50,5 @@ export async function GET() {
     ? { id: allAdmins[0].id, name: allAdmins[0].name }
     : null;
 
-  return NextResponse.json({ ok: true, hasPassword, adminUser });
+  return NextResponse.json({ ok: true, hasPassword, fnosBound, adminUser });
 }

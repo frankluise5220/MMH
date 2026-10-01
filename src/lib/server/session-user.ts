@@ -20,6 +20,7 @@ export type SessionUserRow = {
   role: string;
   isSystem: boolean;
   householdId: string | null;
+  fnosUid: string | null;
   authVersion: number;
 };
 
@@ -29,6 +30,7 @@ export const SESSION_USER_SELECT = {
   role: true,
   isSystem: true,
   householdId: true,
+  fnosUid: true,
   authVersion: true,
 } as const;
 

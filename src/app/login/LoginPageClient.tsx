@@ -103,14 +103,14 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   const [pendingLogin, setPendingLogin] = useState<{ username: string; password: string } | null>(null);
   const [initialLedgerSetup, setInitialLedgerSetup] = useState(false);
 
-  const [setupUsername, setSetupUsername] = useState("admin");
+  const [setupUsername, setSetupUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [createMethod, setCreateMethod] = useState<"invite" | "existing">("invite");
   const [createAuthMode, setCreateAuthMode] = useState<"local" | "mmh" | "fnos">("local");
   const [createInviteCode, setCreateInviteCode] = useState("");
   const [createLedgerName, setCreateLedgerName] = useState("");
-  const [createAdminName, setCreateAdminName] = useState("admin");
+  const [createAdminName, setCreateAdminName] = useState("");
   const [createAdminEmail, setCreateAdminEmail] = useState("");
   const [createPassword, setCreatePassword] = useState("");
   const [createExistingUserId, setCreateExistingUserId] = useState("");
@@ -535,7 +535,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   async function handleCreateLedger() {
     const trimmedInviteCode = createInviteCode.trim();
     const trimmedLedgerName = createLedgerName.trim();
-    const trimmedAdminName = createAdminName.trim() || "admin";
+    const trimmedAdminName = createAdminName.trim();
     const trimmedAdminEmail = createAdminEmail.trim();
     const trimmedPassword = createPassword.trim();
     const trimmedConfirmPassword = createConfirmPassword.trim();
@@ -811,20 +811,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     } finally {
       setRegisterLoading(false);
     }
-  }
-
-  function openRegister() {
-    setRegisterInviteMode(false);
-    setRegisterEmail("");
-    setRegisterCode("");
-    setRegisterCodeSent(false);
-    setRegisterPassword("");
-    setRegisterName("");
-    setRegisterInfo("");
-    setRegisterError("");
-    setShowReset(false);
-    setShowRegister(true);
-    cancelHouseholdChoice();
   }
 
   if (checking) {
@@ -1423,7 +1409,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                       />
                     </div>
                     <div className="space-y-3 border-t border-slate-200 pt-3">
-                      <div className="text-xs font-medium text-slate-600">创建用户</div>
+                      <div className="text-xs font-medium text-slate-600">{t("login.createUser")}</div>
                       <div className="flex gap-1 rounded-lg border border-slate-200 bg-white p-1">
                         <button type="button" onClick={() => setCreateAuthMode("local")} className={createAuthMode === "local" ? "flex-1 rounded-md bg-slate-100 px-2 py-1.5 text-xs font-medium text-slate-800" : "flex-1 rounded-md px-2 py-1.5 text-xs text-slate-500"}>{t("login.mode.local")}</button>
                         <button type="button" onClick={() => setCreateAuthMode("mmh")} className={createAuthMode === "mmh" ? "flex-1 rounded-md bg-slate-100 px-2 py-1.5 text-xs font-medium text-slate-800" : "flex-1 rounded-md px-2 py-1.5 text-xs text-slate-500"}>{t("login.mode.mmh")}</button>
@@ -1621,7 +1607,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                   />
                 </div>
                 <div className="space-y-3 border-t border-slate-200 pt-3">
-                  <div className="text-xs font-medium text-slate-600">创建用户</div>
+                  <div className="text-xs font-medium text-slate-600">{t("login.createUser")}</div>
                   <div className="flex gap-1 rounded-lg border border-slate-200 bg-white p-1">
                     <button type="button" onClick={() => setCreateAuthMode("local")} className={createAuthMode === "local" ? "flex-1 rounded-md bg-slate-100 px-2 py-1.5 text-xs font-medium text-slate-800" : "flex-1 rounded-md px-2 py-1.5 text-xs text-slate-500"}>{t("login.mode.local")}</button>
                     <button type="button" onClick={() => setCreateAuthMode("mmh")} className={createAuthMode === "mmh" ? "flex-1 rounded-md bg-slate-100 px-2 py-1.5 text-xs font-medium text-slate-800" : "flex-1 rounded-md px-2 py-1.5 text-xs text-slate-500"}>{t("login.mode.mmh")}</button>
@@ -1688,7 +1674,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                   setCreateAuthMode("local");
                   setCreateInviteCode("");
                   setCreateLedgerName("");
-                  setCreateAdminName("admin");
+                  setCreateAdminName("");
                   setCreateAdminEmail("");
                   setCreatePassword("");
                   setCreateConfirmPassword("");
@@ -1720,7 +1706,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 type="text"
                 autoComplete="username"
                 className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                placeholder="admin"
+                placeholder={t("login.adminUsernamePlaceholder")}
                 autoFocus
               />
             </div>
@@ -1773,7 +1759,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 setShowReset(false);
                 setCreateInviteCode("");
                 setCreateLedgerName("");
-                setCreateAdminName("admin");
+                setCreateAdminName("");
                 setCreateAdminEmail("");
                 setCreatePassword("");
                 setCreateConfirmPassword("");

@@ -157,6 +157,28 @@ const dataDir = process.env.MMH_DATA_DIR || ".";
 const dbPath = path.join(dataDir, "mmh.db");
 const sqlPath = path.join(__dirname, "..", "prisma", "native-init.sql");
 
+function tableExists(db, table) {
+  return Boolean(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table));
+}
+
+function columnExists(db, table, column) {
+  if (!tableExists(db, table)) return false;
+  return db.prepare("PRAGMA table_info(\"" + table.replace(/\"/g, "\"\"") + "\")").all().some((row) => row.name === column);
+}
+
+function addColumnIfMissing(db, table, column, definition) {
+  if (!columnExists(db, table, column)) {
+    db.exec("ALTER TABLE \"" + table.replace(/\"/g, "\"\"") + "\" ADD COLUMN \"" + column.replace(/\"/g, "\"\"") + "\" " + definition);
+  }
+}
+
+function applyRuntimeMigrations(db) {
+  // Windows upgrades previously created only missing tables. Keep the login
+  // query compatible with databases created by those older desktop builds.
+  addColumnIfMissing(db, "User", "authVersion", "INTEGER NOT NULL DEFAULT 1");
+  addColumnIfMissing(db, "UserSettings", "sessionDays", "INTEGER NOT NULL DEFAULT 30");
+}
+
 fs.mkdirSync(dataDir, { recursive: true });
 const db = new Database(dbPath);
 db.pragma("busy_timeout = 10000");
@@ -189,7 +211,8 @@ try {
         }
       }
     }
-    console.log("MMH SQLite database already initialized at " + dbPath);
+    applyRuntimeMigrations(db);
+    console.log("MMH SQLite database already initialized and migrated at " + dbPath);
   }
 } finally {
   db.close();

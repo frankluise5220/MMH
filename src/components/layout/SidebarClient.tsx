@@ -27,6 +27,7 @@ import {
   X,
 } from "lucide-react";
 import { MmhLogo } from "@/components/MmhLogo";
+import { withBasePath } from "@/lib/base-path";
 import { LedgerSwitcher } from "../LedgerSwitcher";
 import { NewLedgerSetupCheck } from "../NewLedgerSetupCheck";
 import { DailyTaskCheck } from "../DailyTaskCheck";
@@ -508,7 +509,7 @@ export function SidebarClient({
       if (!res.ok || data?.ok !== true) {
         throw new Error(data?.error || `Logout API returned ${res.status}`);
       }
-      window.location.assign("/login");
+      window.location.assign(withBasePath("/login"));
     } catch (error) {
       window.alert(error instanceof Error ? `${t("sidebarClient.logoutFailed")}: ${error.message}` : t("sidebarClient.logoutFailed"));
       setLoggingOut(false);
