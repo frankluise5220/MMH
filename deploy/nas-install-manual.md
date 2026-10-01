@@ -146,8 +146,10 @@ http://群晖IP:7777/
 
 ### 1. 安装
 
+普通用户只需要完成下面 5 步：
+
 1. 在 NAS 上安装 Docker、Container Manager、容器管理器或类似功能。
-2. 在 NAS 文件管理里新建一个目录，用来放 MMH 的部署文件。例如：
+2. 在 NAS 文件管理里新建一个目录，用来放 MMH 的部署文件，例如：
 
 ```text
 docker/mmh
@@ -157,8 +159,7 @@ docker/mmh
    - `docker-compose.yml`：https://raw.githubusercontent.com/frankluise5220/MMH/main/deploy/nas/docker-compose.yml
    - `postgres-entrypoint.sh`：https://raw.githubusercontent.com/frankluise5220/MMH/main/deploy/nas/postgres-entrypoint.sh
    - `env.example`：https://raw.githubusercontent.com/frankluise5220/MMH/main/deploy/nas/env.example
-4. 把 `env.example` 改名为 `.env`。
-5. 打开 `.env`，修改数据库密码：
+4. 把 `env.example` 改名为 `.env`，打开 `.env`，只修改数据库密码：
 
 ```env
 POSTGRES_PASSWORD="REPLACE_WITH_YOUR_OWN_LONG_RANDOM_PASSWORD"
@@ -166,54 +167,68 @@ POSTGRES_PASSWORD="REPLACE_WITH_YOUR_OWN_LONG_RANDOM_PASSWORD"
 
 密码建议使用 24 位以上的字母和数字。图形界面安装使用静态 `.env` 文件，Docker 不会自动生成这个密码。
 
-> 文件权限：`postgres-entrypoint.sh` 必须至少对 Docker 守护进程可读，建议设为 `755`；`docker-compose.yml` 和 `.env` 至少设为 `644`。如果 NAS 文件管理器下载后显示权限为 `000` 或容器日志出现 `init.sh: Permission denied`，先在 NAS 终端执行：
->
-> ```bash
-> cd /你的实际部署目录
-> chmod 755 postgres-entrypoint.sh
-> chmod 644 docker-compose.yml .env
-> ```
->
-> 这一步不会删除或修改数据库卷。
+5. 在 NAS 的 Docker 图形界面里运行项目：
+   - 如果项目提示已经存在 `docker-compose.yml`，选择使用已有文件继续。
+   - 选择刚才的部署目录和 `docker-compose.yml`，项目名称填写 `mmh`，然后点击运行、部署或启动。
+   - 等待日志中出现 `starting app...` 后即可退出日志窗口；首次启动需要拉取镜像，等待时间取决于 NAS 网络和镜像下载速度。
+   - 回到桌面，点击 `MMH` 图标打开系统。
 
-6. 如果 NAS 宿主机的 `7777` 已被其他服务占用，修改 `.env` 中的宿主机端口；容器内部端口始终保持 `7777`：
->
-> ```env
-> MMH_HOST_PORT="7780"
-> ```
->
-> 对应的端口映射是 `7780:7777`，浏览器访问 `http://NAS_IP:7780/`。Docker 图形界面中如果分别填写“主机端口”和“容器端口”，应填写 `7780` 和 `7777`，不要把容器端口改成 `7780`。发生端口冲突或修改 `MMH_HOST_PORT` 后，必须重新部署整个 Compose 项目；单纯重启旧容器不会更新端口绑定。命令行执行：
->
-> ```bash
-> docker compose -p mmh up -d --force-recreate
-> ```
->
-> 如果你的网络不能稳定访问默认的 Docker Proxy 或 Docker Hub，必须同时为 MMH 应用、更新器和 PostgreSQL 选择可用镜像源。比如 5.212 的实测配置是：
->
-> ```env
-> MMH_IMAGE_SOURCE="nju"
-> MMH_APP_IMAGE="ghcr.nju.edu.cn/frankluise5220/mmh:latest"
-> MMH_UPDATER_IMAGE="ghcr.nju.edu.cn/frankluise5220/mmh-updater:latest"
-> POSTGRES_IMAGE="docker.m.daocloud.io/library/postgres:15-alpine"
-> ```
->
-> 不要只替换 `MMH_APP_IMAGE` 和 `MMH_UPDATER_IMAGE`，否则 `postgres:15-alpine` 仍会从 Docker Hub 拉取。先在 NAS 终端验证三个镜像：
->
-> ```bash
-> docker manifest inspect ghcr.nju.edu.cn/frankluise5220/mmh:latest
-> docker manifest inspect ghcr.nju.edu.cn/frankluise5220/mmh-updater:latest
-> docker manifest inspect docker.m.daocloud.io/library/postgres:15-alpine
-> ```
->
-> 其中第三方镜像站的 manifest 能读取，不代表所有 blob 下载都稳定；如果拉取时出现 IPv6 连接重置，改用 NAS 的 IPv4 DNS/网络，或使用局域网内的 registry 镜像，不要删除 `pgdata` 后反复重试。
+如果界面提示“已经有 Docker Compose 文件”，这是正常提示，不需要重新创建 Compose 文件。应用启动完成后，浏览器地址通常是 `http://NAS_IP:7777/`，其中 `NAS_IP` 换成 NAS 的实际 IP。
 
-7. 如果你的 `docker-compose.yml` 里 `MMH_UPDATE_TOKEN` 是 `${MMH_UPDATE_TOKEN:-...}` 形式（新版部署文件），在同一份 `.env` 里设置网页更新令牌；如果该行写的是 `${POSTGRES_PASSWORD:-...}`（旧版派生），跳过这一步：
+### 安装完成后的注意事项
+
+以下内容只在遇到对应问题时处理，普通安装不需要操作。
+
+**7777 端口已被占用**
+
+如果 NAS 宿主机的 `7777` 已被其他服务占用，修改 `.env` 中的宿主机端口；容器内部端口始终保持 `7777`：
+
+```env
+MMH_HOST_PORT="7780"
+```
+
+对应的端口映射是 `7780:7777`，浏览器访问 `http://NAS_IP:7780/`。Docker 图形界面中如果分别填写“主机端口”和“容器端口”，应填写 `7780` 和 `7777`，不要把容器端口改成 `7780`。修改端口后必须重新部署整个 Compose 项目，不能只重启旧容器：
+
+```bash
+docker compose -p mmh up -d --force-recreate
+```
+
+**文件权限错误**
+
+如果容器日志出现 `init.sh: Permission denied`，在 NAS 终端执行：
+
+```bash
+cd /你的实际部署目录
+chmod 755 postgres-entrypoint.sh
+chmod 644 docker-compose.yml .env
+```
+
+**网络或镜像拉取失败**
+
+如果 NAS 不能稳定访问默认的 Docker Proxy 或 Docker Hub，需要同时为 MMH 应用、更新器和 PostgreSQL 选择可用镜像源。比如：
+
+```env
+MMH_IMAGE_SOURCE="nju"
+MMH_APP_IMAGE="ghcr.nju.edu.cn/frankluise5220/mmh:latest"
+MMH_UPDATER_IMAGE="ghcr.nju.edu.cn/frankluise5220/mmh-updater:latest"
+POSTGRES_IMAGE="docker.m.daocloud.io/library/postgres:15-alpine"
+```
+
+不要只替换应用镜像和更新器镜像，否则 PostgreSQL 仍会从 Docker Hub 拉取。应用镜像还必须包含 Prisma schema engine；如果日志停在 `ensured ... unique index`、数据库只有 `_mmh_schema_meta`，并且诊断显示正在访问 `binaries.prisma.sh`，请先拉取包含离线 schema engine 修复的新版镜像：
+
+```bash
+cd /你的实际部署目录
+docker compose -p mmh pull app updater
+docker compose -p mmh up -d app updater
+```
+
+**网页更新不可用**
+
+如果 `docker-compose.yml` 里 `MMH_UPDATE_TOKEN` 是 `${MMH_UPDATE_TOKEN:-...}` 形式，在 `.env` 中设置网页更新令牌；如果是 `${POSTGRES_PASSWORD:-...}` 形式，则不需要设置：
 
 ```env
 MMH_UPDATE_TOKEN="REPLACE_WITH_YOUR_OWN_LONG_RANDOM_TOKEN"
 ```
-
-令牌是应用与更新器容器之间的共享口令，网页里的“系统更新”（刷新远端版本、一键更新）依赖它。用 24 位以上随机字符串，生成示例：`openssl rand -hex 24`。不设置（且 compose 不再自动派生）时，更新页会提示“未配置宿主机更新执行器”，或报“获取远端版本失败：spawnSync /bin/sh ETIMEDOUT”（GitHub 直连超时），且“更新”按钮不可用。
 
 默认 `.env` 已包含 NAS 资源保护参数：
 
@@ -223,23 +238,7 @@ MMH_NODE_MAX_OLD_SPACE_MB="auto"
 PG_POOL_MAX="4"
 ```
 
-这些值会把 `mmh-app` 容器限制在约 1.5GB 内，并让 Node 的 V8 old-space 按容器/宿主可用内存自动分档；默认 1.5GB app 容器下通常会得到 768MB old-space。应用到 PostgreSQL 的连接池默认降到 4，给数据库和系统缓存保留余量。这个限制的目的不是让正常请求触顶退出，而是把异常增长限制在应用容器内，避免拖慢数据库和整台 NAS。Docker 版还会通过 `/api/health` 做应用健康检查并返回宿主内存、运行限制和内存压力，但健康接口只在数据库探测失败时返回 503，避免单纯因为内存接近阈值造成重启风暴。2GB 内存设备如需更保守可下调 `MMH_APP_MEMORY_LIMIT`；4GB 及以上设备如有大文件导入或 AI 识别任务，可以按需调大 `MMH_APP_MEMORY_LIMIT`，或把 `MMH_NODE_MAX_OLD_SPACE_MB` 从 `auto` 改成明确数字。
-
-8. 在 NAS 的 Docker 图形界面里创建项目：
-   - 项目名称填写 `mmh`。
-   - 项目目录选择刚才放部署文件的目录。
-   - Compose 文件选择 `docker-compose.yml`。
-   - 点击部署、创建或启动。
-
-首次启动需要拉取镜像，等待时间取决于 NAS 网络和镜像下载速度。应用镜像还必须包含 Prisma schema engine；如果容器日志停在 `ensured ... unique index`、数据库只有 `_mmh_schema_meta`，并且日志或诊断显示正在访问 `binaries.prisma.sh`，说明使用的是旧镜像。请先拉取包含离线 schema engine 修复的新版镜像，再继续启动：
-
-```bash
-cd /你的实际部署目录
-docker compose -p mmh pull app updater
-docker compose -p mmh up -d app updater
-```
-
-图形界面部署时，NAS 宿主机端口和容器内部端口是两层配置。推荐只修改 `.env` 的 `MMH_HOST_PORT`，不要直接修改容器内的 `PORT`；例如 `MMH_HOST_PORT="7780"` 会生成 `7780:7777`，浏览器访问 `http://NAS_IP:7780/`。容器内部始终监听 `7777`。
+这些参数通常不需要修改。2GB 内存设备如需更保守可下调 `MMH_APP_MEMORY_LIMIT`；4GB 及以上设备如有大文件导入或 AI 识别任务，可以按需调大。
 
 ### 2. 更新
 

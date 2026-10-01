@@ -4,20 +4,20 @@
       "id": "mmh",
       "name": "MMH",
       "display_name": "MMH 家庭财务工作台",
-      "version": "0.1.68",
+      "version": "0.1.69",
       "platform": "x86",
       "platforms": [
         "x86",
         "arm"
       ],
       "description": "MMH 家庭财务工作台是本地优先的家庭记账与全资产管理工具，数据保存在自己的飞牛 NAS 上。支持多账本、多成员、账户流水、往来款、信用卡、贷款、基金、股票、存款、债券、房产、保险、统计报表、导入导出、AI 助手以及手动/自动备份。报销与差旅工作流正在开发中，已提供部分录入和查看能力。",
-      "download_url": "http://fnapp.floatingice.win/apps/mmh-0.1.68.fpk",
+      "download_url": "http://fnapp.floatingice.win/apps/mmh-0.1.69.fpk",
       "download_urls": {
-        "x86_64": "http://fnapp.floatingice.win/apps/mmh-0.1.68.fpk",
-        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.68/mmh-fnos-v0.1.68-arm64.fpk"
+        "x86_64": "http://fnapp.floatingice.win/apps/mmh-0.1.69.fpk",
+        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.69/mmh-fnos-v0.1.69-arm64.fpk"
       },
       "homepage": "https://github.com/frankluise5220/MMH",
-      "changelog": "0.1.66/0.1.67 升级至 0.1.68：首次安装仍免邀请码，补齐本地、MMH 用户及 fnOS 网关免密注册；固定登录卡片高度并修复 fnOS/Windows 登录兼容问题。完整说明见 GitHub Release v0.1.68",
+      "changelog": "0.1.68 升级至 0.1.69：修复邀请码六态判定、签名状态诊断、存款与债券到期日周年口径及相关数据迁移；补齐备份覆盖闸门与账簿初始化权限隔离。完整说明见 GitHub Release v0.1.69",
       "tags": [
         "finance",
         "bookkeeping"

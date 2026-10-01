@@ -290,6 +290,52 @@ SQL
   mmh_log "legacy DebtAgreement rekey complete."
 }
 
+# 存款/债券到期日口径更正（2026-10-01 用户裁定）。
+# 旧实现把「算头不算尾」错用到**到期日**上（2026-12-21 存 1 年 → 2027-12-20），
+# 再靠 depositInterestDaysUtc 的 +1 补偿把利息修回 365 天 —— 结果是利息对、到期日早一天，
+# 且与已定版的付息锚点口径（depositPayoutAnchorUtc：对应日、不提前一天）自相矛盾。
+# 这里把「到期日 +1 天 == 起存日 + N 整年（N ≥ 1，闰日钳到月末）」的行推回周年。
+# 幂等：迁移后到期日 == 周年，条件不再匹配，重复执行是 no-op。
+# 注意：run_compat_migrations 跑在 `prisma db push` **之前**，全新库还没有 transactions
+# 表，因此必须先做 to_regclass 存在性检查，否则会报错中断启动。
+migrate_deposit_maturity_anniversary() {
+  if [ "$(psql_mmh -tAc "SELECT CASE WHEN to_regclass('public.transactions') IS NULL THEN '0' ELSE '1' END" | tr -d '[:space:]')" = "1" ]; then
+    mmh_log "normalizing deposit maturity dates to the calendar anniversary..."
+    if ! psql_mmh -v ON_ERROR_STOP=1 <<'SQL'; then
+UPDATE "transactions"
+   SET "fundArrivalDate" = "fundArrivalDate" + INTERVAL '1 day'
+ WHERE "type" = 'investment'
+   AND "fundProductType" = 'deposit'
+   AND "fundSubtype" = 'buy'
+   AND "deletedAt" IS NULL
+   AND "fundArrivalDate" IS NOT NULL
+   AND "date" IS NOT NULL
+   AND ROUND(("fundArrivalDate"::date - "date"::date) / 365.0) >= 1
+   AND ("fundArrivalDate"::date + INTERVAL '1 day')::date
+       = ("date"::date + (ROUND(("fundArrivalDate"::date - "date"::date) / 365.0)::int * INTERVAL '1 year'))::date;
+SQL
+      mmh_log "WARNING: deposit maturity anniversary migration failed; continuing so MMH stays available."
+    fi
+  fi
+
+  if [ "$(psql_mmh -tAc "SELECT CASE WHEN to_regclass('public.bond_transactions') IS NULL THEN '0' ELSE '1' END" | tr -d '[:space:]')" = "1" ]; then
+    mmh_log "normalizing bond maturity dates to the calendar anniversary..."
+    if ! psql_mmh -v ON_ERROR_STOP=1 <<'SQL'; then
+UPDATE "bond_transactions"
+   SET "maturityDate" = "maturityDate" + INTERVAL '1 day'
+ WHERE "action" = 'buy'
+   AND "deletedAt" IS NULL
+   AND "maturityDate" IS NOT NULL
+   AND "tradeDate" IS NOT NULL
+   AND ROUND(("maturityDate"::date - "tradeDate"::date) / 365.0) >= 1
+   AND ("maturityDate"::date + INTERVAL '1 day')::date
+       = ("tradeDate"::date + (ROUND(("maturityDate"::date - "tradeDate"::date) / 365.0)::int * INTERVAL '1 year'))::date;
+SQL
+      mmh_log "WARNING: bond maturity anniversary migration failed; continuing so MMH stays available."
+    fi
+  fi
+}
+
 run_compat_migrations() {
   legacy_statement_category_rules="$(
     psql_mmh -tAc "SELECT CASE WHEN to_regclass('public.statement_category_rules') IS NULL THEN '0' ELSE '1' END" | tr -d '[:space:]'
@@ -489,6 +535,7 @@ SQL
   fi
 
   migrate_debt_agreement_rekey
+  migrate_deposit_maturity_anniversary
 }
 
 until pg_isready -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE"; do

@@ -2654,7 +2654,86 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    // 存款/债券到期日口径更正（2026-10-01）：旧实现把「算头不算尾」错用到到期日上
+    // （2026-12-21 存 1 年 → 2027-12-20），现推回对年对月对日。
+    // 不走 SQL 日期函数：Prisma 用 iso8601 字符串存 DateTime，date() 会改掉格式；
+    // 这里读原值 → 用与 JS 侧 addCalendarYearsUtc 相同的口径判定 → 按原格式写回。
+    // 幂等：迁移后到期日 == 周年，判定不再命中。
+    version: "20261001_deposit_maturity_anniversary",
+    description: "Shift deposit/bond maturity dates from anniversary-1day back to the calendar anniversary",
+    apply(db) {
+      // 用参数化查询：SQL 里既不带字符串字面量也不带反斜杠，
+      // 避免在模板字符串里被二次转义（反斜杠加双引号会被模板吞成裸双引号而提前闭合字符串）。
+      if (tableExists(db, "transactions")) {
+        const rows = db
+          .prepare(
+            'SELECT id, "date" AS start, "fundArrivalDate" AS maturity FROM "transactions"' +
+              ' WHERE "type" = ? AND "fundProductType" = ? AND "fundSubtype" = ?' +
+              ' AND "deletedAt" IS NULL AND "fundArrivalDate" IS NOT NULL AND "date" IS NOT NULL',
+          )
+          .all("investment", "deposit", "buy");
+        const update = db.prepare('UPDATE "transactions" SET "fundArrivalDate" = ? WHERE id = ?');
+        for (const row of rows) {
+          const next = shiftMaturityToAnniversary(row.maturity, row.start);
+          if (next !== null) update.run(next, row.id);
+        }
+      }
+      if (tableExists(db, "bond_transactions")) {
+        const rows = db
+          .prepare(
+            'SELECT id, "tradeDate" AS start, "maturityDate" AS maturity FROM "bond_transactions"' +
+              ' WHERE "action" = ? AND "deletedAt" IS NULL' +
+              ' AND "maturityDate" IS NOT NULL AND "tradeDate" IS NOT NULL',
+          )
+          .all("buy");
+        const update = db.prepare('UPDATE "bond_transactions" SET "maturityDate" = ? WHERE id = ?');
+        for (const row of rows) {
+          const next = shiftMaturityToAnniversary(row.maturity, row.start);
+          if (next !== null) update.run(next, row.id);
+        }
+      }
+    },
+  },
 ];
+
+// 到期日「周年 − 1 天」→ 周年；返回 null 表示不是旧口径。
+// 判定与 JS 侧 addCalendarYearsUtc 等价：到期日 +1 天正好落在「起存日 + N 整年」
+// （N ≥ 1，闰日钳到月末）。比较按 UTC 年月日，兼容存成 UTC 零点 / 本地零点两种口径；
+// 写回时沿用原值的存储格式（数字 unixepoch-ms、'YYYY-MM-DD HH:MM:SS' 或 ISO8601）。
+function shiftMaturityToAnniversary(rawMaturity, rawStart) {
+  if (rawMaturity === null || rawMaturity === undefined || rawStart === null || rawStart === undefined) return null;
+  const parse = (value) => {
+    if (typeof value === "number") return new Date(value);
+    if (typeof value === "bigint") return new Date(Number(value));
+    const text = String(value);
+    const date = new Date(text.includes("T") ? text : text.replace(" ", "T") + "Z");
+    return Number.isFinite(date.getTime()) ? date : null;
+  };
+  const format = (date, template) => {
+    if (typeof template === "number") return date.getTime();
+    if (typeof template === "bigint") return BigInt(date.getTime());
+    const text = String(template);
+    if (!text.includes("T")) return date.toISOString().slice(0, 19).replace("T", " ");
+    const iso = date.toISOString();
+    return text.endsWith("Z") ? iso : iso.replace("Z", "+00:00");
+  };
+  const start = parse(rawStart);
+  const maturity = parse(rawMaturity);
+  if (!start || !maturity) return null;
+  const years = Math.round((maturity.getTime() - start.getTime()) / 86400000 / 365);
+  if (years < 1) return null;
+  const targetYear = start.getUTCFullYear() + years;
+  const targetMonth = start.getUTCMonth();
+  const lastDay = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
+  const anniversary = new Date(Date.UTC(targetYear, targetMonth, Math.min(start.getUTCDate(), lastDay)));
+  const shifted = new Date(maturity.getTime() + 86400000);
+  const sameYmd =
+    shifted.getUTCFullYear() === anniversary.getUTCFullYear() &&
+    shifted.getUTCMonth() === anniversary.getUTCMonth() &&
+    shifted.getUTCDate() === anniversary.getUTCDate();
+  return sameYmd ? format(shifted, rawMaturity) : null;
+}
 
 function rebuildDebtAgreementToAccount(db) {
   if (!tableExists(db, "DebtAgreement")) return;
